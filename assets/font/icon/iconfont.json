@@ -1,0 +1,30 @@
+{
+  "id": "4700367",
+  "name": "GStore",
+  "font_family": "iconfont",
+  "css_prefix_text": "icon-",
+  "description": "",
+  "glyphs": [
+    {
+      "icon_id": "1381301",
+      "name": "appstoreo",
+      "font_class": "appstoreo",
+      "unicode": "e603",
+      "unicode_decimal": 58883
+    },
+    {
+      "icon_id": "22894637",
+      "name": "appstore",
+      "font_class": "appstore",
+      "unicode": "e664",
+      "unicode_decimal": 58980
+    },
+    {
+      "icon_id": "6560988",
+      "name": "完成",
+      "font_class": "wancheng1",
+      "unicode": "e615",
+      "unicode_decimal": 58901
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:android="http://schemas.android.com/apk/res/android">
+    <paths>
+
+        <!--表示外部存储空间应用私有目录下的 files/ 目录，对应Context.getExternalFilesDir()所获取的目录路径：/storage/emulate/0/Android/data/<包名>/files；-->
+        <external-files-path name="external-files-downloads-path" path="downloads" />
+    </paths>
+</resources>
