@@ -33,8 +33,11 @@ class ApplistLogic extends GetxController with GithubRequestMix {
   }
 
   Future<void> checkUpdata() async {
-    var task =
-        await githubApi.releases("sunO2", "GStore-Repositorys", 1, cancelToken);
+    var task = await githubApi
+        .releases("sunO2", "GStore-Repositorys", 1, cancelToken)
+        .catchError((e) {
+      log("$e");
+    });
     List<dynamic> gstoreRepositorys = jsonDecode(task);
     dynamic release =
         (gstoreRepositorys.isNotEmpty) ? gstoreRepositorys[0] ?? {} : {};

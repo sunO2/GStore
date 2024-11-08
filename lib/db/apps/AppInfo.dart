@@ -33,3 +33,12 @@ class AppInfoConfig {
   final String version;
   AppInfoConfig(this.version);
 }
+
+@entity
+class AppCategory {
+  @primaryKey
+  final String id;
+  final String description;
+  final String icon;
+  AppCategory(this.id, this.description, this.icon);
+}

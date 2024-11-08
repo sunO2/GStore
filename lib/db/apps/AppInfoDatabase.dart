@@ -10,7 +10,7 @@ import 'package:gstore/db/apps/AppInfo.dart';
 part 'AppInfoDatabase.g.dart';
 
 @TypeConverters([CategoryConverter])
-@Database(version: 1, entities: [AppInfo, AppInfoConfig])
+@Database(version: 1, entities: [AppInfo, AppInfoConfig, AppCategory])
 abstract class AppInfoDatabase extends FloorDatabase {
   AppInfoDao get dao;
 }

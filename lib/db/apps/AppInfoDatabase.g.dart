@@ -99,6 +99,8 @@ class _$AppInfoDatabase extends AppInfoDatabase {
             'CREATE TABLE IF NOT EXISTS `AppInfo` (`appId` TEXT NOT NULL, `name` TEXT NOT NULL, `user` TEXT NOT NULL, `repositories` TEXT NOT NULL, `icon` TEXT NOT NULL, `des` TEXT NOT NULL, `category` TEXT, PRIMARY KEY (`appId`))');
         await database.execute(
             'CREATE TABLE IF NOT EXISTS `AppInfoConfig` (`version` TEXT NOT NULL, PRIMARY KEY (`version`))');
+        await database.execute(
+            'CREATE TABLE IF NOT EXISTS `AppCategory` (`id` TEXT NOT NULL, `description` TEXT NOT NULL, `icon` TEXT NOT NULL, PRIMARY KEY (`id`))');
 
         await callback?.onCreate?.call(database, version);
       },
@@ -157,6 +159,13 @@ class _$AppInfoDao extends AppInfoDao {
     return _queryAdapter.query('SELECT * FROM config LIMIT 1',
         mapper: (Map<String, Object?> row) =>
             AppInfoConfig(row['version'] as String));
+  }
+
+  @override
+  Future<List<AppCategory>> getAllCategory() async {
+    return _queryAdapter.queryList('SELECT * FROM category',
+        mapper: (Map<String, Object?> row) => AppCategory(row['id'] as String,
+            row['description'] as String, row['icon'] as String));
   }
 }
 

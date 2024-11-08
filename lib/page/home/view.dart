@@ -33,7 +33,7 @@ class HomePage extends StatelessWidget {
                 ),
                 label: "应用"),
             const BottomNavigationBarItem(
-                icon: Icon(Icons.settings), label: "设置"),
+                icon: Icon(Icons.settings), label: "分类"),
           ],
           onTap: (index) {
             logic.jumpToPage(index);

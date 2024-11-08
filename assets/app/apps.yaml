@@ -1,86 +1,165 @@
-version: 0.0.1
+version: 0.0.9
+category:
+  - TOOLS,工具
+  - NET,网络
+  - SAFETY,安全
+  - SOCIAL,社交
+  - OFFICE,办公
+  - PHOTO,照片
+  - ENTERTAINMENT,娱乐
+  - MEDIA,影音
+  - HOOK,Hook
+  - PROXY,代理
+  - TERMINAL,终端
+  - NOTE,笔记
+  - DOWNLOAD,下载器
 apps:
   - name: LibChecker
     user: LibChecker
     repositories: LibChecker
     icon: https://ghp.ci/https://raw.githubusercontent.com/LibChecker/LibChecker/refs/heads/master/app/src/main/res/drawable-xxxhdpi/pic_logo.png
-    des: 应用信息检查
+    des: 应用信息检查 通过快照 对比应用更新内容
     appId: com.absinthe.libchecker
+    category: 
+      - TOOLS
   - name: LocalSend
     user: localsend
     repositories: localsend
     appId: org.localsend.localsend_app
     icon: https://ghp.ci/https://github.com/localsend/localsend/blob/main/app/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png?raw=true
-    des: 本地文件传输
+    des: 多平台局域网文件传输 类似快传
+    category: 
+      - TOOLS
+      - NET
   - name: keyguard
     user: AChep
     repositories: keyguard-app
     appId: com.artemchep.keyguard
     icon: https://ghp.ci/https://github.com/AChep/keyguard-app/blob/master/common/src/androidMain/res/mipmap-xxxhdpi/ic_launcher.png?raw=true
-    des: Bitwarden 第三方客户端
+    des: Bitwarden 密码管理软件 第三方客户端 
+    category:
+      - SAFETY
+      - TOOLS
   - name: findroid
     user: jarnedemeulemeester
     repositories: findroid
     appId: dev.jdtech.jellyfin
     icon: https://ghp.ci/https://github.com/jarnedemeulemeester/findroid/blob/main/core/src/main/ic_launcher-playstore.png
-    des: Jellyfin 第三方客户端
+    des: Jellyfin 第三方客户端 电影，影视播放器
+    category: 
+      - MEDIA
+  - name: jellyfin
+    user: jellyfin
+    repositories: jellyfin-android
+    appId: org.jellyfin.mobile
+    icon: https://ghp.ci/https://github.com/jellyfin/jellyfin-android/blob/master/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+    des: Jellyfin 官方客户端 电影，影视播放器
+    category: 
+      - MEDIA
   - name: Bitwarden
     user: bitwarden
     repositories: android
     appId: com.x8bit.bitwarden
     icon: https://store-images.s-microsoft.com/image/apps.9628.15bced16-76b6-40f0-b229-b0fa0f565ba8.a4bafbe6-7354-4f8f-b022-5bd405f680f1.a63587e6-b50f-4673-8e37-16cc614b7873
-    des: Bitwarden 官方客户端
+    des: Bitwarden 密码管理软件 官方客户端 
+    category:
+      - SAFETY
+      - TOOLS
   - name: LX Music
     user: lyswhut
     repositories: lx-music-mobile
     appId: cn.toside.music.mobile
     icon: https://ghp.ci/https://github.com/lyswhut/lx-music-mobile/blob/master/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
-    des: 洛雪音乐助手客户端
+    des: 洛雪音乐助手客户端 音乐播放器
+    category:
+      - MEDIA
   - name: FlClash
     user: chen08209
     repositories: FlClash
     appId: com.follow.clash
     icon: https://ghp.ci/https://github.com/chen08209/FlClash/blob/main/android/app/src/main/res/mipmap-xxhdpi/ic_launcher_round.webp
-    des: ClashMeta 客户端
+    des: ClashMeta 网络代理客户端
+    category:
+      - PROXY
+      - NET
   - name: ClashMeta
     user: MetaCubeX
     repositories: ClashMetaForAndroid
     appId: com.github.kr328.clash
     icon: https://ghp.ci/https://github.com/MetaCubeX/ClashMetaForAndroid/blob/main/app/src/main/ic_launcher-playstore.png
-    des: ClashMeta 客户端
+    des: ClashMeta 网络代理客户端
+    category:
+      - PROXY
+      - NET
   - name: v2rayNG
     user: 2dust
     repositories: v2rayNG
     appId: com.v2ray.ang
     icon: https://ghp.ci/https://github.com/2dust/v2rayNG/blob/master/V2rayNG/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
-    des: V2ray Android客户端
+    des: V2ray Android V2ray协议 网络代理客户端
+    category:
+      - PROXY
+      - NET
   - name: termux
     user: termux
     repositories: termux-app
     appId: com.termux
     icon: https://ghp.ci/https://github.com/termux/termux-app/blob/master/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
     des: termux是一个Android终端仿真器和Linux环境应用程序，直接工作，无需根目录或设置。一个最小的基本系统被自动安装-额外的软件包可以使用APT软件包管理器来使用
+    category:
+      - TOOLS
+      - TERMINAL
   - name: obsidian
     user: obsidianmd
     repositories: obsidian-releases
     appId: md.obsidian
     icon: https://forum.obsidian.md/uploads/default/optimized/3X/9/f/9f1b5b46aed533f5386cf276ab2cdce48cbd2e25_2_200x200.png
     des: Obsidian是使用Markdown语法的闭源笔记软件。用户可以在笔记间建立双向链接，并且可以探索这些笔记连接形成的关系图谱
+    category:
+      - NOTE
+      - OFFICE
   - name: Shizuku
     user: RikkaApps
     repositories: Shizuku
     appId: moe.shizuku.privileged.api
     icon: https://ghp.ci/https://github.com/RikkaApps/Shizuku/blob/master/manager/src/main/res/mipmap-xxxhdpi/ic_launcher.png
-    des: Shizuku 是一款可以帮助普通应用借助一个由app_process 启动的Java 进程直接以adb 或root 特权使用系统API。
+    des: Shizuku 是一款可以帮助普通应用借助一个由app_process 启动的Java 进程直接以adb 或root 特权使用系统API HOOK 系统。
+    category:
+      - HOOK
+      - TOOLS
   - name: Magisk
     user: topjohnwu
     repositories: Magisk
     appId: com.topjohnwu.magisk
     icon: https://ghp.ci/https://github.com/topjohnwu/Magisk/raw/master/docs/images/logo.png
     des: Magisk（也被称作面具）是一套开放源代码的Android（6.0以上版本）自定义工具套组，内置了Magisk Manager（图形化管理界面）、Root、启动脚本、SElinux补丁和启动时认证/dm-verity/强制加密移除功能。Magisk同时提供了在无需直接修改系统文件的情况下更改/system或/vendor等分区内容的接口，利用与Xposed类似的模块系统，开发者可以对系统进行修改或对所安装的软件功能进行修改等
+    category:
+      - HOOK
+      - TOOLS
   - name: ProxyPin
     user: wanghongenpin
     repositories: proxypin
     appId: com.network.proxy
     icon: https://ghp.ci/https://github.com/wanghongenpin/proxypin/blob/main/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
     des: 多平台网络抓包工具
+    category:
+      - NET
+      - HOOK
+  - name: RustDesk
+    user: rustdesk
+    repositories: rustdesk
+    appId: com.carriez.flutter_hbb
+    icon: https://ghp.ci/https://github.com/rustdesk/rustdesk/blob/master/flutter/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+    des: 多平台远程桌面控制软件工具
+    category:
+      - OFFICE
+      - TOOLS
+  - name: GopeedLab
+    user: GopeedLab
+    repositories: gopeed
+    appId: com.gopeed
+    icon: https://ghp.ci/https://github.com/GopeedLab/gopeed/blob/main/ui/flutter/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+    des: 多平台下载器 下载速度飞快
+    category:
+      - DOWNLOAD
+      - NET

@@ -24,7 +24,9 @@ class DioClient {
   Dio get() => _dio;
 
   void setAuthorization(String? authorization) {
-    _dio.options.headers["Authorization"] = "Bearer $authorization";
+    if (authorization?.isNotEmpty ?? false) {
+      _dio.options.headers["Authorization"] = "Bearer $authorization";
+    }
   }
 
   static DioClient _getInstance() {

@@ -15,4 +15,7 @@ abstract class AppInfoDao {
 
   @Query('SELECT * FROM config LIMIT 1')
   Future<AppInfoConfig?> getVersion();
+
+  @Query('SELECT * FROM category')
+  Future<List<AppCategory>> getAllCategory();
 }

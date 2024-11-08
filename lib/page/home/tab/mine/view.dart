@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:gstore/http/download/DownloadStatusDataBase.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
-import 'package:gstore/http/github/dio_client.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:gstore/page/home/tab/mine/logic.dart';
+import 'package:gstore/core/core.dart';
+import 'package:jovial_svg/jovial_svg.dart';
 
 class MinePage extends StatelessWidget {
   TextEditingController controller = TextEditingController();
@@ -10,25 +11,73 @@ class MinePage extends StatelessWidget {
   MinePage({super.key});
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        children: [
-          TextField(
-            controller: controller,
-            decoration: const InputDecoration(
-              hintText: "输入",
+    final logic = Get.put(MineLogic());
+    final state = Get.find<MineLogic>().state;
+    return Scaffold(
+      appBar: AppBar(
+        title: GestureDetector(
+          onTap: logic.search,
+          child: Container(
+            decoration: BoxDecoration(
+                borderRadius: const BorderRadius.all(Radius.circular(40)),
+                color: Theme.of(context).primaryColor.withAlpha(30)),
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+            width: 240,
+            child: const Row(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                Padding(
+                  padding: EdgeInsets.only(top: 4),
+                  child: Icon(
+                    Icons.search,
+                    size: 24,
+                  ),
+                ),
+                SizedBox(
+                  width: 16,
+                ),
+                Text("搜索应用",
+                    style: TextStyle(fontWeight: FontWeight.w400, fontSize: 18))
+              ],
             ),
           ),
-          MaterialButton(
-            onPressed: () async {
-              final SharedPreferencesAsync prefs = SharedPreferencesAsync();
-              await prefs.setString("github_token", controller.text);
-              DioClient().setAuthorization(controller.text);
-            },
-            child: Text("保存"),
-          )
-        ],
+        ),
+      ),
+      body: Container(
+        padding: const EdgeInsets.all(16),
+        child: FutureBuilder(
+          future: logic.getCategory(),
+          builder: (context, snap) {
+            var data = snap.data;
+            if (snap.connectionState == ConnectionState.active ||
+                snap.connectionState == ConnectionState.waiting ||
+                null == data) {
+              return const SizedBox();
+            }
+
+            return ListView.builder(
+              itemCount: data.length,
+              itemBuilder: (context, index) {
+                var category = data[index];
+                return ListTile(
+                  leading: SizedBox(
+                    width: 32,
+                    height: 32,
+                    child: ScalableImageWidget(
+                      si: ScalableImage.fromSvgString(category.icon),
+                    ),
+                  ),
+                  title: Text(
+                    category.description,
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                  dense: true,
+                );
+              },
+            );
+          },
+        ),
       ),
     );
   }
