@@ -167,6 +167,20 @@ class _$AppInfoDao extends AppInfoDao {
         mapper: (Map<String, Object?> row) => AppCategory(row['id'] as String,
             row['description'] as String, row['icon'] as String));
   }
+
+  @override
+  Future<List<AppInfo>> searchCategoryLike(String word) async {
+    return _queryAdapter.queryList('SELECT * FROM apps WHERE category LIKE ?1',
+        mapper: (Map<String, Object?> row) => AppInfo(
+            row['appId'] as String,
+            row['name'] as String,
+            row['user'] as String,
+            row['repositories'] as String,
+            row['icon'] as String,
+            row['des'] as String,
+            _categoryConverter.decode(row['category'] as String?)),
+        arguments: [word]);
+  }
 }
 
 // ignore_for_file: unused_element

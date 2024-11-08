@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/routers.dart';
 import 'package:gstore/core/utils/logger.dart';
+import 'package:gstore/db/apps/AppInfo.dart';
+import 'package:jovial_svg/jovial_svg.dart';
 import 'logic.dart';
 
 class SearchPage extends StatelessWidget {
@@ -11,19 +13,41 @@ class SearchPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final logic = Get.put(SearchLogic());
+    var args = Get.arguments;
     return Scaffold(
       appBar: AppBar(
-        title: SizedBox(
-          width: 240,
-          child: TextField(
-            autofocus: true,
-            controller: logic.textEditingController,
-            decoration: const InputDecoration(
-              hintText: "搜索应用",
-              border: InputBorder.none,
-            ),
-          ),
-        ),
+        title: args == null
+            ? SizedBox(
+                width: 240,
+                child: TextField(
+                  autofocus: true,
+                  controller: logic.textEditingController,
+                  decoration: const InputDecoration(
+                    hintText: "搜索应用",
+                    border: InputBorder.none,
+                  ),
+                ),
+              )
+            : args is AppCategory
+                ? Row(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(args.description),
+                      const SizedBox(
+                        width: 6,
+                      ),
+                      SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: ScalableImageWidget(
+                          scale: 0.2,
+                          si: ScalableImage.fromSvgString(args.icon),
+                        ),
+                      ),
+                    ],
+                  )
+                : const Text(""),
       ),
       body: Container(
           padding: const EdgeInsets.all(16),

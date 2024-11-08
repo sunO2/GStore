@@ -4,6 +4,6 @@ var logger = Logger(
   printer: PrettyPrinter(stackTraceBeginIndex: 1),
 );
 
-void log(String message) {
+void log(dynamic message) {
   logger.i(message);
 }

@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/services.dart';
+import 'package:gstore/core/utils/unit.dart';
 import 'package:gstore/db/apps/AppInfoDatabase.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
 import 'package:gstore/http/download/downloadService.dart';
@@ -42,7 +43,7 @@ class ApplistLogic extends GetxController with GithubRequestMix {
     dynamic release =
         (gstoreRepositorys.isNotEmpty) ? gstoreRepositorys[0] ?? {} : {};
     var version = release["name"];
-    if (version != state.version) {
+    if (compareVersion(state.version, version) == 1) {
       var downloadStatus = await Get.showOverlay(
         asyncFunction: () async {
           final completer = Completer<int>();

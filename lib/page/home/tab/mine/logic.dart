@@ -11,9 +11,17 @@ class MineLogic extends GetxController {
   }
 
   Future<List<AppCategory>> getCategory() async {
-    var dao = (await appInfoDatabase).dao;
-    return dao.getAllCategory();
+    var database = (await appInfoDatabase);
+    var data = database.dao.getAllCategory();
+    database.close();
+    return data;
   }
 
-  search() {}
+  search() {
+    Get.toNamed(AppRoute.search);
+  }
+
+  category(AppCategory category) {
+    Get.toNamed(AppRoute.categoryPage, arguments: category);
+  }
 }

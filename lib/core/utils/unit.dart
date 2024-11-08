@@ -13,3 +13,20 @@ String byteSize(int bytes) {
     return '$bytes B';
   }
 }
+
+int compareVersion(String oldVersion, newVersion) {
+  // 将版本号字符串分割为整数列表
+  List<int> parseVersion(String version) {
+    return version.split('.').map(int.parse).toList();
+  }
+
+  List<int> oldParts = parseVersion(oldVersion);
+  List<int> newParts = parseVersion(newVersion);
+
+  // 比较主版本、次版本和补丁版本
+  for (int i = 0; i < 3; i++) {
+    if (oldParts[i] < newParts[i]) return 1; // v1 比 v2 新
+    if (oldParts[i] > newParts[i]) return -1; // v1 比 v2 旧
+  }
+  return 0; // 版本号相同
+}

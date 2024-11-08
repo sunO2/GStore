@@ -12,7 +12,6 @@ class MinePage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final logic = Get.put(MineLogic());
-    final state = Get.find<MineLogic>().state;
     return Scaffold(
       appBar: AppBar(
         title: GestureDetector(
@@ -73,6 +72,7 @@ class MinePage extends StatelessWidget {
                     style: Theme.of(context).textTheme.titleMedium,
                   ),
                   dense: true,
+                  onTap: () => logic.category(category),
                 );
               },
             );
