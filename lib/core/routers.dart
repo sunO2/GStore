@@ -6,6 +6,8 @@ class AppRoute {
   static String appDetail = "/GStore/appDetail";
   static String search = "/GStore/seawrch";
   static String categoryPage = "/GStore/categoryPage";
+  static String downloadCenter = "/GStore/downloadCenter";
+  static String updateCenter = "/GStore/updateCenter";
 
   static List<GetPage> pages = [
     GetPage(
@@ -20,5 +22,7 @@ class AppRoute {
         page: () => const SearchPage(),
         transitionDuration: const Duration(milliseconds: 0),
         transition: Transition.noTransition),
+    GetPage(name: downloadCenter, page: () => const DownloadManager()),
+    GetPage(name: updateCenter, page: () => const UpdateManager()),
   ];
 }

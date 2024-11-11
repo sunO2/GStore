@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:gstore/compent/app_widget.dart';
+import 'package:gstore/core/icons/Icons.dart';
 
 import 'logic.dart';
 import 'package:gstore/core/core.dart';
@@ -22,32 +23,49 @@ class AppListState extends State<ApplistPage>
       appBar: AppBar(
         title: GestureDetector(
           onTap: logic.search,
-          child: Container(
-            decoration: BoxDecoration(
-                borderRadius: const BorderRadius.all(Radius.circular(40)),
-                color: Theme.of(context).primaryColor.withAlpha(30)),
-            padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
-            width: 240,
-            child: const Row(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.center,
-              children: [
-                Padding(
-                  padding: EdgeInsets.only(top: 4),
-                  child: Icon(
-                    Icons.search,
-                    size: 24,
+          child: Tooltip(
+            message: "搜索",
+            child: Container(
+              decoration: BoxDecoration(
+                  borderRadius: const BorderRadius.all(Radius.circular(40)),
+                  color: Theme.of(context).primaryColor.withAlpha(30)),
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+              child: const Row(
+                mainAxisSize: MainAxisSize.max,
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Padding(
+                    padding: EdgeInsets.only(top: 4),
+                    child: Icon(
+                      Icons.search,
+                      size: 24,
+                    ),
                   ),
-                ),
-                SizedBox(
-                  width: 16,
-                ),
-                Text("搜索应用",
-                    style: TextStyle(fontWeight: FontWeight.w400, fontSize: 18))
-              ],
+                  SizedBox(
+                    width: 16,
+                  ),
+                  Text("搜索应用",
+                      style:
+                          TextStyle(fontWeight: FontWeight.w400, fontSize: 18))
+                ],
+              ),
             ),
           ),
         ),
+        actions: [
+          IconButton(
+            tooltip: "应用更新",
+            icon: const Icon(
+              AliIcon.appUpdateCenter,
+            ),
+            onPressed: () => Get.toNamed(AppRoute.updateCenter),
+          ),
+          IconButton(
+            tooltip: "下载中心",
+            icon: const Icon(AliIcon.appDownloadCenter),
+            onPressed: () => Get.toNamed(AppRoute.downloadCenter),
+          ),
+        ],
       ),
       body: RefreshIndicator(
         onRefresh: logic.checkUpdata,

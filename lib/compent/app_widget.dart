@@ -40,7 +40,11 @@ class AppItemWidget extends StatelessWidget {
               tag: appName ?? "",
               child: Text(
                 appName ?? "",
-                style: const TextStyle(fontWeight: FontWeight.w800),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontWeight: FontWeight.w800,
+                ),
               ))
         ],
       ),

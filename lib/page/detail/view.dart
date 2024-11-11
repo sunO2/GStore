@@ -199,7 +199,10 @@ class DetailPage extends StatelessWidget {
                                 text: data["name"],
                                 url: data["browser_download_url"],
                                 onLinkTap: (url) {
-                                  logic.startDownload(url, data["name"],
+                                  logic.startDownload(
+                                      url,
+                                      logic.state.release[0]["tag_name"] ?? "",
+                                      data["name"],
                                       downloadSize: data["size"]);
                                 },
                               );

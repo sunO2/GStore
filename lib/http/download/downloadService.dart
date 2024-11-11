@@ -10,10 +10,10 @@ class DownloadService extends GetxService {
 
   DownloadService(this._dio);
 
-  Future<DownloadStatus> download(String url, String fileName,
+  Future<DownloadStatus> download(String appid, appName, version, url, fileName,
       {int? downloadSize}) async {
     var downloadStatus = _downloadManager[fileName] ??
-        (await DownloadStatus.create(fileName, url,
+        (await DownloadStatus.create(appid, appName, version, fileName, url,
             downloadSize: downloadSize));
     if (downloadStatus.status == DownloadStatus.DOWNLOAD_SUCCESS) {
       _install(fileName, downloadStatus.savePath);

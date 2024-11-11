@@ -1,10 +1,14 @@
+import 'dart:ffi';
+
 import 'package:floor/floor.dart';
+import 'package:gstore/http/download/DownloadStatusDataBase.dart';
 import 'dart:async';
 import 'dart:io';
 
 import 'package:path_provider/path_provider.dart';
 
 final Map<String, StreamController<DownloadStatus>> _streamManager = {};
+final Future<DownloadDatabase> downloadDatabase = downloadStatusDatabase;
 
 @entity
 class DownloadStatus {
@@ -21,18 +25,31 @@ class DownloadStatus {
 
   @ignore
   late StreamController<DownloadStatus> _counterController;
+
+  @PrimaryKey(autoGenerate: true)
+  int? id;
+  final String appId;
+  final String appName;
+  final String version;
+  final String fileName;
+  final String downloadUrl;
+  final String savePath;
+  int createTime = 0;
   int total = 0;
   int count = 0;
   int status = DOWNLOAD_READY;
-  @primaryKey
-  final String name;
-  final String downloadUrl;
-  final String savePath;
-  DownloadStatus(this.name, this.downloadUrl, this.savePath) {
-    var stream = _streamManager[name];
+
+  DownloadStatus(this.appId, this.appName, this.version, this.fileName,
+      this.downloadUrl, this.savePath,
+      {this.total = 0,
+      this.count = 0,
+      this.status = DOWNLOAD_READY,
+      this.id,
+      this.createTime = 0}) {
+    var stream = _streamManager[fileName];
     if (null == stream) {
       _counterController = StreamController<DownloadStatus>.broadcast();
-      _streamManager[name] = _counterController;
+      _streamManager[fileName] = _counterController;
     } else {
       _counterController = stream;
     }
@@ -40,40 +57,63 @@ class DownloadStatus {
 
   @override
   String toString() {
-    return 'DownloadStatus{total: $total, count: $count, status: $status, name: $name, downloadUrl: $downloadUrl, savePath: $savePath}';
+    return '''DownloadStatus{
+  id: $id,
+  appId: $appId, 
+  version: $version,
+  fileName: $fileName, 
+  total: $total, 
+  count: $count, 
+  status: $status,
+  downloadUrl: $downloadUrl,
+  savePath: $savePath,
+  crewateTime: $createTime,
+}''';
   }
 
-  void downloadError() {
+  void downloadError() async {
     status = DOWNLOAD_ERROR;
     _counterController.sink.add(this);
+    await (await downloadDatabase).downloadStatusDao.updateDownload(this);
   }
 
-  void downloadSuccess() {
+  void downloadSuccess() async {
     count = total;
     status = DOWNLOAD_SUCCESS;
     _counterController.sink.add(this);
+    await (await downloadDatabase).downloadStatusDao.updateDownload(this);
   }
 
   void updateDownload(int count, int total) async {
     this.count = count;
     this.total = total;
     status = DOWNLOAD_LOADING;
+    await (await downloadDatabase).downloadStatusDao.updateDownload(this);
     _counterController.sink.add(this);
-    // final database = await downloadStatusDatabase;
-    // database.downloadStatusDao.updateDownload(this);
   }
 
   Stream<DownloadStatus> get observer => _counterController.stream;
 
-  static Future<DownloadStatus> create(String name, String downloadUrl,
+  static Future<DownloadStatus> create(
+      String appId, appName, version, name, String downloadUrl,
       {int? downloadSize}) async {
     var path = await getDownloadsDirectory();
     if (null == path) throw Exception("保存路径获取失败");
     var savePath = "${path.path}/$name";
-    var status = DownloadStatus(name, "https://ghp.ci/$downloadUrl", savePath);
+    var status = DownloadStatus(
+        appId, appName, version, name, "https://ghp.ci/$downloadUrl", savePath);
     status.total = downloadSize ?? 0;
-    // final database = await downloadStatusDatabase;
-    // final item = await database.downloadStatusDao.findPersonById(name).first;
+
+    final item = await (await downloadDatabase)
+        .downloadStatusDao
+        .getDownloadOfName(name, version);
+    if (null == item) {
+      status.createTime = DateTime.now().millisecondsSinceEpoch;
+      int id =
+          await (await downloadDatabase).downloadStatusDao.insertPerson(status);
+      status.id = id;
+    }
+
     var saveFile = File(savePath);
     if (await saveFile.exists()) {
       status.status = DownloadStatus.DOWNLOAD_LOADING;
@@ -83,9 +123,7 @@ class DownloadStatus {
         status.count = length;
       }
     }
-    // if (null == item) {
-    //   database.downloadStatusDao.insertPerson(status);
-    // }
+
     return status;
   }
 }

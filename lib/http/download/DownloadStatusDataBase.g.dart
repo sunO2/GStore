@@ -6,33 +6,33 @@ part of 'DownloadStatusDataBase.dart';
 // FloorGenerator
 // **************************************************************************
 
-abstract class $AppDatabaseBuilderContract {
+abstract class $DownloadDatabaseBuilderContract {
   /// Adds migrations to the builder.
-  $AppDatabaseBuilderContract addMigrations(List<Migration> migrations);
+  $DownloadDatabaseBuilderContract addMigrations(List<Migration> migrations);
 
   /// Adds a database [Callback] to the builder.
-  $AppDatabaseBuilderContract addCallback(Callback callback);
+  $DownloadDatabaseBuilderContract addCallback(Callback callback);
 
   /// Creates the database and initializes it.
-  Future<AppDatabase> build();
+  Future<DownloadDatabase> build();
 }
 
 // ignore: avoid_classes_with_only_static_members
-class $FloorAppDatabase {
+class $FloorDownloadDatabase {
   /// Creates a database builder for a persistent database.
   /// Once a database is built, you should keep a reference to it and re-use it.
-  static $AppDatabaseBuilderContract databaseBuilder(String name) =>
-      _$AppDatabaseBuilder(name);
+  static $DownloadDatabaseBuilderContract databaseBuilder(String name) =>
+      _$DownloadDatabaseBuilder(name);
 
   /// Creates a database builder for an in memory database.
   /// Information stored in an in memory database disappears when the process is killed.
   /// Once a database is built, you should keep a reference to it and re-use it.
-  static $AppDatabaseBuilderContract inMemoryDatabaseBuilder() =>
-      _$AppDatabaseBuilder(null);
+  static $DownloadDatabaseBuilderContract inMemoryDatabaseBuilder() =>
+      _$DownloadDatabaseBuilder(null);
 }
 
-class _$AppDatabaseBuilder implements $AppDatabaseBuilderContract {
-  _$AppDatabaseBuilder(this.name);
+class _$DownloadDatabaseBuilder implements $DownloadDatabaseBuilderContract {
+  _$DownloadDatabaseBuilder(this.name);
 
   final String? name;
 
@@ -41,23 +41,23 @@ class _$AppDatabaseBuilder implements $AppDatabaseBuilderContract {
   Callback? _callback;
 
   @override
-  $AppDatabaseBuilderContract addMigrations(List<Migration> migrations) {
+  $DownloadDatabaseBuilderContract addMigrations(List<Migration> migrations) {
     _migrations.addAll(migrations);
     return this;
   }
 
   @override
-  $AppDatabaseBuilderContract addCallback(Callback callback) {
+  $DownloadDatabaseBuilderContract addCallback(Callback callback) {
     _callback = callback;
     return this;
   }
 
   @override
-  Future<AppDatabase> build() async {
+  Future<DownloadDatabase> build() async {
     final path = name != null
         ? await sqfliteDatabaseFactory.getDatabasePath(name!)
         : ':memory:';
-    final database = _$AppDatabase();
+    final database = _$DownloadDatabase();
     database.database = await database.open(
       path,
       _migrations,
@@ -67,8 +67,8 @@ class _$AppDatabaseBuilder implements $AppDatabaseBuilderContract {
   }
 }
 
-class _$AppDatabase extends AppDatabase {
-  _$AppDatabase([StreamController<String>? listener]) {
+class _$DownloadDatabase extends DownloadDatabase {
+  _$DownloadDatabase([StreamController<String>? listener]) {
     changeListener = listener ?? StreamController<String>.broadcast();
   }
 
@@ -96,7 +96,7 @@ class _$AppDatabase extends AppDatabase {
       },
       onCreate: (database, version) async {
         await database.execute(
-            'CREATE TABLE IF NOT EXISTS `DownloadStatus` (`total` INTEGER NOT NULL, `count` INTEGER NOT NULL, `status` INTEGER NOT NULL, `name` TEXT NOT NULL, `downloadUrl` TEXT NOT NULL, `savePath` TEXT NOT NULL, PRIMARY KEY (`name`))');
+            'CREATE TABLE IF NOT EXISTS `DownloadStatus` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `appId` TEXT NOT NULL, `appName` TEXT NOT NULL, `version` TEXT NOT NULL, `fileName` TEXT NOT NULL, `downloadUrl` TEXT NOT NULL, `savePath` TEXT NOT NULL, `createTime` INTEGER NOT NULL, `total` INTEGER NOT NULL, `count` INTEGER NOT NULL, `status` INTEGER NOT NULL)');
 
         await callback?.onCreate?.call(database, version);
       },
@@ -115,32 +115,40 @@ class _$DownloadstatusDao extends DownloadstatusDao {
   _$DownloadstatusDao(
     this.database,
     this.changeListener,
-  )   : _queryAdapter = QueryAdapter(database, changeListener),
+  )   : _queryAdapter = QueryAdapter(database),
         _downloadStatusInsertionAdapter = InsertionAdapter(
             database,
             'DownloadStatus',
             (DownloadStatus item) => <String, Object?>{
+                  'id': item.id,
+                  'appId': item.appId,
+                  'appName': item.appName,
+                  'version': item.version,
+                  'fileName': item.fileName,
+                  'downloadUrl': item.downloadUrl,
+                  'savePath': item.savePath,
+                  'createTime': item.createTime,
                   'total': item.total,
                   'count': item.count,
-                  'status': item.status,
-                  'name': item.name,
-                  'downloadUrl': item.downloadUrl,
-                  'savePath': item.savePath
-                },
-            changeListener),
+                  'status': item.status
+                }),
         _downloadStatusUpdateAdapter = UpdateAdapter(
             database,
             'DownloadStatus',
-            ['name'],
+            ['id'],
             (DownloadStatus item) => <String, Object?>{
+                  'id': item.id,
+                  'appId': item.appId,
+                  'appName': item.appName,
+                  'version': item.version,
+                  'fileName': item.fileName,
+                  'downloadUrl': item.downloadUrl,
+                  'savePath': item.savePath,
+                  'createTime': item.createTime,
                   'total': item.total,
                   'count': item.count,
-                  'status': item.status,
-                  'name': item.name,
-                  'downloadUrl': item.downloadUrl,
-                  'savePath': item.savePath
-                },
-            changeListener);
+                  'status': item.status
+                });
 
   final sqflite.DatabaseExecutor database;
 
@@ -153,41 +161,47 @@ class _$DownloadstatusDao extends DownloadstatusDao {
   final UpdateAdapter<DownloadStatus> _downloadStatusUpdateAdapter;
 
   @override
-  Future<List<DownloadStatus>> findAllPeople() async {
+  Future<List<DownloadStatus>> getAllDownload() async {
     return _queryAdapter.queryList('SELECT * FROM DownloadStatus',
         mapper: (Map<String, Object?> row) => DownloadStatus(
-            row['name'] as String,
+            row['appId'] as String,
+            row['appName'] as String,
+            row['version'] as String,
+            row['fileName'] as String,
             row['downloadUrl'] as String,
-            row['savePath'] as String));
+            row['savePath'] as String,
+            total: row['total'] as int,
+            count: row['count'] as int,
+            status: row['status'] as int,
+            id: row['id'] as int?,
+            createTime: row['createTime'] as int));
   }
 
   @override
-  Stream<List<DownloadStatus>> findAllPeopleName() {
-    return _queryAdapter.queryListStream('SELECT name FROM DownloadStatus',
+  Future<DownloadStatus?> getDownloadOfName(
+    String name,
+    String version,
+  ) async {
+    return _queryAdapter.query(
+        'SELECT * FROM DownloadStatus WHERE fileName = ?1 AND version = ?2',
         mapper: (Map<String, Object?> row) => DownloadStatus(
-            row['name'] as String,
+            row['appId'] as String,
+            row['appName'] as String,
+            row['version'] as String,
+            row['fileName'] as String,
             row['downloadUrl'] as String,
-            row['savePath'] as String),
-        queryableName: 'DownloadStatus',
-        isView: false);
+            row['savePath'] as String,
+            total: row['total'] as int,
+            count: row['count'] as int,
+            status: row['status'] as int,
+            id: row['id'] as int?,
+            createTime: row['createTime'] as int),
+        arguments: [name, version]);
   }
 
   @override
-  Stream<DownloadStatus?> findPersonById(String name) {
-    return _queryAdapter.queryStream(
-        'SELECT * FROM DownloadStatus WHERE name = ?1',
-        mapper: (Map<String, Object?> row) => DownloadStatus(
-            row['name'] as String,
-            row['downloadUrl'] as String,
-            row['savePath'] as String),
-        arguments: [name],
-        queryableName: 'DownloadStatus',
-        isView: false);
-  }
-
-  @override
-  Future<void> insertPerson(DownloadStatus person) async {
-    await _downloadStatusInsertionAdapter.insert(
+  Future<int> insertPerson(DownloadStatus person) {
+    return _downloadStatusInsertionAdapter.insertAndReturnId(
         person, OnConflictStrategy.ignore);
   }
 

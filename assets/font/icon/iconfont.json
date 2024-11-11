@@ -6,6 +6,20 @@
   "description": "",
   "glyphs": [
     {
+      "icon_id": "24492783",
+      "name": "Download",
+      "font_class": "Download",
+      "unicode": "e613",
+      "unicode_decimal": 58899
+    },
+    {
+      "icon_id": "34699906",
+      "name": "Update",
+      "font_class": "Update",
+      "unicode": "e614",
+      "unicode_decimal": 58900
+    },
+    {
       "icon_id": "1381301",
       "name": "appstoreo",
       "font_class": "appstoreo",

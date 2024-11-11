@@ -52,11 +52,13 @@ class DetailLogic extends GetxController with GithubRequestMix {
     print("$text $href $text");
   }
 
-  void startDownload(String? url, fileName, {int? downloadSize}) async {
+  void startDownload(String? url, String version, fileName,
+      {int? downloadSize}) async {
     if (null != url) {
       downloadListenerSubscription?.cancel();
-      var status = await Get.find<DownloadService>()
-          .download(url, fileName, downloadSize: downloadSize);
+      var status = await Get.find<DownloadService>().download(
+          app.appId, app.name, version, url, fileName,
+          downloadSize: downloadSize);
       counterController.sink.add(status);
       downloadListenerSubscription = status.observer.listen((da) {
         counterController.sink.add(da);

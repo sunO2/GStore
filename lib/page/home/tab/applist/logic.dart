@@ -50,7 +50,11 @@ class ApplistLogic extends GetxController with GithubRequestMix {
           final cancel = Completer<int>();
           var assets = release["assets"][0];
           var status = await Get.find<DownloadService>().download(
-              assets["browser_download_url"], assets["name"],
+              "com.sunO2.gstore.db",
+              "GStore.db",
+              version,
+              assets["browser_download_url"],
+              assets["name"],
               downloadSize: assets["size"]);
           var sub = status.observer.listen((dStatus) {
             if (dStatus.status == DownloadStatus.DOWNLOAD_SUCCESS ||

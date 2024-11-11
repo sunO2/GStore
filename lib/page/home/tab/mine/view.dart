@@ -85,6 +85,6 @@ class MinePage extends StatelessWidget {
   Future<List<DownloadStatus>> getAll() async {
     var s = await downloadStatusDatabase;
     var dao = s.downloadStatusDao;
-    return dao.findAllPeople();
+    return dao.getAllDownload();
   }
 }

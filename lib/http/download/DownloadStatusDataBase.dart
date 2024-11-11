@@ -8,11 +8,11 @@ import 'dart:async';
 part 'DownloadStatusDataBase.g.dart'; // the generated code will be there
 
 @Database(version: 1, entities: [DownloadStatus])
-abstract class AppDatabase extends FloorDatabase {
+abstract class DownloadDatabase extends FloorDatabase {
   DownloadstatusDao get downloadStatusDao;
 }
 
-Future<AppDatabase> get downloadStatusDatabase =>
-    $FloorAppDatabase.databaseBuilder('app_database.db').build();
+Future<DownloadDatabase> get downloadStatusDatabase =>
+    $FloorDownloadDatabase.databaseBuilder('app_database.db').build();
 
 void test() {}
