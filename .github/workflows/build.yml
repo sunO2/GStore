@@ -23,8 +23,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: v1.0.4
-          release_name: 1.0.4
+          tag_name: v1.0.6
+          release_name: 1.0.6
           body: 测试
           draft: false
           prerelease: false
