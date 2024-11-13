@@ -1,3 +1,4 @@
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:gstore/compent/app_widget.dart';
 import 'package:gstore/core/icons/Icons.dart';
@@ -69,22 +70,63 @@ class AppListState extends State<ApplistPage>
       ),
       body: RefreshIndicator(
         onRefresh: logic.checkUpdata,
-        child: GetBuilder<ApplistLogic>(
-            builder: (ctl) => GridView.builder(
-                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: 4,
-                  ),
-                  itemBuilder: (context, index) {
-                    var app = state.apps[index];
-                    return AppItemWidget(
-                      appName: app.name,
-                      appIcon: app.icon,
-                      onTap: () =>
-                          Get.toNamed(AppRoute.appDetail, arguments: app),
+        child: SingleChildScrollView(
+          child: Column(
+            children: [
+              FutureBuilder(
+                  future: logic.getBanner(),
+                  builder: (contest, snap) {
+                    var data = snap.data;
+                    if (null == data) {
+                      return const SizedBox();
+                    }
+                    var length = data.length;
+                    return SizedBox(
+                      height: 180,
+                      child: PageView.builder(
+                        controller: PageController(
+                            viewportFraction: 0.8, initialPage: 5000),
+                        itemCount: 10000,
+                        itemBuilder: (context, item) {
+                          var index = item % length;
+                          return GestureDetector(
+                            onTap: () =>
+                                logic.appDetailOfAppId(data[index]["appId"]),
+                            child: Padding(
+                              padding: const EdgeInsets.all(20),
+                              child: CachedNetworkImage(
+                                height: 180,
+                                fit: BoxFit.fill,
+                                imageUrl: data[index]["banner"],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
                     );
-                  },
-                  itemCount: state.apps.isNotEmpty ? state.apps.length : 0,
-                )),
+                  }),
+              GetBuilder<ApplistLogic>(
+                  builder: (ctl) => GridView.builder(
+                        shrinkWrap: true,
+                        gridDelegate:
+                            const SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: 4,
+                        ),
+                        itemBuilder: (context, index) {
+                          var app = state.apps[index];
+                          return AppItemWidget(
+                            appName: app.name,
+                            appIcon: app.icon,
+                            onTap: () =>
+                                Get.toNamed(AppRoute.appDetail, arguments: app),
+                          );
+                        },
+                        itemCount:
+                            state.apps.isNotEmpty ? state.apps.length : 0,
+                      ))
+            ],
+          ),
+        ),
       ),
     );
   }

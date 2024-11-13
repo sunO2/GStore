@@ -8,6 +8,7 @@ import 'package:gstore/db/apps/AppInfoDatabase.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
 import 'package:gstore/http/download/downloadService.dart';
 import 'package:gstore/core/core.dart';
+import 'package:yaml/yaml.dart';
 
 import 'state.dart';
 
@@ -34,6 +35,8 @@ class ApplistLogic extends GetxController with GithubRequestMix {
   }
 
   Future<void> checkUpdata() async {
+    getBanner();
+
     var task = await githubApi
         .releases("sunO2", "GStore-Repositorys", 1, cancelToken)
         .catchError((e) {
@@ -119,14 +122,28 @@ class ApplistLogic extends GetxController with GithubRequestMix {
     update();
   }
 
+  Future<List<dynamic>> getBanner() async {
+    return loadYaml(await rootBundle.loadString("assets/app/banner.yaml"));
+  }
+
   //搜索页面
   void search() {
     Get.toNamed(AppRoute.search);
   }
 
+  void appDetailOfAppId(String appId) async {
+    var appInfo = await appDatabase?.dao.getAppInfo(appId);
+    if (null != appInfo) {
+      appDetail(appInfo);
+    }
+  }
+
+  void appDetail(AppInfo app) {
+    Get.toNamed(AppRoute.appDetail, arguments: app);
+  }
+
   @override
   void onClose() {
-    appDatabase?.close();
     super.onClose();
   }
 }
