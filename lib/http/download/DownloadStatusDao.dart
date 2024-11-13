@@ -3,8 +3,8 @@ import 'package:gstore/http/download/DownloadStatus.dart';
 
 @dao
 abstract class DownloadstatusDao {
-  @Query('SELECT * FROM DownloadStatus')
-  Future<List<DownloadStatus>> getAllDownload();
+  @Query('SELECT * FROM DownloadStatus ORDER BY createTime DESC')
+  Stream<List<DownloadStatus>> getAllDownload();
 
   @Query(
       'SELECT * FROM DownloadStatus WHERE fileName = :name AND version = :version')

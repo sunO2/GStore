@@ -115,7 +115,7 @@ class _$DownloadstatusDao extends DownloadstatusDao {
   _$DownloadstatusDao(
     this.database,
     this.changeListener,
-  )   : _queryAdapter = QueryAdapter(database),
+  )   : _queryAdapter = QueryAdapter(database, changeListener),
         _downloadStatusInsertionAdapter = InsertionAdapter(
             database,
             'DownloadStatus',
@@ -131,7 +131,8 @@ class _$DownloadstatusDao extends DownloadstatusDao {
                   'total': item.total,
                   'count': item.count,
                   'status': item.status
-                }),
+                },
+            changeListener),
         _downloadStatusUpdateAdapter = UpdateAdapter(
             database,
             'DownloadStatus',
@@ -148,7 +149,8 @@ class _$DownloadstatusDao extends DownloadstatusDao {
                   'total': item.total,
                   'count': item.count,
                   'status': item.status
-                });
+                },
+            changeListener);
 
   final sqflite.DatabaseExecutor database;
 
@@ -161,8 +163,9 @@ class _$DownloadstatusDao extends DownloadstatusDao {
   final UpdateAdapter<DownloadStatus> _downloadStatusUpdateAdapter;
 
   @override
-  Future<List<DownloadStatus>> getAllDownload() async {
-    return _queryAdapter.queryList('SELECT * FROM DownloadStatus',
+  Stream<List<DownloadStatus>> getAllDownload() {
+    return _queryAdapter.queryListStream(
+        'SELECT * FROM DownloadStatus ORDER BY createTime DESC',
         mapper: (Map<String, Object?> row) => DownloadStatus(
             row['appId'] as String,
             row['appName'] as String,
@@ -174,7 +177,9 @@ class _$DownloadstatusDao extends DownloadstatusDao {
             count: row['count'] as int,
             status: row['status'] as int,
             id: row['id'] as int?,
-            createTime: row['createTime'] as int));
+            createTime: row['createTime'] as int),
+        queryableName: 'DownloadStatus',
+        isView: false);
   }
 
   @override

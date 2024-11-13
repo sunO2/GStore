@@ -6,6 +6,9 @@ abstract class AppInfoDao {
   @Query('SELECT * FROM apps')
   Future<List<AppInfo>> getAllApps();
 
+  @Query('SELECT * FROM apps WHERE appId = :appId')
+  Future<AppInfo?> getAppInfo(String appId);
+
   Future<List<AppInfo>> search(String word) => searchWord('%$word%');
 
   @Query('SELECT * FROM apps WHERE name LIKE :word OR des LIKE :word')

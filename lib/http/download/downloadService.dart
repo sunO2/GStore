@@ -2,19 +2,23 @@ import 'package:app_installer/app_installer.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
 import 'package:gstore/core/core.dart';
 import 'package:dio/dio.dart';
+import 'package:gstore/http/download/DownloadStatusDataBase.dart';
+
+final Future<DownloadDatabase> database = downloadStatusDatabase;
 
 class DownloadService extends GetxService {
-  final _downloadManager = <String, DownloadStatus>{};
-
   final Dio _dio;
 
   DownloadService(this._dio);
 
   Future<DownloadStatus> download(String appid, appName, version, url, fileName,
       {int? downloadSize}) async {
-    var downloadStatus = _downloadManager[fileName] ??
+    var downloadStatus = (await (await database)
+            .downloadStatusDao
+            .getDownloadOfName(fileName, version)) ??
         (await DownloadStatus.create(appid, appName, version, fileName, url,
             downloadSize: downloadSize));
+
     if (downloadStatus.status == DownloadStatus.DOWNLOAD_SUCCESS) {
       _install(fileName, downloadStatus.savePath);
       return downloadStatus;

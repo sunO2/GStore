@@ -140,6 +140,20 @@ class _$AppInfoDao extends AppInfoDao {
   }
 
   @override
+  Future<AppInfo?> getAppInfo(String appId) async {
+    return _queryAdapter.query('SELECT * FROM apps WHERE appId = ?1',
+        mapper: (Map<String, Object?> row) => AppInfo(
+            row['appId'] as String,
+            row['name'] as String,
+            row['user'] as String,
+            row['repositories'] as String,
+            row['icon'] as String,
+            row['des'] as String,
+            _categoryConverter.decode(row['category'] as String?)),
+        arguments: [appId]);
+  }
+
+  @override
   Future<List<AppInfo>> searchWord(String word) async {
     return _queryAdapter.queryList(
         'SELECT * FROM apps WHERE name LIKE ?1 OR des LIKE ?1',

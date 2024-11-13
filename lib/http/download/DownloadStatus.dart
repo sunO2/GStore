@@ -1,14 +1,15 @@
 import 'dart:ffi';
 
+import 'package:dio/dio.dart';
 import 'package:floor/floor.dart';
 import 'package:gstore/http/download/DownloadStatusDataBase.dart';
+import 'package:gstore/http/download/downloadService.dart';
 import 'dart:async';
 import 'dart:io';
 
 import 'package:path_provider/path_provider.dart';
 
 final Map<String, StreamController<DownloadStatus>> _streamManager = {};
-final Future<DownloadDatabase> downloadDatabase = downloadStatusDatabase;
 
 @entity
 class DownloadStatus {
@@ -74,21 +75,21 @@ class DownloadStatus {
   void downloadError() async {
     status = DOWNLOAD_ERROR;
     _counterController.sink.add(this);
-    await (await downloadDatabase).downloadStatusDao.updateDownload(this);
+    await (await database).downloadStatusDao.updateDownload(this);
   }
 
   void downloadSuccess() async {
     count = total;
     status = DOWNLOAD_SUCCESS;
     _counterController.sink.add(this);
-    await (await downloadDatabase).downloadStatusDao.updateDownload(this);
+    await (await database).downloadStatusDao.updateDownload(this);
   }
 
   void updateDownload(int count, int total) async {
     this.count = count;
     this.total = total;
     status = DOWNLOAD_LOADING;
-    await (await downloadDatabase).downloadStatusDao.updateDownload(this);
+    await (await database).downloadStatusDao.updateDownload(this);
     _counterController.sink.add(this);
   }
 
@@ -104,13 +105,12 @@ class DownloadStatus {
         appId, appName, version, name, "https://ghp.ci/$downloadUrl", savePath);
     status.total = downloadSize ?? 0;
 
-    final item = await (await downloadDatabase)
+    final item = await (await database)
         .downloadStatusDao
         .getDownloadOfName(name, version);
     if (null == item) {
       status.createTime = DateTime.now().millisecondsSinceEpoch;
-      int id =
-          await (await downloadDatabase).downloadStatusDao.insertPerson(status);
+      int id = await (await database).downloadStatusDao.insertPerson(status);
       status.id = id;
     }
 
