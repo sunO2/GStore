@@ -11,14 +11,14 @@ jobs:
           distribution: 'zulu'
           java-version: '17'
 
+      - name: Clone repository
+        uses: actions/checkout@v4
+
       - name: Get version from pubspec.yaml
         id: get_version
         run: |
           VERSION=$(sed -n 's/^version: \([0-9]*\.[0-9]*\.[0-9]*\).*/\1/p' ./pubspec.yaml)
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-
-      - name: Clone repository
-        uses: actions/checkout@v4
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
