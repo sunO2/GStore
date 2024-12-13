@@ -1,0 +1,30 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "GStore",
+      "request": "launch",
+      "type": "dart"
+    },
+    {
+      "name": "GStore (profile mode)",
+      "request": "launch",
+      "type": "dart",
+      "flutterMode": "profile"
+    },
+    {
+      "name": "GStore (release mode)",
+      "request": "launch",
+      "type": "dart",
+      "flutterMode": "release"
+    },
+    {
+      "name": "C/C++ Runner: Debug Session",
+      "type": "lldb",
+      "request": "launch",
+      "args": [],
+      "cwd": "/Users/ex-hezhihu870/develop/android/program/github/GStore/windows/runner",
+      "program": "/Users/ex-hezhihu870/develop/android/program/github/GStore/windows/runner/build/Debug/outDebug"
+    }
+  ]
+}

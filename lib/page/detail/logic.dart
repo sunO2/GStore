@@ -1,8 +1,10 @@
 import 'package:gstore/http/download/downloadService.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
+import 'package:gstore/page/web/browser.dart';
 import 'package:http/http.dart' as http;
 import 'package:installed_apps/installed_apps.dart';
 import 'package:gstore/core/core.dart';
+import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
 import 'state.dart';
 
@@ -68,6 +70,20 @@ class DetailLogic extends GetxController with GithubRequestMix {
 
   startApp(String packageName) {
     InstalledApps.startApp(packageName);
+  }
+
+  openBrowser() {
+    // Get.toNamed(AppRoute.webView, arguments: app);
+    GStoreInAppBrowser inAppBrowser = GStoreInAppBrowser(app);
+
+    final settings = InAppBrowserClassSettings(
+        browserSettings: InAppBrowserSettings(hideUrlBar: false),
+        webViewSettings:
+            InAppWebViewSettings(javaScriptEnabled: true, isInspectable: true));
+    inAppBrowser.openUrlRequest(
+        urlRequest: URLRequest(
+            url: WebUri("https://github.com/${app.user}/${app.repositories}")),
+        settings: settings);
   }
 
   @override

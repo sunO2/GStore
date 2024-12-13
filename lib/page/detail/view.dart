@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:gstore/compent/link_text.dart';
+import 'package:gstore/core/icons/Icons.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
 import 'logic.dart';
 import 'package:installed_apps/app_info.dart' as sysAppInfo;
@@ -38,6 +39,30 @@ class DetailPage extends StatelessWidget {
               logic.app.name,
               style: const TextStyle(fontWeight: FontWeight.w800),
             )),
+        actions: [
+          IconButton(
+            onPressed: () {},
+            icon: SizedBox(
+              width: 24,
+              height: 24,
+              child: ScalableImageWidget(
+                si: SvgIcon.history(context),
+              ),
+            ),
+            tooltip: "历史版本",
+          ),
+          IconButton(
+            onPressed: logic.openBrowser,
+            icon: SizedBox(
+              width: 24,
+              height: 24,
+              child: ScalableImageWidget(
+                si: SvgIcon.browser(context),
+              ),
+            ),
+            tooltip: "仓库浏览",
+          )
+        ],
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
