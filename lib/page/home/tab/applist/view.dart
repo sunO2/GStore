@@ -93,11 +93,16 @@ class AppListState extends State<ApplistPage>
                             onTap: () =>
                                 logic.appDetailOfAppId(data[index]["appId"]),
                             child: Padding(
-                              padding: const EdgeInsets.all(20),
-                              child: CachedNetworkImage(
-                                height: 180,
-                                fit: BoxFit.fill,
-                                imageUrl: data[index]["banner"],
+                              padding: const EdgeInsets.only(
+                                  left: 8, right: 8, top: 16, bottom: 16),
+                              child: ClipRRect(
+                                borderRadius:
+                                    const BorderRadius.all(Radius.circular(16)),
+                                child: CachedNetworkImage(
+                                  height: 180,
+                                  fit: BoxFit.fill,
+                                  imageUrl: data[index]["banner"],
+                                ),
                               ),
                             ),
                           );

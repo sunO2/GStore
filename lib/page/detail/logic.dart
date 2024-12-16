@@ -76,13 +76,16 @@ class DetailLogic extends GetxController with GithubRequestMix {
     // Get.toNamed(AppRoute.webView, arguments: app);
     GStoreInAppBrowser inAppBrowser = GStoreInAppBrowser(app);
 
-    final settings = InAppBrowserClassSettings(
-        browserSettings: InAppBrowserSettings(hideUrlBar: false),
-        webViewSettings:
-            InAppWebViewSettings(javaScriptEnabled: true, isInspectable: true));
-    inAppBrowser.openUrlRequest(
-        urlRequest: URLRequest(
-            url: WebUri("https://github.com/${app.user}/${app.repositories}")),
+    final settings = ChromeSafariBrowserSettings(
+      shareState: CustomTabsShareState.SHARE_STATE_ON,
+      barCollapsingEnabled: true,
+    );
+    // final settings = InAppBrowserClassSettings(
+    //     browserSettings: InAppBrowserSettings(hideUrlBar: false),
+    //     webViewSettings:
+    //         InAppWebViewSettings(javaScriptEnabled: true, isInspectable: true));
+    inAppBrowser.open(
+        url: WebUri("https://github.com/${app.user}/${app.repositories}"),
         settings: settings);
   }
 
