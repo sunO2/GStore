@@ -239,7 +239,7 @@ class DetailPage extends StatelessWidget {
                                       height: 120,
                                       color: Colors.white,
                                       child: QrImageView(
-                                        data: url!,
+                                        data: "https://ghgo.xyz/${url ?? ""}",
                                         version: QrVersions.auto,
                                         size: 120,
                                         embeddedImage:
