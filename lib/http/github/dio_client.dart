@@ -1,4 +1,7 @@
+import "dart:io";
+
 import "package:dio/dio.dart" show BaseOptions, Dio;
+import "package:dio/io.dart";
 
 class DioClient {
   factory DioClient() => _getInstance();
@@ -19,6 +22,12 @@ class DioClient {
     };
     // 初始化
     _dio = Dio(options);
+    (_dio.httpClientAdapter as DefaultHttpClientAdapter).onHttpClientCreate =
+        (HttpClient client) {
+      client.badCertificateCallback =
+          (X509Certificate cert, String host, int port) => true;
+      return client;
+    };
   }
 
   Dio get() => _dio;

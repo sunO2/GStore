@@ -35,6 +35,7 @@ class DownloadService extends GetxService {
         downloadStatus.downloadError();
       }
     }).catchError((error) {
+      log("错误：${downloadStatus.downloadUrl} $error");
       downloadStatus.downloadError();
     });
     return downloadStatus;
