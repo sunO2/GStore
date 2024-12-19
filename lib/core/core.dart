@@ -16,14 +16,18 @@ void updateConfig(AppInfoConfig? config) {
 }
 
 AppInfoConfig? getConfig() {
-  AppInfoConfig config = Get.find(tag: "config");
-  return config;
+  try {
+    AppInfoConfig? config = Get.find(tag: "config");
+    return config;
+  } catch (e) {
+    return null;
+  }
 }
 
 String getProxy() {
   AppInfoConfig? config = getConfig();
   if (null == config) {
-    return "https://ghgo.xyz";
+    return "https://ghgo.xyz/";
   }
   return config.proxy!;
 }

@@ -102,8 +102,13 @@ class DownloadStatus {
     var path = await getDownloadsDirectory();
     if (null == path) throw Exception("保存路径获取失败");
     var savePath = "${path.path}/$name";
-    var status = DownloadStatus(
-        appId, appName, version, name, "${getProxy()}$downloadUrl", savePath);
+
+    if (!downloadUrl.startsWith(getProxy())) {
+      downloadUrl = "${getProxy()}$downloadUrl";
+    }
+
+    var status =
+        DownloadStatus(appId, appName, version, name, downloadUrl, savePath);
     status.total = downloadSize ?? 0;
 
     final item = await (await database)
