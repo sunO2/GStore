@@ -5,7 +5,6 @@ import 'package:gstore/core/utils/unit.dart';
 import 'package:gstore/core/icons/Icons.dart';
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
-import 'package:qr_flutter/qr_flutter.dart';
 
 typedef OnLinkTap = void Function(String? url);
 
@@ -13,8 +12,10 @@ class LinkText extends StatelessWidget {
   final String? text;
   final String? url;
   final OnLinkTap? onLinkTap;
+  final OnLinkTap? onLongPress;
 
-  const LinkText({super.key, this.text, this.url, this.onLinkTap});
+  const LinkText(
+      {super.key, this.text, this.url, this.onLinkTap, this.onLongPress});
 
   @override
   Widget build(BuildContext context) => GestureDetector(
@@ -30,20 +31,8 @@ class LinkText extends StatelessWidget {
             if (null != onLinkTap) {onLinkTap!(url)}
           },
           onLongPress: () {
-            if (url?.isNotEmpty ?? false) {
-              Get.defaultDialog(
-                title: "下载二维码",
-                content: Container(
-                  width: 120,
-                  height: 120,
-                  color: Colors.white,
-                  child: QrImageView(
-                    data: url!,
-                    version: QrVersions.auto,
-                    size: 120,
-                  ),
-                ),
-              );
+            if (null != onLongPress) {
+              onLongPress!(url);
             }
           },
         ),
@@ -60,7 +49,8 @@ class DownloadLink extends LinkText {
       this.downloadSize,
       super.text,
       super.url,
-      super.onLinkTap});
+      super.onLinkTap,
+      super.onLongPress});
 
   @override
   Widget build(BuildContext context) {

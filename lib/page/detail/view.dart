@@ -9,6 +9,7 @@ import 'package:installed_apps/app_info.dart' as sysAppInfo;
 import 'package:jovial_svg/jovial_svg.dart';
 import 'package:markdown/markdown.dart' as md;
 import 'package:gstore/core/core.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 
 class DetailPage extends StatelessWidget {
   const DetailPage({super.key});
@@ -229,6 +230,24 @@ class DetailPage extends StatelessWidget {
                                       logic.state.release[0]["tag_name"] ?? "",
                                       data["name"],
                                       downloadSize: data["size"]);
+                                },
+                                onLongPress: (url) {
+                                  Get.defaultDialog(
+                                    title: "下载二维码",
+                                    content: Container(
+                                      width: 120,
+                                      height: 120,
+                                      color: Colors.white,
+                                      child: QrImageView(
+                                        data: url!,
+                                        version: QrVersions.auto,
+                                        size: 120,
+                                        embeddedImage:
+                                            CachedNetworkImageProvider(
+                                                logic.app.icon),
+                                      ),
+                                    ),
+                                  );
                                 },
                               );
                             }).toList(),
