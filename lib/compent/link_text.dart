@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:gstore/compent/flag_text.dart';
+import 'package:gstore/core/core.dart';
 import 'package:gstore/core/utils/unit.dart';
 import 'package:gstore/core/icons/Icons.dart';
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 
 typedef OnLinkTap = void Function(String? url);
 
@@ -26,6 +28,23 @@ class LinkText extends StatelessWidget {
           ),
           onTap: () => {
             if (null != onLinkTap) {onLinkTap!(url)}
+          },
+          onLongPress: () {
+            if (url?.isNotEmpty ?? false) {
+              Get.defaultDialog(
+                title: "下载二维码",
+                content: Container(
+                  width: 120,
+                  height: 120,
+                  color: Colors.white,
+                  child: QrImageView(
+                    data: url!,
+                    version: QrVersions.auto,
+                    size: 120,
+                  ),
+                ),
+              );
+            }
           },
         ),
       );
