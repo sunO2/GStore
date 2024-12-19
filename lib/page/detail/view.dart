@@ -237,9 +237,22 @@ class DetailPage extends StatelessWidget {
                                     content: Container(
                                       width: 120,
                                       height: 120,
-                                      color: Colors.white,
+                                      decoration: BoxDecoration(
+                                        color: Colors.white,
+                                        borderRadius: BorderRadius.circular(8),
+                                        shape: BoxShape.rectangle,
+                                        boxShadow: [
+                                          BoxShadow(
+                                            color: Colors.black.withAlpha(100),
+                                            offset: const Offset(0, 0),
+                                            blurRadius: 24,
+                                            spreadRadius: 0,
+                                          ),
+                                        ],
+                                      ),
+                                      // color: Colors.white,
                                       child: QrImageView(
-                                        data: "https://ghgo.xyz/${url ?? ""}",
+                                        data: "${getProxy()}${url ?? ""}",
                                         version: QrVersions.auto,
                                         size: 120,
                                         embeddedImage:
@@ -283,7 +296,7 @@ class DetailPage extends StatelessWidget {
                         } else {
                           var url = "";
                           if ("$uri".startsWith("http")) {
-                            url = "https://ghgo.xyz/$uri";
+                            url = "${getProxy()}$uri";
                           } else {
                             url = "${state.sourceUrl}$uri";
                           }

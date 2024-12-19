@@ -98,7 +98,7 @@ class _$AppInfoDatabase extends AppInfoDatabase {
         await database.execute(
             'CREATE TABLE IF NOT EXISTS `AppInfo` (`appId` TEXT NOT NULL, `name` TEXT NOT NULL, `user` TEXT NOT NULL, `repositories` TEXT NOT NULL, `icon` TEXT NOT NULL, `des` TEXT NOT NULL, `category` TEXT, PRIMARY KEY (`appId`))');
         await database.execute(
-            'CREATE TABLE IF NOT EXISTS `AppInfoConfig` (`version` TEXT NOT NULL, PRIMARY KEY (`version`))');
+            'CREATE TABLE IF NOT EXISTS `AppInfoConfig` (`version` TEXT NOT NULL, `proxy` TEXT, PRIMARY KEY (`version`))');
         await database.execute(
             'CREATE TABLE IF NOT EXISTS `AppCategory` (`id` TEXT NOT NULL, `description` TEXT NOT NULL, `icon` TEXT NOT NULL, PRIMARY KEY (`id`))');
 
@@ -172,7 +172,7 @@ class _$AppInfoDao extends AppInfoDao {
   Future<AppInfoConfig?> getVersion() async {
     return _queryAdapter.query('SELECT * FROM config LIMIT 1',
         mapper: (Map<String, Object?> row) =>
-            AppInfoConfig(row['version'] as String));
+            AppInfoConfig(row['version'] as String, row['proxy'] as String?));
   }
 
   @override

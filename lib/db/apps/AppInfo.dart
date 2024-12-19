@@ -31,7 +31,16 @@ class AppInfo {
 class AppInfoConfig {
   @primaryKey
   final String version;
-  AppInfoConfig(this.version);
+  final String? proxy;
+  AppInfoConfig(this.version, this.proxy);
+
+  @override
+  String toString() {
+    return '''AppInfoConfig={
+      version=$version,
+      proxy=$proxy,
+    }''';
+  }
 }
 
 @entity

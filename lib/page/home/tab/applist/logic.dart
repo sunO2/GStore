@@ -118,7 +118,7 @@ class ApplistLogic extends GetxController with GithubRequestMix {
         .catchError((error) => List<AppInfo>.empty());
     var config = await appDatabase!.dao.getVersion();
     state.version = config?.version ?? "";
-    log("数据库数据刷新： ${state.version}");
+    updateConfig(config);
     update();
   }
 

@@ -2,6 +2,7 @@ import 'dart:ffi';
 
 import 'package:dio/dio.dart';
 import 'package:floor/floor.dart';
+import 'package:gstore/core/core.dart';
 import 'package:gstore/http/download/DownloadStatusDataBase.dart';
 import 'package:gstore/http/download/downloadService.dart';
 import 'dart:async';
@@ -101,8 +102,8 @@ class DownloadStatus {
     var path = await getDownloadsDirectory();
     if (null == path) throw Exception("保存路径获取失败");
     var savePath = "${path.path}/$name";
-    var status = DownloadStatus(appId, appName, version, name,
-        "https://ghgo.xyz/$downloadUrl", savePath);
+    var status = DownloadStatus(
+        appId, appName, version, name, "${getProxy()}$downloadUrl", savePath);
     status.total = downloadSize ?? 0;
 
     final item = await (await database)

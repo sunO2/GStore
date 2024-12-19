@@ -40,7 +40,7 @@ class DetailLogic extends GetxController with GithubRequestMix {
     }
 
     state.sourceUrl =
-        "https://ghgo.xyz/https://raw.githubusercontent.com/${apiList.full_name}/refs/heads/${apiList.default_branch}/";
+        "${getProxy()}https://raw.githubusercontent.com/${apiList.full_name}/refs/heads/${apiList.default_branch}/";
     var resp = await http.get(Uri.parse('${state.sourceUrl}README.md'));
 
     if (resp.statusCode == 404) {
