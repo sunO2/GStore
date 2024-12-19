@@ -283,7 +283,7 @@ class DetailPage extends StatelessWidget {
                         } else {
                           var url = "";
                           if ("$uri".startsWith("http")) {
-                            url = "https://ghp.ci/$uri";
+                            url = "https://ghgo.xyz/$uri";
                           } else {
                             url = "${state.sourceUrl}$uri";
                           }

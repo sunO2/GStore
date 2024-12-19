@@ -101,8 +101,8 @@ class DownloadStatus {
     var path = await getDownloadsDirectory();
     if (null == path) throw Exception("保存路径获取失败");
     var savePath = "${path.path}/$name";
-    var status = DownloadStatus(
-        appId, appName, version, name, "https://ghp.ci/$downloadUrl", savePath);
+    var status = DownloadStatus(appId, appName, version, name,
+        "https://ghgo.xyz/$downloadUrl", savePath);
     status.total = downloadSize ?? 0;
 
     final item = await (await database)

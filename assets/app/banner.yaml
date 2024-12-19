@@ -1,8 +1,8 @@
 - appId: com.absinthe.libchecker
-  banner: https://ghp.ci/https://github.com/LibChecker/LibChecker/blob/master/source/header.png
+  banner: https://ghgo.xyz/https://github.com/LibChecker/LibChecker/blob/master/source/header.png
 - appId: ru.tech.imageresizershrinker
-  banner: https://ghp.ci/https://github.com/T8RIN/ImageToolbox/raw/master/fastlane/metadata/android/en-US/images/banner/banner1.png
+  banner: https://ghgo.xyz/https://github.com/T8RIN/ImageToolbox/raw/master/fastlane/metadata/android/en-US/images/banner/banner1.png
 - appId: com.gopeed
-  banner: https://ghp.ci/https://github.com/GopeedLab/gopeed/raw/main/_docs/img/banner.png
+  banner: https://ghgo.xyz/https://github.com/GopeedLab/gopeed/raw/main/_docs/img/banner.png
 - appId: com.carriez.flutter_hbb
   banner: https://rustdesk.com/remote.jpg
