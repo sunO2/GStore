@@ -14,36 +14,47 @@ jobs:
       - name: Clone repository
         uses: actions/checkout@v4
 
+      - name: Download Latest apps.db from sunO2/GStore-repositorys Release
+        run: |
+          REPO_OWNER="sunO2"
+          REPO_NAME="GStore-repositorys"
+          RELEASE_INFO=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest")
+          RELEASE_ZIP_URL=$(echo "$RELEASE_INFO" | jq -r '.zipball_url')
+
+          if [[ -z "$RELEASE_ZIP_URL" ]]; then
+            echo "::warning::No release URL found for sunO2/GStore-repositorys. Using existing apps.db."
+            exit 0 # Continue workflow, but warn that apps.db update might have failed
+          fi
+
+          echo "Downloading latest release from: $RELEASE_ZIP_URL"
+          curl -L -o latest_release.zip "$RELEASE_ZIP_URL"
+
+          if ! unzip -o latest_release.zip "apps.db" -d release_content; then
+            echo "::error::Failed to unzip latest release or apps.db not found in release."
+            exit 1
+          fi
+
+          # Find the extracted apps.db path (due to zipball including repo name in path)
+          EXTRACTED_DB_PATH=$(find release_content -name "apps.db")
+
+          if [[ -z "$EXTRACTED_DB_PATH" ]]; then
+            echo "::error::apps.db not found in extracted release content."
+            exit 1
+          fi
+
+          echo "Extracted apps.db path: $EXTRACTED_DB_PATH"
+
+          mkdir -p assets/app/db
+          cp "$EXTRACTED_DB_PATH" assets/app/db/apps.db
+          echo "Successfully updated assets/app/db/apps.db"
+
+
       - name: Get version from pubspec.yaml
         id: get_version
         run: |
           VERSION=$(sed -n 's/^version: \([0-9]*\.[0-9]*\.[0-9]*\).*/\1/p' ./pubspec.yaml)
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-
-      - name: Fetch latest release from Suno2/Gstore-Repo
-        id: fetch_latest_release
-        uses: actions/github-script@v6
-        with:
-          script: |
-            const response = await github.repos.getLatestRelease({
-              owner: 'sunO2',
-              repo: 'GStore-Repositorys'
-            });
-            core.setOutput('release_tarball_url', response.data.tarball_url);
-
-      - name: Download latest release tarball
-        run: |
-          wget -O Gstore-Repo.tar.gz ${{ steps.fetch_latest_release.outputs.release_tarball_url }}
-
-      - name: Extract apps.db from tarball
-        run: |
-          mkdir -p Gstore-Repo
-          tar -xzf Gstore-Repo.tar.gz -C Gstore-Repo --strip-components=1
-
-      - name: Copy apps.db to assets/app/db/
-        run: |
-          cp Gstore-Repo/assets/app/db/apps.db assets/app/db/
-
+          
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
