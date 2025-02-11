@@ -42,12 +42,23 @@ jobs:
           VERSION=$(sed -n 's/^version: \([0-9]*\.[0-9]*\.[0-9]*\).*/\1/p' ./pubspec.yaml)
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           
+      # Cache flutter dependencies for faster builds
+      - name: Cache Flutter pub
+        uses: actions/cache@v3
+        id: flutter-pub-cache
+        with:
+          path: ~/.pub-cache
+          key: ${{ runner.os }}-pub-${{ hashFiles('**/pubspec.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pub-
+
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
           flutter-version: 3.24.3
 
-      - run: flutter pub get
+      - name: Install dependencies
+        run: flutter pub get
       - run: flutter test
       - run: flutter build apk --no-shrink --target-platform android-arm,android-arm64,android-x64 --split-per-abi 
       - run: flutter build appbundle
