@@ -20,6 +20,30 @@ jobs:
           VERSION=$(sed -n 's/^version: \([0-9]*\.[0-9]*\.[0-9]*\).*/\1/p' ./pubspec.yaml)
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
+      - name: Fetch latest release from Suno2/Gstore-Repo
+        id: fetch_latest_release
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const response = await github.repos.getLatestRelease({
+              owner: 'sunO2',
+              repo: 'GStore-Repositorys'
+            });
+            core.setOutput('release_tarball_url', response.data.tarball_url);
+
+      - name: Download latest release tarball
+        run: |
+          wget -O Gstore-Repo.tar.gz ${{ steps.fetch_latest_release.outputs.release_tarball_url }}
+
+      - name: Extract apps.db from tarball
+        run: |
+          mkdir -p Gstore-Repo
+          tar -xzf Gstore-Repo.tar.gz -C Gstore-Repo --strip-components=1
+
+      - name: Copy apps.db to assets/app/db/
+        run: |
+          cp Gstore-Repo/assets/app/db/apps.db assets/app/db/
+
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
