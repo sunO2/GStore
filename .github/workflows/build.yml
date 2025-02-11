@@ -14,39 +14,26 @@ jobs:
       - name: Clone repository
         uses: actions/checkout@v4
 
-      - name: Download Latest apps.db from sunO2/GStore-repositorys Release
+      - name: Download Latest apps.db Asset from sunO2/GStore-repositorys Release
         run: |
           REPO_OWNER="sunO2"
           REPO_NAME="GStore-repositorys"
-          RELEASE_INFO=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest")
-          RELEASE_ZIP_URL=$(echo "$RELEASE_INFO" | jq -r '.zipball_url')
+          ASSET_NAME="apps.db" # Replace with the actual asset name if different
 
-          if [[ -z "$RELEASE_ZIP_URL" ]]; then
-            echo "::warning::No release URL found for sunO2/GStore-repositorys. Using existing apps.db."
+          RELEASE_INFO=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest")
+          ASSET_URL=$(echo "$RELEASE_INFO" | jq -r ".assets[] | select(.name == \"$ASSET_NAME\") | .browser_download_url")
+
+          if [[ -z "$ASSET_URL" ]]; then
+            echo "::warning::No asset named '$ASSET_NAME' found in latest release of sunO2/GStore-repositorys. Using existing apps.db or workflow might fail if it's missing."
             exit 0 # Continue workflow, but warn that apps.db update might have failed
           fi
 
-          echo "Downloading latest release from: $RELEASE_ZIP_URL"
-          curl -L -o latest_release.zip "$RELEASE_ZIP_URL"
-
-          if ! unzip -o latest_release.zip "apps.db" -d release_content; then
-            echo "::error::Failed to unzip latest release or apps.db not found in release."
-            exit 1
-          fi
-
-          # Find the extracted apps.db path (due to zipball including repo name in path)
-          EXTRACTED_DB_PATH=$(find release_content -name "apps.db")
-
-          if [[ -z "$EXTRACTED_DB_PATH" ]]; then
-            echo "::error::apps.db not found in extracted release content."
-            exit 1
-          fi
-
-          echo "Extracted apps.db path: $EXTRACTED_DB_PATH"
+          echo "Downloading asset '$ASSET_NAME' from: $ASSET_URL"
+          curl -L -o downloaded_apps.db "$ASSET_URL" # Download asset to 'downloaded_apps.db'
 
           mkdir -p assets/app/db
-          cp "$EXTRACTED_DB_PATH" assets/app/db/apps.db
-          echo "Successfully updated assets/app/db/apps.db"
+          cp downloaded_apps.db assets/app/db/apps.db # Copy downloaded asset to destination, renaming it to apps.db
+          echo "Successfully updated assets/app/db/apps.db from release asset"
 
 
       - name: Get version from pubspec.yaml
