@@ -1,11 +1,7 @@
-import 'dart:ffi';
 
-import 'package:dio/dio.dart';
 import 'package:floor/floor.dart';
 import 'package:gstore/core/core.dart';
-import 'package:gstore/http/download/DownloadStatusDataBase.dart';
 import 'package:gstore/http/download/downloadService.dart';
-import 'dart:async';
 import 'dart:io';
 
 import 'package:path_provider/path_provider.dart';

@@ -15,6 +15,16 @@ void updateConfig(AppInfoConfig? config) {
   }
 }
 
+void updateDataBaseVersion(String? version) {
+  AppInfoConfig? config = getConfig();
+  updateConfig(AppInfoConfig(version ?? "0.0.0", config?.proxy));
+}
+
+void updateProxy(String? proxyUrl) {
+  AppInfoConfig? config = getConfig();
+  updateConfig(AppInfoConfig(config?.version ?? "0.0.0", proxyUrl));
+}
+
 AppInfoConfig? getConfig() {
   try {
     AppInfoConfig? config = Get.find(tag: "config");
@@ -27,7 +37,7 @@ AppInfoConfig? getConfig() {
 String getProxy() {
   AppInfoConfig? config = getConfig();
   if (null == config) {
-    return "https://ghgo.xyz/";
+    return "https://ghfast.top/";
   }
-  return config.proxy!;
+  return config.proxy ?? "";
 }

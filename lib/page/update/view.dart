@@ -15,11 +15,11 @@ class UpdateManager extends StatelessWidget {
     final logic = Get.put(UpdateLogic());
     return Scaffold(
         appBar: AppBar(
-          title: Text("应用更新"),
+          title: const Text("应用更新"),
         ),
         body: Container(
           padding: const EdgeInsets.all(16),
-          child: SizedBox(),
+          child: const SizedBox(),
         ));
   }
 }

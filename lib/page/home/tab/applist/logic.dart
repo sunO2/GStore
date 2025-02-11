@@ -8,6 +8,7 @@ import 'package:gstore/db/apps/AppInfoDatabase.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
 import 'package:gstore/http/download/downloadService.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/http/github/dio_client.dart';
 import 'package:yaml/yaml.dart';
 
 import 'state.dart';
@@ -30,12 +31,22 @@ class ApplistLogic extends GetxController with GithubRequestMix {
       await dbFile.writeAsBytes(
           buffer.asUint8List(bytes.offsetInBytes, bytes.lengthInBytes));
     }
+
     await refreshDataOfDB();
     checkUpdata();
   }
 
   Future<void> checkUpdata() async {
-    getBanner();
+    // getBanner();
+
+    /// 拉取代理
+    var proxyConfigRequest = await DioClient.instance.get().get(
+        "https://my-json-server.typicode.com/suno2/GStore-Repositorys/proxy");
+    var proxyUrl = proxyConfigRequest.data["url"];
+    if (proxyUrl?.toString().isNotEmpty ?? false) {
+      log("请求代理地址结果： $proxyUrl");
+      updateProxy(proxyUrl);
+    }
 
     var task = await githubApi
         .releases("sunO2", "GStore-Repositorys", 1, cancelToken)
@@ -111,19 +122,21 @@ class ApplistLogic extends GetxController with GithubRequestMix {
 
   refreshDataOfDB() async {
     appDatabase?.close();
-    log("加载数据库数据： ${state.version}");
     appDatabase = await appInfoDatabase;
     state.apps = await appDatabase!.dao
         .getAllApps()
         .catchError((error) => List<AppInfo>.empty());
     var config = await appDatabase!.dao.getVersion();
     state.version = config?.version ?? "";
-    updateConfig(config);
+    log("加载数据库数据： ${state.version}");
+    updateDataBaseVersion(state.version);
     update();
   }
 
   Future<List<dynamic>> getBanner() async {
-    return loadYaml(await rootBundle.loadString("assets/app/banner.yaml"));
+    var bannerString = await rootBundle.loadString("assets/app/banner.yaml");
+    bannerString = bannerString.replaceAll("ENV_PROXY:", getProxy());
+    return loadYaml(bannerString);
   }
 
   //搜索页面
@@ -140,10 +153,5 @@ class ApplistLogic extends GetxController with GithubRequestMix {
 
   void appDetail(AppInfo app) {
     Get.toNamed(AppRoute.appDetail, arguments: app);
-  }
-
-  @override
-  void onClose() {
-    super.onClose();
   }
 }

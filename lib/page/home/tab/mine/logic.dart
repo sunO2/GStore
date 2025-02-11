@@ -5,10 +5,6 @@ import 'state.dart';
 class MineLogic extends GetxController {
   final MineState state = MineState();
 
-  @override
-  void onReady() {
-    super.onReady();
-  }
 
   Future<List<AppCategory>> getCategory() async {
     var database = (await appInfoDatabase);

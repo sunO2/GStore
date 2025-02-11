@@ -5,9 +5,6 @@ import 'package:gstore/http/github/dio_client.dart';
 import 'package:gstore/http/github/github_client.dart';
 
 import 'package:gstore/core/core.dart';
-import 'package:gstore/http/download/downloadService.dart';
-import 'package:gstore/http/github/dio_client.dart';
-import 'package:gstore/http/github/github_client.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {

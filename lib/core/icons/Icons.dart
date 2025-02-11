@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:gstore/core/core.dart';
 import 'package:jovial_svg/jovial_svg.dart';
 import 'package:sprintf/sprintf.dart';
 

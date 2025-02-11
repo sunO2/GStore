@@ -1,6 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:gstore/http/download/DownloadStatusDataBase.dart';
-import 'package:gstore/http/download/DownloadStatus.dart';
 import 'package:gstore/page/home/tab/mine/logic.dart';
 import 'package:gstore/core/core.dart';
 import 'package:jovial_svg/jovial_svg.dart';

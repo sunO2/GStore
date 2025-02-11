@@ -70,10 +70,10 @@ class AppListState extends State<ApplistPage>
       ),
       body: RefreshIndicator(
         onRefresh: logic.checkUpdata,
-        child: SingleChildScrollView(
-          child: Column(
-            children: [
-              FutureBuilder(
+        child: CustomScrollView(
+          slivers: [
+            SliverToBoxAdapter(
+              child: FutureBuilder(
                   future: logic.getBanner(),
                   builder: (contest, snap) {
                     var data = snap.data;
@@ -110,9 +110,11 @@ class AppListState extends State<ApplistPage>
                       ),
                     );
                   }),
-              GetBuilder<ApplistLogic>(
-                  builder: (ctl) => GridView.builder(
-                        shrinkWrap: true,
+            ),
+            SliverPadding(
+              padding: const EdgeInsets.all(0),
+              sliver: GetBuilder<ApplistLogic>(
+                  builder: (ctl) => SliverGrid.builder(
                         gridDelegate:
                             const SliverGridDelegateWithFixedCrossAxisCount(
                           crossAxisCount: 4,
@@ -128,9 +130,9 @@ class AppListState extends State<ApplistPage>
                         },
                         itemCount:
                             state.apps.isNotEmpty ? state.apps.length : 0,
-                      ))
-            ],
-          ),
+                      )),
+            )
+          ],
         ),
       ),
     );

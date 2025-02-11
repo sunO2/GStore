@@ -15,7 +15,7 @@ class DownloadManagerLogic extends GetxController with GithubRequestMix {
   @override
   void onReady() async {
     var db = await database;
-    var downloadList = await db.downloadStatusDao.getAllDownload();
+    var downloadList = db.downloadStatusDao.getAllDownload();
     downloadList.listen((items) {
       var map = <String, List<DownloadStatus>>{};
       for (var item in items) {

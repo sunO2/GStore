@@ -28,7 +28,7 @@ class DownloadManager extends StatelessWidget {
                 var downloadList = snap.data;
                 if (snap.connectionState != ConnectionState.active ||
                     (downloadList?.isEmpty ?? true)) {
-                  return Text("下载列表为空");
+                  return const Text("下载列表为空");
                 }
                 return ListView.builder(
                   shrinkWrap: true,
@@ -78,7 +78,7 @@ class DownloadManager extends StatelessWidget {
                                     builder: (context, snap) {
                                       var data = snap.data;
                                       return ClipRRect(
-                                        borderRadius: BorderRadius.all(
+                                        borderRadius: const BorderRadius.all(
                                             Radius.circular(20)),
                                         child: Container(
                                           constraints:
