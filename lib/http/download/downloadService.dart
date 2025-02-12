@@ -23,19 +23,38 @@ class DownloadService extends GetxService {
       _install(fileName, downloadStatus.savePath);
       return downloadStatus;
     }
-    _dio.download(downloadStatus.downloadUrl, downloadStatus.savePath,
-        onReceiveProgress: (count, total) {
-      downloadStatus.updateDownload(count, total);
-    }).then((response) {
+
+    int start = downloadStatus.count;
+    _dio.download(
+      downloadStatus.downloadUrl,
+      downloadStatus.savePath,
+      cancelToken: downloadStatus.getCancelToken(),
+      onReceiveProgress: (count, total) {
+        downloadStatus.updateDownload(start + count, total);
+      },
+      options: Options(
+        headers: {
+          'Range': 'bytes=$start-',
+        },
+      ),
+    ).then((response) {
       log("statusCode: ${response.statusCode}   response: $response");
-      if (response.statusCode == 200) {
+      if (response.statusCode == 200 || response.statusCode == 206) {
         _install(fileName, downloadStatus.savePath);
         downloadStatus.downloadSuccess();
       } else {
         downloadStatus.downloadError();
       }
     }).catchError((error) {
-      log("错误：${downloadStatus.downloadUrl} $error");
+      log(error);
+      if (error is DioException) {
+        if (CancelToken.isCancel(error)) {
+          log("取消下载：${downloadStatus.downloadUrl}");
+          downloadStatus.downloadCanced();
+          return;
+        }
+      }
+      log("错误：${downloadStatus.downloadUrl} ${error.message}");
       downloadStatus.downloadError();
     });
     return downloadStatus;

@@ -44,9 +44,13 @@ class DownloadManagerLogic extends GetxController with GithubRequestMix {
     }
   }
 
-  void retryDownload(DownloadStatus downStatus) async {
+  void resumeDownload(DownloadStatus downStatus) {
+    retryDownload(downStatus, restartCount: downStatus.count);
+  }
+
+  void retryDownload(DownloadStatus downStatus, {int restartCount = 0}) async {
     // 实现重新下载的逻辑
-    downStatus.updateDownload(0, downStatus.total);
+    downStatus.updateDownload(restartCount, downStatus.total);
     await Get.find<DownloadService>().download(
         downStatus.appId,
         downStatus.appName,
@@ -58,6 +62,7 @@ class DownloadManagerLogic extends GetxController with GithubRequestMix {
 
   void pauseDownload(DownloadStatus downStatus) {
     // 实现暂停下载的逻辑
+    downStatus.cancelDownload();
   }
 
   void deleteDownload(DownloadStatus downStatus) async {
