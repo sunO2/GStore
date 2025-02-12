@@ -130,7 +130,7 @@ class DownloadStatus {
       {int? downloadSize}) async {
     var path = await getDownloadsDirectory();
     if (null == path) throw Exception("保存路径获取失败");
-    var savePath = "${path.path}/$name";
+    var savePath = "${path.path}/$appId-$version-$name";
 
     if (!downloadUrl.startsWith(getProxy())) {
       downloadUrl = "${getProxy()}$downloadUrl";
