@@ -129,12 +129,34 @@ class DownloadManager extends StatelessWidget {
                                                           child: Text(
                                                             downStatus.fileName,
                                                             style: const TextStyle(
+                                                                color: Colors
+                                                                    .white,
                                                                 fontSize: 10,
                                                                 fontWeight:
                                                                     FontWeight
                                                                         .w500),
                                                           ),
                                                         ),
+                                                        Align(
+                                                          alignment: Alignment
+                                                              .centerRight,
+                                                          child: Padding(
+                                                            padding:
+                                                                const EdgeInsets
+                                                                    .only(
+                                                                    right: 8),
+                                                            child: Text(
+                                                              "${((data.count / data.total) * 100).toInt()}%",
+                                                              style: const TextStyle(
+                                                                  color: Colors
+                                                                      .white,
+                                                                  fontSize: 10,
+                                                                  fontWeight:
+                                                                      FontWeight
+                                                                          .w500),
+                                                            ),
+                                                          ),
+                                                        )
                                                       ],
                                                     ),
                                                   ),
