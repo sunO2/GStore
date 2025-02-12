@@ -161,16 +161,39 @@ class DownloadManager extends StatelessWidget {
                                                               .install_mobile),
                                                           onPressed: () {
                                                             logic.installApp(
-                                                                downStatus);
+                                                                data);
                                                           },
                                                         ),
 
+                                                      if (data.status ==
+                                                          DownloadStatus
+                                                              .DOWNLOAD_READY)
+                                                        IconButton(
+                                                          icon: const Icon(
+                                                              Icons.play_arrow),
+                                                          onPressed: () {
+                                                            logic
+                                                                .resumeDownload(
+                                                                    data);
+                                                          },
+                                                        ),
+                                                      if (data.status ==
+                                                          DownloadStatus
+                                                              .DOWNLOAD_LOADING)
+                                                        IconButton(
+                                                          icon: const Icon(
+                                                              Icons.pause),
+                                                          onPressed: () {
+                                                            logic.pauseDownload(
+                                                                data);
+                                                          },
+                                                        ),
                                                       IconButton(
                                                         icon: const Icon(
                                                             Icons.refresh),
                                                         onPressed: () {
                                                           logic.retryDownload(
-                                                              downStatus);
+                                                              data);
                                                         },
                                                       ),
                                                       // if (data.status ==

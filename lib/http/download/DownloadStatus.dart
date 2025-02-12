@@ -1,4 +1,4 @@
-
+import 'package:dio/dio.dart';
 import 'package:floor/floor.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/http/download/downloadService.dart';
@@ -7,6 +7,8 @@ import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 
 final Map<String, StreamController<DownloadStatus>> _streamManager = {};
+// 取消下载按钮
+final Map<String, CancelToken> _cancelTokens = {};
 
 @entity
 class DownloadStatus {
@@ -44,6 +46,10 @@ class DownloadStatus {
       this.status = DOWNLOAD_READY,
       this.id,
       this.createTime = 0}) {
+    /// 默认状态 不为下载成功 则为
+    if (status == DOWNLOAD_LOADING) {
+      status = DOWNLOAD_READY;
+    }
     var stream = _streamManager[fileName];
     if (null == stream) {
       _counterController = StreamController<DownloadStatus>.broadcast();
@@ -51,6 +57,15 @@ class DownloadStatus {
     } else {
       _counterController = stream;
     }
+  }
+
+  CancelToken getCancelToken() {
+    var token = _cancelTokens[fileName];
+    if (null == token || token.isCancelled) {
+      token = CancelToken();
+      _cancelTokens[fileName] = token;
+    }
+    return token;
   }
 
   @override
@@ -67,6 +82,20 @@ class DownloadStatus {
   savePath: $savePath,
   crewateTime: $createTime,
 }''';
+  }
+
+  cancelDownload() {
+    var token = _cancelTokens[fileName];
+    if (null != token) {
+      token.cancel();
+      _cancelTokens.remove(fileName);
+    }
+  }
+
+  void downloadCanced() async {
+    status = DOWNLOAD_READY;
+    _counterController.sink.add(this);
+    await (await database).downloadStatusDao.updateDownload(this);
   }
 
   void downloadError() async {
@@ -118,7 +147,7 @@ class DownloadStatus {
 
     var saveFile = File(savePath);
     if (await saveFile.exists()) {
-      status.status = DownloadStatus.DOWNLOAD_LOADING;
+      // status.status = DownloadStatus.DOWNLOAD_LOADING;
       var length = await saveFile.length();
       if (length == (downloadSize ?? 0)) {
         status.status = DownloadStatus.DOWNLOAD_SUCCESS;
