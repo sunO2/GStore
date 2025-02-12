@@ -50,17 +50,21 @@ class DownloadStatus {
     if (status == DOWNLOAD_LOADING) {
       status = DOWNLOAD_READY;
     }
-    var stream = _streamManager[fileName];
+    var stream = _streamManager[_downloadTag];
     if (null == stream) {
       _counterController = StreamController<DownloadStatus>.broadcast();
-      _streamManager[fileName] = _counterController;
+      _streamManager[_downloadTag] = _counterController;
     } else {
       _counterController = stream;
     }
   }
 
+  get _downloadTag {
+    return "$appId-$version-$fileName";
+  }
+
   CancelToken getCancelToken() {
-    var token = _cancelTokens[fileName];
+    var token = _cancelTokens[_downloadTag];
     if (null == token || token.isCancelled) {
       token = CancelToken();
       _cancelTokens[fileName] = token;
