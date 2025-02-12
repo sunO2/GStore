@@ -1,12 +1,9 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
-import 'package:gstore/core/routers.dart';
 import 'package:gstore/core/utils/logger.dart';
-import 'package:gstore/core/utils/unit.dart';
 import 'package:gstore/db/apps/AppInfo.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
-import 'package:jovial_svg/jovial_svg.dart';
 import 'logic.dart';
 
 class DownloadManager extends StatelessWidget {
@@ -40,11 +37,13 @@ class DownloadManager extends StatelessWidget {
                         builder: (context, snap) {
                           var info = snap.data;
                           return Theme(
-                            data: Theme.of(context)
-                                .copyWith(dividerColor: Colors.transparent),
+                            data: Theme.of(context).copyWith(
+                              dividerColor: Colors.transparent,
+                            ),
                             child: ExpansionTile(
                               subtitle: Text(item[0].version),
-                              childrenPadding: const EdgeInsets.all(16),
+                              childrenPadding:
+                                  const EdgeInsets.only(left: 16, right: 0),
                               maintainState: true,
                               leading: SizedBox(
                                 width: 32,
@@ -73,65 +72,135 @@ class DownloadManager extends StatelessWidget {
                                   CrossAxisAlignment.start,
                               expandedAlignment: Alignment.topLeft,
                               children: item.map((downStatus) {
-                                return StreamBuilder(
-                                    stream: downStatus.observer,
-                                    builder: (context, snap) {
-                                      var data = snap.data;
-                                      return ClipRRect(
-                                        borderRadius: const BorderRadius.all(
-                                            Radius.circular(20)),
-                                        child: Container(
-                                          constraints:
-                                              const BoxConstraints.expand(
-                                                  width: 280, height: 18),
-                                          margin: const EdgeInsets.only(
-                                              top: 2, bottom: 2),
-                                          decoration: BoxDecoration(
-                                            color:
-                                                Theme.of(context).brightness ==
-                                                        Brightness.dark
-                                                    ? Colors.grey.shade600
-                                                    : Colors.grey.shade300,
-                                            borderRadius:
-                                                const BorderRadius.all(
-                                                    Radius.circular(30)),
-                                          ),
-                                          child: Stack(
-                                            alignment: AlignmentDirectional
-                                                .centerStart,
+                                return Column(
+                                  children: [
+                                    StreamBuilder(
+                                        stream: downStatus.observer,
+                                        builder: (context, snap) {
+                                          var data = snap.data ?? downStatus;
+                                          return Row(
                                             children: [
-                                              data?.status ==
-                                                      DownloadStatus
-                                                          .DOWNLOAD_LOADING
-                                                  ? LinearProgressIndicator(
-                                                      value: data == null
-                                                          ? 0
-                                                          : data.count /
-                                                              data.total,
-                                                      minHeight: 18,
+                                              Expanded(
+                                                child: ClipRRect(
+                                                  borderRadius:
+                                                      const BorderRadius.all(
+                                                          Radius.circular(20)),
+                                                  child: Container(
+                                                    constraints:
+                                                        const BoxConstraints
+                                                            .expand(height: 18),
+                                                    margin:
+                                                        const EdgeInsets.only(
+                                                            top: 2, bottom: 2),
+                                                    decoration: BoxDecoration(
+                                                      color: Theme.of(context)
+                                                                  .brightness ==
+                                                              Brightness.dark
+                                                          ? Colors.grey.shade600
+                                                          : Colors
+                                                              .grey.shade300,
                                                       borderRadius:
                                                           const BorderRadius
                                                               .all(
                                                               Radius.circular(
-                                                                  20)),
-                                                    )
-                                                  : const SizedBox(),
-                                              Padding(
-                                                padding: const EdgeInsets.only(
-                                                    left: 8, right: 8),
-                                                child: Text(
-                                                  downStatus.fileName,
-                                                  style: const TextStyle(
-                                                      fontSize: 10,
-                                                      fontWeight:
-                                                          FontWeight.w500),
+                                                                  30)),
+                                                    ),
+                                                    child: Stack(
+                                                      alignment:
+                                                          AlignmentDirectional
+                                                              .centerStart,
+                                                      children: [
+                                                        LinearProgressIndicator(
+                                                          value: data.count /
+                                                              data.total,
+                                                          minHeight: 18,
+                                                          borderRadius:
+                                                              const BorderRadius
+                                                                  .all(Radius
+                                                                      .circular(
+                                                                          20)),
+                                                        ),
+                                                        Padding(
+                                                          padding:
+                                                              const EdgeInsets
+                                                                  .only(
+                                                                  left: 8,
+                                                                  right: 8),
+                                                          child: Text(
+                                                            downStatus.fileName,
+                                                            style: const TextStyle(
+                                                                fontSize: 10,
+                                                                fontWeight:
+                                                                    FontWeight
+                                                                        .w500),
+                                                          ),
+                                                        ),
+                                                      ],
+                                                    ),
+                                                  ),
                                                 ),
                                               ),
+                                              Theme(
+                                                  data: Theme.of(context)
+                                                      .copyWith(
+                                                          iconTheme: IconTheme
+                                                                  .of(context)
+                                                              .copyWith(
+                                                                  size: 14)),
+                                                  child: Row(
+                                                    mainAxisSize:
+                                                        MainAxisSize.min,
+                                                    children: [
+                                                      if (data.status ==
+                                                              DownloadStatus
+                                                                  .DOWNLOAD_SUCCESS &&
+                                                          data.fileName
+                                                              .endsWith(".apk"))
+                                                        IconButton(
+                                                          icon: const Icon(Icons
+                                                              .install_mobile),
+                                                          onPressed: () {
+                                                            logic.installApp(
+                                                                downStatus);
+                                                          },
+                                                        ),
+
+                                                      IconButton(
+                                                        icon: const Icon(
+                                                            Icons.refresh),
+                                                        onPressed: () {
+                                                          logic.retryDownload(
+                                                              downStatus);
+                                                        },
+                                                      ),
+                                                      // if (data.status ==
+                                                      //     DownloadStatus
+                                                      //         .DOWNLOAD_LOADING)
+                                                      //   IconButton(
+                                                      //     icon: const Icon(
+                                                      //         Icons.pause),
+                                                      //     onPressed: () {
+                                                      //       logic.pauseDownload(
+                                                      //           downStatus);
+                                                      //     },
+                                                      //   ),
+                                                      // IconButton(
+                                                      //   visualDensity: VisualDensity
+                                                      //       .adaptivePlatformDensity,
+                                                      //   icon: const Icon(
+                                                      //       Icons.delete),
+                                                      //   onPressed: () {
+                                                      //     logic.deleteDownload(
+                                                      //         downStatus);
+                                                      //   },
+                                                      // ),
+                                                    ],
+                                                  )),
                                             ],
-                                          ),
-                                        ),
-                                      );
-                                    });
+                                          );
+                                        }),
+                                  ],
+                                );
                               }).toList(),
                             ),
                           );
