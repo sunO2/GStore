@@ -157,6 +157,7 @@ class DownloadManager extends StatelessWidget {
                                                           data.fileName
                                                               .endsWith(".apk"))
                                                         IconButton(
+                                                          tooltip: "安装",
                                                           icon: const Icon(Icons
                                                               .install_mobile),
                                                           onPressed: () {
@@ -169,6 +170,7 @@ class DownloadManager extends StatelessWidget {
                                                           DownloadStatus
                                                               .DOWNLOAD_READY)
                                                         IconButton(
+                                                          tooltip: "开始下载",
                                                           icon: const Icon(
                                                               Icons.play_arrow),
                                                           onPressed: () {
@@ -181,6 +183,7 @@ class DownloadManager extends StatelessWidget {
                                                           DownloadStatus
                                                               .DOWNLOAD_LOADING)
                                                         IconButton(
+                                                          tooltip: "暂停下载",
                                                           icon: const Icon(
                                                               Icons.pause),
                                                           onPressed: () {
@@ -189,6 +192,7 @@ class DownloadManager extends StatelessWidget {
                                                           },
                                                         ),
                                                       IconButton(
+                                                        tooltip: "重新下载",
                                                         icon: const Icon(
                                                             Icons.refresh),
                                                         onPressed: () {
