@@ -10,6 +10,7 @@ import 'package:jovial_svg/jovial_svg.dart';
 import 'package:markdown/markdown.dart' as md;
 import 'package:gstore/core/core.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'package:flutter_html/flutter_html.dart';
 
 class DetailPage extends StatelessWidget {
   const DetailPage({super.key});
@@ -416,25 +417,32 @@ class AppStartedWidget extends StatelessWidget {
 
 // 自定义 MarkdownElementBuilder 来处理 <a> 标签
 class CustomLinkBuilder extends MarkdownElementBuilder {
-  final pattern = RegExp('<img\\s+[^>]*src=["\']([^"\']+)["\']');
   @override
   Widget visitElementAfter(md.Element element, TextStyle? preferredStyle) {
-    return Wrap(
-      children: element.children?.map((node) {
-            List images = pattern
-                .allMatches(element.textContent)
-                .map((e) => e.group(1))
-                .toList();
-            if (images.isNotEmpty) {
-              return Image(image: CachedNetworkImageProvider(images[0]));
-            } else {
-              return Text(
-                element.textContent,
-                style: preferredStyle,
-              );
-            }
-          }).toList() ??
-          [],
+    element.attributes.forEach((key, value) {
+      log("key: $key, value: $value");
+    });
+    return SizedBox(
+      height: 80,
+      // children: element.children?.map((node) {
+      //       List images = pattern
+      //           .allMatches(element.textContent)
+      //           .map((e) => e.group(1))
+      //           .toList();
+      //       if (images.isNotEmpty) {
+      //         return Image(image: CachedNetworkImageProvider(images[0]));
+      //       } else {
+      //         return Text(
+      //           element.textContent,
+      //           style: preferredStyle,
+      //         );
+      //       }
+      //     }).toList() ??
+      //     [],
+      child: Html(
+        data: element.textContent,
+        shrinkWrap: true,
+      ),
     );
   }
 }
