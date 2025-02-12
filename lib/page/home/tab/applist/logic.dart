@@ -67,10 +67,10 @@ class ApplistLogic extends GetxController with GithubRequestMix {
               "com.sunO2.gstore.db",
               "GStore.db",
               version,
-              assets["browser_download_url"],
+              "$proxyUrl${assets["browser_download_url"]}",
               assets["name"],
               downloadSize: assets["size"]);
-          var sub = status.observer.listen((dStatus) {
+          var sub = status.observer.listen((dStatus) async {
             if (dStatus.status == DownloadStatus.DOWNLOAD_SUCCESS ||
                 dStatus.status == DownloadStatus.DOWNLOAD_ERROR) {
               completer.complete(dStatus.status);

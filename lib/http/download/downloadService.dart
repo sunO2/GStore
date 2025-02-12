@@ -18,13 +18,13 @@ class DownloadService extends GetxService {
             .getDownloadOfName(fileName, version)) ??
         (await DownloadStatus.create(appid, appName, version, fileName, url,
             downloadSize: downloadSize));
-
-    if (downloadStatus.status == DownloadStatus.DOWNLOAD_SUCCESS) {
-      _install(fileName, downloadStatus.savePath);
+    if (downloadStatus.status == DownloadStatus.DOWNLOAD_SUCCESS &&
+        _install(fileName, downloadStatus.savePath)) {
       return downloadStatus;
     }
 
     int start = downloadStatus.count;
+    if (fileName.endsWith("apps.db")) start = 0;
     _dio.download(
       downloadStatus.downloadUrl,
       downloadStatus.savePath,
@@ -46,7 +46,6 @@ class DownloadService extends GetxService {
         downloadStatus.downloadError();
       }
     }).catchError((error) {
-      log(error);
       if (error is DioException) {
         if (CancelToken.isCancel(error)) {
           log("取消下载：${downloadStatus.downloadUrl}");
@@ -63,6 +62,8 @@ class DownloadService extends GetxService {
   _install(String fileName, String filePath) {
     if (GetPlatform.isAndroid && fileName.endsWith(".apk")) {
       AppInstaller.installApk(filePath);
+      return true;
     }
+    return false;
   }
 }
