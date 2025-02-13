@@ -2,6 +2,7 @@ import 'package:dynamic_color/dynamic_color.dart';
 import 'package:flutter/material.dart';
 import 'package:gstore/http/download/downloadService.dart';
 import 'package:gstore/http/github/dio_client.dart';
+import 'package:gstore/http/github/github_auth_api.dart';
 import 'package:gstore/http/github/github_client.dart';
 
 import 'package:gstore/core/core.dart';
@@ -15,6 +16,9 @@ void main() {
 
   Get.lazyPut<GithubRestClient>(() {
     return GithubRestClient(DioClient().get());
+  });
+  Get.lazyPut<GithubAuthApi>(() {
+    return GithubAuthApi(DioClient().get());
   });
   Get.lazyPut<DownloadService>(() {
     return DownloadService(DioClient().get());
