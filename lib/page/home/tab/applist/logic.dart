@@ -69,7 +69,8 @@ class ApplistLogic extends GetxController with GithubRequestMix {
               version,
               "$proxyUrl${assets["browser_download_url"]}",
               assets["name"],
-              downloadSize: assets["size"]);
+              downloadSize: assets["size"],
+              saveFileName: "apps.db");
           var sub = status.observer.listen((dStatus) async {
             if (dStatus.status == DownloadStatus.DOWNLOAD_SUCCESS ||
                 dStatus.status == DownloadStatus.DOWNLOAD_ERROR) {
@@ -126,8 +127,11 @@ class ApplistLogic extends GetxController with GithubRequestMix {
     state.apps = await appDatabase!.dao
         .getAllApps()
         .catchError((error) => List<AppInfo>.empty());
-    var config = await appDatabase!.dao.getVersion();
-    state.version = config?.version ?? "";
+    var config =
+        await appDatabase!.dao.getVersion().onError((error, stackTrace) {
+      log("数据库版本获取失败： $error");
+    });
+    state.version = config?.version ?? "0.0.0";
     log("加载数据库数据： ${state.version}");
     updateDataBaseVersion(state.version);
     update();

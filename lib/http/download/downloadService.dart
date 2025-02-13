@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:app_installer/app_installer.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
 import 'package:gstore/core/core.dart';
@@ -11,8 +12,17 @@ class DownloadService extends GetxService {
 
   DownloadService(this._dio);
 
+  /// 下载文件
+  /// appid 包名
+  /// appName 应用名称
+  /// version 版本
+  /// url 下载地址
+  /// fileName 文件名
+  /// downloadSize 文件大小
+  /// breakPoint 是否支持断点续传
+  /// saveName 保存的文件名
   Future<DownloadStatus> download(String appid, appName, version, url, fileName,
-      {int? downloadSize}) async {
+      {int? downloadSize, bool breakPoint = true, String? saveFileName}) async {
     var downloadStatus = (await (await database)
             .downloadStatusDao
             .getDownloadOfName(fileName, version)) ??
@@ -23,38 +33,61 @@ class DownloadService extends GetxService {
       return downloadStatus;
     }
 
-    int start = downloadStatus.count;
-    if (fileName.endsWith("apps.db")) start = 0;
-    _dio.download(
+    final file = File(downloadStatus.savePath);
+    var downloadTempFile = File("${file.path}.temp");
+    // 确保目录存在
+    await file.parent.create(recursive: true);
+    int start = 0;
+
+    // 获取已下载的文件大小
+    if (breakPoint && await downloadTempFile.exists()) {
+      start = await downloadTempFile.length();
+    }
+
+    final response = await _dio.get(
       downloadStatus.downloadUrl,
-      downloadStatus.savePath,
       cancelToken: downloadStatus.getCancelToken(),
       onReceiveProgress: (count, total) {
-        downloadStatus.updateDownload(start + count, total);
+        downloadStatus.updateDownload(start + count, total + start);
       },
       options: Options(
-        headers: {
-          'Range': 'bytes=$start-',
-        },
+        headers: {'Range': 'bytes=$start-'},
+        responseType: ResponseType.stream,
       ),
-    ).then((response) {
-      log("statusCode: ${response.statusCode}   response: $response");
-      if (response.statusCode == 200 || response.statusCode == 206) {
-        _install(fileName, downloadStatus.savePath);
-        downloadStatus.downloadSuccess();
-      } else {
-        downloadStatus.downloadError();
-      }
-    }).catchError((error) {
-      if (error is DioException) {
-        if (CancelToken.isCancel(error)) {
-          log("取消下载：${downloadStatus.downloadUrl}");
-          downloadStatus.downloadCanced();
-          return;
+    );
+    final fileStream =
+        downloadTempFile.openWrite(mode: FileMode.writeOnlyAppend);
+    bool isClosed = false;
+    log("下载状态码：${response.statusCode}");
+
+    response.data.stream.listen((data) {
+      fileStream.add(data);
+    }, onDone: () async {
+      if (!isClosed) {
+        isClosed = true;
+        await fileStream.close();
+        if (response.statusCode == 200 || response.statusCode == 206) {
+          downloadTempFile.renameSync(file.path);
+          _install(fileName, downloadStatus.savePath);
+          downloadStatus.downloadSuccess();
+        } else {
+          downloadStatus.downloadError();
         }
       }
-      log("错误：${downloadStatus.downloadUrl} ${error.message}");
-      downloadStatus.downloadError();
+    }, onError: (error) async {
+      if (!isClosed) {
+        isClosed = true;
+        await fileStream.close();
+        if (error is DioException) {
+          if (CancelToken.isCancel(error)) {
+            log("取消下载：${downloadStatus.downloadUrl}");
+            downloadStatus.downloadCanced();
+            return;
+          }
+        }
+        log("错误：${downloadStatus.downloadUrl} ${error.message}");
+        downloadStatus.downloadError();
+      }
     });
     return downloadStatus;
   }
