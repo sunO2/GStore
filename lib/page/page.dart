@@ -4,3 +4,4 @@ export 'package:gstore/page/search/view.dart';
 export 'package:gstore/page/download/view.dart';
 export 'package:gstore/page/update/view.dart';
 export 'package:gstore/page/web/view.dart';
+export 'package:gstore/page/auth/view.dart';

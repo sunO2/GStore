@@ -9,6 +9,7 @@ class AppRoute {
   static String downloadCenter = "/GStore/downloadCenter";
   static String updateCenter = "/GStore/updateCenter";
   static String webView = "/GStore/webView";
+  static String auth = "/GStore/auth";
 
   static List<GetPage> pages = [
     GetPage(
@@ -26,5 +27,6 @@ class AppRoute {
     GetPage(name: downloadCenter, page: () => const DownloadManager()),
     GetPage(name: updateCenter, page: () => const UpdateManager()),
     GetPage(name: webView, page: () => const WebPage()),
+    GetPage(name: auth, page: () => const AuthPage()),
   ];
 }

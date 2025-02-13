@@ -66,6 +66,13 @@ class AppListState extends State<ApplistPage>
             icon: const Icon(AliIcon.appDownloadCenter),
             onPressed: () => Get.toNamed(AppRoute.downloadCenter),
           ),
+          IconButton(
+            tooltip: "登陆",
+            icon: const Icon(
+              Icons.account_circle_outlined,
+            ),
+            onPressed: () => Get.toNamed(AppRoute.auth),
+          ),
         ],
       ),
       body: RefreshIndicator(
