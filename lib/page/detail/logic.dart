@@ -51,7 +51,9 @@ class DetailLogic extends GetxController with GithubRequestMix {
   }
 
   void onTapLink(String text, String? href, String title) {
-    print("$text $href $text");
+    if (null != href) {
+      openBrowser(href);
+    }
   }
 
   void startDownload(String? url, String version, fileName,
@@ -72,21 +74,25 @@ class DetailLogic extends GetxController with GithubRequestMix {
     InstalledApps.startApp(packageName);
   }
 
-  openBrowser() {
+  openBrowser(String url) {
     // Get.toNamed(AppRoute.webView, arguments: app);
+    if (!"$url".startsWith("http://") &&
+        !"$url".startsWith("https://") &&
+        !"$url".startsWith("file://")) {
+      return;
+    }
+
     GStoreInAppBrowser inAppBrowser = GStoreInAppBrowser(app);
 
     final settings = ChromeSafariBrowserSettings(
       shareState: CustomTabsShareState.SHARE_STATE_ON,
       barCollapsingEnabled: true,
     );
-    // final settings = InAppBrowserClassSettings(
-    //     browserSettings: InAppBrowserSettings(hideUrlBar: false),
-    //     webViewSettings:
-    //         InAppWebViewSettings(javaScriptEnabled: true, isInspectable: true));
-    inAppBrowser.open(
-        url: WebUri("https://github.com/${app.user}/${app.repositories}"),
-        settings: settings);
+    inAppBrowser.open(url: WebUri(url), settings: settings);
+  }
+
+  openProjectBrowser() {
+    openBrowser("https://github.com/${app.user}/${app.repositories}");
   }
 
   @override

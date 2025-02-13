@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_html/flutter_html.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:gstore/compent/link_text.dart';
+import 'package:gstore/compent/markdown_widget.dart';
 import 'package:gstore/core/icons/Icons.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
 import 'logic.dart';
@@ -10,7 +12,6 @@ import 'package:jovial_svg/jovial_svg.dart';
 import 'package:markdown/markdown.dart' as md;
 import 'package:gstore/core/core.dart';
 import 'package:qr_flutter/qr_flutter.dart';
-import 'package:flutter_html/flutter_html.dart';
 
 class DetailPage extends StatelessWidget {
   const DetailPage({super.key});
@@ -54,7 +55,7 @@ class DetailPage extends StatelessWidget {
             tooltip: "历史版本",
           ),
           IconButton(
-            onPressed: logic.openBrowser,
+            onPressed: logic.openProjectBrowser,
             icon: SizedBox(
               width: 24,
               height: 24,
@@ -280,7 +281,9 @@ class DetailPage extends StatelessWidget {
                       data: state.body(),
                       onTapLink: logic.onTapLink,
                       builders: <String, MarkdownElementBuilder>{
-                        'a': CustomLinkBuilder(),
+                        'a': CustomLinkBuilder(onTap: (url) {
+                          if (null != url) logic.openBrowser(url);
+                        })
                       },
                       imageBuilder: (Uri uri, String? title, String? alt) {
                         if (!"$uri".endsWith(".png") &&
@@ -415,27 +418,27 @@ class AppStartedWidget extends StatelessWidget {
       );
 }
 
-// 自定义 MarkdownElementBuilder 来处理 <a> 标签
-class CustomLinkBuilder extends MarkdownElementBuilder {
-  final pattern = RegExp('<img\\s+[^>]*src=["\']([^"\']+)["\']');
-  @override
-  Widget visitElementAfter(md.Element element, TextStyle? preferredStyle) {
-    return Wrap(
-      children: element.children?.map((node) {
-            List images = pattern
-                .allMatches(element.textContent)
-                .map((e) => e.group(1))
-                .toList();
-            if (images.isNotEmpty) {
-              return Image(image: CachedNetworkImageProvider(images[0]));
-            } else {
-              return Text(
-                element.textContent,
-                style: preferredStyle,
-              );
-            }
-          }).toList() ??
-          [],
-    );
-  }
-}
+// // 自定义 MarkdownElementBuilder 来处理 <a> 标签
+// class CustomLinkBuilder extends MarkdownElementBuilder {
+//   final pattern = RegExp('<img\\s+[^>]*src=["\']([^"\']+)["\']');
+//   @override
+//   Widget visitElementAfter(md.Element element, TextStyle? preferredStyle) {
+//     return Wrap(
+//       children: element.children?.map((node) {
+//             List images = pattern
+//                 .allMatches(element.textContent)
+//                 .map((e) => e.group(1))
+//                 .toList();
+//             if (images.isNotEmpty) {
+//               return Image(image: CachedNetworkImageProvider(images[0]));
+//             } else {
+//               return Text(
+//                 element.textContent,
+//                 style: preferredStyle,
+//               );
+//             }
+//           }).toList() ??
+//           [],
+//     );
+//   }
+// }
