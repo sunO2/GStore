@@ -27,7 +27,7 @@ class DownloadService extends GetxService {
             .downloadStatusDao
             .getDownloadOfName(fileName, version)) ??
         (await DownloadStatus.create(appid, appName, version, fileName, url,
-            downloadSize: downloadSize));
+            downloadSize: downloadSize, saveFileName: saveFileName));
     if (downloadStatus.status == DownloadStatus.DOWNLOAD_SUCCESS &&
         _install(fileName, downloadStatus.savePath)) {
       return downloadStatus;
