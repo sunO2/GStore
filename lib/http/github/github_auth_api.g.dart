@@ -26,6 +26,8 @@ Map<String, dynamic> _$AuthDeviceResponseToJson(AuthDeviceResponse instance) =>
 
 AuthLoginResponse _$AuthLoginResponseFromJson(Map<String, dynamic> json) =>
     AuthLoginResponse(
+      json['error'] as String?,
+      (json['interval'] as num?)?.toInt(),
       accessToken: json['access_token'] as String?,
       tokenType: json['token_type'] as String?,
       scope: json['scope'] as String?,
@@ -36,6 +38,8 @@ Map<String, dynamic> _$AuthLoginResponseToJson(AuthLoginResponse instance) =>
       'access_token': instance.accessToken,
       'token_type': instance.tokenType,
       'scope': instance.scope,
+      'error': instance.error,
+      'interval': instance.interval,
     };
 
 // **************************************************************************
