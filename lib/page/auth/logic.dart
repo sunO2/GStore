@@ -1,4 +1,5 @@
 import 'package:gstore/core/core.dart';
+import 'package:gstore/http/github/dio_client.dart';
 import 'package:gstore/http/github/github_auth_api.dart';
 import 'state.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
@@ -7,6 +8,7 @@ import 'package:flutter/services.dart';
 
 class AuthPageLogic extends GetxController with GithubRequestMix {
   Timer? _timer;
+  Timer? _loginRequestTimer;
   InAppWebViewController? webViewController;
 
   void loadUrl(String url) {
@@ -21,20 +23,6 @@ class AuthPageLogic extends GetxController with GithubRequestMix {
   void startVerification(String code, int interval, String? deviceCode) {
     state.verificationCode.value = code;
     state.status.value = AuthStatus.verifying;
-    startTimer(interval, deviceCode);
-  }
-
-  void startTimer(int interval, String? deviceCode) {
-    state.remainingSeconds.value = 900; // 重置为15分钟
-    _timer?.cancel();
-    _timer = Timer.periodic(Duration(seconds: interval), (timer) {
-      if (state.remainingSeconds.value > 0) {
-        state.remainingSeconds.value--;
-        loginDevice(deviceCode ?? "");
-      } else {
-        cancelVerification();
-      }
-    });
   }
 
   void cancelVerification() {
@@ -46,30 +34,46 @@ class AuthPageLogic extends GetxController with GithubRequestMix {
   Future<void> copyVerificationCode() async {
     await Clipboard.setData(ClipboardData(text: state.verificationCode.value));
     Get.snackbar('提示', '验证码已复制到剪贴板');
-  }
-
-  @override
-  void onReady() {
-    super.onReady();
+    var call = await webViewController?.evaluateJavascript(
+        source:
+            "fillUserCode('${state.verificationCode.value.replaceAll("-", "")}')");
   }
 
   @override
   void onClose() {
     _timer?.cancel();
+    _loginRequestTimer?.cancel();
     super.onClose();
   }
 
   getDeviceCode() {
-    authApi.device("Ov23liK4Xz0eBlefQJJm").then((value) {
+    authApi.device("Ov23liK4Xz0eBlefQJJm").then((value) async {
       startVerification(
           value.userCode ?? "", value.interval ?? 5, value.deviceCode);
-      loadUrl(value.verificationUri ?? "");
+      if (value.deviceCode?.isNotEmpty ?? false) {
+        startTimeRequestAccessToken(value.deviceCode!, value.interval ?? 0);
+      }
+    });
+  }
+
+  startTimeRequestAccessToken(String deviceCode, int interval) {
+    if (_loginRequestTimer?.isActive ?? false) _loginRequestTimer?.cancel();
+    _loginRequestTimer = Timer.periodic(Duration(seconds: interval), (timer) {
+      loginDevice(deviceCode);
     });
   }
 
   loginDevice(String deviceCode) {
     authApi.login("Ov23liK4Xz0eBlefQJJm", deviceCode).then((value) {
-      log("登录状态更新：${value.toJson()}");
+      if (value.error != null && value.interval != null) {
+        startTimeRequestAccessToken(deviceCode, value.interval!);
+        return;
+      }
+      if (value.accessToken?.isNotEmpty ?? false) {
+        if (_loginRequestTimer?.isActive ?? false) _loginRequestTimer?.cancel();
+        cancelVerification();
+        DioClient.instance.setAuthorization(value.accessToken);
+      }
       // cancelVerification();
     });
   }

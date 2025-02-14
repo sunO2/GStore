@@ -50,8 +50,11 @@ class AuthLoginResponse {
   @JsonKey(name: "token_type")
   final String? tokenType;
   final String? scope;
+  final String? error;
+  final int? interval;
 
-  AuthLoginResponse({this.accessToken, this.tokenType, this.scope});
+  AuthLoginResponse(this.error, this.interval,
+      {this.accessToken, this.tokenType, this.scope});
 
   factory AuthLoginResponse.fromJson(Map<String, dynamic> json) =>
       _$AuthLoginResponseFromJson(json);
