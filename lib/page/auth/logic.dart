@@ -39,7 +39,7 @@ class AuthPageLogic extends GetxController with GithubRequestMix {
 
   void cancelVerification() {
     _timer?.cancel();
-    state.status.value = AuthStatus.empty;
+    state.status.value = AuthStatus.success;
     state.verificationCode.value = '';
   }
 
