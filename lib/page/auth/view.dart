@@ -1,3 +1,4 @@
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:gstore/core/core.dart';
@@ -14,32 +15,60 @@ class AuthPage extends StatelessWidget {
       appBar: AppBar(
         centerTitle: true,
         title: const Text("GitHub 登录",
-            style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+            style: TextStyle(fontWeight: FontWeight.bold)),
       ),
-      body: InAppWebView(
-        onWebViewCreated: (controller) {
-          logic.webViewController = controller;
-        },
-        initialUrlRequest: URLRequest(
-            url: WebUri.uri(Uri.parse("https://github.com/login/device"))),
-        onLoadStop: (controller, url) => {
-          log("当前加载的url: ${url.toString()}"),
-          controller.injectJavascriptFileFromAsset(
-              assetFilePath: "assets/auth/auto_input_auth_code.js"),
-          if (url.toString() ==
-              "https://github.com/login/device?skip_account_picker=true")
-            {logic.state.status.value = AuthStatus.initial},
-        },
-        initialSettings: InAppWebViewSettings(
-          isInspectable: false,
-          javaScriptEnabled: true,
-        ),
-      ),
+      body: PopScope(
+          canPop: false,
+          onPopInvokedWithResult: (didpop, result) {
+            Get.back(result: logic.state.status.value);
+          },
+          child: InAppWebView(
+            onWebViewCreated: (controller) {
+              logic.registerEvent(controller);
+            },
+            initialUrlRequest: URLRequest(
+                url: WebUri.uri(Uri.parse(
+                    "file:///android_asset/flutter_assets/assets/auth/auth_des.html"))), // https://github.com/login/device"))),
+            onLoadStop: (controller, url) {
+              var urlString = url.toString();
+              log("当前加载的url: $urlString");
+              controller.injectJavascriptFileFromAsset(
+                  assetFilePath: "assets/auth/auto_input_auth_code.js");
+              if (urlString
+                  .endsWith("/login/device?skip_account_picker=true")) {
+                logic.state.status.value = AuthStatus.initial;
+              } else if (urlString.endsWith("/login/device/success")) {
+                logic.state.status.value = AuthStatus.success;
+              }
+            },
+            initialSettings: InAppWebViewSettings(
+              isInspectable: false,
+              javaScriptEnabled: true,
+            ),
+          )),
       floatingActionButton: Obx(() {
-        if (logic.state.status.value == AuthStatus.initial) {
+        if (logic.state.status.value == AuthStatus.initial ||
+            logic.state.status.value == AuthStatus.requestUserCode) {
           return FloatingActionButton.extended(
-            onPressed: () => logic.getDeviceCode(),
-            label: const Text("获取验证码"),
+            onPressed: () {
+              if (logic.state.status.value != AuthStatus.requestUserCode) {
+                logic.getDeviceCode();
+              }
+            },
+            label: Row(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                const Text("获取验证码"),
+                SizedBox(
+                  width: 8,
+                ),
+                if (logic.state.status.value == AuthStatus.requestUserCode)
+                  const CupertinoActivityIndicator(
+                    radius: 6,
+                  ),
+              ],
+            ),
           );
         } else if (logic.state.status.value == AuthStatus.verifying) {
           return Container(

@@ -7,14 +7,24 @@ part 'github_client.g.dart';
 
 @RestApi(baseUrl: 'https://api.github.com')
 abstract class GithubRestClient with GetxServiceMixin {
-
-  factory GithubRestClient(Dio dio, {String? baseUrl}) => _GithubRestClient(dio);
+  factory GithubRestClient(Dio dio, {String? baseUrl}) =>
+      _GithubRestClient(dio);
 
   @GET('/repos/{user}/{repositories}')
-  Future<ApiList> apiList(@Path('user') String user,@Path('repositories') repositories, @CancelRequest() CancelToken cancelToken);
+  Future<ApiList> apiList(
+      @Path('user') String user,
+      @Path('repositories') repositories,
+      @CancelRequest() CancelToken cancelToken);
 
   @GET('/repos/{user}/{repositories}/releases?per_page={page}')
-  Future<String> releases(@Path('user') String user,@Path('repositories') String repositories,@Path('page') int page, @CancelRequest() CancelToken cancelToken );
+  Future<String> releases(
+      @Path('user') String user,
+      @Path('repositories') String repositories,
+      @Path('page') int page,
+      @CancelRequest() CancelToken cancelToken);
+
+  @GET('/octocat')
+  Future<HttpResponse> octocat();
 }
 
 @JsonSerializable()
@@ -31,9 +41,8 @@ class Task {
   Map<String, dynamic> toJson() => _$TaskToJson(this);
 }
 
-
 @JsonSerializable()
-class ApiList{
+class ApiList {
   final int? id;
   final String? default_branch;
   final int? forks;
@@ -42,15 +51,17 @@ class ApiList{
   final String? description;
   final String? created_at;
   final String? full_name;
-  const ApiList({this.id,
-    this.default_branch,
-    this.forks,
-    this.stargazers_count,
-    this.description,
-    this.created_at,
-    this.full_name,
-    this.html_url});
+  const ApiList(
+      {this.id,
+      this.default_branch,
+      this.forks,
+      this.stargazers_count,
+      this.description,
+      this.created_at,
+      this.full_name,
+      this.html_url});
 
-  factory ApiList.fromJson(Map<String, dynamic> json) => _$ApiListFromJson(json);
+  factory ApiList.fromJson(Map<String, dynamic> json) =>
+      _$ApiListFromJson(json);
   Map<String, dynamic> toJson() => _$ApiListToJson(this);
 }
