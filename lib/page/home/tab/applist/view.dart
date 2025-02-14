@@ -2,6 +2,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:gstore/compent/app_widget.dart';
 import 'package:gstore/core/icons/Icons.dart';
+import 'package:gstore/page/auth/state.dart';
 
 import 'logic.dart';
 import 'package:gstore/core/core.dart';
@@ -66,13 +67,25 @@ class AppListState extends State<ApplistPage>
             icon: const Icon(AliIcon.appDownloadCenter),
             onPressed: () => Get.toNamed(AppRoute.downloadCenter),
           ),
-          IconButton(
-            tooltip: "登陆",
-            icon: const Icon(
-              Icons.account_circle_outlined,
-            ),
-            onPressed: () => Get.toNamed(AppRoute.auth),
-          ),
+          Obx(() {
+            if (logic.state.loginStatus.value == 0) {
+              return IconButton(
+                tooltip: "登陆",
+                icon: const Icon(
+                  Icons.account_circle_outlined,
+                ),
+                onPressed: () {
+                  Get.toNamed(AppRoute.auth)?.then((onValue) {
+                    if (onValue == AuthStatus.success) {
+                      logic.checkUserLoginStatus();
+                    }
+                  });
+                },
+              );
+            } else {
+              return const SizedBox();
+            }
+          }),
         ],
       ),
       body: RefreshIndicator(

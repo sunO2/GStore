@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>GitHub 登录说明</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    :root {
+      --bg-color: #ffffff;
+      --text-color: #24292e;
+      --button-bg: #2ea44f;
+      --button-hover-bg: #2c974b;
+      --link-color: #0366d6;
+      --highlight-color: #24292e;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg-color: #0d1117;
+        --text-color: #c9d1d9;
+        --button-bg: #238636;
+        --button-hover-bg: #2ea043;
+        --link-color: #58a6ff;
+        --highlight-color: #c9d1d9;
+      }
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      line-height: 1.6;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 20px;
+      padding-bottom: 80px;
+      background-color: var(--bg-color);
+      color: var(--text-color);
+    }
+
+    a {
+      color: var(--link-color);
+      text-decoration: none;
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+
+    .highlight {
+      color: var(--highlight-color);
+      font-weight: 600;
+    }
+    .login-button {
+      position: fixed;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 200px;
+      padding: 15px 30px;
+      z-index: 100;
+      background-color: var(--button-bg);
+      color: #ffffff;
+      text-align: center;
+      border: none;
+      border-radius: 6px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      text-decoration: none;
+      transition: background-color 0.2s;
+    }
+    .login-button:hover {
+      background-color: var(--button-hover-bg);
+    }
+    .loading-spinner {
+      border: 4px solid rgba(255, 255, 255, 0.3);
+      border-radius: 50%;
+      border-top: 4px solid #ffffff;
+      width: 20px;
+      height: 20px;
+      animation: spin 1s linear infinite;
+      display: inline-block;
+      vertical-align: middle;
+    }
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+
+  <h1>GitHub 登录说明</h1>
+
+  <p>欢迎使用我们的应用！为了让您能够充分利用 GitHub 的强大功能，并确保您的数据安全，我们需要您通过 GitHub 账户进行认证授权。请仔细阅读以下说明，了解登录原因、流程以及相关信息。</p>
+
+  <h2>为什么需要登录 GitHub 账户？</h2>
+
+  <p>GitHub 是全球最大的代码托管平台，为开发者提供了丰富的工具和服务。我们的应用集成了 GitHub 的功能，为您提供便捷的代码管理、协作等体验。登录 GitHub 账户后，您可以：</p>
+
+  <ul>
+    <li><span class="highlight">突破 API 限制，畅享极速访问：</span> GitHub API 对于未登录的访问存在每小时 60 次的频率限制，这可能会影响您的使用体验。详细信息请参阅 <a href="https://docs.github.com/zh/rest/using-the-rest-api/rate-limits-for-the-rest-api?apiVersion=2022-11-28#about-primary-rate-limits" target="_blank">GitHub API 速率限制</a>。</li>
+    <li><span class="highlight">安全访问您的私有仓库，掌控代码：</span> 认证授权后，您的应用将能够安全地访问您在 GitHub 上的私有仓库，从而实现代码管理、协作等功能。我们采用严格的加密和安全措施，确保您的代码安全无忧。</li>
+    <li><span class="highlight">个性化服务，定制体验：</span> 登录后，我们可以根据您的 GitHub 信息，为您提供更个性化的服务体验，例如推荐您可能感兴趣的项目、为您匹配合适的合作伙伴等。</li>
+  </ul>
+
+  <h2>登录方式</h2>
+
+  <p>我们采用 GitHub 官方推荐的 <a href="https://docs.github.com/zh/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps#device-flow" target="_blank">设备认证</a> 方式进行用户授权，以确保您的账户安全。设备认证无需您在应用中输入 GitHub 密码，避免了密码泄露的风险，同时也能让您精确控制应用访问您仓库的权限。</p>
+
+  <ol>
+    <li><span class="highlight">启动认证，获取唯一码：</span> 在应用中点击“登录 GitHub”按钮，应用将为您生成一个<span class="highlight">唯一码</span>，此唯一码将用于后续的设备认证。</li>
+    <li><span class="highlight">设备认证，安全登录：</span> 请访问 GitHub 设备认证页面，并在页面上输入您的<span class="highlight">唯一码</span>。</li>
+    <li><span class="highlight">授权应用，确认权限：</span> 在 GitHub 页面上，您需要确认授权您的应用访问您的仓库权限。请注意，我们仅会请求<span class="highlight">最小功能</span>所需的 repo 权限，以最大限度地保护您的数据安全。您可以随时在 GitHub 设置中撤销对我们应用的授权。</li>
+    <li><span class="highlight">完成认证，开始使用：</span> 授权成功后，您的应用将自动完成认证过程，并开始享受完整的功能体验。</li>
+  </ol>
+
+  <button class="login-button" onclick="login()">立即登录</button>
+
+  <script>
+    function login() {
+      var button = document.querySelector('.login-button');
+      button.innerHTML = '<div class="loading-spinner"></div>';
+      window.flutter_inappwebview.callHandler('gstore_login_to_github', {});
+    }
+  </script>
+</body>
+</html>

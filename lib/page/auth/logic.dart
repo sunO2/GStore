@@ -11,14 +11,26 @@ class AuthPageLogic extends GetxController with GithubRequestMix {
   Timer? _loginRequestTimer;
   InAppWebViewController? webViewController;
 
+  final authApi = Get.find<GithubAuthApi>();
+  final AuthPageState state = AuthPageState();
+
   void loadUrl(String url) {
     log("开始加载url $url ${null != webViewController}");
     webViewController?.loadUrl(
         urlRequest: URLRequest(url: WebUri.uri(Uri.parse(url))));
   }
 
-  final authApi = Get.find<GithubAuthApi>();
-  final AuthPageState state = AuthPageState();
+  void registerEvent(InAppWebViewController controller) {
+    webViewController = controller;
+    controller.addJavaScriptHandler(
+        handlerName: "gstore_login_to_github",
+        callback: (data) {
+          webViewController?.loadUrl(
+              urlRequest: URLRequest(
+                  url: WebUri.uri(
+                      Uri.parse("https://github.com/login/device"))));
+        });
+  }
 
   void startVerification(String code, int interval, String? deviceCode) {
     state.verificationCode.value = code;
@@ -27,11 +39,11 @@ class AuthPageLogic extends GetxController with GithubRequestMix {
 
   void cancelVerification() {
     _timer?.cancel();
-    state.status.value = AuthStatus.initial;
+    state.status.value = AuthStatus.empty;
     state.verificationCode.value = '';
   }
 
-  Future<void> copyVerificationCode() async {
+  Future<void> copyVerificationCode({String? verificationCode}) async {
     await Clipboard.setData(ClipboardData(text: state.verificationCode.value));
     Get.snackbar('提示', '验证码已复制到剪贴板');
     var call = await webViewController?.evaluateJavascript(
@@ -39,20 +51,18 @@ class AuthPageLogic extends GetxController with GithubRequestMix {
             "fillUserCode('${state.verificationCode.value.replaceAll("-", "")}')");
   }
 
-  @override
-  void onClose() {
-    _timer?.cancel();
-    _loginRequestTimer?.cancel();
-    super.onClose();
-  }
-
   getDeviceCode() {
+    state.status.value = AuthStatus.requestUserCode;
     authApi.device("Ov23liK4Xz0eBlefQJJm").then((value) async {
       startVerification(
           value.userCode ?? "", value.interval ?? 5, value.deviceCode);
       if (value.deviceCode?.isNotEmpty ?? false) {
         startTimeRequestAccessToken(value.deviceCode!, value.interval ?? 0);
+        copyVerificationCode(verificationCode: value.userCode);
       }
+    }).onError((error, stackTrace) {
+      log("获取设备码失败 $error");
+      state.status.value = AuthStatus.initial;
     });
   }
 
@@ -76,5 +86,12 @@ class AuthPageLogic extends GetxController with GithubRequestMix {
       }
       // cancelVerification();
     });
+  }
+
+  @override
+  void onClose() {
+    _timer?.cancel();
+    _loginRequestTimer?.cancel();
+    super.onClose();
   }
 }
