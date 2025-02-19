@@ -1,6 +1,5 @@
 # gstore
 
-![Build Status](https://github.com/username/repo/workflows/Build/badge.svg)
 
 github 资源的应用商店 
 
