@@ -59,6 +59,10 @@ class DownloadStatus {
     }
   }
 
+  get saveFileName {
+    return savePath.split("/").last;
+  }
+
   get _downloadTag {
     return "$appId-$version-$fileName";
   }

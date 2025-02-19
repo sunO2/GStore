@@ -15,8 +15,6 @@ abstract class AppInfoDatabase extends FloorDatabase {
   AppInfoDao get dao;
 }
 
-Future<AppInfoDatabase> get appInfoDatabase => Builder("apps.db").build();
-
 class Builder extends _$AppInfoDatabaseBuilder {
   Builder(super.name);
 
