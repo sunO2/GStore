@@ -12,8 +12,4 @@ github 资源的应用商店
 [商店数据来源](https://github.com/sunO2/GStore-Repositorys)
 
 
-[![Top Langs](https://github-readme-stats.vercel.app/api/top-langs/?username=sunO2&theme=shades-of-purple)](https://github.com/sunO2)
-
-
-[![Top Langs](https://github-readme-stats.vercel.app/api/top-langs/?sunO2=anuraghazra)](https://github.com/anuraghazra/github-readme-stats)
-[![Readme Card](https://github-readme-stats.vercel.app/api/pin/?username=sunO2&repo=GStore&theme=shades-of-purple)](https://github.com/sunO2/GStore)
+[![Top Langs](https://github-readme-stats.vercel.app/api/top-langs/?username=sunO2&theme=shades-of-purple&layout=compact)](https://github.com/sunO2)
