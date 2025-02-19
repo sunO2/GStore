@@ -13,3 +13,4 @@ github 资源的应用商店
 
 
 [![Top Langs](https://github-readme-stats.vercel.app/api/top-langs/?username=sunO2&theme=shades-of-purple)](https://github.com/sunO2)
+[![Readme Card](https://github-readme-stats.vercel.app/api/pin/?username=sunO2&repo=GStore)](https://github.com/sunO2/GStore)
