@@ -10,7 +10,7 @@ import 'state.dart';
 class DownloadManagerLogic extends GetxController with GithubRequestMix {
   final DownloadManagerState state = DownloadManagerState();
   final Future<DownloadDatabase> database = downloadStatusDatabase;
-  final Future<AppInfoDatabase> appInfoDB = appInfoDatabase;
+  final AppInfoDatabase appInfoDB = "gstore".repoDB.db;
   final StreamController<List<List<DownloadStatus>>> controller =
       StreamController();
 
@@ -71,7 +71,6 @@ class DownloadManagerLogic extends GetxController with GithubRequestMix {
 
   @override
   void onClose() async {
-    // (await database).close();
     super.onClose();
   }
 }

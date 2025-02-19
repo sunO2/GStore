@@ -1,15 +1,12 @@
 import 'package:gstore/core/core.dart';
-import 'package:gstore/db/apps/AppInfoDatabase.dart';
 import 'state.dart';
 
 class MineLogic extends GetxController {
   final MineState state = MineState();
 
-
   Future<List<AppCategory>> getCategory() async {
-    var database = (await appInfoDatabase);
+    var database = "gstore".repoDB.db;
     var data = database.dao.getAllCategory();
-    database.close();
     return data;
   }
 

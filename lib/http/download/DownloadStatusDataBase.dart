@@ -14,5 +14,3 @@ abstract class DownloadDatabase extends FloorDatabase {
 
 Future<DownloadDatabase> get downloadStatusDatabase =>
     $FloorDownloadDatabase.databaseBuilder('app_database.db').build();
-
-void test() {}

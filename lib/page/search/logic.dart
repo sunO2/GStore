@@ -13,7 +13,7 @@ class SearchLogic extends GetxController with GithubRequestMix {
 
   @override
   void onReady() async {
-    database = await appInfoDatabase;
+    database = "gstore".repoDB.db;
     textEditingController.addListener(inputListener);
     queryCaertory();
     super.onReady();
@@ -42,7 +42,6 @@ class SearchLogic extends GetxController with GithubRequestMix {
 
   @override
   void onClose() {
-    database?.close();
     searchController.close();
     super.onClose();
   }
