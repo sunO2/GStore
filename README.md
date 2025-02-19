@@ -11,4 +11,3 @@ github 资源的应用商店
 
 [商店数据来源](https://github.com/sunO2/GStore-Repositorys)
 
-[![GitHub Stars](https://img.shields.io/github/stars/用户名/仓库名?style=social)](https://github.com/用户名/仓库名/stargazers)
