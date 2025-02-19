@@ -1,5 +1,6 @@
 # GStore
-![GitHub release (with filter)](https://img.shields.io/github/v/release/sunO2/GStore?style=flat&refresh=0)
+[![项目状态：开发中](https://img.shields.io/badge/项目状态-开发中-yellowgreen.svg)](https://github.com/sunO2/GStore)
+![GitHub release](https://img.shields.io/github/v/release/sunO2/GStore?style=flat&refresh=0)
 ![GitHub repo stars](https://img.shields.io/github/stars/sunO2/GStore?style=flat&refresh=0)
 ![GitHub issues](https://img.shields.io/github/issues/sunO2/GStore?style=flat&refresh=0)
 ![GitHub pull requests](https://img.shields.io/github/issues-pr/sunO2/GStore?style=flat&refresh=0)
@@ -8,9 +9,8 @@
 
 # GStore 软件商店
 
-[![项目状态：开发中](https://img.shields.io/badge/项目状态-开发中-yellowgreen.svg)](https://github.com/sunO2/GStore)
-[![开源许可协议：MIT](https://img.shields.io/badge/License-MIT-brightgreen.svg)](https://opensource.org/licenses/MIT)
-[Image of GStore 软件商店界面示例 - 建议替换成您的软件商店实际截图，例如软件列表页、软件详情页等，增加直观感受]
+
+
 
 **一个基于开源项目的软件商店，旨在为您提供便捷、安全、可信赖的软件发现、下载和更新体验。**
 
