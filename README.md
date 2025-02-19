@@ -5,6 +5,8 @@
 ![GitHub pull requests](https://img.shields.io/github/issues-pr/sunO2/GStore?style=for-the-badge)
 ![GitHub all releases](https://img.shields.io/github/downloads/sunO2/GStore/total?style=for-the-badge)
 ![GitHub](https://img.shields.io/github/license/sunO2/GStore?style=for-the-badge)
+
+
 github 资源的应用商店 
 
 [商店数据来源](https://github.com/sunO2/GStore-Repositorys)
