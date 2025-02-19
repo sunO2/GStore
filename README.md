@@ -91,5 +91,3 @@ GStore 软件商店的核心数据——软件列表、描述、下载链接、�
 
 本项目使用 **MIT License** 开源许可证。
 
-
-[![Top Langs](https://github-readme-stats.vercel.app/api/top-langs/?username=sunO2&theme=shades-of-purple&layout=compact)](https://github.com/sunO2)
