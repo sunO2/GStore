@@ -1,11 +1,11 @@
 # GStore
 [![项目状态：开发中](https://img.shields.io/badge/项目状态-开发中-yellowgreen.svg)](https://github.com/sunO2/GStore)
-![GitHub release](https://img.shields.io/github/v/release/sunO2/GStore?style=flat&refresh=0)
-![GitHub repo stars](https://img.shields.io/github/stars/sunO2/GStore?style=flat&refresh=0)
-![GitHub issues](https://img.shields.io/github/issues/sunO2/GStore?style=flat&refresh=0)
+[![GitHub release](https://img.shields.io/github/v/release/sunO2/GStore?style=flat&refresh=0)](https://github.com/sunO2/GStore/releases)
+[![GitHub repo stars](https://img.shields.io/github/stars/sunO2/GStore?style=flat&refresh=0)](https://github.com/sunO2/GStore)
+[![GitHub issues](https://img.shields.io/github/issues/sunO2/GStore?style=flat&refresh=0)](https://github.com/sunO2/GStore/issues)
 ![GitHub pull requests](https://img.shields.io/github/issues-pr/sunO2/GStore?style=flat&refresh=0)
-![GitHub all releases](https://img.shields.io/github/downloads/sunO2/GStore/total?style=flat&refresh=0)
-![GitHub](https://img.shields.io/github/license/sunO2/GStore?style=flat&refresh=0)
+[![GitHub all releases](https://img.shields.io/github/downloads/sunO2/GStore/total?style=flat&refresh=0)](https://github.com/sunO2/GStore/releases)
+[![GitHub](https://img.shields.io/github/license/sunO2/GStore?style=flat&refresh=0)](https://github.com/sunO2/GStore?tab=GPL-3.0-1-ov-file)
 
 # GStore 软件商店
 
