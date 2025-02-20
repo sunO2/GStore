@@ -6,6 +6,4 @@ import 'state.dart';
 
 class UpdateLogic extends GetxController with GithubRequestMix {
   final UpdateState state = UpdateState();
-
-
 }

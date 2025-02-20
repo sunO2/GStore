@@ -26,5 +26,4 @@ class WebPageLogic extends GetxController with GithubRequestMix {
   //   )
   //   ..loadRequest(Uri.parse(
   //       "https://github.com/${Get.arguments.user}/${Get.arguments.repositories}"));
-
 }

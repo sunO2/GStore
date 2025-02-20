@@ -3,7 +3,6 @@ import 'package:gstore/db/apps/AppInfoDatabase.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/http/github/dio_client.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:yaml/yaml.dart';
 
 import 'state.dart';
@@ -17,22 +16,6 @@ class ApplistLogic extends GetxController with GithubRequestMix {
     super.onReady();
     await refreshDataOfDB();
     checkUpdata();
-    checkUserLoginStatus();
-  }
-
-  //// 检查用户登录状态
-  void checkUserLoginStatus() async {
-    if ((await SharedPreferencesAsync().getString("github_token"))?.isEmpty ??
-        true) {
-      state.loginStatus.value = 0;
-      return;
-    }
-    var response = await githubApi.octocat();
-    if (response.response.statusCode != 200) {
-      state.loginStatus.value = 0;
-    } else {
-      state.loginStatus.value = 1;
-    }
   }
 
   Future<void> checkUpdata() async {

@@ -60,7 +60,7 @@ class AuthPage extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
                 const Text("获取验证码"),
-                SizedBox(
+                const SizedBox(
                   width: 8,
                 ),
                 if (logic.state.status.value == AuthStatus.requestUserCode)

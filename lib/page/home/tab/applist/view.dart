@@ -1,8 +1,12 @@
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:gstore/compent/app_widget.dart';
 import 'package:gstore/core/icons/Icons.dart';
-import 'package:gstore/page/auth/state.dart';
+import 'package:gstore/core/service/user_manager.dart';
+import 'package:gstore/http/github/user_info/user_info.dart';
+import 'package:gstore/page/web/browser.dart';
 
 import 'logic.dart';
 import 'package:gstore/core/core.dart';
@@ -68,23 +72,63 @@ class AppListState extends State<ApplistPage>
             onPressed: () => Get.toNamed(AppRoute.downloadCenter),
           ),
           Obx(() {
-            if (logic.state.loginStatus.value == 0) {
-              return IconButton(
-                tooltip: "登陆",
-                icon: const Icon(
+            var user = Get.find<UserManager>().userInfo.value;
+
+            icon(UserInfo fuser) {
+              if (fuser.avatarUrl?.isNotEmpty ?? false) {
+                return Container(
+                  width: Theme.of(context).appBarTheme.iconTheme?.size ?? 24,
+                  height: Theme.of(context).appBarTheme.iconTheme?.size ?? 24,
+                  decoration: BoxDecoration(
+                      border: Border.all(width: 1.5),
+                      borderRadius: BorderRadius.all(
+                        Radius.circular(
+                            Theme.of(context).appBarTheme.iconTheme?.size ??
+                                24),
+                      )),
+                  child: ClipOval(
+                    child: CachedNetworkImage(
+                      width:
+                          Theme.of(context).appBarTheme.iconTheme?.size ?? 24,
+                      height:
+                          Theme.of(context).appBarTheme.iconTheme?.size ?? 24,
+                      placeholder: (context, url) =>
+                          const CupertinoActivityIndicator(
+                        radius: 8,
+                      ),
+                      errorWidget: (context, url, error) => const Icon(
+                        Icons.account_circle_outlined,
+                      ),
+                      imageUrl: fuser.avatarUrl ?? "",
+                    ),
+                  ),
+                );
+              } else {
+                return const Icon(
                   Icons.account_circle_outlined,
-                ),
-                onPressed: () {
-                  Get.toNamed(AppRoute.auth)?.then((onValue) {
-                    if (onValue == AuthStatus.success) {
-                      logic.checkUserLoginStatus();
-                    }
-                  });
-                },
-              );
-            } else {
-              return const SizedBox();
+                );
+              }
             }
+
+            onPressed() {
+              if (user.avatarUrl?.isEmpty ?? true) {
+                Get.toNamed(AppRoute.auth);
+              } else {
+                GStoreInAppBrowser inAppBrowser = GStoreInAppBrowser();
+                final settings = ChromeSafariBrowserSettings(
+                  shareState: CustomTabsShareState.SHARE_STATE_ON,
+                  barCollapsingEnabled: true,
+                );
+                inAppBrowser.open(
+                    url: WebUri(user.htmlUrl ?? ""), settings: settings);
+              }
+            }
+
+            return IconButton(
+              tooltip: "登陆",
+              icon: icon(user),
+              onPressed: onPressed,
+            );
           }),
         ],
       ),

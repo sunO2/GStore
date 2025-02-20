@@ -1,4 +1,4 @@
-import 'package:gstore/http/download/downloadService.dart';
+import 'package:gstore/core/service/downloadService.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
 import 'package:gstore/page/web/browser.dart';
 import 'package:http/http.dart' as http;
@@ -76,13 +76,13 @@ class DetailLogic extends GetxController with GithubRequestMix {
 
   openBrowser(String url) {
     // Get.toNamed(AppRoute.webView, arguments: app);
-    if (!"$url".startsWith("http://") &&
-        !"$url".startsWith("https://") &&
-        !"$url".startsWith("file://")) {
+    if (!url.startsWith("http://") &&
+        !url.startsWith("https://") &&
+        !url.startsWith("file://")) {
       return;
     }
 
-    GStoreInAppBrowser inAppBrowser = GStoreInAppBrowser(app);
+    GStoreInAppBrowser inAppBrowser = GStoreInAppBrowser(appInfo: app);
 
     final settings = ChromeSafariBrowserSettings(
       shareState: CustomTabsShareState.SHARE_STATE_ON,

@@ -1,5 +1,6 @@
 import 'package:dio/dio.dart';
 import 'package:get/get.dart';
+import 'package:gstore/http/github/user_info/user_info.dart';
 import 'package:json_annotation/json_annotation.dart';
 import 'package:retrofit/retrofit.dart';
 
@@ -22,6 +23,9 @@ abstract class GithubRestClient with GetxServiceMixin {
       @Path('repositories') String repositories,
       @Path('page') int page,
       @CancelRequest() CancelToken cancelToken);
+
+  @GET('/user')
+  Future<UserInfo?> user();
 
   @GET('/octocat')
   Future<HttpResponse> octocat();

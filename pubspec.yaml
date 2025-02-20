@@ -59,6 +59,7 @@ dependencies:
   pretty_dio_logger: ^1.4.0
   flutter_html: ^3.0.0-beta.2
   sqflite: ^2.4.1
+  flutter_secure_storage: ^9.2.4
 
 
 dev_dependencies:
