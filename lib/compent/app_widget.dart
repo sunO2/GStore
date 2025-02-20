@@ -35,6 +35,7 @@ class AppItemWidget extends StatelessWidget {
                           width: 56,
                           height: 56,
                           child: CachedNetworkImage(
+                            fit: BoxFit.fill,
                             placeholder: (context, url) {
                               return const CupertinoActivityIndicator(
                                 radius: 8,
