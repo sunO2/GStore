@@ -1,7 +1,7 @@
 import 'package:dio/dio.dart';
 import 'package:floor/floor.dart';
 import 'package:gstore/core/core.dart';
-import 'package:gstore/http/download/downloadService.dart';
+import 'package:gstore/core/service/downloadService.dart';
 import 'dart:io';
 
 import 'package:path_provider/path_provider.dart';

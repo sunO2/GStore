@@ -1,7 +1,7 @@
 import 'package:get/get.dart';
 import 'package:gstore/db/apps/AppInfo.dart';
 
-export 'package:gstore/db/db_manager.dart';
+export 'package:gstore/core/service/db_manager.dart';
 export 'package:gstore/core/utils/logger.dart';
 export 'package:gstore/core/routers.dart';
 export 'package:get/get.dart';

@@ -3,7 +3,6 @@ import "package:dio/dio.dart";
 import "package:dio/io.dart";
 import "package:gstore/core/core.dart";
 import 'package:pretty_dio_logger/pretty_dio_logger.dart';
-import "package:shared_preferences/shared_preferences.dart";
 
 /// 重试拦截器
 class RetryInterceptor extends Interceptor {
@@ -128,11 +127,9 @@ class DioClient {
 
   /// 设置授权token
   /// [authorization] GitHub个人访问令牌
-  void setAuthorization(String? authorization) {
+  set authorization(String? authorization) {
     if (authorization?.isNotEmpty ?? false) {
       _dio.options.headers["Authorization"] = "Bearer $authorization";
-      final SharedPreferencesAsync prefs = SharedPreferencesAsync();
-      prefs.setString("github_token", authorization!);
     }
   }
 

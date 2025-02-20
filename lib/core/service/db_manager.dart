@@ -8,7 +8,7 @@ import 'package:gstore/core/core.dart';
 import 'package:gstore/core/utils/unit.dart';
 import 'package:gstore/db/apps/AppInfoDatabase.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
-import 'package:gstore/http/download/downloadService.dart';
+import 'package:gstore/core/service/downloadService.dart';
 import 'package:gstore/http/github/github_client.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:gstore/db/apps/AppInfoDatabase.dart' as db;

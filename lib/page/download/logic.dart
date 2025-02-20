@@ -3,7 +3,7 @@ import 'package:gstore/core/core.dart';
 import 'package:gstore/db/apps/AppInfoDatabase.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
 import 'package:gstore/http/download/DownloadStatusDataBase.dart';
-import 'package:gstore/http/download/downloadService.dart';
+import 'package:gstore/core/service/downloadService.dart';
 
 import 'state.dart';
 
