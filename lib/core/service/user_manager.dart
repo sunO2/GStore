@@ -11,7 +11,7 @@ class UserManager extends GetxService {
   final _authApi = Get.find<GithubAuthApi>();
   final _githubApi = Get.find<GithubRestClient>();
   final _storage = const FlutterSecureStorage();
-  final userInfo = UserInfo().obs;
+  final userInfo = const UserInfo().obs;
   Timer? _loginRequestTimer;
 
   Future<UserInfo?> getUserInfo() async {
@@ -31,13 +31,14 @@ class UserManager extends GetxService {
     if (_loginRequestTimer?.isActive ?? false) _loginRequestTimer?.cancel();
   }
 
-  startLoginOfTimer(String deviceCode, int interval, CancelToken cancelToken) {
-    Completer completer = Completer();
+  Future<UserInfo?> startLoginOfTimer(
+      String deviceCode, int interval, CancelToken cancelToken) {
+    Completer<UserInfo> completer = Completer();
     _nextTimer(deviceCode, interval, completer, cancelToken);
     return completer.future;
   }
 
-  _nextTimer(String deviceCode, int interval, Completer completer,
+  _nextTimer(String deviceCode, int interval, Completer<UserInfo?> completer,
       CancelToken cancelToken) {
     if (_loginRequestTimer?.isActive ?? false) _loginRequestTimer?.cancel();
     _loginRequestTimer = Timer.periodic(Duration(seconds: interval), (timer) {
@@ -46,7 +47,7 @@ class UserManager extends GetxService {
     });
   }
 
-  _login(String deviceCode, Completer completer,
+  _login(String deviceCode, Completer<UserInfo?> completer,
       CancelToken cancelLoginToken) async {
     try {
       if (cancelLoginToken.isCancelled) {
@@ -70,7 +71,7 @@ class UserManager extends GetxService {
             userInfo.value = user;
             _storage.write(key: "user_info", value: user.toJson());
           }
-          return user;
+          return Future.value(user);
         }));
       }
       return null;

@@ -43,18 +43,18 @@ class AuthPageLogic extends GetxController with GithubRequestMix {
             source:
                 "fillUserCode('${state.verificationCode.value.replaceAll("-", "")}')");
 
-        Future.delayed(
-            Duration(seconds: value.interval ?? 5),
-            userManager
-                .startLoginOfTimer(value.deviceCode!, value.interval ?? 5,
-                    loginRequestCancelToken)
-                .then((value) {
-              if (null != value) {
-                state.status.value = AuthStatus.success;
-                state.verificationCode.value = '';
-              }
-            }));
-        ;
+        Future.delayed(Duration(seconds: value.interval ?? 5), () {
+          userManager
+              .startLoginOfTimer(value.deviceCode!, value.interval ?? 5,
+                  loginRequestCancelToken)
+              .then((value) {
+            if (null != value) {
+              state.status.value = AuthStatus.success;
+              state.verificationCode.value = '';
+              loadUrl(value.htmlUrl ?? "");
+            }
+          });
+        });
       }
     }).onError((error, stackTrace) {
       log("获取设备码失败 $error");

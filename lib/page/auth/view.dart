@@ -19,7 +19,13 @@ class AuthPage extends StatelessWidget {
       ),
       body: PopScope(
           canPop: false,
-          onPopInvokedWithResult: (didpop, result) {
+          onPopInvokedWithResult: (didpop, result) async {
+            bool isSuccess = logic.state.status.value == AuthStatus.success;
+            if (!isSuccess &&
+                (await logic.webViewController?.canGoBack() ?? false)) {
+              logic.webViewController?.goBack();
+              return;
+            }
             Get.back(result: logic.state.status.value);
           },
           child: InAppWebView(
