@@ -17,6 +17,17 @@ registerService() async {
   Get.lazyPut<UserManager>(() => UserManager());
 }
 
+colorSchemeSeed(ColorScheme? color, Brightness brightness) {
+  if (null == color) {
+    if (brightness == Brightness.light) {
+      return ColorScheme.dark(brightness: brightness);
+    } else {
+      return ColorScheme.light(brightness: brightness);
+    }
+  }
+  return color;
+}
+
 main() async {
   WidgetsFlutterBinding.ensureInitialized();
   Get.config(
@@ -42,9 +53,13 @@ main() async {
       getPages: AppRoute.pages,
       themeMode: ThemeMode.system,
       theme: ThemeData(
-          colorScheme: light, useMaterial3: true, brightness: Brightness.light),
+          colorScheme: colorSchemeSeed(light, Brightness.light),
+          useMaterial3: true,
+          brightness: Brightness.light),
       darkTheme: ThemeData(
-          colorScheme: dark, useMaterial3: true, brightness: Brightness.dark),
+          colorScheme: colorSchemeSeed(dark, Brightness.dark),
+          useMaterial3: true,
+          brightness: Brightness.dark),
     );
   }));
 }

@@ -21,25 +21,38 @@ class HomePage extends StatelessWidget {
           MinePage(),
         ],
       ),
-      bottomNavigationBar: GetBuilder<HomeLogic>(builder: (ctl) {
-        return BottomNavigationBar(
-          items: [
-            BottomNavigationBarItem(
-                icon: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 200),
-                  child: (ctl.state.index() == 0)
-                      ? const Icon(AliIcon.appStoreActive, key: ValueKey(0))
-                      : const Icon(AliIcon.appStore, key: ValueKey(1)),
-                ),
-                label: "应用"),
-            const BottomNavigationBarItem(
-                icon: Icon(Icons.settings), label: "分类"),
-          ],
-          onTap: (index) {
+      bottomNavigationBar: Obx(() {
+        return NavigationBar(
+          selectedIndex: logic.state.index.value,
+          onDestinationSelected: (index) {
             logic.jumpToPage(index);
           },
-          currentIndex: ctl.state.index(),
-          iconSize: 20,
+          destinations: [
+            NavigationDestination(
+                icon: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 300),
+                  child: (logic.state.index.value == 0)
+                      ? const Icon(
+                          AliIcon.appStoreActive,
+                          key: ValueKey(0),
+                          size: 20,
+                        )
+                      : const Icon(
+                          AliIcon.appStore,
+                          key: ValueKey(1),
+                          size: 20,
+                        ),
+                ),
+                label: "应用"),
+            NavigationDestination(
+                icon: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 300),
+                  child: (logic.state.index.value == 1)
+                      ? const Icon(Icons.settings, key: ValueKey(1))
+                      : const Icon(Icons.settings_outlined, key: ValueKey(0)),
+                ),
+                label: "分类")
+          ],
         );
       }),
     );

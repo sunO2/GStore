@@ -1,4 +1,5 @@
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
 class AppItemWidget extends StatelessWidget {
@@ -23,11 +24,20 @@ class AppItemWidget extends StatelessWidget {
                 ? Hero(
                     tag: appIcon!,
                     child: Card(
-                      clipBehavior: Clip.none,
-                      child: Image(
-                        image: CachedNetworkImageProvider(appIcon!),
+                      color: Theme.of(context).colorScheme.primaryFixedDim,
+                      child: SizedBox(
                         width: 56,
                         height: 56,
+                        child: CachedNetworkImage(
+                          placeholder: (context, url) {
+                            return const CupertinoActivityIndicator(
+                              radius: 8,
+                            );
+                          },
+                          imageUrl: appIcon!,
+                          width: 56,
+                          height: 56,
+                        ),
                       ),
                     ))
                 : const SizedBox(

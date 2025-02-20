@@ -56,6 +56,7 @@ class AuthPage extends StatelessWidget {
         if (logic.state.status.value == AuthStatus.initial ||
             logic.state.status.value == AuthStatus.requestUserCode) {
           return FloatingActionButton.extended(
+            backgroundColor: Theme.of(context).colorScheme.primaryContainer,
             onPressed: () {
               if (logic.state.status.value != AuthStatus.requestUserCode) {
                 logic.getDeviceCode();
@@ -65,7 +66,13 @@ class AuthPage extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
-                const Text("获取验证码"),
+                Text(
+                  "获取验证码",
+                  style: Theme.of(context)
+                      .textTheme
+                      .displaySmall
+                      ?.copyWith(fontSize: 14, fontWeight: FontWeight.bold),
+                ),
                 const SizedBox(
                   width: 8,
                 ),
@@ -77,50 +84,25 @@ class AuthPage extends StatelessWidget {
             ),
           );
         } else if (logic.state.status.value == AuthStatus.verifying) {
-          return Container(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.end,
-              crossAxisAlignment: CrossAxisAlignment.end,
+          return FloatingActionButton.extended(
+            onPressed: logic.copyVerificationCode,
+            label: Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Container(
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.surface,
-                    borderRadius: BorderRadius.circular(8),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withOpacity(0.1),
-                        blurRadius: 8,
-                        offset: const Offset(0, 2),
-                      ),
-                    ],
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      InkWell(
-                        onTap: logic.copyVerificationCode,
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.center,
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Text(
-                              '验证码: ${logic.state.verificationCode.value}',
-                              style: const TextStyle(fontSize: 12),
-                            ),
-                            const SizedBox(
-                              width: 4,
-                            ),
-                            const Icon(
-                              Icons.copy,
-                              size: 10,
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
+                Text(
+                  '验证码: ${logic.state.verificationCode.value}',
+                  style: Theme.of(context)
+                      .textTheme
+                      .displaySmall
+                      ?.copyWith(fontSize: 12, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(
+                  width: 4,
+                ),
+                const Icon(
+                  Icons.copy,
+                  size: 10,
                 ),
               ],
             ),
