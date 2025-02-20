@@ -23,20 +23,27 @@ class AppItemWidget extends StatelessWidget {
             child: (appIcon != null)
                 ? Hero(
                     tag: appIcon!,
-                    child: Card(
-                      color: Theme.of(context).colorScheme.primaryFixedDim,
-                      child: SizedBox(
-                        width: 56,
-                        height: 56,
-                        child: CachedNetworkImage(
-                          placeholder: (context, url) {
-                            return const CupertinoActivityIndicator(
-                              radius: 8,
-                            );
-                          },
-                          imageUrl: appIcon!,
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(16),
+                      child: Container(
+                        decoration: BoxDecoration(
+                            color:
+                                Theme.of(context).colorScheme.primaryContainer,
+                            // border: Border.all(width: 0),
+                            borderRadius: BorderRadius.circular(16)),
+                        child: SizedBox(
                           width: 56,
                           height: 56,
+                          child: CachedNetworkImage(
+                            placeholder: (context, url) {
+                              return const CupertinoActivityIndicator(
+                                radius: 8,
+                              );
+                            },
+                            imageUrl: appIcon!,
+                            width: 56,
+                            height: 56,
+                          ),
                         ),
                       ),
                     ))
