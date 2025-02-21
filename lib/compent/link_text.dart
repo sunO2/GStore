@@ -18,24 +18,22 @@ class LinkText extends StatelessWidget {
       {super.key, this.text, this.url, this.onLinkTap, this.onLongPress});
 
   @override
-  Widget build(BuildContext context) => GestureDetector(
-        child: InkWell(
-          child: Text(
-            text ?? "",
-            style: Theme.of(context)
-                .textTheme
-                .bodySmall
-                ?.copyWith(color: Theme.of(context).colorScheme.primary),
-          ),
-          onTap: () => {
-            if (null != onLinkTap) {onLinkTap!(url)}
-          },
-          onLongPress: () {
-            if (null != onLongPress) {
-              onLongPress!(url);
-            }
-          },
+  Widget build(BuildContext context) => InkWell(
+        child: Text(
+          text ?? "",
+          style: Theme.of(context)
+              .textTheme
+              .bodySmall
+              ?.copyWith(color: Theme.of(context).colorScheme.primary),
         ),
+        onTap: () => {
+          if (null != onLinkTap) {onLinkTap!(url)}
+        },
+        onLongPress: () {
+          if (null != onLongPress) {
+            onLongPress!(url);
+          }
+        },
       );
 }
 
