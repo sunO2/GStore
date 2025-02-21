@@ -10,9 +10,7 @@ class FlagText extends StatelessWidget {
         margin: const EdgeInsets.only(left: 8, top: 2, bottom: 2),
         padding: const EdgeInsets.only(left: 4, right: 4, top: 2, bottom: 2),
         decoration: BoxDecoration(
-          color: Theme.of(context).brightness == Brightness.dark
-              ? Colors.grey.shade600
-              : Colors.grey.shade300,
+          color: Theme.of(context).colorScheme.primary.withAlpha(130),
           borderRadius: const BorderRadius.all(Radius.circular(20)),
         ),
         child: Text(

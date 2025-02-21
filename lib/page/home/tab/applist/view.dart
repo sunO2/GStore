@@ -125,7 +125,7 @@ class AppListState extends State<ApplistPage>
             }
 
             return IconButton(
-              tooltip: "登陆",
+              tooltip: user.name ?? "登陆",
               icon: icon(user),
               onPressed: onPressed,
             );
