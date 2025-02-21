@@ -43,6 +43,11 @@ class DownloadManager extends StatelessWidget {
                             child: Container(
                               margin: const EdgeInsets.only(top: 8, bottom: 8),
                               decoration: BoxDecoration(
+                                  border: Border.all(
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .primary
+                                          .withAlpha(130)),
                                   borderRadius: const BorderRadius.all(
                                       Radius.circular(16)),
                                   color: Theme.of(context)
@@ -58,7 +63,7 @@ class DownloadManager extends StatelessWidget {
                                 ),
                                 subtitle: Text(item[0].version),
                                 childrenPadding:
-                                    const EdgeInsets.only(left: 16, right: 0),
+                                    const EdgeInsets.only(left: 8, right: 8),
                                 maintainState: true,
                                 leading: SizedBox(
                                   width: 32,
@@ -87,67 +92,92 @@ class DownloadManager extends StatelessWidget {
                                     CrossAxisAlignment.start,
                                 expandedAlignment: Alignment.topLeft,
                                 children: item.map((downStatus) {
-                                  return Column(
-                                    children: [
-                                      StreamBuilder(
-                                          stream: downStatus.observer,
-                                          builder: (context, snap) {
-                                            var data = snap.data ?? downStatus;
-                                            return Row(
-                                              children: [
-                                                Expanded(
-                                                  child: ClipRRect(
-                                                    borderRadius:
-                                                        const BorderRadius.all(
-                                                            Radius.circular(
-                                                                20)),
-                                                    child: Container(
-                                                      constraints:
-                                                          const BoxConstraints
-                                                              .expand(
-                                                              height: 18),
-                                                      margin:
-                                                          const EdgeInsets.only(
-                                                              top: 2,
-                                                              bottom: 2),
-                                                      decoration: BoxDecoration(
-                                                        color: Theme.of(context)
-                                                                    .brightness ==
-                                                                Brightness.dark
-                                                            ? Colors
-                                                                .grey.shade600
-                                                            : Colors
-                                                                .grey.shade300,
-                                                        borderRadius:
-                                                            const BorderRadius
-                                                                .all(
-                                                                Radius.circular(
-                                                                    30)),
-                                                      ),
-                                                      child: Stack(
-                                                        alignment:
-                                                            AlignmentDirectional
-                                                                .centerStart,
-                                                        children: [
-                                                          LinearProgressIndicator(
-                                                            value: data.count /
-                                                                data.total,
-                                                            minHeight: 18,
-                                                            borderRadius:
-                                                                const BorderRadius
-                                                                    .all(Radius
-                                                                        .circular(
-                                                                            20)),
+                                  return Container(
+                                    margin: const EdgeInsets.only(
+                                        top: 4, bottom: 4),
+                                    decoration: BoxDecoration(
+                                        borderRadius: const BorderRadius.all(
+                                            Radius.circular(8)),
+                                        border: Border.all(
+                                            color: Theme.of(context)
+                                                .colorScheme
+                                                .primary
+                                                .withAlpha(130))),
+                                    child: StreamBuilder(
+                                        stream: downStatus.observer,
+                                        builder: (context, snap) {
+                                          var data = snap.data ?? downStatus;
+                                          return Row(
+                                            children: [
+                                              Expanded(
+                                                child: ClipRRect(
+                                                  borderRadius:
+                                                      const BorderRadius.all(
+                                                          Radius.circular(20)),
+                                                  child: Container(
+                                                    constraints:
+                                                        const BoxConstraints
+                                                            .expand(height: 18),
+                                                    margin:
+                                                        const EdgeInsets.only(
+                                                            top: 2,
+                                                            bottom: 2,
+                                                            left: 8),
+                                                    decoration: BoxDecoration(
+                                                      color: Theme.of(context)
+                                                                  .brightness ==
+                                                              Brightness.dark
+                                                          ? Colors.grey.shade600
+                                                          : Colors
+                                                              .grey.shade300,
+                                                      borderRadius:
+                                                          const BorderRadius
+                                                              .all(
+                                                              Radius.circular(
+                                                                  30)),
+                                                    ),
+                                                    child: Stack(
+                                                      alignment:
+                                                          AlignmentDirectional
+                                                              .centerStart,
+                                                      children: [
+                                                        LinearProgressIndicator(
+                                                          value: data.count /
+                                                              data.total,
+                                                          minHeight: 18,
+                                                          borderRadius:
+                                                              const BorderRadius
+                                                                  .all(Radius
+                                                                      .circular(
+                                                                          20)),
+                                                        ),
+                                                        Padding(
+                                                          padding:
+                                                              const EdgeInsets
+                                                                  .only(
+                                                                  left: 8,
+                                                                  right: 8),
+                                                          child: Text(
+                                                            downStatus.fileName,
+                                                            style: const TextStyle(
+                                                                color: Colors
+                                                                    .white,
+                                                                fontSize: 10,
+                                                                fontWeight:
+                                                                    FontWeight
+                                                                        .w500),
                                                           ),
-                                                          Padding(
+                                                        ),
+                                                        Align(
+                                                          alignment: Alignment
+                                                              .centerRight,
+                                                          child: Padding(
                                                             padding:
                                                                 const EdgeInsets
                                                                     .only(
-                                                                    left: 8,
                                                                     right: 8),
                                                             child: Text(
-                                                              downStatus
-                                                                  .fileName,
+                                                              "${((data.count / data.total) * 100).toInt()}%",
                                                               style: const TextStyle(
                                                                   color: Colors
                                                                       .white,
@@ -157,100 +187,76 @@ class DownloadManager extends StatelessWidget {
                                                                           .w500),
                                                             ),
                                                           ),
-                                                          Align(
-                                                            alignment: Alignment
-                                                                .centerRight,
-                                                            child: Padding(
-                                                              padding:
-                                                                  const EdgeInsets
-                                                                      .only(
-                                                                      right: 8),
-                                                              child: Text(
-                                                                "${((data.count / data.total) * 100).toInt()}%",
-                                                                style: const TextStyle(
-                                                                    color: Colors
-                                                                        .white,
-                                                                    fontSize:
-                                                                        10,
-                                                                    fontWeight:
-                                                                        FontWeight
-                                                                            .w500),
-                                                              ),
-                                                            ),
-                                                          )
-                                                        ],
-                                                      ),
+                                                        )
+                                                      ],
                                                     ),
                                                   ),
                                                 ),
-                                                Theme(
-                                                    data: Theme.of(context)
-                                                        .copyWith(
-                                                            iconTheme: IconTheme
-                                                                    .of(context)
-                                                                .copyWith(
-                                                                    size: 14)),
-                                                    child: Row(
-                                                      mainAxisSize:
-                                                          MainAxisSize.min,
-                                                      children: [
-                                                        if (data.status ==
-                                                                DownloadStatus
-                                                                    .DOWNLOAD_SUCCESS &&
-                                                            data.fileName
-                                                                .endsWith(
-                                                                    ".apk"))
-                                                          IconButton(
-                                                            tooltip: "安装",
-                                                            icon: const Icon(Icons
-                                                                .install_mobile),
-                                                            onPressed: () {
-                                                              logic.installApp(
-                                                                  data);
-                                                            },
-                                                          ),
-                                                        if (data.status ==
-                                                            DownloadStatus
-                                                                .DOWNLOAD_READY)
-                                                          IconButton(
-                                                            tooltip: "开始下载",
-                                                            icon: const Icon(
-                                                                Icons
-                                                                    .play_arrow),
-                                                            onPressed: () {
-                                                              logic
-                                                                  .resumeDownload(
-                                                                      data);
-                                                            },
-                                                          ),
-                                                        if (data.status ==
-                                                            DownloadStatus
-                                                                .DOWNLOAD_LOADING)
-                                                          IconButton(
-                                                            tooltip: "暂停下载",
-                                                            icon: const Icon(
-                                                                Icons.pause),
-                                                            onPressed: () {
-                                                              logic
-                                                                  .pauseDownload(
-                                                                      data);
-                                                            },
-                                                          ),
+                                              ),
+                                              Theme(
+                                                  data: Theme.of(context)
+                                                      .copyWith(
+                                                          iconTheme: IconTheme
+                                                                  .of(context)
+                                                              .copyWith(
+                                                                  size: 14)),
+                                                  child: Row(
+                                                    mainAxisSize:
+                                                        MainAxisSize.min,
+                                                    children: [
+                                                      if (data.status ==
+                                                              DownloadStatus
+                                                                  .DOWNLOAD_SUCCESS &&
+                                                          data.fileName
+                                                              .endsWith(".apk"))
                                                         IconButton(
-                                                          tooltip: "重新下载",
-                                                          icon: const Icon(
-                                                              Icons.refresh),
+                                                          tooltip: "安装",
+                                                          icon: const Icon(Icons
+                                                              .install_mobile),
                                                           onPressed: () {
-                                                            logic.retryDownload(
+                                                            logic.installApp(
                                                                 data);
                                                           },
                                                         ),
-                                                      ],
-                                                    )),
-                                              ],
-                                            );
-                                          }),
-                                    ],
+                                                      if (data.status ==
+                                                          DownloadStatus
+                                                              .DOWNLOAD_READY)
+                                                        IconButton(
+                                                          tooltip: "开始下载",
+                                                          icon: const Icon(
+                                                              Icons.play_arrow),
+                                                          onPressed: () {
+                                                            logic
+                                                                .resumeDownload(
+                                                                    data);
+                                                          },
+                                                        ),
+                                                      if (data.status ==
+                                                          DownloadStatus
+                                                              .DOWNLOAD_LOADING)
+                                                        IconButton(
+                                                          tooltip: "暂停下载",
+                                                          icon: const Icon(
+                                                              Icons.pause),
+                                                          onPressed: () {
+                                                            logic.pauseDownload(
+                                                                data);
+                                                          },
+                                                        ),
+                                                      IconButton(
+                                                        tooltip: "重新下载",
+                                                        icon: const Icon(
+                                                            Icons.refresh),
+                                                        onPressed: () {
+                                                          logic.retryDownload(
+                                                              data);
+                                                        },
+                                                      ),
+                                                    ],
+                                                  )),
+                                            ],
+                                          );
+                                        }),
                                   );
                                 }).toList(),
                               ),
