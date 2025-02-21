@@ -25,7 +25,7 @@ class LinkText extends StatelessWidget {
             style: Theme.of(context)
                 .textTheme
                 .bodySmall
-                ?.copyWith(color: Colors.blueAccent),
+                ?.copyWith(color: Theme.of(context).colorScheme.primary),
           ),
           onTap: () => {
             if (null != onLinkTap) {onLinkTap!(url)}
@@ -42,11 +42,15 @@ class LinkText extends StatelessWidget {
 class DownloadLink extends LinkText {
   final int? downloadCount;
   final int? downloadSize;
+  final String? appId;
+  final String? version;
 
   const DownloadLink(
       {super.key,
       this.downloadCount,
       this.downloadSize,
+      this.appId,
+      this.version,
       super.text,
       super.url,
       super.onLinkTap,
@@ -70,9 +74,10 @@ class DownloadLink extends LinkText {
                         padding: const EdgeInsets.only(
                             left: 4, right: 4, top: 2, bottom: 2),
                         decoration: BoxDecoration(
-                          color: Theme.of(context).brightness == Brightness.dark
-                              ? Colors.grey.shade600
-                              : Colors.grey.shade300,
+                          color: Theme.of(context)
+                              .colorScheme
+                              .primary
+                              .withAlpha(130),
                           borderRadius:
                               const BorderRadius.all(Radius.circular(20)),
                         ),
@@ -92,7 +97,7 @@ class DownloadLink extends LinkText {
 
   Future<bool> isDownload(String? fileName, int? downloadSize) async {
     var path = await getDownloadsDirectory();
-    var savePath = "${path?.path}/$fileName";
+    var savePath = "${path?.path}/$appId-$version-$fileName";
     var saveFile = File(savePath);
     return saveFile.exists();
   }

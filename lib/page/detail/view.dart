@@ -74,7 +74,23 @@ class DetailPage extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Container(
-              margin: const EdgeInsets.only(bottom: 16),
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                  border: Border(
+                    // 使用 Border 类
+                    top: border(context),
+                    left: border(context),
+                    right: border(context),
+                    // top, left, right 边框默认不配置，即 BorderSide.none，所以不显示
+                  ),
+                  // border: Border.all(
+                  //     width: 1,
+                  //     color:
+                  //         Theme.of(context).colorScheme.primary.withAlpha(130)),
+                  borderRadius: const BorderRadius.only(
+                      topLeft: Radius.circular(16),
+                      topRight: Radius.circular(16)),
+                  color: Theme.of(context).colorScheme.primaryContainer),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 mainAxisAlignment: MainAxisAlignment.start,
@@ -169,15 +185,42 @@ class DetailPage extends StatelessWidget {
                     height: 6,
                   ),
                   Text(logic.app.des),
-                  const Divider(
-                    height: 18,
-                  ),
-                  GetX<DetailLogic>(builder: (ctl) {
-                    return Text((ctl.state.apiInfo.value.description ?? ""));
-                  }),
-                  const SizedBox(
-                    height: 16,
-                  ),
+                ],
+              ),
+            ),
+            Container(
+              constraints:
+                  const BoxConstraints.tightForFinite(width: double.maxFinite),
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                  border: Border.all(
+                      width: 1,
+                      color:
+                          Theme.of(context).colorScheme.primary.withAlpha(130)),
+                  borderRadius: const BorderRadius.only(
+                      bottomLeft: Radius.circular(16),
+                      bottomRight: Radius.circular(16)),
+                  color: Theme.of(context).colorScheme.primaryContainer),
+              child: GetX<DetailLogic>(builder: (ctl) {
+                return Text((ctl.state.apiInfo.value.description ?? ""));
+              }),
+            ),
+            Container(
+              margin: const EdgeInsets.only(top: 8),
+              constraints:
+                  const BoxConstraints.tightForFinite(width: double.maxFinite),
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                  border: Border.all(
+                      width: 1,
+                      color:
+                          Theme.of(context).colorScheme.primary.withAlpha(130)),
+                  borderRadius: const BorderRadius.all(Radius.circular(16)),
+                  color: Theme.of(context).colorScheme.primaryContainer),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.start,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
@@ -226,6 +269,8 @@ class DetailPage extends StatelessWidget {
                                 downloadCount: data["download_count"],
                                 text: data["name"],
                                 url: data["browser_download_url"],
+                                appId: logic.app.appId,
+                                version: logic.state.release[0]["name"],
                                 onLinkTap: (url) {
                                   logic.startDownload(
                                       url,
@@ -269,47 +314,66 @@ class DetailPage extends StatelessWidget {
                           )
                         : const SizedBox();
                   }),
-                  const SizedBox(
-                    height: 16,
-                  ),
                 ],
               ),
             ),
-            GetX<DetailLogic>(
-                builder: (ctl) => MarkdownBody(
-                      imageDirectory: state.sourceUrl,
-                      data: state.body(),
-                      onTapLink: logic.onTapLink,
-                      builders: <String, MarkdownElementBuilder>{
-                        'a': CustomLinkBuilder(onTap: (url) {
-                          if (null != url) logic.openBrowser(url);
-                        })
-                      },
-                      imageBuilder: (Uri uri, String? title, String? alt) {
-                        if (!"$uri".endsWith(".png") &&
-                            !"$uri".endsWith(".jpg")) {
-                          return Padding(
-                            padding: const EdgeInsets.only(
-                                left: 2, right: 2, top: 2, bottom: 2),
-                            child: ScalableImageWidget.fromSISource(
-                              scale: 0.8,
-                              si: ScalableImageSource.fromSvgHttpUrl(
-                                  Uri.parse('$uri')),
-                            ),
-                          );
-                        } else {
-                          var url = "";
-                          if ("$uri".startsWith("http")) {
-                            url = "${getProxy()}$uri";
-                          } else {
-                            url = "${state.sourceUrl}$uri";
-                          }
-                          return Image(
-                            image: CachedNetworkImageProvider(url),
-                          );
-                        }
-                      },
-                    ))
+            GetBuilder<DetailLogic>(builder: (logic) {
+              var markdownData = state.body.value;
+              if (markdownData.isEmpty) {
+                return const SizedBox();
+              }
+              return Container(
+                margin: const EdgeInsets.only(top: 8),
+                constraints: const BoxConstraints.tightForFinite(
+                    width: double.maxFinite),
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                    border: Border.all(
+                        width: 1,
+                        color: Theme.of(context)
+                            .colorScheme
+                            .primary
+                            .withAlpha(130)),
+                    borderRadius: const BorderRadius.all(Radius.circular(16)),
+                    color: Theme.of(context).colorScheme.primaryContainer),
+                child: MarkdownBody(
+                  imageDirectory: state.sourceUrl,
+                  data: markdownData,
+                  onTapLink: logic.onTapLink,
+                  styleSheet: MarkdownStyleSheet(
+                      a: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          color: Theme.of(context).colorScheme.primary)),
+                  builders: <String, MarkdownElementBuilder>{
+                    'a': CustomLinkBuilder(onTap: (url) {
+                      if (null != url) logic.openBrowser(url);
+                    })
+                  },
+                  imageBuilder: (Uri uri, String? title, String? alt) {
+                    if (!"$uri".endsWith(".png") && !"$uri".endsWith(".jpg")) {
+                      return Padding(
+                        padding: const EdgeInsets.only(
+                            left: 2, right: 2, top: 2, bottom: 2),
+                        child: ScalableImageWidget.fromSISource(
+                          scale: 0.8,
+                          si: ScalableImageSource.fromSvgHttpUrl(
+                              Uri.parse('$uri')),
+                        ),
+                      );
+                    } else {
+                      var url = "";
+                      if ("$uri".startsWith("http")) {
+                        url = "${getProxy()}$uri";
+                      } else {
+                        url = "${state.sourceUrl}$uri";
+                      }
+                      return Image(
+                        image: CachedNetworkImageProvider(url),
+                      );
+                    }
+                  },
+                ),
+              );
+            })
           ],
         ),
       ),
@@ -347,9 +411,7 @@ class DetailPage extends StatelessWidget {
         margin: const EdgeInsets.only(top: 2, bottom: 2),
         padding: const EdgeInsets.only(left: 4, right: 4, top: 2, bottom: 2),
         decoration: BoxDecoration(
-          color: Theme.of(context).brightness == Brightness.dark
-              ? Colors.grey.shade600
-              : Colors.grey.shade300,
+          color: Theme.of(context).colorScheme.primary.withAlpha(130),
           borderRadius: const BorderRadius.all(Radius.circular(20)),
         ),
         child: Text(
@@ -373,10 +435,10 @@ class AppStartedWidget extends StatelessWidget {
         padding: const EdgeInsets.only(left: 8, right: 8, top: 2, bottom: 2),
         margin: const EdgeInsets.only(right: 8),
         decoration: BoxDecoration(
-          border: Border.all(width: 1.0, color: Colors.grey.shade200),
-          color: Theme.of(context).brightness == Brightness.dark
-              ? Colors.grey.shade800
-              : Colors.grey.shade100,
+          border: Border.all(
+              width: 1.0,
+              color: Theme.of(context).colorScheme.primaryFixed.withAlpha(100)),
+          color: Theme.of(context).colorScheme.primaryContainer,
           borderRadius: const BorderRadius.all(Radius.circular(8)),
         ),
         child: Row(
@@ -402,9 +464,7 @@ class AppStartedWidget extends StatelessWidget {
               padding:
                   const EdgeInsets.only(left: 4, right: 4, top: 1, bottom: 1),
               decoration: BoxDecoration(
-                color: Theme.of(context).brightness == Brightness.dark
-                    ? Colors.grey.shade600
-                    : Colors.grey.shade300,
+                color: Theme.of(context).colorScheme.primaryFixed.withAlpha(80),
                 borderRadius: const BorderRadius.all(Radius.circular(20)),
               ),
               child: Text(
@@ -442,3 +502,8 @@ class AppStartedWidget extends StatelessWidget {
 //     );
 //   }
 // }
+border(context) => BorderSide(
+      // 配置底部边框
+      color: Theme.of(context).colorScheme.primary.withAlpha(130), // 边框颜色为蓝色
+      width: 1, // 边框宽度为 2.0
+    );

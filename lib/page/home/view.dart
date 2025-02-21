@@ -23,6 +23,7 @@ class HomePage extends StatelessWidget {
       ),
       bottomNavigationBar: Obx(() {
         return NavigationBar(
+          backgroundColor: Theme.of(context).colorScheme.primary.withAlpha(30),
           selectedIndex: logic.state.index.value,
           onDestinationSelected: (index) {
             logic.jumpToPage(index);

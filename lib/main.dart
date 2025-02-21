@@ -2,6 +2,7 @@ import 'package:dynamic_color/dynamic_color.dart';
 import 'package:flutter/material.dart';
 import 'package:gstore/core/service/downloadService.dart';
 import 'package:gstore/core/service/user_manager.dart';
+import 'package:gstore/core/theme/theme_utils.dart';
 import 'package:gstore/http/github/dio_client.dart';
 import 'package:gstore/http/github/github_auth_api.dart';
 import 'package:gstore/http/github/github_client.dart';
@@ -30,6 +31,7 @@ colorSchemeSeed(ColorScheme? color, Brightness brightness) {
 
 main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
   Get.config(
       enableLog: true,
       defaultPopGesture: true,
@@ -41,10 +43,12 @@ main() async {
       onInit: () async {
         DioClient().authorization = await Get.find<UserManager>().token;
       },
-      // home: const MyHomePage(title: "GStore"),
       builder: (context, child) {
+        configStatusBar();
         return Material(
           child: SafeArea(
+            top: false,
+            bottom: false,
             child: child!,
           ),
         );
