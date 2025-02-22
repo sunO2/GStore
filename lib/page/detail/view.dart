@@ -9,7 +9,6 @@ import 'package:gstore/http/download/DownloadStatus.dart';
 import 'logic.dart';
 import 'package:installed_apps/app_info.dart' as sysAppInfo;
 import 'package:jovial_svg/jovial_svg.dart';
-import 'package:markdown/markdown.dart' as md;
 import 'package:gstore/core/core.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
@@ -33,6 +32,7 @@ class DetailPage extends StatelessWidget {
   Widget build(BuildContext context) {
     final logic = Get.put(DetailLogic());
     final state = Get.find<DetailLogic>().state;
+    int animateDuration = 300;
     return Scaffold(
       appBar: AppBar(
         title: Hero(
@@ -81,112 +81,114 @@ class DetailPage extends StatelessWidget {
                     top: border(context),
                     left: border(context),
                     right: border(context),
-                    // top, left, right 边框默认不配置，即 BorderSide.none，所以不显示
                   ),
-                  // border: Border.all(
-                  //     width: 1,
-                  //     color:
-                  //         Theme.of(context).colorScheme.primary.withAlpha(130)),
                   borderRadius: const BorderRadius.only(
                       topLeft: Radius.circular(16),
                       topRight: Radius.circular(16)),
                   color: Theme.of(context).colorScheme.primaryContainer),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                mainAxisAlignment: MainAxisAlignment.start,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
+              child: AnimatedSize(
+                  alignment: Alignment.topCenter,
+                  duration:  Duration(milliseconds: animateDuration),
+                  child: Column(
                     mainAxisSize: MainAxisSize.min,
                     mainAxisAlignment: MainAxisAlignment.start,
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      GestureDetector(
-                        onLongPress: () {
-                          if (logic.state.release[0] == null) {
-                            return;
-                          }
-                          Get.bottomSheet(
-                            persistent: false,
-                            Material(
-                              borderRadius: const BorderRadius.only(
-                                  topLeft: Radius.circular(16),
-                                  topRight: Radius.circular(16)),
-                              child: Markdown(
-                                  data: logic.state.release[0]?["body"] ?? ""),
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        mainAxisAlignment: MainAxisAlignment.start,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          GestureDetector(
+                            onLongPress: () {
+                              if (logic.state.release[0] == null) {
+                                return;
+                              }
+                              Get.bottomSheet(
+                                persistent: false,
+                                Material(
+                                  borderRadius: const BorderRadius.only(
+                                      topLeft: Radius.circular(16),
+                                      topRight: Radius.circular(16)),
+                                  child: Markdown(
+                                      data: logic.state.release[0]?["body"] ??
+                                          ""),
+                                ),
+                              );
+                            },
+                            child: Hero(
+                              tag: logic.app.icon,
+                              child: Image(
+                                image:
+                                    CachedNetworkImageProvider(logic.app.icon),
+                                width: 64,
+                                height: 64,
+                              ),
                             ),
-                          );
-                        },
-                        child: Hero(
-                          tag: logic.app.icon,
-                          child: Image(
-                            image: CachedNetworkImageProvider(logic.app.icon),
-                            width: 64,
-                            height: 64,
                           ),
-                        ),
-                      ),
-                      const SizedBox(
-                        width: 16,
-                      ),
-                      GetX<DetailLogic>(builder: (ctl) {
-                        dynamic release = (logic.state.release.isNotEmpty)
-                            ? logic.state.release[0] ?? {}
-                            : {};
-                        return Expanded(
-                            child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          mainAxisAlignment: MainAxisAlignment.start,
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Wrap(
-                              crossAxisAlignment: WrapCrossAlignment.start,
-                              children: [
-                                Text(
-                                  release["name"] ?? "",
-                                  style:
-                                      Theme.of(context).textTheme.headlineSmall,
-                                ),
-                                const SizedBox(
-                                  width: 8,
-                                ),
-                                installStatus(context, ctl, state.installInfo),
-                              ],
-                            ),
-                            const SizedBox(
-                              height: 8,
-                            ),
-                            Row(
+                          const SizedBox(
+                            width: 16,
+                          ),
+                          GetX<DetailLogic>(builder: (ctl) {
+                            dynamic release = (logic.state.release.isNotEmpty)
+                                ? logic.state.release[0] ?? {}
+                                : {};
+                            return Expanded(
+                                child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisAlignment: MainAxisAlignment.start,
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                AppStartedWidget(
-                                  icon: const Icon(
-                                    Icons.get_app_rounded,
-                                    size: 14,
-                                  ),
-                                  name: "Fork",
-                                  flag: "${logic.state.apiInfo().forks}",
+                                Wrap(
+                                  crossAxisAlignment: WrapCrossAlignment.start,
+                                  children: [
+                                    Text(
+                                      release["name"] ?? "",
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .headlineSmall,
+                                    ),
+                                    const SizedBox(
+                                      width: 8,
+                                    ),
+                                    installStatus(
+                                        context, ctl, state.installInfo),
+                                  ],
                                 ),
-                                AppStartedWidget(
-                                  icon:
-                                      const Icon(Icons.star_rounded, size: 14),
-                                  name: "Start",
-                                  flag:
-                                      "${logic.state.apiInfo().stargazers_count}",
+                                const SizedBox(
+                                  height: 8,
                                 ),
+                                Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    AppStartedWidget(
+                                      icon: const Icon(
+                                        Icons.get_app_rounded,
+                                        size: 14,
+                                      ),
+                                      name: "Fork",
+                                      flag: "${logic.state.apiInfo().forks}",
+                                    ),
+                                    AppStartedWidget(
+                                      icon: const Icon(Icons.star_rounded,
+                                          size: 14),
+                                      name: "Start",
+                                      flag:
+                                          "${logic.state.apiInfo().stargazers_count}",
+                                    ),
+                                  ],
+                                )
                               ],
-                            )
-                          ],
-                        ));
-                      })
+                            ));
+                          })
+                        ],
+                      ),
+                      const SizedBox(
+                        height: 6,
+                      ),
+                      Text(logic.app.des),
                     ],
-                  ),
-                  const SizedBox(
-                    height: 6,
-                  ),
-                  Text(logic.app.des),
-                ],
-              ),
+                  )),
             ),
             Container(
               constraints:
@@ -201,9 +203,13 @@ class DetailPage extends StatelessWidget {
                       bottomLeft: Radius.circular(16),
                       bottomRight: Radius.circular(16)),
                   color: Theme.of(context).colorScheme.primaryContainer),
-              child: GetX<DetailLogic>(builder: (ctl) {
-                return Text((ctl.state.apiInfo.value.description ?? ""));
-              }),
+              child: AnimatedSize(
+                duration: Duration(milliseconds: animateDuration),
+                alignment: Alignment.topCenter,
+                child: GetX<DetailLogic>(builder: (ctl) {
+                  return Text((ctl.state.apiInfo.value.description ?? ""));
+                }),
+              ),
             ),
             Container(
               margin: const EdgeInsets.only(top: 8),
@@ -217,104 +223,111 @@ class DetailPage extends StatelessWidget {
                           Theme.of(context).colorScheme.primary.withAlpha(130)),
                   borderRadius: const BorderRadius.all(Radius.circular(16)),
                   color: Theme.of(context).colorScheme.primaryContainer),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.start,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(
-                        "Download:",
-                        style: Theme.of(context)
-                            .textTheme
-                            .bodyLarge
-                            ?.copyWith(fontWeight: FontWeight.w600),
-                      ),
-                      GetX<DetailLogic>(builder: (ctl) {
-                        dynamic release = (ctl.state.release.isNotEmpty)
-                            ? ctl.state.release[0] ?? {}
-                            : {};
-                        var time = release?["published_at"]?.toString() ?? "";
-                        var timeDate =
-                            time.isNotEmpty ? DateTime.parse(time) : null;
-
-                        return Text(
-                          null != timeDate
-                              ? "${timeDate.year}-${timeDate.month}-${timeDate.day}"
-                              : "",
+              child: AnimatedSize(
+                duration: Duration(milliseconds: animateDuration),
+                alignment: Alignment.topCenter,
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.start,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          "Download:",
                           style: Theme.of(context)
                               .textTheme
                               .bodyLarge
-                              ?.copyWith(
-                                  fontWeight: FontWeight.w600, fontSize: 10),
-                        );
-                      }),
-                    ],
-                  ),
-                  const SizedBox(
-                    height: 8,
-                  ),
-                  GetX<DetailLogic>(builder: (cth) {
-                    List<dynamic> assets = (logic.state.release.isNotEmpty)
-                        ? logic.state.release[0]["assets"] ?? []
-                        : [];
-                    return (assets.isNotEmpty)
-                        ? Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            mainAxisSize: MainAxisSize.min,
-                            children: assets.map((data) {
-                              return DownloadLink(
-                                downloadSize: data["size"],
-                                downloadCount: data["download_count"],
-                                text: data["name"],
-                                url: data["browser_download_url"],
-                                appId: logic.app.appId,
-                                version: logic.state.release[0]["name"],
-                                onLinkTap: (url) {
-                                  logic.startDownload(
-                                      url,
-                                      logic.state.release[0]["tag_name"] ?? "",
-                                      data["name"],
-                                      downloadSize: data["size"]);
-                                },
-                                onLongPress: (url) {
-                                  Get.defaultDialog(
-                                    title: "下载二维码",
-                                    content: Container(
-                                      width: 120,
-                                      height: 120,
-                                      decoration: BoxDecoration(
-                                        color: Colors.white,
-                                        borderRadius: BorderRadius.circular(8),
-                                        shape: BoxShape.rectangle,
-                                        boxShadow: [
-                                          BoxShadow(
-                                            color: Colors.black.withAlpha(100),
-                                            offset: const Offset(0, 0),
-                                            blurRadius: 24,
-                                            spreadRadius: 0,
-                                          ),
-                                        ],
+                              ?.copyWith(fontWeight: FontWeight.w600),
+                        ),
+                        GetX<DetailLogic>(builder: (ctl) {
+                          dynamic release = (ctl.state.release.isNotEmpty)
+                              ? ctl.state.release[0] ?? {}
+                              : {};
+                          var time = release?["published_at"]?.toString() ?? "";
+                          var timeDate =
+                              time.isNotEmpty ? DateTime.parse(time) : null;
+
+                          return Text(
+                            null != timeDate
+                                ? "${timeDate.year}-${timeDate.month}-${timeDate.day}"
+                                : "",
+                            style: Theme.of(context)
+                                .textTheme
+                                .bodyLarge
+                                ?.copyWith(
+                                    fontWeight: FontWeight.w600, fontSize: 10),
+                          );
+                        }),
+                      ],
+                    ),
+                    const SizedBox(
+                      height: 8,
+                    ),
+                    GetX<DetailLogic>(builder: (cth) {
+                      List<dynamic> assets = (logic.state.release.isNotEmpty)
+                          ? logic.state.release[0]["assets"] ?? []
+                          : [];
+                      return (assets.isNotEmpty)
+                          ? Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
+                              children: assets.map((data) {
+                                return DownloadLink(
+                                  downloadSize: data["size"],
+                                  downloadCount: data["download_count"],
+                                  text: data["name"],
+                                  url: data["browser_download_url"],
+                                  appId: logic.app.appId,
+                                  version: logic.state.release[0]["name"],
+                                  onLinkTap: (url) {
+                                    logic.startDownload(
+                                        url,
+                                        logic.state.release[0]["tag_name"] ??
+                                            "",
+                                        data["name"],
+                                        downloadSize: data["size"]);
+                                  },
+                                  onLongPress: (url) {
+                                    Get.defaultDialog(
+                                      title: "下载二维码",
+                                      content: Container(
+                                        width: 120,
+                                        height: 120,
+                                        decoration: BoxDecoration(
+                                          color: Colors.white,
+                                          borderRadius:
+                                              BorderRadius.circular(8),
+                                          shape: BoxShape.rectangle,
+                                          boxShadow: [
+                                            BoxShadow(
+                                              color:
+                                                  Colors.black.withAlpha(100),
+                                              offset: const Offset(0, 0),
+                                              blurRadius: 24,
+                                              spreadRadius: 0,
+                                            ),
+                                          ],
+                                        ),
+                                        // color: Colors.white,
+                                        child: QrImageView(
+                                          data: "${getProxy()}${url ?? ""}",
+                                          version: QrVersions.auto,
+                                          size: 120,
+                                          embeddedImage:
+                                              CachedNetworkImageProvider(
+                                                  logic.app.icon),
+                                        ),
                                       ),
-                                      // color: Colors.white,
-                                      child: QrImageView(
-                                        data: "${getProxy()}${url ?? ""}",
-                                        version: QrVersions.auto,
-                                        size: 120,
-                                        embeddedImage:
-                                            CachedNetworkImageProvider(
-                                                logic.app.icon),
-                                      ),
-                                    ),
-                                  );
-                                },
-                              );
-                            }).toList(),
-                          )
-                        : const SizedBox();
-                  }),
-                ],
+                                    );
+                                  },
+                                );
+                              }).toList(),
+                            )
+                          : const SizedBox();
+                    }),
+                  ],
+                ),
               ),
             ),
             GetBuilder<DetailLogic>(builder: (logic) {
