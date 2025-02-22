@@ -79,17 +79,12 @@ class UpdateManager extends StatelessWidget {
   }
 
   Widget colorWidget(BuildContext context, String key, Color color) {
-    return Row(
-      children: [
-        Text(key),
-        Expanded(
-            child: Container(
-          height: 20,
-          color: color,
-          margin: const EdgeInsets.only(left: 16, top: 8, bottom: 8),
-          width: double.maxFinite,
-        )),
-      ],
-    );
+    return  Container(
+              color: color,
+              padding: EdgeInsets.all(4),
+              margin: const EdgeInsets.only(left: 16, top: 8, bottom: 8),
+              width: double.maxFinite,
+              child: Text(key),
+            );
   }
 }
