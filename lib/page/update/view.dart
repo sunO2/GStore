@@ -14,30 +14,36 @@ class UpdateManager extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     var colorScheme = Theme.of(context).colorScheme;
-    var colors = <String,Color>{
-      "primary":colorScheme.primary,
-      "primaryContainer":colorScheme.primaryContainer,
-      "primaryFixed":colorScheme.primaryFixed,
-      "primaryFixedDim":colorScheme.primaryFixedDim,
-      "secondary":colorScheme.secondary,
-      "secondaryContainer":colorScheme.secondaryContainer,
-      "secondaryFixed":colorScheme.secondaryFixed,
-      "secondaryFixedDim":colorScheme.secondaryFixedDim,
-      "tertiary":colorScheme.tertiary,
-      "tertiaryContainer":colorScheme.tertiaryContainer,
-      "tertiaryFixed":colorScheme.tertiaryFixed,
-      "tertiaryFixedDim":colorScheme.tertiaryFixedDim,
-      "error":colorScheme.error,
-      "errorContainer":colorScheme.errorContainer,
-      "surface":colorScheme.surface,
-      "surfaceBright":colorScheme.surfaceBright,
-      "surfaceContainer":colorScheme.surfaceContainer,
-      "surfaceContainerHigh":colorScheme.surfaceContainerHigh,
-      "surfaceContainerHighest":colorScheme.surfaceContainerHighest,
-      "surfaceContainerLow":colorScheme.surfaceContainerLow,
-      "surfaceContainerLowest":colorScheme.surfaceContainerLowest,
-      "surfaceDim":colorScheme.surfaceDim,
-      "surfaceTint":colorScheme.surfaceTint,
+    var schemeColors = <String, Color>{
+      "primary": colorScheme.primary,
+      "primaryContainer": colorScheme.primaryContainer,
+      "primaryFixed": colorScheme.primaryFixed,
+      "primaryFixedDim": colorScheme.primaryFixedDim,
+      "secondary": colorScheme.secondary,
+      "secondaryContainer": colorScheme.secondaryContainer,
+      "secondaryFixed": colorScheme.secondaryFixed,
+      "secondaryFixedDim": colorScheme.secondaryFixedDim,
+      "tertiary": colorScheme.tertiary,
+      "tertiaryContainer": colorScheme.tertiaryContainer,
+      "tertiaryFixed": colorScheme.tertiaryFixed,
+      "tertiaryFixedDim": colorScheme.tertiaryFixedDim,
+      "error": colorScheme.error,
+      "errorContainer": colorScheme.errorContainer,
+      "surface": colorScheme.surface,
+      "surfaceBright": colorScheme.surfaceBright,
+      "surfaceContainer": colorScheme.surfaceContainer,
+      "surfaceContainerHigh": colorScheme.surfaceContainerHigh,
+      "surfaceContainerHighest": colorScheme.surfaceContainerHighest,
+      "surfaceContainerLow": colorScheme.surfaceContainerLow,
+      "surfaceContainerLowest": colorScheme.surfaceContainerLowest,
+      "surfaceDim": colorScheme.surfaceDim,
+      "surfaceTint": colorScheme.surfaceTint,
+    };
+
+    var themeColors = <String, Color>{
+      "primaryColor": Theme.of(context).primaryColor,
+      "primaryColorDark": Theme.of(context).primaryColorDark,
+      "primaryColorLight": Theme.of(context).primaryColorLight
     };
 
     final logic = Get.put(UpdateLogic());
@@ -49,20 +55,40 @@ class UpdateManager extends StatelessWidget {
           padding: const EdgeInsets.all(16),
           child: SingleChildScrollView(
             child: Column(
-            children: colors.keys.map((key){
-                var color = colors[key];
-                return colorWidget(context,key,color!);
-            }).toList(),
-          ),
+              children: [
+                Text(
+                  "Theme: ",
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                ...themeColors.keys.map((key) {
+                  var color = themeColors[key];
+                  return colorWidget(context, key, color!);
+                }),
+                Text(
+                  "Scheme: ",
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                ...schemeColors.keys.map((key) {
+                  var color = schemeColors[key];
+                  return colorWidget(context, key, color!);
+                })
+              ],
+            ),
           ),
         ));
   }
 
-  Widget colorWidget(BuildContext context,String key,Color color){
+  Widget colorWidget(BuildContext context, String key, Color color) {
     return Row(
       children: [
         Text(key),
-        Expanded(child: Container(height: 20,color: color,margin: const EdgeInsets.only(left: 16,top: 8,bottom: 8),width: double.maxFinite,)),
+        Expanded(
+            child: Container(
+          height: 20,
+          color: color,
+          margin: const EdgeInsets.only(left: 16, top: 8, bottom: 8),
+          width: double.maxFinite,
+        )),
       ],
     );
   }
