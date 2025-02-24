@@ -346,45 +346,54 @@ class DetailPage extends StatelessWidget {
                             .withAlpha(130)),
                     borderRadius: const BorderRadius.all(Radius.circular(16)),
                     color: Theme.of(context).colorScheme.primaryContainer),
-                child: markdownData.isEmpty
-                    ? const CupertinoActivityIndicator()
-                    : MarkdownBody(
-                        imageDirectory: state.sourceUrl,
-                        data: markdownData,
-                        onTapLink: logic.onTapLink,
-                        styleSheet: MarkdownStyleSheet(
-                            a: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                                color: Theme.of(context).colorScheme.primary)),
-                        builders: <String, MarkdownElementBuilder>{
-                          'a': CustomLinkBuilder(onTap: (url) {
-                            if (null != url) logic.openBrowser(url);
-                          })
-                        },
-                        imageBuilder: (Uri uri, String? title, String? alt) {
-                          if (!"$uri".endsWith(".png") &&
-                              !"$uri".endsWith(".jpg")) {
-                            return Padding(
-                              padding: const EdgeInsets.only(
-                                  left: 2, right: 2, top: 2, bottom: 2),
-                              child: ScalableImageWidget.fromSISource(
-                                scale: 0.8,
-                                si: ScalableImageSource.fromSvgHttpUrl(
-                                    Uri.parse('$uri')),
-                              ),
-                            );
-                          } else {
-                            var url = "";
-                            if ("$uri".startsWith("http")) {
-                              url = "${getProxy()}$uri";
+                child: AnimatedSize(
+                  alignment: Alignment.topCenter,
+                  duration: Duration(microseconds: animateDuration),
+                  child: markdownData.isEmpty
+                      ? const CupertinoActivityIndicator()
+                      : MarkdownBody(
+                          imageDirectory: state.sourceUrl,
+                          data: markdownData,
+                          onTapLink: logic.onTapLink,
+                          styleSheet: MarkdownStyleSheet(
+                              a: Theme.of(context)
+                                  .textTheme
+                                  .bodyMedium
+                                  ?.copyWith(
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .primary)),
+                          builders: <String, MarkdownElementBuilder>{
+                            'a': CustomLinkBuilder(onTap: (url) {
+                              if (null != url) logic.openBrowser(url);
+                            })
+                          },
+                          imageBuilder: (Uri uri, String? title, String? alt) {
+                            if (!"$uri".endsWith(".png") &&
+                                !"$uri".endsWith(".jpg")) {
+                              return Padding(
+                                padding: const EdgeInsets.only(
+                                    left: 2, right: 2, top: 2, bottom: 2),
+                                child: ScalableImageWidget.fromSISource(
+                                  scale: 0.8,
+                                  si: ScalableImageSource.fromSvgHttpUrl(
+                                      Uri.parse('$uri')),
+                                ),
+                              );
                             } else {
-                              url = "${state.sourceUrl}$uri";
+                              var url = "";
+                              if ("$uri".startsWith("http")) {
+                                url = "${getProxy()}$uri";
+                              } else {
+                                url = "${state.sourceUrl}$uri";
+                              }
+                              return Image(
+                                image: CachedNetworkImageProvider(url),
+                              );
                             }
-                            return Image(
-                              image: CachedNetworkImageProvider(url),
-                            );
-                          }
-                        },
-                      ),
+                          },
+                        ),
+                ),
               );
             })
           ],
