@@ -12,7 +12,12 @@ class WebPageLogic extends GetxController with GithubRequestMix {
   final String rootUrl = Get.arguments["url"];
   final AppInfo? appInfo = Get.arguments["appInfo"];
 
+  onLoadStart(InAppWebViewController ctroller, url) async {
+    state.loadingStatus.value = 1;
+  }
+
   onLoadStop(InAppWebViewController ctroller, url) async {
+    state.loadingStatus.value = 0;
     var color = await ctroller.evaluateJavascript(source: '''(function() {
         let themeColorMeta = document.querySelector('meta[name="theme-color"]');
         if (themeColorMeta) {
