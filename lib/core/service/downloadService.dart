@@ -4,13 +4,38 @@ import 'package:gstore/http/download/DownloadStatus.dart';
 import 'package:gstore/core/core.dart';
 import 'package:dio/dio.dart';
 import 'package:gstore/http/download/DownloadStatusDataBase.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 
 final Future<DownloadDatabase> database = downloadStatusDatabase;
 
 class DownloadService extends GetxService {
+  StreamSubscription<List<ConnectivityResult>>? _subscription;
+  List<ConnectivityResult>? _connectivityResult;
+  bool _isVPN = false;
+
   final Dio _dio;
 
   DownloadService(this._dio);
+
+  @override
+  onInit() async {
+    _connectivityResult = await (Connectivity().checkConnectivity());
+    _isVPN = _connectivityResult?.contains(ConnectivityResult.vpn) ?? false;
+    log("初始化网络: ${_connectivityResult?.map((a) {
+          return a.name;
+        }).toList().join(",")}");
+    _subscription = Connectivity()
+        .onConnectivityChanged
+        .listen((List<ConnectivityResult> result) {
+      _connectivityResult = result;
+      _isVPN = result.contains(ConnectivityResult.vpn);
+      log("网络变化: ${result.map((a) {
+            return a.name;
+          }).toList().join(",")}");
+      // Received changes in available connectivity types!
+    });
+    super.onInit();
+  }
 
   /// 下载文件
   /// appid 包名
@@ -98,5 +123,13 @@ class DownloadService extends GetxService {
       return true;
     }
     return false;
+  }
+
+  bool get isVPN => _isVPN;
+
+  @override
+  void onClose() {
+    _subscription?.cancel();
+    super.onClose();
   }
 }

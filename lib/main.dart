@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:gstore/core/service/downloadService.dart';
 import 'package:gstore/core/service/user_manager.dart';
 import 'package:gstore/core/theme/theme_utils.dart';
+import 'package:gstore/core/transition/app_transition.dart';
 import 'package:gstore/http/github/dio_client.dart';
 import 'package:gstore/http/github/github_auth_api.dart';
 import 'package:gstore/http/github/github_client.dart';
@@ -33,9 +34,10 @@ main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   Get.config(
-      enableLog: true,
-      defaultPopGesture: true,
-      defaultTransition: Transition.cupertino);
+    enableLog: true,
+    defaultPopGesture: false,
+    // defaultTransition: Transition.cupertino
+  );
   await registerService();
 
   runApp(DynamicColorBuilder(builder: (light, dark) {
@@ -56,6 +58,7 @@ main() async {
       initialRoute: AppRoute.home,
       getPages: AppRoute.pages,
       themeMode: ThemeMode.system,
+      customTransition: AppTransition(),
       theme: ThemeData(
           colorScheme: colorSchemeSeed(light, Brightness.light),
           useMaterial3: true,

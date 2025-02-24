@@ -13,10 +13,11 @@ class AppRoute {
 
   static List<GetPage> pages = [
     GetPage(
-        name: home,
-        page: () => const HomePage(),
-        transitionDuration: const Duration(milliseconds: 0),
-        transition: Transition.noTransition),
+      name: home,
+      page: () => const HomePage(),
+      // transitionDuration: const Duration(milliseconds: 0),
+      // transition: Transition.noTransition
+    ),
     GetPage(name: appDetail, page: () => const DetailPage()),
     GetPage(name: categoryPage, page: () => const SearchPage()),
     GetPage(
@@ -29,4 +30,11 @@ class AppRoute {
     GetPage(name: webView, page: () => const WebPage()),
     GetPage(name: auth, page: () => const AuthPage()),
   ];
+}
+
+launcherBrow(String url, {AppInfo? appinfo}) {
+  Get.toNamed(AppRoute.webView, arguments: {
+    "url": url,
+    "appInfo": appinfo,
+  });
 }

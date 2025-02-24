@@ -78,3 +78,15 @@ class CustomLinkBuilder extends MarkdownElementBuilder {
     );
   }
 }
+
+// 自定义 MarkdownElementBuilder 来处理 <a> 标签
+class CustomCodeBuilder extends MarkdownElementBuilder {
+  OnLinkTap? onTap;
+  CustomCodeBuilder({this.onTap});
+
+  @override
+  Widget visitElementAfter(md.Element element, TextStyle? preferredStyle) {
+    var url = element.attributes["href"];
+    return Text(element.textContent);
+  }
+}

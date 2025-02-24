@@ -82,13 +82,14 @@ class DetailLogic extends GetxController with GithubRequestMix {
       return;
     }
 
-    GStoreInAppBrowser inAppBrowser = GStoreInAppBrowser(appInfo: app);
+    // GStoreInAppBrowser inAppBrowser = GStoreInAppBrowser(appInfo: app);
 
-    final settings = ChromeSafariBrowserSettings(
-      shareState: CustomTabsShareState.SHARE_STATE_ON,
-      barCollapsingEnabled: true,
-    );
-    inAppBrowser.open(url: WebUri(url), settings: settings);
+    // final settings = ChromeSafariBrowserSettings(
+    //   shareState: CustomTabsShareState.SHARE_STATE_ON,
+    //   barCollapsingEnabled: true,
+    // );
+    // inAppBrowser.open(url: WebUri(url), settings: settings);
+    launcherBrow(url, appinfo: app);
   }
 
   openProjectBrowser() {

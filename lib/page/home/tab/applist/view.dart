@@ -114,13 +114,14 @@ class AppListState extends State<ApplistPage>
               if (user.avatarUrl?.isEmpty ?? true) {
                 Get.toNamed(AppRoute.auth);
               } else {
-                GStoreInAppBrowser inAppBrowser = GStoreInAppBrowser();
-                final settings = ChromeSafariBrowserSettings(
-                  shareState: CustomTabsShareState.SHARE_STATE_ON,
-                  barCollapsingEnabled: true,
-                );
-                inAppBrowser.open(
-                    url: WebUri(user.htmlUrl ?? ""), settings: settings);
+                // GStoreInAppBrowser inAppBrowser = GStoreInAppBrowser();
+                // final settings = ChromeSafariBrowserSettings(
+                //   shareState: CustomTabsShareState.SHARE_STATE_ON,
+                //   barCollapsingEnabled: true,
+                // );
+                // inAppBrowser.open(
+                //     url: WebUri(user.htmlUrl ?? ""), settings: settings);
+                launcherBrow(user.htmlUrl ?? "");
               }
             }
 

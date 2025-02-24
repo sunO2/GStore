@@ -1,3 +1,4 @@
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_html/flutter_html.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
@@ -88,7 +89,7 @@ class DetailPage extends StatelessWidget {
                   color: Theme.of(context).colorScheme.primaryContainer),
               child: AnimatedSize(
                   alignment: Alignment.topCenter,
-                  duration:  Duration(milliseconds: animateDuration),
+                  duration: Duration(milliseconds: animateDuration),
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     mainAxisAlignment: MainAxisAlignment.start,
@@ -332,9 +333,6 @@ class DetailPage extends StatelessWidget {
             ),
             GetBuilder<DetailLogic>(builder: (logic) {
               var markdownData = state.body.value;
-              if (markdownData.isEmpty) {
-                return const SizedBox();
-              }
               return Container(
                 margin: const EdgeInsets.only(top: 8),
                 constraints: const BoxConstraints.tightForFinite(
@@ -349,42 +347,45 @@ class DetailPage extends StatelessWidget {
                             .withAlpha(130)),
                     borderRadius: const BorderRadius.all(Radius.circular(16)),
                     color: Theme.of(context).colorScheme.primaryContainer),
-                child: MarkdownBody(
-                  imageDirectory: state.sourceUrl,
-                  data: markdownData,
-                  onTapLink: logic.onTapLink,
-                  styleSheet: MarkdownStyleSheet(
-                      a: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          color: Theme.of(context).colorScheme.primary)),
-                  builders: <String, MarkdownElementBuilder>{
-                    'a': CustomLinkBuilder(onTap: (url) {
-                      if (null != url) logic.openBrowser(url);
-                    })
-                  },
-                  imageBuilder: (Uri uri, String? title, String? alt) {
-                    if (!"$uri".endsWith(".png") && !"$uri".endsWith(".jpg")) {
-                      return Padding(
-                        padding: const EdgeInsets.only(
-                            left: 2, right: 2, top: 2, bottom: 2),
-                        child: ScalableImageWidget.fromSISource(
-                          scale: 0.8,
-                          si: ScalableImageSource.fromSvgHttpUrl(
-                              Uri.parse('$uri')),
-                        ),
-                      );
-                    } else {
-                      var url = "";
-                      if ("$uri".startsWith("http")) {
-                        url = "${getProxy()}$uri";
-                      } else {
-                        url = "${state.sourceUrl}$uri";
-                      }
-                      return Image(
-                        image: CachedNetworkImageProvider(url),
-                      );
-                    }
-                  },
-                ),
+                child: markdownData.isEmpty
+                    ? const CupertinoActivityIndicator()
+                    : MarkdownBody(
+                        imageDirectory: state.sourceUrl,
+                        data: markdownData,
+                        onTapLink: logic.onTapLink,
+                        styleSheet: MarkdownStyleSheet(
+                            a: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                color: Theme.of(context).colorScheme.primary)),
+                        builders: <String, MarkdownElementBuilder>{
+                          'a': CustomLinkBuilder(onTap: (url) {
+                            if (null != url) logic.openBrowser(url);
+                          })
+                        },
+                        imageBuilder: (Uri uri, String? title, String? alt) {
+                          if (!"$uri".endsWith(".png") &&
+                              !"$uri".endsWith(".jpg")) {
+                            return Padding(
+                              padding: const EdgeInsets.only(
+                                  left: 2, right: 2, top: 2, bottom: 2),
+                              child: ScalableImageWidget.fromSISource(
+                                scale: 0.8,
+                                si: ScalableImageSource.fromSvgHttpUrl(
+                                    Uri.parse('$uri')),
+                              ),
+                            );
+                          } else {
+                            var url = "";
+                            if ("$uri".startsWith("http")) {
+                              url = "${getProxy()}$uri";
+                            } else {
+                              url = "${state.sourceUrl}$uri";
+                            }
+                            return Image(
+                              image: CachedNetworkImageProvider(url),
+                            );
+                          }
+                        },
+                      ),
               );
             })
           ],

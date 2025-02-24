@@ -1,4 +1,5 @@
 import 'package:get/get.dart';
+import 'package:gstore/core/service/downloadService.dart';
 import 'package:gstore/db/apps/AppInfo.dart';
 
 export 'package:gstore/core/service/db_manager.dart';
@@ -36,6 +37,7 @@ AppInfoConfig? getConfig() {
 }
 
 String getProxy() {
+  if (Get.find<DownloadService>().isVPN) return "";
   AppInfoConfig? config = getConfig();
   if (null == config) {
     return "https://ghfast.top/";
