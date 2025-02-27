@@ -273,15 +273,17 @@ class AppListState extends State<ApplistPage>
     return Container(
       width: 110,
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: Theme.of(context).scaffoldBackgroundColor,
         borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.1),
-            blurRadius: 2,
-            offset: const Offset(0, 1),
-          ),
-        ],
+        border: Border.all(
+            width: 1.5, color: Theme.of(context).colorScheme.primaryContainer),
+        // boxShadow: [
+        //   BoxShadow(
+        //     color: Colors.black.withOpacity(0.1),
+        //     blurRadius: 2,
+        //     offset: const Offset(0, 1),
+        //   ),
+        // ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -309,6 +311,7 @@ class AppListState extends State<ApplistPage>
             padding: const EdgeInsets.only(left: 8, right: 8),
             child: Text(
               appinfo.name,
+              maxLines: 1,
               style: Theme.of(context).textTheme.bodyLarge,
             ),
           ),
