@@ -208,8 +208,12 @@ class AppListState extends State<ApplistPage>
                                   "more".tr,
                                   style: Theme.of(context)
                                       .textTheme
-                                      .headlineSmall
-                                      ?.copyWith(fontWeight: FontWeight.bold),
+                                      .bodyLarge
+                                      ?.copyWith(
+                                          fontWeight: FontWeight.bold,
+                                          color: Theme.of(context)
+                                              .colorScheme
+                                              .primary),
                                 ),
                               ),
                             ],
