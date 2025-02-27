@@ -31,26 +31,18 @@ class HomePage extends StatelessWidget {
           destinations: [
             NavigationDestination(
                 icon: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 300),
+                  duration: const Duration(milliseconds: 500),
                   child: (logic.state.index.value == 0)
-                      ? const Icon(
-                          AliIcon.appStoreActive,
-                          key: ValueKey(0),
-                          size: 20,
-                        )
-                      : const Icon(
-                          AliIcon.appStore,
-                          key: ValueKey(1),
-                          size: 20,
-                        ),
+                      ? const Icon(Icons.grid_view_rounded, key: ValueKey(1))
+                      : const Icon(Icons.grid_view_outlined, key: ValueKey(0)),
                 ),
                 label: "home".tr),
             NavigationDestination(
                 icon: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 300),
+                  duration: const Duration(milliseconds: 500),
                   child: (logic.state.index.value == 1)
-                      ? const Icon(Icons.settings, key: ValueKey(1))
-                      : const Icon(Icons.settings_outlined, key: ValueKey(0)),
+                      ? const Icon(Icons.category, key: ValueKey(1))
+                      : const Icon(Icons.category_outlined, key: ValueKey(0)),
                 ),
                 label: "category".tr)
           ],

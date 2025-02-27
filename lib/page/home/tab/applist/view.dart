@@ -1,6 +1,7 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:gstore/compent/app_widget.dart';
 import 'package:gstore/core/icons/Icons.dart';
 import 'package:gstore/core/service/user_manager.dart';
@@ -65,7 +66,7 @@ class AppListState extends State<ApplistPage>
             icon: const Icon(
               AliIcon.appUpdateCenter,
             ),
-            onPressed: () => Get.toNamed(AppRoute.updateCenter),
+            onPressed: () => Get.toNamed(AppRoute.test_home),
           ),
           IconButton(
             tooltip: "download_tip".tr,
@@ -148,7 +149,7 @@ class AppListState extends State<ApplistPage>
                     }
                     var length = data.length;
                     return SizedBox(
-                      height: 180,
+                      height: 210,
                       child: PageView.builder(
                         controller: PageController(
                             viewportFraction: 0.8, initialPage: 5000),
@@ -177,6 +178,63 @@ class AppListState extends State<ApplistPage>
                     );
                   }),
             ),
+            SliverToBoxAdapter(
+              child: FutureBuilder(
+                  future: logic.hotList,
+                  builder: (context, snap) {
+                    if (!snap.hasData && null != snap.data) {
+                      return const SizedBox();
+                    }
+                    var data = snap.data;
+                    return Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.only(left: 16, right: 16),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            crossAxisAlignment: CrossAxisAlignment.center,
+                            children: [
+                              Text(
+                                "hot_tool_title".tr,
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .headlineSmall
+                                    ?.copyWith(fontWeight: FontWeight.bold),
+                              ),
+                              InkWell(
+                                onTap: () => logic.toCategory("TOOLS"),
+                                child: Text(
+                                  "more".tr,
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .headlineSmall
+                                      ?.copyWith(fontWeight: FontWeight.bold),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        SizedBox(
+                          height: 210,
+                          child: ListView.separated(
+                            separatorBuilder: (context, index) {
+                              return const SizedBox(
+                                width: 16,
+                              );
+                            },
+                            padding: const EdgeInsets.all(16),
+                            itemCount: data?.length ?? 0,
+                            scrollDirection: Axis.horizontal,
+                            itemBuilder: (context, index) => GestureDetector(
+                                onTap: () => logic.appDetail(data[index]),
+                                child: _buildHotItem(context, data![index])),
+                          ),
+                        ),
+                      ],
+                    );
+                  }),
+            ),
             SliverPadding(
               padding: const EdgeInsets.all(0),
               sliver: GetBuilder<ApplistLogic>(
@@ -200,6 +258,64 @@ class AppListState extends State<ApplistPage>
             )
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildHotItem(
+    BuildContext context,
+    AppInfo appinfo,
+  ) {
+    return Container(
+      width: 110,
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.1),
+            blurRadius: 2,
+            offset: const Offset(0, 1),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            constraints: const BoxConstraints.expand(height: 90, width: 90),
+            margin: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.primaryContainer,
+                // border: Border.all(width: 0),
+                borderRadius: BorderRadius.circular(20)),
+            child: CachedNetworkImage(
+              fit: BoxFit.fill,
+              placeholder: (context, url) {
+                return const CupertinoActivityIndicator(
+                  radius: 8,
+                );
+              },
+              imageUrl: appinfo.icon,
+              width: 56,
+              height: 56,
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.only(left: 8, right: 8),
+            child: Text(
+              appinfo.name,
+              style: Theme.of(context).textTheme.bodyLarge,
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.only(left: 8, right: 8),
+            child: Text(
+              "实用工具",
+              style: Theme.of(context).textTheme.bodyLarge,
+            ),
+          )
+        ],
       ),
     );
   }

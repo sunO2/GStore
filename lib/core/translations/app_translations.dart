@@ -21,6 +21,8 @@ class Messages extends Translations {
           "get_otp": "获取验证码",
           "otp": "验证码",
           "install": "安装",
+          "hot_tool_title": "热门工具",
+          "more": "更多",
         },
         'ko_KR': {
           'home': '홈',
@@ -40,6 +42,8 @@ class Messages extends Translations {
           "get_otp": "OTP",
           "otp": "OTP",
           "install": "설치",
+          "hot_tool_title": "인기 도구",
+          "more": "더 보기",
         },
         'ru_RU': {
           'home': 'Главная',
@@ -59,6 +63,8 @@ class Messages extends Translations {
           "get_otp": "OTP",
           "otp": "OTP",
           "install": "Установить",
+          "hot_tool_title": "Популярные инструменты",
+          "more": "Больше",
         },
         'en_US': {
           'home': 'Home',
@@ -78,6 +84,8 @@ class Messages extends Translations {
           "get_otp": "OTP",
           "otp": "OTP",
           "install": "Install",
+          "hot_tool_title": "Hot Tools",
+          "more": "More",
         }
       };
 }

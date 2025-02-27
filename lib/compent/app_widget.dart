@@ -22,7 +22,7 @@ class AppItemWidget extends StatelessWidget {
             padding: const EdgeInsets.only(bottom: 8),
             child: (appIcon != null)
                 ? Hero(
-                    tag: appIcon!,
+                    tag: "appIcon!",
                     child: ClipRRect(
                       borderRadius: BorderRadius.circular(16),
                       child: Container(
@@ -54,7 +54,7 @@ class AppItemWidget extends StatelessWidget {
                   ),
           ),
           Hero(
-              tag: appName ?? "",
+              tag: "appName ?? " "",
               child: Text(
                 appName ?? "",
                 maxLines: 1,

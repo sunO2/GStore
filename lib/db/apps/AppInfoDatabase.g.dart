@@ -183,8 +183,18 @@ class _$AppInfoDao extends AppInfoDao {
   }
 
   @override
-  Future<List<AppInfo>> searchCategoryLike(String word) async {
-    return _queryAdapter.queryList('SELECT * FROM apps WHERE category LIKE ?1',
+  Future<AppCategory?> queryCategory(String id) async {
+    return _queryAdapter.query('SELECT * FROM category WHERE id = ?1',
+        mapper: (Map<String, Object?> row) => AppCategory(row['id'] as String,
+            row['description'] as String, row['icon'] as String),
+        arguments: [id]);
+  }
+
+  @override
+  Future<List<AppInfo>> searchCategoryLike(String word,
+      {int limit = -1}) async {
+    return _queryAdapter.queryList(
+        'SELECT * FROM apps WHERE category LIKE ?1 LIMIT ?2',
         mapper: (Map<String, Object?> row) => AppInfo(
             row['appId'] as String,
             row['name'] as String,
@@ -193,7 +203,7 @@ class _$AppInfoDao extends AppInfoDao {
             row['icon'] as String,
             row['des'] as String,
             _categoryConverter.decode(row['category'] as String?)),
-        arguments: [word]);
+        arguments: [word, limit]);
   }
 }
 

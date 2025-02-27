@@ -1,4 +1,5 @@
 import 'package:gstore/core/core.dart';
+import 'package:gstore/page/ai_test/home.dart';
 import 'package:gstore/page/page.dart';
 
 class AppRoute {
@@ -10,6 +11,7 @@ class AppRoute {
   static String updateCenter = "/GStore/updateCenter";
   static String webView = "/GStore/webView";
   static String auth = "/GStore/auth";
+  static String test_home = "/GStore/test/home";
 
   static List<GetPage> pages = [
     GetPage(
@@ -29,6 +31,7 @@ class AppRoute {
     GetPage(name: updateCenter, page: () => const UpdateManager()),
     GetPage(name: webView, page: () => const WebPage()),
     GetPage(name: auth, page: () => const AuthPage()),
+    GetPage(name: test_home, page: () => const AppStoreHomePage()),
   ];
 }
 

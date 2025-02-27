@@ -33,7 +33,8 @@ class SearchLogic extends GetxController with GithubRequestMix {
   void queryCaertory() async {
     var category = Get.arguments;
     if (category is AppCategory) {
-      var searchList = await database?.dao.queryCategory(category.id);
+      var searchList =
+          await database?.dao.searchCategoryLike('%${category.id}%');
       if (searchList?.isNotEmpty ?? false) {
         searchController.sink.add(searchList!);
       }

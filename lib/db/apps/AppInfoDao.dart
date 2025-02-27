@@ -20,9 +20,9 @@ abstract class AppInfoDao {
   @Query('SELECT * FROM category')
   Future<List<AppCategory>> getAllCategory();
 
-  Future<List<AppInfo>> queryCategory(String word) =>
-      searchCategoryLike('%$word%');
+  @Query('SELECT * FROM category WHERE id = :id')
+  Future<AppCategory?> queryCategory(String id);
 
-  @Query('SELECT * FROM apps WHERE category LIKE :word')
-  Future<List<AppInfo>> searchCategoryLike(String word);
+  @Query('SELECT * FROM apps WHERE category LIKE :word LIMIT :limit')
+  Future<List<AppInfo>> searchCategoryLike(String word, {int limit = -1});
 }

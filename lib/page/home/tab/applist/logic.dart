@@ -11,6 +11,10 @@ class ApplistLogic extends GetxController with GithubRequestMix {
   final ApplistState state = ApplistState();
   AppInfoDatabase? appDatabase;
 
+  Future<List<AppInfo>> get hotList async {
+    return await "gstore".repoDB.db.dao.searchCategoryLike("%TOOLS%", limit: 5);
+  }
+
   @override
   void onReady() async {
     super.onReady();
@@ -70,5 +74,11 @@ class ApplistLogic extends GetxController with GithubRequestMix {
 
   void appDetail(AppInfo app) {
     Get.toNamed(AppRoute.appDetail, arguments: app);
+  }
+
+  void toCategory(String category) {
+    appDatabase?.dao.queryCategory(category).then((category) {
+      Get.toNamed(AppRoute.categoryPage, arguments: category);
+    });
   }
 }
