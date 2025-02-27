@@ -58,6 +58,10 @@ class DownloadService extends GetxService {
       return downloadStatus;
     }
 
+    if (downloadStatus.isDownloading) {
+      return downloadStatus;
+    }
+
     final file = File(downloadStatus.savePath);
     var downloadTempFile = File("${file.path}.temp");
     // 确保目录存在

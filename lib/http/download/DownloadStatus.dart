@@ -92,10 +92,13 @@ class DownloadStatus {
 }''';
   }
 
+  bool get isDownloading => null != _cancelTokens[fileName];
+
   cancelDownload() {
     var token = _cancelTokens[fileName];
     if (null != token) {
       token.cancel();
+      token = null;
       _cancelTokens.remove(fileName);
     }
   }
