@@ -20,22 +20,26 @@ class MinePage extends StatelessWidget {
                 color: Theme.of(context).primaryColor.withAlpha(30)),
             padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
             width: 240,
-            child: const Row(
+            child: Row(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
-                Padding(
+                const Padding(
                   padding: EdgeInsets.only(top: 4),
                   child: Icon(
+                    color: Colors.grey,
                     Icons.search,
                     size: 24,
                   ),
                 ),
-                SizedBox(
+                const SizedBox(
                   width: 16,
                 ),
-                Text("搜索应用",
-                    style: TextStyle(fontWeight: FontWeight.w400, fontSize: 18))
+                Text("search_tip".tr,
+                    style: const TextStyle(
+                        color: Colors.grey,
+                        fontWeight: FontWeight.w400,
+                        fontSize: 18))
               ],
             ),
           ),

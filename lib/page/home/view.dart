@@ -44,7 +44,7 @@ class HomePage extends StatelessWidget {
                           size: 20,
                         ),
                 ),
-                label: "应用"),
+                label: "home".tr),
             NavigationDestination(
                 icon: AnimatedSwitcher(
                   duration: const Duration(milliseconds: 300),
@@ -52,7 +52,7 @@ class HomePage extends StatelessWidget {
                       ? const Icon(Icons.settings, key: ValueKey(1))
                       : const Icon(Icons.settings_outlined, key: ValueKey(0)),
                 ),
-                label: "分类")
+                label: "category".tr)
           ],
         );
       }),

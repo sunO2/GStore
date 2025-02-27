@@ -52,7 +52,7 @@ class DetailPage extends StatelessWidget {
                 si: SvgIcon.history(context),
               ),
             ),
-            tooltip: "历史版本",
+            tooltip: "history".tr,
           ),
           IconButton(
             onPressed: logic.openProjectBrowser,
@@ -63,7 +63,7 @@ class DetailPage extends StatelessWidget {
                 si: SvgIcon.browser(context),
               ),
             ),
-            tooltip: "仓库浏览",
+            tooltip: "repository_browser".tr,
           )
         ],
       ),

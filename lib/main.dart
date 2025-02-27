@@ -4,6 +4,7 @@ import 'package:gstore/core/service/downloadService.dart';
 import 'package:gstore/core/service/user_manager.dart';
 import 'package:gstore/core/theme/theme_utils.dart';
 import 'package:gstore/core/transition/app_transition.dart';
+import 'package:gstore/core/translations/app_translations.dart';
 import 'package:gstore/http/github/dio_client.dart';
 import 'package:gstore/http/github/github_auth_api.dart';
 import 'package:gstore/http/github/github_client.dart';
@@ -55,6 +56,9 @@ main() async {
           ),
         );
       },
+      locale: Get.deviceLocale,
+      fallbackLocale: const Locale("en", "US"),
+      translations: Messages(),
       initialRoute: AppRoute.home,
       getPages: AppRoute.pages,
       themeMode: ThemeMode.system,

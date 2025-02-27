@@ -14,7 +14,7 @@ class DownloadManager extends StatelessWidget {
     final logic = Get.put(DownloadManagerLogic());
     return Scaffold(
       appBar: AppBar(
-        title: const Text("下载管理"),
+        title: Text("download_tip".tr),
       ),
       body: Container(
           padding: const EdgeInsets.only(left: 8, right: 8),
@@ -25,7 +25,7 @@ class DownloadManager extends StatelessWidget {
                 var downloadList = snap.data;
                 if (snap.connectionState != ConnectionState.active ||
                     (downloadList?.isEmpty ?? true)) {
-                  return const Text("下载列表为空");
+                  return Text("download_list_empty".tr);
                 }
                 return ListView.builder(
                   shrinkWrap: true,
@@ -210,7 +210,7 @@ class DownloadManager extends StatelessWidget {
                                                           data.fileName
                                                               .endsWith(".apk"))
                                                         IconButton(
-                                                          tooltip: "安装",
+                                                          tooltip: "install".tr,
                                                           icon: const Icon(Icons
                                                               .install_mobile),
                                                           onPressed: () {
@@ -222,7 +222,8 @@ class DownloadManager extends StatelessWidget {
                                                           DownloadStatus
                                                               .DOWNLOAD_READY)
                                                         IconButton(
-                                                          tooltip: "开始下载",
+                                                          tooltip:
+                                                              "download".tr,
                                                           icon: const Icon(
                                                               Icons.play_arrow),
                                                           onPressed: () {
@@ -235,7 +236,9 @@ class DownloadManager extends StatelessWidget {
                                                           DownloadStatus
                                                               .DOWNLOAD_LOADING)
                                                         IconButton(
-                                                          tooltip: "暂停下载",
+                                                          tooltip:
+                                                              "download_pause"
+                                                                  .tr,
                                                           icon: const Icon(
                                                               Icons.pause),
                                                           onPressed: () {
@@ -244,7 +247,8 @@ class DownloadManager extends StatelessWidget {
                                                           },
                                                         ),
                                                       IconButton(
-                                                        tooltip: "重新下载",
+                                                        tooltip:
+                                                            "re_download".tr,
                                                         icon: const Icon(
                                                             Icons.refresh),
                                                         onPressed: () {

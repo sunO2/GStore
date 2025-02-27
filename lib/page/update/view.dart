@@ -49,7 +49,7 @@ class UpdateManager extends StatelessWidget {
     final logic = Get.put(UpdateLogic());
     return Scaffold(
         appBar: AppBar(
-          title: const Text("应用更新"),
+          title: Text("updata_tip".tr),
         ),
         body: Container(
           padding: const EdgeInsets.all(16),
@@ -79,12 +79,12 @@ class UpdateManager extends StatelessWidget {
   }
 
   Widget colorWidget(BuildContext context, String key, Color color) {
-    return  Container(
-              color: color,
-              padding: EdgeInsets.all(4),
-              margin: const EdgeInsets.only(left: 16, top: 8, bottom: 8),
-              width: double.maxFinite,
-              child: Text(key),
-            );
+    return Container(
+      color: color,
+      padding: EdgeInsets.all(4),
+      margin: const EdgeInsets.only(left: 16, top: 8, bottom: 8),
+      width: double.maxFinite,
+      child: Text(key),
+    );
   }
 }

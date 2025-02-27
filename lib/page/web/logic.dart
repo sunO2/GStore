@@ -46,4 +46,11 @@ class WebPageLogic extends GetxController with GithubRequestMix {
   void registerEvent(InAppWebViewController controller) {
     webViewController = controller;
   }
+
+  @override
+  void onClose() {
+    webViewController?.stopLoading();
+    webViewController?.dispose();
+    super.onClose();
+  }
 }

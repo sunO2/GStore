@@ -14,8 +14,8 @@ class AuthPage extends StatelessWidget {
     return Scaffold(
       appBar: AppBar(
         centerTitle: true,
-        title: const Text("GitHub 登录",
-            style: TextStyle(fontWeight: FontWeight.bold)),
+        title: Text("login_to_github".tr,
+            style: const TextStyle(fontWeight: FontWeight.bold)),
       ),
       body: PopScope(
           canPop: false,
@@ -67,7 +67,7 @@ class AuthPage extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
                 Text(
-                  "获取验证码",
+                  "get_otp".tr,
                   style: Theme.of(context)
                       .textTheme
                       .displaySmall
@@ -91,7 +91,7 @@ class AuthPage extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
-                  '验证码: ${logic.state.verificationCode.value}',
+                  '${"otp".tr}: ${logic.state.verificationCode.value}',
                   style: Theme.of(context)
                       .textTheme
                       .displaySmall

@@ -1,12 +1,10 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:gstore/compent/app_widget.dart';
 import 'package:gstore/core/icons/Icons.dart';
 import 'package:gstore/core/service/user_manager.dart';
 import 'package:gstore/http/github/user_info/user_info.dart';
-import 'package:gstore/page/web/browser.dart';
 
 import 'logic.dart';
 import 'package:gstore/core/core.dart';
@@ -30,29 +28,32 @@ class AppListState extends State<ApplistPage>
         title: GestureDetector(
           onTap: logic.search,
           child: Tooltip(
-            message: "搜索",
+            message: "search".tr,
             child: Container(
               decoration: BoxDecoration(
                   borderRadius: const BorderRadius.all(Radius.circular(40)),
                   color: Theme.of(context).primaryColor.withAlpha(30)),
               padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
-              child: const Row(
+              child: Row(
                 mainAxisSize: MainAxisSize.max,
                 crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
-                  Padding(
+                  const Padding(
                     padding: EdgeInsets.only(top: 4),
                     child: Icon(
+                      color: Colors.grey,
                       Icons.search,
                       size: 24,
                     ),
                   ),
-                  SizedBox(
+                  const SizedBox(
                     width: 16,
                   ),
-                  Text("搜索应用",
-                      style:
-                          TextStyle(fontWeight: FontWeight.w400, fontSize: 18))
+                  Text("search_tip".tr,
+                      style: const TextStyle(
+                          color: Colors.grey,
+                          fontWeight: FontWeight.w400,
+                          fontSize: 18))
                 ],
               ),
             ),
@@ -60,14 +61,14 @@ class AppListState extends State<ApplistPage>
         ),
         actions: [
           IconButton(
-            tooltip: "应用更新",
+            tooltip: "updata_tip".tr,
             icon: const Icon(
               AliIcon.appUpdateCenter,
             ),
             onPressed: () => Get.toNamed(AppRoute.updateCenter),
           ),
           IconButton(
-            tooltip: "下载中心",
+            tooltip: "download_tip".tr,
             icon: const Icon(AliIcon.appDownloadCenter),
             onPressed: () => Get.toNamed(AppRoute.downloadCenter),
           ),
@@ -126,7 +127,7 @@ class AppListState extends State<ApplistPage>
             }
 
             return IconButton(
-              tooltip: user.name ?? "登陆",
+              tooltip: user.name ?? "login".tr,
               icon: icon(user),
               onPressed: onPressed,
             );
