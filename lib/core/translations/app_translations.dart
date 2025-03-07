@@ -21,7 +21,7 @@ class Messages extends Translations {
           "get_otp": "获取验证码",
           "otp": "验证码",
           "install": "安装",
-          "hot_tool_title": "热门工具",
+          "hot_tool_title": "热门应用",
           "more": "更多",
         },
         'ko_KR': {

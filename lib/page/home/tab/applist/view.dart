@@ -2,6 +2,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/src/scheduler/ticker.dart';
 import 'package:gstore/compent/app_widget.dart';
 import 'package:gstore/core/icons/Icons.dart';
 import 'package:gstore/core/service/user_manager.dart';
@@ -18,7 +19,7 @@ class ApplistPage extends StatefulWidget {
 }
 
 class AppListState extends State<ApplistPage>
-    with AutomaticKeepAliveClientMixin {
+    with AutomaticKeepAliveClientMixin, TickerProviderStateMixin {
   @override
   Widget build(BuildContext context) {
     super.build(context);
@@ -227,6 +228,7 @@ class AppListState extends State<ApplistPage>
                                 width: 16,
                               );
                             },
+                            reverse: true,
                             padding: const EdgeInsets.all(16),
                             itemCount: data?.length ?? 0,
                             scrollDirection: Axis.horizontal,
@@ -239,6 +241,20 @@ class AppListState extends State<ApplistPage>
                     );
                   }),
             ),
+            // SliverToBoxAdapter(
+            //   child: TabBar(
+            //       dividerHeight: 0,
+            //       indicatorWeight: 8,
+            //       enableFeedback: false,
+            //       indicatorSize: TabBarIndicatorSize.label,
+            //       controller: TabController(length: 3, vsync: this),
+            //       tabs: ["a", "b", "c"].map((a) {
+            //         return Tab(
+            //           text: a,
+            //           icon: Icon(Icons.import_contacts),
+            //         );
+            //       }).toList()),
+            // ),
             SliverPadding(
               padding: const EdgeInsets.all(0),
               sliver: GetBuilder<ApplistLogic>(
@@ -319,7 +335,10 @@ class AppListState extends State<ApplistPage>
             padding: const EdgeInsets.only(left: 8, right: 8),
             child: Text(
               "实用工具",
-              style: Theme.of(context).textTheme.bodyLarge,
+              style: Theme.of(context)
+                  .textTheme
+                  .bodyLarge
+                  ?.copyWith(fontWeight: FontWeight.w200),
             ),
           )
         ],

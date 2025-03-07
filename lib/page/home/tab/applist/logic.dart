@@ -11,10 +11,6 @@ class ApplistLogic extends GetxController with GithubRequestMix {
   final ApplistState state = ApplistState();
   AppInfoDatabase? appDatabase;
 
-  Future<List<AppInfo>> get hotList async {
-    return await "gstore".repoDB.db.dao.searchCategoryLike("%TOOLS%", limit: 5);
-  }
-
   @override
   void onReady() async {
     super.onReady();
@@ -70,6 +66,24 @@ class ApplistLogic extends GetxController with GithubRequestMix {
     if (null != appInfo) {
       appDetail(appInfo);
     }
+  }
+
+  Future<List<AppInfo>> get hotList async {
+    return await "gstore"
+        .repoDB
+        .db
+        .dao
+        .searchCategoryLike("%HOT%", limit: 6)
+        .then((list) async {
+      if (list.isEmpty) {
+        return await "gstore"
+            .repoDB
+            .db
+            .dao
+            .searchCategoryLike("%TOOLS%", limit: 5);
+      }
+      return list;
+    });
   }
 
   void appDetail(AppInfo app) {
