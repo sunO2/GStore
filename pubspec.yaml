@@ -45,7 +45,10 @@ dependencies:
   http: ^1.2.2
   cached_network_image: ^3.4.1
 
-  installed_apps: any
+  installed_apps:
+    git:
+      url: https://github.com/shatanikmahanty/installed_apps.git
+      ref: master
   jovial_svg: any
   path_provider: any
   dio: any
@@ -73,7 +76,6 @@ dev_dependencies:
   permission_handler: ^11.3.1
   path_provider: ^2.1.4
   app_installer: ^1.2.0
-  installed_apps: ^1.5.2
   jovial_svg: ^1.1.22
   floor_generator: ^1.4.2
 
