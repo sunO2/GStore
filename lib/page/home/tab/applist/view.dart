@@ -2,13 +2,14 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
-import 'package:gstore/compent/app_widget.dart';
 import 'package:gstore/core/icons/Icons.dart';
+import 'package:gstore/core/model/AppDetailRequest.dart';
 import 'package:gstore/core/service/user_manager.dart';
 import 'package:gstore/http/github/user_info/user_info.dart';
 import 'package:gstore/page/web/browser.dart';
 
 import 'logic.dart';
+import 'state.dart';
 import 'package:gstore/core/core.dart';
 
 class ApplistPage extends StatefulWidget {
@@ -132,74 +133,278 @@ class AppListState extends State<ApplistPage>
           }),
         ],
       ),
-      body: RefreshIndicator(
-        onRefresh: logic.checkUpdata,
-        child: CustomScrollView(
-          slivers: [
-            SliverToBoxAdapter(
-              child: FutureBuilder(
-                  future: logic.getBanner(),
-                  builder: (contest, snap) {
-                    var data = snap.data;
-                    if (null == data) {
-                      return const SizedBox();
-                    }
-                    var length = data.length;
-                    return SizedBox(
-                      height: 180,
-                      child: PageView.builder(
-                        controller: PageController(
-                            viewportFraction: 0.8, initialPage: 5000),
-                        itemCount: 10000,
-                        itemBuilder: (context, item) {
-                          var index = item % length;
-                          return GestureDetector(
-                            onTap: () =>
-                                logic.appDetailOfAppId(data[index]["appId"]),
-                            child: Padding(
-                              padding: const EdgeInsets.only(
-                                  left: 8, right: 8, top: 16, bottom: 16),
-                              child: ClipRRect(
-                                borderRadius:
-                                    const BorderRadius.all(Radius.circular(16)),
-                                child: CachedNetworkImage(
-                                  height: 180,
-                                  fit: BoxFit.fill,
-                                  imageUrl: data[index]["banner"],
-                                ),
-                              ),
-                            ),
-                          );
-                        },
-                      ),
-                    );
-                  }),
+      body: Obx(() => _buildBody(context, logic, state)),
+    );
+  }
+
+  Widget _buildBody(BuildContext context, ApplistLogic logic, ApplistState state) {
+    // 加载状态
+    if (state.isLoading.value) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    // 错误状态
+    if (state.errorMessage.value.isNotEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.error_outline, size: 48, color: Colors.red),
+            const SizedBox(height: 16),
+            Text(state.errorMessage.value),
+            const SizedBox(height: 16),
+            ElevatedButton(
+              onPressed: logic.loadAggregatedApps,
+              child: const Text('重试'),
             ),
-            SliverPadding(
-              padding: const EdgeInsets.all(0),
-              sliver: GetBuilder<ApplistLogic>(
-                  builder: (ctl) => SliverGrid.builder(
-                        gridDelegate:
-                            const SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount: 4,
-                        ),
-                        itemBuilder: (context, index) {
-                          var app = state.apps[index];
-                          return AppItemWidget(
-                            appName: app.name,
-                            appIcon: app.icon,
-                            onTap: () =>
-                                Get.toNamed(AppRoute.appDetail, arguments: app),
-                          );
-                        },
-                        itemCount:
-                            state.apps.isNotEmpty ? state.apps.length : 0,
-                      )),
-            )
+            const SizedBox(height: 16),
+            TextButton(
+              onPressed: () => Get.toNamed(AppRoute.home),
+              child: const Text('去发现页面添加应用'),
+            ),
           ],
         ),
+      );
+    }
+
+    // 空状态
+    if (state.apps.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              Icons.apps_outlined,
+              size: 64,
+              color: Colors.grey[400],
+            ),
+            const SizedBox(height: 16),
+            Text(
+              '还没有添加任何应用',
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    color: Colors.grey[600],
+                  ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '点击"发现"标签浏览和添加应用',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Colors.grey[500],
+                  ),
+            ),
+            const SizedBox(height: 24),
+            ElevatedButton.icon(
+              onPressed: () => Get.toNamed(AppRoute.home),
+              icon: const Icon(Icons.explore),
+              label: const Text('去发现'),
+            ),
+          ],
+        ),
+      );
+    }
+
+    // 应用列表
+    return RefreshIndicator(
+      onRefresh: logic.loadAggregatedApps,
+      child: CustomScrollView(
+        slivers: [
+          // Banner
+          SliverToBoxAdapter(
+            child: FutureBuilder(
+                future: logic.getBanner(),
+                builder: (contest, snap) {
+                  var data = snap.data;
+                  if (null == data) {
+                    return const SizedBox();
+                  }
+                  var length = data.length;
+                  return SizedBox(
+                    height: 180,
+                    child: PageView.builder(
+                      controller: PageController(
+                          viewportFraction: 0.8, initialPage: 5000),
+                      itemCount: 10000,
+                      itemBuilder: (context, item) {
+                        var index = item % length;
+                        return GestureDetector(
+                          onTap: () {
+                            // Banner 点击暂不处理，因为 banner 数据结构可能变化
+                          },
+                          child: Padding(
+                            padding: const EdgeInsets.only(
+                                left: 8, right: 8, top: 16, bottom: 16),
+                            child: ClipRRect(
+                              borderRadius:
+                                  const BorderRadius.all(Radius.circular(16)),
+                              child: CachedNetworkImage(
+                                height: 180,
+                                fit: BoxFit.fill,
+                                imageUrl: data[index]["banner"],
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  );
+                }),
+          ),
+
+          // 应用列表
+          SliverPadding(
+            padding: const EdgeInsets.all(0),
+            sliver: SliverGrid.builder(
+              gridDelegate:
+                  const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 4,
+              ),
+              itemBuilder: (context, index) {
+                var app = state.apps[index];
+                return _buildAggregatedAppItem(
+                  context,
+                  app,
+                  logic,
+                );
+              },
+              itemCount: state.apps.length,
+            ),
+          ),
+        ],
       ),
     );
+  }
+
+  /// 聚合应用卡片
+  Widget _buildAggregatedAppItem(
+    BuildContext context,
+    AggregatedAppInfo app,
+    ApplistLogic logic,
+  ) {
+    final channelColor = _getChannelColor(app.channel);
+    final channelShortName = _getChannelShortName(app.channel);
+
+    return GestureDetector(
+      onTap: () => logic.appDetail(app),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: SizedBox(
+              width: 56,
+              height: 56,
+              child: Stack(
+                children: [
+                  // 图标
+                  Positioned.fill(
+                    child: Hero(
+                      tag: app.appInfo.icon ?? "",
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(16),
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color:
+                                Theme.of(context).colorScheme.primaryContainer,
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          child: app.appInfo.icon != null
+                              ? CachedNetworkImage(
+                                  fit: BoxFit.fill,
+                                  placeholder: (context, url) {
+                                    return const CupertinoActivityIndicator(
+                                      radius: 8,
+                                    );
+                                  },
+                                  errorWidget: (context, url, error) {
+                                    return const Icon(Icons.error);
+                                  },
+                                  imageUrl: app.appInfo.icon!,
+                                  width: 56,
+                                  height: 56,
+                                )
+                              : const SizedBox(),
+                        ),
+                      ),
+                    ),
+                  ),
+                  // 渠道标识 - 右下角
+                  Positioned(
+                    right: 0,
+                    bottom: 0,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 3, vertical: 1),
+                      decoration: BoxDecoration(
+                        color: channelColor.withOpacity(0.9),
+                        borderRadius: const BorderRadius.only(
+                          topRight: Radius.circular(0),
+                          topLeft: Radius.circular(4),
+                          bottomLeft: Radius.circular(4),
+                          bottomRight: Radius.circular(16),
+                        ),
+                      ),
+                      child: Text(
+                        channelShortName,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 7,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          Hero(
+            tag: app.appInfo.name ?? "",
+            child: Text(
+              app.appInfo.name ?? "",
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 获取渠道颜色
+  Color _getChannelColor(ChannelType type) {
+    switch (type) {
+      case ChannelType.localDb:
+        return Colors.blue;
+      case ChannelType.github:
+        return Colors.purple;
+      case ChannelType.http:
+        return Colors.orange;
+      case ChannelType.vivo:
+        return const Color(0xFF4155D0); // vivo 蓝
+      default:
+        return Colors.grey;
+    }
+  }
+
+  /// 获取渠道短名称
+  String _getChannelShortName(ChannelType type) {
+    switch (type) {
+      case ChannelType.localDb:
+        return 'DB';
+      case ChannelType.github:
+        return 'GH';
+      case ChannelType.http:
+        return 'API';
+      case ChannelType.vivo:
+        return 'vivo';
+      default:
+        return 'APP';
+    }
   }
 
   @override

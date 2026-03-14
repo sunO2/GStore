@@ -1,0 +1,200 @@
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:get/get.dart';
+import 'package:gstore/core/channel/channel.dart';
+import 'package:gstore/core/icons/Icons.dart';
+
+import 'state.dart';
+
+class ChannelTestLogic extends GetxController {
+  final ChannelTestState state = ChannelTestState();
+  late ChannelManager _channelManager;
+
+  @override
+  void onReady() async {
+    super.onReady();
+    try {
+      _channelManager = Get.find(tag: 'channelManager');
+    } catch (e) {
+      debugPrint('ChannelTest: 渠道管理器未初始化，请先在 main.dart 中调用 ChannelIntegration.initialize()');
+    }
+    _loadInitialData();
+  }
+
+  /// 加载初始数据
+  Future<void> _loadInitialData() async {
+    if (_channelManager != null) {
+      await executeQuery('getAllApps');
+    }
+  }
+
+  /// 获取渠道列表
+  List<ChannelInfo> get channelList => _channelManager?.allChannelInfo ?? [];
+
+  /// 获取启用的渠道
+  List<IChannel> get enabledChannels => _channelManager?.enabledChannels ?? [];
+
+  /// 选择渠道
+  void selectChannel(ChannelType type) {
+    state.selectedChannel.value = type;
+  }
+
+  /// 执行查询
+  Future<void> executeQuery(String operation) async {
+    if (_channelManager == null) {
+      state.errorMessage.value = '渠道管理器未初始化';
+      return;
+    }
+
+    state.operationType.value = operation;
+    state.isQuerying.value = true;
+    state.errorMessage.value = '';
+    state.queryResult.value = null;
+
+    try {
+      ChannelResult result;
+
+      switch (operation) {
+        case 'getAllApps':
+          result = await _channelManager.getAllApps(
+            from: state.selectedChannel.value,
+          );
+          if (result.success) {
+            state.apps.value = result.data ?? [];
+          }
+          break;
+
+        case 'getAppInfo':
+          result = await _channelManager.getAppInfo(
+            state.appId.value,
+            from: state.selectedChannel.value,
+          );
+          if (result.success && result.data != null) {
+            state.apps.value = [result.data!];
+          } else {
+            state.apps.value = [];
+          }
+          break;
+
+        case 'searchApps':
+          if (state.searchKeyword.value.isEmpty) {
+            state.errorMessage.value = '请输入搜索关键词';
+            state.isQuerying.value = false;
+            return;
+          }
+          result = await _channelManager.searchApps(
+            state.searchKeyword.value,
+            from: state.selectedChannel.value,
+          );
+          if (result.success) {
+            state.apps.value = result.data ?? [];
+          }
+          break;
+
+        case 'searchByCategory':
+          result = await _channelManager.searchByCategory(
+            state.categoryId.value,
+            from: state.selectedChannel.value,
+          );
+          if (result.success) {
+            state.apps.value = result.data ?? [];
+          }
+          break;
+
+        case 'getAllCategories':
+          result = await _channelManager.getAllCategories(
+            from: state.selectedChannel.value,
+          );
+          if (result.success) {
+            // 分类数据不显示在应用列表中
+            state.apps.value = [];
+          }
+          break;
+
+        case 'checkUpdate':
+          result = await _channelManager.checkUpdate(
+            from: state.selectedChannel.value,
+          );
+          state.apps.value = [];
+          break;
+
+        case 'checkAllUpdates':
+          var results = await _channelManager.checkAllUpdates();
+          var sb = StringBuffer();
+          results.forEach((type, result) {
+            sb.writeln('$type: ${result.success ? (result.data ?? false) : "失败"}');
+          });
+          state.queryResult.value = ChannelResult(
+            from: state.selectedChannel.value,
+            success: true,
+            metadata: {'summary': sb.toString()},
+          );
+          state.isQuerying.value = false;
+          return;
+
+        default:
+          state.errorMessage.value = '未知操作: $operation';
+          state.isQuerying.value = false;
+          return;
+      }
+
+      state.queryResult.value = result;
+
+      if (!result.success) {
+        state.errorMessage.value = result.error ?? '查询失败';
+      }
+    } catch (e) {
+      state.errorMessage.value = '查询异常: $e';
+      state.queryResult.value = ChannelResult.failure(
+        from: state.selectedChannel.value,
+        error: e.toString(),
+      );
+    } finally {
+      state.isQuerying.value = false;
+    }
+  }
+
+  /// 清除缓存
+  Future<void> clearCache() async {
+    if (_channelManager == null) return;
+
+    await _channelManager.clearCache(
+      from: state.selectedChannel.value,
+    );
+    Get.snackbar(
+      '清除缓存',
+      '已清除 ${state.selectedChannel.value.code} 渠道的缓存',
+      icon: const Icon(Icons.check_circle, color: Colors.green),
+    );
+  }
+
+  /// 刷新数据
+  Future<void> refresh() async {
+    await executeQuery(state.operationType.value);
+  }
+
+  /// 切换渠道并刷新
+  Future<void> switchChannel(ChannelType type) async {
+    selectChannel(type);
+    await refresh();
+  }
+
+  /// 获取渠道图标
+  IconData getChannelIcon(ChannelType type) {
+    switch (type) {
+      case ChannelType.localDb:
+        return Icons.storage;
+      case ChannelType.github:
+        return Icons.code;
+      case ChannelType.http:
+        return Icons.cloud;
+      default:
+        return Icons.apps;
+    }
+  }
+
+  @override
+  void onClose() {
+    super.onClose();
+  }
+}

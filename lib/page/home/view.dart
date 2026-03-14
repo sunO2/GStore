@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:gstore/page/home/tab/mine/view.dart';
 import 'package:gstore/page/home/tab/applist/view.dart';
+import 'package:gstore/page/home/tab/channeltest/view.dart';
+import 'package:gstore/page/home/tab/discovery/view.dart';
 
 import 'logic.dart';
 import 'package:gstore/core/icons/Icons.dart';
@@ -18,7 +20,9 @@ class HomePage extends StatelessWidget {
         controller: logic.controller,
         children: [
           const ApplistPage(),
+          DiscoveryPage(),
           MinePage(),
+          ChannelTestPage(),
         ],
       ),
       bottomNavigationBar: Obx(() {
@@ -44,15 +48,31 @@ class HomePage extends StatelessWidget {
                           size: 20,
                         ),
                 ),
-                label: "应用"),
+                label: "首页"),
             NavigationDestination(
                 icon: AnimatedSwitcher(
                   duration: const Duration(milliseconds: 300),
                   child: (logic.state.index.value == 1)
-                      ? const Icon(Icons.settings, key: ValueKey(1))
-                      : const Icon(Icons.settings_outlined, key: ValueKey(0)),
+                      ? const Icon(Icons.explore, key: ValueKey(2))
+                      : const Icon(Icons.explore_outlined, key: ValueKey(3)),
                 ),
-                label: "分类")
+                label: "发现"),
+            NavigationDestination(
+                icon: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 300),
+                  child: (logic.state.index.value == 2)
+                      ? const Icon(Icons.settings, key: ValueKey(4))
+                      : const Icon(Icons.settings_outlined, key: ValueKey(5)),
+                ),
+                label: "分类"),
+            NavigationDestination(
+                icon: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 300),
+                  child: (logic.state.index.value == 3)
+                      ? const Icon(Icons.science, key: ValueKey(6))
+                      : const Icon(Icons.science_outlined, key: ValueKey(7)),
+                ),
+                label: "Channel")
           ],
         );
       }),
