@@ -6,6 +6,8 @@ import 'package:gstore/core/theme/theme_utils.dart';
 import 'package:gstore/http/github/dio_client.dart';
 import 'package:gstore/http/github/github_auth_api.dart';
 import 'package:gstore/http/github/github_client.dart';
+import 'package:gstore/core/channel/ChannelIntegration.dart';
+import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
 
 import 'package:gstore/core/core.dart';
 
@@ -16,6 +18,14 @@ registerService() async {
   Get.lazyPut<GithubAuthApi>(() => GithubAuthApi(DioClient().get()));
   Get.lazyPut<DownloadService>(() => DownloadService(DioClient().get()));
   Get.lazyPut<UserManager>(() => UserManager());
+
+  // 初始化渠道系统
+  await ChannelIntegration.initialize();
+
+  // 初始化应用聚合管理器
+  final aggregator = AppAggregatorManager.instance;
+  await aggregator.initialize();
+  Get.put(aggregator, tag: 'aggregatorManager');
 }
 
 colorSchemeSeed(ColorScheme? color, Brightness brightness) {

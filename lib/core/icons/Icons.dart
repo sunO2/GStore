@@ -15,6 +15,15 @@ class AliIcon {
       IconData(0xe614, fontFamily: _aLiFontIcon);
   static const IconData browser = IconData(0xe60d, fontFamily: _aLiFontIcon);
   static const IconData history = IconData(0xe665, fontFamily: _aLiFontIcon);
+
+  // Channel 相关图标
+  static const IconData database = IconData(0xe600, fontFamily: _aLiFontIcon);
+  static const IconData github = IconData(0xe666, fontFamily: _aLiFontIcon);
+  static const IconData link = IconData(0xe667, fontFamily: _aLiFontIcon);
+  static const IconData app = IconData(0xe601, fontFamily: _aLiFontIcon);
+  static const IconData check = IconData(0xe668, fontFamily: _aLiFontIcon);
+  static const IconData delete = IconData(0xe669, fontFamily: _aLiFontIcon);
+  static const IconData touchApp = IconData(0xe66a, fontFamily: _aLiFontIcon);
 }
 
 class SvgIcon {

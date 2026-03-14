@@ -1,0 +1,41 @@
+import 'package:get/get.dart';
+import 'package:gstore/core/aggregate/aggregate.dart';
+import 'package:gstore/core/channel/channel.dart';
+import 'package:gstore/db/apps/AppInfo.dart';
+
+class DiscoveryState {
+  /// 当前选中的渠道筛选
+  final selectedChannel = Rx<ChannelType?>(null);
+
+  /// 所有渠道的应用列表
+  final Map<ChannelType, List<AppInfo>> channelApps = <ChannelType, List<AppInfo>>{}.obs;
+
+  /// 已添加应用索引 (channelId -> Set<appId>)
+  final Map<String, Set<String>> addedAppsIndex = <String, Set<String>>{}.obs;
+
+  /// 加载状态
+  final isLoading = false.obs;
+
+  /// 错误信息
+  final errorMessage = ''.obs;
+
+  /// 搜索关键词
+  final searchKeyword = ''.obs;
+
+  /// 当前显示模式（全部/已添加/未添加）
+  final displayMode = DisplayMode.all.obs;
+
+  DiscoveryState() {}
+}
+
+/// 显示模式
+enum DisplayMode {
+  /// 全部
+  all,
+
+  /// 已添加
+  added,
+
+  /// 未添加
+  notAdded,
+}

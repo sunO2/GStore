@@ -1,5 +1,7 @@
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:gstore/db/apps/AppInfoDatabase.dart';
+import 'package:gstore/core/aggregate/aggregate.dart';
+import 'package:gstore/core/model/AppDetailRequest.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/http/github/dio_client.dart';
@@ -9,13 +11,38 @@ import 'state.dart';
 
 class ApplistLogic extends GetxController with GithubRequestMix {
   final ApplistState state = ApplistState();
-  AppInfoDatabase? appDatabase;
+  late AppAggregatorManager _aggregator;
+  StreamSubscription? _appsSubscription;
 
   @override
   void onReady() async {
     super.onReady();
-    await refreshDataOfDB();
+    _aggregator = Get.find(tag: 'aggregatorManager');
+
+    // 监听已添加应用变化
+    _appsSubscription = _aggregator.appsChangedStream.listen((_) {
+      loadAggregatedApps();
+    });
+
+    await loadAggregatedApps();
     checkUpdata();
+  }
+
+  /// 加载聚合应用
+  Future<void> loadAggregatedApps() async {
+    state.isLoading.value = true;
+    state.errorMessage.value = '';
+
+    try {
+      final apps = await _aggregator.getAggregatedApps();
+      state.apps = apps;
+      update();
+    } catch (e) {
+      state.errorMessage.value = '加载失败: $e';
+      log('ApplistLogic: 加载聚合应用失败 - $e');
+    } finally {
+      state.isLoading.value = false;
+    }
   }
 
   Future<void> checkUpdata() async {
@@ -31,23 +58,8 @@ class ApplistLogic extends GetxController with GithubRequestMix {
 
     var downloadStatus = await "gstore".checkUpdate();
     if (downloadStatus == DownloadStatus.DOWNLOAD_SUCCESS) {
-      refreshDataOfDB();
+      await loadAggregatedApps();
     }
-  }
-
-  refreshDataOfDB() async {
-    appDatabase = "gstore".repoDB.db;
-    state.apps = await appDatabase!.dao
-        .getAllApps()
-        .catchError((error) => List<AppInfo>.empty());
-    var config =
-        await appDatabase!.dao.getVersion().onError((error, stackTrace) {
-      log("数据库版本获取失败： $error");
-    });
-    state.version = config?.version ?? "0.0.0";
-    log("加载数据库数据： ${state.version}");
-    updateDataBaseVersion(state.version);
-    update();
   }
 
   Future<List<dynamic>> getBanner() async {
@@ -61,14 +73,45 @@ class ApplistLogic extends GetxController with GithubRequestMix {
     Get.toNamed(AppRoute.search);
   }
 
-  void appDetailOfAppId(String appId) async {
-    var appInfo = await appDatabase?.dao.getAppInfo(appId);
-    if (null != appInfo) {
-      appDetail(appInfo);
+  void appDetail(AggregatedAppInfo app) {
+    // 创建轻量级的详情请求参数
+    final request = AppDetailRequest(
+      appId: app.appInfo.appId,
+      name: app.appInfo.name,
+      packageName: app.appInfo.repositories,
+      icon: app.appInfo.icon,
+      description: app.appInfo.des,
+      channel: app.channel,
+    );
+    Get.toNamed(AppRoute.appDetail, arguments: request);
+  }
+
+  /// 移除应用
+  Future<void> removeApp(AggregatedAppInfo app) async {
+    try {
+      await _aggregator.removeApp(
+        channel: app.channel,
+        appId: app.appInfo.appId,
+      );
+
+      Get.snackbar(
+        '已移除',
+        app.appInfo.name,
+        icon: Icon(Icons.remove_circle, color: Colors.orange[700]),
+        duration: const Duration(seconds: 1),
+      );
+    } catch (e) {
+      Get.snackbar(
+        '操作失败',
+        e.toString(),
+        icon: const Icon(Icons.error, color: Colors.red),
+      );
     }
   }
 
-  void appDetail(AppInfo app) {
-    Get.toNamed(AppRoute.appDetail, arguments: app);
+  @override
+  void onClose() {
+    _appsSubscription?.cancel();
+    super.onClose();
   }
 }

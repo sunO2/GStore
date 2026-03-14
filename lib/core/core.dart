@@ -4,6 +4,8 @@ import 'package:gstore/db/apps/AppInfo.dart';
 export 'package:gstore/core/service/db_manager.dart';
 export 'package:gstore/core/utils/logger.dart';
 export 'package:gstore/core/routers.dart';
+export 'package:gstore/core/channel/channel.dart';
+export 'package:gstore/core/aggregate/aggregate.dart';
 export 'package:get/get.dart';
 export 'package:gstore/http/github_request_mix.dart';
 export 'package:gstore/db/apps/AppInfo.dart';
