@@ -2,6 +2,7 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/design/design_tokens.dart';
 import 'logic.dart';
 import 'state.dart';
 
@@ -16,42 +17,63 @@ class AuthPage extends StatelessWidget {
         centerTitle: true,
         title: const Text("GitHub 登录",
             style: TextStyle(fontWeight: FontWeight.bold)),
-      ),
-      body: PopScope(
-          canPop: false,
-          onPopInvokedWithResult: (didpop, result) async {
-            bool isSuccess = logic.state.status.value == AuthStatus.success;
-            if (!isSuccess &&
-                (await logic.webViewController?.canGoBack() ?? false)) {
+        leading: IconButton(
+          icon: const Icon(Icons.close),
+          onPressed: () async {
+            // 如果登录成功，直接返回
+            if (logic.state.status.value == AuthStatus.success) {
+              Get.back(result: AuthStatus.success);
+              return;
+            }
+
+            // 检查 WebView 是否可以返回
+            if (await logic.webViewController?.canGoBack() ?? false) {
               logic.webViewController?.goBack();
               return;
             }
-            Get.back(result: logic.state.status.value);
+
+            // 显示确认对话框
+            final shouldPop = await AppDialogs.showConfirmDialog(
+              title: '确认退出登录？',
+              message: '您尚未完成 GitHub 登录，确定要退出吗？',
+              confirmText: '确认退出',
+              cancelText: '继续登录',
+            );
+
+            if (shouldPop == true) {
+              Get.back();
+            }
           },
-          child: InAppWebView(
-            onWebViewCreated: (controller) {
-              logic.registerEvent(controller);
-            },
-            initialUrlRequest: URLRequest(
-                url: WebUri.uri(Uri.parse(
-                    "file:///android_asset/flutter_assets/assets/auth/auth_des.html"))), // https://github.com/login/device"))),
-            onLoadStop: (controller, url) {
-              var urlString = url.toString();
-              log("当前加载的url: $urlString");
-              controller.injectJavascriptFileFromAsset(
-                  assetFilePath: "assets/auth/auto_input_auth_code.js");
-              if (urlString
-                  .endsWith("/login/device?skip_account_picker=true")) {
-                logic.state.status.value = AuthStatus.initial;
-              } else if (urlString.endsWith("/login/device/success")) {
-                logic.state.status.value = AuthStatus.success;
-              }
-            },
-            initialSettings: InAppWebViewSettings(
-              isInspectable: false,
-              javaScriptEnabled: true,
-            ),
-          )),
+        ),
+      ),
+      body: InAppWebView(
+        onWebViewCreated: (controller) {
+          logic.registerEvent(controller);
+        },
+        initialUrlRequest: URLRequest(
+            url: WebUri.uri(Uri.parse(
+                "file:///android_asset/flutter_assets/assets/auth/auth_des.html"))),
+        onLoadStop: (controller, url) {
+          var urlString = url.toString();
+          debugPrint("当前加载的url: $urlString");
+          controller.injectJavascriptFileFromAsset(
+              assetFilePath: "assets/auth/auto_input_auth_code.js");
+          if (urlString
+              .endsWith("/login/device?skip_account_picker=true")) {
+            logic.state.status.value = AuthStatus.initial;
+          } else if (urlString.endsWith("/login/device/success")) {
+            logic.state.status.value = AuthStatus.success;
+            // 登录成功后延迟自动返回
+            Future.delayed(const Duration(milliseconds: 500), () {
+              Get.back(result: AuthStatus.success);
+            });
+          }
+        },
+        initialSettings: InAppWebViewSettings(
+          isInspectable: false,
+          javaScriptEnabled: true,
+        ),
+      ),
       floatingActionButton: Obx(() {
         if (logic.state.status.value == AuthStatus.initial ||
             logic.state.status.value == AuthStatus.requestUserCode) {

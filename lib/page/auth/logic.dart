@@ -1,6 +1,7 @@
 import 'package:dio/dio.dart';
 import 'package:flutter/services.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/service/user_manager.dart';
 import 'state.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
@@ -21,6 +22,10 @@ class AuthPageLogic extends GetxController with GithubRequestMix {
 
   void registerEvent(InAppWebViewController controller) {
     webViewController = controller;
+    // 重置状态，确保每次打开登录页面都是干净的状态
+    state.status.value = AuthStatus.empty;
+    state.verificationCode.value = '';
+
     controller.addJavaScriptHandler(
         handlerName: "gstore_login_to_github",
         callback: (data) {
@@ -64,7 +69,7 @@ class AuthPageLogic extends GetxController with GithubRequestMix {
 
   Future<void> copyVerificationCode() async {
     await Clipboard.setData(ClipboardData(text: state.verificationCode.value));
-    Get.snackbar('提示', '验证码已复制到剪贴板');
+    AppDialogs.showSuccess('验证码已复制到剪贴板', title: '提示');
   }
 
   @override

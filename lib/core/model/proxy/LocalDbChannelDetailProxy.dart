@@ -9,34 +9,47 @@ import 'package:gstore/core/model/proxy/ChannelDetailProxy.dart';
 class LocalDbChannelDetailProxy extends ChannelDetailProxy {
   LocalDbChannelDetailProxy(super.data);
 
-  @override
+
   ChannelType get channelType => ChannelType.localDb;
 
-  @override
+
   String get appId => data['appId'] ?? '';
 
-  @override
+
   String get name => data['name'] ?? '';
 
-  @override
+
+  String get appName => name;
+
+
   String get icon => data['icon'] ?? '';
 
-  @override
+
   String get description => data['description'] ?? '';
 
-  @override
+
   String? get version => data['version']?.toString();
 
-  @override
+
   String? get developer => data['developer']?.toString();
 
-  @override
-  String? get packageName => data['packageName']?.toString();
 
-  @override
+  String get packageName => data['packageName']?.toString() ?? '';
+
+
   String? get projectUrl => data['projectUrl']?.toString();
 
-  @override
+
+  String? get readme {
+    final readmeValue = extra['readme']?.toString();
+    debugPrint('LocalDbChannelDetailProxy: readme getter 调用');
+    debugPrint('LocalDbChannelDetailProxy: extra keys = ${extra.keys.toList()}');
+    debugPrint('LocalDbChannelDetailProxy: readme value = ${readmeValue != null ? "${readmeValue.substring(0, readmeValue.length > 50 ? 50 : readmeValue.length)}..." : "null"}');
+    debugPrint('LocalDbChannelDetailProxy: readme length = ${readmeValue?.length ?? 0}');
+    return readmeValue;
+  }
+
+
   List<DownloadInfo> get downloads {
     final downloadsList = data['downloads'];
     debugPrint('LocalDbChannelDetailProxy: downloads 类型 = ${downloadsList.runtimeType}');
@@ -82,7 +95,7 @@ class LocalDbChannelDetailProxy extends ChannelDetailProxy {
     return const [];
   }
 
-  @override
+
   List<DetailSection> get sections {
     final sectionsList = data['sections'];
     if (sectionsList is List) {
@@ -100,7 +113,7 @@ class LocalDbChannelDetailProxy extends ChannelDetailProxy {
     return const [DetailSection.downloads];
   }
 
-  @override
+
   List<StatTag> buildStatTags() {
     final tags = <StatTag>[];
 

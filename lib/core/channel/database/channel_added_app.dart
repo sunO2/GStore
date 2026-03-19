@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:floor/floor.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 
@@ -31,6 +33,9 @@ class ChannelAddedApp {
   /// 渠道类型代码
   final String channelCode;
 
+  /// 扩展字段，JSON 字符串格式存储额外信息
+  final String? extra;
+
   ChannelAddedApp({
     required this.appId,
     required this.name,
@@ -41,6 +46,7 @@ class ChannelAddedApp {
     this.category,
     required this.addTime,
     required this.channelCode,
+    this.extra,
   });
 
   /// 从 ChannelType 创建 channelCode
@@ -54,6 +60,7 @@ class ChannelAddedApp {
     String? category,
     required int addTime,
     required ChannelType channel,
+    String? extra,
   }) {
     return ChannelAddedApp(
       appId: appId,
@@ -65,6 +72,26 @@ class ChannelAddedApp {
       category: category,
       addTime: addTime,
       channelCode: channel.code,
+      extra: extra,
     );
+  }
+
+  /// 从 extra 中获取 JSON 数据
+  Map<String, dynamic>? getExtraData() {
+    if (extra == null || extra!.isEmpty) return null;
+    try {
+      return jsonDecode(extra!) as Map<String, dynamic>;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /// 从 extra 中获取指定字段的值
+  T? getExtra<T>(String key) {
+    final data = getExtraData();
+    if (data == null) return null;
+    final value = data[key];
+    if (value is T) return value;
+    return null;
   }
 }

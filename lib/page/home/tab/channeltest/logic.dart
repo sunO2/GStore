@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/channel/channel.dart';
 import 'package:gstore/core/icons/Icons.dart';
+import 'package:gstore/core/core.dart';
 
 import 'state.dart';
 
@@ -188,6 +189,10 @@ class ChannelTestLogic extends GetxController {
         return Icons.code;
       case ChannelType.http:
         return Icons.cloud;
+      case ChannelType.vivo:
+        return Icons.phone_android;
+      case ChannelType.fdroid:
+        return Icons.extension;
       default:
         return Icons.apps;
     }
@@ -196,5 +201,48 @@ class ChannelTestLogic extends GetxController {
   @override
   void onClose() {
     super.onClose();
+  }
+
+  /// 显示日志
+  void showLogs() {
+    Get.toNamed(AppRoute.logViewer);
+  }
+
+  /// 切换开发者模式
+  void toggleDeveloperMode() {
+    state.developerMode.value = !state.developerMode.value;
+    Get.snackbar(
+      '开发者模式',
+      state.developerMode.value ? '已开启' : '已关闭',
+      icon: Icon(
+        state.developerMode.value ? Icons.bug_report : Icons.bug_report_outlined,
+        color: state.developerMode.value ? Colors.orange : Colors.grey,
+      ),
+      duration: const Duration(seconds: 1),
+    );
+  }
+
+  /// 选择操作（用于开发者模式）
+  void selectOperation(String operation) {
+    state.currentOperation.value = operation;
+    executeQuery(operation);
+  }
+
+  /// 获取渠道名称
+  String getChannelName(ChannelType type) {
+    switch (type) {
+      case ChannelType.localDb:
+        return '本地数据库';
+      case ChannelType.github:
+        return 'GitHub';
+      case ChannelType.http:
+        return 'HTTP API';
+      case ChannelType.vivo:
+        return 'vivo';
+      case ChannelType.fdroid:
+        return 'F-Droid';
+      default:
+        return type.code;
+    }
   }
 }

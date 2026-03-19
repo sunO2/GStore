@@ -1,11 +1,17 @@
 import 'package:get/get.dart';
 
+/// 认证状态枚举
 enum AuthStatus {
+  /// 空状态
   empty,
-  initial, // 初始状态
+  /// 初始状态
+  initial,
+  /// 请求用户码中
   requestUserCode,
-  verifying, // 验证中状态
-  success, // 验证中状态
+  /// 验证中
+  verifying,
+  /// 验证成功
+  success,
 }
 
 class AuthPageState {

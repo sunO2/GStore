@@ -8,7 +8,7 @@ import 'package:gstore/core/channel/model/ChannelInfo.dart';
 import 'package:gstore/core/channel/model/ChannelResult.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
-import 'package:gstore/core/model/IDetailData.dart';
+import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/model/proxy/GitHubChannelDetailProxy.dart';
 import 'package:gstore/db/apps/AppInfo.dart';
 import 'package:gstore/db/apps/AppInfo.dart' as db;
@@ -343,7 +343,7 @@ class GitHubChannel implements IChannel {
   }
 
   @override
-  Future<ChannelResult<IDetailData>> getAppDetail(
+  Future<ChannelResult<IDetailInfo>> getAppDetail(
     String appId, {
     bool forceRefresh = false,
   }) async {
@@ -413,17 +413,21 @@ class GitHubChannel implements IChannel {
 
       debugPrint('GitHubChannel: 最终下载列表数量 = ${downloads.length}');
 
-      // 获取 README
+      // 获取 README（添加超时控制）
       String? readme;
       if (apiList is Map && apiList['default_branch'] != null) {
         final branch = apiList['default_branch'].toString();
         final rawBaseUrl = 'https://raw.githubusercontent.com/${appInfo.user}/${appInfo.repositories}/refs/heads/$branch/';
         try {
-          final readmeMdResp = await http.get(Uri.parse('${rawBaseUrl}README.md'));
+          final readmeMdResp = await http
+              .get(Uri.parse('${rawBaseUrl}README.md'))
+              .timeout(const Duration(seconds: 10));
           if (readmeMdResp.statusCode == 200 && readmeMdResp.body.isNotEmpty) {
             readme = readmeMdResp.body;
           } else {
-            final readmeMdUpperResp = await http.get(Uri.parse('${rawBaseUrl}README.MD'));
+            final readmeMdUpperResp = await http
+                .get(Uri.parse('${rawBaseUrl}README.MD'))
+                .timeout(const Duration(seconds: 10));
             if (readmeMdUpperResp.statusCode == 200 && readmeMdUpperResp.body.isNotEmpty) {
               readme = readmeMdUpperResp.body;
             }

@@ -3,8 +3,11 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/aggregate/aggregate.dart';
 import 'package:gstore/core/channel/channel.dart';
+import 'package:gstore/core/channel/model/ChannelType.dart';
+import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/icons/Icons.dart';
 import 'package:gstore/db/apps/AppInfo.dart';
+import 'dart:async';
 
 import 'state.dart';
 
@@ -13,6 +16,18 @@ class DiscoveryLogic extends GetxController {
 
   late AppAggregatorManager _aggregator;
   late ChannelManager _channelManager;
+
+  // 搜索控制器
+  final searchController = TextEditingController();
+
+  // 防抖定时器
+  Timer? _debounceTimer;
+
+  // 选中的搜索渠道
+  ChannelType? _selectedSearchChannel;
+
+  /// 获取渠道列表（用于UI显示）
+  List<ChannelInfo> get channelList => _channelManager.allChannelInfo;
 
   @override
   void onReady() async {
@@ -86,6 +101,80 @@ class DiscoveryLogic extends GetxController {
   /// 搜索
   void setSearchKeyword(String keyword) {
     state.searchKeyword.value = keyword;
+  }
+
+  /// 显示渠道搜索对话框
+  void showChannelSearchDialog(BuildContext context) {
+    final availableChannels = _channelManager.enabledChannels;
+
+    Get.dialog(
+      AlertDialog(
+        title: const Text('选择搜索渠道'),
+        content: availableChannels.isEmpty
+            ? const Text('没有可用的渠道')
+            : Column(
+                mainAxisSize: MainAxisSize.min,
+                children: availableChannels.map((channel) {
+                  return ListTile(
+                    leading: Icon(_getChannelIcon(channel.info.type)),
+                    title: Text(channel.info.name),
+                    subtitle: Text(channel.info.description),
+                    onTap: () {
+                      Get.back();  // 关闭对话框
+                      _openChannelSearch(context, channel);
+                    },
+                  );
+                }).toList(),
+              ),
+      ),
+    );
+  }
+
+  /// 打开渠道搜索页面
+  void _openChannelSearch(BuildContext context, dynamic channel) {
+    // 获取渠道的搜索组件
+    final searchWidget = channel.getAddAppWidget(
+      context,
+      (app) => toggleApp(channel.info.type, app),
+    );
+
+    if (searchWidget != null) {
+      // 渠道提供了搜索组件，直接显示
+      Get.dialog(
+        Dialog(
+          child: SizedBox(
+            width: Get.width * 0.9,
+            height: Get.height * 0.8,
+            child: searchWidget,
+          ),
+        ),
+      );
+    } else {
+      // 渠道不提供搜索组件，显示提示
+      Get.snackbar(
+        '提示',
+        '${channel.info.name} 不支持搜索功能',
+        duration: const Duration(seconds: 2),
+      );
+    }
+  }
+
+  /// 获取渠道图标
+  IconData _getChannelIcon(ChannelType type) {
+    switch (type) {
+      case ChannelType.localDb:
+        return Icons.storage;
+      case ChannelType.github:
+        return Icons.code;
+      case ChannelType.http:
+        return Icons.cloud;
+      case ChannelType.vivo:
+        return Icons.phone_android;
+      case ChannelType.fdroid:
+        return Icons.android;
+      case ChannelType.custom:
+        return Icons.apps;
+    }
   }
 
   /// 检查应用是否已添加
@@ -227,6 +316,8 @@ class DiscoveryLogic extends GetxController {
         return Icons.cloud;
       case ChannelType.vivo:
         return Icons.phone_android;
+      case ChannelType.fdroid:
+        return Icons.extension;
       default:
         return Icons.apps;
     }
@@ -477,8 +568,156 @@ class DiscoveryLogic extends GetxController {
     );
   }
 
+  /// 获取渠道名称
+  String getChannelName(ChannelType type) {
+    switch (type) {
+      case ChannelType.localDb:
+        return '本地数据库';
+      case ChannelType.github:
+        return 'GitHub';
+      case ChannelType.http:
+        return 'HTTP API';
+      case ChannelType.vivo:
+        return 'vivo';
+      case ChannelType.fdroid:
+        return 'F-Droid';
+      default:
+        return type.code;
+    }
+  }
+
+  /// 切换显示模式（简化版本）
+  void toggleDisplayMode() {
+    switch (state.displayMode.value) {
+      case DisplayMode.all:
+        setDisplayMode(DisplayMode.added);
+        break;
+      case DisplayMode.added:
+        setDisplayMode(DisplayMode.notAdded);
+        break;
+      case DisplayMode.notAdded:
+        setDisplayMode(DisplayMode.all);
+        break;
+    }
+  }
+
+  /// 选择搜索渠道
+  void selectSearchChannel(ChannelType? channel) {
+    _selectedSearchChannel = channel;
+  }
+
+  /// 执行搜索
+  Future<void> performSearch() async {
+    if (searchController.text.trim().isEmpty) {
+      return;
+    }
+
+    // 如果有选中的搜索渠道，只在该渠道搜索
+    if (_selectedSearchChannel != null) {
+      await _searchInChannel(_selectedSearchChannel!, searchController.text.trim());
+    } else {
+      // 搜索所有渠道
+      for (var channel in _channelManager.enabledChannels) {
+        await _searchInChannel(channel.info.type, searchController.text.trim());
+      }
+    }
+  }
+
+  /// 在指定渠道搜索
+  Future<void> _searchInChannel(ChannelType channelType, String keyword) async {
+    final channel = _channelManager.getChannel(channelType);
+    if (channel == null) return;
+
+    try {
+      final result = await channel.searchApps(keyword, forceRefresh: true);
+      if (result.success && result.data != null) {
+        state.channelApps[channelType] = result.data!;
+      }
+    } catch (e) {
+      debugPrint('DiscoveryLogic: 搜索 $channelType 失败 - $e');
+    }
+  }
+
+  /// 防抖搜索
+  void debounceSearch() {
+    _debounceTimer?.cancel();
+    _debounceTimer = Timer(const Duration(milliseconds: 500), () {
+      performSearch();
+    });
+  }
+
+  /// 显示批量操作菜单
+  void showBatchActions(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      builder: (context) => Container(
+        padding: AppSpacing.allLG,
+        child: SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.select_all),
+                title: const Text('全选当前页面'),
+                onTap: () {
+                  Get.back();
+                  _selectAllInCurrentView();
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.add_circle_outline),
+                title: const Text('批量添加已选'),
+                onTap: () {
+                  Get.back();
+                  _batchAddSelected();
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.remove_circle_outline),
+                title: const Text('批量移除已选'),
+                onTap: () {
+                  Get.back();
+                  _batchRemoveSelected();
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 全选当前视图
+  void _selectAllInCurrentView() {
+    Get.snackbar(
+      '提示',
+      '批量操作功能开发中',
+      icon: const Icon(Icons.info, color: Colors.blue),
+    );
+  }
+
+  /// 批量添加
+  void _batchAddSelected() {
+    Get.snackbar(
+      '提示',
+      '批量操作功能开发中',
+      icon: const Icon(Icons.info, color: Colors.blue),
+    );
+  }
+
+  /// 批量移除
+  void _batchRemoveSelected() {
+    Get.snackbar(
+      '提示',
+      '批量操作功能开发中',
+      icon: const Icon(Icons.info, color: Colors.blue),
+    );
+  }
+
   @override
   void onClose() {
+    searchController.dispose();
+    _debounceTimer?.cancel();
     super.onClose();
   }
 }

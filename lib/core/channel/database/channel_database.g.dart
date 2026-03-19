@@ -80,7 +80,7 @@ class _$ChannelDatabase extends ChannelDatabase {
     Callback? callback,
   ]) async {
     final databaseOptions = sqflite.OpenDatabaseOptions(
-      version: 1,
+      version: 2,
       onConfigure: (database) async {
         await database.execute('PRAGMA foreign_keys = ON');
         await callback?.onConfigure?.call(database);
@@ -96,7 +96,7 @@ class _$ChannelDatabase extends ChannelDatabase {
       },
       onCreate: (database, version) async {
         await database.execute(
-            'CREATE TABLE IF NOT EXISTS `channel_added_app` (`appId` TEXT NOT NULL, `name` TEXT NOT NULL, `user` TEXT NOT NULL, `repositories` TEXT NOT NULL, `icon` TEXT NOT NULL, `description` TEXT NOT NULL, `category` TEXT, `addTime` INTEGER NOT NULL, `channelCode` TEXT NOT NULL, PRIMARY KEY (`appId`))');
+            'CREATE TABLE IF NOT EXISTS `channel_added_app` (`appId` TEXT NOT NULL, `name` TEXT NOT NULL, `user` TEXT NOT NULL, `repositories` TEXT NOT NULL, `icon` TEXT NOT NULL, `description` TEXT NOT NULL, `category` TEXT, `addTime` INTEGER NOT NULL, `channelCode` TEXT NOT NULL, `extra` TEXT, PRIMARY KEY (`appId`))');
 
         await callback?.onCreate?.call(database, version);
       },
@@ -127,7 +127,8 @@ class _$ChannelAddedAppDao extends ChannelAddedAppDao {
                   'description': item.description,
                   'category': item.category,
                   'addTime': item.addTime,
-                  'channelCode': item.channelCode
+                  'channelCode': item.channelCode,
+                  'extra': item.extra
                 });
 
   final sqflite.DatabaseExecutor database;
@@ -152,7 +153,7 @@ class _$ChannelAddedAppDao extends ChannelAddedAppDao {
   Future<List<ChannelAddedApp>> getAppsByChannel(String channelCode) async {
     return _queryAdapter.queryList(
         'SELECT * FROM channel_added_app WHERE channelCode = ?1 ORDER BY addTime DESC',
-        mapper: (Map<String, Object?> row) => ChannelAddedApp(appId: row['appId'] as String, name: row['name'] as String, user: row['user'] as String, repositories: row['repositories'] as String, icon: row['icon'] as String, description: row['description'] as String, category: row['category'] as String?, addTime: row['addTime'] as int, channelCode: row['channelCode'] as String),
+        mapper: (Map<String, Object?> row) => ChannelAddedApp(appId: row['appId'] as String, name: row['name'] as String, user: row['user'] as String, repositories: row['repositories'] as String, icon: row['icon'] as String, description: row['description'] as String, category: row['category'] as String?, addTime: row['addTime'] as int, channelCode: row['channelCode'] as String, extra: row['extra'] as String?),
         arguments: [channelCode]);
   }
 
@@ -171,7 +172,7 @@ class _$ChannelAddedAppDao extends ChannelAddedAppDao {
   ) async {
     return _queryAdapter.query(
         'SELECT * FROM channel_added_app WHERE appId = ?1 AND channelCode = ?2 LIMIT 1',
-        mapper: (Map<String, Object?> row) => ChannelAddedApp(appId: row['appId'] as String, name: row['name'] as String, user: row['user'] as String, repositories: row['repositories'] as String, icon: row['icon'] as String, description: row['description'] as String, category: row['category'] as String?, addTime: row['addTime'] as int, channelCode: row['channelCode'] as String),
+        mapper: (Map<String, Object?> row) => ChannelAddedApp(appId: row['appId'] as String, name: row['name'] as String, user: row['user'] as String, repositories: row['repositories'] as String, icon: row['icon'] as String, description: row['description'] as String, category: row['category'] as String?, addTime: row['addTime'] as int, channelCode: row['channelCode'] as String, extra: row['extra'] as String?),
         arguments: [appId, channelCode]);
   }
 
@@ -195,7 +196,8 @@ class _$ChannelAddedAppDao extends ChannelAddedAppDao {
             description: row['description'] as String,
             category: row['category'] as String?,
             addTime: row['addTime'] as int,
-            channelCode: row['channelCode'] as String));
+            channelCode: row['channelCode'] as String,
+            extra: row['extra'] as String?));
   }
 
   @override

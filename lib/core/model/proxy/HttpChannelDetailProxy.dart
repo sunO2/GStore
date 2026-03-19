@@ -8,34 +8,37 @@ import 'package:gstore/core/model/proxy/ChannelDetailProxy.dart';
 class HttpChannelDetailProxy extends ChannelDetailProxy {
   HttpChannelDetailProxy(super.data);
 
-  @override
+
   ChannelType get channelType => ChannelType.http;
 
-  @override
+
   String get appId => data['appId'] ?? '';
 
-  @override
+
   String get name => data['name'] ?? '';
 
-  @override
+
+  String get appName => name;
+
+
   String get icon => data['icon'] ?? '';
 
-  @override
+
   String get description => data['description'] ?? '';
 
-  @override
+
   String? get version => data['version']?.toString();
 
-  @override
+
   String? get developer => data['developer']?.toString();
 
-  @override
-  String? get packageName => data['packageName']?.toString();
 
-  @override
+  String get packageName => data['packageName']?.toString() ?? '';
+
+
   String? get projectUrl => data['projectUrl']?.toString();
 
-  @override
+
   List<DownloadInfo> get downloads {
     final downloadsList = data['downloads'];
     if (downloadsList is List) {
@@ -69,7 +72,7 @@ class HttpChannelDetailProxy extends ChannelDetailProxy {
     return const [];
   }
 
-  @override
+
   List<DetailSection> get sections {
     final sectionsList = data['sections'];
     if (sectionsList is List) {
@@ -87,7 +90,7 @@ class HttpChannelDetailProxy extends ChannelDetailProxy {
     return const [DetailSection.downloads];
   }
 
-  @override
+
   List<StatTag> buildStatTags() {
     // HTTP 渠道默认没有统计标签
     return const [];

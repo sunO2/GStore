@@ -120,6 +120,40 @@ class DioClient {
     responseBody: true,
     error: true,
     compact: true,
+    // 过滤 F-Droid v2 索引文件和大文件下载的日志
+    filter: (options, args) {
+      final requestPath = options.uri.path;
+      final requestUrl = options.uri.toString();
+
+      // 过滤 F-Droid 索引文件 (index-v1.json, index-v2.json 等)
+      if (requestPath.contains('index-v') || requestUrl.contains('index-v')) {
+        return false;
+      }
+
+      // 过滤 F-Droid 增量文件 (index-v2-*.json)
+      if (RegExp(r'index-v\d+-\d+\.json').hasMatch(requestPath)) {
+        return false;
+      }
+
+      // 过滤 F-Droid entry 文件
+      if (requestPath.contains('entry.json') || requestPath.contains('entry.jar')) {
+        return false;
+      }
+
+      // 过滤 APK 文件下载
+      if (requestPath.endsWith('.apk')) {
+        return false;
+      }
+
+      // 过滤大型响应 (检查请求是否是大型文件)
+      // 如果是 F-Droid 仓库的请求，很可能是大文件
+      if (requestUrl.contains('f-droid.org/repo') &&
+          (requestPath.contains('.json') || requestPath.contains('.jar'))) {
+        return false;
+      }
+
+      return true;
+    },
   );
 
   /// 获取Dio实例

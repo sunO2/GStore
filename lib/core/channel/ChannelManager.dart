@@ -77,20 +77,42 @@ class ChannelManager {
     return channels;
   }
 
-  /// 检查渠道可用性
+  /// 检查渠道可用性（并行化提升性能）
   Future<List<ChannelType>> checkAvailableChannels() async {
-    List<ChannelType> availableTypes = [];
+    // 筛选出启用的渠道
+    final enabledEntries = _channels.entries
+        .where((entry) => entry.value.info.enabled)
+        .toList();
 
-    for (var entry in _channels.entries) {
-      if (entry.value.info.enabled) {
-        bool isAvailable = await entry.value.checkAvailable();
-        if (isAvailable) {
-          availableTypes.add(entry.key);
-        }
+    if (enabledEntries.isEmpty) {
+      return [];
+    }
+
+    // 并行检查所有渠道的可用性
+    final results = await Future.wait(
+      enabledEntries.map((entry) => _checkChannelWithFallback(entry)),
+      eagerError: false, // 某个渠道失败不影响其他渠道
+    );
+
+    // 收集可用的渠道类型
+    final availableTypes = <ChannelType>[];
+    for (var i = 0; i < enabledEntries.length; i++) {
+      if (results[i]) {
+        availableTypes.add(enabledEntries[i].key);
       }
     }
 
     return availableTypes;
+  }
+
+  /// 检查单个渠道可用性（带错误处理）
+  Future<bool> _checkChannelWithFallback(MapEntry<ChannelType, IChannel> entry) async {
+    try {
+      return await entry.value.checkAvailable();
+    } catch (e) {
+      debugPrint('ChannelManager: 检查渠道 ${entry.key.code} 失败 - $e');
+      return false;
+    }
   }
 
   // ==================== 查询方法（指定渠道） ====================

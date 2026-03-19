@@ -10,6 +10,12 @@ class AppRoute {
   static String updateCenter = "/GStore/updateCenter";
   static String webView = "/GStore/webView";
   static String auth = "/GStore/auth";
+  static String fdroidRepo = "/GStore/fdroidRepo";
+  static String logViewer = "/GStore/logViewer";
+  static String settings = "/GStore/settings";
+  static String themeSettings = "/GStore/themeSettings";
+  static String backup = "/GStore/backup";
+  static String webdavConfig = "/GStore/webdavConfig";
 
   static List<GetPage> pages = [
     GetPage(
@@ -28,5 +34,11 @@ class AppRoute {
     GetPage(name: updateCenter, page: () => const UpdateManager()),
     GetPage(name: webView, page: () => const WebPage()),
     GetPage(name: auth, page: () => const AuthPage()),
+    GetPage(name: fdroidRepo, page: () => FdroidRepoPage()),
+    GetPage(name: logViewer, page: () => const LogViewerPage()),
+    GetPage(name: settings, page: () => const SettingsPage()),
+    GetPage(name: themeSettings, page: () => const ThemeSettingsPage()),
+    GetPage(name: backup, page: () => const BackupPage()),
+    GetPage(name: webdavConfig, page: () => const WebDavConfigPage()),
   ];
 }

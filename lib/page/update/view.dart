@@ -2,6 +2,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:dynamic_color/dynamic_color.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
+import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/routers.dart';
 import 'package:gstore/core/utils/logger.dart';
 import 'package:gstore/db/apps/AppInfo.dart';
@@ -52,7 +53,7 @@ class UpdateManager extends StatelessWidget {
           title: const Text("应用更新"),
         ),
         body: Container(
-          padding: const EdgeInsets.all(16),
+          padding: AppSpacing.allLG,
           child: SingleChildScrollView(
             child: Column(
               children: [

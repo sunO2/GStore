@@ -10,7 +10,7 @@ import 'package:gstore/core/channel/model/ChannelInfo.dart';
 import 'package:gstore/core/channel/model/ChannelResult.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
-import 'package:gstore/core/model/IDetailData.dart';
+import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/model/proxy/VivoChannelDetailProxy.dart';
 import 'package:gstore/db/apps/AppInfo.dart';
 import 'package:gstore/db/apps/AppInfo.dart' as db;
@@ -128,12 +128,15 @@ class VivoChannel implements IChannel {
     bool forceRefresh = false,
   }) async {
     try {
+      debugPrint('VivoChannel: getAppInfo 开始 - appId=$appId, forceRefresh=$forceRefresh, _database=$_database');
+
       // 优先从渠道数据库中查询已保存的应用
       if (!forceRefresh && _database != null) {
         final channelApp = await _database!.dao.getApp(appId, ChannelType.vivo.code);
         if (channelApp != null) {
+          debugPrint('VivoChannel: 从渠道数据库找到应用 - ${channelApp.name}, extra=${channelApp.extra}');
           // 从数据库中找到了应用信息
-          final app = AppInfo(
+          final app = AppInfo.withExtra(
             channelApp.appId,
             channelApp.name,
             channelApp.user,
@@ -141,39 +144,51 @@ class VivoChannel implements IChannel {
             channelApp.icon,
             channelApp.description,
             channelApp.category?.split(','),
+            channelApp.extra,
           );
           return ChannelResult.success(
             data: app,
             from: ChannelType.vivo,
             fromCache: true,
           );
+        } else {
+          debugPrint('VivoChannel: 渠道数据库中未找到应用 - appId=$appId');
         }
       }
 
       // 数据库中没有，调用 API 获取详情
+      debugPrint('VivoChannel: 渠道数据库中没有数据，调用 API 获取详情');
+      // 需要从 extra 中获取 vivoId
+      String vivoId = appId; // 默认使用 appId
+      debugPrint('VivoChannel: 使用 appId 作为 vivoId - $vivoId');
+
       final response = await _dio.get(
         _detailUrl,
         queryParameters: {
           ..._defaultParams,
-          'appId': appId,
+          'appId': vivoId,
           'frompage': 'messageh5',
         },
       );
+
+      debugPrint('VivoChannel: API 响应状态码 - ${response.statusCode}');
 
       if (response.statusCode == 200) {
         final data = response.data is String ? jsonDecode(response.data) : response.data;
         final app = _parseAppDetail(data, appId);
 
+        debugPrint('VivoChannel: API 获取成功 - ${app?.name ?? "null"}');
         return ChannelResult.success(
           data: app,
           from: ChannelType.vivo,
           fromCache: false,
         );
       } else {
+        debugPrint('VivoChannel: API 返回错误状态码 - ${response.statusCode}');
         throw Exception('HTTP ${response.statusCode}');
       }
     } catch (e) {
-      debugPrint('VivoChannel: 获取应用信息失败 - $e');
+      debugPrint('VivoChannel: 获取应用信息失败 - appId=$appId, error=$e');
       return ChannelResult.failure(
         from: ChannelType.vivo,
         error: e.toString(),
@@ -182,28 +197,56 @@ class VivoChannel implements IChannel {
   }
 
   @override
-  Future<ChannelResult<IDetailData>> getAppDetail(
+  Future<ChannelResult<IDetailInfo>> getAppDetail(
     String appId, {
     bool forceRefresh = false,
   }) async {
     try {
-      // 先获取基本应用信息
-      final appInfoResult = await getAppInfo(appId, forceRefresh: forceRefresh);
-      if (!appInfoResult.success || appInfoResult.data == null) {
-        return ChannelResult.failure(
-          from: ChannelType.vivo,
-          error: appInfoResult.error ?? '应用不存在',
-        );
+      // 先获取基本应用信息（从数据库，获取 extra）
+      String? vivoId;
+      AppInfo? appInfo;
+
+      if (_database != null) {
+        final channelApp = await _database!.dao.getApp(appId, ChannelType.vivo.code);
+        if (channelApp != null && !forceRefresh) {
+          // 从数据库中找到了应用信息
+          appInfo = AppInfo.withExtra(
+            channelApp.appId,
+            channelApp.name,
+            channelApp.user,
+            channelApp.repositories,
+            channelApp.icon,
+            channelApp.description,
+            channelApp.category?.split(','),
+            channelApp.extra,
+          );
+
+          // 从 extra 中获取 vivoId
+          if (channelApp.extra != null) {
+            try {
+              final extraData = jsonDecode(channelApp.extra!) as Map<String, dynamic>;
+              vivoId = extraData['vivoId']?.toString();
+            } catch (e) {
+              debugPrint('VivoChannel: 解析 extra 失败 - $e');
+            }
+          }
+        }
       }
 
-      final appInfo = appInfoResult.data!;
+      // 如果没有找到 vivoId，使用 repositories 字段（保存的是 vivoId）
+      vivoId ??= appInfo?.repositories;
+
+      // 如果还是没有，使用 appId
+      vivoId ??= appId;
+
+      debugPrint('VivoChannel: getAppDetail - appId=$appId, vivoId=$vivoId');
 
       // 获取详细信息
       final response = await _dio.get(
         _detailUrl,
         queryParameters: {
           ..._defaultParams,
-          'appId': appId,
+          'appId': vivoId,
           'frompage': 'messageh5',
         },
       );
@@ -223,8 +266,13 @@ class VivoChannel implements IChannel {
       final version = detail['versionName']?.toString() ?? detail['version']?.toString();
       final versionCode = detail['versionCode']?.toString() ?? detail['version_code']?.toString();
       final size = detail['apkSize'] as int?;
-      final developer = detail['developerName']?.toString() ?? appInfo.user;
-      final packageName = detail['package_name']?.toString() ?? detail['packageName']?.toString() ?? appInfo.appId;
+      final developer = detail['developerName']?.toString() ?? appInfo?.user ?? '';
+      final packageName = detail['package_name']?.toString() ?? detail['packageName']?.toString() ?? appInfo?.appId ?? appId;
+
+      debugPrint('VivoChannel: 原始数据中的 package_name = ${detail['package_name']}');
+      debugPrint('VivoChannel: 原始数据中的 packageName = ${detail['packageName']}');
+      debugPrint('VivoChannel: appInfo?.appId = ${appInfo?.appId}');
+      debugPrint('VivoChannel: 最终使用的 packageName = $packageName');
 
       // 解析下载量、评分等统计信息
       final downloads = detail['downloadCount'] as int?;
@@ -263,7 +311,7 @@ class VivoChannel implements IChannel {
       // 应用详细介绍
       final description = detail['introduction']?.toString() ??
           detail['shortIntroduction']?.toString() ??
-          appInfo.des;
+          appInfo?.des ?? '';
 
       // 构建下载信息
       final downloadUrl = detail['download_url']?.toString() ?? detail['downloadUrl']?.toString();
@@ -292,10 +340,10 @@ class VivoChannel implements IChannel {
 
       // 构建原始数据 Map（保持原始格式）
       final rawData = <String, dynamic>{
-        'appId': appInfo.appId,
-        'name': appInfo.name,
-        'icon': appInfo.icon,
-        'description': appInfo.des,
+        'appId': appInfo?.appId ?? appId,
+        'name': appInfo?.name ?? '',
+        'icon': appInfo?.icon ?? '',
+        'description': appInfo?.des ?? '',
         'version': version,
         'developer': developer,
         'packageName': packageName,
@@ -507,10 +555,11 @@ class VivoChannel implements IChannel {
       category: app.category?.join(','),
       addTime: DateTime.now().millisecondsSinceEpoch,
       channel: ChannelType.vivo,
+      extra: app.extra, // 保存 extra 字段
     );
 
     await _database!.dao.insertApp(channelApp);
-    debugPrint('VivoChannel: 已保存搜索结果 ${app.name}');
+    debugPrint('VivoChannel: 已保存搜索结果 ${app.name}，extra=${app.extra}');
   }
 
   /// 从渠道数据库删除搜索结果
@@ -697,25 +746,39 @@ class VivoChannel implements IChannel {
 
         final map = item as Map<String, dynamic>;
 
-        // 解析关键字段 - 使用新的字段名
+        // 解析关键字段
         final id = map['id']?.toString() ?? '';
         final title = map['title_zh']?.toString() ?? map['title']?.toString() ?? '';
         final icon = map['icon_url']?.toString() ?? map['icon']?.toString() ?? '';
-        final packageName = map['package_name']?.toString() ?? map['packageName']?.toString() ?? id;
+        final packageName = map['package_name']?.toString() ?? map['packageName']?.toString() ?? '';
         final developer = map['developer']?.toString() ?? map['developerName']?.toString() ?? '';
         final remark = map['remark']?.toString() ?? map['introduction']?.toString() ?? map['shortIntroduction']?.toString() ?? '';
 
-        // 使用 id 作为 appId
-        final appId = id.isNotEmpty ? id : packageName;
+        // 使用 packageName 作为 appId（这样详情页可以用 packageName 检测安装）
+        final appId = packageName.isNotEmpty ? packageName : id;
 
-        apps.add(AppInfo(
+        // 构建扩展数据，保存所有原始信息
+        final extraData = <String, dynamic>{
+          'vivoId': id, // vivo 的应用 ID
+          'packageName': packageName,
+          'title': title,
+          'developer': developer,
+          'iconUrl': icon,
+          'remark': remark,
+        };
+        final extraJson = jsonEncode(extraData);
+
+        debugPrint('VivoChannel: 搜索结果 - id=$id, packageName=$packageName, appId=$appId');
+
+        apps.add(AppInfo.withExtra(
           appId,
           title,
           developer,
-          packageName,
+          id, // repositories 存放 vivoId
           icon,
           remark,
           null, // vivo 搜索结果中没有分类信息
+          extraJson,
         ));
       }
 

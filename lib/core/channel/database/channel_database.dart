@@ -12,7 +12,7 @@ part 'channel_database.g.dart';
 
 /// 渠道应用数据库
 /// 每个渠道维护自己添加的应用列表
-@Database(version: 1, entities: [ChannelAddedApp])
+@Database(version: 2, entities: [ChannelAddedApp])
 abstract class ChannelDatabase extends FloorDatabase {
   ChannelAddedAppDao get dao;
 
@@ -23,6 +23,24 @@ abstract class ChannelDatabase extends FloorDatabase {
 
     return await $FloorChannelDatabase
         .databaseBuilder(dbPath)
+        .addCallback(Callback(
+          onCreate: (database, version) async {
+            debugPrint('ChannelDatabase: 创建数据库，版本 $version');
+          },
+          onUpgrade: (database, startVersion, endVersion) async {
+            debugPrint('ChannelDatabase: 升级数据库 $startVersion -> $endVersion');
+            // 从版本 1 升级到版本 2：添加 extra 列
+            if (startVersion == 1 && endVersion == 2) {
+              await database.execute(
+                'ALTER TABLE channel_added_app ADD COLUMN extra TEXT',
+              );
+              debugPrint('ChannelDatabase: 已添加 extra 列');
+            }
+          },
+          onOpen: (database) async {
+            debugPrint('ChannelDatabase: 打开数据库');
+          },
+        ))
         .build();
   }
 }

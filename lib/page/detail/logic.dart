@@ -1,8 +1,15 @@
+import 'package:flutter/foundation.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/AppDetailRequest.dart';
-import 'package:gstore/core/model/IDetailData.dart';
+import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/service/downloadService.dart';
+import 'package:gstore/core/download/DownloadStrategyManager.dart';
+import 'package:gstore/core/download/strategy/impl/LocalDbDownloadStrategy.dart';
+import 'package:gstore/core/download/strategy/impl/VivoDownloadStrategy.dart';
+import 'package:gstore/core/download/strategy/impl/GitHubDownloadStrategy.dart';
+import 'package:gstore/core/download/strategy/impl/HttpDownloadStrategy.dart';
+import 'package:gstore/core/download/strategy/impl/FdroidDownloadStrategy.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
 import 'package:gstore/page/web/browser.dart';
 import 'package:installed_apps/installed_apps.dart';
@@ -40,18 +47,25 @@ class DetailLogic extends GetxController {
       return;
     }
 
-    // 转换为 AppDetailRequest
+    // 转换为 AppDetailRequest（类型安全）
     if (args is AppDetailRequest) {
-      request = args as AppDetailRequest;
-    } else if (args is Map) {
+      request = args;
+    } else if (args is Map<String, dynamic>) {
       // 尝试从 Map 转换
-      request = AppDetailRequest.fromAppInfo(
-        args as Map<String, dynamic>,
-        args['channel'] ?? ChannelType.localDb,
-      );
+      final channel = args['channel'];
+      final channelType = channel is ChannelType
+          ? channel
+          : (channel is String ? ChannelType.fromCode(channel) : ChannelType.localDb);
+      request = AppDetailRequest.fromAppInfo(args, channelType ?? ChannelType.localDb);
     } else {
       // 尝试从 AggregatedAppInfo 转换
-      request = AppDetailRequest.fromAggregatedAppInfo(args);
+      try {
+        request = AppDetailRequest.fromAggregatedAppInfo(args);
+      } catch (e) {
+        state.errorMessage.value = '无效的参数类型: ${args.runtimeType}';
+        state.isLoading.value = false;
+        return;
+      }
     }
 
     // 设置基础信息到 state
@@ -73,11 +87,6 @@ class DetailLogic extends GetxController {
     state.errorMessage.value = '';
 
     try {
-      // 检查应用是否已安装
-      if (await InstalledApps.isAppInstalled(request!.appId) ?? false) {
-        state.installInfo = await InstalledApps.getAppInfo(request!.appId);
-      }
-
       // 通过渠道管理器获取详情
       final channelInstance = _channelManager.getChannel(request!.channel);
       if (channelInstance == null) {
@@ -101,6 +110,68 @@ class DetailLogic extends GetxController {
       }
 
       state.detailInfo.value = result.data;
+
+      // 详情加载后，使用详情中的 packageName 重新检测安装状态
+      final detail = result.data;
+      debugPrint('DetailLogic: detail.appId = ${detail?.appId}');
+      debugPrint('DetailLogic: detail.packageName = "${detail?.packageName}"');
+      debugPrint('DetailLogic: detail.runtimeType = ${detail?.runtimeType}');
+
+      String? packageToCheck = detail?.packageName?.trim();
+      debugPrint('DetailLogic: packageName 长度 = ${detail?.packageName?.length ?? 0}');
+      debugPrint('DetailLogic: packageName bytes = ${detail?.packageName?.codeUnits}');
+
+      // 如果详情中没有 packageName，尝试使用 appId（如果它看起来像包名）
+      if ((packageToCheck == null || packageToCheck.isEmpty) &&
+          (detail?.appId?.contains('.') ?? false)) {
+        packageToCheck = detail!.appId.trim();
+        debugPrint('DetailLogic: 使用详情 appId 作为包名进行检测: $packageToCheck');
+      }
+
+      debugPrint('DetailLogic: 最终用于检测的包名 = "$packageToCheck"');
+
+      if (packageToCheck != null && packageToCheck.isNotEmpty) {
+        try {
+          final isInstalled = await InstalledApps.isAppInstalled(packageToCheck);
+          debugPrint('DetailLogic: InstalledApps.isAppInstalled("$packageToCheck") = $isInstalled');
+
+          if (isInstalled == true) {
+            state.installInfo.value = await InstalledApps.getAppInfo(packageToCheck);
+            debugPrint('DetailLogic: ✓ 应用已安装 - ${state.installInfo.value?.packageName}');
+            debugPrint('DetailLogic:   安装版本 = ${state.installInfo.value?.versionName}');
+            debugPrint('DetailLogic:   UI 将更新（installInfo 是响应式变量）');
+          } else {
+            debugPrint('DetailLogic: ✗ 应用未安装 - "$packageToCheck"');
+
+            // 尝试列出所有已安装应用，看看是否有类似包名
+            try {
+              final allApps = await InstalledApps.getInstalledApps();
+              debugPrint('DetailLogic: 已安装应用总数 = ${allApps.length}');
+
+              final packageToCheckLower = packageToCheck.toLowerCase();
+              final searchPart = packageToCheckLower.split('.').last;
+
+              final similarApps = allApps.where((app) {
+                final appName = app.packageName.toLowerCase();
+                return appName.contains(searchPart) || packageToCheckLower.contains(appName.split('.').last);
+              }).toList();
+
+              if (similarApps.isNotEmpty) {
+                debugPrint('DetailLogic: 找到类似包名的应用:');
+                for (var app in similarApps.take(5)) {
+                  debugPrint('DetailLogic:   - ${app.packageName} (${app.name})');
+                }
+              }
+            } catch (e) {
+              debugPrint('DetailLogic: 获取已安装应用列表失败: $e');
+            }
+          }
+        } catch (e) {
+          debugPrint('DetailLogic: 检测安装状态时出错: $e');
+        }
+      } else {
+        debugPrint('DetailLogic: 无法检测安装状态 - 没有可用的包名');
+      }
     } catch (e) {
       state.errorMessage.value = '加载详情失败: $e';
     } finally {
@@ -109,6 +180,7 @@ class DetailLogic extends GetxController {
   }
 
   /// 开始下载
+  /// 优先使用新的策略模式下载，失败时降级到旧方法
   Future<void> startDownload(
     DownloadInfo download, {
     int? downloadSize,
@@ -122,19 +194,69 @@ class DetailLogic extends GetxController {
     final appId = req?.appId ?? detail!.appId;
     final appName = req?.name ?? detail!.name;
 
-    final status = await Get.find<DownloadService>().download(
-      appId,
-      appName,
-      download.version ?? 'unknown',
-      download.url,
-      download.name,
-      downloadSize: download.size ?? downloadSize,
-    );
+    DownloadStatus? status;
 
-    counterController.sink.add(status);
-    downloadListenerSubscription = status.observer.listen((da) {
-      counterController.sink.add(da);
-    });
+    // 尝试使用新的策略模式下载
+    try {
+      // 确保策略管理器已初始化
+      _initializeDownloadStrategies();
+
+      // 创建下载上下文
+      final context = await DownloadStrategyManager.instance.createContext(
+        download,
+        detail!,
+      );
+
+      if (context != null) {
+        debugPrint('DetailLogic: 使用策略模式下载 - ${context.downloadUrl}');
+        status = await Get.find<DownloadService>().downloadWithContext(
+          context,
+          appId,
+          appName,
+          download.version ?? 'unknown',
+          download.name,
+        );
+      } else {
+        debugPrint('DetailLogic: 下载上下文创建失败，降级到旧方法');
+        throw Exception('Failed to create download context');
+      }
+    } catch (e) {
+      debugPrint('DetailLogic: 策略模式下载失败，降级到旧方法 - $e');
+      // 降级到旧的下载方法
+      status = await Get.find<DownloadService>().download(
+        appId,
+        appName,
+        download.version ?? 'unknown',
+        download.url,
+        download.name,
+        downloadSize: download.size ?? downloadSize,
+      );
+    }
+
+    if (status != null) {
+      counterController.sink.add(status);
+      downloadListenerSubscription = status.observer.listen((da) {
+        counterController.sink.add(da);
+      });
+    }
+  }
+
+  /// 初始化下载策略
+  /// 确保所有渠道的策略都已注册
+  void _initializeDownloadStrategies() {
+    final manager = DownloadStrategyManager.instance;
+
+    // 只在首次调用时注册策略
+    if (manager.strategyCount == 0) {
+      manager.registerAll([
+        LocalDbDownloadStrategy(),
+        VivoDownloadStrategy(),
+        GitHubDownloadStrategy(),
+        HttpDownloadStrategy(),
+        FdroidDownloadStrategy(),
+      ]);
+      debugPrint('DetailLogic: 已注册 ${manager.strategyCount} 个下载策略');
+    }
   }
 
   /// 启动应用
@@ -173,9 +295,9 @@ class DetailLogic extends GetxController {
       // 如果是 GitHub 渠道，构造 GitHub URL
       final detailFromLogic = state.detailInfo.value;
       if (detailFromLogic != null) {
-        // 尝试从 extra 获取 user/repositories
-        final apiData = detailFromLogic.extra['apiData'] as Map?;
-        if (apiData != null && apiData['full_name'] != null) {
+        // 尝试从 extra 获取 user/repositories（类型安全）
+        final apiData = detailFromLogic.extra['apiData'];
+        if (apiData is Map && apiData['full_name'] is String) {
           openBrowser('https://github.com/${apiData['full_name']}');
           return;
         }
@@ -184,29 +306,31 @@ class DetailLogic extends GetxController {
     }
   }
 
-  /// 将 IDetailData 转换为 AppInfo
-  dynamic _detailToAppInfo(IDetailData detail) {
-    // 返回一个类似 AppInfo 的对象
-    return {
-      'appId': detail.appId,
-      'name': detail.name,
-      'icon': detail.icon,
-      'des': detail.description,
-      'user': detail.developer,
-      'repositories': detail.packageName,
-    };
+  /// 将 IDetailInfo 转换为 AppInfo
+  AppInfo _detailToAppInfo(IDetailInfo detail) {
+    // 返回一个 AppInfo 对象（类型安全）
+    return AppInfo(
+      detail.appId,
+      detail.name,
+      detail.developer ?? '',
+      detail.packageName ?? '',
+      detail.icon,
+      detail.description ?? '',
+      null,
+    );
   }
 
   /// 将 AppDetailRequest 转换为 AppInfo
-  dynamic _requestToAppInfo(AppDetailRequest req) {
-    return {
-      'appId': req.appId,
-      'name': req.name,
-      'icon': req.icon,
-      'des': req.description,
-      'user': null,
-      'repositories': req.packageName,
-    };
+  AppInfo _requestToAppInfo(AppDetailRequest req) {
+    return AppInfo(
+      req.appId,
+      req.name,
+      '', // user 字段为空
+      req.packageName ?? '',
+      req.icon ?? '', // icon 可能为空，使用空字符串作为默认值
+      req.description ?? '',
+      null,
+    );
   }
 
   @override

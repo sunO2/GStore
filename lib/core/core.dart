@@ -1,11 +1,67 @@
 import 'package:get/get.dart';
 import 'package:gstore/db/apps/AppInfo.dart';
 
+// 设计系统
+export 'package:gstore/core/design/design_tokens.dart';
+
+// 新的统一数据模型
+export 'package:gstore/core/model/IAppInfo.dart';
+export 'package:gstore/core/model/IDetailInfo.dart';
+export 'package:gstore/core/model/AppInfoEntity.dart';
+export 'package:gstore/core/model/AppRepository.dart';
+export 'package:gstore/core/model/BackupData.dart';
+export 'package:gstore/core/data/unified_database.dart';
+export 'package:gstore/core/data/unified_repository.dart';
+
+// 核心服务
 export 'package:gstore/core/service/db_manager.dart';
+export 'package:gstore/core/service/user_manager.dart';
+export 'package:gstore/core/service/downloadService.dart';
+export 'package:gstore/core/service/backup_service.dart';
 export 'package:gstore/core/utils/logger.dart';
 export 'package:gstore/core/routers.dart';
+
+// 渠道相关
 export 'package:gstore/core/channel/channel.dart';
+export 'package:gstore/core/channel/BaseChannel.dart';
+
+// 聚合和下载
 export 'package:gstore/core/aggregate/aggregate.dart';
+export 'package:gstore/core/download/download.dart';
+
+// F-Droid 相关
+export 'package:gstore/core/fdroid/fdroid_repo.dart';
+
+// WebDAV 相关
+export 'package:gstore/core/webdav/webdav_client.dart';
+export 'package:gstore/core/webdav/webdav_config.dart';
+
+// 日志管理
+export 'package:gstore/core/logger/LogManager.dart' hide LogLevel;
+
+// 错误处理和配置
+export 'package:gstore/core/exception/AppException.dart';
+export 'package:gstore/core/config/AppConfig.dart';
+export 'package:gstore/core/error/ErrorHandler.dart';
+export 'package:gstore/core/security/UrlValidator.dart';
+
+// 主题控制
+export 'package:gstore/core/theme/theme_controller.dart';
+
+// 依赖注入
+export 'package:gstore/core/di/ServiceContainer.dart';
+export 'package:gstore/core/di/ServiceRegistrar.dart';
+
+// 缓存管理
+export 'package:gstore/core/cache/CacheManager.dart';
+
+// 事件系统
+export 'package:gstore/core/event/database_event.dart';
+
+// 资源管理
+export 'package:gstore/core/resource/Disposable.dart';
+
+// 第三方库
 export 'package:get/get.dart';
 export 'package:gstore/http/github_request_mix.dart';
 export 'package:gstore/db/apps/AppInfo.dart';

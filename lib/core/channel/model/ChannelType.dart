@@ -12,6 +12,9 @@ enum ChannelType {
   /// vivo 应用市场渠道
   vivo('vivo', 'vivo 应用市场', 4),
 
+  /// F-Droid 应用市场渠道
+  fdroid('fdroid', 'F-Droid', 5),
+
   /// 自定义渠道
   custom('custom', '自定义', 99);
 

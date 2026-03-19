@@ -2,14 +2,146 @@
 library;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:cached_network_image/cached_network_image.dart';
-import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:flutter_html/flutter_html.dart';
+import 'package:flutter_html/src/extension/html_extension.dart';
+import 'package:markdown/markdown.dart' as md;
 import 'package:gstore/core/model/AppDetailInfo.dart';
-import 'package:gstore/core/model/IDetailData.dart';
+import 'package:gstore/core/model/IDetailInfo.dart';
+import 'package:gstore/core/design/design_tokens.dart';
+
+/// 自定义代码块扩展 - 添加复制按钮
+class CodeBlockExtension extends HtmlExtension {
+  final BuildContext context;
+
+  CodeBlockExtension(this.context);
+
+  @override
+  Set<String> get supportedTags => {'pre'};
+
+  @override
+  InlineSpan build(ExtensionContext context) {
+    final element = context.styledElement;
+    final codeText = element?.element?.text?.trim() ?? '';
+
+    return WidgetSpan(
+      child: _CodeBlockWidget(
+        codeText: codeText,
+        buildContext: this.context,
+      ),
+    );
+  }
+}
+
+/// 代码块组件 - 带复制按钮
+class _CodeBlockWidget extends StatelessWidget {
+  final String codeText;
+  final BuildContext buildContext;
+
+  const _CodeBlockWidget({
+    required this.codeText,
+    required this.buildContext,
+  });
+
+  Future<void> _copyToClipboard() async {
+    await Clipboard.setData(ClipboardData(text: codeText));
+    if (buildContext.mounted) {
+      ScaffoldMessenger.of(buildContext).showSnackBar(
+        SnackBar(
+          content: const Text('代码已复制'),
+          duration: const Duration(seconds: 2),
+          behavior: SnackBarBehavior.floating,
+          margin: EdgeInsets.only(
+            bottom: MediaQuery.of(buildContext).size.height - 120,
+            left: AppSpacing.md,
+            right: AppSpacing.md,
+          ),
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: EdgeInsets.only(bottom: AppSpacing.xs),
+      decoration: BoxDecoration(
+        color: AppColors.codeEditorBackground,
+        borderRadius: AppRadius.allMD,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // 工具栏（包含复制按钮）
+          Container(
+            padding: EdgeInsets.symmetric(
+              horizontal: AppSpacing.md,
+              vertical: AppSpacing.xs,
+            ),
+            decoration: BoxDecoration(
+              color: AppColors.codeEditorToolbar,
+              borderRadius: BorderRadius.only(
+                topLeft: Radius.circular(AppRadius.md),
+                topRight: Radius.circular(AppRadius.md),
+              ),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                InkWell(
+                  onTap: _copyToClipboard,
+                  borderRadius: AppRadius.allSM,
+                  child: Container(
+                    padding: EdgeInsets.symmetric(
+                      horizontal: AppSpacing.sm,
+                      vertical: AppSpacing.xs,
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.copy_outlined,
+                          size: AppTypography.iconSM,
+                          color: AppColors.codeEditorText,
+                        ),
+                        SizedBox(width: AppSpacing.xs),
+                        Text(
+                          '复制',
+                          style: TextStyle(
+                            color: AppColors.codeEditorText,
+                            fontSize: AppTypography.sizeXS,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          // 代码内容
+          Container(
+            padding: EdgeInsets.all(AppSpacing.md),
+            width: double.infinity,
+            child: Text(
+              codeText,
+              style: TextStyle(
+                color: AppColors.codeEditorText,
+                fontFamily: 'monospace',
+                fontSize: AppTypography.sizeSM,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
 
 /// 版本信息 Section
 class VersionSection extends StatelessWidget {
-  final IDetailData info;
+  final IDetailInfo info;
 
   const VersionSection({super.key, required this.info});
 
@@ -20,14 +152,14 @@ class VersionSection extends StatelessWidget {
     }
 
     return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.all(16),
+      margin: AppSpacing.onlyBottomSM,
+      padding: AppSpacing.allLG,
       decoration: BoxDecoration(
         border: Border.all(
           width: 1,
-          color: Theme.of(context).colorScheme.primary.withAlpha(130),
+          color: Theme.of(context).colorScheme.primary.withAlpha(AppColors.alphaMedium),
         ),
-        borderRadius: const BorderRadius.all(Radius.circular(16)),
+        borderRadius: AppRadius.allLG,
         color: Theme.of(context).colorScheme.primaryContainer,
       ),
       child: Column(
@@ -37,25 +169,25 @@ class VersionSection extends StatelessWidget {
             Text(
               '版本',
               style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                    fontWeight: FontWeight.w600,
+                    fontWeight: AppTypography.weightSemiBold,
                   ),
             ),
-            const SizedBox(height: 8),
+            SizedBox(height: AppSpacing.sm),
             Text(
               info.version!,
               style: Theme.of(context).textTheme.bodyLarge,
             ),
           ],
           if (info.version != null && info.packageName != null)
-            const SizedBox(height: 12),
+            SizedBox(height: AppSpacing.md),
           if (info.packageName != null) ...[
             Text(
               '包名',
               style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                    fontWeight: FontWeight.w600,
+                    fontWeight: AppTypography.weightSemiBold,
                   ),
             ),
-            const SizedBox(height: 8),
+            SizedBox(height: AppSpacing.sm),
             Text(
               info.packageName!,
               style: Theme.of(context).textTheme.bodySmall,
@@ -83,38 +215,44 @@ class _StatItem extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      padding: AppSpacing.horizontalSM_verticalXS,
       decoration: BoxDecoration(
         border: Border.all(
           width: 1.0,
-          color: Theme.of(context).colorScheme.primaryFixed.withAlpha(100),
+          color: Theme.of(context).colorScheme.primaryFixed.withAlpha(AppColors.alphaLower),
         ),
         color: Theme.of(context).colorScheme.primaryContainer,
-        borderRadius: const BorderRadius.all(Radius.circular(8)),
+        borderRadius: AppRadius.allSM,
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           icon,
-          const SizedBox(width: 4),
+          SizedBox(width: AppSpacing.xs),
           Text(
             label,
-            style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w500),
+            style: TextStyle(
+              fontSize: AppTypography.sizeXXS,
+              fontWeight: AppTypography.weightMedium,
+            ),
           ),
-          const SizedBox(width: 4),
+          SizedBox(width: AppSpacing.xs),
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+            padding: EdgeInsets.symmetric(horizontal: AppSpacing.sm * 1.5, vertical: 1),
             decoration: BoxDecoration(
-              color: Theme.of(context).colorScheme.primaryFixed.withAlpha(80),
-              borderRadius: const BorderRadius.all(Radius.circular(10)),
+              color: Theme.of(context).colorScheme.primaryFixed.withAlpha(AppColors.alphaLowest),
+              borderRadius: AppRadius.allMD,
             ),
             child: Text(
               value,
-              style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w500),
+              style: TextStyle(
+                fontSize: AppTypography.sizeXXS,
+                fontWeight: AppTypography.weightMedium,
+              ),
             ),
           ),
           if (trailing != null) ...[
-            const SizedBox(width: 2),
+            SizedBox(width: AppSpacing.xs),
             trailing!,
           ],
         ],
@@ -125,7 +263,7 @@ class _StatItem extends StatelessWidget {
 
 /// 应用截图 Section
 class ScreenshotsSection extends StatelessWidget {
-final IDetailData info;
+final IDetailInfo info;
 
   const ScreenshotsSection({super.key, required this.info});
 
@@ -137,14 +275,14 @@ final IDetailData info;
     }
 
     return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.all(16),
+      margin: AppSpacing.onlyBottomSM,
+      padding: AppSpacing.allLG,
       decoration: BoxDecoration(
         border: Border.all(
           width: 1,
-          color: Theme.of(context).colorScheme.primary.withAlpha(130),
+          color: Theme.of(context).colorScheme.primary.withAlpha(AppColors.alphaMedium),
         ),
-        borderRadius: const BorderRadius.all(Radius.circular(16)),
+        borderRadius: AppRadius.allLG,
         color: Theme.of(context).colorScheme.primaryContainer,
       ),
       child: Column(
@@ -153,10 +291,10 @@ final IDetailData info;
           Text(
             '应用截图',
             style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                  fontWeight: FontWeight.w600,
+                  fontWeight: AppTypography.weightSemiBold,
                 ),
           ),
-          const SizedBox(height: 12),
+          SizedBox(height: AppSpacing.md),
           SizedBox(
             height: 200,
             child: ListView.builder(
@@ -166,20 +304,20 @@ final IDetailData info;
                 final screenshot = screenshots[index];
                 return Container(
                   width: 120,
-                  margin: const EdgeInsets.only(right: 12),
+                  margin: AppSpacing.onlyRightMD,
                   child: ClipRRect(
-                    borderRadius: BorderRadius.circular(12),
+                    borderRadius: AppRadius.allMD,
                     child: CachedNetworkImage(
                       imageUrl: screenshot.url,
                       fit: BoxFit.contain,
                       placeholder: (context, url) => Container(
-                        color: Colors.grey[200],
+                        color: AppColors.grey200,
                         child: const Center(
                           child: CircularProgressIndicator(strokeWidth: 2),
                         ),
                       ),
                       errorWidget: (context, url, error) => Container(
-                        color: Colors.grey[300],
+                        color: AppColors.grey300,
                         child: const Icon(Icons.broken_image),
                       ),
                     ),
@@ -196,7 +334,7 @@ final IDetailData info;
 
 /// README/详情文本 Section
 class ReadmeSection extends StatelessWidget {
-final IDetailData info;
+  final IDetailInfo info;
   final void Function(String)? onLinkTap;
 
   const ReadmeSection({super.key, required this.info, this.onLinkTap});
@@ -208,51 +346,216 @@ final IDetailData info;
       return const SizedBox.shrink();
     }
 
+    // 将 Markdown 转换为 HTML
+    final htmlContent = md.markdownToHtml(
+      readme,
+      extensionSet: md.ExtensionSet.gitHubFlavored,
+    );
+
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+
     return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.all(16),
+      margin: EdgeInsets.only(bottom: AppSpacing.md),
+      padding: EdgeInsets.all(AppSpacing.lg),
       decoration: BoxDecoration(
         border: Border.all(
           width: 1,
-          color: Theme.of(context).colorScheme.primary.withAlpha(130),
+          color: colorScheme.primary.withAlpha(AppColors.alphaLow),
         ),
-        borderRadius: const BorderRadius.all(Radius.circular(16)),
-        color: Theme.of(context).colorScheme.primaryContainer,
+        borderRadius: AppRadius.allLG,
+        color: colorScheme.surface,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
             '详细介绍',
-            style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                  fontWeight: FontWeight.w600,
-                ),
+            style: theme.textTheme.titleSmall?.copyWith(
+              fontWeight: AppTypography.weightSemiBold,
+              color: colorScheme.onSurface,
+            ),
           ),
-          const SizedBox(height: 12),
-          MarkdownBody(
-            data: readme,
-            onTapLink: (text, href, title) {
-              if (href != null && onLinkTap != null) {
-                onLinkTap?.call(href);
+          SizedBox(height: AppSpacing.md),
+          Html(
+            data: htmlContent,
+            onLinkTap: (url, _, __) {
+              if (url != null && onLinkTap != null) {
+                onLinkTap?.call(url);
               }
             },
-            styleSheet: MarkdownStyleSheet(
-              a: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: Theme.of(context).colorScheme.primary,
+            // 添加自定义代码块扩展
+            extensions: [
+              CodeBlockExtension(context),
+            ],
+            style: {
+              // 正文基础样式
+              'body': Style(
+                margin: Margins.zero,
+                padding: HtmlPaddings.zero,
+                color: colorScheme.onSurface,
+                fontSize: FontSize(AppTypography.sizeMD),
+                lineHeight: const LineHeight(1.5),
+              ),
+
+              // 标题样式
+              'h1': Style(
+                color: colorScheme.onSurface,
+                fontSize: FontSize(AppTypography.sizeXXL),
+                fontWeight: AppTypography.weightSemiBold,
+                margin: Margins.only(bottom: AppSpacing.xs, top: AppSpacing.xs),
+                padding: HtmlPaddings.only(bottom: AppSpacing.xs),
+              ),
+              'h2': Style(
+                color: colorScheme.onSurface,
+                fontSize: FontSize(AppTypography.sizeXL),
+                fontWeight: AppTypography.weightSemiBold,
+                margin: Margins.only(bottom: AppSpacing.xs, top: AppSpacing.xs),
+                padding: HtmlPaddings.only(left: AppSpacing.sm),
+              ),
+              'h3': Style(
+                color: colorScheme.onSurface,
+                fontSize: FontSize(AppTypography.sizeLG),
+                fontWeight: AppTypography.weightSemiBold,
+                margin: Margins.only(bottom: AppSpacing.xs, top: AppSpacing.xs),
+              ),
+              'h4': Style(
+                color: colorScheme.onSurface,
+                fontSize: FontSize(AppTypography.sizeMD),
+                fontWeight: AppTypography.weightSemiBold,
+                margin: Margins.only(bottom: AppSpacing.xs, top: AppSpacing.xs),
+              ),
+
+              // 段落样式
+              'p': Style(
+                margin: Margins.only(bottom: AppSpacing.xs),
+                lineHeight: const LineHeight(1.6),
+              ),
+
+              // 链接样式
+              'a': Style(
+                color: colorScheme.primary,
+                textDecoration: TextDecoration.underline,
+                textDecorationColor: colorScheme.primary,
+                fontWeight: AppTypography.weightMedium,
+              ),
+
+              // 行内代码样式
+              'code': Style(
+                backgroundColor: colorScheme.primaryContainer.withAlpha(AppColors.alphaLowest),
+                color: colorScheme.primary,
+                padding: HtmlPaddings.symmetric(horizontal: 6, vertical: 3),
+                fontFamily: 'monospace',
+                fontSize: FontSize(AppTypography.sizeSM - 1),
+              ),
+
+              // 代码块样式
+              'pre': Style(
+                backgroundColor: AppColors.codeEditorBackground,
+                color: AppColors.codeEditorText,
+                padding: HtmlPaddings.all(AppSpacing.md),
+                margin: Margins.only(bottom: AppSpacing.md),
+                fontFamily: 'monospace',
+                fontSize: FontSize(AppTypography.sizeSM),
+              ),
+
+              // 引用块样式
+              'blockquote': Style(
+                border: Border(
+                  left: BorderSide(
+                    color: colorScheme.primary,
+                    width: 4,
                   ),
-            ),
-            imageBuilder: (uri, title, alt) {
-              final url = uri.toString();
-              return Image(
-                image: CachedNetworkImageProvider(url),
-                errorBuilder: (context, error, stackTrace) {
-                  return Container(
-                    color: Colors.grey[300],
-                    child: const Icon(Icons.broken_image),
-                  );
-                },
-              );
+                ),
+                padding: HtmlPaddings.only(left: AppSpacing.md),
+                margin: Margins.symmetric(vertical: AppSpacing.xs),
+                color: colorScheme.onSurfaceVariant.withAlpha(AppColors.alphaMedium),
+                backgroundColor: colorScheme.surfaceContainerHighest.withAlpha(AppColors.alphaLowest),
+              ),
+
+              // 列表样式
+              'ul': Style(
+                margin: Margins.only(bottom: AppSpacing.xs, left: AppSpacing.md),
+              ),
+              'ol': Style(
+                margin: Margins.only(bottom: AppSpacing.xs, left: AppSpacing.md),
+              ),
+              'li': Style(
+                margin: Margins.only(bottom: AppSpacing.xs),
+                lineHeight: const LineHeight(1.6),
+              ),
+
+              // 表格样式
+              'table': Style(
+                width: Width(double.infinity),
+                border: Border.all(
+                  color: colorScheme.outline.withAlpha(AppColors.alphaLower),
+                  width: 1,
+                ),
+                margin: Margins.only(bottom: AppSpacing.xs),
+              ),
+              'th': Style(
+                backgroundColor: colorScheme.primaryContainer.withAlpha(AppColors.alphaLowest),
+                color: colorScheme.onPrimaryContainer,
+                padding: HtmlPaddings.symmetric(horizontal: AppSpacing.md, vertical: AppSpacing.sm),
+                fontWeight: AppTypography.weightSemiBold,
+                textAlign: TextAlign.center,
+              ),
+              'td': Style(
+                padding: HtmlPaddings.symmetric(horizontal: AppSpacing.md, vertical: AppSpacing.sm),
+                border: Border(
+                  top: BorderSide(
+                    color: colorScheme.outline.withAlpha(AppColors.alphaLower),
+                    width: 1,
+                  ),
+                ),
+              ),
+
+              // 图片样式
+              'img': Style(
+                margin: Margins.symmetric(vertical: AppSpacing.xs),
+              ),
+
+              // 分隔线样式
+              'hr': Style(
+                border: Border(
+                  bottom: BorderSide(
+                    color: colorScheme.outlineVariant.withAlpha(AppColors.alphaLower),
+                    width: 1,
+                  ),
+                ),
+                margin: Margins.symmetric(vertical: AppSpacing.sm),
+              ),
+
+              // 强调文本
+              'strong': Style(
+                fontWeight: AppTypography.weightSemiBold,
+                color: colorScheme.onSurface,
+              ),
+              'b': Style(
+                fontWeight: AppTypography.weightSemiBold,
+                color: colorScheme.onSurface,
+              ),
+
+              // 斜体文本
+              'em': Style(
+                fontStyle: FontStyle.italic,
+              ),
+              'i': Style(
+                fontStyle: FontStyle.italic,
+              ),
+
+              // 删除线
+              'del': Style(
+                textDecoration: TextDecoration.lineThrough,
+                color: colorScheme.onSurfaceVariant.withAlpha(AppColors.alphaMedium),
+              ),
+              's': Style(
+                textDecoration: TextDecoration.lineThrough,
+                color: colorScheme.onSurfaceVariant.withAlpha(AppColors.alphaMedium),
+              ),
             },
+            shrinkWrap: true,
           ),
         ],
       ),
@@ -262,7 +565,7 @@ final IDetailData info;
 
 /// 下载链接 Section
 class DownloadsSection extends StatelessWidget {
-final IDetailData info;
+final IDetailInfo info;
   final void Function(DownloadInfo)? onDownloadTap;
   final void Function(DownloadInfo)? onLongPress;
 
@@ -298,23 +601,23 @@ final IDetailData info;
 
     if (filteredDownloads.isEmpty) {
       return Container(
-        margin: const EdgeInsets.only(bottom: 8),
-        padding: const EdgeInsets.all(16),
+        margin: AppSpacing.onlyBottomSM,
+        padding: AppSpacing.allLG,
         child: Row(
           children: [
             Icon(
               Icons.info_outline,
-              size: 18,
-              color: Colors.grey[600],
+              size: AppTypography.iconMD,
+              color: AppColors.grey600,
             ),
-            const SizedBox(width: 8),
+            SizedBox(width: AppSpacing.sm),
             Expanded(
               child: Text(
                 info.downloads.isEmpty
                     ? '该应用暂无可下载文件'
                     : '该应用暂无适配当前平台的文件',
                 style: TextStyle(
-                  color: Colors.grey[600],
+                  color: AppColors.grey600,
                   fontStyle: FontStyle.italic,
                 ),
               ),
@@ -325,14 +628,14 @@ final IDetailData info;
     }
 
     return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.all(16),
+      margin: AppSpacing.onlyBottomSM,
+      padding: AppSpacing.allLG,
       decoration: BoxDecoration(
         border: Border.all(
           width: 1,
-          color: Theme.of(context).colorScheme.primary.withAlpha(130),
+          color: Theme.of(context).colorScheme.primary.withAlpha(AppColors.alphaMedium),
         ),
-        borderRadius: const BorderRadius.all(Radius.circular(16)),
+        borderRadius: AppRadius.allLG,
         color: Theme.of(context).colorScheme.primaryContainer,
       ),
       child: Column(
@@ -345,28 +648,28 @@ final IDetailData info;
                 children: [
                   Icon(
                     Icons.download_rounded,
-                    size: 18,
+                    size: AppTypography.iconMD,
                     color: Theme.of(context).colorScheme.primary,
                   ),
-                  const SizedBox(width: 8),
+                  SizedBox(width: AppSpacing.sm),
                   Text(
                     '下载文件',
                     style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                          fontWeight: FontWeight.w600,
+                          fontWeight: AppTypography.weightSemiBold,
                         ),
                   ),
-                  const SizedBox(width: 4),
+                  SizedBox(width: AppSpacing.xs),
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    padding: EdgeInsets.symmetric(horizontal: AppSpacing.sm * 1.5, vertical: 1),
                     decoration: BoxDecoration(
                       color: Theme.of(context).colorScheme.primaryContainer,
-                      borderRadius: BorderRadius.circular(10),
+                      borderRadius: AppRadius.allMD,
                     ),
                     child: Text(
                       '${filteredDownloads.length} 个文件',
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(
                             color: Theme.of(context).colorScheme.primary,
-                            fontSize: 11,
+                            fontSize: AppTypography.sizeXXS,
                           ),
                     ),
                   ),
@@ -376,13 +679,13 @@ final IDetailData info;
                 Text(
                   '更新于 ${_formatDate(filteredDownloads.first.publishedAt!)}',
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        fontSize: 10,
-                        color: Colors.grey[600],
+                        fontSize: AppTypography.sizeXXS,
+                        color: AppColors.grey600,
                       ),
                 ),
             ],
           ),
-          const SizedBox(height: 12),
+          SizedBox(height: AppSpacing.md),
           ...filteredDownloads.map((download) => _DownloadItem(
                 download: download,
                 onTap: onDownloadTap,
@@ -424,173 +727,93 @@ class _DownloadItem extends StatelessWidget {
     this.onLongPress,
   });
 
-  IconData _getFileIcon(String fileName) {
-    final ext = fileName.split('.').last.toLowerCase();
-    switch (ext) {
-      case 'apk':
-        return Icons.android;
-      case 'aab':
-        return Icons.android; // Android App Bundle 使用相同的图标
-      case 'zip':
-      case 'rar':
-      case '7z':
-      case 'tar':
-      case 'gz':
-        return Icons.archive;
-      case 'exe':
-        return Icons.desktop_windows;
-      case 'dmg':
-      case 'pkg':
-        return Icons.desktop_mac;
-      case 'sh':
-        return Icons.terminal;
-      default:
-        return Icons.insert_drive_file;
-    }
-  }
-
-  String _getFileTypeLabel(String fileName) {
-    final ext = fileName.split('.').last.toLowerCase();
-    switch (ext) {
-      case 'apk':
-        return 'Android APK';
-      case 'aab':
-        return 'Android Bundle'; // Android App Bundle
-      case 'exe':
-        return 'Windows';
-      case 'dmg':
-        return 'macOS';
-      case 'zip':
-      case 'rar':
-      case '7z':
-        return '压缩包';
-      case 'sh':
-        return '脚本';
-      default:
-        return '文件';
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final fileName = download.name;
-    final fileIcon = _getFileIcon(fileName);
-    final fileType = _getFileTypeLabel(fileName);
 
     return Container(
-      margin: const EdgeInsets.only(bottom: 8),
+      margin: AppSpacing.onlyBottomSM,
       child: InkWell(
-        onTap: onTap != null ? () => onTap!(download) : null,
         onLongPress: onLongPress != null ? () => onLongPress!(download) : null,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: AppRadius.allMD,
         child: Container(
-          padding: const EdgeInsets.all(12),
+          padding: AppSpacing.allMD,
           decoration: BoxDecoration(
             gradient: LinearGradient(
               colors: [
                 Theme.of(context).colorScheme.primaryContainer,
-                Theme.of(context).colorScheme.primaryContainer.withAlpha(200),
+                Theme.of(context).colorScheme.primaryContainer.withAlpha(AppColors.alphaMedium),
               ],
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
             ),
             border: Border.all(
-              color: Theme.of(context).colorScheme.primary.withAlpha(60),
+              color: Theme.of(context).colorScheme.primary.withAlpha(AppColors.alphaLower),
             ),
-            borderRadius: BorderRadius.circular(12),
+            borderRadius: AppRadius.allMD,
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // 文件名和类型图标
+              // 文件名
               Row(
                 children: [
-                  Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.primary.withAlpha(30),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Icon(
-                      fileIcon,
-                      size: 20,
-                      color: Theme.of(context).colorScheme.primary,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          fileName,
-                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                                fontWeight: FontWeight.w500,
-                              ),
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
+                        Tooltip(
+                          message: fileName,
+                          child: Text(
+                            fileName,
+                            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                  fontWeight: AppTypography.weightMedium,
+                                ),
+                            maxLines: 3,
+                            overflow: TextOverflow.ellipsis,
+                          ),
                         ),
-                        const SizedBox(height: 4),
-                        Row(
-                          children: [
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 6,
-                                vertical: 2,
-                              ),
-                              decoration: BoxDecoration(
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .primary
-                                    .withAlpha(80),
-                                borderRadius: BorderRadius.circular(4),
-                              ),
-                              child: Text(
-                                fileType,
-                                style: Theme.of(context)
-                                    .textTheme
-                                    .bodySmall
-                                    ?.copyWith(
-                                      color: Theme.of(context)
-                                          .colorScheme
-                                          .primary,
-                                          fontSize: 10,
-                                        ),
-                              ),
-                            ),
-                            if (download.version != null) ...[
-                              const SizedBox(width: 8),
+                        if (download.version != null) ...[
+                          SizedBox(height: AppSpacing.xs),
+                          Row(
+                            children: [
                               Icon(
                                 Icons.label,
-                                size: 12,
-                                color: Colors.grey[600],
+                                size: AppTypography.iconXS,
+                                color: AppColors.grey600,
                               ),
-                              const SizedBox(width: 2),
+                              SizedBox(width: AppSpacing.xs),
                               Text(
                                 download.version!,
-                                style:
-                                    Theme.of(context).textTheme.bodySmall?.copyWith(
-                                          color: Colors.grey[600],
-                                          fontSize: 10,
-                                        ),
+                                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                      color: AppColors.grey600,
+                                      fontSize: AppTypography.sizeXXS,
+                                    ),
                               ),
                             ],
-                          ],
-                        ),
+                          ),
+                        ],
                       ],
                     ),
                   ),
                   // 下载按钮
                   if (onTap != null)
-                    Icon(
-                      Icons.download_rounded,
-                      size: 24,
-                      color: Theme.of(context).colorScheme.primary,
+                    InkWell(
+                      onTap: () => onTap!(download),
+                      borderRadius: AppRadius.allXL,
+                      child: Container(
+                        padding: AppSpacing.allSM,
+                        child: Icon(
+                          Icons.download_rounded,
+                          size: AppTypography.iconLG,
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
+                      ),
                     ),
                 ],
               ),
               // 详细信息行
-              const SizedBox(height: 8),
+              SizedBox(height: AppSpacing.sm),
               Row(
                 children: [
                   if (download.size != null)
@@ -616,21 +839,6 @@ class _DownloadItem extends StatelessWidget {
                       _formatNumber(download.downloadCount!),
                       Colors.orange,
                     ),
-                  // 二维码按钮
-                  if (onLongPress != null)
-                    GestureDetector(
-                      onLongPress: onLongPress != null
-                          ? () => onLongPress!(download)
-                          : null,
-                      child: Container(
-                        padding: const EdgeInsets.all(4),
-                        child: Icon(
-                          Icons.qr_code_2,
-                          size: 16,
-                          color: Colors.grey[600],
-                        ),
-                      ),
-                    ),
                 ],
               ),
             ],
@@ -647,22 +855,22 @@ class _DownloadItem extends StatelessWidget {
     Color color,
   ) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+      padding: EdgeInsets.symmetric(horizontal: AppSpacing.sm * 1.5, vertical: AppSpacing.xs),
       decoration: BoxDecoration(
         color: color.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(4),
+        borderRadius: AppRadius.allXS,
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 10, color: color),
-          const SizedBox(width: 3),
+          Icon(icon, size: AppTypography.iconXXS, color: color),
+          SizedBox(width: AppSpacing.xs),
           Text(
             label,
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
                   color: color,
-                  fontSize: 10,
-                  fontWeight: FontWeight.w500,
+                  fontSize: AppTypography.sizeXXS,
+                  fontWeight: AppTypography.weightMedium,
                 ),
           ),
         ],
@@ -679,7 +887,7 @@ class _DownloadItem extends StatelessWidget {
 
 /// 开发者信息 Section
 class DeveloperSection extends StatelessWidget {
-final IDetailData info;
+final IDetailInfo info;
 
   const DeveloperSection({super.key, required this.info});
 
@@ -690,8 +898,8 @@ final IDetailData info;
     }
 
     return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.all(16),
+      margin: AppSpacing.onlyBottomSM,
+      padding: AppSpacing.allLG,
       decoration: BoxDecoration(
         border: Border.all(
           width: 1,
@@ -707,7 +915,7 @@ final IDetailData info;
             Text(
               '开发者',
               style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                    fontWeight: FontWeight.w600,
+                    fontWeight: AppTypography.weightSemiBold,
                   ),
             ),
             const SizedBox(height: 8),
@@ -722,7 +930,7 @@ final IDetailData info;
             Text(
               '项目主页',
               style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                    fontWeight: FontWeight.w600,
+                    fontWeight: AppTypography.weightSemiBold,
                   ),
             ),
             const SizedBox(height: 8),
@@ -741,7 +949,7 @@ final IDetailData info;
 
 /// 更新日志 Section
 class ChangelogSection extends StatelessWidget {
-final IDetailData info;
+final IDetailInfo info;
 
   const ChangelogSection({super.key, required this.info});
 
@@ -753,14 +961,14 @@ final IDetailData info;
     }
 
     return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.all(16),
+      margin: AppSpacing.onlyBottomSM,
+      padding: AppSpacing.allLG,
       decoration: BoxDecoration(
         border: Border.all(
           width: 1,
-          color: Theme.of(context).colorScheme.primary.withAlpha(130),
+          color: Theme.of(context).colorScheme.primary.withAlpha(AppColors.alphaMedium),
         ),
-        borderRadius: const BorderRadius.all(Radius.circular(16)),
+        borderRadius: AppRadius.allLG,
         color: Theme.of(context).colorScheme.primaryContainer,
       ),
       child: Column(
@@ -769,10 +977,10 @@ final IDetailData info;
           Text(
             '更新日志',
             style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                  fontWeight: FontWeight.w600,
+                  fontWeight: AppTypography.weightSemiBold,
                 ),
           ),
-          const SizedBox(height: 12),
+          SizedBox(height: AppSpacing.md),
           Text(
             changelog,
             style: Theme.of(context).textTheme.bodyMedium,
@@ -785,7 +993,7 @@ final IDetailData info;
 
 /// 权限说明 Section
 class PermissionsSection extends StatelessWidget {
-final IDetailData info;
+final IDetailInfo info;
 
   const PermissionsSection({super.key, required this.info});
 
@@ -797,14 +1005,14 @@ final IDetailData info;
     }
 
     return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.all(16),
+      margin: AppSpacing.onlyBottomSM,
+      padding: AppSpacing.allLG,
       decoration: BoxDecoration(
         border: Border.all(
           width: 1,
-          color: Theme.of(context).colorScheme.primary.withAlpha(130),
+          color: Theme.of(context).colorScheme.primary.withAlpha(AppColors.alphaMedium),
         ),
-        borderRadius: const BorderRadius.all(Radius.circular(16)),
+        borderRadius: AppRadius.allLG,
         color: Theme.of(context).colorScheme.primaryContainer,
       ),
       child: Column(
@@ -813,17 +1021,17 @@ final IDetailData info;
           Text(
             '权限说明',
             style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                  fontWeight: FontWeight.w600,
+                  fontWeight: AppTypography.weightSemiBold,
                 ),
           ),
-          const SizedBox(height: 12),
+          SizedBox(height: AppSpacing.md),
           ...permissions.map((permission) => Padding(
-                padding: const EdgeInsets.only(bottom: 8),
+                padding: AppSpacing.onlyBottomSM,
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Icon(Icons.security, size: 16),
-                    const SizedBox(width: 8),
+                    const Icon(Icons.security, size: AppTypography.sizeSM),
+                    SizedBox(width: AppSpacing.sm),
                     Expanded(
                       child: Text(
                         permission,

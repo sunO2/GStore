@@ -8,7 +8,7 @@ import 'package:gstore/core/channel/model/ChannelInfo.dart';
 import 'package:gstore/core/channel/model/ChannelResult.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
-import 'package:gstore/core/model/IDetailData.dart';
+import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/model/proxy/LocalDbChannelDetailProxy.dart';
 import 'package:gstore/db/apps/AppInfo.dart';
 import 'package:gstore/db/apps/AppInfo.dart' as db;
@@ -108,7 +108,7 @@ class LocalDbChannel implements IChannel {
   }
 
   @override
-  Future<ChannelResult<IDetailData>> getAppDetail(
+  Future<ChannelResult<IDetailInfo>> getAppDetail(
     String appId, {
     bool forceRefresh = false,
   }) async {
@@ -149,6 +149,7 @@ class LocalDbChannel implements IChannel {
       final downloads = <DownloadInfo>[];
       String? latestVersion;
       Map<String, dynamic>? apiList; // 声明 apiList 变量以便后续使用
+      String? readme; // 声明 readme 变量以便后续使用
 
       // 检查是否是 GitHub 仓库类型（有 user 和 repositories）
       final isGitHubRepo = appInfo.user.isNotEmpty && appInfo.repositories.isNotEmpty;
@@ -159,7 +160,7 @@ class LocalDbChannel implements IChannel {
         try {
           debugPrint('LocalDbChannel: >>> 正在调用 GitHub API 获取 releases 和统计信息 - ${appInfo.user}/${appInfo.repositories}');
 
-          // 并发获取 releases 和 API 统计信息
+          // 并发获取 releases、API 统计信息和 README
           final results = await Future.wait([
             _githubApi!.releases(
               appInfo.user,
@@ -168,6 +169,11 @@ class LocalDbChannel implements IChannel {
               CancelToken(),
             ),
             _githubApi!.apiList(
+              appInfo.user,
+              appInfo.repositories,
+              CancelToken(),
+            ),
+            _githubApi!.readme(
               appInfo.user,
               appInfo.repositories,
               CancelToken(),
@@ -187,6 +193,20 @@ class LocalDbChannel implements IChannel {
               : (apiListObject.toString().startsWith('{')
                   ? jsonDecode(apiListObject.toString()) as Map<String, dynamic>?
                   : null);
+
+          // README 返回的是 JSON String，需要解码
+          Map<String, dynamic>? readmeData;
+          final readmeResult = results[2] as String;
+          if (readmeResult.isNotEmpty) {
+            try {
+              readmeData = jsonDecode(readmeResult) as Map<String, dynamic>;
+              debugPrint('LocalDbChannel: README JSON 解码成功');
+            } catch (e) {
+              debugPrint('LocalDbChannel: README JSON 解码失败 - $e');
+            }
+          } else {
+            debugPrint('LocalDbChannel: README 返回空字符串');
+          }
 
           debugPrint('LocalDbChannel: <<< GitHub API 返回 releases 数量 = ${releases.length}');
 
@@ -221,6 +241,51 @@ class LocalDbChannel implements IChannel {
           }
 
           debugPrint('LocalDbChannel: >>> 最终下载列表数量 = ${downloads.length}');
+
+          // 处理 README - Base64 解码（使用 GitHub API 返回的数据）
+          if (readmeData != null && readmeData['content'] != null) {
+            try {
+              final content = readmeData['content'] as String;
+              final encoding = readmeData['encoding'] as String? ?? 'base64';
+              final name = readmeData['name']?.toString() ?? 'README';
+
+              debugPrint('LocalDbChannel: GitHub API 返回 README - $name, 编码=$encoding, 内容长度=${content.length}');
+
+              if (encoding == 'base64') {
+                // Base64 解码 - 需要先清理换行符和空格
+                var cleanContent = content.replaceAll(RegExp(r'\s+'), '');
+                debugPrint('LocalDbChannel: 清理后 Base64 内容长度 = ${cleanContent.length}');
+
+                // GitHub API 可能返回 URL 安全的 Base64，需要转换
+                // URL 安全: - (代替 +), _ (代替 /)
+                // 标准: +, /
+                cleanContent = cleanContent
+                    .replaceAll('-', '+')
+                    .replaceAll('_', '/');
+
+                // 添加必要的填充
+                while (cleanContent.length % 4 != 0) {
+                  cleanContent += '=';
+                }
+
+                debugPrint('LocalDbChannel: 标准化后 Base64 长度 = ${cleanContent.length}');
+                final decodedBytes = base64.decode(cleanContent);
+                readme = utf8.decode(decodedBytes);
+                debugPrint('LocalDbChannel: ✓ README Base64 解码成功，长度 = ${readme.length}');
+              } else if (encoding == null || encoding == 'none') {
+                // 直接使用（未编码）
+                readme = content;
+                debugPrint('LocalDbChannel: ✓ README 直接使用，长度 = ${readme.length}');
+              } else {
+                debugPrint('LocalDbChannel: ⚠ 未知编码 $encoding，尝试直接使用');
+                readme = content;
+              }
+            } catch (e) {
+              debugPrint('LocalDbChannel: ✗ README 解码失败 - $e');
+            }
+          } else {
+            debugPrint('LocalDbChannel: ⚠ GitHub API 返回 README 数据为空');
+          }
         } catch (e, stackTrace) {
           // GitHub API 调用失败不影响整体流程，使用空下载列表
           debugPrint('LocalDbChannel: ✗ 获取 GitHub releases 失败: $e');
@@ -230,11 +295,18 @@ class LocalDbChannel implements IChannel {
         debugPrint('LocalDbChannel: ⚠ 跳过 GitHub releases 查询 - isGitHubRepo: $isGitHubRepo, hasApi: ${_githubApi != null}');
       }
 
-      // 使用描述作为README
-      final readme = appInfo.des.isNotEmpty ? appInfo.des : null;
+      // 如果没有从 GitHub 获取到 README，使用数据库中的内容
+      if (readme == null) {
+        readme = (appInfo.readme != null && appInfo.readme!.isNotEmpty)
+            ? appInfo.readme!
+            : (appInfo.des.isNotEmpty ? appInfo.des : null);
+        debugPrint('LocalDbChannel: 使用数据库 README/des，长度 = ${readme?.length ?? 0}');
+      }
 
       debugPrint('LocalDbChannel: ========== 构建详情信息完成 ==========');
       debugPrint('LocalDbChannel: downloads 列表长度 = ${downloads.length}');
+      debugPrint('LocalDbChannel: README 最终长度 = ${readme?.length ?? 0}');
+      debugPrint('LocalDbChannel: README 预览 = ${readme != null && readme.length > 0 ? readme.substring(0, readme.length > 100 ? 100 : readme.length) : "null"}');
 
       // 构建原始数据 Map（保持原始格式）
       final rawData = <String, dynamic>{

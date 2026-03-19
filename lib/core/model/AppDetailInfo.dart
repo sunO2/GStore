@@ -53,11 +53,20 @@ class DownloadInfo {
   /// 版本号/标签
   final String? version;
 
+  /// 版本代码（数字）
+  final int? versionCode;
+
   /// 发布时间
   final DateTime? publishedAt;
 
   /// 平台标识（如：android, universal, arm64-v8a）
   final String? platform;
+
+  /// 文件哈希值
+  final String? hash;
+
+  /// 哈希类型（如：sha256, md5）
+  final String? hashType;
 
   DownloadInfo({
     required this.url,
@@ -65,8 +74,11 @@ class DownloadInfo {
     this.size,
     this.downloadCount,
     this.version,
+    this.versionCode,
     this.publishedAt,
     this.platform,
+    this.hash,
+    this.hashType,
   });
 
   /// 格式化文件大小
