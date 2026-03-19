@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
+import 'package:get/get.dart';
 import 'package:gstore/core/aggregate/AppAddedDatabase.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/channel.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
+import 'package:gstore/core/event/database_event.dart';
 import 'package:gstore/db/apps/AppInfo.dart';
 
 /// 应用聚合管理器
@@ -41,6 +43,22 @@ class AppAggregatorManager {
 
       _database = database;
       _isInitialized = true;
+
+      // 监听数据库变化事件
+      try {
+        final eventBus = DatabaseEventBus.instance;
+        ever(eventBus.eventStream, (event) {
+          if (event != null) {
+            debugPrint('AppAggregatorManager: ✅ 收到数据库事件 - ${event.type}');
+            debugPrint('AppAggregatorManager: 开始刷新应用列表...');
+            // 任何数据库变化都触发应用列表刷新
+            _notifyAppsChanged();
+          }
+        });
+        debugPrint('AppAggregatorManager: 数据库事件监听已注册');
+      } catch (e) {
+        debugPrint('AppAggregatorManager: 注册数据库事件监听失败 - $e');
+      }
 
       debugPrint('AppAggregatorManager: 初始化成功');
     } catch (e) {
@@ -195,17 +213,30 @@ class AppAggregatorManager {
   /// 聚合所有渠道的已添加应用
   Future<List<AggregatedAppInfo>> getAggregatedApps() async {
     final addedApps = await getAllAddedApps();
+    debugPrint('AppAggregatorManager: 从聚合数据库获取到 ${addedApps.length} 个应用');
+
     final aggregatedApps = <AggregatedAppInfo>[];
+    int successCount = 0;
+    int failedCount = 0;
+    int cacheCount = 0;
 
     for (var addedApp in addedApps) {
       try {
         final channelType = ChannelType.fromCode(addedApp.channelId);
-        if (channelType == null) continue;
+        if (channelType == null) {
+          debugPrint('AppAggregatorManager: 跳过未知渠道 - ${addedApp.channelId}');
+          continue;
+        }
 
         // 从渠道获取应用详情
         final channel = _channelManager.getChannel(channelType);
-        if (channel == null) continue;
+        if (channel == null) {
+          debugPrint('AppAggregatorManager: 渠道实例为空 - ${channelType.name}');
+          failedCount++;
+          continue;
+        }
 
+        debugPrint('AppAggregatorManager: 正在获取应用详情 - ${addedApp.appId} (${channelType.name})');
         final result = await channel.getAppInfo(addedApp.appId);
 
         if (result.success && result.data != null) {
@@ -214,17 +245,20 @@ class AppAggregatorManager {
             appInfo: result.data!,
             channel: channelType,
           ));
+          successCount++;
         } else {
           // 渠道获取失败，使用本地缓存的数据
+          debugPrint('AppAggregatorManager: 渠道获取失败，使用缓存 - ${addedApp.appId}, error: ${result.error}');
           aggregatedApps.add(AggregatedAppInfo(
             addedAppInfo: addedApp,
             appInfo: _createAppInfoFromAdded(addedApp),
             channel: channelType,
             isFromCache: true,
           ));
+          cacheCount++;
         }
       } catch (e) {
-        debugPrint('AppAggregatorManager: 获取应用详情失败 - ${addedApp.appId}, $e');
+        debugPrint('AppAggregatorManager: 获取应用详情异常 - ${addedApp.appId}, $e');
         // 使用本地缓存的数据
         aggregatedApps.add(AggregatedAppInfo(
           addedAppInfo: addedApp,
@@ -233,9 +267,11 @@ class AppAggregatorManager {
           isFromCache: true,
           error: e.toString(),
         ));
+        failedCount++;
       }
     }
 
+    debugPrint('AppAggregatorManager: 聚合完成 - 成功: $successCount, 缓存: $cacheCount, 失败: $failedCount');
     return aggregatedApps;
   }
 
@@ -256,8 +292,13 @@ class AppAggregatorManager {
 
   /// 通知应用列表变化
   void _notifyAppsChanged() {
+    debugPrint('AppAggregatorManager: _notifyAppsChanged() 被调用');
     getAllAddedApps().then((apps) {
+      debugPrint('AppAggregatorManager: 获取到 ${apps.length} 个已添加应用，准备发送通知');
       _appsChangedController.add(apps);
+      debugPrint('AppAggregatorManager: 已发送 appsChangedStream 事件');
+    }).catchError((error) {
+      debugPrint('AppAggregatorManager: 获取应用列表失败 - $error');
     });
   }
 

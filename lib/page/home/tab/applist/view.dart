@@ -7,10 +7,13 @@ import 'package:gstore/core/model/AppDetailRequest.dart';
 import 'package:gstore/core/service/user_manager.dart';
 import 'package:gstore/http/github/user_info/user_info.dart';
 import 'package:gstore/page/web/browser.dart';
+import 'package:gstore/core/design/design_tokens.dart';
 
 import 'logic.dart';
 import 'state.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/page/auth/state.dart';
+import '../../logic.dart';
 
 class ApplistPage extends StatefulWidget {
   const ApplistPage({super.key});
@@ -29,31 +32,34 @@ class AppListState extends State<ApplistPage>
     return Scaffold(
       appBar: AppBar(
         title: GestureDetector(
-          onTap: logic.search,
+          onTap: () => _showQuickSearchGuide(context),
           child: Tooltip(
-            message: "搜索",
+            message: "快速搜索添加应用",
             child: Container(
               decoration: BoxDecoration(
-                  borderRadius: const BorderRadius.all(Radius.circular(40)),
-                  color: Theme.of(context).primaryColor.withAlpha(30)),
-              padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
-              child: const Row(
+                  borderRadius: AppRadius.allXL,
+                  color: Theme.of(context).primaryColor.withAlpha(AppColors.alphaMedium)),
+              padding: AppSpacing.horizontalLG_verticalSM_bottomXS,
+              child: Row(
                 mainAxisSize: MainAxisSize.max,
                 crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
                   Padding(
-                    padding: EdgeInsets.only(top: 4),
+                    padding: AppSpacing.onlyTopXS,
                     child: Icon(
                       Icons.search,
-                      size: 24,
+                      size: AppTypography.iconXL,
                     ),
                   ),
                   SizedBox(
-                    width: 16,
+                    width: AppSpacing.lg,
                   ),
-                  Text("搜索应用",
-                      style:
-                          TextStyle(fontWeight: FontWeight.w400, fontSize: 18))
+                  Text(
+                    "快速搜索",
+                    style: AppTypography.headlineMedium.copyWith(
+                      color: Colors.white,
+                    ),
+                  )
                 ],
               ),
             ),
@@ -78,24 +84,20 @@ class AppListState extends State<ApplistPage>
             icon(UserInfo fuser) {
               if (fuser.avatarUrl?.isNotEmpty ?? false) {
                 return Container(
-                  width: Theme.of(context).appBarTheme.iconTheme?.size ?? 24,
-                  height: Theme.of(context).appBarTheme.iconTheme?.size ?? 24,
+                  width: Theme.of(context).appBarTheme.iconTheme?.size ?? AppTypography.iconXL,
+                  height: Theme.of(context).appBarTheme.iconTheme?.size ?? AppTypography.iconXL,
                   decoration: BoxDecoration(
                       border: Border.all(width: 1.5),
-                      borderRadius: BorderRadius.all(
-                        Radius.circular(
-                            Theme.of(context).appBarTheme.iconTheme?.size ??
-                                24),
-                      )),
+                      borderRadius: AppRadius.allCircle),
                   child: ClipOval(
                     child: CachedNetworkImage(
                       width:
-                          Theme.of(context).appBarTheme.iconTheme?.size ?? 24,
+                          Theme.of(context).appBarTheme.iconTheme?.size ?? AppTypography.iconXL,
                       height:
-                          Theme.of(context).appBarTheme.iconTheme?.size ?? 24,
+                          Theme.of(context).appBarTheme.iconTheme?.size ?? AppTypography.iconXL,
                       placeholder: (context, url) =>
                           const CupertinoActivityIndicator(
-                        radius: 8,
+                        radius: AppSpacing.sm,
                       ),
                       errorWidget: (context, url, error) => const Icon(
                         Icons.account_circle_outlined,
@@ -111,9 +113,23 @@ class AppListState extends State<ApplistPage>
               }
             }
 
-            onPressed() {
+            onPressed() async {
               if (user.avatarUrl?.isEmpty ?? true) {
-                Get.toNamed(AppRoute.auth);
+                final result = await Get.toNamed<AuthStatus>(AppRoute.auth);
+                if (result == AuthStatus.success) {
+                  // 登录成功，显示提示
+                  if (mounted) {
+                    Get.snackbar(
+                      '登录成功',
+                      '您可以访问更多功能了！',
+                      icon: const Icon(
+                        Icons.check_circle,
+                        color: AppColors.success,
+                      ),
+                      duration: const Duration(seconds: 2),
+                    );
+                  }
+                }
               } else {
                 GStoreInAppBrowser inAppBrowser = GStoreInAppBrowser();
                 final settings = ChromeSafariBrowserSettings(
@@ -140,65 +156,78 @@ class AppListState extends State<ApplistPage>
   Widget _buildBody(BuildContext context, ApplistLogic logic, ApplistState state) {
     // 加载状态
     if (state.isLoading.value) {
-      return const Center(child: CircularProgressIndicator());
+      return const LoadingState();
     }
 
     // 错误状态
     if (state.errorMessage.value.isNotEmpty) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.error_outline, size: 48, color: Colors.red),
-            const SizedBox(height: 16),
-            Text(state.errorMessage.value),
-            const SizedBox(height: 16),
-            ElevatedButton(
-              onPressed: logic.loadAggregatedApps,
-              child: const Text('重试'),
-            ),
-            const SizedBox(height: 16),
-            TextButton(
-              onPressed: () => Get.toNamed(AppRoute.home),
-              child: const Text('去发现页面添加应用'),
-            ),
-          ],
-        ),
+      return ErrorState(
+        message: state.errorMessage.value,
+        retryLabel: '重试',
+        onRetryPressed: logic.loadAggregatedApps,
       );
     }
 
     // 空状态
     if (state.apps.isEmpty) {
       return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              Icons.apps_outlined,
-              size: 64,
-              color: Colors.grey[400],
-            ),
-            const SizedBox(height: 16),
-            Text(
-              '还没有添加任何应用',
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    color: Colors.grey[600],
-                  ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              '点击"发现"标签浏览和添加应用',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Colors.grey[500],
-                  ),
-            ),
-            const SizedBox(height: 24),
-            ElevatedButton.icon(
-              onPressed: () => Get.toNamed(AppRoute.home),
-              icon: const Icon(Icons.explore),
-              label: const Text('去发现'),
-            ),
-          ],
+        child: Padding(
+          padding: AppSpacing.allXXL,
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                Icons.apps_outlined,
+                size: AppTypography.iconXXXL,
+                color: AppColors.grey400,
+              ),
+              const SizedBox(height: AppSpacing.lg),
+              Text(
+                '还没有添加任何应用',
+                style: AppTypography.titleMedium.copyWith(
+                      color: AppColors.textSecondary,
+                    ),
+              ),
+              const SizedBox(height: AppSpacing.sm),
+              Text(
+                '3种方式快速添加应用：',
+                style: AppTypography.bodyMedium.copyWith(
+                      color: AppColors.textSecondary,
+                      fontWeight: AppTypography.weightMedium,
+                    ),
+              ),
+              const SizedBox(height: AppSpacing.lg),
+              _buildQuickAddOption(
+                context,
+                icon: Icons.search,
+                title: '快速搜索',
+                description: '点击上方搜索栏直接搜索',
+                onTap: () => _showQuickSearchGuide(context),
+              ),
+              const SizedBox(height: AppSpacing.sm),
+              _buildQuickAddOption(
+                context,
+                icon: Icons.explore,
+                title: '浏览发现页',
+                description: '切换到"发现"标签浏览应用',
+                onTap: () {
+                  final homeLogic = Get.find<HomeLogic>();
+                  homeLogic.jumpToPage(1); // 切换到发现页
+                },
+              ),
+              const SizedBox(height: AppSpacing.sm),
+              _buildQuickAddOption(
+                context,
+                icon: Icons.science_outlined,
+                title: '我的频道',
+                description: '管理已添加的应用频道',
+                onTap: () {
+                  final homeLogic = Get.find<HomeLogic>();
+                  homeLogic.jumpToPage(2); // 切换到我的频道页
+                },
+              ),
+            ],
+          ),
         ),
       );
     }
@@ -231,11 +260,9 @@ class AppListState extends State<ApplistPage>
                             // Banner 点击暂不处理，因为 banner 数据结构可能变化
                           },
                           child: Padding(
-                            padding: const EdgeInsets.only(
-                                left: 8, right: 8, top: 16, bottom: 16),
+                            padding: AppSpacing.onlyHorizontalSM_verticalLG,
                             child: ClipRRect(
-                              borderRadius:
-                                  const BorderRadius.all(Radius.circular(16)),
+                              borderRadius: AppRadius.allLG,
                               child: CachedNetworkImage(
                                 height: 180,
                                 fit: BoxFit.fill,
@@ -252,11 +279,14 @@ class AppListState extends State<ApplistPage>
 
           // 应用列表
           SliverPadding(
-            padding: const EdgeInsets.all(0),
+            padding: EdgeInsets.zero,
             sliver: SliverGrid.builder(
               gridDelegate:
                   const SliverGridDelegateWithFixedCrossAxisCount(
                 crossAxisCount: 4,
+                mainAxisSpacing: AppSpacing.sm,
+                crossAxisSpacing: AppSpacing.sm,
+                childAspectRatio: 0.75,
               ),
               itemBuilder: (context, index) {
                 var app = state.apps[index];
@@ -280,7 +310,7 @@ class AppListState extends State<ApplistPage>
     AggregatedAppInfo app,
     ApplistLogic logic,
   ) {
-    final channelColor = _getChannelColor(app.channel);
+    final channelColor = AppColors.getChannelBrandColor(app.channel.name);
     final channelShortName = _getChannelShortName(app.channel);
 
     return GestureDetector(
@@ -291,10 +321,10 @@ class AppListState extends State<ApplistPage>
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           Padding(
-            padding: const EdgeInsets.only(bottom: 8),
+            padding: AppSpacing.onlyBottomMD,
             child: SizedBox(
-              width: 56,
-              height: 56,
+              width: 64,
+              height: 64,
               child: Stack(
                 children: [
                   // 图标
@@ -302,27 +332,27 @@ class AppListState extends State<ApplistPage>
                     child: Hero(
                       tag: app.appInfo.icon ?? "",
                       child: ClipRRect(
-                        borderRadius: BorderRadius.circular(16),
+                        borderRadius: AppRadius.allLG,
                         child: Container(
                           decoration: BoxDecoration(
                             color:
                                 Theme.of(context).colorScheme.primaryContainer,
-                            borderRadius: BorderRadius.circular(16),
+                            borderRadius: AppRadius.allLG,
                           ),
                           child: app.appInfo.icon != null
                               ? CachedNetworkImage(
                                   fit: BoxFit.fill,
                                   placeholder: (context, url) {
                                     return const CupertinoActivityIndicator(
-                                      radius: 8,
+                                      radius: AppSpacing.sm,
                                     );
                                   },
                                   errorWidget: (context, url, error) {
                                     return const Icon(Icons.error);
                                   },
                                   imageUrl: app.appInfo.icon!,
-                                  width: 56,
-                                  height: 56,
+                                  width: 64,
+                                  height: 64,
                                 )
                               : const SizedBox(),
                         ),
@@ -334,23 +364,20 @@ class AppListState extends State<ApplistPage>
                     right: 0,
                     bottom: 0,
                     child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 3, vertical: 1),
+                      padding: AppSpacing.horizontalXS_verticalXS,
                       decoration: BoxDecoration(
-                        color: channelColor.withOpacity(0.9),
+                        color: AppColors.withOpacity(channelColor, 0.9),
                         borderRadius: const BorderRadius.only(
                           topRight: Radius.circular(0),
-                          topLeft: Radius.circular(4),
-                          bottomLeft: Radius.circular(4),
-                          bottomRight: Radius.circular(16),
+                          topLeft: Radius.circular(AppSpacing.xs),
+                          bottomLeft: Radius.circular(AppSpacing.xs),
+                          bottomRight: Radius.circular(AppSpacing.lg),
                         ),
                       ),
                       child: Text(
                         channelShortName,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 7,
-                          fontWeight: FontWeight.bold,
+                        style: AppTypography.labelSmall.copyWith(
+                          color: AppColors.white,
                         ),
                       ),
                     ),
@@ -365,30 +392,15 @@ class AppListState extends State<ApplistPage>
               app.appInfo.name ?? "",
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                fontWeight: FontWeight.w800,
+              style: AppTypography.labelMedium.copyWith(
+                fontWeight: AppTypography.weightSemiBold,
+                color: AppColors.textPrimary,
               ),
             ),
           ),
         ],
       ),
     );
-  }
-
-  /// 获取渠道颜色
-  Color _getChannelColor(ChannelType type) {
-    switch (type) {
-      case ChannelType.localDb:
-        return Colors.blue;
-      case ChannelType.github:
-        return Colors.purple;
-      case ChannelType.http:
-        return Colors.orange;
-      case ChannelType.vivo:
-        return const Color(0xFF4155D0); // vivo 蓝
-      default:
-        return Colors.grey;
-    }
   }
 
   /// 获取渠道短名称
@@ -402,9 +414,153 @@ class AppListState extends State<ApplistPage>
         return 'API';
       case ChannelType.vivo:
         return 'vivo';
+      case ChannelType.fdroid:
+        return 'FD';
       default:
         return 'APP';
     }
+  }
+
+  /// 显示快速搜索引导
+  void _showQuickSearchGuide(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Row(
+          children: [
+            Icon(Icons.search, color: Theme.of(context).colorScheme.primary),
+            const SizedBox(width: AppSpacing.sm),
+            const Text('快速搜索应用'),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '点击上方的"快速搜索"按钮，然后：',
+              style: AppTypography.bodyMedium,
+            ),
+            const SizedBox(height: AppSpacing.md),
+            _buildGuideStep(context, '1', '选择要搜索的渠道'),
+            _buildGuideStep(context, '2', '输入应用名称关键词'),
+            _buildGuideStep(context, '3', '点击添加按钮添加应用'),
+            const SizedBox(height: AppSpacing.md),
+            Text(
+              '💡 提示：也可以切换到"发现"页面浏览更多应用',
+              style: AppTypography.bodySmall.copyWith(
+                    color: AppColors.textSecondary,
+                  ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('知道了'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 构建引导步骤
+  Widget _buildGuideStep(BuildContext context, String number, String text) {
+    return Padding(
+      padding: AppSpacing.onlyVerticalSM,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: AppSpacing.lg + AppSpacing.sm,
+            height: AppSpacing.lg + AppSpacing.sm,
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.primary,
+              shape: BoxShape.circle,
+            ),
+            child: Center(
+              child: Text(
+                number,
+                style: AppTypography.labelMedium.copyWith(
+                  color: Theme.of(context).colorScheme.onPrimary,
+                  fontWeight: AppTypography.weightBold,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: AppSpacing.md),
+          Expanded(
+            child: Text(
+              text,
+              style: AppTypography.bodyMedium,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 构建快速添加选项
+  Widget _buildQuickAddOption(
+    BuildContext context, {
+    required IconData icon,
+    required String title,
+    required String description,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: AppRadius.allMD,
+      child: AppCard(
+        padding: AppSpacing.horizontalLG_verticalMD,
+        border: Border.all(color: AppColors.grey300),
+        borderRadius: AppRadius.allMD,
+        onTap: onTap,
+        child: Row(
+          children: [
+            Container(
+              width: AppSpacing.xl + AppSpacing.xxl,
+              height: AppSpacing.xl + AppSpacing.xxl,
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.primaryContainer,
+                borderRadius: AppRadius.allSM,
+              ),
+              child: Icon(
+                icon,
+                color: Theme.of(context).colorScheme.primary,
+                size: AppTypography.iconLG,
+              ),
+            ),
+            const SizedBox(width: AppSpacing.md),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: AppTypography.titleSmall.copyWith(
+                          fontWeight: AppTypography.weightSemiBold,
+                          color: AppColors.textPrimary,
+                        ),
+                  ),
+                  const SizedBox(height: AppSpacing.xs),
+                  Text(
+                    description,
+                    style: AppTypography.bodySmall.copyWith(
+                          color: AppColors.textSecondary,
+                        ),
+                  ),
+                ],
+              ),
+            ),
+            Icon(
+              Icons.chevron_right,
+              color: AppColors.grey400,
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   @override

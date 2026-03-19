@@ -183,6 +183,27 @@ class _$DownloadstatusDao extends DownloadstatusDao {
   }
 
   @override
+  Stream<List<DownloadStatus>> getDownloadsByStatus(int status) {
+    return _queryAdapter.queryListStream(
+        'SELECT * FROM DownloadStatus WHERE status = ?1 ORDER BY createTime DESC',
+        mapper: (Map<String, Object?> row) => DownloadStatus(
+            row['appId'] as String,
+            row['appName'] as String,
+            row['version'] as String,
+            row['fileName'] as String,
+            row['downloadUrl'] as String,
+            row['savePath'] as String,
+            total: row['total'] as int,
+            count: row['count'] as int,
+            status: row['status'] as int,
+            id: row['id'] as int?,
+            createTime: row['createTime'] as int),
+        arguments: [status],
+        queryableName: 'DownloadStatus',
+        isView: false);
+  }
+
+  @override
   Future<DownloadStatus?> getDownloadOfName(
     String name,
     String version,
@@ -202,6 +223,88 @@ class _$DownloadstatusDao extends DownloadstatusDao {
             id: row['id'] as int?,
             createTime: row['createTime'] as int),
         arguments: [name, version]);
+  }
+
+  @override
+  Stream<List<DownloadStatus>> getDownloadsByAppId(String appId) {
+    return _queryAdapter.queryListStream(
+        'SELECT * FROM DownloadStatus WHERE appId = ?1 ORDER BY createTime DESC',
+        mapper: (Map<String, Object?> row) => DownloadStatus(
+            row['appId'] as String,
+            row['appName'] as String,
+            row['version'] as String,
+            row['fileName'] as String,
+            row['downloadUrl'] as String,
+            row['savePath'] as String,
+            total: row['total'] as int,
+            count: row['count'] as int,
+            status: row['status'] as int,
+            id: row['id'] as int?,
+            createTime: row['createTime'] as int),
+        arguments: [appId],
+        queryableName: 'DownloadStatus',
+        isView: false);
+  }
+
+  @override
+  Future<List<DownloadStatus>> getDownloadingItems() async {
+    return _queryAdapter.queryList(
+        'SELECT * FROM DownloadStatus WHERE status = 2 ORDER BY createTime DESC',
+        mapper: (Map<String, Object?> row) => DownloadStatus(
+            row['appId'] as String,
+            row['appName'] as String,
+            row['version'] as String,
+            row['fileName'] as String,
+            row['downloadUrl'] as String,
+            row['savePath'] as String,
+            total: row['total'] as int,
+            count: row['count'] as int,
+            status: row['status'] as int,
+            id: row['id'] as int?,
+            createTime: row['createTime'] as int));
+  }
+
+  @override
+  Future<List<DownloadStatus>> getCompletedItems() async {
+    return _queryAdapter.queryList(
+        'SELECT * FROM DownloadStatus WHERE status IN (3, -1) ORDER BY createTime DESC',
+        mapper: (Map<String, Object?> row) => DownloadStatus(
+            row['appId'] as String,
+            row['appName'] as String,
+            row['version'] as String,
+            row['fileName'] as String,
+            row['downloadUrl'] as String,
+            row['savePath'] as String,
+            total: row['total'] as int,
+            count: row['count'] as int,
+            status: row['status'] as int,
+            id: row['id'] as int?,
+            createTime: row['createTime'] as int));
+  }
+
+  @override
+  Future<void> deleteDownload(int id) async {
+    await _queryAdapter.queryNoReturn(
+        'DELETE FROM DownloadStatus WHERE id = ?1',
+        arguments: [id]);
+  }
+
+  @override
+  Future<void> deleteDownloadsByAppId(String appId) async {
+    await _queryAdapter.queryNoReturn(
+        'DELETE FROM DownloadStatus WHERE appId = ?1',
+        arguments: [appId]);
+  }
+
+  @override
+  Future<void> deleteCompletedDownloads() async {
+    await _queryAdapter
+        .queryNoReturn('DELETE FROM DownloadStatus WHERE status IN (3, -1)');
+  }
+
+  @override
+  Future<void> deleteAllDownloads() async {
+    await _queryAdapter.queryNoReturn('DELETE FROM DownloadStatus');
   }
 
   @override

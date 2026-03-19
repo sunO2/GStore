@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/channel/channel.dart';
 import 'package:gstore/core/icons/Icons.dart';
+import 'package:gstore/core/core.dart';
 import 'package:gstore/db/apps/AppInfo.dart';
 
 import 'logic.dart';
@@ -35,8 +36,8 @@ class DiscoveryPage extends StatelessWidget {
                     value: DisplayMode.all,
                     child: Row(
                       children: [
-                        Icon(Icons.apps, size: 18),
-                        SizedBox(width: 8),
+                        Icon(Icons.apps, size: AppTypography.iconMD),
+                        SizedBox(width: AppSpacing.sm),
                         Text('全部'),
                       ],
                     ),
@@ -45,8 +46,8 @@ class DiscoveryPage extends StatelessWidget {
                     value: DisplayMode.added,
                     child: Row(
                       children: [
-                        Icon(Icons.check_circle, size: 18),
-                        SizedBox(width: 8),
+                        Icon(Icons.check_circle, size: AppTypography.iconMD),
+                        SizedBox(width: AppSpacing.sm),
                         Text('已添加'),
                       ],
                     ),
@@ -55,8 +56,8 @@ class DiscoveryPage extends StatelessWidget {
                     value: DisplayMode.notAdded,
                     child: Row(
                       children: [
-                        Icon(Icons.add_circle_outline, size: 18),
-                        SizedBox(width: 8),
+                        Icon(Icons.add_circle_outline, size: AppTypography.iconMD),
+                        SizedBox(width: AppSpacing.sm),
                         Text('未添加'),
                       ],
                     ),
@@ -89,24 +90,67 @@ class DiscoveryPage extends StatelessWidget {
   Widget _buildSearchBar(BuildContext context) {
     return Obx(() {
       return Container(
-        padding: const EdgeInsets.all(16),
+        padding: AppSpacing.allLG,
         child: TextField(
           decoration: InputDecoration(
-            hintText: '搜索应用...',
+            hintText: '输入应用名称搜索...',
             prefixIcon: const Icon(Icons.search),
             suffixIcon: state.searchKeyword.value.isNotEmpty
                 ? IconButton(
                     icon: const Icon(Icons.clear),
-                    onPressed: () => logic.setSearchKeyword(''),
+                    onPressed: () {
+                      logic.setSearchKeyword('');
+                    },
                   )
-                : null,
+                : PopupMenuButton<ChannelType?>(
+                    icon: const Icon(Icons.filter_list),
+                    tooltip: '选择搜索渠道',
+                    onSelected: (channel) {
+                      // 选择特定渠道搜索
+                      logic.selectChannel(channel);
+                      // 执行搜索
+                      if (state.searchKeyword.value.isNotEmpty) {
+                        logic.performSearch();
+                      }
+                    },
+                    itemBuilder: (context) => [
+                      const PopupMenuItem(
+                        value: null,
+                        child: Row(
+                          children: [
+                            Icon(Icons.apps, size: AppTypography.iconLG),
+                            SizedBox(width: AppSpacing.sm),
+                            Text('全部渠道'),
+                          ],
+                        ),
+                      ),
+                      ...logic.channelList.map((info) {
+                        return PopupMenuItem(
+                          value: info.type,
+                          child: Row(
+                            children: [
+                              Icon(logic.getChannelIcon(info.type), size: AppTypography.iconLG),
+                              const SizedBox(width: AppSpacing.sm),
+                              Text(info.name),
+                            ],
+                          ),
+                        );
+                      }),
+                    ],
+                  ),
             border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(12),
+              borderRadius: AppRadius.allMD,
             ),
             filled: true,
             fillColor: Theme.of(context).colorScheme.surface,
           ),
-          onChanged: logic.setSearchKeyword,
+          onChanged: (value) {
+            logic.setSearchKeyword(value);
+            // 实时搜索（防抖）
+            logic.debounceSearch();
+          },
+          textInputAction: TextInputAction.search,
+          onSubmitted: (_) => logic.performSearch(),
         ),
       );
     });
@@ -122,8 +166,8 @@ class DiscoveryPage extends StatelessWidget {
       }
 
       return Container(
-        height: 50,
-        padding: const EdgeInsets.symmetric(horizontal: 16),
+        height: AppSpacing.xl * 2.5,
+        padding: AppSpacing.onlyHorizontalLG,
         child: ListView.builder(
           scrollDirection: Axis.horizontal,
           itemCount: channels.length + 1, // +1 for "全部"
@@ -172,18 +216,22 @@ class DiscoveryPage extends StatelessWidget {
     required VoidCallback onTap,
   }) {
     return Padding(
-      padding: const EdgeInsets.only(right: 8),
+      padding: const EdgeInsets.only(right: AppSpacing.sm),
       child: FilterChip(
         label: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 16),
-            const SizedBox(width: 4),
+            Icon(icon, size: AppTypography.iconSM),
+            const SizedBox(width: AppSpacing.xs),
             Text(label),
             if (count != null) ...[
-              const SizedBox(width: 4),
-              Text('($count${addedCount != null ? '/$addedCount' : ''})',
-                  style: Theme.of(context).textTheme.bodySmall),
+              const SizedBox(width: AppSpacing.xs),
+              Text(
+                '($count${addedCount != null ? '/$addedCount' : ''})',
+                style: AppTypography.labelSmall.copyWith(
+                  color: AppColors.textSecondary,
+                ),
+              ),
             ],
           ],
         ),
@@ -203,7 +251,10 @@ class DiscoveryPage extends StatelessWidget {
           0, (sum, apps) => sum + apps.length);
 
       return Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.lg,
+          vertical: AppSpacing.sm,
+        ),
         color: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.3),
         child: Row(
           children: [
@@ -236,10 +287,10 @@ class DiscoveryPage extends StatelessWidget {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Icon(Icons.error_outline, size: 48, color: Colors.red),
-              const SizedBox(height: 16),
+              const Icon(Icons.error_outline, size: AppTypography.iconHuge, color: Colors.red),
+              const SizedBox(height: AppSpacing.lg),
               Text(state.errorMessage.value),
-              const SizedBox(height: 16),
+              const SizedBox(height: AppSpacing.lg),
               ElevatedButton(
                 onPressed: logic.loadData,
                 child: const Text('重试'),
@@ -258,10 +309,10 @@ class DiscoveryPage extends StatelessWidget {
             children: [
               Icon(
                 _getDisplayModeIcon(state.displayMode.value),
-                size: 48,
+                size: AppTypography.iconHuge,
                 color: Colors.grey,
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: AppSpacing.lg),
               Text(
                 _getEmptyMessage(),
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
@@ -274,7 +325,7 @@ class DiscoveryPage extends StatelessWidget {
       }
 
       return ListView.builder(
-        padding: const EdgeInsets.all(8),
+        padding: AppSpacing.allSM,
         itemCount: filteredApps.length,
         itemBuilder: (context, index) {
           final channel = filteredApps.keys.elementAt(index);
@@ -293,24 +344,24 @@ class DiscoveryPage extends StatelessWidget {
     List<AppInfo> apps,
   ) {
     return Card(
-      margin: const EdgeInsets.only(bottom: 8),
+      margin: const EdgeInsets.only(bottom: AppSpacing.sm),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           // 渠道标题
           Container(
-            padding: const EdgeInsets.all(12),
+            padding: AppSpacing.allMD,
             decoration: BoxDecoration(
               color: Theme.of(context).colorScheme.primaryContainer.withOpacity(0.3),
               borderRadius: const BorderRadius.only(
-                topLeft: Radius.circular(12),
-                topRight: Radius.circular(12),
+                topLeft: Radius.circular(AppRadius.md),
+                topRight: Radius.circular(AppRadius.md),
               ),
             ),
             child: Row(
               children: [
-                Icon(logic.getChannelIcon(channel), size: 16),
-                const SizedBox(width: 8),
+                Icon(logic.getChannelIcon(channel), size: AppTypography.sizeMD),
+                const SizedBox(width: AppSpacing.sm),
                 Text(
                   _getChannelName(channel),
                   style: Theme.of(context).textTheme.titleSmall,
@@ -320,10 +371,10 @@ class DiscoveryPage extends StatelessWidget {
                   '${apps.length} 个',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
-                const SizedBox(width: 8),
+                const SizedBox(width: AppSpacing.sm),
                 // 批量操作菜单
                 PopupMenuButton<String>(
-                  icon: const Icon(Icons.more_vert, size: 16),
+                  icon: const Icon(Icons.more_vert, size: AppTypography.sizeMD),
                   onSelected: (value) {
                     switch (value) {
                       case 'add_all':
@@ -339,8 +390,8 @@ class DiscoveryPage extends StatelessWidget {
                       value: 'add_all',
                       child: Row(
                         children: [
-                          const Icon(Icons.add_circle_outline, size: 16),
-                          const SizedBox(width: 8),
+                          const Icon(Icons.add_circle_outline, size: AppTypography.sizeMD),
+                          const SizedBox(width: AppSpacing.sm),
                           Text('全部添加'),
                         ],
                       ),
@@ -349,8 +400,8 @@ class DiscoveryPage extends StatelessWidget {
                       value: 'clear',
                       child: Row(
                         children: [
-                          const Icon(Icons.delete_sweep, size: 16),
-                          const SizedBox(width: 8),
+                          const Icon(Icons.delete_sweep, size: AppTypography.sizeMD),
+                          const SizedBox(width: AppSpacing.sm),
                           Text('清空已添加'),
                         ],
                       ),
@@ -382,7 +433,7 @@ class DiscoveryPage extends StatelessWidget {
               backgroundImage: NetworkImage(app.icon),
             )
           : CircleAvatar(
-              child: Icon(Icons.app_settings_alt, size: 20),
+              child: Icon(Icons.app_settings_alt, size: AppTypography.iconLG),
             ),
       title: Text(app.name),
       subtitle: Column(
@@ -449,6 +500,8 @@ class DiscoveryPage extends StatelessWidget {
         return 'HTTP API';
       case ChannelType.vivo:
         return 'vivo';
+      case ChannelType.fdroid:
+        return 'F-Droid';
       default:
         return type.code;
     }

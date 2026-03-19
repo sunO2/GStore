@@ -3,7 +3,7 @@ import 'package:gstore/core/channel/model/ChannelInfo.dart';
 import 'package:gstore/core/channel/model/ChannelResult.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
-import 'package:gstore/core/model/IDetailData.dart';
+import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/db/apps/AppInfo.dart';
 import 'package:gstore/db/apps/AppInfo.dart' as db;
 
@@ -46,8 +46,8 @@ abstract interface class IChannel {
   });
 
   /// 获取应用详情（用于详情页面展示）
-  /// 返回 IDetailData 接口，由各渠道实现具体数据
-  Future<ChannelResult<IDetailData>> getAppDetail(
+  /// 返回 IDetailInfo 接口，由各渠道实现具体数据
+  Future<ChannelResult<IDetailInfo>> getAppDetail(
     String appId, {
     bool forceRefresh = false,
   });

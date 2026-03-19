@@ -1,10 +1,12 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_html/flutter_html.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
-import 'package:gstore/core/model/IDetailData.dart';
+import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/model/StatTag.dart';
+import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/page/detail/widgets.dart';
 import 'logic.dart';
 import 'state.dart';
@@ -35,16 +37,12 @@ class DetailPage extends StatelessWidget {
     return Scaffold(
       appBar: _buildAppBar(context, logic, state),
       body: Obx(() {
-        // 初始加载中
-        if (state.isLoading.value) {
-          return const Center(child: CircularProgressIndicator());
-        }
-
         // 有错误
         if (state.errorMessage.value.isNotEmpty) {
           return _buildErrorBody(context, logic, state);
         }
 
+        // 直接显示内容（移除大块 loading，避免布局跳动）
         return _buildBody(context, logic, state);
       }),
       floatingActionButton: StreamBuilder(
@@ -90,7 +88,9 @@ class DetailPage extends StatelessWidget {
           tag: state.displayIcon,
           child: Text(
             title,
-            style: const TextStyle(fontWeight: FontWeight.w800),
+            style: AppTypography.headlineSmall.copyWith(
+              color: AppColors.textPrimary,
+            ),
           ),
         );
       }),
@@ -114,20 +114,10 @@ class DetailPage extends StatelessWidget {
     DetailLogic logic,
     DetailState state,
   ) {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const Icon(Icons.error_outline, size: 48, color: Colors.red),
-          const SizedBox(height: 16),
-          Text(state.errorMessage.value),
-          const SizedBox(height: 16),
-          ElevatedButton(
-            onPressed: () => logic.loadDetail(),
-            child: const Text('重试'),
-          ),
-        ],
-      ),
+    return ErrorState(
+      message: state.errorMessage.value,
+      retryLabel: '重试',
+      onRetryPressed: () => logic.loadDetail(),
     );
   }
 
@@ -137,19 +127,19 @@ class DetailPage extends StatelessWidget {
     DetailState state,
   ) {
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(16),
+      padding: AppSpacing.allLG,
       child: Column(
         children: [
           // 头部基础信息
           _buildHeader(context, logic, state),
 
-          const SizedBox(height: 8),
+          const SizedBox(height: AppSpacing.sm),
 
           // 详情加载指示器
           Obx(() {
             if (state.isLoadingDetail.value) {
               return const Padding(
-                padding: EdgeInsets.all(16),
+                padding: AppSpacing.allLG,
                 child: Center(child: CircularProgressIndicator()),
               );
             }
@@ -176,22 +166,15 @@ class DetailPage extends StatelessWidget {
     DetailLogic logic,
     DetailState state,
   ) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        border: Border(
-          top: border(context),
-          left: border(context),
-          right: border(context),
-        ),
-        borderRadius: const BorderRadius.only(
-          topLeft: Radius.circular(16),
-          topRight: Radius.circular(16),
-          bottomLeft: Radius.circular(16),
-          bottomRight: Radius.circular(16),
-        ),
-        color: Theme.of(context).colorScheme.primaryContainer,
+    return AppCard(
+      padding: AppSpacing.allLG,
+      backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+      border: Border(
+        top: border(context),
+        left: border(context),
+        right: border(context),
       ),
+      borderRadius: AppRadius.allLG,
       child: Obx(() {
         final icon = state.displayIcon;
         final name = state.displayName;
@@ -208,30 +191,30 @@ class DetailPage extends StatelessWidget {
                 Hero(
                   tag: icon,
                   child: ClipRRect(
-                    borderRadius: BorderRadius.circular(12),
+                    borderRadius: AppRadius.allMD,
                     child: icon.isNotEmpty
                         ? Image(
                             image: CachedNetworkImageProvider(icon),
-                            width: 64,
-                            height: 64,
+                            width: AppSpacing.xxxl + AppSpacing.xxl + AppSpacing.md,
+                            height: AppSpacing.xxxl + AppSpacing.xxl + AppSpacing.md,
                             errorBuilder: (context, error, stackTrace) {
                               return Container(
-                                width: 64,
-                                height: 64,
-                                color: Colors.grey[300],
+                                width: AppSpacing.xxxl + AppSpacing.xxl + AppSpacing.md,
+                                height: AppSpacing.xxxl + AppSpacing.xxl + AppSpacing.md,
+                                color: AppColors.grey300,
                                 child: const Icon(Icons.error),
                               );
                             },
                           )
                         : Container(
-                            width: 64,
-                            height: 64,
-                            color: Colors.grey[300],
+                            width: AppSpacing.xxxl + AppSpacing.xxl + AppSpacing.md,
+                            height: AppSpacing.xxxl + AppSpacing.xxl + AppSpacing.md,
+                            color: AppColors.grey300,
                             child: const Icon(Icons.apps),
                           ),
                   ),
                 ),
-                const SizedBox(width: 16),
+                const SizedBox(width: AppSpacing.lg),
                 // 名称和安装状态
                 Expanded(
                   child: Column(
@@ -241,11 +224,11 @@ class DetailPage extends StatelessWidget {
                         name,
                         style: Theme.of(context).textTheme.headlineSmall,
                       ),
-                      const SizedBox(height: 8),
+                      const SizedBox(height: AppSpacing.sm),
                       // 版本、包名、统计标签
                       Wrap(
-                        spacing: 8,
-                        runSpacing: 4,
+                        spacing: AppSpacing.sm,
+                        runSpacing: AppSpacing.xs,
                         children: [
                           // 版本标签
                           if (version != null && version.isNotEmpty)
@@ -255,8 +238,8 @@ class DetailPage extends StatelessWidget {
                             _buildPackageTag(context, packageName),
                           // 统计标签（统一渲染，无需判断 channel 类型）
                           ...?detailInfo?.buildStatTags().map((tag) => _buildStatTag(context, tag)),
-                          // 安装状态
-                          _buildInstallStatus(context, logic, state.installInfo),
+                          // 安装状态（响应式）
+                          Obx(() => _buildInstallStatus(context, logic, state.installInfo.value)),
                         ],
                       ),
                     ],
@@ -265,10 +248,46 @@ class DetailPage extends StatelessWidget {
               ],
             ),
             if (description.isNotEmpty) ...[
-              const SizedBox(height: 16),
-              Text(
-                description,
-                style: Theme.of(context).textTheme.bodyMedium,
+              const SizedBox(height: AppSpacing.lg),
+              Html(
+                data: description,
+                style: {
+                  'body': Style(
+                    margin: Margins.zero,
+                    padding: HtmlPaddings.zero,
+                    color: Theme.of(context).colorScheme.onSurface,
+                    fontSize: FontSize(AppTypography.sizeMD),
+                    lineHeight: const LineHeight(1.5),
+                  ),
+                  'p': Style(
+                    margin: Margins.zero,
+                    lineHeight: const LineHeight(1.5),
+                  ),
+                  'a': Style(
+                    color: Theme.of(context).colorScheme.primary,
+                    textDecoration: TextDecoration.underline,
+                    fontWeight: AppTypography.weightMedium,
+                  ),
+                  'strong': Style(
+                    fontWeight: AppTypography.weightSemiBold,
+                  ),
+                  'em': Style(
+                    fontStyle: FontStyle.italic,
+                  ),
+                  'code': Style(
+                    backgroundColor: Theme.of(context).colorScheme.primaryContainer.withAlpha(AppColors.alphaLowest),
+                    color: Theme.of(context).colorScheme.primary,
+                    padding: HtmlPaddings.symmetric(horizontal: 4, vertical: 2),
+                    fontFamily: 'monospace',
+                    fontSize: FontSize(AppTypography.sizeSM - 1),
+                  ),
+                },
+                shrinkWrap: true,
+                onLinkTap: (url, _, __) {
+                  if (url != null) {
+                    logic.openBrowser(url);
+                  }
+                },
               ),
             ],
           ],
@@ -280,12 +299,12 @@ class DetailPage extends StatelessWidget {
   /// 版本标签
   Widget _buildVersionTag(BuildContext context, String version) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      padding: AppSpacing.horizontalMD_verticalXS,
       decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.primary.withAlpha(40),
-        borderRadius: BorderRadius.circular(12),
+        color: Theme.of(context).colorScheme.primary.withAlpha(AppColors.alphaLow),
+        borderRadius: AppRadius.allMD,
         border: Border.all(
-          color: Theme.of(context).colorScheme.primary.withAlpha(80),
+          color: Theme.of(context).colorScheme.primary.withAlpha(AppColors.alphaMedium),
           width: 1,
         ),
       ),
@@ -294,15 +313,15 @@ class DetailPage extends StatelessWidget {
         children: [
           Icon(
             Icons.tag,
-            size: 12,
+            size: AppTypography.iconXS,
             color: Theme.of(context).colorScheme.primary,
           ),
-          const SizedBox(width: 4),
+          const SizedBox(width: AppSpacing.xs),
           Text(
             version,
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
                   color: Theme.of(context).colorScheme.primary,
-                  fontWeight: FontWeight.w500,
+                  fontWeight: AppTypography.weightMedium,
                 ),
           ),
         ],
@@ -313,12 +332,12 @@ class DetailPage extends StatelessWidget {
   /// 包名标签
   Widget _buildPackageTag(BuildContext context, String packageName) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      padding: AppSpacing.horizontalMD_verticalXS,
       decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.secondary.withAlpha(40),
-        borderRadius: BorderRadius.circular(12),
+        color: Theme.of(context).colorScheme.secondary.withAlpha(AppColors.alphaLow),
+        borderRadius: AppRadius.allMD,
         border: Border.all(
-          color: Theme.of(context).colorScheme.secondary.withAlpha(80),
+          color: Theme.of(context).colorScheme.secondary.withAlpha(AppColors.alphaMedium),
           width: 1,
         ),
       ),
@@ -327,15 +346,15 @@ class DetailPage extends StatelessWidget {
         children: [
           Icon(
             Icons.inventory_2_outlined,
-            size: 12,
+            size: AppTypography.iconXS,
             color: Theme.of(context).colorScheme.secondary,
           ),
-          const SizedBox(width: 4),
+          const SizedBox(width: AppSpacing.xs),
           Text(
             packageName,
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
                   color: Theme.of(context).colorScheme.secondary,
-                  fontWeight: FontWeight.w500,
+                  fontWeight: AppTypography.weightMedium,
                 ),
           ),
         ],
@@ -346,10 +365,10 @@ class DetailPage extends StatelessWidget {
   /// 统一的统计标签渲染方法
   Widget _buildStatTag(BuildContext context, StatTag tag) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      padding: AppSpacing.horizontalMD_verticalXS,
       decoration: BoxDecoration(
         color: tag.backgroundColor,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: AppRadius.allMD,
         border: Border.all(
           color: tag.borderColor,
           width: 1,
@@ -360,15 +379,15 @@ class DetailPage extends StatelessWidget {
         children: [
           Icon(
             tag.icon,
-            size: 12,
+            size: AppTypography.iconXS,
             color: tag.textColor,
           ),
-          const SizedBox(width: 4),
+          const SizedBox(width: AppSpacing.xs),
           Text(
             tag.text,
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
                   color: tag.textColor,
-                  fontWeight: FontWeight.w500,
+                  fontWeight: AppTypography.weightMedium,
                 ),
           ),
         ],
@@ -379,7 +398,7 @@ class DetailPage extends StatelessWidget {
   List<Widget> _buildSections(
     BuildContext context,
     DetailLogic logic,
-    IDetailData detail,
+    IDetailInfo detail,
   ) {
     final sections = <Widget>[];
 
@@ -410,16 +429,16 @@ class DetailPage extends StatelessWidget {
                 Get.defaultDialog(
                   title: "下载二维码",
                   content: Container(
-                    width: 120,
-                    height: 120,
+                    width: AppSpacing.xxxl + AppSpacing.xxxl + AppSpacing.xxl + AppSpacing.xl,
+                    height: AppSpacing.xxxl + AppSpacing.xxxl + AppSpacing.xxl + AppSpacing.xl,
                     decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(8),
+                      color: AppColors.white,
+                      borderRadius: AppRadius.allSM,
                     ),
                     child: QrImageView(
                       data: download.url,
                       version: QrVersions.auto,
-                      size: 120,
+                      size: AppSpacing.xxxl + AppSpacing.xxxl + AppSpacing.xxl + AppSpacing.xl,
                       embeddedImage: detail.icon.isNotEmpty
                           ? CachedNetworkImageProvider(detail.icon)
                           : null,
@@ -461,14 +480,16 @@ class DetailPage extends StatelessWidget {
           ? null
           : () => logic.startApp(status.packageName),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        padding: AppSpacing.horizontalMD_verticalXS,
         decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.primary.withAlpha(130),
-          borderRadius: BorderRadius.circular(20),
+          color: Theme.of(context).colorScheme.primary.withAlpha(AppColors.alphaMedium),
+          borderRadius: AppRadius.allXL,
         ),
         child: Text(
           title,
-          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
+          style: AppTypography.labelSmall.copyWith(
+            color: Theme.of(context).colorScheme.onPrimary,
+          ),
         ),
       ),
     );
@@ -476,6 +497,6 @@ class DetailPage extends StatelessWidget {
 }
 
 BorderSide border(BuildContext context) => BorderSide(
-  color: Theme.of(context).colorScheme.primary.withAlpha(130),
+  color: Theme.of(context).colorScheme.primary.withAlpha(AppColors.alphaMedium),
   width: 1,
 );

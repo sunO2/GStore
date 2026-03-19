@@ -19,30 +19,42 @@ class ApplistLogic extends GetxController with GithubRequestMix {
     super.onReady();
     _aggregator = Get.find(tag: 'aggregatorManager');
 
+    debugPrint('ApplistLogic: 初始化，监听应用变化事件');
+
     // 监听已添加应用变化
     _appsSubscription = _aggregator.appsChangedStream.listen((_) {
+      debugPrint('ApplistLogic: ✅ 收到 appsChangedStream 通知');
       loadAggregatedApps();
     });
 
+    debugPrint('ApplistLogic: 开始加载应用');
     await loadAggregatedApps();
     checkUpdata();
   }
 
   /// 加载聚合应用
   Future<void> loadAggregatedApps() async {
+    debugPrint('ApplistLogic: ========== 开始加载聚合应用 ==========');
     state.isLoading.value = true;
     state.errorMessage.value = '';
 
     try {
+      debugPrint('ApplistLogic: 调用 _aggregator.getAggregatedApps()');
       final apps = await _aggregator.getAggregatedApps();
+      debugPrint('ApplistLogic: ✅ 获取到 ${apps.length} 个聚合应用');
+
       state.apps = apps;
       update();
-    } catch (e) {
+
+      debugPrint('ApplistLogic: 已更新 UI，应用数量: ${apps.length}');
+    } catch (e, stackTrace) {
+      debugPrint('ApplistLogic: ❌ 加载聚合应用失败 - $e');
+      debugPrint('ApplistLogic: 堆栈跟踪: $stackTrace');
       state.errorMessage.value = '加载失败: $e';
-      log('ApplistLogic: 加载聚合应用失败 - $e');
     } finally {
       state.isLoading.value = false;
     }
+    debugPrint('ApplistLogic: ========== 加载聚合应用完成 ==========');
   }
 
   Future<void> checkUpdata() async {
@@ -75,10 +87,11 @@ class ApplistLogic extends GetxController with GithubRequestMix {
 
   void appDetail(AggregatedAppInfo app) {
     // 创建轻量级的详情请求参数
+    // appId 格式通常是包名（如 org.example.app），直接用作 packageName
     final request = AppDetailRequest(
       appId: app.appInfo.appId,
       name: app.appInfo.name,
-      packageName: app.appInfo.repositories,
+      packageName: app.appInfo.appId, // appId 就是包名格式
       icon: app.appInfo.icon,
       description: app.appInfo.des,
       channel: app.channel,

@@ -35,7 +35,8 @@ dependencies:
   logger: ^2.4.0  # for logging purpose
   json_annotation: ^4.9.0
   get:
-  flutter_markdown: ^0.7.3+1
+  flutter_markdown: ^0.7.6+2
+  markdown: ^7.2.0
   yaml: ^3.1.2
 
 
@@ -63,8 +64,14 @@ dependencies:
   flutter_html: ^3.0.0-beta.2
   sqflite: ^2.4.1
   flutter_secure_storage: ^9.2.4
+  file_picker: ^8.1.6
+  permission_handler: ^11.3.1
+  archive: ^3.6.1
 
 
+  flutter_rust_bridge: 2.11.1
+  path: any
+  xml: ^6.5.0
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -79,12 +86,20 @@ dev_dependencies:
   jovial_svg: ^1.1.22
   floor_generator: ^1.4.2
 
-  # The "flutter_lints" package below contains a set of recommended lints to
-  # encourage good coding practices. The lint set provided by the package is
-  # activated in the `analysis_options.yaml` file located at the root of your
-  # package. See that file for information about deactivating specific lint
-  # rules and activating additional ones.
+  # Rust FFI
   flutter_lints: ^4.0.0
+
+# Rust FFI 配置
+flutter_rust_bridge:
+  # Rust 输入（模块路径）
+  rust_input: fdroid_repo::bridge
+  # Rust 项目根目录
+  rust_root: ../rust/fdroid_repo
+  # Dart 输出目录
+  dart_output: lib/core/rust/generated/
+  # Rust 输出文件
+  rust_output: ../rust/fdroid_repo/src/frb_generated.rs
+
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec

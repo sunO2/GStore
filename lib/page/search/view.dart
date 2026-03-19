@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/routers.dart';
 import 'package:gstore/core/utils/logger.dart';
+import 'package:gstore/core/core.dart';
 import 'package:gstore/db/apps/AppInfo.dart';
 import 'package:jovial_svg/jovial_svg.dart';
 import 'logic.dart';
@@ -50,7 +51,7 @@ class SearchPage extends StatelessWidget {
                 : const Text(""),
       ),
       body: Container(
-          padding: const EdgeInsets.all(16),
+          padding: AppSpacing.allLG,
           child: StreamBuilder(
               stream: logic.searchController.stream,
               builder: (context, snap) {
@@ -84,14 +85,14 @@ class SearchPage extends StatelessWidget {
                         tag: app.name,
                         child: Text(
                           app.name,
-                          style: const TextStyle(fontWeight: FontWeight.w800),
+                          style: Theme.of(context).textTheme.titleSmall,
                         ),
                       ),
                       subtitle: Text(
                         app.des,
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontWeight: FontWeight.w800),
+                        style: Theme.of(context).textTheme.bodySmall,
                       ),
                     );
                   },

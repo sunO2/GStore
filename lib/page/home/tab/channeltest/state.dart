@@ -30,6 +30,15 @@ class ChannelTestState {
   /// 应用 ID
   final appId = 'com.example.app'.obs;
 
+  /// 当前执行的操作（用于高亮显示）
+  final currentOperation = ''.obs;
+
+  /// 开发者模式开关
+  final developerMode = false.obs;
+
+  /// 结果显示（纯文本格式）
+  final result = ''.obs;
+
   ChannelTestState() {
     // 初始化
   }

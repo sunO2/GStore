@@ -96,7 +96,7 @@ class _$AppInfoDatabase extends AppInfoDatabase {
       },
       onCreate: (database, version) async {
         await database.execute(
-            'CREATE TABLE IF NOT EXISTS `AppInfo` (`appId` TEXT NOT NULL, `name` TEXT NOT NULL, `user` TEXT NOT NULL, `repositories` TEXT NOT NULL, `icon` TEXT NOT NULL, `des` TEXT NOT NULL, `category` TEXT, PRIMARY KEY (`appId`))');
+            'CREATE TABLE IF NOT EXISTS `AppInfo` (`appId` TEXT NOT NULL, `name` TEXT NOT NULL, `user` TEXT NOT NULL, `repositories` TEXT NOT NULL, `icon` TEXT NOT NULL, `des` TEXT NOT NULL, `readme` TEXT, `category` TEXT, `extra` TEXT, PRIMARY KEY (`appId`))');
         await database.execute(
             'CREATE TABLE IF NOT EXISTS `AppInfoConfig` (`version` TEXT NOT NULL, `proxy` TEXT, PRIMARY KEY (`version`))');
         await database.execute(

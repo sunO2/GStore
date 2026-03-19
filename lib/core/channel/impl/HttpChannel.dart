@@ -8,7 +8,7 @@ import 'package:gstore/core/channel/model/ChannelInfo.dart';
 import 'package:gstore/core/channel/model/ChannelResult.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
-import 'package:gstore/core/model/IDetailData.dart';
+import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/model/proxy/HttpChannelDetailProxy.dart';
 import 'package:gstore/db/apps/AppInfo.dart';
 import 'package:gstore/db/apps/AppInfo.dart' as db;
@@ -440,7 +440,7 @@ class HttpChannel implements IChannel {
   }
 
   @override
-  Future<ChannelResult<IDetailData>> getAppDetail(
+  Future<ChannelResult<IDetailInfo>> getAppDetail(
     String appId, {
     bool forceRefresh = false,
   }) async {
@@ -530,7 +530,7 @@ class HttpChannel implements IChannel {
   }
 
   /// 构建基本信息（当没有详细数据时）
-  ChannelResult<IDetailData> _buildBasicDetail(AppInfo appInfo) {
+  ChannelResult<IDetailInfo> _buildBasicDetail(AppInfo appInfo) {
     // 构建原始数据 Map
     final rawData = <String, dynamic>{
       'appId': appInfo.appId,

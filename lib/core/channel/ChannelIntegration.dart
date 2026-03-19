@@ -45,11 +45,20 @@ class ChannelIntegration {
       priority: 4,
     );
 
+    // 4. 注册 F-Droid 应用市场渠道
+    var fdroidChannel = FdroidChannel(
+      dio: DioClient().get(),
+      name: 'F-Droid',
+      description: 'F-Droid 开源应用市场',
+      priority: 5,
+    );
+
     // 注册所有渠道
     manager.registerChannels([
       localDbChannel,
       githubChannel,
       vivoChannel,
+      fdroidChannel,
     ]);
 
     // 初始化所有启用的渠道

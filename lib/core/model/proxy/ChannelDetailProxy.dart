@@ -1,13 +1,13 @@
 import 'package:flutter/foundation.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
-import 'package:gstore/core/model/IDetailData.dart';
+import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/StatTag.dart';
 
 /// 渠道详情数据代理基类
-/// 包装原始数据，实现 IDetailData 接口
+/// 包装原始数据，实现 IDetailInfo 接口
 /// 子类实现特定渠道的数据访问逻辑
-abstract class ChannelDetailProxy implements IDetailData {
+abstract class ChannelDetailProxy implements IDetailInfo {
   /// 原始数据（来自 API 或数据库）
   final Map<String, dynamic> _data;
 
@@ -20,10 +20,20 @@ abstract class ChannelDetailProxy implements IDetailData {
   Map<String, dynamic> get extra => _data;
 
   @override
-  bool get isValid => appId.isNotEmpty && name.isNotEmpty;
+  bool get isValid => packageName.isNotEmpty && appName.isNotEmpty;
 
   /// 子类需要实现的渠道类型
+  @override
   ChannelType get channelType;
+
+  /// 子类需要实现的渠道ID（用于统一数据库）
+  @override
+  String get channelId => channelType.code;
+
+  /// 子类需要实现 appName
+  /// 从旧接口的 name 字段获取，确保兼容性
+  @override
+  String get appName;
 
   @override
   String? get readme => extra['readme']?.toString();

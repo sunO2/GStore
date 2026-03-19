@@ -9,6 +9,12 @@ import 'package:path_provider/path_provider.dart';
 final Map<String, StreamController<DownloadStatus>> _streamManager = {};
 // 取消下载按钮
 final Map<String, CancelToken> _cancelTokens = {};
+// 正在下载的文件列表（用于防止重复下载）
+final Set<String> _downloadingFiles = {};
+// 数据库更新节流控制（避免频繁更新数据库）
+final Map<String, DateTime> _lastUpdateTime = {};
+// 节流间隔（毫秒）
+const _updateThrottleMs = 500;
 
 @entity
 class DownloadStatus {
@@ -71,9 +77,30 @@ class DownloadStatus {
     var token = _cancelTokens[_downloadTag];
     if (null == token || token.isCancelled) {
       token = CancelToken();
-      _cancelTokens[fileName] = token;
+      _cancelTokens[_downloadTag] = token;
     }
     return token;
+  }
+
+  /// 检查文件是否正在下载
+  static bool isDownloading(String appid, String version, String fileName) {
+    final tag = "$appid-$version-$fileName";
+    return _downloadingFiles.contains(tag);
+  }
+
+  /// 标记文件开始下载
+  void markAsDownloading() {
+    _downloadingFiles.add(_downloadTag);
+  }
+
+  /// 标记文件下载完成（成功、取消或失败）
+  void markAsCompleted() {
+    _downloadingFiles.remove(_downloadTag);
+  }
+
+  /// 获取所有正在下载的文件标签
+  static Set<String> getDownloadingFiles() {
+    return Set.from(_downloadingFiles);
   }
 
   @override
@@ -93,29 +120,35 @@ class DownloadStatus {
   }
 
   cancelDownload() {
-    var token = _cancelTokens[fileName];
+    var token = _cancelTokens[_downloadTag];
     if (null != token) {
       token.cancel();
-      _cancelTokens.remove(fileName);
+      _cancelTokens.remove(_downloadTag);
     }
   }
 
   void downloadCanced() async {
     status = DOWNLOAD_READY;
+    markAsCompleted();
     _counterController.sink.add(this);
+    _lastUpdateTime.remove(_downloadTag);  // 清理节流记录
     await (await database).downloadStatusDao.updateDownload(this);
   }
 
   void downloadError() async {
     status = DOWNLOAD_ERROR;
+    markAsCompleted();
     _counterController.sink.add(this);
+    _lastUpdateTime.remove(_downloadTag);  // 清理节流记录
     await (await database).downloadStatusDao.updateDownload(this);
   }
 
   void downloadSuccess() async {
     count = total;
     status = DOWNLOAD_SUCCESS;
+    markAsCompleted();
     _counterController.sink.add(this);
+    _lastUpdateTime.remove(_downloadTag);  // 清理节流记录
     await (await database).downloadStatusDao.updateDownload(this);
   }
 
@@ -123,8 +156,20 @@ class DownloadStatus {
     this.count = count;
     this.total = total;
     status = DOWNLOAD_LOADING;
-    await (await database).downloadStatusDao.updateDownload(this);
+
+    // 始终更新 Stream（UI 需要实时进度）
     _counterController.sink.add(this);
+
+    // 节流：只在超过节流间隔时才更新数据库
+    final now = DateTime.now();
+    final lastUpdate = _lastUpdateTime[_downloadTag];
+    final shouldUpdateDb = lastUpdate == null ||
+        now.difference(lastUpdate).inMilliseconds >= _updateThrottleMs;
+
+    if (shouldUpdateDb) {
+      _lastUpdateTime[_downloadTag] = now;
+      await (await database).downloadStatusDao.updateDownload(this);
+    }
   }
 
   Stream<DownloadStatus> get observer => _counterController.stream;

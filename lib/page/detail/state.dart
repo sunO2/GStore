@@ -1,7 +1,7 @@
 import 'package:get/get.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/AppDetailRequest.dart';
-import 'package:gstore/core/model/IDetailData.dart';
+import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:installed_apps/app_info.dart';
 
 class DetailState {
@@ -9,16 +9,16 @@ class DetailState {
   AppDetailRequest? request;
 
   /// 应用详情信息
-  final Rx<IDetailData?> detailInfo = Rx<IDetailData?>(null);
+  final Rx<IDetailInfo?> detailInfo = Rx<IDetailInfo?>(null);
 
-  /// 是否正在加载
-  final RxBool isLoading = true.obs;
+  /// 是否正在加载（改为 false，避免显示大块 loading）
+  final RxBool isLoading = false.obs;
 
   /// 错误信息
   final RxString errorMessage = ''.obs;
 
-  /// 已安装的应用信息
-  AppInfo? installInfo;
+  /// 已安装的应用信息（响应式变量）
+  final Rx<AppInfo?> installInfo = Rx<AppInfo?>(null);
 
   /// 是否正在加载详情（基础信息已显示）
   final RxBool isLoadingDetail = false.obs;
@@ -42,4 +42,7 @@ class DetailState {
 
   /// 是否有详情信息
   bool get hasDetailInfo => detailInfo.value != null;
+
+  /// 是否已安装
+  bool get isInstalled => installInfo.value != null;
 }

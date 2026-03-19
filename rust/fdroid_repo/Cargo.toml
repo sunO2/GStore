@@ -1,0 +1,36 @@
+[package]
+name = "fdroid_repo"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+# JSON 序列化
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# 异步运行时
+tokio = { version = "1", features = ["full"] }
+# HTTP 客户端 - 使用 rustls 避免 OpenSSL 依赖
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+# ZIP 解析（用于 index-v1.jar 和 index-v2.jar）
+zip = "2.2"
+# XML 解析（用于 index-v1.jar）
+quick-xml = "0.37"
+# SQLite
+rusqlite = { version = "0.32", features = ["bundled"] }
+# Flutter FFI
+flutter_rust_bridge = "=2.11.1"
+# 日期时间
+chrono = { version = "0.4", features = ["serde"] }
+# Android 日志
+log = "0.4"
+android_logger = "0.13"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

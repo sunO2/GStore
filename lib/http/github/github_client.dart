@@ -3,6 +3,7 @@ import 'package:get/get.dart';
 import 'package:gstore/http/github/user_info/user_info.dart';
 import 'package:json_annotation/json_annotation.dart';
 import 'package:retrofit/retrofit.dart';
+import 'package:retrofit/http.dart' as retrofit;
 
 part 'github_client.g.dart';
 
@@ -22,6 +23,17 @@ abstract class GithubRestClient with GetxServiceMixin {
       @Path('user') String user,
       @Path('repositories') String repositories,
       @Path('page') int page,
+      @CancelRequest() CancelToken cancelToken);
+
+  /// 获取仓库的 README 文件
+  /// 返回包含 Base64 编码内容的 JSON String
+  @GET('/repos/{user}/{repositories}/readme')
+  @retrofit.Headers(<String, String>{
+    "Accept": "application/vnd.github.v3+json"
+  })
+  Future<String> readme(
+      @Path('user') String user,
+      @Path('repositories') String repositories,
       @CancelRequest() CancelToken cancelToken);
 
   @GET('/user')
