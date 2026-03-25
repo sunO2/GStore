@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:gstore/core/design/design_tokens.dart';
 
 /// 主题模式枚举
 enum AppThemeMode {
@@ -341,77 +340,27 @@ class ColorSchemeGenerator {
     Color? secondaryColor,
     Color? tertiaryColor,
   }) {
-    final secondary = secondaryColor ?? _shiftHue(primaryColor, 60);
-    final tertiary = tertiaryColor ?? _shiftHue(primaryColor, 120);
-
-    return ColorScheme(
+    // 使用 fromSeed 从主色生成完整的 Material 3 色系
+    // 这样可以确保 secondaryContainer 等容器色有丰富的色阶
+    final baseScheme = ColorScheme.fromSeed(
+      seedColor: primaryColor,
       brightness: brightness,
-      primary: primaryColor,
-      onPrimary: _getContrastColor(primaryColor),
-      primaryContainer: _lighten(primaryColor, 0.8),
-      onPrimaryContainer: _darken(primaryColor, 0.2),
-
-      secondary: secondary,
-      onSecondary: _getContrastColor(secondary),
-      secondaryContainer: _lighten(secondary, 0.8),
-      onSecondaryContainer: _darken(secondary, 0.2),
-
-      tertiary: tertiary,
-      onTertiary: _getContrastColor(tertiary),
-      tertiaryContainer: _lighten(tertiary, 0.8),
-      onTertiaryContainer: _darken(tertiary, 0.2),
-
-      error: brightness == Brightness.light
-          ? const Color(0xFFB00020)
-          : const Color(0xFFCF6679),
-      onError: brightness == Brightness.light
-          ? const Color(0xFFFFFFFF)
-          : const Color(0xFF000000),
-
-      background: brightness == Brightness.light
-          ? const Color(0xFFFAFAFA)
-          : const Color(0xFF121212),
-      onBackground: brightness == Brightness.light
-          ? const Color(0xFF000000)
-          : const Color(0xFFFFFFFF),
-
-      surface: brightness == Brightness.light
-          ? const Color(0xFFFFFFFF)
-          : const Color(0xFF1E1E1E),
-      onSurface: brightness == Brightness.light
-          ? const Color(0xFF000000)
-          : const Color(0xFFFFFFFF),
-
-      outline: brightness == Brightness.light
-          ? const Color(0xFFE0E0E0)
-          : const Color(0xFF424242),
-      outlineVariant: brightness == Brightness.light
-          ? const Color(0xFFEEEEEE)
-          : const Color(0xFF4A4A4A),
     );
-  }
 
-  /// 获取对比色（黑或白）
-  static Color _getContrastColor(Color color) {
-    final luminance = color.computeLuminance();
-    return luminance > 0.5 ? Colors.black : Colors.white;
-  }
+    // 如果用户指定了 secondary 或 tertiary，需要覆盖默认值
+    // 但保留其他 Material 3 自动生成的颜色
+    if (secondaryColor == null && tertiaryColor == null) {
+      // 没有自定义 secondary/tertiary，直接使用生成的完整色板
+      return baseScheme;
+    }
 
-  /// 调整色相
-  static Color _shiftHue(Color color, int degrees) {
-    final hsl = HSLColor.fromColor(color);
-    return hsl.withHue((hsl.hue + degrees) % 360).toColor();
-  }
-
-  /// 变亮
-  static Color _lighten(Color color, double amount) {
-    final hsl = HSLColor.fromColor(color);
-    return hsl.withLightness((hsl.lightness + amount).clamp(0.0, 1.0)).toColor();
-  }
-
-  /// 变暗
-  static Color _darken(Color color, double amount) {
-    final hsl = HSLColor.fromColor(color);
-    return hsl.withLightness((hsl.lightness - amount).clamp(0.0, 1.0)).toColor();
+    // 有自定义颜色，从 seedColor 生成并覆盖
+    // 注意：fromSeed 会生成完整的色板，我们只需要覆盖指定的颜色
+    return ColorScheme.fromSeed(
+      seedColor: primaryColor,
+      secondary: secondaryColor,
+      tertiary: tertiaryColor,
+      brightness: brightness,
+    );
   }
 }

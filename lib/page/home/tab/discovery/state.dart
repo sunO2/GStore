@@ -4,7 +4,7 @@ import 'package:gstore/core/channel/channel.dart';
 import 'package:gstore/db/apps/AppInfo.dart';
 
 class DiscoveryState {
-  /// 当前选中的渠道筛选
+  /// 当前选中的渠道（null 表示全部）
   final selectedChannel = Rx<ChannelType?>(null);
 
   /// 所有渠道的应用列表
@@ -24,6 +24,24 @@ class DiscoveryState {
 
   /// 当前显示模式（全部/已添加/未添加）
   final displayMode = DisplayMode.all.obs;
+
+  /// 每个渠道的当前页码
+  final Map<ChannelType, int> channelPages = <ChannelType, int>{}.obs;
+
+  /// 每个渠道是否正在加载更多
+  final Map<ChannelType, bool> channelLoadingMore = <ChannelType, bool>{}.obs;
+
+  /// 每个渠道的总数
+  final Map<ChannelType, int> channelTotalCounts = <ChannelType, int>{}.obs;
+
+  /// 是否处于多选模式
+  final isMultiSelectMode = false.obs;
+
+  /// 已选中的应用（key: "channelCode:appId"）
+  final RxSet<String> selectedApps = <String>{}.obs;
+
+  /// Grid 交叉轴数量（响应式）
+  final crossAxisCount = 3.obs;
 
   DiscoveryState() {}
 }

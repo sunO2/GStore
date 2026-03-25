@@ -6,6 +6,7 @@ import 'app_spacing.dart';
 import 'app_radius.dart';
 import 'app_animations.dart';
 import 'app_typography.dart';
+import 'app_components.dart';
 
 /// 统一的弹框组件
 ///
@@ -551,7 +552,7 @@ class AppDialogs {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const CircularProgressIndicator(),
+            const AppLoading(size: AppLoadingSize.medium),
             const SizedBox(height: AppSpacing.lg),
             Text(
               message,

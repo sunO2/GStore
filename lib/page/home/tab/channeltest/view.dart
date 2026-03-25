@@ -35,11 +35,7 @@ class ChannelTestPage extends StatelessWidget {
           Obx(() => IconButton(
                 onPressed: state.isQuerying.value ? null : logic.refresh,
                 icon: state.isQuerying.value
-                    ? SizedBox(
-                        width: AppSpacing.lg + AppSpacing.xs,
-                        height: AppSpacing.lg + AppSpacing.xs,
-                        child: const CircularProgressIndicator(strokeWidth: 2),
-                      )
+                    ? const AppLoading(size: AppLoadingSize.small)
                     : const Icon(Icons.refresh),
               )),
           PopupMenuButton<String>(

@@ -69,7 +69,7 @@ class DownloadManager extends StatelessWidget {
                 stream: logic.controller.stream,
                 builder: (context, snap) {
                   if (snap.connectionState != ConnectionState.active) {
-                    return const Center(child: CircularProgressIndicator());
+                    return const Center(child: AppLoading(size: AppLoadingSize.medium));
                   }
 
                   final downloadList = snap.data;

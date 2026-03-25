@@ -6,6 +6,12 @@ class ApplistState {
   /// 聚合的应用列表（按添加时间排序）
   List<AggregatedAppInfo> apps = [];
 
+  /// 过滤后的应用列表（用于显示搜索结果）
+  List<AggregatedAppInfo> filteredApps = [];
+
+  /// 搜索关键词
+  final RxString searchKeyword = ''.obs;
+
   /// 数据库版本
   String version = "";
 

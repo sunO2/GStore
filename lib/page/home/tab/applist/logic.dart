@@ -14,6 +14,10 @@ class ApplistLogic extends GetxController with GithubRequestMix {
   late AppAggregatorManager _aggregator;
   StreamSubscription? _appsSubscription;
 
+  // 搜索框控制
+  final FocusNode searchFocusNode = FocusNode();
+  final TextEditingController searchController = TextEditingController();
+
   @override
   void onReady() async {
     super.onReady();
@@ -44,6 +48,7 @@ class ApplistLogic extends GetxController with GithubRequestMix {
       debugPrint('ApplistLogic: ✅ 获取到 ${apps.length} 个聚合应用');
 
       state.apps = apps;
+      state.filteredApps = apps; // 初始化时显示所有应用
       update();
 
       debugPrint('ApplistLogic: 已更新 UI，应用数量: ${apps.length}');
@@ -55,6 +60,28 @@ class ApplistLogic extends GetxController with GithubRequestMix {
       state.isLoading.value = false;
     }
     debugPrint('ApplistLogic: ========== 加载聚合应用完成 ==========');
+  }
+
+  /// 执行搜索
+  void searchApps(String keyword) {
+    state.searchKeyword.value = keyword;
+
+    if (keyword.isEmpty) {
+      state.filteredApps = state.apps;
+    } else {
+      final lowerKeyword = keyword.toLowerCase();
+      state.filteredApps = state.apps.where((app) {
+        // 搜索应用名称
+        final nameMatch = app.appInfo.name?.toLowerCase().contains(lowerKeyword) ?? false;
+        // 搜索应用描述
+        final descMatch = app.appInfo.des?.toLowerCase().contains(lowerKeyword) ?? false;
+        // 搜索包名
+        final packageMatch = app.appInfo.appId.toLowerCase().contains(lowerKeyword);
+
+        return nameMatch || descMatch || packageMatch;
+      }).toList();
+    }
+    update();
   }
 
   Future<void> checkUpdata() async {
@@ -124,6 +151,8 @@ class ApplistLogic extends GetxController with GithubRequestMix {
 
   @override
   void onClose() {
+    searchFocusNode.dispose();
+    searchController.dispose();
     _appsSubscription?.cancel();
     super.onClose();
   }

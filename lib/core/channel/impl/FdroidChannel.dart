@@ -16,6 +16,7 @@ import 'package:gstore/core/fdroid/FdroidRepoModels.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/model/proxy/FdroidChannelDetailProxy.dart';
+import 'package:gstore/core/service/app_icon_service.dart';
 import 'package:gstore/db/apps/AppInfo.dart';
 import 'package:gstore/db/apps/AppInfo.dart' as db;
 
@@ -197,8 +198,9 @@ class FdroidChannel implements IChannel {
       final results = await _repoManager.searchApps(keyword, limit: 50);
 
       // 转换为 AppInfo
-      final apps = results.map((appMap) {
+      final apps = await Future.wait(results.map((appMap) async {
         final categories = appMap['categories'] as List<dynamic>? ?? [];
+        final packageName = appMap['packageName'] ?? '';
 
         // 处理图标 URL
         String iconUrl;
@@ -238,22 +240,29 @@ class FdroidChannel implements IChannel {
             }
           }
         } else {
-          // 默认图标
-          iconUrl = '$_currentRepoUrl/icons/${appMap['packageName'] ?? 'app'}.png';
+          // 没有图标数据，尝试获取已安装应用的图标
+          final installedIcon = await AppIconService.instance.getInstalledAppIcon(packageName);
+          if (installedIcon != null) {
+            iconUrl = installedIcon;
+            debugPrint('FdroidChannel: 使用已安装应用图标 - $packageName');
+          } else {
+            // 使用默认图标
+            iconUrl = '$_currentRepoUrl/icons/$packageName.png';
+          }
         }
 
-        debugPrint('FdroidChannel: 图标处理 - 原始=$iconKey, 最终=$iconUrl');
+        debugPrint('FdroidChannel: 图标处理 - packageName=$packageName, iconKey=$iconKey, 最终=$iconUrl');
 
         return AppInfo(
-          appMap['packageName'] ?? '',
+          packageName,
           appMap['name'] ?? '',
           appMap['authorName'] ?? '',
-          appMap['packageName'] ?? '',
+          packageName,
           iconUrl,
           appMap['summary'] ?? '',
           categories.cast<String>(),
         );
-      }).toList();
+      }).toList());
 
       debugPrint('FdroidChannel: 搜索到 ${apps.length} 个结果');
       return ChannelResult.success(
@@ -537,26 +546,29 @@ class FdroidChannel implements IChannel {
       debugPrint('FdroidChannel: ========== 开始获取应用详情 ==========');
       debugPrint('FdroidChannel: appId = $appId');
 
-      // 步骤 1: 尝试从 Rust 数据库获取应用数据（包含 metadata 和 versions）
-      try {
-        final searchResults = await _repoManager.searchApps(appId, limit: 1);
-        if (searchResults.isNotEmpty) {
-          final appData = searchResults.first;
-          final metadataJson = appData['metadata'] as String?;
-          final versionsJson = appData['versions'] as String?;
+      // 步骤 1: 尝试从 Rust 数据库精确查询应用数据（包含 metadata 和 versions）
+      if (!forceRefresh) {
+        try {
+          final appData = await _repoManager.getAppByPackageName(appId);
+          if (appData != null) {
+            final metadataJson = appData['metadata'] as String?;
+            final versionsJson = appData['versions'] as String?;
 
-          if (metadataJson != null && versionsJson != null) {
-            debugPrint('FdroidChannel: 从数据库获取到 metadata 和 versions');
-            return await _parseDetailFromJson(
-              appId,
-              appData,
-              metadataJson,
-              versionsJson,
-            );
+            if (metadataJson != null && versionsJson != null) {
+              debugPrint('FdroidChannel: 从数据库精确获取到 metadata 和 versions');
+              return await _parseDetailFromJson(
+                appId,
+                appData,
+                metadataJson,
+                versionsJson,
+              );
+            }
+          } else {
+            debugPrint('FdroidChannel: 数据库中未找到精确匹配的应用');
           }
+        } catch (e) {
+          debugPrint('FdroidChannel: 从数据库获取失败，尝试网络请求 - $e');
         }
-      } catch (e) {
-        debugPrint('FdroidChannel: 从数据库获取失败，尝试网络请求 - $e');
       }
 
       // 步骤 2: 数据库没有或 forceRefresh，通过网络 API 获取（降级方案）
@@ -1197,7 +1209,7 @@ class _FdroidSearchWidgetState extends State<_FdroidSearchWidget> {
   Widget _buildSearchResults() {
     if (_isSearching) {
       return const Center(
-        child: CircularProgressIndicator(),
+        child: AppLoading(size: AppLoadingSize.medium),
       );
     }
 

@@ -197,6 +197,19 @@ class AppSpacing {
   /// Radio padding - padding for radio buttons
   static const EdgeInsets radioPadding = EdgeInsets.symmetric(horizontal: sm);
 
+  // ========== Card Internal Layout Spacing ==========
+  /// Card group spacing - spacing between different groups/sections within a card
+  /// Example: spacing between "Export options" and "Restore mode" sections
+  static const double cardGroupSpacing = lg;
+
+  /// Card title description spacing - spacing between title and description text within the same group
+  /// Example: spacing between "Restore Mode" title and its description
+  static const double cardTitleDescriptionSpacing = xs;
+
+  /// Card control spacing - spacing between description and control element (button, switch, etc.)
+  /// Example: spacing between description and segmented button
+  static const double cardControlSpacing = md;
+
   // ========== Sliver Padding ==========
   /// Sliver padding for app bar
   static const EdgeInsets sliverAppBarPadding = EdgeInsets.symmetric(horizontal: lg, vertical: md);

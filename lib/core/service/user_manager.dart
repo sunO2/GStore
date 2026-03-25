@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/design/design_tokens.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:gstore/http/github/dio_client.dart';
 import 'package:gstore/http/github/github_auth_api.dart';
 import 'package:gstore/http/github/github_client.dart';
@@ -13,35 +14,86 @@ import 'package:gstore/http/github/user_info/user_info.dart';
 ///
 /// 负责用户登录、token 管理、用户信息存储等功能
 class UserManager extends GetxService {
-  final _authApi = Get.find<GithubAuthApi>();
-  final _githubApi = Get.find<GithubRestClient>();
-  final _storage = const FlutterSecureStorage();
+  static UserManager? _instance;
+
+  static UserManager get instance {
+    _instance ??= UserManager._internal();
+    return _instance!;
+  }
+
+  late final GithubAuthApi _authApi;
+  late final GithubRestClient _githubApi;
+  final _secureStorage = const FlutterSecureStorage();
   final userInfo = const UserInfo().obs;
   Timer? _loginRequestTimer;
+
+  /// SharedPreferences 实例（备用存储）
+  SharedPreferences? _prefs;
+
+  /// 是否已初始化
+  bool _isInitialized = false;
 
   /// 存储键
   static const String _tokenKey = 'github_token';
   static const String _userInfoKey = 'user_info';
+
+  /// 初始化 SharedPreferences
+  Future<void> _initPrefs() async {
+    _prefs ??= await SharedPreferences.getInstance();
+  }
+
+  /// 私有构造函数
+  UserManager._internal() {
+    // 在 initialize() 中初始化依赖
+  }
+
+  @override
+  onInit() {
+    debugPrint('UserManager: onInit 被调用 (instance: ${identityHashCode(this)})');
+    // 不要在这里调用 _initialize()，因为 initialize() 会调用它
+    super.onInit();
+  }
+
+  /// 初始化（必须在使用前调用）
+  Future<void> initialize() async {
+    if (_isInitialized) {
+      debugPrint('UserManager: 已经初始化过，跳过');
+      return;
+    }
+
+    debugPrint('UserManager: 开始公共初始化');
+    // 初始化依赖
+    _authApi = Get.find<GithubAuthApi>();
+    _githubApi = Get.find<GithubRestClient>();
+
+    // 调用内部初始化
+    await _initialize();
+  }
 
   /// 获取当前用户信息
   Future<UserInfo?> getUserInfo() async {
     return _githubApi.user();
   }
 
-  @override
-  onInit() {
-    debugPrint('UserManager: onInit 被调用');
-    _initialize();
-    super.onInit();
-  }
-
   /// 初始化用户登录状态
   Future<void> _initialize() async {
-    debugPrint('UserManager: 开始初始化，检查登录状态...');
+    // 防止重复初始化
+    if (_isInitialized) {
+      debugPrint('UserManager: 已初始化，跳过重复初始化');
+      return;
+    }
 
-    // 先读取 token
-    final token = await _storage.read(key: _tokenKey);
-    debugPrint('UserManager: Token 是否存在: ${token != null && token.isNotEmpty}');
+    debugPrint('UserManager: 开始初始化，检查登录状态...');
+    debugPrint('  - 存储键: $_tokenKey');
+
+    // 先读取 token（使用新的 getToken 方法）
+    final token = await getToken();
+
+    debugPrint('UserManager: Token 是否存在: ${token != null}');
+    if (token != null) {
+      debugPrint('  - Token 长度: ${token.length}');
+      debugPrint('  - Token 前缀: ${token.substring(0, 10)}...');
+    }
 
     if (token != null && token.isNotEmpty) {
       // 设置全局授权头
@@ -49,13 +101,14 @@ class UserManager extends GetxService {
       debugPrint('UserManager: 已设置授权头');
 
       // 尝试读取用户信息
-      final userInfoJson = await _storage.read(key: _userInfoKey);
+      final userInfoJson = await _secureStorage.read(key: _userInfoKey);
       if (userInfoJson != null && userInfoJson.isNotEmpty) {
         try {
           userInfo.value = UserInfo.fromJsonString(userInfoJson);
           debugPrint('UserManager: 已加载用户信息 - ${userInfo.value.login}');
         } catch (e) {
           debugPrint('UserManager: 解析用户信息失败 - $e');
+          debugPrint('UserManager: ⚠️ 解析失败，清除 Token');
           // 如果解析失败，清除数据
           await logout();
         }
@@ -66,26 +119,28 @@ class UserManager extends GetxService {
           final user = await getUserInfo();
           if (user != null) {
             userInfo.value = user;
-            await _storage.write(key: _userInfoKey, value: user.toJson());
+            await _secureStorage.write(key: _userInfoKey, value: user.toJson());
             debugPrint('UserManager: 已重新获取用户信息 - ${user.login}');
           } else {
             // token 无效，清除
-            debugPrint('UserManager: Token 无效，清除登录状态');
+            debugPrint('UserManager: Token 无效（API 返回 null），清除登录状态');
+            debugPrint('UserManager: ⚠️ API 返回 null，清除 Token');
             await logout();
           }
         } catch (e) {
-          debugPrint('UserManager: 重新获取用户信息失败 - $e');
-          await logout();
+          // 网络错误或其他异常，不清除 Token
+          // Token 可能仍然有效，只是暂时无法获取用户信息
+          debugPrint('UserManager: 获取用户信息失败（网络错误？），保留 Token - $e');
+          // 不调用 logout()，让用户可以继续使用已保存的登录状态
         }
       }
     } else {
       debugPrint('UserManager: 未找到 Token，用户未登录');
     }
-  }
 
-  /// 公共初始化方法（可在 app 启动时手动调用）
-  Future<void> initialize() async {
-    await _initialize();
+    // 标记为已初始化
+    _isInitialized = true;
+    debugPrint('UserManager: 初始化完成');
   }
 
   /// 取消登录请求
@@ -167,7 +222,7 @@ class UserManager extends GetxService {
         final user = await _githubApi.user();
         if (user != null) {
           userInfo.value = user;
-          await _storage.write(key: _userInfoKey, value: user.toJson());
+          await _secureStorage.write(key: _userInfoKey, value: user.toJson());
           completer.complete(user);
         } else {
           completer.complete(null);
@@ -197,36 +252,125 @@ class UserManager extends GetxService {
   /// 获取设备码
   Future<AuthDeviceResponse> get deviceId async {
     try {
+      debugPrint('UserManager: 开始获取设备码...');
+      debugPrint('  - Client ID: ${AppConfig.githubClientId}');
+      debugPrint('  - 请求 URL: https://github.com/login/device/code');
+
       final value = await _authApi.device(AppConfig.githubClientId);
 
-      // 自动复制验证码
+      debugPrint('UserManager: 获取设备码响应:');
+      debugPrint('  - device_code: ${value.deviceCode}');
+      debugPrint('  - user_code: ${value.userCode}');
+      debugPrint('  - verification_uri: ${value.verificationUri}');
+      debugPrint('  - expires_in: ${value.expiresIn}');
+      debugPrint('  - interval: ${value.interval}');
+
+      // 自动复制验证码（静默复制，不显示提示，避免在无 Overlay 时报错）
       if (value.userCode?.isNotEmpty ?? false) {
-        await copyVerificationCode(value.userCode!);
+        try {
+          await Clipboard.setData(ClipboardData(text: value.userCode!));
+          debugPrint('UserManager: 验证码已自动复制到剪贴板 - ${value.userCode}');
+        } catch (e) {
+          debugPrint('UserManager: 复制验证码失败 - $e');
+        }
       }
 
       return value;
+    } on DioException catch (e) {
+      debugPrint('UserManager: ❌ Dio 错误 - 获取设备码失败');
+      debugPrint('  - 错误类型: ${e.type}');
+      debugPrint('  - 错误消息: ${e.message}');
+      debugPrint('  - 响应状态码: ${e.response?.statusCode}');
+      debugPrint('  - 响应数据: ${e.response?.data}');
+      debugPrint('  - 请求 URL: ${e.requestOptions.uri}');
+
+      String errorMsg = '网络请求失败';
+      if (e.type == DioExceptionType.connectionTimeout) {
+        errorMsg = '连接超时，请检查网络';
+      } else if (e.type == DioExceptionType.receiveTimeout) {
+        errorMsg = '接收超时，请稍后重试';
+      } else if (e.type == DioExceptionType.badResponse) {
+        final statusCode = e.response?.statusCode;
+        if (statusCode == 404) {
+          errorMsg = 'OAuth App 配置错误，请检查 Client ID';
+        } else if (statusCode == 401) {
+          errorMsg = 'Client ID 无效或未启用 Device Flow';
+        } else if (statusCode == 429) {
+          errorMsg = '请求过于频繁，请稍后重试';
+        } else {
+          errorMsg = '服务器错误 ($statusCode)';
+        }
+      } else if (e.type == DioExceptionType.connectionError) {
+        errorMsg = '无法连接到 GitHub，请检查网络或代理设置';
+      }
+
+      AppDialogs.showError(errorMsg, title: '获取验证码失败');
+      return AuthDeviceResponse();
     } catch (e) {
-      debugPrint('UserManager: 获取设备码失败 - $e');
-      AppDialogs.showError('请检查网络连接后重试', title: '获取验证码失败');
+      debugPrint('UserManager: ❌ 未知错误 - 获取设备码失败 - $e');
+      AppDialogs.showError('发生未知错误: $e', title: '获取验证码失败');
       return AuthDeviceResponse();
     }
   }
 
-  /// 保存 token
+  /// 保存 token（同时使用 FlutterSecureStorage 和 SharedPreferences）
   Future<bool> saveToken(String token) async {
     try {
-      await _storage.write(key: _tokenKey, value: token);
-      debugPrint('UserManager: Token 已保存');
+      debugPrint('UserManager: 开始保存 Token...');
+      debugPrint('  - Token 长度: ${token.length}');
+      debugPrint('  - Token 前缀: ${token.substring(0, 10)}...');
+
+      // 确保 SharedPreferences 已初始化
+      await _initPrefs();
+
+      // 保存到 FlutterSecureStorage
+      await _secureStorage.write(key: _tokenKey, value: token);
+
+      // 保存到 SharedPreferences（同步操作）
+      await _prefs!.setString(_tokenKey, token);
+
+      debugPrint('UserManager: ✅ Token 已保存到 FlutterSecureStorage 和 SharedPreferences');
       return true;
     } catch (e) {
-      debugPrint('UserManager: 保存 token 失败 - $e');
+      debugPrint('UserManager: ❌ 保存 token 异常 - $e');
       return false;
     }
   }
 
-  /// 获取 token
+  /// 获取 token（优先从 FlutterSecureStorage 读取，失败则从 SharedPreferences 读取）
   Future<String?> getToken() async {
-    return await _storage.read(key: _tokenKey);
+    try {
+      // 确保 SharedPreferences 已初始化
+      await _initPrefs();
+
+      // 优先从 FlutterSecureStorage 读取
+      final secureToken = await _secureStorage.read(key: _tokenKey);
+
+      if (secureToken != null && secureToken.isNotEmpty) {
+        debugPrint('UserManager: 从 FlutterSecureStorage 读取 Token 成功 (长度: ${secureToken.length})');
+        return secureToken;
+      }
+
+      // FlutterSecureStorage 失败，尝试从 SharedPreferences 读取
+      final prefsToken = _prefs!.getString(_tokenKey);
+      if (prefsToken != null && prefsToken.isNotEmpty) {
+        debugPrint('UserManager: ⚠️ FlutterSecureStorage 为空，从 SharedPreferences 读取 Token 成功 (长度: ${prefsToken.length})');
+        // 同步回 FlutterSecureStorage
+        try {
+          await _secureStorage.write(key: _tokenKey, value: prefsToken);
+          debugPrint('UserManager: 已同步 Token 到 FlutterSecureStorage');
+        } catch (e) {
+          debugPrint('UserManager: 同步到 FlutterSecureStorage 失败 - $e');
+        }
+        return prefsToken;
+      }
+
+      debugPrint('UserManager: 从存储读取 Token 为空');
+      return null;
+    } catch (e) {
+      debugPrint('UserManager: 读取 Token 异常 - $e');
+      return null;
+    }
   }
 
   /// 复制验证码到剪贴板
@@ -257,10 +401,12 @@ class UserManager extends GetxService {
       }
 
       // token 无效，清除
+      debugPrint('UserManager: ⚠️ Token 验证失败（API 返回 null），清除 Token');
       await logout();
       return false;
     } catch (e) {
       debugPrint('UserManager: Token 验证失败 - $e');
+      debugPrint('UserManager: ⚠️ Token 验证异常，清除 Token');
       await logout();
       return false;
     }
@@ -278,12 +424,22 @@ class UserManager extends GetxService {
   /// 退出登录
   Future<void> logout() async {
     try {
+      debugPrint('UserManager: ⚠️⚠️⚠️ 开始退出登录，清除 Token ⚠️⚠️⚠️');
+      debugPrint('  - 调用堆栈: ${StackTrace.current}');
+
       // 清除内存中的用户信息
       userInfo.value = const UserInfo();
 
-      // 清除存储的数据
-      await _storage.delete(key: _userInfoKey);
-      await _storage.delete(key: _tokenKey);
+      // 确保 SharedPreferences 已初始化
+      await _initPrefs();
+
+      // 清除所有存储的数据
+      await _secureStorage.delete(key: _userInfoKey);
+      await _secureStorage.delete(key: _tokenKey);
+      await _prefs!.remove(_userInfoKey);
+      await _prefs!.remove(_tokenKey);
+
+      debugPrint('UserManager: 已清除 FlutterSecureStorage 和 SharedPreferences 中的数据');
 
       // 清除 Dio 的授权头
       DioClient.instance.authorization = null;
@@ -291,7 +447,7 @@ class UserManager extends GetxService {
       // 取消任何进行中的登录
       cancelLogin();
 
-      debugPrint('UserManager: 已退出登录');
+      debugPrint('UserManager: ✅ 已退出登录，Token 已清除');
     } catch (e) {
       debugPrint('UserManager: 退出登录失败 - $e');
     }

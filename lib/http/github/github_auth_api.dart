@@ -2,6 +2,7 @@ import 'package:dio/dio.dart';
 import 'package:get/get.dart';
 import 'package:json_annotation/json_annotation.dart';
 import 'package:retrofit/retrofit.dart';
+import 'package:retrofit/http.dart' as retrofit;
 
 part 'github_auth_api.g.dart';
 
@@ -10,9 +11,18 @@ abstract class GithubAuthApi with GetxServiceMixin {
   factory GithubAuthApi(Dio dio, {String? baseUrl}) => _GithubAuthApi(dio);
 
   @POST('/device/code')
+  @retrofit.Headers(<String, String>{
+    "Content-Type": "application/x-www-form-urlencoded",
+    "Accept": "application/json",
+  })
   Future<AuthDeviceResponse> device(@Field("client_id") String clientId,
       {@Field("scope") String scope = "repo"});
+
   @POST('/oauth/access_token')
+  @retrofit.Headers(<String, String>{
+    "Content-Type": "application/x-www-form-urlencoded",
+    "Accept": "application/json",
+  })
   Future<AuthLoginResponse> login(@Field("client_id") String clientId,
       @Field("device_code") String deviceCode,
       {@Field("grant_type")

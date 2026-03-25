@@ -1,5 +1,4 @@
 import 'package:cached_network_image/cached_network_image.dart';
-import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:gstore/core/icons/Icons.dart';
@@ -8,6 +7,7 @@ import 'package:gstore/core/service/user_manager.dart';
 import 'package:gstore/http/github/user_info/user_info.dart';
 import 'package:gstore/page/web/browser.dart';
 import 'package:gstore/core/design/design_tokens.dart';
+import 'package:gstore/core/design/app_components.dart';
 
 import 'logic.dart';
 import 'state.dart';
@@ -31,38 +31,53 @@ class AppListState extends State<ApplistPage>
     final state = Get.find<ApplistLogic>().state;
     return Scaffold(
       appBar: AppBar(
-        title: GestureDetector(
-          onTap: () => _showQuickSearchGuide(context),
-          child: Tooltip(
-            message: "快速搜索添加应用",
-            child: Container(
-              decoration: BoxDecoration(
-                  borderRadius: AppRadius.allXL,
-                  color: Theme.of(context).primaryColor.withAlpha(AppColors.alphaMedium)),
-              padding: AppSpacing.horizontalLG_verticalSM_bottomXS,
-              child: Row(
-                mainAxisSize: MainAxisSize.max,
-                crossAxisAlignment: CrossAxisAlignment.center,
-                children: [
-                  Padding(
-                    padding: AppSpacing.onlyTopXS,
-                    child: Icon(
-                      Icons.search,
-                      size: AppTypography.iconXL,
-                    ),
-                  ),
-                  SizedBox(
-                    width: AppSpacing.lg,
-                  ),
-                  Text(
-                    "快速搜索",
-                    style: AppTypography.headlineMedium.copyWith(
-                      color: Colors.white,
-                    ),
-                  )
-                ],
+        title: SizedBox(
+          height: 40,
+          child: TextField(
+            controller: logic.searchController,
+            focusNode: logic.searchFocusNode,
+            decoration: InputDecoration(
+              hintText: '搜索应用...',
+              hintStyle: TextStyle(
+                color: Theme.of(context)
+                    .colorScheme
+                    .onSurface
+                    .withValues(alpha: 0.5),
+                fontSize: 16,
               ),
+              prefixIcon: const Icon(Icons.search, size: 20),
+              suffixIcon: Obx(() {
+                if (state.searchKeyword.value.isNotEmpty) {
+                  return IconButton(
+                    icon: const Icon(Icons.clear, size: 18),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                    onPressed: () {
+                      logic.searchController.clear();
+                      logic.searchApps('');
+                      logic.searchFocusNode.unfocus();
+                    },
+                  );
+                }
+                return const SizedBox.shrink();
+              }),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(20),
+                borderSide: BorderSide.none,
+              ),
+              filled: true,
+              fillColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 12,
+                vertical: 8,
+              ),
+              isDense: true,
             ),
+            style: TextStyle(
+              color: Theme.of(context).colorScheme.onSurface,
+              fontSize: 16,
+            ),
+            onChanged: (value) => logic.searchApps(value),
           ),
         ),
         actions: [
@@ -96,9 +111,7 @@ class AppListState extends State<ApplistPage>
                       height:
                           Theme.of(context).appBarTheme.iconTheme?.size ?? AppTypography.iconXL,
                       placeholder: (context, url) =>
-                          const CupertinoActivityIndicator(
-                        radius: AppSpacing.sm,
-                      ),
+                          const AppLoading(size: AppLoadingSize.small),
                       errorWidget: (context, url, error) => const Icon(
                         Icons.account_circle_outlined,
                       ),
@@ -149,7 +162,11 @@ class AppListState extends State<ApplistPage>
           }),
         ],
       ),
-      body: Obx(() => _buildBody(context, logic, state)),
+      body: GestureDetector(
+        onTap: () => logic.searchFocusNode.unfocus(),
+        behavior: HitTestBehavior.translucent,
+        child: Obx(() => _buildBody(context, logic, state)),
+      ),
     );
   }
 
@@ -169,7 +186,41 @@ class AppListState extends State<ApplistPage>
     }
 
     // 空状态
-    if (state.apps.isEmpty) {
+    if (state.filteredApps.isEmpty) {
+      // 搜索无结果
+      if (state.searchKeyword.value.isNotEmpty) {
+        return Center(
+          child: Padding(
+            padding: AppSpacing.allXXL,
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  Icons.search_off,
+                  size: AppTypography.iconXXXL,
+                  color: AppColors.grey400,
+                ),
+                const SizedBox(height: AppSpacing.lg),
+                Text(
+                  '未找到相关应用',
+                  style: AppTypography.titleMedium.copyWith(
+                    color: AppColors.textSecondary,
+                  ),
+                ),
+                const SizedBox(height: AppSpacing.sm),
+                Text(
+                  '尝试使用其他关键词搜索',
+                  style: AppTypography.bodyMedium.copyWith(
+                    color: AppColors.textSecondary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      }
+
+      // 还没有添加任何应用
       return Center(
         child: Padding(
           padding: AppSpacing.allXXL,
@@ -289,14 +340,14 @@ class AppListState extends State<ApplistPage>
                 childAspectRatio: 0.75,
               ),
               itemBuilder: (context, index) {
-                var app = state.apps[index];
+                var app = state.filteredApps[index];
                 return _buildAggregatedAppItem(
                   context,
                   app,
                   logic,
                 );
               },
-              itemCount: state.apps.length,
+              itemCount: state.filteredApps.length,
             ),
           ),
         ],
@@ -343,8 +394,8 @@ class AppListState extends State<ApplistPage>
                               ? CachedNetworkImage(
                                   fit: BoxFit.fill,
                                   placeholder: (context, url) {
-                                    return const CupertinoActivityIndicator(
-                                      radius: AppSpacing.sm,
+                                    return const Center(
+                                      child: AppLoading(size: AppLoadingSize.small),
                                     );
                                   },
                                   errorWidget: (context, url, error) {
@@ -394,7 +445,7 @@ class AppListState extends State<ApplistPage>
               overflow: TextOverflow.ellipsis,
               style: AppTypography.labelMedium.copyWith(
                 fontWeight: AppTypography.weightSemiBold,
-                color: AppColors.textPrimary,
+                color: Theme.of(context).colorScheme.onSurface,
               ),
             ),
           ),
@@ -513,7 +564,9 @@ class AppListState extends State<ApplistPage>
       borderRadius: AppRadius.allMD,
       child: AppCard(
         padding: AppSpacing.horizontalLG_verticalMD,
-        border: Border.all(color: AppColors.grey300),
+        border: Border.all(
+          color: Theme.of(context).colorScheme.outlineVariant.withOpacity(0.5),
+        ),
         borderRadius: AppRadius.allMD,
         onTap: onTap,
         child: Row(
@@ -540,14 +593,14 @@ class AppListState extends State<ApplistPage>
                     title,
                     style: AppTypography.titleSmall.copyWith(
                           fontWeight: AppTypography.weightSemiBold,
-                          color: AppColors.textPrimary,
+                          color: Theme.of(context).colorScheme.onSurface,
                         ),
                   ),
                   const SizedBox(height: AppSpacing.xs),
                   Text(
                     description,
                     style: AppTypography.bodySmall.copyWith(
-                          color: AppColors.textSecondary,
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
                         ),
                   ),
                 ],
