@@ -53,6 +53,7 @@ dependencies:
   jovial_svg: any
   path_provider: any
   dio: any
+  rhttp: ^0.15.1
   app_installer: any
   dynamic_color: ^1.7.0
   floor: ^1.4.2

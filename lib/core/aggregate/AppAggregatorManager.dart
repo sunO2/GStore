@@ -257,8 +257,13 @@ class AppAggregatorManager {
           ));
           cacheCount++;
         }
-      } catch (e) {
-        debugPrint('AppAggregatorManager: 获取应用详情异常 - ${addedApp.appId}, $e');
+      } catch (e, stackTrace) {
+        debugPrint('AppAggregatorManager: ❌ 获取应用详情异常');
+        debugPrint('  - appId: ${addedApp.appId}');
+        debugPrint('  - channelId: ${addedApp.channelId}');
+        debugPrint('  - 异常类型: ${e.runtimeType}');
+        debugPrint('  - 异常信息: $e');
+        debugPrint('  - 堆栈跟踪: $stackTrace');
         // 使用本地缓存的数据
         aggregatedApps.add(AggregatedAppInfo(
           addedAppInfo: addedApp,

@@ -102,7 +102,7 @@ class BackupPage extends StatelessWidget {
 
       if (stats == null) {
         return const Center(
-          child: CircularProgressIndicator(),
+          child: AppLoading(size: AppLoadingSize.medium),
         );
       }
 
@@ -323,11 +323,7 @@ class BackupPage extends StatelessWidget {
               title: const Text('导出到本地'),
               subtitle: const Text('将备份数据保存到本地文件'),
               trailing: isExporting
-                  ? const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
+                  ? const AppLoading(size: AppLoadingSize.small)
                   : const Icon(Icons.chevron_right),
               onTap: isExporting ? null : () => logic.exportCompressed(context),
             ),
@@ -339,11 +335,7 @@ class BackupPage extends StatelessWidget {
               title: const Text('从本地文件恢复'),
               subtitle: const Text('选择本地备份文件进行恢复'),
               trailing: isImporting
-                  ? const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
+                  ? const AppLoading(size: AppLoadingSize.small)
                   : const Icon(Icons.chevron_right),
               onTap: isImporting ? null : () => logic.selectAndImportFile(context),
             ),
@@ -410,11 +402,7 @@ class BackupPage extends StatelessWidget {
                       : '请先配置 WebDAV 信息',
                 ),
                 trailing: isExporting
-                    ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
+                    ? const AppLoading(size: AppLoadingSize.small)
                     : const Icon(Icons.chevron_right),
                 onTap: isEnabled && !isExporting
                     ? () => logic.uploadToWebDav(context, compressed: true)
@@ -432,11 +420,7 @@ class BackupPage extends StatelessWidget {
                       : '请先配置 WebDAV 信息',
                 ),
                 trailing: isImporting
-                    ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
+                    ? const AppLoading(size: AppLoadingSize.small)
                     : const Icon(Icons.chevron_right),
                 onTap: isEnabled && !isImporting
                     ? () => logic.downloadFromWebDav(context)
@@ -474,13 +458,9 @@ class BackupPage extends StatelessWidget {
     }
 
     if (status == WebDavConnectionStatus.testing) {
-      return SizedBox(
-        width: size,
-        height: size,
-        child: CircularProgressIndicator(
-          strokeWidth: 2,
-          valueColor: const AlwaysStoppedAnimation<Color>(AppColors.info),
-        ),
+      return AppLoading(
+        size: AppLoadingSize.small,
+        color: AppColors.info,
       );
     }
 

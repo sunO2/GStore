@@ -48,18 +48,58 @@ class AuthPageLogic extends GetxController with GithubRequestMix {
             source:
                 "fillUserCode('${state.verificationCode.value.replaceAll("-", "")}')");
 
-        Future.delayed(Duration(seconds: value.interval ?? 5), () {
-          userManager
-              .startLoginOfTimer(value.deviceCode!, value.interval ?? 5,
-                  loginRequestCancelToken)
-              .then((value) {
-            if (null != value) {
+        // 开始轮询登录状态
+        Future.delayed(Duration(seconds: value.interval ?? 5), () async {
+          try {
+            final userInfo = await userManager.startLoginOfTimer(
+                value.deviceCode!, value.interval ?? 5, loginRequestCancelToken);
+
+            // 以 API 轮询结果为准，不依赖页面 URL
+            if (userInfo != null) {
+              log("登录成功：${userInfo.login}");
               state.status.value = AuthStatus.success;
               state.verificationCode.value = '';
-              loadUrl(value.htmlUrl ?? "");
+
+              // 检查页面是否还存在，避免在页面销毁后显示提示
+              if (Get.isRegistered<AuthPageLogic>() && navigator != null) {
+                try {
+                  AppDialogs.showSuccess('登录成功！欢迎回来，${userInfo.login}',
+                      title: '登录成功');
+                } catch (e) {
+                  log("显示成功提示失败（页面可能已关闭）：$e");
+                }
+              }
+
+              // 延迟自动返回
+              await Future.delayed(const Duration(milliseconds: 800));
+              if (Get.isRegistered<AuthPageLogic>()) {
+                try {
+                  Get.back(result: AuthStatus.success);
+                } catch (e) {
+                  log("返回失败（页面可能已关闭）：$e");
+                }
+              }
+            } else {
+              log("登录失败：userInfo 为 null");
+              state.status.value = AuthStatus.initial;
+              if (Get.isRegistered<AuthPageLogic>()) {
+                try {
+                  AppDialogs.showError('登录失败，请重试', title: '登录失败');
+                } catch (e) {
+                  log("显示错误提示失败：$e");
+                }
+              }
             }
-          });
+          } catch (e) {
+            log("登录轮询失败：$e");
+            state.status.value = AuthStatus.initial;
+            // 错误信息已在 UserManager 中显示，这里不需要再显示
+          }
         });
+      } else {
+        // deviceCode 为空，说明获取失败，重置状态
+        log("获取设备码失败：返回的 deviceCode 为空");
+        state.status.value = AuthStatus.initial;
       }
     }).onError((error, stackTrace) {
       log("获取设备码失败 $error");

@@ -46,7 +46,7 @@ class FdroidRepoPage extends StatelessWidget {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          const CircularProgressIndicator(),
+          const AppLoading(size: AppLoadingSize.medium),
           SizedBox(height: AppSpacing.lg),
           Text('加载中... ${state.loadingProgress.value.toInt()}%'),
         ],

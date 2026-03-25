@@ -1,273 +1,391 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:gstore/core/channel/channel.dart';
-import 'package:gstore/core/icons/Icons.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/design/app_components.dart';
 import 'package:gstore/db/apps/AppInfo.dart';
 
 import 'logic.dart';
 import 'state.dart';
 
-class DiscoveryPage extends StatelessWidget {
-  DiscoveryPage({super.key});
+class DiscoveryPage extends StatefulWidget {
+  const DiscoveryPage({super.key});
 
+  @override
+  State<DiscoveryPage> createState() => _DiscoveryPageState();
+}
+
+class _DiscoveryPageState extends State<DiscoveryPage> {
   final DiscoveryLogic logic = Get.put(DiscoveryLogic());
   final DiscoveryState state = Get.find<DiscoveryLogic>().state;
+
+  final ScrollController _gridScrollController = ScrollController();
+
+  @override
+  void initState() {
+    super.initState();
+    // 初始化 Grid 列数
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      logic.updateCrossAxisCount(context);
+    });
+  }
+
+  @override
+  void dispose() {
+    _gridScrollController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('发现'),
-        elevation: 0,
-        actions: [
-          // 添加应用按钮
-          IconButton(
-            tooltip: '添加应用',
-            icon: const Icon(Icons.add),
-            onPressed: () => logic.showAddAppSheet(context),
-          ),
-          // 显示模式切换
-          Obx(() => PopupMenuButton<DisplayMode>(
-                icon: Icon(_getDisplayModeIcon(state.displayMode.value)),
-                onSelected: (mode) => logic.setDisplayMode(mode),
-                itemBuilder: (context) => [
-                  const PopupMenuItem(
-                    value: DisplayMode.all,
-                    child: Row(
-                      children: [
-                        Icon(Icons.apps, size: AppTypography.iconMD),
-                        SizedBox(width: AppSpacing.sm),
-                        Text('全部'),
-                      ],
-                    ),
-                  ),
-                  const PopupMenuItem(
-                    value: DisplayMode.added,
-                    child: Row(
-                      children: [
-                        Icon(Icons.check_circle, size: AppTypography.iconMD),
-                        SizedBox(width: AppSpacing.sm),
-                        Text('已添加'),
-                      ],
-                    ),
-                  ),
-                  const PopupMenuItem(
-                    value: DisplayMode.notAdded,
-                    child: Row(
-                      children: [
-                        Icon(Icons.add_circle_outline, size: AppTypography.iconMD),
-                        SizedBox(width: AppSpacing.sm),
-                        Text('未添加'),
-                      ],
-                    ),
-                  ),
-                ],
-              )),
-        ],
+      appBar: _buildAppBar(context),
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // 左侧导航栏
+              _buildSidebar(context),
+
+              // 右侧内容区
+              Expanded(
+                child: _buildContentArea(context),
+              ),
+            ],
+          );
+        },
       ),
-      body: Column(
+    );
+  }
+
+  /// AppBar
+  PreferredSizeWidget _buildAppBar(BuildContext context) {
+    return AppBar(
+      elevation: 0,
+      scrolledUnderElevation: 0,
+      bottom: PreferredSize(
+        preferredSize: const Size.fromHeight(1),
+        child: Container(
+          height: 1,
+          decoration: BoxDecoration(
+            border: Border(
+              bottom: BorderSide(
+                color: Theme.of(context).colorScheme.outlineVariant.withOpacity(0.5),
+                width: 1,
+              ),
+            ),
+          ),
+        ),
+      ),
+      title: const Text('发现'),
+      actions: [
+        // 添加应用按钮
+        IconButton(
+          tooltip: '添加应用',
+          icon: const Icon(Icons.add),
+          onPressed: () => logic.showAddAppSheet(context),
+        ),
+
+        // 多选模式按钮
+        Obx(() {
+          if (state.isMultiSelectMode.value) {
+            // 取消多选
+            return TextButton(
+              onPressed: () => logic.toggleMultiSelectMode(),
+              child: const Text('取消'),
+            );
+          } else {
+            // 显示模式菜单
+            return PopupMenuButton<DisplayMode>(
+              icon: Icon(_getDisplayModeIcon(state.displayMode.value)),
+              tooltip: '显示模式',
+              onSelected: (mode) => logic.setDisplayMode(mode),
+              itemBuilder: (context) => [
+                const PopupMenuItem(
+                  value: DisplayMode.all,
+                  child: Row(
+                    children: [
+                      Icon(Icons.apps, size: AppTypography.iconMD),
+                      SizedBox(width: AppSpacing.sm),
+                      Text('全部'),
+                    ],
+                  ),
+                ),
+                const PopupMenuItem(
+                  value: DisplayMode.added,
+                  child: Row(
+                    children: [
+                      Icon(Icons.check_circle, size: AppTypography.iconMD),
+                      SizedBox(width: AppSpacing.sm),
+                      Text('已添加'),
+                    ],
+                  ),
+                ),
+                const PopupMenuItem(
+                  value: DisplayMode.notAdded,
+                  child: Row(
+                    children: [
+                      Icon(Icons.add_circle_outline, size: AppTypography.iconMD),
+                      SizedBox(width: AppSpacing.sm),
+                      Text('未添加'),
+                    ],
+                  ),
+                ),
+              ],
+            );
+          }
+        }),
+      ],
+    );
+  }
+
+  /// 左侧导航栏
+  Widget _buildSidebar(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Container(
+      width: 80,
+      decoration: BoxDecoration(
+        border: Border(
+          right: BorderSide(
+            color: theme.colorScheme.outlineVariant.withOpacity(0.5),
+            width: 1,
+          ),
+          bottom: BorderSide(
+            color: theme.colorScheme.outlineVariant.withOpacity(0.5),
+            width: 1,
+          ),
+        ),
+      ),
+      child: Column(
         children: [
-          // 搜索栏
-          _buildSearchBar(context),
+          // 全部 Tab
+          Obx(() => _buildSidebarItem(
+                context: context,
+                icon: Icons.apps,
+                label: '全部',
+                count: logic.getTotalAppCount(),
+                isSelected: state.selectedChannel.value == null,
+                onTap: () => logic.selectChannel(null),
+              )),
 
-          // 渠道筛选
-          _buildChannelFilter(context),
+          const Divider(height: 1),
 
-          // 统计信息
-          _buildStatsBar(context),
-
-          // 应用列表
+          // 渠道列表 - 使用 code 属性进行比较
           Expanded(
-            child: _buildAppList(context),
+            child: Obx(() {
+              final selectedChannel = state.selectedChannel.value;
+              final channels = logic.sortedChannelTypes;
+
+              return ListView.builder(
+                padding: EdgeInsets.zero,
+                itemCount: channels.length,
+                itemBuilder: (context, index) {
+                  final channel = channels[index];
+                  // 使用 code 属性比较，确保正确识别
+                  final isSelected = selectedChannel?.code == channel.code;
+                  final count = state.channelApps[channel]?.length ?? 0;
+
+                  return Column(
+                    children: [
+                      if (index > 0) const Divider(height: 1),
+                      _buildSidebarItem(
+                        context: context,
+                        icon: logic.getChannelIcon(channel),
+                        label: _getChannelShortName(channel),
+                        count: count,
+                        isSelected: isSelected,
+                        onTap: () => logic.selectChannel(channel),
+                      ),
+                    ],
+                  );
+                },
+              );
+            }),
           ),
         ],
       ),
     );
   }
 
+  /// 左侧导航项
+  Widget _buildSidebarItem({
+    required BuildContext context,
+    required IconData icon,
+    required String label,
+    required int count,
+    required bool isSelected,
+    required VoidCallback onTap,
+  }) {
+    final theme = Theme.of(context);
+
+    return InkWell(
+      onTap: onTap,
+      child: Container(
+        height: 72,
+        width: double.infinity,
+        decoration: BoxDecoration(
+          color: isSelected
+              ? theme.colorScheme.primaryContainer.withOpacity(0.5)
+              : Colors.transparent,
+          border: isSelected
+              ? Border(
+                  left: BorderSide(
+                    color: theme.colorScheme.primary,
+                    width: 3,
+                  ),
+                )
+              : null,
+        ),
+        child: Padding(
+          padding: AppSpacing.horizontalXS_verticalSM,
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                icon,
+                size: AppTypography.iconLG,
+                color: isSelected
+                    ? theme.colorScheme.primary
+                    : theme.colorScheme.onSurfaceVariant,
+              ),
+              const SizedBox(height: AppSpacing.xs),
+              Text(
+                label,
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: isSelected
+                      ? theme.colorScheme.primary
+                      : theme.colorScheme.onSurfaceVariant,
+                  fontSize: 10,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              const SizedBox(height: 2),
+              Text(
+                '$count',
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant.withOpacity(0.7),
+                  fontSize: 9,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 右侧内容区
+  Widget _buildContentArea(BuildContext context) {
+    return Column(
+      children: [
+        // 搜索栏
+        _buildSearchBar(context),
+
+        // 多选模式工具栏
+        Obx(() {
+          if (state.isMultiSelectMode.value) {
+            return _buildMultiSelectToolbar(context);
+          }
+          return const SizedBox.shrink();
+        }),
+
+        // Grid 列表
+        Expanded(
+          child: _buildAppGrid(context),
+        ),
+      ],
+    );
+  }
+
   /// 搜索栏
   Widget _buildSearchBar(BuildContext context) {
+    final theme = Theme.of(context);
+
     return Obx(() {
       return Container(
         padding: AppSpacing.allLG,
         child: TextField(
+          controller: logic.searchController,
           decoration: InputDecoration(
-            hintText: '输入应用名称搜索...',
+            hintText: '搜索应用...',
             prefixIcon: const Icon(Icons.search),
             suffixIcon: state.searchKeyword.value.isNotEmpty
                 ? IconButton(
                     icon: const Icon(Icons.clear),
                     onPressed: () {
                       logic.setSearchKeyword('');
+                      logic.searchController.clear();
                     },
                   )
-                : PopupMenuButton<ChannelType?>(
-                    icon: const Icon(Icons.filter_list),
-                    tooltip: '选择搜索渠道',
-                    onSelected: (channel) {
-                      // 选择特定渠道搜索
-                      logic.selectChannel(channel);
-                      // 执行搜索
-                      if (state.searchKeyword.value.isNotEmpty) {
-                        logic.performSearch();
-                      }
-                    },
-                    itemBuilder: (context) => [
-                      const PopupMenuItem(
-                        value: null,
-                        child: Row(
-                          children: [
-                            Icon(Icons.apps, size: AppTypography.iconLG),
-                            SizedBox(width: AppSpacing.sm),
-                            Text('全部渠道'),
-                          ],
-                        ),
-                      ),
-                      ...logic.channelList.map((info) {
-                        return PopupMenuItem(
-                          value: info.type,
-                          child: Row(
-                            children: [
-                              Icon(logic.getChannelIcon(info.type), size: AppTypography.iconLG),
-                              const SizedBox(width: AppSpacing.sm),
-                              Text(info.name),
-                            ],
-                          ),
-                        );
-                      }),
-                    ],
-                  ),
+                : null,
             border: OutlineInputBorder(
               borderRadius: AppRadius.allMD,
+              borderSide: BorderSide(
+                color: theme.colorScheme.outline,
+                width: 1,
+              ),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: AppRadius.allMD,
+              borderSide: BorderSide(
+                color: theme.colorScheme.outline,
+                width: 1,
+              ),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: AppRadius.allMD,
+              borderSide: BorderSide(
+                color: theme.colorScheme.primary,
+                width: 2,
+              ),
             ),
             filled: true,
-            fillColor: Theme.of(context).colorScheme.surface,
+            fillColor: theme.colorScheme.surfaceContainerHighest,
+            contentPadding: AppSpacing.allMD,
           ),
           onChanged: (value) {
             logic.setSearchKeyword(value);
-            // 实时搜索（防抖）
-            logic.debounceSearch();
           },
           textInputAction: TextInputAction.search,
-          onSubmitted: (_) => logic.performSearch(),
         ),
       );
     });
   }
 
-  /// 渠道筛选
-  Widget _buildChannelFilter(BuildContext context) {
+  /// 多选模式工具栏
+  Widget _buildMultiSelectToolbar(BuildContext context) {
+    final theme = Theme.of(context);
+
     return Obx(() {
-      final channels = state.channelApps.keys.toList();
-
-      if (channels.isEmpty) {
-        return const SizedBox.shrink();
-      }
-
       return Container(
-        height: AppSpacing.xl * 2.5,
-        padding: AppSpacing.onlyHorizontalLG,
-        child: ListView.builder(
-          scrollDirection: Axis.horizontal,
-          itemCount: channels.length + 1, // +1 for "全部"
-          itemBuilder: (context, index) {
-            // 全部选项
-            if (index == 0) {
-              final isSelected = state.selectedChannel.value == null;
-              return _buildChannelChip(
-                context: context,
-                label: '全部',
-                icon: Icons.apps,
-                isSelected: isSelected,
-                count: logic.getTotalAppCount(),
-                onTap: () => logic.selectChannel(null),
-              );
-            }
-
-            final channel = channels[index - 1];
-            final isSelected = state.selectedChannel.value == channel;
-            final apps = state.channelApps[channel] ?? [];
-            final addedCount = state.addedAppsIndex[channel.code]?.length ?? 0;
-
-            return _buildChannelChip(
-              context: context,
-              label: _getChannelName(channel),
-              icon: logic.getChannelIcon(channel),
-              isSelected: isSelected,
-              count: apps.length,
-              addedCount: addedCount,
-              onTap: () => logic.selectChannel(channel),
-            );
-          },
-        ),
-      );
-    });
-  }
-
-  /// 渠道筛选 Chip
-  Widget _buildChannelChip({
-    required BuildContext context,
-    required String label,
-    required IconData icon,
-    required bool isSelected,
-    int? count,
-    int? addedCount,
-    required VoidCallback onTap,
-  }) {
-    return Padding(
-      padding: const EdgeInsets.only(right: AppSpacing.sm),
-      child: FilterChip(
-        label: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: AppTypography.iconSM),
-            const SizedBox(width: AppSpacing.xs),
-            Text(label),
-            if (count != null) ...[
-              const SizedBox(width: AppSpacing.xs),
-              Text(
-                '($count${addedCount != null ? '/$addedCount' : ''})',
-                style: AppTypography.labelSmall.copyWith(
-                  color: AppColors.textSecondary,
-                ),
-              ),
-            ],
-          ],
-        ),
-        selected: isSelected,
-        onSelected: (_) => onTap(),
-        selectedColor: Theme.of(context).colorScheme.primaryContainer,
-        showCheckmark: false,
-      ),
-    );
-  }
-
-  /// 统计信息栏
-  Widget _buildStatsBar(BuildContext context) {
-    return Obx(() {
-      final filteredApps = logic.getFilteredApps();
-      final totalCount = filteredApps.values.fold(
-          0, (sum, apps) => sum + apps.length);
-
-      return Container(
-        padding: const EdgeInsets.symmetric(
-          horizontal: AppSpacing.lg,
-          vertical: AppSpacing.sm,
-        ),
-        color: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.3),
+        padding: AppSpacing.horizontalLG_verticalSM,
         child: Row(
           children: [
             Text(
-              '共 $totalCount 个应用',
-              style: Theme.of(context).textTheme.bodySmall,
+              '已选 ${state.selectedApps.length} 个',
+              style: theme.textTheme.titleSmall,
             ),
             const Spacer(),
-            Text(
-              '已添加 ${logic.getAddedAppCount()} 个',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Theme.of(context).colorScheme.primary,
-                  ),
+            TextButton.icon(
+              onPressed: logic.selectAllInView,
+              icon: const Icon(Icons.select_all, size: AppTypography.iconSM),
+              label: const Text('全选'),
+            ),
+            TextButton.icon(
+              onPressed: logic.deselectAll,
+              icon: const Icon(Icons.clear, size: AppTypography.iconSM),
+              label: const Text('清空'),
+            ),
+            const SizedBox(width: AppSpacing.sm),
+            FilledButton.icon(
+              onPressed: logic.batchAddSelected,
+              icon: const Icon(Icons.add_circle, size: AppTypography.iconSM),
+              label: const Text('添加'),
             ),
           ],
         ),
@@ -275,11 +393,11 @@ class DiscoveryPage extends StatelessWidget {
     });
   }
 
-  /// 应用列表
-  Widget _buildAppList(BuildContext context) {
+  /// 应用 Grid
+  Widget _buildAppGrid(BuildContext context) {
     return Obx(() {
       if (state.isLoading.value) {
-        return const Center(child: CircularProgressIndicator());
+        return const Center(child: AppLoading(size: AppLoadingSize.medium));
       }
 
       if (state.errorMessage.value.isNotEmpty) {
@@ -300,9 +418,9 @@ class DiscoveryPage extends StatelessWidget {
         );
       }
 
-      final filteredApps = logic.getFilteredApps();
+      final appsWithChannel = logic.getDisplayApps();
 
-      if (filteredApps.isEmpty) {
+      if (appsWithChannel.isEmpty) {
         return Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
@@ -310,13 +428,13 @@ class DiscoveryPage extends StatelessWidget {
               Icon(
                 _getDisplayModeIcon(state.displayMode.value),
                 size: AppTypography.iconHuge,
-                color: Colors.grey,
+                color: Theme.of(context).colorScheme.outlineVariant,
               ),
               const SizedBox(height: AppSpacing.lg),
               Text(
                 _getEmptyMessage(),
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: Colors.grey,
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
                     ),
               ),
             ],
@@ -324,140 +442,233 @@ class DiscoveryPage extends StatelessWidget {
         );
       }
 
-      return ListView.builder(
-        padding: AppSpacing.allSM,
-        itemCount: filteredApps.length,
+      return GridView.builder(
+        controller: _gridScrollController,
+        padding: AppSpacing.allLG,
+        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: state.crossAxisCount.value,
+          childAspectRatio: 0.85,
+          crossAxisSpacing: AppSpacing.sm,
+          mainAxisSpacing: AppSpacing.sm,
+        ),
+        itemCount: appsWithChannel.length,
         itemBuilder: (context, index) {
-          final channel = filteredApps.keys.elementAt(index);
-          final apps = filteredApps[channel]!;
-
-          return _buildChannelSection(context, channel, apps);
+          final (app, channel) = appsWithChannel[index];
+          return _buildAppCard(context, app, channel);
         },
       );
     });
   }
 
-  /// 渠道分组区块
-  Widget _buildChannelSection(
-    BuildContext context,
-    ChannelType channel,
-    List<AppInfo> apps,
-  ) {
-    return Card(
-      margin: const EdgeInsets.only(bottom: AppSpacing.sm),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // 渠道标题
-          Container(
-            padding: AppSpacing.allMD,
-            decoration: BoxDecoration(
-              color: Theme.of(context).colorScheme.primaryContainer.withOpacity(0.3),
-              borderRadius: const BorderRadius.only(
-                topLeft: Radius.circular(AppRadius.md),
-                topRight: Radius.circular(AppRadius.md),
+  /// 应用卡片
+  Widget _buildAppCard(BuildContext context, AppInfo app, ChannelType channel) {
+    final theme = Theme.of(context);
+
+    final isAdded = logic.isAppAdded(channel, app.appId);
+    final appKey = '${channel.code}:${app.appId}';
+
+    return Obx(() {
+      final isSelected = state.selectedApps.contains(appKey);
+      final isMultiSelect = state.isMultiSelectMode.value;
+
+      return Container(
+        clipBehavior: Clip.antiAlias,
+        decoration: BoxDecoration(
+          borderRadius: AppRadius.allMD,
+          border: Border.all(
+            color: isSelected
+                ? theme.colorScheme.primary
+                : isAdded
+                    ? theme.colorScheme.primary.withOpacity(0.5)
+                    : theme.colorScheme.outlineVariant.withOpacity(0.5),
+            width: isSelected ? 2 : 1,
+          ),
+        ),
+        child: Stack(
+          clipBehavior: Clip.antiAlias,
+          children: [
+            // 卡片主体
+            Card(
+              elevation: 0,
+              margin: EdgeInsets.zero,
+              color: isAdded
+                  ? theme.colorScheme.primaryContainer.withOpacity(0.3)
+                  : theme.colorScheme.surface,
+              shape: RoundedRectangleBorder(
+                borderRadius: AppRadius.allMD,
+                side: BorderSide.none,
+              ),
+              child: InkWell(
+                onTap: () {
+                  if (isMultiSelect) {
+                    logic.toggleAppSelection(channel.code, app.appId);
+                  } else {
+                    logic.toggleApp(channel, app);
+                  }
+                },
+                onLongPress: () {
+                  if (!isMultiSelect) {
+                    logic.toggleMultiSelectMode();
+                    logic.toggleAppSelection(channel.code, app.appId);
+                  }
+                },
+                borderRadius: AppRadius.allMD,
+                child: SizedBox(
+                  height: 130,
+                  child: Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        // 应用图标
+                        app.icon.isNotEmpty
+                            ? ClipRRect(
+                                borderRadius: AppRadius.allSM,
+                                child: CachedNetworkImage(
+                                  imageUrl: app.icon,
+                                  width: 42,
+                                  height: 42,
+                                  fit: BoxFit.cover,
+                                  placeholder: (context, url) => Container(
+                                    width: 42,
+                                    height: 42,
+                                    decoration: BoxDecoration(
+                                      color: theme.colorScheme.surfaceContainerHighest,
+                                      borderRadius: AppRadius.allSM,
+                                    ),
+                                    child: const AppLoading(size: AppLoadingSize.small),
+                                  ),
+                                  errorWidget: (context, url, error) => Container(
+                                    width: 42,
+                                    height: 42,
+                                    decoration: BoxDecoration(
+                                      color: theme.colorScheme.surfaceContainerHighest,
+                                      borderRadius: AppRadius.allSM,
+                                    ),
+                                    child: Icon(
+                                      Icons.apps,
+                                      size: 24,
+                                      color: theme.colorScheme.onSurfaceVariant,
+                                    ),
+                                  ),
+                                ),
+                              )
+                            : Container(
+                                width: 42,
+                                height: 42,
+                                decoration: BoxDecoration(
+                                  color: theme.colorScheme.surfaceContainerHighest,
+                                  borderRadius: AppRadius.allSM,
+                                ),
+                                child: Icon(
+                                  Icons.apps,
+                                  size: 24,
+                                  color: theme.colorScheme.onSurfaceVariant,
+                                ),
+                              ),
+
+                        const SizedBox(height: AppSpacing.xs),
+
+                        // 应用名称
+                        SizedBox(
+                          width: double.infinity,
+                          child: Text(
+                            app.name,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            textAlign: TextAlign.center,
+                            style: theme.textTheme.labelSmall?.copyWith(
+                              fontWeight: AppTypography.weightMedium,
+                              color: isAdded
+                                  ? theme.colorScheme.onPrimaryContainer
+                                  : theme.colorScheme.onSurface,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
               ),
             ),
-            child: Row(
-              children: [
-                Icon(logic.getChannelIcon(channel), size: AppTypography.sizeMD),
-                const SizedBox(width: AppSpacing.sm),
-                Text(
-                  _getChannelName(channel),
-                  style: Theme.of(context).textTheme.titleSmall,
+
+            // 多选 Checkbox - 叠加在左上角
+            if (isMultiSelect)
+              Positioned(
+                left: 4,
+                top: 4,
+                child: Container(
+                  width: 28,
+                  height: 28,
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.surface,
+                    borderRadius: AppRadius.allSM,
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.15),
+                        blurRadius: 3,
+                        offset: const Offset(0, 1),
+                      ),
+                    ],
+                  ),
+                  child: Transform.scale(
+                    scale: 0.85,
+                    child: Checkbox(
+                      value: isSelected,
+                      onChanged: (_) {
+                        logic.toggleAppSelection(channel.code, app.appId);
+                      },
+                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      visualDensity: VisualDensity.compact,
+                    ),
+                  ),
                 ),
-                const Spacer(),
-                Text(
-                  '${apps.length} 个',
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-                const SizedBox(width: AppSpacing.sm),
-                // 批量操作菜单
-                PopupMenuButton<String>(
-                  icon: const Icon(Icons.more_vert, size: AppTypography.sizeMD),
-                  onSelected: (value) {
-                    switch (value) {
-                      case 'add_all':
-                        logic.addAllFromChannel(channel);
-                        break;
-                      case 'clear':
-                        logic.clearChannel(channel);
-                        break;
-                    }
-                  },
-                  itemBuilder: (context) => [
-                    PopupMenuItem(
-                      value: 'add_all',
-                      child: Row(
-                        children: [
-                          const Icon(Icons.add_circle_outline, size: AppTypography.sizeMD),
-                          const SizedBox(width: AppSpacing.sm),
-                          Text('全部添加'),
+              ),
+
+            // 斜角标签 - 在容器内，45度旋转，超出部分被裁剪
+            if (!isMultiSelect && isAdded)
+              Positioned(
+                right: -18,
+                top: 4,
+                child: Transform.rotate(
+                  angle: 0.785, // 45度
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 24,
+                      vertical: 4,
+                    ),
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: [
+                          theme.colorScheme.primary,
+                          theme.colorScheme.primary.withOpacity(0.85),
                         ],
                       ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.25),
+                          blurRadius: 3,
+                          offset: const Offset(1, 1),
+                        ),
+                      ],
                     ),
-                    PopupMenuItem(
-                      value: 'clear',
-                      child: Row(
-                        children: [
-                          const Icon(Icons.delete_sweep, size: AppTypography.sizeMD),
-                          const SizedBox(width: AppSpacing.sm),
-                          Text('清空已添加'),
-                        ],
+                    child: Text(
+                      '入库',
+                      style: TextStyle(
+                        color: theme.colorScheme.onPrimary,
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                        height: 1.0,
+                        letterSpacing: 1,
                       ),
                     ),
-                  ],
+                  ),
                 ),
-              ],
-            ),
-          ),
-
-          // 应用列表
-          ...apps.map((app) => _buildAppTile(context, channel, app)),
-        ],
-      ),
-    );
-  }
-
-  /// 应用卡片
-  Widget _buildAppTile(
-    BuildContext context,
-    ChannelType channel,
-    AppInfo app,
-  ) {
-    final isAdded = logic.isAppAdded(channel, app.appId);
-
-    return ListTile(
-      leading: app.icon.isNotEmpty
-          ? CircleAvatar(
-              backgroundImage: NetworkImage(app.icon),
-            )
-          : CircleAvatar(
-              child: Icon(Icons.app_settings_alt, size: AppTypography.iconLG),
-            ),
-      title: Text(app.name),
-      subtitle: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(app.appId, style: Theme.of(context).textTheme.bodySmall),
-          if (app.des.isNotEmpty)
-            Text(
-              app.des,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-        ],
-      ),
-      trailing: IconButton(
-        icon: Icon(
-          isAdded ? Icons.check_circle : Icons.add_circle_outline,
-          color: isAdded ? Colors.green : Colors.grey,
+              ),
+          ],
         ),
-        onPressed: () => logic.toggleApp(channel, app),
-      ),
-      onTap: () => logic.toggleApp(channel, app),
-    );
+      );
+    });
   }
 
   /// 获取显示模式图标
@@ -489,21 +700,39 @@ class DiscoveryPage extends StatelessWidget {
     }
   }
 
-  /// 获取渠道名称
-  String _getChannelName(ChannelType type) {
+  /// 获取渠道简称
+  String _getChannelShortName(ChannelType type) {
     switch (type) {
       case ChannelType.localDb:
-        return '本地数据库';
+        return '本地';
       case ChannelType.github:
         return 'GitHub';
       case ChannelType.http:
-        return 'HTTP API';
+        return 'HTTP';
       case ChannelType.vivo:
         return 'vivo';
       case ChannelType.fdroid:
-        return 'F-Droid';
+        return 'FD';
       default:
-        return type.code;
+        return type.code.substring(0, 3);
+    }
+  }
+
+  /// 获取渠道颜色
+  Color _getChannelColor(ChannelType type) {
+    switch (type) {
+      case ChannelType.github:
+        return const Color(0xFF24292E);
+      case ChannelType.fdroid:
+        return const Color(0xFF1976D2);
+      case ChannelType.vivo:
+        return const Color(0xFF4155D0);
+      case ChannelType.http:
+        return const Color(0xFFFF9800);
+      case ChannelType.localDb:
+        return const Color(0xFF2196F3);
+      default:
+        return Colors.grey;
     }
   }
 }

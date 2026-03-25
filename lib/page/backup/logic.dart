@@ -339,7 +339,7 @@ class BackupLogic extends GetxController {
         builder: (context) => PopScope(
           canPop: false,
           child: const Center(
-            child: CircularProgressIndicator(),
+            child: AppLoading(size: AppLoadingSize.medium),
           ),
         ),
       );
@@ -474,7 +474,7 @@ class BackupLogic extends GetxController {
         builder: (context) => const PopScope(
           canPop: false,
           child: Center(
-            child: CircularProgressIndicator(),
+            child: AppLoading(size: AppLoadingSize.medium),
           ),
         ),
       );
@@ -553,7 +553,7 @@ class BackupLogic extends GetxController {
             builder: (context) => const PopScope(
               canPop: false,
               child: Center(
-                child: CircularProgressIndicator(),
+                child: AppLoading(size: AppLoadingSize.medium),
               ),
             ),
           );

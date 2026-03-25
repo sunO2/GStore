@@ -301,17 +301,17 @@ class ThemeDataBuilder {
       brightness: Brightness.light,
       textTheme: textTheme, // 完整的文字主题
 
-      // 扁平化风格：使用动态色的淡色作为背景
-      scaffoldBackgroundColor: colorScheme.surfaceContainerLowest,
+      // 扁平化风格：使用 secondaryContainer 调淡 65% 的纯色作为背景
+      scaffoldBackgroundColor: _lightenColor(colorScheme.secondaryContainer, 0.65),
 
       // App bar theme - 扁平化
       appBarTheme: AppBarTheme(
-        centerTitle: true,
+        centerTitle: false, // 标题在左侧
         elevation: 0,
         scrolledUnderElevation: 0,
-        backgroundColor: colorScheme.surface,
+        backgroundColor: _lightenColor(colorScheme.secondaryContainer, 0.65),
         foregroundColor: colorScheme.onSurface,
-        titleTextStyle: textTheme.titleLarge,
+        titleTextStyle: textTheme.headlineLarge, // 使用更大的标题字号
         systemOverlayStyle: const SystemUiOverlayStyle(
           statusBarBrightness: Brightness.light,
           statusBarIconBrightness: Brightness.dark,
@@ -335,7 +335,7 @@ class ThemeDataBuilder {
 
       // Navigation bar theme
       navigationBarTheme: NavigationBarThemeData(
-        backgroundColor: colorScheme.surface,
+        backgroundColor: _lightenColor(colorScheme.secondaryContainer, 0.65),
         elevation: 0,
         height: 80,
         indicatorColor: colorScheme.primaryContainer,
@@ -343,7 +343,7 @@ class ThemeDataBuilder {
 
       // Navigation rail theme (for larger screens)
       navigationRailTheme: NavigationRailThemeData(
-        backgroundColor: colorScheme.surface,
+        backgroundColor: _lightenColor(colorScheme.secondaryContainer, 0.65),
         elevation: 0,
       ),
 
@@ -566,17 +566,17 @@ class ThemeDataBuilder {
       brightness: Brightness.dark,
       textTheme: textTheme, // 完整的文字主题
 
-      // 扁平化风格：使用动态色的深色作为背景
-      scaffoldBackgroundColor: colorScheme.surface,
+      // 扁平化风格：使用 secondaryContainer 调淡 65% 的纯色作为背景
+      scaffoldBackgroundColor: _darkenColor(colorScheme.secondaryContainer, 0.65),
 
       // App bar theme - 扁平化
       appBarTheme: AppBarTheme(
-        centerTitle: true,
+        centerTitle: false, // 标题在左侧
         elevation: 0,
         scrolledUnderElevation: 0,
-        backgroundColor: colorScheme.surface,
+        backgroundColor: _darkenColor(colorScheme.secondaryContainer, 0.65),
         foregroundColor: colorScheme.onSurface,
-        titleTextStyle: textTheme.titleLarge,
+        titleTextStyle: textTheme.headlineLarge, // 使用更大的标题字号
         systemOverlayStyle: const SystemUiOverlayStyle(
           statusBarBrightness: Brightness.dark,
           statusBarIconBrightness: Brightness.light,
@@ -600,7 +600,7 @@ class ThemeDataBuilder {
 
       // Navigation bar theme
       navigationBarTheme: NavigationBarThemeData(
-        backgroundColor: colorScheme.surface,
+        backgroundColor: _darkenColor(colorScheme.secondaryContainer, 0.65),
         elevation: 0,
         height: 80,
         indicatorColor: colorScheme.primaryContainer,
@@ -608,7 +608,7 @@ class ThemeDataBuilder {
 
       // Navigation rail theme (for larger screens)
       navigationRailTheme: NavigationRailThemeData(
-        backgroundColor: colorScheme.surface,
+        backgroundColor: _darkenColor(colorScheme.secondaryContainer, 0.65),
         elevation: 0,
       ),
 
@@ -811,5 +811,35 @@ class ThemeDataBuilder {
     if (scale == 0) return 0;
     if (scale == 1) return baseRadius;
     return baseRadius * scale;
+  }
+
+  /// 将颜色调淡（用于亮色模式）
+  ///
+  /// [color] 原始颜色
+  /// [factor] 调淡系数 (0.0-1.0)，0.65 表示 65% 的淡化效果
+  static Color _lightenColor(Color color, double factor) {
+    assert(factor >= 0.0 && factor <= 1.0);
+
+    final hsl = HSLColor.fromColor(color);
+    // 通过提高亮度来模拟淡化效果
+    // factor 越大，颜色越淡
+    final lightness = hsl.lightness + (1.0 - hsl.lightness) * factor;
+
+    return hsl.withLightness(lightness.clamp(0.0, 1.0)).toColor();
+  }
+
+  /// 将颜色调深（用于暗色模式）
+  ///
+  /// [color] 原始颜色
+  /// [factor] 调深系数 (0.0-1.0)，0.65 表示 65% 的调深效果
+  static Color _darkenColor(Color color, double factor) {
+    assert(factor >= 0.0 && factor <= 1.0);
+
+    final hsl = HSLColor.fromColor(color);
+    // 通过降低亮度来模拟淡化效果（在暗色背景下）
+    // factor 越大，颜色越接近背景色
+    final lightness = hsl.lightness * (1.0 - factor);
+
+    return hsl.withLightness(lightness.clamp(0.0, 1.0)).toColor();
   }
 }

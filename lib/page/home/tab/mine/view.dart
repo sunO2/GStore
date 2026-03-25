@@ -6,10 +6,9 @@ import 'package:gstore/page/web/browser.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
 import 'package:gstore/core/core.dart';
-import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/theme/app_theme_config.dart';
-import 'package:gstore/page/auth/state.dart';
-import '../../logic.dart';
+import 'package:gstore/page/backup/logic.dart';
+import 'package:gstore/page/backup/state.dart';
 
 class MinePage extends StatefulWidget {
   const MinePage({super.key});
@@ -18,9 +17,112 @@ class MinePage extends StatefulWidget {
   State<MinePage> createState() => _MinePageState();
 }
 
-class _MinePageState extends State<MinePage> {
+class _MinePageState extends State<MinePage> with TickerProviderStateMixin {
   /// 外观卡片展开状态
   bool _appearanceExpanded = false;
+
+  /// 备份卡片展开状态
+  bool _backupExpanded = false;
+
+  /// 备份逻辑控制器
+  late final BackupLogic _backupLogic;
+
+  /// WebDAV 配置状态
+  bool _hasWebDavConfig = false;
+
+  /// 外观卡片动画控制器
+  late AnimationController _appearanceController;
+  late Animation<double> _appearanceAnimation;
+
+  /// 备份卡片动画控制器
+  late AnimationController _backupController;
+  late Animation<double> _backupAnimation;
+
+  /// 卡片 GlobalKey
+  final GlobalKey _appearanceCardKey = GlobalKey();
+  final GlobalKey _backupCardKey = GlobalKey();
+
+  @override
+  void initState() {
+    super.initState();
+    _backupLogic = Get.put(BackupLogic());
+    _checkWebDavConfig();
+
+    // 初始化外观卡片动画
+    _appearanceController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 300),
+    );
+    _appearanceAnimation = CurvedAnimation(
+      parent: _appearanceController,
+      curve: Curves.easeInOut,
+    );
+
+    // 初始化备份卡片动画
+    _backupController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 300),
+    );
+    _backupAnimation = CurvedAnimation(
+      parent: _backupController,
+      curve: Curves.easeInOut,
+    );
+  }
+
+  @override
+  void dispose() {
+    _appearanceController.dispose();
+    _backupController.dispose();
+    super.dispose();
+  }
+
+  /// 切换外观卡片展开状态
+  void _toggleAppearanceExpanded() {
+    setState(() => _appearanceExpanded = !_appearanceExpanded);
+    if (_appearanceExpanded) {
+      _appearanceController.forward();
+    } else {
+      _appearanceController.reverse();
+    }
+  }
+
+  /// 切换备份卡片展开状态
+  void _toggleBackupExpanded() {
+    setState(() => _backupExpanded = !_backupExpanded);
+    if (_backupExpanded) {
+      _backupController.forward();
+    } else {
+      _backupController.reverse();
+    }
+  }
+
+  /// 滚动到指定 key 的位置
+  void _scrollToKey(GlobalKey key) {
+    final context = key.currentContext;
+    if (context == null || !context.mounted) return;
+
+    try {
+      // 使用 ensureVisible 确保元素可见
+      Scrollable.ensureVisible(
+        context,
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeInOut,
+        alignment: 0.0, // 0.0 表示滚动到顶部
+      );
+    } catch (e) {
+      // 如果滚动失败，忽略错误
+    }
+  }
+
+  /// 检查 WebDAV 配置状态
+  Future<void> _checkWebDavConfig() async {
+    final hasConfig = await WebDavConfigManager.instance.hasConfig();
+    if (mounted) {
+      setState(() {
+        _hasWebDavConfig = hasConfig;
+      });
+    }
+  }
 
   /// 从主题获取卡片的形状（包含圆角和边框）
   ShapeBorder get _cardShape {
@@ -93,6 +195,11 @@ class _MinePageState extends State<MinePage> {
 
               // 外观卡片（始终显示）
               _buildAppearanceCard(context),
+
+              const SizedBox(height: AppSpacing.md),
+
+              // 备份管理卡片（始终显示）
+              _buildBackupCard(context),
 
               const SizedBox(height: AppSpacing.md),
 
@@ -250,6 +357,7 @@ class _MinePageState extends State<MinePage> {
     final themeController = Get.find<ThemeController>();
 
     return Card(
+      key: _appearanceCardKey,
       elevation: 0,
       shape: _cardShape,
       child: Padding(
@@ -259,6 +367,7 @@ class _MinePageState extends State<MinePage> {
           children: [
             // 标题栏（带展开/收起按钮）
             Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
               children: [
                 Icon(
                   Icons.palette_outlined,
@@ -275,19 +384,26 @@ class _MinePageState extends State<MinePage> {
                 const Spacer(),
                 InkWell(
                   onTap: () {
-                    setState(() => _appearanceExpanded = !_appearanceExpanded);
+                    _toggleAppearanceExpanded();
+                    // 展开后滚动到可见区域
+                    if (_appearanceExpanded) {
+                      Future.delayed(const Duration(milliseconds: 100), () {
+                        _scrollToKey(_appearanceCardKey);
+                      });
+                    }
                   },
                   borderRadius: BorderRadius.circular(20),
-                  child: Padding(
-                    padding: const EdgeInsets.all(8),
-                    child: AnimatedRotation(
-                      turns: _appearanceExpanded ? 0.5 : 0,
-                      duration: const Duration(milliseconds: 300),
-                      curve: Curves.easeInOut,
-                      child: Icon(
-                        Icons.expand_more,
-                        size: AppTypography.iconMD,
-                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  child: const SizedBox(
+                    width: 32,
+                    height: 32,
+                    child: Center(
+                      child: Padding(
+                        padding: EdgeInsets.all(6),
+                        child: Icon(
+                          Icons.expand_more,
+                          size: 18,
+                          color: AppColors.textSecondary,
+                        ),
                       ),
                     ),
                   ),
@@ -337,34 +453,33 @@ class _MinePageState extends State<MinePage> {
             }),
 
             // 展开的详细设置
-            AnimatedSize(
-              duration: const Duration(milliseconds: 300),
-              curve: Curves.easeInOut,
-              child: _appearanceExpanded
-                  ? Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const SizedBox(height: AppSpacing.lg),
-                        Divider(color: Theme.of(context).colorScheme.outlineVariant.withOpacity(0.3)),
-                        const SizedBox(height: AppSpacing.lg),
+            SizeTransition(
+              sizeFactor: _appearanceAnimation,
+              axis: Axis.vertical,
+              axisAlignment: -1.0, // 从顶部开始
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const SizedBox(height: AppSpacing.lg),
+                  Divider(color: Theme.of(context).colorScheme.outlineVariant.withOpacity(0.3)),
+                  const SizedBox(height: AppSpacing.lg),
 
-                        // 颜色设置
-                        _buildColorSetting(context, themeController),
-                        const SizedBox(height: AppSpacing.lg),
+                  // 颜色设置
+                  _buildColorSetting(context, themeController),
+                  const SizedBox(height: AppSpacing.lg),
 
-                        // 字体风格
-                        _buildFontStyleSetting(context, themeController),
-                        const SizedBox(height: AppSpacing.lg),
+                  // 字体风格
+                  _buildFontStyleSetting(context, themeController),
+                  const SizedBox(height: AppSpacing.lg),
 
-                        // 圆角风格
-                        _buildRadiusStyleSetting(context, themeController),
-                        const SizedBox(height: AppSpacing.lg),
+                  // 圆角风格
+                  _buildRadiusStyleSetting(context, themeController),
+                  const SizedBox(height: AppSpacing.lg),
 
-                        // 边框风格
-                        _buildBorderStyleSetting(context, themeController),
-                      ],
-                    )
-                  : const SizedBox.shrink(),
+                  // 边框风格
+                  _buildBorderStyleSetting(context, themeController),
+                ],
+              ),
             ),
           ],
         ),
@@ -681,6 +796,249 @@ class _MinePageState extends State<MinePage> {
         return 0.5;
       case AppBorderStyle.bold:
         return 1.5;
+    }
+  }
+
+  /// 构建备份管理卡片
+  Widget _buildBackupCard(BuildContext context) {
+    return Card(
+      key: _backupCardKey,
+      elevation: 0,
+      shape: _cardShape,
+      child: Padding(
+        padding: AppSpacing.allLG,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // 标题栏（带展开/收起按钮，仅在有 WebDAV 配置时显示）
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                Icon(
+                  Icons.backup_outlined,
+                  size: AppTypography.iconMD,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+                const SizedBox(width: AppSpacing.md),
+                Text(
+                  '备份管理',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: AppTypography.weightSemiBold,
+                      ),
+                ),
+                const Spacer(),
+                // 只有配置了 WebDAV 时才显示展开/收起按钮
+                if (_hasWebDavConfig)
+                  InkWell(
+                    onTap: () {
+                      _toggleBackupExpanded();
+                      // 展开后滚动到可见区域
+                      if (_backupExpanded) {
+                        Future.delayed(const Duration(milliseconds: 100), () {
+                          _scrollToKey(_backupCardKey);
+                        });
+                      }
+                    },
+                    borderRadius: BorderRadius.circular(20),
+                    child: const SizedBox(
+                      width: 32,
+                      height: 32,
+                      child: Center(
+                        child: Padding(
+                          padding: EdgeInsets.all(6),
+                          child: Icon(
+                            Icons.expand_more,
+                            size: 18,
+                            color: AppColors.textSecondary,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: AppSpacing.lg),
+
+            // 备份选项和操作
+            Obx(() {
+              final state = _backupLogic.state;
+
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // 导出时包含应用配置
+                  SwitchListTile(
+                    title: const Text('导出时包含应用配置'),
+                    subtitle: const Text('导出备份时同时导出主题、WebDAV 等应用设置'),
+                    contentPadding: EdgeInsets.zero,
+                    value: state.includeAppConfig.value,
+                    onChanged: (value) => _backupLogic.toggleIncludeAppConfig(value),
+                  ),
+
+                  // 恢复方式（使用与 SwitchListTile 标题相同的样式）
+                  Text(
+                    '恢复方式',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                          fontWeight: AppTypography.weightMedium,
+                        ),
+                  ),
+                  SizedBox(height: AppSpacing.cardTitleDescriptionSpacing),
+
+                  // 恢复方式描述
+                  Text(
+                    _getRestoreModeDescription(state.restoreMode.value),
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: AppColors.textSecondary,
+                        ),
+                  ),
+                  SizedBox(height: AppSpacing.cardControlSpacing),
+
+                  // 分段式按钮（铺满整行）
+                  SizedBox(
+                    width: double.infinity,
+                    child: AppSegmentedButton<RestoreMode>(
+                      value: state.restoreMode.value,
+                      segments: const [
+                        AppSegment(
+                          value: RestoreMode.replace,
+                          label: '覆盖',
+                          icon: Icons.refresh,
+                        ),
+                        AppSegment(
+                          value: RestoreMode.merge,
+                          label: '合并',
+                          icon: Icons.merge,
+                        ),
+                        AppSegment(
+                          value: RestoreMode.update,
+                          label: '更新',
+                          icon: Icons.update,
+                        ),
+                      ],
+                      onChanged: (RestoreMode newMode) {
+                        _backupLogic.setRestoreMode(newMode);
+                      },
+                    ),
+                  ),
+                  SizedBox(height: AppSpacing.cardGroupSpacing),
+
+                  // 本地备份恢复按钮
+                  Row(
+                    children: [
+                      Expanded(
+                        child: FilledButton.tonalIcon(
+                          onPressed: state.isExporting.value
+                              ? null
+                              : () => _backupLogic.exportCompressed(context),
+                          icon: state.isExporting.value
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: AppLoading(size: AppLoadingSize.small),
+                                )
+                              : const Icon(Icons.save_alt),
+                          label: Text(state.isExporting.value ? '导出中...' : '导出到本地'),
+                        ),
+                      ),
+                      const SizedBox(width: AppSpacing.md),
+                      Expanded(
+                        child: FilledButton.tonalIcon(
+                          onPressed: state.isImporting.value
+                              ? null
+                              : () => _backupLogic.selectAndImportFile(context),
+                          icon: state.isImporting.value
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: AppLoading(size: AppLoadingSize.small),
+                                )
+                              : const Icon(Icons.folder_open),
+                          label: Text(state.isImporting.value ? '导入中...' : '从本地恢复'),
+                        ),
+                      ),
+                    ],
+                  ),
+
+                  // WebDAV 备份恢复按钮（仅在有配置时显示）
+                  if (_hasWebDavConfig) ...[
+                    const SizedBox(height: AppSpacing.lg),
+
+                    // 展开的 WebDAV 操作
+                    SizeTransition(
+                      sizeFactor: _backupAnimation,
+                      axis: Axis.vertical,
+                      axisAlignment: -1.0,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          // 分割线（只在展开时显示）
+                          Divider(color: Theme.of(context).colorScheme.outlineVariant.withOpacity(0.3)),
+                          const SizedBox(height: AppSpacing.lg),
+
+                          Text(
+                            'WebDAV 云端备份',
+                            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                  color: AppColors.textSecondary,
+                                ),
+                          ),
+                          const SizedBox(height: AppSpacing.md),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: FilledButton.icon(
+                                  onPressed: state.isUploadingWebDav.value
+                                      ? null
+                                      : () => _backupLogic.uploadToWebDav(context, compressed: true),
+                                  icon: state.isUploadingWebDav.value
+                                      ? const SizedBox(
+                                          width: 16,
+                                          height: 16,
+                                          child: AppLoading(size: AppLoadingSize.small),
+                                        )
+                                      : const Icon(Icons.cloud_upload),
+                                  label: Text(state.isUploadingWebDav.value ? '上传中...' : '备份到网盘'),
+                                ),
+                              ),
+                              const SizedBox(width: AppSpacing.md),
+                              Expanded(
+                                child: FilledButton.icon(
+                                  onPressed: state.isImporting.value
+                                      ? null
+                                      : () => _backupLogic.downloadFromWebDav(context),
+                                  icon: state.isImporting.value
+                                      ? const SizedBox(
+                                          width: 16,
+                                          height: 16,
+                                          child: AppLoading(size: AppLoadingSize.small),
+                                        )
+                                      : const Icon(Icons.cloud_download),
+                                  label: Text(state.isImporting.value ? '下载中...' : '从网盘恢复'),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ],
+              );
+            }),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 获取恢复方式描述
+  String _getRestoreModeDescription(RestoreMode mode) {
+    switch (mode) {
+      case RestoreMode.replace:
+        return '覆盖模式：清空所有已添加的应用，然后导入备份中的应用';
+      case RestoreMode.merge:
+        return '合并模式：只添加不存在的应用，不更新已存在的应用';
+      case RestoreMode.update:
+        return '更新模式：更新已存在的应用，并添加不存在的应用';
     }
   }
 }

@@ -29,6 +29,214 @@ class DiscoveryLogic extends GetxController {
   /// 获取渠道列表（用于UI显示）
   List<ChannelInfo> get channelList => _channelManager.allChannelInfo;
 
+  /// 获取已排序的渠道类型列表（用于筛选标签）
+  List<ChannelType> get sortedChannelTypes {
+    final channels = state.channelApps.keys.toList();
+    // 按渠道名称排序，确保顺序稳定
+    channels.sort((a, b) => a.code.compareTo(b.code));
+    return channels;
+  }
+
+  /// 获取当前显示的应用列表（扁平化，用于 Grid）
+  /// 返回 (AppInfo, ChannelType) 对，确保每个应用都有正确的渠道信息
+  List<(AppInfo, ChannelType)> getDisplayApps() {
+    List<(AppInfo, ChannelType)> result = [];
+
+    final channels = state.selectedChannel.value == null
+        ? sortedChannelTypes
+        : [state.selectedChannel.value!];
+
+    for (var channel in channels) {
+      final apps = state.channelApps[channel] ?? [];
+      for (var app in apps) {
+        // 显示模式筛选
+        final isAdded = isAppAdded(channel, app.appId);
+        switch (state.displayMode.value) {
+          case DisplayMode.added:
+            if (!isAdded) continue;
+            break;
+          case DisplayMode.notAdded:
+            if (isAdded) continue;
+            break;
+          case DisplayMode.all:
+          default:
+            break;
+        }
+
+        // 搜索筛选
+        if (state.searchKeyword.value.isNotEmpty) {
+          final keyword = state.searchKeyword.value.toLowerCase();
+          if (!app.name.toLowerCase().contains(keyword) &&
+              !app.des.toLowerCase().contains(keyword)) {
+            continue;
+          }
+        }
+
+        result.add((app, channel));
+      }
+    }
+
+    return result;
+  }
+
+  /// 获取应用的渠道信息
+  ChannelType? getChannelForApp(String appId) {
+    for (var entry in state.channelApps.entries) {
+      if (entry.value.any((app) => app.appId == appId)) {
+        return entry.key;
+      }
+    }
+    return null;
+  }
+
+  /// 获取渠道应用统计
+  int getChannelAppCount(ChannelType? channel) {
+    if (channel == null) {
+      return getTotalAppCount();
+    }
+    return state.channelApps[channel]?.length ?? 0;
+  }
+
+  /// 获取渠道已添加应用数
+  int getChannelAddedCount(ChannelType? channel) {
+    if (channel == null) {
+      return getAddedAppCount();
+    }
+    final apps = state.channelApps[channel] ?? [];
+    return apps.where((app) => isAppAdded(channel, app.appId)).length;
+  }
+
+  /// 计算响应式 Grid 列数
+  int calculateCrossAxisCount(BuildContext context) {
+    final width = MediaQuery.of(context).size.width;
+    if (width < 600) return 3;      // 手机竖屏
+    if (width < 900) return 5;      // 手机横屏
+    return 7;                       // 平板
+  }
+
+  /// 更新 Grid 列数
+  void updateCrossAxisCount(BuildContext context) {
+    state.crossAxisCount.value = calculateCrossAxisCount(context);
+  }
+
+  /// 进入/退出多选模式
+  void toggleMultiSelectMode() {
+    state.isMultiSelectMode.value = !state.isMultiSelectMode.value;
+    if (!state.isMultiSelectMode.value) {
+      state.selectedApps.clear();
+    }
+  }
+
+  /// 切换应用选择状态
+  void toggleAppSelection(String channelCode, String appId) {
+    final key = '$channelCode:$appId';
+    if (state.selectedApps.contains(key)) {
+      state.selectedApps.remove(key);
+    } else {
+      state.selectedApps.add(key);
+    }
+  }
+
+  /// 全选当前视图
+  void selectAllInView() {
+    state.selectedApps.clear();
+    final appsWithChannel = getDisplayApps();
+    for (var (app, channel) in appsWithChannel) {
+      state.selectedApps.add('${channel.code}:${app.appId}');
+    }
+  }
+
+  /// 取消全选
+  void deselectAll() {
+    state.selectedApps.clear();
+  }
+
+  /// 批量添加选中的应用
+  Future<void> batchAddSelected() async {
+    if (state.selectedApps.isEmpty) return;
+
+    int successCount = 0;
+    int failCount = 0;
+
+    for (var key in state.selectedApps) {
+      final parts = key.split(':');
+      if (parts.length != 2) continue;
+
+      final channelCode = parts[0];
+      final appId = parts[1];
+
+      // 查找对应的渠道和应用
+      ChannelType? channel;
+      AppInfo? appInfo;
+
+      for (var entry in state.channelApps.entries) {
+        if (entry.key.code == channelCode) {
+          channel = entry.key;
+          appInfo = entry.value.firstWhereOrNull((app) => app.appId == appId);
+          break;
+        }
+      }
+
+      if (channel != null && appInfo != null) {
+        try {
+          await _aggregator.toggleApp(
+            channel: channel,
+            appInfo: appInfo,
+          );
+          successCount++;
+        } catch (e) {
+          failCount++;
+          debugPrint('添加应用失败: $appId - $e');
+        }
+      }
+    }
+
+    // 清空选择
+    state.selectedApps.clear();
+    state.isMultiSelectMode.value = false;
+
+    // 刷新数据
+    await _updateAddedAppsIndex();
+
+    // 显示结果
+    Get.snackbar(
+      '批量添加完成',
+      '成功: $successCount, 失败: $failCount',
+      icon: Icon(
+        failCount == 0 ? Icons.check_circle : Icons.warning,
+        color: failCount == 0 ? Colors.green : Colors.orange,
+      ),
+      duration: const Duration(seconds: 2),
+    );
+  }
+
+  /// 加载更多指定渠道的应用
+  Future<void> loadMoreChannel(ChannelType channel) async {
+    if (state.channelLoadingMore[channel] == true) return;
+
+    state.channelLoadingMore[channel] = true;
+
+    try {
+      final currentPage = state.channelPages[channel] ?? 1;
+      final channelInstance = _channelManager.getChannel(channel);
+
+      if (channelInstance != null) {
+        // TODO: 实现分页加载逻辑
+        // 这里需要根据渠道的分页接口来实现
+        // 暂时使用 forceRefresh 加载全部
+        final result = await channelInstance.getAllApps(forceRefresh: true);
+        if (result.success && result.data != null) {
+          state.channelApps[channel] = result.data!;
+          state.channelPages[channel] = currentPage + 1;
+        }
+      }
+    } catch (e) {
+      debugPrint('DiscoveryLogic: 加载更多 $channel 失败 - $e');
+    } finally {
+      state.channelLoadingMore[channel] = false;
+    }
+  }
+
   @override
   void onReady() async {
     super.onReady();
@@ -90,7 +298,10 @@ class DiscoveryLogic extends GetxController {
 
   /// 切换渠道筛选
   void selectChannel(ChannelType? type) {
+    debugPrint('DiscoveryLogic: selectChannel called with type: ${type?.code ?? "null"}');
+    debugPrint('DiscoveryLogic: current selectedChannel: ${state.selectedChannel.value?.code ?? "null"}');
     state.selectedChannel.value = type;
+    debugPrint('DiscoveryLogic: new selectedChannel: ${state.selectedChannel.value?.code ?? "null"}');
   }
 
   /// 切换显示模式

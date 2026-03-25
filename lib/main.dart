@@ -14,6 +14,7 @@ import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
 import 'package:gstore/core/fdroid/FdroidRepoManager.dart';
 import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/event/database_event.dart';
+import 'package:rhttp/rhttp.dart';
 
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/config/config_initializer.dart';
@@ -22,19 +23,30 @@ registerService() async {
   // 初始化日志管理器（必须在最开始，因为其他模块可能需要使用日志）
   Get.put(LogManager.instance);
 
+  // 初始化 rhttp（基于 curl 的高性能 HTTP 客户端）
+  // 必须在使用 RhttpAdapter 之前初始化
+  try {
+    await Rhttp.init();
+    appLog.info('rhttp initialized successfully');
+  } catch (e) {
+    appLog.error('Failed to initialize rhttp, falling back to default adapter',
+        data: {'error': e.toString()});
+  }
+
   // 注册 Dio 实例（供 FdroidRepoManager 使用）
   Get.lazyPut<Dio>(() => DioClient().get());
 
   Get.lazyPut<GithubRestClient>(() => GithubRestClient(DioClient().get()));
   await Get.putAsync<DbManager>(() async => await DbManager().init());
 
-  Get.lazyPut<GithubAuthApi>(() => GithubAuthApi(DioClient().get()));
+  // OAuth API 需要使用单独的 Dio 实例（不包含 GitHub REST API 专用 headers）
+  Get.lazyPut<GithubAuthApi>(() => GithubAuthApi(DioClient.createOAuthClient()));
   Get.lazyPut<DownloadService>(() => DownloadService(DioClient().get()));
 
-  // 初始化 UserManager（确保在启动时立即创建并初始化）
-  final userManager = UserManager();
+  // 初始化 UserManager（使用单例模式）
+  final userManager = UserManager.instance;
   Get.put(userManager);
-  await userManager.initialize(); // 等待异步初始化完成
+  await userManager.initialize();
 
   // 初始化数据库事件总线
   Get.put(DatabaseEventBus());

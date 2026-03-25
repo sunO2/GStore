@@ -20,9 +20,19 @@ class AuthPage extends StatelessWidget {
         leading: IconButton(
           icon: const Icon(Icons.close),
           onPressed: () async {
-            // 如果登录成功，直接返回
-            if (logic.state.status.value == AuthStatus.success) {
+            final currentStatus = logic.state.status.value;
+
+            // 登录成功或正在验证中，直接返回
+            if (currentStatus == AuthStatus.success ||
+                currentStatus == AuthStatus.verifying) {
               Get.back(result: AuthStatus.success);
+              return;
+            }
+
+            // 正在获取验证码，不允许关闭
+            if (currentStatus == AuthStatus.requestUserCode) {
+              AppDialogs.showWarning('正在获取验证码，请稍候...',
+                  title: '提示');
               return;
             }
 
@@ -58,16 +68,13 @@ class AuthPage extends StatelessWidget {
           debugPrint("当前加载的url: $urlString");
           controller.injectJavascriptFileFromAsset(
               assetFilePath: "assets/auth/auto_input_auth_code.js");
+          // 检测是否到达设备登录页面
           if (urlString
               .endsWith("/login/device?skip_account_picker=true")) {
             logic.state.status.value = AuthStatus.initial;
-          } else if (urlString.endsWith("/login/device/success")) {
-            logic.state.status.value = AuthStatus.success;
-            // 登录成功后延迟自动返回
-            Future.delayed(const Duration(milliseconds: 500), () {
-              Get.back(result: AuthStatus.success);
-            });
           }
+          // 注意：登录成功判断已改为使用 API 轮询结果（logic.dart），
+          // 不再依赖页面 URL 跳转到 /login/device/success
         },
         initialSettings: InAppWebViewSettings(
           isInspectable: false,

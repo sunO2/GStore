@@ -271,6 +271,55 @@ class FdroidRepoManager extends GetxController {
     }
   }
 
+  /// 精确查询应用（通过 packageName）
+  Future<Map<String, dynamic>?> getAppByPackageName(String packageName) async {
+    final source = currentSource.value;
+    if (source == null) {
+      throw Exception('请先选择一个源');
+    }
+
+    try {
+      appLog.info('开始精确查询应用', data: {
+        'packageName': packageName,
+        'source': source.name,
+      });
+
+      // 确保数据已加载
+      final appCount = await rust.FdroidRustRepoManager.getAppCount();
+      if (appCount == 0) {
+        appLog.warning('数据库中没有应用，开始加载仓库');
+        await loadRepository();
+      }
+
+      // 使用搜索接口，然后精确匹配 packageName
+      final results = await rust.FdroidRustRepoManager.searchApps(packageName, limit: 100);
+
+      // 精确匹配 packageName
+      for (var app in results) {
+        final appMap = rust.FdroidRustRepoManager.appInfoToMap(app);
+        if (appMap['packageName'] == packageName) {
+          appLog.info('精确查询成功', data: {
+            'packageName': packageName,
+            'name': appMap['name'],
+          });
+          return appMap;
+        }
+      }
+
+      appLog.warning('未找到应用', data: {
+        'packageName': packageName,
+      });
+      return null;
+    } catch (e) {
+      appLog.error('精确查询失败', data: {
+        'packageName': packageName,
+        'error': e.toString(),
+      });
+      debugPrint('FdroidRepoManager: 精确查询失败 - $e');
+      return null;
+    }
+  }
+
   /// 获取所有应用
   Future<List<Map<String, dynamic>>> getAllApps() async {
     final source = currentSource.value;

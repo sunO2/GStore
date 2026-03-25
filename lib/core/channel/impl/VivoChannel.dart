@@ -9,6 +9,7 @@ import 'package:gstore/core/channel/database/channel_database.dart';
 import 'package:gstore/core/channel/model/ChannelInfo.dart';
 import 'package:gstore/core/channel/model/ChannelResult.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
+import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/model/proxy/VivoChannelDetailProxy.dart';
@@ -950,7 +951,7 @@ class _VivoAddAppState extends State<_VivoAddAppWidget> {
       return const Center(
         child: Padding(
           padding: EdgeInsets.all(24),
-          child: CircularProgressIndicator(),
+          child: AppLoading(size: AppLoadingSize.medium),
         ),
       );
     }

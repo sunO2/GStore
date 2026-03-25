@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 /// Reusable UI components that follow the app design system
@@ -10,6 +11,7 @@ import 'app_spacing.dart';
 import 'app_radius.dart';
 import 'app_shadows.dart';
 import 'app_typography.dart';
+import 'app_animations.dart';
 
 // ========== AppCard ==========
 /// Unified card component with consistent styling
@@ -138,13 +140,9 @@ class AppButton extends StatelessWidget {
 
     Widget buildChild() {
       if (isLoading) {
-        return SizedBox(
-          width: _getButtonIconSize(),
-          height: _getButtonIconSize(),
-          child: const CircularProgressIndicator(
-            strokeWidth: 2,
-            valueColor: AlwaysStoppedAnimation(Colors.white),
-          ),
+        return AppLoading(
+          size: AppLoadingSize.small,
+          color: _getForegroundColor(),
         );
       }
 
@@ -519,38 +517,6 @@ class EmptyState extends StatelessWidget {
   }
 }
 
-// ========== LoadingState ==========
-/// Unified loading state component
-class LoadingState extends StatelessWidget {
-  const LoadingState({
-    super.key,
-    this.message,
-  });
-
-  final String? message;
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const CircularProgressIndicator(),
-          if (message != null) ...[
-            const SizedBox(height: AppSpacing.md),
-            Text(
-              message!,
-              style: AppTypography.bodyMedium.copyWith(
-                color: AppColors.textSecondary,
-              ),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-}
-
 // ========== ErrorState ==========
 /// Unified error state component
 class ErrorState extends StatelessWidget {
@@ -821,4 +787,283 @@ class AppSegment<T> {
 
   /// 选项的图标（可选）
   final IconData? icon;
+}
+
+// ========== AppLoading ==========
+
+/// 统一的莫比乌斯环 Loading 组件
+///
+/// 提供两种尺寸：
+/// - [AppLoadingSize.small]: 组件内 loading（小尺寸，如按钮内）
+/// - [AppLoadingSize.medium]: 页面内 loading（中等尺寸，如列表加载）
+/// - [AppLoadingSize.large]: 全屏 loading（大尺寸，如页面加载）
+///
+/// 示例：
+/// ```dart
+/// // 组件内 loading
+/// AppLoading(size: AppLoadingSize.small)
+///
+/// // 页面 loading
+/// AppLoading(size: AppLoadingSize.medium)
+///
+/// // 全屏 loading
+/// AppLoading(size: AppLoadingSize.large)
+/// ```
+class AppLoading extends StatefulWidget {
+  const AppLoading({
+    super.key,
+    this.size = AppLoadingSize.medium,
+    this.color,
+  });
+
+  /// Loading 尺寸
+  final AppLoadingSize size;
+
+  /// Loading 颜色（默认使用主题色）
+  final Color? color;
+
+  @override
+  State<AppLoading> createState() => _AppLoadingState();
+}
+
+class _AppLoadingState extends State<AppLoading>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+  double _completedCycles = 0.0; // 已完成的循环次数
+  double _lastValue = 0.0; // 上一次的值
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 3000), // 3秒一圈
+    );
+
+    _controller.addListener(() {
+      final currentValue = _controller.value;
+      // 当值从接近 1 变回接近 0 时，表示完成了一个循环
+      if (_lastValue > 0.9 && currentValue < 0.1) {
+        setState(() {
+          _completedCycles += 1.0;
+        });
+      }
+      _lastValue = currentValue;
+    });
+
+    _controller.repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final size = _getSize();
+    final strokeWidth = _getStrokeWidth();
+    final defaultColor = Theme.of(context).colorScheme.primary;
+
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) {
+        // 使用累积的总进度 = 已完成的循环数 + 当前周期值
+        final progress = _completedCycles + _controller.value;
+        return SizedBox(
+          width: size,
+          height: size,
+          child: CustomPaint(
+            size: Size(size, size),
+            painter: _ElegantRingPainter(
+              color: widget.color ?? defaultColor,
+              strokeWidth: strokeWidth,
+              progress: progress,
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  double _getSize() {
+    switch (widget.size) {
+      case AppLoadingSize.small:
+        return 24;
+      case AppLoadingSize.medium:
+        return 48;
+      case AppLoadingSize.large:
+        return 64;
+    }
+  }
+
+  double _getStrokeWidth() {
+    switch (widget.size) {
+      case AppLoadingSize.small:
+        return 2;
+      case AppLoadingSize.medium:
+        return 3;
+      case AppLoadingSize.large:
+        return 4;
+    }
+  }
+}
+
+/// Loading 尺寸枚举
+enum AppLoadingSize { small, medium, large }
+
+/// 优雅的圆环旋转绘制器
+///
+/// 绘制多段弧线以不同速度旋转，类似 iOS 风格的加载动画
+/// 支持动态呼吸颜色效果
+class _ElegantRingPainter extends CustomPainter {
+  _ElegantRingPainter({
+    required this.color,
+    required this.strokeWidth,
+    required this.progress,
+  });
+
+  final Color color;
+  final double strokeWidth;
+  final double progress;
+
+  /// 计算呼吸颜色
+  ///
+  /// 基于进度值在主色和辅助色之间平滑过渡
+  Color _computeBreathingColor(double baseProgress, double alpha) {
+    // 使用多个正弦波叠加创建更自然的呼吸效果
+    final breathe1 = math.sin(baseProgress * math.pi * 2); // 主呼吸周期
+    final breathe2 = math.sin(baseProgress * math.pi * 3 + math.pi / 4); // 次呼吸周期
+    final breathe3 = math.sin(baseProgress * math.pi * 5 + math.pi / 2); // 快速变化
+
+    // 混合呼吸值，创造随机感
+    final breathe = (breathe1 * 0.5 + breathe2 * 0.3 + breathe3 * 0.2);
+
+    // 色相偏移（创造彩虹般的渐变）- 增加范围让效果更明显
+    final hueShift = breathe * 50; // ±50度的色相偏移
+
+    // 亮度变化 - 增加范围
+    final brightnessShift = breathe * 0.2; // ±20%的亮度变化
+
+    // 饱和度变化 - 增加色彩鲜艳度
+    final saturationShift = breathe * 0.15; // ±15%的饱和度变化
+
+    // 将 HSL 转换回 Color
+    final hsl = HSLColor.fromColor(color);
+    final newHsl = hsl
+        .withHue((hsl.hue + hueShift) % 360) // 使用模运算确保在0-360范围内循环
+        .withLightness((hsl.lightness + brightnessShift).clamp(0.2, 0.9))
+        .withSaturation((hsl.saturation + saturationShift).clamp(0.3, 1.0));
+
+    return newHsl.withAlpha(alpha).toColor();
+  }
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width / 2, size.height / 2);
+    final radius = (size.width - strokeWidth) / 2;
+
+    // 主旋转弧线（较长，旋转速度正常）
+    final mainArcAngle = progress * 2 * math.pi;
+    final mainArcStart = mainArcAngle;
+    final mainArcSweep = math.pi * 1.5; // 270度
+
+    final mainRect = Rect.fromCircle(center: center, radius: radius);
+    final mainPaint = Paint()
+      ..color = _computeBreathingColor(progress, 1.0)
+      ..strokeWidth = strokeWidth
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round;
+
+    canvas.drawArc(mainRect, mainArcStart, mainArcSweep, false, mainPaint);
+
+    // 次要弧线（较短，反向旋转）
+    final secondaryAngle = -mainArcAngle * 1.5;
+    final secondaryStart = secondaryAngle;
+    final secondarySweep = math.pi * 0.8; // 144度
+    final secondaryRadius = radius * 0.75;
+
+    // 使用连续的弧度值计算颜色，避免跳跃
+    final continuousSecondaryCycle = secondaryAngle.abs() / (2 * math.pi);
+
+    final secondaryRect = Rect.fromCircle(center: center, radius: secondaryRadius);
+    final secondaryPaint = Paint()
+      ..color = _computeBreathingColor(continuousSecondaryCycle, 0.7)
+      ..strokeWidth = strokeWidth * 0.75
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round;
+
+    canvas.drawArc(secondaryRect, secondaryStart, secondarySweep, false, secondaryPaint);
+
+    // 小弧线（最小，正向旋转）
+    final smallAngle = mainArcAngle * 2.0;
+    final smallStart = smallAngle;
+    final smallSweep = math.pi * 0.5; // 90度
+    final smallRadius = radius * 0.5;
+
+    // 使用连续的弧度值计算颜色，避免跳跃
+    final continuousSmallCycle = smallAngle.abs() / (2 * math.pi);
+
+    final smallRect = Rect.fromCircle(center: center, radius: smallRadius);
+    final smallPaint = Paint()
+      ..color = _computeBreathingColor(continuousSmallCycle, 0.4)
+      ..strokeWidth = strokeWidth * 0.5
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round;
+
+    canvas.drawArc(smallRect, smallStart, smallSweep, false, smallPaint);
+
+    // 中心点（装饰，带呼吸效果）
+    // 使用 mainArcAngle 而不是 progress 来保持呼吸效果的连续性
+    // 将弧度归一化到一个连续的周期，避免循环时的跳跃
+    final continuousCycle = mainArcAngle / (2 * math.pi); // 连续的周期值（0, 1, 2, 3...）
+    final dotBreathe = (math.sin(continuousCycle * math.pi * 2) + 1) / 2; // 0-1，连续无跳跃
+    final dotAlpha = 0.25 + 0.45 * dotBreathe; // 0.25-0.7
+    final dotPaint = Paint()
+      ..color = _computeBreathingColor(continuousCycle % 1.0, dotAlpha)
+      ..style = PaintingStyle.fill;
+
+    canvas.drawCircle(center, strokeWidth * 0.8, dotPaint);
+  }
+
+  @override
+  bool shouldRepaint(_ElegantRingPainter oldDelegate) {
+    return oldDelegate.color != color ||
+        oldDelegate.strokeWidth != strokeWidth ||
+        oldDelegate.progress != progress;
+  }
+}
+
+// ========== LoadingState (Updated) ==========
+
+/// Unified loading state component（使用新的 AppLoading）
+class LoadingState extends StatelessWidget {
+  const LoadingState({
+    super.key,
+    this.message,
+  });
+
+  final String? message;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const AppLoading(size: AppLoadingSize.large),
+          if (message != null) ...[
+            const SizedBox(height: AppSpacing.lg),
+            Text(
+              message!,
+              style: AppTypography.bodyMedium.copyWith(
+                color: AppColors.textSecondary,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
 }

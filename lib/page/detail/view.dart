@@ -140,7 +140,7 @@ class DetailPage extends StatelessWidget {
             if (state.isLoadingDetail.value) {
               return const Padding(
                 padding: AppSpacing.allLG,
-                child: Center(child: CircularProgressIndicator()),
+                child: Center(child: AppLoading(size: AppLoadingSize.medium)),
               );
             }
             return const SizedBox.shrink();

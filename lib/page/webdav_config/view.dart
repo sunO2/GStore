@@ -198,11 +198,7 @@ class WebDavConfigPage extends StatelessWidget {
                 ? null
                 : () => logic.testConnection(),
             icon: state.isTesting.value
-                ? const SizedBox(
-                    width: AppTypography.iconMD,
-                    height: AppTypography.iconMD,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
+                ? const AppLoading(size: AppLoadingSize.small)
                 : const Icon(Icons.wifi_find),
             label: Text(state.isTesting.value ? '测试中...' : '测试连接'),
           ),
@@ -222,11 +218,7 @@ class WebDavConfigPage extends StatelessWidget {
                 ? null
                 : () => logic.saveConfig(context),
             icon: state.isSaving.value
-                ? const SizedBox(
-                    width: AppTypography.iconMD,
-                    height: AppTypography.iconMD,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
+                ? const AppLoading(size: AppLoadingSize.small)
                 : const Icon(Icons.save),
             label: Text(state.isSaving.value ? '保存中...' : '保存配置'),
           ),

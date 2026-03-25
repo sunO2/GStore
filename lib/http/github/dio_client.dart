@@ -1,8 +1,7 @@
-import "dart:io";
 import "package:dio/dio.dart";
-import "package:dio/io.dart";
 import "package:gstore/core/core.dart";
 import 'package:pretty_dio_logger/pretty_dio_logger.dart';
+import 'package:gstore/http/rhttp_adapter.dart';
 
 /// 重试拦截器
 class RetryInterceptor extends Interceptor {
@@ -75,6 +74,9 @@ class DioClient {
   /// Dio实例
   static late Dio _dio;
 
+  /// OAuth 专用 Dio 实例（不包含 GitHub REST API 专用 headers）
+  static late Dio _oauthDio;
+
   /// 私有构造函数，初始化Dio配置
   /// 设置GitHub API请求头和证书验证
   DioClient._internal() {
@@ -83,7 +85,8 @@ class DioClient {
       receiveTimeout: GitHubConfig.receiveTimeout,
       headers: {
         "Accept": GitHubConfig.acceptHeader,
-        "X-GitHub-Api-Version": GitHubConfig.apiVersion
+        "X-GitHub-Api-Version": GitHubConfig.apiVersion,
+        "User-Agent": "GStore-App/1.0",  // GitHub API 要求必须有 User-Agent
       },
     );
 
@@ -103,13 +106,77 @@ class DioClient {
       ],
     ));
 
-    // 配置HTTPS证书验证
-    (_dio.httpClientAdapter as IOHttpClientAdapter).onHttpClientCreate =
-        (HttpClient client) {
-      client.badCertificateCallback =
-          (X509Certificate cert, String host, int port) => true;
-      return client;
-    };
+    // 使用 rhttp 作为 HTTP 客户端以提升性能
+    // rhttp 基于 curl，性能更好，支持 HTTP/2
+    _dio.httpClientAdapter = RhttpAdapter(
+      allowBadCertificate: true, // 允许自签名证书（开发环境）
+    );
+
+    // 初始化 OAuth 专用 Dio 实例
+    _initOAuthDio();
+  }
+
+  /// 初始化 OAuth 专用 Dio 实例
+  /// OAuth 端点不需要 GitHub REST API 的专用 headers
+  void _initOAuthDio() {
+    BaseOptions options = BaseOptions(
+      connectTimeout: GitHubConfig.connectTimeout,
+      receiveTimeout: GitHubConfig.receiveTimeout,
+      headers: {
+        "Accept": "application/json",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": "GStore-App/1.0",  // GitHub API 要求必须有 User-Agent
+      },
+    );
+
+    _oauthDio = Dio(options);
+
+    // 添加日志拦截器
+    _oauthDio.interceptors.add(dioLoggerInterceptor);
+
+    // 添加重试拦截器
+    _oauthDio.interceptors.add(RetryInterceptor(
+      dio: _oauthDio,
+      retries: 3,
+      retryDelays: const [
+        Duration(seconds: 1),
+        Duration(seconds: 2),
+        Duration(seconds: 3),
+      ],
+    ));
+
+    // 使用 rhttp 作为 HTTP 客户端
+    _oauthDio.httpClientAdapter = RhttpAdapter(
+      allowBadCertificate: true,
+    );
+  }
+
+  /// 创建 OAuth 专用 Dio 实例（静态方法）
+  static Dio createOAuthClient() {
+    // 如果单例已存在，返回其 OAuth 实例
+    if (_instance != null) {
+      return _oauthDio;
+    }
+
+    // 否则创建临时实例
+    BaseOptions options = BaseOptions(
+      connectTimeout: GitHubConfig.connectTimeout,
+      receiveTimeout: GitHubConfig.receiveTimeout,
+      headers: {
+        "Accept": "application/json",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": "GStore-App/1.0",  // GitHub API 要求必须有 User-Agent
+      },
+    );
+
+    final dio = Dio(options);
+
+    // 使用 rhttp 作为 HTTP 客户端
+    dio.httpClientAdapter = RhttpAdapter(
+      allowBadCertificate: true,
+    );
+
+    return dio;
   }
 
   /// 日志拦截器

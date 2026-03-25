@@ -158,6 +158,172 @@ Card(
  淡色   略深   更深   最深
 ```
 
+### 4.4 卡片内部布局间距规范
+
+卡片内部布局使用统一的间距规范，确保视觉一致性和可读性。
+
+#### 间距定义
+
+| 间距类型 | 常量 | 数值 | 使用场景 |
+|---------|------|------|----------|
+| 组与组之间 | `cardGroupSpacing` | 16px | 卡片内不同配置组之间的垂直间距 |
+| 标题与描述 | `cardTitleDescriptionSpacing` | 4px | 同一组内标题和描述文字之间的间距 |
+| 描述与控件 | `cardControlSpacing` | 12px | 描述文字与配置控件（按钮、开关等）之间的间距 |
+
+#### 布局结构示例
+
+```
+┌─────────────────────────────────┐
+│ 卡片内边距: 16px (allLG)        │
+│                                 │
+│ ┌─ 配置组 1 ─────────────────┐ │
+│ │ SwitchListTile (标准样式)    │ │
+│ │  - 标题 + 描述              │ │
+│ └────────────────────────────┘ │
+│                                 │
+│ 16px (cardGroupSpacing)         │
+│                                 │
+│ ┌─ 配置组 2 ─────────────────┐ │
+│ │ 标题 (titleMedium)           │ │
+│ │ 4px (cardTitleDescriptionSp) │ │
+│ │ 描述 (bodySmall)             │ │
+│ │ 12px (cardControlSpacing)    │ │
+│ │ [分段式按钮]                 │ │
+│ └────────────────────────────┘ │
+│                                 │
+│ 16px (cardGroupSpacing)         │
+│                                 │
+│ ┌─ 配置组 3 ─────────────────┐ │
+│ │ [操作按钮]                   │ │
+│ └────────────────────────────┘ │
+│                                 │
+└─────────────────────────────────┘
+```
+
+#### 代码示例
+
+```dart
+import 'package:gstore/core/design/design_tokens.dart';
+
+Card(
+  padding: AppSpacing.allLG,  // 卡片内边距 16px
+  child: Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      // 配置组 1: SwitchListTile（标准样式，自带内部间距）
+      SwitchListTile(
+        title: const Text('导出时包含应用配置'),
+        subtitle: const Text('导出备份时同时导出主题、WebDAV 等应用设置'),
+        contentPadding: EdgeInsets.zero,
+        value: includeAppConfig,
+        onChanged: (value) => toggleIncludeAppConfig(value),
+      ),
+
+      // 组与组之间间距: 16px
+      SizedBox(height: AppSpacing.cardGroupSpacing),
+
+      // 配置组 2: 标题 + 描述 + 控件
+      // 标题（与 SwitchListTile 的 title 样式一致）
+      Text(
+        '恢复方式',
+        style: Theme.of(context).textTheme.titleMedium?.copyWith(
+              fontWeight: AppTypography.weightMedium,
+            ),
+      ),
+      // 标题与描述之间间距: 4px
+      SizedBox(height: AppSpacing.cardTitleDescriptionSpacing),
+      // 描述
+      Text(
+        '覆盖模式：清空所有已添加的应用，然后导入备份中的应用',
+        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: AppColors.textSecondary,
+            ),
+      ),
+      // 描述与控件之间间距: 12px
+      SizedBox(height: AppSpacing.cardControlSpacing),
+      // 控件（铺满整行）
+      SizedBox(
+        width: double.infinity,
+        child: AppSegmentedButton<RestoreMode>(...),
+      ),
+
+      // 组与组之间间距: 16px
+      SizedBox(height: AppSpacing.cardGroupSpacing),
+
+      // 配置组 3: 操作按钮
+      Row(
+        children: [
+          Expanded(child: FilledButton(...)),
+          SizedBox(width: AppSpacing.md),
+          Expanded(child: FilledButton(...)),
+        ],
+      ),
+    ],
+  ),
+)
+```
+
+#### 使用场景
+
+这些间距规范适用于所有卡片内部的配置布局：
+
+```
+✅ 适用场景：
+- 设置页面的配置卡片
+- 备份管理的配置选项
+- 外观设置的主题选择
+- 任何包含多个配置组的卡片
+
+❌ 避免问题：
+- 使用不一致的间距值
+- 标题和描述之间间距过大或过小
+- 控件与描述之间缺少间距
+- 不同配置组之间缺少明显的分隔
+```
+
+#### 特殊情况处理
+
+```dart
+// 如果卡片只有一组配置，可以减少底部间距
+Card(
+  child: Column(
+    children: [
+      // 单个配置组
+      SwitchListTile(...),
+
+      // 操作按钮（不需要额外的 cardGroupSpacing）
+      SizedBox(height: AppSpacing.lg),  // 使用标准间距
+      Row(...),
+    ],
+  ),
+)
+
+// 如果配置组之间需要更强的视觉分隔，可以添加分割线
+Divider(color: theme.colorScheme.outlineVariant.withOpacity(0.3)),
+```
+
+#### 与组件内置间距的配合
+
+```dart
+// SwitchListTile 和 ListTile 已经有内置的垂直间距
+// 使用 contentPadding: EdgeInsets.zero 可以清除默认内边距
+// 但保留内置的标题和描述之间的间距
+
+SwitchListTile(
+  title: const Text('标题'),
+  subtitle: const Text('描述'),
+  contentPadding: EdgeInsets.zero,  // 清除默认内边距
+  // 内置的标题和描述间距会自动保持一致
+)
+
+// 对于自定义布局，手动使用卡片内部间距规范
+Text('标题'),
+SizedBox(height: AppSpacing.cardTitleDescriptionSpacing),  // 4px
+Text('描述'),
+SizedBox(height: AppSpacing.cardControlSpacing),  // 12px
+AppSegmentedButton(...),
+```
+
 ---
 
 ## 5. 按钮设计
@@ -385,14 +551,65 @@ NavigationBar(
 
 ### 7.2 AppBar 规范
 
+#### 标题位置和大小
+
+**设计原则：**
+- 标题文字必须放置在左侧（`centerTitle: false`）
+- 使用较大的标题字号，突出页面层级
+- 保持与页面其他元素的对齐和视觉平衡
+
 ```dart
 AppBar(
   elevation: 0,  // 扁平化
   scrolledUnderElevation: 0,  // 滚动时也无阴影
   backgroundColor: theme.colorScheme.surface,
-  centerTitle: true,
+  centerTitle: false,  // 标题在左侧
+  titleTextStyle: Theme.of(context).textTheme.headlineLarge,
 )
 ```
+
+#### 标题文字样式
+
+| 属性 | 值 | 说明 |
+|------|-----|------|
+| 样式 | `headlineLarge` | 20sp，w600 |
+| 颜色 | `onSurface` | 自动适配主题 |
+| 位置 | 左对齐 | `centerTitle: false` |
+| 字重 | SemiBold (w600) | 强调标题层级 |
+
+#### 代码示例
+
+```dart
+// 标准 AppBar
+AppBar(
+  title: Text('页面标题'),
+  // centerTitle 默认为 false，标题自动左对齐
+)
+
+// 自定义样式的 AppBar
+AppBar(
+  title: Text(
+    '页面标题',
+    style: Theme.of(context).textTheme.headlineLarge,
+  ),
+)
+```
+
+#### 与其他元素的视觉对齐
+
+```
+┌─────────────────────────────────────┐
+│ ← 返回   页面标题          操作按钮 → │
+│         (headlineLarge, 20sp)         │
+└─────────────────────────────────────┘
+   16px      8px                    16px
+```
+
+**注意事项：**
+- 所有页面 AppBar 标题必须在左侧，不得居中
+- 标题字号统一使用 `headlineLarge`（20sp）
+- 避免使用 `titleLarge` 或 `titleMedium` 作为 AppBar 标题
+- 如需自定义标题样式，必须保持与 `headlineLarge` 一致的视觉重量
 
 ---
 
