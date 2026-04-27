@@ -130,60 +130,90 @@ class WebDavClient {
     }
   }
 
-  /// 上传文件
-  Future<String> uploadFile(String remotePath, Uint8List data) async {
-    try {
-      debugPrint('WebDavClient: 上传文件原始路径 - $remotePath (${data.length} bytes)');
-      debugPrint('WebDavClient: baseUrl - ${config.baseUrl}');
+  /// 上传文件（支持 429 错误重试）
+  Future<String> uploadFile(String remotePath, Uint8List data, {int maxRetries = 3}) async {
+    int retryCount = 0;
 
-      // 规范化路径：确保以 / 开头，但不包含 //
-      String normalizedPath = remotePath;
-      if (!normalizedPath.startsWith('/')) {
-        normalizedPath = '/$normalizedPath';
-      }
-      normalizedPath = normalizedPath.replaceAll('//', '/');
-
-      debugPrint('WebDavClient: 上传文件规范化路径 - $normalizedPath');
-
-      // 获取父目录并确保其存在
-      final dirPath = p.dirname(normalizedPath);
-      debugPrint('WebDavClient: 父目录路径 - $dirPath');
-
-      if (dirPath != '/' && dirPath != '.' && dirPath.isNotEmpty) {
-        try {
-          await ensureDirectory(dirPath);
-        } catch (e) {
-          debugPrint('WebDavClient: 创建目录失败（可能已存在），继续上传 - $e');
+    while (retryCount <= maxRetries) {
+      try {
+        debugPrint('WebDavClient: 上传文件原始路径 - $remotePath (${data.length} bytes)');
+        debugPrint('WebDavClient: baseUrl - ${config.baseUrl}');
+        if (retryCount > 0) {
+          debugPrint('WebDavClient: 重试第 $retryCount 次');
         }
+
+        // 规范化路径：确保以 / 开头，但不包含 //
+        String normalizedPath = remotePath;
+        if (!normalizedPath.startsWith('/')) {
+          normalizedPath = '/$normalizedPath';
+        }
+        normalizedPath = normalizedPath.replaceAll('//', '/');
+
+        debugPrint('WebDavClient: 上传文件规范化路径 - $normalizedPath');
+
+        // 获取父目录并确保其存在
+        final dirPath = p.dirname(normalizedPath);
+        debugPrint('WebDavClient: 父目录路径 - $dirPath');
+
+        if (dirPath != '/' && dirPath != '.' && dirPath.isNotEmpty) {
+          try {
+            await ensureDirectory(dirPath);
+          } catch (e) {
+            debugPrint('WebDavClient: 创建目录失败（可能已存在），继续上传 - $e');
+          }
+        }
+
+        // 上传文件
+        debugPrint('WebDavClient: 开始 PUT 请求到 - $normalizedPath');
+        final response = await _dio.put(
+          normalizedPath,
+          data: Stream.fromIterable([data]),
+          options: Options(
+            headers: {
+              'Content-Type': 'application/octet-stream',
+            },
+          ),
+        );
+
+        debugPrint('WebDavClient: PUT 响应状态码 - ${response.statusCode}');
+
+        // 检查响应状态码
+        if (response.statusCode != 200 &&
+            response.statusCode != 201 &&
+            response.statusCode != 204) {
+          // HTTP 429 - Too Many Requests
+          if (response.statusCode == 429 && retryCount < maxRetries) {
+            retryCount++;
+            final waitTime = Duration(seconds: 2 * retryCount); // 递增等待时间：2s, 4s, 6s
+            debugPrint('WebDavClient: HTTP 429，等待 ${waitTime.inSeconds} 秒后重试...');
+            await Future.delayed(waitTime);
+            continue; // 继续重试
+          }
+
+          throw Exception('上传失败：HTTP ${response.statusCode}');
+        }
+
+        debugPrint('WebDavClient: 上传成功 - ${response.statusCode}');
+        return normalizedPath;
+      } on DioException catch (e) {
+        // HTTP 429 - Too Many Requests
+        if (e.response?.statusCode == 429 && retryCount < maxRetries) {
+          retryCount++;
+          final waitTime = Duration(seconds: 2 * retryCount);
+          debugPrint('WebDavClient: HTTP 429（DioException），等待 ${waitTime.inSeconds} 秒后重试...');
+          await Future.delayed(waitTime);
+          continue;
+        }
+
+        debugPrint('WebDavClient: 上传文件失败 - $e');
+        rethrow;
+      } catch (e) {
+        debugPrint('WebDavClient: 上传文件失败 - $e');
+        rethrow;
       }
-
-      // 上传文件
-      debugPrint('WebDavClient: 开始 PUT 请求到 - $normalizedPath');
-      final response = await _dio.put(
-        normalizedPath,
-        data: Stream.fromIterable([data]),
-        options: Options(
-          headers: {
-            'Content-Type': 'application/octet-stream',
-          },
-        ),
-      );
-
-      debugPrint('WebDavClient: PUT 响应状态码 - ${response.statusCode}');
-
-      // 检查响应状态码
-      if (response.statusCode != 200 &&
-          response.statusCode != 201 &&
-          response.statusCode != 204) {
-        throw Exception('上传失败：HTTP ${response.statusCode}');
-      }
-
-      debugPrint('WebDavClient: 上传成功 - ${response.statusCode}');
-      return normalizedPath;
-    } catch (e) {
-      debugPrint('WebDavClient: 上传文件失败 - $e');
-      rethrow;
     }
+
+    throw Exception('上传失败：超过最大重试次数 ($maxRetries 次)');
   }
 
   /// 下载文件
