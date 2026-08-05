@@ -130,6 +130,7 @@ class DownloadStatus {
   void downloadCanced() async {
     status = DOWNLOAD_READY;
     markAsCompleted();
+    _cleanupAfterComplete();
     _counterController.sink.add(this);
     _lastUpdateTime.remove(_downloadTag);  // 清理节流记录
     await (await database).downloadStatusDao.updateDownload(this);
@@ -138,6 +139,7 @@ class DownloadStatus {
   void downloadError() async {
     status = DOWNLOAD_ERROR;
     markAsCompleted();
+    _cleanupAfterComplete();
     _counterController.sink.add(this);
     _lastUpdateTime.remove(_downloadTag);  // 清理节流记录
     await (await database).downloadStatusDao.updateDownload(this);
@@ -147,9 +149,28 @@ class DownloadStatus {
     count = total;
     status = DOWNLOAD_SUCCESS;
     markAsCompleted();
+    _cleanupAfterComplete();
     _counterController.sink.add(this);
     _lastUpdateTime.remove(_downloadTag);  // 清理节流记录
     await (await database).downloadStatusDao.updateDownload(this);
+  }
+
+  /// 清理下载完成后的资源
+  /// 释放取消令牌，避免内存泄漏
+  void _cleanupAfterComplete() {
+    _cancelTokens.remove(_downloadTag);
+  }
+
+  /// 释放所有资源（删除记录时调用）
+  /// 关闭 StreamController 并清理全局映射，避免内存泄漏
+  void dispose() {
+    _cancelTokens.remove(_downloadTag);
+    _lastUpdateTime.remove(_downloadTag);
+    markAsCompleted();
+    _streamManager.remove(_downloadTag);
+    if (!_counterController.isClosed) {
+      _counterController.close();
+    }
   }
 
   void updateDownload(int count, int total) async {

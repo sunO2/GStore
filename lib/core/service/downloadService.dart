@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:app_installer/app_installer.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
@@ -6,14 +7,60 @@ import 'package:dio/dio.dart';
 import 'package:gstore/http/download/DownloadStatusDataBase.dart';
 import 'package:gstore/core/download/model/DownloadContext.dart';
 
+/// 下载数据库（兼容旧代码引用，已内部缓存单例）
 final Future<DownloadDatabase> database = downloadStatusDatabase;
+
+/// 下载并发控制信号量
+/// 限制同时进行的下载任务数量，避免资源耗尽
+class DownloadSemaphore {
+  final int _maxConcurrent;
+  int _active = 0;
+  final List<Completer<void>> _queue = [];
+
+  DownloadSemaphore(this._maxConcurrent);
+
+  /// 获取执行许可（排队等待）
+  Future<void> acquire() async {
+    if (_active < _maxConcurrent) {
+      _active++;
+      return;
+    }
+
+    final completer = Completer<void>();
+    _queue.add(completer);
+    await completer.future;
+    _active++;
+  }
+
+  /// 释放许可
+  void release() {
+    _active--;
+    if (_queue.isNotEmpty) {
+      final next = _queue.removeAt(0);
+      next.complete();
+    }
+  }
+
+  /// 当前活跃任务数
+  int get active => _active;
+
+  /// 排队任务数
+  int get queued => _queue.length;
+}
 
 class DownloadService extends GetxService {
   final Dio _dio;
 
-  DownloadService(this._dio);
+  /// 最大并发下载数
+  static const int maxConcurrentDownloads = 3;
 
-  /// 下载文件
+  /// 失败重试次数
+  static const int maxRetryCount = 3;
+
+  final DownloadSemaphore _semaphore =
+      DownloadSemaphore(maxConcurrentDownloads);
+
+  DownloadService(this._dio);
   /// appid 包名
   /// appName 应用名称
   /// version 版本
@@ -36,6 +83,7 @@ class DownloadService extends GetxService {
       }
     }
 
+    // 获取或创建下载状态
     var downloadStatus = (await (await database)
             .downloadStatusDao
             .getDownloadOfName(fileName, version)) ??
@@ -49,62 +97,16 @@ class DownloadService extends GetxService {
     // 标记为正在下载
     downloadStatus.markAsDownloading();
 
-    final file = File(downloadStatus.savePath);
-    var downloadTempFile = File("${file.path}.temp");
-    // 确保目录存在
-    await file.parent.create(recursive: true);
-    int start = 0;
-
-    // 获取已下载的文件大小
-    if (breakPoint && await downloadTempFile.exists()) {
-      start = await downloadTempFile.length();
+    // 等待并发许可
+    await _semaphore.acquire();
+    try {
+      await _performDownload(
+        downloadStatus,
+        breakPoint: breakPoint,
+      );
+    } finally {
+      _semaphore.release();
     }
-
-    final response = await _dio.get(
-      downloadStatus.downloadUrl,
-      cancelToken: downloadStatus.getCancelToken(),
-      onReceiveProgress: (count, total) {
-        downloadStatus.updateDownload(start + count, total + start);
-      },
-      options: Options(
-        headers: {'Range': 'bytes=$start-'},
-        responseType: ResponseType.stream,
-      ),
-    );
-    final fileStream =
-        downloadTempFile.openWrite(mode: FileMode.writeOnlyAppend);
-    bool isClosed = false;
-    log("下载状态码：${response.statusCode}");
-
-    response.data.stream.listen((data) {
-      fileStream.add(data);
-    }, onDone: () async {
-      if (!isClosed) {
-        isClosed = true;
-        await fileStream.close();
-        if (response.statusCode == 200 || response.statusCode == 206) {
-          downloadTempFile.renameSync(file.path);
-          _install(fileName, downloadStatus.savePath);
-          downloadStatus.downloadSuccess();
-        } else {
-          downloadStatus.downloadError();
-        }
-      }
-    }, onError: (error) async {
-      if (!isClosed) {
-        isClosed = true;
-        await fileStream.close();
-        if (error is DioException) {
-          if (CancelToken.isCancel(error)) {
-            log("取消下载：${downloadStatus.downloadUrl}");
-            downloadStatus.downloadCanced();
-            return;
-          }
-        }
-        log("错误：${downloadStatus.downloadUrl} ${error.message}");
-        downloadStatus.downloadError();
-      }
-    });
     return downloadStatus;
   }
 
@@ -164,80 +166,141 @@ class DownloadService extends GetxService {
     // 标记为正在下载
     downloadStatus.markAsDownloading();
 
+    // 等待并发许可
+    await _semaphore.acquire();
+    try {
+      await _performDownload(
+        downloadStatus,
+        context: context,
+        breakPoint: breakPoint,
+      );
+    } finally {
+      _semaphore.release();
+    }
+
+    return downloadStatus;
+  }
+
+  /// 执行实际下载（支持断点续传、非Range服务器处理、失败自动重试）
+  Future<void> _performDownload(
+    DownloadStatus downloadStatus, {
+    DownloadContext? context,
+    bool breakPoint = true,
+  }) async {
     final file = File(downloadStatus.savePath);
     var downloadTempFile = File("${file.path}.temp");
     // 确保目录存在
     await file.parent.create(recursive: true);
-    int start = 0;
 
-    // 获取已下载的文件大小
-    if (breakPoint && await downloadTempFile.exists()) {
-      start = await downloadTempFile.length();
-    }
-
-    // 构建请求头
-    final headers = <String, String>{'Range': 'bytes=$start-'};
-    if (context.hasCustomHeaders) {
-      headers.addAll(context.headers!);
-    }
-
-    // 配置请求选项
-    final options = Options(
-      headers: headers,
-      responseType: ResponseType.stream,
-    );
-
-    // 设置超时
-    if (context.timeoutInSeconds != null) {
-      options.sendTimeout = Duration(seconds: context.timeoutInSeconds!);
-      options.receiveTimeout = Duration(seconds: context.timeoutInSeconds!);
-    }
-
-    final response = await _dio.get(
-      context.downloadUrl,
-      cancelToken: downloadStatus.getCancelToken(),
-      onReceiveProgress: (count, total) {
-        downloadStatus.updateDownload(start + count, total + start);
-      },
-      options: options,
-    );
-
-    final fileStream =
-        downloadTempFile.openWrite(mode: FileMode.writeOnlyAppend);
-    bool isClosed = false;
-    log("下载状态码：${response.statusCode}");
-
-    response.data.stream.listen((data) {
-      fileStream.add(data);
-    }, onDone: () async {
-      if (!isClosed) {
-        isClosed = true;
-        await fileStream.close();
-        if (response.statusCode == 200 || response.statusCode == 206) {
-          downloadTempFile.renameSync(file.path);
-          _install(fileName, downloadStatus.savePath);
-          downloadStatus.downloadSuccess();
-        } else {
-          downloadStatus.downloadError();
-        }
+    int attempt = 0;
+    while (attempt <= maxRetryCount) {
+      if (attempt > 0) {
+        log("重试下载 (${attempt}/$maxRetryCount): ${downloadStatus.fileName}");
+        // 退避等待
+        await Future.delayed(Duration(seconds: attempt * 2));
       }
-    }, onError: (error) async {
-      if (!isClosed) {
-        isClosed = true;
-        await fileStream.close();
-        if (error is DioException) {
-          if (CancelToken.isCancel(error)) {
-            log("取消下载：${context.downloadUrl}");
+
+      int start = 0;
+      // 获取已下载的文件大小
+      if (breakPoint && await downloadTempFile.exists()) {
+        start = await downloadTempFile.length();
+      }
+
+      // 构建请求头
+      final requestHeaders = <String, String>{
+        'Range': 'bytes=$start-',
+        ...?context?.headers,
+      };
+
+      // 配置请求选项
+      final options = Options(
+        headers: requestHeaders,
+        responseType: ResponseType.stream,
+      );
+
+      // 设置超时
+      if (context?.timeoutInSeconds != null) {
+        options.sendTimeout = Duration(seconds: context!.timeoutInSeconds!);
+        options.receiveTimeout = Duration(seconds: context.timeoutInSeconds!);
+      }
+
+      final downloadUrl = context?.downloadUrl ?? downloadStatus.downloadUrl;
+
+      try {
+        final response = await _dio.get(
+          downloadUrl,
+          cancelToken: downloadStatus.getCancelToken(),
+          onReceiveProgress: (count, total) {
+            downloadStatus.updateDownload(start + count, total + start);
+          },
+          options: options,
+        );
+
+        final statusCode = response.statusCode;
+        final isRangeResponse = statusCode == 206;
+        final isFullResponse = statusCode == 200;
+
+        log("下载状态码：$statusCode");
+
+        // 服务器返回 200（不支持 Range），从头开始写入
+        if (isFullResponse && start > 0) {
+          log("服务器不支持断点续传（200），从头下载");
+          if (await downloadTempFile.exists()) {
+            await downloadTempFile.delete();
+          }
+          start = 0;
+        }
+
+        final fileStream =
+            downloadTempFile.openWrite(mode: FileMode.writeOnlyAppend);
+
+        try {
+          // 使用 await for 顺序写入，天然支持背压
+          await for (final data in response.data.stream) {
+            fileStream.add(data);
+          }
+          await fileStream.close();
+
+          if (isRangeResponse || isFullResponse) {
+            downloadTempFile.renameSync(file.path);
+            _install(downloadStatus.fileName, downloadStatus.savePath);
+            downloadStatus.downloadSuccess();
+            return;
+          } else {
+            downloadStatus.downloadError();
+            return;
+          }
+        } on DioException catch (e) {
+          await fileStream.close();
+          if (CancelToken.isCancel(e)) {
+            log("取消下载：$downloadUrl");
             downloadStatus.downloadCanced();
             return;
           }
+          log("下载异常：$downloadUrl ${e.message}");
+        } catch (e) {
+          await fileStream.close();
+          log("下载异常：$downloadUrl $e");
         }
-        log("错误：${context.downloadUrl} ${error.message}");
-        downloadStatus.downloadError();
+      } on DioException catch (e) {
+        if (CancelToken.isCancel(e)) {
+          log("取消下载：$downloadUrl");
+          downloadStatus.downloadCanced();
+          return;
+        }
+        log("下载异常：$downloadUrl ${e.message}");
+      } catch (e) {
+        log("下载异常：$downloadUrl $e");
       }
-    });
 
-    return downloadStatus;
+      // 到达这里说明下载失败，尝试重试
+      if (attempt < maxRetryCount) {
+        attempt++;
+        continue;
+      }
+      downloadStatus.downloadError();
+      return;
+    }
   }
 
   _install(String fileName, String filePath) {

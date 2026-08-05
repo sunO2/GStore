@@ -12,5 +12,17 @@ abstract class DownloadDatabase extends FloorDatabase {
   DownloadstatusDao get downloadStatusDao;
 }
 
-Future<DownloadDatabase> get downloadStatusDatabase =>
-    $FloorDownloadDatabase.databaseBuilder('app_database.db').build();
+DownloadDatabase? _cachedDownloadDatabase;
+
+Future<DownloadDatabase> get downloadStatusDatabase async {
+  _cachedDownloadDatabase ??=
+      await $FloorDownloadDatabase.databaseBuilder('app_database.db').build();
+  return _cachedDownloadDatabase!;
+}
+
+Future<void> closeDownloadStatusDatabase() async {
+  if (_cachedDownloadDatabase != null) {
+    await _cachedDownloadDatabase!.close();
+    _cachedDownloadDatabase = null;
+  }
+}
