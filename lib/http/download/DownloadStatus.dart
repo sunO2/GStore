@@ -162,15 +162,13 @@ class DownloadStatus {
   }
 
   /// 释放所有资源（删除记录时调用）
-  /// 关闭 StreamController 并清理全局映射，避免内存泄漏
+  /// 从全局映射中移除，避免内存泄漏
+  /// 注意：不主动关闭 StreamController，避免 UI 仍在监听时报错
   void dispose() {
     _cancelTokens.remove(_downloadTag);
     _lastUpdateTime.remove(_downloadTag);
     markAsCompleted();
     _streamManager.remove(_downloadTag);
-    if (!_counterController.isClosed) {
-      _counterController.close();
-    }
   }
 
   void updateDownload(int count, int total) async {

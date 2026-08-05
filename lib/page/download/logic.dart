@@ -34,26 +34,16 @@ class DownloadManagerLogic extends GetxController with GithubRequestMix {
   /// 当前筛选类型
   final Rx<DownloadFilter> currentFilter = DownloadFilter.all.obs;
 
-  /// 原始数据流（按应用分组）
-  final StreamController<List<List<DownloadStatus>>> _rawController =
-      StreamController.broadcast();
+  /// 筛选后的下载分组数据（按应用分组）
+  /// 使用 Rx 保证订阅时立即有当前值，避免 broadcast 流数据丢失
+  final Rx<List<List<DownloadStatus>>> downloadGroups =
+      Rx<List<List<DownloadStatus>>>([]);
 
-  /// 对外暴露的筛选流
-  late final Stream<List<List<DownloadStatus>>> filteredStream;
-
-  /// 最近一次原始分组数据（用于筛选时重放）
+  /// 原始分组数据（用于筛选切换时重放）
   List<List<DownloadStatus>> _latestGroups = [];
 
   @override
   void onReady() async {
-    // 组合原始数据流与筛选条件，输出筛选后的分组列表
-    filteredStream = _rawController.stream
-        .map((groups) {
-          _latestGroups = groups;
-          return _applyFilter(groups, currentFilter.value);
-        })
-        .distinct();
-
     _initDownloadStream();
     super.onReady();
   }
@@ -83,7 +73,10 @@ class DownloadManagerLogic extends GetxController with GithubRequestMix {
         var list = map[key] ??= [];
         list.add(item);
       }
-      _rawController.sink.add(List.from(map.values));
+      _latestGroups = List.from(map.values);
+      downloadGroups.value = _applyFilter(_latestGroups, currentFilter.value);
+      // 预取应用信息（异步，不阻塞 UI）
+      _prefetchAppInfos(_latestGroups);
     });
   }
 
@@ -111,10 +104,7 @@ class DownloadManagerLogic extends GetxController with GithubRequestMix {
 
     // 防止同一应用并发重复查询
     if (_appInfoLoading.contains(appId)) {
-      await Future<void>.delayed(const Duration(milliseconds: 50));
-      if (_appInfoCache.containsKey(appId)) {
-        return _appInfoCache[appId];
-      }
+      return null;
     }
 
     _appInfoLoading.add(appId);
@@ -127,6 +117,29 @@ class DownloadManagerLogic extends GetxController with GithubRequestMix {
       return null;
     } finally {
       _appInfoLoading.remove(appId);
+    }
+  }
+
+  /// 同步获取缓存的应用信息
+  /// 缓存未命中时返回 null（view 会显示默认图标）
+  AppInfo? getCachedAppInfo(String appId) {
+    return _appInfoCache[appId];
+  }
+
+  /// 预取应用信息到缓存
+  Future<void> _prefetchAppInfos(List<List<DownloadStatus>> groups) async {
+    var hasNewInfo = false;
+    for (final group in groups) {
+      if (group.isEmpty) continue;
+      final appId = group[0].appId;
+      if (!_appInfoCache.containsKey(appId)) {
+        await getAppInfo(appId);
+        hasNewInfo = true;
+      }
+    }
+    // 预取完成后刷新 UI（让图标显示）
+    if (hasNewInfo && downloadGroups.value.isNotEmpty) {
+      downloadGroups.value = List.from(downloadGroups.value);
     }
   }
 
@@ -376,20 +389,17 @@ class DownloadManagerLogic extends GetxController with GithubRequestMix {
   /// 切换筛选类型
   void setFilter(DownloadFilter filter) {
     currentFilter.value = filter;
-    // 触发筛选流重新输出
-    if (_latestGroups.isNotEmpty) {
-      _rawController.sink.add(_latestGroups);
-    }
+    // 基于最新数据重新应用筛选
+    downloadGroups.value = _applyFilter(_latestGroups, filter);
   }
 
   /// 获取筛选后的流
   Stream<List<List<DownloadStatus>>> getFilteredStream() {
-    return filteredStream;
+    return downloadGroups.stream;
   }
 
   @override
   void onClose() async {
-    await _rawController.close();
     super.onClose();
   }
 }

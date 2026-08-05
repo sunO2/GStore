@@ -65,40 +65,28 @@ class DownloadManager extends StatelessWidget {
           Expanded(
             child: Padding(
               padding: EdgeInsets.symmetric(horizontal: AppSpacing.lg),
-              child: StreamBuilder<List<List<DownloadStatus>>>(
-                stream: logic.getFilteredStream(),
-                builder: (context, snap) {
-                  if (snap.connectionState != ConnectionState.active) {
-                    return const Center(child: AppLoading(size: AppLoadingSize.medium));
-                  }
+              child: Obx(() {
+                final downloadList = logic.downloadGroups.value;
 
-                  final downloadList = snap.data;
+                if (downloadList.isEmpty) {
+                  return _buildEmptyState(context);
+                }
 
-                  if (downloadList == null || downloadList.isEmpty) {
-                    return _buildEmptyState(context);
-                  }
-
-                  return ListView.builder(
-                    padding: EdgeInsets.symmetric(vertical: AppSpacing.sm),
-                    itemCount: downloadList.length,
-                    itemBuilder: (context, index) {
-                      final item = downloadList[index];
-                      return FutureBuilder<AppInfo?>(
-                        future: logic.getAppInfo(item[0].appId),
-                        builder: (context, snap) {
-                          final info = snap.data;
-                          return _buildDownloadGroup(
-                            context,
-                            logic,
-                            item,
-                            info,
-                          );
-                        },
-                      );
-                    },
-                  );
-                },
-              ),
+                return ListView.builder(
+                  padding: EdgeInsets.symmetric(vertical: AppSpacing.sm),
+                  itemCount: downloadList.length,
+                  itemBuilder: (context, index) {
+                    final item = downloadList[index];
+                    final info = logic.getCachedAppInfo(item[0].appId);
+                    return _buildDownloadGroup(
+                      context,
+                      logic,
+                      item,
+                      info,
+                    );
+                  },
+                );
+              }),
             ),
           ),
         ],
