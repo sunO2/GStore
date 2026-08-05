@@ -43,3 +43,6 @@ app.*.map.json
 /android/app/release
 
 .codegpt
+
+# Rust
+rust/fdroid_repo/target/

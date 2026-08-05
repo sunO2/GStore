@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
+import 'package:gstore/core/core.dart';
 import 'package:gstore/core/channel/channel.dart';
 import 'package:gstore/core/icons/Icons.dart';
 import 'package:gstore/core/design/design_tokens.dart';
@@ -50,6 +51,9 @@ class ChannelTestPage extends StatelessWidget {
                 case 'check_available':
                   _checkAvailableChannels(context);
                   break;
+                case 'workflow_designer':
+                  Get.toNamed(AppRoute.workflowDesigner);
+                  break;
               }
             },
             itemBuilder: (context) => [
@@ -80,6 +84,16 @@ class ChannelTestPage extends StatelessWidget {
                     Icon(Icons.check_circle_outline, size: AppTypography.iconSM),
                     SizedBox(width: AppSpacing.sm),
                     Text('检查可用性'),
+                  ],
+                ),
+              ),
+              PopupMenuItem(
+                value: 'workflow_designer',
+                child: Row(
+                  children: [
+                    Icon(Icons.account_tree, size: AppTypography.iconSM),
+                    SizedBox(width: AppSpacing.sm),
+                    Text('工作流设计器'),
                   ],
                 ),
               ),

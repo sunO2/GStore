@@ -116,7 +116,7 @@ class ThemeSettingsPage extends StatelessWidget {
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
                           content: Text('已切换到${mode.displayName}'),
-                          duration: AppAnimations.fast,
+                          duration: AppAnimations.snackBar,
                         ),
                       );
                     }
@@ -151,7 +151,7 @@ class ThemeSettingsPage extends StatelessWidget {
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
                       content: Text(value ? '已启用自定义颜色' : '已恢复动态色'),
-                      duration: AppAnimations.fast,
+                      duration: AppAnimations.snackBar,
                     ),
                   );
                 }
@@ -254,7 +254,7 @@ class ThemeSettingsPage extends StatelessWidget {
                     ScaffoldMessenger.of(context).showSnackBar(
                       const SnackBar(
                         content: Text('已恢复为默认主题'),
-                        duration: AppAnimations.fast,
+                        duration: AppAnimations.snackBar,
                       ),
                     );
                   }
@@ -299,7 +299,7 @@ class ThemeSettingsPage extends StatelessWidget {
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
                           content: Text('已设置为$styleName'),
-                          duration: AppAnimations.fast,
+                          duration: AppAnimations.snackBar,
                         ),
                       );
                     }
@@ -353,7 +353,7 @@ class ThemeSettingsPage extends StatelessWidget {
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
                           content: Text('已设置为$styleName'),
-                          duration: AppAnimations.fast,
+                          duration: AppAnimations.snackBar,
                         ),
                       );
                     }
@@ -408,7 +408,7 @@ class ThemeSettingsPage extends StatelessWidget {
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
                           content: Text('已设置为$styleName'),
-                          duration: AppAnimations.fast,
+                          duration: AppAnimations.snackBar,
                         ),
                       );
                     }

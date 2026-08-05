@@ -24,6 +24,9 @@ class ApplistState {
   /// 错误信息
   final RxString errorMessage = ''.obs;
 
+  /// Banner 数据缓存 Future
+  Future<List<dynamic>>? bannerFuture;
+
   ApplistState() {
     ///Initialize variables
   }

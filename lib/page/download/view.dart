@@ -396,10 +396,23 @@ class DownloadManager extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        LinearProgressIndicator(
-          value: progress,
-          minHeight: AppSpacing.sm,
-          borderRadius: AppRadius.allSM,
+        // 进度条容器
+        Container(
+          height: AppSpacing.sm,
+          decoration: BoxDecoration(
+            borderRadius: AppRadius.allSM,
+          ),
+          child: ClipRRect(
+            borderRadius: AppRadius.allSM,
+            child: LinearProgressIndicator(
+              value: progress,
+              minHeight: AppSpacing.sm,
+              // 轨道颜色（未填充部分）
+              backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+              // 进度颜色使用主题色
+              color: Theme.of(context).colorScheme.primary,
+            ),
+          ),
         ),
         const SizedBox(height: AppSpacing.xs),
         Row(
