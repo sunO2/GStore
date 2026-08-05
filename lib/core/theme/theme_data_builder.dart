@@ -21,21 +21,24 @@ import 'package:gstore/core/theme/app_theme_config.dart';
 class ThemeDataBuilder {
   ThemeDataBuilder._();
 
-  // ========== 颜色语义化映射 ==========
-
-  /// 将语义化颜色映射到 ColorScheme
-  /// 这些颜色会自动适配亮色/暗色主题
-  static const Color _textPrimaryLight = Color(0xFF212121);
-  static const Color _textSecondaryLight = Color(0xFF757575);
-  static const Color _textTertiaryLight = Color(0xFF9E9E9E);
-  static const Color _textPrimaryDark = Color(0xFFFFFFFF);
-  static const Color _textSecondaryDark = Color(0xB2FFFFFF); // 70% opacity
-  static const Color _textTertiaryDark = Color(0x80FFFFFF);  // 50% opacity
-
   // ========== 文字主题构建 ==========
 
-  /// 构建完整的 TextTheme（亮色）
-  static TextTheme buildLightTextTheme(ColorScheme colorScheme, [double fontScale = 1.0]) {
+  /// 构建完整的 TextTheme
+  static TextTheme _buildTextTheme(
+    ColorScheme colorScheme,
+    Brightness brightness,
+    double fontScale,
+  ) {
+    // 根据亮度选择文字颜色
+    final isLight = brightness == Brightness.light;
+    final textPrimary = isLight ? const Color(0xFF212121) : Colors.white;
+    final textSecondary = isLight
+        ? const Color(0xFF757575)
+        : const Color(0xB2FFFFFF); // 70% white
+    final textTertiary = isLight
+        ? const Color(0xFF9E9E9E)
+        : const Color(0x80FFFFFF); // 50% white
+
     return TextTheme(
       // ========== Display 系列（超大标题）==========
       displayLarge: TextStyle(
@@ -80,7 +83,7 @@ class ThemeDataBuilder {
         fontWeight: AppTypography.weightMedium,
         height: AppTypography.heightNormal,
         letterSpacing: AppTypography.spacingNormal,
-        color: _textPrimaryLight, // 主要文字
+        color: textPrimary,
       ),
 
       // ========== Title 系列（卡片标题）==========
@@ -96,14 +99,14 @@ class ThemeDataBuilder {
         fontWeight: AppTypography.weightMedium,
         height: AppTypography.heightNormal,
         letterSpacing: AppTypography.spacingNormal,
-        color: _textPrimaryLight, // 主要文字（应用名称）
+        color: textPrimary,
       ),
       titleSmall: TextStyle(
         fontSize: AppTypography.sizeSM * fontScale,
         fontWeight: AppTypography.weightMedium,
         height: AppTypography.heightNormal,
         letterSpacing: AppTypography.spacingWide,
-        color: _textPrimaryLight, // 主要文字（小标题）
+        color: textPrimary,
       ),
 
       // ========== Body 系列（正文）==========
@@ -112,21 +115,21 @@ class ThemeDataBuilder {
         fontWeight: AppTypography.weightRegular,
         height: AppTypography.heightNormal,
         letterSpacing: AppTypography.spacingNormal,
-        color: _textPrimaryLight, // 主要文字（大正文）
+        color: textPrimary,
       ),
       bodyMedium: TextStyle(
         fontSize: AppTypography.sizeSM * fontScale,
         fontWeight: AppTypography.weightRegular,
         height: AppTypography.heightNormal,
         letterSpacing: AppTypography.spacingNormal,
-        color: _textSecondaryLight, // 次要文字（应用描述）
+        color: textSecondary,
       ),
       bodySmall: TextStyle(
         fontSize: AppTypography.sizeXS * fontScale,
         fontWeight: AppTypography.weightRegular,
         height: AppTypography.heightRelaxed,
         letterSpacing: AppTypography.spacingWide,
-        color: _textSecondaryLight, // 次要文字（小正文）
+        color: textSecondary,
       ),
 
       // ========== Label 系列（标签/按钮）==========
@@ -142,158 +145,82 @@ class ThemeDataBuilder {
         fontWeight: AppTypography.weightMedium,
         height: AppTypography.heightNormal,
         letterSpacing: AppTypography.spacingWide,
-        color: _textTertiaryLight, // 辅助文字（标签）
+        color: textTertiary,
       ),
       labelSmall: TextStyle(
         fontSize: AppTypography.sizeXXS * fontScale,
         fontWeight: AppTypography.weightMedium,
         height: AppTypography.heightNormal,
         letterSpacing: AppTypography.spacingWider,
-        color: _textTertiaryLight, // 辅助文字（小标签）
+        color: textTertiary,
       ),
     );
   }
 
-  /// 构建完整的 TextTheme（暗色）
-  static TextTheme buildDarkTextTheme(ColorScheme colorScheme, [double fontScale = 1.0]) {
-    return TextTheme(
-      // ========== Display 系列（超大标题）==========
-      displayLarge: TextStyle(
-        fontSize: AppTypography.sizeHuge * fontScale,
-        fontWeight: AppTypography.weightBold,
-        height: AppTypography.heightTight,
-        letterSpacing: AppTypography.spacingTight,
-        color: colorScheme.onSurface,
-      ),
-      displayMedium: TextStyle(
-        fontSize: AppTypography.sizeXXXL * fontScale,
-        fontWeight: AppTypography.weightBold,
-        height: AppTypography.heightTight,
-        letterSpacing: AppTypography.spacingNormal,
-        color: colorScheme.onSurface,
-      ),
-      displaySmall: TextStyle(
-        fontSize: AppTypography.sizeXXL * fontScale,
-        fontWeight: AppTypography.weightSemiBold,
-        height: AppTypography.heightSnug,
-        letterSpacing: AppTypography.spacingNormal,
-        color: colorScheme.onSurface,
-      ),
+  // ========== 颜色辅助方法 ==========
 
-      // ========== Headline 系列（页面标题）==========
-      headlineLarge: TextStyle(
-        fontSize: AppTypography.sizeXL * fontScale,
-        fontWeight: AppTypography.weightSemiBold,
-        height: AppTypography.heightNormal,
-        letterSpacing: AppTypography.spacingNormal,
-        color: colorScheme.onSurface,
-      ),
-      headlineMedium: TextStyle(
-        fontSize: AppTypography.sizeLG * fontScale,
-        fontWeight: AppTypography.weightSemiBold,
-        height: AppTypography.heightNormal,
-        letterSpacing: AppTypography.spacingNormal,
-        color: colorScheme.onSurface,
-      ),
-      headlineSmall: TextStyle(
-        fontSize: AppTypography.sizeMD * fontScale,
-        fontWeight: AppTypography.weightMedium,
-        height: AppTypography.heightNormal,
-        letterSpacing: AppTypography.spacingNormal,
-        color: _textPrimaryDark, // 主要文字
-      ),
+  /// 根据缩放系数获取圆角值
+  static double _getRadiusValue(double baseRadius, double scale) {
+    if (scale == 0) return 0;
+    if (scale == 1) return baseRadius;
+    return baseRadius * scale;
+  }
 
-      // ========== Title 系列（卡片标题）==========
-      titleLarge: TextStyle(
-        fontSize: AppTypography.sizeMD * fontScale,
-        fontWeight: AppTypography.weightSemiBold,
-        height: AppTypography.heightNormal,
-        letterSpacing: AppTypography.spacingNormal,
-        color: colorScheme.onSurface,
-      ),
-      titleMedium: TextStyle(
-        fontSize: AppTypography.sizeMD * fontScale,
-        fontWeight: AppTypography.weightMedium,
-        height: AppTypography.heightNormal,
-        letterSpacing: AppTypography.spacingNormal,
-        color: _textPrimaryDark, // 主要文字（应用名称）
-      ),
-      titleSmall: TextStyle(
-        fontSize: AppTypography.sizeSM * fontScale,
-        fontWeight: AppTypography.weightMedium,
-        height: AppTypography.heightNormal,
-        letterSpacing: AppTypography.spacingWide,
-        color: _textPrimaryDark, // 主要文字（小标题）
-      ),
+  /// 将颜色调淡（用于亮色模式）
+  static Color _lightenColor(Color color, double factor) {
+    assert(factor >= 0.0 && factor <= 1.0);
+    final hsl = HSLColor.fromColor(color);
+    final lightness = hsl.lightness + (1.0 - hsl.lightness) * factor;
+    return hsl.withLightness(lightness.clamp(0.0, 1.0)).toColor();
+  }
 
-      // ========== Body 系列（正文）==========
-      bodyLarge: TextStyle(
-        fontSize: AppTypography.sizeMD * fontScale,
-        fontWeight: AppTypography.weightRegular,
-        height: AppTypography.heightNormal,
-        letterSpacing: AppTypography.spacingNormal,
-        color: _textPrimaryDark, // 主要文字（大正文）
-      ),
-      bodyMedium: TextStyle(
-        fontSize: AppTypography.sizeSM * fontScale,
-        fontWeight: AppTypography.weightRegular,
-        height: AppTypography.heightNormal,
-        letterSpacing: AppTypography.spacingNormal,
-        color: _textSecondaryDark, // 次要文字（应用描述）
-      ),
-      bodySmall: TextStyle(
-        fontSize: AppTypography.sizeXS * fontScale,
-        fontWeight: AppTypography.weightRegular,
-        height: AppTypography.heightRelaxed,
-        letterSpacing: AppTypography.spacingWide,
-        color: _textSecondaryDark, // 次要文字（小正文）
-      ),
-
-      // ========== Label 系列（标签/按钮）==========
-      labelLarge: TextStyle(
-        fontSize: AppTypography.sizeSM * fontScale,
-        fontWeight: AppTypography.weightMedium,
-        height: AppTypography.heightNormal,
-        letterSpacing: AppTypography.spacingWide,
-        color: colorScheme.onSurface,
-      ),
-      labelMedium: TextStyle(
-        fontSize: AppTypography.sizeXS * fontScale,
-        fontWeight: AppTypography.weightMedium,
-        height: AppTypography.heightNormal,
-        letterSpacing: AppTypography.spacingWide,
-        color: _textTertiaryDark, // 辅助文字（标签）
-      ),
-      labelSmall: TextStyle(
-        fontSize: AppTypography.sizeXXS * fontScale,
-        fontWeight: AppTypography.weightMedium,
-        height: AppTypography.heightNormal,
-        letterSpacing: AppTypography.spacingWider,
-        color: _textTertiaryDark, // 辅助文字（小标签）
-      ),
-    );
+  /// 将颜色调深（用于暗色模式）
+  static Color _darkenColor(Color color, double factor) {
+    assert(factor >= 0.0 && factor <= 1.0);
+    final hsl = HSLColor.fromColor(color);
+    final lightness = hsl.lightness * (1.0 - factor);
+    return hsl.withLightness(lightness.clamp(0.0, 1.0)).toColor();
   }
 
   // ========== 完整主题构建 ==========
 
-  /// Build light theme with complete text styles
+  /// Build light theme using colorSchemeSeed (Material 3 新方案)
   static ThemeData buildLightTheme(
     ColorScheme? dynamicColorScheme, {
     AppThemeConfig? config,
   }) {
-    // 使用 ColorSchemeGenerator 生成 ColorScheme
-    final colorScheme = ColorSchemeGenerator.generate(
-      brightness: Brightness.light,
-      config: config ?? AppThemeConfig.default_,
-      dynamicColorScheme: dynamicColorScheme,
-    );
+    config ??= AppThemeConfig.default_;
 
-    final fontScale = config?.fontScale ?? 1.0;
-    final radiusScale = config?.radiusScale ?? 1.0;
-    final borderWidth = config?.borderWidth ?? 1.0;
-    final borderOpacity = config?.borderOpacity ?? 0.5;
+    // 使用 colorSchemeSeed 方案：一个种子色自动生成完整配色
+    final ColorScheme colorScheme;
+    if (config.useCustomColors && config.primaryColor != null) {
+      // 自定义主色
+      colorScheme = ColorScheme.fromSeed(
+        seedColor: config.primaryColor!,
+        brightness: Brightness.light,
+        secondary: config.secondaryColor,
+        tertiary: config.tertiaryColor,
+      );
+    } else if (config.useCustomColors && config.seedColor != null) {
+      // 自定义种子色
+      colorScheme = ColorScheme.fromSeed(
+        seedColor: config.seedColor!,
+        brightness: Brightness.light,
+      );
+    } else {
+      // 动态色或默认蓝色
+      colorScheme = dynamicColorScheme ?? ColorScheme.fromSeed(
+        seedColor: Colors.blue,
+        brightness: Brightness.light,
+      );
+    }
 
-    final textTheme = buildLightTextTheme(colorScheme, fontScale);
+    final fontScale = config.fontScale;
+    final radiusScale = config.radiusScale;
+    final borderWidth = config.borderWidth;
+    final borderOpacity = config.borderOpacity;
+
+    final textTheme = _buildTextTheme(colorScheme, Brightness.light, fontScale);
 
     return ThemeData(
       colorScheme: colorScheme,
@@ -541,24 +468,43 @@ class ThemeDataBuilder {
     );
   }
 
-  /// Build dark theme with complete text styles
+  /// Build dark theme using colorSchemeSeed (Material 3 新方案)
   static ThemeData buildDarkTheme(
     ColorScheme? dynamicColorScheme, {
     AppThemeConfig? config,
   }) {
-    // 使用 ColorSchemeGenerator 生成 ColorScheme
-    final colorScheme = ColorSchemeGenerator.generate(
-      brightness: Brightness.dark,
-      config: config ?? AppThemeConfig.default_,
-      dynamicColorScheme: dynamicColorScheme,
-    );
+    config ??= AppThemeConfig.default_;
 
-    final fontScale = config?.fontScale ?? 1.0;
-    final radiusScale = config?.radiusScale ?? 1.0;
-    final borderWidth = config?.borderWidth ?? 1.0;
-    final borderOpacity = config?.borderOpacity ?? 0.3; // 暗色模式边框更透明
+    // 使用 colorSchemeSeed 方案：一个种子色自动生成完整配色
+    final ColorScheme colorScheme;
+    if (config.useCustomColors && config.primaryColor != null) {
+      // 自定义主色
+      colorScheme = ColorScheme.fromSeed(
+        seedColor: config.primaryColor!,
+        brightness: Brightness.dark,
+        secondary: config.secondaryColor,
+        tertiary: config.tertiaryColor,
+      );
+    } else if (config.useCustomColors && config.seedColor != null) {
+      // 自定义种子色
+      colorScheme = ColorScheme.fromSeed(
+        seedColor: config.seedColor!,
+        brightness: Brightness.dark,
+      );
+    } else {
+      // 动态色或默认蓝色
+      colorScheme = dynamicColorScheme ?? ColorScheme.fromSeed(
+        seedColor: Colors.blue,
+        brightness: Brightness.dark,
+      );
+    }
 
-    final textTheme = buildDarkTextTheme(colorScheme, fontScale);
+    final fontScale = config.fontScale;
+    final radiusScale = config.radiusScale;
+    final borderWidth = config.borderWidth;
+    final borderOpacity = 0.3; // 暗色模式边框更透明
+
+    final textTheme = _buildTextTheme(colorScheme, Brightness.dark, fontScale);
 
     return ThemeData(
       colorScheme: colorScheme,
@@ -804,42 +750,5 @@ class ThemeDataBuilder {
         }),
       ),
     );
-  }
-
-  /// 根据缩放系数获取圆角值
-  static double _getRadiusValue(double baseRadius, double scale) {
-    if (scale == 0) return 0;
-    if (scale == 1) return baseRadius;
-    return baseRadius * scale;
-  }
-
-  /// 将颜色调淡（用于亮色模式）
-  ///
-  /// [color] 原始颜色
-  /// [factor] 调淡系数 (0.0-1.0)，0.65 表示 65% 的淡化效果
-  static Color _lightenColor(Color color, double factor) {
-    assert(factor >= 0.0 && factor <= 1.0);
-
-    final hsl = HSLColor.fromColor(color);
-    // 通过提高亮度来模拟淡化效果
-    // factor 越大，颜色越淡
-    final lightness = hsl.lightness + (1.0 - hsl.lightness) * factor;
-
-    return hsl.withLightness(lightness.clamp(0.0, 1.0)).toColor();
-  }
-
-  /// 将颜色调深（用于暗色模式）
-  ///
-  /// [color] 原始颜色
-  /// [factor] 调深系数 (0.0-1.0)，0.65 表示 65% 的调深效果
-  static Color _darkenColor(Color color, double factor) {
-    assert(factor >= 0.0 && factor <= 1.0);
-
-    final hsl = HSLColor.fromColor(color);
-    // 通过降低亮度来模拟淡化效果（在暗色背景下）
-    // factor 越大，颜色越接近背景色
-    final lightness = hsl.lightness * (1.0 - factor);
-
-    return hsl.withLightness(lightness.clamp(0.0, 1.0)).toColor();
   }
 }

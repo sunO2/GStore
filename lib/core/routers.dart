@@ -16,6 +16,7 @@ class AppRoute {
   static String themeSettings = "/GStore/themeSettings";
   static String backup = "/GStore/backup";
   static String webdavConfig = "/GStore/webdavConfig";
+  static String workflowDesigner = "/GStore/workflowDesigner";
 
   static List<GetPage> pages = [
     GetPage(
@@ -40,5 +41,6 @@ class AppRoute {
     GetPage(name: themeSettings, page: () => const ThemeSettingsPage()),
     GetPage(name: backup, page: () => const BackupPage()),
     GetPage(name: webdavConfig, page: () => const WebDavConfigPage()),
+    GetPage(name: workflowDesigner, page: () => const WorkflowDesignerPage()),
   ];
 }

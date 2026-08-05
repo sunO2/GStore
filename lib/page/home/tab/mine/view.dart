@@ -712,7 +712,7 @@ class _MinePageState extends State<MinePage> with TickerProviderStateMixin {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text('已设置主题颜色'),
-        duration: Duration(milliseconds: AppAnimations.fast.inMilliseconds),
+        duration: AppAnimations.snackBar,
       ),
     );
   }

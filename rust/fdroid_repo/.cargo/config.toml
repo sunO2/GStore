@@ -1,0 +1,31 @@
+# Rust Android 构建配置
+# NDK 路径: /home/hezhihu89/develop/android/sdk/ndk/26.3.11579264
+
+[target.aarch64-linux-android]
+ar = "/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+linker = "/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android33-clang"
+rustflags = [
+    "-C", "link-arg=-fuse-ld=lld",
+]
+
+[target.armv7-linux-androideabi]
+ar = "/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+linker = "/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi33-clang"
+rustflags = [
+    "-C", "link-arg=-fuse-ld=lld",
+    "-C", "link-arg=-Wl,--export-dynamic-symbol=__rust...",
+]
+
+[target.i686-linux-android]
+ar = "/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+linker = "/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android33-clang"
+rustflags = [
+    "-C", "link-arg=-fuse-ld=lld",
+]
+
+[target.x86_64-linux-android]
+ar = "/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+linker = "/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android33-clang"
+rustflags = [
+    "-C", "link-arg=-fuse-ld=lld",
+]
