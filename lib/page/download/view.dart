@@ -66,7 +66,7 @@ class DownloadManager extends StatelessWidget {
             child: Padding(
               padding: EdgeInsets.symmetric(horizontal: AppSpacing.lg),
               child: StreamBuilder<List<List<DownloadStatus>>>(
-                stream: logic.controller.stream,
+                stream: logic.getFilteredStream(),
                 builder: (context, snap) {
                   if (snap.connectionState != ConnectionState.active) {
                     return const Center(child: AppLoading(size: AppLoadingSize.medium));

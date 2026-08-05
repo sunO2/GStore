@@ -26,16 +26,50 @@ class DownloadManagerLogic extends GetxController with GithubRequestMix {
   final DownloadManagerState state = DownloadManagerState();
   final Future<DownloadDatabase> database = downloadStatusDatabase;
   final AppInfoDatabase appInfoDB = "gstore".repoDB.db;
-  final StreamController<List<List<DownloadStatus>>> controller =
-      StreamController();
+
+  /// 应用信息缓存（避免列表滚动时重复查询数据库）
+  final Map<String, AppInfo?> _appInfoCache = {};
+  final Set<String> _appInfoLoading = {};
 
   /// 当前筛选类型
   final Rx<DownloadFilter> currentFilter = DownloadFilter.all.obs;
 
+  /// 原始数据流（按应用分组）
+  final StreamController<List<List<DownloadStatus>>> _rawController =
+      StreamController.broadcast();
+
+  /// 对外暴露的筛选流
+  late final Stream<List<List<DownloadStatus>>> filteredStream;
+
+  /// 最近一次原始分组数据（用于筛选时重放）
+  List<List<DownloadStatus>> _latestGroups = [];
+
   @override
   void onReady() async {
+    // 组合原始数据流与筛选条件，输出筛选后的分组列表
+    filteredStream = _rawController.stream
+        .map((groups) {
+          _latestGroups = groups;
+          return _applyFilter(groups, currentFilter.value);
+        })
+        .distinct();
+
     _initDownloadStream();
     super.onReady();
+  }
+
+  /// 应用筛选条件到分组列表
+  List<List<DownloadStatus>> _applyFilter(
+    List<List<DownloadStatus>> groups,
+    DownloadFilter filter,
+  ) {
+    if (filter == DownloadFilter.all) return groups;
+
+    return groups
+        .map((group) =>
+            group.where((item) => _matchesFilter(item, filter)).toList())
+        .where((group) => group.isNotEmpty)
+        .toList();
   }
 
   /// 初始化下载流
@@ -49,13 +83,51 @@ class DownloadManagerLogic extends GetxController with GithubRequestMix {
         var list = map[key] ??= [];
         list.add(item);
       }
-      controller.sink.add(List.from(map.values));
+      _rawController.sink.add(List.from(map.values));
     });
   }
 
-  /// 获取应用信息
+  /// 判断下载项是否匹配筛选条件
+  bool _matchesFilter(DownloadStatus item, DownloadFilter filter) {
+    switch (filter) {
+      case DownloadFilter.downloading:
+        return item.status == DownloadStatus.DOWNLOAD_LOADING;
+      case DownloadFilter.completed:
+        return item.status == DownloadStatus.DOWNLOAD_SUCCESS;
+      case DownloadFilter.failed:
+        return item.status == DownloadStatus.DOWNLOAD_ERROR ||
+            item.status == DownloadStatus.DOWNLOAD_READY;
+      case DownloadFilter.all:
+        return true;
+    }
+  }
+
+  /// 获取应用信息（带缓存）
   Future<AppInfo?> getAppInfo(String appId) async {
-    return (await appInfoDB).dao.getAppInfo(appId);
+    // 命中缓存
+    if (_appInfoCache.containsKey(appId)) {
+      return _appInfoCache[appId];
+    }
+
+    // 防止同一应用并发重复查询
+    if (_appInfoLoading.contains(appId)) {
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      if (_appInfoCache.containsKey(appId)) {
+        return _appInfoCache[appId];
+      }
+    }
+
+    _appInfoLoading.add(appId);
+    try {
+      final info = await (await appInfoDB).dao.getAppInfo(appId);
+      _appInfoCache[appId] = info;
+      return info;
+    } catch (e) {
+      _appInfoCache[appId] = null;
+      return null;
+    } finally {
+      _appInfoLoading.remove(appId);
+    }
   }
 
   /// 安装应用
@@ -65,13 +137,30 @@ class DownloadManagerLogic extends GetxController with GithubRequestMix {
     }
   }
 
-  /// 恢复下载
+  /// 恢复下载（断点续传）
   void resumeDownload(DownloadStatus downStatus) {
     retryDownload(downStatus, restartCount: downStatus.count);
   }
 
   /// 重新下载
+  /// [restartCount] 起始字节数：
+  ///   - 续传时传入当前已下载字节数（downStatus.count）
+  ///   - 重新下载时默认 0（从头开始）
   void retryDownload(DownloadStatus downStatus, {int restartCount = 0}) async {
+    // 标记为下载中（确保防重复下载生效）
+    if (!DownloadStatus.isDownloading(
+        downStatus.appId, downStatus.version, downStatus.fileName)) {
+      downStatus.markAsDownloading();
+    }
+
+    // 若重新下载，删除旧的临时文件
+    if (restartCount == 0) {
+      final tempFile = File("${downStatus.savePath}.temp");
+      if (await tempFile.exists()) {
+        await tempFile.delete();
+      }
+    }
+
     downStatus.updateDownload(restartCount, downStatus.total);
     await Get.find<DownloadService>().download(
         downStatus.appId,
@@ -117,6 +206,9 @@ class DownloadManagerLogic extends GetxController with GithubRequestMix {
         final db = await database;
         await db.downloadStatusDao.deleteDownload(downStatus.id!);
       }
+
+      // 4. 释放内存资源
+      downStatus.dispose();
 
       Get.snackbar(
         '已删除',
@@ -181,6 +273,11 @@ class DownloadManagerLogic extends GetxController with GithubRequestMix {
 
       // 删除数据库记录
       await db.downloadStatusDao.deleteCompletedDownloads();
+
+      // 释放内存资源
+      for (var item in items) {
+        item.dispose();
+      }
 
       final count = items.length;
       Get.snackbar(
@@ -255,6 +352,11 @@ class DownloadManagerLogic extends GetxController with GithubRequestMix {
       // 清空数据库
       await db.downloadStatusDao.deleteAllDownloads();
 
+      // 释放内存资源
+      for (var item in items) {
+        item.dispose();
+      }
+
       Get.snackbar(
         '清空完成',
         '已清空所有下载记录',
@@ -274,21 +376,20 @@ class DownloadManagerLogic extends GetxController with GithubRequestMix {
   /// 切换筛选类型
   void setFilter(DownloadFilter filter) {
     currentFilter.value = filter;
+    // 触发筛选流重新输出
+    if (_latestGroups.isNotEmpty) {
+      _rawController.sink.add(_latestGroups);
+    }
   }
 
   /// 获取筛选后的流
   Stream<List<List<DownloadStatus>>> getFilteredStream() {
-    if (currentFilter.value == DownloadFilter.all) {
-      return controller.stream;
-    }
-
-    // TODO: 实现其他筛选类型的流
-    return controller.stream;
+    return filteredStream;
   }
 
   @override
   void onClose() async {
-    await controller.close();
+    await _rawController.close();
     super.onClose();
   }
 }
