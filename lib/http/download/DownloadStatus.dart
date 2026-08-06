@@ -1,5 +1,6 @@
 import 'package:dio/dio.dart';
 import 'package:floor/floor.dart';
+import 'package:flutter/foundation.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/service/downloadService.dart';
 import 'dart:io';
@@ -206,15 +207,26 @@ class DownloadStatus {
   static Future<DownloadStatus> create(
       String appId, appName, version, name, String downloadUrl,
       {int? downloadSize, String? saveFileName}) async {
-    var path = await getDownloadsDirectory();
-    if (null == path) throw Exception("保存路径获取失败");
-    var savePath = "${path.path}/${saveFileName ?? "$appId-$version-$name"}";
+    debugPrint('DownloadStatus.create 开始: name=$name version=$version');
+    String savePath;
+    // 若 saveFileName 是绝对路径（用于数据库等需要固定位置的文件），直接使用
+    if (saveFileName != null && saveFileName.startsWith('/')) {
+      savePath = saveFileName;
+      debugPrint('DownloadStatus.create: 使用绝对路径 savePath = $savePath');
+    } else {
+      var path = await getDownloadsDirectory();
+      debugPrint('DownloadStatus.create: 获取下载目录 = ${path?.path}');
+      if (null == path) throw Exception("保存路径获取失败");
+      savePath = "${path.path}/${saveFileName ?? "$appId-$version-$name"}";
+      debugPrint('DownloadStatus.create: savePath = $savePath');
+    }
 
     // 仅对 GitHub 相关 URL 应用代理，避免破坏 vivo/F-Droid 等渠道的下载链接
     if (_needsProxy(downloadUrl)) {
       final proxy = getProxy();
       if (proxy.isNotEmpty && !downloadUrl.startsWith(proxy)) {
         downloadUrl = "$proxy$downloadUrl";
+        debugPrint('DownloadStatus.create: 应用代理 - $downloadUrl');
       }
     }
     var status =
@@ -224,10 +236,12 @@ class DownloadStatus {
     final item = await (await database)
         .downloadStatusDao
         .getDownloadOfName(name, version);
+    debugPrint('DownloadStatus.create: 查重结果 = ${item != null}');
     if (null == item) {
       status.createTime = DateTime.now().millisecondsSinceEpoch;
       int id = await (await database).downloadStatusDao.insertPerson(status);
       status.id = id;
+      debugPrint('DownloadStatus.create: 已插入下载记录 id=$id');
     }
 
     var saveFile = File(savePath);

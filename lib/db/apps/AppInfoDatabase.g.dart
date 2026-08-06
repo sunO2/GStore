@@ -118,13 +118,22 @@ class _$AppInfoDao extends AppInfoDao {
   _$AppInfoDao(
     this.database,
     this.changeListener,
-  ) : _queryAdapter = QueryAdapter(database);
+  )   : _queryAdapter = QueryAdapter(database),
+        _appInfoConfigInsertionAdapter = InsertionAdapter(
+            database,
+            'AppInfoConfig',
+            (AppInfoConfig item) => <String, Object?>{
+                  'version': item.version,
+                  'proxy': item.proxy
+                });
 
   final sqflite.DatabaseExecutor database;
 
   final StreamController<String> changeListener;
 
   final QueryAdapter _queryAdapter;
+
+  final InsertionAdapter<AppInfoConfig> _appInfoConfigInsertionAdapter;
 
   @override
   Future<List<AppInfo>> getAllApps() async {
@@ -202,6 +211,12 @@ class _$AppInfoDao extends AppInfoDao {
             row['des'] as String,
             _categoryConverter.decode(row['category'] as String?)),
         arguments: [word]);
+  }
+
+  @override
+  Future<void> insertConfig(AppInfoConfig config) async {
+    await _appInfoConfigInsertionAdapter.insert(
+        config, OnConflictStrategy.replace);
   }
 }
 

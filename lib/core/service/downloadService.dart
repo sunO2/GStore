@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
 import 'package:gstore/core/core.dart';
 import 'package:dio/dio.dart';
@@ -69,10 +70,12 @@ class DownloadService extends GetxService {
   /// breakPoint 是否支持断点续传
   /// saveName 保存的文件名
   Future<DownloadStatus> download(String appid, appName, version, url, fileName,
-      {int? downloadSize, bool breakPoint = true, String? saveFileName}) async {
+      {int? downloadSize, bool breakPoint = true, String? saveFileName,
+      bool forceDownload = false}) async {
+    debugPrint('DownloadService.download 开始: appid=$appid version=$version url=$url forceDownload=$forceDownload');
     // 检查是否正在下载
     if (DownloadStatus.isDownloading(appid, version, fileName)) {
-      log("文件正在下载中，跳过重复下载: $fileName");
+      debugPrint("文件正在下载中，跳过重复下载: $fileName");
       // 返回现有的下载状态
       final existing = await (await (await database)
           .downloadStatusDao
@@ -83,21 +86,52 @@ class DownloadService extends GetxService {
     }
 
     // 获取或创建下载状态
-    var downloadStatus = (await (await database)
-            .downloadStatusDao
-            .getDownloadOfName(fileName, version)) ??
+    var existing = await (await database)
+        .downloadStatusDao
+        .getDownloadOfName(fileName, version);
+    debugPrint('DownloadService: 查找到已有记录: ${existing != null}'
+        '${existing != null ? ' savePath=${existing!.savePath} status=${existing.status}' : ''}');
+    // 若调用方传了新的保存路径，且与已有记录路径不一致，则删除旧记录重新创建
+    // （否则会复用旧 savePath，导致下载写入错误位置）
+    if (existing != null &&
+        saveFileName != null &&
+        existing.savePath != saveFileName) {
+      debugPrint('DownloadService: 保存路径已变化，重建下载记录: '
+          '${existing.savePath} -> $saveFileName');
+      final eid = existing.id;
+      if (eid != null) {
+        await (await database).downloadStatusDao.deleteDownload(eid);
+      }
+      existing = null;
+    }
+    var downloadStatus = existing ??
         (await DownloadStatus.create(appid, appName, version, fileName, url,
             downloadSize: downloadSize, saveFileName: saveFileName));
-    if (downloadStatus.status == DownloadStatus.DOWNLOAD_SUCCESS &&
+    debugPrint('DownloadService: 下载状态已创建, status=${downloadStatus.status}, savePath=${downloadStatus.savePath}');
+    // 若非强制下载，且已下载成功，直接返回（跳过重复下载）
+    if (!forceDownload &&
+        downloadStatus.status == DownloadStatus.DOWNLOAD_SUCCESS &&
         _install(fileName, downloadStatus.savePath)) {
+      debugPrint('DownloadService: 已下载成功，跳过重复下载');
       return downloadStatus;
+    }
+
+    // 强制下载时，清除旧的临时文件，从头下载
+    if (forceDownload) {
+      debugPrint('DownloadService: 强制重新下载，清理旧文件');
+      final tempFile = File("${downloadStatus.savePath}.temp");
+      if (await tempFile.exists()) {
+        await tempFile.delete();
+      }
     }
 
     // 标记为正在下载
     downloadStatus.markAsDownloading();
 
     // 等待并发许可
+    debugPrint('DownloadService: 等待并发许可 (活跃: ${_semaphore.active})');
     await _semaphore.acquire();
+    debugPrint('DownloadService: 已获取并发许可，开始执行下载');
     try {
       await _performDownload(
         downloadStatus,
@@ -106,6 +140,7 @@ class DownloadService extends GetxService {
     } finally {
       _semaphore.release();
     }
+    debugPrint('DownloadService: 下载执行完成, 最终状态: ${downloadStatus.status}');
     return downloadStatus;
   }
 
@@ -134,7 +169,7 @@ class DownloadService extends GetxService {
   }) async {
     // 检查是否正在下载
     if (DownloadStatus.isDownloading(appid, version, fileName)) {
-      log("文件正在下载中，跳过重复下载: $fileName");
+      debugPrint("文件正在下载中，跳过重复下载: $fileName");
       // 返回现有的下载状态
       final existing = await (await (await database)
           .downloadStatusDao
@@ -194,7 +229,7 @@ class DownloadService extends GetxService {
     int attempt = 0;
     while (attempt <= maxRetryCount) {
       if (attempt > 0) {
-        log("重试下载 (${attempt}/$maxRetryCount): ${downloadStatus.fileName}");
+        debugPrint("重试下载 (${attempt}/$maxRetryCount): ${downloadStatus.fileName}");
         // 退避等待
         await Future.delayed(Duration(seconds: attempt * 2));
       }
@@ -226,6 +261,7 @@ class DownloadService extends GetxService {
       final downloadUrl = context?.downloadUrl ?? downloadStatus.downloadUrl;
 
       try {
+        debugPrint('DownloadService: 发起 HTTP GET 请求 - $downloadUrl (start=$start)');
         final response = await _dio.get(
           downloadUrl,
           cancelToken: downloadStatus.getCancelToken(),
@@ -234,16 +270,17 @@ class DownloadService extends GetxService {
           },
           options: options,
         );
+        debugPrint('DownloadService: HTTP 响应已到达, statusCode=${response.statusCode}');
 
         final statusCode = response.statusCode;
         final isRangeResponse = statusCode == 206;
         final isFullResponse = statusCode == 200;
 
-        log("下载状态码：$statusCode");
+        debugPrint("下载状态码：$statusCode");
 
         // 服务器返回 200（不支持 Range），从头开始写入
         if (isFullResponse && start > 0) {
-          log("服务器不支持断点续传（200），从头下载");
+          debugPrint("服务器不支持断点续传（200），从头下载");
           if (await downloadTempFile.exists()) {
             await downloadTempFile.delete();
           }
@@ -255,11 +292,13 @@ class DownloadService extends GetxService {
 
         try {
           // 使用 await for 顺序写入，天然支持背压
+          var received = 0;
           await for (final data in response.data.stream) {
             fileStream.add(data);
+            received += data.length as int;
           }
+          debugPrint('DownloadService: 流读取完成, 本次收到 $received 字节');
           await fileStream.close();
-
           if (isRangeResponse || isFullResponse) {
             downloadTempFile.renameSync(file.path);
             _install(downloadStatus.fileName, downloadStatus.savePath);
@@ -272,24 +311,24 @@ class DownloadService extends GetxService {
         } on DioException catch (e) {
           await fileStream.close();
           if (CancelToken.isCancel(e)) {
-            log("取消下载：$downloadUrl");
+            debugPrint("取消下载：$downloadUrl");
             downloadStatus.downloadCanced();
             return;
           }
-          log("下载异常：$downloadUrl ${e.message}");
+          debugPrint("下载异常：$downloadUrl ${e.message}");
         } catch (e) {
           await fileStream.close();
-          log("下载异常：$downloadUrl $e");
+          debugPrint("下载异常：$downloadUrl $e");
         }
       } on DioException catch (e) {
         if (CancelToken.isCancel(e)) {
-          log("取消下载：$downloadUrl");
+          debugPrint("取消下载：$downloadUrl");
           downloadStatus.downloadCanced();
           return;
         }
-        log("下载异常：$downloadUrl ${e.message}");
+        debugPrint("下载异常：$downloadUrl ${e.message}");
       } catch (e) {
-        log("下载异常：$downloadUrl $e");
+        debugPrint("下载异常：$downloadUrl $e");
       }
 
       // 到达这里说明下载失败，尝试重试

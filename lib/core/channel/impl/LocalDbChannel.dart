@@ -20,7 +20,7 @@ import 'package:gstore/http/github/github_client.dart';
 /// 基于 SQLite 本地数据库提供数据
 /// 支持 GitHub API 查询 releases 信息
 class LocalDbChannel implements IChannel {
-  final AppInfoDatabase _database;
+  AppInfoDatabase _database;
   final GithubRestClient? _githubApi;
 
   @override
@@ -46,6 +46,12 @@ class LocalDbChannel implements IChannel {
           enabled: enabled,
           supportOffline: true,
         );
+
+  /// 更新数据库引用（数据库更新后调用，避免使用已关闭的旧数据库）
+  void updateDatabase(AppInfoDatabase database) {
+    _database = database;
+    debugPrint('LocalDbChannel: 数据库引用已更新');
+  }
 
   @override
   Future<void> initialize() async {

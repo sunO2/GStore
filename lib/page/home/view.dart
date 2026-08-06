@@ -37,17 +37,22 @@ class HomePage extends StatelessWidget {
             NavigationDestination(
                 icon: AnimatedSwitcher(
                   duration: AppAnimations.normal,
-                  child: (logic.state.index.value == 0)
-                      ? const Icon(
-                          AliIcon.appStoreActive,
-                          key: ValueKey(0),
-                          size: AppTypography.iconLG,
-                        )
-                      : const Icon(
-                          AliIcon.appStore,
-                          key: ValueKey(1),
-                          size: AppTypography.iconLG,
-                        ),
+                  child: ColorFiltered(
+                    // AliIcon 是 COLR 彩色字体，不响应 IconTheme 颜色，强制染色
+                    colorFilter: ColorFilter.mode(
+                      (logic.state.index.value == 0)
+                          ? Theme.of(context).colorScheme.primary
+                          : Theme.of(context).colorScheme.onSurfaceVariant,
+                      BlendMode.srcATop,
+                    ),
+                    child: Icon(
+                      (logic.state.index.value == 0)
+                          ? AliIcon.appStoreActive
+                          : AliIcon.appStore,
+                      key: ValueKey(logic.state.index.value == 0 ? 0 : 1),
+                      size: AppTypography.iconLG,
+                    ),
+                  ),
                 ),
                 label: "首页"),
             NavigationDestination(
