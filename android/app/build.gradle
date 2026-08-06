@@ -29,10 +29,8 @@ android {
         versionCode = flutter.versionCode
         versionName = flutter.versionName
 
-        // 指定 native 库的 ABI
-        ndk {
-            abiFilters 'arm64-v8a', 'armeabi-v7a', 'x86', 'x86_64'
-        }
+        // 使用 Flutter 的 --target-platform/--split-per-abi 自动管理 ABI
+        // （此处不设 abiFilters，避免与 --split-per-abi 冲突）
     }
 
     // 指定 jniLibs 目录位置
