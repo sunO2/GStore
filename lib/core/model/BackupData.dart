@@ -358,11 +358,18 @@ class BackupData {
   @JsonKey(includeFromJson: true, includeToJson: true)
   final Map<String, dynamic>? appConfig;
 
+  /// 扩展数据（v2.1 新增）
+  /// 包含：F-Droid 源列表、Agent 配置等
+  /// 格式: { "category": data }
+  @JsonKey(includeFromJson: true, includeToJson: true)
+  final Map<String, dynamic>? extras;
+
   const BackupData({
     required this.metadata,
     required this.apps,
     this.channelApps = const {},
     this.appConfig,
+    this.extras,
   });
 
   factory BackupData.fromJson(Map<String, dynamic> json) {
@@ -374,10 +381,12 @@ class BackupData {
                 .map((item) => BackupAppItem.fromJson(item))
                 .toList(),
         channelApps: {},
+        appConfig: json['appConfig'] as Map<String, dynamic>?,
+        extras: json['extras'] as Map<String, dynamic>?,
       );
     }
 
-    // 处理 v2.0 格式
+    // 处理 v2.0/v2.1 格式
     return _$BackupDataFromJson(json);
   }
 
@@ -416,12 +425,14 @@ class BackupData {
     List<BackupAppItem>? apps,
     Map<String, List<ChannelAppBackupItem>>? channelApps,
     Map<String, dynamic>? appConfig,
+    Map<String, dynamic>? extras,
   }) {
     return BackupData(
       metadata: metadata ?? this.metadata,
       apps: apps ?? this.apps,
       channelApps: channelApps ?? this.channelApps,
       appConfig: appConfig ?? this.appConfig,
+      extras: extras ?? this.extras,
     );
   }
 }

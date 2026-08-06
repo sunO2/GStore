@@ -217,6 +217,49 @@ class BackupPage extends StatelessWidget {
 
             const Divider(height: 1),
 
+            // 导出内容选项（展开区域）
+            ExpansionTile(
+              title: const Text('导出内容选项'),
+              subtitle: const Text('选择备份中包含哪些应用数据字段'),
+              leading: const Icon(Icons.tune, size: AppTypography.iconMD),
+              tilePadding: EdgeInsets.zero,
+              childrenPadding: EdgeInsets.zero,
+              children: [
+                SwitchListTile(
+                  dense: true,
+                  title: const Text('包含图标 URL'),
+                  value: state.includeIconUrls.value,
+                  onChanged: (value) => logic.toggleIncludeIconUrls(value),
+                ),
+                SwitchListTile(
+                  dense: true,
+                  title: const Text('包含描述'),
+                  value: state.includeDescription.value,
+                  onChanged: (value) => logic.toggleIncludeDescription(value),
+                ),
+                SwitchListTile(
+                  dense: true,
+                  title: const Text('包含分类'),
+                  value: state.includeCategory.value,
+                  onChanged: (value) => logic.toggleIncludeCategory(value),
+                ),
+                SwitchListTile(
+                  dense: true,
+                  title: const Text('包含扩展字段 (extra)'),
+                  value: state.includeExtra.value,
+                  onChanged: (value) => logic.toggleIncludeExtra(value),
+                ),
+                SwitchListTile(
+                  dense: true,
+                  title: const Text('仅导出已启用的应用'),
+                  value: state.enabledOnly.value,
+                  onChanged: (value) => logic.toggleEnabledOnly(value),
+                ),
+              ],
+            ),
+
+            const Divider(height: 1),
+
             // 导入时是否恢复应用配置
             SwitchListTile(
               title: const Text('导入时恢复应用配置'),

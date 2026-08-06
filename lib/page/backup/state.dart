@@ -52,6 +52,21 @@ class BackupState {
   /// 是否恢复应用配置（导入时）
   final RxBool restoreAppConfig = true.obs;
 
+  /// 导出选项：是否包含图标 URL
+  final RxBool includeIconUrls = true.obs;
+
+  /// 导出选项：是否包含描述
+  final RxBool includeDescription = true.obs;
+
+  /// 导出选项：是否包含分类
+  final RxBool includeCategory = true.obs;
+
+  /// 导出选项：是否包含 extra 字段
+  final RxBool includeExtra = true.obs;
+
+  /// 导出选项：是否仅包含已启用的应用
+  final RxBool enabledOnly = false.obs;
+
   /// 恢复模式
   final Rx<RestoreMode> restoreMode = RestoreMode.merge.obs;
 }

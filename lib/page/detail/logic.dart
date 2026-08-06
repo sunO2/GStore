@@ -302,6 +302,9 @@ class DetailLogic extends GetxController {
       return;
     }
 
+    // 防止代理前缀污染（剥掉全局代理前缀，确保打开真实 URL）
+    url = _stripProxyPrefix(url);
+
     final detail = state.detailInfo.value;
     GStoreInAppBrowser inAppBrowser = GStoreInAppBrowser(
       appInfo: detail != null
@@ -314,6 +317,17 @@ class DetailLogic extends GetxController {
       barCollapsingEnabled: true,
     );
     inAppBrowser.open(url: WebUri(url), settings: settings);
+  }
+
+  /// 剥掉代理前缀（如 https://ghfast.top/），保留原始 URL
+  String _stripProxyPrefix(String url) {
+    final proxy = getProxy();
+    if (proxy.isNotEmpty && url.startsWith(proxy)) {
+      final stripped = url.substring(proxy.length);
+      debugPrint('DetailLogic: 剥掉代理前缀 - $url -> $stripped');
+      return stripped;
+    }
+    return url;
   }
 
   /// 打开项目主页

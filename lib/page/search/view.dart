@@ -52,53 +52,47 @@ class SearchPage extends StatelessWidget {
       ),
       body: Container(
           padding: AppSpacing.allLG,
-          child: StreamBuilder(
-              stream: logic.searchController.stream,
-              builder: (context, snap) {
-                var state = snap.connectionState;
-                if (state != ConnectionState.active) {
-                  return const SizedBox();
-                }
-                var data = snap.data;
-                if (null == data) {
-                  return const SizedBox();
-                }
-                return ListView.builder(
-                  itemBuilder: (context, index) {
-                    var app = data[index];
-                    log("app: $app");
-                    return ListTile(
-                      onTap: () {
-                        Get.toNamed(AppRoute.appDetail, arguments: app);
-                      },
-                      leading: Hero(
-                        tag: app.icon,
-                        child: Image(
-                          image: CachedNetworkImageProvider(
-                            data[index].icon,
-                          ),
-                          width: 48,
-                          height: 48,
-                        ),
-                      ),
-                      title: Hero(
-                        tag: app.name,
-                        child: Text(
-                          app.name,
-                          style: Theme.of(context).textTheme.titleSmall,
-                        ),
-                      ),
-                      subtitle: Text(
-                        app.des,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                    );
+          child: Obx(() {
+            final data = logic.state.searchList;
+            if (data.isEmpty) {
+              return const SizedBox();
+            }
+            return ListView.builder(
+              itemBuilder: (context, index) {
+                var app = data[index];
+                log("app: $app");
+                return ListTile(
+                  onTap: () {
+                    Get.toNamed(AppRoute.appDetail, arguments: app);
                   },
-                  itemCount: data.length,
+                  leading: Hero(
+                    tag: app.icon,
+                    child: Image(
+                      image: CachedNetworkImageProvider(
+                        data[index].icon,
+                      ),
+                      width: 48,
+                      height: 48,
+                    ),
+                  ),
+                  title: Hero(
+                    tag: app.name,
+                    child: Text(
+                      app.name,
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
+                  ),
+                  subtitle: Text(
+                    app.des,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
                 );
-              })),
+              },
+              itemCount: data.length,
+            );
+          })),
     );
   }
 }

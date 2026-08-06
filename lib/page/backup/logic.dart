@@ -110,9 +110,11 @@ class BackupLogic extends GetxController {
       // 创建 Archive 对象
       final archive = Archive();
 
-      // 先生成应用备份数据
+      // 先生成应用备份数据（使用用户配置的导出选项）
       debugPrint('BackupLogic: 正在生成应用备份数据...');
-      final backupData = await _backupService.exportData();
+      final backupData = await _backupService.exportData(
+        options: _buildBackupOptions(),
+      );
 
       // 移除 appConfig 字段（如果存在），因为我们将配置单独保存
       final appsData = backupData.appConfig != null
@@ -255,6 +257,43 @@ class BackupLogic extends GetxController {
   /// 切换是否包含应用配置
   void toggleIncludeAppConfig(bool value) {
     state.includeAppConfig.value = value;
+  }
+
+  /// 切换导出选项：图标 URL
+  void toggleIncludeIconUrls(bool value) {
+    state.includeIconUrls.value = value;
+  }
+
+  /// 切换导出选项：描述
+  void toggleIncludeDescription(bool value) {
+    state.includeDescription.value = value;
+  }
+
+  /// 切换导出选项：分类
+  void toggleIncludeCategory(bool value) {
+    state.includeCategory.value = value;
+  }
+
+  /// 切换导出选项：extra
+  void toggleIncludeExtra(bool value) {
+    state.includeExtra.value = value;
+  }
+
+  /// 切换导出选项：仅已启用
+  void toggleEnabledOnly(bool value) {
+    state.enabledOnly.value = value;
+  }
+
+  /// 构建导出选项
+  BackupOptions _buildBackupOptions() {
+    return BackupOptions(
+      includeIconUrls: state.includeIconUrls.value,
+      includeDescription: state.includeDescription.value,
+      includeCategory: state.includeCategory.value,
+      includeExtra: state.includeExtra.value,
+      enabledOnly: state.enabledOnly.value,
+      includeAppConfig: state.includeAppConfig.value,
+    );
   }
 
   /// 切换是否恢复应用配置

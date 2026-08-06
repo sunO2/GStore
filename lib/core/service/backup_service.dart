@@ -13,6 +13,8 @@ import 'package:gstore/core/webdav/webdav_config.dart';
 import 'package:gstore/core/config/config_manager.dart';
 import 'package:gstore/core/config/config_backup.dart';
 import 'package:gstore/core/config/config_initializer.dart';
+import 'package:gstore/core/fdroid/FdroidRepoManager.dart';
+import 'package:gstore/core/agent/agent_model_store.dart';
 
 /// 备份服务
 /// 负责导出和导入应用数据
@@ -148,6 +150,41 @@ class BackupService {
       }
     }
 
+    // 导出扩展数据（F-Droid 源、Agent 配置等）
+    final extras = <String, dynamic>{};
+    try {
+      // F-Droid 仓库源列表
+      final fdroidSources = FdroidRepoManager.instance.sources;
+      if (fdroidSources.isNotEmpty) {
+        extras['fdroid_sources'] =
+            fdroidSources.map((s) => s.toJson()).toList();
+        debugPrint('BackupService: 导出 F-Droid 源 ${fdroidSources.length} 个');
+      }
+    } catch (e) {
+      debugPrint('BackupService: 导出 F-Droid 源失败 - $e');
+    }
+
+    try {
+      // Agent LLM 模型配置
+      final modelStore = await AgentModelStore.load();
+      if (modelStore.models.isNotEmpty) {
+        extras['agent_models'] = modelStore.models
+            .map((m) => {
+                  'id': m.id,
+                  'name': m.name,
+                  'provider': m.provider.name,
+                  'apiKey': m.apiKey,
+                  'model': m.model,
+                  'baseUrl': m.baseUrl,
+                })
+            .toList();
+        extras['agent_selected_id'] = modelStore.selectedId;
+        debugPrint('BackupService: 导出 Agent 模型 ${modelStore.models.length} 个');
+      }
+    } catch (e) {
+      debugPrint('BackupService: 导出 Agent 配置失败 - $e');
+    }
+
     // 构建元数据
     final channelCounts = <String, int>{};
     for (final app in allApps) {
@@ -157,7 +194,7 @@ class BackupService {
     final metadata = BackupMetadata(
       version: BackupVersion.v2_0, // 使用 v2.0 版本
       exportDate: DateTime.now(),
-      appVersion: '1.0.19',
+      appVersion: '1.0.24',
       totalApps: allApps.length,
       channelCounts: channelCounts,
       options: exportOptions,
@@ -168,9 +205,10 @@ class BackupService {
       apps: allApps,
       channelApps: channelAppsMap,
       appConfig: appConfig,
+      extras: extras.isNotEmpty ? extras : null,
     );
 
-    debugPrint('BackupService: 导出完成 - ${allApps.length} 个聚合应用, ${channelAppsMap.length} 个渠道有额外数据${includeAppConfig ? ", 包含应用配置" : ""}');
+    debugPrint('BackupService: 导出完成 - ${allApps.length} 个聚合应用, ${channelAppsMap.length} 个渠道有额外数据${includeAppConfig ? ", 包含应用配置" : ""}, 扩展数据 ${extras.length} 类');
     return backupData;
   }
 
@@ -516,6 +554,75 @@ class BackupService {
         }
       } else {
         debugPrint('BackupService: 备份中不包含应用配置');
+      }
+
+      // 导入扩展数据（F-Droid 源、Agent 配置等）
+      if (backupData.extras != null && backupData.extras!.isNotEmpty) {
+        debugPrint('BackupService: 开始导入扩展数据（${backupData.extras!.keys.toList()}）');
+
+        // F-Droid 仓库源
+        final fdroidSources = backupData.extras!['fdroid_sources'];
+        if (fdroidSources is List && fdroidSources.isNotEmpty) {
+          try {
+            final manager = FdroidRepoManager.instance;
+            // 清理现有源（保留默认）
+            final defaultIds = {'official', 'tuna_mirror'};
+            for (final source in List.of(manager.sources)) {
+              if (!defaultIds.contains(source.id)) {
+                await manager.removeSource(source.id);
+              }
+            }
+            // 添加备份的源（跳过默认源）
+            for (final item in fdroidSources) {
+              if (item is Map<String, dynamic>) {
+                final source = FdroidSource.fromJson(item);
+                if (!defaultIds.contains(source.id)) {
+                  await manager.addSource(source);
+                }
+              }
+            }
+            debugPrint('BackupService: ✅ F-Droid 源恢复完成');
+          } catch (e) {
+            debugPrint('BackupService: 恢复 F-Droid 源失败 - $e');
+          }
+        }
+
+        // Agent LLM 模型配置
+        final agentModels = backupData.extras!['agent_models'];
+        if (agentModels is List && agentModels.isNotEmpty) {
+          try {
+            final store = await AgentModelStore.load();
+            for (final item in agentModels) {
+              if (item is Map<String, dynamic>) {
+                final model = AgentModel(
+                  id: item['id'] as String? ?? '',
+                  name: item['name'] as String? ?? '',
+                  provider: AgentLlmProvider.values.firstWhere(
+                    (e) => e.name == item['provider'],
+                    orElse: () => AgentLlmProvider.google,
+                  ),
+                  apiKey: item['apiKey'] as String? ?? '',
+                  model: item['model'] as String? ?? '',
+                  baseUrl: item['baseUrl'] as String? ?? '',
+                );
+                if (model.id.isNotEmpty) {
+                  await store.add(model, select: false);
+                }
+              }
+            }
+            final selectedId = backupData.extras!['agent_selected_id'] as String?;
+            if (selectedId != null && store.models.any((m) => m.id == selectedId)) {
+              await store.select(selectedId);
+            } else if (store.models.isNotEmpty) {
+              await store.select(store.models.first.id);
+            }
+            debugPrint('BackupService: ✅ Agent 模型配置恢复完成');
+          } catch (e) {
+            debugPrint('BackupService: 恢复 Agent 配置失败 - $e');
+          }
+        }
+      } else {
+        debugPrint('BackupService: 备份中不包含扩展数据');
       }
 
       result.success = true;

@@ -33,17 +33,40 @@ class DbManager extends GetxService {
   var dbRepositroies = <String, DBRepository>{};
 
   Future<DbManager> init() async {
-    var path = await getDownloadsDirectory();
-    var dbFile = File("${path?.path}/gstore/apps.db");
-    await dbFile.parent.create(recursive: true);
+    // 使用应用私有目录（Android 11+ 外部共享目录受作用域存储限制，可能返回 null 导致 ANR）
+    final dir = await getApplicationDocumentsDirectory();
+    var dbDir = Directory("${dir.path}/gstore");
+    await dbDir.create(recursive: true);
+    var dbFile = File("${dbDir.path}/apps.db");
+
+    // 旧版本数据库在下载目录，迁移到新位置（若存在）
+    try {
+      final oldDir = await getDownloadsDirectory();
+      if (oldDir != null) {
+        final oldFile = File("${oldDir.path}/gstore/apps.db");
+        if (await oldFile.exists() && !(await dbFile.exists())) {
+          await oldFile.copy(dbFile.path);
+          debugPrint('DbManager: 已迁移旧数据库到应用私有目录');
+        }
+      }
+    } catch (e) {
+      debugPrint('DbManager: 迁移旧数据库失败（忽略）- $e');
+    }
+
     if (!(await dbFile.exists())) {
       var bytes = await rootBundle.load("assets/app/db/apps.db");
       ByteBuffer buffer = bytes.buffer;
       await dbFile.writeAsBytes(
           buffer.asUint8List(bytes.offsetInBytes, bytes.lengthInBytes));
     }
-    dbRepositroies["gstore"] = (DBRepository("gstore", "sunO2",
-        "GStore-Repositorys", await db.Builder("gstore/apps.db").build()));
+    // 构建数据库（加超时保护，避免启动卡死）
+    try {
+      dbRepositroies["gstore"] = (DBRepository("gstore", "sunO2",
+          "GStore-Repositorys", await db.Builder("gstore/apps.db").build()));
+    } catch (e) {
+      debugPrint('DbManager: 数据库构建失败 - $e');
+      rethrow;
+    }
     return this;
   }
 
@@ -133,6 +156,22 @@ class DbManager extends GetxService {
       ).then((value) async {
         if (value.status == DownloadStatus.DOWNLOAD_SUCCESS) {
           await dbRepositroy.db.close();
+          // 下载的文件在下载目录，迁移到应用私有目录
+          try {
+            final dlDir = await getDownloadsDirectory();
+            if (dlDir != null) {
+              final src = File("${dlDir.path}/${value.saveFileName}");
+              final appDir = await getApplicationDocumentsDirectory();
+              final dst = File("${appDir.path}/${value.saveFileName}");
+              await dst.parent.create(recursive: true);
+              if (await src.exists()) {
+                await src.copy(dst.path);
+                debugPrint('DbManager: 数据库文件已迁移到私有目录');
+              }
+            }
+          } catch (e) {
+            debugPrint('DbManager: 数据库文件迁移失败（忽略）- $e');
+          }
           dbRepositroies[target] = dbRepositroy.copyWith(
               db: await db.Builder(
                       "${dbRepositroy.target}/${value.saveFileName}")
