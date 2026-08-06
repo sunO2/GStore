@@ -129,6 +129,7 @@ BackupData _$BackupDataFromJson(Map<String, dynamic> json) => BackupData(
           ) ??
           const {},
       appConfig: json['appConfig'] as Map<String, dynamic>?,
+      extras: json['extras'] as Map<String, dynamic>?,
     );
 
 Map<String, dynamic> _$BackupDataToJson(BackupData instance) =>
@@ -137,4 +138,5 @@ Map<String, dynamic> _$BackupDataToJson(BackupData instance) =>
       'apps': instance.apps,
       'channelApps': instance.channelApps,
       'appConfig': instance.appConfig,
+      'extras': instance.extras,
     };

@@ -2,6 +2,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:floor/floor.dart';
+import 'package:flutter/foundation.dart';
 import 'package:gstore/db/apps/AppInfoDao.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart' as sqflite;
@@ -20,8 +21,9 @@ class Builder extends _$AppInfoDatabaseBuilder {
 
   @override
   Future<AppInfoDatabase> build() async {
-    var p = await getDownloadsDirectory();
-    var path = File("${p?.path}/$name");
+    // 使用应用私有目录（Android 11+ 外部共享目录受作用域存储限制）
+    final dir = await getApplicationDocumentsDirectory();
+    var path = File("${dir.path}/$name");
 
     final database = _$AppInfoDatabase();
     database.database = await database.open(
@@ -30,8 +32,12 @@ class Builder extends _$AppInfoDatabaseBuilder {
       _callback,
     );
 
-    // 初始化 FTS5 全文搜索索引
-    await _setupFts5(database.database);
+    // 初始化 FTS5 全文搜索索引（失败不影响数据库使用，仅降级为 LIKE 搜索）
+    try {
+      await _setupFts5(database.database);
+    } catch (e) {
+      debugPrint('AppInfoDatabase: FTS5 初始化失败（降级为 LIKE 搜索）- $e');
+    }
     return database;
   }
 
