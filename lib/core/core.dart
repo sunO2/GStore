@@ -1,5 +1,7 @@
+import 'package:flutter/foundation.dart';
 import 'package:get/get.dart';
 import 'package:gstore/db/apps/AppInfo.dart';
+import 'package:gstore/core/service/db_manager.dart';
 
 // 设计系统
 export 'package:gstore/core/design/design_tokens.dart';
@@ -88,7 +90,15 @@ void updateDataBaseVersion(String? version) {
 
 void updateProxy(String? proxyUrl) {
   AppInfoConfig? config = getConfig();
-  updateConfig(AppInfoConfig(config?.version ?? "0.0.0", proxyUrl));
+  // 存空串表示不使用代理
+  updateConfig(AppInfoConfig(config?.version ?? "0.0.0", proxyUrl ?? ''));
+  // 持久化代理配置到数据库
+  try {
+    final manager = Get.find<DbManager>();
+    manager.persistConfig(AppInfoConfig(config?.version ?? "0.0.0", proxyUrl ?? ''));
+  } catch (e) {
+    debugPrint('更新代理配置持久化失败: $e');
+  }
 }
 
 AppInfoConfig? getConfig() {
@@ -100,12 +110,19 @@ AppInfoConfig? getConfig() {
   }
 }
 
+/// 默认 GitHub 代理前缀
+const String defaultProxy = 'https://gh-proxy.org/';
+
+/// 获取当前代理前缀
+/// - 配置为空串/null 时表示不使用代理，返回空字符串
+/// - 从未配置过（内存无 config）时返回默认代理
 String getProxy() {
   AppInfoConfig? config = getConfig();
   if (null == config) {
-    return "https://ghfast.top/";
+    return defaultProxy;
   }
-  return config.proxy ?? "";
+  final proxy = config.proxy?.trim() ?? '';
+  return proxy;
 }
 
 String get proxy => getProxy();

@@ -174,13 +174,15 @@ class DownloadManagerLogic extends GetxController with GithubRequestMix {
     }
 
     downStatus.updateDownload(restartCount, downStatus.total);
+    // 从头下载时强制重新下载（forceDownload: true），续传时保留已下载部分
     await Get.find<DownloadService>().download(
         downStatus.appId,
         downStatus.appName,
         downStatus.version,
         downStatus.downloadUrl,
         downStatus.fileName,
-        downloadSize: downStatus.total);
+        downloadSize: downStatus.total,
+        forceDownload: restartCount == 0);
   }
 
   /// 暂停下载

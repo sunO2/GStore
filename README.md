@@ -1,111 +1,162 @@
+<div align="center">
+
 # GStore
 
-[![项目状态：开发中](https://img.shields.io/badge/项目状态-开发中-yellowgreen.svg)](https://github.com/sunO2/GStore)
-[![GitHub release](https://img.shields.io/github/v/release/sunO2/GStore?style=flat&refresh=0)](https://github.com/sunO2/GStore/releases)
-[![GitHub repo stars](https://img.shields.io/github/stars/sunO2/GStore?style=flat&refresh=0)](https://github.com/sunO2/GStore)
-[![GitHub issues](https://img.shields.io/github/issues/sunO2/GStore?style=flat&refresh=0)](https://github.com/sunO2/GStore/issues)
-![GitHub pull requests](https://img.shields.io/github/issues-pr/sunO2/GStore?style=flat&refresh=0)
-[![GitHub all releases](https://img.shields.io/github/downloads/sunO2/GStore/total?style=flat&refresh=0)](https://github.com/sunO2/GStore/releases)
-[![GitHub](https://img.shields.io/github/license/sunO2/GStore?style=flat&refresh=0)](https://github.com/sunO2/GStore/blob/main/LICENSE)
+**基于开源数据的跨渠道软件商店，为 Android 用户提供安全、可审计的应用发现、下载与更新体验。**
 
-# GStore 软件商店
+[![项目状态](https://img.shields.io/badge/项目状态-开发中-yellowgreen.svg)](https://github.com/sunO2/GStore)
+[![GitHub release](https://img.shields.io/github/v/release/sunO2/GStore)](https://github.com/sunO2/GStore/releases)
+[![GitHub stars](https://img.shields.io/github/stars/sunO2/GStore)](https://github.com/sunO2/GStore)
+[![GitHub issues](https://img.shields.io/github/issues/sunO2/GStore)](https://github.com/sunO2/GStore/issues)
+[![GitHub pull requests](https://img.shields.io/github/issues-pr/sunO2/GStore)](https://github.com/sunO2/GStore/pulls)
+[![GitHub downloads](https://img.shields.io/github/downloads/sunO2/GStore/total)](https://github.com/sunO2/GStore/releases)
+[![License](https://img.shields.io/github/license/sunO2/GStore)](https://github.com/sunO2/GStore/blob/main/LICENSE)
 
-**一个基于开源项目的软件商店，旨在为您提供便捷、安全、可信赖的软件发现、下载和更新体验。**
+</div>
 
-GStore 不仅仅是一个软件下载平台，更是一个建立在开放、透明原则之上的软件生态系统。我们整合精选的开源项目，为您提供丰富的软件选择，同时保证软件来源的可追溯性和安全性。您可以在这里轻松浏览、下载并管理您需要的各种软件，所有软件数据均开源，欢迎社区共同维护和完善。
+---
 
-## ✨ 主要特性
+## 目录
 
-* **多渠道应用聚合**: 支持 GitHub、F-Droid、vivo 应用市场、HTTP API 及本地数据库等多种应用来源，统一聚合展示。
-* **精选开源软件**: GStore 收录经过筛选和审核的优质开源软件，确保软件的质量和安全性。告别广告和捆绑，专注于纯粹的软件体验。
-* **一站式软件管理**: 无需在多个网站之间跳转，GStore 提供集中的软件展示、下载和更新平台，简化您的软件管理流程。
-* **简洁直观的界面**: 我们注重用户体验，GStore 拥有清晰、友好的用户界面，让您轻松浏览和找到所需的软件。
-* **快速便捷的下载**: 提供高速稳定的下载服务，支持断点续传、并发控制和失败自动重试，让您快速获取心仪的软件。
-* **软件更新提醒**: 及时推送软件更新信息，帮助您保持软件版本最新，享受最佳功能和安全性。
-* **自定义频道**: 支持添加和管理自定义应用频道，灵活扩展您的应用来源。
-* **Material You 动态配色**: 原生支持 Android 12+ 动态主题，随系统取色自动适配。
-* **工作流引擎**: 内置可视化工作流设计器，支持自动化流程编排。
-* **完全开源的数据**: GStore 的软件数据全部开源，任何人都可以查看、贡献和审计，保证数据的透明度和社区参与性。
+- [简介](#简介)
+- [主要特性](#主要特性)
+- [开源数据仓库](#开源数据仓库)
+- [环境要求](#环境要求)
+- [快速开始](#快速开始)
+  - [安装使用](#安装使用)
+  - [本地构建](#本地构建)
+- [项目结构](#项目结构)
+- [技术栈](#技术栈)
+- [平台支持](#平台支持)
+- [贡献指南](#贡献指南)
+- [许可证](#许可证)
 
-## 🗂️ 开源软件数据仓库
+## 简介
 
-GStore 软件商店的核心数据——软件列表、描述、下载链接、更新信息等，全部托管在独立的开源仓库 [**GStore-Repositorys**](https://github.com/sunO2/GStore-Repositorys)。
+GStore 是一个建立在**开放、透明**原则之上的软件商店。所有软件数据均开源托管，任何人都可以查看、审计与贡献。
 
-我们坚信数据的开放和透明是构建可信赖软件生态的基础。
+它通过统一的渠道抽象层聚合多个软件来源（GitHub、F-Droid、vivo 应用市场、HTTP API 及本地数据库），提供一站式的软件发现、下载、更新与备份管理。数据与代码的双重开放，保证了软件来源的可追溯性与安全性。
 
-**GStore-Repositorys 仓库的特点：**
+## 主要特性
 
-* **数据驱动**: 软件商店的展示内容完全由该仓库的数据驱动。
-* **社区共建**: 欢迎社区成员共同维护和完善软件数据，提交 Issue 和 Pull Request 来添加新的软件、更新软件信息或修复错误。
-* **格式规范**: 我们定义了清晰的数据格式规范，方便您理解和参与数据贡献。具体数据格式规范请参考 [GStore-Repositorys 仓库的 README.md](https://github.com/sunO2/GStore-Repositorys/blob/main/README.md)。
+- **多渠道应用聚合** — 统一接入 GitHub、F-Droid、vivo、HTTP API 与本地数据库等多种来源，聚合展示并支持频道筛选。
+- **可靠的多任务下载** — 支持断点续传、并发控制、失败自动重试，以及强制重新下载。
+- **静默安装（Shizuku）** — 通过 Shizuku 授权实现免确认静默安装，未授权时自动回退系统安装器。
+- **开源数据驱动** — 应用数据完全开源，支持服务端数据库自动更新（带版本检测与增量提示）。
+- **GitHub 加速代理** — 内置可配置的 GitHub 代理前缀，改善国内访问体验。
+- **本地数据备份** — 支持本地文件与 WebDAV 云端双向备份/恢复，备份可包含应用配置。
+- **离线可用** — 内置本地数据库渠道，无网络时仍可浏览已收录应用。
+- **全文搜索** — 基于 SQLite FTS5 的全文索引（设备不支持时自动降级 LIKE 搜索）。
+- **Material You 动态配色** — 支持 Android 12+ 跟随系统取色，同时提供亮/暗主题。
+- **自定义频道** — 支持扩展自定义应用来源，灵活管理应用集合。
+- **Agent 助手（Genkit）** — 集成 Google Genkit 与多模型后端，提供智能交互能力。
 
-**如何参与数据贡献？**
+## 开源数据仓库
 
-1. **Fork [GStore-Repositorys](https://github.com/sunO2/GStore-Repositorys) 仓库**
-2. **按照数据格式规范，在 `data` 目录下添加或修改软件数据文件**
-3. **提交 Pull Request，等待审核合并**
+GStore 的应用数据（应用列表、描述、下载链接、版本信息等）托管在独立的开源仓库：
 
-您的贡献将帮助 GStore 软件商店变得更加丰富和完善，感谢您的参与！
+**[GStore-Repositorys](https://github.com/sunO2/GStore-Repositorys)**
 
-## 🚀 快速开始
+### 数据仓库特点
 
-### 如果您是用户
+- **数据驱动** — 商店展示内容完全由该仓库数据驱动，应用内可一键更新数据库。
+- **社区共建** — 欢迎通过 Issue / Pull Request 添加软件、修正信息或补充数据。
+- **格式规范** — 数据格式遵循仓库内定义的规范，详见 [数据格式说明](https://github.com/sunO2/GStore-Repositorys/blob/main/README.md)。
 
-1. **下载 GStore 安装包**: 前往 [GStore 项目的 Release 页面](https://github.com/sunO2/GStore/releases) 下载最新版本的 APK。
-2. **安装 GStore**: 运行 APK 完成安装（需允许"安装未知来源应用"权限）。
-3. **浏览应用**: 在"首页"浏览已添加的应用，或在"发现"页面探索新应用。
-4. **添加应用**: 通过搜索、浏览或添加自定义频道来扩充您的应用列表。
-5. **下载安装**: 点击应用详情页的"下载"按钮即可下载并安装。
-6. **更新管理**: GStore 会定期检查更新，在"更新中心"统一管理。
+### 如何贡献数据
 
-### 如果您是开发者
+1. Fork [GStore-Repositorys](https://github.com/sunO2/GStore-Repositorys)
+2. 按数据规范在相应目录添加或修改软件数据
+3. 提交 Pull Request，等待审核合并
+
+## 环境要求
+
+| 组件 | 版本 |
+| --- | --- |
+| Flutter | >= 3.44（当前 3.44.x 已验证） |
+| Dart | >= 3.5.3 |
+| Android Gradle Plugin | 8.11.x |
+| Gradle | 8.14 |
+| Kotlin | 2.2.x |
+
+> 构建 Android 产物时请确保 Android SDK / NDK 环境就绪。
+
+## 快速开始
+
+### 安装使用
+
+1. 前往 [Release 页面](https://github.com/sunO2/GStore/releases) 下载最新 APK；
+2. 完成安装（需允许"安装未知来源应用"）；
+3. 在**发现**页浏览并添加应用，或进入**设置 → 数据库更新**获取最新数据；
+4. 在应用详情页下载并安装应用。
+
+### 本地构建
 
 ```bash
 # 克隆仓库
 git clone https://github.com/sunO2/GStore.git
 cd GStore
 
-# 获取依赖
+# 安装依赖
 flutter pub get
 
 # 运行调试
 flutter run
 
-# 构建 APK
+# 构建 Release APK（arm64）
 flutter build apk --release --target-platform android-arm64
 ```
 
-> 注意：F-Droid 渠道的高性能解析依赖 Rust 库（`rust/fdroid_repo`）。如需启用该功能，请先构建 Rust Android 库（参考 `build_android_rust.sh`）。
+> **F-Droid 渠道（可选）**：高性能仓库解析依赖 Rust 库（`rust/fdroid_repo`）。
+> 如需启用，先执行 `./build_android_rust.sh` 构建 Rust Android 库。
 
-## 🛠️ 技术栈
+## 项目结构
 
-* **前端框架**: Flutter（Material Design 3）
-* **状态管理**: GetX（响应式状态 + 依赖注入 + 路由）
-* **网络请求**: Dio、Retrofit、rhttp（基于 curl 的高性能 HTTP 客户端）
-* **本地存储**: Floor（SQLite ORM）、shared_preferences、flutter_secure_storage
-* **数据库**: SQLite
-* **图像处理**: cached_network_image
-* **网页浏览**: flutter_inappwebview
-* **后端加速**: Rust + flutter_rust_bridge（FFI 集成，用于 F-Droid 仓库高性能解析）
-* **持续集成**: GitHub Actions（自动构建多架构 APK / AAB 并发布 Release）
+```text
+lib/
+├── core/            # 核心层：渠道抽象、聚合管理、服务、主题、代理等
+│   ├── channel/     # 渠道系统（本地库 / GitHub / vivo / F-Droid）
+│   ├── aggregate/   # 首页应用聚合管理器
+│   ├── service/     # 下载、数据库、备份、安装等服务
+│   └── theme/       # Material You / 主题系统
+├── db/              # Floor（SQLite）实体与 DAO
+├── http/            # 网络层：GitHub API、下载状态管理
+├── page/            # 页面层：首页、发现、下载、设置、备份、WebDAV 配置等
+├── rust/            # flutter_rust_bridge 生成的 FFI 绑定
+└── compent/         # 通用组件
+rust/fdroid_repo/    # Rust 实现的 F-Droid 仓库解析库
+assets/              # 静态资源（图标、默认数据库等）
+```
 
-## 📦 支持的平台
+## 技术栈
 
-* **Android**（主要平台，支持 arm64-v8a / armeabi-v7a / x86 / x86_64）
-* iOS / Web / Linux / macOS / Windows（Flutter 跨平台支持，功能逐步完善中）
+| 类别 | 技术 |
+| --- | --- |
+| UI 框架 | Flutter（Material Design 3） |
+| 状态管理 | GetX（响应式状态、依赖注入、路由） |
+| 网络请求 | Dio、Retrofit、rhttp（curl 高性能 HTTP） |
+| 本地存储 | Floor（SQLite ORM）、shared_preferences、flutter_secure_storage |
+| 图像加载 | cached_network_image |
+| 网页浏览 | flutter_inappwebview |
+| 静默安装 | shizuku_api |
+| AI 助手 | Genkit、genkit_google_genai、genkit_openai |
+| Rust 集成 | flutter_rust_bridge（FFI，F-Droid 解析） |
+| 持续集成 | GitHub Actions（多架构 APK / AAB 构建发布） |
 
-## 🤝 贡献
+## 平台支持
 
-我们非常欢迎社区的贡献，无论是代码贡献、数据贡献、文档完善、Bug 报告，还是功能建议，都将帮助 GStore 变得更好。
+- **Android**（主要目标平台）：arm64-v8a / armeabi-v7a / x86 / x86_64
+- **iOS / Web / Linux / macOS / Windows**：基于 Flutter 跨平台支持，功能逐步完善中
 
-您可以通过以下方式参与贡献：
+## 贡献指南
 
-* **提交 Issue**: 如果您在使用过程中遇到 Bug，或者有任何功能建议，欢迎提交 Issue。
-* **提交 Pull Request**: 如果您有能力修复 Bug 或开发新功能，欢迎提交 Pull Request。
-* **贡献软件数据**: 如果您希望推荐新的开源软件加入 GStore，或者发现现有软件数据需要更新，请参考 [GStore-Repositorys](https://github.com/sunO2/GStore-Repositorys) 仓库的说明，提交数据贡献。
-* **参与讨论**: 在 Issue 评论区或社区论坛参与讨论，分享您的想法和建议。
-* **推广 GStore**: 如果您喜欢 GStore，欢迎分享给您的朋友和同事，让更多人了解和使用 GStore。
+欢迎任何形式的贡献：代码、数据、文档、Bug 报告与功能建议。
 
-## 📜 许可证
+- **提交 Issue** — 报告 Bug 或提出功能建议
+- **提交 Pull Request** — 修复 Bug、开发新功能或完善文档
+- **贡献数据** — 参考 [数据仓库](#开源数据仓库) 部分提交软件数据
+- **参与讨论** — 在 Issue 评论区交流想法
 
-本项目使用 **GPL-3.0** 开源许可证。查看 [LICENSE](LICENSE) 了解详情。
+## 许可证
+
+本项目基于 **GPL-3.0** 开源协议分发，详情见 [LICENSE](LICENSE)。

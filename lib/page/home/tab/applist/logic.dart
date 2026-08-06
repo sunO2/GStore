@@ -44,7 +44,6 @@ class ApplistLogic extends GetxController with GithubRequestMix {
 
     debugPrint('ApplistLogic: 🚀 开始加载应用数据...');
     await loadAggregatedApps();
-    checkUpdata();
   }
 
   /// 加载聚合应用
@@ -122,13 +121,19 @@ class ApplistLogic extends GetxController with GithubRequestMix {
 
   Future<void> checkUpdata() async {
     // getBanner();
-    /// 拉取代理
-    var proxyConfigRequest = await DioClient.instance.get().get(
-        "https://my-json-server.typicode.com/suno2/GStore-Repositorys/proxy");
-    var proxyUrl = proxyConfigRequest.data["url"];
-    if (proxyUrl?.toString().isNotEmpty ?? false) {
-      log("请求代理地址结果： $proxyUrl");
-      updateProxy(proxyUrl);
+    /// 仅当用户未手动设置代理时，才从远程拉取默认代理
+    if (getProxy().isEmpty || getProxy() == defaultProxy) {
+      try {
+        var proxyConfigRequest = await DioClient.instance.get().get(
+            "https://my-json-server.typicode.com/suno2/GStore-Repositorys/proxy");
+        var proxyUrl = proxyConfigRequest.data["url"];
+        if (proxyUrl?.toString().isNotEmpty ?? false) {
+          log("请求代理地址结果： $proxyUrl");
+          updateProxy(proxyUrl);
+        }
+      } catch (e) {
+        log("拉取代理失败： $e");
+      }
     }
 
     var downloadStatus = await "gstore".checkUpdate();

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/theme/theme_controller.dart';
+import 'package:gstore/http/download/DownloadStatus.dart';
 
 /// Main settings page with appearance and other settings
 class SettingsPage extends StatelessWidget {
@@ -101,9 +102,78 @@ class SettingsPage extends StatelessWidget {
             trailing: const Icon(Icons.chevron_right, size: AppTypography.iconSM),
             onTap: () => Get.toNamed(AppRoute.backup),
           ),
+          const Divider(height: 1),
+          // GitHub 代理设置
+          ListTile(
+            leading: const Icon(Icons.cloud, size: AppTypography.iconMD),
+            title: const Text('GitHub 代理'),
+            subtitle: Text(
+              '当前: ${getProxy().isEmpty ? '未设置' : getProxy()}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            trailing: const Icon(Icons.chevron_right, size: AppTypography.iconSM),
+            onTap: () => _showProxySettingDialog(context),
+          ),
         ],
       ),
     );
+  }
+
+  /// 显示 GitHub 代理设置对话框
+  Future<void> _showProxySettingDialog(BuildContext context) async {
+    final controller = TextEditingController(text: getProxy());
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('GitHub 代理设置'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('设置 GitHub 相关下载的代理前缀，用于加速国内访问。'),
+            const SizedBox(height: AppSpacing.md),
+            TextField(
+              controller: controller,
+              decoration: const InputDecoration(
+                labelText: '代理前缀',
+                hintText: 'https://gh-proxy.org/',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: AppSpacing.sm),
+            const Text(
+              '设置了代理则下载走代理；留空表示不使用代理',
+              style: TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, controller.text.trim()),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, controller.text.trim()),
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+
+    if (result != null) {
+      var value = result;
+      // 确保以 / 结尾（空字符串表示不使用代理）
+      if (value.isNotEmpty && !value.endsWith('/')) {
+        value = '$value/';
+      }
+      updateProxy(value.isNotEmpty ? value : null);
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(value.isEmpty ? '已禁用 GitHub 代理' : '代理已更新: $value')),
+        );
+      }
+    }
   }
 
   Widget _buildInstallSection(BuildContext context) {
@@ -138,6 +208,9 @@ class SettingsPage extends StatelessWidget {
             subtitle: const Text('1.0.19'),
           ),
           const Divider(height: 1),
+          // 数据库更新（放在版本下面）
+          const _DataUpdateTile(),
+          const Divider(height: 1),
           ListTile(
             leading: const Icon(Icons.description_outlined),
             title: const Text('开源协议'),
@@ -149,6 +222,187 @@ class SettingsPage extends StatelessWidget {
         ],
       ),
     );
+  }
+}
+
+/// 数据更新检测 Tile
+/// 状态：可检查（箭头）/ 检查中（loading）/ 有更新（"更新"按钮）
+class _DataUpdateTile extends StatefulWidget {
+  const _DataUpdateTile();
+
+  @override
+  State<_DataUpdateTile> createState() => _DataUpdateTileState();
+}
+
+class _DataUpdateTileState extends State<_DataUpdateTile> {
+  /// 是否正在检查
+  bool _checking = false;
+
+  /// 是否有更新
+  bool _hasUpdate = false;
+
+  /// 是否正在下载更新
+  bool _downloading = false;
+
+  /// 当前数据库版本
+  String _currentVersion = '0.0.0.0';
+
+  /// 可更新版本
+  String? _latestVersion;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadCurrentVersion();
+  }
+
+  /// 读取当前数据库版本
+  Future<void> _loadCurrentVersion() async {
+    try {
+      final version = await Get.find<DbManager>().getDBVersion('gstore');
+      if (mounted) {
+        setState(() => _currentVersion = version);
+      }
+    } catch (e) {
+      debugPrint('_DataUpdateTile: 读取当前版本失败 - $e');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final Widget trailing;
+    if (_checking || _downloading) {
+      // 与刷新按钮同尺寸容器居中，避免交替时跳动
+      trailing = const SizedBox(
+        width: 40,
+        height: 40,
+        child: Center(
+          child: SizedBox(
+            width: 18,
+            height: 18,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+        ),
+      );
+    } else if (_hasUpdate) {
+      // 有更新：显示"更新"按钮
+      trailing = FilledButton.tonal(
+        onPressed: _performUpdate,
+        style: FilledButton.styleFrom(
+          visualDensity: VisualDensity.compact,
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+        ),
+        child: const Text('更新'),
+      );
+    } else {
+      // 默认：刷新按钮（检查更新），固定在 40x40 容器内与 loading 对齐
+      trailing = SizedBox(
+        width: 40,
+        height: 40,
+        child: IconButton(
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(),
+          icon: const Icon(Icons.refresh, size: AppTypography.iconMD),
+          tooltip: '检查更新',
+          onPressed: _checkForUpdate,
+        ),
+      );
+    }
+
+    return ListTile(
+      leading: const Icon(Icons.system_update_alt, size: AppTypography.iconMD),
+      title: Text(_downloading ? '正在更新数据库...' : '数据库更新'),
+      subtitle: Text(
+        _hasUpdate && _latestVersion != null
+            ? '当前 $_currentVersion → 可更新 $_latestVersion'
+            : '当前版本: $_currentVersion',
+      ),
+      trailing: trailing,
+      onTap: _checking || _downloading ? null : _checkForUpdate,
+    );
+  }
+
+  /// 检查是否有更新（不自动下载）
+  Future<void> _checkForUpdate() async {
+    if (_checking) return;
+    setState(() {
+      _checking = true;
+      _hasUpdate = false;
+    });
+
+    try {
+      final info = await Get.find<DbManager>().checkUpdateInfo('gstore');
+      if (!mounted) return;
+      setState(() {
+        _checking = false;
+        _hasUpdate = info != null;
+        _latestVersion = info?['latest'];
+        if (info != null) _currentVersion = info['current']!;
+      });
+      if (info == null) {
+        Get.snackbar(
+          '已是最新',
+          '本地数据库已是最新版本',
+          snackPosition: SnackPosition.BOTTOM,
+          duration: const Duration(seconds: 2),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _checking = false);
+        Get.snackbar(
+          '检查失败',
+          '检查更新出错: $e',
+          snackPosition: SnackPosition.BOTTOM,
+          backgroundColor: Get.theme.colorScheme.errorContainer,
+          duration: const Duration(seconds: 3),
+        );
+      }
+    }
+  }
+
+  /// 执行更新下载
+  Future<void> _performUpdate() async {
+    if (_downloading) return;
+    setState(() => _downloading = true);
+
+    try {
+      final result = await "gstore".checkUpdate();
+      if (!mounted) return;
+      setState(() {
+        _downloading = false;
+        _hasUpdate = false;
+      });
+      if (result == DownloadStatus.DOWNLOAD_SUCCESS) {
+        await _loadCurrentVersion();
+        setState(() => _latestVersion = null);
+        Get.snackbar(
+          '更新成功',
+          '本地数据库已更新',
+          snackPosition: SnackPosition.BOTTOM,
+          duration: const Duration(seconds: 2),
+        );
+      } else {
+        Get.snackbar(
+          '更新失败',
+          '数据库更新失败，请检查网络或代理设置',
+          snackPosition: SnackPosition.BOTTOM,
+          backgroundColor: Get.theme.colorScheme.errorContainer,
+          duration: const Duration(seconds: 3),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _downloading = false);
+        Get.snackbar(
+          '更新失败',
+          '更新出错: $e',
+          snackPosition: SnackPosition.BOTTOM,
+          backgroundColor: Get.theme.colorScheme.errorContainer,
+          duration: const Duration(seconds: 3),
+        );
+      }
+    }
   }
 }
 

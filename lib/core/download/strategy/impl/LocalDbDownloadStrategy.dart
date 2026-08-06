@@ -3,11 +3,12 @@ import 'package:gstore/core/download/model/DownloadContext.dart';
 import 'package:gstore/core/download/strategy/BaseDownloadStrategy.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
+import 'package:gstore/core/core.dart';
 
 /// LocalDbChannel 下载策略
 /// 处理本地数据库渠道的下载逻辑
-/// - 支持使用 extra['proxy'] 中的代理配置加速 GitHub 下载
-/// - 如果 URL 不是完整的 GitHub URL，使用代理拼接
+/// - 使用全局代理配置（getProxy）加速 GitHub 下载
+/// - 设置了代理则直接使用"代理前缀 + 完整URL"
 class LocalDbDownloadStrategy extends BaseDownloadStrategy {
   @override
   ChannelType get supportedChannel => ChannelType.localDb;
@@ -22,29 +23,18 @@ class LocalDbDownloadStrategy extends BaseDownloadStrategy {
     // 构建基础上下文
     final context = buildBaseContext(downloadInfo, detailData);
 
-    // 提取代理配置
-    final proxy = extractProxy(detailData);
-    if (proxy != null && proxy.isNotEmpty) {
-      log('提取到代理配置: $proxy');
+    // 使用全局代理配置
+    final proxy = getProxy();
+    if (proxy.isNotEmpty) {
+      log('使用全局代理配置: $proxy');
 
-      // 尝试应用代理转换URL
-      final transformedUrl = applyProxy(downloadInfo.url, proxy);
-      if (transformedUrl != null) {
-        context.finalUrl = transformedUrl;
-        context.proxy = proxy;
-        log('使用代理URL: $transformedUrl');
-      } else {
-        // 如果是完整URL，仍然记录代理信息（可能需要用于其他用途）
-        if (isFullGitHubUrl(downloadInfo.url)) {
-          log('检测到完整GitHub URL，不使用代理转换');
-        } else {
-          // 对于非GitHub URL，仍然尝试使用代理
-          context.proxy = proxy;
-          log('非GitHub URL，保留代理配置');
-        }
-      }
+      // 设置了代理则直接拼接：代理前缀 + 完整URL
+      final finalUrl = '${proxy.endsWith('/') ? proxy : '$proxy/'}${downloadInfo.url}';
+      context.finalUrl = finalUrl;
+      context.proxy = proxy;
+      log('使用代理URL: $finalUrl');
     } else {
-      log('未找到代理配置，使用原始URL');
+      log('未配置代理，使用原始URL');
     }
 
     return context;

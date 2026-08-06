@@ -841,34 +841,37 @@ class _MinePageState extends State<MinePage> with TickerProviderStateMixin {
                       ),
                 ),
                 const Spacer(),
-                // 只有配置了 WebDAV 时才显示展开/收起按钮
-                if (_hasWebDavConfig)
-                  InkWell(
-                    onTap: () {
-                      _toggleBackupExpanded();
-                      // 展开后滚动到可见区域
-                      if (_backupExpanded) {
-                        Future.delayed(const Duration(milliseconds: 100), () {
-                          _scrollToKey(_backupCardKey);
-                        });
-                      }
-                    },
-                    borderRadius: BorderRadius.circular(20),
-                    child: const SizedBox(
-                      width: 32,
-                      height: 32,
-                      child: Center(
-                        child: Padding(
-                          padding: EdgeInsets.all(6),
-                          child: Icon(
-                            Icons.expand_more,
-                            size: 18,
-                            color: AppColors.textSecondary,
+                // 展开/收起按钮区域（始终占位，避免布局跳动）
+                // 仅在有 WebDAV 配置时才显示箭头并可点击
+                SizedBox(
+                  width: 32,
+                  height: 32,
+                  child: _hasWebDavConfig
+                      ? InkWell(
+                          onTap: () {
+                            _toggleBackupExpanded();
+                            // 展开后滚动到可见区域
+                            if (_backupExpanded) {
+                              Future.delayed(const Duration(milliseconds: 100),
+                                  () {
+                                _scrollToKey(_backupCardKey);
+                              });
+                            }
+                          },
+                          borderRadius: BorderRadius.circular(20),
+                          child: const Center(
+                            child: Padding(
+                              padding: EdgeInsets.all(6),
+                              child: Icon(
+                                Icons.expand_more,
+                                size: 18,
+                                color: AppColors.textSecondary,
+                              ),
+                            ),
                           ),
-                        ),
-                      ),
-                    ),
-                  ),
+                        )
+                      : const SizedBox(width: 32, height: 32),
+                ),
               ],
             ),
             const SizedBox(height: AppSpacing.lg),
@@ -975,9 +978,7 @@ class _MinePageState extends State<MinePage> with TickerProviderStateMixin {
 
                   // WebDAV 备份恢复按钮（仅在有配置时显示）
                   if (_hasWebDavConfig) ...[
-                    const SizedBox(height: AppSpacing.lg),
-
-                    // 展开的 WebDAV 操作
+                    // 展开的 WebDAV 操作（折叠时整体高度为 0，避免布局跳动）
                     SizeTransition(
                       sizeFactor: _backupAnimation,
                       axis: Axis.vertical,
@@ -985,6 +986,7 @@ class _MinePageState extends State<MinePage> with TickerProviderStateMixin {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
+                          const SizedBox(height: AppSpacing.lg),
                           // 分割线（只在展开时显示）
                           Divider(color: Theme.of(context).colorScheme.outlineVariant.withOpacity(0.3)),
                           const SizedBox(height: AppSpacing.lg),
