@@ -285,7 +285,7 @@ extension AppThemeConfigExtension on AppThemeConfig {
     switch (borderStyle) {
       case AppBorderStyle.default_:
       case AppBorderStyle.standard:
-        return 0.5;
+        return 0.6;
       case AppBorderStyle.none:
         return 0.0;
       case AppBorderStyle.light:

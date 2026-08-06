@@ -229,14 +229,14 @@ class ThemeDataBuilder {
       textTheme: textTheme, // 完整的文字主题
 
       // 扁平化风格：使用 secondaryContainer 调淡 65% 的纯色作为背景
-      scaffoldBackgroundColor: _lightenColor(colorScheme.secondaryContainer, 0.65),
+      scaffoldBackgroundColor: _lightenColor(colorScheme.secondaryContainer, 0.4),
 
       // App bar theme - 扁平化
       appBarTheme: AppBarTheme(
         centerTitle: false, // 标题在左侧
         elevation: 0,
         scrolledUnderElevation: 0,
-        backgroundColor: _lightenColor(colorScheme.secondaryContainer, 0.65),
+        backgroundColor: _lightenColor(colorScheme.secondaryContainer, 0.4),
         foregroundColor: colorScheme.onSurface,
         titleTextStyle: textTheme.headlineLarge, // 使用更大的标题字号
         systemOverlayStyle: const SystemUiOverlayStyle(
@@ -252,7 +252,8 @@ class ThemeDataBuilder {
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(_getRadiusValue(AppRadius.lg, radiusScale)),
           side: BorderSide(
-            color: colorScheme.outlineVariant.withOpacity(borderOpacity),
+            // 亮色下使用较深的 outline，增强卡片与背景的边界
+            color: colorScheme.outline.withOpacity(borderOpacity),
             width: borderWidth,
           ),
         ),
@@ -262,7 +263,7 @@ class ThemeDataBuilder {
 
       // Navigation bar theme
       navigationBarTheme: NavigationBarThemeData(
-        backgroundColor: _lightenColor(colorScheme.secondaryContainer, 0.65),
+        backgroundColor: _lightenColor(colorScheme.secondaryContainer, 0.4),
         elevation: 0,
         height: 80,
         indicatorColor: colorScheme.primaryContainer,
@@ -286,7 +287,7 @@ class ThemeDataBuilder {
 
       // Navigation rail theme (for larger screens)
       navigationRailTheme: NavigationRailThemeData(
-        backgroundColor: _lightenColor(colorScheme.secondaryContainer, 0.65),
+        backgroundColor: _lightenColor(colorScheme.secondaryContainer, 0.4),
         elevation: 0,
       ),
 
@@ -518,7 +519,7 @@ class ThemeDataBuilder {
     final fontScale = config.fontScale;
     final radiusScale = config.radiusScale;
     final borderWidth = config.borderWidth;
-    final borderOpacity = 0.3; // 暗色模式边框更透明
+    final borderOpacity = 0.4; // 暗色模式边框更透明
 
     final textTheme = _buildTextTheme(colorScheme, Brightness.dark, fontScale);
 
@@ -529,14 +530,14 @@ class ThemeDataBuilder {
       textTheme: textTheme, // 完整的文字主题
 
       // 扁平化风格：使用 secondaryContainer 调淡 65% 的纯色作为背景
-      scaffoldBackgroundColor: _darkenColor(colorScheme.secondaryContainer, 0.65),
+      scaffoldBackgroundColor: _darkenColor(colorScheme.secondaryContainer, 0.72),
 
       // App bar theme - 扁平化
       appBarTheme: AppBarTheme(
         centerTitle: false, // 标题在左侧
         elevation: 0,
         scrolledUnderElevation: 0,
-        backgroundColor: _darkenColor(colorScheme.secondaryContainer, 0.65),
+        backgroundColor: _darkenColor(colorScheme.secondaryContainer, 0.72),
         foregroundColor: colorScheme.onSurface,
         titleTextStyle: textTheme.headlineLarge, // 使用更大的标题字号
         systemOverlayStyle: const SystemUiOverlayStyle(
@@ -545,10 +546,10 @@ class ThemeDataBuilder {
         ),
       ),
 
-      // Card theme - 扁平化，无阴影，深色
+      // Card theme - 扁平化，无阴影，深色（比背景更亮，增强层次）
       cardTheme: CardThemeData(
         elevation: 0,
-        color: colorScheme.surfaceContainerLow,
+        color: colorScheme.surfaceContainerHigh,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(_getRadiusValue(AppRadius.lg, radiusScale)),
           side: BorderSide(
@@ -562,7 +563,7 @@ class ThemeDataBuilder {
 
       // Navigation bar theme
       navigationBarTheme: NavigationBarThemeData(
-        backgroundColor: _darkenColor(colorScheme.secondaryContainer, 0.65),
+        backgroundColor: _darkenColor(colorScheme.secondaryContainer, 0.72),
         elevation: 0,
         height: 80,
         indicatorColor: colorScheme.primaryContainer,
@@ -586,7 +587,7 @@ class ThemeDataBuilder {
 
       // Navigation rail theme (for larger screens)
       navigationRailTheme: NavigationRailThemeData(
-        backgroundColor: _darkenColor(colorScheme.secondaryContainer, 0.65),
+        backgroundColor: _darkenColor(colorScheme.secondaryContainer, 0.72),
         elevation: 0,
       ),
 

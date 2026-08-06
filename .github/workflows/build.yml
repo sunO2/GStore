@@ -67,7 +67,11 @@ jobs:
         id: get_commit_msg
         run: |
           COMMIT_MSG=$(git log -1 --pretty=%B)
-          echo "message=${COMMIT_MSG}" >> $GITHUB_OUTPUT
+          {
+            echo 'message<<EOF'
+            echo "$COMMIT_MSG"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
           
       - name: Create Release
         id: create_release
