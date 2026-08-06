@@ -335,6 +335,20 @@ class _MinePageState extends State<MinePage> with TickerProviderStateMixin {
       child: Column(
         children: [
           ListTile(
+            leading: const Icon(Icons.auto_awesome, size: AppTypography.iconMD),
+            title: const Text('AI 助手'),
+            trailing: const Icon(Icons.chevron_right, size: AppTypography.iconSM),
+            onTap: () => Get.toNamed(AppRoute.agent),
+          ),
+          const Divider(height: 1),
+          ListTile(
+            leading: const Icon(Icons.android, size: AppTypography.iconMD),
+            title: const Text('已安装应用'),
+            trailing: const Icon(Icons.chevron_right, size: AppTypography.iconSM),
+            onTap: () => Get.toNamed(AppRoute.installedApps),
+          ),
+          const Divider(height: 1),
+          ListTile(
             leading: const Icon(Icons.settings, size: AppTypography.iconMD),
             title: const Text('设置'),
             trailing: const Icon(Icons.chevron_right, size: AppTypography.iconSM),

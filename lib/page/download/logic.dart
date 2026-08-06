@@ -1,6 +1,5 @@
 import 'dart:io';
 
-import 'package:app_installer/app_installer.dart';
 import 'package:flutter/material.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/db/apps/AppInfoDatabase.dart';
@@ -143,10 +142,10 @@ class DownloadManagerLogic extends GetxController with GithubRequestMix {
     }
   }
 
-  /// 安装应用
-  void installApp(DownloadStatus downStatus) {
+  /// 安装应用（Shizuku 静默安装优先，回退系统安装）
+  Future<void> installApp(DownloadStatus downStatus) async {
     if (GetPlatform.isAndroid && downStatus.fileName.endsWith(".apk")) {
-      AppInstaller.installApk(downStatus.savePath);
+      await InstallManager.instance.installApk(downStatus.savePath);
     }
   }
 

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
@@ -181,6 +182,7 @@ class DetailLogic extends GetxController {
 
   /// 开始下载
   /// 优先使用新的策略模式下载，失败时降级到旧方法
+  /// 先建立状态监听（显示实时进度），再异步启动下载（不阻塞 UI）
   Future<void> startDownload(
     DownloadInfo download, {
     int? downloadSize,
@@ -193,28 +195,60 @@ class DetailLogic extends GetxController {
 
     final appId = req?.appId ?? detail!.appId;
     final appName = req?.name ?? detail!.name;
+    final version = download.version ?? 'unknown';
+    final fileName = download.name;
 
-    DownloadStatus? status;
+    // 预先创建/获取下载状态，用于立即建立进度监听
+    final status = await DownloadStatus.create(
+      appId,
+      appName,
+      version,
+      fileName,
+      download.url,
+      downloadSize: download.size ?? downloadSize,
+    );
 
-    // 尝试使用新的策略模式下载
+    // 立即监听进度并转发到 UI
+    state.currentDownload.value = status;
+    counterController.sink.add(status);
+    downloadListenerSubscription = status.observer.listen((da) {
+      state.currentDownload.value = da;
+      counterController.sink.add(da);
+    });
+
+    // 异步启动下载（不阻塞，下载完成后会自动更新 status）
+    unawaited(_startDownloadTask(download, appId, appName, version, fileName));
+  }
+
+  /// 实际启动下载任务（异步执行）
+  Future<void> _startDownloadTask(
+    DownloadInfo download,
+    String appId,
+    String appName,
+    String version,
+    String fileName,
+  ) async {
     try {
       // 确保策略管理器已初始化
       _initializeDownloadStrategies();
 
-      // 创建下载上下文
+      final detail = state.detailInfo.value;
+      if (detail == null) return;
+
+      // 尝试使用策略模式下载
       final context = await DownloadStrategyManager.instance.createContext(
         download,
-        detail!,
+        detail,
       );
 
       if (context != null) {
         debugPrint('DetailLogic: 使用策略模式下载 - ${context.downloadUrl}');
-        status = await Get.find<DownloadService>().downloadWithContext(
+        await Get.find<DownloadService>().downloadWithContext(
           context,
           appId,
           appName,
-          download.version ?? 'unknown',
-          download.name,
+          version,
+          fileName,
         );
       } else {
         debugPrint('DetailLogic: 下载上下文创建失败，降级到旧方法');
@@ -222,22 +256,18 @@ class DetailLogic extends GetxController {
       }
     } catch (e) {
       debugPrint('DetailLogic: 策略模式下载失败，降级到旧方法 - $e');
-      // 降级到旧的下载方法
-      status = await Get.find<DownloadService>().download(
-        appId,
-        appName,
-        download.version ?? 'unknown',
-        download.url,
-        download.name,
-        downloadSize: download.size ?? downloadSize,
-      );
-    }
-
-    if (status != null) {
-      counterController.sink.add(status);
-      downloadListenerSubscription = status.observer.listen((da) {
-        counterController.sink.add(da);
-      });
+      try {
+        await Get.find<DownloadService>().download(
+          appId,
+          appName,
+          version,
+          download.url,
+          fileName,
+          downloadSize: download.size,
+        );
+      } catch (e2) {
+        debugPrint('DetailLogic: 下载失败 - $e2');
+      }
     }
   }
 

@@ -169,6 +169,14 @@ class _$AppInfoDao extends AppInfoDao {
   }
 
   @override
+  Future<List<AppInfo>> searchFts(String word) async {
+    return _queryAdapter.queryList(
+        'SELECT * FROM apps     WHERE rowid IN (SELECT rowid FROM apps_fts WHERE apps_fts MATCH ?1)     ORDER BY rowid',
+        mapper: (Map<String, Object?> row) => AppInfo(row['appId'] as String, row['name'] as String, row['user'] as String, row['repositories'] as String, row['icon'] as String, row['des'] as String, _categoryConverter.decode(row['category'] as String?)),
+        arguments: [word]);
+  }
+
+  @override
   Future<AppInfoConfig?> getVersion() async {
     return _queryAdapter.query('SELECT * FROM config LIMIT 1',
         mapper: (Map<String, Object?> row) =>

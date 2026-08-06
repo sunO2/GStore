@@ -12,3 +12,6 @@ export 'package:gstore/page/settings/theme_settings_page.dart';
 export 'package:gstore/page/backup/view.dart';
 export 'package:gstore/page/webdav_config/view.dart';
 export 'package:gstore/page/workflow/workflow_designer_page.dart';
+export 'package:gstore/page/agent/view.dart';
+export 'package:gstore/page/agent/agent_settings_page.dart';
+export 'package:gstore/page/installed_apps/view.dart';

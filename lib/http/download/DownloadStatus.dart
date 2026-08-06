@@ -193,6 +193,16 @@ class DownloadStatus {
 
   Stream<DownloadStatus> get observer => _counterController.stream;
 
+  /// 检查 URL 是否需要代理
+  /// 仅 GitHub 相关域名需要代理加速（国内访问慢）
+  static bool _needsProxy(String url) {
+    return url.startsWith('https://github.com/') ||
+        url.startsWith('https://raw.githubusercontent.com/') ||
+        url.startsWith('https://api.github.com/') ||
+        url.startsWith('https://objects.githubusercontent.com/') ||
+        url.startsWith('http://github.com/');
+  }
+
   static Future<DownloadStatus> create(
       String appId, appName, version, name, String downloadUrl,
       {int? downloadSize, String? saveFileName}) async {
@@ -200,8 +210,12 @@ class DownloadStatus {
     if (null == path) throw Exception("保存路径获取失败");
     var savePath = "${path.path}/${saveFileName ?? "$appId-$version-$name"}";
 
-    if (!downloadUrl.startsWith(getProxy())) {
-      downloadUrl = "${getProxy()}$downloadUrl";
+    // 仅对 GitHub 相关 URL 应用代理，避免破坏 vivo/F-Droid 等渠道的下载链接
+    if (_needsProxy(downloadUrl)) {
+      final proxy = getProxy();
+      if (proxy.isNotEmpty && !downloadUrl.startsWith(proxy)) {
+        downloadUrl = "$proxy$downloadUrl";
+      }
     }
     var status =
         DownloadStatus(appId, appName, version, name, downloadUrl, savePath);

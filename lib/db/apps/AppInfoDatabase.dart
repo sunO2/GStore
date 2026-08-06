@@ -29,7 +29,55 @@ class Builder extends _$AppInfoDatabaseBuilder {
       _migrations,
       _callback,
     );
+
+    // 初始化 FTS5 全文搜索索引
+    await _setupFts5(database.database);
     return database;
+  }
+
+  /// 初始化 FTS5 全文搜索
+  /// 创建虚拟表 + 触发器同步 apps 表，并回填已有数据
+  Future<void> _setupFts5(sqflite.DatabaseExecutor db) async {
+    // 创建 FTS5 虚拟表
+    // unicode61 兼容所有 SQLite 版本；查询用前缀匹配（"词"*）
+    await db.execute('''
+      CREATE VIRTUAL TABLE IF NOT EXISTS apps_fts USING fts5(
+        appId UNINDEXED,
+        name,
+        des,
+        content=''
+      )
+    ''');
+
+    // 创建触发器：apps 表插入/更新/删除时同步
+    await db.execute('''
+      CREATE TRIGGER IF NOT EXISTS apps_fts_insert AFTER INSERT ON apps BEGIN
+        INSERT INTO apps_fts(rowid, appId, name, des)
+        VALUES (new.rowid, new.appId, new.name, new.des);
+      END
+    ''');
+    await db.execute('''
+      CREATE TRIGGER IF NOT EXISTS apps_fts_delete AFTER DELETE ON apps BEGIN
+        DELETE FROM apps_fts WHERE rowid = old.rowid;
+      END
+    ''');
+    await db.execute('''
+      CREATE TRIGGER IF NOT EXISTS apps_fts_update AFTER UPDATE ON apps BEGIN
+        DELETE FROM apps_fts WHERE rowid = old.rowid;
+        INSERT INTO apps_fts(rowid, appId, name, des)
+        VALUES (new.rowid, new.appId, new.name, new.des);
+      END
+    ''');
+
+    // 回填已有数据（幂等：检查 apps_fts 是否为空）
+    final count = await db.rawQuery('SELECT count(*) AS c FROM apps_fts');
+    final c = count.isNotEmpty ? (count.first['c'] as int? ?? 0) : 0;
+    if (c == 0) {
+      await db.execute('''
+        INSERT INTO apps_fts(rowid, appId, name, des)
+        SELECT rowid, appId, name, des FROM apps
+      ''');
+    }
   }
 }
 

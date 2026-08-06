@@ -73,6 +73,11 @@ dependencies:
   flutter_rust_bridge: 2.11.1
   path: any
   xml: ^6.5.0
+  genkit: ^0.15.1
+  genkit_google_genai: ^0.2.12
+  genkit_openai: ^0.3.7
+  device_info_plus: ^12.4.0
+  shizuku_api: ^1.2.2
 dev_dependencies:
   flutter_test:
     sdk: flutter

@@ -266,6 +266,22 @@ class ThemeDataBuilder {
         elevation: 0,
         height: 80,
         indicatorColor: colorScheme.primaryContainer,
+        // 统一所有 tab 图标颜色（含自定义字体图标）
+        iconTheme: WidgetStateProperty.resolveWith(
+          (states) => IconThemeData(
+            color: states.contains(WidgetState.selected)
+                ? colorScheme.primary
+                : colorScheme.onSurfaceVariant,
+          ),
+        ),
+        labelTextStyle: WidgetStateProperty.resolveWith(
+          (states) => TextStyle(
+            fontSize: 12,
+            color: states.contains(WidgetState.selected)
+                ? colorScheme.primary
+                : colorScheme.onSurfaceVariant,
+          ),
+        ),
       ),
 
       // Navigation rail theme (for larger screens)
@@ -550,6 +566,22 @@ class ThemeDataBuilder {
         elevation: 0,
         height: 80,
         indicatorColor: colorScheme.primaryContainer,
+        // 统一所有 tab 图标颜色（含自定义字体图标）
+        iconTheme: WidgetStateProperty.resolveWith(
+          (states) => IconThemeData(
+            color: states.contains(WidgetState.selected)
+                ? colorScheme.primary
+                : colorScheme.onSurfaceVariant,
+          ),
+        ),
+        labelTextStyle: WidgetStateProperty.resolveWith(
+          (states) => TextStyle(
+            fontSize: 12,
+            color: states.contains(WidgetState.selected)
+                ? colorScheme.primary
+                : colorScheme.onSurfaceVariant,
+          ),
+        ),
       ),
 
       // Navigation rail theme (for larger screens)
