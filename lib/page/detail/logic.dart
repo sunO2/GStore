@@ -305,27 +305,38 @@ class DetailLogic extends GetxController {
     // 防止代理前缀污染（剥掉全局代理前缀，确保打开真实 URL）
     url = _stripProxyPrefix(url);
 
-    final detail = state.detailInfo.value;
-    GStoreInAppBrowser inAppBrowser = GStoreInAppBrowser(
-      appInfo: detail != null
-          ? _detailToAppInfo(detail)
-          : (request != null ? _requestToAppInfo(request!) : null),
-    );
+    try {
+      final detail = state.detailInfo.value;
+      GStoreInAppBrowser inAppBrowser = GStoreInAppBrowser(
+        appInfo: detail != null
+            ? _detailToAppInfo(detail)
+            : (request != null ? _requestToAppInfo(request!) : null),
+      );
 
-    final settings = ChromeSafariBrowserSettings(
-      shareState: CustomTabsShareState.SHARE_STATE_ON,
-      barCollapsingEnabled: true,
-    );
-    inAppBrowser.open(url: WebUri(url), settings: settings);
+      final settings = ChromeSafariBrowserSettings(
+        shareState: CustomTabsShareState.SHARE_STATE_ON,
+        barCollapsingEnabled: true,
+      );
+      inAppBrowser.open(url: WebUri(url), settings: settings);
+    } catch (e) {
+      debugPrint('DetailLogic: 打开浏览器失败 - $e');
+    }
   }
 
   /// 剥掉代理前缀（如 https://ghfast.top/），保留原始 URL
   String _stripProxyPrefix(String url) {
     final proxy = getProxy();
-    if (proxy.isNotEmpty && url.startsWith(proxy)) {
-      final stripped = url.substring(proxy.length);
-      debugPrint('DetailLogic: 剥掉代理前缀 - $url -> $stripped');
-      return stripped;
+    if (proxy.isEmpty) return url;
+
+    // 仅当代理后紧跟协议边界时才剥离，避免误匹配（如 https://ghfast.top 误匹配 https://ghfast.top2.com）
+    if (url.startsWith(proxy)) {
+      final remainder = url.substring(proxy.length);
+      // 剥离后必须是完整协议 URL（避免相对路径导致 WebUri 崩溃）
+      if (remainder.startsWith('http://') ||
+          remainder.startsWith('https://')) {
+        debugPrint('DetailLogic: 剥掉代理前缀 - $url -> $remainder');
+        return remainder;
+      }
     }
     return url;
   }
