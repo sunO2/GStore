@@ -25,6 +25,11 @@ class SettingsPage extends StatelessWidget {
           _buildDataSyncSection(context),
           const SizedBox(height: AppSpacing.xxl),
 
+          // Install & Permission section
+          _buildSectionHeader('安装与权限'),
+          _buildInstallSection(context),
+          const SizedBox(height: AppSpacing.xxl),
+
           // About section
           _buildSectionHeader('关于'),
           _buildAboutSection(context),
@@ -101,6 +106,27 @@ class SettingsPage extends StatelessWidget {
     );
   }
 
+  Widget _buildInstallSection(BuildContext context) {
+    return Card(
+      margin: AppSpacing.allLG,
+      child: Column(
+        children: [
+          // Shizuku 授权状态
+          _ShizukuTile(),
+          const Divider(height: 1),
+          // 安装方式提示
+          ListTile(
+            leading: const Icon(Icons.system_update_alt, size: AppTypography.iconMD),
+            title: const Text('安装方式'),
+            subtitle: const Text(
+                '开启 Shizuku 后可静默安装应用，无需逐次确认；未授权时使用系统安装'),
+            isThreeLine: true,
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildAboutSection(BuildContext context) {
     return Card(
       margin: AppSpacing.allLG,
@@ -122,6 +148,102 @@ class SettingsPage extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Shizuku 授权状态 Tile
+class _ShizukuTile extends StatefulWidget {
+  @override
+  State<_ShizukuTile> createState() => _ShizukuTileState();
+}
+
+class _ShizukuTileState extends State<_ShizukuTile> {
+  bool _checking = true;
+  bool _available = false;
+  bool _granted = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _check();
+  }
+
+  Future<void> _check() async {
+    final manager = InstallManager.instance;
+    await manager.checkShizuku();
+    if (mounted) {
+      setState(() {
+        _checking = false;
+        _available = manager.isBinderRunning;
+        _granted = manager.isPermissionGranted;
+      });
+    }
+  }
+
+  Future<void> _requestPermission() async {
+    setState(() => _checking = true);
+    final manager = InstallManager.instance;
+    final granted = await manager.requestPermission();
+    if (mounted) {
+      setState(() {
+        _checking = false;
+        _available = manager.isBinderRunning;
+        _granted = granted;
+      });
+    }
+    if (mounted && granted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Shizuku 授权成功，可静默安装应用')),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_checking) {
+      return const ListTile(
+        leading: Icon(Icons.shield_outlined, size: AppTypography.iconMD),
+        title: Text('Shizuku 状态'),
+        subtitle: Text('检测中...'),
+      );
+    }
+
+    if (!_available) {
+      return ListTile(
+        leading: const Icon(Icons.shield_outlined, size: AppTypography.iconMD),
+        title: const Text('Shizuku 状态'),
+        subtitle: const Text('未运行（需安装 Shizuku 并启动）'),
+        trailing: TextButton(
+          onPressed: () async {
+            final manager = InstallManager.instance;
+            await manager.checkShizuku();
+            if (mounted) setState(() {
+              _available = manager.isBinderRunning;
+              _granted = manager.isPermissionGranted;
+            });
+          },
+          child: const Text('重新检测'),
+        ),
+      );
+    }
+
+    if (!_granted) {
+      return ListTile(
+        leading: const Icon(Icons.shield_outlined, size: AppTypography.iconMD),
+        title: const Text('Shizuku 状态'),
+        subtitle: const Text('已运行，未授权'),
+        trailing: TextButton(
+          onPressed: _requestPermission,
+          child: const Text('授权'),
+        ),
+      );
+    }
+
+    return const ListTile(
+      leading: Icon(Icons.shield, size: AppTypography.iconMD, color: Colors.green),
+      title: Text('Shizuku 状态'),
+      subtitle: Text('已授权，可静默安装'),
     );
   }
 }

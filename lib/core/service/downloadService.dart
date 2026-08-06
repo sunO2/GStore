@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:io';
-import 'package:app_installer/app_installer.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
 import 'package:gstore/core/core.dart';
 import 'package:dio/dio.dart';
@@ -305,7 +304,8 @@ class DownloadService extends GetxService {
 
   _install(String fileName, String filePath) {
     if (GetPlatform.isAndroid && fileName.endsWith(".apk")) {
-      AppInstaller.installApk(filePath);
+      // 使用 InstallManager 统一安装（Shizuku 静默安装优先，回退系统安装）
+      InstallManager.instance.installApk(filePath);
       return true;
     }
     return false;

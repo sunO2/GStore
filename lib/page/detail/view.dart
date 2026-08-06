@@ -7,6 +7,7 @@ import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/model/StatTag.dart';
 import 'package:gstore/core/design/design_tokens.dart';
+import 'package:gstore/http/download/DownloadStatus.dart';
 import 'package:gstore/page/detail/widgets.dart';
 import 'logic.dart';
 import 'state.dart';
@@ -45,31 +46,41 @@ class DetailPage extends StatelessWidget {
         // 直接显示内容（移除大块 loading，避免布局跳动）
         return _buildBody(context, logic, state);
       }),
-      floatingActionButton: StreamBuilder(
-        stream: logic.counterController.stream,
-        builder: (context, AsyncSnapshot snapshot) {
-          if (!snapshot.hasData) return const SizedBox();
+      floatingActionButton: Obx(() {
+        final data = state.currentDownload.value;
+        if (data == null) return const SizedBox();
 
-          final data = snapshot.data;
-          if (data == null) return const SizedBox();
+        final total = data.total;
+        final count = data.count;
+        // 防止除零错误
+        final hasTotal = total > 0;
+        final progress = hasTotal ? (count / total).clamp(0.0, 1.0) : null;
+        final percent = hasTotal ? ((count / total) * 100).toInt().clamp(0, 100) : 0;
+        final downloading = data.status == DownloadStatus.DOWNLOAD_LOADING;
 
-          return FloatingActionButton(
-            onPressed: null,
-            child: Stack(
-              alignment: AlignmentDirectional.center,
-              children: [
-                CircularProgressIndicator(
-                  value: data.count / data.total,
-                ),
-                Text(
-                  "${((data.count / data.total) * 100).toInt()}",
-                  style: Theme.of(context).textTheme.labelSmall,
-                )
-              ],
-            ),
-          );
-        },
-      ),
+        if (!downloading && data.status != DownloadStatus.DOWNLOAD_SUCCESS) {
+          return const SizedBox();
+        }
+
+        return FloatingActionButton(
+          onPressed: null,
+          backgroundColor: downloading
+              ? null
+              : Theme.of(context).colorScheme.primaryContainer,
+          child: Stack(
+            alignment: AlignmentDirectional.center,
+            children: [
+              CircularProgressIndicator(
+                value: progress,
+              ),
+              Text(
+                hasTotal ? "$percent" : "...",
+                style: Theme.of(context).textTheme.labelSmall,
+              )
+            ],
+          ),
+        );
+      }),
     );
   }
 

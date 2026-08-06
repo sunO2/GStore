@@ -17,6 +17,9 @@ class AppRoute {
   static String backup = "/GStore/backup";
   static String webdavConfig = "/GStore/webdavConfig";
   static String workflowDesigner = "/GStore/workflowDesigner";
+  static String agent = "/GStore/agent";
+  static String agentSettings = "/GStore/agentSettings";
+  static String installedApps = "/GStore/installedApps";
 
   static List<GetPage> pages = [
     GetPage(
@@ -42,5 +45,8 @@ class AppRoute {
     GetPage(name: backup, page: () => const BackupPage()),
     GetPage(name: webdavConfig, page: () => const WebDavConfigPage()),
     GetPage(name: workflowDesigner, page: () => const WorkflowDesignerPage()),
+    GetPage(name: agent, page: () => const AgentPage()),
+    GetPage(name: agentSettings, page: () => const AgentSettingsPage()),
+    GetPage(name: installedApps, page: () => const InstalledAppsPage()),
   ];
 }

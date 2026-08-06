@@ -66,6 +66,9 @@ registerService() async {
 
   // 初始化配置管理系统
   await ConfigInitializer.initialize();
+
+  // 初始化 Agent 智能助手服务（懒初始化，首次使用时创建）
+  Get.lazyPut<AgentService>(() => AgentService());
 }
 
 colorSchemeSeed(ColorScheme? color, Brightness brightness) {

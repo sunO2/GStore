@@ -70,7 +70,11 @@ class _GithubAuthApi implements GithubAuthApi {
   }) async {
     final _extra = <String, dynamic>{};
     final queryParameters = <String, dynamic>{};
-    final _headers = <String, dynamic>{};
+    final _headers = <String, dynamic>{
+      r'Content-Type': 'application/x-www-form-urlencoded',
+      r'Accept': 'application/json',
+    };
+    _headers.removeWhere((k, v) => v == null);
     final _data = {
       'client_id': clientId,
       'scope': scope,
@@ -79,6 +83,7 @@ class _GithubAuthApi implements GithubAuthApi {
       method: 'POST',
       headers: _headers,
       extra: _extra,
+      contentType: 'application/x-www-form-urlencoded',
     )
         .compose(
           _dio.options,
@@ -110,7 +115,11 @@ class _GithubAuthApi implements GithubAuthApi {
   }) async {
     final _extra = <String, dynamic>{};
     final queryParameters = <String, dynamic>{};
-    final _headers = <String, dynamic>{};
+    final _headers = <String, dynamic>{
+      r'Content-Type': 'application/x-www-form-urlencoded',
+      r'Accept': 'application/json',
+    };
+    _headers.removeWhere((k, v) => v == null);
     final _data = {
       'client_id': clientId,
       'device_code': deviceCode,
@@ -120,6 +129,7 @@ class _GithubAuthApi implements GithubAuthApi {
       method: 'POST',
       headers: _headers,
       extra: _extra,
+      contentType: 'application/x-www-form-urlencoded',
     )
         .compose(
           _dio.options,

@@ -18,6 +18,7 @@ export 'package:gstore/core/service/db_manager.dart';
 export 'package:gstore/core/service/user_manager.dart';
 export 'package:gstore/core/service/downloadService.dart';
 export 'package:gstore/core/service/backup_service.dart';
+export 'package:gstore/core/service/install_manager.dart';
 export 'package:gstore/core/utils/logger.dart';
 export 'package:gstore/core/routers.dart';
 
@@ -57,6 +58,12 @@ export 'package:gstore/core/cache/CacheManager.dart';
 
 // 事件系统
 export 'package:gstore/core/event/database_event.dart';
+
+// Agent 智能助手
+export 'package:gstore/core/agent/agent_model_store.dart';
+export 'package:gstore/core/agent/agent_session_store.dart';
+export 'package:gstore/core/agent/agent_service.dart';
+export 'package:gstore/core/agent/platform_arch.dart';
 
 // 资源管理
 export 'package:gstore/core/resource/Disposable.dart';
