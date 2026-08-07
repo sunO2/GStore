@@ -6,6 +6,7 @@ library;
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:gstore/core/logger/LogManager.dart';
 
 import '../config_provider.dart';
 import '../config_storage.dart';
@@ -71,11 +72,11 @@ class WebDavConfigProvider extends ConfigProvider<WebDavConfig> {
       );
 
       _currentConfig = config;
-      debugPrint('WebDavConfigProvider: 配置已加载 - $url');
+      appLog.info('WebDavConfigProvider: 配置已加载 - $url');
       return config;
     } catch (e, stackTrace) {
-      debugPrint('WebDavConfigProvider: 加载配置失败 - $e');
-      debugPrint('WebDavConfigProvider: 堆栈跟踪: $stackTrace');
+      appLog.error('WebDavConfigProvider: 加载配置失败 - $e');
+      appLog.error('WebDavConfigProvider: 堆栈跟踪: $stackTrace');
       _currentConfig = null;
       return null;
     }
@@ -95,15 +96,15 @@ class WebDavConfigProvider extends ConfigProvider<WebDavConfig> {
       if (success.every((s) => s)) {
         _currentConfig = config;
         _configController.add(config);
-        debugPrint('WebDavConfigProvider: 配置已保存 - ${config.url}');
+        appLog.info('WebDavConfigProvider: 配置已保存 - ${config.url}');
         return true;
       } else {
-        debugPrint('WebDavConfigProvider: 保存配置失败 - 部分字段保存失败');
+        appLog.error('WebDavConfigProvider: 保存配置失败 - 部分字段保存失败');
         return false;
       }
     } catch (e, stackTrace) {
-      debugPrint('WebDavConfigProvider: 保存配置异常 - $e');
-      debugPrint('WebDavConfigProvider: 堆栈跟踪: $stackTrace');
+      appLog.error('WebDavConfigProvider: 保存配置异常 - $e');
+      appLog.error('WebDavConfigProvider: 堆栈跟踪: $stackTrace');
       return false;
     }
   }
@@ -122,15 +123,15 @@ class WebDavConfigProvider extends ConfigProvider<WebDavConfig> {
       if (success.every((s) => s)) {
         _currentConfig = null;
         _configController.add(null);
-        debugPrint('WebDavConfigProvider: 配置已清除');
+        appLog.info('WebDavConfigProvider: 配置已清除');
         return true;
       } else {
-        debugPrint('WebDavConfigProvider: 清除配置失败 - 部分字段清除失败');
+        appLog.error('WebDavConfigProvider: 清除配置失败 - 部分字段清除失败');
         return false;
       }
     } catch (e, stackTrace) {
-      debugPrint('WebDavConfigProvider: 清除配置异常 - $e');
-      debugPrint('WebDavConfigProvider: 堆栈跟踪: $stackTrace');
+      appLog.error('WebDavConfigProvider: 清除配置异常 - $e');
+      appLog.error('WebDavConfigProvider: 堆栈跟踪: $stackTrace');
       return false;
     }
   }
@@ -164,7 +165,7 @@ class WebDavConfigProvider extends ConfigProvider<WebDavConfig> {
   @override
   Future<bool> importFromJson(Map<String, dynamic> json) async {
     try {
-      debugPrint('WebDavConfigProvider: 开始从 JSON 导入配置');
+      appLog.info('WebDavConfigProvider: 开始从 JSON 导入配置');
       debugPrint('WebDavConfigProvider: JSON keys: ${json.keys.toList()}');
 
       final config = WebDavConfig.fromJson(json);
@@ -174,8 +175,8 @@ class WebDavConfigProvider extends ConfigProvider<WebDavConfig> {
       debugPrint('WebDavConfigProvider: 保存结果 - $success');
       return success;
     } catch (e, stackTrace) {
-      debugPrint('WebDavConfigProvider: 导入配置失败 - $e');
-      debugPrint('WebDavConfigProvider: 堆栈跟踪: $stackTrace');
+      appLog.error('WebDavConfigProvider: 导入配置失败 - $e');
+      appLog.error('WebDavConfigProvider: 堆栈跟踪: $stackTrace');
       return false;
     }
   }

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:dio/dio.dart';
 import 'package:dynamic_color/dynamic_color.dart';
 import 'package:flutter/material.dart';
@@ -14,7 +16,9 @@ import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
 import 'package:gstore/core/fdroid/FdroidRepoManager.dart';
 import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/event/database_event.dart';
+import 'package:gstore/core/service/download_notification_service.dart';
 import 'package:rhttp/rhttp.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/config/config_initializer.dart';
@@ -22,6 +26,9 @@ import 'package:gstore/core/config/config_initializer.dart';
 registerService() async {
   // 初始化日志管理器（必须在最开始，因为其他模块可能需要使用日志）
   Get.put(LogManager.instance);
+
+  // 初始化下载通知服务（通知栏进度 + 前台服务）
+  await DownloadNotificationService.instance.init();
 
   // 初始化 rhttp（基于 curl 的高性能 HTTP 客户端）
   // 必须在使用 RhttpAdapter 之前初始化
@@ -69,6 +76,12 @@ registerService() async {
 
   // 初始化 Agent 智能助手服务（懒初始化，首次使用时创建）
   Get.lazyPut<AgentService>(() => AgentService());
+
+  // 初始化红点服务
+  Get.put(BadgeService());
+
+  // 启动后异步检测红点（应用更新 / 数据库更新等），不阻塞 UI
+  unawaited(BadgeService.instance.checkAll());
 }
 
 colorSchemeSeed(ColorScheme? color, Brightness brightness) {
@@ -85,6 +98,9 @@ colorSchemeSeed(ColorScheme? color, Brightness brightness) {
 main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  // 初始化前台任务通信端口（后台 isolate 保活）
+  FlutterForegroundTask.initCommunicationPort();
+
   // 先初始化 LogManager（必须在最开始，用于拦截日志）
   Get.put(LogManager.instance);
   appLog.info('应用启动', data: {
@@ -92,9 +108,10 @@ main() async {
   });
 
   // 重定向 debugPrint 到 appLog（这样所有 debugPrint 都会进入日志查看器）
+  // 默认映射为 debug 级别；重要流程/错误请使用 appLog.info / appLog.error
   debugPrint = (String? message, {int? wrapWidth}) {
     if (message != null) {
-      appLog.info(message);
+      appLog.debug(message);
     }
   };
 

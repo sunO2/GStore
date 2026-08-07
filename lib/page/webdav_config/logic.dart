@@ -27,13 +27,13 @@ class WebDavConfigLogic extends GetxController {
         state.enableHttps.value = config.enableHttps;
         state.hasConfig.value = true;
 
-        debugPrint('WebDavConfigLogic: 配置已加载');
+        appLog.info('WebDavConfigLogic: 配置已加载');
       } else {
         state.hasConfig.value = false;
         debugPrint('WebDavConfigLogic: 未找到配置');
       }
     } catch (e) {
-      debugPrint('WebDavConfigLogic: 加载配置失败 - $e');
+      appLog.error('WebDavConfigLogic: 加载配置失败 - $e');
       state.hasConfig.value = false;
     }
   }
@@ -55,7 +55,7 @@ class WebDavConfigLogic extends GetxController {
 
     try {
       state.isTesting.value = true;
-      debugPrint('WebDavConfigLogic: 开始测试连接 - ${config.baseUrl}');
+      appLog.info('WebDavConfigLogic: 开始测试连接 - ${config.baseUrl}');
 
       final success = await BackupService.instance
           .testWebDavConnection(config);
@@ -84,7 +84,7 @@ class WebDavConfigLogic extends GetxController {
         );
       }
     } catch (e) {
-      debugPrint('WebDavConfigLogic: 测试连接失败 - $e');
+      appLog.error('WebDavConfigLogic: 测试连接失败 - $e');
       Get.snackbar(
         '连接失败',
         '连接错误：$e',
@@ -131,7 +131,7 @@ class WebDavConfigLogic extends GetxController {
       // 返回上一页
       Navigator.pop(context, true);
     } catch (e) {
-      debugPrint('WebDavConfigLogic: 保存配置失败 - $e');
+      appLog.error('WebDavConfigLogic: 保存配置失败 - $e');
       Get.snackbar(
         '保存失败',
         '保存配置失败：$e',
@@ -164,7 +164,7 @@ class WebDavConfigLogic extends GetxController {
         snackPosition: SnackPosition.BOTTOM,
       );
     } catch (e) {
-      debugPrint('WebDavConfigLogic: 删除配置失败 - $e');
+      appLog.error('WebDavConfigLogic: 删除配置失败 - $e');
       Get.snackbar(
         '删除失败',
         '删除配置失败：$e',

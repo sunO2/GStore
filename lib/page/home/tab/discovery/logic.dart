@@ -1,12 +1,15 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:gstore/core/aggregate/aggregate.dart';
 import 'package:gstore/core/channel/channel.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/icons/Icons.dart';
+import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/db/apps/AppInfo.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:async';
 
 import 'state.dart';
@@ -186,7 +189,7 @@ class DiscoveryLogic extends GetxController {
           successCount++;
         } catch (e) {
           failCount++;
-          debugPrint('添加应用失败: $appId - $e');
+          appLog.error('添加应用失败: $appId - $e');
         }
       }
     }
@@ -231,7 +234,7 @@ class DiscoveryLogic extends GetxController {
         }
       }
     } catch (e) {
-      debugPrint('DiscoveryLogic: 加载更多 $channel 失败 - $e');
+      appLog.error('DiscoveryLogic: 加载更多 $channel 失败 - $e');
     } finally {
       state.channelLoadingMore[channel] = false;
     }
@@ -264,7 +267,7 @@ class DiscoveryLogic extends GetxController {
       ]);
     } catch (e) {
       state.errorMessage.value = '加载数据失败: $e';
-      debugPrint('DiscoveryLogic: 加载失败 - $e');
+      appLog.error('DiscoveryLogic: 加载失败 - $e');
     } finally {
       state.isLoading.value = false;
     }
@@ -282,7 +285,7 @@ class DiscoveryLogic extends GetxController {
           state.channelApps[channel.info.type] = result.data!;
         }
       } catch (e) {
-        debugPrint('DiscoveryLogic: 加载 ${channel.info.type.code} 失败 - $e');
+        appLog.error('DiscoveryLogic: 加载 ${channel.info.type.code} 失败 - $e');
         // 即使失败也添加空列表
         state.channelApps[channel.info.type] = [];
       }
@@ -429,6 +432,215 @@ class DiscoveryLogic extends GetxController {
     }
   }
 
+  /// 保存搜索结果到渠道数据库（不直接入库首页）
+  /// 用户需在渠道应用列表中选择"入库"才会加入首页
+  Future<bool> saveSearchToChannel(ChannelType channel, AppInfo app) async {
+    final channelInstance = _channelManager.getChannel(channel);
+    if (channelInstance == null) return false;
+    try {
+      // 统一调用 IChannel.addApp（各渠道内部处理保存逻辑）
+      final result = await channelInstance.addApp(app);
+      if (!result.success) {
+        appLog.error(
+            'DiscoveryLogic: ${channel.code} 保存搜索结果失败 - ${result.error}');
+        return false;
+      }
+
+      // 刷新该渠道的应用列表（让保存的应用出现在渠道视图中）
+      await _refreshChannelApps(channel);
+      return true;
+    } catch (e) {
+      appLog.error('DiscoveryLogic: 保存搜索结果失败 - $e');
+      return false;
+    }
+  }
+
+  /// 刷新指定渠道的应用列表
+  Future<void> _refreshChannelApps(ChannelType channel) async {
+    final channelInstance = _channelManager.getChannel(channel);
+    if (channelInstance == null) return;
+    try {
+      final result = await channelInstance.getAllApps(forceRefresh: true);
+      if (result.success && result.data != null) {
+        state.channelApps[channel] = result.data!;
+      }
+    } catch (e) {
+      appLog.error('DiscoveryLogic: 刷新渠道应用失败 - $e');
+    }
+  }
+
+  /// 从渠道移除应用（同时从首页聚合移除）
+  /// 返回是否成功；[showSnack] 为 false 时静默（批量操作场景）
+  Future<bool> removeFromChannel(
+    ChannelType channel,
+    String appId, {
+    bool showSnack = true,
+  }) async {
+    final channelInstance = _channelManager.getChannel(channel);
+    if (channelInstance == null) return false;
+    try {
+      final result = await channelInstance.removeApp(appId);
+      if (!result.success) {
+        appLog.error(
+            'DiscoveryLogic: ${channel.code} 移除应用失败 - ${result.error}');
+        if (showSnack) {
+          Get.snackbar(
+            '移除失败',
+            '${result.error ?? '未知错误'}',
+            snackPosition: SnackPosition.BOTTOM,
+            backgroundColor: Get.theme.colorScheme.errorContainer,
+            duration: const Duration(seconds: 2),
+          );
+        }
+        return false;
+      }
+
+      // 若已添加到首页，同步移除
+      final aggregator = _aggregator;
+      if (await aggregator.isAppAdded(channel: channel, appId: appId)) {
+        await aggregator.removeApp(channel: channel, appId: appId);
+      }
+
+      // 刷新渠道列表
+      await _refreshChannelApps(channel);
+      if (showSnack) {
+        Get.snackbar(
+          '已移除',
+          '已从${getChannelName(channel)}移除',
+          snackPosition: SnackPosition.BOTTOM,
+          duration: const Duration(seconds: 1),
+        );
+      }
+      return true;
+    } catch (e) {
+      appLog.error('DiscoveryLogic: 移除渠道应用失败 - $e');
+      if (showSnack) {
+        Get.snackbar(
+          '移除失败',
+          e.toString(),
+          snackPosition: SnackPosition.BOTTOM,
+          backgroundColor: Get.theme.colorScheme.errorContainer,
+          duration: const Duration(seconds: 2),
+        );
+      }
+      return false;
+    }
+  }
+
+  /// 显示应用操作菜单（长按触发）
+  /// 单应用操作：添加到首页/移除首页、从渠道删除、批量管理
+  void showAppActions(BuildContext context, ChannelType channel, AppInfo app) {
+    final isAdded = isAppAdded(channel, app.appId);
+    final theme = Theme.of(context);
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: theme.scaffoldBackgroundColor,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // 拖动指示器
+            Container(
+              margin: const EdgeInsets.symmetric(vertical: 12),
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: Colors.grey[300],
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            // 应用信息头
+            Padding(
+              padding: const EdgeInsets.symmetric(
+                horizontal: AppSpacing.lg,
+                vertical: AppSpacing.sm,
+              ),
+              child: Row(
+                children: [
+                  AppIcon(url: app.icon, width: 40, height: 40),
+                  const SizedBox(width: AppSpacing.md),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          app.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.titleMedium,
+                        ),
+                        Text(
+                          '${getChannelName(channel)} · '
+                          '${isAdded ? '已在首页' : '未添加到首页'}',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            // 添加到首页 / 从首页移除
+            ListTile(
+              leading: Icon(
+                isAdded
+                    ? Icons.remove_circle_outline
+                    : Icons.add_circle_outline,
+                color: theme.colorScheme.primary,
+              ),
+              title: Text(isAdded ? '从首页移除' : '添加到首页'),
+              onTap: () {
+                Navigator.of(sheetContext).pop();
+                toggleApp(channel, app);
+              },
+            ),
+            // 从渠道删除
+            ListTile(
+              leading: const Icon(Icons.delete_outline, color: Colors.red),
+              title: const Text(
+                '从渠道删除',
+                style: TextStyle(color: Colors.red),
+              ),
+              onTap: () {
+                Navigator.of(sheetContext).pop();
+                AppDialogs.showDialog(
+                  title: '移除应用',
+                  content:
+                      '确定从${getChannelName(channel)}移除 ${app.name} 吗？',
+                  confirmText: '移除',
+                  cancelText: '取消',
+                  isDangerous: true,
+                  onConfirm: () => removeFromChannel(channel, app.appId),
+                );
+              },
+            ),
+            // 批量管理
+            ListTile(
+              leading: Icon(
+                Icons.checklist,
+                color: theme.colorScheme.secondary,
+              ),
+              title: const Text('批量管理'),
+              onTap: () {
+                Navigator.of(sheetContext).pop();
+                toggleMultiSelectMode();
+                toggleAppSelection(channel.code, app.appId);
+              },
+            ),
+            const SizedBox(height: AppSpacing.sm),
+          ],
+        ),
+      ),
+    );
+  }
+
   /// 批量添加（添加渠道的所有应用）
   Future<void> addAllFromChannel(ChannelType channel) async {
     final apps = state.channelApps[channel] ?? [];
@@ -545,239 +757,65 @@ class DiscoveryLogic extends GetxController {
   }
 
   /// 显示添加应用的 Bottom Sheet
+  /// 直接弹出搜索框 + 渠道多选（默认 F-Droid，记忆上次选中）
   void showAddAppSheet(BuildContext context) {
     final channels = _channelManager.enabledChannels;
 
-    // 过滤出支持添加应用的渠道
-    final addableChannels = channels.where((channel) {
-      final widget = channel.getAddAppWidget(context, (app) {});
-      return widget != null;
-    }).toList();
+    // 过滤出启用的搜索渠道
+    final searchableChannels = channels.where((c) => c.info.enabled).toList();
 
-    if (addableChannels.isEmpty) {
+    if (searchableChannels.isEmpty) {
       Get.snackbar(
         '提示',
-        '当前没有支持通过 UI 添加应用的渠道',
+        '当前没有可用的搜索渠道',
         icon: const Icon(Icons.info, color: Colors.blue),
       );
       return;
     }
 
-    // 如果只有一个支持添加的渠道，直接显示它的添加界面
-    if (addableChannels.length == 1) {
-      final channel = addableChannels.first;
-      final addWidget = channel.getAddAppWidget(
-        context,
-        (app) async {
-          // 注意：这里的回调现在不再使用
-          // 搜索 widget 会直接保存到渠道数据库
-          // 这个回调保留是为了兼容性，但不会被调用
-        },
-        onAppSaved: () async {
-          // 保存后重新加载该渠道的应用列表
-          final result = await channel.getAllApps(forceRefresh: true);
-          if (result.success && result.data != null) {
-            state.channelApps[channel.info.type] = result.data!;
-          }
-        },
-      );
-
-      if (addWidget != null) {
-        showModalBottomSheet(
-          context: context,
-          isScrollControlled: true,
-          builder: (context) => DraggableScrollableSheet(
-            initialChildSize: 0.7,
-            minChildSize: 0.5,
-            maxChildSize: 0.95,
-            expand: false,
-            builder: (context, scrollController) => Container(
-              decoration: BoxDecoration(
-                color: Theme.of(context).scaffoldBackgroundColor,
-                borderRadius: const BorderRadius.only(
-                  topLeft: Radius.circular(20),
-                  topRight: Radius.circular(20),
-                ),
-              ),
-              child: Column(
-                children: [
-                  // 拖动指示器
-                  Container(
-                    margin: const EdgeInsets.symmetric(vertical: 12),
-                    width: 40,
-                    height: 4,
-                    decoration: BoxDecoration(
-                      color: Colors.grey[300],
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                  ),
-                  // 标题
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                    child: Row(
-                      children: [
-                        Icon(
-                          getChannelIcon(channel.info.type),
-                          size: 20,
-                          color: Theme.of(context).colorScheme.primary,
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          '搜索并保存 ${channel.info.name} 应用',
-                          style: Theme.of(context).textTheme.titleMedium,
-                        ),
-                        const Spacer(),
-                        IconButton(
-                          icon: const Icon(Icons.close),
-                          onPressed: () => Get.back(),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const Divider(height: 1),
-                  // 添加界面
-                  Expanded(child: addWidget),
-                ],
-              ),
-            ),
-          ),
-        );
-      }
-      return;
-    }
-
-    // 多个渠道时，先显示渠道选择列表
-    showModalBottomSheet(
-      context: context,
-      builder: (context) => Container(
-        padding: const EdgeInsets.symmetric(vertical: 16),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // 拖动指示器
-            Container(
-              margin: const EdgeInsets.symmetric(vertical: 12),
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(
-                color: Colors.grey[300],
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-            // 标题
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              child: Row(
-                children: [
-                  const Icon(Icons.add_circle, size: 20),
-                  const SizedBox(width: 8),
-                  Text(
-                    '选择渠道',
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
-                ],
-              ),
-            ),
-            const Divider(height: 1),
-            // 渠道列表
-            ListView.builder(
-              shrinkWrap: true,
-              itemCount: addableChannels.length,
-              itemBuilder: (context, index) {
-                final channel = addableChannels[index];
-                return ListTile(
-                  leading: Icon(getChannelIcon(channel.info.type)),
-                  title: Text(channel.info.name),
-                  subtitle: Text(channel.info.description),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () {
-                    Get.back();
-                    // 显示该渠道的添加界面
-                    final addWidget = channel.getAddAppWidget(
-                      context,
-                      (app) async {
-                        // 注意：这里的回调现在不再使用
-                        // 搜索 widget 会直接保存到渠道数据库
-                      },
-                      onAppSaved: () async {
-                        // 保存后重新加载该渠道的应用列表
-                        final result = await channel.getAllApps(forceRefresh: true);
-                        if (result.success && result.data != null) {
-                          state.channelApps[channel.info.type] = result.data!;
-                        }
-                      },
-                    );
-
-                    if (addWidget != null) {
-                      showModalBottomSheet(
-                        context: context,
-                        isScrollControlled: true,
-                        builder: (context) => DraggableScrollableSheet(
-                          initialChildSize: 0.7,
-                          minChildSize: 0.5,
-                          maxChildSize: 0.95,
-                          expand: false,
-                          builder: (context, scrollController) => Container(
-                            decoration: BoxDecoration(
-                              color: Theme.of(context).scaffoldBackgroundColor,
-                              borderRadius: const BorderRadius.only(
-                                topLeft: Radius.circular(20),
-                                topRight: Radius.circular(20),
-                              ),
-                            ),
-                            child: Column(
-                              children: [
-                                // 拖动指示器
-                                Container(
-                                  margin: const EdgeInsets.symmetric(vertical: 12),
-                                  width: 40,
-                                  height: 4,
-                                  decoration: BoxDecoration(
-                                    color: Colors.grey[300],
-                                    borderRadius: BorderRadius.circular(2),
-                                  ),
-                                ),
-                                // 标题
-                                Padding(
-                                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                                  child: Row(
-                                    children: [
-                                      Icon(
-                                        getChannelIcon(channel.info.type),
-                                        size: 20,
-                                        color: Theme.of(context).colorScheme.primary,
-                                      ),
-                                      const SizedBox(width: 8),
-                                      Text(
-                                        '搜索并保存 ${channel.info.name} 应用',
-                                        style: Theme.of(context).textTheme.titleMedium,
-                                      ),
-                                      const Spacer(),
-                                      IconButton(
-                                        icon: const Icon(Icons.close),
-                                        onPressed: () => Get.back(),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                const Divider(height: 1),
-                                // 添加界面
-                                Expanded(child: addWidget),
-                              ],
-                            ),
-                          ),
-                        ),
-                      );
-                    }
-                  },
-                );
-              },
-            ),
-          ],
+    // 加载记忆的选中渠道（默认 F-Droid）
+    _loadSelectedChannelCodes().then((saved) {
+      if (!context.mounted) return;
+      showModalBottomSheet(
+        context: context,
+        isScrollControlled: true,
+        backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+        builder: (sheetContext) => _AddAppSearchSheet(
+          channels: searchableChannels,
+          initialSelectedCodes: saved,
+          onSaveToChannel: saveSearchToChannel,
+          onSelectionChanged: _saveSelectedChannelCodes,
         ),
-      ),
-    );
+      );
+    });
   }
+
+  /// 记忆选中渠道的 key
+  static const String _selectedChannelsKey = 'discovery_add_selected_channels';
+
+  /// 读取记忆的选中渠道（默认 F-Droid）
+  Future<List<String>> _loadSelectedChannelCodes() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final saved = prefs.getStringList(_selectedChannelsKey) ?? [];
+      if (saved.isNotEmpty) return saved;
+      return const ['fdroid'];
+    } catch (e) {
+      appLog.error('DiscoveryLogic: 读取选中渠道失败 - $e');
+      return const ['fdroid'];
+    }
+  }
+
+  /// 保存选中渠道
+  Future<void> _saveSelectedChannelCodes(List<String> codes) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList(_selectedChannelsKey, codes);
+    } catch (e) {
+      appLog.error('DiscoveryLogic: 保存选中渠道失败 - $e');
+    }
+  }
+
 
   /// 获取渠道名称
   String getChannelName(ChannelType type) {
@@ -845,7 +883,7 @@ class DiscoveryLogic extends GetxController {
         state.channelApps[channelType] = result.data!;
       }
     } catch (e) {
-      debugPrint('DiscoveryLogic: 搜索 $channelType 失败 - $e');
+      appLog.error('DiscoveryLogic: 搜索 $channelType 失败 - $e');
     }
   }
 
@@ -871,7 +909,7 @@ class DiscoveryLogic extends GetxController {
                 leading: const Icon(Icons.select_all),
                 title: const Text('全选当前页面'),
                 onTap: () {
-                  Get.back();
+                  Navigator.of(context).pop();
                   _selectAllInCurrentView();
                 },
               ),
@@ -879,7 +917,7 @@ class DiscoveryLogic extends GetxController {
                 leading: const Icon(Icons.add_circle_outline),
                 title: const Text('批量添加已选'),
                 onTap: () {
-                  Get.back();
+                  Navigator.of(context).pop();
                   _batchAddSelected();
                 },
               ),
@@ -887,7 +925,7 @@ class DiscoveryLogic extends GetxController {
                 leading: const Icon(Icons.remove_circle_outline),
                 title: const Text('批量移除已选'),
                 onTap: () {
-                  Get.back();
+                  Navigator.of(context).pop();
                   _batchRemoveSelected();
                 },
               ),
@@ -916,12 +954,51 @@ class DiscoveryLogic extends GetxController {
     );
   }
 
-  /// 批量移除
-  void _batchRemoveSelected() {
+  /// 批量移除（从渠道删除选中的应用，供 UI 调用）
+  Future<void> batchRemoveSelected() => _batchRemoveSelected();
+
+  /// 批量移除（从渠道删除选中的应用）
+  Future<void> _batchRemoveSelected() async {
+    if (state.selectedApps.isEmpty) return;
+
+    final confirmed = await AppDialogs.showDialog(
+      title: '移除应用',
+      content: '确定从渠道移除选中的 ${state.selectedApps.length} 个应用吗？',
+      confirmText: '移除',
+      cancelText: '取消',
+      isDangerous: true,
+    );
+    if (confirmed != true) return;
+
+    int successCount = 0;
+    int failCount = 0;
+    final keys = List<String>.from(state.selectedApps);
+
+    for (final key in keys) {
+      final parts = key.split(':');
+      if (parts.length != 2) continue;
+      final channelCode = parts[0];
+      final appId = parts[1];
+      final channel = ChannelType.fromCode(channelCode);
+      if (channel == null) continue;
+
+      final ok = await removeFromChannel(channel, appId, showSnack: false);
+      if (ok) {
+        successCount++;
+      } else {
+        failCount++;
+      }
+    }
+
+    // 清空选择并退出多选
+    state.selectedApps.clear();
+    state.isMultiSelectMode.value = false;
+
     Get.snackbar(
-      '提示',
-      '批量操作功能开发中',
-      icon: const Icon(Icons.info, color: Colors.blue),
+      '移除完成',
+      '成功: $successCount, 失败: $failCount',
+      snackPosition: SnackPosition.BOTTOM,
+      duration: const Duration(seconds: 2),
     );
   }
 
@@ -930,5 +1007,493 @@ class DiscoveryLogic extends GetxController {
     searchController.dispose();
     _debounceTimer?.cancel();
     super.onClose();
+  }
+}
+
+/// 添加应用搜索 Bottom Sheet
+/// 直接搜索，下方渠道多选（默认 F-Droid，记忆选中）
+class _AddAppSearchSheet extends StatefulWidget {
+  /// 可选搜索渠道
+  final List<IChannel> channels;
+
+  /// 初始选中的渠道 codes
+  final List<String> initialSelectedCodes;
+
+  /// 保存到渠道回调（返回是否成功）
+  final Future<bool> Function(ChannelType channel, AppInfo appInfo)
+      onSaveToChannel;
+
+  /// 选中渠道变化回调（持久化）
+  final Future<void> Function(List<String> codes) onSelectionChanged;
+
+  const _AddAppSearchSheet({
+    required this.channels,
+    required this.initialSelectedCodes,
+    required this.onSaveToChannel,
+    required this.onSelectionChanged,
+  });
+
+  @override
+  State<_AddAppSearchSheet> createState() => _AddAppSearchSheetState();
+}
+
+class _AddAppSearchSheetState extends State<_AddAppSearchSheet> {
+  late final Set<String> _selectedCodes;
+  final TextEditingController _searchController = TextEditingController();
+  final FocusNode _focusNode = FocusNode();
+
+  /// 搜索结果：应用 + 来源渠道
+  final List<(AppInfo, ChannelType)> _results = [];
+
+  bool _searching = false;
+  bool _searched = false;
+  Timer? _debounce;
+
+  /// 已保存到渠道的应用 key（channel.code:appId）
+  final Set<String> _savedKeys = {};
+
+  /// 正在保存的 key
+  String? _savingKey;
+
+  @override
+  void initState() {
+    super.initState();
+    // 初始选中 = 记忆的选中（过滤无效渠道），空则默认 fdroid
+    final validCodes = widget.channels.map((c) => c.info.type.code).toSet();
+    final initial = widget.initialSelectedCodes.where(validCodes.contains).toSet();
+    _selectedCodes = initial.isNotEmpty ? initial : {'fdroid'};
+    _focusNode.requestFocus();
+  }
+
+  @override
+  void dispose() {
+    _debounce?.cancel();
+    _searchController.dispose();
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  /// 当前选中的渠道类型
+  List<ChannelType> get _selectedTypes {
+    return widget.channels
+        .where((c) => _selectedCodes.contains(c.info.type.code))
+        .map((c) => c.info.type)
+        .toList();
+  }
+
+  /// 切换渠道选中
+  void _toggleChannel(ChannelType type) {
+    setState(() {
+      if (_selectedCodes.contains(type.code)) {
+        _selectedCodes.remove(type.code);
+      } else {
+        _selectedCodes.add(type.code);
+      }
+    });
+    // 持久化选中
+    widget.onSelectionChanged(_selectedCodes.toList());
+    // 有搜索词则重新搜索
+    if (_searchController.text.trim().isNotEmpty) {
+      _doSearch(_searchController.text.trim());
+    }
+  }
+
+  /// 防抖搜索
+  void _onKeywordChanged(String value) {
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 400), () {
+      final keyword = value.trim();
+      if (keyword.isEmpty) {
+        setState(() {
+          _results.clear();
+          _searched = false;
+        });
+        return;
+      }
+      _doSearch(keyword);
+    });
+  }
+
+  /// 搜索所有选中渠道，聚合结果
+  Future<void> _doSearch(String keyword) async {
+    final types = _selectedTypes;
+    if (types.isEmpty) {
+      setState(() {
+        _results.clear();
+        _searched = true;
+      });
+      return;
+    }
+
+    setState(() {
+      _searching = true;
+      _searched = true;
+    });
+
+    final newResults = <(AppInfo, ChannelType)>[];
+    for (final type in types) {
+      try {
+        final channel = widget.channels.firstWhereOrNull(
+          (c) => c.info.type == type,
+        );
+        if (channel == null) continue;
+        final result = await channel.searchApps(keyword, forceRefresh: true);
+        if (result.success && result.data != null) {
+          for (final app in result.data!) {
+            newResults.add((app, type));
+          }
+        }
+      } catch (e) {
+        appLog.error('_AddAppSearchSheet: 搜索 ${type.code} 失败 - $e');
+      }
+    }
+
+    // 按搜索词相似度排序（名称/包名完全匹配 > 前缀 > 包含 > 描述包含）
+    final kw = keyword.toLowerCase();
+    newResults.sort((a, b) => _scoreResult(b.$1, kw) - _scoreResult(a.$1, kw));
+
+    if (!mounted) return;
+    setState(() {
+      _results
+        ..clear()
+        ..addAll(newResults);
+      _searching = false;
+    });
+  }
+
+  /// 计算应用与搜索词的匹配分数
+  int _scoreResult(AppInfo app, String kw) {
+    final name = app.name.toLowerCase();
+    final pkg = app.appId.toLowerCase();
+    final des = app.des.toLowerCase();
+    int score = 0;
+    if (name == kw) {
+      score += 100;
+    } else if (name.startsWith(kw)) {
+      score += 80;
+    } else if (name.contains(kw)) {
+      score += 60;
+    }
+    if (pkg == kw) {
+      score += 50;
+    } else if (pkg.contains(kw)) {
+      score += 40;
+    }
+    if (des.contains(kw)) {
+      score += 20;
+    }
+    return score;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+
+    return Padding(
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.of(context).viewInsets.bottom,
+      ),
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.of(context).size.height * 0.85,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // 拖动指示器
+            Container(
+              margin: const EdgeInsets.symmetric(vertical: 12),
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: Colors.grey[300],
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            // 标题
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              child: Row(
+                children: [
+                  const Icon(Icons.search, size: 20),
+                  const SizedBox(width: 8),
+                  Text(
+                    '搜索应用',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                  const Spacer(),
+                  IconButton(
+                    icon: const Icon(Icons.close),
+                    onPressed: () => Navigator.of(context).pop(),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+
+            // 渠道多选
+            SizedBox(
+              width: double.infinity,
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                child: Row(
+                  children: widget.channels.map((channel) {
+                    final type = channel.info.type;
+                    final selected = _selectedCodes.contains(type.code);
+                    return Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: FilterChip(
+                        avatar: Icon(
+                          _channelIcon(type),
+                          size: 16,
+                          color: selected ? scheme.onSecondaryContainer : null,
+                        ),
+                        label: Text(channel.info.name),
+                        selected: selected,
+                        onSelected: (_) => _toggleChannel(type),
+                        visualDensity: VisualDensity.compact,
+                      ),
+                    );
+                  }).toList(),
+                ),
+              ),
+            ),
+            const Divider(height: 1),
+
+            // 搜索输入框
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+              child: TextField(
+                controller: _searchController,
+                focusNode: _focusNode,
+                onChanged: _onKeywordChanged,
+                onSubmitted: (value) {
+                  final keyword = value.trim();
+                  if (keyword.isNotEmpty) _doSearch(keyword);
+                },
+                decoration: InputDecoration(
+                  hintText: '输入应用名称或包名搜索',
+                  prefixIcon: const Icon(Icons.search),
+                  filled: true,
+                  fillColor: scheme.surfaceContainerHighest,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide.none,
+                  ),
+                  contentPadding: const EdgeInsets.symmetric(vertical: 10),
+                ),
+              ),
+            ),
+
+            // 搜索结果
+            Flexible(
+              child: _buildResultArea(context),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 结果区域
+  Widget _buildResultArea(BuildContext context) {
+    if (_searching) {
+      return const Padding(
+        padding: EdgeInsets.all(24),
+        child: AppLoading(size: AppLoadingSize.medium),
+      );
+    }
+
+    if (!_searched) {
+      return const Padding(
+        padding: EdgeInsets.all(32),
+        child: Center(
+          child: Text('输入关键词，搜索所选渠道的应用'),
+        ),
+      );
+    }
+
+    if (_results.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.all(32),
+        child: Center(child: Text('未找到相关应用')),
+      );
+    }
+
+    return ListView.builder(
+      shrinkWrap: true,
+      itemCount: _results.length,
+      itemBuilder: (context, index) {
+        final (app, type) = _results[index];
+        final scheme = Theme.of(context).colorScheme;
+        return ListTile(
+            leading: app.icon.isNotEmpty
+                ? ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: CachedNetworkImage(
+                      imageUrl: app.icon,
+                      width: 40,
+                      height: 40,
+                      fit: BoxFit.cover,
+                      errorWidget: (_, __, ___) =>
+                          _defaultAppIcon(context),
+                    ),
+                  )
+                : _defaultAppIcon(context),
+            // 标题行：应用名 + 渠道标签（渠道名始终可见，不被截断）
+            title: Row(
+              children: [
+                Flexible(
+                  child: Text(
+                    app.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 1,
+                  ),
+                  decoration: BoxDecoration(
+                    color: scheme.secondaryContainer,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    _channelName(type),
+                    style: TextStyle(
+                      fontSize: 10,
+                      color: scheme.onSecondaryContainer,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            subtitle: app.des.isNotEmpty
+                ? Text(
+                    app.des,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  )
+                : null,
+            trailing: _buildSaveButton(type, app),
+          );
+        },
+    );
+  }
+
+  /// 保存按钮：保存到渠道数据库（不直接入库首页）
+  Widget _buildSaveButton(ChannelType type, AppInfo app) {
+    final key = '${type.code}:${app.appId}';
+    final saved = _savedKeys.contains(key);
+    final saving = _savingKey == key;
+
+    if (saved) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(horizontal: 8),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.check_circle, size: 16, color: Colors.green),
+            SizedBox(width: 4),
+            Text('已添加', style: TextStyle(fontSize: 13)),
+          ],
+        ),
+      );
+    }
+
+    return FilledButton.tonal(
+      style: FilledButton.styleFrom(
+        visualDensity: VisualDensity.compact,
+      ),
+      onPressed: saving ? null : () => _saveToChannel(type, app),
+      child: saving
+          ? const SizedBox(
+              width: 14,
+              height: 14,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          : const Text('添加'),
+    );
+  }
+
+  /// 保存到渠道（保存搜索结果，供后续入库）
+  Future<void> _saveToChannel(ChannelType type, AppInfo app) async {
+    final key = '${type.code}:${app.appId}';
+    setState(() => _savingKey = key);
+    final success = await widget.onSaveToChannel(type, app);
+    if (!mounted) return;
+    setState(() {
+      _savingKey = null;
+      if (success) {
+        _savedKeys.add(key);
+        Get.snackbar(
+          '已添加到${_channelName(type)}',
+          '${app.name} 已保存，可到渠道列表中选择入库',
+          snackPosition: SnackPosition.BOTTOM,
+          duration: const Duration(seconds: 2),
+        );
+      } else {
+        Get.snackbar(
+          '添加失败',
+          '${app.name} 保存到${_channelName(type)}失败',
+          snackPosition: SnackPosition.BOTTOM,
+          backgroundColor: Get.theme.colorScheme.errorContainer,
+          duration: const Duration(seconds: 3),
+        );
+      }
+    });
+  }
+
+  /// 默认应用图标
+  Widget _defaultAppIcon(BuildContext context) {
+    return Container(
+      width: 40,
+      height: 40,
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: const Icon(Icons.android, color: Colors.grey),
+    );
+  }
+
+  /// 渠道名称
+  String _channelName(ChannelType type) {
+    switch (type) {
+      case ChannelType.localDb:
+        return '本地数据库';
+      case ChannelType.github:
+        return 'GitHub';
+      case ChannelType.http:
+        return 'HTTP API';
+      case ChannelType.vivo:
+        return 'vivo';
+      case ChannelType.fdroid:
+        return 'F-Droid';
+      default:
+        return type.code;
+    }
+  }
+
+  /// 渠道图标
+  IconData _channelIcon(ChannelType type) {
+    switch (type) {
+      case ChannelType.localDb:
+        return Icons.storage;
+      case ChannelType.github:
+        return Icons.code;
+      case ChannelType.http:
+        return Icons.cloud;
+      case ChannelType.vivo:
+        return Icons.phone_android;
+      case ChannelType.fdroid:
+        return Icons.android;
+      default:
+        return Icons.apps;
+    }
   }
 }

@@ -1,18 +1,18 @@
 import 'dart:async';
 
 import 'package:floor/floor.dart';
-import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart' as sqflite;
 import 'package:gstore/core/channel/database/channel_added_app.dart';
 import 'package:gstore/core/channel/database/channel_added_app_dao.dart';
+import 'package:gstore/core/logger/LogManager.dart';
 
 part 'channel_database.g.dart';
 
 /// 渠道应用数据库
 /// 每个渠道维护自己添加的应用列表
-@Database(version: 2, entities: [ChannelAddedApp])
+@Database(version: 3, entities: [ChannelAddedApp])
 abstract class ChannelDatabase extends FloorDatabase {
   ChannelAddedAppDao get dao;
 
@@ -23,22 +23,28 @@ abstract class ChannelDatabase extends FloorDatabase {
 
     return await $FloorChannelDatabase
         .databaseBuilder(dbPath)
+        .addMigrations([
+          // v1 -> v2：添加 extra 列
+          Migration(1, 2, (database) async {
+            await database.execute(
+              'ALTER TABLE channel_added_app ADD COLUMN extra TEXT',
+            );
+            appLog.info('ChannelDatabase: 已添加 extra 列');
+          }),
+          // v2 -> v3：添加 apprepo 列（GitHub 渠道仓库完整名）
+          Migration(2, 3, (database) async {
+            await database.execute(
+              'ALTER TABLE channel_added_app ADD COLUMN apprepo TEXT',
+            );
+            appLog.info('ChannelDatabase: 已添加 apprepo 列');
+          }),
+        ])
         .addCallback(Callback(
           onCreate: (database, version) async {
-            debugPrint('ChannelDatabase: 创建数据库，版本 $version');
-          },
-          onUpgrade: (database, startVersion, endVersion) async {
-            debugPrint('ChannelDatabase: 升级数据库 $startVersion -> $endVersion');
-            // 从版本 1 升级到版本 2：添加 extra 列
-            if (startVersion == 1 && endVersion == 2) {
-              await database.execute(
-                'ALTER TABLE channel_added_app ADD COLUMN extra TEXT',
-              );
-              debugPrint('ChannelDatabase: 已添加 extra 列');
-            }
+            appLog.info('ChannelDatabase: 创建数据库，版本 $version');
           },
           onOpen: (database) async {
-            debugPrint('ChannelDatabase: 打开数据库');
+            appLog.info('ChannelDatabase: 打开数据库');
           },
         ))
         .build();
@@ -57,7 +63,7 @@ class ChannelDatabaseManager {
 
   static Future<ChannelDatabase> create() async {
     final database = await ChannelDatabase.create();
-    debugPrint('ChannelDatabase: 数据库初始化成功');
+    appLog.info('ChannelDatabase: 数据库初始化成功');
     return database;
   }
 

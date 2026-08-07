@@ -1,5 +1,5 @@
-import 'package:flutter/foundation.dart';
 import 'package:gstore/core/channel/IChannel.dart';
+import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/channel/model/ChannelInfo.dart';
 import 'package:gstore/core/channel/model/ChannelResult.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
@@ -30,16 +30,16 @@ class ChannelManager {
   void setDefaultChannel(ChannelType type) {
     if (_channels.containsKey(type)) {
       _defaultChannelType = type;
-      debugPrint('ChannelManager: 默认渠道已设置为 ${type.code}');
+      appLog.info('ChannelManager: 默认渠道已设置为 ${type.code}');
     } else {
-      debugPrint('ChannelManager: 渠道 ${type.code} 未注册，无法设为默认');
+      appLog.error('ChannelManager: 渠道 ${type.code} 未注册，无法设为默认');
     }
   }
 
   /// 注册渠道
   void registerChannel(IChannel channel) {
     _channels[channel.info.type] = channel;
-    debugPrint('ChannelManager: 渠道 ${channel.info.type.code} 已注册');
+    appLog.info('ChannelManager: 渠道 ${channel.info.type.code} 已注册');
   }
 
   /// 批量注册渠道
@@ -54,7 +54,7 @@ class ChannelManager {
     var channel = _channels.remove(type);
     if (channel != null) {
       channel.dispose();
-      debugPrint('ChannelManager: 渠道 ${type.code} 已取消注册');
+      appLog.info('ChannelManager: 渠道 ${type.code} 已取消注册');
     }
   }
 
@@ -110,7 +110,7 @@ class ChannelManager {
     try {
       return await entry.value.checkAvailable();
     } catch (e) {
-      debugPrint('ChannelManager: 检查渠道 ${entry.key.code} 失败 - $e');
+      appLog.error('ChannelManager: 检查渠道 ${entry.key.code} 失败 - $e');
       return false;
     }
   }
@@ -211,7 +211,7 @@ class ChannelManager {
           return result;
         }
       } catch (e) {
-        debugPrint('ChannelManager: 渠道 ${channel.info.type.code} 查询失败: $e');
+        appLog.error('ChannelManager: 渠道 ${channel.info.type.code} 查询失败: $e');
         continue;
       }
     }
@@ -237,7 +237,7 @@ class ChannelManager {
           return result;
         }
       } catch (e) {
-        debugPrint('ChannelManager: 渠道 ${channel.info.type.code} 查询失败: $e');
+        appLog.error('ChannelManager: 渠道 ${channel.info.type.code} 查询失败: $e');
         continue;
       }
     }
@@ -321,9 +321,9 @@ class ChannelManager {
       if (!channel.isInitialized) {
         try {
           await channel.initialize();
-          debugPrint('ChannelManager: 渠道 ${channel.info.type.code} 初始化成功');
+          appLog.info('ChannelManager: 渠道 ${channel.info.type.code} 初始化成功');
         } catch (e) {
-          debugPrint('ChannelManager: 渠道 ${channel.info.type.code} 初始化失败: $e');
+          appLog.error('ChannelManager: 渠道 ${channel.info.type.code} 初始化失败: $e');
         }
       }
     }
@@ -346,12 +346,12 @@ class ChannelManager {
     var channel = _channels[selectedType];
 
     if (channel == null) {
-      debugPrint('ChannelManager: 渠道 ${selectedType.code} 未注册');
+      appLog.error('ChannelManager: 渠道 ${selectedType.code} 未注册');
       return null;
     }
 
     if (!channel.info.enabled) {
-      debugPrint('ChannelManager: 渠道 ${selectedType.code} 未启用');
+      appLog.error('ChannelManager: 渠道 ${selectedType.code} 未启用');
       return null;
     }
 

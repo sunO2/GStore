@@ -1,5 +1,7 @@
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/foundation.dart';
+import 'package:gstore/core/logger/LogManager.dart';
+import 'package:gstore/core/model/AppDetailInfo.dart';
 
 /// 当前设备平台架构信息
 /// 用于在 GitHub 等渠道的下载资产中匹配对应 CPU 架构的 APK
@@ -35,7 +37,7 @@ class PlatformArch {
         return _abi;
       }
     } catch (e) {
-      debugPrint('PlatformArch: 获取 ABI 失败 - $e');
+      appLog.error('PlatformArch: 获取 ABI 失败 - $e');
     }
     return null;
   }
@@ -122,5 +124,28 @@ class PlatformArch {
 
     // 4. 回退：第一项
     return items.first;
+  }
+
+  /// 从下载列表中选择匹配当前设备架构的最佳包
+  /// 规则：
+  ///   1. 匹配设备架构的 APK（如 arm64-v8a 设备优先选 arm64 APK）
+  ///   2. universal 通用包兜底
+  ///   3. 任意 APK
+  ///   4. 第一项
+  /// 单一项时直接返回（无需选择）
+  static Future<DownloadInfo?> selectBestDownload(
+    List<DownloadInfo> downloads,
+  ) async {
+    if (downloads.isEmpty) return null;
+    if (downloads.length == 1) return downloads.first;
+
+    // 确保 ABI 已检测
+    await detectAbi();
+
+    return selectBestAsset<DownloadInfo>(
+      downloads,
+      (d) => d.name,
+      isApk: (d) => d.name.toLowerCase().endsWith('.apk'),
+    );
   }
 }

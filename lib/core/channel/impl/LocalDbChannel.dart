@@ -4,6 +4,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:gstore/core/channel/IChannel.dart';
+import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/channel/model/ChannelInfo.dart';
 import 'package:gstore/core/channel/model/ChannelResult.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
@@ -15,11 +16,12 @@ import 'package:gstore/db/apps/AppInfo.dart' as db;
 import 'package:gstore/db/apps/AppInfoDatabase.dart';
 import 'package:gstore/core/service/db_manager.dart';
 import 'package:gstore/http/github/github_client.dart';
+import 'package:gstore/core/channel/AppUpdateCheckMixin.dart';
 
 /// 本地数据库渠道实现
 /// 基于 SQLite 本地数据库提供数据
 /// 支持 GitHub API 查询 releases 信息
-class LocalDbChannel implements IChannel {
+class LocalDbChannel with AppUpdateCheckMixin implements IChannel {
   AppInfoDatabase _database;
   final GithubRestClient? _githubApi;
 
@@ -50,14 +52,14 @@ class LocalDbChannel implements IChannel {
   /// 更新数据库引用（数据库更新后调用，避免使用已关闭的旧数据库）
   void updateDatabase(AppInfoDatabase database) {
     _database = database;
-    debugPrint('LocalDbChannel: 数据库引用已更新');
+    appLog.info('LocalDbChannel: 数据库引用已更新');
   }
 
   @override
   Future<void> initialize() async {
     // 数据库已由 DbManager 初始化，这里只做标记
     isInitialized = true;
-    debugPrint('LocalDbChannel: 初始化完成');
+    appLog.info('LocalDbChannel: 初始化完成');
   }
 
   @override
@@ -67,7 +69,7 @@ class LocalDbChannel implements IChannel {
       await _database.dao.getVersion();
       return true;
     } catch (e) {
-      debugPrint('LocalDbChannel: 数据库不可用 - $e');
+      appLog.error('LocalDbChannel: 数据库不可用 - $e');
       return false;
     }
   }
@@ -84,7 +86,7 @@ class LocalDbChannel implements IChannel {
         fromCache: !forceRefresh,
       );
     } catch (e) {
-      debugPrint('LocalDbChannel: 获取应用列表失败 - $e');
+      appLog.error('LocalDbChannel: 获取应用列表失败 - $e');
       return ChannelResult.failure(
         from: ChannelType.localDb,
         error: e.toString(),
@@ -105,7 +107,7 @@ class LocalDbChannel implements IChannel {
         fromCache: !forceRefresh,
       );
     } catch (e) {
-      debugPrint('LocalDbChannel: 获取应用信息失败 - $e');
+      appLog.error('LocalDbChannel: 获取应用信息失败 - $e');
       return ChannelResult.failure(
         from: ChannelType.localDb,
         error: e.toString(),
@@ -119,7 +121,7 @@ class LocalDbChannel implements IChannel {
     bool forceRefresh = false,
   }) async {
     try {
-      debugPrint('LocalDbChannel: ========== 开始获取应用详情 ==========');
+      appLog.info('LocalDbChannel: ========== 开始获取应用详情 ==========');
       debugPrint('LocalDbChannel: appId = $appId');
 
       // 获取应用信息
@@ -208,7 +210,7 @@ class LocalDbChannel implements IChannel {
               readmeData = jsonDecode(readmeResult) as Map<String, dynamic>;
               debugPrint('LocalDbChannel: README JSON 解码成功');
             } catch (e) {
-              debugPrint('LocalDbChannel: README JSON 解码失败 - $e');
+              appLog.error('LocalDbChannel: README JSON 解码失败 - $e');
             }
           } else {
             debugPrint('LocalDbChannel: README 返回空字符串');
@@ -287,14 +289,14 @@ class LocalDbChannel implements IChannel {
                 readme = content;
               }
             } catch (e) {
-              debugPrint('LocalDbChannel: ✗ README 解码失败 - $e');
+              appLog.error('LocalDbChannel: ✗ README 解码失败 - $e');
             }
           } else {
             debugPrint('LocalDbChannel: ⚠ GitHub API 返回 README 数据为空');
           }
         } catch (e, stackTrace) {
           // GitHub API 调用失败不影响整体流程，使用空下载列表
-          debugPrint('LocalDbChannel: ✗ 获取 GitHub releases 失败: $e');
+          appLog.error('LocalDbChannel: ✗ 获取 GitHub releases 失败: $e');
           debugPrint('LocalDbChannel: stackTrace: $stackTrace');
         }
       } else {
@@ -309,7 +311,7 @@ class LocalDbChannel implements IChannel {
         debugPrint('LocalDbChannel: 使用数据库 README/des，长度 = ${readme?.length ?? 0}');
       }
 
-      debugPrint('LocalDbChannel: ========== 构建详情信息完成 ==========');
+      appLog.info('LocalDbChannel: ========== 构建详情信息完成 ==========');
       debugPrint('LocalDbChannel: downloads 列表长度 = ${downloads.length}');
       debugPrint('LocalDbChannel: README 最终长度 = ${readme?.length ?? 0}');
       debugPrint('LocalDbChannel: README 预览 = ${readme != null && readme.length > 0 ? readme.substring(0, readme.length > 100 ? 100 : readme.length) : "null"}');
@@ -343,7 +345,7 @@ class LocalDbChannel implements IChannel {
         fromCache: !forceRefresh,
       );
     } catch (e) {
-      debugPrint('LocalDbChannel: ✗ 获取应用详情失败 - $e');
+      appLog.error('LocalDbChannel: ✗ 获取应用详情失败 - $e');
       return ChannelResult.failure(
         from: ChannelType.localDb,
         error: e.toString(),
@@ -398,7 +400,7 @@ class LocalDbChannel implements IChannel {
         fromCache: !forceRefresh,
       );
     } catch (e) {
-      debugPrint('LocalDbChannel: 搜索应用失败 - $e');
+      appLog.error('LocalDbChannel: 搜索应用失败 - $e');
       return ChannelResult.failure(
         from: ChannelType.localDb,
         error: e.toString(),
@@ -419,7 +421,7 @@ class LocalDbChannel implements IChannel {
         fromCache: !forceRefresh,
       );
     } catch (e) {
-      debugPrint('LocalDbChannel: 按分类搜索失败 - $e');
+      appLog.error('LocalDbChannel: 按分类搜索失败 - $e');
       return ChannelResult.failure(
         from: ChannelType.localDb,
         error: e.toString(),
@@ -439,12 +441,28 @@ class LocalDbChannel implements IChannel {
         fromCache: !forceRefresh,
       );
     } catch (e) {
-      debugPrint('LocalDbChannel: 获取分类失败 - $e');
+      appLog.error('LocalDbChannel: 获取分类失败 - $e');
       return ChannelResult.failure(
         from: ChannelType.localDb,
         error: e.toString(),
       );
     }
+  }
+
+  @override
+  Future<ChannelResult<void>> addApp(AppInfo app) async {
+    return ChannelResult.failure(
+      from: ChannelType.localDb,
+      error: '本地数据库渠道不支持手动添加应用',
+    );
+  }
+
+  @override
+  Future<ChannelResult<void>> removeApp(String appId) async {
+    return ChannelResult.failure(
+      from: ChannelType.localDb,
+      error: '本地数据库渠道不支持移除应用',
+    );
   }
 
   @override
@@ -458,7 +476,6 @@ class LocalDbChannel implements IChannel {
           metadata: {'reason': 'no_version'},
         );
       }
-
       // 通过 DbManager 检查更新
       var updateStatus = await "gstore".checkUpdate();
       bool hasUpdate = updateStatus == 0 || updateStatus == 1;
@@ -472,7 +489,7 @@ class LocalDbChannel implements IChannel {
         },
       );
     } catch (e) {
-      debugPrint('LocalDbChannel: 检查更新失败 - $e');
+      appLog.error('LocalDbChannel: 检查更新失败 - $e');
       return ChannelResult.failure(
         from: ChannelType.localDb,
         error: e.toString(),
@@ -494,7 +511,7 @@ class LocalDbChannel implements IChannel {
         metadata: {'updateStatus': updateStatus},
       );
     } catch (e) {
-      debugPrint('LocalDbChannel: 执行更新失败 - $e');
+      appLog.error('LocalDbChannel: 执行更新失败 - $e');
       return ChannelResult.failure(
         from: ChannelType.localDb,
         error: e.toString(),
@@ -514,7 +531,7 @@ class LocalDbChannel implements IChannel {
         fromCache: !forceRefresh,
       );
     } catch (e) {
-      debugPrint('LocalDbChannel: 获取配置失败 - $e');
+      appLog.error('LocalDbChannel: 获取配置失败 - $e');
       return ChannelResult.failure(
         from: ChannelType.localDb,
         error: e.toString(),
@@ -538,7 +555,7 @@ class LocalDbChannel implements IChannel {
   @override
   Future<void> dispose() async {
     isInitialized = false;
-    debugPrint('LocalDbChannel: 已释放');
+    appLog.info('LocalDbChannel: 已释放');
   }
 
   @override

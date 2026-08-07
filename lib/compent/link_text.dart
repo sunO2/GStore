@@ -80,8 +80,8 @@ class DownloadLink extends LinkText {
                               const BorderRadius.all(Radius.circular(20)),
                         ),
                         // child: Text("已下载",style:  Theme.of(context).textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w600,fontSize: 10),),
-                        child: Icon(
-                          AliIcon.downloadSuccess,
+                        child: ColoredAliIcon(
+                          icon: AliIcon.downloadSuccess,
                           color: Theme.of(context).textTheme.bodySmall?.color,
                           size: 12,
                         ),

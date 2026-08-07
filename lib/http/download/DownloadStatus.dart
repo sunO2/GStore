@@ -207,7 +207,7 @@ class DownloadStatus {
   static Future<DownloadStatus> create(
       String appId, appName, version, name, String downloadUrl,
       {int? downloadSize, String? saveFileName}) async {
-    debugPrint('DownloadStatus.create 开始: name=$name version=$version');
+    appLog.info('DownloadStatus.create 开始: name=$name version=$version');
     String savePath;
     // 若 saveFileName 是绝对路径（用于数据库等需要固定位置的文件），直接使用
     if (saveFileName != null && saveFileName.startsWith('/')) {

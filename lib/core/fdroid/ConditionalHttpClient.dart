@@ -1,5 +1,6 @@
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
+import 'package:gstore/core/logger/LogManager.dart';
 
 /// HTTP 条件请求结果
 class ConditionalRequestResult {
@@ -123,7 +124,7 @@ class ConditionalHttpClient {
 
       // 处理 304 Not Modified
       if (response.statusCode == 304) {
-        debugPrint('ConditionalHttpClient: 304 Not Modified - 使用缓存');
+        appLog.info('ConditionalHttpClient: 304 Not Modified - 使用缓存');
 
         // 从响应头获取新的元数据（如果有）
         final newLastModified = response.headers['Last-Modified']?.first;
@@ -137,7 +138,7 @@ class ConditionalHttpClient {
 
       // 处理成功响应
       if (response.statusCode == 200) {
-        debugPrint('ConditionalHttpClient: ${response.statusCode} Success - 数据已更新');
+        appLog.info('ConditionalHttpClient: ${response.statusCode} Success - 数据已更新');
 
         final newLastModified = response.headers['Last-Modified']?.first;
         final newEntityTag = response.headers['ETag']?.first;
@@ -150,13 +151,13 @@ class ConditionalHttpClient {
       }
 
       // 处理其他状态码
-      debugPrint('ConditionalHttpClient: ${response.statusCode} - $url');
+      appLog.error('ConditionalHttpClient: ${response.statusCode} - $url');
 
       return ConditionalRequestResult.failure(
         statusCode: response.statusCode!,
       );
     } catch (e) {
-      debugPrint('ConditionalHttpClient: 请求失败 - $e');
+      appLog.error('ConditionalHttpClient: 请求失败 - $e');
       return ConditionalRequestResult.failure(
         statusCode: 0,
         errorMessage: e.toString(),
@@ -203,7 +204,7 @@ class ConditionalHttpClient {
 
     // 检查是否是 304
     if (response.statusCode == 304) {
-      debugPrint('ConditionalHttpClient: 304 Not Modified - 使用缓存');
+      appLog.info('ConditionalHttpClient: 304 Not Modified - 使用缓存');
       throw Exception('304 Not Modified - Content not modified');
     }
 

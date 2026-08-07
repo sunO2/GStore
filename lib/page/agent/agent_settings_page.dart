@@ -46,7 +46,7 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
       final service = Get.find<AgentService>();
       await service.reconfigure();
     } catch (e) {
-      debugPrint('AgentSettings: reconfigure 失败 - $e');
+      appLog.error('AgentSettings: reconfigure 失败 - $e');
     }
   }
 

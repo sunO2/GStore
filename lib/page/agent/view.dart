@@ -318,16 +318,7 @@ class AgentPage extends StatelessWidget {
             ? Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  SizedBox(
-                    width: 14,
-                    height: 14,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      valueColor: AlwaysStoppedAnimation(
-                        Theme.of(context).colorScheme.primary,
-                      ),
-                    ),
-                  ),
+                  const AppLoading(size: AppLoadingSize.small),
                   const SizedBox(width: AppSpacing.md),
                   Text(
                     '思考中...',
@@ -396,14 +387,7 @@ class AgentPage extends StatelessWidget {
             return IconButton.filled(
               onPressed: sending ? null : logic.sendMessage,
               icon: sending
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: Colors.white,
-                      ),
-                    )
+                  ? const AppLoading(size: AppLoadingSize.small)
                   : const Icon(Icons.send),
               tooltip: '发送',
             );
@@ -564,14 +548,7 @@ class _ToolBubbleState extends State<_ToolBubble> {
                   children: [
                     // 状态图标/动画
                     isRunning
-                        ? SizedBox(
-                            width: AppTypography.iconSM,
-                            height: AppTypography.iconSM,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              valueColor: AlwaysStoppedAnimation(_toolColor),
-                            ),
-                          )
+                        ? const AppLoading(size: AppLoadingSize.small)
                         : Icon(
                             msg.toolStatus == AgentToolStatus.error
                                 ? Icons.error_outline

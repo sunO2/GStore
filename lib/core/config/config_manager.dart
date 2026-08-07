@@ -6,6 +6,7 @@ library;
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
+import 'package:gstore/core/core.dart';
 
 import 'config_provider.dart';
 import 'config_storage.dart';
@@ -59,7 +60,7 @@ class ConfigManager {
   Future<void> initialize() async {
     if (_initialized) return;
 
-    debugPrint('ConfigManager: 开始初始化');
+    appLog.info('ConfigManager: 开始初始化');
 
     // 创建存储实例
     _storage = CompositeConfigStorage([
@@ -74,7 +75,7 @@ class ConfigManager {
     await _checkAndMigrateVersion();
 
     _initialized = true;
-    debugPrint('ConfigManager: 初始化完成 (版本: $_currentVersion)');
+    appLog.info('ConfigManager: 初始化完成 (版本: $_currentVersion)');
   }
 
   /// 检查并迁移配置版本
@@ -82,7 +83,7 @@ class ConfigManager {
     final savedVersion = await _storage.getInt(_versionKey) ?? 0;
 
     if (savedVersion < _currentVersion) {
-      debugPrint('ConfigManager: 检测到配置版本变更: $savedVersion -> $_currentVersion');
+      appLog.info('ConfigManager: 检测到配置版本变更: $savedVersion -> $_currentVersion');
       // TODO: 实现版本迁移逻辑
       await _storage.setInt(_versionKey, _currentVersion);
     }
@@ -131,7 +132,7 @@ class ConfigManager {
       debugPrint('ConfigManager: 加载配置 - $configKey: ${config != null ? "成功" : "不存在"}');
       return config;
     } catch (e, stackTrace) {
-      debugPrint('ConfigManager: 加载配置失败 - $configKey: $e');
+      appLog.error('ConfigManager: 加载配置失败 - $configKey: $e');
       debugPrint('ConfigManager: 堆栈跟踪: $stackTrace');
       return null;
     }
@@ -148,15 +149,15 @@ class ConfigManager {
     try {
       final success = await provider.save(config);
       if (success) {
-        debugPrint('ConfigManager: 保存配置成功 - $configKey');
+        appLog.info('ConfigManager: 保存配置成功 - $configKey');
         // 发送配置变化事件（仅发送键，不发送数据以避免类型问题）
         _changeController.add({configKey: true});
       } else {
-        debugPrint('ConfigManager: 保存配置失败 - $configKey');
+        appLog.error('ConfigManager: 保存配置失败 - $configKey');
       }
       return success;
     } catch (e, stackTrace) {
-      debugPrint('ConfigManager: 保存配置异常 - $configKey: $e');
+      appLog.error('ConfigManager: 保存配置异常 - $configKey: $e');
       debugPrint('ConfigManager: 堆栈跟踪: $stackTrace');
       return false;
     }
@@ -173,15 +174,15 @@ class ConfigManager {
     try {
       final success = await provider.clear();
       if (success) {
-        debugPrint('ConfigManager: 清除配置成功 - $configKey');
+        appLog.info('ConfigManager: 清除配置成功 - $configKey');
         // 发送配置变化事件（仅发送键，不发送数据以避免类型问题）
         _changeController.add({configKey: false});
       } else {
-        debugPrint('ConfigManager: 清除配置失败 - $configKey');
+        appLog.error('ConfigManager: 清除配置失败 - $configKey');
       }
       return success;
     } catch (e, stackTrace) {
-      debugPrint('ConfigManager: 清除配置异常 - $configKey: $e');
+      appLog.error('ConfigManager: 清除配置异常 - $configKey: $e');
       debugPrint('ConfigManager: 堆栈跟踪: $stackTrace');
       return false;
     }
@@ -201,7 +202,7 @@ class ConfigManager {
 
   /// 导出所有配置
   Future<ConfigBackupData> exportAll() async {
-    debugPrint('ConfigManager: 开始导出所有配置');
+    appLog.info('ConfigManager: 开始导出所有配置');
 
     final Map<String, dynamic> configs = {};
 
@@ -214,11 +215,11 @@ class ConfigManager {
             configs[entry.key] = config.toJson();
             debugPrint('ConfigManager: 导出配置 - ${entry.key}');
           } catch (e) {
-            debugPrint('ConfigManager: 配置没有 toJson 方法 - ${entry.key}: $e');
+            appLog.error('ConfigManager: 配置没有 toJson 方法 - ${entry.key}: $e');
           }
         }
       } catch (e) {
-        debugPrint('ConfigManager: 导出配置失败 - ${entry.key}: $e');
+        appLog.error('ConfigManager: 导出配置失败 - ${entry.key}: $e');
       }
     }
 
@@ -229,7 +230,7 @@ class ConfigManager {
       // 这里可以接受一个可选的版本号参数
       appVersion = _cachedAppVersion;
     } catch (e) {
-      debugPrint('ConfigManager: 获取应用版本失败: $e');
+      appLog.error('ConfigManager: 获取应用版本失败: $e');
     }
 
     final backupData = ConfigBackupData(
@@ -239,7 +240,7 @@ class ConfigManager {
       configs: configs,
     );
 
-    debugPrint('ConfigManager: 配置导出完成 (共 ${configs.length} 项配置)');
+    appLog.info('ConfigManager: 配置导出完成 (共 ${configs.length} 项配置)');
     return backupData;
   }
 
@@ -251,11 +252,11 @@ class ConfigManager {
 
   /// 导入所有配置
   Future<bool> importAll(ConfigBackupData data) async {
-    debugPrint('ConfigManager: 开始导入配置 (版本: ${data.version})');
+    appLog.info('ConfigManager: 开始导入配置 (版本: ${data.version})');
 
     // 检查版本是否兼容
     if (data.version > _currentVersion) {
-      debugPrint('ConfigManager: 配置版本过新，无法导入');
+      appLog.error('ConfigManager: 配置版本过新，无法导入');
       return false;
     }
 
@@ -275,14 +276,14 @@ class ConfigManager {
         final success = await provider.importFromJson(entry.value);
         if (success) {
           successCount++;
-          debugPrint('ConfigManager: 导入配置成功 - ${entry.key}');
+          appLog.info('ConfigManager: 导入配置成功 - ${entry.key}');
         } else {
           failCount++;
-          debugPrint('ConfigManager: 导入配置失败 - ${entry.key}');
+          appLog.error('ConfigManager: 导入配置失败 - ${entry.key}');
         }
       } catch (e, stackTrace) {
         failCount++;
-        debugPrint('ConfigManager: 导入配置异常 - ${entry.key}: $e');
+        appLog.error('ConfigManager: 导入配置异常 - ${entry.key}: $e');
         debugPrint('ConfigManager: 堆栈跟踪: $stackTrace');
       }
     }
@@ -290,7 +291,7 @@ class ConfigManager {
     // 更新配置版本
     await _storage.setInt(_versionKey, _currentVersion);
 
-    debugPrint('ConfigManager: 配置导入完成 (成功: $successCount, 失败: $failCount)');
+    appLog.info('ConfigManager: 配置导入完成 (成功: $successCount, 失败: $failCount)');
     return failCount == 0;
   }
 
@@ -301,14 +302,14 @@ class ConfigManager {
       final backupData = ConfigBackupData.fromJson(json);
       return await importAll(backupData);
     } catch (e) {
-      debugPrint('ConfigManager: JSON 解析失败: $e');
+      appLog.error('ConfigManager: JSON 解析失败: $e');
       return false;
     }
   }
 
   /// 清除所有配置
   Future<bool> clearAll() async {
-    debugPrint('ConfigManager: 开始清除所有配置');
+    appLog.info('ConfigManager: 开始清除所有配置');
 
     bool allSuccess = true;
     for (final configKey in _providers.keys) {
@@ -316,7 +317,7 @@ class ConfigManager {
       allSuccess = allSuccess && success;
     }
 
-    debugPrint('ConfigManager: 清除所有配置完成');
+    appLog.info('ConfigManager: 清除所有配置完成');
     return allSuccess;
   }
 

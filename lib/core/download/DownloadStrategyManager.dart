@@ -1,5 +1,5 @@
-import 'package:flutter/foundation.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
+import 'package:gstore/core/core.dart';
 import 'package:gstore/core/download/model/DownloadContext.dart';
 import 'package:gstore/core/download/strategy/IDownloadStrategy.dart';
 import 'package:gstore/core/download/exception/DownloadException.dart';
@@ -32,7 +32,7 @@ class DownloadStrategyManager {
   /// 如果同一渠道类型已注册，会覆盖旧策略
   void register(IDownloadStrategy strategy) {
     _strategies[strategy.supportedChannel] = strategy;
-    debugPrint('DownloadStrategyManager: 注册策略 ${strategy.strategyName} '
+    appLog.info('DownloadStrategyManager: 注册策略 ${strategy.strategyName} '
         'for ${strategy.supportedChannel.code}');
   }
 
@@ -66,7 +66,7 @@ class DownloadStrategyManager {
     final strategy = getStrategy(channel);
 
     if (strategy == null) {
-      debugPrint('DownloadStrategyManager: 未找到渠道 $channel 的下载策略');
+      appLog.error('DownloadStrategyManager: 未找到渠道 $channel 的下载策略');
       return null;
     }
 
@@ -75,14 +75,14 @@ class DownloadStrategyManager {
       final isValid = await strategy.validateContext(context);
 
       if (!isValid) {
-        debugPrint('DownloadStrategyManager: 下载上下文验证失败 - $context');
+        appLog.error('DownloadStrategyManager: 下载上下文验证失败 - $context');
         return null;
       }
 
-      debugPrint('DownloadStrategyManager: 创建下载上下文成功 - ${context.downloadUrl}');
+      appLog.info('DownloadStrategyManager: 创建下载上下文成功 - ${context.downloadUrl}');
       return context;
     } catch (e) {
-      debugPrint('DownloadStrategyManager: 创建下载上下文异常 - $e');
+      appLog.error('DownloadStrategyManager: 创建下载上下文异常 - $e');
       return null;
     }
   }

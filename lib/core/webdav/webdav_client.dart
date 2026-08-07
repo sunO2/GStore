@@ -1,9 +1,9 @@
 import 'dart:convert';
-import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
+import 'package:gstore/core/logger/LogManager.dart';
 import 'package:path/path.dart' as p;
 import 'package:xml/xml.dart';
 
@@ -84,10 +84,10 @@ class WebDavClient {
       // 尝试创建备份目录（如果目录已存在会返回 405 或 201）
       await ensureDirectory(config.backupPath);
 
-      debugPrint('WebDavClient: 连接测试成功');
+      appLog.info('WebDavClient: 连接测试成功');
       return true;
     } catch (e) {
-      debugPrint('WebDavClient: 连接测试失败 - $e');
+      appLog.error('WebDavClient: 连接测试失败 - $e');
       return false;
     }
   }
@@ -125,7 +125,7 @@ class WebDavClient {
         debugPrint('WebDavClient: 目录已存在 - ${e.response?.statusCode}');
         return;
       }
-      debugPrint('WebDavClient: 创建目录失败 - $e');
+      appLog.error('WebDavClient: 创建目录失败 - $e');
       rethrow;
     }
   }
@@ -193,7 +193,7 @@ class WebDavClient {
           throw Exception('上传失败：HTTP ${response.statusCode}');
         }
 
-        debugPrint('WebDavClient: 上传成功 - ${response.statusCode}');
+        appLog.info('WebDavClient: 上传成功 - ${response.statusCode}');
         return normalizedPath;
       } on DioException catch (e) {
         // HTTP 429 - Too Many Requests
@@ -205,10 +205,10 @@ class WebDavClient {
           continue;
         }
 
-        debugPrint('WebDavClient: 上传文件失败 - $e');
+        appLog.error('WebDavClient: 上传文件失败 - $e');
         rethrow;
       } catch (e) {
-        debugPrint('WebDavClient: 上传文件失败 - $e');
+        appLog.error('WebDavClient: 上传文件失败 - $e');
         rethrow;
       }
     }
@@ -241,10 +241,10 @@ class WebDavClient {
       }
 
       final data = response.data as Uint8List;
-      debugPrint('WebDavClient: 下载成功 - ${data.length} bytes');
+      appLog.info('WebDavClient: 下载成功 - ${data.length} bytes');
       return data;
     } catch (e) {
-      debugPrint('WebDavClient: 下载文件失败 - $e');
+      appLog.error('WebDavClient: 下载文件失败 - $e');
       rethrow;
     }
   }
@@ -265,9 +265,9 @@ class WebDavClient {
         normalizedPath,
       );
 
-      debugPrint('WebDavClient: 删除成功 - ${response.statusCode}');
+      appLog.info('WebDavClient: 删除成功 - ${response.statusCode}');
     } catch (e) {
-      debugPrint('WebDavClient: 删除文件失败 - $e');
+      appLog.error('WebDavClient: 删除文件失败 - $e');
       rethrow;
     }
   }
@@ -392,10 +392,10 @@ class WebDavClient {
         debugPrint('WebDavClient: 找到文件 - $name (相对路径: $relativePath, ${files.last.size} bytes, ${files.last.modified})');
       }
 
-      debugPrint('WebDavClient: 列出目录成功 - 找到 ${files.length} 个文件');
+      appLog.info('WebDavClient: 列出目录成功 - 找到 ${files.length} 个文件');
       return files;
     } catch (e) {
-      debugPrint('WebDavClient: 列出目录失败 - $e');
+      appLog.error('WebDavClient: 列出目录失败 - $e');
       rethrow;
     }
   }
@@ -419,7 +419,7 @@ class WebDavClient {
       debugPrint('WebDavClient: 找到最新文件 - ${latest.name} (${latest.modified})');
       return latest;
     } catch (e) {
-      debugPrint('WebDavClient: 查找最新文件失败 - $e');
+      appLog.error('WebDavClient: 查找最新文件失败 - $e');
       return null;
     }
   }

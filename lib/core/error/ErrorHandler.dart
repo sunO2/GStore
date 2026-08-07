@@ -5,6 +5,7 @@ library;
 import 'package:flutter/foundation.dart';
 import 'package:gstore/core/exception/AppException.dart';
 import 'package:gstore/core/config/AppConfig.dart';
+import 'package:gstore/core/core.dart';
 
 /// 错误处理优先级
 enum ErrorPriority {
@@ -104,7 +105,7 @@ class ErrorHandler {
 
     // 设置全局错误处理
     if (kDebugMode) {
-      debugPrint('ErrorHandler: 初始化完成');
+      appLog.info('ErrorHandler: 初始化完成');
     }
   }
 
@@ -200,22 +201,22 @@ class ErrorHandler {
     switch (report.priority) {
       case ErrorPriority.low:
         if (config.logLevel.isDebug) {
-          debugPrint('🟡 [LOW] $message');
+          appLog.error('🟡 [LOW] $message');
         }
         break;
       case ErrorPriority.medium:
         if (config.logLevel.isInfo) {
-          debugPrint('🟠 [MEDIUM] $message');
+          appLog.error('🟠 [MEDIUM] $message');
         }
         break;
       case ErrorPriority.high:
         if (config.logLevel.isWarning) {
-          debugPrint('🔴 [HIGH] $message');
+          appLog.error('🔴 [HIGH] $message');
         }
         break;
       case ErrorPriority.critical:
         if (config.logLevel.isError) {
-          debugPrint('🚨 [CRITICAL] $message');
+          appLog.error('🚨 [CRITICAL] $message');
           if (report.stackTrace != null) {
             debugPrint(report.stackTrace.toString());
           }

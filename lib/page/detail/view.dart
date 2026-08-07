@@ -204,18 +204,11 @@ class DetailPage extends StatelessWidget {
                   child: ClipRRect(
                     borderRadius: AppRadius.allMD,
                     child: icon.isNotEmpty
-                        ? Image(
-                            image: CachedNetworkImageProvider(icon),
+                        ? AppIcon(
+                            url: icon,
                             width: AppSpacing.xxxl + AppSpacing.xxl + AppSpacing.md,
                             height: AppSpacing.xxxl + AppSpacing.xxl + AppSpacing.md,
-                            errorBuilder: (context, error, stackTrace) {
-                              return Container(
-                                width: AppSpacing.xxxl + AppSpacing.xxl + AppSpacing.md,
-                                height: AppSpacing.xxxl + AppSpacing.xxl + AppSpacing.md,
-                                color: AppColors.grey300,
-                                child: const Icon(Icons.error),
-                              );
-                            },
+                            borderRadius: 0,
                           )
                         : Container(
                             width: AppSpacing.xxxl + AppSpacing.xxl + AppSpacing.md,
@@ -437,8 +430,8 @@ class DetailPage extends StatelessWidget {
               info: detail,
               onDownloadTap: (download) => logic.startDownload(download),
               onLongPress: (download) {
-                Get.defaultDialog(
-                  title: "下载二维码",
+                AppDialogs.showDialog(
+                  title: '下载二维码',
                   content: Container(
                     width: AppSpacing.xxxl + AppSpacing.xxxl + AppSpacing.xxl + AppSpacing.xl,
                     height: AppSpacing.xxxl + AppSpacing.xxxl + AppSpacing.xxl + AppSpacing.xl,
@@ -455,6 +448,8 @@ class DetailPage extends StatelessWidget {
                           : null,
                     ),
                   ),
+                  confirmText: '关闭',
+                  cancelText: null,
                 );
               },
             ),

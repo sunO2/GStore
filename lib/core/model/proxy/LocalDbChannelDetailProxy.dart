@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/StatTag.dart';
@@ -83,7 +84,7 @@ class LocalDbChannelDetailProxy extends ChannelDetailProxy {
             debugPrint('LocalDbChannelDetailProxy: ✓ 从 Map 构造 DownloadInfo - ${info.name}');
             result.add(info);
           } catch (e) {
-            debugPrint('LocalDbChannelDetailProxy: ✗ 转换失败 - $e');
+            appLog.error('LocalDbChannelDetailProxy: ✗ 转换失败 - $e');
             // 忽略无法转换的项
           }
         }

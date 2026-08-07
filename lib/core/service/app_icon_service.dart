@@ -5,6 +5,7 @@ import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 import 'package:installed_apps/installed_apps.dart';
 import 'package:installed_apps/app_info.dart' as ia;
+import 'package:gstore/core/core.dart';
 
 /// 应用图标服务
 /// 获取已安装应用的图标作为后备
@@ -48,14 +49,14 @@ class AppIconService {
       final iconPath = await _getAppIconPath(packageName);
       if (iconPath != null) {
         _iconCache[packageName] = iconPath;
-        debugPrint('AppIconService: 成功获取图标 - $packageName -> $iconPath');
+        appLog.info('AppIconService: 成功获取图标 - $packageName -> $iconPath');
         return iconPath;
       }
 
-      debugPrint('AppIconService: 无法获取图标 - $packageName');
+      appLog.error('AppIconService: 无法获取图标 - $packageName');
       return null;
     } catch (e) {
-      debugPrint('AppIconService: 获取图标失败 - $packageName, $e');
+      appLog.error('AppIconService: 获取图标失败 - $packageName, $e');
       return null;
     }
   }
@@ -96,7 +97,7 @@ class AppIconService {
       // 保存到缓存目录
       return await _saveIconToCache(packageName, iconBytes);
     } catch (e) {
-      debugPrint('AppIconService: 获取图标失败 - $packageName, $e');
+      appLog.error('AppIconService: 获取图标失败 - $packageName, $e');
       return null;
     }
   }
@@ -116,7 +117,7 @@ class AppIconService {
       debugPrint('AppIconService: 图标已保存到缓存 - ${iconFile.path}');
       return iconFile.path;
     } catch (e) {
-      debugPrint('AppIconService: 保存图标失败 - $e');
+      appLog.error('AppIconService: 保存图标失败 - $e');
       return null;
     }
   }
@@ -166,13 +167,13 @@ class AppIconService {
       }
       _iconCache.clear();
     } catch (e) {
-      debugPrint('AppIconService: 清除缓存失败 - $e');
+      appLog.error('AppIconService: 清除缓存失败 - $e');
     }
   }
 
   /// 预加载图标（用于批量获取）
   Future<void> preloadIcons(List<String> packageNames) async {
-    debugPrint('AppIconService: 开始预加载 ${packageNames.length} 个应用图标');
+    appLog.info('AppIconService: 开始预加载 ${packageNames.length} 个应用图标');
     int successCount = 0;
 
     for (var packageName in packageNames) {
@@ -182,6 +183,6 @@ class AppIconService {
       }
     }
 
-    debugPrint('AppIconService: 预加载完成 - 成功: $successCount/${packageNames.length}');
+    appLog.info('AppIconService: 预加载完成 - 成功: $successCount/${packageNames.length}');
   }
 }

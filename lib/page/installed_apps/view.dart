@@ -171,27 +171,12 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
     String confirmText = '确定',
     bool isDestructive = false,
   }) {
-    return showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(title),
-        content: Text(content),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: isDestructive
-                ? FilledButton.styleFrom(
-                    backgroundColor: Theme.of(context).colorScheme.error,
-                  )
-                : null,
-            child: Text(confirmText),
-          ),
-        ],
-      ),
+    return AppDialogs.showDialog(
+      title: title,
+      content: content,
+      confirmText: confirmText,
+      cancelText: '取消',
+      isDangerous: isDestructive,
     );
   }
 

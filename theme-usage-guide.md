@@ -399,3 +399,63 @@ Text(
 ---
 
 更新日期：2024-03-17
+
+---
+
+## 弹框 / 交互组件统一规范（新增 2026-08-07）
+
+> 应用内所有弹框、确认框、提示框必须统一风格，遵循以下规则。
+
+### 1. 确认框 / 提示框 → 一律使用 `AppDialogs.showDialog`
+
+统一入口：`lib/core/design/app_dialogs.dart`（通过 `design_tokens.dart` 导出）
+
+```dart
+AppDialogs.showDialog(
+  title: '清空日志',
+  content: '确定要清空所有日志吗？',
+  confirmText: '清空',
+  cancelText: '取消',
+  isDangerous: true,        // 危险操作 → 确认按钮红色
+  onConfirm: () { ... },    // 确认回调（可选）
+  icon: Icon(Icons.delete_outline),  // 可选图标
+);
+```
+
+- 按钮为 `TextButton`（取消）+ `FilledButton`（确认），危险操作用 `isDangerous` 红色
+- 支持返回值：`final confirmed = await AppDialogs.showDialog(...)` 返回 `bool?`
+
+### 2. 禁止使用的旧写法
+
+```dart
+// ❌ 禁止：GetX 默认对话框（不随主题适配）
+Get.defaultDialog(title: ..., middleText: ...)
+
+// ❌ 禁止：手写 AlertDialog + Get.dialog / showDialog 做确认框
+// （确认/提示框场景，统一走 AppDialogs.showDialog）
+```
+
+### 3. 复杂表单 / 选择对话框
+
+如需输入框、多控件组合等复杂内容，仍可用 `showDialog` + `AlertDialog`（Material 3 主题自动适配），但**标题用 `textTheme.titleLarge`、按钮用 `TextButton` + `FilledButton`**，与 AppDialogs 视觉一致。
+
+### 4. 统一组件清单
+
+| 场景 | 组件 |
+|------|------|
+| 确认框 / 危险操作确认 | `AppDialogs.showDialog`（`isDangerous: true`） |
+| 通用提示 / 信息框 | `AppDialogs.showDialog` |
+| 成功 / 失败 Snackbar | `AppDialogs.showSuccess` / `AppDialogs.showError` |
+| 加载中 | `AppLoading`（圆形流光动画，勿用 `CircularProgressIndicator`） |
+| 空状态 | `AppLoading` / 主题图标 + 主题文字 |
+
+### 5. 代码审查清单（开发新页面时必须遵守）
+
+- [ ] 确认框使用 `AppDialogs.showDialog`，而非 `Get.defaultDialog`
+- [ ] 没有硬编码颜色 / 字号（一律 `Theme.of(context)` / 主题 token）
+- [ ] loading 使用 `AppLoading`，不直接用 `CircularProgressIndicator`
+- [ ] 图标用 `ColoredAliIcon`（COLR 彩色字体图标必须染色）
+
+---
+
+更新日期：2026-08-07

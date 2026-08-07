@@ -1,8 +1,8 @@
 import 'dart:io';
 import 'package:app_installer/app_installer.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
+import 'package:gstore/core/core.dart';
 import 'package:shizuku_api/shizuku_api.dart';
 
 /// 安装方式
@@ -61,7 +61,7 @@ class InstallManager extends GetxService {
         _permissionGranted = false;
       }
     } catch (e) {
-      debugPrint('InstallManager: 检测 Shizuku 失败 - $e');
+      appLog.error('InstallManager: 检测 Shizuku 失败 - $e');
       _binderRunning = false;
       _permissionGranted = false;
     }
@@ -82,7 +82,7 @@ class InstallManager extends GetxService {
       _checked = true;
       return granted;
     } catch (e) {
-      debugPrint('InstallManager: 请求 Shizuku 授权失败 - $e');
+      appLog.error('InstallManager: 请求 Shizuku 授权失败 - $e');
       return false;
     }
   }
@@ -115,12 +115,12 @@ class InstallManager extends GetxService {
         final result = await _shizukuApi.runCommand('pm install -r "$filePath"');
         // runCommand 返回 null 表示失败
         if (result != null) {
-          debugPrint('InstallManager: Shizuku 静默安装成功');
+          appLog.info('InstallManager: Shizuku 静默安装成功');
           return (true, InstallMethod.shizuku);
         }
-        debugPrint('InstallManager: Shizuku 静默安装失败，回退系统安装');
+        appLog.error('InstallManager: Shizuku 静默安装失败，回退系统安装');
       } catch (e) {
-        debugPrint('InstallManager: Shizuku 安装异常 - $e，回退系统安装');
+        appLog.error('InstallManager: Shizuku 安装异常 - $e，回退系统安装');
       }
     }
 
@@ -129,7 +129,7 @@ class InstallManager extends GetxService {
       await AppInstaller.installApk(filePath);
       return (true, InstallMethod.system);
     } catch (e) {
-      debugPrint('InstallManager: 系统安装失败 - $e');
+      appLog.error('InstallManager: 系统安装失败 - $e');
       return (false, InstallMethod.system);
     }
   }
@@ -180,7 +180,7 @@ class InstallManager extends GetxService {
       final result = await _shizukuApi.runCommand(command);
       return result != null;
     } catch (e) {
-      debugPrint('InstallManager: 命令执行失败 - $e');
+      appLog.error('InstallManager: 命令执行失败 - $e');
       return false;
     }
   }
@@ -199,7 +199,7 @@ class InstallManager extends GetxService {
       });
       return ok ?? false;
     } catch (e) {
-      debugPrint('InstallManager: 打开系统卸载界面失败 - $e');
+      appLog.error('InstallManager: 打开系统卸载界面失败 - $e');
       return false;
     }
   }
@@ -213,7 +213,7 @@ class InstallManager extends GetxService {
       });
       return ok ?? false;
     } catch (e) {
-      debugPrint('InstallManager: 打开系统应用详情失败 - $e');
+      appLog.error('InstallManager: 打开系统应用详情失败 - $e');
       return false;
     }
   }

@@ -8,6 +8,7 @@ import 'dart:convert';
 
 import 'package:get/get.dart';
 import 'package:flutter/material.dart';
+import 'package:gstore/core/core.dart';
 
 import '../config_provider.dart';
 import '../../theme/app_theme_config.dart';
@@ -68,13 +69,13 @@ class ThemeConfigProvider extends ConfigProvider<AppThemeConfig> {
         final config = AppThemeConfig.fromJson(json);
         _themeConfig.value = config;
 
-        debugPrint('ThemeConfigProvider: 配置加载成功 - useCustomColors = ${config.useCustomColors}');
+        appLog.info('ThemeConfigProvider: 配置加载成功 - useCustomColors = ${config.useCustomColors}');
         return config;
       }
       debugPrint('ThemeConfigProvider: 未找到保存的配置，使用默认值');
       return AppThemeConfig.default_;
     } catch (e) {
-      debugPrint('ThemeConfigProvider: 加载配置失败 - $e');
+      appLog.error('ThemeConfigProvider: 加载配置失败 - $e');
       return AppThemeConfig.default_;
     }
   }
@@ -92,13 +93,13 @@ class ThemeConfigProvider extends ConfigProvider<AppThemeConfig> {
       if (success) {
         _themeConfig.value = config;
         _configController.add(config);
-        debugPrint('ThemeConfigProvider: 配置已保存并发出变化事件');
+        appLog.info('ThemeConfigProvider: 配置已保存并发出变化事件');
       } else {
-        debugPrint('ThemeConfigProvider: 保存失败 - setString 返回 false');
+        appLog.error('ThemeConfigProvider: 保存失败 - setString 返回 false');
       }
       return success;
     } catch (e) {
-      debugPrint('ThemeConfigProvider: 保存异常 - $e');
+      appLog.error('ThemeConfigProvider: 保存异常 - $e');
       return false;
     }
   }
@@ -109,7 +110,7 @@ class ThemeConfigProvider extends ConfigProvider<AppThemeConfig> {
     if (success) {
       _themeConfig.value = AppThemeConfig.default_;
       _configController.add(AppThemeConfig.default_);
-      debugPrint('ThemeConfigProvider: 配置已清除并发出变化事件');
+      appLog.info('ThemeConfigProvider: 配置已清除并发出变化事件');
     }
     return success;
   }
@@ -141,7 +142,7 @@ class ThemeConfigProvider extends ConfigProvider<AppThemeConfig> {
       if (success) {
         _themeMode.value = mode;
         _modeController.add(mode);
-        debugPrint('ThemeConfigProvider: 主题模式已保存并发出变化事件 - $mode');
+        appLog.info('ThemeConfigProvider: 主题模式已保存并发出变化事件 - $mode');
       }
       return success;
     } catch (e) {
@@ -244,7 +245,7 @@ class ThemeConfigProvider extends ConfigProvider<AppThemeConfig> {
       debugPrint('ThemeConfigProvider: 保存结果 - $success');
       return success;
     } catch (e, stackTrace) {
-      debugPrint('ThemeConfigProvider: 导入配置失败 - $e');
+      appLog.error('ThemeConfigProvider: 导入配置失败 - $e');
       debugPrint('ThemeConfigProvider: 堆栈跟踪: $stackTrace');
       return false;
     }

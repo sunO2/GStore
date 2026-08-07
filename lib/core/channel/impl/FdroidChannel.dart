@@ -10,21 +10,25 @@ import 'package:gstore/core/channel/database/channel_database.dart';
 import 'package:gstore/core/channel/model/ChannelInfo.dart';
 import 'package:gstore/core/channel/model/ChannelResult.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
+import 'package:gstore/core/channel/model/AppUpdateCheckResult.dart';
 import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/fdroid/FdroidRepoManager.dart';
+import 'package:gstore/core/agent/platform_arch.dart';
 import 'package:gstore/core/fdroid/FdroidRepoModels.dart';
+import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/model/proxy/FdroidChannelDetailProxy.dart';
 import 'package:gstore/core/service/app_icon_service.dart';
 import 'package:gstore/db/apps/AppInfo.dart';
 import 'package:gstore/db/apps/AppInfo.dart' as db;
+import 'package:gstore/core/channel/AppUpdateCheckMixin.dart';
 
 /// F-Droid 应用市场渠道实现
 /// 架构：
 /// - 使用 Rust RepoManager 搜索应用
 /// - 使用 ChannelDatabase 存储用户添加的应用
-class FdroidChannel implements IChannel {
+class FdroidChannel with AppUpdateCheckMixin implements IChannel {
   final Dio _dio;
 
   FdroidRepoManager get _repoManager => Get.find<FdroidRepoManager>();
@@ -67,7 +71,7 @@ class FdroidChannel implements IChannel {
     // 初始化 Channel 数据库
     _database = await ChannelDatabaseManager.instance;
     isInitialized = true;
-    debugPrint('FdroidChannel: 初始化完成');
+    appLog.info('FdroidChannel: 初始化完成');
   }
 
   @override
@@ -78,7 +82,7 @@ class FdroidChannel implements IChannel {
       );
       return response.statusCode == 200;
     } catch (e) {
-      debugPrint('FdroidChannel: 检查可用性失败 - $e');
+      appLog.error('FdroidChannel: 检查可用性失败 - $e');
       return false;
     }
   }
@@ -170,14 +174,14 @@ class FdroidChannel implements IChannel {
         );
       }).toList();
 
-      debugPrint('FdroidChannel: 获取到 ${apps.length} 个已添加应用');
+      appLog.info('FdroidChannel: 获取到 ${apps.length} 个已添加应用');
       return ChannelResult.success(
         data: apps,
         from: ChannelType.fdroid,
         fromCache: true,
       );
     } catch (e) {
-      debugPrint('FdroidChannel: 获取应用列表失败 - $e');
+      appLog.error('FdroidChannel: 获取应用列表失败 - $e');
       return ChannelResult.failure(
         from: ChannelType.fdroid,
         error: e.toString(),
@@ -264,14 +268,14 @@ class FdroidChannel implements IChannel {
         );
       }).toList());
 
-      debugPrint('FdroidChannel: 搜索到 ${apps.length} 个结果');
+      appLog.info('FdroidChannel: 搜索到 ${apps.length} 个结果');
       return ChannelResult.success(
         data: apps,
         from: ChannelType.fdroid,
         fromCache: false, // 搜索结果
       );
     } catch (e) {
-      debugPrint('FdroidChannel: 搜索失败 - $e');
+      appLog.error('FdroidChannel: 搜索失败 - $e');
       return ChannelResult.failure(
         from: ChannelType.fdroid,
         error: e.toString(),
@@ -337,14 +341,14 @@ class FdroidChannel implements IChannel {
 
       await _database!.dao.insertApp(channelApp);
 
-      debugPrint('FdroidChannel: 应用添加成功');
+      appLog.info('FdroidChannel: 应用添加成功');
       return ChannelResult.success(
         data: null,
         from: ChannelType.fdroid,
         fromCache: true,
       );
     } catch (e) {
-      debugPrint('FdroidChannel: 添加应用失败 - $e');
+      appLog.error('FdroidChannel: 添加应用失败 - $e');
       return ChannelResult.failure(
         from: ChannelType.fdroid,
         error: e.toString(),
@@ -363,14 +367,14 @@ class FdroidChannel implements IChannel {
 
       await _database!.dao.removeApp(appId, ChannelType.fdroid.code);
 
-      debugPrint('FdroidChannel: 应用移除成功');
+      appLog.info('FdroidChannel: 应用移除成功');
       return ChannelResult.success(
         data: null,
         from: ChannelType.fdroid,
         fromCache: true,
       );
     } catch (e) {
-      debugPrint('FdroidChannel: 移除应用失败 - $e');
+      appLog.error('FdroidChannel: 移除应用失败 - $e');
       return ChannelResult.failure(
         from: ChannelType.fdroid,
         error: e.toString(),
@@ -453,7 +457,7 @@ class FdroidChannel implements IChannel {
             );
           }
         } catch (e) {
-          debugPrint('FdroidChannel: 从数据库读取失败，尝试网络请求 - $e');
+          appLog.error('FdroidChannel: 从数据库读取失败，尝试网络请求 - $e');
         }
       }
 
@@ -529,7 +533,7 @@ class FdroidChannel implements IChannel {
         fromCache: false,
       );
     } catch (e) {
-      debugPrint('FdroidChannel: 获取应用信息失败 - $e');
+      appLog.error('FdroidChannel: 获取应用信息失败 - $e');
       return ChannelResult.failure(
         from: ChannelType.fdroid,
         error: e.toString(),
@@ -543,7 +547,7 @@ class FdroidChannel implements IChannel {
     bool forceRefresh = false,
   }) async {
     try {
-      debugPrint('FdroidChannel: ========== 开始获取应用详情 ==========');
+      appLog.info('FdroidChannel: ========== 开始获取应用详情 ==========');
       debugPrint('FdroidChannel: appId = $appId');
 
       // 步骤 1: 尝试从 Rust 数据库精确查询应用数据（包含 metadata 和 versions）
@@ -567,7 +571,7 @@ class FdroidChannel implements IChannel {
             debugPrint('FdroidChannel: 数据库中未找到精确匹配的应用');
           }
         } catch (e) {
-          debugPrint('FdroidChannel: 从数据库获取失败，尝试网络请求 - $e');
+          appLog.error('FdroidChannel: 从数据库获取失败，尝试网络请求 - $e');
         }
       }
 
@@ -575,7 +579,58 @@ class FdroidChannel implements IChannel {
       debugPrint('FdroidChannel: 使用网络 API 获取详情');
       return await _fetchDetailFromApi(appId);
     } catch (e) {
-      debugPrint('FdroidChannel: ✗ 获取应用详情失败 - $e');
+      appLog.error('FdroidChannel: ✗ 获取应用详情失败 - $e');
+      return ChannelResult.failure(
+        from: ChannelType.fdroid,
+        error: e.toString(),
+      );
+    }
+  }
+
+  /// 更新检测：仅使用本地 Rust 索引，避免触发网络请求
+  /// F-Droid 数据已由仓库索引定期同步到本地，无需实时联网
+  @override
+  Future<ChannelResult<AppUpdateCheckResult>> checkAppUpdate(
+    String appId,
+  ) async {
+    try {
+      final appData = await _repoManager.getAppByPackageName(appId);
+      if (appData != null) {
+        final metadataJson = appData['metadata'] as String?;
+        final versionsJson = appData['versions'] as String?;
+        if (metadataJson != null && versionsJson != null) {
+          final result = await _parseDetailFromJson(
+            appId,
+            appData,
+            metadataJson,
+            versionsJson,
+          );
+          if (result.success && result.data != null) {
+            final detail = result.data!;
+            // 按设备架构选择最佳下载包
+            final bestDownload =
+                await PlatformArch.selectBestDownload(detail.downloads);
+            return ChannelResult.success(
+              data: AppUpdateCheckResult(
+                appId: appId,
+                packageName: detail.packageName,
+                name: detail.name,
+                icon: detail.icon,
+                latestVersion: detail.version,
+                latestDownload: bestDownload,
+                detail: detail,
+              ),
+              from: ChannelType.fdroid,
+            );
+          }
+        }
+      }
+      return ChannelResult.failure(
+        from: ChannelType.fdroid,
+        error: '本地仓库索引中未找到 $appId，请先同步仓库数据',
+      );
+    } catch (e) {
+      appLog.error('FdroidChannel: 本地检查更新失败 - $e');
       return ChannelResult.failure(
         from: ChannelType.fdroid,
         error: e.toString(),
@@ -702,7 +757,7 @@ class FdroidChannel implements IChannel {
                               summaryData?.values.firstOrNull as String? ??
                               summary;
 
-      debugPrint('FdroidChannel: ========== 构建详情信息完成 ==========');
+      appLog.info('FdroidChannel: ========== 构建详情信息完成 ==========');
       debugPrint('FdroidChannel: name = $localizedName');
       debugPrint('FdroidChannel: downloads 数量 = ${downloads.length}');
       debugPrint('FdroidChannel: screenshots 数量 = ${screenshots.length}');
@@ -736,7 +791,7 @@ class FdroidChannel implements IChannel {
         fromCache: true,
       );
     } catch (e) {
-      debugPrint('FdroidChannel: 解析 JSON 详情失败 - $e');
+      appLog.error('FdroidChannel: 解析 JSON 详情失败 - $e');
       rethrow;
     }
   }
@@ -835,7 +890,7 @@ class FdroidChannel implements IChannel {
       });
     }
 
-    debugPrint('FdroidChannel: ========== 构建详情信息完成 ==========');
+    appLog.info('FdroidChannel: ========== 构建详情信息完成 ==========');
     debugPrint('FdroidChannel: name = $name');
     debugPrint('FdroidChannel: downloads 数量 = ${downloads.length}');
 
@@ -949,7 +1004,7 @@ class FdroidChannel implements IChannel {
         metadata: {'lastModified': lastModified},
       );
     } catch (e) {
-      debugPrint('FdroidChannel: 检查更新失败 - $e');
+      appLog.error('FdroidChannel: 检查更新失败 - $e');
       return ChannelResult.failure(
         from: ChannelType.fdroid,
         error: e.toString(),
@@ -983,7 +1038,7 @@ class FdroidChannel implements IChannel {
   @override
   Future<void> clearCache() async {
     // F-Droid 是远程 API，缓存由 Dio 管理
-    debugPrint('FdroidChannel: 缓存已清除');
+    appLog.info('FdroidChannel: 缓存已清除');
   }
 
   @override
@@ -995,7 +1050,7 @@ class FdroidChannel implements IChannel {
   @override
   Future<void> dispose() async {
     isInitialized = false;
-    debugPrint('FdroidChannel: 已释放');
+    appLog.info('FdroidChannel: 已释放');
   }
 
   /// 解析应用信息
@@ -1078,7 +1133,7 @@ class _FdroidSearchWidgetState extends State<_FdroidSearchWidget> {
         });
       }
     } catch (e) {
-      debugPrint('加载已添加应用失败: $e');
+      appLog.error('加载已添加应用失败: $e');
     }
   }
 

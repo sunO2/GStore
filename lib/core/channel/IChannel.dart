@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:gstore/core/channel/model/AppUpdateCheckResult.dart';
 import 'package:gstore/core/channel/model/ChannelInfo.dart';
 import 'package:gstore/core/channel/model/ChannelResult.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
@@ -51,6 +52,17 @@ abstract interface class IChannel {
     String appId, {
     bool forceRefresh = false,
   });
+
+  /// 检查指定应用是否有新版本（更新检测统一入口）
+  /// 由各渠道内部决定数据源（本地索引 / releases / 数据库 / 网络 API 等）
+  Future<ChannelResult<AppUpdateCheckResult>> checkAppUpdate(String appId);
+
+  /// 保存搜索结果到渠道数据库（添加应用到渠道）
+  /// 各渠道实现；不支持的渠道返回 failure
+  Future<ChannelResult<void>> addApp(AppInfo app);
+
+  /// 从渠道数据库移除应用
+  Future<ChannelResult<void>> removeApp(String appId);
 
   /// 搜索应用（支持按名称和描述搜索）
   Future<ChannelResult<List<AppInfo>>> searchApps(

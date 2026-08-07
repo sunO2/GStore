@@ -15,18 +15,48 @@ String byteSize(int bytes) {
 }
 
 int compareVersion(String oldVersion, newVersion) {
-  // 将版本号字符串分割为整数列表
-  List<int> parseVersion(String version) {
-    return version.split('.').map(int.parse).toList();
-  }
+  final oldParts = _parseVersion(oldVersion);
+  final newParts = _parseVersion(newVersion);
 
-  List<int> oldParts = parseVersion(oldVersion);
-  List<int> newParts = parseVersion(newVersion);
-
-  // 比较主版本、次版本和补丁版本
-  for (int i = 0; i < 3; i++) {
-    if (oldParts[i] < newParts[i]) return 1; // v1 比 v2 新
-    if (oldParts[i] > newParts[i]) return -1; // v1 比 v2 旧
+  // 比较主版本、次版本和补丁版本（不足位数视为 0）
+  final len = oldParts.length > newParts.length
+      ? oldParts.length
+      : newParts.length;
+  for (int i = 0; i < len; i++) {
+    final oldPart = i < oldParts.length ? oldParts[i] : 0;
+    final newPart = i < newParts.length ? newParts[i] : 0;
+    if (oldPart < newPart) return 1; // 新版本更大
+    if (oldPart > newPart) return -1; // 旧版本更大
   }
   return 0; // 版本号相同
+}
+
+/// 从版本字符串提取所有数字段
+/// 兼容 "v2"、"0-beta04"、"1.5.0-alpha" 等含非数字字符的版本号
+/// 提取所有数字序列，如 "0-beta04" -> [0, 4]
+List<int> _parseVersion(String version) {
+  final matches = RegExp(r'\d+').allMatches(version);
+  if (matches.isEmpty) return const [0];
+  return matches.map((m) => int.parse(m.group(0)!)).toList();
+}
+
+/// 判断 URL 是否为 GitHub 相关域名（需要走代理）
+bool isGithubUrl(String url) {
+  return url.startsWith('https://github.com/') ||
+      url.startsWith('http://github.com/') ||
+      url.startsWith('https://raw.githubusercontent.com/') ||
+      url.startsWith('https://api.github.com/') ||
+      url.startsWith('https://objects.githubusercontent.com/') ||
+      url.startsWith('https://user-images.githubusercontent.com/') ||
+      url.startsWith('https://avatars.githubusercontent.com/') ||
+      url.startsWith('https://camo.githubusercontent.com/');
+}
+
+/// 应用代理前缀（GitHub 相关域名且配置了代理时）
+/// 返回处理后的 URL
+String applyProxyIfNeeded(String url, String proxy) {
+  if (proxy.isEmpty) return url;
+  if (!isGithubUrl(url)) return url;
+  if (url.startsWith(proxy)) return url; // 已带代理
+  return '$proxy$url';
 }

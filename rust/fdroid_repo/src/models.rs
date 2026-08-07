@@ -41,3 +41,20 @@ pub struct DownloadResult {
     pub total_apps: i32,
     pub download_time_ms: i32,
 }
+
+/// APK 解析结果（从 AndroidManifest 提取的真实应用信息）
+#[derive(Clone, Debug, Default)]
+pub struct ApkInfo {
+    /// 真实包名（如 com.termux）
+    pub package_name: String,
+    /// 版本名（如 0.118.0）
+    pub version_name: String,
+    /// 版本码
+    pub version_code: String,
+    /// 应用名称
+    pub app_name: String,
+    /// 最低支持 SDK
+    pub min_sdk: String,
+    /// 主 Activity
+    pub main_activity: String,
+}

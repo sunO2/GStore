@@ -28,15 +28,15 @@ class BackupLogic extends GetxController {
   /// 初始化
   Future<void> _initialize() async {
     try {
-      debugPrint('BackupLogic: 开始初始化');
+      appLog.info('BackupLogic: 开始初始化');
       await _backupService.initialize();
-      debugPrint('BackupLogic: BackupService 初始化完成');
+      appLog.info('BackupLogic: BackupService 初始化完成');
       await loadStatistics();
       await checkWebDavConfig();
-      debugPrint('BackupLogic: 统计信息加载完成');
+      appLog.info('BackupLogic: 统计信息加载完成');
     } catch (e, stackTrace) {
-      debugPrint('BackupLogic: 初始化失败 - $e');
-      debugPrint('BackupLogic: 堆栈跟踪: $stackTrace');
+      appLog.error('BackupLogic: 初始化失败 - $e');
+      appLog.error('BackupLogic: 堆栈跟踪: $stackTrace');
       state.errorMessage.value = '初始化失败: $e';
     }
   }
@@ -55,7 +55,7 @@ class BackupLogic extends GetxController {
         state.webDavStatus.value = WebDavConnectionStatus.notConfigured;
       }
     } catch (e) {
-      debugPrint('BackupLogic: 检查 WebDAV 配置失败 - $e');
+      appLog.error('BackupLogic: 检查 WebDAV 配置失败 - $e');
       state.hasWebDavConfig.value = false;
       state.webDavStatus.value = WebDavConnectionStatus.notConfigured;
     }
@@ -76,13 +76,13 @@ class BackupLogic extends GetxController {
 
       if (success) {
         state.webDavStatus.value = WebDavConnectionStatus.connected;
-        debugPrint('BackupLogic: WebDAV 连接测试成功');
+        appLog.info('BackupLogic: WebDAV 连接测试成功');
       } else {
         state.webDavStatus.value = WebDavConnectionStatus.failed;
-        debugPrint('BackupLogic: WebDAV 连接测试失败');
+        appLog.error('BackupLogic: WebDAV 连接测试失败');
       }
     } catch (e) {
-      debugPrint('BackupLogic: WebDAV 连接测试异常 - $e');
+      appLog.error('BackupLogic: WebDAV 连接测试异常 - $e');
       state.webDavStatus.value = WebDavConnectionStatus.failed;
     }
   }
@@ -95,8 +95,8 @@ class BackupLogic extends GetxController {
       state.statistics.value = statistics;
       debugPrint('BackupLogic: 统计信息加载成功 - 总数: ${statistics.totalApps}');
     } catch (e, stackTrace) {
-      debugPrint('BackupLogic: 加载统计信息失败 - $e');
-      debugPrint('BackupLogic: 堆栈跟踪: $stackTrace');
+      appLog.error('BackupLogic: 加载统计信息失败 - $e');
+      appLog.error('BackupLogic: 堆栈跟踪: $stackTrace');
       state.errorMessage.value = '加载统计信息失败: $e';
     }
   }
@@ -104,7 +104,7 @@ class BackupLogic extends GetxController {
   /// 导出压缩备份（可选择是否包含应用配置）
   Future<void> exportCompressed(BuildContext context) async {
     try {
-      debugPrint('BackupLogic: 开始导出压缩备份');
+      appLog.info('BackupLogic: 开始导出压缩备份');
       state.isExporting.value = true;
 
       // 创建 Archive 对象
@@ -138,7 +138,7 @@ class BackupLogic extends GetxController {
           final configManager = ConfigManager.instance;
           final configBackup = await configManager.exportAll();
 
-          debugPrint('BackupLogic: 应用配置导出成功，包含 ${configBackup.configs.length} 项配置');
+          appLog.info('BackupLogic: 应用配置导出成功，包含 ${configBackup.configs.length} 项配置');
 
           if (configBackup.configs.isEmpty) {
             debugPrint('BackupLogic: ⚠️ 配置为空，跳过 app_config.json');
@@ -155,8 +155,8 @@ class BackupLogic extends GetxController {
             }
           }
         } catch (e, stackTrace) {
-          debugPrint('BackupLogic: 导出应用配置失败: $e');
-          debugPrint('BackupLogic: 堆栈跟踪: $stackTrace');
+          appLog.error('BackupLogic: 导出应用配置失败: $e');
+          appLog.error('BackupLogic: 堆栈跟踪: $stackTrace');
 
           if (context.mounted) {
             Get.snackbar(
@@ -181,8 +181,8 @@ class BackupLogic extends GetxController {
 
       await _saveCompressedBackup(context, Uint8List.fromList(compressedBytes), tarBytes.length);
     } catch (e, stackTrace) {
-      debugPrint('BackupLogic: 导出失败 - $e');
-      debugPrint('BackupLogic: 堆栈跟踪: $stackTrace');
+      appLog.error('BackupLogic: 导出失败 - $e');
+      appLog.error('BackupLogic: 堆栈跟踪: $stackTrace');
       state.isExporting.value = false;
 
       if (context.mounted) {
@@ -222,7 +222,7 @@ class BackupLogic extends GetxController {
       );
       debugPrint('BackupLogic: 文件保存路径: $outputPath');
     } catch (e) {
-      debugPrint('BackupLogic: FilePicker.saveFile 失败: $e');
+      appLog.error('BackupLogic: FilePicker.saveFile 失败: $e');
     }
 
     // 如果用户取消选择，提示用户
@@ -241,7 +241,7 @@ class BackupLogic extends GetxController {
       return;
     }
 
-    debugPrint('BackupLogic: 导出成功');
+    appLog.info('BackupLogic: 导出成功');
     state.isExporting.value = false;
 
     if (context.mounted) {
@@ -337,7 +337,7 @@ class BackupLogic extends GetxController {
 
       final filePath = result.files.single.path;
       if (filePath == null) {
-        debugPrint('BackupLogic: 无法获取文件路径');
+        appLog.error('BackupLogic: 无法获取文件路径');
         if (context.mounted) {
           Get.snackbar(
             '文件路径错误',
@@ -352,7 +352,7 @@ class BackupLogic extends GetxController {
       debugPrint('BackupLogic: 恢复模式: ${state.restoreMode.value}');
       await importFromFile(context, filePath);
     } catch (e) {
-      debugPrint('BackupLogic: 选择文件失败 - $e');
+      appLog.error('BackupLogic: 选择文件失败 - $e');
       if (context.mounted) {
         Get.snackbar(
           '选择文件失败',
@@ -445,7 +445,7 @@ class BackupLogic extends GetxController {
   /// 上传到 WebDAV
   Future<void> uploadToWebDav(BuildContext context, {bool compressed = false}) async {
     try {
-      debugPrint('BackupLogic: 开始上传到 WebDAV');
+      appLog.info('BackupLogic: 开始上传到 WebDAV');
       state.isUploadingWebDav.value = true;
 
       // 检查配置
@@ -468,7 +468,7 @@ class BackupLogic extends GetxController {
         includeAppConfig: state.includeAppConfig.value,
       );
 
-      debugPrint('BackupLogic: 上传成功 - $remotePath');
+      appLog.info('BackupLogic: 上传成功 - $remotePath');
       state.isUploadingWebDav.value = false;
 
       if (context.mounted) {
@@ -482,8 +482,8 @@ class BackupLogic extends GetxController {
         );
       }
     } catch (e, stackTrace) {
-      debugPrint('BackupLogic: 上传失败 - $e');
-      debugPrint('BackupLogic: 堆栈跟踪: $stackTrace');
+      appLog.error('BackupLogic: 上传失败 - $e');
+      appLog.error('BackupLogic: 堆栈跟踪: $stackTrace');
       state.isUploadingWebDav.value = false;
 
       if (context.mounted) {
@@ -503,7 +503,7 @@ class BackupLogic extends GetxController {
     String? remotePath,
   }) async {
     try {
-      debugPrint('BackupLogic: 从 WebDAV 下载备份');
+      appLog.info('BackupLogic: 从 WebDAV 下载备份');
       state.isImporting.value = true;
 
       // 显示进度对话框
@@ -600,7 +600,7 @@ class BackupLogic extends GetxController {
           Navigator.pop(context);
           state.isImporting.value = false;
 
-          debugPrint('BackupLogic: 获取备份列表失败: $e');
+          appLog.error('BackupLogic: 获取备份列表失败: $e');
 
           Get.snackbar(
             '获取备份列表失败',
@@ -640,7 +640,7 @@ class BackupLogic extends GetxController {
           message += '\n已存在跳过: ${result.skippedCount} 个';
         }
 
-        debugPrint('BackupLogic: 导入成功 - ${result.addedCount} 个新应用, ${result.skippedCount} 个已存在');
+        appLog.info('BackupLogic: 导入成功 - ${result.addedCount} 个新应用, ${result.skippedCount} 个已存在');
 
         Get.snackbar(
           '导入成功',

@@ -1,9 +1,9 @@
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:gstore/core/channel/IChannel.dart';
+import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/channel/model/ChannelInfo.dart';
 import 'package:gstore/core/channel/model/ChannelResult.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
@@ -12,10 +12,11 @@ import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/model/proxy/HttpChannelDetailProxy.dart';
 import 'package:gstore/db/apps/AppInfo.dart';
 import 'package:gstore/db/apps/AppInfo.dart' as db;
+import 'package:gstore/core/channel/AppUpdateCheckMixin.dart';
 
 /// HTTP API 渠道实现
 /// 通过 HTTP API 获取应用数据
-class HttpChannel implements IChannel {
+class HttpChannel with AppUpdateCheckMixin implements IChannel {
   final Dio _dio;
   final String _baseUrl;
 
@@ -57,7 +58,7 @@ class HttpChannel implements IChannel {
       // 如果没有 health 接口，忽略错误
     }
     isInitialized = true;
-    debugPrint('HttpChannel: 初始化完成 - $_baseUrl');
+    appLog.info('HttpChannel: 初始化完成 - $_baseUrl');
   }
 
   @override
@@ -69,7 +70,7 @@ class HttpChannel implements IChannel {
       );
       return response.statusCode == 200;
     } catch (e) {
-      debugPrint('HttpChannel: API 不可用 - $e');
+      appLog.error('HttpChannel: API 不可用 - $e');
       return false;
     }
   }
@@ -118,7 +119,7 @@ class HttpChannel implements IChannel {
         metadata: {'count': apps.length},
       );
     } catch (e) {
-      debugPrint('HttpChannel: 获取应用列表失败 - $e');
+      appLog.error('HttpChannel: 获取应用列表失败 - $e');
       return ChannelResult.failure(
         from: ChannelType.http,
         error: e.toString(),
@@ -165,7 +166,7 @@ class HttpChannel implements IChannel {
         fromCache: false,
       );
     } catch (e) {
-      debugPrint('HttpChannel: 获取应用信息失败 - $e');
+      appLog.error('HttpChannel: 获取应用信息失败 - $e');
       return ChannelResult.failure(
         from: ChannelType.http,
         error: e.toString(),
@@ -210,7 +211,7 @@ class HttpChannel implements IChannel {
         fromCache: false,
       );
     } catch (e) {
-      debugPrint('HttpChannel: 搜索应用失败 - $e');
+      appLog.error('HttpChannel: 搜索应用失败 - $e');
       return ChannelResult.failure(
         from: ChannelType.http,
         error: e.toString(),
@@ -254,7 +255,7 @@ class HttpChannel implements IChannel {
         fromCache: false,
       );
     } catch (e) {
-      debugPrint('HttpChannel: 按分类搜索失败 - $e');
+      appLog.error('HttpChannel: 按分类搜索失败 - $e');
       return ChannelResult.failure(
         from: ChannelType.http,
         error: e.toString(),
@@ -301,12 +302,28 @@ class HttpChannel implements IChannel {
         fromCache: false,
       );
     } catch (e) {
-      debugPrint('HttpChannel: 获取分类失败 - $e');
+      appLog.error('HttpChannel: 获取分类失败 - $e');
       return ChannelResult.failure(
         from: ChannelType.http,
         error: e.toString(),
       );
     }
+  }
+
+  @override
+  Future<ChannelResult<void>> addApp(AppInfo app) async {
+    return ChannelResult.failure(
+      from: ChannelType.http,
+      error: 'HTTP API 渠道不支持手动添加应用',
+    );
+  }
+
+  @override
+  Future<ChannelResult<void>> removeApp(String appId) async {
+    return ChannelResult.failure(
+      from: ChannelType.http,
+      error: 'HTTP API 渠道不支持移除应用',
+    );
   }
 
   @override
@@ -336,7 +353,7 @@ class HttpChannel implements IChannel {
         },
       );
     } catch (e) {
-      debugPrint('HttpChannel: 检查更新失败 - $e');
+      appLog.error('HttpChannel: 检查更新失败 - $e');
       return ChannelResult.failure(
         from: ChannelType.http,
         error: e.toString(),
@@ -367,7 +384,7 @@ class HttpChannel implements IChannel {
         from: ChannelType.http,
       );
     } catch (e) {
-      debugPrint('HttpChannel: 执行更新失败 - $e');
+      appLog.error('HttpChannel: 执行更新失败 - $e');
       return ChannelResult.failure(
         from: ChannelType.http,
         error: e.toString(),
@@ -411,7 +428,7 @@ class HttpChannel implements IChannel {
         fromCache: false,
       );
     } catch (e) {
-      debugPrint('HttpChannel: 获取配置失败 - $e');
+      appLog.error('HttpChannel: 获取配置失败 - $e');
       return ChannelResult.failure(
         from: ChannelType.http,
         error: e.toString(),
@@ -424,7 +441,7 @@ class HttpChannel implements IChannel {
     _cachedApps = null;
     _cachedCategories = null;
     _cachedConfig = null;
-    debugPrint('HttpChannel: 缓存已清除');
+    appLog.info('HttpChannel: 缓存已清除');
   }
 
   @override
@@ -436,7 +453,7 @@ class HttpChannel implements IChannel {
   Future<void> dispose() async {
     await clearCache();
     isInitialized = false;
-    debugPrint('HttpChannel: 已释放');
+    appLog.info('HttpChannel: 已释放');
   }
 
   @override
@@ -521,7 +538,7 @@ class HttpChannel implements IChannel {
       if (appInfoResult.success && appInfoResult.data != null) {
         return _buildBasicDetail(appInfoResult.data!);
       }
-      debugPrint('HttpChannel: 获取应用详情失败 - $e');
+      appLog.error('HttpChannel: 获取应用详情失败 - $e');
       return ChannelResult.failure(
         from: ChannelType.http,
         error: e.toString(),

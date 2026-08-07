@@ -18,6 +18,10 @@ class ChannelAddedApp {
   /// 仓库/包名
   final String repositories;
 
+  /// 仓库完整名（owner/repo），仅 GitHub 渠道使用
+  /// GitHub 渠道 appId 暂用此值，下载安装后替换为真实包名
+  final String? apprepo;
+
   /// 图标 URL
   final String icon;
 
@@ -41,6 +45,7 @@ class ChannelAddedApp {
     required this.name,
     required this.user,
     required this.repositories,
+    this.apprepo,
     required this.icon,
     required this.description,
     this.category,
@@ -55,6 +60,7 @@ class ChannelAddedApp {
     required String name,
     required String user,
     required String repositories,
+    String? apprepo,
     required String icon,
     required String description,
     String? category,
@@ -67,6 +73,7 @@ class ChannelAddedApp {
       name: name,
       user: user,
       repositories: repositories,
+      apprepo: apprepo,
       icon: icon,
       description: description,
       category: category,

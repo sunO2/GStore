@@ -4,6 +4,7 @@
 library;
 
 import 'package:flutter/foundation.dart';
+import 'package:gstore/core/core.dart';
 
 import 'config_manager.dart';
 import 'config_storage.dart';
@@ -31,7 +32,7 @@ class ConfigInitializer {
       return;
     }
 
-    debugPrint('ConfigInitializer: 开始初始化配置管理系统');
+    appLog.info('ConfigInitializer: 开始初始化配置管理系统');
 
     // 初始化配置管理器
     final manager = ConfigManager.instance;
@@ -55,10 +56,10 @@ class ConfigInitializer {
 
     // 初始化工作流管理器
     await WorkflowManager.instance.initialize(storage);
-    debugPrint('ConfigInitializer: 工作流管理器初始化完成');
+    appLog.info('ConfigInitializer: 工作流管理器初始化完成');
 
     _initialized = true;
-    debugPrint('ConfigInitializer: 配置管理系统初始化完成');
+    appLog.info('ConfigInitializer: 配置管理系统初始化完成');
   }
 
   /// 注册所有配置提供者
@@ -70,19 +71,19 @@ class ConfigInitializer {
     manager.registerProvider(
       ThemeConfigProvider(storage),
     );
-    debugPrint('ConfigInitializer: 已注册主题配置提供者');
+    appLog.info('ConfigInitializer: 已注册主题配置提供者');
 
     // 注册 WebDAV 配置提供者
     manager.registerProvider(
       WebDavConfigProvider(SecureConfigStorage()),
     );
-    debugPrint('ConfigInitializer: 已注册 WebDAV 配置提供者');
+    appLog.info('ConfigInitializer: 已注册 WebDAV 配置提供者');
 
     // 注册更新配置提供者
     manager.registerProvider(
       UpdateConfigProvider(storage),
     );
-    debugPrint('ConfigInitializer: 已注册更新配置提供者');
+    appLog.info('ConfigInitializer: 已注册更新配置提供者');
   }
 
   /// 获取主题配置提供者

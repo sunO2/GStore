@@ -26,50 +26,50 @@ class ApplistLogic extends GetxController with GithubRequestMix {
 
     try {
       _aggregator = Get.find(tag: 'aggregatorManager');
-      debugPrint('ApplistLogic: ✅ 初始化成功，获取到 AppAggregatorManager');
+      appLog.info('ApplistLogic: ✅ 初始化成功，获取到 AppAggregatorManager');
     } catch (e) {
-      debugPrint('ApplistLogic: ❌ 获取 AppAggregatorManager 失败 - $e');
+      appLog.error('ApplistLogic: ❌ 获取 AppAggregatorManager 失败 - $e');
       return;
     }
 
     // 监听已添加应用变化
     _appsSubscription = _aggregator.appsChangedStream.listen((_) {
-      debugPrint('ApplistLogic: ✅ 收到 appsChangedStream 通知，重新加载应用列表');
+      appLog.info('ApplistLogic: ✅ 收到 appsChangedStream 通知，重新加载应用列表');
       loadAggregatedApps();
     }, onError: (error) {
-      debugPrint('ApplistLogic: ⚠️ appsChangedStream 发生错误 - $error');
+      appLog.error('ApplistLogic: ⚠️ appsChangedStream 发生错误 - $error');
     }, onDone: () {
-      debugPrint('ApplistLogic: ℹ️ appsChangedStream 已关闭');
+      appLog.info('ApplistLogic: ℹ️ appsChangedStream 已关闭');
     });
 
-    debugPrint('ApplistLogic: 🚀 开始加载应用数据...');
+    appLog.info('ApplistLogic: 🚀 开始加载应用数据...');
     await loadAggregatedApps();
   }
 
   /// 加载聚合应用
   Future<void> loadAggregatedApps() async {
-    debugPrint('ApplistLogic: ========== 开始加载聚合应用 ==========');
+    appLog.info('ApplistLogic: ========== 开始加载聚合应用 ==========');
     state.isLoading.value = true;
     state.errorMessage.value = '';
 
     try {
       debugPrint('ApplistLogic: 调用 _aggregator.getAggregatedApps()');
       final apps = await _aggregator.getAggregatedApps();
-      debugPrint('ApplistLogic: ✅ 获取到 ${apps.length} 个聚合应用');
+      appLog.info('ApplistLogic: ✅ 获取到 ${apps.length} 个聚合应用');
 
       state.apps = apps;
       state.filteredApps = apps; // 初始化时显示所有应用
       update();
 
-      debugPrint('ApplistLogic: 已更新 UI，应用数量: ${apps.length}');
+      appLog.info('ApplistLogic: 已更新 UI，应用数量: ${apps.length}');
     } catch (e, stackTrace) {
-      debugPrint('ApplistLogic: ❌ 加载聚合应用失败 - $e');
+      appLog.error('ApplistLogic: ❌ 加载聚合应用失败 - $e');
       debugPrint('ApplistLogic: 堆栈跟踪: $stackTrace');
       state.errorMessage.value = '加载失败: $e';
     } finally {
       state.isLoading.value = false;
     }
-    debugPrint('ApplistLogic: ========== 加载聚合应用完成 ==========');
+    appLog.info('ApplistLogic: ========== 加载聚合应用完成 ==========');
   }
 
   /// 执行搜索（带防抖）
@@ -218,24 +218,24 @@ class ApplistLogic extends GetxController with GithubRequestMix {
         duration: const Duration(seconds: 3),
       );
     } catch (e) {
-      debugPrint('ApplistLogic: 跳转失败 - $e');
+      appLog.error('ApplistLogic: 跳转失败 - $e');
     }
   }
 
   @override
   void onClose() {
-    debugPrint('ApplistLogic: 🧹 开始清理资源...');
+    appLog.info('ApplistLogic: 🧹 开始清理资源...');
 
     // 清理搜索相关资源
     _searchDebounce?.cancel();
     _searchDebounce = null;
-    debugPrint('ApplistLogic: ✅ 搜索防抖 Timer 已取消');
+    appLog.info('ApplistLogic: ✅ 搜索防抖 Timer 已取消');
 
     // 取消流订阅
     if (_appsSubscription != null) {
       _appsSubscription!.cancel();
       _appsSubscription = null;
-      debugPrint('ApplistLogic: ✅ 应用变化订阅已取消');
+      appLog.info('ApplistLogic: ✅ 应用变化订阅已取消');
     }
 
     // 清理 Controller
@@ -244,16 +244,16 @@ class ApplistLogic extends GetxController with GithubRequestMix {
         searchFocusNode.unfocus();
       }
       searchFocusNode.dispose();
-      debugPrint('ApplistLogic: ✅ FocusNode 已释放');
+      appLog.info('ApplistLogic: ✅ FocusNode 已释放');
     } catch (e) {
-      debugPrint('ApplistLogic: ⚠️ FocusNode 释放时出错 - $e');
+      appLog.error('ApplistLogic: ⚠️ FocusNode 释放时出错 - $e');
     }
 
     try {
       searchController.dispose();
-      debugPrint('ApplistLogic: ✅ TextEditingController 已释放');
+      appLog.info('ApplistLogic: ✅ TextEditingController 已释放');
     } catch (e) {
-      debugPrint('ApplistLogic: ⚠️ TextEditingController 释放时出错 - $e');
+      appLog.error('ApplistLogic: ⚠️ TextEditingController 释放时出错 - $e');
     }
 
     // 清理缓存
@@ -261,7 +261,7 @@ class ApplistLogic extends GetxController with GithubRequestMix {
     state.apps.clear();
     state.filteredApps.clear();
 
-    debugPrint('ApplistLogic: 🎉 所有资源已清理完毕');
+    appLog.info('ApplistLogic: 🎉 所有资源已清理完毕');
     super.onClose();
   }
 }

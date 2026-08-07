@@ -18,8 +18,10 @@ import 'package:gstore/core/service/backup_service.dart';
 import 'package:gstore/core/theme/app_theme_config.dart';
 import 'package:gstore/core/theme/theme_controller.dart';
 import 'package:gstore/core/fdroid/FdroidRepoManager.dart';
+import 'package:gstore/core/utils/unit.dart';
 import 'package:gstore/core/webdav/webdav_config.dart';
 import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
+import 'package:gstore/db/apps/AppInfo.dart' as db;
 import 'package:gstore/http/download/DownloadStatus.dart';
 import 'package:gstore/http/download/DownloadStatusDataBase.dart';
 import 'package:gstore/core/download/strategy/impl/LocalDbDownloadStrategy.dart';
@@ -117,6 +119,7 @@ class AgentService extends GetxService {
   static const String fdroidRepoToolName = 'fdroidRepo';
   static const String webdavSyncToolName = 'webdavSync';
   static const String installedAppsToolName = 'installedApps';
+  static const String channelAppToolName = 'channelApp';
 
   Genkit? _ai;
   AgentModel? _model;
@@ -160,23 +163,26 @@ class AgentService extends GetxService {
 ${PlatformArch.platformDescription}
 
 可用工具：
-1. searchApp - 搜索应用。输入 keyword（关键词）。返回匹配的应用列表（含名称、包名、简介、来源渠道）。
-2. downloadApp - 下载应用。输入 appId（包名/仓库名）、channel（渠道代码，如 github/fdroid/vivo）、url（下载地址，可选）、name（应用名）、version（版本号）。GitHub 渠道时系统会自动选择匹配当前 CPU 架构的 APK。vivo 渠道需传 vivoId。
+1. searchApp - 搜索应用。输入 keyword（关键词）。返回匹配的应用列表（含名称、包名、简介、来源渠道）。支持 GitHub 渠道（走代理搜索仓库）。
+2. downloadApp - 下载应用。输入 appId（包名/仓库名）、channel（渠道代码，如 github/fdroid/vivo）、url（下载地址，可选）、name（应用名）、version（版本号）。GitHub 渠道时系统会自动选择匹配当前 CPU 架构的 APK。vivo 渠道需传 vivoId。下载完成后自动解析 APK 获取真实包名/图标/应用名并更新。
 3. installApp - 安装已下载的 APK。输入 savePath（APK 文件路径）。
-4. manageApp - 管理"我的应用"列表。action 为 list/add/remove/isAdded。
-5. getAppInfo - 获取应用详情或检查版本。输入 appId、channel。
-6. updateApps - 检查应用更新。appId 和 channel 可选（不传则检查全部已添加应用）。
-7. backup - 备份/恢复应用数据。action 为 export/import。
-8. manageDownload - 管理下载任务。action 为 list/pause/resume/cleanCompleted/clearAll。
-9. themeControl - 控制主题。action 为 mode/toggle/color。
-10. fdroidRepo - 管理 F-Droid 仓库。action 为 list/load/search/stats。
-11. webdavSync - WebDAV 云备份。action 为 upload/download/status。
-12. installedApps - 管理已安装应用。action 为 list/check/uninstall/clearData/clearCache/forceStop。卸载/清理/停止需 Shizuku 授权。
+4. manageApp - 管理"我的应用"列表（首页聚合）。action 为 list/add/remove/isAdded。
+5. channelApp - 管理应用渠道中的已添加应用（渠道数据库）。action 为 list（列出渠道应用，需 channel）、add（添加应用到渠道，需 appId+channel+name）、remove（从渠道移除，需 appId+channel）。GitHub 渠道 appId 用 owner/repo（如 termux/termux-app）。
+6. getAppInfo - 获取应用详情或检查版本。输入 appId、channel。
+7. updateApps - 检查应用更新。appId 和 channel 可选（不传则检查全部已添加应用）。返回每个已安装应用是否有更新（当前版本 → 最新版本）。
+8. backup - 备份/恢复应用数据。action 为 export/import。
+9. manageDownload - 管理下载任务。action 为 list/pause/resume/cleanCompleted/clearAll。
+10. themeControl - 控制主题。action 为 mode/toggle/color。
+11. fdroidRepo - 管理 F-Droid 仓库。action 为 list/load/search/stats。
+12. webdavSync - WebDAV 云备份。action 为 upload/download/status。
+13. installedApps - 管理已安装应用。action 为 list/check/uninstall/clearData/clearCache/forceStop。卸载/清理/停止需 Shizuku 授权。
 
 使用规则：
 - 用户要求"找/搜索/看看有没有 XX 应用"时，先调用 searchApp。
+- 推荐策略：优先推荐开源应用（GitHub、F-Droid 渠道）；若开源无合适应用或用户明确要热门的，可推荐用户量更大的非开源应用（vivo 渠道）。推荐时标注来源渠道。
 - 用户要求"下载 XX"时，用 searchApp 找到后调用 downloadApp。
 - 用户要求"添加 XX 到我的应用"/"移除 XX"/"我的应用有哪些"时，调用 manageApp。
+- 用户要求"添加 XX 到 XX 渠道"/"从渠道删除/移除 XX"/"XX 渠道有哪些应用"时，调用 channelApp。
 - 用户要求"检查更新"/"更新 XX"时，调用 updateApps。
 - 用户要求"备份"/"恢复"时，调用 backup。
 - 用户要求"暂停/恢复/清理下载"时，调用 manageDownload。
@@ -212,7 +218,7 @@ ${PlatformArch.platformDescription}
     _loadSessionMessages();
 
     if (_model == null || !_model!.isConfigured) {
-      debugPrint('AgentService: 未配置模型');
+      appLog.error('AgentService: 未配置模型');
       _initialized = false;
       return false;
     }
@@ -238,11 +244,11 @@ ${PlatformArch.platformDescription}
       _restoreMessagesFromSession();
 
       _initialized = true;
-      debugPrint(
+      appLog.info(
           'AgentService: 初始化成功 provider=${_model!.provider.name} model=${_model!.effectiveModel} abi=${PlatformArch.abi} sessions=${_sessionStore!.sessions.length}');
       return true;
     } catch (e) {
-      debugPrint('AgentService: 初始化失败 - $e');
+      appLog.error('AgentService: 初始化失败 - $e');
       _initialized = false;
       return false;
     }
@@ -500,6 +506,28 @@ ${PlatformArch.platformDescription}
       },
     );
 
+    // 渠道应用管理工具（渠道数据库：添加/移除/列出渠道已添加应用）
+    ai.defineTool<Map<String, dynamic>, String>(
+      name: channelAppToolName,
+      description:
+          '管理应用渠道中的已添加应用（区别于"我的应用"首页列表）。action 为 list（列出渠道已添加应用，需 channel）、add（添加应用到渠道，需 appId+channel+name）、remove（从渠道移除，需 appId+channel）。GitHub 渠道 appId 用 owner/repo（如 termux/termux-app）。',
+      fn: (input, _) async {
+        final action = input['action']?.toString() ?? 'list';
+        final appId = input['appId']?.toString() ?? '';
+        final channel = input['channel']?.toString() ?? '';
+        final name = input['name']?.toString() ?? '';
+        final msg = _addToolMessage(AgentToolType.manageApp, '渠道管理: $action');
+        try {
+          final result = await _manageChannelApp(action, appId, channel, name);
+          _updateToolMessage(msg, done: true, detail: result);
+          return result;
+        } catch (e) {
+          _updateToolMessage(msg, status: AgentToolStatus.error, detail: '$e');
+          return '渠道管理失败: $e';
+        }
+      },
+    );
+
     // 应用详情/更新检查工具
     ai.defineTool<Map<String, dynamic>, String>(
       name: appInfoToolName,
@@ -524,7 +552,7 @@ ${PlatformArch.platformDescription}
     ai.defineTool<Map<String, dynamic>, String>(
       name: updateAppsToolName,
       description:
-          '检查所有已添加应用是否有更新，或更新指定应用。appId 和 channel 可选（不传则检查全部）。',
+          '检查已安装应用是否有更新。appId 和 channel 可选（不传则检查全部已添加应用）。返回每个应用的当前版本与最新版本，并标记哪些可更新。',
       fn: (input, _) async {
         final appId = input['appId']?.toString() ?? '';
         final channel = input['channel']?.toString() ?? '';
@@ -745,6 +773,8 @@ ${PlatformArch.platformDescription}
     }
   }
 
+  /// 网络搜索（cn.bing.com，国内可直接访问）
+  /// 用于推荐候选应用、补充应用背景资料、回答外部知识问题
   /// 下载应用
   /// 优先使用策略管理器走正常下载流程（与详情页一致）
   /// 若传入 URL 有效则直接下载；否则通过渠道详情获取真实下载地址
@@ -937,6 +967,66 @@ ${PlatformArch.platformDescription}
     }
   }
 
+  /// 渠道应用管理（渠道数据库中的已添加应用）
+  Future<String> _manageChannelApp(
+    String action,
+    String appId,
+    String channel,
+    String name,
+  ) async {
+    if (channel.isEmpty) return '渠道管理需要指定 channel';
+    try {
+      final channelType = ChannelType.fromCode(channel);
+      if (channelType == null) return '未知渠道: $channel';
+      final manager = ChannelManager.instance;
+      final inst = manager.getChannel(channelType);
+      if (inst == null) return '渠道 $channel 不可用';
+
+      switch (action) {
+        case 'list':
+          final result = await inst.getAllApps(forceRefresh: true);
+          if (!result.success || result.data == null) {
+            return '获取渠道应用失败: ${result.error ?? '未知错误'}';
+          }
+          if (result.data!.isEmpty) {
+            return '${channelType.description} 渠道暂无已添加应用';
+          }
+          final lines = result.data!
+              .map((a) => '• ${a.name} (${a.appId})')
+              .toList();
+          return '${channelType.description} 渠道应用共 ${result.data!.length} 个：\n${lines.join('\n')}';
+
+        case 'add':
+          if (appId.isEmpty) return '添加渠道应用需要 appId';
+          final appInfo = db.AppInfo(
+            appId,
+            name.isEmpty ? appId : name,
+            '',
+            '',
+            '',
+            '',
+            null,
+          );
+          final r = await inst.addApp(appInfo);
+          return r.success
+              ? '已添加 ${name.isEmpty ? appId : name} 到${channelType.description}渠道'
+              : '添加失败: ${r.error ?? '未知错误'}';
+
+        case 'remove':
+          if (appId.isEmpty) return '移除渠道应用需要 appId';
+          final r = await inst.removeApp(appId);
+          return r.success
+              ? '已从${channelType.description}渠道移除 $appId'
+              : '移除失败: ${r.error ?? '未知错误'}';
+
+        default:
+          return '未知操作: $action（支持 list/add/remove）';
+      }
+    } catch (e) {
+      return '渠道管理失败: $e';
+    }
+  }
+
   /// 获取应用详情（含版本、简介等）
   Future<String> _getAppInfo(String appId, String channel) async {
     if (appId.isEmpty) return '需要 appId';
@@ -988,21 +1078,40 @@ ${PlatformArch.platformDescription}
 
       // 指定应用时只查该应用
       if (appId.isNotEmpty) {
-        final channelType = channel.isNotEmpty ? ChannelType.fromCode(channel) : null;
+        final channelType = channel.isNotEmpty
+            ? ChannelType.fromCode(channel)
+            : null;
         if (channelType == null) {
           return '检查更新需要指定渠道 channel';
         }
         final inst = manager.getChannel(channelType);
         if (inst == null) return '渠道 ${channelType.code} 不可用';
-        final detailResult = await inst.getAppDetail(appId, forceRefresh: true);
-        if (!detailResult.success || detailResult.data == null) {
-          return '获取 $appId 信息失败';
+
+        final added =
+            await aggregator.isAppAdded(channel: channelType, appId: appId);
+        if (!added) return '$appId 不在我的应用中，无法检查更新';
+
+        final checkResult = await inst.checkAppUpdate(appId);
+        if (!checkResult.success || checkResult.data == null) {
+          return '$appId 更新检查失败: ${checkResult.error ?? '未知错误'}';
         }
-        final detail = detailResult.data!;
-        final added = await aggregator.isAppAdded(channel: channelType, appId: appId);
-        final appName = detail.name.isNotEmpty ? detail.name : appId;
-        if (!added) return '$appName 不在我的应用中，无法检查更新';
-        return '$appName 最新版本: ${detail.version ?? '未知'}';
+        final check = checkResult.data!;
+        final appName = check.name.isNotEmpty ? check.name : appId;
+        final latest = check.latestVersion ?? '未知';
+
+        // 对比已安装版本
+        final packageName = check.packageName.trim().isNotEmpty
+            ? check.packageName.trim()
+            : appId;
+        final installed = await InstalledApps.getAppInfo(packageName);
+        final installedVersion = installed?.versionName;
+        if (installedVersion == null || latest == '未知') {
+          return '$appName 最新版本: $latest（设备上未安装或无法获取版本）';
+        }
+        final hasUpdate = compareVersion(installedVersion, latest) == 1;
+        return hasUpdate
+            ? '$appName 有更新: $installedVersion → $latest'
+            : '$appName 已是最新版本 ($latest)';
       }
 
       // 检查所有已添加应用
@@ -1010,22 +1119,41 @@ ${PlatformArch.platformDescription}
       if (addedApps.isEmpty) return '我的应用列表为空，没有可检查的更新。';
 
       final updates = <String>[];
+      int checked = 0;
       for (final added in addedApps) {
         try {
           final channelType = ChannelType.fromCode(added.channelId);
           if (channelType == null) continue;
           final inst = manager.getChannel(channelType);
           if (inst == null) continue;
-          final detailResult = await inst.getAppDetail(added.appId);
-          if (detailResult.success && detailResult.data != null) {
-            final detail = detailResult.data!;
-            final appName = detail.name.isNotEmpty ? detail.name : added.appName;
-            updates.add('• $appName: ${detail.version ?? '未知'}');
+          final checkResult = await inst.checkAppUpdate(added.appId);
+          if (!checkResult.success || checkResult.data == null) continue;
+          final check = checkResult.data!;
+          checked++;
+
+          final packageName = check.packageName.trim().isNotEmpty
+              ? check.packageName.trim()
+              : added.appId;
+          final installed = await InstalledApps.getAppInfo(packageName);
+          final installedVersion = installed?.versionName;
+          final latest = check.latestVersion;
+          final appName =
+              check.name.isNotEmpty ? check.name : added.appName;
+
+          if (installedVersion == null || latest == null) {
+            updates.add('• $appName: 最新 $latest ?? 未安装');
+            continue;
+          }
+          if (compareVersion(installedVersion, latest) == 1) {
+            updates.add('• $appName: $installedVersion → $latest ⬆ 可更新');
+          } else {
+            updates.add('• $appName: 已是最新 ($latest)');
           }
         } catch (e) {
           // 单个应用失败不影响整体
         }
       }
+      if (checked == 0) return '检查了 ${addedApps.length} 个应用，但未能获取更新信息。';
       return '已检查 ${addedApps.length} 个应用：\n${updates.join('\n')}';
     } catch (e) {
       return '更新检查失败: $e';
@@ -1378,7 +1506,7 @@ ${PlatformArch.platformDescription}
       // 持久化助手消息
       _persistStreamMessage(streamMsg);
     } catch (e) {
-      debugPrint('AgentService: 生成失败 - $e');
+      appLog.error('AgentService: 生成失败 - $e');
       _addAssistantMessage('抱歉，请求失败：$e');
     } finally {
       _busy = false;

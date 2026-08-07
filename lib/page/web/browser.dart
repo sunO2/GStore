@@ -1,4 +1,3 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/db/apps/AppInfo.dart';
@@ -17,7 +16,7 @@ class GStoreInAppBrowser {
     try {
       await InAppBrowser.openWithSystemBrowser(url: url);
     } catch (e) {
-      debugPrint('GStoreInAppBrowser: 打开系统浏览器失败 - $e');
+      appLog.error('GStoreInAppBrowser: 打开系统浏览器失败 - $e');
       // 兜底：尝试用 url_launcher 或直接忽略
     }
   }

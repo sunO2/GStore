@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:gstore/core/logger/LogManager.dart';
 
 /// WebDAV 配置
 class WebDavConfig {
@@ -117,9 +118,9 @@ class WebDavConfigManager {
       await _storage.write(key: _keyBackupPath, value: config.backupPath);
       await _storage.write(key: _keyEnableHttps, value: config.enableHttps.toString());
 
-      debugPrint('WebDavConfigManager: 配置已保存');
+      appLog.info('WebDavConfigManager: 配置已保存');
     } catch (e) {
-      debugPrint('WebDavConfigManager: 保存配置失败 - $e');
+      appLog.error('WebDavConfigManager: 保存配置失败 - $e');
       rethrow;
     }
   }
@@ -146,10 +147,10 @@ class WebDavConfigManager {
         enableHttps: enableHttpsStr == 'true',
       );
 
-      debugPrint('WebDavConfigManager: 配置已加载');
+      appLog.info('WebDavConfigManager: 配置已加载');
       return config;
     } catch (e) {
-      debugPrint('WebDavConfigManager: 加载配置失败 - $e');
+      appLog.error('WebDavConfigManager: 加载配置失败 - $e');
       return null;
     }
   }
@@ -163,9 +164,9 @@ class WebDavConfigManager {
       await _storage.delete(key: _keyBackupPath);
       await _storage.delete(key: _keyEnableHttps);
 
-      debugPrint('WebDavConfigManager: 配置已清除');
+      appLog.info('WebDavConfigManager: 配置已清除');
     } catch (e) {
-      debugPrint('WebDavConfigManager: 清除配置失败 - $e');
+      appLog.error('WebDavConfigManager: 清除配置失败 - $e');
     }
   }
 

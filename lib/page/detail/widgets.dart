@@ -10,6 +10,7 @@ import 'package:markdown/markdown.dart' as md;
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/design/design_tokens.dart';
+import 'package:gstore/core/core.dart';
 
 /// 自定义代码块扩展 - 添加复制按钮
 class CodeBlockExtension extends HtmlExtension {
@@ -139,12 +140,117 @@ class _CodeBlockWidget extends StatelessWidget {
   }
 }
 
+/// 图片扩展：README 内图片圆角显示 + 点击全屏预览
+class _ReadmeImageExtension extends HtmlExtension {
+  final BuildContext context;
+
+  _ReadmeImageExtension(this.context);
+
+  @override
+  Set<String> get supportedTags => {'img'};
+
+  @override
+  InlineSpan build(ExtensionContext context) {
+    final src = context.styledElement?.element?.attributes['src'] ?? '';
+    final uri = Uri.tryParse(src);
+    if (uri == null || src.isEmpty) {
+      return const WidgetSpan(child: SizedBox.shrink());
+    }
+    return WidgetSpan(
+      alignment: PlaceholderAlignment.bottom,
+      child: _ReadmeImage(url: src, buildContext: this.context),
+    );
+  }
+}
+
+/// README 图片组件
+class _ReadmeImage extends StatelessWidget {
+  final String url;
+  final BuildContext buildContext;
+
+  const _ReadmeImage({required this.url, required this.buildContext});
+
+  /// GitHub 相关图片 URL 应用代理
+  String get _proxiedUrl {
+    final proxied = applyProxyIfNeeded(url, getProxy());
+    debugPrint('ReadmeImage: url=$url proxied=$proxied proxy=${getProxy().isEmpty ? '(空)' : getProxy()}');
+    return proxied;
+  }
+
+  /// 全屏预览
+  void _preview(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => Dialog(
+        backgroundColor: Colors.black87,
+        child: GestureDetector(
+          onTap: () => Navigator.pop(context),
+          child: InteractiveViewer(
+            maxScale: 5,
+            child: Center(
+              child: CachedNetworkImage(
+                imageUrl: _proxiedUrl,
+                fit: BoxFit.contain,
+                placeholder: (context, url) => const Center(
+                  child: CircularProgressIndicator(),
+                ),
+                errorWidget: (context, url, error) => const Icon(
+                  Icons.broken_image_outlined,
+                  color: Colors.white70,
+                  size: 48,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final maxWidth = MediaQuery.of(context).size.width - AppSpacing.lg * 2;
+
+    return GestureDetector(
+      onTap: () => _preview(buildContext),
+      child: ClipRRect(
+        borderRadius: AppRadius.allMD,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxWidth: maxWidth,
+            maxHeight: maxWidth * 0.8,
+          ),
+          child: CachedNetworkImage(
+            imageUrl: _proxiedUrl,
+            fit: BoxFit.contain,
+            placeholder: (context, url) => Container(
+              height: 100,
+              color: Theme.of(context).colorScheme.surfaceContainerHighest,
+              child: const Center(
+                child: SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              ),
+            ),
+            errorWidget: (context, url, error) => Container(
+              height: 60,
+              color: Theme.of(context).colorScheme.surfaceContainerHighest,
+              child: const Icon(Icons.broken_image_outlined),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// 版本信息 Section
 class VersionSection extends StatelessWidget {
   final IDetailInfo info;
 
   const VersionSection({super.key, required this.info});
-
   @override
   Widget build(BuildContext context) {
     if (info.version == null && info.packageName == null) {
@@ -387,6 +493,7 @@ class ReadmeSection extends StatelessWidget {
             // 添加自定义代码块扩展
             extensions: [
               CodeBlockExtension(context),
+              _ReadmeImageExtension(context),
             ],
             style: {
               // 正文基础样式

@@ -126,35 +126,39 @@ class AppDialogs {
               const SizedBox(height: AppSpacing.xxl),
 
               // 操作按钮
-              Row(
-                mainAxisAlignment: cancelText == null
-                    ? MainAxisAlignment.center
-                    : MainAxisAlignment.end,
-                children: [
-                  if (cancelText != null)
-                    TextButton(
-                      onPressed: () {
-                        Get.back(result: false);
-                        onCancel?.call();
-                      },
-                      child: Text(cancelText),
-                    ),
-                  if (cancelText != null)
-                    const SizedBox(width: AppSpacing.sm),
-                  if (confirmText != null)
-                    FilledButton(
-                      style: isDangerous
-                          ? FilledButton.styleFrom(
-                              backgroundColor: _colorScheme.error,
-                            )
-                          : null,
-                      onPressed: () {
-                        Get.back(result: true);
-                        onConfirm?.call();
-                      },
-                      child: Text(confirmText),
-                    ),
-                ],
+              // 使用 Builder 获取 dialog 自身的 context，用 Navigator.pop 确定性关闭
+              // （避免 Get.back 依赖全局 navigator 状态导致偶发不关闭）
+              Builder(
+                builder: (dialogContext) => Row(
+                  mainAxisAlignment: cancelText == null
+                      ? MainAxisAlignment.center
+                      : MainAxisAlignment.end,
+                  children: [
+                    if (cancelText != null)
+                      TextButton(
+                        onPressed: () {
+                          Navigator.of(dialogContext).pop(false);
+                          onCancel?.call();
+                        },
+                        child: Text(cancelText),
+                      ),
+                    if (cancelText != null)
+                      const SizedBox(width: AppSpacing.sm),
+                    if (confirmText != null)
+                      FilledButton(
+                        style: isDangerous
+                            ? FilledButton.styleFrom(
+                                backgroundColor: _colorScheme.error,
+                              )
+                            : null,
+                        onPressed: () {
+                          Navigator.of(dialogContext).pop(true);
+                          onConfirm?.call();
+                        },
+                        child: Text(confirmText),
+                      ),
+                  ],
+                ),
               ),
             ],
           ),

@@ -2,7 +2,6 @@
 /// 实现 IAppRepository 接口
 library;
 
-import 'package:flutter/foundation.dart';
 import 'package:gstore/core/model/IAppInfo.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
@@ -11,6 +10,7 @@ import 'package:gstore/core/model/AppRepository.dart';
 import 'package:gstore/core/data/unified_database.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
+import 'package:gstore/core/core.dart';
 import 'package:gstore/core/model/proxy/ChannelDetailProxy.dart';
 
 /// 统一应用仓库实现
@@ -22,7 +22,7 @@ class UnifiedAppRepository implements IAppRepository {
   Future<void> initialize() async {
     _database = UnifiedDatabase();
     _channelManager = ChannelManager.instance;
-    debugPrint('UnifiedAppRepository: 初始化成功');
+    appLog.info('UnifiedAppRepository: 初始化成功');
   }
 
   @override
@@ -32,7 +32,7 @@ class UnifiedAppRepository implements IAppRepository {
       final apps = entities.map((e) => _entityToInterface(e)).toList();
       return RepositoryResult.success(apps);
     } catch (e) {
-      debugPrint('UnifiedAppRepository: 获取应用列表失败 - $e');
+      appLog.error('UnifiedAppRepository: 获取应用列表失败 - $e');
       return RepositoryResult.failure(e.toString());
     }
   }
@@ -46,7 +46,7 @@ class UnifiedAppRepository implements IAppRepository {
       }
       return RepositoryResult.success(_entityToInterface(entity));
     } catch (e) {
-      debugPrint('UnifiedAppRepository: 获取应用失败 - $e');
+      appLog.error('UnifiedAppRepository: 获取应用失败 - $e');
       return RepositoryResult.failure(e.toString());
     }
   }
@@ -81,7 +81,7 @@ class UnifiedAppRepository implements IAppRepository {
 
       return RepositoryResult.success(result.data);
     } catch (e) {
-      debugPrint('UnifiedAppRepository: 获取详情失败 - $e');
+      appLog.error('UnifiedAppRepository: 获取详情失败 - $e');
       return RepositoryResult.failure(e.toString());
     }
   }
@@ -107,7 +107,7 @@ class UnifiedAppRepository implements IAppRepository {
       await _database.insertApp(entity);
       return RepositoryResult.success(null);
     } catch (e) {
-      debugPrint('UnifiedAppRepository: 添加应用失败 - $e');
+      appLog.error('UnifiedAppRepository: 添加应用失败 - $e');
       return RepositoryResult.failure(e.toString());
     }
   }
@@ -128,7 +128,7 @@ class UnifiedAppRepository implements IAppRepository {
       await _database.deleteByPackage(packageName);
       return RepositoryResult.success(null);
     } catch (e) {
-      debugPrint('UnifiedAppRepository: 删除应用失败 - $e');
+      appLog.error('UnifiedAppRepository: 删除应用失败 - $e');
       return RepositoryResult.failure(e.toString());
     }
   }
@@ -140,7 +140,7 @@ class UnifiedAppRepository implements IAppRepository {
       final apps = entities.map((e) => _entityToInterface(e)).toList();
       return RepositoryResult.success(apps);
     } catch (e) {
-      debugPrint('UnifiedAppRepository: 获取渠道应用失败 - $e');
+      appLog.error('UnifiedAppRepository: 获取渠道应用失败 - $e');
       return RepositoryResult.failure(e.toString());
     }
   }
@@ -152,7 +152,7 @@ class UnifiedAppRepository implements IAppRepository {
       final apps = entities.map((e) => _entityToInterface(e)).toList();
       return RepositoryResult.success(apps);
     } catch (e) {
-      debugPrint('UnifiedAppRepository: 搜索应用失败 - $e');
+      appLog.error('UnifiedAppRepository: 搜索应用失败 - $e');
       return RepositoryResult.failure(e.toString());
     }
   }
@@ -171,7 +171,7 @@ class UnifiedAppRepository implements IAppRepository {
       await _database.insertApps(entities);
       return RepositoryResult.success(null);
     } catch (e) {
-      debugPrint('UnifiedAppRepository: 批量添加应用失败 - $e');
+      appLog.error('UnifiedAppRepository: 批量添加应用失败 - $e');
       return RepositoryResult.failure(e.toString());
     }
   }
@@ -182,7 +182,7 @@ class UnifiedAppRepository implements IAppRepository {
       await _database.deleteAll();
       return RepositoryResult.success(null);
     } catch (e) {
-      debugPrint('UnifiedAppRepository: 清空应用失败 - $e');
+      appLog.error('UnifiedAppRepository: 清空应用失败 - $e');
       return RepositoryResult.failure(e.toString());
     }
   }
