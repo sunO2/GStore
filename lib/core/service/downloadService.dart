@@ -6,6 +6,8 @@ import 'package:gstore/core/core.dart';
 import 'package:dio/dio.dart';
 import 'package:gstore/http/download/DownloadStatusDataBase.dart';
 import 'package:gstore/core/download/model/DownloadContext.dart';
+import 'package:gstore/core/service/download_notification_service.dart';
+import 'package:gstore/core/service/apk_info_service.dart';
 
 /// 下载数据库（兼容旧代码引用，已内部缓存单例）
 final Future<DownloadDatabase> database = downloadStatusDatabase;
@@ -72,10 +74,12 @@ class DownloadService extends GetxService {
   Future<DownloadStatus> download(String appid, appName, version, url, fileName,
       {int? downloadSize, bool breakPoint = true, String? saveFileName,
       bool forceDownload = false}) async {
-    debugPrint('DownloadService.download 开始: appid=$appid version=$version url=$url forceDownload=$forceDownload');
+    appLog.info('DownloadService.download 开始: appid=$appid version=$version url=$url forceDownload=$forceDownload');
+    // 请求通知权限（Android 13+ 首次下载时询问）
+    DownloadNotificationService.instance.requestPermission();
     // 检查是否正在下载
     if (DownloadStatus.isDownloading(appid, version, fileName)) {
-      debugPrint("文件正在下载中，跳过重复下载: $fileName");
+      appLog.info("文件正在下载中，跳过重复下载: $fileName");
       // 返回现有的下载状态
       final existing = await (await (await database)
           .downloadStatusDao
@@ -112,7 +116,7 @@ class DownloadService extends GetxService {
     if (!forceDownload &&
         downloadStatus.status == DownloadStatus.DOWNLOAD_SUCCESS &&
         _install(fileName, downloadStatus.savePath)) {
-      debugPrint('DownloadService: 已下载成功，跳过重复下载');
+      appLog.info('DownloadService: 已下载成功，跳过重复下载');
       return downloadStatus;
     }
 
@@ -131,7 +135,7 @@ class DownloadService extends GetxService {
     // 等待并发许可
     debugPrint('DownloadService: 等待并发许可 (活跃: ${_semaphore.active})');
     await _semaphore.acquire();
-    debugPrint('DownloadService: 已获取并发许可，开始执行下载');
+    appLog.info('DownloadService: 已获取并发许可，开始执行下载');
     try {
       await _performDownload(
         downloadStatus,
@@ -140,7 +144,7 @@ class DownloadService extends GetxService {
     } finally {
       _semaphore.release();
     }
-    debugPrint('DownloadService: 下载执行完成, 最终状态: ${downloadStatus.status}');
+    appLog.info('DownloadService: 下载执行完成, 最终状态: ${downloadStatus.status}');
     return downloadStatus;
   }
 
@@ -169,7 +173,7 @@ class DownloadService extends GetxService {
   }) async {
     // 检查是否正在下载
     if (DownloadStatus.isDownloading(appid, version, fileName)) {
-      debugPrint("文件正在下载中，跳过重复下载: $fileName");
+      appLog.info("文件正在下载中，跳过重复下载: $fileName");
       // 返回现有的下载状态
       final existing = await (await (await database)
           .downloadStatusDao
@@ -226,10 +230,21 @@ class DownloadService extends GetxService {
     // 确保目录存在
     await file.parent.create(recursive: true);
 
+    // 通知栏进度（下载开始）
+    final notifId = downloadStatus.id ?? downloadStatus.appId.hashCode;
+    final notifTitle = downloadStatus.appName.isNotEmpty
+        ? downloadStatus.appName
+        : downloadStatus.appId;
+    DownloadNotificationService.instance.onDownloadStart(
+      notifId,
+      notifTitle,
+      downloadStatus.fileName,
+    );
+
     int attempt = 0;
     while (attempt <= maxRetryCount) {
       if (attempt > 0) {
-        debugPrint("重试下载 (${attempt}/$maxRetryCount): ${downloadStatus.fileName}");
+        appLog.info("重试下载 (${attempt}/$maxRetryCount): ${downloadStatus.fileName}");
         // 退避等待
         await Future.delayed(Duration(seconds: attempt * 2));
       }
@@ -267,6 +282,14 @@ class DownloadService extends GetxService {
           cancelToken: downloadStatus.getCancelToken(),
           onReceiveProgress: (count, total) {
             downloadStatus.updateDownload(start + count, total + start);
+            // 通知栏进度更新
+            DownloadNotificationService.instance.onDownloadProgress(
+              notifId,
+              notifTitle,
+              downloadStatus.fileName,
+              start + count,
+              total + start,
+            );
           },
           options: options,
         );
@@ -292,10 +315,20 @@ class DownloadService extends GetxService {
 
         try {
           // 使用 await for 顺序写入，天然支持背压
+          // 注意：流式下载（responseType: stream）时 onReceiveProgress 不触发，
+          // 需在读取循环中手动更新进度
           var received = 0;
           await for (final data in response.data.stream) {
             fileStream.add(data);
             received += data.length as int;
+            downloadStatus.updateDownload(start + received, downloadStatus.total + start);
+            DownloadNotificationService.instance.onDownloadProgress(
+              notifId,
+              notifTitle,
+              downloadStatus.fileName,
+              start + received,
+              downloadStatus.total + start,
+            );
           }
           debugPrint('DownloadService: 流读取完成, 本次收到 $received 字节');
           await fileStream.close();
@@ -303,32 +336,49 @@ class DownloadService extends GetxService {
             downloadTempFile.renameSync(file.path);
             _install(downloadStatus.fileName, downloadStatus.savePath);
             downloadStatus.downloadSuccess();
+            DownloadNotificationService.instance
+                .onDownloadComplete(notifId);
+            // 下载成功（APK）：异步解析并更新真实包名/图标（GitHub 渠道）
+            if (file.path.endsWith('.apk')) {
+              unawaited(
+                ApkInfoService.instance.handleDownloadedApk(
+                  appId: downloadStatus.appId,
+                  apkPath: file.path,
+                ),
+              );
+            }
             return;
           } else {
             downloadStatus.downloadError();
+            DownloadNotificationService.instance.onDownloadError(
+              notifId,
+              notifTitle,
+            );
             return;
           }
         } on DioException catch (e) {
           await fileStream.close();
           if (CancelToken.isCancel(e)) {
-            debugPrint("取消下载：$downloadUrl");
+            appLog.info("取消下载：$downloadUrl");
             downloadStatus.downloadCanced();
+            DownloadNotificationService.instance.onDownloadCancel(notifId);
             return;
           }
-          debugPrint("下载异常：$downloadUrl ${e.message}");
+          appLog.error("下载异常：$downloadUrl ${e.message}");
         } catch (e) {
           await fileStream.close();
-          debugPrint("下载异常：$downloadUrl $e");
+          appLog.error("下载异常：$downloadUrl $e");
         }
       } on DioException catch (e) {
         if (CancelToken.isCancel(e)) {
-          debugPrint("取消下载：$downloadUrl");
+          appLog.info("取消下载：$downloadUrl");
           downloadStatus.downloadCanced();
+          DownloadNotificationService.instance.onDownloadCancel(notifId);
           return;
         }
-        debugPrint("下载异常：$downloadUrl ${e.message}");
+        appLog.error("下载异常：$downloadUrl ${e.message}");
       } catch (e) {
-        debugPrint("下载异常：$downloadUrl $e");
+        appLog.error("下载异常：$downloadUrl $e");
       }
 
       // 到达这里说明下载失败，尝试重试
@@ -337,6 +387,7 @@ class DownloadService extends GetxService {
         continue;
       }
       downloadStatus.downloadError();
+      DownloadNotificationService.instance.onDownloadError(notifId, notifTitle);
       return;
     }
   }

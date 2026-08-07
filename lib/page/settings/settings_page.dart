@@ -264,7 +264,7 @@ class _DataUpdateTileState extends State<_DataUpdateTile> {
         setState(() => _currentVersion = version);
       }
     } catch (e) {
-      debugPrint('_DataUpdateTile: 读取当前版本失败 - $e');
+      appLog.error('_DataUpdateTile: 读取当前版本失败 - $e');
     }
   }
 
@@ -277,11 +277,7 @@ class _DataUpdateTileState extends State<_DataUpdateTile> {
         width: 40,
         height: 40,
         child: Center(
-          child: SizedBox(
-            width: 18,
-            height: 18,
-            child: CircularProgressIndicator(strokeWidth: 2),
-          ),
+          child: AppLoading(size: AppLoadingSize.small),
         ),
       );
     } else if (_hasUpdate) {
@@ -295,14 +291,14 @@ class _DataUpdateTileState extends State<_DataUpdateTile> {
         child: const Text('更新'),
       );
     } else {
-      // 默认：刷新按钮（检查更新），固定在 40x40 容器内与 loading 对齐
+      // 默认：双箭头刷新按钮（检查更新），固定在 40x40 容器内与 loading 对齐
       trailing = SizedBox(
         width: 40,
         height: 40,
         child: IconButton(
           padding: EdgeInsets.zero,
           constraints: const BoxConstraints(),
-          icon: const Icon(Icons.refresh, size: AppTypography.iconMD),
+          icon: const Icon(Icons.sync, size: AppTypography.iconMD),
           tooltip: '检查更新',
           onPressed: _checkForUpdate,
         ),
@@ -310,7 +306,15 @@ class _DataUpdateTileState extends State<_DataUpdateTile> {
     }
 
     return ListTile(
-      leading: const Icon(Icons.system_update_alt, size: AppTypography.iconMD),
+      leading: Obx(() {
+        final hasDbUpdate =
+            BadgeService.instance.hasBadge(BadgeKey.dbUpdate);
+        return AppBadge(
+          count: hasDbUpdate ? 1 : 0,
+          showCount: false,
+          child: const Icon(Icons.system_update_alt, size: AppTypography.iconMD),
+        );
+      }),
       title: Text(_downloading ? '正在更新数据库...' : '数据库更新'),
       subtitle: Text(
         _hasUpdate && _latestVersion != null

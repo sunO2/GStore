@@ -1,9 +1,9 @@
 import 'dart:io';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
-import 'package:flutter/foundation.dart';
 import 'package:gstore/core/fdroid/FdroidRepoModels.dart';
 import 'package:gstore/core/fdroid/FdroidRepoDatabase.dart';
+import 'package:gstore/core/logger/LogManager.dart';
 
 /// 临时数据库 - 用于存储解析过程中的应用数据
 /// 类似 Neo-Store 的 IndexContentMerger
@@ -227,10 +227,10 @@ class FdroidTempDatabase {
       // 提交事务
       await db.execute('COMMIT');
 
-      debugPrint('FdroidTempDatabase: 已复制 ${apps.length} 个应用到正式数据库');
+      appLog.info('FdroidTempDatabase: 已复制 ${apps.length} 个应用到正式数据库');
     } catch (e) {
       await db.execute('ROLLBACK');
-      debugPrint('FdroidTempDatabase: 复制失败，已回滚 - $e');
+      appLog.error('FdroidTempDatabase: 复制失败，已回滚 - $e');
       rethrow;
     }
   }
@@ -244,7 +244,7 @@ class FdroidTempDatabase {
 
     await close();
 
-    debugPrint('FdroidTempDatabase: 临时数据库已清空');
+    appLog.info('FdroidTempDatabase: 临时数据库已清空');
   }
 
   /// 关闭数据库

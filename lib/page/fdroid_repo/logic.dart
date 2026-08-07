@@ -6,6 +6,7 @@ import 'package:get/get.dart';
 import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/fdroid/FdroidRepoManager.dart';
 import 'package:gstore/core/fdroid/FdroidRepoModels.dart';
+import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/page/fdroid_repo/state.dart';
 
 /// F-Droid 仓库管理业务逻辑
@@ -77,7 +78,7 @@ class FdroidRepoLogic extends GetxController {
     try {
       state.statistics.value = await _manager.getStatistics();
     } catch (e) {
-      debugPrint('加载统计信息失败: $e');
+      appLog.error('加载统计信息失败: $e');
     }
   }
 
@@ -91,7 +92,7 @@ class FdroidRepoLogic extends GetxController {
         state.latestVersion.value = result['latestVersion'] ?? 0;
       }
     } catch (e) {
-      debugPrint('检查更新失败: $e');
+      appLog.error('检查更新失败: $e');
     }
   }
 
@@ -112,13 +113,13 @@ class FdroidRepoLogic extends GetxController {
     }
 
     try {
-      debugPrint('FdroidRepoLogic: 开始加载仓库: ${state.currentSource.value?.repoUrl}');
+      appLog.info('FdroidRepoLogic: 开始加载仓库: ${state.currentSource.value?.repoUrl}');
       await _manager.loadRepository();
 
       await _loadStatistics();
       AppDialogs.showSuccess('仓库数据加载完成');
     } catch (e) {
-      debugPrint('FdroidRepoLogic: 加载失败 - $e');
+      appLog.error('FdroidRepoLogic: 加载失败 - $e');
       AppDialogs.showError('加载失败: $e');
     }
   }

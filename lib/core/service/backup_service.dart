@@ -46,7 +46,7 @@ class BackupService {
     _channelDb = channelDb;
 
     _isInitialized = true;
-    debugPrint('BackupService: 初始化成功');
+    appLog.info('BackupService: 初始化成功');
   }
 
   // ==================== 导出功能 ====================
@@ -65,7 +65,7 @@ class BackupService {
     final exportOptions = options ?? const BackupOptions();
     final targetChannels = channels ?? ChannelType.values;
 
-    debugPrint('BackupService: 开始导出数据（包含渠道数据库）');
+    appLog.info('BackupService: 开始导出数据（包含渠道数据库）');
     if (includeAppConfig) {
       debugPrint('BackupService: 将包含应用配置（主题等）');
     }
@@ -96,7 +96,7 @@ class BackupService {
 
     for (final channel in targetChannels) {
       try {
-        debugPrint('BackupService: 导出渠道 ${channel.name} 的数据');
+        appLog.info('BackupService: 导出渠道 ${channel.name} 的数据');
         final channelApps = await _channelDb.dao.getAppsByChannel(channel.code);
 
         if (channelApps.isNotEmpty) {
@@ -104,7 +104,7 @@ class BackupService {
               .map((app) => ChannelAppBackupItem.fromChannelAddedApp(app))
               .toList();
           channelAppsMap[channel.code] = backupItems;
-          debugPrint('BackupService: ${channel.name} 渠道导出 ${backupItems.length} 个应用');
+          appLog.info('BackupService: ${channel.name} 渠道导出 ${backupItems.length} 个应用');
 
           // 更新聚合数据中的 extra 字段
           for (final backupItem in backupItems) {
@@ -130,7 +130,7 @@ class BackupService {
           }
         }
       } catch (e) {
-        debugPrint('BackupService: 导出渠道 ${channel.name} 失败 - $e');
+        appLog.error('BackupService: 导出渠道 ${channel.name} 失败 - $e');
       }
     }
 
@@ -138,15 +138,15 @@ class BackupService {
     Map<String, dynamic>? appConfig;
     if (includeAppConfig) {
       try {
-        debugPrint('BackupService: 开始导出应用配置');
+        appLog.info('BackupService: 开始导出应用配置');
         final configManager = ConfigManager.instance;
         final configBackupData = await configManager.exportAll();
 
         // 将 ConfigBackupData 转换为 Map
         appConfig = configBackupData.toJson();
-        debugPrint('BackupService: 应用配置导出完成 (共 ${appConfig.length} 项配置)');
+        appLog.info('BackupService: 应用配置导出完成 (共 ${appConfig.length} 项配置)');
       } catch (e) {
-        debugPrint('BackupService: 导出应用配置失败 - $e');
+        appLog.error('BackupService: 导出应用配置失败 - $e');
       }
     }
 
@@ -158,10 +158,10 @@ class BackupService {
       if (fdroidSources.isNotEmpty) {
         extras['fdroid_sources'] =
             fdroidSources.map((s) => s.toJson()).toList();
-        debugPrint('BackupService: 导出 F-Droid 源 ${fdroidSources.length} 个');
+        appLog.info('BackupService: 导出 F-Droid 源 ${fdroidSources.length} 个');
       }
     } catch (e) {
-      debugPrint('BackupService: 导出 F-Droid 源失败 - $e');
+      appLog.error('BackupService: 导出 F-Droid 源失败 - $e');
     }
 
     try {
@@ -179,10 +179,10 @@ class BackupService {
                 })
             .toList();
         extras['agent_selected_id'] = modelStore.selectedId;
-        debugPrint('BackupService: 导出 Agent 模型 ${modelStore.models.length} 个');
+        appLog.info('BackupService: 导出 Agent 模型 ${modelStore.models.length} 个');
       }
     } catch (e) {
-      debugPrint('BackupService: 导出 Agent 配置失败 - $e');
+      appLog.error('BackupService: 导出 Agent 配置失败 - $e');
     }
 
     // 构建元数据
@@ -208,7 +208,7 @@ class BackupService {
       extras: extras.isNotEmpty ? extras : null,
     );
 
-    debugPrint('BackupService: 导出完成 - ${allApps.length} 个聚合应用, ${channelAppsMap.length} 个渠道有额外数据${includeAppConfig ? ", 包含应用配置" : ""}, 扩展数据 ${extras.length} 类');
+    appLog.info('BackupService: 导出完成 - ${allApps.length} 个聚合应用, ${channelAppsMap.length} 个渠道有额外数据${includeAppConfig ? ", 包含应用配置" : ""}, 扩展数据 ${extras.length} 类');
     return backupData;
   }
 
@@ -240,7 +240,7 @@ class BackupService {
     final file = File(targetPath);
     await file.writeAsString(jsonString);
 
-    debugPrint('BackupService: 已导出到 $targetPath');
+    appLog.info('BackupService: 已导出到 $targetPath');
     return targetPath;
   }
 
@@ -278,7 +278,7 @@ class BackupService {
     final file = File(targetPath);
     await file.writeAsBytes(compressedBytes);
 
-    debugPrint('BackupService: 已导出到 $targetPath');
+    appLog.info('BackupService: 已导出到 $targetPath');
     return targetPath;
   }
 
@@ -294,7 +294,7 @@ class BackupService {
     BackupImportMode mode = BackupImportMode.merge,
     bool restoreAppConfig = true,
   }) async {
-    debugPrint('BackupService: ========== 开始导入 ==========');
+    appLog.info('BackupService: ========== 开始导入 ==========');
     debugPrint('BackupService: 文件路径: $filePath');
     debugPrint('BackupService: 导入模式: $mode');
     debugPrint('BackupService: 恢复应用配置: $restoreAppConfig');
@@ -302,13 +302,13 @@ class BackupService {
     // 读取文件
     final file = File(filePath);
     if (!await file.exists()) {
-      debugPrint('BackupService: ❌ 文件不存在');
+      appLog.error('BackupService: ❌ 文件不存在');
       throw BackupException('文件不存在: $filePath');
     }
 
     // 检查文件类型
     if (!filePath.endsWith('.tar.gz')) {
-      debugPrint('BackupService: ❌ 不支持的文件格式');
+      appLog.error('BackupService: ❌ 不支持的文件格式');
       throw BackupException('不支持的文件格式，请使用 .tar.gz 格式的备份文件');
     }
 
@@ -346,7 +346,7 @@ class BackupService {
     }
 
     if (jsonString.isEmpty) {
-      debugPrint('BackupService: ❌ 未找到 apps.json 文件');
+      appLog.error('BackupService: ❌ 未找到 apps.json 文件');
       throw BackupException('备份文件中未找到 apps.json');
     }
 
@@ -381,18 +381,18 @@ class BackupService {
     // 验证版本
     if (backupData.metadata.version != BackupVersion.v1_0 &&
         backupData.metadata.version != BackupVersion.v2_0) {
-      debugPrint('BackupService: ❌ 不支持的版本: ${backupData.metadata.version}');
+      appLog.error('BackupService: ❌ 不支持的版本: ${backupData.metadata.version}');
       throw BackupException(
         '不支持的备份版本: ${backupData.metadata.version}',
       );
     }
 
-    debugPrint('BackupService: ✅ 版本验证通过');
-    debugPrint('BackupService: 开始导入数据...');
+    appLog.info('BackupService: ✅ 版本验证通过');
+    appLog.info('BackupService: 开始导入数据...');
 
     // 如果有配置数据且需要恢复配置，则导入配置
     if (configData != null && restoreAppConfig) {
-      debugPrint('BackupService: 开始导入应用配置，包含 ${configData.length} 项配置');
+      appLog.info('BackupService: 开始导入应用配置，包含 ${configData.length} 项配置');
       try {
         // 确保配置管理器已初始化
         await ConfigInitializer.initialize();
@@ -403,13 +403,13 @@ class BackupService {
           ConfigBackupData.fromJson(configData),
         );
         if (importSuccess) {
-          debugPrint('BackupService: ✅ 应用配置导入成功');
+          appLog.info('BackupService: ✅ 应用配置导入成功');
         } else {
-          debugPrint('BackupService: ⚠️ 应用配置导入部分失败');
+          appLog.error('BackupService: ⚠️ 应用配置导入部分失败');
         }
       } catch (e, stackTrace) {
-        debugPrint('BackupService: ⚠️ 导入应用配置失败: $e');
-        debugPrint('BackupService: 堆栈跟踪: $stackTrace');
+        appLog.error('BackupService: ⚠️ 导入应用配置失败: $e');
+        appLog.error('BackupService: 堆栈跟踪: $stackTrace');
         // 配置导入失败不影响应用数据导入
       }
     } else if (configData != null && !restoreAppConfig) {
@@ -418,8 +418,8 @@ class BackupService {
 
     final result = await importData(backupData, mode: mode);
 
-    debugPrint('BackupService: ========== 导入完成 ==========');
-    debugPrint('BackupService: 成功: ${result.success}');
+    appLog.info('BackupService: ========== 导入完成 ==========');
+    appLog.info('BackupService: 成功: ${result.success}');
     debugPrint('BackupService: 总数: ${result.totalCount}');
     debugPrint('BackupService: 新增: ${result.addedCount}');
     debugPrint('BackupService: 跳过: ${result.skippedCount}');
@@ -439,7 +439,7 @@ class BackupService {
 
     final result = BackupImportResult();
 
-    debugPrint('BackupService: ========== 开始导入数据 ==========');
+    appLog.info('BackupService: ========== 开始导入数据 ==========');
     debugPrint('BackupService: 应用数量: ${backupData.apps.length}');
     debugPrint('BackupService: 版本: ${backupData.metadata.version}');
     debugPrint('BackupService: 渠道数据: ${backupData.channelApps.length} 个渠道');
@@ -449,26 +449,26 @@ class BackupService {
       // 验证版本
       if (backupData.metadata.version != BackupVersion.v1_0 &&
           backupData.metadata.version != BackupVersion.v2_0) {
-        debugPrint('BackupService: ❌ 不支持的版本: ${backupData.metadata.version}');
+        appLog.error('BackupService: ❌ 不支持的版本: ${backupData.metadata.version}');
         throw BackupException(
           '不支持的备份版本: ${backupData.metadata.version}',
         );
       }
 
-      debugPrint('BackupService: ✅ 版本验证通过');
+      appLog.info('BackupService: ✅ 版本验证通过');
 
       // 根据导入模式处理聚合数据库
       switch (mode) {
         case BackupImportMode.replace:
-          debugPrint('BackupService: 模式: REPLACE - 清空并重新添加');
+          appLog.info('BackupService: 模式: REPLACE - 清空并重新添加');
           // 替换模式：先清空，再添加
           await _aggregatorDb.addedAppDao.clearAll();
-          debugPrint('BackupService: 已清空聚合数据库');
+          appLog.info('BackupService: 已清空聚合数据库');
           await _addAllAppsToAggregator(backupData.apps);
           break;
 
         case BackupImportMode.merge:
-          debugPrint('BackupService: 模式: MERGE - 合并已存在的应用');
+          appLog.info('BackupService: 模式: MERGE - 合并已存在的应用');
           // 合并模式：添加不存在的应用
           final existingApps = await _aggregatorDb.addedAppDao.getAllAddedApps();
           final existingKeys = existingApps
@@ -513,7 +513,7 @@ class BackupService {
           break;
 
         case BackupImportMode.update:
-          debugPrint('BackupService: 模式: UPDATE - 更新或添加');
+          appLog.info('BackupService: 模式: UPDATE - 更新或添加');
           // 更新模式：更新存在的应用，添加不存在的
           await _addAllAppsToAggregator(backupData.apps);
           break;
@@ -521,7 +521,7 @@ class BackupService {
 
       // 导入渠道数据库数据
       if (backupData.metadata.version == BackupVersion.v2_0 && backupData.channelApps.isNotEmpty) {
-        debugPrint('BackupService: 开始导入渠道数据库数据（${backupData.channelApps.length} 个渠道）');
+        appLog.info('BackupService: 开始导入渠道数据库数据（${backupData.channelApps.length} 个渠道）');
         await _importChannelApps(backupData.channelApps, mode);
       } else {
         debugPrint('BackupService: 无渠道数据需要导入（版本: ${backupData.metadata.version}, 渠道数: ${backupData.channelApps.length}）');
@@ -530,7 +530,7 @@ class BackupService {
       // 导入应用配置（如果存在）
       if (backupData.appConfig != null && backupData.appConfig!.isNotEmpty) {
         try {
-          debugPrint('BackupService: 开始导入应用配置');
+          appLog.info('BackupService: 开始导入应用配置');
           debugPrint('BackupService: 配置项: ${backupData.appConfig!.keys.toList()}');
 
           final configManager = ConfigManager.instance;
@@ -544,12 +544,12 @@ class BackupService {
 
           final importSuccess = await configManager.importAll(configBackupData);
           if (importSuccess) {
-            debugPrint('BackupService: ✅ 应用配置导入成功');
+            appLog.info('BackupService: ✅ 应用配置导入成功');
           } else {
-            debugPrint('BackupService: ⚠️ 应用配置导入部分失败');
+            appLog.error('BackupService: ⚠️ 应用配置导入部分失败');
           }
         } catch (e) {
-          debugPrint('BackupService: 导入应用配置失败 - $e');
+          appLog.error('BackupService: 导入应用配置失败 - $e');
           // 配置导入失败不影响应用导入
         }
       } else {
@@ -558,7 +558,7 @@ class BackupService {
 
       // 导入扩展数据（F-Droid 源、Agent 配置等）
       if (backupData.extras != null && backupData.extras!.isNotEmpty) {
-        debugPrint('BackupService: 开始导入扩展数据（${backupData.extras!.keys.toList()}）');
+        appLog.info('BackupService: 开始导入扩展数据（${backupData.extras!.keys.toList()}）');
 
         // F-Droid 仓库源
         final fdroidSources = backupData.extras!['fdroid_sources'];
@@ -581,9 +581,9 @@ class BackupService {
                 }
               }
             }
-            debugPrint('BackupService: ✅ F-Droid 源恢复完成');
+            appLog.info('BackupService: ✅ F-Droid 源恢复完成');
           } catch (e) {
-            debugPrint('BackupService: 恢复 F-Droid 源失败 - $e');
+            appLog.error('BackupService: 恢复 F-Droid 源失败 - $e');
           }
         }
 
@@ -616,9 +616,9 @@ class BackupService {
             } else if (store.models.isNotEmpty) {
               await store.select(store.models.first.id);
             }
-            debugPrint('BackupService: ✅ Agent 模型配置恢复完成');
+            appLog.info('BackupService: ✅ Agent 模型配置恢复完成');
           } catch (e) {
-            debugPrint('BackupService: 恢复 Agent 配置失败 - $e');
+            appLog.error('BackupService: 恢复 Agent 配置失败 - $e');
           }
         }
       } else {
@@ -629,11 +629,11 @@ class BackupService {
       result.totalCount = backupData.apps.length;
       result.addedCount = backupData.apps.length - (result.skippedCount ?? 0);
 
-      debugPrint('BackupService: ✅ 导入成功');
+      appLog.info('BackupService: ✅ 导入成功');
       debugPrint('BackupService: 总数: ${result.totalCount}, 新增: ${result.addedCount}, 跳过: ${result.skippedCount}');
 
       // 发送数据库变化事件，通知UI刷新
-      debugPrint('BackupService: 📢 发送批量导入事件，通知UI刷新');
+      appLog.info('BackupService: 📢 发送批量导入事件，通知UI刷新');
       DatabaseEventBus.instance.send(DatabaseChangeEvent(
         type: DatabaseChangeType.batchImport,
         data: {'totalCount': result.totalCount, 'addedCount': result.addedCount},
@@ -655,12 +655,12 @@ class BackupService {
     } catch (e, stackTrace) {
       result.success = false;
       result.error = e.toString();
-      debugPrint('BackupService: ❌ 导入失败 - $e');
-      debugPrint('BackupService: 堆栈跟踪: $stackTrace');
+      appLog.error('BackupService: ❌ 导入失败 - $e');
+      appLog.error('BackupService: 堆栈跟踪: $stackTrace');
       rethrow;
     }
 
-    debugPrint('BackupService: ========== 导入数据完成 ==========');
+    appLog.info('BackupService: ========== 导入数据完成 ==========');
     return result;
   }
 
@@ -684,14 +684,14 @@ class BackupService {
 
     try {
       await _aggregatorDb.addedAppDao.insertApps(addedApps);
-      debugPrint('BackupService: 成功插入 ${addedApps.length} 个应用到聚合数据库');
+      appLog.info('BackupService: 成功插入 ${addedApps.length} 个应用到聚合数据库');
 
       // 打印插入的应用列表
       for (final app in addedApps) {
         debugPrint('BackupService: 已插入 - ${app.channelId}/${app.appId} (${app.appName})');
       }
     } catch (e) {
-      debugPrint('BackupService: 插入聚合数据库失败 - $e');
+      appLog.error('BackupService: 插入聚合数据库失败 - $e');
       rethrow;
     }
   }
@@ -701,7 +701,7 @@ class BackupService {
     Map<String, List<ChannelAppBackupItem>> channelAppsMap,
     BackupImportMode mode,
   ) async {
-    debugPrint('BackupService: ========== 开始导入渠道数据库 ==========');
+    appLog.info('BackupService: ========== 开始导入渠道数据库 ==========');
     debugPrint('BackupService: 渠道数量: ${channelAppsMap.length}');
     debugPrint('BackupService: 渠道列表: ${channelAppsMap.keys.toList()}');
     debugPrint('BackupService: 导入模式: $mode');
@@ -729,7 +729,7 @@ class BackupService {
           final beforeCount = await _channelDb.dao.getCountByChannel(channelCode);
           debugPrint('BackupService: - 清空前数量: $beforeCount');
           await _channelDb.dao.clearChannel(channelCode);
-          debugPrint('BackupService: - 已清空渠道 $channelCode');
+          appLog.info('BackupService: - 已清空渠道 $channelCode');
         }
 
         // 转换并插入渠道应用
@@ -761,25 +761,25 @@ class BackupService {
           try {
             await _channelDb.dao.insertApp(app);
             insertedCount++;
-            debugPrint('BackupService:   - ✅ 插入成功: ${app.appId} (${app.name})');
+            appLog.info('BackupService:   - ✅ 插入成功: ${app.appId} (${app.name})');
           } catch (e) {
-            debugPrint('BackupService:   - ❌ 插入失败: ${app.appId} - $e');
+            appLog.error('BackupService:   - ❌ 插入失败: ${app.appId} - $e');
           }
         }
 
         // 验证导入结果
         final afterCount = await _channelDb.dao.getCountByChannel(channelCode);
-        debugPrint('BackupService: 渠道 $channelCode 导入完成');
+        appLog.info('BackupService: 渠道 $channelCode 导入完成');
         debugPrint('BackupService: - 插入: $insertedCount 个');
         debugPrint('BackupService: - 跳过: $skippedCount 个');
         debugPrint('BackupService: - 导入后总数: $afterCount');
       } catch (e, stackTrace) {
-        debugPrint('BackupService: ❌ 导入渠道 $channelCode 失败 - $e');
-        debugPrint('BackupService: 堆栈跟踪: $stackTrace');
+        appLog.error('BackupService: ❌ 导入渠道 $channelCode 失败 - $e');
+        appLog.error('BackupService: 堆栈跟踪: $stackTrace');
       }
     }
 
-    debugPrint('BackupService: ========== 渠道数据库导入完成 ==========');
+    appLog.info('BackupService: ========== 渠道数据库导入完成 ==========');
 
     // 最终验证
     final totalCount = await _channelDb.dao.getTotalCount();
@@ -824,7 +824,7 @@ class BackupService {
       final docDir = await getApplicationDocumentsDirectory();
       return docDir.path;
     } catch (e) {
-      debugPrint('BackupService: 获取默认导出目录失败 - $e');
+      appLog.error('BackupService: 获取默认导出目录失败 - $e');
       // 最后的备选方案：使用应用文档目录
       final docDir = await getApplicationDocumentsDirectory();
       return docDir.path;
@@ -884,7 +884,7 @@ class BackupService {
     final file = File(filePath);
     if (await file.exists()) {
       await file.delete();
-      debugPrint('BackupService: 已删除备份文件 - $filePath');
+      appLog.info('BackupService: 已删除备份文件 - $filePath');
     }
   }
 
@@ -904,7 +904,7 @@ class BackupService {
     List<ChannelType>? channels,
     bool includeAppConfig = false,
   }) async {
-    debugPrint('BackupService: 开始上传到 WebDAV');
+    appLog.info('BackupService: 开始上传到 WebDAV');
 
     // 生成备份数据
     final backupData = await exportData(options: options, channels: channels);
@@ -929,7 +929,7 @@ class BackupService {
         final configManager = ConfigManager.instance;
         final configBackup = await configManager.exportAll();
 
-        debugPrint('BackupService: 应用配置导出成功，包含 ${configBackup.configs.length} 项配置');
+        appLog.info('BackupService: 应用配置导出成功，包含 ${configBackup.configs.length} 项配置');
 
         if (configBackup.configs.isNotEmpty) {
           // 添加 app_config.json 到归档
@@ -946,8 +946,8 @@ class BackupService {
           debugPrint('BackupService: ⚠️ 配置为空，跳过 app_config.json');
         }
       } catch (e, stackTrace) {
-        debugPrint('BackupService: 导出应用配置失败: $e');
-        debugPrint('BackupService: 堆栈跟踪: $stackTrace');
+        appLog.error('BackupService: 导出应用配置失败: $e');
+        appLog.error('BackupService: 堆栈跟踪: $stackTrace');
       }
     }
 
@@ -971,7 +971,7 @@ class BackupService {
     // 上传文件
     await client.uploadFile(remotePath, uploadBytes);
 
-    debugPrint('BackupService: 上传到 WebDAV 成功 - $remotePath');
+    appLog.info('BackupService: 上传到 WebDAV 成功 - $remotePath');
     return remotePath;
   }
 
@@ -987,7 +987,7 @@ class BackupService {
     BackupImportMode mode = BackupImportMode.merge,
     bool restoreAppConfig = true,
   }) async {
-    debugPrint('BackupService: 从 WebDAV 下载备份 - $remotePath');
+    appLog.info('BackupService: 从 WebDAV 下载备份 - $remotePath');
     debugPrint('BackupService: 恢复应用配置: $restoreAppConfig');
 
     // 创建 WebDAV 客户端
@@ -1033,7 +1033,7 @@ class BackupService {
 
     // 如果有配置数据且需要恢复配置，则导入配置
     if (configData != null && restoreAppConfig) {
-      debugPrint('BackupService: 开始导入应用配置，包含 ${configData.length} 项配置');
+      appLog.info('BackupService: 开始导入应用配置，包含 ${configData.length} 项配置');
       try {
         // 确保配置管理器已初始化
         await ConfigInitializer.initialize();
@@ -1043,15 +1043,15 @@ class BackupService {
         await configManager.importAll(
           ConfigBackupData.fromJson(configData),
         );
-        debugPrint('BackupService: 应用配置导入成功');
+        appLog.info('BackupService: 应用配置导入成功');
       } catch (e) {
-        debugPrint('BackupService: 导入应用配置失败: $e');
+        appLog.error('BackupService: 导入应用配置失败: $e');
       }
     } else if (configData != null && !restoreAppConfig) {
       debugPrint('BackupService: 跳过应用配置导入（用户未选择恢复配置）');
     }
 
-    debugPrint('BackupService: 备份版本: ${backupData.metadata.version}, 开始导入');
+    appLog.info('BackupService: 备份版本: ${backupData.metadata.version}, 开始导入');
 
     // 导入数据
     return importData(backupData, mode: mode);
@@ -1063,7 +1063,7 @@ class BackupService {
       final client = WebDavClient(config);
       return await client.testConnection();
     } catch (e) {
-      debugPrint('BackupService: WebDAV 连接测试失败 - $e');
+      appLog.error('BackupService: WebDAV 连接测试失败 - $e');
       return false;
     }
   }

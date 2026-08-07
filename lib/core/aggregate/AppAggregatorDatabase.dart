@@ -1,11 +1,11 @@
 import 'dart:async';
 
 import 'package:floor/floor.dart';
-import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart' as sqflite;
 import 'package:gstore/core/aggregate/aggregate.dart';
+import 'package:gstore/core/logger/LogManager.dart';
 
 part 'AppAggregatorDatabase.g.dart';
 
@@ -150,7 +150,7 @@ class AppAggregatorDatabaseManager {
 
   static Future<AppAggregatorDatabase> create() async {
     final database = await AppAggregatorDatabase.create();
-    debugPrint('AppAggregatorDatabase: 数据库初始化成功');
+    appLog.info('AppAggregatorDatabase: 数据库初始化成功');
     return database;
   }
 

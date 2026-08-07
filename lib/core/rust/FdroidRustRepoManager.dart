@@ -1,9 +1,11 @@
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as path;
-import 'package:gstore/core/rust/bridge.dart' show FdroidRepoManager;
-import 'package:gstore/core/rust/frb_generated.dart' show RustLib;
-import 'package:gstore/core/rust/models.dart' show AppInfo, DownloadResult;
+import 'package:gstore/core/logger/LogManager.dart';
+import 'package:gstore/core/rust/generated/bridge.dart' show FdroidRepoManager;
+import 'package:gstore/core/rust/generated/frb_generated.dart' show RustLib;
+import 'package:gstore/core/rust/generated/models.dart'
+    show AppInfo, ApkInfo, DownloadResult;
 
 /// Rust F-Droid 仓库管理器
 ///
@@ -20,7 +22,7 @@ class FdroidRustRepoManager {
       // 初始化 flutter_rust_bridge
       await RustLib.init();
       _initialized = true;
-      debugPrint('FdroidRustRepoManager: Bridge initialized');
+      appLog.info('FdroidRustRepoManager: Bridge initialized');
     }
 
     if (_manager == null) {
@@ -34,9 +36,9 @@ class FdroidRustRepoManager {
         // 创建新实例
         _manager = await FdroidRepoManager.newInstance();
         await _manager!.initialize(dbPath: db);
-        debugPrint('FdroidRustRepoManager: 初始化成功 - $db');
+        appLog.info('FdroidRustRepoManager: 初始化成功 - $db');
       } catch (e) {
-        debugPrint('FdroidRustRepoManager: 初始化失败 - $e');
+        appLog.error('FdroidRustRepoManager: 初始化失败 - $e');
         rethrow;
       }
     }
@@ -54,16 +56,16 @@ class FdroidRustRepoManager {
     }
 
     try {
-      debugPrint('FdroidRustRepoManager: 开始下载 $repoUrl');
+      appLog.info('FdroidRustRepoManager: 开始下载 $repoUrl');
 
       final result = await _manager!.downloadRepo(repoUrl: repoUrl);
 
-      debugPrint('FdroidRustRepoManager: 下载完成 - ${result.totalApps} 个应用, '
+      appLog.info('FdroidRustRepoManager: 下载完成 - ${result.totalApps} 个应用, '
           '耗时 ${result.downloadTimeMs}ms');
 
       return result.totalApps;
     } catch (e) {
-      debugPrint('FdroidRustRepoManager: 下载失败 - $e');
+      appLog.error('FdroidRustRepoManager: 下载失败 - $e');
       rethrow;
     }
   }
@@ -77,7 +79,7 @@ class FdroidRustRepoManager {
     try {
       return await _manager!.getAppCount();
     } catch (e) {
-      debugPrint('FdroidRustRepoManager: 获取应用数量失败 - $e');
+      appLog.error('FdroidRustRepoManager: 获取应用数量失败 - $e');
       return 0;
     }
   }
@@ -94,7 +96,7 @@ class FdroidRustRepoManager {
           await _manager!.searchApps(keyword: keyword, limit: limit);
       return results;
     } catch (e) {
-      debugPrint('FdroidRustRepoManager: 搜索失败 - $e');
+      appLog.error('FdroidRustRepoManager: 搜索失败 - $e');
       return [];
     }
   }
@@ -107,10 +109,10 @@ class FdroidRustRepoManager {
 
     try {
       final count = await _manager!.clearApps();
-      debugPrint('FdroidRustRepoManager: 已清空 $count 个应用');
+      appLog.info('FdroidRustRepoManager: 已清空 $count 个应用');
       return count;
     } catch (e) {
-      debugPrint('FdroidRustRepoManager: 清空应用失败 - $e');
+      appLog.error('FdroidRustRepoManager: 清空应用失败 - $e');
       return 0;
     }
   }
@@ -131,7 +133,7 @@ class FdroidRustRepoManager {
       }
       return app;
     } catch (e) {
-      debugPrint('FdroidRustRepoManager: 获取应用失败 - $e');
+      appLog.error('FdroidRustRepoManager: 获取应用失败 - $e');
       return null;
     }
   }
@@ -163,5 +165,14 @@ class FdroidRustRepoManager {
       'metadata': rustApp.metadata,
       'versions': rustApp.versions,
     };
+  }
+
+  /// 解析 APK 文件，提取真实包名/版本/应用名等信息
+  /// 在安装前调用（Rust 实现，从 APK 的 AndroidManifest.xml 解析）
+  static Future<ApkInfo> parseApkInfo(String apkPath) async {
+    if (_manager == null) {
+      await initialize();
+    }
+    return await _manager!.parseApkInfo(apkPath: apkPath);
   }
 }

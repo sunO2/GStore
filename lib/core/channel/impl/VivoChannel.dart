@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:gstore/core/channel/IChannel.dart';
 import 'package:gstore/core/channel/database/channel_added_app.dart';
 import 'package:gstore/core/channel/database/channel_database.dart';
+import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/channel/model/ChannelInfo.dart';
 import 'package:gstore/core/channel/model/ChannelResult.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
@@ -15,10 +16,11 @@ import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/model/proxy/VivoChannelDetailProxy.dart';
 import 'package:gstore/db/apps/AppInfo.dart';
 import 'package:gstore/db/apps/AppInfo.dart' as db;
+import 'package:gstore/core/channel/AppUpdateCheckMixin.dart';
 
 /// vivo 应用市场渠道实现
 /// 通过 vivo 应用市场 API 获取应用数据
-class VivoChannel implements IChannel {
+class VivoChannel with AppUpdateCheckMixin implements IChannel {
   final Dio _dio;
 
   @override
@@ -72,7 +74,7 @@ class VivoChannel implements IChannel {
     _database = await ChannelDatabaseManager.instance;
     // vivo API 无需特殊初始化
     isInitialized = true;
-    debugPrint('VivoChannel: 初始化完成');
+    appLog.info('VivoChannel: 初始化完成');
   }
 
   @override
@@ -82,7 +84,7 @@ class VivoChannel implements IChannel {
       final response = await searchApps('汽车', forceRefresh: true);
       return response.success;
     } catch (e) {
-      debugPrint('VivoChannel: API 不可用 - $e');
+      appLog.error('VivoChannel: API 不可用 - $e');
       return false;
     }
   }
@@ -115,7 +117,7 @@ class VivoChannel implements IChannel {
         },
       );
     } catch (e) {
-      debugPrint('VivoChannel: 获取应用列表失败 - $e');
+      appLog.error('VivoChannel: 获取应用列表失败 - $e');
       return ChannelResult.failure(
         from: ChannelType.vivo,
         error: e.toString(),
@@ -178,18 +180,18 @@ class VivoChannel implements IChannel {
         final data = response.data is String ? jsonDecode(response.data) : response.data;
         final app = _parseAppDetail(data, appId);
 
-        debugPrint('VivoChannel: API 获取成功 - ${app?.name ?? "null"}');
+        appLog.info('VivoChannel: API 获取成功 - ${app?.name ?? "null"}');
         return ChannelResult.success(
           data: app,
           from: ChannelType.vivo,
           fromCache: false,
         );
       } else {
-        debugPrint('VivoChannel: API 返回错误状态码 - ${response.statusCode}');
+        appLog.error('VivoChannel: API 返回错误状态码 - ${response.statusCode}');
         throw Exception('HTTP ${response.statusCode}');
       }
     } catch (e) {
-      debugPrint('VivoChannel: 获取应用信息失败 - appId=$appId, error=$e');
+      appLog.error('VivoChannel: 获取应用信息失败 - appId=$appId, error=$e');
       return ChannelResult.failure(
         from: ChannelType.vivo,
         error: e.toString(),
@@ -228,7 +230,7 @@ class VivoChannel implements IChannel {
               final extraData = jsonDecode(channelApp.extra!) as Map<String, dynamic>;
               vivoId = extraData['vivoId']?.toString();
             } catch (e) {
-              debugPrint('VivoChannel: 解析 extra 失败 - $e');
+              appLog.error('VivoChannel: 解析 extra 失败 - $e');
             }
           }
         }
@@ -263,26 +265,40 @@ class VivoChannel implements IChannel {
 
       final detail = data as Map<String, dynamic>;
 
-      // 解析详细信息
-      final version = detail['versionName']?.toString() ?? detail['version']?.toString();
-      final versionCode = detail['versionCode']?.toString() ?? detail['version_code']?.toString();
-      final size = detail['apkSize'] as int?;
-      final developer = detail['developerName']?.toString() ?? appInfo?.user ?? '';
-      final packageName = detail['package_name']?.toString() ?? detail['packageName']?.toString() ?? appInfo?.appId ?? appId;
+      // 解析详细信息（接口字段为下划线格式，兼容驼峰）
+      final version = detail['version_name']?.toString() ??
+          detail['versionName']?.toString() ??
+          detail['version']?.toString();
+      final versionCode = detail['version_code']?.toString() ??
+          detail['versionCode']?.toString();
+      final size = (detail['size'] as num?)?.toInt() ??
+          (detail['apkSize'] as num?)?.toInt();
+      final developer = detail['developerName']?.toString() ??
+          detail['developer']?.toString() ??
+          appInfo?.user ??
+          '';
+      final packageName = detail['package_name']?.toString() ??
+          detail['packageName']?.toString() ??
+          appInfo?.appId ??
+          appId;
 
       debugPrint('VivoChannel: 原始数据中的 package_name = ${detail['package_name']}');
       debugPrint('VivoChannel: 原始数据中的 packageName = ${detail['packageName']}');
       debugPrint('VivoChannel: appInfo?.appId = ${appInfo?.appId}');
       debugPrint('VivoChannel: 最终使用的 packageName = $packageName');
+      debugPrint('VivoChannel: 版本信息 version_name = ${detail['version_name']}, version_code = ${detail['version_code']}');
 
       // 解析下载量、评分等统计信息
-      final downloads = detail['downloadCount'] as int?;
-      final rating = detail['score']?.toDouble();
-      final ratingCount = detail['scoreCount'] as int?;
-      final favorites = detail['favoriteCount'] as int?;
+      final downloads = (detail['download_count'] as num?)?.toInt() ??
+          (detail['downloadCount'] as num?)?.toInt();
+      final rating = (detail['score'] as num?)?.toDouble();
+      final ratingCount = (detail['raters_count'] as num?)?.toInt() ??
+          (detail['scoreCount'] as num?)?.toInt();
+      final favorites = (detail['favorite_count'] as num?)?.toInt() ??
+          (detail['favoriteCount'] as num?)?.toInt();
 
       // 解析应用截图
-      final screenshotsData = detail['screenShots'];
+      final screenshotsData = detail['screenshotList'] ?? detail['screenShots'];
       final screenshots = <ScreenshotInfo>[];
       if (screenshotsData is List) {
         for (var item in screenshotsData) {
@@ -294,7 +310,7 @@ class VivoChannel implements IChannel {
       }
 
       // 解析权限列表
-      final permissionsData = detail['permissions'];
+      final permissionsData = detail['permissionList'] ?? detail['permissions'];
       final permissions = <String>[];
       if (permissionsData is List) {
         for (var item in permissionsData) {
@@ -315,7 +331,16 @@ class VivoChannel implements IChannel {
           appInfo?.des ?? '';
 
       // 构建下载信息
-      final downloadUrl = detail['download_url']?.toString() ?? detail['downloadUrl']?.toString();
+      // download_url 为完整链接；apk 为相对路径（兜底拼 baseUrl）
+      var downloadUrl = detail['download_url']?.toString() ??
+          detail['downloadUrl']?.toString();
+      if ((downloadUrl == null || downloadUrl.isEmpty) &&
+          detail['apk'] != null) {
+        final apkPath = detail['apk'].toString();
+        downloadUrl = apkPath.startsWith('http')
+            ? apkPath
+            : '$_baseUrl${apkPath.startsWith('/') ? apkPath : '/$apkPath'}';
+      }
       final downloadsList = <DownloadInfo>[];
 
       debugPrint('VivoChannel: packageName = $packageName, versionCode = $versionCode, downloadUrl = $downloadUrl');
@@ -376,7 +401,7 @@ class VivoChannel implements IChannel {
         fromCache: false,
       );
     } catch (e) {
-      debugPrint('VivoChannel: 获取应用详情失败 - $e');
+      appLog.error('VivoChannel: 获取应用详情失败 - $e');
       return ChannelResult.failure(
         from: ChannelType.vivo,
         error: e.toString(),
@@ -473,7 +498,7 @@ class VivoChannel implements IChannel {
         throw Exception('HTTP ${response.statusCode}');
       }
     } catch (e) {
-      debugPrint('VivoChannel: 搜索应用失败 - $e');
+      appLog.error('VivoChannel: 搜索应用失败 - $e');
       return ChannelResult.failure(
         from: ChannelType.vivo,
         error: e.toString(),
@@ -539,10 +564,38 @@ class VivoChannel implements IChannel {
 
   // ==================== 渠道数据库操作（搜索结果存储）====================
 
+  @override
+  Future<ChannelResult<void>> addApp(AppInfo app) async {
+    try {
+      await saveSearchResult(app);
+      return ChannelResult.success(data: null, from: ChannelType.vivo);
+    } catch (e) {
+      appLog.error('VivoChannel: 添加应用失败 - $e');
+      return ChannelResult.failure(
+        from: ChannelType.vivo,
+        error: e.toString(),
+      );
+    }
+  }
+
+  @override
+  Future<ChannelResult<void>> removeApp(String appId) async {
+    try {
+      await deleteSearchResult(appId);
+      return ChannelResult.success(data: null, from: ChannelType.vivo);
+    } catch (e) {
+      appLog.error('VivoChannel: 移除应用失败 - $e');
+      return ChannelResult.failure(
+        from: ChannelType.vivo,
+        error: e.toString(),
+      );
+    }
+  }
+
   /// 保存搜索结果到渠道数据库
   Future<void> saveSearchResult(AppInfo app) async {
     if (_database == null) {
-      debugPrint('VivoChannel: 数据库未初始化');
+      appLog.error('VivoChannel: 数据库未初始化');
       return;
     }
 
@@ -560,24 +613,24 @@ class VivoChannel implements IChannel {
     );
 
     await _database!.dao.insertApp(channelApp);
-    debugPrint('VivoChannel: 已保存搜索结果 ${app.name}，extra=${app.extra}');
+    appLog.info('VivoChannel: 已保存搜索结果 ${app.name}，extra=${app.extra}');
   }
 
   /// 从渠道数据库删除搜索结果
   Future<void> deleteSearchResult(String appId) async {
     if (_database == null) {
-      debugPrint('VivoChannel: 数据库未初始化');
+      appLog.error('VivoChannel: 数据库未初始化');
       return;
     }
 
     await _database!.dao.removeApp(appId, ChannelType.vivo.code);
-    debugPrint('VivoChannel: 已删除搜索结果 $appId');
+    appLog.info('VivoChannel: 已删除搜索结果 $appId');
   }
 
   /// 获取渠道数据库中的所有应用（搜索结果）
   Future<List<AppInfo>> getChannelApps() async {
     if (_database == null) {
-      debugPrint('VivoChannel: 数据库未初始化');
+      appLog.error('VivoChannel: 数据库未初始化');
       return [];
     }
 
@@ -599,7 +652,7 @@ class VivoChannel implements IChannel {
   /// 检查应用是否在渠道数据库中
   Future<bool> isInChannel(String appId) async {
     if (_database == null) {
-      debugPrint('VivoChannel: 数据库未初始化');
+      appLog.error('VivoChannel: 数据库未初始化');
       return false;
     }
 
@@ -627,7 +680,7 @@ class VivoChannel implements IChannel {
   Future<void> clearCache() async {
     _cachedApps = null;
     _cachedCategories = null;
-    debugPrint('VivoChannel: 缓存已清除');
+    appLog.info('VivoChannel: 缓存已清除');
   }
 
   @override
@@ -639,7 +692,7 @@ class VivoChannel implements IChannel {
   Future<void> dispose() async {
     await clearCache();
     isInitialized = false;
-    debugPrint('VivoChannel: 已释放');
+    appLog.info('VivoChannel: 已释放');
   }
 
   @override
@@ -662,15 +715,21 @@ class VivoChannel implements IChannel {
 
       // 解析图标
       String icon = '';
-      if (map['icon'] != null) {
-        icon = map['icon'].toString();
+      final iconRaw = map['icon_url'] ?? map['icon'];
+      if (iconRaw != null) {
+        icon = iconRaw.toString();
       }
 
       // 解析名称
-      String name = map['appName']?.toString() ?? '';
+      String name = map['title_zh']?.toString() ??
+          map['title_en']?.toString() ??
+          map['appName']?.toString() ??
+          '';
 
       // 解析包名
-      String packageName = map['packageName']?.toString() ?? appId;
+      String packageName = map['package_name']?.toString() ??
+          map['packageName']?.toString() ??
+          appId;
 
       // 解析描述
       String description = map['introduction']?.toString() ?? '';
@@ -689,8 +748,9 @@ class VivoChannel implements IChannel {
 
       // 构造下载 URL
       String downloadUrl = '';
-      if (map['downloadUrl'] != null) {
-        downloadUrl = map['downloadUrl'].toString();
+      final dlRaw = map['download_url'] ?? map['downloadUrl'];
+      if (dlRaw != null) {
+        downloadUrl = dlRaw.toString();
       }
 
       return AppInfo(
@@ -703,7 +763,7 @@ class VivoChannel implements IChannel {
         categories.isNotEmpty ? categories : null,
       );
     } catch (e) {
-      debugPrint('VivoChannel: 解析应用详情失败 - $e');
+      appLog.error('VivoChannel: 解析应用详情失败 - $e');
       return null;
     }
   }
@@ -717,7 +777,7 @@ class VivoChannel implements IChannel {
 
       // 检查响应是否成功
       if (data is Map && data['code'] != 0) {
-        debugPrint('VivoChannel: API 返回错误 - ${data['code']}');
+        appLog.error('VivoChannel: API 返回错误 - ${data['code']}');
         return [];
       }
 
@@ -785,7 +845,7 @@ class VivoChannel implements IChannel {
 
       return apps;
     } catch (e) {
-      debugPrint('VivoChannel: 解析搜索结果失败 - $e');
+      appLog.error('VivoChannel: 解析搜索结果失败 - $e');
       return [];
     }
   }

@@ -3,6 +3,7 @@
 library;
 
 import 'package:flutter/foundation.dart';
+import 'package:gstore/core/core.dart';
 
 /// 应用异常基类
 /// 所有自定义异常都应该继承此类
@@ -40,7 +41,7 @@ abstract class AppException implements Exception {
 
   /// 记录异常信息
   void log() {
-    debugPrint(toString());
+    appLog.error(toString());
     if (stackTrace != null) {
       debugPrint(stackTrace.toString());
     }

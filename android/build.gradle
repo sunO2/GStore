@@ -10,7 +10,7 @@ subprojects {
         if (project.plugins.hasPlugin("com.android.application") ||
                 project.plugins.hasPlugin("com.android.library")) {
             project.android {
-                compileSdkVersion 34
+                // 让各模块使用自己的 compileSdk（app 用 flutter 默认，插件用自身声明）
                 if (namespace == null) {
                     namespace = project.group
                 }

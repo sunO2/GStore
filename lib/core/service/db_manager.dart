@@ -51,11 +51,11 @@ class DbManager extends GetxService {
         final oldFile = File("${oldDir.path}/gstore/apps.db");
         if (await oldFile.exists() && !(await dbFile.exists())) {
           await oldFile.copy(dbFile.path);
-          debugPrint('DbManager: 已迁移旧数据库到应用私有目录');
+          appLog.info('DbManager: 已迁移旧数据库到应用私有目录');
         }
       }
     } catch (e) {
-      debugPrint('DbManager: 迁移旧数据库失败（忽略）- $e');
+      appLog.error('DbManager: 迁移旧数据库失败（忽略）- $e');
     }
 
     if (!(await dbFile.exists())) {
@@ -69,7 +69,7 @@ class DbManager extends GetxService {
       dbRepositroies["gstore"] = (DBRepository("gstore", "sunO2",
           "GStore-Repositorys", await db.Builder("gstore/apps.db").build()));
     } catch (e) {
-      debugPrint('DbManager: 数据库构建失败 - $e');
+      appLog.error('DbManager: 数据库构建失败 - $e');
       rethrow;
     }
 
@@ -78,10 +78,10 @@ class DbManager extends GetxService {
       final dbConfig = await dbRepositroies["gstore"]!.db.dao.getVersion();
       if (dbConfig != null) {
         updateConfig(dbConfig);
-        debugPrint('DbManager: 已恢复配置（代理: ${dbConfig.proxy ?? "默认"}）');
+        appLog.info('DbManager: 已恢复配置（代理: ${dbConfig.proxy ?? "默认"}）');
       }
     } catch (e) {
-      debugPrint('DbManager: 恢复配置失败 - $e');
+      appLog.error('DbManager: 恢复配置失败 - $e');
     }
     return this;
   }
@@ -120,7 +120,7 @@ class DbManager extends GetxService {
     try {
       return (await repo.db.dao.getVersion())?.version ?? '0.0.0.0';
     } catch (e) {
-      debugPrint('DbManager: 获取数据库版本失败 - $e');
+      appLog.error('DbManager: 获取数据库版本失败 - $e');
       return '0.0.0.0';
     }
   }
@@ -139,7 +139,7 @@ class DbManager extends GetxService {
   /// 获取最新版本信息
   /// 返回 null 表示无更新或获取失败
   Future<Map<String, dynamic>?> _getLatestReleaseInfo(String target) async {
-    debugPrint('DbManager: ===== 开始检查数据库更新 ($target) =====');
+    appLog.info('DbManager: ===== 开始检查数据库更新 ($target) =====');
     DBRepository dbRepositroy = dbRepositroies[target]!;
     var dbVersion =
         (await dbRepositroy.db.dao.getVersion())?.version ?? "0.0.0.0";
@@ -153,7 +153,7 @@ class DbManager extends GetxService {
           .timeout(const Duration(seconds: 15));
       debugPrint('DbManager: GitHub releases API 请求成功, 响应长度: ${task?.length}');
     } catch (e) {
-      debugPrint("DbManager: ❌ 获取仓库信息失败: $e");
+      appLog.error("DbManager: ❌ 获取仓库信息失败: $e");
       return null;
     }
     try {
@@ -165,12 +165,12 @@ class DbManager extends GetxService {
       debugPrint('DbManager: 最新 release 版本: $version');
       debugPrint('DbManager: 版本比较 (当前$dbVersion vs 最新$version): ${compareVersion(dbVersion, version)}');
       if (compareVersion(dbVersion, version) == 1) {
-        debugPrint('DbManager: ✅ 发现新版本，返回更新信息');
+        appLog.info('DbManager: ✅ 发现新版本，返回更新信息');
         return {'release': release, 'version': version};
       }
       debugPrint('DbManager: 无新版本（当前已是最新）');
     } catch (e) {
-      debugPrint("DbManager: ❌ 解析仓库信息失败: $e");
+      appLog.error("DbManager: ❌ 解析仓库信息失败: $e");
     }
     return null;
   }
@@ -178,7 +178,7 @@ class DbManager extends GetxService {
   /// 检查数据库更新
   Future<int> _checkUpdateDBOfRepositroy(String target) async {
     DBRepository dbRepositroy = dbRepositroies[target]!;
-    debugPrint('DbManager: ===== 开始下载数据库更新 ($target) =====');
+    appLog.info('DbManager: ===== 开始下载数据库更新 ($target) =====');
     final info = await _getLatestReleaseInfo(target);
     if (info == null) {
       debugPrint('DbManager: 无更新，跳过下载');
@@ -189,7 +189,7 @@ class DbManager extends GetxService {
     final version = info['version'] as String;
     var assets = release["assets"][0];
     final downloadUrl = "${getProxy()}${assets["browser_download_url"]}";
-    debugPrint('DbManager: 开始下载新版本: $version');
+    appLog.info('DbManager: 开始下载新版本: $version');
     debugPrint('DbManager: 代理: ${getProxy()}');
     debugPrint('DbManager: 原始下载URL: ${assets["browser_download_url"]}');
     debugPrint('DbManager: 最终下载URL: $downloadUrl');
@@ -213,7 +213,7 @@ class DbManager extends GetxService {
               downloadSize: assets["size"],
               saveFileName: dbDownloadPath,
               forceDownload: true); // 强制重新下载，确保数据库更新
-          debugPrint('DbManager: 下载完成，状态: ${status.status}, 保存路径: ${status.savePath}');
+          appLog.info('DbManager: 下载完成，状态: ${status.status}, 保存路径: ${status.savePath}');
           return status;
         },
         loadingWidget: Center(
@@ -248,7 +248,7 @@ class DbManager extends GetxService {
         opacity: .0,
       ).then((value) async {
         if (value.status == DownloadStatus.DOWNLOAD_SUCCESS) {
-          debugPrint('DbManager: 下载成功，准备替换数据库');
+          appLog.info('DbManager: 下载成功，准备替换数据库');
           final appDir = await getApplicationDocumentsDirectory();
           final dbDownloadPath = '${appDir.path}/gstore/apps.db.download';
           final dbTargetPath = '${appDir.path}/gstore/apps.db';
@@ -264,11 +264,11 @@ class DbManager extends GetxService {
                 String.fromCharCodes(bytes.sublist(0, 15)) == 'SQLite format 3';
             debugPrint('DbManager: 文件头校验=${isSqlite ? "有效SQLite" : "无效文件!"}');
             if (!isSqlite) {
-              debugPrint('DbManager: 下载文件无效，保留原数据库');
+              appLog.error('DbManager: 下载文件无效，保留原数据库');
               return value.status;
             }
           } else {
-            debugPrint('DbManager: 下载临时文件不存在，保留原数据库');
+            appLog.error('DbManager: 下载临时文件不存在，保留原数据库');
             return value.status;
           }
 
@@ -278,7 +278,7 @@ class DbManager extends GetxService {
           try {
             await dbRepositroy.db.close();
           } catch (e) {
-            debugPrint('DbManager: 关闭旧连接异常（忽略继续）- $e');
+            appLog.error('DbManager: 关闭旧连接异常（忽略继续）- $e');
           }
 
           // 2. 删除旧数据库文件及其 WAL/SHM 附属文件（确保不被残留连接污染）
@@ -289,17 +289,17 @@ class DbManager extends GetxService {
               File('$dbTargetPath-wal').exists().then((e) => e ? File('$dbTargetPath-wal').delete() : Future.value()),
               File('$dbTargetPath-shm').exists().then((e) => e ? File('$dbTargetPath-shm').delete() : Future.value()),
             ]);
-            debugPrint('DbManager: 旧数据库文件已删除');
+            appLog.info('DbManager: 旧数据库文件已删除');
           } catch (e) {
-            debugPrint('DbManager: 删除旧数据库文件失败 - $e');
+            appLog.error('DbManager: 删除旧数据库文件失败 - $e');
           }
 
           // 3. 用下载的新文件覆盖
           try {
             await downloadFile.rename(dbTargetPath);
-            debugPrint('DbManager: 新数据库文件已就位');
+            appLog.info('DbManager: 新数据库文件已就位');
           } catch (e) {
-            debugPrint('DbManager: 覆盖新数据库失败 - $e');
+            appLog.error('DbManager: 覆盖新数据库失败 - $e');
             return value.status;
           }
 
@@ -307,14 +307,14 @@ class DbManager extends GetxService {
           dbRepositroies[target] = dbRepositroy.copyWith(
               db: await db.Builder("gstore/apps.db")
                   .build());
-          debugPrint('DbManager: 数据库已重建（新版本）');
+          appLog.info('DbManager: 数据库已重建（新版本）');
           // 验证重建后数据库内容
           try {
             final appCount = await dbRepositroies[target]!.db.dao.getAllApps();
             final cfg = await dbRepositroies[target]!.db.dao.getVersion();
             debugPrint('DbManager: 重建后 apps 数量=${appCount.length}, 版本=${cfg?.version}');
           } catch (e) {
-            debugPrint('DbManager: 重建后内容验证失败 - $e');
+            appLog.error('DbManager: 重建后内容验证失败 - $e');
           }
 
           // 更新 LocalDbChannel 的数据库引用（避免使用已关闭的旧数据库）
@@ -323,22 +323,25 @@ class DbManager extends GetxService {
             final localDb = channelManager.getChannel(ChannelType.localDb);
             if (localDb is LocalDbChannel) {
               localDb.updateDatabase(dbRepositroies[target]!.db);
-              debugPrint('DbManager: LocalDbChannel 数据库引用已更新');
+              appLog.info('DbManager: LocalDbChannel 数据库引用已更新');
             }
           } catch (e) {
-            debugPrint('DbManager: 更新 LocalDbChannel 引用失败 - $e');
+            appLog.error('DbManager: 更新 LocalDbChannel 引用失败 - $e');
           }
 
           // 通知发现页刷新数据（数据库已更新，重新加载应用列表）
           try {
             final discovery = Get.find<DiscoveryLogic>();
             await discovery.loadData();
-            debugPrint('DbManager: 已通知发现页刷新');
+            appLog.info('DbManager: 已通知发现页刷新');
           } catch (e) {
-            debugPrint('DbManager: 通知发现页刷新失败（可能未打开）- $e');
+            appLog.error('DbManager: 通知发现页刷新失败（可能未打开）- $e');
           }
+
+          // 数据库已更新到最新，清除红点
+          BadgeService.instance.setBadge(BadgeKey.dbUpdate, 0);
         } else {
-          debugPrint('DbManager: 下载未成功，状态=${value.status}，保留原数据库');
+          appLog.error('DbManager: 下载未成功，状态=${value.status}，保留原数据库');
         }
         return value.status;
       });

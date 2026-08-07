@@ -4,6 +4,7 @@ library;
 
 import 'package:flutter/foundation.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
+import 'package:gstore/core/core.dart';
 import 'package:gstore/core/exception/AppException.dart';
 
 /// 应用配置类
@@ -199,7 +200,7 @@ class AppConfig {
       return;
     }
 
-    debugPrint('AppConfig: 开始初始化...');
+    appLog.info('AppConfig: 开始初始化...');
 
     // 加载自定义配置
     if (customConfig != null) {
@@ -210,7 +211,7 @@ class AppConfig {
     _validateConfig();
 
     _isInitialized = true;
-    debugPrint('AppConfig: 初始化完成');
+    appLog.info('AppConfig: 初始化完成');
   }
 
   /// 加载自定义配置
@@ -247,7 +248,7 @@ class AppConfig {
       enableUrlValidation = config['enableUrlValidation'] as bool;
     }
 
-    debugPrint('AppConfig: 已加载自定义配置');
+    appLog.info('AppConfig: 已加载自定义配置');
   }
 
   /// 验证配置
@@ -273,7 +274,7 @@ class AppConfig {
       );
     }
 
-    debugPrint('AppConfig: 配置验证通过');
+    appLog.info('AppConfig: 配置验证通过');
   }
 
   /// 重置为默认配置
@@ -297,7 +298,7 @@ class AppConfig {
     pageSize = 20;
     listAnimationDurationMs = 300;
 
-    debugPrint('AppConfig: 已重置为默认配置');
+    appLog.info('AppConfig: 已重置为默认配置');
   }
 
   /// ========== URL 工具方法 ==========

@@ -55,6 +55,25 @@ build_arch() {
     export "CXX_${target_underscore}=$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin/${target}33-clang++"
     export "AR_${target_underscore}=$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
 
+    # armv7: ring/cc 等需要旧式工具链名（arm-linux-androideabi-clang）
+    # NDK 的 armv7a...clang 是相对 symlink（复制会断链），改用包装脚本调用真实 NDK 包装
+    if [ "$target" = "armv7-linux-androideabi" ]; then
+        local toolchain_bin="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin"
+        local symlink_dir="$PROJECT_DIR/target/toolchain-bin"
+        mkdir -p "$symlink_dir"
+        cat > "$symlink_dir/arm-linux-androideabi-clang" << EOF
+#!/bin/sh
+exec "$toolchain_bin/armv7a-linux-androideabi33-clang" "\$@"
+EOF
+        cat > "$symlink_dir/arm-linux-androideabi-clang++" << EOF
+#!/bin/sh
+exec "$toolchain_bin/armv7a-linux-androideabi33-clang++" "\$@"
+EOF
+        ln -sf "$toolchain_bin/llvm-ar" "$symlink_dir/arm-linux-androideabi-ar"
+        chmod +x "$symlink_dir/arm-linux-androideabi-clang" "$symlink_dir/arm-linux-androideabi-clang++"
+        export PATH="$symlink_dir:$PATH"
+    fi
+
     # 检查 target 是否已安装
     if ! rustup target list --installed | grep -q "$target"; then
         echo_info "Installing Rust target: $target"

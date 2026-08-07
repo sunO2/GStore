@@ -3,10 +3,10 @@
 library;
 
 import 'package:dio/dio.dart';
-import 'package:flutter/foundation.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/IChannel.dart';
 import 'package:gstore/core/config/AppConfig.dart';
+import 'package:gstore/core/core.dart';
 import 'package:gstore/core/di/ServiceContainer.dart';
 import 'package:gstore/core/error/ErrorHandler.dart';
 import 'package:gstore/core/security/UrlValidator.dart';
@@ -33,7 +33,7 @@ class ServiceRegistrar {
 
   /// 注册所有核心服务
   void registerCoreServices(ServiceContainer container) {
-    debugPrint('ServiceRegistrar: 开始注册核心服务...');
+    appLog.info('ServiceRegistrar: 开始注册核心服务...');
 
     // 1. 应用配置（单例）
     container.registerSingleton<AppConfig>(
@@ -67,7 +67,7 @@ class ServiceRegistrar {
     // 5. ChannelManager（单例）
     container.registerInstance<ChannelManager>(ChannelManager.instance);
 
-    debugPrint('ServiceRegistrar: 核心服务注册完成');
+    appLog.info('ServiceRegistrar: 核心服务注册完成');
   }
 
   /// 注册渠道服务
@@ -75,19 +75,19 @@ class ServiceRegistrar {
     ServiceContainer container,
     List<IChannel> channels,
   ) {
-    debugPrint('ServiceRegistrar: 开始注册渠道服务...');
+    appLog.info('ServiceRegistrar: 开始注册渠道服务...');
 
     final channelManager = container.getService<ChannelManager>();
 
     // 批量注册渠道
     channelManager.registerChannels(channels);
 
-    debugPrint('ServiceRegistrar: 已注册 ${channels.length} 个渠道');
+    appLog.info('ServiceRegistrar: 已注册 ${channels.length} 个渠道');
   }
 
   /// 初始化所有服务
   Future<void> initializeServices(ServiceContainer container) async {
-    debugPrint('ServiceRegistrar: 开始初始化服务...');
+    appLog.info('ServiceRegistrar: 开始初始化服务...');
 
     try {
       // 1. 初始化配置
@@ -102,9 +102,9 @@ class ServiceRegistrar {
       final channelManager = container.getService<ChannelManager>();
       await channelManager.initializeAll();
 
-      debugPrint('ServiceRegistrar: 服务初始化完成');
+      appLog.info('ServiceRegistrar: 服务初始化完成');
     } catch (e, stackTrace) {
-      debugPrint('ServiceRegistrar: 服务初始化失败 - $e');
+      appLog.error('ServiceRegistrar: 服务初始化失败 - $e');
       final errorHandler = container.tryGetService<ErrorHandler>();
       errorHandler?.handle(e, stackTrace);
       rethrow;

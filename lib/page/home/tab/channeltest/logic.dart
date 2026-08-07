@@ -1,4 +1,3 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/channel/channel.dart';
@@ -17,7 +16,7 @@ class ChannelTestLogic extends GetxController {
     try {
       _channelManager = Get.find(tag: 'channelManager');
     } catch (e) {
-      debugPrint('ChannelTest: 渠道管理器未初始化，请先在 main.dart 中调用 ChannelIntegration.initialize()');
+      appLog.error('ChannelTest: 渠道管理器未初始化，请先在 main.dart 中调用 ChannelIntegration.initialize()');
     }
     _loadInitialData();
   }

@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:gstore/core/channel/channel.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/design/app_components.dart';
@@ -365,27 +364,38 @@ class _DiscoveryPageState extends State<DiscoveryPage> {
       return Container(
         padding: AppSpacing.horizontalLG_verticalSM,
         child: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
             Text(
               '已选 ${state.selectedApps.length} 个',
               style: theme.textTheme.titleSmall,
             ),
-            const Spacer(),
-            TextButton.icon(
-              onPressed: logic.selectAllInView,
-              icon: const Icon(Icons.select_all, size: AppTypography.iconSM),
-              label: const Text('全选'),
-            ),
-            TextButton.icon(
-              onPressed: logic.deselectAll,
-              icon: const Icon(Icons.clear, size: AppTypography.iconSM),
-              label: const Text('清空'),
-            ),
             const SizedBox(width: AppSpacing.sm),
-            FilledButton.icon(
-              onPressed: logic.batchAddSelected,
-              icon: const Icon(Icons.add_circle, size: AppTypography.iconSM),
-              label: const Text('添加'),
+            // 按钮区 Wrap 自动换行，避免窄屏溢出/需要滑动
+            Expanded(
+              child: Wrap(
+                alignment: WrapAlignment.end,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                spacing: AppSpacing.sm,
+                runSpacing: AppSpacing.xs,
+                children: [
+                  TextButton.icon(
+                    onPressed: logic.selectAllInView,
+                    icon: const Icon(Icons.select_all, size: AppTypography.iconSM),
+                    label: const Text('全选'),
+                  ),
+                  TextButton.icon(
+                    onPressed: logic.deselectAll,
+                    icon: const Icon(Icons.clear, size: AppTypography.iconSM),
+                    label: const Text('清空'),
+                  ),
+                  FilledButton.icon(
+                    onPressed: logic.batchAddSelected,
+                    icon: const Icon(Icons.add_circle, size: AppTypography.iconSM),
+                    label: const Text('添加'),
+                  ),
+                ],
+              ),
             ),
           ],
         ),
@@ -507,9 +517,11 @@ class _DiscoveryPageState extends State<DiscoveryPage> {
                   }
                 },
                 onLongPress: () {
-                  if (!isMultiSelect) {
-                    logic.toggleMultiSelectMode();
+                  // 多选模式下长按切换选择，否则弹出操作菜单
+                  if (isMultiSelect) {
                     logic.toggleAppSelection(channel.code, app.appId);
+                  } else {
+                    logic.showAppActions(context, channel, app);
                   }
                 },
                 borderRadius: AppRadius.allMD,
@@ -521,51 +533,12 @@ class _DiscoveryPageState extends State<DiscoveryPage> {
                       crossAxisAlignment: CrossAxisAlignment.center,
                       children: [
                         // 应用图标
-                        app.icon.isNotEmpty
-                            ? ClipRRect(
-                                borderRadius: AppRadius.allSM,
-                                child: CachedNetworkImage(
-                                  imageUrl: app.icon,
-                                  width: 42,
-                                  height: 42,
-                                  fit: BoxFit.cover,
-                                  placeholder: (context, url) => Container(
-                                    width: 42,
-                                    height: 42,
-                                    decoration: BoxDecoration(
-                                      color: theme.colorScheme.surfaceContainerHighest,
-                                      borderRadius: AppRadius.allSM,
-                                    ),
-                                    child: const AppLoading(size: AppLoadingSize.small),
-                                  ),
-                                  errorWidget: (context, url, error) => Container(
-                                    width: 42,
-                                    height: 42,
-                                    decoration: BoxDecoration(
-                                      color: theme.colorScheme.surfaceContainerHighest,
-                                      borderRadius: AppRadius.allSM,
-                                    ),
-                                    child: Icon(
-                                      Icons.apps,
-                                      size: 24,
-                                      color: theme.colorScheme.onSurfaceVariant,
-                                    ),
-                                  ),
-                                ),
-                              )
-                            : Container(
-                                width: 42,
-                                height: 42,
-                                decoration: BoxDecoration(
-                                  color: theme.colorScheme.surfaceContainerHighest,
-                                  borderRadius: AppRadius.allSM,
-                                ),
-                                child: Icon(
-                                  Icons.apps,
-                                  size: 24,
-                                  color: theme.colorScheme.onSurfaceVariant,
-                                ),
-                              ),
+                        AppIcon(
+                          url: app.icon,
+                          width: 42,
+                          height: 42,
+                          borderRadius: AppRadius.sm,
+                        ),
 
                         const SizedBox(height: AppSpacing.xs),
 
@@ -606,8 +579,7 @@ class _DiscoveryPageState extends State<DiscoveryPage> {
                     boxShadow: [
                       BoxShadow(
                         color: Colors.black.withOpacity(0.15),
-                        blurRadius: 3,
-                        offset: const Offset(0, 1),
+                        blurRadius: 3,                        offset: const Offset(0, 1),
                       ),
                     ],
                   ),

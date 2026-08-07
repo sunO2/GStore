@@ -5,6 +5,7 @@ import 'package:gstore/core/aggregate/AppAddedDatabase.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/channel.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
+import 'package:gstore/core/core.dart';
 import 'package:gstore/core/event/database_event.dart';
 import 'package:gstore/db/apps/AppInfo.dart';
 
@@ -49,20 +50,20 @@ class AppAggregatorManager {
         final eventBus = DatabaseEventBus.instance;
         ever(eventBus.eventStream, (event) {
           if (event != null) {
-            debugPrint('AppAggregatorManager: ✅ 收到数据库事件 - ${event.type}');
+            appLog.info('AppAggregatorManager: ✅ 收到数据库事件 - ${event.type}');
             debugPrint('AppAggregatorManager: 开始刷新应用列表...');
             // 任何数据库变化都触发应用列表刷新
             _notifyAppsChanged();
           }
         });
-        debugPrint('AppAggregatorManager: 数据库事件监听已注册');
+        appLog.info('AppAggregatorManager: 数据库事件监听已注册');
       } catch (e) {
-        debugPrint('AppAggregatorManager: 注册数据库事件监听失败 - $e');
+        appLog.error('AppAggregatorManager: 注册数据库事件监听失败 - $e');
       }
 
-      debugPrint('AppAggregatorManager: 初始化成功');
+      appLog.info('AppAggregatorManager: 初始化成功');
     } catch (e) {
-      debugPrint('AppAggregatorManager: 初始化失败 - $e');
+      appLog.error('AppAggregatorManager: 初始化失败 - $e');
       rethrow;
     }
   }
@@ -91,7 +92,7 @@ class AppAggregatorManager {
     // 通知变化
     _notifyAppsChanged();
 
-    debugPrint('AppAggregatorManager: 添加应用 - ${appInfo.name} (${channel.code})');
+    appLog.info('AppAggregatorManager: 添加应用 - ${appInfo.name} (${channel.code})');
   }
 
   /// 批量添加应用
@@ -114,7 +115,7 @@ class AppAggregatorManager {
 
     _notifyAppsChanged();
 
-    debugPrint('AppAggregatorManager: 批量添加 ${appInfos.length} 个应用 (${channel.code})');
+    appLog.info('AppAggregatorManager: 批量添加 ${appInfos.length} 个应用 (${channel.code})');
   }
 
   /// 移除应用
@@ -126,7 +127,7 @@ class AppAggregatorManager {
 
     _notifyAppsChanged();
 
-    debugPrint('AppAggregatorManager: 移除应用 - $appId (${channel.code})');
+    appLog.info('AppAggregatorManager: 移除应用 - $appId (${channel.code})');
   }
 
   /// 切换应用添加状态
@@ -151,7 +152,7 @@ class AppAggregatorManager {
 
     _notifyAppsChanged();
 
-    debugPrint('AppAggregatorManager: 清空渠道 - ${channel.code}');
+    appLog.info('AppAggregatorManager: 清空渠道 - ${channel.code}');
   }
 
   /// 清空所有应用
@@ -160,7 +161,7 @@ class AppAggregatorManager {
 
     _notifyAppsChanged();
 
-    debugPrint('AppAggregatorManager: 清空所有应用');
+    appLog.info('AppAggregatorManager: 清空所有应用');
   }
 
   // ==================== 查询方法 ====================
@@ -248,7 +249,7 @@ class AppAggregatorManager {
           successCount++;
         } else {
           // 渠道获取失败，使用本地缓存的数据
-          debugPrint('AppAggregatorManager: 渠道获取失败，使用缓存 - ${addedApp.appId}, error: ${result.error}');
+          appLog.error('AppAggregatorManager: 渠道获取失败，使用缓存 - ${addedApp.appId}, error: ${result.error}');
           aggregatedApps.add(AggregatedAppInfo(
             addedAppInfo: addedApp,
             appInfo: _createAppInfoFromAdded(addedApp),
@@ -258,7 +259,7 @@ class AppAggregatorManager {
           cacheCount++;
         }
       } catch (e, stackTrace) {
-        debugPrint('AppAggregatorManager: ❌ 获取应用详情异常');
+        appLog.error('AppAggregatorManager: ❌ 获取应用详情异常');
         debugPrint('  - appId: ${addedApp.appId}');
         debugPrint('  - channelId: ${addedApp.channelId}');
         debugPrint('  - 异常类型: ${e.runtimeType}');
@@ -276,7 +277,7 @@ class AppAggregatorManager {
       }
     }
 
-    debugPrint('AppAggregatorManager: 聚合完成 - 成功: $successCount, 缓存: $cacheCount, 失败: $failedCount');
+    appLog.info('AppAggregatorManager: 聚合完成 - 成功: $successCount, 缓存: $cacheCount, 失败: $failedCount');
     return aggregatedApps;
   }
 
@@ -303,7 +304,7 @@ class AppAggregatorManager {
       _appsChangedController.add(apps);
       debugPrint('AppAggregatorManager: 已发送 appsChangedStream 事件');
     }).catchError((error) {
-      debugPrint('AppAggregatorManager: 获取应用列表失败 - $error');
+      appLog.error('AppAggregatorManager: 获取应用列表失败 - $error');
     });
   }
 

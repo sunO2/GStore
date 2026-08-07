@@ -58,7 +58,7 @@ class EmptyStateWidget extends StatelessWidget {
                   final homeLogic = Get.find();
                   homeLogic.jumpToPage(1);
                 } catch (e) {
-                  debugPrint('跳转失败: $e');
+                  appLog.error('跳转失败: $e');
                 }
               },
             ),
@@ -73,7 +73,7 @@ class EmptyStateWidget extends StatelessWidget {
                   final homeLogic = Get.find();
                   homeLogic.jumpToPage(2);
                 } catch (e) {
-                  debugPrint('跳转失败: $e');
+                  appLog.error('跳转失败: $e');
                 }
               },
             ),

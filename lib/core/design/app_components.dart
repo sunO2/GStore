@@ -1,4 +1,6 @@
+import 'dart:io';
 import 'dart:math' as math;
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 
 /// Reusable UI components that follow the app design system
@@ -970,8 +972,43 @@ class _ElegantRingPainter extends CustomPainter {
     final mainArcSweep = math.pi * 1.5; // 270度
 
     final mainRect = Rect.fromCircle(center: center, radius: radius);
+
+    // 呼吸基色
+    final breatheColor = _computeBreathingColor(progress, 1.0);
+    final glowColor = breatheColor.withAlpha(90);
+
+    // 光晕：弧线下的柔和辉光（模糊层）
+    // 头亮尾渐隐到透明，避免两端都是亮点造成断层
+    final glowPaint = Paint()
+      ..shader = SweepGradient(
+        startAngle: mainArcStart,
+        endAngle: mainArcStart + mainArcSweep,
+        colors: [
+          glowColor,
+          glowColor.withAlpha(20),
+          glowColor.withAlpha(0),
+        ],
+        stops: const [0.0, 0.6, 1.0],
+      ).createShader(mainRect)
+      ..strokeWidth = strokeWidth * 2.4
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..maskFilter = MaskFilter.blur(BlurStyle.normal, strokeWidth);
+
+    canvas.drawArc(mainRect, mainArcStart, mainArcSweep, false, glowPaint);
+
+    // 主弧线：渐变填充（头亮 → 尾部渐隐），实现流畅的流光拖尾效果
     final mainPaint = Paint()
-      ..color = _computeBreathingColor(progress, 1.0)
+      ..shader = SweepGradient(
+        startAngle: mainArcStart,
+        endAngle: mainArcStart + mainArcSweep,
+        colors: [
+          breatheColor,
+          breatheColor.withAlpha(200),
+          breatheColor.withAlpha(20),
+        ],
+        stops: const [0.0, 0.75, 1.0],
+      ).createShader(mainRect)
       ..strokeWidth = strokeWidth
       ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.round;
@@ -986,15 +1023,26 @@ class _ElegantRingPainter extends CustomPainter {
 
     // 使用连续的弧度值计算颜色，避免跳跃
     final continuousSecondaryCycle = secondaryAngle.abs() / (2 * math.pi);
+    final secondaryColor = _computeBreathingColor(continuousSecondaryCycle, 0.7);
 
-    final secondaryRect = Rect.fromCircle(center: center, radius: secondaryRadius);
+    final secondaryRect =
+        Rect.fromCircle(center: center, radius: secondaryRadius);
     final secondaryPaint = Paint()
-      ..color = _computeBreathingColor(continuousSecondaryCycle, 0.7)
+      ..shader = SweepGradient(
+        startAngle: secondaryStart,
+        endAngle: secondaryStart + secondarySweep,
+        colors: [
+          secondaryColor,
+          secondaryColor.withAlpha(40),
+        ],
+        stops: const [0.0, 1.0],
+      ).createShader(secondaryRect)
       ..strokeWidth = strokeWidth * 0.75
       ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.round;
 
-    canvas.drawArc(secondaryRect, secondaryStart, secondarySweep, false, secondaryPaint);
+    canvas.drawArc(
+        secondaryRect, secondaryStart, secondarySweep, false, secondaryPaint);
 
     // 小弧线（最小，正向旋转）
     final smallAngle = mainArcAngle * 2.0;
@@ -1004,10 +1052,19 @@ class _ElegantRingPainter extends CustomPainter {
 
     // 使用连续的弧度值计算颜色，避免跳跃
     final continuousSmallCycle = smallAngle.abs() / (2 * math.pi);
+    final smallColor = _computeBreathingColor(continuousSmallCycle, 0.4);
 
     final smallRect = Rect.fromCircle(center: center, radius: smallRadius);
     final smallPaint = Paint()
-      ..color = _computeBreathingColor(continuousSmallCycle, 0.4)
+      ..shader = SweepGradient(
+        startAngle: smallStart,
+        endAngle: smallStart + smallSweep,
+        colors: [
+          smallColor,
+          smallColor.withAlpha(30),
+        ],
+        stops: const [0.0, 1.0],
+      ).createShader(smallRect)
       ..strokeWidth = strokeWidth * 0.5
       ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.round;
@@ -1025,6 +1082,14 @@ class _ElegantRingPainter extends CustomPainter {
       ..style = PaintingStyle.fill;
 
     canvas.drawCircle(center, strokeWidth * 0.8, dotPaint);
+
+    // 中心点外圈光晕（脉冲扩散）
+    final pulseRadius = strokeWidth * 0.8 + (dotBreathe * strokeWidth * 1.6);
+    final pulsePaint = Paint()
+      ..color = _computeBreathingColor(continuousCycle % 1.0, 0.25)
+      ..style = PaintingStyle.fill;
+
+    canvas.drawCircle(center, pulseRadius, pulsePaint);
   }
 
   @override
@@ -1064,6 +1129,208 @@ class LoadingState extends StatelessWidget {
           ],
         ],
       ),
+    );
+  }
+}
+
+/// AliIcon（COLR 彩色字体）染色图标
+/// AliIcon 字体包含 COLR/CPAL 表，自带黑色填充，不响应 IconTheme 颜色。
+/// 使用 ColorFiltered 强制染色，使图标在夜间模式等场景下颜色正常。
+class ColoredAliIcon extends StatelessWidget {
+  /// 图标数据（AliIcon 系列）
+  final IconData icon;
+
+  /// 图标大小
+  final double size;
+
+  /// 图标颜色（默认使用 onSurface）
+  final Color? color;
+
+  const ColoredAliIcon({
+    super.key,
+    required this.icon,
+    this.size = 24,
+    this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final effectiveColor = color ?? Theme.of(context).colorScheme.onSurface;
+    return ColorFiltered(
+      colorFilter: ColorFilter.mode(effectiveColor, BlendMode.srcATop),
+      child: Icon(icon, size: size),
+    );
+  }
+}
+
+/// 红点角标（叠加在功能入口图标右上角）
+/// count > 0 时显示，count > 99 显示 "99+"
+class AppBadge extends StatelessWidget {
+  /// 红点数量（<=0 不显示）
+  final int count;
+
+  /// 被叠加的内容（图标等）
+  final Widget child;
+
+  /// 红点颜色（默认 error 红）
+  final Color? color;
+
+  /// 是否显示数字（false 仅显示圆点，count>0 即显示）
+  final bool showCount;
+
+  /// 圆点模式的最大数字
+  final int maxCount;
+
+  const AppBadge({
+    super.key,
+    required this.count,
+    required this.child,
+    this.color,
+    this.showCount = true,
+    this.maxCount = 99,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final badgeColor = color ?? Theme.of(context).colorScheme.error;
+    final visible = count > 0;
+
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        child,
+        if (visible)
+          Positioned(
+            top: -4,
+            right: -8,
+            child: showCount
+                ? Container(
+                    constraints: const BoxConstraints(minWidth: 16),
+                    height: 16,
+                    padding: const EdgeInsets.symmetric(horizontal: 4),
+                    decoration: BoxDecoration(
+                      color: badgeColor,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: Theme.of(context).colorScheme.surface,
+                        width: 1.5,
+                      ),
+                    ),
+                    alignment: Alignment.center,
+                    child: Text(
+                      count > maxCount ? '$maxCount+' : '$count',
+                      style: TextStyle(
+                        fontSize: 9,
+                        fontWeight: FontWeight.bold,
+                        color: Theme.of(context).colorScheme.onError,
+                        height: 1,
+                      ),
+                    ),
+                  )
+                : Container(
+                    width: 10,
+                    height: 10,
+                    decoration: BoxDecoration(
+                      color: badgeColor,
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: Theme.of(context).colorScheme.surface,
+                        width: 1.5,
+                      ),
+                    ),
+                  ),
+          ),
+      ],
+    );
+  }
+}
+
+/// 统一应用图标组件
+/// 支持：网络 URL（CachedNetworkImage）、本地文件路径（FileImage）、默认图标
+class AppIcon extends StatelessWidget {
+  /// 图标地址：http(s):// 网络 URL 或本地文件路径（/ 或 file:// 开头）
+  final String? url;
+
+  /// 图标尺寸
+  final double width;
+  final double height;
+
+  /// 圆角
+  final double borderRadius;
+
+  /// 填充方式
+  final BoxFit fit;
+
+  /// 是否显示默认图标（url 为空时）
+  final bool showDefaultIcon;
+
+  const AppIcon({
+    super.key,
+    this.url,
+    this.width = 48,
+    this.height = 48,
+    this.borderRadius = 8,
+    this.fit = BoxFit.cover,
+    this.showDefaultIcon = true,
+  });
+
+  /// 是否为本地文件路径
+  bool get _isLocalPath {
+    if (url == null || url!.isEmpty) return false;
+    return url!.startsWith('/') || url!.startsWith('file://');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+
+    // 空地址 → 默认图标
+    if (url == null || url!.isEmpty) {
+      return _default(scheme);
+    }
+
+    final clip = ClipRRect(
+      borderRadius: BorderRadius.circular(borderRadius),
+      child: _isLocalPath
+          // 本地文件路径（如应用图标缓存 app_icons/*.png）
+          ? Image.file(
+              File(url!.startsWith('file://') ? url!.substring(7) : url!),
+              width: width,
+              height: height,
+              fit: fit,
+              errorBuilder: (_, __, ___) => _default(scheme),
+            )
+          // 网络 URL
+          : CachedNetworkImage(
+              imageUrl: url!,
+              width: width,
+              height: height,
+              fit: fit,
+              placeholder: (_, __) => Container(
+                width: width,
+                height: height,
+                color: scheme.surfaceContainerHighest,
+              ),
+              errorWidget: (_, __, ___) => _default(scheme),
+            ),
+    );
+
+    if (!showDefaultIcon && url == null) {
+      return clip;
+    }
+    return clip;
+  }
+
+  /// 默认图标（安卓）
+  Widget _default(ColorScheme scheme) {
+    return Container(
+      width: width,
+      height: height,
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(borderRadius),
+      ),
+      child: const Icon(Icons.android, color: Colors.grey),
     );
   }
 }

@@ -138,11 +138,11 @@ class DetailLogic extends GetxController {
 
           if (isInstalled == true) {
             state.installInfo.value = await InstalledApps.getAppInfo(packageToCheck);
-            debugPrint('DetailLogic: ✓ 应用已安装 - ${state.installInfo.value?.packageName}');
+            appLog.info('DetailLogic: ✓ 应用已安装 - ${state.installInfo.value?.packageName}');
             debugPrint('DetailLogic:   安装版本 = ${state.installInfo.value?.versionName}');
             debugPrint('DetailLogic:   UI 将更新（installInfo 是响应式变量）');
           } else {
-            debugPrint('DetailLogic: ✗ 应用未安装 - "$packageToCheck"');
+            appLog.info('DetailLogic: ✗ 应用未安装 - "$packageToCheck"');
 
             // 尝试列出所有已安装应用，看看是否有类似包名
             try {
@@ -164,14 +164,14 @@ class DetailLogic extends GetxController {
                 }
               }
             } catch (e) {
-              debugPrint('DetailLogic: 获取已安装应用列表失败: $e');
+              appLog.error('DetailLogic: 获取已安装应用列表失败: $e');
             }
           }
         } catch (e) {
-          debugPrint('DetailLogic: 检测安装状态时出错: $e');
+          appLog.error('DetailLogic: 检测安装状态时出错: $e');
         }
       } else {
-        debugPrint('DetailLogic: 无法检测安装状态 - 没有可用的包名');
+        appLog.error('DetailLogic: 无法检测安装状态 - 没有可用的包名');
       }
     } catch (e) {
       state.errorMessage.value = '加载详情失败: $e';
@@ -212,7 +212,9 @@ class DetailLogic extends GetxController {
     state.currentDownload.value = status;
     counterController.sink.add(status);
     downloadListenerSubscription = status.observer.listen((da) {
+      // 同一实例更新时 GetX 不会自动通知，需强制 refresh
       state.currentDownload.value = da;
+      state.currentDownload.refresh();
       counterController.sink.add(da);
     });
 
@@ -251,11 +253,11 @@ class DetailLogic extends GetxController {
           fileName,
         );
       } else {
-        debugPrint('DetailLogic: 下载上下文创建失败，降级到旧方法');
+        appLog.error('DetailLogic: 下载上下文创建失败，降级到旧方法');
         throw Exception('Failed to create download context');
       }
     } catch (e) {
-      debugPrint('DetailLogic: 策略模式下载失败，降级到旧方法 - $e');
+      appLog.error('DetailLogic: 策略模式下载失败，降级到旧方法 - $e');
       try {
         await Get.find<DownloadService>().download(
           appId,
@@ -266,7 +268,7 @@ class DetailLogic extends GetxController {
           downloadSize: download.size,
         );
       } catch (e2) {
-        debugPrint('DetailLogic: 下载失败 - $e2');
+        appLog.error('DetailLogic: 下载失败 - $e2');
       }
     }
   }
@@ -285,7 +287,7 @@ class DetailLogic extends GetxController {
         HttpDownloadStrategy(),
         FdroidDownloadStrategy(),
       ]);
-      debugPrint('DetailLogic: 已注册 ${manager.strategyCount} 个下载策略');
+      appLog.info('DetailLogic: 已注册 ${manager.strategyCount} 个下载策略');
     }
   }
 
@@ -319,7 +321,7 @@ class DetailLogic extends GetxController {
       );
       inAppBrowser.open(url: WebUri(url), settings: settings);
     } catch (e) {
-      debugPrint('DetailLogic: 打开浏览器失败 - $e');
+      appLog.error('DetailLogic: 打开浏览器失败 - $e');
     }
   }
 

@@ -9,6 +9,7 @@ import 'package:gstore/core/fdroid/FdroidRepoModels.dart';
 import 'package:gstore/core/fdroid/FdroidIsolateParser.dart';
 import 'package:gstore/core/fdroid/FdroidTempDatabase.dart';
 import 'package:gstore/core/fdroid/ConditionalHttpClient.dart';
+import 'package:gstore/core/logger/LogManager.dart';
 import 'package:path/path.dart' as path;
 
 // 导入新的完整解析函数
@@ -43,14 +44,14 @@ class FdroidIndexV2Parser {
           return response.data as Map<String, dynamic>?;
         }
       } catch (e) {
-        debugPrint('FdroidIndexV2: entry.json 不可用，尝试 entry.jar - $e');
+        appLog.error('FdroidIndexV2: entry.json 不可用，尝试 entry.jar - $e');
       }
 
       // 如果 JSON 失败，忽略 JAR 格式（签名验证复杂）
       // 直接尝试最新的 index-v2
       return null;
     } catch (e) {
-      debugPrint('FdroidIndexV2: 解析入口文件失败 - $e');
+      appLog.error('FdroidIndexV2: 解析入口文件失败 - $e');
       return null;
     }
   }
@@ -112,7 +113,7 @@ class FdroidIndexV2Parser {
         final indexVersion = version ?? availableVersions.last;
         final indexUrl = '$repoUrl/index-v$indexVersion.json';
 
-        debugPrint('FdroidIndexV2: 开始解析 $indexUrl (版本: $indexVersion)${retryCount > 0 ? " (重试 $retryCount/$maxRetries)" : ""}');
+        appLog.info('FdroidIndexV2: 开始解析 $indexUrl (版本: $indexVersion)${retryCount > 0 ? " (重试 $retryCount/$maxRetries)" : ""}');
 
         // 检查本地缓存（只在非强制刷新且第一次尝试时检查）
         if (!forceRefresh && retryCount == 0) {
@@ -121,7 +122,7 @@ class FdroidIndexV2Parser {
             // 版本匹配，但还需要检查是否真的有应用数据
             final appCount = (await database.dao.getAppCount()) ?? 0;
             if (appCount > 0) {
-              debugPrint('FdroidIndexV2: 已是最新版本 $indexVersion，且有 $appCount 个应用');
+              appLog.info('FdroidIndexV2: 已是最新版本 $indexVersion，且有 $appCount 个应用');
               return 0;
             } else {
               debugPrint('FdroidIndexV2: 版本匹配但无应用数据，需要重新加载');
@@ -136,7 +137,7 @@ class FdroidIndexV2Parser {
         debugPrint('FdroidIndexV2: 跳过条件请求，直接下载');
 
         // 使用流式下载
-        debugPrint('FdroidIndexV2: 开始下载 $indexUrl');
+        appLog.info('FdroidIndexV2: 开始下载 $indexUrl');
         final response = await _dio.get(
           indexUrl,
           options: Options(
@@ -213,33 +214,33 @@ class FdroidIndexV2Parser {
               entityTag: entityTag,
             );
 
-            debugPrint('FdroidIndexV2: 解析完成 - $appsInserted 个应用');
+            appLog.info('FdroidIndexV2: 解析完成 - $appsInserted 个应用');
 
             return appsInserted;
           } on FormatException catch (e) {
             // JSON 还不完整，继续读取
             continue;
           } catch (e) {
-            debugPrint('FdroidIndexV2: JSON 解析异常 - $e');
+            appLog.error('FdroidIndexV2: JSON 解析异常 - $e');
             rethrow;
           }
         }
 
-        debugPrint('FdroidIndexV2: 流结束，但未成功解析 JSON (共接收 $totalBytes 字节)');
+        appLog.error('FdroidIndexV2: 流结束，但未成功解析 JSON (共接收 $totalBytes 字节)');
         throw Exception('Incomplete JSON data');
 
       } catch (e) {
         retryCount++;
 
         if (retryCount <= maxRetries && _isNetworkError(e)) {
-          debugPrint('FdroidIndexV2: 网络错误，准备重试 ($retryCount/$maxRetries) - $e');
+          appLog.error('FdroidIndexV2: 网络错误，准备重试 ($retryCount/$maxRetries) - $e');
           await Future.delayed(Duration(seconds: retryCount * 2)); // 指数退避
           continue;
         }
 
         // 如果不是网络错误或已达到最大重试次数，抛出异常
         if (retryCount > maxRetries) {
-          debugPrint('FdroidIndexV2: 已达到最大重试次数，放弃重试');
+          appLog.error('FdroidIndexV2: 已达到最大重试次数，放弃重试');
         }
         rethrow;
       }
@@ -265,7 +266,7 @@ class FdroidIndexV2Parser {
     int toVersion,
   ) async {
     try {
-      debugPrint('FdroidIndexV2: 增量更新 $fromVersion -> $toVersion');
+      appLog.info('FdroidIndexV2: 增量更新 $fromVersion -> $toVersion');
 
       int appsUpdated = 0;
       int appsAdded = 0;
@@ -291,10 +292,10 @@ class FdroidIndexV2Parser {
             appsAdded += result['added'] ?? 0;
             packagesAdded += result['packages'] ?? 0;
 
-            debugPrint('FdroidIndexV2: 版本 $version 更新完成');
+            appLog.info('FdroidIndexV2: 版本 $version 更新完成');
           }
         } catch (e) {
-          debugPrint('FdroidIndexV2: 版本 $version 更新失败 - $e');
+          appLog.error('FdroidIndexV2: 版本 $version 更新失败 - $e');
         }
       }
 
@@ -307,7 +308,7 @@ class FdroidIndexV2Parser {
         'packagesAdded': packagesAdded,
       };
     } catch (e) {
-      debugPrint('FdroidIndexV2: 增量更新失败 - $e');
+      appLog.error('FdroidIndexV2: 增量更新失败 - $e');
       rethrow;
     }
   }
@@ -325,7 +326,7 @@ class FdroidIndexV2Parser {
       final availableVersions = await getAvailableVersions(repoUrl);
 
       if (availableVersions.isEmpty) {
-        debugPrint('FdroidIndexV2: 没有可用的版本');
+        appLog.error('FdroidIndexV2: 没有可用的版本');
         return null;
       }
 
@@ -333,7 +334,7 @@ class FdroidIndexV2Parser {
       final latestVersion = availableVersions.last;
 
       if (latestVersion <= currentVersion) {
-        debugPrint('FdroidIndexV2: 已是最新版本 $latestVersion');
+        appLog.info('FdroidIndexV2: 已是最新版本 $latestVersion');
         return {
           'hasUpdate': false,
           'currentVersion': currentVersion,
@@ -341,7 +342,7 @@ class FdroidIndexV2Parser {
         };
       }
 
-      debugPrint('FdroidIndexV2: 发现更新 $currentVersion -> $latestVersion');
+      appLog.info('FdroidIndexV2: 发现更新 $currentVersion -> $latestVersion');
 
       // 应用增量更新
       final result = await applyIncrementalUpdate(
@@ -357,7 +358,7 @@ class FdroidIndexV2Parser {
         ...result,
       };
     } catch (e) {
-      debugPrint('FdroidIndexV2: 检查更新失败 - $e');
+      appLog.error('FdroidIndexV2: 检查更新失败 - $e');
       return null;
     }
   }
@@ -413,14 +414,14 @@ class FdroidIndexV2Parser {
                           ),
                         );
                       } catch (e) {
-                        debugPrint('FdroidIndexV2: 解析包失败 $packageName:$apkName - $e');
+                        appLog.error('FdroidIndexV2: 解析包失败 $packageName:$apkName - $e');
                       }
                     }
                   }
                 }
               }
             } catch (e) {
-              debugPrint('FdroidIndexV2: 解析应用失败 $packageName - $e');
+              appLog.error('FdroidIndexV2: 解析应用失败 $packageName - $e');
             }
           }
         }
@@ -504,7 +505,7 @@ class FdroidIndexV2Parser {
       await _updateVersionInfo(repoUrl, indexVersion);
     }
 
-    debugPrint('FdroidIndexV2: [Isolate模式] 处理完成 - 共 $appsInserted 个应用, $packagesInserted 个包');
+    appLog.info('FdroidIndexV2: [Isolate模式] 处理完成 - 共 $appsInserted 个应用, $packagesInserted 个包');
 
     return {
       'apps': appsInserted,
@@ -566,14 +567,14 @@ class FdroidIndexV2Parser {
                     await database.dao.upsertPackage(pkg);
                     packages++;
                   } catch (e) {
-                    debugPrint('FdroidIndexV2: 更新包失败 $packageName:$apkName - $e');
+                    appLog.error('FdroidIndexV2: 更新包失败 $packageName:$apkName - $e');
                   }
                 }
               }
             }
           }
         } catch (e) {
-          debugPrint('FdroidIndexV2: 更新应用失败 $packageName - $e');
+          appLog.error('FdroidIndexV2: 更新应用失败 $packageName - $e');
         }
       }
     }
@@ -610,7 +611,7 @@ class FdroidIndexV2Parser {
   Future<void> clearDatabase() async {
     await database.dao.clearApps();
     await database.dao.clearPackages();
-    debugPrint('FdroidIndexV2: 数据库已清空');
+    appLog.info('FdroidIndexV2: 数据库已清空');
   }
 
   /// 使用后台线程完整解析JSON（避免ANR）
@@ -623,7 +624,7 @@ class FdroidIndexV2Parser {
     String? entityTag,
   }) async {
     try {
-      debugPrint('FdroidIndexV2: [完整后台解析] 开始...');
+      appLog.info('FdroidIndexV2: [完整后台解析] 开始...');
 
       // 将完整的JSON数据转换为字节数组
       final jsonBytes = Uint8List.fromList(utf8.encode(jsonEncode(jsonData)));
@@ -643,7 +644,7 @@ class FdroidIndexV2Parser {
         parseMessage,
       );
 
-      debugPrint('FdroidIndexV2: [完整后台解析] 后台解析完成，共 ${result.totalApps} 个应用，分为 ${result.allBatches.length} 个批次');
+      appLog.info('FdroidIndexV2: [完整后台解析] 后台解析完成，共 ${result.totalApps} 个应用，分为 ${result.allBatches.length} 个批次');
 
       // 现在主线程只需要写入数据库
       int appsInserted = 0;
@@ -667,7 +668,7 @@ class FdroidIndexV2Parser {
         await Future.delayed(Duration(microseconds: 100));
       }
 
-      debugPrint('FdroidIndexV2: [完整后台解析] 全部完成，共 $appsInserted 个应用');
+      appLog.info('FdroidIndexV2: [完整后台解析] 全部完成，共 $appsInserted 个应用');
 
       // 更新版本信息（包含HTTP响应头）
       await _updateVersionInfo(
@@ -679,7 +680,7 @@ class FdroidIndexV2Parser {
 
       return appsInserted;
     } catch (e) {
-      debugPrint('FdroidIndexV2: [完整后台解析] 失败 - $e');
+      appLog.error('FdroidIndexV2: [完整后台解析] 失败 - $e');
       rethrow;
     }
   }

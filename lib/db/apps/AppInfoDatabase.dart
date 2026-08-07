@@ -2,8 +2,8 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:floor/floor.dart';
-import 'package:flutter/foundation.dart';
 import 'package:gstore/db/apps/AppInfoDao.dart';
+import 'package:gstore/core/logger/LogManager.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart' as sqflite;
 import 'package:gstore/db/apps/AppInfo.dart';
@@ -36,7 +36,7 @@ class Builder extends _$AppInfoDatabaseBuilder {
     try {
       await _setupFts5(database.database);
     } catch (e) {
-      debugPrint('AppInfoDatabase: FTS5 初始化失败（降级为 LIKE 搜索）- $e');
+      appLog.error('AppInfoDatabase: FTS5 初始化失败（降级为 LIKE 搜索）- $e');
     }
     return database;
   }

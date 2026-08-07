@@ -4,7 +4,7 @@
 library;
 
 import 'dart:async';
-import 'package:flutter/foundation.dart';
+import 'package:gstore/core/core.dart';
 
 /// 配置提供者接口
 ///
@@ -32,7 +32,7 @@ abstract class ConfigProvider<T> {
   /// 默认实现不支持从 JSON 导入
   /// 子类应该覆盖此方法以支持配置导入
   Future<bool> importFromJson(Map<String, dynamic> json) async {
-    debugPrint('ConfigProvider[$configKey]: importFromJson 未实现，无法导入配置');
+    appLog.error('ConfigProvider[$configKey]: importFromJson 未实现，无法导入配置');
     return false;
   }
 

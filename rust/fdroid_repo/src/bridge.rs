@@ -1,7 +1,19 @@
 // Flutter FFI Bridge - 暴露给 Dart 的接口
 use flutter_rust_bridge::frb;
+use super::apk::*;
 use super::models::*;
 use super::repo::*;
+
+/// APK 解析结果（结构体将自动生成 Dart 侧对应类）
+pub use crate::models::ApkInfo;
+
+impl FdroidRepoManager {
+    /// 解析 APK 文件，提取真实包名/版本/应用名等信息
+    /// 在安装前调用，避免依赖安装结果判断包名
+    pub fn parse_apk_info(&self, apk_path: String) -> Result<ApkInfo, String> {
+        crate::apk::parse_apk_info(apk_path)
+    }
+}
 
 /// F-Droid 仓库管理器
 #[frb(opaque)]

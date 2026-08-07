@@ -21,7 +21,9 @@ export 'package:gstore/core/service/user_manager.dart';
 export 'package:gstore/core/service/downloadService.dart';
 export 'package:gstore/core/service/backup_service.dart';
 export 'package:gstore/core/service/install_manager.dart';
+export 'package:gstore/core/service/badge_service.dart';
 export 'package:gstore/core/utils/logger.dart';
+export 'package:gstore/core/utils/unit.dart';
 export 'package:gstore/core/routers.dart';
 
 // 渠道相关

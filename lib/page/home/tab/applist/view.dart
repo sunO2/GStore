@@ -94,14 +94,24 @@ class AppListState extends State<ApplistPage>
         actions: [
           IconButton(
             tooltip: "应用更新",
-            icon: const Icon(
-              AliIcon.appUpdateCenter,
-            ),
+            icon: Obx(() {
+              final count = BadgeService.instance.countOf(BadgeKey.appUpdate);
+              return AppBadge(
+                count: count,
+                child: ColoredAliIcon(
+                  icon: AliIcon.appUpdateCenter,
+                  size: AppTypography.iconMD,
+                ),
+              );
+            }),
             onPressed: () => Get.toNamed(AppRoute.updateCenter),
           ),
           IconButton(
             tooltip: "下载中心",
-            icon: const Icon(AliIcon.appDownloadCenter),
+            icon: ColoredAliIcon(
+              icon: AliIcon.appDownloadCenter,
+              size: AppTypography.iconMD,
+            ),
             onPressed: () => Get.toNamed(AppRoute.downloadCenter),
           ),
           Obx(() {

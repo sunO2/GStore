@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:gstore/compent/link_text.dart';
+import 'package:gstore/core/core.dart';
 import 'package:html/dom.dart' as dom;
 
 import 'package:cached_network_image/cached_network_image.dart';
@@ -34,7 +35,8 @@ class CustomLinkBuilder extends MarkdownElementBuilder {
                         left: 2, right: 2, top: 2, bottom: 2),
                     child: ScalableImageWidget.fromSISource(
                       scale: 0.8,
-                      si: ScalableImageSource.fromSvgHttpUrl(Uri.parse('$uri')),
+                      si: ScalableImageSource.fromSvgHttpUrl(
+                          Uri.parse(applyProxyIfNeeded('$uri', getProxy()))),
                     ),
                   ),
                   href
@@ -44,7 +46,8 @@ class CustomLinkBuilder extends MarkdownElementBuilder {
                 Image(
                     height: double.parse(domFirst.attributes["height"] ?? "-1"),
                     image: CachedNetworkImageProvider(
-                        domFirst.attributes["src"] ?? "")),
+                        applyProxyIfNeeded(
+                            domFirst.attributes["src"] ?? "", getProxy()))),
                 href
               );
             }
@@ -56,7 +59,8 @@ class CustomLinkBuilder extends MarkdownElementBuilder {
                 Image(
                     width: 100,
                     image: CachedNetworkImageProvider(
-                        first.attributes["src"] ?? "")),
+                        applyProxyIfNeeded(
+                            first.attributes["src"] ?? "", getProxy()))),
                 first.attributes["href"]
               );
           }

@@ -25,6 +25,17 @@ abstract class GithubRestClient with GetxServiceMixin {
       @Path('page') int page,
       @CancelRequest() CancelToken cancelToken);
 
+  /// 搜索仓库（用于 GitHub 渠道搜索应用）
+  /// 宽松搜索：按名称/描述/README 匹配关键词
+  @GET('/search/repositories')
+  @retrofit.Headers(<String, String>{
+    "Accept": "application/vnd.github+json"
+  })
+  Future<String> searchRepositories(
+      @Query('q') String query,
+      @Query('per_page') int perPage,
+      @CancelRequest() CancelToken cancelToken);
+
   /// 获取仓库的 README 文件
   /// 返回包含 Base64 编码内容的 JSON String
   @GET('/repos/{user}/{repositories}/readme')

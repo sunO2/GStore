@@ -8,6 +8,7 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:json_annotation/json_annotation.dart';
+import 'package:gstore/core/core.dart';
 
 import '../config_provider.dart';
 import '../config_storage.dart';
@@ -196,12 +197,12 @@ class UpdateConfigProvider extends ConfigProvider<UpdateConfig> {
         final json = jsonDecode(jsonString) as Map<String, dynamic>;
         final config = UpdateConfig.fromJson(json);
         _currentConfig = config;
-        debugPrint('UpdateConfigProvider: 配置已加载 - $config');
+        appLog.info('UpdateConfigProvider: 配置已加载 - $config');
         return config;
       }
       return UpdateConfig.default_;
     } catch (e, stackTrace) {
-      debugPrint('UpdateConfigProvider: 加载配置失败 - $e');
+      appLog.error('UpdateConfigProvider: 加载配置失败 - $e');
       debugPrint('UpdateConfigProvider: 堆栈跟踪: $stackTrace');
       return UpdateConfig.default_;
     }
@@ -215,14 +216,14 @@ class UpdateConfigProvider extends ConfigProvider<UpdateConfig> {
       if (success) {
         _currentConfig = config;
         _configController.add(config);
-        debugPrint('UpdateConfigProvider: 配置已保存');
+        appLog.info('UpdateConfigProvider: 配置已保存');
         return true;
       } else {
-        debugPrint('UpdateConfigProvider: 保存配置失败');
+        appLog.error('UpdateConfigProvider: 保存配置失败');
         return false;
       }
     } catch (e, stackTrace) {
-      debugPrint('UpdateConfigProvider: 保存配置异常 - $e');
+      appLog.error('UpdateConfigProvider: 保存配置异常 - $e');
       debugPrint('UpdateConfigProvider: 堆栈跟踪: $stackTrace');
       return false;
     }
@@ -234,7 +235,7 @@ class UpdateConfigProvider extends ConfigProvider<UpdateConfig> {
     if (success) {
       _currentConfig = UpdateConfig.default_;
       _configController.add(UpdateConfig.default_);
-      debugPrint('UpdateConfigProvider: 配置已清除');
+      appLog.info('UpdateConfigProvider: 配置已清除');
     }
     return success;
   }
@@ -297,7 +298,7 @@ class UpdateConfigProvider extends ConfigProvider<UpdateConfig> {
       debugPrint('UpdateConfigProvider: 保存结果 - $success');
       return success;
     } catch (e, stackTrace) {
-      debugPrint('UpdateConfigProvider: 导入配置失败 - $e');
+      appLog.error('UpdateConfigProvider: 导入配置失败 - $e');
       debugPrint('UpdateConfigProvider: 堆栈跟踪: $stackTrace');
       return false;
     }

@@ -14,12 +14,15 @@ serde_json = "1.0"
 tokio = { version = "1", features = ["full"] }
 # HTTP 客户端 - 使用 rustls 避免 OpenSSL 依赖
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
-# ZIP 解析（用于 index-v1.jar 和 index-v2.jar）
-zip = "2.2"
+# ZIP 解析（用于 index-v1.jar 和 index-v2.jar、APK manifest）
+# 仅启用 deflate，避免引入 zstd/lzma/bzip2 的 C 依赖导致部分 Android 架构交叉编译失败
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
 # XML 解析（用于 index-v1.jar）
 quick-xml = "0.37"
 # SQLite
 rusqlite = { version = "0.32", features = ["bundled"] }
+# APK 二进制 XML 解析（安装前从 APK 提取真实包名/版本；纯 Rust 无 openssl 依赖）
+apk-info-axml = "1.0.11"
 # Flutter FFI
 flutter_rust_bridge = "=2.11.1"
 # 日期时间

@@ -61,7 +61,7 @@ class UserManager extends GetxService {
       return;
     }
 
-    debugPrint('UserManager: 开始公共初始化');
+    appLog.info('UserManager: 开始公共初始化');
     // 初始化依赖
     _authApi = Get.find<GithubAuthApi>();
     _githubApi = Get.find<GithubRestClient>();
@@ -83,7 +83,7 @@ class UserManager extends GetxService {
       return;
     }
 
-    debugPrint('UserManager: 开始初始化，检查登录状态...');
+    appLog.info('UserManager: 开始初始化，检查登录状态...');
     debugPrint('  - 存储键: $_tokenKey');
 
     // 先读取 token（使用新的 getToken 方法）
@@ -105,10 +105,10 @@ class UserManager extends GetxService {
       if (userInfoJson != null && userInfoJson.isNotEmpty) {
         try {
           userInfo.value = UserInfo.fromJsonString(userInfoJson);
-          debugPrint('UserManager: 已加载用户信息 - ${userInfo.value.login}');
+          appLog.info('UserManager: 已加载用户信息 - ${userInfo.value.login}');
         } catch (e) {
-          debugPrint('UserManager: 解析用户信息失败 - $e');
-          debugPrint('UserManager: ⚠️ 解析失败，清除 Token');
+          appLog.error('UserManager: 解析用户信息失败 - $e');
+          appLog.error('UserManager: ⚠️ 解析失败，清除 Token');
           // 如果解析失败，清除数据
           await logout();
         }
@@ -120,17 +120,17 @@ class UserManager extends GetxService {
           if (user != null) {
             userInfo.value = user;
             await _secureStorage.write(key: _userInfoKey, value: user.toJson());
-            debugPrint('UserManager: 已重新获取用户信息 - ${user.login}');
+            appLog.info('UserManager: 已重新获取用户信息 - ${user.login}');
           } else {
             // token 无效，清除
-            debugPrint('UserManager: Token 无效（API 返回 null），清除登录状态');
-            debugPrint('UserManager: ⚠️ API 返回 null，清除 Token');
+            appLog.error('UserManager: Token 无效（API 返回 null），清除登录状态');
+            appLog.error('UserManager: ⚠️ API 返回 null，清除 Token');
             await logout();
           }
         } catch (e) {
           // 网络错误或其他异常，不清除 Token
           // Token 可能仍然有效，只是暂时无法获取用户信息
-          debugPrint('UserManager: 获取用户信息失败（网络错误？），保留 Token - $e');
+          appLog.error('UserManager: 获取用户信息失败（网络错误？），保留 Token - $e');
           // 不调用 logout()，让用户可以继续使用已保存的登录状态
         }
       }
@@ -140,7 +140,7 @@ class UserManager extends GetxService {
 
     // 标记为已初始化
     _isInitialized = true;
-    debugPrint('UserManager: 初始化完成');
+    appLog.info('UserManager: 初始化完成');
   }
 
   /// 取消登录请求
@@ -234,16 +234,16 @@ class UserManager extends GetxService {
         debugPrint('UserManager: 登录已取消');
       } else if (e.response?.statusCode == 401 ||
           e.response?.statusCode == 403) {
-        debugPrint('UserManager: 认证失败 - ${e.response?.statusCode}');
+        appLog.error('UserManager: 认证失败 - ${e.response?.statusCode}');
         completer.completeError(e);
       } else {
-        debugPrint('UserManager: 登录请求失败 - $e');
+        appLog.error('UserManager: 登录请求失败 - $e');
         AppDialogs.showError('网络错误，请检查网络连接', title: '登录失败');
         completer.completeError(e);
       }
     } catch (e) {
       // 其他错误处理
-      debugPrint('UserManager: 登录异常 - $e');
+      appLog.error('UserManager: 登录异常 - $e');
       AppDialogs.showError('发生未知错误，请重试', title: '登录失败');
       completer.completeError(e);
     }
@@ -271,13 +271,13 @@ class UserManager extends GetxService {
           await Clipboard.setData(ClipboardData(text: value.userCode!));
           debugPrint('UserManager: 验证码已自动复制到剪贴板 - ${value.userCode}');
         } catch (e) {
-          debugPrint('UserManager: 复制验证码失败 - $e');
+          appLog.error('UserManager: 复制验证码失败 - $e');
         }
       }
 
       return value;
     } on DioException catch (e) {
-      debugPrint('UserManager: ❌ Dio 错误 - 获取设备码失败');
+      appLog.error('UserManager: ❌ Dio 错误 - 获取设备码失败');
       debugPrint('  - 错误类型: ${e.type}');
       debugPrint('  - 错误消息: ${e.message}');
       debugPrint('  - 响应状态码: ${e.response?.statusCode}');
@@ -307,7 +307,7 @@ class UserManager extends GetxService {
       AppDialogs.showError(errorMsg, title: '获取验证码失败');
       return AuthDeviceResponse();
     } catch (e) {
-      debugPrint('UserManager: ❌ 未知错误 - 获取设备码失败 - $e');
+      appLog.error('UserManager: ❌ 未知错误 - 获取设备码失败 - $e');
       AppDialogs.showError('发生未知错误: $e', title: '获取验证码失败');
       return AuthDeviceResponse();
     }
@@ -329,10 +329,10 @@ class UserManager extends GetxService {
       // 保存到 SharedPreferences（同步操作）
       await _prefs!.setString(_tokenKey, token);
 
-      debugPrint('UserManager: ✅ Token 已保存到 FlutterSecureStorage 和 SharedPreferences');
+      appLog.info('UserManager: ✅ Token 已保存到 FlutterSecureStorage 和 SharedPreferences');
       return true;
     } catch (e) {
-      debugPrint('UserManager: ❌ 保存 token 异常 - $e');
+      appLog.error('UserManager: ❌ 保存 token 异常 - $e');
       return false;
     }
   }
@@ -358,9 +358,9 @@ class UserManager extends GetxService {
         // 同步回 FlutterSecureStorage
         try {
           await _secureStorage.write(key: _tokenKey, value: prefsToken);
-          debugPrint('UserManager: 已同步 Token 到 FlutterSecureStorage');
+          appLog.info('UserManager: 已同步 Token 到 FlutterSecureStorage');
         } catch (e) {
-          debugPrint('UserManager: 同步到 FlutterSecureStorage 失败 - $e');
+          appLog.error('UserManager: 同步到 FlutterSecureStorage 失败 - $e');
         }
         return prefsToken;
       }
@@ -368,7 +368,7 @@ class UserManager extends GetxService {
       debugPrint('UserManager: 从存储读取 Token 为空');
       return null;
     } catch (e) {
-      debugPrint('UserManager: 读取 Token 异常 - $e');
+      appLog.error('UserManager: 读取 Token 异常 - $e');
       return null;
     }
   }
@@ -401,12 +401,12 @@ class UserManager extends GetxService {
       }
 
       // token 无效，清除
-      debugPrint('UserManager: ⚠️ Token 验证失败（API 返回 null），清除 Token');
+      appLog.error('UserManager: ⚠️ Token 验证失败（API 返回 null），清除 Token');
       await logout();
       return false;
     } catch (e) {
-      debugPrint('UserManager: Token 验证失败 - $e');
-      debugPrint('UserManager: ⚠️ Token 验证异常，清除 Token');
+      appLog.error('UserManager: Token 验证失败 - $e');
+      appLog.error('UserManager: ⚠️ Token 验证异常，清除 Token');
       await logout();
       return false;
     }
@@ -424,7 +424,7 @@ class UserManager extends GetxService {
   /// 退出登录
   Future<void> logout() async {
     try {
-      debugPrint('UserManager: ⚠️⚠️⚠️ 开始退出登录，清除 Token ⚠️⚠️⚠️');
+      appLog.info('UserManager: ⚠️⚠️⚠️ 开始退出登录，清除 Token ⚠️⚠️⚠️');
       debugPrint('  - 调用堆栈: ${StackTrace.current}');
 
       // 清除内存中的用户信息
@@ -439,7 +439,7 @@ class UserManager extends GetxService {
       await _prefs!.remove(_userInfoKey);
       await _prefs!.remove(_tokenKey);
 
-      debugPrint('UserManager: 已清除 FlutterSecureStorage 和 SharedPreferences 中的数据');
+      appLog.info('UserManager: 已清除 FlutterSecureStorage 和 SharedPreferences 中的数据');
 
       // 清除 Dio 的授权头
       DioClient.instance.authorization = null;
@@ -447,9 +447,9 @@ class UserManager extends GetxService {
       // 取消任何进行中的登录
       cancelLogin();
 
-      debugPrint('UserManager: ✅ 已退出登录，Token 已清除');
+      appLog.info('UserManager: ✅ 已退出登录，Token 已清除');
     } catch (e) {
-      debugPrint('UserManager: 退出登录失败 - $e');
+      appLog.error('UserManager: 退出登录失败 - $e');
     }
   }
 }

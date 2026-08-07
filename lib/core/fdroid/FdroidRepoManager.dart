@@ -45,7 +45,7 @@ class FdroidRepoManager extends GetxController {
   /// 初始化管理器
   Future<void> initialize() async {
     try {
-      debugPrint('FdroidRepoManager: 开始初始化...');
+      appLog.info('FdroidRepoManager: 开始初始化...');
 
       // 初始化 Rust 后端
       final dbPath = path.join(
@@ -54,11 +54,11 @@ class FdroidRepoManager extends GetxController {
       );
       debugPrint('FdroidRepoManager: 初始化 Rust 后端，数据库路径: $dbPath');
       await rust.FdroidRustRepoManager.initialize(dbPath: dbPath);
-      debugPrint('FdroidRepoManager: Rust 后端初始化成功');
+      appLog.info('FdroidRepoManager: Rust 后端初始化成功');
 
       // 加载保存的源配置
       await _loadSources();
-      debugPrint('FdroidRepoManager: 已加载 ${sources.length} 个源');
+      appLog.info('FdroidRepoManager: 已加载 ${sources.length} 个源');
 
       // 设置默认源（如果没有保存的源，或者只有官方源，则添加清华镜像）
       if (sources.isEmpty || (sources.length == 1 && sources.first.id == 'official')) {
@@ -80,7 +80,7 @@ class FdroidRepoManager extends GetxController {
         final lastSource = sources.firstWhereOrNull((s) => s.id == lastSourceId);
         if (lastSource != null) {
           currentSource.value = lastSource;
-          debugPrint('FdroidRepoManager: 恢复上次选中的源: $lastSource');
+          appLog.info('FdroidRepoManager: 恢复上次选中的源: $lastSource');
         } else {
           currentSource.value = enabledSource;
         }
@@ -88,9 +88,9 @@ class FdroidRepoManager extends GetxController {
         currentSource.value = enabledSource;
       }
 
-      debugPrint('FdroidRepoManager: 初始化完成，当前源: ${currentSource.value}');
+      appLog.info('FdroidRepoManager: 初始化完成，当前源: ${currentSource.value}');
     } catch (e) {
-      debugPrint('FdroidRepoManager: 初始化失败 - $e');
+      appLog.error('FdroidRepoManager: 初始化失败 - $e');
       errorMessage.value = '初始化失败: $e';
       rethrow;
     }
@@ -109,13 +109,13 @@ class FdroidRepoManager extends GetxController {
             .toList();
         sources.clear();
         sources.addAll(loadedSources);
-        debugPrint('FdroidRepoManager: 已加载 ${sources.length} 个保存的源');
+        appLog.info('FdroidRepoManager: 已加载 ${sources.length} 个保存的源');
       } else {
         sources.clear();
         debugPrint('FdroidRepoManager: 没有保存的源配置');
       }
     } catch (e) {
-      debugPrint('FdroidRepoManager: 加载源配置失败 - $e');
+      appLog.error('FdroidRepoManager: 加载源配置失败 - $e');
       sources.clear();
     }
   }
@@ -126,9 +126,9 @@ class FdroidRepoManager extends GetxController {
       final prefs = await SharedPreferences.getInstance();
       final sourcesJson = jsonEncode(sources.map((s) => s.toJson()).toList());
       await prefs.setString('fdroid_sources', sourcesJson);
-      debugPrint('FdroidRepoManager: 已保存 ${sources.length} 个源配置');
+      appLog.info('FdroidRepoManager: 已保存 ${sources.length} 个源配置');
     } catch (e) {
-      debugPrint('FdroidRepoManager: 保存源配置失败 - $e');
+      appLog.error('FdroidRepoManager: 保存源配置失败 - $e');
     }
   }
 
@@ -149,7 +149,7 @@ class FdroidRepoManager extends GetxController {
     // 保存当前选中的源
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('last_source_id', sourceId);
-    debugPrint('FdroidRepoManager: 已保存当前源: $sourceId');
+    appLog.info('FdroidRepoManager: 已保存当前源: $sourceId');
 
     // 重新加载数据
     await loadRepository();
@@ -177,12 +177,12 @@ class FdroidRepoManager extends GetxController {
 
     final source = currentSource.value;
     if (source == null) {
-      debugPrint('FdroidRepoManager: 源为 null，返回错误');
+      appLog.error('FdroidRepoManager: 源为 null，返回错误');
       errorMessage.value = '请先选择一个源';
       return;
     }
 
-    debugPrint('FdroidRepoManager: 开始加载源: ${source.name} (${source.repoUrl})');
+    appLog.info('FdroidRepoManager: 开始加载源: ${source.name} (${source.repoUrl})');
 
     isLoading.value = true;
     errorMessage.value = '';
@@ -197,10 +197,10 @@ class FdroidRepoManager extends GetxController {
       );
 
       loadingProgress.value = 1.0;
-      debugPrint('FdroidRepoManager: Rust 后端下载完成');
-      debugPrint('FdroidRepoManager: 仓库加载完成');
+      appLog.info('FdroidRepoManager: Rust 后端下载完成');
+      appLog.info('FdroidRepoManager: 仓库加载完成');
     } catch (e) {
-      debugPrint('FdroidRepoManager: 加载仓库失败 - $e');
+      appLog.error('FdroidRepoManager: 加载仓库失败 - $e');
       errorMessage.value = '加载失败: $e';
       rethrow;
     } finally {
@@ -266,7 +266,7 @@ class FdroidRepoManager extends GetxController {
         'keyword': keyword,
         'error': e.toString(),
       });
-      debugPrint('FdroidRepoManager: 搜索失败 - $e');
+      appLog.error('FdroidRepoManager: 搜索失败 - $e');
       rethrow;
     }
   }
@@ -315,7 +315,7 @@ class FdroidRepoManager extends GetxController {
         'packageName': packageName,
         'error': e.toString(),
       });
-      debugPrint('FdroidRepoManager: 精确查询失败 - $e');
+      appLog.error('FdroidRepoManager: 精确查询失败 - $e');
       return null;
     }
   }
@@ -388,7 +388,7 @@ class FdroidRepoManager extends GetxController {
       appLog.error('获取所有应用失败', data: {
         'error': e.toString(),
       });
-      debugPrint('FdroidRepoManager: 获取所有应用失败 - $e');
+      appLog.error('FdroidRepoManager: 获取所有应用失败 - $e');
       rethrow;
     }
   }
@@ -398,7 +398,7 @@ class FdroidRepoManager extends GetxController {
     try {
       return await rust.FdroidRustRepoManager.getAppCount();
     } catch (e) {
-      debugPrint('FdroidRepoManager: 获取应用数量失败 - $e');
+      appLog.error('FdroidRepoManager: 获取应用数量失败 - $e');
       return 0;
     }
   }
@@ -411,7 +411,7 @@ class FdroidRepoManager extends GetxController {
         'apps': appCount,
       };
     } catch (e) {
-      debugPrint('FdroidRepoManager: 获取统计信息失败 - $e');
+      appLog.error('FdroidRepoManager: 获取统计信息失败 - $e');
       return {
         'apps': 0,
       };
@@ -453,14 +453,14 @@ class FdroidRepoManager extends GetxController {
 
   /// 清空当前数据
   Future<void> clearData() async {
-    debugPrint('FdroidRepoManager: 开始清空数据...');
+    appLog.info('FdroidRepoManager: 开始清空数据...');
 
     try {
       // 调用 Rust 清空数据库
       final count = await rust.FdroidRustRepoManager.clearApps();
-      debugPrint('FdroidRepoManager: 已清空 $count 个应用');
+      appLog.info('FdroidRepoManager: 已清空 $count 个应用');
     } catch (e) {
-      debugPrint('FdroidRepoManager: 清空数据失败 - $e');
+      appLog.error('FdroidRepoManager: 清空数据失败 - $e');
       rethrow;
     }
   }
@@ -474,7 +474,7 @@ class FdroidRepoManager extends GetxController {
       }
       return null;
     } catch (e) {
-      debugPrint('FdroidRepoManager: 获取应用失败 - $e');
+      appLog.error('FdroidRepoManager: 获取应用失败 - $e');
       return null;
     }
   }
@@ -485,7 +485,7 @@ class FdroidRepoManager extends GetxController {
       final directory = await getApplicationDocumentsDirectory();
       return directory;
     } catch (e) {
-      debugPrint('FdroidRepoManager: 获取文档目录失败，使用默认路径: $e');
+      appLog.error('FdroidRepoManager: 获取文档目录失败，使用默认路径: $e');
     }
 
     // 回退到简单实现

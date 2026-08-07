@@ -48,15 +48,13 @@ class LogViewerPage extends StatelessWidget {
             icon: const Icon(Icons.delete_outline),
             tooltip: '清空日志',
             onPressed: () {
-              Get.defaultDialog(
+              AppDialogs.showDialog(
                 title: '清空日志',
-                middleText: '确定要清空所有日志吗？',
-                textConfirm: '清空',
-                textCancel: '取消',
-                onConfirm: () {
-                  logic.clearLogs();
-                  Get.back();
-                },
+                content: '确定要清空所有日志吗？',
+                confirmText: '清空',
+                cancelText: '取消',
+                isDangerous: true,
+                onConfirm: logic.clearLogs,
               );
             },
           ),

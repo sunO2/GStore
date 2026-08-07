@@ -1,4 +1,3 @@
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:gstore/core/core.dart';
 
@@ -42,20 +41,14 @@ class AppCardWidget extends StatelessWidget {
                                 Theme.of(context).colorScheme.primaryContainer,
                             borderRadius: AppRadius.allLG,
                           ),
-                          child: app.appInfo.icon != null
-                              ? CachedNetworkImage(
-                                  fit: BoxFit.fill,
-                                  placeholder: (context, url) {
-                                    return const Center(
-                                      child: AppLoading(size: AppLoadingSize.small),
-                                    );
-                                  },
-                                  errorWidget: (context, url, error) {
-                                    return const Icon(Icons.error);
-                                  },
-                                  imageUrl: app.appInfo.icon!,
+                          child: app.appInfo.icon != null &&
+                                  app.appInfo.icon!.isNotEmpty
+                              ? AppIcon(
+                                  url: app.appInfo.icon,
                                   width: 64,
                                   height: 64,
+                                  fit: BoxFit.fill,
+                                  borderRadius: 0,
                                 )
                               : const SizedBox(),
                         ),

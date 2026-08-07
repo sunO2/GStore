@@ -12,6 +12,7 @@ import 'package:gstore/core/error/ErrorHandler.dart';
 import 'package:gstore/core/exception/AppException.dart';
 import 'package:gstore/db/apps/AppInfo.dart';
 import 'package:gstore/db/apps/AppInfo.dart' as db;
+import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 
@@ -126,7 +127,7 @@ abstract class BaseChannel implements IChannel {
     _cachedCategories = null;
     _cachedConfig = null;
     _cacheCreatedAt = null;
-    debugPrint('$runtimeType: 缓存已清除');
+    appLog.info('$runtimeType: 缓存已清除');
   }
 
   /// 安全执行渠道操作
@@ -228,7 +229,7 @@ abstract class BaseChannel implements IChannel {
       final filtered = config.filterSensitiveInfoInLog
           ? config.filterSensitiveInfo(message)
           : message;
-      debugPrint('🔵 [INFO] $runtimeType: $filtered');
+      appLog.info('🔵 [INFO] $runtimeType: $filtered');
     }
   }
 
@@ -238,7 +239,7 @@ abstract class BaseChannel implements IChannel {
       final filtered = config.filterSensitiveInfoInLog
           ? config.filterSensitiveInfo(message)
           : message;
-      debugPrint('🟠 [WARN] $runtimeType: $filtered');
+      appLog.warning('🟠 [WARN] $runtimeType: $filtered');
     }
   }
 
@@ -248,7 +249,7 @@ abstract class BaseChannel implements IChannel {
       final filtered = config.filterSensitiveInfoInLog
           ? config.filterSensitiveInfo(message)
           : message;
-      debugPrint('🔴 [ERROR] $runtimeType: $filtered');
+      appLog.error('🔴 [ERROR] $runtimeType: $filtered');
       if (error != null) {
         debugPrint('  错误: $error');
       }
@@ -304,7 +305,7 @@ class ChannelDataBuilder {
   }) {
     // 记录错误
     if (error != null) {
-      debugPrint('ChannelDataBuilder: $message - $error');
+      appLog.error('ChannelDataBuilder: $message - $error');
     }
 
     return ChannelResult.failure(

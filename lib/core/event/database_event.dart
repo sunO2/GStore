@@ -1,5 +1,5 @@
-import 'package:flutter/foundation.dart';
 import 'package:get/get.dart';
+import 'package:gstore/core/core.dart';
 
 /// 数据库变化事件类型
 enum DatabaseChangeType {
@@ -43,7 +43,7 @@ class DatabaseEventBus extends GetxController {
 
   /// 发送数据库变化事件
   void send(DatabaseChangeEvent event) {
-    debugPrint('DatabaseEventBus: 发送事件 - ${event.type}');
+    appLog.info('DatabaseEventBus: 发送事件 - ${event.type}');
     _currentEvent.value = event;
   }
 

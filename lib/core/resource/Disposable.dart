@@ -4,6 +4,7 @@ library;
 
 import 'dart:async';
 import 'package:flutter/foundation.dart';
+import 'package:gstore/core/core.dart';
 import 'package:gstore/core/exception/AppException.dart';
 
 /// 可释放资源接口
@@ -27,7 +28,7 @@ class ResourceContainer implements Disposable {
   /// 注册资源
   void register<T extends Disposable>(String key, T resource) {
     if (_isDisposed) {
-      debugPrint('ResourceContainer: 容器已释放，无法注册资源 $key');
+      appLog.error('ResourceContainer: 容器已释放，无法注册资源 $key');
       return;
     }
     _resources[key] = resource;
@@ -70,7 +71,7 @@ class ResourceContainer implements Disposable {
         try {
           await resource.dispose();
         } catch (e) {
-          debugPrint('ResourceContainer: 释放资源 $key 失败 - $e');
+          appLog.error('ResourceContainer: 释放资源 $key 失败 - $e');
         }
       }
     }
@@ -176,7 +177,7 @@ class StreamManager implements Disposable {
       try {
         await subscription.dispose();
       } catch (e) {
-        debugPrint('StreamManager: 取消订阅失败 - $e');
+        appLog.error('StreamManager: 取消订阅失败 - $e');
       }
     }
 

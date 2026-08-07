@@ -1,6 +1,5 @@
 import 'dart:io';
 
-import 'package:flutter/material.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/db/apps/AppInfoDatabase.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
@@ -159,12 +158,6 @@ class DownloadManagerLogic extends GetxController with GithubRequestMix {
   ///   - 续传时传入当前已下载字节数（downStatus.count）
   ///   - 重新下载时默认 0（从头开始）
   void retryDownload(DownloadStatus downStatus, {int restartCount = 0}) async {
-    // 标记为下载中（确保防重复下载生效）
-    if (!DownloadStatus.isDownloading(
-        downStatus.appId, downStatus.version, downStatus.fileName)) {
-      downStatus.markAsDownloading();
-    }
-
     // 若重新下载，删除旧的临时文件
     if (restartCount == 0) {
       final tempFile = File("${downStatus.savePath}.temp");
@@ -175,6 +168,8 @@ class DownloadManagerLogic extends GetxController with GithubRequestMix {
 
     downStatus.updateDownload(restartCount, downStatus.total);
     // 从头下载时强制重新下载（forceDownload: true），续传时保留已下载部分
+    // 注意：不要在此处 markAsDownloading，否则 download() 的防重检查会误判为
+    // "正在下载" 而直接跳过，导致点击"继续下载/重试"无效
     await Get.find<DownloadService>().download(
         downStatus.appId,
         downStatus.appName,
@@ -313,24 +308,12 @@ class DownloadManagerLogic extends GetxController with GithubRequestMix {
   /// 清空所有下载记录
   Future<void> clearAll() async {
     // 显示确认对话框
-    final confirmed = await Get.dialog<bool>(
-      AlertDialog(
-        title: const Text('确认清空'),
-        content: const Text('确定要清空所有下载记录吗？此操作不可恢复。'),
-        actions: [
-          TextButton(
-            onPressed: () => Get.back(result: false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Get.back(result: true),
-            style: FilledButton.styleFrom(
-              backgroundColor: Get.theme.colorScheme.error,
-            ),
-            child: const Text('确认清空'),
-          ),
-        ],
-      ),
+    final confirmed = await AppDialogs.showDialog(
+      title: '确认清空',
+      content: '确定要清空所有下载记录吗？此操作不可恢复。',
+      confirmText: '确认清空',
+      cancelText: '取消',
+      isDangerous: true,
     );
 
     if (confirmed != true) return;

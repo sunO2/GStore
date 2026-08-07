@@ -1,5 +1,5 @@
 import 'dart:convert';
-import 'package:flutter/foundation.dart';
+import 'package:gstore/core/core.dart';
 import '../channel/channel.dart';
 import '../config/config_storage.dart';
 import 'models/step_model.dart';
@@ -124,7 +124,7 @@ class WorkflowManager {
         _saveToStorage();
       }
     } catch (e) {
-      debugPrint('导入工作流失败: $e');
+      appLog.error('导入工作流失败: $e');
     }
   }
 
@@ -136,10 +136,10 @@ class WorkflowManager {
       final jsonStr = await _storage!.getString(_storageKey);
       if (jsonStr != null && jsonStr.isNotEmpty) {
         importFromJson(jsonStr);
-        debugPrint('工作流已从存储加载: ${_workflows.length} 个');
+        appLog.info('工作流已从存储加载: ${_workflows.length} 个');
       }
     } catch (e) {
-      debugPrint('加载工作流失败: $e');
+      appLog.error('加载工作流失败: $e');
     }
   }
 
@@ -150,9 +150,9 @@ class WorkflowManager {
     try {
       final jsonStr = exportToJson();
       await _storage!.setString(_storageKey, jsonStr);
-      debugPrint('工作流已保存: ${_workflows.length} 个');
+      appLog.info('工作流已保存: ${_workflows.length} 个');
     } catch (e) {
-      debugPrint('保存工作流失败: $e');
+      appLog.error('保存工作流失败: $e');
     }
   }
 

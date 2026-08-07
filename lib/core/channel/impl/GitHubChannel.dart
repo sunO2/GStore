@@ -14,13 +14,20 @@ import 'package:gstore/db/apps/AppInfo.dart';
 import 'package:gstore/db/apps/AppInfo.dart' as db;
 import 'package:gstore/http/github/github_client.dart';
 import 'package:http/http.dart' as http;
+import 'package:gstore/core/channel/AppUpdateCheckMixin.dart';
+import 'package:gstore/core/channel/database/channel_database.dart';
+import 'package:gstore/core/channel/database/channel_added_app.dart';
+import 'package:gstore/core/core.dart';
 
 /// GitHub API 渠道实现
 /// 通过 GitHub API 获取应用数据
-class GitHubChannel implements IChannel {
+class GitHubChannel with AppUpdateCheckMixin implements IChannel {
   final GithubRestClient _githubApi;
   final String _user;
   final String _repository;
+
+  /// 渠道数据库（已添加应用存储）
+  ChannelDatabase? _database;
 
   @override
   ChannelInfo info;
@@ -55,9 +62,10 @@ class GitHubChannel implements IChannel {
 
   @override
   Future<void> initialize() async {
-    // GitHub API 无需特殊初始化
+    // 初始化渠道数据库（已添加应用存储）
+    _database = await ChannelDatabaseManager.instance;
     isInitialized = true;
-    debugPrint('GitHubChannel: 初始化完成');
+    appLog.info('GitHubChannel: 初始化完成');
   }
 
   @override
@@ -67,7 +75,7 @@ class GitHubChannel implements IChannel {
       await _githubApi.releases(_user, _repository, 1, CancelToken());
       return true;
     } catch (e) {
-      debugPrint('GitHubChannel: API 不可用 - $e');
+      appLog.error('GitHubChannel: API 不可用 - $e');
       return false;
     }
   }
@@ -85,23 +93,32 @@ class GitHubChannel implements IChannel {
         );
       }
 
-      // 从 GitHub releases 获取数据
-      // 注意: 这里需要根据实际的 GitHub 数据结构进行解析
-      // 当前实现返回空列表，需要根据实际情况调整
-
-      var apps = <AppInfo>[];
-      // TODO: 实现从 GitHub API 获取应用列表的逻辑
-      // 例如解析 releases 或其他数据源
+      // 从渠道数据库读取已添加应用
+      if (_database == null) {
+        throw Exception('数据库未初始化');
+      }
+      final channelApps = await _database!.dao
+          .getAppsByChannel(ChannelType.github.code);
+      final apps = channelApps.map((c) {
+        return AppInfo(
+          c.appId,
+          c.name,
+          c.user,
+          c.repositories,
+          c.icon,
+          c.description,
+          c.category?.split(','),
+        );
+      }).toList();
 
       _cachedApps = apps;
-
       return ChannelResult.success(
         data: apps,
         from: ChannelType.github,
         fromCache: false,
       );
     } catch (e) {
-      debugPrint('GitHubChannel: 获取应用列表失败 - $e');
+      appLog.error('GitHubChannel: 获取应用列表失败 - $e');
       return ChannelResult.failure(
         from: ChannelType.github,
         error: e.toString(),
@@ -115,27 +132,64 @@ class GitHubChannel implements IChannel {
     bool forceRefresh = false,
   }) async {
     try {
-      // 先从缓存中查找
-      if (_cachedApps != null) {
-        var app = _cachedApps!.firstWhere(
-          (a) => a.appId == appId,
-          orElse: () => _createNotFoundApp(appId),
+      // 先从渠道数据库查找
+      if (_database != null) {
+        final stored = await _database!.dao.getApp(
+          appId,
+          ChannelType.github.code,
         );
-        return ChannelResult.success(
-          data: app.appId.isEmpty ? null : app,
-          from: ChannelType.github,
-          fromCache: true,
-        );
+        if (stored != null) {
+          return ChannelResult.success(
+            data: AppInfo(
+              stored.appId,
+              stored.name,
+              stored.user,
+              stored.repositories,
+              stored.icon,
+              stored.description,
+              stored.category?.split(','),
+            ),
+            from: ChannelType.github,
+            fromCache: true,
+          );
+        }
       }
 
-      // 从 API 获取
-      // TODO: 实现从 GitHub API 获取单个应用信息的逻辑
+      // appId 格式为 owner/repo，拆分后从 GitHub API 获取
+      final parts = appId.split('/');
+      if (parts.length != 2) {
+        return ChannelResult.success(data: null, from: ChannelType.github);
+      }
+      final user = parts[0];
+      final repo = parts[1];
+
+      final apiList = await _githubApi.apiList(
+        user,
+        repo,
+        CancelToken(),
+      );
+      final name = apiList.full_name?.split('/').last.isNotEmpty == true
+          ? apiList.full_name!.split('/').last
+          : repo;
+      final description = apiList.description?.isNotEmpty == true
+          ? apiList.description!
+          : '';
+
       return ChannelResult.success(
-        data: null,
+        data: AppInfo(
+          appId,
+          name,
+          user,
+          repo,
+          '',
+          description,
+          null,
+        ),
         from: ChannelType.github,
+        fromCache: false,
       );
     } catch (e) {
-      debugPrint('GitHubChannel: 获取应用信息失败 - $e');
+      appLog.error('GitHubChannel: 获取应用信息失败 - $e');
       return ChannelResult.failure(
         from: ChannelType.github,
         error: e.toString(),
@@ -149,26 +203,107 @@ class GitHubChannel implements IChannel {
     bool forceRefresh = false,
   }) async {
     try {
-      var allAppsResult = await getAllApps(forceRefresh: forceRefresh);
-      if (!allAppsResult.success) {
+      // 走代理搜索 GitHub 仓库（宽松搜索，用户自选）
+      final proxy = getProxy();
+      final query = Uri.encodeComponent('$keyword in:name,description,readme');
+      final searchUrl =
+          'https://api.github.com/search/repositories?q=$query&per_page=30';
+      final url = proxy.isNotEmpty ? '$proxy$searchUrl' : searchUrl;
+
+      final response = await http
+          .get(
+            Uri.parse(url),
+            headers: {
+              'Accept': 'application/vnd.github+json',
+              'User-Agent': 'GStore-App/1.0',
+            },
+          )
+          .timeout(const Duration(seconds: 15));
+
+      if (response.statusCode != 200) {
         return ChannelResult.failure(
           from: ChannelType.github,
-          error: allAppsResult.error ?? '搜索失败',
+          error: '搜索失败: HTTP ${response.statusCode}',
         );
       }
 
-      var apps = allAppsResult.data!.where((app) {
-        return app.name.toLowerCase().contains(keyword.toLowerCase()) ||
-            app.des.toLowerCase().contains(keyword.toLowerCase());
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      final items = (data['items'] as List<dynamic>? ?? []);
+      final apps = items.map((item) {
+        final map = item as Map<String, dynamic>;
+        final fullName = map['full_name']?.toString() ?? '';
+        final owner = map['owner'] as Map<String, dynamic>?;
+        final avatar = owner?['avatar_url']?.toString() ?? '';
+        return AppInfo(
+          fullName, // appId = owner/repo
+          map['name']?.toString() ?? fullName,
+          owner?['login']?.toString() ?? '',
+          fullName, // repositories = full_name
+          avatar, // 临时图标：仓库 owner 头像
+          map['description']?.toString() ?? '',
+          null,
+        );
       }).toList();
 
       return ChannelResult.success(
         data: apps,
         from: ChannelType.github,
-        fromCache: allAppsResult.fromCache,
+        fromCache: false,
       );
     } catch (e) {
-      debugPrint('GitHubChannel: 搜索应用失败 - $e');
+      appLog.error('GitHubChannel: 搜索应用失败 - $e');
+      return ChannelResult.failure(
+        from: ChannelType.github,
+        error: e.toString(),
+      );
+    }
+  }
+
+  @override
+  Future<ChannelResult<void>> addApp(AppInfo app) async {
+    try {
+      if (_database == null) {
+        throw Exception('数据库未初始化');
+      }
+      // 拆分 owner/repo：app.user 存 owner，repositories 存 repo
+      final parts = app.appId.split('/');
+      final owner = app.user.isNotEmpty ? app.user : (parts.isNotEmpty ? parts[0] : '');
+      final repo = parts.length == 2 ? parts[1] : app.repositories;
+
+      final channelApp = ChannelAddedApp.withChannel(
+        appId: app.appId, // 暂用 owner/repo
+        name: app.name,
+        user: owner,
+        repositories: repo,
+        apprepo: app.appId, // 仓库完整名
+        icon: app.icon,
+        description: app.des,
+        addTime: DateTime.now().millisecondsSinceEpoch,
+        channel: ChannelType.github,
+      );
+      await _database!.dao.insertApp(channelApp);
+      appLog.info('GitHubChannel: 添加应用成功 - ${app.appId}');
+      return ChannelResult.success(data: null, from: ChannelType.github);
+    } catch (e) {
+      appLog.error('GitHubChannel: 添加应用失败 - $e');
+      return ChannelResult.failure(
+        from: ChannelType.github,
+        error: e.toString(),
+      );
+    }
+  }
+
+  @override
+  Future<ChannelResult<void>> removeApp(String appId) async {
+    try {
+      if (_database == null) {
+        throw Exception('数据库未初始化');
+      }
+      await _database!.dao.removeApp(appId, ChannelType.github.code);
+      _cachedApps = null;
+      return ChannelResult.success(data: null, from: ChannelType.github);
+    } catch (e) {
+      appLog.error('GitHubChannel: 移除应用失败 - $e');
       return ChannelResult.failure(
         from: ChannelType.github,
         error: e.toString(),
@@ -200,7 +335,7 @@ class GitHubChannel implements IChannel {
         fromCache: allAppsResult.fromCache,
       );
     } catch (e) {
-      debugPrint('GitHubChannel: 按分类搜索失败 - $e');
+      appLog.error('GitHubChannel: 按分类搜索失败 - $e');
       return ChannelResult.failure(
         from: ChannelType.github,
         error: e.toString(),
@@ -233,7 +368,7 @@ class GitHubChannel implements IChannel {
         fromCache: false,
       );
     } catch (e) {
-      debugPrint('GitHubChannel: 获取分类失败 - $e');
+      appLog.error('GitHubChannel: 获取分类失败 - $e');
       return ChannelResult.failure(
         from: ChannelType.github,
         error: e.toString(),
@@ -269,7 +404,7 @@ class GitHubChannel implements IChannel {
         metadata: {'latestVersion': latestVersion},
       );
     } catch (e) {
-      debugPrint('GitHubChannel: 检查更新失败 - $e');
+      appLog.error('GitHubChannel: 检查更新失败 - $e');
       return ChannelResult.failure(
         from: ChannelType.github,
         error: e.toString(),
@@ -313,7 +448,7 @@ class GitHubChannel implements IChannel {
         fromCache: false,
       );
     } catch (e) {
-      debugPrint('GitHubChannel: 获取配置失败 - $e');
+      appLog.error('GitHubChannel: 获取配置失败 - $e');
       return ChannelResult.failure(
         from: ChannelType.github,
         error: e.toString(),
@@ -326,7 +461,7 @@ class GitHubChannel implements IChannel {
     _cachedApps = null;
     _cachedCategories = null;
     _cachedConfig = null;
-    debugPrint('GitHubChannel: 缓存已清除');
+    appLog.info('GitHubChannel: 缓存已清除');
   }
 
   @override
@@ -339,7 +474,7 @@ class GitHubChannel implements IChannel {
   Future<void> dispose() async {
     await clearCache();
     isInitialized = false;
-    debugPrint('GitHubChannel: 已释放');
+    appLog.info('GitHubChannel: 已释放');
   }
 
   @override
@@ -365,15 +500,13 @@ class GitHubChannel implements IChannel {
         _githubApi.releases(appInfo.user, appInfo.repositories, 1, CancelToken()),
       ]);
 
-      final apiListJson = results[0];
-      final releasesJson = results[1];
-
-      // 解析 API 信息
-      final apiList = jsonDecode(apiListJson as String) as Map<String, dynamic>;
+      // apiList 返回 ApiList 对象（非 JSON 字符串）
+      final ApiList apiList = results[0] as ApiList;
+      final String releasesJson = results[1] as String;
 
       // 解析 Releases
       final List<dynamic> releases = List<dynamic>.from(
-        jsonDecode(releasesJson as String) as List,
+        jsonDecode(releasesJson) as List,
       );
 
       // 构建下载列表
@@ -415,8 +548,9 @@ class GitHubChannel implements IChannel {
 
       // 获取 README（添加超时控制）
       String? readme;
-      if (apiList is Map && apiList['default_branch'] != null) {
-        final branch = apiList['default_branch'].toString();
+      if (apiList.default_branch != null &&
+          apiList.default_branch!.isNotEmpty) {
+        final branch = apiList.default_branch!;
         final rawBaseUrl = 'https://raw.githubusercontent.com/${appInfo.user}/${appInfo.repositories}/refs/heads/$branch/';
         try {
           final readmeMdResp = await http
@@ -433,7 +567,7 @@ class GitHubChannel implements IChannel {
             }
           }
         } catch (e) {
-          debugPrint('GitHubChannel: 获取 README 失败 - $e');
+          appLog.error('GitHubChannel: 获取 README 失败 - $e');
         }
       }
 
@@ -445,8 +579,9 @@ class GitHubChannel implements IChannel {
         'description': appInfo.des,
         'version': latestVersion,
         'developer': appInfo.user,
-        'packageName': appInfo.repositories,
-        'projectUrl': apiList is Map ? apiList['html_url']?.toString() : null,
+        // GitHub 应用真实包名在下载解析后存于 appId（含 '.'）；未更新时用仓库名
+        'packageName': appId.contains('.') ? appId : appInfo.repositories,
+        'projectUrl': apiList.html_url?.toString(),
         'sections': _buildSections(downloads, readme, apiList),
         'downloads': downloads,
         'readme': readme,
@@ -457,7 +592,11 @@ class GitHubChannel implements IChannel {
           }
           return null; // 使用默认的网络图片处理
         },
-        'apiData': apiList,
+        // apiData 用 Map 存储（GitHubChannelDetailProxy.buildStatTags 按 Map 读取）
+        'apiData': {
+          'stargazers_count': apiList.stargazers_count,
+          'forks_count': apiList.forks,
+        },
         'releaseData': releases.isNotEmpty ? releases[0] : null,
       };
 
@@ -470,7 +609,7 @@ class GitHubChannel implements IChannel {
         fromCache: false,
       );
     } catch (e) {
-      debugPrint('GitHubChannel: 获取应用详情失败 - $e');
+      appLog.error('GitHubChannel: 获取应用详情失败 - $e');
       return ChannelResult.failure(
         from: ChannelType.github,
         error: e.toString(),
@@ -496,16 +635,13 @@ class GitHubChannel implements IChannel {
   List<DetailSection> _buildSections(
     List<DownloadInfo> downloads,
     String? readme,
-    dynamic apiList,
+    ApiList apiList,
   ) {
     final sections = <DetailSection>[];
 
     // 统计数据（GitHub 特有）
-    if (apiList is Map) {
-      if (apiList['stargazers_count'] != null ||
-          apiList['forks_count'] != null) {
-        sections.add(DetailSection.statistics);
-      }
+    if (apiList.stargazers_count != null || apiList.forks != null) {
+      sections.add(DetailSection.statistics);
     }
 
     // 版本信息 - 只在有下载时显示

@@ -7,6 +7,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:gstore/core/config/AppConfig.dart';
+import 'package:gstore/core/core.dart';
 import 'package:gstore/core/exception/AppException.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite/sqflite.dart';
@@ -123,7 +124,7 @@ class CacheManager {
       _cleanupExpiredMemoryCache();
 
       _isInitialized = true;
-      debugPrint('CacheManager: 初始化完成');
+      appLog.info('CacheManager: 初始化完成');
     } catch (e, stackTrace) {
       throw CacheException(
         message: '缓存管理器初始化失败',
@@ -287,7 +288,7 @@ class CacheManager {
 
       await batch.commit(noResult: true);
     } catch (e) {
-      debugPrint('CacheManager: 写入磁盘缓存失败 - $e');
+      appLog.error('CacheManager: 写入磁盘缓存失败 - $e');
     }
   }
 
@@ -339,7 +340,7 @@ class CacheManager {
 
       return parsed as T;
     } catch (e) {
-      debugPrint('CacheManager: 读取磁盘缓存失败 - $e');
+      appLog.error('CacheManager: 读取磁盘缓存失败 - $e');
       _stats.misses++;
       return null;
     }
