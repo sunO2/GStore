@@ -14,7 +14,8 @@
     <application
         android:label="GStore"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher_foreground">
+        android:icon="@mipmap/ic_launcher_foreground"
+        android:largeHeap="true">
         <activity
             android:name=".MainActivity"
             android:exported="true"

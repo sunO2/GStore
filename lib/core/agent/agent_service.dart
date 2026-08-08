@@ -858,7 +858,12 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
         final force = input['force']?.toString() == 'true';
         return _runAction(
           fdroidRepoToolName,
-          {'action': action, 'keyword': keyword, 'force': force},
+          {
+            'action': action,
+            'keyword': keyword,
+            // ActionController 声明 force 为 string 参数，传字符串避免类型校验失败
+            'force': force ? 'true' : 'false',
+          },
           detail: 'F-Droid 仓库: $action',
         );
       },
@@ -1165,7 +1170,11 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
           final result = await _downloadApp(
             appId, channel, url, name, version,
             vivoId: vivoId,
+            onStatus: (status) {
+              _currentDownloadStatus = status;
+            },
           );
+          _currentDownloadStatus = null;
           return _successAction(result);
         },
       ),
@@ -1351,6 +1360,8 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
 
       // 遍历所有渠道搜索
       for (final channel in ChannelType.values) {
+        // 已请求停止 → 中断搜索
+        if (_cancelRequested) return '已停止搜索';
         try {
           final result = await manager.searchApps(
             keyword,
@@ -1432,6 +1443,12 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
       var detailAppId = appId;
       if (channelType == ChannelType.vivo && vivoId != null && vivoId.isNotEmpty) {
         detailAppId = vivoId;
+      } else if (channelType == ChannelType.vivo) {
+        // 无 vivoId：尝试通过搜索获取（搜索结果含 vivoId）
+        detailAppId = await _resolveVivoId(appId);
+        if (detailAppId.isEmpty) {
+          return '无法获取 $name 的 vivo 应用信息（缺少 vivoId），请在详情页查看或稍后重试';
+        }
       }
 
       final detailResult = await channelInst.getAppDetail(detailAppId, forceRefresh: true);
@@ -1495,6 +1512,37 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
     } catch (e) {
       return '下载失败: $e';
     }
+  }
+
+  /// 通过搜索解析 vivo 应用的 vivoId
+  /// 搜索结果中 vivo 渠道应用的 repositories 字段存有 vivoId
+  Future<String> _resolveVivoId(String packageName) async {
+    try {
+      final manager = ChannelManager.instance;
+      final result = await manager.searchApps(
+        packageName,
+        from: ChannelType.vivo,
+        forceRefresh: true,
+      );
+      if (result.success && result.data != null) {
+        for (final app in result.data!) {
+          // 精确匹配包名
+          if (app.appId == packageName && app.repositories.isNotEmpty) {
+            appLog.info('AgentService: 解析 vivoId - ${app.repositories} ($packageName)');
+            return app.repositories;
+          }
+        }
+        // 兜底：取第一个非空 repositories
+        for (final app in result.data!) {
+          if (app.repositories.isNotEmpty) {
+            return app.repositories;
+          }
+        }
+      }
+    } catch (e) {
+      appLog.error('AgentService: 解析 vivoId 失败 - $e');
+    }
+    return '';
   }
 
   /// 安装应用
@@ -1913,8 +1961,10 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
           return 'F-Droid 仓库共 ${sources.length} 个：\n${lines.join('\n')}';
 
         case 'load':
+          appLog.info('AgentService: fdroidRepo load 开始, force=$force');
           await manager.loadRepository(forceRefresh: force);
           final stats = await manager.getStatistics();
+          appLog.info('AgentService: fdroidRepo load 完成');
           return 'F-Droid 仓库加载完成。应用总数: ${stats['apps'] ?? 0}';
 
         case 'search':
@@ -2069,6 +2119,12 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
   /// 由 AiChatWidget 的停止按钮回调调用
   void stopGenerating() {
     _cancelRequested = true;
+    // 中断正在执行的下载工具
+    final download = _currentDownloadStatus;
+    if (download != null && download.status == DownloadStatus.DOWNLOAD_LOADING) {
+      appLog.info('AgentService: 停止下载 - ${download.fileName}');
+      download.cancelDownload();
+    }
     appLog.info('AgentService: 请求停止生成');
   }
 
