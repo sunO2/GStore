@@ -68,6 +68,20 @@ class AgentLogic extends GetxController {
     _scrollToBottom();
   }
 
+  /// 发送指定文本（供 AiChatWidget.onSendMessage 使用）
+  Future<void> sendText(String text) async {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) return;
+
+    inputController.clear();
+    state.isGenerating.value = true;
+
+    await service.chat(trimmed);
+
+    state.isGenerating.value = false;
+    _scrollToBottom();
+  }
+
   /// 新建会话
   Future<void> newSession() async {
     await service.newSession();

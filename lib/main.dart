@@ -26,9 +26,11 @@ import 'package:gstore/core/config/config_initializer.dart';
 registerService() async {
   // 初始化日志管理器（必须在最开始，因为其他模块可能需要使用日志）
   Get.put(LogManager.instance);
+  appLog.info('registerService: 开始');
 
   // 初始化下载通知服务（通知栏进度 + 前台服务）
   await DownloadNotificationService.instance.init();
+  appLog.info('registerService: 下载通知服务初始化完成');
 
   // 初始化 rhttp（基于 curl 的高性能 HTTP 客户端）
   // 必须在使用 RhttpAdapter 之前初始化
@@ -39,12 +41,14 @@ registerService() async {
     appLog.error('Failed to initialize rhttp, falling back to default adapter',
         data: {'error': e.toString()});
   }
+  appLog.info('registerService: rhttp 初始化完成');
 
   // 注册 Dio 实例（供 FdroidRepoManager 使用）
   Get.lazyPut<Dio>(() => DioClient().get());
 
   Get.lazyPut<GithubRestClient>(() => GithubRestClient(DioClient().get()));
   await Get.putAsync<DbManager>(() async => await DbManager().init());
+  appLog.info('registerService: DbManager 初始化完成');
 
   // OAuth API 需要使用单独的 Dio 实例（不包含 GitHub REST API 专用 headers）
   Get.lazyPut<GithubAuthApi>(() => GithubAuthApi(DioClient.createOAuthClient()));
@@ -54,25 +58,30 @@ registerService() async {
   final userManager = UserManager.instance;
   Get.put(userManager);
   await userManager.initialize();
+  appLog.info('registerService: UserManager 初始化完成');
 
   // 初始化数据库事件总线
   Get.put(DatabaseEventBus());
 
   // 初始化渠道系统
   await ChannelIntegration.initialize();
+  appLog.info('registerService: 渠道初始化完成');
 
   // 初始化应用聚合管理器
   final aggregator = AppAggregatorManager.instance;
   await aggregator.initialize();
   Get.put(aggregator, tag: 'aggregatorManager');
+  appLog.info('registerService: 聚合管理器初始化完成');
 
   // 初始化 F-Droid 仓库管理器
   final fdroidManager = FdroidRepoManager.instance;
   await fdroidManager.initialize();
   Get.put(fdroidManager);
+  appLog.info('registerService: F-Droid 管理器初始化完成');
 
   // 初始化配置管理系统
   await ConfigInitializer.initialize();
+  appLog.info('registerService: 配置管理系统初始化完成');
 
   // 初始化 Agent 智能助手服务（懒初始化，首次使用时创建）
   Get.lazyPut<AgentService>(() => AgentService());
@@ -82,6 +91,7 @@ registerService() async {
 
   // 启动后异步检测红点（应用更新 / 数据库更新等），不阻塞 UI
   unawaited(BadgeService.instance.checkAll());
+  appLog.info('registerService: 全部初始化完成');
 }
 
 colorSchemeSeed(ColorScheme? color, Brightness brightness) {
