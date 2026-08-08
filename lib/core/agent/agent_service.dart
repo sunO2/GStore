@@ -23,6 +23,7 @@ import 'package:gstore/core/theme/theme_controller.dart';
 import 'package:gstore/core/fdroid/FdroidRepoManager.dart';
 import 'package:gstore/core/utils/unit.dart';
 import 'package:gstore/core/webdav/webdav_config.dart';
+import 'package:gstore/core/webdav/webdav_client.dart';
 import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
 import 'package:gstore/db/apps/AppInfo.dart' as db;
 import 'package:gstore/http/download/DownloadStatus.dart';
@@ -867,7 +868,7 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
     ai.defineTool<Map<String, dynamic>, String>(
       name: webdavSyncToolName,
       description:
-          'WebDAV 云备份。action 为 upload（上传备份到网盘）、download（从网盘恢复）、status（检查配置状态）。',
+          'WebDAV 云备份。action 为 list（查询网盘中的备份数据列表，可查看备份时间/大小）、upload（上传备份到网盘）、download（从网盘恢复）、status（检查配置状态）。',
       fn: (input, _) async {
         final action = input['action']?.toString() ?? 'status';
         return _runAction(
@@ -1306,7 +1307,7 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
       ),
       AiAction(
         name: webdavSyncToolName,
-        description: 'WebDAV 云备份。action 为 upload/download/status。',
+        description: 'WebDAV 云备份。action 为 list（查询网盘备份数据列表）/upload/download/status。',
         parameters: [
           ActionParameter.string(name: 'action', description: '操作类型', required: true),
         ],
@@ -1949,6 +1950,23 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
       final service = BackupService.instance;
 
       switch (action) {
+        case 'list':
+          final client = WebDavClient(config!);
+          final files = await client.listFiles(
+            config.backupPath,
+            pattern: 'gstore_backup_*.tar.gz',
+          );
+          if (files.isEmpty) {
+            return 'WebDAV 网盘中暂无备份（路径: ${config.backupPath}）';
+          }
+          files.sort((a, b) => b.modified.compareTo(a.modified));
+          final lines = files
+              .take(20)
+              .map((f) =>
+                  '• ${f.name}  (${f.formattedSize}, ${f.modified.toLocal().toString().substring(0, 16)})')
+              .toList();
+          return 'WebDAV 网盘共有 ${files.length} 个备份（显示前 ${lines.length} 个）：\n${lines.join('\n')}';
+
         case 'upload':
           await service.uploadToWebDav(config: config!, compressed: true);
           return '已备份到 WebDAV 网盘';
@@ -1965,7 +1983,7 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
           return 'WebDAV 已配置: ${config!.url}';
 
         default:
-          return '未知操作: $action（支持 upload/download/status）';
+          return '未知操作: $action（支持 list/upload/download/status）';
       }
     } catch (e) {
       return 'WebDAV 操作失败: $e';
