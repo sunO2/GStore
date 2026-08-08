@@ -11,6 +11,7 @@ import 'package:genkit_openai/genkit_openai.dart';
 import 'package:installed_apps/installed_apps.dart';
 import 'package:gstore/core/agent/agent_model_store.dart';
 import 'package:gstore/core/agent/agent_session_store.dart';
+import 'package:gstore/core/agent/agent_skills.dart';
 import 'package:gstore/core/agent/platform_arch.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
@@ -221,8 +222,29 @@ ${PlatformArch.platformDescription}
 9. manageDownload - 管理下载任务。action 为 list/pause/resume/cleanCompleted/clearAll。
 10. themeControl - 控制主题。action 为 mode/toggle/color。
 11. fdroidRepo - 管理 F-Droid 仓库。action 为 list/load/search/stats。
-12. webdavSync - WebDAV 云备份。action 为 upload/download/status。
+12. webdavSync - WebDAV 云备份。action 为 list（查询网盘备份数据列表）/upload/download/status。
 13. installedApps - 管理已安装应用。action 为 list/check/uninstall/clearData/clearCache/forceStop。卸载/清理/停止需 Shizuku 授权。
+14. confirmAction - 向用户发起确认。输入 question（确认问题，需清晰说明要执行的操作）。用于敏感/不可逆操作，用户需在界面上确认或取消。
+
+敏感操作清单（执行前**必须**调用 confirmAction 让用户确认）：
+- 卸载应用（installedApps 的 uninstall）
+- 清理应用数据/缓存（installedApps 的 clearData/clearCache）
+- 强制停止应用（installedApps 的 forceStop）
+- 恢复备份/覆盖现有数据（backup 的 import 且会影响当前数据）
+- 删除会话/清空数据（manageDownload 的 clearAll、backup 相关删除）
+- 移除"我的应用"或渠道中的应用（manageApp remove / channelApp remove）
+- 其他不可逆或影响较大的操作
+
+确认流程：先调用 confirmAction 展示操作内容，用户确认后再执行实际操作；用户取消则不要执行并告知用户。
+
+选项选择场景（也必须调用 confirmAction，带 options 让用户选择）：
+- 用户需要决策时：如"你想怎么处理""要不要继续""用哪个版本""选哪个方案"等
+- 多选一：当存在 2 个以上合理选项时，用 options 传入选项数组，让用户点选
+- 示例：卸载应用前问"卸载后是否保留数据？"（options: ["保留数据", "清除数据"]）
+- 示例：安装多个版本时问"安装哪个版本？"（options: ["稳定版", "测试版"]）
+- 用户犹豫/征求建议且涉及实际执行时，优先用 confirmAction 给选项，而不是只回文字
+
+注意：不要因为"不确定是否该调用"而跳过 confirmAction——只要涉及上述敏感操作或选择决策，就应调用。
 
 使用规则：
 - 用户要求"找/搜索/看看有没有 XX 应用"时，先调用 searchApp。
@@ -236,7 +258,12 @@ ${PlatformArch.platformDescription}
 - 用户要求"切换主题/换颜色"时，调用 themeControl。
 - 用户要求"我装了什么应用"/"XX 装了吗"时，调用 installedApps。
 - 下载完成后询问用户是否安装；确认后调用 installApp。
+- 执行上述敏感操作前，先调用 confirmAction 让用户确认；用户确认后再执行。
+- 用户需要做选择或表达犹豫（"怎么弄""选哪个""要不要"等）时，调用 confirmAction 并提供 options 选项，让用户直接点选。
 - 回答简洁，中文回复。当用户提到具体应用时，给出推荐并询问是否下载。
+
+技能知识库（遇到对应场景时，严格按技能中的步骤执行）：
+${AgentSkills.renderAll(language: PromptLanguage.zh)}
 
 错误处理指引：
 - 工具返回错误或异常时，先向用户说明问题，再给出可行的下一步建议，不要假装操作成功。
