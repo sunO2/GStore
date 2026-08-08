@@ -119,10 +119,11 @@ main() async {
 
   // 重定向 debugPrint 到 appLog（这样所有 debugPrint 都会进入日志查看器）
   // 默认映射为 debug 级别；重要流程/错误请使用 appLog.info / appLog.error
+  // 过滤 flutter_gen_ai_chat_ui 库的内部调试噪音（消息流/滚动/状态机）
   debugPrint = (String? message, {int? wrapWidth}) {
-    if (message != null) {
-      appLog.debug(message);
-    }
+    if (message == null) return;
+    if (_isChatUiNoise(message)) return;
+    appLog.debug(message);
   };
 
   Get.config(
@@ -162,4 +163,29 @@ main() async {
       );
     });
   }));
+}
+
+/// flutter_gen_ai_chat_ui 库内部调试日志的关键词
+/// 这些日志不包含业务信息，仅库内部消息流/滚动/状态机调试，过滤掉避免刷屏
+const List<String> _chatUiNoisePatterns = [
+  'ChatMessagesController:',
+  'MESSAGE TYPE:',
+  'SCROLL DECISION:',
+  'NOT SCROLLING:',
+  'SCROLLING:',
+  'Streaming message set to:',
+  'USER MESSAGE:',
+  'NEW RESPONSE:',
+  'CHAIN MESSAGE:',
+  'AiChatWidget:',
+  'USER SCROLL:',
+  'Manual scrolling',
+];
+
+/// 判断是否为 ai_chat_ui 库的内部噪音日志
+bool _isChatUiNoise(String message) {
+  for (final pattern in _chatUiNoisePatterns) {
+    if (message.contains(pattern)) return true;
+  }
+  return false;
 }
