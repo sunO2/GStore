@@ -177,7 +177,12 @@ class VivoChannel with AppUpdateCheckMixin implements IChannel {
       debugPrint('VivoChannel: API 响应状态码 - ${response.statusCode}');
 
       if (response.statusCode == 200) {
-        final data = response.data is String ? jsonDecode(response.data) : response.data;
+        final raw = response.data;
+        if (raw == null || (raw is String && raw.trim().isEmpty)) {
+          appLog.error('VivoChannel: 详情接口返回空数据 - appId=$appId, vivoId=$vivoId');
+          throw Exception('vivo 详情接口返回空数据');
+        }
+        final data = raw is String ? jsonDecode(raw) : raw;
         final app = _parseAppDetail(data, appId);
 
         appLog.info('VivoChannel: API 获取成功 - ${app?.name ?? "null"}');
@@ -205,14 +210,14 @@ class VivoChannel with AppUpdateCheckMixin implements IChannel {
     bool forceRefresh = false,
   }) async {
     try {
-      // 先获取基本应用信息（从数据库，获取 extra）
+      // 先获取基本应用信息（从数据库，获取 extra 中的 vivoId）
+      // 注意：即使 forceRefresh 也先查库拿 vivoId（vivo 详情接口需要 vivoId 而非包名）
       String? vivoId;
       AppInfo? appInfo;
 
       if (_database != null) {
         final channelApp = await _database!.dao.getApp(appId, ChannelType.vivo.code);
-        if (channelApp != null && !forceRefresh) {
-          // 从数据库中找到了应用信息
+        if (channelApp != null) {
           appInfo = AppInfo.withExtra(
             channelApp.appId,
             channelApp.name,
@@ -258,7 +263,13 @@ class VivoChannel with AppUpdateCheckMixin implements IChannel {
         throw Exception('HTTP ${response.statusCode}');
       }
 
-      final data = response.data is String ? jsonDecode(response.data) : response.data;
+      // 防御空响应（vivo 接口可能对非法 vivoId 返回空 body）
+      final raw = response.data;
+      if (raw == null || (raw is String && raw.trim().isEmpty)) {
+        throw Exception('vivo 详情接口返回空数据（请确认 vivoId 正确: $vivoId）');
+      }
+
+      final data = raw is String ? jsonDecode(raw) : raw;
       if (data == null || data is! Map) {
         throw Exception('Invalid response data');
       }

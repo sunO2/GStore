@@ -2,6 +2,8 @@ import 'dart:io';
 import 'package:app_installer/app_installer.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/painting.dart' show Color;
+import 'package:flutter_gen_ai_chat_ui/flutter_gen_ai_chat_ui.dart'
+    hide AgentState;
 import 'package:get/get.dart';
 import 'package:genkit/genkit.dart';
 import 'package:genkit_google_genai/genkit_google_genai.dart';
@@ -140,6 +142,15 @@ class AgentService extends GetxService {
   List<Message> _messages = [];
   bool _initialized = false;
   bool _busy = false;
+
+  /// 是否请求停止当前生成（用户点击停止按钮）
+  bool _cancelRequested = false;
+
+  /// 工具执行控制器（AiActionProvider 原生工具调用）
+  ActionController _actionController = ActionController();
+
+  /// 工具执行控制器（view 注入，供 AiActionProvider 使用）
+  ActionController get actionController => _actionController;
 
   /// 已持久化的工具消息 ID（避免同一工具运行→完成时重复新增记录）
   final Set<String> _persistedToolIds = {};
@@ -513,6 +524,7 @@ ${PlatformArch.platformDescription}
           toolType: msg.toolType?.name,
           toolStatus: msg.toolStatus?.name,
           toolDetail: msg.toolDetail,
+          time: msg.time.millisecondsSinceEpoch,
           seq: msg.seq,
           turnId: msg.turnId,
         ));
@@ -534,6 +546,7 @@ ${PlatformArch.platformDescription}
       isUser: msg.isUser,
       text: msg.text,
       isToolResult: false,
+      time: msg.time.millisecondsSinceEpoch,
       seq: msg.seq,
       turnId: msg.turnId,
     ));
@@ -559,6 +572,7 @@ ${PlatformArch.platformDescription}
   }
 
   /// 定义 Agent 工具
+  /// 定义 Agent 工具（委托到 ActionController 原生执行）
   void _defineTools() {
     final ai = _ai;
     if (ai == null) return;
@@ -569,18 +583,11 @@ ${PlatformArch.platformDescription}
       description: '在 GStore 软件商店中搜索应用。输入关键词 keyword，返回匹配的应用列表。',
       fn: (input, _) async {
         final keyword = input['keyword']?.toString() ?? '';
-        final msg = _addToolMessage(
-          AgentToolType.search,
-          '搜索"$keyword"',
+        return _runAction(
+          searchToolName,
+          {'keyword': keyword},
+          detail: '搜索"$keyword"',
         );
-        try {
-          final result = await _searchApps(keyword);
-          _updateToolMessage(msg, done: true, detail: result);
-          return result;
-        } catch (e) {
-          _updateToolMessage(msg, status: AgentToolStatus.error, detail: '$e');
-          return '搜索失败: $e';
-        }
       },
     );
 
@@ -596,33 +603,18 @@ ${PlatformArch.platformDescription}
         final name = input['name']?.toString() ?? '';
         final version = input['version']?.toString() ?? 'unknown';
         final vivoId = input['vivoId']?.toString();
-        final msg = _addToolMessage(
-          AgentToolType.download,
-          '下载 $name ($version)',
+        return _runAction(
+          downloadToolName,
+          {
+            'appId': appId,
+            'channel': channel,
+            'url': url,
+            'name': name,
+            'version': version,
+            'vivoId': vivoId,
+          },
+          detail: '下载 $name ($version)',
         );
-        try {
-          final result = await _downloadApp(
-            appId,
-            channel,
-            url,
-            name,
-            version,
-            vivoId: vivoId,
-            onStatus: (status) {
-              _updateToolMessage(
-                msg,
-                done: false,
-                detail: '正在下载 $name...',
-                downloadStatus: status,
-              );
-            },
-          );
-          _updateToolMessage(msg, done: true, detail: result);
-          return result;
-        } catch (e) {
-          _updateToolMessage(msg, status: AgentToolStatus.error, detail: '$e');
-          return '下载失败: $e';
-        }
       },
     );
 
@@ -633,18 +625,11 @@ ${PlatformArch.platformDescription}
       fn: (input, _) async {
         final savePath = input['savePath']?.toString() ?? '';
         final fileName = savePath.split('/').last;
-        final msg = _addToolMessage(
-          AgentToolType.install,
-          '安装 $fileName',
+        return _runAction(
+          installToolName,
+          {'savePath': savePath},
+          detail: '安装 $fileName',
         );
-        try {
-          final result = await _installApp(savePath);
-          _updateToolMessage(msg, done: true, detail: result);
-          return result;
-        } catch (e) {
-          _updateToolMessage(msg, status: AgentToolStatus.error, detail: '$e');
-          return '安装失败: $e';
-        }
       },
     );
 
@@ -658,37 +643,29 @@ ${PlatformArch.platformDescription}
         final appId = input['appId']?.toString() ?? '';
         final channel = input['channel']?.toString() ?? '';
         final name = input['name']?.toString() ?? '';
-        final msg = _addToolMessage(AgentToolType.manageApp, '管理应用: $action');
-        try {
-          final result = await _manageApp(action, appId, channel, name);
-          _updateToolMessage(msg, done: true, detail: result);
-          return result;
-        } catch (e) {
-          _updateToolMessage(msg, status: AgentToolStatus.error, detail: '$e');
-          return '操作失败: $e';
-        }
+        return _runAction(
+          manageAppToolName,
+          {'action': action, 'appId': appId, 'channel': channel, 'name': name},
+          detail: '管理应用: $action',
+        );
       },
     );
 
-    // 渠道应用管理工具（渠道数据库：添加/移除/列出渠道已添加应用）
+    // 渠道应用管理工具
     ai.defineTool<Map<String, dynamic>, String>(
       name: channelAppToolName,
       description:
-          '管理应用渠道中的已添加应用（区别于"我的应用"首页列表）。action 为 list（列出渠道已添加应用，需 channel）、add（添加应用到渠道，需 appId+channel+name）、remove（从渠道移除，需 appId+channel）。GitHub 渠道 appId 用 owner/repo（如 termux/termux-app）。',
+          '管理应用渠道中的已添加应用。action 为 list/add/remove。GitHub 渠道 appId 用 owner/repo（如 termux/termux-app）。',
       fn: (input, _) async {
         final action = input['action']?.toString() ?? 'list';
         final appId = input['appId']?.toString() ?? '';
         final channel = input['channel']?.toString() ?? '';
         final name = input['name']?.toString() ?? '';
-        final msg = _addToolMessage(AgentToolType.manageApp, '渠道管理: $action');
-        try {
-          final result = await _manageChannelApp(action, appId, channel, name);
-          _updateToolMessage(msg, done: true, detail: result);
-          return result;
-        } catch (e) {
-          _updateToolMessage(msg, status: AgentToolStatus.error, detail: '$e');
-          return '渠道管理失败: $e';
-        }
+        return _runAction(
+          channelAppToolName,
+          {'action': action, 'appId': appId, 'channel': channel, 'name': name},
+          detail: '渠道管理: $action',
+        );
       },
     );
 
@@ -700,15 +677,11 @@ ${PlatformArch.platformDescription}
       fn: (input, _) async {
         final appId = input['appId']?.toString() ?? '';
         final channel = input['channel']?.toString() ?? '';
-        final msg = _addToolMessage(AgentToolType.appInfo, '查询应用详情: $appId');
-        try {
-          final result = await _getAppInfo(appId, channel);
-          _updateToolMessage(msg, done: true, detail: result);
-          return result;
-        } catch (e) {
-          _updateToolMessage(msg, status: AgentToolStatus.error, detail: '$e');
-          return '查询失败: $e';
-        }
+        return _runAction(
+          appInfoToolName,
+          {'appId': appId, 'channel': channel},
+          detail: '查询应用详情: $appId',
+        );
       },
     );
 
@@ -720,15 +693,11 @@ ${PlatformArch.platformDescription}
       fn: (input, _) async {
         final appId = input['appId']?.toString() ?? '';
         final channel = input['channel']?.toString() ?? '';
-        final msg = _addToolMessage(AgentToolType.update, '检查应用更新');
-        try {
-          final result = await _checkUpdates(appId, channel);
-          _updateToolMessage(msg, done: true, detail: result);
-          return result;
-        } catch (e) {
-          _updateToolMessage(msg, status: AgentToolStatus.error, detail: '$e');
-          return '更新检查失败: $e';
-        }
+        return _runAction(
+          updateAppsToolName,
+          {'appId': appId, 'channel': channel},
+          detail: '检查应用更新',
+        );
       },
     );
 
@@ -740,15 +709,11 @@ ${PlatformArch.platformDescription}
       fn: (input, _) async {
         final action = input['action']?.toString() ?? 'export';
         final filePath = input['filePath']?.toString() ?? '';
-        final msg = _addToolMessage(AgentToolType.backup, '备份管理: $action');
-        try {
-          final result = await _backup(action, filePath);
-          _updateToolMessage(msg, done: true, detail: result);
-          return result;
-        } catch (e) {
-          _updateToolMessage(msg, status: AgentToolStatus.error, detail: '$e');
-          return '备份操作失败: $e';
-        }
+        return _runAction(
+          backupToolName,
+          {'action': action, 'filePath': filePath},
+          detail: '备份管理: $action',
+        );
       },
     );
 
@@ -760,15 +725,11 @@ ${PlatformArch.platformDescription}
       fn: (input, _) async {
         final action = input['action']?.toString() ?? 'list';
         final fileName = input['fileName']?.toString() ?? '';
-        final msg = _addToolMessage(AgentToolType.manageDownload, '下载管理: $action');
-        try {
-          final result = await _manageDownloads(action, fileName);
-          _updateToolMessage(msg, done: true, detail: result);
-          return result;
-        } catch (e) {
-          _updateToolMessage(msg, status: AgentToolStatus.error, detail: '$e');
-          return '下载管理失败: $e';
-        }
+        return _runAction(
+          manageDownloadToolName,
+          {'action': action, 'fileName': fileName},
+          detail: '下载管理: $action',
+        );
       },
     );
 
@@ -781,15 +742,11 @@ ${PlatformArch.platformDescription}
         final action = input['action']?.toString() ?? 'toggle';
         final mode = input['mode']?.toString() ?? '';
         final hexColor = input['hexColor']?.toString() ?? '';
-        final msg = _addToolMessage(AgentToolType.theme, '主题控制: $action');
-        try {
-          final result = await _controlTheme(action, mode, hexColor);
-          _updateToolMessage(msg, done: true, detail: result);
-          return result;
-        } catch (e) {
-          _updateToolMessage(msg, status: AgentToolStatus.error, detail: '$e');
-          return '主题操作失败: $e';
-        }
+        return _runAction(
+          themeToolName,
+          {'action': action, 'mode': mode, 'hexColor': hexColor},
+          detail: '主题控制: $action',
+        );
       },
     );
 
@@ -802,15 +759,11 @@ ${PlatformArch.platformDescription}
         final action = input['action']?.toString() ?? 'list';
         final keyword = input['keyword']?.toString() ?? '';
         final force = input['force']?.toString() == 'true';
-        final msg = _addToolMessage(AgentToolType.fdroid, 'F-Droid 仓库: $action');
-        try {
-          final result = await _fdroidRepo(action, keyword, force);
-          _updateToolMessage(msg, done: true, detail: result);
-          return result;
-        } catch (e) {
-          _updateToolMessage(msg, status: AgentToolStatus.error, detail: '$e');
-          return 'F-Droid 操作失败: $e';
-        }
+        return _runAction(
+          fdroidRepoToolName,
+          {'action': action, 'keyword': keyword, 'force': force},
+          detail: 'F-Droid 仓库: $action',
+        );
       },
     );
 
@@ -821,15 +774,11 @@ ${PlatformArch.platformDescription}
           'WebDAV 云备份。action 为 upload（上传备份到网盘）、download（从网盘恢复）、status（检查配置状态）。',
       fn: (input, _) async {
         final action = input['action']?.toString() ?? 'status';
-        final msg = _addToolMessage(AgentToolType.webdav, 'WebDAV 同步: $action');
-        try {
-          final result = await _webdavSync(action);
-          _updateToolMessage(msg, done: true, detail: result);
-          return result;
-        } catch (e) {
-          _updateToolMessage(msg, status: AgentToolStatus.error, detail: '$e');
-          return 'WebDAV 操作失败: $e';
-        }
+        return _runAction(
+          webdavSyncToolName,
+          {'action': action},
+          detail: 'WebDAV 同步: $action',
+        );
       },
     );
 
@@ -842,20 +791,59 @@ ${PlatformArch.platformDescription}
         final action = input['action']?.toString() ?? 'list';
         final keyword = input['keyword']?.toString() ?? '';
         final packageName = input['packageName']?.toString() ?? '';
-        final msg = _addToolMessage(AgentToolType.installed, '已安装应用: $action');
-        try {
-          final result = await _installedApps(action, keyword, packageName);
-          _updateToolMessage(msg, done: true, detail: result);
-          return result;
-        } catch (e) {
-          _updateToolMessage(msg, status: AgentToolStatus.error, detail: '$e');
-          return '已安装应用操作失败: $e';
-        }
+        return _runAction(
+          installedAppsToolName,
+          {'action': action, 'keyword': keyword, 'packageName': packageName},
+          detail: '已安装应用: $action',
+        );
       },
     );
   }
 
-  /// 添加一条工具消息（running 状态）
+  /// 执行工具（委托 ActionController 原生执行）
+  /// 返回执行结果字符串供模型使用
+  Future<String> _runAction(
+    String name,
+    Map<String, dynamic> params, {
+    String? detail,
+  }) async {
+    // 已请求停止 → 拒绝新的工具调用
+    if (_cancelRequested) {
+      return '已停止，工具调用被取消';
+    }
+    // 创建工具消息（加入消息流，持久显示）
+    final msg = _addToolMessage(_toolTypeForName(name), detail ?? name);
+    try {
+      // 确保 action 已注册（AiActionProvider 可能尚未 build）
+      if (!_actionController.actions.containsKey(name)) {
+        for (final action in buildActions()) {
+          if (action.name == name) {
+            _actionController.registerAction(action);
+            break;
+          }
+        }
+      }
+      final result = await _actionController.executeAction(name, params);
+      // 更新工具消息状态 + 持久化
+      final data = result.data;
+      final text = result.success
+          ? (data is Map && data['result'] != null
+              ? data['result'].toString()
+              : '执行成功')
+          : (result.error ?? '执行失败');
+      _updateToolMessage(
+        msg,
+        status: result.success ? AgentToolStatus.done : AgentToolStatus.error,
+        detail: text,
+      );
+      return text;
+    } catch (e) {
+      _updateToolMessage(msg, status: AgentToolStatus.error, detail: '执行失败: $e');
+      return '执行失败: $e';
+    }
+  }
+
+  /// 添加一条工具消息（running 状态，加入消息流持久显示）
   AgentMessage _addToolMessage(AgentToolType type, String detail) {
     final msg = AgentMessage(
       isUser: false,
@@ -870,7 +858,7 @@ ${PlatformArch.platformDescription}
     return msg;
   }
 
-  /// 更新工具消息状态
+  /// 更新工具消息状态（并持久化）
   void _updateToolMessage(
     AgentMessage msg, {
     bool? done,
@@ -896,6 +884,253 @@ ${PlatformArch.platformDescription}
     }
     // 触发 Rx 更新
     messages.refresh();
+  }
+
+  /// 工具名 → AgentToolType（用于工具消息图标/标签）
+  AgentToolType _toolTypeForName(String name) {
+    switch (name) {
+      case searchToolName:
+        return AgentToolType.search;
+      case downloadToolName:
+        return AgentToolType.download;
+      case installToolName:
+        return AgentToolType.install;
+      case manageAppToolName:
+        return AgentToolType.manageApp;
+      case channelAppToolName:
+        return AgentToolType.manageApp;
+      case appInfoToolName:
+        return AgentToolType.appInfo;
+      case updateAppsToolName:
+        return AgentToolType.update;
+      case backupToolName:
+        return AgentToolType.backup;
+      case manageDownloadToolName:
+        return AgentToolType.manageDownload;
+      case themeToolName:
+        return AgentToolType.theme;
+      case fdroidRepoToolName:
+        return AgentToolType.fdroid;
+      case webdavSyncToolName:
+        return AgentToolType.webdav;
+      case installedAppsToolName:
+        return AgentToolType.installed;
+      default:
+        return AgentToolType.manageApp;
+    }
+  }
+
+  /// 构建 13 个工具对应的 AiAction（供 AiActionProvider 原生工具调用）
+  /// handler 复用内部工具实现，返回 ActionResult
+  List<AiAction> buildActions() {
+    return [
+      AiAction(
+        name: searchToolName,
+        description: '在 GStore 软件商店中搜索应用。输入关键词 keyword，返回匹配的应用列表。',
+        parameters: [
+          ActionParameter.string(name: 'keyword', description: '搜索关键词', required: true),
+        ],
+        handler: (params) async {
+          final keyword = params['keyword']?.toString() ?? '';
+          final result = await _searchApps(keyword);
+          return _successAction(result);
+        },
+      ),
+      AiAction(
+        name: downloadToolName,
+        description: '下载应用 APK。需要 appId、channel（如 github/fdroid/vivo）、url（可选）、name、version。vivo 渠道还需传入 vivoId（vivo 应用 ID）。',
+        parameters: [
+          ActionParameter.string(name: 'appId', description: '包名/仓库名', required: true),
+          ActionParameter.string(name: 'channel', description: '渠道代码', required: true),
+          ActionParameter.string(name: 'url', description: '下载地址'),
+          ActionParameter.string(name: 'name', description: '应用名'),
+          ActionParameter.string(name: 'version', description: '版本号'),
+          ActionParameter.string(name: 'vivoId', description: 'vivo 应用 ID（vivo 渠道必需）'),
+        ],
+        handler: (params) async {
+          final appId = params['appId']?.toString() ?? '';
+          final channel = params['channel']?.toString() ?? '';
+          final url = params['url']?.toString() ?? '';
+          final name = params['name']?.toString() ?? '';
+          final version = params['version']?.toString() ?? 'unknown';
+          final vivoId = params['vivoId']?.toString();
+          final result = await _downloadApp(
+            appId, channel, url, name, version,
+            vivoId: vivoId,
+          );
+          return _successAction(result);
+        },
+      ),
+      AiAction(
+        name: installToolName,
+        description: '安装已下载的 APK 文件。需要 savePath（APK 文件完整路径）。',
+        parameters: [
+          ActionParameter.string(name: 'savePath', description: 'APK 文件路径', required: true),
+        ],
+        handler: (params) async {
+          final savePath = params['savePath']?.toString() ?? '';
+          final result = await _installApp(savePath);
+          return _successAction(result);
+        },
+      ),
+      AiAction(
+        name: manageAppToolName,
+        description: '管理"我的应用"列表。action 为 list/add/remove/isAdded。',
+        parameters: [
+          ActionParameter.string(name: 'action', description: '操作类型', required: true),
+          ActionParameter.string(name: 'appId', description: '应用ID'),
+          ActionParameter.string(name: 'channel', description: '渠道代码'),
+          ActionParameter.string(name: 'name', description: '应用名'),
+        ],
+        handler: (params) async {
+          final action = params['action']?.toString() ?? 'list';
+          final appId = params['appId']?.toString() ?? '';
+          final channel = params['channel']?.toString() ?? '';
+          final name = params['name']?.toString() ?? '';
+          final result = await _manageApp(action, appId, channel, name);
+          return _successAction(result);
+        },
+      ),
+      AiAction(
+        name: channelAppToolName,
+        description: '管理应用渠道中的已添加应用。action 为 list/add/remove。',
+        parameters: [
+          ActionParameter.string(name: 'action', description: '操作类型', required: true),
+          ActionParameter.string(name: 'appId', description: '应用ID'),
+          ActionParameter.string(name: 'channel', description: '渠道代码'),
+          ActionParameter.string(name: 'name', description: '应用名'),
+        ],
+        handler: (params) async {
+          final action = params['action']?.toString() ?? 'list';
+          final appId = params['appId']?.toString() ?? '';
+          final channel = params['channel']?.toString() ?? '';
+          final name = params['name']?.toString() ?? '';
+          final result = await _manageChannelApp(action, appId, channel, name);
+          return _successAction(result);
+        },
+      ),
+      AiAction(
+        name: appInfoToolName,
+        description: '获取应用详情或检查是否有更新。需要 appId、channel。',
+        parameters: [
+          ActionParameter.string(name: 'appId', description: '应用ID', required: true),
+          ActionParameter.string(name: 'channel', description: '渠道代码', required: true),
+        ],
+        handler: (params) async {
+          final appId = params['appId']?.toString() ?? '';
+          final channel = params['channel']?.toString() ?? '';
+          final result = await _getAppInfo(appId, channel);
+          return _successAction(result);
+        },
+      ),
+      AiAction(
+        name: updateAppsToolName,
+        description: '检查已安装应用是否有更新。appId 和 channel 可选。',
+        parameters: [
+          ActionParameter.string(name: 'appId', description: '应用ID'),
+          ActionParameter.string(name: 'channel', description: '渠道代码'),
+        ],
+        handler: (params) async {
+          final appId = params['appId']?.toString() ?? '';
+          final channel = params['channel']?.toString() ?? '';
+          final result = await _checkUpdates(appId, channel);
+          return _successAction(result);
+        },
+      ),
+      AiAction(
+        name: backupToolName,
+        description: '备份或恢复应用数据。action 为 export/import。',
+        parameters: [
+          ActionParameter.string(name: 'action', description: 'export/import', required: true),
+          ActionParameter.string(name: 'filePath', description: '导入文件路径'),
+        ],
+        handler: (params) async {
+          final action = params['action']?.toString() ?? 'export';
+          final filePath = params['filePath']?.toString() ?? '';
+          final result = await _backup(action, filePath);
+          return _successAction(result);
+        },
+      ),
+      AiAction(
+        name: manageDownloadToolName,
+        description: '管理下载任务。action 为 list/pause/resume/cleanCompleted/clearAll。',
+        parameters: [
+          ActionParameter.string(name: 'action', description: '操作类型', required: true),
+          ActionParameter.string(name: 'fileName', description: '文件名'),
+        ],
+        handler: (params) async {
+          final action = params['action']?.toString() ?? 'list';
+          final fileName = params['fileName']?.toString() ?? '';
+          final result = await _manageDownloads(action, fileName);
+          return _successAction(result);
+        },
+      ),
+      AiAction(
+        name: themeToolName,
+        description: '控制应用主题。action 为 mode/toggle/color。',
+        parameters: [
+          ActionParameter.string(name: 'action', description: '操作类型', required: true),
+          ActionParameter.string(name: 'mode', description: 'light/dark/system'),
+          ActionParameter.string(name: 'hexColor', description: '主题色'),
+        ],
+        handler: (params) async {
+          final action = params['action']?.toString() ?? 'toggle';
+          final mode = params['mode']?.toString() ?? '';
+          final hexColor = params['hexColor']?.toString() ?? '';
+          final result = await _controlTheme(action, mode, hexColor);
+          return _successAction(result);
+        },
+      ),
+      AiAction(
+        name: fdroidRepoToolName,
+        description: '管理 F-Droid 仓库。action 为 list/load/search/stats。',
+        parameters: [
+          ActionParameter.string(name: 'action', description: '操作类型', required: true),
+          ActionParameter.string(name: 'keyword', description: '搜索关键词'),
+          ActionParameter.string(name: 'force', description: '是否强制刷新'),
+        ],
+        handler: (params) async {
+          final action = params['action']?.toString() ?? 'list';
+          final keyword = params['keyword']?.toString() ?? '';
+          final force = params['force']?.toString() == 'true';
+          final result = await _fdroidRepo(action, keyword, force);
+          return _successAction(result);
+        },
+      ),
+      AiAction(
+        name: webdavSyncToolName,
+        description: 'WebDAV 云备份。action 为 upload/download/status。',
+        parameters: [
+          ActionParameter.string(name: 'action', description: '操作类型', required: true),
+        ],
+        handler: (params) async {
+          final action = params['action']?.toString() ?? 'status';
+          final result = await _webdavSync(action);
+          return _successAction(result);
+        },
+      ),
+      AiAction(
+        name: installedAppsToolName,
+        description: '管理设备上已安装的应用。action 为 list/check/uninstall/clearData/clearCache/forceStop。',
+        parameters: [
+          ActionParameter.string(name: 'action', description: '操作类型', required: true),
+          ActionParameter.string(name: 'keyword', description: '过滤关键词'),
+          ActionParameter.string(name: 'packageName', description: '包名'),
+        ],
+        handler: (params) async {
+          final action = params['action']?.toString() ?? 'list';
+          final keyword = params['keyword']?.toString() ?? '';
+          final packageName = params['packageName']?.toString() ?? '';
+          final result = await _installedApps(action, keyword, packageName);
+          return _successAction(result);
+        },
+      ),
+    ];
+  }
+
+  /// 工具执行成功结果包装
+  ActionResult _successAction(String result) {
+    return ActionResult.createSuccess({'result': result});
   }
 
   /// 搜索应用（跨渠道聚合）
@@ -1605,6 +1840,13 @@ ${PlatformArch.platformDescription}
     return ok ? '已$actionLabel $packageName' : '$actionLabel失败，请检查 Shizuku 权限或应用是否可操作';
   }
 
+  /// 停止当前生成（对话流 + 工具调用）
+  /// 由 AiChatWidget 的停止按钮回调调用
+  void stopGenerating() {
+    _cancelRequested = true;
+    appLog.info('AgentService: 请求停止生成');
+  }
+
   /// 发送用户消息并获取回复（流式输出）
   Future<void> chat(String userText) async {
     if (!_initialized) {
@@ -1664,12 +1906,25 @@ ${PlatformArch.platformDescription}
       // 流式累积文本
       final buffer = StringBuffer();
       await for (final chunk in stream) {
+        // 用户请求停止 → 中断
+        if (_cancelRequested) break;
         final text = chunk.text;
         if (text.isNotEmpty) {
           buffer.write(text);
           streamMsg.text = buffer.toString();
           messages.refresh();
         }
+      }
+
+      // 若已停止，不再等待最终响应
+      if (_cancelRequested) {
+        appLog.info('AgentService: 已停止生成，保留已输出内容');
+        streamMsg.text = buffer.toString().trim().isEmpty
+            ? '（已停止生成）'
+            : buffer.toString().trim();
+        messages.refresh();
+        _persistStreamMessage(streamMsg);
+        return;
       }
 
       // 获取最终响应，更新消息历史
@@ -1688,6 +1943,7 @@ ${PlatformArch.platformDescription}
     } finally {
       _busy = false;
       _currentTurnId = null;
+      _cancelRequested = false;
     }
   }
 
