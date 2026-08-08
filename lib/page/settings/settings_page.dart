@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
+import 'package:gstore/core/config/config_manager.dart';
+import 'package:gstore/core/config/providers/download_config_provider.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/theme/theme_controller.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
@@ -29,6 +31,11 @@ class SettingsPage extends StatelessWidget {
           // Install & Permission section
           _buildSectionHeader('安装与权限'),
           _buildInstallSection(context),
+          const SizedBox(height: AppSpacing.xxl),
+
+          // Download section
+          _buildSectionHeader('下载'),
+          _buildDownloadSection(context),
           const SizedBox(height: AppSpacing.xxl),
 
           // About section
@@ -192,6 +199,18 @@ class SettingsPage extends StatelessWidget {
                 '开启 Shizuku 后可静默安装应用，无需逐次确认；未授权时使用系统安装'),
             isThreeLine: true,
           ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDownloadSection(BuildContext context) {
+    return Card(
+      margin: AppSpacing.allLG,
+      child: Column(
+        children: [
+          // 多段下载开关
+          const _MultiSegmentDownloadTile(),
         ],
       ),
     );
@@ -502,6 +521,82 @@ class _ShizukuTileState extends State<_ShizukuTile> {
       leading: Icon(Icons.shield, size: AppTypography.iconMD, color: Colors.green),
       title: Text('Shizuku 状态'),
       subtitle: Text('已授权，可静默安装'),
+    );
+  }
+}
+
+/// 多段下载开关 Tile
+///
+/// 控制是否启用多段并行下载（自适应分段，可显著加速大文件下载）。
+/// 弱网/网络不稳定时可关闭，回退为单连接下载。
+class _MultiSegmentDownloadTile extends StatefulWidget {
+  const _MultiSegmentDownloadTile();
+
+  @override
+  State<_MultiSegmentDownloadTile> createState() =>
+      _MultiSegmentDownloadTileState();
+}
+
+class _MultiSegmentDownloadTileState extends State<_MultiSegmentDownloadTile> {
+  bool _enabled = true;
+  bool _loaded = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final provider = ConfigManager.instance.providers['download_config'];
+      if (provider is DownloadConfigProvider) {
+        final enabled = await provider.isMultiSegmentEnabled();
+        if (mounted) {
+          setState(() {
+            _enabled = enabled;
+            _loaded = true;
+          });
+        }
+        return;
+      }
+    } catch (e) {
+      debugPrint('SettingsPage: 读取多段下载配置失败 - $e');
+    }
+    if (mounted) {
+      setState(() {
+        _enabled = true;
+        _loaded = true;
+      });
+    }
+  }
+
+  Future<void> _toggle(bool value) async {
+    setState(() => _enabled = value);
+    try {
+      final provider = ConfigManager.instance.providers['download_config'];
+      if (provider is DownloadConfigProvider) {
+        await provider.setMultiSegmentEnabled(value);
+        appLog.info('SettingsPage: 多段下载已${value ? "开启" : "关闭"}');
+      }
+    } catch (e) {
+      debugPrint('SettingsPage: 保存多段下载配置失败 - $e');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SwitchListTile(
+      secondary: Icon(
+        Icons.multiple_stop,
+        size: AppTypography.iconMD,
+        color: Theme.of(context).colorScheme.primary,
+      ),
+      title: const Text('多段下载'),
+      subtitle: const Text(
+          '自适应分段并行下载（最大 8 段），大文件下载更快。弱网或不稳定时可关闭'),
+      value: _enabled,
+      onChanged: _loaded ? _toggle : null,
     );
   }
 }

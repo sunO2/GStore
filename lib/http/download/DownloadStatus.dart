@@ -8,7 +8,7 @@ import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 
 final Map<String, StreamController<DownloadStatus>> _streamManager = {};
-// 取消下载按钮
+// 取消下载按钮（键：单段=tag，多段=tag#index）
 final Map<String, CancelToken> _cancelTokens = {};
 // 正在下载的文件列表（用于防止重复下载）
 final Set<String> _downloadingFiles = {};
@@ -74,13 +74,47 @@ class DownloadStatus {
     return "$appId-$version-$fileName";
   }
 
+  /// 单段下载的取消令牌（兼容旧路径，index = -1）
   CancelToken getCancelToken() {
-    var token = _cancelTokens[_downloadTag];
+    return getSegmentCancelToken(-1);
+  }
+
+  /// 获取指定段（index）的取消令牌
+  /// index = -1 表示单段下载（无分段场景）
+  CancelToken getSegmentCancelToken(int index) {
+    final key = _tokenKey(index);
+    var token = _cancelTokens[key];
     if (null == token || token.isCancelled) {
       token = CancelToken();
-      _cancelTokens[_downloadTag] = token;
+      _cancelTokens[key] = token;
     }
     return token;
+  }
+
+  /// 取消所有段的下载
+  void cancelDownload() {
+    // 取消单段令牌
+    final singleKey = _tokenKey(-1);
+    final single = _cancelTokens[singleKey];
+    if (null != single) {
+      single.cancel();
+      _cancelTokens.remove(singleKey);
+    }
+
+    // 取消多段令牌（tag#0..n）
+    final prefix = '$_downloadTag#';
+    final multiKeys = _cancelTokens.keys
+        .where((key) => key.startsWith(prefix))
+        .toList();
+    for (final key in multiKeys) {
+      _cancelTokens[key]?.cancel();
+      _cancelTokens.remove(key);
+    }
+  }
+
+  /// 生成取消令牌的键
+  String _tokenKey(int index) {
+    return index < 0 ? _downloadTag : '$_downloadTag#$index';
   }
 
   /// 检查文件是否正在下载
@@ -120,14 +154,6 @@ class DownloadStatus {
 }''';
   }
 
-  cancelDownload() {
-    var token = _cancelTokens[_downloadTag];
-    if (null != token) {
-      token.cancel();
-      _cancelTokens.remove(_downloadTag);
-    }
-  }
-
   void downloadCanced() async {
     status = DOWNLOAD_READY;
     markAsCompleted();
@@ -157,16 +183,18 @@ class DownloadStatus {
   }
 
   /// 清理下载完成后的资源
-  /// 释放取消令牌，避免内存泄漏
+  /// 释放该任务全部段的取消令牌，避免内存泄漏
   void _cleanupAfterComplete() {
-    _cancelTokens.remove(_downloadTag);
+    _cancelTokens.removeWhere((key, _) =>
+        key == _downloadTag || key.startsWith('$_downloadTag#'));
   }
 
   /// 释放所有资源（删除记录时调用）
   /// 从全局映射中移除，避免内存泄漏
   /// 注意：不主动关闭 StreamController，避免 UI 仍在监听时报错
   void dispose() {
-    _cancelTokens.remove(_downloadTag);
+    _cancelTokens.removeWhere((key, _) =>
+        key == _downloadTag || key.startsWith('$_downloadTag#'));
     _lastUpdateTime.remove(_downloadTag);
     markAsCompleted();
     _streamManager.remove(_downloadTag);
@@ -188,7 +216,12 @@ class DownloadStatus {
 
     if (shouldUpdateDb) {
       _lastUpdateTime[_downloadTag] = now;
-      await (await database).downloadStatusDao.updateDownload(this);
+      try {
+        await (await database).downloadStatusDao.updateDownload(this);
+      } catch (e) {
+        // 进度入库失败不影响下载本身（例如测试环境无数据库）
+        debugPrint('DownloadStatus: 进度入库失败（忽略）- $e');
+      }
     }
   }
 

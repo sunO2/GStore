@@ -11,6 +11,7 @@ import 'config_storage.dart';
 import 'providers/theme_config_provider.dart';
 import 'providers/webdav_config_provider.dart';
 import 'providers/update_config_provider.dart';
+import 'providers/download_config_provider.dart';
 import '../workflow/workflow.dart';
 
 /// 配置初始化器
@@ -84,6 +85,12 @@ class ConfigInitializer {
       UpdateConfigProvider(storage),
     );
     appLog.info('ConfigInitializer: 已注册更新配置提供者');
+
+    // 注册下载配置提供者
+    manager.registerProvider(
+      DownloadConfigProvider(storage),
+    );
+    appLog.info('ConfigInitializer: 已注册下载配置提供者');
   }
 
   /// 获取主题配置提供者
@@ -109,6 +116,15 @@ class ConfigInitializer {
     final provider = ConfigManager.instance.providers['update_config'];
     if (provider == null || provider is! UpdateConfigProvider) {
       throw StateError('UpdateConfigProvider not registered. Call initialize() first.');
+    }
+    return provider;
+  }
+
+  /// 获取下载配置提供者
+  static DownloadConfigProvider getDownloadConfigProvider() {
+    final provider = ConfigManager.instance.providers['download_config'];
+    if (provider == null || provider is! DownloadConfigProvider) {
+      throw StateError('DownloadConfigProvider not registered. Call initialize() first.');
     }
     return provider;
   }

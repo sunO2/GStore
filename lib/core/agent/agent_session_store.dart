@@ -62,14 +62,34 @@ class SessionMessage {
   /// 是否是工具结果
   final bool isToolResult;
 
+  /// 工具类型（工具消息专用，存储工具枚举名）
+  final String? toolType;
+
+  /// 工具执行状态（工具消息专用）
+  final String? toolStatus;
+
+  /// 工具调用参数描述（如关键词/应用名/操作）
+  final String? toolDetail;
+
   /// 创建时间
   final int time;
+
+  /// 消息序号（用于恢复时保持实时显示顺序）
+  final int seq;
+
+  /// 回合 ID（同一轮"用户提问→助手回复→工具调用"共享，用于绑定工具记录）
+  final String? turnId;
 
   SessionMessage({
     required this.isUser,
     required this.text,
     this.isToolResult = false,
+    this.toolType,
+    this.toolStatus,
+    this.toolDetail,
     int? time,
+    this.seq = 0,
+    this.turnId,
   }) : time = time ?? DateTime.now().millisecondsSinceEpoch;
 
   Map<String, dynamic> toJson() {
@@ -77,7 +97,12 @@ class SessionMessage {
       'isUser': isUser,
       'text': text,
       'isToolResult': isToolResult,
+      'toolType': toolType,
+      'toolStatus': toolStatus,
+      'toolDetail': toolDetail,
       'time': time,
+      'seq': seq,
+      'turnId': turnId,
     };
   }
 
@@ -86,7 +111,12 @@ class SessionMessage {
       isUser: json['isUser'] as bool? ?? false,
       text: json['text'] as String? ?? '',
       isToolResult: json['isToolResult'] as bool? ?? false,
+      toolType: json['toolType'] as String?,
+      toolStatus: json['toolStatus'] as String?,
+      toolDetail: json['toolDetail'] as String?,
       time: json['time'] as int?,
+      seq: json['seq'] as int? ?? 0,
+      turnId: json['turnId'] as String?,
     );
   }
 }
