@@ -42,14 +42,7 @@ class WebDavConfigLogic extends GetxController {
   Future<void> testConnection() async {
     final config = _getConfigFromInput();
     if (!config.isValid) {
-      Get.snackbar(
-        '配置不完整',
-        '请填写完整的 WebDAV 配置信息',
-        duration: const Duration(seconds: 2),
-        snackPosition: SnackPosition.BOTTOM,
-        backgroundColor: Colors.orange,
-        colorText: Colors.white,
-      );
+      AppDialogs.showWarning('请填写完整的 WebDAV 配置信息（服务器地址、用户名、密码）');
       return;
     }
 
@@ -63,37 +56,13 @@ class WebDavConfigLogic extends GetxController {
       debugPrint('WebDavConfigLogic: 测试连接结果 - $success');
 
       if (success) {
-        Get.snackbar(
-          '连接成功',
-          'WebDAV 服务器连接正常 ✓',
-          duration: const Duration(seconds: 2),
-          snackPosition: SnackPosition.BOTTOM,
-          backgroundColor: AppColors.success,
-          colorText: Colors.white,
-          icon: const Icon(Icons.check_circle, color: Colors.white),
-        );
+        AppDialogs.showSuccess('WebDAV 服务器连接正常');
       } else {
-        Get.snackbar(
-          '连接失败',
-          '无法连接到 WebDAV 服务器，请检查配置',
-          duration: const Duration(seconds: 3),
-          snackPosition: SnackPosition.BOTTOM,
-          backgroundColor: AppColors.error,
-          colorText: Colors.white,
-          icon: const Icon(Icons.error, color: Colors.white),
-        );
+        AppDialogs.showError('无法连接到 WebDAV 服务器，请检查地址、账号密码或网络');
       }
     } catch (e) {
       appLog.error('WebDavConfigLogic: 测试连接失败 - $e');
-      Get.snackbar(
-        '连接失败',
-        '连接错误：$e',
-        duration: const Duration(seconds: 3),
-        snackPosition: SnackPosition.BOTTOM,
-        backgroundColor: AppColors.error,
-        colorText: Colors.white,
-        icon: const Icon(Icons.error, color: Colors.white),
-      );
+      AppDialogs.showError('连接错误：$e');
     } finally {
       state.isTesting.value = false;
     }

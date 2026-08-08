@@ -3,6 +3,8 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/config/config_manager.dart';
+import 'package:gstore/core/config/providers/download_config_provider.dart';
 import 'package:dio/dio.dart';
 import 'package:gstore/http/download/DownloadStatusDataBase.dart';
 import 'package:gstore/core/download/model/DownloadContext.dart';
@@ -225,21 +227,224 @@ class DownloadService extends GetxService {
     DownloadContext? context,
     bool breakPoint = true,
   }) async {
-    final file = File(downloadStatus.savePath);
-    var downloadTempFile = File("${file.path}.temp");
-    // 确保目录存在
-    await file.parent.create(recursive: true);
-
-    // 通知栏进度（下载开始）
+    // 多段下载调度：根据配置、文件大小决定是否使用多段
     final notifId = downloadStatus.id ?? downloadStatus.appId.hashCode;
     final notifTitle = downloadStatus.appName.isNotEmpty
         ? downloadStatus.appName
         : downloadStatus.appId;
+
+    // 通知栏进度（下载开始）
     DownloadNotificationService.instance.onDownloadStart(
       notifId,
       notifTitle,
       downloadStatus.fileName,
     );
+
+    // 读取多段下载配置
+    final useMultiSegment = await _shouldUseMultiSegment(downloadStatus, breakPoint);
+
+    if (useMultiSegment) {
+      appLog.info('DownloadService: 使用多段下载 - ${downloadStatus.fileName} (${downloadStatus.total} B)');
+      await _performDownloadMultiSegment(
+        downloadStatus,
+        context: context,
+        notifId: notifId,
+        notifTitle: notifTitle,
+      );
+      return;
+    }
+
+    // 单段（原逻辑）
+    await _performDownloadSingle(
+      downloadStatus,
+      context: context,
+      breakPoint: breakPoint,
+      notifId: notifId,
+      notifTitle: notifTitle,
+    );
+  }
+
+  /// 判断是否使用多段下载
+  /// 需同时满足：
+  /// 1. 配置开关开启
+  /// 2. 支持断点续传
+  /// 3. 文件大小超过最小阈值（>= 2MB）
+  Future<bool> _shouldUseMultiSegment(
+    DownloadStatus downloadStatus,
+    bool breakPoint,
+  ) async {
+    try {
+      if (!breakPoint) return false;
+      // 读取开关（失败默认开启）
+      bool enabled = true;
+      try {
+        final provider = ConfigManager.instance.providers['download_config'];
+        if (provider is DownloadConfigProvider) {
+          enabled = await provider.isMultiSegmentEnabled();
+        }
+      } catch (e) {
+        appLog.error('DownloadService: 读取多段开关失败（默认开启）- $e');
+      }
+      if (!enabled) return false;
+
+      // 文件大小需已知且 >= 2MB
+      final total = downloadStatus.total;
+      if (total < SegmentPlanner.minMultiSegmentSize) return false;
+
+      return true;
+    } catch (e) {
+      appLog.error('DownloadService: 判断多段失败（回退单段）- $e');
+      return false;
+    }
+  }
+
+  /// 多段并行下载实现
+  Future<void> _performDownloadMultiSegment(
+    DownloadStatus downloadStatus, {
+    DownloadContext? context,
+    required int notifId,
+    required String notifTitle,
+  }) async {
+    final url = context?.downloadUrl ?? downloadStatus.downloadUrl;
+    final file = File(downloadStatus.savePath);
+    await file.parent.create(recursive: true);
+
+    int attempt = 0;
+    while (attempt <= maxRetryCount) {
+      if (attempt > 0) {
+        appLog.info("重试多段下载 (${attempt}/$maxRetryCount): ${downloadStatus.fileName}");
+        await Future.delayed(Duration(seconds: attempt * 2));
+      }
+
+      // 规划分段（探测 Range + 自适应段数）
+      final plan = await SegmentPlanner.plan(
+        url: url,
+        totalBytes: downloadStatus.total,
+        supportBreakpoint: true,
+        dio: _dio,
+        cancelToken: downloadStatus.getSegmentCancelToken(0),
+        headers: context?.headers,
+      );
+
+      // 探测失败或文件不支持多段 → 回退单段
+      if (plan == null ||
+          !plan.supportsRange ||
+          !plan.isMultiSegment) {
+        debugPrint('DownloadService: 服务器不支持多段，回退单连接');
+        await _performDownloadSingle(
+          downloadStatus,
+          context: context,
+          breakPoint: true,
+          notifId: notifId,
+          notifTitle: notifTitle,
+        );
+        return;
+      }
+
+      // 多段下载
+      final downloader = SegmentDownloader(_dio);
+      final result = await downloader.downloadSegments(
+        plan: plan,
+        status: downloadStatus,
+        context: context,
+        onProgress: (count, total) {
+          // 通知栏进度（多段进度由 SegmentDownloader 内部调用 status.updateDownload）
+          DownloadNotificationService.instance.onDownloadProgress(
+            notifId,
+            notifTitle,
+            downloadStatus.fileName,
+            count,
+            total,
+          );
+        },
+      );
+
+      if (result.cancelled) {
+        appLog.info("取消下载：$url");
+        downloadStatus.downloadCanced();
+        DownloadNotificationService.instance.onDownloadCancel(notifId);
+        return;
+      }
+
+      if (!result.success) {
+        // 服务器不支持分段：直接回退单段（不重试多段）
+        if (result.fallback) {
+          appLog.info("服务器不支持多段，回退单连接下载");
+          await _performDownloadSingle(
+            downloadStatus,
+            context: context,
+            breakPoint: true,
+            notifId: notifId,
+            notifTitle: notifTitle,
+          );
+          return;
+        }
+
+        appLog.error("多段下载失败：${result.errorMessage}");
+        // 段级已重试过，这里做任务级重试
+        if (attempt < maxRetryCount) {
+          attempt++;
+          continue;
+        }
+        // 清理不完整的 part 文件
+        await SegmentMerger.cleanupParts(
+          downloadStatus.savePath,
+          plan.segmentCount,
+        );
+        downloadStatus.downloadError();
+        DownloadNotificationService.instance.onDownloadError(notifId, notifTitle);
+        return;
+      }
+
+      // 全部段下载成功 → 合并
+      final merged = await SegmentMerger.merge(
+        savePath: downloadStatus.savePath,
+        segmentCount: plan.segmentCount,
+      );
+      if (!merged) {
+        if (attempt < maxRetryCount) {
+          attempt++;
+          continue;
+        }
+        downloadStatus.downloadError();
+        DownloadNotificationService.instance.onDownloadError(notifId, notifTitle);
+        return;
+      }
+
+      // 合并成功
+      _install(downloadStatus.fileName, downloadStatus.savePath);
+      downloadStatus.downloadSuccess();
+      DownloadNotificationService.instance.onDownloadComplete(notifId);
+
+      // 下载成功（APK）：异步解析并更新真实包名/图标
+      if (file.path.endsWith('.apk')) {
+        unawaited(
+          ApkInfoService.instance.handleDownloadedApk(
+            appId: downloadStatus.appId,
+            apkPath: file.path,
+          ),
+        );
+      }
+      return;
+    }
+
+    // 全部重试耗尽
+    downloadStatus.downloadError();
+    DownloadNotificationService.instance.onDownloadError(notifId, notifTitle);
+  }
+
+  /// 单连接下载实现（原逻辑）
+  Future<void> _performDownloadSingle(
+    DownloadStatus downloadStatus, {
+    DownloadContext? context,
+    bool breakPoint = true,
+    required int notifId,
+    required String notifTitle,
+  }) async {
+    final file = File(downloadStatus.savePath);
+    var downloadTempFile = File("${file.path}.temp");
+    // 确保目录存在
+    await file.parent.create(recursive: true);
 
     int attempt = 0;
     while (attempt <= maxRetryCount) {

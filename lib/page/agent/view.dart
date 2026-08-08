@@ -90,13 +90,25 @@ class AgentPage extends StatelessWidget {
               if (messages.isEmpty) {
                 return _buildEmptyState(context);
               }
-              return ListView.builder(
-                controller: logic.scrollController,
-                padding: AppSpacing.allLG,
-                itemCount: messages.length,
-                itemBuilder: (context, index) {
-                  return _buildMessage(context, messages[index]);
+              return NotificationListener<ScrollNotification>(
+                onNotification: (notification) {
+                  // 滚动到顶部（最早消息）时触发加载更早历史
+                  if (notification.metrics.axis == Axis.vertical &&
+                      notification.metrics.maxScrollExtent > 0 &&
+                      notification.metrics.pixels <= 100) {
+                    logic.loadMoreHistoryIfNeeded();
+                  }
+                  return false;
                 },
+                child: ListView.builder(
+                  controller: logic.scrollController,
+                  padding: AppSpacing.allLG,
+                  itemCount: messages.length,
+                  itemBuilder: (context, index) {
+                    // index 0 是最早消息，index 最后是最新
+                    return _buildMessage(context, messages[index]);
+                  },
+                ),
               );
             }),
           ),
@@ -525,6 +537,7 @@ class _ToolBubbleState extends State<_ToolBubble> {
     return Align(
       alignment: Alignment.centerLeft,
       child: Container(
+        // 工具记录与助手回复同侧（左对齐），从属于其所属回合
         margin: EdgeInsets.only(bottom: AppSpacing.md),
         padding: EdgeInsets.zero,
         constraints: BoxConstraints(

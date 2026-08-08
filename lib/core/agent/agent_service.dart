@@ -77,6 +77,12 @@ class AgentMessage {
   /// 是否是工具消息
   final bool isToolResult;
 
+  /// 消息序号（用于持久化后恢复顺序，实时按创建顺序递增）
+  final int seq;
+
+  /// 回合 ID（同一轮对话共享，用于绑定工具调用记录）
+  final String? turnId;
+
   AgentMessage({
     String? id,
     required this.isUser,
@@ -87,11 +93,17 @@ class AgentMessage {
     this.downloadStatus,
     this.isToolResult = false,
     DateTime? time,
+    int? seq,
+    this.turnId,
   })  : id = id ?? _generateId(),
-        time = time ?? DateTime.now();
+        time = time ?? DateTime.now(),
+        seq = seq ?? _seqCounter++;
 
   static int _idCounter = 0;
   static String _generateId() => 'msg-${DateTime.now().microsecondsSinceEpoch}-${_idCounter++}';
+
+  /// 全局序号计数器（跨会话递增，保证顺序唯一）
+  static int _seqCounter = 0;
 
   /// 追加流式文本
   void appendText(String t) {
@@ -128,6 +140,30 @@ class AgentService extends GetxService {
   List<Message> _messages = [];
   bool _initialized = false;
   bool _busy = false;
+
+  /// 已持久化的工具消息 ID（避免同一工具运行→完成时重复新增记录）
+  final Set<String> _persistedToolIds = {};
+
+  /// 当前回合 ID（chat() 内设置，该轮的用户/助手/工具消息共享）
+  String? _currentTurnId;
+
+  /// 当前会话全量消息缓存（按 seq 排序），用于分页加载
+  List<SessionMessage> _allSessionMessages = [];
+
+  /// 已加载到 UI 的消息条数（从最新往前的数量）
+  int _loadedMessageCount = 0;
+
+  /// 分页加载初始条数
+  static const int initialHistoryPageSize = 30;
+
+  /// 分页加载每页条数
+  static const int historyPageSize = 30;
+
+  /// 是否还有更早的历史消息可加载
+  bool get hasMoreHistory => _loadedMessageCount < _allSessionMessages.length;
+
+  /// 当前已加载的历史条数
+  int get loadedHistoryCount => _loadedMessageCount;
 
   /// 是否初始化成功
   bool get isInitialized => _initialized;
@@ -254,25 +290,98 @@ ${PlatformArch.platformDescription}
     }
   }
 
-  /// 加载当前会话消息到 UI
+  /// 加载当前会话消息到 UI（分页：仅加载最近的 [initialHistoryPageSize] 条）
+  /// 按消息序号（seq）排序恢复，保证与实时显示顺序一致
   void _loadSessionMessages() {
-    messages.clear();
+    _persistedToolIds.clear();
     final session = _sessionStore?.current;
-    if (session == null) return;
-    for (final m in session.messages) {
-      messages.add(AgentMessage(
-        isUser: m.isUser,
-        text: m.text,
-        isToolResult: m.isToolResult,
-      ));
+    if (session == null) {
+      messages.clear();
+      _allSessionMessages = [];
+      _loadedMessageCount = 0;
+      return;
     }
+    // 按 seq 排序（用户→助手→工具），与实时创建顺序一致
+    _allSessionMessages = List.of(session.messages)
+      ..sort((a, b) => a.seq.compareTo(b.seq));
+
+    // 只加载最近的 initialHistoryPageSize 条
+    _loadedMessageCount = _allSessionMessages.length > initialHistoryPageSize
+        ? initialHistoryPageSize
+        : _allSessionMessages.length;
+    messages.value = _buildAgentMessages(
+      _allSessionMessages.sublist(_allSessionMessages.length - _loadedMessageCount),
+    );
+  }
+
+  /// 加载更早的一页历史消息，插入到消息列表头部（更早的位置）
+  void loadMoreHistory() {
+    if (!hasMoreHistory) return;
+    final start = _allSessionMessages.length - _loadedMessageCount - historyPageSize;
+    final from = start < 0 ? 0 : start;
+    final count = _allSessionMessages.length - _loadedMessageCount - from;
+    final older = _buildAgentMessages(
+      _allSessionMessages.sublist(from, from + count),
+    );
+    // 插入头部（更早消息在前）
+    messages.insertAll(0, older);
+    _loadedMessageCount += count;
+    appLog.info('AgentService: 加载更早历史 $count 条 (累计 $_loadedMessageCount)');
+  }
+
+  /// 将 SessionMessage 列表构建为 AgentMessage 列表
+  List<AgentMessage> _buildAgentMessages(List<SessionMessage> list) {
+    return list.map((m) {
+      if (m.isToolResult) {
+        // 工具消息：还原工具类型/状态/详情
+        return AgentMessage(
+          isUser: false,
+          text: m.text,
+          toolType: _toolTypeFromName(m.toolType),
+          toolStatus: _toolStatusFromName(m.toolStatus),
+          toolDetail: m.toolDetail,
+          isToolResult: true,
+          time: DateTime.fromMillisecondsSinceEpoch(m.time),
+          seq: m.seq,
+          turnId: m.turnId,
+        );
+      } else {
+        return AgentMessage(
+          isUser: m.isUser,
+          text: m.text,
+          isToolResult: false,
+          time: DateTime.fromMillisecondsSinceEpoch(m.time),
+          seq: m.seq,
+          turnId: m.turnId,
+        );
+      }
+    }).toList();
+  }
+
+  /// 工具类型枚举名 → AgentToolType
+  AgentToolType? _toolTypeFromName(String? name) {
+    if (name == null || name.isEmpty) return null;
+    for (final t in AgentToolType.values) {
+      if (t.name == name) return t;
+    }
+    return null;
+  }
+
+  /// 工具状态枚举名 → AgentToolStatus
+  AgentToolStatus? _toolStatusFromName(String? name) {
+    if (name == null || name.isEmpty) return null;
+    for (final s in AgentToolStatus.values) {
+      if (s.name == name) return s;
+    }
+    return null;
   }
 
   /// 从会话恢复 Genkit 上下文消息
+  /// 跳过工具消息（避免向 LLM 注入冗长工具记录，仅保留用户/助手文本）
   void _restoreMessagesFromSession() {
-    final session = _sessionStore?.current;
-    if (session == null) return;
-    for (final m in session.messages) {
+    if (_allSessionMessages.isEmpty) return;
+    for (final m in _allSessionMessages) {
+      if (m.isToolResult) continue;
       _messages.add(Message(
         role: m.isUser ? Role.user : Role.model,
         content: [TextPart(text: m.text)],
@@ -373,11 +482,48 @@ ${PlatformArch.platformDescription}
   }
 
   /// 保存消息到当前会话（并持久化）
-  /// 跳过工具消息（避免冗长和污染上下文），只保存用户与助手文本消息
+  /// 用户与助手文本消息 + 工具调用记录都会保存，以便重新进入会话时完整还原
   void _persistMessage(AgentMessage msg) {
-    if (msg.isToolResult) return;
     final session = _sessionStore?.current;
     if (session == null) return;
+
+    // 工具消息：若已持久化过则更新对应记录（运行→完成），否则新增
+    if (msg.isToolResult) {
+      final idx = session.messages.indexWhere((m) =>
+          m.isToolResult &&
+          m.toolType == msg.toolType?.name &&
+          m.toolDetail == msg.toolDetail);
+      if (idx >= 0 && _persistedToolIds.contains(msg.id)) {
+        session.messages[idx] = SessionMessage(
+          isUser: false,
+          text: msg.text,
+          isToolResult: true,
+          toolType: msg.toolType?.name,
+          toolStatus: msg.toolStatus?.name,
+          toolDetail: msg.toolDetail,
+          time: session.messages[idx].time,
+          seq: session.messages[idx].seq,
+          turnId: msg.turnId ?? session.messages[idx].turnId,
+        );
+      } else {
+        session.messages.add(SessionMessage(
+          isUser: false,
+          text: msg.text,
+          isToolResult: true,
+          toolType: msg.toolType?.name,
+          toolStatus: msg.toolStatus?.name,
+          toolDetail: msg.toolDetail,
+          seq: msg.seq,
+          turnId: msg.turnId,
+        ));
+        _persistedToolIds.add(msg.id);
+      }
+      session.updatedAt = DateTime.now().millisecondsSinceEpoch;
+      _sessionStore?.save();
+      _syncSessionCache(session);
+      return;
+    }
+
     // 设置会话标题为首条用户消息
     if (msg.isUser && session.title == '新对话') {
       session.title = msg.text.length > 20
@@ -388,10 +534,28 @@ ${PlatformArch.platformDescription}
       isUser: msg.isUser,
       text: msg.text,
       isToolResult: false,
+      seq: msg.seq,
+      turnId: msg.turnId,
     ));
     session.updatedAt = DateTime.now().millisecondsSinceEpoch;
     // 异步持久化
     _sessionStore?.save();
+    _syncSessionCache(session);
+  }
+
+  /// 同步全量消息缓存（分页边界保持最新）
+  void _syncSessionCache(AgentSession session) {
+    final newAll = List.of(session.messages)
+      ..sort((a, b) => a.seq.compareTo(b.seq));
+    final oldLen = _allSessionMessages.length;
+    _allSessionMessages = newAll;
+    if (_allSessionMessages.length >= oldLen) {
+      // 新消息追加：已加载条数同步增加（新消息已显示在 UI）
+      _loadedMessageCount += (_allSessionMessages.length - oldLen);
+    } else {
+      // 消息被删除（清空等）：重置
+      _loadedMessageCount = _allSessionMessages.length;
+    }
   }
 
   /// 定义 Agent 工具
@@ -700,6 +864,7 @@ ${PlatformArch.platformDescription}
       toolStatus: AgentToolStatus.running,
       toolDetail: detail,
       isToolResult: true,
+      turnId: _currentTurnId,
     );
     messages.add(msg);
     return msg;
@@ -723,6 +888,11 @@ ${PlatformArch.platformDescription}
     }
     if (downloadStatus != null) {
       current.downloadStatus = downloadStatus;
+    }
+    // 工具完成或失败时持久化记录
+    if (current.toolStatus == AgentToolStatus.done ||
+        current.toolStatus == AgentToolStatus.error) {
+      _persistMessage(current);
     }
     // 触发 Rx 更新
     messages.refresh();
@@ -1449,6 +1619,9 @@ ${PlatformArch.platformDescription}
     if (_busy) return;
     _busy = true;
 
+    // 开启新回合（该轮的用户/助手/工具消息共享 turnId）
+    _currentTurnId = 'turn-${DateTime.now().millisecondsSinceEpoch}';
+
     _addUserMessage(userText);
 
     try {
@@ -1461,7 +1634,11 @@ ${PlatformArch.platformDescription}
       final model = _getModelRef(_model!);
 
       // 创建一条流式消息（初始为空）
-      final streamMsg = AgentMessage(isUser: false, text: '');
+      final streamMsg = AgentMessage(
+        isUser: false,
+        text: '',
+        turnId: _currentTurnId,
+      );
       messages.add(streamMsg);
 
       final stream = ai.generateStream<dynamic, void>(
@@ -1510,11 +1687,16 @@ ${PlatformArch.platformDescription}
       _addAssistantMessage('抱歉，请求失败：$e');
     } finally {
       _busy = false;
+      _currentTurnId = null;
     }
   }
 
   void _addUserMessage(String text) {
-    final msg = AgentMessage(isUser: true, text: text);
+    final msg = AgentMessage(
+      isUser: true,
+      text: text,
+      turnId: _currentTurnId,
+    );
     messages.add(msg);
     _persistMessage(msg);
   }
@@ -1526,6 +1708,7 @@ ${PlatformArch.platformDescription}
       text: text,
       toolType: toolType,
       isToolResult: isToolResult,
+      turnId: _currentTurnId,
     );
     messages.add(msg);
     _persistMessage(msg);

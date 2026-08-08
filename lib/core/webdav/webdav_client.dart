@@ -81,7 +81,22 @@ class WebDavClient {
     try {
       debugPrint('WebDavClient: 测试连接 - ${config.baseUrl}');
 
-      // 尝试创建备份目录（如果目录已存在会返回 405 或 201）
+      // 1. OPTIONS 探测服务器连通性与 WebDAV 支持
+      final optionsResp = await _dio.request(
+        '/',
+        options: Options(
+          method: 'OPTIONS',
+        ),
+      );
+      // 2xx/3xx 视为服务器可达；401/403 认证问题由后续 MKCOL 暴露
+      if (optionsResp.statusCode != null &&
+          optionsResp.statusCode! >= 500) {
+        debugPrint('WebDavClient: 服务器响应异常 - HTTP ${optionsResp.statusCode}');
+        return false;
+      }
+
+      // 2. 尝试创建备份目录（如果目录已存在会返回 405 或 201；
+      //    认证失败会抛 401/403）
       await ensureDirectory(config.backupPath);
 
       appLog.info('WebDavClient: 连接测试成功');
@@ -118,7 +133,14 @@ class WebDavClient {
         return;
       }
 
+      // 认证失败/权限不足/路径错误等非预期状态码
       debugPrint('WebDavClient: 目录创建结果 - ${response.statusCode}');
+      throw DioException(
+        requestOptions: response.requestOptions,
+        type: DioExceptionType.badResponse,
+        response: response,
+        message: 'MKCOL 返回 HTTP ${response.statusCode}',
+      );
     } on DioException catch (e) {
       // 如果目录已存在，返回 201 Created 或 405 Method Not Allowed
       if (e.response?.statusCode == 201 || e.response?.statusCode == 405) {

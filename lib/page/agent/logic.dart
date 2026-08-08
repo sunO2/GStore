@@ -12,6 +12,9 @@ class AgentLogic extends GetxController {
   final FocusNode inputFocusNode = FocusNode();
   final ScrollController scrollController = ScrollController();
 
+  /// 是否已完成初始加载（初始化加载历史消息时不触发滚动跳动）
+  bool _initialLoaded = false;
+
   /// Agent 服务
   AgentService? _service;
 
@@ -36,6 +39,12 @@ class AgentLogic extends GetxController {
   Future<void> _init() async {
     final ok = await service.initialize();
     state.isInitialized.value = ok;
+    // 初始化加载完成后允许后续滚动
+    _initialLoaded = true;
+    // 进入页面显示最新消息（滚动到底部，列表就绪后执行）
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scrollToBottom();
+    });
   }
 
   /// 确保 Agent 已初始化（用于会话列表等需要存储已加载的场景）
@@ -101,21 +110,61 @@ class AgentLogic extends GetxController {
     await _init();
   }
 
+  /// 滚动到底部（普通列表，底部 = maxScrollExtent）
+  Timer? _scrollDebounce;
+
   /// 滚动到底部
+  /// 普通列表用 jumpTo(maxScrollExtent) 滚到最新消息，无动画跳动；
+  /// 初始化加载历史消息阶段跳过，避免进入页面时跳动
   void _scrollToBottom() {
+    if (!_initialLoaded) return;
+    _scrollDebounce?.cancel();
+    _scrollDebounce = Timer(const Duration(milliseconds: 80), () {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (scrollController.hasClients) {
+          scrollController.jumpTo(scrollController.position.maxScrollExtent);
+        }
+      });
+    });
+  }
+
+  /// 滚动到顶部时加载更早的历史消息（保持当前视觉位置不跳动）
+  void loadMoreHistoryIfNeeded() {
+    if (!service.hasMoreHistory) return;
+    if (_loadingHistory) return;
+    _loadingHistory = true;
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (scrollController.hasClients) {
-        scrollController.animateTo(
-          scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 300),
-          curve: Curves.easeOut,
-        );
+        // 记录加载前的偏移量
+        final oldMax = scrollController.position.maxScrollExtent;
+        final oldPixels = scrollController.position.pixels;
+
+        service.loadMoreHistory();
+
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (scrollController.hasClients) {
+            // 普通列表：新内容插入顶部，maxScrollExtent 增大，
+            // 补偿偏移量保持视觉位置不变（内容下移量 = 新增滚动范围）
+            final newMax = scrollController.position.maxScrollExtent;
+            final delta = newMax - oldMax;
+            if (delta > 0) {
+              scrollController.jumpTo(oldPixels + delta);
+            }
+          }
+          _loadingHistory = false;
+        });
+      } else {
+        _loadingHistory = false;
       }
     });
   }
 
+  bool _loadingHistory = false;
+
   @override
   void onClose() {
+    _scrollDebounce?.cancel();
     inputController.dispose();
     inputFocusNode.dispose();
     scrollController.dispose();

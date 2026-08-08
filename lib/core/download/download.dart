@@ -13,3 +13,8 @@ export 'DownloadStrategyManager.dart';
 
 // 异常定义
 export 'exception/DownloadException.dart';
+
+// 多段下载核心
+export 'segment/segment_planner.dart';
+export 'segment/segment_downloader.dart';
+export 'segment/segment_merger.dart';
