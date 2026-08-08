@@ -47,6 +47,7 @@ enum AgentToolType {
   fdroid,
   webdav,
   installed,
+  confirm,
 }
 
 /// 工具执行状态
@@ -86,6 +87,10 @@ class AgentMessage {
   /// 回合 ID（同一轮对话共享，用于绑定工具调用记录）
   final String? turnId;
 
+  /// 确认工具的选项列表（多选一时使用；二选一时为 null）
+  /// 仅运行时使用，不持久化（恢复历史时确认已解决，无需选项）
+  List<String>? confirmOptions;
+
   AgentMessage({
     String? id,
     required this.isUser,
@@ -98,6 +103,7 @@ class AgentMessage {
     DateTime? time,
     int? seq,
     this.turnId,
+    this.confirmOptions,
   })  : id = id ?? _generateId(),
         time = time ?? DateTime.now(),
         seq = seq ?? _seqCounter++;
@@ -147,6 +153,25 @@ class AgentService extends GetxService {
   /// 是否请求停止当前生成（用户点击停止按钮）
   bool _cancelRequested = false;
 
+  /// 当前正在累积文本的流式助手消息
+  /// 工具调用时将其"定稿"为独立 agent 消息，实现文本被工具调用分割
+  AgentMessage? _activeStreamMsg;
+
+  /// 当前正在执行的下载任务状态（停止时取消）
+  DownloadStatus? _currentDownloadStatus;
+
+  /// 用户确认回调（view 注入，弹确认 UI）
+  /// 参数为确认问题，返回 true=用户确认，false=取消
+  Future<bool> Function(String question)? onConfirmRequest;
+
+  /// 待确认的请求（key = 确认消息 id）
+  /// UI 通过 [resolveConfirmation] 完成对应 Completer，
+  /// 值为用户选择（多选一时为所选选项，二选一时为 '确认'/'取消'）
+  final Map<String, Completer<String>> _pendingConfirmations = {};
+
+  /// 工具名称常量：确认工具
+  static const String confirmToolName = 'confirmAction';
+
   /// 工具执行控制器（AiActionProvider 原生工具调用）
   ActionController _actionController = ActionController();
 
@@ -166,10 +191,11 @@ class AgentService extends GetxService {
   int _loadedMessageCount = 0;
 
   /// 分页加载初始条数
-  static const int initialHistoryPageSize = 30;
+  /// 首次加载的完整回合数（每个回合 = 用户消息 + 对应 agent/工具回复）
+  static const int initialTurnsCount = 5;
 
-  /// 分页加载每页条数
-  static const int historyPageSize = 30;
+  /// 是否正在分页加载历史（分页期间禁止自动滚动到底，避免加载更多后跳回底部）
+  bool isPaginatingHistory = false;
 
   /// 是否还有更早的历史消息可加载
   bool get hasMoreHistory => _loadedMessageCount < _allSessionMessages.length;
@@ -328,8 +354,9 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
     }
   }
 
-  /// 加载当前会话消息到 UI（分页：仅加载最近的 [initialHistoryPageSize] 条）
-  /// 按消息序号（seq）排序恢复，保证与实时显示顺序一致
+  /// 加载当前会话消息到 UI（分页：仅加载最近的 [initialTurnsCount] 个完整回合）
+  /// 以用户消息为锚点：从尾部往前找最近的 N 条用户消息，
+  /// 加载从最早那条用户消息到末尾的全部消息（完整回合，避免切分对话）
   void _loadSessionMessages() {
     _persistedToolIds.clear();
     final session = _sessionStore?.current;
@@ -339,25 +366,65 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
       _loadedMessageCount = 0;
       return;
     }
-    // 按 seq 排序（用户→助手→工具），与实时创建顺序一致
+    // 按 time 排序（真实创建时间，seq 作 tiebreaker），保证与实时显示顺序一致
     _allSessionMessages = List.of(session.messages)
-      ..sort((a, b) => a.seq.compareTo(b.seq));
+      ..sort((a, b) =>
+          a.time != b.time ? a.time.compareTo(b.time) : a.seq.compareTo(b.seq));
 
-    // 只加载最近的 initialHistoryPageSize 条
-    _loadedMessageCount = _allSessionMessages.length > initialHistoryPageSize
-        ? initialHistoryPageSize
-        : _allSessionMessages.length;
+    // 推进全局 seq 计数器到最大历史 seq + 1，
+    // 防止应用重启后（_seqCounter 重置为 0）新消息 seq 与历史消息冲突导致顺序错乱
+    if (_allSessionMessages.isNotEmpty) {
+      final maxSeq = _allSessionMessages
+          .map((m) => m.seq)
+          .reduce((a, b) => a > b ? a : b);
+      if (maxSeq >= AgentMessage._seqCounter) {
+        AgentMessage._seqCounter = maxSeq + 1;
+      }
+    }
+
+    // 从尾部往前找最近的 initialTurnsCount 个用户回合的锚点
+    var anchorStart = 0;
+    var userCount = 0;
+    for (var i = _allSessionMessages.length - 1; i >= 0; i--) {
+      if (_allSessionMessages[i].isUser) {
+        userCount++;
+        if (userCount >= initialTurnsCount) {
+          anchorStart = i;
+          break;
+        }
+      }
+    }
+    // 不足 initialTurnsCount 个回合时从 0 开始（加载全部）
+    if (userCount < initialTurnsCount) {
+      anchorStart = 0;
+    }
+
+    _loadedMessageCount = _allSessionMessages.length - anchorStart;
     messages.value = _buildAgentMessages(
-      _allSessionMessages.sublist(_allSessionMessages.length - _loadedMessageCount),
+      _allSessionMessages.sublist(anchorStart),
     );
   }
 
-  /// 加载更早的一页历史消息，插入到消息列表头部（更早的位置）
-  void loadMoreHistory() {
-    if (!hasMoreHistory) return;
-    final start = _allSessionMessages.length - _loadedMessageCount - historyPageSize;
-    final from = start < 0 ? 0 : start;
-    final count = _allSessionMessages.length - _loadedMessageCount - from;
+  /// 加载更早的一组完整对话（以用户消息为锚点）
+  /// 从尾部未加载区域往前找最近的一条用户消息，
+  /// 加载该用户消息及其后续全部消息（该用户回合的完整事件线），
+  /// 保证每次加载都能补全一组完整对话，而非按固定条数切分。
+  /// 返回本次新增的 AgentMessage 列表（view 用于增量同步到 controller）
+  List<AgentMessage> loadMoreHistory() {
+    if (!hasMoreHistory) return const [];
+
+    // 未加载区域：[0, unloadedEnd)，其中 unloadedEnd = L - loaded
+    final unloadedEnd = _allSessionMessages.length - _loadedMessageCount;
+    if (unloadedEnd <= 0) return const [];
+
+    // 从未加载区域末尾往前找最近的用户消息作为锚点
+    var anchor = unloadedEnd - 1;
+    while (anchor >= 0 && !_allSessionMessages[anchor].isUser) {
+      anchor--;
+    }
+    // 锚点 = 用户消息位置（含），加载它及后续全部未加载消息
+    final from = anchor < 0 ? 0 : anchor;
+    final count = unloadedEnd - from;
     final older = _buildAgentMessages(
       _allSessionMessages.sublist(from, from + count),
     );
@@ -365,6 +432,7 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
     messages.insertAll(0, older);
     _loadedMessageCount += count;
     appLog.info('AgentService: 加载更早历史 $count 条 (累计 $_loadedMessageCount)');
+    return older;
   }
 
   /// 将 SessionMessage 列表构建为 AgentMessage 列表
@@ -586,7 +654,8 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
   /// 同步全量消息缓存（分页边界保持最新）
   void _syncSessionCache(AgentSession session) {
     final newAll = List.of(session.messages)
-      ..sort((a, b) => a.seq.compareTo(b.seq));
+      ..sort((a, b) =>
+          a.time != b.time ? a.time.compareTo(b.time) : a.seq.compareTo(b.seq));
     final oldLen = _allSessionMessages.length;
     _allSessionMessages = newAll;
     if (_allSessionMessages.length >= oldLen) {
@@ -825,6 +894,85 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
         );
       },
     );
+
+    // 用户确认工具（与用户交互：确认/取消/选项选择）
+    ai.defineTool<Map<String, dynamic>, String>(
+      name: confirmToolName,
+      description:
+          '向用户发起确认或选择请求。用于两类场景：'
+          '1) 敏感/不可逆操作需要用户确认（如卸载应用、清理数据、恢复备份、删除会话、移除应用）；'
+          '2) 需要用户在多个选项中做出选择（如"你想怎么处理""用哪个版本""选哪个方案"）。'
+          '输入 question（清晰的问题）。'
+          '当需要用户选择时传 options（选项数组或逗号分隔字符串，2-5 个选项）；不传则显示确认/取消按钮。'
+          '调用后等待用户操作，返回用户的选择。'
+          '遇到下列情况**必须调用**：用户表达犹豫/要求选择/涉及删除卸载清理覆盖/需要二次确认，'
+          '不要用普通文字回复代替选项交互。',
+      fn: (input, _) async {
+        final question = input['question']?.toString() ?? '';
+        // 解析选项：可能是 List 或逗号分隔字符串
+        List<String>? options;
+        final optRaw = input['options'];
+        if (optRaw is List) {
+          options = optRaw.map((o) => o.toString()).where((o) => o.isNotEmpty).toList();
+        } else if (optRaw is String && optRaw.trim().isNotEmpty) {
+          options = optRaw
+              .split(RegExp(r'[,，]'))
+              .map((o) => o.trim())
+              .where((o) => o.isNotEmpty)
+              .toList();
+        }
+        if (options != null && options.isEmpty) options = null;
+        return _requestUserConfirmation(question, options: options);
+      },
+    );
+  }
+
+  /// 请求用户确认（创建确认节点，等待用户选择）
+  /// [question] 确认问题；[options] 多选一的选项列表（null 时二选一确认/取消）
+  /// 返回用户的选择结果字符串供模型使用
+  Future<String> _requestUserConfirmation(
+    String question, {
+    List<String>? options,
+  }) async {
+    if (question.isEmpty) {
+      return '确认问题不能为空';
+    }
+
+    // 定稿已输出的 agent 文本为独立消息（实现"回答→确认→结果"分步）
+    _commitActiveStreamText();
+
+    // 创建确认工具消息（step 节点显示确认 UI）
+    final msg = _addToolMessage(AgentToolType.confirm, question);
+    msg.confirmOptions = options;
+    final completer = Completer<String>();
+    _pendingConfirmations[msg.id] = completer;
+
+    // 等待 UI 选择（resolveConfirmation 完成）
+    final choice = await completer.future;
+    _pendingConfirmations.remove(msg.id);
+
+    if (choice.isEmpty || choice == '取消') {
+      _updateToolMessage(msg, status: AgentToolStatus.error, detail: '已取消');
+      return '用户已取消';
+    }
+    if (options != null && options.isNotEmpty) {
+      _updateToolMessage(msg, status: AgentToolStatus.done, detail: '已选择：$choice');
+      return '用户已选择：$choice';
+    }
+    _updateToolMessage(msg, status: AgentToolStatus.done, detail: '已确认');
+    return '用户已确认';
+  }
+
+  /// 处理用户确认结果（UI 调用）
+  /// [msgId] 确认消息 id，[choice] 用户选择：
+  /// - 多选一：所选选项字符串
+  /// - 二选一：'确认' 或 '取消'
+  /// - 空字符串视为取消
+  void resolveConfirmation(String msgId, String choice) {
+    final completer = _pendingConfirmations[msgId];
+    if (completer != null && !completer.isCompleted) {
+      completer.complete(choice);
+    }
   }
 
   /// 执行工具（委托 ActionController 原生执行）
@@ -838,6 +986,9 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
     if (_cancelRequested) {
       return '已停止，工具调用被取消';
     }
+    // 工具调用前，把已输出的流式文本定稿为独立 agent 消息
+    // （实现"回复→工具→回复→工具"的分步展示）
+    _commitActiveStreamText();
     // 创建工具消息（加入消息流，持久显示）
     final msg = _addToolMessage(_toolTypeForName(name), detail ?? name);
     try {
@@ -851,6 +1002,11 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
         }
       }
       final result = await _actionController.executeAction(name, params);
+      // 用户已停止 → 标记工具为取消（不当作错误）
+      if (_cancelRequested) {
+        _updateToolMessage(msg, status: AgentToolStatus.error, detail: '已取消');
+        return '已取消（用户停止）';
+      }
       // 更新工具消息状态 + 持久化
       final data = result.data;
       final text = result.success
@@ -883,6 +1039,30 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
     );
     messages.add(msg);
     return msg;
+  }
+
+  /// 把当前已输出的流式文本"定稿"为独立 agent 消息。
+  /// 定稿后置空 _activeStreamMsg，后续文本由流式循环懒创建——
+  /// 这样新建消息的 seq 会排在工具消息之后，实现"回复→工具→回复"顺序。
+  void _commitActiveStreamText() {
+    final current = _activeStreamMsg;
+    if (current == null) return;
+
+    final text = current.text.trim();
+    if (text.isNotEmpty) {
+      // 定稿：创建独立 agent 消息（排在工具消息前）
+      final committed = AgentMessage(
+        isUser: false,
+        text: text,
+        turnId: current.turnId,
+      );
+      messages.add(committed);
+      _persistMessage(committed);
+    }
+    // 移除原流式消息（有文本则已定稿，无文本则丢弃空占位）
+    messages.remove(current);
+    // 置空：后续文本由流式循环懒创建（在工具消息之后）
+    _activeStreamMsg = null;
   }
 
   /// 更新工具消息状态（并持久化）
@@ -1903,12 +2083,13 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
       final model = _getModelRef(_model!);
 
       // 创建一条流式消息（初始为空）
-      final streamMsg = AgentMessage(
+      // 工具调用时会被"定稿"为独立消息并新建承接，实现分步展示
+      _activeStreamMsg = AgentMessage(
         isUser: false,
         text: '',
         turnId: _currentTurnId,
       );
-      messages.add(streamMsg);
+      messages.add(_activeStreamMsg!);
 
       final stream = ai.generateStream<dynamic, void>(
         model: model as ModelRef<dynamic>,
@@ -1926,19 +2107,28 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
           fdroidRepoToolName,
           webdavSyncToolName,
           installedAppsToolName,
+          confirmToolName,
         ],
         maxTurns: 12,
       );
 
       // 流式累积文本
-      final buffer = StringBuffer();
       await for (final chunk in stream) {
         // 用户请求停止 → 中断
         if (_cancelRequested) break;
         final text = chunk.text;
         if (text.isNotEmpty) {
-          buffer.write(text);
-          streamMsg.text = buffer.toString();
+          // 工具调用后 _activeStreamMsg 被置空：懒创建新消息，
+          // 使其 seq 排在工具消息之后，保证"回复→工具→回复"顺序
+          if (_activeStreamMsg == null) {
+            _activeStreamMsg = AgentMessage(
+              isUser: false,
+              text: '',
+              turnId: _currentTurnId,
+            );
+            messages.add(_activeStreamMsg!);
+          }
+          _activeStreamMsg?.text = (_activeStreamMsg?.text ?? '') + text;
           messages.refresh();
         }
       }
@@ -1946,11 +2136,13 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
       // 若已停止，不再等待最终响应
       if (_cancelRequested) {
         appLog.info('AgentService: 已停止生成，保留已输出内容');
-        streamMsg.text = buffer.toString().trim().isEmpty
-            ? '（已停止生成）'
-            : buffer.toString().trim();
-        messages.refresh();
-        _persistStreamMessage(streamMsg);
+        final msg = _activeStreamMsg;
+        if (msg != null) {
+          msg.text = msg.text.trim().isEmpty ? '（已停止生成）' : msg.text.trim();
+          messages.refresh();
+          _persistStreamMessage(msg);
+        }
+        _activeStreamMsg = null;
         return;
       }
 
@@ -1959,15 +2151,24 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
       _messages = List.of(response.messages ?? _messages);
 
       // 最终文本兜底
-      final finalText = buffer.toString().trim();
-      streamMsg.text = finalText.isEmpty ? '（没有生成回复，请重试）' : finalText;
-      messages.refresh();
-      // 持久化助手消息
-      _persistStreamMessage(streamMsg);
+      final msg = _activeStreamMsg;
+      if (msg != null) {
+        if (msg.text.trim().isEmpty) {
+          // 工具调用后无后续文本的残留空消息：移除，不展示
+          messages.remove(msg);
+        } else {
+          msg.text = msg.text.trim();
+          messages.refresh();
+          // 持久化助手消息
+          _persistStreamMessage(msg);
+        }
+      }
+      _activeStreamMsg = null;
     } catch (e) {
       appLog.error('AgentService: 生成失败 - $e');
       _addAssistantMessage('抱歉，请求失败：$e');
     } finally {
+      _activeStreamMsg = null;
       _busy = false;
       _currentTurnId = null;
       _cancelRequested = false;

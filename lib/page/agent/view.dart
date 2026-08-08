@@ -34,6 +34,9 @@ class _AgentPageState extends State<AgentPage> {
   /// 工具消息签名（id+status），变化时触发全量聚合重建
   String _lastToolSignature = '';
 
+  /// 是否正在分页加载（分页时用增量同步，避免 setMessages 重置滚动）
+  bool _isPaginating = false;
+
   /// 是否已初始化同步
   bool _initialSyncDone = false;
 
@@ -48,14 +51,31 @@ class _AgentPageState extends State<AgentPage> {
     // 监听消息变化，增量同步到聊天控制器
     _logic.service.messages.listen(_onMessagesChanged);
 
+    // 监听滚动：reverse 列表接近顶部（最早消息）时加载更早历史
+    // 库内部使用 logic.scrollController（传给 AiChatWidget），此处直接监听
+    _logic.scrollController.addListener(_onScrollChanged);
+
     // 初始化同步（若 service 已加载历史消息）
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _onMessagesChanged(_logic.service.messages);
     });
   }
 
+  /// 滚动位置变化：接近 reverse 列表顶部时加载更早历史
+  void _onScrollChanged() {
+    if (!_logic.scrollController.hasClients) return;
+    final position = _logic.scrollController.position;
+    // reverse 列表：offset 0 = 底部（最新），maxScrollExtent = 顶部（最早）
+    if (position.maxScrollExtent > 0 &&
+        position.pixels >= position.maxScrollExtent - 100) {
+      debugPrint('AgentView nearTop: pixels=${position.pixels.toStringAsFixed(0)} max=${position.maxScrollExtent.toStringAsFixed(0)}');
+      _triggerLoadMore();
+    }
+  }
+
   @override
   void dispose() {
+    _logic.scrollController.removeListener(_onScrollChanged);
     _chatController.dispose();
     super.dispose();
   }
@@ -68,6 +88,19 @@ class _AgentPageState extends State<AgentPage> {
     if (!_initialSyncDone || messages.isEmpty) {
       _rebuildAll();
       _initialSyncDone = true;
+      // 首次加载完成：定位到底部（最新消息），避免停留在顶部
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        final sc = _logic.scrollController;
+        if (sc.hasClients) {
+          sc.jumpTo(0);
+        }
+      });
+      return;
+    }
+
+    // 分页加载：跳过（由 _triggerLoadMore 的 controller.loadMore 增量处理，
+    // 避免 setMessages 全量重建重置滚动位置）
+    if (_isPaginating) {
       return;
     }
 
@@ -122,19 +155,17 @@ class _AgentPageState extends State<AgentPage> {
     return buf.toString();
   }
 
-  /// 全量重建消息列表（工具消息聚合为容器）
+  /// 全量重建消息列表（同回合消息按 turnId 聚合为时间轴）
   void _rebuildAll() {
     final msgs = _logic.service.messages;
-    // 按持久化顺序重设 createdAt，保证排序正确
-    final base = DateTime.fromMillisecondsSinceEpoch(1000);
-    final grouped = _groupToolMessages(msgs);
+    final grouped = _groupTimeline(msgs);
     final list = <ChatMessage>[];
     for (var i = 0; i < grouped.length; i++) {
       final item = grouped[i];
-      final cm = item.tools != null
-          ? _toToolGroupMessage(item.tools!)
-          : _toChatMessage(item.msg!);
-      list.add(cm.copyWith(createdAt: base.add(Duration(milliseconds: i + 1))));
+      // 使用消息真实时间（msg.time），库按 createdAt 排序显示最新在底部
+      list.add(item.turnMsgs != null
+          ? _toTimelineMessage(item.turnMsgs!)
+          : _toChatMessage(item.msg!));
     }
     _syncedMessages
       ..clear()
@@ -146,42 +177,119 @@ class _AgentPageState extends State<AgentPage> {
     _chatController.setMessages(list);
   }
 
-  /// 将连续的工具消息聚合成组（同回合多个工具调用显示在一个容器）
-  /// 返回 [(msg, null)] 普通消息 或 [null, tools] 工具组
-  List<({AgentMessage? msg, List<AgentMessage>? tools})> _groupToolMessages(
-      List<AgentMessage> messages) {
-    final result = <({AgentMessage? msg, List<AgentMessage>? tools})>[];
-    var currentTools = <AgentMessage>[];
+  /// 触发加载更早历史（增量 addMessages，不重置滚动位置）
+  void _triggerLoadMore() {
+    debugPrint('AgentView triggerLoadMore: hasMore=${_logic.service.hasMoreHistory} paginating=$_isPaginating loaded=${_logic.service.loadedHistoryCount}');
+    if (!_logic.service.hasMoreHistory) return;
+    if (_isPaginating) return;
+    _isPaginating = true;
+    // 标记分页：logic 的 messages listener 跳过自动滚动，避免跳回底部
+    _logic.service.isPaginatingHistory = true;
 
-    void flushTools() {
-      if (currentTools.isNotEmpty) {
-        result.add((msg: null, tools: List.of(currentTools)));
-        currentTools = [];
+    try {
+      final older = _logic.service.loadMoreHistory();
+      if (older.isEmpty) {
+        _isPaginating = false;
+        return;
       }
+      debugPrint('AgentView older: ${older.map((m) => m.isUser ? "U" : (m.isToolResult ? "T" : "A")).join(",")}');
+      // 转成 ChatMessage（按 turnId 聚合成时间轴）
+      final grouped = _groupTimeline(older);
+      debugPrint('AgentView grouped: ${grouped.map((g) => g.msg != null ? (g.msg!.isUser ? "U" : "A") : "G").join(",")}');
+      final chatMsgs = <ChatMessage>[];
+      for (final item in grouped) {
+        chatMsgs.add(item.turnMsgs != null
+            ? _toTimelineMessage(item.turnMsgs!)
+            : _toChatMessage(item.msg!));
+      }
+      // controller._messages 布局为 [最新...最旧]（index 0 最新），addMessages append 到末尾。
+      // 需把更早消息按 createdAt 降序（最新在前、最早在末尾），append 后最早显示在 reverse 列表顶部。
+      final olderSorted = chatMsgs.toList()
+        ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      _chatController.addMessages(olderSorted);
+      // 更新同步记录
+      for (final msg in older) {
+        if (!msg.isToolResult) {
+          _syncedMessages[msg.id] = _toChatMessage(msg);
+        }
+      }
+      _lastToolSignature = _toolSignature(_logic.service.messages);
+    } catch (e) {
+      appLog.error('AgentView: 加载更早历史失败 - $e');
+    } finally {
+      _isPaginating = false;
+      // 延迟重置：等 RxList 通知（异步）派发完成后，避免 logic 的滚动监听误触发
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _logic.service.isPaginatingHistory = false;
+      });
+    }
+  }
+
+  /// 按 turnId 分组：同回合的 agent 文本 + 工具消息合并为一个时间轴；
+  /// 用户消息保持独立。
+  /// 返回 [(msg, null)] 独立消息 或 [null, turnMsgs] 时间轴消息组
+  List<({AgentMessage? msg, List<AgentMessage>? turnMsgs})> _groupTimeline(
+      List<AgentMessage> messages) {
+    final result = <({AgentMessage? msg, List<AgentMessage>? turnMsgs})>[];
+    // 当前回合收集（用户消息不入时间轴）
+    var currentTurnId = '';
+    var currentTurn = <AgentMessage>[];
+
+    void flushTurn() {
+      if (currentTurn.isNotEmpty) {
+        // 按 seq 排序（agent 文本在前，工具在后）
+        currentTurn.sort((a, b) => a.seq.compareTo(b.seq));
+        result.add((msg: null, turnMsgs: List.of(currentTurn)));
+        currentTurn = [];
+      }
+      currentTurnId = '';
     }
 
     for (final msg in messages) {
-      if (msg.isToolResult) {
-        currentTools.add(msg);
+      if (msg.isUser) {
+        // 用户消息：先结束当前回合，再独立显示
+        flushTurn();
+        result.add((msg: msg, turnMsgs: null));
+      } else if (msg.isToolResult) {
+        // 工具消息：归入当前回合；若 turnId 与当前不同，先结束当前回合
+        final turnId = msg.turnId ?? '';
+        if (currentTurn.isNotEmpty && turnId != currentTurnId && turnId.isNotEmpty) {
+          flushTurn();
+        }
+        if (currentTurnId.isEmpty) currentTurnId = turnId;
+        currentTurn.add(msg);
       } else {
-        flushTools();
-        result.add((msg: msg, tools: null));
+        // agent 文本消息：归入当前回合（若同 turnId）或开启新回合
+        final turnId = msg.turnId ?? '';
+        if (currentTurn.isNotEmpty && turnId != currentTurnId && turnId.isNotEmpty) {
+          flushTurn();
+        }
+        if (currentTurnId.isEmpty) currentTurnId = turnId;
+        currentTurn.add(msg);
       }
     }
-    flushTools();
+    flushTurn();
     return result;
   }
 
-  /// 工具组 → 容器 ChatMessage（customBuilder 渲染 _ToolGroupBubble）
-  ChatMessage _toToolGroupMessage(List<AgentMessage> tools) {
-    // 工具组 id 用首个工具 id
-    final firstId = tools.isNotEmpty ? tools.first.id : 'toolgroup';
+  /// 时间轴组 → ChatMessage（customBuilder 渲染 _TurnTimeline）
+  /// 时间取该回合最早 agent 回复时间（无 agent 文本时取最早消息时间）
+  ChatMessage _toTimelineMessage(List<AgentMessage> turnMsgs) {
+    final firstId = turnMsgs.isNotEmpty ? turnMsgs.first.id : 'timeline';
+    DateTime? agentTime;
+    for (final m in turnMsgs) {
+      if (!m.isToolResult) {
+        agentTime = m.time;
+        break;
+      }
+    }
+    final time = agentTime ?? (turnMsgs.isNotEmpty ? turnMsgs.first.time : DateTime.now());
     return ChatMessage(
       text: '',
       user: _aiUser,
-      createdAt: tools.isNotEmpty ? tools.first.time : DateTime.now(),
-      customProperties: {'id': 'toolgroup_$firstId'},
-      customBuilder: (context, _) => _ToolGroupBubble(tools: tools),
+      createdAt: time,
+      customProperties: {'id': 'timeline_$firstId'},
+      customBuilder: (context, _) => _TurnTimeline(turnMsgs: turnMsgs),
     );
   }
 
@@ -300,6 +408,8 @@ class _AgentPageState extends State<AgentPage> {
                   currentUser: _currentUser,
                   aiUser: _aiUser,
                   controller: _chatController,
+                  // 共享 scrollController，让库的分页滚动检测与 loadMoreHistoryIfNeeded 使用同一 controller
+                  scrollController: logic.scrollController,
                   onSendMessage: (chatMsg) {
                     _handleSendMessage(chatMsg);
                   },
@@ -320,20 +430,30 @@ class _AgentPageState extends State<AgentPage> {
                   ],
                   messageOptions: _buildMessageOptions(context),
                   inputOptions: _buildInputOptions(context, logic, state),
+                  // 减小消息列表左右间距（默认 16 → 8）
+                  spacingConfig: const ChatSpacingConfig(
+                    messageListPadding: EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 8,
+                    ),
+                  ),
                   enableMarkdownStreaming: true,
                   streamingWordByWord: false,
                   loadingConfig: LoadingConfig(
                     isLoading: state.isGenerating.value,
+                    loadingIndicator: const AppLoading(size: AppLoadingSize.small),
                   ),
                   messageListOptions: MessageListOptions(
                     onLoadMore: () async {
-                      // 库自动滚动到顶部时加载更早历史，桥接监听会全量重建保持顺序
-                      _logic.loadMoreHistoryIfNeeded();
+                      // 官方方案：controller.loadMore 增量加载（addMessages，不重置滚动）
+                      _triggerLoadMore();
                     },
                     hasMoreMessages: logic.service.hasMoreHistory,
                     paginationConfig: PaginationConfig(
                       enabled: true,
-                      autoLoadOnScroll: true,
+                      // 库的 reverse 分页触发方向与"向上加载更早"不符，关闭自动加载，
+                      // 由 scrollController 监听视觉顶部触发
+                      autoLoadOnScroll: false,
                     ),
                   ),
                 ),
@@ -355,7 +475,7 @@ class _AgentPageState extends State<AgentPage> {
   /// 消息气泡样式（匹配现有风格）
   MessageOptions _buildMessageOptions(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final bubbleMaxWidth = MediaQuery.of(context).size.width * 0.85;
+    final bubbleMaxWidth = MediaQuery.of(context).size.width * 0.93;
     return MessageOptions(
       bubbleStyle: BubbleStyle(
         userBubbleColor: scheme.primaryContainer,
@@ -367,12 +487,97 @@ class _AgentPageState extends State<AgentPage> {
         aiBubbleMaxWidth: bubbleMaxWidth,
         userBubbleMaxWidth: bubbleMaxWidth,
       ),
-      showTime: false,
+      // 气泡与屏幕边缘的间距（默认 16 → 8，更紧凑）
+      containerMargin: const EdgeInsets.symmetric(horizontal: 8),
+      showTime: true,
       showUserName: false,
+      // 时间格式：当天显示时分，跨天显示日期+时间
+      timeFormat: (time) {
+        final h = time.hour.toString().padLeft(2, '0');
+        final m = time.minute.toString().padLeft(2, '0');
+        final now = DateTime.now();
+        final isToday = time.year == now.year &&
+            time.month == now.month &&
+            time.day == now.day;
+        if (isToday) return '$h:$m';
+        return '${time.month}/${time.day} $h:$m';
+      },
       userTextColor: scheme.onPrimaryContainer,
       aiTextColor: scheme.onSurface,
       textStyle: Theme.of(context).textTheme.bodyMedium,
+      // 定制用户气泡：渐变 + 不对称圆角 + 阴影（agent 消息用默认气泡）
+      bubbleBuilder: (context, message, isCurrentUser, defaultBubble) {
+        if (!isCurrentUser) return defaultBubble;
+        return Align(
+          alignment: Alignment.centerRight,
+          child: Container(
+            constraints: BoxConstraints(
+              maxWidth: bubbleMaxWidth,
+            ),
+            padding: EdgeInsets.symmetric(
+              horizontal: 14,
+              vertical: 10,
+            ),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  scheme.primary,
+                  scheme.primary.withValues(alpha: 0.85),
+                ],
+              ),
+              borderRadius: BorderRadius.only(
+                topLeft: Radius.circular(AppRadius.lg),
+                topRight: Radius.circular(AppRadius.lg),
+                bottomLeft: Radius.circular(AppRadius.lg),
+                bottomRight: Radius.circular(AppRadius.sm),
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: scheme.primary.withValues(alpha: 0.25),
+                  blurRadius: 8,
+                  offset: const Offset(0, 3),
+                ),
+              ],
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  message.text,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: scheme.onPrimary,
+                        height: 1.4,
+                      ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  _formatMessageTime(message.createdAt),
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: scheme.onPrimary.withValues(alpha: 0.8),
+                        fontSize: 10,
+                      ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
+  }
+
+  /// 格式化消息时间（当天时分，跨天日期+时间）
+  String _formatMessageTime(DateTime time) {
+    final h = time.hour.toString().padLeft(2, '0');
+    final m = time.minute.toString().padLeft(2, '0');
+    final now = DateTime.now();
+    final isToday = time.year == now.year &&
+        time.month == now.month &&
+        time.day == now.day;
+    if (isToday) return '$h:$m';
+    return '${time.month}/${time.day} $h:$m';
   }
 
   /// 输入栏样式（匹配现有风格）
@@ -532,225 +737,268 @@ class _AgentPageState extends State<AgentPage> {
   }
 }
 
-/// 工具调用聚合容器（圆形卡片堆叠/展开动画）
-/// 折叠态：圆形工具卡片堆叠 + 数量，点击展开
-/// 展开态：圆形卡片从堆叠位置动画散开排列（最后一个为收起圆形）
-/// 运行中的工具：保留工具图标 + 右上角 AppLoading 角标
-/// 点击工具圆形：弹框显示调用详情
-class _ToolGroupBubble extends StatefulWidget {
-  final List<AgentMessage> tools;
+/// 回合时间轴（竖向时间线）
+/// 把同一回合的 agent 回复文本与工具调用，按执行顺序串成竖向时间轴
+class _TurnTimeline extends StatelessWidget {
+  final List<AgentMessage> turnMsgs;
 
-  const _ToolGroupBubble({required this.tools});
-
-  @override
-  State<_ToolGroupBubble> createState() => _ToolGroupBubbleState();
-}
-
-class _ToolGroupBubbleState extends State<_ToolGroupBubble> {
-  bool _expanded = false;
-
-  List<AgentMessage> get tools => widget.tools;
-
-  /// 折叠态最多显示的胶囊数
-  static const int _maxCollapsedChips = 3;
-
-  Color _toolColorOf(AgentToolType? type) {
-    switch (type) {
-      case AgentToolType.search:
-        return Colors.blue;
-      case AgentToolType.download:
-        return Colors.orange;
-      case AgentToolType.install:
-        return Colors.green;
-      case AgentToolType.manageApp:
-        return Colors.indigo;
-      case AgentToolType.appInfo:
-        return Colors.teal;
-      case AgentToolType.update:
-        return Colors.purple;
-      case AgentToolType.backup:
-        return Colors.brown;
-      case AgentToolType.manageDownload:
-        return Colors.orange;
-      case AgentToolType.theme:
-        return Colors.pink;
-      case AgentToolType.fdroid:
-        return Colors.lightGreen;
-      case AgentToolType.webdav:
-        return Colors.cyan;
-      case AgentToolType.installed:
-        return Colors.lime;
-      case null:
-        return Colors.blueGrey;
-    }
-  }
-
-  IconData _toolIconOf(AgentToolType? type) {
-    switch (type) {
-      case AgentToolType.search:
-        return Icons.search;
-      case AgentToolType.download:
-        return Icons.download;
-      case AgentToolType.install:
-        return Icons.install_mobile;
-      case AgentToolType.manageApp:
-        return Icons.apps;
-      case AgentToolType.appInfo:
-        return Icons.info_outline;
-      case AgentToolType.update:
-        return Icons.system_update_alt;
-      case AgentToolType.backup:
-        return Icons.backup_outlined;
-      case AgentToolType.manageDownload:
-        return Icons.download_for_offline_outlined;
-      case AgentToolType.theme:
-        return Icons.palette_outlined;
-      case AgentToolType.fdroid:
-        return Icons.science_outlined;
-      case AgentToolType.webdav:
-        return Icons.cloud_outlined;
-      case AgentToolType.installed:
-        return Icons.check_circle_outline;
-      case null:
-        return Icons.build;
-    }
-  }
-
-  String _toolLabelOf(AgentToolType? type) {
-    switch (type) {
-      case AgentToolType.search:
-        return '🔍 搜索应用';
-      case AgentToolType.download:
-        return '⬇️ 下载应用';
-      case AgentToolType.install:
-        return '📦 安装应用';
-      case AgentToolType.manageApp:
-        return '🗂️ 管理应用';
-      case AgentToolType.appInfo:
-        return 'ℹ️ 应用详情';
-      case AgentToolType.update:
-        return '🔄 检查更新';
-      case AgentToolType.backup:
-        return '💾 备份管理';
-      case AgentToolType.manageDownload:
-        return '⬇️ 下载管理';
-      case AgentToolType.theme:
-        return '🎨 主题设置';
-      case AgentToolType.fdroid:
-        return '🧪 F-Droid 仓库';
-      case AgentToolType.webdav:
-        return '☁️ WebDAV 同步';
-      case AgentToolType.installed:
-        return '📱 已安装应用';
-      case null:
-        return '工具';
-    }
-  }
-
-  /// 工具简称（胶囊显示用）
-  String _toolShortName(AgentToolType? type) {
-    switch (type) {
-      case AgentToolType.search:
-        return '搜索';
-      case AgentToolType.download:
-        return '下载';
-      case AgentToolType.install:
-        return '安装';
-      case AgentToolType.manageApp:
-        return '管理应用';
-      case AgentToolType.appInfo:
-        return '详情';
-      case AgentToolType.update:
-        return '检查更新';
-      case AgentToolType.backup:
-        return '备份';
-      case AgentToolType.manageDownload:
-        return '下载管理';
-      case AgentToolType.theme:
-        return '主题';
-      case AgentToolType.fdroid:
-        return 'F-Droid';
-      case AgentToolType.webdav:
-        return 'WebDAV';
-      case AgentToolType.installed:
-        return '已安装';
-      case null:
-        return '工具';
-    }
-  }
+  const _TurnTimeline({required this.turnMsgs});
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     return Align(
       alignment: Alignment.centerLeft,
-      // 匹配 agent 气泡默认左 margin（16），保持左侧对齐；
-      // 负上边距抵消 agent 气泡底部 margin，让工具容器紧贴对应的 agent 气泡
+      // 匹配 agent 气泡左间距（8），保持左侧对齐
       child: Padding(
-        padding: const EdgeInsets.only(left: 16, top: -6, bottom: 6),
+        padding: const EdgeInsets.only(left: 8, top: 4, bottom: 8),
         child: ConstrainedBox(
           constraints: BoxConstraints(
-            maxWidth: MediaQuery.of(context).size.width * 0.85,
+            maxWidth: MediaQuery.of(context).size.width * 0.93,
           ),
-          child: _expanded ? _buildExpanded(context) : _buildCollapsed(context),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              for (var i = 0; i < turnMsgs.length; i++)
+                _buildStep(context, turnMsgs[i], i == turnMsgs.length - 1, i + 1),
+            ],
+          ),
         ),
       ),
     );
   }
 
-  /// 折叠态：胶囊 chips 行（工具图标 + 简称 + 计数）
-  Widget _buildCollapsed(BuildContext context) {
+  /// 单个时间轴步骤
+  Widget _buildStep(BuildContext context, AgentMessage msg, bool isLast, int stepNumber) {
     final scheme = Theme.of(context).colorScheme;
-    // 前 3 个 + 计数胶囊
-    final visible = tools.take(_maxCollapsedChips).toList();
-    final remaining = tools.length - visible.length;
+    final isTool = msg.isToolResult;
+    final nodeColor =
+        isTool ? _timelineToolColor(msg.toolType) : scheme.primary;
 
-    return GestureDetector(
-      onTap: () => setState(() => _expanded = true),
-      behavior: HitTestBehavior.opaque,
-      child: Wrap(
-        spacing: AppSpacing.sm,
-        runSpacing: AppSpacing.xs,
-        crossAxisAlignment: WrapCrossAlignment.center,
+    return IntrinsicHeight(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          ...visible.map((tool) => _buildChip(context, tool)),
-          if (remaining > 0)
-            _buildCountChip(context, remaining),
+          // 时间轴竖线 + 节点圆点（带序号）
+          SizedBox(
+            width: 20,
+            child: Column(
+              children: [
+                // 节点圆点 + 序号数字
+                Container(
+                  width: 18,
+                  height: 18,
+                  margin: EdgeInsets.only(top: 4),
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: nodeColor,
+                  ),
+                  child: Center(
+                    child: Text(
+                      '$stepNumber',
+                      style: TextStyle(
+                        fontSize: 9,
+                        fontWeight: FontWeight.bold,
+                        color: scheme.onPrimary,
+                      ),
+                    ),
+                  ),
+                ),
+                // 竖线（非最后一步）
+                if (!isLast)
+                  Expanded(
+                    child: Container(
+                      width: 2,
+                      margin: EdgeInsets.symmetric(vertical: 2),
+                      color: scheme.outlineVariant.withValues(alpha: 0.5),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(width: AppSpacing.sm),
+          // 步骤内容
+          Expanded(
+            child: Padding(
+              padding: EdgeInsets.only(bottom: isLast ? 0 : AppSpacing.md),
+              child: isTool
+                  ? (msg.toolType == AgentToolType.confirm
+                      ? _buildConfirmNode(context, msg)
+                      : _buildToolChip(context, msg))
+                  : _buildText(context, msg),
+            ),
+          ),
         ],
       ),
     );
   }
 
-  /// 单个工具胶囊
-  Widget _buildChip(BuildContext context, AgentMessage tool) {
+  /// agent 文本节点（markdown 渲染）
+  Widget _buildText(BuildContext context, AgentMessage msg) {
+    if (msg.text.trim().isEmpty) {
+      return const SizedBox.shrink();
+    }
+    return AgentMarkdownMessage(text: msg.text);
+  }
+
+  /// 确认节点（内联确认/取消按钮）
+  /// 待确认：高亮显示问题 + 选项/确认取消按钮
+  /// 已选择：disable（不可再点），显示结果
+  Widget _buildConfirmNode(BuildContext context, AgentMessage msg) {
     final scheme = Theme.of(context).colorScheme;
-    final color = _toolColorOf(tool.toolType);
+    final pending = msg.toolStatus == AgentToolStatus.running;
+    final confirmed = msg.toolStatus == AgentToolStatus.done;
+    final cancelled = msg.toolStatus == AgentToolStatus.error;
+    final question = msg.toolDetail ?? msg.text ?? '';
+    final options = msg.confirmOptions ?? const <String>[];
+
+    return Container(
+      padding: EdgeInsets.symmetric(horizontal: AppSpacing.md, vertical: AppSpacing.sm),
+      decoration: BoxDecoration(
+        color: pending
+            ? scheme.primaryContainer.withValues(alpha: 0.6)
+            : scheme.surfaceContainerHighest.withValues(alpha: 0.4),
+        borderRadius: BorderRadius.circular(AppRadius.md),
+        border: Border.all(
+          color: pending ? scheme.primary : scheme.outlineVariant,
+          width: pending ? 1.5 : 1,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // 问题描述
+          Row(
+            children: [
+              Icon(
+                pending
+                    ? Icons.help_outline
+                    : (confirmed ? Icons.check_circle : Icons.cancel),
+                size: 16,
+                color: pending
+                    ? scheme.primary
+                    : (confirmed ? AppColors.success : scheme.error),
+              ),
+              const SizedBox(width: AppSpacing.sm),
+              Expanded(
+                child: Text(
+                  pending
+                      ? question
+                      : (msg.toolDetail ?? '已${confirmed ? "确认" : "取消"}'),
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: scheme.onSurface,
+                        fontWeight: pending ? FontWeight.w600 : FontWeight.w400,
+                      ),
+                ),
+              ),
+            ],
+          ),
+          if (pending && options.isNotEmpty) ...[
+            const SizedBox(height: AppSpacing.sm),
+            // 多选一：选项列表
+            ...options.map((opt) => _buildOptionItem(context, msg, opt)),
+          ],
+          if (pending && options.isEmpty) ...[
+            const SizedBox(height: AppSpacing.sm),
+            // 二选一：确认/取消按钮
+            Row(
+              children: [
+                Expanded(
+                  child: FilledButton(
+                    onPressed: () => _resolve(context, msg.id, '确认'),
+                    style: FilledButton.styleFrom(
+                      padding: EdgeInsets.symmetric(vertical: 8),
+                      backgroundColor: AppColors.success,
+                    ),
+                    child: const Text('确认'),
+                  ),
+                ),
+                const SizedBox(width: AppSpacing.sm),
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: () => _resolve(context, msg.id, '取消'),
+                    style: OutlinedButton.styleFrom(
+                      padding: EdgeInsets.symmetric(vertical: 8),
+                    ),
+                    child: const Text('取消'),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  /// 单选选项项
+  Widget _buildOptionItem(BuildContext context, AgentMessage msg, String option) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: EdgeInsets.only(bottom: AppSpacing.xs),
+      child: SizedBox(
+        width: double.infinity,
+        child: OutlinedButton.icon(
+          onPressed: () => _resolve(context, msg.id, option),
+          icon: const Icon(Icons.radio_button_unchecked, size: 16),
+          label: Align(
+            alignment: Alignment.centerLeft,
+            child: Text(
+              option,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: scheme.onSurface,
+                  ),
+            ),
+          ),
+          style: OutlinedButton.styleFrom(
+            padding: EdgeInsets.symmetric(horizontal: AppSpacing.md, vertical: 8),
+            alignment: Alignment.centerLeft,
+            backgroundColor: scheme.surface.withValues(alpha: 0.6),
+            side: BorderSide(color: scheme.outlineVariant),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 用户选择确认/取消/选项
+  void _resolve(BuildContext context, String msgId, String choice) {
+    final service = Get.find<AgentService>();
+    service.resolveConfirmation(msgId, choice);
+  }
+
+  /// 工具节点（胶囊 chip，点击弹详情）
+  Widget _buildToolChip(BuildContext context, AgentMessage tool) {
+    final scheme = Theme.of(context).colorScheme;
+    final color = _timelineToolColor(tool.toolType);
     final isRunning = tool.toolStatus == AgentToolStatus.running;
     final isError = tool.toolStatus == AgentToolStatus.error;
 
-    return Container(
-      padding: EdgeInsets.symmetric(horizontal: AppSpacing.sm, vertical: 4),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(AppRadius.circle),
-        border: Border.all(color: color.withValues(alpha: 0.3)),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(
-            isError ? Icons.error_outline : _toolIconOf(tool.toolType),
-            size: 14,
-            color: isError ? scheme.error : color,
+    return GestureDetector(
+      onTap: () => _showToolDetailDialog(context, tool),
+      child: Container(
+        padding: EdgeInsets.symmetric(horizontal: AppSpacing.sm, vertical: 5),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(AppRadius.sm),
+          border: Border.all(color: color.withValues(alpha: 0.3)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              isError ? Icons.error_outline : _timelineToolIcon(tool.toolType),
+              size: 14,
+              color: isError ? scheme.error : color,
+            ),
+            const SizedBox(width: 4),
+            Text(
+              _timelineToolLabel(tool.toolType),
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: color,
+                    fontWeight: FontWeight.w600,
+                  ),
           ),
-          const SizedBox(width: 4),
-          Text(
-            _toolShortName(tool.toolType),
-            style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  color: color,
-                  fontWeight: FontWeight.w600,
-                ),
-          ),
-          // 运行中 loading 角标
           if (isRunning) ...[
             const SizedBox(width: 4),
             SizedBox(
@@ -760,79 +1008,43 @@ class _ToolGroupBubbleState extends State<_ToolGroupBubble> {
             ),
           ],
         ],
-      ),
-    );
-  }
-
-  /// 计数胶囊（如 +7）
-  Widget _buildCountChip(BuildContext context, int remaining) {
-    final scheme = Theme.of(context).colorScheme;
-    return Container(
-      padding: EdgeInsets.symmetric(horizontal: AppSpacing.sm, vertical: 4),
-      decoration: BoxDecoration(
-        color: scheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(AppRadius.circle),
-        border: Border.all(color: scheme.outlineVariant),
-      ),
-      child: Text(
-        '+$remaining',
-        style: Theme.of(context).textTheme.labelSmall?.copyWith(
-              color: scheme.onSurfaceVariant,
-              fontWeight: FontWeight.w600,
-            ),
-      ),
-    );
-  }
-
-  /// 展开态：复用 _ToolBubble 条目竖排 + 收起操作
-  Widget _buildExpanded(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        ...tools.map((tool) => _ToolBubble(msg: tool)),
-        // 收起
-        GestureDetector(
-          onTap: () => setState(() => _expanded = false),
-          child: Padding(
-            padding: EdgeInsets.symmetric(vertical: AppSpacing.xs),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  Icons.expand_less,
-                  size: 16,
-                  color: scheme.onSurfaceVariant,
-                ),
-                const SizedBox(width: 4),
-                Text(
-                  '收起',
-                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                        color: scheme.onSurfaceVariant,
-                      ),
-                ),
-              ],
-            ),
-          ),
         ),
-      ],
+      ),
     );
   }
 
   /// 弹框显示工具调用详情（可复制）
-  void _showDetailDialog(BuildContext context, AgentMessage tool) {
-    final detailText = _buildDetailText(tool);
+  void _showToolDetailDialog(BuildContext context, AgentMessage tool) {
+    final buffer = StringBuffer();
+    buffer.writeln('工具：${_timelineToolLabel(tool.toolType)}');
+    final statusText = switch (tool.toolStatus) {
+      AgentToolStatus.running => '执行中',
+      AgentToolStatus.done => '完成',
+      AgentToolStatus.error => '失败',
+      null => '未知',
+    };
+    buffer.writeln('状态：$statusText');
+    if (tool.toolDetail != null && tool.toolDetail!.isNotEmpty) {
+      buffer.writeln('详情：');
+      buffer.writeln(tool.toolDetail);
+    }
+    if (tool.downloadStatus != null) {
+      buffer.writeln('下载状态：${tool.downloadStatus!.status}');
+    }
+    final detailText = buffer.toString().trimRight();
+
     showDialog(
       context: context,
       builder: (context) {
         return AlertDialog(
           title: Row(
             children: [
-              Icon(_toolIconOf(tool.toolType), color: _toolColorOf(tool.toolType)),
+              Icon(_timelineToolIcon(tool.toolType),
+                  color: _timelineToolColor(tool.toolType)),
               const SizedBox(width: AppSpacing.sm),
               Expanded(
                 child: Text(
-                  _toolLabelOf(tool.toolType),
+                  _timelineToolLabel(tool.toolType),
                   style: const TextStyle(fontSize: 16),
                 ),
               ),
@@ -868,30 +1080,111 @@ class _ToolGroupBubbleState extends State<_ToolGroupBubble> {
     );
   }
 
-  /// 构建详情文本（用于弹窗显示与复制）
-  String _buildDetailText(AgentMessage tool) {
-    final buffer = StringBuffer();
-    buffer.writeln('工具：${_toolLabelOf(tool.toolType)}');
-    final statusText = switch (tool.toolStatus) {
-      AgentToolStatus.running => '执行中',
-      AgentToolStatus.done => '完成',
-      AgentToolStatus.error => '失败',
-      null => '未知',
-    };
-    buffer.writeln('状态：$statusText');
-    if (tool.toolDetail != null && tool.toolDetail!.isNotEmpty) {
-      buffer.writeln('详情：');
-      buffer.writeln(tool.toolDetail);
+  Color _timelineToolColor(AgentToolType? type) {
+    switch (type) {
+      case AgentToolType.search:
+        return Colors.blue;
+      case AgentToolType.download:
+        return Colors.orange;
+      case AgentToolType.install:
+        return Colors.green;
+      case AgentToolType.manageApp:
+        return Colors.indigo;
+      case AgentToolType.appInfo:
+        return Colors.teal;
+      case AgentToolType.update:
+        return Colors.purple;
+      case AgentToolType.backup:
+        return Colors.brown;
+      case AgentToolType.manageDownload:
+        return Colors.orange;
+      case AgentToolType.theme:
+        return Colors.pink;
+      case AgentToolType.fdroid:
+        return Colors.lightGreen;
+      case AgentToolType.webdav:
+        return Colors.cyan;
+      case AgentToolType.installed:
+        return Colors.lime;
+      case null:
+      case AgentToolType.confirm:
+        return Colors.indigo;
+        return Colors.blueGrey;
     }
-    if (tool.downloadStatus != null) {
-      buffer.writeln('下载状态：${tool.downloadStatus!.status}');
+  }
+
+  IconData _timelineToolIcon(AgentToolType? type) {
+    switch (type) {
+      case AgentToolType.search:
+        return Icons.search;
+      case AgentToolType.download:
+        return Icons.download;
+      case AgentToolType.install:
+        return Icons.install_mobile;
+      case AgentToolType.manageApp:
+        return Icons.apps;
+      case AgentToolType.appInfo:
+        return Icons.info_outline;
+      case AgentToolType.update:
+        return Icons.system_update_alt;
+      case AgentToolType.backup:
+        return Icons.backup_outlined;
+      case AgentToolType.manageDownload:
+        return Icons.download_for_offline_outlined;
+      case AgentToolType.theme:
+        return Icons.palette_outlined;
+      case AgentToolType.fdroid:
+        return Icons.science_outlined;
+      case AgentToolType.webdav:
+        return Icons.cloud_outlined;
+      case AgentToolType.installed:
+        return Icons.check_circle_outline;
+      case null:
+      case AgentToolType.confirm:
+        return Icons.help_outline;
+        return Icons.build;
     }
-    return buffer.toString().trimRight();
+  }
+
+  String _timelineToolLabel(AgentToolType? type) {
+    switch (type) {
+      case AgentToolType.search:
+        return '🔍 搜索应用';
+      case AgentToolType.download:
+        return '⬇️ 下载应用';
+      case AgentToolType.install:
+        return '📦 安装应用';
+      case AgentToolType.manageApp:
+        return '🗂️ 管理应用';
+      case AgentToolType.appInfo:
+        return 'ℹ️ 应用详情';
+      case AgentToolType.update:
+        return '🔄 检查更新';
+      case AgentToolType.backup:
+        return '💾 备份管理';
+      case AgentToolType.manageDownload:
+        return '⬇️ 下载管理';
+      case AgentToolType.theme:
+        return '🎨 主题设置';
+      case AgentToolType.fdroid:
+        return '🧪 F-Droid 仓库';
+      case AgentToolType.webdav:
+        return '☁️ WebDAV 同步';
+      case AgentToolType.installed:
+        return '📱 已安装应用';
+      case null:
+      case AgentToolType.confirm:
+        return '❓ 确认操作';
+        return '工具';
+    }
   }
 }
 
-/// 工具消息气泡
-/// 默认折叠（只显示标题），点击展开详情，标题右侧按钮弹出完整内容弹窗（可复制）
+/// 工具调用聚合容器（圆形卡片堆叠/展开动画）
+/// 折叠态：圆形工具卡片堆叠 + 数量，点击展开
+/// 展开态：圆形卡片从堆叠位置动画散开排列（最后一个为收起圆形）
+/// 运行中的工具：保留工具图标 + 右上角 AppLoading 角标
+/// 点击工具圆形：弹框显示调用详情
 class _ToolBubble extends StatefulWidget {
   final AgentMessage msg;
 
@@ -936,6 +1229,8 @@ class _ToolBubbleState extends State<_ToolBubble> {
       case AgentToolType.installed:
         return Colors.lime;
       case null:
+      case AgentToolType.confirm:
+        return Colors.indigo;
         return Colors.blueGrey;
     }
   }
@@ -968,6 +1263,8 @@ class _ToolBubbleState extends State<_ToolBubble> {
       case AgentToolType.installed:
         return Icons.check_circle_outline;
       case null:
+      case AgentToolType.confirm:
+        return Icons.help_outline;
         return Icons.build;
     }
   }
@@ -1001,6 +1298,8 @@ class _ToolBubbleState extends State<_ToolBubble> {
       case AgentToolType.installed:
         return '📱 已安装应用';
       case null:
+      case AgentToolType.confirm:
+        return '❓ 确认操作';
         return '工具';
     }
   }

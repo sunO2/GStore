@@ -28,7 +28,9 @@ class AgentLogic extends GetxController {
     super.onReady();
 
     // 监听消息变化，流式输出时自动滚动到底部
+    // 分页加载历史时跳过（避免加载更多后跳回底部）
     service.messages.listen((_) {
+      if (service.isPaginatingHistory) return;
       _scrollToBottom();
     });
 
@@ -128,15 +130,15 @@ class AgentLogic extends GetxController {
   Timer? _scrollDebounce;
 
   /// 滚动到底部
-  /// 普通列表用 jumpTo(maxScrollExtent) 滚到最新消息，无动画跳动；
-  /// 初始化加载历史消息阶段跳过，避免进入页面时跳动
+  /// 库使用 reverse 列表（reverseOrder=true），offset 0 = 视觉底部（最新消息）
+  /// jumpTo(0) 无动画跳动；初始化加载历史消息阶段跳过，避免进入页面时跳动
   void _scrollToBottom() {
     if (!_initialLoaded) return;
     _scrollDebounce?.cancel();
     _scrollDebounce = Timer(const Duration(milliseconds: 80), () {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (scrollController.hasClients) {
-          scrollController.jumpTo(scrollController.position.maxScrollExtent);
+          scrollController.jumpTo(0);
         }
       });
     });
@@ -151,20 +153,18 @@ class AgentLogic extends GetxController {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (scrollController.hasClients) {
         // 记录加载前的偏移量
-        final oldMax = scrollController.position.maxScrollExtent;
         final oldPixels = scrollController.position.pixels;
 
         service.loadMoreHistory();
 
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (scrollController.hasClients) {
-            // 普通列表：新内容插入顶部，maxScrollExtent 增大，
-            // 补偿偏移量保持视觉位置不变（内容下移量 = 新增滚动范围）
-            final newMax = scrollController.position.maxScrollExtent;
-            final delta = newMax - oldMax;
-            if (delta > 0) {
-              scrollController.jumpTo(oldPixels + delta);
-            }
+            // reverse 列表：offset 0 = 底部（最新），maxScrollExtent = 顶部（最早）。
+            // 更早消息插入数组开头 = 视觉顶部，offset 不变即可保持当前视觉位置。
+            scrollController.jumpTo(oldPixels.clamp(
+              0.0,
+              scrollController.position.maxScrollExtent,
+            ));
           }
           _loadingHistory = false;
         });
