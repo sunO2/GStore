@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:gstore/page/home/tab/mine/view.dart';
 import 'package:gstore/page/home/tab/applist/view.dart';
-import 'package:gstore/page/home/tab/channeltest/view.dart';
+import 'package:gstore/page/agent/view.dart';
 import 'package:gstore/page/home/tab/discovery/view.dart';
 
 import 'logic.dart';
@@ -22,7 +22,7 @@ class HomePage extends StatelessWidget {
         children: [
           const ApplistPage(),
           DiscoveryPage(),
-          ChannelTestPage(),
+          const AgentPage(),
           MinePage(),
         ],
       ),
@@ -67,10 +67,10 @@ class HomePage extends StatelessWidget {
                 icon: AnimatedSwitcher(
                   duration: AppAnimations.normal,
                   child: (logic.state.index.value == 2)
-                      ? const Icon(Icons.science, key: ValueKey(6))
-                      : const Icon(Icons.science_outlined, key: ValueKey(7)),
+                      ? const Icon(Icons.smart_toy, key: ValueKey(6))
+                      : const Icon(Icons.smart_toy_outlined, key: ValueKey(7)),
                 ),
-                label: "我的频道"),
+                label: "AI 助手"),
             NavigationDestination(
                 icon: AnimatedSwitcher(
                   duration: AppAnimations.normal,
