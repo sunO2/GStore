@@ -141,12 +141,20 @@ class AgentSkills {
       workflowEn: '1. Check configuration first: call webdavSync status; guide to Settings if not configured\n2. Query backup data: call webdavSync list to show the cloud backup files (time/size) for the user to pick from\n3. Upload: call webdavSync upload\n4. Download/restore: call webdavSync download (confirm with confirmAction before overwriting)\n5. Report the result',
     ),
     AgentSkill(
+      name: '应用配置管理',
+      nameEn: 'App Config Management',
+      triggers: '用户要求修改应用配置、查看设置、调整下载/更新策略、设置代理时',
+      triggersEn: 'When the user asks to change app config, view settings, adjust download/update policy, or set proxy',
+      workflow: '1. 先调用 configManager list 获取结构化 JSON 快照（含 key/类型/当前值/默认值/可选枚举值/示例/分组），敏感项已脱敏\n2. 查看单个配置：configManager get（需 key），返回结构化 JSON\n3. 根据快照中的 type/enumValues/example 构造正确类型的 value，调用 configManager set（需 key 和 value）；修改后相关功能自动生效，无需额外操作\n4. 清除配置：configManager clear（需 key）\n5. 反馈结果（结构化 success/message/key/value）；失败时说明原因（未知键/类型错误/不允许修改）并重新 list 确认可用项',
+      workflowEn: '1. Call configManager list first to get a structured JSON snapshot (key/type/current value/default/enum values/example/category); sensitive values are masked\n2. Read a single item: configManager get (needs key), returns structured JSON\n3. Build a correctly typed value from type/enumValues/example, then call configManager set (needs key+value); the related feature updates automatically\n4. Clear config: configManager clear (needs key)\n5. Report the structured result (success/message/key/value); on failure explain why (unknown key / wrong type / not accessible) and re-list to confirm valid items',
+    ),
+    AgentSkill(
       name: '问题诊断与失败处理',
       nameEn: 'Troubleshooting & Failure Handling',
       triggers: '任何工具返回错误、搜索无结果、下载/安装失败时',
       triggersEn: 'When any tool returns an error, search yields nothing, or download/install fails',
-      workflow: '1. 先向用户说明问题，不假装成功\n2. 分类处理：\n   - 搜索无结果：换关键词/检查渠道\n   - 下载失败：网络/URL失效/服务器不支持断点\n   - 安装失败：APK完整性/手动从下载中心安装\n   - 备份失败：存储权限/路径\n   - 模型/API失败：检查API Key/网络\n3. 给出可行的下一步建议\n4. 避免重复无意义重试',
-      workflowEn: '1. Explain the issue first; never pretend success\n2. Handle by category:\n   - No search results: change keywords / check channels\n   - Download failed: network / invalid URL / server without resumable support\n   - Install failed: APK integrity / manual install from download center\n   - Backup failed: storage permission / path\n   - Model/API failure: check API key / network\n3. Give actionable next steps\n4. Avoid meaningless repeated retries',
+      workflow: '1. 先向用户说明问题，不假装成功\n2. 分类处理：\n   - 搜索无结果：换关键词/检查渠道\n   - 下载失败：网络/URL失效/服务器不支持断点\n   - 安装失败：APK完整性/手动从下载中心安装\n   - 备份失败：存储权限/路径\n   - 模型/API失败：检查API Key/网络\n   - 配置失败：用 configManager list 确认可用项\n3. 给出可行的下一步建议\n4. 避免重复无意义重试',
+      workflowEn: '1. Explain the issue first; never pretend success\n2. Handle by category:\n   - No search results: change keywords / check channels\n   - Download failed: network / invalid URL / server without resumable support\n   - Install failed: APK integrity / manual install from download center\n   - Backup failed: storage permission / path\n   - Model/API failure: check API key / network\n   - Config failed: use configManager list to confirm valid items\n3. Give actionable next steps\n4. Avoid meaningless repeated retries',
     ),
   ];
 
