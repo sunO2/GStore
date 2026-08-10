@@ -13,6 +13,7 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:gstore/core/core.dart';
 
@@ -455,6 +456,22 @@ class ConfigService {
     final entry = _registry[key];
     if (entry == null) {
       return ConfigOpResult.failure('未知配置项: $key', key: key);
+    }
+
+    // JSON 类型配置兼容字符串输入：
+    // LLM 函数调用参数多为字符串，若 value 是 JSON 字符串则解析为 Map/List
+    if (entry.type == ConfigValueType.json && value is String) {
+      final trimmed = value.trim();
+      if (trimmed.isNotEmpty) {
+        try {
+          value = jsonDecode(trimmed);
+        } catch (_) {
+          return ConfigOpResult.failure(
+            '配置 $key 需要 JSON 对象（如 {"fontStyle": 3}）或合法 JSON 字符串',
+            key: key,
+          );
+        }
+      }
     }
 
     // 类型校验

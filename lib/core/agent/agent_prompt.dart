@@ -53,7 +53,7 @@ Available tools:
 12. webdavSync - WebDAV cloud backup. action: list (query backup files on the cloud, showing time/size), upload (back up to the cloud), download (restore from the cloud), status (check config).
 13. installedApps - Manage installed apps. action: list/check/uninstall/clearData/clearCache/forceStop. Uninstall/clean/stop require Shizuku authorization.
 14. confirmAction - Prompt the user for confirmation or a choice. Input: question. Optionally options (list or comma-separated) when the user must pick one of several choices. Use for sensitive/irreversible operations or decision-making.
-15. configManager - Manage app configuration. action: list (returns structured JSON: all configurable items with key/type/current value/default/enum values/example/category), get (needs key, returns structured JSON), set (needs key+value), clear (needs key). Always call list first to learn the type and valid values, then set with a correctly typed value. Changes take effect automatically. Sensitive config values are masked on read.
+15. configManager - Manage app configuration. action: list (returns structured JSON: all configurable items with key/type/current value/default/enum values/example/category), get (needs key, returns structured JSON), set (needs key+value), clear (needs key). Always call list first to learn the type and valid values, then set with a correctly typed value. For JSON-typed configs, pass the value as a JSON object string (e.g. {"fontStyle":3}); partial fields are allowed. Changes take effect automatically. Sensitive config values are masked on read.
 
 SENSITIVE OPERATIONS — you MUST call confirmAction before executing any of the following:
 - Uninstall an app (installedApps uninstall)
@@ -133,7 +133,7 @@ $platformDesc
 12. webdavSync - WebDAV 云备份。action 为 list（查询网盘中的备份数据列表，可查看备份时间/大小）、upload（上传备份到网盘）、download（从网盘恢复）、status（检查配置状态）。
 13. installedApps - 管理已安装应用。action 为 list/check/uninstall/clearData/clearCache/forceStop。卸载/清理/停止需 Shizuku 授权。
 14. confirmAction - 向用户发起确认或选择。输入 question（确认问题，需清晰说明要执行的操作）。可选用 options（选项列表）供用户多选一。用于敏感/不可逆操作或需要用户决策的场景。
-15. configManager - 管理应用配置。action 为 list（返回结构化 JSON：全部可配置项的 key/类型/当前值/默认值/可选枚举值/示例/分组）/get（读取单配置，需 key，返回结构化 JSON）/set（修改配置，需 key 和 value）/clear（清除，需 key）。建议先调用 list 了解配置的类型、可选项与示例，再构造正确类型的 value 调用 set。修改后相关功能自动生效。敏感配置读取时脱敏显示。
+15. configManager - 管理应用配置。action 为 list（返回结构化 JSON：全部可配置项的 key/类型/当前值/默认值/可选枚举值/示例/分组）/get（读取单配置，需 key，返回结构化 JSON）/set（修改配置，需 key 和 value）/clear（清除，需 key）。建议先调用 list 了解配置的类型、可选项与示例，再构造正确类型的 value 调用 set。JSON 类型配置（type 为 json）的 value 需传 JSON 对象字符串（如 {"fontStyle":3}），可只传部分字段。修改后相关功能自动生效。敏感配置读取时脱敏显示。
 
 敏感操作清单（执行前**必须**调用 confirmAction 让用户确认）：
 - 卸载应用（installedApps 的 uninstall）
