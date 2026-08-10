@@ -2,16 +2,18 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:get/get.dart';
+import 'package:gstore/core/config/config_registry.dart';
+import 'package:gstore/core/config/config_service.dart';
 import 'package:gstore/core/fdroid/FdroidRepoModels.dart';
 import 'package:gstore/core/logger/LogManager.dart';
+import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/rust/FdroidRustRepoManager.dart' as rust;
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 /// F-Droid 仓库管理器
 /// 使用 Rust 实现提供更快的下载和解析速度
-class FdroidRepoManager extends GetxController {
+class FdroidRepoManager extends GetxController implements IFdroidRepoService {
   static FdroidRepoManager? _instance;
 
   static FdroidRepoManager get instance {
@@ -74,9 +76,9 @@ class FdroidRepoManager extends GetxController {
       debugPrint('FdroidRepoManager: 找到启用源: $enabledSource');
 
       // 尝试加载上次选中的源
-      final prefs = await SharedPreferences.getInstance();
-      final lastSourceId = prefs.getString('last_source_id');
-      if (lastSourceId != null) {
+      final lastSourceId =
+          await ConfigService.instance.getT<String>(ConfigKeys.lastSourceId);
+      if (lastSourceId != null && lastSourceId.isNotEmpty) {
         final lastSource = sources.firstWhereOrNull((s) => s.id == lastSourceId);
         if (lastSource != null) {
           currentSource.value = lastSource;
@@ -99,8 +101,8 @@ class FdroidRepoManager extends GetxController {
   /// 加载保存的源配置
   Future<void> _loadSources() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final sourcesJson = prefs.getString('fdroid_sources');
+      final sourcesJson =
+          await ConfigService.instance.getT<String>(ConfigKeys.fdroidSources);
 
       if (sourcesJson != null && sourcesJson.isNotEmpty) {
         final List<dynamic> sourcesList = jsonDecode(sourcesJson);
@@ -123,9 +125,12 @@ class FdroidRepoManager extends GetxController {
   /// 保存源配置
   Future<void> _saveSources() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
       final sourcesJson = jsonEncode(sources.map((s) => s.toJson()).toList());
-      await prefs.setString('fdroid_sources', sourcesJson);
+      await ConfigService.instance.set(
+        ConfigKeys.fdroidSources,
+        sourcesJson,
+        source: ConfigChangeSource.internal,
+      );
       appLog.info('FdroidRepoManager: 已保存 ${sources.length} 个源配置');
     } catch (e) {
       appLog.error('FdroidRepoManager: 保存源配置失败 - $e');
@@ -147,8 +152,11 @@ class FdroidRepoManager extends GetxController {
     currentSource.value = source;
 
     // 保存当前选中的源
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('last_source_id', sourceId);
+    await ConfigService.instance.set(
+      ConfigKeys.lastSourceId,
+      sourceId,
+      source: ConfigChangeSource.user,
+    );
     appLog.info('FdroidRepoManager: 已保存当前源: $sourceId');
 
     // 重新加载数据

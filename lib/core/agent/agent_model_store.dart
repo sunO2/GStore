@@ -1,5 +1,7 @@
 import 'dart:convert';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:gstore/core/config/config_registry.dart';
+import 'package:gstore/core/config/config_service.dart';
+import 'package:gstore/core/config/config_store.dart';
 
 /// LLM Provider 类型
 enum AgentLlmProvider {
@@ -100,9 +102,8 @@ class AgentModel {
 
 /// 模型存储管理器
 /// 管理多个模型配置，支持选择当前使用的模型
+/// 存储走统一 ConfigService/ConfigStore（key 见 ConfigKeys）
 class AgentModelStore {
-  static const String _keyModels = 'agent_models';
-  static const String _keySelectedId = 'agent_selected_model_id';
 
   /// 所有模型配置
   List<AgentModel> models;
@@ -126,8 +127,9 @@ class AgentModelStore {
 
   /// 从本地存储加载
   static Future<AgentModelStore> load() async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_keyModels);
+    final store = ConfigStore.instance;
+    await store.initialize();
+    final raw = await store.readString(ConfigKeys.agentModels);
     List<AgentModel> models = [];
     if (raw != null && raw.isNotEmpty) {
       try {
@@ -141,19 +143,20 @@ class AgentModelStore {
     }
     return AgentModelStore(
       models: models,
-      selectedId: prefs.getString(_keySelectedId),
+      selectedId: await store.readString(ConfigKeys.agentSelectedModelId),
     );
   }
 
   /// 保存到本地存储
   Future<void> save() async {
-    final prefs = await SharedPreferences.getInstance();
+    final store = ConfigStore.instance;
+    await store.initialize();
     final raw = jsonEncode(models.map((e) => e.toJson()).toList());
-    await prefs.setString(_keyModels, raw);
+    await store.writeString(ConfigKeys.agentModels, raw);
     if (selectedId != null) {
-      await prefs.setString(_keySelectedId, selectedId!);
+      await store.writeString(ConfigKeys.agentSelectedModelId, selectedId!);
     } else {
-      await prefs.remove(_keySelectedId);
+      await store.remove(ConfigKeys.agentSelectedModelId);
     }
   }
 
@@ -184,10 +187,21 @@ class AgentModelStore {
     await save();
   }
 
-  /// 选择当前使用的模型
+  /// 选择当前使用的模型（经 ConfigService 广播，AgentService 监听后主动重配）
   Future<void> select(String id) async {
     selectedId = id;
-    await save();
+    await ConfigService.instance.set(
+      ConfigKeys.agentSelectedModelId,
+      id,
+      source: ConfigChangeSource.user,
+    );
+    await _persistModels();
+  }
+
+  Future<void> _persistModels() async {
+    final store = ConfigStore.instance;
+    final raw = jsonEncode(models.map((e) => e.toJson()).toList());
+    await store.writeString(ConfigKeys.agentModels, raw);
   }
 
   /// 清空所有

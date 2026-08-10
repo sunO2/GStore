@@ -5,6 +5,7 @@ import 'package:gstore/http/download/DownloadStatus.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/config/config_manager.dart';
 import 'package:gstore/core/config/providers/download_config_provider.dart';
+import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:dio/dio.dart';
 import 'package:gstore/http/download/DownloadStatusDataBase.dart';
 import 'package:gstore/core/download/model/DownloadContext.dart';
@@ -52,7 +53,8 @@ class DownloadSemaphore {
   int get queued => _queue.length;
 }
 
-class DownloadService extends GetxService {
+class DownloadService extends GetxService
+    implements IDownloadService {
   final Dio _dio;
 
   /// 最大并发下载数
@@ -64,7 +66,43 @@ class DownloadService extends GetxService {
   final DownloadSemaphore _semaphore =
       DownloadSemaphore(maxConcurrentDownloads);
 
+  /// 是否启用多段下载（内存缓存，配置变化时由 ConfigService 事件更新）
+  bool _multiSegmentEnabled = true;
+
+  /// 多段下载开关的订阅
+  StreamSubscription? _multiSegmentSub;
+
   DownloadService(this._dio);
+
+  @override
+  void onInit() {
+    super.onInit();
+    // 订阅 ConfigService：download_config 变化 → 主动更新缓存开关
+    try {
+      _multiSegmentSub =
+          ConfigService.instance.watch(ConfigKeys.downloadConfig).listen(
+        (event) async {
+          final v = event.newValue;
+          if (v is Map<String, dynamic>) {
+            try {
+              _multiSegmentEnabled =
+                  DownloadConfig.fromJson(v).multiSegmentEnabled;
+            } catch (_) {}
+          } else if (v is bool) {
+            _multiSegmentEnabled = v;
+          }
+        },
+      );
+    } catch (e) {
+      appLog.error('DownloadService: 订阅下载配置失败 - $e');
+    }
+  }
+
+  @override
+  void onClose() {
+    _multiSegmentSub?.cancel();
+    super.onClose();
+  }
   /// appid 包名
   /// appName 应用名称
   /// version 版本
@@ -275,15 +313,18 @@ class DownloadService extends GetxService {
   ) async {
     try {
       if (!breakPoint) return false;
-      // 读取开关（失败默认开启）
-      bool enabled = true;
-      try {
-        final provider = ConfigManager.instance.providers['download_config'];
-        if (provider is DownloadConfigProvider) {
-          enabled = await provider.isMultiSegmentEnabled();
+      // 读取开关（内存缓存优先；首次从配置读取）
+      var enabled = _multiSegmentEnabled;
+      if (!enabled) {
+        try {
+          final provider = ConfigManager.instance.providers['download_config'];
+          if (provider is DownloadConfigProvider) {
+            enabled = await provider.isMultiSegmentEnabled();
+            _multiSegmentEnabled = enabled;
+          }
+        } catch (e) {
+          appLog.error('DownloadService: 读取多段开关失败（默认开启）- $e');
         }
-      } catch (e) {
-        appLog.error('DownloadService: 读取多段开关失败（默认开启）- $e');
       }
       if (!enabled) return false;
 

@@ -2,6 +2,8 @@ import 'package:flutter/foundation.dart';
 import 'package:get/get.dart';
 import 'package:gstore/db/apps/AppInfo.dart';
 import 'package:gstore/core/service/db_manager.dart';
+import 'package:gstore/core/config/config_service.dart';
+import 'package:gstore/core/config/config_registry.dart';
 
 // 设计系统
 export 'package:gstore/core/design/design_tokens.dart';
@@ -47,6 +49,8 @@ export 'package:gstore/core/logger/LogManager.dart' hide LogLevel;
 // 错误处理和配置
 export 'package:gstore/core/exception/AppException.dart';
 export 'package:gstore/core/config/AppConfig.dart';
+export 'package:gstore/core/config/config_service.dart';
+export 'package:gstore/core/config/config_registry.dart';
 export 'package:gstore/core/error/ErrorHandler.dart';
 export 'package:gstore/core/security/UrlValidator.dart';
 
@@ -68,6 +72,9 @@ export 'package:gstore/core/agent/agent_model_store.dart';
 export 'package:gstore/core/agent/agent_session_store.dart';
 export 'package:gstore/core/agent/agent_service.dart';
 export 'package:gstore/core/agent/platform_arch.dart';
+
+// 模块化框架（ModuleManager + 动态代理）
+export 'package:gstore/core/module/module.dart';
 
 // 资源管理
 export 'package:gstore/core/resource/Disposable.dart';
@@ -101,9 +108,7 @@ void updateProxy(String? proxyUrl) {
   } catch (e) {
     debugPrint('更新代理配置持久化失败: $e');
   }
-}
-
-AppInfoConfig? getConfig() {
+}AppInfoConfig? getConfig() {
   try {
     AppInfoConfig? config = Get.find(tag: "config");
     return config;
@@ -128,3 +133,41 @@ String getProxy() {
 }
 
 String get proxy => getProxy();
+
+/// 启动代理配置桥接：监听 ConfigService 的 proxy_url 变化，
+/// 变化后更新内存 config 与数据库，使 getProxy() 立即生效。
+/// 在应用启动（ConfigInitializer 初始化完成后）调用一次。
+void startProxyConfigBridge() {
+  try {
+    final service = ConfigService.instance;
+    if (_proxyBridgeStarted) return;
+    _proxyBridgeStarted = true;
+
+    // 同步一次：内存/DB 中已有代理值时写入统一存储
+    Future(() async {
+      try {
+        final current = getProxy();
+        if (current.isNotEmpty) {
+          await service.set(
+            ConfigKeys.proxyUrl,
+            current,
+            source: ConfigChangeSource.internal,
+          );
+        }
+      } catch (e) {
+        debugPrint('代理配置同步失败: $e');
+      }
+    });
+
+    service.watch(ConfigKeys.proxyUrl).listen((event) {
+      final value = event.newValue?.toString() ?? '';
+      if (value != getProxy()) {
+        updateProxy(value);
+      }
+    });
+  } catch (e) {
+    debugPrint('代理配置桥接启动失败: $e');
+  }
+}
+
+bool _proxyBridgeStarted = false;

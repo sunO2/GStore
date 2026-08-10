@@ -7,6 +7,9 @@ import 'package:flutter/foundation.dart';
 import 'package:gstore/core/core.dart';
 
 import 'config_manager.dart';
+import 'config_registry.dart';
+import 'config_service.dart';
+import 'config_store.dart';
 import 'config_storage.dart';
 import 'providers/theme_config_provider.dart';
 import 'providers/webdav_config_provider.dart';
@@ -55,12 +58,52 @@ class ConfigInitializer {
     // 注册所有配置提供者
     _registerProviders(manager, storage);
 
+    // 初始化统一 ConfigService（注册表 + 桥接 provider + 存量迁移）
+    await _initializeConfigService(manager, storage);
+
     // 初始化工作流管理器
     await WorkflowManager.instance.initialize(storage);
     appLog.info('ConfigInitializer: 工作流管理器初始化完成');
 
     _initialized = true;
     appLog.info('ConfigInitializer: 配置管理系统初始化完成');
+  }
+
+  /// 初始化统一 ConfigService
+  static Future<void> _initializeConfigService(
+    ConfigManager manager,
+    CompositeConfigStorage storage,
+  ) async {
+    // 初始化统一存储
+    await ConfigStore.instance.initialize();
+
+    // 注册内置配置项（标记敏感 key）
+    ConfigRegistry.registerAll(ConfigService.instance);
+    ConfigService.instance.initialize();
+
+    // 桥接已存在的 ConfigProvider（读写委托，保持现有机制兼容）
+    final themeProvider = manager.getProvider<dynamic>('theme_config');
+    if (themeProvider != null) {
+      ConfigService.instance.bridgeProvider(themeProvider);
+    }
+    final downloadProvider = manager.getProvider<dynamic>('download_config');
+    if (downloadProvider != null) {
+      ConfigService.instance.bridgeProvider(downloadProvider);
+    }
+    final updateProvider = manager.getProvider<dynamic>('update_config');
+    if (updateProvider != null) {
+      ConfigService.instance.bridgeProvider(updateProvider);
+    }
+    final webdavProvider = manager.getProvider<dynamic>('webdav_config');
+    if (webdavProvider != null) {
+      ConfigService.instance.bridgeProvider(webdavProvider);
+    }
+
+    // 存量迁移：散落的旧 key 迁移到统一存储
+    await ConfigRegistry.migrateLegacy(ConfigStore.instance);
+
+    appLog.info('ConfigInitializer: ConfigService 初始化完成 '
+        '(共 ${ConfigService.instance.list().length} 项配置)');
   }
 
   /// 注册所有配置提供者
