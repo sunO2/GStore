@@ -613,10 +613,14 @@ class _AgentPageState extends State<AgentPage>
         filled: true,
         fillColor: scheme.surfaceContainerHighest,
         border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(AppRadius.lg),
+          // 半圆：大圆角（内部 contentPadding 相应调整，文本不顶边）
+          borderRadius: BorderRadius.circular(AppRadius.circle),
           borderSide: BorderSide.none,
         ),
-        contentPadding: AppSpacing.horizontalMD_verticalSM,
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.lg,
+          vertical: AppSpacing.md,
+        ),
       ),
       sendButtonBuilder: (onSend) => Obx(() {
         final sending = state.isGenerating.value;
@@ -628,10 +632,10 @@ class _AgentPageState extends State<AgentPage>
           tooltip: '发送',
         );
       }),
-      // 悬浮外壳：保持原高度，左右/下方少量留白（不贴底）
+      // 悬浮外壳：无背景/无边框（仅阴影体现悬浮），圆角半圆
       useOuterContainer: false,
       containerPadding: const EdgeInsets.symmetric(
-        horizontal: AppSpacing.sm,
+        horizontal: AppSpacing.xs,
         vertical: AppSpacing.xs,
       ),
       margin: EdgeInsets.only(
@@ -641,11 +645,7 @@ class _AgentPageState extends State<AgentPage>
         bottom: AppSpacing.md,
       ),
       containerDecoration: BoxDecoration(
-        color: scheme.surfaceContainerLow,
-        borderRadius: BorderRadius.circular(AppRadius.lg),
-        border: Border.all(
-          color: scheme.outlineVariant.withValues(alpha: 0.5),
-        ),
+        borderRadius: BorderRadius.circular(AppRadius.xxl),
         boxShadow: [
           BoxShadow(
             color: scheme.shadow.withValues(alpha: 0.12),
