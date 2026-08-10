@@ -530,10 +530,18 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
       _loadedMessageCount = 0;
       return;
     }
-    // 按 time 排序（真实创建时间，seq 作 tiebreaker），保证与实时显示顺序一致
-    _allSessionMessages = List.of(session.messages)
-      ..sort((a, b) =>
-          a.time != b.time ? a.time.compareTo(b.time) : a.seq.compareTo(b.seq));
+    // 按 time 排序（真实创建时间，seq 作 tiebreaker，原始顺序兜底保证稳定）
+    // 注：Dart List.sort 不稳定，同一毫秒 + 同 seq 时需用持久化顺序兜底，
+    // 否则 agent 回复可能排到用户消息前面（乱序）。
+    final indexed = session.messages.asMap().entries.toList();
+    indexed.sort((a, b) {
+      final t = a.value.time.compareTo(b.value.time);
+      if (t != 0) return t;
+      final s = a.value.seq.compareTo(b.value.seq);
+      if (s != 0) return s;
+      return a.key.compareTo(b.key);
+    });
+    _allSessionMessages = indexed.map((e) => e.value).toList();
 
     // 推进全局 seq 计数器到最大历史 seq + 1，
     // 防止应用重启后（_seqCounter 重置为 0）新消息 seq 与历史消息冲突导致顺序错乱
@@ -838,9 +846,16 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
 
   /// 同步全量消息缓存（分页边界保持最新）
   void _syncSessionCache(AgentSession session) {
-    final newAll = List.of(session.messages)
-      ..sort((a, b) =>
-          a.time != b.time ? a.time.compareTo(b.time) : a.seq.compareTo(b.seq));
+    // 稳定排序：time 优先、seq 兜底、持久化顺序兜底（避免同毫秒乱序）
+    final indexed = session.messages.asMap().entries.toList();
+    indexed.sort((a, b) {
+      final t = a.value.time.compareTo(b.value.time);
+      if (t != 0) return t;
+      final s = a.value.seq.compareTo(b.value.seq);
+      if (s != 0) return s;
+      return a.key.compareTo(b.key);
+    });
+    final newAll = indexed.map((e) => e.value).toList();
     final oldLen = _allSessionMessages.length;
     _allSessionMessages = newAll;
     if (_allSessionMessages.length >= oldLen) {
