@@ -166,5 +166,53 @@ void main() {
       expect(restored.text, '旧消息');
       expect(restored.turnId, isNull);
     });
+
+    test('稳定排序：同毫秒 + 同 seq 时保持持久化顺序（用户在前）', () {
+      // 模拟极端场景：用户消息与 agent 回复同一毫秒、seq 相同（旧数据 seq=0）。
+      // 用户消息总是先持久化（index 更小），稳定排序应保证用户在前。
+      final msgs = [
+        SessionMessage(
+          isUser: true, // 用户消息（先持久化，index 0）
+          text: '提问',
+          time: 1710000000000,
+          seq: 0,
+        ),
+        SessionMessage(
+          isUser: false, // agent 回复（后持久化，index 1）
+          text: '回复',
+          time: 1710000000000,
+          seq: 0,
+        ),
+      ];
+      // 与 AgentService 稳定排序一致的逻辑
+      final indexed = msgs.asMap().entries.toList();
+      indexed.sort((a, b) {
+        final t = a.value.time.compareTo(b.value.time);
+        if (t != 0) return t;
+        final s = a.value.seq.compareTo(b.value.seq);
+        if (s != 0) return s;
+        return a.key.compareTo(b.key);
+      });
+      final sorted = indexed.map((e) => e.value).toList();
+      expect(sorted.first.isUser, true, reason: '同毫秒同 seq 时用户消息必须在前');
+      expect(sorted.last.isUser, false);
+    });
+
+    test('稳定排序：同毫秒不同 seq 时按 seq 排序', () {
+      final msgs = [
+        SessionMessage(isUser: true, text: '提问', time: 1710000000000, seq: 5),
+        SessionMessage(isUser: false, text: '回复', time: 1710000000000, seq: 6),
+      ];
+      final indexed = msgs.asMap().entries.toList();
+      indexed.sort((a, b) {
+        final t = a.value.time.compareTo(b.value.time);
+        if (t != 0) return t;
+        final s = a.value.seq.compareTo(b.value.seq);
+        if (s != 0) return s;
+        return a.key.compareTo(b.key);
+      });
+      final sorted = indexed.map((e) => e.value).toList();
+      expect(sorted.first.isUser, true);
+    });
   });
 }

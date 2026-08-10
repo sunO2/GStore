@@ -155,6 +155,18 @@ class _AgentPageState extends State<AgentPage> {
     return buf.toString();
   }
 
+  /// 消息显示时间（含 seq 微秒偏移）
+  ///
+  /// 用户消息与 agent 回复可能在同一毫秒创建（发送后立即创建回复消息），
+  /// 库的 reverseOrder setMessages 用不稳定 sort 按 createdAt 排序，
+  /// 同毫秒时顺序不确定导致 agent 排到用户前。
+  /// 方案：把全局递增的 seq 叠加到微秒位（seq：用户 < agent），
+  /// 保证同毫秒内用户消息必然早于其 agent 回复。
+  DateTime _displayTime(AgentMessage msg) {
+    final micros = (msg.seq & 0x3FFFF).toInt(); // 低 18 位（约 26 万，足够）
+    return msg.time.add(Duration(microseconds: micros));
+  }
+
   /// 全量重建消息列表（同回合消息按 turnId 聚合为时间轴）
   void _rebuildAll() {
     final msgs = _logic.service.messages;
@@ -276,18 +288,16 @@ class _AgentPageState extends State<AgentPage> {
   /// 时间取该回合最早 agent 回复时间（无 agent 文本时取最早消息时间）
   ChatMessage _toTimelineMessage(List<AgentMessage> turnMsgs) {
     final firstId = turnMsgs.isNotEmpty ? turnMsgs.first.id : 'timeline';
-    DateTime? agentTime;
-    for (final m in turnMsgs) {
-      if (!m.isToolResult) {
-        agentTime = m.time;
-        break;
-      }
-    }
-    final time = agentTime ?? (turnMsgs.isNotEmpty ? turnMsgs.first.time : DateTime.now());
+    // 时间轴整体时间 = 回合最早 agent 回复的显示时间（含 seq 微秒偏移，
+    // 保证同毫秒下用户消息在前、agent 回合在后）
+    final displayTime = _displayTime(turnMsgs.firstWhere(
+      (m) => !m.isToolResult,
+      orElse: () => turnMsgs.first,
+    ));
     return ChatMessage(
       text: '',
       user: _aiUser,
-      createdAt: time,
+      createdAt: displayTime,
       customProperties: {'id': 'timeline_$firstId'},
       customBuilder: (context, _) => _TurnTimeline(turnMsgs: turnMsgs),
     );
@@ -300,7 +310,7 @@ class _AgentPageState extends State<AgentPage> {
       return ChatMessage(
         text: '',
         user: _aiUser,
-        createdAt: msg.time,
+        createdAt: _displayTime(msg),
         customProperties: {'id': msg.id},
         customBuilder: (context, _) => _ToolBubble(msg: msg),
       );
@@ -309,14 +319,14 @@ class _AgentPageState extends State<AgentPage> {
       return ChatMessage(
         text: msg.text,
         user: _currentUser,
-        createdAt: msg.time,
+        createdAt: _displayTime(msg),
         customProperties: {'id': msg.id},
       );
     }
     return ChatMessage(
       text: msg.text,
       user: _aiUser,
-      createdAt: msg.time,
+      createdAt: _displayTime(msg),
       isMarkdown: true,
       customProperties: {'id': msg.id},
     );
