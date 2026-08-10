@@ -147,6 +147,37 @@ void main() {
       expect(value, '***');
     });
 
+    test('JSON 类型配置兼容字符串输入（jsonDecode）', () async {
+      final service = ConfigService.instance;
+      // Agent 传 JSON 字符串
+      final result = await service.set(
+        ConfigKeys.themeConfig,
+        '{"fontStyle":3}',
+      );
+      expect(result.success, true, reason: result.message);
+      // 已解析为 Map 写入
+      final raw = await service.getRaw(ConfigKeys.themeConfig);
+      expect(raw, isA<Map>());
+    });
+
+    test('JSON 类型配置非法字符串返回友好错误', () async {
+      final service = ConfigService.instance;
+      final result = await service.set(
+        ConfigKeys.themeConfig,
+        'not-json{{{',
+      );
+      expect(result.success, false);
+      expect(result.message, contains('JSON'));
+    });
+
+    test('JSON 类型配置传 Map 仍正常', () async {
+      final service = ConfigService.instance;
+      final result = await service.set(ConfigKeys.themeConfig, {
+        'fontStyle': 3,
+      });
+      expect(result.success, true, reason: result.message);
+    });
+
     test('未设置返回 null', () async {
       final service = ConfigService.instance;
       expect(await service.get(ConfigKeys.proxyUrl), isNull);

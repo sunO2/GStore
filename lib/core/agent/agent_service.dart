@@ -1074,7 +1074,9 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
       description:
           '管理 GStore 应用配置。action 为 list（返回结构化 JSON：全部可配置项的 key/类型/当前值/默认值/可选枚举值/示例/分组）、get（读取单配置，需 key，返回结构化 JSON）、set（修改配置，需 key 和 value）、clear（清除配置，需 key）。'
           '建议先调用 list 了解配置的类型、可选项与示例，再构造正确的 value 调用 set。'
-          '可配置项包括：theme_mode（主题模式 0/1/2）、proxy_url（GitHub 代理前缀）、download_config（下载配置 JSON）、update_config（更新配置 JSON）、webdav_config（WebDAV 配置 JSON，敏感）、agent_selected_model_id（Agent 模型 ID）等。'
+          'JSON 类型配置（type 为 json）的 value 需传 JSON 对象字符串，如 {"fontStyle":3}；可只传要修改的部分字段（缺失字段用默认值）。'
+          'theme_config 支持字段（数字索引）：fontStyle（0默认/1紧凑/2标准/3宽松/4大号）、radiusStyle（0默认/1圆润/2方正）、borderStyle（0默认/1粗/2细）、useCustomColors（布尔）。'
+          'theme_mode（主题模式 0/1/2）、proxy_url（GitHub 代理前缀）、download_config（下载配置 JSON）、update_config（更新配置 JSON）、webdav_config（WebDAV 配置 JSON，敏感）、agent_selected_model_id（Agent 模型 ID）等。'
           '修改配置后相关功能会自动生效（如切换主题、更新代理），无需额外操作。'
           '敏感配置（如 WebDAV 密码）读取时脱敏显示，但可以设置。',
       fn: (input, _) async {

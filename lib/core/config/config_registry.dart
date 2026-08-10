@@ -67,8 +67,9 @@ class AppCoreConfigModule extends ConfigModule {
           type: ConfigValueType.json,
           agentAccessible: true,
           category: 'theme',
-          description: '主题配置（颜色/字体/圆角等）',
-          descriptionEn: 'Theme config (colors/font/radius etc.)',
+          example: '{"fontStyle":3}（3=宽松，4=大号）；可传部分字段',
+          description: '主题配置（颜色/字体/圆角等，JSON；字段值用数字索引）',
+          descriptionEn: 'Theme config (colors/font/radius etc., JSON; use numeric indices)',
         ),
         const ConfigEntry(
           key: ConfigKeys.themeMode,
