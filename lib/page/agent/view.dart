@@ -639,10 +639,10 @@ class _AgentPageState extends State<AgentPage>
         vertical: AppSpacing.xs,
       ),
       margin: EdgeInsets.only(
-        left: AppSpacing.sm,
-        right: AppSpacing.sm,
+        left: AppSpacing.xs,
+        right: AppSpacing.xs,
         top: AppSpacing.xs,
-        bottom: AppSpacing.md,
+        bottom: AppSpacing.sm,
       ),
       containerDecoration: BoxDecoration(
         borderRadius: BorderRadius.circular(AppRadius.xxl),
