@@ -634,23 +634,27 @@ class _AgentPageState extends State<AgentPage>
       }),
       // 悬浮外壳：无背景/无边框（仅阴影体现悬浮），圆角半圆
       useOuterContainer: false,
+      // 关键：外层容器默认 padding 16px 会把阴影区域扩大一圈，
+      // 设为 0 让阴影紧贴输入组件本体
+      padding: EdgeInsets.zero,
       containerPadding: const EdgeInsets.symmetric(
         horizontal: AppSpacing.xs,
         vertical: AppSpacing.xs,
       ),
       margin: EdgeInsets.only(
-        left: AppSpacing.xs,
-        right: AppSpacing.xs,
-        top: AppSpacing.xs,
+        left: 2,
+        right: 2,
+        top: 2,
         bottom: AppSpacing.sm,
       ),
       containerDecoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(AppRadius.xxl),
+        // 圆角与输入框一致（胶囊），阴影紧贴输入组件轮廓而非整块矩形
+        borderRadius: BorderRadius.circular(AppRadius.circle),
         boxShadow: [
           BoxShadow(
-            color: scheme.shadow.withValues(alpha: 0.06),
-            blurRadius: 6,
-            offset: const Offset(0, 2),
+            color: scheme.shadow.withValues(alpha: 0.05),
+            blurRadius: 3,
+            offset: const Offset(0, 1),
           ),
         ],
       ),
