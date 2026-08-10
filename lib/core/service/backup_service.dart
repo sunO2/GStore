@@ -15,10 +15,11 @@ import 'package:gstore/core/config/config_backup.dart';
 import 'package:gstore/core/config/config_initializer.dart';
 import 'package:gstore/core/fdroid/FdroidRepoManager.dart';
 import 'package:gstore/core/agent/agent_model_store.dart';
+import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 
 /// 备份服务
 /// 负责导出和导入应用数据
-class BackupService {
+class BackupService implements IBackupService, IWebDavService {
   static BackupService? _instance;
   static BackupService get instance {
     _instance ??= BackupService._internal();
@@ -1066,6 +1067,14 @@ class BackupService {
       appLog.error('BackupService: WebDAV 连接测试失败 - $e');
       return false;
     }
+  }
+
+  /// 列出 WebDAV 目录文件
+  Future<List<WebDavFile>> listFiles(String dirPath, {String? pattern}) async {
+    final config = await WebDavConfigManager.instance.loadConfig();
+    if (config == null) return const [];
+    final client = WebDavClient(config);
+    return client.listFiles(dirPath, pattern: pattern);
   }
 
   /// 获取备份统计信息

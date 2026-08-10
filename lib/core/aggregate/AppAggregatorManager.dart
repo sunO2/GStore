@@ -7,11 +7,12 @@ import 'package:gstore/core/channel/channel.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/event/database_event.dart';
+import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/db/apps/AppInfo.dart';
 
 /// 应用聚合管理器
 /// 负责管理所有渠道已添加的应用
-class AppAggregatorManager {
+class AppAggregatorManager implements IAggregateService {
   static AppAggregatorManager? _instance;
   static AppAggregatorManager get instance {
     _instance ??= AppAggregatorManager._internal();

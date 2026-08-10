@@ -3,6 +3,7 @@ import 'package:app_installer/app_installer.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:shizuku_api/shizuku_api.dart';
 
 /// 安装方式
@@ -17,7 +18,7 @@ enum InstallMethod {
 /// 应用安装管理器
 /// 统一管理安装方式：优先 Shizuku 静默安装，未授权时回退系统安装
 /// 使用策略模式，可灵活切换安装方式
-class InstallManager extends GetxService {
+class InstallManager extends GetxService implements IInstallService {
   static InstallManager? _instance;
   static InstallManager get instance => _instance ??= InstallManager._();
   InstallManager._();
