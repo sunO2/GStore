@@ -628,14 +628,17 @@ class _AgentPageState extends State<AgentPage>
           tooltip: '发送',
         );
       }),
-      // 悬浮外壳：底部留白 + 圆角 + 阴影（替代默认贴底 Material 外壳）
+      // 悬浮外壳：保持原高度，左右/下方少量留白（不贴底）
       useOuterContainer: false,
-      containerPadding: AppSpacing.allMD,
+      containerPadding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.sm,
+        vertical: AppSpacing.xs,
+      ),
       margin: EdgeInsets.only(
-        left: AppSpacing.md,
-        right: AppSpacing.md,
+        left: AppSpacing.sm,
+        right: AppSpacing.sm,
         top: AppSpacing.xs,
-        bottom: AppSpacing.lg,
+        bottom: AppSpacing.md,
       ),
       containerDecoration: BoxDecoration(
         color: scheme.surfaceContainerLow,
@@ -645,9 +648,9 @@ class _AgentPageState extends State<AgentPage>
         ),
         boxShadow: [
           BoxShadow(
-            color: scheme.shadow.withValues(alpha: 0.18),
-            blurRadius: 12,
-            offset: const Offset(0, 4),
+            color: scheme.shadow.withValues(alpha: 0.12),
+            blurRadius: 8,
+            offset: const Offset(0, 3),
           ),
         ],
       ),
