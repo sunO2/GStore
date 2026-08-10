@@ -12,7 +12,11 @@ import 'package:installed_apps/installed_apps.dart';
 import 'package:gstore/core/agent/agent_model_store.dart';
 import 'package:gstore/core/agent/agent_session_store.dart';
 import 'package:gstore/core/agent/agent_skills.dart';
+import 'package:gstore/core/agent/agent_tool_module.dart';
 import 'package:gstore/core/agent/platform_arch.dart';
+import 'package:gstore/core/agent/tools/builtin_tools.dart';
+import 'package:gstore/core/module/app_modules.dart';
+import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
@@ -49,6 +53,7 @@ enum AgentToolType {
   webdav,
   installed,
   confirm,
+  config,
 }
 
 /// 工具执行状态
@@ -142,6 +147,7 @@ class AgentService extends GetxService {
   static const String webdavSyncToolName = 'webdavSync';
   static const String installedAppsToolName = 'installedApps';
   static const String channelAppToolName = 'channelApp';
+  static const String configManagerToolName = 'configManager';
 
   Genkit? _ai;
   AgentModel? _model;
@@ -150,6 +156,148 @@ class AgentService extends GetxService {
   List<Message> _messages = [];
   bool _initialized = false;
   bool _busy = false;
+
+  /// 已注册的 Agent 工具模块（内置 + 模块化热插拔工具）
+  final List<AgentToolModule> _agentTools = [];
+
+  /// 工具执行上下文（委托到 AgentService 内部实现）
+  late final AgentToolContext _toolContext = AgentToolContext(
+    executeDelegate: (toolName, params) => _executeTool(toolName, params),
+    stopRequested: () => _cancelRequested,
+  );
+
+  /// 注册 Agent 工具模块（上线；幂等去重）
+  void registerAgentTools(List<AgentToolModule> tools) {
+    for (final tool in tools) {
+      if (_agentTools.any((t) => t.toolName == tool.toolName)) continue;
+      _agentTools.add(tool);
+      appLog.info('AgentService: 工具上线 - ${tool.toolName}');
+    }
+  }
+
+  /// 注销 Agent 工具模块（下线）
+  void unregisterAgentTools(List<String> toolNames) {
+    final names = toolNames.toSet();
+    _agentTools.removeWhere((t) {
+      final removed = names.contains(t.toolName);
+      if (removed) {
+        appLog.info('AgentService: 工具下线 - ${t.toolName}');
+      }
+      return removed;
+    });
+  }
+
+  /// 当前全部已注册工具名（模型可调用清单）
+  List<String> get registeredToolNames =>
+      _agentTools.map((t) => t.toolName).toList();
+
+  /// 分发工具执行到对应实现（模块 execute 的委托目标）
+  Future<String> _executeTool(String toolName, Map<String, dynamic> params) {
+    switch (toolName) {
+      case searchToolName:
+        return _searchApps(params['keyword']?.toString() ?? '');
+      case downloadToolName:
+        return _downloadApp(
+          params['appId']?.toString() ?? '',
+          params['channel']?.toString() ?? '',
+          params['url']?.toString() ?? '',
+          params['name']?.toString() ?? '',
+          params['version']?.toString() ?? '',
+          vivoId: params['vivoId']?.toString(),
+        );
+      case installToolName:
+        return _installApp(params['savePath']?.toString() ?? '');
+      case manageAppToolName:
+        return _manageApp(
+          params['action']?.toString() ?? '',
+          params['appId']?.toString() ?? '',
+          params['channel']?.toString() ?? '',
+          params['name']?.toString() ?? '',
+        );
+      case channelAppToolName:
+        return _manageChannelApp(
+          params['action']?.toString() ?? '',
+          params['appId']?.toString() ?? '',
+          params['channel']?.toString() ?? '',
+          params['name']?.toString() ?? '',
+        );
+      case appInfoToolName:
+        return _getAppInfo(
+          params['appId']?.toString() ?? '',
+          params['channel']?.toString() ?? '',
+        );
+      case updateAppsToolName:
+        return _checkUpdates(
+          params['appId']?.toString() ?? '',
+          params['channel']?.toString() ?? '',
+        );
+      case backupToolName:
+        return _backup(
+          params['action']?.toString() ?? '',
+          params['filePath']?.toString() ?? '',
+        );
+      case manageDownloadToolName:
+        return _manageDownloads(
+          params['action']?.toString() ?? '',
+          params['fileName']?.toString() ?? '',
+        );
+      case themeToolName:
+        return _controlTheme(
+          params['action']?.toString() ?? '',
+          params['mode']?.toString() ?? '',
+          params['hexColor']?.toString() ?? '',
+        );
+      case fdroidRepoToolName:
+        return _fdroidRepo(
+          params['action']?.toString() ?? '',
+          params['keyword']?.toString() ?? '',
+          params['force']?.toString() == 'true',
+        );
+      case webdavSyncToolName:
+        return _webdavSync(params['action']?.toString() ?? '');
+      case configManagerToolName:
+        return _configManager(
+          params['action']?.toString() ?? '',
+          params['key']?.toString() ?? '',
+          params['value'],
+        );
+      case installedAppsToolName:
+        return _installedApps(
+          params['action']?.toString() ?? '',
+          params['keyword']?.toString() ?? '',
+          params['packageName']?.toString() ?? '',
+        );
+      case confirmToolName:
+        return _confirmAction(params);
+      default:
+        // 尝试模块化工具自身的 execute（可扩展执行体）
+        for (final tool in _agentTools) {
+          if (tool.toolName == toolName) {
+            return tool.execute(_toolContext, params);
+          }
+        }
+        return Future.value('未知工具: $toolName');
+    }
+  }
+
+  /// 确认工具执行（用户确认/选项选择）
+  Future<String> _confirmAction(Map<String, dynamic> params) async {
+    final question = params['question']?.toString() ?? '';
+    List<String>? options;
+    final optRaw = params['options'];
+    if (optRaw is List) {
+      options =
+          optRaw.map((o) => o.toString()).where((o) => o.isNotEmpty).toList();
+    } else if (optRaw is String && optRaw.trim().isNotEmpty) {
+      options = optRaw
+          .split(RegExp(r'[,，]'))
+          .map((o) => o.trim())
+          .where((o) => o.isNotEmpty)
+          .toList();
+    }
+    if (options != null && options.isEmpty) options = null;
+    return _requestUserConfirmation(question, options: options);
+  }
 
   /// 是否请求停止当前生成（用户点击停止按钮）
   bool _cancelRequested = false;
@@ -251,7 +399,8 @@ ${PlatformArch.platformDescription}
 11. fdroidRepo - 管理 F-Droid 仓库。action 为 list/load/search/stats。
 12. webdavSync - WebDAV 云备份。action 为 list（查询网盘备份数据列表）/upload/download/status。
 13. installedApps - 管理已安装应用。action 为 list/check/uninstall/clearData/clearCache/forceStop。卸载/清理/停止需 Shizuku 授权。
-14. confirmAction - 向用户发起确认。输入 question（确认问题，需清晰说明要执行的操作）。用于敏感/不可逆操作，用户需在界面上确认或取消。
+ 14. confirmAction - 向用户发起确认。输入 question（确认问题，需清晰说明要执行的操作）。用于敏感/不可逆操作，用户需在界面上确认或取消。
+15. configManager - 管理应用配置。action 为 list（列出可配置项）/get（读取，需 key）/set（修改，需 key 和 value）/clear（清除，需 key）。修改后相关功能自动生效。敏感配置读取脱敏。
 
 敏感操作清单（执行前**必须**调用 confirmAction 让用户确认）：
 - 卸载应用（installedApps 的 uninstall）
@@ -284,6 +433,7 @@ ${PlatformArch.platformDescription}
 - 用户要求"暂停/恢复/清理下载"时，调用 manageDownload。
 - 用户要求"切换主题/换颜色"时，调用 themeControl。
 - 用户要求"我装了什么应用"/"XX 装了吗"时，调用 installedApps。
+- 用户要求修改应用配置（如"修改下载设置""设置代理""修改更新策略""查看配置"）时，调用 configManager（list/get/set/clear），修改后功能自动生效。
 - 下载完成后询问用户是否安装；确认后调用 installApp。
 - 执行上述敏感操作前，先调用 confirmAction 让用户确认；用户确认后再执行。
 - 用户需要做选择或表达犹豫（"怎么弄""选哪个""要不要"等）时，调用 confirmAction 并提供 options 选项，让用户直接点选。
@@ -309,6 +459,7 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
   Future<bool> initialize() async {
     _store = await AgentModelStore.load();
     _model = _store!.selected;
+    _subscribeModelChanges();
 
     // 加载会话存储
     _sessionStore = await AgentSessionStore.load();
@@ -331,6 +482,18 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
       // 根据模型构建插件（使用局部变量让类型推断处理）
       final plugin = _buildPlugin(_model!);
       _ai = Genkit(plugins: [plugin]);
+
+      // 注册 Agent 工具模块（默认全部上线；优先从 ModuleManager 拉取已注册工具）
+      if (_agentTools.isEmpty) {
+        // 通过模块中心注册的工具模块
+        final toolsModule = ModuleManager.instance.getModule('agent_tools');
+        if (toolsModule is AgentToolsModule) {
+          registerAgentTools(toolsModule.tools);
+        }
+        if (_agentTools.isEmpty) {
+          registerAgentTools(BuiltinAgentTools.all);
+        }
+      }
 
       // 定义工具
       _defineTools();
@@ -528,6 +691,27 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
     _initialized = false;
     _ai = null;
     return initialize();
+  }
+
+  /// 模型切换订阅
+  StreamSubscription? _modelChangeSub;
+
+  /// 订阅 ConfigService：选中模型变化 → 主动重新初始化 Agent
+  void _subscribeModelChanges() {
+    if (_modelChangeSub != null) return;
+    try {
+      _modelChangeSub = ConfigService.instance
+          .watch(ConfigKeys.agentSelectedModelId)
+          .listen((event) async {
+        final newId = event.newValue?.toString();
+        if (newId == null || newId.isEmpty) return;
+        if (_store == null || _store!.selectedId == newId) return;
+        appLog.info('AgentService: 检测到模型切换 $newId，重新初始化');
+        await reconfigure();
+      });
+    } catch (e) {
+      appLog.error('AgentService: 订阅模型变化失败 - $e');
+    }
   }
 
   /// 创建新会话
@@ -869,6 +1053,27 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
       },
     );
 
+    // 应用配置管理工具
+    ai.defineTool<Map<String, dynamic>, String>(
+      name: configManagerToolName,
+      description:
+          '管理 GStore 应用配置。action 为 list（返回结构化 JSON：全部可配置项的 key/类型/当前值/默认值/可选枚举值/示例/分组）、get（读取单配置，需 key，返回结构化 JSON）、set（修改配置，需 key 和 value）、clear（清除配置，需 key）。'
+          '建议先调用 list 了解配置的类型、可选项与示例，再构造正确的 value 调用 set。'
+          '可配置项包括：theme_mode（主题模式 0/1/2）、proxy_url（GitHub 代理前缀）、download_config（下载配置 JSON）、update_config（更新配置 JSON）、webdav_config（WebDAV 配置 JSON，敏感）、agent_selected_model_id（Agent 模型 ID）等。'
+          '修改配置后相关功能会自动生效（如切换主题、更新代理），无需额外操作。'
+          '敏感配置（如 WebDAV 密码）读取时脱敏显示，但可以设置。',
+      fn: (input, _) async {
+        final action = input['action']?.toString() ?? 'list';
+        final key = input['key']?.toString() ?? '';
+        final value = input['value'];
+        return _runAction(
+          configManagerToolName,
+          {'action': action, 'key': key, 'value': value},
+          detail: '配置管理: $action',
+        );
+      },
+    );
+
     // WebDAV 云备份工具
     ai.defineTool<Map<String, dynamic>, String>(
       name: webdavSyncToolName,
@@ -931,6 +1136,35 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
         return _requestUserConfirmation(question, options: options);
       },
     );
+
+    // 模块化工具（热插拔）：注册 _agentTools 中未被硬编码覆盖的工具
+    const builtinDefined = {
+      searchToolName,
+      downloadToolName,
+      installToolName,
+      manageAppToolName,
+      channelAppToolName,
+      appInfoToolName,
+      updateAppsToolName,
+      backupToolName,
+      manageDownloadToolName,
+      themeToolName,
+      fdroidRepoToolName,
+      webdavSyncToolName,
+      installedAppsToolName,
+      confirmToolName,
+      configManagerToolName,
+    };
+    for (final tool in _agentTools) {
+      if (builtinDefined.contains(tool.toolName)) continue;
+      ai.defineTool<Map<String, dynamic>, String>(
+        name: tool.toolName,
+        description: tool.toolDescription,
+        fn: (input, _) async {
+          return _runAction(tool.toolName, input, detail: '工具: ${tool.toolName}');
+        },
+      );
+    }
   }
 
   /// 请求用户确认（创建确认节点，等待用户选择）
@@ -1128,6 +1362,8 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
         return AgentToolType.webdav;
       case installedAppsToolName:
         return AgentToolType.installed;
+      case configManagerToolName:
+        return AgentToolType.config;
       default:
         return AgentToolType.manageApp;
     }
@@ -1327,6 +1563,23 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
         },
       ),
       AiAction(
+        name: configManagerToolName,
+        description:
+            '管理 GStore 应用配置。action 为 list（结构化 JSON 快照）/get（需 key）/set（需 key 和 value）/clear（需 key）。修改后功能自动生效。建议先 list 了解类型与可选项。',
+        parameters: [
+          ActionParameter.string(name: 'action', description: '操作类型', required: true),
+          ActionParameter.string(name: 'key', description: '配置键'),
+          ActionParameter.string(name: 'value', description: '配置值（set 时使用）'),
+        ],
+        handler: (params) async {
+          final action = params['action']?.toString() ?? 'list';
+          final key = params['key']?.toString() ?? '';
+          final value = params['value'];
+          final result = await _configManager(action, key, value);
+          return _successAction(result);
+        },
+      ),
+      AiAction(
         name: installedAppsToolName,
         description: '管理设备上已安装的应用。action 为 list/check/uninstall/clearData/clearCache/forceStop。',
         parameters: [
@@ -1342,7 +1595,51 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
           return _successAction(result);
         },
       ),
+      // 模块化工具（热插拔）：生成 _agentTools 中未被硬编码覆盖的工具
+      ..._extraActions(),
     ];
+  }
+
+  /// 构建模块化工具（未硬编码）的 AiAction 列表
+  List<AiAction> _extraActions() {
+    const builtinDefined = {
+      searchToolName,
+      downloadToolName,
+      installToolName,
+      manageAppToolName,
+      channelAppToolName,
+      appInfoToolName,
+      updateAppsToolName,
+      backupToolName,
+      manageDownloadToolName,
+      themeToolName,
+      fdroidRepoToolName,
+      webdavSyncToolName,
+      installedAppsToolName,
+      confirmToolName,
+      configManagerToolName,
+    };
+    final result = <AiAction>[];
+    for (final tool in _agentTools) {
+      if (builtinDefined.contains(tool.toolName)) continue;
+      result.add(AiAction(
+        name: tool.toolName,
+        description: tool.toolDescription,
+        parameters: [
+          for (final p in tool.toolParams)
+            ActionParameter.string(
+              name: p.name,
+              description: p.description,
+              required: p.required,
+            ),
+        ],
+        handler: (params) async {
+          final result = await tool.execute(_toolContext, params);
+          return _successAction(result);
+        },
+      ));
+    }
+    return result;
   }
 
   /// 工具执行成功结果包装
@@ -1904,6 +2201,72 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
     }
   }
 
+  /// 应用配置管理（统一 ConfigService 门面，结构化快照输出）
+  ///
+  /// list/get 返回结构化 JSON（含类型/当前值/默认值/可选项/示例/分组），
+  /// set/clear 返回结构化结果。修改后相关功能自动生效。
+  Future<String> _configManager(String action, String key, Object? value) async {
+    final service = ConfigService.instance;
+    switch (action) {
+      case 'list':
+        final snapshots = await service.snapshots();
+        if (snapshots.isEmpty) return '暂无可配置项';
+        final json = jsonEncode(
+          snapshots.map((s) => s.toJson()).toList(),
+        );
+        return json;
+
+      case 'get':
+        if (key.isEmpty) return 'get 需要 key';
+        if (!service.has(key)) return '未知配置项: $key';
+        if (!service.isAgentAccessible(key)) {
+          return '配置项 $key 不允许 Agent 读取';
+        }
+        final snapshot = await service.snapshot(key);
+        if (snapshot == null) return '配置 $key 未设置';
+        return jsonEncode(snapshot.toJson());
+
+      case 'set':
+        if (key.isEmpty) return 'set 需要 key';
+        if (!service.has(key)) return '未知配置项: $key';
+        if (!service.isAgentAccessible(key)) {
+          return '配置项 $key 不允许 Agent 修改';
+        }
+        final result = await service.set(
+          key,
+          value,
+          source: ConfigChangeSource.agent,
+        );
+        return _formatOpResult(result);
+
+      case 'clear':
+        if (key.isEmpty) return 'clear 需要 key';
+        if (!service.has(key)) return '未知配置项: $key';
+        if (!service.isAgentAccessible(key)) {
+          return '配置项 $key 不允许 Agent 修改';
+        }
+        final result = await service.clear(
+          key,
+          source: ConfigChangeSource.agent,
+        );
+        return _formatOpResult(result);
+
+      default:
+        return '未知操作: $action（支持 list/get/set/clear）';
+    }
+  }
+
+  /// 格式化配置操作结果为结构化 JSON
+  String _formatOpResult(ConfigOpResult result) {
+    return jsonEncode({
+      'success': result.success,
+      'message': result.message,
+      'key': result.key,
+      'value': result.value,
+      'defaultValue': result.defaultValue,
+    });
+  }
+
   /// 主题控制
   Future<String> _controlTheme(String action, String mode, String hexColor) async {
     try {
@@ -2168,21 +2531,24 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
       final stream = ai.generateStream<dynamic, void>(
         model: model as ModelRef<dynamic>,
         messages: _messages,
-        toolNames: [
-          searchToolName,
-          downloadToolName,
-          installToolName,
-          manageAppToolName,
-          appInfoToolName,
-          updateAppsToolName,
-          backupToolName,
-          manageDownloadToolName,
-          themeToolName,
-          fdroidRepoToolName,
-          webdavSyncToolName,
-          installedAppsToolName,
-          confirmToolName,
-        ],
+        toolNames: registeredToolNames.isNotEmpty
+            ? registeredToolNames
+            : [
+                searchToolName,
+                downloadToolName,
+                installToolName,
+                manageAppToolName,
+                appInfoToolName,
+                updateAppsToolName,
+                backupToolName,
+                manageDownloadToolName,
+                themeToolName,
+                fdroidRepoToolName,
+                webdavSyncToolName,
+                installedAppsToolName,
+                confirmToolName,
+                configManagerToolName,
+              ],
         maxTurns: 12,
       );
 

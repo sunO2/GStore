@@ -22,6 +22,9 @@ import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/config/config_initializer.dart';
+import 'package:gstore/core/module/app_modules.dart';
+import 'package:gstore/core/module/module.dart';
+import 'package:gstore/core/module/module_manager.dart';
 
 registerService() async {
   // 初始化日志管理器（必须在最开始，因为其他模块可能需要使用日志）
@@ -83,6 +86,18 @@ registerService() async {
   await ConfigInitializer.initialize();
   appLog.info('registerService: 配置管理系统初始化完成');
 
+  // 启动代理配置桥接（ConfigService proxy_url 变化 → getProxy 立即生效）
+  startProxyConfigBridge();
+  appLog.info('registerService: 代理配置桥接启动完成');
+
+  // 初始化主题控制器（须在模块中心注册前，ThemeModule 上线时需要绑定）
+  Get.put(ThemeController());
+  appLog.info('registerService: 主题控制器初始化完成');
+
+  // 初始化模块中心：注入上下文（配置/Agent 工具/服务联动）并注册全部核心模块
+  await _initModuleManager();
+  appLog.info('registerService: 模块中心初始化完成');
+
   // 初始化 Agent 智能助手服务（懒初始化，首次使用时创建）
   Get.lazyPut<AgentService>(() => AgentService());
 
@@ -103,6 +118,28 @@ colorSchemeSeed(ColorScheme? color, Brightness brightness) {
     }
   }
   return color;
+}
+
+/// 初始化模块中心
+///
+/// 1. 注入 ModuleContext：Agent 工具注册/注销、服务绑定/解绑、配置服务联动
+/// 2. 注册全部核心业务模块（渠道/下载/备份/WebDAV/F-Droid/主题/安装/聚合/Agent 工具）
+Future<void> _initModuleManager() async {
+  final manager = ModuleManager.instance;
+
+  // AgentService 懒初始化前无法直接引用，通过回调桥接：
+  // 工具注册由 AgentService 首次初始化时自行注册内置工具；
+  // 此处 context 仅提供服务绑定与配置联动能力。
+  manager.injectContext(ModuleContext(
+    config: ConfigService.instance,
+    bindService: (type, impl) => manager.bindByType(type, impl),
+    unbindService: (type) => manager.unbindByType(type),
+  ));
+
+  // 注册全部核心业务模块（上下线联动配置与 Agent 工具）
+  await CoreModules.registerAll(manager);
+  appLog.info('_initModuleManager: 已注册 ${manager.moduleCount} 个模块 '
+      '(${manager.moduleNames.join(', ')})');
 }
 
 main() async {
@@ -131,9 +168,6 @@ main() async {
       defaultPopGesture: true,
       defaultTransition: Transition.cupertino);
   await registerService();
-
-  // 初始化主题控制器
-  Get.put(ThemeController());
 
   runApp(DynamicColorBuilder(builder: (light, dark) {
     return Obx(() {

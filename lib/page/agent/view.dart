@@ -1106,6 +1106,8 @@ class _TurnTimeline extends StatelessWidget {
         return Colors.cyan;
       case AgentToolType.installed:
         return Colors.lime;
+      case AgentToolType.config:
+        return Colors.blueGrey;
       case null:
       case AgentToolType.confirm:
         return Colors.indigo;
@@ -1139,6 +1141,8 @@ class _TurnTimeline extends StatelessWidget {
         return Icons.cloud_outlined;
       case AgentToolType.installed:
         return Icons.check_circle_outline;
+      case AgentToolType.config:
+        return Icons.settings_outlined;
       case null:
       case AgentToolType.confirm:
         return Icons.help_outline;
@@ -1172,6 +1176,8 @@ class _TurnTimeline extends StatelessWidget {
         return '☁️ WebDAV 同步';
       case AgentToolType.installed:
         return '📱 已安装应用';
+      case AgentToolType.config:
+        return '⚙️ 配置管理';
       case null:
       case AgentToolType.confirm:
         return '❓ 确认操作';
@@ -1228,6 +1234,8 @@ class _ToolBubbleState extends State<_ToolBubble> {
         return Colors.cyan;
       case AgentToolType.installed:
         return Colors.lime;
+      case AgentToolType.config:
+        return Colors.blueGrey;
       case null:
       case AgentToolType.confirm:
         return Colors.indigo;
@@ -1262,6 +1270,8 @@ class _ToolBubbleState extends State<_ToolBubble> {
         return Icons.cloud_outlined;
       case AgentToolType.installed:
         return Icons.check_circle_outline;
+      case AgentToolType.config:
+        return Icons.settings_outlined;
       case null:
       case AgentToolType.confirm:
         return Icons.help_outline;
@@ -1297,6 +1307,8 @@ class _ToolBubbleState extends State<_ToolBubble> {
         return '☁️ WebDAV 同步';
       case AgentToolType.installed:
         return '📱 已安装应用';
+      case AgentToolType.config:
+        return '⚙️ 配置管理';
       case null:
       case AgentToolType.confirm:
         return '❓ 确认操作';
