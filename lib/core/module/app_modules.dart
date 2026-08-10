@@ -1,13 +1,12 @@
 /// 应用业务模块
 ///
-/// 将 GStore 核心业务能力（渠道/下载/备份/WebDAV/F-Droid/主题/安装/聚合）
+/// 将 GStore 核心业务能力（渠道/下载/备份/WebDAV/F-Droid/主题/安装/聚合/Agent 工具）
 /// 封装为 AppModule，注册到 ModuleManager：
-/// - 上线（onRegister）：绑定服务接口 + 注册配置（ConfigModule）+ 注册 Agent 工具
+/// - 上线（onInit + onRegister）：依赖就绪后初始化自身并绑定服务/配置/工具
 /// - 下线（onUnregister）：解绑服务接口 + 注销配置 + 注销 Agent 工具
 ///
-/// 实现"模块上线注册、下线移除"的热插拔能力，
-/// 调用方通过 ModuleManager.get<T>()（编译期绑定，0 损耗）
-/// 或 DynamicProxy（延迟绑定）访问服务。
+/// 模块通过 dependencies 声明依赖（如 channel 依赖 db、backup 依赖 db+config+channel），
+/// 由 ModuleManager 拓扑排序按依赖顺序初始化（类似 Linux 包管理器）。
 library;
 
 import 'package:get/get.dart';
@@ -15,12 +14,14 @@ import 'package:gstore/core/core.dart';
 import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
 import 'package:gstore/core/agent/agent_tool_module.dart';
 import 'package:gstore/core/agent/tools/builtin_tools.dart';
+import 'package:gstore/core/channel/ChannelIntegration.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/config/config_registry.dart';
 import 'package:gstore/core/fdroid/FdroidRepoManager.dart';
 import 'package:gstore/core/module/module.dart';
 import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/service/backup_service.dart';
+import 'package:gstore/core/service/badge_service.dart';
 import 'package:gstore/core/service/downloadService.dart';
 import 'package:gstore/core/service/install_manager.dart';
 import 'package:gstore/core/theme/theme_controller.dart';
@@ -43,6 +44,7 @@ class CoreModules {
         InstallModule(),
         AggregateModule(),
         AgentToolsModule(),
+        BadgeModule(),
       ];
 
   /// 注册全部内置业务模块到 ModuleManager
@@ -53,13 +55,21 @@ class CoreModules {
   }
 }
 
-/// 渠道模块
+/// 渠道模块（依赖 db）
 class ChannelModule extends AppModule {
   @override
   String get moduleName => 'channel';
 
   @override
+  List<String> get dependencies => const ['db'];
+
+  @override
   int get priority => 10;
+
+  @override
+  Future<void> onInit(ModuleContext context) async {
+    await ChannelIntegration.initialize();
+  }
 
   @override
   Future<void> onRegister(ModuleContext context) async {
@@ -72,10 +82,13 @@ class ChannelModule extends AppModule {
   }
 }
 
-/// 下载模块
+/// 下载模块（依赖 channel + config）
 class DownloadModule extends AppModule {
   @override
   String get moduleName => 'download';
+
+  @override
+  List<String> get dependencies => const ['channel', 'config'];
 
   @override
   int get priority => 20;
@@ -94,10 +107,13 @@ class DownloadModule extends AppModule {
   }
 }
 
-/// 备份模块
+/// 备份模块（依赖 db + config + channel）
 class BackupModule extends AppModule {
   @override
   String get moduleName => 'backup';
+
+  @override
+  List<String> get dependencies => const ['db', 'config', 'channel'];
 
   @override
   int get priority => 30;
@@ -113,10 +129,13 @@ class BackupModule extends AppModule {
   }
 }
 
-/// WebDAV 模块
+/// WebDAV 模块（依赖 config）
 class WebDavModule extends AppModule {
   @override
   String get moduleName => 'webdav';
+
+  @override
+  List<String> get dependencies => const ['config'];
 
   @override
   int get priority => 40;
@@ -132,13 +151,27 @@ class WebDavModule extends AppModule {
   }
 }
 
-/// F-Droid 模块
+/// F-Droid 模块（依赖 config + db）
+///
+/// onInit 中完成 Rust 后端初始化（原 main.dart 迁入）。
 class FdroidModule extends AppModule {
   @override
   String get moduleName => 'fdroid';
 
   @override
+  List<String> get dependencies => const ['config', 'db'];
+
+  @override
   int get priority => 50;
+
+  @override
+  Future<void> onInit(ModuleContext context) async {
+    final fdroidManager = FdroidRepoManager.instance;
+    await fdroidManager.initialize();
+    if (!Get.isRegistered<FdroidRepoManager>()) {
+      Get.put(fdroidManager);
+    }
+  }
 
   @override
   Future<void> onRegister(ModuleContext context) async {
@@ -151,22 +184,29 @@ class FdroidModule extends AppModule {
   }
 }
 
-/// 主题模块
+/// 主题模块（依赖 config）
+///
+/// onInit 中注册 ThemeController（原 main.dart 迁入）。
 class ThemeModule extends AppModule {
   @override
   String get moduleName => 'theme';
 
   @override
+  List<String> get dependencies => const ['config'];
+
+  @override
   int get priority => 60;
 
   @override
-  Future<void> onRegister(ModuleContext context) async {
-    // ThemeController 由 main.dart 提前注册；此处容错获取
-    try {
-      context.bindService?.call(IThemeService, Get.find<ThemeController>());
-    } catch (e) {
-      appLog.error('ThemeModule: 绑定主题服务失败 - $e');
+  Future<void> onInit(ModuleContext context) async {
+    if (!Get.isRegistered<ThemeController>()) {
+      Get.put(ThemeController());
     }
+  }
+
+  @override
+  Future<void> onRegister(ModuleContext context) async {
+    context.bindService?.call(IThemeService, Get.find<ThemeController>());
   }
 
   @override
@@ -175,7 +215,7 @@ class ThemeModule extends AppModule {
   }
 }
 
-/// 安装模块
+/// 安装模块（无依赖）
 class InstallModule extends AppModule {
   @override
   String get moduleName => 'install';
@@ -194,13 +234,27 @@ class InstallModule extends AppModule {
   }
 }
 
-/// 聚合（我的应用）模块
+/// 聚合（我的应用）模块（依赖 db）
+///
+/// onInit 中完成聚合数据库初始化（原 main.dart 迁入）。
 class AggregateModule extends AppModule {
   @override
   String get moduleName => 'aggregate';
 
   @override
+  List<String> get dependencies => const ['db'];
+
+  @override
   int get priority => 80;
+
+  @override
+  Future<void> onInit(ModuleContext context) async {
+    final aggregator = AppAggregatorManager.instance;
+    await aggregator.initialize();
+    if (!Get.isRegistered<AppAggregatorManager>()) {
+      Get.put(aggregator, tag: 'aggregatorManager');
+    }
+  }
 
   @override
   Future<void> onRegister(ModuleContext context) async {
@@ -213,13 +267,16 @@ class AggregateModule extends AppModule {
   }
 }
 
-/// Agent 工具模块
+/// Agent 工具模块（依赖 config + channel）
 ///
 /// 上线时注册全部内置 Agent 工具（AgentService 拉取后模型可调用），
 /// 下线时移除。通过 ModuleContext.registerAgentTools 联动。
 class AgentToolsModule extends AppModule {
   @override
   String get moduleName => 'agent_tools';
+
+  @override
+  List<String> get dependencies => const ['config', 'channel'];
 
   @override
   int get priority => 90;
@@ -235,5 +292,28 @@ class AgentToolsModule extends AppModule {
   @override
   Future<void> onUnregister(ModuleContext context) async {
     context.unregisterAgentTools?.call(tools.map((t) => t.toolName).toList());
+  }
+}
+
+/// 红点模块（依赖 channel + download + aggregate）
+///
+/// onInit 中注册 BadgeService 并异步触发红点检测（原 main.dart 迁入）。
+class BadgeModule extends AppModule {
+  @override
+  String get moduleName => 'badge';
+
+  @override
+  List<String> get dependencies => const ['channel', 'download', 'aggregate'];
+
+  @override
+  int get priority => 100;
+
+  @override
+  Future<void> onInit(ModuleContext context) async {
+    if (!Get.isRegistered<BadgeService>()) {
+      Get.put(BadgeService());
+    }
+    // 启动后异步检测红点（应用更新 / 数据库更新等），不阻塞 UI
+    unawaited(BadgeService.instance.checkAll());
   }
 }

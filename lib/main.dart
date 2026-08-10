@@ -1,28 +1,16 @@
 import 'dart:async';
 
-import 'package:dio/dio.dart';
 import 'package:dynamic_color/dynamic_color.dart';
 import 'package:flutter/material.dart';
-import 'package:gstore/core/service/downloadService.dart';
-import 'package:gstore/core/service/user_manager.dart';
 import 'package:gstore/core/theme/theme_utils.dart';
 import 'package:gstore/core/theme/theme_controller.dart';
 import 'package:gstore/core/theme/theme_data_builder.dart';
-import 'package:gstore/http/github/dio_client.dart';
-import 'package:gstore/http/github/github_auth_api.dart';
-import 'package:gstore/http/github/github_client.dart';
-import 'package:gstore/core/channel/ChannelIntegration.dart';
-import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
-import 'package:gstore/core/fdroid/FdroidRepoManager.dart';
 import 'package:gstore/core/logger/LogManager.dart';
-import 'package:gstore/core/event/database_event.dart';
-import 'package:gstore/core/service/download_notification_service.dart';
-import 'package:rhttp/rhttp.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
 import 'package:gstore/core/core.dart';
-import 'package:gstore/core/config/config_initializer.dart';
 import 'package:gstore/core/module/app_modules.dart';
+import 'package:gstore/core/module/infra_modules.dart';
 import 'package:gstore/core/module/module.dart';
 import 'package:gstore/core/module/module_manager.dart';
 
@@ -30,83 +18,17 @@ registerService() async {
   // 初始化日志管理器（必须在最开始，因为其他模块可能需要使用日志）
   Get.put(LogManager.instance);
   appLog.info('registerService: 开始');
+  final sw = Stopwatch()..start();
 
-  // 初始化下载通知服务（通知栏进度 + 前台服务）
-  await DownloadNotificationService.instance.init();
-  appLog.info('registerService: 下载通知服务初始化完成');
-
-  // 初始化 rhttp（基于 curl 的高性能 HTTP 客户端）
-  // 必须在使用 RhttpAdapter 之前初始化
-  try {
-    await Rhttp.init();
-    appLog.info('rhttp initialized successfully');
-  } catch (e) {
-    appLog.error('Failed to initialize rhttp, falling back to default adapter',
-        data: {'error': e.toString()});
-  }
-  appLog.info('registerService: rhttp 初始化完成');
-
-  // 注册 Dio 实例（供 FdroidRepoManager 使用）
-  Get.lazyPut<Dio>(() => DioClient().get());
-
-  Get.lazyPut<GithubRestClient>(() => GithubRestClient(DioClient().get()));
-  await Get.putAsync<DbManager>(() async => await DbManager().init());
-  appLog.info('registerService: DbManager 初始化完成');
-
-  // OAuth API 需要使用单独的 Dio 实例（不包含 GitHub REST API 专用 headers）
-  Get.lazyPut<GithubAuthApi>(() => GithubAuthApi(DioClient.createOAuthClient()));
-  Get.lazyPut<DownloadService>(() => DownloadService(DioClient().get()));
-
-  // 初始化 UserManager（使用单例模式）
-  final userManager = UserManager.instance;
-  Get.put(userManager);
-  await userManager.initialize();
-  appLog.info('registerService: UserManager 初始化完成');
-
-  // 初始化数据库事件总线
-  Get.put(DatabaseEventBus());
-
-  // 初始化渠道系统
-  await ChannelIntegration.initialize();
-  appLog.info('registerService: 渠道初始化完成');
-
-  // 初始化应用聚合管理器
-  final aggregator = AppAggregatorManager.instance;
-  await aggregator.initialize();
-  Get.put(aggregator, tag: 'aggregatorManager');
-  appLog.info('registerService: 聚合管理器初始化完成');
-
-  // 初始化 F-Droid 仓库管理器
-  final fdroidManager = FdroidRepoManager.instance;
-  await fdroidManager.initialize();
-  Get.put(fdroidManager);
-  appLog.info('registerService: F-Droid 管理器初始化完成');
-
-  // 初始化配置管理系统
-  await ConfigInitializer.initialize();
-  appLog.info('registerService: 配置管理系统初始化完成');
-
-  // 启动代理配置桥接（ConfigService proxy_url 变化 → getProxy 立即生效）
-  startProxyConfigBridge();
-  appLog.info('registerService: 代理配置桥接启动完成');
-
-  // 初始化主题控制器（须在模块中心注册前，ThemeModule 上线时需要绑定）
-  Get.put(ThemeController());
-  appLog.info('registerService: 主题控制器初始化完成');
-
-  // 初始化模块中心：注入上下文（配置/Agent 工具/服务联动）并注册全部核心模块
-  await _initModuleManager();
-  appLog.info('registerService: 模块中心初始化完成');
+  // 初始化模块中心：注入上下文（配置/Agent 工具/服务联动）并注册全部模块。
+  // 模块通过 dependencies 声明依赖，ModuleManager 拓扑排序 + 分层并行初始化
+  //（类似 Linux 包管理器：依赖就绪后才初始化下一层，同层无依赖模块并行）。
+  await _initModuleManager(sw);
 
   // 初始化 Agent 智能助手服务（懒初始化，首次使用时创建）
   Get.lazyPut<AgentService>(() => AgentService());
 
-  // 初始化红点服务
-  Get.put(BadgeService());
-
-  // 启动后异步检测红点（应用更新 / 数据库更新等），不阻塞 UI
-  unawaited(BadgeService.instance.checkAll());
-  appLog.info('registerService: 全部初始化完成');
+  appLog.info('registerService: 全部初始化完成（总耗时 ${sw.elapsedMilliseconds}ms）');
 }
 
 colorSchemeSeed(ColorScheme? color, Brightness brightness) {
@@ -123,23 +45,36 @@ colorSchemeSeed(ColorScheme? color, Brightness brightness) {
 /// 初始化模块中心
 ///
 /// 1. 注入 ModuleContext：Agent 工具注册/注销、服务绑定/解绑、配置服务联动
-/// 2. 注册全部核心业务模块（渠道/下载/备份/WebDAV/F-Droid/主题/安装/聚合/Agent 工具）
-Future<void> _initModuleManager() async {
+/// 2. 注册全部基础设施 + 业务模块（登记，不初始化）
+/// 3. initializeAll：按依赖拓扑排序分层并行初始化（onInit → onRegister）
+Future<void> _initModuleManager(Stopwatch sw) async {
   final manager = ModuleManager.instance;
 
-  // AgentService 懒初始化前无法直接引用，通过回调桥接：
-  // 工具注册由 AgentService 首次初始化时自行注册内置工具；
-  // 此处 context 仅提供服务绑定与配置联动能力。
   manager.injectContext(ModuleContext(
     config: ConfigService.instance,
     bindService: (type, impl) => manager.bindByType(type, impl),
     unbindService: (type) => manager.unbindByType(type),
+    manager: manager,
   ));
 
-  // 注册全部核心业务模块（上下线联动配置与 Agent 工具）
-  await CoreModules.registerAll(manager);
-  appLog.info('_initModuleManager: 已注册 ${manager.moduleCount} 个模块 '
-      '(${manager.moduleNames.join(', ')})');
+  // 内置模块清单（initializeModule 自动补注册依赖时查找）
+  manager.registerKnownModules(() => [...InfraModules.all, ...CoreModules.all]);
+
+  // 注册全部模块（登记，不初始化）
+  manager.registerModule(LogModule());
+  for (final module in InfraModules.all) {
+    await manager.registerModule(module);
+  }
+  for (final module in CoreModules.all) {
+    await manager.registerModule(module);
+  }
+  appLog.info('_initModuleManager: 已注册 ${manager.moduleCount} 个模块');
+
+  // 按依赖拓扑排序分层并行初始化
+  final initSw = Stopwatch()..start();
+  await manager.initializeAll();
+  initSw.stop();
+  appLog.info('_initModuleManager: 全部模块初始化完成（${initSw.elapsedMilliseconds}ms）');
 }
 
 main() async {

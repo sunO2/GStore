@@ -63,6 +63,7 @@ void main() {
 
       final module = _DownloadModule(service);
       await manager.registerModule(module);
+      await manager.initializeModule('download');
 
       // 上线后服务可用（0 损耗编译期绑定）
       expect(manager.hasModule('download'), true);
@@ -87,6 +88,7 @@ void main() {
       ));
 
       await manager.registerModule(_DownloadModule(service));
+      await manager.initializeModule('download');
       expect(manager.require<IDownloadService>(), same(service));
 
       await manager.unregisterModule('download');
@@ -109,6 +111,7 @@ void main() {
       );
 
       await manager.registerModule(_DownloadModule(service));
+      await manager.initializeModule('download');
       final result = await proxy.download('app', 'name', '1.0', 'url', 'a.apk');
       expect(result.fileName, 'a.apk');
 
