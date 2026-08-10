@@ -17,9 +17,14 @@ class AgentPage extends StatefulWidget {
   State<AgentPage> createState() => _AgentPageState();
 }
 
-class _AgentPageState extends State<AgentPage> {
+/// 保持页面状态（作为首页 tab 时切换不销毁：输入/滚动/对话状态保留）
+class _AgentPageState extends State<AgentPage>
+    with AutomaticKeepAliveClientMixin {
   late final AgentLogic _logic;
   late final AgentState _state;
+
+  @override
+  bool get wantKeepAlive => true;
 
   /// 聊天控制器（flutter_gen_ai_chat_ui）
   final ChatMessagesController _chatController = ChatMessagesController();
@@ -334,6 +339,7 @@ class _AgentPageState extends State<AgentPage> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context); // AutomaticKeepAliveClientMixin 要求
     final logic = _logic;
     final state = _state;
     return Scaffold(

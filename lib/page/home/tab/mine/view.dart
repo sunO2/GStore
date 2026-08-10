@@ -17,7 +17,9 @@ class MinePage extends StatefulWidget {
   State<MinePage> createState() => _MinePageState();
 }
 
-class _MinePageState extends State<MinePage> with TickerProviderStateMixin {
+/// 保持页面状态（tab 切换不销毁：滚动位置/折叠状态保留）
+class _MinePageState extends State<MinePage>
+    with TickerProviderStateMixin, AutomaticKeepAliveClientMixin {
   /// 外观卡片展开状态
   bool _appearanceExpanded = false;
 
@@ -29,6 +31,9 @@ class _MinePageState extends State<MinePage> with TickerProviderStateMixin {
 
   /// WebDAV 配置状态
   bool _hasWebDavConfig = false;
+
+  @override
+  bool get wantKeepAlive => true;
 
   /// 外观卡片动画控制器
   late AnimationController _appearanceController;
@@ -170,6 +175,7 @@ class _MinePageState extends State<MinePage> with TickerProviderStateMixin {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context); // AutomaticKeepAliveClientMixin 要求
     return Scaffold(
       appBar: AppBar(
         title: const Text('我的'),

@@ -15,11 +15,16 @@ class DiscoveryPage extends StatefulWidget {
   State<DiscoveryPage> createState() => _DiscoveryPageState();
 }
 
-class _DiscoveryPageState extends State<DiscoveryPage> {
+/// 保持页面状态（tab 切换不销毁：滚动位置/筛选状态保留）
+class _DiscoveryPageState extends State<DiscoveryPage>
+    with AutomaticKeepAliveClientMixin {
   final DiscoveryLogic logic = Get.put(DiscoveryLogic());
   final DiscoveryState state = Get.find<DiscoveryLogic>().state;
 
   final ScrollController _gridScrollController = ScrollController();
+
+  @override
+  bool get wantKeepAlive => true;
 
   @override
   void initState() {
@@ -38,6 +43,7 @@ class _DiscoveryPageState extends State<DiscoveryPage> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context); // AutomaticKeepAliveClientMixin 要求
     return Scaffold(
       appBar: _buildAppBar(context),
       body: LayoutBuilder(
