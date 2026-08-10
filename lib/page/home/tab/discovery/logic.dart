@@ -5,6 +5,8 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:gstore/core/aggregate/aggregate.dart';
 import 'package:gstore/core/channel/channel.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
+import 'package:gstore/core/config/config_registry.dart';
+import 'package:gstore/core/config/config_service.dart';
 import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/icons/Icons.dart';
 import 'package:gstore/core/logger/LogManager.dart';
@@ -790,15 +792,12 @@ class DiscoveryLogic extends GetxController {
     });
   }
 
-  /// 记忆选中渠道的 key
-  static const String _selectedChannelsKey = 'discovery_add_selected_channels';
-
   /// 读取记忆的选中渠道（默认 F-Droid）
   Future<List<String>> _loadSelectedChannelCodes() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final saved = prefs.getStringList(_selectedChannelsKey) ?? [];
-      if (saved.isNotEmpty) return saved;
+      final saved =
+          await ConfigService.instance.getT<List<String>>(ConfigKeys.selectedChannels);
+      if (saved != null && saved.isNotEmpty) return saved;
       return const ['fdroid'];
     } catch (e) {
       appLog.error('DiscoveryLogic: 读取选中渠道失败 - $e');
@@ -809,8 +808,11 @@ class DiscoveryLogic extends GetxController {
   /// 保存选中渠道
   Future<void> _saveSelectedChannelCodes(List<String> codes) async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setStringList(_selectedChannelsKey, codes);
+      await ConfigService.instance.set(
+        ConfigKeys.selectedChannels,
+        codes,
+        source: ConfigChangeSource.user,
+      );
     } catch (e) {
       appLog.error('DiscoveryLogic: 保存选中渠道失败 - $e');
     }

@@ -1,5 +1,8 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/agent/agent_model_store.dart';
+import 'package:gstore/core/config/config_registry.dart';
+import 'package:gstore/core/config/config_service.dart';
+import 'package:gstore/core/config/config_store.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -109,8 +112,12 @@ void main() {
   });
 
   group('AgentModelStore', () {
-    setUp(() {
+    setUp(() async {
       SharedPreferences.setMockInitialValues({});
+      // 重置 ConfigStore，避免单例缓存旧 prefs 实例导致跨用例污染
+      ConfigStore.instance.resetForTest();
+      await ConfigStore.instance.initialize();
+      ConfigRegistry.registerAll(ConfigService.instance);
     });
 
     test('load 空存储返回空列表', () async {

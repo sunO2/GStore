@@ -23,6 +23,31 @@ enum StorageType {
   memory,
 }
 
+/// 存储变化事件
+///
+/// 由写入拦截统一发出（不依赖平台原生监听），
+/// 订阅者可据此实现"配置变化 → 功能主动响应"。
+class StorageChangeEvent {
+  /// 变化的键
+  final String key;
+
+  /// 新值（remove/clear 时为 null）
+  final Object? value;
+
+  /// 所在存储类型
+  final StorageType storageType;
+
+  const StorageChangeEvent({
+    required this.key,
+    this.value,
+    required this.storageType,
+  });
+
+  @override
+  String toString() =>
+      'StorageChangeEvent{key: $key, value: $value, type: $storageType}';
+}
+
 /// 配置存储接口
 ///
 /// 提供统一的键值存储接口，支持不同类型的存储后端
@@ -72,8 +97,49 @@ abstract class ConfigStorage {
   /// 检查键是否存在
   Future<bool> containsKey(String key);
 
-  /// 监听键变化
+  /// 按值类型保存（bool/int/double/String/List<String> 自动分派）
+  Future<bool> setValue(String key, Object? value) async {
+    if (value == null) return remove(key);
+    return switch (value) {
+      final bool v => setBool(key, v),
+      final int v => setInt(key, v),
+      final double v => setDouble(key, v),
+      final String v => setString(key, v),
+      final List<String> v => setStringList(key, v),
+      _ => setString(key, value.toString()),
+    };
+  }
+
+  /// 按值类型读取（返回存储原始值；无此键返回 null）
+  Future<Object?> getValue(String key) async {
+    final value = await getString(key);
+    if (value == null) return null;
+    // 尝试按存储原始类型读取
+    final intValue = int.tryParse(value);
+    if (intValue != null) return intValue;
+    if (value == 'true') return true;
+    if (value == 'false') return false;
+    final doubleValue = double.tryParse(value);
+    if (doubleValue != null) return doubleValue;
+    return value;
+  }
+
+  /// 迁移键：将 [oldKey] 的值迁移到 [newKey] 并删除旧键
+  /// 返回是否完成迁移（旧键不存在视为已完成）
+  Future<bool> migrateKey(String oldKey, String newKey) async {
+    if (oldKey == newKey) return true;
+    final value = await getString(oldKey);
+    if (value == null) return true;
+    final ok = await setString(newKey, value);
+    if (ok) await remove(oldKey);
+    return ok;
+  }
+
+  /// 监听键变化（基于 changes 过滤；remove 时发出 null）
   Stream<String?> watch(String key);
+
+  /// 存储变化事件流（所有写入/删除的统一广播）
+  Stream<StorageChangeEvent> get changes;
 
   /// 获取所有键
   Future<Set<String>> keys();
@@ -91,6 +157,23 @@ class SharedPrefsConfigStorage implements ConfigStorage {
   StorageType get type => StorageType.normal;
 
   SharedPreferences? _prefs;
+
+  /// 变化事件广播器（写入拦截）
+  final _changesController =
+      StreamController<StorageChangeEvent>.broadcast();
+
+  @override
+  Stream<StorageChangeEvent> get changes => _changesController.stream;
+
+  /// 发出变化事件（remove 时 value 为 null）
+  void _emit(String key, Object? value) {
+    if (_changesController.isClosed) return;
+    _changesController.add(StorageChangeEvent(
+      key: _key(key),
+      value: value,
+      storageType: StorageType.normal,
+    ));
+  }
 
   @override
   Future<void> initialize() async {
@@ -120,7 +203,9 @@ class SharedPrefsConfigStorage implements ConfigStorage {
 
   @override
   Future<bool> setString(String key, String value) async {
-    return await _prefsInstance.setString(_key(key), value);
+    final ok = await _prefsInstance.setString(_key(key), value);
+    if (ok) _emit(key, value);
+    return ok;
   }
 
   @override
@@ -130,7 +215,9 @@ class SharedPrefsConfigStorage implements ConfigStorage {
 
   @override
   Future<bool> setInt(String key, int value) async {
-    return await _prefsInstance.setInt(_key(key), value);
+    final ok = await _prefsInstance.setInt(_key(key), value);
+    if (ok) _emit(key, value);
+    return ok;
   }
 
   @override
@@ -140,7 +227,9 @@ class SharedPrefsConfigStorage implements ConfigStorage {
 
   @override
   Future<bool> setBool(String key, bool value) async {
-    return await _prefsInstance.setBool(_key(key), value);
+    final ok = await _prefsInstance.setBool(_key(key), value);
+    if (ok) _emit(key, value);
+    return ok;
   }
 
   @override
@@ -150,7 +239,9 @@ class SharedPrefsConfigStorage implements ConfigStorage {
 
   @override
   Future<bool> setDouble(String key, double value) async {
-    return await _prefsInstance.setDouble(_key(key), value);
+    final ok = await _prefsInstance.setDouble(_key(key), value);
+    if (ok) _emit(key, value);
+    return ok;
   }
 
   @override
@@ -160,7 +251,9 @@ class SharedPrefsConfigStorage implements ConfigStorage {
 
   @override
   Future<bool> setStringList(String key, List<String> value) async {
-    return await _prefsInstance.setStringList(_key(key), value);
+    final ok = await _prefsInstance.setStringList(_key(key), value);
+    if (ok) _emit(key, value);
+    return ok;
   }
 
   @override
@@ -170,7 +263,9 @@ class SharedPrefsConfigStorage implements ConfigStorage {
 
   @override
   Future<bool> remove(String key) async {
-    return await _prefsInstance.remove(_key(key));
+    final ok = await _prefsInstance.remove(_key(key));
+    if (ok) _emit(key, null);
+    return ok;
   }
 
   @override
@@ -189,15 +284,50 @@ class SharedPrefsConfigStorage implements ConfigStorage {
 
   @override
   Stream<String?> watch(String key) {
-    // SharedPreferences 不原生支持流，使用轮询或事件总线
-    // 这里返回一个永不发出的流，需要配合事件总线使用
-    return const Stream.empty();
+    return changes
+        .where((e) => e.key == _key(key))
+        .map((e) => e.value?.toString());
   }
 
   @override
   Future<Set<String>> keys() async {
     final allKeys = _prefsInstance.getKeys();
     return allKeys.where((key) => key.startsWith(_prefix)).map((key) => key.substring(_prefix.length)).toSet();
+  }
+
+  @override
+  Future<Object?> getValue(String key) async {
+    // SharedPreferences 原生支持类型化读取，直接返回原始值
+    return _prefsInstance.get(_key(key));
+  }
+
+  @override
+  Future<bool> setValue(String key, Object? value) async {
+    if (value == null) return remove(key);
+    return switch (value) {
+      final bool v => setBool(key, v),
+      final int v => setInt(key, v),
+      final double v => setDouble(key, v),
+      final String v => setString(key, v),
+      final List<String> v => setStringList(key, v),
+      _ => setString(key, value.toString()),
+    };
+  }
+
+  @override
+  Future<bool> migrateKey(String oldKey, String newKey) async {
+    if (oldKey == newKey) return true;
+    final rawKey = _key(oldKey);
+    final exists = _prefsInstance.containsKey(rawKey);
+    if (!exists) return true;
+    final value = _prefsInstance.get(rawKey);
+    final ok = await setValue(newKey, value);
+    if (ok) await _prefsInstance.remove(rawKey);
+    return ok;
+  }
+
+  void dispose() {
+    _changesController.close();
   }
 }
 
@@ -214,6 +344,23 @@ class SecureConfigStorage implements ConfigStorage {
     ),
   );
 
+  /// 变化事件广播器（写入拦截）
+  final _changesController =
+      StreamController<StorageChangeEvent>.broadcast();
+
+  @override
+  Stream<StorageChangeEvent> get changes => _changesController.stream;
+
+  /// 发出变化事件（remove 时 value 为 null）
+  void _emit(String key, Object? value) {
+    if (_changesController.isClosed) return;
+    _changesController.add(StorageChangeEvent(
+      key: _key(key),
+      value: value,
+      storageType: StorageType.secure,
+    ));
+  }
+
   @override
   StorageType get type => StorageType.secure;
 
@@ -228,6 +375,7 @@ class SecureConfigStorage implements ConfigStorage {
   Future<bool> setString(String key, String value) async {
     try {
       await _storage.write(key: _key(key), value: value);
+      _emit(key, value);
       return true;
     } catch (e) {
       return false;
@@ -297,6 +445,7 @@ class SecureConfigStorage implements ConfigStorage {
   Future<bool> remove(String key) async {
     try {
       await _storage.delete(key: _key(key));
+      _emit(key, null);
       return true;
     } catch (e) {
       return false;
@@ -321,8 +470,9 @@ class SecureConfigStorage implements ConfigStorage {
 
   @override
   Stream<String?> watch(String key) {
-    // FlutterSecureStorage 不原生支持流
-    return const Stream.empty();
+    return changes
+        .where((e) => e.key == _key(key))
+        .map((e) => e.value?.toString());
   }
 
   @override
@@ -330,6 +480,180 @@ class SecureConfigStorage implements ConfigStorage {
     // FlutterSecureStorage 不支持列出所有键
     // 返回空集合
     return const {};
+  }
+
+  @override
+  Future<Object?> getValue(String key) async {
+    final value = await getString(key);
+    if (value == null) return null;
+    final intValue = int.tryParse(value);
+    if (intValue != null) return intValue;
+    if (value == 'true') return true;
+    if (value == 'false') return false;
+    final doubleValue = double.tryParse(value);
+    if (doubleValue != null) return doubleValue;
+    return value;
+  }
+
+  @override
+  Future<bool> setValue(String key, Object? value) async {
+    if (value == null) return remove(key);
+    return setString(key, value.toString());
+  }
+
+  @override
+  Future<bool> migrateKey(String oldKey, String newKey) async {
+    if (oldKey == newKey) return true;
+    final value = await getString(oldKey);
+    if (value == null) return true;
+    final ok = await setString(newKey, value);
+    if (ok) await remove(oldKey);
+    return ok;
+  }
+}
+
+/// 内存存储实现
+///
+/// 适用于测试与临时配置；支持事件广播。
+class MemoryConfigStorage implements ConfigStorage {
+  MemoryConfigStorage();
+
+  final Map<String, Object?> _data = {};
+
+  /// 变化事件广播器（写入拦截）
+  final _changesController =
+      StreamController<StorageChangeEvent>.broadcast();
+
+  @override
+  Stream<StorageChangeEvent> get changes => _changesController.stream;
+
+  /// 发出变化事件（remove 时 value 为 null）
+  void _emit(String key, Object? value) {
+    if (_changesController.isClosed) return;
+    _changesController.add(StorageChangeEvent(
+      key: key,
+      value: value,
+      storageType: StorageType.memory,
+    ));
+  }
+
+  @override
+  StorageType get type => StorageType.memory;
+
+  @override
+  Future<void> initialize() async {}
+
+  @override
+  Future<bool> setString(String key, String value) async {
+    _data[key] = value;
+    _emit(key, value);
+    return true;
+  }
+
+  @override
+  Future<String?> getString(String key) async {
+    final v = _data[key];
+    return v is String ? v : null;
+  }
+
+  @override
+  Future<bool> setInt(String key, int value) async {
+    _data[key] = value;
+    _emit(key, value);
+    return true;
+  }
+
+  @override
+  Future<int?> getInt(String key) async {
+    final v = _data[key];
+    return v is int ? v : null;
+  }
+
+  @override
+  Future<bool> setBool(String key, bool value) async {
+    _data[key] = value;
+    _emit(key, value);
+    return true;
+  }
+
+  @override
+  Future<bool?> getBool(String key) async {
+    final v = _data[key];
+    return v is bool ? v : null;
+  }
+
+  @override
+  Future<bool> setDouble(String key, double value) async {
+    _data[key] = value;
+    _emit(key, value);
+    return true;
+  }
+
+  @override
+  Future<double?> getDouble(String key) async {
+    final v = _data[key];
+    return v is double ? v : null;
+  }
+
+  @override
+  Future<bool> setStringList(String key, List<String> value) async {
+    _data[key] = List.of(value);
+    _emit(key, value);
+    return true;
+  }
+
+  @override
+  Future<List<String>?> getStringList(String key) async {
+    final v = _data[key];
+    return v is List<String> ? List.of(v) : null;
+  }
+
+  @override
+  Future<bool> remove(String key) async {
+    final existed = _data.containsKey(key);
+    _data.remove(key);
+    if (existed) _emit(key, null);
+    return true;
+  }
+
+  @override
+  Future<bool> clear() async {
+    _data.clear();
+    return true;
+  }
+
+  @override
+  Future<bool> containsKey(String key) async => _data.containsKey(key);
+
+  @override
+  Stream<String?> watch(String key) {
+    return changes
+        .where((e) => e.key == key)
+        .map((e) => e.value?.toString());
+  }
+
+  @override
+  Future<Set<String>> keys() async => Set.of(_data.keys);
+
+  @override
+  Future<Object?> getValue(String key) async => _data[key];
+
+  @override
+  Future<bool> setValue(String key, Object? value) async {
+    if (value == null) return remove(key);
+    _data[key] = value;
+    _emit(key, value);
+    return true;
+  }
+
+  @override
+  Future<bool> migrateKey(String oldKey, String newKey) async {
+    if (oldKey == newKey) return true;
+    if (!_data.containsKey(oldKey)) return true;
+    _data[newKey] = _data[oldKey];
+    _data.remove(oldKey);
+    _emit(newKey, _data[newKey]);
+    return true;
   }
 }
 
@@ -341,6 +665,13 @@ class CompositeConfigStorage implements ConfigStorage {
 
   @override
   StorageType get type => StorageType.normal;
+
+  @override
+  Stream<StorageChangeEvent> get changes {
+    return StreamGroup.merge(
+      storages.map((s) => s.changes),
+    );
+  }
 
   @override
   Future<void> initialize() async {
@@ -463,6 +794,36 @@ class CompositeConfigStorage implements ConfigStorage {
     return StreamGroup.merge(
       storages.map((s) => s.watch(key)),
     );
+  }
+
+  @override
+  Future<bool> setValue(String key, Object? value) async {
+    if (value == null) return remove(key);
+    final storage = _getStorageForType(StorageType.normal);
+    return await storage.setValue(key, value);
+  }
+
+  @override
+  Future<Object?> getValue(String key) async {
+    for (final storage in storages) {
+      final value = await storage.getValue(key);
+      if (value != null) return value;
+    }
+    return null;
+  }
+
+  @override
+  Future<bool> migrateKey(String oldKey, String newKey) async {
+    if (oldKey == newKey) return true;
+    final value = await getValue(oldKey);
+    if (value == null) return true;
+    final ok = await setValue(newKey, value);
+    if (ok) {
+      for (final storage in storages) {
+        await storage.remove(oldKey);
+      }
+    }
+    return ok;
   }
 
   @override

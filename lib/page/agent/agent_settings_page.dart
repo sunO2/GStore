@@ -33,10 +33,9 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
     }
   }
 
-  /// 选择模型并立即生效
+  /// 选择模型并立即生效（AgentService 监听配置变化后自动重配）
   Future<void> _selectModel(AgentModel model) async {
     await _store!.select(model.id);
-    await _reconfigureService();
     if (mounted) setState(() {});
   }
 
