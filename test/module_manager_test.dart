@@ -99,27 +99,38 @@ void main() {
       expect(manager.moduleCount, 0);
     });
 
-    test('同名模块重复注册 = 重新上线（触发 onRegister）', () async {
+    test('同名模块重复注册 = 重新上线（需重新初始化）', () async {
       final manager = ModuleManager.instance;
       final m1 = TestModule(name: 'mod_a');
       final m2 = TestModule(name: 'mod_a');
 
       await manager.registerModule(m1);
-      await manager.registerModule(m2);
+      await manager.initializeModule('mod_a');
+      expect(m1.registerCalls, 1);
 
+      await manager.registerModule(m2);
       expect(m1.unregisterCalls, 1); // 旧模块被下线
-      expect(m2.registerCalls, 1); // 新模块上线
+      expect(m2.registerCalls, 0); // 新模块尚未初始化（登记不初始化）
+      expect(manager.isInitialized('mod_a'), false);
+
+      await manager.initializeModule('mod_a');
+      expect(m2.registerCalls, 1); // 重新初始化后上线
       expect(manager.getModule('mod_a'), same(m2));
     });
 
-    test('生命周期钩子按上线/下线调用', () async {
+    test('生命周期钩子按上线/下线调用（initializeModule 触发）', () async {
       final manager = ModuleManager.instance;
       final module = TestModule(name: 'mod_a');
       await manager.registerModule(module);
+      expect(module.registerCalls, 0); // 仅登记不初始化
+
+      await manager.initializeModule('mod_a');
       expect(module.registerCalls, 1);
+      expect(manager.isInitialized('mod_a'), true);
 
       await manager.unregisterModule('mod_a');
       expect(module.unregisterCalls, 1);
+      expect(manager.isInitialized('mod_a'), false);
     });
   });
 
@@ -192,9 +203,12 @@ void main() {
         bindService: (t, impl) => manager.bind<ITestService>(impl as ITestService),
         unbindService: (t) => manager.unbind<ITestService>(),
       ));
-      // 模块 onRegister 中绑定服务
+      // 模块 onRegister 中绑定服务（需 initializeModule 触发）
       final svcModule = _ServiceModule(manager);
       await manager.registerModule(svcModule);
+      expect(manager.get<ITestService>(), isNull); // 仅登记未初始化
+
+      await manager.initializeModule('svc_module');
       expect(manager.get<ITestService>(), isNotNull);
 
       await manager.unregisterModule('svc_module');
@@ -241,6 +255,93 @@ void main() {
       expect(proxy.invocationCount, 2);
     });
   });
+
+  group('模块依赖排序初始化', () {
+    test('依赖模块先于被依赖模块初始化', () async {
+      final manager = ModuleManager.instance;
+      final order = <String>[];
+
+      await manager.registerModule(_OrderModule('app', ['base'], order));
+      await manager.registerModule(_OrderModule('base', const [], order));
+
+      await manager.initializeAll();
+      expect(order, ['base', 'app'], reason: '依赖 base 必须先初始化');
+    });
+
+    test('initializeAll 分层并行：无依赖模块同层', () async {
+      final manager = ModuleManager.instance;
+      final order = <String>[];
+
+      await manager.registerModule(_OrderModule('a', const [], order));
+      await manager.registerModule(_OrderModule('b', const [], order));
+      await manager.registerModule(_OrderModule('c', ['a', 'b'], order));
+
+      await manager.initializeAll();
+      // a、b 先于 c
+      expect(order.indexOf('a'), lessThan(order.indexOf('c')));
+      expect(order.indexOf('b'), lessThan(order.indexOf('c')));
+    });
+
+    test('initializeModule 单模块上线自动初始化依赖', () async {
+      final manager = ModuleManager.instance;
+      final order = <String>[];
+
+      await manager.registerModule(_OrderModule('app', ['base'], order));
+      await manager.registerModule(_OrderModule('base', const [], order));
+
+      await manager.initializeModule('app');
+      expect(order, ['base', 'app']);
+      expect(manager.isInitialized('base'), true);
+      expect(manager.isInitialized('app'), true);
+    });
+
+    test('initializeAll 幂等：重复调用不重复初始化', () async {
+      final manager = ModuleManager.instance;
+      final order = <String>[];
+
+      await manager.registerModule(_OrderModule('app', ['base'], order));
+      await manager.registerModule(_OrderModule('base', const [], order));
+
+      await manager.initializeAll();
+      await manager.initializeAll();
+      expect(order, ['base', 'app']); // 不重复
+    });
+
+    test('循环依赖抛错', () async {
+      final manager = ModuleManager.instance;
+      await manager.registerModule(_OrderModule('a', ['b'], []));
+      await manager.registerModule(_OrderModule('b', ['a'], []));
+
+      expect(
+        () => manager.initializeAll(),
+        throwsA(isA<StateError>()),
+      );
+    });
+
+    test('缺失依赖从已知清单自动补注册', () async {
+      final manager = ModuleManager.instance;
+      final order = <String>[];
+
+      // 只注册 app，base 在已知清单中
+      await manager.registerModule(_OrderModule('app', ['base'], order));
+      manager.registerKnownModules(() => [_OrderModule('base', const [], order)]);
+
+      await manager.initializeAll();
+      expect(order, ['base', 'app']);
+      expect(manager.hasModule('base'), true);
+      expect(manager.isInitialized('base'), true);
+    });
+
+    test('服务类型依赖未满足时抛错', () async {
+      final manager = ModuleManager.instance;
+      await manager.registerModule(_ServiceDepModule());
+
+      expect(
+        () => manager.initializeModule('svc_dep'),
+        throwsA(isA<StateError>()),
+      );
+    });
+  });
 }
 
 /// 测试用动态代理
@@ -272,5 +373,37 @@ class _ServiceModule extends AppModule {
   @override
   Future<void> onUnregister(ModuleContext context) async {
     context.unbindService!(ITestService);
+  }
+}
+
+/// 记录初始化顺序的模块
+class _OrderModule extends AppModule {
+  _OrderModule(this.moduleName, this.dependencies, this.order);
+
+  @override
+  final String moduleName;
+
+  @override
+  final List<String> dependencies;
+
+  final List<String> order;
+
+  @override
+  Future<void> onInit(ModuleContext context) async {
+    order.add(moduleName);
+  }
+}
+
+/// 声明服务类型依赖（未绑定时初始化应抛错）
+class _ServiceDepModule extends AppModule {
+  @override
+  String get moduleName => 'svc_dep';
+
+  @override
+  List<Type> get serviceDependencies => const [ITestService];
+
+  @override
+  Future<void> onInit(ModuleContext context) async {
+    context.requireDependency<ITestService>();
   }
 }
