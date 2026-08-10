@@ -9,14 +9,15 @@ GStore 项目文档中心，分为两部分：
 
 | 文档 | 内容 |
 | --- | --- |
-| [01-项目概述与架构](./development/01-项目概述与架构.md) | 技术栈、总体架构、目录结构、启动流程 |
+| [01-项目概述与架构](./development/01-项目概述与架构.md) | 技术栈、总体架构（含模块化）、目录结构、启动流程 |
 | [02-核心模块-渠道系统](./development/02-核心模块-渠道系统.md) | IChannel 抽象、5 个渠道实现、ChannelManager |
 | [03-核心模块-下载系统](./development/03-核心模块-下载系统.md) | 下载服务、多段下载、安装管理 |
 | [04-核心模块-备份与WebDAV](./development/04-核心模块-备份与WebDAV.md) | 备份数据模型、BackupService、WebDAV 客户端 |
-| [05-核心模块-Agent助手](./development/05-核心模块-Agent助手.md) | Genkit 集成、14 个工具、提示词与技能库 |
-| [06-核心模块-配置与主题](./development/06-核心模块-配置与主题.md) | ConfigManager、设计系统、主题控制 |
+| [05-核心模块-Agent助手](./development/05-核心模块-Agent助手.md) | Genkit 集成、15 个工具（模块化）、提示词与技能库 |
+| [06-核心模块-配置与主题](./development/06-核心模块-配置与主题.md) | ConfigService、模块化注册、快照、订阅者模式、设计系统 |
 | [07-核心模块-F-Droid与Rust](./development/07-核心模块-F-Droid与Rust.md) | 仓库管理、index-v2、增量更新、Rust FFI |
-| [08-构建与测试](./development/08-构建与测试.md) | 环境、构建命令、测试覆盖、开发规范 |
+| [08-核心模块-模块化框架](./development/08-核心模块-模块化框架.md) | ModuleManager、动态代理、热插拔、Agent 工具上下线 |
+| [09-构建与测试](./development/09-构建与测试.md) | 环境、构建命令、测试覆盖、开发规范 |
 
 ## 使用 Wiki
 

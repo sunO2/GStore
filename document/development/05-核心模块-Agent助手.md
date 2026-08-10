@@ -63,6 +63,21 @@ AgentService 同时向两套机制注册工具：
 | `webdavSync` | WebDAV 云备份（list/upload/download/status） |
 | `installedApps` | 已安装应用（list/check/uninstall/clearData/clearCache/forceStop） |
 | `confirmAction` | 用户确认/选择交互（敏感操作必须） |
+| `configManager` | 应用配置管理（list/get/set/clear，结构化快照） |
+
+### 工具模块化（热插拔）
+
+每个工具独立为 `AgentToolModule`（`lib/core/agent/agent_tool_module.dart`）：
+
+- 15 个内置工具类在 `lib/core/agent/tools/builtin_tools.dart`（`BuiltinAgentTools.all`），
+  每个含 `toolName / toolDescription / toolParams` 元数据。
+- AgentService 提供 `registerAgentTools / unregisterAgentTools / registeredToolNames`：
+  - 初始化时从 ModuleManager 拉取 `AgentToolsModule` 的工具（工具上线）
+  - `_defineTools` / `buildActions` / chat `toolNames` 动态枚举已注册工具
+- **上下线**：模块下线（unregisterModule）→ 工具从模型可调用清单移除；
+  模块化工具（未硬编码）自动生成 defineTool + AiAction。
+- 执行分发：`_executeTool` switch 到内部实现（search/download/.../confirm），
+  未知工具委托模块自身 `execute`（可扩展执行体）。
 
 ### 流式输出分步展示
 
@@ -85,7 +100,7 @@ AgentService 同时向两套机制注册工具：
 
 ## 6. 技能库（agent_skills.dart）
 
-10 个技能，每个包含触发条件 + 中英双语工作流：
+11 个技能，每个包含触发条件 + 中英双语工作流：
 
 1. App Recommendation（推荐应用）
 2. Download & Install Flow（下载安装流程）
@@ -96,7 +111,8 @@ AgentService 同时向两套机制注册工具：
 7. Download Management（下载管理）
 8. F-Droid Repository（F-Droid 仓库）
 9. WebDAV Cloud Backup（WebDAV 云备份）
-10. Troubleshooting & Failure Handling（问题诊断与失败处理）
+10. App Config Management（应用配置管理，配合 configManager 工具）
+11. Troubleshooting & Failure Handling（问题诊断与失败处理）
 
 `AgentSkills.renderAll(language:)` 注入系统提示词。
 
@@ -115,3 +131,5 @@ AgentService 同时向两套机制注册工具：
 - `test/agent_model_store_test.dart`：模型配置与 Store CRUD 持久化。
 - `test/agent_session_store_test.dart`：会话序列化、工具字段兼容。
 - `test/agent_group_order_test.dart`：时间轴分组顺序。
+- `test/agent_tool_module_test.dart`：工具模块元数据/执行/上下线。
+- `test/module_service_test.dart`：服务模块上下线联动、动态代理热插拔。
