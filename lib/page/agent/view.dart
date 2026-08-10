@@ -652,9 +652,12 @@ class _AgentPageState extends State<AgentPage>
         borderRadius: BorderRadius.circular(AppRadius.circle),
         boxShadow: [
           BoxShadow(
-            color: scheme.shadow.withValues(alpha: 0.05),
-            blurRadius: 3,
-            offset: const Offset(0, 1),
+            color: scheme.shadow.withValues(alpha: 0.08),
+            blurRadius: 6,
+            // spreadRadius 负值收缩：阴影范围贴紧输入组件，
+            // 不再覆盖到底部留白区域
+            spreadRadius: -8,
+            offset: const Offset(0, 2),
           ),
         ],
       ),
