@@ -596,14 +596,14 @@ class _AgentPageState extends State<AgentPage>
     return '${time.month}/${time.day} $h:$m';
   }
 
-  /// 输入栏样式（匹配现有风格）
+  /// 输入栏样式（悬浮效果：底部留白 + 圆角 + 阴影）
   InputOptions _buildInputOptions(
     BuildContext context,
     AgentLogic logic,
     AgentState state,
   ) {
     final scheme = Theme.of(context).colorScheme;
-    return InputOptions.custom(
+    return InputOptions(
       textController: logic.inputController,
       textStyle: Theme.of(context).textTheme.bodyMedium,
       sendOnEnter: true,
@@ -628,6 +628,29 @@ class _AgentPageState extends State<AgentPage>
           tooltip: '发送',
         );
       }),
+      // 悬浮外壳：底部留白 + 圆角 + 阴影（替代默认贴底 Material 外壳）
+      useOuterContainer: false,
+      containerPadding: AppSpacing.allMD,
+      margin: EdgeInsets.only(
+        left: AppSpacing.md,
+        right: AppSpacing.md,
+        top: AppSpacing.xs,
+        bottom: AppSpacing.lg,
+      ),
+      containerDecoration: BoxDecoration(
+        color: scheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(AppRadius.lg),
+        border: Border.all(
+          color: scheme.outlineVariant.withValues(alpha: 0.5),
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: scheme.shadow.withValues(alpha: 0.18),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
     );
   }
 
