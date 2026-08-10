@@ -317,16 +317,19 @@ class ChannelManager {
 
   /// 初始化所有启用的渠道
   Future<void> initializeAll() async {
-    for (var channel in enabledChannels) {
-      if (!channel.isInitialized) {
-        try {
-          await channel.initialize();
-          appLog.info('ChannelManager: 渠道 ${channel.info.type.code} 初始化成功');
-        } catch (e) {
-          appLog.error('ChannelManager: 渠道 ${channel.info.type.code} 初始化失败: $e');
-        }
-      }
-    }
+    // 并行初始化各渠道（数据库建库相互独立，ChannelDatabaseManager 有并发保护）
+    await Future.wait(
+      enabledChannels
+          .where((channel) => !channel.isInitialized)
+          .map((channel) async {
+            try {
+              await channel.initialize();
+              appLog.info('ChannelManager: 渠道 ${channel.info.type.code} 初始化成功');
+            } catch (e) {
+              appLog.error('ChannelManager: 渠道 ${channel.info.type.code} 初始化失败: $e');
+            }
+          }),
+    );
   }
 
   /// 释放所有渠道资源

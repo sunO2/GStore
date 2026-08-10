@@ -55,14 +55,25 @@ abstract class ChannelDatabase extends FloorDatabase {
 class ChannelDatabaseManager {
   static ChannelDatabase? _instance;
 
-  static Future<ChannelDatabase> get instance async {
-    if (_instance != null) return _instance!;
-    _instance = await create();
-    return _instance!;
+  /// 正在创建中的 future（并发保护：多个调用方同时请求时只建一次库）
+  static Future<ChannelDatabase>? _creating;
+
+  static Future<ChannelDatabase> get instance {
+    final existing = _instance;
+    if (existing != null) return Future.value(existing);
+    // 已有正在创建的 future → 复用（避免并发重复建库）
+    final inFlight = _creating;
+    if (inFlight != null) return inFlight;
+    final creating = create();
+    _creating = creating;
+    return creating.whenComplete(() {
+      _creating = null;
+    });
   }
 
   static Future<ChannelDatabase> create() async {
     final database = await ChannelDatabase.create();
+    _instance = database;
     appLog.info('ChannelDatabase: 数据库初始化成功');
     return database;
   }

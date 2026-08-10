@@ -114,25 +114,9 @@ class UserManager extends GetxService {
         }
       } else {
         debugPrint('UserManager: 未找到用户信息，尝试重新获取...');
-        // 如果有 token 但没有用户信息，尝试重新获取
-        try {
-          final user = await getUserInfo();
-          if (user != null) {
-            userInfo.value = user;
-            await _secureStorage.write(key: _userInfoKey, value: user.toJson());
-            appLog.info('UserManager: 已重新获取用户信息 - ${user.login}');
-          } else {
-            // token 无效，清除
-            appLog.error('UserManager: Token 无效（API 返回 null），清除登录状态');
-            appLog.error('UserManager: ⚠️ API 返回 null，清除 Token');
-            await logout();
-          }
-        } catch (e) {
-          // 网络错误或其他异常，不清除 Token
-          // Token 可能仍然有效，只是暂时无法获取用户信息
-          appLog.error('UserManager: 获取用户信息失败（网络错误？），保留 Token - $e');
-          // 不调用 logout()，让用户可以继续使用已保存的登录状态
-        }
+        // 有 token 但没有用户信息：异步重新获取，不阻塞启动
+        // （网络请求可能较慢，放在启动路径外；失败不清除 token）
+        unawaited(_fetchUserInfoAsync());
       }
     } else {
       debugPrint('UserManager: 未找到 Token，用户未登录');
@@ -141,6 +125,25 @@ class UserManager extends GetxService {
     // 标记为已初始化
     _isInitialized = true;
     appLog.info('UserManager: 初始化完成');
+  }
+
+  /// 异步获取用户信息（不阻塞启动）
+  Future<void> _fetchUserInfoAsync() async {
+    try {
+      final user = await getUserInfo();
+      if (user != null) {
+        userInfo.value = user;
+        await _secureStorage.write(key: _userInfoKey, value: user.toJson());
+        appLog.info('UserManager: 已异步获取用户信息 - ${user.login}');
+      } else {
+        // token 无效，清除
+        appLog.error('UserManager: Token 无效（API 返回 null），清除登录状态');
+        await logout();
+      }
+    } catch (e) {
+      // 网络错误或其他异常，不清除 Token
+      appLog.error('UserManager: 异步获取用户信息失败，保留 Token - $e');
+    }
   }
 
   /// 取消登录请求
