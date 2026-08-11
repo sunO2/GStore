@@ -9,13 +9,8 @@ import 'package:gstore/core/config/config_registry.dart';
 export 'package:gstore/core/design/design_tokens.dart';
 
 // 新的统一数据模型
-export 'package:gstore/core/model/IAppInfo.dart';
 export 'package:gstore/core/model/IDetailInfo.dart';
-export 'package:gstore/core/model/AppInfoEntity.dart';
-export 'package:gstore/core/model/AppRepository.dart';
 export 'package:gstore/core/model/BackupData.dart';
-export 'package:gstore/core/data/unified_database.dart';
-export 'package:gstore/core/data/unified_repository.dart';
 
 // 核心服务
 export 'package:gstore/core/service/db_manager.dart';
@@ -30,7 +25,6 @@ export 'package:gstore/core/routers.dart';
 
 // 渠道相关
 export 'package:gstore/core/channel/channel.dart';
-export 'package:gstore/core/channel/BaseChannel.dart';
 
 // 聚合和下载
 export 'package:gstore/core/aggregate/aggregate.dart';

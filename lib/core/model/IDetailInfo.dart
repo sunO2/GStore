@@ -2,7 +2,6 @@
 /// 继承基础信息接口，扩展详情相关字段
 library;
 
-import 'package:gstore/core/model/IAppInfo.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/StatTag.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
@@ -10,7 +9,24 @@ import 'package:gstore/core/channel/model/ChannelType.dart';
 /// 应用详情信息接口
 /// 扩展自基础信息接口，提供完整的应用详情数据
 /// 替代旧的 IDetailData 接口
-abstract class IDetailInfo extends IAppInfo {
+abstract class IDetailInfo {
+  /// 应用包名（唯一标识）
+  ///
+  /// 用于：
+  /// - 数据库主键
+  /// - 应用安装状态检测
+  /// - 应用去重和合并
+  String get packageName;
+
+  /// 应用名称
+  String get appName;
+
+  /// 应用图标URL
+  String get icon;
+
+  /// 应用简短描述
+  String get description;
+
   /// 应用ID（渠道中的原始ID，如 owner/repo 或数字ID）
   /// 用于向后兼容 IDetailData
   String get appId;
