@@ -1,14 +1,11 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:gstore/core/aggregate/aggregate.dart';
 import 'package:gstore/core/model/AppDetailRequest.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/http/github/dio_client.dart';
-import 'package:yaml/yaml.dart';
 
 import 'state.dart';
-import '../../logic.dart';
 
 class ApplistLogic extends GetxController with GithubRequestMix {
   final ApplistState state = ApplistState();
@@ -59,9 +56,12 @@ class ApplistLogic extends GetxController with GithubRequestMix {
 
       state.apps = apps;
       state.filteredApps = apps; // 初始化时显示所有应用
+      _buildCategories();
       update();
 
       appLog.info('ApplistLogic: 已更新 UI，应用数量: ${apps.length}');
+      // 后台异步检测可更新状态（不阻塞首屏）
+      unawaited(_loadUpdateStates());
     } catch (e, stackTrace) {
       appLog.error('ApplistLogic: ❌ 加载聚合应用失败 - $e');
       debugPrint('ApplistLogic: 堆栈跟踪: $stackTrace');
@@ -72,51 +72,26 @@ class ApplistLogic extends GetxController with GithubRequestMix {
     appLog.info('ApplistLogic: ========== 加载聚合应用完成 ==========');
   }
 
-  /// 执行搜索（带防抖）
+  /// 执行搜索（带防抖，与分类/排序组合）
   void searchApps(String keyword) {
     _searchDebounce?.cancel();
     state.searchKeyword.value = keyword;
 
     if (keyword.isEmpty) {
-      state.filteredApps = state.apps;
-      update();
+      _applyFilter();
       return;
     }
 
     _searchDebounce = Timer(const Duration(milliseconds: 300), () {
-      final lowerKeyword = keyword.toLowerCase();
-      state.filteredApps = state.apps.where((app) {
-        // 搜索应用名称
-        final nameMatch = app.appInfo.name?.toLowerCase().contains(lowerKeyword) ?? false;
-        // 搜索应用描述
-        final descMatch = app.appInfo.des?.toLowerCase().contains(lowerKeyword) ?? false;
-        // 搜索包名
-        final packageMatch = app.appInfo.appId.toLowerCase().contains(lowerKeyword);
-
-        return nameMatch || descMatch || packageMatch;
-      }).toList();
-      update();
+      _applyFilter();
     });
   }
 
-  /// 立即执行搜索（用于清空等场景）
+  /// 立即执行搜索（用于清空等场景，与分类/排序组合）
   void searchAppsImmediate(String keyword) {
     _searchDebounce?.cancel();
     state.searchKeyword.value = keyword;
-
-    if (keyword.isEmpty) {
-      state.filteredApps = state.apps;
-    } else {
-      final lowerKeyword = keyword.toLowerCase();
-      state.filteredApps = state.apps.where((app) {
-        final nameMatch = app.appInfo.name?.toLowerCase().contains(lowerKeyword) ?? false;
-        final descMatch = app.appInfo.des?.toLowerCase().contains(lowerKeyword) ?? false;
-        final packageMatch = app.appInfo.appId.toLowerCase().contains(lowerKeyword);
-
-        return nameMatch || descMatch || packageMatch;
-      }).toList();
-    }
-    update();
+    _applyFilter();
   }
 
   Future<void> checkUpdata() async {
@@ -142,39 +117,143 @@ class ApplistLogic extends GetxController with GithubRequestMix {
     }
   }
 
-  Future<List<dynamic>> getBanner() async {
-    state.bannerFuture ??= _loadBanner();
-    return state.bannerFuture!;
-  }
-
-  Future<List<dynamic>> _loadBanner() async {
-    var bannerString = await rootBundle.loadString("assets/app/banner.yaml");
-    bannerString = bannerString.replaceAll("ENV_PROXY:", getProxy());
-    return loadYaml(bannerString);
-  }
-
-  void onBannerTap(dynamic bannerData) {
-    final url = bannerData?["url"];
-    if (url != null && url.toString().isNotEmpty) {
-      Get.toNamed(AppRoute.webView, arguments: {
-        'title': bannerData?["title"] ?? "详情",
-        'url': url.toString(),
-      });
-    }
-  }
-
   //搜索页面
   void search() {
     Get.toNamed(AppRoute.search);
   }
 
+  /// 构建分类列表（从应用数据去重提取，含"全部"）
+  void _buildCategories() {
+    final set = <String>{};
+    for (final app in state.apps) {
+      final cats = app.appInfo.category;
+      if (cats != null) {
+        for (final c in cats) {
+          if (c.trim().isNotEmpty) set.add(c.trim());
+        }
+      }
+    }
+    state.categories = set.toList()..sort();
+  }
+
+  /// 选择分类（空串 = 全部），与搜索组合过滤
+  void setCategory(String category) {
+    state.selectedCategory.value = category;
+    _applyFilter();
+  }
+
+  /// 设置排序模式
+  void setSortMode(AppSortMode mode) {
+    state.sortMode.value = mode;
+    _applyFilter();
+  }
+
+  /// 应用当前筛选（搜索词 + 分类）与排序
+  void _applyFilter() {
+    final keyword = state.searchKeyword.value.toLowerCase();
+    final category = state.selectedCategory.value;
+    final mode = state.sortMode.value;
+
+    var list = state.apps.where((app) {
+      // 搜索过滤
+      if (keyword.isNotEmpty) {
+        final nameMatch = app.appInfo.name?.toLowerCase().contains(keyword) ?? false;
+        final descMatch = app.appInfo.des?.toLowerCase().contains(keyword) ?? false;
+        final packageMatch = app.appInfo.appId.toLowerCase().contains(keyword);
+        if (!nameMatch && !descMatch && !packageMatch) return false;
+      }
+      // 分类过滤
+      if (category.isNotEmpty) {
+        final cats = app.appInfo.category ?? const <String>[];
+        if (!cats.contains(category)) return false;
+      }
+      return true;
+    }).toList();
+
+    // 排序
+    switch (mode) {
+      case AppSortMode.recent:
+        list.sort((a, b) =>
+            b.addedAppInfo.addTime.compareTo(a.addedAppInfo.addTime));
+      case AppSortMode.name:
+        list.sort((a, b) =>
+            (a.appInfo.name ?? '').toLowerCase().compareTo((b.appInfo.name ?? '').toLowerCase()));
+      case AppSortMode.updateFirst:
+        list.sort((a, b) {
+          final ua = state.updateStates[a.appInfo.appId] ?? false;
+          final ub = state.updateStates[b.appInfo.appId] ?? false;
+          if (ua != ub) return ua ? -1 : 1;
+          return b.addedAppInfo.addTime.compareTo(a.addedAppInfo.addTime);
+        });
+    }
+    state.filteredApps = list;
+    update();
+  }
+
+  /// 可更新应用列表（用于"可更新"分区，按添加时间倒序）
+  List<AggregatedAppInfo> get updatableApps {
+    final result = state.apps
+        .where((app) => state.updateStates[app.appInfo.appId] == true)
+        .toList();
+    result.sort(
+        (a, b) => b.addedAppInfo.addTime.compareTo(a.addedAppInfo.addTime));
+    return result;
+  }
+
+  /// 最近添加应用（用于"最近添加"分区，前 [count] 个）
+  List<AggregatedAppInfo> recentApps({int count = 8}) {
+    final list = List.of(state.apps)
+      ..sort(
+          (a, b) => b.addedAppInfo.addTime.compareTo(a.addedAppInfo.addTime));
+    return list.take(count).toList();
+  }
+
+  /// 后台异步检测可更新状态（逐项渠道检测，缓存结果；失败静默）
+  Future<void> _loadUpdateStates() async {
+    if (state.apps.isEmpty) return;
+    state.isCheckingUpdates.value = true;
+    try {
+      final manager = ChannelManager.instance;
+      final results = <String, bool>{};
+      for (final app in state.apps) {
+        try {
+          final channel = manager.getChannel(app.channel);
+          if (channel == null) continue;
+          final check = await channel.checkAppUpdate(app.appInfo.appId);
+          if (!check.success || check.data == null) continue;
+          final latest = check.data!.latestVersion;
+          // 有最新版本号即视为可更新（与 BadgeService 口径一致：已安装时比对版本）
+          results[app.appInfo.appId] = latest != null && latest.isNotEmpty;
+        } catch (e) {
+          // 单个应用检测失败不影响整体
+        }
+      }
+      state.updateStates
+        ..clear()
+        ..addAll(results);
+      // 若当前是"可更新优先"排序，重新应用
+      if (state.sortMode.value == AppSortMode.updateFirst) {
+        _applyFilter();
+      } else {
+        update();
+      }
+    } finally {
+      state.isCheckingUpdates.value = false;
+    }
+  }
+
   void appDetail(AggregatedAppInfo app) {
     // 创建轻量级的详情请求参数
-    // appId 格式通常是包名（如 org.example.app），直接用作 packageName
+    // 优先使用真实包名（metadata 收录时已写入 extra），否则 appId 占位
+    // 注意：appId 原样传递（渠道查询键），不做格式转换——由渠道内部处理
+    final realPackageName = app.appInfo.getExtra<String>('packageName');
+    final packageName = (realPackageName?.isNotEmpty ?? false)
+        ? realPackageName
+        : app.appInfo.appId;
     final request = AppDetailRequest(
       appId: app.appInfo.appId,
       name: app.appInfo.name,
-      packageName: app.appInfo.appId, // appId 就是包名格式
+      packageName: packageName,
       icon: app.appInfo.icon,
       description: app.appInfo.des,
       channel: app.channel,
@@ -257,9 +336,9 @@ class ApplistLogic extends GetxController with GithubRequestMix {
     }
 
     // 清理缓存
-    state.bannerFuture = null;
     state.apps.clear();
     state.filteredApps.clear();
+    state.updateStates.clear();
 
     appLog.info('ApplistLogic: 🎉 所有资源已清理完毕');
     super.onClose();
