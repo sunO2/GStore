@@ -11,6 +11,7 @@ export 'package:gstore/core/design/design_tokens.dart';
 // 新的统一数据模型
 export 'package:gstore/core/model/IDetailInfo.dart';
 export 'package:gstore/core/model/BackupData.dart';
+export 'package:gstore/core/model/AppIdentity.dart';
 export 'package:gstore/core/model/AppSummary.dart';
 export 'package:gstore/core/data/metadata_repository.dart';
 
