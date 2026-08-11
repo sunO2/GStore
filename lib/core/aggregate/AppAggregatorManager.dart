@@ -1,4 +1,5 @@
 import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/aggregate/AppAddedDatabase.dart';
@@ -23,6 +24,14 @@ class AppAggregatorManager implements IAggregateService {
 
   late AppAddedDatabase _database;
   late ChannelManager _channelManager;
+
+  /// 测试注入：跳过 initialize 的数据库创建
+  @visibleForTesting
+  set debugDatabase(AppAddedDatabase db) => _database = db;
+
+  /// 测试注入：指定渠道管理器（未注册渠道时 getChannel 返回 null，跳过渠道库同步）
+  @visibleForTesting
+  set debugChannelManager(ChannelManager manager) => _channelManager = manager;
 
   /// 流控制器 - 已添加应用变化通知
   final _appsChangedController = StreamController<List<AddedAppInfo>>.broadcast();
@@ -72,28 +81,68 @@ class AppAggregatorManager implements IAggregateService {
   // ==================== 添加/移除应用 ====================
 
   /// 添加应用
+  ///
+  /// 聚合库只存引用（渠道 + 应用 ID + 聚合元数据），应用信息由渠道实时查询。
+  /// - appId 形态由渠道自报（IChannel.canonicalAppId，外部无感）：
+  ///   GitHub metadata 已收录 → 真实包名；未收录 → owner/repo 占位
+  /// - 统一调用渠道 addApp 落渠道库（渠道自行决定是否支持/如何保存），失败不阻断首页添加
   Future<void> addApp({
     required ChannelType channel,
     required AppInfo appInfo,
     int? sortOrder,
   }) async {
-    final addedApp = AddedAppInfo(
-      channelId: channel.code,
-      appId: appInfo.appId,
-      appName: appInfo.name,
-      iconUrl: appInfo.icon,
-      description: appInfo.des,
-      category: appInfo.category?.join(','),
-      addTime: DateTime.now().millisecondsSinceEpoch,
-      sortOrder: sortOrder ?? 0,
-    );
+    // 渠道自报规范化 appId（无感调用）
+    final channelInstance = _channelManager.getChannel(channel);
+    final appId = channelInstance != null
+        ? await channelInstance.canonicalAppId(appInfo)
+        : appInfo.appId;
 
-    await _database.addedAppDao.insertApp(addedApp);
+    final now = DateTime.now().millisecondsSinceEpoch;
+    // 幂等：已存在（channelId + appId）时更新而非新增（自增 id 主键无唯一约束）
+    final existing = await _database.addedAppDao.getApp(channel.code, appId);
+    if (existing != null) {
+      await _database.addedAppDao.updateApp(AddedAppInfo(
+        id: existing.id,
+        channelId: channel.code,
+        appId: appId,
+        addTime: now,
+        sortOrder: sortOrder ?? existing.sortOrder,
+        isEnabled: existing.isEnabled,
+      ));
+    } else {
+      await _database.addedAppDao.insertApp(AddedAppInfo(
+        channelId: channel.code,
+        appId: appId,
+        addTime: now,
+        sortOrder: sortOrder ?? 0,
+      ));
+    }
+
+    // 统一添加入口：渠道自己落渠道库（GitHub 收录/未收录、Vivo、Fdroid 等由渠道决定）
+    // 失败不阻断首页添加（LocalDb/Http 等不支持 addApp 的渠道忽略）
+    if (channelInstance != null) {
+      try {
+        final enhanced = appId != appInfo.appId
+            ? AppInfo(
+                appId,
+                appInfo.name,
+                appInfo.user,
+                appInfo.repositories,
+                appInfo.icon,
+                appInfo.des,
+                appInfo.category,
+              )
+            : appInfo;
+        await channelInstance.addApp(enhanced);
+      } catch (e) {
+        appLog.error('AppAggregatorManager: 渠道保存失败（不影响首页添加）- $e');
+      }
+    }
 
     // 通知变化
     _notifyAppsChanged();
 
-    appLog.info('AppAggregatorManager: 添加应用 - ${appInfo.name} (${channel.code})');
+    appLog.info('AppAggregatorManager: 添加应用 - $appId (${channel.code})');
   }
 
   /// 批量添加应用
@@ -102,17 +151,57 @@ class AppAggregatorManager implements IAggregateService {
     required List<AppInfo> appInfos,
   }) async {
     final now = DateTime.now().millisecondsSinceEpoch;
-    final addedApps = appInfos.map((app) => AddedAppInfo(
-      channelId: channel.code,
-      appId: app.appId,
-      appName: app.name,
-      iconUrl: app.icon,
-      description: app.des,
-      category: app.category?.join(','),
-      addTime: now,
-    )).toList();
+    final channelInstance = _channelManager.getChannel(channel);
+    final addedApps = <AddedAppInfo>[];
 
-    await _database.addedAppDao.insertApps(addedApps);
+    for (final app in appInfos) {
+      final appId = channelInstance != null
+          ? await channelInstance.canonicalAppId(app)
+          : app.appId;
+
+      // 幂等：已存在则更新，否则新增
+      final existing = await _database.addedAppDao.getApp(channel.code, appId);
+      if (existing != null) {
+        await _database.addedAppDao.updateApp(AddedAppInfo(
+          id: existing.id,
+          channelId: channel.code,
+          appId: appId,
+          addTime: now,
+          sortOrder: existing.sortOrder,
+          isEnabled: existing.isEnabled,
+        ));
+      } else {
+        addedApps.add(AddedAppInfo(
+          channelId: channel.code,
+          appId: appId,
+          addTime: now,
+        ));
+      }
+
+      // 统一添加入口：渠道自己落渠道库（失败不阻断）
+      if (channelInstance != null) {
+        try {
+          final enhanced = appId != app.appId
+              ? AppInfo(
+                  appId,
+                  app.name,
+                  app.user,
+                  app.repositories,
+                  app.icon,
+                  app.des,
+                  app.category,
+                )
+              : app;
+          await channelInstance.addApp(enhanced);
+        } catch (e) {
+          appLog.error('AppAggregatorManager: 渠道保存失败（不影响首页添加）- $e');
+        }
+      }
+    }
+
+    if (addedApps.isNotEmpty) {
+      await _database.addedAppDao.insertApps(addedApps);
+    }
 
     _notifyAppsChanged();
 
@@ -213,70 +302,98 @@ class AppAggregatorManager implements IAggregateService {
 
   /// 从渠道获取已添加应用的详细信息
   /// 聚合所有渠道的已添加应用
+  /// 分片并行：每片 8 个 addedApp 用 Future.wait 并发查询；
+  /// 结果按输入索引回填、跳过 null（未知渠道/渠道实例为空，等价原串行 continue）并压缩顺序，
+  /// 最终列表顺序与 addedApps（addTime 倒序）一致
   Future<List<AggregatedAppInfo>> getAggregatedApps() async {
+    const sliceSize = 8;
     final addedApps = await getAllAddedApps();
     debugPrint('AppAggregatorManager: 从聚合数据库获取到 ${addedApps.length} 个应用');
 
-    final aggregatedApps = <AggregatedAppInfo>[];
     int successCount = 0;
     int failedCount = 0;
     int cacheCount = 0;
 
-    for (var addedApp in addedApps) {
-      try {
-        final channelType = ChannelType.fromCode(addedApp.channelId);
-        if (channelType == null) {
-          debugPrint('AppAggregatorManager: 跳过未知渠道 - ${addedApp.channelId}');
-          continue;
-        }
+    // 分片并行：每片 sliceSize 个，片内 Future.wait 并发取详情，片间串行等待
+    final results = <AggregatedAppInfo?>[];
+    for (var start = 0; start < addedApps.length; start += sliceSize) {
+      final end = (start + sliceSize > addedApps.length)
+          ? addedApps.length
+          : start + sliceSize;
+      final slice = addedApps.sublist(start, end);
 
-        // 从渠道获取应用详情
-        final channel = _channelManager.getChannel(channelType);
-        if (channel == null) {
-          debugPrint('AppAggregatorManager: 渠道实例为空 - ${channelType.name}');
-          failedCount++;
-          continue;
-        }
+      // 片内局部计数，片结束后合并（闭包与 Future.wait 同 isolate 同步推进）
+      var sliceSuccess = 0;
+      var sliceFailed = 0;
+      var sliceCache = 0;
 
-        debugPrint('AppAggregatorManager: 正在获取应用详情 - ${addedApp.appId} (${channelType.name})');
-        final result = await channel.getAppInfo(addedApp.appId);
+      final sliceResults = await Future.wait(slice.map((addedApp) async {
+        try {
+          final channelType = ChannelType.fromCode(addedApp.channelId);
+          if (channelType == null) {
+            debugPrint('AppAggregatorManager: 跳过未知渠道 - ${addedApp.channelId}');
+            return null;
+          }
 
-        if (result.success && result.data != null) {
-          aggregatedApps.add(AggregatedAppInfo(
-            addedAppInfo: addedApp,
-            appInfo: result.data!,
-            channel: channelType,
-          ));
-          successCount++;
-        } else {
-          // 渠道获取失败，使用本地缓存的数据
-          appLog.error('AppAggregatorManager: 渠道获取失败，使用缓存 - ${addedApp.appId}, error: ${result.error}');
-          aggregatedApps.add(AggregatedAppInfo(
+          // 从渠道获取应用详情
+          final channel = _channelManager.getChannel(channelType);
+          if (channel == null) {
+            debugPrint('AppAggregatorManager: 渠道实例为空 - ${channelType.name}');
+            sliceFailed++;
+            return null;
+          }
+
+          debugPrint('AppAggregatorManager: 正在获取应用详情 - ${addedApp.appId} (${channelType.name})');
+          final result = await channel.getAppInfo(addedApp.appId);
+
+          if (result.success && result.data != null) {
+            sliceSuccess++;
+            return AggregatedAppInfo(
+              addedAppInfo: addedApp,
+              appInfo: result.data!,
+              channel: channelType,
+            );
+          } else {
+            // 渠道获取失败，使用本地缓存的数据
+            appLog.error('AppAggregatorManager: 渠道获取失败，使用缓存 - ${addedApp.appId}, error: ${result.error}');
+            sliceCache++;
+            return AggregatedAppInfo(
+              addedAppInfo: addedApp,
+              appInfo: _createAppInfoFromAdded(addedApp),
+              channel: channelType,
+              isFromCache: true,
+            );
+          }
+        } catch (e, stackTrace) {
+          appLog.error('AppAggregatorManager: ❌ 获取应用详情异常');
+          debugPrint('  - appId: ${addedApp.appId}');
+          debugPrint('  - channelId: ${addedApp.channelId}');
+          debugPrint('  - 异常类型: ${e.runtimeType}');
+          debugPrint('  - 异常信息: $e');
+          debugPrint('  - 堆栈跟踪: $stackTrace');
+          // 使用本地缓存的数据
+          sliceFailed++;
+          return AggregatedAppInfo(
             addedAppInfo: addedApp,
             appInfo: _createAppInfoFromAdded(addedApp),
-            channel: channelType,
+            channel: ChannelType.localDb,
             isFromCache: true,
-          ));
-          cacheCount++;
+            error: e.toString(),
+          );
         }
-      } catch (e, stackTrace) {
-        appLog.error('AppAggregatorManager: ❌ 获取应用详情异常');
-        debugPrint('  - appId: ${addedApp.appId}');
-        debugPrint('  - channelId: ${addedApp.channelId}');
-        debugPrint('  - 异常类型: ${e.runtimeType}');
-        debugPrint('  - 异常信息: $e');
-        debugPrint('  - 堆栈跟踪: $stackTrace');
-        // 使用本地缓存的数据
-        aggregatedApps.add(AggregatedAppInfo(
-          addedAppInfo: addedApp,
-          appInfo: _createAppInfoFromAdded(addedApp),
-          channel: ChannelType.localDb,
-          isFromCache: true,
-          error: e.toString(),
-        ));
-        failedCount++;
-      }
+      }));
+
+      successCount += sliceSuccess;
+      failedCount += sliceFailed;
+      cacheCount += sliceCache;
+      results.addAll(sliceResults);
     }
+
+    // 按输入索引回填：跳过 null（未知渠道/渠道实例为空的 continue 语义），压缩顺序
+    final aggregatedApps = <AggregatedAppInfo>[
+      for (final result in results)
+        if (result != null) result,
+    ];
 
     appLog.info('AppAggregatorManager: 聚合完成 - 成功: $successCount, 缓存: $cacheCount, 失败: $failedCount');
     return aggregatedApps;
@@ -284,16 +401,17 @@ class AppAggregatorManager implements IAggregateService {
 
   // ==================== 私有方法 ====================
 
-  /// 从 AddedAppInfo 创建 AppInfo
+  /// 从 AddedAppInfo 创建占位 AppInfo（渠道查询失败时兜底）
+  /// 聚合库只存引用，无应用信息副本；兜底显示 appId 与空图标（UI 占位）
   AppInfo _createAppInfoFromAdded(AddedAppInfo addedApp) {
     return AppInfo(
       addedApp.appId,
-      addedApp.appName,
+      addedApp.appId, // 占位名称（显示 appId）
       '', // user
       '', // repositories
-      addedApp.iconUrl ?? '',
-      addedApp.description ?? '',
-      addedApp.category?.split(',') ?? [],
+      '', // 空图标（UI 显示占位）
+      '', // 描述
+      null, // category
     );
   }
 
