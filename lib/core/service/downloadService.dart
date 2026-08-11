@@ -117,8 +117,8 @@ class DownloadService extends GetxService
     appLog.info('DownloadService.download 开始: appid=$appid version=$version url=$url forceDownload=$forceDownload');
     // 请求通知权限（Android 13+ 首次下载时询问）
     DownloadNotificationService.instance.requestPermission();
-    // 检查是否正在下载
-    if (DownloadStatus.isDownloading(appid, version, fileName)) {
+    // 检查是否正在下载（强制重新下载时跳过防重检查，允许重置状态从头下载）
+    if (!forceDownload && DownloadStatus.isDownloading(appid, version, fileName)) {
       appLog.info("文件正在下载中，跳过重复下载: $fileName");
       // 返回现有的下载状态
       final existing = await (await (await database)
@@ -160,13 +160,23 @@ class DownloadService extends GetxService
       return downloadStatus;
     }
 
-    // 强制下载时，清除旧的临时文件，从头下载
+    // 强制重新下载：无论当前状态（含下载中）都重置并从头下载。
+    // 若旧任务正在下载，先取消其网络请求/令牌，避免文件写入冲突。
     if (forceDownload) {
-      debugPrint('DownloadService: 强制重新下载，清理旧文件');
+      debugPrint('DownloadService: 强制重新下载，重置旧任务状态');
+      if (DownloadStatus.isDownloading(appid, version, fileName)) {
+        downloadStatus.cancelDownload();
+        downloadStatus.markAsCompleted();
+        debugPrint('DownloadService: 已取消旧下载任务（下载中 → 重置）');
+      }
+      // 清除旧的临时文件，从头下载
       final tempFile = File("${downloadStatus.savePath}.temp");
       if (await tempFile.exists()) {
         await tempFile.delete();
       }
+      // 重置进度与状态为就绪（确保从 0 开始）
+      downloadStatus.count = 0;
+      downloadStatus.status = DownloadStatus.DOWNLOAD_READY;
     }
 
     // 标记为正在下载
