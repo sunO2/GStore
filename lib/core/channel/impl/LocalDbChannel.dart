@@ -9,9 +9,10 @@ import 'package:gstore/core/channel/model/ChannelInfo.dart';
 import 'package:gstore/core/channel/model/ChannelResult.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
+import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
+import 'package:gstore/core/data/metadata_repository.dart';
 import 'package:gstore/core/model/proxy/LocalDbChannelDetailProxy.dart';
-import 'package:gstore/db/apps/AppInfo.dart';
 import 'package:gstore/db/apps/AppInfo.dart' as db;
 import 'package:gstore/db/apps/AppInfoDatabase.dart';
 import 'package:gstore/core/service/db_manager.dart';
@@ -75,13 +76,13 @@ class LocalDbChannel with AppUpdateCheckMixin implements IChannel {
   }
 
   @override
-  Future<ChannelResult<List<AppInfo>>> getAllApps({
+  Future<ChannelResult<List<AppSummary>>> getAllApps({
     bool forceRefresh = false,
   }) async {
     try {
       var apps = await _database.dao.getAllApps();
       return ChannelResult.success(
-        data: apps,
+        data: apps.map(AppSummary.fromDbAppInfo).toList(),
         from: ChannelType.localDb,
         fromCache: !forceRefresh,
       );
@@ -95,12 +96,53 @@ class LocalDbChannel with AppUpdateCheckMixin implements IChannel {
   }
 
   @override
-  Future<ChannelResult<AppInfo?>> getAppInfo(
+  Future<ChannelResult<AppSummary?>> getAppInfo(
     String appId, {
     bool forceRefresh = false,
   }) async {
     try {
-      var appInfo = await _database.dao.getAppInfo(appId);
+      var entity = await _database.dao.getAppInfo(appId);
+      if (entity == null) {
+        return ChannelResult.success(
+          data: null,
+          from: ChannelType.localDb,
+          fromCache: !forceRefresh,
+        );
+      }
+
+      var appInfo = AppSummary.fromDbAppInfo(entity);
+
+      // GitHub 仓库类型应用：优先用 metadata 覆盖真实图标/应用名/包名（未收录回退数据库记录）
+      if (appInfo.user.isNotEmpty && appInfo.repositories.isNotEmpty) {
+        final metadata = await MetadataRepository.instance
+            .fetchInfo(appInfo.user, appInfo.repositories);
+        if (metadata != null) {
+          // Android 包名必须含 '.'，过滤脏数据（误存的应用名等）
+          final rawPackage = metadata['packageName']?.toString() ?? '';
+          final packageName =
+              (rawPackage.trim().isNotEmpty && rawPackage.contains('.')) ? rawPackage : '';
+          final metadataName = metadata['appName']?.toString() ?? '';
+          final metadataIcon = await MetadataRepository.instance
+              .resolveIconUrl(appInfo.user, appInfo.repositories);
+          final displayName = metadataName.isNotEmpty ? metadataName : appInfo.name;
+          final icon =
+              (metadataIcon?.isNotEmpty ?? false) ? metadataIcon! : appInfo.icon;
+
+          appInfo = AppSummary(
+            appId: appInfo.appId,
+            packageName: packageName.isNotEmpty ? packageName : null,
+            name: displayName,
+            user: appInfo.user,
+            repositories: appInfo.repositories,
+            icon: icon,
+            des: appInfo.des,
+            readme: appInfo.readme,
+            category: appInfo.category,
+            extra: appInfo.extra,
+          );
+        }
+      }
+
       return ChannelResult.success(
         data: appInfo,
         from: ChannelType.localDb,
@@ -124,16 +166,49 @@ class LocalDbChannel with AppUpdateCheckMixin implements IChannel {
       appLog.info('LocalDbChannel: ========== 开始获取应用详情 ==========');
       debugPrint('LocalDbChannel: appId = $appId');
 
-      // 获取应用信息
-      final appInfoResult = await getAppInfo(appId, forceRefresh: forceRefresh);
-      if (!appInfoResult.success || appInfoResult.data == null) {
+      // 直接查询数据库实体（readme/字段完整），不走 getAppInfo（该路径的 metadata 覆盖逻辑已移入下方详情路径）
+      final entity = await _database.dao.getAppInfo(appId);
+      if (entity == null) {
         return ChannelResult.failure(
           from: ChannelType.localDb,
-          error: appInfoResult.error ?? '应用不存在',
+          error: '应用不存在',
         );
       }
 
-      final appInfo = appInfoResult.data!;
+      var appInfo = AppSummary.fromDbAppInfo(entity);
+
+      // GitHub 仓库类型应用：优先用 metadata 覆盖真实图标/应用名/包名（未收录回退数据库记录）
+      if (appInfo.user.isNotEmpty && appInfo.repositories.isNotEmpty) {
+        final metadata = await MetadataRepository.instance
+            .fetchInfo(appInfo.user, appInfo.repositories);
+        if (metadata != null) {
+          // Android 包名必须含 '.'，过滤脏数据（误存的应用名等）
+          final rawPackage = metadata['packageName']?.toString() ?? '';
+          final overridePackage =
+              (rawPackage.trim().isNotEmpty && rawPackage.contains('.')) ? rawPackage : '';
+          final metadataName = metadata['appName']?.toString() ?? '';
+          final overrideIcon = await MetadataRepository.instance
+              .resolveIconUrl(appInfo.user, appInfo.repositories);
+          final displayName = metadataName.isNotEmpty ? metadataName : appInfo.name;
+          final icon =
+              (overrideIcon?.isNotEmpty ?? false) ? overrideIcon! : appInfo.icon;
+
+          appInfo = AppSummary(
+            appId: appInfo.appId,
+            packageName:
+                overridePackage.isNotEmpty ? overridePackage : appInfo.packageName,
+            name: displayName,
+            user: appInfo.user,
+            repositories: appInfo.repositories,
+            icon: icon,
+            des: appInfo.des,
+            readme: appInfo.readme,
+            category: appInfo.category,
+            extra: appInfo.extra,
+          );
+        }
+      }
+
       debugPrint('LocalDbChannel: appInfo.name = ${appInfo.name}');
       debugPrint('LocalDbChannel: appInfo.user = ${appInfo.user}');
       debugPrint('LocalDbChannel: appInfo.repositories = ${appInfo.repositories}');
@@ -151,6 +226,39 @@ class LocalDbChannel with AppUpdateCheckMixin implements IChannel {
         debugPrint('LocalDbChannel: 使用 appId 作为 packageName = $packageName');
       } else {
         debugPrint('LocalDbChannel: appId 不是包名格式，不显示包名');
+      }
+
+      // 优先读取仓库元数据（真实图标 / 包名 / 版本 / 应用名），未收录时回退默认数据
+      // 负缓存命中（此前未收录）时绕过一次重试——应用可能刚被收录（如刚提交 issue）
+      String? metadataIcon;
+      String? metadataVersionName;
+      String? metadataAppName;
+      if (appInfo.user.isNotEmpty && appInfo.repositories.isNotEmpty) {
+        var metadata = await MetadataRepository.instance
+            .fetchInfo(appInfo.user, appInfo.repositories);
+        if (metadata == null) {
+          metadata = await MetadataRepository.instance.fetchInfo(
+            appInfo.user,
+            appInfo.repositories,
+            ignoreNegativeCache: true,
+          );
+        }
+        if (metadata != null) {
+          metadataIcon = await MetadataRepository.instance
+              .resolveIconUrl(appInfo.user, appInfo.repositories);
+          final metaPackage = metadata['packageName']?.toString();
+          if (metaPackage != null &&
+              metaPackage.trim().isNotEmpty &&
+              metaPackage.contains('.')) {
+            packageName = metaPackage;
+            debugPrint('LocalDbChannel: 使用元数据 packageName = $packageName');
+          }
+          metadataVersionName = metadata['versionName']?.toString();
+          final metaAppName = metadata['appName']?.toString();
+          if (metaAppName != null && metaAppName.isNotEmpty) {
+            metadataAppName = metaAppName;
+          }
+        }
       }
 
       // 尝试从 GitHub API 获取 releases
@@ -319,10 +427,13 @@ class LocalDbChannel with AppUpdateCheckMixin implements IChannel {
       // 构建原始数据 Map（保持原始格式）
       final rawData = <String, dynamic>{
         'appId': appInfo.appId,
-        'name': appInfo.name,
-        'icon': appInfo.icon,
+        // 优先使用元数据仓库的真实应用名，未收录时回退数据库名称
+        'name': metadataAppName ?? appInfo.name,
+        // 优先使用元数据仓库的真实图标，未收录时回退数据库图标
+        'icon': metadataIcon ?? appInfo.icon,
         'description': appInfo.des,
-        'version': latestVersion,
+        // 优先使用元数据的版本信息（versionName），否则用 GitHub release 版本
+        'version': metadataVersionName ?? latestVersion,
         'developer': appInfo.user,
         'packageName': packageName,
         'projectUrl': config?.proxy != null
@@ -388,14 +499,14 @@ class LocalDbChannel with AppUpdateCheckMixin implements IChannel {
   }
 
   @override
-  Future<ChannelResult<List<AppInfo>>> searchApps(
+  Future<ChannelResult<List<AppSummary>>> searchApps(
     String keyword, {
     bool forceRefresh = false,
   }) async {
     try {
       var apps = await _database.dao.search(keyword);
       return ChannelResult.success(
-        data: apps,
+        data: apps.map(AppSummary.fromDbAppInfo).toList(),
         from: ChannelType.localDb,
         fromCache: !forceRefresh,
       );
@@ -409,14 +520,14 @@ class LocalDbChannel with AppUpdateCheckMixin implements IChannel {
   }
 
   @override
-  Future<ChannelResult<List<AppInfo>>> searchByCategory(
+  Future<ChannelResult<List<AppSummary>>> searchByCategory(
     String categoryId, {
     bool forceRefresh = false,
   }) async {
     try {
       var apps = await _database.dao.queryCategory(categoryId);
       return ChannelResult.success(
-        data: apps,
+        data: apps.map(AppSummary.fromDbAppInfo).toList(),
         from: ChannelType.localDb,
         fromCache: !forceRefresh,
       );
@@ -449,8 +560,12 @@ class LocalDbChannel with AppUpdateCheckMixin implements IChannel {
     }
   }
 
+  /// appId 即包名（本地数据库语义），无需规范化
   @override
-  Future<ChannelResult<void>> addApp(AppInfo app) async {
+  Future<String> canonicalAppId(AppSummary appInfo) async => appInfo.appId;
+
+  @override
+  Future<ChannelResult<void>> addApp(AppSummary app) async {
     return ChannelResult.failure(
       from: ChannelType.localDb,
       error: '本地数据库渠道不支持手动添加应用',
@@ -561,7 +676,7 @@ class LocalDbChannel with AppUpdateCheckMixin implements IChannel {
   @override
   Widget? getAddAppWidget(
     BuildContext context,
-    Function(AppInfo) onAppAdded, {
+    Function(AppSummary) onAppAdded, {
     VoidCallback? onAppSaved,
   }) {
     // 本地数据库渠道不需要添加功能，应用已经在数据库中
