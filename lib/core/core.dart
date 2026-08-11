@@ -75,6 +75,7 @@ export 'package:gstore/core/module/module.dart';
 
 // 更新管理模块
 export 'package:gstore/core/update/app_update_info.dart';
+export 'package:gstore/core/update/update_log.dart';
 export 'package:gstore/core/update/update_manager.dart';
 
 // 资源管理
