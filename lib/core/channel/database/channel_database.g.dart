@@ -80,7 +80,7 @@ class _$ChannelDatabase extends ChannelDatabase {
     Callback? callback,
   ]) async {
     final databaseOptions = sqflite.OpenDatabaseOptions(
-      version: 3,
+      version: 4,
       onConfigure: (database) async {
         await database.execute('PRAGMA foreign_keys = ON');
         await callback?.onConfigure?.call(database);
@@ -96,7 +96,7 @@ class _$ChannelDatabase extends ChannelDatabase {
       },
       onCreate: (database, version) async {
         await database.execute(
-            'CREATE TABLE IF NOT EXISTS `channel_added_app` (`appId` TEXT NOT NULL, `name` TEXT NOT NULL, `user` TEXT NOT NULL, `repositories` TEXT NOT NULL, `apprepo` TEXT, `icon` TEXT NOT NULL, `description` TEXT NOT NULL, `category` TEXT, `addTime` INTEGER NOT NULL, `channelCode` TEXT NOT NULL, `extra` TEXT, PRIMARY KEY (`appId`))');
+            'CREATE TABLE IF NOT EXISTS `channel_added_app` (`channelCode` TEXT NOT NULL, `appId` TEXT NOT NULL, `name` TEXT NOT NULL, `user` TEXT NOT NULL, `repositories` TEXT NOT NULL, `apprepo` TEXT, `icon` TEXT NOT NULL, `description` TEXT NOT NULL, `category` TEXT, `addTime` INTEGER NOT NULL, `extra` TEXT, PRIMARY KEY (`channelCode`, `appId`))');
 
         await callback?.onCreate?.call(database, version);
       },
@@ -119,6 +119,7 @@ class _$ChannelAddedAppDao extends ChannelAddedAppDao {
             database,
             'channel_added_app',
             (ChannelAddedApp item) => <String, Object?>{
+                  'channelCode': item.channelCode,
                   'appId': item.appId,
                   'name': item.name,
                   'user': item.user,
@@ -128,7 +129,6 @@ class _$ChannelAddedAppDao extends ChannelAddedAppDao {
                   'description': item.description,
                   'category': item.category,
                   'addTime': item.addTime,
-                  'channelCode': item.channelCode,
                   'extra': item.extra
                 });
 
