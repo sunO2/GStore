@@ -5,21 +5,16 @@ class AppCardWidget extends StatelessWidget {
   final AggregatedAppInfo app;
   final VoidCallback onTap;
 
-  /// 是否有更新（显示红点角标）
-  final bool hasUpdate;
-
   const AppCardWidget({
     super.key,
     required this.app,
     required this.onTap,
-    this.hasUpdate = false,
   });
 
   @override
   Widget build(BuildContext context) {
     final channelColor = AppColors.getChannelBrandColor(app.channel.name);
     final channelShortName = _getChannelShortName(app.channel);
-    final scheme = Theme.of(context).colorScheme;
 
     return GestureDetector(
       onTap: onTap,
@@ -83,24 +78,6 @@ class AppCardWidget extends StatelessWidget {
                       ),
                     ),
                   ),
-                  // 可更新红点（右上角）
-                  if (hasUpdate)
-                    Positioned(
-                      top: 0,
-                      right: 0,
-                      child: Container(
-                        width: 14,
-                        height: 14,
-                        decoration: BoxDecoration(
-                          color: scheme.error,
-                          shape: BoxShape.circle,
-                          border: Border.all(
-                            color: scheme.surface,
-                            width: 2,
-                          ),
-                        ),
-                      ),
-                    ),
                 ],
               ),
             ),
