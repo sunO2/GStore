@@ -261,6 +261,8 @@ class AppAggregatorManager implements IAggregateService {
             AddedAppTag(channelId: channel.code, appId: appId, tag: t.trim()),
         ]);
       }
+      // 标签变化 → 通知首页刷新（getAggregatedApps 会合并新标签到分类）
+      _notifyAppsChanged();
     } catch (e) {
       appLog.error('AppAggregatorManager: 设置标签失败 - $e');
       rethrow;

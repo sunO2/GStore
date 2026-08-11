@@ -130,6 +130,17 @@ class FakeTagsChannel implements IChannel {
   Future<void> dispose() async {}
 }
 
+/// canonicalAppId 返回与入参 appId 不同的规范化 ID 的假渠道
+/// （模拟 GitHub 收录场景：raw 'owner/repo' → 真实包名 'com.example.app'，
+///  与 discovery 页 showTagPickerForApp 修复后的取 key 路径一致）
+class FakeCanonicalizingTagsChannel extends FakeTagsChannel {
+  FakeCanonicalizingTagsChannel(super.type);
+
+  @override
+  Future<String> canonicalAppId(AppSummary appInfo) async =>
+      'com.example.app';
+}
+
 /// getAggregatedApps 合并用户标签到分类测试
 ///
 /// 验证（v5 用户标签系统聚合侧）：
@@ -275,5 +286,62 @@ void main() {
     expect(await manager.getTags(channel: ChannelType.github, appId: 'com.tags'),
         isEmpty, reason: '移除应用必须联动清理用户标签');
     expect(await manager.getAllTagsIndex(), isEmpty);
+  });
+
+  test('发现页标签保存：canonical appId 作 key 才能匹配聚合库（raw appId 作 key 丢失）',
+      () async {
+    // 覆盖注册：GitHub 渠道换成"规范化"假渠道（canonicalAppId 返回真实包名），
+    // 模拟发现页 showTagPickerForApp 修复后的调用链（addApp 与 setTags 同 key）
+    ChannelManager.instance
+        .registerChannel(FakeCanonicalizingTagsChannel(ChannelType.github));
+
+    // 1) 发现页添加应用：聚合库落 key = canonicalAppId('owner/repo') = 'com.example.app'
+    await manager.addApp(
+      channel: ChannelType.github,
+      appInfo: AppSummary(
+        appId: 'owner/repo',
+        packageName: null,
+        name: 'Demo App',
+        user: 'owner',
+        repositories: 'owner/repo',
+        icon: '',
+        des: '',
+        category: null,
+      ),
+    );
+    expect(await db.addedAppDao.getApp('github', 'com.example.app'), isNotNull,
+        reason: 'addApp 必须以规范化 appId 落库');
+    expect(await db.addedAppDao.getApp('github', 'owner/repo'), isNull,
+        reason: 'raw appId 不应出现在聚合库');
+
+    // 2) 修复后的发现页逻辑：用 canonicalId 保存标签 → key 与聚合库条目一致
+    await manager.setTags(
+      channel: ChannelType.github,
+      appId: 'com.example.app',
+      tags: ['我的标签'],
+    );
+
+    // 3) 首页聚合：canonical key 的标签必须合并进分类（证明 key 匹配）
+    final result = await manager.getAggregatedApps();
+    expect(result, hasLength(1));
+    final info = result.single;
+    expect(info.addedAppInfo.appId, 'com.example.app',
+        reason: '聚合库条目 appId 为规范化后的真实包名');
+    expect(info.appInfo.category, contains('我的标签'),
+        reason: 'canonical appId 作 key 保存的标签必须出现在首页分类筛选');
+
+    // 4) 反证：raw appId（owner/repo）作 key 保存 → 标签丢失
+    //    （文档化修复必要性：旧代码用 raw appId 作 key 匹配不到聚合库）
+    await manager.setTags(
+      channel: ChannelType.github,
+      appId: 'owner/repo',
+      tags: ['游戏'],
+    );
+    final index = await manager.getAllTagsIndex();
+    expect(index['github:owner/repo'], contains('游戏'),
+        reason: 'raw key 标签确实写入了独立条目（与 canonical key 互不相通）');
+    final result2 = await manager.getAggregatedApps();
+    expect(result2.single.appInfo.category, isNot(contains('游戏')),
+        reason: 'raw appId 作 key 匹配不到聚合库条目 → 首页分类看不到该标签（修复点）');
   });
 }
