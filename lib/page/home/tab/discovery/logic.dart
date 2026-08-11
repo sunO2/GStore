@@ -458,9 +458,16 @@ class DiscoveryLogic extends GetxController {
   /// 读取当前标签 -> 加载预置分类（本地库 AppCategory.description，失败回退内置列表）
   /// -> 展示对话框 -> 用户确认后整体保存（替换语义）。
   Future<void> showTagPickerForApp(ChannelType channel, AppSummary appInfo) async {
-    // 读取当前标签
+    // 关键：标签 key 必须与聚合库一致——addApp 落库用的是 canonicalAppId 规范化后的 appId
+    // （如 GitHub 收录后为真实包名），原始 appId（如 owner/repo）作 key 会匹配不到聚合库
+    final channelInstance = _channelManager.getChannel(channel);
+    final canonicalId = channelInstance != null
+        ? await channelInstance.canonicalAppId(appInfo)
+        : appInfo.appId;
+
+    // 读取当前标签（用规范化 appId）
     final currentTags =
-        await _aggregator.getTags(channel: channel, appId: appInfo.appId);
+        await _aggregator.getTags(channel: channel, appId: canonicalId);
 
     // 加载预置分类：本地库 AppCategory 的 description 作为标签值
     var presetTags = <String>[];
@@ -486,9 +493,10 @@ class DiscoveryLogic extends GetxController {
     if (result == null) return; // 取消，不保存
 
     try {
+      // 保存标签（用规范化 appId，与聚合库 key 一致）
       await _aggregator.setTags(
         channel: channel,
-        appId: appInfo.appId,
+        appId: canonicalId,
         tags: result,
       );
     } catch (e) {
