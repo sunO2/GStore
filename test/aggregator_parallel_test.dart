@@ -244,7 +244,8 @@ void main() {
       expect(result[i].error, isNull);
     }
 
-    // 6. 计数一致：成功 15 / 失败(异常兜底) 1 / 缓存 0
+    // 6. 计数一致：成功 15 / 异常兜底占位（isFromCache=true、error 非空）1
+    //    注意：异常兜底占位同样置 isFromCache=true，故 cached 计数实际统计的是占位条数而非缓存命中数
     final failed = result.where((e) => e.error != null).length;
     final cached = result.where((e) => e.isFromCache).length;
     final ok = result.where((e) => e.error == null && !e.isFromCache).length;

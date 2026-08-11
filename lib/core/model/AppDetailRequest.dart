@@ -45,12 +45,12 @@ class AppDetailRequest {
 
         // 优先使用真实包名（B1 后 packageName 为 AppSummary 一级字段），否则回退 repositories 占位
         String? packageName;
-        try {
-          final pkg = appInfo?.packageName;
-          if (pkg != null && pkg.isNotEmpty) {
-            packageName = pkg;
-          }
-        } catch (_) {}
+        // appInfo 为 dynamic；对 AggregatedAppInfo 调用 ?.packageName 不会抛（AppSummary.packageName 为
+        // 真实 getter，null 时返回 null）——无需 try/catch 死防御，异常统一由外层兜底
+        final pkg = appInfo?.packageName;
+        if (pkg != null && pkg.isNotEmpty) {
+          packageName = pkg;
+        }
         packageName ??= appInfo?.repositories;
 
         // 注意：appId 原样传递（渠道查询键），不做格式转换——由渠道内部处理

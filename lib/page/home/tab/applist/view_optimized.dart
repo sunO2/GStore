@@ -372,9 +372,7 @@ class _QuickSearchDialogState extends State<QuickSearchDialog> {
       owner = app.user;
       repo = app.repositories;
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('无法解析仓库地址，请从详情页提交')),
-      );
+      AppDialogs.showError('无法解析仓库地址，请从详情页提交');
       return;
     }
 

@@ -75,6 +75,47 @@ class LocalDbChannel with AppUpdateCheckMixin implements IChannel {
     }
   }
 
+  /// GitHub 仓库类型应用：优先用 metadata 覆盖真实图标/应用名/包名（未收录回退数据库记录）。
+  /// [keepExistingPackageName] 为 true 时，metadata 缺少合法包名则保留原 packageName
+  /// （getAppDetail 语义）；为 false 时置 null（getAppInfo 语义，保持各调用点现状不变）。
+  Future<AppSummary> _applyMetadataOverride(
+    AppSummary app, {
+    required bool keepExistingPackageName,
+  }) async {
+    if (app.user.isEmpty || app.repositories.isEmpty) {
+      return app;
+    }
+    final metadata =
+        await MetadataRepository.instance.fetchInfo(app.user, app.repositories);
+    if (metadata == null) {
+      return app;
+    }
+    // Android 包名必须含 '.'，过滤脏数据（误存的应用名等）
+    final rawPackage = metadata['packageName']?.toString() ?? '';
+    final overridePackage =
+        (rawPackage.trim().isNotEmpty && rawPackage.contains('.')) ? rawPackage : '';
+    final metadataName = metadata['appName']?.toString() ?? '';
+    final overrideIcon = await MetadataRepository.instance
+        .resolveIconUrl(app.user, app.repositories);
+    final displayName = metadataName.isNotEmpty ? metadataName : app.name;
+    final icon = (overrideIcon?.isNotEmpty ?? false) ? overrideIcon! : app.icon;
+
+    return AppSummary(
+      appId: app.appId,
+      packageName: overridePackage.isNotEmpty
+          ? overridePackage
+          : (keepExistingPackageName ? app.packageName : null),
+      name: displayName,
+      user: app.user,
+      repositories: app.repositories,
+      icon: icon,
+      des: app.des,
+      readme: app.readme,
+      category: app.category,
+      extra: app.extra,
+    );
+  }
+
   @override
   Future<ChannelResult<List<AppSummary>>> getAllApps({
     bool forceRefresh = false,
@@ -111,37 +152,10 @@ class LocalDbChannel with AppUpdateCheckMixin implements IChannel {
       }
 
       var appInfo = AppSummary.fromDbAppInfo(entity);
-
-      // GitHub 仓库类型应用：优先用 metadata 覆盖真实图标/应用名/包名（未收录回退数据库记录）
-      if (appInfo.user.isNotEmpty && appInfo.repositories.isNotEmpty) {
-        final metadata = await MetadataRepository.instance
-            .fetchInfo(appInfo.user, appInfo.repositories);
-        if (metadata != null) {
-          // Android 包名必须含 '.'，过滤脏数据（误存的应用名等）
-          final rawPackage = metadata['packageName']?.toString() ?? '';
-          final packageName =
-              (rawPackage.trim().isNotEmpty && rawPackage.contains('.')) ? rawPackage : '';
-          final metadataName = metadata['appName']?.toString() ?? '';
-          final metadataIcon = await MetadataRepository.instance
-              .resolveIconUrl(appInfo.user, appInfo.repositories);
-          final displayName = metadataName.isNotEmpty ? metadataName : appInfo.name;
-          final icon =
-              (metadataIcon?.isNotEmpty ?? false) ? metadataIcon! : appInfo.icon;
-
-          appInfo = AppSummary(
-            appId: appInfo.appId,
-            packageName: packageName.isNotEmpty ? packageName : null,
-            name: displayName,
-            user: appInfo.user,
-            repositories: appInfo.repositories,
-            icon: icon,
-            des: appInfo.des,
-            readme: appInfo.readme,
-            category: appInfo.category,
-            extra: appInfo.extra,
-          );
-        }
-      }
+      appInfo = await _applyMetadataOverride(
+        appInfo,
+        keepExistingPackageName: false,
+      );
 
       return ChannelResult.success(
         data: appInfo,
@@ -176,38 +190,10 @@ class LocalDbChannel with AppUpdateCheckMixin implements IChannel {
       }
 
       var appInfo = AppSummary.fromDbAppInfo(entity);
-
-      // GitHub 仓库类型应用：优先用 metadata 覆盖真实图标/应用名/包名（未收录回退数据库记录）
-      if (appInfo.user.isNotEmpty && appInfo.repositories.isNotEmpty) {
-        final metadata = await MetadataRepository.instance
-            .fetchInfo(appInfo.user, appInfo.repositories);
-        if (metadata != null) {
-          // Android 包名必须含 '.'，过滤脏数据（误存的应用名等）
-          final rawPackage = metadata['packageName']?.toString() ?? '';
-          final overridePackage =
-              (rawPackage.trim().isNotEmpty && rawPackage.contains('.')) ? rawPackage : '';
-          final metadataName = metadata['appName']?.toString() ?? '';
-          final overrideIcon = await MetadataRepository.instance
-              .resolveIconUrl(appInfo.user, appInfo.repositories);
-          final displayName = metadataName.isNotEmpty ? metadataName : appInfo.name;
-          final icon =
-              (overrideIcon?.isNotEmpty ?? false) ? overrideIcon! : appInfo.icon;
-
-          appInfo = AppSummary(
-            appId: appInfo.appId,
-            packageName:
-                overridePackage.isNotEmpty ? overridePackage : appInfo.packageName,
-            name: displayName,
-            user: appInfo.user,
-            repositories: appInfo.repositories,
-            icon: icon,
-            des: appInfo.des,
-            readme: appInfo.readme,
-            category: appInfo.category,
-            extra: appInfo.extra,
-          );
-        }
-      }
+      appInfo = await _applyMetadataOverride(
+        appInfo,
+        keepExistingPackageName: true,
+      );
 
       debugPrint('LocalDbChannel: appInfo.name = ${appInfo.name}');
       debugPrint('LocalDbChannel: appInfo.user = ${appInfo.user}');
