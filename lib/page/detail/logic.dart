@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/AppDetailRequest.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/service/downloadService.dart';
+import 'package:gstore/core/service/metadata_submit_service.dart';
 import 'package:gstore/core/download/DownloadStrategyManager.dart';
 import 'package:gstore/core/download/strategy/impl/LocalDbDownloadStrategy.dart';
 import 'package:gstore/core/download/strategy/impl/VivoDownloadStrategy.dart';
@@ -143,29 +145,6 @@ class DetailLogic extends GetxController {
             debugPrint('DetailLogic:   UI 将更新（installInfo 是响应式变量）');
           } else {
             appLog.info('DetailLogic: ✗ 应用未安装 - "$packageToCheck"');
-
-            // 尝试列出所有已安装应用，看看是否有类似包名
-            try {
-              final allApps = await InstalledApps.getInstalledApps();
-              debugPrint('DetailLogic: 已安装应用总数 = ${allApps.length}');
-
-              final packageToCheckLower = packageToCheck.toLowerCase();
-              final searchPart = packageToCheckLower.split('.').last;
-
-              final similarApps = allApps.where((app) {
-                final appName = app.packageName.toLowerCase();
-                return appName.contains(searchPart) || packageToCheckLower.contains(appName.split('.').last);
-              }).toList();
-
-              if (similarApps.isNotEmpty) {
-                debugPrint('DetailLogic: 找到类似包名的应用:');
-                for (var app in similarApps.take(5)) {
-                  debugPrint('DetailLogic:   - ${app.packageName} (${app.name})');
-                }
-              }
-            } catch (e) {
-              appLog.error('DetailLogic: 获取已安装应用列表失败: $e');
-            }
           }
         } catch (e) {
           appLog.error('DetailLogic: 检测安装状态时出错: $e');
@@ -363,30 +342,119 @@ class DetailLogic extends GetxController {
     }
   }
 
-  /// 将 IDetailInfo 转换为 AppInfo
-  AppInfo _detailToAppInfo(IDetailInfo detail) {
-    // 返回一个 AppInfo 对象（类型安全）
-    return AppInfo(
-      detail.appId,
-      detail.name,
-      detail.developer ?? '',
-      detail.packageName ?? '',
-      detail.icon,
-      detail.description ?? '',
-      null,
+  /// 是否可提交应用元数据（GitHub 渠道，或 LocalDb 中的 GitHub 仓库类型应用）
+  bool get canSubmitAppMetadata => _githubRepo() != null;
+
+  /// 从请求/详情中解析 GitHub owner/repo
+  /// - GitHub 渠道：apiData.full_name 或 appId（owner/repo）
+  /// - LocalDb 渠道：extra 中的 repositoryName + developer（GitHub 仓库类型应用）
+  ({String owner, String repo})? _githubRepo() {
+    final detail = state.detailInfo.value;
+
+    if (request?.channel == ChannelType.github) {
+      // 优先从 apiData.full_name 解析
+      final apiData = detail?.extra['apiData'];
+      if (apiData is Map && apiData['full_name'] is String) {
+        final full = apiData['full_name'] as String;
+        final parts = full.split('/');
+        if (parts.length == 2) return (owner: parts[0], repo: parts[1]);
+      }
+
+      // 回退：appId 格式为 owner/repo
+      final parts = (request!.appId).split('/');
+      if (parts.length == 2) return (owner: parts[0], repo: parts[1]);
+    } else if (request?.channel == ChannelType.localDb && detail != null) {
+      // LocalDb 中的 GitHub 仓库类型应用：repositoryName + developer
+      final repositoryName = detail.extra['repositoryName']?.toString();
+      final developer = detail.extra['developer']?.toString();
+      if ((repositoryName?.isNotEmpty ?? false) &&
+          (developer?.isNotEmpty ?? false)) {
+        return (owner: developer!, repo: repositoryName!);
+      }
+    }
+
+    return null;
+  }
+
+  /// 提交应用元数据提取请求（触发 GStore-Repositorys Actions）
+  Future<void> submitAppMetadata(BuildContext context) async {
+    final repo = _githubRepo();
+    if (repo == null) {
+      AppDialogs.showError('该应用不是 GitHub 仓库类型，无法完善应用信息');
+      return;
+    }
+
+    final userManager = Get.find<UserManager>();
+    final loggedIn = await userManager.isLoggedIn();
+    if (!loggedIn) {
+      final goLogin = await AppDialogs.showDialog(
+        title: '需要登录 GitHub',
+        content: '提交完善应用信息需要登录 GitHub 账号，是否前往登录？',
+        confirmText: '去登录',
+        cancelText: '取消',
+      );
+      if (goLogin == true) {
+        Get.toNamed(AppRoute.auth);
+      }
+      return;
+    }
+
+    final confirmed = await AppDialogs.showDialog(
+      title: '完善应用信息',
+      content: '将向 GStore-Repositorys 提交 issue，'
+          '由 Actions 自动提取 ${repo.owner}/${repo.repo} 最新 release APK 的\n'
+          '应用名 / 包名 / 图标 / 版本信息。',
+      confirmText: '提交',
+      cancelText: '取消',
+    );
+    if (confirmed != true) return;
+
+    try {
+      final url = await MetadataSubmitService.instance.submitAppMetadata(
+        owner: repo.owner,
+        repo: repo.repo,
+      );
+      if (url == null) {
+        AppDialogs.showError('未登录，无法提交');
+        return;
+      }
+      AppDialogs.showSuccess(
+        '已提交，仓库 Actions 将自动处理\n可在 issue 中查看进度',
+        title: '提交成功',
+      );
+      appLog.info('DetailLogic: 元数据请求已提交 - $url');
+    } catch (e) {
+      appLog.error('DetailLogic: 提交元数据请求失败 - $e');
+      AppDialogs.showError('提交失败: $e', title: '提交失败');
+    }
+  }
+
+  /// 将 IDetailInfo 转换为 AppSummary
+  AppSummary _detailToAppInfo(IDetailInfo detail) {
+    // 返回一个 AppSummary 对象（类型安全）
+    // 注意：repositories 保持现映射 = detail.packageName（browser 的 appInfo 载荷依赖它，不得置空）
+    final packageName = detail.packageName.isNotEmpty ? detail.packageName : null;
+    return AppSummary(
+      appId: detail.appId,
+      packageName: packageName,
+      name: detail.name,
+      user: detail.developer ?? '',
+      repositories: detail.packageName,
+      icon: detail.icon,
+      des: detail.description ?? '',
     );
   }
 
-  /// 将 AppDetailRequest 转换为 AppInfo
-  AppInfo _requestToAppInfo(AppDetailRequest req) {
-    return AppInfo(
-      req.appId,
-      req.name,
-      '', // user 字段为空
-      req.packageName ?? '',
-      req.icon ?? '', // icon 可能为空，使用空字符串作为默认值
-      req.description ?? '',
-      null,
+  /// 将 AppDetailRequest 转换为 AppSummary
+  AppSummary _requestToAppInfo(AppDetailRequest req) {
+    return AppSummary(
+      appId: req.appId,
+      packageName: req.packageName?.isNotEmpty == true ? req.packageName : null,
+      name: req.name,
+      user: '', // user 字段为空
+      repositories: req.packageName ?? '', // repositories 保持现映射 = req.packageName（browser 载荷依赖）
+      icon: req.icon ?? '', // icon 可能为空，使用空字符串作为默认值
+      des: req.description ?? '',
     );
   }
 

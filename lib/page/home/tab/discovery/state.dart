@@ -1,14 +1,14 @@
 import 'package:get/get.dart';
 import 'package:gstore/core/aggregate/aggregate.dart';
 import 'package:gstore/core/channel/channel.dart';
-import 'package:gstore/db/apps/AppInfo.dart';
+import 'package:gstore/core/model/AppSummary.dart';
 
 class DiscoveryState {
   /// 当前选中的渠道（null 表示全部）
   final selectedChannel = Rx<ChannelType?>(null);
 
   /// 所有渠道的应用列表
-  final Map<ChannelType, List<AppInfo>> channelApps = <ChannelType, List<AppInfo>>{}.obs;
+  final Map<ChannelType, List<AppSummary>> channelApps = <ChannelType, List<AppSummary>>{}.obs;
 
   /// 已添加应用索引 (channelId -> Set<appId>)
   final Map<String, Set<String>> addedAppsIndex = <String, Set<String>>{}.obs;

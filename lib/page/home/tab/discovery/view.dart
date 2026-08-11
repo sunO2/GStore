@@ -3,7 +3,7 @@ import 'package:get/get.dart';
 import 'package:gstore/core/channel/channel.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/design/app_components.dart';
-import 'package:gstore/db/apps/AppInfo.dart';
+import 'package:gstore/core/model/AppSummary.dart';
 
 import 'logic.dart';
 import 'state.dart';
@@ -477,7 +477,7 @@ class _DiscoveryPageState extends State<DiscoveryPage>
   }
 
   /// 应用卡片
-  Widget _buildAppCard(BuildContext context, AppInfo app, ChannelType channel) {
+  Widget _buildAppCard(BuildContext context, AppSummary app, ChannelType channel) {
     final theme = Theme.of(context);
 
     final isAdded = logic.isAppAdded(channel, app.appId);

@@ -16,7 +16,6 @@ import 'package:gstore/core/rust/FdroidRustRepoManager.dart';
 import 'package:gstore/core/rust/generated/models.dart';
 import 'package:gstore/core/service/apk_native_service.dart';
 import 'package:gstore/core/service/app_icon_service.dart';
-import 'package:gstore/db/apps/AppInfo.dart' as app_info;
 
 /// APK 信息解析与更新服务
 /// 下载完成后解析 APK，用真实包名/应用名/图标更新渠道与聚合记录
@@ -187,14 +186,14 @@ class ApkInfoService {
       );
       await aggregator.addApp(
         channel: ChannelType.github,
-        appInfo: app_info.AppInfo(
-          packageName,
-          appName.isNotEmpty ? appName : oldAppId,
-          '',
-          oldAppId,
-          iconPath,
-          '',
-          null,
+        appInfo: AppSummary(
+          appId: packageName,
+          packageName: packageName,
+          name: appName.isNotEmpty ? appName : oldAppId,
+          user: '',
+          repositories: oldAppId,
+          icon: iconPath,
+          des: '',
         ),
       );
       appLog.info('ApkInfoService: 聚合记录已更新(原生)');
@@ -307,14 +306,14 @@ class ApkInfoService {
         );
         await aggregator.addApp(
           channel: ChannelType.github,
-          appInfo: app_info.AppInfo(
-            record.appId,
-            realName ?? record.name,
-            '',
-            record.repositories,
-            iconPath ?? '',
-            record.description,
-            null,
+          appInfo: AppSummary(
+            appId: record.appId,
+            packageName: null, // 原实现未提供包名（extra 为空），保持语义不变
+            name: realName ?? record.name,
+            user: '',
+            repositories: record.repositories,
+            icon: iconPath ?? '',
+            des: record.description,
           ),
         );
         appLog.info('ApkInfoService: 聚合记录应用名/图标已更新');

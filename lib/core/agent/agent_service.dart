@@ -29,7 +29,6 @@ import 'package:gstore/core/utils/unit.dart';
 import 'package:gstore/core/webdav/webdav_config.dart';
 import 'package:gstore/core/webdav/webdav_client.dart';
 import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
-import 'package:gstore/db/apps/AppInfo.dart' as db;
 import 'package:gstore/http/download/DownloadStatus.dart';
 import 'package:gstore/http/download/DownloadStatusDataBase.dart';
 import 'package:gstore/core/download/strategy/impl/LocalDbDownloadStrategy.dart';
@@ -1895,7 +1894,7 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
           final apps = await aggregator.getAllAddedApps();
           if (apps.isEmpty) return '我的应用中还没有添加任何应用。';
           final lines = apps
-              .map((a) => '• ${a.appName} (${a.appId}) 渠道: ${a.channelId}')
+              .map((a) => '• ${a.appId} 渠道: ${a.channelId}')
               .toList();
           return '我的应用共 ${apps.length} 个：\n${lines.join('\n')}';
 
@@ -1973,14 +1972,14 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
 
         case 'add':
           if (appId.isEmpty) return '添加渠道应用需要 appId';
-          final appInfo = db.AppInfo(
-            appId,
-            name.isEmpty ? appId : name,
-            '',
-            '',
-            '',
-            '',
-            null,
+          final appInfo = AppSummary(
+            appId: appId,
+            packageName: null,
+            name: name.isEmpty ? appId : name,
+            user: '',
+            repositories: '',
+            icon: '',
+            des: '',
           );
           final r = await inst.addApp(appInfo);
           return r.success
@@ -2033,7 +2032,7 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
   }
 
   /// 格式化应用信息
-  String _formatAppInfo(AppInfo app, ChannelType channel) {
+  String _formatAppInfo(AppSummary app, ChannelType channel) {
     final buffer = StringBuffer()
       ..writeln('应用: ${app.name}')
       ..writeln('包名: ${app.appId}')
@@ -2112,8 +2111,7 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
           final installed = await InstalledApps.getAppInfo(packageName);
           final installedVersion = installed?.versionName;
           final latest = check.latestVersion;
-          final appName =
-              check.name.isNotEmpty ? check.name : added.appName;
+          final appName = check.name.isNotEmpty ? check.name : added.appId;
 
           if (installedVersion == null || latest == null) {
             updates.add('• $appName: 最新 $latest ?? 未安装');

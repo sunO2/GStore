@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:gstore/core/icons/Icons.dart';
 import 'package:gstore/core/model/AppDetailRequest.dart';
+import 'package:gstore/core/service/metadata_submit_service.dart';
 import 'package:gstore/core/service/user_manager.dart';
 import 'package:gstore/http/github/user_info/user_info.dart';
 import 'package:gstore/page/web/browser.dart';
@@ -26,7 +27,8 @@ class QuickSearchDialog extends StatefulWidget {
 class _QuickSearchDialogState extends State<QuickSearchDialog> {
   final TextEditingController _searchController = TextEditingController();
   ChannelType? _selectedChannel;
-  final List<AppInfo> _searchResults = [];
+  ChannelType? _currentSearchChannel;
+  final List<AppSummary> _searchResults = [];
   bool _isSearching = false;
   String? _errorMessage;
 
@@ -64,6 +66,9 @@ class _QuickSearchDialogState extends State<QuickSearchDialog> {
         return;
       }
 
+      // 记录当前搜索渠道（用于结果项展示渠道相关操作）
+      _currentSearchChannel = targetChannel;
+
       // 执行搜索
       final result = await channel.searchApps(
         _searchController.text.trim(),
@@ -90,12 +95,12 @@ class _QuickSearchDialogState extends State<QuickSearchDialog> {
   }
 
   /// 添加应用
-  Future<void> _addApp(AppInfo app) async {
+  Future<void> _addApp(AppSummary app) async {
     try {
       final aggregator = AppAggregatorManager.instance;
       await aggregator.addApp(
-        app.appId,
-        from: app.channel,
+        channel: _currentSearchChannel ?? ChannelType.localDb,
+        appInfo: app,
       );
 
       if (mounted) {
@@ -293,7 +298,7 @@ class _QuickSearchDialogState extends State<QuickSearchDialog> {
   }
 
   /// 搜索结果项
-  Widget _buildSearchResultItem(BuildContext context, AppInfo app) {
+  Widget _buildSearchResultItem(BuildContext context, AppSummary app) {
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
       child: ListTile(
@@ -322,14 +327,102 @@ class _QuickSearchDialogState extends State<QuickSearchDialog> {
         ),
         title: Text(app.name),
         subtitle: Text(app.des ?? '暂无描述'),
-        trailing: IconButton(
-          icon: const Icon(Icons.add_circle),
-          color: Theme.of(context).colorScheme.primary,
-          onPressed: () => _addApp(app),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // GitHub 渠道 / LocalDb 的 GitHub 仓库类型：完善应用信息
+            if (_canSubmitAppMetadata(app))
+              IconButton(
+                icon: const Icon(Icons.manage_search),
+                color: Theme.of(context).colorScheme.primary,
+                tooltip: '完善应用信息',
+                onPressed: () => _submitAppMetadata(app),
+              ),
+            IconButton(
+              icon: const Icon(Icons.add_circle),
+              color: Theme.of(context).colorScheme.primary,
+              onPressed: () => _addApp(app),
+            ),
+          ],
         ),
         onTap: () => _addApp(app),
       ),
     );
+  }
+
+  /// 当前搜索结果是否可提交元数据（GitHub 渠道，或 LocalDb 的 GitHub 仓库类型）
+  bool _canSubmitAppMetadata(AppSummary app) {
+    if (_currentSearchChannel == ChannelType.github) return true;
+    if (_currentSearchChannel == ChannelType.localDb) {
+      return app.user.isNotEmpty && app.repositories.isNotEmpty;
+    }
+    return false;
+  }
+
+  /// 提交元数据提取请求（GitHub 渠道 / LocalDb 的 GitHub 仓库类型搜索结果）
+  Future<void> _submitAppMetadata(AppSummary app) async {
+    // GitHub 渠道：appId 为 owner/repo；LocalDb：使用 user + repositories
+    final parts = app.appId.split('/');
+    final String owner;
+    final String repo;
+    if (parts.length == 2) {
+      owner = parts[0];
+      repo = parts[1];
+    } else if (app.user.isNotEmpty && app.repositories.isNotEmpty) {
+      owner = app.user;
+      repo = app.repositories;
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('无法解析仓库地址，请从详情页提交')),
+      );
+      return;
+    }
+
+    final userManager = Get.find<UserManager>();
+    final loggedIn = await userManager.isLoggedIn();
+    if (!loggedIn) {
+      final goLogin = await AppDialogs.showDialog(
+        title: '需要登录 GitHub',
+        content: '提交完善应用信息需要登录 GitHub 账号，是否前往登录？',
+        confirmText: '去登录',
+        cancelText: '取消',
+      );
+      if (goLogin == true && mounted) {
+        Get.toNamed(AppRoute.auth);
+      }
+      return;
+    }
+
+    if (!mounted) return;
+    final confirmed = await AppDialogs.showDialog(
+      title: '完善应用信息',
+      content: '将向 GStore-Repositorys 提交 issue，'
+          '由 Actions 自动提取 $owner/$repo 最新 release APK 的\n'
+          '应用名 / 包名 / 图标 / 版本信息。',
+      confirmText: '提交',
+      cancelText: '取消',
+    );
+    if (confirmed != true) return;
+
+    try {
+      final url = await MetadataSubmitService.instance.submitAppMetadata(
+        owner: owner,
+        repo: repo,
+      );
+      if (!mounted) return;
+      if (url == null) {
+        AppDialogs.showError('未登录，无法提交');
+        return;
+      }
+      AppDialogs.showSuccess(
+        '已提交，仓库 Actions 将自动处理\n可在 issue 中查看进度',
+        title: '提交成功',
+      );
+    } catch (e) {
+      if (mounted) {
+        AppDialogs.showError('提交失败: $e', title: '提交失败');
+      }
+    }
   }
 
   IconData _getChannelIcon(ChannelType type) {

@@ -43,10 +43,21 @@ class AppDetailRequest {
         final appInfo = (aggregatedInfo as dynamic).appInfo;
         final channel = (aggregatedInfo as dynamic).channel as ChannelType;
 
+        // 优先使用真实包名（B1 后 packageName 为 AppSummary 一级字段），否则回退 repositories 占位
+        String? packageName;
+        try {
+          final pkg = appInfo?.packageName;
+          if (pkg != null && pkg.isNotEmpty) {
+            packageName = pkg;
+          }
+        } catch (_) {}
+        packageName ??= appInfo?.repositories;
+
+        // 注意：appId 原样传递（渠道查询键），不做格式转换——由渠道内部处理
         return AppDetailRequest(
           appId: appInfo?.appId ?? '',
           name: appInfo?.name ?? '',
-          packageName: appInfo?.repositories,
+          packageName: packageName,
           icon: appInfo?.icon,
           description: appInfo?.des,
           channel: channel,
