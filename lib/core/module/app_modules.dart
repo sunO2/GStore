@@ -43,6 +43,7 @@ class CoreModules {
         InstallModule(),
         AggregateModule(),
         AgentToolsModule(),
+        UpdateModule(),
         BadgeModule(),
       ];
 
@@ -290,7 +291,28 @@ class AgentToolsModule extends AppModule {
   }
 }
 
-/// 红点模块（依赖 channel + download + aggregate）
+/// 更新管理模块（依赖 channel + aggregate）
+///
+/// 注册集中式 UpdateManager（统一检测入口 + 状态仓库）。
+class UpdateModule extends AppModule {
+  @override
+  String get moduleName => 'update';
+
+  @override
+  List<String> get dependencies => const ['channel', 'aggregate'];
+
+  @override
+  int get priority => 95;
+
+  @override
+  Future<void> onInit(ModuleContext context) async {
+    if (!Get.isRegistered<UpdateManagerService>()) {
+      Get.put(UpdateManagerService());
+    }
+  }
+}
+
+/// 红点模块（依赖 channel + download + aggregate + update）
 ///
 /// onInit 中注册 BadgeService 并异步触发红点检测（原 main.dart 迁入）。
 class BadgeModule extends AppModule {
@@ -298,7 +320,7 @@ class BadgeModule extends AppModule {
   String get moduleName => 'badge';
 
   @override
-  List<String> get dependencies => const ['channel', 'download', 'aggregate'];
+  List<String> get dependencies => const ['channel', 'download', 'aggregate', 'update'];
 
   @override
   int get priority => 100;
@@ -308,7 +330,7 @@ class BadgeModule extends AppModule {
     if (!Get.isRegistered<BadgeService>()) {
       Get.put(BadgeService());
     }
-    // 启动后异步检测红点（应用更新 / 数据库更新等），不阻塞 UI
+    // 启动后异步检测红点（应用更新走 UpdateManager 懒检测 / 数据库更新等），不阻塞 UI
     unawaited(BadgeService.instance.checkAll());
   }
 }

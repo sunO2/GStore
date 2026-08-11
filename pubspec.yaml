@@ -98,6 +98,8 @@ dev_dependencies:
 
   # Rust FFI
   flutter_lints: ^4.0.0
+  sqflite_common_ffi: 2.3.4+4
+  mockito: ^5.4.4
 
 # Rust FFI 配置
 flutter_rust_bridge:

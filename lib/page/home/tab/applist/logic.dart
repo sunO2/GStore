@@ -41,6 +41,39 @@ class ApplistLogic extends GetxController with GithubRequestMix {
 
     appLog.info('ApplistLogic: 🚀 开始加载应用数据...');
     await loadAggregatedApps();
+
+    // 订阅 UpdateManager：可更新状态变化 → 刷新红点/分区/排序
+    _updateSub = UpdateManagerService.instance.updateList.listen((_) {
+      _syncUpdateStates();
+      _applyFilter();
+    });
+    _syncUpdateStates();
+  }
+
+  /// 订阅 UpdateManager（页面销毁时取消）
+  StreamSubscription? _updateSub;
+
+  /// 同步可更新状态到本地（供红点/分区/排序）
+  void _syncUpdateStates() {
+    final manager = UpdateManagerService.instance;
+    final states = <String, bool>{};
+    for (final app in state.apps) {
+      states[app.appInfo.appId] = manager.hasUpdate(app.appInfo.appId);
+    }
+    state.updateStates
+      ..clear()
+      ..addAll(states);
+  }
+
+  /// 可更新应用列表（用于"可更新"分区，数据来自 UpdateManager）
+  List<AggregatedAppInfo> get updatableApps {
+    final manager = UpdateManagerService.instance;
+    final result = state.apps
+        .where((app) => manager.hasUpdate(app.appInfo.appId))
+        .toList();
+    result.sort(
+        (a, b) => b.addedAppInfo.addTime.compareTo(a.addedAppInfo.addTime));
+    return result;
   }
 
   /// 加载聚合应用
@@ -55,7 +88,7 @@ class ApplistLogic extends GetxController with GithubRequestMix {
       appLog.info('ApplistLogic: ✅ 获取到 ${apps.length} 个聚合应用');
 
       state.apps = apps;
-      state.filteredApps = apps; // 初始化时显示所有应用
+      state.filteredApps.value = apps; // 初始化时显示所有应用
       _buildCategories();
       update();
 
@@ -176,8 +209,15 @@ class ApplistLogic extends GetxController with GithubRequestMix {
       case AppSortMode.name:
         list.sort((a, b) =>
             (a.appInfo.name ?? '').toLowerCase().compareTo((b.appInfo.name ?? '').toLowerCase()));
+      case AppSortMode.updateFirst:
+        list.sort((a, b) {
+          final ua = state.updateStates[a.appInfo.appId] ?? false;
+          final ub = state.updateStates[b.appInfo.appId] ?? false;
+          if (ua != ub) return ua ? -1 : 1;
+          return b.addedAppInfo.addTime.compareTo(a.addedAppInfo.addTime);
+        });
     }
-    state.filteredApps = list;
+    state.filteredApps.value = list;
     update();
   }
 
@@ -259,6 +299,13 @@ class ApplistLogic extends GetxController with GithubRequestMix {
       _appsSubscription!.cancel();
       _appsSubscription = null;
       appLog.info('ApplistLogic: ✅ 应用变化订阅已取消');
+    }
+
+    // 取消更新状态订阅
+    if (_updateSub != null) {
+      _updateSub!.cancel();
+      _updateSub = null;
+      appLog.info('ApplistLogic: ✅ 更新状态订阅已取消');
     }
 
     // 清理 Controller

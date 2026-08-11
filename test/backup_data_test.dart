@@ -155,24 +155,20 @@ void main() {
       expect(restored.extra, '{"k":"v"}');
     });
 
-    test('fromAddedAppInfo：按选项过滤字段', () {
+    test('fromAddedAppInfo：聚合库只存引用（v3），应用信息用 appId 占位', () {
       final app = AddedAppInfo(
         channelId: 'github',
         appId: 'termux/termux-app',
-        appName: 'Termux',
-        iconUrl: 'https://i.png',
-        description: 'desc',
-        category: '工具',
         addTime: 123,
         sortOrder: 1,
         isEnabled: true,
       );
       final full = BackupAppItem.fromAddedAppInfo(app, const BackupOptions());
-      expect(full.iconUrl, 'https://i.png');
-      expect(full.description, 'desc');
-      expect(full.category, '工具');
+      expect(full.iconUrl, isNull);
+      expect(full.description, isNull);
+      expect(full.category, isNull);
       expect(full.channelId, 'github');
-      expect(full.appName, 'Termux');
+      expect(full.appName, 'termux/termux-app');
 
       const noIcons = BackupOptions(
         includeIconUrls: false,
@@ -207,12 +203,13 @@ void main() {
       expect(filtered.extra, isNull);
     });
 
-    test('toAddedAppInfo 转换', () {
+    test('toAddedAppInfo 转换（只写引用字段）', () {
       final item = makeAppItem();
       final app = item.toAddedAppInfo();
       expect(app.appId, 'termux/termux-app');
       expect(app.channelId, 'github');
-      expect(app.appName, 'Termux');
+      expect(app.addTime, 1000);
+      expect(app.sortOrder, 2);
       expect(app.isEnabled, true);
     });
 

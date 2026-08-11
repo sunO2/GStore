@@ -4,6 +4,7 @@ import 'dart:ui' show FontFeature;
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/design/design_tokens.dart';
+import 'package:gstore/core/update/app_update_info.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
 
 import 'logic.dart';

@@ -8,6 +8,9 @@ enum AppSortMode {
 
   /// 按名称 A-Z
   name,
+
+  /// 可更新优先
+  updateFirst,
 }
 
 class ApplistState {
@@ -15,7 +18,9 @@ class ApplistState {
   List<AggregatedAppInfo> apps = [];
 
   /// 过滤后的应用列表（用于显示搜索结果/分类筛选）
-  List<AggregatedAppInfo> filteredApps = [];
+  /// RxList：过滤结果变化时 Obx 才能感知并重建 UI
+  /// （普通 List + GetxController.update() 不触发 Obx，会导致防抖后的最终搜索结果不刷新）
+  final RxList<AggregatedAppInfo> filteredApps = <AggregatedAppInfo>[].obs;
 
   /// 搜索关键词
   final RxString searchKeyword = ''.obs;
@@ -40,6 +45,9 @@ class ApplistState {
 
   /// 当前排序模式
   final Rx<AppSortMode> sortMode = AppSortMode.recent.obs;
+
+  /// 可更新状态缓存（appId → 是否有更新，由 UpdateManager 驱动）
+  final Map<String, bool> updateStates = {};
 
   ApplistState() {
     ///Initialize variables

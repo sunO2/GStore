@@ -648,7 +648,7 @@ class BackupService implements IBackupService, IWebDavService {
       final importedApps = await _aggregatorDb.addedAppDao.getAllAddedApps();
       debugPrint('BackupService: 导入的应用列表:');
       for (final app in importedApps.take(10)) {
-        debugPrint('BackupService:   - ${app.channelId}/${app.appId} (${app.appName})');
+        debugPrint('BackupService:   - ${app.channelId}/${app.appId}');
       }
       if (importedApps.length > 10) {
         debugPrint('BackupService:   ... 还有 ${importedApps.length - 10} 个');
@@ -670,13 +670,10 @@ class BackupService implements IBackupService, IWebDavService {
     debugPrint('BackupService: 开始添加 ${apps.length} 个应用到聚合数据库');
 
     final addedApps = apps.map((backupApp) {
+      // 聚合库只存引用（v3），应用信息字段忽略，恢复后由渠道实时获取
       return AddedAppInfo(
         channelId: backupApp.channelId,
         appId: backupApp.appId,
-        appName: backupApp.appName,
-        iconUrl: backupApp.iconUrl,
-        description: backupApp.description,
-        category: backupApp.category,
         addTime: backupApp.addTime,
         sortOrder: backupApp.sortOrder,
         isEnabled: backupApp.isEnabled,
@@ -689,7 +686,7 @@ class BackupService implements IBackupService, IWebDavService {
 
       // 打印插入的应用列表
       for (final app in addedApps) {
-        debugPrint('BackupService: 已插入 - ${app.channelId}/${app.appId} (${app.appName})');
+        debugPrint('BackupService: 已插入 - ${app.channelId}/${app.appId}');
       }
     } catch (e) {
       appLog.error('BackupService: 插入聚合数据库失败 - $e');

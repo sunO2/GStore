@@ -46,3 +46,6 @@ app.*.map.json
 
 # Rust
 rust/fdroid_repo/target/
+
+# GStore-Repositorys 临时克隆
+/git.temp/

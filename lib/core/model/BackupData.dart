@@ -187,14 +187,15 @@ class BackupAppItem {
   Map<String, dynamic> toJson() => _$BackupAppItemToJson(this);
 
   /// 从 AddedAppInfo 转换
+  /// 聚合库只存引用（v3），应用信息字段用 appId 占位（备份格式保持兼容）
   static BackupAppItem fromAddedAppInfo(AddedAppInfo app, BackupOptions options) {
     return BackupAppItem(
       channelId: app.channelId,
       appId: app.appId,
-      appName: app.appName,
-      iconUrl: options.includeIconUrls ? app.iconUrl : null,
-      description: options.includeDescription ? app.description : null,
-      category: options.includeCategory ? app.category : null,
+      appName: app.appId,
+      iconUrl: null,
+      description: null,
+      category: null,
       addTime: app.addTime,
       sortOrder: app.sortOrder,
       isEnabled: app.isEnabled,
@@ -222,14 +223,12 @@ class BackupAppItem {
   }
 
   /// 转换为 AddedAppInfo
+  /// 聚合库只存引用（v3），应用信息字段（appName/iconUrl/description/category）
+  /// 在恢复时忽略，恢复后由渠道实时获取
   AddedAppInfo toAddedAppInfo() {
     return AddedAppInfo(
       channelId: channelId,
       appId: appId,
-      appName: appName,
-      iconUrl: iconUrl,
-      description: description,
-      category: category,
       addTime: addTime,
       sortOrder: sortOrder,
       isEnabled: isEnabled,

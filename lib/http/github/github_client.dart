@@ -52,6 +52,27 @@ abstract class GithubRestClient with GetxServiceMixin {
 
   @GET('/octocat')
   Future<HttpResponse> octocat();
+
+  /// 创建 issue（用于提交应用元数据提取请求到 GStore-Repositorys）
+  @POST('/repos/{owner}/{repo}/issues')
+  Future<CreateIssueResponse> createIssue(
+      @Path('owner') String owner,
+      @Path('repo') String repo,
+      @Body() Map<String, dynamic> body);
+}
+
+@JsonSerializable()
+class CreateIssueResponse {
+  final int? number;
+  @JsonKey(name: 'html_url')
+  final String? htmlUrl;
+  final String? title;
+
+  const CreateIssueResponse({this.number, this.htmlUrl, this.title});
+
+  factory CreateIssueResponse.fromJson(Map<String, dynamic> json) =>
+      _$CreateIssueResponseFromJson(json);
+  Map<String, dynamic> toJson() => _$CreateIssueResponseToJson(this);
 }
 
 @JsonSerializable()

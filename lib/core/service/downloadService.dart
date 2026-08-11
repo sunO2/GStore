@@ -466,6 +466,7 @@ class DownloadService extends GetxService
       _install(downloadStatus.fileName, downloadStatus.savePath);
       downloadStatus.downloadSuccess();
       DownloadNotificationService.instance.onDownloadComplete(notifId);
+      _afterDownloadInstalled(downloadStatus);
 
       // 下载成功（APK）：异步解析并更新真实包名/图标
       if (file.path.endsWith('.apk')) {
@@ -594,6 +595,7 @@ class DownloadService extends GetxService
             downloadStatus.downloadSuccess();
             DownloadNotificationService.instance
                 .onDownloadComplete(notifId);
+            _afterDownloadInstalled(downloadStatus);
             // 下载成功（APK）：异步解析并更新真实包名/图标（GitHub 渠道）
             if (file.path.endsWith('.apk')) {
               unawaited(
@@ -655,5 +657,17 @@ class DownloadService extends GetxService
       return true;
     }
     return false;
+  }
+
+  /// 下载安装完成后刷新更新状态（从可更新列表移除已更新应用）
+  /// 后台异步，不阻塞下载流程
+  void _afterDownloadInstalled(DownloadStatus status) {
+    try {
+      final appId = status.appId;
+      if (appId.isEmpty) return;
+      unawaited(UpdateManagerService.instance.markUpdated(appId));
+    } catch (e) {
+      // 更新状态刷新失败不影响下载本身
+    }
   }
 }
