@@ -6,6 +6,15 @@ import 'package:gstore/core/core.dart';
 import 'package:gstore/core/theme/theme_controller.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
 
+/// GitHub 代理预设地址
+const List<String> presetProxyHosts = [
+  'https://gh-proxy.org/',
+  'https://v4.gh-proxy.org/',
+  'https://v6.gh-proxy.org/',
+  'https://cdn.gh-proxy.org/',
+  'https://axisnow.gh-proxy.org/',
+];
+
 /// Main settings page with appearance and other settings
 class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key});
@@ -134,26 +143,45 @@ class SettingsPage extends StatelessWidget {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('GitHub 代理设置'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('设置 GitHub 相关下载的代理前缀，用于加速国内访问。'),
-            const SizedBox(height: AppSpacing.md),
-            TextField(
-              controller: controller,
-              decoration: const InputDecoration(
-                labelText: '代理前缀',
-                hintText: 'https://gh-proxy.org/',
-                border: OutlineInputBorder(),
+        content: StatefulBuilder(
+          builder: (context, setDialogState) => Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('设置 GitHub 相关下载的代理前缀，用于加速国内访问。'),
+              const SizedBox(height: AppSpacing.md),
+              // 预设代理快速选择
+              Wrap(
+                spacing: AppSpacing.sm,
+                runSpacing: AppSpacing.xs,
+                children: presetProxyHosts.map((host) {
+                  final selected = controller.text == host;
+                  return ChoiceChip(
+                    label: Text(host),
+                    selected: selected,
+                    onSelected: (_) {
+                      controller.text = host;
+                      setDialogState(() {});
+                    },
+                  );
+                }).toList(),
               ),
-            ),
-            const SizedBox(height: AppSpacing.sm),
-            const Text(
-              '设置了代理则下载走代理；留空表示不使用代理',
-              style: TextStyle(fontSize: 12, color: Colors.grey),
-            ),
-          ],
+              const SizedBox(height: AppSpacing.md),
+              TextField(
+                controller: controller,
+                decoration: const InputDecoration(
+                  labelText: '代理前缀',
+                  hintText: 'https://gh-proxy.org/',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: AppSpacing.sm),
+              const Text(
+                '设置了代理则下载走代理；留空表示不使用代理',
+                style: TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+            ],
+          ),
         ),
         actions: [
           TextButton(
