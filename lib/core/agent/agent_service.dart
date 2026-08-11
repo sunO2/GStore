@@ -2047,10 +2047,9 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
   /// 检查应用更新
   Future<String> _checkUpdates(String appId, String channel) async {
     try {
-      final aggregator = AppAggregatorManager.instance;
-      final manager = ChannelManager.instance;
+      final manager = UpdateManagerService.instance;
 
-      // 指定应用时只查该应用
+      // 指定应用时只查该应用（渠道直查或读缓存，不污染全量）
       if (appId.isNotEmpty) {
         final channelType = channel.isNotEmpty
             ? ChannelType.fromCode(channel)
@@ -2058,76 +2057,24 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
         if (channelType == null) {
           return '检查更新需要指定渠道 channel';
         }
-        final inst = manager.getChannel(channelType);
-        if (inst == null) return '渠道 ${channelType.code} 不可用';
-
-        final added =
-            await aggregator.isAppAdded(channel: channelType, appId: appId);
-        if (!added) return '$appId 不在我的应用中，无法检查更新';
-
-        final checkResult = await inst.checkAppUpdate(appId);
-        if (!checkResult.success || checkResult.data == null) {
-          return '$appId 更新检查失败: ${checkResult.error ?? '未知错误'}';
+        final info = await manager.checkApp(appId, channelCode: channel);
+        if (info == null) {
+          return '$appId 未发现可更新（未安装/渠道无版本/已是最新）';
         }
-        final check = checkResult.data!;
-        final appName = check.name.isNotEmpty ? check.name : appId;
-        final latest = check.latestVersion ?? '未知';
-
-        // 对比已安装版本
-        final packageName = check.packageName.trim().isNotEmpty
-            ? check.packageName.trim()
-            : appId;
-        final installed = await InstalledApps.getAppInfo(packageName);
-        final installedVersion = installed?.versionName;
-        if (installedVersion == null || latest == '未知') {
-          return '$appName 最新版本: $latest（设备上未安装或无法获取版本）';
-        }
-        final hasUpdate = compareVersion(installedVersion, latest) == 1;
-        return hasUpdate
-            ? '$appName 有更新: $installedVersion → $latest'
-            : '$appName 已是最新版本 ($latest)';
+        final appName = info.appName;
+        return '$appName 有更新: ${info.installedVersion} → ${info.latestVersion}';
       }
 
-      // 检查所有已添加应用
-      final addedApps = await aggregator.getAllAddedApps();
-      if (addedApps.isEmpty) return '我的应用列表为空，没有可检查的更新。';
-
-      final updates = <String>[];
-      int checked = 0;
-      for (final added in addedApps) {
-        try {
-          final channelType = ChannelType.fromCode(added.channelId);
-          if (channelType == null) continue;
-          final inst = manager.getChannel(channelType);
-          if (inst == null) continue;
-          final checkResult = await inst.checkAppUpdate(added.appId);
-          if (!checkResult.success || checkResult.data == null) continue;
-          final check = checkResult.data!;
-          checked++;
-
-          final packageName = check.packageName.trim().isNotEmpty
-              ? check.packageName.trim()
-              : added.appId;
-          final installed = await InstalledApps.getAppInfo(packageName);
-          final installedVersion = installed?.versionName;
-          final latest = check.latestVersion;
-          final appName = check.name.isNotEmpty ? check.name : added.appId;
-
-          if (installedVersion == null || latest == null) {
-            updates.add('• $appName: 最新 $latest ?? 未安装');
-            continue;
-          }
-          if (compareVersion(installedVersion, latest) == 1) {
-            updates.add('• $appName: $installedVersion → $latest ⬆ 可更新');
-          } else {
-            updates.add('• $appName: 已是最新 ($latest)');
-          }
-        } catch (e) {
-          // 单个应用失败不影响整体
-        }
+      // 检查所有已添加应用：触发懒检测（锁+时间窗防重），然后读共享结果
+      await manager.ensureChecked();
+      final updates = manager.updatableApps;
+      if (updates.isEmpty) {
+        return '已检查所有应用，均是最新版本。';
       }
-      if (checked == 0) return '检查了 ${addedApps.length} 个应用，但未能获取更新信息。';
-      return '已检查 ${addedApps.length} 个应用：\n${updates.join('\n')}';
+      final lines = updates
+          .map((u) => '• ${u.appName}: ${u.installedVersion} → ${u.latestVersion} ⬆ 可更新')
+          .toList();
+      return '发现 ${updates.length} 个可更新应用：\n${lines.join('\n')}';
     } catch (e) {
       return '更新检查失败: $e';
     }

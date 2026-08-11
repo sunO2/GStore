@@ -5,10 +5,14 @@ class AppCardWidget extends StatelessWidget {
   final AggregatedAppInfo app;
   final VoidCallback onTap;
 
+  /// 是否有更新（显示红点角标，数据来自 UpdateManager）
+  final bool hasUpdate;
+
   const AppCardWidget({
     super.key,
     required this.app,
     required this.onTap,
+    this.hasUpdate = false,
   });
 
   @override
@@ -55,6 +59,24 @@ class AppCardWidget extends StatelessWidget {
                       ),
                     ),
                   ),
+                  // 可更新红点（右上角，数据来自 UpdateManager）
+                  if (hasUpdate)
+                    Positioned(
+                      top: 0,
+                      right: 0,
+                      child: Container(
+                        width: 14,
+                        height: 14,
+                        decoration: BoxDecoration(
+                          color: Theme.of(context).colorScheme.error,
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: Theme.of(context).colorScheme.surface,
+                            width: 2,
+                          ),
+                        ),
+                      ),
+                    ),
                   // 渠道角标
                   Positioned(
                     right: 0,

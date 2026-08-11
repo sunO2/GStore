@@ -20,6 +20,7 @@ import 'package:gstore/core/module/module.dart';
 import 'package:gstore/core/service/db_manager.dart';
 import 'package:gstore/core/service/download_notification_service.dart';
 import 'package:gstore/core/service/downloadService.dart';
+import 'package:gstore/core/service/metadata_submit_service.dart';
 import 'package:gstore/core/service/user_manager.dart';
 import 'package:gstore/http/github/dio_client.dart';
 import 'package:gstore/http/github/github_auth_api.dart';
@@ -164,5 +165,7 @@ class UserModule extends AppModule {
       Get.put(userManager);
     }
     await userManager.initialize();
+    // 元数据提交服务（依赖用户登录态，首次使用时创建）
+    Get.lazyPut<MetadataSubmitService>(() => MetadataSubmitService());
   }
 }

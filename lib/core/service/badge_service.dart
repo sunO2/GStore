@@ -1,10 +1,5 @@
 import 'package:get/get.dart';
-import 'package:installed_apps/installed_apps.dart';
-import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
-import 'package:gstore/core/channel/ChannelManager.dart';
-import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/core.dart';
-import 'package:gstore/core/utils/unit.dart';
 
 /// 红点键（未来可扩展：新增枚举值即可）
 enum BadgeKey {
@@ -62,53 +57,24 @@ class BadgeService extends GetxService {
   /// 启动后检测所有红点来源
   /// 后台异步执行，不阻塞 UI
   Future<void> checkAll() async {
-    await Future.wait([
-      _checkAppUpdateBadge(),
-      _checkDbUpdateBadge(),
-    ]);
+    // 应用更新红点由 UpdateManager 驱动（订阅 updateList），
+    // 这里仅触发一次懒检测（锁+时间窗防重），随后订阅同步
+    await UpdateManagerService.instance.ensureChecked();
+    _subscribeUpdateManagerService();
+    await _checkDbUpdateBadge();
   }
 
-  /// 检测应用更新红点（已添加且已安装的应用有更新数量）
-  Future<void> _checkAppUpdateBadge() async {
-    try {
-      final aggregator = AppAggregatorManager.instance;
-      final manager = ChannelManager.instance;
-      final addedApps = await aggregator.getAllAddedApps();
+  /// 是否已订阅 UpdateManager
+  bool _subscribed = false;
 
-      int count = 0;
-      for (final added in addedApps) {
-        try {
-          final channelType = ChannelType.fromCode(added.channelId);
-          if (channelType == null) continue;
-          final channel = manager.getChannel(channelType);
-          if (channel == null) continue;
-
-          final checkResult = await channel.checkAppUpdate(added.appId);
-          if (!checkResult.success || checkResult.data == null) continue;
-          final check = checkResult.data!;
-
-          final packageName = check.packageName.trim().isNotEmpty
-              ? check.packageName.trim()
-              : added.appId;
-          final installed = await InstalledApps.getAppInfo(packageName);
-          final installedVersion = installed?.versionName;
-          final latestVersion = check.latestVersion;
-
-          if (installedVersion != null &&
-              latestVersion != null &&
-              compareVersion(installedVersion, latestVersion) == 1) {
-            count++;
-          }
-        } catch (e) {
-          // 单个应用失败不影响整体
-        }
-      }
-
-      setBadge(BadgeKey.appUpdate, count);
-      appLog.info('BadgeService: 应用更新红点数量 = $count');
-    } catch (e) {
-      appLog.error('BadgeService: 检测应用更新红点失败 - $e');
-    }
+  /// 订阅 UpdateManager：可更新数量变化 → 同步红点
+  void _subscribeUpdateManagerService() {
+    if (_subscribed) return;
+    _subscribed = true;
+    UpdateManagerService.instance.updateList.listen((list) {
+      setBadge(BadgeKey.appUpdate, list.length);
+      appLog.info('BadgeService: 应用更新红点数量 = ${list.length}');
+    });
   }
 
   /// 检测数据库版本更新红点

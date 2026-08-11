@@ -6,6 +6,21 @@ part of 'github_client.dart';
 // JsonSerializableGenerator
 // **************************************************************************
 
+CreateIssueResponse _$CreateIssueResponseFromJson(Map<String, dynamic> json) =>
+    CreateIssueResponse(
+      number: (json['number'] as num?)?.toInt(),
+      htmlUrl: json['html_url'] as String?,
+      title: json['title'] as String?,
+    );
+
+Map<String, dynamic> _$CreateIssueResponseToJson(
+        CreateIssueResponse instance) =>
+    <String, dynamic>{
+      'number': instance.number,
+      'html_url': instance.htmlUrl,
+      'title': instance.title,
+    };
+
 Task _$TaskFromJson(Map<String, dynamic> json) => Task(
       id: json['id'] as String?,
       name: json['name'] as String?,
@@ -284,6 +299,44 @@ class _GithubRestClient implements GithubRestClient {
     final _value = _result.data;
     final httpResponse = HttpResponse(_value, _result);
     return httpResponse;
+  }
+
+  @override
+  Future<CreateIssueResponse> createIssue(
+    String owner,
+    String repo,
+    Map<String, dynamic> body,
+  ) async {
+    final _extra = <String, dynamic>{};
+    final queryParameters = <String, dynamic>{};
+    final _headers = <String, dynamic>{};
+    final _data = <String, dynamic>{};
+    _data.addAll(body);
+    final _options = _setStreamType<CreateIssueResponse>(Options(
+      method: 'POST',
+      headers: _headers,
+      extra: _extra,
+    )
+        .compose(
+          _dio.options,
+          '/repos/${owner}/${repo}/issues',
+          queryParameters: queryParameters,
+          data: _data,
+        )
+        .copyWith(
+            baseUrl: _combineBaseUrls(
+          _dio.options.baseUrl,
+          baseUrl,
+        )));
+    final _result = await _dio.fetch<Map<String, dynamic>>(_options);
+    late CreateIssueResponse _value;
+    try {
+      _value = CreateIssueResponse.fromJson(_result.data!);
+    } on Object catch (e, s) {
+      errorLogger?.logError(e, s, _options);
+      rethrow;
+    }
+    return _value;
   }
 
   RequestOptions _setStreamType<T>(RequestOptions requestOptions) {

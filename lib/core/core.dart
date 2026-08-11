@@ -73,6 +73,10 @@ export 'package:gstore/core/agent/platform_arch.dart';
 // 模块化框架（ModuleManager + 动态代理）
 export 'package:gstore/core/module/module.dart';
 
+// 更新管理模块
+export 'package:gstore/core/update/app_update_info.dart';
+export 'package:gstore/core/update/update_manager.dart';
+
 // 资源管理
 export 'package:gstore/core/resource/Disposable.dart';
 
