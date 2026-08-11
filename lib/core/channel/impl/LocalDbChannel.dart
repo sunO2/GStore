@@ -218,14 +218,12 @@ class LocalDbChannel with AppUpdateCheckMixin implements IChannel {
       final config = await _database.dao.getVersion();
 
       // 获取包名
-      // 优先使用 appId（如果包含点，通常是包名格式如 com.example.app）
-      // 否则不显示包名
-      String? packageName;
-      if (appInfo.appId.contains('.')) {
-        packageName = appInfo.appId;
-        debugPrint('LocalDbChannel: 使用 appId 作为 packageName = $packageName');
+      // 直接使用 AppSummary.packageName（渠道显式提供的真实包名），不再用 appId 猜测
+      String? packageName = appInfo.packageName;
+      if (packageName != null && packageName.isNotEmpty) {
+        debugPrint('LocalDbChannel: 使用 packageName = $packageName');
       } else {
-        debugPrint('LocalDbChannel: appId 不是包名格式，不显示包名');
+        debugPrint('LocalDbChannel: 无 packageName，不显示包名');
       }
 
       // 优先读取仓库元数据（真实图标 / 包名 / 版本 / 应用名），未收录时回退默认数据
