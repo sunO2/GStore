@@ -9,6 +9,7 @@ import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/event/database_event.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
+import 'package:gstore/core/model/AppIdentity.dart';
 import 'package:gstore/core/model/AppSummary.dart';
 
 /// 应用聚合管理器
@@ -461,4 +462,11 @@ class AggregatedAppInfo {
     this.isFromCache = false,
     this.error,
   });
+
+  /// 应用身份（渠道 + 渠道内 ID + 真实包名）
+  AppIdentity get identity => AppIdentity(
+        channel: channel,
+        channelAppId: addedAppInfo.appId,
+        packageName: appInfo.packageName,
+      );
 }
