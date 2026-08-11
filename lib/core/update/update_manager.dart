@@ -74,10 +74,12 @@ class UpdateManagerService extends GetxService {
   /// 主动检测（页面刷新 / 手动触发）
   /// [onProgress] 逐应用进度回调（检测前 appId 占位，检测后携带名称/图标），供更新页滚轮/图标/进度展示
   /// [onLog] 检测过程日志回调（渠道不可用/未安装/版本对比/发现更新等），供更新页日志输出
+  /// [onCheckList] 待检测应用名列表回调（检测前一次性提供，供更新页滚轮预填完整名单）
   Future<void> checkUpdates({
     bool force = false,
     void Function(UpdateCheckProgress progress)? onProgress,
     void Function(CheckLogLevel level, String message)? onLog,
+    void Function(List<String> appNames)? onCheckList,
   }) async {
     if (isChecking.value) return; // 并发锁
     isChecking.value = true;
@@ -92,15 +94,36 @@ class UpdateManagerService extends GetxService {
       final manager = ChannelManager.instance;
       final addedApps = await aggregator.getAllAddedApps();
       final total = addedApps.length;
+
+      // 构建待检测应用名列表（优先聚合真实名，兜底 appId）供滚轮预填
+      List<String> appNames;
+      try {
+        final aggregated = await aggregator.getAggregatedApps();
+        final nameById = <String, String>{};
+        for (final a in aggregated) {
+          final name = a.appInfo.name.trim().isNotEmpty
+              ? a.appInfo.name.trim()
+              : a.appInfo.appId;
+          nameById[a.addedAppInfo.appId] = name;
+        }
+        appNames = [
+          for (final added in addedApps)
+            nameById[added.appId] ?? added.appId,
+        ];
+      } catch (_) {
+        // 聚合获取失败时用 appId 兜底
+        appNames = [for (final added in addedApps) added.appId];
+      }
+      onCheckList?.call(appNames);
       log(CheckLogLevel.info, '已添加应用共 $total 个');
 
       final newUpdateList = <AppUpdateInfo>[];
       for (var i = 0; i < addedApps.length; i++) {
         final added = addedApps[i];
-        // 检测前进度：appId 占位（AddedAppInfo 精简版无 appName）
+        // 检测前进度：appId 占位（名称以 onCheckList 预填的滚轮为准）
         onProgress?.call(UpdateCheckProgress(
           appId: added.appId,
-          appName: added.appId,
+          appName: appNames[i],
           index: i,
           total: total,
         ));

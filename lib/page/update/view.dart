@@ -32,28 +32,39 @@ class UpdateManager extends StatelessWidget {
       ),
       body: Obx(() {
         final state = logic.state;
-        // 检测中或检测完成（无更新）时，停留在检测页展示完整日志
-        if (state.isLoading.value || state.checkFinished.value) {
+        // 检测中：停留在检测页展示滚轮/图标/进度/日志
+        if (state.isLoading.value) {
           return _buildChecking(context, state);
+        }
+        // 无更新完成：停留检测页展示完整日志
+        if (state.checkFinished.value && state.updateList.isEmpty) {
+          return _buildChecking(context, state);
+        }
+        // 有更新：showLog 控制"检测日志页 ⇄ 更新列表页"切换
+        if (state.updateList.isNotEmpty) {
+          if (state.showLog.value) {
+            return _buildChecking(context, state);
+          }
+          return _buildUpdateList(context, logic, state);
         }
         if (state.errorMessage.value != null && state.updateList.isEmpty) {
           return _buildEmpty(context, state.errorMessage.value!, hasError: true);
         }
-        if (state.updateList.isEmpty) {
-          return _buildEmpty(context, '所有已添加应用均已是最新版本');
-        }
-        return _buildUpdateList(context, logic, state);
+        return _buildEmpty(context, '所有已添加应用均已是最新版本');
       }),
     );
   }
 
-  /// 检测中 / 检测完成
+  /// 检测中 / 检测完成（日志页）
   Widget _buildChecking(BuildContext context, UpdateState state) {
     final total = state.totalCount.value;
     final percent = total > 0
         ? (state.checkedCount.value / total).clamp(0.0, 1.0)
         : 0.0;
-    final finished = state.checkFinished.value;
+    // 完成态判定：无更新完成（checkFinished）或有更新时手动切到日志页（showLog）
+    final finished = state.checkFinished.value ||
+        (state.updateList.isNotEmpty && state.showLog.value);
+    final hasUpdates = state.updateList.isNotEmpty;
     return Column(
       children: [
         // 顶部：loading/完成图标 + 滚轮 + 进度
@@ -71,14 +82,16 @@ class UpdateManager extends StatelessWidget {
                 // loading 圆环 + 被检测应用图标叠加
                 _CheckingAppIconLoading(state: state),
               const SizedBox(height: AppSpacing.lg),
-              // 正在检测的应用名（滚轮效果：可看到上一个/当前/下一个）
+              // 正在检测的应用名（滚轮效果：完整预填待检测名单，随进度滚动）
               _CheckingWheel(state: state),
               const SizedBox(height: AppSpacing.xs),
               Text(
                 finished
-                    ? '检测完成（${total} 个应用，均无更新）'
+                    ? (hasUpdates
+                        ? '检测完成：发现 ${state.updateList.length} 个可更新应用'
+                        : '检测完成（$total 个应用，均无更新）')
                     : (total > 0
-                        ? '正在检测更新 ${state.checkedCount.value}/${total}'
+                        ? '正在检测更新 ${state.checkedCount.value}/$total'
                         : '正在检测更新...'),
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
                       color: AppColors.textSecondary,
@@ -95,6 +108,15 @@ class UpdateManager extends StatelessWidget {
                         Theme.of(context).colorScheme.surfaceContainerHighest,
                     color: Theme.of(context).colorScheme.primary,
                   ),
+                ),
+              ],
+              // 有更新时：提供切换到更新列表的按钮（检测完成态可来回切换）
+              if (hasUpdates) ...[
+                const SizedBox(height: AppSpacing.md),
+                FilledButton.tonalIcon(
+                  onPressed: () => Get.find<UpdateLogic>().toggleLogView(),
+                  icon: const Icon(Icons.list_alt, size: 18),
+                  label: Text('查看更新列表（${state.updateList.length}）'),
                 ),
               ],
             ],
@@ -163,6 +185,13 @@ class UpdateManager extends StatelessWidget {
                       ),
                 ),
               ),
+              // 切换到检测日志页
+              TextButton.icon(
+                onPressed: () => logic.toggleLogView(),
+                icon: const Icon(Icons.receipt_long, size: 18),
+                label: const Text('检测日志'),
+              ),
+              const SizedBox(width: AppSpacing.xs),
               FilledButton.tonalIcon(
                 onPressed: state.updatingAppId.value != null
                     ? null

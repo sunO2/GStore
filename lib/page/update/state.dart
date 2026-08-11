@@ -46,6 +46,9 @@ class UpdateState {
   /// 检测是否已完成（无更新时停留在检测页展示日志）
   final RxBool checkFinished = false.obs;
 
+  /// 是否显示检测日志页（有更新时手动切换：true=日志页 / false=更新列表）
+  final RxBool showLog = false.obs;
+
   /// 追加一条检测日志
   void addLog(CheckLogLevel level, String text) {
     checkLog.add(CheckLogEntry(level: level, text: text));
