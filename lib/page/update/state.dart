@@ -1,47 +1,10 @@
 import 'package:get/get.dart';
 import 'package:gstore/core/update/app_update_info.dart';
+import 'package:gstore/core/update/update_log.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
 
-/// 检测日志级别（决定颜色规则）
-enum CheckLogLevel {
-  /// 信息（检测过程）
-  info,
-
-  /// 已安装应用信息
-  installed,
-
-  /// 发现更新
-  update,
-
-  /// 无更新
-  none,
-
-  /// 跳过（未安装 / 无版本信息）
-  skip,
-
-  /// 错误
-  error,
-}
-
-/// 单条检测日志
-class CheckLogEntry {
-  final CheckLogLevel level;
-  final String text;
-  final DateTime time;
-
-  CheckLogEntry({
-    required this.level,
-    required this.text,
-    DateTime? time,
-  }) : time = time ?? DateTime.now();
-
-  String get timeText {
-    final h = time.hour.toString().padLeft(2, '0');
-    final m = time.minute.toString().padLeft(2, '0');
-    final s = time.second.toString().padLeft(2, '0');
-    return '$h:$m:$s';
-  }
-}
+export 'package:gstore/core/update/update_log.dart'
+    show CheckLogLevel, CheckLogEntry;
 
 class UpdateState {
   /// 可更新应用列表

@@ -62,12 +62,23 @@ class UpdateLogic extends GetxController {
 
     await manager.checkUpdates(
       force: force,
-      onProgress: (appId, index, total) {
-        state.checkedCount.value = index + 1;
-        state.totalCount.value = total;
-        state.checkingAppName.value = appId;
-        state.checkIndex.value = index;
-        state.addLog(CheckLogLevel.info, '检查中: $appId');
+      // 逐应用进度：滚轮 + 图标 + 进度（检测前 appId 占位，检测后携带名称/图标）
+      onProgress: (progress) {
+        // 首次遇到该应用时填充滚轮列表（保持检测顺序）
+        if (state.checkIndex.value != progress.index) {
+          state.checkList.add(progress.appName);
+        }
+        state.checkIndex.value = progress.index;
+        state.checkingAppName.value = progress.appName;
+        if (progress.iconUrl != null && progress.iconUrl!.isNotEmpty) {
+          state.checkingIconUrl.value = progress.iconUrl;
+        }
+        state.checkedCount.value = progress.index + 1;
+        state.totalCount.value = progress.total;
+      },
+      // 详细检测日志（渠道不可用/未安装/版本对比/发现更新等）
+      onLog: (level, message) {
+        state.addLog(level, message);
       },
     );
 
@@ -113,21 +124,34 @@ class UpdateLogic extends GetxController {
       // 确保下载策略已注册
       _ensureDownloadStrategies();
 
-      // 尝试使用策略模式下载（含代理处理），失败降级到普通下载
+      // 尝试使用策略模式下载（含代理处理），失败/缓存恢复无详情时降级到普通下载
       try {
-        final context = await DownloadStrategyManager.instance.createContext(
-          info.latestDownload,
-          info.detail,
-        );
-        if (context != null) {
-          await Get.find<DownloadService>().downloadWithContext(
-            context,
-            info.appId,
-            info.appName,
-            version,
-            fileName,
+        final detail = info.detail;
+        if (detail != null) {
+          final context = await DownloadStrategyManager.instance.createContext(
+            info.latestDownload,
+            detail,
           );
+          if (context != null) {
+            await Get.find<DownloadService>().downloadWithContext(
+              context,
+              info.appId,
+              info.appName,
+              version,
+              fileName,
+            );
+          } else {
+            await Get.find<DownloadService>().download(
+              info.appId,
+              info.appName,
+              version,
+              info.latestDownload.url,
+              fileName,
+              downloadSize: info.latestDownload.size,
+            );
+          }
         } else {
+          // 缓存恢复（detail 未持久化）→ 直接普通下载
           await Get.find<DownloadService>().download(
             info.appId,
             info.appName,
