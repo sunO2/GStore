@@ -1,6 +1,6 @@
 import 'package:get/get.dart';
 import 'package:gstore/core/channel/channel.dart';
-import 'package:gstore/db/apps/AppInfo.dart';
+import 'package:gstore/core/model/AppSummary.dart';
 
 class ChannelTestState {
   /// 当前选中的渠道
@@ -13,7 +13,7 @@ class ChannelTestState {
   final isQuerying = false.obs;
 
   /// 应用列表
-  final apps = <AppInfo>[].obs;
+  final apps = <AppSummary>[].obs;
 
   /// 错误信息
   final errorMessage = ''.obs;

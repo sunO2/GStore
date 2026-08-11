@@ -191,12 +191,9 @@ class ApplistLogic extends GetxController with GithubRequestMix {
 
   void appDetail(AggregatedAppInfo app) {
     // 创建轻量级的详情请求参数
-    // 优先使用真实包名（metadata 收录时已写入 extra），否则 appId 占位
+    // 优先使用真实包名（B1 后 packageName 为 AppSummary 一级字段），否则 appId 占位
     // 注意：appId 原样传递（渠道查询键），不做格式转换——由渠道内部处理
-    final realPackageName = app.appInfo.getExtra<String>('packageName');
-    final packageName = (realPackageName?.isNotEmpty ?? false)
-        ? realPackageName
-        : app.appInfo.appId;
+    final packageName = app.appInfo.packageName ?? app.appInfo.appId;
     final request = AppDetailRequest(
       appId: app.appInfo.appId,
       name: app.appInfo.name,

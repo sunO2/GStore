@@ -10,7 +10,7 @@ import 'package:gstore/core/config/config_service.dart';
 import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/icons/Icons.dart';
 import 'package:gstore/core/logger/LogManager.dart';
-import 'package:gstore/db/apps/AppInfo.dart';
+import 'package:gstore/core/model/AppSummary.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:async';
 
@@ -43,9 +43,9 @@ class DiscoveryLogic extends GetxController {
   }
 
   /// 获取当前显示的应用列表（扁平化，用于 Grid）
-  /// 返回 (AppInfo, ChannelType) 对，确保每个应用都有正确的渠道信息
-  List<(AppInfo, ChannelType)> getDisplayApps() {
-    List<(AppInfo, ChannelType)> result = [];
+  /// 返回 (AppSummary, ChannelType) 对，确保每个应用都有正确的渠道信息
+  List<(AppSummary, ChannelType)> getDisplayApps() {
+    List<(AppSummary, ChannelType)> result = [];
 
     final channels = state.selectedChannel.value == null
         ? sortedChannelTypes
@@ -172,7 +172,7 @@ class DiscoveryLogic extends GetxController {
 
       // 查找对应的渠道和应用
       ChannelType? channel;
-      AppInfo? appInfo;
+      AppSummary? appInfo;
 
       for (var entry in state.channelApps.entries) {
         if (entry.key.code == channelCode) {
@@ -399,7 +399,7 @@ class DiscoveryLogic extends GetxController {
   }
 
   /// 添加/移除应用（添加到聚合管理器，用于首页显示）
-  Future<void> toggleApp(ChannelType channel, AppInfo appInfo) async {
+  Future<void> toggleApp(ChannelType channel, AppSummary appInfo) async {
     try {
       // 使用聚合管理器切换应用状态
       final added = await _aggregator.toggleApp(
@@ -436,7 +436,7 @@ class DiscoveryLogic extends GetxController {
 
   /// 保存搜索结果到渠道数据库（不直接入库首页）
   /// 用户需在渠道应用列表中选择"入库"才会加入首页
-  Future<bool> saveSearchToChannel(ChannelType channel, AppInfo app) async {
+  Future<bool> saveSearchToChannel(ChannelType channel, AppSummary app) async {
     final channelInstance = _channelManager.getChannel(channel);
     if (channelInstance == null) return false;
     try {
@@ -531,7 +531,7 @@ class DiscoveryLogic extends GetxController {
 
   /// 显示应用操作菜单（长按触发）
   /// 单应用操作：添加到首页/移除首页、从渠道删除、批量管理
-  void showAppActions(BuildContext context, ChannelType channel, AppInfo app) {
+  void showAppActions(BuildContext context, ChannelType channel, AppSummary app) {
     final isAdded = isAppAdded(channel, app.appId);
     final theme = Theme.of(context);
 
@@ -688,8 +688,8 @@ class DiscoveryLogic extends GetxController {
   }
 
   /// 获取筛选后的应用列表
-  Map<ChannelType, List<AppInfo>> getFilteredApps() {
-    final result = <ChannelType, List<AppInfo>>{};
+  Map<ChannelType, List<AppSummary>> getFilteredApps() {
+    final result = <ChannelType, List<AppSummary>>{};
 
     state.channelApps.forEach((channel, apps) {
       // 渠道筛选
@@ -1022,7 +1022,7 @@ class _AddAppSearchSheet extends StatefulWidget {
   final List<String> initialSelectedCodes;
 
   /// 保存到渠道回调（返回是否成功）
-  final Future<bool> Function(ChannelType channel, AppInfo appInfo)
+  final Future<bool> Function(ChannelType channel, AppSummary appInfo)
       onSaveToChannel;
 
   /// 选中渠道变化回调（持久化）
@@ -1045,7 +1045,7 @@ class _AddAppSearchSheetState extends State<_AddAppSearchSheet> {
   final FocusNode _focusNode = FocusNode();
 
   /// 搜索结果：应用 + 来源渠道
-  final List<(AppInfo, ChannelType)> _results = [];
+  final List<(AppSummary, ChannelType)> _results = [];
 
   bool _searching = false;
   bool _searched = false;
@@ -1132,7 +1132,7 @@ class _AddAppSearchSheetState extends State<_AddAppSearchSheet> {
       _searched = true;
     });
 
-    final newResults = <(AppInfo, ChannelType)>[];
+    final newResults = <(AppSummary, ChannelType)>[];
     for (final type in types) {
       try {
         final channel = widget.channels.firstWhereOrNull(
@@ -1164,7 +1164,7 @@ class _AddAppSearchSheetState extends State<_AddAppSearchSheet> {
   }
 
   /// 计算应用与搜索词的匹配分数
-  int _scoreResult(AppInfo app, String kw) {
+  int _scoreResult(AppSummary app, String kw) {
     final name = app.name.toLowerCase();
     final pkg = app.appId.toLowerCase();
     final des = app.des.toLowerCase();
@@ -1388,7 +1388,7 @@ class _AddAppSearchSheetState extends State<_AddAppSearchSheet> {
   }
 
   /// 保存按钮：保存到渠道数据库（不直接入库首页）
-  Widget _buildSaveButton(ChannelType type, AppInfo app) {
+  Widget _buildSaveButton(ChannelType type, AppSummary app) {
     final key = '${type.code}:${app.appId}';
     final saved = _savedKeys.contains(key);
     final saving = _savingKey == key;
@@ -1423,7 +1423,7 @@ class _AddAppSearchSheetState extends State<_AddAppSearchSheet> {
   }
 
   /// 保存到渠道（保存搜索结果，供后续入库）
-  Future<void> _saveToChannel(ChannelType type, AppInfo app) async {
+  Future<void> _saveToChannel(ChannelType type, AppSummary app) async {
     final key = '${type.code}:${app.appId}';
     setState(() => _savingKey = key);
     final success = await widget.onSaveToChannel(type, app);

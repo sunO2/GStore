@@ -1,11 +1,10 @@
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:gstore/core/core.dart';
-import 'package:gstore/db/apps/AppInfo.dart';
 
 /// GStore 浏览器封装
 /// 使用系统默认浏览器打开（避免 Chrome Custom Tabs 在部分 ROM 上闪退）
 class GStoreInAppBrowser {
-  final AppInfo? appInfo;
+  final AppSummary? appInfo;
   GStoreInAppBrowser({this.appInfo});
 
   /// 打开 URL（用系统默认浏览器，兼容性最好）
