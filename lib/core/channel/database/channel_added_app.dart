@@ -4,9 +4,14 @@ import 'package:floor/floor.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 
 /// 渠道已添加应用实体
-@Entity(tableName: 'channel_added_app')
+/// v4：复合主键 (channelCode, appId)，同 appId 跨渠道可共存（不再互相覆盖）
+/// 注意：Floor 按字段声明顺序生成 PRIMARY KEY 列序，channelCode 须在 appId 之前
+@Entity(tableName: 'channel_added_app', primaryKeys: ['channelCode', 'appId'])
 class ChannelAddedApp {
-  @PrimaryKey()
+  /// 渠道类型代码
+  final String channelCode;
+
+  /// 渠道内应用 ID（GitHub 为 owner/repo 或真实包名，其他渠道为包名/渠道 ID）
   final String appId;
 
   /// 应用名称
@@ -33,9 +38,6 @@ class ChannelAddedApp {
 
   /// 添加时间（毫秒时间戳）
   final int addTime;
-
-  /// 渠道类型代码
-  final String channelCode;
 
   /// 扩展字段，JSON 字符串格式存储额外信息
   final String? extra;

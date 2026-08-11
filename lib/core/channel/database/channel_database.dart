@@ -12,7 +12,7 @@ part 'channel_database.g.dart';
 
 /// 渠道应用数据库
 /// 每个渠道维护自己添加的应用列表
-@Database(version: 3, entities: [ChannelAddedApp])
+@Database(version: 4, entities: [ChannelAddedApp])
 abstract class ChannelDatabase extends FloorDatabase {
   ChannelAddedAppDao get dao;
 
@@ -38,6 +38,9 @@ abstract class ChannelDatabase extends FloorDatabase {
             );
             appLog.info('ChannelDatabase: 已添加 apprepo 列');
           }),
+          // v3 -> v4：重建表为复合主键 (channelCode, appId)，
+          // 同 appId 跨渠道不再互相覆盖（A1）
+          Migration(3, 4, migration3to4),
         ])
         .addCallback(Callback(
           onCreate: (database, version) async {
@@ -51,9 +54,43 @@ abstract class ChannelDatabase extends FloorDatabase {
   }
 }
 
+/// v3 → v4 迁移：channel_added_app 主键从单列 appId 重建为复合主键 (channelCode, appId)
+///
+/// 目的：同 appId 跨渠道应用可共存（GitHub 渠道 appId 为 owner/repo，
+/// 与 LocalDb/vivo 渠道包名可能相同，旧主键导致互相覆盖丢数据）。
+///
+/// 策略：重建表迁移（与 AppAddedDatabase v2→v3 先例一致）——
+/// 建新表（列与现表完全一致，主键为复合）→ 拷贝数据 → 删旧表 → 重命名。
+/// 注意：SQL 无 IF NOT EXISTS 守卫，Floor 按数据库版本号只执行一次，
+/// 重复执行报 table exists 属预期行为，重跑幂等由版本号机制保证。
+Future<void> migration3to4(sqflite.Database database) async {
+  await database.execute('''
+    CREATE TABLE `channel_added_app_new` (
+      `appId` TEXT NOT NULL,
+      `name` TEXT NOT NULL,
+      `user` TEXT NOT NULL,
+      `repositories` TEXT NOT NULL,
+      `apprepo` TEXT,
+      `icon` TEXT NOT NULL,
+      `description` TEXT NOT NULL,
+      `category` TEXT,
+      `addTime` INTEGER NOT NULL,
+      `channelCode` TEXT NOT NULL,
+      `extra` TEXT,
+      PRIMARY KEY (`channelCode`, `appId`)
+    )
+  ''');
+  await database.execute('''
+    INSERT INTO channel_added_app_new (appId, name, user, repositories, apprepo, icon, description, category, addTime, channelCode, extra)
+    SELECT appId, name, user, repositories, apprepo, icon, description, category, addTime, channelCode, extra FROM channel_added_app
+  ''');
+  await database.execute('DROP TABLE channel_added_app');
+  await database.execute('ALTER TABLE channel_added_app_new RENAME TO channel_added_app');
+  appLog.info('ChannelDatabase: v3→v4 迁移完成，channel_added_app 复合主键 (channelCode, appId)');
+}
+
 /// 渠道数据库单例
-class ChannelDatabaseManager {
-  static ChannelDatabase? _instance;
+class ChannelDatabaseManager {  static ChannelDatabase? _instance;
 
   /// 正在创建中的 future（并发保护：多个调用方同时请求时只建一次库）
   static Future<ChannelDatabase>? _creating;
