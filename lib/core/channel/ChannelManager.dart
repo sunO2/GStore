@@ -3,7 +3,7 @@ import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/channel/model/ChannelInfo.dart';
 import 'package:gstore/core/channel/model/ChannelResult.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
-import 'package:gstore/db/apps/AppInfo.dart';
+import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/db/apps/AppInfo.dart' as db;
 
 /// 渠道管理器
@@ -118,7 +118,7 @@ class ChannelManager {
   // ==================== 查询方法（指定渠道） ====================
 
   /// 使用指定渠道获取所有应用
-  Future<ChannelResult<List<AppInfo>>> getAllApps({
+  Future<ChannelResult<List<AppSummary>>> getAllApps({
     ChannelType? from,
     bool forceRefresh = false,
   }) async {
@@ -133,7 +133,7 @@ class ChannelManager {
   }
 
   /// 使用指定渠道获取应用信息
-  Future<ChannelResult<AppInfo?>> getAppInfo(
+  Future<ChannelResult<AppSummary?>> getAppInfo(
     String appId, {
     ChannelType? from,
     bool forceRefresh = false,
@@ -149,7 +149,7 @@ class ChannelManager {
   }
 
   /// 使用指定渠道搜索应用
-  Future<ChannelResult<List<AppInfo>>> searchApps(
+  Future<ChannelResult<List<AppSummary>>> searchApps(
     String keyword, {
     ChannelType? from,
     bool forceRefresh = false,
@@ -165,7 +165,7 @@ class ChannelManager {
   }
 
   /// 使用指定渠道按分类搜索
-  Future<ChannelResult<List<AppInfo>>> searchByCategory(
+  Future<ChannelResult<List<AppSummary>>> searchByCategory(
     String categoryId, {
     ChannelType? from,
     bool forceRefresh = false,
@@ -198,7 +198,7 @@ class ChannelManager {
   // ==================== 查询方法（自动降级） ====================
 
   /// 获取所有应用（支持自动降级）
-  Future<ChannelResult<List<AppInfo>>> getAllAppsWithFallback({
+  Future<ChannelResult<List<AppSummary>>> getAllAppsWithFallback({
     bool forceRefresh = false,
     List<ChannelType>? preferredOrder,
   }) async {
@@ -223,7 +223,7 @@ class ChannelManager {
   }
 
   /// 获取应用信息（支持自动降级）
-  Future<ChannelResult<AppInfo?>> getAppInfoWithFallback(
+  Future<ChannelResult<AppSummary?>> getAppInfoWithFallback(
     String appId, {
     bool forceRefresh = false,
     List<ChannelType>? preferredOrder,

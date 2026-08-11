@@ -9,7 +9,7 @@ import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/event/database_event.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
-import 'package:gstore/db/apps/AppInfo.dart';
+import 'package:gstore/core/model/AppSummary.dart';
 
 /// 应用聚合管理器
 /// 负责管理所有渠道已添加的应用
@@ -88,7 +88,7 @@ class AppAggregatorManager implements IAggregateService {
   /// - 统一调用渠道 addApp 落渠道库（渠道自行决定是否支持/如何保存），失败不阻断首页添加
   Future<void> addApp({
     required ChannelType channel,
-    required AppInfo appInfo,
+    required AppSummary appInfo,
     int? sortOrder,
   }) async {
     // 渠道自报规范化 appId（无感调用）
@@ -123,14 +123,15 @@ class AppAggregatorManager implements IAggregateService {
     if (channelInstance != null) {
       try {
         final enhanced = appId != appInfo.appId
-            ? AppInfo(
-                appId,
-                appInfo.name,
-                appInfo.user,
-                appInfo.repositories,
-                appInfo.icon,
-                appInfo.des,
-                appInfo.category,
+            ? AppSummary(
+                appId: appId,
+                packageName: null,
+                name: appInfo.name,
+                user: appInfo.user,
+                repositories: appInfo.repositories,
+                icon: appInfo.icon,
+                des: appInfo.des,
+                category: appInfo.category,
               )
             : appInfo;
         await channelInstance.addApp(enhanced);
@@ -148,7 +149,7 @@ class AppAggregatorManager implements IAggregateService {
   /// 批量添加应用
   Future<void> addApps({
     required ChannelType channel,
-    required List<AppInfo> appInfos,
+    required List<AppSummary> appInfos,
   }) async {
     final now = DateTime.now().millisecondsSinceEpoch;
     final channelInstance = _channelManager.getChannel(channel);
@@ -182,14 +183,15 @@ class AppAggregatorManager implements IAggregateService {
       if (channelInstance != null) {
         try {
           final enhanced = appId != app.appId
-              ? AppInfo(
-                  appId,
-                  app.name,
-                  app.user,
-                  app.repositories,
-                  app.icon,
-                  app.des,
-                  app.category,
+              ? AppSummary(
+                  appId: appId,
+                  packageName: null,
+                  name: app.name,
+                  user: app.user,
+                  repositories: app.repositories,
+                  icon: app.icon,
+                  des: app.des,
+                  category: app.category,
                 )
               : app;
           await channelInstance.addApp(enhanced);
@@ -223,7 +225,7 @@ class AppAggregatorManager implements IAggregateService {
   /// 切换应用添加状态
   Future<bool> toggleApp({
     required ChannelType channel,
-    required AppInfo appInfo,
+    required AppSummary appInfo,
   }) async {
     final isAdded = await isAppAdded(channel: channel, appId: appInfo.appId);
 
@@ -359,7 +361,7 @@ class AppAggregatorManager implements IAggregateService {
             sliceCache++;
             return AggregatedAppInfo(
               addedAppInfo: addedApp,
-              appInfo: _createAppInfoFromAdded(addedApp),
+              appInfo: _createAppSummaryFromAdded(addedApp),
               channel: channelType,
               isFromCache: true,
             );
@@ -375,7 +377,7 @@ class AppAggregatorManager implements IAggregateService {
           sliceFailed++;
           return AggregatedAppInfo(
             addedAppInfo: addedApp,
-            appInfo: _createAppInfoFromAdded(addedApp),
+            appInfo: _createAppSummaryFromAdded(addedApp),
             channel: ChannelType.localDb,
             isFromCache: true,
             error: e.toString(),
@@ -401,17 +403,18 @@ class AppAggregatorManager implements IAggregateService {
 
   // ==================== 私有方法 ====================
 
-  /// 从 AddedAppInfo 创建占位 AppInfo（渠道查询失败时兜底）
+  /// 从 AddedAppInfo 创建占位 AppSummary（渠道查询失败时兜底）
   /// 聚合库只存引用，无应用信息副本；兜底显示 appId 与空图标（UI 占位）
-  AppInfo _createAppInfoFromAdded(AddedAppInfo addedApp) {
-    return AppInfo(
-      addedApp.appId,
-      addedApp.appId, // 占位名称（显示 appId）
-      '', // user
-      '', // repositories
-      '', // 空图标（UI 显示占位）
-      '', // 描述
-      null, // category
+  AppSummary _createAppSummaryFromAdded(AddedAppInfo addedApp) {
+    return AppSummary(
+      appId: addedApp.appId,
+      packageName: null,
+      name: addedApp.appId, // 占位名称（显示 appId）
+      user: '', // user
+      repositories: '', // repositories
+      icon: '', // 空图标（UI 显示占位）
+      des: '', // 描述
+      category: null,
     );
   }
 
@@ -440,7 +443,7 @@ class AggregatedAppInfo {
   final AddedAppInfo addedAppInfo;
 
   /// 应用详细信息
-  final AppInfo appInfo;
+  final AppSummary appInfo;
 
   /// 来源渠道
   final ChannelType channel;

@@ -10,8 +10,8 @@ import 'package:gstore/core/channel/model/AppUpdateCheckResult.dart';
 import 'package:gstore/core/channel/model/ChannelInfo.dart';
 import 'package:gstore/core/channel/model/ChannelResult.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
+import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
-import 'package:gstore/db/apps/AppInfo.dart';
 import 'package:gstore/db/apps/AppInfo.dart' as db;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -50,7 +50,7 @@ class FakeChannel implements IChannel {
       );
 
   @override
-  Future<ChannelResult<AppInfo?>> getAppInfo(String appId,
+  Future<ChannelResult<AppSummary?>> getAppInfo(String appId,
       {bool forceRefresh = false}) async {
     _inFlight++;
     if (_inFlight > maxConcurrent) maxConcurrent = _inFlight;
@@ -60,7 +60,16 @@ class FakeChannel implements IChannel {
         throw Exception('模拟渠道异常: $appId');
       }
       return ChannelResult.success(
-        data: AppInfo(appId, 'App $appId', '', '', '', '描述', null),
+        data: AppSummary(
+          appId: appId,
+          packageName: null,
+          name: 'App $appId',
+          user: '',
+          repositories: '',
+          icon: '',
+          des: '描述',
+          category: null,
+        ),
         from: type,
       );
     } finally {
@@ -78,19 +87,19 @@ class FakeChannel implements IChannel {
   Future<bool> checkAvailable() async => true;
 
   @override
-  Future<String> canonicalAppId(AppInfo appInfo) async => appInfo.appId;
+  Future<String> canonicalAppId(AppSummary appInfo) async => appInfo.appId;
 
   @override
-  Future<ChannelResult<void>> addApp(AppInfo app) async =>
+  Future<ChannelResult<void>> addApp(AppSummary app) async =>
       ChannelResult.success(data: null, from: type);
 
   @override
-  Widget? getAddAppWidget(BuildContext context, Function(AppInfo) onAppAdded,
+  Widget? getAddAppWidget(BuildContext context, Function(AppSummary) onAppAdded,
           {VoidCallback? onAppSaved}) =>
       null;
 
   @override
-  Future<ChannelResult<List<AppInfo>>> getAllApps(
+  Future<ChannelResult<List<AppSummary>>> getAllApps(
           {bool forceRefresh = false}) async =>
       ChannelResult.success(data: [], from: type);
 
@@ -109,12 +118,12 @@ class FakeChannel implements IChannel {
       ChannelResult.success(data: null, from: type);
 
   @override
-  Future<ChannelResult<List<AppInfo>>> searchApps(String keyword,
+  Future<ChannelResult<List<AppSummary>>> searchApps(String keyword,
           {bool forceRefresh = false}) async =>
       ChannelResult.success(data: [], from: type);
 
   @override
-  Future<ChannelResult<List<AppInfo>>> searchByCategory(String categoryId,
+  Future<ChannelResult<List<AppSummary>>> searchByCategory(String categoryId,
           {bool forceRefresh = false}) async =>
       ChannelResult.success(data: [], from: type);
 
