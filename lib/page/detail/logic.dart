@@ -124,12 +124,8 @@ class DetailLogic extends GetxController {
       debugPrint('DetailLogic: packageName 长度 = ${detail?.packageName?.length ?? 0}');
       debugPrint('DetailLogic: packageName bytes = ${detail?.packageName?.codeUnits}');
 
-      // 如果详情中没有 packageName，尝试使用 appId（如果它看起来像包名）
-      if ((packageToCheck == null || packageToCheck.isEmpty) &&
-          (detail?.appId?.contains('.') ?? false)) {
-        packageToCheck = detail!.appId.trim();
-        debugPrint('DetailLogic: 使用详情 appId 作为包名进行检测: $packageToCheck');
-      }
+      // 不再用 appId 猜测包名（appId 含点即包名的猜测已清零）：
+      // 仅使用渠道显式提供的 packageName，缺失时跳过安装检测（与旧猜测失败时的行为一致）
 
       debugPrint('DetailLogic: 最终用于检测的包名 = "$packageToCheck"');
 

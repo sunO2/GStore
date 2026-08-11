@@ -667,11 +667,11 @@ class GitHubChannel with AppUpdateCheckMixin implements IChannel {
         // 优先使用元数据的版本信息（versionName）
         'version': metadata?['versionName']?.toString() ?? latestVersion,
         'developer': appInfo.user,
-        // 优先使用元数据的真实包名；否则仅当 appId 已是真实包名（下载后替换，含 '.'）时使用；
+        // 优先使用元数据的真实包名；否则回退 AppSummary.packageName（渠道显式提供的真实包名）；
         // 未收录时不用仓库名占位（repo 名不是包名，避免误用于安装检测）
         'packageName': _validPackageName(metadata?['packageName']?.toString()).isNotEmpty
             ? _validPackageName(metadata?['packageName']?.toString())
-            : (appId.contains('.') ? appId : ''),
+            : _validPackageName(appInfo.packageName),
         'projectUrl': apiList.html_url?.toString(),
         'sections': _buildSections(downloads, readme, apiList),
         'downloads': downloads,
