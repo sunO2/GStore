@@ -44,11 +44,12 @@ class UpdateLogic extends GetxController {
     if (manager.isChecking.value) return;
 
     // 订阅一次结果同步（避免重复监听）
+    // 注意：不在订阅回调里设置 checkFinished —— 由下方检测流程统一控制，
+    // 否则检测中 updateList 变更会提前置完成态，导致有更新也显示"均无更新"
     if (!_subscribed) {
       _subscribed = true;
       manager.updateList.listen((list) {
         state.updateList.assignAll(list);
-        state.checkFinished.value = true;
         state.totalCount.value = state.totalCount.value;
         // 同步红点：检测结果与功能入口红点一致
         BadgeService.instance.setBadge(BadgeKey.appUpdate, list.length);
@@ -62,12 +63,13 @@ class UpdateLogic extends GetxController {
 
     await manager.checkUpdates(
       force: force,
-      // 逐应用进度：滚轮 + 图标 + 进度（检测前 appId 占位，检测后携带名称/图标）
+      // 预填滚轮名单：一次性提供全部待检测应用名（修复滚轮只显示占位/当前项问题）
+      onCheckList: (names) {
+        state.checkList.assignAll(names);
+      },
+      // 逐应用进度：滚轮 + 图标 + 进度（检测前预填名，检测后携带结果名称/图标）
       onProgress: (progress) {
-        // 首次遇到该应用时填充滚轮列表（保持检测顺序）
-        if (state.checkIndex.value != progress.index) {
-          state.checkList.add(progress.appName);
-        }
+        // 更新滚轮当前项名与图标（名称优先结果，未出结果用预填名）
         state.checkIndex.value = progress.index;
         state.checkingAppName.value = progress.appName;
         if (progress.iconUrl != null && progress.iconUrl!.isNotEmpty) {
@@ -84,14 +86,24 @@ class UpdateLogic extends GetxController {
 
     state.isLoading.value = false;
     if (manager.updateList.isEmpty) {
+      // 无更新：停留检测页展示完整日志
       state.checkFinished.value = true;
+      state.showLog.value = false;
       state.addLog(CheckLogLevel.none, '检测完成：所有应用均已是最新版本');
     } else {
+      // 有更新：显示更新列表（默认）；checkFinished 保持 false，避免进入完成态检测页
+      state.checkFinished.value = false;
+      state.showLog.value = false;
       state.addLog(
         CheckLogLevel.update,
         '检测完成：发现 ${manager.updateList.length} 个可更新应用',
       );
     }
+  }
+
+  /// 切换"检测日志页"与"更新列表页"（仅在有更新时有效）
+  void toggleLogView() {
+    state.showLog.value = !state.showLog.value;
   }
 
   /// 更新单个应用（下载 + 自动安装）
