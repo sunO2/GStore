@@ -85,12 +85,15 @@ Future<void> migration3to4(sqflite.Database database) async {
     SELECT appId, name, user, repositories, apprepo, icon, description, category, addTime, channelCode, extra FROM channel_added_app
   ''');
   await database.execute('DROP TABLE channel_added_app');
-  await database.execute('ALTER TABLE channel_added_app_new RENAME TO channel_added_app');
-  appLog.info('ChannelDatabase: v3→v4 迁移完成，channel_added_app 复合主键 (channelCode, appId)');
+  await database
+      .execute('ALTER TABLE channel_added_app_new RENAME TO channel_added_app');
+  appLog.info(
+      'ChannelDatabase: v3→v4 迁移完成，channel_added_app 复合主键 (channelCode, appId)');
 }
 
 /// 渠道数据库单例
-class ChannelDatabaseManager {  static ChannelDatabase? _instance;
+class ChannelDatabaseManager {
+  static ChannelDatabase? _instance;
 
   /// 正在创建中的 future（并发保护：多个调用方同时请求时只建一次库）
   static Future<ChannelDatabase>? _creating;
