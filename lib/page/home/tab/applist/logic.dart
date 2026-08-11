@@ -60,8 +60,6 @@ class ApplistLogic extends GetxController with GithubRequestMix {
       update();
 
       appLog.info('ApplistLogic: 已更新 UI，应用数量: ${apps.length}');
-      // 后台异步检测可更新状态（不阻塞首屏）
-      unawaited(_loadUpdateStates());
     } catch (e, stackTrace) {
       appLog.error('ApplistLogic: ❌ 加载聚合应用失败 - $e');
       debugPrint('ApplistLogic: 堆栈跟踪: $stackTrace');
@@ -178,26 +176,9 @@ class ApplistLogic extends GetxController with GithubRequestMix {
       case AppSortMode.name:
         list.sort((a, b) =>
             (a.appInfo.name ?? '').toLowerCase().compareTo((b.appInfo.name ?? '').toLowerCase()));
-      case AppSortMode.updateFirst:
-        list.sort((a, b) {
-          final ua = state.updateStates[a.appInfo.appId] ?? false;
-          final ub = state.updateStates[b.appInfo.appId] ?? false;
-          if (ua != ub) return ua ? -1 : 1;
-          return b.addedAppInfo.addTime.compareTo(a.addedAppInfo.addTime);
-        });
     }
     state.filteredApps = list;
     update();
-  }
-
-  /// 可更新应用列表（用于"可更新"分区，按添加时间倒序）
-  List<AggregatedAppInfo> get updatableApps {
-    final result = state.apps
-        .where((app) => state.updateStates[app.appInfo.appId] == true)
-        .toList();
-    result.sort(
-        (a, b) => b.addedAppInfo.addTime.compareTo(a.addedAppInfo.addTime));
-    return result;
   }
 
   /// 最近添加应用（用于"最近添加"分区，前 [count] 个）
@@ -206,40 +187,6 @@ class ApplistLogic extends GetxController with GithubRequestMix {
       ..sort(
           (a, b) => b.addedAppInfo.addTime.compareTo(a.addedAppInfo.addTime));
     return list.take(count).toList();
-  }
-
-  /// 后台异步检测可更新状态（逐项渠道检测，缓存结果；失败静默）
-  Future<void> _loadUpdateStates() async {
-    if (state.apps.isEmpty) return;
-    state.isCheckingUpdates.value = true;
-    try {
-      final manager = ChannelManager.instance;
-      final results = <String, bool>{};
-      for (final app in state.apps) {
-        try {
-          final channel = manager.getChannel(app.channel);
-          if (channel == null) continue;
-          final check = await channel.checkAppUpdate(app.appInfo.appId);
-          if (!check.success || check.data == null) continue;
-          final latest = check.data!.latestVersion;
-          // 有最新版本号即视为可更新（与 BadgeService 口径一致：已安装时比对版本）
-          results[app.appInfo.appId] = latest != null && latest.isNotEmpty;
-        } catch (e) {
-          // 单个应用检测失败不影响整体
-        }
-      }
-      state.updateStates
-        ..clear()
-        ..addAll(results);
-      // 若当前是"可更新优先"排序，重新应用
-      if (state.sortMode.value == AppSortMode.updateFirst) {
-        _applyFilter();
-      } else {
-        update();
-      }
-    } finally {
-      state.isCheckingUpdates.value = false;
-    }
   }
 
   void appDetail(AggregatedAppInfo app) {
@@ -338,7 +285,6 @@ class ApplistLogic extends GetxController with GithubRequestMix {
     // 清理缓存
     state.apps.clear();
     state.filteredApps.clear();
-    state.updateStates.clear();
 
     appLog.info('ApplistLogic: 🎉 所有资源已清理完毕');
     super.onClose();

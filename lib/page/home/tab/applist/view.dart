@@ -12,7 +12,6 @@ import 'logic.dart';
 import 'state.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/page/auth/state.dart';
-import '../../logic.dart';
 import 'widgets/app_card_widget.dart';
 import 'widgets/empty_state_widget.dart';
 import 'widgets/horizontal_app_row.dart';
@@ -259,33 +258,6 @@ class AppListState extends State<ApplistPage>
 
           // 搜索时只显示搜索结果，隐藏分区
           if (!isSearching) ...[
-            // 可更新分区（横向行）
-            if (logic.updatableApps.isNotEmpty)
-              SliverToBoxAdapter(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    SectionTitle(
-                      title: '可更新',
-                      subtitle: '有可用新版本的应用',
-                      trailing: IconButton(
-                        tooltip: '去更新中心',
-                        icon: ColoredAliIcon(
-                          icon: AliIcon.appUpdateCenter,
-                          size: AppTypography.iconSM,
-                        ),
-                        onPressed: () =>
-                            Get.toNamed(AppRoute.updateCenter),
-                      ),
-                    ),
-                    HorizontalAppRow(
-                      apps: logic.updatableApps,
-                      onTap: logic.appDetail,
-                    ),
-                  ],
-                ),
-              ),
-
             // 最近添加分区（横向行）
             SliverToBoxAdapter(
               child: Column(
@@ -328,8 +300,6 @@ class AppListState extends State<ApplistPage>
                     final app = state.filteredApps[index];
                     return AppCardWidget(
                       app: app,
-                      hasUpdate:
-                          state.updateStates[app.appInfo.appId] ?? false,
                       onTap: () => logic.appDetail(app),
                     );
                   },
@@ -356,7 +326,6 @@ class _CategoryFilterBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
     return Padding(
       padding: const EdgeInsets.fromLTRB(
         AppSpacing.md,
@@ -405,10 +374,7 @@ class _CategoryFilterBar extends StatelessWidget {
                 value: AppSortMode.name,
                 child: Text('按名称'),
               ),
-              const PopupMenuItem(
-                value: AppSortMode.updateFirst,
-                child: Text('可更新优先'),
-              ),
+
             ],
           ),
         ],

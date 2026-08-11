@@ -8,9 +8,6 @@ enum AppSortMode {
 
   /// 按名称 A-Z
   name,
-
-  /// 可更新优先
-  updateFirst,
 }
 
 class ApplistState {
@@ -43,13 +40,6 @@ class ApplistState {
 
   /// 当前排序模式
   final Rx<AppSortMode> sortMode = AppSortMode.recent.obs;
-
-  /// 可更新状态缓存（appId → 是否有更新）
-  /// 懒加载：列表渲染后后台异步检测
-  final Map<String, bool> updateStates = {};
-
-  /// 是否正在检测更新
-  final RxBool isCheckingUpdates = false.obs;
 
   ApplistState() {
     ///Initialize variables
