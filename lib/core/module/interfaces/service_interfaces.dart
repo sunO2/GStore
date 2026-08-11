@@ -10,13 +10,11 @@ import 'package:flutter/material.dart';
 import 'package:gstore/core/aggregate/AppAddedDatabase.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/fdroid/FdroidRepoModels.dart';
-import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/BackupData.dart';
 import 'package:gstore/core/service/backup_service.dart';
 import 'package:gstore/core/theme/app_theme_config.dart';
 import 'package:gstore/core/webdav/webdav_client.dart';
 import 'package:gstore/core/webdav/webdav_config.dart';
-import 'package:gstore/db/apps/AppInfo.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
 
 /// 下载服务接口
@@ -181,23 +179,6 @@ abstract class IAggregateService {
 
   /// 总数
   Future<int> getTotalCount();
-}
-abstract class IChannelService {
-  /// 搜索应用
-  Future<List<AppInfo>> searchApps(String keyword, {ChannelType? from});
-
-  /// 获取应用详情
-  Future<AppDetailInfo?> getAppDetail(
-    String appId, {
-    required ChannelType channel,
-    bool forceRefresh = false,
-  });
-
-  /// 全部应用
-  Future<List<AppInfo>> getAllApps();
-
-  /// 检查更新
-  Future<bool> checkUpdate({ChannelType? from});
 }
 
 /// 已安装应用服务接口

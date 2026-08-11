@@ -15,7 +15,6 @@ import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
 import 'package:gstore/core/agent/agent_tool_module.dart';
 import 'package:gstore/core/agent/tools/builtin_tools.dart';
 import 'package:gstore/core/channel/ChannelIntegration.dart';
-import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/config/config_registry.dart';
 import 'package:gstore/core/fdroid/FdroidRepoManager.dart';
 import 'package:gstore/core/module/module.dart';
@@ -72,14 +71,10 @@ class ChannelModule extends AppModule {
   }
 
   @override
-  Future<void> onRegister(ModuleContext context) async {
-    context.bindService?.call(IChannelService, ChannelManager.instance);
-  }
+  Future<void> onRegister(ModuleContext context) async {}
 
   @override
-  Future<void> onUnregister(ModuleContext context) async {
-    context.unbindService?.call(IChannelService);
-  }
+  Future<void> onUnregister(ModuleContext context) async {}
 }
 
 /// 下载模块（依赖 channel + config）
