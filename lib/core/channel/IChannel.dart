@@ -4,13 +4,13 @@ import 'package:gstore/core/channel/model/ChannelInfo.dart';
 import 'package:gstore/core/channel/model/ChannelResult.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
+import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
-import 'package:gstore/db/apps/AppInfo.dart';
 import 'package:gstore/db/apps/AppInfo.dart' as db;
 
 /// 渠道抽象接口
 /// 定义所有渠道必须实现的基本操作
-abstract interface class IChannel {
+abstract class IChannel {
   /// 获取渠道信息
   ChannelInfo get info;
 
@@ -29,19 +29,19 @@ abstract interface class IChannel {
   /// onAppSaved: 保存到渠道数据库后的回调（用于刷新列表）
   Widget? getAddAppWidget(
     BuildContext context,
-    Function(AppInfo) onAppAdded, {
+    Function(AppSummary) onAppAdded, {
     VoidCallback? onAppSaved,
   });
 
   // ==================== 应用信息查询 ====================
 
   /// 获取所有应用
-  Future<ChannelResult<List<AppInfo>>> getAllApps({
+  Future<ChannelResult<List<AppSummary>>> getAllApps({
     bool forceRefresh = false,
   });
 
   /// 根据 appId 获取应用信息
-  Future<ChannelResult<AppInfo?>> getAppInfo(
+  Future<ChannelResult<AppSummary?>> getAppInfo(
     String appId, {
     bool forceRefresh = false,
   });
@@ -59,19 +59,27 @@ abstract interface class IChannel {
 
   /// 保存搜索结果到渠道数据库（添加应用到渠道）
   /// 各渠道实现；不支持的渠道返回 failure
-  Future<ChannelResult<void>> addApp(AppInfo app);
+  Future<ChannelResult<void>> addApp(AppSummary app);
+
+  /// 规范化应用 ID（聚合层添加应用时由渠道自报，外部无感）
+  ///
+  /// 渠道根据自己的 appId 语义决定添加时使用的 ID：
+  /// - GitHub：metadata 已收录时返回真实包名（替换 owner/repo 占位）
+  /// - 其他渠道：通常返回原 appId（如包名/vivoId）
+  /// 默认实现返回原 appId；各渠道可覆盖
+  Future<String> canonicalAppId(AppSummary appInfo) async => appInfo.appId;
 
   /// 从渠道数据库移除应用
   Future<ChannelResult<void>> removeApp(String appId);
 
   /// 搜索应用（支持按名称和描述搜索）
-  Future<ChannelResult<List<AppInfo>>> searchApps(
+  Future<ChannelResult<List<AppSummary>>> searchApps(
     String keyword, {
     bool forceRefresh = false,
   });
 
   /// 按分类搜索应用
-  Future<ChannelResult<List<AppInfo>>> searchByCategory(
+  Future<ChannelResult<List<AppSummary>>> searchByCategory(
     String categoryId, {
     bool forceRefresh = false,
   });

@@ -8,9 +8,9 @@ import 'package:gstore/core/channel/model/ChannelInfo.dart';
 import 'package:gstore/core/channel/model/ChannelResult.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
+import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/model/proxy/HttpChannelDetailProxy.dart';
-import 'package:gstore/db/apps/AppInfo.dart';
 import 'package:gstore/db/apps/AppInfo.dart' as db;
 import 'package:gstore/core/channel/AppUpdateCheckMixin.dart';
 
@@ -27,7 +27,7 @@ class HttpChannel with AppUpdateCheckMixin implements IChannel {
   bool isInitialized = false;
 
   // 缓存数据
-  List<AppInfo>? _cachedApps;
+  List<AppSummary>? _cachedApps;
   List<db.AppCategory>? _cachedCategories;
   db.AppInfoConfig? _cachedConfig;
 
@@ -76,7 +76,7 @@ class HttpChannel with AppUpdateCheckMixin implements IChannel {
   }
 
   @override
-  Future<ChannelResult<List<AppInfo>>> getAllApps({
+  Future<ChannelResult<List<AppSummary>>> getAllApps({
     bool forceRefresh = false,
   }) async {
     try {
@@ -99,14 +99,14 @@ class HttpChannel with AppUpdateCheckMixin implements IChannel {
           : response.data;
 
       var apps = data.map((json) {
-        return AppInfo(
-          json['appId'] as String,
-          json['name'] as String,
-          json['user'] as String,
-          json['repositories'] as String,
-          json['icon'] as String,
-          json['des'] as String,
-          (json['category'] as List<dynamic>?)?.cast<String>(),
+        return AppSummary(
+          appId: json['appId'] as String,
+          name: json['name'] as String,
+          user: json['user'] as String,
+          repositories: json['repositories'] as String,
+          icon: json['icon'] as String,
+          des: json['des'] as String,
+          category: (json['category'] as List<dynamic>?)?.cast<String>(),
         );
       }).toList();
 
@@ -128,7 +128,7 @@ class HttpChannel with AppUpdateCheckMixin implements IChannel {
   }
 
   @override
-  Future<ChannelResult<AppInfo?>> getAppInfo(
+  Future<ChannelResult<AppSummary?>> getAppInfo(
     String appId, {
     bool forceRefresh = false,
   }) async {
@@ -150,14 +150,14 @@ class HttpChannel with AppUpdateCheckMixin implements IChannel {
           ? jsonDecode(response.data)
           : response.data;
 
-      var app = AppInfo(
-        json['appId'] as String,
-        json['name'] as String,
-        json['user'] as String,
-        json['repositories'] as String,
-        json['icon'] as String,
-        json['des'] as String,
-        (json['category'] as List<dynamic>?)?.cast<String>(),
+      var app = AppSummary(
+        appId: json['appId'] as String,
+        name: json['name'] as String,
+        user: json['user'] as String,
+        repositories: json['repositories'] as String,
+        icon: json['icon'] as String,
+        des: json['des'] as String,
+        category: (json['category'] as List<dynamic>?)?.cast<String>(),
       );
 
       return ChannelResult.success(
@@ -175,7 +175,7 @@ class HttpChannel with AppUpdateCheckMixin implements IChannel {
   }
 
   @override
-  Future<ChannelResult<List<AppInfo>>> searchApps(
+  Future<ChannelResult<List<AppSummary>>> searchApps(
     String keyword, {
     bool forceRefresh = false,
   }) async {
@@ -194,14 +194,14 @@ class HttpChannel with AppUpdateCheckMixin implements IChannel {
           : response.data;
 
       var apps = data.map((json) {
-        return AppInfo(
-          json['appId'] as String,
-          json['name'] as String,
-          json['user'] as String,
-          json['repositories'] as String,
-          json['icon'] as String,
-          json['des'] as String,
-          (json['category'] as List<dynamic>?)?.cast<String>(),
+        return AppSummary(
+          appId: json['appId'] as String,
+          name: json['name'] as String,
+          user: json['user'] as String,
+          repositories: json['repositories'] as String,
+          icon: json['icon'] as String,
+          des: json['des'] as String,
+          category: (json['category'] as List<dynamic>?)?.cast<String>(),
         );
       }).toList();
 
@@ -220,7 +220,7 @@ class HttpChannel with AppUpdateCheckMixin implements IChannel {
   }
 
   @override
-  Future<ChannelResult<List<AppInfo>>> searchByCategory(
+  Future<ChannelResult<List<AppSummary>>> searchByCategory(
     String categoryId, {
     bool forceRefresh = false,
   }) async {
@@ -238,14 +238,14 @@ class HttpChannel with AppUpdateCheckMixin implements IChannel {
           : response.data;
 
       var apps = data.map((json) {
-        return AppInfo(
-          json['appId'] as String,
-          json['name'] as String,
-          json['user'] as String,
-          json['repositories'] as String,
-          json['icon'] as String,
-          json['des'] as String,
-          (json['category'] as List<dynamic>?)?.cast<String>(),
+        return AppSummary(
+          appId: json['appId'] as String,
+          name: json['name'] as String,
+          user: json['user'] as String,
+          repositories: json['repositories'] as String,
+          icon: json['icon'] as String,
+          des: json['des'] as String,
+          category: (json['category'] as List<dynamic>?)?.cast<String>(),
         );
       }).toList();
 
@@ -310,8 +310,12 @@ class HttpChannel with AppUpdateCheckMixin implements IChannel {
     }
   }
 
+  /// appId 由 HTTP API 返回（渠道语义），无需规范化
   @override
-  Future<ChannelResult<void>> addApp(AppInfo app) async {
+  Future<String> canonicalAppId(AppSummary appInfo) async => appInfo.appId;
+
+  @override
+  Future<ChannelResult<void>> addApp(AppSummary app) async {
     return ChannelResult.failure(
       from: ChannelType.http,
       error: 'HTTP API 渠道不支持手动添加应用',
@@ -547,7 +551,7 @@ class HttpChannel with AppUpdateCheckMixin implements IChannel {
   }
 
   /// 构建基本信息（当没有详细数据时）
-  ChannelResult<IDetailInfo> _buildBasicDetail(AppInfo appInfo) {
+  ChannelResult<IDetailInfo> _buildBasicDetail(AppSummary appInfo) {
     // 构建原始数据 Map
     final rawData = <String, dynamic>{
       'appId': appInfo.appId,
@@ -592,7 +596,7 @@ class HttpChannel with AppUpdateCheckMixin implements IChannel {
   @override
   Widget? getAddAppWidget(
     BuildContext context,
-    Function(AppInfo) onAppAdded, {
+    Function(AppSummary) onAppAdded, {
     VoidCallback? onAppSaved,
   }) {
     // HTTP API 渠道暂不支持通过 UI 添加应用

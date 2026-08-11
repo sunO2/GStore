@@ -12,9 +12,9 @@ import 'package:gstore/core/channel/model/ChannelResult.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
+import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/model/proxy/VivoChannelDetailProxy.dart';
-import 'package:gstore/db/apps/AppInfo.dart';
 import 'package:gstore/db/apps/AppInfo.dart' as db;
 import 'package:gstore/core/channel/AppUpdateCheckMixin.dart';
 
@@ -30,7 +30,7 @@ class VivoChannel with AppUpdateCheckMixin implements IChannel {
   bool isInitialized = false;
 
   // 缓存数据
-  List<AppInfo>? _cachedApps;
+  List<AppSummary>? _cachedApps;
   List<db.AppCategory>? _cachedCategories;
 
   // 数据库
@@ -90,7 +90,7 @@ class VivoChannel with AppUpdateCheckMixin implements IChannel {
   }
 
   @override
-  Future<ChannelResult<List<AppInfo>>> getAllApps({
+  Future<ChannelResult<List<AppSummary>>> getAllApps({
     bool forceRefresh = false,
   }) async {
     try {
@@ -126,7 +126,7 @@ class VivoChannel with AppUpdateCheckMixin implements IChannel {
   }
 
   @override
-  Future<ChannelResult<AppInfo?>> getAppInfo(
+  Future<ChannelResult<AppSummary?>> getAppInfo(
     String appId, {
     bool forceRefresh = false,
   }) async {
@@ -139,16 +139,7 @@ class VivoChannel with AppUpdateCheckMixin implements IChannel {
         if (channelApp != null) {
           debugPrint('VivoChannel: 从渠道数据库找到应用 - ${channelApp.name}, extra=${channelApp.extra}');
           // 从数据库中找到了应用信息
-          final app = AppInfo.withExtra(
-            channelApp.appId,
-            channelApp.name,
-            channelApp.user,
-            channelApp.repositories,
-            channelApp.icon,
-            channelApp.description,
-            channelApp.category?.split(','),
-            channelApp.extra,
-          );
+          final app = AppSummary.fromChannelAddedApp(channelApp);
           return ChannelResult.success(
             data: app,
             from: ChannelType.vivo,
@@ -213,21 +204,12 @@ class VivoChannel with AppUpdateCheckMixin implements IChannel {
       // 先获取基本应用信息（从数据库，获取 extra 中的 vivoId）
       // 注意：即使 forceRefresh 也先查库拿 vivoId（vivo 详情接口需要 vivoId 而非包名）
       String? vivoId;
-      AppInfo? appInfo;
+      AppSummary? appInfo;
 
       if (_database != null) {
         final channelApp = await _database!.dao.getApp(appId, ChannelType.vivo.code);
         if (channelApp != null) {
-          appInfo = AppInfo.withExtra(
-            channelApp.appId,
-            channelApp.name,
-            channelApp.user,
-            channelApp.repositories,
-            channelApp.icon,
-            channelApp.description,
-            channelApp.category?.split(','),
-            channelApp.extra,
-          );
+          appInfo = AppSummary.fromChannelAddedApp(channelApp);
 
           // 从 extra 中获取 vivoId
           if (channelApp.extra != null) {
@@ -466,7 +448,7 @@ class VivoChannel with AppUpdateCheckMixin implements IChannel {
   }
 
   @override
-  Future<ChannelResult<List<AppInfo>>> searchApps(
+  Future<ChannelResult<List<AppSummary>>> searchApps(
     String keyword, {
     bool forceRefresh = false,
   }) async {
@@ -518,7 +500,7 @@ class VivoChannel with AppUpdateCheckMixin implements IChannel {
   }
 
   @override
-  Future<ChannelResult<List<AppInfo>>> searchByCategory(
+  Future<ChannelResult<List<AppSummary>>> searchByCategory(
     String categoryId, {
     bool forceRefresh = false,
   }) async {
@@ -575,8 +557,12 @@ class VivoChannel with AppUpdateCheckMixin implements IChannel {
 
   // ==================== 渠道数据库操作（搜索结果存储）====================
 
+  /// appId 即包名/vivoId（vivo 渠道语义），无需规范化
   @override
-  Future<ChannelResult<void>> addApp(AppInfo app) async {
+  Future<String> canonicalAppId(AppSummary appInfo) async => appInfo.appId;
+
+  @override
+  Future<ChannelResult<void>> addApp(AppSummary app) async {
     try {
       await saveSearchResult(app);
       return ChannelResult.success(data: null, from: ChannelType.vivo);
@@ -604,7 +590,7 @@ class VivoChannel with AppUpdateCheckMixin implements IChannel {
   }
 
   /// 保存搜索结果到渠道数据库
-  Future<void> saveSearchResult(AppInfo app) async {
+  Future<void> saveSearchResult(AppSummary app) async {
     if (_database == null) {
       appLog.error('VivoChannel: 数据库未初始化');
       return;
@@ -620,7 +606,7 @@ class VivoChannel with AppUpdateCheckMixin implements IChannel {
       category: app.category?.join(','),
       addTime: DateTime.now().millisecondsSinceEpoch,
       channel: ChannelType.vivo,
-      extra: app.extra, // 保存 extra 字段
+      extra: app.extra != null ? jsonEncode(app.extra) : null, // 保存 extra 字段
     );
 
     await _database!.dao.insertApp(channelApp);
@@ -639,7 +625,7 @@ class VivoChannel with AppUpdateCheckMixin implements IChannel {
   }
 
   /// 获取渠道数据库中的所有应用（搜索结果）
-  Future<List<AppInfo>> getChannelApps() async {
+  Future<List<AppSummary>> getChannelApps() async {
     if (_database == null) {
       appLog.error('VivoChannel: 数据库未初始化');
       return [];
@@ -647,17 +633,7 @@ class VivoChannel with AppUpdateCheckMixin implements IChannel {
 
     final channelApps = await _database!.dao.getAppsByChannel(ChannelType.vivo.code);
 
-    return channelApps.map((app) {
-      return AppInfo(
-        app.appId,
-        app.name,
-        app.user,
-        app.repositories,
-        app.icon,
-        app.description,
-        app.category?.split(','),
-      );
-    }).toList();
+    return channelApps.map(AppSummary.fromChannelAddedApp).toList();
   }
 
   /// 检查应用是否在渠道数据库中
@@ -674,7 +650,7 @@ class VivoChannel with AppUpdateCheckMixin implements IChannel {
   // ==================== 聚合管理器操作（首页显示）====================
 
   /// 添加应用到聚合管理器（用于首页显示）
-  Future<void> addToAggregator(AppInfo app) async {
+  Future<void> addToAggregator(AppSummary app) async {
     // 这个方法会由发现页面的逻辑调用
     // 实际的添加逻辑在 AppAggregatorManager 中处理
     debugPrint('VivoChannel: 请求添加应用到聚合管理器 ${app.name}');
@@ -707,7 +683,7 @@ class VivoChannel with AppUpdateCheckMixin implements IChannel {
   }
 
   @override
-  Widget? getAddAppWidget(BuildContext context, Function(AppInfo) onAppAdded, {VoidCallback? onAppSaved}) {
+  Widget? getAddAppWidget(BuildContext context, Function(AppSummary) onAppAdded, {VoidCallback? onAppSaved}) {
     return _VivoAddAppWidget(
       channel: this,
       onAppAdded: onAppAdded,
@@ -716,7 +692,7 @@ class VivoChannel with AppUpdateCheckMixin implements IChannel {
   }
 
   /// 解析应用详情
-  AppInfo? _parseAppDetail(dynamic data, String appId) {
+  AppSummary? _parseAppDetail(dynamic data, String appId) {
     try {
       if (data == null || data is! Map) {
         return null;
@@ -764,14 +740,15 @@ class VivoChannel with AppUpdateCheckMixin implements IChannel {
         downloadUrl = dlRaw.toString();
       }
 
-      return AppInfo(
-        packageName, // 使用包名作为 appId
-        name,
-        developer,
-        packageName, // repositories 使用包名
-        icon,
-        description,
-        categories.isNotEmpty ? categories : null,
+      return AppSummary(
+        appId: packageName, // 使用包名作为 appId
+        packageName: packageName,
+        name: name,
+        user: developer,
+        repositories: packageName, // repositories 使用包名
+        icon: icon,
+        des: description,
+        category: categories.isNotEmpty ? categories : null,
       );
     } catch (e) {
       appLog.error('VivoChannel: 解析应用详情失败 - $e');
@@ -780,7 +757,7 @@ class VivoChannel with AppUpdateCheckMixin implements IChannel {
   }
 
   /// 解析搜索结果
-  List<AppInfo> _parseSearchResults(dynamic data) {
+  List<AppSummary> _parseSearchResults(dynamic data) {
     try {
       if (data == null) {
         return [];
@@ -811,7 +788,7 @@ class VivoChannel with AppUpdateCheckMixin implements IChannel {
         return [];
       }
 
-      final apps = <AppInfo>[];
+      final apps = <AppSummary>[];
 
       for (var item in results) {
         if (item is! Map) continue;
@@ -838,19 +815,19 @@ class VivoChannel with AppUpdateCheckMixin implements IChannel {
           'iconUrl': icon,
           'remark': remark,
         };
-        final extraJson = jsonEncode(extraData);
 
         debugPrint('VivoChannel: 搜索结果 - id=$id, packageName=$packageName, appId=$appId');
 
-        apps.add(AppInfo.withExtra(
-          appId,
-          title,
-          developer,
-          id, // repositories 存放 vivoId
-          icon,
-          remark,
-          null, // vivo 搜索结果中没有分类信息
-          extraJson,
+        apps.add(AppSummary(
+          appId: appId,
+          packageName: packageName.isNotEmpty ? packageName : null,
+          name: title,
+          user: developer,
+          repositories: id, // repositories 存放 vivoId
+          icon: icon,
+          des: remark,
+          category: null, // vivo 搜索结果中没有分类信息
+          extra: extraData,
         ));
       }
 
@@ -865,7 +842,7 @@ class VivoChannel with AppUpdateCheckMixin implements IChannel {
 /// vivo 渠道添加应用 Widget
 class _VivoAddAppWidget extends StatefulWidget {
   final VivoChannel channel;
-  final Function(AppInfo) onAppAdded;
+  final Function(AppSummary) onAppAdded;
   final VoidCallback? onAppSaved;
 
   const _VivoAddAppWidget({
@@ -882,7 +859,7 @@ class _VivoAddAppWidget extends StatefulWidget {
 class _VivoAddAppState extends State<_VivoAddAppWidget> {
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _focusNode = FocusNode();
-  List<AppInfo> _searchResults = [];
+  List<AppSummary> _searchResults = [];
   bool _isSearching = false;
   String? _errorMessage;
 
@@ -941,7 +918,7 @@ class _VivoAddAppState extends State<_VivoAddAppWidget> {
   }
 
   /// 保存搜索结果到渠道数据库
-  Future<void> _saveToChannel(AppInfo app) async {
+  Future<void> _saveToChannel(AppSummary app) async {
     try {
       await widget.channel.saveSearchResult(app);
       setState(() {

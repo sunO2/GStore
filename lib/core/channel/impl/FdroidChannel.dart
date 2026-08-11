@@ -17,10 +17,10 @@ import 'package:gstore/core/agent/platform_arch.dart';
 import 'package:gstore/core/fdroid/FdroidRepoModels.dart';
 import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
+import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/model/proxy/FdroidChannelDetailProxy.dart';
 import 'package:gstore/core/service/app_icon_service.dart';
-import 'package:gstore/db/apps/AppInfo.dart';
 import 'package:gstore/db/apps/AppInfo.dart' as db;
 import 'package:gstore/core/channel/AppUpdateCheckMixin.dart';
 
@@ -90,7 +90,7 @@ class FdroidChannel with AppUpdateCheckMixin implements IChannel {
   @override
   Widget? getAddAppWidget(
     BuildContext context,
-    Function(AppInfo) onAppAdded, {
+    Function(AppSummary) onAppAdded, {
     VoidCallback? onAppSaved,
   }) {
     // F-Droid 渠道通过搜索添加应用
@@ -102,7 +102,7 @@ class FdroidChannel with AppUpdateCheckMixin implements IChannel {
   }
 
   @override
-  Future<ChannelResult<List<AppInfo>>> getAllApps({
+  Future<ChannelResult<List<AppSummary>>> getAllApps({
     bool forceRefresh = false,
   }) async {
     try {
@@ -163,14 +163,14 @@ class FdroidChannel with AppUpdateCheckMixin implements IChannel {
 
         debugPrint('FdroidChannel: 图标处理 - 原始=$iconKey, 最终=$iconUrl');
 
-        return AppInfo(
-          channelApp.appId,
-          channelApp.name,
-          channelApp.user,
-          channelApp.repositories,
-          iconUrl,
-          channelApp.description,
-          categories,
+        return AppSummary(
+          appId: channelApp.appId,
+          name: channelApp.name,
+          user: channelApp.user,
+          repositories: channelApp.repositories,
+          icon: iconUrl,
+          des: channelApp.description,
+          category: categories,
         );
       }).toList();
 
@@ -191,7 +191,7 @@ class FdroidChannel with AppUpdateCheckMixin implements IChannel {
 
   /// 从仓库搜索应用（调用 Rust）
   @override
-  Future<ChannelResult<List<AppInfo>>> searchApps(
+  Future<ChannelResult<List<AppSummary>>> searchApps(
     String keyword, {
     bool forceRefresh = false,
   }) async {
@@ -257,14 +257,15 @@ class FdroidChannel with AppUpdateCheckMixin implements IChannel {
 
         debugPrint('FdroidChannel: 图标处理 - packageName=$packageName, iconKey=$iconKey, 最终=$iconUrl');
 
-        return AppInfo(
-          packageName,
-          appMap['name'] ?? '',
-          appMap['authorName'] ?? '',
-          packageName,
-          iconUrl,
-          appMap['summary'] ?? '',
-          categories.cast<String>(),
+        return AppSummary(
+          appId: packageName,
+          packageName: (packageName as String).isNotEmpty ? packageName : null,
+          name: appMap['name'] ?? '',
+          user: appMap['authorName'] ?? '',
+          repositories: packageName,
+          icon: iconUrl,
+          des: appMap['summary'] ?? '',
+          category: categories.cast<String>(),
         );
       }).toList());
 
@@ -283,8 +284,12 @@ class FdroidChannel with AppUpdateCheckMixin implements IChannel {
     }
   }
 
+  /// appId 即包名（F-Droid 语义），无需规范化
+  @override
+  Future<String> canonicalAppId(AppSummary appInfo) async => appInfo.appId;
+
   /// 添加应用到已添加列表
-  Future<ChannelResult<void>> addApp(AppInfo app) async {
+  Future<ChannelResult<void>> addApp(AppSummary app) async {
     try {
       debugPrint('FdroidChannel: 添加应用 - ${app.appId}');
 
@@ -383,7 +388,7 @@ class FdroidChannel with AppUpdateCheckMixin implements IChannel {
   }
 
   @override
-  Future<ChannelResult<AppInfo?>> getAppInfo(
+  Future<ChannelResult<AppSummary?>> getAppInfo(
     String appId, {
     bool forceRefresh = false,
   }) async {
@@ -439,14 +444,14 @@ class FdroidChannel with AppUpdateCheckMixin implements IChannel {
             }
 
             debugPrint('FdroidChannel: 从数据库读取应用信息，图标处理 - 原始=$iconKey, 最终=$iconUrl');
-            final appInfo = AppInfo(
-              app.appId,
-              app.name,
-              app.user,
-              app.repositories,
-              iconUrl,
-              app.description,
-              categories,
+            final appInfo = AppSummary(
+              appId: app.appId,
+              name: app.name,
+              user: app.user,
+              repositories: app.repositories,
+              icon: iconUrl,
+              des: app.description,
+              category: categories,
             );
 
             debugPrint('FdroidChannel: 从数据库读取应用信息 - ${app.name}');
@@ -517,14 +522,15 @@ class FdroidChannel with AppUpdateCheckMixin implements IChannel {
         // 默认图标
         iconUrl = '$_currentRepoUrl/icons/$packageName.png';
       }
-      final app = AppInfo(
-        packageName,
-        data['name'] ?? packageName,
-        data['authorName'] ?? '',
-        packageName,
-        iconUrl,  // 构造完整的图标URL
-        data['summary'] ?? '',
-        null,
+      final app = AppSummary(
+        appId: packageName,
+        packageName: packageName,
+        name: data['name'] ?? packageName,
+        user: data['authorName'] ?? '',
+        repositories: packageName,
+        icon: iconUrl, // 构造完整的图标URL
+        des: data['summary'] ?? '',
+        category: null,
       );
 
       return ChannelResult.success(
@@ -946,7 +952,7 @@ class FdroidChannel with AppUpdateCheckMixin implements IChannel {
   }
 
   @override
-  Future<ChannelResult<List<AppInfo>>> searchByCategory(
+  Future<ChannelResult<List<AppSummary>>> searchByCategory(
     String categoryId, {
     bool forceRefresh = false,
   }) async {
@@ -1054,20 +1060,21 @@ class FdroidChannel with AppUpdateCheckMixin implements IChannel {
   }
 
   /// 解析应用信息
-  AppInfo _parseAppInfo(String packageName, Map appData) {
+  AppSummary _parseAppInfo(String packageName, Map appData) {
     final name = appData['name'] as String? ?? packageName;
     final summary = appData['summary'] as String? ?? '';
     final icon = appData['icon'] as String? ?? '$packageName.png';
     final license = appData['license'] as String?;
 
-    return AppInfo(
-      packageName,
-      name,
-      appData['authorName'] ?? '',
-      packageName,
-      '${_currentRepoUrl}/icons-640/$icon',
-      summary,
-      null,
+    return AppSummary(
+      appId: packageName,
+      packageName: packageName,
+      name: name,
+      user: appData['authorName'] ?? '',
+      repositories: packageName,
+      icon: '${_currentRepoUrl}/icons-640/$icon',
+      des: summary,
+      category: null,
     );
   }
 
@@ -1086,7 +1093,7 @@ class FdroidChannel with AppUpdateCheckMixin implements IChannel {
 /// F-Droid 搜索组件
 class _FdroidSearchWidget extends StatefulWidget {
   final FdroidChannel channel;
-  final Function(AppInfo) onAppAdded;
+  final Function(AppSummary) onAppAdded;
   final VoidCallback? onAppSaved;
 
   const _FdroidSearchWidget({
@@ -1102,7 +1109,7 @@ class _FdroidSearchWidget extends StatefulWidget {
 class _FdroidSearchWidgetState extends State<_FdroidSearchWidget> {
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _focusNode = FocusNode();
-  List<AppInfo> _searchResults = [];
+  List<AppSummary> _searchResults = [];
   bool _isSearching = false;
   String? _errorMessage;
   Set<String> _addedApps = {};  // 已添加的应用包名
@@ -1176,7 +1183,7 @@ class _FdroidSearchWidgetState extends State<_FdroidSearchWidget> {
   }
 
   /// 添加应用
-  Future<void> _addApp(AppInfo app) async {
+  Future<void> _addApp(AppSummary app) async {
     try {
       // 保存到 ChannelDatabase（渠道数据库）
       final result = await widget.channel.addApp(app);
