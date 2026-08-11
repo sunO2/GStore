@@ -80,7 +80,7 @@ class _$AppAddedDatabase extends AppAddedDatabase {
     Callback? callback,
   ]) async {
     final databaseOptions = sqflite.OpenDatabaseOptions(
-      version: 1,
+      version: 4,
       onConfigure: (database) async {
         await database.execute('PRAGMA foreign_keys = ON');
         await callback?.onConfigure?.call(database);
@@ -96,7 +96,9 @@ class _$AppAddedDatabase extends AppAddedDatabase {
       },
       onCreate: (database, version) async {
         await database.execute(
-            'CREATE TABLE IF NOT EXISTS `added_apps` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `channelId` TEXT NOT NULL, `appId` TEXT NOT NULL, `appName` TEXT NOT NULL, `iconUrl` TEXT, `description` TEXT, `category` TEXT, `addTime` INTEGER NOT NULL, `sortOrder` INTEGER NOT NULL, `isEnabled` INTEGER NOT NULL)');
+            'CREATE TABLE IF NOT EXISTS `added_apps` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `channelId` TEXT NOT NULL, `appId` TEXT NOT NULL, `addTime` INTEGER NOT NULL, `sortOrder` INTEGER NOT NULL, `isEnabled` INTEGER NOT NULL)');
+        await database.execute(
+            'CREATE UNIQUE INDEX `index_added_apps_channelId_appId` ON `added_apps` (`channelId`, `appId`)');
 
         await callback?.onCreate?.call(database, version);
       },
@@ -122,10 +124,6 @@ class _$AddedAppDao extends AddedAppDao {
                   'id': item.id,
                   'channelId': item.channelId,
                   'appId': item.appId,
-                  'appName': item.appName,
-                  'iconUrl': item.iconUrl,
-                  'description': item.description,
-                  'category': item.category,
                   'addTime': item.addTime,
                   'sortOrder': item.sortOrder,
                   'isEnabled': item.isEnabled ? 1 : 0
@@ -138,10 +136,6 @@ class _$AddedAppDao extends AddedAppDao {
                   'id': item.id,
                   'channelId': item.channelId,
                   'appId': item.appId,
-                  'appName': item.appName,
-                  'iconUrl': item.iconUrl,
-                  'description': item.description,
-                  'category': item.category,
                   'addTime': item.addTime,
                   'sortOrder': item.sortOrder,
                   'isEnabled': item.isEnabled ? 1 : 0
@@ -165,10 +159,6 @@ class _$AddedAppDao extends AddedAppDao {
             id: row['id'] as int?,
             channelId: row['channelId'] as String,
             appId: row['appId'] as String,
-            appName: row['appName'] as String,
-            iconUrl: row['iconUrl'] as String?,
-            description: row['description'] as String?,
-            category: row['category'] as String?,
             addTime: row['addTime'] as int?,
             sortOrder: row['sortOrder'] as int,
             isEnabled: (row['isEnabled'] as int) != 0));
@@ -182,10 +172,6 @@ class _$AddedAppDao extends AddedAppDao {
             id: row['id'] as int?,
             channelId: row['channelId'] as String,
             appId: row['appId'] as String,
-            appName: row['appName'] as String,
-            iconUrl: row['iconUrl'] as String?,
-            description: row['description'] as String?,
-            category: row['category'] as String?,
             addTime: row['addTime'] as int?,
             sortOrder: row['sortOrder'] as int,
             isEnabled: (row['isEnabled'] as int) != 0),
@@ -203,10 +189,6 @@ class _$AddedAppDao extends AddedAppDao {
             id: row['id'] as int?,
             channelId: row['channelId'] as String,
             appId: row['appId'] as String,
-            appName: row['appName'] as String,
-            iconUrl: row['iconUrl'] as String?,
-            description: row['description'] as String?,
-            category: row['category'] as String?,
             addTime: row['addTime'] as int?,
             sortOrder: row['sortOrder'] as int,
             isEnabled: (row['isEnabled'] as int) != 0),
