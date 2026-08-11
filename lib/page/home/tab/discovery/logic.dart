@@ -11,10 +11,12 @@ import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/icons/Icons.dart';
 import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/model/AppSummary.dart';
+import 'package:gstore/core/service/db_manager.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:async';
 
 import 'state.dart';
+import 'widgets/tag_picker_dialog.dart';
 
 class DiscoveryLogic extends GetxController {
   final DiscoveryState state = DiscoveryState();
@@ -184,6 +186,7 @@ class DiscoveryLogic extends GetxController {
 
       if (channel != null && appInfo != null) {
         try {
+          // 批量添加不逐个弹标签选择框（避免噪声），如需分类可单独添加后手动打标
           await _aggregator.toggleApp(
             channel: channel,
             appInfo: appInfo,
@@ -425,9 +428,73 @@ class DiscoveryLogic extends GetxController {
         ),
         duration: const Duration(seconds: 1),
       );
+
+      // 添加成功后才弹标签选择框（fire-and-forget，不阻塞切换流程）
+      if (added) {
+        unawaited(showTagPickerForApp(channel, appInfo));
+      }
     } catch (e) {
       Get.snackbar(
         '操作失败',
+        e.toString(),
+        icon: const Icon(Icons.error, color: Colors.red),
+      );
+    }
+  }
+
+  /// 本地库预置分类加载失败/为空时的内置回退列表
+  static const List<String> _fallbackPresetTags = [
+    '工具',
+    '游戏',
+    '社交',
+    '影音',
+    '阅读',
+    '效率',
+    '系统',
+  ];
+
+  /// 应用添加成功后弹出可选分类标签对话框
+  ///
+  /// 读取当前标签 -> 加载预置分类（本地库 AppCategory.description，失败回退内置列表）
+  /// -> 展示对话框 -> 用户确认后整体保存（替换语义）。
+  Future<void> showTagPickerForApp(ChannelType channel, AppSummary appInfo) async {
+    // 读取当前标签
+    final currentTags =
+        await _aggregator.getTags(channel: channel, appId: appInfo.appId);
+
+    // 加载预置分类：本地库 AppCategory 的 description 作为标签值
+    var presetTags = <String>[];
+    try {
+      final categories = await "gstore".repoDB.db.dao.getAllCategory();
+      presetTags = categories
+          .map((c) => c.description.trim())
+          .where((d) => d.isNotEmpty)
+          .toList();
+    } catch (e) {
+      appLog.error('DiscoveryLogic: 加载预置分类失败，使用内置列表 - $e');
+    }
+    if (presetTags.isEmpty) {
+      presetTags = _fallbackPresetTags;
+    }
+
+    // 弹出标签选择对话框
+    final result = await showTagPickerDialog(
+      Get.context!,
+      presetTags: presetTags,
+      currentTags: currentTags,
+    );
+    if (result == null) return; // 取消，不保存
+
+    try {
+      await _aggregator.setTags(
+        channel: channel,
+        appId: appInfo.appId,
+        tags: result,
+      );
+    } catch (e) {
+      appLog.error('DiscoveryLogic: 保存标签失败 - $e');
+      Get.snackbar(
+        '保存标签失败',
         e.toString(),
         icon: const Icon(Icons.error, color: Colors.red),
       );
