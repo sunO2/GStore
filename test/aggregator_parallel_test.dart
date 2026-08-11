@@ -13,6 +13,7 @@ import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/db/apps/AppInfo.dart' as db;
+import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:sqlite3/open.dart';
@@ -179,9 +180,15 @@ void main() {
   setUp(() async {
     SharedPreferences.setMockInitialValues({});
 
-    // 注意：sqflite_common_ffi 对 ':memory:' 按路径复用同一实例，
-    // 必须清空残留数据保证用例隔离
-    db = await AppAddedDatabase.create(dbPath: inMemoryDatabasePath);
+    // 注意：不使用共享的 inMemoryDatabasePath（':memory:'）——sqflite_common_ffi
+    // 将其映射为 .dart_tool 下公共文件，多个测试文件并行 isolate 删除/重建会
+    // 互相踩踏（added_apps_constraint_test 删除该文件时本文件已打开 → readonly
+    // 竞态，见 SqliteException 1032）；本文件独享一个文件路径保证隔离。
+    final dbFile = p.join(
+        await databaseFactory.getDatabasesPath(), 'aggregator_parallel_test.db');
+    await databaseFactory.deleteDatabase(dbFile);
+
+    db = await AppAddedDatabase.create(dbPath: dbFile);
     await db.addedAppDao.clearAll();
     final manager = AppAggregatorManager.instance;
     manager.debugDatabase = db;

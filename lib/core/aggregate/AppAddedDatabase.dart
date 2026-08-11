@@ -15,9 +15,15 @@ part 'AppAddedDatabase.g.dart';
 ///
 /// v4：added_apps 增加 UNIQUE(channelId, appId) 唯一索引，
 /// 兜底防重复添加（addApp 先查后插 + 索引约束双保险）。
-@Database(version: 4, entities: [AddedAppInfo])
+///
+/// v5：新增 added_app_tags 用户标签表（(channelId, appId) 关联），
+/// 跨渠道统一为应用打自定义标签（渠道自带分类 + 用户标签合并展示）。
+@Database(version: 5, entities: [AddedAppInfo, AddedAppTag])
 abstract class AppAddedDatabase extends FloorDatabase {
   AddedAppDao get addedAppDao;
+
+  /// 用户标签 DAO
+  AppTagDao get appTagDao;
 
   /// 创建数据库实例
   /// [dbPath] 可注入数据库文件路径（测试用内存库等）
@@ -30,7 +36,12 @@ abstract class AppAddedDatabase extends FloorDatabase {
 
     return await $FloorAppAddedDatabase
         .databaseBuilder(dbPathValue)
-        .addMigrations([_migration1to2, _migration2to3, _migration3to4])
+        .addMigrations([
+          _migration1to2,
+          _migration2to3,
+          _migration3to4,
+          _migration4to5,
+        ])
         .build();
   }
 
@@ -63,6 +74,19 @@ abstract class AppAddedDatabase extends FloorDatabase {
   /// v3 → v4：先去重历史重复记录，再建 UNIQUE(channelId, appId) 唯一索引
   /// （索引名与 Floor 生成的 onCreate 一致，保证新装库与迁移库结构等价）
   static final _migration3to4 = Migration(3, 4, migration3to4);
+
+  /// v4 → v5：新增用户标签表（(channelId, appId, tag) 复合主键）
+  static final _migration4to5 = Migration(4, 5, (database) async {
+    await database.execute('''
+      CREATE TABLE IF NOT EXISTS added_app_tags (
+        channelId TEXT NOT NULL,
+        appId TEXT NOT NULL,
+        tag TEXT NOT NULL,
+        addTime INTEGER NOT NULL,
+        PRIMARY KEY (channelId, appId, tag)
+      )
+    ''');
+  });
 }
 
 /// v3 → v4 迁移：added_apps 唯一约束 UNIQUE(channelId, appId)
@@ -165,4 +189,71 @@ abstract class AddedAppDao {
   /// 获取指定渠道的应用数量
   @Query('SELECT COUNT(*) FROM added_apps WHERE channelId = :channelId')
   Future<int?> getCountByChannel(String channelId);
+}
+
+/// 用户自定义标签实体
+/// 按 (channelId, appId) 关联已添加应用（与 added_apps 引用表同构），
+/// 跨渠道统一为应用打标签；标签与渠道自带分类合并后供首页分类展示。
+/// 复合主键 (channelId, appId, tag) 经 @Entity(primaryKeys:) 声明
+/// （Floor 复合主键约定：primaryKeys 字段列表，而非多个 @PrimaryKey 注解）。
+@Entity(tableName: 'added_app_tags', primaryKeys: ['channelId', 'appId', 'tag'])
+class AddedAppTag {
+  /// 渠道类型
+  final String channelId;
+
+  /// 应用 ID（在对应渠道中的 ID，与 added_apps.appId 一致）
+  final String appId;
+
+  /// 用户自定义标签（可复用 AppCategory.id 或自由输入）
+  final String tag;
+
+  /// 添加时间（毫秒时间戳）
+  final int addTime;
+
+  AddedAppTag({
+    required this.channelId,
+    required this.appId,
+    required this.tag,
+    int? addTime,
+  }) : addTime = addTime ?? DateTime.now().millisecondsSinceEpoch;
+}
+
+/// 用户标签 DAO
+@dao
+abstract class AppTagDao {
+  /// 获取指定应用的全部标签
+  @Query('SELECT * FROM added_app_tags WHERE channelId = :channelId AND appId = :appId ORDER BY addTime')
+  Future<List<AddedAppTag>> getTags(String channelId, String appId);
+
+  /// 获取指定渠道的全部标签
+  @Query('SELECT * FROM added_app_tags WHERE channelId = :channelId')
+  Future<List<AddedAppTag>> getTagsByChannel(String channelId);
+
+  /// 获取全部标签
+  @Query('SELECT * FROM added_app_tags')
+  Future<List<AddedAppTag>> getAllTags();
+
+  /// 添加单个标签（复合主键冲突时 replace）
+  @Insert(onConflict: OnConflictStrategy.replace)
+  Future<void> insertTag(AddedAppTag tag);
+
+  /// 批量添加标签
+  @Insert(onConflict: OnConflictStrategy.replace)
+  Future<void> insertTags(List<AddedAppTag> tags);
+
+  /// 移除单个标签
+  @Query('DELETE FROM added_app_tags WHERE channelId = :channelId AND appId = :appId AND tag = :tag')
+  Future<void> removeTag(String channelId, String appId, String tag);
+
+  /// 移除应用的全部标签（应用从首页移除时联动清理）
+  @Query('DELETE FROM added_app_tags WHERE channelId = :channelId AND appId = :appId')
+  Future<void> removeTagsOfApp(String channelId, String appId);
+
+  /// 清空指定渠道的所有标签
+  @Query('DELETE FROM added_app_tags WHERE channelId = :channelId')
+  Future<void> clearChannel(String channelId);
+
+  /// 清空所有标签
+  @Query('DELETE FROM added_app_tags')
+  Future<void> clearAll();
 }
