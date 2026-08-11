@@ -74,13 +74,15 @@ class _$AppAddedDatabase extends AppAddedDatabase {
 
   AddedAppDao? _addedAppDaoInstance;
 
+  AppTagDao? _appTagDaoInstance;
+
   Future<sqflite.Database> open(
     String path,
     List<Migration> migrations, [
     Callback? callback,
   ]) async {
     final databaseOptions = sqflite.OpenDatabaseOptions(
-      version: 4,
+      version: 5,
       onConfigure: (database) async {
         await database.execute('PRAGMA foreign_keys = ON');
         await callback?.onConfigure?.call(database);
@@ -98,6 +100,8 @@ class _$AppAddedDatabase extends AppAddedDatabase {
         await database.execute(
             'CREATE TABLE IF NOT EXISTS `added_apps` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `channelId` TEXT NOT NULL, `appId` TEXT NOT NULL, `addTime` INTEGER NOT NULL, `sortOrder` INTEGER NOT NULL, `isEnabled` INTEGER NOT NULL)');
         await database.execute(
+            'CREATE TABLE IF NOT EXISTS `added_app_tags` (`channelId` TEXT NOT NULL, `appId` TEXT NOT NULL, `tag` TEXT NOT NULL, `addTime` INTEGER NOT NULL, PRIMARY KEY (`channelId`, `appId`, `tag`))');
+        await database.execute(
             'CREATE UNIQUE INDEX `index_added_apps_channelId_appId` ON `added_apps` (`channelId`, `appId`)');
 
         await callback?.onCreate?.call(database, version);
@@ -109,6 +113,11 @@ class _$AppAddedDatabase extends AppAddedDatabase {
   @override
   AddedAppDao get addedAppDao {
     return _addedAppDaoInstance ??= _$AddedAppDao(database, changeListener);
+  }
+
+  @override
+  AppTagDao get appTagDao {
+    return _appTagDaoInstance ??= _$AppTagDao(database, changeListener);
   }
 }
 
@@ -256,5 +265,106 @@ class _$AddedAppDao extends AddedAppDao {
   @override
   Future<void> updateApp(AddedAppInfo app) async {
     await _addedAppInfoUpdateAdapter.update(app, OnConflictStrategy.replace);
+  }
+}
+
+class _$AppTagDao extends AppTagDao {
+  _$AppTagDao(
+    this.database,
+    this.changeListener,
+  )   : _queryAdapter = QueryAdapter(database),
+        _addedAppTagInsertionAdapter = InsertionAdapter(
+            database,
+            'added_app_tags',
+            (AddedAppTag item) => <String, Object?>{
+                  'channelId': item.channelId,
+                  'appId': item.appId,
+                  'tag': item.tag,
+                  'addTime': item.addTime
+                });
+
+  final sqflite.DatabaseExecutor database;
+
+  final StreamController<String> changeListener;
+
+  final QueryAdapter _queryAdapter;
+
+  final InsertionAdapter<AddedAppTag> _addedAppTagInsertionAdapter;
+
+  @override
+  Future<List<AddedAppTag>> getTags(
+    String channelId,
+    String appId,
+  ) async {
+    return _queryAdapter.queryList(
+        'SELECT * FROM added_app_tags WHERE channelId = ?1 AND appId = ?2 ORDER BY addTime',
+        mapper: (Map<String, Object?> row) => AddedAppTag(channelId: row['channelId'] as String, appId: row['appId'] as String, tag: row['tag'] as String, addTime: row['addTime'] as int?),
+        arguments: [channelId, appId]);
+  }
+
+  @override
+  Future<List<AddedAppTag>> getTagsByChannel(String channelId) async {
+    return _queryAdapter.queryList(
+        'SELECT * FROM added_app_tags WHERE channelId = ?1',
+        mapper: (Map<String, Object?> row) => AddedAppTag(
+            channelId: row['channelId'] as String,
+            appId: row['appId'] as String,
+            tag: row['tag'] as String,
+            addTime: row['addTime'] as int?),
+        arguments: [channelId]);
+  }
+
+  @override
+  Future<List<AddedAppTag>> getAllTags() async {
+    return _queryAdapter.queryList('SELECT * FROM added_app_tags',
+        mapper: (Map<String, Object?> row) => AddedAppTag(
+            channelId: row['channelId'] as String,
+            appId: row['appId'] as String,
+            tag: row['tag'] as String,
+            addTime: row['addTime'] as int?));
+  }
+
+  @override
+  Future<void> removeTag(
+    String channelId,
+    String appId,
+    String tag,
+  ) async {
+    await _queryAdapter.queryNoReturn(
+        'DELETE FROM added_app_tags WHERE channelId = ?1 AND appId = ?2 AND tag = ?3',
+        arguments: [channelId, appId, tag]);
+  }
+
+  @override
+  Future<void> removeTagsOfApp(
+    String channelId,
+    String appId,
+  ) async {
+    await _queryAdapter.queryNoReturn(
+        'DELETE FROM added_app_tags WHERE channelId = ?1 AND appId = ?2',
+        arguments: [channelId, appId]);
+  }
+
+  @override
+  Future<void> clearChannel(String channelId) async {
+    await _queryAdapter.queryNoReturn(
+        'DELETE FROM added_app_tags WHERE channelId = ?1',
+        arguments: [channelId]);
+  }
+
+  @override
+  Future<void> clearAll() async {
+    await _queryAdapter.queryNoReturn('DELETE FROM added_app_tags');
+  }
+
+  @override
+  Future<void> insertTag(AddedAppTag tag) async {
+    await _addedAppTagInsertionAdapter.insert(tag, OnConflictStrategy.replace);
+  }
+
+  @override
+  Future<void> insertTags(List<AddedAppTag> tags) async {
+    await _addedAppTagInsertionAdapter.insertList(
+        tags, OnConflictStrategy.replace);
   }
 }

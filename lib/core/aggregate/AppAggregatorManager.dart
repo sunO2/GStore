@@ -217,10 +217,101 @@ class AppAggregatorManager implements IAggregateService {
     required String appId,
   }) async {
     await _database.addedAppDao.removeApp(channel.code, appId);
+    // 联动清理该应用的用户标签（避免残留孤儿标签）
+    try {
+      await _database.appTagDao.removeTagsOfApp(channel.code, appId);
+    } catch (e) {
+      appLog.error('AppAggregatorManager: 清理标签失败 - $e');
+    }
 
     _notifyAppsChanged();
 
     appLog.info('AppAggregatorManager: 移除应用 - $appId (${channel.code})');
+  }
+
+  // ==================== 用户标签 ====================
+
+  /// 获取应用的用户标签（无标签返回空列表）
+  Future<List<String>> getTags({
+    required ChannelType channel,
+    required String appId,
+  }) async {
+    try {
+      final rows =
+          await _database.appTagDao.getTags(channel.code, appId);
+      return rows.map((e) => e.tag).toList();
+    } catch (e) {
+      appLog.error('AppAggregatorManager: 获取标签失败 - $e');
+      return [];
+    }
+  }
+
+  /// 设置应用的用户标签（整体替换：先清空再写入）
+  Future<void> setTags({
+    required ChannelType channel,
+    required String appId,
+    required List<String> tags,
+  }) async {
+    try {
+      await _database.appTagDao.removeTagsOfApp(channel.code, appId);
+      final deduped = tags.toSet().where((t) => t.trim().isNotEmpty).toList();
+      if (deduped.isNotEmpty) {
+        await _database.appTagDao.insertTags([
+          for (final t in deduped)
+            AddedAppTag(channelId: channel.code, appId: appId, tag: t.trim()),
+        ]);
+      }
+    } catch (e) {
+      appLog.error('AppAggregatorManager: 设置标签失败 - $e');
+      rethrow;
+    }
+  }
+
+  /// 为应用添加单个标签（幂等，已有则跳过）
+  Future<void> addTag({
+    required ChannelType channel,
+    required String appId,
+    required String tag,
+  }) async {
+    final t = tag.trim();
+    if (t.isEmpty) return;
+    try {
+      await _database.appTagDao.insertTag(
+        AddedAppTag(channelId: channel.code, appId: appId, tag: t),
+      );
+    } catch (e) {
+      appLog.error('AppAggregatorManager: 添加标签失败 - $e');
+    }
+  }
+
+  /// 移除应用单个标签
+  Future<void> removeTag({
+    required ChannelType channel,
+    required String appId,
+    required String tag,
+  }) async {
+    try {
+      await _database.appTagDao.removeTag(channel.code, appId, tag);
+    } catch (e) {
+      appLog.error('AppAggregatorManager: 移除标签失败 - $e');
+    }
+  }
+
+  /// 获取全部标签索引：Map<"channelId:appId", List<String>>
+  /// 供 getAggregatedApps 一次性合并，避免逐应用查询
+  Future<Map<String, List<String>>> getAllTagsIndex() async {
+    try {
+      final all = await _database.appTagDao.getAllTags();
+      final index = <String, List<String>>{};
+      for (final row in all) {
+        final key = '${row.channelId}:${row.appId}';
+        index.putIfAbsent(key, () => []).add(row.tag);
+      }
+      return index;
+    } catch (e) {
+      appLog.error('AppAggregatorManager: 获取标签索引失败 - $e');
+      return {};
+    }
   }
 
   /// 切换应用添加状态
@@ -313,9 +404,21 @@ class AppAggregatorManager implements IAggregateService {
     final addedApps = await getAllAddedApps();
     debugPrint('AppAggregatorManager: 从聚合数据库获取到 ${addedApps.length} 个应用');
 
+    // 一次性读取全部用户标签索引（channelId:appId → tags），供合并展示
+    final tagsIndex = await getAllTagsIndex();
+
     int successCount = 0;
     int failedCount = 0;
     int cacheCount = 0;
+
+    /// 合并渠道自带分类与用户标签（去重）
+    List<String> mergeCategories(AppSummary summary, String key) {
+      final merged = <String>{
+        ...?summary.category,
+        ...?tagsIndex[key],
+      };
+      return merged.toList();
+    }
 
     // 分片并行：每片 sliceSize 个，片内 Future.wait 并发取详情，片间串行等待
     final results = <AggregatedAppInfo?>[];
@@ -351,18 +454,28 @@ class AppAggregatorManager implements IAggregateService {
 
           if (result.success && result.data != null) {
             sliceSuccess++;
+            final summary = result.data!;
+            final key = '${addedApp.channelId}:${addedApp.appId}';
+            final merged = mergeCategories(summary, key);
             return AggregatedAppInfo(
               addedAppInfo: addedApp,
-              appInfo: result.data!,
+              appInfo: merged.isEmpty
+                  ? summary
+                  : summary.copyWith(category: merged),
               channel: channelType,
             );
           } else {
             // 渠道获取失败，使用本地缓存的数据
             appLog.error('AppAggregatorManager: 渠道获取失败，使用缓存 - ${addedApp.appId}, error: ${result.error}');
             sliceCache++;
+            final summary = _createAppSummaryFromAdded(addedApp);
+            final key = '${addedApp.channelId}:${addedApp.appId}';
+            final merged = mergeCategories(summary, key);
             return AggregatedAppInfo(
               addedAppInfo: addedApp,
-              appInfo: _createAppSummaryFromAdded(addedApp),
+              appInfo: merged.isEmpty
+                  ? summary
+                  : summary.copyWith(category: merged),
               channel: channelType,
               isFromCache: true,
             );
@@ -376,9 +489,14 @@ class AppAggregatorManager implements IAggregateService {
           debugPrint('  - 堆栈跟踪: $stackTrace');
           // 使用本地缓存的数据
           sliceFailed++;
+          final summary = _createAppSummaryFromAdded(addedApp);
+          final key = '${addedApp.channelId}:${addedApp.appId}';
+          final merged = mergeCategories(summary, key);
           return AggregatedAppInfo(
             addedAppInfo: addedApp,
-            appInfo: _createAppSummaryFromAdded(addedApp),
+            appInfo: merged.isEmpty
+                ? summary
+                : summary.copyWith(category: merged),
             channel: ChannelType.localDb,
             isFromCache: true,
             error: e.toString(),
