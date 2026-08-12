@@ -229,6 +229,56 @@ class AppAggregatorManager implements IAggregateService {
     appLog.info('AppAggregatorManager: 移除应用 - $appId (${channel.code})');
   }
 
+  /// 聚合库应用 ID 改名（渠道记录 appId 迁移后调用，保持聚合库 appId 与渠道一致）
+  ///
+  /// 只操作聚合库（added_apps + 用户标签），不触碰渠道库——渠道库由渠道/服务自行迁移。
+  /// - 保留 id/addTime/sortOrder/isEnabled（updateApp 按 id 更新，避免 remove+insert 重置元数据）
+  /// - 目标 appId 已存在（异常残留）时合并：删源行、标签并入目标行
+  /// - 幂等：源记录不存在时 no-op
+  Future<void> renameApp({
+    required ChannelType channel,
+    required String oldAppId,
+    required String newAppId,
+  }) async {
+    if (oldAppId == newAppId) return;
+    final db = _database;
+
+    final existing = await db.addedAppDao.getApp(channel.code, oldAppId);
+    if (existing == null) return; // 幂等：源不存在直接返回
+
+    // 目标 appId 已存在（异常残留）→ 删源行，保留目标行元数据
+    final target = await db.addedAppDao.getApp(channel.code, newAppId);
+    if (target != null) {
+      await db.addedAppDao.removeApp(channel.code, oldAppId);
+    } else {
+      // 常规改名：updateApp 保留原 id（addTime/sortOrder/isEnabled 不变）
+      await db.addedAppDao.updateApp(AddedAppInfo(
+        id: existing.id,
+        channelId: channel.code,
+        appId: newAppId,
+        addTime: existing.addTime,
+        sortOrder: existing.sortOrder,
+        isEnabled: existing.isEnabled,
+      ));
+    }
+
+    // 标签迁移（旧 appId → 新 appId，避免孤儿标签/丢失）
+    final tags = await db.appTagDao.getTags(channel.code, oldAppId);
+    if (tags.isNotEmpty) {
+      await db.appTagDao.removeTagsOfApp(channel.code, oldAppId);
+      await db.appTagDao.insertTags([
+        for (final t in tags)
+          AddedAppTag(channelId: channel.code, appId: newAppId, tag: t.tag),
+      ]);
+    }
+
+    _notifyAppsChanged();
+    appLog.info('AppAggregatorManager: 应用 ID 改名 $oldAppId -> $newAppId (${channel.code})');
+  }
+
+  /// 通知聚合层应用数据变化（渠道记录被外部更新后调用，触发首页刷新）
+  void notifyAppsChanged() => _notifyAppsChanged();
+
   // ==================== 用户标签 ====================
 
   /// 获取应用的用户标签（无标签返回空列表）
