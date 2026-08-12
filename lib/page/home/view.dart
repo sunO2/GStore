@@ -34,96 +34,119 @@ class HomePage extends StatelessWidget {
         ],
       ),
       // 悬浮磨砂导航胶囊：BackdropFilter 磨砂 + 半透明主题底 + 圆角悬浮（M3 主题令牌）
-      bottomNavigationBar: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(
-            AppSpacing.lg,
-            0,
-            AppSpacing.lg,
-            AppSpacing.md,
-          ),
-          child: ClipRRect(
-            // 大圆角胶囊（高度 64 时近似全圆）
-            borderRadius: BorderRadius.circular(AppRadius.xxl + AppRadius.sm),
-            child: BackdropFilter(
-              filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-              child: Obx(() {
-                // 局部压缩胶囊高度（M3 默认 80 → 64，更紧凑；主题其他属性不变）
-                return Theme(
-                  data: Theme.of(context).copyWith(
-                    navigationBarTheme: const NavigationBarThemeData(
-                      height: 64,
-                    ),
+      // AI 助手页激活时下沉滑出（聚焦模式，由输入栏左侧"返回"按钮接管导航）
+      bottomNavigationBar: Obx(() {
+        final isAiTab = logic.state.index.value == 2;
+        return AnimatedSlide(
+          duration: const Duration(milliseconds: 200),
+          curve: Curves.easeOut,
+          offset: isAiTab ? const Offset(0, 1.2) : Offset.zero,
+          child: ExcludeSemantics(
+            excluding: isAiTab,
+            child: IgnorePointer(
+              ignoring: isAiTab,
+              child: SafeArea(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(
+                    AppSpacing.lg,
+                    0,
+                    AppSpacing.lg,
+                    AppSpacing.md,
                   ),
-                  child: NavigationBar(
-                    backgroundColor: Theme.of(context)
-                        .colorScheme
-                        .surface
-                        .withValues(alpha: 0.82),
-                    selectedIndex: logic.state.index.value,
-                    onDestinationSelected: (index) {
-                      logic.jumpToPage(index);
-                    },
-                    destinations: [
-                      NavigationDestination(
-                          icon: AnimatedSwitcher(
-                            duration: AppAnimations.normal,
-                            child: ColorFiltered(
-                              // AliIcon 是 COLR 彩色字体，不响应 IconTheme 颜色，强制染色
-                              colorFilter: ColorFilter.mode(
-                                (logic.state.index.value == 0)
-                                    ? Theme.of(context).colorScheme.primary
-                                    : Theme.of(context)
-                                        .colorScheme
-                                        .onSurfaceVariant,
-                                BlendMode.srcATop,
-                              ),
-                              child: Icon(
-                                (logic.state.index.value == 0)
-                                    ? AliIcon.appStoreActive
-                                    : AliIcon.appStore,
-                                key: ValueKey(
-                                    logic.state.index.value == 0 ? 0 : 1),
-                                size: AppTypography.iconLG,
-                              ),
+                  child: ClipRRect(
+                    // 大圆角胶囊（高度 64 时近似全圆）
+                    borderRadius:
+                        BorderRadius.circular(AppRadius.xxl + AppRadius.sm),
+                    child: BackdropFilter(
+                      filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+                      child: Obx(() {
+                        // 局部压缩胶囊高度（M3 默认 80 → 64，更紧凑；主题其他属性不变）
+                        return Theme(
+                          data: Theme.of(context).copyWith(
+                            navigationBarTheme: const NavigationBarThemeData(
+                              height: 64,
                             ),
                           ),
-                          label: "首页"),
-                      NavigationDestination(
-                          icon: AnimatedSwitcher(
-                            duration: AppAnimations.normal,
-                            child: (logic.state.index.value == 1)
-                                ? const Icon(Icons.explore, key: ValueKey(2))
-                                : const Icon(Icons.explore_outlined,
-                                    key: ValueKey(3)),
+                          child: NavigationBar(
+                            backgroundColor: Theme.of(context)
+                                .colorScheme
+                                .surface
+                                .withValues(alpha: 0.82),
+                            selectedIndex: logic.state.index.value,
+                            onDestinationSelected: (index) {
+                              logic.jumpToPage(index);
+                            },
+                            destinations: [
+                              NavigationDestination(
+                                  icon: AnimatedSwitcher(
+                                    duration: AppAnimations.normal,
+                                    child: ColorFiltered(
+                                      // AliIcon 是 COLR 彩色字体，不响应 IconTheme 颜色，强制染色
+                                      colorFilter: ColorFilter.mode(
+                                        (logic.state.index.value == 0)
+                                            ? Theme.of(context)
+                                                .colorScheme
+                                                .primary
+                                            : Theme.of(context)
+                                                .colorScheme
+                                                .onSurfaceVariant,
+                                        BlendMode.srcATop,
+                                      ),
+                                      child: Icon(
+                                        (logic.state.index.value == 0)
+                                            ? AliIcon.appStoreActive
+                                            : AliIcon.appStore,
+                                        key: ValueKey(
+                                            logic.state.index.value == 0
+                                                ? 0
+                                                : 1),
+                                        size: AppTypography.iconLG,
+                                      ),
+                                    ),
+                                  ),
+                                  label: "首页"),
+                              NavigationDestination(
+                                  icon: AnimatedSwitcher(
+                                    duration: AppAnimations.normal,
+                                    child: (logic.state.index.value == 1)
+                                        ? const Icon(Icons.explore,
+                                            key: ValueKey(2))
+                                        : const Icon(Icons.explore_outlined,
+                                            key: ValueKey(3)),
+                                  ),
+                                  label: "发现"),
+                              NavigationDestination(
+                                  icon: AnimatedSwitcher(
+                                    duration: AppAnimations.normal,
+                                    child: (logic.state.index.value == 2)
+                                        ? const Icon(Icons.smart_toy,
+                                            key: ValueKey(6))
+                                        : const Icon(Icons.smart_toy_outlined,
+                                            key: ValueKey(7)),
+                                  ),
+                                  label: "AI 助手"),
+                              NavigationDestination(
+                                  icon: AnimatedSwitcher(
+                                    duration: AppAnimations.normal,
+                                    child: (logic.state.index.value == 3)
+                                        ? const Icon(Icons.person,
+                                            key: ValueKey(4))
+                                        : const Icon(Icons.person_outline,
+                                            key: ValueKey(5)),
+                                  ),
+                                  label: "我的")
+                            ],
                           ),
-                          label: "发现"),
-                      NavigationDestination(
-                          icon: AnimatedSwitcher(
-                            duration: AppAnimations.normal,
-                            child: (logic.state.index.value == 2)
-                                ? const Icon(Icons.smart_toy, key: ValueKey(6))
-                                : const Icon(Icons.smart_toy_outlined,
-                                    key: ValueKey(7)),
-                          ),
-                          label: "AI 助手"),
-                      NavigationDestination(
-                          icon: AnimatedSwitcher(
-                            duration: AppAnimations.normal,
-                            child: (logic.state.index.value == 3)
-                                ? const Icon(Icons.person, key: ValueKey(4))
-                                : const Icon(Icons.person_outline,
-                                    key: ValueKey(5)),
-                          ),
-                          label: "我的")
-                    ],
+                        );
+                      }),
+                    ),
                   ),
-                );
-              }),
+                ),
+              ),
             ),
           ),
-        ),
-      ),
+        );
+      }),
     );
   }
 }
