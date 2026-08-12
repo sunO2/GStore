@@ -316,6 +316,34 @@ class AppAggregatorManager implements IAggregateService {
     }
   }
 
+  /// 加载 localdb 渠道分类 ID → 中文 description 映射
+  ///
+  /// localdb 数据仓库的 AppInfo.category 存英文 ID（如 'PROXY'），而发现页
+  /// 用户标签存中文 description（如 '代理'）。聚合时用此映射把英文 ID 归一化
+  /// 为中文，避免首页出现 'PROXY' / '代理' 并存。
+  /// 渠道缺失/查询失败/异常一律返回空映射（降级为原样合并），绝不影响聚合流程。
+  Future<Map<String, String>> _loadCategoryIdToDescription() async {
+    try {
+      final channel = _channelManager.getChannel(ChannelType.localDb);
+      if (channel == null) return {};
+
+      final result = await channel.getAllCategories();
+      if (!result.success || result.data == null) return {};
+
+      final map = <String, String>{};
+      for (final category in result.data!) {
+        final id = category.id.trim();
+        final description = category.description.trim();
+        if (id.isEmpty || description.isEmpty) continue;
+        map[id] = description;
+      }
+      return map;
+    } catch (e) {
+      appLog.error('AppAggregatorManager: 加载分类 ID → description 映射失败 - $e');
+      return {};
+    }
+  }
+
   /// 切换应用添加状态
   Future<bool> toggleApp({
     required ChannelType channel,
@@ -409,16 +437,23 @@ class AppAggregatorManager implements IAggregateService {
     // 一次性读取全部用户标签索引（channelId:appId → tags），供合并展示
     final tagsIndex = await getAllTagsIndex();
 
+    // 一次性读取 localdb 渠道分类映射（英文 ID → 中文 description）；
+    // 失败/缺失时为空映射，mergeCategories 降级为原样合并
+    final categoryIdToDesc = await _loadCategoryIdToDescription();
+
     int successCount = 0;
     int failedCount = 0;
     int cacheCount = 0;
 
-    /// 合并渠道自带分类与用户标签（去重）
+    /// 合并渠道自带分类与用户标签（去重），并将 localdb 英文分类 ID
+    /// 归一化为中文 description（映射表外自定义标签保留原文，跳过空值）
     List<String> mergeCategories(AppSummary summary, String key) {
-      final merged = <String>{
-        ...?summary.category,
-        ...?tagsIndex[key],
-      };
+      final merged = <String>{};
+      for (final raw in [...?summary.category, ...?tagsIndex[key]]) {
+        final value = raw.trim();
+        if (value.isEmpty) continue;
+        merged.add(categoryIdToDesc[value] ?? value);
+      }
       return merged.toList();
     }
 
