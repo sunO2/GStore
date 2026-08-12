@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:gstore/core/channel/database/channel_added_app.dart';
 import 'package:gstore/core/channel/impl/GitHubChannel.dart';
 import 'package:gstore/core/data/metadata_repository.dart';
 import 'package:gstore/http/github/github_client.dart';
@@ -175,6 +176,94 @@ void main() {
       expect(detail.packageName, '');
       // 回退：版本 = release 版本（空 releases 时为 null）
       expect(detail.version, isNull);
+    });
+  });
+
+  group('searchApps（repositories 语义）', () {
+    test('repositories 存仓库名而非完整名（根治 search-add 产脏）', () async {
+      MetadataRepository.instance.debugClient = MockClient(
+          (request) async => http.Response('Not Found', 404));
+
+      const searchBody = '''
+      {
+        "items": [
+          {
+            "full_name": "gkd-kit/gkd",
+            "name": "gkd",
+            "owner": {"login": "gkd-kit", "avatar_url": "https://avatar"},
+            "description": "自定义屏幕点击"
+          }
+        ]
+      }
+      ''';
+      final channel = GitHubChannel(
+        githubApi: FakeGithubRestClient(),
+        httpClient: MockClient((request) async => http.Response.bytes(
+              utf8.encode(searchBody),
+              200,
+              headers: {'content-type': 'application/json; charset=utf-8'},
+            )),
+      );
+
+      final result = await channel.searchApps('gkd');
+      expect(result.success, isTrue);
+      final app = result.data!.single;
+      expect(app.appId, 'gkd-kit/gkd');
+      expect(app.user, 'gkd-kit');
+      // 关键断言：repositories 必须是仓库名（无 '/'），完整名由 appId/apprepo 承载
+      expect(app.repositories, 'gkd');
+      expect(app.repositories.contains('/'), isFalse);
+    });
+  });
+
+  group('normalizeStoredRecord（历史脏数据自愈）', () {
+    ChannelAddedApp record({
+      String appId = 'li.songe.gkd',
+      String user = 'li.songe.gkd',
+      String repositories = 'gkd-kit/gkd',
+      String? apprepo,
+    }) {
+      return ChannelAddedApp(
+        appId: appId,
+        name: 'GKD',
+        user: user,
+        repositories: repositories,
+        apprepo: apprepo,
+        icon: '',
+        description: '',
+        category: null,
+        addTime: 0,
+        channelCode: 'github',
+        extra: null,
+      );
+    }
+
+    test('repositories 含完整名（历史 bug 产物）：拆分 user/repositories，apprepo 兜底完整名', () {
+      final normalized =
+          GitHubChannel.normalizeStoredRecord(record(repositories: 'gkd-kit/gkd'));
+      expect(normalized.user, 'gkd-kit');
+      expect(normalized.repositories, 'gkd');
+      expect(normalized.apprepo, 'gkd-kit/gkd');
+      expect(normalized.appId, 'li.songe.gkd'); // appId（真实包名）不变
+    });
+
+    test('apprepo 已有值时保留原值，不覆盖', () {
+      final normalized = GitHubChannel.normalizeStoredRecord(
+          record(repositories: 'gkd-kit/gkd', apprepo: '旧完整名'));
+      expect(normalized.apprepo, '旧完整名');
+      expect(normalized.user, 'gkd-kit');
+      expect(normalized.repositories, 'gkd');
+    });
+
+    test('repositories 无斜杠（干净记录）：原样返回', () {
+      final clean = record(user: 'gkd-kit', repositories: 'gkd');
+      expect(identical(GitHubChannel.normalizeStoredRecord(clean), clean), isTrue);
+    });
+
+    test('repositories 含多个斜杠（异常数据）：不做拆分', () {
+      final weird = record(repositories: 'a/b/c');
+      final normalized = GitHubChannel.normalizeStoredRecord(weird);
+      expect(identical(normalized, weird), isTrue);
     });
   });
 }

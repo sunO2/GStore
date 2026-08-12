@@ -69,30 +69,31 @@ class ApkInfoService {
 
     final (info, iconBytes) = await parseApk(apkPath);
     if (info == null) return;
-    // 包名相同无需更新
-    if (info.packageName == appId) return;
+    // 包名相同无需更新；空/非法包名不迁移（避免写入空 appId 脏行）
+    final packageName = info.packageName.trim();
+    if (packageName.isEmpty || packageName == appId) return;
 
-    appLog.info('ApkInfoService: 解析成功 $appId -> ${info.packageName}');
+    appLog.info('ApkInfoService: 解析成功 $appId -> $packageName');
 
-    // 原生插件提供了图标字节：直接存本地并更新记录
+    // 原生插件提供了图标字节：直接存本地并更新记录（含 name/icon）
     if (iconBytes != null && iconBytes.isNotEmpty) {
-      final iconPath = await _saveIconBytes(info.packageName, iconBytes);
+      final iconPath = await _saveIconBytes(packageName, iconBytes);
       if (iconPath != null) {
-        await _updatePackageNameAndIcon(
-          appId,
-          info.packageName,
-          info.appName,
-          iconPath,
+        await _migrateAppId(
+          oldAppId: appId,
+          newPackageName: packageName,
+          name: info.appName,
+          icon: iconPath,
         );
         return;
       }
     }
 
     // 步骤 1：立即更新渠道记录的包名（不等安装）
-    await _updatePackageName(appId, info.packageName);
+    await _updatePackageName(appId, packageName);
 
     // 步骤 2：后台等待安装完成，通过包名判断已安装后获取应用名与图标
-    unawaited(_updateNameAndIconAfterInstall(appId, info.packageName));
+    unawaited(_updateNameAndIconAfterInstall(appId, packageName));
   }
 
   /// 将图标 PNG 字节保存到本地缓存
@@ -111,46 +112,40 @@ class ApkInfoService {
     }
   }
 
-  /// 直接更新包名 + 应用名 + 图标（原生解析场景，图标无需等安装）
-  Future<void> _updatePackageNameAndIcon(
-    String oldAppId,
-    String packageName,
-    String appName,
-    String iconPath,
-  ) async {
+  /// 统一编排：渠道记录 appId 迁移（owner/repo → 真实包名）+ 聚合库同步改名
+  ///
+  /// 分层：渠道表 schema/apprepo/extra 语义归 GitHubChannel.migrateAppId；
+  /// 聚合库 appId 归 AppAggregatorManager.renameApp（只动聚合引用，绝不重建渠道记录）；
+  /// 本服务仅做跨层编排。两个库（channel_apps.db / app_added.db）无法事务，
+  /// 各自 try/catch 独立守卫（沿用"渠道保存失败不影响聚合"的容错哲学）。
+  Future<void> _migrateAppId({
+    required String oldAppId,
+    required String newPackageName,
+    String? name,
+    String? icon,
+  }) async {
     try {
-      final db = await ChannelDatabaseManager.instance;
-      final list = await db.dao.getAppsByChannel(ChannelType.github.code);
-      final matched = list.where(
-        (r) => r.appId == oldAppId || r.apprepo == oldAppId,
+      final channel = ChannelManager.instance.getChannel(ChannelType.github);
+      if (channel is! GitHubChannel) return;
+      final migrated = await channel.migrateAppId(
+        oldAppId: oldAppId,
+        newPackageName: newPackageName,
+        name: name,
+        icon: icon,
       );
-      if (matched.isEmpty) return;
-      final record = matched.first;
-      final updated = ChannelAddedApp(
-        appId: packageName,
-        name: appName.isNotEmpty ? appName : record.name,
-        user: record.user,
-        repositories: record.repositories,
-        apprepo: record.apprepo ?? oldAppId,
-        icon: iconPath,
-        description: record.description,
-        category: record.category,
-        addTime: record.addTime,
-        channelCode: ChannelType.github.code,
-        extra: record.extra,
-      );
-      await db.dao.insertApp(updated);
-      if (record.appId != packageName) {
-        await db.dao.removeApp(record.appId, ChannelType.github.code);
+      if (migrated == null) return;
+
+      try {
+        await AppAggregatorManager.instance.renameApp(
+          channel: ChannelType.github,
+          oldAppId: oldAppId,
+          newAppId: newPackageName,
+        );
+      } catch (e) {
+        appLog.error('ApkInfoService: 聚合记录改名失败 - $e');
       }
-      appLog.info(
-          'ApkInfoService: 记录已更新(原生) $oldAppId -> $packageName '
-          '(name=$appName, icon=$iconPath)');
-      // 清除 GitHub 渠道缓存，确保渠道列表显示最新数据
-      _clearGithubCache();
-      await _updateAggregatorWithInfo(oldAppId, packageName, appName, iconPath);
     } catch (e) {
-      appLog.error('ApkInfoService: 原生更新记录失败 - $e');
+      appLog.error('ApkInfoService: 迁移渠道记录失败 - $e');
     }
   }
 
@@ -166,77 +161,9 @@ class ApkInfoService {
     }
   }
 
-  /// 更新聚合记录（原生场景）
-  Future<void> _updateAggregatorWithInfo(
-    String oldAppId,
-    String packageName,
-    String appName,
-    String iconPath,
-  ) async {
-    try {
-      final aggregator = AppAggregatorManager.instance;
-      final added = await aggregator.isAppAdded(
-        channel: ChannelType.github,
-        appId: oldAppId,
-      );
-      if (!added) return;
-      await aggregator.removeApp(
-        channel: ChannelType.github,
-        appId: oldAppId,
-      );
-      await aggregator.addApp(
-        channel: ChannelType.github,
-        appInfo: AppSummary(
-          appId: packageName,
-          packageName: packageName,
-          name: appName.isNotEmpty ? appName : oldAppId,
-          user: '',
-          repositories: oldAppId,
-          icon: iconPath,
-          des: '',
-        ),
-      );
-      appLog.info('ApkInfoService: 聚合记录已更新(原生)');
-    } catch (e) {
-      appLog.error('ApkInfoService: 更新聚合记录失败 - $e');
-    }
-  }
-
-  /// 立即将渠道记录 appId 替换为真实包名
+  /// 立即将渠道记录 appId 替换为真实包名（非原生路径，无图标字节）
   Future<void> _updatePackageName(String oldAppId, String packageName) async {
-    try {
-      final db = await ChannelDatabaseManager.instance;
-      final list = await db.dao.getAppsByChannel(ChannelType.github.code);
-      final matched = list.where(
-        (r) => r.appId == oldAppId || r.apprepo == oldAppId,
-      );
-      if (matched.isEmpty) {
-        debugPrint('ApkInfoService: 未找到匹配的渠道记录 $oldAppId');
-        return;
-      }
-      final record = matched.first;
-      final updated = ChannelAddedApp(
-        appId: packageName,
-        name: record.name,
-        user: record.user,
-        repositories: record.repositories,
-        apprepo: record.apprepo ?? oldAppId,
-        icon: record.icon,
-        description: record.description,
-        category: record.category,
-        addTime: record.addTime,
-        channelCode: ChannelType.github.code,
-        extra: record.extra,
-      );
-      await db.dao.insertApp(updated);
-      if (record.appId != packageName) {
-        await db.dao.removeApp(record.appId, ChannelType.github.code);
-      }
-      appLog.info('ApkInfoService: 包名已更新 $oldAppId -> $packageName');
-      _clearGithubCache();
-    } catch (e) {
-      appLog.error('ApkInfoService: 更新包名失败 - $e');
-    }
+    await _migrateAppId(oldAppId: oldAppId, newPackageName: packageName);
   }
 
   /// 等待安装完成后，通过包名获取真实应用名与图标并更新记录
@@ -267,14 +194,18 @@ class ApkInfoService {
         return;
       }
 
-      // 更新渠道记录
+      // 更新渠道记录（appId 已由 _updatePackageName 迁移为 packageName；
+      // 精确 PK 匹配优先，apprepo 兜底渠道迁移失败的场景）
       final db = await ChannelDatabaseManager.instance;
-      final list = await db.dao.getAppsByChannel(ChannelType.github.code);
-      final matched = list.where(
-        (r) => r.appId == packageName || r.apprepo == oldAppId,
-      );
-      if (matched.isEmpty) return;
-      final record = matched.first;
+      var matched = await db.dao.getApp(packageName, ChannelType.github.code);
+      if (matched == null) {
+        final byApprepo = await db.dao
+            .getAppsByChannel(ChannelType.github.code)
+            .then((list) => list.where((r) => r.apprepo == oldAppId));
+        if (byApprepo.isEmpty) return;
+        matched = byApprepo.first;
+      }
+      final record = matched;
       final updated = ChannelAddedApp(
         appId: record.appId,
         name: realName ?? record.name,
@@ -293,30 +224,13 @@ class ApkInfoService {
           '(name=$realName, icon=$iconPath)');
       _clearGithubCache();
 
-      // 更新聚合记录（若已添加首页）
-      final aggregator = AppAggregatorManager.instance;
-      final added = await aggregator.isAppAdded(
+      // 聚合库不存 name/icon（只存引用，信息由渠道实时查）——无需重建聚合记录，
+      // 仅通知首页刷新即可拉到新数据
+      if (await AppAggregatorManager.instance.isAppAdded(
         channel: ChannelType.github,
         appId: record.appId,
-      );
-      if (added) {
-        await aggregator.removeApp(
-          channel: ChannelType.github,
-          appId: record.appId,
-        );
-        await aggregator.addApp(
-          channel: ChannelType.github,
-          appInfo: AppSummary(
-            appId: record.appId,
-            packageName: null, // 原实现未提供包名（extra 为空），保持语义不变
-            name: realName ?? record.name,
-            user: '',
-            repositories: record.repositories,
-            icon: iconPath ?? '',
-            des: record.description,
-          ),
-        );
-        appLog.info('ApkInfoService: 聚合记录应用名/图标已更新');
+      )) {
+        AppAggregatorManager.instance.notifyAppsChanged();
       }
     } catch (e) {
       appLog.error('ApkInfoService: 更新应用名/图标失败 - $e');

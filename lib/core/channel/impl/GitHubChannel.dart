@@ -99,12 +99,11 @@ class GitHubChannel with AppUpdateCheckMixin implements IChannel {
         );
       }
 
-      // 从渠道数据库读取已添加应用
+      // 从渠道数据库读取已添加应用（读取边界做脏数据自愈）
       if (_database == null) {
         throw Exception('数据库未初始化');
       }
-      final channelApps = await _database!.dao
-          .getAppsByChannel(ChannelType.github.code);
+      final channelApps = await _loadChannelApps();
       final apps = channelApps
           .map(AppSummary.fromChannelAddedApp)
           .toList();
@@ -266,7 +265,9 @@ class GitHubChannel with AppUpdateCheckMixin implements IChannel {
           appId: fullName, // appId = owner/repo
           name: map['name']?.toString() ?? fullName,
           user: owner?['login']?.toString() ?? '',
-          repositories: fullName, // repositories = full_name
+          // repositories 存仓库名（full_name 末段），而非完整名——完整名由 appId/apprepo 承载，
+          // 存完整名会在聚合层 canonical 成包名后经 addApp 落成脏记录（repositories 含 '/'）
+          repositories: fullName.split('/').last,
           icon: avatar, // 临时图标：仓库 owner 头像
           des: map['description']?.toString() ?? '',
           category: null,
@@ -710,10 +711,137 @@ class GitHubChannel with AppUpdateCheckMixin implements IChannel {
     }
   }
 
+  /// 规范化渠道记录：repositories 被误存为完整名（owner/repo，历史安装迁移 bug 产物）
+  /// 时拆分为 user/repositories，apprepo 保留完整名；其余字段原样。
+  /// 非脏数据（repositories 无 '/'）原样返回。GitHub 仓库名不可能含 '/'，误判面为零。
+  @visibleForTesting
+  static ChannelAddedApp normalizeStoredRecord(ChannelAddedApp record) {
+    if (!record.repositories.contains('/')) return record;
+    final parts = record.repositories.split('/');
+    if (parts.length != 2) return record;
+    return ChannelAddedApp(
+      appId: record.appId,
+      name: record.name,
+      user: parts[0],
+      repositories: parts[1],
+      apprepo: record.apprepo ?? record.repositories,
+      icon: record.icon,
+      description: record.description,
+      category: record.category,
+      addTime: record.addTime,
+      channelCode: record.channelCode,
+      extra: record.extra,
+    );
+  }
+
+  /// 读取渠道记录并做脏数据自愈（读取边界统一入口）
+  /// 历史脏记录（repositories 含完整名）拆分修正后回写，一次后即净
+  Future<List<ChannelAddedApp>> _loadChannelApps() async {
+    if (_database == null) {
+      throw Exception('数据库未初始化');
+    }
+    final apps = await _database!.dao
+        .getAppsByChannel(ChannelType.github.code);
+    final corrected = <ChannelAddedApp>[];
+    for (final record in apps) {
+      final normalized = normalizeStoredRecord(record);
+      if (!identical(normalized, record)) {
+        try {
+          await _database!.dao.insertApp(normalized);
+        } catch (e) {
+          appLog.error('GitHubChannel: 自愈脏记录失败 - $e');
+        }
+      }
+      corrected.add(normalized);
+    }
+    return corrected;
+  }
+
+  /// 渠道记录 appId 迁移：owner/repo → 真实包名（下载解析 APK 后调用）
+  ///
+  /// 语义：appId 是唯一需要变化的标识，user/repositories（owner/repo）必须保留，
+  /// apprepo 兜底记录完整名，extra.packageName 同步为新包名（APK 解析是 ground truth）。
+  /// 未匹配记录（appId 或 apprepo 均不等于 oldAppId）返回 null，不做任何修改。
+  ///
+  /// 注意：本方法只动渠道库，聚合层（AppAggregatorManager）的 appId 同步由调用方编排。
+  Future<ChannelAddedApp?> migrateAppId({
+    required String oldAppId,
+    required String newPackageName,
+    String? name,
+    String? icon,
+  }) async {
+    if (oldAppId == newPackageName || newPackageName.isEmpty) return null;
+    final db = _database ?? await ChannelDatabaseManager.instance;
+
+    // 精确 PK 匹配优先，未命中再按 apprepo 兜底（兼容重复下载/历史记录）
+    var matched = await db.dao.getApp(oldAppId, ChannelType.github.code);
+    if (matched == null) {
+      final byApprepo = await db.dao
+          .getAppsByChannel(ChannelType.github.code)
+          .then((list) => list.where((r) => r.apprepo == oldAppId));
+      if (byApprepo.isEmpty) return null;
+      matched = byApprepo.first;
+    }
+    if (matched.appId == newPackageName) return matched;
+    final record = matched;
+
+    // 注：floor 1.4.2 生成的 DAO 无事务支持，沿用项目既有 insert+remove 模式；
+    // 若 insert 成功而 remove 失败残留双记录，REPLACE(同 PK)/下次迁移可覆盖自愈
+    final updated = ChannelAddedApp(
+      appId: newPackageName,
+      name: name ?? record.name,
+      user: record.user,
+      repositories: record.repositories,
+      apprepo: record.apprepo ?? oldAppId,
+      icon: icon ?? record.icon,
+      description: record.description,
+      category: record.category,
+      addTime: record.addTime,
+      channelCode: ChannelType.github.code,
+      extra: _mergePackageName(record.extra, newPackageName),
+    );
+    await db.dao.insertApp(updated);
+    // 复合主键 (channelCode, appId)：新 appId 插入后旧行残留，需删除
+    await db.dao.removeApp(record.appId, ChannelType.github.code);
+
+    await clearCache();
+    appLog.info('GitHubChannel: 渠道记录 appId 迁移 $oldAppId -> $newPackageName');
+    return updated;
+  }
+
+  /// 合并包名到 extra（保留既有字段，packageName 覆盖为新值）
+  String? _mergePackageName(String? extra, String packageName) {
+    Map<String, dynamic> data;
+    if (extra != null && extra.isNotEmpty) {
+      try {
+        data = jsonDecode(extra) as Map<String, dynamic>;
+      } catch (_) {
+        data = {};
+      }
+    } else {
+      data = {};
+    }
+    data['packageName'] = packageName;
+    return jsonEncode(data);
+  }
+
   /// 从渠道数据库记录构建 AppSummary
   /// 优先用 metadata 覆盖真实图标/应用名/包名；未收录回退数据库记录；
   /// 数据有变化时同步回写渠道数据库（保持最新）
   Future<AppSummary> _buildStoredAppInfo(ChannelAddedApp stored) async {
+    // 历史脏数据自愈：repositories 误存完整名时拆分修正并回写
+    // （须在 early-return 之前——脏记录 user 非空会绕过下方 guard；
+    //   也须在 metadata fetch 之前——后续用修正后的 owner/repo 查询）
+    final normalized = normalizeStoredRecord(stored);
+    if (!identical(normalized, stored)) {
+      try {
+        await _database!.dao.insertApp(normalized);
+      } catch (e) {
+        appLog.error('GitHubChannel: 自愈脏记录失败 - $e');
+      }
+      stored = normalized;
+    }
+
     // 缺少 user/repositories（无法解析仓库）时直接返回记录
     if (stored.user.isEmpty || stored.repositories.isEmpty) {
       return AppSummary.fromChannelAddedApp(stored);
