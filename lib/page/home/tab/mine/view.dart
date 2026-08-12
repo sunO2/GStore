@@ -186,7 +186,7 @@ class _MinePageState extends State<MinePage>
           left: AppSpacing.lg,
           right: AppSpacing.lg,
           top: AppSpacing.lg,
-          bottom: 100 + MediaQuery.of(context).padding.bottom,
+          bottom: 80 + MediaQuery.of(context).padding.bottom,
         ),
         child: Obx(() {
           final user = Get.find<UserManager>().userInfo.value;

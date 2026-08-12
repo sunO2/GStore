@@ -189,10 +189,7 @@ class _DiscoveryPageState extends State<DiscoveryPage>
               final channels = logic.sortedChannelTypes;
 
               return ListView.builder(
-                // 底部避让悬浮导航胶囊（extendBody 后内容延伸至胶囊后方）
-                padding: EdgeInsets.only(
-                  bottom: 100 + MediaQuery.of(context).padding.bottom,
-                ),
+                padding: EdgeInsets.zero,
                 itemCount: channels.length,
                 itemBuilder: (context, index) {
                   final channel = channels[index];
@@ -470,7 +467,13 @@ class _DiscoveryPageState extends State<DiscoveryPage>
 
       return GridView.builder(
         controller: _gridScrollController,
-        padding: AppSpacing.allLG,
+        // 底部避让悬浮导航胶囊（extendBody 后内容延伸至胶囊后方）
+        padding: EdgeInsets.fromLTRB(
+          AppSpacing.lg,
+          AppSpacing.lg,
+          AppSpacing.lg,
+          80 + MediaQuery.of(context).padding.bottom,
+        ),
         gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
           crossAxisCount: state.crossAxisCount.value,
           childAspectRatio: 0.85,
