@@ -333,28 +333,21 @@ class _DiscoveryPageState extends State<DiscoveryPage>
                   )
                 : null,
             border: OutlineInputBorder(
-              borderRadius: AppRadius.allMD,
-              borderSide: BorderSide(
-                color: theme.colorScheme.outline,
-                width: 1,
-              ),
+              // 胶囊形搜索框（与 AI 输入栏/悬浮导航胶囊风格统一）
+              borderRadius: BorderRadius.circular(AppRadius.circle),
+              borderSide: BorderSide.none,
             ),
             enabledBorder: OutlineInputBorder(
-              borderRadius: AppRadius.allMD,
-              borderSide: BorderSide(
-                color: theme.colorScheme.outline,
-                width: 1,
-              ),
+              borderRadius: BorderRadius.circular(AppRadius.circle),
+              borderSide: BorderSide.none,
             ),
             focusedBorder: OutlineInputBorder(
-              borderRadius: AppRadius.allMD,
-              borderSide: BorderSide(
-                color: theme.colorScheme.primary,
-                width: 2,
-              ),
+              borderRadius: BorderRadius.circular(AppRadius.circle),
+              borderSide: BorderSide.none,
             ),
             filled: true,
-            fillColor: theme.colorScheme.surfaceContainerHighest,
+            // 半透明填充（透出磨砂质感，随主题变化）
+            fillColor: theme.colorScheme.surface.withValues(alpha: 0.65),
             contentPadding: AppSpacing.allMD,
           ),
           onChanged: (value) {

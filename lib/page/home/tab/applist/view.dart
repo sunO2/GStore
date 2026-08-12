@@ -72,11 +72,14 @@ class AppListState extends State<ApplistPage>
                 return const SizedBox.shrink();
               }),
               border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(20),
+                // 胶囊形搜索框（高度 40 时全圆，与 AI 输入栏风格统一）
+                borderRadius: BorderRadius.circular(AppRadius.circle),
                 borderSide: BorderSide.none,
               ),
               filled: true,
-              fillColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+              // 半透明填充（透出磨砂质感，随主题变化）
+              fillColor:
+                  Theme.of(context).colorScheme.surface.withValues(alpha: 0.65),
               contentPadding: const EdgeInsets.symmetric(
                 horizontal: 12,
                 vertical: 8,
