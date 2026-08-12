@@ -13,6 +13,7 @@ import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/db/apps/AppInfo.dart' as db;
+import 'package:gstore/db/apps/AppInfo.dart' as dbModels;
 import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -139,6 +140,51 @@ class FakeCanonicalizingTagsChannel extends FakeTagsChannel {
   @override
   Future<String> canonicalAppId(AppSummary appInfo) async =>
       'com.example.app';
+}
+
+/// 分类归一化测试假渠道：
+/// getAppInfo 返回英文分类 ID ['PROXY']（模拟 localdb 数据仓库 AppInfo.category
+///  原样存储英文 ID），getAllCategories 可配置返回 AppCategory 列表或失败
+/// （模拟 localdb 渠道分类表：id 英文 + description 中文）。
+class FakeNormalizeChannel extends FakeTagsChannel {
+  final List<db.AppCategory> categories;
+  final bool categoriesFail;
+
+  FakeNormalizeChannel(
+    super.type, {
+    this.categories = const [],
+    this.categoriesFail = false,
+  });
+
+  @override
+  Future<ChannelResult<AppSummary?>> getAppInfo(String appId,
+      {bool forceRefresh = false}) async {
+    return ChannelResult.success(
+      data: AppSummary(
+        appId: appId,
+        packageName: null,
+        name: 'App $appId',
+        user: '',
+        repositories: '',
+        icon: '',
+        des: '描述',
+        category: ['PROXY'], // 渠道自带英文分类 ID（数据仓库原样）
+      ),
+      from: type,
+    );
+  }
+
+  @override
+  Future<ChannelResult<List<db.AppCategory>>> getAllCategories(
+      {bool forceRefresh = false}) async {
+    if (categoriesFail) {
+      return ChannelResult.failure(
+        from: type,
+        error: '模拟分类表读取失败',
+      );
+    }
+    return ChannelResult.success(data: categories, from: type);
+  }
 }
 
 /// getAggregatedApps 合并用户标签到分类测试
@@ -343,5 +389,134 @@ void main() {
     final result2 = await manager.getAggregatedApps();
     expect(result2.single.appInfo.category, isNot(contains('游戏')),
         reason: 'raw appId 作 key 匹配不到聚合库条目 → 首页分类看不到该标签（修复点）');
+  });
+
+  test('S1: 英文分类 ID 归一化为中文 description（渠道 PROXY + 用户标签 代理 → 仅 代理）',
+      () async {
+    // 覆盖注册：github 渠道返回英文分类 ['PROXY']；localdb 渠道提供分类表 PROXY→代理
+    ChannelManager.instance
+        .registerChannel(FakeNormalizeChannel(ChannelType.github));
+    ChannelManager.instance.registerChannel(FakeNormalizeChannel(
+      ChannelType.localDb,
+      categories: [dbModels.AppCategory('PROXY', '代理', '')],
+    ));
+
+    await db.addedAppDao.insertApp(AddedAppInfo(
+      channelId: 'github',
+      appId: 'com.tags',
+      addTime: 1000,
+    ));
+    await manager.setTags(
+      channel: ChannelType.github,
+      appId: 'com.tags',
+      tags: ['代理'],
+    );
+
+    final result = await manager.getAggregatedApps();
+    expect(result, hasLength(1));
+    expect(result.single.appInfo.category, ['代理'],
+        reason: '英文 PROXY 必须归一化为中文 代理，并与用户中文标签去重');
+    expect(result.single.isFromCache, isFalse);
+  });
+
+  test('S2: 映射表外自定义标签保留原文（PROXY→代理，效率工具 原样保留）', () async {
+    ChannelManager.instance
+        .registerChannel(FakeNormalizeChannel(ChannelType.github));
+    ChannelManager.instance.registerChannel(FakeNormalizeChannel(
+      ChannelType.localDb,
+      categories: [dbModels.AppCategory('PROXY', '代理', '')],
+    ));
+
+    await db.addedAppDao.insertApp(AddedAppInfo(
+      channelId: 'github',
+      appId: 'com.tags',
+      addTime: 1000,
+    ));
+    await manager.setTags(
+      channel: ChannelType.github,
+      appId: 'com.tags',
+      tags: ['效率工具'],
+    );
+
+    final result = await manager.getAggregatedApps();
+    final category = result.single.appInfo.category!;
+    expect(category, containsAll(['代理', '效率工具']),
+        reason: 'PROXY 归一化为 代理，映射表外的自定义标签保留原文');
+    expect(category, isNot(contains('PROXY')),
+        reason: '英文分类 ID 不得原样出现在聚合结果');
+  });
+
+  test('S2: localdb 渠道未注册时原样合并（无归一化、不崩溃）', () async {
+    ChannelManager.instance
+        .registerChannel(FakeNormalizeChannel(ChannelType.github));
+    // 显式移除 localdb 渠道，模拟缺失场景（getChannel(localDb) 返回 null）
+    ChannelManager.instance.unregisterChannel(ChannelType.localDb);
+
+    await db.addedAppDao.insertApp(AddedAppInfo(
+      channelId: 'github',
+      appId: 'com.tags',
+      addTime: 1000,
+    ));
+    await manager.setTags(
+      channel: ChannelType.github,
+      appId: 'com.tags',
+      tags: ['代理'],
+    );
+
+    final result = await manager.getAggregatedApps();
+    expect(result, hasLength(1));
+    expect(result.single.appInfo.category, containsAll(['PROXY', '代理']),
+        reason: '分类映射缺失时必须降级为原样合并（保留英文 ID），且不抛异常');
+  });
+
+  test('S2: localdb 渠道 getAllCategories 失败时原样合并（无归一化、不崩溃）',
+      () async {
+    ChannelManager.instance
+        .registerChannel(FakeNormalizeChannel(ChannelType.github));
+    ChannelManager.instance.registerChannel(FakeNormalizeChannel(
+      ChannelType.localDb,
+      categoriesFail: true,
+    ));
+
+    await db.addedAppDao.insertApp(AddedAppInfo(
+      channelId: 'github',
+      appId: 'com.tags',
+      addTime: 1000,
+    ));
+    await manager.setTags(
+      channel: ChannelType.github,
+      appId: 'com.tags',
+      tags: ['代理'],
+    );
+
+    final result = await manager.getAggregatedApps();
+    expect(result, hasLength(1));
+    expect(result.single.appInfo.category, containsAll(['PROXY', '代理']),
+        reason: '分类表读取失败必须降级为原样合并（保留英文 ID），且不抛异常');
+  });
+
+  test('S3: 渠道 PROXY + 标签 [代理, 系统] → [代理, 系统]（归一化去重、系统保留）',
+      () async {
+    ChannelManager.instance
+        .registerChannel(FakeNormalizeChannel(ChannelType.github));
+    ChannelManager.instance.registerChannel(FakeNormalizeChannel(
+      ChannelType.localDb,
+      categories: [dbModels.AppCategory('PROXY', '代理', '')],
+    ));
+
+    await db.addedAppDao.insertApp(AddedAppInfo(
+      channelId: 'github',
+      appId: 'com.tags',
+      addTime: 1000,
+    ));
+    await manager.setTags(
+      channel: ChannelType.github,
+      appId: 'com.tags',
+      tags: ['代理', '系统'],
+    );
+
+    final result = await manager.getAggregatedApps();
+    expect(result.single.appInfo.category, ['代理', '系统'],
+        reason: 'PROXY→代理 与用户标签去重，系统 保留，无重复无英文 ID');
   });
 }
