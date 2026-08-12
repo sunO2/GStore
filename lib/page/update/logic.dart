@@ -45,6 +45,10 @@ class UpdateLogic extends GetxController {
     if (manager.lastCheckedAt.value != null) {
       state.updateList.assignAll(manager.updateList);
       state.showLog.value = false;
+      // 无更新缓存：展示检测完成页（含历史日志），而非纯空态
+      if (manager.updateList.isEmpty) {
+        state.checkFinished.value = true;
+      }
     } else {
       checkUpdates();
     }
