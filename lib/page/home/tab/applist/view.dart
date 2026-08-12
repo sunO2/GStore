@@ -99,7 +99,8 @@ class AppListState extends State<ApplistPage>
                 count: count,
                 child: ColoredAliIcon(
                   icon: AliIcon.appUpdateCenter,
-                  size: AppTypography.iconMD,
+                  // 与 AppBar 默认图标/用户头像(iconXL) 对齐，避免与其他 tab 不协调
+                  size: AppTypography.iconXL,
                 ),
               );
             }),
@@ -109,7 +110,8 @@ class AppListState extends State<ApplistPage>
             tooltip: "下载中心",
             icon: ColoredAliIcon(
               icon: AliIcon.appDownloadCenter,
-              size: AppTypography.iconMD,
+              // 与 AppBar 默认图标/用户头像(iconXL) 对齐
+              size: AppTypography.iconXL,
             ),
             onPressed: () => Get.toNamed(AppRoute.downloadCenter),
           ),
