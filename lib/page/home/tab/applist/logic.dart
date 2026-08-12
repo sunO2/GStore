@@ -88,11 +88,12 @@ class ApplistLogic extends GetxController with GithubRequestMix {
       appLog.info('ApplistLogic: ✅ 获取到 ${apps.length} 个聚合应用');
 
       state.apps = apps;
-      state.filteredApps.value = apps; // 初始化时显示所有应用
+      // 重新应用当前筛选（分类/搜索/排序）——不能直接显示全部，
+      // 否则下拉刷新后 filteredApps 变为全部而 selectedCategory 仍选中旧分类（状态/显示不一致）
       _buildCategories();
-      update();
+      _applyFilter();
 
-      appLog.info('ApplistLogic: 已更新 UI，应用数量: ${apps.length}');
+      appLog.info('ApplistLogic: 已更新 UI，应用数量: ${state.filteredApps.length}');
     } catch (e, stackTrace) {
       appLog.error('ApplistLogic: ❌ 加载聚合应用失败 - $e');
       debugPrint('ApplistLogic: 堆栈跟踪: $stackTrace');
