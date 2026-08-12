@@ -515,7 +515,7 @@ class _AgentPageState extends State<AgentPage>
             ),
           ),
           // 悬浮磨砂输入栏：AnimatedPadding 按键盘高度平滑顶起
-          // （无键盘时底缘与导航胶囊顶部 8px 轻融合；键盘弹出时紧贴键盘上方）
+          // （无键盘时悬浮于导航胶囊上方 12px 留白；键盘弹出时紧贴键盘上方）
           Positioned(
             left: 0,
             right: 0,
@@ -526,7 +526,7 @@ class _AgentPageState extends State<AgentPage>
               padding: EdgeInsets.only(
                 bottom: MediaQuery.of(context).viewInsets.bottom > 0
                     ? MediaQuery.of(context).viewInsets.bottom + AppSpacing.md
-                    : 68,
+                    : 88,
               ),
               child: _buildFloatingInput(context),
             ),
