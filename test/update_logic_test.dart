@@ -42,6 +42,19 @@ class _FakeUpdateManager extends UpdateManagerService {
     void Function(List<String> appNames)? onCheckList,
   }) async {
     fakeIsChecking.value = true;
+    // 共享状态 Rx（页面订阅镜像，与真实 manager 行为一致）
+    checkList.assignAll(['示例应用']);
+    checkedCount.value = 1;
+    totalCount.value = 1;
+    checkingAppName.value = '示例应用';
+    checkLog
+        .assignAll([CheckLogEntry(level: CheckLogLevel.info, text: '检测中...')]);
+    currentProgress.value = const UpdateCheckProgress(
+      appId: 'com.example.app',
+      appName: '示例应用',
+      index: 0,
+      total: 1,
+    );
     onCheckList?.call(['示例应用']);
     checkListFired = onCheckList != null;
     onProgress?.call(const UpdateCheckProgress(

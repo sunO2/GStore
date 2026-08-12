@@ -37,6 +37,26 @@ class UpdateManagerService extends GetxService {
   /// 检测日志（前台/后台检测同源产出，格式一致；持久化缓存，二次进入可查看）
   final RxList<CheckLogEntry> checkLog = <CheckLogEntry>[].obs;
 
+  // ===== 检测进度状态（前台/后台检测共享，页面订阅镜像展示）=====
+
+  /// 当前检测进度（逐应用更新）
+  final Rxn<UpdateCheckProgress> currentProgress = Rxn<UpdateCheckProgress>();
+
+  /// 待检测应用名列表（检测前一次性提供，供滚轮预填完整名单）
+  final RxList<String> checkList = <String>[].obs;
+
+  /// 已检测数量
+  final RxInt checkedCount = 0.obs;
+
+  /// 总应用数
+  final RxInt totalCount = 0.obs;
+
+  /// 当前正在检测的应用名（滚轮展示）
+  final RxString checkingAppName = RxString('');
+
+  /// 当前正在检测的应用图标 URL（loading 叠加展示）
+  final RxnString checkingIconUrl = RxnString();
+
   /// 缓存恢复完成标志（页面进入时等待，避免恢复未完成误判"从未检测"）
   late final Future<void> cacheRestored = _restoreCache();
 
@@ -133,30 +153,37 @@ class UpdateManagerService extends GetxService {
         appNames = [for (final added in addedApps) added.appId];
       }
       onCheckList?.call(appNames);
+      // 共享状态：待检测名单/总数（页面订阅镜像，后台检测同样产出）
+      checkList.assignAll(appNames);
+      totalCount.value = total;
       log(CheckLogLevel.info, '已添加应用共 $total 个');
 
       final newUpdateList = <AppUpdateInfo>[];
       for (var i = 0; i < addedApps.length; i++) {
         final added = addedApps[i];
         // 检测前进度：appId 占位（名称以 onCheckList 预填的滚轮为准）
-        onProgress?.call(UpdateCheckProgress(
+        final preProgress = UpdateCheckProgress(
           appId: added.appId,
           appName: appNames[i],
           index: i,
           total: total,
-        ));
+        );
+        onProgress?.call(preProgress);
+        _publishProgress(preProgress);
         final info = await _checkOneApp(added, manager, log);
         // 检测后进度：携带结果名称/图标
         if (info != null) {
           newUpdateList.add(info);
-          onProgress?.call(UpdateCheckProgress(
+          final postProgress = UpdateCheckProgress(
             appId: info.appId,
             appName: info.appName,
             iconUrl: info.iconUrl,
             index: i,
             total: total,
             hasResult: true,
-          ));
+          );
+          onProgress?.call(postProgress);
+          _publishProgress(postProgress);
         }
       }
 
@@ -175,6 +202,17 @@ class UpdateManagerService extends GetxService {
       onLog?.call(CheckLogLevel.error, '检测失败: $e');
     } finally {
       isChecking.value = false;
+    }
+  }
+
+  /// 发布进度到共享 Rx（前台/后台检测同源，页面订阅镜像）
+  void _publishProgress(UpdateCheckProgress progress) {
+    currentProgress.value = progress;
+    checkedCount.value = progress.index + 1;
+    totalCount.value = progress.total;
+    checkingAppName.value = progress.appName;
+    if (progress.iconUrl != null && progress.iconUrl!.isNotEmpty) {
+      checkingIconUrl.value = progress.iconUrl;
     }
   }
 

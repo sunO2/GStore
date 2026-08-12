@@ -34,9 +34,14 @@ class UpdateLogic extends GetxController {
     _subscribeManager(manager);
 
     // 缓存优先：等待缓存恢复完成（避免恢复中误判"从未检测"）
+    // - 检测进行中（后台触发）→ 直接进入检测中展示（订阅进度/日志，不重新发起）
     // - 已有上次检测记录 → 直接展示缓存结果（不触发耗时检测，手动刷新才检测）
     // - 从未检测过 → 自动检测一次
     await manager.cacheRestored;
+    if (manager.isChecking.value) {
+      state.isLoading.value = true;
+      return;
+    }
     if (manager.lastCheckedAt.value != null) {
       state.updateList.assignAll(manager.updateList);
       state.showLog.value = false;
@@ -46,26 +51,37 @@ class UpdateLogic extends GetxController {
   }
 
   /// 订阅 UpdateManager 结果同步（避免重复监听）
+  /// 结果/日志/进度全部走订阅镜像：前台/后台检测共享同一实例状态
   void _subscribeManager(UpdateManagerService manager) {
     if (_subscribed) return;
     _subscribed = true;
     manager.updateList.listen((list) {
       state.updateList.assignAll(list);
-      state.totalCount.value = state.totalCount.value;
       // 同步红点：检测结果与功能入口红点一致
       BadgeService.instance.setBadge(BadgeKey.appUpdate, list.length);
     });
-    // 检测日志统一由 UpdateManager 产出（前台/后台同源，含持久化恢复），
-    // 页面仅订阅同步（检测开始/完成提示亦由 manager 统一输出）
+    // 检测日志统一由 UpdateManager 产出（前台/后台同源，含持久化恢复）
     manager.checkLog.listen((logs) {
       state.checkLog.assignAll(logs);
+    });
+    // 进度镜像：isLoading 随 isChecking（后台检测中进入页面自动显示检测页）
+    manager.isChecking.listen((checking) {
+      state.isLoading.value = checking;
+    });
+    manager.checkList.listen((list) => state.checkList.assignAll(list));
+    manager.checkedCount.listen((v) => state.checkedCount.value = v);
+    manager.totalCount.listen((v) => state.totalCount.value = v);
+    manager.checkingAppName.listen((v) => state.checkingAppName.value = v);
+    manager.checkingIconUrl.listen((v) => state.checkingIconUrl.value = v);
+    manager.currentProgress.listen((p) {
+      if (p != null) state.checkIndex.value = p.index;
     });
   }
 
   /// 检测所有已添加应用是否有更新
   ///
-  /// 统一走 UpdateManager（锁 + 时间窗防重）：
-  /// - 页面自动进入：onReady 缓存优先（有缓存不检测）
+  /// 统一走 UpdateManager（锁防重 + 状态共享）：
+  /// - 页面自动进入：onReady 缓存优先/检测中订阅（不重新发起）
   /// - 手动刷新：checkUpdates(force: true) 强制重新检测
   Future<void> checkUpdates({bool force = false}) async {
     final manager = UpdateManagerService.instance;
@@ -78,28 +94,7 @@ class UpdateLogic extends GetxController {
     state.updateList.clear();
     state.resetCheckProgress();
 
-    await manager.checkUpdates(
-      force: force,
-      // 预填滚轮名单：一次性提供全部待检测应用名（修复滚轮只显示占位/当前项问题）
-      onCheckList: (names) {
-        state.checkList.assignAll(names);
-      },
-      // 逐应用进度：滚轮 + 图标 + 进度（检测前预填名，检测后携带结果名称/图标）
-      onProgress: (progress) {
-        // 更新滚轮当前项名与图标（名称优先结果，未出结果用预填名）
-        state.checkIndex.value = progress.index;
-        state.checkingAppName.value = progress.appName;
-        if (progress.iconUrl != null && progress.iconUrl!.isNotEmpty) {
-          state.checkingIconUrl.value = progress.iconUrl;
-        }
-        state.checkedCount.value = progress.index + 1;
-        state.totalCount.value = progress.total;
-      },
-      // 详细检测日志（渠道不可用/未安装/版本对比/发现更新等）
-      onLog: (level, message) {
-        state.addLog(level, message);
-      },
-    );
+    await manager.checkUpdates(force: force);
 
     state.isLoading.value = false;
     if (manager.updateList.isEmpty) {
