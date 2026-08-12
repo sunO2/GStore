@@ -6,19 +6,8 @@ import 'package:gstore/http/download/DownloadStatus.dart';
 import 'package:gstore/http/download/DownloadStatusDataBase.dart';
 import 'package:gstore/core/service/downloadService.dart';
 
+import 'download_status_utils.dart';
 import 'state.dart';
-
-/// 下载筛选类型
-enum DownloadFilter {
-  /// 全部
-  all,
-  /// 下载中
-  downloading,
-  /// 已完成
-  completed,
-  /// 失败
-  failed,
-}
 
 class DownloadManagerLogic extends GetxController with GithubRequestMix {
   final DownloadManagerState state = DownloadManagerState();
@@ -54,8 +43,7 @@ class DownloadManagerLogic extends GetxController with GithubRequestMix {
     if (filter == DownloadFilter.all) return groups;
 
     return groups
-        .map((group) =>
-            group.where((item) => _matchesFilter(item, filter)).toList())
+        .map((group) => group.where((item) => matchesFilter(item, filter)).toList())
         .where((group) => group.isNotEmpty)
         .toList();
   }
@@ -76,21 +64,6 @@ class DownloadManagerLogic extends GetxController with GithubRequestMix {
       // 预取应用信息（异步，不阻塞 UI）
       _prefetchAppInfos(_latestGroups);
     });
-  }
-
-  /// 判断下载项是否匹配筛选条件
-  bool _matchesFilter(DownloadStatus item, DownloadFilter filter) {
-    switch (filter) {
-      case DownloadFilter.downloading:
-        return item.status == DownloadStatus.DOWNLOAD_LOADING;
-      case DownloadFilter.completed:
-        return item.status == DownloadStatus.DOWNLOAD_SUCCESS;
-      case DownloadFilter.failed:
-        return item.status == DownloadStatus.DOWNLOAD_ERROR ||
-            item.status == DownloadStatus.DOWNLOAD_READY;
-      case DownloadFilter.all:
-        return true;
-    }
   }
 
   /// 获取应用信息（带缓存）
@@ -183,11 +156,9 @@ class DownloadManagerLogic extends GetxController with GithubRequestMix {
   /// 暂停下载
   void pauseDownload(DownloadStatus downStatus) {
     downStatus.cancelDownload();
-    Get.snackbar(
-      '已暂停',
+    AppDialogs.showSuccess(
       '已暂停 ${downStatus.appName} 的下载',
-      snackPosition: SnackPosition.BOTTOM,
-      duration: const Duration(seconds: 2),
+      title: '已暂停',
     );
   }
 
@@ -219,18 +190,14 @@ class DownloadManagerLogic extends GetxController with GithubRequestMix {
       // 4. 释放内存资源
       downStatus.dispose();
 
-      Get.snackbar(
-        '已删除',
+      AppDialogs.showSuccess(
         '已删除 ${downStatus.appName} 的下载记录',
-        snackPosition: SnackPosition.BOTTOM,
-        duration: const Duration(seconds: 2),
+        title: '已删除',
       );
     } catch (e) {
-      Get.snackbar(
-        '删除失败',
+      AppDialogs.showError(
         '删除下载记录失败: $e',
-        snackPosition: SnackPosition.BOTTOM,
-        backgroundColor: Get.theme.colorScheme.errorContainer,
+        title: '删除失败',
       );
     }
   }
@@ -241,18 +208,14 @@ class DownloadManagerLogic extends GetxController with GithubRequestMix {
       final db = await database;
       await db.downloadStatusDao.deleteDownloadsByAppId(appId);
 
-      Get.snackbar(
-        '已删除',
+      AppDialogs.showSuccess(
         '已删除该应用的所有下载记录',
-        snackPosition: SnackPosition.BOTTOM,
-        duration: const Duration(seconds: 2),
+        title: '已删除',
       );
     } catch (e) {
-      Get.snackbar(
-        '删除失败',
+      AppDialogs.showError(
         '删除下载记录失败: $e',
-        snackPosition: SnackPosition.BOTTOM,
-        backgroundColor: Get.theme.colorScheme.errorContainer,
+        title: '删除失败',
       );
     }
   }
@@ -289,18 +252,14 @@ class DownloadManagerLogic extends GetxController with GithubRequestMix {
       }
 
       final count = items.length;
-      Get.snackbar(
-        '清理完成',
+      AppDialogs.showSuccess(
         count > 0 ? '已清理 $count 条已完成记录' : '没有需要清理的记录',
-        snackPosition: SnackPosition.BOTTOM,
-        duration: const Duration(seconds: 2),
+        title: '清理完成',
       );
     } catch (e) {
-      Get.snackbar(
-        '清理失败',
+      AppDialogs.showError(
         '清理下载记录失败: $e',
-        snackPosition: SnackPosition.BOTTOM,
-        backgroundColor: Get.theme.colorScheme.errorContainer,
+        title: '清理失败',
       );
     }
   }
@@ -354,18 +313,14 @@ class DownloadManagerLogic extends GetxController with GithubRequestMix {
         item.dispose();
       }
 
-      Get.snackbar(
-        '清空完成',
+      AppDialogs.showSuccess(
         '已清空所有下载记录',
-        snackPosition: SnackPosition.BOTTOM,
-        duration: const Duration(seconds: 2),
+        title: '清空完成',
       );
     } catch (e) {
-      Get.snackbar(
-        '清空失败',
+      AppDialogs.showError(
         '清空下载记录失败: $e',
-        snackPosition: SnackPosition.BOTTOM,
-        backgroundColor: Get.theme.colorScheme.errorContainer,
+        title: '清空失败',
       );
     }
   }
