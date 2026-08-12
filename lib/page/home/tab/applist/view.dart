@@ -41,8 +41,22 @@ class AppListState extends State<ApplistPage>
     super.build(context);
     return Scaffold(
       appBar: AppBar(
-        title: SizedBox(
-          height: 40,
+        title: Container(
+          height: 48,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(AppRadius.circle),
+            // 悬浮阴影：胶囊浮起感（与 AI 输入栏/导航胶囊视觉语言一致）
+            boxShadow: [
+              BoxShadow(
+                color: Theme.of(context)
+                    .colorScheme
+                    .shadow
+                    .withValues(alpha: 0.06),
+                blurRadius: 8,
+                offset: const Offset(0, 2),
+              ),
+            ],
+          ),
           child: TextField(
             controller: logic.searchController,
             focusNode: logic.searchFocusNode,
@@ -72,7 +86,7 @@ class AppListState extends State<ApplistPage>
                 return const SizedBox.shrink();
               }),
               border: OutlineInputBorder(
-                // 胶囊形搜索框（高度 40 时全圆，与 AI 输入栏风格统一）
+                // 胶囊形搜索框（48 高 + 全圆）
                 borderRadius: BorderRadius.circular(AppRadius.circle),
                 borderSide: BorderSide.none,
               ),
