@@ -173,7 +173,8 @@ class _ReadmeImage extends StatelessWidget {
   /// GitHub 相关图片 URL 应用代理
   String get _proxiedUrl {
     final proxied = applyProxyIfNeeded(url, getProxy());
-    debugPrint('ReadmeImage: url=$url proxied=$proxied proxy=${getProxy().isEmpty ? '(空)' : getProxy()}');
+    debugPrint(
+        'ReadmeImage: url=$url proxied=$proxied proxy=${getProxy().isEmpty ? '(空)' : getProxy()}');
     return proxied;
   }
 
@@ -263,7 +264,10 @@ class VersionSection extends StatelessWidget {
       decoration: BoxDecoration(
         border: Border.all(
           width: 1,
-          color: Theme.of(context).colorScheme.primary.withAlpha(AppColors.alphaMedium),
+          color: Theme.of(context)
+              .colorScheme
+              .primary
+              .withAlpha(AppColors.alphaMedium),
         ),
         borderRadius: AppRadius.allLG,
         color: Theme.of(context).colorScheme.primaryContainer,
@@ -325,7 +329,10 @@ class _StatItem extends StatelessWidget {
       decoration: BoxDecoration(
         border: Border.all(
           width: 1.0,
-          color: Theme.of(context).colorScheme.primaryFixed.withAlpha(AppColors.alphaLower),
+          color: Theme.of(context)
+              .colorScheme
+              .primaryFixed
+              .withAlpha(AppColors.alphaLower),
         ),
         color: Theme.of(context).colorScheme.primaryContainer,
         borderRadius: AppRadius.allSM,
@@ -344,9 +351,13 @@ class _StatItem extends StatelessWidget {
           ),
           SizedBox(width: AppSpacing.xs),
           Container(
-            padding: EdgeInsets.symmetric(horizontal: AppSpacing.sm * 1.5, vertical: 1),
+            padding: EdgeInsets.symmetric(
+                horizontal: AppSpacing.sm * 1.5, vertical: 1),
             decoration: BoxDecoration(
-              color: Theme.of(context).colorScheme.primaryFixed.withAlpha(AppColors.alphaLowest),
+              color: Theme.of(context)
+                  .colorScheme
+                  .primaryFixed
+                  .withAlpha(AppColors.alphaLowest),
               borderRadius: AppRadius.allMD,
             ),
             child: Text(
@@ -369,7 +380,7 @@ class _StatItem extends StatelessWidget {
 
 /// 应用截图 Section
 class ScreenshotsSection extends StatelessWidget {
-final IDetailInfo info;
+  final IDetailInfo info;
 
   const ScreenshotsSection({super.key, required this.info});
 
@@ -386,7 +397,10 @@ final IDetailInfo info;
       decoration: BoxDecoration(
         border: Border.all(
           width: 1,
-          color: Theme.of(context).colorScheme.primary.withAlpha(AppColors.alphaMedium),
+          color: Theme.of(context)
+              .colorScheme
+              .primary
+              .withAlpha(AppColors.alphaMedium),
         ),
         borderRadius: AppRadius.allLG,
         color: Theme.of(context).colorScheme.primaryContainer,
@@ -433,7 +447,9 @@ class _ScreenshotGallery extends StatelessWidget {
                 borderRadius: AppRadius.allMD,
                 child: CachedNetworkImage(
                   imageUrl: screenshot.url,
-                  fit: BoxFit.contain,
+                  // cover 满铺：圆角完整作用于图片本身
+                  // （容器 120×200 与竖屏截图比例接近，裁剪量极小）
+                  fit: BoxFit.cover,
                   placeholder: (context, url) => Container(
                     color: scheme.surfaceContainerHighest,
                     child: const Center(
@@ -569,186 +585,202 @@ class ReadmeSection extends StatelessWidget {
           ],
           if (htmlContent.isNotEmpty)
             Html(
-            data: htmlContent,
-            onLinkTap: (url, _, __) {
-              if (url != null && onLinkTap != null) {
-                onLinkTap?.call(url);
-              }
-            },
-            // 添加自定义代码块扩展
-            extensions: [
-              CodeBlockExtension(context),
-              _ReadmeImageExtension(context),
-            ],
-            style: {
-              // 正文基础样式
-              'body': Style(
-                margin: Margins.zero,
-                padding: HtmlPaddings.zero,
-                color: colorScheme.onSurface,
-                fontSize: FontSize(AppTypography.sizeMD),
-                lineHeight: const LineHeight(1.5),
-              ),
+              data: htmlContent,
+              onLinkTap: (url, _, __) {
+                if (url != null && onLinkTap != null) {
+                  onLinkTap?.call(url);
+                }
+              },
+              // 添加自定义代码块扩展
+              extensions: [
+                CodeBlockExtension(context),
+                _ReadmeImageExtension(context),
+              ],
+              style: {
+                // 正文基础样式
+                'body': Style(
+                  margin: Margins.zero,
+                  padding: HtmlPaddings.zero,
+                  color: colorScheme.onSurface,
+                  fontSize: FontSize(AppTypography.sizeMD),
+                  lineHeight: const LineHeight(1.5),
+                ),
 
-              // 标题样式
-              'h1': Style(
-                color: colorScheme.onSurface,
-                fontSize: FontSize(AppTypography.sizeXXL),
-                fontWeight: AppTypography.weightSemiBold,
-                margin: Margins.only(bottom: AppSpacing.xs, top: AppSpacing.xs),
-                padding: HtmlPaddings.only(bottom: AppSpacing.xs),
-              ),
-              'h2': Style(
-                color: colorScheme.onSurface,
-                fontSize: FontSize(AppTypography.sizeXL),
-                fontWeight: AppTypography.weightSemiBold,
-                margin: Margins.only(bottom: AppSpacing.xs, top: AppSpacing.xs),
-                padding: HtmlPaddings.only(left: AppSpacing.sm),
-              ),
-              'h3': Style(
-                color: colorScheme.onSurface,
-                fontSize: FontSize(AppTypography.sizeLG),
-                fontWeight: AppTypography.weightSemiBold,
-                margin: Margins.only(bottom: AppSpacing.xs, top: AppSpacing.xs),
-              ),
-              'h4': Style(
-                color: colorScheme.onSurface,
-                fontSize: FontSize(AppTypography.sizeMD),
-                fontWeight: AppTypography.weightSemiBold,
-                margin: Margins.only(bottom: AppSpacing.xs, top: AppSpacing.xs),
-              ),
+                // 标题样式
+                'h1': Style(
+                  color: colorScheme.onSurface,
+                  fontSize: FontSize(AppTypography.sizeXXL),
+                  fontWeight: AppTypography.weightSemiBold,
+                  margin:
+                      Margins.only(bottom: AppSpacing.xs, top: AppSpacing.xs),
+                  padding: HtmlPaddings.only(bottom: AppSpacing.xs),
+                ),
+                'h2': Style(
+                  color: colorScheme.onSurface,
+                  fontSize: FontSize(AppTypography.sizeXL),
+                  fontWeight: AppTypography.weightSemiBold,
+                  margin:
+                      Margins.only(bottom: AppSpacing.xs, top: AppSpacing.xs),
+                  padding: HtmlPaddings.only(left: AppSpacing.sm),
+                ),
+                'h3': Style(
+                  color: colorScheme.onSurface,
+                  fontSize: FontSize(AppTypography.sizeLG),
+                  fontWeight: AppTypography.weightSemiBold,
+                  margin:
+                      Margins.only(bottom: AppSpacing.xs, top: AppSpacing.xs),
+                ),
+                'h4': Style(
+                  color: colorScheme.onSurface,
+                  fontSize: FontSize(AppTypography.sizeMD),
+                  fontWeight: AppTypography.weightSemiBold,
+                  margin:
+                      Margins.only(bottom: AppSpacing.xs, top: AppSpacing.xs),
+                ),
 
-              // 段落样式
-              'p': Style(
-                margin: Margins.only(bottom: AppSpacing.xs),
-                lineHeight: const LineHeight(1.6),
-              ),
+                // 段落样式
+                'p': Style(
+                  margin: Margins.only(bottom: AppSpacing.xs),
+                  lineHeight: const LineHeight(1.6),
+                ),
 
-              // 链接样式
-              'a': Style(
-                color: colorScheme.primary,
-                textDecoration: TextDecoration.underline,
-                textDecorationColor: colorScheme.primary,
-                fontWeight: AppTypography.weightMedium,
-              ),
+                // 链接样式
+                'a': Style(
+                  color: colorScheme.primary,
+                  textDecoration: TextDecoration.underline,
+                  textDecorationColor: colorScheme.primary,
+                  fontWeight: AppTypography.weightMedium,
+                ),
 
-              // 行内代码样式
-              'code': Style(
-                backgroundColor: colorScheme.primaryContainer.withAlpha(AppColors.alphaLowest),
-                color: colorScheme.primary,
-                padding: HtmlPaddings.symmetric(horizontal: 6, vertical: 3),
-                fontFamily: 'monospace',
-                fontSize: FontSize(AppTypography.sizeSM - 1),
-              ),
+                // 行内代码样式
+                'code': Style(
+                  backgroundColor: colorScheme.primaryContainer
+                      .withAlpha(AppColors.alphaLowest),
+                  color: colorScheme.primary,
+                  padding: HtmlPaddings.symmetric(horizontal: 6, vertical: 3),
+                  fontFamily: 'monospace',
+                  fontSize: FontSize(AppTypography.sizeSM - 1),
+                ),
 
-              // 代码块样式
-              'pre': Style(
-                backgroundColor: AppColors.codeEditorBackground,
-                color: AppColors.codeEditorText,
-                padding: HtmlPaddings.all(AppSpacing.md),
-                margin: Margins.only(bottom: AppSpacing.md),
-                fontFamily: 'monospace',
-                fontSize: FontSize(AppTypography.sizeSM),
-              ),
+                // 代码块样式
+                'pre': Style(
+                  backgroundColor: AppColors.codeEditorBackground,
+                  color: AppColors.codeEditorText,
+                  padding: HtmlPaddings.all(AppSpacing.md),
+                  margin: Margins.only(bottom: AppSpacing.md),
+                  fontFamily: 'monospace',
+                  fontSize: FontSize(AppTypography.sizeSM),
+                ),
 
-              // 引用块样式
-              'blockquote': Style(
-                border: Border(
-                  left: BorderSide(
-                    color: colorScheme.primary,
-                    width: 4,
+                // 引用块样式
+                'blockquote': Style(
+                  border: Border(
+                    left: BorderSide(
+                      color: colorScheme.primary,
+                      width: 4,
+                    ),
                   ),
+                  padding: HtmlPaddings.only(left: AppSpacing.md),
+                  margin: Margins.symmetric(vertical: AppSpacing.xs),
+                  color: colorScheme.onSurfaceVariant
+                      .withAlpha(AppColors.alphaMedium),
+                  backgroundColor: colorScheme.surfaceContainerHighest
+                      .withAlpha(AppColors.alphaLowest),
                 ),
-                padding: HtmlPaddings.only(left: AppSpacing.md),
-                margin: Margins.symmetric(vertical: AppSpacing.xs),
-                color: colorScheme.onSurfaceVariant.withAlpha(AppColors.alphaMedium),
-                backgroundColor: colorScheme.surfaceContainerHighest.withAlpha(AppColors.alphaLowest),
-              ),
 
-              // 列表样式
-              'ul': Style(
-                margin: Margins.only(bottom: AppSpacing.xs, left: AppSpacing.md),
-              ),
-              'ol': Style(
-                margin: Margins.only(bottom: AppSpacing.xs, left: AppSpacing.md),
-              ),
-              'li': Style(
-                margin: Margins.only(bottom: AppSpacing.xs),
-                lineHeight: const LineHeight(1.6),
-              ),
-
-              // 表格样式
-              'table': Style(
-                width: Width(double.infinity),
-                border: Border.all(
-                  color: colorScheme.outline.withAlpha(AppColors.alphaLower),
-                  width: 1,
+                // 列表样式
+                'ul': Style(
+                  margin:
+                      Margins.only(bottom: AppSpacing.xs, left: AppSpacing.md),
                 ),
-                margin: Margins.only(bottom: AppSpacing.xs),
-              ),
-              'th': Style(
-                backgroundColor: colorScheme.primaryContainer.withAlpha(AppColors.alphaLowest),
-                color: colorScheme.onPrimaryContainer,
-                padding: HtmlPaddings.symmetric(horizontal: AppSpacing.md, vertical: AppSpacing.sm),
-                fontWeight: AppTypography.weightSemiBold,
-                textAlign: TextAlign.center,
-              ),
-              'td': Style(
-                padding: HtmlPaddings.symmetric(horizontal: AppSpacing.md, vertical: AppSpacing.sm),
-                border: Border(
-                  top: BorderSide(
+                'ol': Style(
+                  margin:
+                      Margins.only(bottom: AppSpacing.xs, left: AppSpacing.md),
+                ),
+                'li': Style(
+                  margin: Margins.only(bottom: AppSpacing.xs),
+                  lineHeight: const LineHeight(1.6),
+                ),
+
+                // 表格样式
+                'table': Style(
+                  width: Width(double.infinity),
+                  border: Border.all(
                     color: colorScheme.outline.withAlpha(AppColors.alphaLower),
                     width: 1,
                   ),
+                  margin: Margins.only(bottom: AppSpacing.xs),
                 ),
-              ),
-
-              // 图片样式
-              'img': Style(
-                margin: Margins.symmetric(vertical: AppSpacing.xs),
-              ),
-
-              // 分隔线样式
-              'hr': Style(
-                border: Border(
-                  bottom: BorderSide(
-                    color: colorScheme.outlineVariant.withAlpha(AppColors.alphaLower),
-                    width: 1,
+                'th': Style(
+                  backgroundColor: colorScheme.primaryContainer
+                      .withAlpha(AppColors.alphaLowest),
+                  color: colorScheme.onPrimaryContainer,
+                  padding: HtmlPaddings.symmetric(
+                      horizontal: AppSpacing.md, vertical: AppSpacing.sm),
+                  fontWeight: AppTypography.weightSemiBold,
+                  textAlign: TextAlign.center,
+                ),
+                'td': Style(
+                  padding: HtmlPaddings.symmetric(
+                      horizontal: AppSpacing.md, vertical: AppSpacing.sm),
+                  border: Border(
+                    top: BorderSide(
+                      color:
+                          colorScheme.outline.withAlpha(AppColors.alphaLower),
+                      width: 1,
+                    ),
                   ),
                 ),
-                margin: Margins.symmetric(vertical: AppSpacing.sm),
-              ),
 
-              // 强调文本
-              'strong': Style(
-                fontWeight: AppTypography.weightSemiBold,
-                color: colorScheme.onSurface,
-              ),
-              'b': Style(
-                fontWeight: AppTypography.weightSemiBold,
-                color: colorScheme.onSurface,
-              ),
+                // 图片样式
+                'img': Style(
+                  margin: Margins.symmetric(vertical: AppSpacing.xs),
+                ),
 
-              // 斜体文本
-              'em': Style(
-                fontStyle: FontStyle.italic,
-              ),
-              'i': Style(
-                fontStyle: FontStyle.italic,
-              ),
+                // 分隔线样式
+                'hr': Style(
+                  border: Border(
+                    bottom: BorderSide(
+                      color: colorScheme.outlineVariant
+                          .withAlpha(AppColors.alphaLower),
+                      width: 1,
+                    ),
+                  ),
+                  margin: Margins.symmetric(vertical: AppSpacing.sm),
+                ),
 
-              // 删除线
-              'del': Style(
-                textDecoration: TextDecoration.lineThrough,
-                color: colorScheme.onSurfaceVariant.withAlpha(AppColors.alphaMedium),
-              ),
-              's': Style(
-                textDecoration: TextDecoration.lineThrough,
-                color: colorScheme.onSurfaceVariant.withAlpha(AppColors.alphaMedium),
-              ),
-            },
-            shrinkWrap: true,
-          ),
+                // 强调文本
+                'strong': Style(
+                  fontWeight: AppTypography.weightSemiBold,
+                  color: colorScheme.onSurface,
+                ),
+                'b': Style(
+                  fontWeight: AppTypography.weightSemiBold,
+                  color: colorScheme.onSurface,
+                ),
+
+                // 斜体文本
+                'em': Style(
+                  fontStyle: FontStyle.italic,
+                ),
+                'i': Style(
+                  fontStyle: FontStyle.italic,
+                ),
+
+                // 删除线
+                'del': Style(
+                  textDecoration: TextDecoration.lineThrough,
+                  color: colorScheme.onSurfaceVariant
+                      .withAlpha(AppColors.alphaMedium),
+                ),
+                's': Style(
+                  textDecoration: TextDecoration.lineThrough,
+                  color: colorScheme.onSurfaceVariant
+                      .withAlpha(AppColors.alphaMedium),
+                ),
+              },
+              shrinkWrap: true,
+            ),
         ],
       ),
     );
@@ -757,7 +789,7 @@ class ReadmeSection extends StatelessWidget {
 
 /// 下载链接 Section
 class DownloadsSection extends StatelessWidget {
-final IDetailInfo info;
+  final IDetailInfo info;
   final void Function(DownloadInfo)? onDownloadTap;
   final void Function(DownloadInfo)? onLongPress;
 
@@ -805,9 +837,7 @@ final IDetailInfo info;
             SizedBox(width: AppSpacing.sm),
             Expanded(
               child: Text(
-                info.downloads.isEmpty
-                    ? '该应用暂无可下载文件'
-                    : '该应用暂无适配当前平台的文件',
+                info.downloads.isEmpty ? '该应用暂无可下载文件' : '该应用暂无适配当前平台的文件',
                 style: TextStyle(
                   color: AppColors.grey600,
                   fontStyle: FontStyle.italic,
@@ -825,7 +855,10 @@ final IDetailInfo info;
       decoration: BoxDecoration(
         border: Border.all(
           width: 1,
-          color: Theme.of(context).colorScheme.primary.withAlpha(AppColors.alphaMedium),
+          color: Theme.of(context)
+              .colorScheme
+              .primary
+              .withAlpha(AppColors.alphaMedium),
         ),
         borderRadius: AppRadius.allLG,
         color: Theme.of(context).colorScheme.primaryContainer,
@@ -852,7 +885,8 @@ final IDetailInfo info;
                   ),
                   SizedBox(width: AppSpacing.xs),
                   Container(
-                    padding: EdgeInsets.symmetric(horizontal: AppSpacing.sm * 1.5, vertical: 1),
+                    padding: EdgeInsets.symmetric(
+                        horizontal: AppSpacing.sm * 1.5, vertical: 1),
                     decoration: BoxDecoration(
                       color: Theme.of(context).colorScheme.primaryContainer,
                       borderRadius: AppRadius.allMD,
@@ -934,13 +968,19 @@ class _DownloadItem extends StatelessWidget {
             gradient: LinearGradient(
               colors: [
                 Theme.of(context).colorScheme.primaryContainer,
-                Theme.of(context).colorScheme.primaryContainer.withAlpha(AppColors.alphaMedium),
+                Theme.of(context)
+                    .colorScheme
+                    .primaryContainer
+                    .withAlpha(AppColors.alphaMedium),
               ],
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
             ),
             border: Border.all(
-              color: Theme.of(context).colorScheme.primary.withAlpha(AppColors.alphaLower),
+              color: Theme.of(context)
+                  .colorScheme
+                  .primary
+                  .withAlpha(AppColors.alphaLower),
             ),
             borderRadius: AppRadius.allMD,
           ),
@@ -958,7 +998,10 @@ class _DownloadItem extends StatelessWidget {
                           message: fileName,
                           child: Text(
                             fileName,
-                            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            style: Theme.of(context)
+                                .textTheme
+                                .bodyMedium
+                                ?.copyWith(
                                   fontWeight: AppTypography.weightMedium,
                                 ),
                             maxLines: 3,
@@ -977,7 +1020,10 @@ class _DownloadItem extends StatelessWidget {
                               SizedBox(width: AppSpacing.xs),
                               Text(
                                 download.version!,
-                                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .bodySmall
+                                    ?.copyWith(
                                       color: AppColors.grey600,
                                       fontSize: AppTypography.sizeXXS,
                                     ),
@@ -1047,7 +1093,8 @@ class _DownloadItem extends StatelessWidget {
     Color color,
   ) {
     return Container(
-      padding: EdgeInsets.symmetric(horizontal: AppSpacing.sm * 1.5, vertical: AppSpacing.xs),
+      padding: EdgeInsets.symmetric(
+          horizontal: AppSpacing.sm * 1.5, vertical: AppSpacing.xs),
       decoration: BoxDecoration(
         color: color.withOpacity(0.1),
         borderRadius: AppRadius.allXS,
@@ -1079,7 +1126,7 @@ class _DownloadItem extends StatelessWidget {
 
 /// 开发者信息 Section
 class DeveloperSection extends StatelessWidget {
-final IDetailInfo info;
+  final IDetailInfo info;
 
   const DeveloperSection({super.key, required this.info});
 
@@ -1141,7 +1188,7 @@ final IDetailInfo info;
 
 /// 更新日志 Section
 class ChangelogSection extends StatelessWidget {
-final IDetailInfo info;
+  final IDetailInfo info;
 
   const ChangelogSection({super.key, required this.info});
 
@@ -1158,7 +1205,10 @@ final IDetailInfo info;
       decoration: BoxDecoration(
         border: Border.all(
           width: 1,
-          color: Theme.of(context).colorScheme.primary.withAlpha(AppColors.alphaMedium),
+          color: Theme.of(context)
+              .colorScheme
+              .primary
+              .withAlpha(AppColors.alphaMedium),
         ),
         borderRadius: AppRadius.allLG,
         color: Theme.of(context).colorScheme.primaryContainer,
@@ -1185,7 +1235,7 @@ final IDetailInfo info;
 
 /// 权限说明 Section
 class PermissionsSection extends StatelessWidget {
-final IDetailInfo info;
+  final IDetailInfo info;
 
   const PermissionsSection({super.key, required this.info});
 
@@ -1202,7 +1252,10 @@ final IDetailInfo info;
       decoration: BoxDecoration(
         border: Border.all(
           width: 1,
-          color: Theme.of(context).colorScheme.primary.withAlpha(AppColors.alphaMedium),
+          color: Theme.of(context)
+              .colorScheme
+              .primary
+              .withAlpha(AppColors.alphaMedium),
         ),
         borderRadius: AppRadius.allLG,
         color: Theme.of(context).colorScheme.primaryContainer,
