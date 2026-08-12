@@ -14,7 +14,11 @@ import 'state.dart';
 import 'markdown_message.dart';
 
 class AgentPage extends StatefulWidget {
-  const AgentPage({super.key});
+  /// 是否内嵌在首页 tab（底部有悬浮导航胶囊需避让）；
+  /// 独立路由进入（我的页 → AI 助手）时无胶囊，输入栏贴底常规间距
+  final bool isTabEmbedded;
+
+  const AgentPage({super.key, this.isTabEmbedded = false});
 
   @override
   State<AgentPage> createState() => _AgentPageState();
@@ -477,7 +481,8 @@ class _AgentPageState extends State<AgentPage>
                           // readOnly：隐藏库内置输入栏（由外部悬浮磨砂输入栏接管）
                           readOnly: true,
                           // 减小消息列表左右间距（默认 16 → 8）；
-                          // 底部避让：键盘弹出时仅输入栏(56)+间隙+呼吸，无键盘时再加胶囊(76)
+                          // 底部避让：键盘时仅输入栏(56)+呼吸；无键盘时
+                          // tab 内嵌加胶囊(76)避让，独立页面仅输入栏+呼吸
                           spacingConfig: ChatSpacingConfig(
                             messageListPadding: EdgeInsets.only(
                               left: 8,
@@ -486,7 +491,9 @@ class _AgentPageState extends State<AgentPage>
                               bottom:
                                   MediaQuery.of(context).viewInsets.bottom > 0
                                       ? 72
-                                      : 148,
+                                      : widget.isTabEmbedded
+                                          ? 156
+                                          : 80,
                             ),
                           ),
                           enableMarkdownStreaming: true,
@@ -518,7 +525,8 @@ class _AgentPageState extends State<AgentPage>
             ),
           ),
           // 悬浮磨砂输入栏：AnimatedPadding 按键盘高度平滑顶起
-          // （无键盘时悬浮于导航胶囊上方 12px 留白；键盘弹出时紧贴键盘上方）
+          // （tab 内嵌：悬浮于导航胶囊上方留白；独立页面：常规贴底间距；
+          //   键盘弹出时均紧贴键盘上方）
           Positioned(
             left: 0,
             right: 0,
@@ -529,7 +537,9 @@ class _AgentPageState extends State<AgentPage>
               padding: EdgeInsets.only(
                 bottom: MediaQuery.of(context).viewInsets.bottom > 0
                     ? MediaQuery.of(context).viewInsets.bottom + AppSpacing.md
-                    : 88,
+                    : widget.isTabEmbedded
+                        ? 100
+                        : 16,
               ),
               child: _buildFloatingInput(context),
             ),
