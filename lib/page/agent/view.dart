@@ -500,13 +500,14 @@ class _AgentPageState extends State<AgentPage>
               ],
             ),
           ),
-          // 悬浮磨砂输入栏（键盘弹出时贴键盘上方，否则浮于导航胶囊上方）
+          // 悬浮磨砂输入栏（键盘弹出时贴键盘上方；平时下移与导航胶囊部分重叠，
+          // 胶囊绘制在 body 之上，重叠区自然被盖住，视觉融为一体）
           Positioned(
             left: 0,
             right: 0,
             bottom: MediaQuery.of(context).viewInsets.bottom > 0
                 ? MediaQuery.of(context).viewInsets.bottom + AppSpacing.md
-                : 84,
+                : 60,
             child: _buildFloatingInput(context),
           ),
         ],
@@ -531,27 +532,28 @@ class _AgentPageState extends State<AgentPage>
               vertical: AppSpacing.xs,
             ),
             decoration: BoxDecoration(
-              color: scheme.surface.withValues(alpha: 0.82),
+              // 半透明磨砂底（alpha 0.65：更透，背后消息滚动可见）
+              color: scheme.surface.withValues(alpha: 0.65),
               borderRadius: BorderRadius.circular(AppRadius.xxl + AppRadius.sm),
             ),
             child: Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
               children: [
                 Expanded(
                   child: TextField(
                     controller: logic.inputController,
                     style: Theme.of(context).textTheme.bodyMedium,
-                    textInputAction: TextInputAction.send,
-                    onSubmitted: (_) => _submitInput(),
+                    // 多行自动换行：1 行起，最高 4 行（超出内部滚动）
+                    minLines: 1,
+                    maxLines: 4,
+                    keyboardType: TextInputType.multiline,
+                    textInputAction: TextInputAction.newline,
                     decoration: InputDecoration(
                       hintText: '输入你的需求...',
                       hintStyle: TextStyle(color: scheme.onSurfaceVariant),
-                      filled: true,
-                      // 输入框内半透明（透出磨砂质感）
-                      fillColor: scheme.surface.withValues(alpha: 0.55),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(AppRadius.circle),
-                        borderSide: BorderSide.none,
-                      ),
+                      // 无内框/无填充：输入区直接透出磨砂容器底色，与胶囊融为一体
+                      filled: false,
+                      border: InputBorder.none,
                       contentPadding: const EdgeInsets.symmetric(
                         horizontal: AppSpacing.lg,
                         vertical: AppSpacing.md,
