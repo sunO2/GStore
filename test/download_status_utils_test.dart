@@ -108,4 +108,46 @@ void main() {
       expect(primaryActionFor(successPdf), isNull);
     });
   });
+
+  group('inferChannelLabel', () {
+    test('GitHub API 链接 → GitHub', () {
+      expect(
+        inferChannelLabel(
+            'https://api.github.com/repos/gkd-kit/gkd/releases/download/v1.0/gkd.apk'),
+        'GitHub',
+      );
+    });
+
+    test('GitHub raw 链接 → GitHub', () {
+      expect(
+        inferChannelLabel(
+            'https://raw.githubusercontent.com/sunO2/GStore-Repositorys/main/README.md'),
+        'GitHub',
+      );
+    });
+
+    test('带代理前缀的 GitHub 链接仍识别为 GitHub（内含 github.com）', () {
+      expect(
+        inferChannelLabel(
+            'https://ghfast.top/https://github.com/sunO2/GStore/releases/download/v1/app.apk'),
+        'GitHub',
+      );
+    });
+
+    test('vivo 域名 → vivo 应用市场', () {
+      expect(
+        inferChannelLabel(
+            'https://app.vss.cn/pp/xx.apk'),
+        'vivo 应用市场',
+      );
+    });
+
+    test('未知域名 → null', () {
+      expect(inferChannelLabel('https://example.com/app.apk'), isNull);
+    });
+
+    test('空链接 → null', () {
+      expect(inferChannelLabel(''), isNull);
+    });
+  });
 }
