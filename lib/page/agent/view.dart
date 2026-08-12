@@ -565,8 +565,9 @@ class _AgentPageState extends State<AgentPage>
             right: 0,
             bottom: 0,
             child: Obx(() {
-              final aiActive = widget.isTabEmbedded &&
-                  Get.find<HomeLogic>().state.index.value == 2;
+              // 无条件读 Rx（Obx 需至少一个依赖；HomeLogic 在导航栈底层必然存在）
+              final homeIndex = Get.find<HomeLogic>().state.index.value;
+              final aiActive = widget.isTabEmbedded && homeIndex == 2;
               return AnimatedPadding(
                 duration: const Duration(milliseconds: 200),
                 curve: Curves.easeOut,
