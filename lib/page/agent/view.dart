@@ -87,13 +87,38 @@ class _AgentPageState extends State<AgentPage>
         // 等一帧确保输入框已构建（keepAlive 页输入框常驻，index 变化后立即聚焦）
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (index == 2) {
-            _inputFocusNode.requestFocus();
+            _focusInputWhenReady();
           } else {
             _inputFocusNode.unfocus();
           }
         });
       });
+      // 首次进入兜底：PageView 懒加载，AgentPage 在 index 变 2 时才首次
+      // initState——ever 不回调初始值，此处主动检查当前 index 触发聚焦
+      if (homeLogic.state.index.value == 2) {
+        WidgetsBinding.instance
+            .addPostFrameCallback((_) => _focusInputWhenReady());
+      }
+    } else {
+      // 独立页面（我的页进入）：每次进入自动聚焦输入框唤起键盘
+      WidgetsBinding.instance
+          .addPostFrameCallback((_) => _focusInputWhenReady());
     }
+  }
+
+  /// 输入框挂载后再聚焦（首次进入 PageView 懒加载时输入框尚未 build）
+  /// [retries] 最多重试次数（100ms 间隔，覆盖页面构建/动画窗口）
+  void _focusInputWhenReady({int retries = 10}) {
+    if (!mounted) return;
+    // FocusNode.context 非空 = 已 attach 到 EditableText
+    if (_inputFocusNode.context != null) {
+      _inputFocusNode.requestFocus();
+      return;
+    }
+    if (retries <= 0) return;
+    Future.delayed(const Duration(milliseconds: 100), () {
+      if (mounted) _focusInputWhenReady(retries: retries - 1);
+    });
   }
 
   /// 滚动位置变化：接近 reverse 列表顶部时加载更早历史
