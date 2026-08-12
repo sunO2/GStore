@@ -6,6 +6,7 @@ import 'package:gstore/core/update/app_update_info.dart';
 import 'package:gstore/core/update/update_log.dart';
 import 'package:gstore/core/update/update_manager.dart';
 import 'package:gstore/page/update/logic.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 /// 假 UpdateManager：跳过真实渠道检测，回放固定结果并触发全部回调
 /// （UpdateLogic 通过 UpdateManagerService.instance 查找，Get.put 注册后即可替换）
@@ -135,5 +136,24 @@ void main() {
     expect(logic.state.checkFinished.value, isTrue);
     expect(logic.state.showLog.value, isFalse);
     expect(logic.state.updateList, isEmpty);
+  });
+
+  test('订阅前已恢复的缓存日志/结果：订阅后立即同步显示（回归）', () async {
+    SharedPreferences.setMockInitialValues({});
+    final fake = _FakeUpdateManager([]);
+    // 模拟缓存已在页面订阅前恢复（启动时 BadgeService 触发恢复）
+    fake.checkLog
+        .assignAll([CheckLogEntry(level: CheckLogLevel.info, text: '历史日志')]);
+    fake.lastCheckedAt.value = DateTime.now();
+    Get.put<UpdateManagerService>(fake);
+    Get.put(BadgeService());
+
+    final logic = UpdateLogic();
+    await logic.onReady();
+
+    // RxList.listen 不回调初始值 → 依赖订阅后显式同步
+    expect(logic.state.checkLog, isNotEmpty);
+    expect(logic.state.checkLog.first.text, '历史日志');
+    expect(logic.state.isLoading.value, isFalse);
   });
 }

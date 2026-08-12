@@ -76,6 +76,19 @@ class UpdateLogic extends GetxController {
     manager.currentProgress.listen((p) {
       if (p != null) state.checkIndex.value = p.index;
     });
+    // RxList/Rx 的 listen 不回调初始值：缓存可能已在订阅前恢复
+    // （如启动时 BadgeService 触发恢复），订阅后必须显式同步当前状态
+    state.updateList.assignAll(manager.updateList);
+    state.checkLog.assignAll(manager.checkLog);
+    state.checkList.assignAll(manager.checkList);
+    state.checkedCount.value = manager.checkedCount.value;
+    state.totalCount.value = manager.totalCount.value;
+    state.checkingAppName.value = manager.checkingAppName.value;
+    state.checkingIconUrl.value = manager.checkingIconUrl.value;
+    state.isLoading.value = manager.isChecking.value;
+    if (manager.currentProgress.value != null) {
+      state.checkIndex.value = manager.currentProgress.value!.index;
+    }
   }
 
   /// 检测所有已添加应用是否有更新
