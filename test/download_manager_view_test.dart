@@ -104,6 +104,9 @@ void _useTallView(WidgetTester tester) {
 void main() {
   late _TestDownloadManagerLogic logic;
 
+  // 注意：不在 setUpAll 做 sqfliteFfiInit——widget 测试环境（flutter_test binding
+  // 已初始化）下 ffi isolate 模式会与测试框架挂起；下载数据库由逻辑构造时
+  // 懒打开（依赖宿主 libsqlite3，运行需 LD_LIBRARY_PATH 提供 .so）
   setUp(() {
     Get.reset();
 
