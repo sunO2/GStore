@@ -500,14 +500,14 @@ class _AgentPageState extends State<AgentPage>
               ],
             ),
           ),
-          // 悬浮磨砂输入栏（键盘弹出时贴键盘上方；平时下移与导航胶囊部分重叠，
-          // 胶囊绘制在 body 之上，重叠区自然被盖住，视觉融为一体）
+          // 悬浮磨砂输入栏（键盘弹出时贴键盘上方；平时底缘与导航胶囊顶部
+          // 轻微重叠融合——胶囊绘制在 body 之上，重叠区被盖住不遮内容）
           Positioned(
             left: 0,
             right: 0,
             bottom: MediaQuery.of(context).viewInsets.bottom > 0
                 ? MediaQuery.of(context).viewInsets.bottom + AppSpacing.md
-                : 60,
+                : 68,
             child: _buildFloatingInput(context),
           ),
         ],
@@ -551,9 +551,13 @@ class _AgentPageState extends State<AgentPage>
                     decoration: InputDecoration(
                       hintText: '输入你的需求...',
                       hintStyle: TextStyle(color: scheme.onSurfaceVariant),
-                      // 无内框/无填充：输入区直接透出磨砂容器底色，与胶囊融为一体
+                      // 无内框/无填充：显式覆盖全局主题的 OutlineInputBorder，
+                      // 输入区直接透出磨砂容器底色，与胶囊融为一体
                       filled: false,
                       border: InputBorder.none,
+                      enabledBorder: InputBorder.none,
+                      focusedBorder: InputBorder.none,
+                      disabledBorder: InputBorder.none,
                       contentPadding: const EdgeInsets.symmetric(
                         horizontal: AppSpacing.lg,
                         vertical: AppSpacing.md,
