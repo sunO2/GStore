@@ -38,6 +38,12 @@ class _AgentPageState extends State<AgentPage>
   /// 聊天控制器（flutter_gen_ai_chat_ui）
   final ChatMessagesController _chatController = ChatMessagesController();
 
+  /// 悬浮输入框焦点（tab 内嵌时随 AI tab 激活/离开自动聚焦/失焦）
+  final FocusNode _inputFocusNode = FocusNode();
+
+  /// tab 切换监听（进入 AI 页聚焦弹键盘，离开失焦收键盘）
+  Worker? _indexWorker;
+
   /// 当前用户（本机用户）与 AI 用户
   late final ChatUser _currentUser;
   late final ChatUser _aiUser;
@@ -73,6 +79,21 @@ class _AgentPageState extends State<AgentPage>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _onMessagesChanged(_logic.service.messages);
     });
+
+    // tab 内嵌场景：进入 AI tab 自动聚焦输入框（弹键盘），离开自动失焦（收键盘）
+    if (widget.isTabEmbedded) {
+      final homeLogic = Get.find<HomeLogic>();
+      _indexWorker = ever(homeLogic.state.index, (index) {
+        // 等一帧确保输入框已构建（keepAlive 页输入框常驻，index 变化后立即聚焦）
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (index == 2) {
+            _inputFocusNode.requestFocus();
+          } else {
+            _inputFocusNode.unfocus();
+          }
+        });
+      });
+    }
   }
 
   /// 滚动位置变化：接近 reverse 列表顶部时加载更早历史
@@ -90,6 +111,8 @@ class _AgentPageState extends State<AgentPage>
 
   @override
   void dispose() {
+    _indexWorker?.dispose();
+    _inputFocusNode.dispose();
     _logic.scrollController.removeListener(_onScrollChanged);
     _chatController.dispose();
     super.dispose();
@@ -597,6 +620,7 @@ class _AgentPageState extends State<AgentPage>
                 Expanded(
                   child: TextField(
                     controller: logic.inputController,
+                    focusNode: _inputFocusNode,
                     style: Theme.of(context).textTheme.bodyMedium,
                     // 多行自动换行：1 行起，最高 4 行（超出内部滚动）
                     minLines: 1,
@@ -648,6 +672,7 @@ class _AgentPageState extends State<AgentPage>
   }
 
   /// 返回来源 tab 按钮（图标 = 进入 AI 页前的 tab，点击直接跳回并展开导航）
+  /// filledTonal 圆底装饰，与右侧发送按钮（filled）视觉对称
   Widget _buildBackButton(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final homeLogic = Get.find<HomeLogic>();
@@ -657,15 +682,36 @@ class _AgentPageState extends State<AgentPage>
           ColoredAliIcon(
             icon: AliIcon.appStore,
             size: AppTypography.iconMD,
-            color: scheme.onSurfaceVariant,
+            color: scheme.onSecondaryContainer,
           ),
           '返回首页',
         ),
-      1 => (Icon(Icons.explore_outlined, size: AppTypography.iconMD), '返回发现'),
-      3 => (Icon(Icons.person_outline, size: AppTypography.iconMD), '返回我的'),
-      _ => (Icon(Icons.apps, size: AppTypography.iconMD), '返回'),
+      1 => (
+          Icon(
+            Icons.explore_outlined,
+            size: AppTypography.iconMD,
+            color: scheme.onSecondaryContainer,
+          ),
+          '返回发现',
+        ),
+      3 => (
+          Icon(
+            Icons.person_outline,
+            size: AppTypography.iconMD,
+            color: scheme.onSecondaryContainer,
+          ),
+          '返回我的',
+        ),
+      _ => (
+          Icon(
+            Icons.apps,
+            size: AppTypography.iconMD,
+            color: scheme.onSecondaryContainer,
+          ),
+          '返回',
+        ),
     };
-    return IconButton(
+    return IconButton.filledTonal(
       tooltip: tooltip,
       icon: icon,
       onPressed: () => homeLogic.jumpToPage(sourceIndex),
