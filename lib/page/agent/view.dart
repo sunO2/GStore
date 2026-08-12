@@ -5,6 +5,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_gen_ai_chat_ui/flutter_gen_ai_chat_ui.dart'
     hide AgentState;
 import 'package:get/get.dart';
+import 'package:gstore/core/icons/Icons.dart';
+import 'package:gstore/page/home/logic.dart';
 import 'package:gstore/core/agent/agent_service.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
@@ -482,7 +484,8 @@ class _AgentPageState extends State<AgentPage>
                           readOnly: true,
                           // 减小消息列表左右间距（默认 16 → 8）；
                           // 底部避让：键盘时仅输入栏(56)+呼吸；无键盘时
-                          // tab 内嵌加胶囊(76)避让，独立页面仅输入栏+呼吸
+                          // tab 内嵌分胶囊在场(156)/AI 激活滑出(80)两态，
+                          // 独立页面仅输入栏+呼吸
                           spacingConfig: ChatSpacingConfig(
                             messageListPadding: EdgeInsets.only(
                               left: 8,
@@ -492,7 +495,13 @@ class _AgentPageState extends State<AgentPage>
                                   MediaQuery.of(context).viewInsets.bottom > 0
                                       ? 72
                                       : widget.isTabEmbedded
-                                          ? 156
+                                          ? (Get.find<HomeLogic>()
+                                                      .state
+                                                      .index
+                                                      .value ==
+                                                  2
+                                              ? 80
+                                              : 156)
                                           : 80,
                             ),
                           ),
@@ -525,24 +534,29 @@ class _AgentPageState extends State<AgentPage>
             ),
           ),
           // 悬浮磨砂输入栏：AnimatedPadding 按键盘高度平滑顶起
-          // （tab 内嵌：悬浮于导航胶囊上方留白；独立页面：常规贴底间距；
+          // （tab 内嵌且 AI 激活时胶囊滑出 → 贴底 16 + 左侧"返回"按钮；
+          //   非激活时胶囊在场 → 上浮 100；独立页面常规贴底 16；
           //   键盘弹出时均紧贴键盘上方）
           Positioned(
             left: 0,
             right: 0,
             bottom: 0,
-            child: AnimatedPadding(
-              duration: const Duration(milliseconds: 200),
-              curve: Curves.easeOut,
-              padding: EdgeInsets.only(
-                bottom: MediaQuery.of(context).viewInsets.bottom > 0
-                    ? MediaQuery.of(context).viewInsets.bottom + AppSpacing.md
-                    : widget.isTabEmbedded
-                        ? 100
-                        : 16,
-              ),
-              child: _buildFloatingInput(context),
-            ),
+            child: Obx(() {
+              final aiActive = widget.isTabEmbedded &&
+                  Get.find<HomeLogic>().state.index.value == 2;
+              return AnimatedPadding(
+                duration: const Duration(milliseconds: 200),
+                curve: Curves.easeOut,
+                padding: EdgeInsets.only(
+                  bottom: MediaQuery.of(context).viewInsets.bottom > 0
+                      ? MediaQuery.of(context).viewInsets.bottom + AppSpacing.md
+                      : widget.isTabEmbedded
+                          ? (aiActive ? 16 : 100)
+                          : 16,
+                ),
+                child: _buildFloatingInput(context, showBack: aiActive),
+              );
+            }),
           ),
         ],
       ),
@@ -550,7 +564,9 @@ class _AgentPageState extends State<AgentPage>
   }
 
   /// 悬浮磨砂输入栏：与底部导航胶囊同款磨砂（BackdropFilter + 半透明主题底）
-  Widget _buildFloatingInput(BuildContext context) {
+  /// 悬浮磨砂输入栏：与底部导航胶囊同款磨砂（BackdropFilter + 半透明主题底）
+  /// [showBack] 为 true（AI tab 激活、胶囊滑出）时，左侧显示"返回来源 tab"按钮
+  Widget _buildFloatingInput(BuildContext context, {bool showBack = false}) {
     final scheme = Theme.of(context).colorScheme;
     final logic = _logic;
     final state = _state;
@@ -573,6 +589,11 @@ class _AgentPageState extends State<AgentPage>
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
+                // 返回来源 tab 按钮（与发送按钮对称；仅胶囊滑出时显示）
+                if (showBack) ...[
+                  _buildBackButton(context),
+                  const SizedBox(width: AppSpacing.xs),
+                ],
                 Expanded(
                   child: TextField(
                     controller: logic.inputController,
@@ -624,6 +645,31 @@ class _AgentPageState extends State<AgentPage>
     if (text.isEmpty) return;
     _logic.inputController.clear();
     _logic.sendText(text);
+  }
+
+  /// 返回来源 tab 按钮（图标 = 进入 AI 页前的 tab，点击直接跳回并展开导航）
+  Widget _buildBackButton(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final homeLogic = Get.find<HomeLogic>();
+    final sourceIndex = homeLogic.state.sourceIndex.value;
+    final (icon, tooltip) = switch (sourceIndex) {
+      0 => (
+          ColoredAliIcon(
+            icon: AliIcon.appStore,
+            size: AppTypography.iconMD,
+            color: scheme.onSurfaceVariant,
+          ),
+          '返回首页',
+        ),
+      1 => (Icon(Icons.explore_outlined, size: AppTypography.iconMD), '返回发现'),
+      3 => (Icon(Icons.person_outline, size: AppTypography.iconMD), '返回我的'),
+      _ => (Icon(Icons.apps, size: AppTypography.iconMD), '返回'),
+    };
+    return IconButton(
+      tooltip: tooltip,
+      icon: icon,
+      onPressed: () => homeLogic.jumpToPage(sourceIndex),
+    );
   }
 
   /// 发送消息
