@@ -55,6 +55,11 @@ class UpdateLogic extends GetxController {
       // 同步红点：检测结果与功能入口红点一致
       BadgeService.instance.setBadge(BadgeKey.appUpdate, list.length);
     });
+    // 检测日志统一由 UpdateManager 产出（前台/后台同源，含持久化恢复），
+    // 页面仅订阅同步（检测开始/完成提示亦由 manager 统一输出）
+    manager.checkLog.listen((logs) {
+      state.checkLog.assignAll(logs);
+    });
   }
 
   /// 检测所有已添加应用是否有更新
@@ -72,7 +77,6 @@ class UpdateLogic extends GetxController {
     state.isLoading.value = true;
     state.updateList.clear();
     state.resetCheckProgress();
-    state.addLog(CheckLogLevel.info, '开始检测应用更新...');
 
     await manager.checkUpdates(
       force: force,
@@ -99,18 +103,13 @@ class UpdateLogic extends GetxController {
 
     state.isLoading.value = false;
     if (manager.updateList.isEmpty) {
-      // 无更新：停留检测页展示完整日志
+      // 无更新：停留检测页展示完整日志（完成提示由 manager 日志统一输出）
       state.checkFinished.value = true;
       state.showLog.value = false;
-      state.addLog(CheckLogLevel.none, '检测完成：所有应用均已是最新版本');
     } else {
       // 有更新：显示更新列表（默认）；checkFinished 保持 false，避免进入完成态检测页
       state.checkFinished.value = false;
       state.showLog.value = false;
-      state.addLog(
-        CheckLogLevel.update,
-        '检测完成：发现 ${manager.updateList.length} 个可更新应用',
-      );
     }
   }
 

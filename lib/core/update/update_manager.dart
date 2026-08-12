@@ -34,6 +34,9 @@ class UpdateManagerService extends GetxService {
   /// 上次检测时间（Rx：页面副标题/时间窗实时响应）
   final Rx<DateTime?> lastCheckedAt = Rx<DateTime?>(null);
 
+  /// 检测日志（前台/后台检测同源产出，格式一致；持久化缓存，二次进入可查看）
+  final RxList<CheckLogEntry> checkLog = <CheckLogEntry>[].obs;
+
   /// 缓存恢复完成标志（页面进入时等待，避免恢复未完成误判"从未检测"）
   late final Future<void> cacheRestored = _restoreCache();
 
@@ -57,6 +60,12 @@ class UpdateManagerService extends GetxService {
       }
       final last = await UpdateCache.lastCheckedAt();
       if (last != null) lastCheckedAt.value = last;
+      // 恢复上次检测日志（二次进入检测页直接可见）
+      final logs = await UpdateCache.loadLogs();
+      if (logs.isNotEmpty) {
+        checkLog.assignAll(logs);
+        appLog.info('UpdateManager: 已恢复检测日志 ${logs.length} 条');
+      }
     } catch (e) {
       appLog.error('UpdateManager: 恢复缓存失败 - $e');
     }
@@ -90,10 +99,16 @@ class UpdateManagerService extends GetxService {
 
     void log(CheckLogLevel level, String msg) {
       appLog.debug('[UpdateManager] $msg');
+      // 统一收集（前台页面回调 + 内存流 + 持久化，保证前后台格式一致）
+      checkLog.add(CheckLogEntry(level: level, text: msg));
       onLog?.call(level, msg);
     }
 
     try {
+      // 新一轮检测：清空历史日志，开始提示统一由 manager 产出
+      checkLog.clear();
+      log(CheckLogLevel.info, '开始检测应用更新...');
+
       final aggregator = AppAggregatorManager.instance;
       final manager = ChannelManager.instance;
       final addedApps = await aggregator.getAllAddedApps();
@@ -147,9 +162,10 @@ class UpdateManagerService extends GetxService {
 
       updateList.assignAll(newUpdateList);
       lastCheckedAt.value = DateTime.now();
-      // 持久化检测时间 + 结果（跨重启时间窗 + 结果展示）
+      // 持久化检测时间 + 结果 + 日志（跨重启时间窗 + 结果展示 + 日志回看）
       await UpdateCache.saveCheckedAt(lastCheckedAt.value!);
       await UpdateCache.saveResults(newUpdateList);
+      await UpdateCache.saveLogs(List.of(checkLog));
       log(CheckLogLevel.update, '检测完成：发现 ${newUpdateList.length} 个可更新应用');
       if (newUpdateList.isEmpty) {
         log(CheckLogLevel.none, '所有已添加应用均已是最新版本');

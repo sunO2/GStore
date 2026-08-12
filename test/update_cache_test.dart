@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/update/app_update_info.dart';
 import 'package:gstore/core/update/update_cache.dart';
+import 'package:gstore/core/update/update_log.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -51,5 +52,41 @@ void main() {
 
     final loaded = await UpdateCache.loadResults();
     expect(loaded, isEmpty);
+  });
+
+  test('UpdateCache saveLogs/loadLogs 往返保留级别/文本/时间', () async {
+    SharedPreferences.setMockInitialValues({});
+
+    final logs = [
+      CheckLogEntry(
+        level: CheckLogLevel.info,
+        text: '开始检测应用更新...',
+        time: DateTime.fromMillisecondsSinceEpoch(1700000000000),
+      ),
+      CheckLogEntry(
+        level: CheckLogLevel.update,
+        text: '示例应用：发现更新 2.0.0',
+        time: DateTime.fromMillisecondsSinceEpoch(1700000005000),
+      ),
+    ];
+    await UpdateCache.saveLogs(logs);
+
+    final restored = await UpdateCache.loadLogs();
+    expect(restored, hasLength(2));
+    expect(restored[0].level, CheckLogLevel.info);
+    expect(restored[0].text, '开始检测应用更新...');
+    expect(restored[0].time.millisecondsSinceEpoch, 1700000000000);
+    expect(restored[1].level, CheckLogLevel.update);
+    expect(restored[1].text, '示例应用：发现更新 2.0.0');
+  });
+
+  test('UpdateCache.loadLogs 无记录/损坏返回空列表', () async {
+    SharedPreferences.setMockInitialValues({});
+
+    expect(await UpdateCache.loadLogs(), isEmpty);
+
+    // 损坏数据容错
+    SharedPreferences.setMockInitialValues({'update_check_logs_v1': 'not-json'});
+    expect(await UpdateCache.loadLogs(), isEmpty);
   });
 }
