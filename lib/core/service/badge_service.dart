@@ -75,6 +75,10 @@ class BadgeService extends GetxService {
       setBadge(BadgeKey.appUpdate, list.length);
       appLog.info('BadgeService: 应用更新红点数量 = ${list.length}');
     });
+    // 立即同步当前值：updateList.listen 只响应后续变化，
+    // 而启动时缓存恢复（UpdateManager.onInit → _restoreCache）可能已在订阅前完成，
+    // 否则有可更新应用时红点不亮（直到下一次检测变化才出现）
+    setBadge(BadgeKey.appUpdate, UpdateManagerService.instance.updateList.length);
   }
 
   /// 检测数据库版本更新红点
