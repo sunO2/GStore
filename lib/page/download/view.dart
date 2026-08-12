@@ -152,24 +152,21 @@ class _DownloadManagerState extends State<DownloadManager> {
           Icon(
             Icons.download_outlined,
             size: AppTypography.iconHuge * 2,
-            color: Theme.of(context)
-                .colorScheme
-                .primary
-                .withValues(alpha: 0.3),
+            color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.3),
           ),
           const SizedBox(height: AppSpacing.lg),
           Text(
             '暂无下载记录',
             style: Theme.of(context).textTheme.titleLarge?.copyWith(
-              color: Theme.of(context).colorScheme.onSurfaceVariant,
-            ),
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
           ),
           const SizedBox(height: AppSpacing.sm),
           Text(
             '下载的应用会显示在这里',
             style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-              color: Theme.of(context).colorScheme.onSurfaceVariant,
-            ),
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
           ),
         ],
       ),
@@ -279,16 +276,16 @@ class _DownloadManagerState extends State<DownloadManager> {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    color: scheme.onSurface,
-                  ),
+                        color: scheme.onSurface,
+                      ),
                 ),
                 Text(
                   items[0].version,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: scheme.onSurfaceVariant,
-                  ),
+                        color: scheme.onSurfaceVariant,
+                      ),
                 ),
               ],
             ),
@@ -362,7 +359,8 @@ class _DownloadManagerState extends State<DownloadManager> {
     DownloadStatus downStatus,
   ) {
     return Dismissible(
-      key: Key(downStatus.id?.toString() ?? '${downStatus.appId}-${downStatus.version}-${downStatus.fileName}'),
+      key: Key(downStatus.id?.toString() ??
+          '${downStatus.appId}-${downStatus.version}-${downStatus.fileName}'),
       direction: DismissDirection.endToStart,
       // 删除前先确认
       confirmDismiss: (_) => _confirmDelete(context, downStatus),
@@ -388,9 +386,9 @@ class _DownloadManagerState extends State<DownloadManager> {
             Text(
               '删除',
               style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                color: Theme.of(context).colorScheme.onError,
-                fontWeight: AppTypography.weightMedium,
-              ),
+                    color: Theme.of(context).colorScheme.onError,
+                    fontWeight: AppTypography.weightMedium,
+                  ),
             ),
           ],
         ),
@@ -414,8 +412,8 @@ class _DownloadManagerState extends State<DownloadManager> {
                       child: Text(
                         data.fileName,
                         style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          fontWeight: AppTypography.weightMedium,
-                        ),
+                              fontWeight: AppTypography.weightMedium,
+                            ),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -432,8 +430,8 @@ class _DownloadManagerState extends State<DownloadManager> {
                   Text(
                     '文件大小: ${_formatFileSize(data.total)}',
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    ),
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
                   ),
 
                 const SizedBox(height: AppSpacing.sm),
@@ -517,8 +515,8 @@ class _DownloadManagerState extends State<DownloadManager> {
           vertical: AppSpacing.xs,
         ),
         textStyle: Theme.of(context).textTheme.labelLarge?.copyWith(
-          fontWeight: AppTypography.weightMedium,
-        ),
+              fontWeight: AppTypography.weightMedium,
+            ),
         shape: const RoundedRectangleBorder(
           borderRadius: AppRadius.allSM,
         ),
@@ -557,8 +555,8 @@ class _DownloadManagerState extends State<DownloadManager> {
               child: Text(
                 label,
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: scheme.onSurfaceVariant,
-                ),
+                      color: scheme.onSurfaceVariant,
+                    ),
               ),
             ),
             Expanded(
@@ -574,47 +572,57 @@ class _DownloadManagerState extends State<DownloadManager> {
 
     await AppDialogs.showBottomSheet(
       title: '下载信息',
+      // children 无水平 padding（标题才带），内容整体补左右边距避免贴边
       children: [
-        infoRow('文件名', item.fileName),
-        infoRow('应用', '${item.appName}（${item.version}）'),
-        infoRow('应用标识', item.appId),
-        if (item.total > 0) infoRow('文件大小', _formatFileSize(item.total)),
-        infoRow('保存路径', item.savePath),
-        infoRow('创建时间', _formatCreateTime(item.createTime)),
-        if (channel != null) infoRow('来源渠道', channel),
-        // 下载链接（可复制）
         Padding(
-          padding: const EdgeInsets.symmetric(vertical: AppSpacing.xs),
-          child: Row(
+          padding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg),
+          child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              SizedBox(
-                width: AppSpacing.xxxl * 2,
-                child: Text(
-                  '下载链接',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: scheme.onSurfaceVariant,
-                  ),
+              infoRow('文件名', item.fileName),
+              infoRow('应用', '${item.appName}（${item.version}）'),
+              infoRow('应用标识', item.appId),
+              if (item.total > 0) infoRow('文件大小', _formatFileSize(item.total)),
+              infoRow('保存路径', item.savePath),
+              infoRow('创建时间', _formatCreateTime(item.createTime)),
+              if (channel != null) infoRow('来源渠道', channel),
+              // 下载链接（可复制）
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: AppSpacing.xs),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SizedBox(
+                      width: AppSpacing.xxxl * 2,
+                      child: Text(
+                        '下载链接',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: scheme.onSurfaceVariant,
+                            ),
+                      ),
+                    ),
+                    Expanded(
+                      child: Text(
+                        item.downloadUrl,
+                        style: Theme.of(context).textTheme.bodyMedium,
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: '复制链接',
+                      icon: Icon(
+                        Icons.copy,
+                        size: AppTypography.iconSM,
+                        color: scheme.primary,
+                      ),
+                      visualDensity: VisualDensity.compact,
+                      onPressed: () async {
+                        await Clipboard.setData(
+                            ClipboardData(text: item.downloadUrl));
+                        AppDialogs.showSuccess('已复制下载链接');
+                      },
+                    ),
+                  ],
                 ),
-              ),
-              Expanded(
-                child: Text(
-                  item.downloadUrl,
-                  style: Theme.of(context).textTheme.bodyMedium,
-                ),
-              ),
-              IconButton(
-                tooltip: '复制链接',
-                icon: Icon(
-                  Icons.copy,
-                  size: AppTypography.iconSM,
-                  color: scheme.primary,
-                ),
-                visualDensity: VisualDensity.compact,
-                onPressed: () async {
-                  await Clipboard.setData(ClipboardData(text: item.downloadUrl));
-                  AppDialogs.showSuccess('已复制下载链接');
-                },
               ),
             ],
           ),
@@ -637,21 +645,21 @@ class _DownloadManagerState extends State<DownloadManager> {
     final scheme = Theme.of(context).colorScheme;
     final (label, color, icon) = switch (statusKindOf(item)) {
       DownloadStatusKind.downloading => (
-        '下载中',
-        scheme.primary,
-        Icons.downloading,
-      ),
+          '下载中',
+          scheme.primary,
+          Icons.downloading,
+        ),
       DownloadStatusKind.completed => (
-        '已完成',
-        scheme.tertiary,
-        Icons.check_circle,
-      ),
+          '已完成',
+          scheme.tertiary,
+          Icons.check_circle,
+        ),
       DownloadStatusKind.failed => ('失败', scheme.error, Icons.error),
       DownloadStatusKind.waiting => (
-        '等待中',
-        scheme.onSurfaceVariant,
-        Icons.schedule,
-      ),
+          '等待中',
+          scheme.onSurfaceVariant,
+          Icons.schedule,
+        ),
     };
 
     return Chip(
@@ -694,7 +702,8 @@ class _DownloadManagerState extends State<DownloadManager> {
               value: progress,
               minHeight: AppSpacing.sm,
               // 轨道颜色（未填充部分）
-              backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+              backgroundColor:
+                  Theme.of(context).colorScheme.surfaceContainerHighest,
               // 进度颜色使用主题色
               color: Theme.of(context).colorScheme.primary,
             ),
@@ -711,8 +720,8 @@ class _DownloadManagerState extends State<DownloadManager> {
             Text(
               '$percent%',
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                fontWeight: AppTypography.weightMedium,
-              ),
+                    fontWeight: AppTypography.weightMedium,
+                  ),
             ),
           ],
         ),
