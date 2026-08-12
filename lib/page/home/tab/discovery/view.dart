@@ -77,7 +77,10 @@ class _DiscoveryPageState extends State<DiscoveryPage>
           decoration: BoxDecoration(
             border: Border(
               bottom: BorderSide(
-                color: Theme.of(context).colorScheme.outlineVariant.withOpacity(0.5),
+                color: Theme.of(context)
+                    .colorScheme
+                    .outlineVariant
+                    .withOpacity(0.5),
                 width: 1,
               ),
             ),
@@ -132,7 +135,8 @@ class _DiscoveryPageState extends State<DiscoveryPage>
                   value: DisplayMode.notAdded,
                   child: Row(
                     children: [
-                      Icon(Icons.add_circle_outline, size: AppTypography.iconMD),
+                      Icon(Icons.add_circle_outline,
+                          size: AppTypography.iconMD),
                       SizedBox(width: AppSpacing.sm),
                       Text('未添加'),
                     ],
@@ -185,7 +189,10 @@ class _DiscoveryPageState extends State<DiscoveryPage>
               final channels = logic.sortedChannelTypes;
 
               return ListView.builder(
-                padding: EdgeInsets.zero,
+                // 底部避让悬浮导航胶囊（extendBody 后内容延伸至胶囊后方）
+                padding: EdgeInsets.only(
+                  bottom: 100 + MediaQuery.of(context).padding.bottom,
+                ),
                 itemCount: channels.length,
                 itemBuilder: (context, index) {
                   final channel = channels[index];
@@ -387,7 +394,8 @@ class _DiscoveryPageState extends State<DiscoveryPage>
                 children: [
                   TextButton.icon(
                     onPressed: logic.selectAllInView,
-                    icon: const Icon(Icons.select_all, size: AppTypography.iconSM),
+                    icon: const Icon(Icons.select_all,
+                        size: AppTypography.iconSM),
                     label: const Text('全选'),
                   ),
                   TextButton.icon(
@@ -397,7 +405,8 @@ class _DiscoveryPageState extends State<DiscoveryPage>
                   ),
                   FilledButton.icon(
                     onPressed: logic.batchAddSelected,
-                    icon: const Icon(Icons.add_circle, size: AppTypography.iconSM),
+                    icon: const Icon(Icons.add_circle,
+                        size: AppTypography.iconSM),
                     label: const Text('添加'),
                   ),
                 ],
@@ -421,7 +430,8 @@ class _DiscoveryPageState extends State<DiscoveryPage>
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Icon(Icons.error_outline, size: AppTypography.iconHuge, color: Colors.red),
+              const Icon(Icons.error_outline,
+                  size: AppTypography.iconHuge, color: Colors.red),
               const SizedBox(height: AppSpacing.lg),
               Text(state.errorMessage.value),
               const SizedBox(height: AppSpacing.lg),
@@ -477,7 +487,8 @@ class _DiscoveryPageState extends State<DiscoveryPage>
   }
 
   /// 应用卡片
-  Widget _buildAppCard(BuildContext context, AppSummary app, ChannelType channel) {
+  Widget _buildAppCard(
+      BuildContext context, AppSummary app, ChannelType channel) {
     final theme = Theme.of(context);
 
     final isAdded = logic.isAppAdded(channel, app.appId);
@@ -585,7 +596,8 @@ class _DiscoveryPageState extends State<DiscoveryPage>
                     boxShadow: [
                       BoxShadow(
                         color: Colors.black.withOpacity(0.15),
-                        blurRadius: 3,                        offset: const Offset(0, 1),
+                        blurRadius: 3,
+                        offset: const Offset(0, 1),
                       ),
                     ],
                   ),

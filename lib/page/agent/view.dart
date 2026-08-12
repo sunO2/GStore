@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_gen_ai_chat_ui/flutter_gen_ai_chat_ui.dart' hide AgentState;
+import 'package:flutter_gen_ai_chat_ui/flutter_gen_ai_chat_ui.dart'
+    hide AgentState;
 import 'package:get/get.dart';
 import 'package:gstore/core/agent/agent_service.dart';
 import 'package:gstore/core/core.dart';
@@ -73,7 +74,8 @@ class _AgentPageState extends State<AgentPage>
     // reverse 列表：offset 0 = 底部（最新），maxScrollExtent = 顶部（最早）
     if (position.maxScrollExtent > 0 &&
         position.pixels >= position.maxScrollExtent - 100) {
-      debugPrint('AgentView nearTop: pixels=${position.pixels.toStringAsFixed(0)} max=${position.maxScrollExtent.toStringAsFixed(0)}');
+      debugPrint(
+          'AgentView nearTop: pixels=${position.pixels.toStringAsFixed(0)} max=${position.maxScrollExtent.toStringAsFixed(0)}');
       _triggerLoadMore();
     }
   }
@@ -138,9 +140,8 @@ class _AgentPageState extends State<AgentPage>
     }
 
     // 删除的消息（会话切换等罕见场景）
-    final removed = _syncedMessages.keys
-        .where((id) => !currentIds.contains(id))
-        .toList();
+    final removed =
+        _syncedMessages.keys.where((id) => !currentIds.contains(id)).toList();
     if (removed.isNotEmpty) {
       for (final id in removed) {
         _syncedMessages.remove(id);
@@ -188,7 +189,8 @@ class _AgentPageState extends State<AgentPage>
       ..clear()
       ..addEntries(list.map((cm) {
         // 从 customProperties.id 恢复消息 id
-        final id = cm.customProperties?['id']?.toString() ?? cm.hashCode.toString();
+        final id =
+            cm.customProperties?['id']?.toString() ?? cm.hashCode.toString();
         return MapEntry(id, cm);
       }));
     _chatController.setMessages(list);
@@ -196,7 +198,8 @@ class _AgentPageState extends State<AgentPage>
 
   /// 触发加载更早历史（增量 addMessages，不重置滚动位置）
   void _triggerLoadMore() {
-    debugPrint('AgentView triggerLoadMore: hasMore=${_logic.service.hasMoreHistory} paginating=$_isPaginating loaded=${_logic.service.loadedHistoryCount}');
+    debugPrint(
+        'AgentView triggerLoadMore: hasMore=${_logic.service.hasMoreHistory} paginating=$_isPaginating loaded=${_logic.service.loadedHistoryCount}');
     if (!_logic.service.hasMoreHistory) return;
     if (_isPaginating) return;
     _isPaginating = true;
@@ -209,10 +212,12 @@ class _AgentPageState extends State<AgentPage>
         _isPaginating = false;
         return;
       }
-      debugPrint('AgentView older: ${older.map((m) => m.isUser ? "U" : (m.isToolResult ? "T" : "A")).join(",")}');
+      debugPrint(
+          'AgentView older: ${older.map((m) => m.isUser ? "U" : (m.isToolResult ? "T" : "A")).join(",")}');
       // 转成 ChatMessage（按 turnId 聚合成时间轴）
       final grouped = _groupTimeline(older);
-      debugPrint('AgentView grouped: ${grouped.map((g) => g.msg != null ? (g.msg!.isUser ? "U" : "A") : "G").join(",")}');
+      debugPrint(
+          'AgentView grouped: ${grouped.map((g) => g.msg != null ? (g.msg!.isUser ? "U" : "A") : "G").join(",")}');
       final chatMsgs = <ChatMessage>[];
       for (final item in grouped) {
         chatMsgs.add(item.turnMsgs != null
@@ -270,7 +275,9 @@ class _AgentPageState extends State<AgentPage>
       } else if (msg.isToolResult) {
         // 工具消息：归入当前回合；若 turnId 与当前不同，先结束当前回合
         final turnId = msg.turnId ?? '';
-        if (currentTurn.isNotEmpty && turnId != currentTurnId && turnId.isNotEmpty) {
+        if (currentTurn.isNotEmpty &&
+            turnId != currentTurnId &&
+            turnId.isNotEmpty) {
           flushTurn();
         }
         if (currentTurnId.isEmpty) currentTurnId = turnId;
@@ -278,7 +285,9 @@ class _AgentPageState extends State<AgentPage>
       } else {
         // agent 文本消息：归入当前回合（若同 turnId）或开启新回合
         final turnId = msg.turnId ?? '';
-        if (currentTurn.isNotEmpty && turnId != currentTurnId && turnId.isNotEmpty) {
+        if (currentTurn.isNotEmpty &&
+            turnId != currentTurnId &&
+            turnId.isNotEmpty) {
           flushTurn();
         }
         if (currentTurnId.isEmpty) currentTurnId = turnId;
@@ -446,18 +455,21 @@ class _AgentPageState extends State<AgentPage>
                   ],
                   messageOptions: _buildMessageOptions(context),
                   inputOptions: _buildInputOptions(context, logic, state),
-                  // 减小消息列表左右间距（默认 16 → 8）
+                  // 减小消息列表左右间距（默认 16 → 8）；底部避让悬浮导航胶囊
                   spacingConfig: const ChatSpacingConfig(
-                    messageListPadding: EdgeInsets.symmetric(
-                      horizontal: 8,
-                      vertical: 8,
+                    messageListPadding: EdgeInsets.only(
+                      left: 8,
+                      right: 8,
+                      top: 8,
+                      bottom: 100,
                     ),
                   ),
                   enableMarkdownStreaming: true,
                   streamingWordByWord: false,
                   loadingConfig: LoadingConfig(
                     isLoading: state.isGenerating.value,
-                    loadingIndicator: const AppLoading(size: AppLoadingSize.small),
+                    loadingIndicator:
+                        const AppLoading(size: AppLoadingSize.small),
                   ),
                   messageListOptions: MessageListOptions(
                     onLoadMore: () async {
@@ -589,9 +601,8 @@ class _AgentPageState extends State<AgentPage>
     final h = time.hour.toString().padLeft(2, '0');
     final m = time.minute.toString().padLeft(2, '0');
     final now = DateTime.now();
-    final isToday = time.year == now.year &&
-        time.month == now.month &&
-        time.day == now.day;
+    final isToday =
+        time.year == now.year && time.month == now.month && time.day == now.day;
     if (isToday) return '$h:$m';
     return '${time.month}/${time.day} $h:$m';
   }
@@ -607,11 +618,16 @@ class _AgentPageState extends State<AgentPage>
       textController: logic.inputController,
       textStyle: Theme.of(context).textTheme.bodyMedium,
       sendOnEnter: true,
+      // 磨砂统一：与底部悬浮导航胶囊一致的 BackdropFilter 模糊强度（20 sigma）
+      blurStrength: 2,
+      // 磨砂底：半透明主题 surface（随亮/暗主题自动变化）
+      containerBackgroundColor: scheme.surface.withValues(alpha: 0.82),
       decoration: InputDecoration(
         hintText: '输入你的需求...',
         hintStyle: TextStyle(color: scheme.onSurfaceVariant),
         filled: true,
-        fillColor: scheme.surfaceContainerHighest,
+        // 输入框内半透明（透出磨砂质感）
+        fillColor: scheme.surface.withValues(alpha: 0.55),
         border: OutlineInputBorder(
           // 半圆：大圆角（内部 contentPadding 相应调整，文本不顶边）
           borderRadius: BorderRadius.circular(AppRadius.circle),
@@ -738,7 +754,10 @@ class _AgentPageState extends State<AgentPage>
                             session.title,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            style: Theme.of(context)
+                                .textTheme
+                                .bodyMedium
+                                ?.copyWith(
                                   fontWeight: isCurrent
                                       ? AppTypography.weightSemiBold
                                       : FontWeight.w400,
@@ -746,7 +765,10 @@ class _AgentPageState extends State<AgentPage>
                           ),
                           subtitle: Text(
                             _formatSessionTime(session.updatedAt),
-                            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                            style: Theme.of(context)
+                                .textTheme
+                                .labelSmall
+                                ?.copyWith(
                                   color: AppColors.textTertiary,
                                 ),
                           ),
@@ -809,7 +831,8 @@ class _TurnTimeline extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               for (var i = 0; i < turnMsgs.length; i++)
-                _buildStep(context, turnMsgs[i], i == turnMsgs.length - 1, i + 1),
+                _buildStep(
+                    context, turnMsgs[i], i == turnMsgs.length - 1, i + 1),
             ],
           ),
         ),
@@ -818,7 +841,8 @@ class _TurnTimeline extends StatelessWidget {
   }
 
   /// 单个时间轴步骤
-  Widget _buildStep(BuildContext context, AgentMessage msg, bool isLast, int stepNumber) {
+  Widget _buildStep(
+      BuildContext context, AgentMessage msg, bool isLast, int stepNumber) {
     final scheme = Theme.of(context).colorScheme;
     final isTool = msg.isToolResult;
     final nodeColor =
@@ -902,7 +926,8 @@ class _TurnTimeline extends StatelessWidget {
     final options = msg.confirmOptions ?? const <String>[];
 
     return Container(
-      padding: EdgeInsets.symmetric(horizontal: AppSpacing.md, vertical: AppSpacing.sm),
+      padding: EdgeInsets.symmetric(
+          horizontal: AppSpacing.md, vertical: AppSpacing.sm),
       decoration: BoxDecoration(
         color: pending
             ? scheme.primaryContainer.withValues(alpha: 0.6)
@@ -981,7 +1006,8 @@ class _TurnTimeline extends StatelessWidget {
   }
 
   /// 单选选项项
-  Widget _buildOptionItem(BuildContext context, AgentMessage msg, String option) {
+  Widget _buildOptionItem(
+      BuildContext context, AgentMessage msg, String option) {
     final scheme = Theme.of(context).colorScheme;
     return Padding(
       padding: EdgeInsets.only(bottom: AppSpacing.xs),
@@ -1000,7 +1026,8 @@ class _TurnTimeline extends StatelessWidget {
             ),
           ),
           style: OutlinedButton.styleFrom(
-            padding: EdgeInsets.symmetric(horizontal: AppSpacing.md, vertical: 8),
+            padding:
+                EdgeInsets.symmetric(horizontal: AppSpacing.md, vertical: 8),
             alignment: Alignment.centerLeft,
             backgroundColor: scheme.surface.withValues(alpha: 0.6),
             side: BorderSide(color: scheme.outlineVariant),
@@ -1047,16 +1074,16 @@ class _TurnTimeline extends StatelessWidget {
                     color: color,
                     fontWeight: FontWeight.w600,
                   ),
-          ),
-          if (isRunning) ...[
-            const SizedBox(width: 4),
-            SizedBox(
-              width: 10,
-              height: 10,
-              child: AppLoading(size: AppLoadingSize.small, color: color),
             ),
+            if (isRunning) ...[
+              const SizedBox(width: 4),
+              SizedBox(
+                width: 10,
+                height: 10,
+                child: AppLoading(size: AppLoadingSize.small, color: color),
+              ),
+            ],
           ],
-        ],
         ),
       ),
     );
@@ -1434,8 +1461,7 @@ class _ToolBubbleState extends State<_ToolBubble> {
                                 .textTheme
                                 .labelSmall
                                 ?.copyWith(
-                                  color: msg.toolStatus ==
-                                          AgentToolStatus.error
+                                  color: msg.toolStatus == AgentToolStatus.error
                                       ? AppColors.error
                                       : AppColors.textSecondary,
                                 ),
@@ -1461,9 +1487,7 @@ class _ToolBubbleState extends State<_ToolBubble> {
                         // 展开/收起指示
                         if (_hasDetail)
                           Icon(
-                            _expanded
-                                ? Icons.expand_less
-                                : Icons.expand_more,
+                            _expanded ? Icons.expand_less : Icons.expand_more,
                             size: AppTypography.iconSM,
                             color: AppColors.textSecondary,
                           ),
@@ -1587,8 +1611,7 @@ class _ToolBubbleState extends State<_ToolBubble> {
     return buffer.toString().trimRight();
   }
 
-  Widget _buildDownloadProgress(
-      BuildContext context, DownloadStatus status) {
+  Widget _buildDownloadProgress(BuildContext context, DownloadStatus status) {
     return StreamBuilder<DownloadStatus>(
       stream: status.observer,
       builder: (context, snap) {

@@ -121,17 +121,19 @@ class AppListState extends State<ApplistPage>
             icon(UserInfo fuser) {
               if (fuser.avatarUrl?.isNotEmpty ?? false) {
                 return Container(
-                  width: Theme.of(context).appBarTheme.iconTheme?.size ?? AppTypography.iconXL,
-                  height: Theme.of(context).appBarTheme.iconTheme?.size ?? AppTypography.iconXL,
+                  width: Theme.of(context).appBarTheme.iconTheme?.size ??
+                      AppTypography.iconXL,
+                  height: Theme.of(context).appBarTheme.iconTheme?.size ??
+                      AppTypography.iconXL,
                   decoration: BoxDecoration(
                       border: Border.all(width: 1.5),
                       borderRadius: AppRadius.allCircle),
                   child: ClipOval(
                     child: CachedNetworkImage(
-                      width:
-                          Theme.of(context).appBarTheme.iconTheme?.size ?? AppTypography.iconXL,
-                      height:
-                          Theme.of(context).appBarTheme.iconTheme?.size ?? AppTypography.iconXL,
+                      width: Theme.of(context).appBarTheme.iconTheme?.size ??
+                          AppTypography.iconXL,
+                      height: Theme.of(context).appBarTheme.iconTheme?.size ??
+                          AppTypography.iconXL,
                       placeholder: (context, url) =>
                           const AppLoading(size: AppLoadingSize.small),
                       errorWidget: (context, url, error) => const Icon(
@@ -305,8 +307,7 @@ class AppListState extends State<ApplistPage>
           SliverToBoxAdapter(
             child: SectionTitle(
               title: isSearching ? '搜索结果' : '全部应用',
-              subtitle:
-                  '${state.filteredApps.length} 个应用 · 添加时间排序',
+              subtitle: '${state.filteredApps.length} 个应用 · 添加时间排序',
             ),
           ),
           SliverPadding(
@@ -328,8 +329,7 @@ class AppListState extends State<ApplistPage>
                     final app = state.filteredApps[index];
                     return AppCardWidget(
                       app: app,
-                      hasUpdate:
-                          state.updateStates[app.appInfo.appId] ?? false,
+                      hasUpdate: state.updateStates[app.appInfo.appId] ?? false,
                       onTap: () => logic.appDetail(app),
                     );
                   },
@@ -337,6 +337,13 @@ class AppListState extends State<ApplistPage>
                 );
               },
             ),
+          ),
+          // 底部避让悬浮导航胶囊（extendBody 后内容延伸至胶囊后方）
+          SliverPadding(
+            padding: EdgeInsets.only(
+              bottom: 100 + MediaQuery.of(context).padding.bottom,
+            ),
+            sliver: const SliverToBoxAdapter(child: SizedBox.shrink()),
           ),
         ],
       ),
@@ -447,9 +454,7 @@ class _CategoryChip extends StatelessWidget {
           child: Text(
             label,
             style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                  color: selected
-                      ? scheme.onPrimary
-                      : scheme.onSurfaceVariant,
+                  color: selected ? scheme.onPrimary : scheme.onSurfaceVariant,
                   fontWeight: selected
                       ? AppTypography.weightSemiBold
                       : AppTypography.weightMedium,
