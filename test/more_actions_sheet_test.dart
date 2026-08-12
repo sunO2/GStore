@@ -30,9 +30,9 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    // 标题与当前标签
+    // 标题与预置分类（头部"当前标签"区块已移除）
     expect(find.text('测试应用'), findsOneWidget);
-    expect(find.text('当前标签'), findsOneWidget);
+    expect(find.text('当前标签'), findsNothing);
     expect(find.text('工具'), findsWidgets);
 
     // 预置 chips 全部渲染
@@ -152,7 +152,8 @@ void main() {
 
     await tester.tap(find.widgetWithText(TextButton, '清空'));
     await tester.pumpAndSettle();
-    expect(find.text('暂无标签'), findsOneWidget);
+    // 清空后无自定义标签残留
+    expect(find.byType(InputChip), findsNothing);
     expect(
       tester.widget<FilterChip>(find.widgetWithText(FilterChip, '工具')).selected,
       isFalse,
