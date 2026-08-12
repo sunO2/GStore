@@ -124,7 +124,9 @@ class UpdateManager extends StatelessWidget {
                 finished
                     ? (hasUpdates
                         ? '检测完成：发现 ${state.updateList.length} 个可更新应用'
-                        : '检测完成（$total 个应用，均无更新）')
+                        : (total > 0
+                            ? '检测完成（$total 个应用，均无更新）'
+                            : '检测完成：所有应用均已是最新版本'))
                     : (total > 0
                         ? '正在检测更新 ${state.checkedCount.value}/$total'
                         : '正在检测更新...'),
@@ -527,9 +529,20 @@ class _CheckingWheelState extends State<_CheckingWheel> {
   Widget build(BuildContext context) {
     final names = widget.state.checkList;
     if (names.isEmpty) {
-      return const SizedBox(
+      // 缓存优先场景无本次检测名单：完成态显示"暂无检测记录"，
+      // 检测中才显示"正在检测更新..."
+      final finished = widget.state.checkFinished.value ||
+          (widget.state.updateList.isNotEmpty && widget.state.showLog.value);
+      return SizedBox(
         height: 96,
-        child: Center(child: Text('正在检测更新...')),
+        child: Center(
+          child: Text(
+            finished ? '暂无检测记录' : '正在检测更新...',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+          ),
+        ),
       );
     }
 
