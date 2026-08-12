@@ -29,7 +29,7 @@ class HomePage extends StatelessWidget {
         children: [
           const ApplistPage(),
           DiscoveryPage(),
-          const AgentPage(),
+          const AgentPage(isTabEmbedded: true),
           MinePage(),
         ],
       ),
