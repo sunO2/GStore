@@ -115,12 +115,7 @@ class FdroidChannelDetailProxy extends ChannelDetailProxy {
     // 下载列表
     sections.add(DetailSection.downloads);
 
-    // 截图（如果有）
-    if (screenshots != null && screenshots!.isNotEmpty) {
-      sections.add(DetailSection.screenshots);
-    }
-
-    // README（如果有描述）
+    // README（如果有描述；截图已统一内嵌在详情区内，不再单独成区块）
     if (description.isNotEmpty) {
       sections.add(DetailSection.readme);
     }

@@ -401,38 +401,113 @@ final IDetailInfo info;
                 ),
           ),
           SizedBox(height: AppSpacing.md),
-          SizedBox(
-            height: 200,
-            child: ListView.builder(
-              scrollDirection: Axis.horizontal,
-              itemCount: screenshots.length,
-              itemBuilder: (context, index) {
-                final screenshot = screenshots[index];
-                return Container(
-                  width: 120,
-                  margin: AppSpacing.onlyRightMD,
-                  child: ClipRRect(
-                    borderRadius: AppRadius.allMD,
-                    child: CachedNetworkImage(
-                      imageUrl: screenshot.url,
-                      fit: BoxFit.contain,
-                      placeholder: (context, url) => Container(
-                        color: AppColors.grey200,
-                        child: const Center(
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        ),
-                      ),
-                      errorWidget: (context, url, error) => Container(
-                        color: AppColors.grey300,
-                        child: const Icon(Icons.broken_image),
-                      ),
+          _ScreenshotGallery(screenshots: screenshots),
+        ],
+      ),
+    );
+  }
+}
+
+/// 应用截图横向滑动列表（懒加载；点击卡片全屏预览）
+class _ScreenshotGallery extends StatelessWidget {
+  final List<ScreenshotInfo> screenshots;
+
+  const _ScreenshotGallery({required this.screenshots});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return SizedBox(
+      height: 200,
+      child: ListView.builder(
+        scrollDirection: Axis.horizontal,
+        itemCount: screenshots.length,
+        itemBuilder: (context, index) {
+          final screenshot = screenshots[index];
+          return GestureDetector(
+            onTap: () => _showPreview(context, index),
+            child: Container(
+              width: 120,
+              margin: AppSpacing.onlyRightMD,
+              child: ClipRRect(
+                borderRadius: AppRadius.allMD,
+                child: CachedNetworkImage(
+                  imageUrl: screenshot.url,
+                  fit: BoxFit.contain,
+                  placeholder: (context, url) => Container(
+                    color: scheme.surfaceContainerHighest,
+                    child: const Center(
+                      child: AppLoading(size: AppLoadingSize.small),
                     ),
                   ),
-                );
-              },
+                  errorWidget: (context, url, error) => Container(
+                    color: scheme.surfaceContainerHighest,
+                    child: Icon(
+                      Icons.broken_image,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              ),
             ),
-          ),
-        ],
+          );
+        },
+      ),
+    );
+  }
+
+  /// 全屏预览（InteractiveViewer 缩放，页码指示，点击关闭）
+  void _showPreview(BuildContext context, int index) {
+    final scheme = Theme.of(context).colorScheme;
+    showDialog<void>(
+      context: context,
+      barrierColor: scheme.scrim.withValues(alpha: 0.9),
+      builder: (_) => Dialog(
+        backgroundColor: Colors.transparent,
+        insetPadding: const EdgeInsets.all(AppSpacing.sm),
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: InteractiveViewer(
+                maxScale: 4,
+                child: Center(
+                  child: CachedNetworkImage(
+                    imageUrl: screenshots[index].url,
+                    fit: BoxFit.contain,
+                    placeholder: (context, url) =>
+                        const AppLoading(size: AppLoadingSize.medium),
+                    errorWidget: (context, url, error) => Icon(
+                      Icons.broken_image,
+                      size: AppTypography.iconHuge,
+                      color: scheme.onSurface,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            Positioned(
+              top: 8,
+              right: 8,
+              child: IconButton(
+                tooltip: '关闭',
+                icon: Icon(Icons.close, color: scheme.onSurface),
+                onPressed: () => Navigator.of(context).pop(),
+              ),
+            ),
+            Positioned(
+              bottom: 16,
+              left: 0,
+              right: 0,
+              child: Text(
+                '${index + 1} / ${screenshots.length}',
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                      color: scheme.onSurface,
+                    ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -448,15 +523,19 @@ class ReadmeSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final readme = info.readme;
-    if (readme == null || readme.isEmpty) {
+    // 截图统一内嵌详情区：有截图或正文任一存在即渲染（截图为横向滑动列表）
+    final screenshots = info.screenshots ?? const <ScreenshotInfo>[];
+    if ((readme == null || readme.isEmpty) && screenshots.isEmpty) {
       return const SizedBox.shrink();
     }
 
     // 将 Markdown 转换为 HTML
-    final htmlContent = md.markdownToHtml(
-      readme,
-      extensionSet: md.ExtensionSet.gitHubFlavored,
-    );
+    final htmlContent = (readme == null || readme.isEmpty)
+        ? ''
+        : md.markdownToHtml(
+            readme,
+            extensionSet: md.ExtensionSet.gitHubFlavored,
+          );
 
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
@@ -483,7 +562,13 @@ class ReadmeSection extends StatelessWidget {
             ),
           ),
           SizedBox(height: AppSpacing.md),
-          Html(
+          // 截图横向滑动列表（点击全屏预览），统一收纳进详情区
+          if (screenshots.isNotEmpty) ...[
+            _ScreenshotGallery(screenshots: screenshots),
+            const SizedBox(height: AppSpacing.md),
+          ],
+          if (htmlContent.isNotEmpty)
+            Html(
             data: htmlContent,
             onLinkTap: (url, _, __) {
               if (url != null && onLinkTap != null) {

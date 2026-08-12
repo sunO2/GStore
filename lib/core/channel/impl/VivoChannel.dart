@@ -368,7 +368,6 @@ class VivoChannel with AppUpdateCheckMixin implements IChannel {
         'packageName': packageName,
         'sections': _buildSections(
           hasDownloads: downloadsList.isNotEmpty,
-          hasScreenshots: screenshots.isNotEmpty,
           hasReadme: description.isNotEmpty,
           hasRating: rating != null,
           hasStatistics: downloads != null || favorites != null,
@@ -405,7 +404,6 @@ class VivoChannel with AppUpdateCheckMixin implements IChannel {
   /// 根据可用数据构建 sections 列表
   List<DetailSection> _buildSections({
     required bool hasDownloads,
-    required bool hasScreenshots,
     required bool hasReadme,
     required bool hasRating,
     required bool hasStatistics,
@@ -415,11 +413,6 @@ class VivoChannel with AppUpdateCheckMixin implements IChannel {
 
     // 版本信息
     sections.add(DetailSection.version);
-
-    // 应用截图
-    if (hasScreenshots) {
-      sections.add(DetailSection.screenshots);
-    }
 
     // 统计数据（下载量、评分等）
     if (hasStatistics || hasRating) {
@@ -434,7 +427,7 @@ class VivoChannel with AppUpdateCheckMixin implements IChannel {
     // 下载列表 - 始终添加，显示可用文件或"无可用文件"消息
     sections.add(DetailSection.downloads);
 
-    // 详细介绍
+    // 详细介绍（截图已统一内嵌在详情区内，不再单独成区块）
     if (hasReadme) {
       sections.add(DetailSection.readme);
     }
