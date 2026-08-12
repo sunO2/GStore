@@ -392,123 +392,144 @@ class _AgentPageState extends State<AgentPage>
       ),
       // 悬浮输入栏：消息列表在下（readOnly 隐藏库内置输入栏），
       // 磨砂输入栏覆盖在消息之上（与底部导航胶囊同款磨砂风格）
+      // 键盘处理（resizeToAvoidBottomInset: false 手动模式）：
+      // - 消息区 AnimatedPadding 让出键盘高度（底部 = 键盘顶）
+      // - 输入栏 AnimatedPadding 顶起（紧贴键盘上方，平滑过渡）
       body: Stack(
         children: [
           Positioned.fill(
-            child: Column(
-              children: [
-                // 未配置提示
-                Obx(() {
-                  if (state.isInitialized.value) return const SizedBox.shrink();
-                  return Container(
-                    width: double.infinity,
-                    margin: AppSpacing.onlyHorizontalMD,
-                    padding: AppSpacing.allMD,
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.primaryContainer,
-                      borderRadius: AppRadius.allMD,
-                    ),
-                    child: Row(
-                      children: [
-                        const Icon(Icons.warning_amber_rounded,
-                            color: AppColors.warning),
-                        const SizedBox(width: AppSpacing.md),
-                        const Expanded(
-                          child: Text('请先配置 LLM 模型（API Key）'),
-                        ),
-                        TextButton(
-                          onPressed: logic.openSettings,
-                          child: const Text('去设置'),
-                        ),
-                      ],
-                    ),
-                  );
-                }),
-
-                // AI 聊天界面（始终渲染 AiChatWidget，空消息时显示欢迎页）
-                Expanded(
-                  child: Obx(() {
-                    final messages = logic.service.messages;
-                    final isEmpty = messages.isEmpty;
-                    // 原生工具调用系统：注册 Agent 工具到 AiActionProvider
-                    return AiActionProvider(
-                      config: AiActionConfig(
-                        actions: logic.service.buildActions(),
+            child: AnimatedPadding(
+              duration: const Duration(milliseconds: 200),
+              curve: Curves.easeOut,
+              padding: EdgeInsets.only(
+                bottom: MediaQuery.of(context).viewInsets.bottom,
+              ),
+              child: Column(
+                children: [
+                  // 未配置提示
+                  Obx(() {
+                    if (state.isInitialized.value)
+                      return const SizedBox.shrink();
+                    return Container(
+                      width: double.infinity,
+                      margin: AppSpacing.onlyHorizontalMD,
+                      padding: AppSpacing.allMD,
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.primaryContainer,
+                        borderRadius: AppRadius.allMD,
                       ),
-                      controller: logic.service.actionController,
-                      child: AiChatWidget(
-                        currentUser: _currentUser,
-                        aiUser: _aiUser,
-                        controller: _chatController,
-                        // 共享 scrollController，让库的分页滚动检测与 loadMoreHistoryIfNeeded 使用同一 controller
-                        scrollController: logic.scrollController,
-                        onSendMessage: (chatMsg) {
-                          _handleSendMessage(chatMsg);
-                        },
-                        // 停止生成（对话流 + 工具调用）
-                        onCancelGenerating: () {
-                          logic.service.stopGenerating();
-                        },
-                        welcomeMessageConfig: isEmpty
-                            ? WelcomeMessageConfig(
-                                title: 'GStore AI 助手',
-                                questionsSectionTitle: '可以试试这样问我：',
-                              )
-                            : null,
-                        exampleQuestions: [
-                          ExampleQuestion(question: '帮我找一个截图工具'),
-                          ExampleQuestion(question: '帮我下载 Termux'),
-                          ExampleQuestion(question: '检查我的应用是否有更新'),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.warning_amber_rounded,
+                              color: AppColors.warning),
+                          const SizedBox(width: AppSpacing.md),
+                          const Expanded(
+                            child: Text('请先配置 LLM 模型（API Key）'),
+                          ),
+                          TextButton(
+                            onPressed: logic.openSettings,
+                            child: const Text('去设置'),
+                          ),
                         ],
-                        messageOptions: _buildMessageOptions(context),
-                        // readOnly：隐藏库内置输入栏（由外部悬浮磨砂输入栏接管）
-                        readOnly: true,
-                        // 减小消息列表左右间距（默认 16 → 8）；
-                        // 底部避让悬浮输入栏(56) + 间隙(8) + 导航胶囊(76) + 呼吸(8)
-                        spacingConfig: const ChatSpacingConfig(
-                          messageListPadding: EdgeInsets.only(
-                            left: 8,
-                            right: 8,
-                            top: 8,
-                            bottom: 148,
-                          ),
-                        ),
-                        enableMarkdownStreaming: true,
-                        streamingWordByWord: false,
-                        loadingConfig: LoadingConfig(
-                          isLoading: state.isGenerating.value,
-                          loadingIndicator:
-                              const AppLoading(size: AppLoadingSize.small),
-                        ),
-                        messageListOptions: MessageListOptions(
-                          onLoadMore: () async {
-                            // 官方方案：controller.loadMore 增量加载（addMessages，不重置滚动）
-                            _triggerLoadMore();
-                          },
-                          hasMoreMessages: logic.service.hasMoreHistory,
-                          paginationConfig: PaginationConfig(
-                            enabled: true,
-                            // 库的 reverse 分页触发方向与"向上加载更早"不符，关闭自动加载，
-                            // 由 scrollController 监听视觉顶部触发
-                            autoLoadOnScroll: false,
-                          ),
-                        ),
                       ),
                     );
                   }),
-                ),
-              ],
+
+                  // AI 聊天界面（始终渲染 AiChatWidget，空消息时显示欢迎页）
+                  Expanded(
+                    child: Obx(() {
+                      final messages = logic.service.messages;
+                      final isEmpty = messages.isEmpty;
+                      // 原生工具调用系统：注册 Agent 工具到 AiActionProvider
+                      return AiActionProvider(
+                        config: AiActionConfig(
+                          actions: logic.service.buildActions(),
+                        ),
+                        controller: logic.service.actionController,
+                        child: AiChatWidget(
+                          currentUser: _currentUser,
+                          aiUser: _aiUser,
+                          controller: _chatController,
+                          // 共享 scrollController，让库的分页滚动检测与 loadMoreHistoryIfNeeded 使用同一 controller
+                          scrollController: logic.scrollController,
+                          onSendMessage: (chatMsg) {
+                            _handleSendMessage(chatMsg);
+                          },
+                          // 停止生成（对话流 + 工具调用）
+                          onCancelGenerating: () {
+                            logic.service.stopGenerating();
+                          },
+                          welcomeMessageConfig: isEmpty
+                              ? WelcomeMessageConfig(
+                                  title: 'GStore AI 助手',
+                                  questionsSectionTitle: '可以试试这样问我：',
+                                )
+                              : null,
+                          exampleQuestions: [
+                            ExampleQuestion(question: '帮我找一个截图工具'),
+                            ExampleQuestion(question: '帮我下载 Termux'),
+                            ExampleQuestion(question: '检查我的应用是否有更新'),
+                          ],
+                          messageOptions: _buildMessageOptions(context),
+                          // readOnly：隐藏库内置输入栏（由外部悬浮磨砂输入栏接管）
+                          readOnly: true,
+                          // 减小消息列表左右间距（默认 16 → 8）；
+                          // 底部避让：键盘弹出时仅输入栏(56)+间隙+呼吸，无键盘时再加胶囊(76)
+                          spacingConfig: ChatSpacingConfig(
+                            messageListPadding: EdgeInsets.only(
+                              left: 8,
+                              right: 8,
+                              top: 8,
+                              bottom:
+                                  MediaQuery.of(context).viewInsets.bottom > 0
+                                      ? 72
+                                      : 148,
+                            ),
+                          ),
+                          enableMarkdownStreaming: true,
+                          streamingWordByWord: false,
+                          loadingConfig: LoadingConfig(
+                            isLoading: state.isGenerating.value,
+                            loadingIndicator:
+                                const AppLoading(size: AppLoadingSize.small),
+                          ),
+                          messageListOptions: MessageListOptions(
+                            onLoadMore: () async {
+                              // 官方方案：controller.loadMore 增量加载（addMessages，不重置滚动）
+                              _triggerLoadMore();
+                            },
+                            hasMoreMessages: logic.service.hasMoreHistory,
+                            paginationConfig: PaginationConfig(
+                              enabled: true,
+                              // 库的 reverse 分页触发方向与"向上加载更早"不符，关闭自动加载，
+                              // 由 scrollController 监听视觉顶部触发
+                              autoLoadOnScroll: false,
+                            ),
+                          ),
+                        ),
+                      );
+                    }),
+                  ),
+                ],
+              ),
             ),
           ),
-          // 悬浮磨砂输入栏（键盘弹出时贴键盘上方；平时底缘与导航胶囊顶部
-          // 轻微重叠融合——胶囊绘制在 body 之上，重叠区被盖住不遮内容）
+          // 悬浮磨砂输入栏：AnimatedPadding 按键盘高度平滑顶起
+          // （无键盘时底缘与导航胶囊顶部 8px 轻融合；键盘弹出时紧贴键盘上方）
           Positioned(
             left: 0,
             right: 0,
-            bottom: MediaQuery.of(context).viewInsets.bottom > 0
-                ? MediaQuery.of(context).viewInsets.bottom + AppSpacing.md
-                : 68,
-            child: _buildFloatingInput(context),
+            bottom: 0,
+            child: AnimatedPadding(
+              duration: const Duration(milliseconds: 200),
+              curve: Curves.easeOut,
+              padding: EdgeInsets.only(
+                bottom: MediaQuery.of(context).viewInsets.bottom > 0
+                    ? MediaQuery.of(context).viewInsets.bottom + AppSpacing.md
+                    : 68,
+              ),
+              child: _buildFloatingInput(context),
+            ),
           ),
         ],
       ),
