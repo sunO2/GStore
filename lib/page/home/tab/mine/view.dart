@@ -181,7 +181,13 @@ class _MinePageState extends State<MinePage>
         title: const Text('我的'),
       ),
       body: SingleChildScrollView(
-        padding: AppSpacing.allLG,
+        // 底部避让悬浮导航胶囊（extendBody 后内容延伸至胶囊后方）
+        padding: EdgeInsets.only(
+          left: AppSpacing.lg,
+          right: AppSpacing.lg,
+          top: AppSpacing.lg,
+          bottom: 100 + MediaQuery.of(context).padding.bottom,
+        ),
         child: Obx(() {
           final user = Get.find<UserManager>().userInfo.value;
 
@@ -343,28 +349,33 @@ class _MinePageState extends State<MinePage>
           ListTile(
             leading: const Icon(Icons.auto_awesome, size: AppTypography.iconMD),
             title: const Text('AI 助手'),
-            trailing: const Icon(Icons.chevron_right, size: AppTypography.iconSM),
+            trailing:
+                const Icon(Icons.chevron_right, size: AppTypography.iconSM),
             onTap: () => Get.toNamed(AppRoute.agent),
           ),
           const Divider(height: 1),
           ListTile(
             leading: const Icon(Icons.android, size: AppTypography.iconMD),
             title: const Text('已安装应用'),
-            trailing: const Icon(Icons.chevron_right, size: AppTypography.iconSM),
+            trailing:
+                const Icon(Icons.chevron_right, size: AppTypography.iconSM),
             onTap: () => Get.toNamed(AppRoute.installedApps),
           ),
           const Divider(height: 1),
           ListTile(
             leading: const Icon(Icons.settings, size: AppTypography.iconMD),
             title: const Text('设置'),
-            trailing: const Icon(Icons.chevron_right, size: AppTypography.iconSM),
+            trailing:
+                const Icon(Icons.chevron_right, size: AppTypography.iconSM),
             onTap: () => Get.toNamed(AppRoute.settings),
           ),
           const Divider(height: 1),
           ListTile(
-            leading: const Icon(Icons.bug_report_outlined, size: AppTypography.iconMD),
+            leading: const Icon(Icons.bug_report_outlined,
+                size: AppTypography.iconMD),
             title: const Text('查看日志'),
-            trailing: const Icon(Icons.chevron_right, size: AppTypography.iconSM),
+            trailing:
+                const Icon(Icons.chevron_right, size: AppTypography.iconSM),
             onTap: () => Get.toNamed(AppRoute.logViewer),
           ),
         ],
@@ -481,7 +492,11 @@ class _MinePageState extends State<MinePage>
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const SizedBox(height: AppSpacing.lg),
-                  Divider(color: Theme.of(context).colorScheme.outlineVariant.withOpacity(0.3)),
+                  Divider(
+                      color: Theme.of(context)
+                          .colorScheme
+                          .outlineVariant
+                          .withOpacity(0.3)),
                   const SizedBox(height: AppSpacing.lg),
 
                   // 颜色设置
@@ -545,32 +560,38 @@ class _MinePageState extends State<MinePage>
                 _ColorPresetButton(
                   color: const Color(0xFF1976D2),
                   isSelected: currentPrimaryColor == const Color(0xFF1976D2),
-                  onTap: () => _setPrimaryColor(context, controller, const Color(0xFF1976D2)),
+                  onTap: () => _setPrimaryColor(
+                      context, controller, const Color(0xFF1976D2)),
                 ),
                 _ColorPresetButton(
                   color: const Color(0xFF388E3C),
                   isSelected: currentPrimaryColor == const Color(0xFF388E3C),
-                  onTap: () => _setPrimaryColor(context, controller, const Color(0xFF388E3C)),
+                  onTap: () => _setPrimaryColor(
+                      context, controller, const Color(0xFF388E3C)),
                 ),
                 _ColorPresetButton(
                   color: const Color(0xFFD32F2F),
                   isSelected: currentPrimaryColor == const Color(0xFFD32F2F),
-                  onTap: () => _setPrimaryColor(context, controller, const Color(0xFFD32F2F)),
+                  onTap: () => _setPrimaryColor(
+                      context, controller, const Color(0xFFD32F2F)),
                 ),
                 _ColorPresetButton(
                   color: const Color(0xFFF57C00),
                   isSelected: currentPrimaryColor == const Color(0xFFF57C00),
-                  onTap: () => _setPrimaryColor(context, controller, const Color(0xFFF57C00)),
+                  onTap: () => _setPrimaryColor(
+                      context, controller, const Color(0xFFF57C00)),
                 ),
                 _ColorPresetButton(
                   color: const Color(0xFF7B1FA2),
                   isSelected: currentPrimaryColor == const Color(0xFF7B1FA2),
-                  onTap: () => _setPrimaryColor(context, controller, const Color(0xFF7B1FA2)),
+                  onTap: () => _setPrimaryColor(
+                      context, controller, const Color(0xFF7B1FA2)),
                 ),
                 _ColorPresetButton(
                   color: const Color(0xFF0097A7),
                   isSelected: currentPrimaryColor == const Color(0xFF0097A7),
-                  onTap: () => _setPrimaryColor(context, controller, const Color(0xFF0097A7)),
+                  onTap: () => _setPrimaryColor(
+                      context, controller, const Color(0xFF0097A7)),
                 ),
               ],
             ),
@@ -581,7 +602,8 @@ class _MinePageState extends State<MinePage>
   }
 
   /// 构建字体风格设置
-  Widget _buildFontStyleSetting(BuildContext context, ThemeController controller) {
+  Widget _buildFontStyleSetting(
+      BuildContext context, ThemeController controller) {
     return Obx(() {
       final currentStyle = controller.themeConfig.fontStyle;
 
@@ -607,9 +629,11 @@ class _MinePageState extends State<MinePage>
                     controller.setFontStyle(style);
                   }
                 },
-                backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+                backgroundColor:
+                    Theme.of(context).colorScheme.surfaceContainerHighest,
                 selectedColor: Theme.of(context).colorScheme.primaryContainer,
-                checkmarkColor: Theme.of(context).colorScheme.onPrimaryContainer,
+                checkmarkColor:
+                    Theme.of(context).colorScheme.onPrimaryContainer,
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(_smallRadius),
                   side: _borderSide,
@@ -623,7 +647,8 @@ class _MinePageState extends State<MinePage>
   }
 
   /// 构建圆角风格设置
-  Widget _buildRadiusStyleSetting(BuildContext context, ThemeController controller) {
+  Widget _buildRadiusStyleSetting(
+      BuildContext context, ThemeController controller) {
     return Obx(() {
       final currentStyle = controller.themeConfig.radiusStyle;
 
@@ -649,15 +674,18 @@ class _MinePageState extends State<MinePage>
                     controller.setRadiusStyle(style);
                   }
                 },
-                backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+                backgroundColor:
+                    Theme.of(context).colorScheme.surfaceContainerHighest,
                 selectedColor: Theme.of(context).colorScheme.primaryContainer,
-                checkmarkColor: Theme.of(context).colorScheme.onPrimaryContainer,
+                checkmarkColor:
+                    Theme.of(context).colorScheme.onPrimaryContainer,
                 avatar: Container(
                   width: 16,
                   height: 16,
                   decoration: BoxDecoration(
                     color: Theme.of(context).colorScheme.primary,
-                    borderRadius: BorderRadius.circular(_getRadiusPreview(style)),
+                    borderRadius:
+                        BorderRadius.circular(_getRadiusPreview(style)),
                   ),
                 ),
                 shape: RoundedRectangleBorder(
@@ -673,7 +701,8 @@ class _MinePageState extends State<MinePage>
   }
 
   /// 构建边框风格设置
-  Widget _buildBorderStyleSetting(BuildContext context, ThemeController controller) {
+  Widget _buildBorderStyleSetting(
+      BuildContext context, ThemeController controller) {
     return Obx(() {
       final currentStyle = controller.themeConfig.borderStyle;
 
@@ -699,9 +728,11 @@ class _MinePageState extends State<MinePage>
                     controller.setBorderStyle(style);
                   }
                 },
-                backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+                backgroundColor:
+                    Theme.of(context).colorScheme.surfaceContainerHighest,
                 selectedColor: Theme.of(context).colorScheme.primaryContainer,
-                checkmarkColor: Theme.of(context).colorScheme.onPrimaryContainer,
+                checkmarkColor:
+                    Theme.of(context).colorScheme.onPrimaryContainer,
                 avatar: Container(
                   width: 16,
                   height: 16,
@@ -727,7 +758,8 @@ class _MinePageState extends State<MinePage>
   }
 
   /// 设置主色
-  void _setPrimaryColor(BuildContext context, ThemeController controller, Color color) {
+  void _setPrimaryColor(
+      BuildContext context, ThemeController controller, Color color) {
     controller.setCustomColorTheme(primaryColor: color);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -895,7 +927,8 @@ class _MinePageState extends State<MinePage>
                     subtitle: const Text('导出备份时同时导出主题、WebDAV 等应用设置'),
                     contentPadding: EdgeInsets.zero,
                     value: state.includeAppConfig.value,
-                    onChanged: (value) => _backupLogic.toggleIncludeAppConfig(value),
+                    onChanged: (value) =>
+                        _backupLogic.toggleIncludeAppConfig(value),
                   ),
 
                   // 恢复方式（使用与 SwitchListTile 标题相同的样式）
@@ -960,7 +993,8 @@ class _MinePageState extends State<MinePage>
                                   child: AppLoading(size: AppLoadingSize.small),
                                 )
                               : const Icon(Icons.save_alt),
-                          label: Text(state.isExporting.value ? '导出中...' : '导出到本地'),
+                          label: Text(
+                              state.isExporting.value ? '导出中...' : '导出到本地'),
                         ),
                       ),
                       const SizedBox(width: AppSpacing.md),
@@ -976,7 +1010,8 @@ class _MinePageState extends State<MinePage>
                                   child: AppLoading(size: AppLoadingSize.small),
                                 )
                               : const Icon(Icons.folder_open),
-                          label: Text(state.isImporting.value ? '导入中...' : '从本地恢复'),
+                          label: Text(
+                              state.isImporting.value ? '导入中...' : '从本地恢复'),
                         ),
                       ),
                     ],
@@ -994,12 +1029,19 @@ class _MinePageState extends State<MinePage>
                         children: [
                           const SizedBox(height: AppSpacing.lg),
                           // 分割线（只在展开时显示）
-                          Divider(color: Theme.of(context).colorScheme.outlineVariant.withOpacity(0.3)),
+                          Divider(
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .outlineVariant
+                                  .withOpacity(0.3)),
                           const SizedBox(height: AppSpacing.lg),
 
                           Text(
                             'WebDAV 云端备份',
-                            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            style: Theme.of(context)
+                                .textTheme
+                                .bodyMedium
+                                ?.copyWith(
                                   color: AppColors.textSecondary,
                                 ),
                           ),
@@ -1010,15 +1052,20 @@ class _MinePageState extends State<MinePage>
                                 child: FilledButton.icon(
                                   onPressed: state.isUploadingWebDav.value
                                       ? null
-                                      : () => _backupLogic.uploadToWebDav(context, compressed: true),
+                                      : () => _backupLogic.uploadToWebDav(
+                                          context,
+                                          compressed: true),
                                   icon: state.isUploadingWebDav.value
                                       ? const SizedBox(
                                           width: 16,
                                           height: 16,
-                                          child: AppLoading(size: AppLoadingSize.small),
+                                          child: AppLoading(
+                                              size: AppLoadingSize.small),
                                         )
                                       : const Icon(Icons.cloud_upload),
-                                  label: Text(state.isUploadingWebDav.value ? '上传中...' : '备份到网盘'),
+                                  label: Text(state.isUploadingWebDav.value
+                                      ? '上传中...'
+                                      : '备份到网盘'),
                                 ),
                               ),
                               const SizedBox(width: AppSpacing.md),
@@ -1026,15 +1073,19 @@ class _MinePageState extends State<MinePage>
                                 child: FilledButton.icon(
                                   onPressed: state.isImporting.value
                                       ? null
-                                      : () => _backupLogic.downloadFromWebDav(context),
+                                      : () => _backupLogic
+                                          .downloadFromWebDav(context),
                                   icon: state.isImporting.value
                                       ? const SizedBox(
                                           width: 16,
                                           height: 16,
-                                          child: AppLoading(size: AppLoadingSize.small),
+                                          child: AppLoading(
+                                              size: AppLoadingSize.small),
                                         )
                                       : const Icon(Icons.cloud_download),
-                                  label: Text(state.isImporting.value ? '下载中...' : '从网盘恢复'),
+                                  label: Text(state.isImporting.value
+                                      ? '下载中...'
+                                      : '从网盘恢复'),
                                 ),
                               ),
                             ],
@@ -1119,7 +1170,9 @@ class _ColorPresetButton extends StatelessWidget {
         child: isSelected
             ? Icon(
                 Icons.check,
-                color: color.computeLuminance() > 0.5 ? Colors.black : Colors.white,
+                color: color.computeLuminance() > 0.5
+                    ? Colors.black
+                    : Colors.white,
                 size: 20,
               )
             : null,
