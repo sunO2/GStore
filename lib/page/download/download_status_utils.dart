@@ -59,3 +59,24 @@ DownloadAction? primaryActionFor(DownloadStatus item) {
       return null;
   }
 }
+
+/// 从下载链接推断来源渠道（展示用）
+///
+/// DownloadStatus 无渠道字段，依据 URL 域名推断：
+/// - 含 api.github.com / github.com / raw.githubusercontent.com → GitHub
+///   （含代理前缀 URL，如 ghfast.top/https://github.com/...，仍能命中）
+/// - 含 vivo 应用市场域名 → vivo 应用市场
+/// - 其余无法识别 → null（展示时省略渠道行）
+String? inferChannelLabel(String downloadUrl) {
+  final url = downloadUrl.toLowerCase();
+  if (url.isEmpty) return null;
+  if (url.contains('github.com') ||
+      url.contains('api.github.com') ||
+      url.contains('raw.githubusercontent.com')) {
+    return 'GitHub';
+  }
+  if (url.contains('vivo') || url.contains('app.vss')) {
+    return 'vivo 应用市场';
+  }
+  return null;
+}

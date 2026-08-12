@@ -1,5 +1,6 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
 import 'package:gstore/page/download/download_status_utils.dart';
@@ -406,7 +407,7 @@ class _DownloadManagerState extends State<DownloadManager> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // 文件名和状态
+                // 文件名（完整信息见 info 弹窗；状态徽标保留在卡片头，避免重复）
                 Row(
                   children: [
                     Expanded(
@@ -419,8 +420,6 @@ class _DownloadManagerState extends State<DownloadManager> {
                         overflow: TextOverflow.ellipsis,
                       ),
                     ),
-                    const SizedBox(width: AppSpacing.sm),
-                    _buildStatusBadge(context, data),
                   ],
                 ),
                 const SizedBox(height: AppSpacing.sm),
@@ -465,6 +464,15 @@ class _DownloadManagerState extends State<DownloadManager> {
                           logic.deleteDownload(data);
                         }
                       },
+                    ),
+                    IconButton(
+                      tooltip: '下载信息',
+                      icon: const Icon(
+                        Icons.info_outline,
+                        size: AppTypography.iconSM,
+                      ),
+                      visualDensity: VisualDensity.compact,
+                      onPressed: () => _showDownloadInfo(context, data),
                     ),
                   ],
                 ),
@@ -528,6 +536,100 @@ class _DownloadManagerState extends State<DownloadManager> {
       isDangerous: true,
     );
     return confirmed == true;
+  }
+
+  /// 下载信息弹窗（文件名/链接/渠道等完整信息，不受列表截断影响）
+  Future<void> _showDownloadInfo(
+    BuildContext context,
+    DownloadStatus item,
+  ) async {
+    final scheme = Theme.of(context).colorScheme;
+    final channel = inferChannelLabel(item.downloadUrl);
+
+    Widget infoRow(String label, String value) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: AppSpacing.xs),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(
+              width: AppSpacing.xxxl * 2,
+              child: Text(
+                label,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: scheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+            Expanded(
+              child: Text(
+                value,
+                style: Theme.of(context).textTheme.bodyMedium,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    await AppDialogs.showBottomSheet(
+      title: '下载信息',
+      children: [
+        infoRow('文件名', item.fileName),
+        infoRow('应用', '${item.appName}（${item.version}）'),
+        infoRow('应用标识', item.appId),
+        if (item.total > 0) infoRow('文件大小', _formatFileSize(item.total)),
+        infoRow('保存路径', item.savePath),
+        infoRow('创建时间', _formatCreateTime(item.createTime)),
+        if (channel != null) infoRow('来源渠道', channel),
+        // 下载链接（可复制）
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: AppSpacing.xs),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SizedBox(
+                width: AppSpacing.xxxl * 2,
+                child: Text(
+                  '下载链接',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+              Expanded(
+                child: Text(
+                  item.downloadUrl,
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
+              ),
+              IconButton(
+                tooltip: '复制链接',
+                icon: Icon(
+                  Icons.copy,
+                  size: AppTypography.iconSM,
+                  color: scheme.primary,
+                ),
+                visualDensity: VisualDensity.compact,
+                onPressed: () async {
+                  await Clipboard.setData(ClipboardData(text: item.downloadUrl));
+                  AppDialogs.showSuccess('已复制下载链接');
+                },
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// 创建时间格式化（毫秒时间戳 → yyyy-MM-dd HH:mm；0/未知显示"未知"）
+  String _formatCreateTime(int millis) {
+    if (millis <= 0) return '未知';
+    final dt = DateTime.fromMillisecondsSinceEpoch(millis);
+    String pad(int n) => n.toString().padLeft(2, '0');
+    return '${dt.year}-${pad(dt.month)}-${pad(dt.day)} '
+        '${pad(dt.hour)}:${pad(dt.minute)}';
   }
 
   /// 构建状态标签（颜色全部取自主题）

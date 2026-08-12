@@ -81,13 +81,14 @@ DownloadStatus _item(
   String appName = '测试应用',
   String version = '1.0.0',
   String fileName = 'app.apk',
+  String? downloadUrl,
 }) {
   final item = DownloadStatus(
     appId,
     appName,
     version,
     fileName,
-    'https://example.com/$fileName',
+    downloadUrl ?? 'https://example.com/$fileName',
     '/data/media/0/Download/$fileName',
   );
   item.status = status;
@@ -325,14 +326,54 @@ void main() {
     expect(find.text('示例应用'), findsOneWidget);
     expect(find.text('2.3.4'), findsOneWidget);
 
-    // 状态徽标渲染在卡片内（卡片头 + 文件行各一个「下载中」徽标）
+    // 状态徽标仅渲染在卡片头（文件行已去掉重复徽标）
     final inCard = find.descendant(
       of: find.byType(AppCard),
       matching: find.text('下载中'),
     );
-    expect(inCard, findsNWidgets(2));
+    expect(inCard, findsNWidgets(1));
     // 全局另有 1 个「下载中」筛选 chip
-    expect(find.text('下载中'), findsNWidgets(3));
+    expect(find.text('下载中'), findsNWidgets(2));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('下载信息弹窗：info 按钮显示文件名/链接/渠道，可复制链接', (tester) async {
+    _useTallView(tester);
+
+    const longFileName = 'a-very-long-download-file-name-that-would-be-truncated-in-list.apk';
+    final item = _item(
+      DownloadStatus.DOWNLOAD_SUCCESS,
+      appId: 'gkd-kit/gkd',
+      appName: 'GKD',
+      version: '1.2.3',
+      fileName: longFileName,
+      downloadUrl: 'https://api.github.com/repos/gkd-kit/gkd/releases/download/v1.2.3/gkd.apk',
+    );
+    logic.seed([
+      [item],
+    ]);
+
+    await pumpPage(tester);
+
+    // 点行尾 info 图标
+    await tester.tap(find.byTooltip('下载信息'));
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pump(const Duration(milliseconds: 300));
+
+    // 弹窗展示完整信息（文件名不截断；列表行 + 弹窗各一处）
+    expect(find.text('下载信息'), findsOneWidget);
+    expect(find.text(longFileName), findsNWidgets(2));
+    expect(find.text('下载链接'), findsOneWidget);
+    expect(
+      find.text(
+          'https://api.github.com/repos/gkd-kit/gkd/releases/download/v1.2.3/gkd.apk'),
+      findsOneWidget,
+    );
+    // 渠道推断
+    expect(find.text('来源渠道'), findsOneWidget);
+    expect(find.text('GitHub'), findsOneWidget);
+    // 复制按钮存在
+    expect(find.byTooltip('复制链接'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }
