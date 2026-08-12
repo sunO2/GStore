@@ -13,6 +13,26 @@ import 'package:gstore/core/module/app_modules.dart';
 import 'package:gstore/core/module/infra_modules.dart';
 import 'package:gstore/core/module/module.dart';
 import 'package:gstore/core/module/module_manager.dart';
+import 'package:gstore/core/routers.dart';
+
+/// 返回首页时重置键盘焦点
+///
+/// Flutter 路由 pop 存在焦点恢复机制：pop 回首页时会把焦点恢复到
+/// 推入二级页前持有焦点的首页 TextField（搜索框/AI 输入栏），导致键盘自动弹出。
+/// 此 observer 在 pop 回首页（previousRoute 为 home）后统一 unfocus，
+/// 语义：返回首页不自动弹键盘（想继续输入点一下输入框即可）。
+/// 不影响"搜索页 → 详情 → 返回搜索页"等键盘应保留的流程（previousRoute 非 home）。
+class HomeFocusResetObserver extends NavigatorObserver {
+  @override
+  void didPop(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    super.didPop(route, previousRoute);
+    if (previousRoute?.settings.name == AppRoute.home) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        FocusManager.instance.primaryFocus?.unfocus();
+      });
+    }
+  }
+}
 
 registerService() async {
   // 初始化日志管理器（必须在最开始，因为其他模块可能需要使用日志）
@@ -120,6 +140,8 @@ main() async {
         },
         initialRoute: AppRoute.home,
         getPages: AppRoute.pages,
+        // 返回首页时重置键盘焦点（见 HomeFocusResetObserver）
+        navigatorObservers: [HomeFocusResetObserver()],
         themeMode: controller.themeModeValue,
         theme: ThemeDataBuilder.buildLightTheme(
           light,
