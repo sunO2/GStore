@@ -42,6 +42,27 @@ class CheckLogEntry {
     final s = time.second.toString().padLeft(2, '0');
     return '$h:$m:$s';
   }
+
+  /// 序列化（日志持久化缓存用）
+  Map<String, dynamic> toJson() => {
+        'level': level.name,
+        'text': text,
+        'time': time.millisecondsSinceEpoch,
+      };
+
+  /// 反序列化（损坏/未知级别回退 info）
+  factory CheckLogEntry.fromJson(Map<String, dynamic> json) {
+    return CheckLogEntry(
+      level: CheckLogLevel.values.firstWhere(
+        (e) => e.name == json['level'],
+        orElse: () => CheckLogLevel.info,
+      ),
+      text: json['text']?.toString() ?? '',
+      time: DateTime.fromMillisecondsSinceEpoch(
+        (json['time'] as num?)?.toInt() ?? 0,
+      ),
+    );
+  }
 }
 
 /// 检测进度回调数据（供更新页滚轮/图标/进度展示）
