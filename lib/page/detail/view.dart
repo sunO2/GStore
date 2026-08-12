@@ -106,29 +106,12 @@ class DetailPage extends StatelessWidget {
         );
       }),
       actions: [
-        // 完善应用信息（GitHub 渠道 / LocalDb 的 GitHub 仓库类型应用）
-        Obx(() {
-          final detail = state.detailInfo.value;
-          if (detail == null || !logic.canSubmitAppMetadata) {
-            return const SizedBox();
-          }
-
-          return IconButton(
-            onPressed: () => logic.submitAppMetadata(context),
-            icon: const Icon(Icons.manage_search),
-            tooltip: "完善应用信息",
-          );
-        }),
-        Obx(() {
-          final detail = state.detailInfo.value;
-          if (detail?.projectUrl == null) return const SizedBox();
-
-          return IconButton(
-            onPressed: logic.openProjectBrowser,
-            icon: const Icon(Icons.language),
-            tooltip: "项目主页",
-          );
-        }),
+        // 更多：分类标签编辑 + 动作宫格（完善应用信息 / 项目主页等）
+        IconButton(
+          onPressed: () => logic.showMoreActions(context),
+          icon: const Icon(Icons.more_vert),
+          tooltip: "更多",
+        ),
       ],
     );
   }
