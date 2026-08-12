@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/update/app_update_info.dart';
+import 'package:gstore/core/update/update_manager.dart';
+import 'package:gstore/core/update/update_time_format.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
 
 import 'logic.dart';
@@ -20,12 +22,45 @@ class UpdateManager extends StatelessWidget {
     final logic = Get.put(UpdateLogic());
     return Scaffold(
       appBar: AppBar(
-        title: const Text('应用更新'),
+        // 标题 + 上次检测时间副标题（1 小时内显示 x 分钟前，超过显示实际时间）
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('应用更新'),
+            Obx(() {
+              final state = logic.state;
+              final last = UpdateManagerService.instance.lastCheckedAt.value;
+              final subtitle = state.isLoading.value
+                  ? '检测中...'
+                  : formatLastChecked(last, DateTime.now());
+              return Text(
+                subtitle,
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+              );
+            }),
+          ],
+        ),
         actions: [
+          // 检测日志 ⇄ 更新列表 切换（仅在有可更新应用时显示）
+          Obx(() {
+            final state = logic.state;
+            if (state.updateList.isEmpty) return const SizedBox.shrink();
+            final showLog = state.showLog.value;
+            return IconButton(
+              tooltip: showLog ? '查看更新列表' : '检测日志',
+              icon: Icon(showLog ? Icons.list_alt : Icons.receipt_long),
+              onPressed: () => logic.toggleLogView(),
+            );
+          }),
           IconButton(
             tooltip: '检查更新',
             icon: const Icon(Icons.refresh),
-            onPressed: logic.state.isLoading.value ? null : logic.checkUpdates,
+            onPressed: logic.state.isLoading.value
+                ? null
+                : () => logic.checkUpdates(force: true),
           ),
           const SizedBox(width: AppSpacing.xs),
         ],
@@ -48,7 +83,8 @@ class UpdateManager extends StatelessWidget {
           return _buildUpdateList(context, logic, state);
         }
         if (state.errorMessage.value != null && state.updateList.isEmpty) {
-          return _buildEmpty(context, state.errorMessage.value!, hasError: true);
+          return _buildEmpty(context, state.errorMessage.value!,
+              hasError: true);
         }
         return _buildEmpty(context, '所有已添加应用均已是最新版本');
       }),
@@ -58,9 +94,8 @@ class UpdateManager extends StatelessWidget {
   /// 检测中 / 检测完成（日志页）
   Widget _buildChecking(BuildContext context, UpdateState state) {
     final total = state.totalCount.value;
-    final percent = total > 0
-        ? (state.checkedCount.value / total).clamp(0.0, 1.0)
-        : 0.0;
+    final percent =
+        total > 0 ? (state.checkedCount.value / total).clamp(0.0, 1.0) : 0.0;
     // 完成态判定：无更新完成（checkFinished）或有更新时手动切到日志页（showLog）
     final finished = state.checkFinished.value ||
         (state.updateList.isNotEmpty && state.showLog.value);
@@ -110,15 +145,7 @@ class UpdateManager extends StatelessWidget {
                   ),
                 ),
               ],
-              // 有更新时：提供切换到更新列表的按钮（检测完成态可来回切换）
-              if (hasUpdates) ...[
-                const SizedBox(height: AppSpacing.md),
-                FilledButton.tonalIcon(
-                  onPressed: () => Get.find<UpdateLogic>().toggleLogView(),
-                  icon: const Icon(Icons.list_alt, size: 18),
-                  label: Text('查看更新列表（${state.updateList.length}）'),
-                ),
-              ],
+              // 切换到更新列表的按钮已移至导航头（AppBar actions）
             ],
           ),
         ),
@@ -133,7 +160,8 @@ class UpdateManager extends StatelessWidget {
   }
 
   /// 空状态 / 错误
-  Widget _buildEmpty(BuildContext context, String message, {bool hasError = false}) {
+  Widget _buildEmpty(BuildContext context, String message,
+      {bool hasError = false}) {
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
@@ -185,17 +213,11 @@ class UpdateManager extends StatelessWidget {
                       ),
                 ),
               ),
-              // 切换到检测日志页
-              TextButton.icon(
-                onPressed: () => logic.toggleLogView(),
-                icon: const Icon(Icons.receipt_long, size: 18),
-                label: const Text('检测日志'),
-              ),
+              // 切换到检测日志的按钮已移至导航头（AppBar actions）
               const SizedBox(width: AppSpacing.xs),
               FilledButton.tonalIcon(
-                onPressed: state.updatingAppId.value != null
-                    ? null
-                    : logic.updateAll,
+                onPressed:
+                    state.updatingAppId.value != null ? null : logic.updateAll,
                 icon: const Icon(Icons.system_update_alt, size: 18),
                 label: const Text('全部更新'),
               ),
@@ -406,6 +428,7 @@ class _ChannelTag extends StatelessWidget {
     );
   }
 }
+
 /// 检测中 loading：圆环 + 被检测应用图标叠加
 class _CheckingAppIconLoading extends StatelessWidget {
   final UpdateState state;
@@ -613,7 +636,16 @@ class _CheckLogViewState extends State<_CheckLogView> {
     return Obx(() {
       final logs = widget.state.checkLog;
       if (logs.isEmpty) {
-        return const SizedBox.shrink();
+        // 缓存优先进入时无本次检测日志（未触发检测）
+        return Center(
+          child: Text(
+            '暂无检测日志\n点击右上角"检查更新"执行一次检测',
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+          ),
+        );
       }
       return ListView.builder(
         controller: _scrollController,
@@ -634,9 +666,9 @@ class _CheckLogViewState extends State<_CheckLogView> {
                 Text(
                   entry.timeText,
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: AppColors.textTertiary,
-                        fontFeatures: const [FontFeature.tabularFigures()],
-                      ),
+                    color: AppColors.textTertiary,
+                    fontFeatures: const [FontFeature.tabularFigures()],
+                  ),
                 ),
                 const SizedBox(width: AppSpacing.sm),
                 Expanded(

@@ -28,33 +28,46 @@ class UpdateLogic extends GetxController {
   }
 
   @override
-  void onReady() {
+  Future<void> onReady() async {
     super.onReady();
-    // 进入页面后懒检测（UpdateManager 锁+时间窗防重）
-    checkUpdates();
+    final manager = UpdateManagerService.instance;
+    _subscribeManager(manager);
+
+    // 缓存优先：等待缓存恢复完成（避免恢复中误判"从未检测"）
+    // - 已有上次检测记录 → 直接展示缓存结果（不触发耗时检测，手动刷新才检测）
+    // - 从未检测过 → 自动检测一次
+    await manager.cacheRestored;
+    if (manager.lastCheckedAt.value != null) {
+      state.updateList.assignAll(manager.updateList);
+      state.showLog.value = false;
+    } else {
+      checkUpdates();
+    }
+  }
+
+  /// 订阅 UpdateManager 结果同步（避免重复监听）
+  void _subscribeManager(UpdateManagerService manager) {
+    if (_subscribed) return;
+    _subscribed = true;
+    manager.updateList.listen((list) {
+      state.updateList.assignAll(list);
+      state.totalCount.value = state.totalCount.value;
+      // 同步红点：检测结果与功能入口红点一致
+      BadgeService.instance.setBadge(BadgeKey.appUpdate, list.length);
+    });
   }
 
   /// 检测所有已添加应用是否有更新
   ///
   /// 统一走 UpdateManager（锁 + 时间窗防重）：
-  /// - 页面自动进入：ensureChecked（时间窗内不重复检测）
+  /// - 页面自动进入：onReady 缓存优先（有缓存不检测）
   /// - 手动刷新：checkUpdates(force: true) 强制重新检测
   Future<void> checkUpdates({bool force = false}) async {
     final manager = UpdateManagerService.instance;
     if (manager.isChecking.value) return;
 
-    // 订阅一次结果同步（避免重复监听）
-    // 注意：不在订阅回调里设置 checkFinished —— 由下方检测流程统一控制，
-    // 否则检测中 updateList 变更会提前置完成态，导致有更新也显示"均无更新"
-    if (!_subscribed) {
-      _subscribed = true;
-      manager.updateList.listen((list) {
-        state.updateList.assignAll(list);
-        state.totalCount.value = state.totalCount.value;
-        // 同步红点：检测结果与功能入口红点一致
-        BadgeService.instance.setBadge(BadgeKey.appUpdate, list.length);
-      });
-    }
+    // 幂等订阅（onReady 已订阅时跳过；直接调用场景兜底）
+    _subscribeManager(manager);
 
     state.isLoading.value = true;
     state.updateList.clear();

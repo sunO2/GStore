@@ -31,7 +31,11 @@ class UpdateManagerService extends GetxService {
   final RxBool isChecking = false.obs;
 
   /// 上次检测时间（内存态）
-  DateTime? _lastCheckedAt;
+  /// 上次检测时间（Rx：页面副标题/时间窗实时响应）
+  final Rx<DateTime?> lastCheckedAt = Rx<DateTime?>(null);
+
+  /// 缓存恢复完成标志（页面进入时等待，避免恢复未完成误判"从未检测"）
+  late final Future<void> cacheRestored = _restoreCache();
 
   /// 时间窗（小时）：非强制检测时，距上次检测不足该时长则跳过
   static const int cacheValidHours = 1;
@@ -40,7 +44,7 @@ class UpdateManagerService extends GetxService {
   void onInit() {
     super.onInit();
     // 启动恢复缓存结果：重启后立即展示上次检测出的可更新应用（后台静默刷新）
-    unawaited(_restoreCache());
+    unawaited(cacheRestored);
   }
 
   /// 从缓存恢复上次检测结果
@@ -52,7 +56,7 @@ class UpdateManagerService extends GetxService {
         appLog.info('UpdateManager: 已恢复缓存结果 ${cached.length} 个可更新应用');
       }
       final last = await UpdateCache.lastCheckedAt();
-      if (last != null) _lastCheckedAt = last;
+      if (last != null) lastCheckedAt.value = last;
     } catch (e) {
       appLog.error('UpdateManager: 恢复缓存失败 - $e');
     }
@@ -107,8 +111,7 @@ class UpdateManagerService extends GetxService {
           nameById[a.addedAppInfo.appId] = name;
         }
         appNames = [
-          for (final added in addedApps)
-            nameById[added.appId] ?? added.appId,
+          for (final added in addedApps) nameById[added.appId] ?? added.appId,
         ];
       } catch (_) {
         // 聚合获取失败时用 appId 兜底
@@ -143,9 +146,9 @@ class UpdateManagerService extends GetxService {
       }
 
       updateList.assignAll(newUpdateList);
-      _lastCheckedAt = DateTime.now();
+      lastCheckedAt.value = DateTime.now();
       // 持久化检测时间 + 结果（跨重启时间窗 + 结果展示）
-      await UpdateCache.saveCheckedAt(_lastCheckedAt!);
+      await UpdateCache.saveCheckedAt(lastCheckedAt.value!);
       await UpdateCache.saveResults(newUpdateList);
       log(CheckLogLevel.update, '检测完成：发现 ${newUpdateList.length} 个可更新应用');
       if (newUpdateList.isEmpty) {
@@ -212,8 +215,7 @@ class UpdateManagerService extends GetxService {
 
       final latestVersion = check.latestVersion;
       if (latestVersion == null || latestVersion.isEmpty) {
-        log(CheckLogLevel.skip,
-            '$displayName：渠道无版本信息（已安装 $installedVersion）');
+        log(CheckLogLevel.skip, '$displayName：渠道无版本信息（已安装 $installedVersion）');
         return null;
       }
 
@@ -276,8 +278,7 @@ class UpdateManagerService extends GetxService {
   }
 
   /// 指定应用是否有更新
-  bool hasUpdate(String appId) =>
-      updateList.any((e) => e.appId == appId);
+  bool hasUpdate(String appId) => updateList.any((e) => e.appId == appId);
 
   /// 可更新应用列表（供首页分区等）
   List<AppUpdateInfo> get updatableApps => List.unmodifiable(updateList);
@@ -321,7 +322,7 @@ class UpdateManagerService extends GetxService {
 
   /// 缓存是否有效（距上次检测未超时间窗）
   Future<bool> _isCacheValid() async {
-    final last = _lastCheckedAt ?? await UpdateCache.lastCheckedAt();
+    final last = lastCheckedAt.value ?? await UpdateCache.lastCheckedAt();
     if (last == null) return false;
     return DateTime.now().difference(last).inHours < cacheValidHours;
   }
@@ -331,6 +332,6 @@ class UpdateManagerService extends GetxService {
   void resetForTest() {
     updateList.clear();
     isChecking.value = false;
-    _lastCheckedAt = null;
+    lastCheckedAt.value = null;
   }
 }
