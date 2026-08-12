@@ -354,6 +354,9 @@ class _AgentPageState extends State<AgentPage>
     final logic = _logic;
     final state = _state;
     return Scaffold(
+      // 手动键盘布局：禁用内嵌 Scaffold 自动压缩（否则 body 内 viewInsets 被
+      // 消费为 0，悬浮输入栏的 viewInsets 顶起逻辑失效，输入栏停在半空）
+      resizeToAvoidBottomInset: false,
       appBar: AppBar(
         title: Obx(() {
           final isInit = state.isInitialized.value;
