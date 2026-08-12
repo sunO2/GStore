@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/widgets.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
@@ -19,6 +20,7 @@ import 'package:installed_apps/installed_apps.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
 import 'state.dart';
+import 'widgets/more_actions_sheet.dart';
 
 class DetailLogic extends GetxController {
   final StreamController<DownloadStatus> counterController =
@@ -33,9 +35,13 @@ class DetailLogic extends GetxController {
   /// 渠道管理器
   late ChannelManager _channelManager;
 
+  /// 聚合管理器（标签读写，与发现页同一套 added_app_tags）
+  late AppAggregatorManager _aggregator;
+
   @override
   void onReady() {
     _channelManager = Get.find(tag: 'channelManager');
+    _aggregator = Get.find(tag: 'aggregatorManager');
     _initializeFromArguments();
     super.onReady();
   }
@@ -422,6 +428,118 @@ class DetailLogic extends GetxController {
     } catch (e) {
       appLog.error('DetailLogic: 提交元数据请求失败 - $e');
       AppDialogs.showError('提交失败: $e', title: '提交失败');
+    }
+  }
+
+  /// 本地库预置分类加载失败/为空时的内置回退列表（与发现页一致）
+  static const List<String> _fallbackPresetTags = [
+    '工具',
+    '游戏',
+    '社交',
+    '影音',
+    '阅读',
+    '效率',
+    '系统',
+  ];
+
+  /// 打开"更多"底部面板：分类标签编辑（与发现页同一套 added_app_tags）+ 动作宫格
+  ///
+  /// 标签 key 使用 canonical appId（渠道自报规范化），与聚合库/发现页完全一致，
+  /// 避免首页匹配不到标签（上次 bug 教训）。
+  Future<void> showMoreActions(BuildContext context) async {
+    final req = request;
+    if (req == null) return;
+
+    // 解析 canonical appId（复刻发现页 showTagPickerForApp 的模式：
+    // 渠道 getAppInfo 返回的 AppSummary 交给 canonicalAppId 规范化）
+    final channelInstance = _channelManager.getChannel(req.channel);
+    String canonicalId = req.appId;
+    if (channelInstance != null) {
+      try {
+        final basicInfo = await channelInstance.getAppInfo(
+          req.appId,
+          forceRefresh: false,
+        );
+        final appSummary = basicInfo.success ? basicInfo.data : null;
+        if (appSummary != null) {
+          canonicalId = await channelInstance.canonicalAppId(appSummary);
+        }
+      } catch (e) {
+        appLog.error('DetailLogic: 解析 canonical appId 失败，使用原始 appId - $e');
+      }
+    }
+
+    // 读取当前标签（用规范化 appId）
+    final currentTags = await _aggregator.getTags(
+      channel: req.channel,
+      appId: canonicalId,
+    );
+
+    // 加载预置分类：本地库 AppCategory 的 description 作为标签值
+    var presetTags = <String>[];
+    try {
+      final categories = await "gstore".repoDB.db.dao.getAllCategory();
+      presetTags = categories
+          .map((c) => c.description.trim())
+          .where((d) => d.isNotEmpty)
+          .toList();
+    } catch (e) {
+      appLog.error('DetailLogic: 加载预置分类失败，使用内置列表 - $e');
+    }
+    if (presetTags.isEmpty) {
+      presetTags = _fallbackPresetTags;
+    }
+
+    // 构建动作宫格
+    final githubRepo = _githubRepo();
+    final actions = <MoreActionItem>[
+      // 完善应用信息（GitHub 渠道 / LocalDb 的 GitHub 仓库类型应用）
+      if (canSubmitAppMetadata)
+        MoreActionItem(
+          icon: Icons.manage_search,
+          label: '完善应用信息',
+          onTap: () => submitAppMetadata(context),
+        ),
+      // 项目主页
+      if (state.detailInfo.value?.projectUrl != null)
+        MoreActionItem(
+          icon: Icons.language,
+          label: '项目主页',
+          onTap: openProjectBrowser,
+        ),
+      // 打开 GitHub（owner/repo 可解析时）
+      if (githubRepo != null)
+        MoreActionItem(
+          icon: Icons.code,
+          label: '打开 GitHub',
+          onTap: () => openBrowser(
+            'https://github.com/${githubRepo.owner}/${githubRepo.repo}',
+          ),
+        ),
+    ];
+
+    // 弹出底部面板（顶部标签编辑 + 底部动作宫格）
+    if (!context.mounted) return;
+    final result = await showMoreActionsSheet(
+      context,
+      appName: req.name,
+      presetTags: presetTags,
+      currentTags: currentTags,
+      actions: actions,
+    );
+    if (result == null) return; // 取消/关闭，不保存
+
+    try {
+      // 保存标签（用规范化 appId，与聚合库 key 一致）
+      await _aggregator.setTags(
+        channel: req.channel,
+        appId: canonicalId,
+        tags: result,
+      );
+      AppDialogs.showSuccess('分类标签已更新', title: '保存成功');
+    } catch (e) {
+      appLog.error('DetailLogic: 保存标签失败 - $e');
+      AppDialogs.showError('保存标签失败: $e', title: '保存失败');
     }
   }
 
