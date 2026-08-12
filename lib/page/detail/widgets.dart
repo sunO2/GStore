@@ -423,7 +423,11 @@ class ScreenshotsSection extends StatelessWidget {
 }
 
 /// 应用截图横向滑动列表（懒加载；点击卡片全屏预览）
+/// 卡片按标准 9:16 竖屏比例：宽 = 高 × 9/16
 class _ScreenshotGallery extends StatelessWidget {
+  static const double _cardHeight = 200;
+  static const double _cardWidth = _cardHeight * 9 / 16;
+
   final List<ScreenshotInfo> screenshots;
 
   const _ScreenshotGallery({required this.screenshots});
@@ -432,7 +436,7 @@ class _ScreenshotGallery extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return SizedBox(
-      height: 200,
+      height: _cardHeight,
       child: ListView.builder(
         scrollDirection: Axis.horizontal,
         itemCount: screenshots.length,
@@ -441,7 +445,7 @@ class _ScreenshotGallery extends StatelessWidget {
           return GestureDetector(
             onTap: () => _showPreview(context, index),
             child: Container(
-              width: 120,
+              width: _cardWidth,
               margin: AppSpacing.onlyRightMD,
               child: ClipRRect(
                 borderRadius: AppRadius.allMD,
