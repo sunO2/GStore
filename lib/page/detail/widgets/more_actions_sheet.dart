@@ -154,44 +154,12 @@ class _MoreActionsSheetState extends State<_MoreActionsSheet> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // 标题 + 当前标签
+              // 标题
               Text(
                 widget.appName,
                 style: textTheme.titleLarge?.copyWith(
                   fontWeight: AppTypography.weightSemiBold,
                 ),
-              ),
-              const SizedBox(height: AppSpacing.sm),
-              Text(
-                '当前标签',
-                style: textTheme.labelLarge?.copyWith(
-                  color: colorScheme.onSurfaceVariant,
-                ),
-              ),
-              const SizedBox(height: AppSpacing.sm),
-              Wrap(
-                spacing: AppSpacing.sm,
-                runSpacing: AppSpacing.xs,
-                children: [
-                  if (_selectedTags.isEmpty)
-                    Text(
-                      '暂无标签',
-                      style: textTheme.bodySmall?.copyWith(
-                        color: colorScheme.onSurfaceVariant,
-                      ),
-                    )
-                  else
-                    for (final tag in _selectedTags)
-                      Chip(
-                        label: Text(tag),
-                        backgroundColor: colorScheme.secondaryContainer,
-                        labelStyle: textTheme.labelMedium?.copyWith(
-                          color: colorScheme.onSecondaryContainer,
-                        ),
-                        side: BorderSide.none,
-                        visualDensity: VisualDensity.compact,
-                      ),
-                ],
               ),
               const SizedBox(height: AppSpacing.lg),
 
@@ -239,24 +207,30 @@ class _MoreActionsSheetState extends State<_MoreActionsSheet> {
                 onSubmitted: (_) => _addCustomTag(),
               ),
 
-              // 自定义标签（可移除）
+              // 自定义标签（可移除，横向滑动填充避免过多标签超出边界）
               if (customTags.isNotEmpty) ...[
                 const SizedBox(height: AppSpacing.md),
-                Wrap(
-                  spacing: AppSpacing.sm,
-                  runSpacing: AppSpacing.xs,
-                  children: [
-                    for (final tag in customTags)
-                      InputChip(
-                        label: Text(tag),
-                        onDeleted: () => _removeTag(tag),
-                        backgroundColor: colorScheme.secondaryContainer,
-                        deleteIconColor: colorScheme.onSecondaryContainer,
-                        labelStyle: textTheme.labelMedium?.copyWith(
-                          color: colorScheme.onSecondaryContainer,
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: [
+                      for (final tag in customTags) ...[
+                        InputChip(
+                          label: Text(tag),
+                          onDeleted: () => _removeTag(tag),
+                          backgroundColor: colorScheme.secondaryContainer,
+                          deleteIconColor: colorScheme.onSecondaryContainer,
+                          labelStyle: textTheme.labelSmall?.copyWith(
+                            color: colorScheme.onSecondaryContainer,
+                          ),
+                          visualDensity: VisualDensity.compact,
+                          materialTapTargetSize:
+                              MaterialTapTargetSize.shrinkWrap,
                         ),
-                      ),
-                  ],
+                        const SizedBox(width: AppSpacing.sm),
+                      ],
+                    ],
+                  ),
                 ),
               ],
 

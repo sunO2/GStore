@@ -491,7 +491,6 @@ class DetailLogic extends GetxController {
     }
 
     // 构建动作宫格
-    final githubRepo = _githubRepo();
     final actions = <MoreActionItem>[
       // 完善应用信息（GitHub 渠道 / LocalDb 的 GitHub 仓库类型应用）
       if (canSubmitAppMetadata)
@@ -500,21 +499,12 @@ class DetailLogic extends GetxController {
           label: '完善应用信息',
           onTap: () => submitAppMetadata(context),
         ),
-      // 项目主页
+      // 项目主页（打开项目的 GitHub 地址 / 项目详情地址）
       if (state.detailInfo.value?.projectUrl != null)
         MoreActionItem(
           icon: Icons.language,
           label: '项目主页',
           onTap: openProjectBrowser,
-        ),
-      // 打开 GitHub（owner/repo 可解析时）
-      if (githubRepo != null)
-        MoreActionItem(
-          icon: Icons.code,
-          label: '打开 GitHub',
-          onTap: () => openBrowser(
-            'https://github.com/${githubRepo.owner}/${githubRepo.repo}',
-          ),
         ),
     ];
 
