@@ -20,6 +20,9 @@ class HomePage extends StatelessWidget {
     return Scaffold(
       // 内容延伸到悬浮导航胶囊后方，磨砂才能透出页面内容
       extendBody: true,
+      // 禁用自动键盘压缩：输入栏位置由各页用 viewInsets 手动控制
+      // （AI 悬浮输入栏需精确贴键盘，Scaffold 压缩会导致双倍偏移）
+      resizeToAvoidBottomInset: false,
       body: PageView(
         physics: const NeverScrollableScrollPhysics(),
         controller: logic.controller,
