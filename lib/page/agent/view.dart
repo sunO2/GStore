@@ -471,79 +471,81 @@ class _AgentPageState extends State<AgentPage>
                   Expanded(
                     child: Obx(() {
                       final messages = logic.service.messages;
-                      // 胶囊/输入栏避让动画（AI 激活 80 ↔ 胶囊在场 156，平滑过渡）
-                      final homeIndex = Get.find<HomeLogic>().state.index.value;
-                      final aiActive = widget.isTabEmbedded && homeIndex == 2;
                       final isEmpty = messages.isEmpty;
                       // 原生工具调用系统：注册 Agent 工具到 AiActionProvider
-                      return AnimatedPadding(
-                        duration: const Duration(milliseconds: 200),
-                        curve: Curves.easeOut,
-                        padding: EdgeInsets.only(
-                          bottom:
-                              widget.isTabEmbedded ? (aiActive ? 80 : 156) : 80,
+                      return AiActionProvider(
+                        config: AiActionConfig(
+                          actions: logic.service.buildActions(),
                         ),
-                        child: AiActionProvider(
-                          config: AiActionConfig(
-                            actions: logic.service.buildActions(),
+                        controller: logic.service.actionController,
+                        child: AiChatWidget(
+                          currentUser: _currentUser,
+                          aiUser: _aiUser,
+                          controller: _chatController,
+                          // 共享 scrollController，让库的分页滚动检测与 loadMoreHistoryIfNeeded 使用同一 controller
+                          scrollController: logic.scrollController,
+                          onSendMessage: (chatMsg) {
+                            _handleSendMessage(chatMsg);
+                          },
+                          // 停止生成（对话流 + 工具调用）
+                          onCancelGenerating: () {
+                            logic.service.stopGenerating();
+                          },
+                          welcomeMessageConfig: isEmpty
+                              ? WelcomeMessageConfig(
+                                  title: 'GStore AI 助手',
+                                  questionsSectionTitle: '可以试试这样问我：',
+                                )
+                              : null,
+                          exampleQuestions: [
+                            ExampleQuestion(question: '帮我找一个截图工具'),
+                            ExampleQuestion(question: '帮我下载 Termux'),
+                            ExampleQuestion(question: '检查我的应用是否有更新'),
+                          ],
+                          messageOptions: _buildMessageOptions(context),
+                          // readOnly：隐藏库内置输入栏（由外部悬浮磨砂输入栏接管）
+                          readOnly: true,
+                          // 减小消息列表左右间距（默认 16 → 8）；
+                          // 底部避让：键盘时仅输入栏(56)+呼吸；无键盘时
+                          // tab 内嵌分胶囊在场(156)/AI 激活滑出(80)两态，
+                          // 独立页面仅输入栏+呼吸
+                          spacingConfig: ChatSpacingConfig(
+                            messageListPadding: EdgeInsets.only(
+                              left: 8,
+                              right: 8,
+                              top: 8,
+                              bottom:
+                                  MediaQuery.of(context).viewInsets.bottom > 0
+                                      ? 72
+                                      : widget.isTabEmbedded
+                                          ? (Get.find<HomeLogic>()
+                                                      .state
+                                                      .index
+                                                      .value ==
+                                                  2
+                                              ? 80
+                                              : 156)
+                                          : 80,
+                            ),
                           ),
-                          controller: logic.service.actionController,
-                          child: AiChatWidget(
-                            currentUser: _currentUser,
-                            aiUser: _aiUser,
-                            controller: _chatController,
-                            // 共享 scrollController，让库的分页滚动检测与 loadMoreHistoryIfNeeded 使用同一 controller
-                            scrollController: logic.scrollController,
-                            onSendMessage: (chatMsg) {
-                              _handleSendMessage(chatMsg);
+                          enableMarkdownStreaming: true,
+                          streamingWordByWord: false,
+                          loadingConfig: LoadingConfig(
+                            isLoading: state.isGenerating.value,
+                            loadingIndicator:
+                                const AppLoading(size: AppLoadingSize.small),
+                          ),
+                          messageListOptions: MessageListOptions(
+                            onLoadMore: () async {
+                              // 官方方案：controller.loadMore 增量加载（addMessages，不重置滚动）
+                              _triggerLoadMore();
                             },
-                            // 停止生成（对话流 + 工具调用）
-                            onCancelGenerating: () {
-                              logic.service.stopGenerating();
-                            },
-                            welcomeMessageConfig: isEmpty
-                                ? WelcomeMessageConfig(
-                                    title: 'GStore AI 助手',
-                                    questionsSectionTitle: '可以试试这样问我：',
-                                  )
-                                : null,
-                            exampleQuestions: [
-                              ExampleQuestion(question: '帮我找一个截图工具'),
-                              ExampleQuestion(question: '帮我下载 Termux'),
-                              ExampleQuestion(question: '检查我的应用是否有更新'),
-                            ],
-                            messageOptions: _buildMessageOptions(context),
-                            // readOnly：隐藏库内置输入栏（由外部悬浮磨砂输入栏接管）
-                            readOnly: true,
-                            // 减小消息列表左右间距（默认 16 → 8）；
-                            // 底部避让由外层 AnimatedPadding 管理（156↔80 平滑动画），
-                            // 此处不再设底部 padding，避免双重避让
-                            spacingConfig: ChatSpacingConfig(
-                              messageListPadding: EdgeInsets.only(
-                                left: 8,
-                                right: 8,
-                                top: 8,
-                              ),
-                            ),
-                            enableMarkdownStreaming: true,
-                            streamingWordByWord: false,
-                            loadingConfig: LoadingConfig(
-                              isLoading: state.isGenerating.value,
-                              loadingIndicator:
-                                  const AppLoading(size: AppLoadingSize.small),
-                            ),
-                            messageListOptions: MessageListOptions(
-                              onLoadMore: () async {
-                                // 官方方案：controller.loadMore 增量加载（addMessages，不重置滚动）
-                                _triggerLoadMore();
-                              },
-                              hasMoreMessages: logic.service.hasMoreHistory,
-                              paginationConfig: PaginationConfig(
-                                enabled: true,
-                                // 库的 reverse 分页触发方向与"向上加载更早"不符，关闭自动加载，
-                                // 由 scrollController 监听视觉顶部触发
-                                autoLoadOnScroll: false,
-                              ),
+                            hasMoreMessages: logic.service.hasMoreHistory,
+                            paginationConfig: PaginationConfig(
+                              enabled: true,
+                              // 库的 reverse 分页触发方向与"向上加载更早"不符，关闭自动加载，
+                              // 由 scrollController 监听视觉顶部触发
+                              autoLoadOnScroll: false,
                             ),
                           ),
                         ),
