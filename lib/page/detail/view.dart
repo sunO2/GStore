@@ -363,6 +363,10 @@ class DetailPage extends StatelessWidget {
   ) {
     final sections = <Widget>[];
 
+    // 应用信息卡（包名/版本/开发者/渠道基础信息与统计展开区）始终显示，
+    // 全空时内部自隐藏——不依赖渠道 statistics 声明（localdb 渠道 apiList 为空时无 statistics section）
+    sections.add(AppInfoSection(info: detail));
+
     for (var sectionType in detail.sections) {
       switch (sectionType) {
         case DetailSection.version:
@@ -370,11 +374,7 @@ class DetailPage extends StatelessWidget {
           break;
         case DetailSection.statistics:
         case DetailSection.rating:
-          // 渠道可能同时声明 statistics 与 rating（如 vivo 评分场景），
-          // 统一渲染一次，避免统计卡片堆叠
-          if (!sections.any((s) => s is AppInfoSection)) {
-            sections.add(AppInfoSection(info: detail));
-          }
+          // 统计已并入 AppInfoSection 展开区，不再单独渲染
           break;
         case DetailSection.screenshots:
           sections.add(ScreenshotsSection(info: detail));
