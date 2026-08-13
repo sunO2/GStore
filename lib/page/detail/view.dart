@@ -185,7 +185,6 @@ class DetailPage extends StatelessWidget {
         final name = state.displayName;
         final description = state.displayDescription;
         final version = state.displayVersion;
-        final packageName = state.detailInfo.value?.packageName;
         final detailInfo = state.detailInfo.value;
 
         return Column(
@@ -235,37 +234,14 @@ class DetailPage extends StatelessWidget {
                         spacing: AppSpacing.sm,
                         runSpacing: AppSpacing.xs,
                         children: [
-                          // 版本标签
-                          if (version != null && version.isNotEmpty)
-                            _buildChip(
-                              context,
-                              icon: Icons.tag,
-                              label: version,
-                              fg: Theme.of(context).colorScheme.primary,
-                              bg: Theme.of(context)
-                                  .colorScheme
-                                  .primary
-                                  .withAlpha(AppColors.alphaLow),
-                              border: Theme.of(context)
-                                  .colorScheme
-                                  .primary
-                                  .withAlpha(AppColors.alphaMedium),
-                            ),
-                          // 包名标签
-                          if (packageName != null && packageName.isNotEmpty)
-                            _buildChip(
-                              context,
-                              icon: Icons.inventory_2_outlined,
-                              label: packageName,
-                              fg: Theme.of(context).colorScheme.secondary,
-                              bg: Theme.of(context)
-                                  .colorScheme
-                                  .secondary
-                                  .withAlpha(AppColors.alphaLow),
-                              border: Theme.of(context)
-                                  .colorScheme
-                                  .secondary
-                                  .withAlpha(AppColors.alphaMedium),
+                          // 版本标签（已安装显示当前版本，未安装显示最新版本）
+                          if (version != null &&
+                                  version.isNotEmpty ||
+                              state.installInfo.value != null)
+                            VersionBadge(
+                              latestVersion: version,
+                              installedVersion:
+                                  state.installInfo.value?.versionName,
                             ),
                           // 统计标签（统一渲染，无需判断 channel 类型）
                           ...?detailInfo?.buildStatTags().map(
@@ -397,8 +373,8 @@ class DetailPage extends StatelessWidget {
         case DetailSection.rating:
           // 渠道可能同时声明 statistics 与 rating（如 vivo 评分场景），
           // 统一渲染一次，避免统计卡片堆叠
-          if (!sections.any((s) => s is StatisticsSection)) {
-            sections.add(StatisticsSection(info: detail));
+          if (!sections.any((s) => s is AppInfoSection)) {
+            sections.add(AppInfoSection(info: detail));
           }
           break;
         case DetailSection.screenshots:
