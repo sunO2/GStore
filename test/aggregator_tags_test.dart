@@ -20,7 +20,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:sqlite3/open.dart';
 
 /// 返回固定渠道分类 ['工具'] 的假渠道（getAppInfo 立即返回）
-class FakeTagsChannel implements IChannel {
+class FakeTagsChannel extends IChannel {
   final ChannelType type;
 
   FakeTagsChannel(this.type);

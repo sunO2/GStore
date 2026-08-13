@@ -24,7 +24,7 @@ import 'package:gstore/core/core.dart';
 /// 本地数据库渠道实现
 /// 基于 SQLite 本地数据库提供数据
 /// 支持 GitHub API 查询 releases 信息
-class LocalDbChannel with AppUpdateCheckMixin implements IChannel {
+class LocalDbChannel extends IChannel with AppUpdateCheckMixin {
   AppInfoDatabase _database;
   final GithubRestClient? _githubApi;
 
@@ -248,7 +248,6 @@ class LocalDbChannel with AppUpdateCheckMixin implements IChannel {
       final downloads = <DownloadInfo>[];
       String? latestVersion;
       Map<String, dynamic>? apiList; // 声明 apiList 变量以便后续使用
-      String? readme; // 声明 readme 变量以便后续使用
 
       // 检查是否是 GitHub 仓库类型（有 user 和 repositories）
       final isGitHubRepo = appInfo.user.isNotEmpty && appInfo.repositories.isNotEmpty;
@@ -259,7 +258,7 @@ class LocalDbChannel with AppUpdateCheckMixin implements IChannel {
         try {
           debugPrint('LocalDbChannel: >>> 正在调用 GitHub API 获取 releases 和统计信息 - ${appInfo.user}/${appInfo.repositories}');
 
-          // 并发获取 releases、API 统计信息和 README
+          // 并发获取 releases 与 API 统计信息（README 由 _fetchReadmeInternal 单独获取）
           final results = await Future.wait([
             _githubApi!.releases(
               appInfo.user,
@@ -272,18 +271,16 @@ class LocalDbChannel with AppUpdateCheckMixin implements IChannel {
               appInfo.repositories,
               CancelToken(),
             ),
-            _githubApi!.readme(
-              appInfo.user,
-              appInfo.repositories,
-              CancelToken(),
-            ),
           ]);
 
-          // releases 返回的是 JSON String
-          final releasesJson = results[0] as String;
-          final List<dynamic> releases = List<dynamic>.from(
-            jsonDecode(releasesJson) as List,
+          // releases 解析（下载列表 + 最新版本；与 fetchDownloads 共用解析）
+          final releasesResult = await _fetchReleasesFor(
+            appInfo,
+            releasesJson: results[0] as String,
           );
+          downloads.addAll(releasesResult.downloads);
+          latestVersion = releasesResult.latestVersion;
+          debugPrint('LocalDbChannel: <<< GitHub API 返回下载项数量 = ${downloads.length}');
 
           // apiList 返回的是 ApiList 对象，转换为 Map
           final apiListObject = results[1] as dynamic;
@@ -295,98 +292,7 @@ class LocalDbChannel with AppUpdateCheckMixin implements IChannel {
 
           debugPrint('LocalDbChannel: apiList=${apiList != null ? "有值(stars=${apiList['stargazers_count']}, forks=${apiList['forks_count']})" : "null(未获取到 GitHub 统计)"}');
 
-          // README 返回的是 JSON String，需要解码
-          Map<String, dynamic>? readmeData;
-          final readmeResult = results[2] as String;
-          if (readmeResult.isNotEmpty) {
-            try {
-              readmeData = jsonDecode(readmeResult) as Map<String, dynamic>;
-              debugPrint('LocalDbChannel: README JSON 解码成功');
-            } catch (e) {
-              appLog.error('LocalDbChannel: README JSON 解码失败 - $e');
-            }
-          } else {
-            debugPrint('LocalDbChannel: README 返回空字符串');
-          }
-
-          debugPrint('LocalDbChannel: <<< GitHub API 返回 releases 数量 = ${releases.length}');
-
-          if (releases.isNotEmpty) {
-            final latestRelease = releases[0] as Map<String, dynamic>;
-            latestVersion = latestRelease['name']?.toString() ??
-                latestRelease['tag_name']?.toString();
-            debugPrint('LocalDbChannel: latestVersion = $latestVersion');
-
-            final publishedAt = latestRelease['published_at'] != null
-                ? DateTime.parse(latestRelease['published_at'].toString())
-                : null;
-
-            final assets = latestRelease['assets'] as List<dynamic>? ?? [];
-            debugPrint('LocalDbChannel: assets 数量 = ${assets.length}');
-
-            for (var asset in assets) {
-              if (asset is Map<String, dynamic>) {
-                final downloadInfo = DownloadInfo(
-                  url: asset['browser_download_url']?.toString() ?? '',
-                  name: asset['name']?.toString() ?? '',
-                  size: asset['size'] as int?,
-                  downloadCount: asset['download_count'] as int?,
-                  version: latestVersion,
-                  publishedAt: publishedAt,
-                  platform: _parsePlatformFromAssetName(asset['name']?.toString() ?? ''),
-                );
-                downloads.add(downloadInfo);
-                debugPrint('LocalDbChannel: ✓ 添加下载文件 - ${downloadInfo.name} (${downloadInfo.formattedSize})');
-              }
-            }
-          }
-
           debugPrint('LocalDbChannel: >>> 最终下载列表数量 = ${downloads.length}');
-
-          // 处理 README - Base64 解码（使用 GitHub API 返回的数据）
-          if (readmeData != null && readmeData['content'] != null) {
-            try {
-              final content = readmeData['content'] as String;
-              final encoding = readmeData['encoding'] as String? ?? 'base64';
-              final name = readmeData['name']?.toString() ?? 'README';
-
-              debugPrint('LocalDbChannel: GitHub API 返回 README - $name, 编码=$encoding, 内容长度=${content.length}');
-
-              if (encoding == 'base64') {
-                // Base64 解码 - 需要先清理换行符和空格
-                var cleanContent = content.replaceAll(RegExp(r'\s+'), '');
-                debugPrint('LocalDbChannel: 清理后 Base64 内容长度 = ${cleanContent.length}');
-
-                // GitHub API 可能返回 URL 安全的 Base64，需要转换
-                // URL 安全: - (代替 +), _ (代替 /)
-                // 标准: +, /
-                cleanContent = cleanContent
-                    .replaceAll('-', '+')
-                    .replaceAll('_', '/');
-
-                // 添加必要的填充
-                while (cleanContent.length % 4 != 0) {
-                  cleanContent += '=';
-                }
-
-                debugPrint('LocalDbChannel: 标准化后 Base64 长度 = ${cleanContent.length}');
-                final decodedBytes = base64.decode(cleanContent);
-                readme = utf8.decode(decodedBytes);
-                debugPrint('LocalDbChannel: ✓ README Base64 解码成功，长度 = ${readme.length}');
-              } else if (encoding == null || encoding == 'none') {
-                // 直接使用（未编码）
-                readme = content;
-                debugPrint('LocalDbChannel: ✓ README 直接使用，长度 = ${readme.length}');
-              } else {
-                debugPrint('LocalDbChannel: ⚠ 未知编码 $encoding，尝试直接使用');
-                readme = content;
-              }
-            } catch (e) {
-              appLog.error('LocalDbChannel: ✗ README 解码失败 - $e');
-            }
-          } else {
-            debugPrint('LocalDbChannel: ⚠ GitHub API 返回 README 数据为空');
-          }
         } catch (e, stackTrace) {
           // GitHub API 调用失败不影响整体流程，使用空下载列表
           appLog.error('LocalDbChannel: ✗ 获取 GitHub releases 失败: $e');
@@ -396,23 +302,9 @@ class LocalDbChannel with AppUpdateCheckMixin implements IChannel {
         debugPrint('LocalDbChannel: ⚠ 跳过 GitHub releases 查询 - isGitHubRepo: $isGitHubRepo, hasApi: ${_githubApi != null}');
       }
 
-      // 如果没有从 GitHub 获取到 README，使用数据库中的内容
-      if (readme == null) {
-        readme = (appInfo.readme != null && appInfo.readme!.isNotEmpty)
-            ? appInfo.readme!
-            : (appInfo.des.isNotEmpty ? appInfo.des : null);
-        debugPrint('LocalDbChannel: 使用数据库 README/des，长度 = ${readme?.length ?? 0}');
-      }
-
-      // 将 README 中的相对路径图片替换为完整 raw URL
-      // （代理仅用于下载/图片加速，不改变资源地址语义）
-      final defaultBranch = apiList?['default_branch']?.toString();
-      final rawBaseUrl =
-          'https://raw.githubusercontent.com/${appInfo.user}/${appInfo.repositories}/refs/heads/'
-          '${defaultBranch != null && defaultBranch.isNotEmpty ? defaultBranch : 'main'}/';
-      if (readme != null) {
-        readme = resolveReadmeImageUrls(readme, rawBaseUrl);
-      }
+      // README：GitHub API base64 解码 → DB 兜底 → 图片绝对化
+      // （与 fetchReadme 共用逻辑；apiList 可空时 raw 图片绝对化回退 'main'）
+      final readme = await _fetchReadmeInternal(appInfo, apiList);
 
       appLog.info('LocalDbChannel: ========== 构建详情信息完成 ==========');
       debugPrint('LocalDbChannel: downloads 列表长度 = ${downloads.length}');
@@ -461,6 +353,280 @@ class LocalDbChannel with AppUpdateCheckMixin implements IChannel {
       );
     }
   }
+
+  /// 分块加载路径的 AppSummary 解析：直接查库，不做 metadata 覆盖
+  /// （分块数据只用 user/repositories/readme/des，且避免分块路径引入额外网络依赖）
+  Future<AppSummary?> _loadAppSummary(String appId) async {
+    final entity = await _database.dao.getAppInfo(appId);
+    return entity == null ? null : AppSummary.fromDbAppInfo(entity);
+  }
+
+  /// 分块加载：仅下载列表（走 _githubApi.releases，失败 → 空列表）
+  @override
+  Future<ChannelResult<List<DownloadInfo>>> fetchDownloads(String appId) async {
+    try {
+      final appInfo = await _loadAppSummary(appId);
+      if (appInfo == null) {
+        return ChannelResult.failure(
+          from: ChannelType.localDb,
+          error: '应用不存在',
+        );
+      }
+      final result = await _fetchReleasesFor(appInfo);
+      return ChannelResult.success(
+        data: result.downloads,
+        from: ChannelType.localDb,
+      );
+    } catch (e) {
+      appLog.error('LocalDbChannel: ✗ 获取下载列表失败 - $e');
+      return ChannelResult.failure(
+        from: ChannelType.localDb,
+        error: e.toString(),
+      );
+    }
+  }
+
+  /// 分块加载：仅 README（_githubApi.readme base64 解码 → DB 兜底 → 图片绝对化）
+  @override
+  Future<ChannelResult<String?>> fetchReadme(String appId) async {
+    try {
+      final appInfo = await _loadAppSummary(appId);
+      if (appInfo == null) {
+        return ChannelResult.failure(
+          from: ChannelType.localDb,
+          error: '应用不存在',
+        );
+      }
+      // apiList 可空：raw 图片绝对化回退 'main'（分块路径不额外拉仓库 API）
+      final readme = await _fetchReadmeInternal(appInfo, null);
+      return ChannelResult.success(data: readme, from: ChannelType.localDb);
+    } catch (e) {
+      appLog.error('LocalDbChannel: ✗ 获取 README 失败 - $e');
+      return ChannelResult.failure(
+        from: ChannelType.localDb,
+        error: e.toString(),
+      );
+    }
+  }
+
+  /// 分块加载：仅统计/版本/开发者（apiList 原始 Map，供 buildStatTags 解析；失败 → null）
+  @override
+  Future<ChannelResult<Map<String, dynamic>?>> fetchStatistics(
+    String appId,
+  ) async {
+    try {
+      final appInfo = await _loadAppSummary(appId);
+      if (appInfo == null) {
+        return ChannelResult.failure(
+          from: ChannelType.localDb,
+          error: '应用不存在',
+        );
+      }
+      if (_githubApi == null ||
+          appInfo.user.isEmpty ||
+          appInfo.repositories.isEmpty) {
+        return ChannelResult.success(data: null, from: ChannelType.localDb);
+      }
+      try {
+        final apiList = await _githubApi!.apiList(
+          appInfo.user,
+          appInfo.repositories,
+          CancelToken(),
+        );
+        return ChannelResult.success(
+          data: _apiListToMap(apiList),
+          from: ChannelType.localDb,
+        );
+      } catch (e) {
+        // GitHub API 失败不影响整体流程，统计置 null
+        appLog.error('LocalDbChannel: ✗ 获取 GitHub 统计失败 - $e');
+        return ChannelResult.success(data: null, from: ChannelType.localDb);
+      }
+    } catch (e) {
+      appLog.error('LocalDbChannel: ✗ 获取统计信息失败 - $e');
+      return ChannelResult.failure(
+        from: ChannelType.localDb,
+        error: e.toString(),
+      );
+    }
+  }
+
+  /// 拉取最新 release 并解析为下载列表 + 最新版本。
+  ///
+  /// getAppDetail 与 fetchDownloads 共用解析逻辑；[releasesJson] 由
+  /// getAppDetail 并发预取后传入（避免重复请求），null 时内部拉取。
+  /// _githubApi 未注入 / 非仓库 / 解析失败 → 空列表（不阻塞主流程）。
+  Future<({List<DownloadInfo> downloads, String? latestVersion})>
+      _fetchReleasesFor(AppSummary appInfo, {String? releasesJson}) async {
+    if (_githubApi == null ||
+        appInfo.user.isEmpty ||
+        appInfo.repositories.isEmpty) {
+      return (downloads: const <DownloadInfo>[], latestVersion: null);
+    }
+    try {
+      final json = releasesJson ??
+          await _githubApi!.releases(
+            appInfo.user,
+            appInfo.repositories,
+            1,
+            CancelToken(),
+          );
+      final List<dynamic> releases = List<dynamic>.from(
+        jsonDecode(json) as List,
+      );
+
+      final downloads = <DownloadInfo>[];
+      String? latestVersion;
+
+      debugPrint('LocalDbChannel: <<< GitHub API 返回 releases 数量 = ${releases.length}');
+
+      if (releases.isNotEmpty) {
+        final latestRelease = releases[0] as Map<String, dynamic>;
+        latestVersion = latestRelease['name']?.toString() ??
+            latestRelease['tag_name']?.toString();
+        debugPrint('LocalDbChannel: latestVersion = $latestVersion');
+
+        final publishedAt = latestRelease['published_at'] != null
+            ? DateTime.parse(latestRelease['published_at'].toString())
+            : null;
+
+        final assets = latestRelease['assets'] as List<dynamic>? ?? [];
+        debugPrint('LocalDbChannel: assets 数量 = ${assets.length}');
+
+        for (var asset in assets) {
+          if (asset is Map<String, dynamic>) {
+            final downloadInfo = DownloadInfo(
+              url: asset['browser_download_url']?.toString() ?? '',
+              name: asset['name']?.toString() ?? '',
+              size: asset['size'] as int?,
+              downloadCount: asset['download_count'] as int?,
+              version: latestVersion,
+              publishedAt: publishedAt,
+              platform: _parsePlatformFromAssetName(asset['name']?.toString() ?? ''),
+            );
+            downloads.add(downloadInfo);
+            debugPrint('LocalDbChannel: ✓ 添加下载文件 - ${downloadInfo.name} (${downloadInfo.formattedSize})');
+          }
+        }
+      }
+
+      debugPrint('LocalDbChannel: >>> 最终下载列表数量 = ${downloads.length}');
+      return (downloads: downloads, latestVersion: latestVersion);
+    } catch (e) {
+      // GitHub API 调用失败不影响整体流程，使用空下载列表
+      appLog.error('LocalDbChannel: ✗ 获取 GitHub releases 失败: $e');
+      return (downloads: const <DownloadInfo>[], latestVersion: null);
+    }
+  }
+
+  /// 获取 README：_githubApi.readme base64 解码 → DB readme 兜底 → 图片绝对化。
+  ///
+  /// getAppDetail 与 fetchReadme 共用；[apiList] 可空：default_branch 缺失时
+  /// raw 图片绝对化回退 'main'；GitHub 侧任一环节失败静默降级 DB 内容。
+  Future<String?> _fetchReadmeInternal(
+    AppSummary appInfo,
+    Map<String, dynamic>? apiList,
+  ) async {
+    String? readme;
+
+    if (_githubApi != null &&
+        appInfo.user.isNotEmpty &&
+        appInfo.repositories.isNotEmpty) {
+      try {
+        final readmeResult = await _githubApi!.readme(
+          appInfo.user,
+          appInfo.repositories,
+          CancelToken(),
+        );
+        Map<String, dynamic>? readmeData;
+        if (readmeResult.isNotEmpty) {
+          try {
+            readmeData = jsonDecode(readmeResult) as Map<String, dynamic>;
+            debugPrint('LocalDbChannel: README JSON 解码成功');
+          } catch (e) {
+            appLog.error('LocalDbChannel: README JSON 解码失败 - $e');
+          }
+        } else {
+          debugPrint('LocalDbChannel: README 返回空字符串');
+        }
+
+        // 处理 README - Base64 解码（使用 GitHub API 返回的数据）
+        if (readmeData != null && readmeData['content'] != null) {
+          try {
+            final content = readmeData['content'] as String;
+            final encoding = readmeData['encoding'] as String? ?? 'base64';
+            final name = readmeData['name']?.toString() ?? 'README';
+
+            debugPrint('LocalDbChannel: GitHub API 返回 README - $name, 编码=$encoding, 内容长度=${content.length}');
+
+            if (encoding == 'base64') {
+              // Base64 解码 - 需要先清理换行符和空格
+              var cleanContent = content.replaceAll(RegExp(r'\s+'), '');
+              debugPrint('LocalDbChannel: 清理后 Base64 内容长度 = ${cleanContent.length}');
+
+              // GitHub API 可能返回 URL 安全的 Base64，需要转换
+              // URL 安全: - (代替 +), _ (代替 /)
+              // 标准: +, /
+              cleanContent = cleanContent
+                  .replaceAll('-', '+')
+                  .replaceAll('_', '/');
+
+              // 添加必要的填充
+              while (cleanContent.length % 4 != 0) {
+                cleanContent += '=';
+              }
+
+              debugPrint('LocalDbChannel: 标准化后 Base64 长度 = ${cleanContent.length}');
+              final decodedBytes = base64.decode(cleanContent);
+              readme = utf8.decode(decodedBytes);
+              debugPrint('LocalDbChannel: ✓ README Base64 解码成功，长度 = ${readme.length}');
+            } else {
+              // 未编码 / 未知编码：直接使用
+              readme = content;
+              debugPrint('LocalDbChannel: ✓ README 直接使用，长度 = ${readme.length}');
+            }
+          } catch (e) {
+            appLog.error('LocalDbChannel: ✗ README 解码失败 - $e');
+          }
+        } else {
+          debugPrint('LocalDbChannel: ⚠ GitHub API 返回 README 数据为空');
+        }
+      } catch (e) {
+        appLog.error('LocalDbChannel: ✗ 获取 GitHub README 失败 - $e');
+      }
+    }
+
+    // 如果没有从 GitHub 获取到 README，使用数据库中的内容
+    if (readme == null) {
+      readme = (appInfo.readme != null && appInfo.readme!.isNotEmpty)
+          ? appInfo.readme!
+          : (appInfo.des.isNotEmpty ? appInfo.des : null);
+      debugPrint('LocalDbChannel: 使用数据库 README/des，长度 = ${readme?.length ?? 0}');
+    }
+
+    // 将 README 中的相对路径图片替换为完整 raw URL
+    // （代理仅用于下载/图片加速，不改变资源地址语义）
+    final defaultBranch = apiList?['default_branch']?.toString();
+    final rawBaseUrl =
+        'https://raw.githubusercontent.com/${appInfo.user}/${appInfo.repositories}/refs/heads/'
+        '${defaultBranch != null && defaultBranch.isNotEmpty ? defaultBranch : 'main'}/';
+    if (readme != null) {
+      readme = resolveReadmeImageUrls(readme, rawBaseUrl);
+    }
+    return readme;
+  }
+
+  /// ApiList → Map（buildStatTags 按 'stargazers_count'/'forks_count' 读取；
+  /// ApiList.toJson 的 key 为 'forks'，不可直接复用）
+  Map<String, dynamic> _apiListToMap(ApiList apiList) => {
+        'stargazers_count': apiList.stargazers_count,
+        'forks_count': apiList.forks,
+        'default_branch': apiList.default_branch,
+        'html_url': apiList.html_url,
+        'full_name': apiList.full_name,
+        'description': apiList.description,
+        'created_at': apiList.created_at,
+      };
 
   /// 从文件名解析平台信息
   String? _parsePlatformFromAssetName(String fileName) {

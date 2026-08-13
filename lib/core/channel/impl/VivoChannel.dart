@@ -20,7 +20,7 @@ import 'package:gstore/core/channel/AppUpdateCheckMixin.dart';
 
 /// vivo 应用市场渠道实现
 /// 通过 vivo 应用市场 API 获取应用数据
-class VivoChannel with AppUpdateCheckMixin implements IChannel {
+class VivoChannel extends IChannel with AppUpdateCheckMixin {
   final Dio _dio;
 
   @override

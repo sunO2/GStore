@@ -23,7 +23,7 @@ import 'package:gstore/core/data/metadata_repository.dart';
 
 /// GitHub API 渠道实现
 /// 通过 GitHub API 获取应用数据
-class GitHubChannel with AppUpdateCheckMixin implements IChannel {
+class GitHubChannel extends IChannel with AppUpdateCheckMixin {
   final GithubRestClient _githubApi;
   final String _user;
   final String _repository;
@@ -586,109 +586,18 @@ class GitHubChannel with AppUpdateCheckMixin implements IChannel {
 
       // apiList 返回 ApiList 对象（非 JSON 字符串）
       final ApiList apiList = results[0] as ApiList;
-      final String releasesJson = results[1] as String;
 
-      // 解析 Releases
-      final List<dynamic> releases = List<dynamic>.from(
-        jsonDecode(releasesJson) as List,
+      // 解析 Releases（下载列表 + 最新版本 + 原始 release Map，与 fetchDownloads 共用解析）
+      final releases = await _fetchReleasesFor(
+        appInfo,
+        releasesJson: results[1] as String,
       );
+      final downloads = releases.downloads;
+      final latestVersion = releases.latestVersion;
 
-      // 构建下载列表
-      final downloads = <DownloadInfo>[];
-      String? latestVersion;
-      DateTime? publishedAt;
-
-      debugPrint('GitHubChannel: releases 数量 = ${releases.length}');
-
-      if (releases.isNotEmpty) {
-        final latestRelease = releases[0] as Map<String, dynamic>;
-        latestVersion = latestRelease['name']?.toString() ??
-            latestRelease['tag_name']?.toString();
-        publishedAt = latestRelease['published_at'] != null
-            ? DateTime.parse(latestRelease['published_at'].toString())
-            : null;
-
-        final assets = latestRelease['assets'] as List<dynamic>? ?? [];
-        debugPrint('GitHubChannel: assets 数量 = ${assets.length}');
-
-        for (var asset in assets) {
-          if (asset is Map<String, dynamic>) {
-            final downloadInfo = DownloadInfo(
-              url: asset['browser_download_url']?.toString() ?? '',
-              name: asset['name']?.toString() ?? '',
-              size: asset['size'] as int?,
-              downloadCount: asset['download_count'] as int?,
-              version: latestVersion,
-              publishedAt: publishedAt,
-              platform: _parsePlatformFromAssetName(asset['name']?.toString() ?? ''),
-            );
-            downloads.add(downloadInfo);
-            debugPrint('GitHubChannel: 添加下载文件 - ${downloadInfo.name}');
-          }
-        }
-      }
-
-      debugPrint('GitHubChannel: 最终下载列表数量 = ${downloads.length}');
-
-      // 获取 README（contents API + ETag 条件缓存）
-      // 缓存存绝对化后文本（304 命中直接渲染，无需重复 resolve）
-      String? readme;
-      if (apiList.default_branch != null &&
-          apiList.default_branch!.isNotEmpty) {
-        final branch = apiList.default_branch!;
-        final rawBaseUrl = 'https://raw.githubusercontent.com/${appInfo.user}/${appInfo.repositories}/refs/heads/$branch/';
-        try {
-          final cached = await ReadmeCache.instance
-              .get(appInfo.user, appInfo.repositories);
-          final headers =
-              cached != null ? {'If-None-Match': cached.etag} : null;
-          final apiBase =
-              'https://api.github.com/repos/${appInfo.user}/${appInfo.repositories}/contents';
-          final readmeResp = await _httpClient
-              .get(Uri.parse(applyProxyIfNeeded('$apiBase/README.md?ref=$branch', getProxy())),
-                  headers: headers)
-              .timeout(const Duration(seconds: 10));
-          if (readmeResp.statusCode == 304 && cached != null) {
-            // 条件命中：直接用缓存（已绝对化）
-            readme = cached.readme;
-          } else if (readmeResp.statusCode == 200 &&
-              readmeResp.body.isNotEmpty) {
-            readme = decodeContentsReadme(readmeResp.body);
-            final etag = readmeResp.headers['etag'];
-            if (readme != null) {
-              readme = resolveReadmeImageUrls(readme, rawBaseUrl);
-              if (etag != null && etag.isNotEmpty) {
-                await ReadmeCache.instance.put(appInfo.user,
-                    appInfo.repositories,
-                    etag: etag, readme: readme);
-              }
-            }
-          } else {
-            // fallback README.MD（同样带条件头；同 key 复用主 etag 条件请求）
-            final upperResp = await _httpClient
-                .get(Uri.parse(applyProxyIfNeeded('$apiBase/README.MD?ref=$branch', getProxy())),
-                    headers: headers)
-                .timeout(const Duration(seconds: 10));
-            if (upperResp.statusCode == 304 && cached != null) {
-              readme = cached.readme;
-            } else if (upperResp.statusCode == 200 &&
-                upperResp.body.isNotEmpty) {
-              readme = decodeContentsReadme(upperResp.body);
-              final etag = upperResp.headers['etag'];
-              if (readme != null) {
-                readme = resolveReadmeImageUrls(readme, rawBaseUrl);
-                if (etag != null && etag.isNotEmpty) {
-                  await ReadmeCache.instance.put(appInfo.user,
-                      appInfo.repositories,
-                      etag: etag, readme: readme);
-                }
-              }
-            }
-          }
-        } catch (e) {
-          appLog.error('GitHubChannel: 获取 README 失败 - $e');
-        }
-      }
+      // 获取 README（contents API + ETag 条件缓存 + README.MD 回退 + 图片绝对化，
+      // 与 fetchReadme 共用逻辑；分支来自 apiList.default_branch）
+      final readme = await _fetchReadmeInternal(appInfo, apiList.default_branch);
 
       // 构建原始数据 Map（保持原始格式）
       final rawData = <String, dynamic>{
@@ -719,12 +628,10 @@ class GitHubChannel with AppUpdateCheckMixin implements IChannel {
           }
           return null; // 使用默认的网络图片处理
         },
-        // apiData 用 Map 存储（GitHubChannelDetailProxy.buildStatTags 按 Map 读取）
-        'apiData': {
-          'stargazers_count': apiList.stargazers_count,
-          'forks_count': apiList.forks,
-        },
-        'releaseData': releases.isNotEmpty ? releases[0] : null,
+        // apiData 用 Map 存储（GitHubChannelDetailProxy.buildStatTags 按 Map 读取；
+        // 与 fetchStatistics 共用转换）
+        'apiData': _apiListToMap(apiList),
+        'releaseData': releases.latestRelease,
         // 元数据（versionCode 等扩展信息，供更新检测/展示使用）
         if (metadata != null) 'metadata': metadata,
       };
@@ -745,6 +652,245 @@ class GitHubChannel with AppUpdateCheckMixin implements IChannel {
       );
     }
   }
+
+  /// 分块加载：仅下载列表（不拉 README/统计）。
+  /// getAppInfo → 最新 release 解析（与 getAppDetail 共用 _fetchReleasesFor）
+  @override
+  Future<ChannelResult<List<DownloadInfo>>> fetchDownloads(String appId) async {
+    try {
+      final appInfoResult = await getAppInfo(appId);
+      if (!appInfoResult.success || appInfoResult.data == null) {
+        return ChannelResult.failure(
+          from: ChannelType.github,
+          error: appInfoResult.error ?? '应用不存在',
+        );
+      }
+      final result = await _fetchReleasesFor(appInfoResult.data!);
+      return ChannelResult.success(
+        data: result.downloads,
+        from: ChannelType.github,
+      );
+    } catch (e) {
+      appLog.error('GitHubChannel: 获取下载列表失败 - $e');
+      return ChannelResult.failure(
+        from: ChannelType.github,
+        error: e.toString(),
+      );
+    }
+  }
+
+  /// 分块加载：仅 README（读缓存 / 条件请求）。
+  /// getAppInfo → 仓库 API 取分支 → contents API + ETag 缓存（与 getAppDetail 共用）
+  @override
+  Future<ChannelResult<String?>> fetchReadme(String appId) async {
+    try {
+      final appInfoResult = await getAppInfo(appId);
+      if (!appInfoResult.success || appInfoResult.data == null) {
+        return ChannelResult.failure(
+          from: ChannelType.github,
+          error: appInfoResult.error ?? '应用不存在',
+        );
+      }
+      final appInfo = appInfoResult.data!;
+      // 分支信息（raw 图片绝对化基准）来自仓库 API
+      final apiList = await _githubApi.apiList(
+        appInfo.user,
+        appInfo.repositories,
+        CancelToken(),
+      );
+      final readme = await _fetchReadmeInternal(appInfo, apiList.default_branch);
+      return ChannelResult.success(data: readme, from: ChannelType.github);
+    } catch (e) {
+      appLog.error('GitHubChannel: 获取 README 失败 - $e');
+      return ChannelResult.failure(
+        from: ChannelType.github,
+        error: e.toString(),
+      );
+    }
+  }
+
+  /// 分块加载：仅统计/版本/开发者（apiList 原始 Map，供 buildStatTags 解析）
+  @override
+  Future<ChannelResult<Map<String, dynamic>?>> fetchStatistics(
+    String appId,
+  ) async {
+    try {
+      final appInfoResult = await getAppInfo(appId);
+      if (!appInfoResult.success || appInfoResult.data == null) {
+        return ChannelResult.failure(
+          from: ChannelType.github,
+          error: appInfoResult.error ?? '应用不存在',
+        );
+      }
+      final appInfo = appInfoResult.data!;
+      final apiList = await _githubApi.apiList(
+        appInfo.user,
+        appInfo.repositories,
+        CancelToken(),
+      );
+      return ChannelResult.success(
+        data: _apiListToMap(apiList),
+        from: ChannelType.github,
+      );
+    } catch (e) {
+      appLog.error('GitHubChannel: 获取统计信息失败 - $e');
+      return ChannelResult.failure(
+        from: ChannelType.github,
+        error: e.toString(),
+      );
+    }
+  }
+
+  /// 拉取最新 release 并解析为下载列表 + 最新版本 + 原始 release Map。
+  ///
+  /// getAppDetail 与 fetchDownloads 共用解析逻辑；[releasesJson] 由
+  /// getAppDetail 并发预取后传入（避免重复请求），null 时内部拉取。
+  /// 解析失败抛异常（getAppDetail 由外层兜底；fetchDownloads 转为 failure）。
+  Future<
+      ({
+        List<DownloadInfo> downloads,
+        Map<String, dynamic>? latestRelease,
+        String? latestVersion,
+      })> _fetchReleasesFor(AppSummary appInfo, {String? releasesJson}) async {
+    final json = releasesJson ??
+        await _githubApi.releases(
+          appInfo.user,
+          appInfo.repositories,
+          1,
+          CancelToken(),
+        );
+    final List<dynamic> releases = List<dynamic>.from(
+      jsonDecode(json) as List,
+    );
+
+    // 构建下载列表
+    final downloads = <DownloadInfo>[];
+    String? latestVersion;
+    DateTime? publishedAt;
+    Map<String, dynamic>? latestRelease;
+
+    debugPrint('GitHubChannel: releases 数量 = ${releases.length}');
+
+    if (releases.isNotEmpty) {
+      latestRelease = releases[0] as Map<String, dynamic>;
+      latestVersion = latestRelease['name']?.toString() ??
+          latestRelease['tag_name']?.toString();
+      publishedAt = latestRelease['published_at'] != null
+          ? DateTime.parse(latestRelease['published_at'].toString())
+          : null;
+
+      final assets = latestRelease['assets'] as List<dynamic>? ?? [];
+      debugPrint('GitHubChannel: assets 数量 = ${assets.length}');
+
+      for (var asset in assets) {
+        if (asset is Map<String, dynamic>) {
+          final downloadInfo = DownloadInfo(
+            url: asset['browser_download_url']?.toString() ?? '',
+            name: asset['name']?.toString() ?? '',
+            size: asset['size'] as int?,
+            downloadCount: asset['download_count'] as int?,
+            version: latestVersion,
+            publishedAt: publishedAt,
+            platform: _parsePlatformFromAssetName(asset['name']?.toString() ?? ''),
+          );
+          downloads.add(downloadInfo);
+          debugPrint('GitHubChannel: 添加下载文件 - ${downloadInfo.name}');
+        }
+      }
+    }
+
+    debugPrint('GitHubChannel: 最终下载列表数量 = ${downloads.length}');
+    return (
+      downloads: downloads,
+      latestRelease: latestRelease,
+      latestVersion: latestVersion,
+    );
+  }
+
+  /// 获取 README（contents API + ETag 条件缓存 + README.MD 回退 + 图片绝对化）。
+  ///
+  /// getAppDetail 与 fetchReadme 共用；[defaultBranch] 为空（无分支信息）时不
+  /// 发起请求返回 null；任一环节失败静默返回 null（不影响主流程）。
+  /// 缓存存绝对化后文本（304 命中直接渲染，无需重复 resolve）。
+  Future<String?> _fetchReadmeInternal(
+    AppSummary appInfo,
+    String? defaultBranch,
+  ) async {
+    if (defaultBranch == null || defaultBranch.isEmpty) return null;
+    final branch = defaultBranch;
+    final rawBaseUrl =
+        'https://raw.githubusercontent.com/${appInfo.user}/${appInfo.repositories}/refs/heads/$branch/';
+    try {
+      final cached =
+          await ReadmeCache.instance.get(appInfo.user, appInfo.repositories);
+      final headers = cached != null ? {'If-None-Match': cached.etag} : null;
+      final apiBase =
+          'https://api.github.com/repos/${appInfo.user}/${appInfo.repositories}/contents';
+      final readmeResp = await _httpClient
+          .get(
+            Uri.parse(applyProxyIfNeeded('$apiBase/README.md?ref=$branch', getProxy())),
+            headers: headers,
+          )
+          .timeout(const Duration(seconds: 10));
+      if (readmeResp.statusCode == 304 && cached != null) {
+        // 条件命中：直接用缓存（已绝对化）
+        return cached.readme;
+      }
+      if (readmeResp.statusCode == 200 && readmeResp.body.isNotEmpty) {
+        final readme = decodeContentsReadme(readmeResp.body);
+        final etag = readmeResp.headers['etag'];
+        if (readme != null) {
+          final resolved = resolveReadmeImageUrls(readme, rawBaseUrl);
+          if (etag != null && etag.isNotEmpty) {
+            await ReadmeCache.instance.put(appInfo.user,
+                appInfo.repositories,
+                etag: etag, readme: resolved);
+          }
+          return resolved;
+        }
+      } else {
+        // fallback README.MD（同样带条件头；同 key 复用主 etag 条件请求）
+        final upperResp = await _httpClient
+            .get(
+              Uri.parse(applyProxyIfNeeded('$apiBase/README.MD?ref=$branch', getProxy())),
+              headers: headers,
+            )
+            .timeout(const Duration(seconds: 10));
+        if (upperResp.statusCode == 304 && cached != null) {
+          return cached.readme;
+        }
+        if (upperResp.statusCode == 200 && upperResp.body.isNotEmpty) {
+          final readme = decodeContentsReadme(upperResp.body);
+          final etag = upperResp.headers['etag'];
+          if (readme != null) {
+            final resolved = resolveReadmeImageUrls(readme, rawBaseUrl);
+            if (etag != null && etag.isNotEmpty) {
+              await ReadmeCache.instance.put(appInfo.user,
+                  appInfo.repositories,
+                  etag: etag, readme: resolved);
+            }
+            return resolved;
+          }
+        }
+      }
+      return null;
+    } catch (e) {
+      appLog.error('GitHubChannel: 获取 README 失败 - $e');
+      return null;
+    }
+  }
+
+  /// ApiList → Map（buildStatTags 按 'stargazers_count'/'forks_count' 读取；
+  /// ApiList.toJson 的 key 为 'forks'，不可直接复用）
+  Map<String, dynamic> _apiListToMap(ApiList apiList) => {
+        'stargazers_count': apiList.stargazers_count,
+        'forks_count': apiList.forks,
+        'default_branch': apiList.default_branch,
+        'html_url': apiList.html_url,
+        'full_name': apiList.full_name,
+        'description': apiList.description,
+        'created_at': apiList.created_at,
+      };
 
   /// 规范化渠道记录：repositories 被误存为完整名（owner/repo，历史安装迁移 bug 产物）
   /// 时拆分为 user/repositories，apprepo 保留完整名；其余字段原样。

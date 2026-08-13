@@ -24,7 +24,7 @@ import 'package:sqlite3/open.dart';
 ///   getAppInfo 在飞行中（maxConcurrent == 1）；分片 Future.wait 并行后
 ///   maxConcurrent 必然 >= 2。
 /// - throwingAppId 命中时抛异常，验证 per-app try/catch 兜底不丢条。
-class FakeChannel implements IChannel {
+class FakeChannel extends IChannel {
   final ChannelType type;
   final Duration delay;
 

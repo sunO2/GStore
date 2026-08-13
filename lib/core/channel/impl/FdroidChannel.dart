@@ -28,7 +28,7 @@ import 'package:gstore/core/channel/AppUpdateCheckMixin.dart';
 /// 架构：
 /// - 使用 Rust RepoManager 搜索应用
 /// - 使用 ChannelDatabase 存储用户添加的应用
-class FdroidChannel with AppUpdateCheckMixin implements IChannel {
+class FdroidChannel extends IChannel with AppUpdateCheckMixin {
   final Dio _dio;
 
   FdroidRepoManager get _repoManager => Get.find<FdroidRepoManager>();
