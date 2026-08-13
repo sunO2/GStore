@@ -27,6 +27,21 @@ class DetailState {
   /// 当前下载状态（响应式，用于 FAB 进度显示）
   final Rx<DownloadStatus?> currentDownload = Rx<DownloadStatus?>(null);
 
+  /// 下载列表（分块加载独立注入，null=未就绪/失败降级）
+  final Rx<List<DownloadInfo>?> downloads = Rx<List<DownloadInfo>?>(null);
+
+  /// README 内容（分块加载独立注入，null=未就绪/失败降级）
+  final Rx<String?> readme = Rx<String?>(null);
+
+  /// 下载列表区块加载中
+  final RxBool downloadsLoading = false.obs;
+
+  /// README 区块加载中
+  final RxBool readmeLoading = false.obs;
+
+  /// 统计区块加载中
+  final RxBool statisticsLoading = false.obs;
+
   DetailState() {
     ///Initialize variables
   }
