@@ -156,8 +156,6 @@ class SharedPrefsConfigStorage implements ConfigStorage {
   @override
   StorageType get type => StorageType.normal;
 
-  SharedPreferences? _prefs;
-
   /// 变化事件广播器（写入拦截）
   final _changesController =
       StreamController<StorageChangeEvent>.broadcast();
@@ -177,13 +175,9 @@ class SharedPrefsConfigStorage implements ConfigStorage {
 
   @override
   Future<void> initialize() async {
-    _prefs ??= await _getInstance();
-  }
-
-  Future<SharedPreferences> _getInstance() async {
-    // 延迟导入避免循环依赖
-    final SharedPreferences prefs = await _getPrefs();
-    return prefs;
+    // 预热插件（不缓存实例：测试中 setMockInitialValues 会替换平台存储，
+    // 每次操作经 _getPrefs() 重新解析，保证始终读写最新数据）
+    await _getPrefs();
   }
 
   Future<SharedPreferences> _getPrefs() async {
@@ -192,78 +186,71 @@ class SharedPrefsConfigStorage implements ConfigStorage {
     return SharedPreferences.getInstance();
   }
 
-  SharedPreferences get _prefsInstance {
-    if (_prefs == null) {
-      throw StateError('SharedPrefsConfigStorage not initialized. Call initialize() first.');
-    }
-    return _prefs!;
-  }
-
   String _key(String key) => '$_prefix$key';
 
   @override
   Future<bool> setString(String key, String value) async {
-    final ok = await _prefsInstance.setString(_key(key), value);
+    final ok = await (await _getPrefs()).setString(_key(key), value);
     if (ok) _emit(key, value);
     return ok;
   }
 
   @override
   Future<String?> getString(String key) async {
-    return _prefsInstance.getString(_key(key));
+    return (await _getPrefs()).getString(_key(key));
   }
 
   @override
   Future<bool> setInt(String key, int value) async {
-    final ok = await _prefsInstance.setInt(_key(key), value);
+    final ok = await (await _getPrefs()).setInt(_key(key), value);
     if (ok) _emit(key, value);
     return ok;
   }
 
   @override
   Future<int?> getInt(String key) async {
-    return _prefsInstance.getInt(_key(key));
+    return (await _getPrefs()).getInt(_key(key));
   }
 
   @override
   Future<bool> setBool(String key, bool value) async {
-    final ok = await _prefsInstance.setBool(_key(key), value);
+    final ok = await (await _getPrefs()).setBool(_key(key), value);
     if (ok) _emit(key, value);
     return ok;
   }
 
   @override
   Future<bool?> getBool(String key) async {
-    return _prefsInstance.getBool(_key(key));
+    return (await _getPrefs()).getBool(_key(key));
   }
 
   @override
   Future<bool> setDouble(String key, double value) async {
-    final ok = await _prefsInstance.setDouble(_key(key), value);
+    final ok = await (await _getPrefs()).setDouble(_key(key), value);
     if (ok) _emit(key, value);
     return ok;
   }
 
   @override
   Future<double?> getDouble(String key) async {
-    return _prefsInstance.getDouble(_key(key));
+    return (await _getPrefs()).getDouble(_key(key));
   }
 
   @override
   Future<bool> setStringList(String key, List<String> value) async {
-    final ok = await _prefsInstance.setStringList(_key(key), value);
+    final ok = await (await _getPrefs()).setStringList(_key(key), value);
     if (ok) _emit(key, value);
     return ok;
   }
 
   @override
   Future<List<String>?> getStringList(String key) async {
-    return _prefsInstance.getStringList(_key(key));
+    return (await _getPrefs()).getStringList(_key(key));
   }
 
   @override
   Future<bool> remove(String key) async {
-    final ok = await _prefsInstance.remove(_key(key));
+    final ok = await (await _getPrefs()).remove(_key(key));
     if (ok) _emit(key, null);
     return ok;
   }
@@ -279,7 +266,7 @@ class SharedPrefsConfigStorage implements ConfigStorage {
 
   @override
   Future<bool> containsKey(String key) async {
-    return _prefsInstance.containsKey(_key(key));
+    return (await _getPrefs()).containsKey(_key(key));
   }
 
   @override
@@ -291,14 +278,14 @@ class SharedPrefsConfigStorage implements ConfigStorage {
 
   @override
   Future<Set<String>> keys() async {
-    final allKeys = _prefsInstance.getKeys();
+    final allKeys = (await _getPrefs()).getKeys();
     return allKeys.where((key) => key.startsWith(_prefix)).map((key) => key.substring(_prefix.length)).toSet();
   }
 
   @override
   Future<Object?> getValue(String key) async {
     // SharedPreferences 原生支持类型化读取，直接返回原始值
-    return _prefsInstance.get(_key(key));
+    return (await _getPrefs()).get(_key(key));
   }
 
   @override
@@ -318,11 +305,11 @@ class SharedPrefsConfigStorage implements ConfigStorage {
   Future<bool> migrateKey(String oldKey, String newKey) async {
     if (oldKey == newKey) return true;
     final rawKey = _key(oldKey);
-    final exists = _prefsInstance.containsKey(rawKey);
+    final exists = (await _getPrefs()).containsKey(rawKey);
     if (!exists) return true;
-    final value = _prefsInstance.get(rawKey);
+    final value = (await _getPrefs()).get(rawKey);
     final ok = await setValue(newKey, value);
-    if (ok) await _prefsInstance.remove(rawKey);
+    if (ok) await (await _getPrefs()).remove(rawKey);
     return ok;
   }
 

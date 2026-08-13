@@ -71,8 +71,8 @@ class ConfigModule extends AppModule {
   @override
   Future<void> onInit(ModuleContext context) async {
     await ConfigInitializer.initialize();
-    // 启动代理配置桥接（ConfigService proxy_url 变化 → getProxy 立即生效）
-    startProxyConfigBridge();
+    // 代理配置 B 轨：从 ConfigService 加载并订阅 proxy_url 变化（getProxy 即时生效）
+    await loadProxyFromConfig();
   }
 
   @override
