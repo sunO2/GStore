@@ -788,15 +788,19 @@ class ReadmeSection extends StatelessWidget {
     );
   }
 
-  /// 解析 markdown 图片 title（convertHtmlImgsToMarkdown 编码为 "WxH"，仅数字）
-  /// 解析失败（null/非法）→ null（不传尺寸，交由 _ReadmeImage loose 自适应）
-  (double, double)? _parseImageTitleSize(String? title) {
+  /// 解析 markdown 图片 title（convertHtmlImgsToMarkdown 编码为 "WxH" / 单边 "Wx"、"xH"，
+  /// 仅数字）。解析失败（null/非法）→ null（不传尺寸，交由 _ReadmeImage loose 自适应）。
+  /// 缺失的一边返回 null（AppImage 单边尺寸由固有尺寸等比补全）。
+  (double?, double?)? _parseImageTitleSize(String? title) {
     if (title == null) return null;
-    final m = RegExp(r'^(\d+)[xX](\d+)$').firstMatch(title.trim());
+    final m = RegExp(r'^(\d*)[xX](\d*)$').firstMatch(title.trim());
     if (m == null) return null;
-    final w = double.tryParse(m.group(1)!);
-    final h = double.tryParse(m.group(2)!);
-    if (w == null || h == null) return null;
+    final wRaw = m.group(1)!;
+    final hRaw = m.group(2)!;
+    if (wRaw.isEmpty && hRaw.isEmpty) return null;
+    final w = wRaw.isEmpty ? null : double.tryParse(wRaw);
+    final h = hRaw.isEmpty ? null : double.tryParse(hRaw);
+    if (w == null && h == null) return null;
     return (w, h);
   }
 

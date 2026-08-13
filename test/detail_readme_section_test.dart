@@ -1,11 +1,30 @@
+import 'dart:typed_data';
+
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
+import 'package:gstore/core/image/app_image.dart';
+import 'package:gstore/core/image/app_image_loader.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/model/StatTag.dart';
 import 'package:gstore/page/detail/widgets.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
+
+/// 1×1 RGBA 透明 PNG（可被 Flutter 解码）。
+final Uint8List kPngBytes = Uint8List.fromList(const [
+  0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, //
+  0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, //
+  0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, //
+  0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, //
+  0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, //
+  0x54, 0x78, 0x9C, 0x62, 0x00, 0x01, 0x00, 0x00, //
+  0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, //
+  0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, //
+  0x42, 0x60, 0x82,
+]);
 
 /// ReadmeSection 截图内嵌测试
 ///
@@ -77,6 +96,18 @@ Future<void> pumpReadme(WidgetTester tester, _FakeDetailInfo info) async {
 }
 
 void main() {
+  setUp(() {
+    // README 图片走 AppImageLoader（新链路），注入 MockClient 返回 1×1 PNG
+    AppImageLoader.instance.debugClient = MockClient((request) async {
+      return http.Response.bytes(
+        kPngBytes,
+        200,
+        headers: const {'content-type': 'image/png'},
+      );
+    });
+    AppImageLoader.instance.clearCache();
+  });
+
   testWidgets('有截图+正文：横向列表与 Markdown 同容器渲染', (tester) async {
     final info = _FakeDetailInfo()
       ..readmeValue = '# 标题\n详细介绍文本'
@@ -154,6 +185,47 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
 
     expect(find.byType(InteractiveViewer), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('README markdown 图片 → AppImage（新链路），与截图 CachedNetworkImage 区分',
+      (tester) async {
+    final info = _FakeDetailInfo()
+      ..readmeValue = '![icon](https://example.com/icon.png)'
+      ..screenshotsValue = [
+        ScreenshotInfo(url: 'https://example.com/s1.png'),
+        ScreenshotInfo(url: 'https://example.com/s2.png'),
+      ];
+
+    await pumpReadme(tester, info);
+    // 图片下载完成（mock 无延迟，额外推一帧让异步 load 完成）
+    await tester.pump(const Duration(milliseconds: 100));
+
+    // README 图片：新链路 AppImage 渲染（内部 Image）
+    expect(find.byType(AppImage), findsOneWidget);
+    expect(
+      find.descendant(of: find.byType(AppImage), matching: find.byType(Image)),
+      findsOneWidget,
+    );
+    // 截图：仍是 CachedNetworkImage（未迁移），与 README 图片互不干扰
+    expect(find.byType(CachedNetworkImage), findsNWidgets(2));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('README 表格与代码块渲染不回归（MarkdownBody 语法支持）', (tester) async {
+    final info = _FakeDetailInfo()
+      ..readmeValue = '# 标题\n\n| 列A | 列B |\n|---|---|\n| 1 | 2 |\n\n'
+          '```dart\nfinal x = 1;\n```';
+
+    await pumpReadme(tester, info);
+
+    // 表格：Material Table + 单元格文本
+    expect(find.byType(Table), findsOneWidget);
+    expect(find.text('1'), findsOneWidget);
+    expect(find.text('2'), findsOneWidget);
+    // 代码块：_CodeBlockWidget 工具栏（复制）+ 代码文本
+    expect(find.text('复制'), findsOneWidget);
+    expect(find.text('final x = 1;'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }

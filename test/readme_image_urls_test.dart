@@ -136,6 +136,24 @@ void main() {
       );
     });
 
+    test('仅 width → title "Wx"（高度由 _ReadmeImage loose 自适应）', () {
+      expect(
+        convertHtmlImgsToMarkdown(
+          '<img src="https://a.com/x.png" alt="logo" width="150px">',
+        ),
+        '![logo](https://a.com/x.png "150x")',
+      );
+    });
+
+    test('仅 height → title "xH"（宽度等比补全）', () {
+      expect(
+        convertHtmlImgsToMarkdown(
+          '<img src="https://a.com/x.png" alt="logo" height="100">',
+        ),
+        '![logo](https://a.com/x.png "x100")',
+      );
+    });
+
     test('自闭合 <img src="x.png" /> → ![](x.png)', () {
       expect(
         convertHtmlImgsToMarkdown('<img src="x.png" />'),

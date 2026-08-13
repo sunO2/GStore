@@ -8,10 +8,12 @@ import 'package:flutter_svg/flutter_svg.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
+import 'package:gstore/core/image/app_image.dart';
 import 'package:gstore/core/image/app_image_loader.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/model/StatTag.dart';
+import 'package:gstore/core/utils/unit.dart';
 import 'package:gstore/page/detail/widgets.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -155,9 +157,11 @@ void main() {
 
     await pumpReadmeLoaded(tester, info);
 
+    // 新链路：markdown 图片 → imageBuilder → _ReadmeImage → AppImage
+    expect(find.byType(AppImage), findsOneWidget);
     expect(find.byType(SvgPicture), findsOneWidget);
     final size = tester.getSize(find.byType(SvgPicture));
-    // 宽度：768 显示区，flutter_html 行内排版有 2px 收窄，容差 4
+    // 宽度：768 显示区，flutter_markdown_plus 行内排版有 2px 收窄，容差 4
     expect(size.width, closeTo(kDisplayWidth, 4));
     expect(size.height, 30); // 钳制高度，非 SVG 固有 20 或全屏 614.4
     expect(tester.takeException(), isNull);
@@ -199,6 +203,56 @@ void main() {
     expect(find.byType(SvgPicture), findsOneWidget);
     final size = tester.getSize(find.byType(SvgPicture));
     expect(size.width, closeTo(150, 1));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('<img height="100"> → 仅高度生效（"xH" title），宽度等比补全',
+      (tester) async {
+    final info = _FakeDetailInfo()
+      ..readmeValue = '<img src="$kPngUrl" height="100">';
+
+    await pumpReadmeLoaded(tester, info);
+
+    expect(find.byType(Image), findsOneWidget);
+    final size = tester.getSize(find.byType(Image));
+    // 1×1 固有 + 高度 100 → 宽度等比补全 100（clamp ≤ 768）
+    expect(size, const Size(100, 100));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('<img> 无 width/height → 预处理无 title → 固有 1×1 tight 不放大',
+      (tester) async {
+    final info = _FakeDetailInfo()..readmeValue = '<img src="$kPngUrl">';
+
+    await pumpReadmeLoaded(tester, info);
+
+    expect(find.byType(Image), findsOneWidget);
+    final size = tester.getSize(find.byType(Image));
+    expect(size, const Size(1, 1));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('HTML img 相对路径：渠道层 resolveReadmeImageUrls 绝对化（含代理）后正常渲染',
+      (tester) async {
+    // 模拟渠道层（GitHubChannel）预处理：相对路径 → rawBaseUrl 绝对化
+    const rawBase = 'https://raw.githubusercontent.com/o/r/main/';
+    final readme = resolveReadmeImageUrls('<img src="screenshots/a.png">', rawBase);
+    expect(readme, contains(rawBase));
+    // github 域名 → _ReadmeImage 加默认代理前缀；mock 对任意 URL 返回 PNG
+    AppImageLoader.instance.debugClient = MockClient((request) async {
+      expect(request.url.toString(), startsWith('https://gh-proxy.org/'));
+      return http.Response.bytes(
+        kPngBytes,
+        200,
+        headers: const {'content-type': 'image/png'},
+      );
+    });
+    final info = _FakeDetailInfo()..readmeValue = readme;
+
+    await pumpReadmeLoaded(tester, info);
+
+    expect(find.byType(Image), findsOneWidget);
+    expect(find.byType(SvgPicture), findsNothing);
     expect(tester.takeException(), isNull);
   });
 

@@ -92,7 +92,7 @@ String resolveReadmeImageUrls(String readme, String rawBaseUrl) {
 /// 将 HTML <img> 标签转换为 markdown 图片语法（flutter_markdown_plus 不支持内联 HTML）
 /// <img src="URL" alt="x" width="200" height="100"> → ![x](URL "200x100")
 /// 无 width/height → ![alt](URL)；无 alt → ![](URL)
-/// title 编码格式 "WxH"（width x height，仅含数字时）
+/// title 编码格式 "WxH"；仅单边时 "Wx" / "xH"（width x height，仅含数字时）
 ///
 /// 限制与说明：
 /// - 无 src 的 img 原样保留；非 img 的 HTML 一律不动
@@ -114,7 +114,13 @@ String convertHtmlImgsToMarkdown(String html) {
     final w = attrs['width'] == null ? null : _stripImgSize(attrs['width']!);
     final h = attrs['height'] == null ? null : _stripImgSize(attrs['height']!);
     var md = '![$alt]($src';
-    if (w != null && h != null) md += ' "${w}x$h"'; // 仅两者都为纯数字才编码 title
+    if (w != null && h != null) {
+      md += ' "${w}x$h"';
+    } else if (w != null) {
+      md += ' "${w}x"'; // 仅宽度：高度交由 _ReadmeImage loose 自适应
+    } else if (h != null) {
+      md += ' "x$h"'; // 仅高度：宽度等比补全
+    }
     return '$md)';
   });
 }
