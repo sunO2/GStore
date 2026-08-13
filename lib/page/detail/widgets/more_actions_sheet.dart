@@ -183,6 +183,23 @@ class _MoreActionsSheetState extends State<_MoreActionsSheet> {
                         onSelected: (_) => _togglePreset(tag),
                         selectedColor: colorScheme.secondaryContainer,
                         checkmarkColor: colorScheme.onSecondaryContainer,
+                        // 紧凑小巧：缩小高度/内边距/字号，视觉更精致
+                        visualDensity: VisualDensity.compact,
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        labelPadding: const EdgeInsets.symmetric(
+                          horizontal: AppSpacing.sm,
+                        ),
+                        labelStyle: textTheme.labelSmall,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(
+                            AppRadius.radiusButton,
+                          ),
+                          side: BorderSide(
+                            color: _selectedTags.contains(tag)
+                                ? colorScheme.secondary
+                                : colorScheme.outlineVariant,
+                          ),
+                        ),
                       ),
                   ],
                 ),

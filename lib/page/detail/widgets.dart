@@ -396,7 +396,8 @@ class _AppInfoSectionState extends State<AppInfoSection> {
 
     final hasBasicRows = info.packageName.isNotEmpty ||
         version != null ||
-        developer != null;
+        developer != null ||
+        info.channelId.isNotEmpty;
     final hasExpandable = projectUrl != null || tags.isNotEmpty;
 
     // 全空（无基础行且无可展开内容）→ 不渲染
@@ -519,8 +520,10 @@ class VersionBadge extends StatelessWidget {
       ),
     );
 
-    final showBadge =
-        installed != null && latest != null && installed != latest;
+    final showBadge = installed != null &&
+        latest != null &&
+        latest.isNotEmpty &&
+        installed != latest;
 
     return Stack(
       clipBehavior: Clip.none,

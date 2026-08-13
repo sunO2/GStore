@@ -48,7 +48,7 @@ class _FakeDetailInfo implements IDetailInfo {
   @override
   bool get isValid => packageName.isNotEmpty && appName.isNotEmpty;
   @override
-  String get channelId => channelIdValue ?? 'github';
+  String get channelId => channelIdValue ?? '';
   @override
   ChannelType get channelType => ChannelType.github;
   @override
@@ -77,7 +77,7 @@ class _FakeDetailInfo implements IDetailInfo {
   List<StatTag> buildStatTags() => statTags;
 }
 
-Future<void> pumpAppInfo(WidgetTester tester, _FakeDetailInfo info) async {
+Future<void> _pumpAppInfo(WidgetTester tester, _FakeDetailInfo info) async {
   await tester.pumpWidget(
     MaterialApp(
       home: Scaffold(
@@ -98,15 +98,14 @@ void main() {
       projectUrlValue: 'https://github.com/sunO2/GStore',
     );
 
-    await pumpAppInfo(tester, info);
+    await _pumpAppInfo(tester, info);
 
     expect(find.text('应用信息'), findsOneWidget);
     expect(find.byIcon(Icons.info_outline), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('默认收起：基础行（包名/当前版本/开发者/渠道）存在，统计 chips 不存在',
-      (tester) async {
+  testWidgets('默认收起：基础行（包名/当前版本/开发者/渠道）存在，统计 chips 不存在', (tester) async {
     final info = _FakeDetailInfo(
       versionValue: '1.0.24',
       developerValue: 'OpenSource Team',
@@ -114,7 +113,7 @@ void main() {
       statTags: [StatTag.stars(1234), StatTag.forks(56)],
     );
 
-    await pumpAppInfo(tester, info);
+    await _pumpAppInfo(tester, info);
 
     // 基础行 label + value
     expect(find.text('包名'), findsOneWidget);
@@ -133,8 +132,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('点击展开按钮 → 统计 chips 与项目主页出现、图标变 expand_less；再点收起',
-      (tester) async {
+  testWidgets('点击展开按钮 → 统计 chips 与项目主页出现、图标变 expand_less；再点收起', (tester) async {
     final info = _FakeDetailInfo(
       versionValue: '1.0.24',
       developerValue: 'OpenSource Team',
@@ -143,7 +141,7 @@ void main() {
       statTags: [StatTag.stars(1234), StatTag.forks(56)],
     );
 
-    await pumpAppInfo(tester, info);
+    await _pumpAppInfo(tester, info);
 
     // 展开
     await tester.tap(find.byIcon(Icons.expand_more));
@@ -171,14 +169,15 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('vivo 场景：buildStatTags 为空时展开 fallback 到 statistics.buildStatTags()',
+  testWidgets(
+      'vivo 场景：buildStatTags 为空时展开 fallback 到 statistics.buildStatTags()',
       (tester) async {
     final info = _FakeDetailInfo(
       channelIdValue: 'vivo',
       statisticsValue: StatisticsInfo(downloads: 10000, rating: 4.8),
     );
 
-    await pumpAppInfo(tester, info);
+    await _pumpAppInfo(tester, info);
 
     await tester.tap(find.byIcon(Icons.expand_more));
     await tester.pumpAndSettle();
@@ -197,7 +196,7 @@ void main() {
       channelIdValue: 'github',
     );
 
-    await pumpAppInfo(tester, info);
+    await _pumpAppInfo(tester, info);
 
     // 基础行仍显示
     expect(find.text('应用信息'), findsOneWidget);
@@ -218,10 +217,26 @@ void main() {
       projectUrlValue: null,
     );
 
-    await pumpAppInfo(tester, info);
+    await _pumpAppInfo(tester, info);
 
     expect(find.text('应用信息'), findsNothing);
     expect(find.byType(AppInfoSection), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('仅渠道非空 → 不 shrink，显示渠道行（回归）', (tester) async {
+    final info = _FakeDetailInfo(
+      packageNameValue: '',
+      versionValue: null,
+      developerValue: null,
+      channelIdValue: 'github',
+      projectUrlValue: null,
+    );
+
+    await _pumpAppInfo(tester, info);
+
+    expect(find.text('应用信息'), findsOneWidget);
+    expect(find.text('github'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }
