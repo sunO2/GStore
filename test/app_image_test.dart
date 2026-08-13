@@ -37,6 +37,16 @@ const String kBadgeUrl =
     'https://img.shields.io/badge/build-passing-brightgreen.svg';
 const String k404Url = 'https://example.com/missing.png';
 
+/// 畸形 SVG：标签不闭合，解码必然失败。
+final Uint8List kMalformedSvgBytes = utf8.encode('<svg><g></svg>');
+
+/// 畸形 PNG：content-type 为 png 但字节是垃圾，解码必然失败。
+final Uint8List kBrokenPngBytes = Uint8List.fromList(
+  List<int>.generate(64, (i) => (i * 7 + 3) % 256),
+);
+const String kMalformedSvgUrl = 'https://example.com/broken.svg';
+const String kBrokenPngUrl = 'https://example.com/broken.png';
+
 /// 构造按 URL 分发响应的 MockClient；[requestCount] 记录请求次数。
 MockClient buildMockClient({void Function(int count)? onRequest}) {
   var count = 0;
@@ -64,6 +74,18 @@ MockClient buildMockClient({void Function(int count)? onRequest}) {
           kSvgBytes,
           200,
           headers: const {'content-type': 'image/svg+xml'},
+        );
+      case kMalformedSvgUrl:
+        return http.Response.bytes(
+          kMalformedSvgBytes,
+          200,
+          headers: const {'content-type': 'image/svg+xml'},
+        );
+      case kBrokenPngUrl:
+        return http.Response.bytes(
+          kBrokenPngBytes,
+          200,
+          headers: const {'content-type': 'image/png'},
         );
       default:
         return http.Response('Not Found', 404);
@@ -300,6 +322,62 @@ void main() {
       await tester.pump(const Duration(milliseconds: 50));
       expect(error, isTrue);
       expect(success, isFalse);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('畸形 SVG → 解码失败触发 onError 且渲染 errorWidget', (tester) async {
+      Object? decodeError;
+      await tester.pumpWidget(wrap(
+        AppImage(
+          url: kMalformedSvgUrl,
+          width: 32,
+          height: 32,
+          errorWidget: errorBox,
+          onError: (e) => decodeError = e,
+        ),
+      ));
+      await tester.pumpAndSettle();
+      expect(decodeError, isNotNull);
+      expect(find.byKey(const Key('error')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('损坏 PNG → 解码失败触发 onError 且渲染 errorWidget', (tester) async {
+      Object? decodeError;
+      await tester.pumpWidget(wrap(
+        AppImage(
+          url: kBrokenPngUrl,
+          width: 32,
+          height: 32,
+          errorWidget: errorBox,
+          onError: (e) => decodeError = e,
+        ),
+      ));
+      await tester.pumpAndSettle();
+      expect(decodeError, isNotNull);
+      expect(find.byKey(const Key('error')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('解码失败 → onError 只触发一次（rebuild 后仍为 1）', (tester) async {
+      var errorCount = 0;
+      Widget build() => wrap(
+            AppImage(
+              url: kMalformedSvgUrl,
+              width: 32,
+              height: 32,
+              errorWidget: errorBox,
+              onError: (_) => errorCount++,
+            ),
+          );
+      await tester.pumpWidget(build());
+      await tester.pumpAndSettle();
+      expect(errorCount, 1);
+
+      // 同 widget 再次 pump（元素复用触发 rebuild）→ errorBuilder 再执行但不重复 onError。
+      await tester.pumpWidget(build());
+      await tester.pumpAndSettle();
+      expect(errorCount, 1);
       expect(tester.takeException(), isNull);
     });
   });
