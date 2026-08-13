@@ -9,7 +9,6 @@ import 'package:gstore/http/download/DownloadStatus.dart';
 import 'package:gstore/page/detail/widgets.dart';
 import 'logic.dart';
 import 'state.dart';
-import 'package:installed_apps/app_info.dart' as sysAppInfo;
 
 class DetailPage extends StatelessWidget {
   const DetailPage({super.key});
@@ -184,12 +183,12 @@ class DetailPage extends StatelessWidget {
         final icon = state.displayIcon;
         final name = state.displayName;
         final description = state.displayDescription;
-        final version = state.displayVersion;
         final detailInfo = state.detailInfo.value;
 
         return Column(
           children: [
             Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 // 图标
                 Hero(
@@ -219,7 +218,7 @@ class DetailPage extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(width: AppSpacing.lg),
-                // 名称和安装状态
+                // 名称
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -227,36 +226,6 @@ class DetailPage extends StatelessWidget {
                       Text(
                         name,
                         style: Theme.of(context).textTheme.titleLarge,
-                      ),
-                      const SizedBox(height: AppSpacing.sm),
-                      // 版本、包名、统计标签
-                      Wrap(
-                        spacing: AppSpacing.sm,
-                        runSpacing: AppSpacing.xs,
-                        children: [
-                          // 版本标签（已安装显示当前版本，未安装显示最新版本）
-                          if ((version != null && version.isNotEmpty) ||
-                              state.installInfo.value != null)
-                            VersionBadge(
-                              latestVersion: version,
-                              installedVersion:
-                                  state.installInfo.value?.versionName,
-                            ),
-                          // 统计标签（统一渲染，无需判断 channel 类型）
-                          ...?detailInfo?.buildStatTags().map(
-                                (tag) => _buildChip(
-                                  context,
-                                  icon: tag.icon,
-                                  label: tag.text,
-                                  fg: tag.textColor,
-                                  bg: tag.backgroundColor,
-                                  border: tag.borderColor,
-                                ),
-                              ),
-                          // 安装状态（响应式）
-                          Obx(() => _buildInstallStatus(
-                              context, logic, state.installInfo.value)),
-                        ],
                       ),
                     ],
                   ),
@@ -316,46 +285,6 @@ class DetailPage extends StatelessWidget {
     );
   }
 
-  /// 统一的标签 chip 渲染方法（版本 / 包名 / 统计共用）
-  Widget _buildChip(
-    BuildContext context, {
-    required IconData icon,
-    required String label,
-    required Color fg,
-    required Color bg,
-    required Color border,
-  }) {
-    return Container(
-      padding: AppSpacing.horizontalMD_verticalXS,
-      decoration: BoxDecoration(
-        color: bg,
-        borderRadius: AppRadius.allMD,
-        border: Border.all(
-          color: border,
-          width: 1,
-        ),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(
-            icon,
-            size: AppTypography.iconXS,
-            color: fg,
-          ),
-          const SizedBox(width: AppSpacing.xs),
-          Text(
-            label,
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: fg,
-                  fontWeight: AppTypography.weightMedium,
-                ),
-          ),
-        ],
-      ),
-    );
-  }
-
   List<Widget> _buildSections(
     BuildContext context,
     DetailLogic logic,
@@ -370,7 +299,7 @@ class DetailPage extends StatelessWidget {
     for (var sectionType in detail.sections) {
       switch (sectionType) {
         case DetailSection.version:
-          // 版本标签由 VersionBadge 展示，包名已移入应用信息卡
+          // 版本信息已移入应用信息卡，不再单独渲染
           break;
         case DetailSection.statistics:
         case DetailSection.rating:
@@ -416,34 +345,6 @@ class DetailPage extends StatelessWidget {
     }
 
     return sections;
-  }
-
-  Widget _buildInstallStatus(
-    BuildContext context,
-    DetailLogic logic,
-    sysAppInfo.AppInfo? status,
-  ) {
-    final title = status == null ? "未安装" : "installed ${status.versionName}";
-
-    return GestureDetector(
-      onTap: status == null ? null : () => logic.startApp(status.packageName),
-      child: Container(
-        padding: AppSpacing.horizontalMD_verticalXS,
-        decoration: BoxDecoration(
-          color: Theme.of(context)
-              .colorScheme
-              .primary
-              .withAlpha(AppColors.alphaMedium),
-          borderRadius: AppRadius.allXL,
-        ),
-        child: Text(
-          title,
-          style: AppTypography.labelSmall.copyWith(
-            color: Theme.of(context).colorScheme.onPrimary,
-          ),
-        ),
-      ),
-    );
   }
 }
 
