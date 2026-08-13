@@ -145,29 +145,6 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
-  /// 预设代理链接 span：逗号分隔，选中项前加 ✅ 并高亮（点击选中并生效）
-  TextSpan _buildProxyLinkSpan(
-    BuildContext context, {
-    required String host,
-    required bool isFirst,
-    required bool isSelected,
-    required VoidCallback onTap,
-  }) {
-    final scheme = Theme.of(context).colorScheme;
-    final text = '${isFirst ? '' : ', '}${isSelected ? '✅ ' : ''}$host';
-    return TextSpan(
-      text: text,
-      style: TextStyle(
-        // 选中：主题色加粗；未选中：onSurfaceVariant 淡化（提示可点击）
-        color: isSelected ? scheme.primary : scheme.onSurfaceVariant,
-        fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
-        decoration: isSelected ? null : TextDecoration.underline,
-        decorationColor: scheme.outlineVariant,
-      ),
-      recognizer: TapGestureRecognizer()..onTap = onTap,
-    );
-  }
-
   /// 显示 GitHub 代理设置对话框
   Future<void> _showProxySettingDialog(BuildContext context) async {
     final controller = TextEditingController(text: getProxy());
@@ -182,34 +159,67 @@ class _SettingsPageState extends State<SettingsPage> {
             children: [
               const Text('设置 GitHub 相关下载的代理前缀，用于加速国内访问。'),
               const SizedBox(height: AppSpacing.md),
-              // 预设代理快速选择：富文本多链接逗号分隔，
-              // 点击某个链接即选中并立即生效（当前项前显示 ✅）
-              Text.rich(
-                TextSpan(
-                  children: [
-                    for (var i = 0; i < presetProxyHosts.length; i++)
-                      _buildProxyLinkSpan(
-                        context,
-                        host: presetProxyHosts[i],
-                        isFirst: i == 0,
-                        isSelected: controller.text == presetProxyHosts[i],
-                        onTap: () {
-                          controller.text = presetProxyHosts[i];
-                          // 点击即生效（无需再点保存）
-                          updateProxy(presetProxyHosts[i]);
-                          setDialogState(() {});
-                        },
+              // 代理输入框 + 右侧下拉选择（可手动输入；下拉选择即生效）
+              LayoutBuilder(
+                builder: (context, constraints) => DropdownMenu<String>(
+                  controller: controller,
+                  // 手动输入不过滤菜单（始终显示全部预设）
+                  enableFilter: false,
+                  width: constraints.maxWidth,
+                  onSelected: (value) {
+                    if (value != null) {
+                      controller.text = value;
+                      // 下拉选择即生效（手动输入仍走保存按钮）
+                      updateProxy(value);
+                      setDialogState(() {});
+                    }
+                  },
+                  // 无边框胶囊样式（与搜索框/AI 输入栏视觉统一）
+                  decorationBuilder: (context, controller) {
+                    final scheme = Theme.of(context).colorScheme;
+                    final capsuleBorder = OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(AppRadius.circle),
+                      borderSide: BorderSide.none,
+                    );
+                    return InputDecoration(
+                      labelText: '代理前缀',
+                      hintText: 'https://gh-proxy.org/',
+                      hintStyle: TextStyle(color: scheme.onSurfaceVariant),
+                      filled: true,
+                      fillColor: scheme.surface.withValues(alpha: 0.65),
+                      border: capsuleBorder,
+                      enabledBorder: capsuleBorder,
+                      focusedBorder: capsuleBorder,
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: AppSpacing.lg,
+                        vertical: AppSpacing.md,
+                      ),
+                    );
+                  },
+                  dropdownMenuEntries: [
+                    for (final host in presetProxyHosts)
+                      DropdownMenuEntry(
+                        value: host,
+                        label: host,
+                        // 当前选中项前 ✅ 标记
+                        labelWidget: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (controller.text == host)
+                              const Text(
+                                '✅ ',
+                                style: TextStyle(fontSize: 14),
+                              ),
+                            Flexible(
+                              child: Text(
+                                host,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                   ],
-                ),
-              ),
-              const SizedBox(height: AppSpacing.md),
-              TextField(
-                controller: controller,
-                decoration: const InputDecoration(
-                  labelText: '代理前缀',
-                  hintText: 'https://gh-proxy.org/',
-                  border: OutlineInputBorder(),
                 ),
               ),
               const SizedBox(height: AppSpacing.sm),
