@@ -6,8 +6,8 @@ import 'package:flutter/services.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter_html/flutter_html.dart';
 import 'package:flutter_html/src/extension/html_extension.dart';
-import 'package:flutter_svg/flutter_svg.dart';
 import 'package:markdown/markdown.dart' as md;
+import 'package:gstore/core/image/app_image.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/model/StatTag.dart';
@@ -292,39 +292,25 @@ class _ReadmeImage extends StatelessWidget {
     });
   }
 
-  /// 构建 README 图片：SVG 走 flutter_svg，其余走 CachedNetworkImage
+  /// 构建 README 图片：经 [AppImage] 自动判型（SVG/位图）并钳制显示区
+  /// （badge SVG 高度钳制 30，其余 tight 768x(768*0.8)）
   /// [placeholder] / [errorWidget] 由调用方提供（列表与全屏预览样式不同）
   Widget _buildImage({
     required Widget placeholder,
     required Widget errorWidget,
   }) {
-    if (isSvgUrl(url)) {
-      return SvgPicture.network(
-        _proxiedUrl,
-        headers: const {
-          'User-Agent':
-              'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36',
-        },
-        fit: BoxFit.contain,
-        placeholderBuilder: (context) => placeholder,
-        errorBuilder: (context, error, stackTrace) {
-          _logLoadFailure(error);
-          return errorWidget;
-        },
-      );
-    }
-    return CachedNetworkImage(
-      imageUrl: _proxiedUrl,
+    final maxWidth = MediaQuery.of(buildContext).size.width - AppSpacing.lg * 2;
+    return AppImage(
+      url: _proxiedUrl,
+      width: maxWidth,
+      height: maxWidth * 0.8,
       fit: BoxFit.contain,
-      imageBuilder: (context, imageProvider) {
-        _logLoadSuccess();
-        return Image(image: imageProvider, fit: BoxFit.contain);
-      },
-      errorWidget: (context, url, error) {
-        _logLoadFailure(error);
-        return errorWidget;
-      },
-      placeholder: (context, url) => placeholder,
+      alignment: Alignment.center,
+      allowDrawingOutsideViewBox: false,
+      placeholder: placeholder,
+      errorWidget: errorWidget,
+      onSuccess: _logLoadSuccess,
+      onError: _logLoadFailure,
     );
   }
 
@@ -358,35 +344,27 @@ class _ReadmeImage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final maxWidth = MediaQuery.of(context).size.width - AppSpacing.lg * 2;
-
     return GestureDetector(
       onTap: () => _preview(buildContext),
       onLongPress: _copyUrl,
       child: ClipRRect(
         borderRadius: AppRadius.allMD,
-        child: ConstrainedBox(
-          constraints: BoxConstraints(
-            maxWidth: maxWidth,
-            maxHeight: maxWidth * 0.8,
-          ),
-          child: _buildImage(
-            placeholder: Container(
-              height: 100,
-              color: Theme.of(context).colorScheme.surfaceContainerHighest,
-              child: const Center(
-                child: SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
+        child: _buildImage(
+          placeholder: Container(
+            height: 100,
+            color: Theme.of(context).colorScheme.surfaceContainerHighest,
+            child: const Center(
+              child: SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
               ),
             ),
-            errorWidget: Container(
-              height: 60,
-              color: Theme.of(context).colorScheme.surfaceContainerHighest,
-              child: const Icon(Icons.broken_image_outlined),
-            ),
+          ),
+          errorWidget: Container(
+            height: 60,
+            color: Theme.of(context).colorScheme.surfaceContainerHighest,
+            child: const Icon(Icons.broken_image_outlined),
           ),
         ),
       ),
