@@ -16,7 +16,7 @@ import 'package:gstore/core/channel/AppUpdateCheckMixin.dart';
 
 /// HTTP API 渠道实现
 /// 通过 HTTP API 获取应用数据
-class HttpChannel with AppUpdateCheckMixin implements IChannel {
+class HttpChannel extends IChannel with AppUpdateCheckMixin {
   final Dio _dio;
   final String _baseUrl;
 

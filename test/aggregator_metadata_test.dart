@@ -22,7 +22,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:sqlite3/open.dart';
 
 /// 可配置 canonicalAppId 的假渠道（验证"渠道自报 appId + 统一添加入口"）
-class FakeChannel implements IChannel {
+class FakeChannel extends IChannel {
   final ChannelType type;
   final String Function(AppSummary) canonical;
 

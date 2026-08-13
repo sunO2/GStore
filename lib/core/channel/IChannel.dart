@@ -53,6 +53,41 @@ abstract class IChannel {
     bool forceRefresh = false,
   });
 
+  // ==================== 分块加载（详情页渐进加载） ====================
+
+  /// 分块加载：仅下载列表（不拉 README/统计）。
+  ///
+  /// 详情页三个区块（下载 / README / 统计）独立渐进渲染时按需调用，
+  /// 单次失败只降级对应区块，不阻塞其他区块。
+  /// 默认实现返回 failure（不支持分块加载的渠道无需改动）；
+  /// GitHub / LocalDb 渠道 override 复用 getAppDetail 的公共解析逻辑。
+  Future<ChannelResult<List<DownloadInfo>>> fetchDownloads(String appId) async {
+    return ChannelResult.failure(
+      from: info.type,
+      error: '当前渠道不支持分块加载下载列表',
+    );
+  }
+
+  /// 分块加载：仅 README（读缓存 / 条件请求）。
+  /// 默认实现返回 failure（不支持分块加载的渠道无需改动）。
+  Future<ChannelResult<String?>> fetchReadme(String appId) async {
+    return ChannelResult.failure(
+      from: info.type,
+      error: '当前渠道不支持分块加载 README',
+    );
+  }
+
+  /// 分块加载：仅统计/版本/开发者（apiList 原始 Map，供 buildStatTags 解析）。
+  /// 默认实现返回 failure（不支持分块加载的渠道无需改动）。
+  Future<ChannelResult<Map<String, dynamic>?>> fetchStatistics(
+    String appId,
+  ) async {
+    return ChannelResult.failure(
+      from: info.type,
+      error: '当前渠道不支持分块加载统计',
+    );
+  }
+
   /// 检查指定应用是否有新版本（更新检测统一入口）
   /// 由各渠道内部决定数据源（本地索引 / releases / 数据库 / 网络 API 等）
   Future<ChannelResult<AppUpdateCheckResult>> checkAppUpdate(String appId);
