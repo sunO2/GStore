@@ -110,6 +110,9 @@ String? _proxyCache;
 /// ConfigService proxy_url 订阅（loadProxyFromConfig 建立，resetProxyForTest 取消）
 StreamSubscription<ConfigChangeEvent>? _proxySubscription;
 
+/// 代理加载 Future memoize：并发调用复用同一 Future，消除双订阅竞态
+Future<void>? _loadFuture;
+
 /// 代理值归一化：null（未设置/清除）→ 默认代理；'' 及具体值 → 原值
 String _resolveProxyValue(Object? value) {
   if (value == null) return defaultProxy;
@@ -121,8 +124,13 @@ String _resolveProxyValue(Object? value) {
 /// - 读取 ConfigService.get(ConfigKeys.proxyUrl) 初始化缓存
 ///   （null → defaultProxy、'' → ''）
 /// - 订阅 proxy_url 变化：B 轨写入（set/clear）后 getProxy() 即时反映
-Future<void> loadProxyFromConfig() async {
-  if (_proxySubscription != null) return; // 幂等
+/// - Future memoize：首次调用执行 _doLoadProxyFromConfig，并发调用
+///   复用同一 Future（幂等 + 只建立一次订阅）
+Future<void> loadProxyFromConfig() {
+  return _loadFuture ??= _doLoadProxyFromConfig();
+}
+
+Future<void> _doLoadProxyFromConfig() async {
   _proxyCache = _resolveProxyValue(
     await ConfigService.instance.get(ConfigKeys.proxyUrl),
   );
@@ -180,4 +188,5 @@ void resetProxyForTest() {
   _proxySubscription?.cancel();
   _proxySubscription = null;
   _proxyCache = null;
+  _loadFuture = null;
 }
