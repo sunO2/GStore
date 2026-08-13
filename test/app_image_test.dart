@@ -281,6 +281,34 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
+    testWidgets('无 width/height 的 1×1 PNG → tight 固有尺寸 1x1', (tester) async {
+      await tester.pumpWidget(wrap(const AppImage(url: kPngUrl)));
+      // 下载完成（fake 10ms）→ 先 loose 渲染；intrinsic 读取为引擎异步，
+      // fake async 下不推进 → runAsync 让 ImmutableBuffer/ImageDescriptor 完成
+      await tester.pump(const Duration(milliseconds: 50));
+      expect(find.byType(Image), findsOneWidget);
+      await tester.runAsync(() async {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      });
+      await tester.pump();
+      expect(tester.getSize(find.byType(Image)), const Size(1, 1));
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('无尺寸 PNG + maxWidth 2 → clamp 等比 1x1 不放大', (tester) async {
+      await tester.pumpWidget(wrap(
+        const AppImage(url: kPngUrl, maxWidth: 2),
+      ));
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.runAsync(() async {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      });
+      await tester.pump();
+      // scale = min(1, 2/1, ∞/1) = 1 → 不放大（1x1 未超限）
+      expect(tester.getSize(find.byType(Image)), const Size(1, 1));
+      expect(tester.takeException(), isNull);
+    });
+
     testWidgets('badge SVG 无 height（仅 width）→ 高度仍钳制 badgeHeight',
         (tester) async {
       await tester.pumpWidget(wrap(

@@ -163,16 +163,16 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('.png 绝对 URL → 渲染 Image，显示区 tight 768x614.4', (tester) async {
+  testWidgets('.png 绝对 URL → 渲染 Image，固有 1×1 tight 不放大（不再撑满显示区）',
+      (tester) async {
     final info = _FakeDetailInfo()..readmeValue = '![icon]($kPngUrl)';
 
     await pumpReadmeLoaded(tester, info);
 
     expect(find.byType(Image), findsOneWidget);
     final size = tester.getSize(find.byType(Image));
-    // 宽度：768 显示区，flutter_html 行内排版有 2px 收窄，容差 4
-    expect(size.width, closeTo(kDisplayWidth, 4));
-    expect(size.height, closeTo(614.4, 1));
+    // 无 HTML 尺寸 + 1×1 固有尺寸（ImageDescriptor）→ tight clamp 不放大
+    expect(size, const Size(1, 1));
     expect(tester.takeException(), isNull);
   });
 
