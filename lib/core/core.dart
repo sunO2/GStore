@@ -127,7 +127,12 @@ String _resolveProxyValue(Object? value) {
 /// - Future memoize：首次调用执行 _doLoadProxyFromConfig，并发调用
 ///   复用同一 Future（幂等 + 只建立一次订阅）
 Future<void> loadProxyFromConfig() {
-  return _loadFuture ??= _doLoadProxyFromConfig();
+  return _loadFuture ??= _doLoadProxyFromConfig().catchError(
+    (Object e, StackTrace st) {
+      _loadFuture = null; // 失败后可重试
+      Error.throwWithStackTrace(e, st);
+    },
+  );
 }
 
 Future<void> _doLoadProxyFromConfig() async {
