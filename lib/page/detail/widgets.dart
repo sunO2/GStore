@@ -735,10 +735,35 @@ class ReadmeSection extends StatelessWidget {
   final IDetailInfo info;
   final void Function(String)? onLinkTap;
 
-  const ReadmeSection({super.key, required this.info, this.onLinkTap});
+  /// 是否加载中（分块加载未就绪时渲染轻量占位，完成态渲染真实内容）
+  final bool loading;
+
+  const ReadmeSection({
+    super.key,
+    required this.info,
+    this.onLinkTap,
+    this.loading = false,
+  });
 
   @override
   Widget build(BuildContext context) {
+    if (loading) {
+      // 加载中轻量占位：卡片标题保持稳定（避免完成态布局跳动），
+      // 内容区固定高度 + 加载指示
+      return const SectionCard(
+        title: '详细介绍',
+        icon: Icons.description_outlined,
+        children: [
+          SizedBox(
+            height: 60,
+            child: Center(
+              child: AppLoading(size: AppLoadingSize.small),
+            ),
+          ),
+        ],
+      );
+    }
+
     final readme = info.readme;
     // 截图统一内嵌详情区：有截图或正文任一存在即渲染（截图为横向滑动列表）
     final screenshots = info.screenshots ?? const <ScreenshotInfo>[];
@@ -976,11 +1001,15 @@ class DownloadsSection extends StatelessWidget {
   final void Function(DownloadInfo)? onDownloadTap;
   final void Function(DownloadInfo)? onLongPress;
 
+  /// 是否加载中（分块加载未就绪时渲染骨架占位，完成态渲染真实列表）
+  final bool loading;
+
   const DownloadsSection({
     super.key,
     required this.info,
     this.onDownloadTap,
     this.onLongPress,
+    this.loading = false,
   });
 
   /// 过滤出当前平台的可下载文件
@@ -1001,8 +1030,58 @@ class DownloadsSection extends StatelessWidget {
     }).toList();
   }
 
+  /// 加载中骨架：卡片标题/图标保持稳定（避免完成态布局跳动），
+  /// 内容区渲染 3 行轻量骨架（AppLoading 圆环 + 主题色灰条），与 _DownloadItem 行结构对齐
+  Widget _buildLoadingSkeleton(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final skeletonColor = colorScheme.surfaceContainerHighest;
+
+    Widget bar({required double height, double? width}) {
+      return Container(
+        height: height,
+        width: width,
+        decoration: BoxDecoration(
+          color: skeletonColor,
+          borderRadius: AppRadius.allSM,
+        ),
+      );
+    }
+
+    return SectionCard(
+      title: '下载文件',
+      icon: Icons.download_rounded,
+      children: [
+        for (var i = 0; i < 3; i++)
+          Padding(
+            padding: AppSpacing.onlyBottomSM,
+            child: Row(
+              children: [
+                // 与 _DownloadItem 图标位对齐的加载指示
+                const AppLoading(size: AppLoadingSize.small),
+                const SizedBox(width: AppSpacing.md),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // 文件名灰条
+                      bar(height: 14),
+                      const SizedBox(height: AppSpacing.xs),
+                      // 版本信息灰条
+                      bar(height: 10, width: 120),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    if (loading) return _buildLoadingSkeleton(context);
+
     final colorScheme = Theme.of(context).colorScheme;
     // 过滤出当前平台的文件
     final filteredDownloads = _filterPlatformDownloads(info.downloads);

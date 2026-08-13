@@ -139,9 +139,14 @@ class DetailPage extends StatelessWidget {
 
           const SizedBox(height: AppSpacing.sm),
 
-          // 详情加载指示器
+          // 详情加载指示器（兜底）：仅当基础信息尚未注入且无任何区块 loading 时显示，
+          // 区块级 skeleton（下载/README）已覆盖主要加载场景，避免双 loading 叠加
           Obx(() {
-            if (state.isLoadingDetail.value) {
+            if (state.isLoadingDetail.value &&
+                state.detailInfo.value == null &&
+                !state.downloadsLoading.value &&
+                !state.readmeLoading.value &&
+                !state.statisticsLoading.value) {
               return const Padding(
                 padding: AppSpacing.allLG,
                 child: Center(child: AppLoading(size: AppLoadingSize.medium)),
@@ -157,7 +162,7 @@ class DetailPage extends StatelessWidget {
               return const SizedBox.shrink();
             }
             return Column(
-              children: _buildSections(context, logic, detail),
+              children: _buildSections(context, logic, state, detail),
             );
           }),
         ],
@@ -302,6 +307,7 @@ class DetailPage extends StatelessWidget {
   List<Widget> _buildSections(
     BuildContext context,
     DetailLogic logic,
+    DetailState state,
     IDetailInfo detail,
   ) {
     final sections = <Widget>[];
@@ -310,7 +316,19 @@ class DetailPage extends StatelessWidget {
     // 全空时内部自隐藏——不依赖渠道 statistics 声明（localdb 渠道 apiList 为空时无 statistics section）
     sections.add(AppInfoSection(info: detail));
 
-    for (var sectionType in detail.sections) {
+    // 区块渲染顺序：以 detail.sections（渐进组装/渠道声明）为主序，
+    // 下载/README 区块另以独立 Rx（downloadsLoading/readmeLoading）兜底：
+    // 加载中即使 sections 尚未声明也要渲染骨架，完成且空则不渲染——
+    // 避免"加载完成后区块才凭空出现"的闪烁。LinkedHashSet 去重保证单实例。
+    final sectionTypes = <DetailSection>{
+      ...detail.sections,
+      if (state.downloadsLoading.value || detail.downloads.isNotEmpty)
+        DetailSection.downloads,
+      if (state.readmeLoading.value || (detail.readme?.isNotEmpty ?? false))
+        DetailSection.readme,
+    };
+
+    for (var sectionType in sectionTypes) {
       switch (sectionType) {
         case DetailSection.version:
           // 版本信息已移入应用信息卡，不再单独渲染
@@ -323,27 +341,33 @@ class DetailPage extends StatelessWidget {
           sections.add(ScreenshotsSection(info: detail));
           break;
         case DetailSection.readme:
+          // 加载中 → 轻量占位；完成且非空 → 正文；完成空 → 不进入此分支
           sections.add(
-            ReadmeSection(
-              info: detail,
-              onLinkTap: (url) => logic.openBrowser(url),
-            ),
+            state.readmeLoading.value
+                ? ReadmeSection(info: detail, loading: true)
+                : ReadmeSection(
+                    info: detail,
+                    onLinkTap: (url) => logic.openBrowser(url),
+                  ),
           );
           break;
         case DetailSection.downloads:
+          // 加载中 → 骨架占位；完成非空 → 列表；完成空 → 不进入此分支
           sections.add(
-            DownloadsSection(
-              info: detail,
-              onDownloadTap: (download) => logic.startDownload(download),
-              onLongPress: (download) {
-                AppDialogs.showDialog(
-                  title: '下载二维码',
-                  content: buildQrDialogContent(detail, download),
-                  confirmText: '关闭',
-                  cancelText: null,
-                );
-              },
-            ),
+            state.downloadsLoading.value
+                ? DownloadsSection(info: detail, loading: true)
+                : DownloadsSection(
+                    info: detail,
+                    onDownloadTap: (download) => logic.startDownload(download),
+                    onLongPress: (download) {
+                      AppDialogs.showDialog(
+                        title: '下载二维码',
+                        content: buildQrDialogContent(detail, download),
+                        confirmText: '关闭',
+                        cancelText: null,
+                      );
+                    },
+                  ),
           );
           break;
         case DetailSection.developer:
