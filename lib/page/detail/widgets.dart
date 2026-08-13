@@ -1458,52 +1458,111 @@ class PermissionsSection extends StatelessWidget {
 /// 下载二维码弹窗内容
 ///
 /// 白底 QR 平板（AppColors.white 保证夜间模式可扫码）+ 应用图标与名称：
-/// - QrImageView(data: 下载链接, size: 108)，无 embeddedImage
+/// - QrImageView(data: 当前二维码数据, size: 108)，无 embeddedImage
+/// - 实际走代理的链接（GitHub/localdb）提供"代理前缀"开关：默认开启（代理 URL
+///   生成二维码），关闭后切换原始 URL 重新生成；状态为弹框内临时状态，不持久化
 /// - AppIcon(24×24) + SizedBox(sm) + 应用名称（bodySmall）
 Widget buildQrDialogContent(IDetailInfo detail, DownloadInfo download) {
-  return Container(
-    padding: AppSpacing.allLG,
-    decoration: BoxDecoration(
-      color: AppColors.white,
-      borderRadius: AppRadius.allSM,
-    ),
-    child: Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        QrImageView(
-          data: download.url,
-          version: QrVersions.auto,
-          size: 108,
-        ),
-        const SizedBox(height: AppSpacing.sm),
-        Builder(
-          builder: (context) => Row(
-            children: [
-              AppIcon(
-                url: detail.icon,
-                width: 24,
-                height: 24,
-                borderRadius: AppRadius.xs,
-              ),
-              const SizedBox(width: AppSpacing.sm),
-              Flexible(
-                child: Text(
-                  detail.appName,
-                  // 白板为强制白色（保证夜间可扫码），文字用固定深色保证可读
-                  style: Theme.of(context)
-                      .textTheme
-                      .bodySmall
-                      ?.copyWith(color: AppColors.textPrimary),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-            ],
+  return _QrDialogContent(detail: detail, download: download);
+}
+
+/// 下载二维码弹窗内容（代理开关为弹框内临时 StatefulWidget 状态）
+class _QrDialogContent extends StatefulWidget {
+  const _QrDialogContent({required this.detail, required this.download});
+
+  final IDetailInfo detail;
+  final DownloadInfo download;
+
+  @override
+  State<_QrDialogContent> createState() => _QrDialogContentState();
+}
+
+class _QrDialogContentState extends State<_QrDialogContent> {
+  /// 默认使用代理前缀生成二维码（关闭弹框即丢弃，不持久化）
+  bool _useProxy = true;
+
+  @override
+  Widget build(BuildContext context) {
+    final detail = widget.detail;
+    final download = widget.download;
+    final proxied = applyProxyIfNeeded(download.url, getProxy());
+    final canProxy = proxied != download.url;
+    final qrData = _useProxy ? proxied : download.url;
+
+    return Container(
+      padding: AppSpacing.allLG,
+      decoration: const BoxDecoration(
+        color: AppColors.white,
+        borderRadius: AppRadius.allSM,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          QrImageView(
+            data: qrData,
+            version: QrVersions.auto,
+            size: 108,
           ),
-        ),
-      ],
-    ),
-  );
+          // 当前二维码 URL 小字（便于确认代理前后差异）
+          Padding(
+            padding: const EdgeInsets.only(top: AppSpacing.sm),
+            child: Text(
+              qrData,
+              key: const Key('qr_data_caption'),
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          // 实际走代理的链接才显示代理开关
+          if (canProxy)
+            Row(
+              children: [
+                Text(
+                  '代理前缀',
+                  style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                ),
+                const Spacer(),
+                Switch(
+                  value: _useProxy,
+                  onChanged: (v) => setState(() => _useProxy = v),
+                ),
+              ],
+            ),
+          const SizedBox(height: AppSpacing.sm),
+          Builder(
+            builder: (context) => Row(
+              children: [
+                AppIcon(
+                  url: detail.icon,
+                  width: 24,
+                  height: 24,
+                  borderRadius: AppRadius.xs,
+                ),
+                const SizedBox(width: AppSpacing.sm),
+                Flexible(
+                  child: Text(
+                    detail.appName,
+                    // 白板为强制白色（保证夜间可扫码），文字用固定深色保证可读
+                    style: Theme.of(context)
+                        .textTheme
+                        .bodySmall
+                        ?.copyWith(color: AppColors.textPrimary),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 /// 判断头部 description 是否与 readme 重复

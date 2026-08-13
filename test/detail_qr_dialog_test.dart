@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
+import 'package:gstore/core/core.dart' show applyProxyIfNeeded, getProxy;
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/model/StatTag.dart';
@@ -101,4 +102,79 @@ void main() {
             ?.fontSize);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('GitHub URL：默认开启代理前缀，QR 数据为代理 URL 且显示开关', (tester) async {
+    final detail = _FakeDetailInfo();
+    const url = 'https://github.com/sunO2/GStore/releases/download/v1.0.0/app.apk';
+    final download = DownloadInfo(url: url, name: 'app.apk');
+    // 未配置代理时 getProxy() 返回 defaultProxy，GitHub URL 会被代理
+    final proxied = applyProxyIfNeeded(url, getProxy());
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Center(child: buildQrDialogContent(detail, download)),
+        ),
+      ),
+    );
+
+    // QrImageView.data 在 qr_flutter 4.1.0 为库私有（无公开 getter），
+    // 通过渲染的 URL 小字断言同一份 qrData 值
+    expect(_qrCaption(tester), proxied);
+    expect(proxied, isNot(url));
+    // 开关存在（可切换到原始 URL）
+    expect(find.byType(Switch), findsOneWidget);
+    expect(find.text('代理前缀'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('GitHub URL：关闭代理开关后 QR 数据切换为原始 URL', (tester) async {
+    final detail = _FakeDetailInfo();
+    const url = 'https://github.com/sunO2/GStore/releases/download/v1.0.0/app.apk';
+    final download = DownloadInfo(url: url, name: 'app.apk');
+    final proxied = applyProxyIfNeeded(url, getProxy());
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Center(child: buildQrDialogContent(detail, download)),
+        ),
+      ),
+    );
+    expect(_qrCaption(tester), proxied);
+
+    await tester.tap(find.byType(Switch));
+    await tester.pump();
+
+    // 关闭后切换为原始 URL（重新生成）
+    expect(_qrCaption(tester), url);
+    expect(find.text(proxied), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('非 GitHub URL：不显示代理开关，QR 数据为原始 URL', (tester) async {
+    final detail = _FakeDetailInfo();
+    const url = 'https://example.com/a.apk';
+    final download = DownloadInfo(url: url, name: 'a.apk');
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Center(child: buildQrDialogContent(detail, download)),
+        ),
+      ),
+    );
+
+    expect(_qrCaption(tester), url);
+    expect(find.byType(Switch), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+}
+
+/// 读取二维码弹窗内 URL 小字（与 QrImageView.data 同一份 qrData 值；
+/// qr_flutter 4.1.0 的 data 为库私有字段，无公开 getter 可直接断言）
+String? _qrCaption(WidgetTester tester) {
+  return tester
+      .widget<Text>(find.byKey(const Key('qr_data_caption')))
+      .data;
 }
