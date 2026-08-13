@@ -4,8 +4,7 @@ library;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:cached_network_image/cached_network_image.dart';
-import 'package:flutter_html/flutter_html.dart';
-import 'package:flutter_html/src/extension/html_extension.dart';
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:markdown/markdown.dart' as md;
 import 'package:gstore/core/image/app_image.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
@@ -93,25 +92,27 @@ class SectionCard extends StatelessWidget {
   }
 }
 
-/// 自定义代码块扩展 - 添加复制按钮
-class CodeBlockExtension extends HtmlExtension {
-  final BuildContext context;
-
-  CodeBlockExtension(this.context);
+/// 自定义代码块构建器（flutter_markdown_plus）- 添加复制按钮
+///
+/// 对应旧 flutter_html 的 CodeBlockExtension：README 代码块复用
+/// [_CodeBlockWidget]（工具栏 + 复制按钮 + 深色主题）。
+class _ReadmeCodeBlockBuilder extends MarkdownElementBuilder {
+  @override
+  bool isBlockElement() => true;
 
   @override
-  Set<String> get supportedTags => {'pre'};
+  Widget? visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    final codeText = element.textContent.replaceFirst(RegExp(r'\n+$'), '');
+    if (codeText.trim().isEmpty) return const SizedBox.shrink();
 
-  @override
-  InlineSpan build(ExtensionContext context) {
-    final element = context.styledElement;
-    final codeText = element?.element?.text?.trim() ?? '';
-
-    return WidgetSpan(
-      child: _CodeBlockWidget(
-        codeText: codeText,
-        buildContext: this.context,
-      ),
+    return _CodeBlockWidget(
+      codeText: codeText,
+      buildContext: context,
     );
   }
 }
@@ -216,48 +217,6 @@ class _CodeBlockWidget extends StatelessWidget {
             ),
           ),
         ],
-      ),
-    );
-  }
-}
-
-/// 解析 HTML 尺寸属性（如 `width="100"` / `width="100px"`）。
-///
-/// 百分比 / 非数字 / 空值 → null（交由 AppImage loose 自适应）。
-double? _parseHtmlDimension(String? raw) {
-  if (raw == null) return null;
-  final trimmed = raw.trim();
-  if (trimmed.isEmpty || trimmed.contains('%')) return null;
-  final value =
-      trimmed.toLowerCase().endsWith('px') ? trimmed.substring(0, trimmed.length - 2) : trimmed;
-  final parsed = double.tryParse(value.trim());
-  return (parsed == null || !parsed.isFinite) ? null : parsed;
-}
-
-/// 图片扩展：README 内图片圆角显示 + 点击全屏预览
-class _ReadmeImageExtension extends HtmlExtension {
-  final BuildContext context;
-
-  _ReadmeImageExtension(this.context);
-
-  @override
-  Set<String> get supportedTags => {'img'};
-
-  @override
-  InlineSpan build(ExtensionContext context) {
-    final attributes = context.styledElement?.element?.attributes ?? const {};
-    final src = attributes['src'] ?? '';
-    final uri = Uri.tryParse(src);
-    if (uri == null || src.isEmpty) {
-      return const WidgetSpan(child: SizedBox.shrink());
-    }
-    return WidgetSpan(
-      alignment: PlaceholderAlignment.bottom,
-      child: _ReadmeImage(
-        url: src,
-        buildContext: this.context,
-        htmlWidth: _parseHtmlDimension(attributes['width']),
-        htmlHeight: _parseHtmlDimension(attributes['height']),
       ),
     );
   }
@@ -779,16 +738,15 @@ class ReadmeSection extends StatelessWidget {
       return const SizedBox.shrink();
     }
 
-    // 将 Markdown 转换为 HTML
-    final htmlContent = (readme == null || readme.isEmpty)
+    // README 文本流：相对路径图片已在渠道层经 rawBaseUrl 绝对化
+    // （resolveReadmeImageUrls，见 GitHubChannel/LocalDbChannel），
+    // 此处仅将内嵌 <img> HTML 转换为 markdown 图片语法
+    // （flutter_markdown_plus 不支持内联 HTML；尺寸经 title "WxH" 传递）
+    final markdown = (readme == null || readme.isEmpty)
         ? ''
-        : md.markdownToHtml(
-            readme,
-            extensionSet: md.ExtensionSet.gitHubFlavored,
-          );
+        : convertHtmlImgsToMarkdown(readme);
 
     final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
 
     return SectionCard(
       title: '详细介绍',
@@ -799,198 +757,203 @@ class ReadmeSection extends StatelessWidget {
           _ScreenshotGallery(screenshots: screenshots),
           const SizedBox(height: AppSpacing.md),
         ],
-        if (htmlContent.isNotEmpty)
-          Html(
-            data: htmlContent,
-            onLinkTap: (url, _, __) {
-              if (url != null && onLinkTap != null) {
-                onLinkTap?.call(url);
+        if (markdown.isNotEmpty)
+          MarkdownBody(
+            data: markdown,
+            selectable: true,
+            onTapLink: (text, href, title) {
+              if (href != null && href.isNotEmpty && onLinkTap != null) {
+                onLinkTap?.call(href);
               }
             },
-            // 添加自定义代码块扩展
-            extensions: [
-              CodeBlockExtension(context),
-              _ReadmeImageExtension(context),
-            ],
-            style: {
-              // 正文基础样式
-              'body': Style(
-                margin: Margins.zero,
-                padding: HtmlPaddings.zero,
-                color: colorScheme.onSurface,
-                fontSize: FontSize(AppTypography.sizeMD),
-                lineHeight: const LineHeight(1.5),
-              ),
-
-              // 标题样式
-              'h1': Style(
-                color: colorScheme.onSurface,
-                fontSize: FontSize(AppTypography.sizeXXL),
-                fontWeight: AppTypography.weightSemiBold,
-                margin: Margins.only(bottom: AppSpacing.xs, top: AppSpacing.xs),
-                padding: HtmlPaddings.only(bottom: AppSpacing.xs),
-              ),
-              'h2': Style(
-                color: colorScheme.onSurface,
-                fontSize: FontSize(AppTypography.sizeXL),
-                fontWeight: AppTypography.weightSemiBold,
-                margin: Margins.only(bottom: AppSpacing.xs, top: AppSpacing.xs),
-                padding: HtmlPaddings.only(left: AppSpacing.sm),
-              ),
-              'h3': Style(
-                color: colorScheme.onSurface,
-                fontSize: FontSize(AppTypography.sizeLG),
-                fontWeight: AppTypography.weightSemiBold,
-                margin: Margins.only(bottom: AppSpacing.xs, top: AppSpacing.xs),
-              ),
-              'h4': Style(
-                color: colorScheme.onSurface,
-                fontSize: FontSize(AppTypography.sizeMD),
-                fontWeight: AppTypography.weightSemiBold,
-                margin: Margins.only(bottom: AppSpacing.xs, top: AppSpacing.xs),
-              ),
-
-              // 段落样式
-              'p': Style(
-                margin: Margins.only(bottom: AppSpacing.xs),
-                lineHeight: const LineHeight(1.6),
-              ),
-
-              // 链接样式
-              'a': Style(
-                color: colorScheme.primary,
-                textDecoration: TextDecoration.underline,
-                textDecorationColor: colorScheme.primary,
-                fontWeight: AppTypography.weightMedium,
-              ),
-
-              // 行内代码样式
-              'code': Style(
-                backgroundColor: colorScheme.surfaceContainerHighest,
-                color: colorScheme.primary,
-                padding: HtmlPaddings.symmetric(horizontal: 6, vertical: 3),
-                fontFamily: 'monospace',
-                fontSize: FontSize(AppTypography.sizeSM - 1),
-              ),
-
-              // 代码块样式
-              'pre': Style(
-                backgroundColor: AppColors.codeEditorBackground,
-                color: AppColors.codeEditorText,
-                padding: HtmlPaddings.all(AppSpacing.md),
-                margin: Margins.only(bottom: AppSpacing.md),
-                fontFamily: 'monospace',
-                fontSize: FontSize(AppTypography.sizeSM),
-              ),
-
-              // 引用块样式
-              'blockquote': Style(
-                border: Border(
-                  left: BorderSide(
-                    color: colorScheme.primary,
-                    width: 4,
-                  ),
+            imageBuilder: (uri, title, alt) {
+              final size = _parseImageTitleSize(title);
+              return Padding(
+                padding: const EdgeInsets.symmetric(vertical: AppSpacing.xs),
+                child: _ReadmeImage(
+                  url: uri.toString(),
+                  buildContext: context,
+                  htmlWidth: size?.$1,
+                  htmlHeight: size?.$2,
                 ),
-                padding: HtmlPaddings.only(left: AppSpacing.md),
-                margin: Margins.symmetric(vertical: AppSpacing.xs),
-                color: colorScheme.onSurfaceVariant
-                    .withAlpha(AppColors.alphaMedium),
-                backgroundColor: colorScheme.surfaceContainerHighest
-                    .withAlpha(AppColors.alphaLowest),
-              ),
-
-              // 列表样式
-              'ul': Style(
-                margin:
-                    Margins.only(bottom: AppSpacing.xs, left: AppSpacing.md),
-              ),
-              'ol': Style(
-                margin:
-                    Margins.only(bottom: AppSpacing.xs, left: AppSpacing.md),
-              ),
-              'li': Style(
-                margin: Margins.only(bottom: AppSpacing.xs),
-                lineHeight: const LineHeight(1.6),
-              ),
-
-              // 表格样式
-              'table': Style(
-                width: Width(double.infinity),
-                border: Border.all(
-                  color: colorScheme.outline.withAlpha(AppColors.alphaLower),
-                  width: 1,
-                ),
-                margin: Margins.only(bottom: AppSpacing.xs),
-              ),
-              'th': Style(
-                backgroundColor: colorScheme.surfaceContainerHighest,
-                color: colorScheme.onSurface,
-                padding: HtmlPaddings.symmetric(
-                    horizontal: AppSpacing.md, vertical: AppSpacing.sm),
-                fontWeight: AppTypography.weightSemiBold,
-                textAlign: TextAlign.center,
-              ),
-              'td': Style(
-                padding: HtmlPaddings.symmetric(
-                    horizontal: AppSpacing.md, vertical: AppSpacing.sm),
-                border: Border(
-                  top: BorderSide(
-                    color: colorScheme.outline.withAlpha(AppColors.alphaLower),
-                    width: 1,
-                  ),
-                ),
-              ),
-
-              // 图片样式
-              'img': Style(
-                margin: Margins.symmetric(vertical: AppSpacing.xs),
-              ),
-
-              // 分隔线样式
-              'hr': Style(
-                border: Border(
-                  bottom: BorderSide(
-                    color: colorScheme.outlineVariant
-                        .withAlpha(AppColors.alphaLower),
-                    width: 1,
-                  ),
-                ),
-                margin: Margins.symmetric(vertical: AppSpacing.sm),
-              ),
-
-              // 强调文本
-              'strong': Style(
-                fontWeight: AppTypography.weightSemiBold,
-                color: colorScheme.onSurface,
-              ),
-              'b': Style(
-                fontWeight: AppTypography.weightSemiBold,
-                color: colorScheme.onSurface,
-              ),
-
-              // 斜体文本
-              'em': Style(
-                fontStyle: FontStyle.italic,
-              ),
-              'i': Style(
-                fontStyle: FontStyle.italic,
-              ),
-
-              // 删除线
-              'del': Style(
-                textDecoration: TextDecoration.lineThrough,
-                color: colorScheme.onSurfaceVariant
-                    .withAlpha(AppColors.alphaMedium),
-              ),
-              's': Style(
-                textDecoration: TextDecoration.lineThrough,
-                color: colorScheme.onSurfaceVariant
-                    .withAlpha(AppColors.alphaMedium),
-              ),
+              );
             },
-            shrinkWrap: true,
+            // README 代码块：复制按钮 + 深色工具栏（复用旧 _CodeBlockWidget）
+            builders: {
+              'pre': _ReadmeCodeBlockBuilder(),
+            },
+            styleSheet: _buildReadmeStyleSheet(theme),
           ),
       ],
+    );
+  }
+
+  /// 解析 markdown 图片 title（convertHtmlImgsToMarkdown 编码为 "WxH"，仅数字）
+  /// 解析失败（null/非法）→ null（不传尺寸，交由 _ReadmeImage loose 自适应）
+  (double, double)? _parseImageTitleSize(String? title) {
+    if (title == null) return null;
+    final m = RegExp(r'^(\d+)[xX](\d+)$').firstMatch(title.trim());
+    if (m == null) return null;
+    final w = double.tryParse(m.group(1)!);
+    final h = double.tryParse(m.group(2)!);
+    if (w == null || h == null) return null;
+    return (w, h);
+  }
+
+  /// 移植原 flutter_html style map → flutter_markdown_plus MarkdownStyleSheet。
+  ///
+  /// 逐项对照说明（无法 1:1 的取最接近字段）：
+  /// - body（sizeMD/1.5/onSurface）→ p；p/li 原 lineHeight 1.6 由 blockSpacing 补偿
+  /// - 标题原 margin+padding 合并进 h*Padding（块间距由 blockSpacing 承担）
+  /// - 行内 code 原 padding(6,3) 无法表达 → 保留背景/颜色/字体
+  /// - pre 原背景/内边距由 _CodeBlockWidget 自带，codeblock* 清空避免双重样式
+  /// - td 原 border-top → TableBorder.all 近似（flutter_markdown_plus 无逐行边框）
+  MarkdownStyleSheet _buildReadmeStyleSheet(ThemeData theme) {
+    final colorScheme = theme.colorScheme;
+
+    return MarkdownStyleSheet.fromTheme(theme).copyWith(
+      // 块间基础间距（原各块 margin 的近似）
+      blockSpacing: AppSpacing.xs,
+
+      // 正文基础样式
+      p: TextStyle(
+        fontSize: AppTypography.sizeMD,
+        height: 1.5,
+        color: colorScheme.onSurface,
+      ),
+      pPadding: EdgeInsets.zero,
+
+      // 标题样式
+      h1: TextStyle(
+        fontSize: AppTypography.sizeXXL,
+        fontWeight: AppTypography.weightSemiBold,
+        color: colorScheme.onSurface,
+      ),
+      h1Padding: const EdgeInsets.only(bottom: AppSpacing.xs * 2),
+      h2: TextStyle(
+        fontSize: AppTypography.sizeXL,
+        fontWeight: AppTypography.weightSemiBold,
+        color: colorScheme.onSurface,
+      ),
+      h2Padding: const EdgeInsets.only(
+        bottom: AppSpacing.xs,
+        left: AppSpacing.sm,
+      ),
+      h3: TextStyle(
+        fontSize: AppTypography.sizeLG,
+        fontWeight: AppTypography.weightSemiBold,
+        color: colorScheme.onSurface,
+      ),
+      h3Padding: const EdgeInsets.only(bottom: AppSpacing.xs),
+      h4: TextStyle(
+        fontSize: AppTypography.sizeMD,
+        fontWeight: AppTypography.weightSemiBold,
+        color: colorScheme.onSurface,
+      ),
+      h4Padding: const EdgeInsets.only(bottom: AppSpacing.xs),
+
+      // 链接样式
+      a: TextStyle(
+        color: colorScheme.primary,
+        decoration: TextDecoration.underline,
+        decorationColor: colorScheme.primary,
+        fontWeight: AppTypography.weightMedium,
+      ),
+
+      // 行内代码样式
+      code: TextStyle(
+        backgroundColor: colorScheme.surfaceContainerHighest,
+        color: colorScheme.primary,
+        fontFamily: 'monospace',
+        fontSize: AppTypography.sizeSM - 1,
+      ),
+
+      // 代码块：样式由 _CodeBlockWidget 自带（复制按钮 + 深色工具栏），
+      // 清掉 fromTheme 默认装饰避免双重样式
+      codeblockPadding: EdgeInsets.zero,
+      codeblockDecoration: const BoxDecoration(),
+
+      // 引用块样式
+      blockquote: TextStyle(
+        color: colorScheme.onSurfaceVariant.withAlpha(AppColors.alphaMedium),
+      ),
+      blockquotePadding: const EdgeInsets.fromLTRB(
+        AppSpacing.md,
+        AppSpacing.xs,
+        0,
+        AppSpacing.xs,
+      ),
+      blockquoteDecoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHighest
+            .withAlpha(AppColors.alphaLowest),
+        border: Border(
+          left: BorderSide(
+            color: colorScheme.primary,
+            width: 4,
+          ),
+        ),
+      ),
+
+      // 列表样式
+      listIndent: AppSpacing.md,
+      listBullet: TextStyle(
+        fontSize: AppTypography.sizeMD,
+        height: 1.5,
+        color: colorScheme.onSurface,
+      ),
+
+      // 表格样式
+      tableBorder: TableBorder.all(
+        color: colorScheme.outline.withAlpha(AppColors.alphaLower),
+        width: 1,
+      ),
+      tablePadding: const EdgeInsets.only(bottom: AppSpacing.xs),
+      tableBody: TextStyle(
+        fontSize: AppTypography.sizeMD,
+        height: 1.5,
+        color: colorScheme.onSurface,
+      ),
+      tableHead: TextStyle(
+        color: colorScheme.onSurface,
+        fontWeight: AppTypography.weightSemiBold,
+      ),
+      tableHeadAlign: TextAlign.center,
+      tableCellsPadding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.md,
+        vertical: AppSpacing.sm,
+      ),
+      tableHeadCellsPadding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.md,
+        vertical: AppSpacing.sm,
+      ),
+      tableHeadCellsDecoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHighest,
+      ),
+
+      // 分隔线样式
+      horizontalRuleDecoration: BoxDecoration(
+        border: Border(
+          bottom: BorderSide(
+            color: colorScheme.outlineVariant.withAlpha(AppColors.alphaLower),
+            width: 1,
+          ),
+        ),
+      ),
+
+      // 强调文本
+      strong: TextStyle(
+        fontWeight: AppTypography.weightSemiBold,
+        color: colorScheme.onSurface,
+      ),
+
+      // 斜体文本
+      em: const TextStyle(fontStyle: FontStyle.italic),
+
+      // 删除线
+      del: TextStyle(
+        decoration: TextDecoration.lineThrough,
+        color: colorScheme.onSurfaceVariant.withAlpha(AppColors.alphaMedium),
+      ),
     );
   }
 }
