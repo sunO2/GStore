@@ -653,6 +653,10 @@ class GitHubChannel with AppUpdateCheckMixin implements IChannel {
         } catch (e) {
           appLog.error('GitHubChannel: 获取 README 失败 - $e');
         }
+        // 将 README 中的相对路径图片替换为完整 raw URL
+        if (readme != null) {
+          readme = resolveReadmeImageUrls(readme, rawBaseUrl);
+        }
       }
 
       // 构建原始数据 Map（保持原始格式）
