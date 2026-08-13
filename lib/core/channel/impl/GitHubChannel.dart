@@ -17,6 +17,7 @@ import 'package:http/http.dart' as http;
 import 'package:gstore/core/channel/AppUpdateCheckMixin.dart';
 import 'package:gstore/core/channel/database/channel_database.dart';
 import 'package:gstore/core/channel/database/channel_added_app.dart';
+import 'package:gstore/core/cache/ReadmeCache.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/data/metadata_repository.dart';
 
@@ -629,34 +630,63 @@ class GitHubChannel with AppUpdateCheckMixin implements IChannel {
 
       debugPrint('GitHubChannel: 最终下载列表数量 = ${downloads.length}');
 
-      // 获取 README（GitHub API contents 端点，raw 直连保留用于图片基准）
+      // 获取 README（contents API + ETag 条件缓存）
+      // 缓存存绝对化后文本（304 命中直接渲染，无需重复 resolve）
       String? readme;
       if (apiList.default_branch != null &&
           apiList.default_branch!.isNotEmpty) {
         final branch = apiList.default_branch!;
         final rawBaseUrl = 'https://raw.githubusercontent.com/${appInfo.user}/${appInfo.repositories}/refs/heads/$branch/';
         try {
+          final cached = await ReadmeCache.instance
+              .get(appInfo.user, appInfo.repositories);
+          final headers =
+              cached != null ? {'If-None-Match': cached.etag} : null;
           final apiBase =
               'https://api.github.com/repos/${appInfo.user}/${appInfo.repositories}/contents';
           final readmeResp = await _httpClient
-              .get(Uri.parse(applyProxyIfNeeded('$apiBase/README.md?ref=$branch', getProxy())))
+              .get(Uri.parse(applyProxyIfNeeded('$apiBase/README.md?ref=$branch', getProxy())),
+                  headers: headers)
               .timeout(const Duration(seconds: 10));
-          if (readmeResp.statusCode == 200 && readmeResp.body.isNotEmpty) {
+          if (readmeResp.statusCode == 304 && cached != null) {
+            // 条件命中：直接用缓存（已绝对化）
+            readme = cached.readme;
+          } else if (readmeResp.statusCode == 200 &&
+              readmeResp.body.isNotEmpty) {
             readme = decodeContentsReadme(readmeResp.body);
+            final etag = readmeResp.headers['etag'];
+            if (readme != null) {
+              readme = resolveReadmeImageUrls(readme, rawBaseUrl);
+              if (etag != null && etag.isNotEmpty) {
+                await ReadmeCache.instance.put(appInfo.user,
+                    appInfo.repositories,
+                    etag: etag, readme: readme);
+              }
+            }
           } else {
+            // fallback README.MD（同样带条件头；同 key 复用主 etag 条件请求）
             final upperResp = await _httpClient
-                .get(Uri.parse(applyProxyIfNeeded('$apiBase/README.MD?ref=$branch', getProxy())))
+                .get(Uri.parse(applyProxyIfNeeded('$apiBase/README.MD?ref=$branch', getProxy())),
+                    headers: headers)
                 .timeout(const Duration(seconds: 10));
-            if (upperResp.statusCode == 200 && upperResp.body.isNotEmpty) {
+            if (upperResp.statusCode == 304 && cached != null) {
+              readme = cached.readme;
+            } else if (upperResp.statusCode == 200 &&
+                upperResp.body.isNotEmpty) {
               readme = decodeContentsReadme(upperResp.body);
+              final etag = upperResp.headers['etag'];
+              if (readme != null) {
+                readme = resolveReadmeImageUrls(readme, rawBaseUrl);
+                if (etag != null && etag.isNotEmpty) {
+                  await ReadmeCache.instance.put(appInfo.user,
+                      appInfo.repositories,
+                      etag: etag, readme: readme);
+                }
+              }
             }
           }
         } catch (e) {
           appLog.error('GitHubChannel: 获取 README 失败 - $e');
-        }
-        // 将 README 中的相对路径图片替换为完整 raw URL
-        if (readme != null) {
-          readme = resolveReadmeImageUrls(readme, rawBaseUrl);
         }
       }
 
