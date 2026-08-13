@@ -90,6 +90,18 @@ class AppListState extends State<ApplistPage>
                 borderRadius: BorderRadius.circular(AppRadius.circle),
                 borderSide: BorderSide.none,
               ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(AppRadius.circle),
+                borderSide: BorderSide.none,
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(AppRadius.circle),
+                borderSide: BorderSide.none,
+              ),
+              disabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(AppRadius.circle),
+                borderSide: BorderSide.none,
+              ),
               filled: true,
               // 半透明填充（透出磨砂质感，随主题变化）
               fillColor:
