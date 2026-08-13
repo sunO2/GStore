@@ -94,6 +94,81 @@ void main() {
     });
   });
 
+  group('convertHtmlImgsToMarkdown', () {
+    test('无 alt 无尺寸 → ![](URL)', () {
+      expect(
+        convertHtmlImgsToMarkdown('<img src="https://a.com/x.png">'),
+        '![](https://a.com/x.png)',
+      );
+    });
+
+    test('带 alt → ![alt](URL)', () {
+      expect(
+        convertHtmlImgsToMarkdown('<img src="https://a.com/x.png" alt="logo">'),
+        '![logo](https://a.com/x.png)',
+      );
+    });
+
+    test('alt + width/height → ![alt](URL "WxH")', () {
+      expect(
+        convertHtmlImgsToMarkdown(
+          '<img src="https://a.com/x.png" alt="logo" width="200" height="100">',
+        ),
+        '![logo](https://a.com/x.png "200x100")',
+      );
+    });
+
+    test('width/height 带 px 后缀 → 剥离 px 编码 "WxH"', () {
+      expect(
+        convertHtmlImgsToMarkdown(
+          '<img src="https://a.com/x.png" alt="logo" width="200px" height="100px">',
+        ),
+        '![logo](https://a.com/x.png "200x100")',
+      );
+    });
+
+    test('width 含 % → 不编码 title，仅保留 alt', () {
+      expect(
+        convertHtmlImgsToMarkdown(
+          '<img src="https://a.com/x.png" alt="logo" width="50%">',
+        ),
+        '![logo](https://a.com/x.png)',
+      );
+    });
+
+    test('自闭合 <img src="x.png" /> → ![](x.png)', () {
+      expect(
+        convertHtmlImgsToMarkdown('<img src="x.png" />'),
+        '![](x.png)',
+      );
+    });
+
+    test('多 img 混合文本 → 都转换、文字保留', () {
+      const input =
+          '标题段落\n<img src="a.png" alt="一">\n中间文字\n<img src="b.png" alt="二" width="10" height="20">\n结尾';
+      const expected =
+          '标题段落\n![一](a.png)\n中间文字\n![二](b.png "10x20")\n结尾';
+      expect(convertHtmlImgsToMarkdown(input), expected);
+    });
+
+    test('无 src 的 img → 原样保留', () {
+      const input = '<img alt="logo" width="100">';
+      expect(convertHtmlImgsToMarkdown(input), input);
+    });
+
+    test('非 img HTML（<br>/<div>/<a>）→ 原样不动', () {
+      const input = '<br>\n<div>text</div>\n<a href="https://a.com">link</a>';
+      expect(convertHtmlImgsToMarkdown(input), input);
+    });
+
+    test('img 与文本相邻（无换行）→ 不吞文本', () {
+      expect(
+        convertHtmlImgsToMarkdown('前置<img src="a.png">后置'),
+        '前置![](a.png)后置',
+      );
+    });
+  });
+
   group('isSvgUrl', () {
     test('.svg 后缀 → true', () {
       expect(isSvgUrl('https://x.com/a.svg'), isTrue);
