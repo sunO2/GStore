@@ -163,4 +163,30 @@ void main() {
     await tester.pumpAndSettle();
     expect(await clearFuture, isEmpty);
   });
+
+  testWidgets('更多底部面板：actions 为空时隐藏"操作"区（无标题、无宫格）', (tester) async {
+    await tester.pumpWidget(
+      const GetMaterialApp(home: Scaffold(body: SizedBox())),
+    );
+
+    final future = showMoreActionsSheet(
+      Get.context!,
+      appName: '测试应用',
+      presetTags: ['工具'],
+      currentTags: const [],
+      actions: const [],
+    );
+    await tester.pumpAndSettle();
+
+    // 面板正常弹出
+    expect(find.text('测试应用'), findsOneWidget);
+
+    // 空 actions：不渲染"操作"标题与宫格
+    expect(find.text('操作'), findsNothing);
+    expect(find.byType(GridView), findsNothing);
+
+    await tester.tap(find.widgetWithText(FilledButton, '确定'));
+    await tester.pumpAndSettle();
+    expect(await future, isEmpty);
+  });
 }
