@@ -629,25 +629,26 @@ class GitHubChannel with AppUpdateCheckMixin implements IChannel {
 
       debugPrint('GitHubChannel: 最终下载列表数量 = ${downloads.length}');
 
-      // 获取 README（添加超时控制）
+      // 获取 README（GitHub API contents 端点，raw 直连保留用于图片基准）
       String? readme;
       if (apiList.default_branch != null &&
           apiList.default_branch!.isNotEmpty) {
         final branch = apiList.default_branch!;
         final rawBaseUrl = 'https://raw.githubusercontent.com/${appInfo.user}/${appInfo.repositories}/refs/heads/$branch/';
         try {
-          // raw.githubusercontent.com 需走代理（与 MetadataRepository 一致）
-          final readmeMdResp = await _httpClient
-              .get(Uri.parse(applyProxyIfNeeded('${rawBaseUrl}README.md', getProxy())))
+          final apiBase =
+              'https://api.github.com/repos/${appInfo.user}/${appInfo.repositories}/contents';
+          final readmeResp = await _httpClient
+              .get(Uri.parse(applyProxyIfNeeded('$apiBase/README.md?ref=$branch', getProxy())))
               .timeout(const Duration(seconds: 10));
-          if (readmeMdResp.statusCode == 200 && readmeMdResp.body.isNotEmpty) {
-            readme = readmeMdResp.body;
+          if (readmeResp.statusCode == 200 && readmeResp.body.isNotEmpty) {
+            readme = decodeContentsReadme(readmeResp.body);
           } else {
-            final readmeMdUpperResp = await _httpClient
-                .get(Uri.parse(applyProxyIfNeeded('${rawBaseUrl}README.MD', getProxy())))
+            final upperResp = await _httpClient
+                .get(Uri.parse(applyProxyIfNeeded('$apiBase/README.MD?ref=$branch', getProxy())))
                 .timeout(const Duration(seconds: 10));
-            if (readmeMdUpperResp.statusCode == 200 && readmeMdUpperResp.body.isNotEmpty) {
-              readme = readmeMdUpperResp.body;
+            if (upperResp.statusCode == 200 && upperResp.body.isNotEmpty) {
+              readme = decodeContentsReadme(upperResp.body);
             }
           }
         } catch (e) {
@@ -976,5 +977,24 @@ class GitHubChannel with AppUpdateCheckMixin implements IChannel {
       des: '应用不存在',
       category: null,
     );
+  }
+}
+
+/// 解析 GitHub contents API 响应（JSON: {content: base64, encoding}）→ markdown 文本
+/// JSON 解析失败/无 content → 原样返回 body（兼容 raw 文本响应）；空/解码失败 → null
+String? decodeContentsReadme(String body) {
+  try {
+    final decoded = jsonDecode(body);
+    if (decoded is Map && decoded['content'] is String) {
+      final b64 = (decoded['content'] as String).replaceAll(RegExp(r'\s'), '');
+      return utf8.decode(base64Decode(b64));
+    }
+    return body; // 无 content（如 raw 文本）→ 原样
+  } catch (_) {
+    try {
+      return utf8.decode(base64Decode(body)); // 兼容：body 直接是 base64
+    } catch (_) {
+      return body;
+    }
   }
 }
