@@ -258,6 +258,30 @@ class _ReadmeImage extends StatelessWidget {
     return proxied;
   }
 
+  /// 长按复制原始图片链接（未代理）
+  Future<void> _copyUrl() async {
+    await Clipboard.setData(ClipboardData(text: url));
+    if (buildContext.mounted) {
+      AppDialogs.showSuccess('已复制图片链接');
+    }
+  }
+
+  /// 图片加载成功日志（含缓存命中，imageBuilder 为成功路径）
+  void _logLoadSuccess() {
+    appLog.info('README 图片加载成功',
+        data: {'url': url, 'proxiedUrl': _proxiedUrl});
+  }
+
+  /// 图片加载失败日志
+  void _logLoadFailure(Object error) {
+    appLog.error('README 图片加载失败', data: {
+      'url': url,
+      'proxiedUrl': _proxiedUrl,
+      'proxy': getProxy(),
+      'error': error.toString(),
+    });
+  }
+
   /// 全屏预览
   void _preview(BuildContext context) {
     showDialog(
@@ -272,14 +296,21 @@ class _ReadmeImage extends StatelessWidget {
               child: CachedNetworkImage(
                 imageUrl: _proxiedUrl,
                 fit: BoxFit.contain,
+                imageBuilder: (context, imageProvider) {
+                  _logLoadSuccess();
+                  return Image(image: imageProvider, fit: BoxFit.contain);
+                },
                 placeholder: (context, url) => const Center(
                   child: CircularProgressIndicator(),
                 ),
-                errorWidget: (context, url, error) => const Icon(
-                  Icons.broken_image_outlined,
-                  color: Colors.white70,
-                  size: 48,
-                ),
+                errorWidget: (context, url, error) {
+                  _logLoadFailure(error);
+                  return const Icon(
+                    Icons.broken_image_outlined,
+                    color: Colors.white70,
+                    size: 48,
+                  );
+                },
               ),
             ),
           ),
@@ -294,6 +325,7 @@ class _ReadmeImage extends StatelessWidget {
 
     return GestureDetector(
       onTap: () => _preview(buildContext),
+      onLongPress: _copyUrl,
       child: ClipRRect(
         borderRadius: AppRadius.allMD,
         child: ConstrainedBox(
@@ -304,6 +336,10 @@ class _ReadmeImage extends StatelessWidget {
           child: CachedNetworkImage(
             imageUrl: _proxiedUrl,
             fit: BoxFit.contain,
+            imageBuilder: (context, imageProvider) {
+              _logLoadSuccess();
+              return Image(image: imageProvider, fit: BoxFit.contain);
+            },
             placeholder: (context, url) => Container(
               height: 100,
               color: Theme.of(context).colorScheme.surfaceContainerHighest,
@@ -315,11 +351,14 @@ class _ReadmeImage extends StatelessWidget {
                 ),
               ),
             ),
-            errorWidget: (context, url, error) => Container(
-              height: 60,
-              color: Theme.of(context).colorScheme.surfaceContainerHighest,
-              child: const Icon(Icons.broken_image_outlined),
-            ),
+            errorWidget: (context, url, error) {
+              _logLoadFailure(error);
+              return Container(
+                height: 60,
+                color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                child: const Icon(Icons.broken_image_outlined),
+              );
+            },
           ),
         ),
       ),
