@@ -2,6 +2,7 @@ import 'dart:ffi';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/channel/database/channel_database.dart';
+import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart' as sqflite;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:sqlite3/open.dart';
@@ -78,8 +79,16 @@ void main() {
   });
 
   setUp(() async {
+    // 注意：不使用共享的 inMemoryDatabasePath（':memory:'）——sqflite_common_ffi
+    // 将其映射为 .dart_tool 下公共文件，多个测试文件并行 isolate 删除/重建会
+    // 互相踩踏（database is locked）；本文件独享一个文件路径，delete+open
+    // 只影响本文件，保证用例隔离。
+    final dbFile = p.join(
+        await _ffiFactory.getDatabasesPath(), 'channel_db_migration_test.db');
+    await _ffiFactory.deleteDatabase(dbFile);
+
     db = await _ffiFactory.openDatabase(
-      inMemoryDatabasePath,
+      dbFile,
       options: sqflite.OpenDatabaseOptions(version: 3),
     );
     await db.execute(v3CreateTableSql);
@@ -87,6 +96,9 @@ void main() {
 
   tearDown(() async {
     await db.close();
+    // 清理本文件独占的 db 文件，避免在 .dart_tool 下残留
+    await _ffiFactory.deleteDatabase(
+        p.join(await _ffiFactory.getDatabasesPath(), 'channel_db_migration_test.db'));
   });
 
   group('迁移前缺陷复现（v3 表 PRIMARY KEY(appId)）', () {
