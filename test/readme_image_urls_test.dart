@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/utils/unit.dart';
+import 'package:gstore/page/detail/widgets.dart';
 
 void main() {
   group('resolveReadmeImageUrls', () {
@@ -58,6 +59,28 @@ void main() {
         resolveReadmeImageUrls('![](logo.png)', base),
         '![](${base}logo.png)',
       );
+    });
+  });
+
+  group('isSvgUrl', () {
+    test('.svg 后缀 → true', () {
+      expect(isSvgUrl('https://x.com/a.svg'), isTrue);
+    });
+
+    test('.svg?query 后缀 → true', () {
+      expect(isSvgUrl('https://x.com/a.svg?raw=1'), isTrue);
+    });
+
+    test('大写 .SVG 后缀 → true（大小写不敏感）', () {
+      expect(isSvgUrl('https://x.com/A.SVG'), isTrue);
+    });
+
+    test('.png 后缀 → false', () {
+      expect(isSvgUrl('https://x.com/a.png'), isFalse);
+    });
+
+    test('.svgz 后缀 → false（不误判 .svg 前缀）', () {
+      expect(isSvgUrl('https://x.com/a.svgz'), isFalse);
     });
   });
 }

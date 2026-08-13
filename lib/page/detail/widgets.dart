@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter_html/flutter_html.dart';
 import 'package:flutter_html/src/extension/html_extension.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:markdown/markdown.dart' as md;
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
@@ -243,6 +244,12 @@ class _ReadmeImageExtension extends HtmlExtension {
   }
 }
 
+/// 判断 URL 是否为 SVG 图片（README 徽章常见）
+bool isSvgUrl(String url) {
+  final lower = url.toLowerCase();
+  return lower.endsWith('.svg') || lower.contains('.svg?');
+}
+
 /// README 图片组件
 class _ReadmeImage extends StatelessWidget {
   final String url;
@@ -282,6 +289,38 @@ class _ReadmeImage extends StatelessWidget {
     });
   }
 
+  /// 构建 README 图片：SVG 走 flutter_svg，其余走 CachedNetworkImage
+  /// [placeholder] / [errorWidget] 由调用方提供（列表与全屏预览样式不同）
+  Widget _buildImage({
+    required Widget placeholder,
+    required Widget errorWidget,
+  }) {
+    if (isSvgUrl(url)) {
+      return SvgPicture.network(
+        _proxiedUrl,
+        fit: BoxFit.contain,
+        placeholderBuilder: (context) => placeholder,
+        errorBuilder: (context, error, stackTrace) {
+          _logLoadFailure(error);
+          return errorWidget;
+        },
+      );
+    }
+    return CachedNetworkImage(
+      imageUrl: _proxiedUrl,
+      fit: BoxFit.contain,
+      imageBuilder: (context, imageProvider) {
+        _logLoadSuccess();
+        return Image(image: imageProvider, fit: BoxFit.contain);
+      },
+      errorWidget: (context, url, error) {
+        _logLoadFailure(error);
+        return errorWidget;
+      },
+      placeholder: (context, url) => placeholder,
+    );
+  }
+
   /// 全屏预览
   void _preview(BuildContext context) {
     showDialog(
@@ -293,24 +332,15 @@ class _ReadmeImage extends StatelessWidget {
           child: InteractiveViewer(
             maxScale: 5,
             child: Center(
-              child: CachedNetworkImage(
-                imageUrl: _proxiedUrl,
-                fit: BoxFit.contain,
-                imageBuilder: (context, imageProvider) {
-                  _logLoadSuccess();
-                  return Image(image: imageProvider, fit: BoxFit.contain);
-                },
-                placeholder: (context, url) => const Center(
+              child: _buildImage(
+                placeholder: const Center(
                   child: CircularProgressIndicator(),
                 ),
-                errorWidget: (context, url, error) {
-                  _logLoadFailure(error);
-                  return const Icon(
-                    Icons.broken_image_outlined,
-                    color: Colors.white70,
-                    size: 48,
-                  );
-                },
+                errorWidget: const Icon(
+                  Icons.broken_image_outlined,
+                  color: Colors.white70,
+                  size: 48,
+                ),
               ),
             ),
           ),
@@ -333,14 +363,8 @@ class _ReadmeImage extends StatelessWidget {
             maxWidth: maxWidth,
             maxHeight: maxWidth * 0.8,
           ),
-          child: CachedNetworkImage(
-            imageUrl: _proxiedUrl,
-            fit: BoxFit.contain,
-            imageBuilder: (context, imageProvider) {
-              _logLoadSuccess();
-              return Image(image: imageProvider, fit: BoxFit.contain);
-            },
-            placeholder: (context, url) => Container(
+          child: _buildImage(
+            placeholder: Container(
               height: 100,
               color: Theme.of(context).colorScheme.surfaceContainerHighest,
               child: const Center(
@@ -351,14 +375,11 @@ class _ReadmeImage extends StatelessWidget {
                 ),
               ),
             ),
-            errorWidget: (context, url, error) {
-              _logLoadFailure(error);
-              return Container(
-                height: 60,
-                color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                child: const Icon(Icons.broken_image_outlined),
-              );
-            },
+            errorWidget: Container(
+              height: 60,
+              color: Theme.of(context).colorScheme.surfaceContainerHighest,
+              child: const Icon(Icons.broken_image_outlined),
+            ),
           ),
         ),
       ),
