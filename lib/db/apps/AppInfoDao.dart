@@ -50,7 +50,7 @@ abstract class AppInfoDao {
   ''')
   Future<List<AppInfo>> searchFts(String word);
 
-  @Query('SELECT * FROM config LIMIT 1')
+  @Query('SELECT * FROM config ORDER BY rowid DESC LIMIT 1')
   Future<AppInfoConfig?> getVersion();
 
   @Insert(onConflict: OnConflictStrategy.replace)
