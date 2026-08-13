@@ -235,8 +235,7 @@ class DetailPage extends StatelessWidget {
                         runSpacing: AppSpacing.xs,
                         children: [
                           // 版本标签（已安装显示当前版本，未安装显示最新版本）
-                          if (version != null &&
-                                  version.isNotEmpty ||
+                          if ((version != null && version.isNotEmpty) ||
                               state.installInfo.value != null)
                             VersionBadge(
                               latestVersion: version,
@@ -367,7 +366,7 @@ class DetailPage extends StatelessWidget {
     for (var sectionType in detail.sections) {
       switch (sectionType) {
         case DetailSection.version:
-          // 版本和包名已整合到 ReadmeSection 中显示为标签
+          // 版本标签由 VersionBadge 展示，包名已移入应用信息卡
           break;
         case DetailSection.statistics:
         case DetailSection.rating:
