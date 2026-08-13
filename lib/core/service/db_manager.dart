@@ -73,12 +73,12 @@ class DbManager extends GetxService {
       rethrow;
     }
 
-    // 从数据库恢复配置到内存（含代理设置）
+    // 从数据库恢复版本配置到内存（代理配置走 ConfigService B 轨）
     try {
       final dbConfig = await dbRepositroies["gstore"]!.db.dao.getVersion();
       if (dbConfig != null) {
-        updateConfig(dbConfig);
-        appLog.info('DbManager: 已恢复配置（代理: ${dbConfig.proxy ?? "默认"}）');
+        updateConfig(dbConfig.version);
+        appLog.info('DbManager: 已恢复配置（版本: ${dbConfig.version}）');
       }
     } catch (e) {
       appLog.error('DbManager: 恢复配置失败 - $e');
