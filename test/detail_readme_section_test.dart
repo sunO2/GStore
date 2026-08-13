@@ -4,6 +4,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
+import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/image/app_image.dart';
 import 'package:gstore/core/image/app_image_loader.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
@@ -158,6 +159,45 @@ void main() {
 
     expect(find.text('详细介绍'), findsNothing);
     expect(find.byType(CachedNetworkImage), findsNothing);
+  });
+
+  testWidgets('loading: true → 轻量占位（卡片标题 + AppLoading），不渲染正文/截图', (tester) async {
+    final info = _FakeDetailInfo()
+      ..readmeValue = '# 标题\n详细介绍文本'
+      ..screenshotsValue = [
+        ScreenshotInfo(url: 'https://example.com/s1.png'),
+      ];
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: ReadmeSection(info: info, loading: true),
+          ),
+        ),
+      ),
+    );
+    // AppLoading 是无限动画，用固定时长 pump 而非 pumpAndSettle
+    await tester.pump(const Duration(milliseconds: 100));
+
+    // 占位可见：卡片标题保持稳定 + 加载指示
+    expect(find.text('详细介绍'), findsOneWidget);
+    expect(find.byType(AppLoading), findsOneWidget);
+    // 真实内容不渲染
+    expect(find.text('标题'), findsNothing);
+    expect(find.textContaining('详细介绍文本'), findsNothing);
+    expect(find.byType(CachedNetworkImage), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('loading: false（默认）→ 真实内容照常渲染，无加载指示', (tester) async {
+    final info = _FakeDetailInfo()..readmeValue = '纯文本介绍';
+
+    await pumpReadme(tester, info);
+
+    expect(find.text('详细介绍'), findsOneWidget);
+    expect(find.byType(AppLoading), findsNothing);
+    expect(find.textContaining('纯文本介绍'), findsOneWidget);
   });
 
   testWidgets('点击截图弹出全屏预览（缩放 + 页码），关闭后消失', (tester) async {
