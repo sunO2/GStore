@@ -183,6 +183,7 @@ class DetailPage extends StatelessWidget {
         final icon = state.displayIcon;
         final name = state.displayName;
         final description = state.displayDescription;
+        final version = state.displayVersion;
         final detailInfo = state.detailInfo.value;
 
         return Column(
@@ -218,7 +219,7 @@ class DetailPage extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(width: AppSpacing.lg),
-                // 名称
+                // 名称 + 版本 + 描述
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -227,58 +228,71 @@ class DetailPage extends StatelessWidget {
                         name,
                         style: Theme.of(context).textTheme.titleLarge,
                       ),
+                      // 版本信息（已安装显示当前版本 + 最新角标；未安装显示最新版本）
+                      if ((version != null && version.isNotEmpty) ||
+                          state.installInfo.value != null)
+                        Padding(
+                          padding: const EdgeInsets.only(top: AppSpacing.xs),
+                          child: VersionBadge(
+                            latestVersion: version,
+                            installedVersion:
+                                state.installInfo.value?.versionName,
+                          ),
+                        ),
+                      if (description.isNotEmpty &&
+                          !isDescriptionDuplicated(
+                              detailInfo, description)) ...[
+                        const SizedBox(height: AppSpacing.lg),
+                        Html(
+                          data: description,
+                          style: {
+                            'body': Style(
+                              margin: Margins.zero,
+                              padding: HtmlPaddings.zero,
+                              color: Theme.of(context).colorScheme.onSurface,
+                              fontSize: FontSize(AppTypography.sizeMD),
+                              lineHeight: const LineHeight(1.5),
+                            ),
+                            'p': Style(
+                              margin: Margins.zero,
+                              lineHeight: const LineHeight(1.5),
+                            ),
+                            'a': Style(
+                              color: Theme.of(context).colorScheme.primary,
+                              textDecoration: TextDecoration.underline,
+                              fontWeight: AppTypography.weightMedium,
+                            ),
+                            'strong': Style(
+                              fontWeight: AppTypography.weightSemiBold,
+                            ),
+                            'em': Style(
+                              fontStyle: FontStyle.italic,
+                            ),
+                            'code': Style(
+                              backgroundColor: Theme.of(context)
+                                  .colorScheme
+                                  .primaryContainer
+                                  .withAlpha(AppColors.alphaLowest),
+                              color: Theme.of(context).colorScheme.primary,
+                              padding: HtmlPaddings.symmetric(
+                                  horizontal: 4, vertical: 2),
+                              fontFamily: 'monospace',
+                              fontSize: FontSize(AppTypography.sizeSM - 1),
+                            ),
+                          },
+                          shrinkWrap: true,
+                          onLinkTap: (url, _, __) {
+                            if (url != null) {
+                              logic.openBrowser(url);
+                            }
+                          },
+                        ),
+                      ],
                     ],
                   ),
                 ),
               ],
             ),
-            if (description.isNotEmpty &&
-                !isDescriptionDuplicated(detailInfo, description)) ...[
-              const SizedBox(height: AppSpacing.lg),
-              Html(
-                data: description,
-                style: {
-                  'body': Style(
-                    margin: Margins.zero,
-                    padding: HtmlPaddings.zero,
-                    color: Theme.of(context).colorScheme.onSurface,
-                    fontSize: FontSize(AppTypography.sizeMD),
-                    lineHeight: const LineHeight(1.5),
-                  ),
-                  'p': Style(
-                    margin: Margins.zero,
-                    lineHeight: const LineHeight(1.5),
-                  ),
-                  'a': Style(
-                    color: Theme.of(context).colorScheme.primary,
-                    textDecoration: TextDecoration.underline,
-                    fontWeight: AppTypography.weightMedium,
-                  ),
-                  'strong': Style(
-                    fontWeight: AppTypography.weightSemiBold,
-                  ),
-                  'em': Style(
-                    fontStyle: FontStyle.italic,
-                  ),
-                  'code': Style(
-                    backgroundColor: Theme.of(context)
-                        .colorScheme
-                        .primaryContainer
-                        .withAlpha(AppColors.alphaLowest),
-                    color: Theme.of(context).colorScheme.primary,
-                    padding: HtmlPaddings.symmetric(horizontal: 4, vertical: 2),
-                    fontFamily: 'monospace',
-                    fontSize: FontSize(AppTypography.sizeSM - 1),
-                  ),
-                },
-                shrinkWrap: true,
-                onLinkTap: (url, _, __) {
-                  if (url != null) {
-                    logic.openBrowser(url);
-                  }
-                },
-              ),
-            ],
           ],
         );
       }),
