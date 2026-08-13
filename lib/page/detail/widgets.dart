@@ -531,12 +531,12 @@ class VersionBadge extends StatelessWidget {
         chip,
         if (showBadge)
           Positioned(
-            top: -AppSpacing.sm,
-            right: -AppSpacing.sm,
+            top: -AppSpacing.sm - 2,
+            right: -AppSpacing.sm - 4,
             child: Container(
-              padding: EdgeInsets.symmetric(
-                horizontal: AppSpacing.sm,
-                vertical: AppSpacing.xs,
+              padding: const EdgeInsets.symmetric(
+                horizontal: 3,
+                vertical: 1,
               ),
               decoration: BoxDecoration(
                 color: colorScheme.primaryContainer,
@@ -546,6 +546,7 @@ class VersionBadge extends StatelessWidget {
                 'v$latest',
                 style: textTheme.labelSmall?.copyWith(
                   color: colorScheme.onPrimaryContainer,
+                  fontSize: 9,
                   fontWeight: AppTypography.weightSemiBold,
                 ),
               ),
