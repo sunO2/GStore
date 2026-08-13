@@ -82,13 +82,13 @@ dependencies:
   flutter_local_notifications: ^22.2.0
   flutter_foreground_task: ^10.0.0
   flutter_gen_ai_chat_ui: ^2.15.0
+  flutter_svg: ^2.3.0
 dev_dependencies:
   flutter_test:
     sdk: flutter
   retrofit_generator: '>=8.0.0 <10.0.0' # for Dart 3.3 use ^9.0.0
   build_runner: ^2.3.3
   json_serializable: ^6.8.0
-  flutter_svg: ^2.0.10+1
   flutter_svg_provider: ^1.0.7
   permission_handler: ^11.3.1
   path_provider: ^2.1.4
