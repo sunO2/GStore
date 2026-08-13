@@ -1,7 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:get/get.dart';
 import 'package:gstore/db/apps/AppInfo.dart';
-import 'package:gstore/core/service/db_manager.dart';
 import 'package:gstore/core/config/config_service.dart';
 import 'package:gstore/core/config/config_registry.dart';
 
@@ -88,35 +89,65 @@ export 'package:gstore/db/apps/AppInfo.dart';
 export 'dart:async';
 export 'dart:convert';
 
-void updateConfig(AppInfoConfig? config) {
-  if (null != config) {
-    // Get.put 在已注册（如启动时 db_manager 注册）时静默保留旧实例（不替换），
-    // 导致 updateProxy 只持久化 DB、内存 config 不更新、getProxy() 返回旧值。
-    // 先 delete 再 put 保证新配置立即生效。
-    if (Get.isRegistered<AppInfoConfig>(tag: "config")) {
-      Get.delete<AppInfoConfig>(tag: "config");
-    }
-    Get.put(config, tag: "config");
+/// 更新内存中的应用版本配置（version-only，代理配置走 ConfigService B 轨）。
+///
+/// Get.put 在已注册（如启动时 db_manager 注册）时静默保留旧实例（不替换），
+/// 先 delete 再 put 保证新配置立即生效。
+void updateConfig(String? version) {
+  if (Get.isRegistered<AppInfoConfig>(tag: "config")) {
+    Get.delete<AppInfoConfig>(tag: "config");
   }
+  Get.put(AppInfoConfig(version ?? "0.0.0", null), tag: "config");
 }
 
 void updateDataBaseVersion(String? version) {
-  AppInfoConfig? config = getConfig();
-  updateConfig(AppInfoConfig(version ?? "0.0.0", config?.proxy));
+  updateConfig(version);
 }
 
-void updateProxy(String? proxyUrl) {
-  AppInfoConfig? config = getConfig();
-  // 存空串表示不使用代理
-  updateConfig(AppInfoConfig(config?.version ?? "0.0.0", proxyUrl ?? ''));
-  // 持久化代理配置到数据库
+/// 代理缓存；null 表示尚未从 ConfigService 加载（getProxy 返回 defaultProxy）
+String? _proxyCache;
+
+/// ConfigService proxy_url 订阅（loadProxyFromConfig 建立，resetProxyForTest 取消）
+StreamSubscription<ConfigChangeEvent>? _proxySubscription;
+
+/// 代理值归一化：null（未设置/清除）→ 默认代理；'' 及具体值 → 原值
+String _resolveProxyValue(Object? value) {
+  if (value == null) return defaultProxy;
+  return value.toString();
+}
+
+/// 从统一配置服务加载代理并订阅变化（幂等，重复调用直接返回）
+///
+/// - 读取 ConfigService.get(ConfigKeys.proxyUrl) 初始化缓存
+///   （null → defaultProxy、'' → ''）
+/// - 订阅 proxy_url 变化：B 轨写入（set/clear）后 getProxy() 即时反映
+Future<void> loadProxyFromConfig() async {
+  if (_proxySubscription != null) return; // 幂等
+  _proxyCache = _resolveProxyValue(
+    await ConfigService.instance.get(ConfigKeys.proxyUrl),
+  );
+  _proxySubscription = ConfigService.instance
+      .watch(ConfigKeys.proxyUrl)
+      .listen((event) {
+    _proxyCache = _resolveProxyValue(event.newValue);
+  });
+}
+
+/// 更新代理配置（B 轨：写入 ConfigService + 缓存即时更新）
+///
+/// - null：set null 清除（持久化删除该 key）
+/// - 其他：写入统一存储并广播变化事件
+/// - 缓存同步更新保证 getProxy() 立即生效（set 异步不阻塞即时读）
+Future<void> updateProxy(String? proxyUrl) async {
+  _proxyCache = _resolveProxyValue(proxyUrl);
   try {
-    final manager = Get.find<DbManager>();
-    manager.persistConfig(
-        AppInfoConfig(config?.version ?? "0.0.0", proxyUrl ?? ''));
+    await ConfigService.instance.set(ConfigKeys.proxyUrl, proxyUrl);
   } catch (e) {
-    debugPrint('更新代理配置持久化失败: $e');
+    debugPrint('代理配置持久化失败: $e');
   }
+  // 写回复核：set 广播的变化事件异步送达（可能晚于后续写入），
+  // 按最新写入值重设缓存，避免过期事件覆盖即时更新。
+  _proxyCache = _resolveProxyValue(proxyUrl);
 }
 
 AppInfoConfig? getConfig() {
@@ -134,53 +165,19 @@ AppInfoConfig? getConfig() {
 const String defaultProxy = 'https://gh-proxy.org/';
 
 /// 获取当前代理前缀
-/// - 配置为空串/null 时表示不使用代理，返回空字符串
-/// - 从未配置过（内存无 config）时返回默认代理
+/// - 已加载（loadProxyFromConfig / updateProxy 后）：返回缓存值
+///   （'' 表示不使用代理；清除/null 后为 defaultProxy）
+/// - 未加载时返回 defaultProxy
 String getProxy() {
-  AppInfoConfig? config = getConfig();
-  if (null == config) {
-    return defaultProxy;
-  }
-  final proxy = config.proxy?.trim() ?? '';
-  return proxy;
+  return _proxyCache ?? defaultProxy;
 }
 
 String get proxy => getProxy();
 
-/// 启动代理配置桥接：监听 ConfigService 的 proxy_url 变化，
-/// 变化后更新内存 config 与数据库，使 getProxy() 立即生效。
-/// 在应用启动（ConfigInitializer 初始化完成后）调用一次。
-void startProxyConfigBridge() {
-  try {
-    final service = ConfigService.instance;
-    if (_proxyBridgeStarted) return;
-    _proxyBridgeStarted = true;
-
-    // 同步一次：内存/DB 中已有代理值时写入统一存储
-    Future(() async {
-      try {
-        final current = getProxy();
-        if (current.isNotEmpty) {
-          await service.set(
-            ConfigKeys.proxyUrl,
-            current,
-            source: ConfigChangeSource.internal,
-          );
-        }
-      } catch (e) {
-        debugPrint('代理配置同步失败: $e');
-      }
-    });
-
-    service.watch(ConfigKeys.proxyUrl).listen((event) {
-      final value = event.newValue?.toString() ?? '';
-      if (value != getProxy()) {
-        updateProxy(value);
-      }
-    });
-  } catch (e) {
-    debugPrint('代理配置桥接启动失败: $e');
-  }
+/// 取消代理订阅并重置缓存（仅测试使用）
+@visibleForTesting
+void resetProxyForTest() {
+  _proxySubscription?.cancel();
+  _proxySubscription = null;
+  _proxyCache = null;
 }
-
-bool _proxyBridgeStarted = false;
