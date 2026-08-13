@@ -33,8 +33,10 @@ class AppImage extends StatefulWidget {
   const AppImage({
     super.key,
     required this.url,
-    required this.width,
-    required this.height,
+    this.width,
+    this.height,
+    this.maxWidth = double.infinity,
+    this.maxHeight = double.infinity,
     this.placeholder,
     this.errorWidget,
     this.onSuccess,
@@ -49,11 +51,17 @@ class AppImage extends StatefulWidget {
   /// 已代理的最终下载 URL。
   final String url;
 
-  /// 期望显示宽度。
-  final double width;
+  /// HTML 指定宽度（可选）；为 null 时由 [maxWidth] 兜底。
+  final double? width;
 
-  /// 期望显示高度。
-  final double height;
+  /// HTML 指定高度（可选）；为 null 时由 [maxHeight] 兜底（badge SVG 则钳制 [badgeHeight]）。
+  final double? height;
+
+  /// 无显式宽度时的宽度上限。
+  final double maxWidth;
+
+  /// 无显式高度时的高度上限。
+  final double maxHeight;
 
   /// 加载完成前显示的占位组件。
   final Widget? placeholder;
@@ -134,15 +142,22 @@ class _AppImageState extends State<AppImage> {
       );
     }
 
+    final format = result.format;
+    final isBadge = format == ImageFormat.svg && isBadgeUrl(widget.url);
+    // HTML 显式尺寸优先；未给时用 maxWidth/maxHeight 兜底，
+    // badge SVG 未给高度时钳制到 badgeHeight（默认 30，保留现状）。
+    final double effectiveWidth = widget.width ?? widget.maxWidth;
+    final double effectiveHeight = widget.height ??
+        (isBadge ? (widget.badgeHeight ?? 30) : widget.maxHeight);
     final size = resolveImageDisplaySize(
       url: widget.url,
-      format: result.format,
-      width: widget.width,
-      height: widget.height,
+      format: format,
+      width: effectiveWidth,
+      height: effectiveHeight,
       badgeHeight: widget.badgeHeight,
     );
 
-    final Widget child = result.format == ImageFormat.svg
+    final Widget child = format == ImageFormat.svg
         ? SvgPicture(
             SvgBytesLoader(result.bytes),
             fit: widget.fit,
@@ -163,7 +178,18 @@ class _AppImageState extends State<AppImage> {
             },
           );
 
-    return SizedBox.fromSize(size: size, child: child);
+    // 解析后尺寸完全确定（如 HTML 显式宽高、badge 钳制）→ tight；
+    // 否则 → loose 上限约束，SVG/位图按固有尺寸显示、超限等比 clamp。
+    if (size.width.isFinite && size.height.isFinite) {
+      return SizedBox.fromSize(size: size, child: child);
+    }
+    return ConstrainedBox(
+      constraints: BoxConstraints(
+        maxWidth: effectiveWidth,
+        maxHeight: effectiveHeight,
+      ),
+      child: child,
+    );
   }
 
   /// 解码失败统一处理：首次触发时上报 [AppImage.onError]，并返回错误占位。

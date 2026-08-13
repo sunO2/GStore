@@ -264,6 +264,33 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
+    testWidgets('无 width/height 的 SVG → 按固有尺寸 100x20 显示（loose）',
+        (tester) async {
+      await tester.pumpWidget(wrap(const AppImage(url: kSvgUrl)));
+      await tester.pump(const Duration(milliseconds: 50));
+      expect(tester.getSize(find.byType(SvgPicture)), const Size(100, 20));
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('无尺寸 SVG + maxWidth 60 → clamp 等比 60x12', (tester) async {
+      await tester.pumpWidget(wrap(
+        const AppImage(url: kSvgUrl, maxWidth: 60),
+      ));
+      await tester.pump(const Duration(milliseconds: 50));
+      expect(tester.getSize(find.byType(SvgPicture)), const Size(60, 12));
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('badge SVG 无 height（仅 width）→ 高度仍钳制 badgeHeight',
+        (tester) async {
+      await tester.pumpWidget(wrap(
+        const AppImage(url: kBadgeUrl, width: 300, badgeHeight: 30),
+      ));
+      await tester.pump(const Duration(milliseconds: 50));
+      expect(tester.getSize(find.byType(SvgPicture)), const Size(300, 30));
+      expect(tester.takeException(), isNull);
+    });
+
     testWidgets('缓存去重：同 URL 第二个实例命中缓存 → requestCount == 1',
         (tester) async {
       var requestCount = 0;
