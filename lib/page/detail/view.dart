@@ -52,7 +52,8 @@ class DetailPage extends StatelessWidget {
         // 防止除零错误
         final hasTotal = total > 0;
         final progress = hasTotal ? (count / total).clamp(0.0, 1.0) : null;
-        final percent = hasTotal ? ((count / total) * 100).toInt().clamp(0, 100) : 0;
+        final percent =
+            hasTotal ? ((count / total) * 100).toInt().clamp(0, 100) : 0;
         final downloading = data.status == DownloadStatus.DOWNLOAD_LOADING;
 
         if (!downloading && data.status != DownloadStatus.DOWNLOAD_SUCCESS) {
@@ -206,10 +207,14 @@ class DetailPage extends StatelessWidget {
                         : Container(
                             width: AppSpacing.xxxl * 2,
                             height: AppSpacing.xxxl * 2,
-                            color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .surfaceContainerHighest,
                             child: Icon(
                               Icons.apps,
-                              color: Theme.of(context).colorScheme.onSurfaceVariant,
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onSurfaceVariant,
                             ),
                           ),
                   ),
@@ -274,7 +279,8 @@ class DetailPage extends StatelessWidget {
                                 ),
                               ),
                           // 安装状态（响应式）
-                          Obx(() => _buildInstallStatus(context, logic, state.installInfo.value)),
+                          Obx(() => _buildInstallStatus(
+                              context, logic, state.installInfo.value)),
                         ],
                       ),
                     ],
@@ -311,7 +317,10 @@ class DetailPage extends StatelessWidget {
                     fontStyle: FontStyle.italic,
                   ),
                   'code': Style(
-                    backgroundColor: Theme.of(context).colorScheme.primaryContainer.withAlpha(AppColors.alphaLowest),
+                    backgroundColor: Theme.of(context)
+                        .colorScheme
+                        .primaryContainer
+                        .withAlpha(AppColors.alphaLowest),
                     color: Theme.of(context).colorScheme.primary,
                     padding: HtmlPaddings.symmetric(horizontal: 4, vertical: 2),
                     fontFamily: 'monospace',
@@ -386,7 +395,11 @@ class DetailPage extends StatelessWidget {
           break;
         case DetailSection.statistics:
         case DetailSection.rating:
-          sections.add(StatisticsSection(info: detail));
+          // 渠道可能同时声明 statistics 与 rating（如 vivo 评分场景），
+          // 统一渲染一次，避免统计卡片堆叠
+          if (!sections.any((s) => s is StatisticsSection)) {
+            sections.add(StatisticsSection(info: detail));
+          }
           break;
         case DetailSection.screenshots:
           sections.add(ScreenshotsSection(info: detail));
@@ -415,8 +428,6 @@ class DetailPage extends StatelessWidget {
             ),
           );
           break;
-        case DetailSection.rating:
-          break;
         case DetailSection.developer:
           sections.add(DeveloperSection(info: detail));
           break;
@@ -437,18 +448,17 @@ class DetailPage extends StatelessWidget {
     DetailLogic logic,
     sysAppInfo.AppInfo? status,
   ) {
-    final title = status == null
-        ? "未安装"
-        : "installed ${status.versionName}";
+    final title = status == null ? "未安装" : "installed ${status.versionName}";
 
     return GestureDetector(
-      onTap: status == null
-          ? null
-          : () => logic.startApp(status.packageName),
+      onTap: status == null ? null : () => logic.startApp(status.packageName),
       child: Container(
         padding: AppSpacing.horizontalMD_verticalXS,
         decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.primary.withAlpha(AppColors.alphaMedium),
+          color: Theme.of(context)
+              .colorScheme
+              .primary
+              .withAlpha(AppColors.alphaMedium),
           borderRadius: AppRadius.allXL,
         ),
         child: Text(
@@ -463,6 +473,9 @@ class DetailPage extends StatelessWidget {
 }
 
 BorderSide border(BuildContext context) => BorderSide(
-  color: Theme.of(context).colorScheme.primary.withAlpha(AppColors.alphaMedium),
-  width: 1,
-);
+      color: Theme.of(context)
+          .colorScheme
+          .primary
+          .withAlpha(AppColors.alphaMedium),
+      width: 1,
+    );

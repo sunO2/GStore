@@ -76,7 +76,10 @@ class SectionCard extends StatelessWidget {
                   fontWeight: AppTypography.weightSemiBold,
                 ),
               ),
-              if (count != null) count!,
+              if (count != null) ...[
+                const SizedBox(width: AppSpacing.xs),
+                count!,
+              ],
               const Spacer(),
               if (trailing != null) trailing!,
             ],
@@ -1264,7 +1267,11 @@ Widget buildQrDialogContent(IDetailInfo detail, DownloadInfo download) {
               Flexible(
                 child: Text(
                   detail.appName,
-                  style: Theme.of(context).textTheme.bodySmall,
+                  // 白板为强制白色（保证夜间可扫码），文字用固定深色保证可读
+                  style: Theme.of(context)
+                      .textTheme
+                      .bodySmall
+                      ?.copyWith(color: AppColors.textPrimary),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
