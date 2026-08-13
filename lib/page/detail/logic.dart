@@ -6,6 +6,7 @@ import 'package:gstore/core/core.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/AppDetailRequest.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
+import 'package:gstore/core/model/StatTag.dart';
 import 'package:gstore/core/service/downloadService.dart';
 import 'package:gstore/core/service/metadata_submit_service.dart';
 import 'package:gstore/core/download/DownloadStrategyManager.dart';
@@ -85,7 +86,11 @@ class DetailLogic extends GetxController {
     loadDetail();
   }
 
-  /// 加载应用详情
+  /// 加载应用详情（分块渐进组装）
+  ///
+  /// ① getAppInfo → 基础 detailInfo 立即注入（名称/图标/描述/开发者/主页等）
+  /// ② 三路并行（统计/下载/README），各自独立 try/catch，互不阻塞：
+  ///    任一区块失败只降级自身（区块保持 null + loading 复位），不影响其他区块。
   Future<void> loadDetail() async {
     if (request == null) {
       state.errorMessage.value = '缺少请求参数';
@@ -96,55 +101,37 @@ class DetailLogic extends GetxController {
     state.errorMessage.value = '';
 
     try {
-      // 通过渠道管理器获取详情
+      // 懒初始化（兼容单测直接调 loadDetail；正常流程 onReady 已注入，重复查找幂等）
+      _channelManager = Get.find(tag: 'channelManager');
       final channelInstance = _channelManager.getChannel(request!.channel);
       if (channelInstance == null) {
         throw Exception('Channel not found: ${request!.channel}');
       }
 
-      // 先获取基本信息（缓存数据）
-      final basicInfoResult = await channelInstance.getAppInfo(
-        request!.appId,
-        forceRefresh: false,
-      );
-
-      // 再获取详情信息
-      final result = await channelInstance.getAppDetail(
-        request!.appId,
-        forceRefresh: false,
-      );
-
-      if (!result.success || result.data == null) {
-        throw Exception(result.error ?? 'Failed to load app detail');
+      // ① 基础信息（失败仅日志不阻塞，回退 request 参数）
+      AppSummary? basic;
+      try {
+        final basicInfoResult = await channelInstance.getAppInfo(
+          request!.appId,
+          forceRefresh: false,
+        );
+        basic = basicInfoResult.success ? basicInfoResult.data : null;
+      } catch (e) {
+        appLog.error('DetailLogic: 获取基础信息失败（不阻塞分块加载） - $e');
       }
 
-      state.detailInfo.value = result.data;
+      // 基础 detailInfo 就绪即注入（头部/应用信息卡立即可渲染）
+      state.detailInfo.value = _ProgressiveDetailInfo(_buildBaseDetailInfo(basic));
 
-      // 详情加载后，使用详情中的 packageName 重新检测安装状态
-      final detail = result.data;
-      debugPrint('DetailLogic: detail.appId = ${detail?.appId}');
-      debugPrint('DetailLogic: detail.packageName = "${detail?.packageName}"');
-      debugPrint('DetailLogic: detail.runtimeType = ${detail?.runtimeType}');
-
-      String? packageToCheck = detail?.packageName?.trim();
-      debugPrint('DetailLogic: packageName 长度 = ${detail?.packageName?.length ?? 0}');
-      debugPrint('DetailLogic: packageName bytes = ${detail?.packageName?.codeUnits}');
-
-      // 不再用 appId 猜测包名（appId 含点即包名的猜测已清零）：
-      // 仅使用渠道显式提供的 packageName，缺失时跳过安装检测（与旧猜测失败时的行为一致）
-
-      debugPrint('DetailLogic: 最终用于检测的包名 = "$packageToCheck"');
-
+      // packageName 就绪即执行安装检测（插件调用失败已容忍，不影响加载流程）
+      final packageToCheck =
+          (basic?.packageName ?? state.detailInfo.value?.packageName)?.trim();
       if (packageToCheck != null && packageToCheck.isNotEmpty) {
         try {
           final isInstalled = await InstalledApps.isAppInstalled(packageToCheck);
-          debugPrint('DetailLogic: InstalledApps.isAppInstalled("$packageToCheck") = $isInstalled');
-
           if (isInstalled == true) {
             state.installInfo.value = await InstalledApps.getAppInfo(packageToCheck);
             appLog.info('DetailLogic: ✓ 应用已安装 - ${state.installInfo.value?.packageName}');
-            debugPrint('DetailLogic:   安装版本 = ${state.installInfo.value?.versionName}');
-            debugPrint('DetailLogic:   UI 将更新（installInfo 是响应式变量）');
           } else {
             appLog.info('DetailLogic: ✗ 应用未安装 - "$packageToCheck"');
           }
@@ -154,10 +141,156 @@ class DetailLogic extends GetxController {
       } else {
         appLog.error('DetailLogic: 无法检测安装状态 - 没有可用的包名');
       }
+
+      // ② 三路并行分块加载（统计/下载/README），各自独立降级互不阻塞
+      await Future.wait([
+        _loadStatistics(channelInstance),
+        _loadDownloads(channelInstance),
+        _loadReadme(channelInstance),
+      ]);
     } catch (e) {
       state.errorMessage.value = '加载详情失败: $e';
     } finally {
       state.isLoadingDetail.value = false;
+    }
+  }
+
+  /// 基于基础信息（AppSummary）+ 请求参数构造渐进组装的基础详情。
+  ///
+  /// 字段与旧 getAppDetail 结果对齐：appId/name/icon/description/channel/
+  /// packageName/version/developer/projectUrl + extra 基础键
+  /// （developer/repositoryName/projectUrl/proxy——供 _githubRepo / 下载策略读取）。
+  AppDetailInfo _buildBaseDetailInfo(AppSummary? basic) {
+    final req = request!;
+    final name = (basic?.name.isNotEmpty ?? false) ? basic!.name : req.name;
+    final icon =
+        (basic?.icon.isNotEmpty ?? false) ? basic!.icon : (req.icon ?? '');
+    final des = (basic?.des.isNotEmpty ?? false)
+        ? basic!.des
+        : (req.description ?? '');
+    final developer = (basic?.user.isNotEmpty ?? false) ? basic!.user : null;
+    final projectUrl = _buildProjectUrl(basic);
+
+    return AppDetailInfo(
+      appId: (basic?.appId.isNotEmpty ?? false) ? basic!.appId : req.appId,
+      name: name,
+      icon: icon,
+      description: des,
+      channel: req.channel,
+      sections: const [],
+      packageName: basic?.packageName,
+      developer: developer,
+      projectUrl: projectUrl,
+      extra: {
+        if (developer != null) 'developer': developer,
+        if (basic?.repositories.isNotEmpty ?? false)
+          'repositoryName': basic!.repositories,
+        if (projectUrl != null) 'projectUrl': projectUrl,
+        'proxy': getProxy(),
+      },
+    );
+  }
+
+  /// 构造项目主页：GitHub 仓库型应用（user/repositories 齐备）→ github.com 地址。
+  String? _buildProjectUrl(AppSummary? basic) {
+    final user = basic?.user ?? '';
+    final repo = basic?.repositories ?? '';
+    if (user.isNotEmpty && repo.isNotEmpty) {
+      return 'https://github.com/$user/$repo';
+    }
+    return null;
+  }
+
+  /// 区块数据到达后对当前 detailInfo 做 copyWith 增补（渐进组装，每次注入即渲染对应区块）
+  void _updateDetailInfo(AppDetailInfo Function(AppDetailInfo) transform) {
+    final current = state.detailInfo.value;
+    if (current is _ProgressiveDetailInfo) {
+      // 新包装实例触发 Rx 通知
+      state.detailInfo.value = _ProgressiveDetailInfo(transform(current.inner));
+    }
+  }
+
+  /// 分块加载：统计（apiList → extra.apiData，供 buildStatTags / createContext 解析）
+  Future<void> _loadStatistics(IChannel channel) async {
+    state.statisticsLoading.value = true;
+    try {
+      final result = await channel.fetchStatistics(request!.appId);
+      if (result.success && result.data != null) {
+        final apiData = result.data!;
+        _updateDetailInfo((inner) {
+          final extra = Map<String, dynamic>.from(inner.extra);
+          extra['apiData'] = apiData;
+          final sections = [...inner.sections];
+          // 与原 _buildSections 语义一致：有 stars/forks 才声明统计区块
+          if ((apiData['stargazers_count'] != null ||
+                  apiData['forks_count'] != null) &&
+              !sections.contains(DetailSection.statistics)) {
+            sections.add(DetailSection.statistics);
+          }
+          return inner.copyWith(extra: extra, sections: sections);
+        });
+      }
+    } catch (e) {
+      appLog.error('DetailLogic: 加载统计失败（独立降级，不阻塞其他区块） - $e');
+    } finally {
+      state.statisticsLoading.value = false;
+    }
+  }
+
+  /// 分块加载：下载列表（state.downloads + detailInfo.downloads/version + sections）
+  Future<void> _loadDownloads(IChannel channel) async {
+    state.downloadsLoading.value = true;
+    try {
+      final result = await channel.fetchDownloads(request!.appId);
+      if (result.success) {
+        final downloads = result.data ?? const <DownloadInfo>[];
+        state.downloads.value = downloads;
+        _updateDetailInfo((inner) {
+          final sections = [...inner.sections];
+          // 与原 _buildSections 语义一致：有下载项才声明下载区块
+          if (downloads.isNotEmpty &&
+              !sections.contains(DetailSection.downloads)) {
+            sections.add(DetailSection.downloads);
+          }
+          return inner.copyWith(
+            downloads: downloads,
+            // 最新版本：下载列表首项（releases 按时间倒序，与旧 latestVersion 语义对齐）
+            version: inner.version ??
+                (downloads.isNotEmpty ? downloads.first.version : null),
+            sections: sections,
+          );
+        });
+      }
+    } catch (e) {
+      appLog.error('DetailLogic: 加载下载列表失败（独立降级，不阻塞其他区块） - $e');
+    } finally {
+      state.downloadsLoading.value = false;
+    }
+  }
+
+  /// 分块加载：README（state.readme + detailInfo.extra.readme + sections）
+  Future<void> _loadReadme(IChannel channel) async {
+    state.readmeLoading.value = true;
+    try {
+      final result = await channel.fetchReadme(request!.appId);
+      if (result.success && result.data != null) {
+        final readme = result.data!;
+        state.readme.value = readme;
+        _updateDetailInfo((inner) {
+          final extra = Map<String, dynamic>.from(inner.extra);
+          extra['readme'] = readme;
+          final sections = [...inner.sections];
+          // 与原 _buildSections 语义一致：README 非空才声明区块
+          if (readme.isNotEmpty && !sections.contains(DetailSection.readme)) {
+            sections.add(DetailSection.readme);
+          }
+          return inner.copyWith(extra: extra, sections: sections);
+        });
+      }
+    } catch (e) {
+      appLog.error('DetailLogic: 加载 README 失败（独立降级，不阻塞其他区块） - $e');
+    } finally {
+      state.readmeLoading.value = false;
     }
   }
 
@@ -545,7 +678,7 @@ class DetailLogic extends GetxController {
       user: detail.developer ?? '',
       repositories: detail.packageName,
       icon: detail.icon,
-      des: detail.description ?? '',
+      des: detail.description,
     );
   }
 
@@ -568,4 +701,111 @@ class DetailLogic extends GetxController {
     downloadListenerSubscription?.cancel();
     super.onClose();
   }
+}
+
+/// 渐进组装中的详情信息：包装 [AppDetailInfo]，暴露 [IDetailInfo] 接口。
+///
+/// AppDetailInfo 本身不实现 IDetailInfo（渠道详情走各自的 ChannelDetailProxy），
+/// 这里在 logic 内做最小适配，保证 state.detailInfo / DownloadStrategyManager.createContext
+/// 等以 IDetailInfo 消费的路径兼容；字段与旧 getAppDetail 结果对齐
+/// （downloads/readme/statistics/version/developer/projectUrl/extra 各键）。
+class _ProgressiveDetailInfo implements IDetailInfo {
+  _ProgressiveDetailInfo(this.inner);
+
+  /// 内部承载对象（三路数据到达时通过 copyWith 增补）
+  final AppDetailInfo inner;
+
+  @override
+  String get packageName => inner.packageName ?? '';
+
+  @override
+  String get appName => inner.name;
+
+  @override
+  String get name => inner.name;
+
+  @override
+  String get icon => inner.icon;
+
+  @override
+  String get description => inner.description;
+
+  @override
+  String get appId => inner.appId;
+
+  @override
+  String get channelId => inner.channel.code;
+
+  @override
+  ChannelType get channelType => inner.channel;
+
+  @override
+  String? get version => inner.version;
+
+  @override
+  String? get developer => inner.developer;
+
+  @override
+  String? get projectUrl => inner.projectUrl;
+
+  @override
+  List<DownloadInfo> get downloads => inner.downloads;
+
+  @override
+  List<DetailSection> get sections => inner.sections;
+
+  @override
+  Map<String, dynamic> get extra => inner.extra;
+
+  @override
+  String? get readme => inner.readme;
+
+  @override
+  List<ScreenshotInfo>? get screenshots => inner.screenshots;
+
+  @override
+  String? get changelog => inner.changelog;
+
+  @override
+  List<String>? get permissions => inner.permissions;
+
+  @override
+  StatisticsInfo? get statistics {
+    final s = inner.statistics;
+    if (s != null) return s;
+    // 与渠道代理一致：从 extra.apiData 解析 GitHub 统计
+    final apiData = inner.extra['apiData'];
+    if (apiData is Map) {
+      final stars = apiData['stargazers_count'];
+      final watchers = apiData['watchers_count'];
+      final forks = apiData['forks_count'];
+      if (stars is int || watchers is int || forks is int) {
+        return StatisticsInfo(
+          stars: stars is int ? stars : null,
+          watchers: watchers is int ? watchers : null,
+          forks: forks is int ? forks : null,
+        );
+      }
+    }
+    return null;
+  }
+
+  @override
+  List<StatTag> buildStatTags() {
+    // 与 GitHub/LocalDb 渠道代理一致：从 extra.apiData 构建统计标签
+    final tags = <StatTag>[];
+    final apiData = inner.extra['apiData'];
+    if (apiData is Map) {
+      final stars = apiData['stargazers_count'];
+      final watchers = apiData['watchers_count'];
+      final forks = apiData['forks_count'];
+      if (stars is int && stars > 0) tags.add(StatTag.stars(stars));
+      if (watchers is int && watchers > 0) tags.add(StatTag.watchers(watchers));
+      if (forks is int && forks > 0) tags.add(StatTag.forks(forks));
+    }
+    return tags;
+  }
+
+  @override
+  bool get isValid => inner.isValid;
 }
