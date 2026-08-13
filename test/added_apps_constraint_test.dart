@@ -56,9 +56,17 @@ void main() {
 
   group('migration3to4（v3 → v4 迁移路径）', () {
     test('先插重复行再迁移：去重保留 MAX(id)，唯一索引生效后重复插入抛异常', () async {
+      // 注意：不使用共享的 inMemoryDatabasePath（':memory:'）——sqflite_common_ffi
+      // 将其映射为 .dart_tool 下公共文件，多个测试文件并行 isolate 删除/重建会
+      // 互相踩踏（database is locked）；本文件独享一个文件路径，delete+open
+      // 只影响本文件，保证用例隔离。
+      final v3File = p.join(await databaseFactory.getDatabasesPath(),
+          'added_apps_constraint_test.db');
+      await databaseFactory.deleteDatabase(v3File);
+
       // 手工建 v3 表（无唯一索引）
       final db = await databaseFactory.openDatabase(
-        inMemoryDatabasePath,
+        v3File,
         options: sqflite.OpenDatabaseOptions(version: 3),
       );
       await db.execute(v3CreateTableSql);
@@ -100,14 +108,15 @@ void main() {
 
   group('全新库（AppAddedDatabase.create v4 onCreate）', () {
     test('重复插入同 (channelId, appId) 触发唯一约束', () async {
-      // Floor 在 Linux 经 sqfliteDatabaseFactory 将 :memory: 解析为数据库目录下
-      // 的持久化文件（非纯内存），跨测试复用同一实例；先删除残留文件，
+      // 注意：不使用共享的 inMemoryDatabasePath（':memory:'）——sqflite_common_ffi
+      // 将其映射为 .dart_tool 下公共文件，多个测试文件并行 isolate 删除/重建会
+      // 互相踩踏（database is locked）；本文件独享一个文件路径，先删除残留文件
       // 保证 onCreate 按当前 .g.dart（含唯一索引）全新执行，避免旧 schema 残留。
-      final dbFile =
-          p.join(await databaseFactory.getDatabasesPath(), inMemoryDatabasePath);
+      final dbFile = p.join(await databaseFactory.getDatabasesPath(),
+          'added_apps_constraint_test.db');
       await databaseFactory.deleteDatabase(dbFile);
 
-      final db = await AppAddedDatabase.create(dbPath: inMemoryDatabasePath);
+      final db = await AppAddedDatabase.create(dbPath: dbFile);
       addTearDown(db.close);
 
       // 底层 sqflite 库直接插入（abort，绕过 DAO 的 OnConflictStrategy.replace）

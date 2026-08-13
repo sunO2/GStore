@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/aggregate/AppAddedDatabase.dart';
 import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
+import 'package:path/path.dart' as p;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:sqlite3/open.dart';
 
@@ -27,7 +28,15 @@ void main() {
   });
 
   setUp(() async {
-    db = await AppAddedDatabase.create(dbPath: inMemoryDatabasePath);
+    // 注意：不使用共享的 inMemoryDatabasePath（':memory:'）——sqflite_common_ffi
+    // 将其映射为 .dart_tool 下公共文件，多个测试文件并行 isolate 删除/重建会
+    // 互相踩踏（database is locked / disk I/O error）；本文件独享一个文件路径，
+    // delete+create 只影响本文件，保证用例隔离。
+    final dbFile = p.join(
+        await databaseFactory.getDatabasesPath(), 'aggregator_rename_test.db');
+    await databaseFactory.deleteDatabase(dbFile);
+
+    db = await AppAddedDatabase.create(dbPath: dbFile);
     await db.addedAppDao.clearAll();
     await db.appTagDao.clearAll();
     manager = AppAggregatorManager.instance;
