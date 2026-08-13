@@ -423,7 +423,11 @@ class LocalDbChannel with AppUpdateCheckMixin implements IChannel {
         'projectUrl': config?.proxy != null
             ? '${config?.proxy}/${appInfo.user}/${appInfo.repositories}'
             : 'https://github.com/${appInfo.user}/${appInfo.repositories}',
-        'sections': _buildSections(downloads, readme),
+        'sections': _buildSections(
+          downloads,
+          readme,
+          ApiList.fromJson(apiList ?? const <String, dynamic>{}),
+        ),
         'downloads': downloads,
         'readme': readme,
         'proxy': config?.proxy,
@@ -463,8 +467,14 @@ class LocalDbChannel with AppUpdateCheckMixin implements IChannel {
   List<DetailSection> _buildSections(
     List<DownloadInfo> downloads,
     String? readme,
+    ApiList apiList,
   ) {
     final sections = <DetailSection>[];
+
+    // 统计数据（GitHub 特有）
+    if (apiList.stargazers_count != null || apiList.forks != null) {
+      sections.add(DetailSection.statistics);
+    }
 
     // 版本信息 - 只在有下载时显示
     if (downloads.isNotEmpty) {
