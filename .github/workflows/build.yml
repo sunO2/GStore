@@ -13,6 +13,8 @@ jobs:
 
       - name: Clone repository
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0  # 完整 git 历史：release notes 需要上一 tag 之后的所有 commits
 
       - name: Download Latest apps.db Asset from sunO2/GStore-repositorys Release
         run: |
@@ -63,15 +65,34 @@ jobs:
       - run: flutter build apk --no-shrink --target-platform android-arm,android-arm64,android-x64 --split-per-abi 
       - run: flutter build appbundle
       
-      - name: Get latest commit message
-        id: get_commit_msg
+      - name: Get previous release tag
+        id: prev_release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          COMMIT_MSG=$(git log -1 --pretty=%B)
-          {
-            echo 'message<<EOF'
-            echo "$COMMIT_MSG"
-            echo 'EOF'
-          } >> "$GITHUB_OUTPUT"
+          # 取最近一次 release 的 tag（当前 release 尚未创建，latest 即上一次打包）
+          PREV=$(gh release view --json tagName --jq .tagName 2>/dev/null || true)
+          echo "prev_tag=$PREV" >> "$GITHUB_OUTPUT"
+          echo "Previous release tag: $PREV"
+
+      - name: Generate release notes
+        id: get_notes
+        run: |
+          CURRENT="v${{ steps.get_version.outputs.version }}"
+          PREV="${{ steps.prev_release.outputs.prev_tag }}"
+          if [[ -n "$PREV" && "$PREV" != "$CURRENT" ]]; then
+            # 上一次打包（release tag）之后的所有 commit
+            git log "$PREV..HEAD" --pretty=format:"* %s" > notes.txt
+          else
+            # 首个 release 或重跑：全量 commit 历史
+            git log --pretty=format:"* %s" > notes.txt
+          fi
+          echo "--- release notes ---"
+          cat notes.txt
+          echo "---------------------"
+          if [[ ! -s notes.txt ]]; then
+            echo "* 无新增提交" > notes.txt
+          fi
           
       - name: Create Release
         id: create_release
@@ -81,12 +102,12 @@ jobs:
           # 官方 create-release@v1 已弃用，改用内置 gh CLI（幂等：tag 已存在时回退 edit）
           gh release create "v${{ steps.get_version.outputs.version }}" \
             --title "${{ steps.get_version.outputs.version }}" \
-            --notes "${{ steps.get_commit_msg.outputs.message }}" \
+            --notes-file notes.txt \
             --target "${GITHUB_SHA}" \
             --draft=false \
             --prerelease=false \
           || gh release edit "v${{ steps.get_version.outputs.version }}" \
-            --notes "${{ steps.get_commit_msg.outputs.message }}"
+            --notes-file notes.txt
       - name: Upload Release Assets
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
