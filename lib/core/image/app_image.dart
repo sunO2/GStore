@@ -90,6 +90,10 @@ class _AppImageState extends State<AppImage> {
   LoadedImage? _result;
   Object? _error;
 
+  /// 解码失败是否已上报（errorBuilder 可能在多次 build 中重复触发，
+  /// 守卫保证 onError 只触发一次；与 _load 下载失败路径互不干扰）。
+  bool _decodeErrorFired = false;
+
   @override
   void initState() {
     super.initState();
@@ -144,17 +148,29 @@ class _AppImageState extends State<AppImage> {
             fit: widget.fit,
             alignment: widget.alignment,
             allowDrawingOutsideViewBox: widget.allowDrawingOutsideViewBox,
-            errorBuilder: (c, e, s) =>
-                widget.errorWidget ?? const SizedBox.shrink(),
+            errorBuilder: (c, e, s) {
+              _reportDecodeError(e);
+              return widget.errorWidget ?? const SizedBox.shrink();
+            },
           )
         : Image(
             image: MemoryImage(result.bytes),
             fit: widget.fit,
             alignment: widget.alignment,
-            errorBuilder: (c, e, s) =>
-                widget.errorWidget ?? const SizedBox.shrink(),
+            errorBuilder: (c, e, s) {
+              _reportDecodeError(e);
+              return widget.errorWidget ?? const SizedBox.shrink();
+            },
           );
 
     return SizedBox.fromSize(size: size, child: child);
+  }
+
+  /// 解码失败统一处理：首次触发时上报 [AppImage.onError]，并返回错误占位。
+  void _reportDecodeError(Object error) {
+    if (!_decodeErrorFired) {
+      _decodeErrorFired = true;
+      widget.onError?.call(error);
+    }
   }
 }
