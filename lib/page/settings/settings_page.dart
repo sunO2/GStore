@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/config/config_manager.dart';
@@ -16,9 +17,14 @@ const List<String> presetProxyHosts = [
 ];
 
 /// Main settings page with appearance and other settings
-class SettingsPage extends StatelessWidget {
+class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
 
+  @override
+  State<SettingsPage> createState() => _SettingsPageState();
+}
+
+class _SettingsPageState extends State<SettingsPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -108,14 +114,16 @@ class SettingsPage extends StatelessWidget {
           ListTile(
             leading: const Icon(Icons.source, size: AppTypography.iconMD),
             title: const Text('F-Droid 源管理'),
-            trailing: const Icon(Icons.chevron_right, size: AppTypography.iconSM),
+            trailing:
+                const Icon(Icons.chevron_right, size: AppTypography.iconSM),
             onTap: () => Get.toNamed(AppRoute.fdroidRepo),
           ),
           const Divider(height: 1),
           ListTile(
             leading: const Icon(Icons.backup, size: AppTypography.iconMD),
             title: const Text('数据备份'),
-            trailing: const Icon(Icons.chevron_right, size: AppTypography.iconSM),
+            trailing:
+                const Icon(Icons.chevron_right, size: AppTypography.iconSM),
             onTap: () => Get.toNamed(AppRoute.backup),
           ),
           const Divider(height: 1),
@@ -128,11 +136,32 @@ class SettingsPage extends StatelessWidget {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
-            trailing: const Icon(Icons.chevron_right, size: AppTypography.iconSM),
+            trailing:
+                const Icon(Icons.chevron_right, size: AppTypography.iconSM),
             onTap: () => _showProxySettingDialog(context),
           ),
         ],
       ),
+    );
+  }
+
+  /// 预设代理链接 span：逗号分隔，选中项前加 ✅ 并高亮（点击选中并生效）
+  TextSpan _buildProxyLinkSpan(
+    BuildContext context, {
+    required String host,
+    required bool isFirst,
+    required bool isSelected,
+    required VoidCallback onTap,
+  }) {
+    final scheme = Theme.of(context).colorScheme;
+    final text = '${isFirst ? '' : ', '}${isSelected ? '✅ ' : ''}$host';
+    return TextSpan(
+      text: text,
+      style: TextStyle(
+        color: isSelected ? scheme.primary : scheme.onSurface,
+        fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
+      ),
+      recognizer: TapGestureRecognizer()..onTap = onTap,
     );
   }
 
@@ -150,21 +179,26 @@ class SettingsPage extends StatelessWidget {
             children: [
               const Text('设置 GitHub 相关下载的代理前缀，用于加速国内访问。'),
               const SizedBox(height: AppSpacing.md),
-              // 预设代理快速选择
-              Wrap(
-                spacing: AppSpacing.sm,
-                runSpacing: AppSpacing.xs,
-                children: presetProxyHosts.map((host) {
-                  final selected = controller.text == host;
-                  return ChoiceChip(
-                    label: Text(host),
-                    selected: selected,
-                    onSelected: (_) {
-                      controller.text = host;
-                      setDialogState(() {});
-                    },
-                  );
-                }).toList(),
+              // 预设代理快速选择：富文本多链接逗号分隔，
+              // 点击某个链接即选中并立即生效（当前项前显示 ✅）
+              Text.rich(
+                TextSpan(
+                  children: [
+                    for (var i = 0; i < presetProxyHosts.length; i++)
+                      _buildProxyLinkSpan(
+                        context,
+                        host: presetProxyHosts[i],
+                        isFirst: i == 0,
+                        isSelected: controller.text == presetProxyHosts[i],
+                        onTap: () {
+                          controller.text = presetProxyHosts[i];
+                          // 点击即生效（无需再点保存）
+                          updateProxy(presetProxyHosts[i]);
+                          setDialogState(() {});
+                        },
+                      ),
+                  ],
+                ),
               ),
               const SizedBox(height: AppSpacing.md),
               TextField(
@@ -203,9 +237,12 @@ class SettingsPage extends StatelessWidget {
         value = '$value/';
       }
       updateProxy(value.isNotEmpty ? value : null);
+      if (mounted)
+        setState(() {}); // 刷新代理 subtitle（StatelessWidget → StatefulWidget）
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(value.isEmpty ? '已禁用 GitHub 代理' : '代理已更新: $value')),
+          SnackBar(
+              content: Text(value.isEmpty ? '已禁用 GitHub 代理' : '代理已更新: $value')),
         );
       }
     }
@@ -221,10 +258,10 @@ class SettingsPage extends StatelessWidget {
           const Divider(height: 1),
           // 安装方式提示
           ListTile(
-            leading: const Icon(Icons.system_update_alt, size: AppTypography.iconMD),
+            leading:
+                const Icon(Icons.system_update_alt, size: AppTypography.iconMD),
             title: const Text('安装方式'),
-            subtitle: const Text(
-                '开启 Shizuku 后可静默安装应用，无需逐次确认；未授权时使用系统安装'),
+            subtitle: const Text('开启 Shizuku 后可静默安装应用，无需逐次确认；未授权时使用系统安装'),
             isThreeLine: true,
           ),
         ],
@@ -354,12 +391,12 @@ class _DataUpdateTileState extends State<_DataUpdateTile> {
 
     return ListTile(
       leading: Obx(() {
-        final hasDbUpdate =
-            BadgeService.instance.hasBadge(BadgeKey.dbUpdate);
+        final hasDbUpdate = BadgeService.instance.hasBadge(BadgeKey.dbUpdate);
         return AppBadge(
           count: hasDbUpdate ? 1 : 0,
           showCount: false,
-          child: const Icon(Icons.system_update_alt, size: AppTypography.iconMD),
+          child:
+              const Icon(Icons.system_update_alt, size: AppTypography.iconMD),
         );
       }),
       title: Text(_downloading ? '正在更新数据库...' : '数据库更新'),
@@ -523,10 +560,11 @@ class _ShizukuTileState extends State<_ShizukuTile> {
           onPressed: () async {
             final manager = InstallManager.instance;
             await manager.checkShizuku();
-            if (mounted) setState(() {
-              _available = manager.isBinderRunning;
-              _granted = manager.isPermissionGranted;
-            });
+            if (mounted)
+              setState(() {
+                _available = manager.isBinderRunning;
+                _granted = manager.isPermissionGranted;
+              });
           },
           child: const Text('重新检测'),
         ),
@@ -546,7 +584,8 @@ class _ShizukuTileState extends State<_ShizukuTile> {
     }
 
     return const ListTile(
-      leading: Icon(Icons.shield, size: AppTypography.iconMD, color: Colors.green),
+      leading:
+          Icon(Icons.shield, size: AppTypography.iconMD, color: Colors.green),
       title: Text('Shizuku 状态'),
       subtitle: Text('已授权，可静默安装'),
     );
@@ -621,8 +660,7 @@ class _MultiSegmentDownloadTileState extends State<_MultiSegmentDownloadTile> {
         color: Theme.of(context).colorScheme.primary,
       ),
       title: const Text('多段下载'),
-      subtitle: const Text(
-          '自适应分段并行下载（最大 8 段），大文件下载更快。弱网或不稳定时可关闭'),
+      subtitle: const Text('自适应分段并行下载（最大 8 段），大文件下载更快。弱网或不稳定时可关闭'),
       value: _enabled,
       onChanged: _loaded ? _toggle : null,
     );
