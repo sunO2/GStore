@@ -42,20 +42,9 @@ class AppListState extends State<ApplistPage>
     return Scaffold(
       appBar: AppBar(
         title: Container(
-          height: 48,
+          height: 40,
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(AppRadius.circle),
-            // 悬浮阴影：胶囊浮起感（与 AI 输入栏/导航胶囊视觉语言一致）
-            boxShadow: [
-              BoxShadow(
-                color: Theme.of(context)
-                    .colorScheme
-                    .shadow
-                    .withValues(alpha: 0.06),
-                blurRadius: 8,
-                offset: const Offset(0, 2),
-              ),
-            ],
           ),
           child: TextField(
             controller: logic.searchController,
