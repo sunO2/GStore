@@ -114,5 +114,26 @@ void main() {
     test('.svgz 后缀 → false（不误判 .svg 前缀）', () {
       expect(isSvgUrl('https://x.com/a.svgz'), isFalse);
     });
+
+    test('shields.io 无后缀动态徽章 → true', () {
+      expect(
+        isSvgUrl(
+          'https://img.shields.io/badge/App_Store-Download-0D96F6?logo=apple&logoColor=white',
+        ),
+        isTrue,
+      );
+    });
+
+    test('shields.io 带 .svg 后缀 URL → true', () {
+      expect(isSvgUrl('https://img.shields.io/pub/v/x.svg'), isTrue);
+    });
+
+    test('普通 .png URL → false', () {
+      expect(isSvgUrl('https://example.com/a.png'), isFalse);
+    });
+
+    test('无扩展名非 shields.io URL → false', () {
+      expect(isSvgUrl('https://example.com/badge/foo'), isFalse);
+    });
   });
 }

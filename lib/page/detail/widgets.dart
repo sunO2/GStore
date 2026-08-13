@@ -247,7 +247,10 @@ class _ReadmeImageExtension extends HtmlExtension {
 /// 判断 URL 是否为 SVG 图片（README 徽章常见）
 bool isSvgUrl(String url) {
   final lower = url.toLowerCase();
-  return lower.endsWith('.svg') || lower.contains('.svg?');
+  return lower.endsWith('.svg') ||
+      lower.contains('.svg?') ||
+      // shields.io 动态徽章无 .svg 后缀但返回 SVG 内容
+      lower.contains('img.shields.io');
 }
 
 /// README 图片组件
