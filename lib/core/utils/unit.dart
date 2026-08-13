@@ -88,3 +88,41 @@ String resolveReadmeImageUrls(String readme, String rawBaseUrl) {
     return m.group(0)!.replaceFirst('src="$src"', 'src="$rawBaseUrl$src"');
   });
 }
+
+/// 将 HTML <img> 标签转换为 markdown 图片语法（flutter_markdown_plus 不支持内联 HTML）
+/// <img src="URL" alt="x" width="200" height="100"> → ![x](URL "200x100")
+/// 无 width/height → ![alt](URL)；无 alt → ![](URL)
+/// title 编码格式 "WxH"（width x height，仅含数字时）
+///
+/// 限制与说明：
+/// - 无 src 的 img 原样保留；非 img 的 HTML 一律不动
+/// - alt 仅按原样嵌入，未转义其中的 ] ( ) —— README 场景 alt 均为简单文本，
+///   若遇复杂 alt 需自行转义
+/// - 仅支持双引号属性（HTML 标准写法）；width/height 可为纯数字或带 px 后缀，
+///   含 % / 小数等其他单位时不编码 title
+String convertHtmlImgsToMarkdown(String html) {
+  final imgPattern = RegExp(r'<img\b[^>]*>', caseSensitive: false);
+  return html.replaceAllMapped(imgPattern, (m) {
+    final tag = m.group(0)!;
+    final attrs = <String, String>{};
+    for (final a in RegExp(r'([a-zA-Z:]+)="([^"]*)"').allMatches(tag)) {
+      attrs[a.group(1)!.toLowerCase()] = a.group(2)!;
+    }
+    final src = attrs['src'];
+    if (src == null || src.isEmpty) return tag; // 无 src → 原样保留
+    final alt = attrs['alt'] ?? '';
+    final w = attrs['width'] == null ? null : _stripImgSize(attrs['width']!);
+    final h = attrs['height'] == null ? null : _stripImgSize(attrs['height']!);
+    var md = '![$alt]($src';
+    if (w != null && h != null) md += ' "${w}x$h"'; // 仅两者都为纯数字才编码 title
+    return '$md)';
+  });
+}
+
+/// 剥离 width/height 的 px 后缀，仅纯数字（可带 px）时返回数字串，否则返回 null
+/// "200" / "200px" → "200"；"50%" / "200.5" → null
+String? _stripImgSize(String raw) {
+  final m = RegExp(r'^([0-9]+)(?:px)?$', caseSensitive: false)
+      .firstMatch(raw.trim());
+  return m?.group(1);
+}
