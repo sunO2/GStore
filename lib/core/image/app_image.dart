@@ -50,6 +50,8 @@ class AppImage extends StatefulWidget {
     this.allowDrawingOutsideViewBox = false,
     this.badgeHeight,
     this.loader,
+    this.hideOnLoading = false,
+    this.hideOnError = false,
   });
 
   /// 已代理的最终下载 URL。
@@ -93,6 +95,13 @@ class AppImage extends StatefulWidget {
 
   /// 加载器（测试注入），默认 [AppImageLoader.instance]。
   final AppImageLoader? loader;
+
+  /// 加载中是否隐藏占位（渲染 [SizedBox.shrink]，默认 false 显示 [placeholder]）。
+  final bool hideOnLoading;
+
+  /// 加载失败是否隐藏错误占位（渲染 [SizedBox.shrink]，
+  /// 默认 false 显示 [errorWidget]；[onError] 回调不受影响）。
+  final bool hideOnError;
 
   @override
   State<AppImage> createState() => _AppImageState();
@@ -154,6 +163,7 @@ class _AppImageState extends State<AppImage> {
   Widget build(BuildContext context) {
     final error = _error;
     if (error != null) {
+      if (widget.hideOnError) return const SizedBox.shrink();
       return SizedBox(
         width: widget.width,
         height: widget.height,
@@ -163,6 +173,7 @@ class _AppImageState extends State<AppImage> {
 
     final result = _result;
     if (result == null) {
+      if (widget.hideOnLoading) return const SizedBox.shrink();
       return SizedBox(
         width: widget.width,
         height: widget.height,

@@ -414,6 +414,64 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
+    testWidgets('hideOnError: true + 404 → 渲染 SizedBox.shrink；onError 仍触发',
+        (tester) async {
+      var error = false;
+      await tester.pumpWidget(wrap(
+        AppImage(
+          url: k404Url,
+          width: 32,
+          height: 32,
+          errorWidget: errorBox,
+          hideOnError: true,
+          onError: (_) => error = true,
+        ),
+      ));
+      await tester.pump(const Duration(milliseconds: 50));
+      // errorWidget 不渲染，AppImage 尺寸为 0（SizedBox.shrink）
+      expect(find.byKey(const Key('error')), findsNothing);
+      expect(tester.getSize(find.byType(AppImage)), Size.zero);
+      // onError 回调仍触发（仅 UI 隐藏）
+      expect(error, isTrue);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('hideOnLoading: true → 初始帧无 placeholder，加载完成后仍渲染图片',
+        (tester) async {
+      await tester.pumpWidget(wrap(
+        const AppImage(
+          url: kPngUrl,
+          width: 32,
+          height: 32,
+          placeholder: placeholder,
+          hideOnLoading: true,
+        ),
+      ));
+      // 初始帧：placeholder 不渲染，AppImage 尺寸为 0（SizedBox.shrink）
+      expect(find.byKey(const Key('placeholder')), findsNothing);
+      expect(tester.getSize(find.byType(AppImage)), Size.zero);
+      // 加载完成 → 图片正常渲染
+      await tester.pump(const Duration(milliseconds: 50));
+      expect(find.byType(Image), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('hideOnError: true + 加载成功 → 图片正常渲染（不受影响）', (tester) async {
+      await tester.pumpWidget(wrap(
+        const AppImage(
+          url: kPngUrl,
+          width: 32,
+          height: 32,
+          errorWidget: errorBox,
+          hideOnError: true,
+        ),
+      ));
+      await tester.pump(const Duration(milliseconds: 50));
+      expect(find.byType(Image), findsOneWidget);
+      expect(find.byKey(const Key('error')), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
     testWidgets('解码失败 → onError 只触发一次（rebuild 后仍为 1）', (tester) async {
       var errorCount = 0;
       Widget build() => wrap(
