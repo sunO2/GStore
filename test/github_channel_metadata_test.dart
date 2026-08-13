@@ -179,6 +179,127 @@ void main() {
     });
   });
 
+  group('getAppDetail（README contents API）', () {
+    test('contents API 200：JSON base64 解码为 readme', () async {
+      MetadataRepository.instance.debugClient = MockClient(
+          (request) async => http.Response('Not Found', 404));
+
+      final readmeJson = jsonEncode({
+        'name': 'README.md',
+        'content': base64Encode(utf8.encode('# Termux\n使用手册')),
+        'encoding': 'base64',
+      });
+
+      final channel = GitHubChannel(
+        githubApi: FakeGithubRestClient(),
+        httpClient: MockClient((request) async {
+          if (request.url.path.endsWith('/contents/README.md')) {
+            return http.Response(readmeJson, 200);
+          }
+          return http.Response('Not Found', 404);
+        }),
+      );
+
+      final result = await channel.getAppDetail('termux/termux-app');
+      expect(result.success, isTrue);
+      expect(result.data!.readme, '# Termux\n使用手册');
+    });
+
+    test('README 请求走 api.github.com contents 端点（含 ref 分支）', () async {
+      MetadataRepository.instance.debugClient = MockClient(
+          (request) async => http.Response('Not Found', 404));
+
+      final requestedUrls = <String>[];
+      final readmeJson = jsonEncode({
+        'name': 'README.md',
+        'content': base64Encode(utf8.encode('# Termux\n使用手册')),
+        'encoding': 'base64',
+      });
+
+      final channel = GitHubChannel(
+        githubApi: FakeGithubRestClient(),
+        httpClient: MockClient((request) async {
+          requestedUrls.add(request.url.toString());
+          if (request.url.path.endsWith('/contents/README.md')) {
+            return http.Response(readmeJson, 200);
+          }
+          return http.Response('Not Found', 404);
+        }),
+      );
+
+      final result = await channel.getAppDetail('termux/termux-app');
+      expect(result.success, isTrue);
+      // 测试环境 getProxy() 返回默认代理前缀，断言内容端点与 ref 分支（而非代理前缀）
+      expect(
+        requestedUrls.any((u) => u.contains(
+            'https://api.github.com/repos/termux/termux-app/contents/README.md?ref=master')),
+        isTrue,
+      );
+    });
+
+    test('README.md 404 → 回退 README.MD（JSON base64 解码）', () async {
+      MetadataRepository.instance.debugClient = MockClient(
+          (request) async => http.Response('Not Found', 404));
+
+      final readmeJson = jsonEncode({
+        'name': 'README.MD',
+        'content': base64Encode(utf8.encode('# Fallback\n回退手册')),
+        'encoding': 'base64',
+      });
+
+      final channel = GitHubChannel(
+        githubApi: FakeGithubRestClient(),
+        httpClient: MockClient((request) async {
+          if (request.url.path.endsWith('/contents/README.md')) {
+            return http.Response('Not Found', 404);
+          }
+          if (request.url.path.endsWith('/contents/README.MD')) {
+            return http.Response(readmeJson, 200);
+          }
+          return http.Response('Not Found', 404);
+        }),
+      );
+
+      final result = await channel.getAppDetail('termux/termux-app');
+      expect(result.success, isTrue);
+      expect(result.data!.readme, '# Fallback\n回退手册');
+    });
+  });
+
+  group('decodeContentsReadme（纯函数）', () {
+    test('合法 base64 JSON → 解码文本', () {
+      final body = jsonEncode({
+        'name': 'README.md',
+        'content': base64Encode(utf8.encode('# Termux\n使用手册')),
+        'encoding': 'base64',
+      });
+      expect(decodeContentsReadme(body), '# Termux\n使用手册');
+    });
+
+    test('content base64 带换行 → 解码成功', () {
+      final b64 = base64Encode(utf8.encode('# Termux\n使用手册'));
+      // GitHub contents API 会在 base64 中插入换行，需去空白后解码
+      final b64WithNewline = '${b64.substring(0, 10)}\n${b64.substring(10)}';
+      final body = jsonEncode({'content': b64WithNewline, 'encoding': 'base64'});
+      expect(decodeContentsReadme(body), '# Termux\n使用手册');
+    });
+
+    test('无 content 字段的 JSON → 原样返回 body', () {
+      const body = '{"name":"README.md"}';
+      expect(decodeContentsReadme(body), body);
+    });
+
+    test('非 JSON 文本（raw 内容）→ 原样返回', () {
+      const raw = '# Termux\n使用手册';
+      expect(decodeContentsReadme(raw), raw);
+    });
+
+    test('损坏 base64（非 JSON 且无法解码）→ 原样返回 body（兼容 fallback）', () {
+      const corrupted = '!!!not-base64!!!';
+      expect(decodeContentsReadme(corrupted), corrupted);
+    });
+  });
+
   group('searchApps（repositories 语义）', () {
     test('repositories 存仓库名而非完整名（根治 search-add 产脏）', () async {
       MetadataRepository.instance.debugClient = MockClient(
