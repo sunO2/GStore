@@ -298,6 +298,10 @@ class _ReadmeImage extends StatelessWidget {
     if (isSvgUrl(url)) {
       return SvgPicture.network(
         _proxiedUrl,
+        headers: const {
+          'User-Agent':
+              'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36',
+        },
         fit: BoxFit.contain,
         placeholderBuilder: (context) => placeholder,
         errorBuilder: (context, error, stackTrace) {
