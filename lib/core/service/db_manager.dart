@@ -98,14 +98,6 @@ class DbManager extends GetxService {
     return;
   }
 
-  /// 持久化配置到数据库
-  Future<void> persistConfig(AppInfoConfig config) async {
-    final repo = dbRepositroies["gstore"];
-    if (repo != null) {
-      await repo.db.dao.insertConfig(config);
-    }
-  }
-
   /// 检查数据库是否有更新（仅检测，不下载）
   /// 返回 true 表示有新版本
   Future<bool> _checkUpdateOnly(String target) async {
