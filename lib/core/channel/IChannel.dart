@@ -55,6 +55,14 @@ abstract class IChannel {
 
   // ==================== 分块加载（详情页渐进加载） ====================
 
+  /// 是否支持分块渐进加载。
+  ///
+  /// true（GitHub / LocalDb）时详情页走三路分块（fetchStatistics / fetchDownloads /
+  /// fetchReadme）独立渐进渲染；false（Vivo / Fdroid / Http 等默认渠道）时详情页
+  /// 回退旧流程 getAppDetail 一次性完整注入（截图/下载/更新日志/权限/评分等区块
+  /// 仅旧流程提供，不得因分块改造丢失）。
+  bool get supportsProgressiveLoading => false;
+
   /// 分块加载：仅下载列表（不拉 README/统计）。
   ///
   /// 详情页三个区块（下载 / README / 统计）独立渐进渲染时按需调用，

@@ -31,6 +31,7 @@ class FakeGithubRestClient implements GithubRestClient {
     this.throwOnReleases = false,
     this.throwOnReadme = false,
     this.throwOnApiList = false,
+    this.apiListFailuresRemaining = 0,
   }) : apiListData = apiList ??
             ApiList(
               full_name: 'termux/termux-app',
@@ -48,10 +49,18 @@ class FakeGithubRestClient implements GithubRestClient {
   bool throwOnReadme;
   bool throwOnApiList;
 
+  /// 前 N 次 apiList 调用抛异常（之后恢复成功）：
+  /// 用于构造"getAppInfo 成功但 fetchReadme 内部 apiList 失败"的场景
+  int apiListFailuresRemaining;
+
   @override
   Future<ApiList> apiList(
       String user, dynamic repositories, CancelToken cancelToken) async {
     if (throwOnApiList) throw Exception('apiList 失败');
+    if (apiListFailuresRemaining > 0) {
+      apiListFailuresRemaining--;
+      throw Exception('apiList 失败（第 N 次）');
+    }
     return apiListData;
   }
 
@@ -309,6 +318,59 @@ void main() {
         requestedUrls.any((u) => u.contains('/contents/')),
         isFalse,
       );
+    });
+
+    test('fetchReadme 内部 apiList 失败 + 有缓存 → 返回缓存文本（不再整路 failure）',
+        () async {
+      MetadataRepository.instance.debugClient =
+          MockClient((request) async => http.Response('Not Found', 404));
+
+      const cachedReadme = '# 离线缓存 README';
+      await ReadmeCache.instance.put('termux', 'termux-app',
+          etag: '"etag0"', readme: cachedReadme);
+
+      final channel = GitHubChannel(
+        // 第一次 apiList（getAppInfo 内）成功，第二次（fetchReadme 内）失败
+        githubApi: FakeGithubRestClient(apiListFailuresRemaining: 1),
+        httpClient: MockClient((request) async => http.Response('', 404)),
+      );
+
+      final result = await channel.fetchReadme('termux/termux-app');
+      expect(result.success, isTrue);
+      expect(result.data, cachedReadme);
+    });
+
+    test('fetchReadme 内部 apiList 失败 + 无缓存 → failure（保持失败可感知）', () async {
+      MetadataRepository.instance.debugClient =
+          MockClient((request) async => http.Response('Not Found', 404));
+
+      final channel = GitHubChannel(
+        githubApi: FakeGithubRestClient(apiListFailuresRemaining: 1),
+        httpClient: MockClient((request) async => http.Response('', 404)),
+      );
+
+      final result = await channel.fetchReadme('termux/termux-app');
+      expect(result.success, isFalse);
+    });
+
+    test('getAppInfo 失败（apiList 抛异常）+ 有缓存 → 按 appId 拆 owner/repo 兜底返回缓存',
+        () async {
+      MetadataRepository.instance.debugClient =
+          MockClient((request) async => http.Response('Not Found', 404));
+
+      const cachedReadme = '# 全离线缓存 README';
+      await ReadmeCache.instance.put('termux', 'termux-app',
+          etag: '"etag0"', readme: cachedReadme);
+
+      final channel = GitHubChannel(
+        // getAppInfo 内 apiList 即抛异常 → 整路离线
+        githubApi: FakeGithubRestClient(throwOnApiList: true),
+        httpClient: MockClient((request) async => http.Response('', 404)),
+      );
+
+      final result = await channel.fetchReadme('termux/termux-app');
+      expect(result.success, isTrue);
+      expect(result.data, cachedReadme);
     });
   });
 
