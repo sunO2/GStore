@@ -280,10 +280,13 @@ class _ReadmeImage extends StatelessWidget {
   /// 构建 README 图片：经 [AppImage] 自动判型（SVG/位图）。
   /// HTML width/height 优先（tight）；未指定时 loose 自适应：
   /// SVG 按固有尺寸显示（badge 高度钳制 30），位图等比 clamp 于显示区。
-  /// [placeholder] / [errorWidget] 由调用方提供（列表与全屏预览样式不同）
+  /// [placeholder] / [errorWidget] 由调用方提供（列表与全屏预览样式不同）；
+  /// 内嵌（列表）默认隐藏加载占位与失败占位，全屏预览传 false 保留反馈。
   Widget _buildImage({
     required Widget placeholder,
     required Widget errorWidget,
+    bool hideOnLoading = true,
+    bool hideOnError = true,
   }) {
     final maxWidth = MediaQuery.of(buildContext).size.width - AppSpacing.lg * 2;
     return AppImage(
@@ -297,6 +300,8 @@ class _ReadmeImage extends StatelessWidget {
       allowDrawingOutsideViewBox: false,
       placeholder: placeholder,
       errorWidget: errorWidget,
+      hideOnLoading: hideOnLoading,
+      hideOnError: hideOnError,
       onSuccess: _logLoadSuccess,
       onError: _logLoadFailure,
     );
@@ -322,6 +327,9 @@ class _ReadmeImage extends StatelessWidget {
                   color: Colors.white70,
                   size: 48,
                 ),
+                // 全屏预览保留加载转圈与失败反馈
+                hideOnLoading: false,
+                hideOnError: false,
               ),
             ),
           ),

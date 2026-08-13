@@ -256,24 +256,26 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('加载完成前 placeholder（CircularProgressIndicator）可见', (tester) async {
+  testWidgets('加载完成前 placeholder 隐藏（hideOnLoading）→ 加载完成后图片显示',
+      (tester) async {
     final info = _FakeDetailInfo()..readmeValue = '![badge]($kBadgeUrl)';
 
     await pumpReadme(tester, info); // Html 已解析，下载（300ms）未完成
 
-    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    // 内嵌默认 hideOnLoading: true → 无占位（无转圈）
+    expect(find.byType(CircularProgressIndicator), findsNothing);
 
     await tester.pump(const Duration(milliseconds: 400));
     expect(find.byType(CircularProgressIndicator), findsNothing);
     expect(find.byType(SvgPicture), findsOneWidget);
   });
 
-  testWidgets('404 → errorWidget（broken_image 图标）', (tester) async {
+  testWidgets('404 → 内嵌隐藏（无 broken_image 图标）', (tester) async {
     final info = _FakeDetailInfo()..readmeValue = '![x]($k404Url)';
 
     await pumpReadmeLoaded(tester, info);
 
-    expect(find.byIcon(Icons.broken_image_outlined), findsOneWidget);
+    expect(find.byIcon(Icons.broken_image_outlined), findsNothing);
     expect(find.byType(Image), findsNothing);
     expect(tester.takeException(), isNull);
   });
