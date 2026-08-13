@@ -119,9 +119,8 @@ MockClient buildMockClient({void Function(int count)? onRequest}) {
   return mock;
 }
 
-/// 测试面宽 800 → maxWidth = 800 - AppSpacing.lg*2 = 768，高 = 768*0.8。
+/// 测试面宽 800 → maxWidth = 800 - AppSpacing.lg*2 = 768。
 const double kDisplayWidth = 768;
-const double kDisplayHeight = 614.4;
 
 /// 固定 pump（AppLoading 占位与 Snackbar 为无限/定时动画，勿 pumpAndSettle）。
 Future<void> pumpReadme(WidgetTester tester, _FakeDetailInfo info) async {
@@ -173,7 +172,33 @@ void main() {
     final size = tester.getSize(find.byType(Image));
     // 宽度：768 显示区，flutter_html 行内排版有 2px 收窄，容差 4
     expect(size.width, closeTo(kDisplayWidth, 4));
-    expect(size.height, closeTo(kDisplayHeight, 1));
+    expect(size.height, closeTo(614.4, 1));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('<img width="200" height="100"> → 渲染尺寸 200x100（HTML 优先）',
+      (tester) async {
+    final info = _FakeDetailInfo()
+      ..readmeValue = '<img src="$kPngUrl" width="200" height="100">';
+
+    await pumpReadmeLoaded(tester, info);
+
+    expect(find.byType(Image), findsOneWidget);
+    final size = tester.getSize(find.byType(Image));
+    expect(size, const Size(200, 100));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('<img width="150px"> → 仅宽度生效（px 后缀剥离），高度 loose 固有',
+      (tester) async {
+    final info = _FakeDetailInfo()
+      ..readmeValue = '<img src="$kBadgeUrl" width="150px">';
+
+    await pumpReadmeLoaded(tester, info);
+
+    expect(find.byType(SvgPicture), findsOneWidget);
+    final size = tester.getSize(find.byType(SvgPicture));
+    expect(size.width, closeTo(150, 1));
     expect(tester.takeException(), isNull);
   });
 

@@ -221,6 +221,19 @@ class _CodeBlockWidget extends StatelessWidget {
   }
 }
 
+/// 解析 HTML 尺寸属性（如 `width="100"` / `width="100px"`）。
+///
+/// 百分比 / 非数字 / 空值 → null（交由 AppImage loose 自适应）。
+double? _parseHtmlDimension(String? raw) {
+  if (raw == null) return null;
+  final trimmed = raw.trim();
+  if (trimmed.isEmpty || trimmed.contains('%')) return null;
+  final value =
+      trimmed.toLowerCase().endsWith('px') ? trimmed.substring(0, trimmed.length - 2) : trimmed;
+  final parsed = double.tryParse(value.trim());
+  return (parsed == null || !parsed.isFinite) ? null : parsed;
+}
+
 /// 图片扩展：README 内图片圆角显示 + 点击全屏预览
 class _ReadmeImageExtension extends HtmlExtension {
   final BuildContext context;
@@ -232,14 +245,20 @@ class _ReadmeImageExtension extends HtmlExtension {
 
   @override
   InlineSpan build(ExtensionContext context) {
-    final src = context.styledElement?.element?.attributes['src'] ?? '';
+    final attributes = context.styledElement?.element?.attributes ?? const {};
+    final src = attributes['src'] ?? '';
     final uri = Uri.tryParse(src);
     if (uri == null || src.isEmpty) {
       return const WidgetSpan(child: SizedBox.shrink());
     }
     return WidgetSpan(
       alignment: PlaceholderAlignment.bottom,
-      child: _ReadmeImage(url: src, buildContext: this.context),
+      child: _ReadmeImage(
+        url: src,
+        buildContext: this.context,
+        htmlWidth: _parseHtmlDimension(attributes['width']),
+        htmlHeight: _parseHtmlDimension(attributes['height']),
+      ),
     );
   }
 }
@@ -257,8 +276,15 @@ bool isSvgUrl(String url) {
 class _ReadmeImage extends StatelessWidget {
   final String url;
   final BuildContext buildContext;
+  final double? htmlWidth;
+  final double? htmlHeight;
 
-  const _ReadmeImage({required this.url, required this.buildContext});
+  const _ReadmeImage({
+    required this.url,
+    required this.buildContext,
+    this.htmlWidth,
+    this.htmlHeight,
+  });
 
   /// GitHub 相关图片 URL 应用代理
   String get _proxiedUrl {
@@ -292,8 +318,9 @@ class _ReadmeImage extends StatelessWidget {
     });
   }
 
-  /// 构建 README 图片：经 [AppImage] 自动判型（SVG/位图）并钳制显示区
-  /// （badge SVG 高度钳制 30，其余 tight 768x(768*0.8)）
+  /// 构建 README 图片：经 [AppImage] 自动判型（SVG/位图）。
+  /// HTML width/height 优先（tight）；未指定时 loose 自适应：
+  /// SVG 按固有尺寸显示（badge 高度钳制 30），位图等比 clamp 于显示区。
   /// [placeholder] / [errorWidget] 由调用方提供（列表与全屏预览样式不同）
   Widget _buildImage({
     required Widget placeholder,
@@ -302,8 +329,10 @@ class _ReadmeImage extends StatelessWidget {
     final maxWidth = MediaQuery.of(buildContext).size.width - AppSpacing.lg * 2;
     return AppImage(
       url: _proxiedUrl,
-      width: maxWidth,
-      height: maxWidth * 0.8,
+      width: htmlWidth,
+      height: htmlHeight,
+      maxWidth: maxWidth,
+      maxHeight: maxWidth * 0.8,
       fit: BoxFit.contain,
       alignment: Alignment.center,
       allowDrawingOutsideViewBox: false,
