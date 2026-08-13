@@ -12,6 +12,81 @@ import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/core.dart';
 
+/// 统一的详情页 Section 卡片容器
+///
+/// 详情页各 Section 统一复用，替代手写容器样式：
+/// - surface 背景 + outlineVariant 细边框 + AppRadius.lg 圆角（非 primaryContainer 色块）
+/// - 标题行：可选 icon（primary 色 iconMD）+ 标题（titleSmall 加粗）+ 可选 count + Spacer + 可选 trailing
+class SectionCard extends StatelessWidget {
+  const SectionCard({
+    super.key,
+    required this.title,
+    this.icon,
+    this.count,
+    this.trailing,
+    required this.children,
+  });
+
+  /// 标题文本
+  final String title;
+
+  /// 标题左侧图标（可选）
+  final IconData? icon;
+
+  /// 标题右侧计数（可选，位于标题与 trailing 之间）
+  final Widget? count;
+
+  /// 标题行最右侧内容（可选）
+  final Widget? trailing;
+
+  /// 卡片内容区子组件
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+
+    return Container(
+      margin: AppSpacing.onlyBottomSM,
+      padding: AppSpacing.allLG,
+      decoration: BoxDecoration(
+        color: colorScheme.surface,
+        border: Border.all(color: colorScheme.outlineVariant, width: 1),
+        borderRadius: AppRadius.allLG,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              if (icon != null) ...[
+                Icon(
+                  icon,
+                  size: AppTypography.iconMD,
+                  color: colorScheme.primary,
+                ),
+                const SizedBox(width: AppSpacing.sm),
+              ],
+              Text(
+                title,
+                style: theme.textTheme.titleSmall?.copyWith(
+                  fontWeight: AppTypography.weightSemiBold,
+                ),
+              ),
+              if (count != null) count!,
+              const Spacer(),
+              if (trailing != null) trailing!,
+            ],
+          ),
+          const SizedBox(height: AppSpacing.md),
+          ...children,
+        ],
+      ),
+    );
+  }
+}
+
 /// 自定义代码块扩展 - 添加复制按钮
 class CodeBlockExtension extends HtmlExtension {
   final BuildContext context;
