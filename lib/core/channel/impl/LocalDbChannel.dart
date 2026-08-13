@@ -295,6 +295,8 @@ class LocalDbChannel with AppUpdateCheckMixin implements IChannel {
                   ? jsonDecode(apiListObject.toString()) as Map<String, dynamic>?
                   : null);
 
+          debugPrint('LocalDbChannel: apiList=${apiList != null ? "有值(stars=${apiList['stargazers_count']}, forks=${apiList['forks_count']})" : "null(未获取到 GitHub 统计)"}');
+
           // README 返回的是 JSON String，需要解码
           Map<String, dynamic>? readmeData;
           final readmeResult = results[2] as String;
