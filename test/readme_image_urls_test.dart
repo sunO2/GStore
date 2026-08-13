@@ -60,6 +60,38 @@ void main() {
         '![](${base}logo.png)',
       );
     });
+
+    test('HTML img src 相对路径拼接 base', () {
+      expect(
+        resolveReadmeImageUrls('<img src="screenshots/x.png">', base),
+        '<img src="${base}screenshots/x.png">',
+      );
+    });
+
+    test('a 标签内 HTML img 仅替换内层 src，a 标签与 alt 保留', () {
+      expect(
+        resolveReadmeImageUrls(
+          '<a href="https://x"><img src="screenshots/unnamed.jpg" alt="y" /></a>',
+          base,
+        ),
+        '<a href="https://x"><img src="${base}screenshots/unnamed.jpg" alt="y" /></a>',
+      );
+    });
+
+    test('HTML img 绝对 URL 不动', () {
+      const src = '<img src="https://example.com/x.png">';
+      expect(resolveReadmeImageUrls(src, base), src);
+    });
+
+    test('HTML img 和 Markdown 图片混合都替换', () {
+      expect(
+        resolveReadmeImageUrls(
+          '<img src="screenshots/a.png">\n![b](img/b.png)',
+          base,
+        ),
+        '<img src="${base}screenshots/a.png">\n![b](${base}img/b.png)',
+      );
+    });
   });
 
   group('isSvgUrl', () {
