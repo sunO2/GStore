@@ -234,7 +234,8 @@ class _SettingsPageState extends State<SettingsPage> {
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context, controller.text.trim()),
+            // 取消：返回 null，不触发保存逻辑（此前与保存按钮同样返回输入值导致误保存）
+            onPressed: () => Navigator.pop(context),
             child: const Text('取消'),
           ),
           FilledButton(
