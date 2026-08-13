@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -11,8 +12,19 @@ import 'package:gstore/core/image/image_type_detector.dart';
 void main() {
   final loader = AppImageLoader.instance;
 
-  setUp(() {
+  late Directory tempDir;
+
+  setUp(() async {
     loader.clearCache();
+    // 每个用例注入独立临时磁盘目录，隔离磁盘缓存状态。
+    tempDir = await Directory.systemTemp.createTemp('imgcache_loader');
+    loader.diskDirectory = tempDir;
+  });
+
+  tearDown(() async {
+    if (await tempDir.exists()) {
+      await tempDir.delete(recursive: true);
+    }
   });
 
   /// 记录请求次数并按 [handler] 返回响应的 MockClient。
@@ -60,7 +72,25 @@ void main() {
     expect(result.format, ImageFormat.svg);
   });
 
-  test('clearCache 后再次 load → 重新下载（requestCount == 2）', () async {
+  test('clearCache + clearDiskCache 后再次 load → 重新下载（requestCount == 2）', () async {
+    var requestCount = 0;
+    loader.debugClient = countingClient(
+      () => requestCount++,
+      (_) async => http.Response.bytes(pngBytes, 200),
+    );
+
+    await loader.load('https://example.com/a.png');
+    expect(requestCount, 1);
+
+    // clearCache 只清内存（磁盘保留），clearDiskCache 清磁盘 → 两级皆空才真正重下。
+    loader.clearCache();
+    await loader.clearDiskCache();
+
+    await loader.load('https://example.com/a.png');
+    expect(requestCount, 2);
+  });
+
+  test('仅 clearCache（内存清、磁盘留）→ 二次 load 命中磁盘不下载（requestCount 仍 1）', () async {
     var requestCount = 0;
     loader.debugClient = countingClient(
       () => requestCount++,
@@ -72,8 +102,21 @@ void main() {
 
     loader.clearCache();
 
+    final second = await loader.load('https://example.com/a.png');
+    expect(second.bytes, pngBytes);
+    expect(requestCount, 1, reason: '内存清了但磁盘命中，不应重新下载');
+  });
+
+  test('下载后写盘：load 后磁盘缓存目录存在对应文件', () async {
+    loader.debugClient = countingClient(
+      () => 0,
+      (_) async => http.Response.bytes(pngBytes, 200),
+    );
+
     await loader.load('https://example.com/a.png');
-    expect(requestCount, 2);
+
+    final files = await tempDir.list().toList();
+    expect(files, isNotEmpty, reason: 'load 后磁盘缓存目录应含缓存文件');
   });
 
   test('下载失败（404）→ load 抛异常传播', () async {
