@@ -163,6 +163,8 @@ class _SettingsPageState extends State<SettingsPage> {
               LayoutBuilder(
                 builder: (context, constraints) => DropdownMenu<String>(
                   controller: controller,
+                  // 必须开启：Android 平台默认 canRequestFocus=false → 输入框只读
+                  requestFocusOnTap: true,
                   // 手动输入不过滤菜单（始终显示全部预设）
                   enableFilter: false,
                   width: constraints.maxWidth,
@@ -174,7 +176,7 @@ class _SettingsPageState extends State<SettingsPage> {
                       setDialogState(() {});
                     }
                   },
-                  // 无边框胶囊样式（与搜索框/AI 输入栏视觉统一）
+                  // 无边框胶囊样式（高对比容器底色，与对话框背景区分）
                   decorationBuilder: (context, controller) {
                     final scheme = Theme.of(context).colorScheme;
                     final capsuleBorder = OutlineInputBorder(
@@ -186,7 +188,7 @@ class _SettingsPageState extends State<SettingsPage> {
                       hintText: 'https://gh-proxy.org/',
                       hintStyle: TextStyle(color: scheme.onSurfaceVariant),
                       filled: true,
-                      fillColor: scheme.surface.withValues(alpha: 0.65),
+                      fillColor: scheme.surfaceContainerHighest,
                       border: capsuleBorder,
                       enabledBorder: capsuleBorder,
                       focusedBorder: capsuleBorder,
