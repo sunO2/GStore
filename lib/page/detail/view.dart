@@ -1,18 +1,15 @@
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_html/flutter_html.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
-import 'package:gstore/core/model/StatTag.dart';
 import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
 import 'package:gstore/page/detail/widgets.dart';
 import 'logic.dart';
 import 'state.dart';
 import 'package:installed_apps/app_info.dart' as sysAppInfo;
-import 'package:qr_flutter/qr_flutter.dart';
 
 class DetailPage extends StatelessWidget {
   const DetailPage({super.key});
@@ -202,15 +199,18 @@ class DetailPage extends StatelessWidget {
                     child: icon.isNotEmpty
                         ? AppIcon(
                             url: icon,
-                            width: AppSpacing.xxxl + AppSpacing.xxl + AppSpacing.md,
-                            height: AppSpacing.xxxl + AppSpacing.xxl + AppSpacing.md,
+                            width: AppSpacing.xxxl * 2,
+                            height: AppSpacing.xxxl * 2,
                             borderRadius: 0,
                           )
                         : Container(
-                            width: AppSpacing.xxxl + AppSpacing.xxl + AppSpacing.md,
-                            height: AppSpacing.xxxl + AppSpacing.xxl + AppSpacing.md,
-                            color: AppColors.grey300,
-                            child: const Icon(Icons.apps),
+                            width: AppSpacing.xxxl * 2,
+                            height: AppSpacing.xxxl * 2,
+                            color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                            child: Icon(
+                              Icons.apps,
+                              color: Theme.of(context).colorScheme.onSurfaceVariant,
+                            ),
                           ),
                   ),
                 ),
@@ -222,7 +222,7 @@ class DetailPage extends StatelessWidget {
                     children: [
                       Text(
                         name,
-                        style: Theme.of(context).textTheme.headlineSmall,
+                        style: Theme.of(context).textTheme.titleLarge,
                       ),
                       const SizedBox(height: AppSpacing.sm),
                       // 版本、包名、统计标签
@@ -232,12 +232,47 @@ class DetailPage extends StatelessWidget {
                         children: [
                           // 版本标签
                           if (version != null && version.isNotEmpty)
-                            _buildVersionTag(context, version),
+                            _buildChip(
+                              context,
+                              icon: Icons.tag,
+                              label: version,
+                              fg: Theme.of(context).colorScheme.primary,
+                              bg: Theme.of(context)
+                                  .colorScheme
+                                  .primary
+                                  .withAlpha(AppColors.alphaLow),
+                              border: Theme.of(context)
+                                  .colorScheme
+                                  .primary
+                                  .withAlpha(AppColors.alphaMedium),
+                            ),
                           // 包名标签
                           if (packageName != null && packageName.isNotEmpty)
-                            _buildPackageTag(context, packageName),
+                            _buildChip(
+                              context,
+                              icon: Icons.inventory_2_outlined,
+                              label: packageName,
+                              fg: Theme.of(context).colorScheme.secondary,
+                              bg: Theme.of(context)
+                                  .colorScheme
+                                  .secondary
+                                  .withAlpha(AppColors.alphaLow),
+                              border: Theme.of(context)
+                                  .colorScheme
+                                  .secondary
+                                  .withAlpha(AppColors.alphaMedium),
+                            ),
                           // 统计标签（统一渲染，无需判断 channel 类型）
-                          ...?detailInfo?.buildStatTags().map((tag) => _buildStatTag(context, tag)),
+                          ...?detailInfo?.buildStatTags().map(
+                                (tag) => _buildChip(
+                                  context,
+                                  icon: tag.icon,
+                                  label: tag.text,
+                                  fg: tag.textColor,
+                                  bg: tag.backgroundColor,
+                                  border: tag.borderColor,
+                                ),
+                              ),
                           // 安装状态（响应式）
                           Obx(() => _buildInstallStatus(context, logic, state.installInfo.value)),
                         ],
@@ -247,7 +282,8 @@ class DetailPage extends StatelessWidget {
                 ),
               ],
             ),
-            if (description.isNotEmpty) ...[
+            if (description.isNotEmpty &&
+                !isDescriptionDuplicated(detailInfo, description)) ...[
               const SizedBox(height: AppSpacing.lg),
               Html(
                 data: description,
@@ -296,15 +332,22 @@ class DetailPage extends StatelessWidget {
     );
   }
 
-  /// 版本标签
-  Widget _buildVersionTag(BuildContext context, String version) {
+  /// 统一的标签 chip 渲染方法（版本 / 包名 / 统计共用）
+  Widget _buildChip(
+    BuildContext context, {
+    required IconData icon,
+    required String label,
+    required Color fg,
+    required Color bg,
+    required Color border,
+  }) {
     return Container(
       padding: AppSpacing.horizontalMD_verticalXS,
       decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.primary.withAlpha(AppColors.alphaLow),
+        color: bg,
         borderRadius: AppRadius.allMD,
         border: Border.all(
-          color: Theme.of(context).colorScheme.primary.withAlpha(AppColors.alphaMedium),
+          color: border,
           width: 1,
         ),
       ),
@@ -312,81 +355,15 @@ class DetailPage extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           Icon(
-            Icons.tag,
+            icon,
             size: AppTypography.iconXS,
-            color: Theme.of(context).colorScheme.primary,
+            color: fg,
           ),
           const SizedBox(width: AppSpacing.xs),
           Text(
-            version,
+            label,
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: Theme.of(context).colorScheme.primary,
-                  fontWeight: AppTypography.weightMedium,
-                ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// 包名标签
-  Widget _buildPackageTag(BuildContext context, String packageName) {
-    return Container(
-      padding: AppSpacing.horizontalMD_verticalXS,
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.secondary.withAlpha(AppColors.alphaLow),
-        borderRadius: AppRadius.allMD,
-        border: Border.all(
-          color: Theme.of(context).colorScheme.secondary.withAlpha(AppColors.alphaMedium),
-          width: 1,
-        ),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(
-            Icons.inventory_2_outlined,
-            size: AppTypography.iconXS,
-            color: Theme.of(context).colorScheme.secondary,
-          ),
-          const SizedBox(width: AppSpacing.xs),
-          Text(
-            packageName,
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: Theme.of(context).colorScheme.secondary,
-                  fontWeight: AppTypography.weightMedium,
-                ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// 统一的统计标签渲染方法
-  Widget _buildStatTag(BuildContext context, StatTag tag) {
-    return Container(
-      padding: AppSpacing.horizontalMD_verticalXS,
-      decoration: BoxDecoration(
-        color: tag.backgroundColor,
-        borderRadius: AppRadius.allMD,
-        border: Border.all(
-          color: tag.borderColor,
-          width: 1,
-        ),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(
-            tag.icon,
-            size: AppTypography.iconXS,
-            color: tag.textColor,
-          ),
-          const SizedBox(width: AppSpacing.xs),
-          Text(
-            tag.text,
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: tag.textColor,
+                  color: fg,
                   fontWeight: AppTypography.weightMedium,
                 ),
           ),
@@ -408,6 +385,8 @@ class DetailPage extends StatelessWidget {
           // 版本和包名已整合到 ReadmeSection 中显示为标签
           break;
         case DetailSection.statistics:
+        case DetailSection.rating:
+          sections.add(StatisticsSection(info: detail));
           break;
         case DetailSection.screenshots:
           sections.add(ScreenshotsSection(info: detail));
@@ -428,22 +407,7 @@ class DetailPage extends StatelessWidget {
               onLongPress: (download) {
                 AppDialogs.showDialog(
                   title: '下载二维码',
-                  content: Container(
-                    width: AppSpacing.xxxl + AppSpacing.xxxl + AppSpacing.xxl + AppSpacing.xl,
-                    height: AppSpacing.xxxl + AppSpacing.xxxl + AppSpacing.xxl + AppSpacing.xl,
-                    decoration: BoxDecoration(
-                      color: AppColors.white,
-                      borderRadius: AppRadius.allSM,
-                    ),
-                    child: QrImageView(
-                      data: download.url,
-                      version: QrVersions.auto,
-                      size: AppSpacing.xxxl + AppSpacing.xxxl + AppSpacing.xxl + AppSpacing.xl,
-                      embeddedImage: detail.icon.isNotEmpty
-                          ? CachedNetworkImageProvider(detail.icon)
-                          : null,
-                    ),
-                  ),
+                  content: buildQrDialogContent(detail, download),
                   confirmText: '关闭',
                   cancelText: null,
                 );
