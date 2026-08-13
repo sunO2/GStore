@@ -90,6 +90,12 @@ export 'dart:convert';
 
 void updateConfig(AppInfoConfig? config) {
   if (null != config) {
+    // Get.put 在已注册（如启动时 db_manager 注册）时静默保留旧实例（不替换），
+    // 导致 updateProxy 只持久化 DB、内存 config 不更新、getProxy() 返回旧值。
+    // 先 delete 再 put 保证新配置立即生效。
+    if (Get.isRegistered<AppInfoConfig>(tag: "config")) {
+      Get.delete<AppInfoConfig>(tag: "config");
+    }
     Get.put(config, tag: "config");
   }
 }
@@ -106,13 +112,18 @@ void updateProxy(String? proxyUrl) {
   // 持久化代理配置到数据库
   try {
     final manager = Get.find<DbManager>();
-    manager.persistConfig(AppInfoConfig(config?.version ?? "0.0.0", proxyUrl ?? ''));
+    manager.persistConfig(
+        AppInfoConfig(config?.version ?? "0.0.0", proxyUrl ?? ''));
   } catch (e) {
     debugPrint('更新代理配置持久化失败: $e');
   }
-}AppInfoConfig? getConfig() {
+}
+
+AppInfoConfig? getConfig() {
   try {
-    AppInfoConfig? config = Get.find(tag: "config");
+    // 必须带类型参数：GetX 的 key = Type + tag，无类型（dynamic）与
+    // AppInfoConfig 注册的 key 不匹配 → 永远找不到 → getProxy 恒返回默认值
+    AppInfoConfig? config = Get.find<AppInfoConfig>(tag: "config");
     return config;
   } catch (e) {
     return null;

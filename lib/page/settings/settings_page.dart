@@ -158,8 +158,11 @@ class _SettingsPageState extends State<SettingsPage> {
     return TextSpan(
       text: text,
       style: TextStyle(
-        color: isSelected ? scheme.primary : scheme.onSurface,
+        // 选中：主题色加粗；未选中：onSurfaceVariant 淡化（提示可点击）
+        color: isSelected ? scheme.primary : scheme.onSurfaceVariant,
         fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
+        decoration: isSelected ? null : TextDecoration.underline,
+        decorationColor: scheme.outlineVariant,
       ),
       recognizer: TapGestureRecognizer()..onTap = onTap,
     );
