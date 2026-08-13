@@ -1,7 +1,9 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:gstore/core/cache/ReadmeCache.dart';
 import 'package:gstore/core/channel/database/channel_added_app.dart';
 import 'package:gstore/core/channel/impl/GitHubChannel.dart';
 import 'package:gstore/core/data/metadata_repository.dart';
@@ -263,6 +265,124 @@ void main() {
       final result = await channel.getAppDetail('termux/termux-app');
       expect(result.success, isTrue);
       expect(result.data!.readme, '# Fallback\n回退手册');
+    });
+  });
+
+  group('getAppDetail（README ETag 条件缓存）', () {
+    late Directory tempDir;
+
+    String readmeJson(String content) => jsonEncode({
+          'name': 'README.md',
+          'content': base64Encode(utf8.encode(content)),
+          'encoding': 'base64',
+        });
+
+    setUp(() {
+      tempDir = Directory.systemTemp.createTempSync('readme_cache_it');
+      ReadmeCache.instanceForTest = ReadmeCache(directory: tempDir);
+    });
+
+    tearDown(() {
+      ReadmeCache.instanceForTest = ReadmeCache();
+      if (tempDir.existsSync()) {
+        tempDir.deleteSync(recursive: true);
+      }
+    });
+
+    test('首次 200 + etag 响应头 → readme 正确 + 缓存写入', () async {
+      MetadataRepository.instance.debugClient = MockClient(
+          (request) async => http.Response('Not Found', 404));
+
+      final channel = GitHubChannel(
+        githubApi: FakeGithubRestClient(),
+        httpClient: MockClient((request) async {
+          if (request.url.path.endsWith('/contents/README.md')) {
+            return http.Response(readmeJson('# Termux\n使用手册'), 200,
+                headers: {'etag': '"etag1"'});
+          }
+          return http.Response('Not Found', 404);
+        }),
+      );
+
+      final result = await channel.getAppDetail('termux/termux-app');
+      expect(result.success, isTrue);
+      expect(result.data!.readme, '# Termux\n使用手册');
+
+      // 断言缓存已写入（etag 与 readme 均正确）
+      final entry = await ReadmeCache.instance.get('termux', 'termux-app');
+      expect(entry, isNotNull);
+      expect(entry!.etag, '"etag1"');
+      expect(entry.readme, '# Termux\n使用手册');
+    });
+
+    test('二次请求带 If-None-Match → 304 空 body → readme 用缓存值（不重新解码）', () async {
+      MetadataRepository.instance.debugClient = MockClient(
+          (request) async => http.Response('Not Found', 404));
+
+      // 预置缓存（绝对化后文本，与原始解码结果刻意不同，验证直接复用）
+      const cachedReadme = '# Termux\n![图](https://raw.githubusercontent.com/termux/termux-app/refs/heads/master/a.png)';
+      await ReadmeCache.instance
+          .put('termux', 'termux-app', etag: '"etag1"', readme: cachedReadme);
+
+      final requestedUrls = <String>[];
+      final channel = GitHubChannel(
+        githubApi: FakeGithubRestClient(),
+        httpClient: MockClient((request) async {
+          if (request.url.path.endsWith('/contents/README.md')) {
+            requestedUrls.add(request.url.toString());
+            // 断言 If-None-Match 头正确传递（MockClient 请求头大小写不敏感）
+            expect(request.headers['If-None-Match'], '"etag1"');
+            return http.Response('', 304);
+          }
+          return http.Response('Not Found', 404);
+        }),
+      );
+
+      final result = await channel.getAppDetail('termux/termux-app');
+      expect(result.success, isTrue);
+      expect(requestedUrls, isNotEmpty);
+      // 304 命中：直接用缓存值（已绝对化），不重新解码
+      expect(result.data!.readme, cachedReadme);
+    });
+
+    test('内容变化：带 If-None-Match 的请求返回 200 + 新内容 + 新 etag → readme 与缓存更新', () async {
+      MetadataRepository.instance.debugClient = MockClient(
+          (request) async => http.Response('Not Found', 404));
+
+      var callCount = 0;
+      final channel = GitHubChannel(
+        githubApi: FakeGithubRestClient(),
+        httpClient: MockClient((request) async {
+          if (request.url.path.endsWith('/contents/README.md')) {
+            callCount++;
+            if (callCount == 1) {
+              // 首次：无条件头
+              expect(request.headers.containsKey('If-None-Match'), isFalse);
+              return http.Response(readmeJson('# V1'), 200,
+                  headers: {'etag': '"etag1"'});
+            }
+            // 二次：带缓存 etag
+            expect(request.headers['If-None-Match'], '"etag1"');
+            return http.Response(readmeJson('# V2\n更新内容'), 200,
+                headers: {'etag': '"etag2"'});
+          }
+          return http.Response('Not Found', 404);
+        }),
+      );
+
+      final result1 = await channel.getAppDetail('termux/termux-app');
+      expect(result1.success, isTrue);
+      expect(result1.data!.readme, '# V1');
+
+      final result2 = await channel.getAppDetail('termux/termux-app');
+      expect(result2.success, isTrue);
+      expect(result2.data!.readme, '# V2\n更新内容');
+
+      // 缓存 etag 已更新
+      final entry = await ReadmeCache.instance.get('termux', 'termux-app');
+      expect(entry, isNotNull);
+      expect(entry!.etag, '"etag2"');
+      expect(entry.readme, '# V2\n更新内容');
     });
   });
 
