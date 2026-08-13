@@ -19,6 +19,7 @@ import 'package:gstore/core/service/db_manager.dart';
 import 'package:gstore/http/github/github_client.dart';
 import 'package:gstore/core/utils/unit.dart';
 import 'package:gstore/core/channel/AppUpdateCheckMixin.dart';
+import 'package:gstore/core/core.dart';
 
 /// 本地数据库渠道实现
 /// 基于 SQLite 本地数据库提供数据
@@ -200,9 +201,6 @@ class LocalDbChannel with AppUpdateCheckMixin implements IChannel {
       debugPrint('LocalDbChannel: appInfo.user = ${appInfo.user}');
       debugPrint('LocalDbChannel: appInfo.repositories = ${appInfo.repositories}');
       debugPrint('LocalDbChannel: appInfo.appId = ${appInfo.appId}');
-
-      // 获取配置
-      final config = await _database.dao.getVersion();
 
       // 获取包名
       // 直接使用 AppSummary.packageName（渠道显式提供的真实包名），不再用 appId 猜测
@@ -442,7 +440,7 @@ class LocalDbChannel with AppUpdateCheckMixin implements IChannel {
         ),
         'downloads': downloads,
         'readme': readme,
-        'proxy': config?.proxy,
+        'proxy': getProxy(),
         'repositoryName': appInfo.repositories,
         'apiData': apiList,
       };
@@ -606,7 +604,7 @@ class LocalDbChannel with AppUpdateCheckMixin implements IChannel {
         from: ChannelType.localDb,
         metadata: {
           'currentVersion': config.version,
-          'proxy': config.proxy,
+          'proxy': getProxy(),
         },
       );
     } catch (e) {
