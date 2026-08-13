@@ -9,8 +9,10 @@ import 'package:flutter_html/src/extension/html_extension.dart';
 import 'package:markdown/markdown.dart' as md;
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
+import 'package:gstore/core/model/StatTag.dart';
 import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/core.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 
 /// 统一的详情页 Section 卡片容器
 ///
@@ -322,133 +324,70 @@ class _ReadmeImage extends StatelessWidget {
   }
 }
 
-/// 版本信息 Section
-class VersionSection extends StatelessWidget {
-  final IDetailInfo info;
+/// 统计标签 chip：复用 StatTag 自带颜色工厂（背景/边框/文本色）
+class _StatTagChip extends StatelessWidget {
+  final StatTag tag;
 
-  const VersionSection({super.key, required this.info});
+  const _StatTagChip({required this.tag});
+
   @override
   Widget build(BuildContext context) {
-    if (info.version == null && info.packageName == null) {
-      return const SizedBox.shrink();
-    }
-
     return Container(
-      margin: AppSpacing.onlyBottomSM,
-      padding: AppSpacing.allLG,
+      padding: AppSpacing.horizontalMD_verticalXS,
       decoration: BoxDecoration(
-        border: Border.all(
-          width: 1,
-          color: Theme.of(context)
-              .colorScheme
-              .primary
-              .withAlpha(AppColors.alphaMedium),
-        ),
-        borderRadius: AppRadius.allLG,
-        color: Theme.of(context).colorScheme.primaryContainer,
+        color: tag.backgroundColor,
+        borderRadius: AppRadius.allMD,
+        border: Border.all(color: tag.borderColor, width: 1),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          if (info.version != null) ...[
-            Text(
-              '版本',
-              style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                    fontWeight: AppTypography.weightSemiBold,
-                  ),
-            ),
-            SizedBox(height: AppSpacing.sm),
-            Text(
-              info.version!,
-              style: Theme.of(context).textTheme.bodyLarge,
-            ),
-          ],
-          if (info.version != null && info.packageName != null)
-            SizedBox(height: AppSpacing.md),
-          if (info.packageName != null) ...[
-            Text(
-              '包名',
-              style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                    fontWeight: AppTypography.weightSemiBold,
-                  ),
-            ),
-            SizedBox(height: AppSpacing.sm),
-            Text(
-              info.packageName!,
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-          ],
+          Icon(tag.icon, size: AppTypography.iconXS, color: tag.textColor),
+          const SizedBox(width: AppSpacing.xs),
+          Text(
+            tag.text,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: tag.textColor,
+                  fontWeight: AppTypography.weightMedium,
+                ),
+          ),
         ],
       ),
     );
   }
 }
 
-class _StatItem extends StatelessWidget {
-  final Widget icon;
-  final String label;
-  final String value;
-  final Widget? trailing;
+/// 统计信息 Section
+///
+/// 展示应用统计标签（stars/forks/downloads/rating 等）：
+/// - 优先取 info.buildStatTags()
+/// - 为空时 fallback 到 info.statistics?.buildStatTags()
+/// - 两者皆空 → 整块不渲染
+class StatisticsSection extends StatelessWidget {
+  final IDetailInfo info;
 
-  const _StatItem({
-    required this.icon,
-    required this.label,
-    required this.value,
-    this.trailing,
-  });
+  const StatisticsSection({super.key, required this.info});
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: AppSpacing.horizontalSM_verticalXS,
-      decoration: BoxDecoration(
-        border: Border.all(
-          width: 1.0,
-          color: Theme.of(context)
-              .colorScheme
-              .primaryFixed
-              .withAlpha(AppColors.alphaLower),
+    var tags = info.buildStatTags();
+    if (tags.isEmpty) {
+      tags = info.statistics?.buildStatTags() ?? const <StatTag>[];
+    }
+    if (tags.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return SectionCard(
+      title: '统计信息',
+      icon: Icons.query_stats,
+      children: [
+        Wrap(
+          spacing: AppSpacing.sm,
+          runSpacing: AppSpacing.xs,
+          children: [for (final tag in tags) _StatTagChip(tag: tag)],
         ),
-        color: Theme.of(context).colorScheme.primaryContainer,
-        borderRadius: AppRadius.allSM,
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          icon,
-          SizedBox(width: AppSpacing.xs),
-          Text(
-            label,
-            style: TextStyle(
-              fontSize: AppTypography.sizeXXS,
-              fontWeight: AppTypography.weightMedium,
-            ),
-          ),
-          SizedBox(width: AppSpacing.xs),
-          Container(
-            padding: EdgeInsets.symmetric(
-                horizontal: AppSpacing.sm * 1.5, vertical: 1),
-            decoration: BoxDecoration(
-              color: Theme.of(context)
-                  .colorScheme
-                  .primaryFixed
-                  .withAlpha(AppColors.alphaLowest),
-              borderRadius: AppRadius.allMD,
-            ),
-            child: Text(
-              value,
-              style: TextStyle(
-                fontSize: AppTypography.sizeXXS,
-                fontWeight: AppTypography.weightMedium,
-              ),
-            ),
-          ),
-          if (trailing != null) ...[
-            SizedBox(width: AppSpacing.xs),
-            trailing!,
-          ],
-        ],
-      ),
+      ],
     );
   }
 }
@@ -466,33 +405,10 @@ class ScreenshotsSection extends StatelessWidget {
       return const SizedBox.shrink();
     }
 
-    return Container(
-      margin: AppSpacing.onlyBottomSM,
-      padding: AppSpacing.allLG,
-      decoration: BoxDecoration(
-        border: Border.all(
-          width: 1,
-          color: Theme.of(context)
-              .colorScheme
-              .primary
-              .withAlpha(AppColors.alphaMedium),
-        ),
-        borderRadius: AppRadius.allLG,
-        color: Theme.of(context).colorScheme.primaryContainer,
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            '应用截图',
-            style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                  fontWeight: AppTypography.weightSemiBold,
-                ),
-          ),
-          SizedBox(height: AppSpacing.md),
-          _ScreenshotGallery(screenshots: screenshots),
-        ],
-      ),
+    return SectionCard(
+      title: '应用截图',
+      icon: Icons.photo_library_outlined,
+      children: [_ScreenshotGallery(screenshots: screenshots)],
     );
   }
 }
@@ -635,233 +551,207 @@ class ReadmeSection extends StatelessWidget {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
 
-    return Container(
-      margin: EdgeInsets.only(bottom: AppSpacing.md),
-      padding: EdgeInsets.all(AppSpacing.lg),
-      decoration: BoxDecoration(
-        border: Border.all(
-          width: 1,
-          color: colorScheme.primary.withAlpha(AppColors.alphaLow),
-        ),
-        borderRadius: AppRadius.allLG,
-        color: colorScheme.surface,
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            '详细介绍',
-            style: theme.textTheme.titleSmall?.copyWith(
-              fontWeight: AppTypography.weightSemiBold,
-              color: colorScheme.onSurface,
-            ),
-          ),
-          SizedBox(height: AppSpacing.md),
-          // 截图横向滑动列表（点击全屏预览），统一收纳进详情区
-          if (screenshots.isNotEmpty) ...[
-            _ScreenshotGallery(screenshots: screenshots),
-            const SizedBox(height: AppSpacing.md),
-          ],
-          if (htmlContent.isNotEmpty)
-            Html(
-              data: htmlContent,
-              onLinkTap: (url, _, __) {
-                if (url != null && onLinkTap != null) {
-                  onLinkTap?.call(url);
-                }
-              },
-              // 添加自定义代码块扩展
-              extensions: [
-                CodeBlockExtension(context),
-                _ReadmeImageExtension(context),
-              ],
-              style: {
-                // 正文基础样式
-                'body': Style(
-                  margin: Margins.zero,
-                  padding: HtmlPaddings.zero,
-                  color: colorScheme.onSurface,
-                  fontSize: FontSize(AppTypography.sizeMD),
-                  lineHeight: const LineHeight(1.5),
-                ),
+    return SectionCard(
+      title: '详细介绍',
+      icon: Icons.description_outlined,
+      children: [
+        // 截图横向滑动列表（点击全屏预览），统一收纳进详情区
+        if (screenshots.isNotEmpty) ...[
+          _ScreenshotGallery(screenshots: screenshots),
+          const SizedBox(height: AppSpacing.md),
+        ],
+        if (htmlContent.isNotEmpty)
+          Html(
+            data: htmlContent,
+            onLinkTap: (url, _, __) {
+              if (url != null && onLinkTap != null) {
+                onLinkTap?.call(url);
+              }
+            },
+            // 添加自定义代码块扩展
+            extensions: [
+              CodeBlockExtension(context),
+              _ReadmeImageExtension(context),
+            ],
+            style: {
+              // 正文基础样式
+              'body': Style(
+                margin: Margins.zero,
+                padding: HtmlPaddings.zero,
+                color: colorScheme.onSurface,
+                fontSize: FontSize(AppTypography.sizeMD),
+                lineHeight: const LineHeight(1.5),
+              ),
 
-                // 标题样式
-                'h1': Style(
-                  color: colorScheme.onSurface,
-                  fontSize: FontSize(AppTypography.sizeXXL),
-                  fontWeight: AppTypography.weightSemiBold,
-                  margin:
-                      Margins.only(bottom: AppSpacing.xs, top: AppSpacing.xs),
-                  padding: HtmlPaddings.only(bottom: AppSpacing.xs),
-                ),
-                'h2': Style(
-                  color: colorScheme.onSurface,
-                  fontSize: FontSize(AppTypography.sizeXL),
-                  fontWeight: AppTypography.weightSemiBold,
-                  margin:
-                      Margins.only(bottom: AppSpacing.xs, top: AppSpacing.xs),
-                  padding: HtmlPaddings.only(left: AppSpacing.sm),
-                ),
-                'h3': Style(
-                  color: colorScheme.onSurface,
-                  fontSize: FontSize(AppTypography.sizeLG),
-                  fontWeight: AppTypography.weightSemiBold,
-                  margin:
-                      Margins.only(bottom: AppSpacing.xs, top: AppSpacing.xs),
-                ),
-                'h4': Style(
-                  color: colorScheme.onSurface,
-                  fontSize: FontSize(AppTypography.sizeMD),
-                  fontWeight: AppTypography.weightSemiBold,
-                  margin:
-                      Margins.only(bottom: AppSpacing.xs, top: AppSpacing.xs),
-                ),
+              // 标题样式
+              'h1': Style(
+                color: colorScheme.onSurface,
+                fontSize: FontSize(AppTypography.sizeXXL),
+                fontWeight: AppTypography.weightSemiBold,
+                margin: Margins.only(bottom: AppSpacing.xs, top: AppSpacing.xs),
+                padding: HtmlPaddings.only(bottom: AppSpacing.xs),
+              ),
+              'h2': Style(
+                color: colorScheme.onSurface,
+                fontSize: FontSize(AppTypography.sizeXL),
+                fontWeight: AppTypography.weightSemiBold,
+                margin: Margins.only(bottom: AppSpacing.xs, top: AppSpacing.xs),
+                padding: HtmlPaddings.only(left: AppSpacing.sm),
+              ),
+              'h3': Style(
+                color: colorScheme.onSurface,
+                fontSize: FontSize(AppTypography.sizeLG),
+                fontWeight: AppTypography.weightSemiBold,
+                margin: Margins.only(bottom: AppSpacing.xs, top: AppSpacing.xs),
+              ),
+              'h4': Style(
+                color: colorScheme.onSurface,
+                fontSize: FontSize(AppTypography.sizeMD),
+                fontWeight: AppTypography.weightSemiBold,
+                margin: Margins.only(bottom: AppSpacing.xs, top: AppSpacing.xs),
+              ),
 
-                // 段落样式
-                'p': Style(
-                  margin: Margins.only(bottom: AppSpacing.xs),
-                  lineHeight: const LineHeight(1.6),
-                ),
+              // 段落样式
+              'p': Style(
+                margin: Margins.only(bottom: AppSpacing.xs),
+                lineHeight: const LineHeight(1.6),
+              ),
 
-                // 链接样式
-                'a': Style(
-                  color: colorScheme.primary,
-                  textDecoration: TextDecoration.underline,
-                  textDecorationColor: colorScheme.primary,
-                  fontWeight: AppTypography.weightMedium,
-                ),
+              // 链接样式
+              'a': Style(
+                color: colorScheme.primary,
+                textDecoration: TextDecoration.underline,
+                textDecorationColor: colorScheme.primary,
+                fontWeight: AppTypography.weightMedium,
+              ),
 
-                // 行内代码样式
-                'code': Style(
-                  backgroundColor: colorScheme.primaryContainer
-                      .withAlpha(AppColors.alphaLowest),
-                  color: colorScheme.primary,
-                  padding: HtmlPaddings.symmetric(horizontal: 6, vertical: 3),
-                  fontFamily: 'monospace',
-                  fontSize: FontSize(AppTypography.sizeSM - 1),
-                ),
+              // 行内代码样式
+              'code': Style(
+                backgroundColor: colorScheme.surfaceContainerHighest,
+                color: colorScheme.primary,
+                padding: HtmlPaddings.symmetric(horizontal: 6, vertical: 3),
+                fontFamily: 'monospace',
+                fontSize: FontSize(AppTypography.sizeSM - 1),
+              ),
 
-                // 代码块样式
-                'pre': Style(
-                  backgroundColor: AppColors.codeEditorBackground,
-                  color: AppColors.codeEditorText,
-                  padding: HtmlPaddings.all(AppSpacing.md),
-                  margin: Margins.only(bottom: AppSpacing.md),
-                  fontFamily: 'monospace',
-                  fontSize: FontSize(AppTypography.sizeSM),
-                ),
+              // 代码块样式
+              'pre': Style(
+                backgroundColor: AppColors.codeEditorBackground,
+                color: AppColors.codeEditorText,
+                padding: HtmlPaddings.all(AppSpacing.md),
+                margin: Margins.only(bottom: AppSpacing.md),
+                fontFamily: 'monospace',
+                fontSize: FontSize(AppTypography.sizeSM),
+              ),
 
-                // 引用块样式
-                'blockquote': Style(
-                  border: Border(
-                    left: BorderSide(
-                      color: colorScheme.primary,
-                      width: 4,
-                    ),
+              // 引用块样式
+              'blockquote': Style(
+                border: Border(
+                  left: BorderSide(
+                    color: colorScheme.primary,
+                    width: 4,
                   ),
-                  padding: HtmlPaddings.only(left: AppSpacing.md),
-                  margin: Margins.symmetric(vertical: AppSpacing.xs),
-                  color: colorScheme.onSurfaceVariant
-                      .withAlpha(AppColors.alphaMedium),
-                  backgroundColor: colorScheme.surfaceContainerHighest
-                      .withAlpha(AppColors.alphaLowest),
                 ),
+                padding: HtmlPaddings.only(left: AppSpacing.md),
+                margin: Margins.symmetric(vertical: AppSpacing.xs),
+                color: colorScheme.onSurfaceVariant
+                    .withAlpha(AppColors.alphaMedium),
+                backgroundColor: colorScheme.surfaceContainerHighest
+                    .withAlpha(AppColors.alphaLowest),
+              ),
 
-                // 列表样式
-                'ul': Style(
-                  margin:
-                      Margins.only(bottom: AppSpacing.xs, left: AppSpacing.md),
-                ),
-                'ol': Style(
-                  margin:
-                      Margins.only(bottom: AppSpacing.xs, left: AppSpacing.md),
-                ),
-                'li': Style(
-                  margin: Margins.only(bottom: AppSpacing.xs),
-                  lineHeight: const LineHeight(1.6),
-                ),
+              // 列表样式
+              'ul': Style(
+                margin:
+                    Margins.only(bottom: AppSpacing.xs, left: AppSpacing.md),
+              ),
+              'ol': Style(
+                margin:
+                    Margins.only(bottom: AppSpacing.xs, left: AppSpacing.md),
+              ),
+              'li': Style(
+                margin: Margins.only(bottom: AppSpacing.xs),
+                lineHeight: const LineHeight(1.6),
+              ),
 
-                // 表格样式
-                'table': Style(
-                  width: Width(double.infinity),
-                  border: Border.all(
+              // 表格样式
+              'table': Style(
+                width: Width(double.infinity),
+                border: Border.all(
+                  color: colorScheme.outline.withAlpha(AppColors.alphaLower),
+                  width: 1,
+                ),
+                margin: Margins.only(bottom: AppSpacing.xs),
+              ),
+              'th': Style(
+                backgroundColor: colorScheme.surfaceContainerHighest,
+                color: colorScheme.onSurface,
+                padding: HtmlPaddings.symmetric(
+                    horizontal: AppSpacing.md, vertical: AppSpacing.sm),
+                fontWeight: AppTypography.weightSemiBold,
+                textAlign: TextAlign.center,
+              ),
+              'td': Style(
+                padding: HtmlPaddings.symmetric(
+                    horizontal: AppSpacing.md, vertical: AppSpacing.sm),
+                border: Border(
+                  top: BorderSide(
                     color: colorScheme.outline.withAlpha(AppColors.alphaLower),
                     width: 1,
                   ),
-                  margin: Margins.only(bottom: AppSpacing.xs),
                 ),
-                'th': Style(
-                  backgroundColor: colorScheme.primaryContainer
-                      .withAlpha(AppColors.alphaLowest),
-                  color: colorScheme.onPrimaryContainer,
-                  padding: HtmlPaddings.symmetric(
-                      horizontal: AppSpacing.md, vertical: AppSpacing.sm),
-                  fontWeight: AppTypography.weightSemiBold,
-                  textAlign: TextAlign.center,
-                ),
-                'td': Style(
-                  padding: HtmlPaddings.symmetric(
-                      horizontal: AppSpacing.md, vertical: AppSpacing.sm),
-                  border: Border(
-                    top: BorderSide(
-                      color:
-                          colorScheme.outline.withAlpha(AppColors.alphaLower),
-                      width: 1,
-                    ),
+              ),
+
+              // 图片样式
+              'img': Style(
+                margin: Margins.symmetric(vertical: AppSpacing.xs),
+              ),
+
+              // 分隔线样式
+              'hr': Style(
+                border: Border(
+                  bottom: BorderSide(
+                    color: colorScheme.outlineVariant
+                        .withAlpha(AppColors.alphaLower),
+                    width: 1,
                   ),
                 ),
+                margin: Margins.symmetric(vertical: AppSpacing.sm),
+              ),
 
-                // 图片样式
-                'img': Style(
-                  margin: Margins.symmetric(vertical: AppSpacing.xs),
-                ),
+              // 强调文本
+              'strong': Style(
+                fontWeight: AppTypography.weightSemiBold,
+                color: colorScheme.onSurface,
+              ),
+              'b': Style(
+                fontWeight: AppTypography.weightSemiBold,
+                color: colorScheme.onSurface,
+              ),
 
-                // 分隔线样式
-                'hr': Style(
-                  border: Border(
-                    bottom: BorderSide(
-                      color: colorScheme.outlineVariant
-                          .withAlpha(AppColors.alphaLower),
-                      width: 1,
-                    ),
-                  ),
-                  margin: Margins.symmetric(vertical: AppSpacing.sm),
-                ),
+              // 斜体文本
+              'em': Style(
+                fontStyle: FontStyle.italic,
+              ),
+              'i': Style(
+                fontStyle: FontStyle.italic,
+              ),
 
-                // 强调文本
-                'strong': Style(
-                  fontWeight: AppTypography.weightSemiBold,
-                  color: colorScheme.onSurface,
-                ),
-                'b': Style(
-                  fontWeight: AppTypography.weightSemiBold,
-                  color: colorScheme.onSurface,
-                ),
-
-                // 斜体文本
-                'em': Style(
-                  fontStyle: FontStyle.italic,
-                ),
-                'i': Style(
-                  fontStyle: FontStyle.italic,
-                ),
-
-                // 删除线
-                'del': Style(
-                  textDecoration: TextDecoration.lineThrough,
-                  color: colorScheme.onSurfaceVariant
-                      .withAlpha(AppColors.alphaMedium),
-                ),
-                's': Style(
-                  textDecoration: TextDecoration.lineThrough,
-                  color: colorScheme.onSurfaceVariant
-                      .withAlpha(AppColors.alphaMedium),
-                ),
-              },
-              shrinkWrap: true,
-            ),
-        ],
-      ),
+              // 删除线
+              'del': Style(
+                textDecoration: TextDecoration.lineThrough,
+                color: colorScheme.onSurfaceVariant
+                    .withAlpha(AppColors.alphaMedium),
+              ),
+              's': Style(
+                textDecoration: TextDecoration.lineThrough,
+                color: colorScheme.onSurfaceVariant
+                    .withAlpha(AppColors.alphaMedium),
+              ),
+            },
+            shrinkWrap: true,
+          ),
+      ],
     );
   }
 }
@@ -899,105 +789,72 @@ class DownloadsSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
     // 过滤出当前平台的文件
     final filteredDownloads = _filterPlatformDownloads(info.downloads);
 
     if (filteredDownloads.isEmpty) {
-      return Container(
-        margin: AppSpacing.onlyBottomSM,
-        padding: AppSpacing.allLG,
-        child: Row(
-          children: [
-            Icon(
-              Icons.info_outline,
-              size: AppTypography.iconMD,
-              color: AppColors.grey600,
-            ),
-            SizedBox(width: AppSpacing.sm),
-            Expanded(
-              child: Text(
-                info.downloads.isEmpty ? '该应用暂无可下载文件' : '该应用暂无适配当前平台的文件',
-                style: TextStyle(
-                  color: AppColors.grey600,
-                  fontStyle: FontStyle.italic,
+      return SectionCard(
+        title: '下载文件',
+        icon: Icons.download_rounded,
+        children: [
+          Row(
+            children: [
+              Icon(
+                Icons.info_outline,
+                size: AppTypography.iconMD,
+                color: colorScheme.onSurfaceVariant,
+              ),
+              const SizedBox(width: AppSpacing.sm),
+              Expanded(
+                child: Text(
+                  info.downloads.isEmpty ? '该应用暂无可下载文件' : '该应用暂无适配当前平台的文件',
+                  style: TextStyle(
+                    color: colorScheme.onSurfaceVariant,
+                    fontStyle: FontStyle.italic,
+                  ),
                 ),
               ),
-            ),
-          ],
-        ),
+            ],
+          ),
+        ],
       );
     }
 
-    return Container(
-      margin: AppSpacing.onlyBottomSM,
-      padding: AppSpacing.allLG,
-      decoration: BoxDecoration(
-        border: Border.all(
-          width: 1,
-          color: Theme.of(context)
-              .colorScheme
-              .primary
-              .withAlpha(AppColors.alphaMedium),
+    return SectionCard(
+      title: '下载文件',
+      icon: Icons.download_rounded,
+      count: Container(
+        padding:
+            EdgeInsets.symmetric(horizontal: AppSpacing.sm * 1.5, vertical: 1),
+        decoration: BoxDecoration(
+          color: colorScheme.primary.withAlpha(AppColors.alphaLow),
+          borderRadius: AppRadius.allMD,
         ),
-        borderRadius: AppRadius.allLG,
-        color: Theme.of(context).colorScheme.primaryContainer,
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Row(
-                children: [
-                  Icon(
-                    Icons.download_rounded,
-                    size: AppTypography.iconMD,
-                    color: Theme.of(context).colorScheme.primary,
-                  ),
-                  SizedBox(width: AppSpacing.sm),
-                  Text(
-                    '下载文件',
-                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                          fontWeight: AppTypography.weightSemiBold,
-                        ),
-                  ),
-                  SizedBox(width: AppSpacing.xs),
-                  Container(
-                    padding: EdgeInsets.symmetric(
-                        horizontal: AppSpacing.sm * 1.5, vertical: 1),
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.primaryContainer,
-                      borderRadius: AppRadius.allMD,
-                    ),
-                    child: Text(
-                      '${filteredDownloads.length} 个文件',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: Theme.of(context).colorScheme.primary,
-                            fontSize: AppTypography.sizeXXS,
-                          ),
-                    ),
-                  ),
-                ],
+        child: Text(
+          '${filteredDownloads.length} 个文件',
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: colorScheme.primary,
+                fontSize: AppTypography.sizeXXS,
               ),
-              if (filteredDownloads.first.publishedAt != null)
-                Text(
-                  '更新于 ${_formatDate(filteredDownloads.first.publishedAt!)}',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        fontSize: AppTypography.sizeXXS,
-                        color: AppColors.grey600,
-                      ),
-                ),
-            ],
-          ),
-          SizedBox(height: AppSpacing.md),
-          ...filteredDownloads.map((download) => _DownloadItem(
-                download: download,
-                onTap: onDownloadTap,
-                onLongPress: onLongPress,
-              )),
-        ],
+        ),
       ),
+      trailing: filteredDownloads.first.publishedAt != null
+          ? Text(
+              '更新于 ${_formatDate(filteredDownloads.first.publishedAt!)}',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    fontSize: AppTypography.sizeXXS,
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+            )
+          : null,
+      children: [
+        ...filteredDownloads.map((download) => _DownloadItem(
+              download: download,
+              onTap: onDownloadTap,
+              onLongPress: onLongPress,
+            )),
+      ],
     );
   }
 
@@ -1046,10 +903,10 @@ class _DownloadItem extends StatelessWidget {
           decoration: BoxDecoration(
             gradient: LinearGradient(
               colors: [
-                Theme.of(context).colorScheme.primaryContainer,
+                Theme.of(context).colorScheme.surfaceContainerHighest,
                 Theme.of(context)
                     .colorScheme
-                    .primaryContainer
+                    .surfaceContainerHighest
                     .withAlpha(AppColors.alphaMedium),
               ],
               begin: Alignment.topLeft,
@@ -1094,7 +951,9 @@ class _DownloadItem extends StatelessWidget {
                               Icon(
                                 Icons.label,
                                 size: AppTypography.iconXS,
-                                color: AppColors.grey600,
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSurfaceVariant,
                               ),
                               SizedBox(width: AppSpacing.xs),
                               Text(
@@ -1103,7 +962,9 @@ class _DownloadItem extends StatelessWidget {
                                     .textTheme
                                     .bodySmall
                                     ?.copyWith(
-                                      color: AppColors.grey600,
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onSurfaceVariant,
                                       fontSize: AppTypography.sizeXXS,
                                     ),
                               ),
@@ -1203,6 +1064,52 @@ class _DownloadItem extends StatelessWidget {
   }
 }
 
+/// 开发者信息行：[xs icon + onSurfaceVariant label + onSurface value]
+class _InfoRow extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String value;
+  final Color? valueColor;
+
+  const _InfoRow({
+    required this.icon,
+    required this.label,
+    required this.value,
+    this.valueColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: AppSpacing.onlyBottomSM,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon,
+              size: AppTypography.iconXS, color: colorScheme.onSurfaceVariant),
+          const SizedBox(width: AppSpacing.sm),
+          Text(
+            label,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: colorScheme.onSurfaceVariant,
+                ),
+          ),
+          const SizedBox(width: AppSpacing.sm),
+          Expanded(
+            child: Text(
+              value,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: valueColor ?? colorScheme.onSurface,
+                  ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// 开发者信息 Section
 class DeveloperSection extends StatelessWidget {
   final IDetailInfo info;
@@ -1211,56 +1118,50 @@ class DeveloperSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (info.developer == null && info.projectUrl == null) {
+    final developer = info.developer;
+    final projectUrl = info.projectUrl;
+    final version = info.version;
+    final channelId = info.channelId;
+
+    // 四字段全空才隐藏
+    if (developer == null &&
+        projectUrl == null &&
+        version == null &&
+        channelId.isEmpty) {
       return const SizedBox.shrink();
     }
 
-    return Container(
-      margin: AppSpacing.onlyBottomSM,
-      padding: AppSpacing.allLG,
-      decoration: BoxDecoration(
-        border: Border.all(
-          width: 1,
-          color: Theme.of(context).colorScheme.primary.withAlpha(130),
-        ),
-        borderRadius: const BorderRadius.all(Radius.circular(16)),
-        color: Theme.of(context).colorScheme.primaryContainer,
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (info.developer != null) ...[
-            Text(
-              '开发者',
-              style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                    fontWeight: AppTypography.weightSemiBold,
-                  ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              info.developer!,
-              style: Theme.of(context).textTheme.bodyLarge,
-            ),
-          ],
-          if (info.developer != null && info.projectUrl != null)
-            const SizedBox(height: 12),
-          if (info.projectUrl != null) ...[
-            Text(
-              '项目主页',
-              style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                    fontWeight: AppTypography.weightSemiBold,
-                  ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              info.projectUrl!,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Theme.of(context).colorScheme.primary,
-                  ),
-            ),
-          ],
-        ],
-      ),
+    final primary = Theme.of(context).colorScheme.primary;
+    return SectionCard(
+      title: '开发者',
+      icon: Icons.person_outline,
+      children: [
+        if (developer != null)
+          _InfoRow(
+            icon: Icons.person_outline,
+            label: '开发者',
+            value: developer,
+          ),
+        if (projectUrl != null)
+          _InfoRow(
+            icon: Icons.link,
+            label: '项目主页',
+            value: projectUrl,
+            valueColor: primary,
+          ),
+        if (version != null)
+          _InfoRow(
+            icon: Icons.tag,
+            label: '版本',
+            value: version,
+          ),
+        if (channelId.isNotEmpty)
+          _InfoRow(
+            icon: Icons.storefront,
+            label: '渠道',
+            value: channelId,
+          ),
+      ],
     );
   }
 }
@@ -1278,36 +1179,15 @@ class ChangelogSection extends StatelessWidget {
       return const SizedBox.shrink();
     }
 
-    return Container(
-      margin: AppSpacing.onlyBottomSM,
-      padding: AppSpacing.allLG,
-      decoration: BoxDecoration(
-        border: Border.all(
-          width: 1,
-          color: Theme.of(context)
-              .colorScheme
-              .primary
-              .withAlpha(AppColors.alphaMedium),
+    return SectionCard(
+      title: '更新日志',
+      icon: Icons.update,
+      children: [
+        Text(
+          changelog,
+          style: Theme.of(context).textTheme.bodyMedium,
         ),
-        borderRadius: AppRadius.allLG,
-        color: Theme.of(context).colorScheme.primaryContainer,
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            '更新日志',
-            style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                  fontWeight: AppTypography.weightSemiBold,
-                ),
-          ),
-          SizedBox(height: AppSpacing.md),
-          Text(
-            changelog,
-            style: Theme.of(context).textTheme.bodyMedium,
-          ),
-        ],
-      ),
+      ],
     );
   }
 }
@@ -1325,48 +1205,89 @@ class PermissionsSection extends StatelessWidget {
       return const SizedBox.shrink();
     }
 
-    return Container(
-      margin: AppSpacing.onlyBottomSM,
-      padding: AppSpacing.allLG,
-      decoration: BoxDecoration(
-        border: Border.all(
-          width: 1,
-          color: Theme.of(context)
-              .colorScheme
-              .primary
-              .withAlpha(AppColors.alphaMedium),
-        ),
-        borderRadius: AppRadius.allLG,
-        color: Theme.of(context).colorScheme.primaryContainer,
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            '权限说明',
-            style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                  fontWeight: AppTypography.weightSemiBold,
-                ),
-          ),
-          SizedBox(height: AppSpacing.md),
-          ...permissions.map((permission) => Padding(
-                padding: AppSpacing.onlyBottomSM,
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Icon(Icons.security, size: AppTypography.sizeSM),
-                    SizedBox(width: AppSpacing.sm),
-                    Expanded(
-                      child: Text(
-                        permission,
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
+    return SectionCard(
+      title: '权限说明',
+      icon: Icons.security,
+      children: [
+        ...permissions.map((permission) => Padding(
+              padding: AppSpacing.onlyBottomSM,
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Icon(Icons.security, size: AppTypography.sizeSM),
+                  SizedBox(width: AppSpacing.sm),
+                  Expanded(
+                    child: Text(
+                      permission,
+                      style: Theme.of(context).textTheme.bodySmall,
                     ),
-                  ],
-                ),
-              )),
-        ],
-      ),
+                  ),
+                ],
+              ),
+            )),
+      ],
     );
   }
+}
+
+/// 下载二维码弹窗内容
+///
+/// 白底 QR 平板（AppColors.white 保证夜间模式可扫码）+ 应用图标与名称：
+/// - QrImageView(data: 下载链接, size: 108)，无 embeddedImage
+/// - AppIcon(24×24) + SizedBox(sm) + 应用名称（bodySmall）
+Widget buildQrDialogContent(IDetailInfo detail, DownloadInfo download) {
+  return Container(
+    padding: AppSpacing.allLG,
+    decoration: BoxDecoration(
+      color: AppColors.white,
+      borderRadius: AppRadius.allSM,
+    ),
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        QrImageView(
+          data: download.url,
+          version: QrVersions.auto,
+          size: 108,
+        ),
+        const SizedBox(height: AppSpacing.sm),
+        Builder(
+          builder: (context) => Row(
+            children: [
+              AppIcon(
+                url: detail.icon,
+                width: 24,
+                height: 24,
+                borderRadius: AppRadius.xs,
+              ),
+              const SizedBox(width: AppSpacing.sm),
+              Flexible(
+                child: Text(
+                  detail.appName,
+                  style: Theme.of(context).textTheme.bodySmall,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+/// 判断头部 description 是否与 readme 重复
+///
+/// readme 非空且（description.trim() == readme.trim() ||
+/// readme.trim() 以 description.trim() 开头）→ true
+bool isDescriptionDuplicated(IDetailInfo? info, String description) {
+  final readme = info?.readme;
+  final trimmedDescription = description.trim();
+  if (readme == null || readme.isEmpty || trimmedDescription.isEmpty) {
+    return false;
+  }
+  final trimmedReadme = readme.trim();
+  return trimmedDescription == trimmedReadme ||
+      trimmedReadme.startsWith(trimmedDescription);
 }
