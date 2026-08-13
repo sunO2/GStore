@@ -360,36 +360,194 @@ class _StatTagChip extends StatelessWidget {
   }
 }
 
-/// 统计信息 Section
+/// 应用信息 Section（可折叠）
 ///
-/// 展示应用统计标签（stars/forks/downloads/rating 等）：
-/// - 优先取 info.buildStatTags()
-/// - 为空时 fallback 到 info.statistics?.buildStatTags()
-/// - 两者皆空 → 整块不渲染
-class StatisticsSection extends StatelessWidget {
+/// 展示应用基础信息（包名/当前版本/开发者/渠道，字段非空才渲染），
+/// 存在可展开内容（项目主页/统计标签）时提供展开/收起按钮：
+/// - 默认收起：仅渲染基础行
+/// - 展开追加：项目主页（primary 色）+ 统计 StatTag chips
+///   （优先 info.buildStatTags()，为空 fallback 到 info.statistics?.buildStatTags()）
+/// - 无可展开内容 → 隐藏展开按钮
+/// - 基础行与可展开内容全空 → SizedBox.shrink
+class AppInfoSection extends StatefulWidget {
   final IDetailInfo info;
 
-  const StatisticsSection({super.key, required this.info});
+  const AppInfoSection({super.key, required this.info});
+
+  @override
+  State<AppInfoSection> createState() => _AppInfoSectionState();
+}
+
+class _AppInfoSectionState extends State<AppInfoSection> {
+  bool _expanded = false;
 
   @override
   Widget build(BuildContext context) {
+    final info = widget.info;
+    final version = info.version;
+    final developer = info.developer;
+    final projectUrl = info.projectUrl;
+    final channelId = info.channelId;
+
     var tags = info.buildStatTags();
     if (tags.isEmpty) {
       tags = info.statistics?.buildStatTags() ?? const <StatTag>[];
     }
-    if (tags.isEmpty) {
+
+    final hasBasicRows = info.packageName.isNotEmpty ||
+        version != null ||
+        developer != null;
+    final hasExpandable = projectUrl != null || tags.isNotEmpty;
+
+    // 全空（无基础行且无可展开内容）→ 不渲染
+    if (!hasBasicRows && !hasExpandable) {
       return const SizedBox.shrink();
     }
 
+    final primary = Theme.of(context).colorScheme.primary;
+
     return SectionCard(
-      title: '统计信息',
-      icon: Icons.query_stats,
+      title: '应用信息',
+      icon: Icons.info_outline,
+      trailing: hasExpandable
+          ? IconButton(
+              onPressed: () => setState(() => _expanded = !_expanded),
+              tooltip: _expanded ? '收起' : '展开',
+              icon: Icon(
+                _expanded ? Icons.expand_less : Icons.expand_more,
+                color: primary,
+              ),
+            )
+          : null,
       children: [
-        Wrap(
-          spacing: AppSpacing.sm,
-          runSpacing: AppSpacing.xs,
-          children: [for (final tag in tags) _StatTagChip(tag: tag)],
-        ),
+        if (info.packageName.isNotEmpty)
+          _InfoRow(
+            icon: Icons.smartphone,
+            label: '包名',
+            value: info.packageName,
+          ),
+        if (version != null)
+          _InfoRow(
+            icon: Icons.tag,
+            label: '当前版本',
+            value: version,
+          ),
+        if (developer != null)
+          _InfoRow(
+            icon: Icons.person_outline,
+            label: '开发者',
+            value: developer,
+          ),
+        if (channelId.isNotEmpty)
+          _InfoRow(
+            icon: Icons.storefront,
+            label: '渠道',
+            value: channelId,
+          ),
+        if (_expanded) ...[
+          if (projectUrl != null)
+            _InfoRow(
+              icon: Icons.link,
+              label: '项目主页',
+              value: projectUrl,
+              valueColor: primary,
+            ),
+          if (tags.isNotEmpty)
+            Wrap(
+              spacing: AppSpacing.sm,
+              runSpacing: AppSpacing.xs,
+              children: [for (final tag in tags) _StatTagChip(tag: tag)],
+            ),
+        ],
+      ],
+    );
+  }
+}
+
+/// 版本角标组件
+///
+/// 展示当前安装版本与最新版本对比：
+/// - 已安装 → chip 标签 '当前版本 {installedVersion}'
+/// - 未安装 → chip 直接显示 {latestVersion}
+/// - 已安装且 latest != installed → 右上角小胶囊角标 'v{latestVersion}'
+/// - 两者皆空 → SizedBox.shrink
+class VersionBadge extends StatelessWidget {
+  final String? latestVersion;
+  final String? installedVersion;
+
+  const VersionBadge({
+    super.key,
+    required this.latestVersion,
+    required this.installedVersion,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final latest = latestVersion;
+    final installed = installedVersion;
+    if (latest == null && installed == null) {
+      return const SizedBox.shrink();
+    }
+
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+
+    final chip = Container(
+      padding: AppSpacing.horizontalMD_verticalXS,
+      decoration: BoxDecoration(
+        color: colorScheme.primaryContainer.withValues(alpha: 0.4),
+        borderRadius: AppRadius.allMD,
+        border: Border.all(color: colorScheme.primary, width: 1),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            Icons.tag,
+            size: AppTypography.iconXS,
+            color: colorScheme.primary,
+          ),
+          const SizedBox(width: AppSpacing.xs),
+          Text(
+            installed != null ? '当前版本 $installed' : latest ?? '',
+            style: textTheme.labelMedium?.copyWith(
+              color: colorScheme.primary,
+              fontWeight: AppTypography.weightMedium,
+            ),
+          ),
+        ],
+      ),
+    );
+
+    final showBadge =
+        installed != null && latest != null && installed != latest;
+
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        chip,
+        if (showBadge)
+          Positioned(
+            top: -AppSpacing.sm,
+            right: -AppSpacing.sm,
+            child: Container(
+              padding: EdgeInsets.symmetric(
+                horizontal: AppSpacing.sm,
+                vertical: AppSpacing.xs,
+              ),
+              decoration: BoxDecoration(
+                color: colorScheme.primaryContainer,
+                borderRadius: AppRadius.allMD,
+              ),
+              child: Text(
+                'v$latest',
+                style: textTheme.labelSmall?.copyWith(
+                  color: colorScheme.onPrimaryContainer,
+                  fontWeight: AppTypography.weightSemiBold,
+                ),
+              ),
+            ),
+          ),
       ],
     );
   }
