@@ -17,6 +17,7 @@ import 'package:gstore/db/apps/AppInfo.dart' as db;
 import 'package:gstore/db/apps/AppInfoDatabase.dart';
 import 'package:gstore/core/service/db_manager.dart';
 import 'package:gstore/http/github/github_client.dart';
+import 'package:gstore/core/utils/unit.dart';
 import 'package:gstore/core/channel/AppUpdateCheckMixin.dart';
 
 /// 本地数据库渠道实现
@@ -403,6 +404,16 @@ class LocalDbChannel with AppUpdateCheckMixin implements IChannel {
         debugPrint('LocalDbChannel: 使用数据库 README/des，长度 = ${readme?.length ?? 0}');
       }
 
+      // 将 README 中的相对路径图片替换为完整 raw URL
+      // （代理仅用于下载/图片加速，不改变资源地址语义）
+      final defaultBranch = apiList?['default_branch']?.toString();
+      final rawBaseUrl =
+          'https://raw.githubusercontent.com/${appInfo.user}/${appInfo.repositories}/refs/heads/'
+          '${defaultBranch != null && defaultBranch.isNotEmpty ? defaultBranch : 'main'}/';
+      if (readme != null) {
+        readme = resolveReadmeImageUrls(readme, rawBaseUrl);
+      }
+
       appLog.info('LocalDbChannel: ========== 构建详情信息完成 ==========');
       debugPrint('LocalDbChannel: downloads 列表长度 = ${downloads.length}');
       debugPrint('LocalDbChannel: README 最终长度 = ${readme?.length ?? 0}');
@@ -420,9 +431,8 @@ class LocalDbChannel with AppUpdateCheckMixin implements IChannel {
         'version': metadataVersionName ?? latestVersion,
         'developer': appInfo.user,
         'packageName': packageName,
-        'projectUrl': config?.proxy != null
-            ? '${config?.proxy}/${appInfo.user}/${appInfo.repositories}'
-            : 'https://github.com/${appInfo.user}/${appInfo.repositories}',
+        // 项目主页始终为 github.com 地址（代理仅用于下载/图片加速，不改变主页语义）
+        'projectUrl': 'https://github.com/${appInfo.user}/${appInfo.repositories}',
         'sections': _buildSections(
           downloads,
           readme,
