@@ -187,7 +187,8 @@ class _$AppInfoDao extends AppInfoDao {
 
   @override
   Future<AppInfoConfig?> getVersion() async {
-    return _queryAdapter.query('SELECT * FROM config LIMIT 1',
+    return _queryAdapter.query(
+        'SELECT * FROM config ORDER BY rowid DESC LIMIT 1',
         mapper: (Map<String, Object?> row) =>
             AppInfoConfig(row['version'] as String, row['proxy'] as String?));
   }
