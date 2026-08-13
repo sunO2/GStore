@@ -236,31 +236,33 @@ class _MoreActionsSheetState extends State<_MoreActionsSheet> {
 
               const SizedBox(height: AppSpacing.xxl),
 
-              // 分隔线 + 动作宫格
-              const Divider(),
-              const SizedBox(height: AppSpacing.lg),
-              Text(
-                '操作',
-                style: textTheme.labelLarge?.copyWith(
-                  color: colorScheme.onSurfaceVariant,
+              // 分隔线 + 动作宫格（actions 为空时整块隐藏）
+              if (widget.actions.isNotEmpty) ...[
+                const Divider(),
+                const SizedBox(height: AppSpacing.lg),
+                Text(
+                  '操作',
+                  style: textTheme.labelLarge?.copyWith(
+                    color: colorScheme.onSurfaceVariant,
+                  ),
                 ),
-              ),
-              const SizedBox(height: AppSpacing.sm),
-              GridView.count(
-                crossAxisCount: 4,
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                mainAxisSpacing: AppSpacing.sm,
-                crossAxisSpacing: AppSpacing.sm,
-                childAspectRatio: 1.1,
-                children: [
-                  for (final action in widget.actions)
-                    _ActionTile(
-                      action: action,
-                      onTap: () => _runAction(action),
-                    ),
-                ],
-              ),
+                const SizedBox(height: AppSpacing.sm),
+                GridView.count(
+                  crossAxisCount: 4,
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  mainAxisSpacing: AppSpacing.sm,
+                  crossAxisSpacing: AppSpacing.sm,
+                  childAspectRatio: 1.1,
+                  children: [
+                    for (final action in widget.actions)
+                      _ActionTile(
+                        action: action,
+                        onTap: () => _runAction(action),
+                      ),
+                  ],
+                ),
+              ],
 
               const SizedBox(height: AppSpacing.lg),
 
