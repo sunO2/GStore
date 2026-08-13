@@ -653,6 +653,10 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
     }
   }
 
+  /// 支持分块渐进加载（详情页走三路独立渐进渲染）
+  @override
+  bool get supportsProgressiveLoading => true;
+
   /// 分块加载：仅下载列表（不拉 README/统计）。
   /// getAppInfo → 最新 release 解析（与 getAppDetail 共用 _fetchReleasesFor）
   @override
@@ -680,12 +684,25 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
   }
 
   /// 分块加载：仅 README（读缓存 / 条件请求）。
-  /// getAppInfo → 仓库 API 取分支 → contents API + ETag 缓存（与 getAppDetail 共用）
+  /// getAppInfo → 仓库 API 取分支 → contents API + ETag 缓存（与 getAppDetail 共用）。
+  /// apiList 失败/无 default_branch（如离线）时纯缓存兜底：ReadmeCache 命中直接返回
+  /// 缓存文本，不再整路 failure（离线时缓存存在也渲染 README）。
   @override
   Future<ChannelResult<String?>> fetchReadme(String appId) async {
     try {
       final appInfoResult = await getAppInfo(appId);
       if (!appInfoResult.success || appInfoResult.data == null) {
+        // getAppInfo 失败（如离线）：按 appId（owner/repo 格式）拆 owner/repo，纯缓存兜底
+        final parts = appId.split('/');
+        if (parts.length == 2) {
+          final cached = await ReadmeCache.instance.get(parts[0], parts[1]);
+          if (cached != null) {
+            return ChannelResult.success(
+              data: cached.readme,
+              from: ChannelType.github,
+            );
+          }
+        }
         return ChannelResult.failure(
           from: ChannelType.github,
           error: appInfoResult.error ?? '应用不存在',
@@ -693,11 +710,36 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
       }
       final appInfo = appInfoResult.data!;
       // 分支信息（raw 图片绝对化基准）来自仓库 API
-      final apiList = await _githubApi.apiList(
-        appInfo.user,
-        appInfo.repositories,
-        CancelToken(),
-      );
+      ApiList? apiList;
+      try {
+        apiList = await _githubApi.apiList(
+          appInfo.user,
+          appInfo.repositories,
+          CancelToken(),
+        );
+      } catch (e) {
+        appLog.error('GitHubChannel: 获取仓库分支信息失败（尝试 README 缓存兜底） - $e');
+      }
+      // apiList 失败 / 无 default_branch：纯缓存兜底，命中直接返回缓存文本，不整路失败
+      if (apiList == null || (apiList.default_branch?.isEmpty ?? true)) {
+        final cached =
+            await ReadmeCache.instance.get(appInfo.user, appInfo.repositories);
+        if (cached != null) {
+          return ChannelResult.success(
+            data: cached.readme,
+            from: ChannelType.github,
+          );
+        }
+        if (apiList == null) {
+          // apiList 请求失败且无缓存：保持失败可感知（"网络不可用"语义）
+          return ChannelResult.failure(
+            from: ChannelType.github,
+            error: '获取仓库信息失败（无 README 缓存）',
+          );
+        }
+        // default_branch 本身为空（非请求失败）：与旧行为一致 success(null)
+        return ChannelResult.success(data: null, from: ChannelType.github);
+      }
       final readme = await _fetchReadmeInternal(appInfo, apiList.default_branch);
       return ChannelResult.success(data: readme, from: ChannelType.github);
     } catch (e) {

@@ -361,6 +361,10 @@ class LocalDbChannel extends IChannel with AppUpdateCheckMixin {
     return entity == null ? null : AppSummary.fromDbAppInfo(entity);
   }
 
+  /// 支持分块渐进加载（详情页走三路独立渐进渲染）
+  @override
+  bool get supportsProgressiveLoading => true;
+
   /// 分块加载：仅下载列表（走 _githubApi.releases，失败 → 空列表）
   @override
   Future<ChannelResult<List<DownloadInfo>>> fetchDownloads(String appId) async {

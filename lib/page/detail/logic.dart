@@ -108,6 +108,13 @@ class DetailLogic extends GetxController {
         throw Exception('Channel not found: ${request!.channel}');
       }
 
+      // 非分块渠道（Vivo/Fdroid/Http 等）：回退旧流程 getAppDetail 一次性完整注入。
+      // 截图/下载/更新日志/权限/评分等区块仅旧流程提供，分块改造不得使其丢失。
+      if (!channelInstance.supportsProgressiveLoading) {
+        await _loadDetailLegacy(channelInstance);
+        return;
+      }
+
       // ① 基础信息（失败仅日志不阻塞，回退 request 参数）
       AppSummary? basic;
       try {
@@ -121,11 +128,21 @@ class DetailLogic extends GetxController {
       }
 
       // 基础 detailInfo 就绪即注入（头部/应用信息卡立即可渲染）
-      state.detailInfo.value = _ProgressiveDetailInfo(_buildBaseDetailInfo(basic));
+      final baseDetail = _buildBaseDetailInfo(basic);
+      // 包名回退：getAppInfo（keepExistingPackageName: false）无 metadata 时
+      // packageName 为 null（离线 LocalDb 应用检测丢失）——回退请求参数包名，
+      // 使 packageName 语义与旧 getAppDetail（keepExistingPackageName: true）对齐。
+      final effectivePackageName = (baseDetail.packageName?.isNotEmpty ?? false)
+          ? baseDetail.packageName!
+          : request!.packageName;
+      final effectiveBase = (effectivePackageName != null &&
+              effectivePackageName.isNotEmpty)
+          ? baseDetail.copyWith(packageName: effectivePackageName)
+          : baseDetail;
+      state.detailInfo.value = _ProgressiveDetailInfo(effectiveBase);
 
       // packageName 就绪即执行安装检测（插件调用失败已容忍，不影响加载流程）
-      final packageToCheck =
-          (basic?.packageName ?? state.detailInfo.value?.packageName)?.trim();
+      final packageToCheck = effectivePackageName?.trim();
       if (packageToCheck != null && packageToCheck.isNotEmpty) {
         try {
           final isInstalled = await InstalledApps.isAppInstalled(packageToCheck);
@@ -152,6 +169,53 @@ class DetailLogic extends GetxController {
       state.errorMessage.value = '加载详情失败: $e';
     } finally {
       state.isLoadingDetail.value = false;
+    }
+  }
+
+  /// 旧流程加载详情（非分块渠道回退路径）：还原分块改造前的 loadDetail 主体。
+  ///
+  /// getAppInfo（缓存基础信息，失败仅日志不阻塞）→ getAppDetail 一次性完整注入
+  /// （截图/下载/更新日志/权限/评分等全部区块）→ 基于详情 packageName 检测安装状态。
+  /// isLoadingDetail 的复位由外层 loadDetail 的 finally 统一负责。
+  Future<void> _loadDetailLegacy(IChannel channel) async {
+    // 先获取基本信息（缓存数据；失败不阻塞，请求参数/详情兜底显示）
+    try {
+      await channel.getAppInfo(
+        request!.appId,
+        forceRefresh: false,
+      );
+    } catch (e) {
+      appLog.error('DetailLogic: 获取基础信息失败（不阻塞详情加载） - $e');
+    }
+
+    // 再获取详情信息（一次性完整注入）
+    final result = await channel.getAppDetail(
+      request!.appId,
+      forceRefresh: false,
+    );
+    if (!result.success || result.data == null) {
+      throw Exception(result.error ?? 'Failed to load app detail');
+    }
+
+    state.detailInfo.value = result.data;
+
+    // 详情加载后，使用详情中的 packageName 检测安装状态
+    final detail = result.data;
+    final packageToCheck = detail?.packageName.trim();
+    if (packageToCheck != null && packageToCheck.isNotEmpty) {
+      try {
+        final isInstalled = await InstalledApps.isAppInstalled(packageToCheck);
+        if (isInstalled == true) {
+          state.installInfo.value = await InstalledApps.getAppInfo(packageToCheck);
+          appLog.info('DetailLogic: ✓ 应用已安装 - ${state.installInfo.value?.packageName}');
+        } else {
+          appLog.info('DetailLogic: ✗ 应用未安装 - "$packageToCheck"');
+        }
+      } catch (e) {
+        appLog.error('DetailLogic: 检测安装状态时出错: $e');
+      }
+    } else {
+      appLog.error('DetailLogic: 无法检测安装状态 - 没有可用的包名');
     }
   }
 

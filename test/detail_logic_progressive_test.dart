@@ -13,6 +13,7 @@ import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/AppDetailRequest.dart';
 import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
+import 'package:gstore/core/model/StatTag.dart';
 import 'package:gstore/db/apps/AppInfo.dart' as db;
 import 'package:gstore/page/detail/logic.dart';
 
@@ -28,14 +29,29 @@ import 'package:gstore/page/detail/logic.dart';
 /// InstalledApps 插件在单测环境调用抛 MissingPluginException——logic 已有
 /// try/catch 容忍，断言时不涉及 installInfo。
 class FakeChannel extends IChannel {
-  FakeChannel({this.channelType = ChannelType.github});
+  FakeChannel({
+    this.channelType = ChannelType.github,
+    this.progressiveSupported = true,
+  });
 
   final ChannelType channelType;
+
+  /// 是否支持分块加载（false = 非分块渠道，loadDetail 走旧流程 getAppDetail）
+  final bool progressiveSupported;
 
   /// 三路分块返回（默认立即成功；注入 Completer 可控制完成时序）
   Completer<ChannelResult<List<DownloadInfo>>>? downloadsCompleter;
   Completer<ChannelResult<String?>>? readmeCompleter;
   Completer<ChannelResult<Map<String, dynamic>?>>? statisticsCompleter;
+
+  /// getAppDetail 返回的完整详情（非分块渠道旧流程用）
+  IDetailInfo? getAppDetailResult;
+
+  /// getAppDetail 调用次数
+  int getAppDetailCalls = 0;
+
+  /// 三路 fetch 总调用次数（非分块渠道旧流程不应调用任何一路）
+  int fetchCalls = 0;
 
   /// getAppInfo 返回的基础信息
   AppSummary basic = const AppSummary(
@@ -71,6 +87,7 @@ class FakeChannel extends IChannel {
 
   @override
   Future<ChannelResult<List<DownloadInfo>>> fetchDownloads(String appId) {
+    fetchCalls++;
     return downloadsCompleter?.future ??
         Future.value(
           ChannelResult.success(data: const [], from: channelType),
@@ -79,12 +96,14 @@ class FakeChannel extends IChannel {
 
   @override
   Future<ChannelResult<String?>> fetchReadme(String appId) {
+    fetchCalls++;
     return readmeCompleter?.future ??
         Future.value(ChannelResult.success(data: null, from: channelType));
   }
 
   @override
   Future<ChannelResult<Map<String, dynamic>?>> fetchStatistics(String appId) {
+    fetchCalls++;
     return statisticsCompleter?.future ??
         Future.value(
           ChannelResult.success(data: null, from: channelType),
@@ -94,11 +113,17 @@ class FakeChannel extends IChannel {
   // ==================== 其余 IChannel 抽象成员最小实现 ====================
 
   @override
+  bool get supportsProgressiveLoading => progressiveSupported;
+
+  @override
   Future<ChannelResult<IDetailInfo>> getAppDetail(
     String appId, {
     bool forceRefresh = false,
   }) async {
-    throw UnimplementedError();
+    getAppDetailCalls++;
+    final result = getAppDetailResult;
+    if (result == null) throw UnimplementedError();
+    return ChannelResult.success(data: result, from: channelType);
   }
 
   @override
@@ -409,4 +434,107 @@ void main() {
     expect(detail.extra.containsKey('readme'), isFalse);
     expect(logic.state.isLoadingDetail.value, isFalse);
   });
+
+  test('f) 非分块渠道（supportsProgressiveLoading=false）→ 旧流程 getAppDetail 一次性完整注入，三路 fetch 不调用',
+      () async {
+    final legacyChannel = FakeChannel(progressiveSupported: false);
+    ChannelManager.instance.registerChannel(legacyChannel);
+    // 替换已注册的同渠道类型实例（getChannel 按 channelType 查找）
+    logic.request = const AppDetailRequest(
+      appId: 'owner/repo',
+      name: '测试应用',
+      packageName: 'com.example.app',
+      channel: ChannelType.github,
+    );
+
+    final fullDetail = _FakeDetailInfo();
+    legacyChannel.getAppDetailResult = fullDetail;
+
+    await logic.loadDetail();
+
+    // 旧流程：getAppDetail 恰好调用一次（getAppInfo 前置基础 + getAppDetail 主体）
+    expect(legacyChannel.getAppDetailCalls, 1);
+    // 三路 fetch 全部未被调用（非分块渠道不拆三路）
+    expect(legacyChannel.fetchCalls, 0);
+
+    // detailInfo 一次性完整注入（与 getAppDetail 返回同一实例）
+    final detail = logic.state.detailInfo.value;
+    expect(identical(detail, fullDetail), isTrue);
+    expect(detail!.sections, contains(DetailSection.downloads));
+    expect(detail.sections, contains(DetailSection.readme));
+    expect(detail.sections, contains(DetailSection.statistics));
+    expect(detail.screenshots, hasLength(1));
+    expect(detail.changelog, '更新日志');
+    expect(detail.permissions, contains('INTERNET'));
+    expect(detail.version, '1.2.0');
+    expect(logic.state.isLoadingDetail.value, isFalse);
+    expect(logic.state.errorMessage.value, isEmpty);
+  });
+}
+
+/// 旧流程 getAppDetail 返回的完整详情（覆盖截图/下载/更新日志/权限/评分等全部区块）
+class _FakeDetailInfo extends IDetailInfo {
+  @override
+  String get packageName => 'com.example.app';
+
+  @override
+  String get appName => '测试应用';
+
+  @override
+  String get icon => 'https://example.com/icon.png';
+
+  @override
+  String get description => '完整详情描述';
+
+  @override
+  String get appId => 'owner/repo';
+
+  @override
+  String get channelId => 'github';
+
+  @override
+  ChannelType get channelType => ChannelType.github;
+
+  @override
+  String? get version => '1.2.0';
+
+  @override
+  String? get developer => 'owner';
+
+  @override
+  String? get projectUrl => 'https://github.com/owner/repo';
+
+  @override
+  List<DownloadInfo> get downloads => const [];
+
+  @override
+  List<DetailSection> get sections => const [
+        DetailSection.statistics,
+        DetailSection.version,
+        DetailSection.downloads,
+        DetailSection.readme,
+      ];
+
+  @override
+  Map<String, dynamic> get extra => const {};
+
+  @override
+  String? get readme => '# 完整 README';
+
+  @override
+  List<ScreenshotInfo>? get screenshots =>
+      [ScreenshotInfo(url: 'https://example.com/s1.png')];
+
+  @override
+  String? get changelog => '更新日志';
+
+  @override
+  List<String>? get permissions => const ['INTERNET'];
+
+  @override
+  StatisticsInfo? get statistics =>
+      StatisticsInfo(stars: 100, forks: 20);
+
+  @override
+  List<StatTag> buildStatTags() => const [];
 }
