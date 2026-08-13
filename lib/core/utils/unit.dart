@@ -61,12 +61,13 @@ String applyProxyIfNeeded(String url, String proxy) {
   return '$proxy$url';
 }
 
-/// 将 Markdown 中的相对路径图片替换为完整 raw URL（GitHub 仓库资源）
+/// 将 Markdown 与 HTML 中的相对路径图片替换为完整 raw URL（GitHub 仓库资源）
 /// ![img](images/x.png) → ![img]({rawBaseUrl}images/x.png)
+/// <img src="screenshots/x.png"> → <img src="{rawBaseUrl}screenshots/x.png">
 /// 绝对 URL（http/https/data:）与其余内容不动；rawBaseUrl 需以 / 结尾
 String resolveReadmeImageUrls(String readme, String rawBaseUrl) {
   final pattern = RegExp(r'!\[([^\]]*)\]\(([^)\s]+)\)');
-  return readme.replaceAllMapped(pattern, (m) {
+  readme = readme.replaceAllMapped(pattern, (m) {
     final alt = m.group(1)!;
     final path = m.group(2)!;
     if (path.startsWith('http://') ||
@@ -75,5 +76,15 @@ String resolveReadmeImageUrls(String readme, String rawBaseUrl) {
       return m.group(0)!;
     }
     return '![$alt]($rawBaseUrl$path)';
+  });
+  final htmlImgPattern = RegExp(r'<img\b[^>]*\bsrc="([^"]+)"[^>]*>');
+  return readme.replaceAllMapped(htmlImgPattern, (m) {
+    final src = m.group(1)!;
+    if (src.startsWith('http://') ||
+        src.startsWith('https://') ||
+        src.startsWith('data:')) {
+      return m.group(0)!;
+    }
+    return m.group(0)!.replaceFirst('src="$src"', 'src="$rawBaseUrl$src"');
   });
 }
