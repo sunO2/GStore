@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/compent/entrance_list.dart';
+import 'package:gstore/compent/pressable_scale.dart';
 import 'package:gstore/core/service/install_manager.dart';
 import 'package:installed_apps/installed_apps.dart';
 import 'package:installed_apps/app_info.dart' as installed;
@@ -281,7 +282,9 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
   }
 
   Widget _buildAppTile(BuildContext context, installed.AppInfo app) {
-    return Card(
+    // 外层 PressableScale 仅做按压反馈（保留 PopupMenuButton 等原交互）
+    return PressableScale(
+      child: Card(
       margin: EdgeInsets.only(bottom: AppSpacing.sm),
       elevation: 0,
       shape: RoundedRectangleBorder(
@@ -378,6 +381,7 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
             ),
           ],
         ),
+      ),
       ),
     );
   }

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/compent/entrance_list.dart';
+import 'package:gstore/compent/pressable_scale.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/update/apk_matcher.dart';
 import 'package:gstore/core/update/app_update_info.dart';
@@ -263,13 +264,17 @@ class _UpdateListBody extends StatelessWidget {
         separatorBuilder: (_, __) => const Divider(height: 1),
         itemBuilder: (context, index) {
           final info = state.updateList[index];
-          return _UpdateTile(
-            info: info,
-            isUpdating: state.updatingAppId.value == info.appId,
-            download: state.currentDownload.value,
-            selectedApkName: state.selectedApkName[info.appId],
-            onUpdate: () => logic.updateApp(info),
-            onSelectApk: (dl) => logic.selectApk(info, dl),
+          // 外层 PressableScale 仅做按压反馈（onTap 传 null；
+          // 更新按钮/APK 选择器由各自内层手势承接）
+          return PressableScale(
+            child: _UpdateTile(
+              info: info,
+              isUpdating: state.updatingAppId.value == info.appId,
+              download: state.currentDownload.value,
+              selectedApkName: state.selectedApkName[info.appId],
+              onUpdate: () => logic.updateApp(info),
+              onSelectApk: (dl) => logic.selectApk(info, dl),
+            ),
           );
         },
       );

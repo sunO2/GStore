@@ -89,65 +89,101 @@ class HomePage extends StatelessWidget {
                                 },
                                 destinations: [
                                   NavigationDestination(
-                                    icon: AnimatedSwitcher(
-                                      duration: AppAnimations.normal,
-                                      child: ColorFiltered(
-                                        // AliIcon 是 COLR 彩色字体，不响应 IconTheme 颜色，强制染色
-                                        colorFilter: ColorFilter.mode(
-                                          (logic.state.index.value == 0)
-                                              ? Theme.of(context)
-                                                  .colorScheme
-                                                  .primary
-                                              : Theme.of(context)
-                                                  .colorScheme
-                                                  .onSurfaceVariant,
-                                          BlendMode.srcATop,
-                                        ),
-                                        child: Icon(
-                                          (logic.state.index.value == 0)
-                                              ? AliIcon.appStoreActive
-                                              : AliIcon.appStore,
-                                          key: ValueKey(
-                                            logic.state.index.value == 0
-                                                ? 0
-                                                : 1,
+                                    // 选中项图标微放大（AnimatedScale 包在 AnimatedSwitcher 外，
+                                    // 两动画独立叠加：切换淡入淡出 + 缩放）
+                                    icon: AnimatedScale(
+                                      scale: (logic.state.index.value == 0)
+                                          ? 1.15
+                                          : 1.0,
+                                      duration: AppAnimation.fast,
+                                      curve: AppAnimation.curve,
+                                      child: AnimatedSwitcher(
+                                        duration: AppAnimations.normal,
+                                        child: ColorFiltered(
+                                          // AliIcon 是 COLR 彩色字体，不响应 IconTheme 颜色，强制染色
+                                          colorFilter: ColorFilter.mode(
+                                            (logic.state.index.value == 0)
+                                                ? Theme.of(context)
+                                                    .colorScheme
+                                                    .primary
+                                                : Theme.of(context)
+                                                    .colorScheme
+                                                    .onSurfaceVariant,
+                                            BlendMode.srcATop,
                                           ),
-                                          size: AppTypography.iconLG,
+                                          child: Icon(
+                                            (logic.state.index.value == 0)
+                                                ? AliIcon.appStoreActive
+                                                : AliIcon.appStore,
+                                            key: ValueKey(
+                                              logic.state.index.value == 0
+                                                  ? 0
+                                                  : 1,
+                                            ),
+                                            size: AppTypography.iconLG,
+                                          ),
                                         ),
                                       ),
                                     ),
                                     label: "首页",
                                   ),
                                   NavigationDestination(
-                                    icon: AnimatedSwitcher(
-                                      duration: AppAnimations.normal,
-                                      child: (logic.state.index.value == 1)
-                                          ? const Icon(Icons.explore,
-                                              key: ValueKey(2))
-                                          : const Icon(Icons.explore_outlined,
-                                              key: ValueKey(3)),
+                                    icon: AnimatedScale(
+                                      scale: (logic.state.index.value == 1)
+                                          ? 1.15
+                                          : 1.0,
+                                      duration: AppAnimation.fast,
+                                      curve: AppAnimation.curve,
+                                      child: AnimatedSwitcher(
+                                        duration: AppAnimations.normal,
+                                        child:
+                                            (logic.state.index.value == 1)
+                                                ? const Icon(Icons.explore,
+                                                    key: ValueKey(2))
+                                                : const Icon(
+                                                    Icons.explore_outlined,
+                                                    key: ValueKey(3)),
+                                      ),
                                     ),
                                     label: "发现",
                                   ),
                                   NavigationDestination(
-                                    icon: AnimatedSwitcher(
-                                      duration: AppAnimations.normal,
-                                      child: (logic.state.index.value == 2)
-                                          ? const Icon(Icons.smart_toy,
-                                              key: ValueKey(6))
-                                          : const Icon(Icons.smart_toy_outlined,
-                                              key: ValueKey(7)),
+                                    icon: AnimatedScale(
+                                      scale: (logic.state.index.value == 2)
+                                          ? 1.15
+                                          : 1.0,
+                                      duration: AppAnimation.fast,
+                                      curve: AppAnimation.curve,
+                                      child: AnimatedSwitcher(
+                                        duration: AppAnimations.normal,
+                                        child:
+                                            (logic.state.index.value == 2)
+                                                ? const Icon(Icons.smart_toy,
+                                                    key: ValueKey(6))
+                                                : const Icon(
+                                                    Icons.smart_toy_outlined,
+                                                    key: ValueKey(7)),
+                                      ),
                                     ),
                                     label: "AI 助手",
                                   ),
                                   NavigationDestination(
-                                    icon: AnimatedSwitcher(
-                                      duration: AppAnimations.normal,
-                                      child: (logic.state.index.value == 3)
-                                          ? const Icon(Icons.person,
-                                              key: ValueKey(4))
-                                          : const Icon(Icons.person_outline,
-                                              key: ValueKey(5)),
+                                    icon: AnimatedScale(
+                                      scale: (logic.state.index.value == 3)
+                                          ? 1.15
+                                          : 1.0,
+                                      duration: AppAnimation.fast,
+                                      curve: AppAnimation.curve,
+                                      child: AnimatedSwitcher(
+                                        duration: AppAnimations.normal,
+                                        child:
+                                            (logic.state.index.value == 3)
+                                                ? const Icon(Icons.person,
+                                                    key: ValueKey(4))
+                                                : const Icon(
+                                                    Icons.person_outline,
+                                                    key: ValueKey(5)),
+                                      ),
                                     ),
                                     label: "我的",
                                   ),

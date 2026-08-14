@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:gstore/compent/pressable_scale.dart';
 import 'package:gstore/core/core.dart';
 
 class AppCardWidget extends StatelessWidget {
@@ -20,9 +21,11 @@ class AppCardWidget extends StatelessWidget {
     final channelColor = AppColors.getChannelBrandColor(app.channel.name);
     final channelShortName = _getChannelShortName(app.channel);
 
-    return GestureDetector(
-      onTap: onTap,
-      child: Column(
+    // 外层 PressableScale 仅做按压反馈（onTap 仍由内层 GestureDetector 承接）
+    return PressableScale(
+      child: GestureDetector(
+        onTap: onTap,
+        child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.center,
@@ -137,6 +140,7 @@ class AppCardWidget extends StatelessWidget {
             ),
         ],
       ),
+    ),
     );
   }
 
