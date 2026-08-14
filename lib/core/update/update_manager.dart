@@ -17,6 +17,7 @@ import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/update/app_update_info.dart';
+import 'package:gstore/core/update/apk_matcher.dart';
 import 'package:gstore/core/update/update_cache.dart';
 import 'package:gstore/core/update/update_log.dart';
 
@@ -285,11 +286,20 @@ class UpdateManagerService extends GetxService {
         return null;
       }
 
-      final download = check.latestDownload;
-      if (download == null) {
+      final defaultDownload = check.latestDownload;
+      if (defaultDownload == null) {
         log(CheckLogLevel.skip, '$displayName：有更新但无可下载文件');
         return null;
       }
+
+      // 用户 APK 选择偏好：存储命中 → 文件名相似度匹配最接近候选；否则现有
+      // selectBestDownload 规则（check.latestDownload 即渠道按设备架构选出的最佳）
+      final preferred = await UpdateCache.preferredApkName(addedApp.channelId, appId);
+      final download = selectDownloadWithPreference(
+        fallback: defaultDownload,
+        candidates: check.detail.downloads,
+        preferred: preferred,
+      );
 
       log(CheckLogLevel.update, '$displayName：发现更新 $latestVersion');
 
