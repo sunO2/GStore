@@ -1,5 +1,15 @@
 import 'package:gstore/core/model/AppDetailInfo.dart';
 
+/// 是否 Android 可安装文件（.apk / .aab，大小写不敏感）
+bool isInstallableDownload(DownloadInfo dl) {
+  final lower = dl.name.toLowerCase();
+  return lower.endsWith('.apk') || lower.endsWith('.aab');
+}
+
+/// 过滤出可安装下载（保留原顺序）
+List<DownloadInfo> filterInstallableDownloads(List<DownloadInfo> downloads) =>
+    downloads.where(isInstallableDownload).toList();
+
 /// 从下载候选中按文件名 Levenshtein 相似度选择最接近 [preferred] 的项。
 ///
 /// 规则：

@@ -61,6 +61,54 @@ void main() {
     });
   });
 
+  group('isInstallableDownload', () {
+    test('.apk / .aab 为真（大小写不敏感）', () {
+      expect(isInstallableDownload(_dl('app.apk')), isTrue);
+      expect(isInstallableDownload(_dl('app.aab')), isTrue);
+      expect(isInstallableDownload(_dl('app.APK')), isTrue);
+      expect(isInstallableDownload(_dl('app-arm64-v8a-v2.0.0.apk')), isTrue);
+      expect(isInstallableDownload(_dl('App-Release.AAB')), isTrue);
+    });
+
+    test('非 .apk/.aab 为假（zip/txt/md/无扩展名）', () {
+      expect(isInstallableDownload(_dl('app.zip')), isFalse);
+      expect(isInstallableDownload(_dl('app.txt')), isFalse);
+      expect(isInstallableDownload(_dl('README.md')), isFalse);
+      expect(isInstallableDownload(_dl('app')), isFalse);
+      expect(isInstallableDownload(_dl('app.apk.zip')), isFalse);
+    });
+  });
+
+  group('filterInstallableDownloads', () {
+    test('仅保留 .apk/.aab（大小写不敏感），剔除 zip/txt/md/无扩展名', () {
+      final downloads = [
+        _dl('app-arm64-v8a-v2.0.0.apk'),
+        _dl('app-arm64-v8a-v2.0.0.zip'),
+        _dl('notes.txt'),
+        _dl('README.md'),
+        _dl('app-universal-v2.0.0.APK'),
+        _dl('bundle-v2.0.0.aab'),
+        _dl('noext'),
+      ];
+      final result = filterInstallableDownloads(downloads);
+      expect(
+        result.map((e) => e.name).toList(),
+        ['app-arm64-v8a-v2.0.0.apk', 'app-universal-v2.0.0.APK', 'bundle-v2.0.0.aab'],
+      );
+    });
+
+    test('空列表 → 空列表（不抛错）', () {
+      expect(filterInstallableDownloads(const []), isEmpty);
+    });
+
+    test('全部可安装 → 原样返回（顺序保留）', () {
+      final downloads = [_dl('a.apk'), _dl('b.aab'), _dl('c.apk')];
+      final result = filterInstallableDownloads(downloads);
+      expect(result.map((e) => e.name).toList(),
+          downloads.map((e) => e.name).toList());
+    });
+  });
+
   group('selectDownloadWithPreference', () {
     final fallback = _dl('app-universal-v2.0.0.apk');
     final arm = _dl('app-arm64-v8a-v2.0.0.apk');
