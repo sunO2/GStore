@@ -34,6 +34,34 @@ class HomeFocusResetObserver extends NavigatorObserver {
   }
 }
 
+/// M3 fadeThrough 近似全局页面过渡（交叉淡入 + 轻微上移）
+///
+/// Get（4.7.2）的 [CustomTransition] 是抽象类，需实现 buildTransition：
+/// (context, curve, alignment, animation, secondaryAnimation, child)。
+/// default: 分支（get_transition_mixin.dart:641）调用时 animation 已被
+/// defaultTransitionCurve（easeOutQuad）包裹；忽略 secondaryAnimation
+/// （fadeThrough 近似只做 primary 动画）。
+class _FadeThroughPageTransition extends CustomTransition {
+  @override
+  Widget buildTransition(
+    BuildContext context,
+    Curve? curve,
+    Alignment? alignment,
+    Animation<double> animation,
+    Animation<double> secondaryAnimation,
+    Widget child,
+  ) {
+    return FadeTransition(
+      opacity: animation,
+      child: SlideTransition(
+        position: Tween<Offset>(begin: const Offset(0, 0.02), end: Offset.zero)
+            .animate(animation),
+        child: child,
+      ),
+    );
+  }
+}
+
 registerService() async {
   // 初始化日志管理器（必须在最开始，因为其他模块可能需要使用日志）
   Get.put(LogManager.instance);
@@ -118,10 +146,12 @@ main() async {
     appLog.debug(message);
   };
 
-  Get.config(
-      enableLog: true,
-      defaultPopGesture: true,
-      defaultTransition: Transition.cupertino);
+  Get.config(enableLog: true, defaultPopGesture: true);
+  // 全局页面过渡：M3 fadeThrough 近似（交叉淡入 + 轻微上移，无位移过场）。
+  // Get.customTransition 类型为 CustomTransition?（abstract class，非函数赋值），
+  // default: 分支经 buildTransition 调用（get_transition_mixin.dart:641），
+  // 传入的 animation 已被 Get 用 defaultTransitionCurve（easeOutQuad）包裹。
+  Get.customTransition = _FadeThroughPageTransition();
   await registerService();
 
   runApp(DynamicColorBuilder(builder: (light, dark) {
