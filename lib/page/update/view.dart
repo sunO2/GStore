@@ -4,6 +4,7 @@ import 'dart:ui' show FontFeature;
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/design/design_tokens.dart';
+import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/update/app_update_info.dart';
 import 'package:gstore/core/update/update_manager.dart';
 import 'package:gstore/core/update/update_time_format.dart';
@@ -228,23 +229,47 @@ class UpdateManager extends StatelessWidget {
         ),
         const Divider(height: 1),
         Expanded(
-          child: ListView.separated(
-            padding: AppSpacing.onlyBottomXL,
-            itemCount: state.updateList.length,
-            separatorBuilder: (_, __) => const Divider(height: 1),
-            itemBuilder: (context, index) {
-              final info = state.updateList[index];
-              return _UpdateTile(
-                info: info,
-                isUpdating: state.updatingAppId.value == info.appId,
-                download: state.currentDownload.value,
-                onUpdate: () => logic.updateApp(info),
-              );
-            },
+          // 显式订阅用户 APK 选择（RxMap.operator[] 不注册依赖，
+          // 且 ListView itemBuilder 惰性布局时 Obx 代理已失效 → 直接订阅 length）
+          child: _UpdateListBody(
+            state: state,
+            logic: logic,
           ),
         ),
       ],
     );
+  }
+}
+
+/// 更新列表主体：独立 Obx 订阅 selectedApkName，换选后即时刷新勾选
+class _UpdateListBody extends StatelessWidget {
+  final UpdateState state;
+  final UpdateLogic logic;
+
+  const _UpdateListBody({required this.state, required this.logic});
+
+  @override
+  Widget build(BuildContext context) {
+    return Obx(() {
+      // 订阅 RxMap 变更（map 值读取在 itemBuilder 惰性布局期，无法注册依赖）
+      state.selectedApkName.length;
+      return ListView.separated(
+        padding: AppSpacing.onlyBottomXL,
+        itemCount: state.updateList.length,
+        separatorBuilder: (_, __) => const Divider(height: 1),
+        itemBuilder: (context, index) {
+          final info = state.updateList[index];
+          return _UpdateTile(
+            info: info,
+            isUpdating: state.updatingAppId.value == info.appId,
+            download: state.currentDownload.value,
+            selectedApkName: state.selectedApkName[info.appId],
+            onUpdate: () => logic.updateApp(info),
+            onSelectApk: (dl) => logic.selectApk(info, dl),
+          );
+        },
+      );
+    });
   }
 }
 
@@ -255,16 +280,26 @@ class _UpdateTile extends StatelessWidget {
   final DownloadStatus? download;
   final VoidCallback onUpdate;
 
+  /// 用户选择的 APK 文件名（null/空 = 未选，默认 latestDownload）
+  final String? selectedApkName;
+
+  /// 用户换选候选 APK 回调
+  final void Function(DownloadInfo download) onSelectApk;
+
   const _UpdateTile({
     required this.info,
     required this.isUpdating,
     required this.download,
     required this.onUpdate,
+    required this.selectedApkName,
+    required this.onSelectApk,
   });
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    // 展开候选列表：仅 detail 存在且候选 >1 时显示（缓存恢复 detail=null → 无候选）
+    final candidates = info.detail?.downloads ?? const <DownloadInfo>[];
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(
@@ -273,61 +308,76 @@ class _UpdateTile extends StatelessWidget {
         AppSpacing.lg,
         AppSpacing.md,
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // 图标
-          _AppIcon(url: info.iconUrl, name: info.appName),
-          const SizedBox(width: AppSpacing.md),
-          // 名称 + 版本信息
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
+          Row(
+            children: [
+              // 图标
+              _AppIcon(url: info.iconUrl, name: info.appName),
+              const SizedBox(width: AppSpacing.md),
+              // 名称 + 版本信息
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Flexible(
-                      child: Text(
-                        info.appName,
-                        style: Theme.of(context).textTheme.titleMedium,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            info.appName,
+                            style: Theme.of(context).textTheme.titleMedium,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        const SizedBox(width: AppSpacing.xs),
+                        _ChannelTag(
+                          channelName: info.channelName,
+                          color: scheme.secondaryContainer,
+                          textColor: scheme.onSecondaryContainer,
+                        ),
+                      ],
                     ),
-                    const SizedBox(width: AppSpacing.xs),
-                    _ChannelTag(
-                      channelName: info.channelName,
-                      color: scheme.secondaryContainer,
-                      textColor: scheme.onSecondaryContainer,
+                    const SizedBox(height: AppSpacing.xs),
+                    Text(
+                      '${info.installedVersion} → ${info.latestVersion}',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: AppColors.textSecondary,
+                          ),
                     ),
+                    if (isUpdating && download != null) ...[
+                      const SizedBox(height: AppSpacing.sm),
+                      _buildDownloadProgress(context, download!),
+                    ],
                   ],
                 ),
-                const SizedBox(height: AppSpacing.xs),
-                Text(
-                  '${info.installedVersion} → ${info.latestVersion}',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: AppColors.textSecondary,
-                      ),
-                ),
-                if (isUpdating && download != null) ...[
-                  const SizedBox(height: AppSpacing.sm),
-                  _buildDownloadProgress(context, download!),
-                ],
-              ],
-            ),
-          ),
-          const SizedBox(width: AppSpacing.md),
-          // 更新按钮
-          if (isUpdating)
-            const AppLoading(size: AppLoadingSize.small)
-          else
-            FilledButton.tonal(
-              onPressed: onUpdate,
-              style: FilledButton.styleFrom(
-                visualDensity: VisualDensity.compact,
-                padding: const EdgeInsets.symmetric(horizontal: 16),
               ),
-              child: const Text('更新'),
+              const SizedBox(width: AppSpacing.md),
+              // 更新按钮
+              if (isUpdating)
+                const AppLoading(size: AppLoadingSize.small)
+              else
+                FilledButton.tonal(
+                  onPressed: onUpdate,
+                  style: FilledButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                  ),
+                  child: const Text('更新'),
+                ),
+            ],
+          ),
+          // APK 候选展开选择（候选 >1 才显示入口）
+          if (candidates.length > 1) ...[
+            const SizedBox(height: AppSpacing.xs),
+            _ApkSelector(
+              candidates: candidates,
+              selectedName: selectedApkName,
+              defaultName: info.latestDownload.name,
+              onSelect: onSelectApk,
             ),
+          ],
         ],
       ),
     );
@@ -356,6 +406,141 @@ class _UpdateTile extends StatelessWidget {
           style: Theme.of(context).textTheme.bodySmall,
         ),
       ],
+    );
+  }
+}
+
+/// APK 候选展开选择器
+/// 展开后列出全部候选，勾选标识当前选中（用户所选 ?? 默认 latestDownload.name）
+class _ApkSelector extends StatefulWidget {
+  final List<DownloadInfo> candidates;
+  final String? selectedName;
+  final String defaultName;
+  final void Function(DownloadInfo download) onSelect;
+
+  const _ApkSelector({
+    required this.candidates,
+    required this.selectedName,
+    required this.defaultName,
+    required this.onSelect,
+  });
+
+  @override
+  State<_ApkSelector> createState() => _ApkSelectorState();
+}
+
+class _ApkSelectorState extends State<_ApkSelector> {
+  bool _expanded = false;
+
+  /// 当前生效的选中文件名（用户所选优先，回退默认规则结果）
+  String get _effectiveSelected =>
+      (widget.selectedName != null && widget.selectedName!.isNotEmpty)
+          ? widget.selectedName!
+          : widget.defaultName;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // 展开入口：标题 + 当前选中文件名 + 展开箭头
+        InkWell(
+          onTap: () => setState(() => _expanded = !_expanded),
+          borderRadius: AppRadius.allSM,
+          child: Padding(
+            padding: AppSpacing.horizontalSM_verticalXS,
+            child: Row(
+              children: [
+                Icon(
+                  _expanded ? Icons.expand_less : Icons.expand_more,
+                  size: AppTypography.iconSM,
+                  color: scheme.onSurfaceVariant,
+                ),
+                const SizedBox(width: AppSpacing.xs),
+                Text(
+                  '选择 APK',
+                  style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
+                ),
+                const SizedBox(width: AppSpacing.md),
+                Expanded(
+                  child: Text(
+                    _effectiveSelected,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: scheme.primary,
+                        ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        if (_expanded) ...[
+          const SizedBox(height: AppSpacing.xs),
+          for (final dl in widget.candidates)
+            _ApkOption(
+              download: dl,
+              selected: dl.name == _effectiveSelected,
+              onTap: () {
+                if (dl.name != _effectiveSelected) {
+                  widget.onSelect(dl);
+                }
+              },
+            ),
+        ],
+      ],
+    );
+  }
+}
+
+/// 单个 APK 候选行：勾选图标 + 文件名
+class _ApkOption extends StatelessWidget {
+  final DownloadInfo download;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _ApkOption({
+    required this.download,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return InkWell(
+      key: ValueKey('apk_option_${download.name}'),
+      onTap: onTap,
+      borderRadius: AppRadius.allSM,
+      child: Padding(
+        padding: AppSpacing.horizontalSM_verticalXS,
+        child: Row(
+          children: [
+            Icon(
+              selected ? Icons.check_circle : Icons.radio_button_unchecked,
+              size: AppTypography.iconSM,
+              color: selected ? scheme.primary : scheme.onSurfaceVariant,
+            ),
+            const SizedBox(width: AppSpacing.sm),
+            Expanded(
+              child: Text(
+                download.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: selected
+                          ? scheme.onSurface
+                          : scheme.onSurfaceVariant,
+                    ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
