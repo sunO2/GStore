@@ -4,6 +4,7 @@ import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/model/StatTag.dart';
+import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/page/detail/widgets.dart';
 
 /// AppInfoSection 测试（TDD RED：组件尚未实现）
@@ -237,6 +238,38 @@ void main() {
 
     expect(find.text('应用信息'), findsOneWidget);
     expect(find.text('github'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('展开动画：AnimatedSize/AnimatedRotation 存在，展开完成后内容可见且箭头旋转', (tester) async {
+    final info = _FakeDetailInfo(
+      versionValue: '1.0.24',
+      projectUrlValue: 'https://github.com/sunO2/GStore',
+      statTags: [StatTag.stars(1234)],
+    );
+
+    await _pumpAppInfo(tester, info);
+
+    // 折叠/旋转动画组件存在（默认收起：0 turns）
+    expect(find.byType(AnimatedRotation), findsOneWidget);
+    expect(find.byType(AnimatedSize), findsOneWidget);
+    final rotation =
+        tester.widget<AnimatedRotation>(find.byType(AnimatedRotation));
+    expect(rotation.turns, 0.0);
+
+    // 展开：固定 pump 推进动画（勿 pumpAndSettle）
+    await tester.tap(find.byIcon(Icons.expand_more));
+    await tester.pump();
+    await tester.pump(AppAnimation.medium);
+    await tester.pump(AppAnimation.medium);
+
+    // 展开内容可见 + 箭头已旋转 0.5
+    expect(find.text('项目主页'), findsOneWidget);
+    expect(find.text('https://github.com/sunO2/GStore'), findsOneWidget);
+    expect(find.byIcon(Icons.expand_less), findsOneWidget);
+    final rotated =
+        tester.widget<AnimatedRotation>(find.byType(AnimatedRotation));
+    expect(rotated.turns, 0.5);
     expect(tester.takeException(), isNull);
   });
 }

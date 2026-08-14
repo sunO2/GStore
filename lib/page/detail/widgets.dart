@@ -455,9 +455,14 @@ class _AppInfoSectionState extends State<AppInfoSection> {
           ? IconButton(
               onPressed: () => setState(() => _expanded = !_expanded),
               tooltip: _expanded ? '收起' : '展开',
-              icon: Icon(
-                _expanded ? Icons.expand_less : Icons.expand_more,
-                color: primary,
+              icon: AnimatedRotation(
+                turns: _expanded ? 0.5 : 0.0,
+                duration: AppAnimation.fast,
+                curve: AppAnimation.curve,
+                child: Icon(
+                  _expanded ? Icons.expand_less : Icons.expand_more,
+                  color: primary,
+                ),
               ),
             )
           : null,
@@ -486,21 +491,36 @@ class _AppInfoSectionState extends State<AppInfoSection> {
             label: '渠道',
             value: channelId,
           ),
-        if (_expanded) ...[
-          if (projectUrl != null)
-            _InfoRow(
-              icon: Icons.link,
-              label: '项目主页',
-              value: projectUrl,
-              valueColor: primary,
-            ),
-          if (tags.isNotEmpty)
-            Wrap(
-              spacing: AppSpacing.sm,
-              runSpacing: AppSpacing.xs,
-              children: [for (final tag in tags) _StatTagChip(tag: tag)],
-            ),
-        ],
+        // 展开区：AnimatedSize 平滑展开/收起（展开内容保持原列表语义，收起时
+        // 仅占零高度占位，宽度撑满保证仅高度方向动画）
+        AnimatedSize(
+          duration: AppAnimation.medium,
+          curve: AppAnimation.curve,
+          alignment: Alignment.topCenter,
+          child: _expanded
+              ? Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (projectUrl != null)
+                      _InfoRow(
+                        icon: Icons.link,
+                        label: '项目主页',
+                        value: projectUrl,
+                        valueColor: primary,
+                      ),
+                    if (tags.isNotEmpty)
+                      Wrap(
+                        spacing: AppSpacing.sm,
+                        runSpacing: AppSpacing.xs,
+                        children: [
+                          for (final tag in tags) _StatTagChip(tag: tag),
+                        ],
+                      ),
+                  ],
+                )
+              : const SizedBox(width: double.infinity),
+        ),
       ],
     );
   }

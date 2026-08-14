@@ -10,6 +10,7 @@ import 'package:gstore/core/download/model/DownloadContext.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/model/StatTag.dart';
+import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/service/badge_service.dart';
 import 'package:gstore/core/service/downloadService.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
@@ -392,6 +393,26 @@ void main() {
       expect(find.text('app-universal-v2.0.0.apk'), findsNothing);
       expect(find.text('app.zip'), findsNothing);
       expect(find.text('notes.txt'), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('展开动画：AnimatedSize 展开 + 候选行交错入场，动画完成后全部可见', (tester) async {
+      await _pumpUpdatePage(tester, _multiCandidateInfo());
+
+      // AnimatedSize 包裹展开区
+      expect(find.byType(AnimatedSize), findsOneWidget);
+
+      // 展开：固定 pump 推进交错动画（勿 pumpAndSettle）
+      await tester.tap(find.text('选择 APK'));
+      await tester.pump();
+      await tester.pump(AppAnimation.medium);
+      await tester.pump(AppAnimation.medium);
+
+      // 交错动画完成后候选全部可见（universal 额外出现在入口选中文案 → 2 处）
+      expect(find.text('app-universal-v2.0.0.apk'), findsNWidgets(2));
+      expect(find.text('app-arm64-v8a-v2.0.0.apk'), findsOneWidget);
+      expect(find.text('app-x86_64-v2.0.0.apk'), findsOneWidget);
+      expect(_checkedIconOf('app-universal-v2.0.0.apk'), findsOneWidget);
       expect(tester.takeException(), isNull);
     });
 

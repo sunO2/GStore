@@ -139,30 +139,54 @@ class DetailPage extends StatelessWidget {
 
           const SizedBox(height: AppSpacing.sm),
 
-          // 详情加载指示器（兜底）：仅当基础信息尚未注入且无任何区块 loading 时显示，
-          // 区块级 skeleton（下载/README）已覆盖主要加载场景，避免双 loading 叠加
+          // 详情加载指示器（兜底）→ Sections 过渡：AnimatedSwitcher 淡入+缩放。
+          // 仅当基础信息尚未注入且无任何区块 loading 时显示 spinner，
+          // 区块级 skeleton（下载/README）已覆盖主要加载场景，避免双 loading 叠加；
+          // child 用 ValueKey 区分 loading/empty/sections 三态触发过渡
           Obx(() {
-            if (state.isLoadingDetail.value &&
-                state.detailInfo.value == null &&
+            final detail = state.detailInfo.value;
+            final showSpinner = state.isLoadingDetail.value &&
+                detail == null &&
                 !state.downloadsLoading.value &&
                 !state.readmeLoading.value &&
-                !state.statisticsLoading.value) {
-              return const Padding(
+                !state.statisticsLoading.value;
+
+            final Widget child;
+            if (showSpinner) {
+              child = const Padding(
+                key: ValueKey('detail_loading'),
                 padding: AppSpacing.allLG,
                 child: Center(child: AppLoading(size: AppLoadingSize.medium)),
               );
+            } else if (detail == null) {
+              child = const SizedBox.shrink(key: ValueKey('detail_empty'));
+            } else {
+              child = Column(
+                key: const ValueKey('detail_sections'),
+                children: _buildSections(context, logic, state, detail),
+              );
             }
-            return const SizedBox.shrink();
-          }),
 
-          // 动态渲染 Sections
-          Obx(() {
-            final detail = state.detailInfo.value;
-            if (detail == null) {
-              return const SizedBox.shrink();
-            }
-            return Column(
-              children: _buildSections(context, logic, state, detail),
+            return AnimatedSwitcher(
+              duration: AppAnimation.slow,
+              switchInCurve: AppAnimation.curve,
+              switchOutCurve: AppAnimation.curve,
+              transitionBuilder: (child, animation) => FadeTransition(
+                opacity: animation,
+                child: ScaleTransition(
+                  scale: Tween<double>(begin: 0.96, end: 1.0)
+                      .animate(animation),
+                  child: child,
+                ),
+              ),
+              layoutBuilder: (currentChild, previousChildren) => Stack(
+                alignment: Alignment.topCenter,
+                children: [
+                  ...previousChildren,
+                  if (currentChild != null) currentChild,
+                ],
+              ),
+              child: child,
             );
           }),
         ],
@@ -345,33 +369,39 @@ class DetailPage extends StatelessWidget {
           sections.add(ScreenshotsSection(info: detail));
           break;
         case DetailSection.readme:
-          // 加载中 → 轻量占位；完成且非空 → 正文；完成空 → 不进入此分支
+          // 加载中 → 轻量占位；完成且非空 → 正文；完成空 → 不进入此分支。
+          // 区块首次出现时做一次渐进入场（loading→内容切换保持原逻辑，动画仅作用于首现）
           sections.add(
-            state.readmeLoading.value
-                ? ReadmeSection(info: detail, loading: true)
-                : ReadmeSection(
-                    info: detail,
-                    onLinkTap: (url) => logic.openBrowser(url),
-                  ),
+            _FadeSlideIn(
+              child: state.readmeLoading.value
+                  ? ReadmeSection(info: detail, loading: true)
+                  : ReadmeSection(
+                      info: detail,
+                      onLinkTap: (url) => logic.openBrowser(url),
+                    ),
+            ),
           );
           break;
         case DetailSection.downloads:
           // 加载中 → 骨架占位；完成非空 → 列表；完成空 → 不进入此分支
           sections.add(
-            state.downloadsLoading.value
-                ? DownloadsSection(info: detail, loading: true)
-                : DownloadsSection(
-                    info: detail,
-                    onDownloadTap: (download) => logic.startDownload(download),
-                    onLongPress: (download) {
-                      AppDialogs.showDialog(
-                        title: '下载二维码',
-                        content: buildQrDialogContent(detail, download),
-                        confirmText: '关闭',
-                        cancelText: null,
-                      );
-                    },
-                  ),
+            _FadeSlideIn(
+              child: state.downloadsLoading.value
+                  ? DownloadsSection(info: detail, loading: true)
+                  : DownloadsSection(
+                      info: detail,
+                      onDownloadTap: (download) =>
+                          logic.startDownload(download),
+                      onLongPress: (download) {
+                        AppDialogs.showDialog(
+                          title: '下载二维码',
+                          content: buildQrDialogContent(detail, download),
+                          confirmText: '关闭',
+                          cancelText: null,
+                        );
+                      },
+                    ),
+            ),
           );
           break;
         case DetailSection.developer:
@@ -397,3 +427,52 @@ BorderSide border(BuildContext context) => BorderSide(
           .withAlpha(AppColors.alphaMedium),
       width: 1,
     );
+
+/// 区块渐进出现：首次挂载时淡入 + 从下方 10% 高度滑入一次
+/// 自持 AnimationController（initState 启动一次 forward），key/位置稳定时
+/// 不重复播放；区块内部 loading→内容切换不触发重放。
+class _FadeSlideIn extends StatefulWidget {
+  final Widget child;
+
+  const _FadeSlideIn({required this.child});
+
+  @override
+  State<_FadeSlideIn> createState() => _FadeSlideInState();
+}
+
+class _FadeSlideInState extends State<_FadeSlideIn>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  late final Animation<double> _animation;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: AppAnimation.slow,
+    )..forward();
+    _animation =
+        CurvedAnimation(parent: _controller, curve: AppAnimation.curve);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FadeTransition(
+      opacity: _animation,
+      child: SlideTransition(
+        position: Tween<Offset>(
+          begin: const Offset(0, 0.1),
+          end: Offset.zero,
+        ).animate(_animation),
+        child: widget.child,
+      ),
+    );
+  }
+}
