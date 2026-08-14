@@ -139,7 +139,7 @@ class DetailPage extends StatelessWidget {
 
           const SizedBox(height: AppSpacing.sm),
 
-          // 详情加载指示器（兜底）→ Sections 过渡：AnimatedSwitcher 淡入+缩放。
+          // 详情加载指示器（兜底）→ Sections 过渡：AnimatedSwitcher 淡入。
           // 仅当基础信息尚未注入且无任何区块 loading 时显示 spinner，
           // 区块级 skeleton（下载/README）已覆盖主要加载场景，避免双 loading 叠加；
           // child 用 ValueKey 区分 loading/empty/sections 三态触发过渡
@@ -173,11 +173,7 @@ class DetailPage extends StatelessWidget {
               switchOutCurve: AppAnimation.curve,
               transitionBuilder: (child, animation) => FadeTransition(
                 opacity: animation,
-                child: ScaleTransition(
-                  scale: Tween<double>(begin: 0.96, end: 1.0)
-                      .animate(animation),
-                  child: child,
-                ),
+                child: child,
               ),
               layoutBuilder: (currentChild, previousChildren) => Stack(
                 alignment: Alignment.topCenter,
