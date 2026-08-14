@@ -1,5 +1,6 @@
 import 'package:flutter/widgets.dart';
 import 'package:get/get.dart';
+import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/http/github_request_mix.dart';
 
 import 'state.dart';
@@ -13,7 +14,8 @@ class HomeLogic extends GetxController with GithubRequestMix {
     if (index == 2 && state.index.value != 2) {
       state.sourceIndex.value = state.index.value;
     }
-    controller.jumpToPage(index);
+    controller.animateToPage(index,
+        duration: AppAnimation.slow, curve: AppAnimation.curve);
     state.index.value = index;
     update();
   }
