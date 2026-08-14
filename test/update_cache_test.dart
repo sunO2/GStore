@@ -89,4 +89,90 @@ void main() {
     SharedPreferences.setMockInitialValues({'update_check_logs_v1': 'not-json'});
     expect(await UpdateCache.loadLogs(), isEmpty);
   });
+
+  group('UpdateCache APK 选择偏好', () {
+    const channelId = 'github';
+    const appId = 'com.example.app';
+
+    test('未保存 → preferredApkName 返回 null', () async {
+      SharedPreferences.setMockInitialValues({});
+
+      expect(await UpdateCache.preferredApkName(channelId, appId), isNull);
+    });
+
+    test('savePreferredApk 后命中；不同 appId → null（key 隔离）', () async {
+      SharedPreferences.setMockInitialValues({});
+
+      await UpdateCache.savePreferredApk(channelId, appId, 'app-2.0.0.apk');
+
+      expect(
+        await UpdateCache.preferredApkName(channelId, appId),
+        'app-2.0.0.apk',
+      );
+      expect(
+        await UpdateCache.preferredApkName(channelId, 'com.example.other'),
+        isNull,
+      );
+    });
+
+    test('覆盖保存（同 key 换文件名）→ 返回新值', () async {
+      SharedPreferences.setMockInitialValues({});
+
+      await UpdateCache.savePreferredApk(channelId, appId, 'app-2.0.0.apk');
+      await UpdateCache.savePreferredApk(channelId, appId, 'app-2.0.1.apk');
+
+      expect(
+        await UpdateCache.preferredApkName(channelId, appId),
+        'app-2.0.1.apk',
+      );
+    });
+
+    test('savePreferredApk 空文件名 → 删除该键（命中 null）', () async {
+      SharedPreferences.setMockInitialValues({});
+
+      await UpdateCache.savePreferredApk(channelId, appId, 'app-2.0.0.apk');
+      await UpdateCache.savePreferredApk(channelId, appId, '');
+
+      expect(await UpdateCache.preferredApkName(channelId, appId), isNull);
+    });
+
+    test('clearPreferredApk → null', () async {
+      SharedPreferences.setMockInitialValues({});
+
+      await UpdateCache.savePreferredApk(channelId, appId, 'app-2.0.0.apk');
+      await UpdateCache.clearPreferredApk(channelId, appId);
+
+      expect(await UpdateCache.preferredApkName(channelId, appId), isNull);
+    });
+
+    test('多个应用互不干扰', () async {
+      SharedPreferences.setMockInitialValues({});
+
+      await UpdateCache.savePreferredApk('github', 'com.a', 'a-1.0.apk');
+      await UpdateCache.savePreferredApk('fdroid', 'com.b', 'b-2.0.apk');
+      await UpdateCache.savePreferredApk('github', 'com.b', 'b-3.0.apk');
+
+      expect(
+        await UpdateCache.preferredApkName('github', 'com.a'),
+        'a-1.0.apk',
+      );
+      expect(
+        await UpdateCache.preferredApkName('fdroid', 'com.b'),
+        'b-2.0.apk',
+      );
+      expect(
+        await UpdateCache.preferredApkName('github', 'com.b'),
+        'b-3.0.apk',
+      );
+      expect(await UpdateCache.preferredApkName('fdroid', 'com.a'), isNull);
+    });
+
+    test('损坏 JSON（预置非法字符串）→ null 不抛异常', () async {
+      SharedPreferences.setMockInitialValues(
+        {'update_preferred_apk': 'not-json{'},
+      );
+
+      expect(await UpdateCache.preferredApkName(channelId, appId), isNull);
+    });
+  });
 }
