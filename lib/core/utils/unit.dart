@@ -91,38 +91,77 @@ String resolveReadmeImageUrls(String readme, String rawBaseUrl) {
 
 /// 将 HTML <img> 标签转换为 markdown 图片语法（flutter_markdown_plus 不支持内联 HTML）
 /// <img src="URL" alt="x" width="200" height="100"> → ![x](URL "200x100")
+/// <a href="HREF"><img ...></a> → [![x](URL "200x100")](HREF)
 /// 无 width/height → ![alt](URL)；无 alt → ![](URL)
 /// title 编码格式 "WxH"；仅单边时 "Wx" / "xH"（width x height，仅含数字时）
 ///
+/// 处理链（依次）：
+/// 1. <a> 包裹的 img → markdown 链接图片（提取 a 的 href + img 的 src/alt/width/height）
+/// 2. 单独 <img> → markdown 图片
+/// 3. 剥离孤立内联 HTML 标签：<br> → 换行；其余常见标签（a/div/span/p/h1-6 等）→ ''（内容保留），
+///    避免 <a>/<div> 等行首标签被 CommonMark 判为 HTML 块而吞掉后续 markdown 语法
+///
 /// 限制与说明：
-/// - 无 src 的 img 原样保留；非 img 的 HTML 一律不动
+/// - 无 src 的 img 原样保留；无 href 的 <a> 包裹按单独 img 处理（a 标签由步骤 3 剥离）
 /// - alt 仅按原样嵌入，未转义其中的 ] ( ) —— README 场景 alt 均为简单文本，
 ///   若遇复杂 alt 需自行转义
 /// - 仅支持双引号属性（HTML 标准写法）；width/height 可为纯数字或带 px 后缀，
 ///   含 % / 小数等其他单位时不编码 title
+/// - <img> 不在剥离名单（理论上已全转换；若残留保持原样不剥）
 String convertHtmlImgsToMarkdown(String html) {
-  final imgPattern = RegExp(r'<img\b[^>]*>', caseSensitive: false);
-  return html.replaceAllMapped(imgPattern, (m) {
-    final tag = m.group(0)!;
-    final attrs = <String, String>{};
-    for (final a in RegExp(r'([a-zA-Z:]+)="([^"]*)"').allMatches(tag)) {
-      attrs[a.group(1)!.toLowerCase()] = a.group(2)!;
-    }
-    final src = attrs['src'];
-    if (src == null || src.isEmpty) return tag; // 无 src → 原样保留
-    final alt = attrs['alt'] ?? '';
-    final w = attrs['width'] == null ? null : _stripImgSize(attrs['width']!);
-    final h = attrs['height'] == null ? null : _stripImgSize(attrs['height']!);
-    var md = '![$alt]($src';
-    if (w != null && h != null) {
-      md += ' "${w}x$h"';
-    } else if (w != null) {
-      md += ' "${w}x"'; // 仅宽度：高度交由 _ReadmeImage loose 自适应
-    } else if (h != null) {
-      md += ' "x$h"'; // 仅高度：宽度等比补全
-    }
-    return '$md)';
+  // 1. <a> 包裹 img → markdown 链接图片
+  final aImgPattern =
+      RegExp(r'<a\b[^>]*>\s*(<img\b[^>]*>)\s*</a>', caseSensitive: false);
+  html = html.replaceAllMapped(aImgPattern, (m) {
+    final full = m.group(0)!;
+    final aTag = full.substring(0, full.indexOf('>') + 1);
+    final href = _extractImgAttrs(aTag)['href'] ?? '';
+    final imgTag = m.group(1)!;
+    final imgMd = _imgTagToMarkdown(imgTag);
+    if (href.isEmpty || imgMd == imgTag) return imgTag; // 无 href/src → a 由步骤 3 剥离
+    return '[$imgMd]($href)';
   });
+
+  // 2. 单独 img
+  final imgPattern = RegExp(r'<img\b[^>]*>', caseSensitive: false);
+  html =
+      html.replaceAllMapped(imgPattern, (m) => _imgTagToMarkdown(m.group(0)!));
+
+  // 3. 剥离孤立内联 HTML 标签（img 已全部转换，剩余标签不影响 markdown 解析）
+  final brPattern = RegExp(r'<br\s*/?>', caseSensitive: false);
+  html = html.replaceAll(brPattern, '\n');
+  final orphanPattern = RegExp(
+      r'</?(?:a|div|span|center|p|h[1-6]|strong|em|b|i|u|font|table|thead|tbody|tr|td|th|ul|ol|li)(?:\s[^>]*)?/?>',
+      caseSensitive: false);
+  return html.replaceAll(orphanPattern, '');
+}
+
+/// 提取单个 HTML 标签内的双引号属性（键转小写）
+Map<String, String> _extractImgAttrs(String tag) {
+  final attrs = <String, String>{};
+  for (final a in RegExp(r'([a-zA-Z:]+)="([^"]*)"').allMatches(tag)) {
+    attrs[a.group(1)!.toLowerCase()] = a.group(2)!;
+  }
+  return attrs;
+}
+
+/// 将单个 <img> 标签转 markdown 图片语法；无 src 时原样返回原标签
+String _imgTagToMarkdown(String tag) {
+  final attrs = _extractImgAttrs(tag);
+  final src = attrs['src'];
+  if (src == null || src.isEmpty) return tag; // 无 src → 原样保留
+  final alt = attrs['alt'] ?? '';
+  final w = attrs['width'] == null ? null : _stripImgSize(attrs['width']!);
+  final h = attrs['height'] == null ? null : _stripImgSize(attrs['height']!);
+  var md = '![$alt]($src';
+  if (w != null && h != null) {
+    md += ' "${w}x$h"';
+  } else if (w != null) {
+    md += ' "${w}x"'; // 仅宽度：高度交由 _ReadmeImage loose 自适应
+  } else if (h != null) {
+    md += ' "x$h"'; // 仅高度：宽度等比补全
+  }
+  return '$md)';
 }
 
 /// 剥离 width/height 的 px 后缀，仅纯数字（可带 px）时返回数字串，否则返回 null

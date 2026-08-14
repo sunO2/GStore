@@ -174,9 +174,9 @@ void main() {
       expect(convertHtmlImgsToMarkdown(input), input);
     });
 
-    test('非 img HTML（<br>/<div>/<a>）→ 原样不动', () {
+    test('孤立 HTML 标签（<br>/<div>/<a>）→ 剥离，内容保留（新语义）', () {
       const input = '<br>\n<div>text</div>\n<a href="https://a.com">link</a>';
-      expect(convertHtmlImgsToMarkdown(input), input);
+      expect(convertHtmlImgsToMarkdown(input), '\n\ntext\nlink');
     });
 
     test('img 与文本相邻（无换行）→ 不吞文本', () {
@@ -184,6 +184,83 @@ void main() {
         convertHtmlImgsToMarkdown('前置<img src="a.png">后置'),
         '前置![](a.png)后置',
       );
+    });
+
+    test('<a> 包裹 img → markdown 链接图片', () {
+      expect(
+        convertHtmlImgsToMarkdown('<a href="X"><img src="Y" alt="Z" /></a>'),
+        '[![Z](Y)](X)',
+      );
+    });
+
+    test('<a> 包裹无 alt img → [![](Y)](X)', () {
+      expect(
+        convertHtmlImgsToMarkdown('<a href="X"><img src="Y"></a>'),
+        '[![](Y)](X)',
+      );
+    });
+
+    test('<a> 包裹 img 带 width/height → 编码 "WxH" title', () {
+      expect(
+        convertHtmlImgsToMarkdown(
+          '<a href="X"><img src="Y" alt="Z" width="100" height="50"></a>',
+        ),
+        '[![Z](Y "100x50")](X)',
+      );
+    });
+
+    test('<a> 带 target/rel 等附加属性 → href 正常提取', () {
+      expect(
+        convertHtmlImgsToMarkdown(
+          '<a target="_blank" href="https://x.com" rel="noopener">'
+          '<img src="y.png" alt="z"></a>',
+        ),
+        '[![z](y.png)](https://x.com)',
+      );
+    });
+
+    test('<a> 包裹无 src img → img 原样保留、a 剥离', () {
+      expect(
+        convertHtmlImgsToMarkdown(
+          '<a href="https://x.com"><img alt="logo" width="100"></a>',
+        ),
+        '<img alt="logo" width="100">',
+      );
+    });
+
+    test('FlyClash 真实片段：a 包裹 img + 缩进换行 + 单独 img → 无标签残留', () {
+      const input = '<a href="https://www.stromsend.xyz/#/register?code=tIhaARYV">\n'
+          '  <img src="screenshots/unnamed.jpg" alt="友情推荐" />\n'
+          '</a>\n'
+          '  <img src="screenshots/screenshot.png">';
+      const expected = '[![友情推荐](screenshots/unnamed.jpg)]'
+          '(https://www.stromsend.xyz/#/register?code=tIhaARYV)\n'
+          '  ![](screenshots/screenshot.png)';
+      final result = convertHtmlImgsToMarkdown(input);
+      expect(result, expected);
+      expect(result.contains('<'), isFalse);
+    });
+
+    test('孤立 <a>/<div>/<span> 标签 → 剥离，内容保留', () {
+      const input = '<a>\n<div>内容</div>\n<span>更多</span>\n</a>';
+      expect(convertHtmlImgsToMarkdown(input), '\n内容\n更多\n');
+    });
+
+    test('<br>/<br/>/<br /> → 换行', () {
+      expect(
+        convertHtmlImgsToMarkdown('a<br>b<br/>c<br />d'),
+        'a\nb\nc\nd',
+      );
+    });
+
+    test('混合：a 包裹 + 单独 img + 文本段落', () {
+      const input = '介绍文字\n'
+          '<a href="https://x.com"><img src="a.png" alt="A"></a>\n'
+          '段落 <img src="b.png"> 结尾';
+      const expected = '介绍文字\n'
+          '[![A](a.png)](https://x.com)\n'
+          '段落 ![](b.png) 结尾';
+      expect(convertHtmlImgsToMarkdown(input), expected);
     });
   });
 
