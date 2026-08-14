@@ -4,6 +4,7 @@ import 'dart:ui' show FontFeature;
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/design/design_tokens.dart';
+import 'package:gstore/compent/entrance_list.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/update/apk_matcher.dart';
 import 'package:gstore/core/update/app_update_info.dart';
@@ -254,7 +255,9 @@ class _UpdateListBody extends StatelessWidget {
     return Obx(() {
       // 订阅 RxMap 变更（map 值读取在 itemBuilder 惰性布局期，无法注册依赖）
       state.selectedApkName.length;
-      return ListView.separated(
+      return EntranceList(
+        key: ValueKey(state.updateList.length),
+        separated: true,
         padding: AppSpacing.onlyBottomXL,
         itemCount: state.updateList.length,
         separatorBuilder: (_, __) => const Divider(height: 1),

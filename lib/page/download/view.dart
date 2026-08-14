@@ -2,6 +2,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/compent/entrance_list.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
 import 'package:gstore/page/download/download_status_utils.dart';
 import 'package:gstore/page/download/logic.dart';
@@ -88,7 +89,8 @@ class _DownloadManagerState extends State<DownloadManager> {
                   return _buildEmptyState(context);
                 }
 
-                return ListView.builder(
+                return EntranceList(
+                  key: ValueKey(downloadList.length),
                   padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm),
                   itemCount: downloadList.length,
                   itemBuilder: (context, index) {
