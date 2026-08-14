@@ -17,6 +17,7 @@ class UpdateCache {
   static const String _keyLastCheckedAt = 'update_last_checked_at';
   static const String _keyResults = 'update_results_v1';
   static const String _keyLogs = 'update_check_logs_v1';
+  static const String _keyPreferredApk = 'update_preferred_apk';
 
   /// 读取上次检测时间（无记录返回 null）
   static Future<DateTime?> lastCheckedAt() async {
@@ -92,5 +93,58 @@ class UpdateCache {
     } catch (_) {
       return [];
     }
+  }
+
+  /// 读取用户选择的 APK 文件名偏好（key = "{channelId}:{appId}" → 文件名）
+  /// 无记录/损坏返回 null
+  static Future<String?> preferredApkName(
+    String channelId,
+    String appId,
+  ) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_keyPreferredApk);
+      if (raw == null || raw.isEmpty) return null;
+      final map = jsonDecode(raw) as Map<String, dynamic>;
+      return map['$channelId:$appId'] as String?;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 保存用户选择的 APK 文件名；fileName 为空 → 删除该键
+  static Future<void> savePreferredApk(
+    String channelId,
+    String appId,
+    String fileName,
+  ) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_keyPreferredApk);
+      final map = <String, dynamic>{};
+      if (raw != null && raw.isNotEmpty) {
+        final decoded = jsonDecode(raw);
+        if (decoded is Map<String, dynamic>) {
+          map.addAll(decoded);
+        }
+      }
+      final key = '$channelId:$appId';
+      if (fileName.isEmpty) {
+        map.remove(key);
+      } else {
+        map[key] = fileName;
+      }
+      await prefs.setString(_keyPreferredApk, jsonEncode(map));
+    } catch (_) {
+      // 持久化失败不影响内存状态
+    }
+  }
+
+  /// 删除用户 APK 选择偏好
+  static Future<void> clearPreferredApk(
+    String channelId,
+    String appId,
+  ) async {
+    await savePreferredApk(channelId, appId, '');
   }
 }
