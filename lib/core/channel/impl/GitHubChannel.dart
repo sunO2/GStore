@@ -833,12 +833,23 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
       final headers = cached != null ? {'If-None-Match': cached.etag} : null;
       final apiBase =
           'https://api.github.com/repos/${appInfo.user}/${appInfo.repositories}/contents';
+      appLog.info('GitHubChannel: README 请求', data: {
+        'url': '$apiBase/README.md',
+        'proxy': getProxy(),
+        '缓存': cached != null,
+      });
+      // 直连 api.github.com（与 _githubApi 一致）：gh-proxy 不支持 contents API（403）
       final readmeResp = await _httpClient
           .get(
-            Uri.parse(applyProxyIfNeeded('$apiBase/README.md', getProxy())),
+            Uri.parse('$apiBase/README.md'),
             headers: headers,
           )
           .timeout(const Duration(seconds: 10));
+      appLog.info('GitHubChannel: README 响应', data: {
+        'statusCode': readmeResp.statusCode,
+        'etag': readmeResp.headers['etag'],
+        '分支': 'README.md',
+      });
       if (readmeResp.statusCode == 304 && cached != null) {
         // 条件命中：直接用缓存（已绝对化）
         return cached.readme;
@@ -855,37 +866,69 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
             await ReadmeCache.instance.put(appInfo.user,
                 appInfo.repositories,
                 etag: etag, readme: resolved);
+            appLog.info('GitHubChannel: README 缓存写入', data: {
+              'etag': etag,
+              '长度': resolved.length,
+            });
           }
           return resolved;
         }
-      } else {
-        // fallback README.MD（同样不带 ref；同 key 复用主 etag 条件请求）
-        final upperResp = await _httpClient
-            .get(
-              Uri.parse(applyProxyIfNeeded('$apiBase/README.MD', getProxy())),
-              headers: headers,
-            )
-            .timeout(const Duration(seconds: 10));
-        if (upperResp.statusCode == 304 && cached != null) {
-          return cached.readme;
-        }
-        if (upperResp.statusCode == 200 && upperResp.body.isNotEmpty) {
-          final branch =
-              _extractBranchFromContentsJson(upperResp.body, appInfo);
-          final rawBaseUrl =
-              'https://raw.githubusercontent.com/${appInfo.user}/${appInfo.repositories}/refs/heads/${branch ?? 'main'}/';
-          final readme = decodeContentsReadme(upperResp.body);
-          final etag = upperResp.headers['etag'];
-          if (readme != null) {
-            final resolved = resolveReadmeImageUrls(readme, rawBaseUrl);
-            if (etag != null && etag.isNotEmpty) {
-              await ReadmeCache.instance.put(appInfo.user,
-                  appInfo.repositories,
-                  etag: etag, readme: resolved);
-            }
-            return resolved;
+      }
+      // 非 200/304：缓存兜底（403 代理拒绝/限流/404 等），不静默 null 丢弃
+      if (readmeResp.statusCode != 200 && readmeResp.statusCode != 304) {
+        appLog.warning('GitHubChannel: README 获取非 200', data: {
+          'statusCode': readmeResp.statusCode,
+          '缓存兜底': cached != null,
+        });
+        if (cached != null) return cached.readme;
+      }
+      // fallback README.MD（同样不带 ref；同 key 复用主 etag 条件请求；同结构缓存兜底）
+      appLog.info('GitHubChannel: README 请求', data: {
+        'url': '$apiBase/README.MD',
+        'proxy': getProxy(),
+        '缓存': cached != null,
+      });
+      final upperResp = await _httpClient
+          .get(
+            Uri.parse('$apiBase/README.MD'),
+            headers: headers,
+          )
+          .timeout(const Duration(seconds: 10));
+      appLog.info('GitHubChannel: README 响应', data: {
+        'statusCode': upperResp.statusCode,
+        'etag': upperResp.headers['etag'],
+        '分支': 'README.MD',
+      });
+      if (upperResp.statusCode == 304 && cached != null) {
+        return cached.readme;
+      }
+      if (upperResp.statusCode == 200 && upperResp.body.isNotEmpty) {
+        final branch =
+            _extractBranchFromContentsJson(upperResp.body, appInfo);
+        final rawBaseUrl =
+            'https://raw.githubusercontent.com/${appInfo.user}/${appInfo.repositories}/refs/heads/${branch ?? 'main'}/';
+        final readme = decodeContentsReadme(upperResp.body);
+        final etag = upperResp.headers['etag'];
+        if (readme != null) {
+          final resolved = resolveReadmeImageUrls(readme, rawBaseUrl);
+          if (etag != null && etag.isNotEmpty) {
+            await ReadmeCache.instance.put(appInfo.user,
+                appInfo.repositories,
+                etag: etag, readme: resolved);
+            appLog.info('GitHubChannel: README 缓存写入', data: {
+              'etag': etag,
+              '长度': resolved.length,
+            });
           }
+          return resolved;
         }
+      }
+      if (upperResp.statusCode != 200 && upperResp.statusCode != 304) {
+        appLog.warning('GitHubChannel: README 获取非 200', data: {
+          'statusCode': upperResp.statusCode,
+          '缓存兜底': cached != null,
+        });
+        if (cached != null) return cached.readme;
       }
       return null;
     } catch (e) {
@@ -894,7 +937,13 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
       try {
         final cached = await ReadmeCache.instance
             .get(appInfo.user, appInfo.repositories);
-        if (cached != null) return cached.readme;
+        if (cached != null) {
+          appLog.info('GitHubChannel: README 缓存兜底', data: {
+            '原因': '请求异常',
+            '缓存': true,
+          });
+          return cached.readme;
+        }
       } catch (_) {}
       return null;
     }

@@ -6,6 +6,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/cache/ReadmeCache.dart';
 import 'package:gstore/core/channel/impl/GitHubChannel.dart';
+import 'package:gstore/core/core.dart' show getProxy;
 import 'package:gstore/core/channel/impl/LocalDbChannel.dart';
 import 'package:gstore/core/data/metadata_repository.dart';
 import 'package:gstore/db/apps/AppInfoDatabase.dart';
@@ -368,6 +369,70 @@ void main() {
       final channel = GitHubChannel(
         githubApi: FakeGithubRestClient(),
         httpClient: MockClient((request) async => http.Response('Not Found', 404)),
+      );
+
+      final result = await channel.fetchReadme('termux/termux-app');
+      expect(result.success, isTrue);
+      expect(result.data, isNull);
+    });
+
+    test('fetchReadme 请求 URL 不含代理前缀（直连 api.github.com，gh-proxy 不支持 contents API）',
+        () async {
+      MetadataRepository.instance.debugClient =
+          MockClient((request) async => http.Response('Not Found', 404));
+
+      final requestedUrls = <String>[];
+      final channel = GitHubChannel(
+        githubApi: FakeGithubRestClient(),
+        httpClient: MockClient((request) async {
+          requestedUrls.add(request.url.toString());
+          if (request.url.path.endsWith('/contents/README.md')) {
+            return http.Response(
+              readmeJson('# Termux'),
+              200,
+              headers: {'etag': '"etag1"'},
+            );
+          }
+          return http.Response('Not Found', 404);
+        }),
+      );
+
+      final result = await channel.fetchReadme('termux/termux-app');
+      expect(result.success, isTrue);
+      final readmeUrl =
+          requestedUrls.singleWhere((u) => u.contains('/contents/README.md'));
+      // 直连 api.github.com：不含代理前缀（代理下 gh-proxy 返回 403）
+      expect(readmeUrl.startsWith(getProxy()), isFalse);
+      expect(readmeUrl.startsWith('https://api.github.com/'), isTrue);
+    });
+
+    test('403（代理拒绝/限流）+ 缓存预置 → 返回缓存文本（非 200/304 状态码缓存兜底）',
+        () async {
+      MetadataRepository.instance.debugClient =
+          MockClient((request) async => http.Response('Not Found', 404));
+
+      const cachedReadme = '# 缓存 README（403 兜底）';
+      await ReadmeCache.instance.put('termux', 'termux-app',
+          etag: '"etag1"', readme: cachedReadme);
+
+      final channel = GitHubChannel(
+        githubApi: FakeGithubRestClient(),
+        httpClient: MockClient((request) async => http.Response('Forbidden', 403)),
+      );
+
+      final result = await channel.fetchReadme('termux/termux-app');
+      expect(result.success, isTrue);
+      expect(result.data, cachedReadme);
+    });
+
+    test('403 + 无缓存 → success(null)（非 200/304 且无缓存不崩溃、不整路失败）',
+        () async {
+      MetadataRepository.instance.debugClient =
+          MockClient((request) async => http.Response('Not Found', 404));
+
+      final channel = GitHubChannel(
+        githubApi: FakeGithubRestClient(),
+        httpClient: MockClient((request) async => http.Response('Forbidden', 403)),
       );
 
       final result = await channel.fetchReadme('termux/termux-app');
