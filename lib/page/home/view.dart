@@ -11,6 +11,46 @@ import 'logic.dart';
 import 'package:gstore/core/icons/Icons.dart';
 import 'package:gstore/core/core.dart';
 
+/// tab 切换交叉淡入（M3 fadeThrough）：按 PageController 当前 page 位置插值 opacity。
+/// 当前页 opacity 1，切换过程中邻页按距离 0→1 交叉淡入。
+class _TabFadeThrough extends StatelessWidget {
+  const _TabFadeThrough({
+    required this.animation,
+    required this.index,
+    required this.fallbackIndex,
+    required this.child,
+  });
+
+  /// PageController（作为 Listenable，动画/滚动期间逐帧通知重建）
+  final Listenable animation;
+
+  /// 本页在 PageView 中的下标
+  final int index;
+
+  /// [PageController.page] 为 null（尚未布局/无像素）时的兜底当前页
+  final double fallbackIndex;
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = animation as PageController;
+    return AnimatedBuilder(
+      animation: animation,
+      child: child,
+      builder: (context, child) {
+        // PageController.page 语义（SDK page_view.dart 已查证）：
+        // page = clamp(pixels, min, max) / (viewportDimension * viewportFraction)，
+        // 由实时 pixels 计算 —— animateToPage 动画期间逐帧返回插值 float（非 null/旧值）；
+        // 仅在未布局（!hasPixels / 无内容尺寸）时返回 null，此时兜底 fallbackIndex。
+        final page = controller.page ?? fallbackIndex;
+        final distance = (page - index).abs().clamp(0.0, 1.0).toDouble();
+        return Opacity(opacity: 1 - distance, child: child);
+      },
+    );
+  }
+}
+
 class HomePage extends StatelessWidget {
   const HomePage({super.key});
 
@@ -38,10 +78,30 @@ class HomePage extends StatelessWidget {
             physics: const NeverScrollableScrollPhysics(),
             controller: logic.controller,
             children: [
-              const ApplistPage(),
-              DiscoveryPage(),
-              const AgentPage(isTabEmbedded: true),
-              MinePage(),
+              _TabFadeThrough(
+                animation: logic.controller,
+                index: 0,
+                fallbackIndex: logic.state.index.value.toDouble(),
+                child: const ApplistPage(),
+              ),
+              _TabFadeThrough(
+                animation: logic.controller,
+                index: 1,
+                fallbackIndex: logic.state.index.value.toDouble(),
+                child: const DiscoveryPage(),
+              ),
+              _TabFadeThrough(
+                animation: logic.controller,
+                index: 2,
+                fallbackIndex: logic.state.index.value.toDouble(),
+                child: const AgentPage(isTabEmbedded: true),
+              ),
+              _TabFadeThrough(
+                animation: logic.controller,
+                index: 3,
+                fallbackIndex: logic.state.index.value.toDouble(),
+                child: const MinePage(),
+              ),
             ],
           ),
           // 悬浮磨砂导航胶囊：BackdropFilter 磨砂 + 半透明主题底 + 圆角悬浮（M3 主题令牌）
