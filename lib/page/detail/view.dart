@@ -139,10 +139,11 @@ class DetailPage extends StatelessWidget {
 
           const SizedBox(height: AppSpacing.sm),
 
-          // 详情加载指示器（兜底）→ Sections 过渡：AnimatedSwitcher 淡入。
+          // 详情加载指示器（兜底）→ Sections：单树条件渲染（无 AnimatedSwitcher 双树）。
           // 仅当基础信息尚未注入且无任何区块 loading 时显示 spinner，
           // 区块级 skeleton（下载/README）已覆盖主要加载场景，避免双 loading 叠加；
-          // child 用 ValueKey 区分 loading/empty/sections 三态触发过渡
+          // sections 入场动画由各区块 _FadeSlideIn 提供（loading→sections 直接切换，
+          // 消除 switcher 保留新旧两树导致的切换帧双倍布局）。
           Obx(() {
             final detail = state.detailInfo.value;
             final showSpinner = state.isLoadingDetail.value &&
@@ -154,36 +155,18 @@ class DetailPage extends StatelessWidget {
             final Widget child;
             if (showSpinner) {
               child = const Padding(
-                key: ValueKey('detail_loading'),
                 padding: AppSpacing.allLG,
                 child: Center(child: AppLoading(size: AppLoadingSize.medium)),
               );
             } else if (detail == null) {
-              child = const SizedBox.shrink(key: ValueKey('detail_empty'));
+              child = const SizedBox.shrink();
             } else {
               child = Column(
-                key: const ValueKey('detail_sections'),
                 children: _buildSections(context, logic, state, detail),
               );
             }
 
-            return AnimatedSwitcher(
-              duration: AppAnimation.slow,
-              switchInCurve: AppAnimation.curve,
-              switchOutCurve: AppAnimation.curve,
-              transitionBuilder: (child, animation) => FadeTransition(
-                opacity: animation,
-                child: child,
-              ),
-              layoutBuilder: (currentChild, previousChildren) => Stack(
-                alignment: Alignment.topCenter,
-                children: [
-                  ...previousChildren,
-                  if (currentChild != null) currentChild,
-                ],
-              ),
-              child: child,
-            );
+            return child;
           }),
         ],
       ),

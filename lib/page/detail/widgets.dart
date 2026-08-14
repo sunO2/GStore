@@ -751,7 +751,7 @@ class _ScreenshotGallery extends StatelessWidget {
 }
 
 /// README/详情文本 Section
-class ReadmeSection extends StatelessWidget {
+class ReadmeSection extends StatefulWidget {
   final IDetailInfo info;
   final void Function(String)? onLinkTap;
 
@@ -766,10 +766,27 @@ class ReadmeSection extends StatelessWidget {
   });
 
   @override
+  State<ReadmeSection> createState() => _ReadmeSectionState();
+}
+
+class _ReadmeSectionState extends State<ReadmeSection> {
+  /// README 大文本的 MarkdownBody 同步解析移出进入帧：首帧渲染轻量占位，
+  /// postFrame 后一帧才构建 MarkdownBody——详情页进入/返回不再被解析阻塞。
+  bool _ready = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) setState(() => _ready = true);
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
-    if (loading) {
-      // 加载中轻量占位：卡片标题保持稳定（避免完成态布局跳动），
-      // 内容区固定高度 + 加载指示
+    if (widget.loading || !_ready) {
+      // 加载中 / deferred 未就绪的轻量占位：卡片标题保持稳定（避免完成态
+      // 布局跳动），内容区固定高度 + 加载指示
       return const SectionCard(
         title: '详细介绍',
         icon: Icons.description_outlined,
@@ -784,6 +801,7 @@ class ReadmeSection extends StatelessWidget {
       );
     }
 
+    final info = widget.info;
     final readme = info.readme;
     // 截图统一内嵌详情区：有截图或正文任一存在即渲染（截图为横向滑动列表）
     final screenshots = info.screenshots ?? const <ScreenshotInfo>[];
@@ -815,8 +833,8 @@ class ReadmeSection extends StatelessWidget {
             data: markdown,
             selectable: true,
             onTapLink: (text, href, title) {
-              if (href != null && href.isNotEmpty && onLinkTap != null) {
-                onLinkTap?.call(href);
+              if (href != null && href.isNotEmpty && widget.onLinkTap != null) {
+                widget.onLinkTap?.call(href);
               }
             },
             imageBuilder: (uri, title, alt) {
