@@ -24,6 +24,23 @@ DownloadInfo? pickClosestApk(List<DownloadInfo> candidates, String preferred) {
   return best;
 }
 
+/// 结合用户 APK 选择偏好与默认规则（selectBestDownload）选出下载项。
+///
+/// 规则：
+/// - [preferred] 非空且能在 [candidates] 中按文件名相似度匹配到项 → 返回匹配项
+/// - 其余情况（无偏好 / 偏好为空串 / candidates 为空 / 无匹配）→ 返回 [fallback]
+///   （即渠道按设备架构选出的 check.latestDownload，现规则不变）
+/// - [candidates] 为 null（如缓存恢复路径无 detail）→ 回退 [fallback]
+DownloadInfo selectDownloadWithPreference({
+  required DownloadInfo fallback,
+  required List<DownloadInfo>? candidates,
+  required String? preferred,
+}) {
+  if (preferred == null || preferred.trim().isEmpty) return fallback;
+  final list = candidates ?? const <DownloadInfo>[];
+  return pickClosestApk(list, preferred) ?? fallback;
+}
+
 /// 标准 Levenshtein 编辑距离（动态规划，O(n*m)）。
 /// 文件名通常 <100 字符，两行滚动数组即可满足空间需求。
 int _levenshtein(String a, String b) {

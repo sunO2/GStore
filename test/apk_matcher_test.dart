@@ -60,4 +60,73 @@ void main() {
       expect(result, same(only));
     });
   });
+
+  group('selectDownloadWithPreference', () {
+    final fallback = _dl('app-universal-v2.0.0.apk');
+    final arm = _dl('app-arm64-v8a-v2.0.0.apk');
+    final x86 = _dl('app-x86_64-v2.0.0.apk');
+    final candidates = [fallback, arm, x86];
+
+    test('偏好匹配候选（非渠道默认首项）→ 返回匹配项', () {
+      final result = selectDownloadWithPreference(
+        fallback: fallback,
+        candidates: candidates,
+        preferred: 'app-arm64-v8a-v2.0.0.apk',
+      );
+      expect(result, same(arm));
+    });
+
+    test('偏好无精确匹配：最近候选即默认首项 → 结果与 fallback 相同（现规则不变）', () {
+      // pickClosestApk 在候选非空时始终返回最近者；当最近者恰为默认项
+      // （如旧版本 universal 偏好）时，选择结果与现规则 latestDownload 一致
+      final result = selectDownloadWithPreference(
+        fallback: fallback,
+        candidates: candidates,
+        preferred: 'app-universal-v2.1.0.apk',
+      );
+      expect(result, same(fallback));
+    });
+
+    test('无偏好（null / 空串）→ fallback（现规则）', () {
+      expect(
+        selectDownloadWithPreference(fallback: fallback, candidates: candidates, preferred: null),
+        same(fallback),
+      );
+      expect(
+        selectDownloadWithPreference(fallback: fallback, candidates: candidates, preferred: ''),
+        same(fallback),
+      );
+      expect(
+        selectDownloadWithPreference(fallback: fallback, candidates: candidates, preferred: '  '),
+        same(fallback),
+      );
+    });
+
+    test('candidates 为 null（缓存恢复 detail 为空）→ 回退 fallback', () {
+      final result = selectDownloadWithPreference(
+        fallback: fallback,
+        candidates: null,
+        preferred: 'app-arm64-v8a-v2.0.0.apk',
+      );
+      expect(result, same(fallback));
+    });
+
+    test('candidates 空列表 → 回退 fallback', () {
+      final result = selectDownloadWithPreference(
+        fallback: fallback,
+        candidates: const [],
+        preferred: 'app-arm64-v8a-v2.0.0.apk',
+      );
+      expect(result, same(fallback));
+    });
+
+    test('完全一致（距离 0）→ 直选', () {
+      final result = selectDownloadWithPreference(
+        fallback: fallback,
+        candidates: candidates,
+        preferred: 'app-x86_64-v2.0.0.apk',
+      );
+      expect(result, same(x86));
+    });
+  });
 }
