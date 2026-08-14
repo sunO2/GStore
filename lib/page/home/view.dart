@@ -45,13 +45,12 @@ class _TabFadeThrough extends StatelessWidget {
         // 仅在未布局（!hasPixels / 无内容尺寸）时返回 null，此时兜底 fallbackIndex。
         final page = controller.page ?? fallbackIndex;
         final distance = (page - index).abs().clamp(0.0, 1.0).toDouble();
-        // 反向补偿 PageView 平移：PageView 位移 = (page - index) * viewportWidth，
-        // 补偿后内容视觉静止，切换只有交叉淡入（真 fadeThrough）
+        // 补偿 PageView 平移：页 i 屏幕位置 = (i - page)*W，反向补偿 +(page - i)*W 使内容静止
         final translateX = (page - index) * MediaQuery.of(context).size.width;
         return Opacity(
           opacity: 1 - distance,
           child: Transform.translate(
-            offset: Offset(-translateX, 0),
+            offset: Offset(translateX, 0),
             child: child,
           ),
         );
