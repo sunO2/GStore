@@ -11,60 +11,142 @@ import 'logic.dart';
 import 'package:gstore/core/icons/Icons.dart';
 import 'package:gstore/core/core.dart';
 
-/// tab 切换交叉淡入（M3 fadeThrough）：按 PageController 当前 page 位置插值 opacity。
-/// 当前页 opacity 1，切换过程中邻页按距离 0→1 交叉淡入。
+/// tab 切换交叉淡入（M3 fadeThrough，无平移）：
+/// - 两段式（fromIndex/toIndex 均非空）：源页随 fadeValue 0→0.5 淡出，
+///   中点瞬移切换后目标页随 0.5→1 淡入；
+/// - 单段式（仅 toIndex 非空，外部瞬移跳转 fallback）：目标页全程 0→1 淡入；
+/// - 常态（均空）：当前页 opacity 1，其余 0。
 class _TabFadeThrough extends StatelessWidget {
   const _TabFadeThrough({
-    required this.animation,
     required this.index,
-    required this.fallbackIndex,
+    required this.currentIndex,
+    required this.fromIndex,
+    required this.toIndex,
+    required this.fadeValue,
     required this.child,
   });
-
-  /// PageController（作为 Listenable，动画/滚动期间逐帧通知重建）
-  final Listenable animation;
 
   /// 本页在 PageView 中的下标
   final int index;
 
-  /// [PageController.page] 为 null（尚未布局/无像素）时的兜底当前页
-  final double fallbackIndex;
+  /// 无切换动画时的当前页（logic.state.index.value）
+  final int currentIndex;
+
+  /// 两段式交叉淡入的源页（前半段淡出）；null 表示单段淡入/常态
+  final int? fromIndex;
+
+  /// 切换目标页（后半段淡入）；null 表示无切换动画
+  final int? toIndex;
+
+  /// 淡入淡出进度 0→1（_fadeController.value）
+  final double fadeValue;
 
   final Widget child;
 
   @override
   Widget build(BuildContext context) {
-    final controller = animation as PageController;
-    return AnimatedBuilder(
-      animation: animation,
-      child: child,
-      builder: (context, child) {
-        // PageController.page 语义（SDK page_view.dart 已查证）：
-        // page = clamp(pixels, min, max) / (viewportDimension * viewportFraction)，
-        // 由实时 pixels 计算 —— animateToPage 动画期间逐帧返回插值 float（非 null/旧值）；
-        // 仅在未布局（!hasPixels / 无内容尺寸）时返回 null，此时兜底 fallbackIndex。
-        final page = controller.page ?? fallbackIndex;
-        final distance = (page - index).abs().clamp(0.0, 1.0).toDouble();
-        // 补偿 PageView 平移：页 i 屏幕位置 = (i - page)*W，反向补偿 +(page - i)*W 使内容静止
-        final translateX = (page - index) * MediaQuery.of(context).size.width;
-        return Opacity(
-          opacity: 1 - distance,
-          child: Transform.translate(
-            offset: Offset(translateX, 0),
-            child: child,
-          ),
-        );
-      },
-    );
+    final from = fromIndex;
+    final to = toIndex;
+    double opacity;
+    if (from != null && to != null) {
+      // 两段式交叉：源页 0→0.5 淡出，目标页 0.5→1 淡入（中点瞬移切换）
+      if (index == to) {
+        opacity = (fadeValue * 2 - 1).clamp(0.0, 1.0);
+      } else if (index == from) {
+        opacity = (1 - fadeValue * 2).clamp(0.0, 1.0);
+      } else {
+        opacity = 0.0;
+      }
+    } else if (index == to) {
+      // 外部瞬移跳转 fallback：新页全程 0→1 淡入（无源页淡出，瞬移已完成）
+      opacity = fadeValue;
+    } else if (index == currentIndex) {
+      // 常态：当前页完全显示
+      opacity = 1.0;
+    } else {
+      opacity = 0.0;
+    }
+    return Opacity(opacity: opacity, child: child);
   }
 }
 
-class HomePage extends StatelessWidget {
+class HomePage extends StatefulWidget {
   const HomePage({super.key});
 
   @override
+  State<HomePage> createState() => _HomePageState();
+}
+
+class _HomePageState extends State<HomePage>
+    with SingleTickerProviderStateMixin {
+  late final HomeLogic logic = Get.put(HomeLogic());
+
+  /// 交叉淡入淡出驱动：0→0.5 源页淡出（中点瞬移切换），0.5→1 目标页淡入
+  late final AnimationController _fadeController =
+      AnimationController(vsync: this, duration: AppAnimation.medium);
+
+  /// ever 监听器（dispose 时回收）
+  late Worker _indexWorker;
+
+  /// 两段式交叉淡入的源页/目标页；均为 null 表示无切换动画
+  int? _fromIndex;
+  int? _toIndex;
+
+  @override
+  void initState() {
+    super.initState();
+    _fadeController.addListener(_onFadeTick);
+    // 所有 logic.jumpToPage 调用点（agent 返回/applist/empty_state/底部导航瞬移中点）
+    // 统一在 index 变化时触发淡入动画；底部导航的两段式交叉淡入由 _crossFadeTo 直接
+    // 驱动，其 index 变化发生在 _toIndex 非空期间 → 此处提前返回，避免双触发。
+    _indexWorker = ever(logic.state.index, _onIndexChanged);
+  }
+
+  @override
+  void dispose() {
+    _indexWorker.dispose();
+    _fadeController.dispose();
+    super.dispose();
+  }
+
+  /// 两段式交叉淡入淡出（底部导航等视图内跳转）：
+  /// 记录源页/目标页 → 淡出源页 → 中点瞬移切换 → 淡入目标页。
+  void _crossFadeTo(int index) {
+    // 当前可见页：交叉淡入前半段（尚未瞬移）取源页，否则取在途目标页/实际 index
+    final current = (_fromIndex != null && _fadeController.value < 0.5)
+        ? _fromIndex!
+        : (_toIndex ?? logic.state.index.value);
+    if (index == current) return;
+    _fromIndex = current;
+    _toIndex = index;
+    _fadeController.forward(from: 0);
+  }
+
+  /// 动画逐帧回调：中点一次性瞬移切换；结束时清空淡入状态。
+  void _onFadeTick() {
+    final v = _fadeController.value;
+    final to = _toIndex;
+    if (v >= 0.5 && to != null && logic.state.index.value != to) {
+      logic.jumpToPage(to); // 一次性：index 已变后条件不成立
+    }
+    if (_fadeController.isCompleted && to != null) {
+      _fromIndex = null;
+      _toIndex = null;
+    }
+    setState(() {});
+  }
+
+  /// 外部瞬移跳转（agent 返回/applist/empty_state）fallback：
+  /// 不在交叉淡入流程中时，新页 0→1 单段淡入（瞬移已由 jumpToPage 完成）。
+  void _onIndexChanged(int index) {
+    if (_toIndex != null) return; // 已在交叉淡入流程中（底部导航路径）
+    _fromIndex = null;
+    _toIndex = index;
+    _fadeController.forward(from: 0);
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final logic = Get.put(HomeLogic());
     // AI 助手 tab 时拦截系统返回：回到来源 tab（而非退出 app）
     // canPop 动态跟随 index：非 AI tab 返回键正常退出
     return Obx(() {
@@ -87,27 +169,35 @@ class HomePage extends StatelessWidget {
             controller: logic.controller,
             children: [
               _TabFadeThrough(
-                animation: logic.controller,
                 index: 0,
-                fallbackIndex: logic.state.index.value.toDouble(),
+                currentIndex: logic.state.index.value,
+                fromIndex: _fromIndex,
+                toIndex: _toIndex,
+                fadeValue: _fadeController.value,
                 child: const ApplistPage(),
               ),
               _TabFadeThrough(
-                animation: logic.controller,
                 index: 1,
-                fallbackIndex: logic.state.index.value.toDouble(),
+                currentIndex: logic.state.index.value,
+                fromIndex: _fromIndex,
+                toIndex: _toIndex,
+                fadeValue: _fadeController.value,
                 child: const DiscoveryPage(),
               ),
               _TabFadeThrough(
-                animation: logic.controller,
                 index: 2,
-                fallbackIndex: logic.state.index.value.toDouble(),
+                currentIndex: logic.state.index.value,
+                fromIndex: _fromIndex,
+                toIndex: _toIndex,
+                fadeValue: _fadeController.value,
                 child: const AgentPage(isTabEmbedded: true),
               ),
               _TabFadeThrough(
-                animation: logic.controller,
                 index: 3,
-                fallbackIndex: logic.state.index.value.toDouble(),
+                currentIndex: logic.state.index.value,
+                fromIndex: _fromIndex,
+                toIndex: _toIndex,
+                fadeValue: _fadeController.value,
                 child: const MinePage(),
               ),
             ],
@@ -153,7 +243,8 @@ class HomePage extends StatelessWidget {
                                     .withValues(alpha: 0.82),
                                 selectedIndex: logic.state.index.value,
                                 onDestinationSelected: (index) {
-                                  logic.jumpToPage(index);
+                                  // 视图内跳转：两段式交叉淡入（中点由 _onFadeTick 瞬移）
+                                  _crossFadeTo(index);
                                 },
                                 destinations: [
                                   NavigationDestination(
