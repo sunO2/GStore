@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/compent/entrance_list.dart';
 import 'package:gstore/core/service/install_manager.dart';
 import 'package:installed_apps/installed_apps.dart';
 import 'package:installed_apps/app_info.dart' as installed;
@@ -264,7 +265,8 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
                 ? const Center(child: AppLoading(size: AppLoadingSize.medium))
                 : _filteredApps.isEmpty
                     ? const Center(child: Text('未找到已安装应用'))
-                    : ListView.builder(
+                    : EntranceList(
+                        key: ValueKey(_filteredApps.length),
                         padding: AppSpacing.onlyHorizontalMD,
                         itemCount: _filteredApps.length,
                         itemBuilder: (context, index) {

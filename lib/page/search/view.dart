@@ -4,6 +4,7 @@ import 'package:get/get.dart';
 import 'package:gstore/core/routers.dart';
 import 'package:gstore/core/utils/logger.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/compent/entrance_list.dart';
 import 'package:gstore/db/apps/AppInfo.dart';
 import 'package:jovial_svg/jovial_svg.dart';
 import 'logic.dart';
@@ -57,7 +58,8 @@ class SearchPage extends StatelessWidget {
             if (data.isEmpty) {
               return const SizedBox();
             }
-            return ListView.builder(
+            return EntranceList(
+              key: ValueKey(data.length),
               itemBuilder: (context, index) {
                 var app = data[index];
                 log("app: $app");
