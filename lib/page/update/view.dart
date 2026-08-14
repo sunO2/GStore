@@ -456,10 +456,15 @@ class _ApkSelectorState extends State<_ApkSelector> {
             padding: AppSpacing.horizontalSM_verticalXS,
             child: Row(
               children: [
-                Icon(
-                  _expanded ? Icons.expand_less : Icons.expand_more,
-                  size: AppTypography.iconSM,
-                  color: scheme.onSurfaceVariant,
+                AnimatedRotation(
+                  turns: _expanded ? 0.5 : 0.0,
+                  duration: AppAnimation.fast,
+                  curve: AppAnimation.curve,
+                  child: Icon(
+                    _expanded ? Icons.expand_less : Icons.expand_more,
+                    size: AppTypography.iconSM,
+                    color: scheme.onSurfaceVariant,
+                  ),
                 ),
                 const SizedBox(width: AppSpacing.xs),
                 Text(
@@ -483,20 +488,93 @@ class _ApkSelectorState extends State<_ApkSelector> {
             ),
           ),
         ),
-        if (_expanded) ...[
-          const SizedBox(height: AppSpacing.xs),
-          for (final dl in widget.candidates)
-            _ApkOption(
-              download: dl,
-              selected: dl.name == _effectiveSelected,
-              onTap: () {
-                if (dl.name != _effectiveSelected) {
-                  widget.onSelect(dl);
-                }
-              },
-            ),
-        ],
+        // 候选展开区：AnimatedSize 平滑展开 + 每行 _StaggeredReveal 依次滑入
+        // （收起时子级整体移除，重开后交错动画可重放）
+        AnimatedSize(
+          duration: AppAnimation.medium,
+          curve: AppAnimation.curve,
+          alignment: Alignment.topCenter,
+          child: _expanded
+              ? Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const SizedBox(height: AppSpacing.xs),
+                    for (var i = 0; i < widget.candidates.length; i++)
+                      _StaggeredReveal(
+                        index: i,
+                        child: _ApkOption(
+                          download: widget.candidates[i],
+                          selected: widget.candidates[i].name ==
+                              _effectiveSelected,
+                          onTap: () {
+                            if (widget.candidates[i].name !=
+                                _effectiveSelected) {
+                              widget.onSelect(widget.candidates[i]);
+                            }
+                          },
+                        ),
+                      ),
+                  ],
+                )
+              : const SizedBox(width: double.infinity),
+        ),
       ],
+    );
+  }
+}
+
+/// 交错入场：展开时候选行依次滑入（delay = index * AppAnimation.stagger）
+/// 自持 AnimationController，仅在本 widget 挂载（= 展开态）时启动一次，
+/// 收起后随子树销毁，重开可重放。
+class _StaggeredReveal extends StatefulWidget {
+  final int index;
+  final Widget child;
+
+  const _StaggeredReveal({required this.index, required this.child});
+
+  @override
+  State<_StaggeredReveal> createState() => _StaggeredRevealState();
+}
+
+class _StaggeredRevealState extends State<_StaggeredReveal>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: AppAnimation.medium,
+    )..forward();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final totalMs = AppAnimation.medium.inMilliseconds;
+    final start = (widget.index * AppAnimation.stagger.inMilliseconds) /
+        totalMs;
+    final animation = CurvedAnimation(
+      parent: _controller,
+      curve: Interval(start.clamp(0.0, 1.0), 1.0,
+          curve: AppAnimation.curve),
+    );
+    return FadeTransition(
+      opacity: animation,
+      child: SlideTransition(
+        position: Tween<Offset>(
+          begin: const Offset(0, 0.1),
+          end: Offset.zero,
+        ).animate(animation),
+        child: widget.child,
+      ),
     );
   }
 }
