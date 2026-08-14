@@ -46,6 +46,10 @@ class UpdateState {
   /// 检测是否已完成（无更新时停留在检测页展示日志）
   final RxBool checkFinished = false.obs;
 
+  /// 用户为各应用选择的 APK 文件名（appId → 文件名；空 = 未选/默认规则）
+  /// 默认选中 = 现规则结果（latestDownload）或有偏好时相似度匹配结果
+  final RxMap<String, String> selectedApkName = <String, String>{}.obs;
+
   /// 是否显示检测日志页（有更新时手动切换：true=日志页 / false=更新列表）
   final RxBool showLog = false.obs;
 

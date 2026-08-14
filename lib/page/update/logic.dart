@@ -8,7 +8,10 @@ import 'package:gstore/core/download/strategy/impl/VivoDownloadStrategy.dart';
 import 'package:gstore/core/download/strategy/impl/GitHubDownloadStrategy.dart';
 import 'package:gstore/core/download/strategy/impl/HttpDownloadStrategy.dart';
 import 'package:gstore/core/download/strategy/impl/FdroidDownloadStrategy.dart';
+import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/service/downloadService.dart';
+import 'package:gstore/core/update/apk_matcher.dart';
+import 'package:gstore/core/update/update_cache.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
 
 import 'state.dart';
@@ -61,6 +64,8 @@ class UpdateLogic extends GetxController {
     _subscribed = true;
     manager.updateList.listen((list) {
       state.updateList.assignAll(list);
+      // 结果同步后计算各应用默认选中（偏好匹配；无偏好不设，视图回退 latestDownload）
+      unawaited(_syncDefaultSelections(list));
       // 同步红点：检测结果与功能入口红点一致
       BadgeService.instance.setBadge(BadgeKey.appUpdate, list.length);
     });
@@ -83,6 +88,7 @@ class UpdateLogic extends GetxController {
     // RxList/Rx 的 listen 不回调初始值：缓存可能已在订阅前恢复
     // （如启动时 BadgeService 触发恢复），订阅后必须显式同步当前状态
     state.updateList.assignAll(manager.updateList);
+    unawaited(_syncDefaultSelections(manager.updateList));
     state.checkLog.assignAll(manager.checkLog);
     state.checkList.assignAll(manager.checkList);
     state.checkedCount.value = manager.checkedCount.value;
@@ -130,6 +136,52 @@ class UpdateLogic extends GetxController {
     state.showLog.value = !state.showLog.value;
   }
 
+  /// 用户手动选择某应用的下载 APK 候选
+  ///
+  /// - 更新内存选中（立即生效，卡片勾选跟随）
+  /// - 持久化偏好（channelId:appId → 文件名），下次检测/更新优先匹配该文件名
+  Future<void> selectApk(AppUpdateInfo info, DownloadInfo download) async {
+    state.selectedApkName[info.appId] = download.name;
+    await UpdateCache.savePreferredApk(
+        info.channelId, info.appId, download.name);
+    // 保存完成后重断言：避免并发 _syncDefaultSelections 读到旧偏好覆盖本次选择
+    state.selectedApkName[info.appId] = download.name;
+  }
+
+  /// 检测结果同步后：为每个应用计算默认选中（仅初始化未设置项）
+  ///
+  /// - 有偏好 → pickClosestApk(detail.downloads, preferred) 匹配候选并勾选
+  /// - 无偏好 / detail=null（缓存恢复无候选）→ 不设置（视图回退 latestDownload 默认）
+  /// - 用户本次会话已换选过（非空）→ 不覆盖
+  Future<void> _syncDefaultSelections(List<AppUpdateInfo> list) async {
+    final validIds = list.map((e) => e.appId).toSet();
+    state.selectedApkName.removeWhere((k, _) => !validIds.contains(k));
+    for (final info in list) {
+      final current = state.selectedApkName[info.appId];
+      if (current != null && current.isNotEmpty) continue;
+      if (info.detail == null) continue;
+      final preferred =
+          await UpdateCache.preferredApkName(info.channelId, info.appId);
+      if (preferred == null || preferred.trim().isEmpty) continue;
+      final matched = pickClosestApk(info.detail!.downloads, preferred);
+      if (matched != null) {
+        state.selectedApkName[info.appId] = matched.name;
+      }
+    }
+  }
+
+  /// 确定本次更新下载的 APK：用户所选（须在候选列表中）?? 默认规则结果
+  DownloadInfo _resolveDownload(AppUpdateInfo info) {
+    final selectedName = state.selectedApkName[info.appId];
+    if (selectedName != null && selectedName.isNotEmpty && info.detail != null) {
+      return info.detail!.downloads.firstWhere(
+        (d) => d.name == selectedName,
+        orElse: () => info.latestDownload,
+      );
+    }
+    return info.latestDownload;
+  }
+
   /// 更新单个应用（下载 + 自动安装）
   Future<void> updateApp(AppUpdateInfo info) async {
     if (state.updatingAppId.value != null) return;
@@ -137,8 +189,11 @@ class UpdateLogic extends GetxController {
     state.updatingAppId.value = info.appId;
 
     try {
-      final version = info.latestDownload.version ?? info.latestVersion;
-      final fileName = info.latestDownload.name;
+      // 本次下载 = 用户所选（须匹配 detail.downloads）?? 现规则结果（latestDownload
+      // 已是偏好匹配后的默认项）；缓存恢复 detail=null → 直接用 latestDownload
+      final download = _resolveDownload(info);
+      final version = download.version ?? info.latestVersion;
+      final fileName = download.name;
 
       // 预创建下载状态用于进度监听
       final status = await DownloadStatus.create(
@@ -146,8 +201,8 @@ class UpdateLogic extends GetxController {
         info.appName,
         version,
         fileName,
-        info.latestDownload.url,
-        downloadSize: info.latestDownload.size,
+        download.url,
+        downloadSize: download.size,
       );
       state.currentDownload.value = status;
 
@@ -165,7 +220,7 @@ class UpdateLogic extends GetxController {
         final detail = info.detail;
         if (detail != null) {
           final context = await DownloadStrategyManager.instance.createContext(
-            info.latestDownload,
+            download,
             detail,
           );
           if (context != null) {
@@ -181,9 +236,9 @@ class UpdateLogic extends GetxController {
               info.appId,
               info.appName,
               version,
-              info.latestDownload.url,
+              download.url,
               fileName,
-              downloadSize: info.latestDownload.size,
+              downloadSize: download.size,
             );
           }
         } else {
@@ -192,9 +247,9 @@ class UpdateLogic extends GetxController {
             info.appId,
             info.appName,
             version,
-            info.latestDownload.url,
+            download.url,
             fileName,
-            downloadSize: info.latestDownload.size,
+            downloadSize: download.size,
           );
         }
       } catch (e) {
@@ -203,9 +258,9 @@ class UpdateLogic extends GetxController {
           info.appId,
           info.appName,
           version,
-          info.latestDownload.url,
+          download.url,
           fileName,
-          downloadSize: info.latestDownload.size,
+          downloadSize: download.size,
         );
       }
 
