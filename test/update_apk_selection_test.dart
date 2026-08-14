@@ -159,6 +159,39 @@ AppUpdateInfo _multiCandidateInfo() {
   );
 }
 
+/// 混排候选信息：含 .apk/.zip/.txt，可安装候选 2 个 → 展开列表只显示 apk/aab
+AppUpdateInfo _mixedCandidateInfo() {
+  final universal = _dl('app-universal-v2.0.0.apk');
+  final arm = _dl('app-arm64-v8a-v2.0.0.apk');
+  final zip = _dl('app-arm64-v8a-v2.0.0.zip');
+  final txt = _dl('notes.txt');
+  return AppUpdateInfo(
+    channelId: _channelCode,
+    appId: _appId,
+    appName: '示例应用',
+    packageName: _appId,
+    installedVersion: '1.0.0',
+    latestVersion: '2.0.0',
+    latestDownload: universal,
+    detail: _FakeDetail(downloads: [universal, arm, zip, txt]),
+  );
+}
+
+/// 过滤后单候选信息：仅 1 个 .apk，其余为 zip/txt → 无展开入口
+AppUpdateInfo _singleApkWithJunkInfo() {
+  final apk = _dl('app-universal-v2.0.0.apk');
+  return AppUpdateInfo(
+    channelId: _channelCode,
+    appId: _appId,
+    appName: '示例应用',
+    packageName: _appId,
+    installedVersion: '1.0.0',
+    latestVersion: '2.0.0',
+    latestDownload: apk,
+    detail: _FakeDetail(downloads: [apk, _dl('app.zip'), _dl('notes.txt')]),
+  );
+}
+
 /// 单候选信息：detail 有 1 个候选 → 无展开入口
 AppUpdateInfo _singleCandidateInfo() {
   final dl = _dl('app-universal-v2.0.0.apk');
@@ -335,6 +368,55 @@ void main() {
       await _pumpUpdatePage(tester, _cacheRestoredInfo());
 
       expect(find.text('选择 APK'), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('候选含 .apk/.zip/.txt 混排：展开列表只显示 .apk/.aab', (tester) async {
+      await _pumpUpdatePage(tester, _mixedCandidateInfo());
+      await _expandApkSelector(tester);
+
+      // universal 额外出现在展开入口当前选中文案中 → 2 处；arm 仅选项 1 处
+      expect(find.text('app-universal-v2.0.0.apk'), findsNWidgets(2));
+      expect(find.text('app-arm64-v8a-v2.0.0.apk'), findsOneWidget);
+      // 非可安装文件不出现
+      expect(find.text('app-arm64-v8a-v2.0.0.zip'), findsNothing);
+      expect(find.text('notes.txt'), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('过滤后仅 1 个 .apk（其余为 zip/txt）→ 无展开入口', (tester) async {
+      await _pumpUpdatePage(tester, _singleApkWithJunkInfo());
+
+      expect(find.text('选择 APK'), findsNothing);
+      // 无展开入口 → 文件名不渲染（zip/txt 更不出现）
+      expect(find.text('app-universal-v2.0.0.apk'), findsNothing);
+      expect(find.text('app.zip'), findsNothing);
+      expect(find.text('notes.txt'), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('APK 文件名 Text：maxLines=2 且保留 ellipsis', (tester) async {
+      await _pumpUpdatePage(tester, _multiCandidateInfo());
+      await _expandApkSelector(tester);
+
+      // 展开入口行（_ApkSelector）+ 选项行（_ApkOption）中的文件名均 maxLines=2
+      final filenameTexts = tester
+          .widgetList<Text>(find.text('app-universal-v2.0.0.apk'))
+          .toList();
+      expect(filenameTexts, isNotEmpty);
+      for (final t in filenameTexts) {
+        expect(t.maxLines, 2);
+        expect(t.overflow, TextOverflow.ellipsis);
+      }
+
+      // 另一选项行（_ApkOption）中的文件名
+      final optionText =
+          tester.widget<Text>(find.descendant(
+            of: find.byKey(ValueKey('apk_option_app-arm64-v8a-v2.0.0.apk')),
+            matching: find.text('app-arm64-v8a-v2.0.0.apk'),
+          ));
+      expect(optionText.maxLines, 2);
+      expect(optionText.overflow, TextOverflow.ellipsis);
       expect(tester.takeException(), isNull);
     });
   });

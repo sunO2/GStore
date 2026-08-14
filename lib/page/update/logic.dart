@@ -163,7 +163,11 @@ class UpdateLogic extends GetxController {
       final preferred =
           await UpdateCache.preferredApkName(info.channelId, info.appId);
       if (preferred == null || preferred.trim().isEmpty) continue;
-      final matched = pickClosestApk(info.detail!.downloads, preferred);
+      // 与 UI 候选一致：先过滤 Android 可安装文件（.apk/.aab）再相似度匹配
+      final matched = pickClosestApk(
+        filterInstallableDownloads(info.detail!.downloads),
+        preferred,
+      );
       if (matched != null) {
         state.selectedApkName[info.appId] = matched.name;
       }

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
+import 'package:gstore/core/update/apk_matcher.dart';
 import 'package:gstore/core/update/app_update_info.dart';
 import 'package:gstore/core/update/update_manager.dart';
 import 'package:gstore/core/update/update_time_format.dart';
@@ -298,8 +299,11 @@ class _UpdateTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    // 展开候选列表：仅 detail 存在且候选 >1 时显示（缓存恢复 detail=null → 无候选）
-    final candidates = info.detail?.downloads ?? const <DownloadInfo>[];
+    // 展开候选列表：仅 Android 可安装文件（.apk/.aab），且 detail 存在且候选 >1 时显示
+    // （缓存恢复 detail=null → 无候选）；zip/txt 等非安装文件不进入候选
+    final candidates = filterInstallableDownloads(
+      info.detail?.downloads ?? const <DownloadInfo>[],
+    );
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(
@@ -327,7 +331,7 @@ class _UpdateTile extends StatelessWidget {
                           child: Text(
                             info.appName,
                             style: Theme.of(context).textTheme.titleMedium,
-                            maxLines: 1,
+                            maxLines: 2,
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
@@ -468,7 +472,7 @@ class _ApkSelectorState extends State<_ApkSelector> {
                 Expanded(
                   child: Text(
                     _effectiveSelected,
-                    maxLines: 1,
+                    maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
                           color: scheme.primary,
@@ -529,7 +533,7 @@ class _ApkOption extends StatelessWidget {
             Expanded(
               child: Text(
                 download.name,
-                maxLines: 1,
+                maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
                       color: selected
