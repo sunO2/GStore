@@ -1,10 +1,18 @@
 import 'dart:io';
 import 'package:app_installer/app_installer.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:shizuku_api/shizuku_api.dart';
+
+/// pm 命令成功判定：输出以 "Success" 开头（pm install/uninstall/clear/disable 等）
+/// null（命令未执行）/ "Failure [...]" / 空输出 → false
+bool isPmSuccess(String? result) {
+  if (result == null) return false;
+  return result.trim().startsWith('Success');
+}
 
 /// 安装方式
 enum InstallMethod {
@@ -23,7 +31,7 @@ class InstallManager extends GetxService implements IInstallService {
   static InstallManager get instance => _instance ??= InstallManager._();
   InstallManager._();
 
-  final ShizukuApi _shizukuApi = ShizukuApi();
+  ShizukuApi _shizukuApi = ShizukuApi();
 
   /// Shizuku 是否已运行（Binder 连接）
   bool _binderRunning = false;
@@ -33,6 +41,39 @@ class InstallManager extends GetxService implements IInstallService {
 
   /// 是否已检测过
   bool _checked = false;
+
+  /// 测试用：是否将当前平台视为 Android（默认跟随真实平台）
+  bool _isAndroidOverride = false;
+
+  /// 测试用：替换 ShizukuApi 实例
+  @visibleForTesting
+  set shizukuApiForTest(ShizukuApi api) => _shizukuApi = api;
+
+  /// 测试用：直接注入 Shizuku 状态（跳过真实检测）
+  @visibleForTesting
+  void setShizukuStateForTest({
+    required bool binder,
+    required bool permission,
+  }) {
+    _binderRunning = binder;
+    _permissionGranted = permission;
+    _checked = true;
+  }
+
+  /// 测试用：强制指定平台是否为 Android（installApk 的平台判断）
+  @visibleForTesting
+  void setIsAndroidForTest(bool isAndroid) {
+    _isAndroidOverride = isAndroid;
+  }
+
+  /// 重置单例（仅测试使用）
+  @visibleForTesting
+  static void resetForTest() {
+    _instance = null;
+  }
+
+  /// 当前是否视为 Android 平台
+  bool get _isAndroid => _isAndroidOverride || GetPlatform.isAndroid;
 
   /// 当前安装方式偏好（默认系统安装）
   InstallMethod _preferredMethod = InstallMethod.system;
@@ -97,7 +138,7 @@ class InstallManager extends GetxService implements IInstallService {
   /// 优先使用 Shizuku 静默安装（可用时），否则回退系统安装
   /// 返回 (是否成功, 使用的安装方式)
   Future<(bool, InstallMethod)> installApk(String filePath) async {
-    if (!GetPlatform.isAndroid || !filePath.endsWith('.apk')) {
+    if (!_isAndroid || !filePath.endsWith('.apk')) {
       return (false, _preferredMethod);
     }
 
@@ -114,14 +155,21 @@ class InstallManager extends GetxService implements IInstallService {
     if (_binderRunning && _permissionGranted) {
       try {
         final result = await _shizukuApi.runCommand('pm install -r "$filePath"');
-        // runCommand 返回 null 表示失败
-        if (result != null) {
+        if (isPmSuccess(result)) {
           appLog.info('InstallManager: Shizuku 静默安装成功');
           return (true, InstallMethod.shizuku);
         }
-        appLog.error('InstallManager: Shizuku 静默安装失败，回退系统安装');
+        // 失败：记录完整输出（pm 的 Failure [...] 即失败原因），落入回退系统安装
+        appLog.error('InstallManager: Shizuku 静默安装失败，回退系统安装', data: {
+          'result': result ?? '(命令未执行/无输出)',
+          'filePath': filePath,
+          'binderRunning': _binderRunning,
+          'permissionGranted': _permissionGranted,
+        });
       } catch (e) {
-        appLog.error('InstallManager: Shizuku 安装异常 - $e，回退系统安装');
+        appLog.error('InstallManager: Shizuku 安装异常 - $e，回退系统安装', data: {
+          'filePath': filePath,
+        });
       }
     }
 
@@ -168,20 +216,38 @@ class InstallManager extends GetxService implements IInstallService {
 
   /// 强制停止应用
   Future<bool> forceStopApp(String packageName) async {
-    return _runShizukuCommand('am force-stop "$packageName"');
+    return _runShizukuCommand('am force-stop "$packageName"',
+        checkPmSuccess: false);
   }
 
   /// 执行 Shizuku 命令（统一权限检查 + 执行）
-  Future<bool> _runShizukuCommand(String command) async {
+  /// [checkPmSuccess] 为 true（默认，pm 类命令）时按输出 "Success" 开头判定成功；
+  /// false（am 类命令，成功无输出）时仅按结果非 null 判定
+  Future<bool> _runShizukuCommand(String command,
+      {bool checkPmSuccess = true}) async {
     if (!_binderRunning || !_permissionGranted) {
       if (!_checked) await checkShizuku();
-      if (!_binderRunning || !_permissionGranted) return false;
+      if (!_binderRunning || !_permissionGranted) {
+        appLog.error('InstallManager: 命令未执行（Shizuku 不可用）', data: {
+          'command': command,
+        });
+        return false;
+      }
     }
     try {
       final result = await _shizukuApi.runCommand(command);
-      return result != null;
+      final ok = checkPmSuccess ? isPmSuccess(result) : result != null;
+      if (!ok) {
+        appLog.error('InstallManager: 命令执行失败', data: {
+          'command': command,
+          'result': result ?? '(无输出)',
+          'binderRunning': _binderRunning,
+          'permissionGranted': _permissionGranted,
+        });
+      }
+      return ok;
     } catch (e) {
-      appLog.error('InstallManager: 命令执行失败 - $e');
+      appLog.error('InstallManager: 命令执行异常 - $e', data: {'command': command});
       return false;
     }
   }
