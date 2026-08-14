@@ -5,6 +5,7 @@ import 'package:gstore/core/routers.dart';
 import 'package:gstore/core/utils/logger.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/compent/entrance_list.dart';
+import 'package:gstore/compent/pressable_scale.dart';
 import 'package:gstore/db/apps/AppInfo.dart';
 import 'package:jovial_svg/jovial_svg.dart';
 import 'logic.dart';
@@ -63,32 +64,35 @@ class SearchPage extends StatelessWidget {
               itemBuilder: (context, index) {
                 var app = data[index];
                 log("app: $app");
-                return ListTile(
-                  onTap: () {
-                    Get.toNamed(AppRoute.appDetail, arguments: app);
-                  },
-                  leading: Hero(
-                    tag: app.icon,
-                    child: Image(
-                      image: CachedNetworkImageProvider(
-                        data[index].icon,
+                // 外层 PressableScale 仅做按压反馈（点击由 ListTile 内层 onTap 承接）
+                return PressableScale(
+                  child: ListTile(
+                    onTap: () {
+                      Get.toNamed(AppRoute.appDetail, arguments: app);
+                    },
+                    leading: Hero(
+                      tag: app.icon,
+                      child: Image(
+                        image: CachedNetworkImageProvider(
+                          data[index].icon,
+                        ),
+                        width: 48,
+                        height: 48,
                       ),
-                      width: 48,
-                      height: 48,
                     ),
-                  ),
-                  title: Hero(
-                    tag: app.name,
-                    child: Text(
-                      app.name,
-                      style: Theme.of(context).textTheme.titleSmall,
+                    title: Hero(
+                      tag: app.name,
+                      child: Text(
+                        app.name,
+                        style: Theme.of(context).textTheme.titleSmall,
+                      ),
                     ),
-                  ),
-                  subtitle: Text(
-                    app.des,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.bodySmall,
+                    subtitle: Text(
+                      app.des,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
                   ),
                 );
               },

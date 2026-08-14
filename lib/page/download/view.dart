@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/compent/entrance_list.dart';
+import 'package:gstore/compent/pressable_scale.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
 import 'package:gstore/page/download/download_status_utils.dart';
 import 'package:gstore/page/download/logic.dart';
@@ -189,7 +190,10 @@ class _DownloadManagerState extends State<DownloadManager> {
     // 组内进行中的文件（LOADING，或 READY 且已下载部分字节）
     final activeItem = _activeDownloadItem(items);
 
-    return AppCard(
+    // 外层 PressableScale 仅做按压反馈；多文件组展开/收起由内部 header
+    // GestureDetector 承接，单文件组无点击动作
+    return PressableScale(
+      child: AppCard(
       margin: const EdgeInsets.only(bottom: AppSpacing.md),
       padding: EdgeInsets.zero,
       borderRadius: AppRadius.allMD,
@@ -241,6 +245,7 @@ class _DownloadManagerState extends State<DownloadManager> {
               _buildDownloadItem(context, logic, items[i]),
             ],
         ],
+      ),
       ),
     );
   }
