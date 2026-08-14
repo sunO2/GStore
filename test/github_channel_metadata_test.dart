@@ -207,15 +207,19 @@ void main() {
       expect(result.data!.readme, '# Termux\n使用手册');
     });
 
-    test('README 请求走 api.github.com contents 端点（含 ref 分支）', () async {
+    test('README 请求走 api.github.com contents 端点（不带 ref，分支从 download_url 提取）',
+        () async {
       MetadataRepository.instance.debugClient = MockClient(
           (request) async => http.Response('Not Found', 404));
 
       final requestedUrls = <String>[];
       final readmeJson = jsonEncode({
         'name': 'README.md',
-        'content': base64Encode(utf8.encode('# Termux\n使用手册')),
+        'content':
+            base64Encode(utf8.encode('# Termux\n![img](icon.png)\n使用手册')),
         'encoding': 'base64',
+        'download_url':
+            'https://raw.githubusercontent.com/termux/termux-app/dev/README.md',
       });
 
       final channel = GitHubChannel(
@@ -231,11 +235,21 @@ void main() {
 
       final result = await channel.getAppDetail('termux/termux-app');
       expect(result.success, isTrue);
-      // 测试环境 getProxy() 返回默认代理前缀，断言内容端点与 ref 分支（而非代理前缀）
+      // 测试环境 getProxy() 返回默认代理前缀，断言内容端点（而非代理前缀），
+      // 且请求不再带 ref 查询参数（contents API 走默认分支）
       expect(
-        requestedUrls.any((u) => u.contains(
-            'https://api.github.com/repos/termux/termux-app/contents/README.md?ref=master')),
+        requestedUrls.any((u) =>
+            u.contains(
+                'https://api.github.com/repos/termux/termux-app/contents/README.md') &&
+            !u.contains('ref=')),
         isTrue,
+      );
+      // 图片绝对化使用响应 download_url 提取的分支（refs/heads/{branch}）
+      expect(
+        result.data!.readme,
+        '# Termux\n![img]'
+        '(https://raw.githubusercontent.com/termux/termux-app/refs/heads/dev/icon.png)'
+        '\n使用手册',
       );
     });
 
