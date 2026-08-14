@@ -316,17 +316,21 @@ class DetailPage extends StatelessWidget {
     // 全空时内部自隐藏——不依赖渠道 statistics 声明（localdb 渠道 apiList 为空时无 statistics section）
     sections.add(AppInfoSection(info: detail));
 
-    // 区块渲染顺序：以 detail.sections（渐进组装/渠道声明）为主序，
-    // 下载/README 区块另以独立 Rx（downloadsLoading/readmeLoading）兜底：
+    // 区块渲染顺序：固定为「基础区块（sections 中非下载/README，按到达顺序）→
+    // downloads → readme」——下载永远在 README 前，加载中/加载后位置一致，永不跳动。
+    // （README 304 命中近瞬时先完成 append 时，不再把下载挤到下方）
+    // 下载/README 区块以独立 Rx（downloadsLoading/readmeLoading）兜底：
     // 加载中即使 sections 尚未声明也要渲染骨架，完成且空则不渲染——
-    // 避免"加载完成后区块才凭空出现"的闪烁。LinkedHashSet 去重保证单实例。
-    final sectionTypes = <DetailSection>{
-      ...detail.sections,
+    // 避免"加载完成后区块才凭空出现"的闪烁。List 而非 Set：基础区块显式过滤
+    // 下载/README 后各区块单实例，顺序由固定拼装保证。
+    final sectionTypes = <DetailSection>[
+      ...detail.sections.where((s) =>
+          s != DetailSection.downloads && s != DetailSection.readme),
       if (state.downloadsLoading.value || detail.downloads.isNotEmpty)
         DetailSection.downloads,
       if (state.readmeLoading.value || (detail.readme?.isNotEmpty ?? false))
         DetailSection.readme,
-    };
+    ];
 
     for (var sectionType in sectionTypes) {
       switch (sectionType) {

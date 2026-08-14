@@ -596,8 +596,8 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
       final latestVersion = releases.latestVersion;
 
       // 获取 README（contents API + ETag 条件缓存 + README.MD 回退 + 图片绝对化，
-      // 与 fetchReadme 共用逻辑；分支来自 apiList.default_branch）
-      final readme = await _fetchReadmeInternal(appInfo, apiList.default_branch);
+      // 与 fetchReadme 共用逻辑；分支从 contents 响应 download_url 提取）
+      final readme = await _fetchReadmeInternal(appInfo);
 
       // 构建原始数据 Map（保持原始格式）
       final rawData = <String, dynamic>{
@@ -684,15 +684,17 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
   }
 
   /// 分块加载：仅 README（读缓存 / 条件请求）。
-  /// getAppInfo → 仓库 API 取分支 → contents API + ETag 缓存（与 getAppDetail 共用）。
-  /// apiList 失败/无 default_branch（如离线）时纯缓存兜底：ReadmeCache 命中直接返回
-  /// 缓存文本，不再整路 failure（离线时缓存存在也渲染 README）。
+  /// getAppInfo → contents API + ETag 缓存（与 getAppDetail 共用；不再依赖
+  /// apiList 取分支，分支由 contents 响应 download_url 提取，省 1 次 apiList
+  /// 请求降低限流概率）。
+  /// getAppInfo 失败（如离线/限流）时按 appId（owner/repo 格式）拆 owner/repo
+  /// 纯缓存兜底：ReadmeCache 命中直接返回缓存文本，不再整路 failure。
   @override
   Future<ChannelResult<String?>> fetchReadme(String appId) async {
     try {
       final appInfoResult = await getAppInfo(appId);
       if (!appInfoResult.success || appInfoResult.data == null) {
-        // getAppInfo 失败（如离线）：按 appId（owner/repo 格式）拆 owner/repo，纯缓存兜底
+        // getAppInfo 失败（如离线/限流）：按 appId（owner/repo 格式）拆 owner/repo，纯缓存兜底
         final parts = appId.split('/');
         if (parts.length == 2) {
           final cached = await ReadmeCache.instance.get(parts[0], parts[1]);
@@ -708,39 +710,7 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
           error: appInfoResult.error ?? '应用不存在',
         );
       }
-      final appInfo = appInfoResult.data!;
-      // 分支信息（raw 图片绝对化基准）来自仓库 API
-      ApiList? apiList;
-      try {
-        apiList = await _githubApi.apiList(
-          appInfo.user,
-          appInfo.repositories,
-          CancelToken(),
-        );
-      } catch (e) {
-        appLog.error('GitHubChannel: 获取仓库分支信息失败（尝试 README 缓存兜底） - $e');
-      }
-      // apiList 失败 / 无 default_branch：纯缓存兜底，命中直接返回缓存文本，不整路失败
-      if (apiList == null || (apiList.default_branch?.isEmpty ?? true)) {
-        final cached =
-            await ReadmeCache.instance.get(appInfo.user, appInfo.repositories);
-        if (cached != null) {
-          return ChannelResult.success(
-            data: cached.readme,
-            from: ChannelType.github,
-          );
-        }
-        if (apiList == null) {
-          // apiList 请求失败且无缓存：保持失败可感知（"网络不可用"语义）
-          return ChannelResult.failure(
-            from: ChannelType.github,
-            error: '获取仓库信息失败（无 README 缓存）',
-          );
-        }
-        // default_branch 本身为空（非请求失败）：与旧行为一致 success(null)
-        return ChannelResult.success(data: null, from: ChannelType.github);
-      }
-      final readme = await _fetchReadmeInternal(appInfo, apiList.default_branch);
+      final readme = await _fetchReadmeInternal(appInfoResult.data!);
       return ChannelResult.success(data: readme, from: ChannelType.github);
     } catch (e) {
       appLog.error('GitHubChannel: 获取 README 失败 - $e');
@@ -851,17 +821,12 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
 
   /// 获取 README（contents API + ETag 条件缓存 + README.MD 回退 + 图片绝对化）。
   ///
-  /// getAppDetail 与 fetchReadme 共用；[defaultBranch] 为空（无分支信息）时不
-  /// 发起请求返回 null；任一环节失败静默返回 null（不影响主流程）。
-  /// 缓存存绝对化后文本（304 命中直接渲染，无需重复 resolve）。
-  Future<String?> _fetchReadmeInternal(
-    AppSummary appInfo,
-    String? defaultBranch,
-  ) async {
-    if (defaultBranch == null || defaultBranch.isEmpty) return null;
-    final branch = defaultBranch;
-    final rawBaseUrl =
-        'https://raw.githubusercontent.com/${appInfo.user}/${appInfo.repositories}/refs/heads/$branch/';
+  /// getAppDetail 与 fetchReadme 共用。请求**不带 ?ref=**（GitHub 默认分支语义），
+  /// 图片绝对化基准分支从 200 响应 JSON 的 download_url 提取（失败兜底 'main'），
+  /// 不再依赖 apiList（省 1 次限流配额）。缓存存绝对化后文本（304 命中直接渲染，
+  /// 无需重复 resolve）；请求失败（网络/限流/离线）时兜底返回缓存文本，
+  /// 避免 README 区随 apiList 限流凭空消失。
+  Future<String?> _fetchReadmeInternal(AppSummary appInfo) async {
     try {
       final cached =
           await ReadmeCache.instance.get(appInfo.user, appInfo.repositories);
@@ -870,7 +835,7 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
           'https://api.github.com/repos/${appInfo.user}/${appInfo.repositories}/contents';
       final readmeResp = await _httpClient
           .get(
-            Uri.parse(applyProxyIfNeeded('$apiBase/README.md?ref=$branch', getProxy())),
+            Uri.parse(applyProxyIfNeeded('$apiBase/README.md', getProxy())),
             headers: headers,
           )
           .timeout(const Duration(seconds: 10));
@@ -879,6 +844,9 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
         return cached.readme;
       }
       if (readmeResp.statusCode == 200 && readmeResp.body.isNotEmpty) {
+        final branch = _extractBranchFromContentsJson(readmeResp.body, appInfo);
+        final rawBaseUrl =
+            'https://raw.githubusercontent.com/${appInfo.user}/${appInfo.repositories}/refs/heads/${branch ?? 'main'}/';
         final readme = decodeContentsReadme(readmeResp.body);
         final etag = readmeResp.headers['etag'];
         if (readme != null) {
@@ -891,10 +859,10 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
           return resolved;
         }
       } else {
-        // fallback README.MD（同样带条件头；同 key 复用主 etag 条件请求）
+        // fallback README.MD（同样不带 ref；同 key 复用主 etag 条件请求）
         final upperResp = await _httpClient
             .get(
-              Uri.parse(applyProxyIfNeeded('$apiBase/README.MD?ref=$branch', getProxy())),
+              Uri.parse(applyProxyIfNeeded('$apiBase/README.MD', getProxy())),
               headers: headers,
             )
             .timeout(const Duration(seconds: 10));
@@ -902,6 +870,10 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
           return cached.readme;
         }
         if (upperResp.statusCode == 200 && upperResp.body.isNotEmpty) {
+          final branch =
+              _extractBranchFromContentsJson(upperResp.body, appInfo);
+          final rawBaseUrl =
+              'https://raw.githubusercontent.com/${appInfo.user}/${appInfo.repositories}/refs/heads/${branch ?? 'main'}/';
           final readme = decodeContentsReadme(upperResp.body);
           final etag = upperResp.headers['etag'];
           if (readme != null) {
@@ -918,8 +890,32 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
       return null;
     } catch (e) {
       appLog.error('GitHubChannel: 获取 README 失败 - $e');
+      // 请求失败（网络/限流/离线）：缓存仍显示，不随失败消失
+      try {
+        final cached = await ReadmeCache.instance
+            .get(appInfo.user, appInfo.repositories);
+        if (cached != null) return cached.readme;
+      } catch (_) {}
       return null;
     }
+  }
+
+  /// 从 contents API 响应 JSON 的 download_url 提取分支名（图片绝对化基准）。
+  /// 格式 https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{file}
+  /// 提取失败返回 null（调用方兜底 'main'）。
+  String? _extractBranchFromContentsJson(String body, AppSummary appInfo) {
+    try {
+      final decoded = jsonDecode(body);
+      if (decoded is Map && decoded['download_url'] is String) {
+        final segs = Uri.parse(decoded['download_url'] as String).pathSegments;
+        if (segs.length >= 3 &&
+            segs[0] == appInfo.user &&
+            segs[1] == appInfo.repositories) {
+          return segs[2];
+        }
+      }
+    } catch (_) {}
+    return null;
   }
 
   /// ApiList → Map（buildStatTags 按 'stargazers_count'/'forks_count' 读取；

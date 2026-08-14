@@ -53,9 +53,13 @@ class FakeGithubRestClient implements GithubRestClient {
   /// 用于构造"getAppInfo 成功但 fetchReadme 内部 apiList 失败"的场景
   int apiListFailuresRemaining;
 
+  /// apiList 调用次数（断言 fetchReadme 不再额外调 apiList：getAppInfo 内 1 次）
+  int apiListCallCount = 0;
+
   @override
   Future<ApiList> apiList(
       String user, dynamic repositories, CancelToken cancelToken) async {
+    apiListCallCount++;
     if (throwOnApiList) throw Exception('apiList 失败');
     if (apiListFailuresRemaining > 0) {
       apiListFailuresRemaining--;
@@ -206,10 +210,11 @@ void main() {
   group('GitHubChannel.fetchReadme（分块 README：contents API + ETag 缓存）', () {
     late Directory tempDir;
 
-    String readmeJson(String content) => jsonEncode({
+    String readmeJson(String content, {String? downloadUrl}) => jsonEncode({
           'name': 'README.md',
           'content': base64Encode(utf8.encode(content)),
           'encoding': 'base64',
+          if (downloadUrl != null) 'download_url': downloadUrl,
         });
 
     setUp(() {
@@ -224,16 +229,28 @@ void main() {
       }
     });
 
-    test('首次 200 + etag → readme 文本 + 缓存写入', () async {
+    test('首次 200（请求不带 ?ref=）+ download_url 提取分支 → 文本 + 图片绝对化 + 缓存写入',
+        () async {
       MetadataRepository.instance.debugClient =
           MockClient((request) async => http.Response('Not Found', 404));
 
+      final requestedUrls = <String>[];
       final channel = GitHubChannel(
         githubApi: FakeGithubRestClient(),
         httpClient: MockClient((request) async {
+          requestedUrls.add(request.url.toString());
           if (request.url.path.endsWith('/contents/README.md')) {
-            return http.Response(readmeJson('# Termux\n分块加载'), 200,
-                headers: {'etag': '"etag1"'});
+            // 不再依赖 apiList 分支：请求不带 ref（GitHub 默认分支语义）
+            expect(request.url.queryParameters.containsKey('ref'), isFalse);
+            return http.Response(
+              readmeJson(
+                '# Termux\n![截图](images/screenshot.png)',
+                downloadUrl:
+                    'https://raw.githubusercontent.com/termux/termux-app/main/README.md',
+              ),
+              200,
+              headers: {'etag': '"etag1"'},
+            );
           }
           return http.Response('Not Found', 404);
         }),
@@ -241,12 +258,79 @@ void main() {
 
       final result = await channel.fetchReadme('termux/termux-app');
       expect(result.success, isTrue);
-      expect(result.data, '# Termux\n分块加载');
+      // 请求 URL 不含 ref=
+      final readmeUrl =
+          requestedUrls.singleWhere((u) => u.contains('/contents/README.md'));
+      expect(readmeUrl.contains('ref='), isFalse);
+      // 文本解码正确 + 相对图片绝对化到提取分支（main）
+      expect(
+        result.data,
+        '# Termux\n![截图](https://raw.githubusercontent.com/termux/termux-app/refs/heads/main/images/screenshot.png)',
+      );
 
       final entry = await ReadmeCache.instance.get('termux', 'termux-app');
       expect(entry, isNotNull);
       expect(entry!.etag, '"etag1"');
-      expect(entry.readme, '# Termux\n分块加载');
+      expect(
+        entry.readme,
+        '# Termux\n![截图](https://raw.githubusercontent.com/termux/termux-app/refs/heads/main/images/screenshot.png)',
+      );
+    });
+
+    test('download_url 分支非 main（master）→ 图片绝对化用提取分支（非兜底）', () async {
+      MetadataRepository.instance.debugClient =
+          MockClient((request) async => http.Response('Not Found', 404));
+
+      final channel = GitHubChannel(
+        githubApi: FakeGithubRestClient(),
+        httpClient: MockClient((request) async {
+          if (request.url.path.endsWith('/contents/README.md')) {
+            return http.Response(
+              readmeJson(
+                '![图](img/x.png)',
+                downloadUrl:
+                    'https://raw.githubusercontent.com/termux/termux-app/master/README.md',
+              ),
+              200,
+              headers: {'etag': '"etagM"'},
+            );
+          }
+          return http.Response('Not Found', 404);
+        }),
+      );
+
+      final result = await channel.fetchReadme('termux/termux-app');
+      expect(result.success, isTrue);
+      expect(
+        result.data,
+        '![图](https://raw.githubusercontent.com/termux/termux-app/refs/heads/master/img/x.png)',
+      );
+    });
+
+    test('download_url 缺失 → 图片绝对化兜底 main（正文照常显示）', () async {
+      MetadataRepository.instance.debugClient =
+          MockClient((request) async => http.Response('Not Found', 404));
+
+      final channel = GitHubChannel(
+        githubApi: FakeGithubRestClient(),
+        httpClient: MockClient((request) async {
+          if (request.url.path.endsWith('/contents/README.md')) {
+            return http.Response(
+              readmeJson('![图](x.png)'),
+              200,
+              headers: {'etag': '"etag1"'},
+            );
+          }
+          return http.Response('Not Found', 404);
+        }),
+      );
+
+      final result = await channel.fetchReadme('termux/termux-app');
+      expect(result.success, isTrue);
+      expect(
+        result.data,
+        '![图](https://raw.githubusercontent.com/termux/termux-app/refs/heads/main/x.png)',
+      );
     });
 
     test('二次请求带 If-None-Match → 304 → 直接用缓存值', () async {
@@ -264,6 +348,7 @@ void main() {
           if (request.url.path.endsWith('/contents/README.md')) {
             requestedUrls.add(request.url.toString());
             expect(request.headers['If-None-Match'], '"etag1"');
+            expect(request.url.queryParameters.containsKey('ref'), isFalse);
             return http.Response('', 304);
           }
           return http.Response('Not Found', 404);
@@ -290,37 +375,78 @@ void main() {
       expect(result.data, isNull);
     });
 
-    test('default_branch 为空 → 不发起 contents 请求 → success(null)', () async {
+    test('不再依赖 apiList.default_branch：为 null 时仍发起 contents 请求并返回 README',
+        () async {
       MetadataRepository.instance.debugClient =
           MockClient((request) async => http.Response('Not Found', 404));
 
+      final fake = FakeGithubRestClient(
+        apiList: ApiList(
+          full_name: 'termux/termux-app',
+          html_url: 'https://github.com/termux/termux-app',
+          stargazers_count: 100,
+          forks: 20,
+          default_branch: null,
+        ),
+      );
       final requestedUrls = <String>[];
       final channel = GitHubChannel(
-        githubApi: FakeGithubRestClient(
-          apiList: ApiList(
-            full_name: 'termux/termux-app',
-            html_url: 'https://github.com/termux/termux-app',
-            stargazers_count: 100,
-            forks: 20,
-            default_branch: null,
-          ),
-        ),
+        githubApi: fake,
         httpClient: MockClient((request) async {
           requestedUrls.add(request.url.toString());
+          if (request.url.path.endsWith('/contents/README.md')) {
+            return http.Response(
+              readmeJson(
+                '# Termux',
+                downloadUrl:
+                    'https://raw.githubusercontent.com/termux/termux-app/main/README.md',
+              ),
+              200,
+              headers: {'etag': '"etag1"'},
+            );
+          }
           return http.Response('Not Found', 404);
         }),
       );
 
       final result = await channel.fetchReadme('termux/termux-app');
       expect(result.success, isTrue);
-      expect(result.data, isNull);
+      expect(result.data, '# Termux');
+      // 仍发起了 contents 请求（不再因 default_branch 为空提前返回）
       expect(
-        requestedUrls.any((u) => u.contains('/contents/')),
-        isFalse,
+        requestedUrls.any((u) => u.contains('/contents/README.md')),
+        isTrue,
       );
+      // 仅 getAppInfo 内部 1 次 apiList
+      expect(fake.apiListCallCount, 1);
     });
 
-    test('fetchReadme 内部 apiList 失败 + 有缓存 → 返回缓存文本（不再整路 failure）',
+    test('fetchReadme 不再额外调 apiList（getAppInfo 内 1 次，fetchReadme 后仍为 1）',
+        () async {
+      MetadataRepository.instance.debugClient =
+          MockClient((request) async => http.Response('Not Found', 404));
+
+      final fake = FakeGithubRestClient();
+      final channel = GitHubChannel(
+        githubApi: fake,
+        httpClient: MockClient((request) async {
+          if (request.url.path.endsWith('/contents/README.md')) {
+            return http.Response(
+              readmeJson('# Termux'),
+              200,
+              headers: {'etag': '"etag1"'},
+            );
+          }
+          return http.Response('Not Found', 404);
+        }),
+      );
+
+      final result = await channel.fetchReadme('termux/termux-app');
+      expect(result.success, isTrue);
+      expect(fake.apiListCallCount, 1);
+    });
+
+    test('contents 请求失败（httpClient 抛异常）+ 有缓存 → 返回缓存文本（catch 兜底）',
         () async {
       MetadataRepository.instance.debugClient =
           MockClient((request) async => http.Response('Not Found', 404));
@@ -330,9 +456,8 @@ void main() {
           etag: '"etag0"', readme: cachedReadme);
 
       final channel = GitHubChannel(
-        // 第一次 apiList（getAppInfo 内）成功，第二次（fetchReadme 内）失败
-        githubApi: FakeGithubRestClient(apiListFailuresRemaining: 1),
-        httpClient: MockClient((request) async => http.Response('', 404)),
+        githubApi: FakeGithubRestClient(),
+        httpClient: MockClient((request) async => throw Exception('网络不可用')),
       );
 
       final result = await channel.fetchReadme('termux/termux-app');
@@ -340,17 +465,19 @@ void main() {
       expect(result.data, cachedReadme);
     });
 
-    test('fetchReadme 内部 apiList 失败 + 无缓存 → failure（保持失败可感知）', () async {
+    test('contents 请求失败 + 无缓存 → success(null)（catch 兜底无缓存不整路失败）',
+        () async {
       MetadataRepository.instance.debugClient =
           MockClient((request) async => http.Response('Not Found', 404));
 
       final channel = GitHubChannel(
-        githubApi: FakeGithubRestClient(apiListFailuresRemaining: 1),
-        httpClient: MockClient((request) async => http.Response('', 404)),
+        githubApi: FakeGithubRestClient(),
+        httpClient: MockClient((request) async => throw Exception('网络不可用')),
       );
 
       final result = await channel.fetchReadme('termux/termux-app');
-      expect(result.success, isFalse);
+      expect(result.success, isTrue);
+      expect(result.data, isNull);
     });
 
     test('getAppInfo 失败（apiList 抛异常）+ 有缓存 → 按 appId 拆 owner/repo 兜底返回缓存',
