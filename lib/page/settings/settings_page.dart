@@ -302,11 +302,8 @@ class _SettingsPageState extends State<SettingsPage> {
       margin: AppSpacing.allLG,
       child: Column(
         children: [
-          ListTile(
-            leading: const Icon(Icons.info_outline),
-            title: const Text('版本'),
-            subtitle: const Text('1.0.19'),
-          ),
+          // 版本（异步读取平台包信息，真实 versionName）
+          const _AboutVersionTile(),
           const Divider(height: 1),
           // 数据库更新（放在版本下面）
           const _DataUpdateTile(),
@@ -321,6 +318,46 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// 版本 Tile：异步读取实际版本号（package_info_plus）
+/// 加载中显示 '…'；获取失败（如测试环境）显示 'unknown'
+class _AboutVersionTile extends StatefulWidget {
+  const _AboutVersionTile();
+
+  @override
+  State<_AboutVersionTile> createState() => _AboutVersionTileState();
+}
+
+class _AboutVersionTileState extends State<_AboutVersionTile> {
+  String? _version;
+  bool _loaded = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadVersion();
+  }
+
+  Future<void> _loadVersion() async {
+    final version = await AppVersionService.versionName();
+    if (mounted) {
+      setState(() {
+        _version = version;
+        _loaded = true;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final subtitle = !_loaded ? '…' : (_version ?? 'unknown');
+    return ListTile(
+      leading: const Icon(Icons.info_outline),
+      title: const Text('版本'),
+      subtitle: Text(subtitle),
     );
   }
 }

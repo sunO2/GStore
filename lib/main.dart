@@ -133,8 +133,9 @@ main() async {
 
   // 先初始化 LogManager（必须在最开始，用于拦截日志）
   Get.put(LogManager.instance);
+  final appVersion = await AppVersionService.versionName() ?? 'unknown';
   appLog.info('应用启动', data: {
-    'version': '1.0.19',
+    'version': appVersion,
   });
 
   // 重定向 debugPrint 到 appLog（这样所有 debugPrint 都会进入日志查看器）
