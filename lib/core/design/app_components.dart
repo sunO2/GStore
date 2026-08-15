@@ -978,17 +978,19 @@ class _ElegantRingPainter extends CustomPainter {
     final glowColor = breatheColor.withAlpha(90);
 
     // 光晕：弧线下的柔和辉光（模糊层）
-    // 头亮尾渐隐到透明，避免两端都是亮点造成断层
+    // 固定全圆无缝色环：startAngle 固定 0、endAngle 固定 2π，首尾同色无缝衔接，
+    // 避免 clamp 在"弧尾跨画布 0°"时 t 突变到最亮色造成 3 点钟横向割裂线
     final glowPaint = Paint()
       ..shader = SweepGradient(
-        startAngle: mainArcStart,
-        endAngle: mainArcStart + mainArcSweep,
+        startAngle: 0,
+        endAngle: 2 * math.pi,
         colors: [
           glowColor,
           glowColor.withAlpha(20),
           glowColor.withAlpha(0),
+          glowColor,
         ],
-        stops: const [0.0, 0.6, 1.0],
+        stops: const [0.0, 0.4, 0.8, 1.0],
       ).createShader(mainRect)
       ..strokeWidth = strokeWidth * 2.4
       ..style = PaintingStyle.stroke
@@ -997,17 +999,19 @@ class _ElegantRingPainter extends CustomPainter {
 
     canvas.drawArc(mainRect, mainArcStart, mainArcSweep, false, glowPaint);
 
-    // 主弧线：渐变填充（头亮 → 尾部渐隐），实现流畅的流光拖尾效果
+    // 主弧线：固定全圆无缝色环（亮→暗→亮），弧扫过固定色环实现流光拖尾，
+    // 无 clamp 边界跳变（第一圈 startAngle<2π 时的 3 点钟割裂线已消除）
     final mainPaint = Paint()
       ..shader = SweepGradient(
-        startAngle: mainArcStart,
-        endAngle: mainArcStart + mainArcSweep,
+        startAngle: 0,
+        endAngle: 2 * math.pi,
         colors: [
           breatheColor,
           breatheColor.withAlpha(200),
           breatheColor.withAlpha(20),
+          breatheColor,
         ],
-        stops: const [0.0, 0.75, 1.0],
+        stops: const [0.0, 0.3, 0.7, 1.0], // 亮→暗→亮 无缝环
       ).createShader(mainRect)
       ..strokeWidth = strokeWidth
       ..style = PaintingStyle.stroke
@@ -1029,13 +1033,14 @@ class _ElegantRingPainter extends CustomPainter {
         Rect.fromCircle(center: center, radius: secondaryRadius);
     final secondaryPaint = Paint()
       ..shader = SweepGradient(
-        startAngle: secondaryStart,
-        endAngle: secondaryStart + secondarySweep,
+        startAngle: 0,
+        endAngle: 2 * math.pi, // 固定全圆无缝色环，避免 clamp 跳变（弧扫过固定色环）
         colors: [
           secondaryColor,
           secondaryColor.withAlpha(40),
+          secondaryColor,
         ],
-        stops: const [0.0, 1.0],
+        stops: const [0.0, 0.5, 1.0], // 亮→暗→亮 无缝环
       ).createShader(secondaryRect)
       ..strokeWidth = strokeWidth * 0.75
       ..style = PaintingStyle.stroke
@@ -1057,13 +1062,14 @@ class _ElegantRingPainter extends CustomPainter {
     final smallRect = Rect.fromCircle(center: center, radius: smallRadius);
     final smallPaint = Paint()
       ..shader = SweepGradient(
-        startAngle: smallStart,
-        endAngle: smallStart + smallSweep,
+        startAngle: 0,
+        endAngle: 2 * math.pi, // 固定全圆无缝色环，避免 clamp 跳变（弧扫过固定色环）
         colors: [
           smallColor,
           smallColor.withAlpha(30),
+          smallColor,
         ],
-        stops: const [0.0, 1.0],
+        stops: const [0.0, 0.5, 1.0], // 亮→暗→亮 无缝环
       ).createShader(smallRect)
       ..strokeWidth = strokeWidth * 0.5
       ..style = PaintingStyle.stroke
