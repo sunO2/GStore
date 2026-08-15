@@ -31,6 +31,7 @@ Map<String, dynamic> _$BackupMetadataToJson(BackupMetadata instance) =>
 const _$BackupVersionEnumMap = {
   BackupVersion.v1_0: '1.0',
   BackupVersion.v2_0: '2.0',
+  BackupVersion.v2_1: '2.1',
 };
 
 BackupOptions _$BackupOptionsFromJson(Map<String, dynamic> json) =>
@@ -113,6 +114,20 @@ Map<String, dynamic> _$ChannelAppBackupItemToJson(
       'extra': instance.extra,
     };
 
+BackupTagItem _$BackupTagItemFromJson(Map<String, dynamic> json) =>
+    BackupTagItem(
+      channelId: json['channelId'] as String,
+      appId: json['appId'] as String,
+      tag: json['tag'] as String,
+    );
+
+Map<String, dynamic> _$BackupTagItemToJson(BackupTagItem instance) =>
+    <String, dynamic>{
+      'channelId': instance.channelId,
+      'appId': instance.appId,
+      'tag': instance.tag,
+    };
+
 BackupData _$BackupDataFromJson(Map<String, dynamic> json) => BackupData(
       metadata:
           BackupMetadata.fromJson(json['metadata'] as Map<String, dynamic>),
@@ -130,6 +145,9 @@ BackupData _$BackupDataFromJson(Map<String, dynamic> json) => BackupData(
           const {},
       appConfig: json['appConfig'] as Map<String, dynamic>?,
       extras: json['extras'] as Map<String, dynamic>?,
+      tags: (json['tags'] as List<dynamic>?)
+          ?.map((e) => BackupTagItem.fromJson(e as Map<String, dynamic>))
+          .toList(),
     );
 
 Map<String, dynamic> _$BackupDataToJson(BackupData instance) =>
@@ -139,4 +157,5 @@ Map<String, dynamic> _$BackupDataToJson(BackupData instance) =>
       'channelApps': instance.channelApps,
       'appConfig': instance.appConfig,
       'extras': instance.extras,
+      'tags': instance.tags,
     };

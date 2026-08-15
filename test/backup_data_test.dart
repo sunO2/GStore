@@ -223,6 +223,33 @@ void main() {
     });
   });
 
+  group('BackupTagItem', () {
+    test('toJson / fromJson 往返', () {
+      const item = BackupTagItem(
+        channelId: 'github',
+        appId: 'termux/termux-app',
+        tag: '效率工具',
+      );
+      final json = item.toJson();
+      expect(json['channelId'], 'github');
+      expect(json['appId'], 'termux/termux-app');
+      expect(json['tag'], '效率工具');
+
+      final restored = BackupTagItem.fromJson(json);
+      expect(restored.channelId, 'github');
+      expect(restored.appId, 'termux/termux-app');
+      expect(restored.tag, '效率工具');
+    });
+
+    test('toAddedAppTag 转换（导入恢复用）', () {
+      const item = BackupTagItem(channelId: 'fdroid', appId: 'com.a', tag: '游戏');
+      final tag = item.toAddedAppTag();
+      expect(tag.channelId, 'fdroid');
+      expect(tag.appId, 'com.a');
+      expect(tag.tag, '游戏');
+    });
+  });
+
   group('ChannelAppBackupItem', () {
     test('toJson / fromJson 往返', () {
       final item = ChannelAppBackupItem(
@@ -355,6 +382,88 @@ void main() {
       expect(restored.metadata.version, BackupVersion.v1_0);
       expect(restored.apps.length, 1);
       expect(restored.channelApps, isEmpty);
+      expect(restored.tags, isNull);
+    });
+
+    test('v2.1 toJson / fromJson 往返（含 tags + proxy_url）', () {
+      final data = BackupData(
+        metadata: BackupMetadata(
+          version: BackupVersion.v2_1,
+          exportDate: DateTime(2026, 1, 1),
+          appVersion: '1.0.0',
+          totalApps: 1,
+          channelCounts: {'github': 1},
+          options: const BackupOptions(),
+        ),
+        apps: [makeAppItem()],
+        tags: const [
+          BackupTagItem(channelId: 'github', appId: 'a/b', tag: '效率工具'),
+          BackupTagItem(channelId: 'github', appId: 'a/b', tag: '我的标签'),
+        ],
+        appConfig: {'proxy_url': 'https://gh-proxy.org/'},
+      );
+      final json = roundTripJson(data.toJson());
+      expect(json['metadata']['version'], '2.1');
+      expect(json['appConfig'], {'proxy_url': 'https://gh-proxy.org/'});
+      final tagsJson = json['tags'] as List;
+      expect(tagsJson, hasLength(2));
+      expect(tagsJson.first,
+          {'channelId': 'github', 'appId': 'a/b', 'tag': '效率工具'});
+
+      final restored = BackupData.fromJson(json);
+      expect(restored.metadata.version, BackupVersion.v2_1);
+      expect(restored.apps.length, 1);
+      expect(restored.tags, hasLength(2));
+      expect(restored.tags!.first.channelId, 'github');
+      expect(restored.tags!.first.appId, 'a/b');
+      expect(restored.tags!.first.tag, '效率工具');
+      expect(restored.tags![1].tag, '我的标签');
+      expect(restored.appConfig, {'proxy_url': 'https://gh-proxy.org/'});
+    });
+
+    test('v2.0 兼容：JSON 无 tags 字段 → tags null 不崩', () {
+      final v20Json = {
+        'metadata': {
+          'version': '2.0',
+          'exportDate': '2026-01-01T00:00:00.000',
+          'appVersion': '1.0.0',
+          'totalApps': 1,
+          'channelCounts': <String, int>{'github': 1},
+          'options': <String, dynamic>{},
+        },
+        'apps': [
+          {
+            'channelId': 'github',
+            'appId': 'a/b',
+            'appName': 'A',
+            'addTime': 1,
+            'sortOrder': 0,
+            'isEnabled': true,
+          },
+        ],
+        'channelApps': <String, dynamic>{},
+      };
+      final restored = BackupData.fromJson(v20Json);
+      expect(restored.metadata.version, BackupVersion.v2_0);
+      expect(restored.apps.length, 1);
+      expect(restored.channelApps, isEmpty);
+      expect(restored.tags, isNull);
+    });
+
+    test('v2.1 metadata 序列化', () {
+      final meta = BackupMetadata(
+        version: BackupVersion.v2_1,
+        exportDate: DateTime(2026, 1, 1),
+        appVersion: '1.0.0',
+        totalApps: 1,
+        channelCounts: {},
+        options: const BackupOptions(),
+      );
+      final json = roundTripJson(meta.toJson());
+      expect(json['version'], '2.1');
+
+      final restored = BackupMetadata.fromJson(json);
+      expect(restored.version, BackupVersion.v2_1);
     });
 
     test('getAppsByChannel 过滤', () {
