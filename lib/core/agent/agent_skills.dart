@@ -97,8 +97,8 @@ class AgentSkills {
       nameEn: 'Backup & Restore',
       triggers: '用户要求备份、恢复、导出、导入数据时',
       triggersEn: 'When the user asks to back up, restore, export, or import data',
-      workflow: '1. 导出备份：调用 backup export，可选择是否包含应用配置\n2. 导入/恢复：调用 backup import（需 filePath）\n3. 恢复会覆盖现有数据，**必须先 confirmAction 确认**\n4. 备份文件保存位置告知用户\n5. WebDAV 云备份：确认已配置网盘，未配置先引导到设置\n6. 操作完成告知结果，失败给出存储权限/路径检查建议',
-      workflowEn: '1. Export: call backup export; optionally include app config\n2. Import/restore: call backup import (needs filePath)\n3. Restore overwrites existing data - you MUST confirm with confirmAction first\n4. Inform the user where the backup file was saved\n5. WebDAV backup: verify the drive is configured; guide to Settings if not\n6. Report results; on failure suggest checking storage permission or path',
+      workflow: '1. 导出备份：调用 backup export，可选择是否包含应用配置。备份内容（v2.1）：已添加应用、渠道库、应用配置（主题等）、应用分类标签、代理配置、F-Droid 仓库源、Agent 模型配置；不含下载记录\n2. 导入/恢复：调用 backup import（需 filePath）\n3. 恢复会覆盖现有数据，**必须先 confirmAction 确认**\n4. 备份文件保存位置告知用户\n5. WebDAV 云备份：确认已配置网盘，未配置先引导到设置\n6. 操作完成告知结果，失败给出存储权限/路径检查建议',
+      workflowEn: '1. Export: call backup export; optionally include app config. Backup contents (v2.1): added apps, channel databases, app config (theme etc.), app category tags, proxy config, F-Droid repository sources, Agent model config; download records are not included\n2. Import/restore: call backup import (needs filePath)\n3. Restore overwrites existing data - you MUST confirm with confirmAction first\n4. Inform the user where the backup file was saved\n5. WebDAV backup: verify the drive is configured; guide to Settings if not\n6. Report results; on failure suggest checking storage permission or path',
     ),
     AgentSkill(
       name: '已安装应用管理',
