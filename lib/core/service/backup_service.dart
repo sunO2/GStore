@@ -149,6 +149,20 @@ class BackupService implements IBackupService, IWebDavService {
       } catch (e) {
         appLog.error('BackupService: 导出应用配置失败 - $e');
       }
+
+      // 代理配置（B 轨：ConfigService 单独存储，不在 ConfigManager 注册表内），
+      // 并入 appConfig 保持配置一致性；导入时走 ConfigService.set 恢复
+      if (appConfig != null) {
+        try {
+          final proxy = await ConfigService.instance.get(ConfigKeys.proxyUrl);
+          if (proxy != null && proxy.toString().isNotEmpty) {
+            appConfig['proxy_url'] = proxy.toString();
+            appLog.info('BackupService: 导出代理配置完成');
+          }
+        } catch (e) {
+          appLog.error('BackupService: 导出代理配置失败 - $e');
+        }
+      }
     }
 
     // 导出扩展数据（F-Droid 源、Agent 配置等）
@@ -186,6 +200,21 @@ class BackupService implements IBackupService, IWebDavService {
       appLog.error('BackupService: 导出 Agent 配置失败 - $e');
     }
 
+    // 导出用户分类标签（v2.1 新增）
+    List<BackupTagItem>? backupTags;
+    try {
+      final tags = await _aggregatorDb.appTagDao.getAllTags();
+      if (tags.isNotEmpty) {
+        backupTags = tags
+            .map((t) =>
+                BackupTagItem(channelId: t.channelId, appId: t.appId, tag: t.tag))
+            .toList();
+        appLog.info('BackupService: 导出用户标签 ${tags.length} 个');
+      }
+    } catch (e) {
+      appLog.error('BackupService: 导出用户标签失败 - $e');
+    }
+
     // 构建元数据
     final channelCounts = <String, int>{};
     for (final app in allApps) {
@@ -193,7 +222,7 @@ class BackupService implements IBackupService, IWebDavService {
     }
 
     final metadata = BackupMetadata(
-      version: BackupVersion.v2_0, // 使用 v2.0 版本
+      version: BackupVersion.v2_1, // 使用 v2.1 版本（含分类标签 + 代理配置）
       exportDate: DateTime.now(),
       appVersion: await AppVersionService.versionName() ?? 'unknown',
       totalApps: allApps.length,
@@ -207,6 +236,7 @@ class BackupService implements IBackupService, IWebDavService {
       channelApps: channelAppsMap,
       appConfig: appConfig,
       extras: extras.isNotEmpty ? extras : null,
+      tags: backupTags,
     );
 
     appLog.info('BackupService: 导出完成 - ${allApps.length} 个聚合应用, ${channelAppsMap.length} 个渠道有额外数据${includeAppConfig ? ", 包含应用配置" : ""}, 扩展数据 ${extras.length} 类');
@@ -380,8 +410,7 @@ class BackupService implements IBackupService, IWebDavService {
     }
 
     // 验证版本
-    if (backupData.metadata.version != BackupVersion.v1_0 &&
-        backupData.metadata.version != BackupVersion.v2_0) {
+    if (!_isSupportedVersion(backupData.metadata.version)) {
       appLog.error('BackupService: ❌ 不支持的版本: ${backupData.metadata.version}');
       throw BackupException(
         '不支持的备份版本: ${backupData.metadata.version}',
@@ -448,8 +477,7 @@ class BackupService implements IBackupService, IWebDavService {
 
     try {
       // 验证版本
-      if (backupData.metadata.version != BackupVersion.v1_0 &&
-          backupData.metadata.version != BackupVersion.v2_0) {
+      if (!_isSupportedVersion(backupData.metadata.version)) {
         appLog.error('BackupService: ❌ 不支持的版本: ${backupData.metadata.version}');
         throw BackupException(
           '不支持的备份版本: ${backupData.metadata.version}',
@@ -520,8 +548,10 @@ class BackupService implements IBackupService, IWebDavService {
           break;
       }
 
-      // 导入渠道数据库数据
-      if (backupData.metadata.version == BackupVersion.v2_0 && backupData.channelApps.isNotEmpty) {
+      // 导入渠道数据库数据（v2.0 及更新版本包含渠道数据）
+      if ((backupData.metadata.version == BackupVersion.v2_0 ||
+              backupData.metadata.version == BackupVersion.v2_1) &&
+          backupData.channelApps.isNotEmpty) {
         appLog.info('BackupService: 开始导入渠道数据库数据（${backupData.channelApps.length} 个渠道）');
         await _importChannelApps(backupData.channelApps, mode);
       } else {
@@ -555,6 +585,42 @@ class BackupService implements IBackupService, IWebDavService {
         }
       } else {
         debugPrint('BackupService: 备份中不包含应用配置');
+      }
+
+      // 代理配置（B 轨：不走 ConfigManager，直接写 ConfigService，与配置导入相互独立）
+      final proxyValue = backupData.appConfig?['proxy_url'];
+      if (proxyValue != null && proxyValue.toString().isNotEmpty) {
+        try {
+          final proxyResult = await ConfigService.instance.set(
+            ConfigKeys.proxyUrl,
+            proxyValue.toString(),
+          );
+          if (proxyResult.success) {
+            appLog.info('BackupService: ✅ 代理配置恢复完成');
+          } else {
+            appLog.error(
+                'BackupService: ⚠️ 代理配置恢复失败 - ${proxyResult.message}');
+          }
+        } catch (e) {
+          appLog.error('BackupService: 恢复代理配置失败 - $e');
+        }
+      } else {
+        debugPrint('BackupService: 备份中不包含代理配置');
+      }
+
+      // 导入用户分类标签（v2.1 新增；insertTags 复合主键冲突 replace，幂等追加）
+      if (backupData.tags != null && backupData.tags!.isNotEmpty) {
+        try {
+          final tagItems = backupData.tags!
+              .map((t) => t.toAddedAppTag())
+              .toList();
+          await _aggregatorDb.appTagDao.insertTags(tagItems);
+          appLog.info('BackupService: ✅ 用户标签恢复完成（${tagItems.length} 个）');
+        } catch (e) {
+          appLog.error('BackupService: 恢复用户标签失败 - $e');
+        }
+      } else {
+        debugPrint('BackupService: 备份中不包含用户标签');
       }
 
       // 导入扩展数据（F-Droid 源、Agent 配置等）
@@ -796,6 +862,20 @@ class BackupService implements IBackupService, IWebDavService {
 
   // ==================== 辅助方法 ====================
 
+  /// 支持的备份版本（v1.0 / v2.0 / v2.1）
+  bool _isSupportedVersion(BackupVersion version) {
+    return version == BackupVersion.v1_0 ||
+        version == BackupVersion.v2_0 ||
+        version == BackupVersion.v2_1;
+  }
+
+  /// 测试用：注入聚合数据库（跳过 initialize 的 path_provider 依赖）
+  @visibleForTesting
+  void setTestDatabases(AppAddedDatabase aggregatorDb) {
+    _aggregatorDb = aggregatorDb;
+    _isInitialized = true;
+  }
+
   /// 获取默认导出目录
   Future<String> getDefaultExportDirectory() async {
     try {
@@ -1022,8 +1102,7 @@ class BackupService implements IBackupService, IWebDavService {
     final backupData = BackupData.fromJson(jsonData);
 
     // 验证版本
-    if (backupData.metadata.version != BackupVersion.v1_0 &&
-        backupData.metadata.version != BackupVersion.v2_0) {
+    if (!_isSupportedVersion(backupData.metadata.version)) {
       throw BackupException(
         '不支持的备份版本: ${backupData.metadata.version}',
       );

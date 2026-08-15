@@ -12,6 +12,9 @@ enum BackupVersion {
 
   @JsonValue('2.0')
   v2_0, // 聚合数据库 + 渠道数据库
+
+  @JsonValue('2.1')
+  v2_1, // v2.0 + 用户分类标签 + 代理配置
 }
 
 /// 备份元数据
@@ -337,6 +340,35 @@ class ChannelAppBackupItem {
   }
 }
 
+/// 标签备份项（用户自定义分类标签，与 AddedAppTag 同构）
+@JsonSerializable()
+class BackupTagItem {
+  /// 渠道 ID
+  final String channelId;
+
+  /// 应用 ID
+  final String appId;
+
+  /// 用户自定义标签
+  final String tag;
+
+  const BackupTagItem({
+    required this.channelId,
+    required this.appId,
+    required this.tag,
+  });
+
+  factory BackupTagItem.fromJson(Map<String, dynamic> json) =>
+      _$BackupTagItemFromJson(json);
+
+  Map<String, dynamic> toJson() => _$BackupTagItemToJson(this);
+
+  /// 转换为 AddedAppTag（导入恢复用，addTime 取当前时间）
+  AddedAppTag toAddedAppTag() {
+    return AddedAppTag(channelId: channelId, appId: appId, tag: tag);
+  }
+}
+
 /// 完整备份数据
 @JsonSerializable()
 class BackupData {
@@ -363,12 +395,17 @@ class BackupData {
   @JsonKey(includeFromJson: true, includeToJson: true)
   final Map<String, dynamic>? extras;
 
+  /// 用户分类标签（v2.1 新增；v2.0 及更早备份不含此字段，缺失 → null）
+  @JsonKey(includeFromJson: true, includeToJson: true)
+  final List<BackupTagItem>? tags;
+
   const BackupData({
     required this.metadata,
     required this.apps,
     this.channelApps = const {},
     this.appConfig,
     this.extras,
+    this.tags,
   });
 
   factory BackupData.fromJson(Map<String, dynamic> json) {
@@ -382,6 +419,11 @@ class BackupData {
         channelApps: {},
         appConfig: json['appConfig'] as Map<String, dynamic>?,
         extras: json['extras'] as Map<String, dynamic>?,
+        tags: json['tags'] == null
+            ? null
+            : (json['tags'] as List)
+                .map((item) => BackupTagItem.fromJson(item))
+                .toList(),
       );
     }
 
@@ -425,6 +467,7 @@ class BackupData {
     Map<String, List<ChannelAppBackupItem>>? channelApps,
     Map<String, dynamic>? appConfig,
     Map<String, dynamic>? extras,
+    List<BackupTagItem>? tags,
   }) {
     return BackupData(
       metadata: metadata ?? this.metadata,
@@ -432,6 +475,7 @@ class BackupData {
       channelApps: channelApps ?? this.channelApps,
       appConfig: appConfig ?? this.appConfig,
       extras: extras ?? this.extras,
+      tags: tags ?? this.tags,
     );
   }
 }
