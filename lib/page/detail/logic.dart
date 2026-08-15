@@ -284,6 +284,12 @@ class DetailLogic extends GetxController {
         _updateDetailInfo((inner) {
           final extra = Map<String, dynamic>.from(inner.extra);
           extra['apiData'] = apiData;
+          // metadata 全量并入 extra（versionCode 等供更新检测消费）
+          final meta = apiData['metadata'];
+          if (meta is Map) {
+            extra['metadata'] = Map<String, dynamic>.from(meta);
+          }
+          final metaVersion = apiData['versionName']?.toString();
           final sections = [...inner.sections];
           // 与原 _buildSections 语义一致：有 stars/forks 才声明统计区块
           if ((apiData['stargazers_count'] != null ||
@@ -291,7 +297,13 @@ class DetailLogic extends GetxController {
               !sections.contains(DetailSection.statistics)) {
             sections.add(DetailSection.statistics);
           }
-          return inner.copyWith(extra: extra, sections: sections);
+          return inner.copyWith(
+            extra: extra,
+            // metadata versionName 优先（APK 提取，更准确）；否则 releases 首项
+            // （_loadDownloads 兜底 inner.version ?? downloads.first.version）
+            version: metaVersion?.isNotEmpty == true ? metaVersion : inner.version,
+            sections: sections,
+          );
         });
       }
     } catch (e) {

@@ -437,10 +437,19 @@ class LocalDbChannel extends IChannel with AppUpdateCheckMixin {
           appInfo.repositories,
           CancelToken(),
         );
-        return ChannelResult.success(
-          data: _apiListToMap(apiList),
-          from: ChannelType.localDb,
+        final data = _apiListToMap(apiList);
+        // 并入 metadata（APK 提取的 versionName/versionCode）：fetchInfo 内部
+        // 兜底异常/未收录 → null，不带 metadata 键，不阻塞不报错
+        final metadata = await MetadataRepository.instance.fetchInfo(
+          appInfo.user,
+          appInfo.repositories,
         );
+        if (metadata != null) {
+          data['versionName'] = metadata['versionName']?.toString();
+          data['versionCode'] = metadata['versionCode'];
+          data['metadata'] = metadata;
+        }
+        return ChannelResult.success(data: data, from: ChannelType.localDb);
       } catch (e) {
         // GitHub API 失败不影响整体流程，统计置 null
         appLog.error('LocalDbChannel: ✗ 获取 GitHub 统计失败 - $e');

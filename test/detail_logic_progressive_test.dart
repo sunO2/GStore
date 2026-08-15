@@ -470,6 +470,67 @@ void main() {
     expect(logic.state.isLoadingDetail.value, isFalse);
     expect(logic.state.errorMessage.value, isEmpty);
   });
+
+  test('g) fetchStatistics 带 metadata versionName → version 优先于 downloads 首项', () async {
+    channel.downloadsCompleter = Completer()
+      ..complete(ChannelResult.success(
+        data: [
+          DownloadInfo(
+            url: 'https://example.com/a.apk',
+            name: 'a.apk',
+            version: '1.2.0',
+          ),
+        ],
+        from: ChannelType.github,
+      ));
+    channel.statisticsCompleter = Completer()
+      ..complete(ChannelResult.success(
+        data: {
+          'stargazers_count': 100,
+          'forks_count': 20,
+          'versionName': '2.1.0',
+          'versionCode': 210,
+          'metadata': {'versionName': '2.1.0', 'versionCode': 210},
+        },
+        from: ChannelType.github,
+      ));
+
+    await logic.loadDetail();
+
+    final detail = logic.state.detailInfo.value!;
+    // metadata versionName（APK 提取）优先于 releases 首项 version
+    expect(detail.version, '2.1.0');
+    // metadata 全量进入 extra（versionCode 供更新检测消费）
+    expect(detail.extra['metadata'], {'versionName': '2.1.0', 'versionCode': 210});
+    expect(detail.extra['apiData'], isA<Map<String, dynamic>>());
+    expect(logic.state.isLoadingDetail.value, isFalse);
+  });
+
+  test('h) fetchStatistics 无 versionName → version 保持 downloads 首项（回归）', () async {
+    channel.downloadsCompleter = Completer()
+      ..complete(ChannelResult.success(
+        data: [
+          DownloadInfo(
+            url: 'https://example.com/a.apk',
+            name: 'a.apk',
+            version: '1.2.0',
+          ),
+        ],
+        from: ChannelType.github,
+      ));
+    channel.statisticsCompleter = Completer()
+      ..complete(ChannelResult.success(
+        data: {'stargazers_count': 100, 'forks_count': 20},
+        from: ChannelType.github,
+      ));
+
+    await logic.loadDetail();
+
+    final detail = logic.state.detailInfo.value!;
+    expect(detail.version, '1.2.0');
+    expect(detail.extra.containsKey('metadata'), isFalse);
+    expect(logic.state.isLoadingDetail.value, isFalse);
+  });
 }
 
 /// 旧流程 getAppDetail 返回的完整详情（覆盖截图/下载/更新日志/权限/评分等全部区块）
