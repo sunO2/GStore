@@ -195,7 +195,7 @@ class BackupService implements IBackupService, IWebDavService {
     final metadata = BackupMetadata(
       version: BackupVersion.v2_0, // 使用 v2.0 版本
       exportDate: DateTime.now(),
-      appVersion: '1.0.24',
+      appVersion: await AppVersionService.versionName() ?? 'unknown',
       totalApps: allApps.length,
       channelCounts: channelCounts,
       options: exportOptions,
