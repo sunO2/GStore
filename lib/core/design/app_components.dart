@@ -844,11 +844,11 @@ class _AppLoadingState extends State<AppLoading>
 
     _controller.addListener(() {
       final currentValue = _controller.value;
-      // 当值从接近 1 变回接近 0 时，表示完成了一个循环
-      if (_lastValue > 0.9 && currentValue < 0.1) {
-        setState(() {
-          _completedCycles += 1.0;
-        });
+      // value 递减 = 完成一圈：立即累加（无需 setState——
+      // AnimatedBuilder 已监听 _controller，同帧重建读到新值，
+      // progress 严格连续，消除弧起点回跳/水平位置亮线）
+      if (currentValue < _lastValue) {
+        _completedCycles += 1.0;
       }
       _lastValue = currentValue;
     });
