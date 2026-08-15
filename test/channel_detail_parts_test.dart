@@ -598,6 +598,54 @@ void main() {
       final result = await channel.fetchStatistics('termux/termux-app');
       expect(result.success, isFalse);
     });
+
+    test('info.json 200 → 并入 metadata（versionName/versionCode/metadata 全量）', () async {
+      MetadataRepository.instance.debugClient = MockClient((request) async {
+        if (request.url.path.endsWith('/info.json')) {
+          return http.Response(
+            jsonEncode({
+              'versionName': '2.1.0',
+              'versionCode': 210,
+              'packageName': 'com.termux',
+            }),
+            200,
+          );
+        }
+        return http.Response('Not Found', 404);
+      });
+
+      final channel = GitHubChannel(
+        githubApi: FakeGithubRestClient(),
+        httpClient: MockClient((request) async => http.Response('', 404)),
+      );
+
+      final result = await channel.fetchStatistics('termux/termux-app');
+      expect(result.success, isTrue);
+      final map = result.data!;
+      expect(map['versionName'], '2.1.0');
+      expect(map['versionCode'], 210);
+      expect(map['metadata'], isA<Map<String, dynamic>>());
+      expect((map['metadata'] as Map)['packageName'], 'com.termux');
+      // 原有统计字段保留
+      expect(map['stargazers_count'], 100);
+      expect(map['forks_count'], 20);
+    });
+
+    test('info.json 404（未收录）→ 无 metadata 键不报错', () async {
+      MetadataRepository.instance.debugClient =
+          MockClient((request) async => http.Response('Not Found', 404));
+
+      final channel = GitHubChannel(
+        githubApi: FakeGithubRestClient(),
+        httpClient: MockClient((request) async => http.Response('', 404)),
+      );
+
+      final result = await channel.fetchStatistics('termux/termux-app');
+      expect(result.success, isTrue);
+      expect(result.data!.containsKey('metadata'), isFalse);
+      expect(result.data!.containsKey('versionName'), isFalse);
+      expect(result.data!['stargazers_count'], 100);
+    });
   });
 
   group('LocalDbChannel（分块加载）', () {
@@ -617,6 +665,9 @@ void main() {
       // （历史命名不一致；生产库为预置文件不受影响）——补建与生产库一致的 apps 表。
       // AppInfoDao 无写接口（生产由整库替换更新），故用原始 sqflite 写入
       db = await ($FloorAppInfoDatabase.inMemoryDatabaseBuilder()).build();
+      // fetchStatistics 并入 metadata 会走 fetchInfo：默认未收录（404），避免真网络
+      MetadataRepository.instance.debugClient =
+          MockClient((request) async => http.Response('Not Found', 404));
       await db.database.execute('''
         CREATE TABLE IF NOT EXISTS apps (
           appId TEXT NOT NULL,
@@ -704,6 +755,32 @@ void main() {
       final result = await channel.fetchStatistics('com.termux');
       expect(result.success, isTrue);
       expect(result.data, isNull);
+    });
+
+    test('fetchStatistics：info.json 200 → 并入 metadata（versionName/versionCode/metadata）',
+        () async {
+      MetadataRepository.instance.debugClient = MockClient((request) async {
+        if (request.url.path.endsWith('/info.json')) {
+          return http.Response(
+            jsonEncode({'versionName': '3.0.0', 'versionCode': 300}),
+            200,
+          );
+        }
+        return http.Response('Not Found', 404);
+      });
+
+      final channel = LocalDbChannel(
+        database: db,
+        githubApi: FakeGithubRestClient(),
+      );
+
+      final result = await channel.fetchStatistics('com.termux');
+      expect(result.success, isTrue);
+      expect(result.data!['versionName'], '3.0.0');
+      expect(result.data!['versionCode'], 300);
+      expect(result.data!['metadata'], isA<Map<String, dynamic>>());
+      // 原有统计字段保留
+      expect(result.data!['stargazers_count'], 100);
     });
 
     test('fetchStatistics：_githubApi 未注入 → success(null)', () async {

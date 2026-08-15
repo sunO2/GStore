@@ -735,13 +735,27 @@ class GitHubChannel extends IChannel with AppUpdateCheckMixin {
         );
       }
       final appInfo = appInfoResult.data!;
-      final apiList = await _githubApi.apiList(
-        appInfo.user,
-        appInfo.repositories,
-        CancelToken(),
-      );
+      // 并行：仓库统计 + 元数据（fetchInfo 有缓存，成本低；metadata 含 APK 提取的
+      // versionName/versionCode，fetchInfo 内部兜底异常/未收录 → null，不阻塞统计）
+      final results = await Future.wait<Object?>([
+        _githubApi.apiList(
+          appInfo.user,
+          appInfo.repositories,
+          CancelToken(),
+        ),
+        MetadataRepository.instance.fetchInfo(appInfo.user, appInfo.repositories),
+      ]);
+      final apiList = results[0] as ApiList;
+      final metadata = results[1] as Map<String, dynamic>?;
       return ChannelResult.success(
-        data: _apiListToMap(apiList),
+        data: {
+          ..._apiListToMap(apiList),
+          if (metadata != null) ...{
+            'versionName': metadata['versionName']?.toString(),
+            'versionCode': metadata['versionCode'],
+            'metadata': metadata,
+          },
+        },
         from: ChannelType.github,
       );
     } catch (e) {
