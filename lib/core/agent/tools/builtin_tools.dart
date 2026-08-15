@@ -99,7 +99,7 @@ class GetAppInfoTool extends AgentToolModule {
 
   @override
   String get toolDescription =>
-      '获取应用详情或检查版本。输入 appId、channel。';
+      '获取应用详情或检查版本。输入 appId、channel。版本信息优先取 metadata（从 release APK 提取，更准确）。';
 
   @override
   List<AgentToolParam> get toolParams => const [
@@ -115,7 +115,7 @@ class UpdateAppsTool extends AgentToolModule {
 
   @override
   String get toolDescription =>
-      '检查应用更新。appId 和 channel 可选（不传则检查全部已添加应用）。返回每个已安装应用是否有更新（当前版本 → 最新版本）。';
+      '检查应用更新。appId 和 channel 可选（不传则检查全部已添加应用）。返回每个已安装应用是否有更新（当前版本 → 最新版本）。版本信息优先取 metadata（从 release APK 提取，更准确）。更新时可手动选择 APK（文件名相似度记忆，偏好持久化，下次检测优先匹配）。';
 
   @override
   List<AgentToolParam> get toolParams => const [
@@ -131,7 +131,7 @@ class BackupTool extends AgentToolModule {
 
   @override
   String get toolDescription =>
-      '备份/恢复应用数据。action 为 export/import（import 需 filePath，恢复会覆盖数据，执行前必须 confirmAction 确认）。';
+      '备份/恢复应用数据。action 为 export/import（import 需 filePath，恢复会覆盖数据，执行前必须 confirmAction 确认）。备份内容（v2.1）：已添加应用、渠道库、应用配置（主题等）、应用分类标签、代理配置、F-Droid 仓库源、Agent 模型配置；不含下载记录。';
 
   @override
   List<AgentToolParam> get toolParams => const [

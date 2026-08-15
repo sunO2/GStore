@@ -44,9 +44,9 @@ Available tools:
 3. installApp - Install a downloaded APK. Input: savePath (full APK path).
 4. manageApp - Manage the "My Apps" list (home aggregation). action: list/add/remove/isAdded.
 5. channelApp - Manage apps added to a channel (channel database). action: list (needs channel), add (needs appId+channel+name), remove (needs appId+channel). For GitHub, appId uses owner/repo (e.g. termux/termux-app).
-6. getAppInfo - Get app details or check version. Inputs: appId, channel.
-7. updateApps - Check for app updates. appId and channel optional (omit to check all added apps). Returns whether each installed app has an update (current version → latest version).
-8. backup - Backup/restore app data. action: export/import.
+6. getAppInfo - Get app details or check version. Inputs: appId, channel. Version info prefers metadata (extracted from the release APK, more accurate).
+7. updateApps - Check for app updates. appId and channel optional (omit to check all added apps). Returns whether each installed app has an update (current version → latest version). Version info prefers metadata (extracted from the release APK, more accurate). When updating, the user can manually select the APK (filename-similarity memory; the preference is persisted and matched on the next check).
+8. backup - Backup/restore app data. action: export/import. Backup contents (v2.1): added apps, channel databases, app config (theme etc.), app category tags, proxy config, F-Droid repository sources, Agent model config; download records are not included.
 9. manageDownload - Manage download tasks. action: list/pause/resume/cleanCompleted/clearAll.
 10. themeControl - Control theme. action: mode/toggle/color.
 11. fdroidRepo - Manage F-Droid repositories. action: list/load/search/stats.
@@ -124,9 +124,9 @@ $platformDesc
 3. installApp - 安装已下载的 APK。输入 savePath（APK 文件路径）。
 4. manageApp - 管理"我的应用"列表（首页聚合）。action 为 list/add/remove/isAdded。
 5. channelApp - 管理应用渠道中的已添加应用（渠道数据库）。action 为 list（列出渠道应用，需 channel）、add（添加应用到渠道，需 appId+channel+name）、remove（从渠道移除，需 appId+channel）。GitHub 渠道 appId 用 owner/repo（如 termux/termux-app）。
-6. getAppInfo - 获取应用详情或检查版本。输入 appId、channel。
-7. updateApps - 检查应用更新。appId 和 channel 可选（不传则检查全部已添加应用）。返回每个已安装应用是否有更新（当前版本 → 最新版本）。
-8. backup - 备份/恢复应用数据。action 为 export/import。
+6. getAppInfo - 获取应用详情或检查版本。输入 appId、channel。版本信息优先取 metadata（从 release APK 提取，更准确）。
+7. updateApps - 检查应用更新。appId 和 channel 可选（不传则检查全部已添加应用）。返回每个已安装应用是否有更新（当前版本 → 最新版本）。版本信息优先取 metadata（从 release APK 提取，更准确）。更新时可手动选择 APK（文件名相似度记忆，偏好持久化，下次检测优先匹配）。
+8. backup - 备份/恢复应用数据。action 为 export/import。备份内容（v2.1）：已添加应用、渠道库、应用配置（主题等）、应用分类标签、代理配置、F-Droid 仓库源、Agent 模型配置；不含下载记录。
 9. manageDownload - 管理下载任务。action 为 list/pause/resume/cleanCompleted/clearAll。
 10. themeControl - 控制主题。action 为 mode/toggle/color。
 11. fdroidRepo - 管理 F-Droid 仓库。action 为 list/load/search/stats。
