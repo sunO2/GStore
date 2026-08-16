@@ -20,6 +20,7 @@ class AppRoute {
   static String agent = "/GStore/agent";
   static String agentSettings = "/GStore/agentSettings";
   static String installedApps = "/GStore/installedApps";
+  static String moduleManage = "/GStore/moduleManage";
 
   static List<GetPage> pages = [
     GetPage(
@@ -48,5 +49,6 @@ class AppRoute {
     GetPage(name: agent, page: () => const AgentPage()),
     GetPage(name: agentSettings, page: () => const AgentSettingsPage()),
     GetPage(name: installedApps, page: () => const InstalledAppsPage()),
+    GetPage(name: moduleManage, page: () => const ModuleManagePage()),
   ];
 }

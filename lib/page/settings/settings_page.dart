@@ -43,6 +43,11 @@ class _SettingsPageState extends State<SettingsPage> {
           _buildDataSyncSection(context),
           const SizedBox(height: AppSpacing.xxl),
 
+          // Module section
+          _buildSectionHeader('模块'),
+          _buildModuleSection(context),
+          const SizedBox(height: AppSpacing.xxl),
+
           // Install & Permission section
           _buildSectionHeader('安装与权限'),
           _buildInstallSection(context),
@@ -139,6 +144,23 @@ class _SettingsPageState extends State<SettingsPage> {
             trailing:
                 const Icon(Icons.chevron_right, size: AppTypography.iconSM),
             onTap: () => _showProxySettingDialog(context),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildModuleSection(BuildContext context) {
+    return Card(
+      margin: AppSpacing.allLG,
+      child: Column(
+        children: [
+          ListTile(
+            leading: const Icon(Icons.tune, size: AppTypography.iconMD),
+            title: const Text('模块管理'),
+            trailing:
+                const Icon(Icons.chevron_right, size: AppTypography.iconSM),
+            onTap: () => Get.toNamed(AppRoute.moduleManage),
           ),
         ],
       ),
