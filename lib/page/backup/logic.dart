@@ -11,9 +11,8 @@ import 'package:file_picker/file_picker.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/config/config_manager.dart';
 import 'package:gstore/core/config/config_initializer.dart';
+import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/webdav/webdav_config.dart';
-import 'package:gstore/core/webdav/webdav_service.dart';
-import 'package:gstore/core/webdav/webdav_task_manager.dart';
 import 'package:gstore/page/backup/state.dart';
 import 'package:gstore/page/backup/widgets/backup_progress_sheet.dart';
 import 'package:gstore/page/backup/widgets/backup_restore_sheet.dart';
@@ -21,7 +20,9 @@ import 'package:gstore/page/backup/widgets/backup_restore_sheet.dart';
 class BackupLogic extends GetxController {
   final BackupState state = BackupState();
   final BackupService _backupService = BackupService.instance;
-  final WebDavService _webdavService = WebDavService.instance;
+
+  /// WebDAV 服务（注册表注入：webdav 模块下线时为 null → 相关功能软降级）
+  final IWebDavService? _webdavService = ModuleManager.instance.get<IWebDavService>();
 
   @override
   void onInit() {
@@ -47,6 +48,12 @@ class BackupLogic extends GetxController {
 
   /// 检查 WebDAV 配置
   Future<void> checkWebDavConfig() async {
+    // webdav 模块下线 → 降级为未配置（不读 secure storage）
+    if (_webdavService == null) {
+      state.hasWebDavConfig.value = false;
+      state.webDavStatus.value = WebDavConnectionStatus.notConfigured;
+      return;
+    }
     try {
       final hasConfig = await WebDavConfigManager.instance.hasConfig();
       state.hasWebDavConfig.value = hasConfig;
@@ -67,6 +74,12 @@ class BackupLogic extends GetxController {
 
   /// 测试 WebDAV 连接
   Future<void> testWebDavConnection() async {
+    final webdav = _webdavService;
+    // webdav 模块下线 → 降级为未配置
+    if (webdav == null) {
+      state.webDavStatus.value = WebDavConnectionStatus.notConfigured;
+      return;
+    }
     try {
       state.webDavStatus.value = WebDavConnectionStatus.testing;
 
@@ -76,7 +89,7 @@ class BackupLogic extends GetxController {
         return;
       }
 
-      final success = await _webdavService.testWebDavConnection(config);
+      final success = await webdav.testWebDavConnection(config);
 
       if (success) {
         state.webDavStatus.value = WebDavConnectionStatus.connected;
@@ -448,10 +461,17 @@ class BackupLogic extends GetxController {
 
   /// 上传到 WebDAV（进度面板：日志流式输出）
   Future<void> uploadToWebDav(BuildContext context, {bool compressed = false}) async {
+    final webdav = _webdavService;
+    // webdav 模块下线 → 降级提示，不发起上传
+    if (webdav == null) {
+      AppDialogs.showWarning('WebDAV 模块未启用');
+      return;
+    }
     appLog.info('BackupLogic: 开始上传到 WebDAV');
 
     // 同步检查：已有备份/恢复任务进行中则不重复触发
-    if (WebDavTaskManager.instance.isBusy) {
+    // （经注册表取实现，webdav 模块下线时降级为不忙）
+    if (ModuleManager.instance.get<IWebDavTaskManager>()?.isBusy ?? false) {
       AppDialogs.showWarning('备份/恢复任务进行中，请稍候');
       return;
     }
@@ -475,7 +495,7 @@ class BackupLogic extends GetxController {
               throw BackupException('未配置 WebDAV 信息');
             }
             onLog('配置加载成功');
-            await _webdavService.uploadToWebDav(
+            await webdav.uploadToWebDav(
               config: config,
               compressed: compressed,
               includeAppConfig: state.includeAppConfig.value,
@@ -491,10 +511,17 @@ class BackupLogic extends GetxController {
 
   /// 从 WebDAV 下载并导入（单面板三阶段：加载配置/列文件 → 选择 → 恢复）
   Future<void> downloadFromWebDav(BuildContext context) async {
+    final webdav = _webdavService;
+    // webdav 模块下线 → 降级提示，不发起下载
+    if (webdav == null) {
+      AppDialogs.showWarning('WebDAV 模块未启用');
+      return;
+    }
     appLog.info('BackupLogic: 从 WebDAV 下载备份');
 
     // 同步检查：已有备份/恢复任务进行中则不重复触发
-    if (WebDavTaskManager.instance.isBusy) {
+    // （经注册表取实现，webdav 模块下线时降级为不忙）
+    if (ModuleManager.instance.get<IWebDavTaskManager>()?.isBusy ?? false) {
       AppDialogs.showWarning('备份/恢复任务进行中，请稍候');
       return;
     }
@@ -518,7 +545,7 @@ class BackupLogic extends GetxController {
               throw BackupException('未配置 WebDAV 信息');
             }
             onLog('连接 WebDAV...');
-            final files = await _webdavService.listFiles(
+            final files = await webdav.listFiles(
               config.backupPath,
               pattern: 'gstore_backup_*.tar.gz',
             );
@@ -530,7 +557,7 @@ class BackupLogic extends GetxController {
           restoreTask: (file, onLog) async {
             final config = await WebDavConfigManager.instance.loadConfig();
             if (config == null) throw BackupException('未配置 WebDAV 信息');
-            await _webdavService.downloadFromWebDav(
+            await webdav.downloadFromWebDav(
               config: config,
               remotePath: file.path,
               mode: _convertRestoreMode(state.restoreMode.value),

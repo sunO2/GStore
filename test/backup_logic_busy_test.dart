@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
+import 'package:gstore/core/module/module_manager.dart';
+import 'package:gstore/core/webdav/webdav_service.dart';
 import 'package:gstore/core/webdav/webdav_task_manager.dart';
 import 'package:gstore/page/backup/logic.dart';
 import 'package:gstore/page/backup/widgets/backup_progress_sheet.dart';
@@ -15,6 +17,13 @@ import 'package:gstore/page/backup/widgets/backup_progress_sheet.dart';
 /// - 不置位 isUploadingWebDav / isImporting
 void main() {
   final manager = WebDavTaskManager.instance;
+
+  setUp(() {
+    // taskBusy 经注册表取实现：绑定后 busy 拦截才生效；
+    // 服务也需绑定——模块未启用短路在 busy 检查之前
+    ModuleManager.instance.bind<IWebDavTaskManager>(manager);
+    ModuleManager.instance.bind<IWebDavService>(WebDavService.instance);
+  });
 
   tearDown(() {
     manager.finish(WebDavTaskType.upload);
