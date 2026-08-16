@@ -11,6 +11,8 @@ import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/model/StatTag.dart';
 import 'package:gstore/core/design/design_tokens.dart';
+import 'package:gstore/core/module/interfaces/service_interfaces.dart';
+import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/service/badge_service.dart';
 import 'package:gstore/core/service/downloadService.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
@@ -449,6 +451,8 @@ void main() {
     test('换选后 updateApp：下载使用用户所选（version/fileName/url）', () async {
       final info = _multiCandidateInfo();
       Get.put<DownloadService>(_FakeDownloadService());
+      // UpdateLogic 已改注册表取用（todo 14）：同步绑定 ModuleManager 注册表
+      ModuleManager.instance.bindByType(IDownloadService, Get.find<DownloadService>());
       Get.put<UpdateManagerService>(_FakeUpdateManager([info]));
       final logic = UpdateLogic();
       final arm = info.detail!.downloads[1];
@@ -474,6 +478,8 @@ void main() {
     test('未换选 updateApp：下载使用默认 latestDownload', () async {
       final info = _multiCandidateInfo();
       Get.put<DownloadService>(_FakeDownloadService());
+      // UpdateLogic 已改注册表取用（todo 14）：同步绑定 ModuleManager 注册表
+      ModuleManager.instance.bindByType(IDownloadService, Get.find<DownloadService>());
       Get.put<UpdateManagerService>(_FakeUpdateManager([info]));
       final logic = UpdateLogic();
 

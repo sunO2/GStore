@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:gstore/core/download/model/DownloadContext.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/module/module.dart';
@@ -15,6 +16,19 @@ class _FakeDownloadService implements IDownloadService {
       String url, String fileName,
       {int? downloadSize, bool breakPoint = true, String? saveFileName, bool forceDownload = false}) async {
     return DownloadStatus(appid, appName, version, fileName, url, '/tmp/$fileName');
+  }
+
+  @override
+  Future<DownloadStatus> downloadWithContext(
+      DownloadContext context,
+      String appid,
+      String appName,
+      String version,
+      String fileName,
+      {bool breakPoint = true,
+      String? saveFileName}) async {
+    return DownloadStatus(
+        appid, appName, version, fileName, context.downloadUrl, '/tmp/$fileName');
   }
 
   /// 测试标记（模拟执行结果）
