@@ -15,9 +15,24 @@ import 'app_components.dart';
 class AppDialogs {
   AppDialogs._();
 
+  /// Snackbar 显示通道：挂载到 GetMaterialApp（main.dart），
+  /// 替代 GetX overlay snackbar（Get.snackbar 与新版 Flutter overlay 兼容问题
+  /// 导致真机提示静默不显示）。
+  static final GlobalKey<ScaffoldMessengerState> scaffoldMessengerKey =
+      GlobalKey();
+
   // ========== 主题获取 ==========
 
-  static ThemeData get _theme => Get.theme;
+  static ThemeData get _theme {
+    try {
+      return Get.theme;
+    } catch (_) {
+      // GetX 未初始化（测试环境/启动早期无 GetMaterialApp 上下文）
+      // → 降级默认亮色主题，保证不崩（仅影响视觉 token，不影响逻辑）
+      return ThemeData.light();
+    }
+  }
+
   static TextTheme get _textTheme => _theme.textTheme;
   static ColorScheme get _colorScheme => _theme.colorScheme;
 
@@ -272,49 +287,104 @@ class AppDialogs {
         break;
     }
 
-    Get.snackbar(
-      title ?? '',
-      message,
-      backgroundColor: _colorScheme.surface,
-      borderRadius: AppRadius.md,
-      boxShadows: const [],
-      margin: AppSpacing.allLG,
-      padding: AppSpacing.allMD,
-      snackPosition: SnackPosition.BOTTOM,
-      duration: duration,
-      animationDuration: AppAnimations.normal,
-      forwardAnimationCurve: Curves.easeOutCubic,
-      reverseAnimationCurve: Curves.easeInCubic,
-      barBlur: 0,
-      snackStyle: SnackStyle.GROUNDED,
-      colorText: _colorScheme.onSurface,
-      leftBarIndicatorColor: indicatorColor,
-      titleText: title != null
-          ? Text(
-              title,
-              style: _textTheme.titleSmall?.copyWith(
-                fontWeight: AppTypography.weightMedium,
-              ),
-            )
-          : const SizedBox.shrink(),
-      messageText: Row(
-        children: [
-          if (icon != null) ...[
-            Icon(icon, size: 20, color: indicatorColor),
-            const SizedBox(width: AppSpacing.sm),
-          ],
-          Expanded(
-            child: Text(
-              message,
-              style: _textTheme.bodySmall,
+    // 优先 ScaffoldMessenger（挂载于 GetMaterialApp，见 main.dart）：
+    // 根治 Get.snackbar（GetX overlay）与新版 Flutter overlay 兼容问题导致的真机静默不显示。
+    final messenger = scaffoldMessengerKey.currentState;
+    if (messenger != null) {
+      messenger
+        ..clearSnackBars()
+        ..showSnackBar(
+          SnackBar(
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (title != null && title!.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: AppSpacing.xs),
+                    child: Text(
+                      title!,
+                      style: _textTheme.titleSmall?.copyWith(
+                        fontWeight: AppTypography.weightMedium,
+                      ),
+                    ),
+                  ),
+                Row(
+                  children: [
+                    if (icon != null) ...[
+                      Icon(icon, size: 20, color: indicatorColor),
+                      const SizedBox(width: AppSpacing.sm),
+                    ],
+                    Expanded(
+                      child: Text(message, style: _textTheme.bodySmall),
+                    ),
+                  ],
+                ),
+              ],
             ),
+            backgroundColor: _colorScheme.surface,
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: AppRadius.allMD),
+            margin: AppSpacing.allLG,
+            duration: duration,
           ),
-        ],
-      ),
-      icon: icon != null
-          ? Icon(icon, color: indicatorColor, size: 24)
-          : null,
-    );
+        );
+      return;
+    }
+
+    // fallback：key 未挂载（启动早期）时退回 GetX overlay snackbar。
+    // 必须先同步检查 overlay 是否可用：Get.snackbar 的异常在异步队列
+    // （SnackbarController._configureOverlay）中抛出，try/catch 无法捕获；
+    // 测试环境（无 GetMaterialApp）overlayContext 为 null → 静默跳过，保证不崩。
+    if (Get.overlayContext != null) {
+      try {
+        Get.snackbar(
+          title ?? '',
+          message,
+          backgroundColor: _colorScheme.surface,
+          borderRadius: AppRadius.md,
+          boxShadows: const [],
+          margin: AppSpacing.allLG,
+          padding: AppSpacing.allMD,
+          snackPosition: SnackPosition.BOTTOM,
+          duration: duration,
+          animationDuration: AppAnimations.normal,
+          forwardAnimationCurve: Curves.easeOutCubic,
+          reverseAnimationCurve: Curves.easeInCubic,
+          barBlur: 0,
+          snackStyle: SnackStyle.GROUNDED,
+          colorText: _colorScheme.onSurface,
+          leftBarIndicatorColor: indicatorColor,
+          titleText: title != null
+              ? Text(
+                  title,
+                  style: _textTheme.titleSmall?.copyWith(
+                    fontWeight: AppTypography.weightMedium,
+                  ),
+                )
+              : const SizedBox.shrink(),
+          messageText: Row(
+            children: [
+              if (icon != null) ...[
+                Icon(icon, size: 20, color: indicatorColor),
+                const SizedBox(width: AppSpacing.sm),
+              ],
+              Expanded(
+                child: Text(
+                  message,
+                  style: _textTheme.bodySmall,
+                ),
+              ),
+            ],
+          ),
+          icon: icon != null
+              ? Icon(icon, color: indicatorColor, size: 24)
+              : null,
+        );
+      } catch (_) {
+        // 同步阶段的兜底（Get.snackbar 内部异步异常无法捕获，见上）
+      }
+    }
   }
 
   // ========== BottomSheet ==========

@@ -159,6 +159,9 @@ main() async {
     return Obx(() {
       final controller = Get.find<ThemeController>();
       return GetMaterialApp(
+        // AppDialogs Snackbar 通道：ScaffoldMessenger 优先于 GetX overlay
+        // （Get.snackbar 与新版 Flutter overlay 兼容问题导致真机提示静默不显示）
+        scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
         builder: (context, child) {
           configStatusBar();
           return Material(
