@@ -7,45 +7,59 @@ import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/fdroid/FdroidRepoManager.dart';
 import 'package:gstore/core/fdroid/FdroidRepoModels.dart';
 import 'package:gstore/core/logger/LogManager.dart';
+import 'package:gstore/core/module/interfaces/service_interfaces.dart';
+import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/page/fdroid_repo/state.dart';
 
 /// F-Droid 仓库管理业务逻辑
 class FdroidRepoLogic extends GetxController {
   final FdroidRepoState state = FdroidRepoState();
-  late FdroidRepoManager _manager;
 
   final TextEditingController searchController = TextEditingController();
+
+  /// F-Droid 仓库服务（注册表注入：fdroid 模块下线时为 null → 软降级）
+  IFdroidRepoService? get _service =>
+      ModuleManager.instance.get<IFdroidRepoService>();
+
+  /// 具体管理器（绑定实现为 FdroidRepoManager 时可用，承载响应式源/进度状态）
+  FdroidRepoManager? get _manager =>
+      _service is FdroidRepoManager ? _service as FdroidRepoManager : null;
 
   @override
   void onInit() {
     super.onInit();
-    _manager = Get.find<FdroidRepoManager>();
+    final manager = _manager;
+    if (manager == null) {
+      // fdroid 模块未启用 → 页面降级为空状态提示
+      state.errorMessage.value = 'F-Droid 模块未启用';
+      return;
+    }
     _initData();
 
     // 监听加载进度
-    ever(_manager.loadingProgress, (progress) {
+    ever(manager.loadingProgress, (progress) {
       state.loadingProgress.value = progress * 100;
     });
 
     // 监听加载状态
-    ever(_manager.isLoading, (loading) {
+    ever(manager.isLoading, (loading) {
       state.isLoading.value = loading;
     });
 
     // 监听错误信息
-    ever(_manager.errorMessage, (error) {
+    ever(manager.errorMessage, (error) {
       if (error?.isNotEmpty == true) {
         state.errorMessage.value = error;
       }
     });
 
     // 监听源列表变化
-    ever(_manager.sources, (sources) {
+    ever(manager.sources, (sources) {
       state.sources.value = sources;
     });
 
     // 监听当前源变化
-    ever(_manager.currentSource, (source) {
+    ever(manager.currentSource, (source) {
       state.currentSource.value = source;
     });
   }
@@ -58,10 +72,15 @@ class FdroidRepoLogic extends GetxController {
 
   /// 初始化数据
   Future<void> _initData() async {
+    final manager = _manager;
+    if (manager == null) {
+      state.errorMessage.value = 'F-Droid 模块未启用';
+      return;
+    }
     try {
       // 加载源列表
-      state.sources.value = await _manager.getSources();
-      state.currentSource.value = await _manager.getCurrentSource();
+      state.sources.value = manager.getSources();
+      state.currentSource.value = manager.getCurrentSource();
 
       // 加载统计信息
       await _loadStatistics();
@@ -75,8 +94,10 @@ class FdroidRepoLogic extends GetxController {
 
   /// 加载统计信息
   Future<void> _loadStatistics() async {
+    final manager = _manager;
+    if (manager == null) return;
     try {
-      state.statistics.value = await _manager.getStatistics();
+      state.statistics.value = await manager.getStatistics();
     } catch (e) {
       appLog.error('加载统计信息失败: $e');
     }
@@ -84,8 +105,10 @@ class FdroidRepoLogic extends GetxController {
 
   /// 检查更新
   Future<void> _checkUpdate() async {
+    final manager = _manager;
+    if (manager == null) return;
     try {
-      final result = await _manager.checkIncrementalUpdate();
+      final result = await manager.checkIncrementalUpdate();
       if (result != null) {
         state.hasUpdate.value = result['hasUpdate'] ?? false;
         state.currentVersion.value = result['currentVersion'] ?? 0;
@@ -98,13 +121,19 @@ class FdroidRepoLogic extends GetxController {
 
   /// 加载仓库数据
   Future<void> loadRepository() async {
+    final service = _service;
+    final manager = _manager;
+    if (service == null) {
+      AppDialogs.showError('F-Droid 模块未启用');
+      return;
+    }
     debugPrint('FdroidRepoLogic: loadRepository 被调用');
     debugPrint('FdroidRepoLogic: state.currentSource.value = ${state.currentSource.value}');
-    debugPrint('FdroidRepoLogic: _manager.currentSource.value = ${_manager.currentSource.value}');
+    debugPrint('FdroidRepoLogic: _manager.currentSource.value = ${manager?.currentSource.value}');
 
     if (state.currentSource.value == null) {
       debugPrint('FdroidRepoLogic: currentSource 为 null，尝试从 manager 同步');
-      state.currentSource.value = _manager.currentSource.value;
+      state.currentSource.value = manager?.currentSource.value;
     }
 
     if (state.currentSource.value == null) {
@@ -114,7 +143,7 @@ class FdroidRepoLogic extends GetxController {
 
     try {
       appLog.info('FdroidRepoLogic: 开始加载仓库: ${state.currentSource.value?.repoUrl}');
-      await _manager.loadRepository();
+      await service.loadRepository();
 
       await _loadStatistics();
       AppDialogs.showSuccess('仓库数据加载完成');
@@ -126,8 +155,13 @@ class FdroidRepoLogic extends GetxController {
 
   /// 检查并应用增量更新
   Future<void> checkAndUpdate() async {
+    final manager = _manager;
+    if (manager == null) {
+      AppDialogs.showError('F-Droid 模块未启用');
+      return;
+    }
     try {
-      final result = await _manager.checkIncrementalUpdate();
+      final result = await manager.checkIncrementalUpdate();
       if (result == null) {
         AppDialogs.showInfo('检查更新失败');
         return;
@@ -139,7 +173,7 @@ class FdroidRepoLogic extends GetxController {
         return;
       }
 
-      await _manager.applyIncrementalUpdate();
+      await manager.applyIncrementalUpdate();
       await _loadStatistics();
 
       AppDialogs.showSuccess('更新完成');
@@ -150,8 +184,13 @@ class FdroidRepoLogic extends GetxController {
 
   /// 切换源
   Future<void> switchSource(FdroidSource source) async {
+    final service = _service;
+    if (service == null) {
+      AppDialogs.showError('F-Droid 模块未启用');
+      return;
+    }
     try {
-      await _manager.switchSource(source.id);
+      await service.switchSource(source.id);
 
       await _loadStatistics();
       AppDialogs.showSuccess('已切换到 ${source.name}');
@@ -246,8 +285,14 @@ class FdroidRepoLogic extends GetxController {
         priority: state.sources.length + 1,
       );
 
-      // 通过 FdroidRepoManager 添加源
-      await _manager.addSource(newSource);
+      final service = _service;
+      if (service == null) {
+        AppDialogs.showError('F-Droid 模块未启用');
+        return;
+      }
+
+      // 通过 F-Droid 服务添加源
+      await service.addSource(newSource);
 
       AppDialogs.showSuccess('已添加源：$name');
     } catch (e) {
@@ -262,10 +307,17 @@ class FdroidRepoLogic extends GetxController {
       return;
     }
 
+    final service = _service;
+    if (service == null) {
+      state.searchResults.clear();
+      AppDialogs.showError('F-Droid 模块未启用');
+      return;
+    }
+
     try {
       state.isSearching.value = true;
 
-      final results = await _manager.searchApps(keyword, limit: 50);
+      final results = await service.searchApps(keyword, limit: 50);
       // 将 Map 转换为 FdroidApp 对象
       final fdroidApps = results.map((map) => FdroidApp(
         packageName: map['packageName'] ?? '',
@@ -300,8 +352,14 @@ class FdroidRepoLogic extends GetxController {
 
     if (confirmed != true) return;
 
+    final service = _service;
+    if (service == null) {
+      AppDialogs.showError('F-Droid 模块未启用');
+      return;
+    }
+
     try {
-      await _manager.clearData();
+      await service.clearData();
       await _loadStatistics();
       AppDialogs.showSuccess('数据已清空');
     } catch (e) {

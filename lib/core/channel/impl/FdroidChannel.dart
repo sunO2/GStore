@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:get/get.dart';
 import 'package:gstore/core/channel/IChannel.dart';
 import 'package:gstore/core/channel/database/channel_added_app.dart';
 import 'package:gstore/core/channel/database/channel_database.dart';
@@ -16,6 +15,8 @@ import 'package:gstore/core/fdroid/FdroidRepoManager.dart';
 import 'package:gstore/core/agent/platform_arch.dart';
 import 'package:gstore/core/fdroid/FdroidRepoModels.dart';
 import 'package:gstore/core/logger/LogManager.dart';
+import 'package:gstore/core/module/interfaces/service_interfaces.dart';
+import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
@@ -31,7 +32,13 @@ import 'package:gstore/core/channel/AppUpdateCheckMixin.dart';
 class FdroidChannel extends IChannel with AppUpdateCheckMixin {
   final Dio _dio;
 
-  FdroidRepoManager get _repoManager => Get.find<FdroidRepoManager>();
+  /// F-Droid 仓库服务（注册表注入：fdroid 模块下线时为 null → 软降级）
+  IFdroidRepoService? get _repoService =>
+      ModuleManager.instance.get<IFdroidRepoService>();
+
+  /// 具体管理器（模块上线时绑定的实现为 FdroidRepoManager，承载响应式源状态）
+  FdroidRepoManager? get _repoManager =>
+      _repoService is FdroidRepoManager ? _repoService as FdroidRepoManager : null;
 
   /// Channel 数据库（存储用户添加的应用）
   ChannelDatabase? _database;
@@ -45,9 +52,9 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
   /// API 基础地址（固定）
   static const String _apiBaseUrl = 'https://f-droid.org/api';
 
-  /// 获取当前仓库地址（动态）
+  /// 获取当前仓库地址（动态；模块下线时使用默认地址）
   String get _currentRepoUrl {
-    return _repoManager.currentSource.value?.repoUrl ?? 'https://f-droid.org/repo';
+    return _repoManager?.currentSource.value?.repoUrl ?? 'https://f-droid.org/repo';
   }
 
   FdroidChannel({
@@ -195,11 +202,19 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
     String keyword, {
     bool forceRefresh = false,
   }) async {
+    final service = _repoService;
+    // fdroid 模块下线 → 软降级为不可用
+    if (service == null) {
+      return ChannelResult.failure(
+        from: ChannelType.fdroid,
+        error: 'F-Droid 模块未启用',
+      );
+    }
     try {
       debugPrint('FdroidChannel: 搜索应用 - $keyword');
 
       // 调用 Rust RepoManager 搜索
-      final results = await _repoManager.searchApps(keyword, limit: 50);
+      final results = await service.searchApps(keyword, limit: 50);
 
       // 转换为 AppInfo
       final apps = await Future.wait(results.map((appMap) async {
@@ -397,7 +412,13 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
       if (!forceRefresh && _database != null) {
         try {
           final channelApps = await _database!.dao.getAppsByChannel(ChannelType.fdroid.code);
-          final app = channelApps.firstWhereOrNull((app) => app.appId == appId);
+          ChannelAddedApp? app;
+          for (final item in channelApps) {
+            if (item.appId == appId) {
+              app = item;
+              break;
+            }
+          }
 
           if (app != null) {
             // 从数据库构造 AppInfo，图标需要构造完整URL
@@ -557,9 +578,10 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
       debugPrint('FdroidChannel: appId = $appId');
 
       // 步骤 1: 尝试从 Rust 数据库精确查询应用数据（包含 metadata 和 versions）
-      if (!forceRefresh) {
+      final service = _repoService;
+      if (!forceRefresh && service != null) {
         try {
-          final appData = await _repoManager.getAppByPackageName(appId);
+          final appData = await service.getAppByPackageName(appId);
           if (appData != null) {
             final metadataJson = appData['metadata'] as String?;
             final versionsJson = appData['versions'] as String?;
@@ -599,8 +621,16 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
   Future<ChannelResult<AppUpdateCheckResult>> checkAppUpdate(
     String appId,
   ) async {
+    final service = _repoService;
+    // fdroid 模块下线 → 软降级为不可用
+    if (service == null) {
+      return ChannelResult.failure(
+        from: ChannelType.fdroid,
+        error: 'F-Droid 模块未启用',
+      );
+    }
     try {
-      final appData = await _repoManager.getAppByPackageName(appId);
+      final appData = await service.getAppByPackageName(appId);
       if (appData != null) {
         final metadataJson = appData['metadata'] as String?;
         final versionsJson = appData['versions'] as String?;
@@ -1321,7 +1351,7 @@ class _FdroidSearchWidgetState extends State<_FdroidSearchWidget> {
                 // app.icon 现在已经是完整URL（由 searchApps 构造）
                 // 如果为空字符串，使用默认
                 final icon = app.icon.isEmpty
-                    ? '${widget.channel._repoManager.currentSource.value?.repoUrl ?? 'https://f-droid.org/repo'}/icons/${app.appId}.png'
+                    ? '${widget.channel._repoManager?.currentSource.value?.repoUrl ?? 'https://f-droid.org/repo'}/icons/${app.appId}.png'
                     : app.icon;
                 return icon;
               }(),
