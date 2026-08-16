@@ -7,13 +7,42 @@ import 'package:gstore/core/design/design_tokens.dart';
 import 'logic.dart';
 import 'state.dart';
 
-class BackupPage extends StatelessWidget {
+class BackupPage extends StatefulWidget {
   const BackupPage({super.key});
 
   @override
+  State<BackupPage> createState() => _BackupPageState();
+}
+
+class _BackupPageState extends State<BackupPage> {
+  // 使用 Get.put 确保 BackupLogic 被初始化
+  final BackupLogic _logic = Get.put<BackupLogic>(BackupLogic());
+
+  /// WebDAV 模块是否在线（订阅模块上下线事件，驱动卡片显隐）
+  bool _webdavModuleOnline = false;
+  StreamSubscription<ModuleEvent>? _webdavSub;
+
+  @override
+  void initState() {
+    super.initState();
+    _webdavModuleOnline = ModuleManager.instance.isInitialized('webdav');
+    _webdavSub = ModuleManager.instance.watchModule('webdav').listen((event) {
+      if (!mounted) return;
+      setState(() {
+        _webdavModuleOnline = event.lifecycle == ModuleLifecycle.registered;
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    _webdavSub?.cancel();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    // 使用 Get.put 确保 BackupLogic 被初始化
-    final logic = Get.put<BackupLogic>(BackupLogic());
+    final logic = _logic;
     final state = logic.state;
 
     return Scaffold(
@@ -83,10 +112,11 @@ class BackupPage extends StatelessWidget {
         // 本地备份
         _buildLocalBackupCard(context, logic, state),
 
-        const SizedBox(height: AppSpacing.lg),
-
-        // WebDAV 云端备份
-        _buildWebDavBackupCard(context, logic, state),
+        // WebDAV 云端备份（模块下线时隐藏，含配置入口）
+        if (_webdavModuleOnline) ...[
+          const SizedBox(height: AppSpacing.lg),
+          _buildWebDavBackupCard(context, logic, state),
+        ],
       ],
     );
   }
