@@ -327,6 +327,40 @@ void main() {
     });
   });
 
+  group('ModuleManager setModuleEnabled 异常后链复位', () {
+    test('onInit 抛异常：错误向上抛出，链复位后后续 toggle 不卡死', () async {
+      final manager = ModuleManager.instance;
+      final module = _ExplodingModule();
+      manager.registerKnownModules(() => [module]);
+
+      await manager.setModuleEnabled('explode', false);
+      await expectLater(
+        manager.setModuleEnabled('explode', true),
+        throwsA(isA<StateError>()),
+        reason: 'onInit 异常必须向上抛出',
+      );
+      // 链已复位：异常后 disable 仍可执行（不卡死）
+      expect(await manager.setModuleEnabled('explode', false), true);
+    });
+
+    test('仅首次 onInit 抛错：异常后再次启用可成功', () async {
+      final manager = ModuleManager.instance;
+      final module = _FailOnceModule();
+      manager.registerKnownModules(() => [module]);
+
+      await manager.setModuleEnabled('explode2', false);
+      await expectLater(
+        manager.setModuleEnabled('explode2', true),
+        throwsA(isA<StateError>()),
+      );
+      await manager.setModuleEnabled('explode2', false);
+      expect(await manager.setModuleEnabled('explode2', true), true,
+          reason: '异常后链复位，可重试启用');
+      expect(manager.isInitialized('explode2'), true);
+      expect(module.registerCalls, 1);
+    });
+  });
+
   group('ModuleManager 服务绑定', () {
     test('bind/get 编译期绑定（0 损耗主路径）', () async {
       final manager = ModuleManager.instance;
@@ -592,5 +626,42 @@ class _ServiceDepModule extends AppModule {
   @override
   Future<void> onInit(ModuleContext context) async {
     context.requireDependency<ITestService>();
+  }
+}
+
+/// onInit 恒抛错的模块（验证异常后 toggle 链复位）
+class _ExplodingModule extends AppModule {
+  @override
+  String get moduleName => 'explode';
+
+  @override
+  int get priority => 10;
+
+  @override
+  Future<void> onInit(ModuleContext context) async {
+    throw StateError('onInit 爆炸');
+  }
+}
+
+/// 仅首次 onInit 抛错的模块（验证异常后可重试启用）
+class _FailOnceModule extends AppModule {
+  int onInitCalls = 0;
+  int registerCalls = 0;
+
+  @override
+  String get moduleName => 'explode2';
+
+  @override
+  int get priority => 10;
+
+  @override
+  Future<void> onInit(ModuleContext context) async {
+    onInitCalls++;
+    if (onInitCalls == 1) throw StateError('首次 onInit 抛错');
+  }
+
+  @override
+  Future<void> onRegister(ModuleContext context) async {
+    registerCalls++;
   }
 }

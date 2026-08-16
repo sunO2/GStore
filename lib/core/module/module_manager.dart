@@ -304,16 +304,23 @@ class ModuleManager {
   /// - 有活跃依赖者（dependencies 含 name 且已初始化的模块）时返回 false 拒绝
   /// - 幂等：已 disabled 时重复 disable 无操作
   /// - 启用：从 [_knownModulesProvider] 查 AppModule 实例 → 移除 disabled → activate
-  Future<bool> setModuleEnabled(String name, bool enabled) {
-    final chain = _toggleChains[name] ?? Future<void>.value();
-    final next = chain.then((_) => _applyModuleEnabled(name, enabled));
-    _toggleChains[name] = next;
-    return next.then((result) {
-      if (identical(_toggleChains[name], next)) {
+  /// - 异常安全：无论成功/异常，finally 都会复位本模块链（异常向上抛出但链已清理，
+  ///   后续 toggle 可重试，不会因失败 future 卡死）
+  Future<bool> setModuleEnabled(String name, bool enabled) async {
+    final prev = _toggleChains[name];
+    final completer = Completer<void>();
+    final chain = prev ?? Future<void>.value();
+    _toggleChains[name] = completer.future;
+    try {
+      await chain; // 等待前一操作完成（成功或失败均由其 finally 释放）
+      return await _applyModuleEnabled(name, enabled);
+    } finally {
+      // 仅当链未被后续调用接管时移除（保持最新调用持有链）
+      if (identical(_toggleChains[name], completer.future)) {
         _toggleChains.remove(name);
       }
-      return result;
-    });
+      completer.complete(); // 释放后续等待（无论成败）
+    }
   }
 
   /// [setModuleEnabled] 的实际执行体（由 per-module 链串行调度）

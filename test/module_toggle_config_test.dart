@@ -19,9 +19,12 @@ Future<void> initForTest() async {
 
 /// 测试模块（验证 manager 上下线联动）
 class ToggleTestModule extends AppModule {
-  ToggleTestModule(this.name);
+  ToggleTestModule(this.name, {this.dependencies = const []});
 
   final String name;
+
+  @override
+  final List<String> dependencies;
 
   int registerCalls = 0;
   int unregisterCalls = 0;
@@ -41,6 +44,12 @@ class ToggleTestModule extends AppModule {
   Future<void> onUnregister(ModuleContext context) async {
     unregisterCalls++;
   }
+}
+
+/// 写入失败的存储（模拟 ConfigService.set 持久化失败）
+class _FailingMemoryStorage extends MemoryConfigStorage {
+  @override
+  Future<bool> setValue(String key, Object? value) async => false;
 }
 
 void main() {
@@ -140,11 +149,57 @@ void main() {
       expect(manager.isInitialized('channel'), true);
       expect(module.registerCalls, 2);
     });
+
+    test('依赖者拒绝时配置值保持原状（不落盘）', () async {
+      final config = ModuleToggleConfig.instance;
+      final manager = ModuleManager.instance;
+      // channel 被 app 依赖且均已初始化 → 关闭 channel 被拒
+      await manager.registerModule(ToggleTestModule('channel'));
+      await manager.registerModule(ToggleTestModule('app', dependencies: ['channel']));
+      await manager.initializeAll();
+
+      // 基线：确立配置为 true
+      expect(await config.setEnabled('channel', true), true);
+      expect(await config.isModuleEnabled('channel'), true);
+
+      final ok = await config.setEnabled('channel', false);
+      expect(ok, false, reason: '依赖者拒绝必须返回 false');
+      expect(await config.isModuleEnabled('channel'), true,
+          reason: '依赖者拒绝时配置不得落盘为 false');
+      expect(manager.isModuleEnabled('channel'), true, reason: '模块保持启用');
+    });
+  });
+
+  group('ModuleToggleConfig setEnabled 持久化失败回滚', () {
+    test('ConfigService.set 失败：返回 false 且回滚运行时切换', () async {
+      // 独立初始化：首个存储写入失败（注册表仍由 setUp 注册）
+      ConfigStore.instance.resetForTest();
+      await ConfigStore.instance.initialize(storages: [
+        _FailingMemoryStorage(),
+        MemoryConfigStorage(),
+      ]);
+      await ModuleManager.instance.clear();
+      final config = ModuleToggleConfig.instance;
+      final manager = ModuleManager.instance;
+      final module = ToggleTestModule('channel');
+      manager.registerKnownModules(() => [module]);
+
+      final ok = await config.setEnabled('channel', false);
+      expect(ok, false, reason: '持久化失败必须返回 false');
+      expect(module.registerCalls, 1,
+          reason: '已做的运行时切换被回滚（重新激活）');
+      expect(manager.isModuleEnabled('channel'), true, reason: '模块保持启用');
+      expect(await config.isModuleEnabled('channel'), true,
+          reason: '配置未落盘');
+    });
   });
 
   group('ModuleToggleConfig watch', () {
     test('watch 收到 bool 值变化事件', () async {
       final config = ModuleToggleConfig.instance;
+      final manager = ModuleManager.instance;
+      // 新顺序下 re-enable 需从 known-modules 查实例（否则 manager 拒绝、不落盘）
+      manager.registerKnownModules(() => [ToggleTestModule('channel')]);
       final seen = <bool>[];
       final sub = config.watch('channel').listen(seen.add);
 

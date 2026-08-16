@@ -2,9 +2,12 @@
 ///
 /// 模块开关的统一配置入口：
 /// - 配置键 `module.<name>.enabled` 持久化到 [ConfigService]（11 个业务 key 已注册 ConfigRegistry）
-/// - [setEnabled] 写配置成功后联动 [ModuleManager.setModuleEnabled] 运行时上下线
+/// - [setEnabled] 先 [ModuleManager.setModuleEnabled] 运行时上下线（含依赖者检查/幂等），
+///   成功返回 true 后再持久化；依赖者拒绝/运行时异常不落盘并返回 false
 /// - 未配置/未注册时默认启用（fail-safe）
 library;
+
+import 'package:flutter/foundation.dart';
 
 import '../config/config_service.dart';
 import 'module_manager.dart';
@@ -54,12 +57,35 @@ class ModuleToggleConfig {
     return true; // 默认启用（fail-safe）
   }
 
-  /// 持久化开关 + 运行时上下线（写配置 → manager.setModuleEnabled）
+  /// 运行时上下线 + 持久化（先 manager 后配置：依赖者拒绝/异常不落盘）。
+  ///
+  /// - [ModuleManager.setModuleEnabled] 返回 false（如依赖者拒绝）→ 不写配置并返回 false
+  /// - 运行时切换抛异常 → 不落盘并返回 false
+  /// - 持久化失败 → 返回 false 并回滚已做的运行时切换（回滚失败仅日志）
   Future<bool> setEnabled(String moduleName, bool enabled) async {
-    final result =
-        await ConfigService.instance.set(keyOf(moduleName), enabled);
-    if (!result.success) return false;
-    return ModuleManager.instance.setModuleEnabled(moduleName, enabled);
+    final manager = ModuleManager.instance;
+    final bool runtimeOk;
+    try {
+      runtimeOk = await manager.setModuleEnabled(moduleName, enabled);
+    } catch (e) {
+      debugPrint(
+          'ModuleToggleConfig.setEnabled($moduleName, $enabled) 运行时切换异常，不落盘: $e');
+      return false;
+    }
+    if (!runtimeOk) return false; // 依赖者拒绝：不写配置
+
+    final result = await ConfigService.instance.set(keyOf(moduleName), enabled);
+    if (!result.success) {
+      // 持久化失败：回滚已做的运行时切换（回滚失败仅日志）
+      try {
+        await manager.setModuleEnabled(moduleName, !enabled);
+      } catch (e) {
+        debugPrint(
+            'ModuleToggleConfig.setEnabled($moduleName, $enabled) 持久化失败且回滚异常: $e');
+      }
+      return false;
+    }
+    return true;
   }
 
   /// 监听单个模块开关变化（ConfigService.watch 映射为 bool 值流）
