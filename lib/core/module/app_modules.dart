@@ -167,7 +167,13 @@ class FdroidModule extends AppModule {
   @override
   Future<void> onInit(ModuleContext context) async {
     final fdroidManager = FdroidRepoManager.instance;
-    await fdroidManager.initialize();
+    try {
+      await fdroidManager.initialize();
+    } catch (e) {
+      // Rust 库缺失/FFI/存储异常 → 降级：F-Droid 渠道懒初始化（不阻塞启动、不闪退）
+      appLog.error('FdroidModule: F-Droid 初始化失败（降级，渠道懒初始化） - $e');
+    }
+    // 无论初始化成败都注册到 Get（失败时服务仍可解析，功能侧自行降级）
     if (!Get.isRegistered<FdroidRepoManager>()) {
       Get.put(fdroidManager);
     }
@@ -335,6 +341,9 @@ class BadgeModule extends AppModule {
       Get.put(BadgeService());
     }
     // 启动后异步检测红点（应用更新走 UpdateManager 懒检测 / 数据库更新等），不阻塞 UI
-    unawaited(BadgeService.instance.checkAll());
+    // catchError：检测异常不成为未处理异步异常（红点缺失可接受，不影响启动）
+    unawaited(BadgeService.instance.checkAll().catchError((Object e, StackTrace st) {
+      appLog.error('BadgeService: 启动检测异常 - $e');
+    }));
   }
 }

@@ -119,10 +119,21 @@ Future<void> _initModuleManager(Stopwatch sw) async {
   appLog.info('_initModuleManager: 已注册 ${manager.moduleCount} 个模块');
 
   // 按依赖拓扑排序分层并行初始化
+  // 任一模块 onInit/onRegister 抛异常 → 记录日志后降级继续启动（不闪退），
+  // 已初始化模块的服务保持可用，失败模块对应功能降级（日志查看器可见）。
   final initSw = Stopwatch()..start();
-  await manager.initializeAll();
-  initSw.stop();
-  appLog.info('_initModuleManager: 全部模块初始化完成（${initSw.elapsedMilliseconds}ms）');
+  try {
+    await manager.initializeAll();
+    initSw.stop();
+    appLog.info('_initModuleManager: 全部模块初始化完成（${initSw.elapsedMilliseconds}ms）');
+  } catch (e, st) {
+    initSw.stop();
+    appLog.error('_initModuleManager: 模块初始化异常（降级继续启动）', data: {
+      'elapsedMs': initSw.elapsedMilliseconds,
+      'error': e.toString(),
+      'stack': st.toString(),
+    });
+  }
 }
 
 main() async {

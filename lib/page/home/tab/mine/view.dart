@@ -122,11 +122,21 @@ class _MinePageState extends State<MinePage>
 
   /// 检查 WebDAV 配置状态
   Future<void> _checkWebDavConfig() async {
-    final hasConfig = await WebDavConfigManager.instance.hasConfig();
-    if (mounted) {
-      setState(() {
-        _hasWebDavConfig = hasConfig;
-      });
+    try {
+      final hasConfig = await WebDavConfigManager.instance.hasConfig();
+      if (mounted) {
+        setState(() {
+          _hasWebDavConfig = hasConfig;
+        });
+      }
+    } catch (e) {
+      // FlutterSecureStorage 等读取异常 → 降级为未配置，不成为未处理异步异常
+      appLog.error('MinePage: 检查 WebDAV 配置失败（降级为未配置） - $e');
+      if (mounted) {
+        setState(() {
+          _hasWebDavConfig = false;
+        });
+      }
     }
   }
 
