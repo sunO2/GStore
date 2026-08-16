@@ -198,6 +198,135 @@ void main() {
     });
   });
 
+  group('ModuleManager setModuleEnabled 运行时上下线', () {
+    test('未初始化模块禁用后 initializeAll 跳过且 isInitialized 保持 false', () async {
+      final manager = ModuleManager.instance;
+      final module = TestModule(name: 'webdav');
+      await manager.registerModule(module);
+
+      final ok = await manager.setModuleEnabled('webdav', false);
+      expect(ok, true);
+      expect(manager.isModuleEnabled('webdav'), false);
+
+      await manager.initializeAll();
+      expect(module.registerCalls, 0, reason: '禁用模块不得被初始化');
+      expect(manager.isInitialized('webdav'), false);
+    });
+
+    test('已初始化模块禁用：unregister + unregistered 事件 + 服务解绑', () async {
+      final manager = ModuleManager.instance;
+      manager.injectContext(ModuleContext(
+        config: null,
+        bindService: (t, impl) => manager.bindByType(t, impl),
+        unbindService: (t) => manager.unbindByType(t),
+      ));
+      final recorder = EventRecorder();
+      final sub = manager.watchModule('toggle_svc').listen(recorder.add);
+
+      final module = _ToggleServiceModule();
+      await manager.registerModule(module);
+      await manager.initializeModule('toggle_svc');
+      expect(manager.get<ITestService>(), isNotNull);
+
+      final ok = await manager.setModuleEnabled('toggle_svc', false);
+      expect(ok, true);
+      expect(module.unregisterCalls, 1, reason: '禁用触发 onUnregister');
+      expect(manager.hasModule('toggle_svc'), false);
+      expect(manager.get<ITestService>(), isNull, reason: '服务已解绑');
+      expect(manager.isInitialized('toggle_svc'), false);
+
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(recorder.events.last.lifecycle, ModuleLifecycle.unregistered);
+
+      await sub.cancel();
+    });
+
+    test('启用重新 activate：registered 事件 + 服务重绑', () async {
+      final manager = ModuleManager.instance;
+      manager.injectContext(ModuleContext(
+        config: null,
+        bindService: (t, impl) => manager.bindByType(t, impl),
+        unbindService: (t) => manager.unbindByType(t),
+      ));
+      final recorder = EventRecorder();
+      final sub = manager.watchModule('toggle_svc').listen(recorder.add);
+
+      final module = _ToggleServiceModule();
+      manager.registerKnownModules(() => [module]);
+
+      await manager.setModuleEnabled('toggle_svc', false);
+      final ok = await manager.setModuleEnabled('toggle_svc', true);
+      expect(ok, true);
+      expect(manager.hasModule('toggle_svc'), true);
+      expect(manager.isInitialized('toggle_svc'), true);
+      expect(manager.get<ITestService>(), isNotNull, reason: '服务已重绑');
+      expect(manager.getModule('toggle_svc'), same(module));
+
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(recorder.events.last.lifecycle, ModuleLifecycle.registered);
+
+      await sub.cancel();
+    });
+
+    test('有活跃依赖者时 disable 返回 false 且模块保持', () async {
+      final manager = ModuleManager.instance;
+      await manager.registerModule(_OrderModule('base', const [], []));
+      await manager.registerModule(_OrderModule('app', ['base'], []));
+      await manager.initializeAll();
+
+      final ok = await manager.setModuleEnabled('base', false);
+      expect(ok, false, reason: '有活跃依赖者必须拒绝');
+      expect(manager.hasModule('base'), true);
+      expect(manager.isInitialized('base'), true);
+      expect(manager.isModuleEnabled('base'), true);
+    });
+
+    test('连点幂等：重复 disable/enable 无异常', () async {
+      final manager = ModuleManager.instance;
+      final module = TestModule(name: 'webdav');
+      manager.registerKnownModules(() => [module]);
+      await manager.registerModule(module);
+      await manager.initializeModule('webdav');
+
+      expect(await manager.setModuleEnabled('webdav', false), true);
+      expect(await manager.setModuleEnabled('webdav', false), true,
+          reason: '重复 disable 无操作');
+      expect(await manager.setModuleEnabled('webdav', true), true);
+      expect(await manager.setModuleEnabled('webdav', true), true);
+      expect(manager.isInitialized('webdav'), true);
+    });
+
+    test('re-enable 从 known modules 查实例成功', () async {
+      final manager = ModuleManager.instance;
+      final module = TestModule(name: 'webdav');
+      manager.registerKnownModules(() => [module]);
+      await manager.registerModule(module);
+      await manager.initializeModule('webdav');
+
+      await manager.setModuleEnabled('webdav', false);
+      expect(manager.hasModule('webdav'), false);
+
+      final ok = await manager.setModuleEnabled('webdav', true);
+      expect(ok, true);
+      expect(manager.getModule('webdav'), same(module),
+          reason: '从 known modules 查回同一实例');
+      expect(manager.isInitialized('webdav'), true);
+    });
+
+    test('re-enable 时 known modules 查不到实例返回 false', () async {
+      final manager = ModuleManager.instance;
+      await manager.registerModule(TestModule(name: 'ghost'));
+      await manager.initializeModule('ghost');
+
+      await manager.setModuleEnabled('ghost', false);
+      expect(manager.hasModule('ghost'), false);
+
+      final ok = await manager.setModuleEnabled('ghost', true);
+      expect(ok, false, reason: 'known modules 无此模块时拒绝启用');
+      expect(manager.hasModule('ghost'), false);
+    });
+  });
+
   group('ModuleManager 服务绑定', () {
     test('bind/get 编译期绑定（0 损耗主路径）', () async {
       final manager = ModuleManager.instance;
@@ -407,6 +536,29 @@ class _ServiceModule extends AppModule {
 
   @override
   Future<void> onUnregister(ModuleContext context) async {
+    context.unbindService!(ITestService);
+  }
+}
+
+/// 上下线开关测试用模块：onRegister 绑定服务、onUnregister 解绑
+class _ToggleServiceModule extends AppModule {
+  _ToggleServiceModule({String? name}) : moduleName = name ?? 'toggle_svc';
+
+  @override
+  final String moduleName;
+
+  int registerCalls = 0;
+  int unregisterCalls = 0;
+
+  @override
+  Future<void> onRegister(ModuleContext context) async {
+    registerCalls++;
+    context.bindService!(ITestService, TestService('toggle'));
+  }
+
+  @override
+  Future<void> onUnregister(ModuleContext context) async {
+    unregisterCalls++;
     context.unbindService!(ITestService);
   }
 }

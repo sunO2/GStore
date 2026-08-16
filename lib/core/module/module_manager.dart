@@ -35,6 +35,12 @@ class ModuleManager {
   /// 已初始化模块（moduleName → true）
   final Set<String> _initialized = {};
 
+  /// 已禁用模块（运行时下线；_initModule 短路跳过，自动补注册不再复活）
+  final Set<String> _disabledModules = {};
+
+  /// per-module 上下线操作链（同名 setModuleEnabled 串行，防双连击竞态）
+  final Map<String, Future<void>> _toggleChains = {};
+
   /// 服务接口绑定（Type → 实现）
   final Map<Type, Object> _services = {};
 
@@ -143,7 +149,8 @@ class ModuleManager {
       changed = false;
       for (final module in _modules.values.toList()) {
         for (final dep in module.dependencies) {
-          if (!_modules.containsKey(dep)) {
+          // 禁用中的模块不补注册（防 unregister 后被自动复活）
+          if (!_modules.containsKey(dep) && !_disabledModules.contains(dep)) {
             final found = known.where((m) => m.moduleName == dep).toList();
             if (found.isNotEmpty) {
               _modules[dep] = found.first;
@@ -157,6 +164,8 @@ class ModuleManager {
 
   /// 单模块初始化（递归解析依赖）
   Future<void> _initModule(String name) async {
+    // 禁用中的模块短路跳过（不修改 _initialized，保持 isInitialized 真实）
+    if (_disabledModules.contains(name)) return;
     final module = _modules[name];
     if (module == null) {
       throw StateError('模块 $name 未注册');
@@ -284,6 +293,58 @@ class ModuleManager {
   /// 是否已绑定服务
   bool hasService<T>() => _services.containsKey(T);
 
+  /// 模块是否启用（未被运行时禁用）
+  bool isModuleEnabled(String name) => !_disabledModules.contains(name);
+
+  /// 运行时上下线开关。per-module Future 链序列化防双连击竞态。
+  ///
+  /// - 已初始化：unregisterModule(name)（触发 onUnregister 解绑服务 + unregistered 事件）
+  ///   后再加入 [_disabledModules]
+  /// - 未初始化：仅加入 [_disabledModules]（[_initModule] 短路跳过，isInitialized 保持 false）
+  /// - 有活跃依赖者（dependencies 含 name 且已初始化的模块）时返回 false 拒绝
+  /// - 幂等：已 disabled 时重复 disable 无操作
+  /// - 启用：从 [_knownModulesProvider] 查 AppModule 实例 → 移除 disabled → activate
+  Future<bool> setModuleEnabled(String name, bool enabled) {
+    final chain = _toggleChains[name] ?? Future<void>.value();
+    final next = chain.then((_) => _applyModuleEnabled(name, enabled));
+    _toggleChains[name] = next;
+    return next.then((result) {
+      if (identical(_toggleChains[name], next)) {
+        _toggleChains.remove(name);
+      }
+      return result;
+    });
+  }
+
+  /// [setModuleEnabled] 的实际执行体（由 per-module 链串行调度）
+  Future<bool> _applyModuleEnabled(String name, bool enabled) async {
+    if (enabled) {
+      // 幂等：已启用
+      if (!_disabledModules.contains(name)) return true;
+      final provider = _knownModulesProvider;
+      final known = provider?.call() ?? const <AppModule>[];
+      final found =
+          known.where((m) => m.moduleName == name).toList();
+      if (found.isEmpty) return false;
+      _disabledModules.remove(name);
+      await activate(found.first);
+      return true;
+    }
+
+    // 幂等：已禁用
+    if (_disabledModules.contains(name)) return true;
+    // 依赖者检查：有活跃依赖者（已初始化且声明依赖本模块）时拒绝
+    final hasActiveDependents = _modules.values.any(
+      (m) => m.dependencies.contains(name) && _initialized.contains(m.moduleName),
+    );
+    if (hasActiveDependents) return false;
+    if (_initialized.contains(name)) {
+      await unregisterModule(name);
+    }
+    _disabledModules.add(name);
+    return true;
+  }
+
   /// 已绑定的服务类型列表
   List<Type> get serviceTypes => _services.keys.toList();
 
@@ -303,6 +364,8 @@ class ModuleManager {
     }
     _services.clear();
     _initialized.clear();
+    _disabledModules.clear();
+    _toggleChains.clear();
   }
 
   /// 释放资源
