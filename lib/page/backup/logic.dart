@@ -11,12 +11,12 @@ import 'package:file_picker/file_picker.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/config/config_manager.dart';
 import 'package:gstore/core/config/config_initializer.dart';
-import 'package:gstore/core/webdav/webdav_client.dart';
 import 'package:gstore/core/webdav/webdav_config.dart';
 import 'package:gstore/core/webdav/webdav_service.dart';
 import 'package:gstore/core/webdav/webdav_task_manager.dart';
 import 'package:gstore/page/backup/state.dart';
 import 'package:gstore/page/backup/widgets/backup_progress_sheet.dart';
+import 'package:gstore/page/backup/widgets/backup_restore_sheet.dart';
 
 class BackupLogic extends GetxController {
   final BackupState state = BackupState();
@@ -456,20 +456,8 @@ class BackupLogic extends GetxController {
       return;
     }
 
-    // 检查配置
-    final config = await WebDavConfigManager.instance.loadConfig();
-    if (config == null) {
-      Get.snackbar(
-        '未配置',
-        '请先配置 WebDAV 信息',
-        duration: const Duration(seconds: 2),
-        snackPosition: SnackPosition.BOTTOM,
-      );
-      return;
-    }
-
-    // 打开进度面板（面板内执行上传并管理成功/失败；isUploadingWebDav
-    // 保持 true 使源按钮禁用，防止重复触发）
+    // 打开进度面板（config 加载移入面板 task 内，点击立即弹面板；
+    // isUploadingWebDav 保持 true 使源按钮禁用，防止重复触发）
     state.isUploadingWebDav.value = true;
     try {
       await showModalBottomSheet<bool>(
@@ -479,12 +467,21 @@ class BackupLogic extends GetxController {
         isScrollControlled: true,
         builder: (_) => BackupProgressSheet(
           title: '备份到网盘',
-          task: (onLog) => _webdavService.uploadToWebDav(
-            config: config,
-            compressed: compressed,
-            includeAppConfig: state.includeAppConfig.value,
-            onLog: onLog,
-          ),
+          task: (onLog) async {
+            onLog('加载 WebDAV 配置...');
+            final config = await WebDavConfigManager.instance.loadConfig();
+            if (config == null) {
+              onLog('未配置 WebDAV 信息', isError: true);
+              throw BackupException('未配置 WebDAV 信息');
+            }
+            onLog('配置加载成功');
+            await _webdavService.uploadToWebDav(
+              config: config,
+              compressed: compressed,
+              includeAppConfig: state.includeAppConfig.value,
+              onLog: onLog,
+            );
+          },
         ),
       );
     } finally {
@@ -492,11 +489,8 @@ class BackupLogic extends GetxController {
     }
   }
 
-  /// 从 WebDAV 下载并导入（进度面板：日志流式输出）
-  Future<void> downloadFromWebDav(
-    BuildContext context, {
-    String? remotePath,
-  }) async {
+  /// 从 WebDAV 下载并导入（单面板三阶段：加载配置/列文件 → 选择 → 恢复）
+  Future<void> downloadFromWebDav(BuildContext context) async {
     appLog.info('BackupLogic: 从 WebDAV 下载备份');
 
     // 同步检查：已有备份/恢复任务进行中则不重复触发
@@ -505,72 +499,8 @@ class BackupLogic extends GetxController {
       return;
     }
 
-    // 检查配置
-    final config = await WebDavConfigManager.instance.loadConfig();
-    if (config == null) {
-      Get.snackbar(
-        '未配置',
-        '请先配置 WebDAV 信息',
-        duration: const Duration(seconds: 2),
-        snackPosition: SnackPosition.BOTTOM,
-      );
-      return;
-    }
-
-    // 如果没有指定路径，列出所有备份文件让用户选择
-    String targetPath;
-    if (remotePath == null) {
-      try {
-        debugPrint('BackupLogic: 获取备份文件列表...');
-        final client = WebDavClient(config);
-        final files = await client.listFiles(
-          config.backupPath,
-          pattern: 'gstore_backup_*.tar.gz',
-        );
-
-        if (files.isEmpty) {
-          Get.snackbar(
-            '未找到备份',
-            '在 WebDAV 服务器上未找到备份文件',
-            duration: const Duration(seconds: 2),
-            snackPosition: SnackPosition.BOTTOM,
-          );
-          return;
-        }
-
-        // 按修改时间倒序排序（最新的在前）
-        files.sort((a, b) => b.modified.compareTo(a.modified));
-        debugPrint('BackupLogic: 找到 ${files.length} 个备份文件');
-
-        // 显示文件选择对话框
-        final selectedFile = await showDialog<WebDavFile>(
-          context: context,
-          builder: (context) => _BackupFileSelector(files: files),
-        );
-
-        // 如果用户取消选择
-        if (selectedFile == null) {
-          debugPrint('BackupLogic: 用户取消选择备份文件');
-          return;
-        }
-
-        targetPath = selectedFile.path;
-        debugPrint('BackupLogic: 用户选择备份 - ${selectedFile.name} (${selectedFile.modified})');
-      } catch (e) {
-        appLog.error('BackupLogic: 获取备份列表失败: $e');
-        Get.snackbar(
-          '获取备份列表失败',
-          e.toString(),
-          duration: const Duration(seconds: 3),
-          snackPosition: SnackPosition.BOTTOM,
-        );
-        return;
-      }
-    } else {
-      targetPath = remotePath;
-    }
-
-    // 打开进度面板（面板内执行下载+恢复；isImporting 保持 true 防重复）
+    // 打开恢复面板（面板内：阶段1 加载配置+列文件 → 阶段2 选择 →
+    // 阶段3 恢复；isImporting 保持 true 防重复触发）
     state.isImporting.value = true;
     try {
       final success = await showModalBottomSheet<bool>(
@@ -578,15 +508,36 @@ class BackupLogic extends GetxController {
         isDismissible: false,
         enableDrag: false,
         isScrollControlled: true,
-        builder: (_) => BackupProgressSheet(
+        builder: (_) => BackupRestoreSheet(
           title: '从网盘恢复备份',
-          task: (onLog) => _webdavService.downloadFromWebDav(
-            config: config,
-            remotePath: targetPath,
-            mode: _convertRestoreMode(state.restoreMode.value),
-            restoreAppConfig: state.restoreAppConfig.value,
-            onLog: onLog,
-          ),
+          prepareTask: (onLog) async {
+            onLog('加载 WebDAV 配置...');
+            final config = await WebDavConfigManager.instance.loadConfig();
+            if (config == null) {
+              onLog('未配置 WebDAV 信息', isError: true);
+              throw BackupException('未配置 WebDAV 信息');
+            }
+            onLog('连接 WebDAV...');
+            final files = await _webdavService.listFiles(
+              config.backupPath,
+              pattern: 'gstore_backup_*.tar.gz',
+            );
+            // 按修改时间倒序排序（最新的在前）
+            files.sort((a, b) => b.modified.compareTo(a.modified));
+            onLog('找到 ${files.length} 个备份文件');
+            return files;
+          },
+          restoreTask: (file, onLog) async {
+            final config = await WebDavConfigManager.instance.loadConfig();
+            if (config == null) throw BackupException('未配置 WebDAV 信息');
+            await _webdavService.downloadFromWebDav(
+              config: config,
+              remotePath: file.path,
+              mode: _convertRestoreMode(state.restoreMode.value),
+              restoreAppConfig: state.restoreAppConfig.value,
+              onLog: onLog,
+            );
+          },
         ),
       );
 
@@ -607,216 +558,5 @@ class BackupLogic extends GetxController {
   void onClose() {
     // TODO: implement dispose
     super.onClose();
-  }
-}
-
-/// 备份文件选择对话框
-class _BackupFileSelector extends StatelessWidget {
-  final List<WebDavFile> files;
-
-  const _BackupFileSelector({required this.files});
-
-  String _formatDateTime(DateTime dt) {
-    return '${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')} '
-        '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    return Dialog(
-      backgroundColor: theme.colorScheme.surface,
-      shape: RoundedRectangleBorder(
-        borderRadius: AppRadius.allXL,
-        side: BorderSide(
-          color: theme.colorScheme.outlineVariant.withOpacity(0.5),
-          width: 1,
-        ),
-      ),
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 500, maxHeight: 500),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // 标题栏
-            Padding(
-              padding: AppSpacing.allXL,
-              child: Row(
-                children: [
-                  Icon(
-                    Icons.backup,
-                    color: theme.colorScheme.primary,
-                    size: 24,
-                  ),
-                  SizedBox(width: AppSpacing.md),
-                  Expanded(
-                    child: Text(
-                      '选择备份文件',
-                      style: theme.textTheme.titleLarge?.copyWith(
-                        fontWeight: AppTypography.weightSemiBold,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            Divider(
-              height: 1,
-              thickness: 1,
-              color: theme.colorScheme.outlineVariant.withOpacity(0.3),
-            ),
-            // 文件列表
-            Flexible(
-              child: ListView.separated(
-                padding: AppSpacing.allLG,
-                itemCount: files.length,
-                separatorBuilder: (context, index) => SizedBox(height: AppSpacing.md),
-                itemBuilder: (context, index) {
-                  final file = files[index];
-                  final isLatest = index == 0;
-
-                  return _buildFileCard(context, file, isLatest, theme);
-                },
-              ),
-            ),
-            Divider(
-              height: 1,
-              thickness: 1,
-              color: theme.colorScheme.outlineVariant.withOpacity(0.3),
-            ),
-            // 底部按钮
-            Padding(
-              padding: AppSpacing.allXL,
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  OutlinedButton(
-                    style: OutlinedButton.styleFrom(
-                      elevation: 0,
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: AppRadius.allSM,
-                      ),
-                      side: BorderSide(
-                        color: theme.colorScheme.outline,
-                        width: 1,
-                      ),
-                    ),
-                    onPressed: () => Navigator.of(context).pop(),
-                    child: Text(
-                      '取消',
-                      style: TextStyle(
-                        fontSize: AppTypography.sizeMD,
-                        fontWeight: AppTypography.weightMedium,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildFileCard(BuildContext context, WebDavFile file, bool isLatest, ThemeData theme) {
-    return InkWell(
-      onTap: () => Navigator.of(context).pop(file),
-      borderRadius: AppRadius.allLG,
-      child: Container(
-        decoration: BoxDecoration(
-          color: theme.colorScheme.surfaceContainerLow,
-          borderRadius: AppRadius.allLG,
-          border: Border.all(
-            color: theme.colorScheme.outlineVariant.withOpacity(0.5),
-            width: 1,
-          ),
-        ),
-        child: Padding(
-          padding: AppSpacing.allLG,
-          child: Row(
-            children: [
-              // 图标
-              Container(
-                width: 48,
-                height: 48,
-                decoration: BoxDecoration(
-                  color: theme.colorScheme.primaryContainer.withOpacity(0.5),
-                  borderRadius: AppRadius.allMD,
-                ),
-                child: Icon(
-                  Icons.backup,
-                  color: theme.colorScheme.primary,
-                  size: 24,
-                ),
-              ),
-              SizedBox(width: AppSpacing.md),
-              // 文件信息
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // 文件名和标签
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            file.name,
-                            style: theme.textTheme.bodyLarge?.copyWith(
-                              fontWeight: AppTypography.weightMedium,
-                            ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                        if (isLatest) ...[
-                          SizedBox(width: AppSpacing.sm),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                            decoration: BoxDecoration(
-                              color: AppColors.success.withOpacity(0.15),
-                              borderRadius: AppRadius.allSM,
-                              border: Border.all(
-                                color: AppColors.success.withOpacity(0.5),
-                                width: 1,
-                              ),
-                            ),
-                            child: Text(
-                              '最新',
-                              style: TextStyle(
-                                fontSize: AppTypography.sizeXXS,
-                                fontWeight: AppTypography.weightMedium,
-                                color: AppColors.success,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ],
-                    ),
-                    SizedBox(height: AppSpacing.xs),
-                    // 时间和大小
-                    Text(
-                      '${_formatDateTime(file.modified)} · ${file.formattedSize}',
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              SizedBox(width: AppSpacing.sm),
-              // 选择图标
-              Icon(
-                Icons.chevron_right,
-                color: theme.colorScheme.outline,
-                size: 20,
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
   }
 }
