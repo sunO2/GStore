@@ -6,8 +6,8 @@ import 'package:gstore/page/web/browser.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/theme/app_theme_config.dart';
-import 'package:gstore/core/webdav/webdav_task_manager.dart';
 import 'package:gstore/page/backup/logic.dart';
 import 'package:gstore/page/backup/state.dart';
 
@@ -33,6 +33,12 @@ class _MinePageState extends State<MinePage>
   /// WebDAV 配置状态
   bool _hasWebDavConfig = false;
 
+  /// WebDAV 模块是否在线（随模块上下线实时更新）
+  bool _webdavModuleOnline = false;
+
+  /// webdav 模块上下线事件订阅（dispose 取消，防泄漏）
+  StreamSubscription<ModuleEvent>? _moduleSub;
+
   @override
   bool get wantKeepAlive => true;
 
@@ -53,6 +59,17 @@ class _MinePageState extends State<MinePage>
     super.initState();
     _backupLogic = Get.put(BackupLogic());
     _checkWebDavConfig();
+
+    // 监听 webdav 模块上下线：下线隐藏备份入口，上线恢复
+    _webdavModuleOnline = ModuleManager.instance.isModuleEnabled('webdav');
+    _moduleSub = ModuleManager.instance.watchModule('webdav').listen((_) {
+      if (!mounted) return;
+      setState(() {
+        _webdavModuleOnline = ModuleManager.instance.isModuleEnabled('webdav');
+      });
+      // 模块事件时配置可能刚写入（配置页保存后返回）：重查刷新
+      _checkWebDavConfig();
+    });
 
     // 初始化外观卡片动画
     _appearanceController = AnimationController(
@@ -77,6 +94,7 @@ class _MinePageState extends State<MinePage>
 
   @override
   void dispose() {
+    _moduleSub?.cancel();
     _appearanceController.dispose();
     _backupController.dispose();
     super.dispose();
@@ -864,6 +882,8 @@ class _MinePageState extends State<MinePage>
 
   /// 构建备份管理卡片
   Widget _buildBackupCard(BuildContext context) {
+    // WebDAV 入口可见性：已配置 且 webdav 模块在线（下线时隐藏，上线恢复）
+    final webdavEntryVisible = _hasWebDavConfig && _webdavModuleOnline;
     return Card(
       key: _backupCardKey,
       elevation: 0,
@@ -895,7 +915,7 @@ class _MinePageState extends State<MinePage>
                 SizedBox(
                   width: 32,
                   height: 32,
-                  child: _hasWebDavConfig
+                  child: webdavEntryVisible
                       ? InkWell(
                           onTap: () {
                             _toggleBackupExpanded();
@@ -928,8 +948,11 @@ class _MinePageState extends State<MinePage>
             // 备份选项和操作
             Obx(() {
               final state = _backupLogic.state;
-              // WebDAV 传输任务进行中（防重复：其他入口/Agent 触发时按钮同样禁用）
-              final taskBusy = WebDavTaskManager.instance.isBusy;
+              // WebDAV 传输任务进行中（防重复：其他入口/Agent 触发时按钮同样禁用；
+              // 经注册表取实现，webdav 模块下线时降级为不忙）
+              final taskBusy =
+                  ModuleManager.instance.get<IWebDavTaskManager>()?.isBusy ??
+                      false;
 
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -1030,8 +1053,8 @@ class _MinePageState extends State<MinePage>
                     ],
                   ),
 
-                  // WebDAV 备份恢复按钮（仅在有配置时显示）
-                  if (_hasWebDavConfig) ...[
+                  // WebDAV 备份恢复按钮（仅在有配置且模块在线时显示）
+                  if (webdavEntryVisible) ...[
                     // 展开的 WebDAV 操作（折叠时整体高度为 0，避免布局跳动）
                     SizeTransition(
                       sizeFactor: _backupAnimation,
@@ -1064,7 +1087,9 @@ class _MinePageState extends State<MinePage>
                               Expanded(
                                 child: FilledButton.icon(
                                   onPressed:
-                                      (state.isUploadingWebDav.value || taskBusy)
+                                      (state.isUploadingWebDav.value ||
+                                              taskBusy ||
+                                              !_webdavModuleOnline)
                                           ? null
                                           : () => _backupLogic.uploadToWebDav(
                                               context,
@@ -1088,7 +1113,9 @@ class _MinePageState extends State<MinePage>
                               Expanded(
                                 child: FilledButton.icon(
                                   onPressed:
-                                      (state.isImporting.value || taskBusy)
+                                      (state.isImporting.value ||
+                                              taskBusy ||
+                                              !_webdavModuleOnline)
                                           ? null
                                           : () => _backupLogic
                                               .downloadFromWebDav(context),
