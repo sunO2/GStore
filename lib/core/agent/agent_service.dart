@@ -17,6 +17,7 @@ import 'package:gstore/core/agent/platform_arch.dart';
 import 'package:gstore/core/agent/tools/builtin_tools.dart';
 import 'package:gstore/core/module/app_modules.dart';
 import 'package:gstore/core/module/module_manager.dart';
+import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
@@ -28,7 +29,6 @@ import 'package:gstore/core/fdroid/FdroidRepoManager.dart';
 import 'package:gstore/core/utils/unit.dart';
 import 'package:gstore/core/webdav/webdav_config.dart';
 import 'package:gstore/core/webdav/webdav_client.dart';
-import 'package:gstore/core/webdav/webdav_service.dart';
 import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
 import 'package:gstore/http/download/DownloadStatusDataBase.dart';
@@ -190,6 +190,10 @@ class AgentService extends GetxService {
   /// 当前全部已注册工具名（模型可调用清单）
   List<String> get registeredToolNames =>
       _agentTools.map((t) => t.toolName).toList();
+
+  /// 执行工具（模块化工具委托入口；测试可直接调用）
+  Future<String> runTool(String toolName, Map<String, dynamic> params) =>
+      _executeTool(toolName, params);
 
   /// 分发工具执行到对应实现（模块 execute 的委托目标）
   Future<String> _executeTool(String toolName, Map<String, dynamic> params) {
@@ -2317,13 +2321,18 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
 
   /// WebDAV 云备份
   Future<String> _webdavSync(String action) async {
+    final service = ModuleManager.instance.get<IWebDavService>();
+    if (service == null) {
+      // webdav 模块下线 → 降级返回，不抛
+      return 'WebDAV 模块未启用，无法执行云备份操作';
+    }
+
     try {
       final hasConfig = await WebDavConfigManager.instance.hasConfig();
       if (!hasConfig) {
         return '尚未配置 WebDAV，请先在"备份管理"中配置网盘。';
       }
       final config = await WebDavConfigManager.instance.loadConfig();
-      final service = WebDavService.instance;
 
       switch (action) {
         case 'list':

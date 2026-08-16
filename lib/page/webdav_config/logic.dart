@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/core.dart';
-import 'package:gstore/core/webdav/webdav_service.dart';
+import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 
 import 'state.dart';
 
@@ -41,6 +41,13 @@ class WebDavConfigLogic extends GetxController {
 
   /// 测试连接
   Future<void> testConnection() async {
+    final service = ModuleManager.instance.get<IWebDavService>();
+    if (service == null) {
+      // webdav 模块下线 → 降级提示，不抛
+      AppDialogs.showWarning('WebDAV 模块未启用，无法测试连接');
+      return;
+    }
+
     final config = _getConfigFromInput();
     if (!config.isValid) {
       AppDialogs.showWarning('请填写完整的 WebDAV 配置信息（服务器地址、用户名、密码）');
@@ -51,8 +58,7 @@ class WebDavConfigLogic extends GetxController {
       state.isTesting.value = true;
       appLog.info('WebDavConfigLogic: 开始测试连接 - ${config.baseUrl}');
 
-      final success = await WebDavService.instance
-          .testWebDavConnection(config);
+      final success = await service.testWebDavConnection(config);
 
       debugPrint('WebDavConfigLogic: 测试连接结果 - $success');
 
