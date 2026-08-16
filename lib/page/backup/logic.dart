@@ -14,6 +14,7 @@ import 'package:gstore/core/config/config_initializer.dart';
 import 'package:gstore/core/webdav/webdav_client.dart';
 import 'package:gstore/core/webdav/webdav_config.dart';
 import 'package:gstore/page/backup/state.dart';
+import 'package:gstore/page/backup/widgets/backup_progress_sheet.dart';
 
 class BackupLogic extends GetxController {
   final BackupState state = BackupState();
@@ -442,239 +443,148 @@ class BackupLogic extends GetxController {
 
   // ==================== WebDAV 功能 ====================
 
-  /// 上传到 WebDAV
+  /// 上传到 WebDAV（进度面板：日志流式输出）
   Future<void> uploadToWebDav(BuildContext context, {bool compressed = false}) async {
-    try {
-      appLog.info('BackupLogic: 开始上传到 WebDAV');
-      state.isUploadingWebDav.value = true;
+    appLog.info('BackupLogic: 开始上传到 WebDAV');
 
-      // 检查配置
-      final config = await WebDavConfigManager.instance.loadConfig();
-      if (config == null) {
-        Get.snackbar(
-          '未配置',
-          '请先配置 WebDAV 信息',
-          duration: const Duration(seconds: 2),
-          snackPosition: SnackPosition.BOTTOM,
-        );
-        state.isUploadingWebDav.value = false;
-        return;
-      }
-
-      // 上传备份
-      final remotePath = await _backupService.uploadToWebDav(
-        config: config,
-        compressed: compressed,
-        includeAppConfig: state.includeAppConfig.value,
+    // 检查配置
+    final config = await WebDavConfigManager.instance.loadConfig();
+    if (config == null) {
+      Get.snackbar(
+        '未配置',
+        '请先配置 WebDAV 信息',
+        duration: const Duration(seconds: 2),
+        snackPosition: SnackPosition.BOTTOM,
       );
+      return;
+    }
 
-      appLog.info('BackupLogic: 上传成功 - $remotePath');
+    // 打开进度面板（面板内执行上传并管理成功/失败；isUploadingWebDav
+    // 保持 true 使源按钮禁用，防止重复触发）
+    state.isUploadingWebDav.value = true;
+    try {
+      await showModalBottomSheet<bool>(
+        context: context,
+        isDismissible: false,
+        enableDrag: false,
+        isScrollControlled: true,
+        builder: (_) => BackupProgressSheet(
+          title: '备份到网盘',
+          task: (onLog) => _backupService.uploadToWebDav(
+            config: config,
+            compressed: compressed,
+            includeAppConfig: state.includeAppConfig.value,
+            onLog: onLog,
+          ),
+        ),
+      );
+    } finally {
       state.isUploadingWebDav.value = false;
-
-      if (context.mounted) {
-        Get.snackbar(
-          '上传成功',
-          '备份已上传到：${config.backupPath}',
-          duration: const Duration(seconds: 5),
-          snackPosition: SnackPosition.BOTTOM,
-          backgroundColor: AppColors.success.withOpacity(0.9),
-          colorText: Colors.white,
-        );
-      }
-    } catch (e, stackTrace) {
-      appLog.error('BackupLogic: 上传失败 - $e');
-      appLog.error('BackupLogic: 堆栈跟踪: $stackTrace');
-      state.isUploadingWebDav.value = false;
-
-      if (context.mounted) {
-        Get.snackbar(
-          '上传失败',
-          '上传到 WebDAV 失败：$e',
-          duration: const Duration(seconds: 3),
-          snackPosition: SnackPosition.BOTTOM,
-        );
-      }
     }
   }
 
-  /// 从 WebDAV 下载并导入
+  /// 从 WebDAV 下载并导入（进度面板：日志流式输出）
   Future<void> downloadFromWebDav(
     BuildContext context, {
     String? remotePath,
   }) async {
-    try {
-      appLog.info('BackupLogic: 从 WebDAV 下载备份');
-      state.isImporting.value = true;
+    appLog.info('BackupLogic: 从 WebDAV 下载备份');
 
-      // 显示进度对话框
-      showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (context) => const PopScope(
-          canPop: false,
-          child: Center(
-            child: AppLoading(size: AppLoadingSize.medium),
-          ),
-        ),
+    // 检查配置
+    final config = await WebDavConfigManager.instance.loadConfig();
+    if (config == null) {
+      Get.snackbar(
+        '未配置',
+        '请先配置 WebDAV 信息',
+        duration: const Duration(seconds: 2),
+        snackPosition: SnackPosition.BOTTOM,
       );
+      return;
+    }
 
-      // 检查配置
-      final config = await WebDavConfigManager.instance.loadConfig();
-      if (config == null) {
-        Navigator.pop(context);
-        state.isImporting.value = false;
+    // 如果没有指定路径，列出所有备份文件让用户选择
+    String targetPath;
+    if (remotePath == null) {
+      try {
+        debugPrint('BackupLogic: 获取备份文件列表...');
+        final client = WebDavClient(config);
+        final files = await client.listFiles(
+          config.backupPath,
+          pattern: 'gstore_backup_*.tar.gz',
+        );
 
+        if (files.isEmpty) {
+          Get.snackbar(
+            '未找到备份',
+            '在 WebDAV 服务器上未找到备份文件',
+            duration: const Duration(seconds: 2),
+            snackPosition: SnackPosition.BOTTOM,
+          );
+          return;
+        }
+
+        // 按修改时间倒序排序（最新的在前）
+        files.sort((a, b) => b.modified.compareTo(a.modified));
+        debugPrint('BackupLogic: 找到 ${files.length} 个备份文件');
+
+        // 显示文件选择对话框
+        final selectedFile = await showDialog<WebDavFile>(
+          context: context,
+          builder: (context) => _BackupFileSelector(files: files),
+        );
+
+        // 如果用户取消选择
+        if (selectedFile == null) {
+          debugPrint('BackupLogic: 用户取消选择备份文件');
+          return;
+        }
+
+        targetPath = selectedFile.path;
+        debugPrint('BackupLogic: 用户选择备份 - ${selectedFile.name} (${selectedFile.modified})');
+      } catch (e) {
+        appLog.error('BackupLogic: 获取备份列表失败: $e');
         Get.snackbar(
-          '未配置',
-          '请先配置 WebDAV 信息',
-          duration: const Duration(seconds: 2),
+          '获取备份列表失败',
+          e.toString(),
+          duration: const Duration(seconds: 3),
           snackPosition: SnackPosition.BOTTOM,
         );
         return;
       }
+    } else {
+      targetPath = remotePath;
+    }
 
-      // 如果没有指定路径，列出所有备份文件让用户选择
-      // 生成当前时间戳的备份文件名
-      final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.')[0];
-      String targetPath = remotePath ?? '${config.backupPath}/gstore_backup_$timestamp.tar.gz';
-
-      if (remotePath == null) {
-        debugPrint('BackupLogic: 获取备份文件列表...');
-
-        try {
-          final client = WebDavClient(config);
-          final files = await client.listFiles(
-            config.backupPath,
-            pattern: 'gstore_backup_*.tar.gz',
-          );
-
-          if (files.isEmpty) {
-            Navigator.pop(context);
-            state.isImporting.value = false;
-
-            Get.snackbar(
-              '未找到备份',
-              '在 WebDAV 服务器上未找到备份文件',
-              duration: const Duration(seconds: 2),
-              snackPosition: SnackPosition.BOTTOM,
-            );
-            return;
-          }
-
-          // 按修改时间倒序排序（最新的在前）
-          files.sort((a, b) => b.modified.compareTo(a.modified));
-
-          debugPrint('BackupLogic: 找到 ${files.length} 个备份文件');
-
-          // 关闭进度对话框
-          Navigator.pop(context);
-
-          // 显示文件选择对话框
-          final selectedFile = await showDialog<WebDavFile>(
-            context: context,
-            builder: (context) => _BackupFileSelector(files: files),
-          );
-
-          // 如果用户取消选择
-          if (selectedFile == null) {
-            state.isImporting.value = false;
-            debugPrint('BackupLogic: 用户取消选择备份文件');
-            return;
-          }
-
-          targetPath = selectedFile.path;
-          debugPrint('BackupLogic: 用户选择备份 - ${selectedFile.name} (${selectedFile.modified})');
-
-          // 重新显示进度对话框
-          showDialog(
-            context: context,
-            barrierDismissible: false,
-            builder: (context) => const PopScope(
-              canPop: false,
-              child: Center(
-                child: AppLoading(size: AppLoadingSize.medium),
-              ),
-            ),
-          );
-        } catch (e) {
-          Navigator.pop(context);
-          state.isImporting.value = false;
-
-          appLog.error('BackupLogic: 获取备份列表失败: $e');
-
-          Get.snackbar(
-            '获取备份列表失败',
-            e.toString(),
-            duration: const Duration(seconds: 3),
-            snackPosition: SnackPosition.BOTTOM,
-            backgroundColor: AppColors.error.withOpacity(0.9),
-            colorText: Colors.white,
-          );
-          return;
-        }
-      }
-
-      // 下载并导入
-      final result = await _backupService.downloadFromWebDav(
-        config: config,
-        remotePath: targetPath,
-        mode: _convertRestoreMode(state.restoreMode.value),
-        restoreAppConfig: state.restoreAppConfig.value,
+    // 打开进度面板（面板内执行下载+恢复；isImporting 保持 true 防重复）
+    state.isImporting.value = true;
+    try {
+      final success = await showModalBottomSheet<bool>(
+        context: context,
+        isDismissible: false,
+        enableDrag: false,
+        isScrollControlled: true,
+        builder: (_) => BackupProgressSheet(
+          title: '从网盘恢复备份',
+          task: (onLog) => _backupService.downloadFromWebDav(
+            config: config,
+            remotePath: targetPath,
+            mode: _convertRestoreMode(state.restoreMode.value),
+            restoreAppConfig: state.restoreAppConfig.value,
+            onLog: onLog,
+          ),
+        ),
       );
 
-      Navigator.pop(context); // 关闭进度对话框
-
-      if (result.success) {
-        state.isImporting.value = false;
-
+      // 面板关闭后：成功才刷新数据（失败/关闭不触发）
+      if (success == true) {
         // 发送数据库变化事件
         DatabaseEventBus.instance.send(const DatabaseChangeEvent(
           type: DatabaseChangeType.batchImport,
         ));
-
-        // 显示成功消息 - 详细显示导入结果
-        String message = '导入完成！\n';
-        message += '总共: ${result.totalCount} 个应用\n';
-        message += '新添加: ${result.addedCount} 个';
-        if (result.skippedCount != null && result.skippedCount! > 0) {
-          message += '\n已存在跳过: ${result.skippedCount} 个';
-        }
-
-        appLog.info('BackupLogic: 导入成功 - ${result.addedCount} 个新应用, ${result.skippedCount} 个已存在');
-
-        Get.snackbar(
-          '导入成功',
-          message,
-          duration: const Duration(seconds: 5),
-          snackPosition: SnackPosition.BOTTOM,
-          backgroundColor: AppColors.success.withOpacity(0.9),
-          colorText: Colors.white,
-        );
-
-        // 刷新数据
         await loadStatistics();
-      } else {
-        state.isImporting.value = false;
-
-        Get.snackbar(
-          '导入失败',
-          result.error ?? '未知错误',
-          duration: const Duration(seconds: 3),
-          snackPosition: SnackPosition.BOTTOM,
-        );
       }
-    } catch (e) {
+    } finally {
       state.isImporting.value = false;
-
-      // 确保关闭对话框
-      Navigator.of(context, rootNavigator: true).pop();
-
-      Get.snackbar(
-        '导入失败',
-        '从 WebDAV 导入失败：$e',
-        duration: const Duration(seconds: 3),
-        snackPosition: SnackPosition.BOTTOM,
-      );
     }
   }
 

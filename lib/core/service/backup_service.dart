@@ -17,6 +17,9 @@ import 'package:gstore/core/fdroid/FdroidRepoManager.dart';
 import 'package:gstore/core/agent/agent_model_store.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 
+/// 备份/恢复进度日志回调（旁路输出，不影响返回/异常语义）
+typedef BackupLogCallback = void Function(String message, {bool isError});
+
 /// 备份服务
 /// 负责导出和导入应用数据
 class BackupService implements IBackupService, IWebDavService {
@@ -464,6 +467,7 @@ class BackupService implements IBackupService, IWebDavService {
   Future<BackupImportResult> importData(
     BackupData backupData, {
     BackupImportMode mode = BackupImportMode.merge,
+    BackupLogCallback? onLog,
   }) async {
     if (!_isInitialized) await initialize();
 
@@ -485,6 +489,7 @@ class BackupService implements IBackupService, IWebDavService {
       }
 
       appLog.info('BackupService: ✅ 版本验证通过');
+      onLog?.call('开始导入应用数据（${backupData.apps.length} 个）...');
 
       // 根据导入模式处理聚合数据库
       switch (mode) {
@@ -548,18 +553,23 @@ class BackupService implements IBackupService, IWebDavService {
           break;
       }
 
+      onLog?.call('应用数据导入完成');
+
       // 导入渠道数据库数据（v2.0 及更新版本包含渠道数据）
       if ((backupData.metadata.version == BackupVersion.v2_0 ||
               backupData.metadata.version == BackupVersion.v2_1) &&
           backupData.channelApps.isNotEmpty) {
         appLog.info('BackupService: 开始导入渠道数据库数据（${backupData.channelApps.length} 个渠道）');
+        onLog?.call('导入渠道库数据（${backupData.channelApps.length} 个渠道）...');
         await _importChannelApps(backupData.channelApps, mode);
+        onLog?.call('渠道库导入完成');
       } else {
         debugPrint('BackupService: 无渠道数据需要导入（版本: ${backupData.metadata.version}, 渠道数: ${backupData.channelApps.length}）');
       }
 
       // 导入应用配置（如果存在）
       if (backupData.appConfig != null && backupData.appConfig!.isNotEmpty) {
+        onLog?.call('开始恢复应用配置...');
         try {
           appLog.info('BackupService: 开始导入应用配置');
           debugPrint('BackupService: 配置项: ${backupData.appConfig!.keys.toList()}');
@@ -576,11 +586,14 @@ class BackupService implements IBackupService, IWebDavService {
           final importSuccess = await configManager.importAll(configBackupData);
           if (importSuccess) {
             appLog.info('BackupService: ✅ 应用配置导入成功');
+            onLog?.call('应用配置恢复完成');
           } else {
             appLog.error('BackupService: ⚠️ 应用配置导入部分失败');
+            onLog?.call('应用配置恢复部分失败', isError: true);
           }
         } catch (e) {
           appLog.error('BackupService: 导入应用配置失败 - $e');
+          onLog?.call('应用配置恢复失败: $e', isError: true);
           // 配置导入失败不影响应用导入
         }
       } else {
@@ -590,6 +603,7 @@ class BackupService implements IBackupService, IWebDavService {
       // 代理配置（B 轨：不走 ConfigManager，直接写 ConfigService，与配置导入相互独立）
       final proxyValue = backupData.appConfig?['proxy_url'];
       if (proxyValue != null && proxyValue.toString().isNotEmpty) {
+        onLog?.call('恢复代理配置...');
         try {
           final proxyResult = await ConfigService.instance.set(
             ConfigKeys.proxyUrl,
@@ -597,12 +611,15 @@ class BackupService implements IBackupService, IWebDavService {
           );
           if (proxyResult.success) {
             appLog.info('BackupService: ✅ 代理配置恢复完成');
+            onLog?.call('代理配置恢复完成');
           } else {
             appLog.error(
                 'BackupService: ⚠️ 代理配置恢复失败 - ${proxyResult.message}');
+            onLog?.call('代理配置恢复失败: ${proxyResult.message}', isError: true);
           }
         } catch (e) {
           appLog.error('BackupService: 恢复代理配置失败 - $e');
+          onLog?.call('代理配置恢复失败: $e', isError: true);
         }
       } else {
         debugPrint('BackupService: 备份中不包含代理配置');
@@ -610,14 +627,17 @@ class BackupService implements IBackupService, IWebDavService {
 
       // 导入用户分类标签（v2.1 新增；insertTags 复合主键冲突 replace，幂等追加）
       if (backupData.tags != null && backupData.tags!.isNotEmpty) {
+        onLog?.call('恢复用户分类标签（${backupData.tags!.length} 个）...');
         try {
           final tagItems = backupData.tags!
               .map((t) => t.toAddedAppTag())
               .toList();
           await _aggregatorDb.appTagDao.insertTags(tagItems);
           appLog.info('BackupService: ✅ 用户标签恢复完成（${tagItems.length} 个）');
+          onLog?.call('用户标签恢复完成');
         } catch (e) {
           appLog.error('BackupService: 恢复用户标签失败 - $e');
+          onLog?.call('用户标签恢复失败: $e', isError: true);
         }
       } else {
         debugPrint('BackupService: 备份中不包含用户标签');
@@ -981,76 +1001,98 @@ class BackupService implements IBackupService, IWebDavService {
     BackupOptions? options,
     List<ChannelType>? channels,
     bool includeAppConfig = false,
+    BackupLogCallback? onLog,
   }) async {
     appLog.info('BackupService: 开始上传到 WebDAV');
-
-    // 生成备份数据
-    final backupData = await exportData(options: options, channels: channels);
-
-    // 创建 Archive 对象
-    final archive = Archive();
-
-    // 添加 apps.json 到归档
-    final appsJsonString = jsonEncode(backupData.toJson());
-    final appsBytes = utf8.encode(appsJsonString);
-    archive.addFile(ArchiveFile('apps.json', appsBytes.length, appsBytes));
-    debugPrint('BackupService: apps.json 已添加 (${appsBytes.length} bytes)');
-
-    // 检查是否需要包含应用配置
-    if (includeAppConfig) {
-      debugPrint('BackupService: 包含应用配置');
-      try {
-        // 确保配置管理器已初始化
-        await ConfigInitializer.initialize();
-        debugPrint('BackupService: ConfigManager 初始化完成，已注册 ${ConfigManager.instance.configKeys.length} 个配置');
-
-        final configManager = ConfigManager.instance;
-        final configBackup = await configManager.exportAll();
-
-        appLog.info('BackupService: 应用配置导出成功，包含 ${configBackup.configs.length} 项配置');
-
-        if (configBackup.configs.isNotEmpty) {
-          // 添加 app_config.json 到归档
-          final configJsonString = jsonEncode(configBackup.toJson());
-          final configBytes = utf8.encode(configJsonString);
-          archive.addFile(ArchiveFile('app_config.json', configBytes.length, configBytes));
-          debugPrint('BackupService: app_config.json 已添加 (${configBytes.length} bytes)');
-
-          // 打印配置键列表
-          for (final key in configBackup.configs.keys) {
-            debugPrint('BackupService:   - $key');
-          }
-        } else {
-          debugPrint('BackupService: ⚠️ 配置为空，跳过 app_config.json');
-        }
-      } catch (e, stackTrace) {
-        appLog.error('BackupService: 导出应用配置失败: $e');
-        appLog.error('BackupService: 堆栈跟踪: $stackTrace');
+    try {
+      // 生成备份数据
+      onLog?.call('开始导出数据...');
+      final backupData = await exportData(options: options, channels: channels);
+      onLog?.call('已添加应用 ${backupData.apps.length} 个');
+      if (backupData.channelApps.isNotEmpty) {
+        onLog?.call('导出渠道库数据（${backupData.channelApps.length} 个渠道）');
       }
+      if (backupData.tags != null && backupData.tags!.isNotEmpty) {
+        onLog?.call('导出分类标签（${backupData.tags!.length} 个）');
+      }
+      if (backupData.appConfig != null && backupData.appConfig!.isNotEmpty) {
+        onLog?.call('导出应用配置（${backupData.appConfig!.length} 项）');
+      }
+
+      // 创建 Archive 对象
+      final archive = Archive();
+
+      // 添加 apps.json 到归档
+      final appsJsonString = jsonEncode(backupData.toJson());
+      final appsBytes = utf8.encode(appsJsonString);
+      archive.addFile(ArchiveFile('apps.json', appsBytes.length, appsBytes));
+      debugPrint('BackupService: apps.json 已添加 (${appsBytes.length} bytes)');
+
+      // 检查是否需要包含应用配置
+      if (includeAppConfig) {
+        debugPrint('BackupService: 包含应用配置');
+        try {
+          // 确保配置管理器已初始化
+          await ConfigInitializer.initialize();
+          debugPrint('BackupService: ConfigManager 初始化完成，已注册 ${ConfigManager.instance.configKeys.length} 个配置');
+
+          final configManager = ConfigManager.instance;
+          final configBackup = await configManager.exportAll();
+
+          appLog.info('BackupService: 应用配置导出成功，包含 ${configBackup.configs.length} 项配置');
+
+          if (configBackup.configs.isNotEmpty) {
+            // 添加 app_config.json 到归档
+            final configJsonString = jsonEncode(configBackup.toJson());
+            final configBytes = utf8.encode(configJsonString);
+            archive.addFile(ArchiveFile('app_config.json', configBytes.length, configBytes));
+            debugPrint('BackupService: app_config.json 已添加 (${configBytes.length} bytes)');
+
+            // 打印配置键列表
+            for (final key in configBackup.configs.keys) {
+              debugPrint('BackupService:   - $key');
+            }
+          } else {
+            debugPrint('BackupService: ⚠️ 配置为空，跳过 app_config.json');
+          }
+        } catch (e, stackTrace) {
+          appLog.error('BackupService: 导出应用配置失败: $e');
+          appLog.error('BackupService: 堆栈跟踪: $stackTrace');
+        }
+      }
+
+      // 打包压缩
+      onLog?.call('打包压缩备份数据...');
+      // 将 Archive 编码为 tar 字节
+      final tarBytes = TarEncoder().encode(archive);
+
+      // 使用 gzip 压缩
+      final uploadBytes = Uint8List.fromList(gzip.encode(tarBytes));
+
+      // 连接 WebDAV 并上传
+      onLog?.call('连接 WebDAV 服务器...');
+      // 创建 WebDAV 客户端
+      final client = WebDavClient(config);
+
+      // 确保备份目录存在
+      await client.ensureDirectory(config.backupPath);
+
+      // 生成文件名（统一格式）
+      final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.')[0];
+      final fileName = 'gstore_backup_$timestamp.tar.gz';
+      final remotePath = '${config.backupPath}/$fileName'.replaceAll('//', '/');
+
+      // 上传文件
+      await client.uploadFile(remotePath, uploadBytes);
+
+      appLog.info('BackupService: 上传到 WebDAV 成功 - $remotePath');
+      onLog?.call('上传成功: $remotePath');
+      return remotePath;
+    } catch (e) {
+      appLog.error('BackupService: 上传到 WebDAV 失败 - $e');
+      onLog?.call('上传失败: $e', isError: true);
+      rethrow;
     }
-
-    // 将 Archive 编码为 tar 字节
-    final tarBytes = TarEncoder().encode(archive);
-
-    // 使用 gzip 压缩
-    final uploadBytes = Uint8List.fromList(gzip.encode(tarBytes));
-
-    // 创建 WebDAV 客户端
-    final client = WebDavClient(config);
-
-    // 确保备份目录存在
-    await client.ensureDirectory(config.backupPath);
-
-    // 生成文件名（统一格式）
-    final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.')[0];
-    final fileName = 'gstore_backup_$timestamp.tar.gz';
-    final remotePath = '${config.backupPath}/$fileName'.replaceAll('//', '/');
-
-    // 上传文件
-    await client.uploadFile(remotePath, uploadBytes);
-
-    appLog.info('BackupService: 上传到 WebDAV 成功 - $remotePath');
-    return remotePath;
   }
 
   /// 从 WebDAV 下载备份并导入
@@ -1064,74 +1106,91 @@ class BackupService implements IBackupService, IWebDavService {
     required String remotePath,
     BackupImportMode mode = BackupImportMode.merge,
     bool restoreAppConfig = true,
+    BackupLogCallback? onLog,
   }) async {
     appLog.info('BackupService: 从 WebDAV 下载备份 - $remotePath');
     debugPrint('BackupService: 恢复应用配置: $restoreAppConfig');
 
-    // 创建 WebDAV 客户端
-    final client = WebDavClient(config);
+    try {
+      // 创建 WebDAV 客户端
+      onLog?.call('连接 WebDAV 服务器...');
+      final client = WebDavClient(config);
 
-    // 下载文件
-    final bytes = await client.downloadFile(remotePath);
+      // 下载文件
+      onLog?.call('下载备份文件: $remotePath');
+      final bytes = await client.downloadFile(remotePath);
+      onLog?.call('下载完成（${bytes.length} 字节）');
 
-    // 解压并解析
-    String jsonString = '';
-    Map<String, dynamic>? configData;
+      // 解压并解析
+      onLog?.call('解压并解析备份数据...');
+      String jsonString = '';
+      Map<String, dynamic>? configData;
 
-    debugPrint('BackupService: 检测到 tar.gz 格式');
-    // 先用 gzip 解压
-    final decompressedBytes = gzip.decode(bytes);
-    // 再用 TarDecoder 解包
-    final tarDecoder = TarDecoder();
-    final archive = tarDecoder.decodeBytes(decompressedBytes);
+      debugPrint('BackupService: 检测到 tar.gz 格式');
+      // 先用 gzip 解压
+      final decompressedBytes = gzip.decode(bytes);
+      // 再用 TarDecoder 解包
+      final tarDecoder = TarDecoder();
+      final archive = tarDecoder.decodeBytes(decompressedBytes);
 
-    // 提取文件
-    for (final archiveFile in archive.files) {
-      if (archiveFile.name == 'apps.json') {
-        final fileBytes = archiveFile.content as List<int>;
-        jsonString = utf8.decode(fileBytes);
-      } else if (archiveFile.name == 'app_config.json') {
-        final fileBytes = archiveFile.content as List<int>;
-        final configJsonString = utf8.decode(fileBytes);
-        configData = jsonDecode(configJsonString) as Map<String, dynamic>;
+      // 提取文件
+      for (final archiveFile in archive.files) {
+        if (archiveFile.name == 'apps.json') {
+          final fileBytes = archiveFile.content as List<int>;
+          jsonString = utf8.decode(fileBytes);
+        } else if (archiveFile.name == 'app_config.json') {
+          final fileBytes = archiveFile.content as List<int>;
+          final configJsonString = utf8.decode(fileBytes);
+          configData = jsonDecode(configJsonString) as Map<String, dynamic>;
+        }
       }
-    }
 
-    // 解析 JSON
-    final jsonData = jsonDecode(jsonString) as Map<String, dynamic>;
-    final backupData = BackupData.fromJson(jsonData);
+      // 解析 JSON
+      final jsonData = jsonDecode(jsonString) as Map<String, dynamic>;
+      final backupData = BackupData.fromJson(jsonData);
+      onLog?.call('解析完成，共 ${backupData.apps.length} 个应用');
 
-    // 验证版本
-    if (!_isSupportedVersion(backupData.metadata.version)) {
-      throw BackupException(
-        '不支持的备份版本: ${backupData.metadata.version}',
-      );
-    }
-
-    // 如果有配置数据且需要恢复配置，则导入配置
-    if (configData != null && restoreAppConfig) {
-      appLog.info('BackupService: 开始导入应用配置，包含 ${configData.length} 项配置');
-      try {
-        // 确保配置管理器已初始化
-        await ConfigInitializer.initialize();
-        debugPrint('BackupService: ConfigManager 初始化完成，已注册 ${ConfigManager.instance.configKeys.length} 个配置');
-
-        final configManager = ConfigManager.instance;
-        await configManager.importAll(
-          ConfigBackupData.fromJson(configData),
+      // 验证版本
+      if (!_isSupportedVersion(backupData.metadata.version)) {
+        throw BackupException(
+          '不支持的备份版本: ${backupData.metadata.version}',
         );
-        appLog.info('BackupService: 应用配置导入成功');
-      } catch (e) {
-        appLog.error('BackupService: 导入应用配置失败: $e');
       }
-    } else if (configData != null && !restoreAppConfig) {
-      debugPrint('BackupService: 跳过应用配置导入（用户未选择恢复配置）');
+
+      // 如果有配置数据且需要恢复配置，则导入配置
+      if (configData != null && restoreAppConfig) {
+        appLog.info('BackupService: 开始导入应用配置，包含 ${configData.length} 项配置');
+        onLog?.call('开始导入应用配置（${configData.length} 项）...');
+        try {
+          // 确保配置管理器已初始化
+          await ConfigInitializer.initialize();
+          debugPrint('BackupService: ConfigManager 初始化完成，已注册 ${ConfigManager.instance.configKeys.length} 个配置');
+
+          final configManager = ConfigManager.instance;
+          await configManager.importAll(
+            ConfigBackupData.fromJson(configData),
+          );
+          appLog.info('BackupService: 应用配置导入成功');
+          onLog?.call('应用配置导入成功');
+        } catch (e) {
+          appLog.error('BackupService: 导入应用配置失败: $e');
+          onLog?.call('导入应用配置失败: $e', isError: true);
+        }
+      } else if (configData != null && !restoreAppConfig) {
+        debugPrint('BackupService: 跳过应用配置导入（用户未选择恢复配置）');
+      }
+
+      appLog.info('BackupService: 备份版本: ${backupData.metadata.version}, 开始导入');
+
+      // 导入数据（内部各阶段同步输出 onLog）
+      final result = await importData(backupData, mode: mode, onLog: onLog);
+      onLog?.call('恢复完成');
+      return result;
+    } catch (e) {
+      appLog.error('BackupService: 从 WebDAV 下载导入失败 - $e');
+      onLog?.call('恢复失败: $e', isError: true);
+      rethrow;
     }
-
-    appLog.info('BackupService: 备份版本: ${backupData.metadata.version}, 开始导入');
-
-    // 导入数据
-    return importData(backupData, mode: mode);
   }
 
   /// 测试 WebDAV 连接
