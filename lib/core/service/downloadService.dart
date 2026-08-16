@@ -212,6 +212,7 @@ class DownloadService extends GetxService
   /// [fileName] 文件名
   /// [breakPoint] 是否支持断点续传
   /// [saveFileName] 保存的文件名
+  @override
   Future<DownloadStatus> downloadWithContext(
     DownloadContext context,
     String appid,

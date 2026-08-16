@@ -23,7 +23,6 @@ import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/service/backup_service.dart';
 import 'package:gstore/core/theme/app_theme_config.dart';
-import 'package:gstore/core/theme/theme_controller.dart';
 import 'package:gstore/core/fdroid/FdroidRepoManager.dart';
 import 'package:gstore/core/utils/unit.dart';
 import 'package:gstore/core/webdav/webdav_config.dart';

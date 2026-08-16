@@ -38,6 +38,7 @@ class AppAggregatorManager implements IAggregateService {
   final _appsChangedController = StreamController<List<AddedAppInfo>>.broadcast();
 
   /// 已添加应用变化流
+  @override
   Stream<List<AddedAppInfo>> get appsChangedStream => _appsChangedController.stream;
 
   /// 是否已初始化
@@ -148,6 +149,7 @@ class AppAggregatorManager implements IAggregateService {
   }
 
   /// 批量添加应用
+  @override
   Future<void> addApps({
     required ChannelType channel,
     required List<AppSummary> appInfos,
@@ -282,6 +284,7 @@ class AppAggregatorManager implements IAggregateService {
   // ==================== 用户标签 ====================
 
   /// 获取应用的用户标签（无标签返回空列表）
+  @override
   Future<List<String>> getTags({
     required ChannelType channel,
     required String appId,
@@ -297,6 +300,7 @@ class AppAggregatorManager implements IAggregateService {
   }
 
   /// 设置应用的用户标签（整体替换：先清空再写入）
+  @override
   Future<void> setTags({
     required ChannelType channel,
     required String appId,
@@ -395,6 +399,7 @@ class AppAggregatorManager implements IAggregateService {
   }
 
   /// 切换应用添加状态
+  @override
   Future<bool> toggleApp({
     required ChannelType channel,
     required AppSummary appInfo,
@@ -411,6 +416,7 @@ class AppAggregatorManager implements IAggregateService {
   }
 
   /// 清空指定渠道的所有应用
+  @override
   Future<void> clearChannel(ChannelType channel) async {
     await _database.addedAppDao.clearChannel(channel.code);
 
@@ -461,6 +467,7 @@ class AppAggregatorManager implements IAggregateService {
 
   /// 获取已添加应用的索引
   /// 返回 Map<ChannelCode, Set<AppId>>
+  @override
   Future<Map<String, Set<String>>> getAddedAppsIndex() async {
     final allApps = await getAllAddedApps();
 
@@ -479,6 +486,7 @@ class AppAggregatorManager implements IAggregateService {
   /// 分片并行：每片 8 个 addedApp 用 Future.wait 并发查询；
   /// 结果按输入索引回填、跳过 null（未知渠道/渠道实例为空，等价原串行 continue）并压缩顺序，
   /// 最终列表顺序与 addedApps（addTime 倒序）一致
+  @override
   Future<List<AggregatedAppInfo>> getAggregatedApps() async {
     const sliceSize = 8;
     final addedApps = await getAllAddedApps();
