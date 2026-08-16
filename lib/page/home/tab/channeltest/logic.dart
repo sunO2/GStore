@@ -8,16 +8,13 @@ import 'state.dart';
 
 class ChannelTestLogic extends GetxController {
   final ChannelTestState state = ChannelTestState();
-  late ChannelManager _channelManager;
+  ChannelManager? _channelManager;
 
   @override
   void onReady() async {
     super.onReady();
-    try {
-      _channelManager = Get.find(tag: 'channelManager');
-    } catch (e) {
-      appLog.error('ChannelTest: 渠道管理器未初始化，请先在 main.dart 中调用 ChannelIntegration.initialize()');
-    }
+    // channel 模块下线 → 注册表取不到，置 null（既有消费点已 null 降级）
+    _channelManager = ModuleManager.instance.get<ChannelManager>();
     _loadInitialData();
   }
 
@@ -41,7 +38,8 @@ class ChannelTestLogic extends GetxController {
 
   /// 执行查询
   Future<void> executeQuery(String operation) async {
-    if (_channelManager == null) {
+    final manager = _channelManager;
+    if (manager == null) {
       state.errorMessage.value = '渠道管理器未初始化';
       return;
     }
@@ -56,7 +54,7 @@ class ChannelTestLogic extends GetxController {
 
       switch (operation) {
         case 'getAllApps':
-          result = await _channelManager.getAllApps(
+          result = await manager.getAllApps(
             from: state.selectedChannel.value,
           );
           if (result.success) {
@@ -65,7 +63,7 @@ class ChannelTestLogic extends GetxController {
           break;
 
         case 'getAppInfo':
-          result = await _channelManager.getAppInfo(
+          result = await manager.getAppInfo(
             state.appId.value,
             from: state.selectedChannel.value,
           );
@@ -82,7 +80,7 @@ class ChannelTestLogic extends GetxController {
             state.isQuerying.value = false;
             return;
           }
-          result = await _channelManager.searchApps(
+          result = await manager.searchApps(
             state.searchKeyword.value,
             from: state.selectedChannel.value,
           );
@@ -92,7 +90,7 @@ class ChannelTestLogic extends GetxController {
           break;
 
         case 'searchByCategory':
-          result = await _channelManager.searchByCategory(
+          result = await manager.searchByCategory(
             state.categoryId.value,
             from: state.selectedChannel.value,
           );
@@ -102,7 +100,7 @@ class ChannelTestLogic extends GetxController {
           break;
 
         case 'getAllCategories':
-          result = await _channelManager.getAllCategories(
+          result = await manager.getAllCategories(
             from: state.selectedChannel.value,
           );
           if (result.success) {
@@ -112,14 +110,14 @@ class ChannelTestLogic extends GetxController {
           break;
 
         case 'checkUpdate':
-          result = await _channelManager.checkUpdate(
+          result = await manager.checkUpdate(
             from: state.selectedChannel.value,
           );
           state.apps.value = [];
           break;
 
         case 'checkAllUpdates':
-          var results = await _channelManager.checkAllUpdates();
+          var results = await manager.checkAllUpdates();
           var sb = StringBuffer();
           results.forEach((type, result) {
             sb.writeln('$type: ${result.success ? (result.data ?? false) : "失败"}');
@@ -156,9 +154,10 @@ class ChannelTestLogic extends GetxController {
 
   /// 清除缓存
   Future<void> clearCache() async {
-    if (_channelManager == null) return;
+    final manager = _channelManager;
+    if (manager == null) return;
 
-    await _channelManager.clearCache(
+    await manager.clearCache(
       from: state.selectedChannel.value,
     );
     Get.snackbar(

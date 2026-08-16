@@ -33,15 +33,15 @@ class DetailLogic extends GetxController {
   /// 请求参数
   AppDetailRequest? request;
 
-  /// 渠道管理器
-  late ChannelManager _channelManager;
+  /// 渠道管理器（channel 模块下线时为 null，消费点软降级）
+  ChannelManager? _channelManager;
 
   /// 聚合管理器（标签读写，与发现页同一套 added_app_tags）
   late AppAggregatorManager _aggregator;
 
   @override
   void onReady() {
-    _channelManager = Get.find(tag: 'channelManager');
+    _channelManager = ModuleManager.instance.get<ChannelManager>();
     _aggregator = Get.find(tag: 'aggregatorManager');
     _initializeFromArguments();
     super.onReady();
@@ -102,8 +102,8 @@ class DetailLogic extends GetxController {
 
     try {
       // 懒初始化（兼容单测直接调 loadDetail；正常流程 onReady 已注入，重复查找幂等）
-      _channelManager = Get.find(tag: 'channelManager');
-      final channelInstance = _channelManager.getChannel(request!.channel);
+      _channelManager = ModuleManager.instance.get<ChannelManager>();
+      final channelInstance = _channelManager?.getChannel(request!.channel);
       if (channelInstance == null) {
         throw Exception('Channel not found: ${request!.channel}');
       }
@@ -668,7 +668,7 @@ class DetailLogic extends GetxController {
 
     // 解析 canonical appId（复刻发现页 showTagPickerForApp 的模式：
     // 渠道 getAppInfo 返回的 AppSummary 交给 canonicalAppId 规范化）
-    final channelInstance = _channelManager.getChannel(req.channel);
+    final channelInstance = _channelManager?.getChannel(req.channel);
     String canonicalId = req.appId;
     if (channelInstance != null) {
       try {

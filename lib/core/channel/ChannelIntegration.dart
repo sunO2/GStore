@@ -9,6 +9,10 @@ import 'package:get/get.dart';
 class ChannelIntegration {
   static ChannelManager? _manager;
 
+  /// 幂等标志：首次初始化完成后置位，重复调用直接返回
+  /// （防 channel 模块 re-enable 时重复 registerChannels / Get.put / initializeAll）
+  static bool _initialized = false;
+
   static ChannelManager get manager {
     _manager ??= ChannelManager.instance;
     return _manager!;
@@ -17,6 +21,8 @@ class ChannelIntegration {
   /// 初始化渠道系统
   /// 在 main.dart 的 registerService 中调用
   static Future<void> initialize() async {
+    if (_initialized) return;
+
     final dbManager = Get.find<DbManager>();
     final githubApi = Get.find<GithubRestClient>();
 
@@ -68,6 +74,8 @@ class ChannelIntegration {
     manager.setDefaultChannel(ChannelType.localDb);
 
     Get.put(manager, tag: 'channelManager');
+
+    _initialized = true;
   }
 
   /// 获取渠道管理器单例

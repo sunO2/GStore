@@ -6,6 +6,7 @@ import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/image/app_image_loader.dart';
+import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/model/StatTag.dart';
@@ -94,6 +95,8 @@ void main() {
     // 不发起任何渠道请求）——先注册避免 find 抛错
     Get.put(ChannelManager.instance, tag: 'channelManager');
     Get.put(AppAggregatorManager.instance, tag: 'aggregatorManager');
+    // DetailLogic 已改注册表取用（todo 16）：同步绑定 ModuleManager 注册表
+    ModuleManager.instance.bindByType(ChannelManager, ChannelManager.instance);
     // README 图片走 AppImageLoader，注入 MockClient 返回 1×1 PNG 避免真实网络
     AppImageLoader.instance.debugClient = MockClient((request) async {
       return http.Response.bytes(

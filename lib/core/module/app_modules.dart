@@ -74,10 +74,16 @@ class ChannelModule extends AppModule {
   }
 
   @override
-  Future<void> onRegister(ModuleContext context) async {}
+  Future<void> onRegister(ModuleContext context) async {
+    // 按类型绑定（与 Get.put(manager, tag: 'channelManager') 同一实例）：
+    // 消费方经 ModuleManager.get<ChannelManager>() 取用，模块下线后软降级
+    context.bindService?.call(ChannelManager, ChannelManager.instance);
+  }
 
   @override
-  Future<void> onUnregister(ModuleContext context) async {}
+  Future<void> onUnregister(ModuleContext context) async {
+    context.unbindService?.call(ChannelManager);
+  }
 }
 
 /// 下载模块（依赖 channel + config）

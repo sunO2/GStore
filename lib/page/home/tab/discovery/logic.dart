@@ -11,6 +11,7 @@ import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/icons/Icons.dart';
 import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/model/AppSummary.dart';
+import 'package:gstore/core/module/module.dart';
 import 'package:gstore/core/service/db_manager.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:async';
@@ -22,7 +23,8 @@ class DiscoveryLogic extends GetxController {
   final DiscoveryState state = DiscoveryState();
 
   late AppAggregatorManager _aggregator;
-  late ChannelManager _channelManager;
+  /// 渠道管理器（channel 模块下线时为 null，消费点软降级）
+  ChannelManager? _channelManager;
 
   // 搜索控制器
   final searchController = TextEditingController();
@@ -34,7 +36,7 @@ class DiscoveryLogic extends GetxController {
   ChannelType? _selectedSearchChannel;
 
   /// 获取渠道列表（用于UI显示）
-  List<ChannelInfo> get channelList => _channelManager.allChannelInfo;
+  List<ChannelInfo> get channelList => _channelManager?.allChannelInfo ?? [];
 
   /// 获取已排序的渠道类型列表（用于筛选标签）
   List<ChannelType> get sortedChannelTypes {
@@ -226,7 +228,7 @@ class DiscoveryLogic extends GetxController {
 
     try {
       final currentPage = state.channelPages[channel] ?? 1;
-      final channelInstance = _channelManager.getChannel(channel);
+      final channelInstance = _channelManager?.getChannel(channel);
 
       if (channelInstance != null) {
         // TODO: 实现分页加载逻辑
@@ -249,7 +251,7 @@ class DiscoveryLogic extends GetxController {
   void onReady() async {
     super.onReady();
     _aggregator = Get.find(tag: 'aggregatorManager');
-    _channelManager = Get.find(tag: 'channelManager');
+    _channelManager = ModuleManager.instance.get<ChannelManager>();
 
     // 监听已添加应用变化
     _aggregator.appsChangedStream.listen((apps) {
@@ -280,7 +282,7 @@ class DiscoveryLogic extends GetxController {
 
   /// 加载所有渠道的应用
   Future<void> _loadAllChannelApps() async {
-    final channels = _channelManager.enabledChannels;
+    final channels = _channelManager?.enabledChannels ?? [];
 
     for (var channel in channels) {
       try {
@@ -324,7 +326,7 @@ class DiscoveryLogic extends GetxController {
 
   /// 显示渠道搜索对话框
   void showChannelSearchDialog(BuildContext context) {
-    final availableChannels = _channelManager.enabledChannels;
+    final availableChannels = _channelManager?.enabledChannels ?? [];
 
     Get.dialog(
       AlertDialog(
@@ -411,7 +413,7 @@ class DiscoveryLogic extends GetxController {
       );
 
       // 重新加载该渠道的应用列表
-      final channelInstance = _channelManager.getChannel(channel);
+      final channelInstance = _channelManager?.getChannel(channel);
       if (channelInstance != null) {
         final result = await channelInstance.getAllApps(forceRefresh: true);
         if (result.success && result.data != null) {
@@ -460,7 +462,7 @@ class DiscoveryLogic extends GetxController {
   Future<void> showTagPickerForApp(ChannelType channel, AppSummary appInfo) async {
     // 关键：标签 key 必须与聚合库一致——addApp 落库用的是 canonicalAppId 规范化后的 appId
     // （如 GitHub 收录后为真实包名），原始 appId（如 owner/repo）作 key 会匹配不到聚合库
-    final channelInstance = _channelManager.getChannel(channel);
+    final channelInstance = _channelManager?.getChannel(channel);
     final canonicalId = channelInstance != null
         ? await channelInstance.canonicalAppId(appInfo)
         : appInfo.appId;
@@ -512,7 +514,7 @@ class DiscoveryLogic extends GetxController {
   /// 保存搜索结果到渠道数据库（不直接入库首页）
   /// 用户需在渠道应用列表中选择"入库"才会加入首页
   Future<bool> saveSearchToChannel(ChannelType channel, AppSummary app) async {
-    final channelInstance = _channelManager.getChannel(channel);
+    final channelInstance = _channelManager?.getChannel(channel);
     if (channelInstance == null) return false;
     try {
       // 统一调用 IChannel.addApp（各渠道内部处理保存逻辑）
@@ -534,7 +536,7 @@ class DiscoveryLogic extends GetxController {
 
   /// 刷新指定渠道的应用列表
   Future<void> _refreshChannelApps(ChannelType channel) async {
-    final channelInstance = _channelManager.getChannel(channel);
+    final channelInstance = _channelManager?.getChannel(channel);
     if (channelInstance == null) return;
     try {
       final result = await channelInstance.getAllApps(forceRefresh: true);
@@ -553,7 +555,7 @@ class DiscoveryLogic extends GetxController {
     String appId, {
     bool showSnack = true,
   }) async {
-    final channelInstance = _channelManager.getChannel(channel);
+    final channelInstance = _channelManager?.getChannel(channel);
     if (channelInstance == null) return false;
     try {
       final result = await channelInstance.removeApp(appId);
@@ -836,7 +838,7 @@ class DiscoveryLogic extends GetxController {
   /// 显示添加应用的 Bottom Sheet
   /// 直接弹出搜索框 + 渠道多选（默认 F-Droid，记忆上次选中）
   void showAddAppSheet(BuildContext context) {
-    final channels = _channelManager.enabledChannels;
+    final channels = _channelManager?.enabledChannels ?? [];
 
     // 过滤出启用的搜索渠道
     final searchableChannels = channels.where((c) => c.info.enabled).toList();
@@ -943,7 +945,7 @@ class DiscoveryLogic extends GetxController {
       await _searchInChannel(_selectedSearchChannel!, searchController.text.trim());
     } else {
       // 搜索所有渠道
-      for (var channel in _channelManager.enabledChannels) {
+      for (var channel in _channelManager?.enabledChannels ?? const <IChannel>[]) {
         await _searchInChannel(channel.info.type, searchController.text.trim());
       }
     }
@@ -951,7 +953,7 @@ class DiscoveryLogic extends GetxController {
 
   /// 在指定渠道搜索
   Future<void> _searchInChannel(ChannelType channelType, String keyword) async {
-    final channel = _channelManager.getChannel(channelType);
+    final channel = _channelManager?.getChannel(channelType);
     if (channel == null) return;
 
     try {

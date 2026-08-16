@@ -793,7 +793,12 @@ class ChannelTestPage extends StatelessWidget {
 
   /// 检查可用渠道
   void _checkAvailableChannels(BuildContext context) async {
-    final manager = Get.find(tag: 'channelManager');
+    // channel 模块下线 → 注册表取不到，降级提示不抛
+    final manager = ModuleManager.instance.get<ChannelManager>();
+    if (manager == null) {
+      AppDialogs.showWarning('渠道模块未启用');
+      return;
+    }
     final available = await manager.checkAvailableChannels();
 
     if (context.mounted) {

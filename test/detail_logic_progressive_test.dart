@@ -9,6 +9,7 @@ import 'package:gstore/core/channel/model/AppUpdateCheckResult.dart';
 import 'package:gstore/core/channel/model/ChannelInfo.dart';
 import 'package:gstore/core/channel/model/ChannelResult.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
+import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/AppDetailRequest.dart';
 import 'package:gstore/core/model/AppSummary.dart';
@@ -224,6 +225,8 @@ void main() {
     channel = FakeChannel();
     ChannelManager.instance.registerChannel(channel);
     Get.put(ChannelManager.instance, tag: 'channelManager');
+    // DetailLogic 已改注册表取用（todo 16）：同步绑定 ModuleManager 注册表
+    ModuleManager.instance.bindByType(ChannelManager, ChannelManager.instance);
 
     logic = DetailLogic();
     logic.request = const AppDetailRequest(
