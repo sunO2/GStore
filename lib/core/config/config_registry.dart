@@ -48,6 +48,41 @@ class ConfigKeys {
 
   /// 发现页选中的渠道（字符串列表）
   static const String selectedChannels = 'selected_channels';
+
+  // ---- 模块开关（module.<name>.enabled，见 ModuleToggleConfig.keyOf）----
+
+  /// 渠道模块开关
+  static const String moduleChannelEnabled = 'module.channel.enabled';
+
+  /// 下载模块开关
+  static const String moduleDownloadEnabled = 'module.download.enabled';
+
+  /// 备份模块开关
+  static const String moduleBackupEnabled = 'module.backup.enabled';
+
+  /// WebDAV 模块开关
+  static const String moduleWebdavEnabled = 'module.webdav.enabled';
+
+  /// F-Droid 模块开关
+  static const String moduleFdroidEnabled = 'module.fdroid.enabled';
+
+  /// 主题模块开关
+  static const String moduleThemeEnabled = 'module.theme.enabled';
+
+  /// 安装模块开关
+  static const String moduleInstallEnabled = 'module.install.enabled';
+
+  /// 聚合模块开关
+  static const String moduleAggregateEnabled = 'module.aggregate.enabled';
+
+  /// Agent 工具模块开关
+  static const String moduleAgentToolsEnabled = 'module.agent_tools.enabled';
+
+  /// 更新模块开关（预留，接口就绪前恒启用）
+  static const String moduleUpdateEnabled = 'module.update.enabled';
+
+  /// 角标模块开关（预留，接口就绪前恒启用）
+  static const String moduleBadgeEnabled = 'module.badge.enabled';
 }
 
 /// 应用核心配置模块
@@ -158,6 +193,95 @@ class AppCoreConfigModule extends ConfigModule {
           category: 'discovery',
           description: '发现页选中的渠道',
           descriptionEn: 'Selected channels on discovery page',
+        ),
+        // ---- 模块开关（持久化，未设置默认启用）----
+        const ConfigEntry(
+          key: ConfigKeys.moduleChannelEnabled,
+          type: ConfigValueType.bool,
+          defaultValue: true,
+          category: 'module',
+          description: '渠道模块开关（false 时渠道模块下线）',
+          descriptionEn: 'Channel module toggle (false = offline)',
+        ),
+        const ConfigEntry(
+          key: ConfigKeys.moduleDownloadEnabled,
+          type: ConfigValueType.bool,
+          defaultValue: true,
+          category: 'module',
+          description: '下载模块开关（false 时下载模块下线）',
+          descriptionEn: 'Download module toggle (false = offline)',
+        ),
+        const ConfigEntry(
+          key: ConfigKeys.moduleBackupEnabled,
+          type: ConfigValueType.bool,
+          defaultValue: true,
+          category: 'module',
+          description: '备份模块开关（false 时备份模块下线）',
+          descriptionEn: 'Backup module toggle (false = offline)',
+        ),
+        const ConfigEntry(
+          key: ConfigKeys.moduleWebdavEnabled,
+          type: ConfigValueType.bool,
+          defaultValue: true,
+          category: 'module',
+          description: 'WebDAV 模块开关（false 时 WebDAV 模块下线）',
+          descriptionEn: 'WebDAV module toggle (false = offline)',
+        ),
+        const ConfigEntry(
+          key: ConfigKeys.moduleFdroidEnabled,
+          type: ConfigValueType.bool,
+          defaultValue: true,
+          category: 'module',
+          description: 'F-Droid 模块开关（false 时 F-Droid 模块下线）',
+          descriptionEn: 'F-Droid module toggle (false = offline)',
+        ),
+        const ConfigEntry(
+          key: ConfigKeys.moduleThemeEnabled,
+          type: ConfigValueType.bool,
+          defaultValue: true,
+          category: 'module',
+          description: '主题模块开关（false 时主题模块下线）',
+          descriptionEn: 'Theme module toggle (false = offline)',
+        ),
+        const ConfigEntry(
+          key: ConfigKeys.moduleInstallEnabled,
+          type: ConfigValueType.bool,
+          defaultValue: true,
+          category: 'module',
+          description: '安装模块开关（false 时安装模块下线）',
+          descriptionEn: 'Install module toggle (false = offline)',
+        ),
+        const ConfigEntry(
+          key: ConfigKeys.moduleAggregateEnabled,
+          type: ConfigValueType.bool,
+          defaultValue: true,
+          category: 'module',
+          description: '聚合模块开关（false 时聚合模块下线）',
+          descriptionEn: 'Aggregate module toggle (false = offline)',
+        ),
+        const ConfigEntry(
+          key: ConfigKeys.moduleAgentToolsEnabled,
+          type: ConfigValueType.bool,
+          defaultValue: true,
+          category: 'module',
+          description: 'Agent 工具模块开关（false 时 Agent 工具下线）',
+          descriptionEn: 'Agent tools module toggle (false = offline)',
+        ),
+        const ConfigEntry(
+          key: ConfigKeys.moduleUpdateEnabled,
+          type: ConfigValueType.bool,
+          defaultValue: true,
+          category: 'module',
+          description: '更新模块开关（预留，接口就绪前恒启用）',
+          descriptionEn: 'Update module toggle (reserved, always on)',
+        ),
+        const ConfigEntry(
+          key: ConfigKeys.moduleBadgeEnabled,
+          type: ConfigValueType.bool,
+          defaultValue: true,
+          category: 'module',
+          description: '角标模块开关（预留，接口就绪前恒启用）',
+          descriptionEn: 'Badge module toggle (reserved, always on)',
         ),
       ];
 
