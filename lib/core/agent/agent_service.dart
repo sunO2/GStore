@@ -2243,7 +2243,11 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
   /// 主题控制
   Future<String> _controlTheme(String action, String mode, String hexColor) async {
     try {
-      final controller = Get.find<ThemeController>();
+      // 主题模块下线 → 注册表取不到服务，降级提示不抛
+      final controller = ModuleManager.instance.get<IThemeService>();
+      if (controller == null) {
+        return '主题模块未启用';
+      }
       switch (action) {
         case 'mode':
           final appMode = switch (mode) {

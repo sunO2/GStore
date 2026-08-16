@@ -180,7 +180,11 @@ main() async {
 
   runApp(DynamicColorBuilder(builder: (light, dark) {
     return Obx(() {
-      final controller = Get.find<ThemeController>();
+      // theme 模块关闭时 Get 未注册 → 兜底创建默认 ThemeController（共享实例防主题分裂；
+      // re-enable 后 ThemeModule.onInit 的 isRegistered 守卫复用同一实例）
+      final controller = Get.isRegistered<ThemeController>()
+          ? Get.find<ThemeController>()
+          : Get.put(ThemeController());
       return GetMaterialApp(
         // AppDialogs Snackbar 通道：ScaffoldMessenger 优先于 GetX overlay
         // （Get.snackbar 与新版 Flutter overlay 兼容问题导致真机提示静默不显示）

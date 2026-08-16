@@ -91,16 +91,27 @@ class _SettingsPageState extends State<SettingsPage> {
             trailing: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Obx(() {
-                  final controller = Get.find<ThemeController>();
-                  return Text(
-                    controller.themeMode.displayName,
-                    style: TextStyle(
-                      color: Theme.of(context).colorScheme.primary,
-                      fontWeight: AppTypography.weightMedium,
-                    ),
-                  );
-                }),
+                // 响应式点（Obx 内读 _themeMode.value）：theme 模块关闭时 Get 未注册
+                // → 降级显示默认文案不崩（此时无 Obx，避免 GetX 无响应式依赖报错）；
+                // 上线时保持响应式订阅
+                Get.isRegistered<ThemeController>()
+                    ? Obx(() {
+                        final controller = Get.find<ThemeController>();
+                        return Text(
+                          controller.themeMode.displayName,
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.primary,
+                            fontWeight: AppTypography.weightMedium,
+                          ),
+                        );
+                      })
+                    : Text(
+                        '默认',
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.primary,
+                          fontWeight: AppTypography.weightMedium,
+                        ),
+                      ),
                 const Icon(Icons.chevron_right),
               ],
             ),
