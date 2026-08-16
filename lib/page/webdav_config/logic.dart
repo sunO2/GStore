@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/webdav/webdav_service.dart';
 
 import 'state.dart';
 
@@ -50,7 +51,7 @@ class WebDavConfigLogic extends GetxController {
       state.isTesting.value = true;
       appLog.info('WebDavConfigLogic: 开始测试连接 - ${config.baseUrl}');
 
-      final success = await BackupService.instance
+      final success = await WebDavService.instance
           .testWebDavConnection(config);
 
       debugPrint('WebDavConfigLogic: 测试连接结果 - $success');

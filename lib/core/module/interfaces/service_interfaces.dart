@@ -6,6 +6,8 @@
 /// - 可选 DynamicProxy 实现延迟绑定/热插拔
 library;
 
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:gstore/core/aggregate/AppAddedDatabase.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
@@ -50,6 +52,22 @@ abstract class IBackupService {
     BackupImportMode mode = BackupImportMode.merge,
   });
 
+  /// 导出备份压缩包（tar.gz bytes）——供 WebDAV 等传输层上传
+  Future<Uint8List> exportCompressedBackup({
+    BackupOptions? options,
+    List<ChannelType>? channels,
+    bool includeAppConfig = false,
+    BackupLogCallback? onLog,
+  });
+
+  /// 从备份压缩包 bytes 恢复（下载层拉取后交给备份模块）
+  Future<BackupImportResult> importBackupBytes(
+    Uint8List bytes, {
+    BackupImportMode mode = BackupImportMode.merge,
+    bool restoreAppConfig = true,
+    BackupLogCallback? onLog,
+  });
+
   /// 列出备份文件
   Future<List<BackupFile>> getBackupFiles();
 
@@ -57,7 +75,34 @@ abstract class IBackupService {
   Future<void> deleteBackupFile(String filePath);
 }
 
-/// WebDAV 服务接口
+/// WebDAV 任务类型
+enum WebDavTaskType {
+  /// 上传任务
+  upload,
+
+  /// 下载任务
+  download,
+}
+
+/// WebDAV 任务管理器接口（防重复 + 状态）
+abstract class IWebDavTaskManager {
+  /// 是否正在上传
+  bool get isUploading;
+
+  /// 是否正在下载
+  bool get isDownloading;
+
+  /// 是否有任务进行中
+  bool get isBusy;
+
+  /// 尝试开始任务（已 busy 时返回 false）
+  bool tryStart(WebDavTaskType type);
+
+  /// 结束任务（复位对应状态）
+  void finish(WebDavTaskType type);
+}
+
+/// WebDAV 服务接口（纯传输层）
 abstract class IWebDavService {
   /// 测试连接
   Future<bool> testWebDavConnection(WebDavConfig config);
@@ -69,7 +114,10 @@ abstract class IWebDavService {
   Future<String> uploadToWebDav({
     required WebDavConfig config,
     bool compressed = true,
+    BackupOptions? options,
+    List<ChannelType>? channels,
     bool includeAppConfig = false,
+    BackupLogCallback? onLog,
   });
 
   /// 从 WebDAV 下载并导入
@@ -78,6 +126,7 @@ abstract class IWebDavService {
     required String remotePath,
     BackupImportMode mode = BackupImportMode.merge,
     bool restoreAppConfig = true,
+    BackupLogCallback? onLog,
   });
 }
 

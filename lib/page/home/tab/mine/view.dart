@@ -7,6 +7,7 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/theme/app_theme_config.dart';
+import 'package:gstore/core/webdav/webdav_task_manager.dart';
 import 'package:gstore/page/backup/logic.dart';
 import 'package:gstore/page/backup/state.dart';
 
@@ -917,6 +918,8 @@ class _MinePageState extends State<MinePage>
             // 备份选项和操作
             Obx(() {
               final state = _backupLogic.state;
+              // WebDAV 传输任务进行中（防重复：其他入口/Agent 触发时按钮同样禁用）
+              final taskBusy = WebDavTaskManager.instance.isBusy;
 
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -1050,32 +1053,36 @@ class _MinePageState extends State<MinePage>
                             children: [
                               Expanded(
                                 child: FilledButton.icon(
-                                  onPressed: state.isUploadingWebDav.value
-                                      ? null
-                                      : () => _backupLogic.uploadToWebDav(
-                                          context,
-                                          compressed: true),
-                                  icon: state.isUploadingWebDav.value
-                                      ? const SizedBox(
-                                          width: 16,
-                                          height: 16,
-                                          child: AppLoading(
-                                              size: AppLoadingSize.small),
-                                        )
-                                      : const Icon(Icons.cloud_upload),
-                                  label: Text(state.isUploadingWebDav.value
-                                      ? '上传中...'
-                                      : '备份到网盘'),
+                                  onPressed:
+                                      (state.isUploadingWebDav.value || taskBusy)
+                                          ? null
+                                          : () => _backupLogic.uploadToWebDav(
+                                              context,
+                                              compressed: true),
+                                  icon:
+                                      (state.isUploadingWebDav.value || taskBusy)
+                                          ? const SizedBox(
+                                              width: 16,
+                                              height: 16,
+                                              child: AppLoading(
+                                                  size: AppLoadingSize.small),
+                                            )
+                                          : const Icon(Icons.cloud_upload),
+                                  label: Text(
+                                      (state.isUploadingWebDav.value || taskBusy)
+                                          ? '上传中...'
+                                          : '备份到网盘'),
                                 ),
                               ),
                               const SizedBox(width: AppSpacing.md),
                               Expanded(
                                 child: FilledButton.icon(
-                                  onPressed: state.isImporting.value
-                                      ? null
-                                      : () => _backupLogic
-                                          .downloadFromWebDav(context),
-                                  icon: state.isImporting.value
+                                  onPressed:
+                                      (state.isImporting.value || taskBusy)
+                                          ? null
+                                          : () => _backupLogic
+                                              .downloadFromWebDav(context),
+                                  icon: (state.isImporting.value || taskBusy)
                                       ? const SizedBox(
                                           width: 16,
                                           height: 16,
@@ -1083,9 +1090,10 @@ class _MinePageState extends State<MinePage>
                                               size: AppLoadingSize.small),
                                         )
                                       : const Icon(Icons.cloud_download),
-                                  label: Text(state.isImporting.value
-                                      ? '下载中...'
-                                      : '从网盘恢复'),
+                                  label: Text(
+                                      (state.isImporting.value || taskBusy)
+                                          ? '下载中...'
+                                          : '从网盘恢复'),
                                 ),
                               ),
                             ],

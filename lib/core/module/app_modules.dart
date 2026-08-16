@@ -24,6 +24,8 @@ import 'package:gstore/core/service/badge_service.dart';
 import 'package:gstore/core/service/downloadService.dart';
 import 'package:gstore/core/service/install_manager.dart';
 import 'package:gstore/core/theme/theme_controller.dart';
+import 'package:gstore/core/webdav/webdav_service.dart';
+import 'package:gstore/core/webdav/webdav_task_manager.dart';
 import 'interfaces/service_interfaces.dart';
 
 /// 核心业务模块注册器
@@ -125,25 +127,27 @@ class BackupModule extends AppModule {
   }
 }
 
-/// WebDAV 模块（依赖 config）
+/// WebDAV 模块（依赖 backup + config）
 class WebDavModule extends AppModule {
   @override
   String get moduleName => 'webdav';
 
   @override
-  List<String> get dependencies => const ['config'];
+  List<String> get dependencies => const ['backup', 'config'];
 
   @override
   int get priority => 40;
 
   @override
   Future<void> onRegister(ModuleContext context) async {
-    context.bindService?.call(IWebDavService, BackupService.instance);
+    context.bindService?.call(IWebDavService, WebDavService.instance);
+    context.bindService?.call(IWebDavTaskManager, WebDavTaskManager.instance);
   }
 
   @override
   Future<void> onUnregister(ModuleContext context) async {
     context.unbindService?.call(IWebDavService);
+    context.unbindService?.call(IWebDavTaskManager);
   }
 }
 

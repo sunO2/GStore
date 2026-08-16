@@ -28,6 +28,7 @@ import 'package:gstore/core/fdroid/FdroidRepoManager.dart';
 import 'package:gstore/core/utils/unit.dart';
 import 'package:gstore/core/webdav/webdav_config.dart';
 import 'package:gstore/core/webdav/webdav_client.dart';
+import 'package:gstore/core/webdav/webdav_service.dart';
 import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
 import 'package:gstore/http/download/DownloadStatusDataBase.dart';
@@ -2322,7 +2323,7 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
         return '尚未配置 WebDAV，请先在"备份管理"中配置网盘。';
       }
       final config = await WebDavConfigManager.instance.loadConfig();
-      final service = BackupService.instance;
+      final service = WebDavService.instance;
 
       switch (action) {
         case 'list':

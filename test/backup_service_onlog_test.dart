@@ -7,18 +7,21 @@ import 'package:gstore/core/config/config_registry.dart';
 import 'package:gstore/core/config/config_service.dart';
 import 'package:gstore/core/config/config_store.dart';
 import 'package:gstore/core/event/database_event.dart';
+import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/service/backup_service.dart';
 import 'package:gstore/core/webdav/webdav_config.dart';
+import 'package:gstore/core/webdav/webdav_service.dart';
+import 'package:gstore/core/webdav/webdav_task_manager.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:sqlite3/open.dart';
 
-/// BackupService onLog 回调测试
+/// WebDavService 上传 onLog 回调测试
 ///
 /// 验证：
-/// - uploadToWebDav 各阶段 onLog 旁路输出（开始导出/已添加应用/渠道/打包压缩/连接 WebDAV）
+/// - uploadToWebDav 各阶段 onLog 旁路输出（开始导出/已添加应用/打包压缩/连接 WebDAV）
 /// - 网络失败 → onLog error 日志（isError: true）+ 异常语义不变（仍 rethrow）
 /// - 不传 onLog 时行为不变（空安全旁路）
 void main() {
@@ -41,7 +44,7 @@ void main() {
   });
 
   late AppAddedDatabase aggregatorDb;
-  late BackupService service;
+  late WebDavService service;
 
   setUp(() async {
     SharedPreferences.setMockInitialValues({});
@@ -53,8 +56,8 @@ void main() {
     await databaseFactory.deleteDatabase(dbFile);
     aggregatorDb = await AppAddedDatabase.create(dbPath: dbFile);
 
-    service = BackupService.instance;
-    service.setTestDatabases(aggregatorDb);
+    BackupService.instance.setTestDatabases(aggregatorDb);
+    service = WebDavService(BackupService.instance);
   });
 
   tearDown(() async {
@@ -62,6 +65,10 @@ void main() {
     final dbFile = p.join(
         await databaseFactory.getDatabasesPath(), 'backup_service_onlog_test.db');
     await databaseFactory.deleteDatabase(dbFile);
+    // 复位任务管理器（finally 已复位，此处兜底）
+    WebDavTaskManager.instance.finish(WebDavTaskManager.instance.isBusy
+        ? WebDavTaskType.upload
+        : WebDavTaskType.download);
   });
 
   group('uploadToWebDav onLog', () {

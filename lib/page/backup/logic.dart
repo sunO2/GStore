@@ -13,12 +13,15 @@ import 'package:gstore/core/config/config_manager.dart';
 import 'package:gstore/core/config/config_initializer.dart';
 import 'package:gstore/core/webdav/webdav_client.dart';
 import 'package:gstore/core/webdav/webdav_config.dart';
+import 'package:gstore/core/webdav/webdav_service.dart';
+import 'package:gstore/core/webdav/webdav_task_manager.dart';
 import 'package:gstore/page/backup/state.dart';
 import 'package:gstore/page/backup/widgets/backup_progress_sheet.dart';
 
 class BackupLogic extends GetxController {
   final BackupState state = BackupState();
   final BackupService _backupService = BackupService.instance;
+  final WebDavService _webdavService = WebDavService.instance;
 
   @override
   void onInit() {
@@ -73,7 +76,7 @@ class BackupLogic extends GetxController {
         return;
       }
 
-      final success = await _backupService.testWebDavConnection(config);
+      final success = await _webdavService.testWebDavConnection(config);
 
       if (success) {
         state.webDavStatus.value = WebDavConnectionStatus.connected;
@@ -447,6 +450,12 @@ class BackupLogic extends GetxController {
   Future<void> uploadToWebDav(BuildContext context, {bool compressed = false}) async {
     appLog.info('BackupLogic: 开始上传到 WebDAV');
 
+    // 同步检查：已有备份/恢复任务进行中则不重复触发
+    if (WebDavTaskManager.instance.isBusy) {
+      AppDialogs.showWarning('备份/恢复任务进行中，请稍候');
+      return;
+    }
+
     // 检查配置
     final config = await WebDavConfigManager.instance.loadConfig();
     if (config == null) {
@@ -470,7 +479,7 @@ class BackupLogic extends GetxController {
         isScrollControlled: true,
         builder: (_) => BackupProgressSheet(
           title: '备份到网盘',
-          task: (onLog) => _backupService.uploadToWebDav(
+          task: (onLog) => _webdavService.uploadToWebDav(
             config: config,
             compressed: compressed,
             includeAppConfig: state.includeAppConfig.value,
@@ -489,6 +498,12 @@ class BackupLogic extends GetxController {
     String? remotePath,
   }) async {
     appLog.info('BackupLogic: 从 WebDAV 下载备份');
+
+    // 同步检查：已有备份/恢复任务进行中则不重复触发
+    if (WebDavTaskManager.instance.isBusy) {
+      AppDialogs.showWarning('备份/恢复任务进行中，请稍候');
+      return;
+    }
 
     // 检查配置
     final config = await WebDavConfigManager.instance.loadConfig();
@@ -565,7 +580,7 @@ class BackupLogic extends GetxController {
         isScrollControlled: true,
         builder: (_) => BackupProgressSheet(
           title: '从网盘恢复备份',
-          task: (onLog) => _backupService.downloadFromWebDav(
+          task: (onLog) => _webdavService.downloadFromWebDav(
             config: config,
             remotePath: targetPath,
             mode: _convertRestoreMode(state.restoreMode.value),
