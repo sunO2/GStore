@@ -47,6 +47,10 @@ class ModuleManager {
   /// 模块上下线事件流
   Stream<ModuleEvent> get onChange => _changeController.stream;
 
+  /// 监听指定模块的上下线事件（broadcast，按 moduleName 过滤）
+  Stream<ModuleEvent> watchModule(String moduleName) =>
+      onChange.where((e) => e.moduleName == moduleName);
+
   /// 模块上下文（注入 Agent 工具/服务绑定回调，由外部初始化）
   ModuleContext? _context;
 

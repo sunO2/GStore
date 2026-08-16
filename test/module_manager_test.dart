@@ -163,6 +163,41 @@ void main() {
     });
   });
 
+  group('ModuleManager watchModule 指定模块监听', () {
+    test('watchModule 只收到指定模块的上下线事件', () async {
+      final manager = ModuleManager.instance;
+      final recorder = EventRecorder();
+      final sub = manager.watchModule('webdav').listen(recorder.add);
+
+      // webdav 自身上下线 → 应收到
+      await manager.registerModule(TestModule(name: 'webdav'));
+      await manager.unregisterModule('webdav');
+      // 其他模块上下线 → 不应触发 webdav 监听
+      await manager.registerModule(TestModule(name: 'other'));
+      await manager.unregisterModule('other');
+
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(recorder.events, hasLength(2));
+      expect(recorder.events[0].moduleName, 'webdav');
+      expect(recorder.events[0].lifecycle, ModuleLifecycle.registered);
+      expect(recorder.events[1].moduleName, 'webdav');
+      expect(recorder.events[1].lifecycle, ModuleLifecycle.unregistered);
+
+      await sub.cancel();
+    });
+
+    test('watchModule 对未注册模块监听不报错', () async {
+      final manager = ModuleManager.instance;
+      final sub = manager.watchModule('ghost').listen((_) {});
+
+      await manager.registerModule(TestModule(name: 'real'));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      await sub.cancel();
+      expect(manager.hasModule('real'), true);
+    });
+  });
+
   group('ModuleManager 服务绑定', () {
     test('bind/get 编译期绑定（0 损耗主路径）', () async {
       final manager = ModuleManager.instance;
