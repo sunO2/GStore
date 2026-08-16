@@ -36,13 +36,13 @@ class DetailLogic extends GetxController {
   /// 渠道管理器（channel 模块下线时为 null，消费点软降级）
   ChannelManager? _channelManager;
 
-  /// 聚合管理器（标签读写，与发现页同一套 added_app_tags）
-  late AppAggregatorManager _aggregator;
+  /// 聚合管理器（标签读写，与发现页同一套 added_app_tags；aggregate 模块下线时为 null）
+  late IAggregateService? _aggregator;
 
   @override
   void onReady() {
     _channelManager = ModuleManager.instance.get<ChannelManager>();
-    _aggregator = Get.find(tag: 'aggregatorManager');
+    _aggregator = ModuleManager.instance.get<IAggregateService>();
     _initializeFromArguments();
     super.onReady();
   }
@@ -686,7 +686,13 @@ class DetailLogic extends GetxController {
     }
 
     // 读取当前标签（用规范化 appId）
-    final currentTags = await _aggregator.getTags(
+    // aggregate 模块下线 → 注册表取不到服务，降级提示不抛
+    final aggregator = _aggregator;
+    if (aggregator == null) {
+      AppDialogs.showWarning('聚合模块未启用');
+      return;
+    }
+    final currentTags = await aggregator.getTags(
       channel: req.channel,
       appId: canonicalId,
     );
@@ -737,7 +743,7 @@ class DetailLogic extends GetxController {
 
     try {
       // 保存标签（用规范化 appId，与聚合库 key 一致）
-      await _aggregator.setTags(
+      await aggregator.setTags(
         channel: req.channel,
         appId: canonicalId,
         tags: result,

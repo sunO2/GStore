@@ -10,9 +10,11 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:gstore/core/aggregate/AppAddedDatabase.dart';
+import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/download/model/DownloadContext.dart';
 import 'package:gstore/core/fdroid/FdroidRepoModels.dart';
+import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/model/BackupData.dart';
 import 'package:gstore/core/service/backup_service.dart';
 import 'package:gstore/core/theme/app_theme_config.dart';
@@ -220,6 +222,9 @@ abstract class IInstallService {
 
 /// 聚合（我的应用）服务接口
 abstract class IAggregateService {
+  /// 已添加应用变化事件流
+  Stream<List<AddedAppInfo>> get appsChangedStream;
+
   /// 移除应用
   Future<void> removeApp({
     required ChannelType channel,
@@ -240,6 +245,40 @@ abstract class IAggregateService {
 
   /// 总数
   Future<int> getTotalCount();
+
+  /// 批量添加应用
+  Future<void> addApps({
+    required ChannelType channel,
+    required List<AppSummary> appInfos,
+  });
+
+  /// 切换应用添加状态
+  Future<bool> toggleApp({
+    required ChannelType channel,
+    required AppSummary appInfo,
+  });
+
+  /// 获取应用的用户标签（无标签返回空列表）
+  Future<List<String>> getTags({
+    required ChannelType channel,
+    required String appId,
+  });
+
+  /// 设置应用的用户标签（整体替换：先清空再写入）
+  Future<void> setTags({
+    required ChannelType channel,
+    required String appId,
+    required List<String> tags,
+  });
+
+  /// 清空指定渠道的所有应用
+  Future<void> clearChannel(ChannelType channel);
+
+  /// 获取已添加应用的索引（ChannelCode → Set<AppId>）
+  Future<Map<String, Set<String>>> getAddedAppsIndex();
+
+  /// 从渠道获取已添加应用的详细信息（聚合所有渠道）
+  Future<List<AggregatedAppInfo>> getAggregatedApps();
 }
 
 /// 已安装应用服务接口

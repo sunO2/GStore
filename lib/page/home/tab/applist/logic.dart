@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:gstore/core/aggregate/aggregate.dart';
 import 'package:gstore/core/model/AppDetailRequest.dart';
+import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/http/github/dio_client.dart';
@@ -9,7 +10,7 @@ import 'state.dart';
 
 class ApplistLogic extends GetxController with GithubRequestMix {
   final ApplistState state = ApplistState();
-  late AppAggregatorManager _aggregator;
+  IAggregateService? _aggregator;
   StreamSubscription? _appsSubscription;
   Timer? _searchDebounce;
 
@@ -21,16 +22,15 @@ class ApplistLogic extends GetxController with GithubRequestMix {
   void onReady() async {
     super.onReady();
 
-    try {
-      _aggregator = Get.find(tag: 'aggregatorManager');
-      appLog.info('ApplistLogic: ✅ 初始化成功，获取到 AppAggregatorManager');
-    } catch (e) {
-      appLog.error('ApplistLogic: ❌ 获取 AppAggregatorManager 失败 - $e');
+    // aggregate 模块下线 → 注册表取不到服务，降级：不订阅、不加载（页面空态）
+    _aggregator = ModuleManager.instance.get<IAggregateService>();
+    if (_aggregator == null) {
+      appLog.error('ApplistLogic: ❌ 聚合模块未启用');
       return;
     }
 
     // 监听已添加应用变化
-    _appsSubscription = _aggregator.appsChangedStream.listen((_) {
+    _appsSubscription = _aggregator?.appsChangedStream.listen((_) {
       appLog.info('ApplistLogic: ✅ 收到 appsChangedStream 通知，重新加载应用列表');
       loadAggregatedApps();
     }, onError: (error) {
@@ -84,7 +84,7 @@ class ApplistLogic extends GetxController with GithubRequestMix {
 
     try {
       debugPrint('ApplistLogic: 调用 _aggregator.getAggregatedApps()');
-      final apps = await _aggregator.getAggregatedApps();
+      final apps = await _aggregator?.getAggregatedApps() ?? const [];
       appLog.info('ApplistLogic: ✅ 获取到 ${apps.length} 个聚合应用');
 
       state.apps = apps;
@@ -249,7 +249,7 @@ class ApplistLogic extends GetxController with GithubRequestMix {
   /// 移除应用
   Future<void> removeApp(AggregatedAppInfo app) async {
     try {
-      await _aggregator.removeApp(
+      await _aggregator?.removeApp(
         channel: app.channel,
         appId: app.appInfo.appId,
       );

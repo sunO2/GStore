@@ -11,6 +11,7 @@ import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/icons/Icons.dart';
 import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/model/AppSummary.dart';
+import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/module/module.dart';
 import 'package:gstore/core/service/db_manager.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -22,7 +23,7 @@ import 'widgets/tag_picker_dialog.dart';
 class DiscoveryLogic extends GetxController {
   final DiscoveryState state = DiscoveryState();
 
-  late AppAggregatorManager _aggregator;
+  late IAggregateService? _aggregator;
   /// 渠道管理器（channel 模块下线时为 null，消费点软降级）
   ChannelManager? _channelManager;
 
@@ -189,7 +190,7 @@ class DiscoveryLogic extends GetxController {
       if (channel != null && appInfo != null) {
         try {
           // 批量添加不逐个弹标签选择框（避免噪声），如需分类可单独添加后手动打标
-          await _aggregator.toggleApp(
+          await _aggregator?.toggleApp(
             channel: channel,
             appInfo: appInfo,
           );
@@ -250,11 +251,11 @@ class DiscoveryLogic extends GetxController {
   @override
   void onReady() async {
     super.onReady();
-    _aggregator = Get.find(tag: 'aggregatorManager');
+    _aggregator = ModuleManager.instance.get<IAggregateService>();
     _channelManager = ModuleManager.instance.get<ChannelManager>();
 
-    // 监听已添加应用变化
-    _aggregator.appsChangedStream.listen((apps) {
+    // 监听已添加应用变化（aggregate 模块下线时跳过订阅）
+    _aggregator?.appsChangedStream.listen((apps) {
       _updateAddedAppsIndex();
     });
 
@@ -301,7 +302,10 @@ class DiscoveryLogic extends GetxController {
 
   /// 更新已添加应用索引
   Future<void> _updateAddedAppsIndex() async {
-    final index = await _aggregator.getAddedAppsIndex();
+    // aggregate 模块下线 → 注册表取不到服务，跳过索引更新
+    final aggregator = _aggregator;
+    if (aggregator == null) return;
+    final index = await aggregator.getAddedAppsIndex();
     state.addedAppsIndex.clear();
     state.addedAppsIndex.addAll(index);
   }
@@ -406,11 +410,12 @@ class DiscoveryLogic extends GetxController {
   /// 添加/移除应用（添加到聚合管理器，用于首页显示）
   Future<void> toggleApp(ChannelType channel, AppSummary appInfo) async {
     try {
-      // 使用聚合管理器切换应用状态
-      final added = await _aggregator.toggleApp(
+      // 使用聚合管理器切换应用状态（aggregate 模块下线时降级为未添加）
+      final added = await _aggregator?.toggleApp(
         channel: channel,
         appInfo: appInfo,
-      );
+      ) ??
+          false;
 
       // 重新加载该渠道的应用列表
       final channelInstance = _channelManager?.getChannel(channel);
@@ -469,7 +474,7 @@ class DiscoveryLogic extends GetxController {
 
     // 读取当前标签（用规范化 appId）
     final currentTags =
-        await _aggregator.getTags(channel: channel, appId: canonicalId);
+        await _aggregator?.getTags(channel: channel, appId: canonicalId) ?? const [];
 
     // 加载预置分类：本地库 AppCategory 的 description 作为标签值
     var presetTags = <String>[];
@@ -496,7 +501,7 @@ class DiscoveryLogic extends GetxController {
 
     try {
       // 保存标签（用规范化 appId，与聚合库 key 一致）
-      await _aggregator.setTags(
+      await _aggregator?.setTags(
         channel: channel,
         appId: canonicalId,
         tags: result,
@@ -574,8 +579,9 @@ class DiscoveryLogic extends GetxController {
         return false;
       }
 
-      // 若已添加到首页，同步移除
+      // 若已添加到首页，同步移除（aggregate 模块下线时跳过）
       final aggregator = _aggregator;
+      if (aggregator == null) return false;
       if (await aggregator.isAppAdded(channel: channel, appId: appId)) {
         await aggregator.removeApp(channel: channel, appId: appId);
       }
@@ -726,7 +732,7 @@ class DiscoveryLogic extends GetxController {
     if (apps.isEmpty) return;
 
     try {
-      await _aggregator.addApps(
+      await _aggregator?.addApps(
         channel: channel,
         appInfos: apps,
       );
@@ -748,7 +754,7 @@ class DiscoveryLogic extends GetxController {
   /// 清空渠道的所有已添加应用
   Future<void> clearChannel(ChannelType channel) async {
     try {
-      await _aggregator.clearChannel(channel);
+      await _aggregator?.clearChannel(channel);
 
       Get.snackbar(
         '已清空',
