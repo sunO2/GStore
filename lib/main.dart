@@ -75,9 +75,6 @@ registerService() async {
   //（类似 Linux 包管理器：依赖就绪后才初始化下一层，同层无依赖模块并行）。
   await _initModuleManager(sw);
 
-  // 初始化 Agent 智能助手服务（懒初始化，首次使用时创建）
-  Get.lazyPut<AgentService>(() => AgentService());
-
   appLog.info('registerService: 全部初始化完成（总耗时 ${sw.elapsedMilliseconds}ms）');
 }
 

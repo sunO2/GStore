@@ -112,8 +112,8 @@ class ModuleManageLogic extends GetxController {
       ),
       ModuleEntry(
         name: 'agent_tools',
-        title: 'Agent 工具',
-        description: 'Agent 助手内置工具集',
+        title: 'Agent 助手',
+        description: 'AI 对话与内置工具',
         dependencies: const ['config', 'channel'],
         togglable: true,
       ),

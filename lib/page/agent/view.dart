@@ -69,7 +69,8 @@ class _AgentPageState extends State<AgentPage>
     _aiUser = ChatUser(id: 'ai', name: 'GStore 助手');
 
     // 监听消息变化，增量同步到聊天控制器
-    _logic.service.messages.listen(_onMessagesChanged);
+    // （agent_tools 模块未启用时 service 为 null，跳过监听）
+    _logic.service?.messages.listen(_onMessagesChanged);
 
     // 监听滚动：reverse 列表接近顶部（最早消息）时加载更早历史
     // 库内部使用 logic.scrollController（传给 AiChatWidget），此处直接监听
@@ -77,7 +78,7 @@ class _AgentPageState extends State<AgentPage>
 
     // 初始化同步（若 service 已加载历史消息）
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _onMessagesChanged(_logic.service.messages);
+      _onMessagesChanged(_logic.service?.messages ?? const []);
     });
 
     // tab 内嵌场景：离开 AI tab 自动失焦（收键盘），进入不自动聚焦——由用户点击输入框唤起键盘
@@ -204,7 +205,8 @@ class _AgentPageState extends State<AgentPage>
 
   /// 全量重建消息列表（同回合消息按 turnId 聚合为时间轴）
   void _rebuildAll() {
-    final msgs = _logic.service.messages;
+    if (_logic.agentUnavailable) return;
+    final msgs = _logic.service!.messages;
     final grouped = _groupTimeline(msgs);
     final list = <ChatMessage>[];
     for (var i = 0; i < grouped.length; i++) {
@@ -227,16 +229,18 @@ class _AgentPageState extends State<AgentPage>
 
   /// 触发加载更早历史（增量 addMessages，不重置滚动位置）
   void _triggerLoadMore() {
+    if (_logic.agentUnavailable) return;
+    final svc = _logic.service!;
     debugPrint(
-        'AgentView triggerLoadMore: hasMore=${_logic.service.hasMoreHistory} paginating=$_isPaginating loaded=${_logic.service.loadedHistoryCount}');
-    if (!_logic.service.hasMoreHistory) return;
+        'AgentView triggerLoadMore: hasMore=${svc.hasMoreHistory} paginating=$_isPaginating loaded=${svc.loadedHistoryCount}');
+    if (!svc.hasMoreHistory) return;
     if (_isPaginating) return;
     _isPaginating = true;
     // 标记分页：logic 的 messages listener 跳过自动滚动，避免跳回底部
-    _logic.service.isPaginatingHistory = true;
+    svc.isPaginatingHistory = true;
 
     try {
-      final older = _logic.service.loadMoreHistory();
+      final older = svc.loadMoreHistory();
       if (older.isEmpty) {
         _isPaginating = false;
         return;
@@ -264,14 +268,14 @@ class _AgentPageState extends State<AgentPage>
           _syncedMessages[msg.id] = _toChatMessage(msg);
         }
       }
-      _lastToolSignature = _toolSignature(_logic.service.messages);
+      _lastToolSignature = _toolSignature(svc.messages);
     } catch (e) {
       appLog.error('AgentView: 加载更早历史失败 - $e');
     } finally {
       _isPaginating = false;
       // 延迟重置：等 RxList 通知（异步）派发完成后，避免 logic 的滚动监听误触发
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        _logic.service.isPaginatingHistory = false;
+        svc.isPaginatingHistory = false;
       });
     }
   }
@@ -438,8 +442,37 @@ class _AgentPageState extends State<AgentPage>
                 children: [
                   // 未配置提示
                   Obx(() {
-                    if (state.isInitialized.value)
-                      return const SizedBox.shrink();
+                    // 无条件读 Rx（Obx 需至少一个依赖；agentUnavailable 非响应式）
+                    final isInit = state.isInitialized.value;
+                    if (logic.agentUnavailable) {
+                      // Agent 模块未启用：降级提示（不渲染聊天区）
+                      return Container(
+                        width: double.infinity,
+                        margin: AppSpacing.onlyHorizontalMD,
+                        padding: AppSpacing.allMD,
+                        decoration: BoxDecoration(
+                          color: Theme.of(context)
+                              .colorScheme
+                              .surfaceContainerHighest,
+                          borderRadius: AppRadius.allMD,
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.info_outline,
+                                color: AppColors.warning),
+                            const SizedBox(width: AppSpacing.md),
+                            const Expanded(
+                              child: Text('Agent 模块未启用，对话不可用'),
+                            ),
+                            TextButton(
+                              onPressed: () => Get.toNamed(AppRoute.moduleManage),
+                              child: const Text('去启用'),
+                            ),
+                          ],
+                        ),
+                      );
+                    }
+                    if (isInit) return const SizedBox.shrink();
                     return Container(
                       width: double.infinity,
                       margin: AppSpacing.onlyHorizontalMD,
@@ -468,14 +501,45 @@ class _AgentPageState extends State<AgentPage>
                   // AI 聊天界面（始终渲染 AiChatWidget，空消息时显示欢迎页）
                   Expanded(
                     child: Obx(() {
-                      final messages = logic.service.messages;
+                      // 无条件读 Rx（Obx 需至少一个依赖；agentUnavailable 非响应式）
+                      final errMsg = state.errorMessage.value;
+                      if (logic.agentUnavailable) {
+                        // Agent 模块未启用：占位提示（不渲染聊天组件）
+                        return Center(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.smart_toy_outlined,
+                                size: AppTypography.iconXXXL,
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSurfaceVariant,
+                              ),
+                              const SizedBox(height: AppSpacing.md),
+                              Text(
+                                errMsg.isEmpty ? 'Agent 模块未启用' : errMsg,
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .titleMedium
+                                    ?.copyWith(
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onSurfaceVariant,
+                                    ),
+                              ),
+                            ],
+                          ),
+                        );
+                      }
+                      final messages = logic.service!.messages;
                       final isEmpty = messages.isEmpty;
                       // 原生工具调用系统：注册 Agent 工具到 AiActionProvider
                       return AiActionProvider(
                         config: AiActionConfig(
-                          actions: logic.service.buildActions(),
+                          actions: logic.service!.buildActions(),
                         ),
-                        controller: logic.service.actionController,
+                        controller: logic.service!.actionController,
                         child: AiChatWidget(
                           currentUser: _currentUser,
                           aiUser: _aiUser,
@@ -487,7 +551,9 @@ class _AgentPageState extends State<AgentPage>
                           },
                           // 停止生成（对话流 + 工具调用）
                           onCancelGenerating: () {
-                            logic.service.stopGenerating();
+                            if (!logic.agentUnavailable) {
+                              logic.service!.stopGenerating();
+                            }
                           },
                           welcomeMessageConfig: isEmpty
                               ? WelcomeMessageConfig(
@@ -538,7 +604,7 @@ class _AgentPageState extends State<AgentPage>
                               // 官方方案：controller.loadMore 增量加载（addMessages，不重置滚动）
                               _triggerLoadMore();
                             },
-                            hasMoreMessages: logic.service.hasMoreHistory,
+                            hasMoreMessages: logic.service!.hasMoreHistory,
                             paginationConfig: PaginationConfig(
                               enabled: true,
                               // 库的 reverse 分页触发方向与"向上加载更早"不符，关闭自动加载，
@@ -666,6 +732,11 @@ class _AgentPageState extends State<AgentPage>
   void _submitInput() {
     final text = _logic.inputController.text.trim();
     if (text.isEmpty) return;
+    if (_logic.agentUnavailable) {
+      // Agent 模块未启用：弹提示不发送
+      AppDialogs.showError('Agent 模块未启用');
+      return;
+    }
     _logic.inputController.clear();
     _logic.sendText(text);
   }
@@ -721,6 +792,11 @@ class _AgentPageState extends State<AgentPage>
   Future<void> _handleSendMessage(ChatMessage chatMsg) async {
     final text = chatMsg.text.trim();
     if (text.isEmpty) return;
+    if (_logic.agentUnavailable) {
+      // Agent 模块未启用：弹提示不发送
+      AppDialogs.showError('Agent 模块未启用');
+      return;
+    }
     await _logic.sendText(text);
   }
 
@@ -834,6 +910,7 @@ class _AgentPageState extends State<AgentPage>
   /// 空状态
   /// 显示会话列表弹窗（切换/删除）
   Future<void> _showSessionList(BuildContext context, AgentLogic logic) async {
+    if (logic.agentUnavailable) return;
     // 确保 Agent 已初始化（会话存储已加载）
     await logic.ensureInitialized();
 
@@ -843,9 +920,9 @@ class _AgentPageState extends State<AgentPage>
       builder: (context) {
         return Obx(() {
           // 订阅消息变化，保证列表在有会话变化时刷新
-          logic.service.messages.length;
-          final currentId = logic.service.currentSessionId;
-          final sessions = logic.service.sessions;
+          logic.service!.messages.length;
+          final currentId = logic.service!.currentSessionId;
+          final sessions = logic.service!.sessions;
           return Padding(
             padding: AppSpacing.allMD,
             child: Column(
@@ -1190,7 +1267,12 @@ class _TurnTimeline extends StatelessWidget {
 
   /// 用户选择确认/取消/选项
   void _resolve(BuildContext context, String msgId, String choice) {
-    final service = Get.find<AgentService>();
+    final service = ModuleManager.instance.get<AgentService>();
+    if (service == null) {
+      // Agent 模块未启用：弹提示不发送
+      AppDialogs.showError('Agent 模块未启用');
+      return;
+    }
     service.resolveConfirmation(msgId, choice);
   }
 

@@ -15,13 +15,12 @@ class AgentLogic extends GetxController {
   /// 是否已完成初始加载（初始化加载历史消息时不触发滚动跳动）
   bool _initialLoaded = false;
 
-  /// Agent 服务
-  AgentService? _service;
+  /// Agent 服务（每次从模块注册表取，避免模块运行中切换后的过期引用；
+  /// agent_tools 模块下线后返回 null → 消费方降级）
+  AgentService? get service => ModuleManager.instance.get<AgentService>();
 
-  AgentService get service {
-    _service ??= Get.find<AgentService>();
-    return _service!;
-  }
+  /// Agent 模块是否未启用（服务未注册）
+  bool get agentUnavailable => service == null;
 
   @override
   void onReady() async {
@@ -29,17 +28,28 @@ class AgentLogic extends GetxController {
 
     // 监听消息变化，流式输出时自动滚动到底部
     // 分页加载历史时跳过（避免加载更多后跳回底部）
-    service.messages.listen((_) {
-      if (service.isPaginatingHistory) return;
-      _scrollToBottom();
-    });
+    final svc = service;
+    if (svc != null) {
+      svc.messages.listen((_) {
+        if (svc.isPaginatingHistory) return;
+        _scrollToBottom();
+      });
+    }
 
     await _init();
   }
 
   /// 初始化 Agent
   Future<void> _init() async {
-    final ok = await service.initialize();
+    final svc = service;
+    if (svc == null) {
+      // 模块未启用：降级提示，不抛异常
+      state.isInitialized.value = false;
+      state.errorMessage.value = 'Agent 模块未启用';
+      _initialLoaded = true;
+      return;
+    }
+    final ok = await svc.initialize();
     state.isInitialized.value = ok;
     // 初始化加载完成后允许后续滚动
     _initialLoaded = true;
@@ -51,7 +61,8 @@ class AgentLogic extends GetxController {
 
   /// 确保 Agent 已初始化（用于会话列表等需要存储已加载的场景）
   Future<void> ensureInitialized() async {
-    if (service.sessionStore == null) {
+    final svc = service;
+    if (svc == null || svc.sessionStore == null) {
       await _init();
     }
   }
@@ -61,10 +72,16 @@ class AgentLogic extends GetxController {
     final text = inputController.text.trim();
     if (text.isEmpty) return;
 
+    final svc = service;
+    if (svc == null) {
+      state.errorMessage.value = 'Agent 模块未启用';
+      return;
+    }
+
     inputController.clear();
     state.isGenerating.value = true;
 
-    await service.chat(text);
+    await svc.chat(text);
 
     state.isGenerating.value = false;
     _scrollToBottom();
@@ -75,10 +92,16 @@ class AgentLogic extends GetxController {
     final trimmed = text.trim();
     if (trimmed.isEmpty) return;
 
+    final svc = service;
+    if (svc == null) {
+      state.errorMessage.value = 'Agent 模块未启用';
+      return;
+    }
+
     inputController.clear();
     state.isGenerating.value = true;
 
-    await service.chat(trimmed);
+    await svc.chat(trimmed);
 
     state.isGenerating.value = false;
     _scrollToBottom();
@@ -86,19 +109,34 @@ class AgentLogic extends GetxController {
 
   /// 新建会话
   Future<void> newSession() async {
-    await service.newSession();
+    final svc = service;
+    if (svc == null) {
+      state.errorMessage.value = 'Agent 模块未启用';
+      return;
+    }
+    await svc.newSession();
     _scrollToBottom();
   }
 
   /// 切换会话
   Future<void> switchSession(String id) async {
-    await service.switchSession(id);
+    final svc = service;
+    if (svc == null) {
+      state.errorMessage.value = 'Agent 模块未启用';
+      return;
+    }
+    await svc.switchSession(id);
     _scrollToBottom();
   }
 
   /// 删除会话
   Future<void> deleteSession(String id) async {
-    await service.deleteSession(id);
+    final svc = service;
+    if (svc == null) {
+      state.errorMessage.value = 'Agent 模块未启用';
+      return;
+    }
+    await svc.deleteSession(id);
     Get.snackbar('已删除', '对话已删除',
         snackPosition: SnackPosition.BOTTOM,
         duration: const Duration(seconds: 1));
@@ -106,7 +144,12 @@ class AgentLogic extends GetxController {
 
   /// 清空当前会话
   Future<void> clearCurrentSession() async {
-    await service.clearCurrentSession();
+    final svc = service;
+    if (svc == null) {
+      state.errorMessage.value = 'Agent 模块未启用';
+      return;
+    }
+    await svc.clearCurrentSession();
     Get.snackbar('已清空', '当前对话已清空',
         snackPosition: SnackPosition.BOTTOM,
         duration: const Duration(seconds: 1));
@@ -114,7 +157,7 @@ class AgentLogic extends GetxController {
 
   /// 当前使用的模型显示名
   String get currentModelName {
-    final model = service.model;
+    final model = service?.model;
     if (model == null) return '';
     return '${model.provider == AgentLlmProvider.google ? 'Gemini' : 'OpenAI'} · ${model.effectiveModel}';
   }
@@ -146,7 +189,9 @@ class AgentLogic extends GetxController {
 
   /// 滚动到顶部时加载更早的历史消息（保持当前视觉位置不跳动）
   void loadMoreHistoryIfNeeded() {
-    if (!service.hasMoreHistory) return;
+    final svc = service;
+    if (svc == null) return;
+    if (!svc.hasMoreHistory) return;
     if (_loadingHistory) return;
     _loadingHistory = true;
 
@@ -155,7 +200,7 @@ class AgentLogic extends GetxController {
         // 记录加载前的偏移量
         final oldPixels = scrollController.position.pixels;
 
-        service.loadMoreHistory();
+        svc.loadMoreHistory();
 
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (scrollController.hasClients) {

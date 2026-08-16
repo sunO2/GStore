@@ -8,6 +8,9 @@ class AgentState {
   /// 是否已初始化（已配置 API Key）
   final RxBool isInitialized = false.obs;
 
+  /// 降级提示（Agent 模块未启用等）
+  final RxString errorMessage = ''.obs;
+
   /// 对话消息
   final RxList<AgentMessage> messages = <AgentMessage>[].obs;
 

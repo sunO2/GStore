@@ -41,8 +41,12 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
 
   /// 重新初始化 Agent 服务
   Future<void> _reconfigureService() async {
+    final service = ModuleManager.instance.get<AgentService>();
+    if (service == null) {
+      // Agent 模块未启用：跳过重配（页面已显示未启用文案）
+      return;
+    }
     try {
-      final service = Get.find<AgentService>();
       await service.reconfigure();
     } catch (e) {
       appLog.error('AgentSettings: reconfigure 失败 - $e');
@@ -93,6 +97,34 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
   Widget _buildBody(BuildContext context) {
     if (_loading) {
       return const Center(child: AppLoading(size: AppLoadingSize.medium));
+    }
+
+    // Agent 模块未启用：模型选择区显示未启用文案（禁用编辑）
+    if (ModuleManager.instance.get<AgentService>() == null) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              Icons.smart_toy_outlined,
+              size: AppTypography.iconXXXL,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+            const SizedBox(height: AppSpacing.lg),
+            Text(
+              'Agent 模块未启用',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: AppSpacing.sm),
+            Text(
+              '请在模块管理中启用 Agent 助手后配置模型',
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+            ),
+          ],
+        ),
+      );
     }
 
     final store = _store!;

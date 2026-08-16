@@ -102,7 +102,7 @@ void main() {
       // 业务模块中文名
       for (final title in [
         '渠道', '下载', '备份', 'WebDAV', 'F-Droid',
-        '主题', '安装', '我的应用', 'Agent 工具',
+        '主题', '安装', '我的应用', 'Agent 助手',
       ]) {
         expect(find.text(title), findsOneWidget, reason: '缺少业务模块: $title');
       }

@@ -283,8 +283,11 @@ class AggregateModule extends AppModule {
 
 /// Agent 工具模块（依赖 config + channel）
 ///
-/// 上线时注册全部内置 Agent 工具（AgentService 拉取后模型可调用），
-/// 下线时移除。通过 ModuleContext.registerAgentTools 联动。
+/// 管理 AgentService 生命周期 + 内置 Agent 工具：
+/// - 上线（onInit）：Get.put AgentService（替代 main.dart lazyPut，模块体系内注册）
+/// - 上线（onRegister）：按类型绑定 AgentService 到注册表（消费方经
+///   ModuleManager.get<AgentService>() 取用，模块下线后软降级）+ 注册内置工具
+/// - 下线（onUnregister）：解绑 AgentService + 注销内置工具
 class AgentToolsModule extends AppModule {
   @override
   String get moduleName => 'agent_tools';
@@ -299,12 +302,22 @@ class AgentToolsModule extends AppModule {
   List<AgentToolModule> get tools => BuiltinAgentTools.all;
 
   @override
+  Future<void> onInit(ModuleContext context) async {
+    // AgentService 归模块管理：agent_tools 禁用时永不注册（对话不可用）
+    if (!Get.isRegistered<AgentService>()) {
+      Get.put(AgentService());
+    }
+  }
+
+  @override
   Future<void> onRegister(ModuleContext context) async {
+    context.bindService?.call(AgentService, Get.find<AgentService>());
     context.registerAgentTools?.call(tools);
   }
 
   @override
   Future<void> onUnregister(ModuleContext context) async {
+    context.unbindService?.call(AgentService);
     context.unregisterAgentTools?.call(tools.map((t) => t.toolName).toList());
   }
 }
