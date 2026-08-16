@@ -20,6 +20,33 @@ class ModuleToggleConfig {
   /// 模块开关配置键：module.<name>.enabled
   static String keyOf(String moduleName) => 'module.$moduleName.enabled';
 
+  /// 可开关业务模块清单（启动装配遍历；update/badge/infra 恒启用，不在此列）
+  static const List<String> toggleableModules = [
+    'channel',
+    'download',
+    'backup',
+    'webdav',
+    'fdroid',
+    'theme',
+    'install',
+    'aggregate',
+    'agent_tools',
+  ];
+
+  /// 启动预置：registerModule 全部完成后、initializeAll 之前调用。
+  ///
+  /// 按持久化配置（`module.<name>.enabled=false`）禁用对应模块，
+  /// 使业务模块启动跳过真实生效（ModuleManager._initModule 对禁用模块短路）。
+  /// 仅遍历 [toggleableModules] 9 个可开关业务模块；update/badge/infra 恒启用。
+  static Future<void> preApplyToggles(ModuleManager manager) async {
+    for (final name in toggleableModules) {
+      if (!await instance.isModuleEnabled(name)) {
+        await manager.setModuleEnabled(name, false);
+      }
+    }
+  }
+
+
   /// 是否启用（ConfigService 读；未注册/未设置默认 true）
   Future<bool> isModuleEnabled(String moduleName) async {
     final v = await ConfigService.instance.get(keyOf(moduleName));

@@ -9,10 +9,12 @@ import 'package:gstore/core/logger/LogManager.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/config/config_initializer.dart';
 import 'package:gstore/core/module/app_modules.dart';
 import 'package:gstore/core/module/infra_modules.dart';
 import 'package:gstore/core/module/module.dart';
 import 'package:gstore/core/module/module_manager.dart';
+import 'package:gstore/core/module/module_toggle_config.dart';
 import 'package:gstore/core/routers.dart';
 
 /// 返回首页时重置键盘焦点
@@ -118,6 +120,11 @@ Future<void> _initModuleManager(Stopwatch sw) async {
   }
   appLog.info('_initModuleManager: 已注册 ${manager.moduleCount} 个模块');
 
+  // 模块开关预置：按持久化配置禁用（仅 9 个可开关业务模块；update/badge/infra 恒启用）。
+  // 必须位于 registerModule 循环之后、initializeAll 之前——disabled 模块启动即跳过
+  //（_initModule 短路，isInitialized 保持 false，业务模块启动跳过真实生效）。
+  await ModuleToggleConfig.preApplyToggles(manager);
+
   // 按依赖拓扑排序分层并行初始化
   // 任一模块 onInit/onRegister 抛异常 → 记录日志后降级继续启动（不闪退），
   // 已初始化模块的服务保持可用，失败模块对应功能降级（日志查看器可见）。
@@ -164,6 +171,11 @@ main() async {
   // default: 分支经 buildTransition 调用（get_transition_mixin.dart:641），
   // 传入的 animation 已被 Get 用 defaultTransitionCurve（easeOutQuad）包裹。
   Get.customTransition = _FadeThroughPageTransition();
+
+  // 配置系统前置初始化（静态 _initialized 幂等；ConfigModule.onInit 保留原调用，
+  // 第二次调用为 no-op）。必须在 registerService 之前：启动装配
+  //（_initModuleManager 预置禁用）需要按持久化开关读配置。
+  await ConfigInitializer.initialize();
   await registerService();
 
   runApp(DynamicColorBuilder(builder: (light, dark) {
