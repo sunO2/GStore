@@ -13,19 +13,6 @@ import 'state.dart';
 class DetailPage extends StatelessWidget {
   const DetailPage({super.key});
 
-  Widget _flightShuttleBuilder(
-    BuildContext flightContext,
-    Animation<double> animation,
-    HeroFlightDirection flightDirection,
-    BuildContext fromHeroContext,
-    BuildContext toHeroContext,
-  ) {
-    return DefaultTextStyle(
-      style: DefaultTextStyle.of(toHeroContext).style,
-      child: toHeroContext.widget,
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     final logic = Get.put(DetailLogic());
@@ -91,14 +78,10 @@ class DetailPage extends StatelessWidget {
         final title = state.displayName;
         if (title.isEmpty) return const SizedBox();
 
-        return Hero(
-          flightShuttleBuilder: _flightShuttleBuilder,
-          tag: state.displayIcon,
-          child: Text(
-            title,
-            style: AppTypography.headlineSmall.copyWith(
-              color: AppColors.textPrimary,
-            ),
+        return Text(
+          title,
+          style: AppTypography.headlineSmall.copyWith(
+            color: AppColors.textPrimary,
           ),
         );
       }),
