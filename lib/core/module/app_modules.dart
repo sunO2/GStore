@@ -101,7 +101,9 @@ class DownloadModule extends AppModule {
   @override
   Future<void> onUnregister(ModuleContext context) async {
     context.unbindService?.call(IDownloadService);
-    context.config?.unregisterModule('app_core');
+    // 注意：不注销 app_core 配置——AppCoreConfigModule 持有 themeMode/webdavConfig/
+    // proxyUrl/agentModels/fdroidSources 等全局配置 key（config_registry.dart:57-154），
+    // 配置是全局的，不随 download 模块下线注销（否则运行期关 download 会清空整个配置注册表）。
   }
 }
 

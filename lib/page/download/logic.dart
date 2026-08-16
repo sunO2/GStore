@@ -1,10 +1,10 @@
 import 'dart:io';
 
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/db/apps/AppInfoDatabase.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
 import 'package:gstore/http/download/DownloadStatusDataBase.dart';
-import 'package:gstore/core/service/downloadService.dart';
 
 import 'download_status_utils.dart';
 import 'state.dart';
@@ -143,7 +143,13 @@ class DownloadManagerLogic extends GetxController with GithubRequestMix {
     // 从头下载时强制重新下载（forceDownload: true），续传时保留已下载部分
     // 注意：不要在此处 markAsDownloading，否则 download() 的防重检查会误判为
     // "正在下载" 而直接跳过，导致点击"继续下载/重试"无效
-    await Get.find<DownloadService>().download(
+    // 下载模块下线 → 注册表取不到服务，降级提示不抛
+    final service = ModuleManager.instance.get<IDownloadService>();
+    if (service == null) {
+      AppDialogs.showWarning('下载模块未启用');
+      return;
+    }
+    await service.download(
         downStatus.appId,
         downStatus.appName,
         downStatus.version,

@@ -11,6 +11,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:gstore/core/aggregate/AppAddedDatabase.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
+import 'package:gstore/core/download/model/DownloadContext.dart';
 import 'package:gstore/core/fdroid/FdroidRepoModels.dart';
 import 'package:gstore/core/model/BackupData.dart';
 import 'package:gstore/core/service/backup_service.dart';
@@ -32,6 +33,17 @@ abstract class IDownloadService {
     bool breakPoint = true,
     String? saveFileName,
     bool forceDownload = false,
+  });
+
+  /// 使用下载上下文下载（策略模式：自定义请求头/代理/URL 转换/超时）
+  Future<DownloadStatus> downloadWithContext(
+    DownloadContext context,
+    String appid,
+    String appName,
+    String version,
+    String fileName, {
+    bool breakPoint = true,
+    String? saveFileName,
   });
 }
 

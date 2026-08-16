@@ -21,7 +21,6 @@ import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
-import 'package:gstore/core/service/downloadService.dart';
 import 'package:gstore/core/service/backup_service.dart';
 import 'package:gstore/core/theme/app_theme_config.dart';
 import 'package:gstore/core/theme/theme_controller.dart';
@@ -1735,7 +1734,11 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
       }
 
       DownloadStatus? status;
-      final service = Get.find<DownloadService>();
+      // 下载模块下线 → 注册表取不到服务，降级提示不抛
+      final service = ModuleManager.instance.get<IDownloadService>();
+      if (service == null) {
+        return '下载模块未启用';
+      }
 
       // 方式1：已有完整 URL，直接下载
       if (url.isNotEmpty && (url.startsWith('http://') || url.startsWith('https://'))) {
@@ -2131,7 +2134,10 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
           final items = await db.downloadStatusDao.getAllDownload().first;
           final item = items.where((d) => d.fileName == fileName).firstOrNull;
           if (item == null) return '未找到下载: $fileName';
-          final service = Get.find<DownloadService>();
+          final service = ModuleManager.instance.get<IDownloadService>();
+          if (service == null) {
+            return '下载模块未启用';
+          }
           await service.download(
             item.appId, item.appName, item.version, item.downloadUrl, item.fileName,
             downloadSize: item.total,

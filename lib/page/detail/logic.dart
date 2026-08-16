@@ -7,7 +7,7 @@ import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/AppDetailRequest.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/model/StatTag.dart';
-import 'package:gstore/core/service/downloadService.dart';
+import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/service/metadata_submit_service.dart';
 import 'package:gstore/core/download/DownloadStrategyManager.dart';
 import 'package:gstore/core/download/strategy/impl/LocalDbDownloadStrategy.dart';
@@ -420,6 +420,13 @@ class DetailLogic extends GetxController {
     String version,
     String fileName,
   ) async {
+    // 下载模块下线 → 注册表取不到服务，降级提示不抛
+    final service = ModuleManager.instance.get<IDownloadService>();
+    if (service == null) {
+      AppDialogs.showWarning('下载模块未启用');
+      return;
+    }
+
     try {
       // 确保策略管理器已初始化
       _initializeDownloadStrategies();
@@ -435,7 +442,7 @@ class DetailLogic extends GetxController {
 
       if (context != null) {
         debugPrint('DetailLogic: 使用策略模式下载 - ${context.downloadUrl}');
-        await Get.find<DownloadService>().downloadWithContext(
+        await service.downloadWithContext(
           context,
           appId,
           appName,
@@ -449,7 +456,7 @@ class DetailLogic extends GetxController {
     } catch (e) {
       appLog.error('DetailLogic: 策略模式下载失败，降级到旧方法 - $e');
       try {
-        await Get.find<DownloadService>().download(
+        await service.download(
           appId,
           appName,
           version,

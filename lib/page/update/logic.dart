@@ -9,7 +9,7 @@ import 'package:gstore/core/download/strategy/impl/GitHubDownloadStrategy.dart';
 import 'package:gstore/core/download/strategy/impl/HttpDownloadStrategy.dart';
 import 'package:gstore/core/download/strategy/impl/FdroidDownloadStrategy.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
-import 'package:gstore/core/service/downloadService.dart';
+import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/update/apk_matcher.dart';
 import 'package:gstore/core/update/update_cache.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
@@ -192,6 +192,14 @@ class UpdateLogic extends GetxController {
 
     state.updatingAppId.value = info.appId;
 
+    // 下载模块下线 → 注册表取不到服务，降级提示不抛
+    final service = ModuleManager.instance.get<IDownloadService>();
+    if (service == null) {
+      AppDialogs.showWarning('下载模块未启用');
+      state.updatingAppId.value = null;
+      return;
+    }
+
     try {
       // 本次下载 = 用户所选（须匹配 detail.downloads）?? 现规则结果（latestDownload
       // 已是偏好匹配后的默认项）；缓存恢复 detail=null → 直接用 latestDownload
@@ -228,7 +236,7 @@ class UpdateLogic extends GetxController {
             detail,
           );
           if (context != null) {
-            await Get.find<DownloadService>().downloadWithContext(
+            await service.downloadWithContext(
               context,
               info.appId,
               info.appName,
@@ -236,7 +244,7 @@ class UpdateLogic extends GetxController {
               fileName,
             );
           } else {
-            await Get.find<DownloadService>().download(
+            await service.download(
               info.appId,
               info.appName,
               version,
@@ -247,7 +255,7 @@ class UpdateLogic extends GetxController {
           }
         } else {
           // 缓存恢复（detail 未持久化）→ 直接普通下载
-          await Get.find<DownloadService>().download(
+          await service.download(
             info.appId,
             info.appName,
             version,
@@ -258,7 +266,7 @@ class UpdateLogic extends GetxController {
         }
       } catch (e) {
         appLog.error('UpdateLogic: 策略下载失败，降级到普通下载 - $e');
-        await Get.find<DownloadService>().download(
+        await service.download(
           info.appId,
           info.appName,
           version,
