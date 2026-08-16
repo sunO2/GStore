@@ -209,38 +209,62 @@ class _BackupRestoreSheetState extends State<BackupRestoreSheet> {
     );
   }
 
-  /// 阶段2：备份文件列表（Radio 单选；最新文件带"最新"标签）
+  /// 阶段2：备份文件列表（单选；每行始终显示清晰 radio 状态图标，
+  /// 最新文件带"最新"标签）
   Widget _buildFileList(ThemeData theme) {
-    return RadioGroup<WebDavFile>(
-      groupValue: _selected,
-      onChanged: (value) => setState(() => _selected = value),
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxHeight: 320),
-        child: ListView.builder(
-          shrinkWrap: true,
-          itemCount: _files.length,
-          itemBuilder: (context, index) {
-            final file = _files[index];
-            final isLatest = index == 0;
-            return RadioListTile<WebDavFile>(
-              value: file,
-              contentPadding: EdgeInsets.zero,
-              title: Text(
-                file.name,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: theme.textTheme.bodyLarge?.copyWith(
-                  fontWeight: AppTypography.weightMedium,
-                ),
-              ),
-              subtitle: Text(
-                '${_formatDateTime(file.modified)} · ${file.formattedSize}',
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-              ),
-              secondary: isLatest
-                  ? Container(
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxHeight: 320),
+      child: ListView.builder(
+        shrinkWrap: true,
+        itemCount: _files.length,
+        itemBuilder: (context, index) {
+          final file = _files[index];
+          final isLatest = index == 0;
+          final selected = _selected == file;
+          return InkWell(
+            onTap: () => setState(() => _selected = file),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm),
+              child: Row(
+                children: [
+                  // radio 状态图标：未选中空心（灰）/ 选中实心（主题色）——始终可见
+                  Icon(
+                    selected
+                        ? Icons.radio_button_checked
+                        : Icons.radio_button_off,
+                    size: AppTypography.iconMD,
+                    color: selected
+                        ? theme.colorScheme.primary
+                        : theme.colorScheme.onSurfaceVariant,
+                  ),
+                  const SizedBox(width: AppSpacing.md),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          file.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.bodyLarge?.copyWith(
+                            fontWeight: AppTypography.weightMedium,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          '${_formatDateTime(file.modified)} · ${file.formattedSize}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (isLatest) ...[
+                    const SizedBox(width: AppSpacing.sm),
+                    Container(
                       padding: const EdgeInsets.symmetric(
                           horizontal: 8, vertical: 2),
                       decoration: BoxDecoration(
@@ -259,11 +283,13 @@ class _BackupRestoreSheetState extends State<BackupRestoreSheet> {
                           color: AppColors.success,
                         ),
                       ),
-                    )
-                  : null,
-            );
-          },
-        ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          );
+        },
       ),
     );
   }
