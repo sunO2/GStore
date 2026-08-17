@@ -276,7 +276,7 @@ class JsChannel extends IChannel implements DynamicChannel {
       }
       return ChannelResult.failure(
         from: ChannelType.custom,
-        error: '脚本未实现 getAppDetail',
+        error: '脚本未返回详情数据（脚本未实现或数据获取失败）',
       );
     } catch (e) {
       _logError('getAppDetail 失败: $e');
@@ -358,7 +358,7 @@ class JsChannel extends IChannel implements DynamicChannel {
       if (saved == null) {
         return ChannelResult.failure(
           from: ChannelType.custom,
-          error: '脚本未实现 checkAppUpdate 且渠道库无该应用',
+          error: '脚本未返回更新信息且渠道库无该应用',
         );
       }
       final summary = AppSummary.fromChannelAddedApp(saved);
@@ -408,7 +408,7 @@ class JsChannel extends IChannel implements DynamicChannel {
       if (apps == null) {
         return ChannelResult.failure(
           from: ChannelType.custom,
-          error: '脚本未实现 doUpdate/getAllApps',
+          error: '脚本未返回更新数据（脚本未实现或数据获取失败）',
         );
       }
       await _persistApps(apps, onProgress: onProgress);
@@ -466,7 +466,7 @@ class JsChannel extends IChannel implements DynamicChannel {
       }
       return ChannelResult.failure(
         from: ChannelType.custom,
-        error: '脚本未实现 getConfig',
+        error: '脚本未返回配置数据（脚本未实现或数据获取失败）',
       );
     } catch (e) {
       _logError('getConfig 失败: $e');

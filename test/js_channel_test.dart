@@ -215,6 +215,18 @@ void main() {
       await channel.dispose();
     });
 
+    test('⑦ 脚本未返回详情数据 → getAppDetail 错误信息中性（不误导为未实现）', () async {
+      final channel = buildChannel();
+      await channel.initialize();
+
+      // _testScript 未实现 getAppDetail → main 返回 null → 中性错误文案
+      final result = await channel.getAppDetail('com.example.one');
+      expect(result.success, isFalse);
+      expect(result.error, '脚本未返回详情数据（脚本未实现或数据获取失败）');
+
+      await channel.dispose();
+    });
+
     test('④ checkUpdate 走脚本；doUpdate 未实现 → 拉全量落库到 channelKey', () async {
       final channel = buildChannel();
       await channel.initialize();

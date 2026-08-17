@@ -447,7 +447,7 @@ void main() {
       await runtime.dispose();
     });
 
-    test('⑨ getAppInfo：无 android 构建 → {ok:true, data:null}', () async {
+    test('⑨ getAppInfo：无 android 构建 → {ok:false, data:null, error}（非 data:null）', () async {
       final runtime = buildRuntime(handler: (options) {
         if (options.path.contains('/sunflower/i/build-list')) {
           return api.buildListNoAndroid();
@@ -457,8 +457,9 @@ void main() {
       await runtime.initialize();
 
       final result = await runtime.call('main', ['getAppInfo', {'appId': 'app-1'}]) as Map;
-      expect(result['ok'], isTrue);
+      expect(result['ok'], isFalse);
       expect(result['data'], isNull);
+      expect(result['error'], '未找到该应用的 Android 构建');
 
       await runtime.dispose();
     });
@@ -568,6 +569,83 @@ void main() {
       expect(dl['size'], 12345678);
       expect(dl['version'], '1.9.0');
       expect(dl['platform'], 'android');
+
+      await runtime.dispose();
+    });
+
+    test('⑰ getAppDetail：无 android 构建 → {ok:false, data:null, error}（非 data:null）', () async {
+      final runtime = buildRuntime(handler: (options) {
+        if (options.path.contains('/sunflower/i/build-list')) {
+          return api.buildListNoAndroid();
+        }
+        return defaultHandler(options);
+      });
+      await runtime.initialize();
+
+      final result = await runtime.call('main', ['getAppDetail', {'appId': 'app-1'}]) as Map;
+      expect(result['ok'], isFalse);
+      expect(result['data'], isNull);
+      expect(result['error'], '未找到该应用的 Android 构建');
+
+      await runtime.dispose();
+    });
+
+    test('⑱ getAppDetail：appId 传包名（已落库有 name）→ 查库解析 name → 成功返回详情', () async {
+      // 落库一条记录：appId=列表 name（ibank），extra.appId=真实包名 identifier
+      await appDao.insertApp(ChannelAddedApp(
+        appId: 'ibank',
+        name: 'ibank',
+        user: '',
+        repositories: 'id-ibank',
+        icon: '',
+        description: '平安口袋银行',
+        addTime: 0,
+        channelCode: _channelKey,
+        extra: jsonEncode({'appId': 'com.pingan.pabank.activity'}),
+      ));
+
+      final runtime = buildRuntime(handler: (options) {
+        if (options.path.contains('/sunflower/i/build-list')) {
+          final appname = options.queryParameters['appname']?.toString() ?? '';
+          if (appname == 'com.pingan.pabank.activity') {
+            return api.buildListNoAndroid(); // 包名查不到 android 构建
+          }
+          return api.buildList(withFileUrl: false); // 列表 name 查到
+        }
+        return defaultHandler(options);
+      });
+      await runtime.initialize();
+
+      final result = await runtime.call(
+          'main', ['getAppDetail', {'appId': 'com.pingan.pabank.activity'}]) as Map;
+      expect(result['ok'], isTrue);
+      final d = result['data'] as Map;
+      expect(d['appId'], 'com.pingan.app'); // builds[0].identifier 真实包名
+      expect(d['packageName'], 'com.pingan.app');
+      expect(d['version'], '1.9.0');
+
+      // 两次 build-list：先包名（无结果）→ 再列表 name（成功）
+      final buildRequests = requestLog.where((r) => r.contains('build-list')).toList();
+      expect(buildRequests.length, 2);
+      expect(buildRequests[0], contains('appname=com.pingan.pabank.activity'));
+      expect(buildRequests[1], contains('appname=ibank'));
+
+      await runtime.dispose();
+    });
+
+    test('⑲ getAppDetail：网络失败 → {ok:false, data:null}（不抛）', () async {
+      final runtime = buildRuntime(handler: (options) {
+        if (options.path.contains('/sunflower/i/build-list')) {
+          return {'__status': 500, 'msg': 'boom'};
+        }
+        return defaultHandler(options);
+      });
+      await runtime.initialize();
+
+      final result = await runtime.call('main', ['getAppDetail', {'appId': 'app-1'}]) as Map;
+      expect(result['ok'], isFalse);
+      expect(result['data'], isNull);
+      expect(result['error'], contains('build-list 请求失败'));
 
       await runtime.dispose();
     });
