@@ -276,6 +276,12 @@ void main() {
     testWidgets('设置页「模块」入口点击可达模块管理页', (tester) async {
       // 默认视口即可（入口位于设置页前部）；过高的视口会触发
       // _DataUpdateTile leading AppBadge 的既有布局断言（与本次改动无关）
+      // 新增「已导入渠道」入口后模块入口下移 → 用 720px 视口使其可见，
+      // 同时不越过 _DataUpdateTile（约 984px）的构建边界，避免既有断言
+      tester.view.physicalSize = const Size(800, 720);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+
       await tester.pumpWidget(GetMaterialApp(
         getPages: AppRoute.pages,
         home: const SettingsPage(),

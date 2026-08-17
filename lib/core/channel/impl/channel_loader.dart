@@ -226,6 +226,41 @@ class ChannelLoader {
     return channel;
   }
 
+  /// 删除脚本渠道：注销注册 + 删除脚本文件 + 清空环境变量持久化。
+  ///
+  /// [channelKey] 校验与 [importScript] 一致（非法抛 [ArgumentError]，
+  /// 防止路径穿越删除任意文件）。
+  /// 幂等：渠道未注册（仅残留文件/env）也清理文件与 env。
+  /// env 清空失败不阻塞文件删除与注销（ConfigStore 未初始化等场景容错）。
+  Future<void> removeChannel(String channelKey) async {
+    if (!RegExp(r'^[a-zA-Z_][a-zA-Z0-9_]*$').hasMatch(channelKey)) {
+      throw ArgumentError.value(
+          channelKey, 'channelKey', '非法渠道标识（需字母/下划线开头，仅含字母数字下划线）');
+    }
+
+    // 注销（内部 dispose）；未注册则跳过
+    ChannelManager.instance.unregisterChannelByKey(channelKey);
+
+    // 清空 env 持久化（channel_env_<key> 敏感路由；未注册渠道也清理残留）
+    try {
+      await ConfigJsChannelEnvStore(channelKey).save(const {});
+    } catch (e) {
+      appLog.error('ChannelLoader: 清空渠道 $channelKey 环境变量失败（不影响删除）: $e');
+    }
+
+    // 删除脚本文件（key 去 'js_' 前缀，与 importScript round-trip）
+    final directory = await _resolveDirectory();
+    if (directory == null) return;
+    final fileName = channelKey.startsWith('js_')
+        ? channelKey.substring(3)
+        : channelKey;
+    final file = File('${directory.path}/$fileName.js');
+    if (file.existsSync()) {
+      file.deleteSync();
+    }
+    appLog.info('ChannelLoader: 脚本渠道 $channelKey 已删除（注销 + 文件 + env）');
+  }
+
   Future<Directory?> _resolveDirectory() async {
     final override = _directoryOverride;
     if (override != null) return override;

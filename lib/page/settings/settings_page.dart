@@ -1,6 +1,10 @@
+import 'dart:io';
+
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
+import 'package:gstore/core/channel/impl/JsChannel.dart';
 import 'package:gstore/core/channel/impl/channel_loader.dart';
 import 'package:gstore/core/config/config_manager.dart';
 import 'package:gstore/core/config/providers/download_config_provider.dart';
@@ -19,7 +23,13 @@ const List<String> presetProxyHosts = [
 
 /// Main settings page with appearance and other settings
 class SettingsPage extends StatefulWidget {
-  const SettingsPage({super.key});
+  const SettingsPage({super.key, this.filePicker});
+
+  /// 从系统选择 .js 脚本文件并返回其内容（null = 取消/失败）。
+  ///
+  /// 测试注入假实现（FilePicker 平台通道在测试环境不可用）；
+  /// 为 null 时走 [FilePicker.platform.pickFiles] 真实实现（SAF，无需权限）。
+  final Future<String?> Function()? filePicker;
 
   @override
   State<SettingsPage> createState() => _SettingsPageState();
@@ -191,10 +201,22 @@ class _SettingsPageState extends State<SettingsPage> {
           ListTile(
             leading: const Icon(Icons.extension, size: AppTypography.iconMD),
             title: const Text('脚本渠道'),
-            subtitle: const Text('粘贴脚本导入自定义渠道'),
+            subtitle: const Text('粘贴脚本或从 .js 文件导入自定义渠道'),
             trailing:
                 const Icon(Icons.chevron_right, size: AppTypography.iconSM),
             onTap: () => _showScriptImportDialog(context),
+          ),
+          const Divider(height: 1),
+          // 已导入脚本渠道管理（列表 + 环境变量编辑 + 删除）
+          ListTile(
+            key: const Key('script_channel_manage_entry'),
+            leading: const Icon(Icons.code, size: AppTypography.iconMD),
+            title: const Text('已导入渠道'),
+            subtitle: Text(
+                '${ChannelManager.instance.dynamicChannels.length} 个脚本渠道'),
+            trailing:
+                const Icon(Icons.chevron_right, size: AppTypography.iconSM),
+            onTap: () => _showScriptChannelManageDialog(context),
           ),
         ],
       ),
@@ -337,58 +359,128 @@ class _SettingsPageState extends State<SettingsPage> {
     }
   }
 
-  /// 显示脚本渠道导入对话框（Android 应用私有目录无法读取公共 Documents 文件，
-  /// 走应用内粘贴导入；iOS/桌面用户仍可手动放文件到渠道目录）
+  /// 从系统选择 .js 脚本文件并读取内容（null = 取消/失败）。
+  ///
+  /// 真实实现：SAF 选文件（无需存储权限）→ [File.readAsString]；
+  /// 测试注入 [SettingsPage.filePicker] 时直接返回注入结果。
+  Future<String?> _pickScriptFile() async {
+    final injected = widget.filePicker;
+    if (injected != null) return injected();
+
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['js'],
+        allowMultiple: false,
+      );
+      if (result == null || result.files.isEmpty) {
+        AppDialogs.showInfo('已取消选择文件');
+        return null;
+      }
+      final path = result.files.single.path;
+      if (path == null) {
+        AppDialogs.showError('无法获取所选文件路径');
+        return null;
+      }
+      return await File(path).readAsString();
+    } catch (e) {
+      AppDialogs.showError('读取脚本文件失败: $e');
+      return null;
+    }
+  }
+
+  /// 显示脚本渠道导入对话框（粘贴或从文件导入；可选配置环境变量）。
+  ///
+  /// Android 应用私有目录无法读取公共 Documents 文件，走应用内导入；
+  /// 环境变量在导入成功后逐项 [JsChannel.setEnv]（渠道隔离持久化，
+  /// 脚本通过 `host.env.get` 读取）。
   Future<void> _showScriptImportDialog(BuildContext context) async {
     final scheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
     final keyController = TextEditingController();
     final scriptController = TextEditingController();
+    // 环境变量编辑结果（导入成功后写入渠道；编辑器 onChanged 持续同步）
+    var envVars = <String, String>{};
+
+    // 内容超高（展开环境变量区后）限高内部滚动，防对话框超出屏幕
+    final maxContentHeight = MediaQuery.sizeOf(context).height - 220;
 
     final confirmed = await AppDialogs.showDialog(
       title: '导入脚本渠道',
-      content: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              '粘贴脚本内容创建自定义渠道（Android 无法直接读取公共目录文件，请在此导入）',
-              style: textTheme.bodySmall?.copyWith(
-                color: scheme.onSurfaceVariant,
+      content: ConstrainedBox(
+        constraints: BoxConstraints(maxHeight: maxContentHeight),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '粘贴脚本或从文件导入创建自定义渠道（Android 无法直接读取公共目录文件，请在此导入）',
+                style: textTheme.bodySmall?.copyWith(
+                  color: scheme.onSurfaceVariant,
+                ),
               ),
-            ),
-            const SizedBox(height: AppSpacing.md),
-            TextField(
-              key: const Key('script_channel_key_input'),
-              controller: keyController,
-              decoration: const InputDecoration(
-                labelText: '渠道标识',
-                hintText: '如 vivo（自动加 js_ 前缀）',
-                border: OutlineInputBorder(),
+              const SizedBox(height: AppSpacing.md),
+              TextField(
+                key: const Key('script_channel_key_input'),
+                controller: keyController,
+                decoration: const InputDecoration(
+                  labelText: '渠道标识',
+                  hintText: '如 vivo（自动加 js_ 前缀）',
+                  border: OutlineInputBorder(),
+                ),
               ),
-            ),
-            const SizedBox(height: AppSpacing.xs),
-            Text(
-              '渠道标识用于数据隔离，仅限字母/数字/下划线',
-              style: textTheme.bodySmall?.copyWith(
-                color: scheme.onSurfaceVariant,
+              const SizedBox(height: AppSpacing.xs),
+              Text(
+                '渠道标识用于数据隔离，仅限字母/数字/下划线',
+                style: textTheme.bodySmall?.copyWith(
+                  color: scheme.onSurfaceVariant,
+                ),
               ),
-            ),
-            const SizedBox(height: AppSpacing.md),
-            TextField(
-              key: const Key('script_channel_script_input'),
-              controller: scriptController,
-              maxLines: 6,
-              minLines: 4,
-              decoration: const InputDecoration(
-                labelText: '脚本内容',
-                hintText: '粘贴 main(method, params) 脚本',
-                border: OutlineInputBorder(),
-                alignLabelWithHint: true,
+              const SizedBox(height: AppSpacing.md),
+              // 从文件选择（注入/真实 FilePicker）
+              OutlinedButton.icon(
+                key: const Key('script_channel_file_button'),
+                onPressed: () async {
+                  final script = await _pickScriptFile();
+                  if (script == null) return;
+                  scriptController.text = script;
+                  if (!context.mounted) return;
+                  AppDialogs.showSuccess('已读取脚本文件（${script.length} 字符），可直接导入或继续编辑');
+                },
+                icon: const Icon(Icons.upload_file),
+                label: const Text('从文件选择 .js 脚本'),
               ),
-            ),
-          ],
+              const SizedBox(height: AppSpacing.xs),
+              TextField(
+                key: const Key('script_channel_script_input'),
+                controller: scriptController,
+                maxLines: 6,
+                minLines: 4,
+                decoration: const InputDecoration(
+                  labelText: '脚本内容',
+                  hintText: '粘贴 main(method, params) 脚本',
+                  border: OutlineInputBorder(),
+                  alignLabelWithHint: true,
+                ),
+              ),
+              const SizedBox(height: AppSpacing.sm),
+              // 环境变量（可选）——导入时配置，导入后可在「已导入渠道」中修改
+              ExpansionTile(
+                key: const Key('script_channel_env_section'),
+                title: const Text('环境变量（可选）'),
+                subtitle: const Text('脚本通过 host.env.get 读取，如账号/密码'),
+                tilePadding: EdgeInsets.zero,
+                childrenPadding: const EdgeInsets.only(bottom: AppSpacing.sm),
+                children: [
+                  _ScriptChannelEnvEditor(
+                    initial: const {},
+                    onChanged: (map) => envVars = map,
+                  ),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
       confirmText: '导入',
@@ -417,9 +509,179 @@ class _SettingsPageState extends State<SettingsPage> {
         channelKey: 'js_$key',
         script: script,
       );
-      AppDialogs.showSuccess('脚本渠道已导入（${channel.info.name}），可切到发现页查看');
+      // 环境变量：导入成功后逐个写入（渠道隔离持久化，host.env.get 读取）
+      if (envVars.isNotEmpty) {
+        for (final entry in envVars.entries) {
+          await channel.setEnv(entry.key, entry.value);
+        }
+        AppDialogs.showSuccess(
+            '脚本渠道已导入（${channel.info.name}），环境变量已保存，脚本通过 host.env.get 读取');
+      } else {
+        AppDialogs.showSuccess('脚本渠道已导入（${channel.info.name}），可切到发现页查看');
+      }
+      if (mounted) setState(() {}); // 刷新「已导入渠道」计数
     } catch (e) {
       AppDialogs.showError('导入失败: $e');
+    }
+  }
+
+  /// 显示脚本渠道管理对话框：列出已导入渠道 + 环境变量编辑 + 删除。
+  Future<void> _showScriptChannelManageDialog(BuildContext context) async {
+    final scheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+
+    await AppDialogs.showDialog(
+      title: '脚本渠道管理',
+      content: StatefulBuilder(
+        builder: (dialogContext, setDialogState) {
+          final channels = ChannelManager.instance.dynamicChannels
+              .whereType<JsChannel>()
+              .toList();
+          if (channels.isEmpty) {
+            return Text(
+              '暂无已导入的脚本渠道，请先通过「脚本渠道」导入',
+              style: textTheme.bodyMedium?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            );
+          }
+          return Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              for (final channel in channels)
+                Padding(
+                  key: Key('script_channel_manage_${channel.channelKey}'),
+                  padding: const EdgeInsets.only(bottom: AppSpacing.sm),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(channel.info.name,
+                                style: textTheme.bodyLarge),
+                            Text(
+                              channel.channelKey,
+                              style: textTheme.bodySmall?.copyWith(
+                                color: scheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        key: Key(
+                            'script_channel_env_edit_${channel.channelKey}'),
+                        tooltip: '编辑环境变量',
+                        icon: const Icon(Icons.settings_outlined),
+                        onPressed: () async {
+                          await _showScriptChannelEnvDialog(channel);
+                          setDialogState(() {});
+                        },
+                      ),
+                      IconButton(
+                        key: Key(
+                            'script_channel_delete_${channel.channelKey}'),
+                        tooltip: '删除渠道',
+                        icon: const Icon(Icons.delete_outline),
+                        onPressed: () =>
+                            _removeScriptChannel(channel, setDialogState),
+                      ),
+                    ],
+                  ),
+                ),
+            ],
+          );
+        },
+      ),
+      confirmText: '关闭',
+      cancelText: null,
+    );
+
+    if (mounted) setState(() {}); // 刷新「已导入渠道」计数
+  }
+
+  /// 删除脚本渠道：危险确认 → [ChannelLoader.removeChannel]（注销 + 删文件 + 清 env）。
+  Future<void> _removeScriptChannel(
+      JsChannel channel, StateSetter setDialogState) async {
+    final confirmed = await AppDialogs.showDialog(
+      title: '删除脚本渠道',
+      content:
+          '确定删除「${channel.info.name}」（${channel.channelKey}）？脚本文件与环境变量将一并删除。',
+      confirmText: '删除',
+      cancelText: '取消',
+      isDangerous: true,
+    );
+    if (confirmed != true) return;
+
+    try {
+      await ChannelLoader().removeChannel(channel.channelKey);
+      if (context.mounted) {
+        setDialogState(() {});
+        AppDialogs.showSuccess('脚本渠道已删除');
+      }
+    } catch (e) {
+      AppDialogs.showError('删除失败: $e');
+    }
+  }
+
+  /// 编辑已导入渠道的环境变量：加载 [JsChannel.getAllEnv] → 键值对编辑 →
+  /// 差异应用 setEnv/removeEnv（保存后立即生效）。
+  Future<void> _showScriptChannelEnvDialog(JsChannel channel) async {
+    final scheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+    final initial = await channel.getAllEnv();
+    if (!context.mounted) return;
+    var envVars = Map<String, String>.of(initial);
+
+    final saved = await AppDialogs.showDialog(
+      title: '环境变量',
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            channel.channelKey,
+            style: textTheme.bodySmall?.copyWith(
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: AppSpacing.sm),
+          Text(
+            '脚本通过 host.env.get 读取；保存后立即生效，无需重建引擎',
+            style: textTheme.bodySmall?.copyWith(
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: AppSpacing.sm),
+          SingleChildScrollView(
+            child: _ScriptChannelEnvEditor(
+              initial: initial,
+              onChanged: (map) => envVars = map,
+            ),
+          ),
+        ],
+      ),
+      confirmText: '保存',
+      cancelText: '取消',
+    );
+
+    if (saved != true) return;
+
+    // 差异应用：新增/修改 → setEnv；删除 → removeEnv
+    for (final entry in envVars.entries) {
+      if (initial[entry.key] != entry.value) {
+        await channel.setEnv(entry.key, entry.value);
+      }
+    }
+    for (final key in initial.keys) {
+      if (!envVars.containsKey(key)) {
+        await channel.removeEnv(key);
+      }
+    }
+    if (context.mounted) {
+      AppDialogs.showSuccess('环境变量已保存，脚本通过 host.env.get 读取');
     }
   }
 
@@ -479,6 +741,143 @@ class _SettingsPageState extends State<SettingsPage> {
       ),
     );
   }
+}
+
+/// 环境变量键值对编辑器（导入对话框 / 渠道管理编辑对话框共用）。
+///
+/// 行 = 键 TextField + 值 TextField + 删除按钮；「添加环境变量」追加一行。
+/// 变更（增/删/改）通过 [onChanged] 上报：键去空格，空键行忽略（值允许为空）。
+class _ScriptChannelEnvEditor extends StatefulWidget {
+  const _ScriptChannelEnvEditor({
+    required this.initial,
+    required this.onChanged,
+  });
+
+  /// 初始键值（编辑已导入渠道时来自 [JsChannel.getAllEnv]）
+  final Map<String, String> initial;
+
+  /// 编辑结果回调（每次增删改后触发）
+  final ValueChanged<Map<String, String>> onChanged;
+
+  @override
+  State<_ScriptChannelEnvEditor> createState() =>
+      _ScriptChannelEnvEditorState();
+}
+
+class _ScriptChannelEnvEditorState extends State<_ScriptChannelEnvEditor> {
+  late final List<_EnvRow> _rows;
+
+  @override
+  void initState() {
+    super.initState();
+    _rows = [
+      for (final entry in widget.initial.entries)
+        _EnvRow(
+          TextEditingController(text: entry.key),
+          TextEditingController(text: entry.value),
+        ),
+    ];
+  }
+
+  @override
+  void dispose() {
+    for (final row in _rows) {
+      row.key.dispose();
+      row.value.dispose();
+    }
+    super.dispose();
+  }
+
+  Map<String, String> _collect() {
+    final result = <String, String>{};
+    for (final row in _rows) {
+      final key = row.key.text.trim();
+      if (key.isNotEmpty) result[key] = row.value.text;
+    }
+    return result;
+  }
+
+  void _notify() => widget.onChanged(_collect());
+
+  void _addRow() {
+    setState(
+        () => _rows.add(_EnvRow(TextEditingController(), TextEditingController())));
+    _notify();
+  }
+
+  void _removeRow(int index) {
+    setState(() {
+      final row = _rows.removeAt(index);
+      row.key.dispose();
+      row.value.dispose();
+    });
+    _notify();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (var i = 0; i < _rows.length; i++) ...[
+          if (i > 0) const SizedBox(height: AppSpacing.xs),
+          Row(
+            key: Key('script_channel_env_row_$i'),
+            children: [
+              Expanded(
+                child: TextField(
+                  key: Key('script_channel_env_key_$i'),
+                  controller: _rows[i].key,
+                  decoration: const InputDecoration(
+                    labelText: '键',
+                    hintText: '如 PINGAN_USER',
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                  onChanged: (_) => _notify(),
+                ),
+              ),
+              const SizedBox(width: AppSpacing.xs),
+              Expanded(
+                child: TextField(
+                  key: Key('script_channel_env_value_$i'),
+                  controller: _rows[i].value,
+                  decoration: const InputDecoration(
+                    labelText: '值',
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                  onChanged: (_) => _notify(),
+                ),
+              ),
+              IconButton(
+                key: Key('script_channel_env_remove_$i'),
+                tooltip: '删除该环境变量',
+                icon: const Icon(Icons.delete_outline),
+                onPressed: () => _removeRow(i),
+              ),
+            ],
+          ),
+        ],
+        const SizedBox(height: AppSpacing.xs),
+        TextButton.icon(
+          key: const Key('script_channel_env_add'),
+          onPressed: _addRow,
+          icon: const Icon(Icons.add),
+          label: const Text('添加环境变量'),
+        ),
+      ],
+    );
+  }
+}
+
+/// 环境变量行（键/值控制器）
+class _EnvRow {
+  _EnvRow(this.key, this.value);
+
+  final TextEditingController key;
+  final TextEditingController value;
 }
 
 /// 版本 Tile：异步读取实际版本号（package_info_plus）
