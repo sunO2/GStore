@@ -5,8 +5,37 @@ import 'package:gstore/core/theme/theme_controller.dart';
 import 'package:gstore/core/theme/app_theme_config.dart';
 
 /// Theme settings page with live preview
-class ThemeSettingsPage extends StatelessWidget {
+class ThemeSettingsPage extends StatefulWidget {
   const ThemeSettingsPage({super.key});
+
+  @override
+  State<ThemeSettingsPage> createState() => _ThemeSettingsPageState();
+}
+
+class _ThemeSettingsPageState extends State<ThemeSettingsPage> {
+  /// theme 模块是否在线（随模块上下线实时更新；下线时整页未启用占位）
+  bool _moduleOnline = false;
+
+  /// theme 模块上下线事件订阅（dispose 取消，防泄漏）
+  StreamSubscription<ModuleEvent>? _moduleSub;
+
+  @override
+  void initState() {
+    super.initState();
+    _moduleOnline = ModuleManager.instance.isModuleEnabled('theme');
+    _moduleSub = ModuleManager.instance.watchModule('theme').listen((_) {
+      if (!mounted) return;
+      setState(() {
+        _moduleOnline = ModuleManager.instance.isModuleEnabled('theme');
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    _moduleSub?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -14,7 +43,45 @@ class ThemeSettingsPage extends StatelessWidget {
       appBar: AppBar(
         title: const Text('主题设置'),
       ),
-      body: ListView(
+      // theme 模块下线 → 整页未启用占位（不渲染 Obx 功能内容，避免 Get.find 异常）
+      body: _moduleOnline ? _buildBody(context) : _buildModuleOffline(context),
+    );
+  }
+
+  /// theme 模块下线占位
+  Widget _buildModuleOffline(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: AppSpacing.allXL,
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              Icons.palette_outlined,
+              size: AppTypography.iconXXXL,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+            const SizedBox(height: AppSpacing.lg),
+            Text(
+              '主题模块未启用',
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
+            const SizedBox(height: AppSpacing.md),
+            Text(
+              '请在「模块管理」中启用主题模块',
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBody(BuildContext context) {
+    return ListView(
         children: [
           // Info banner
           Container(
@@ -71,8 +138,7 @@ class ThemeSettingsPage extends StatelessWidget {
           _buildSectionHeader('预览'),
           _buildPreviewSection(context),
         ],
-      ),
-    );
+      );
   }
 
   Widget _buildSectionHeader(String title) {

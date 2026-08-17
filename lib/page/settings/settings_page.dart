@@ -25,6 +25,30 @@ class SettingsPage extends StatefulWidget {
 }
 
 class _SettingsPageState extends State<SettingsPage> {
+  /// theme 模块是否在线（随模块上下线实时更新；下线时主题入口禁用）
+  bool _themeModuleOnline = false;
+
+  /// theme 模块上下线事件订阅（dispose 取消，防泄漏）
+  StreamSubscription<ModuleEvent>? _themeSub;
+
+  @override
+  void initState() {
+    super.initState();
+    _themeModuleOnline = ModuleManager.instance.isModuleEnabled('theme');
+    _themeSub = ModuleManager.instance.watchModule('theme').listen((_) {
+      if (!mounted) return;
+      setState(() {
+        _themeModuleOnline = ModuleManager.instance.isModuleEnabled('theme');
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    _themeSub?.cancel();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -86,8 +110,13 @@ class _SettingsPageState extends State<SettingsPage> {
       child: Column(
         children: [
           ListTile(
+            enabled: _themeModuleOnline,
             leading: const Icon(Icons.palette_outlined),
             title: const Text('主题'),
+            // theme 模块下线 → 入口禁用并提示未启用（响应式 trailing 保留不动）
+            subtitle: _themeModuleOnline
+                ? null
+                : const Text('主题模块未启用'),
             trailing: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -115,7 +144,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 const Icon(Icons.chevron_right),
               ],
             ),
-            onTap: () => Get.toNamed(AppRoute.themeSettings),
+            onTap: _themeModuleOnline ? () => Get.toNamed(AppRoute.themeSettings) : null,
           ),
         ],
       ),
