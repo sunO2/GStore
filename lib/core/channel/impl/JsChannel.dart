@@ -56,6 +56,9 @@ class JsChannel extends IChannel implements DynamicChannel {
   @override
   final String channelKey;
 
+  /// 脚本源码（只读，供加载器幂等比对脚本是否变更）
+  String get scriptSource => _runtime.script;
+
   final int? _priority;
   final bool _enabled;
   final ChannelAddedAppDao? _appDaoOverride;

@@ -1,4 +1,6 @@
 import 'package:gstore/core/channel/channel.dart';
+import 'package:gstore/core/channel/impl/channel_loader.dart';
+import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/service/db_manager.dart';
 import 'package:gstore/http/github/dio_client.dart';
 import 'package:gstore/http/github/github_client.dart';
@@ -66,6 +68,14 @@ class ChannelIntegration {
       vivoChannel,
       fdroidChannel,
     ]);
+
+    // 5. 加载并注册脚本渠道（用户渠道目录扫描；单个脚本失败跳过，不阻塞内置渠道）
+    //    脚本渠道 initialize 在 JsChannel.initialize 内完成（失败降级 checkAvailable false）
+    try {
+      await ChannelLoader(dio: DioClient().get()).loadAndRegister();
+    } catch (e) {
+      appLog.error('ChannelIntegration: 脚本渠道加载失败（不影响内置渠道）: $e');
+    }
 
     // 初始化所有启用的渠道
     await manager.initializeAll();
