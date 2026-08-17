@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/design/app_borders.dart';
 
 /// 横向滑动应用卡片（用于"可更新"/"最近添加"分区）
 class HorizontalAppRow extends StatelessWidget {
@@ -49,9 +50,7 @@ class _HorizontalAppCard extends StatelessWidget {
         decoration: BoxDecoration(
           color: scheme.surfaceContainerLow,
           borderRadius: AppRadius.allLG,
-          border: Border.all(
-            color: scheme.outlineVariant.withValues(alpha: 0.4),
-          ),
+          border: AppBorders.all(context, color: scheme.outlineVariant),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,

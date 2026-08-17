@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:gstore/compent/pressable_scale.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/design/app_borders.dart';
 
 class AppCardWidget extends StatelessWidget {
   final AggregatedAppInfo app;
@@ -73,9 +74,9 @@ class AppCardWidget extends StatelessWidget {
                         decoration: BoxDecoration(
                           color: Theme.of(context).colorScheme.error,
                           shape: BoxShape.circle,
-                          border: Border.all(
+                          border: AppBorders.all(
+                            context,
                             color: Theme.of(context).colorScheme.surface,
-                            width: 2,
                           ),
                         ),
                       ),

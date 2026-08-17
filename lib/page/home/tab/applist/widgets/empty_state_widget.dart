@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/design/app_borders.dart';
 import '../../../logic.dart';
 
 class EmptyStateWidget extends StatelessWidget {
@@ -104,8 +105,9 @@ class EmptyStateWidget extends StatelessWidget {
       borderRadius: AppRadius.allMD,
       child: AppCard(
         padding: AppSpacing.horizontalLG_verticalMD,
-        border: Border.all(
-          color: Theme.of(context).colorScheme.outlineVariant.withOpacity(0.5),
+        border: AppBorders.all(
+          context,
+          color: Theme.of(context).colorScheme.outlineVariant,
         ),
         borderRadius: AppRadius.allMD,
         onTap: onTap,

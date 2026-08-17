@@ -6,6 +6,7 @@ import 'package:gstore/core/service/user_manager.dart';
 import 'package:gstore/http/github/user_info/user_info.dart';
 import 'package:gstore/page/web/browser.dart';
 import 'package:gstore/core/design/design_tokens.dart';
+import 'package:gstore/core/design/app_borders.dart';
 import 'package:gstore/core/design/app_components.dart';
 
 import 'logic.dart';
@@ -144,7 +145,10 @@ class AppListState extends State<ApplistPage>
                   height: Theme.of(context).appBarTheme.iconTheme?.size ??
                       AppTypography.iconXL,
                   decoration: BoxDecoration(
-                      border: Border.all(width: 1.5),
+                      border: AppBorders.all(
+                        context,
+                        color: Theme.of(context).colorScheme.outlineVariant,
+                      ),
                       borderRadius: AppRadius.allCircle),
                   child: ClipOval(
                     child: CachedNetworkImage(
