@@ -25,7 +25,8 @@ class WebDavService implements IWebDavService {
     return _instance!;
   }
 
-  final IBackupService _backup;
+  /// 备份服务（构造注入；backup 模块运行中下线时为 null → 上传/恢复降级）
+  final IBackupService? _backup;
   final WebDavClient Function(WebDavConfig) _clientFactory;
 
   WebDavClient _client(WebDavConfig config) => _clientFactory(config);
@@ -70,8 +71,12 @@ class WebDavService implements IWebDavService {
       throw BackupException('已有备份任务进行中，请稍候');
     }
     try {
-      // 生成备份压缩包（备份模块）
-      final uploadBytes = await _backup.exportCompressedBackup(
+      // 生成备份压缩包（备份模块；运行中下线 → 降级抛可控异常提示）
+      final backup = _backup;
+      if (backup == null) {
+        throw BackupException('备份模块未启用');
+      }
+      final uploadBytes = await backup.exportCompressedBackup(
         options: options,
         channels: channels,
         includeAppConfig: includeAppConfig,
@@ -133,8 +138,12 @@ class WebDavService implements IWebDavService {
       final bytes = await client.downloadFile(remotePath);
       onLog?.call('下载完成（${bytes.length} 字节）');
 
-      // 解压并恢复（备份模块）
-      final result = await _backup.importBackupBytes(
+      // 解压并恢复（备份模块；运行中下线 → 降级抛可控异常提示）
+      final backup = _backup;
+      if (backup == null) {
+        throw BackupException('备份模块未启用');
+      }
+      final result = await backup.importBackupBytes(
         bytes,
         mode: mode,
         restoreAppConfig: restoreAppConfig,

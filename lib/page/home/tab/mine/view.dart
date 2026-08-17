@@ -45,6 +45,12 @@ class _MinePageState extends State<MinePage>
   /// agent_tools 模块上下线事件订阅（dispose 取消，防泄漏）
   StreamSubscription<ModuleEvent>? _agentSub;
 
+  /// backup 模块是否在线（随模块上下线实时更新，控制备份卡显隐）
+  bool _backupModuleOnline = false;
+
+  /// backup 模块上下线事件订阅（dispose 取消，防泄漏）
+  StreamSubscription<ModuleEvent>? _backupSub;
+
   @override
   bool get wantKeepAlive => true;
 
@@ -87,6 +93,15 @@ class _MinePageState extends State<MinePage>
       });
     });
 
+    // 监听 backup 模块上下线：下线隐藏备份管理卡片，上线恢复
+    _backupModuleOnline = ModuleManager.instance.isModuleEnabled('backup');
+    _backupSub = ModuleManager.instance.watchModule('backup').listen((_) {
+      if (!mounted) return;
+      setState(() {
+        _backupModuleOnline = ModuleManager.instance.isModuleEnabled('backup');
+      });
+    });
+
     // 初始化外观卡片动画
     _appearanceController = AnimationController(
       vsync: this,
@@ -112,6 +127,7 @@ class _MinePageState extends State<MinePage>
   void dispose() {
     _moduleSub?.cancel();
     _agentSub?.cancel();
+    _backupSub?.cancel();
     _appearanceController.dispose();
     _backupController.dispose();
     super.dispose();
@@ -256,10 +272,11 @@ class _MinePageState extends State<MinePage>
 
               const SizedBox(height: AppSpacing.md),
 
-              // 备份管理卡片（始终显示）
-              _buildBackupCard(context),
-
-              const SizedBox(height: AppSpacing.md),
+              // 备份管理卡片（随 backup 模块上下线显隐：下线整卡隐藏）
+              if (_backupModuleOnline) ...[
+                _buildBackupCard(context),
+                const SizedBox(height: AppSpacing.md),
+              ],
 
               // 快捷功能卡片（始终显示）
               _buildQuickActionsCard(context),

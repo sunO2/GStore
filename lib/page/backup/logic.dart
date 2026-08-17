@@ -19,7 +19,12 @@ import 'package:gstore/page/backup/widgets/backup_restore_sheet.dart';
 
 class BackupLogic extends GetxController {
   final BackupState state = BackupState();
-  final BackupService _backupService = BackupService.instance;
+
+  /// 备份服务（注册表注入：backup 模块下线时为 null → 本地备份/恢复功能软降级）。
+  /// BackupModule 恒绑定 [BackupService.instance]（app_modules.dart），
+  /// 故可安全收窄为具体类型以使用 initialize/getStatistics 等接口未覆盖的 API。
+  final BackupService? _backupService =
+      ModuleManager.instance.get<IBackupService>() as BackupService?;
 
   /// WebDAV 服务（注册表注入：webdav 模块下线时为 null → 相关功能软降级）
   final IWebDavService? _webdavService = ModuleManager.instance.get<IWebDavService>();
@@ -34,7 +39,13 @@ class BackupLogic extends GetxController {
   Future<void> _initialize() async {
     try {
       appLog.info('BackupLogic: 开始初始化');
-      await _backupService.initialize();
+      final backup = _backupService;
+      // backup 模块下线 → 跳过初始化（页面入口已隐藏/占位）
+      if (backup == null) {
+        appLog.info('BackupLogic: 备份模块未启用，跳过初始化');
+        return;
+      }
+      await backup.initialize();
       appLog.info('BackupLogic: BackupService 初始化完成');
       await loadStatistics();
       await checkWebDavConfig();
@@ -106,9 +117,12 @@ class BackupLogic extends GetxController {
 
   /// 加载统计信息
   Future<void> loadStatistics() async {
+    final backup = _backupService;
+    // backup 模块下线 → 不加载（保持现状，页面入口已隐藏/占位）
+    if (backup == null) return;
     try {
       debugPrint('BackupLogic: 开始加载统计信息');
-      final statistics = await _backupService.getStatistics();
+      final statistics = await backup.getStatistics();
       state.statistics.value = statistics;
       debugPrint('BackupLogic: 统计信息加载成功 - 总数: ${statistics.totalApps}');
     } catch (e, stackTrace) {
@@ -120,6 +134,12 @@ class BackupLogic extends GetxController {
 
   /// 导出压缩备份（可选择是否包含应用配置）
   Future<void> exportCompressed(BuildContext context) async {
+    final backup = _backupService;
+    // backup 模块下线 → 短路提示，不发起导出
+    if (backup == null) {
+      if (context.mounted) AppDialogs.showWarning('备份模块未启用');
+      return;
+    }
     try {
       appLog.info('BackupLogic: 开始导出压缩备份');
       state.isExporting.value = true;
@@ -129,7 +149,7 @@ class BackupLogic extends GetxController {
 
       // 先生成应用备份数据（使用用户配置的导出选项）
       debugPrint('BackupLogic: 正在生成应用备份数据...');
-      final backupData = await _backupService.exportData(
+      final backupData = await backup.exportData(
         options: _buildBackupOptions(),
       );
 
@@ -337,6 +357,11 @@ class BackupLogic extends GetxController {
 
   /// 选择并导入文件
   Future<void> selectAndImportFile(BuildContext context) async {
+    // backup 模块下线 → 短路提示，不打开文件选择器
+    if (_backupService == null) {
+      if (context.mounted) AppDialogs.showWarning('备份模块未启用');
+      return;
+    }
     try {
       debugPrint('BackupLogic: 开始选择导入文件');
 
@@ -385,6 +410,12 @@ class BackupLogic extends GetxController {
     BuildContext context,
     String filePath,
   ) async {
+    final backup = _backupService;
+    // backup 模块下线 → 短路提示，不发起恢复
+    if (backup == null) {
+      if (context.mounted) AppDialogs.showWarning('备份模块未启用');
+      return;
+    }
     try {
       state.isImporting.value = true;
 
@@ -401,7 +432,7 @@ class BackupLogic extends GetxController {
       );
 
       // 使用 state 中的恢复模式
-      final result = await _backupService.importFromFile(
+      final result = await backup.importFromFile(
         filePath,
         mode: _convertRestoreMode(state.restoreMode.value),
         restoreAppConfig: state.restoreAppConfig.value,

@@ -22,6 +22,10 @@ class _BackupPageState extends State<BackupPage> {
   bool _webdavModuleOnline = false;
   StreamSubscription<ModuleEvent>? _webdavSub;
 
+  /// backup 模块是否在线（订阅模块上下线事件；下线时整页显示未启用占位）
+  bool _backupModuleOnline = false;
+  StreamSubscription<ModuleEvent>? _backupSub;
+
   @override
   void initState() {
     super.initState();
@@ -32,11 +36,23 @@ class _BackupPageState extends State<BackupPage> {
         _webdavModuleOnline = event.lifecycle == ModuleLifecycle.registered;
       });
     });
+
+    _backupModuleOnline = ModuleManager.instance.isModuleEnabled('backup');
+    _backupSub = ModuleManager.instance.watchModule('backup').listen((_) {
+      if (!mounted) return;
+      final online = ModuleManager.instance.isModuleEnabled('backup');
+      setState(() {
+        _backupModuleOnline = online;
+      });
+      // 重新上线后补一次统计加载（离线期间创建的 BackupLogic 跳过了初始化）
+      if (online) _logic.loadStatistics();
+    });
   }
 
   @override
   void dispose() {
     _webdavSub?.cancel();
+    _backupSub?.cancel();
     super.dispose();
   }
 
@@ -49,7 +65,42 @@ class _BackupPageState extends State<BackupPage> {
       appBar: AppBar(
         title: const Text('数据备份'),
       ),
-      body: Obx(() => _buildBody(context, logic, state)),
+      // backup 模块下线 → 整页未启用占位（不渲染功能内容）
+      body: _backupModuleOnline
+          ? Obx(() => _buildBody(context, logic, state))
+          : _buildBackupModuleOffline(context),
+    );
+  }
+
+  /// backup 模块下线占位
+  Widget _buildBackupModuleOffline(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: AppSpacing.allXL,
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              Icons.cloud_off,
+              size: AppTypography.iconXXXL,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+            const SizedBox(height: AppSpacing.lg),
+            Text(
+              '备份模块未启用',
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
+            const SizedBox(height: AppSpacing.md),
+            Text(
+              '请在「模块管理」中启用备份模块',
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      ),
     );
   }
 

@@ -21,7 +21,6 @@ import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
-import 'package:gstore/core/service/backup_service.dart';
 import 'package:gstore/core/theme/app_theme_config.dart';
 import 'package:gstore/core/fdroid/FdroidRepoManager.dart';
 import 'package:gstore/core/utils/unit.dart';
@@ -2090,7 +2089,11 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
   /// 备份/恢复
   Future<String> _backup(String action, String filePath) async {
     try {
-      final service = BackupService.instance;
+      // 经注册表取实现：backup 模块下线 → 降级提示（不抛）
+      final service = ModuleManager.instance.get<IBackupService>();
+      if (service == null) {
+        return '备份模块未启用';
+      }
       switch (action) {
         case 'export':
           final result = await service.exportToCompressedFile();
