@@ -186,4 +186,45 @@ void main() {
       expect(manager.getChannelByKey('js.z'), isNull);
     });
   });
+
+  group('ChannelManager.getChannelByCode 统一 code 查询', () {
+    test('枚举渠道 code 命中 _channels[type]', () async {
+      final manager = ChannelManager.instance;
+      final fake = _FakeEnumChannel();
+      manager.registerChannel(fake);
+
+      expect(manager.getChannelByCode('github'), same(fake),
+          reason: '枚举 code（type.code）应返回对应渠道');
+      expect(manager.getChannelByCode('vivo'), isNull,
+          reason: '未注册的枚举 code 返回 null');
+    });
+
+    test('脚本渠道 channelKey 命中 _channelsByKey', () async {
+      final manager = ChannelManager.instance;
+      final js = JsChannel(
+        channelKey: 'js_pingan',
+        script: 'function main(method, params) { return null; }',
+      );
+      manager.registerChannel(js);
+
+      expect(manager.getChannelByCode('js_pingan'), same(js),
+          reason: '脚本渠道 code（channelKey）应返回对应渠道');
+    });
+
+    test('枚举 code 与脚本 key 并存时互不干扰', () async {
+      final manager = ChannelManager.instance;
+      final fake = _FakeEnumChannel();
+      final js = JsChannel(
+        channelKey: 'js_vivo',
+        script: 'function main(method, params) { return null; }',
+      );
+      manager.registerChannel(fake);
+      manager.registerChannel(js);
+
+      expect(manager.getChannelByCode('github'), same(fake));
+      expect(manager.getChannelByCode('js_vivo'), same(js));
+      expect(manager.getChannelByCode('unknown_code'), isNull,
+          reason: '两者皆无 → null');
+    });
+  });
 }

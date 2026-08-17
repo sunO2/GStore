@@ -15,6 +15,18 @@ abstract interface class DynamicChannel {
   String get channelKey;
 }
 
+/// 渠道唯一 code（数据隔离键）：枚举渠道 → `type.code`（如 'vivo'）；
+/// 动态脚本渠道 → `channelKey`（如 'js_pingan'）。天然唯一，互不冲突。
+///
+/// 发现页等 UI 数据键统一使用该 code，规避多个脚本渠道共享 custom 枚举槽位
+/// 导致的合并显示 / 后注册覆盖问题。
+String channelCode(IChannel channel) {
+  if (channel is DynamicChannel) {
+    return (channel as DynamicChannel).channelKey;
+  }
+  return channel.info.type.code;
+}
+
 /// 渠道管理器
 /// 负责管理多个渠道，支持优先级、降级和手动指定
 class ChannelManager {
@@ -95,6 +107,19 @@ class ChannelManager {
   /// 按 key 获取动态渠道
   IChannel? getChannelByKey(String key) {
     return _channelsByKey[key];
+  }
+
+  /// 按渠道 code 获取渠道：枚举渠道 code（type.code）命中 → `_channels[type]`；
+  /// 否则按脚本渠道 channelKey 查询 `_channelsByKey`；两者皆无 → null。
+  ///
+  /// 与 [channelCode] 互逆：`getChannelByCode(channelCode(channel))` 恒返回该渠道。
+  IChannel? getChannelByCode(String code) {
+    final type = ChannelType.fromCode(code);
+    if (type != null) {
+      final channel = _channels[type];
+      if (channel != null) return channel;
+    }
+    return _channelsByKey[code];
   }
 
   /// 获取所有已注册的动态渠道

@@ -3,14 +3,23 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
+import 'package:gstore/core/channel/IChannel.dart';
 import 'package:gstore/core/channel/database/channel_added_app.dart';
 import 'package:gstore/core/channel/database/channel_added_app_dao.dart';
 import 'package:gstore/core/channel/impl/JsChannel.dart';
+import 'package:gstore/core/channel/model/AppUpdateCheckResult.dart';
+import 'package:gstore/core/channel/model/ChannelInfo.dart';
+import 'package:gstore/core/channel/model/ChannelResult.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
+import 'package:gstore/core/model/AppDetailInfo.dart';
+import 'package:gstore/core/model/AppSummary.dart';
+import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/module/module_manager.dart';
+import 'package:gstore/db/apps/AppInfo.dart' as db;
 import 'package:gstore/page/home/tab/discovery/logic.dart';
 
 /// 内存版 ChannelAddedAppDao（测试用，模拟渠道数据库）
@@ -85,6 +94,100 @@ class _FakeDioAdapter implements HttpClientAdapter {
   void close({bool force = false}) {}
 }
 
+/// 最小枚举渠道（测试用）：验证枚举渠道 code 映射不受脚本渠道改造影响
+class _FakeEnumChannel extends IChannel {
+  _FakeEnumChannel(this._type, this._apps);
+
+  final ChannelType _type;
+  final List<AppSummary> _apps;
+
+  @override
+  ChannelInfo get info =>
+      ChannelInfo(type: _type, name: _type.code, description: '测试用枚举渠道');
+
+  @override
+  bool isInitialized = false;
+
+  @override
+  Future<void> initialize() async => isInitialized = true;
+
+  @override
+  Future<bool> checkAvailable() async => true;
+
+  @override
+  Widget? getAddAppWidget(BuildContext context, Function(AppSummary) onAppAdded,
+          {VoidCallback? onAppSaved}) =>
+      null;
+
+  @override
+  Future<ChannelResult<List<AppSummary>>> getAllApps(
+          {bool forceRefresh = false}) async =>
+      ChannelResult.success(data: _apps, from: _type);
+
+  @override
+  Future<ChannelResult<AppSummary?>> getAppInfo(String appId,
+          {bool forceRefresh = false}) async =>
+      ChannelResult.success(data: null, from: _type);
+
+  @override
+  Future<ChannelResult<IDetailInfo>> getAppDetail(String appId,
+          {bool forceRefresh = false}) async =>
+      ChannelResult.failure(from: _type, error: '不支持');
+
+  @override
+  Future<ChannelResult<AppUpdateCheckResult>> checkAppUpdate(String appId) async =>
+      ChannelResult.failure(from: _type, error: '不支持');
+
+  @override
+  Future<ChannelResult<void>> addApp(AppSummary app) async =>
+      ChannelResult.success(data: null, from: _type);
+
+  @override
+  Future<String> canonicalAppId(AppSummary appInfo) async => appInfo.appId;
+
+  @override
+  Future<ChannelResult<void>> removeApp(String appId) async =>
+      ChannelResult.success(data: null, from: _type);
+
+  @override
+  Future<ChannelResult<List<AppSummary>>> searchApps(String keyword,
+          {bool forceRefresh = false}) async =>
+      ChannelResult.success(data: [], from: _type);
+
+  @override
+  Future<ChannelResult<List<AppSummary>>> searchByCategory(String categoryId,
+          {bool forceRefresh = false}) async =>
+      ChannelResult.success(data: [], from: _type);
+
+  @override
+  Future<ChannelResult<List<db.AppCategory>>> getAllCategories(
+          {bool forceRefresh = false}) async =>
+      ChannelResult.success(data: [], from: _type);
+
+  @override
+  Future<ChannelResult<bool>> checkUpdate() async =>
+      ChannelResult.success(data: false, from: _type);
+
+  @override
+  Future<ChannelResult<bool>> doUpdate(
+          {Function(int current, int total)? onProgress}) async =>
+      ChannelResult.success(data: true, from: _type);
+
+  @override
+  Future<ChannelResult<db.AppInfoConfig?>> getConfig(
+          {bool forceRefresh = false}) async =>
+      ChannelResult.success(data: null, from: _type);
+
+  @override
+  Future<void> clearCache() async {}
+
+  @override
+  Future<int> getCacheSize() async => 0;
+
+  @override
+  Future<void> dispose() async {}
+}
+
 /// 合法脚本 A：应用名含 'A'
 const String _scriptA = '''
 const CHANNEL_META = { name: 'A 渠道', description: 'A 描述' };
@@ -145,6 +248,12 @@ void main() {
         ChannelManager.instance.unregisterChannelByKey(channel.channelKey);
       }
     }
+    // 清理枚举渠道（custom 槽位可能残留脚本渠道，一并清空）
+    for (final type in ChannelType.values) {
+      if (ChannelManager.instance.getChannel(type) != null) {
+        ChannelManager.instance.unregisterChannel(type);
+      }
+    }
     ModuleManager.instance.unbind<ChannelManager>();
     Get.reset();
   });
@@ -161,53 +270,123 @@ void main() {
     return channel;
   }
 
-  group('DiscoveryLogic 动态脚本渠道显示', () {
-    test('① 未注册脚本渠道：sortedChannelTypes 仅含已加载渠道（空）', () {
+  group('DiscoveryLogic 脚本渠道按 code 独立显示', () {
+    test('① 未注册脚本渠道：sortedChannelCodes 仅含已加载渠道（空）', () {
       final logic = DiscoveryLogic();
-      expect(logic.sortedChannelTypes, isEmpty);
+      expect(logic.sortedChannelCodes, isEmpty);
     });
 
-    test('② 脚本渠道注册后 sortedChannelTypes 并入 custom（数据未加载也占位）', () async {
-      await registerScriptChannel('js_vivo', _scriptA);
+    test('② 注册两个脚本渠道 → sortedChannelCodes 含两个 code（未加载也占位）',
+        () async {
+      await registerScriptChannel('js_pingan', _scriptA);
+      await registerScriptChannel('js_vivo', _scriptB);
 
       final logic = DiscoveryLogic();
-      expect(logic.sortedChannelTypes, contains(ChannelType.custom));
+      expect(logic.sortedChannelCodes, containsAll(['js_pingan', 'js_vivo']));
+      // 不再出现共享的 custom 槽位
+      expect(logic.sortedChannelCodes, isNot(contains('custom')));
     });
 
-    test('③ loadData 后脚本渠道数据进入 channelApps[custom]', () async {
-      await registerScriptChannel('js_vivo', _scriptA);
+    test('③ loadData 后 channelApps 有两个独立槽位（code 键），数据不串', () async {
+      await registerScriptChannel('js_pingan', _scriptA);
+      await registerScriptChannel('js_vivo', _scriptB);
 
       final logic = DiscoveryLogic();
       // onReady 设置 _channelManager 并触发 loadData（与真实页面生命周期一致）
       logic.onReady();
       await logic.loadData();
 
-      final apps = logic.state.channelApps[ChannelType.custom];
-      expect(apps, isNotNull);
-      expect(apps, hasLength(1));
-      expect(apps!.first.name, 'App A One');
-      expect(logic.sortedChannelTypes, contains(ChannelType.custom));
+      expect(logic.state.channelApps.keys, containsAll(['js_pingan', 'js_vivo']));
+      expect(logic.state.channelApps['js_pingan'], hasLength(1));
+      expect(logic.state.channelApps['js_vivo'], hasLength(1));
+      expect(logic.state.channelApps['js_pingan']!.first.name, 'App A One');
+      expect(logic.state.channelApps['js_vivo']!.first.name, 'App B One');
+      // 无 custom 合并槽位（后注册不再覆盖先注册）
+      expect(logic.state.channelApps.containsKey('custom'), isFalse);
     });
 
-    test('④ 多个脚本渠道共享 custom 槽位（合并显示，后注册覆盖）', () async {
-      await registerScriptChannel('js_one', _scriptA);
-      await registerScriptChannel('js_two', _scriptB);
+    test('④ selectedChannel 按 code 切换', () async {
+      await registerScriptChannel('js_pingan', _scriptA);
+      await registerScriptChannel('js_vivo', _scriptB);
 
       final logic = DiscoveryLogic();
-      // 合并显示：custom 只出现一次
-      expect(
-        logic.sortedChannelTypes.where((t) => t == ChannelType.custom).length,
-        1,
-      );
-
       logic.onReady();
       await logic.loadData();
 
-      // 共享 custom 键 → 单槽位，后注册渠道数据胜出（多脚本独立展示留待后续）
-      final apps = logic.state.channelApps[ChannelType.custom];
-      expect(apps, isNotNull);
+      // 全部：两个渠道应用都显示
+      expect(logic.getDisplayApps(), hasLength(2));
+
+      logic.selectChannel('js_pingan');
+      expect(logic.state.selectedChannel.value, 'js_pingan');
+      final pinganApps = logic.getDisplayApps();
+      expect(pinganApps, hasLength(1));
+      expect(pinganApps.first.$1.name, 'App A One');
+      expect(pinganApps.first.$2, 'js_pingan');
+
+      logic.selectChannel('js_vivo');
+      final vivoApps = logic.getDisplayApps();
+      expect(vivoApps, hasLength(1));
+      expect(vivoApps.first.$1.name, 'App B One');
+      expect(vivoApps.first.$2, 'js_vivo');
+
+      logic.selectChannel(null);
+      expect(logic.state.selectedChannel.value, isNull);
+      expect(logic.getDisplayApps(), hasLength(2));
+    });
+
+    test('⑤ 重启模拟：重新注册渠道后再次加载，各自槽位数据仍在（不复盖丢失）',
+        () async {
+      await registerScriptChannel('js_pingan', _scriptA);
+      await registerScriptChannel('js_vivo', _scriptB);
+
+      final logic = DiscoveryLogic();
+      logic.onReady();
+      await logic.loadData();
+      expect(logic.state.channelApps['js_pingan']!.first.name, 'App A One');
+      expect(logic.state.channelApps['js_vivo']!.first.name, 'App B One');
+
+      // 模拟重启：注销全部脚本渠道后重新注册（新实例、同 key）
+      for (final channel in ChannelManager.instance.dynamicChannels.toList()) {
+        if (channel is JsChannel) {
+          ChannelManager.instance.unregisterChannelByKey(channel.channelKey);
+        }
+      }
+      await registerScriptChannel('js_pingan', _scriptA);
+      await registerScriptChannel('js_vivo', _scriptB);
+
+      await logic.loadData();
+
+      expect(logic.state.channelApps['js_pingan'], isNotNull);
+      expect(logic.state.channelApps['js_vivo'], isNotNull);
+      expect(logic.state.channelApps['js_pingan']!.first.name, 'App A One');
+      expect(logic.state.channelApps['js_vivo']!.first.name, 'App B One');
+    });
+
+    test('⑥ 枚举渠道（vivo）仍正常（code 映射）', () async {
+      final vivo = _FakeEnumChannel(ChannelType.vivo, [
+        AppSummary(
+          appId: 'com.vivo.app',
+          name: 'Vivo App',
+          user: '',
+          repositories: '',
+          icon: '',
+          des: '',
+        ),
+      ]);
+      ChannelManager.instance.registerChannel(vivo);
+
+      final logic = DiscoveryLogic();
+      logic.onReady();
+      await logic.loadData();
+
+      expect(logic.state.channelApps['vivo'], hasLength(1));
+      expect(logic.state.channelApps['vivo']!.first.name, 'Vivo App');
+      expect(logic.sortedChannelCodes, contains('vivo'));
+
+      logic.selectChannel('vivo');
+      final apps = logic.getDisplayApps();
       expect(apps, hasLength(1));
-      expect(apps!.first.name, 'App B One');
+      expect(apps.first.$2, 'vivo');
     });
   });
 }

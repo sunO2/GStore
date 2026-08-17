@@ -140,7 +140,7 @@ void main() {
       Get.reset();
       final logic = DiscoveryLogic();
       Get.put<DiscoveryLogic>(logic);
-      logic.state.channelApps[ChannelType.github] = [
+      logic.state.channelApps['github'] = [
         const AppSummary(
           appId: 'com.example.test',
           name: '测试应用',

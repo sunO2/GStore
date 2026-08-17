@@ -180,31 +180,31 @@ class _DiscoveryPageState extends State<DiscoveryPage>
 
           const Divider(height: 1),
 
-          // 渠道列表 - 使用 code 属性进行比较
+          // 渠道列表 - 使用 code 字符串进行比较
           Expanded(
             child: Obx(() {
               final selectedChannel = state.selectedChannel.value;
-              final channels = logic.sortedChannelTypes;
+              final codes = logic.sortedChannelCodes;
 
               return ListView.builder(
                 padding: EdgeInsets.zero,
-                itemCount: channels.length,
+                itemCount: codes.length,
                 itemBuilder: (context, index) {
-                  final channel = channels[index];
-                  // 使用 code 属性比较，确保正确识别
-                  final isSelected = selectedChannel?.code == channel.code;
-                  final count = state.channelApps[channel]?.length ?? 0;
+                  final code = codes[index];
+                  // 使用 code 字符串比较，确保正确识别
+                  final isSelected = selectedChannel == code;
+                  final count = state.channelApps[code]?.length ?? 0;
 
                   return Column(
                     children: [
                       if (index > 0) const Divider(height: 1),
                       _buildSidebarItem(
                         context: context,
-                        icon: logic.getChannelIcon(channel),
-                        label: _getChannelShortName(channel),
+                        icon: logic.getChannelIcon(code),
+                        label: _getChannelShortName(code),
                         count: count,
                         isSelected: isSelected,
-                        onTap: () => logic.selectChannel(channel),
+                        onTap: () => logic.selectChannel(code),
                       ),
                     ],
                   );
@@ -473,8 +473,8 @@ class _DiscoveryPageState extends State<DiscoveryPage>
         ),
         itemCount: appsWithChannel.length,
         itemBuilder: (context, index) {
-          final (app, channel) = appsWithChannel[index];
-          return _buildAppCard(context, app, channel);
+          final (app, code) = appsWithChannel[index];
+          return _buildAppCard(context, app, code);
         },
       );
     });
@@ -482,11 +482,11 @@ class _DiscoveryPageState extends State<DiscoveryPage>
 
   /// 应用卡片
   Widget _buildAppCard(
-      BuildContext context, AppSummary app, ChannelType channel) {
+      BuildContext context, AppSummary app, String code) {
     final theme = Theme.of(context);
 
-    final isAdded = logic.isAppAdded(channel, app.appId);
-    final appKey = '${channel.code}:${app.appId}';
+    final isAdded = logic.isAppAdded(code, app.appId);
+    final appKey = '$code:${app.appId}';
 
     return Obx(() {
       final isSelected = state.selectedApps.contains(appKey);
@@ -524,17 +524,17 @@ class _DiscoveryPageState extends State<DiscoveryPage>
               child: InkWell(
                 onTap: () {
                   if (isMultiSelect) {
-                    logic.toggleAppSelection(channel.code, app.appId);
+                    logic.toggleAppSelection(code, app.appId);
                   } else {
-                    logic.toggleApp(channel, app);
+                    logic.toggleApp(code, app);
                   }
                 },
                 onLongPress: () {
                   // 多选模式下长按切换选择，否则弹出操作菜单
                   if (isMultiSelect) {
-                    logic.toggleAppSelection(channel.code, app.appId);
+                    logic.toggleAppSelection(code, app.appId);
                   } else {
-                    logic.showAppActions(context, channel, app);
+                    logic.showAppActions(context, code, app);
                   }
                 },
                 borderRadius: AppRadius.allMD,
@@ -602,7 +602,7 @@ class _DiscoveryPageState extends State<DiscoveryPage>
                     child: Checkbox(
                       value: isSelected,
                       onChanged: (_) {
-                        logic.toggleAppSelection(channel.code, app.appId);
+                        logic.toggleAppSelection(code, app.appId);
                       },
                       materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                       visualDensity: VisualDensity.compact,
@@ -687,8 +687,8 @@ class _DiscoveryPageState extends State<DiscoveryPage>
   }
 
   /// 获取渠道简称
-  String _getChannelShortName(ChannelType type) {
-    switch (type) {
+  String _getChannelShortName(String code) {
+    switch (ChannelType.fromCode(code)) {
       case ChannelType.localDb:
         return '本地';
       case ChannelType.github:
@@ -700,13 +700,14 @@ class _DiscoveryPageState extends State<DiscoveryPage>
       case ChannelType.fdroid:
         return 'FD';
       case ChannelType.custom:
-        // 脚本渠道：单渠道显示其名称（截断），多渠道合并显示"脚本"
-        final dynamicChannels = ChannelManager.instance.dynamicChannels;
-        if (dynamicChannels.length == 1) {
-          final name = dynamicChannels.first.info.name;
+        return '自定义';
+      case null:
+        // 脚本渠道：显示其名称（截断 4 字），缺失回退 code
+        final name = ChannelManager.instance.getChannelByKey(code)?.info.name;
+        if (name != null && name.isNotEmpty) {
           return name.length <= 4 ? name : name.substring(0, 4);
         }
-        return '脚本';
+        return code;
     }
   }
 
