@@ -591,14 +591,50 @@ class _ShizukuTileState extends State<_ShizukuTile> {
   bool _available = false;
   bool _granted = false;
 
+  /// install 模块是否在线（随模块上下线实时更新；下线时 tile 禁用）
+  bool _moduleOnline = false;
+
+  /// install 模块上下线事件订阅（dispose 取消，防泄漏）
+  StreamSubscription<ModuleEvent>? _moduleSub;
+
+  /// 安装管理器（按类型从注册表取；模块下线 → null）
+  InstallManager? get _installManager =>
+      ModuleManager.instance.get<InstallManager>();
+
   @override
   void initState() {
     super.initState();
+    _moduleOnline = ModuleManager.instance.isModuleEnabled('install');
+    _moduleSub = ModuleManager.instance.watchModule('install').listen((_) {
+      if (!mounted) return;
+      setState(() {
+        _moduleOnline = ModuleManager.instance.isModuleEnabled('install');
+      });
+      // 重新上线后重新检测 Shizuku 状态
+      if (_moduleOnline) _check();
+    });
     _check();
   }
 
+  @override
+  void dispose() {
+    _moduleSub?.cancel();
+    super.dispose();
+  }
+
   Future<void> _check() async {
-    final manager = InstallManager.instance;
+    // 模块下线（注册表无服务）→ 直接置不可用态，不访问安装管理器
+    final manager = _installManager;
+    if (manager == null) {
+      if (mounted) {
+        setState(() {
+          _checking = false;
+          _available = false;
+          _granted = false;
+        });
+      }
+      return;
+    }
     await manager.checkShizuku();
     if (mounted) {
       setState(() {
@@ -611,7 +647,11 @@ class _ShizukuTileState extends State<_ShizukuTile> {
 
   Future<void> _requestPermission() async {
     setState(() => _checking = true);
-    final manager = InstallManager.instance;
+    final manager = _installManager;
+    if (manager == null) {
+      if (mounted) setState(() => _checking = false);
+      return;
+    }
     final granted = await manager.requestPermission();
     if (mounted) {
       setState(() {
@@ -629,6 +669,16 @@ class _ShizukuTileState extends State<_ShizukuTile> {
 
   @override
   Widget build(BuildContext context) {
+    // install 模块下线 → tile 禁用，显示未启用提示
+    if (!_moduleOnline) {
+      return ListTile(
+        enabled: false,
+        leading: const Icon(Icons.shield_outlined, size: AppTypography.iconMD),
+        title: const Text('Shizuku 状态'),
+        subtitle: const Text('安装模块未启用'),
+      );
+    }
+
     if (_checking) {
       return const ListTile(
         leading: Icon(Icons.shield_outlined, size: AppTypography.iconMD),
@@ -644,7 +694,8 @@ class _ShizukuTileState extends State<_ShizukuTile> {
         subtitle: const Text('未运行（需安装 Shizuku 并启动）'),
         trailing: TextButton(
           onPressed: () async {
-            final manager = InstallManager.instance;
+            final manager = _installManager;
+            if (manager == null) return;
             await manager.checkShizuku();
             if (mounted)
               setState(() {

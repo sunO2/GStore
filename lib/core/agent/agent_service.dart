@@ -1866,6 +1866,9 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
 
   /// 安装应用
   Future<String> _installApp(String savePath) async {
+    // 安装模块下线 → 注册表取不到服务，降级提示不抛
+    final manager = ModuleManager.instance.get<InstallManager>();
+    if (manager == null) return '安装模块未启用';
     if (savePath.isEmpty) return '安装路径不能为空';
 
     try {
@@ -1878,7 +1881,7 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
       }
 
       // 使用 InstallManager 统一安装（Shizuku 静默安装优先，回退系统安装）
-      final (success, method) = await InstallManager.instance.installApk(savePath);
+      final (success, method) = await manager.installApk(savePath);
       if (!success) {
         return '安装失败，请检查 APK 文件或重试';
       }
@@ -2435,7 +2438,9 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
 
   /// 管理已安装应用（卸载/清理/停止，需 Shizuku）
   Future<String> _manageInstalledPackage(String action, String packageName) async {
-    final manager = InstallManager.instance;
+    // 安装模块下线 → 注册表取不到服务，降级提示不抛
+    final manager = ModuleManager.instance.get<InstallManager>();
+    if (manager == null) return '安装模块未启用';
     if (!manager.isShizukuAvailable) {
       if (!manager.isChecked) await manager.checkShizuku();
       if (!manager.isShizukuAvailable) {

@@ -653,8 +653,11 @@ class DownloadService extends GetxService
 
   _install(String fileName, String filePath) {
     if (GetPlatform.isAndroid && fileName.endsWith(".apk")) {
+      // 安装模块下线 → 注册表取不到服务，短路不安装
+      final manager = ModuleManager.instance.get<InstallManager>();
+      if (manager == null) return false;
       // 使用 InstallManager 统一安装（Shizuku 静默安装优先，回退系统安装）
-      InstallManager.instance.installApk(filePath);
+      manager.installApk(filePath);
       return true;
     }
     return false;

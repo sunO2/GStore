@@ -240,11 +240,15 @@ class InstallModule extends AppModule {
   @override
   Future<void> onRegister(ModuleContext context) async {
     context.bindService?.call(IInstallService, InstallManager.instance);
+    // 按具体类型绑定（消费方 get<InstallManager>() 覆盖接口外方法：
+    // isShizukuAvailable/openUninstallInSystem/openAppDetailsInSystem 等）
+    context.bindService?.call(InstallManager, InstallManager.instance);
   }
 
   @override
   Future<void> onUnregister(ModuleContext context) async {
     context.unbindService?.call(IInstallService);
+    context.unbindService?.call(InstallManager);
   }
 }
 

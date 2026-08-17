@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/compent/entrance_list.dart';
@@ -24,15 +26,45 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
   /// Shizuku 是否可用
   bool _shizukuAvailable = false;
 
+  /// install 模块是否在线（随模块上下线实时更新；下线时整页未启用占位）
+  bool _moduleOnline = false;
+
+  /// install 模块上下线事件订阅（dispose 取消，防泄漏）
+  StreamSubscription<ModuleEvent>? _moduleSub;
+
+  /// 安装管理器（按类型从注册表取；模块下线 → null）
+  InstallManager? get _installManager =>
+      ModuleManager.instance.get<InstallManager>();
+
   @override
   void initState() {
     super.initState();
+    _moduleOnline = ModuleManager.instance.isModuleEnabled('install');
+    _moduleSub = ModuleManager.instance.watchModule('install').listen((_) {
+      if (!mounted) return;
+      setState(() {
+        _moduleOnline = ModuleManager.instance.isModuleEnabled('install');
+      });
+      // 重新上线后补一次初始化（离线期间跳过了 Shizuku 检测/应用加载）
+      if (_moduleOnline) _init();
+    });
     _init();
   }
 
+  @override
+  void dispose() {
+    _moduleSub?.cancel();
+    super.dispose();
+  }
+
   Future<void> _init() async {
+    // 模块下线（注册表无服务）→ 跳过 Shizuku 检测与应用加载，显示未启用占位
+    final manager = _installManager;
+    if (manager == null) {
+      if (mounted) setState(() => _loading = false);
+      return;
+    }
     // 检测 Shizuku 状态
-    final manager = InstallManager.instance;
     await manager.checkShizuku();
     if (mounted) {
       setState(() => _shizukuAvailable = manager.isShizukuAvailable);
@@ -73,7 +105,11 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
 
   /// 请求 Shizuku 授权
   Future<bool> _ensureShizuku() async {
-    final manager = InstallManager.instance;
+    final manager = _installManager;
+    if (manager == null) {
+      _showMessage('安装模块未启用');
+      return false;
+    }
     if (manager.isShizukuAvailable) return true;
 
     if (!manager.isBinderRunning) {
@@ -94,6 +130,11 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
 
   /// 卸载应用
   Future<void> _uninstallApp(installed.AppInfo app) async {
+    final manager = _installManager;
+    if (manager == null) {
+      _showMessage('安装模块未启用');
+      return;
+    }
     final confirmed = await _confirmDialog(
       '卸载应用',
       '确定要卸载 ${app.name} 吗？',
@@ -103,17 +144,17 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
     if (confirmed != true) return;
 
     // 有 Shizuku 时静默卸载，否则跳系统卸载界面
-    if (InstallManager.instance.isShizukuAvailable) {
-      final ok = await InstallManager.instance.managePackage(app.packageName, 'uninstall');
+    if (manager.isShizukuAvailable) {
+      final ok = await manager.managePackage(app.packageName, 'uninstall');
       if (ok) {
         _showMessage('已卸载 ${app.name}');
         await _loadApps();
       } else {
         _showMessage('静默卸载失败，将打开系统卸载界面');
-        await InstallManager.instance.openUninstallInSystem(app.packageName);
+        await manager.openUninstallInSystem(app.packageName);
       }
     } else {
-      final ok = await InstallManager.instance.openUninstallInSystem(app.packageName);
+      final ok = await manager.openUninstallInSystem(app.packageName);
       if (!ok) {
         _showMessage('无法打开系统卸载界面');
       }
@@ -123,7 +164,12 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
   /// 清理应用数据
   /// 有 Shizuku 时静默清理，否则跳系统应用详情页由用户手动操作
   Future<void> _clearData(installed.AppInfo app) async {
-    if (InstallManager.instance.isShizukuAvailable) {
+    final manager = _installManager;
+    if (manager == null) {
+      _showMessage('安装模块未启用');
+      return;
+    }
+    if (manager.isShizukuAvailable) {
       final confirmed = await _confirmDialog(
         '清理数据',
         '确定要清除 ${app.name} 的所有数据吗？\n这相当于恢复出厂设置（会删除登录状态、本地数据等）。',
@@ -131,20 +177,25 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
         isDestructive: true,
       );
       if (confirmed != true) return;
-      final ok = await InstallManager.instance.clearAppData(app.packageName);
+      final ok = await manager.clearAppData(app.packageName);
       _showMessage(ok ? '已清理 ${app.name} 的数据' : '清理数据失败');
     } else {
       // 跳系统应用详情页，用户手动点"清除数据"
       _showMessage('已打开 ${app.name} 的应用详情，请在系统中手动清除数据');
-      await InstallManager.instance.openAppDetailsInSystem(app.packageName);
+      await manager.openAppDetailsInSystem(app.packageName);
     }
   }
 
   /// 清理应用缓存
   /// 有 Shizuku 时静默清理，否则/失败时跳系统应用详情页由用户手动操作
   Future<void> _clearCache(installed.AppInfo app) async {
-    if (InstallManager.instance.isShizukuAvailable) {
-      final ok = await InstallManager.instance.clearAppCache(app.packageName);
+    final manager = _installManager;
+    if (manager == null) {
+      _showMessage('安装模块未启用');
+      return;
+    }
+    if (manager.isShizukuAvailable) {
+      final ok = await manager.clearAppCache(app.packageName);
       if (ok) {
         _showMessage('已清理 ${app.name} 的缓存');
         return;
@@ -152,18 +203,23 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
       // Shizuku 清理失败，回退系统详情页
     }
     _showMessage('已打开 ${app.name} 的应用详情，请在系统中手动清除缓存');
-    await InstallManager.instance.openAppDetailsInSystem(app.packageName);
+    await manager.openAppDetailsInSystem(app.packageName);
   }
 
   /// 强制停止应用
   /// 有 Shizuku 时静默停止，否则跳系统应用详情页
   Future<void> _forceStop(installed.AppInfo app) async {
-    if (InstallManager.instance.isShizukuAvailable) {
-      final ok = await InstallManager.instance.forceStopApp(app.packageName);
+    final manager = _installManager;
+    if (manager == null) {
+      _showMessage('安装模块未启用');
+      return;
+    }
+    if (manager.isShizukuAvailable) {
+      final ok = await manager.forceStopApp(app.packageName);
       _showMessage(ok ? '已强制停止 ${app.name}' : '强制停止失败');
     } else {
       _showMessage('已打开 ${app.name} 的应用详情，请在系统中手动停止');
-      await InstallManager.instance.openAppDetailsInSystem(app.packageName);
+      await manager.openAppDetailsInSystem(app.packageName);
     }
   }
 
@@ -198,11 +254,49 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
           IconButton(
             tooltip: '刷新',
             icon: const Icon(Icons.refresh),
-            onPressed: _loadApps,
+            onPressed: _moduleOnline ? _loadApps : null,
           ),
         ],
       ),
-      body: Column(
+      // install 模块下线 → 整页未启用占位（不渲染功能内容）
+      body: _moduleOnline ? _buildBody(context) : _buildModuleOffline(context),
+    );
+  }
+
+  /// install 模块下线占位
+  Widget _buildModuleOffline(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: AppSpacing.allXL,
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              Icons.android,
+              size: AppTypography.iconXXXL,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+            const SizedBox(height: AppSpacing.lg),
+            Text(
+              '安装模块未启用',
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
+            const SizedBox(height: AppSpacing.md),
+            Text(
+              '请在「模块管理」中启用安装模块',
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBody(BuildContext context) {
+    return Column(
         children: [
           // Shizuku 状态提示
           if (!_shizukuAvailable)
@@ -277,8 +371,7 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
                       ),
           ),
         ],
-      ),
-    );
+      );
   }
 
   Widget _buildAppTile(BuildContext context, installed.AppInfo app) {

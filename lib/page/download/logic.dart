@@ -116,8 +116,14 @@ class DownloadManagerLogic extends GetxController with GithubRequestMix {
 
   /// 安装应用（Shizuku 静默安装优先，回退系统安装）
   Future<void> installApp(DownloadStatus downStatus) async {
+    // 安装模块下线 → 注册表取不到服务，降级提示不抛
+    final manager = ModuleManager.instance.get<InstallManager>();
+    if (manager == null) {
+      AppDialogs.showWarning('安装模块未启用');
+      return;
+    }
     if (GetPlatform.isAndroid && downStatus.fileName.endsWith(".apk")) {
-      await InstallManager.instance.installApk(downStatus.savePath);
+      await manager.installApk(downStatus.savePath);
     }
   }
 
