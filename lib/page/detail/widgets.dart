@@ -11,6 +11,7 @@ import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/model/StatTag.dart';
 import 'package:gstore/core/design/design_tokens.dart';
+import 'package:gstore/core/design/app_borders.dart';
 import 'package:gstore/core/core.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
@@ -54,7 +55,7 @@ class SectionCard extends StatelessWidget {
       padding: AppSpacing.allLG,
       decoration: BoxDecoration(
         color: colorScheme.surface,
-        border: Border.all(color: colorScheme.outlineVariant, width: 1),
+        border: AppBorders.all(context, color: colorScheme.outlineVariant),
         borderRadius: AppRadius.allLG,
       ),
       child: Column(
@@ -381,7 +382,8 @@ class _StatTagChip extends StatelessWidget {
       decoration: BoxDecoration(
         color: tag.backgroundColor,
         borderRadius: AppRadius.allMD,
-        border: Border.all(color: tag.borderColor, width: 1),
+        // 语义色（StatTag 工厂色）保留，宽度随主题 borderStyle
+        border: AppBorders.all(context, color: tag.borderColor),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -559,7 +561,7 @@ class VersionBadge extends StatelessWidget {
       decoration: BoxDecoration(
         color: colorScheme.primaryContainer.withValues(alpha: 0.4),
         borderRadius: AppRadius.allMD,
-        border: Border.all(color: colorScheme.primary, width: 1),
+        border: AppBorders.all(context, color: colorScheme.primary),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -853,7 +855,7 @@ class _ReadmeSectionState extends State<ReadmeSection> {
             builders: {
               'pre': _ReadmeCodeBlockBuilder(),
             },
-            styleSheet: _buildReadmeStyleSheet(theme),
+            styleSheet: _buildReadmeStyleSheet(context, theme),
           ),
       ],
     );
@@ -883,7 +885,8 @@ class _ReadmeSectionState extends State<ReadmeSection> {
   /// - 行内 code 原 padding(6,3) 无法表达 → 保留背景/颜色/字体
   /// - pre 原背景/内边距由 _CodeBlockWidget 自带，codeblock* 清空避免双重样式
   /// - td 原 border-top → TableBorder.all 近似（flutter_markdown_plus 无逐行边框）
-  MarkdownStyleSheet _buildReadmeStyleSheet(ThemeData theme) {
+  MarkdownStyleSheet _buildReadmeStyleSheet(
+      BuildContext context, ThemeData theme) {
     final colorScheme = theme.colorScheme;
 
     return MarkdownStyleSheet.fromTheme(theme).copyWith(
@@ -964,6 +967,7 @@ class _ReadmeSectionState extends State<ReadmeSection> {
         border: Border(
           left: BorderSide(
             color: colorScheme.primary,
+            // 语义色强调（引用块左侧强调条），宽度固定 4 不随主题 borderStyle
             width: 4,
           ),
         ),
@@ -977,10 +981,10 @@ class _ReadmeSectionState extends State<ReadmeSection> {
         color: colorScheme.onSurface,
       ),
 
-      // 表格样式
+      // 表格样式（TableBorder 非 BoxBorder，仅宽度取主题）
       tableBorder: TableBorder.all(
         color: colorScheme.outline.withAlpha(AppColors.alphaLower),
-        width: 1,
+        width: AppBorders.sideOf(context).width,
       ),
       tablePadding: const EdgeInsets.only(bottom: AppSpacing.xs),
       tableBody: TextStyle(
@@ -1005,12 +1009,12 @@ class _ReadmeSectionState extends State<ReadmeSection> {
         color: colorScheme.surfaceContainerHighest,
       ),
 
-      // 分隔线样式
+      // 分隔线样式（宽度随主题 borderStyle）
       horizontalRuleDecoration: BoxDecoration(
         border: Border(
           bottom: BorderSide(
             color: colorScheme.outlineVariant.withAlpha(AppColors.alphaLower),
-            width: 1,
+            width: AppBorders.sideOf(context).width,
           ),
         ),
       ),
@@ -1243,7 +1247,8 @@ class _DownloadItem extends StatelessWidget {
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
             ),
-            border: Border.all(
+            border: AppBorders.all(
+              context,
               color: Theme.of(context)
                   .colorScheme
                   .primary

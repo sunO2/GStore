@@ -5,6 +5,7 @@ import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/design/design_tokens.dart';
+import 'package:gstore/core/design/app_borders.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
 import 'package:gstore/page/detail/widgets.dart';
 import 'logic.dart';
@@ -382,12 +383,12 @@ class DetailPage extends StatelessWidget {
   }
 }
 
-BorderSide border(BuildContext context) => BorderSide(
+BorderSide border(BuildContext context) => AppBorders.sideOf(
+      context,
       color: Theme.of(context)
           .colorScheme
           .primary
           .withAlpha(AppColors.alphaMedium),
-      width: 1,
     );
 
 /// 区块渐进出现：首次挂载时淡入 + 从下方 10% 高度滑入一次
