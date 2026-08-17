@@ -711,6 +711,7 @@ class AppSegmentedButton<T> extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
+    final themeSide = AppBorders.sideOf(context);
 
     return SegmentedButton<T>(
       segments: segments
@@ -757,9 +758,15 @@ class AppSegmentedButton<T> extends StatelessWidget {
             return colorScheme.onSurface;
           },
         ),
-        // 边框（宽度/透明度随主题 borderStyle）
+        // 边框（宽度/透明度随主题 borderStyle；无边框档保留 0.5 最小边框，
+        // 分段可识别性，颜色回退 outlineVariant 随主题）
         side: WidgetStateProperty.all<BorderSide>(
-          AppBorders.sideOf(context),
+          BorderSide(
+            color: themeSide.style == BorderStyle.none
+                ? colorScheme.outlineVariant
+                : themeSide.color,
+            width: themeSide.width < 0.5 ? 0.5 : themeSide.width,
+          ),
         ),
       ),
     );

@@ -10,6 +10,8 @@ class AppBorders {
   /// 宽度/透明度取自 `Theme.of(context).cardTheme.shape.side`（由主题
   /// borderStyle 的 borderWidth/borderOpacity 构建）；cardTheme.shape 不是
   /// [RoundedRectangleBorder] 时回退到 outlineVariant + 1.0。
+  /// 保留主题 side 的 style：无边框档（BorderStyle.none）时返回 none style，
+  /// 调用方据此渲染真无边框（而非 BorderSide(width:0) 的 hairline）。
   static BorderSide sideOf(BuildContext context, {Color? color}) {
     final scheme = Theme.of(context).colorScheme;
     final shape = Theme.of(context).cardTheme.shape;
@@ -17,12 +19,14 @@ class AppBorders {
     return BorderSide(
       color: color ?? (themeSide?.color ?? scheme.outlineVariant),
       width: themeSide?.width ?? 1.0,
+      style: themeSide?.style ?? BorderStyle.solid,
     );
   }
 
   /// 四边统一边框（宽度/透明度随主题 borderStyle），颜色可覆盖。
+  /// 无边框档（style none）时 Border.all 不绘制（真无边框）。
   static Border all(BuildContext context, {Color? color}) {
     final side = sideOf(context, color: color);
-    return Border.all(color: side.color, width: side.width);
+    return Border.all(color: side.color, width: side.width, style: side.style);
   }
 }

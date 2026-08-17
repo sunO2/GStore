@@ -219,6 +219,8 @@ class ThemeDataBuilder {
     final radiusScale = config.radiusScale;
     final borderWidth = config.borderWidth;
     final borderOpacity = config.borderOpacity;
+    // 无边框档：BorderSide(width:0) 会渲染 hairline 细线，需用 BorderSide.none 真无边框
+    final borderNone = config.borderStyle == AppBorderStyle.none;
 
     final textTheme = _buildTextTheme(colorScheme, Brightness.light, fontScale);
 
@@ -251,11 +253,13 @@ class ThemeDataBuilder {
         color: colorScheme.surface,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(_getRadiusValue(AppRadius.lg, radiusScale)),
-          side: BorderSide(
-            // 亮色下使用较深的 outline，增强卡片与背景的边界
-            color: colorScheme.outline.withOpacity(borderOpacity),
-            width: borderWidth,
-          ),
+          side: borderNone
+              ? BorderSide.none
+              : BorderSide(
+                  // 亮色下使用较深的 outline，增强卡片与背景的边界
+                  color: colorScheme.outline.withOpacity(borderOpacity),
+                  width: borderWidth,
+                ),
         ),
         clipBehavior: Clip.antiAlias,
         margin: const EdgeInsets.all(0),
@@ -317,9 +321,25 @@ class ThemeDataBuilder {
           ),
           textStyle: textTheme.labelLarge,
           foregroundColor: colorScheme.primary,
-          side: BorderSide(
-            color: colorScheme.outline,
-            width: borderWidth,
+          side: borderNone
+              ? BorderSide.none
+              : BorderSide(
+                  color: colorScheme.outline,
+                  width: borderWidth,
+                ),
+        ),
+      ),
+
+      // Segmented button theme - 分段选择器保留最小边框（无边框档 0.5 细线，分段可识别）
+      segmentedButtonTheme: SegmentedButtonThemeData(
+        style: ButtonStyle(
+          side: WidgetStateProperty.all<BorderSide>(
+            BorderSide(
+              color: borderNone
+                  ? colorScheme.outlineVariant
+                  : colorScheme.outline,
+              width: borderWidth < 0.5 ? 0.5 : borderWidth,
+            ),
           ),
         ),
       ),
@@ -343,24 +363,30 @@ class ThemeDataBuilder {
         contentPadding: AppSpacing.allMD,
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(_getRadiusValue(AppRadius.lg, radiusScale)),
-          borderSide: BorderSide(
-            color: colorScheme.outline,
-            width: borderWidth,
-          ),
+          borderSide: borderNone
+              ? BorderSide.none
+              : BorderSide(
+                  color: colorScheme.outline,
+                  width: borderWidth,
+                ),
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(_getRadiusValue(AppRadius.lg, radiusScale)),
-          borderSide: BorderSide(
-            color: colorScheme.outline,
-            width: borderWidth,
-          ),
+          borderSide: borderNone
+              ? BorderSide.none
+              : BorderSide(
+                  color: colorScheme.outline,
+                  width: borderWidth,
+                ),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(_getRadiusValue(AppRadius.lg, radiusScale)),
-          borderSide: BorderSide(
-            color: colorScheme.primary,
-            width: borderWidth * 2,
-          ),
+          borderSide: borderNone
+              ? BorderSide.none
+              : BorderSide(
+                  color: colorScheme.primary,
+                  width: borderWidth * 2,
+                ),
         ),
         filled: true,
         fillColor: colorScheme.surfaceContainerHighest,
@@ -520,6 +546,8 @@ class ThemeDataBuilder {
     final radiusScale = config.radiusScale;
     final borderWidth = config.borderWidth;
     final borderOpacity = 0.4; // 暗色模式边框更透明
+    // 无边框档：BorderSide(width:0) 会渲染 hairline 细线，需用 BorderSide.none 真无边框
+    final borderNone = config.borderStyle == AppBorderStyle.none;
 
     final textTheme = _buildTextTheme(colorScheme, Brightness.dark, fontScale);
 
@@ -552,10 +580,12 @@ class ThemeDataBuilder {
         color: colorScheme.surfaceContainerHigh,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(_getRadiusValue(AppRadius.lg, radiusScale)),
-          side: BorderSide(
-            color: colorScheme.outlineVariant.withOpacity(borderOpacity),
-            width: borderWidth,
-          ),
+          side: borderNone
+              ? BorderSide.none
+              : BorderSide(
+                  color: colorScheme.outlineVariant.withOpacity(borderOpacity),
+                  width: borderWidth,
+                ),
         ),
         clipBehavior: Clip.antiAlias,
         margin: const EdgeInsets.all(0),
@@ -617,9 +647,25 @@ class ThemeDataBuilder {
           ),
           textStyle: textTheme.labelLarge,
           foregroundColor: colorScheme.primary,
-          side: BorderSide(
-            color: colorScheme.outline,
-            width: borderWidth,
+          side: borderNone
+              ? BorderSide.none
+              : BorderSide(
+                  color: colorScheme.outline,
+                  width: borderWidth,
+                ),
+        ),
+      ),
+
+      // Segmented button theme - 分段选择器保留最小边框（无边框档 0.5 细线，分段可识别）
+      segmentedButtonTheme: SegmentedButtonThemeData(
+        style: ButtonStyle(
+          side: WidgetStateProperty.all<BorderSide>(
+            BorderSide(
+              color: borderNone
+                  ? colorScheme.outlineVariant
+                  : colorScheme.outline,
+              width: borderWidth < 0.5 ? 0.5 : borderWidth,
+            ),
           ),
         ),
       ),
@@ -643,24 +689,30 @@ class ThemeDataBuilder {
         contentPadding: AppSpacing.allMD,
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(_getRadiusValue(AppRadius.lg, radiusScale)),
-          borderSide: BorderSide(
-            color: colorScheme.outline,
-            width: borderWidth,
-          ),
+          borderSide: borderNone
+              ? BorderSide.none
+              : BorderSide(
+                  color: colorScheme.outline,
+                  width: borderWidth,
+                ),
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(_getRadiusValue(AppRadius.lg, radiusScale)),
-          borderSide: BorderSide(
-            color: colorScheme.outline,
-            width: borderWidth,
-          ),
+          borderSide: borderNone
+              ? BorderSide.none
+              : BorderSide(
+                  color: colorScheme.outline,
+                  width: borderWidth,
+                ),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(_getRadiusValue(AppRadius.lg, radiusScale)),
-          borderSide: BorderSide(
-            color: colorScheme.primary,
-            width: borderWidth * 2,
-          ),
+          borderSide: borderNone
+              ? BorderSide.none
+              : BorderSide(
+                  color: colorScheme.primary,
+                  width: borderWidth * 2,
+                ),
         ),
         filled: true,
         fillColor: colorScheme.surfaceContainerHighest,
