@@ -30,6 +30,11 @@ class JsChannelException implements Exception {
 /// - `host.database.getAppsByChannel()` / `host.database.getApp(appId)` /
 ///   `host.database.insertApps(list)` → 全部强制 channelKey = 当前渠道（数据隔离核心）
 /// - `host.config.get(key)` → ConfigService 读取渠道配置，无则 null
+/// - `host.env.get(name)` / `host.env.all()` / `host.env.has(name)` → 渠道隔离的
+///   环境变量（`{ok, data}` 包装；用户名/密码等凭据由用户配置，不硬编码进脚本）。
+///   env 是**只读快照**：initialize 时从 [envReader] 快照一次，脚本运行中不变；
+///   需改环境变量时由 JSChannel.setEnv 持久化后调用 [updateEnv] 热更新快照
+///   （无需重建引擎，脚本下次读取即生效）。
 /// - `host.log.info(msg)` / `host.log.error(msg)` → appLog
 ///
 /// ## 异常处理
@@ -51,6 +56,7 @@ class JsChannelRuntime {
   final Dio? _dioOverride;
   final ChannelAddedAppDao? _appDaoOverride;
   final Future<Object?> Function(String key)? _configGetterOverride;
+  final Map<String, String> Function()? _envReaderOverride;
   final void Function(String message)? _logInfoOverride;
   final void Function(String message)? _logErrorOverride;
 
@@ -58,22 +64,35 @@ class JsChannelRuntime {
   bool _initialized = false;
   bool _disposed = false;
 
+  /// 当前 env 快照（渠道隔离；initialize 时从 [envReader] 快照，[updateEnv] 热更新）
+  Map<String, String> _env = const {};
+
   JsChannelRuntime({
     required this.channelKey,
     required this.script,
     Dio? dio,
     ChannelAddedAppDao? appDao,
     Future<Object?> Function(String key)? configGetter,
+    Map<String, String> Function()? envReader,
     void Function(String message)? logInfo,
     void Function(String message)? logError,
   })  : _dioOverride = dio,
         _appDaoOverride = appDao,
         _configGetterOverride = configGetter,
+        _envReaderOverride = envReader,
         _logInfoOverride = logInfo,
         _logErrorOverride = logError;
 
   bool get isInitialized => _initialized;
   bool get isDisposed => _disposed;
+
+  /// 热更新 env 快照（JSChannel.setEnv/removeEnv 持久化后调用）。
+  ///
+  /// 无需重建引擎：host.env 回调读的就是快照，脚本下次调用立即看到新值。
+  /// 传入的 map 会被拷贝，后续外部修改不影响快照。
+  void updateEnv(Map<String, String> env) {
+    _env = Map<String, String>.of(env);
+  }
 
   /// 建引擎、注册 host API、注入 host 前缀、加载脚本
   Future<void> initialize() async {
@@ -81,6 +100,9 @@ class JsChannelRuntime {
     if (_disposed) {
       throw JsChannelException('runtime 已释放，无法重新初始化');
     }
+
+    // 初始化时快照 env（只读快照：脚本运行中 env 不变，改环境变量需 updateEnv）
+    _env = _readEnv();
 
     final engine = getJavascriptRuntime(xhr: false);
     _engine = engine;
@@ -155,6 +177,7 @@ class JsChannelRuntime {
     _registerNetworkHost(engine);
     _registerDatabaseHost(engine);
     _registerConfigHost(engine);
+    _registerEnvHost(engine);
     _registerLogHost(engine);
   }
 
@@ -248,6 +271,23 @@ class JsChannelRuntime {
     });
   }
 
+  /// host.env：渠道隔离的环境变量只读快照（get/all/has，同步回调无需 await）
+  void _registerEnvHost(JavascriptRuntime engine) {
+    engine.onMessage('host.env.get', (dynamic args) {
+      final name = _asMap(args)['name']?.toString() ?? '';
+      return {'ok': true, 'data': _env[name]};
+    });
+
+    engine.onMessage('host.env.all', (dynamic args) {
+      return {'ok': true, 'data': Map<String, dynamic>.of(_env)};
+    });
+
+    engine.onMessage('host.env.has', (dynamic args) {
+      final name = _asMap(args)['name']?.toString() ?? '';
+      return {'ok': true, 'data': _env.containsKey(name)};
+    });
+  }
+
   void _registerLogHost(JavascriptRuntime engine) {
     engine.onMessage('host.log.info', (dynamic args) {
       _logInfo(_asMap(args)['msg']?.toString() ?? '');
@@ -268,6 +308,10 @@ class JsChannelRuntime {
 
   Future<Object?> Function(String key) _getConfigGetter() =>
       _configGetterOverride ?? ConfigService.instance.get;
+
+  /// 从 envReader 快照 env（未注入 → 空 map）
+  Map<String, String> _readEnv() =>
+      _envReaderOverride?.call() ?? const <String, String>{};
 
   void _logInfo(String message) {
     final override = _logInfoOverride;
@@ -414,6 +458,17 @@ var host = {
   config: {
     get: function(key) {
       return sendMessage('host.config.get', JSON.stringify({key: key}));
+    }
+  },
+  env: {
+    get: function(name) {
+      return sendMessage('host.env.get', JSON.stringify({name: name}));
+    },
+    all: function() {
+      return sendMessage('host.env.all', '{}');
+    },
+    has: function(name) {
+      return sendMessage('host.env.has', JSON.stringify({name: name}));
     }
   },
   log: {

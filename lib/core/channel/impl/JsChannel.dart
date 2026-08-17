@@ -11,6 +11,7 @@ import 'package:gstore/core/channel/model/AppUpdateCheckResult.dart';
 import 'package:gstore/core/channel/model/ChannelInfo.dart';
 import 'package:gstore/core/channel/model/ChannelResult.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
+import 'package:gstore/core/config/config_store.dart';
 import 'package:gstore/core/js/js_channel_runtime.dart';
 import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
@@ -51,6 +52,14 @@ class _ChannelMeta {
 /// - doUpdate → 从脚本拉全量 → insertApps 落库（channelKey）
 /// - checkUpdate / checkAppUpdate → 无更新 / 查库
 /// - searchApps / getAppDetail / getConfig → failure
+///
+/// ## 环境变量（host.env）
+/// 脚本可用 `host.env.get(name)` / `host.env.all()` / `host.env.has(name)` 读取
+/// 环境变量（如 PINGAN_USER / PINGAN_PASS 用户名密码）。env 由用户配置，
+/// 不进脚本硬编码、不进应用二进制；按渠道隔离持久化到 ConfigStore
+/// （键 `channel_env_<channelKey>`，默认敏感路由到加密存储）。
+/// [setEnv] / [removeEnv] 持久化后热更新 runtime 快照（[JsChannelRuntime.updateEnv]），
+/// 脚本下次读取即生效，无需重建引擎。
 class JsChannel extends IChannel implements DynamicChannel {
   /// 渠道唯一标识（如 'js.vivo'），数据隔离键 + AppInfo.channelCode
   @override
@@ -62,6 +71,9 @@ class JsChannel extends IChannel implements DynamicChannel {
   final int? _priority;
   final bool _enabled;
   final ChannelAddedAppDao? _appDaoOverride;
+
+  /// 环境变量持久化存储（渠道隔离；默认 ConfigStore 实现）
+  final JsChannelEnvStore _envStore;
 
   late ChannelInfo _info;
   _ChannelMeta? _meta;
@@ -77,6 +89,7 @@ class JsChannel extends IChannel implements DynamicChannel {
     Dio? dio,
     ChannelAddedAppDao? appDao,
     Future<Object?> Function(String key)? configGetter,
+    JsChannelEnvStore? envStore,
     void Function(String message)? logInfo,
     void Function(String message)? logError,
     int? priority,
@@ -84,6 +97,7 @@ class JsChannel extends IChannel implements DynamicChannel {
   })  : _priority = priority,
         _enabled = enabled,
         _appDaoOverride = appDao,
+        _envStore = envStore ?? ConfigJsChannelEnvStore(channelKey),
         _runtime = JsChannelRuntime(
           channelKey: channelKey,
           script: script,
@@ -113,6 +127,14 @@ class JsChannel extends IChannel implements DynamicChannel {
   @override
   Future<void> initialize() async {
     if (isInitialized) return;
+    // 把持久化的渠道 env 注入 runtime 快照（渠道隔离；脚本经 host.env 读取）。
+    // env 读取失败不阻塞渠道初始化（降级为空 env，脚本 host.env 读到 null/空）。
+    try {
+      _runtime.updateEnv(await _envStore.load());
+    } catch (e) {
+      _logError('读取渠道 env 失败，降级为空: $e');
+      _runtime.updateEnv(const {});
+    }
     await _runtime.initialize();
     await _readMeta();
     _rebuildInfo();
@@ -460,6 +482,30 @@ class JsChannel extends IChannel implements DynamicChannel {
   @override
   Future<int> getCacheSize() async => 0;
 
+  // ==================== 环境变量（host.env，按渠道持久化） ====================
+
+  /// 设置环境变量：持久化到 [JsChannelEnvStore] + 热更新 runtime 快照。
+  ///
+  /// 脚本下次 `host.env.get(name)` 立即读到新值，无需重建引擎。
+  /// 环境变量不进脚本、不进应用二进制，由用户配置（如 PINGAN_USER/PINGAN_PASS）。
+  Future<void> setEnv(String name, String value) async {
+    final env = Map<String, String>.from(await _envStore.load());
+    env[name] = value;
+    await _envStore.save(env);
+    _runtime.updateEnv(env);
+  }
+
+  /// 删除环境变量（持久化 + 热更新 runtime 快照）
+  Future<void> removeEnv(String name) async {
+    final env = Map<String, String>.from(await _envStore.load());
+    env.remove(name);
+    await _envStore.save(env);
+    _runtime.updateEnv(env);
+  }
+
+  /// 读取当前渠道的全部环境变量（持久化层最新值）
+  Future<Map<String, String>> getAllEnv() => _envStore.load();
+
   // ==================== 脚本调用 ====================
 
   /// 调用脚本 `main(method, params)`，返回脚本结果 data：
@@ -679,5 +725,48 @@ class JsChannelDetailProxy extends ChannelDetailProxy {
       return sections;
     }
     return const [];
+  }
+}
+
+/// 脚本渠道环境变量存储抽象（渠道隔离：每个渠道独立存储键，env 不串）
+abstract class JsChannelEnvStore {
+  /// 读取该渠道全部环境变量（无配置 → 空 map）
+  Future<Map<String, String>> load();
+
+  /// 全量覆盖保存该渠道环境变量
+  Future<void> save(Map<String, String> env);
+}
+
+/// 默认实现：ConfigStore 持久化，键 `channel_env_<channelKey>`，值为 JSON map。
+///
+/// env 可能含凭据（用户名/密码），键默认标记敏感 → 自动路由加密存储。
+class ConfigJsChannelEnvStore implements JsChannelEnvStore {
+  ConfigJsChannelEnvStore(this.channelKey) {
+    ConfigStore.instance.markSensitive(_storageKey);
+  }
+
+  /// 渠道唯一标识（如 'js.pingan'），隔离键
+  final String channelKey;
+
+  String get _storageKey => 'channel_env_$channelKey';
+
+  @override
+  Future<Map<String, String>> load() async {
+    final raw = await ConfigStore.instance.readString(_storageKey);
+    if (raw == null || raw.isEmpty) return const {};
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) {
+        return decoded.map((k, v) => MapEntry(k.toString(), v.toString()));
+      }
+    } catch (_) {
+      // 损坏数据：视为空，下次 save 覆盖
+    }
+    return const {};
+  }
+
+  @override
+  Future<void> save(Map<String, String> env) async {
+    await ConfigStore.instance.writeString(_storageKey, jsonEncode(env));
   }
 }
