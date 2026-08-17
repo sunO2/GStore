@@ -42,6 +42,13 @@ class DiscoveryLogic extends GetxController {
   /// 获取已排序的渠道类型列表（用于筛选标签）
   List<ChannelType> get sortedChannelTypes {
     final channels = state.channelApps.keys.toList();
+    // 动态脚本渠道（type=custom）并入：即使数据未加载也占位显示，
+    // 保证导入后切到发现页可见（channelApps 为空时 custom 不会出现）。
+    // ChannelManager 构造私有 → 单例即 ModuleManager 绑定实例，直接取用
+    for (final channel in ChannelManager.instance.dynamicChannels) {
+      final type = channel.info.type;
+      if (!channels.contains(type)) channels.add(type);
+    }
     // 按渠道名称排序，确保顺序稳定
     channels.sort((a, b) => a.code.compareTo(b.code));
     return channels;
@@ -283,7 +290,18 @@ class DiscoveryLogic extends GetxController {
 
   /// 加载所有渠道的应用
   Future<void> _loadAllChannelApps() async {
-    final channels = _channelManager?.enabledChannels ?? [];
+    final manager = _channelManager;
+    if (manager == null) return;
+
+    // 动态脚本渠道（type=custom）全部并入加载：_channels[custom] 槽位只保留
+    // 最后注册的脚本渠道，dynamicChannels（key 索引）才是全量。
+    // 多个脚本渠道共享 custom 键 → channelApps[custom] 合并（后注册覆盖），
+    // 当前单脚本渠道场景可接受；多脚本独立展示留待后续独立页。
+    final channels = <IChannel>[
+      ...manager.dynamicChannels,
+      ...manager.enabledChannels
+          .where((c) => !manager.dynamicChannels.contains(c)),
+    ];
 
     for (var channel in channels) {
       try {

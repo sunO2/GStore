@@ -313,4 +313,125 @@ void main() {
       await channel.dispose();
     });
   });
+
+  group('ChannelLoader.importScript', () {
+    test('① 写入文件 + 注册成功（getChannelByKey 返回、已初始化、脚本可调用）', () async {
+      final dir = await Directory.systemTemp.createTemp('channel_import_ok');
+      addTearDown(() => dir.delete(recursive: true));
+
+      final loader = ChannelLoader(dio: dio, appDao: appDao, directory: dir);
+      final channel = await loader.importScript(
+        channelKey: 'js_vivo',
+        script: _scriptA,
+      );
+
+      expect(channel.channelKey, 'js_vivo');
+      expect(channel.isInitialized, isTrue);
+
+      // 已注册到 ChannelManager（key 索引）
+      final registered = getManager().getChannelByKey('js_vivo');
+      expect(registered, same(channel));
+
+      // 脚本可正常分发调用
+      final result = await channel.searchApps('App');
+      expect(result.success, isTrue);
+      expect(result.data!.first.name, 'App A One');
+
+      // 文件已写入渠道目录（key 去 js_ 前缀 + .js，与 loadAndRegister 扫描互逆）
+      expect(File('${dir.path}/vivo.js').existsSync(), isTrue);
+    });
+
+    test('② 非法 key → 抛 ArgumentError（不写文件、不注册）', () async {
+      final dir = await Directory.systemTemp.createTemp('channel_import_badkey');
+      addTearDown(() => dir.delete(recursive: true));
+
+      final loader = ChannelLoader(dio: dio, appDao: appDao, directory: dir);
+
+      for (final badKey in ['my-channel', '1abc', '', 'a b']) {
+        expect(
+          () => loader.importScript(channelKey: badKey, script: _scriptA),
+          throwsArgumentError,
+          reason: '非法 key: $badKey',
+        );
+      }
+
+      expect(getManager().getChannelByKey('js_my-channel'), isNull);
+      expect(dir.listSync(), isEmpty, reason: '非法 key 不应写入任何文件');
+    });
+
+    test('③ 同名覆盖：脚本变化 → 注销旧渠道 + 注册新渠道（仅 1 个同 key 实例）', () async {
+      final dir = await Directory.systemTemp.createTemp('channel_import_overwrite');
+      addTearDown(() => dir.delete(recursive: true));
+
+      final loader = ChannelLoader(dio: dio, appDao: appDao, directory: dir);
+      final first = await loader.importScript(channelKey: 'js_dup', script: _scriptA);
+      expect((await first.searchApps('App')).data!.first.name, 'App A One');
+
+      // 同 key 导入不同脚本 → 覆盖
+      final second = await loader.importScript(channelKey: 'js_dup', script: _scriptB);
+      expect(second.channelKey, 'js_dup');
+      expect(second, isNot(same(first)), reason: '覆盖后应为新实例');
+      expect((await second.searchApps('App')).data!.first.name, 'App B One');
+
+      // 旧实例已注销，仅 1 个同 key 渠道
+      final count = getManager()
+          .dynamicChannels
+          .where((c) => c is DynamicChannel && (c as DynamicChannel).channelKey == 'js_dup')
+          .length;
+      expect(count, 1);
+      expect(getManager().getChannelByKey('js_dup'), same(second));
+    });
+
+    test('④ 脚本语法错误 → 抛错且文件回滚（不残留坏文件、不注册）', () async {
+      final dir = await Directory.systemTemp.createTemp('channel_import_badscript');
+      addTearDown(() => dir.delete(recursive: true));
+
+      final loader = ChannelLoader(dio: dio, appDao: appDao, directory: dir);
+
+      await expectLater(
+        loader.importScript(channelKey: 'js_bad', script: _brokenScript),
+        throwsA(anything),
+      );
+
+      expect(getManager().getChannelByKey('js_bad'), isNull);
+      expect(File('${dir.path}/bad.js').existsSync(), isFalse,
+          reason: '校验失败应回滚删除文件');
+    });
+
+    test('⑤ 幂等：同 key 同脚本重复导入 → 返回同一渠道，不重复注册', () async {
+      final dir = await Directory.systemTemp.createTemp('channel_import_idem');
+      addTearDown(() => dir.delete(recursive: true));
+
+      final loader = ChannelLoader(dio: dio, appDao: appDao, directory: dir);
+      final first = await loader.importScript(channelKey: 'js_idem', script: _scriptA);
+      final second = await loader.importScript(channelKey: 'js_idem', script: _scriptA);
+
+      expect(second, same(first), reason: '脚本未变应返回现有渠道');
+
+      final count = getManager()
+          .dynamicChannels
+          .where((c) => c is DynamicChannel && (c as DynamicChannel).channelKey == 'js_idem')
+          .length;
+      expect(count, 1);
+    });
+
+    test('⑥ 导入后 loadAndRegister 扫描 round-trip：不产生 js_js_ 双前缀重复渠道', () async {
+      final dir = await Directory.systemTemp.createTemp('channel_import_roundtrip');
+      addTearDown(() => dir.delete(recursive: true));
+
+      final loader = ChannelLoader(dio: dio, appDao: appDao, directory: dir);
+      await loader.importScript(channelKey: 'js_vivo', script: _scriptA);
+
+      // 文件名为 vivo.js（key 去 js_ 前缀）→ 扫描推导回 js_vivo
+      expect(File('${dir.path}/vivo.js').existsSync(), isTrue);
+
+      // 再次扫描：同 key 同脚本 → 幂等跳过，无新增注册
+      final loaded = await loader.loadAndRegister();
+      expect(loaded, isEmpty);
+
+      // 不产生 js_js_vivo 双前缀渠道
+      expect(getManager().getChannelByKey('js_js_vivo'), isNull);
+      expect(getManager().getChannelByKey('js_vivo'), isNotNull);
+    });
+  });
 }

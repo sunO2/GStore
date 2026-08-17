@@ -16,6 +16,10 @@ import 'package:path_provider/path_provider.dart';
 /// - **内置示例模板**：`assets/channels/example.js`（经 [loadAssetScript] 读取，
 ///   仅模板供用户复制导入，**不随 loadAndRegister 注册**）
 ///
+/// > **Android 目录说明**：`getApplicationDocumentsDirectory()` 是应用私有目录，
+/// > 用户手动放入公共 Documents 的文件**读不到**。Android 用户请走
+/// > [importScript] 应用内粘贴导入；iOS/桌面用户仍可手动放文件到该目录。
+///
 /// ## channelKey 规范
 /// `key = 'js_' + 文件名（无扩展名）`，如 `vivo.js` → `js_vivo`；
 /// `js_` 前缀规避与内置渠道 code 冲突。文件名必须是合法标识符
@@ -140,6 +144,86 @@ class ChannelLoader {
     if (name.isEmpty) return null;
     if (!RegExp(r'^[a-zA-Z_][a-zA-Z0-9_]*$').hasMatch(name)) return null;
     return 'js_$name';
+  }
+
+  /// 从文本导入脚本渠道（Android 应用私有目录无法读取用户手动放置的公共
+  /// Documents 文件，走应用内粘贴导入）。
+  ///
+  /// [channelKey] 为最终渠道标识（如 `js_vivo`，与 [loadAndRegister] 的
+  /// 文件名校验一致：`^[a-zA-Z_][a-zA-Z0-9_]*$`，非法抛 [ArgumentError]）。
+  /// 脚本写入渠道目录（`<key 去 js_ 前缀>.js`，目录不存在自动创建），
+  /// 保证后续 [loadAndRegister] 扫描可 round-trip 还原同一 key（不产生
+  /// `js_js_` 双前缀重复渠道）。
+  ///
+  /// 幂等：同名 key 已注册且脚本未变 → 直接返回现有渠道；
+  /// 脚本变化 → 注销旧渠道后注册新渠道（覆盖）。
+  /// 校验失败（JS 语法错误/初始化失败）→ 回滚文件 + 抛异常（调用方提示）。
+  Future<JsChannel> importScript({
+    required String channelKey,
+    required String script,
+  }) async {
+    if (!RegExp(r'^[a-zA-Z_][a-zA-Z0-9_]*$').hasMatch(channelKey)) {
+      throw ArgumentError.value(
+          channelKey, 'channelKey', '非法渠道标识（需字母/下划线开头，仅含字母数字下划线）');
+    }
+    if (script.trim().isEmpty) {
+      throw ArgumentError.value(script, 'script', '脚本内容为空');
+    }
+
+    final directory = await _resolveDirectory();
+    if (directory == null) {
+      throw StateError('无法解析渠道脚本目录');
+    }
+    if (!directory.existsSync()) {
+      directory.createSync(recursive: true);
+    }
+
+    // 文件名 = key 去 'js_' 前缀（与 loadAndRegister 的 key 推导互逆，round-trip）
+    final fileName = channelKey.startsWith('js_')
+        ? channelKey.substring(3)
+        : channelKey;
+    final file = File('${directory.path}/$fileName.js');
+
+    // 记录旧文件内容（校验失败回滚用）
+    final oldContent = file.existsSync() ? await file.readAsString() : null;
+
+    // 写文件 → 校验（initialize）→ 注册；失败回滚文件 + 抛错
+    await file.writeAsString(script);
+
+    final manager = ChannelManager.instance;
+    final existing = manager.getChannelByKey(channelKey);
+    if (existing is JsChannel && existing.scriptSource == script) {
+      appLog.info('ChannelLoader: 导入渠道 $channelKey 已存在且未变更，跳过');
+      return existing;
+    }
+
+    final channel = JsChannel(
+      channelKey: channelKey,
+      script: script,
+      dio: _dio,
+      appDao: _appDao,
+    );
+    try {
+      await channel.initialize();
+    } catch (e) {
+      await channel.dispose();
+      // 回滚：恢复旧内容（无旧内容则删除）
+      if (oldContent != null) {
+        await file.writeAsString(oldContent);
+      } else if (file.existsSync()) {
+        file.deleteSync();
+      }
+      appLog.error('ChannelLoader: 导入渠道 $channelKey 校验失败，已回滚: $e');
+      rethrow;
+    }
+
+    // 覆盖：注销旧渠道（同 key）后注册新渠道
+    if (existing != null) {
+      manager.unregisterChannelByKey(channelKey);
+    }
+    manager.registerChannel(channel);
+    appLog.info('ChannelLoader: 脚本渠道 $channelKey 导入成功');
+    return channel;
   }
 
   Future<Directory?> _resolveDirectory() async {

@@ -699,8 +699,14 @@ class _DiscoveryPageState extends State<DiscoveryPage>
         return 'vivo';
       case ChannelType.fdroid:
         return 'FD';
-      default:
-        return type.code.substring(0, 3);
+      case ChannelType.custom:
+        // 脚本渠道：单渠道显示其名称（截断），多渠道合并显示"脚本"
+        final dynamicChannels = ChannelManager.instance.dynamicChannels;
+        if (dynamicChannels.length == 1) {
+          final name = dynamicChannels.first.info.name;
+          return name.length <= 4 ? name : name.substring(0, 4);
+        }
+        return '脚本';
     }
   }
 

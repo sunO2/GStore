@@ -1,6 +1,7 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
+import 'package:gstore/core/channel/impl/channel_loader.dart';
 import 'package:gstore/core/config/config_manager.dart';
 import 'package:gstore/core/config/providers/download_config_provider.dart';
 import 'package:gstore/core/core.dart';
@@ -185,6 +186,16 @@ class _SettingsPageState extends State<SettingsPage> {
                 const Icon(Icons.chevron_right, size: AppTypography.iconSM),
             onTap: () => _showProxySettingDialog(context),
           ),
+          const Divider(height: 1),
+          // 脚本渠道导入（Android 应用私有目录无法读取公共 Documents 文件，走应用内导入）
+          ListTile(
+            leading: const Icon(Icons.extension, size: AppTypography.iconMD),
+            title: const Text('脚本渠道'),
+            subtitle: const Text('粘贴脚本导入自定义渠道'),
+            trailing:
+                const Icon(Icons.chevron_right, size: AppTypography.iconSM),
+            onTap: () => _showScriptImportDialog(context),
+          ),
         ],
       ),
     );
@@ -323,6 +334,92 @@ class _SettingsPageState extends State<SettingsPage> {
               content: Text(value.isEmpty ? '已禁用 GitHub 代理' : '代理已更新: $value')),
         );
       }
+    }
+  }
+
+  /// 显示脚本渠道导入对话框（Android 应用私有目录无法读取公共 Documents 文件，
+  /// 走应用内粘贴导入；iOS/桌面用户仍可手动放文件到渠道目录）
+  Future<void> _showScriptImportDialog(BuildContext context) async {
+    final scheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+    final keyController = TextEditingController();
+    final scriptController = TextEditingController();
+
+    final confirmed = await AppDialogs.showDialog(
+      title: '导入脚本渠道',
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '粘贴脚本内容创建自定义渠道（Android 无法直接读取公共目录文件，请在此导入）',
+              style: textTheme.bodySmall?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: AppSpacing.md),
+            TextField(
+              key: const Key('script_channel_key_input'),
+              controller: keyController,
+              decoration: const InputDecoration(
+                labelText: '渠道标识',
+                hintText: '如 vivo（自动加 js_ 前缀）',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: AppSpacing.xs),
+            Text(
+              '渠道标识用于数据隔离，仅限字母/数字/下划线',
+              style: textTheme.bodySmall?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: AppSpacing.md),
+            TextField(
+              key: const Key('script_channel_script_input'),
+              controller: scriptController,
+              maxLines: 6,
+              minLines: 4,
+              decoration: const InputDecoration(
+                labelText: '脚本内容',
+                hintText: '粘贴 main(method, params) 脚本',
+                border: OutlineInputBorder(),
+                alignLabelWithHint: true,
+              ),
+            ),
+          ],
+        ),
+      ),
+      confirmText: '导入',
+      cancelText: '取消',
+    );
+
+    if (confirmed != true) return;
+
+    final key = keyController.text.trim();
+    final script = scriptController.text.trim();
+    if (key.isEmpty) {
+      AppDialogs.showError('请输入渠道标识');
+      return;
+    }
+    if (!RegExp(r'^[a-zA-Z_][a-zA-Z0-9_]*$').hasMatch(key)) {
+      AppDialogs.showError('渠道标识仅限字母/数字/下划线，且以字母或下划线开头');
+      return;
+    }
+    if (script.isEmpty) {
+      AppDialogs.showError('请输入脚本内容');
+      return;
+    }
+
+    try {
+      final channel = await ChannelLoader().importScript(
+        channelKey: 'js_$key',
+        script: script,
+      );
+      AppDialogs.showSuccess('脚本渠道已导入（${channel.info.name}），可切到发现页查看');
+    } catch (e) {
+      AppDialogs.showError('导入失败: $e');
     }
   }
 
