@@ -92,6 +92,12 @@ class _HomePageState extends State<HomePage>
   int? _fromIndex;
   int? _toIndex;
 
+  /// agent_tools 模块是否在线（随模块上下线实时更新，控制 AI 助手入口显隐）
+  bool _agentModuleEnabled = ModuleManager.instance.isModuleEnabled('agent_tools');
+
+  /// agent_tools 模块上下线事件订阅（dispose 取消，防泄漏）
+  StreamSubscription<ModuleEvent>? _agentSub;
+
   @override
   void initState() {
     super.initState();
@@ -100,14 +106,36 @@ class _HomePageState extends State<HomePage>
     // 统一在 index 变化时触发淡入动画；底部导航的两段式交叉淡入由 _crossFadeTo 直接
     // 驱动，其 index 变化发生在 _toIndex 非空期间 → 此处提前返回，避免双触发。
     _indexWorker = ever(logic.state.index, _onIndexChanged);
+
+    // 监听 agent_tools 模块上下线：下线隐藏 AI 助手入口（底部 tab），上线恢复
+    _agentSub = ModuleManager.instance.watchModule('agent_tools').listen((_) {
+      if (!mounted) return;
+      setState(() {
+        _agentModuleEnabled =
+            ModuleManager.instance.isModuleEnabled('agent_tools');
+      });
+      // 运行中下线且当前在 AI tab → 跳回来源 tab，防用户困在无入口页面
+      if (!_agentModuleEnabled && logic.state.index.value == 2) {
+        logic.jumpToPage(logic.state.sourceIndex.value);
+      }
+    });
   }
 
   @override
   void dispose() {
+    _agentSub?.cancel();
     _indexWorker.dispose();
     _fadeController.dispose();
     super.dispose();
   }
+
+  /// raw(0..3) → display（AI 隐藏时：首页0 发现1 我的3→2）
+  int _displayIndex(int raw) =>
+      _agentModuleEnabled ? raw : (raw == 3 ? 2 : raw);
+
+  /// display → raw（AI 隐藏时：display2=我的→raw3）
+  int _rawIndex(int display) =>
+      _agentModuleEnabled ? display : (display == 2 ? 3 : display);
 
   /// 两段式交叉淡入淡出（底部导航等视图内跳转）：
   /// 记录源页/目标页 → 淡出源页 → 中点瞬移切换 → 淡入目标页。
@@ -241,10 +269,12 @@ class _HomePageState extends State<HomePage>
                                     .colorScheme
                                     .surface
                                     .withValues(alpha: 0.82),
-                                selectedIndex: logic.state.index.value,
+                                selectedIndex: _displayIndex(
+                                    logic.state.index.value),
                                 onDestinationSelected: (index) {
                                   // 视图内跳转：两段式交叉淡入（中点由 _onFadeTick 瞬移）
-                                  _crossFadeTo(index);
+                                  // display 下标 → raw 下标（AI 隐藏时 display2=我的→raw3）
+                                  _crossFadeTo(_rawIndex(index));
                                 },
                                 destinations: [
                                   NavigationDestination(
@@ -306,26 +336,29 @@ class _HomePageState extends State<HomePage>
                                     ),
                                     label: "发现",
                                   ),
-                                  NavigationDestination(
-                                    icon: AnimatedScale(
-                                      scale: (logic.state.index.value == 2)
-                                          ? 1.15
-                                          : 1.0,
-                                      duration: AppAnimation.fast,
-                                      curve: AppAnimation.curve,
-                                      child: AnimatedSwitcher(
-                                        duration: AppAnimations.normal,
-                                        child:
-                                            (logic.state.index.value == 2)
-                                                ? const Icon(Icons.smart_toy,
-                                                    key: ValueKey(6))
-                                                : const Icon(
-                                                    Icons.smart_toy_outlined,
-                                                    key: ValueKey(7)),
+                                  // AI 助手入口随 agent_tools 模块上下线显隐
+                                  if (_agentModuleEnabled)
+                                    NavigationDestination(
+                                      icon: AnimatedScale(
+                                        scale: (logic.state.index.value == 2)
+                                            ? 1.15
+                                            : 1.0,
+                                        duration: AppAnimation.fast,
+                                        curve: AppAnimation.curve,
+                                        child: AnimatedSwitcher(
+                                          duration: AppAnimations.normal,
+                                          child:
+                                              (logic.state.index.value == 2)
+                                                  ? const Icon(
+                                                      Icons.smart_toy,
+                                                      key: ValueKey(6))
+                                                  : const Icon(
+                                                      Icons.smart_toy_outlined,
+                                                      key: ValueKey(7)),
+                                        ),
                                       ),
+                                      label: "AI 助手",
                                     ),
-                                    label: "AI 助手",
-                                  ),
                                   NavigationDestination(
                                     icon: AnimatedScale(
                                       scale: (logic.state.index.value == 3)

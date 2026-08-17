@@ -39,6 +39,12 @@ class _MinePageState extends State<MinePage>
   /// webdav 模块上下线事件订阅（dispose 取消，防泄漏）
   StreamSubscription<ModuleEvent>? _moduleSub;
 
+  /// agent_tools 模块是否在线（随模块上下线实时更新，控制 AI 助手入口显隐）
+  bool _agentModuleOnline = false;
+
+  /// agent_tools 模块上下线事件订阅（dispose 取消，防泄漏）
+  StreamSubscription<ModuleEvent>? _agentSub;
+
   @override
   bool get wantKeepAlive => true;
 
@@ -71,6 +77,16 @@ class _MinePageState extends State<MinePage>
       _checkWebDavConfig();
     });
 
+    // 监听 agent_tools 模块上下线：下线隐藏 AI 助手入口，上线恢复
+    _agentModuleOnline = ModuleManager.instance.isModuleEnabled('agent_tools');
+    _agentSub = ModuleManager.instance.watchModule('agent_tools').listen((_) {
+      if (!mounted) return;
+      setState(() {
+        _agentModuleOnline =
+            ModuleManager.instance.isModuleEnabled('agent_tools');
+      });
+    });
+
     // 初始化外观卡片动画
     _appearanceController = AnimationController(
       vsync: this,
@@ -95,6 +111,7 @@ class _MinePageState extends State<MinePage>
   @override
   void dispose() {
     _moduleSub?.cancel();
+    _agentSub?.cancel();
     _appearanceController.dispose();
     _backupController.dispose();
     super.dispose();
@@ -375,14 +392,18 @@ class _MinePageState extends State<MinePage>
       shape: _cardShape,
       child: Column(
         children: [
-          ListTile(
-            leading: const Icon(Icons.auto_awesome, size: AppTypography.iconMD),
-            title: const Text('AI 助手'),
-            trailing:
-                const Icon(Icons.chevron_right, size: AppTypography.iconSM),
-            onTap: () => Get.toNamed(AppRoute.agent),
-          ),
-          const Divider(height: 1),
+          // AI 助手入口随 agent_tools 模块上下线显隐（隐藏时其下方 Divider 一并隐藏）
+          if (_agentModuleOnline) ...[
+            ListTile(
+              leading: const Icon(Icons.auto_awesome,
+                  size: AppTypography.iconMD),
+              title: const Text('AI 助手'),
+              trailing:
+                  const Icon(Icons.chevron_right, size: AppTypography.iconSM),
+              onTap: () => Get.toNamed(AppRoute.agent),
+            ),
+            const Divider(height: 1),
+          ],
           ListTile(
             leading: const Icon(Icons.android, size: AppTypography.iconMD),
             title: const Text('已安装应用'),
