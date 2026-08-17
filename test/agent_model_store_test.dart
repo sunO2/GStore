@@ -195,5 +195,104 @@ void main() {
       expect(store.models, isEmpty);
       expect(store.selected, isNull);
     });
+
+    test('add 同 id 两次：去重更新，不产生重复', () async {
+      final store = await AgentModelStore.load();
+      await store.add(AgentModel(
+        id: 'm1',
+        name: 'v1',
+        provider: AgentLlmProvider.google,
+      ));
+      await store.add(AgentModel(
+        id: 'm1',
+        name: 'v2',
+        provider: AgentLlmProvider.google,
+        apiKey: 'k2',
+      ));
+      expect(store.models.length, 1);
+      expect(store.models.single.name, 'v2');
+      expect(store.models.single.apiKey, 'k2');
+      final reloaded = await AgentModelStore.load();
+      expect(reloaded.models.length, 1);
+      expect(reloaded.models.single.name, 'v2');
+    });
+
+    test('add 不同 id：各自保留', () async {
+      final store = await AgentModelStore.load();
+      await store.add(AgentModel(id: 'm1', provider: AgentLlmProvider.google));
+      await store.add(AgentModel(id: 'm2', provider: AgentLlmProvider.openai));
+      expect(store.models.length, 2);
+      expect(store.models.map((m) => m.id).toSet(), {'m1', 'm2'});
+    });
+
+    test('add 同 id：保持原列表位置更新', () async {
+      final store = await AgentModelStore.load();
+      await store.add(AgentModel(id: 'm1', provider: AgentLlmProvider.google));
+      await store.add(AgentModel(id: 'm2', provider: AgentLlmProvider.openai));
+      await store.add(AgentModel(
+        id: 'm1',
+        name: 'v2',
+        provider: AgentLlmProvider.google,
+      ));
+      expect(store.models.length, 2);
+      expect(store.models[0].id, 'm1');
+      expect(store.models[0].name, 'v2');
+      expect(store.models[1].id, 'm2');
+    });
+
+    test('恢复场景：add 已存在的 id 用备份值更新，新 id 追加，重复恢复不产生重复', () async {
+      final store = await AgentModelStore.load();
+      await store.add(AgentModel(
+        id: 'A',
+        name: '旧值',
+        provider: AgentLlmProvider.google,
+      ));
+      // 模拟 backup_service 恢复循环：对每个备份项调用 add(select: false)
+      await store.add(AgentModel(
+        id: 'A',
+        name: '备份值',
+        provider: AgentLlmProvider.google,
+        apiKey: 'kA',
+      ), select: false);
+      await store.add(AgentModel(
+        id: 'B',
+        name: '新模型',
+        provider: AgentLlmProvider.openai,
+      ), select: false);
+      expect(store.models.length, 2);
+      expect(store.models.map((m) => m.id).toSet(), {'A', 'B'});
+      final a = store.models.firstWhere((m) => m.id == 'A');
+      expect(a.name, '备份值');
+      expect(a.apiKey, 'kA');
+      // 同一备份恢复多次：id 依然唯一
+      await store.add(AgentModel(
+        id: 'A',
+        name: '备份值',
+        provider: AgentLlmProvider.google,
+        apiKey: 'kA',
+      ), select: false);
+      await store.add(AgentModel(
+        id: 'B',
+        name: '新模型',
+        provider: AgentLlmProvider.openai,
+      ), select: false);
+      expect(store.models.length, 2);
+    });
+
+    test('add select:false：已有选中不变', () async {
+      final store = await AgentModelStore.load();
+      await store.add(AgentModel(id: 'm1', provider: AgentLlmProvider.google));
+      expect(store.selectedId, 'm1');
+      await store.add(AgentModel(id: 'm2', provider: AgentLlmProvider.openai),
+          select: false);
+      expect(store.selectedId, 'm1');
+    });
+
+    test('add select:false：无选中时自动选中第一个', () async {
+      final store = await AgentModelStore.load();
+      await store.add(AgentModel(id: 'm1', provider: AgentLlmProvider.google),
+          select: false);
+      expect(store.selectedId, 'm1');
+    });
   });
 }

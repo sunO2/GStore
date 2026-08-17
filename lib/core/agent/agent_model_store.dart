@@ -160,9 +160,14 @@ class AgentModelStore {
     }
   }
 
-  /// 添加模型（未指定选中时自动选中）
+  /// 添加模型（同 id 已存在则更新；未指定选中时自动选中）
   Future<void> add(AgentModel model, {bool select = true}) async {
-    models.add(model);
+    final index = models.indexWhere((e) => e.id == model.id);
+    if (index >= 0) {
+      models[index] = model; // 去重：同 id 更新而非重复添加
+    } else {
+      models.add(model);
+    }
     if (select || selectedId == null) {
       selectedId = model.id;
     }

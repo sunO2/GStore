@@ -868,6 +868,8 @@ class BackupService implements IBackupService {
                   baseUrl: item['baseUrl'] as String? ?? '',
                 );
                 if (model.id.isNotEmpty) {
+                  // add 已按 id 去重（同 id 更新、新 id 追加），
+                  // 同一备份恢复多次不会产生重复模型
                   await store.add(model, select: false);
                 }
               }
