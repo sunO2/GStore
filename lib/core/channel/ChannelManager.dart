@@ -6,6 +6,15 @@ import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/db/apps/AppInfo.dart' as db;
 
+/// 动态渠道（脚本化渠道）轻接口：拥有唯一字符串 key 的渠道。
+///
+/// [ChannelManager] 以 key 维护动态索引（UI 用 key 查询，规避 custom 枚举槽位
+/// 后注册覆盖问题）；动态渠道同时登记 `_channels[custom]` 保持既有逻辑兼容。
+abstract interface class DynamicChannel {
+  /// 渠道唯一标识（如 'js.vivo'），数据隔离键 + AppInfo.channelCode
+  String get channelKey;
+}
+
 /// 渠道管理器
 /// 负责管理多个渠道，支持优先级、降级和手动指定
 class ChannelManager {
@@ -19,6 +28,9 @@ class ChannelManager {
 
   /// 所有已注册的渠道
   final Map<ChannelType, IChannel> _channels = {};
+
+  /// 动态渠道索引（按 channelKey，脚本化渠道主索引）
+  final Map<String, IChannel> _channelsByKey = {};
 
   /// 默认渠道类型（当未指定渠道时使用）
   ChannelType _defaultChannelType = ChannelType.localDb;
@@ -37,8 +49,15 @@ class ChannelManager {
   }
 
   /// 注册渠道
+  /// 动态渠道（DynamicChannel）额外登记 _channelsByKey（后注册覆盖 custom 槽位）
   void registerChannel(IChannel channel) {
     _channels[channel.info.type] = channel;
+    if (channel is DynamicChannel) {
+      final dynamicChannel = channel as DynamicChannel;
+      _channelsByKey[dynamicChannel.channelKey] = channel;
+      appLog.info(
+          'ChannelManager: 动态渠道 ${dynamicChannel.channelKey} 已注册（key 索引）');
+    }
     appLog.info('ChannelManager: 渠道 ${channel.info.type.code} 已注册');
   }
 
@@ -49,13 +68,38 @@ class ChannelManager {
     }
   }
 
-  /// 取消注册渠道
+  /// 取消注册渠道（按类型；动态渠道同步清理 key 索引）
   void unregisterChannel(ChannelType type) {
     var channel = _channels.remove(type);
     if (channel != null) {
+      if (channel is DynamicChannel) {
+        _channelsByKey.remove((channel as DynamicChannel).channelKey);
+      }
       channel.dispose();
       appLog.info('ChannelManager: 渠道 ${type.code} 已取消注册');
     }
+  }
+
+  /// 取消注册动态渠道（按 key，同步清理 custom 槽位）
+  void unregisterChannelByKey(String key) {
+    var channel = _channelsByKey.remove(key);
+    if (channel != null) {
+      if (_channels[channel.info.type] == channel) {
+        _channels.remove(channel.info.type);
+      }
+      channel.dispose();
+      appLog.info('ChannelManager: 动态渠道 $key 已取消注册');
+    }
+  }
+
+  /// 按 key 获取动态渠道
+  IChannel? getChannelByKey(String key) {
+    return _channelsByKey[key];
+  }
+
+  /// 获取所有已注册的动态渠道
+  List<IChannel> get dynamicChannels {
+    return List.unmodifiable(_channelsByKey.values);
   }
 
   /// 获取渠道
@@ -338,6 +382,7 @@ class ChannelManager {
       await channel.dispose();
     }
     _channels.clear();
+    _channelsByKey.clear();
     _instance = null;
   }
 

@@ -121,6 +121,25 @@ class JsChannelRuntime {
     return raw;
   }
 
+  /// 直接求值表达式（读取脚本全局常量，如 `CHANNEL_META`）。
+  ///
+  /// 与 [call] 同语义：表达式抛错抛 [JsChannelException]；
+  /// 表达式结果为 Promise 时自动 await（5s 超时）。
+  Future<dynamic> evaluate(String expression) async {
+    _ensureReady();
+
+    final result = _engine!.evaluate(expression);
+    if (result.isError) {
+      throw JsChannelException(result.stringResult);
+    }
+
+    final raw = result.rawResult;
+    if (raw is Future) {
+      return _awaitJsFuture(raw);
+    }
+    return raw;
+  }
+
   /// 释放引擎资源
   Future<void> dispose() async {
     if (_disposed) return;
@@ -280,8 +299,16 @@ class JsChannelRuntime {
   }
 
   /// 驱动 QuickJS 事件循环直到 JS Promise 完成（5s 超时保护）
+  ///
+  /// 注意：外层 completer 的 future 必须先挂 no-op 错误监听——
+  /// JS Promise reject 后错误经微任务传播，而事件循环驱动中有
+  /// `Future.delayed`（timer 间隙会让微任务先排空），若 await 尚未挂上
+  /// 监听，错误会被 zone 报为 unhandled（flutter_test 直接判测试失败），
+  /// 尽管调用方随后能 catch 到。先挂 catchError 可保证错误始终有监听。
   Future<dynamic> _awaitJsFuture(Future<dynamic> future) async {
     final completer = Completer<dynamic>();
+    // 立即挂 no-op 错误监听（防 unhandled 误报），不影响后续 await 重新抛出
+    completer.future.catchError((_) {});
     future.then(completer.complete, onError: completer.completeError);
 
     final deadline = DateTime.now().add(const Duration(seconds: 5));
