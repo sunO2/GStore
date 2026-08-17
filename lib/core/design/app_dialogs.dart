@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
 import 'app_colors.dart';
+import 'app_borders.dart';
 import 'app_spacing.dart';
 import 'app_radius.dart';
 import 'app_animations.dart';
@@ -35,6 +36,16 @@ class AppDialogs {
 
   static TextTheme get _textTheme => _theme.textTheme;
   static ColorScheme get _colorScheme => _theme.colorScheme;
+
+  /// 主题边框侧边：宽度随主题 borderStyle（cardTheme.shape.side），颜色可覆盖。
+  /// GetX 未初始化（测试环境/启动早期）时回退 1.0 宽度，保证不崩。
+  static BorderSide _themeBorderSide({Color? color}) {
+    final context = Get.context;
+    if (context != null) {
+      return AppBorders.sideOf(context, color: color);
+    }
+    return BorderSide(color: color ?? _colorScheme.borderLight, width: 1);
+  }
 
   // ========== Dialog ==========
 
@@ -99,10 +110,7 @@ class AppDialogs {
       backgroundColor: _colorScheme.dialogSurface,
       shape: RoundedRectangleBorder(
         borderRadius: AppRadius.allXL,
-        side: BorderSide(
-          color: _colorScheme.borderLight,
-          width: 1,
-        ),
+        side: _themeBorderSide(color: _colorScheme.borderLight),
       ),
       insetPadding: AppSpacing.onlyHorizontalLG,
       child: ConstrainedBox(
@@ -456,10 +464,7 @@ class AppDialogs {
           topRight: Radius.circular(AppRadius.xxl),
         ),
         border: Border(
-          top: BorderSide(
-            color: _colorScheme.borderLight,
-            width: 1,
-          ),
+          top: _themeBorderSide(color: _colorScheme.borderLight),
         ),
       ),
       child: Column(
@@ -616,10 +621,7 @@ class AppDialogs {
       backgroundColor: _colorScheme.dialogSurface,
       shape: RoundedRectangleBorder(
         borderRadius: AppRadius.allXL,
-        side: BorderSide(
-          color: _colorScheme.borderLight,
-          width: 1,
-        ),
+        side: _themeBorderSide(color: _colorScheme.borderLight),
       ),
       child: Padding(
         padding: AppSpacing.allXXL,
@@ -672,9 +674,8 @@ class _SelectionItem extends StatelessWidget {
         padding: EdgeInsets.symmetric(horizontal: AppSpacing.lg, vertical: AppSpacing.md),
         decoration: BoxDecoration(
           border: Border(
-            top: BorderSide(
+            top: AppDialogs._themeBorderSide(
               color: theme.colorScheme.borderLight,
-              width: 1,
             ),
           ),
         ),

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/design/app_borders.dart';
 import 'package:gstore/core/theme/theme_controller.dart';
 import 'package:gstore/core/theme/app_theme_config.dart';
 
@@ -239,7 +240,12 @@ class _ThemeSettingsPageState extends State<ThemeSettingsPage> {
                   decoration: BoxDecoration(
                     color: config.primaryColor ?? Theme.of(context).colorScheme.primary,
                     borderRadius: BorderRadius.circular(4),
-                    border: Border.all(color: Colors.grey.withOpacity(0.3)),
+                    border: Border.all(
+                      color: Theme.of(context)
+                          .colorScheme
+                          .outlineVariant
+                          .withValues(alpha: 0.3),
+                    ),
                   ),
                 ),
                 onTap: () => _showColorPicker(
@@ -265,7 +271,12 @@ class _ThemeSettingsPageState extends State<ThemeSettingsPage> {
                   decoration: BoxDecoration(
                     color: config.secondaryColor ?? Colors.grey,
                     borderRadius: BorderRadius.circular(4),
-                    border: Border.all(color: Colors.grey.withOpacity(0.3)),
+                    border: Border.all(
+                      color: Theme.of(context)
+                          .colorScheme
+                          .outlineVariant
+                          .withValues(alpha: 0.3),
+                    ),
                   ),
                 ),
                 onTap: () => _showColorPicker(
@@ -291,7 +302,12 @@ class _ThemeSettingsPageState extends State<ThemeSettingsPage> {
                   decoration: BoxDecoration(
                     color: config.tertiaryColor ?? Colors.grey,
                     borderRadius: BorderRadius.circular(4),
-                    border: Border.all(color: Colors.grey.withOpacity(0.3)),
+                    border: Border.all(
+                      color: Theme.of(context)
+                          .colorScheme
+                          .outlineVariant
+                          .withValues(alpha: 0.3),
+                    ),
                   ),
                 ),
                 onTap: () => _showColorPicker(
@@ -458,7 +474,7 @@ class _ThemeSettingsPageState extends State<ThemeSettingsPage> {
                       borderRadius: BorderRadius.circular(8),
                       border: Border.all(
                         color: Theme.of(context).colorScheme.outline,
-                        width: _getBorderWidth(style),
+                        width: AppBorders.sideOf(context).width,
                       ),
                     ),
                   ),
@@ -653,20 +669,6 @@ class _ThemeSettingsPageState extends State<ThemeSettingsPage> {
     }
   }
 
-  double _getBorderWidth(AppBorderStyle style) {
-    switch (style) {
-      case AppBorderStyle.default_:
-      case AppBorderStyle.standard:
-        return 1.0;
-      case AppBorderStyle.none:
-        return 0.0;
-      case AppBorderStyle.light:
-        return 0.5;
-      case AppBorderStyle.bold:
-        return 1.5;
-    }
-  }
-
   Widget _buildPreviewSection(BuildContext context) {
     return Card(
       margin: AppSpacing.allLG,
@@ -855,7 +857,12 @@ class _ColorPickerState extends State<ColorPicker> {
                   color: color,
                   borderRadius: BorderRadius.circular(8),
                   border: Border.all(
-                    color: isSelected ? Colors.white : Colors.grey.withOpacity(0.3),
+                    color: isSelected
+                        ? Colors.white
+                        : Theme.of(context)
+                            .colorScheme
+                            .outlineVariant
+                            .withValues(alpha: 0.3),
                     width: isSelected ? 3 : 1,
                   ),
                 ),
@@ -873,7 +880,12 @@ class _ColorPickerState extends State<ColorPicker> {
           decoration: BoxDecoration(
             color: _selectedColor,
             borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: Colors.grey.withOpacity(0.3)),
+            border: Border.all(
+                      color: Theme.of(context)
+                          .colorScheme
+                          .outlineVariant
+                          .withValues(alpha: 0.3),
+                    ),
           ),
           child: Center(
             child: Text(

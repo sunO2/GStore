@@ -2,6 +2,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/design/app_borders.dart';
 import 'package:gstore/compent/entrance_list.dart';
 import 'package:gstore/compent/pressable_scale.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
@@ -197,9 +198,7 @@ class _DownloadManagerState extends State<DownloadManager> {
       margin: const EdgeInsets.only(bottom: AppSpacing.md),
       padding: EdgeInsets.zero,
       borderRadius: AppRadius.allMD,
-      border: Border.all(
-        color: scheme.outlineVariant.withValues(alpha: 0.5),
-      ),
+      border: AppBorders.all(context, color: scheme.outlineVariant),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [

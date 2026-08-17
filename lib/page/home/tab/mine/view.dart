@@ -6,6 +6,7 @@ import 'package:gstore/page/web/browser.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/design/app_borders.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/theme/app_theme_config.dart';
 import 'package:gstore/page/backup/logic.dart';
@@ -199,9 +200,9 @@ class _MinePageState extends State<MinePage>
     return cardTheme.shape ??
         RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(AppRadius.lg),
-          side: BorderSide(
-            color: theme.colorScheme.outlineVariant.withOpacity(0.5),
-            width: 1,
+          side: AppBorders.sideOf(
+            context,
+            color: theme.colorScheme.outlineVariant,
           ),
         );
   }
@@ -229,9 +230,9 @@ class _MinePageState extends State<MinePage>
     if (shape is RoundedRectangleBorder) {
       return shape.side;
     }
-    return BorderSide(
-      color: Theme.of(context).colorScheme.outlineVariant.withOpacity(0.5),
-      width: 1,
+    return AppBorders.sideOf(
+      context,
+      color: Theme.of(context).colorScheme.outlineVariant,
     );
   }
 
@@ -559,11 +560,7 @@ class _MinePageState extends State<MinePage>
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const SizedBox(height: AppSpacing.lg),
-                  Divider(
-                      color: Theme.of(context)
-                          .colorScheme
-                          .outlineVariant
-                          .withOpacity(0.3)),
+                  Divider(height: 1),
                   const SizedBox(height: AppSpacing.lg),
 
                   // 颜色设置
@@ -808,7 +805,7 @@ class _MinePageState extends State<MinePage>
                     borderRadius: BorderRadius.circular(4),
                     border: Border.all(
                       color: Theme.of(context).colorScheme.outline,
-                      width: _getBorderWidth(style),
+                      width: AppBorders.sideOf(context).width,
                     ),
                   ),
                 ),
@@ -900,21 +897,6 @@ class _MinePageState extends State<MinePage>
         return '标准';
       case AppBorderStyle.bold:
         return '粗犷';
-    }
-  }
-
-  /// 获取边框宽度
-  double _getBorderWidth(AppBorderStyle style) {
-    switch (style) {
-      case AppBorderStyle.default_:
-      case AppBorderStyle.standard:
-        return 1.0;
-      case AppBorderStyle.none:
-        return 0.0;
-      case AppBorderStyle.light:
-        return 0.5;
-      case AppBorderStyle.bold:
-        return 1.5;
     }
   }
 
@@ -1103,11 +1085,7 @@ class _MinePageState extends State<MinePage>
                         children: [
                           const SizedBox(height: AppSpacing.lg),
                           // 分割线（只在展开时显示）
-                          Divider(
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .outlineVariant
-                                  .withOpacity(0.3)),
+                          Divider(height: 1),
                           const SizedBox(height: AppSpacing.lg),
 
                           Text(
@@ -1229,9 +1207,9 @@ class _ColorPresetButton extends StatelessWidget {
     }
 
     final borderSide = themeBorder ??
-        BorderSide(
-          color: Theme.of(context).colorScheme.outlineVariant.withOpacity(0.5),
-          width: 1,
+        AppBorders.sideOf(
+          context,
+          color: Theme.of(context).colorScheme.outlineVariant,
         );
 
     return InkWell(

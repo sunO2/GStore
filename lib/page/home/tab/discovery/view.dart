@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/channel/channel.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/design/app_borders.dart';
 import 'package:gstore/core/design/app_components.dart';
 import 'package:gstore/core/model/AppSummary.dart';
 
@@ -76,12 +77,9 @@ class _DiscoveryPageState extends State<DiscoveryPage>
           height: 1,
           decoration: BoxDecoration(
             border: Border(
-              bottom: BorderSide(
-                color: Theme.of(context)
-                    .colorScheme
-                    .outlineVariant
-                    .withOpacity(0.5),
-                width: 1,
+              bottom: AppBorders.sideOf(
+                context,
+                color: Theme.of(context).colorScheme.outlineVariant,
               ),
             ),
           ),
@@ -158,13 +156,13 @@ class _DiscoveryPageState extends State<DiscoveryPage>
       width: 80,
       decoration: BoxDecoration(
         border: Border(
-          right: BorderSide(
-            color: theme.colorScheme.outlineVariant.withOpacity(0.5),
-            width: 1,
+          right: AppBorders.sideOf(
+            context,
+            color: theme.colorScheme.outlineVariant,
           ),
-          bottom: BorderSide(
-            color: theme.colorScheme.outlineVariant.withOpacity(0.5),
-            width: 1,
+          bottom: AppBorders.sideOf(
+            context,
+            color: theme.colorScheme.outlineVariant,
           ),
         ),
       ),
@@ -241,9 +239,9 @@ class _DiscoveryPageState extends State<DiscoveryPage>
               : Colors.transparent,
           border: isSelected
               ? Border(
-                  left: BorderSide(
+                  left: AppBorders.sideOf(
+                    context,
                     color: theme.colorScheme.primary,
-                    width: 3,
                   ),
                 )
               : null,
@@ -503,8 +501,10 @@ class _DiscoveryPageState extends State<DiscoveryPage>
                 ? theme.colorScheme.primary
                 : isAdded
                     ? theme.colorScheme.primary.withOpacity(0.5)
-                    : theme.colorScheme.outlineVariant.withOpacity(0.5),
-            width: isSelected ? 2 : 1,
+                    : theme.colorScheme.outlineVariant,
+            width: isSelected
+                ? AppBorders.sideOf(context).width * 2
+                : AppBorders.sideOf(context).width,
           ),
         ),
         child: Stack(

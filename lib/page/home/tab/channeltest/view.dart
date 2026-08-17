@@ -731,7 +731,9 @@ class ChannelTestPage extends StatelessWidget {
       child: Container(
         padding: AppSpacing.onlyVerticalLG,
         decoration: BoxDecoration(
-          border: Border.all(color: AppColors.grey300),
+          border: Border.all(
+            color: Theme.of(context).colorScheme.outlineVariant,
+          ),
           borderRadius: AppRadius.allMD,
         ),
         child: Column(

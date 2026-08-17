@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/design/app_borders.dart';
 import 'package:gstore/compent/entrance_list.dart';
 import 'package:gstore/compent/pressable_scale.dart';
 import 'package:gstore/core/service/install_manager.dart';
@@ -382,8 +383,9 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
       elevation: 0,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(AppRadius.md),
-        side: BorderSide(
-          color: Theme.of(context).colorScheme.outlineVariant.withOpacity(0.5),
+        side: AppBorders.sideOf(
+          context,
+          color: Theme.of(context).colorScheme.outlineVariant,
         ),
       ),
       child: ListTile(
