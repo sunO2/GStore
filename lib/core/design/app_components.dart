@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 /// This library provides pre-built components that ensure consistency
 /// across the application while reducing code duplication.
 
+import 'app_borders.dart';
 import 'app_colors.dart';
 import 'app_spacing.dart';
 import 'app_radius.dart';
@@ -57,10 +58,7 @@ class AppCard extends StatelessWidget {
         borderRadius: borderRadius ?? AppRadius.allLG,
         side: border is BorderSide
             ? border as BorderSide
-            : BorderSide(
-                color: Theme.of(context).colorScheme.outlineVariant.withOpacity(0.5),
-                width: 1,
-              ),
+            : AppBorders.sideOf(context),
       );
     } else if (borderRadius != null) {
       // 如果只指定了圆角，保持主题的边框样式
@@ -412,11 +410,11 @@ class _AppTextFieldState extends State<AppTextField> {
         suffixIcon: _buildSuffixIcon(),
         border: OutlineInputBorder(
           borderRadius: AppRadius.allSM,
-          borderSide: const BorderSide(color: AppColors.borderPrimary),
+          borderSide: AppBorders.sideOf(context, color: AppColors.borderPrimary),
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: AppRadius.allSM,
-          borderSide: const BorderSide(color: AppColors.borderPrimary),
+          borderSide: AppBorders.sideOf(context, color: AppColors.borderPrimary),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: AppRadius.allSM,
@@ -432,7 +430,7 @@ class _AppTextFieldState extends State<AppTextField> {
         ),
         disabledBorder: OutlineInputBorder(
           borderRadius: AppRadius.allSM,
-          borderSide: const BorderSide(color: AppColors.borderSecondary),
+          borderSide: AppBorders.sideOf(context, color: AppColors.borderSecondary),
         ),
         filled: true,
         fillColor: widget.enabled ? AppColors.surface : AppColors.grey100,
@@ -759,12 +757,9 @@ class AppSegmentedButton<T> extends StatelessWidget {
             return colorScheme.onSurface;
           },
         ),
-        // 边框
+        // 边框（宽度/透明度随主题 borderStyle）
         side: WidgetStateProperty.all<BorderSide>(
-          BorderSide(
-            color: colorScheme.outlineVariant.withOpacity(0.5),
-            width: 1,
-          ),
+          AppBorders.sideOf(context),
         ),
       ),
     );
@@ -1217,9 +1212,9 @@ class AppBadge extends StatelessWidget {
                     decoration: BoxDecoration(
                       color: badgeColor,
                       borderRadius: BorderRadius.circular(8),
-                      border: Border.all(
+                      border: AppBorders.all(
+                        context,
                         color: Theme.of(context).colorScheme.surface,
-                        width: 1.5,
                       ),
                     ),
                     alignment: Alignment.center,
@@ -1239,9 +1234,9 @@ class AppBadge extends StatelessWidget {
                     decoration: BoxDecoration(
                       color: badgeColor,
                       shape: BoxShape.circle,
-                      border: Border.all(
+                      border: AppBorders.all(
+                        context,
                         color: Theme.of(context).colorScheme.surface,
-                        width: 1.5,
                       ),
                     ),
                   ),
