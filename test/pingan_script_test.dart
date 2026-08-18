@@ -6,16 +6,24 @@ import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/channel/database/channel_added_app.dart';
 import 'package:gstore/core/channel/database/channel_added_app_dao.dart';
+import 'package:gstore/core/channel/impl/channel_package.dart';
 import 'package:gstore/core/js/js_channel_runtime.dart';
 
-/// pingan.js 渠道脚本测试：验证脚本语法正确 + 引擎加载无错 + 分发器各方法行为。
+/// pingan.js 渠道脚本测试（zip 渠道包）：验证脚本语法正确 + 引擎加载无错 + 分发器各方法行为。
 ///
 /// ⚠️ 本测试不请求真实网络：host.network 走注入的假 Dio adapter（按 path 路由假响应），
 /// host.database 走内存假 DAO。真实调用（连平安 test-b-fat 平台）需真机/可用网络。
 ///
-/// 注意：脚本在 test/ 下直接读取 scripts/channels/pingan.js（flutter test 以项目根为 cwd）。
+/// 注意：脚本在 test/ 下读取 scripts/channels/pingan.zip（flutter test 以项目根为 cwd），
+/// 经 ChannelPackage.decode 解出 entry.js（发现页）与 detail.js（详情页）两份脚本：
+/// - 发现页/更新路径方法（getAllApps/searchApps/getAppInfo/getAppDetail/checkAppUpdate/
+///   checkUpdate/doUpdate）→ entry runtime（JsChannel 消费）
+/// - 详情页方法（getAppDetail/versionOptions/switchVersion/buildHistory/detailMenu/
+///   jsswitchVersion/jsBuildHistory）→ detail runtime（JsDetailChannel 消费）
+/// entry/detail 各自独立 runtime（独立 QuickJS context），工具函数/认证缓存不共享。
 
 const String _pinganHost = 'https://test-b-fat.pingan.com.cn/istore';
+const String _mcdBase = 'https://test-b-fat.pingan.com.cn/istore/istore-api/mcd-api/mcd-api';
 const String _channelKey = 'js_pingan_test';
 
 /// 内存版 ChannelAddedAppDao（测试用，模拟渠道数据库）
@@ -170,6 +178,10 @@ class _FakePinganApi {
               'installTimes': 99,
               'changelog': '修复若干问题',
               'builtBy': 'ci-bot',
+              // 真实接口结构：ipa[0].name 下载文件名（proxy 转发）
+              'ipa': [
+                {'name': 'com.pingan.app-1.9.0.apk', '_id': 'ipa-1'},
+              ],
               'fileurl': withFileUrl ? ['/apk/com.pingan.app-1.9.0.apk'] : [],
             },
           ],
@@ -200,9 +212,18 @@ void main() {
   final api = _FakePinganApi();
 
   late String script;
+  late String detailScript;
+  late Map<String, dynamic> pkgMeta;
   setUpAll(() {
-    script = File('scripts/channels/pingan.js').readAsStringSync();
-    expect(script, contains('CHANNEL_META'), reason: '脚本应包含 CHANNEL_META');
+    final zipBytes = File('scripts/channels/pingan.zip').readAsBytesSync();
+    final pkg = ChannelPackage.decode(zipBytes);
+    expect(pkg, isNotNull, reason: 'pingan.zip 应可解析（entry.js 必须）');
+    script = pkg!.entryScript;
+    detailScript = pkg.detailScript!;
+    expect(detailScript, isNotEmpty, reason: 'pingan.zip 应包含 detail.js');
+    pkgMeta = pkg.meta!;
+    expect(script, contains('CHANNEL_META'), reason: 'entry.js 应包含 CHANNEL_META');
+    expect(pkgMeta['name'], '平安测试商店', reason: 'meta.json name 正确');
   });
 
   /// 默认 handler：app-list 25 条分页 + build-list（fileurl 空）+ 认证 200 无 url
@@ -223,12 +244,13 @@ void main() {
   JsChannelRuntime buildRuntime({
     Map<String, String> Function()? env,
     Map<String, dynamic> Function(RequestOptions options)? handler,
+    String? scriptOverride,
   }) {
     final dio = Dio();
     dio.httpClientAdapter = _FakeDioAdapter(handler ?? defaultHandler, requestLog);
     return JsChannelRuntime(
       channelKey: _channelKey,
-      script: script,
+      script: scriptOverride ?? script,
       dio: dio,
       appDao: appDao,
       envReader: env ?? () => const <String, String>{},
@@ -415,7 +437,7 @@ void main() {
       await runtime.dispose();
     });
 
-    test('⑦ getAppInfo：fileurl 空 + 配置环境变量 → 认证成功拿下载地址', () async {
+    test('⑦ getAppInfo：fileurl 空 + 配置环境变量 → 一次性凭证检测通过 → proxy 下载地址', () async {
       final runtime = buildRuntime(
         env: () => {'PINGAN_USER': 'tester', 'PINGAN_PASS': 'secret'},
         handler: (options) {
@@ -432,7 +454,11 @@ void main() {
 
       final result = await runtime.call('main', ['getAppInfo', {'appId': 'app-1'}]) as Map;
       final extra = (result['data'] as Map)['extra'] as Map;
-      expect(extra['apkUrl'], '$_pinganHost/download/token-redirect.apk');
+      // 下载地址 = proxy 拼接（不经 login/check 返回值）
+      expect(
+        extra['apkUrl'],
+        '$_mcdBase/proxy/sit/com.pingan.app-1.9.0.apk?um=tester&value=secret',
+      );
       expect(extra['downloadNote'], isNull);
       // 确实发起了认证请求（先主路径，成功即止）
       final authRequests = requestLog.where((r) => r.contains('login/check')).toList();
@@ -565,7 +591,7 @@ void main() {
     });
 
     test('⑭ getAppDetail：同 getAppInfo + 详情页字段（downloads 等）', () async {
-      final runtime = buildRuntime();
+      final runtime = buildRuntime(scriptOverride: detailScript);
       await runtime.initialize();
 
       final result = await runtime.call('main', ['getAppDetail', {'appId': 'app-1'}]) as Map;
@@ -597,7 +623,7 @@ void main() {
     });
 
     test('⑰ getAppDetail：无 android 构建 → {ok:false, data:null, error}（非 data:null）', () async {
-      final runtime = buildRuntime(handler: (options) {
+      final runtime = buildRuntime(scriptOverride: detailScript, handler: (options) {
         if (options.path.contains('/sunflower/i/build-list')) {
           return api.buildListNoAndroid();
         }
@@ -627,7 +653,7 @@ void main() {
         extra: jsonEncode({'appId': 'com.pingan.pabank.activity'}),
       ));
 
-      final runtime = buildRuntime(handler: (options) {
+      final runtime = buildRuntime(scriptOverride: detailScript, handler: (options) {
         if (options.path.contains('/sunflower/i/build-list')) {
           final appname = options.queryParameters['appname']?.toString() ?? '';
           if (appname == 'com.pingan.pabank.activity') {
@@ -657,7 +683,7 @@ void main() {
     });
 
     test('⑲ getAppDetail：网络失败 → {ok:false, data:null}（不抛）', () async {
-      final runtime = buildRuntime(handler: (options) {
+      final runtime = buildRuntime(scriptOverride: detailScript, handler: (options) {
         if (options.path.contains('/sunflower/i/build-list')) {
           return {'__status': 500, 'msg': 'boom'};
         }
@@ -698,7 +724,7 @@ void main() {
     });
 
     test('⑳ getVersionOptions 带 env → 只拉该 env 一次（envs 仍全量 5 个）', () async {
-      final runtime = buildRuntime(handler: (options) {
+      final runtime = buildRuntime(scriptOverride: detailScript, handler: (options) {
         if (options.path.contains('/sunflower/i/build-list')) {
           final env = options.queryParameters['env']?.toString() ?? '';
           // 按 env 返回不同版本组（验证只请求目标 env）
@@ -753,7 +779,7 @@ void main() {
     });
 
     test('㉑ getVersionOptions 不带 env → 按凭证默认 env（sit）单次拉取', () async {
-      final runtime = buildRuntime();
+      final runtime = buildRuntime(scriptOverride: detailScript);
       await runtime.initialize();
 
       final result = await runtime.call(
@@ -775,7 +801,7 @@ void main() {
     });
 
     test('㉒ getVersionOptions 单 env 失败 → ok:false（不再静默跳过）', () async {
-      final runtime = buildRuntime(handler: (options) {
+      final runtime = buildRuntime(scriptOverride: detailScript, handler: (options) {
         if (options.path.contains('/sunflower/i/build-list')) {
           return {'__status': 500, 'msg': 'boom'};
         }
@@ -792,7 +818,7 @@ void main() {
     });
 
     test('㉓ getAppDetail 带 version → build-list 单版本拉取（version 参数）', () async {
-      final runtime = buildRuntime();
+      final runtime = buildRuntime(scriptOverride: detailScript);
       await runtime.initialize();
 
       final result = await runtime.call(
@@ -826,6 +852,268 @@ void main() {
           requestLog.where((r) => r.contains('build-list')).toList();
       expect(buildRequests.length, 1);
       expect(buildRequests.first, contains('version=1.9.0'));
+
+      await runtime.dispose();
+    });
+
+    test('㉕ 会话缓存：同凭证连续两次 getAppDetail → login/check 只调 1 次', () async {
+      var loginCheckCount = 0;
+      final runtime = buildRuntime(
+        scriptOverride: detailScript,
+        env: () => {'PINGAN_USER': 'tester', 'PINGAN_PASS': 'secret'},
+        handler: (options) {
+          if (options.path.contains('/sunflower/i/build-list')) {
+            return api.buildList(withFileUrl: false);
+          }
+          if (options.path.contains('login/check')) {
+            loginCheckCount++;
+            return {'code': 0, 'url': '/download/token-redirect.apk'};
+          }
+          return defaultHandler(options);
+        },
+      );
+      await runtime.initialize();
+
+      final r1 = await runtime.call('main', ['getAppDetail', {'appId': 'app-1'}]) as Map;
+      expect(r1['ok'], isTrue);
+      final r2 = await runtime.call('main', ['getAppDetail', {'appId': 'app-1'}]) as Map;
+      expect(r2['ok'], isTrue);
+
+      // 同凭证两次详情 → login/check 只调 1 次（detail runtime 会话缓存命中）
+      expect(loginCheckCount, 1);
+
+      // 详情可下载（proxy url + downloadable:true）
+      final d1 = r1['data'] as Map;
+      final dl1 = (d1['downloads'] as List).first as Map;
+      expect(dl1['url'],
+          '$_mcdBase/proxy/sit/com.pingan.app-1.9.0.apk?um=tester&value=secret');
+      expect(dl1['downloadable'], isTrue);
+      expect(dl1['note'], '');
+
+      await runtime.dispose();
+
+      // zip 拆分后 entry/detail 各自独立 runtime（独立 QuickJS context）：
+      // 认证缓存不再跨方法共享——entry runtime 的 getAppInfo 持有自己的
+      // 会话缓存，首次调用重新检测 1 次（总数 2，而非旧单文件的 1）。
+      final entryRuntime = buildRuntime(
+        env: () => {'PINGAN_USER': 'tester', 'PINGAN_PASS': 'secret'},
+        handler: (options) {
+          if (options.path.contains('/sunflower/i/build-list')) {
+            return api.buildList(withFileUrl: false);
+          }
+          if (options.path.contains('login/check')) {
+            loginCheckCount++;
+            return {'code': 0, 'url': '/download/token-redirect.apk'};
+          }
+          return defaultHandler(options);
+        },
+      );
+      await entryRuntime.initialize();
+      final r3 = await entryRuntime.call('main', ['getAppInfo', {'appId': 'app-1'}]) as Map;
+      expect(r3['ok'], isTrue);
+      expect(loginCheckCount, 2);
+
+      await entryRuntime.dispose();
+    });
+
+    test('㉖ 凭证变更 → 重新检测（缓存按 user/pass）', () async {
+      var loginCheckCount = 0;
+      final runtime = buildRuntime(
+        scriptOverride: detailScript,
+        env: () => {'PINGAN_USER': 'tester', 'PINGAN_PASS': 'secret'},
+        handler: (options) {
+          if (options.path.contains('/sunflower/i/build-list')) {
+            return api.buildList(withFileUrl: false);
+          }
+          if (options.path.contains('login/check')) {
+            loginCheckCount++;
+            return {'code': 0, 'url': '/download/token-redirect.apk'};
+          }
+          return defaultHandler(options);
+        },
+      );
+      await runtime.initialize();
+
+      await runtime.call('main', ['getAppDetail', {'appId': 'app-1'}]);
+      expect(loginCheckCount, 1);
+
+      // 更换凭证（updateEnv 热更新）→ 缓存不匹配 → 重新检测
+      runtime.updateEnv({'PINGAN_USER': 'tester2', 'PINGAN_PASS': 'secret2'});
+      final r2 = await runtime.call('main', ['getAppDetail', {'appId': 'app-1'}]) as Map;
+      expect(r2['ok'], isTrue);
+      expect(loginCheckCount, 2);
+
+      await runtime.dispose();
+    });
+
+    test('㉗ login/check 失败 → 详情仍正常返回（downloadable:false + note，失败不缓存）', () async {
+      var loginCheckCount = 0;
+      final runtime = buildRuntime(
+        scriptOverride: detailScript,
+        env: () => {'PINGAN_USER': 'tester', 'PINGAN_PASS': 'wrong'},
+        handler: (options) {
+          if (options.path.contains('/sunflower/i/build-list')) {
+            return api.buildList(withFileUrl: false);
+          }
+          if (options.path.contains('login/check')) {
+            loginCheckCount++;
+            return {'__status': 401, 'msg': 'unauthorized'};
+          }
+          return defaultHandler(options);
+        },
+      );
+      await runtime.initialize();
+
+      final r1 = await runtime.call('main', ['getAppDetail', {'appId': 'app-1'}]) as Map;
+      expect(r1['ok'], isTrue); // 认证失败绝不阻塞详情
+      final d1 = r1['data'] as Map;
+      final dl1 = (d1['downloads'] as List).first as Map;
+      expect(dl1['url'], '');
+      expect(dl1['downloadable'], isFalse);
+      expect(dl1['note'], isNotEmpty);
+      expect((d1['extra'] as Map)['authError'], contains('认证失败'));
+
+      // 失败未缓存 → 再次调用重新检测（主路径+文档路径各 2 次 = 4）
+      await runtime.call('main', ['getAppDetail', {'appId': 'app-1'}]);
+      expect(loginCheckCount, 4);
+
+      await runtime.dispose();
+    });
+
+    test('㉘ 真实结构（ipa + fileurl 混合）→ 详情正常，downloads 直连/proxy 并存', () async {
+      var loginCheckCount = 0;
+      final runtime = buildRuntime(
+        scriptOverride: detailScript,
+        env: () => {'PINGAN_USER': 'tester', 'PINGAN_PASS': 'secret'},
+        handler: (options) {
+          if (options.path.contains('/sunflower/i/build-list')) {
+            return {
+              'appLogo': '/logo/app.png',
+              'buildList': [
+                {
+                  '_id': 'bg-real-ipa',
+                  'version': '3.2.1',
+                  'platform': 'android',
+                  'env': 'sit',
+                  'publishedAt': 1710000000000,
+                  'builds': [
+                    {
+                      'identifier': 'com.pingan.real',
+                      'versionname': '3.2.1',
+                      'num': 42,
+                      'size': 56789012,
+                      'installTimes': 1024,
+                      'changelog': '修复若干问题',
+                      'builtBy': 'jenkins',
+                      'ipa': [
+                        {'name': 'com.pingan.real-3.2.1.apk', '_id': 'ipa-1'},
+                      ],
+                      'fileurl': [],
+                    },
+                  ],
+                },
+                {
+                  '_id': 'bg-real-file',
+                  'version': '1.0.0',
+                  'platform': 'android',
+                  'env': 'sit',
+                  'publishedAt': 1700000000000,
+                  'builds': [
+                    {
+                      'identifier': 'com.pingan.file',
+                      'versionname': '1.0.0',
+                      'num': 1,
+                      'size': 1000,
+                      'fileurl': ['/apk/direct.apk'],
+                    },
+                  ],
+                },
+              ],
+            };
+          }
+          if (options.path.contains('login/check')) {
+            loginCheckCount++;
+            return {'code': 0, 'url': '/download/token-redirect.apk'};
+          }
+          return defaultHandler(options);
+        },
+      );
+      await runtime.initialize();
+
+      final result = await runtime.call('main', ['getAppDetail', {'appId': 'app-1'}]) as Map;
+      expect(result['ok'], isTrue);
+      final d = result['data'] as Map;
+      expect(d['appId'], 'com.pingan.real'); // 最新组（ipa proxy）
+      expect(d['version'], '3.2.1');
+
+      final downloads = d['downloads'] as List;
+      expect(downloads.length, 2);
+      final dl0 = downloads[0] as Map; // 最新组：ipa name → proxy 拼接
+      expect(dl0['url'],
+          '$_mcdBase/proxy/sit/com.pingan.real-3.2.1.apk?um=tester&value=secret');
+      expect(dl0['downloadable'], isTrue);
+      final dl1 = downloads[1] as Map; // fileurl 直连（不认证）
+      expect(dl1['url'], '$_pinganHost/apk/direct.apk');
+      expect(dl1['downloadable'], isTrue);
+
+      // 一次详情 → login/check 只调 1 次
+      expect(loginCheckCount, 1);
+
+      await runtime.dispose();
+    });
+
+    test('㉙ fetchBuildDetail 失败 → 详情仍返回（screenshots 空）', () async {
+      final runtime = buildRuntime(scriptOverride: detailScript, handler: (options) {
+        if (options.path.endsWith('/sunflower/i/build')) {
+          return {'__status': 500, 'msg': 'boom'};
+        }
+        return defaultHandler(options);
+      });
+      await runtime.initialize();
+
+      final result = await runtime.call('main', ['getAppDetail', {'appId': 'app-1'}]) as Map;
+      expect(result['ok'], isTrue); // build 详情失败 → 降级继续，不阻塞详情
+      final d = result['data'] as Map;
+      expect(d['appId'], 'com.pingan.app');
+      expect((d['extra'] as Map)['screenshots'], isEmpty);
+      expect(d['downloads'], isNotEmpty);
+
+      await runtime.dispose();
+    });
+
+    test('㉚ buildDetailFromGroup 畸形 group → 不抛，返回最简详情', () async {
+      final runtime = buildRuntime(scriptOverride: detailScript, handler: (options) {
+        if (options.path.contains('/sunflower/i/build-list')) {
+          return {
+            'appLogo': '/logo/app.png',
+            'buildList': [
+              {
+                '_id': 'bg-malformed',
+                'version': '0.0.1',
+                'platform': 'android',
+                'env': 'sit',
+                'publishedAt': null,
+                'builds': [
+                  null, // 脏数据：null 历史构建
+                  {'num': 'abc', 'size': 'xyz', 'identifier': null, 'changelog': null},
+                ],
+              },
+            ],
+          };
+        }
+        return defaultHandler(options);
+      });
+      await runtime.initialize();
+
+      final result = await runtime.call('main', ['getAppDetail', {'appId': 'app-1'}]) as Map;
+      expect(result['ok'], isTrue); // 畸形 group 不抛
+      final d = result['data'] as Map;
+      expect(d['name'], '0.0.1');
+      final extra = d['extra'] as Map;
+      expect(extra['versionHistory'], isNotEmpty);
+      final downloads = d['downloads'] as List;
+      expect(downloads.length, 1);
+      expect((downloads.first as Map)['downloadable'], isFalse);
 
       await runtime.dispose();
     });
