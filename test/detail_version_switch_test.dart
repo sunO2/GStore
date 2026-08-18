@@ -53,9 +53,12 @@ class _FakeJsChannel extends JsChannel {
   int versionOptionsCalls = 0;
   int switchVersionCalls = 0;
   int buildHistoryCalls = 0;
+  int getAppInfoCalls = 0;
   String? lastSwitchEnv;
   String? lastSwitchVersion;
   String? lastVersionOptionsEnv;
+  String? lastBuildHistoryVersion;
+  String? lastBuildHistoryEnv;
 
   // ---- Wave B：detailMenu / setUiCallbacks / invokeScriptMethod ----
   List<Map<String, dynamic>>? detailMenuResult;
@@ -150,6 +153,8 @@ class _FakeJsChannel extends JsChannel {
     required String env,
   }) async {
     buildHistoryCalls++;
+    lastBuildHistoryVersion = version;
+    lastBuildHistoryEnv = env;
     return buildHistoryResult;
   }
 
@@ -159,6 +164,7 @@ class _FakeJsChannel extends JsChannel {
     bool forceRefresh = false,
     String? version,
   }) async {
+    getAppInfoCalls++;
     return ChannelResult.success(data: null, from: ChannelType.custom);
   }
 
@@ -546,8 +552,10 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 100));
 
-    // onBuildHistory 被调（version/env 正确）
+    // onBuildHistory 被调（version/env 正确：当前选中 env = prod + 该行 version）
     expect(js.buildHistoryCalls, 1);
+    expect(js.lastBuildHistoryVersion, '1.0.0');
+    expect(js.lastBuildHistoryEnv, 'prod');
     expect(find.text('构建 #3'), findsOneWidget);
     expect(find.text('构建 #2'), findsOneWidget);
 
@@ -712,5 +720,47 @@ void main() {
     expect(js.lastSwitchEnv, 'prod');
     expect(js.lastSwitchVersion, '2.0.0');
     expect(logic.state.detailInfo.value?.version, '2.0.0');
+  });
+
+  testWidgets('⑫ 点"更多"：JsChannel 不调 getAppInfo（canonicalId 直接用 req.appId）',
+      (tester) async {
+    final js = _FakeJsChannel();
+    js.detailMenuResult = [
+      {'action': '切换版本', 'jscall': 'jsswitchVersion', 'clickIsDimiss': true},
+    ];
+    ChannelManager.instance.registerChannel(js);
+
+    final logic = buildLogic();
+    await pumpHost(tester, logic);
+    await openMoreActions(tester);
+
+    // 更多面板打开：detailMenu 被调，但 getAppInfo 零调用（canonical 解析跳过）
+    expect(js.detailMenuCalls, 1);
+    expect(js.getAppInfoCalls, 0);
+    expect(find.text('切换版本'), findsOneWidget);
+  });
+
+  testWidgets('⑬ 点"更多"仅调 detailMenu：零 versionOptions/buildHistory/switchVersion 请求',
+      (tester) async {
+    final js = _FakeJsChannel();
+    js.detailMenuResult = [
+      {'action': '切换版本', 'jscall': 'jsswitchVersion', 'clickIsDimiss': true},
+      {'action': '历史构建', 'jscall': 'jsBuildHistory', 'clickIsDimiss': true},
+    ];
+    ChannelManager.instance.registerChannel(js);
+
+    final logic = buildLogic();
+    await pumpHost(tester, logic);
+    await openMoreActions(tester);
+
+    // 点"更多"只有 detailMenu（纯菜单，零请求）；build-list 类方法均未触发
+    expect(js.detailMenuCalls, 1);
+    expect(js.versionOptionsCalls, 0);
+    expect(js.buildHistoryCalls, 0);
+    expect(js.switchVersionCalls, 0);
+    expect(js.getAppInfoCalls, 0);
+    // 宫格渲染脚本声明动作
+    expect(find.text('切换版本'), findsOneWidget);
+    expect(find.text('历史构建'), findsOneWidget);
   });
 }

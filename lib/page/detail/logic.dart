@@ -669,10 +669,13 @@ class DetailLogic extends GetxController {
     if (req == null) return;
 
     // 解析 canonical appId（复刻发现页 showTagPickerForApp 的模式：
-    // 渠道 getAppInfo 返回的 AppSummary 交给 canonicalAppId 规范化）
+    // 渠道 getAppInfo 返回的 AppSummary 交给 canonicalAppId 规范化）。
+    // 脚本渠道（JsChannel）跳过：canonicalAppId 默认原样返回 appInfo.appId，
+    // 且 getAppInfo 会触发脚本网络请求（build-list）——点"更多"应零请求，
+    // 直接用 req.appId 作 canonicalId 即可。
     final channelInstance = _channelManager?.getChannel(req.channel);
     String canonicalId = req.appId;
-    if (channelInstance != null) {
+    if (channelInstance != null && channelInstance is! JsChannel) {
       try {
         final basicInfo = await channelInstance.getAppInfo(
           req.appId,
@@ -841,10 +844,6 @@ class DetailLogic extends GetxController {
         const <String>[];
     final versions = _parseVersionOptions(opts);
 
-    // 记录最近一次展开的历史构建所属 version/env（onBuildSelect 下载时定位详情用）
-    var historyVersion = '';
-    var historyEnv = '';
-
     return ChannelVersionPickerSheet.show(
       context: context,
       title: title ?? '切换版本',
@@ -855,8 +854,6 @@ class DetailLogic extends GetxController {
       onEnvChanged: (env) async =>
           _parseVersionOptions(await js.versionOptions(req.appId, env: env)),
       onBuildHistory: ({required version, required env}) async {
-        historyVersion = version;
-        historyEnv = env;
         final bh = await js.buildHistory(
           appId: req.appId,
           version: version,
@@ -881,12 +878,14 @@ class DetailLogic extends GetxController {
             const <BuildOption>[];
         return builds;
       },
-      onBuildSelect: (build) {
+      // 携带该行所属 version/env（组件按当前选中 env + 行 version 传参），
+      // 多行同时展开时各自下载定位互不干扰（不复用"最近展开"捕获）。
+      onBuildSelect: (build, {required version, required env}) {
         unawaited(_downloadHistoricalBuild(
           js,
           build,
-          version: historyVersion,
-          env: historyEnv,
+          version: version,
+          env: env,
         ));
       },
     );

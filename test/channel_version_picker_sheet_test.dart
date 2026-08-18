@@ -60,11 +60,16 @@ void main() {
       buildHarness({
     String? currentEnv,
     String? currentVersion,
+    List<VersionOption>? versionsOverride,
     Future<List<BuildOption>> Function({
       required String version,
       required String env,
     })? onBuildHistory,
-    void Function(BuildOption build)? onBuildSelect,
+    void Function(
+      BuildOption build, {
+      required String version,
+      required String env,
+    })? onBuildSelect,
     Future<List<VersionOption>> Function(String env)? onEnvChanged,
   }) {
     late Future<VersionSelection?> result;
@@ -78,7 +83,7 @@ void main() {
                   context: context,
                   title: '切换版本',
                   envs: envs,
-                  versions: versions,
+                  versions: versionsOverride ?? versions,
                   currentEnv: currentEnv,
                   currentVersion: currentVersion,
                   onBuildHistory: onBuildHistory,
@@ -180,7 +185,8 @@ void main() {
         historyCalls.add((version: version, env: env));
         return builds;
       },
-      onBuildSelect: (build) => selectedBuilds.add(build),
+      onBuildSelect: (build, {required version, required env}) =>
+          selectedBuilds.add(build),
     );
     await openSheet(tester, h.app);
 
@@ -372,5 +378,91 @@ void main() {
     expect(find.text('1.2.0'), findsOneWidget);
     expect(find.text('1.0.0'), findsOneWidget);
     expect(find.text('1.1.0'), findsNothing);
+  });
+
+  testWidgets('⑪ 版本多（25+）→ 弹框不超屏、确认/取消按钮固定可见、列表内部滚动',
+      (tester) async {
+    final manyVersions = [
+      for (var i = 0; i < 25; i++)
+        VersionOption(version: '1.$i.0', envs: ['sit'], buildCount: 1),
+    ];
+    final h = buildHarness(versionsOverride: manyVersions);
+    await openSheet(tester, h.app);
+
+    final screenH =
+        tester.view.physicalSize.height / tester.view.devicePixelRatio;
+
+    // 按钮可见且在屏幕内（弹框被限高，不顶出屏幕）
+    final confirm = find.text('确认切换');
+    final cancel = find.text('取消');
+    expect(confirm, findsOneWidget);
+    expect(cancel, findsOneWidget);
+    expect(tester.getRect(confirm).bottom, lessThanOrEqualTo(screenH));
+    expect(tester.getRect(cancel).bottom, lessThanOrEqualTo(screenH));
+    expect(tester.getRect(confirm).top, greaterThan(0));
+    expect(tester.takeException(), isNull);
+
+    // 版本列表内部滚动（拖列表）：首版本滚出、按钮与 env chips 仍固定可见
+    await tester.drag(find.byType(ListView), const Offset(0, -400));
+    await tester.pump();
+    expect(find.text('1.0.0'), findsNothing);
+    expect(find.text('确认切换'), findsOneWidget);
+    expect(find.text('取消'), findsOneWidget);
+    expect(find.text('sit'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('⑫ 点历史构建 → onBuildHistory 传当前选中 env + 该行 version',
+      (tester) async {
+    final historyCalls = <({String version, String env})>[];
+    final h = buildHarness(
+      onBuildHistory: ({required version, required env}) async {
+        historyCalls.add((version: version, env: env));
+        return builds;
+      },
+    );
+    await openSheet(tester, h.app);
+
+    // 先切 env 到 uat（当前选中 env = uat）
+    await tester.tap(find.text('uat'));
+    await tester.pump();
+
+    // 点第一行（1.2.0）的历史构建 → 传参应为 (1.2.0, uat)
+    await tester.tap(find.text('历史构建').first);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(historyCalls, hasLength(1));
+    expect(historyCalls.first.version, '1.2.0');
+    expect(historyCalls.first.env, 'uat');
+  });
+
+  testWidgets('⑬ 多行展开：onBuildSelect 携带各自行的 version/env（不复用最近展开）',
+      (tester) async {
+    final selected = <({int num, String version, String env})>[];
+    final h = buildHarness(
+      onBuildHistory: ({required version, required env}) async => builds,
+      onBuildSelect: (build, {required version, required env}) {
+        selected.add((num: build.num, version: version, env: env));
+      },
+    );
+    await openSheet(tester, h.app);
+
+    // 展开第一行（1.2.0）与第二行（1.1.0）的历史
+    await tester.tap(find.text('历史构建').first);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.tap(find.text('历史构建').last);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    // 点第一行（1.2.0）里的构建 #12 → 应携带 (1.2.0, sit)，而非最近展开的 1.1.0
+    await tester.tap(find.text('构建 #12').first);
+    await tester.pump();
+
+    expect(selected, hasLength(1));
+    expect(selected.first.num, 12);
+    expect(selected.first.version, '1.2.0');
+    expect(selected.first.env, 'sit');
   });
 }

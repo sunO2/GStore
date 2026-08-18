@@ -29,7 +29,11 @@ class ChannelVersionPickerSheet {
       required String version,
       required String env,
     })? onBuildHistory,
-    void Function(BuildOption build)? onBuildSelect,
+    void Function(
+      BuildOption build, {
+      required String version,
+      required String env,
+    })? onBuildSelect,
     Future<List<VersionOption>> Function(String env)? onEnvChanged,
   }) {
     return showModalBottomSheet<VersionSelection>(
@@ -118,7 +122,13 @@ class _ChannelVersionPickerSheet extends StatefulWidget {
     required String version,
     required String env,
   })? onBuildHistory;
-  final void Function(BuildOption build)? onBuildSelect;
+
+  /// 选中某个历史构建 → 下载；携带该行所属 version/env（多行展开时不复用最近展开）
+  final void Function(
+    BuildOption build, {
+    required String version,
+    required String env,
+  })? onBuildSelect;
   final Future<List<VersionOption>> Function(String env)? onEnvChanged;
 
   @override
@@ -250,120 +260,159 @@ class _ChannelVersionPickerSheetState extends State<_ChannelVersionPickerSheet> 
 
     final filtered = _versionsFor(_selectedEnv);
 
-    return SafeArea(
-      top: false,
-      child: SingleChildScrollView(
-        padding: AppSpacing.allXL,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // 标题
-            Text(
-              widget.title,
-              style: textTheme.titleLarge?.copyWith(
-                fontWeight: AppTypography.weightSemiBold,
-              ),
-            ),
-            const SizedBox(height: AppSpacing.lg),
+    // 弹框限高（屏高 70%）：版本多时列表内部滚动，不顶出屏幕；
+    // 确认/取消按钮固定在底部（不随列表滚动，始终可见）。
+    final maxHeight = MediaQuery.of(context).size.height * 0.7;
 
-            // env 独立选择（chips）
-            Text(
-              '环境',
-              style: textTheme.labelLarge?.copyWith(
-                color: colorScheme.onSurfaceVariant,
-              ),
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxHeight: maxHeight),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // ===== 固定头部：标题 + env chips =====
+          Padding(
+            padding: const EdgeInsets.fromLTRB(
+              AppSpacing.xl,
+              AppSpacing.xl,
+              AppSpacing.xl,
+              0,
             ),
-            const SizedBox(height: AppSpacing.sm),
-            Wrap(
-              spacing: AppSpacing.sm,
-              runSpacing: AppSpacing.xs,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                for (final env in widget.envs)
-                  ChoiceChip(
-                    label: Text(env),
-                    selected: _selectedEnv == env,
-                    onSelected: (_) => _selectEnv(env),
-                    selectedColor: colorScheme.secondaryContainer,
-                    checkmarkColor: colorScheme.onSecondaryContainer,
-                    labelStyle: textTheme.labelSmall,
-                    visualDensity: VisualDensity.compact,
-                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    shape: RoundedRectangleBorder(
-                      borderRadius:
-                          BorderRadius.circular(AppRadius.radiusButton),
-                      side: BorderSide(
-                        color: _selectedEnv == env
-                            ? colorScheme.secondary
-                            : colorScheme.outlineVariant,
-                      ),
-                    ),
+                Text(
+                  widget.title,
+                  style: textTheme.titleLarge?.copyWith(
+                    fontWeight: AppTypography.weightSemiBold,
                   ),
-              ],
-            ),
-            const SizedBox(height: AppSpacing.lg),
-
-            // 版本列表
-            Text(
-              '版本',
-              style: textTheme.labelLarge?.copyWith(
-                color: colorScheme.onSurfaceVariant,
-              ),
-            ),
-            const SizedBox(height: AppSpacing.sm),
-            if (_loadingEnv)
-              const Padding(
-                padding: AppSpacing.onlyVerticalMD,
-                child: Center(
-                  child: AppLoading(size: AppLoadingSize.small),
                 ),
-              )
-            else if (filtered.isEmpty)
-              Padding(
-                padding: AppSpacing.onlyVerticalMD,
-                child: Text(
-                  '该环境暂无版本',
-                  style: textTheme.bodyMedium?.copyWith(
+                const SizedBox(height: AppSpacing.lg),
+                // env 独立选择（chips）
+                Text(
+                  '环境',
+                  style: textTheme.labelLarge?.copyWith(
                     color: colorScheme.onSurfaceVariant,
                   ),
                 ),
-              )
-            else
-              for (final version in filtered) ...[
-                _VersionRow(
-                  version: version,
-                  isSelected: _selectedVersion == version.version,
-                  isLoading: _loadingHistoryKey ==
-                      _historyKey(version.version, _selectedEnv),
-                  history: _history[_historyKey(version.version, _selectedEnv)],
-                  onTap: () => setState(() {
-                    _selectedVersion = version.version;
-                  }),
-                  onHistoryTap: () => _loadHistory(version),
-                  onBuildSelect: widget.onBuildSelect,
+                const SizedBox(height: AppSpacing.sm),
+                Wrap(
+                  spacing: AppSpacing.sm,
+                  runSpacing: AppSpacing.xs,
+                  children: [
+                    for (final env in widget.envs)
+                      ChoiceChip(
+                        label: Text(env),
+                        selected: _selectedEnv == env,
+                        onSelected: (_) => _selectEnv(env),
+                        selectedColor: colorScheme.secondaryContainer,
+                        checkmarkColor: colorScheme.onSecondaryContainer,
+                        labelStyle: textTheme.labelSmall,
+                        visualDensity: VisualDensity.compact,
+                        materialTapTargetSize:
+                            MaterialTapTargetSize.shrinkWrap,
+                        shape: RoundedRectangleBorder(
+                          borderRadius:
+                              BorderRadius.circular(AppRadius.radiusButton),
+                          side: BorderSide(
+                            color: _selectedEnv == env
+                                ? colorScheme.secondary
+                                : colorScheme.outlineVariant,
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
-                const Divider(height: 1),
-              ],
-
-            const SizedBox(height: AppSpacing.xxl),
-
-            // 操作按钮
-            Row(
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                TextButton(
-                  onPressed: () => Navigator.of(context).pop(),
-                  child: const Text('取消'),
+                const SizedBox(height: AppSpacing.lg),
+                // 版本标题
+                Text(
+                  '版本',
+                  style: textTheme.labelLarge?.copyWith(
+                    color: colorScheme.onSurfaceVariant,
+                  ),
                 ),
-                const SizedBox(width: AppSpacing.sm),
-                FilledButton(
-                  onPressed: _selectedVersion != null ? _confirm : null,
-                  child: const Text('确认切换'),
-                ),
+                const SizedBox(height: AppSpacing.sm),
               ],
             ),
-          ],
-        ),
+          ),
+
+          // ===== 版本列表（独立滚动区）=====
+          Expanded(
+            child: _loadingEnv
+                ? const Center(
+                    child: AppLoading(size: AppLoadingSize.small),
+                  )
+                : filtered.isEmpty
+                    ? Center(
+                        child: Text(
+                          '该环境暂无版本',
+                          style: textTheme.bodyMedium?.copyWith(
+                            color: colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      )
+                    : ListView.builder(
+                        padding: AppSpacing.onlyHorizontalXL,
+                        itemCount: filtered.length,
+                        itemBuilder: (context, index) {
+                          final version = filtered[index];
+                          return Column(
+                            children: [
+                              _VersionRow(
+                                version: version,
+                                isSelected:
+                                    _selectedVersion == version.version,
+                                isLoading: _loadingHistoryKey ==
+                                    _historyKey(
+                                        version.version, _selectedEnv),
+                                history: _history[_historyKey(
+                                    version.version, _selectedEnv)],
+                                onTap: () => setState(() {
+                                  _selectedVersion = version.version;
+                                }),
+                                onHistoryTap: () => _loadHistory(version),
+                                onBuildSelect: widget.onBuildSelect == null
+                                    ? null
+                                    : (build) => widget.onBuildSelect!(
+                                          build,
+                                          version: version.version,
+                                          env: _selectedEnv,
+                                        ),
+                              ),
+                              const Divider(height: 1),
+                            ],
+                          );
+                        },
+                      ),
+          ),
+
+          // ===== 固定底部：确认/取消按钮（不随列表滚动）=====
+          SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(
+                AppSpacing.xl,
+                AppSpacing.md,
+                AppSpacing.xl,
+                AppSpacing.xl,
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: const Text('取消'),
+                  ),
+                  const SizedBox(width: AppSpacing.sm),
+                  FilledButton(
+                    onPressed: _selectedVersion != null ? _confirm : null,
+                    child: const Text('确认切换'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -455,25 +504,32 @@ class _VersionRow extends StatelessWidget {
             ),
           ),
         ),
-        // 展开的构建列表
+        // 展开的构建列表（空 → 提示，避免"点了没反应"）
         if (history != null)
           Padding(
             padding: const EdgeInsets.only(
               left: AppTypography.iconMD + AppSpacing.sm,
               bottom: AppSpacing.md,
             ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                for (final build in history!)
-                  _BuildRow(
-                    option: build,
-                    onTap: onBuildSelect == null
-                        ? null
-                        : () => onBuildSelect!(build),
+            child: history!.isEmpty
+                ? Text(
+                    '暂无构建记录',
+                    style: textTheme.bodySmall?.copyWith(
+                      color: colorScheme.onSurfaceVariant,
+                    ),
+                  )
+                : Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      for (final build in history!)
+                        _BuildRow(
+                          option: build,
+                          onTap: onBuildSelect == null
+                              ? null
+                              : () => onBuildSelect!(build),
+                        ),
+                    ],
                   ),
-              ],
-            ),
           ),
       ],
     );
