@@ -378,7 +378,7 @@ void main() {
           'main', ['searchApps', {'keyword': '微信'}]) as Map;
       expect(result['ok'], isFalse);
       expect(result['data'], isNull);
-      expect(logMessages.any((m) => m.contains('error:')), isTrue);
+      expect(result['error'], isNotEmpty);
 
       await runtime.dispose();
     });

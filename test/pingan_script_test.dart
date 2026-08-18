@@ -335,7 +335,7 @@ void main() {
       await runtime.dispose();
     });
 
-    test('③ getAllApps 网络失败 → {ok:false, data:null} + 日志', () async {      final runtime = buildRuntime(handler: (options) {
+    test('③ getAllApps 网络失败 → {ok:false, data:null}（不抛）', () async {      final runtime = buildRuntime(handler: (options) {
         return {'__status': 500, 'msg': 'server error'};
       });
       await runtime.initialize();
@@ -343,7 +343,7 @@ void main() {
       final result = await runtime.call('main', ['getAllApps', {}]) as Map;
       expect(result['ok'], isFalse);
       expect(result['data'], isNull);
-      expect(logMessages.any((m) => m.contains('error:')), isTrue);
+      expect(result['error'], isNotEmpty);
 
       await runtime.dispose();
     });
@@ -1077,6 +1077,27 @@ void main() {
       expect(d['appId'], 'com.pingan.app');
       expect((d['extra'] as Map)['screenshots'], isEmpty);
       expect(d['downloads'], isNotEmpty);
+
+      await runtime.dispose();
+    });
+
+    test('㉙b safeGet 非 2xx 保留响应体（data）供脚本按 status 降级', () async {
+      final runtime = buildRuntime(scriptOverride: detailScript, handler: (options) {
+        if (options.path.endsWith('/sunflower/i/build')) {
+          return {'__status': 500, 'msg': 'boom', 'code': 500};
+        }
+        return defaultHandler(options);
+      });
+      await runtime.initialize();
+
+      final result = await runtime.call(
+          'safeGet', ['/sunflower/i/build', {'uuid': 'x', '_id': 'bg-android'}]) as Map;
+      expect(result['ok'], isFalse);
+      expect(result['status'], 500);
+      final data = result['data'] as Map;
+      expect(data['msg'], 'boom'); // 非 2xx 响应体保留
+      expect(data['code'], 500);
+      expect(result['error'], isNotEmpty);
 
       await runtime.dispose();
     });

@@ -58,7 +58,7 @@ class _FakeAppDao implements ChannelAddedAppDao {
   Future<int?> getTotalCount() async => _apps.length;
 }
 
-/// 固定响应 Dio adapter（测试用，模拟网络层）
+/// 固定响应 Dio adapter（测试用，模拟网络层；支持 __status 指定状态码）
 class _FakeDioAdapter implements HttpClientAdapter {
   final Map<String, dynamic> Function(RequestOptions options)? handler;
 
@@ -71,9 +71,13 @@ class _FakeDioAdapter implements HttpClientAdapter {
     Future<void>? cancelFuture,
   ) async {
     final data = handler?.call(options) ?? {'ok': true};
+    var status = 200;
+    if (data['__status'] != null) {
+      status = data.remove('__status') as int;
+    }
     return ResponseBody.fromString(
       jsonEncode(data),
-      200,
+      status,
       headers: {
         Headers.contentTypeHeader: [Headers.jsonContentType],
       },
@@ -96,6 +100,14 @@ function throwError() { throw new Error('boom'); }
 
 async function fetchData() {
   const res = await host.network.get('https://example.com/api', {params: {q: 'x'}});
+  return res;
+}
+
+async function degradeOnStatus() {
+  const res = await host.network.get('https://example.com/api', {params: {q: 'x'}});
+  if (res && res.status === 500) {
+    return { ok: false, status: res.status, data: res.data, degraded: true };
+  }
   return res;
 }
 
@@ -200,6 +212,124 @@ void main() {
 
       final postResult = await runtime.call('postData');
       expect((postResult as Map)['ok'], isTrue);
+
+      await runtime.dispose();
+    });
+
+    test('③a host.network 500 → 不抛，返回 {ok:false, status:500, data:响应体}', () async {
+      final dio2 = Dio();
+      dio2.httpClientAdapter = _FakeDioAdapter((options) {
+        return {'__status': 500, 'msg': 'server error'};
+      });
+      final runtime = JsChannelRuntime(
+        channelKey: 'js.test',
+        script: _testScript,
+        dio: dio2,
+        appDao: appDao,
+        logInfo: (msg) => logMessages.add('info: $msg'),
+        logError: (msg) => logMessages.add('error: $msg'),
+      );
+      await runtime.initialize();
+
+      final result = await runtime.call('fetchData');
+      expect(result, isA<Map>());
+      final map = result as Map;
+      expect(map['ok'], isFalse);
+      expect(map['status'], 500);
+      expect(map['error'], isNotEmpty);
+      final data = map['data'] as Map;
+      expect(data['msg'], 'server error'); // 非 2xx 响应体保留
+
+      await runtime.dispose();
+    });
+
+    test('③b host.network 401 → {ok:false, status:401, data:响应体}', () async {
+      final dio2 = Dio();
+      dio2.httpClientAdapter = _FakeDioAdapter((options) {
+        return {'__status': 401, 'msg': 'unauthorized'};
+      });
+      final runtime = JsChannelRuntime(
+        channelKey: 'js.test',
+        script: _testScript,
+        dio: dio2,
+        appDao: appDao,
+        logInfo: (msg) => logMessages.add('info: $msg'),
+        logError: (msg) => logMessages.add('error: $msg'),
+      );
+      await runtime.initialize();
+
+      final result = await runtime.call('fetchData');
+      final map = result as Map;
+      expect(map['ok'], isFalse);
+      expect(map['status'], 401);
+      expect((map['data'] as Map)['msg'], 'unauthorized');
+
+      await runtime.dispose();
+    });
+
+    test('③c host.network 200 → {ok:true, status:200, data}（无 error 键）', () async {
+      final runtime = buildRuntime();
+      await runtime.initialize();
+
+      final result = await runtime.call('fetchData');
+      final map = result as Map;
+      expect(map['ok'], isTrue);
+      expect(map['status'], 200);
+      expect(map.containsKey('error'), isFalse);
+      expect(map['data'], isA<Map>());
+
+      await runtime.dispose();
+    });
+
+    test('③d 网络异常（连接失败）→ {ok:false, error}（不崩）', () async {
+      final dio2 = Dio();
+      dio2.httpClientAdapter = _FakeDioAdapter((options) {
+        throw DioException.connectionError(
+          requestOptions: options,
+          reason: 'Connection refused',
+        );
+      });
+      final runtime = JsChannelRuntime(
+        channelKey: 'js.test',
+        script: _testScript,
+        dio: dio2,
+        appDao: appDao,
+        logInfo: (msg) => logMessages.add('info: $msg'),
+        logError: (msg) => logMessages.add('error: $msg'),
+      );
+      await runtime.initialize();
+
+      final result = await runtime.call('fetchData');
+      expect(result, isA<Map>());
+      final map = result as Map;
+      expect(map['ok'], isFalse);
+      expect(map['error'], isNotEmpty);
+      expect(logMessages.any((m) => m.contains('error:')), isTrue);
+
+      await runtime.dispose();
+    });
+
+    test('③e JS 脚本按 status 降级（status==500 → 降级分支，读响应体）', () async {
+      final dio2 = Dio();
+      dio2.httpClientAdapter = _FakeDioAdapter((options) {
+        return {'__status': 500, 'msg': 'server error'};
+      });
+      final runtime = JsChannelRuntime(
+        channelKey: 'js.test',
+        script: _testScript,
+        dio: dio2,
+        appDao: appDao,
+        logInfo: (msg) => logMessages.add('info: $msg'),
+        logError: (msg) => logMessages.add('error: $msg'),
+      );
+      await runtime.initialize();
+
+      final result = await runtime.call('degradeOnStatus');
+      final map = result as Map;
+      expect(map['ok'], isFalse);
+      expect(map['status'], 500);
+      expect(map['degraded'], isTrue);
+      expect((map['data'] as Map)['msg'], 'server error');
 
       await runtime.dispose();
     });

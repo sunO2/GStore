@@ -26,7 +26,10 @@ class JsChannelException implements Exception {
 ///
 /// ## host API（JS 侧通过 `host.xxx` 调用，返回 Promise）
 /// - `host.network.get(url, {params, headers})` / `host.network.post(url, {body, json, headers})`
-///   → 走项目 Dio（继承代理/超时配置），统一返回 `{ok, status, data}` 包装
+///   → 走项目 Dio（继承代理/超时配置），统一返回 `{ok, status, data, error?}` 包装。
+///   非 2xx **不抛异常**（validateStatus 恒 true）：返回完整响应（status + 响应体 data），
+///   由脚本按状态码自行降级（401 → 重认证、500 → 降级）；仅网络层错误
+///   （超时/连接失败等 DioException）才捕获 → `{ok:false, error}`。
 /// - `host.database.getAppsByChannel()` / `host.database.getApp(appId)` /
 ///   `host.database.insertApps(list)` → 全部强制 channelKey = 当前渠道（数据隔离核心）
 /// - `host.config.get(key)` → ConfigService 读取渠道配置，无则 null
@@ -255,7 +258,11 @@ class JsChannelRuntime {
         final response = await _getDio().get(
           url,
           queryParameters: _asMap(opts['params']),
-          options: Options(headers: _asMap(opts['headers'])),
+          options: Options(
+            headers: _asMap(opts['headers']),
+            // 非 2xx 不抛（返回完整响应给 JS 按 status 降级），仅网络层错误走 catch
+            validateStatus: (_) => true,
+          ),
         );
         return _wrapResponse(response);
       } catch (e) {
@@ -273,7 +280,11 @@ class JsChannelRuntime {
           url,
           queryParameters: _asMap(opts['params']),
           data: opts['body'] ?? opts['json'],
-          options: Options(headers: _asMap(opts['headers'])),
+          options: Options(
+            headers: _asMap(opts['headers']),
+            // 非 2xx 不抛（返回完整响应给 JS 按 status 降级），仅网络层错误走 catch
+            validateStatus: (_) => true,
+          ),
         );
         return _wrapResponse(response);
       } catch (e) {
@@ -470,10 +481,13 @@ class JsChannelRuntime {
 
   Map<String, dynamic> _wrapResponse(Response<dynamic> response) {
     final status = response.statusCode ?? 0;
+    final ok = status >= 200 && status < 300;
     return {
-      'ok': status >= 200 && status < 300,
+      'ok': ok,
       'status': status,
+      // 非 2xx 也保留响应体（脚本可读 data 按 status 降级）
       'data': _decodeData(response.data),
+      if (!ok) 'error': 'HTTP $status',
     };
   }
 
