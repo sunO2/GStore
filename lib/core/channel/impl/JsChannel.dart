@@ -37,6 +37,10 @@ class _ChannelMeta {
 /// - `getAppInfo({appId})` / `getAppDetail({appId})` / `checkAppUpdate({appId})` → AppInfo JSON 对象 或 null
 /// - `checkUpdate()` / `doUpdate()` → bool
 /// - `getConfig()` → `{ version, proxy }`
+/// - `versionOptions({appId})` → `{ envs: [], versions: [{version, envs, buildCount}], currentEnv, currentVersion }`
+/// - `switchVersion({appId, env, version})` → 同 getAppDetail 的详情数据
+/// - `buildHistory({appId, version, env})` → `{ builds: [{num, publishedAt, size, changelog, installTimes, builtBy, ipaName}] }`
+/// - 脚本未实现 → 返回 null（调用方降级）
 /// - 可选 `const CHANNEL_META = { name, description, icon }`
 ///
 /// AppInfo JSON 字段（与 db.AppInfo 同构）：appId/name/user/repositories/icon/des/readme/category/extra；
@@ -505,6 +509,50 @@ class JsChannel extends IChannel implements DynamicChannel {
 
   /// 读取当前渠道的全部环境变量（持久化层最新值）
   Future<Map<String, String>> getAllEnv() => _envStore.load();
+
+  // ==================== 版本切换 ====================
+
+  /// 获取版本/环境切换选项（脚本 main('versionOptions')）
+  /// 返回原始 Map：`{ envs: List, versions: [{version, envs, buildCount}], currentEnv, currentVersion }`
+  /// 脚本未实现/失败 → null（调用方降级）
+  Future<Map<String, dynamic>?> versionOptions(String appId) async {
+    final data = await _callMain('versionOptions', {'appId': appId});
+    if (data == null) return null;
+    return _stringKeyedMap(data);
+  }
+
+  /// 切换版本/环境（脚本 main('switchVersion')）→ 返回该 env+version 的详情数据（同 getAppDetail 结构）
+  /// 脚本未实现/失败 → null（调用方降级）
+  Future<Map<String, dynamic>?> switchVersion({
+    required String appId,
+    required String env,
+    required String version,
+  }) async {
+    final data = await _callMain('switchVersion', {
+      'appId': appId,
+      'env': env,
+      'version': version,
+    });
+    if (data == null) return null;
+    return _stringKeyedMap(data);
+  }
+
+  /// 获取指定版本历史构建（脚本 main('buildHistory')）
+  /// 返回 `{ builds: [{num, publishedAt, size, changelog, installTimes, builtBy, ipaName}] }`
+  /// 脚本未实现/失败 → null（调用方降级）
+  Future<Map<String, dynamic>?> buildHistory({
+    required String appId,
+    required String version,
+    required String env,
+  }) async {
+    final data = await _callMain('buildHistory', {
+      'appId': appId,
+      'version': version,
+      'env': env,
+    });
+    if (data == null) return null;
+    return _stringKeyedMap(data);
+  }
 
   // ==================== 脚本调用 ====================
 
