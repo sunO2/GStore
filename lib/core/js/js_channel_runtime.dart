@@ -36,6 +36,13 @@ class JsChannelException implements Exception {
 ///   需改环境变量时由 JSChannel.setEnv 持久化后调用 [updateEnv] 热更新快照
 ///   （无需重建引擎，脚本下次读取即生效）。
 /// - `host.log.info(msg)` / `host.log.error(msg)` → appLog
+/// - `host.ui.showVersionPicker(options)` → 弹 Flutter 版本/环境选择框（Hybrid：
+///   runtime 不依赖 UI，由调用方注入 [uiShowVersionPicker] 实现）；
+///   options: `{title, envs:[], versions:[{version, envs, buildCount}], currentEnv, currentVersion}`，
+///   Promise → `{ok, data}`，data 为 `{env, version}` 或 null（用户取消）：
+///   `const sel = await host.ui.showVersionPicker({...}); sel.data`
+/// - `host.ui.refreshDetail(params)` → 刷新详情页（params: `{appId, env, version}`，
+///   由调用方注入 [uiRefreshDetail] 实现）→ `{ok}`
 ///
 /// ## 异常处理
 /// - JS 抛错 → [call] 抛 [JsChannelException]（不崩应用）
@@ -60,6 +67,15 @@ class JsChannelRuntime {
   final void Function(String message)? _logInfoOverride;
   final void Function(String message)? _logErrorOverride;
 
+  /// host.ui 能力：由调用方（JSChannel/详情页）注入 Flutter 实现
+  /// （runtime 不直接依赖 UI/context，保持可测试）
+  final Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
+      _uiShowVersionPickerOverride;
+
+  /// 刷新详情页（JS 调，参数含 appId/env/version）
+  final Future<void> Function(Map<String, dynamic> params)?
+      _uiRefreshDetailOverride;
+
   JavascriptRuntime? _engine;
   bool _initialized = false;
   bool _disposed = false;
@@ -76,12 +92,17 @@ class JsChannelRuntime {
     Map<String, String> Function()? envReader,
     void Function(String message)? logInfo,
     void Function(String message)? logError,
+    Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
+        uiShowVersionPicker,
+    Future<void> Function(Map<String, dynamic> params)? uiRefreshDetail,
   })  : _dioOverride = dio,
         _appDaoOverride = appDao,
         _configGetterOverride = configGetter,
         _envReaderOverride = envReader,
         _logInfoOverride = logInfo,
-        _logErrorOverride = logError;
+        _logErrorOverride = logError,
+        _uiShowVersionPickerOverride = uiShowVersionPicker,
+        _uiRefreshDetailOverride = uiRefreshDetail;
 
   bool get isInitialized => _initialized;
   bool get isDisposed => _disposed;
@@ -179,6 +200,7 @@ class JsChannelRuntime {
     _registerConfigHost(engine);
     _registerEnvHost(engine);
     _registerLogHost(engine);
+    _registerUiHost(engine);
   }
 
   void _registerNetworkHost(JavascriptRuntime engine) {
@@ -296,6 +318,43 @@ class JsChannelRuntime {
     engine.onMessage('host.log.error', (dynamic args) {
       _logError(_asMap(args)['msg']?.toString() ?? '');
       return {'ok': true};
+    });
+  }
+
+  /// host.ui：Flutter UI 能力注入（Hybrid 架构，runtime 不依赖 UI/context）。
+  /// 实现由调用方（JSChannel/详情页）通过构造注入，未注入 → {ok:false} 提示。
+  void _registerUiHost(JavascriptRuntime engine) {
+    // host.ui.showVersionPicker(options) → Promise<{env, version} | null>
+    // options: {title, envs:[], versions:[{version, envs, buildCount}], currentEnv, currentVersion}
+    engine.onMessage('host.ui.showVersionPicker', (dynamic args) async {
+      try {
+        final opts = _asMap(args['options'] ?? args);
+        final cb = _uiShowVersionPickerOverride;
+        if (cb == null) {
+          return {'ok': false, 'error': 'host.ui.showVersionPicker 未注册'};
+        }
+        final sel = await cb(opts);
+        return {'ok': true, 'data': sel};
+      } catch (e) {
+        _logError('host.ui.showVersionPicker 失败: $e');
+        return {'ok': false, 'error': e.toString()};
+      }
+    });
+    // host.ui.refreshDetail(params) → 刷新详情页
+    // params: {appId, env, version}
+    engine.onMessage('host.ui.refreshDetail', (dynamic args) async {
+      try {
+        final params = _asMap(args['params'] ?? args);
+        final cb = _uiRefreshDetailOverride;
+        if (cb == null) {
+          return {'ok': false, 'error': 'host.ui.refreshDetail 未注册'};
+        }
+        await cb(params);
+        return {'ok': true};
+      } catch (e) {
+        _logError('host.ui.refreshDetail 失败: $e');
+        return {'ok': false, 'error': e.toString()};
+      }
     });
   }
 
@@ -477,6 +536,14 @@ var host = {
     },
     error: function(msg) {
       return sendMessage('host.log.error', JSON.stringify({msg: msg}));
+    }
+  },
+  ui: {
+    showVersionPicker: function(options) {
+      return sendMessage('host.ui.showVersionPicker', JSON.stringify({options: options || {}}));
+    },
+    refreshDetail: function(params) {
+      return sendMessage('host.ui.refreshDetail', JSON.stringify({params: params || {}}));
     }
   }
 };

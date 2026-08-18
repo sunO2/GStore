@@ -96,6 +96,9 @@ class JsChannel extends IChannel implements DynamicChannel {
     JsChannelEnvStore? envStore,
     void Function(String message)? logInfo,
     void Function(String message)? logError,
+    Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
+        uiShowVersionPicker,
+    Future<void> Function(Map<String, dynamic> params)? uiRefreshDetail,
     int? priority,
     bool enabled = true,
   })  : _priority = priority,
@@ -110,6 +113,8 @@ class JsChannel extends IChannel implements DynamicChannel {
           configGetter: configGetter,
           logInfo: logInfo,
           logError: logError,
+          uiShowVersionPicker: uiShowVersionPicker,
+          uiRefreshDetail: uiRefreshDetail,
         ) {
     _info = ChannelInfo(
       type: ChannelType.custom,
