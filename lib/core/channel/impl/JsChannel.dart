@@ -72,6 +72,14 @@ class JsChannel extends IChannel implements DynamicChannel {
   /// 脚本源码（只读，供加载器幂等比对脚本是否变更）
   String get scriptSource => _runtime.script;
 
+  /// 详情页脚本源码（zip 渠道包 detail.js，可选；缺失 → 详情走原路径/降级）。
+  /// 本波仅存储，detail 分发逻辑 Wave 2 使用。
+  final String? detailScript;
+
+  /// 渠道包元信息（zip 渠道包 meta.json，可选：name/description/icon）。
+  /// 本波仅存储备用；脚本侧 `CHANNEL_META` 仍优先用于命名（见 [_readMeta]）。
+  final Map<String, dynamic>? meta;
+
   final int? _priority;
   final bool _enabled;
   final ChannelAddedAppDao? _appDaoOverride;
@@ -90,6 +98,8 @@ class JsChannel extends IChannel implements DynamicChannel {
   JsChannel({
     required this.channelKey,
     required String script,
+    this.detailScript,
+    this.meta,
     Dio? dio,
     ChannelAddedAppDao? appDao,
     Future<Object?> Function(String key)? configGetter,

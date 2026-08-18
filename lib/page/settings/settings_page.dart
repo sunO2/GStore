@@ -1,5 +1,7 @@
 import 'dart:io';
+import 'dart:typed_data';
 
+import 'package:archive/archive.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -505,9 +507,13 @@ class _SettingsPageState extends State<SettingsPage> {
     }
 
     try {
-      final channel = await ChannelLoader().importScript(
+      // 粘贴文本 → 内存 zip 渠道包（entry.js；zip 化导入，detail.js/meta.json
+      // Wave 4 文件选择导入时支持）
+      final archive = Archive()..addFile(ArchiveFile.string('entry.js', script));
+      final zipBytes = Uint8List.fromList(ZipEncoder().encode(archive)!);
+      final channel = await ChannelLoader().importZip(
         channelKey: 'js_$key',
-        script: script,
+        zipBytes: zipBytes,
       );
       // 环境变量：导入成功后逐个写入（渠道隔离持久化，host.env.get 读取）
       if (envVars.isNotEmpty) {

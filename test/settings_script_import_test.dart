@@ -112,8 +112,8 @@ void main() {
     // 成功提示
     expect(find.textContaining('脚本渠道已导入'), findsOneWidget);
 
-    // 文件已写入渠道目录（key 去 js_ 前缀 + .js）
-    expect(File('${tempDir.path}/channels/vivo.js').existsSync(), isTrue);
+    // 文件已写入渠道目录（key 去 js_ 前缀 + .zip 渠道包）
+    expect(File('${tempDir.path}/channels/vivo.zip').existsSync(), isTrue);
   });
 
   testWidgets('非法渠道标识 → 提示错误，不导入', (tester) async {

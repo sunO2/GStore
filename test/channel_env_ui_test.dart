@@ -166,7 +166,7 @@ void main() {
     await settleAsync(tester);
 
     expect(ChannelManager.instance.getChannelByKey('js_file1'), isNotNull);
-    expect(File('${tempDir.path}/channels/file1.js').existsSync(), isTrue);
+    expect(File('${tempDir.path}/channels/file1.zip').existsSync(), isTrue);
     expect(find.textContaining('脚本渠道已导入'), findsOneWidget);
   });
 
@@ -285,7 +285,7 @@ void main() {
 
     // 前置：注册 + 文件 + env 均存在
     expect(ChannelManager.instance.getChannelByKey('js_del'), isNotNull);
-    expect(File('${tempDir.path}/channels/del.js').existsSync(), isTrue);
+    expect(File('${tempDir.path}/channels/del.zip').existsSync(), isTrue);
     expect(await ConfigJsChannelEnvStore('js_del').load(), {'SECRET': 'x'});
 
     // 管理 → 删除 → 危险确认
@@ -301,7 +301,7 @@ void main() {
 
     // 注销 + 文件删除 + env 清空
     expect(ChannelManager.instance.getChannelByKey('js_del'), isNull);
-    expect(File('${tempDir.path}/channels/del.js').existsSync(), isFalse);
+    expect(File('${tempDir.path}/channels/del.zip').existsSync(), isFalse);
     expect(await ConfigJsChannelEnvStore('js_del').load(), isEmpty);
     expect(find.textContaining('脚本渠道已删除'), findsOneWidget);
 
