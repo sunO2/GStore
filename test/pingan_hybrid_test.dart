@@ -243,11 +243,11 @@ void main() {
       expect(result['ok'], isTrue);
       expect(result['data'], isTrue);
 
-      // 选择框收到的 options 正确（来自 getVersionOptions：envs 全量 5 个，当前 uat）
+      // 选择框收到的 options 正确（来自 getVersionOptions：envs 全量 5 个，当前 sit）
       expect(pickerOptions, isNotNull);
       expect(pickerOptions!['title'], '切换版本');
       expect(pickerOptions!['envs'], ['sit', 'uat', 'prd', 'rge', 'tmp']);
-      expect(pickerOptions!['currentEnv'], 'uat');
+      expect(pickerOptions!['currentEnv'], 'sit');
       expect(pickerOptions!['currentVersion'], '8.9.0');
       final versions = pickerOptions!['versions'] as List;
       expect(versions.length, 1);
@@ -259,10 +259,10 @@ void main() {
       expect(refreshParams!['env'], 'uat');
       expect(refreshParams!['version'], '8.9.0');
 
-      // 只拉了一次 build-list（当前 env=uat 单次，Wave 拉取优化）
+      // 只拉了一次 build-list（当前 env=sit 单次，Wave 拉取优化）
       final buildRequests = requestLog.where((r) => r.contains('build-list')).toList();
       expect(buildRequests.length, 1);
-      expect(buildRequests.first, contains('env=uat'));
+      expect(buildRequests.first, contains('env=sit'));
 
       await runtime.dispose();
     });
@@ -337,13 +337,58 @@ void main() {
       await runtime.dispose();
     });
 
-    test('⑦ jsBuildHistory：用户选中构建 → showBuildHistory 收到 options（builds）→ refreshDetail 收到 {appId, env, version, build}', () async {
+    test('⑦ jsBuildHistory：用户选中构建 → showBuildHistory 收到完整 builds（build 接口补全）→ refreshDetail 收到 {appId, env, version, build}', () async {
       Map<String, dynamic>? historyOptions;
       Map<String, dynamic>? refreshParams;
       final runtime = buildRuntime(
+        handler: (options) {
+          if (options.path.contains('/sunflower/i/build-list')) {
+            final env = options.queryParameters['env']?.toString() ?? 'sit';
+            return buildListForEnv(env); // 组内只含最新 1 条（真实平台单版本行为）
+          }
+          if (options.path.endsWith('/sunflower/i/build')) {
+            // 真实平台：build 接口返回该版本组完整历史（num 降序）
+            return {
+              'appInfo': {'screenshots': <Object>[]},
+              'builds': [
+                {
+                  'identifier': 'com.pingan.app',
+                  'versionname': '8.9.0',
+                  'num': 3,
+                  'size': 100,
+                  'installTimes': 9,
+                  'changelog': '构建 3',
+                  'builtBy': 'ci',
+                  'fileurl': ['/apk/com.pingan.app-8.9.0-3.apk'],
+                },
+                {
+                  'identifier': 'com.pingan.app',
+                  'versionname': '8.9.0',
+                  'num': 2,
+                  'size': 90,
+                  'installTimes': 8,
+                  'changelog': '构建 2',
+                  'builtBy': 'ci',
+                  'fileurl': ['/apk/com.pingan.app-8.9.0-2.apk'],
+                },
+                {
+                  'identifier': 'com.pingan.app',
+                  'versionname': '8.9.0',
+                  'num': 1,
+                  'size': 80,
+                  'installTimes': 7,
+                  'changelog': '构建 1',
+                  'builtBy': 'ci',
+                  'fileurl': ['/apk/com.pingan.app-8.9.0-1.apk'],
+                },
+              ],
+            };
+          }
+          return defaultHandler(options);
+        },
         uiShowBuildHistory: (options) async {
           historyOptions = options;
-          return {'num': 1, 'ipaName': '8.9.0.apk'};
+          return {'num': 2, 'ipaName': '8.9.0.apk'};
         },
         uiRefreshDetail: (params) async {
           refreshParams = params;
@@ -355,31 +400,34 @@ void main() {
       expect(result['ok'], isTrue);
       expect(result['data'], isTrue);
 
-      // 选择器收到的 options 正确：最新版本（8.9.0）+ 凭证默认 env（无 PINGAN_ENV → uat）+ builds
+      // 选择器收到的 options 正确：最新版本（8.9.0）+ 凭证默认 env（无 PINGAN_ENV → sit）
       expect(historyOptions, isNotNull);
       expect(historyOptions!['version'], '8.9.0');
-      expect(historyOptions!['env'], 'uat');
+      expect(historyOptions!['env'], 'sit');
       final builds = historyOptions!['builds'] as List;
-      expect(builds.length, 1);
+      expect(builds.length, 3); // 完整历史（build 接口补全，非 build-list 单版本 1 条）
+      final nums = builds.map((b) => (b as Map)['num']).toList();
+      expect(nums, [3, 2, 1]); // num 倒序
       final build0 = builds.first as Map;
-      expect(build0['num'], 1);
+      expect(build0['num'], 3);
       expect(build0['ipaName'], '8.9.0.apk');
       expect(build0['size'], 100);
 
       // refreshDetail 收到选中构建（Flutter 侧据此切换到该构建的 APK）
       expect(refreshParams, isNotNull);
       expect(refreshParams!['appId'], 'app-1');
-      expect(refreshParams!['env'], 'uat');
+      expect(refreshParams!['env'], 'sit');
       expect(refreshParams!['version'], '8.9.0');
       final build = refreshParams!['build'] as Map;
-      expect(build['num'], 1);
+      expect(build['num'], 2);
       expect(build['ipaName'], '8.9.0.apk');
 
-      // 两次 build-list：getVersionOptions（env=uat）+ getBuildHistory（version=8.9.0）
+      // 两次 build-list（versionOptions + getBuildHistory）+ 一次 build 接口（完整历史）
       final buildRequests = requestLog.where((r) => r.contains('build-list')).toList();
       expect(buildRequests.length, 2);
-      expect(buildRequests[0], contains('env=uat'));
+      expect(buildRequests[0], contains('env=sit'));
       expect(buildRequests[1], contains('version=8.9.0'));
+      expect(requestLog.where((r) => r.contains('/sunflower/i/build&')).length, 1);
 
       await runtime.dispose();
     });
@@ -456,7 +504,7 @@ void main() {
                 '_id': 'bg-empty',
                 'version': '8.9.0',
                 'platform': 'android',
-                'env': 'uat',
+                'env': 'sit',
                 'publishedAt': 1700000000000,
                 'builds': <Object>[],
               },

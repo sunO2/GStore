@@ -410,7 +410,7 @@ void main() {
       expect(extra['installTimes'], 99);
       expect(extra['changelog'], '修复若干问题');
       expect(extra['builtBy'], 'ci-bot');
-      expect(extra['env'], 'uat');
+      expect(extra['env'], 'sit');
       expect(extra['platform'], 'android');
       expect(extra['publishedAt'], 1690000000000);
 
@@ -458,10 +458,10 @@ void main() {
 
       final result = await runtime.call('main', ['getAppInfo', {'appId': 'app-1'}]) as Map;
       final extra = (result['data'] as Map)['extra'] as Map;
-      // 下载地址 = proxy 拼接（不经 login/check 返回值）；无 PINGAN_ENV → 默认 env=uat
+      // 下载地址 = proxy 拼接（不经 login/check 返回值）；无 PINGAN_ENV → 默认 env=sit
       expect(
         extra['apkUrl'],
-        '$_mcdBase/proxy/uat/com.pingan.app-1.9.0.apk?um=tester&value=secret',
+        '$_mcdBase/proxy/sit/com.pingan.app-1.9.0.apk?um=tester&value=secret',
       );
       expect(extra['downloadNote'], isNull);
       // 确实发起了认证请求（先主路径，成功即止）
@@ -784,7 +784,7 @@ void main() {
       await runtime.dispose();
     });
 
-    test('㉑ getVersionOptions 不带 env → 按凭证默认 env（uat）单次拉取', () async {
+    test('㉑ getVersionOptions 不带 env → 按凭证默认 env（sit）单次拉取', () async {
       final runtime = buildRuntime(scriptOverride: detailScript);
       await runtime.initialize();
 
@@ -792,7 +792,7 @@ void main() {
           'main', ['versionOptions', {'appId': 'app-1'}]) as Map;
       expect(result['ok'], isTrue);
       final data = result['data'] as Map;
-      expect(data['currentEnv'], 'uat'); // readCredentials 默认 env=uat（无 PINGAN_ENV）
+      expect(data['currentEnv'], 'sit'); // readCredentials 默认 env=sit（无 PINGAN_ENV）
       // defaultHandler 的 buildList 有 ios(2.0.0) + android(1.9.0) 两组
       final versions = data['versions'] as List;
       expect(versions.length, 2);
@@ -801,12 +801,12 @@ void main() {
       final buildRequests =
           requestLog.where((r) => r.contains('build-list')).toList();
       expect(buildRequests.length, 1);
-      expect(buildRequests.first, contains('env=uat'));
+      expect(buildRequests.first, contains('env=sit'));
 
       await runtime.dispose();
     });
 
-    test('㉑b 配置 PINGAN_ENV → 覆盖默认 env（uat 默认被替换为 prd）', () async {
+    test('㉑b 配置 PINGAN_ENV → 覆盖默认 env（sit 默认被替换为 prd）', () async {
       final runtime = buildRuntime(
         scriptOverride: detailScript,
         env: () => {'PINGAN_ENV': 'prd'},
@@ -908,11 +908,11 @@ void main() {
       // 同凭证两次详情 → login/check 只调 1 次（detail runtime 会话缓存命中）
       expect(loginCheckCount, 1);
 
-      // 详情可下载（proxy url + downloadable:true）；无 PINGAN_ENV → 默认 env=uat
+      // 详情可下载（proxy url + downloadable:true）；无 PINGAN_ENV → 默认 env=sit
       final d1 = r1['data'] as Map;
       final dl1 = (d1['downloads'] as List).first as Map;
       expect(dl1['url'],
-          '$_mcdBase/proxy/uat/com.pingan.app-1.9.0.apk?um=tester&value=secret');
+          '$_mcdBase/proxy/sit/com.pingan.app-1.9.0.apk?um=tester&value=secret');
       expect(dl1['downloadable'], isTrue);
       expect(dl1['note'], '');
 
@@ -1075,9 +1075,9 @@ void main() {
       // 只显示最新版本组（3.2.1）最新构建单条：不再遍历所有版本（1.0.0 不出现）
       final downloads = d['downloads'] as List;
       expect(downloads.length, 1);
-      final dl0 = downloads[0] as Map; // 最新组：ipa name → proxy 拼接（默认 env=uat）
+      final dl0 = downloads[0] as Map; // 最新组：ipa name → proxy 拼接（默认 env=sit）
       expect(dl0['url'],
-          '$_mcdBase/proxy/uat/com.pingan.real-3.2.1.apk?um=tester&value=secret');
+          '$_mcdBase/proxy/sit/com.pingan.real-3.2.1.apk?um=tester&value=secret');
       expect(dl0['downloadable'], isTrue);
       expect(dl0['version'], '3.2.1');
 
@@ -1123,6 +1123,104 @@ void main() {
       expect(data['msg'], 'boom'); // 非 2xx 响应体保留
       expect(data['code'], 500);
       expect(result['error'], isNotEmpty);
+
+      await runtime.dispose();
+    });
+
+    test('㉙c getBuildHistory：build 接口补全完整构建历史（build-list 单版本只返回最新 1 条 = 根因）', () async {
+      final runtime = buildRuntime(scriptOverride: detailScript, handler: (options) {
+        if (options.path.contains('/sunflower/i/build-list')) {
+          // 模拟真实平台：build-list 带 version 只返回该版本最新构建 1 条
+          // （getBuildHistory 旧实现直接取 group.builds → 历史列表仅 1 项的根因）
+          return {
+            'appLogo': '/logo/app.png',
+            'buildList': [
+              {
+                '_id': 'bg-full',
+                'version': '8.8.0',
+                'platform': 'android',
+                'env': 'sit',
+                'publishedAt': 1700000000000,
+                'builds': [
+                  {
+                    'identifier': 'com.pingan.app',
+                    'versionname': '8.8.0',
+                    'num': 35,
+                    'size': 100,
+                    'installTimes': 5,
+                    'changelog': '最新构建',
+                    'builtBy': 'ci',
+                    'fileurl': ['/apk/com.pingan.app-8.8.0.apk'],
+                  },
+                ],
+              },
+            ],
+          };
+        }
+        if (options.path.endsWith('/sunflower/i/build')) {
+          // 真实平台：build 接口（_id）返回该版本组完整历史（num 降序 35→1）
+          final builds = <Map<String, dynamic>>[];
+          for (var num = 35; num >= 1; num--) {
+            builds.add({
+              'identifier': 'com.pingan.app',
+              'versionname': '8.8.0',
+              'num': num,
+              'size': 100 + num,
+              'installTimes': num,
+              'changelog': '构建 $num',
+              'builtBy': 'ci-bot',
+              'publishedAt': 1700000000000 + num,
+              'fileurl': ['/apk/com.pingan.app-8.8.0-$num.apk'],
+            });
+          }
+          return {'appInfo': {'screenshots': <Object>[]}, 'builds': builds};
+        }
+        return defaultHandler(options);
+      });
+      await runtime.initialize();
+
+      final result = await runtime.call(
+          'main', ['buildHistory', {'appId': 'app-1', 'version': '8.8.0', 'env': 'sit'}]) as Map;
+      expect(result['ok'], isTrue);
+      final builds = (result['data'] as Map)['builds'] as List;
+      expect(builds.length, 35); // 完整历史（非 build-list 单版本 1 条）
+      // num 倒序
+      final nums = builds.map((b) => (b as Map)['num']).toList();
+      expect(nums, List.generate(35, (i) => 35 - i));
+      final first = builds.first as Map;
+      expect(first['num'], 35);
+      expect(first['changelog'], '构建 35');
+      expect(first['ipaName'], '8.8.0.apk');
+      expect(first['size'], 135);
+      final last = builds.last as Map;
+      expect(last['num'], 1);
+
+      // build-list（1 次，带 version）+ build 接口（1 次 _id）
+      final buildListRequests =
+          requestLog.where((r) => r.contains('build-list')).toList();
+      expect(buildListRequests.length, 1);
+      expect(buildListRequests.first, contains('version=8.8.0'));
+      expect(requestLog.where((r) => r.contains('/sunflower/i/build?')).length, 1);
+
+      await runtime.dispose();
+    });
+
+    test('㉙d getBuildHistory：build 接口失败 → 降级用 build-list builds（不抛）', () async {
+      final runtime = buildRuntime(scriptOverride: detailScript, handler: (options) {
+        if (options.path.endsWith('/sunflower/i/build')) {
+          return {'__status': 500, 'msg': 'boom'};
+        }
+        return defaultHandler(options);
+      });
+      await runtime.initialize();
+
+      final result = await runtime.call(
+          'main', ['buildHistory', {'appId': 'app-1', 'version': '1.9.0', 'env': 'sit'}]) as Map;
+      expect(result['ok'], isTrue); // build 接口失败 → 降级，不抛
+      final builds = (result['data'] as Map)['builds'] as List;
+      // 降级：build-list 组内 builds（defaultHandler 单条，至少最新构建可用）
+      expect(builds.length, 1);
+      expect((builds.first as Map)['num'], 7);
 
       await runtime.dispose();
     });
