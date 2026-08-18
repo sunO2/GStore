@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/aggregate/aggregate.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/IChannel.dart';
 import 'package:gstore/core/channel/impl/JsChannel.dart';
+import 'package:gstore/core/channel/impl/js_detail_channel.dart';
 import 'package:gstore/core/channel/model/AppUpdateCheckResult.dart';
 import 'package:gstore/core/channel/model/ChannelInfo.dart';
 import 'package:gstore/core/channel/model/ChannelResult.dart';
@@ -28,6 +30,21 @@ import 'package:gstore/page/detail/logic.dart';
 /// ⑤ 取消 → 不调 switchVersion、detailInfo 不变
 ///
 /// 脚本渠道用 _FakeJsChannel（extends JsChannel，覆写脚本方法，不初始化 JS 引擎）。
+
+/// mock InstalledApps 插件方法通道：视为未安装（详情加载的安装检测不触发
+/// getAppInfo；testWidgets 假异步下未 mock 的平台调用会挂起）。
+void _mockInstalledApps() {
+  const channel = MethodChannel('installed_apps');
+  TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+      .setMockMethodCallHandler(channel, (call) async {
+    switch (call.method) {
+      case 'isAppInstalled':
+        return false;
+      default:
+        return null;
+    }
+  });
+}
 
 /// 内存版 env store（避免 ConfigStore 依赖）
 class _FakeEnvStore implements JsChannelEnvStore {
@@ -63,6 +80,25 @@ class _FakeJsChannel extends JsChannel {
   // ---- Wave B：detailMenu / setUiCallbacks / invokeScriptMethod ----
   List<Map<String, dynamic>>? detailMenuResult;
   int detailMenuCalls = 0;
+
+  // ---- Wave 3：zip 包 detail.js（页面级 detailChannel）----
+  bool hasDetailScript = false;
+  _FakeJsDetailChannel? detailChannel;
+  int releaseDetailChannelCalls = 0;
+  int getAppDetailCalls = 0;
+  ChannelResult<IDetailInfo>? getAppDetailResult;
+
+  @override
+  JsDetailChannel? getDetailChannel(String appId) {
+    if (!hasDetailScript) return null;
+    return detailChannel ??= _FakeJsDetailChannel();
+  }
+
+  @override
+  void releaseDetailChannel(String appId) {
+    releaseDetailChannelCalls++;
+    super.releaseDetailChannel(appId);
+  }
 
   /// setUiCallbacks 捕获的 host.ui 实现（fake 模拟脚本内部调用）
   Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
@@ -174,10 +210,128 @@ class _FakeJsChannel extends JsChannel {
     bool forceRefresh = false,
     String? version,
   }) async {
-    return ChannelResult.success(
-      data: JsChannelDetailProxy(const {}),
-      from: ChannelType.custom,
-    );
+    getAppDetailCalls++;
+    return getAppDetailResult ??
+        ChannelResult.success(
+          data: JsChannelDetailProxy(const {}),
+          from: ChannelType.custom,
+        );
+  }
+}
+
+/// 假 detail 通道（zip 包 detail.js 页面级 runtime）：覆写脚本方法，
+/// 不初始化 JS 引擎；断言详情页消费走 detailChannel 而非 entry。
+class _FakeJsDetailChannel extends JsDetailChannel {
+  _FakeJsDetailChannel()
+      : super(channelKey: 'js.version', detailScript: '// fake detail');
+
+  Map<String, dynamic>? getAppDetailResult;
+  Map<String, dynamic>? versionOptionsResult;
+  Map<String, dynamic>? switchVersionResult;
+  Map<String, dynamic>? buildHistoryResult;
+  List<Map<String, dynamic>>? detailMenuResult;
+
+  int getAppDetailCalls = 0;
+  int versionOptionsCalls = 0;
+  int switchVersionCalls = 0;
+  int buildHistoryCalls = 0;
+  int detailMenuCalls = 0;
+  int callMainCalls = 0;
+  String? lastSwitchEnv;
+  String? lastSwitchVersion;
+  String? lastVersionOptionsEnv;
+  String? lastBuildHistoryVersion;
+  String? lastBuildHistoryEnv;
+
+  /// setUiCallbacks 捕获的 host.ui 实现（模拟 detail.js 内部调用）
+  Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
+      capturedShowVersionPicker;
+  Future<void> Function(Map<String, dynamic> params)? capturedRefreshDetail;
+
+  @override
+  Future<Map<String, dynamic>?> getAppDetail(
+    String appId, {
+    String? version,
+  }) async {
+    getAppDetailCalls++;
+    return getAppDetailResult;
+  }
+
+  @override
+  Future<Map<String, dynamic>?> versionOptions(
+    String appId, {
+    String? env,
+  }) async {
+    versionOptionsCalls++;
+    lastVersionOptionsEnv = env;
+    return versionOptionsResult;
+  }
+
+  @override
+  Future<Map<String, dynamic>?> switchVersion({
+    required String appId,
+    required String env,
+    required String version,
+  }) async {
+    switchVersionCalls++;
+    lastSwitchEnv = env;
+    lastSwitchVersion = version;
+    return switchVersionResult;
+  }
+
+  @override
+  Future<Map<String, dynamic>?> buildHistory({
+    required String appId,
+    required String version,
+    required String env,
+  }) async {
+    buildHistoryCalls++;
+    lastBuildHistoryVersion = version;
+    lastBuildHistoryEnv = env;
+    return buildHistoryResult;
+  }
+
+  @override
+  Future<List<Map<String, dynamic>>?> detailMenu(String appId) async {
+    detailMenuCalls++;
+    return detailMenuResult;
+  }
+
+  @override
+  void setUiCallbacks({
+    Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
+        uiShowVersionPicker,
+    Future<void> Function(Map<String, dynamic> params)? uiRefreshDetail,
+  }) {
+    capturedShowVersionPicker = uiShowVersionPicker;
+    capturedRefreshDetail = uiRefreshDetail;
+  }
+
+  @override
+  Future<dynamic> callMain(String method, [Map<String, dynamic>? params]) async {
+    callMainCalls++;
+    // 模拟 detail.js 内部：jscall 经 host.ui 驱动交互（注入的 Flutter 实现被调）
+    switch (method) {
+      case 'jsswitchVersion':
+        return capturedShowVersionPicker?.call({
+          'title': '切换版本',
+          'envs': ['prod', 'test'],
+          'versions': [
+            {'version': '1.0.0', 'envs': ['prod', 'test'], 'buildCount': 3},
+            {'version': '2.0.0', 'envs': ['prod'], 'buildCount': 1},
+          ],
+          'currentEnv': 'prod',
+          'currentVersion': '1.0.0',
+        });
+      case 'jsrefresh':
+        await capturedRefreshDetail?.call({
+          'appId': 'com.example.one',
+          'env': 'prod',
+          'version': '2.0.0',
+        });
+        return {'ok': true};
+    }
+    return null;
   }
 }
 
@@ -223,12 +377,18 @@ class _FakeChannel extends IChannel {
   }) async =>
       ChannelResult.success(data: const [], from: ChannelType.github);
 
+  int getAppDetailCalls = 0;
+
   @override
   Future<ChannelResult<IDetailInfo>> getAppDetail(
     String appId, {
     bool forceRefresh = false,
   }) async {
-    throw UnimplementedError();
+    getAppDetailCalls++;
+    return ChannelResult.success(
+      data: JsChannelDetailProxy({'appId': appId, 'name': 'App One'}),
+      from: ChannelType.github,
+    );
   }
 
   @override
@@ -415,6 +575,7 @@ void main() {
     ModuleManager.instance.bindByType(ChannelManager, ChannelManager.instance);
     ModuleManager.instance
         .bindByType(IAggregateService, _FakeAggregateService());
+    _mockInstalledApps();
   });
 
   DetailLogic buildLogic({ChannelType channel = ChannelType.custom}) {
@@ -762,5 +923,146 @@ void main() {
     // 宫格渲染脚本声明动作
     expect(find.text('切换版本'), findsOneWidget);
     expect(find.text('历史构建'), findsOneWidget);
+  });
+
+  // ==================== Wave 3：zip 包 detail.js（页面级 detailChannel） ====================
+
+  testWidgets('ⓐ 有 detail.js → 详情加载走 detailChannel.getAppDetail（entry 不被调）',
+      (tester) async {
+    final js = _FakeJsChannel();
+    js.hasDetailScript = true;
+    final dc = _FakeJsDetailChannel();
+    js.detailChannel = dc;
+    dc.getAppDetailResult = {
+      'appId': 'com.example.one',
+      'name': 'App One',
+      'version': '1.0.0',
+      // 不设 packageName：避免 testWidgets 假异步下 InstalledApps 平台调用挂起
+    };
+    ChannelManager.instance.registerChannel(js);
+
+    final logic = buildLogic();
+    await logic.loadDetail();
+    await tester.pumpAndSettle();
+
+    // detail.js 存在 → getAppDetail 走 detailChannel（entry 原路径不被调）
+    expect(dc.getAppDetailCalls, 1);
+    expect(js.getAppDetailCalls, 0);
+    expect(logic.state.detailInfo.value?.version, '1.0.0');
+    expect(logic.state.detailInfo.value?.name, 'App One');
+  });
+
+  testWidgets('ⓑ 无 detail.js（getDetailChannel null）→ 详情加载走 entry 原路径（兼容）',
+      (tester) async {
+    final js = _FakeJsChannel(); // hasDetailScript = false
+    js.getAppDetailResult = ChannelResult.success(
+      data: JsChannelDetailProxy({
+        'appId': 'com.example.one',
+        'name': 'App One',
+        'version': '1.0.0',
+        // 不设 packageName：避免 testWidgets 假异步下 InstalledApps 平台调用挂起
+      }),
+      from: ChannelType.custom,
+    );
+    ChannelManager.instance.registerChannel(js);
+
+    final logic = buildLogic();
+    await logic.loadDetail();
+    await tester.pumpAndSettle();
+
+    // 无 detail.js → getDetailChannel null → entry getAppDetail 原路径
+    expect(js.getAppDetailCalls, 1);
+    expect(logic.state.detailInfo.value?.version, '1.0.0');
+  });
+
+  testWidgets('ⓒ 有 detail.js → detailMenu 走 detailChannel（entry 不被调）+ host.ui 注入',
+      (tester) async {
+    final js = _FakeJsChannel();
+    js.hasDetailScript = true;
+    final dc = _FakeJsDetailChannel();
+    js.detailChannel = dc;
+    dc.detailMenuResult = [
+      {'action': '切换版本', 'jscall': 'jsswitchVersion', 'clickIsDimiss': true},
+      {'action': '清除缓存', 'jscall': 'jsclearCache'},
+    ];
+    ChannelManager.instance.registerChannel(js);
+
+    final logic = buildLogic();
+    await pumpHost(tester, logic);
+    await openMoreActions(tester);
+
+    // detailMenu 走 detailChannel（entry 不被调）
+    expect(dc.detailMenuCalls, 1);
+    expect(js.detailMenuCalls, 0);
+    // host.ui 注入到 detailChannel（创建于页面初始化，此处补注入）
+    expect(dc.capturedShowVersionPicker, isNotNull);
+    expect(dc.capturedRefreshDetail, isNotNull);
+    // 宫格渲染 detail.js 声明动作
+    expect(find.text('切换版本'), findsOneWidget);
+    expect(find.text('清除缓存'), findsOneWidget);
+    expect(find.byIcon(Icons.extension), findsNWidgets(2));
+  });
+
+  testWidgets('ⓓ 有 detail.js → versionOptions/switchVersion 走 detailChannel（entry 不被调）',
+      (tester) async {
+    final js = _FakeJsChannel();
+    js.hasDetailScript = true;
+    final dc = _FakeJsDetailChannel();
+    js.detailChannel = dc;
+    dc.detailMenuResult = null; // 无 detailMenu → 写死"切换版本"入口
+    dc.versionOptionsResult = _versionOptions;
+    dc.switchVersionResult = _switchDetail;
+    ChannelManager.instance.registerChannel(js);
+
+    final logic = buildLogic();
+    await pumpHost(tester, logic);
+    await openVersionSwitcher(tester);
+
+    // 选择器渲染
+    expect(find.text('环境'), findsOneWidget);
+    expect(find.text('版本'), findsOneWidget);
+    expect(find.text('2.0.0'), findsOneWidget);
+
+    // 选 2.0.0 → 确认切换 → 全流程走 detailChannel
+    await tester.tap(find.text('2.0.0'));
+    await tester.pump();
+    await tester.tap(find.text('确认切换'));
+    await tester.pumpAndSettle();
+
+    expect(dc.versionOptionsCalls, 1);
+    expect(dc.switchVersionCalls, 1);
+    expect(dc.lastSwitchEnv, 'prod');
+    expect(dc.lastSwitchVersion, '2.0.0');
+    expect(js.versionOptionsCalls, 0);
+    expect(js.switchVersionCalls, 0);
+    expect(logic.state.detailInfo.value?.version, '2.0.0');
+  });
+
+  testWidgets('ⓔ 页面退出（onClose）→ JsChannel.releaseDetailChannel 被调（工厂缓存清理）',
+      (tester) async {
+    final js = _FakeJsChannel();
+    js.hasDetailScript = true;
+    ChannelManager.instance.registerChannel(js);
+
+    final logic = buildLogic();
+    expect(js.detailChannel, isNotNull, reason: '有 detail.js → getDetailChannel 被调');
+
+    logic.onClose();
+
+    expect(js.releaseDetailChannelCalls, 1);
+  });
+
+  testWidgets('ⓕ 非脚本渠道（GitHub mock）：详情加载走原 getAppDetail 路径（回归）',
+      (tester) async {
+    final ch = _FakeChannel();
+    ChannelManager.instance.registerChannel(ch);
+
+    final logic = buildLogic(channel: ChannelType.github);
+    await logic.loadDetail();
+    await tester.pumpAndSettle();
+
+    // 非脚本渠道完全不变：getAppDetail 走 channel 原路径
+    expect(ch.getAppDetailCalls, 1);
+    expect(logic.state.detailInfo.value?.name, 'App One');
   });
 }

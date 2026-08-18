@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/widgets.dart';
 import 'package:gstore/core/channel/impl/JsChannel.dart';
+import 'package:gstore/core/channel/impl/js_detail_channel.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/design/channel_version_picker_sheet.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
@@ -38,6 +39,11 @@ class DetailLogic extends GetxController {
   /// 渠道管理器（channel 模块下线时为 null，消费点软降级）
   ChannelManager? _channelManager;
 
+  /// 页面级 detail 通道（zip 渠道包 detail.js 独立 runtime，Wave 3）。
+  /// 创建于页面初始化（req 就绪后）；无 detail.js → null → 详情消费走 entry 原路径。
+  /// 页面退出在 [onClose] 经 JsChannel.releaseDetailChannel 释放（工厂缓存一致性）。
+  JsDetailChannel? _detailChannel;
+
   /// 聚合管理器（标签读写，与发现页同一套 added_app_tags；aggregate 模块下线时为 null）
   late IAggregateService? _aggregator;
 
@@ -46,7 +52,35 @@ class DetailLogic extends GetxController {
     _channelManager = ModuleManager.instance.get<ChannelManager>();
     _aggregator = ModuleManager.instance.get<IAggregateService>();
     _initializeFromArguments();
+    _initDetailChannel();
     super.onReady();
+  }
+
+  /// Wave 3：获取页面级 detail 通道（zip 包 detail.js，独立 runtime 消费详情方法）。
+  ///
+  /// 仅在 req 就绪且渠道为 JsChannel 时调 [JsChannel.getDetailChannel]；
+  /// 渠道包无 detail.js → 工厂返回 null（详情走 entry 原路径，兼容）。
+  /// 幂等：工厂 appId 级缓存，重复调用返回同一实例。
+  void _initDetailChannel() {
+    final req = request;
+    if (_detailChannel != null || req == null) return;
+    final ch = _channelManager?.getChannel(req.channel);
+    if (ch is JsChannel) {
+      _detailChannel = ch.getDetailChannel(req.appId);
+    }
+  }
+
+  /// 当前详情页脚本消费源：detailChannel（zip 包 detail.js）优先，entry 回退。
+  ///
+  /// 非脚本渠道（GitHub/LocalDb 等）→ null（详情页脚本消费路径不适用）。
+  _DetailScriptSource? get _detailScriptSource {
+    final detailChannel = _detailChannel;
+    if (detailChannel != null) return _DetailJsScriptSource(detailChannel);
+    final req = request;
+    if (req == null) return null;
+    final ch = _channelManager?.getChannel(req.channel);
+    if (ch is JsChannel) return _EntryScriptSource(ch);
+    return null;
   }
 
   /// 从参数初始化基础信息
@@ -105,6 +139,7 @@ class DetailLogic extends GetxController {
     try {
       // 懒初始化（兼容单测直接调 loadDetail；正常流程 onReady 已注入，重复查找幂等）
       _channelManager = ModuleManager.instance.get<ChannelManager>();
+      _initDetailChannel(); // 兼容单测直调 loadDetail（onReady 未走时补初始化）
       final channelInstance = _channelManager?.getChannel(request!.channel);
       if (channelInstance == null) {
         throw Exception('Channel not found: ${request!.channel}');
@@ -191,10 +226,33 @@ class DetailLogic extends GetxController {
     }
 
     // 再获取详情信息（一次性完整注入）
-    final result = await channel.getAppDetail(
-      request!.appId,
-      forceRefresh: false,
-    );
+    // Wave 3：zip 渠道包 detail.js 存在 → detailChannel 消费（页面级独立 runtime）；
+    // 无 detail.js（getDetailChannel null）→ 原 channel.getAppDetail 路径（兼容）。
+    // detail.js 脚本失败（返回 null）→ 回退 entry 原路径（安全兜底）。
+    ChannelResult<IDetailInfo> result;
+    final detailChannel = _detailChannel;
+    if (detailChannel != null) {
+      final raw = await detailChannel.getAppDetail(request!.appId);
+      if (raw == null) {
+        appLog.warning(
+            'DetailLogic: detail.js getAppDetail 失败，回退 entry 原路径 - ${request!.appId}');
+        result = await channel.getAppDetail(
+          request!.appId,
+          forceRefresh: false,
+        );
+      } else {
+        result = ChannelResult.success(
+          data: JsChannelDetailProxy(raw),
+          from: ChannelType.custom,
+          fromCache: false,
+        );
+      }
+    } else {
+      result = await channel.getAppDetail(
+        request!.appId,
+        forceRefresh: false,
+      );
+    }
     if (!result.success || result.data == null) {
       throw Exception(result.error ?? 'Failed to load app detail');
     }
@@ -735,26 +793,39 @@ class DetailLogic extends GetxController {
         ),
     ];
 
-    // 脚本渠道（Hybrid Wave B）：详情页操作由脚本 detailMenu 声明，
+    // 脚本渠道（Hybrid Wave B/Wave 3）：详情页操作由脚本 detailMenu 声明，
     // Flutter 只渲染 + 桥接；点击动作 → 调脚本 jscall，JS 内部经 host.ui 驱动交互。
+    // Wave 3：有 zip 包 detail.js → detailChannel（页面级 runtime）优先消费，
+    // 无 → entry JsChannel 回退（兼容）。
     if (channelInstance is JsChannel) {
-      final js = channelInstance;
+      final source = _detailScriptSource;
+      if (source == null) return; // 理论不可达（channelInstance 已确认 JsChannel）
       // host.ui 注入：脚本 host.ui.showVersionPicker / refreshDetail 的 Flutter 实现
-      // （ChannelLoader 创建渠道时无 context，详情页使用时注入）
-      js.setUiCallbacks(
-        uiShowVersionPicker: (options) =>
-            _showVersionPickerFromScript(context, js, options),
-        uiRefreshDetail: (params) => _refreshDetailFromScript(js, params),
+      // （ChannelLoader 创建渠道时无 context，详情页使用时注入）。
+      // detailChannel 创建于页面初始化（早于此处注入），需向其 runtime 补注入；
+      // entry 同步注入（保持 Wave B 行为，detail.js 缺失回退路径同样可用）。
+      Future<Map<String, dynamic>?> showVersionPicker(
+              Map<String, dynamic> options) =>
+          _showVersionPickerFromScript(context, source, options);
+      Future<void> refreshDetail(Map<String, dynamic> params) =>
+          _refreshDetailFromScript(source, params);
+      channelInstance.setUiCallbacks(
+        uiShowVersionPicker: showVersionPicker,
+        uiRefreshDetail: refreshDetail,
+      );
+      _detailChannel?.setUiCallbacks(
+        uiShowVersionPicker: showVersionPicker,
+        uiRefreshDetail: refreshDetail,
       );
 
-      final menu = await js.detailMenu(req.appId);
+      final menu = await source.detailMenu(req.appId);
       if (menu == null || menu.isEmpty) {
         // 脚本未声明 detailMenu → 维持现状：写死"切换版本"
         actions.add(
           MoreActionItem(
             icon: Icons.swap_vert,
             label: '切换版本',
-            onTap: () => _openVersionSwitcher(context, js),
+            onTap: () => _openVersionSwitcher(context, source),
           ),
         );
       } else {
@@ -766,7 +837,7 @@ class DetailLogic extends GetxController {
             MoreActionItem(
               icon: Icons.extension, // icon 字段暂不解析，用默认图标
               label: label,
-              onTap: () => _handleJsAction(js, action, context),
+              onTap: () => _handleJsAction(source, action, context),
             ),
           );
         }
@@ -805,21 +876,25 @@ class DetailLogic extends GetxController {
   /// 确认后 [_refreshDetailAfterSwitch] 脚本 switchVersion 返回该 env+version
   /// 的详情 Map（同 getAppDetail 结构）→ 用 JsChannelDetailProxy 整体刷新
   /// state.detailInfo（截图/下载/更新日志按新 env+version）。
-  Future<void> _openVersionSwitcher(BuildContext context, JsChannel js) async {
+  /// Wave 3：消费源为 [_DetailScriptSource]（detailChannel 优先，entry 回退）。
+  Future<void> _openVersionSwitcher(
+    BuildContext context,
+    _DetailScriptSource source,
+  ) async {
     final req = request;
     if (req == null) return;
 
-    final opts = await js.versionOptions(req.appId, env: _currentDetailEnv());
+    final opts = await source.versionOptions(req.appId, env: _currentDetailEnv());
     if (opts == null) {
       AppDialogs.showError('无法获取版本选项（脚本未实现或失败）');
       return;
     }
     if (!context.mounted) return;
 
-    final sel = await _showVersionPicker(context, js, opts);
+    final sel = await _showVersionPicker(context, source, opts);
     if (sel == null) return; // 取消/关闭，不刷新
 
-    await _refreshDetailAfterSwitch(js, sel.env, sel.version);
+    await _refreshDetailAfterSwitch(source, sel.env, sel.version);
   }
 
   /// 弹版本选择器（[ChannelVersionPickerSheet.show]）。
@@ -831,7 +906,7 @@ class DetailLogic extends GetxController {
   /// 返回用户确认的 [VersionSelection] 或 null（取消/关闭）。
   Future<VersionSelection?> _showVersionPicker(
     BuildContext context,
-    JsChannel js,
+    _DetailScriptSource source,
     Map<String, dynamic> opts, {
     String? title,
   }) async {
@@ -852,9 +927,9 @@ class DetailLogic extends GetxController {
       currentEnv: opts['currentEnv']?.toString(),
       currentVersion: opts['currentVersion']?.toString(),
       onEnvChanged: (env) async =>
-          _parseVersionOptions(await js.versionOptions(req.appId, env: env)),
+          _parseVersionOptions(await source.versionOptions(req.appId, env: env)),
       onBuildHistory: ({required version, required env}) async {
-        final bh = await js.buildHistory(
+        final bh = await source.buildHistory(
           appId: req.appId,
           version: version,
           env: env,
@@ -882,7 +957,7 @@ class DetailLogic extends GetxController {
       // 多行同时展开时各自下载定位互不干扰（不复用"最近展开"捕获）。
       onBuildSelect: (build, {required version, required env}) {
         unawaited(_downloadHistoricalBuild(
-          js,
+          source,
           build,
           version: version,
           env: env,
@@ -898,13 +973,13 @@ class DetailLogic extends GetxController {
   /// `{env, version}` 或 null（取消）。
   Future<Map<String, dynamic>?> _showVersionPickerFromScript(
     BuildContext context,
-    JsChannel js,
+    _DetailScriptSource source,
     Map<String, dynamic> options,
   ) async {
     if (!context.mounted) return null;
     final sel = await _showVersionPicker(
       context,
-      js,
+      source,
       options,
       title: options['title']?.toString(),
     );
@@ -917,13 +992,13 @@ class DetailLogic extends GetxController {
   /// [params]：`{appId, env, version}` → 调脚本 switchVersion 拿该 env+version
   /// 详情 → 整体刷新 state.detailInfo（与选择器确认共用刷新逻辑）。
   Future<void> _refreshDetailFromScript(
-    JsChannel js,
+    _DetailScriptSource source,
     Map<String, dynamic> params,
   ) async {
     final env = params['env']?.toString() ?? '';
     final version = params['version']?.toString() ?? '';
     if (env.isEmpty || version.isEmpty) return;
-    await _refreshDetailAfterSwitch(js, env, version);
+    await _refreshDetailAfterSwitch(source, env, version);
   }
 
   /// 执行脚本声明的详情页动作（Hybrid Wave B：点击 → 调脚本 jscall）。
@@ -936,7 +1011,7 @@ class DetailLogic extends GetxController {
   /// jscall 返回不做处理（JS 全权，交互由 host.ui 回调驱动，[setUiCallbacks]
   /// 注入的版本选择器/刷新详情实现已就绪）。
   Future<void> _handleJsAction(
-    JsChannel js,
+    _DetailScriptSource source,
     Map<String, dynamic> action,
     BuildContext context,
   ) async {
@@ -946,19 +1021,19 @@ class DetailLogic extends GetxController {
     final method = action['jscall']?.toString();
     if (method == null || method.isEmpty) return;
 
-    await js.invokeScriptMethod(method, {'appId': req.appId});
+    await source.invokeScriptMethod(method, {'appId': req.appId});
   }
 
   /// switchVersion → state.detailInfo 整体刷新（选择器确认与 host.ui.refreshDetail 共用）。
   Future<void> _refreshDetailAfterSwitch(
-    JsChannel js,
+    _DetailScriptSource source,
     String env,
     String version,
   ) async {
     final req = request;
     if (req == null) return;
 
-    final detail = await js.switchVersion(
+    final detail = await source.switchVersion(
       appId: req.appId,
       env: env,
       version: version,
@@ -1002,7 +1077,7 @@ class DetailLogic extends GetxController {
   /// 匹配该 build 的下载项（ipaName == download.name）→ startDownload；
   /// 无匹配/脚本失败 → 提示"该构建暂不可下载"（历史构建下载走现有下载器）。
   Future<void> _downloadHistoricalBuild(
-    JsChannel js,
+    _DetailScriptSource source,
     BuildOption build, {
     required String version,
     required String env,
@@ -1010,7 +1085,7 @@ class DetailLogic extends GetxController {
     final req = request;
     if (req == null) return;
 
-    final detail = await js.switchVersion(
+    final detail = await source.switchVersion(
       appId: req.appId,
       env: env,
       version: version,
@@ -1069,10 +1144,125 @@ class DetailLogic extends GetxController {
 
   @override
   void onClose() {
+    // Wave 3：释放页面级 detail runtime（工厂缓存一致性——经
+    // JsChannel.releaseDetailChannel 移除 appId 缓存并 dispose，页面退出即释放；
+    // 未创建过该 appId 的 detail 通道 → 幂等无操作）。
+    final req = request;
+    if (req != null) {
+      final ch = _channelManager?.getChannel(req.channel);
+      if (ch is JsChannel) {
+        ch.releaseDetailChannel(req.appId);
+      }
+    }
+    _detailChannel = null;
     counterController.close();
     downloadListenerSubscription?.cancel();
     super.onClose();
   }
+}
+
+/// 详情页脚本消费源（Wave 3）：zip 渠道包 detail.js 的 detailChannel（页面级
+/// 独立 runtime）优先，无 detail.js → entry JsChannel 回退（兼容）。
+///
+/// 统一 versionOptions / switchVersion / buildHistory / detailMenu / jscall 的
+/// 消费入口——详情页逻辑只面向该抽象，不关心脚本来自 entry 还是 detail.js。
+abstract class _DetailScriptSource {
+  Future<Map<String, dynamic>?> versionOptions(String appId, {String? env});
+
+  Future<Map<String, dynamic>?> switchVersion({
+    required String appId,
+    required String env,
+    required String version,
+  });
+
+  Future<Map<String, dynamic>?> buildHistory({
+    required String appId,
+    required String version,
+    required String env,
+  });
+
+  Future<List<Map<String, dynamic>>?> detailMenu(String appId);
+
+  Future<dynamic> invokeScriptMethod(
+    String method, [
+    Map<String, dynamic>? params,
+  ]);
+}
+
+/// entry JsChannel 适配（无 detail.js 时回退；Wave B 原路径）
+class _EntryScriptSource implements _DetailScriptSource {
+  _EntryScriptSource(this._js);
+
+  final JsChannel _js;
+
+  @override
+  Future<Map<String, dynamic>?> versionOptions(String appId, {String? env}) =>
+      _js.versionOptions(appId, env: env);
+
+  @override
+  Future<Map<String, dynamic>?> switchVersion({
+    required String appId,
+    required String env,
+    required String version,
+  }) =>
+      _js.switchVersion(appId: appId, env: env, version: version);
+
+  @override
+  Future<Map<String, dynamic>?> buildHistory({
+    required String appId,
+    required String version,
+    required String env,
+  }) =>
+      _js.buildHistory(appId: appId, version: version, env: env);
+
+  @override
+  Future<List<Map<String, dynamic>>?> detailMenu(String appId) =>
+      _js.detailMenu(appId);
+
+  @override
+  Future<dynamic> invokeScriptMethod(
+    String method, [
+    Map<String, dynamic>? params,
+  ]) =>
+      _js.invokeScriptMethod(method, params);
+}
+
+/// detail.js detailChannel 适配（zip 渠道包页面级 runtime，优先消费）
+class _DetailJsScriptSource implements _DetailScriptSource {
+  _DetailJsScriptSource(this._ch);
+
+  final JsDetailChannel _ch;
+
+  @override
+  Future<Map<String, dynamic>?> versionOptions(String appId, {String? env}) =>
+      _ch.versionOptions(appId, env: env);
+
+  @override
+  Future<Map<String, dynamic>?> switchVersion({
+    required String appId,
+    required String env,
+    required String version,
+  }) =>
+      _ch.switchVersion(appId: appId, env: env, version: version);
+
+  @override
+  Future<Map<String, dynamic>?> buildHistory({
+    required String appId,
+    required String version,
+    required String env,
+  }) =>
+      _ch.buildHistory(appId: appId, version: version, env: env);
+
+  @override
+  Future<List<Map<String, dynamic>>?> detailMenu(String appId) =>
+      _ch.detailMenu(appId);
+
+  @override
+  Future<dynamic> invokeScriptMethod(
+    String method, [
+    Map<String, dynamic>? params,
+  ]) =>
+      _ch.callMain(method, params);
 }
 
 /// 渐进组装中的详情信息：包装 [AppDetailInfo]，暴露 [IDetailInfo] 接口。

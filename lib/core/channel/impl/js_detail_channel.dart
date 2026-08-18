@@ -169,6 +169,22 @@ class JsDetailChannel {
     return data.map((e) => stringKeyedMap(e)).toList();
   }
 
+  /// host.ui 注入（与 entry 相同语义）：详情页使用时覆盖构造时透传的实现。
+  ///
+  /// detail 通道由 [JsChannel.getDetailChannel] 在页面初始化时创建（早于详情页
+  /// showMoreActions 的 host.ui 注入），此处允许注入晚于创建——脚本下次调用
+  /// `host.ui.showVersionPicker` / `host.ui.refreshDetail` 即生效（回调调用时读取）。
+  void setUiCallbacks({
+    Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
+        uiShowVersionPicker,
+    Future<void> Function(Map<String, dynamic> params)? uiRefreshDetail,
+  }) {
+    _runtime.setUiCallbacks(
+      uiShowVersionPicker: uiShowVersionPicker,
+      uiRefreshDetail: uiRefreshDetail,
+    );
+  }
+
   /// 释放 runtime（页面退出调用；数据/缓存随实例释放，免缓存管理）
   Future<void> dispose() => _runtime.dispose();
 
