@@ -823,6 +823,9 @@ class JsChannelDetailProxy extends ChannelDetailProxy {
             size: (e['size'] as num?)?.toInt(),
             version: e['version']?.toString(),
             platform: e['platform']?.toString(),
+            // 脚本 downloads 契约：downloadable/note（无凭证/认证失败 → url 空 + 提示）
+            downloadable: e['downloadable'] == true,
+            note: e['note']?.toString(),
           );
         }
         return DownloadInfo(url: e.toString(), name: e.toString());

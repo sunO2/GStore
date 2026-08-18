@@ -361,6 +361,14 @@ class DownloadService extends GetxService
     final file = File(downloadStatus.savePath);
     await file.parent.create(recursive: true);
 
+    // 防御：URL 为空（脚本未生成下载地址/凭证未配置）→ 直接失败，不发起空 URL 请求
+    if (url.trim().isEmpty) {
+      appLog.error('下载异常：下载地址为空，无法下载 - ${downloadStatus.fileName}');
+      downloadStatus.downloadError();
+      DownloadNotificationService.instance.onDownloadError(notifId, notifTitle);
+      return;
+    }
+
     int attempt = 0;
     while (attempt <= maxRetryCount) {
       if (attempt > 0) {
@@ -532,6 +540,15 @@ class DownloadService extends GetxService
       }
 
       final downloadUrl = context?.downloadUrl ?? downloadStatus.downloadUrl;
+
+      // 防御：URL 为空（脚本未生成下载地址/凭证未配置）→ 直接失败，不发起空 URL 请求
+      // （空 URL 请求会抛 DioException 且 message 为 null → 日志"下载异常： null"）
+      if (downloadUrl.trim().isEmpty) {
+        appLog.error('下载异常：下载地址为空，无法下载 - ${downloadStatus.fileName}');
+        downloadStatus.downloadError();
+        DownloadNotificationService.instance.onDownloadError(notifId, notifTitle);
+        return;
+      }
 
       try {
         debugPrint('DownloadService: 发起 HTTP GET 请求 - $downloadUrl (start=$start)');

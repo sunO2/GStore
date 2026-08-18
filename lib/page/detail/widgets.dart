@@ -1307,20 +1307,56 @@ class _DownloadItem extends StatelessWidget {
                             ],
                           ),
                         ],
+                        // 不可下载原因提示（脚本渠道：未配置凭证/认证失败）
+                        if (!download.downloadable &&
+                            download.note?.isNotEmpty == true) ...[
+                          SizedBox(height: AppSpacing.xs),
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Icon(
+                                Icons.info_outline,
+                                size: AppTypography.iconXS,
+                                color: Theme.of(context).colorScheme.error,
+                              ),
+                              SizedBox(width: AppSpacing.xs),
+                              Expanded(
+                                child: Text(
+                                  download.note!,
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .bodySmall
+                                      ?.copyWith(
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .error,
+                                        fontSize: AppTypography.sizeXXS,
+                                      ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
                       ],
                     ),
                   ),
-                  // 下载按钮
+                  // 下载按钮（不可下载时禁用：脚本未生成下载地址，如未配置凭证/认证失败）
                   if (onTap != null)
                     InkWell(
-                      onTap: () => onTap!(download),
+                      onTap: download.downloadable
+                          ? () => onTap!(download)
+                          : null,
                       borderRadius: AppRadius.allXL,
                       child: Container(
                         padding: AppSpacing.allSM,
                         child: Icon(
-                          Icons.download_rounded,
+                          download.downloadable
+                              ? Icons.download_rounded
+                              : Icons.block,
                           size: AppTypography.iconLG,
-                          color: Theme.of(context).colorScheme.primary,
+                          color: download.downloadable
+                              ? Theme.of(context).colorScheme.primary
+                              : Theme.of(context).colorScheme.outline,
                         ),
                       ),
                     ),

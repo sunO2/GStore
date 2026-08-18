@@ -442,6 +442,20 @@ class DetailLogic extends GetxController {
     final req = request;
     if (detail == null && req == null) return;
 
+    // 下载前守卫：URL 为空（脚本未生成下载地址，如未配置渠道凭证/认证失败）→
+    // 提示配置凭证，不创建下载记录、不发起空 URL 下载
+    // （避免"下载异常：null" + 下载管理出现空链接记录）
+    final downloadUrl = download.url.trim();
+    if (downloadUrl.isEmpty) {
+      appLog.warning('DetailLogic: 下载地址为空，取消下载 - ${download.name}');
+      AppDialogs.showWarning(
+        download.note?.isNotEmpty == true
+            ? download.note!
+            : '下载地址不可用\n请先在渠道环境变量配置 PINGAN_USER/PINGAN_PASS 后重试',
+      );
+      return;
+    }
+
     downloadListenerSubscription?.cancel();
 
     final appId = req?.appId ?? detail!.appId;
@@ -449,13 +463,16 @@ class DetailLogic extends GetxController {
     final version = download.version ?? 'unknown';
     final fileName = download.name;
 
+    // 下载前日志：记录实际发起下载的 URL（排查下载链路每层值）
+    appLog.info('DetailLogic: startDownload - name=$fileName url=$downloadUrl');
+
     // 预先创建/获取下载状态，用于立即建立进度监听
     final status = await DownloadStatus.create(
       appId,
       appName,
       version,
       fileName,
-      download.url,
+      downloadUrl,
       downloadSize: download.size ?? downloadSize,
     );
 

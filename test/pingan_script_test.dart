@@ -196,6 +196,69 @@ class _FakePinganApi {
     (data['buildList'] as List).removeAt(1);
     return data;
   }
+
+  /// 真实接口结构：build-list 组内 builds **无 ipa 字段**（仅 fileurl/versionname/num），
+  /// 平安口袋银行场景（appname=ibank, env=sit, android 8.8.0）——首次路径下载名/URL
+  /// 必须靠 build 接口（_id）补全 ipa[0].name 才能拼出（首次下载项 bug 的根因 mock）。
+  Map<String, dynamic> buildListNoIpa() {
+    return {
+      'appLogo': '/logo/app.png',
+      'buildList': [
+        {
+          '_id': 'bg-ibank',
+          'version': '8.8.0',
+          'platform': 'android',
+          'env': 'sit',
+          'publishedAt': 1700000000000,
+          'status': 'success',
+          'builds': [
+            {
+              'identifier': 'com.pingan.pabank.activity',
+              'versionname': '8.8.0',
+              'num': 35,
+              'size': 23456789,
+              'installTimes': 88,
+              'changelog': '修复若干问题',
+              'builtBy': 'ci-bot',
+              'fileurl': <Object>[],
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  /// build 接口（_id 查询）：真实结构 {'build': {'builds': [...]}, 'appInfo': {...}}，
+  /// 每条构建含 ipa[0].name 真实下载文件名（proxy 转发用，如 PABank-Debug-8.8.0-35.apk）
+  Map<String, dynamic> buildDetail(String groupId, {required String ipaName}) {
+    return {
+      'build': {
+        '_id': groupId,
+        'version': '8.8.0',
+        'builds': [
+          {
+            'identifier': 'com.pingan.pabank.activity',
+            'versionname': '8.8.0',
+            'num': 35,
+            'size': 23456789,
+            'installTimes': 88,
+            'changelog': '修复若干问题',
+            'builtBy': 'ci-bot',
+            'ipa': [
+              {'name': ipaName, '_id': 'ipa-35'},
+            ],
+            'fileurl': <Object>[],
+          },
+        ],
+      },
+      'appInfo': {
+        'displayname': '平安口袋银行',
+        'intro': '平安口袋银行介绍',
+        'name': 'ibank',
+        'screenshots': <Object>[],
+      },
+    };
+  }
 }
 
 void main() {
@@ -1764,6 +1827,141 @@ void main() {
           requestLog.where((r) => r.contains('build-list')).toList();
       expect(buildRequests.length, 3);
       expect(buildRequests.last, contains('appname=app-1'));
+
+      await runtime.dispose();
+    });
+
+    test('㉛c getAppDetail 首次（真实结构：build-list 无 ipa + build 接口补全 + 凭证）→ downloads 真实文件名 + proxy URL 非空', () async {
+      // 回归首次下载项 bug：build-list builds[0] 无 ipa → 修复前 name 合成
+      // "8.8.0.apk"/"平安口袋银行.apk" + ipaName 空 → proxy URL 拼不出（下载地址空）
+      final runtime = buildRuntime(
+        scriptOverride: detailScript,
+        env: () => {'PINGAN_USER': 'tester', 'PINGAN_PASS': 'secret'},
+        handler: (options) {
+          if (options.path.contains('/sunflower/i/build-list')) {
+            return api.buildListNoIpa(); // 真实结构：builds[0] 无 ipa 字段
+          }
+          if (options.path.endsWith('/sunflower/i/build')) {
+            return api.buildDetail('bg-ibank', ipaName: 'PABank-Debug-8.8.0-35.apk');
+          }
+          if (options.path.contains('login/check')) {
+            return {'code': 0, 'url': '/download/token-redirect.apk'};
+          }
+          return defaultHandler(options);
+        },
+      );
+      await runtime.initialize();
+
+      final result = await runtime.call('main', ['getAppDetail', {'appId': 'ibank'}]) as Map;
+      expect(result['ok'], isTrue);
+      final d = result['data'] as Map;
+      expect(d['version'], '8.8.0');
+      final downloads = d['downloads'] as List;
+      expect(downloads.length, 1);
+      final dl = downloads.first as Map;
+      // 真实文件名（build 接口 ipa[0].name 补全，非合成名）
+      expect(dl['name'], 'PABank-Debug-8.8.0-35.apk');
+      // proxy URL（env + ipaName + um/value 编码）——修复前为 ''（下载地址空）
+      expect(
+        dl['url'],
+        '$_mcdBase/proxy/sit/PABank-Debug-8.8.0-35.apk?um=tester&value=secret',
+      );
+      expect(dl['downloadable'], isTrue);
+      expect(dl['note'], '');
+      // 首次路径确实调用了 build 接口（_id 补全）
+      expect(requestLog.where((r) => r.contains('/sunflower/i/build?')).length, 1);
+
+      await runtime.dispose();
+    });
+
+    test('㉛d getAppDetail 首次无凭证（真实结构）→ 真实文件名 + url 空 + note（降级不抛）', () async {
+      final runtime = buildRuntime(
+        scriptOverride: detailScript,
+        handler: (options) {
+          if (options.path.contains('/sunflower/i/build-list')) {
+            return api.buildListNoIpa();
+          }
+          if (options.path.endsWith('/sunflower/i/build')) {
+            return api.buildDetail('bg-ibank', ipaName: 'PABank-Debug-8.8.0-35.apk');
+          }
+          return defaultHandler(options);
+        },
+      );
+      await runtime.initialize();
+
+      final result = await runtime.call('main', ['getAppDetail', {'appId': 'ibank'}]) as Map;
+      expect(result['ok'], isTrue); // 无凭证绝不阻塞详情
+      final downloads = (result['data'] as Map)['downloads'] as List;
+      final dl = downloads.first as Map;
+      expect(dl['name'], 'PABank-Debug-8.8.0-35.apk'); // 文件名仍真实（build 补全）
+      expect(dl['url'], ''); // 无凭证 → 下载地址空（降级）
+      expect(dl['downloadable'], isFalse);
+      expect((dl['note'] as String), contains('PINGAN_USER/PINGAN_PASS'));
+      // 未发起认证请求
+      expect(requestLog.any((r) => r.contains('login/check')), isFalse);
+
+      await runtime.dispose();
+    });
+
+    test('㉛e getAppDetail 首次 build 接口失败（真实结构）→ 降级合成名 + url 空（不抛）', () async {
+      final runtime = buildRuntime(
+        scriptOverride: detailScript,
+        env: () => {'PINGAN_USER': 'tester', 'PINGAN_PASS': 'secret'},
+        handler: (options) {
+          if (options.path.contains('/sunflower/i/build-list')) {
+            return api.buildListNoIpa(); // builds[0] 无 ipa
+          }
+          if (options.path.endsWith('/sunflower/i/build')) {
+            return {'__status': 500, 'msg': 'boom'}; // build 补全失败
+          }
+          if (options.path.contains('login/check')) {
+            return {'code': 0, 'url': '/download/token-redirect.apk'};
+          }
+          return defaultHandler(options);
+        },
+      );
+      await runtime.initialize();
+
+      final result = await runtime.call('main', ['getAppDetail', {'appId': 'ibank'}]) as Map;
+      expect(result['ok'], isTrue); // 补全失败降级，不抛
+      final downloads = (result['data'] as Map)['downloads'] as List;
+      final dl = downloads.first as Map;
+      expect(dl['name'], '8.8.0.apk'); // 降级：versionname + '.apk' 合成
+      expect(dl['url'], ''); // ipaName 缺失 → proxy URL 拼不出（降级行为）
+      expect(dl['downloadable'], isFalse);
+      expect((dl['note'] as String), isNotEmpty);
+
+      await runtime.dispose();
+    });
+
+    test('㉛f 同 entry runtime：getAppDetail 首次（真实结构）→ downloads 真实文件名 + proxy URL 非空', () async {
+      final runtime = buildRuntime(
+        env: () => {'PINGAN_USER': 'tester', 'PINGAN_PASS': 'secret'},
+        handler: (options) {
+          if (options.path.contains('/sunflower/i/build-list')) {
+            return api.buildListNoIpa();
+          }
+          if (options.path.endsWith('/sunflower/i/build')) {
+            return api.buildDetail('bg-ibank', ipaName: 'PABank-Debug-8.8.0-35.apk');
+          }
+          if (options.path.contains('login/check')) {
+            return {'code': 0, 'url': '/download/token-redirect.apk'};
+          }
+          return defaultHandler(options);
+        },
+      );
+      await runtime.initialize();
+
+      final result = await runtime.call('main', ['getAppDetail', {'appId': 'ibank'}]) as Map;
+      expect(result['ok'], isTrue);
+      final downloads = (result['data'] as Map)['downloads'] as List;
+      final dl = downloads.first as Map;
+      expect(dl['name'], 'PABank-Debug-8.8.0-35.apk');
+      expect(
+        dl['url'],
+        '$_mcdBase/proxy/sit/PABank-Debug-8.8.0-35.apk?um=tester&value=secret',
+      );
+      expect(dl['downloadable'], isTrue);
 
       await runtime.dispose();
     });

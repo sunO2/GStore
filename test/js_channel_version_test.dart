@@ -316,5 +316,41 @@ async function main(method, params) {
 
       await channel.dispose();
     });
+
+    test('⑩ getAppDetail downloads 映射 downloadable/note（脚本不可下载契约）', () async {
+      const script = '''
+const CHANNEL_META = { name: '下载契约', description: '下载契约测试' };
+async function main(method, params) {
+  if (method === 'getAppDetail') {
+    return { ok: true, data: {
+      appId: 'com.example.one',
+      name: 'App One',
+      downloads: [
+        { url: '', name: 'one-1.0.0.apk', size: 1024, version: '1.0.0', downloadable: false, note: '需在渠道环境变量配置 PINGAN_USER/PINGAN_PASS 后下载' },
+        { url: 'https://example.com/two.apk', name: 'two-1.0.0.apk', size: 2048, version: '1.0.0', downloadable: true, note: '' }
+      ]
+    }};
+  }
+  return null;
+}
+''';
+      final channel = buildChannel(channelKey: 'js.dlcontract', script: script);
+      await channel.initialize();
+
+      final result = await channel.getAppDetail('com.example.one');
+      expect(result.success, isTrue);
+      final proxy = result.data as JsChannelDetailProxy;
+      final downloads = proxy.downloads;
+      expect(downloads.length, 2);
+      // 不可下载项：url 空 + downloadable:false + note 透传
+      expect(downloads[0].url, '');
+      expect(downloads[0].downloadable, isFalse);
+      expect(downloads[0].note, '需在渠道环境变量配置 PINGAN_USER/PINGAN_PASS 后下载');
+      // 可下载项：downloadable 默认 true
+      expect(downloads[1].url, 'https://example.com/two.apk');
+      expect(downloads[1].downloadable, isTrue);
+
+      await channel.dispose();
+    });
   });
 }
