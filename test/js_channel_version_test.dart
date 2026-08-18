@@ -117,13 +117,18 @@ async function main(method, params) {
   switch (method) {
     case 'versionOptions':
       if (params && params.appId === 'fail') return { ok: false };
-      return { ok: true, data: versionOptionsData };
+      // 回显收到的 env（断言按需单 env 拉取契约）
+      return { ok: true, data: Object.assign({}, versionOptionsData, { receivedEnv: params && params.env }) };
     case 'switchVersion':
       if (params && params.appId === 'fail') return { ok: false };
       return { ok: true, data: detailData };
     case 'buildHistory':
       if (params && params.appId === 'fail') return { ok: false };
       return { ok: true, data: buildsData };
+    case 'getAppDetail':
+      if (params && params.appId === 'fail') return { ok: false };
+      // 回显收到的 version（断言单版本拉取契约）
+      return { ok: true, data: Object.assign({}, detailData, { receivedVersion: params && params.version }) };
     default:
       return null;
   }
@@ -256,6 +261,58 @@ async function main(method, params) {
         version: '1.0.0',
         env: 'prod',
       ), isNull);
+
+      await channel.dispose();
+    });
+
+    test('⑥ versionOptions 带 env → 脚本收到 env（按需单 env 拉取）', () async {
+      final channel = buildChannel();
+      await channel.initialize();
+
+      final data = await channel.versionOptions('com.example.one', env: 'test');
+      expect(data, isNotNull);
+      expect(data!['receivedEnv'], 'test');
+      // 其余字段不受影响
+      expect(data['envs'], ['prod', 'test']);
+      expect(data['currentEnv'], 'prod');
+
+      await channel.dispose();
+    });
+
+    test('⑦ versionOptions 不带 env → 脚本不收到 env（兼容旧调用）', () async {
+      final channel = buildChannel();
+      await channel.initialize();
+
+      final data = await channel.versionOptions('com.example.one');
+      expect(data, isNotNull);
+      expect(data!['receivedEnv'], isNull);
+
+      await channel.dispose();
+    });
+
+    test('⑧ getAppDetail 带 version → 脚本收到 version（单版本拉取）', () async {
+      final channel = buildChannel();
+      await channel.initialize();
+
+      final result = await channel.getAppDetail(
+        'com.example.one',
+        version: '1.0.0',
+      );
+      expect(result.success, isTrue);
+      final proxy = result.data as JsChannelDetailProxy;
+      expect(proxy.data['receivedVersion'], '1.0.0');
+
+      await channel.dispose();
+    });
+
+    test('⑨ getAppDetail 不带 version → 脚本不收到 version（兼容旧调用）', () async {
+      final channel = buildChannel();
+      await channel.initialize();
+
+      final result = await channel.getAppDetail('com.example.one');
+      expect(result.success, isTrue);
+      final proxy = result.data as JsChannelDetailProxy;
+      expect(proxy.data['receivedVersion'], isNull);
 
       await channel.dispose();
     });

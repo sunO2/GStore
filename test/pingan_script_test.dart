@@ -84,7 +84,9 @@ class _FakeDioAdapter implements HttpClientAdapter {
   ) async {
     requestLog.add('${options.method} ${options.path}'
         '?pageNum=${options.queryParameters['pageNum'] ?? '-'}'
-        '&appname=${options.queryParameters['appname'] ?? '-'}');
+        '&appname=${options.queryParameters['appname'] ?? '-'}'
+        '&version=${options.queryParameters['version'] ?? '-'}'
+        '&env=${options.queryParameters['env'] ?? '-'}');
     final data = handler(options);    if (data['__status'] != null) {
       final status = data.remove('__status') as int;
       return ResponseBody.fromString(
@@ -691,6 +693,139 @@ void main() {
       expect(data['appId'], 'com.pingan.app');
       expect(data['packageName'], 'com.pingan.app');
       expect(data['version'], '1.9.0');
+
+      await runtime.dispose();
+    });
+
+    test('⑳ getVersionOptions 带 env → 只拉该 env 一次（envs 仍全量 5 个）', () async {
+      final runtime = buildRuntime(handler: (options) {
+        if (options.path.contains('/sunflower/i/build-list')) {
+          final env = options.queryParameters['env']?.toString() ?? '';
+          // 按 env 返回不同版本组（验证只请求目标 env）
+          return {
+            'appLogo': '/logo/app.png',
+            'buildList': [
+              {
+                '_id': 'bg-$env',
+                'version': '1.0.0',
+                'platform': 'android',
+                'env': env,
+                'publishedAt': 1700000000000,
+                'builds': [
+                  {
+                    'identifier': 'com.pingan.app',
+                    'versionname': '1.0.0',
+                    'num': 1,
+                    'size': 100,
+                    'fileurl': [],
+                  },
+                ],
+              },
+            ],
+          };
+        }
+        return defaultHandler(options);
+      });
+      await runtime.initialize();
+
+      final result = await runtime.call(
+          'main', ['versionOptions', {'appId': 'app-1', 'env': 'uat'}]) as Map;
+      expect(result['ok'], isTrue);
+      final data = result['data'] as Map;
+
+      // envs 仍返回全部 5 个（chips 显示用）
+      expect(data['envs'], ['sit', 'uat', 'prd', 'rge', 'tmp']);
+      // versions 只含该 env 的版本
+      final versions = data['versions'] as List;
+      expect(versions.length, 1);
+      expect((versions.first as Map)['version'], '1.0.0');
+      expect((versions.first as Map)['envs'], ['uat']);
+      expect(data['currentEnv'], 'uat');
+      expect(data['currentVersion'], '1.0.0');
+
+      // 只发了一次 build-list 请求（按 env 单次，不再遍历 5 env）
+      final buildRequests =
+          requestLog.where((r) => r.contains('build-list')).toList();
+      expect(buildRequests.length, 1);
+      expect(buildRequests.first, contains('env=uat'));
+
+      await runtime.dispose();
+    });
+
+    test('㉑ getVersionOptions 不带 env → 按凭证默认 env（sit）单次拉取', () async {
+      final runtime = buildRuntime();
+      await runtime.initialize();
+
+      final result = await runtime.call(
+          'main', ['versionOptions', {'appId': 'app-1'}]) as Map;
+      expect(result['ok'], isTrue);
+      final data = result['data'] as Map;
+      expect(data['currentEnv'], 'sit');
+      // defaultHandler 的 buildList 有 ios(2.0.0) + android(1.9.0) 两组
+      final versions = data['versions'] as List;
+      expect(versions.length, 2);
+      expect((versions.first as Map)['version'], '2.0.0'); // 最新 publishedAt 在前
+
+      final buildRequests =
+          requestLog.where((r) => r.contains('build-list')).toList();
+      expect(buildRequests.length, 1);
+      expect(buildRequests.first, contains('env=sit'));
+
+      await runtime.dispose();
+    });
+
+    test('㉒ getVersionOptions 单 env 失败 → ok:false（不再静默跳过）', () async {
+      final runtime = buildRuntime(handler: (options) {
+        if (options.path.contains('/sunflower/i/build-list')) {
+          return {'__status': 500, 'msg': 'boom'};
+        }
+        return defaultHandler(options);
+      });
+      await runtime.initialize();
+
+      final result = await runtime.call(
+          'main', ['versionOptions', {'appId': 'app-1', 'env': 'prd'}]) as Map;
+      expect(result['ok'], isFalse);
+      expect(result['data'], isNull);
+
+      await runtime.dispose();
+    });
+
+    test('㉓ getAppDetail 带 version → build-list 单版本拉取（version 参数）', () async {
+      final runtime = buildRuntime();
+      await runtime.initialize();
+
+      final result = await runtime.call(
+          'main', ['getAppDetail', {'appId': 'app-1', 'version': '1.9.0'}]) as Map;
+      expect(result['ok'], isTrue);
+      final d = result['data'] as Map;
+      expect(d['version'], '1.9.0');
+      expect(d['appId'], 'com.pingan.app');
+
+      // 单版本拉取：只发一次 build-list，且携带 version 参数
+      final buildRequests =
+          requestLog.where((r) => r.contains('build-list')).toList();
+      expect(buildRequests.length, 1);
+      expect(buildRequests.first, contains('version=1.9.0'));
+
+      await runtime.dispose();
+    });
+
+    test('㉔ getAppInfo 带 version → build-list 单版本拉取（version 参数）', () async {
+      final runtime = buildRuntime();
+      await runtime.initialize();
+
+      final result = await runtime.call(
+          'main', ['getAppInfo', {'appId': 'app-1', 'version': '1.9.0'}]) as Map;
+      expect(result['ok'], isTrue);
+      final app = result['data'] as Map;
+      expect(app['name'], '1.9.0'); // versionname
+      expect((app['extra'] as Map)['version'], '1.9.0');
+
+      final buildRequests =
+          requestLog.where((r) => r.contains('build-list')).toList();
+      expect(buildRequests.length, 1);
+      expect(buildRequests.first, contains('version=1.9.0'));
 
       await runtime.dispose();
     });

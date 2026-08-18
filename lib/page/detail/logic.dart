@@ -766,14 +766,15 @@ class DetailLogic extends GetxController {
 
   /// 打开"切换版本"选择器（仅脚本渠道）。
   ///
-  /// 流程：脚本 versionOptions → ChannelVersionPickerSheet 选 env+version →
+  /// 流程：脚本 versionOptions（按当前详情 env 单 env 拉取）→
+  /// ChannelVersionPickerSheet 选 env+version（env 切换按需刷新版本列表）→
   /// 确认后脚本 switchVersion 返回该 env+version 的详情 Map（同 getAppDetail 结构）→
   /// 用 JsChannelDetailProxy 整体刷新 state.detailInfo（截图/下载/更新日志按新 env+version）。
   Future<void> _openVersionSwitcher(BuildContext context, JsChannel js) async {
     final req = request;
     if (req == null) return;
 
-    final opts = await js.versionOptions(req.appId);
+    final opts = await js.versionOptions(req.appId, env: _currentDetailEnv());
     if (opts == null) {
       AppDialogs.showError('无法获取版本选项（脚本未实现或失败）');
       return;
@@ -784,20 +785,7 @@ class DetailLogic extends GetxController {
             ?.map((e) => e.toString())
             .toList() ??
         const <String>[];
-    final versions = (opts['versions'] as List?)
-            ?.map((v) {
-              final m = v as Map;
-              return VersionOption(
-                version: m['version']?.toString() ?? '',
-                envs: (m['envs'] as List?)
-                        ?.map((e) => e.toString())
-                        .toList() ??
-                    const <String>[],
-                buildCount: (m['buildCount'] as num?)?.toInt() ?? 0,
-              );
-            })
-            .toList() ??
-        const <VersionOption>[];
+    final versions = _parseVersionOptions(opts);
 
     // 记录最近一次展开的历史构建所属 version/env（onBuildSelect 下载时定位详情用）
     var historyVersion = '';
@@ -810,6 +798,8 @@ class DetailLogic extends GetxController {
       versions: versions,
       currentEnv: opts['currentEnv']?.toString(),
       currentVersion: opts['currentVersion']?.toString(),
+      onEnvChanged: (env) async =>
+          _parseVersionOptions(await js.versionOptions(req.appId, env: env)),
       onBuildHistory: ({required version, required env}) async {
         historyVersion = version;
         historyEnv = env;
@@ -860,6 +850,33 @@ class DetailLogic extends GetxController {
     }
     state.detailInfo.value = JsChannelDetailProxy(detail);
     AppDialogs.showSuccess('已切换到 ${sel.version}（${sel.env}）');
+  }
+
+  /// 当前详情所属 env（脚本详情 extra.env；无 → null → 脚本按凭证默认 env）
+  String? _currentDetailEnv() {
+    final detail = state.detailInfo.value;
+    if (detail == null) return null;
+    final extra = detail.extra['extra'];
+    if (extra is Map) return extra['env']?.toString();
+    return null;
+  }
+
+  /// 解析脚本 versionOptions 返回的 versions 列表 → [VersionOption]
+  List<VersionOption> _parseVersionOptions(Map<String, dynamic>? opts) {
+    return (opts?['versions'] as List?)
+            ?.map((v) {
+              final m = v as Map;
+              return VersionOption(
+                version: m['version']?.toString() ?? '',
+                envs: (m['envs'] as List?)
+                        ?.map((e) => e.toString())
+                        .toList() ??
+                    const <String>[],
+                buildCount: (m['buildCount'] as num?)?.toInt() ?? 0,
+              );
+            })
+            .toList() ??
+        const <VersionOption>[];
   }
 
   /// 历史构建下载：调脚本 switchVersion 拿该 env+version 详情 downloads，

@@ -240,9 +240,13 @@ class JsChannel extends IChannel implements DynamicChannel {
   Future<ChannelResult<AppSummary?>> getAppInfo(
     String appId, {
     bool forceRefresh = false,
+    String? version,
   }) async {
     try {
-      final data = await _callMain('getAppInfo', {'appId': appId});
+      final data = await _callMain('getAppInfo', {
+        'appId': appId,
+        if (version != null) 'version': version,
+      });
       final app = _appFromJson(data);
       if (app != null) {
         return ChannelResult.success(
@@ -268,9 +272,13 @@ class JsChannel extends IChannel implements DynamicChannel {
   Future<ChannelResult<IDetailInfo>> getAppDetail(
     String appId, {
     bool forceRefresh = false,
+    String? version,
   }) async {
     try {
-      final data = await _callMain('getAppDetail', {'appId': appId});
+      final data = await _callMain('getAppDetail', {
+        'appId': appId,
+        if (version != null) 'version': version,
+      });
       if (data is Map) {
         return ChannelResult.success(
           data: JsChannelDetailProxy(_stringKeyedMap(data)),
@@ -514,9 +522,16 @@ class JsChannel extends IChannel implements DynamicChannel {
 
   /// 获取版本/环境切换选项（脚本 main('versionOptions')）
   /// 返回原始 Map：`{ envs: List, versions: [{version, envs, buildCount}], currentEnv, currentVersion }`
-  /// 脚本未实现/失败 → null（调用方降级）
-  Future<Map<String, dynamic>?> versionOptions(String appId) async {
-    final data = await _callMain('versionOptions', {'appId': appId});
+  /// [env] 可选：指定环境 → 脚本只拉该 env 的版本列表（按需单 env，避免 5 env 全量）；
+  /// 不传 → 脚本按凭证默认 env。脚本未实现/失败 → null（调用方降级）
+  Future<Map<String, dynamic>?> versionOptions(
+    String appId, {
+    String? env,
+  }) async {
+    final data = await _callMain('versionOptions', {
+      'appId': appId,
+      if (env != null) 'env': env,
+    });
     if (data == null) return null;
     return _stringKeyedMap(data);
   }

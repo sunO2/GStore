@@ -55,13 +55,18 @@ class _FakeJsChannel extends JsChannel {
   int buildHistoryCalls = 0;
   String? lastSwitchEnv;
   String? lastSwitchVersion;
+  String? lastVersionOptionsEnv;
 
   @override
   Future<void> initialize() async {}
 
   @override
-  Future<Map<String, dynamic>?> versionOptions(String appId) async {
+  Future<Map<String, dynamic>?> versionOptions(
+    String appId, {
+    String? env,
+  }) async {
     versionOptionsCalls++;
+    lastVersionOptionsEnv = env;
     return versionOptionsResult;
   }
 
@@ -91,6 +96,7 @@ class _FakeJsChannel extends JsChannel {
   Future<ChannelResult<AppSummary?>> getAppInfo(
     String appId, {
     bool forceRefresh = false,
+    String? version,
   }) async {
     return ChannelResult.success(data: null, from: ChannelType.custom);
   }
@@ -99,6 +105,7 @@ class _FakeJsChannel extends JsChannel {
   Future<ChannelResult<IDetailInfo>> getAppDetail(
     String appId, {
     bool forceRefresh = false,
+    String? version,
   }) async {
     return ChannelResult.success(
       data: JsChannelDetailProxy(const {}),
@@ -510,5 +517,40 @@ void main() {
 
     expect(js.switchVersionCalls, 0);
     expect(logic.state.detailInfo.value?.version, '1.0.0');
+  });
+
+  testWidgets('⑥ 打开切换版本 → versionOptions 带当前详情 env（按需单 env）',
+      (tester) async {
+    final js = _FakeJsChannel();
+    js.versionOptionsResult = _versionOptions;
+    ChannelManager.instance.registerChannel(js);
+
+    final logic = buildLogic();
+    // 预置当前详情（extra.env = uat）→ 初始化 versionOptions 应带该 env
+    logic.state.detailInfo.value = JsChannelDetailProxy({
+      'appId': 'com.example.one',
+      'name': 'App One',
+      'version': '1.0.0',
+      'extra': {'env': 'uat'},
+    });
+    await pumpHost(tester, logic);
+    await openVersionSwitcher(tester);
+
+    expect(js.versionOptionsCalls, 1);
+    expect(js.lastVersionOptionsEnv, 'uat');
+  });
+
+  testWidgets('⑦ 详情无 env → versionOptions 不带 env（脚本按凭证默认）',
+      (tester) async {
+    final js = _FakeJsChannel();
+    js.versionOptionsResult = _versionOptions;
+    ChannelManager.instance.registerChannel(js);
+
+    final logic = buildLogic();
+    await pumpHost(tester, logic);
+    await openVersionSwitcher(tester);
+
+    expect(js.versionOptionsCalls, 1);
+    expect(js.lastVersionOptionsEnv, isNull);
   });
 }

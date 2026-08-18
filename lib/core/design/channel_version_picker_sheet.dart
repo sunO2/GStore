@@ -16,6 +16,8 @@ class ChannelVersionPickerSheet {
   /// [currentEnv] / [currentVersion] 当前选择（高亮）
   /// [onBuildHistory] 历史构建回调（按 version+env 拉取构建列表）
   /// [onBuildSelect] 点历史构建某项 → 下载
+  /// [onEnvChanged] 可选：env chip 切换时按需拉取该 env 的版本列表（加载态刷新）；
+  /// 不提供 → 维持本地过滤初始 [versions]
   static Future<VersionSelection?> show({
     required BuildContext context,
     required String title,
@@ -28,6 +30,7 @@ class ChannelVersionPickerSheet {
       required String env,
     })? onBuildHistory,
     void Function(BuildOption build)? onBuildSelect,
+    Future<List<VersionOption>> Function(String env)? onEnvChanged,
   }) {
     return showModalBottomSheet<VersionSelection>(
       context: context,
@@ -46,6 +49,7 @@ class ChannelVersionPickerSheet {
         currentVersion: currentVersion,
         onBuildHistory: onBuildHistory,
         onBuildSelect: onBuildSelect,
+        onEnvChanged: onEnvChanged,
       ),
     );
   }
@@ -102,6 +106,7 @@ class _ChannelVersionPickerSheet extends StatefulWidget {
     this.currentVersion,
     this.onBuildHistory,
     this.onBuildSelect,
+    this.onEnvChanged,
   });
 
   final String title;
@@ -114,6 +119,7 @@ class _ChannelVersionPickerSheet extends StatefulWidget {
     required String env,
   })? onBuildHistory;
   final void Function(BuildOption build)? onBuildSelect;
+  final Future<List<VersionOption>> Function(String env)? onEnvChanged;
 
   @override
   State<_ChannelVersionPickerSheet> createState() =>
@@ -130,6 +136,12 @@ class _ChannelVersionPickerSheetState extends State<_ChannelVersionPickerSheet> 
   /// 已展开的历史构建列表：key = 'version|env'
   final Map<String, List<BuildOption>> _history = {};
 
+  /// env 切换拉取版本列表的加载态
+  bool _loadingEnv = false;
+
+  /// 按 env 缓存的版本列表（onEnvChanged 提供时按需拉取）
+  final Map<String, List<VersionOption>> _envVersions = {};
+
   @override
   void initState() {
     super.initState();
@@ -137,6 +149,10 @@ class _ChannelVersionPickerSheetState extends State<_ChannelVersionPickerSheet> 
     _selectedEnv = widget.envs.contains(widget.currentEnv)
         ? widget.currentEnv!
         : (widget.envs.isNotEmpty ? widget.envs.first : '');
+    // 初始 versions 属于初始 env（调用方按当前 env 拉取）
+    if (widget.onEnvChanged != null) {
+      _envVersions[_selectedEnv] = widget.versions;
+    }
     // 默认选中当前版本（若属于当前 env）
     if (widget.currentVersion != null &&
         _versionsFor(_selectedEnv)
@@ -145,9 +161,46 @@ class _ChannelVersionPickerSheetState extends State<_ChannelVersionPickerSheet> 
     }
   }
 
-  /// 当前 env 下的版本列表（随 env 过滤）
+  /// 当前 env 下的版本列表：onEnvChanged 提供 → 按需拉取缓存；否则过滤初始列表
   List<VersionOption> _versionsFor(String env) {
+    if (widget.onEnvChanged != null) {
+      return _envVersions[env] ?? const <VersionOption>[];
+    }
     return widget.versions.where((v) => v.envs.contains(env)).toList();
+  }
+
+  /// 切换 env：onEnvChanged 提供 → 加载态 + 按需拉取刷新版本列表；
+  /// 无回调 → 本地过滤初始列表（维持现状）
+  Future<void> _selectEnv(String env) async {
+    if (env == _selectedEnv) return;
+    final onEnvChanged = widget.onEnvChanged;
+    setState(() {
+      _selectedEnv = env;
+      _loadingEnv = onEnvChanged != null;
+    });
+    if (onEnvChanged == null) {
+      if (_selectedVersion != null &&
+          !_versionsFor(env).any((v) => v.version == _selectedVersion)) {
+        setState(() => _selectedVersion = null);
+      }
+      return;
+    }
+    try {
+      final list = await onEnvChanged(env);
+      if (!mounted) return;
+      setState(() {
+        _envVersions[env] = list;
+        _loadingEnv = false;
+        // 保留当前已选 version（若仍在新列表），否则清空
+        if (_selectedVersion != null &&
+            !list.any((v) => v.version == _selectedVersion)) {
+          _selectedVersion = null;
+        }
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _loadingEnv = false);
+    }
   }
 
   String _historyKey(String version, String env) => '$version|$env';
@@ -230,15 +283,7 @@ class _ChannelVersionPickerSheetState extends State<_ChannelVersionPickerSheet> 
                   ChoiceChip(
                     label: Text(env),
                     selected: _selectedEnv == env,
-                    onSelected: (_) => setState(() {
-                      _selectedEnv = env;
-                      // 切换 env 后，若当前版本不属于新 env 则清空
-                      if (_selectedVersion != null &&
-                          !_versionsFor(env)
-                              .any((v) => v.version == _selectedVersion)) {
-                        _selectedVersion = null;
-                      }
-                    }),
+                    onSelected: (_) => _selectEnv(env),
                     selectedColor: colorScheme.secondaryContainer,
                     checkmarkColor: colorScheme.onSecondaryContainer,
                     labelStyle: textTheme.labelSmall,
@@ -266,7 +311,14 @@ class _ChannelVersionPickerSheetState extends State<_ChannelVersionPickerSheet> 
               ),
             ),
             const SizedBox(height: AppSpacing.sm),
-            if (filtered.isEmpty)
+            if (_loadingEnv)
+              const Padding(
+                padding: AppSpacing.onlyVerticalMD,
+                child: Center(
+                  child: AppLoading(size: AppLoadingSize.small),
+                ),
+              )
+            else if (filtered.isEmpty)
               Padding(
                 padding: AppSpacing.onlyVerticalMD,
                 child: Text(

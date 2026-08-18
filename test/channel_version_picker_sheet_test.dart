@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:gstore/core/design/channel_version_picker_sheet.dart';
+import 'package:gstore/core/design/design_tokens.dart';
 
 /// ChannelVersionPickerSheet 通用版本/环境选择器 widget 测试
 ///
@@ -64,6 +65,7 @@ void main() {
       required String env,
     })? onBuildHistory,
     void Function(BuildOption build)? onBuildSelect,
+    Future<List<VersionOption>> Function(String env)? onEnvChanged,
   }) {
     late Future<VersionSelection?> result;
     final app = MaterialApp(
@@ -81,6 +83,7 @@ void main() {
                   currentVersion: currentVersion,
                   onBuildHistory: onBuildHistory,
                   onBuildSelect: onBuildSelect,
+                  onEnvChanged: onEnvChanged,
                 );
               },
               child: const Text('打开选择器'),
@@ -240,5 +243,134 @@ void main() {
       find.widgetWithText(FilledButton, '确认切换'),
     );
     expect(confirm.onPressed, isNotNull);
+  });
+
+  testWidgets('⑦ onEnvChanged 提供：点 env chip → 回调被调 + 加载态 + 版本列表刷新',
+      (tester) async {
+    final envCalls = <String>[];
+    final uatVersions = [
+      const VersionOption(
+        version: '2.0.0',
+        envs: ['uat'],
+        buildCount: 2,
+      ),
+      const VersionOption(
+        version: '1.5.0',
+        envs: ['uat'],
+        buildCount: 1,
+      ),
+    ];
+    final h = buildHarness(
+      onEnvChanged: (env) async {
+        envCalls.add(env);
+        // 模拟异步拉取：先挂起一帧，验证加载态
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        return uatVersions;
+      },
+    );
+    await openSheet(tester, h.app);
+
+    // 初始（sit）：初始 versions 列表
+    expect(find.text('1.2.0'), findsOneWidget);
+    expect(find.text('1.1.0'), findsOneWidget);
+
+    // 切到 uat → 回调被调
+    await tester.tap(find.text('uat'));
+    await tester.pump();
+    expect(envCalls, ['uat']);
+
+    // 加载态（AppLoading 显示，旧版本列表隐藏）
+    expect(find.byType(AppLoading), findsOneWidget);
+    expect(find.text('1.2.0'), findsNothing);
+
+    // 拉回后刷新版本列表
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(find.byType(AppLoading), findsNothing);
+    expect(find.text('2.0.0'), findsOneWidget);
+    expect(find.text('1.5.0'), findsOneWidget);
+    expect(find.text('1.2.0'), findsNothing);
+    expect(find.text('(2 个构建)'), findsOneWidget);
+  });
+
+  testWidgets('⑧ onEnvChanged 提供：切换后保留仍在新列表的已选版本', (tester) async {
+    final h = buildHarness(
+      onEnvChanged: (env) async => [
+        VersionOption(
+          version: '1.2.0',
+          envs: [env],
+          buildCount: 5,
+        ),
+        VersionOption(
+          version: '9.9.9',
+          envs: [env],
+          buildCount: 1,
+        ),
+      ],
+    );
+    await openSheet(tester, h.app);
+
+    // 先选 1.2.0
+    await tester.tap(find.text('1.2.0'));
+    await tester.pump();
+
+    // 切到 uat（新列表仍含 1.2.0）→ 选中保留
+    await tester.tap(find.text('uat'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    final confirm = tester.widget<FilledButton>(
+      find.widgetWithText(FilledButton, '确认切换'),
+    );
+    expect(confirm.onPressed, isNotNull);
+
+    await tester.tap(find.text('确认切换'));
+    await tester.pumpAndSettle();
+    final result = await h.open();
+    expect(result, isNotNull);
+    expect(result!.env, 'uat');
+    expect(result.version, '1.2.0');
+  });
+
+  testWidgets('⑨ onEnvChanged 提供：新列表不含已选版本 → 清空选中', (tester) async {
+    final h = buildHarness(
+      onEnvChanged: (env) async => [
+        VersionOption(
+          version: '9.9.9',
+          envs: [env],
+          buildCount: 1,
+        ),
+      ],
+    );
+    await openSheet(tester, h.app);
+
+    // 先选 1.2.0
+    await tester.tap(find.text('1.2.0'));
+    await tester.pump();
+
+    // 切到 uat（新列表不含 1.2.0）→ 选中清空 → 确认按钮禁用
+    await tester.tap(find.text('uat'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    final confirm = tester.widget<FilledButton>(
+      find.widgetWithText(FilledButton, '确认切换'),
+    );
+    expect(confirm.onPressed, isNull);
+  });
+
+  testWidgets('⑩ 无 onEnvChanged：点 env chip → 维持现状（本地过滤，无加载态）',
+      (tester) async {
+    final h = buildHarness();
+    await openSheet(tester, h.app);
+
+    await tester.tap(find.text('prd'));
+    await tester.pump();
+
+    // 无加载态
+    expect(find.byType(AppLoading), findsNothing);
+    // 本地过滤生效
+    expect(find.text('1.2.0'), findsOneWidget);
+    expect(find.text('1.0.0'), findsOneWidget);
+    expect(find.text('1.1.0'), findsNothing);
   });
 }
