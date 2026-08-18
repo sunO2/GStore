@@ -12,6 +12,8 @@ import 'package:gstore/core/channel/model/ChannelInfo.dart';
 import 'package:gstore/core/channel/model/ChannelResult.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/config/config_store.dart';
+import 'package:gstore/core/channel/impl/js_detail_channel.dart';
+import 'package:gstore/core/channel/impl/js_script_utils.dart';
 import 'package:gstore/core/js/js_channel_runtime.dart';
 import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
@@ -187,7 +189,7 @@ class JsChannel extends IChannel implements DynamicChannel {
         "typeof CHANNEL_META !== 'undefined' ? CHANNEL_META : null",
       );
       if (raw is Map) {
-        final map = _stringKeyedMap(raw);
+        final map = stringKeyedMap(raw);
         _meta = _ChannelMeta(
           name: map['name']?.toString(),
           description: map['description']?.toString(),
@@ -216,6 +218,11 @@ class JsChannel extends IChannel implements DynamicChannel {
 
   @override
   Future<void> dispose() async {
+    // 渠道下线：释放全部 detail runtime（数据/缓存随实例释放）
+    for (final detail in _detailChannels.values) {
+      await detail.dispose();
+    }
+    _detailChannels.clear();
     await _runtime.dispose();
     isInitialized = false;
   }
@@ -281,7 +288,7 @@ class JsChannel extends IChannel implements DynamicChannel {
         'appId': appId,
         if (version != null) 'version': version,
       });
-      final app = _appFromJson(data);
+      final app = appSummaryFromScript(data, channelKey: channelKey);
       if (app != null) {
         return ChannelResult.success(
           data: app,
@@ -315,7 +322,7 @@ class JsChannel extends IChannel implements DynamicChannel {
       });
       if (data is Map) {
         return ChannelResult.success(
-          data: JsChannelDetailProxy(_stringKeyedMap(data)),
+          data: JsChannelDetailProxy(stringKeyedMap(data)),
           from: ChannelType.custom,
           fromCache: false,
         );
@@ -383,7 +390,7 @@ class JsChannel extends IChannel implements DynamicChannel {
     try {
       final data = await _callMain('checkAppUpdate', {'appId': appId});
       if (data is Map) {
-        final map = _stringKeyedMap(data);
+        final map = stringKeyedMap(data);
         final id = map['appId']?.toString() ?? appId;
         final name = map['name']?.toString() ?? id;
         return ChannelResult.success(
@@ -501,7 +508,7 @@ class JsChannel extends IChannel implements DynamicChannel {
     try {
       final data = await _callMain('getConfig');
       if (data is Map) {
-        final map = _stringKeyedMap(data);
+        final map = stringKeyedMap(data);
         return ChannelResult.success(
           data: db.AppInfoConfig(
             map['version']?.toString() ?? '',
@@ -567,7 +574,7 @@ class JsChannel extends IChannel implements DynamicChannel {
       if (env != null) 'env': env,
     });
     if (data == null) return null;
-    return _stringKeyedMap(data);
+    return stringKeyedMap(data);
   }
 
   /// 切换版本/环境（脚本 main('switchVersion')）→ 返回该 env+version 的详情数据（同 getAppDetail 结构）
@@ -583,7 +590,7 @@ class JsChannel extends IChannel implements DynamicChannel {
       'version': version,
     });
     if (data == null) return null;
-    return _stringKeyedMap(data);
+    return stringKeyedMap(data);
   }
 
   /// 获取指定版本历史构建（脚本 main('buildHistory')）
@@ -600,7 +607,7 @@ class JsChannel extends IChannel implements DynamicChannel {
       'env': env,
     });
     if (data == null) return null;
-    return _stringKeyedMap(data);
+    return stringKeyedMap(data);
   }
 
   /// 获取脚本声明的详情页操作（main('detailMenu')，Hybrid Wave B）。
@@ -614,7 +621,7 @@ class JsChannel extends IChannel implements DynamicChannel {
   Future<List<Map<String, dynamic>>?> detailMenu(String appId) async {
     final data = await _callMain('detailMenu', {'appId': appId});
     if (data is! List) return null;
-    return data.map((e) => _stringKeyedMap(e)).toList();
+    return data.map((e) => stringKeyedMap(e)).toList();
   }
 
   /// 通用脚本方法调用（供详情页执行脚本声明的动作 jscall）。
@@ -626,6 +633,41 @@ class JsChannel extends IChannel implements DynamicChannel {
     Map<String, dynamic>? params,
   ]) {
     return _callMain(method, params);
+  }
+
+  // ==================== 详情通道工厂（detail.js 页面级 runtime） ====================
+
+  /// 详情通道缓存（appId 级；页面存活期间复用，退出 release 释放 → 数据免缓存管理）
+  final Map<String, JsDetailChannel> _detailChannels = {};
+
+  /// 工厂：懒创建 detail 通道（appId 级缓存，存活期间复用同一实例）。
+  ///
+  /// 详情通道为**页面级 runtime**：独立 QuickJS context 加载 detail.js，
+  /// 状态与 entry 及其他 appId 互相隔离；页面退出 [releaseDetailChannel] 释放。
+  /// 依赖（dio/appDao/configGetter/env/log/ui 回调）透传本渠道注入值，
+  /// host.database / host.env 数据隔离与 entry 一致（同 channelKey）。
+  /// 渠道包无 detail.js → null（详情走原路径）。
+  JsDetailChannel? getDetailChannel(String appId) {
+    final ds = detailScript;
+    if (ds == null) return null;
+    return _detailChannels.putIfAbsent(appId, () => JsDetailChannel(
+          channelKey: channelKey,
+          detailScript: ds,
+          dio: _runtime.dioOverride,
+          appDao: _appDaoOverride,
+          configGetter: _runtime.configGetterOverride,
+          envReader: () => _runtime.envSnapshot,
+          logInfo: _runtime.logInfoOverride,
+          logError: _runtime.logErrorOverride,
+          uiShowVersionPicker: _runtime.uiShowVersionPickerOverride,
+          uiRefreshDetail: _runtime.uiRefreshDetailOverride,
+        ));
+  }
+
+  /// 页面退出释放：销毁 detail runtime（数据/缓存随实例释放，再取 → 新实例）。
+  /// 未创建过该 appId 的 detail 通道 → 无操作（幂等）。
+  void releaseDetailChannel(String appId) {
+    _detailChannels.remove(appId)?.dispose();
   }
 
   // ==================== 脚本调用 ====================
@@ -659,7 +701,7 @@ class JsChannel extends IChannel implements DynamicChannel {
     if (data is! List) return null;
     final apps = <AppSummary>[];
     for (final item in data) {
-      final app = _appFromJson(item);
+      final app = appSummaryFromScript(item, channelKey: channelKey);
       if (app != null) {
         apps.add(app);
       } else {
@@ -668,52 +710,6 @@ class JsChannel extends IChannel implements DynamicChannel {
       }
     }
     return apps;
-  }
-
-  /// AppInfo JSON → AppSummary；user/repositories 缺省兜底 channelKey；校验失败 → null
-  AppSummary? _appFromJson(dynamic raw) {
-    if (raw is! Map) return null;
-    final map = _stringKeyedMap(raw);
-
-    final appId = map['appId']?.toString() ?? '';
-    final name = map['name']?.toString() ?? '';
-    if (appId.isEmpty || name.isEmpty) return null;
-
-    List<String>? category;
-    final categoryRaw = map['category'];
-    if (categoryRaw is List) {
-      final items = categoryRaw
-          .map((e) => e.toString())
-          .where((e) => e.isNotEmpty)
-          .toList();
-      if (items.isNotEmpty) category = items;
-    } else if (categoryRaw is String && categoryRaw.trim().isNotEmpty) {
-      category = [categoryRaw.trim()];
-    }
-
-    Map<String, dynamic>? extra;
-    final extraRaw = map['extra'];
-    if (extraRaw is Map) {
-      extra = _stringKeyedMap(extraRaw);
-    }
-
-    final packageName = map['packageName']?.toString() ??
-        extra?['packageName']?.toString();
-
-    return AppSummary(
-      appId: appId,
-      packageName: (packageName != null && packageName.isNotEmpty)
-          ? packageName
-          : null,
-      name: name,
-      user: map['user']?.toString() ?? channelKey, // 兜底 channelKey
-      repositories: map['repositories']?.toString() ?? channelKey,
-      icon: map['icon']?.toString() ?? '',
-      des: map['des']?.toString() ?? map['description']?.toString() ?? '',
-      readme: map['readme']?.toString(),
-      category: category,
-      extra: extra,
-    );
   }
 
   /// 落库到本渠道（强制 channelCode = channelKey）
@@ -758,11 +754,6 @@ class JsChannel extends IChannel implements DynamicChannel {
 
   Future<ChannelAddedAppDao> _getAppDao() async =>
       _appDaoOverride ?? (await ChannelDatabaseManager.instance).dao;
-
-  Map<String, dynamic> _stringKeyedMap(dynamic value) {
-    if (value is! Map) return <String, dynamic>{};
-    return value.map((k, v) => MapEntry(k.toString(), v));
-  }
 
   void _logInfo(String message) => appLog.info('[js:$channelKey] $message');
 

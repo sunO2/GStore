@@ -134,6 +134,30 @@ class JsChannelRuntime {
     _env = Map<String, String>.of(env);
   }
 
+  // ==================== 依赖透传（JsChannel.getDetailChannel 供 detail runtime 复用） ====================
+
+  /// 当前 env 快照副本（detail runtime initialize 时快照同一份 env，渠道隔离一致）
+  Map<String, String> get envSnapshot => Map<String, String>.of(_env);
+
+  Dio? get dioOverride => _dioOverride;
+
+  ChannelAddedAppDao? get appDaoOverride => _appDaoOverride;
+
+  Future<Object?> Function(String key)? get configGetterOverride =>
+      _configGetterOverride;
+
+  Map<String, String> Function()? get envReaderOverride => _envReaderOverride;
+
+  void Function(String message)? get logInfoOverride => _logInfoOverride;
+
+  void Function(String message)? get logErrorOverride => _logErrorOverride;
+
+  Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
+      get uiShowVersionPickerOverride => _uiShowVersionPickerOverride;
+
+  Future<void> Function(Map<String, dynamic> params)?
+      get uiRefreshDetailOverride => _uiRefreshDetailOverride;
+
   /// 建引擎、注册 host API、注入 host 前缀、加载脚本
   Future<void> initialize() async {
     if (_initialized) return;
