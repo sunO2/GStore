@@ -57,8 +57,69 @@ class _FakeJsChannel extends JsChannel {
   String? lastSwitchVersion;
   String? lastVersionOptionsEnv;
 
+  // ---- Wave B：detailMenu / setUiCallbacks / invokeScriptMethod ----
+  List<Map<String, dynamic>>? detailMenuResult;
+  int detailMenuCalls = 0;
+
+  /// setUiCallbacks 捕获的 host.ui 实现（fake 模拟脚本内部调用）
+  Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
+      capturedShowVersionPicker;
+  Future<void> Function(Map<String, dynamic> params)? capturedRefreshDetail;
+
+  int invokeScriptMethodCalls = 0;
+  String? lastInvokedMethod;
+  Map<String, dynamic>? lastInvokedParams;
+
   @override
   Future<void> initialize() async {}
+
+  @override
+  Future<List<Map<String, dynamic>>?> detailMenu(String appId) async {
+    detailMenuCalls++;
+    return detailMenuResult;
+  }
+
+  @override
+  void setUiCallbacks({
+    Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
+        uiShowVersionPicker,
+    Future<void> Function(Map<String, dynamic> params)? uiRefreshDetail,
+  }) {
+    capturedShowVersionPicker = uiShowVersionPicker;
+    capturedRefreshDetail = uiRefreshDetail;
+  }
+
+  @override
+  Future<dynamic> invokeScriptMethod(
+    String method, [
+    Map<String, dynamic>? params,
+  ]) async {
+    invokeScriptMethodCalls++;
+    lastInvokedMethod = method;
+    lastInvokedParams = params;
+    // 模拟脚本内部：jscall 经 host.ui 驱动交互（注入的 Flutter 实现被调）
+    switch (method) {
+      case 'jsswitchVersion':
+        return capturedShowVersionPicker?.call({
+          'title': '切换版本',
+          'envs': ['prod', 'test'],
+          'versions': [
+            {'version': '1.0.0', 'envs': ['prod', 'test'], 'buildCount': 3},
+            {'version': '2.0.0', 'envs': ['prod'], 'buildCount': 1},
+          ],
+          'currentEnv': 'prod',
+          'currentVersion': '1.0.0',
+        });
+      case 'jsrefresh':
+        await capturedRefreshDetail?.call({
+          'appId': 'com.example.one',
+          'env': 'prod',
+          'version': '2.0.0',
+        });
+        return {'ok': true};
+    }
+    return null;
+  }
 
   @override
   Future<Map<String, dynamic>?> versionOptions(
@@ -552,5 +613,104 @@ void main() {
 
     expect(js.versionOptionsCalls, 1);
     expect(js.lastVersionOptionsEnv, isNull);
+  });
+
+  // ==================== Wave B：detailMenu 脚本声明详情页操作 ====================
+
+  testWidgets('⑧ 脚本渠道：detailMenu 声明动作 → 宫格用脚本 actions（替换写死"切换版本"）',
+      (tester) async {
+    final js = _FakeJsChannel();
+    js.detailMenuResult = [
+      {'action': '切换版本', 'jscall': 'jsswitchVersion', 'clickIsDimiss': true},
+      {'action': '清除缓存', 'jscall': 'jsclearCache'},
+    ];
+    ChannelManager.instance.registerChannel(js);
+
+    final logic = buildLogic();
+    await pumpHost(tester, logic);
+    await openMoreActions(tester);
+
+    expect(js.detailMenuCalls, 1);
+    expect(find.text('切换版本'), findsOneWidget);
+    expect(find.text('清除缓存'), findsOneWidget);
+    expect(find.byIcon(Icons.extension), findsNWidgets(2));
+    expect(find.byIcon(Icons.swap_vert), findsNothing,
+        reason: '写死"切换版本"被脚本声明替换');
+  });
+
+  testWidgets('⑨ 脚本渠道：detailMenu 未实现（null）→ 维持写死"切换版本"',
+      (tester) async {
+    final js = _FakeJsChannel();
+    js.detailMenuResult = null;
+    ChannelManager.instance.registerChannel(js);
+
+    final logic = buildLogic();
+    await pumpHost(tester, logic);
+    await openMoreActions(tester);
+
+    expect(js.detailMenuCalls, 1);
+    expect(find.text('切换版本'), findsOneWidget);
+    expect(find.byIcon(Icons.swap_vert), findsOneWidget);
+    expect(find.byIcon(Icons.extension), findsNothing);
+  });
+
+  testWidgets('⑩ 点击脚本 action → 关弹框 + 调 jscall + host.ui 版本选择器生效',
+      (tester) async {
+    final js = _FakeJsChannel();
+    js.detailMenuResult = [
+      {'action': '切换版本', 'jscall': 'jsswitchVersion', 'clickIsDimiss': true},
+    ];
+    ChannelManager.instance.registerChannel(js);
+
+    final logic = buildLogic();
+    await pumpHost(tester, logic);
+    await openMoreActions(tester);
+
+    await tester.tap(find.text('切换版本'));
+    await tester.pumpAndSettle();
+
+    // 更多弹框已关闭（动作点击先关面板再执行）
+    expect(find.text('操作'), findsNothing);
+
+    // jscall 被调（appId 正确）
+    expect(js.invokeScriptMethodCalls, 1);
+    expect(js.lastInvokedMethod, 'jsswitchVersion');
+    expect(js.lastInvokedParams, {'appId': 'com.example.one'});
+
+    // host.ui 注入生效：jscall 内部调 host.ui.showVersionPicker → 版本选择器弹出
+    expect(find.text('环境'), findsOneWidget);
+    expect(find.text('版本'), findsOneWidget);
+    expect(find.text('prod'), findsOneWidget);
+    expect(find.text('2.0.0'), findsOneWidget);
+  });
+
+  testWidgets('⑪ 点击脚本 action → jscall 模拟 host.ui.refreshDetail → 详情刷新',
+      (tester) async {
+    final js = _FakeJsChannel();
+    js.detailMenuResult = [
+      {'action': '刷新详情', 'jscall': 'jsrefresh', 'clickIsDimiss': true},
+    ];
+    js.switchVersionResult = _switchDetail;
+    ChannelManager.instance.registerChannel(js);
+
+    final logic = buildLogic();
+    logic.state.detailInfo.value = JsChannelDetailProxy({
+      'appId': 'com.example.one',
+      'name': 'App One',
+      'version': '1.0.0',
+    });
+    await pumpHost(tester, logic);
+    await openMoreActions(tester);
+
+    await tester.tap(find.text('刷新详情'));
+    await tester.pumpAndSettle();
+
+    // jscall 被调 → 脚本内部 host.ui.refreshDetail → switchVersion 刷新 detailInfo
+    expect(js.invokeScriptMethodCalls, 1);
+    expect(js.lastInvokedMethod, 'jsrefresh');
+    expect(js.switchVersionCalls, 1);
+    expect(js.lastSwitchEnv, 'prod');
+    expect(js.lastSwitchVersion, '2.0.0');
+    expect(logic.state.detailInfo.value?.version, '2.0.0');
   });
 }

@@ -125,6 +125,25 @@ class JsChannel extends IChannel implements DynamicChannel {
     );
   }
 
+  // ==================== host.ui 运行时注入 ====================
+
+  /// 运行时注入 host.ui 实现（Hybrid：脚本 `host.ui.showVersionPicker` /
+  /// `host.ui.refreshDetail` 的 Flutter 实现）。
+  ///
+  /// ChannelLoader 创建渠道时无 UI context，由详情页使用渠道时注入
+  /// （showMoreActions 内调用），避免改 ChannelLoader 构造。
+  /// 转发到 runtime，脚本下次调用立即生效；只覆盖非 null 项。
+  void setUiCallbacks({
+    Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
+        uiShowVersionPicker,
+    Future<void> Function(Map<String, dynamic> params)? uiRefreshDetail,
+  }) {
+    _runtime.setUiCallbacks(
+      uiShowVersionPicker: uiShowVersionPicker,
+      uiRefreshDetail: uiRefreshDetail,
+    );
+  }
+
   // ==================== 元信息 ====================
 
   /// ChannelInfo 无 code 字段，渠道标识由 [channelKey] 承担（DynamicChannel 暴露）
@@ -572,6 +591,31 @@ class JsChannel extends IChannel implements DynamicChannel {
     });
     if (data == null) return null;
     return _stringKeyedMap(data);
+  }
+
+  /// 获取脚本声明的详情页操作（main('detailMenu')，Hybrid Wave B）。
+  ///
+  /// 返回 `[{action, jscall, icon?, clickIsDimiss?}]` 动作数组：
+  /// - [action]：动作标签（宫格文案）
+  /// - [jscall]：点击后调用的脚本方法（经 [invokeScriptMethod]）
+  /// - [icon]：图标（暂不解析，Flutter 侧用默认图标）
+  /// - [clickIsDimiss]：点击后是否关闭更多面板
+  /// 脚本未实现/失败/返回非列表 → null（调用方维持现状兜底）。
+  Future<List<Map<String, dynamic>>?> detailMenu(String appId) async {
+    final data = await _callMain('detailMenu', {'appId': appId});
+    if (data is! List) return null;
+    return data.map((e) => _stringKeyedMap(e)).toList();
+  }
+
+  /// 通用脚本方法调用（供详情页执行脚本声明的动作 jscall）。
+  ///
+  /// 语义与 [_callMain] 一致：`{ok:true,data}` → data；`{ok:false}` /
+  /// JS 抛错 → null + 日志。返回不处理（JS 全权，交互由 host.ui 驱动）。
+  Future<dynamic> invokeScriptMethod(
+    String method, [
+    Map<String, dynamic>? params,
+  ]) {
+    return _callMain(method, params);
   }
 
   // ==================== 脚本调用 ====================

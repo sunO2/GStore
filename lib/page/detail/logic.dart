@@ -714,7 +714,7 @@ class DetailLogic extends GetxController {
       presetTags = _fallbackPresetTags;
     }
 
-    // 构建动作宫格
+    // 构建动作宫格（通用项 + 渠道专属项）
     final actions = <MoreActionItem>[
       // 完善应用信息（GitHub 渠道 / LocalDb 的 GitHub 仓库类型应用）
       if (canSubmitAppMetadata)
@@ -730,14 +730,45 @@ class DetailLogic extends GetxController {
           label: '项目主页',
           onTap: openProjectBrowser,
         ),
-      // 切换版本（仅脚本渠道：脚本实现 versionOptions/switchVersion/buildHistory）
-      if (channelInstance is JsChannel)
-        MoreActionItem(
-          icon: Icons.swap_vert,
-          label: '切换版本',
-          onTap: () => _openVersionSwitcher(context, channelInstance),
-        ),
     ];
+
+    // 脚本渠道（Hybrid Wave B）：详情页操作由脚本 detailMenu 声明，
+    // Flutter 只渲染 + 桥接；点击动作 → 调脚本 jscall，JS 内部经 host.ui 驱动交互。
+    if (channelInstance is JsChannel) {
+      final js = channelInstance;
+      // host.ui 注入：脚本 host.ui.showVersionPicker / refreshDetail 的 Flutter 实现
+      // （ChannelLoader 创建渠道时无 context，详情页使用时注入）
+      js.setUiCallbacks(
+        uiShowVersionPicker: (options) =>
+            _showVersionPickerFromScript(context, js, options),
+        uiRefreshDetail: (params) => _refreshDetailFromScript(js, params),
+      );
+
+      final menu = await js.detailMenu(req.appId);
+      if (menu == null || menu.isEmpty) {
+        // 脚本未声明 detailMenu → 维持现状：写死"切换版本"
+        actions.add(
+          MoreActionItem(
+            icon: Icons.swap_vert,
+            label: '切换版本',
+            onTap: () => _openVersionSwitcher(context, js),
+          ),
+        );
+      } else {
+        // 脚本声明了 detailMenu → 用脚本 Actions 构建宫格（替换写死"切换版本"）
+        for (final action in menu) {
+          final label = action['action']?.toString() ?? '';
+          if (label.isEmpty) continue;
+          actions.add(
+            MoreActionItem(
+              icon: Icons.extension, // icon 字段暂不解析，用默认图标
+              label: label,
+              onTap: () => _handleJsAction(js, action, context),
+            ),
+          );
+        }
+      }
+    }
 
     // 弹出底部面板（顶部标签编辑 + 底部动作宫格）
     if (!context.mounted) return;
@@ -764,12 +795,13 @@ class DetailLogic extends GetxController {
     }
   }
 
-  /// 打开"切换版本"选择器（仅脚本渠道）。
+  /// 打开"切换版本"选择器（仅脚本渠道；detailMenu 未实现时的写死入口）。
   ///
   /// 流程：脚本 versionOptions（按当前详情 env 单 env 拉取）→
-  /// ChannelVersionPickerSheet 选 env+version（env 切换按需刷新版本列表）→
-  /// 确认后脚本 switchVersion 返回该 env+version 的详情 Map（同 getAppDetail 结构）→
-  /// 用 JsChannelDetailProxy 整体刷新 state.detailInfo（截图/下载/更新日志按新 env+version）。
+  /// [_showVersionPicker] 选 env+version（env 切换按需刷新版本列表）→
+  /// 确认后 [_refreshDetailAfterSwitch] 脚本 switchVersion 返回该 env+version
+  /// 的详情 Map（同 getAppDetail 结构）→ 用 JsChannelDetailProxy 整体刷新
+  /// state.detailInfo（截图/下载/更新日志按新 env+version）。
   Future<void> _openVersionSwitcher(BuildContext context, JsChannel js) async {
     final req = request;
     if (req == null) return;
@@ -781,6 +813,28 @@ class DetailLogic extends GetxController {
     }
     if (!context.mounted) return;
 
+    final sel = await _showVersionPicker(context, js, opts);
+    if (sel == null) return; // 取消/关闭，不刷新
+
+    await _refreshDetailAfterSwitch(js, sel.env, sel.version);
+  }
+
+  /// 弹版本选择器（[ChannelVersionPickerSheet.show]）。
+  ///
+  /// 数据来自 [opts]（versionOptions 或脚本 host.ui.showVersionPicker 的
+  /// options 同构：envs / versions / currentEnv / currentVersion）；
+  /// env 切换按需调脚本 versionOptions 刷新该 env 的版本列表；
+  /// 历史构建经脚本 buildHistory 拉取，选中 → [_downloadHistoricalBuild]。
+  /// 返回用户确认的 [VersionSelection] 或 null（取消/关闭）。
+  Future<VersionSelection?> _showVersionPicker(
+    BuildContext context,
+    JsChannel js,
+    Map<String, dynamic> opts, {
+    String? title,
+  }) async {
+    final req = request;
+    if (req == null) return null;
+
     final envs = (opts['envs'] as List?)
             ?.map((e) => e.toString())
             .toList() ??
@@ -791,9 +845,9 @@ class DetailLogic extends GetxController {
     var historyVersion = '';
     var historyEnv = '';
 
-    final sel = await ChannelVersionPickerSheet.show(
+    return ChannelVersionPickerSheet.show(
       context: context,
-      title: '切换版本',
+      title: title ?? '切换版本',
       envs: envs,
       versions: versions,
       currentEnv: opts['currentEnv']?.toString(),
@@ -836,20 +890,86 @@ class DetailLogic extends GetxController {
         ));
       },
     );
-    if (sel == null) return; // 取消/关闭，不刷新
+  }
 
-    // 确认切换 → 脚本 switchVersion 拿新 env+version 详情 → 整体刷新 detailInfo
+  /// host.ui.showVersionPicker 的 Flutter 实现（脚本详情页动作内部调用）。
+  ///
+  /// [options] 由脚本传入（title/envs/versions/currentEnv/currentVersion），
+  /// 直接用其数据弹 [ChannelVersionPickerSheet]；返回用户选择
+  /// `{env, version}` 或 null（取消）。
+  Future<Map<String, dynamic>?> _showVersionPickerFromScript(
+    BuildContext context,
+    JsChannel js,
+    Map<String, dynamic> options,
+  ) async {
+    if (!context.mounted) return null;
+    final sel = await _showVersionPicker(
+      context,
+      js,
+      options,
+      title: options['title']?.toString(),
+    );
+    if (sel == null) return null; // 取消/关闭
+    return {'env': sel.env, 'version': sel.version};
+  }
+
+  /// host.ui.refreshDetail 的 Flutter 实现（脚本详情页动作内部调用）。
+  ///
+  /// [params]：`{appId, env, version}` → 调脚本 switchVersion 拿该 env+version
+  /// 详情 → 整体刷新 state.detailInfo（与选择器确认共用刷新逻辑）。
+  Future<void> _refreshDetailFromScript(
+    JsChannel js,
+    Map<String, dynamic> params,
+  ) async {
+    final env = params['env']?.toString() ?? '';
+    final version = params['version']?.toString() ?? '';
+    if (env.isEmpty || version.isEmpty) return;
+    await _refreshDetailAfterSwitch(js, env, version);
+  }
+
+  /// 执行脚本声明的详情页动作（Hybrid Wave B：点击 → 调脚本 jscall）。
+  ///
+  /// 面板关闭时序：showMoreActionsSheet 的动作宫格由面板内部 [_MoreActionsSheet]
+  /// 先 `Navigator.pop` 关闭面板、再执行 onTap —— onTap 执行时面板已在关闭中，
+  /// 故这里不再重复 pop（重复 pop 会误关详情页本身）；[clickIsDimiss] 为 true
+  /// 的动作走同一时序（面板先关、jscall 后调）。
+  ///
+  /// jscall 返回不做处理（JS 全权，交互由 host.ui 回调驱动，[setUiCallbacks]
+  /// 注入的版本选择器/刷新详情实现已就绪）。
+  Future<void> _handleJsAction(
+    JsChannel js,
+    Map<String, dynamic> action,
+    BuildContext context,
+  ) async {
+    final req = request;
+    if (req == null) return;
+
+    final method = action['jscall']?.toString();
+    if (method == null || method.isEmpty) return;
+
+    await js.invokeScriptMethod(method, {'appId': req.appId});
+  }
+
+  /// switchVersion → state.detailInfo 整体刷新（选择器确认与 host.ui.refreshDetail 共用）。
+  Future<void> _refreshDetailAfterSwitch(
+    JsChannel js,
+    String env,
+    String version,
+  ) async {
+    final req = request;
+    if (req == null) return;
+
     final detail = await js.switchVersion(
       appId: req.appId,
-      env: sel.env,
-      version: sel.version,
+      env: env,
+      version: version,
     );
     if (detail == null) {
       AppDialogs.showError('切换版本失败');
       return;
     }
     state.detailInfo.value = JsChannelDetailProxy(detail);
-    AppDialogs.showSuccess('已切换到 ${sel.version}（${sel.env}）');
+    AppDialogs.showSuccess('已切换到 $version（$env）');
   }
 
   /// 当前详情所属 env（脚本详情 extra.env；无 → null → 脚本按凭证默认 env）

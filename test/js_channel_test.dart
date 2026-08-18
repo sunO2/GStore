@@ -106,6 +106,9 @@ async function main(method, params) {
       return { ok: true, data: apps.find(a => a.appId === params.appId) || null };
     case 'checkUpdate':
       return { ok: true, data: false };
+    case 'detailMenu':
+      if (!params || !params.appId) return null;
+      return { ok: true, data: [{ action: '切换版本', jscall: 'jsswitchVersion', clickIsDimiss: true }] };
     default:
       return null;
   }
@@ -309,6 +312,47 @@ void main() {
       final removeResult = await channel.removeApp('com.manual.add');
       expect(removeResult.success, isTrue);
       expect(await appDao.getApp('com.manual.add', 'js.test'), isNull);
+
+      await channel.dispose();
+    });
+
+    test('⑧ detailMenu 返回脚本声明的详情页操作列表', () async {
+      final channel = buildChannel();
+      await channel.initialize();
+
+      final menu = await channel.detailMenu('com.example.one');
+      expect(menu, isNotNull);
+      expect(menu, hasLength(1));
+      expect(menu![0]['action'], '切换版本');
+      expect(menu[0]['jscall'], 'jsswitchVersion');
+      expect(menu[0]['clickIsDimiss'], true);
+
+      await channel.dispose();
+    });
+
+    test('⑨ 脚本未实现 detailMenu → null（调用方维持现状兜底）', () async {
+      final channel = buildChannel(script: _testScriptB);
+      await channel.initialize();
+
+      final menu = await channel.detailMenu('com.example.one');
+      expect(menu, isNull);
+
+      await channel.dispose();
+    });
+
+    test('⑩ invokeScriptMethod 通用脚本调用（jscall 契约）', () async {
+      final channel = buildChannel();
+      await channel.initialize();
+
+      // 已实现方法 → 返回 {ok:true,data} 的 data
+      final data = await channel
+          .invokeScriptMethod('getAppInfo', {'appId': 'com.example.one'});
+      expect(data, isA<Map>());
+      expect((data as Map)['name'], 'App One');
+
+      // 未实现方法 → null（脚本 default 分支）
+      final missing = await channel.invokeScriptMethod('noSuchMethod');
+      expect(missing, isNull);
 
       await channel.dispose();
     });

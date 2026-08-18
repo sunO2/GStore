@@ -68,13 +68,13 @@ class JsChannelRuntime {
   final void Function(String message)? _logErrorOverride;
 
   /// host.ui 能力：由调用方（JSChannel/详情页）注入 Flutter 实现
-  /// （runtime 不直接依赖 UI/context，保持可测试）
-  final Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
+  /// （runtime 不直接依赖 UI/context，保持可测试）。
+  /// 构造时可注入，也可经 [setUiCallbacks] 运行时更新（详情页使用渠道时注入）。
+  Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
       _uiShowVersionPickerOverride;
 
   /// 刷新详情页（JS 调，参数含 appId/env/version）
-  final Future<void> Function(Map<String, dynamic> params)?
-      _uiRefreshDetailOverride;
+  Future<void> Function(Map<String, dynamic> params)? _uiRefreshDetailOverride;
 
   JavascriptRuntime? _engine;
   bool _initialized = false;
@@ -106,6 +106,25 @@ class JsChannelRuntime {
 
   bool get isInitialized => _initialized;
   bool get isDisposed => _disposed;
+
+  /// 运行时注入/更新 host.ui 实现（构造后可改：详情页使用时注入，
+  /// 避免 ChannelLoader 创建渠道时无 UI context）。
+  ///
+  /// 只覆盖非 null 项；null 项保持原值（构造参数或上次 [setUiCallbacks]）。
+  /// 注入后脚本下次调 `host.ui.showVersionPicker` / `host.ui.refreshDetail`
+  /// 立即生效（回调在调用时读取，无需重建引擎）。
+  void setUiCallbacks({
+    Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
+        uiShowVersionPicker,
+    Future<void> Function(Map<String, dynamic> params)? uiRefreshDetail,
+  }) {
+    if (uiShowVersionPicker != null) {
+      _uiShowVersionPickerOverride = uiShowVersionPicker;
+    }
+    if (uiRefreshDetail != null) {
+      _uiRefreshDetailOverride = uiRefreshDetail;
+    }
+  }
 
   /// 热更新 env 快照（JSChannel.setEnv/removeEnv 持久化后调用）。
   ///
