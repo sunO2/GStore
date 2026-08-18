@@ -392,13 +392,17 @@ void main() {
       expect(result['ok'], isTrue);
       final app = result['data'] as Map;
 
-      expect(app['appId'], 'com.pingan.app'); // builds[0].identifier 真实包名
+      // 修复契约：appId 保持渠道查询键（build-list 的 appname），不再用 identifier 包名覆盖；
+      // 真实包名移入 packageName / extra.identifier（否则详情/聚合请求 appId 变包名 → ok:false）
+      expect(app['appId'], 'app-1'); // 查询键
+      expect(app['packageName'], 'com.pingan.app'); // 真实包名（安装检测用）
       expect(app['name'], '1.9.0'); // versionname
       expect(app['des'], 'app-1'); // des = 查询用 appId
       expect(app['icon'], '$_pinganHost/logo/app.png'); // appLogo 补全
 
       final extra = app['extra'] as Map;
       expect(extra['_id'], 'bg-android');
+      expect(extra['identifier'], 'com.pingan.app'); // 真实包名
       expect(extra['version'], '1.9.0');
       expect(extra['versionname'], '1.9.0');
       expect(extra['num'], 7);
@@ -598,15 +602,16 @@ void main() {
       expect(result['ok'], isTrue);
       final d = result['data'] as Map;
 
-      expect(d['appId'], 'com.pingan.app');
+      expect(d['appId'], 'app-1'); // 查询键（修复：不再用 identifier 包名覆盖）
       expect(d['name'], '1.9.0');
-      expect(d['packageName'], 'com.pingan.app');
+      expect(d['packageName'], 'com.pingan.app'); // 真实包名
       expect(d['version'], '1.9.0');
       expect(d['description'], 'app-1');
 
       // extra 完整（含降级 note）
       final extra = d['extra'] as Map;
       expect(extra['_id'], 'bg-android');
+      expect(extra['identifier'], 'com.pingan.app'); // 真实包名
       expect(extra['downloadNote'], '需认证或暂不可下载');
 
       // downloads 数组（详情页代理读取：size 为数字）
@@ -669,9 +674,10 @@ void main() {
           'main', ['getAppDetail', {'appId': 'com.pingan.pabank.activity'}]) as Map;
       expect(result['ok'], isTrue);
       final d = result['data'] as Map;
-      expect(d['appId'], 'com.pingan.app'); // builds[0].identifier 真实包名
+      expect(d['appId'], 'ibank'); // 查库解析出的渠道查询名（不再用 identifier 包名覆盖）
       expect(d['packageName'], 'com.pingan.app');
       expect(d['version'], '1.9.0');
+      expect((d['extra'] as Map)['identifier'], 'com.pingan.app');
 
       // 两次 build-list：先包名（无结果）→ 再列表 name（成功）
       final buildRequests = requestLog.where((r) => r.contains('build-list')).toList();
@@ -826,7 +832,7 @@ void main() {
       expect(result['ok'], isTrue);
       final d = result['data'] as Map;
       expect(d['version'], '1.9.0');
-      expect(d['appId'], 'com.pingan.app');
+      expect(d['appId'], 'app-1'); // 查询键保持
 
       // 单版本拉取：只发一次 build-list，且携带 version 参数
       final buildRequests =
@@ -1043,7 +1049,7 @@ void main() {
       final result = await runtime.call('main', ['getAppDetail', {'appId': 'app-1'}]) as Map;
       expect(result['ok'], isTrue);
       final d = result['data'] as Map;
-      expect(d['appId'], 'com.pingan.real'); // 最新组（ipa proxy）
+      expect(d['appId'], 'app-1'); // 查询键保持（最新组 ipa proxy）
       expect(d['version'], '3.2.1');
 
       final downloads = d['downloads'] as List;
@@ -1074,7 +1080,7 @@ void main() {
       final result = await runtime.call('main', ['getAppDetail', {'appId': 'app-1'}]) as Map;
       expect(result['ok'], isTrue); // build 详情失败 → 降级继续，不阻塞详情
       final d = result['data'] as Map;
-      expect(d['appId'], 'com.pingan.app');
+      expect(d['appId'], 'app-1'); // 查询键保持
       expect((d['extra'] as Map)['screenshots'], isEmpty);
       expect(d['downloads'], isNotEmpty);
 
@@ -1135,6 +1141,175 @@ void main() {
       final downloads = d['downloads'] as List;
       expect(downloads.length, 1);
       expect((downloads.first as Map)['downloadable'], isFalse);
+
+      await runtime.dispose();
+    });
+
+    test('㉛ getAppDetail 包名 appId（无缓存 + 库无记录）→ ok:false + error 含解析失败提示', () async {
+      // 库中无该包名 → resolveAppName 返回原值 → 两次 build-list(包名) 均空 → 明确错误提示
+      final runtime = buildRuntime(scriptOverride: detailScript, handler: (options) {
+        if (options.path.contains('/sunflower/i/build-list')) {
+          final appname = options.queryParameters['appname']?.toString() ?? '';
+          if (appname == 'com.pingan.pabank.activity') {
+            return api.buildListNoAndroid(); // 包名查不到（含首次与 resolve 后重试）
+          }
+          return api.buildList(withFileUrl: false);
+        }
+        return defaultHandler(options);
+      });
+      await runtime.initialize();
+
+      final result = await runtime.call(
+          'main', ['getAppDetail', {'appId': 'com.pingan.pabank.activity'}]) as Map;
+      expect(result['ok'], isFalse);
+      expect(result['data'], isNull);
+      expect((result['error'] as String),
+          contains('无法解析为渠道应用名：com.pingan.pabank.activity'));
+
+      await runtime.dispose();
+    });
+
+    test('㉛b getAppInfo 包名 appId（无缓存 + 库无记录）→ ok:false + error 含解析失败提示', () async {
+      final runtime = buildRuntime(handler: (options) {
+        if (options.path.contains('/sunflower/i/build-list')) {
+          final appname = options.queryParameters['appname']?.toString() ?? '';
+          if (appname == 'com.pingan.pabank.activity') {
+            return api.buildListNoAndroid();
+          }
+          return api.buildList(withFileUrl: false);
+        }
+        return defaultHandler(options);
+      });
+      await runtime.initialize();
+
+      final result = await runtime.call(
+          'main', ['getAppInfo', {'appId': 'com.pingan.pabank.activity'}]) as Map;
+      expect(result['ok'], isFalse);
+      expect(result['data'], isNull);
+      expect((result['error'] as String),
+          contains('无法解析为渠道应用名：com.pingan.pabank.activity'));
+
+      await runtime.dispose();
+    });
+
+    test('㉜ 同 detail runtime：getAppDetail(name) 成功后 switchVersion(包名) 经 _nameCache 解析成功', () async {
+      final runtime = buildRuntime(scriptOverride: detailScript, handler: (options) {
+        if (options.path.contains('/sunflower/i/build-list')) {
+          final appname = options.queryParameters['appname']?.toString() ?? '';
+          // 包名直查 → 空（走 resolveAppName 缓存解析，不再发第二次 build-list）
+          if (appname == 'com.pingan.pabank.activity') {
+            return api.buildListNoAndroid();
+          }
+          // 渠道查询名 → 构建组 identifier = com.pingan.pabank.activity（触发缓存记录）
+          return {
+            'appLogo': '/logo/app.png',
+            'buildList': [
+              {
+                '_id': 'bg-ibank',
+                'version': '1.9.0',
+                'platform': 'android',
+                'env': 'sit',
+                'publishedAt': 1690000000000,
+                'builds': [
+                  {
+                    'identifier': 'com.pingan.pabank.activity',
+                    'versionname': '1.9.0',
+                    'num': 7,
+                    'size': 12345678,
+                    'installTimes': 99,
+                    'changelog': '修复若干问题',
+                    'builtBy': 'ci-bot',
+                    'fileurl': ['/apk/com.pingan.pabank.activity-1.9.0.apk'],
+                  },
+                ],
+              },
+            ],
+          };
+        }
+        return defaultHandler(options);
+      });
+      await runtime.initialize();
+
+      // 先用渠道查询名成功拉详情（identifier 为 com.pingan.pabank.activity）→ 记录缓存
+      final r1 = await runtime.call(
+          'main', ['getAppDetail', {'appId': 'app-1'}]) as Map;
+      expect(r1['ok'], isTrue);
+      expect((r1['data'] as Map)['packageName'], 'com.pingan.pabank.activity');
+
+      // 之后用包名调 switchVersion → _nameCache 命中（app-1）→ 一次 build-list 成功
+      final r2 = await runtime.call(
+          'main', ['switchVersion', {'appId': 'com.pingan.pabank.activity', 'env': 'sit', 'version': ''}]) as Map;
+      expect(r2['ok'], isTrue);
+      final d = r2['data'] as Map;
+      expect(d['appId'], 'app-1'); // 查询键（缓存解析出的 name）
+      expect(d['packageName'], 'com.pingan.pabank.activity');
+
+      // getAppDetail(1) + switchVersion(1) → 共 2 次 build-list（包名未触发额外请求）
+      final buildRequests =
+          requestLog.where((r) => r.contains('build-list')).toList();
+      expect(buildRequests.length, 2);
+      expect(buildRequests.last, contains('appname=app-1'));
+
+      await runtime.dispose();
+    });
+
+    test('㉚b 同 entry runtime：getAppInfo(name) 成功后 getAppInfo(包名) 经 _nameCache 解析成功', () async {
+      final runtime = buildRuntime(handler: (options) {
+        if (options.path.contains('/sunflower/i/build-list')) {
+          final appname = options.queryParameters['appname']?.toString() ?? '';
+          // 包名直查 → 空（走 resolveAppName 缓存解析，不再发第二次 build-list）
+          if (appname == 'com.pingan.pabank.activity') {
+            return api.buildListNoAndroid();
+          }
+          // 渠道查询名 → 构建组 identifier = com.pingan.pabank.activity（触发缓存记录）
+          return {
+            'appLogo': '/logo/app.png',
+            'buildList': [
+              {
+                '_id': 'bg-ibank',
+                'version': '1.9.0',
+                'platform': 'android',
+                'env': 'sit',
+                'publishedAt': 1690000000000,
+                'builds': [
+                  {
+                    'identifier': 'com.pingan.pabank.activity',
+                    'versionname': '1.9.0',
+                    'num': 7,
+                    'size': 12345678,
+                    'installTimes': 99,
+                    'changelog': '修复若干问题',
+                    'builtBy': 'ci-bot',
+                    'fileurl': ['/apk/com.pingan.pabank.activity-1.9.0.apk'],
+                  },
+                ],
+              },
+            ],
+          };
+        }
+        return defaultHandler(options);
+      });
+      await runtime.initialize();
+
+      // 先用渠道查询名成功拉基础信息 → 缓存 包名→name
+      final r1 = await runtime.call('main', ['getAppInfo', {'appId': 'app-1'}]) as Map;
+      expect(r1['ok'], isTrue);
+      expect((r1['data'] as Map)['packageName'], 'com.pingan.pabank.activity');
+
+      // 用包名再查 → _nameCache 命中 → 解析为 app-1 → 成功
+      final r2 = await runtime.call(
+          'main', ['getAppInfo', {'appId': 'com.pingan.pabank.activity'}]) as Map;
+      expect(r2['ok'], isTrue);
+      final app = r2['data'] as Map;
+      expect(app['appId'], 'app-1'); // 查询键（缓存解析）
+      expect(app['packageName'], 'com.pingan.pabank.activity');
+
+      // getAppInfo 两次：name 直查(1) + 包名(直查失败1 + 缓存命中重查1) = 3 次 build-list
+      // （entry 的 resolveAndroidBuilds 先直查包名 → 失败才走 resolveAppName 缓存）
+      final buildRequests =
+          requestLog.where((r) => r.contains('build-list')).toList();
+      expect(buildRequests.length, 3);
+      expect(buildRequests.last, contains('appname=app-1'));
 
       await runtime.dispose();
     });
