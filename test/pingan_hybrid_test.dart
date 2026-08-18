@@ -337,58 +337,100 @@ void main() {
       await runtime.dispose();
     });
 
-    test('⑦ jsBuildHistory：用户选中构建 → showBuildHistory 收到完整 builds（build 接口补全）→ refreshDetail 收到 {appId, env, version, build}', () async {
+    test('⑦ jsBuildHistory：3 平台组取 android 组 → build 接口完整 35 条 → 选 num=5 → refreshDetail 收到 {build}', () async {
       Map<String, dynamic>? historyOptions;
       Map<String, dynamic>? refreshParams;
       final runtime = buildRuntime(
         handler: (options) {
           if (options.path.contains('/sunflower/i/build-list')) {
             final env = options.queryParameters['env']?.toString() ?? 'sit';
-            return buildListForEnv(env); // 组内只含最新 1 条（真实平台单版本行为）
-          }
-          if (options.path.endsWith('/sunflower/i/build')) {
-            // 真实平台：build 接口返回该版本组完整历史（num 降序）
+            // 真实接口：build-list（带 version）返回 android/ios/harmony 3 平台组，
+            // 每组 builds 只含最新 1 条（真实平台单版本行为）；ios/harmony 排前
             return {
-              'appInfo': {'screenshots': <Object>[]},
-              'builds': [
+              'appLogo': '/logo/app.png',
+              'buildList': [
                 {
-                  'identifier': 'com.pingan.app',
-                  'versionname': '8.9.0',
-                  'num': 3,
-                  'size': 100,
-                  'installTimes': 9,
-                  'changelog': '构建 3',
-                  'builtBy': 'ci',
-                  'fileurl': ['/apk/com.pingan.app-8.9.0-3.apk'],
+                  '_id': 'bg-ios',
+                  'version': '8.9.0',
+                  'platform': 'ios',
+                  'env': env,
+                  'publishedAt': 1700000000000,
+                  'builds': [
+                    {
+                      'identifier': 'com.pingan.ios',
+                      'versionname': '8.9.0',
+                      'num': 4,
+                      'size': 500,
+                      'fileurl': <Object>[],
+                    },
+                  ],
                 },
                 {
-                  'identifier': 'com.pingan.app',
-                  'versionname': '8.9.0',
-                  'num': 2,
-                  'size': 90,
-                  'installTimes': 8,
-                  'changelog': '构建 2',
-                  'builtBy': 'ci',
-                  'fileurl': ['/apk/com.pingan.app-8.9.0-2.apk'],
+                  '_id': 'bg-harmony',
+                  'version': '8.9.0',
+                  'platform': 'harmony',
+                  'env': env,
+                  'publishedAt': 1700000000000,
+                  'builds': [
+                    {
+                      'identifier': 'com.pingan.harmony',
+                      'versionname': '8.9.0',
+                      'num': 2,
+                      'size': 300,
+                      'fileurl': <Object>[],
+                    },
+                  ],
                 },
                 {
-                  'identifier': 'com.pingan.app',
-                  'versionname': '8.9.0',
-                  'num': 1,
-                  'size': 80,
-                  'installTimes': 7,
-                  'changelog': '构建 1',
-                  'builtBy': 'ci',
-                  'fileurl': ['/apk/com.pingan.app-8.9.0-1.apk'],
+                  '_id': 'bg-android',
+                  'version': '8.9.0',
+                  'platform': 'android',
+                  'env': env,
+                  'publishedAt': 1700000000000,
+                  'builds': [
+                    {
+                      'identifier': 'com.pingan.app',
+                      'versionname': '8.9.0',
+                      'num': 35,
+                      'size': 100,
+                      'fileurl': <Object>[],
+                    },
+                  ],
                 },
               ],
+            };
+          }
+          if (options.path.endsWith('/sunflower/i/build')) {
+            // 真实平台：build 接口返回 {build:{builds}}（完整历史在 build 键内层，
+            // 实测 num 降序 35→1）+ appInfo；真实字段：每条含 ipa:[{name,_id}]（代理文件名）
+            // + fileurl:[]
+            final builds = <Map<String, dynamic>>[];
+            for (var num = 35; num >= 1; num--) {
+              builds.add({
+                'identifier': 'com.pingan.app',
+                'versionname': '8.9.0',
+                'num': num,
+                'size': 100 + num,
+                'installTimes': num,
+                'changelog': '构建 $num',
+                'builtBy': 'ci',
+                'publishedAt': 1700000000000 + num,
+                'ipa': [
+                  {'name': 'PABank-8.9.0-$num.apk', '_id': 'ipa-$num'},
+                ],
+                'fileurl': <Object>[],
+              });
+            }
+            return {
+              'build': {'_id': 'bg-android', 'version': '8.9.0', 'builds': builds},
+              'appInfo': {'screenshots': <Object>[]},
             };
           }
           return defaultHandler(options);
         },
         uiShowBuildHistory: (options) async {
           historyOptions = options;
-          return {'num': 2, 'ipaName': '8.9.0.apk'};
+          return {'num': 5, 'ipaName': 'PABank-8.9.0-5.apk'};
         },
         uiRefreshDetail: (params) async {
           refreshParams = params;
@@ -405,13 +447,13 @@ void main() {
       expect(historyOptions!['version'], '8.9.0');
       expect(historyOptions!['env'], 'sit');
       final builds = historyOptions!['builds'] as List;
-      expect(builds.length, 3); // 完整历史（build 接口补全，非 build-list 单版本 1 条）
+      expect(builds.length, 35); // android 组完整历史（build 接口补全，非 build-list 单版本 1 条）
       final nums = builds.map((b) => (b as Map)['num']).toList();
-      expect(nums, [3, 2, 1]); // num 倒序
+      expect(nums, List.generate(35, (i) => 35 - i)); // num 倒序
       final build0 = builds.first as Map;
-      expect(build0['num'], 3);
-      expect(build0['ipaName'], '8.9.0.apk');
-      expect(build0['size'], 100);
+      expect(build0['num'], 35);
+      expect(build0['ipaName'], 'PABank-8.9.0-35.apk'); // 真实字段：优先 ipa[0].name
+      expect(build0['size'], 135);
 
       // refreshDetail 收到选中构建（Flutter 侧据此切换到该构建的 APK）
       expect(refreshParams, isNotNull);
@@ -419,14 +461,218 @@ void main() {
       expect(refreshParams!['env'], 'sit');
       expect(refreshParams!['version'], '8.9.0');
       final build = refreshParams!['build'] as Map;
-      expect(build['num'], 2);
-      expect(build['ipaName'], '8.9.0.apk');
+      expect(build['num'], 5);
+      expect(build['ipaName'], 'PABank-8.9.0-5.apk');
 
-      // 两次 build-list（versionOptions + getBuildHistory）+ 一次 build 接口（完整历史）
+      // 两次 build-list（versionOptions + getBuildHistory）+ 一次 build 接口（android 组 _id）
       final buildRequests = requestLog.where((r) => r.contains('build-list')).toList();
       expect(buildRequests.length, 2);
       expect(buildRequests[0], contains('env=sit'));
       expect(buildRequests[1], contains('version=8.9.0'));
+      expect(requestLog.where((r) => r.contains('/sunflower/i/build&')).length, 1);
+
+      await runtime.dispose();
+    });
+
+    test('⑦b jsBuildHistory：真实结构（8.9.0 仅 ios/harmony，android 最新 8.8.0）→ 取 8.8.0 → build 接口完整 35 条（残留根因回归）', () async {
+      // 接口实测：build-list 全量返回各平台组（每组 builds 仅最新 1 条）；
+      // 最新「版本」8.9.0 只有 ios/harmony 构建，android 最新是 8.8.0。
+      // 旧实现 getVersionOptions 遍历所有平台组 → versions[0]=8.9.0（无 android）→
+      // getBuildHistory(8.9.0) 过滤 android 后空 → 历史构建只剩 1 条。
+      // 修复后 versions 只统计 android 组 → 取 8.8.0 → build 接口（bg-android）35 条。
+      // 第二个残留根因：build 接口真实结构为 {build:{builds:[...]}, appInfo}——完整历史在
+      // build 键内层；旧脚本读顶层 bd.builds（undefined）→ 降级 build-list 组内 1 条
+      // （build 35）。mock 用真实结构（本文件 ⑦b/⑦ 已对齐），脚本按 build.builds 读取。
+      Map<String, dynamic>? historyOptions;
+      Map<String, dynamic>? refreshParams;
+      final runtime = buildRuntime(
+        handler: (options) {
+          if (options.path.contains('/sunflower/i/build-list')) {
+            final version = options.queryParameters['version']?.toString() ?? '';
+            if (version.isNotEmpty && version != '8.8.0') {
+              // 带 version 且非 8.8.0（如旧实现误取 8.9.0）→ 真实接口只返回 ios/harmony 组
+              return {
+                'appLogo': '/logo/app.png',
+                'buildList': [
+                  {
+                    '_id': 'bg-ios-890',
+                    'version': '8.9.0',
+                    'platform': 'ios',
+                    'env': 'sit',
+                    'publishedAt': 1701000000000,
+                    'builds': [
+                      {
+                        'identifier': 'com.pingan.ios',
+                        'versionname': '8.9.0',
+                        'num': 1,
+                        'size': 500,
+                        'fileurl': <Object>[],
+                      },
+                    ],
+                  },
+                  {
+                    '_id': 'bg-harmony-890',
+                    'version': '8.9.0',
+                    'platform': 'harmony',
+                    'env': 'sit',
+                    'publishedAt': 1701000000000,
+                    'builds': [
+                      {
+                        'identifier': 'com.pingan.harmony',
+                        'versionname': '8.9.0',
+                        'num': 1,
+                        'size': 300,
+                        'fileurl': <Object>[],
+                      },
+                    ],
+                  },
+                ],
+              };
+            }
+            // 全量 / version=8.8.0：android 8.8.0 组 + ios/harmony 干扰组
+            return {
+              'appLogo': '/logo/app.png',
+              'buildList': [
+                {
+                  '_id': 'bg-ios-890',
+                  'version': '8.9.0',
+                  'platform': 'ios',
+                  'env': 'sit',
+                  'publishedAt': 1701000000000,
+                  'builds': [
+                    {
+                      'identifier': 'com.pingan.ios',
+                      'versionname': '8.9.0',
+                      'num': 1,
+                      'size': 500,
+                      'fileurl': <Object>[],
+                    },
+                  ],
+                },
+                {
+                  '_id': 'bg-harmony-890',
+                  'version': '8.9.0',
+                  'platform': 'harmony',
+                  'env': 'sit',
+                  'publishedAt': 1701000000000,
+                  'builds': [
+                    {
+                      'identifier': 'com.pingan.harmony',
+                      'versionname': '8.9.0',
+                      'num': 1,
+                      'size': 300,
+                      'fileurl': <Object>[],
+                    },
+                  ],
+                },
+                {
+                  '_id': 'bg-android',
+                  'version': '8.8.0',
+                  'platform': 'android',
+                  'env': 'sit',
+                  'publishedAt': 1700000000000,
+                  'builds': [
+                    {
+                      'identifier': 'com.pingan.app',
+                      'versionname': '8.8.0',
+                      'num': 35,
+                      'size': 100,
+                      'fileurl': <Object>[],
+                    },
+                  ],
+                },
+                {
+                  '_id': 'bg-ios-880',
+                  'version': '8.8.0',
+                  'platform': 'ios',
+                  'env': 'sit',
+                  'publishedAt': 1690000000000,
+                  'builds': [
+                    {
+                      'identifier': 'com.pingan.ios',
+                      'versionname': '8.8.0',
+                      'num': 4,
+                      'size': 500,
+                      'fileurl': <Object>[],
+                    },
+                  ],
+                },
+              ],
+            };
+          }
+          if (options.path.endsWith('/sunflower/i/build')) {
+            // build 接口按 _id 路由：只有 android 组返回完整历史
+            // （真实结构：{build:{builds:[...]}, appInfo}——历史在 build 键内层）
+            final id = options.queryParameters['_id']?.toString() ?? '';
+            if (id != 'bg-android') {
+              return {'build': {'_id': id, 'builds': <Object>[]}, 'appInfo': <Object>{}};
+            }
+            final builds = <Map<String, dynamic>>[];
+            for (var num = 35; num >= 1; num--) {
+              builds.add({
+                'identifier': 'com.pingan.app',
+                'versionname': '8.8.0',
+                'num': num,
+                'size': 100 + num,
+                'installTimes': num,
+                'changelog': '构建 $num',
+                'builtBy': 'ci',
+                'publishedAt': 1700000000000 + num,
+                'ipa': [
+                  {'name': 'PABank-8.8.0-$num.apk', '_id': 'ipa-$num'},
+                ],
+                'fileurl': <Object>[],
+              });
+            }
+            return {
+              'build': {'_id': 'bg-android', 'version': '8.8.0', 'builds': builds},
+              'appInfo': {'screenshots': <Object>[]},
+            };
+          }
+          return defaultHandler(options);
+        },
+        uiShowBuildHistory: (options) async {
+          historyOptions = options;
+          return {'num': 5, 'ipaName': 'PABank-8.8.0-5.apk'};
+        },
+        uiRefreshDetail: (params) async {
+          refreshParams = params;
+        },
+      );
+      await runtime.initialize();
+
+      final result = await runtime.call('main', ['jsBuildHistory', {'appId': 'app-1'}]) as Map;
+      expect(result['ok'], isTrue);
+      expect(result['data'], isTrue);
+
+      // 选择器收到的是 android 最新版本 8.8.0（非 8.9.0）+ 完整 35 条
+      expect(historyOptions, isNotNull);
+      expect(historyOptions!['version'], '8.8.0');
+      expect(historyOptions!['env'], 'sit');
+      final builds = historyOptions!['builds'] as List;
+      expect(builds.length, 35);
+      final nums = builds.map((b) => (b as Map)['num']).toList();
+      expect(nums, List.generate(35, (i) => 35 - i)); // num 倒序
+      final build0 = builds.first as Map;
+      expect(build0['num'], 35);
+      expect(build0['ipaName'], 'PABank-8.8.0-35.apk');
+
+      // refreshDetail 收到选中构建（version=8.8.0）
+      expect(refreshParams, isNotNull);
+      expect(refreshParams!['appId'], 'app-1');
+      expect(refreshParams!['env'], 'sit');
+      expect(refreshParams!['version'], '8.8.0');
+      final build = refreshParams!['build'] as Map;
+      expect(build['num'], 5);
+      expect(build['ipaName'], 'PABank-8.8.0-5.apk');
+
+      // 两次 build-list：第一次全量（versionOptions，version 空）→ 第二次 version=8.8.0；
+      // 绝不携带 8.9.0（旧实现误取路径）
+      final buildRequests = requestLog.where((r) => r.contains('build-list')).toList();
+      expect(buildRequests.length, 2);
+      expect(buildRequests[0], contains('env=sit'));
+      expect(buildRequests[0], contains('version=-'));
+      expect(buildRequests[1], contains('version=8.8.0'));
       expect(requestLog.where((r) => r.contains('/sunflower/i/build&')).length, 1);
 
       await runtime.dispose();
