@@ -2,7 +2,9 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/widgets.dart';
+import 'package:gstore/core/channel/impl/JsChannel.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/design/channel_version_picker_sheet.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/AppDetailRequest.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
@@ -728,6 +730,13 @@ class DetailLogic extends GetxController {
           label: '项目主页',
           onTap: openProjectBrowser,
         ),
+      // 切换版本（仅脚本渠道：脚本实现 versionOptions/switchVersion/buildHistory）
+      if (channelInstance is JsChannel)
+        MoreActionItem(
+          icon: Icons.swap_vert,
+          label: '切换版本',
+          onTap: () => _openVersionSwitcher(context, channelInstance),
+        ),
     ];
 
     // 弹出底部面板（顶部标签编辑 + 底部动作宫格）
@@ -753,6 +762,144 @@ class DetailLogic extends GetxController {
       appLog.error('DetailLogic: 保存标签失败 - $e');
       AppDialogs.showError('保存标签失败: $e', title: '保存失败');
     }
+  }
+
+  /// 打开"切换版本"选择器（仅脚本渠道）。
+  ///
+  /// 流程：脚本 versionOptions → ChannelVersionPickerSheet 选 env+version →
+  /// 确认后脚本 switchVersion 返回该 env+version 的详情 Map（同 getAppDetail 结构）→
+  /// 用 JsChannelDetailProxy 整体刷新 state.detailInfo（截图/下载/更新日志按新 env+version）。
+  Future<void> _openVersionSwitcher(BuildContext context, JsChannel js) async {
+    final req = request;
+    if (req == null) return;
+
+    final opts = await js.versionOptions(req.appId);
+    if (opts == null) {
+      AppDialogs.showError('无法获取版本选项（脚本未实现或失败）');
+      return;
+    }
+    if (!context.mounted) return;
+
+    final envs = (opts['envs'] as List?)
+            ?.map((e) => e.toString())
+            .toList() ??
+        const <String>[];
+    final versions = (opts['versions'] as List?)
+            ?.map((v) {
+              final m = v as Map;
+              return VersionOption(
+                version: m['version']?.toString() ?? '',
+                envs: (m['envs'] as List?)
+                        ?.map((e) => e.toString())
+                        .toList() ??
+                    const <String>[],
+                buildCount: (m['buildCount'] as num?)?.toInt() ?? 0,
+              );
+            })
+            .toList() ??
+        const <VersionOption>[];
+
+    // 记录最近一次展开的历史构建所属 version/env（onBuildSelect 下载时定位详情用）
+    var historyVersion = '';
+    var historyEnv = '';
+
+    final sel = await ChannelVersionPickerSheet.show(
+      context: context,
+      title: '切换版本',
+      envs: envs,
+      versions: versions,
+      currentEnv: opts['currentEnv']?.toString(),
+      currentVersion: opts['currentVersion']?.toString(),
+      onBuildHistory: ({required version, required env}) async {
+        historyVersion = version;
+        historyEnv = env;
+        final bh = await js.buildHistory(
+          appId: req.appId,
+          version: version,
+          env: env,
+        );
+        final builds = (bh?['builds'] as List?)
+                ?.map((b) {
+                  final m = b as Map;
+                  return BuildOption(
+                    num: (m['num'] as num?)?.toInt() ?? 0,
+                    publishedAt: m['publishedAt'] != null
+                        ? DateTime.tryParse(m['publishedAt'].toString())
+                        : null,
+                    size: (m['size'] as num?)?.toInt(),
+                    changelog: m['changelog']?.toString(),
+                    installTimes: (m['installTimes'] as num?)?.toInt(),
+                    builtBy: m['builtBy']?.toString(),
+                    ipaName: m['ipaName']?.toString(),
+                  );
+                })
+                .toList() ??
+            const <BuildOption>[];
+        return builds;
+      },
+      onBuildSelect: (build) {
+        unawaited(_downloadHistoricalBuild(
+          js,
+          build,
+          version: historyVersion,
+          env: historyEnv,
+        ));
+      },
+    );
+    if (sel == null) return; // 取消/关闭，不刷新
+
+    // 确认切换 → 脚本 switchVersion 拿新 env+version 详情 → 整体刷新 detailInfo
+    final detail = await js.switchVersion(
+      appId: req.appId,
+      env: sel.env,
+      version: sel.version,
+    );
+    if (detail == null) {
+      AppDialogs.showError('切换版本失败');
+      return;
+    }
+    state.detailInfo.value = JsChannelDetailProxy(detail);
+    AppDialogs.showSuccess('已切换到 ${sel.version}（${sel.env}）');
+  }
+
+  /// 历史构建下载：调脚本 switchVersion 拿该 env+version 详情 downloads，
+  /// 匹配该 build 的下载项（ipaName == download.name）→ startDownload；
+  /// 无匹配/脚本失败 → 提示"该构建暂不可下载"（历史构建下载走现有下载器）。
+  Future<void> _downloadHistoricalBuild(
+    JsChannel js,
+    BuildOption build, {
+    required String version,
+    required String env,
+  }) async {
+    final req = request;
+    if (req == null) return;
+
+    final detail = await js.switchVersion(
+      appId: req.appId,
+      env: env,
+      version: version,
+    );
+    if (detail == null) {
+      AppDialogs.showError('该构建暂不可下载');
+      return;
+    }
+
+    final proxy = JsChannelDetailProxy(detail);
+    final ipaName = build.ipaName;
+    DownloadInfo? match;
+    if (ipaName != null && ipaName.isNotEmpty) {
+      for (final d in proxy.downloads) {
+        if (d.name == ipaName) {
+          match = d;
+          break;
+        }
+      }
+    }
+    if (match == null) {
+      AppDialogs.showError('该构建暂不可下载');
+      return;
+    }
+    await startDownload(match);
   }
 
   /// 将 IDetailInfo 转换为 AppSummary
