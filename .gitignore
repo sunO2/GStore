@@ -49,3 +49,6 @@ rust/fdroid_repo/target/
 
 # GStore-Repositorys 临时克隆
 /git.temp/
+
+# 第三方 API 脚本（用户导入，不进版本库）
+scripts/
