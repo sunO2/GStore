@@ -10,10 +10,10 @@ import 'package:gstore/core/channel/impl/channel_package.dart';
 import 'package:gstore/core/js/js_channel_runtime.dart';
 
 /// pingan.js Hybrid 详情页测试（Wave C，zip 渠道包 detail.js）：detailMenu 声明 Actions +
-/// jsswitchVersion 用 host.ui 驱动版本选择/刷新。
+/// jsswitchVersion 用 host.ui 驱动版本选择/刷新 + jsBuildHistory 用 host.ui 驱动构建历史选择。
 ///
 /// 与 pingan_script_test.dart 同款假网络/Dao 注入；本文件聚焦 host.ui：
-/// uiShowVersionPicker / uiRefreshDetail 回调捕获参数断言，不发真实网络。
+/// uiShowVersionPicker / uiRefreshDetail / uiShowBuildHistory 回调捕获参数断言，不发真实网络。
 ///
 /// 注意：Hybrid 详情方法（detailMenu/jsswitchVersion/jsBuildHistory）由页面级
 /// JsDetailChannel 消费 → 本测试读取 scripts/channels/pingan.zip 解出的 detail.js
@@ -24,7 +24,9 @@ import 'package:gstore/core/js/js_channel_runtime.dart';
 /// - main('jsswitchVersion', {appId}) → 拉版本选项 → showVersionPicker →
 ///   用户选 {env, version} → refreshDetail({appId, env, version}) → {ok:true, data:true}
 ///   取消/能力未注册 → 静默 {ok:true, data:null}
-/// - main('jsBuildHistory', {appId}) → {ok:false, error:'历史构建交互开发中'}
+/// - main('jsBuildHistory', {appId}) → 拉最新版本 builds → showBuildHistory →
+///   用户选 build → refreshDetail({appId, env, version, build}) → {ok:true, data:true}
+///   取消/能力未注册/失败 → 静默 {ok:true, data:null}；无版本/无构建 → {ok:false, error}
 
 const String _channelKey = 'js_pingan_hybrid_test';
 
@@ -94,6 +96,7 @@ class _FakeDioAdapter implements HttpClientAdapter {
   ) async {
     requestLog.add('${options.method} ${options.path}'
         '&appname=${options.queryParameters['appname'] ?? '-'}'
+        '&version=${options.queryParameters['version'] ?? '-'}'
         '&env=${options.queryParameters['env'] ?? '-'}');
     final data = handler(options);
     if (data['__status'] != null) {
@@ -178,6 +181,8 @@ void main() {
     Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
         uiShowVersionPicker,
     Future<void> Function(Map<String, dynamic> params)? uiRefreshDetail,
+    Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
+        uiShowBuildHistory,
   }) {
     final dio = Dio();
     dio.httpClientAdapter = _FakeDioAdapter(handler ?? defaultHandler, requestLog);
@@ -190,6 +195,7 @@ void main() {
       logError: (msg) => logMessages.add('error: $msg'),
       uiShowVersionPicker: uiShowVersionPicker,
       uiRefreshDetail: uiRefreshDetail,
+      uiShowBuildHistory: uiShowBuildHistory,
     );
   }
 
@@ -237,11 +243,11 @@ void main() {
       expect(result['ok'], isTrue);
       expect(result['data'], isTrue);
 
-      // 选择框收到的 options 正确（来自 getVersionOptions：envs 全量 5 个，当前 sit）
+      // 选择框收到的 options 正确（来自 getVersionOptions：envs 全量 5 个，当前 uat）
       expect(pickerOptions, isNotNull);
       expect(pickerOptions!['title'], '切换版本');
       expect(pickerOptions!['envs'], ['sit', 'uat', 'prd', 'rge', 'tmp']);
-      expect(pickerOptions!['currentEnv'], 'sit');
+      expect(pickerOptions!['currentEnv'], 'uat');
       expect(pickerOptions!['currentVersion'], '8.9.0');
       final versions = pickerOptions!['versions'] as List;
       expect(versions.length, 1);
@@ -253,10 +259,10 @@ void main() {
       expect(refreshParams!['env'], 'uat');
       expect(refreshParams!['version'], '8.9.0');
 
-      // 只拉了一次 build-list（当前 env=sit 单次，Wave 拉取优化）
+      // 只拉了一次 build-list（当前 env=uat 单次，Wave 拉取优化）
       final buildRequests = requestLog.where((r) => r.contains('build-list')).toList();
       expect(buildRequests.length, 1);
-      expect(buildRequests.first, contains('env=sit'));
+      expect(buildRequests.first, contains('env=uat'));
 
       await runtime.dispose();
     });
@@ -331,14 +337,140 @@ void main() {
       await runtime.dispose();
     });
 
-    test('⑦ jsBuildHistory → 未实现提示 {ok:false, error: 历史构建交互开发中}', () async {
-      final runtime = buildRuntime();
+    test('⑦ jsBuildHistory：用户选中构建 → showBuildHistory 收到 options（builds）→ refreshDetail 收到 {appId, env, version, build}', () async {
+      Map<String, dynamic>? historyOptions;
+      Map<String, dynamic>? refreshParams;
+      final runtime = buildRuntime(
+        uiShowBuildHistory: (options) async {
+          historyOptions = options;
+          return {'num': 1, 'ipaName': '8.9.0.apk'};
+        },
+        uiRefreshDetail: (params) async {
+          refreshParams = params;
+        },
+      );
+      await runtime.initialize();
+
+      final result = await runtime.call('main', ['jsBuildHistory', {'appId': 'app-1'}]) as Map;
+      expect(result['ok'], isTrue);
+      expect(result['data'], isTrue);
+
+      // 选择器收到的 options 正确：最新版本（8.9.0）+ 凭证默认 env（无 PINGAN_ENV → uat）+ builds
+      expect(historyOptions, isNotNull);
+      expect(historyOptions!['version'], '8.9.0');
+      expect(historyOptions!['env'], 'uat');
+      final builds = historyOptions!['builds'] as List;
+      expect(builds.length, 1);
+      final build0 = builds.first as Map;
+      expect(build0['num'], 1);
+      expect(build0['ipaName'], '8.9.0.apk');
+      expect(build0['size'], 100);
+
+      // refreshDetail 收到选中构建（Flutter 侧据此切换到该构建的 APK）
+      expect(refreshParams, isNotNull);
+      expect(refreshParams!['appId'], 'app-1');
+      expect(refreshParams!['env'], 'uat');
+      expect(refreshParams!['version'], '8.9.0');
+      final build = refreshParams!['build'] as Map;
+      expect(build['num'], 1);
+      expect(build['ipaName'], '8.9.0.apk');
+
+      // 两次 build-list：getVersionOptions（env=uat）+ getBuildHistory（version=8.9.0）
+      final buildRequests = requestLog.where((r) => r.contains('build-list')).toList();
+      expect(buildRequests.length, 2);
+      expect(buildRequests[0], contains('env=uat'));
+      expect(buildRequests[1], contains('version=8.9.0'));
+
+      await runtime.dispose();
+    });
+
+    test('⑧ jsBuildHistory：用户取消（data:null）→ refreshDetail 不被调 + 静默 ok:true', () async {
+      var refreshCalled = false;
+      final runtime = buildRuntime(
+        uiShowBuildHistory: (options) async => null,
+        uiRefreshDetail: (params) async => refreshCalled = true,
+      );
+      await runtime.initialize();
+
+      final result = await runtime.call('main', ['jsBuildHistory', {'appId': 'app-1'}]) as Map;
+      expect(result['ok'], isTrue);
+      expect(result['data'], isNull);
+      expect(refreshCalled, isFalse);
+
+      await runtime.dispose();
+    });
+
+    test('⑨ jsBuildHistory：showBuildHistory 失败（回调抛异常）→ 静默 ok:true 不崩', () async {
+      var refreshCalled = false;
+      final runtime = buildRuntime(
+        uiShowBuildHistory: (options) async => throw Exception('sheet broken'),
+        uiRefreshDetail: (params) async => refreshCalled = true,
+      );
+      await runtime.initialize();
+
+      final result = await runtime.call('main', ['jsBuildHistory', {'appId': 'app-1'}]) as Map;
+      expect(result['ok'], isTrue);
+      expect(result['data'], isNull);
+      expect(refreshCalled, isFalse);
+      // 异常被 runtime 捕获记日志，脚本不抛
+      expect(logMessages.any((m) => m.contains('showBuildHistory 失败')), isTrue);
+
+      await runtime.dispose();
+    });
+
+    test('⑩ jsBuildHistory：能力未注册（未注入回调）→ 静默 ok:true', () async {
+      final runtime = buildRuntime(); // 未注入 uiShowBuildHistory
+      await runtime.initialize();
+
+      final result = await runtime.call('main', ['jsBuildHistory', {'appId': 'app-1'}]) as Map;
+      expect(result['ok'], isTrue);
+      expect(result['data'], isNull);
+
+      await runtime.dispose();
+    });
+
+    test('⑪ jsBuildHistory：无版本数据（buildList 空）→ {ok:false, error: 无版本数据}', () async {
+      final runtime = buildRuntime(handler: (options) {
+        if (options.path.contains('/sunflower/i/build-list')) {
+          return {'appLogo': '', 'buildList': <Object>[]};
+        }
+        return defaultHandler(options);
+      });
       await runtime.initialize();
 
       final result = await runtime.call('main', ['jsBuildHistory', {'appId': 'app-1'}]) as Map;
       expect(result['ok'], isFalse);
       expect(result['data'], isNull);
-      expect(result['error'], '历史构建交互开发中');
+      expect(result['error'], '无版本数据');
+
+      await runtime.dispose();
+    });
+
+    test('⑫ jsBuildHistory：无构建记录（builds 空）→ {ok:false, error: 无构建记录}', () async {
+      final runtime = buildRuntime(handler: (options) {
+        if (options.path.contains('/sunflower/i/build-list')) {
+          return {
+            'appLogo': '/logo/app.png',
+            'buildList': [
+              {
+                '_id': 'bg-empty',
+                'version': '8.9.0',
+                'platform': 'android',
+                'env': 'uat',
+                'publishedAt': 1700000000000,
+                'builds': <Object>[],
+              },
+            ],
+          };
+        }
+        return defaultHandler(options);
+      });
+      await runtime.initialize();
+
+      final result = await runtime.call('main', ['jsBuildHistory', {'appId': 'app-1'}]) as Map;
+      expect(result['ok'], isFalse);
+      expect(result['data'], isNull);
+      expect(result['error'], '无构建记录');
 
       await runtime.dispose();
     });

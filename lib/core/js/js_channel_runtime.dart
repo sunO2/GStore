@@ -44,8 +44,14 @@ class JsChannelException implements Exception {
 ///   options: `{title, envs:[], versions:[{version, envs, buildCount}], currentEnv, currentVersion}`，
 ///   Promise → `{ok, data}`，data 为 `{env, version}` 或 null（用户取消）：
 ///   `const sel = await host.ui.showVersionPicker({...}); sel.data`
-/// - `host.ui.refreshDetail(params)` → 刷新详情页（params: `{appId, env, version}`，
-///   由调用方注入 [uiRefreshDetail] 实现）→ `{ok}`
+/// - `host.ui.showBuildHistory(options)` → 弹 Flutter 构建历史选择器（由调用方注入
+///   [uiShowBuildHistory] 实现）；options: `{version, env, builds:[{num, publishedAt,
+///   size, changelog, installTimes, builtBy, ipaName}]}`，Promise → `{ok, data}`，
+///   data 为选中 build Map（含 num/ipaName）或 null（用户取消）：
+///   `const sel = await host.ui.showBuildHistory({...}); sel.data`
+/// - `host.ui.refreshDetail(params)` → 刷新详情页（params: `{appId, env, version, build?}`，
+///   build 可选：选中历史构建时携带 `{num, ipaName}`，由调用方注入 [uiRefreshDetail]
+///   实现）→ `{ok}`
 ///
 /// ## 异常处理
 /// - JS 抛错 → [call] 抛 [JsChannelException]（不崩应用）
@@ -76,7 +82,11 @@ class JsChannelRuntime {
   Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
       _uiShowVersionPickerOverride;
 
-  /// 刷新详情页（JS 调，参数含 appId/env/version）
+  /// 构建历史选择器（JS 调，options 含 version/env/builds，返回选中 build 或 null）
+  Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
+      _uiShowBuildHistoryOverride;
+
+  /// 刷新详情页（JS 调，参数含 appId/env/version/build?）
   Future<void> Function(Map<String, dynamic> params)? _uiRefreshDetailOverride;
 
   JavascriptRuntime? _engine;
@@ -97,6 +107,8 @@ class JsChannelRuntime {
     void Function(String message)? logError,
     Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
         uiShowVersionPicker,
+    Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
+        uiShowBuildHistory,
     Future<void> Function(Map<String, dynamic> params)? uiRefreshDetail,
   })  : _dioOverride = dio,
         _appDaoOverride = appDao,
@@ -105,6 +117,7 @@ class JsChannelRuntime {
         _logInfoOverride = logInfo,
         _logErrorOverride = logError,
         _uiShowVersionPickerOverride = uiShowVersionPicker,
+        _uiShowBuildHistoryOverride = uiShowBuildHistory,
         _uiRefreshDetailOverride = uiRefreshDetail;
 
   bool get isInitialized => _initialized;
@@ -114,15 +127,20 @@ class JsChannelRuntime {
   /// 避免 ChannelLoader 创建渠道时无 UI context）。
   ///
   /// 只覆盖非 null 项；null 项保持原值（构造参数或上次 [setUiCallbacks]）。
-  /// 注入后脚本下次调 `host.ui.showVersionPicker` / `host.ui.refreshDetail`
-  /// 立即生效（回调在调用时读取，无需重建引擎）。
+  /// 注入后脚本下次调 `host.ui.showVersionPicker` / `host.ui.showBuildHistory` /
+  /// `host.ui.refreshDetail` 立即生效（回调在调用时读取，无需重建引擎）。
   void setUiCallbacks({
     Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
         uiShowVersionPicker,
+    Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
+        uiShowBuildHistory,
     Future<void> Function(Map<String, dynamic> params)? uiRefreshDetail,
   }) {
     if (uiShowVersionPicker != null) {
       _uiShowVersionPickerOverride = uiShowVersionPicker;
+    }
+    if (uiShowBuildHistory != null) {
+      _uiShowBuildHistoryOverride = uiShowBuildHistory;
     }
     if (uiRefreshDetail != null) {
       _uiRefreshDetailOverride = uiRefreshDetail;
@@ -157,6 +175,9 @@ class JsChannelRuntime {
 
   Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
       get uiShowVersionPickerOverride => _uiShowVersionPickerOverride;
+
+  Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
+      get uiShowBuildHistoryOverride => _uiShowBuildHistoryOverride;
 
   Future<void> Function(Map<String, dynamic> params)?
       get uiRefreshDetailOverride => _uiRefreshDetailOverride;
@@ -394,8 +415,24 @@ class JsChannelRuntime {
         return {'ok': false, 'error': e.toString()};
       }
     });
+    // host.ui.showBuildHistory(options) → Promise<选中 build Map | null>
+    // options: {version, env, builds:[{num, publishedAt, size, changelog, installTimes, builtBy, ipaName}]}
+    engine.onMessage('host.ui.showBuildHistory', (dynamic args) async {
+      try {
+        final opts = _asMap(args['options'] ?? args);
+        final cb = _uiShowBuildHistoryOverride;
+        if (cb == null) {
+          return {'ok': false, 'error': 'host.ui.showBuildHistory 未注册'};
+        }
+        final sel = await cb(opts);
+        return {'ok': true, 'data': sel};
+      } catch (e) {
+        _logError('host.ui.showBuildHistory 失败: $e');
+        return {'ok': false, 'error': e.toString()};
+      }
+    });
     // host.ui.refreshDetail(params) → 刷新详情页
-    // params: {appId, env, version}
+    // params: {appId, env, version, build?}
     engine.onMessage('host.ui.refreshDetail', (dynamic args) async {
       try {
         final params = _asMap(args['params'] ?? args);
@@ -598,6 +635,9 @@ var host = {
   ui: {
     showVersionPicker: function(options) {
       return sendMessage('host.ui.showVersionPicker', JSON.stringify({options: options || {}}));
+    },
+    showBuildHistory: function(options) {
+      return sendMessage('host.ui.showBuildHistory', JSON.stringify({options: options || {}}));
     },
     refreshDetail: function(params) {
       return sendMessage('host.ui.refreshDetail', JSON.stringify({params: params || {}}));

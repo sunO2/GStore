@@ -5,6 +5,7 @@ import 'package:flutter/widgets.dart';
 import 'package:gstore/core/channel/impl/JsChannel.dart';
 import 'package:gstore/core/channel/impl/js_detail_channel.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/design/channel_build_history_sheet.dart';
 import 'package:gstore/core/design/channel_version_picker_sheet.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/AppDetailRequest.dart';
@@ -800,21 +801,26 @@ class DetailLogic extends GetxController {
     if (channelInstance is JsChannel) {
       final source = _detailScriptSource;
       if (source == null) return; // 理论不可达（channelInstance 已确认 JsChannel）
-      // host.ui 注入：脚本 host.ui.showVersionPicker / refreshDetail 的 Flutter 实现
-      // （ChannelLoader 创建渠道时无 context，详情页使用时注入）。
+      // host.ui 注入：脚本 host.ui.showVersionPicker / showBuildHistory / refreshDetail
+      // 的 Flutter 实现（ChannelLoader 创建渠道时无 context，详情页使用时注入）。
       // detailChannel 创建于页面初始化（早于此处注入），需向其 runtime 补注入；
       // entry 同步注入（保持 Wave B 行为，detail.js 缺失回退路径同样可用）。
       Future<Map<String, dynamic>?> showVersionPicker(
               Map<String, dynamic> options) =>
           _showVersionPickerFromScript(context, source, options);
+      Future<Map<String, dynamic>?> showBuildHistory(
+              Map<String, dynamic> options) =>
+          _showBuildHistoryFromScript(context, options);
       Future<void> refreshDetail(Map<String, dynamic> params) =>
           _refreshDetailFromScript(source, params);
       channelInstance.setUiCallbacks(
         uiShowVersionPicker: showVersionPicker,
+        uiShowBuildHistory: showBuildHistory,
         uiRefreshDetail: refreshDetail,
       );
       _detailChannel?.setUiCallbacks(
         uiShowVersionPicker: showVersionPicker,
+        uiShowBuildHistory: showBuildHistory,
         uiRefreshDetail: refreshDetail,
       );
 
@@ -987,6 +993,52 @@ class DetailLogic extends GetxController {
     return {'env': sel.env, 'version': sel.version};
   }
 
+  /// host.ui.showBuildHistory 的 Flutter 实现：弹 [ChannelBuildHistorySheet] 单选构建。
+  ///
+  /// options: `{version, env, builds:[{num, publishedAt, size, changelog, installTimes, builtBy, ipaName}]}`
+  /// 返回选中 build Map（num/ipaName 等，脚本据此刷新详情）或 null（取消/关闭）。
+  Future<Map<String, dynamic>?> _showBuildHistoryFromScript(
+    BuildContext context,
+    Map<String, dynamic> options,
+  ) async {
+    if (!context.mounted) return null;
+
+    final version = options['version']?.toString() ?? '';
+    final env = options['env']?.toString() ?? '';
+    final builds = (options['builds'] as List?)
+            ?.map((b) {
+              final m = b as Map;
+              return BuildOption(
+                num: (m['num'] as num?)?.toInt() ?? 0,
+                publishedAt: m['publishedAt'] != null
+                    ? DateTime.tryParse(m['publishedAt'].toString())
+                    : null,
+                size: (m['size'] as num?)?.toInt(),
+                changelog: m['changelog']?.toString(),
+                installTimes: (m['installTimes'] as num?)?.toInt(),
+                builtBy: m['builtBy']?.toString(),
+                ipaName: m['ipaName']?.toString(),
+              );
+            })
+            .toList() ??
+        const <BuildOption>[];
+
+    final sel = await ChannelBuildHistorySheet.show(
+      context: context,
+      version: version,
+      env: env,
+      builds: builds,
+    );
+    if (sel == null) return null; // 取消/关闭
+    return {
+      'num': sel.num,
+      'ipaName': sel.ipaName,
+      'publishedAt': sel.publishedAt?.toIso8601String(),
+      'size': sel.size,
+      'changelog': sel.changelog,
+    };
+  }
+
   /// host.ui.refreshDetail 的 Flutter 实现（脚本详情页动作内部调用）。
   ///
   /// [params]：`{appId, env, version}` → 调脚本 switchVersion 拿该 env+version
@@ -998,7 +1050,14 @@ class DetailLogic extends GetxController {
     final env = params['env']?.toString() ?? '';
     final version = params['version']?.toString() ?? '';
     if (env.isEmpty || version.isEmpty) return;
-    await _refreshDetailAfterSwitch(source, env, version);
+    // build 可选：历史构建选中项 {num, ipaName} → 刷新详情时切换到该构建
+    final build = params['build'];
+    await _refreshDetailAfterSwitch(
+      source,
+      env,
+      version,
+      build: build is Map ? Map<String, dynamic>.from(build) : null,
+    );
   }
 
   /// 执行脚本声明的详情页动作（Hybrid Wave B：点击 → 调脚本 jscall）。
@@ -1028,8 +1087,9 @@ class DetailLogic extends GetxController {
   Future<void> _refreshDetailAfterSwitch(
     _DetailScriptSource source,
     String env,
-    String version,
-  ) async {
+    String version, {
+    Map<String, dynamic>? build,
+  }) async {
     final req = request;
     if (req == null) return;
 
@@ -1037,13 +1097,17 @@ class DetailLogic extends GetxController {
       appId: req.appId,
       env: env,
       version: version,
+      build: build,
     );
     if (detail == null) {
       AppDialogs.showError('切换版本失败');
       return;
     }
     state.detailInfo.value = JsChannelDetailProxy(detail);
-    AppDialogs.showSuccess('已切换到 $version（$env）');
+    final msg = build == null
+        ? '已切换到 $version（$env）'
+        : '已切换到 $version 构建 #${build['num']}（$env）';
+    AppDialogs.showSuccess(msg);
   }
 
   /// 当前详情所属 env（脚本详情 extra.env；无 → null → 脚本按凭证默认 env）
@@ -1173,6 +1237,7 @@ abstract class _DetailScriptSource {
     required String appId,
     required String env,
     required String version,
+    Map<String, dynamic>? build,
   });
 
   Future<Map<String, dynamic>?> buildHistory({
@@ -1204,8 +1269,9 @@ class _EntryScriptSource implements _DetailScriptSource {
     required String appId,
     required String env,
     required String version,
+    Map<String, dynamic>? build,
   }) =>
-      _js.switchVersion(appId: appId, env: env, version: version);
+      _js.switchVersion(appId: appId, env: env, version: version, build: build);
 
   @override
   Future<Map<String, dynamic>?> buildHistory({
@@ -1242,8 +1308,9 @@ class _DetailJsScriptSource implements _DetailScriptSource {
     required String appId,
     required String env,
     required String version,
+    Map<String, dynamic>? build,
   }) =>
-      _ch.switchVersion(appId: appId, env: env, version: version);
+      _ch.switchVersion(appId: appId, env: env, version: version, build: build);
 
   @override
   Future<Map<String, dynamic>?> buildHistory({

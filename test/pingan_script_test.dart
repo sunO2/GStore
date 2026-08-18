@@ -410,7 +410,7 @@ void main() {
       expect(extra['installTimes'], 99);
       expect(extra['changelog'], '修复若干问题');
       expect(extra['builtBy'], 'ci-bot');
-      expect(extra['env'], 'sit');
+      expect(extra['env'], 'uat');
       expect(extra['platform'], 'android');
       expect(extra['publishedAt'], 1690000000000);
 
@@ -458,10 +458,10 @@ void main() {
 
       final result = await runtime.call('main', ['getAppInfo', {'appId': 'app-1'}]) as Map;
       final extra = (result['data'] as Map)['extra'] as Map;
-      // 下载地址 = proxy 拼接（不经 login/check 返回值）
+      // 下载地址 = proxy 拼接（不经 login/check 返回值）；无 PINGAN_ENV → 默认 env=uat
       expect(
         extra['apkUrl'],
-        '$_mcdBase/proxy/sit/com.pingan.app-1.9.0.apk?um=tester&value=secret',
+        '$_mcdBase/proxy/uat/com.pingan.app-1.9.0.apk?um=tester&value=secret',
       );
       expect(extra['downloadNote'], isNull);
       // 确实发起了认证请求（先主路径，成功即止）
@@ -784,7 +784,7 @@ void main() {
       await runtime.dispose();
     });
 
-    test('㉑ getVersionOptions 不带 env → 按凭证默认 env（sit）单次拉取', () async {
+    test('㉑ getVersionOptions 不带 env → 按凭证默认 env（uat）单次拉取', () async {
       final runtime = buildRuntime(scriptOverride: detailScript);
       await runtime.initialize();
 
@@ -792,7 +792,7 @@ void main() {
           'main', ['versionOptions', {'appId': 'app-1'}]) as Map;
       expect(result['ok'], isTrue);
       final data = result['data'] as Map;
-      expect(data['currentEnv'], 'sit');
+      expect(data['currentEnv'], 'uat'); // readCredentials 默认 env=uat（无 PINGAN_ENV）
       // defaultHandler 的 buildList 有 ios(2.0.0) + android(1.9.0) 两组
       final versions = data['versions'] as List;
       expect(versions.length, 2);
@@ -801,7 +801,27 @@ void main() {
       final buildRequests =
           requestLog.where((r) => r.contains('build-list')).toList();
       expect(buildRequests.length, 1);
-      expect(buildRequests.first, contains('env=sit'));
+      expect(buildRequests.first, contains('env=uat'));
+
+      await runtime.dispose();
+    });
+
+    test('㉑b 配置 PINGAN_ENV → 覆盖默认 env（uat 默认被替换为 prd）', () async {
+      final runtime = buildRuntime(
+        scriptOverride: detailScript,
+        env: () => {'PINGAN_ENV': 'prd'},
+      );
+      await runtime.initialize();
+
+      final result = await runtime.call(
+          'main', ['versionOptions', {'appId': 'app-1'}]) as Map;
+      expect(result['ok'], isTrue);
+      expect((result['data'] as Map)['currentEnv'], 'prd');
+
+      final buildRequests =
+          requestLog.where((r) => r.contains('build-list')).toList();
+      expect(buildRequests.length, 1);
+      expect(buildRequests.first, contains('env=prd'));
 
       await runtime.dispose();
     });
@@ -888,11 +908,11 @@ void main() {
       // 同凭证两次详情 → login/check 只调 1 次（detail runtime 会话缓存命中）
       expect(loginCheckCount, 1);
 
-      // 详情可下载（proxy url + downloadable:true）
+      // 详情可下载（proxy url + downloadable:true）；无 PINGAN_ENV → 默认 env=uat
       final d1 = r1['data'] as Map;
       final dl1 = (d1['downloads'] as List).first as Map;
       expect(dl1['url'],
-          '$_mcdBase/proxy/sit/com.pingan.app-1.9.0.apk?um=tester&value=secret');
+          '$_mcdBase/proxy/uat/com.pingan.app-1.9.0.apk?um=tester&value=secret');
       expect(dl1['downloadable'], isTrue);
       expect(dl1['note'], '');
 
@@ -986,7 +1006,7 @@ void main() {
       await runtime.dispose();
     });
 
-    test('㉘ 真实结构（ipa + fileurl 混合）→ 详情正常，downloads 直连/proxy 并存', () async {
+    test('㉘ 真实结构（ipa + fileurl 混合）→ 详情 downloads 只含最新版本组单条', () async {
       var loginCheckCount = 0;
       final runtime = buildRuntime(
         scriptOverride: detailScript,
@@ -1052,15 +1072,14 @@ void main() {
       expect(d['appId'], 'app-1'); // 查询键保持（最新组 ipa proxy）
       expect(d['version'], '3.2.1');
 
+      // 只显示最新版本组（3.2.1）最新构建单条：不再遍历所有版本（1.0.0 不出现）
       final downloads = d['downloads'] as List;
-      expect(downloads.length, 2);
-      final dl0 = downloads[0] as Map; // 最新组：ipa name → proxy 拼接
+      expect(downloads.length, 1);
+      final dl0 = downloads[0] as Map; // 最新组：ipa name → proxy 拼接（默认 env=uat）
       expect(dl0['url'],
-          '$_mcdBase/proxy/sit/com.pingan.real-3.2.1.apk?um=tester&value=secret');
+          '$_mcdBase/proxy/uat/com.pingan.real-3.2.1.apk?um=tester&value=secret');
       expect(dl0['downloadable'], isTrue);
-      final dl1 = downloads[1] as Map; // fileurl 直连（不认证）
-      expect(dl1['url'], '$_pinganHost/apk/direct.apk');
-      expect(dl1['downloadable'], isTrue);
+      expect(dl0['version'], '3.2.1');
 
       // 一次详情 → login/check 只调 1 次
       expect(loginCheckCount, 1);

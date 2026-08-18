@@ -73,6 +73,7 @@ class _FakeJsChannel extends JsChannel {
   int getAppInfoCalls = 0;
   String? lastSwitchEnv;
   String? lastSwitchVersion;
+  Map<String, dynamic>? lastSwitchBuild;
   String? lastVersionOptionsEnv;
   String? lastBuildHistoryVersion;
   String? lastBuildHistoryEnv;
@@ -103,6 +104,8 @@ class _FakeJsChannel extends JsChannel {
   /// setUiCallbacks 捕获的 host.ui 实现（fake 模拟脚本内部调用）
   Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
       capturedShowVersionPicker;
+  Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
+      capturedShowBuildHistory;
   Future<void> Function(Map<String, dynamic> params)? capturedRefreshDetail;
 
   int invokeScriptMethodCalls = 0;
@@ -122,9 +125,12 @@ class _FakeJsChannel extends JsChannel {
   void setUiCallbacks({
     Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
         uiShowVersionPicker,
+    Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
+        uiShowBuildHistory,
     Future<void> Function(Map<String, dynamic> params)? uiRefreshDetail,
   }) {
     capturedShowVersionPicker = uiShowVersionPicker;
+    capturedShowBuildHistory = uiShowBuildHistory;
     capturedRefreshDetail = uiRefreshDetail;
   }
 
@@ -175,10 +181,12 @@ class _FakeJsChannel extends JsChannel {
     required String appId,
     required String env,
     required String version,
+    Map<String, dynamic>? build,
   }) async {
     switchVersionCalls++;
     lastSwitchEnv = env;
     lastSwitchVersion = version;
+    lastSwitchBuild = build;
     return switchVersionResult;
   }
 
@@ -239,6 +247,7 @@ class _FakeJsDetailChannel extends JsDetailChannel {
   int callMainCalls = 0;
   String? lastSwitchEnv;
   String? lastSwitchVersion;
+  Map<String, dynamic>? lastSwitchBuild;
   String? lastVersionOptionsEnv;
   String? lastBuildHistoryVersion;
   String? lastBuildHistoryEnv;
@@ -246,6 +255,8 @@ class _FakeJsDetailChannel extends JsDetailChannel {
   /// setUiCallbacks 捕获的 host.ui 实现（模拟 detail.js 内部调用）
   Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
       capturedShowVersionPicker;
+  Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
+      capturedShowBuildHistory;
   Future<void> Function(Map<String, dynamic> params)? capturedRefreshDetail;
 
   @override
@@ -272,10 +283,12 @@ class _FakeJsDetailChannel extends JsDetailChannel {
     required String appId,
     required String env,
     required String version,
+    Map<String, dynamic>? build,
   }) async {
     switchVersionCalls++;
     lastSwitchEnv = env;
     lastSwitchVersion = version;
+    lastSwitchBuild = build;
     return switchVersionResult;
   }
 
@@ -301,9 +314,12 @@ class _FakeJsDetailChannel extends JsDetailChannel {
   void setUiCallbacks({
     Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
         uiShowVersionPicker,
+    Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
+        uiShowBuildHistory,
     Future<void> Function(Map<String, dynamic> params)? uiRefreshDetail,
   }) {
     capturedShowVersionPicker = uiShowVersionPicker;
+    capturedShowBuildHistory = uiShowBuildHistory;
     capturedRefreshDetail = uiRefreshDetail;
   }
 

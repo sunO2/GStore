@@ -40,6 +40,8 @@ class JsDetailChannel {
     void Function(String message)? logError,
     Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
         uiShowVersionPicker,
+    Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
+        uiShowBuildHistory,
     Future<void> Function(Map<String, dynamic> params)? uiRefreshDetail,
   }) : _runtime = JsChannelRuntime(
           channelKey: channelKey,
@@ -51,6 +53,7 @@ class JsDetailChannel {
           logInfo: logInfo,
           logError: logError,
           uiShowVersionPicker: uiShowVersionPicker,
+          uiShowBuildHistory: uiShowBuildHistory,
           uiRefreshDetail: uiRefreshDetail,
         );
 
@@ -129,16 +132,19 @@ class JsDetailChannel {
   }
 
   /// 切换版本/环境（脚本 main('switchVersion')）→ 该 env+version 的详情 Map；
+  /// [build] 可选：历史构建选中项 `{num, ipaName}` → 脚本切换到该构建；
   /// 脚本未实现/失败 → null（调用方降级）
   Future<Map<String, dynamic>?> switchVersion({
     required String appId,
     required String env,
     required String version,
+    Map<String, dynamic>? build,
   }) async {
     final data = await callMain('switchVersion', {
       'appId': appId,
       'env': env,
       'version': version,
+      if (build != null) 'build': build,
     });
     if (data == null) return null;
     return stringKeyedMap(data);
@@ -173,14 +179,18 @@ class JsDetailChannel {
   ///
   /// detail 通道由 [JsChannel.getDetailChannel] 在页面初始化时创建（早于详情页
   /// showMoreActions 的 host.ui 注入），此处允许注入晚于创建——脚本下次调用
-  /// `host.ui.showVersionPicker` / `host.ui.refreshDetail` 即生效（回调调用时读取）。
+  /// `host.ui.showVersionPicker` / `host.ui.showBuildHistory` / `host.ui.refreshDetail`
+  /// 即生效（回调调用时读取）。
   void setUiCallbacks({
     Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
         uiShowVersionPicker,
+    Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
+        uiShowBuildHistory,
     Future<void> Function(Map<String, dynamic> params)? uiRefreshDetail,
   }) {
     _runtime.setUiCallbacks(
       uiShowVersionPicker: uiShowVersionPicker,
+      uiShowBuildHistory: uiShowBuildHistory,
       uiRefreshDetail: uiRefreshDetail,
     );
   }

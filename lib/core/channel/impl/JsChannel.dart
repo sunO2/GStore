@@ -110,6 +110,8 @@ class JsChannel extends IChannel implements DynamicChannel {
     void Function(String message)? logError,
     Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
         uiShowVersionPicker,
+    Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
+        uiShowBuildHistory,
     Future<void> Function(Map<String, dynamic> params)? uiRefreshDetail,
     int? priority,
     bool enabled = true,
@@ -126,6 +128,7 @@ class JsChannel extends IChannel implements DynamicChannel {
           logInfo: logInfo,
           logError: logError,
           uiShowVersionPicker: uiShowVersionPicker,
+          uiShowBuildHistory: uiShowBuildHistory,
           uiRefreshDetail: uiRefreshDetail,
         ) {
     _info = ChannelInfo(
@@ -140,7 +143,7 @@ class JsChannel extends IChannel implements DynamicChannel {
   // ==================== host.ui 运行时注入 ====================
 
   /// 运行时注入 host.ui 实现（Hybrid：脚本 `host.ui.showVersionPicker` /
-  /// `host.ui.refreshDetail` 的 Flutter 实现）。
+  /// `host.ui.showBuildHistory` / `host.ui.refreshDetail` 的 Flutter 实现）。
   ///
   /// ChannelLoader 创建渠道时无 UI context，由详情页使用渠道时注入
   /// （showMoreActions 内调用），避免改 ChannelLoader 构造。
@@ -148,10 +151,13 @@ class JsChannel extends IChannel implements DynamicChannel {
   void setUiCallbacks({
     Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
         uiShowVersionPicker,
+    Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
+        uiShowBuildHistory,
     Future<void> Function(Map<String, dynamic> params)? uiRefreshDetail,
   }) {
     _runtime.setUiCallbacks(
       uiShowVersionPicker: uiShowVersionPicker,
+      uiShowBuildHistory: uiShowBuildHistory,
       uiRefreshDetail: uiRefreshDetail,
     );
   }
@@ -578,16 +584,19 @@ class JsChannel extends IChannel implements DynamicChannel {
   }
 
   /// 切换版本/环境（脚本 main('switchVersion')）→ 返回该 env+version 的详情数据（同 getAppDetail 结构）
-  /// 脚本未实现/失败 → null（调用方降级）
+  /// [build] 可选：历史构建选中项 `{num, ipaName}` → 脚本切换到该构建（downloads 为该构建单条）；
+  /// 不传 → 版本最新构建。脚本未实现/失败 → null（调用方降级）
   Future<Map<String, dynamic>?> switchVersion({
     required String appId,
     required String env,
     required String version,
+    Map<String, dynamic>? build,
   }) async {
     final data = await _callMain('switchVersion', {
       'appId': appId,
       'env': env,
       'version': version,
+      if (build != null) 'build': build,
     });
     if (data == null) return null;
     return stringKeyedMap(data);
@@ -660,6 +669,7 @@ class JsChannel extends IChannel implements DynamicChannel {
           logInfo: _runtime.logInfoOverride,
           logError: _runtime.logErrorOverride,
           uiShowVersionPicker: _runtime.uiShowVersionPickerOverride,
+          uiShowBuildHistory: _runtime.uiShowBuildHistoryOverride,
           uiRefreshDetail: _runtime.uiRefreshDetailOverride,
         ));
   }
