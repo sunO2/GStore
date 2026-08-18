@@ -85,8 +85,7 @@ class _FakeDioAdapter implements HttpClientAdapter {
     requestLog.add('${options.method} ${options.path}'
         '?pageNum=${options.queryParameters['pageNum'] ?? '-'}'
         '&appname=${options.queryParameters['appname'] ?? '-'}');
-    final data = handler(options);
-    if (data['__status'] != null) {
+    final data = handler(options);    if (data['__status'] != null) {
       final status = data.remove('__status') as int;
       return ResponseBody.fromString(
         jsonEncode(data),
@@ -289,8 +288,30 @@ void main() {
       await runtime.dispose();
     });
 
-    test('③ getAllApps 网络失败 → {ok:false, data:null} + 日志', () async {
+    test('②b 所有请求携带 Android Chrome User-Agent 头', () async {
+      const expectedUa =
+          'Mozilla/5.0 (Linux; Android 13; Pixel 7 Build/TQ3A.230805.001) '
+          'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36';
+      final capturedHeaders = <Map<String, dynamic>>[];
       final runtime = buildRuntime(handler: (options) {
+        capturedHeaders.add(options.headers);
+        return defaultHandler(options);
+      });
+      await runtime.initialize();
+
+      // 触发 app-list + build-list + login/check 三类请求
+      await runtime.call('main', ['getAppInfo', {'appId': 'app-1'}]) as Map;
+
+      expect(capturedHeaders, isNotEmpty);
+      for (final h in capturedHeaders) {
+        expect(h['User-Agent'], expectedUa,
+            reason: '每个请求都应携带写死的 Android Chrome UA');
+      }
+
+      await runtime.dispose();
+    });
+
+    test('③ getAllApps 网络失败 → {ok:false, data:null} + 日志', () async {      final runtime = buildRuntime(handler: (options) {
         return {'__status': 500, 'msg': 'server error'};
       });
       await runtime.initialize();
