@@ -1,5 +1,7 @@
 import 'dart:io';
+import 'dart:typed_data';
 
+import 'package:archive/archive.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:get/get.dart';
@@ -40,6 +42,29 @@ async function main(method, params) {
 }
 ''';
 
+/// 构造内存 zip 渠道包（entry.js 必填；meta.json / extra 可选）
+Uint8List makeZip({
+  String? entry,
+  String? metaJson,
+  Map<String, String> extra = const {},
+}) {
+  final archive = Archive();
+  if (entry != null) {
+    archive.addFile(ArchiveFile.string('entry.js', entry));
+  }
+  if (metaJson != null) {
+    archive.addFile(ArchiveFile.string('meta.json', metaJson));
+  }
+  for (final file in extra.entries) {
+    archive.addFile(ArchiveFile.string(file.key, file.value));
+  }
+  return Uint8List.fromList(ZipEncoder().encode(archive)!);
+}
+
+/// 注入「选择 zip 渠道包」：文件名 + 字节
+Future<({String name, Uint8List bytes})?> pickZip(String fileName) async =>
+    (name: fileName, bytes: makeZip(entry: _script));
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -71,8 +96,10 @@ void main() {
     Get.reset();
   });
 
-  Future<void> pumpSettings(WidgetTester tester,
-      {Future<String?> Function()? filePicker}) async {
+  Future<void> pumpSettings(
+    WidgetTester tester, {
+    Future<({String name, Uint8List bytes})?> Function()? filePicker,
+  }) async {
     await tester.pumpWidget(GetMaterialApp(
       scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
       home: SettingsPage(filePicker: filePicker),
@@ -103,17 +130,17 @@ void main() {
     }
   }
 
-  /// 通过导入对话框导入渠道（可选 env），返回 channelKey（js_ 前缀）
+  /// 通过导入对话框导入 zip 渠道包（可选 env），返回 channelKey（js_ 前缀）
   Future<String> importChannel(
     WidgetTester tester, {
-    String key = 'vivo',
+    String fileName = 'vivo.zip',
     Map<String, String>? env,
   }) async {
     await openImportDialog(tester, expandEnv: env != null);
-    await tester.enterText(
-        find.byKey(const Key('script_channel_key_input')), key);
-    await tester.enterText(
-        find.byKey(const Key('script_channel_script_input')), _script);
+    await tester
+        .ensureVisible(find.byKey(const Key('script_channel_file_button')));
+    await tester.tap(find.byKey(const Key('script_channel_file_button')));
+    await tester.pumpAndSettle();
     if (env != null) {
       var row = 0;
       for (final entry in env.entries) {
@@ -131,15 +158,18 @@ void main() {
     await tester.tap(find.text('导入'));
     await tester.pump();
     await settleAsync(tester);
-    return 'js_$key';
+    final base = fileName.toLowerCase().endsWith('.zip')
+        ? fileName.substring(0, fileName.length - 4)
+        : fileName;
+    return 'js_$base';
   }
 
-  testWidgets('① 导入对话框显示「从文件选择」按钮，注入 filePicker 读取 .js 内容并导入',
+  testWidgets('① 导入对话框显示「从文件选择」按钮，注入 filePicker 选择 .zip 并导入',
       (tester) async {
     var picked = false;
     await pumpSettings(tester, filePicker: () async {
       picked = true;
-      return _script;
+      return pickZip('file1.zip');
     });
 
     await openImportDialog(tester);
@@ -148,32 +178,29 @@ void main() {
     expect(find.byKey(const Key('script_channel_file_button')), findsOneWidget);
     expect(find.textContaining('从文件选择'), findsOneWidget);
 
-    // 点击 → 注入实现被调用 → 脚本内容填入文本框
+    // 点击 → 注入实现被调用 → 预览显示渠道标识（文件名去 .zip）
     await tester
         .ensureVisible(find.byKey(const Key('script_channel_file_button')));
     await tester.tap(find.byKey(const Key('script_channel_file_button')));
     await tester.pumpAndSettle();
     expect(picked, isTrue);
-    final scriptField = tester.widget<TextField>(
-        find.byKey(const Key('script_channel_script_input')));
-    expect(scriptField.controller!.text, contains('getAllApps'));
+    expect(find.byKey(const Key('script_channel_preview')), findsOneWidget);
+    expect(find.textContaining('js_file1'), findsOneWidget);
 
-    // 填 key 后导入
-    await tester.enterText(
-        find.byKey(const Key('script_channel_key_input')), 'file1');
+    // 确认导入
     await tester.tap(find.text('导入'));
     await tester.pump();
     await settleAsync(tester);
 
     expect(ChannelManager.instance.getChannelByKey('js_file1'), isNotNull);
     expect(File('${tempDir.path}/channels/file1.zip').existsSync(), isTrue);
-    expect(find.textContaining('脚本渠道已导入'), findsOneWidget);
+    expect(find.textContaining('渠道包已导入'), findsOneWidget);
   });
 
   testWidgets('② 导入对话框添加环境变量 → 导入后 channel.getAllEnv 含该项（存储落盘）',
       (tester) async {
-    await pumpSettings(tester);
-    await importChannel(tester, key: 'envch', env: {'PINGAN_USER': 'alice'});
+    await pumpSettings(tester, filePicker: () => pickZip('envch.zip'));
+    await importChannel(tester, fileName: 'envch.zip', env: {'PINGAN_USER': 'alice'});
 
     final channel = ChannelManager.instance.getChannelByKey('js_envch');
     expect(channel, isNotNull);
@@ -188,7 +215,7 @@ void main() {
   });
 
   testWidgets('③ 删除环境变量行 → 导入后仅保留剩余项', (tester) async {
-    await pumpSettings(tester);
+    await pumpSettings(tester, filePicker: () => pickZip('envdel.zip'));
     await openImportDialog(tester, expandEnv: true);
 
     // 添加两行并填写
@@ -211,10 +238,11 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('script_channel_env_remove_1')), findsNothing);
 
-    await tester.enterText(
-        find.byKey(const Key('script_channel_key_input')), 'envdel');
-    await tester.enterText(
-        find.byKey(const Key('script_channel_script_input')), _script);
+    // 选择 zip 包并导入
+    await tester
+        .ensureVisible(find.byKey(const Key('script_channel_file_button')));
+    await tester.tap(find.byKey(const Key('script_channel_file_button')));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('导入'));
     await tester.pump();
     await settleAsync(tester);
@@ -225,16 +253,16 @@ void main() {
   });
 
   testWidgets('④ 已导入渠道列表显示渠道（管理入口）', (tester) async {
-    await pumpSettings(tester);
-    await importChannel(tester, key: 'vivo');
+    await pumpSettings(tester, filePicker: () => pickZip('vivo.zip'));
+    await importChannel(tester, fileName: 'vivo.zip');
 
     // 管理入口 subtitle 显示数量
-    expect(find.text('1 个脚本渠道'), findsOneWidget);
+    expect(find.text('1 个渠道包'), findsOneWidget);
 
     await tester.tap(find.text('已导入渠道'));
     await tester.pumpAndSettle();
 
-    expect(find.text('脚本渠道管理'), findsOneWidget);
+    expect(find.text('渠道包管理'), findsOneWidget);
     expect(
         find.byKey(const Key('script_channel_manage_js_vivo')), findsOneWidget);
     expect(find.text('js_vivo'), findsOneWidget);
@@ -242,8 +270,9 @@ void main() {
   });
 
   testWidgets('⑤ 管理入口编辑环境变量 → setEnv 生效（持久化更新）', (tester) async {
-    await pumpSettings(tester);
-    await importChannel(tester, key: 'envedit', env: {'PINGAN_USER': 'alice'});
+    await pumpSettings(tester, filePicker: () => pickZip('envedit.zip'));
+    await importChannel(tester,
+        fileName: 'envedit.zip', env: {'PINGAN_USER': 'alice'});
 
     // 打开管理 → 环境变量编辑
     await tester.tap(find.text('已导入渠道'));
@@ -280,8 +309,8 @@ void main() {
   });
 
   testWidgets('⑥ 删除渠道 → 注销 + 文件删除 + env 清空', (tester) async {
-    await pumpSettings(tester);
-    await importChannel(tester, key: 'del', env: {'SECRET': 'x'});
+    await pumpSettings(tester, filePicker: () => pickZip('del.zip'));
+    await importChannel(tester, fileName: 'del.zip', env: {'SECRET': 'x'});
 
     // 前置：注册 + 文件 + env 均存在
     expect(ChannelManager.instance.getChannelByKey('js_del'), isNotNull);
@@ -293,7 +322,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('script_channel_delete_js_del')));
     await tester.pumpAndSettle();
-    expect(find.text('删除脚本渠道'), findsOneWidget);
+    expect(find.text('删除渠道包'), findsOneWidget);
 
     await tester.tap(find.text('删除'));
     await tester.pump();
@@ -303,7 +332,7 @@ void main() {
     expect(ChannelManager.instance.getChannelByKey('js_del'), isNull);
     expect(File('${tempDir.path}/channels/del.zip').existsSync(), isFalse);
     expect(await ConfigJsChannelEnvStore('js_del').load(), isEmpty);
-    expect(find.textContaining('脚本渠道已删除'), findsOneWidget);
+    expect(find.textContaining('渠道包已删除'), findsOneWidget);
 
     // 管理列表已刷新（渠道行消失）
     expect(

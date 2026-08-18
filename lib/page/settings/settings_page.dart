@@ -1,13 +1,13 @@
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:archive/archive.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/channel/impl/JsChannel.dart';
 import 'package:gstore/core/channel/impl/channel_loader.dart';
+import 'package:gstore/core/channel/impl/channel_package.dart';
 import 'package:gstore/core/config/config_manager.dart';
 import 'package:gstore/core/config/providers/download_config_provider.dart';
 import 'package:gstore/core/core.dart';
@@ -27,15 +27,26 @@ const List<String> presetProxyHosts = [
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key, this.filePicker});
 
-  /// 从系统选择 .js 脚本文件并返回其内容（null = 取消/失败）。
+  /// 选择 .zip 渠道包文件并返回（文件名 + 字节；null = 取消/失败）。
   ///
   /// 测试注入假实现（FilePicker 平台通道在测试环境不可用）；
   /// 为 null 时走 [FilePicker.platform.pickFiles] 真实实现（SAF，无需权限）。
-  final Future<String?> Function()? filePicker;
+  final ZipPackagePick? filePicker;
 
   @override
   State<SettingsPage> createState() => _SettingsPageState();
 }
+
+/// 选择 .zip 渠道包文件（文件名 + 字节；null = 取消/失败）。
+typedef ZipPackagePick = Future<({String name, Uint8List bytes})?> Function();
+
+/// 选中的渠道包（文件名 + 派生渠道标识 + 解析结果 + 原始字节）。
+typedef _SelectedPackage = ({
+  String fileName,
+  String channelKey,
+  ChannelPackage pkg,
+  Uint8List bytes,
+});
 
 class _SettingsPageState extends State<SettingsPage> {
   /// theme 模块是否在线（随模块上下线实时更新；下线时主题入口禁用）
@@ -199,23 +210,23 @@ class _SettingsPageState extends State<SettingsPage> {
             onTap: () => _showProxySettingDialog(context),
           ),
           const Divider(height: 1),
-          // 脚本渠道导入（Android 应用私有目录无法读取公共 Documents 文件，走应用内导入）
+          // 渠道包导入（Android 应用私有目录无法读取公共 Documents 文件，走应用内导入）
           ListTile(
             leading: const Icon(Icons.extension, size: AppTypography.iconMD),
             title: const Text('脚本渠道'),
-            subtitle: const Text('粘贴脚本或从 .js 文件导入自定义渠道'),
+            subtitle: const Text('从 .zip 渠道包文件导入自定义渠道'),
             trailing:
                 const Icon(Icons.chevron_right, size: AppTypography.iconSM),
             onTap: () => _showScriptImportDialog(context),
           ),
           const Divider(height: 1),
-          // 已导入脚本渠道管理（列表 + 环境变量编辑 + 删除）
+          // 已导入渠道包管理（列表 + 环境变量编辑 + 删除）
           ListTile(
             key: const Key('script_channel_manage_entry'),
             leading: const Icon(Icons.code, size: AppTypography.iconMD),
             title: const Text('已导入渠道'),
             subtitle: Text(
-                '${ChannelManager.instance.dynamicChannels.length} 个脚本渠道'),
+                '${ChannelManager.instance.dynamicChannels.length} 个渠道包'),
             trailing:
                 const Icon(Icons.chevron_right, size: AppTypography.iconSM),
             onTap: () => _showScriptChannelManageDialog(context),
@@ -361,127 +372,162 @@ class _SettingsPageState extends State<SettingsPage> {
     }
   }
 
-  /// 从系统选择 .js 脚本文件并读取内容（null = 取消/失败）。
+  /// 从系统选择 .zip 渠道包文件并读取字节（null = 取消/失败）。
   ///
-  /// 真实实现：SAF 选文件（无需存储权限）→ [File.readAsString]；
+  /// 真实实现：SAF 选文件（无需存储权限）→ 读 bytes；
   /// 测试注入 [SettingsPage.filePicker] 时直接返回注入结果。
-  Future<String?> _pickScriptFile() async {
+  Future<({String name, Uint8List bytes})?> _pickZipPackage() async {
     final injected = widget.filePicker;
     if (injected != null) return injected();
 
     try {
       final result = await FilePicker.platform.pickFiles(
         type: FileType.custom,
-        allowedExtensions: ['js'],
+        allowedExtensions: ['zip'],
         allowMultiple: false,
       );
       if (result == null || result.files.isEmpty) {
         AppDialogs.showInfo('已取消选择文件');
         return null;
       }
-      final path = result.files.single.path;
-      if (path == null) {
-        AppDialogs.showError('无法获取所选文件路径');
+      final file = result.files.single;
+      final bytes = file.bytes ??
+          (file.path != null ? await File(file.path!).readAsBytes() : null);
+      if (bytes == null) {
+        AppDialogs.showError('无法读取所选渠道包内容');
         return null;
       }
-      return await File(path).readAsString();
+      return (name: file.name, bytes: bytes);
     } catch (e) {
-      AppDialogs.showError('读取脚本文件失败: $e');
+      AppDialogs.showError('读取渠道包文件失败: $e');
       return null;
     }
   }
 
-  /// 显示脚本渠道导入对话框（粘贴或从文件导入；可选配置环境变量）。
+  /// 渠道包预览：包文件名 + 渠道标识 + 包 meta（名称/描述）或 entry.js 大小。
+  Widget _buildZipPackagePreview(
+      BuildContext context, _SelectedPackage selected) {
+    final scheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+    final meta = selected.pkg.meta;
+    final name = meta?['name']?.toString();
+    final description = meta?['description']?.toString();
+    return Container(
+      key: const Key('script_channel_preview'),
+      width: double.infinity,
+      padding: const EdgeInsets.all(AppSpacing.md),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(AppRadius.md),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('包文件: ${selected.fileName}', style: textTheme.bodySmall),
+          Text('渠道标识: ${selected.channelKey}', style: textTheme.bodySmall),
+          if (name != null && name.isNotEmpty)
+            Text('名称: $name', style: textTheme.bodySmall),
+          if (description != null && description.isNotEmpty)
+            Text('描述: $description', style: textTheme.bodySmall),
+          Text('entry.js 大小: ${selected.pkg.entryScript.length} 字符',
+              style: textTheme.bodySmall),
+        ],
+      ),
+    );
+  }
+
+  /// 显示渠道包导入对话框：选择 .zip 文件 → 校验 → 预览 meta → 确认导入；
+  /// 可选配置环境变量。
   ///
   /// Android 应用私有目录无法读取公共 Documents 文件，走应用内导入；
+  /// channelKey 取 zip 文件名（去 .zip，校验合法标识符，自动加 js_ 前缀）；
   /// 环境变量在导入成功后逐项 [JsChannel.setEnv]（渠道隔离持久化，
   /// 脚本通过 `host.env.get` 读取）。
   Future<void> _showScriptImportDialog(BuildContext context) async {
     final scheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
-    final keyController = TextEditingController();
-    final scriptController = TextEditingController();
     // 环境变量编辑结果（导入成功后写入渠道；编辑器 onChanged 持续同步）
     var envVars = <String, String>{};
+    _SelectedPackage? selected;
 
     // 内容超高（展开环境变量区后）限高内部滚动，防对话框超出屏幕
     final maxContentHeight = MediaQuery.sizeOf(context).height - 220;
 
     final confirmed = await AppDialogs.showDialog(
-      title: '导入脚本渠道',
-      content: ConstrainedBox(
-        constraints: BoxConstraints(maxHeight: maxContentHeight),
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                '粘贴脚本或从文件导入创建自定义渠道（Android 无法直接读取公共目录文件，请在此导入）',
-                style: textTheme.bodySmall?.copyWith(
-                  color: scheme.onSurfaceVariant,
-                ),
-              ),
-              const SizedBox(height: AppSpacing.md),
-              TextField(
-                key: const Key('script_channel_key_input'),
-                controller: keyController,
-                decoration: const InputDecoration(
-                  labelText: '渠道标识',
-                  hintText: '如 vivo（自动加 js_ 前缀）',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: AppSpacing.xs),
-              Text(
-                '渠道标识用于数据隔离，仅限字母/数字/下划线',
-                style: textTheme.bodySmall?.copyWith(
-                  color: scheme.onSurfaceVariant,
-                ),
-              ),
-              const SizedBox(height: AppSpacing.md),
-              // 从文件选择（注入/真实 FilePicker）
-              OutlinedButton.icon(
-                key: const Key('script_channel_file_button'),
-                onPressed: () async {
-                  final script = await _pickScriptFile();
-                  if (script == null) return;
-                  scriptController.text = script;
-                  if (!context.mounted) return;
-                  AppDialogs.showSuccess('已读取脚本文件（${script.length} 字符），可直接导入或继续编辑');
-                },
-                icon: const Icon(Icons.upload_file),
-                label: const Text('从文件选择 .js 脚本'),
-              ),
-              const SizedBox(height: AppSpacing.xs),
-              TextField(
-                key: const Key('script_channel_script_input'),
-                controller: scriptController,
-                maxLines: 6,
-                minLines: 4,
-                decoration: const InputDecoration(
-                  labelText: '脚本内容',
-                  hintText: '粘贴 main(method, params) 脚本',
-                  border: OutlineInputBorder(),
-                  alignLabelWithHint: true,
-                ),
-              ),
-              const SizedBox(height: AppSpacing.sm),
-              // 环境变量（可选）——导入时配置，导入后可在「已导入渠道」中修改
-              ExpansionTile(
-                key: const Key('script_channel_env_section'),
-                title: const Text('环境变量（可选）'),
-                subtitle: const Text('脚本通过 host.env.get 读取，如账号/密码'),
-                tilePadding: EdgeInsets.zero,
-                childrenPadding: const EdgeInsets.only(bottom: AppSpacing.sm),
-                children: [
-                  _ScriptChannelEnvEditor(
-                    initial: const {},
-                    onChanged: (map) => envVars = map,
+      title: '导入渠道包',
+      content: StatefulBuilder(
+        builder: (dialogContext, setDialogState) => ConstrainedBox(
+          constraints: BoxConstraints(maxHeight: maxContentHeight),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '从 .zip 渠道包文件导入自定义渠道（Android 无法直接读取公共目录文件，请在此导入）',
+                  style: textTheme.bodySmall?.copyWith(
+                    color: scheme.onSurfaceVariant,
                   ),
+                ),
+                const SizedBox(height: AppSpacing.md),
+                // 从文件选择 .zip 渠道包
+                OutlinedButton.icon(
+                  key: const Key('script_channel_file_button'),
+                  onPressed: () async {
+                    final picked = await _pickZipPackage();
+                    if (picked == null) return;
+                    final baseName =
+                        picked.name.toLowerCase().endsWith('.zip')
+                            ? picked.name.substring(0, picked.name.length - 4)
+                            : picked.name;
+                    if (!RegExp(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
+                        .hasMatch(baseName)) {
+                      AppDialogs.showError(
+                          '渠道包文件名不能作为渠道标识（需字母/下划线开头，仅含字母数字/下划线）');
+                      return;
+                    }
+                    final pkg = ChannelPackage.decode(picked.bytes);
+                    if (pkg == null) {
+                      AppDialogs.showError(
+                          '无效的渠道包：非 zip 文件 / 缺 entry.js / 含路径穿越');
+                      return;
+                    }
+                    setDialogState(() {
+                      selected = (
+                        fileName: picked.name,
+                        channelKey: 'js_$baseName',
+                        pkg: pkg,
+                        bytes: picked.bytes,
+                      );
+                    });
+                    AppDialogs.showSuccess(
+                        '已读取渠道包（entry.js ${pkg.entryScript.length} 字符），可导入或更换文件');
+                  },
+                  icon: const Icon(Icons.upload_file),
+                  label: const Text('从文件选择渠道包 (.zip)'),
+                ),
+                if (selected != null) ...[
+                  const SizedBox(height: AppSpacing.sm),
+                  _buildZipPackagePreview(dialogContext, selected!),
                 ],
-              ),
-            ],
+                const SizedBox(height: AppSpacing.sm),
+                // 环境变量（可选）——导入时配置，导入后可在「已导入渠道」中修改
+                ExpansionTile(
+                  key: const Key('script_channel_env_section'),
+                  title: const Text('环境变量（可选）'),
+                  subtitle: const Text('脚本通过 host.env.get 读取，如账号/密码'),
+                  tilePadding: EdgeInsets.zero,
+                  childrenPadding: const EdgeInsets.only(bottom: AppSpacing.sm),
+                  children: [
+                    _ScriptChannelEnvEditor(
+                      initial: const {},
+                      onChanged: (map) => envVars = map,
+                    ),
+                  ],
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -491,29 +537,16 @@ class _SettingsPageState extends State<SettingsPage> {
 
     if (confirmed != true) return;
 
-    final key = keyController.text.trim();
-    final script = scriptController.text.trim();
-    if (key.isEmpty) {
-      AppDialogs.showError('请输入渠道标识');
-      return;
-    }
-    if (!RegExp(r'^[a-zA-Z_][a-zA-Z0-9_]*$').hasMatch(key)) {
-      AppDialogs.showError('渠道标识仅限字母/数字/下划线，且以字母或下划线开头');
-      return;
-    }
-    if (script.isEmpty) {
-      AppDialogs.showError('请输入脚本内容');
+    final pkg = selected;
+    if (pkg == null) {
+      AppDialogs.showError('请先选择 .zip 渠道包文件');
       return;
     }
 
     try {
-      // 粘贴文本 → 内存 zip 渠道包（entry.js；zip 化导入，detail.js/meta.json
-      // Wave 4 文件选择导入时支持）
-      final archive = Archive()..addFile(ArchiveFile.string('entry.js', script));
-      final zipBytes = Uint8List.fromList(ZipEncoder().encode(archive)!);
       final channel = await ChannelLoader().importZip(
-        channelKey: 'js_$key',
-        zipBytes: zipBytes,
+        channelKey: pkg.channelKey,
+        zipBytes: pkg.bytes,
       );
       // 环境变量：导入成功后逐个写入（渠道隔离持久化，host.env.get 读取）
       if (envVars.isNotEmpty) {
@@ -521,9 +554,9 @@ class _SettingsPageState extends State<SettingsPage> {
           await channel.setEnv(entry.key, entry.value);
         }
         AppDialogs.showSuccess(
-            '脚本渠道已导入（${channel.info.name}），环境变量已保存，脚本通过 host.env.get 读取');
+            '渠道包已导入（${channel.info.name}），环境变量已保存，脚本通过 host.env.get 读取');
       } else {
-        AppDialogs.showSuccess('脚本渠道已导入（${channel.info.name}），可切到发现页查看');
+        AppDialogs.showSuccess('渠道包已导入（${channel.info.name}），可切到发现页查看');
       }
       if (mounted) setState(() {}); // 刷新「已导入渠道」计数
     } catch (e) {
@@ -531,13 +564,13 @@ class _SettingsPageState extends State<SettingsPage> {
     }
   }
 
-  /// 显示脚本渠道管理对话框：列出已导入渠道 + 环境变量编辑 + 删除。
+  /// 显示渠道包管理对话框：列出已导入渠道 + 环境变量编辑 + 删除。
   Future<void> _showScriptChannelManageDialog(BuildContext context) async {
     final scheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
 
     await AppDialogs.showDialog(
-      title: '脚本渠道管理',
+      title: '渠道包管理',
       content: StatefulBuilder(
         builder: (dialogContext, setDialogState) {
           final channels = ChannelManager.instance.dynamicChannels
@@ -545,7 +578,7 @@ class _SettingsPageState extends State<SettingsPage> {
               .toList();
           if (channels.isEmpty) {
             return Text(
-              '暂无已导入的脚本渠道，请先通过「脚本渠道」导入',
+              '暂无已导入的渠道包，请先通过「脚本渠道」导入',
               style: textTheme.bodyMedium?.copyWith(
                 color: scheme.onSurfaceVariant,
               ),
@@ -608,13 +641,13 @@ class _SettingsPageState extends State<SettingsPage> {
     if (mounted) setState(() {}); // 刷新「已导入渠道」计数
   }
 
-  /// 删除脚本渠道：危险确认 → [ChannelLoader.removeChannel]（注销 + 删文件 + 清 env）。
+  /// 删除渠道包：危险确认 → [ChannelLoader.removeChannel]（注销 + 删文件 + 清 env）。
   Future<void> _removeScriptChannel(
       JsChannel channel, StateSetter setDialogState) async {
     final confirmed = await AppDialogs.showDialog(
-      title: '删除脚本渠道',
+      title: '删除渠道包',
       content:
-          '确定删除「${channel.info.name}」（${channel.channelKey}）？脚本文件与环境变量将一并删除。',
+          '确定删除「${channel.info.name}」（${channel.channelKey}）？渠道包文件与环境变量将一并删除。',
       confirmText: '删除',
       cancelText: '取消',
       isDangerous: true,
@@ -625,7 +658,7 @@ class _SettingsPageState extends State<SettingsPage> {
       await ChannelLoader().removeChannel(channel.channelKey);
       if (context.mounted) {
         setDialogState(() {});
-        AppDialogs.showSuccess('脚本渠道已删除');
+        AppDialogs.showSuccess('渠道包已删除');
       }
     } catch (e) {
       AppDialogs.showError('删除失败: $e');

@@ -27,7 +27,8 @@ import 'package:path_provider/path_provider.dart';
 /// - **用户渠道目录**：`getApplicationDocumentsDirectory()/channels/*.zip`
 ///   （可注入 `directory` 覆盖，测试用）；目录不存在/为空不报错
 /// - **内置示例模板**：`assets/channels/example.js`（经 [loadAssetScript] 读取，
-///   仅模板供用户复制导入，**不随 loadAndRegister 注册**）
+///   仅文档/测试参考——单 .js 文件不再兼容导入（导入入口走 .zip 渠道包），
+///   请按上方规范打包为 zip 后经 [importZip] 导入；**不随 loadAndRegister 注册**）
 ///
 /// > **Android 目录说明**：`getApplicationDocumentsDirectory()` 是应用私有目录，
 /// > 用户手动放入公共 Documents 的文件**读不到**。Android 用户请走
