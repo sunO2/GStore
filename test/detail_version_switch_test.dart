@@ -19,6 +19,8 @@ import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/db/apps/AppInfo.dart' as db;
 import 'package:gstore/page/detail/logic.dart';
+import 'package:gstore/page/detail/view.dart';
+import 'package:gstore/page/detail/widgets.dart';
 
 /// 详情页"切换版本"交互（Wave 3）widget/logic 级测试。
 ///
@@ -107,6 +109,7 @@ class _FakeJsChannel extends JsChannel {
   Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
       capturedShowBuildHistory;
   Future<void> Function(Map<String, dynamic> params)? capturedRefreshDetail;
+  Future<void> Function(List<dynamic> downloads)? capturedUpdateDownloadList;
 
   int invokeScriptMethodCalls = 0;
   String? lastInvokedMethod;
@@ -133,6 +136,7 @@ class _FakeJsChannel extends JsChannel {
     capturedShowVersionPicker = uiShowVersionPicker;
     capturedShowBuildHistory = uiShowBuildHistory;
     capturedRefreshDetail = uiRefreshDetail;
+    capturedUpdateDownloadList = uiUpdateDownloadList;
   }
 
   @override
@@ -259,6 +263,7 @@ class _FakeJsDetailChannel extends JsDetailChannel {
   Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
       capturedShowBuildHistory;
   Future<void> Function(Map<String, dynamic> params)? capturedRefreshDetail;
+  Future<void> Function(List<dynamic> downloads)? capturedUpdateDownloadList;
 
   @override
   Future<Map<String, dynamic>?> getAppDetail(
@@ -323,6 +328,7 @@ class _FakeJsDetailChannel extends JsDetailChannel {
     capturedShowVersionPicker = uiShowVersionPicker;
     capturedShowBuildHistory = uiShowBuildHistory;
     capturedRefreshDetail = uiRefreshDetail;
+    capturedUpdateDownloadList = uiUpdateDownloadList;
   }
 
   @override
@@ -1082,5 +1088,159 @@ void main() {
     // 非脚本渠道完全不变：getAppDetail 走 channel 原路径
     expect(ch.getAppDetailCalls, 1);
     expect(logic.state.detailInfo.value?.name, 'App One');
+  });
+
+  // ==================== Wave 2：host.ui.updateDownloadList（切构建历史局部更新下载区） ====================
+
+  /// 预置脚本渠道 + detail.js（先注册渠道再 buildLogic，保证 _initDetailChannel
+  /// 拿到 detailChannel）+ 注入 host.ui 回调（openMoreActions 触发 setUiCallbacks）。
+  Future<(DetailLogic, _FakeJsDetailChannel)> setupDetailChannel(
+    WidgetTester tester,
+  ) async {
+    final js = _FakeJsChannel();
+    js.hasDetailScript = true;
+    final dc = _FakeJsDetailChannel();
+    js.detailChannel = dc;
+    ChannelManager.instance.registerChannel(js);
+
+    final logic = buildLogic();
+    await pumpHost(tester, logic);
+    await openMoreActions(tester); // 触发 setUiCallbacks 注入（含 uiUpdateDownloadList）
+    return (logic, dc);
+  }
+
+  testWidgets('ⓖ 注入 uiUpdateDownloadList → 传 downloads → detailInfo.downloads 局部更新（不重载）',
+      (tester) async {
+    final (logic, dc) = await setupDetailChannel(tester);
+    // 预置当前详情（旧下载区）
+    logic.state.detailInfo.value = JsChannelDetailProxy({
+      'appId': 'com.example.one',
+      'name': 'App One',
+      'version': '1.0.0',
+      'downloads': [
+        {'url': 'https://example.com/old.apk', 'name': 'old.apk'},
+      ],
+    });
+
+    // 模拟 JS 调 host.ui.updateDownloadList（切构建历史 → 缓存下载区）
+    await dc.capturedUpdateDownloadList!([
+      {
+        'url': 'https://example.com/new.apk',
+        'name': 'new.apk',
+        'version': '1.0.0',
+      },
+    ]);
+
+    // detailInfo.downloads 局部更新（新下载项），其余字段保持
+    final detail = logic.state.detailInfo.value;
+    expect(detail, isNotNull);
+    expect(detail!.downloads, hasLength(1));
+    expect(detail.downloads.first.name, 'new.apk');
+    expect(detail.downloads.first.url, 'https://example.com/new.apk');
+    expect(detail.version, '1.0.0');
+    expect(detail.name, 'App One');
+  });
+
+  testWidgets('ⓗ uiUpdateDownloadList 不触发重新请求（switchVersion/getAppDetail 零调用）',
+      (tester) async {
+    final (logic, dc) = await setupDetailChannel(tester);
+    logic.state.detailInfo.value = JsChannelDetailProxy({
+      'appId': 'com.example.one',
+      'name': 'App One',
+      'version': '1.0.0',
+    });
+
+    await dc.capturedUpdateDownloadList!([
+      {'url': 'https://example.com/new.apk', 'name': 'new.apk'},
+    ]);
+
+    // 纯本地更新：不调脚本/不重新请求详情
+    expect(dc.switchVersionCalls, 0);
+    expect(dc.getAppDetailCalls, 0);
+    expect(dc.callMainCalls, 0);
+  });
+
+  testWidgets('ⓘ detailInfo 为 null → uiUpdateDownloadList 不崩', (tester) async {
+    final (logic, dc) = await setupDetailChannel(tester);
+    // detailInfo 保持 null
+
+    await dc.capturedUpdateDownloadList!([
+      {'url': 'https://example.com/new.apk', 'name': 'new.apk'},
+    ]);
+
+    expect(logic.state.detailInfo.value, isNull);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('ⓙ 下载项 downloadable/note 字段正确透传', (tester) async {
+    final (logic, dc) = await setupDetailChannel(tester);
+    logic.state.detailInfo.value = JsChannelDetailProxy({
+      'appId': 'com.example.one',
+      'name': 'App One',
+      'version': '1.0.0',
+    });
+
+    await dc.capturedUpdateDownloadList!([
+      {
+        'url': '',
+        'name': 'locked.apk',
+        'downloadable': false,
+        'note': '需配置凭证后下载',
+      },
+    ]);
+
+    final detail = logic.state.detailInfo.value;
+    final item = detail!.downloads.first;
+    expect(item.downloadable, isFalse);
+    expect(item.note, '需配置凭证后下载');
+  });
+
+  testWidgets('ⓚ 真实下载区消费：pump 详情页 → 注入回调 → 下载区显示新下载项',
+      (tester) async {
+    final js = _FakeJsChannel();
+    js.hasDetailScript = true;
+    final dc = _FakeJsDetailChannel();
+    js.detailChannel = dc;
+    ChannelManager.instance.registerChannel(js);
+
+    final logic = buildLogic();
+    logic.state.detailInfo.value = JsChannelDetailProxy({
+      'appId': 'com.example.one',
+      'name': 'App One',
+      'version': '1.0.0',
+      'downloads': [
+        {'url': 'https://example.com/old.apk', 'name': 'old.apk'},
+      ],
+    });
+    Get.put(logic);
+    await tester.pumpWidget(const GetMaterialApp(home: DetailPage()));
+    logic.state.errorMessage.value = '';
+    await tester.pump();
+
+    // 初始下载区显示旧下载项
+    expect(find.byType(DownloadsSection), findsOneWidget);
+    expect(find.text('old.apk'), findsOneWidget);
+
+    // 点"更多"触发 setUiCallbacks 注入（含 uiUpdateDownloadList）
+    await tester.tap(find.byIcon(Icons.more_vert));
+    await tester.pumpAndSettle();
+    expect(dc.capturedUpdateDownloadList, isNotNull);
+
+    // 模拟 JS 调 host.ui.updateDownloadList（切构建历史 → 缓存下载区）
+    await dc.capturedUpdateDownloadList!([
+      {
+        'url': 'https://example.com/new.apk',
+        'name': 'new.apk',
+        'version': '1.0.0',
+      },
+    ]);
+    await tester.pump();
+
+    // 下载区局部刷新：显示新下载项（旧项消失），不重载详情
+    expect(find.text('new.apk'), findsOneWidget);
+    expect(find.text('old.apk'), findsNothing);
+    expect(dc.switchVersionCalls, 0);
+    expect(dc.getAppDetailCalls, 0);
+    expect(tester.takeException(), isNull);
   });
 }

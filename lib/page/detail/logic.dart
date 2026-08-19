@@ -834,11 +834,13 @@ class DetailLogic extends GetxController {
         uiShowVersionPicker: showVersionPicker,
         uiShowBuildHistory: showBuildHistory,
         uiRefreshDetail: refreshDetail,
+        uiUpdateDownloadList: _updateDownloadsFromScript,
       );
       _detailChannel?.setUiCallbacks(
         uiShowVersionPicker: showVersionPicker,
         uiShowBuildHistory: showBuildHistory,
         uiRefreshDetail: refreshDetail,
+        uiUpdateDownloadList: _updateDownloadsFromScript,
       );
 
       final menu = await source.detailMenu(req.appId);
@@ -1125,6 +1127,33 @@ class DetailLogic extends GetxController {
         ? '已切换到 $version（$env）'
         : '已切换到 $version 构建 #${build['num']}（$env）';
     AppDialogs.showSuccess(msg);
+  }
+
+  /// host.ui.updateDownloadList 的 Flutter 实现（JS 切构建历史用缓存更新下载区）。
+  ///
+  /// [downloads]：脚本 Map 列表（url/name/size/version/platform/downloadable/note）→
+  /// 局部更新 state.detailInfo.downloads，不重新请求详情（纯本地 UI 刷新）。
+  ///
+  /// 与 [_refreshDetailAfterSwitch]（switchVersion 全量刷新）区分：本回调 JS 已给
+  /// 数据，Flutter 只更新 UI state，不调脚本/不重新请求。
+  Future<void> _updateDownloadsFromScript(List<dynamic> downloads) async {
+    final current = state.detailInfo.value;
+    if (current == null) return;
+    // 复用 JsChannelDetailProxy 的映射逻辑：脚本 Map 列表 → List<DownloadInfo>
+    final mapped = JsChannelDetailProxy({'downloads': downloads}).downloads;
+    if (current is _ProgressiveDetailInfo) {
+      // 渐进包装：copyWith 仅替换 downloads（新实例触发 Rx 通知）
+      _updateDetailInfo((inner) => inner.copyWith(downloads: mapped));
+      return;
+    }
+    if (current is JsChannelDetailProxy) {
+      // 脚本代理：重建代理仅替换 downloads（其余字段保持原数据）
+      final data = Map<String, dynamic>.from(current.data);
+      data['downloads'] = mapped;
+      state.detailInfo.value = JsChannelDetailProxy(data);
+      return;
+    }
+    // 其他 IDetailInfo 实现：无法重建 → 忽略（脚本渠道理论不可达）
   }
 
   /// 当前详情所属 env（脚本详情 extra.env；无 → null → 脚本按凭证默认 env）
