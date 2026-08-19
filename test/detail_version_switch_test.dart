@@ -972,6 +972,8 @@ void main() {
     // detail.js 存在 → getAppDetail 走 detailChannel（entry 原路径不被调）
     expect(dc.getAppDetailCalls, 1);
     expect(js.getAppDetailCalls, 0);
+    // 有 detail.js → 跳过 entry getAppInfo 预取（避免重复 build-list + login/check）
+    expect(js.getAppInfoCalls, 0);
     expect(logic.state.detailInfo.value?.version, '1.0.0');
     expect(logic.state.detailInfo.value?.name, 'App One');
   });

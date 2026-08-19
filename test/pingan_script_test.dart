@@ -1253,7 +1253,7 @@ void main() {
       await runtime.dispose();
     });
 
-    test('㉗ login/check 失败 → 详情仍正常返回（downloadable:false + note，失败不缓存）', () async {
+    test('㉗ login/check 失败 → 详情仍正常返回（downloadable:false + note，失败 60s 冷却防风暴）', () async {
       var loginCheckCount = 0;
       final runtime = buildRuntime(
         scriptOverride: detailScript,
@@ -1280,9 +1280,14 @@ void main() {
       expect(dl1['note'], isNotEmpty);
       expect((d1['extra'] as Map)['authError'], contains('认证失败'));
 
-      // 失败未缓存 → 再次调用重新检测（主路径+文档路径各 2 次 = 4）
+      // 失败 60s 冷却 → 再次调用不重发 login/check（修复前每次重发 main+doc 2 次 = 4）
       await runtime.call('main', ['getAppDetail', {'appId': 'app-1'}]);
-      expect(loginCheckCount, 4);
+      expect(loginCheckCount, 2);
+      // 冷却期内第三次调用 → 依旧不重发（请求风暴防护）
+      await runtime.call('main', ['getAppDetail', {'appId': 'app-1'}]);
+      expect(loginCheckCount, 2);
+      // 冷却跳过有日志（来源可定位）
+      expect(logMessages.any((m) => m.contains('[login/check] 失败冷却中跳过重发')), isTrue);
 
       await runtime.dispose();
     });
@@ -1761,10 +1766,11 @@ void main() {
       expect(d['appId'], 'app-1'); // 查询键（缓存解析出的 name）
       expect(d['packageName'], 'com.pingan.pabank.activity');
 
-      // getAppDetail(1) + switchVersion(1) → 共 2 次 build-list（包名未触发额外请求）
+      // getAppDetail(1) + switchVersion(0，build-list 缓存命中复用) → 共 1 次 build-list
+      // （修复前 switchVersion 重复拉全量 build-list = 2 次；缓存后同查询零请求）
       final buildRequests =
           requestLog.where((r) => r.contains('build-list')).toList();
-      expect(buildRequests.length, 2);
+      expect(buildRequests.length, 1);
       expect(buildRequests.last, contains('appname=app-1'));
 
       await runtime.dispose();
@@ -1821,12 +1827,14 @@ void main() {
       expect(app['appId'], 'app-1'); // 查询键（缓存解析）
       expect(app['packageName'], 'com.pingan.pabank.activity');
 
-      // getAppInfo 两次：name 直查(1) + 包名(直查失败1 + 缓存命中重查1) = 3 次 build-list
-      // （entry 的 resolveAndroidBuilds 先直查包名 → 失败才走 resolveAppName 缓存）
+      // getAppInfo 两次：name 直查(1) + 包名(直查失败1 + 缓存命中重查0) = 2 次 build-list
+      // （修复前 resolve 后重查重复拉全量 = 3 次；build-list 缓存后同查询零请求）
       final buildRequests =
           requestLog.where((r) => r.contains('build-list')).toList();
-      expect(buildRequests.length, 3);
-      expect(buildRequests.last, contains('appname=app-1'));
+      expect(buildRequests.length, 2);
+      // 最后一次实际请求是包名直查（空结果）；app-1 重查走缓存（日志可证）
+      expect(buildRequests.last, contains('appname=com.pingan.pabank.activity'));
+      expect(logMessages.any((m) => m.contains('[build-list] 缓存命中')), isTrue);
 
       await runtime.dispose();
     });

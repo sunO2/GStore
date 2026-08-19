@@ -37,6 +37,9 @@ class DetailLogic extends GetxController {
   /// 请求参数
   AppDetailRequest? request;
 
+  /// 详情加载进行中（重入锁：防 Rx/重建/双击重试等重复触发 loadDetail → 叠加网络请求）
+  bool _loadDetailInFlight = false;
+
   /// 渠道管理器（channel 模块下线时为 null，消费点软降级）
   ChannelManager? _channelManager;
 
@@ -133,7 +136,11 @@ class DetailLogic extends GetxController {
       state.errorMessage.value = '缺少请求参数';
       return;
     }
-
+    if (_loadDetailInFlight) {
+      appLog.warning('DetailLogic: loadDetail 已在进行中，忽略重复调用（防请求叠加）');
+      return;
+    }
+    _loadDetailInFlight = true;
     state.isLoadingDetail.value = true;
     state.errorMessage.value = '';
 
@@ -206,6 +213,7 @@ class DetailLogic extends GetxController {
     } catch (e) {
       state.errorMessage.value = '加载详情失败: $e';
     } finally {
+      _loadDetailInFlight = false;
       state.isLoadingDetail.value = false;
     }
   }
@@ -216,14 +224,22 @@ class DetailLogic extends GetxController {
   /// （截图/下载/更新日志/权限/评分等全部区块）→ 基于详情 packageName 检测安装状态。
   /// isLoadingDetail 的复位由外层 loadDetail 的 finally 统一负责。
   Future<void> _loadDetailLegacy(IChannel channel) async {
-    // 先获取基本信息（缓存数据；失败不阻塞，请求参数/详情兜底显示）
-    try {
-      await channel.getAppInfo(
-        request!.appId,
-        forceRefresh: false,
-      );
-    } catch (e) {
-      appLog.error('DetailLogic: 获取基础信息失败（不阻塞详情加载） - $e');
+    // 有 detail.js（页面级 detailChannel）→ 跳过 entry getAppInfo 预取：
+    // detail.js getAppDetail 一次性返回完整详情（含基础信息/下载/截图），entry
+    // 预取只会额外触发一次 build-list + login/check（entry/detail 两个 runtime
+    // 认证缓存独立）→ 进入详情请求翻倍（真机 build-list/login-check 风暴根因之一）。
+    // 无 detail.js（entry 回退路径/非脚本渠道）→ 保留 getAppInfo 基础信息预取。
+    final detailChannel = _detailChannel;
+    if (detailChannel == null) {
+      // 先获取基本信息（缓存数据；失败不阻塞，请求参数/详情兜底显示）
+      try {
+        await channel.getAppInfo(
+          request!.appId,
+          forceRefresh: false,
+        );
+      } catch (e) {
+        appLog.error('DetailLogic: 获取基础信息失败（不阻塞详情加载） - $e');
+      }
     }
 
     // 再获取详情信息（一次性完整注入）
@@ -231,7 +247,6 @@ class DetailLogic extends GetxController {
     // 无 detail.js（getDetailChannel null）→ 原 channel.getAppDetail 路径（兼容）。
     // detail.js 脚本失败（返回 null）→ 回退 entry 原路径（安全兜底）。
     ChannelResult<IDetailInfo> result;
-    final detailChannel = _detailChannel;
     if (detailChannel != null) {
       final raw = await detailChannel.getAppDetail(request!.appId);
       if (raw == null) {
