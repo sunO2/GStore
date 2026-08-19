@@ -43,6 +43,7 @@ class JsDetailChannel {
     Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
         uiShowBuildHistory,
     Future<void> Function(Map<String, dynamic> params)? uiRefreshDetail,
+    Future<void> Function(List<dynamic> downloads)? uiUpdateDownloadList,
   }) : _runtime = JsChannelRuntime(
           channelKey: channelKey,
           script: detailScript,
@@ -55,6 +56,7 @@ class JsDetailChannel {
           uiShowVersionPicker: uiShowVersionPicker,
           uiShowBuildHistory: uiShowBuildHistory,
           uiRefreshDetail: uiRefreshDetail,
+          uiUpdateDownloadList: uiUpdateDownloadList,
         );
 
   /// 已释放（dispose 后 true；释放后调用方法 → 降级 null）
@@ -179,19 +181,21 @@ class JsDetailChannel {
   ///
   /// detail 通道由 [JsChannel.getDetailChannel] 在页面初始化时创建（早于详情页
   /// showMoreActions 的 host.ui 注入），此处允许注入晚于创建——脚本下次调用
-  /// `host.ui.showVersionPicker` / `host.ui.showBuildHistory` / `host.ui.refreshDetail`
-  /// 即生效（回调调用时读取）。
+  /// `host.ui.showVersionPicker` / `host.ui.showBuildHistory` / `host.ui.refreshDetail` /
+  /// `host.ui.updateDownloadList` 即生效（回调调用时读取）。
   void setUiCallbacks({
     Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
         uiShowVersionPicker,
     Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
         uiShowBuildHistory,
     Future<void> Function(Map<String, dynamic> params)? uiRefreshDetail,
+    Future<void> Function(List<dynamic> downloads)? uiUpdateDownloadList,
   }) {
     _runtime.setUiCallbacks(
       uiShowVersionPicker: uiShowVersionPicker,
       uiShowBuildHistory: uiShowBuildHistory,
       uiRefreshDetail: uiRefreshDetail,
+      uiUpdateDownloadList: uiUpdateDownloadList,
     );
   }
 

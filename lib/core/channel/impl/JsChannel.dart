@@ -113,6 +113,7 @@ class JsChannel extends IChannel implements DynamicChannel {
     Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
         uiShowBuildHistory,
     Future<void> Function(Map<String, dynamic> params)? uiRefreshDetail,
+    Future<void> Function(List<dynamic> downloads)? uiUpdateDownloadList,
     int? priority,
     bool enabled = true,
   })  : _priority = priority,
@@ -130,6 +131,7 @@ class JsChannel extends IChannel implements DynamicChannel {
           uiShowVersionPicker: uiShowVersionPicker,
           uiShowBuildHistory: uiShowBuildHistory,
           uiRefreshDetail: uiRefreshDetail,
+          uiUpdateDownloadList: uiUpdateDownloadList,
         ) {
     _info = ChannelInfo(
       type: ChannelType.custom,
@@ -143,7 +145,8 @@ class JsChannel extends IChannel implements DynamicChannel {
   // ==================== host.ui 运行时注入 ====================
 
   /// 运行时注入 host.ui 实现（Hybrid：脚本 `host.ui.showVersionPicker` /
-  /// `host.ui.showBuildHistory` / `host.ui.refreshDetail` 的 Flutter 实现）。
+  /// `host.ui.showBuildHistory` / `host.ui.refreshDetail` / `host.ui.updateDownloadList`
+  /// 的 Flutter 实现）。
   ///
   /// ChannelLoader 创建渠道时无 UI context，由详情页使用渠道时注入
   /// （showMoreActions 内调用），避免改 ChannelLoader 构造。
@@ -154,11 +157,13 @@ class JsChannel extends IChannel implements DynamicChannel {
     Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
         uiShowBuildHistory,
     Future<void> Function(Map<String, dynamic> params)? uiRefreshDetail,
+    Future<void> Function(List<dynamic> downloads)? uiUpdateDownloadList,
   }) {
     _runtime.setUiCallbacks(
       uiShowVersionPicker: uiShowVersionPicker,
       uiShowBuildHistory: uiShowBuildHistory,
       uiRefreshDetail: uiRefreshDetail,
+      uiUpdateDownloadList: uiUpdateDownloadList,
     );
   }
 
@@ -671,6 +676,7 @@ class JsChannel extends IChannel implements DynamicChannel {
           uiShowVersionPicker: _runtime.uiShowVersionPickerOverride,
           uiShowBuildHistory: _runtime.uiShowBuildHistoryOverride,
           uiRefreshDetail: _runtime.uiRefreshDetailOverride,
+          uiUpdateDownloadList: _runtime.uiUpdateDownloadListOverride,
         ));
   }
 

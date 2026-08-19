@@ -52,6 +52,10 @@ class JsChannelException implements Exception {
 /// - `host.ui.refreshDetail(params)` → 刷新详情页（params: `{appId, env, version, build?}`，
 ///   build 可选：选中历史构建时携带 `{num, ipaName}`，由调用方注入 [uiRefreshDetail]
 ///   实现）→ `{ok}`
+/// - `host.ui.updateDownloadList({downloads})` → 更新详情页下载区（JS 用缓存生成
+///   下载项，切构建历史时局部刷新，不重载详情；由调用方注入 [uiUpdateDownloadList]
+///   实现）。downloads: `[{url, name, size, version, platform, downloadable?, note?}]`，
+///   → `{ok}`：`await host.ui.updateDownloadList({downloads: [...]})`
 ///
 /// ## 异常处理
 /// - JS 抛错 → [call] 抛 [JsChannelException]（不崩应用）
@@ -89,6 +93,9 @@ class JsChannelRuntime {
   /// 刷新详情页（JS 调，参数含 appId/env/version/build?）
   Future<void> Function(Map<String, dynamic> params)? _uiRefreshDetailOverride;
 
+  /// 更新详情页下载区（JS 用缓存生成下载项，切构建历史时局部刷新，不重载详情）
+  Future<void> Function(List<dynamic> downloads)? _uiUpdateDownloadListOverride;
+
   JavascriptRuntime? _engine;
   bool _initialized = false;
   bool _disposed = false;
@@ -110,6 +117,7 @@ class JsChannelRuntime {
     Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
         uiShowBuildHistory,
     Future<void> Function(Map<String, dynamic> params)? uiRefreshDetail,
+    Future<void> Function(List<dynamic> downloads)? uiUpdateDownloadList,
   })  : _dioOverride = dio,
         _appDaoOverride = appDao,
         _configGetterOverride = configGetter,
@@ -118,8 +126,8 @@ class JsChannelRuntime {
         _logErrorOverride = logError,
         _uiShowVersionPickerOverride = uiShowVersionPicker,
         _uiShowBuildHistoryOverride = uiShowBuildHistory,
-        _uiRefreshDetailOverride = uiRefreshDetail;
-
+        _uiRefreshDetailOverride = uiRefreshDetail,
+        _uiUpdateDownloadListOverride = uiUpdateDownloadList;
   bool get isInitialized => _initialized;
   bool get isDisposed => _disposed;
 
@@ -128,13 +136,14 @@ class JsChannelRuntime {
   ///
   /// 只覆盖非 null 项；null 项保持原值（构造参数或上次 [setUiCallbacks]）。
   /// 注入后脚本下次调 `host.ui.showVersionPicker` / `host.ui.showBuildHistory` /
-  /// `host.ui.refreshDetail` 立即生效（回调在调用时读取，无需重建引擎）。
+  /// `host.ui.refreshDetail` / `host.ui.updateDownloadList` 立即生效（回调在调用时读取，无需重建引擎）。
   void setUiCallbacks({
     Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
         uiShowVersionPicker,
     Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
         uiShowBuildHistory,
     Future<void> Function(Map<String, dynamic> params)? uiRefreshDetail,
+    Future<void> Function(List<dynamic> downloads)? uiUpdateDownloadList,
   }) {
     if (uiShowVersionPicker != null) {
       _uiShowVersionPickerOverride = uiShowVersionPicker;
@@ -144,6 +153,9 @@ class JsChannelRuntime {
     }
     if (uiRefreshDetail != null) {
       _uiRefreshDetailOverride = uiRefreshDetail;
+    }
+    if (uiUpdateDownloadList != null) {
+      _uiUpdateDownloadListOverride = uiUpdateDownloadList;
     }
   }
 
@@ -181,6 +193,9 @@ class JsChannelRuntime {
 
   Future<void> Function(Map<String, dynamic> params)?
       get uiRefreshDetailOverride => _uiRefreshDetailOverride;
+
+  Future<void> Function(List<dynamic> downloads)?
+      get uiUpdateDownloadListOverride => _uiUpdateDownloadListOverride;
 
   /// 建引擎、注册 host API、注入 host 前缀、加载脚本
   Future<void> initialize() async {
@@ -447,6 +462,23 @@ class JsChannelRuntime {
         return {'ok': false, 'error': e.toString()};
       }
     });
+    // host.ui.updateDownloadList({downloads: [{url,name,size,version,platform,...}]})
+    // → 更新详情页下载区（JS 用缓存生成下载项，切构建历史时局部刷新，不重载详情）
+    engine.onMessage('host.ui.updateDownloadList', (dynamic args) async {
+      try {
+        final map = _asMap(args['params'] ?? args);
+        final downloads = _asList(map['downloads']);
+        final cb = _uiUpdateDownloadListOverride;
+        if (cb == null) {
+          return {'ok': false, 'error': 'host.ui.updateDownloadList 未注册'};
+        }
+        await cb(downloads);
+        return {'ok': true};
+      } catch (e) {
+        _logError('host.ui.updateDownloadList 失败: $e');
+        return {'ok': false, 'error': e.toString()};
+      }
+    });
   }
 
   // ==================== 依赖解析 ====================
@@ -641,6 +673,9 @@ var host = {
     },
     refreshDetail: function(params) {
       return sendMessage('host.ui.refreshDetail', JSON.stringify({params: params || {}}));
+    },
+    updateDownloadList: function(opts) {
+      return sendMessage('host.ui.updateDownloadList', JSON.stringify({params: opts || {}}));
     }
   }
 };

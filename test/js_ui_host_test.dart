@@ -35,6 +35,21 @@ async function pickBuildNoOptions() {
   const res = await host.ui.showBuildHistory();
   return res;
 }
+
+async function updateDownloadList() {
+  const res = await host.ui.updateDownloadList({
+    downloads: [
+      { url: 'u', name: 'n', size: 1024, version: '1.0', platform: 'android', downloadable: true },
+      { url: 'u2', name: 'n2' }
+    ]
+  });
+  return res;
+}
+
+async function updateDownloadListNoParams() {
+  const res = await host.ui.updateDownloadList();
+  return res;
+}
 ''';
 
 void main() {
@@ -212,6 +227,78 @@ void main() {
     // 无 options 调 showBuildHistory → 不崩，回调收到空 map
     final noOpts = await runtime.call('pickBuildNoOptions');
     expect((noOpts as Map)['ok'], isFalse);
+
+    await runtime.dispose();
+  });
+
+  test('⑨ 注入 uiUpdateDownloadList → 回调收到 downloads（参数正确）→ {ok:true}', () async {
+    List<dynamic>? received;
+    final runtime = JsChannelRuntime(
+      channelKey: 'js.test',
+      script: _uiScript,
+      uiUpdateDownloadList: (downloads) async {
+        received = downloads;
+      },
+    );
+    await runtime.initialize();
+
+    final result = await runtime.call('updateDownloadList');
+    expect(result, isA<Map>());
+    final map = result as Map;
+    expect(map['ok'], isTrue);
+
+    // 回调收到的 downloads 正确（url/name/size/version/platform/downloadable 全量透传）
+    expect(received, isNotNull);
+    expect(received!.length, 2);
+    final first = received!.first as Map;
+    expect(first['url'], 'u');
+    expect(first['name'], 'n');
+    expect(first['size'], 1024);
+    expect(first['version'], '1.0');
+    expect(first['platform'], 'android');
+    expect(first['downloadable'], isTrue);
+    final second = received![1] as Map;
+    expect(second['url'], 'u2');
+    expect(second['name'], 'n2');
+
+    await runtime.dispose();
+  });
+
+  test('⑩ 未注入 uiUpdateDownloadList → {ok:false} 提示未注册', () async {
+    final runtime = JsChannelRuntime(channelKey: 'js.test', script: _uiScript);
+    await runtime.initialize();
+
+    final result = await runtime.call('updateDownloadList');
+    expect(result, isA<Map>());
+    final map = result as Map;
+    expect(map['ok'], isFalse);
+    expect(map['error'].toString(), contains('未注册'));
+
+    // 无参数调 updateDownloadList → 不崩，回调收到空列表
+    final noParams = await runtime.call('updateDownloadListNoParams');
+    expect((noParams as Map)['ok'], isFalse);
+
+    await runtime.dispose();
+  });
+
+  test('⑪ 注入 uiUpdateDownloadList 回调抛异常 → {ok:false} 不崩', () async {
+    final runtime = JsChannelRuntime(
+      channelKey: 'js.test',
+      script: _uiScript,
+      uiUpdateDownloadList: (downloads) async =>
+          throw Exception('update broken'),
+    );
+    await runtime.initialize();
+
+    final result = await runtime.call('updateDownloadList');
+    expect(result, isA<Map>());
+    final map = result as Map;
+    expect(map['ok'], isFalse);
+    expect(map['error'].toString(), contains('update broken'));
+
+    // 异常后 runtime 仍可用
+    final sum = await runtime.call('pickNoOptions');
+    expect((sum as Map)['ok'], isFalse);
 
     await runtime.dispose();
   });

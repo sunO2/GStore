@@ -128,6 +128,7 @@ class _FakeJsChannel extends JsChannel {
     Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
         uiShowBuildHistory,
     Future<void> Function(Map<String, dynamic> params)? uiRefreshDetail,
+    Future<void> Function(List<dynamic> downloads)? uiUpdateDownloadList,
   }) {
     capturedShowVersionPicker = uiShowVersionPicker;
     capturedShowBuildHistory = uiShowBuildHistory;
@@ -317,6 +318,7 @@ class _FakeJsDetailChannel extends JsDetailChannel {
     Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
         uiShowBuildHistory,
     Future<void> Function(Map<String, dynamic> params)? uiRefreshDetail,
+    Future<void> Function(List<dynamic> downloads)? uiUpdateDownloadList,
   }) {
     capturedShowVersionPicker = uiShowVersionPicker;
     capturedShowBuildHistory = uiShowBuildHistory;
