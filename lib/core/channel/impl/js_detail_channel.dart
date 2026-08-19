@@ -71,6 +71,10 @@ class JsDetailChannel {
       if (!_runtime.isInitialized) {
         await _runtime.initialize();
       }
+      // 每次调用前从 envReader 刷新 env 快照：detail 通道按 appId 缓存复用，
+      // 可能创建于 setEnv 之前（快照了旧空 env）；刷新保证 host.env 始终读到
+      // 渠道最新 env（配置 PINGAN_USER/PINGAN_PASS 后详情页立即可下载）。
+      _runtime.refreshEnv();
       final raw = await _runtime.call(
         'main',
         [method, params ?? const <String, dynamic>{}],

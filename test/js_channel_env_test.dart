@@ -296,6 +296,30 @@ void main() {
       await channel.dispose();
     });
 
+    test('重启后（新实例 initialize）runtime 快照含持久化 env（JS 侧 host.env 可见）', () async {
+      final channel = buildChannel(channelKey: 'js.restart');
+      await channel.setEnv('PINGAN_USER', 'alice');
+      await channel.setEnv('PINGAN_PASS', 'pwd123');
+      await channel.dispose();
+
+      // 模拟重启：新实例从 ConfigStore 读持久化 env
+      final restarted = buildChannel(channelKey: 'js.restart');
+      await restarted.initialize();
+
+      // 存储层有值
+      expect(await restarted.getAllEnv(),
+          {'PINGAN_USER': 'alice', 'PINGAN_PASS': 'pwd123'});
+
+      // runtime 快照（JS 侧 host.env）也应含持久化 env
+      // （回归：initialize 内部以 _readEnv() 覆盖快照 → 重启后恒为空 的 bug）
+      final result = await restarted.getAllApps();
+      expect(result.success, isTrue);
+      expect(result.data, hasLength(1));
+      expect(result.data!.first.appId, 'env-alice');
+
+      await restarted.dispose();
+    });
+
     test('removeEnv 删除后 getAllEnv 不再包含', () async {
       final channel = buildChannel(channelKey: 'js.remove');
       await channel.setEnv('KEEP', '1');

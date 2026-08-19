@@ -167,6 +167,16 @@ class JsChannelRuntime {
     _env = Map<String, String>.of(env);
   }
 
+  /// 从 [envReader] 重新快照 env（detail runtime 每次调用前刷新）。
+  ///
+  /// detail 通道按 appId 缓存复用，可能在 setEnv 之前就已创建并初始化
+  /// （快照了旧空 env）；[updateEnv] 只热更新 entry runtime，不会传播到
+  /// 已创建的 detail runtime。调用方在每次脚本调用前调本方法，保证
+  /// detail 侧 host.env 始终读到渠道最新 env。未注入 envReader → 空 map。
+  void refreshEnv() {
+    _env = _readEnv();
+  }
+
   // ==================== 依赖透传（JsChannel.getDetailChannel 供 detail runtime 复用） ====================
 
   /// 当前 env 快照副本（detail runtime initialize 时快照同一份 env，渠道隔离一致）

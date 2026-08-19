@@ -7,6 +7,8 @@ import 'package:gstore/core/channel/database/channel_added_app.dart';
 import 'package:gstore/core/channel/database/channel_added_app_dao.dart';
 import 'package:gstore/core/channel/impl/JsChannel.dart';
 import 'package:gstore/core/channel/impl/js_detail_channel.dart';
+import 'package:gstore/core/config/config_store.dart';
+import 'package:gstore/core/config/config_storage.dart';
 
 /// 内存版 ChannelAddedAppDao（测试用，模拟渠道数据库）
 class _FakeAppDao implements ChannelAddedAppDao {
@@ -153,11 +155,21 @@ async function main(method, params) {
 }
 ''';
 
+/// 测试用统一初始化：全部使用内存存储（避免插件依赖）
+Future<void> initStoreForTest() async {
+  ConfigStore.instance.resetForTest();
+  await ConfigStore.instance.initialize(storages: [
+    MemoryConfigStorage(),
+    MemoryConfigStorage(),
+  ]);
+}
+
 void main() {
   late _FakeAppDao appDao;
   late Dio dio;
 
-  setUp(() {
+  setUp(() async {
+    await initStoreForTest();
     appDao = _FakeAppDao();
     dio = Dio();
     dio.httpClientAdapter = _FakeDioAdapter();
@@ -367,6 +379,26 @@ void main() {
       expect(d3!.isDisposed, isFalse);
 
       await channel.dispose(); // 二次 dispose 幂等
+    });
+
+    test('⑧ detail 通道在 setEnv 前创建 → 之后读到最新 env（缓存复用不陈旧）', () async {
+      final channel = buildChannel(detailScript: _statefulScript);
+      await channel.initialize();
+
+      // 先创建 detail 通道（模拟用户先进详情页，此时 env 未配置）
+      final detail = channel.getDetailChannel('com.example.one');
+      final before = await detail!.callMain('envValue') as Map;
+      expect(before['value'], isNull);
+
+      // 用户去设置页配置 env（setEnv → 热更新 entry runtime）
+      await channel.setEnv('TOKEN', 'TOKEN-NEW');
+
+      // 回到详情页（同一 detail 通道实例，缓存复用）→ 应读到最新 env
+      // （回归：detail runtime 只在 initialize 快照一次 env 的 bug）
+      final after = await detail.callMain('envValue') as Map;
+      expect(after['value'], 'TOKEN-NEW');
+
+      await channel.dispose();
     });
   });
 }

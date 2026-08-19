@@ -178,7 +178,12 @@ class JsChannel extends IChannel implements DynamicChannel {
   @override
   Future<void> initialize() async {
     if (isInitialized) return;
+    await _runtime.initialize();
     // 把持久化的渠道 env 注入 runtime 快照（渠道隔离；脚本经 host.env 读取）。
+    // 必须在 _runtime.initialize() 之后：initialize 内部会以 _readEnv() 覆盖快照
+    // （entry runtime 无 envReader → 空 map），此处再以持久化 env 覆盖，
+    // 否则重启后（新实例 initialize）runtime 快照恒为空 → 脚本 host.env 读不到
+    // 已配置的 PINGAN_USER/PINGAN_PASS（详情页"需配置后才能下载"根因）。
     // env 读取失败不阻塞渠道初始化（降级为空 env，脚本 host.env 读到 null/空）。
     try {
       _runtime.updateEnv(await _envStore.load());
@@ -186,7 +191,6 @@ class JsChannel extends IChannel implements DynamicChannel {
       _logError('读取渠道 env 失败，降级为空: $e');
       _runtime.updateEnv(const {});
     }
-    await _runtime.initialize();
     await _readMeta();
     _rebuildInfo();
     isInitialized = true;
