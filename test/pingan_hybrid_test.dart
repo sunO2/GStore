@@ -13,7 +13,8 @@ import 'package:gstore/core/js/js_channel_runtime.dart';
 /// jsswitchVersion 用 host.ui 驱动版本选择/刷新 + jsBuildHistory 用 host.ui 驱动构建历史选择。
 ///
 /// 与 pingan_script_test.dart 同款假网络/Dao 注入；本文件聚焦 host.ui：
-/// uiShowVersionPicker / uiRefreshDetail / uiShowBuildHistory 回调捕获参数断言，不发真实网络。
+/// uiShowVersionPicker / uiRefreshDetail / uiShowBuildHistory / uiUpdateDownloadList
+/// 回调捕获参数断言，不发真实网络。
 ///
 /// 注意：Hybrid 详情方法（detailMenu/jsswitchVersion/jsBuildHistory）由页面级
 /// JsDetailChannel 消费 → 本测试读取 scripts/channels/pingan.zip 解出的 detail.js
@@ -24,8 +25,10 @@ import 'package:gstore/core/js/js_channel_runtime.dart';
 /// - main('jsswitchVersion', {appId}) → 拉版本选项 → showVersionPicker →
 ///   用户选 {env, version} → refreshDetail({appId, env, version}) → {ok:true, data:true}
 ///   取消/能力未注册 → 静默 {ok:true, data:null}
-/// - main('jsBuildHistory', {appId}) → 拉最新版本 builds → showBuildHistory →
-///   用户选 build → refreshDetail({appId, env, version, build}) → {ok:true, data:true}
+/// - main('jsBuildHistory', {appId}) → 拉最新版本 builds（缓存复用）→ showBuildHistory →
+///   用户选 build → 从缓存取该构建 → 生成单条 downloads →
+///   updateDownloadList({downloads:[单条]}) 局部更新下载区 → {ok:true, data:true}
+///   （不再 refreshDetail 全量重拉：切构建历史数据同源，仅下载项不同）
 ///   取消/能力未注册/失败 → 静默 {ok:true, data:null}；无版本/无构建 → {ok:false, error}
 
 const String _channelKey = 'js_pingan_hybrid_test';
@@ -156,6 +159,54 @@ Map<String, dynamic> defaultHandler(RequestOptions options) {
   return {'code': -1};
 }
 
+/// 完整历史 handler：build-list 返回 android 8.9.0 组 + build 接口返回 35 条完整历史
+/// （真实结构 {build:{builds}}，每条含 ipa[0].name）。供 jsBuildHistory 缓存/命中类测试复用。
+Map<String, dynamic> fullHistoryHandler(RequestOptions options) {
+  if (options.path.contains('/sunflower/i/build-list')) {
+    return {
+      'appLogo': '/logo/app.png',
+      'buildList': [
+        {
+          '_id': 'bg-android',
+          'version': '8.9.0',
+          'platform': 'android',
+          'env': 'sit',
+          'publishedAt': 1700000000000,
+          'builds': [
+            {
+              'identifier': 'com.pingan.app',
+              'versionname': '8.9.0',
+              'num': 35,
+              'size': 100,
+              'fileurl': <Object>[],
+            },
+          ],
+        },
+      ],
+    };
+  }
+  if (options.path.endsWith('/sunflower/i/build')) {
+    final builds = <Map<String, dynamic>>[];
+    for (var num = 35; num >= 1; num--) {
+      builds.add({
+        'identifier': 'com.pingan.app',
+        'versionname': '8.9.0',
+        'num': num,
+        'size': 100 + num,
+        'ipa': [
+          {'name': 'PABank-8.9.0-$num.apk', '_id': 'ipa-$num'},
+        ],
+        'fileurl': <Object>[],
+      });
+    }
+    return {
+      'build': {'_id': 'bg-android', 'version': '8.9.0', 'builds': builds},
+      'appInfo': {'screenshots': <Object>[]},
+    };
+  }
+  return {'code': -1};
+}
+
 void main() {
   late _FakeAppDao appDao;
   late List<String> requestLog;
@@ -178,11 +229,13 @@ void main() {
 
   JsChannelRuntime buildRuntime({
     Map<String, dynamic> Function(RequestOptions options)? handler,
+    Map<String, String> Function()? envReader,
     Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
         uiShowVersionPicker,
     Future<void> Function(Map<String, dynamic> params)? uiRefreshDetail,
     Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
         uiShowBuildHistory,
+    Future<void> Function(List<dynamic> downloads)? uiUpdateDownloadList,
   }) {
     final dio = Dio();
     dio.httpClientAdapter = _FakeDioAdapter(handler ?? defaultHandler, requestLog);
@@ -191,11 +244,13 @@ void main() {
       script: script,
       dio: dio,
       appDao: appDao,
+      envReader: envReader,
       logInfo: (msg) => logMessages.add('info: $msg'),
       logError: (msg) => logMessages.add('error: $msg'),
       uiShowVersionPicker: uiShowVersionPicker,
       uiRefreshDetail: uiRefreshDetail,
       uiShowBuildHistory: uiShowBuildHistory,
+      uiUpdateDownloadList: uiUpdateDownloadList,
     );
   }
 
@@ -337,9 +392,10 @@ void main() {
       await runtime.dispose();
     });
 
-    test('⑦ jsBuildHistory：3 平台组取 android 组 → build 接口完整 35 条 → 选 num=5 → refreshDetail 收到 {build}', () async {
+    test('⑦ jsBuildHistory：3 平台组取 android 组 → build 接口完整 35 条 → 选 num=5 → updateDownloadList 单条（不再 refreshDetail）', () async {
       Map<String, dynamic>? historyOptions;
-      Map<String, dynamic>? refreshParams;
+      List<dynamic>? updateDownloads;
+      var refreshCalled = false;
       final runtime = buildRuntime(
         handler: (options) {
           if (options.path.contains('/sunflower/i/build-list')) {
@@ -433,7 +489,10 @@ void main() {
           return {'num': 5, 'ipaName': 'PABank-8.9.0-5.apk'};
         },
         uiRefreshDetail: (params) async {
-          refreshParams = params;
+          refreshCalled = true;
+        },
+        uiUpdateDownloadList: (downloads) async {
+          updateDownloads = downloads;
         },
       );
       await runtime.initialize();
@@ -455,14 +514,20 @@ void main() {
       expect(build0['ipaName'], 'PABank-8.9.0-35.apk'); // 真实字段：优先 ipa[0].name
       expect(build0['size'], 135);
 
-      // refreshDetail 收到选中构建（Flutter 侧据此切换到该构建的 APK）
-      expect(refreshParams, isNotNull);
-      expect(refreshParams!['appId'], 'app-1');
-      expect(refreshParams!['env'], 'sit');
-      expect(refreshParams!['version'], '8.9.0');
-      final build = refreshParams!['build'] as Map;
-      expect(build['num'], 5);
-      expect(build['ipaName'], 'PABank-8.9.0-5.apk');
+      // updateDownloadList 收到选中构建的单条下载项（缓存生成，无凭证 → url 空 + 不可下载）
+      expect(updateDownloads, isNotNull);
+      expect(updateDownloads!.length, 1);
+      final dl = updateDownloads!.first as Map;
+      expect(dl['name'], 'PABank-8.9.0-5.apk'); // 选中构建 ipa[0].name
+      expect(dl['size'], 105); // 选中构建 size（100+5）
+      expect(dl['version'], '8.9.0');
+      expect(dl['platform'], 'android');
+      expect(dl['url'], '');
+      expect(dl['downloadable'], isFalse);
+      expect(dl['note'], '需在渠道环境变量配置 PINGAN_USER/PINGAN_PASS 后下载');
+
+      // 切构建历史不再 refreshDetail 全量重拉
+      expect(refreshCalled, isFalse);
 
       // 两次 build-list（versionOptions + getBuildHistory）+ 一次 build 接口（android 组 _id）
       final buildRequests = requestLog.where((r) => r.contains('build-list')).toList();
@@ -484,7 +549,8 @@ void main() {
       // build 键内层；旧脚本读顶层 bd.builds（undefined）→ 降级 build-list 组内 1 条
       // （build 35）。mock 用真实结构（本文件 ⑦b/⑦ 已对齐），脚本按 build.builds 读取。
       Map<String, dynamic>? historyOptions;
-      Map<String, dynamic>? refreshParams;
+      List<dynamic>? updateDownloads;
+      var refreshCalled = false;
       final runtime = buildRuntime(
         handler: (options) {
           if (options.path.contains('/sunflower/i/build-list')) {
@@ -636,7 +702,10 @@ void main() {
           return {'num': 5, 'ipaName': 'PABank-8.8.0-5.apk'};
         },
         uiRefreshDetail: (params) async {
-          refreshParams = params;
+          refreshCalled = true;
+        },
+        uiUpdateDownloadList: (downloads) async {
+          updateDownloads = downloads;
         },
       );
       await runtime.initialize();
@@ -657,14 +726,18 @@ void main() {
       expect(build0['num'], 35);
       expect(build0['ipaName'], 'PABank-8.8.0-35.apk');
 
-      // refreshDetail 收到选中构建（version=8.8.0）
-      expect(refreshParams, isNotNull);
-      expect(refreshParams!['appId'], 'app-1');
-      expect(refreshParams!['env'], 'sit');
-      expect(refreshParams!['version'], '8.8.0');
-      final build = refreshParams!['build'] as Map;
-      expect(build['num'], 5);
-      expect(build['ipaName'], 'PABank-8.8.0-5.apk');
+      // updateDownloadList 收到选中构建单条（version=8.8.0，无凭证 → url 空）
+      expect(updateDownloads, isNotNull);
+      expect(updateDownloads!.length, 1);
+      final dl = updateDownloads!.first as Map;
+      expect(dl['name'], 'PABank-8.8.0-5.apk');
+      expect(dl['size'], 105);
+      expect(dl['version'], '8.8.0');
+      expect(dl['url'], '');
+      expect(dl['downloadable'], isFalse);
+
+      // 切构建历史不再 refreshDetail 全量重拉
+      expect(refreshCalled, isFalse);
 
       // 两次 build-list：第一次全量（versionOptions，version 空）→ 第二次 version=8.8.0；
       // 绝不携带 8.9.0（旧实现误取路径）
@@ -678,11 +751,121 @@ void main() {
       await runtime.dispose();
     });
 
-    test('⑧ jsBuildHistory：用户取消（data:null）→ refreshDetail 不被调 + 静默 ok:true', () async {
+    test('⑦c jsBuildHistory：凭证注入 + 认证通过 → updateDownloadList 单条含 proxy URL（downloadable:true）', () async {
+      // 凭证注入（PINGAN_USER/PINGAN_PASS）→ ensureAuthChecked 走 login/check 通过 →
+      // buildDownloads 生成 proxy URL（含 um/value 凭证）；无凭证路径见 ⑦（url 空）。
+      List<dynamic>? updateDownloads;
       var refreshCalled = false;
+      final runtime = buildRuntime(
+        envReader: () => {'PINGAN_USER': 'user1', 'PINGAN_PASS': 'pass1'},
+        handler: (options) {
+          if (options.path.contains('/login/check')) {
+            return {'url': 'https://auth-ok'};
+          }
+          return fullHistoryHandler(options);
+        },
+        uiShowBuildHistory: (options) async => {'num': 5, 'ipaName': 'PABank-8.9.0-5.apk'},
+        uiRefreshDetail: (params) async => refreshCalled = true,
+        uiUpdateDownloadList: (downloads) async => updateDownloads = downloads,
+      );
+      await runtime.initialize();
+
+      final result = await runtime.call('main', ['jsBuildHistory', {'appId': 'app-1'}]) as Map;
+      expect(result['ok'], isTrue);
+      expect(result['data'], isTrue);
+
+      // updateDownloadList 单条：proxy URL 含凭证（um/value），downloadable:true，note 空
+      expect(updateDownloads, isNotNull);
+      expect(updateDownloads!.length, 1);
+      final dl = updateDownloads!.first as Map;
+      expect(dl['name'], 'PABank-8.9.0-5.apk');
+      expect(dl['size'], 105);
+      expect(dl['version'], '8.9.0');
+      expect(dl['url'],
+          'https://test-b-fat.pingan.com.cn/istore/istore-api/mcd-api/mcd-api/proxy/sit/PABank-8.9.0-5.apk?um=user1&value=pass1');
+      expect(dl['downloadable'], isTrue);
+      expect(dl['note'], '');
+
+      // 切构建历史不再 refreshDetail
+      expect(refreshCalled, isFalse);
+
+      await runtime.dispose();
+    });
+
+    test('⑦d jsBuildHistory：缓存复用——两次 jsBuildHistory（同版本）build 接口只拉一次', () async {
+      // 第一次 jsBuildHistory：versionOptions（build-list 无 version）+ getBuildHistory
+      // （build-list 带 version + build 接口）→ 缓存完整 builds；
+      // 第二次 jsBuildHistory：getBuildHistory 缓存命中 → 不再拉 build-list/build 接口。
+      var updateCount = 0;
+      final runtime = buildRuntime(
+        handler: fullHistoryHandler,
+        uiShowBuildHistory: (options) async => {'num': 5, 'ipaName': 'PABank-8.9.0-5.apk'},
+        uiUpdateDownloadList: (downloads) async => updateCount++,
+      );
+      await runtime.initialize();
+
+      final r1 = await runtime.call('main', ['jsBuildHistory', {'appId': 'app-1'}]) as Map;
+      expect(r1['ok'], isTrue);
+      final r2 = await runtime.call('main', ['jsBuildHistory', {'appId': 'app-1'}]) as Map;
+      expect(r2['ok'], isTrue);
+
+      // 两次都局部更新下载区
+      expect(updateCount, 2);
+
+      // build 接口只拉一次（缓存复用）；build-list 三次（每次 versionOptions 拉一次，
+      // 第一次 getBuildHistory 再拉一次带 version 的；第二次 getBuildHistory 缓存命中不拉）
+      expect(requestLog.where((r) => r.contains('/sunflower/i/build&')).length, 1);
+      final buildRequests = requestLog.where((r) => r.contains('build-list')).toList();
+      expect(buildRequests.length, 3);
+
+      await runtime.dispose();
+    });
+
+    test('⑦e jsBuildHistory：缓存无该构建（选中 num 不在缓存）→ 降级 {ok:false, error} 不崩', () async {
+      // 异常路径：选择器回传的构建不在缓存 builds[]（如脏数据/缓存被清）→
+      // 降级提示，不调 updateDownloadList/refreshDetail，不抛。
+      var updateCalled = false;
+      var refreshCalled = false;
+      final runtime = buildRuntime(
+        handler: fullHistoryHandler,
+        uiShowBuildHistory: (options) async => {'num': 999, 'ipaName': 'ghost.apk'},
+        uiRefreshDetail: (params) async => refreshCalled = true,
+        uiUpdateDownloadList: (downloads) async => updateCalled = true,
+      );
+      await runtime.initialize();
+
+      final result = await runtime.call('main', ['jsBuildHistory', {'appId': 'app-1'}]) as Map;
+      expect(result['ok'], isFalse);
+      expect(result['data'], isNull);
+      expect(result['error'], '未找到所选构建，请重试');
+      expect(updateCalled, isFalse);
+      expect(refreshCalled, isFalse);
+
+      await runtime.dispose();
+    });
+
+    test('⑦f jsBuildHistory：updateDownloadList 未注册（未注入回调）→ 静默 ok:true 不崩', () async {
+      // 能力未注册：host.ui.updateDownloadList 返回 {ok:false}（非抛）→ 脚本静默继续 ok:true。
+      final runtime = buildRuntime(
+        handler: fullHistoryHandler,
+        uiShowBuildHistory: (options) async => {'num': 5, 'ipaName': 'PABank-8.9.0-5.apk'},
+      );
+      await runtime.initialize();
+
+      final result = await runtime.call('main', ['jsBuildHistory', {'appId': 'app-1'}]) as Map;
+      expect(result['ok'], isTrue);
+      expect(result['data'], isTrue);
+
+      await runtime.dispose();
+    });
+
+    test('⑧ jsBuildHistory：用户取消（data:null）→ refreshDetail/updateDownloadList 不被调 + 静默 ok:true', () async {
+      var refreshCalled = false;
+      var updateCalled = false;
       final runtime = buildRuntime(
         uiShowBuildHistory: (options) async => null,
         uiRefreshDetail: (params) async => refreshCalled = true,
+        uiUpdateDownloadList: (downloads) async => updateCalled = true,
       );
       await runtime.initialize();
 
@@ -690,6 +873,7 @@ void main() {
       expect(result['ok'], isTrue);
       expect(result['data'], isNull);
       expect(refreshCalled, isFalse);
+      expect(updateCalled, isFalse);
 
       await runtime.dispose();
     });
