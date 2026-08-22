@@ -23,7 +23,8 @@ import 'package:gstore/core/js/js_channel_runtime.dart';
 /// entry/detail 各自独立 runtime（独立 QuickJS context），工具函数/认证缓存不共享。
 
 const String _pinganHost = 'https://test-b-fat.pingan.com.cn/istore';
-const String _mcdBase = 'https://test-b-fat.pingan.com.cn/istore/istore-api/mcd-api/mcd-api';
+const String _apiBase = '$_pinganHost/istore-api';
+const String _mcdBase = 'https://test-b-fat.pingan.com.cn/mcd-api/mcd-api';
 const String _channelKey = 'js_pingan_test';
 
 /// 内存版 ChannelAddedAppDao（测试用，模拟渠道数据库）
@@ -138,6 +139,7 @@ class _FakePinganApi {
   }
 
   /// build-list：ios 组 publishedAt 最新（用于验证"排序后取第一个 android"）
+  /// __v 为 0 基构建计数（__v=34 → 35 次构建），此处 android 7 次 → __v=6。
   Map<String, dynamic> buildList({required bool withFileUrl}) {
     return {
       'appLogo': '/logo/app.png',
@@ -149,6 +151,7 @@ class _FakePinganApi {
           'env': 'sit',
           'publishedAt': 1700000000000,
           'status': 'success',
+          '__v': 1, // 2 次构建（0 基）
           'builds': [
             {
               'identifier': 'com.pingan.ios',
@@ -169,6 +172,7 @@ class _FakePinganApi {
           'env': 'sit',
           'publishedAt': 1690000000000, // 比 ios 旧 → 排序后仍应选 android
           'status': 'success',
+          '__v': 6, // 7 次构建（0 基）
           'builds': [
             {
               'identifier': 'com.pingan.app',
@@ -299,7 +303,7 @@ void main() {
       return api.buildList(withFileUrl: false);
     }
     if (path.contains('login/check')) {
-      return {'code': 0, 'msg': 'ok'}; // 认证成功但响应无下载地址
+      return {'code': '000000', 'msg': 'success'}; // 认证成功
     }
     return {'code': -1};
   }
@@ -354,7 +358,7 @@ void main() {
       expect(first['appId'], 'app-1'); // 列表阶段 appId = a.name
       expect(first['name'], '应用1'); // displayname
       expect(first['des'], '应用1 的简介 description-1'); // intro
-      expect(first['icon'], '$_pinganHost/icons/1.png'); // imgSrc 补全 host
+      expect(first['icon'], '$_apiBase/icons/1.png'); // imgSrc 补全 API_BASE
       expect(first['description'], '应用1 的简介 description-1'); // 落库兼容字段
       expect(first['repositories'], 'id-1');
 
@@ -461,7 +465,7 @@ void main() {
       expect(app['packageName'], 'com.pingan.app'); // 真实包名（安装检测用）
       expect(app['name'], '1.9.0'); // versionname
       expect(app['des'], 'app-1'); // des = 查询用 appId
-      expect(app['icon'], '$_pinganHost/logo/app.png'); // appLogo 补全
+      expect(app['icon'], '$_apiBase/logo/app.png'); // appLogo 补全 API_BASE
 
       final extra = app['extra'] as Map;
       expect(extra['_id'], 'bg-android');
@@ -512,7 +516,7 @@ void main() {
             return api.buildList(withFileUrl: false);
           }
           if (options.path.contains('login/check')) {
-            return {'code': 0, 'url': '/download/token-redirect.apk'};
+            return {'code': '000000', 'msg': 'success'};
           }
           return defaultHandler(options);
         },
@@ -524,7 +528,7 @@ void main() {
       // 下载地址 = proxy 拼接（不经 login/check 返回值）；无 PINGAN_ENV → 默认 env=sit
       expect(
         extra['apkUrl'],
-        '$_mcdBase/proxy/sit/com.pingan.app-1.9.0.apk?um=tester&value=secret',
+        '$_mcdBase/proxy/prd/com.pingan.app-1.9.0.apk?um=tester&value=secret',
       );
       expect(extra['downloadNote'], isNull);
       // 确实发起了认证请求（先主路径，成功即止）
@@ -557,8 +561,8 @@ void main() {
       expect(extra['apkUrl'], isNull);
       expect(extra['downloadNote'], '需认证或暂不可下载');
       expect((extra['authError'] as String), contains('认证失败'));
-      // 主路径失败 → 尝试了文档路径
-      expect(requestLog.where((r) => r.contains('login/check')).length, 2);
+      // 主路径失败
+      expect(requestLog.where((r) => r.contains('login/check')).length, 1);
 
       await runtime.dispose();
     });
@@ -1174,7 +1178,7 @@ void main() {
           }
           if (options.path.contains('login/check')) {
             loginCheckCount++;
-            return {'code': 0, 'url': '/download/token-redirect.apk'};
+            return {'code': '000000', 'msg': 'success'};
           }
           return defaultHandler(options);
         },
@@ -1193,7 +1197,7 @@ void main() {
       final d1 = r1['data'] as Map;
       final dl1 = (d1['downloads'] as List).first as Map;
       expect(dl1['url'],
-          '$_mcdBase/proxy/sit/com.pingan.app-1.9.0.apk?um=tester&value=secret');
+          '$_mcdBase/proxy/prd/com.pingan.app-1.9.0.apk?um=tester&value=secret');
       expect(dl1['downloadable'], isTrue);
       expect(dl1['note'], '');
 
@@ -1210,7 +1214,7 @@ void main() {
           }
           if (options.path.contains('login/check')) {
             loginCheckCount++;
-            return {'code': 0, 'url': '/download/token-redirect.apk'};
+            return {'code': '000000', 'msg': 'success'};
           }
           return defaultHandler(options);
         },
@@ -1234,7 +1238,7 @@ void main() {
           }
           if (options.path.contains('login/check')) {
             loginCheckCount++;
-            return {'code': 0, 'url': '/download/token-redirect.apk'};
+            return {'code': '000000', 'msg': 'success'};
           }
           return defaultHandler(options);
         },
@@ -1282,10 +1286,10 @@ void main() {
 
       // 失败 60s 冷却 → 再次调用不重发 login/check（修复前每次重发 main+doc 2 次 = 4）
       await runtime.call('main', ['getAppDetail', {'appId': 'app-1'}]);
-      expect(loginCheckCount, 2);
+      expect(loginCheckCount, 1);
       // 冷却期内第三次调用 → 依旧不重发（请求风暴防护）
       await runtime.call('main', ['getAppDetail', {'appId': 'app-1'}]);
-      expect(loginCheckCount, 2);
+      expect(loginCheckCount, 1);
       // 冷却跳过有日志（来源可定位）
       expect(logMessages.any((m) => m.contains('[login/check] 失败冷却中跳过重发')), isTrue);
 
@@ -1345,7 +1349,7 @@ void main() {
           }
           if (options.path.contains('login/check')) {
             loginCheckCount++;
-            return {'code': 0, 'url': '/download/token-redirect.apk'};
+            return {'code': '000000', 'msg': 'success'};
           }
           return defaultHandler(options);
         },
@@ -1363,7 +1367,7 @@ void main() {
       expect(downloads.length, 1);
       final dl0 = downloads[0] as Map; // 最新组：ipa name → proxy 拼接（默认 env=sit）
       expect(dl0['url'],
-          '$_mcdBase/proxy/sit/com.pingan.real-3.2.1.apk?um=tester&value=secret');
+          '$_mcdBase/proxy/prd/com.pingan.real-3.2.1.apk?um=tester&value=secret');
       expect(dl0['downloadable'], isTrue);
       expect(dl0['version'], '3.2.1');
 
@@ -1489,11 +1493,11 @@ void main() {
       expect(last['num'], 1);
       expect(last['ipaName'], 'PABank-8.8.0-1.apk');
 
-      // build-list（1 次，带 version）+ build 接口（1 次 _id）
+      // build-list（1 次，全量无 version，复用 getAppDetail 缓存）+ build 接口（1 次 _id）
       final buildListRequests =
           requestLog.where((r) => r.contains('build-list')).toList();
       expect(buildListRequests.length, 1);
-      expect(buildListRequests.first, contains('version=8.8.0'));
+      expect(buildListRequests.first, contains('version=-'));
       expect(requestLog.where((r) => r.contains('/sunflower/i/build?')).length, 1);
 
       await runtime.dispose();
@@ -1853,7 +1857,7 @@ void main() {
             return api.buildDetail('bg-ibank', ipaName: 'PABank-Debug-8.8.0-35.apk');
           }
           if (options.path.contains('login/check')) {
-            return {'code': 0, 'url': '/download/token-redirect.apk'};
+            return {'code': '000000', 'msg': 'success'};
           }
           return defaultHandler(options);
         },
@@ -1872,7 +1876,7 @@ void main() {
       // proxy URL（env + ipaName + um/value 编码）——修复前为 ''（下载地址空）
       expect(
         dl['url'],
-        '$_mcdBase/proxy/sit/PABank-Debug-8.8.0-35.apk?um=tester&value=secret',
+        '$_mcdBase/proxy/prd/PABank-Debug-8.8.0-35.apk?um=tester&value=secret',
       );
       expect(dl['downloadable'], isTrue);
       expect(dl['note'], '');
@@ -1923,7 +1927,7 @@ void main() {
             return {'__status': 500, 'msg': 'boom'}; // build 补全失败
           }
           if (options.path.contains('login/check')) {
-            return {'code': 0, 'url': '/download/token-redirect.apk'};
+            return {'code': '000000', 'msg': 'success'};
           }
           return defaultHandler(options);
         },
@@ -1953,7 +1957,7 @@ void main() {
             return api.buildDetail('bg-ibank', ipaName: 'PABank-Debug-8.8.0-35.apk');
           }
           if (options.path.contains('login/check')) {
-            return {'code': 0, 'url': '/download/token-redirect.apk'};
+            return {'code': '000000', 'msg': 'success'};
           }
           return defaultHandler(options);
         },
@@ -1967,7 +1971,7 @@ void main() {
       expect(dl['name'], 'PABank-Debug-8.8.0-35.apk');
       expect(
         dl['url'],
-        '$_mcdBase/proxy/sit/PABank-Debug-8.8.0-35.apk?um=tester&value=secret',
+        '$_mcdBase/proxy/prd/PABank-Debug-8.8.0-35.apk?um=tester&value=secret',
       );
       expect(dl['downloadable'], isTrue);
 

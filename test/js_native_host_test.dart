@@ -1,27 +1,28 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/js/js_channel_runtime.dart';
+import 'package:gstore/core/js/js_native_host.dart';
 
-/// host.ui 能力组测试脚本：JS 侧调 showVersionPicker / refreshDetail / showBuildHistory
+/// host.native 能力组测试脚本：JS 侧调 showVersionPicker / refreshDetail / showBuildHistory
 const String _uiScript = '''
 async function pickVersion() {
-  const res = await host.ui.showVersionPicker({
+  const res = await host.ui.call('showVersionPicker', {
     title: '选择版本', envs: ['sit'], versions: [], currentEnv: 'sit', currentVersion: '1.0'
   });
   return res;
 }
 
 async function pickNoOptions() {
-  const res = await host.ui.showVersionPicker();
+  const res = await host.ui.call('showVersionPicker');
   return res;
 }
 
 async function refreshDetail() {
-  const res = await host.ui.refreshDetail({appId: 'x', env: 'sit', version: '1.0'});
+  const res = await host.ui.call('refreshDetail', {appId: 'x', env: 'sit', version: '1.0'});
   return res;
 }
 
 async function pickBuildHistory() {
-  const res = await host.ui.showBuildHistory({
+  const res = await host.ui.call('showBuildHistory', {
     version: '1.0.0', env: 'uat',
     builds: [
       { num: 3, publishedAt: '2024-01-03', size: 2048, changelog: '修复', installTimes: 5, builtBy: 'ci', ipaName: 'app-1.0.0.apk' },
@@ -32,12 +33,12 @@ async function pickBuildHistory() {
 }
 
 async function pickBuildNoOptions() {
-  const res = await host.ui.showBuildHistory();
+  const res = await host.ui.call('showBuildHistory');
   return res;
 }
 
 async function updateDownloadList() {
-  const res = await host.ui.updateDownloadList({
+  const res = await host.ui.call('updateDownloadList', {
     downloads: [
       { url: 'u', name: 'n', size: 1024, version: '1.0', platform: 'android', downloadable: true },
       { url: 'u2', name: 'n2' }
@@ -47,21 +48,22 @@ async function updateDownloadList() {
 }
 
 async function updateDownloadListNoParams() {
-  const res = await host.ui.updateDownloadList();
+  const res = await host.ui.call('updateDownloadList');
   return res;
 }
 ''';
 
 void main() {
-  test('① 注入 uiShowVersionPicker → 回调被调（参数正确）→ JS 得 {env, version}', () async {
+  test('① 注入 showVersionPicker → 回调被调（参数正确）→ JS 得 {env, version}', () async {
     Map<String, dynamic>? received;
     final runtime = JsChannelRuntime(
       channelKey: 'js.test',
       script: _uiScript,
-      uiShowVersionPicker: (options) async {
-        received = options;
-        return {'env': 'sit', 'version': '1.0'};
-      },
+      nativeHost: JSNativeHost()
+        ..register('ui', 'showVersionPicker', (options) async {
+          received = options;
+          return {'env': 'sit', 'version': '1.0'};
+        }),
     );
     await runtime.initialize();
 
@@ -88,7 +90,8 @@ void main() {
     final runtime = JsChannelRuntime(
       channelKey: 'js.test',
       script: _uiScript,
-      uiShowVersionPicker: (options) async => null,
+      nativeHost: JSNativeHost()
+        ..register('ui', 'showVersionPicker', (options) async => null),
     );
     await runtime.initialize();
 
@@ -114,14 +117,16 @@ void main() {
     await runtime.dispose();
   });
 
-  test('④ 注入 uiRefreshDetail → 回调被调（参数正确）→ {ok:true}', () async {
+  test('④ 注入 refreshDetail → 回调被调（参数正确）→ {ok:true}', () async {
     Map<String, dynamic>? received;
     final runtime = JsChannelRuntime(
       channelKey: 'js.test',
       script: _uiScript,
-      uiRefreshDetail: (params) async {
-        received = params;
-      },
+      nativeHost: JSNativeHost()
+        ..register('ui', 'refreshDetail', (params) async {
+          received = params;
+          return null;
+        }),
     );
     await runtime.initialize();
 
@@ -142,9 +147,11 @@ void main() {
     final runtime = JsChannelRuntime(
       channelKey: 'js.test',
       script: _uiScript,
-      uiShowVersionPicker: (options) async =>
-          throw Exception('picker broken'),
-      uiRefreshDetail: (params) async => throw Exception('refresh broken'),
+      nativeHost: JSNativeHost()
+        ..register('ui', 'showVersionPicker',
+            (options) async => throw Exception('picker broken'))
+        ..register('ui', 'refreshDetail',
+            (params) async => throw Exception('refresh broken')),
     );
     await runtime.initialize();
 
@@ -163,15 +170,17 @@ void main() {
     await runtime.dispose();
   });
 
-  test('⑥ 注入 uiShowBuildHistory → 回调收到 options（version/env/builds）→ JS 得选中 build', () async {
+  test('⑥ 注入 showBuildHistory → 回调收到 options（version/env/builds）→ JS 得选中 build',
+      () async {
     Map<String, dynamic>? received;
     final runtime = JsChannelRuntime(
       channelKey: 'js.test',
       script: _uiScript,
-      uiShowBuildHistory: (options) async {
-        received = options;
-        return {'num': 3, 'ipaName': 'app-1.0.0.apk'};
-      },
+      nativeHost: JSNativeHost()
+        ..register('ui', 'showBuildHistory', (options) async {
+          received = options;
+          return {'num': 3, 'ipaName': 'app-1.0.0.apk'};
+        }),
     );
     await runtime.initialize();
 
@@ -201,7 +210,8 @@ void main() {
     final runtime = JsChannelRuntime(
       channelKey: 'js.test',
       script: _uiScript,
-      uiShowBuildHistory: (options) async => null,
+      nativeHost: JSNativeHost()
+        ..register('ui', 'showBuildHistory', (options) async => null),
     );
     await runtime.initialize();
 
@@ -231,14 +241,16 @@ void main() {
     await runtime.dispose();
   });
 
-  test('⑨ 注入 uiUpdateDownloadList → 回调收到 downloads（参数正确）→ {ok:true}', () async {
+  test('⑨ 注入 updateDownloadList → 回调收到 downloads（参数正确）→ {ok:true}', () async {
     List<dynamic>? received;
     final runtime = JsChannelRuntime(
       channelKey: 'js.test',
       script: _uiScript,
-      uiUpdateDownloadList: (downloads) async {
-        received = downloads;
-      },
+      nativeHost: JSNativeHost()
+        ..register('ui', 'updateDownloadList', (p) async {
+          received = p['downloads'] as List<dynamic>?;
+          return null;
+        }),
     );
     await runtime.initialize();
 
@@ -264,7 +276,7 @@ void main() {
     await runtime.dispose();
   });
 
-  test('⑩ 未注入 uiUpdateDownloadList → {ok:false} 提示未注册', () async {
+  test('⑩ 未注入 updateDownloadList → {ok:false} 提示未注册', () async {
     final runtime = JsChannelRuntime(channelKey: 'js.test', script: _uiScript);
     await runtime.initialize();
 
@@ -281,12 +293,13 @@ void main() {
     await runtime.dispose();
   });
 
-  test('⑪ 注入 uiUpdateDownloadList 回调抛异常 → {ok:false} 不崩', () async {
+  test('⑪ 注入 updateDownloadList 回调抛异常 → {ok:false} 不崩', () async {
     final runtime = JsChannelRuntime(
       channelKey: 'js.test',
       script: _uiScript,
-      uiUpdateDownloadList: (downloads) async =>
-          throw Exception('update broken'),
+      nativeHost: JSNativeHost()
+        ..register('ui', 'updateDownloadList',
+            (p) async => throw Exception('update broken')),
     );
     await runtime.initialize();
 

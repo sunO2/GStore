@@ -6,6 +6,7 @@ import 'package:gstore/core/channel/database/channel_added_app.dart';
 import 'package:gstore/core/channel/database/channel_added_app_dao.dart';
 import 'package:gstore/core/channel/database/channel_database.dart';
 import 'package:gstore/core/config/config_service.dart';
+import 'package:gstore/core/js/js_native_host.dart';
 import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/http/github/dio_client.dart';
 import 'package:quickjs_engine/quickjs_engine.dart';
@@ -39,23 +40,11 @@ class JsChannelException implements Exception {
 ///   需改环境变量时由 JSChannel.setEnv 持久化后调用 [updateEnv] 热更新快照
 ///   （无需重建引擎，脚本下次读取即生效）。
 /// - `host.log.info(msg)` / `host.log.error(msg)` → appLog
-/// - `host.ui.showVersionPicker(options)` → 弹 Flutter 版本/环境选择框（Hybrid：
-///   runtime 不依赖 UI，由调用方注入 [uiShowVersionPicker] 实现）；
-///   options: `{title, envs:[], versions:[{version, envs, buildCount}], currentEnv, currentVersion}`，
-///   Promise → `{ok, data}`，data 为 `{env, version}` 或 null（用户取消）：
-///   `const sel = await host.ui.showVersionPicker({...}); sel.data`
-/// - `host.ui.showBuildHistory(options)` → 弹 Flutter 构建历史选择器（由调用方注入
-///   [uiShowBuildHistory] 实现）；options: `{version, env, builds:[{num, publishedAt,
-///   size, changelog, installTimes, builtBy, ipaName}]}`，Promise → `{ok, data}`，
-///   data 为选中 build Map（含 num/ipaName）或 null（用户取消）：
-///   `const sel = await host.ui.showBuildHistory({...}); sel.data`
-/// - `host.ui.refreshDetail(params)` → 刷新详情页（params: `{appId, env, version, build?}`，
-///   build 可选：选中历史构建时携带 `{num, ipaName}`，由调用方注入 [uiRefreshDetail]
-///   实现）→ `{ok}`
-/// - `host.ui.updateDownloadList({downloads})` → 更新详情页下载区（JS 用缓存生成
-///   下载项，切构建历史时局部刷新，不重载详情；由调用方注入 [uiUpdateDownloadList]
-///   实现）。downloads: `[{url, name, size, version, platform, downloadable?, note?}]`，
-///   → `{ok}`：`await host.ui.updateDownloadList({downloads: [...]})`
+/// - `host.native.call(name, payload)` → 通用原生能力注册表。通过 [JSNativeHost]
+///   注册/注销任意能力，name 采用命名空间形式（如 `ui.showVersionPicker`、
+///   `platform.share`），payload 为 JSON 可序列化参数，返回 `{ok, data}` 或
+///   `{ok:false, error}`。新增能力只需两步：JS 侧调 `host.native.call` + Dart 侧
+///   [JSNativeHost.register]。
 ///
 /// ## 异常处理
 /// - JS 抛错 → [call] 抛 [JsChannelException]（不崩应用）
@@ -80,21 +69,9 @@ class JsChannelRuntime {
   final void Function(String message)? _logInfoOverride;
   final void Function(String message)? _logErrorOverride;
 
-  /// host.ui 能力：由调用方（JSChannel/详情页）注入 Flutter 实现
-  /// （runtime 不直接依赖 UI/context，保持可测试）。
-  /// 构造时可注入，也可经 [setUiCallbacks] 运行时更新（详情页使用渠道时注入）。
-  Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
-      _uiShowVersionPickerOverride;
-
-  /// 构建历史选择器（JS 调，options 含 version/env/builds，返回选中 build 或 null）
-  Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
-      _uiShowBuildHistoryOverride;
-
-  /// 刷新详情页（JS 调，参数含 appId/env/version/build?）
-  Future<void> Function(Map<String, dynamic> params)? _uiRefreshDetailOverride;
-
-  /// 更新详情页下载区（JS 用缓存生成下载项，切构建历史时局部刷新，不重载详情）
-  Future<void> Function(List<dynamic> downloads)? _uiUpdateDownloadListOverride;
+  /// 通用原生能力注册表：通过 [JSNativeHost] 注册/注销任意 UI 及平台能力。
+  /// 构造时自动创建空实例，也可经 [setNativeHost] 运行时注入已有实例。
+  JSNativeHost _nativeHost;
 
   JavascriptRuntime? _engine;
   bool _initialized = false;
@@ -112,51 +89,22 @@ class JsChannelRuntime {
     Map<String, String> Function()? envReader,
     void Function(String message)? logInfo,
     void Function(String message)? logError,
-    Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
-        uiShowVersionPicker,
-    Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
-        uiShowBuildHistory,
-    Future<void> Function(Map<String, dynamic> params)? uiRefreshDetail,
-    Future<void> Function(List<dynamic> downloads)? uiUpdateDownloadList,
+    JSNativeHost? nativeHost,
   })  : _dioOverride = dio,
         _appDaoOverride = appDao,
         _configGetterOverride = configGetter,
         _envReaderOverride = envReader,
         _logInfoOverride = logInfo,
         _logErrorOverride = logError,
-        _uiShowVersionPickerOverride = uiShowVersionPicker,
-        _uiShowBuildHistoryOverride = uiShowBuildHistory,
-        _uiRefreshDetailOverride = uiRefreshDetail,
-        _uiUpdateDownloadListOverride = uiUpdateDownloadList;
+        _nativeHost = nativeHost ?? JSNativeHost();
   bool get isInitialized => _initialized;
   bool get isDisposed => _disposed;
 
-  /// 运行时注入/更新 host.ui 实现（构造后可改：详情页使用时注入，
-  /// 避免 ChannelLoader 创建渠道时无 UI context）。
+  /// 运行时注入/更新 [JSNativeHost] 实例（构造后可改）。
   ///
-  /// 只覆盖非 null 项；null 项保持原值（构造参数或上次 [setUiCallbacks]）。
-  /// 注入后脚本下次调 `host.ui.showVersionPicker` / `host.ui.showBuildHistory` /
-  /// `host.ui.refreshDetail` / `host.ui.updateDownloadList` 立即生效（回调在调用时读取，无需重建引擎）。
-  void setUiCallbacks({
-    Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
-        uiShowVersionPicker,
-    Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
-        uiShowBuildHistory,
-    Future<void> Function(Map<String, dynamic> params)? uiRefreshDetail,
-    Future<void> Function(List<dynamic> downloads)? uiUpdateDownloadList,
-  }) {
-    if (uiShowVersionPicker != null) {
-      _uiShowVersionPickerOverride = uiShowVersionPicker;
-    }
-    if (uiShowBuildHistory != null) {
-      _uiShowBuildHistoryOverride = uiShowBuildHistory;
-    }
-    if (uiRefreshDetail != null) {
-      _uiRefreshDetailOverride = uiRefreshDetail;
-    }
-    if (uiUpdateDownloadList != null) {
-      _uiUpdateDownloadListOverride = uiUpdateDownloadList;
-    }
+  /// 注入后脚本下次调 `host.native.call` 立即生效（回调在调用时读取，无需重建引擎）。
+  void setNativeHost(JSNativeHost host) {
+    _nativeHost = host;
   }
 
   /// 热更新 env 快照（JSChannel.setEnv/removeEnv 持久化后调用）。
@@ -195,17 +143,8 @@ class JsChannelRuntime {
 
   void Function(String message)? get logErrorOverride => _logErrorOverride;
 
-  Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
-      get uiShowVersionPickerOverride => _uiShowVersionPickerOverride;
-
-  Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
-      get uiShowBuildHistoryOverride => _uiShowBuildHistoryOverride;
-
-  Future<void> Function(Map<String, dynamic> params)?
-      get uiRefreshDetailOverride => _uiRefreshDetailOverride;
-
-  Future<void> Function(List<dynamic> downloads)?
-      get uiUpdateDownloadListOverride => _uiUpdateDownloadListOverride;
+  /// 通用原生能力注册表
+  JSNativeHost get nativeHost => _nativeHost;
 
   /// 建引擎、注册 host API、注入 host 前缀、加载脚本
   Future<void> initialize() async {
@@ -292,7 +231,7 @@ class JsChannelRuntime {
     _registerConfigHost(engine);
     _registerEnvHost(engine);
     _registerLogHost(engine);
-    _registerUiHost(engine);
+    _registerNativeHost(engine);
   }
 
   void _registerNetworkHost(JavascriptRuntime engine) {
@@ -421,71 +360,24 @@ class JsChannelRuntime {
     });
   }
 
-  /// host.ui：Flutter UI 能力注入（Hybrid 架构，runtime 不依赖 UI/context）。
-  /// 实现由调用方（JSChannel/详情页）通过构造注入，未注入 → {ok:false} 提示。
-  void _registerUiHost(JavascriptRuntime engine) {
-    // host.ui.showVersionPicker(options) → Promise<{env, version} | null>
-    // options: {title, envs:[], versions:[{version, envs, buildCount}], currentEnv, currentVersion}
-    engine.onMessage('host.ui.showVersionPicker', (dynamic args) async {
+  /// host.native：通用原生能力注册表（通过 [JSNativeHost] 路由到已注册的 handler）。
+  /// 脚本侧调 `host.ui.call(method, payload)` / `host.core.call` / `host.alert.call`
+  /// 经此方法 dispatch，键为 `'$ns.$method'`。
+  void _registerNativeHost(JavascriptRuntime engine) {
+    engine.onMessage('host.native.call', (dynamic args) async {
       try {
-        final opts = _asMap(args['options'] ?? args);
-        final cb = _uiShowVersionPickerOverride;
+        final map = _asMap(args);
+        final ns = map['ns']?.toString() ?? '';
+        final method = map['method']?.toString() ?? '';
+        final key = '$ns.$method';
+        final payload = _asMap(map['payload'] ?? map);
+        final cb = _nativeHost[key];
         if (cb == null) {
-          return {'ok': false, 'error': 'host.ui.showVersionPicker 未注册'};
+          return {'ok': false, 'error': 'host.native.$key 未注册'};
         }
-        final sel = await cb(opts);
-        return {'ok': true, 'data': sel};
+        return {'ok': true, 'data': await cb(payload)};
       } catch (e) {
-        _logError('host.ui.showVersionPicker 失败: $e');
-        return {'ok': false, 'error': e.toString()};
-      }
-    });
-    // host.ui.showBuildHistory(options) → Promise<选中 build Map | null>
-    // options: {version, env, builds:[{num, publishedAt, size, changelog, installTimes, builtBy, ipaName}]}
-    engine.onMessage('host.ui.showBuildHistory', (dynamic args) async {
-      try {
-        final opts = _asMap(args['options'] ?? args);
-        final cb = _uiShowBuildHistoryOverride;
-        if (cb == null) {
-          return {'ok': false, 'error': 'host.ui.showBuildHistory 未注册'};
-        }
-        final sel = await cb(opts);
-        return {'ok': true, 'data': sel};
-      } catch (e) {
-        _logError('host.ui.showBuildHistory 失败: $e');
-        return {'ok': false, 'error': e.toString()};
-      }
-    });
-    // host.ui.refreshDetail(params) → 刷新详情页
-    // params: {appId, env, version, build?}
-    engine.onMessage('host.ui.refreshDetail', (dynamic args) async {
-      try {
-        final params = _asMap(args['params'] ?? args);
-        final cb = _uiRefreshDetailOverride;
-        if (cb == null) {
-          return {'ok': false, 'error': 'host.ui.refreshDetail 未注册'};
-        }
-        await cb(params);
-        return {'ok': true};
-      } catch (e) {
-        _logError('host.ui.refreshDetail 失败: $e');
-        return {'ok': false, 'error': e.toString()};
-      }
-    });
-    // host.ui.updateDownloadList({downloads: [{url,name,size,version,platform,...}]})
-    // → 更新详情页下载区（JS 用缓存生成下载项，切构建历史时局部刷新，不重载详情）
-    engine.onMessage('host.ui.updateDownloadList', (dynamic args) async {
-      try {
-        final map = _asMap(args['params'] ?? args);
-        final downloads = _asList(map['downloads']);
-        final cb = _uiUpdateDownloadListOverride;
-        if (cb == null) {
-          return {'ok': false, 'error': 'host.ui.updateDownloadList 未注册'};
-        }
-        await cb(downloads);
-        return {'ok': true};
-      } catch (e) {
-        _logError('host.ui.updateDownloadList 失败: $e');
+        _logError('host.native.call 失败: $e');
         return {'ok': false, 'error': e.toString()};
       }
     });
@@ -675,17 +567,18 @@ var host = {
     }
   },
   ui: {
-    showVersionPicker: function(options) {
-      return sendMessage('host.ui.showVersionPicker', JSON.stringify({options: options || {}}));
-    },
-    showBuildHistory: function(options) {
-      return sendMessage('host.ui.showBuildHistory', JSON.stringify({options: options || {}}));
-    },
-    refreshDetail: function(params) {
-      return sendMessage('host.ui.refreshDetail', JSON.stringify({params: params || {}}));
-    },
-    updateDownloadList: function(opts) {
-      return sendMessage('host.ui.updateDownloadList', JSON.stringify({params: opts || {}}));
+    call: function(method, payload) {
+      return sendMessage('host.native.call', JSON.stringify({ns:'ui', method: method, payload: payload || {}}));
+    }
+  },
+  core: {
+    call: function(method, payload) {
+      return sendMessage('host.native.call', JSON.stringify({ns:'core', method: method, payload: payload || {}}));
+    }
+  },
+  alert: {
+    call: function(method, payload) {
+      return sendMessage('host.native.call', JSON.stringify({ns:'alert', method: method, payload: payload || {}}));
     }
   }
 };

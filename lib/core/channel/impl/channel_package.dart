@@ -10,14 +10,16 @@ import 'package:archive/archive.dart';
 /// channels/<key>.zip
 /// ├── entry.js    （必须：发现页脚本，main 分发器：getAllApps/searchApps/getAppInfo 等）
 /// ├── detail.js   （可选：详情页脚本，main 分发器：getAppDetail/versionOptions/switchVersion/buildHistory/detailMenu 等）
-/// └── meta.json   （可选：{ "name": "...", "description": "...", "icon": "..." }）
+/// └── meta.json   （可选：{ "name": "...", "description": "...", "icon": "...", "requiredEnvVars": ["KEY1", "KEY2"] }）
 /// ```
 ///
 /// channelKey = `'js_' + zip 文件名（无 .zip）`。
 ///
 /// ## 安全设计（防 zip 路径穿越）
-/// 本解析器**只取根目录直接文件**，且**不落盘任何解压内容**（仅读入内存字符串）：
-/// - 条目名含 `/`、`\` 或 `..`（如 `../evil.js`、`sub/entry.js`）→ **整包拒绝**（返回 null）
+/// 本解析器**只取根目录直接文件**（icons/ 前缀条目允许子路径），且**不落盘任何解压内容**
+/// （仅读入内存字符串/字节）：
+/// - 根目录条目名含 `/`、`\` 或 `..`（如 `../evil.js`、`sub/entry.js`）→ **整包拒绝**（返回 null）
+/// - icons/ 前缀条目允许含 `/`（子目录图标），但含 `..` → 整包拒绝
 /// - 目录条目直接跳过
 /// 配合 [ChannelLoader] 的 channelKey 标识符白名单，杜绝包内路径逃逸。
 class ChannelPackage {
@@ -30,11 +32,24 @@ class ChannelPackage {
   /// 渠道元信息（meta.json，可选：name/description/icon）
   final Map<String, dynamic>? meta;
 
-  const ChannelPackage({
+  /// zip 内置图标资源（键 = zip 内相对路径如 'icons/version.png'，值 = 字节）
+  /// 由 decode() 解析时从 icons/ 前缀条目提取，供 [iconBytes] 查询。
+  final Map<String, Uint8List> icons;
+
+  /// 必需环境变量键列表（meta.json 中 requiredEnvVars 字段，导入时自动提示用户填写）
+  List<String> get requiredEnvVars {
+    if (meta == null) return const [];
+    final raw = meta!['requiredEnvVars'];
+    if (raw is List) return raw.map((e) => e.toString()).toList();
+    return const [];
+  }
+
+  ChannelPackage({
     required this.entryScript,
     this.detailScript,
     this.meta,
-  });
+    Map<String, Uint8List>? icons,
+  }) : icons = icons ?? const {};
 
   /// 从 zip 字节解码渠道包；包无效 → 返回 null（调用方跳过 + 日志）。
   ///
@@ -57,10 +72,21 @@ class ChannelPackage {
     String? entry;
     String? detail;
     String? metaRaw;
+    final iconEntries = <String, Uint8List>{};
     for (final file in archive.files) {
       if (!file.isFile) continue; // 目录条目跳过
       final name = file.name;
-      // 路径穿越防护：只取根目录直接文件，任何分隔符/穿越标记 → 整包拒绝
+      // icons/ 前缀的文件：允许子路径，提取为图标资源
+      if (name.startsWith('icons/')) {
+        // 路径穿越防护：icons/ 内不允许 ..
+        if (name.contains('..')) return null;
+        final content = file.content;
+        if (content != null) {
+          iconEntries[name] = Uint8List.fromList(content);
+        }
+        continue;
+      }
+      // 非图标文件：只取根目录直接文件（路径穿越防护）
       if (name.contains('/') || name.contains('\\') || name.contains('..')) {
         return null;
       }
@@ -80,8 +106,14 @@ class ChannelPackage {
       entryScript: entry,
       detailScript: detail,
       meta: _parseMeta(metaRaw),
+      icons: iconEntries,
     );
   }
+
+  /// 获取 zip 内置图标字节。
+  /// [path] zip 内相对路径如 'icons/version.png'。
+  /// 不存在 → null（调用方降级为默认图标）。
+  Uint8List? iconBytes(String path) => icons[path];
 
   /// 文件内容 → 字符串（UTF-8 宽松解码；内容缺失 → null）
   static String? _contentToString(ArchiveFile file) {

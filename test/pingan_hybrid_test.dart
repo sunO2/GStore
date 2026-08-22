@@ -8,13 +8,14 @@ import 'package:gstore/core/channel/database/channel_added_app.dart';
 import 'package:gstore/core/channel/database/channel_added_app_dao.dart';
 import 'package:gstore/core/channel/impl/channel_package.dart';
 import 'package:gstore/core/js/js_channel_runtime.dart';
+import 'package:gstore/core/js/js_native_host.dart';
 
 /// pingan.js Hybrid 详情页测试（Wave C，zip 渠道包 detail.js）：detailMenu 声明 Actions +
-/// jsswitchVersion 用 host.ui 驱动版本选择/刷新 + jsBuildHistory 用 host.ui 驱动构建历史选择。
+/// jsswitchVersion 用 host.native 驱动版本选择/刷新 + jsBuildHistory 用 host.native 驱动构建历史选择。
 ///
-/// 与 pingan_script_test.dart 同款假网络/Dao 注入；本文件聚焦 host.ui：
-/// uiShowVersionPicker / uiRefreshDetail / uiShowBuildHistory / uiUpdateDownloadList
-/// 回调捕获参数断言，不发真实网络。
+/// 与 pingan_script_test.dart 同款假网络/Dao 注入；本文件聚焦 host.native：
+/// showVersionPicker / refreshDetail / showBuildHistory / updateDownloadList
+/// 注册表条目捕获参数断言，不发真实网络。
 ///
 /// 注意：Hybrid 详情方法（detailMenu/jsswitchVersion/jsBuildHistory）由页面级
 /// JsDetailChannel 消费 → 本测试读取 scripts/channels/pingan.zip 解出的 detail.js
@@ -224,21 +225,18 @@ void main() {
     final pkg = ChannelPackage.decode(zipBytes);
     expect(pkg, isNotNull, reason: 'pingan.zip 应可解析（entry.js 必须）');
     script = pkg!.detailScript!;
-    expect(script, contains('getDetailMenu'), reason: 'detail.js 应包含 Hybrid detailMenu');
+    expect(script, contains('getDetailMenu'),
+        reason: 'detail.js 应包含 Hybrid detailMenu');
   });
 
   JsChannelRuntime buildRuntime({
     Map<String, dynamic> Function(RequestOptions options)? handler,
     Map<String, String> Function()? envReader,
-    Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
-        uiShowVersionPicker,
-    Future<void> Function(Map<String, dynamic> params)? uiRefreshDetail,
-    Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
-        uiShowBuildHistory,
-    Future<void> Function(List<dynamic> downloads)? uiUpdateDownloadList,
+    JSNativeHost? nativeHost,
   }) {
     final dio = Dio();
-    dio.httpClientAdapter = _FakeDioAdapter(handler ?? defaultHandler, requestLog);
+    dio.httpClientAdapter =
+        _FakeDioAdapter(handler ?? defaultHandler, requestLog);
     return JsChannelRuntime(
       channelKey: _channelKey,
       script: script,
@@ -247,10 +245,7 @@ void main() {
       envReader: envReader,
       logInfo: (msg) => logMessages.add('info: $msg'),
       logError: (msg) => logMessages.add('error: $msg'),
-      uiShowVersionPicker: uiShowVersionPicker,
-      uiRefreshDetail: uiRefreshDetail,
-      uiShowBuildHistory: uiShowBuildHistory,
-      uiUpdateDownloadList: uiUpdateDownloadList,
+      nativeHost: nativeHost,
     );
   }
 
@@ -259,7 +254,10 @@ void main() {
       final runtime = buildRuntime();
       await runtime.initialize();
 
-      final result = await runtime.call('main', ['detailMenu', {'appId': 'app-1'}]) as Map;
+      final result = await runtime.call('main', [
+        'detailMenu',
+        {'appId': 'app-1'}
+      ]) as Map;
       expect(result['ok'], isTrue);
       final actions = result['data'] as List;
       expect(actions.length, 2);
@@ -280,21 +278,28 @@ void main() {
       await runtime.dispose();
     });
 
-    test('② jsswitchVersion：用户选 {env:uat, version:8.9.0} → refreshDetail 参数正确 + ok:true', () async {
+    test(
+        '② jsswitchVersion：用户选 {env:uat, version:8.9.0} → refreshDetail 参数正确 + ok:true',
+        () async {
       Map<String, dynamic>? pickerOptions;
       Map<String, dynamic>? refreshParams;
       final runtime = buildRuntime(
-        uiShowVersionPicker: (options) async {
-          pickerOptions = options;
-          return {'env': 'uat', 'version': '8.9.0'};
-        },
-        uiRefreshDetail: (params) async {
-          refreshParams = params;
-        },
+        nativeHost: JSNativeHost()
+          ..register('ui', 'showVersionPicker', (options) async {
+            pickerOptions = options;
+            return {'env': 'uat', 'version': '8.9.0'};
+          })
+          ..register('ui', 'refreshDetail', (params) async {
+            refreshParams = params;
+            return null;
+          }),
       );
       await runtime.initialize();
 
-      final result = await runtime.call('main', ['jsswitchVersion', {'appId': 'app-1'}]) as Map;
+      final result = await runtime.call('main', [
+        'jsswitchVersion',
+        {'appId': 'app-1'}
+      ]) as Map;
       expect(result['ok'], isTrue);
       expect(result['data'], isTrue);
 
@@ -315,22 +320,28 @@ void main() {
       expect(refreshParams!['version'], '8.9.0');
 
       // 只拉了一次 build-list（当前 env=sit 单次，Wave 拉取优化）
-      final buildRequests = requestLog.where((r) => r.contains('build-list')).toList();
+      final buildRequests =
+          requestLog.where((r) => r.contains('build-list')).toList();
       expect(buildRequests.length, 1);
       expect(buildRequests.first, contains('env=sit'));
 
       await runtime.dispose();
     });
 
-    test('③ jsswitchVersion：用户取消（data:null）→ refreshDetail 不被调 + 静默 ok:true', () async {
+    test('③ jsswitchVersion：用户取消（data:null）→ refreshDetail 不被调 + 静默 ok:true',
+        () async {
       var refreshCalled = false;
       final runtime = buildRuntime(
-        uiShowVersionPicker: (options) async => null,
-        uiRefreshDetail: (params) async => refreshCalled = true,
+        nativeHost: JSNativeHost()
+          ..register('ui', 'showVersionPicker', (p) async => null)
+          ..register('ui', 'refreshDetail', (params) async => refreshCalled = true),
       );
       await runtime.initialize();
 
-      final result = await runtime.call('main', ['jsswitchVersion', {'appId': 'app-1'}]) as Map;
+      final result = await runtime.call('main', [
+        'jsswitchVersion',
+        {'appId': 'app-1'}
+      ]) as Map;
       expect(result['ok'], isTrue);
       expect(result['data'], isNull);
       expect(refreshCalled, isFalse);
@@ -338,36 +349,46 @@ void main() {
       await runtime.dispose();
     });
 
-    test('④ jsswitchVersion：showVersionPicker 失败（回调抛异常）→ 静默 ok:true 不崩', () async {
+    test('④ jsswitchVersion：showVersionPicker 失败（回调抛异常）→ 静默 ok:true 不崩',
+        () async {
       var refreshCalled = false;
       final runtime = buildRuntime(
-        uiShowVersionPicker: (options) async => throw Exception('picker broken'),
-        uiRefreshDetail: (params) async => refreshCalled = true,
+        nativeHost: JSNativeHost()
+          ..register('ui', 'showVersionPicker',
+              (p) async => throw Exception('picker broken'))
+          ..register('ui', 'refreshDetail', (params) async => refreshCalled = true),
       );
       await runtime.initialize();
 
-      final result = await runtime.call('main', ['jsswitchVersion', {'appId': 'app-1'}]) as Map;
+      final result = await runtime.call('main', [
+        'jsswitchVersion',
+        {'appId': 'app-1'}
+      ]) as Map;
       expect(result['ok'], isTrue);
       expect(result['data'], isNull);
       expect(refreshCalled, isFalse);
       // 异常被 runtime 捕获记日志，脚本不抛
-      expect(logMessages.any((m) => m.contains('showVersionPicker 失败')), isTrue);
+      expect(logMessages.any((m) => m.contains('picker broken')), isTrue);
 
       await runtime.dispose();
     });
 
     test('⑤ jsswitchVersion：能力未注册（未注入回调）→ 静默 ok:true', () async {
-      final runtime = buildRuntime(); // 未注入 uiShowVersionPicker
+      final runtime = buildRuntime(); // 未注入 showVersionPicker
       await runtime.initialize();
 
-      final result = await runtime.call('main', ['jsswitchVersion', {'appId': 'app-1'}]) as Map;
+      final result = await runtime.call('main', [
+        'jsswitchVersion',
+        {'appId': 'app-1'}
+      ]) as Map;
       expect(result['ok'], isTrue);
       expect(result['data'], isNull);
 
       await runtime.dispose();
     });
 
-    test('⑥ jsswitchVersion：getVersionOptions 失败 → {ok:false, error} 不弹框', () async {
+    test('⑥ jsswitchVersion：getVersionOptions 失败 → {ok:false, error} 不弹框',
+        () async {
       var pickerCalled = false;
       final runtime = buildRuntime(
         handler: (options) {
@@ -376,14 +397,18 @@ void main() {
           }
           return defaultHandler(options);
         },
-        uiShowVersionPicker: (options) async {
-          pickerCalled = true;
-          return {'env': 'sit', 'version': '8.9.0'};
-        },
+        nativeHost: JSNativeHost()
+          ..register('ui', 'showVersionPicker', (options) async {
+            pickerCalled = true;
+            return {'env': 'sit', 'version': '8.9.0'};
+          }),
       );
       await runtime.initialize();
 
-      final result = await runtime.call('main', ['jsswitchVersion', {'appId': 'app-1'}]) as Map;
+      final result = await runtime.call('main', [
+        'jsswitchVersion',
+        {'appId': 'app-1'}
+      ]) as Map;
       expect(result['ok'], isFalse);
       expect(result['data'], isNull);
       expect(result['error'], '获取版本选项失败');
@@ -392,7 +417,9 @@ void main() {
       await runtime.dispose();
     });
 
-    test('⑦ jsBuildHistory：3 平台组取 android 组 → build 接口完整 35 条 → 选 num=5 → updateDownloadList 单条（不再 refreshDetail）', () async {
+    test(
+        '⑦ jsBuildHistory：3 平台组取 android 组 → build 接口完整 35 条 → 选 num=5 → updateDownloadList 单条（不再 refreshDetail）',
+        () async {
       Map<String, dynamic>? historyOptions;
       List<dynamic>? updateDownloads;
       var refreshCalled = false;
@@ -478,26 +505,36 @@ void main() {
               });
             }
             return {
-              'build': {'_id': 'bg-android', 'version': '8.9.0', 'builds': builds},
+              'build': {
+                '_id': 'bg-android',
+                'version': '8.9.0',
+                'builds': builds
+              },
               'appInfo': {'screenshots': <Object>[]},
             };
           }
           return defaultHandler(options);
         },
-        uiShowBuildHistory: (options) async {
-          historyOptions = options;
-          return {'num': 5, 'ipaName': 'PABank-8.9.0-5.apk'};
-        },
-        uiRefreshDetail: (params) async {
-          refreshCalled = true;
-        },
-        uiUpdateDownloadList: (downloads) async {
-          updateDownloads = downloads;
-        },
+        nativeHost: JSNativeHost()
+          ..register('ui', 'showBuildHistory', (options) async {
+            historyOptions = options;
+            return {'num': 5, 'ipaName': 'PABank-8.9.0-5.apk'};
+          })
+          ..register('ui', 'refreshDetail', (params) async {
+            refreshCalled = true;
+            return null;
+          })
+          ..register('ui', 'updateDownloadList', (p) async {
+            updateDownloads = p['downloads'] as List<dynamic>?;
+            return null;
+          }),
       );
       await runtime.initialize();
 
-      final result = await runtime.call('main', ['jsBuildHistory', {'appId': 'app-1'}]) as Map;
+      final result = await runtime.call('main', [
+        'jsBuildHistory',
+        {'appId': 'app-1'}
+      ]) as Map;
       expect(result['ok'], isTrue);
       expect(result['data'], isTrue);
 
@@ -506,7 +543,8 @@ void main() {
       expect(historyOptions!['version'], '8.9.0');
       expect(historyOptions!['env'], 'sit');
       final builds = historyOptions!['builds'] as List;
-      expect(builds.length, 35); // android 组完整历史（build 接口补全，非 build-list 单版本 1 条）
+      expect(
+          builds.length, 35); // android 组完整历史（build 接口补全，非 build-list 单版本 1 条）
       final nums = builds.map((b) => (b as Map)['num']).toList();
       expect(nums, List.generate(35, (i) => 35 - i)); // num 倒序
       final build0 = builds.first as Map;
@@ -530,16 +568,20 @@ void main() {
       expect(refreshCalled, isFalse);
 
       // 两次 build-list（versionOptions + getBuildHistory）+ 一次 build 接口（android 组 _id）
-      final buildRequests = requestLog.where((r) => r.contains('build-list')).toList();
+      final buildRequests =
+          requestLog.where((r) => r.contains('build-list')).toList();
       expect(buildRequests.length, 2);
       expect(buildRequests[0], contains('env=sit'));
       expect(buildRequests[1], contains('version=8.9.0'));
-      expect(requestLog.where((r) => r.contains('/sunflower/i/build&')).length, 1);
+      expect(
+          requestLog.where((r) => r.contains('/sunflower/i/build&')).length, 1);
 
       await runtime.dispose();
     });
 
-    test('⑦b jsBuildHistory：真实结构（8.9.0 仅 ios/harmony，android 最新 8.8.0）→ 取 8.8.0 → build 接口完整 35 条（残留根因回归）', () async {
+    test(
+        '⑦b jsBuildHistory：真实结构（8.9.0 仅 ios/harmony，android 最新 8.8.0）→ 取 8.8.0 → build 接口完整 35 条（残留根因回归）',
+        () async {
       // 接口实测：build-list 全量返回各平台组（每组 builds 仅最新 1 条）；
       // 最新「版本」8.9.0 只有 ios/harmony 构建，android 最新是 8.8.0。
       // 旧实现 getVersionOptions 遍历所有平台组 → versions[0]=8.9.0（无 android）→
@@ -554,7 +596,8 @@ void main() {
       final runtime = buildRuntime(
         handler: (options) {
           if (options.path.contains('/sunflower/i/build-list')) {
-            final version = options.queryParameters['version']?.toString() ?? '';
+            final version =
+                options.queryParameters['version']?.toString() ?? '';
             if (version.isNotEmpty && version != '8.8.0') {
               // 带 version 且非 8.8.0（如旧实现误取 8.9.0）→ 真实接口只返回 ios/harmony 组
               return {
@@ -671,7 +714,10 @@ void main() {
             // （真实结构：{build:{builds:[...]}, appInfo}——历史在 build 键内层）
             final id = options.queryParameters['_id']?.toString() ?? '';
             if (id != 'bg-android') {
-              return {'build': {'_id': id, 'builds': <Object>[]}, 'appInfo': <Object>{}};
+              return {
+                'build': {'_id': id, 'builds': <Object>[]},
+                'appInfo': <Object>{}
+              };
             }
             final builds = <Map<String, dynamic>>[];
             for (var num = 35; num >= 1; num--) {
@@ -691,26 +737,36 @@ void main() {
               });
             }
             return {
-              'build': {'_id': 'bg-android', 'version': '8.8.0', 'builds': builds},
+              'build': {
+                '_id': 'bg-android',
+                'version': '8.8.0',
+                'builds': builds
+              },
               'appInfo': {'screenshots': <Object>[]},
             };
           }
           return defaultHandler(options);
         },
-        uiShowBuildHistory: (options) async {
-          historyOptions = options;
-          return {'num': 5, 'ipaName': 'PABank-8.8.0-5.apk'};
-        },
-        uiRefreshDetail: (params) async {
-          refreshCalled = true;
-        },
-        uiUpdateDownloadList: (downloads) async {
-          updateDownloads = downloads;
-        },
+        nativeHost: JSNativeHost()
+          ..register('ui', 'showBuildHistory', (options) async {
+            historyOptions = options;
+            return {'num': 5, 'ipaName': 'PABank-8.8.0-5.apk'};
+          })
+          ..register('ui', 'refreshDetail', (params) async {
+            refreshCalled = true;
+            return null;
+          })
+          ..register('ui', 'updateDownloadList', (p) async {
+            updateDownloads = p['downloads'] as List<dynamic>?;
+            return null;
+          }),
       );
       await runtime.initialize();
 
-      final result = await runtime.call('main', ['jsBuildHistory', {'appId': 'app-1'}]) as Map;
+      final result = await runtime.call('main', [
+        'jsBuildHistory',
+        {'appId': 'app-1'}
+      ]) as Map;
       expect(result['ok'], isTrue);
       expect(result['data'], isTrue);
 
@@ -741,17 +797,21 @@ void main() {
 
       // 两次 build-list：第一次全量（versionOptions，version 空）→ 第二次 version=8.8.0；
       // 绝不携带 8.9.0（旧实现误取路径）
-      final buildRequests = requestLog.where((r) => r.contains('build-list')).toList();
+      final buildRequests =
+          requestLog.where((r) => r.contains('build-list')).toList();
       expect(buildRequests.length, 2);
       expect(buildRequests[0], contains('env=sit'));
       expect(buildRequests[0], contains('version=-'));
       expect(buildRequests[1], contains('version=8.8.0'));
-      expect(requestLog.where((r) => r.contains('/sunflower/i/build&')).length, 1);
+      expect(
+          requestLog.where((r) => r.contains('/sunflower/i/build&')).length, 1);
 
       await runtime.dispose();
     });
 
-    test('⑦c jsBuildHistory：凭证注入 + 认证通过 → updateDownloadList 单条含 proxy URL（downloadable:true）', () async {
+    test(
+        '⑦c jsBuildHistory：凭证注入 + 认证通过 → updateDownloadList 单条含 proxy URL（downloadable:true）',
+        () async {
       // 凭证注入（PINGAN_USER/PINGAN_PASS）→ ensureAuthChecked 走 login/check 通过 →
       // buildDownloads 生成 proxy URL（含 um/value 凭证）；无凭证路径见 ⑦（url 空）。
       List<dynamic>? updateDownloads;
@@ -764,13 +824,24 @@ void main() {
           }
           return fullHistoryHandler(options);
         },
-        uiShowBuildHistory: (options) async => {'num': 5, 'ipaName': 'PABank-8.9.0-5.apk'},
-        uiRefreshDetail: (params) async => refreshCalled = true,
-        uiUpdateDownloadList: (downloads) async => updateDownloads = downloads,
+        nativeHost: JSNativeHost()
+          ..register('ui', 'showBuildHistory',
+              (options) async => {'num': 5, 'ipaName': 'PABank-8.9.0-5.apk'})
+          ..register('ui', 'refreshDetail', (params) async {
+            refreshCalled = true;
+            return null;
+          })
+          ..register('ui', 'updateDownloadList', (p) async {
+            updateDownloads = p['downloads'] as List<dynamic>?;
+            return null;
+          }),
       );
       await runtime.initialize();
 
-      final result = await runtime.call('main', ['jsBuildHistory', {'appId': 'app-1'}]) as Map;
+      final result = await runtime.call('main', [
+        'jsBuildHistory',
+        {'appId': 'app-1'}
+      ]) as Map;
       expect(result['ok'], isTrue);
       expect(result['data'], isTrue);
 
@@ -792,21 +863,30 @@ void main() {
       await runtime.dispose();
     });
 
-    test('⑦d jsBuildHistory：缓存复用——两次 jsBuildHistory（同版本）build 接口只拉一次', () async {
+    test('⑦d jsBuildHistory：缓存复用——两次 jsBuildHistory（同版本）build 接口只拉一次',
+        () async {
       // 第一次 jsBuildHistory：versionOptions（build-list 无 version）+ getBuildHistory
       // （build-list 带 version + build 接口）→ 缓存完整 builds；
       // 第二次 jsBuildHistory：getBuildHistory 缓存命中 → 不再拉 build-list/build 接口。
       var updateCount = 0;
       final runtime = buildRuntime(
         handler: fullHistoryHandler,
-        uiShowBuildHistory: (options) async => {'num': 5, 'ipaName': 'PABank-8.9.0-5.apk'},
-        uiUpdateDownloadList: (downloads) async => updateCount++,
+        nativeHost: JSNativeHost()
+          ..register('ui', 'showBuildHistory',
+              (options) async => {'num': 5, 'ipaName': 'PABank-8.9.0-5.apk'})
+          ..register('ui', 'updateDownloadList', (p) async => updateCount++),
       );
       await runtime.initialize();
 
-      final r1 = await runtime.call('main', ['jsBuildHistory', {'appId': 'app-1'}]) as Map;
+      final r1 = await runtime.call('main', [
+        'jsBuildHistory',
+        {'appId': 'app-1'}
+      ]) as Map;
       expect(r1['ok'], isTrue);
-      final r2 = await runtime.call('main', ['jsBuildHistory', {'appId': 'app-1'}]) as Map;
+      final r2 = await runtime.call('main', [
+        'jsBuildHistory',
+        {'appId': 'app-1'}
+      ]) as Map;
       expect(r2['ok'], isTrue);
 
       // 两次都局部更新下载区
@@ -814,27 +894,35 @@ void main() {
 
       // build 接口只拉一次（缓存复用）；build-list 两次（第一次 versionOptions 全量 +
       // 第一次 getBuildHistory 带 version；第二次两者均缓存命中 → 0 新请求）
-      expect(requestLog.where((r) => r.contains('/sunflower/i/build&')).length, 1);
-      final buildRequests = requestLog.where((r) => r.contains('build-list')).toList();
+      expect(
+          requestLog.where((r) => r.contains('/sunflower/i/build&')).length, 1);
+      final buildRequests =
+          requestLog.where((r) => r.contains('build-list')).toList();
       expect(buildRequests.length, 2);
 
       await runtime.dispose();
     });
 
-    test('⑦e jsBuildHistory：缓存无该构建（选中 num 不在缓存）→ 降级 {ok:false, error} 不崩', () async {
+    test('⑦e jsBuildHistory：缓存无该构建（选中 num 不在缓存）→ 降级 {ok:false, error} 不崩',
+        () async {
       // 异常路径：选择器回传的构建不在缓存 builds[]（如脏数据/缓存被清）→
       // 降级提示，不调 updateDownloadList/refreshDetail，不抛。
       var updateCalled = false;
       var refreshCalled = false;
       final runtime = buildRuntime(
         handler: fullHistoryHandler,
-        uiShowBuildHistory: (options) async => {'num': 999, 'ipaName': 'ghost.apk'},
-        uiRefreshDetail: (params) async => refreshCalled = true,
-        uiUpdateDownloadList: (downloads) async => updateCalled = true,
+        nativeHost: JSNativeHost()
+          ..register('ui', 'showBuildHistory',
+              (options) async => {'num': 999, 'ipaName': 'ghost.apk'})
+          ..register('ui', 'refreshDetail', (params) async => refreshCalled = true)
+          ..register('ui', 'updateDownloadList', (p) async => updateCalled = true),
       );
       await runtime.initialize();
 
-      final result = await runtime.call('main', ['jsBuildHistory', {'appId': 'app-1'}]) as Map;
+      final result = await runtime.call('main', [
+        'jsBuildHistory',
+        {'appId': 'app-1'}
+      ]) as Map;
       expect(result['ok'], isFalse);
       expect(result['data'], isNull);
       expect(result['error'], '未找到所选构建，请重试');
@@ -844,32 +932,44 @@ void main() {
       await runtime.dispose();
     });
 
-    test('⑦f jsBuildHistory：updateDownloadList 未注册（未注入回调）→ 静默 ok:true 不崩', () async {
-      // 能力未注册：host.ui.updateDownloadList 返回 {ok:false}（非抛）→ 脚本静默继续 ok:true。
+    test('⑦f jsBuildHistory：updateDownloadList 未注册（未注入回调）→ 静默 ok:true 不崩',
+        () async {
+      // 能力未注册：host.native.call('updateDownloadList') 返回 {ok:false}（非抛）→ 脚本静默继续 ok:true。
       final runtime = buildRuntime(
         handler: fullHistoryHandler,
-        uiShowBuildHistory: (options) async => {'num': 5, 'ipaName': 'PABank-8.9.0-5.apk'},
+        nativeHost: JSNativeHost()
+          ..register('ui', 'showBuildHistory',
+              (options) async => {'num': 5, 'ipaName': 'PABank-8.9.0-5.apk'}),
       );
       await runtime.initialize();
 
-      final result = await runtime.call('main', ['jsBuildHistory', {'appId': 'app-1'}]) as Map;
+      final result = await runtime.call('main', [
+        'jsBuildHistory',
+        {'appId': 'app-1'}
+      ]) as Map;
       expect(result['ok'], isTrue);
       expect(result['data'], isTrue);
 
       await runtime.dispose();
     });
 
-    test('⑧ jsBuildHistory：用户取消（data:null）→ refreshDetail/updateDownloadList 不被调 + 静默 ok:true', () async {
+    test(
+        '⑧ jsBuildHistory：用户取消（data:null）→ refreshDetail/updateDownloadList 不被调 + 静默 ok:true',
+        () async {
       var refreshCalled = false;
       var updateCalled = false;
       final runtime = buildRuntime(
-        uiShowBuildHistory: (options) async => null,
-        uiRefreshDetail: (params) async => refreshCalled = true,
-        uiUpdateDownloadList: (downloads) async => updateCalled = true,
+        nativeHost: JSNativeHost()
+          ..register('ui', 'showBuildHistory', (p) async => null)
+          ..register('ui', 'refreshDetail', (params) async => refreshCalled = true)
+          ..register('ui', 'updateDownloadList', (p) async => updateCalled = true),
       );
       await runtime.initialize();
 
-      final result = await runtime.call('main', ['jsBuildHistory', {'appId': 'app-1'}]) as Map;
+      final result = await runtime.call('main', [
+        'jsBuildHistory',
+        {'appId': 'app-1'}
+      ]) as Map;
       expect(result['ok'], isTrue);
       expect(result['data'], isNull);
       expect(refreshCalled, isFalse);
@@ -878,36 +978,46 @@ void main() {
       await runtime.dispose();
     });
 
-    test('⑨ jsBuildHistory：showBuildHistory 失败（回调抛异常）→ 静默 ok:true 不崩', () async {
+    test('⑨ jsBuildHistory：showBuildHistory 失败（回调抛异常）→ 静默 ok:true 不崩',
+        () async {
       var refreshCalled = false;
       final runtime = buildRuntime(
-        uiShowBuildHistory: (options) async => throw Exception('sheet broken'),
-        uiRefreshDetail: (params) async => refreshCalled = true,
+        nativeHost: JSNativeHost()
+          ..register('ui', 'showBuildHistory',
+              (options) async => throw Exception('sheet broken'))
+          ..register('ui', 'refreshDetail', (params) async => refreshCalled = true),
       );
       await runtime.initialize();
 
-      final result = await runtime.call('main', ['jsBuildHistory', {'appId': 'app-1'}]) as Map;
+      final result = await runtime.call('main', [
+        'jsBuildHistory',
+        {'appId': 'app-1'}
+      ]) as Map;
       expect(result['ok'], isTrue);
       expect(result['data'], isNull);
       expect(refreshCalled, isFalse);
       // 异常被 runtime 捕获记日志，脚本不抛
-      expect(logMessages.any((m) => m.contains('showBuildHistory 失败')), isTrue);
+      expect(logMessages.any((m) => m.contains('sheet broken')), isTrue);
 
       await runtime.dispose();
     });
 
     test('⑩ jsBuildHistory：能力未注册（未注入回调）→ 静默 ok:true', () async {
-      final runtime = buildRuntime(); // 未注入 uiShowBuildHistory
+      final runtime = buildRuntime(); // 未注入 showBuildHistory
       await runtime.initialize();
 
-      final result = await runtime.call('main', ['jsBuildHistory', {'appId': 'app-1'}]) as Map;
+      final result = await runtime.call('main', [
+        'jsBuildHistory',
+        {'appId': 'app-1'}
+      ]) as Map;
       expect(result['ok'], isTrue);
       expect(result['data'], isNull);
 
       await runtime.dispose();
     });
 
-    test('⑪ jsBuildHistory：无版本数据（buildList 空）→ {ok:false, error: 无版本数据}', () async {
+    test('⑪ jsBuildHistory：无版本数据（buildList 空）→ {ok:false, error: 无版本数据}',
+        () async {
       final runtime = buildRuntime(handler: (options) {
         if (options.path.contains('/sunflower/i/build-list')) {
           return {'appLogo': '', 'buildList': <Object>[]};
@@ -916,7 +1026,10 @@ void main() {
       });
       await runtime.initialize();
 
-      final result = await runtime.call('main', ['jsBuildHistory', {'appId': 'app-1'}]) as Map;
+      final result = await runtime.call('main', [
+        'jsBuildHistory',
+        {'appId': 'app-1'}
+      ]) as Map;
       expect(result['ok'], isFalse);
       expect(result['data'], isNull);
       expect(result['error'], '无版本数据');
@@ -924,7 +1037,8 @@ void main() {
       await runtime.dispose();
     });
 
-    test('⑫ jsBuildHistory：无构建记录（builds 空）→ {ok:false, error: 无构建记录}', () async {
+    test('⑫ jsBuildHistory：无构建记录（builds 空）→ {ok:false, error: 无构建记录}',
+        () async {
       final runtime = buildRuntime(handler: (options) {
         if (options.path.contains('/sunflower/i/build-list')) {
           return {
@@ -945,7 +1059,10 @@ void main() {
       });
       await runtime.initialize();
 
-      final result = await runtime.call('main', ['jsBuildHistory', {'appId': 'app-1'}]) as Map;
+      final result = await runtime.call('main', [
+        'jsBuildHistory',
+        {'appId': 'app-1'}
+      ]) as Map;
       expect(result['ok'], isFalse);
       expect(result['data'], isNull);
       expect(result['error'], '无构建记录');
@@ -973,47 +1090,64 @@ void main() {
       final runtime = buildRuntime(
         handler: stormHandler,
         envReader: () => {'PINGAN_USER': 'user1', 'PINGAN_PASS': 'pass1'},
-        uiShowBuildHistory: (options) async =>
-            {'num': 5, 'ipaName': 'PABank-8.9.0-5.apk'},
-        uiUpdateDownloadList: (downloads) async => updateCount++,
+        nativeHost: JSNativeHost()
+          ..register('ui', 'showBuildHistory',
+              (options) async => {'num': 5, 'ipaName': 'PABank-8.9.0-5.apk'})
+          ..register('ui', 'updateDownloadList', (p) async => updateCount++),
       );
       await runtime.initialize();
 
       // ① 进入详情：getAppDetail（1 build-list + 1 build + 1 login）
-      final r1 = await runtime.call('main', ['getAppDetail', {'appId': 'app-1'}]) as Map;
+      final r1 = await runtime.call('main', [
+        'getAppDetail',
+        {'appId': 'app-1'}
+      ]) as Map;
       expect(r1['ok'], isTrue);
       expect(requestLog.where((r) => r.contains('build-list')).length, 1);
-      expect(requestLog.where((r) => r.contains('/sunflower/i/build&')).length, 1);
+      expect(
+          requestLog.where((r) => r.contains('/sunflower/i/build&')).length, 1);
       expect(requestLog.where((r) => r.contains('login/check')).length, 1);
 
       // ② 首次 jsBuildHistory：versionOptions 命中 getAppDetail 的全量缓存（0 请求），
       //    getBuildHistory 拉带 version 的 build-list（build 接口同 groupId 缓存命中）
-      final r2 = await runtime.call('main', ['jsBuildHistory', {'appId': 'app-1'}]) as Map;
+      final r2 = await runtime.call('main', [
+        'jsBuildHistory',
+        {'appId': 'app-1'}
+      ]) as Map;
       expect(r2['ok'], isTrue);
       expect(updateCount, 1);
       expect(requestLog.where((r) => r.contains('build-list')).length, 2);
-      expect(requestLog.where((r) => r.contains('/sunflower/i/build&')).length, 1);
+      expect(
+          requestLog.where((r) => r.contains('/sunflower/i/build&')).length, 1);
       expect(requestLog.where((r) => r.contains('login/check')).length, 1);
 
       // ③ 二次 jsBuildHistory：全缓存命中 → 0 新请求（切构建历史不再重拉版本/构建）
-      final r3 = await runtime.call('main', ['jsBuildHistory', {'appId': 'app-1'}]) as Map;
+      final r3 = await runtime.call('main', [
+        'jsBuildHistory',
+        {'appId': 'app-1'}
+      ]) as Map;
       expect(r3['ok'], isTrue);
       expect(updateCount, 2);
       expect(requestLog.where((r) => r.contains('build-list')).length, 2);
-      expect(requestLog.where((r) => r.contains('/sunflower/i/build&')).length, 1);
+      expect(
+          requestLog.where((r) => r.contains('/sunflower/i/build&')).length, 1);
       expect(requestLog.where((r) => r.contains('login/check')).length, 1);
 
       // ④ 切版本（switchVersion 同 env+version）：build-list/build 缓存命中 → 0 新请求
-      final r4 = await runtime.call(
-          'main', ['switchVersion', {'appId': 'app-1', 'env': 'sit', 'version': '8.9.0'}]) as Map;
+      final r4 = await runtime.call('main', [
+        'switchVersion',
+        {'appId': 'app-1', 'env': 'sit', 'version': '8.9.0'}
+      ]) as Map;
       expect(r4['ok'], isTrue);
       expect(requestLog.where((r) => r.contains('build-list')).length, 2);
-      expect(requestLog.where((r) => r.contains('/sunflower/i/build&')).length, 1);
+      expect(
+          requestLog.where((r) => r.contains('/sunflower/i/build&')).length, 1);
       expect(requestLog.where((r) => r.contains('login/check')).length, 1);
 
       // 缓存命中日志可定位来源
       expect(logMessages.any((m) => m.contains('[build-list] 缓存命中')), isTrue);
-      expect(logMessages.any((m) => m.contains('[login/check] 会话缓存命中')), isTrue);
+      expect(
+          logMessages.any((m) => m.contains('[login/check] 会话缓存命中')), isTrue);
 
       await runtime.dispose();
     });
@@ -1022,7 +1156,10 @@ void main() {
       final runtime = buildRuntime(handler: stormHandler);
       await runtime.initialize();
 
-      final r = await runtime.call('main', ['getAppDetail', {'appId': ''}]) as Map;
+      final r = await runtime.call('main', [
+        'getAppDetail',
+        {'appId': ''}
+      ]) as Map;
       expect(r['ok'], isTrue);
       expect(r['data'], isNull);
       expect(requestLog, isEmpty);
@@ -1041,26 +1178,38 @@ void main() {
           return fullHistoryHandler(options);
         },
         envReader: () => {'PINGAN_USER': 'user1', 'PINGAN_PASS': 'pass1'},
-        uiShowBuildHistory: (options) async =>
-            {'num': 5, 'ipaName': 'PABank-8.9.0-5.apk'},
-        uiUpdateDownloadList: (downloads) async {},
+        nativeHost: JSNativeHost()
+          ..register('ui', 'showBuildHistory',
+              (options) async => {'num': 5, 'ipaName': 'PABank-8.9.0-5.apk'})
+          ..register('ui', 'updateDownloadList', (p) async {
+            return null;
+          }),
       );
       await runtime.initialize();
 
       // getAppDetail（main+doc 失败 = 2 次）→ 进入冷却
-      await runtime.call('main', ['getAppDetail', {'appId': 'app-1'}]);
+      await runtime.call('main', [
+        'getAppDetail',
+        {'appId': 'app-1'}
+      ]);
       expect(loginCheckCount, 2);
 
       // jsBuildHistory（groupNeedsAuth → ensureAuthChecked）→ 冷却命中，不重发
-      await runtime.call('main', ['jsBuildHistory', {'appId': 'app-1'}]);
+      await runtime.call('main', [
+        'jsBuildHistory',
+        {'appId': 'app-1'}
+      ]);
       expect(loginCheckCount, 2);
 
       // switchVersion → 冷却命中，不重发
-      await runtime.call(
-          'main', ['switchVersion', {'appId': 'app-1', 'env': 'sit', 'version': '8.9.0'}]);
+      await runtime.call('main', [
+        'switchVersion',
+        {'appId': 'app-1', 'env': 'sit', 'version': '8.9.0'}
+      ]);
       expect(loginCheckCount, 2);
 
-      expect(logMessages.any((m) => m.contains('[login/check] 失败冷却中跳过重发')), isTrue);
+      expect(logMessages.any((m) => m.contains('[login/check] 失败冷却中跳过重发')),
+          isTrue);
 
       await runtime.dispose();
     });

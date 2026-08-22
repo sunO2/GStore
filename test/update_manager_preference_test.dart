@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/IChannel.dart';
+import 'package:gstore/core/channel/IDetailChannel.dart';
 import 'package:gstore/core/channel/model/AppUpdateCheckResult.dart';
 import 'package:gstore/core/channel/model/ChannelInfo.dart';
 import 'package:gstore/core/channel/model/ChannelResult.dart';
@@ -89,6 +90,13 @@ class _FakeChannel implements IChannel {
     bool forceRefresh = false,
   }) async =>
       ChannelResult.success(data: const [], from: info.type);
+
+  // IChannel 默认实现不随 implements 继承：显式补齐（apply 场景用不到详情通道）
+  @override
+  IDetailChannel? getDetailChannel(String appId) => null;
+
+  @override
+  void releaseDetailChannel(String appId) {}
 
   @override
   Future<ChannelResult<AppSummary?>> getAppInfo(

@@ -1,9 +1,12 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/IChannel.dart';
+import 'package:gstore/core/channel/IDetailChannel.dart';
 import 'package:gstore/core/channel/database/channel_added_app.dart';
 import 'package:gstore/core/channel/database/channel_added_app_dao.dart';
 import 'package:gstore/core/channel/database/channel_database.dart';
@@ -12,9 +15,11 @@ import 'package:gstore/core/channel/model/ChannelInfo.dart';
 import 'package:gstore/core/channel/model/ChannelResult.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/config/config_store.dart';
+import 'package:gstore/core/channel/impl/channel_package.dart';
 import 'package:gstore/core/channel/impl/js_detail_channel.dart';
 import 'package:gstore/core/channel/impl/js_script_utils.dart';
 import 'package:gstore/core/js/js_channel_runtime.dart';
+import 'package:gstore/core/js/js_native_host.dart';
 import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/AppSummary.dart';
@@ -82,6 +87,9 @@ class JsChannel extends IChannel implements DynamicChannel {
   /// 本波仅存储备用；脚本侧 `CHANNEL_META` 仍优先用于命名（见 [_readMeta]）。
   final Map<String, dynamic>? meta;
 
+  /// 渠道包（供 iconBytes 等资源访问；null = 内置渠道无包）
+  final ChannelPackage? _pkg;
+
   final int? _priority;
   final bool _enabled;
   final ChannelAddedAppDao? _appDaoOverride;
@@ -102,21 +110,18 @@ class JsChannel extends IChannel implements DynamicChannel {
     required String script,
     this.detailScript,
     this.meta,
+    ChannelPackage? pkg,
     Dio? dio,
     ChannelAddedAppDao? appDao,
     Future<Object?> Function(String key)? configGetter,
     JsChannelEnvStore? envStore,
     void Function(String message)? logInfo,
     void Function(String message)? logError,
-    Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
-        uiShowVersionPicker,
-    Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
-        uiShowBuildHistory,
-    Future<void> Function(Map<String, dynamic> params)? uiRefreshDetail,
-    Future<void> Function(List<dynamic> downloads)? uiUpdateDownloadList,
+    JSNativeHost? nativeHost,
     int? priority,
     bool enabled = true,
-  })  : _priority = priority,
+  })  : _pkg = pkg,
+        _priority = priority,
         _enabled = enabled,
         _appDaoOverride = appDao,
         _envStore = envStore ?? ConfigJsChannelEnvStore(channelKey),
@@ -128,10 +133,7 @@ class JsChannel extends IChannel implements DynamicChannel {
           configGetter: configGetter,
           logInfo: logInfo,
           logError: logError,
-          uiShowVersionPicker: uiShowVersionPicker,
-          uiShowBuildHistory: uiShowBuildHistory,
-          uiRefreshDetail: uiRefreshDetail,
-          uiUpdateDownloadList: uiUpdateDownloadList,
+          nativeHost: nativeHost,
         ) {
     _info = ChannelInfo(
       type: ChannelType.custom,
@@ -144,28 +146,20 @@ class JsChannel extends IChannel implements DynamicChannel {
 
   // ==================== host.ui 运行时注入 ====================
 
-  /// 运行时注入 host.ui 实现（Hybrid：脚本 `host.ui.showVersionPicker` /
-  /// `host.ui.showBuildHistory` / `host.ui.refreshDetail` / `host.ui.updateDownloadList`
-  /// 的 Flutter 实现）。
+  /// 运行时注入 host.native 实现（Hybrid：脚本 `host.native.call(...)` 的
+  /// Flutter 实现侧，含 showVersionPicker / showBuildHistory / refreshDetail /
+  /// updateDownloadList / showUAPicker 能力）。
   ///
   /// ChannelLoader 创建渠道时无 UI context，由详情页使用渠道时注入
   /// （showMoreActions 内调用），避免改 ChannelLoader 构造。
-  /// 转发到 runtime，脚本下次调用立即生效；只覆盖非 null 项。
-  void setUiCallbacks({
-    Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
-        uiShowVersionPicker,
-    Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
-        uiShowBuildHistory,
-    Future<void> Function(Map<String, dynamic> params)? uiRefreshDetail,
-    Future<void> Function(List<dynamic> downloads)? uiUpdateDownloadList,
-  }) {
-    _runtime.setUiCallbacks(
-      uiShowVersionPicker: uiShowVersionPicker,
-      uiShowBuildHistory: uiShowBuildHistory,
-      uiRefreshDetail: uiRefreshDetail,
-      uiUpdateDownloadList: uiUpdateDownloadList,
-    );
-  }
+  /// 转发到 runtime，脚本下次调用立即生效。
+  void setNativeHost(JSNativeHost host) => _runtime.setNativeHost(host);
+
+  /// 获取 zip 渠道包内置图标字节。
+  /// [path] zip 内相对路径如 'icons/version.png'。
+  /// 由 [ChannelPackage.icons] 提供，渠道包无该图标 → null。
+  /// 详情页 more actions 的图标渲染经此方法获取。
+  Uint8List? iconBytes(String path) => _pkg?.iconBytes(path);
 
   // ==================== 元信息 ====================
 
@@ -234,7 +228,7 @@ class JsChannel extends IChannel implements DynamicChannel {
   @override
   Future<void> dispose() async {
     // 渠道下线：释放全部 detail runtime（数据/缓存随实例释放）
-    for (final detail in _detailChannels.values) {
+    for (final detail in _detailChannels.values.toList()) {
       await detail.dispose();
     }
     _detailChannels.clear();
@@ -269,22 +263,13 @@ class JsChannel extends IChannel implements DynamicChannel {
     bool forceRefresh = false,
   }) async {
     try {
-      final data = await _callMain('getAllApps');
-      final apps = _appsFromScript(data);
-      if (apps != null) {
-        return ChannelResult.success(
-          data: apps,
-          from: ChannelType.custom,
-          fromCache: false,
-          metadata: {'count': apps.length},
-        );
-      }
-      // 脚本未实现 → 查本渠道库（channelKey 隔离）
+      // 只读本地已添加库（和 GitHubChannel 等标准渠道一致）；
+      // 脚本 getAllApps 仅供 doUpdate（数据库更新）场景调用，不走发现页。
       final saved = await (await _getAppDao()).getAppsByChannel(channelKey);
       return ChannelResult.success(
         data: saved.map(AppSummary.fromChannelAddedApp).toList(),
         from: ChannelType.custom,
-        fromCache: true,
+        fromCache: !forceRefresh,
       );
     } catch (e) {
       _logError('getAllApps 失败: $e');
@@ -299,6 +284,23 @@ class JsChannel extends IChannel implements DynamicChannel {
     String? version,
   }) async {
     try {
+      // 非强制刷新时优先查本地数据库（避免首页加载时对每个应用发起网络请求）
+      if (!forceRefresh) {
+        try {
+          final saved = await (await _getAppDao()).getApp(appId, channelKey);
+          if (saved != null) {
+            return ChannelResult.success(
+              data: AppSummary.fromChannelAddedApp(saved),
+              from: ChannelType.custom,
+              fromCache: true,
+            );
+          }
+        } catch (_) {
+          // 查库失败不阻塞，继续走脚本路径
+        }
+      }
+
+      // 本地无缓存或强制刷新 → 调脚本获取
       final data = await _callMain('getAppInfo', {
         'appId': appId,
         if (version != null) 'version': version,
@@ -311,7 +313,7 @@ class JsChannel extends IChannel implements DynamicChannel {
           fromCache: false,
         );
       }
-      // 脚本无结果/未实现 → 查本渠道库
+      // 脚本无结果/未实现 → 查本渠道库（兜底）
       final saved = await (await _getAppDao()).getApp(appId, channelKey);
       return ChannelResult.success(
         data: saved == null ? null : AppSummary.fromChannelAddedApp(saved),
@@ -368,9 +370,27 @@ class JsChannel extends IChannel implements DynamicChannel {
           metadata: {'keyword': keyword, 'count': apps.length},
         );
       }
+      // 脚本未实现 searchApps → 降级：调脚本 getAllApps 获取全量后本地过滤
+      final allData = await _callMain('getAllApps');
+      final allApps = _appsFromScript(allData);
+      if (allApps != null) {
+        final kw = keyword.toLowerCase();
+        final filtered = allApps.where((app) {
+          final name = app.name.toLowerCase();
+          final des = app.des.toLowerCase();
+          final appId = app.appId.toLowerCase();
+          return name.contains(kw) || des.contains(kw) || appId.contains(kw);
+        }).toList();
+        return ChannelResult.success(
+          data: filtered,
+          from: ChannelType.custom,
+          fromCache: false,
+          metadata: {'keyword': keyword, 'count': filtered.length, 'fallback': true},
+        );
+      }
       return ChannelResult.failure(
         from: ChannelType.custom,
-        error: '脚本未实现 searchApps 或调用失败',
+        error: '脚本未实现 searchApps 和 getAllApps',
       );
     } catch (e) {
       _logError('searchApps 失败: $e');
@@ -656,7 +676,7 @@ class JsChannel extends IChannel implements DynamicChannel {
   // ==================== 详情通道工厂（detail.js 页面级 runtime） ====================
 
   /// 详情通道缓存（appId 级；页面存活期间复用，退出 release 释放 → 数据免缓存管理）
-  final Map<String, JsDetailChannel> _detailChannels = {};
+  final Map<String, IDetailChannel> _detailChannels = {};
 
   /// 工厂：懒创建 detail 通道（appId 级缓存，存活期间复用同一实例）。
   ///
@@ -665,10 +685,12 @@ class JsChannel extends IChannel implements DynamicChannel {
   /// 依赖（dio/appDao/configGetter/env/log/ui 回调）透传本渠道注入值，
   /// host.database / host.env 数据隔离与 entry 一致（同 channelKey）。
   /// 渠道包无 detail.js → null（详情走原路径）。
-  JsDetailChannel? getDetailChannel(String appId) {
+  @override
+  IDetailChannel? getDetailChannel(String appId) {
     final ds = detailScript;
     if (ds == null) return null;
     return _detailChannels.putIfAbsent(appId, () => JsDetailChannel(
+          appId: appId,
           channelKey: channelKey,
           detailScript: ds,
           dio: _runtime.dioOverride,
@@ -677,17 +699,15 @@ class JsChannel extends IChannel implements DynamicChannel {
           envReader: () => _runtime.envSnapshot,
           logInfo: _runtime.logInfoOverride,
           logError: _runtime.logErrorOverride,
-          uiShowVersionPicker: _runtime.uiShowVersionPickerOverride,
-          uiShowBuildHistory: _runtime.uiShowBuildHistoryOverride,
-          uiRefreshDetail: _runtime.uiRefreshDetailOverride,
-          uiUpdateDownloadList: _runtime.uiUpdateDownloadListOverride,
+          nativeHost: _runtime.nativeHost,
         ));
   }
 
   /// 页面退出释放：销毁 detail runtime（数据/缓存随实例释放，再取 → 新实例）。
   /// 未创建过该 appId 的 detail 通道 → 无操作（幂等）。
+  @override
   void releaseDetailChannel(String appId) {
-    _detailChannels.remove(appId)?.dispose();
+    unawaited(_detailChannels.remove(appId)?.dispose());
   }
 
   // ==================== 脚本调用 ====================
@@ -833,9 +853,12 @@ class JsChannelDetailProxy extends ChannelDetailProxy {
             size: (e['size'] as num?)?.toInt(),
             version: e['version']?.toString(),
             platform: e['platform']?.toString(),
-            // 脚本 downloads 契约：downloadable/note（无凭证/认证失败 → url 空 + 提示）
-            downloadable: e['downloadable'] == true,
+            // 脚本 downloads 契约：downloadable 默认 true（可下载），
+            // 仅脚本显式设 false 时才禁止（如未配置凭证/认证失败 → url 空 + note 提示）
+            downloadable: (e['downloadable'] as bool?) ?? true,
             note: e['note']?.toString(),
+            buildNum: (e['buildNum'] as num?)?.toInt(),
+            env: e['env']?.toString(),
           );
         }
         return DownloadInfo(url: e.toString(), name: e.toString());

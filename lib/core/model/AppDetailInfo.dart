@@ -74,6 +74,12 @@ class DownloadInfo {
   /// 不可下载原因提示（脚本渠道提供，如"需在渠道环境变量配置 PINGAN_USER/PINGAN_PASS 后下载"）
   final String? note;
 
+  /// 构建编号（脚本渠道，如 35）
+  final int? buildNum;
+
+  /// 环境标识（脚本渠道，如 prd/sit）
+  final String? env;
+
   DownloadInfo({
     required this.url,
     required this.name,
@@ -87,6 +93,8 @@ class DownloadInfo {
     this.hashType,
     this.downloadable = true,
     this.note,
+    this.buildNum,
+    this.env,
   });
 
   /// 格式化文件大小

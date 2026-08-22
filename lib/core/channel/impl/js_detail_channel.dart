@@ -1,7 +1,9 @@
 import 'package:dio/dio.dart';
 import 'package:gstore/core/channel/database/channel_added_app_dao.dart';
+import 'package:gstore/core/channel/IDetailChannel.dart';
 import 'package:gstore/core/channel/impl/js_script_utils.dart';
 import 'package:gstore/core/js/js_channel_runtime.dart';
+import 'package:gstore/core/js/js_native_host.dart';
 import 'package:gstore/core/logger/LogManager.dart';
 
 /// 页面级详情通道：独立 runtime 加载 detail.js（状态隔离，页面退出释放）。
@@ -18,7 +20,11 @@ import 'package:gstore/core/logger/LogManager.dart';
 /// ## 生命周期
 /// 工厂懒创建（appId 级缓存）；页面退出调用 releaseDetailChannel → dispose，
 /// 数据/缓存随 runtime 实例释放，无需单独缓存管理。
-class JsDetailChannel {
+class JsDetailChannel implements IDetailChannel {
+  /// appId 级详情通道归属应用（与工厂 appId 缓存键一致）
+  @override
+  final String appId;
+
   /// 所属渠道唯一标识（与 JsChannel 同 key，数据隔离一致）
   final String channelKey;
 
@@ -30,6 +36,7 @@ class JsDetailChannel {
   /// runtime 懒初始化：首次 [callMain] 时加载脚本；失败降级为 null（不崩）。
   /// 构造不建引擎，页面未实际使用时零成本。
   JsDetailChannel({
+    required this.appId,
     required this.channelKey,
     required this.detailScript,
     Dio? dio,
@@ -38,12 +45,7 @@ class JsDetailChannel {
     Map<String, String> Function()? envReader,
     void Function(String message)? logInfo,
     void Function(String message)? logError,
-    Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
-        uiShowVersionPicker,
-    Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
-        uiShowBuildHistory,
-    Future<void> Function(Map<String, dynamic> params)? uiRefreshDetail,
-    Future<void> Function(List<dynamic> downloads)? uiUpdateDownloadList,
+    JSNativeHost? nativeHost,
   }) : _runtime = JsChannelRuntime(
           channelKey: channelKey,
           script: detailScript,
@@ -53,10 +55,7 @@ class JsDetailChannel {
           envReader: envReader,
           logInfo: logInfo,
           logError: logError,
-          uiShowVersionPicker: uiShowVersionPicker,
-          uiShowBuildHistory: uiShowBuildHistory,
-          uiRefreshDetail: uiRefreshDetail,
-          uiUpdateDownloadList: uiUpdateDownloadList,
+          nativeHost: nativeHost,
         );
 
   /// 已释放（dispose 后 true；释放后调用方法 → 降级 null）
@@ -181,29 +180,15 @@ class JsDetailChannel {
     return data.map((e) => stringKeyedMap(e)).toList();
   }
 
-  /// host.ui 注入（与 entry 相同语义）：详情页使用时覆盖构造时透传的实现。
+  /// host.native 注入（与 entry 相同语义）：详情页使用时覆盖构造时透传的实现。
   ///
   /// detail 通道由 [JsChannel.getDetailChannel] 在页面初始化时创建（早于详情页
-  /// showMoreActions 的 host.ui 注入），此处允许注入晚于创建——脚本下次调用
-  /// `host.ui.showVersionPicker` / `host.ui.showBuildHistory` / `host.ui.refreshDetail` /
-  /// `host.ui.updateDownloadList` 即生效（回调调用时读取）。
-  void setUiCallbacks({
-    Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
-        uiShowVersionPicker,
-    Future<Map<String, dynamic>?> Function(Map<String, dynamic> options)?
-        uiShowBuildHistory,
-    Future<void> Function(Map<String, dynamic> params)? uiRefreshDetail,
-    Future<void> Function(List<dynamic> downloads)? uiUpdateDownloadList,
-  }) {
-    _runtime.setUiCallbacks(
-      uiShowVersionPicker: uiShowVersionPicker,
-      uiShowBuildHistory: uiShowBuildHistory,
-      uiRefreshDetail: uiRefreshDetail,
-      uiUpdateDownloadList: uiUpdateDownloadList,
-    );
-  }
+  /// showMoreActions 的 host.native 注入），此处允许注入晚于创建——脚本下次调用
+  /// `host.native.call('ui.showVersionPicker', ...)` 等即生效。
+  void setNativeHost(JSNativeHost host) => _runtime.setNativeHost(host);
 
   /// 释放 runtime（页面退出调用；数据/缓存随实例释放，免缓存管理）
+  @override
   Future<void> dispose() => _runtime.dispose();
 
   void _logError(String message) =>

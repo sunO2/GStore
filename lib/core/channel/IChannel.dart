@@ -3,6 +3,7 @@ import 'package:gstore/core/channel/model/AppUpdateCheckResult.dart';
 import 'package:gstore/core/channel/model/ChannelInfo.dart';
 import 'package:gstore/core/channel/model/ChannelResult.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
+import 'package:gstore/core/channel/IDetailChannel.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
@@ -158,6 +159,15 @@ abstract class IChannel {
 
   /// 获取缓存大小（字节）
   Future<int> getCacheSize();
+
+  // ==================== 详情通道 ====================
+
+  /// 获取 appId 级详情通道（页面退出经 [releaseDetailChannel] 释放）。
+  /// 默认返回 null（不支持详情通道的渠道无需改动）。
+  IDetailChannel? getDetailChannel(String appId) => null;
+
+  /// 释放 appId 级详情通道（幂等，未创建过无操作）。
+  void releaseDetailChannel(String appId) {}
 
   // ==================== 生命周期 ====================
 

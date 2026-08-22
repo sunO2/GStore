@@ -192,6 +192,7 @@ void main() {
   group('JsDetailChannel 页面级详情通道', () {
     test('① 直接构造：各方法正确（detail.js 分发 + mock 响应）', () async {
       final detail = JsDetailChannel(
+        appId: 'com.example.one',
         channelKey: 'js.detail',
         detailScript: _detailScript,
         dio: dio,
@@ -274,11 +275,12 @@ void main() {
 
       final detail = channel.getDetailChannel('com.example.one');
       expect(detail, isNotNull);
-      expect(detail!.detailScript, _detailScript);
-      expect(detail.channelKey, 'js.detail');
+      final jsDetail = detail as JsDetailChannel;
+      expect(jsDetail.detailScript, _detailScript);
+      expect(jsDetail.channelKey, 'js.detail');
 
       // 工厂创建的实例可正常消费 detail.js
-      final appDetail = await detail.getAppDetail('com.example.one');
+      final appDetail = await jsDetail.getAppDetail('com.example.one');
       expect(appDetail, isNotNull);
       expect(appDetail!['name'], 'Detail App');
 
@@ -302,13 +304,13 @@ void main() {
       expect(first, isNotNull);
 
       channel.releaseDetailChannel('com.example.one');
-      expect(first!.isDisposed, isTrue);
+      expect((first as JsDetailChannel).isDisposed, isTrue);
 
       // 再取 → 新实例（独立 runtime）
       final second = channel.getDetailChannel('com.example.one');
       expect(second, isNotNull);
       expect(identical(second, first), isFalse);
-      expect(second!.isDisposed, isFalse);
+      expect((second as JsDetailChannel).isDisposed, isFalse);
 
       // 释放未创建的 appId → 幂等无操作
       channel.releaseDetailChannel('never.created');
@@ -328,11 +330,13 @@ void main() {
       // 直接构造两个实例（模拟工厂为不同 appId 创建的独立 runtime），
       // 各自注入不同 envReader，验证 JS 全局状态与 host.env 均隔离。
       final a = JsDetailChannel(
+        appId: 'com.example.a',
         channelKey: 'js.detail',
         detailScript: _statefulScript,
         envReader: () => {'TOKEN': 'TOKEN-A'},
       );
       final b = JsDetailChannel(
+        appId: 'com.example.b',
         channelKey: 'js.detail',
         detailScript: _statefulScript,
         envReader: () => {'TOKEN': 'TOKEN-B'},
@@ -369,14 +373,14 @@ void main() {
       await channel.dispose();
 
       // 全部 detail runtime 已释放
-      expect(d1!.isDisposed, isTrue);
-      expect(d2!.isDisposed, isTrue);
+      expect((d1 as JsDetailChannel).isDisposed, isTrue);
+      expect((d2 as JsDetailChannel).isDisposed, isTrue);
 
       // 缓存已清空：再取 → 新实例（非已释放旧实例）
       final d3 = channel.getDetailChannel('com.example.one');
       expect(d3, isNotNull);
       expect(identical(d3, d1), isFalse);
-      expect(d3!.isDisposed, isFalse);
+      expect((d3 as JsDetailChannel).isDisposed, isFalse);
 
       await channel.dispose(); // 二次 dispose 幂等
     });
@@ -387,7 +391,9 @@ void main() {
 
       // 先创建 detail 通道（模拟用户先进详情页，此时 env 未配置）
       final detail = channel.getDetailChannel('com.example.one');
-      final before = await detail!.callMain('envValue') as Map;
+      expect(detail, isNotNull);
+      final jsDetail = detail as JsDetailChannel;
+      final before = await jsDetail.callMain('envValue') as Map;
       expect(before['value'], isNull);
 
       // 用户去设置页配置 env（setEnv → 热更新 entry runtime）
@@ -395,7 +401,7 @@ void main() {
 
       // 回到详情页（同一 detail 通道实例，缓存复用）→ 应读到最新 env
       // （回归：detail runtime 只在 initialize 快照一次 env 的 bug）
-      final after = await detail.callMain('envValue') as Map;
+      final after = await jsDetail.callMain('envValue') as Map;
       expect(after['value'], 'TOKEN-NEW');
 
       await channel.dispose();

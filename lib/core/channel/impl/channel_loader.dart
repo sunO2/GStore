@@ -170,6 +170,7 @@ class ChannelLoader {
       script: pkg.entryScript,
       detailScript: pkg.detailScript,
       meta: pkg.meta,
+      pkg: pkg,
       dio: _dio,
       appDao: _appDao,
     );
