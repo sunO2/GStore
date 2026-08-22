@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -8,6 +9,7 @@ import 'package:get/get.dart';
 import 'package:gstore/core/channel/impl/JsChannel.dart';
 import 'package:gstore/core/channel/impl/channel_loader.dart';
 import 'package:gstore/core/channel/impl/channel_package.dart';
+import 'package:gstore/core/config/config_store.dart';
 import 'package:gstore/core/config/config_manager.dart';
 import 'package:gstore/core/config/providers/download_config_provider.dart';
 import 'package:gstore/core/core.dart';
@@ -447,25 +449,38 @@ class _SettingsPageState extends State<SettingsPage> {
   Future<void> _showScriptImportDialog(BuildContext context) async {
     final scheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
-    // 环境变量编辑结果（导入成功后写入渠道；编辑器 onChanged 持续同步）
     var envVars = <String, String>{};
     _SelectedPackage? selected;
+    // 必需环境变量键集合（导入时用户不可修改键名，只填值）
+    var requiredKeys = <String>{};
 
-    // 内容超高（展开环境变量区后）限高内部滚动，防对话框超出屏幕
-    final maxContentHeight = MediaQuery.sizeOf(context).height - 220;
-
-    final confirmed = await AppDialogs.showDialog(
-      title: '导入渠道包',
-      content: StatefulBuilder(
-        builder: (dialogContext, setDialogState) => ConstrainedBox(
-          constraints: BoxConstraints(maxHeight: maxContentHeight),
+    final confirmed = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) => Padding(
+          padding: EdgeInsets.only(
+            left: 16,
+            right: 16,
+            top: 16,
+            bottom: MediaQuery.of(sheetContext).viewInsets.bottom + 16,
+          ),
           child: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                // 标题
+                Text('导入渠道包',
+                    style: textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w600)),
+                const SizedBox(height: AppSpacing.sm),
                 Text(
-                  '从 .zip 渠道包文件导入自定义渠道（Android 无法直接读取公共目录文件，请在此导入）',
+                  '从 .zip 渠道包文件导入自定义渠道',
                   style: textTheme.bodySmall?.copyWith(
                     color: scheme.onSurfaceVariant,
                   ),
@@ -493,6 +508,30 @@ class _SettingsPageState extends State<SettingsPage> {
                           '无效的渠道包：非 zip 文件 / 缺 entry.js / 含路径穿越');
                       return;
                     }
+                    // 从 meta.json 读取必需环境变量，预填入编辑器
+                    final reqVars = pkg.requiredEnvVars;
+                    final channelKey = 'js_$baseName';
+                    // 尝试加载已存在的环境变量（回显之前填过的值）
+                    var existingEnv = <String, String>{};
+                    try {
+                      final existingRaw = await ConfigStore.instance
+                          .readString('channel_env_$channelKey');
+                      if (existingRaw != null && existingRaw.isNotEmpty) {
+                        final decoded = jsonDecode(existingRaw);
+                        if (decoded is Map) {
+                          existingEnv = decoded.map(
+                              (k, v) => MapEntry(k.toString(), v.toString()));
+                        }
+                      }
+                    } catch (_) {
+                      // 读取失败不影响，使用空值
+                    }
+                    final initial = <String, String>{};
+                    for (final key in reqVars) {
+                      initial[key] = existingEnv[key] ?? '';
+                    }
+                    requiredKeys = reqVars.toSet();
+                    envVars = Map.from(initial);
                     setDialogState(() {
                       selected = (
                         fileName: picked.name,
@@ -501,8 +540,6 @@ class _SettingsPageState extends State<SettingsPage> {
                         bytes: picked.bytes,
                       );
                     });
-                    AppDialogs.showSuccess(
-                        '已读取渠道包（entry.js ${pkg.entryScript.length} 字符），可导入或更换文件');
                   },
                   icon: const Icon(Icons.upload_file),
                   label: const Text('从文件选择渠道包 (.zip)'),
@@ -510,19 +547,51 @@ class _SettingsPageState extends State<SettingsPage> {
                 if (selected != null) ...[
                   const SizedBox(height: AppSpacing.sm),
                   _buildZipPackagePreview(dialogContext, selected!),
-                ],
-                const SizedBox(height: AppSpacing.sm),
-                // 环境变量（可选）——导入时配置，导入后可在「已导入渠道」中修改
-                ExpansionTile(
-                  key: const Key('script_channel_env_section'),
-                  title: const Text('环境变量（可选）'),
-                  subtitle: const Text('脚本通过 host.env.get 读取，如账号/密码'),
-                  tilePadding: EdgeInsets.zero,
-                  childrenPadding: const EdgeInsets.only(bottom: AppSpacing.sm),
-                  children: [
+                  const SizedBox(height: AppSpacing.sm),
+                  // 必需环境变量（meta.json 声明）
+                  if (requiredKeys.isNotEmpty) ...[
+                    Text('必需环境变量',
+                        style: textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w600)),
+                    const SizedBox(height: AppSpacing.xs),
+                    Text('脚本通过 host.env.get 读取，请填写以下值',
+                        style: textTheme.bodySmall?.copyWith(
+                            color: scheme.onSurfaceVariant)),
+                    const SizedBox(height: AppSpacing.sm),
                     _ScriptChannelEnvEditor(
-                      initial: const {},
+                      initial: envVars,
+                      readOnlyKeys: requiredKeys,
                       onChanged: (map) => envVars = map,
+                    ),
+                  ],
+                ],
+                const SizedBox(height: AppSpacing.lg),
+                // 操作按钮
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    TextButton(
+                      onPressed: () => Navigator.of(sheetContext).pop(false),
+                      child: const Text('取消'),
+                    ),
+                    const SizedBox(width: AppSpacing.sm),
+                    FilledButton(
+                      onPressed: () async {
+                        final pkg = selected;
+                        if (pkg == null) {
+                          AppDialogs.showError('请先选择 .zip 渠道包文件');
+                          return;
+                        }
+                        // 校验必需环境变量是否已填写
+                        for (final key in requiredKeys) {
+                          if ((envVars[key] ?? '').trim().isEmpty) {
+                            AppDialogs.showError('请填写必需环境变量 $key');
+                            return;
+                          }
+                        }
+                        Navigator.of(sheetContext).pop(true);
+                      },
+                      child: const Text('导入'),
                     ),
                   ],
                 ),
@@ -531,24 +600,19 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
         ),
       ),
-      confirmText: '导入',
-      cancelText: '取消',
     );
 
     if (confirmed != true) return;
 
     final pkg = selected;
-    if (pkg == null) {
-      AppDialogs.showError('请先选择 .zip 渠道包文件');
-      return;
-    }
+    if (pkg == null) return;
 
     try {
       final channel = await ChannelLoader().importZip(
         channelKey: pkg.channelKey,
         zipBytes: pkg.bytes,
       );
-      // 环境变量：导入成功后逐个写入（渠道隔离持久化，host.env.get 读取）
+      // 环境变量：导入成功后逐个写入
       if (envVars.isNotEmpty) {
         for (final entry in envVars.entries) {
           await channel.setEnv(entry.key, entry.value);
@@ -558,7 +622,7 @@ class _SettingsPageState extends State<SettingsPage> {
       } else {
         AppDialogs.showSuccess('渠道包已导入（${channel.info.name}），可切到发现页查看');
       }
-      if (mounted) setState(() {}); // 刷新「已导入渠道」计数
+      if (mounted) setState(() {});
     } catch (e) {
       AppDialogs.showError('导入失败: $e');
     }
@@ -790,6 +854,7 @@ class _ScriptChannelEnvEditor extends StatefulWidget {
   const _ScriptChannelEnvEditor({
     required this.initial,
     required this.onChanged,
+    this.readOnlyKeys = const {},
   });
 
   /// 初始键值（编辑已导入渠道时来自 [JsChannel.getAllEnv]）
@@ -797,6 +862,9 @@ class _ScriptChannelEnvEditor extends StatefulWidget {
 
   /// 编辑结果回调（每次增删改后触发）
   final ValueChanged<Map<String, String>> onChanged;
+
+  /// 只读键集合（导入时来自 meta.json requiredEnvVars，用户不可修改键名）
+  final Set<String> readOnlyKeys;
 
   @override
   State<_ScriptChannelEnvEditor> createState() =>
@@ -868,11 +936,16 @@ class _ScriptChannelEnvEditorState extends State<_ScriptChannelEnvEditor> {
                 child: TextField(
                   key: Key('script_channel_env_key_$i'),
                   controller: _rows[i].key,
-                  decoration: const InputDecoration(
+                  readOnly: widget.readOnlyKeys.contains(_rows[i].key.text),
+                  decoration: InputDecoration(
                     labelText: '键',
                     hintText: '如 PINGAN_USER',
-                    border: OutlineInputBorder(),
+                    border: const OutlineInputBorder(),
                     isDense: true,
+                    filled: widget.readOnlyKeys.contains(_rows[i].key.text),
+                    fillColor: widget.readOnlyKeys.contains(_rows[i].key.text)
+                        ? Theme.of(context).colorScheme.surfaceContainerLow
+                        : null,
                   ),
                   onChanged: (_) => _notify(),
                 ),
@@ -894,7 +967,9 @@ class _ScriptChannelEnvEditorState extends State<_ScriptChannelEnvEditor> {
                 key: Key('script_channel_env_remove_$i'),
                 tooltip: '删除该环境变量',
                 icon: const Icon(Icons.delete_outline),
-                onPressed: () => _removeRow(i),
+                onPressed: widget.readOnlyKeys.contains(_rows[i].key.text)
+                    ? null
+                    : () => _removeRow(i),
               ),
             ],
           ),
