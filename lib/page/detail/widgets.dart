@@ -1062,6 +1062,8 @@ class DownloadsSection extends StatelessWidget {
       // 检查文件扩展名
       if (fileName.endsWith('.apk')) return true;
       if (fileName.endsWith('.aab')) return true; // Android App Bundle
+      if (fileName.endsWith('.ipa')) return true; // iOS
+      if (fileName.endsWith('.hap')) return true; // Harmony
       if (fileName.endsWith('.zip')) {
         // zip 文件需要进一步检查名称
         // 通常包含 "universal", "android", "arm" 等关键词的是 Android 包
@@ -1362,9 +1364,11 @@ class _DownloadItem extends StatelessWidget {
                     ),
                 ],
               ),
-              // 详细信息行
+              // 详细信息行（自动换行，防标签越界）
               SizedBox(height: AppSpacing.sm),
-              Row(
+              Wrap(
+                spacing: 8,
+                runSpacing: 4,
                 children: [
                   if (download.size != null)
                     _buildInfoChip(
@@ -1373,7 +1377,6 @@ class _DownloadItem extends StatelessWidget {
                       download.formattedSize,
                       Colors.blue,
                     ),
-                  if (download.size != null) const SizedBox(width: 8),
                   if (download.platform != null)
                     _buildInfoChip(
                       context,
@@ -1381,7 +1384,20 @@ class _DownloadItem extends StatelessWidget {
                       download.platform!,
                       Colors.green,
                     ),
-                  const Spacer(),
+                  if (download.buildNum != null)
+                    _buildInfoChip(
+                      context,
+                      Icons.build,
+                      '#${download.buildNum}',
+                      Colors.orange,
+                    ),
+                  if (download.env != null)
+                    _buildInfoChip(
+                      context,
+                      Icons.cloud,
+                      download.env!,
+                      Colors.purple,
+                    ),
                   if (download.downloadCount != null)
                     _buildInfoChip(
                       context,
