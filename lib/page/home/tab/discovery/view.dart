@@ -23,6 +23,11 @@ class _DiscoveryPageState extends State<DiscoveryPage>
   final DiscoveryState state = Get.find<DiscoveryLogic>().state;
 
   final ScrollController _gridScrollController = ScrollController();
+  Worker? _selectedChannelWorker;
+  Worker? _channelAppsWorker;
+  Worker? _addedAppsIndexWorker;
+  Worker? _displayModeWorker;
+  Worker? _searchKeywordWorker;
 
   @override
   bool get wantKeepAlive => true;
@@ -30,6 +35,32 @@ class _DiscoveryPageState extends State<DiscoveryPage>
   @override
   void initState() {
     super.initState();
+    // 监听渠道切换 → setState 触发页面重建（Obx 追踪 selectedChannel 不可靠，
+    // 用 ever + setState 直接驱动 rebuild，确保列表即时刷新）
+    _selectedChannelWorker = ever(state.selectedChannel, (_) {
+      if (mounted) setState(() {});
+    });
+    // 监听 channelApps 变化 → setState（loadData 完成后 Obx 不追踪 RxMap 变化）
+    // state.channelApps 静态类型为 Map，运行时是 RxMap，需要 cast 以传入 ever()
+    _channelAppsWorker = ever(
+      state.channelApps as RxMap<String, List<AppSummary>>,
+      (_) {
+        if (mounted) setState(() {});
+      },
+    );
+    // 监听已添加应用索引变化 → setState（toggleApp/入库后 addedAppsIndex 更新）
+    _addedAppsIndexWorker = ever(
+      state.addedAppsIndex as RxMap<String, Set<String>>,
+      (_) { if (mounted) setState(() {}); },
+    );
+    // 监听显示模式变化 → setState
+    _displayModeWorker = ever(state.displayMode, (_) {
+      if (mounted) setState(() {});
+    });
+    // 监听搜索关键词变化 → setState
+    _searchKeywordWorker = ever(state.searchKeyword, (_) {
+      if (mounted) setState(() {});
+    });
     // 初始化 Grid 列数
     WidgetsBinding.instance.addPostFrameCallback((_) {
       logic.updateCrossAxisCount(context);
@@ -38,6 +69,11 @@ class _DiscoveryPageState extends State<DiscoveryPage>
 
   @override
   void dispose() {
+    _selectedChannelWorker?.dispose();
+    _channelAppsWorker?.dispose();
+    _addedAppsIndexWorker?.dispose();
+    _displayModeWorker?.dispose();
+    _searchKeywordWorker?.dispose();
     _gridScrollController.dispose();
     super.dispose();
   }
@@ -409,6 +445,7 @@ class _DiscoveryPageState extends State<DiscoveryPage>
   /// 应用 Grid
   Widget _buildAppGrid(BuildContext context) {
     return Obx(() {
+      debugPrint('DiscoveryView: _buildAppGrid Obx rebuilding - selectedChannel=${state.selectedChannel.value}');
       if (state.isLoading.value) {
         return const Center(child: AppLoading(size: AppLoadingSize.medium));
       }

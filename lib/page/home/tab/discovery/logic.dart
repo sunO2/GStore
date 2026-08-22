@@ -58,6 +58,11 @@ class DiscoveryLogic extends GetxController {
       codes.add(channelCode(channel));
     }
     final result = codes.toList()..sort();
+    debugPrint('DiscoveryLogic: sortedChannelCodes = $result');
+    debugPrint(
+        'DiscoveryLogic: dynamicChannels = ${ChannelManager.instance.dynamicChannels.map((c) => channelCode(c)).toList()}');
+    debugPrint(
+        'DiscoveryLogic: channelApps keys = ${state.channelApps.keys.toList()}');
     return result;
   }
 
@@ -205,7 +210,7 @@ class DiscoveryLogic extends GetxController {
           try {
             // 批量添加不逐个弹标签选择框（避免噪声），如需分类可单独添加后手动打标
             await _aggregator?.toggleApp(
-              channel: channelInstance.info.type,
+              channelCode: channelCode,
               appInfo: appInfo,
             );
             successCount++;
@@ -304,6 +309,8 @@ class DiscoveryLogic extends GetxController {
   Future<void> _loadAllChannelApps() async {
     final manager = _channelManager;
     if (manager == null) return;
+    debugPrint(
+        'DiscoveryLogic: _loadAllChannelApps 开始 - dynamicChannels=${manager.dynamicChannels.length}, enabledChannels=${manager.enabledChannels.length}');
 
     final channels = <IChannel>[
       ...manager.dynamicChannels,
@@ -315,12 +322,15 @@ class DiscoveryLogic extends GetxController {
       final code = channelCode(channel);
       try {
         final result = await channel.getAllApps();
+        debugPrint(
+            'DiscoveryLogic: 加载渠道 $code - success=${result.success}, count=${result.data?.length ?? 0}');
 
         if (result.success && result.data != null) {
           state.channelApps[code] = result.data!;
         }
       } catch (e) {
         appLog.error('DiscoveryLogic: 加载 $code 失败 - $e');
+        debugPrint('DiscoveryLogic: 加载渠道 $code - 异常: $e');
         // 即使失败也添加空列表
         state.channelApps[code] = [];
       }
@@ -340,9 +350,10 @@ class DiscoveryLogic extends GetxController {
   /// 切换渠道筛选
   void selectChannel(String? code) {
     debugPrint('DiscoveryLogic: selectChannel called with code: ${code ?? "null"}');
-    debugPrint('DiscoveryLogic: current selectedChannel: ${state.selectedChannel.value ?? "null"}');
     state.selectedChannel.value = code;
-    debugPrint('DiscoveryLogic: new selectedChannel: ${state.selectedChannel.value ?? "null"}');
+    // 强制通知所有追踪 selectedChannel 的 Obx 重建（解决切换渠道列表不刷新）
+    state.selectedChannel.refresh();
+    debugPrint('DiscoveryLogic: selectChannel done - ${state.selectedChannel.value ?? "null"}');
   }
 
   /// 切换显示模式
@@ -431,11 +442,9 @@ class DiscoveryLogic extends GetxController {
 
   /// 检查应用是否已添加
   bool isAppAdded(String code, String appId) {
-    // 聚合层按 ChannelType.code 记录 channelId：枚举渠道 = type.code；
-    // 脚本渠道统一按 ChannelType.custom（'custom'）记录 → 脚本 code 回退 'custom'
-    // 保持既有语义（多脚本共享 custom 索引为聚合层既有行为，不在本页改造范围）。
-    final indexKey = ChannelType.fromCode(code) != null ? code : 'custom';
-    return state.addedAppsIndex[indexKey]?.contains(appId) ?? false;
+    // 聚合层迁移后 channelId 存真实 channelCode（枚举 type.code / 脚本 channelKey），
+    // addedAppsIndex 键与 code 直接一致，无需 'custom' 回退。
+    return state.addedAppsIndex[code]?.contains(appId) ?? false;
   }
 
   /// 添加/移除应用（添加到聚合管理器，用于首页显示）
@@ -446,7 +455,7 @@ class DiscoveryLogic extends GetxController {
     try {
       // 使用聚合管理器切换应用状态（aggregate 模块下线时降级为未添加）
       final added = await _aggregator?.toggleApp(
-        channel: channelInstance.info.type,
+        channelCode: code,
         appInfo: appInfo,
       ) ??
           false;
@@ -456,6 +465,9 @@ class DiscoveryLogic extends GetxController {
       if (result.success && result.data != null) {
         state.channelApps[code] = result.data!;
       }
+
+      // 刷新已添加应用索引（更新入库状态图标）
+      await _updateAddedAppsIndex();
 
       Get.snackbar(
         added ? '已添加到首页' : '已从首页移除',
@@ -504,7 +516,7 @@ class DiscoveryLogic extends GetxController {
 
     // 读取当前标签（用规范化 appId）
     final currentTags = await _aggregator
-            ?.getTags(channel: channelInstance.info.type, appId: canonicalId) ??
+            ?.getTags(channelCode: code, appId: canonicalId) ??
         const [];
 
     // 加载预置分类：本地库 AppCategory 的 description 作为标签值
@@ -533,7 +545,7 @@ class DiscoveryLogic extends GetxController {
     try {
       // 保存标签（用规范化 appId，与聚合库 key 一致）
       await _aggregator?.setTags(
-        channel: channelInstance.info.type,
+        channelCode: code,
         appId: canonicalId,
         tags: result,
       );
@@ -563,6 +575,8 @@ class DiscoveryLogic extends GetxController {
 
       // 刷新该渠道的应用列表（让保存的应用出现在渠道视图中）
       await _refreshChannelApps(code);
+      // 刷新已添加应用索引（搜索入库后更新状态）
+      await _updateAddedAppsIndex();
       return true;
     } catch (e) {
       appLog.error('DiscoveryLogic: 保存搜索结果失败 - $e');
@@ -614,9 +628,9 @@ class DiscoveryLogic extends GetxController {
       final aggregator = _aggregator;
       if (aggregator == null) return false;
       if (await aggregator.isAppAdded(
-          channel: channelInstance.info.type, appId: appId)) {
+          channelCode: code, appId: appId)) {
         await aggregator.removeApp(
-            channel: channelInstance.info.type, appId: appId);
+            channelCode: code, appId: appId);
       }
 
       // 刷新渠道列表
@@ -768,7 +782,7 @@ class DiscoveryLogic extends GetxController {
 
     try {
       await _aggregator?.addApps(
-        channel: channelInstance.info.type,
+        channelCode: code,
         appInfos: apps,
       );
 
@@ -792,7 +806,7 @@ class DiscoveryLogic extends GetxController {
     if (channelInstance == null) return;
 
     try {
-      await _aggregator?.clearChannel(channelInstance.info.type);
+      await _aggregator?.clearChannel(code);
 
       Get.snackbar(
         '已清空',
@@ -885,10 +899,20 @@ class DiscoveryLogic extends GetxController {
   /// 显示添加应用的 Bottom Sheet
   /// 直接弹出搜索框 + 渠道多选（默认 F-Droid，记忆上次选中）
   void showAddAppSheet(BuildContext context) {
-    final channels = _channelManager?.enabledChannels ?? [];
+    final manager = _channelManager;
+    if (manager == null) return;
+
+    // 枚举渠道 + 动态脚本渠道（channelKey 隔离），去重后过滤启用渠道。
+    // enabledChannels 按 ChannelType 索引，JS 渠道共享 custom 槽位只含最后一个；
+    // dynamicChannels 按 channelKey 索引，含全部 JS 渠道（与 _loadAllChannelApps 同模式）。
+    final allChannels = <IChannel>[
+      ...manager.dynamicChannels,
+      ...manager.enabledChannels
+          .where((c) => !manager.dynamicChannels.contains(c)),
+    ];
 
     // 过滤出启用的搜索渠道
-    final searchableChannels = channels.where((c) => c.info.enabled).toList();
+    final searchableChannels = allChannels.where((c) => c.info.enabled).toList();
 
     if (searchableChannels.isEmpty) {
       Get.snackbar(
@@ -986,18 +1010,30 @@ class DiscoveryLogic extends GetxController {
 
   /// 执行搜索
   Future<void> performSearch() async {
-    if (searchController.text.trim().isEmpty) {
+    final keyword = searchController.text.trim();
+    if (keyword.isEmpty) {
       return;
     }
 
     // 如果有选中的搜索渠道，只在该渠道搜索
     if (_selectedSearchChannel != null) {
-      await _searchInChannel(
-          _selectedSearchChannel!.code, searchController.text.trim());
+      await _searchInChannel(_selectedSearchChannel!.code, keyword);
     } else {
-      // 搜索所有渠道
+      // 搜索所有渠道：枚举渠道（enabledChannels）+ 动态脚本渠道（dynamicChannels），
+      // 按 channelCode 去重——enabledChannels 中 custom 槽位存最后一个 JS 渠道，
+      // dynamicChannels 含全部 JS 渠道（含 custom 槽位那个），去重避免重复搜索。
+      final searched = <String>{};
       for (var channel in _channelManager?.enabledChannels ?? const <IChannel>[]) {
-        await _searchInChannel(channelCode(channel), searchController.text.trim());
+        final code = channelCode(channel);
+        if (searched.add(code)) {
+          await _searchInChannel(code, keyword);
+        }
+      }
+      for (var channel in _channelManager?.dynamicChannels ?? const <IChannel>[]) {
+        final code = channelCode(channel);
+        if (searched.add(code)) {
+          await _searchInChannel(code, keyword);
+        }
       }
     }
   }
