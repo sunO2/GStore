@@ -36,6 +36,7 @@ AggregatedAppInfo _app(String id) => AggregatedAppInfo(
         des: 'desc',
       ),
       channel: ChannelType.github,
+      channelCode: 'github',
     );
 
 /// 横向卡片中带边框的 Container（唯一：角标/图标容器均无边框）

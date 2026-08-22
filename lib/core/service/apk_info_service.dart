@@ -137,7 +137,7 @@ class ApkInfoService {
 
       try {
         await AppAggregatorManager.instance.renameApp(
-          channel: ChannelType.github,
+          channelCode: 'github',
           oldAppId: oldAppId,
           newAppId: newPackageName,
         );
@@ -227,7 +227,7 @@ class ApkInfoService {
       // 聚合库不存 name/icon（只存引用，信息由渠道实时查）——无需重建聚合记录，
       // 仅通知首页刷新即可拉到新数据
       if (await AppAggregatorManager.instance.isAppAdded(
-        channel: ChannelType.github,
+        channelCode: 'github',
         appId: record.appId,
       )) {
         AppAggregatorManager.instance.notifyAppsChanged();

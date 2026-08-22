@@ -68,7 +68,7 @@ void main() {
       ));
 
       await manager.renameApp(
-        channel: ChannelType.github,
+        channelCode: 'github',
         oldAppId: 'gkd-kit/gkd',
         newAppId: 'li.songe.gkd',
       );
@@ -113,7 +113,7 @@ void main() {
       ));
 
       await manager.renameApp(
-        channel: ChannelType.github,
+        channelCode: 'github',
         oldAppId: 'gkd-kit/gkd',
         newAppId: 'li.songe.gkd',
       );
@@ -131,7 +131,7 @@ void main() {
 
     test('幂等：源记录不存在时 no-op，不产生任何变更', () async {
       await manager.renameApp(
-        channel: ChannelType.github,
+        channelCode: 'github',
         oldAppId: '不存在/app',
         newAppId: 'li.songe.gkd',
       );
@@ -145,7 +145,7 @@ void main() {
         appId: 'li.songe.gkd',
       ));
       await manager.renameApp(
-        channel: ChannelType.github,
+        channelCode: 'github',
         oldAppId: 'li.songe.gkd',
         newAppId: 'li.songe.gkd',
       );

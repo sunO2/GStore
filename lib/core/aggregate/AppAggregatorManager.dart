@@ -89,23 +89,23 @@ class AppAggregatorManager implements IAggregateService {
   ///   GitHub metadata 已收录 → 真实包名；未收录 → owner/repo 占位
   /// - 统一调用渠道 addApp 落渠道库（渠道自行决定是否支持/如何保存），失败不阻断首页添加
   Future<void> addApp({
-    required ChannelType channel,
+    required String channelCode,
     required AppSummary appInfo,
     int? sortOrder,
   }) async {
     // 渠道自报规范化 appId（无感调用）
-    final channelInstance = _channelManager.getChannel(channel);
+    final channelInstance = _channelManager.getChannelByCode(channelCode);
     final appId = channelInstance != null
         ? await channelInstance.canonicalAppId(appInfo)
         : appInfo.appId;
 
     final now = DateTime.now().millisecondsSinceEpoch;
     // 幂等：已存在（channelId + appId）时更新而非新增（自增 id 主键无唯一约束）
-    final existing = await _database.addedAppDao.getApp(channel.code, appId);
+    final existing = await _database.addedAppDao.getApp(channelCode, appId);
     if (existing != null) {
       await _database.addedAppDao.updateApp(AddedAppInfo(
         id: existing.id,
-        channelId: channel.code,
+        channelId: channelCode,
         appId: appId,
         addTime: now,
         sortOrder: sortOrder ?? existing.sortOrder,
@@ -113,7 +113,7 @@ class AppAggregatorManager implements IAggregateService {
       ));
     } else {
       await _database.addedAppDao.insertApp(AddedAppInfo(
-        channelId: channel.code,
+        channelId: channelCode,
         appId: appId,
         addTime: now,
         sortOrder: sortOrder ?? 0,
@@ -145,17 +145,17 @@ class AppAggregatorManager implements IAggregateService {
     // 通知变化
     _notifyAppsChanged();
 
-    appLog.info('AppAggregatorManager: 添加应用 - $appId (${channel.code})');
+    appLog.info('AppAggregatorManager: 添加应用 - $appId ($channelCode)');
   }
 
   /// 批量添加应用
   @override
   Future<void> addApps({
-    required ChannelType channel,
+    required String channelCode,
     required List<AppSummary> appInfos,
   }) async {
     final now = DateTime.now().millisecondsSinceEpoch;
-    final channelInstance = _channelManager.getChannel(channel);
+    final channelInstance = _channelManager.getChannelByCode(channelCode);
     final addedApps = <AddedAppInfo>[];
 
     for (final app in appInfos) {
@@ -164,11 +164,11 @@ class AppAggregatorManager implements IAggregateService {
           : app.appId;
 
       // 幂等：已存在则更新，否则新增
-      final existing = await _database.addedAppDao.getApp(channel.code, appId);
+      final existing = await _database.addedAppDao.getApp(channelCode, appId);
       if (existing != null) {
         await _database.addedAppDao.updateApp(AddedAppInfo(
           id: existing.id,
-          channelId: channel.code,
+          channelId: channelCode,
           appId: appId,
           addTime: now,
           sortOrder: existing.sortOrder,
@@ -176,7 +176,7 @@ class AppAggregatorManager implements IAggregateService {
         ));
       } else {
         addedApps.add(AddedAppInfo(
-          channelId: channel.code,
+          channelId: channelCode,
           appId: appId,
           addTime: now,
         ));
@@ -210,25 +210,25 @@ class AppAggregatorManager implements IAggregateService {
 
     _notifyAppsChanged();
 
-    appLog.info('AppAggregatorManager: 批量添加 ${appInfos.length} 个应用 (${channel.code})');
+    appLog.info('AppAggregatorManager: 批量添加 ${appInfos.length} 个应用 ($channelCode)');
   }
 
   /// 移除应用
   Future<void> removeApp({
-    required ChannelType channel,
+    required String channelCode,
     required String appId,
   }) async {
-    await _database.addedAppDao.removeApp(channel.code, appId);
+    await _database.addedAppDao.removeApp(channelCode, appId);
     // 联动清理该应用的用户标签（避免残留孤儿标签）
     try {
-      await _database.appTagDao.removeTagsOfApp(channel.code, appId);
+      await _database.appTagDao.removeTagsOfApp(channelCode, appId);
     } catch (e) {
       appLog.error('AppAggregatorManager: 清理标签失败 - $e');
     }
 
     _notifyAppsChanged();
 
-    appLog.info('AppAggregatorManager: 移除应用 - $appId (${channel.code})');
+    appLog.info('AppAggregatorManager: 移除应用 - $appId ($channelCode)');
   }
 
   /// 聚合库应用 ID 改名（渠道记录 appId 迁移后调用，保持聚合库 appId 与渠道一致）
@@ -238,25 +238,25 @@ class AppAggregatorManager implements IAggregateService {
   /// - 目标 appId 已存在（异常残留）时合并：删源行、标签并入目标行
   /// - 幂等：源记录不存在时 no-op
   Future<void> renameApp({
-    required ChannelType channel,
+    required String channelCode,
     required String oldAppId,
     required String newAppId,
   }) async {
     if (oldAppId == newAppId) return;
     final db = _database;
 
-    final existing = await db.addedAppDao.getApp(channel.code, oldAppId);
+    final existing = await db.addedAppDao.getApp(channelCode, oldAppId);
     if (existing == null) return; // 幂等：源不存在直接返回
 
     // 目标 appId 已存在（异常残留）→ 删源行，保留目标行元数据
-    final target = await db.addedAppDao.getApp(channel.code, newAppId);
+    final target = await db.addedAppDao.getApp(channelCode, newAppId);
     if (target != null) {
-      await db.addedAppDao.removeApp(channel.code, oldAppId);
+      await db.addedAppDao.removeApp(channelCode, oldAppId);
     } else {
       // 常规改名：updateApp 保留原 id（addTime/sortOrder/isEnabled 不变）
       await db.addedAppDao.updateApp(AddedAppInfo(
         id: existing.id,
-        channelId: channel.code,
+        channelId: channelCode,
         appId: newAppId,
         addTime: existing.addTime,
         sortOrder: existing.sortOrder,
@@ -265,17 +265,17 @@ class AppAggregatorManager implements IAggregateService {
     }
 
     // 标签迁移（旧 appId → 新 appId，避免孤儿标签/丢失）
-    final tags = await db.appTagDao.getTags(channel.code, oldAppId);
+    final tags = await db.appTagDao.getTags(channelCode, oldAppId);
     if (tags.isNotEmpty) {
-      await db.appTagDao.removeTagsOfApp(channel.code, oldAppId);
+      await db.appTagDao.removeTagsOfApp(channelCode, oldAppId);
       await db.appTagDao.insertTags([
         for (final t in tags)
-          AddedAppTag(channelId: channel.code, appId: newAppId, tag: t.tag),
+          AddedAppTag(channelId: channelCode, appId: newAppId, tag: t.tag),
       ]);
     }
 
     _notifyAppsChanged();
-    appLog.info('AppAggregatorManager: 应用 ID 改名 $oldAppId -> $newAppId (${channel.code})');
+    appLog.info('AppAggregatorManager: 应用 ID 改名 $oldAppId -> $newAppId ($channelCode)');
   }
 
   /// 通知聚合层应用数据变化（渠道记录被外部更新后调用，触发首页刷新）
@@ -286,12 +286,12 @@ class AppAggregatorManager implements IAggregateService {
   /// 获取应用的用户标签（无标签返回空列表）
   @override
   Future<List<String>> getTags({
-    required ChannelType channel,
+    required String channelCode,
     required String appId,
   }) async {
     try {
       final rows =
-          await _database.appTagDao.getTags(channel.code, appId);
+          await _database.appTagDao.getTags(channelCode, appId);
       return rows.map((e) => e.tag).toList();
     } catch (e) {
       appLog.error('AppAggregatorManager: 获取标签失败 - $e');
@@ -302,17 +302,17 @@ class AppAggregatorManager implements IAggregateService {
   /// 设置应用的用户标签（整体替换：先清空再写入）
   @override
   Future<void> setTags({
-    required ChannelType channel,
+    required String channelCode,
     required String appId,
     required List<String> tags,
   }) async {
     try {
-      await _database.appTagDao.removeTagsOfApp(channel.code, appId);
+      await _database.appTagDao.removeTagsOfApp(channelCode, appId);
       final deduped = tags.toSet().where((t) => t.trim().isNotEmpty).toList();
       if (deduped.isNotEmpty) {
         await _database.appTagDao.insertTags([
           for (final t in deduped)
-            AddedAppTag(channelId: channel.code, appId: appId, tag: t.trim()),
+            AddedAppTag(channelId: channelCode, appId: appId, tag: t.trim()),
         ]);
       }
       // 标签变化 → 通知首页刷新（getAggregatedApps 会合并新标签到分类）
@@ -325,7 +325,7 @@ class AppAggregatorManager implements IAggregateService {
 
   /// 为应用添加单个标签（幂等，已有则跳过）
   Future<void> addTag({
-    required ChannelType channel,
+    required String channelCode,
     required String appId,
     required String tag,
   }) async {
@@ -333,7 +333,7 @@ class AppAggregatorManager implements IAggregateService {
     if (t.isEmpty) return;
     try {
       await _database.appTagDao.insertTag(
-        AddedAppTag(channelId: channel.code, appId: appId, tag: t),
+        AddedAppTag(channelId: channelCode, appId: appId, tag: t),
       );
     } catch (e) {
       appLog.error('AppAggregatorManager: 添加标签失败 - $e');
@@ -342,12 +342,12 @@ class AppAggregatorManager implements IAggregateService {
 
   /// 移除应用单个标签
   Future<void> removeTag({
-    required ChannelType channel,
+    required String channelCode,
     required String appId,
     required String tag,
   }) async {
     try {
-      await _database.appTagDao.removeTag(channel.code, appId, tag);
+      await _database.appTagDao.removeTag(channelCode, appId, tag);
     } catch (e) {
       appLog.error('AppAggregatorManager: 移除标签失败 - $e');
     }
@@ -378,7 +378,7 @@ class AppAggregatorManager implements IAggregateService {
   /// 渠道缺失/查询失败/异常一律返回空映射（降级为原样合并），绝不影响聚合流程。
   Future<Map<String, String>> _loadCategoryIdToDescription() async {
     try {
-      final channel = _channelManager.getChannel(ChannelType.localDb);
+      final channel = _channelManager.getChannelByCode('localDb');
       if (channel == null) return {};
 
       final result = await channel.getAllCategories();
@@ -401,28 +401,28 @@ class AppAggregatorManager implements IAggregateService {
   /// 切换应用添加状态
   @override
   Future<bool> toggleApp({
-    required ChannelType channel,
+    required String channelCode,
     required AppSummary appInfo,
   }) async {
-    final isAdded = await isAppAdded(channel: channel, appId: appInfo.appId);
+    final isAdded = await isAppAdded(channelCode: channelCode, appId: appInfo.appId);
 
     if (isAdded) {
-      await removeApp(channel: channel, appId: appInfo.appId);
+      await removeApp(channelCode: channelCode, appId: appInfo.appId);
       return false;
     } else {
-      await addApp(channel: channel, appInfo: appInfo);
+      await addApp(channelCode: channelCode, appInfo: appInfo);
       return true;
     }
   }
 
   /// 清空指定渠道的所有应用
   @override
-  Future<void> clearChannel(ChannelType channel) async {
-    await _database.addedAppDao.clearChannel(channel.code);
+  Future<void> clearChannel(String channelCode) async {
+    await _database.addedAppDao.clearChannel(channelCode);
 
     _notifyAppsChanged();
 
-    appLog.info('AppAggregatorManager: 清空渠道 - ${channel.code}');
+    appLog.info('AppAggregatorManager: 清空渠道 - $channelCode');
   }
 
   /// 清空所有应用
@@ -442,16 +442,16 @@ class AppAggregatorManager implements IAggregateService {
   }
 
   /// 获取指定渠道的已添加应用
-  Future<List<AddedAppInfo>> getAppsByChannel(ChannelType channel) async {
-    return await _database.addedAppDao.getAppsByChannel(channel.code);
+  Future<List<AddedAppInfo>> getAppsByChannel(String channelCode) async {
+    return await _database.addedAppDao.getAppsByChannel(channelCode);
   }
 
   /// 检查应用是否已添加
   Future<bool> isAppAdded({
-    required ChannelType channel,
+    required String channelCode,
     required String appId,
   }) async {
-    final app = await _database.addedAppDao.getApp(channel.code, appId);
+    final app = await _database.addedAppDao.getApp(channelCode, appId);
     return app != null;
   }
 
@@ -461,8 +461,8 @@ class AppAggregatorManager implements IAggregateService {
   }
 
   /// 获取指定渠道的应用数量
-  Future<int> getCountByChannel(ChannelType channel) async {
-    return await _database.addedAppDao.getCountByChannel(channel.code) ?? 0;
+  Future<int> getCountByChannel(String channelCode) async {
+    return await _database.addedAppDao.getCountByChannel(channelCode) ?? 0;
   }
 
   /// 获取已添加应用的索引
@@ -529,22 +529,16 @@ class AppAggregatorManager implements IAggregateService {
       var sliceCache = 0;
 
       final sliceResults = await Future.wait(slice.map((addedApp) async {
+        final channelCode = addedApp.channelId;
         try {
-          final channelType = ChannelType.fromCode(addedApp.channelId);
-          if (channelType == null) {
-            debugPrint('AppAggregatorManager: 跳过未知渠道 - ${addedApp.channelId}');
-            return null;
-          }
-
-          // 从渠道获取应用详情
-          final channel = _channelManager.getChannel(channelType);
+          final channel = _channelManager.getChannelByCode(channelCode);
           if (channel == null) {
-            debugPrint('AppAggregatorManager: 渠道实例为空 - ${channelType.name}');
+            debugPrint('AppAggregatorManager: 跳过未知渠道 - $channelCode');
             sliceFailed++;
             return null;
           }
 
-          debugPrint('AppAggregatorManager: 正在获取应用详情 - ${addedApp.appId} (${channelType.name})');
+          debugPrint('AppAggregatorManager: 正在获取应用详情 - ${addedApp.appId} ($channelCode)');
           final result = await channel.getAppInfo(addedApp.appId);
 
           if (result.success && result.data != null) {
@@ -557,7 +551,8 @@ class AppAggregatorManager implements IAggregateService {
               appInfo: merged.isEmpty
                   ? summary
                   : summary.copyWith(category: merged),
-              channel: channelType,
+              channel: channel.info.type,
+              channelCode: channelCode,
             );
           } else {
             // 渠道获取失败，使用本地缓存的数据
@@ -571,7 +566,8 @@ class AppAggregatorManager implements IAggregateService {
               appInfo: merged.isEmpty
                   ? summary
                   : summary.copyWith(category: merged),
-              channel: channelType,
+              channel: channel.info.type,
+              channelCode: channelCode,
               isFromCache: true,
             );
           }
@@ -593,6 +589,7 @@ class AppAggregatorManager implements IAggregateService {
                 ? summary
                 : summary.copyWith(category: merged),
             channel: ChannelType.localDb,
+            channelCode: channelCode,
             isFromCache: true,
             error: e.toString(),
           );
@@ -662,6 +659,9 @@ class AggregatedAppInfo {
   /// 来源渠道
   final ChannelType channel;
 
+  /// 渠道唯一标识（枚举渠道 = type.code；脚本渠道 = channelKey）
+  final String channelCode;
+
   /// 是否来自缓存
   final bool isFromCache;
 
@@ -672,6 +672,7 @@ class AggregatedAppInfo {
     required this.addedAppInfo,
     required this.appInfo,
     required this.channel,
+    required this.channelCode,
     this.isFromCache = false,
     this.error,
   });

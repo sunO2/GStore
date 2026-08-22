@@ -237,7 +237,7 @@ void main() {
 
     // 打用户标签
     await manager.setTags(
-      channel: ChannelType.github,
+      channelCode: 'github',
       appId: 'com.tags',
       tags: ['我的标签'],
     );
@@ -262,12 +262,12 @@ void main() {
     ));
 
     await manager.setTags(
-      channel: ChannelType.github,
+      channelCode: 'github',
       appId: 'com.tags',
       tags: ['a', 'b'],
     );
     await manager.setTags(
-      channel: ChannelType.github,
+      channelCode: 'github',
       appId: 'com.tags',
       tags: ['c'],
     );
@@ -303,7 +303,7 @@ void main() {
 
     // 用户标签与渠道分类 ['工具'] 重叠
     await manager.setTags(
-      channel: ChannelType.github,
+      channelCode: 'github',
       appId: 'com.tags',
       tags: ['工具', '效率'],
     );
@@ -322,14 +322,14 @@ void main() {
       addTime: 1000,
     ));
     await manager.setTags(
-      channel: ChannelType.github,
+      channelCode: 'github',
       appId: 'com.tags',
       tags: ['我的标签'],
     );
 
-    await manager.removeApp(channel: ChannelType.github, appId: 'com.tags');
+    await manager.removeApp(channelCode: 'github', appId: 'com.tags');
 
-    expect(await manager.getTags(channel: ChannelType.github, appId: 'com.tags'),
+    expect(await manager.getTags(channelCode: 'github', appId: 'com.tags'),
         isEmpty, reason: '移除应用必须联动清理用户标签');
     expect(await manager.getAllTagsIndex(), isEmpty);
   });
@@ -343,7 +343,7 @@ void main() {
 
     // 1) 发现页添加应用：聚合库落 key = canonicalAppId('owner/repo') = 'com.example.app'
     await manager.addApp(
-      channel: ChannelType.github,
+      channelCode: 'github',
       appInfo: AppSummary(
         appId: 'owner/repo',
         packageName: null,
@@ -362,7 +362,7 @@ void main() {
 
     // 2) 修复后的发现页逻辑：用 canonicalId 保存标签 → key 与聚合库条目一致
     await manager.setTags(
-      channel: ChannelType.github,
+      channelCode: 'github',
       appId: 'com.example.app',
       tags: ['我的标签'],
     );
@@ -379,7 +379,7 @@ void main() {
     // 4) 反证：raw appId（owner/repo）作 key 保存 → 标签丢失
     //    （文档化修复必要性：旧代码用 raw appId 作 key 匹配不到聚合库）
     await manager.setTags(
-      channel: ChannelType.github,
+      channelCode: 'github',
       appId: 'owner/repo',
       tags: ['游戏'],
     );
@@ -407,7 +407,7 @@ void main() {
       addTime: 1000,
     ));
     await manager.setTags(
-      channel: ChannelType.github,
+      channelCode: 'github',
       appId: 'com.tags',
       tags: ['代理'],
     );
@@ -433,7 +433,7 @@ void main() {
       addTime: 1000,
     ));
     await manager.setTags(
-      channel: ChannelType.github,
+      channelCode: 'github',
       appId: 'com.tags',
       tags: ['效率工具'],
     );
@@ -458,7 +458,7 @@ void main() {
       addTime: 1000,
     ));
     await manager.setTags(
-      channel: ChannelType.github,
+      channelCode: 'github',
       appId: 'com.tags',
       tags: ['代理'],
     );
@@ -484,7 +484,7 @@ void main() {
       addTime: 1000,
     ));
     await manager.setTags(
-      channel: ChannelType.github,
+      channelCode: 'github',
       appId: 'com.tags',
       tags: ['代理'],
     );
@@ -510,7 +510,7 @@ void main() {
       addTime: 1000,
     ));
     await manager.setTags(
-      channel: ChannelType.github,
+      channelCode: 'github',
       appId: 'com.tags',
       tags: ['代理', '系统'],
     );

@@ -227,13 +227,13 @@ abstract class IAggregateService {
 
   /// 移除应用
   Future<void> removeApp({
-    required ChannelType channel,
+    required String channelCode,
     required String appId,
   });
 
   /// 是否已添加
   Future<bool> isAppAdded({
-    required ChannelType channel,
+    required String channelCode,
     required String appId,
   });
 
@@ -241,38 +241,38 @@ abstract class IAggregateService {
   Future<List<AddedAppInfo>> getAllAddedApps();
 
   /// 按渠道获取
-  Future<List<AddedAppInfo>> getAppsByChannel(ChannelType channel);
+  Future<List<AddedAppInfo>> getAppsByChannel(String channelCode);
 
   /// 总数
   Future<int> getTotalCount();
 
   /// 批量添加应用
   Future<void> addApps({
-    required ChannelType channel,
+    required String channelCode,
     required List<AppSummary> appInfos,
   });
 
   /// 切换应用添加状态
   Future<bool> toggleApp({
-    required ChannelType channel,
+    required String channelCode,
     required AppSummary appInfo,
   });
 
   /// 获取应用的用户标签（无标签返回空列表）
   Future<List<String>> getTags({
-    required ChannelType channel,
+    required String channelCode,
     required String appId,
   });
 
   /// 设置应用的用户标签（整体替换：先清空再写入）
   Future<void> setTags({
-    required ChannelType channel,
+    required String channelCode,
     required String appId,
     required List<String> tags,
   });
 
   /// 清空指定渠道的所有应用
-  Future<void> clearChannel(ChannelType channel);
+  Future<void> clearChannel(String channelCode);
 
   /// 获取已添加应用的索引（ChannelCode → Set<AppId>）
   Future<Map<String, Set<String>>> getAddedAppsIndex();

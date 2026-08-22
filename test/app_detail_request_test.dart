@@ -31,6 +31,7 @@ void main() {
         addedAppInfo: addedApp('termux/termux-app'),
         appInfo: appInfo,
         channel: ChannelType.github,
+        channelCode: 'github',
       );
 
       final request = AppDetailRequest.fromAggregatedAppInfo(aggregated);
@@ -55,6 +56,7 @@ void main() {
         addedAppInfo: addedApp('termux/termux-app'),
         appInfo: appInfo,
         channel: ChannelType.github,
+        channelCode: 'github',
       );
 
       final request = AppDetailRequest.fromAggregatedAppInfo(aggregated);
@@ -77,6 +79,7 @@ void main() {
         addedAppInfo: addedApp('unknown/app-x'),
         appInfo: appInfo,
         channel: ChannelType.github,
+        channelCode: 'github',
         isFromCache: true,
       );
 

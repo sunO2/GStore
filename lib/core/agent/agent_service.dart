@@ -1911,35 +1911,28 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
           if (appId.isEmpty || channel.isEmpty) {
             return '添加应用需要 appId 和 channel';
           }
-          final channelType = ChannelType.fromCode(channel);
-          if (channelType == null) return '未知渠道: $channel';
-          // 通过渠道获取应用信息
           final manager = ChannelManager.instance;
-          final channelInst = manager.getChannel(channelType);
+          final channelInst = manager.getChannelByCode(channel);
           if (channelInst == null) return '渠道 $channel 不可用';
           final result = await channelInst.getAppInfo(appId);
           if (!result.success || result.data == null) {
             return '获取应用信息失败: ${result.error ?? '未知错误'}';
           }
-          await aggregator.addApp(channel: channelType, appInfo: result.data!);
+          await aggregator.addApp(channelCode: channel, appInfo: result.data!);
           return '已添加 ${result.data!.name ?? appId} 到我的应用';
 
         case 'remove':
           if (appId.isEmpty || channel.isEmpty) {
             return '移除应用需要 appId 和 channel';
           }
-          final channelType = ChannelType.fromCode(channel);
-          if (channelType == null) return '未知渠道: $channel';
-          await aggregator.removeApp(channel: channelType, appId: appId);
+          await aggregator.removeApp(channelCode: channel, appId: appId);
           return '已移除 $name（$appId）';
 
         case 'isAdded':
           if (appId.isEmpty || channel.isEmpty) {
             return '检查需要 appId 和 channel';
           }
-          final channelType = ChannelType.fromCode(channel);
-          if (channelType == null) return '未知渠道: $channel';
-          final isAdded = await aggregator.isAppAdded(channel: channelType, appId: appId);
+          final isAdded = await aggregator.isAppAdded(channelCode: channel, appId: appId);
           return isAdded ? '$appId 已在我的应用中' : '$appId 尚未添加';
 
         default:

@@ -211,7 +211,7 @@ void main() {
 
       final manager = AppAggregatorManager.instance;
       await manager.addApp(
-        channel: ChannelType.github,
+        channelCode: 'github',
         appInfo: githubSearchResult('termux/termux-app'),
       );
 
@@ -234,7 +234,7 @@ void main() {
     test('渠道 canonicalAppId 返回原样（未收录）：appId 保持占位 owner/repo', () async {
       final manager = AppAggregatorManager.instance;
       await manager.addApp(
-        channel: ChannelType.github,
+        channelCode: 'github',
         appInfo: githubSearchResult('unknown/app-unknown'),
       );
 
@@ -253,7 +253,7 @@ void main() {
 
       final manager = AppAggregatorManager.instance;
       await manager.addApp(
-        channel: ChannelType.github,
+        channelCode: 'github',
         appInfo: githubSearchResult('termux/termux-app'),
       );
 
@@ -269,8 +269,8 @@ void main() {
 
       final manager = AppAggregatorManager.instance;
       final app = githubSearchResult('termux/termux-app');
-      await manager.addApp(channel: ChannelType.github, appInfo: app);
-      await manager.addApp(channel: ChannelType.github, appInfo: app);
+      await manager.addApp(channelCode: 'github', appInfo: app);
+      await manager.addApp(channelCode: 'github', appInfo: app);
 
       final apps = await db.addedAppDao.getAllAddedApps();
       expect(apps, hasLength(1), reason: '同一应用重复添加应覆盖而非新增');
@@ -282,7 +282,7 @@ void main() {
     test('appId 保持包名（LocalDb appId 本就是包名）', () async {
       final manager = AppAggregatorManager.instance;
       await manager.addApp(
-        channel: ChannelType.localDb,
+        channelCode: 'localDb',
         appInfo: localDbResult('com.termux', 'termux', 'termux-app'),
       );
 
@@ -295,7 +295,7 @@ void main() {
     test('普通应用：保持原 ID', () async {
       final manager = AppAggregatorManager.instance;
       await manager.addApp(
-        channel: ChannelType.localDb,
+        channelCode: 'localDb',
         appInfo: AppSummary(
           appId: 'com.vivo.app',
           packageName: null,
@@ -324,7 +324,7 @@ void main() {
 
       final manager = AppAggregatorManager.instance;
       await manager.addApps(
-        channel: ChannelType.github,
+        channelCode: 'github',
         appInfos: [
           githubSearchResult('termux/termux-app'),
           githubSearchResult('unknown/app-unknown'),
@@ -346,27 +346,27 @@ void main() {
     test('isAppAdded / removeApp 基于引用字段工作', () async {
       final manager = AppAggregatorManager.instance;
       await manager.addApp(
-        channel: ChannelType.github,
+        channelCode: 'github',
         appInfo: githubSearchResult('termux/termux-app'),
       );
 
       expect(
         await manager.isAppAdded(
-            channel: ChannelType.github, appId: 'termux/termux-app'),
+            channelCode: 'github', appId: 'termux/termux-app'),
         isTrue,
       );
       expect(
         await manager.isAppAdded(
-            channel: ChannelType.github, appId: 'com.termux'),
+            channelCode: 'github', appId: 'com.termux'),
         isFalse,
         reason: '未收录场景 appId 为占位，包名不是引用键',
       );
 
       await manager.removeApp(
-          channel: ChannelType.github, appId: 'termux/termux-app');
+          channelCode: 'github', appId: 'termux/termux-app');
       expect(
         await manager.isAppAdded(
-            channel: ChannelType.github, appId: 'termux/termux-app'),
+            channelCode: 'github', appId: 'termux/termux-app'),
         isFalse,
       );
     });

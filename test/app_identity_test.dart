@@ -78,6 +78,7 @@ void main() {
         addedAppInfo: added,
         appInfo: appInfo,
         channel: ChannelType.github,
+        channelCode: 'github',
       );
 
       final identity = AppIdentity.fromSummary(agg);
@@ -102,6 +103,7 @@ void main() {
         addedAppInfo: added,
         appInfo: placeholder,
         channel: ChannelType.github,
+        channelCode: 'github',
       );
 
       final identity = AppIdentity.fromSummary(agg);
