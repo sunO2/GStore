@@ -23,6 +23,7 @@ import 'package:gstore/http/download/DownloadStatus.dart';
 import 'package:gstore/page/web/browser.dart';
 import 'package:installed_apps/installed_apps.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+import 'package:gstore/core/js/js_native_host.dart';
 
 import 'state.dart';
 import 'widgets/more_actions_sheet.dart';
@@ -62,15 +63,21 @@ class DetailLogic extends GetxController {
 
   /// Wave 3：获取页面级 detail 通道（zip 包 detail.js，独立 runtime 消费详情方法）。
   ///
-  /// 仅在 req 就绪且渠道为 JsChannel 时调 [JsChannel.getDetailChannel]；
-  /// 渠道包无 detail.js → 工厂返回 null（详情走 entry 原路径，兼容）。
+  /// 经 [IChannel.getDetailChannel] 统一入口获取（appId 级工厂缓存）；仅 JsChannel
+  /// 有 detail.js 返回非 null。渠道包无 detail.js → 工厂返回 null（详情走 entry
+  /// 原路径，兼容）。
   /// 幂等：工厂 appId 级缓存，重复调用返回同一实例。
   void _initDetailChannel() {
     final req = request;
     if (_detailChannel != null || req == null) return;
-    final ch = _channelManager?.getChannel(req.channel);
-    if (ch is JsChannel) {
-      _detailChannel = ch.getDetailChannel(req.appId);
+    // 优先用 channelCode 精确查找（区分同属 custom 的不同 JS 渠道）；
+    // channelCode 为 null 时回退 channel.code（兼容旧调用方/枚举渠道）。
+    final code = req.channelCode ?? req.channel.code;
+    final ch = _channelManager?.getChannelByCode(code);
+    final dc = ch?.getDetailChannel(req.appId);
+    // _detailChannel 保持 JsDetailChannel?（_DetailJsScriptSource 需要其 callMain）
+    if (dc is JsDetailChannel) {
+      _detailChannel = dc;
     }
   }
 
@@ -82,7 +89,8 @@ class DetailLogic extends GetxController {
     if (detailChannel != null) return _DetailJsScriptSource(detailChannel);
     final req = request;
     if (req == null) return null;
-    final ch = _channelManager?.getChannel(req.channel);
+    final code = req.channelCode ?? req.channel.code;
+    final ch = _channelManager?.getChannelByCode(code);
     if (ch is JsChannel) return _EntryScriptSource(ch);
     return null;
   }
@@ -148,9 +156,10 @@ class DetailLogic extends GetxController {
       // 懒初始化（兼容单测直接调 loadDetail；正常流程 onReady 已注入，重复查找幂等）
       _channelManager = ModuleManager.instance.get<ChannelManager>();
       _initDetailChannel(); // 兼容单测直调 loadDetail（onReady 未走时补初始化）
-      final channelInstance = _channelManager?.getChannel(request!.channel);
+      final code = request!.channelCode ?? request!.channel.code;
+      final channelInstance = _channelManager?.getChannelByCode(code);
       if (channelInstance == null) {
-        throw Exception('Channel not found: ${request!.channel}');
+        throw Exception('Channel not found: $code');
       }
 
       // 非分块渠道（Vivo/Fdroid/Http 等）：回退旧流程 getAppDetail 一次性完整注入。
@@ -759,12 +768,16 @@ class DetailLogic extends GetxController {
     final req = request;
     if (req == null) return;
 
+    debugPrint('DetailLogic: showMoreActions 被调用 - appId=${req.appId}, channelCode=${req.channelCode}');
+    try {
+
     // 解析 canonical appId（复刻发现页 showTagPickerForApp 的模式：
     // 渠道 getAppInfo 返回的 AppSummary 交给 canonicalAppId 规范化）。
     // 脚本渠道（JsChannel）跳过：canonicalAppId 默认原样返回 appInfo.appId，
     // 且 getAppInfo 会触发脚本网络请求（build-list）——点"更多"应零请求，
     // 直接用 req.appId 作 canonicalId 即可。
-    final channelInstance = _channelManager?.getChannel(req.channel);
+    final code = req.channelCode ?? req.channel.code;
+    final channelInstance = _channelManager?.getChannelByCode(code);
     String canonicalId = req.appId;
     if (channelInstance != null && channelInstance is! JsChannel) {
       try {
@@ -781,34 +794,41 @@ class DetailLogic extends GetxController {
       }
     }
 
-    // 读取当前标签（用规范化 appId）
-    // aggregate 模块下线 → 注册表取不到服务，降级提示不抛
+    // 读取当前标签（用规范化 appId）+ 预置分类 + 动作宫格
+    // 数据准备：降级策略——aggregate 模块未启用 / getTags、detailMenu 等任何异常
+    // 都不阻断 panel 弹出（异常时弹空标签 + 可用动作的空 sheet）。
     final aggregator = _aggregator;
-    if (aggregator == null) {
-      AppDialogs.showWarning('聚合模块未启用');
-      return;
-    }
-    final currentTags = await aggregator.getTags(
-      channel: req.channel,
-      appId: canonicalId,
-    );
-
-    // 加载预置分类：本地库 AppCategory 的 description 作为标签值
+    var currentTags = <String>[];
     var presetTags = <String>[];
+
+    // 数据准备：仅 getTags + getAllCategory，异常不阻断 sheet 弹出
     try {
-      final categories = await "gstore".repoDB.db.dao.getAllCategory();
-      presetTags = categories
-          .map((c) => c.description.trim())
-          .where((d) => d.isNotEmpty)
-          .toList();
+      if (aggregator != null) {
+        currentTags = await aggregator.getTags(
+          channelCode: req.channelCode ?? req.channel.code,
+          appId: canonicalId,
+        );
+      }
+
+      // 加载预置分类：本地库 AppCategory 的 description 作为标签值
+      try {
+        final categories = await "gstore".repoDB.db.dao.getAllCategory();
+        presetTags = categories
+            .map((c) => c.description.trim())
+            .where((d) => d.isNotEmpty)
+            .toList();
+      } catch (e) {
+        appLog.error('DetailLogic: 加载预置分类失败，使用内置列表 - $e');
+      }
+      if (presetTags.isEmpty) {
+        presetTags = _fallbackPresetTags;
+      }
     } catch (e) {
-      appLog.error('DetailLogic: 加载预置分类失败，使用内置列表 - $e');
-    }
-    if (presetTags.isEmpty) {
+      appLog.error('DetailLogic: showMoreActions 数据准备失败，降级 - $e');
       presetTags = _fallbackPresetTags;
     }
 
-    // 构建动作宫格（通用项 + 渠道专属项）
+    // 构建动作宫格（在 try/catch 外面，确保始终执行）
     final actions = <MoreActionItem>[
       // 完善应用信息（GitHub 渠道 / LocalDb 的 GitHub 仓库类型应用）
       if (canSubmitAppMetadata)
@@ -832,59 +852,100 @@ class DetailLogic extends GetxController {
     // 无 → entry JsChannel 回退（兼容）。
     if (channelInstance is JsChannel) {
       final source = _detailScriptSource;
-      if (source == null) return; // 理论不可达（channelInstance 已确认 JsChannel）
-      // host.ui 注入：脚本 host.ui.showVersionPicker / showBuildHistory / refreshDetail
-      // 的 Flutter 实现（ChannelLoader 创建渠道时无 context，详情页使用时注入）。
-      // detailChannel 创建于页面初始化（早于此处注入），需向其 runtime 补注入；
-      // entry 同步注入（保持 Wave B 行为，detail.js 缺失回退路径同样可用）。
-      Future<Map<String, dynamic>?> showVersionPicker(
-              Map<String, dynamic> options) =>
-          _showVersionPickerFromScript(context, source, options);
-      Future<Map<String, dynamic>?> showBuildHistory(
-              Map<String, dynamic> options) =>
-          _showBuildHistoryFromScript(context, options);
-      Future<void> refreshDetail(Map<String, dynamic> params) =>
-          _refreshDetailFromScript(source, params);
-      channelInstance.setUiCallbacks(
-        uiShowVersionPicker: showVersionPicker,
-        uiShowBuildHistory: showBuildHistory,
-        uiRefreshDetail: refreshDetail,
-        uiUpdateDownloadList: _updateDownloadsFromScript,
-      );
-      _detailChannel?.setUiCallbacks(
-        uiShowVersionPicker: showVersionPicker,
-        uiShowBuildHistory: showBuildHistory,
-        uiRefreshDetail: refreshDetail,
-        uiUpdateDownloadList: _updateDownloadsFromScript,
-      );
-
-      final menu = await source.detailMenu(req.appId);
-      if (menu == null || menu.isEmpty) {
-        // 脚本未声明 detailMenu → 维持现状：写死"切换版本"
+      if (source == null) {
+        // source 为 null（理论上不可达，但防御处理）：仍添加"切换版本"兜底，不 return
         actions.add(
           MoreActionItem(
             icon: Icons.swap_vert,
             label: '切换版本',
-            onTap: () => _openVersionSwitcher(context, source),
+            onTap: () {
+              // 无脚本源时尝试打开版本切换器（可能降级）
+            },
           ),
         );
       } else {
-        // 脚本声明了 detailMenu → 用脚本 Actions 构建宫格（替换写死"切换版本"）
-        for (final action in menu) {
-          final label = action['action']?.toString() ?? '';
-          if (label.isEmpty) continue;
+        // host.ui 注入：脚本 host.ui.showVersionPicker / showBuildHistory / refreshDetail
+        // 的 Flutter 实现（ChannelLoader 创建渠道时无 context，详情页使用时注入）。
+        // detailChannel 创建于页面初始化（早于此处注入），需向其 runtime 补注入；
+        // entry 同步注入（保持 Wave B 行为，detail.js 缺失回退路径同样可用）。
+        final nativeHost = JSNativeHost()
+          ..register('ui', 'showVersionPicker', (p) => _showVersionPickerFromScript(context, source, p))
+          ..register('ui', 'showBuildHistory', (p) => _showBuildHistoryFromScript(context, p))
+          ..register('ui', 'refreshDetail', (p) async { await _refreshDetailFromScript(source, p); return null; })
+          ..register('ui', 'updateDownloadList', (p) async { await _updateDownloadsFromScript((p['downloads'] as List?) ?? const []); return null; })
+          ..register('ui', 'showUAPicker', (p) => _showUAPickerFromScript(context, p));
+        channelInstance.setNativeHost(nativeHost);
+        _detailChannel?.setNativeHost(nativeHost);
+
+        List<Map<String, dynamic>>? menu;
+        try {
+          menu = await source.detailMenu(req.appId).timeout(
+            const Duration(seconds: 5),
+            onTimeout: () {
+              debugPrint('DetailLogic: detailMenu 超时（5s），降级为 null');
+              return null;
+            },
+          );
+        } catch (e) {
+          debugPrint('DetailLogic: detailMenu 调用异常 - $e');
+          menu = null;
+        }
+        if (menu == null || menu.isEmpty) {
+          // 脚本未声明 detailMenu → 维持现状：写死"切换版本"
           actions.add(
             MoreActionItem(
-              icon: Icons.extension, // icon 字段暂不解析，用默认图标
-              label: label,
-              onTap: () => _handleJsAction(source, action, context),
+              icon: Icons.swap_vert,
+              label: '切换版本',
+              onTap: () => _openVersionSwitcher(context, source),
             ),
           );
+        } else {
+          // 脚本声明了 detailMenu → 用脚本 Actions 构建宫格
+          for (final action in menu) {
+            final label = action['action']?.toString() ?? '';
+            if (label.isEmpty) continue;
+
+            // 解析 icon 字段：
+            // - 'icons/xxx.png' → zip 内置图标 → MemoryImage
+            // - Material 图标名（如 'swap_vert'）→ IconData 映射
+            // - 缺失 → Icons.extension 默认
+            final iconSpec = action['icon']?.toString();
+            IconData? iconData;
+            MemoryImage? iconImage;
+
+            if (iconSpec != null && iconSpec.isNotEmpty) {
+              if (iconSpec.startsWith('icons/') ||
+                  iconSpec.endsWith('.png') ||
+                  iconSpec.endsWith('.jpg') ||
+                  iconSpec.endsWith('.svg')) {
+                // 路径形式：从渠道包获取图标字节
+                // （本分支已确认 channelInstance 为 JsChannel，类型提升生效）
+                final bytes = channelInstance.iconBytes(iconSpec);
+                if (bytes != null) {
+                  iconImage = MemoryImage(bytes);
+                }
+              } else {
+                // Material 图标名映射（常用图标子集）
+                iconData = _materialIconFromName(iconSpec);
+              }
+            }
+
+            actions.add(
+              MoreActionItem(
+                icon: iconData ?? Icons.extension,
+                iconImage: iconImage,
+                label: label,
+                onTap: () => _handleJsAction(source, action, context),
+              ),
+            );
+          }
         }
       }
     }
 
-    // 弹出底部面板（顶部标签编辑 + 底部动作宫格）
+    debugPrint('DetailLogic: showMoreActions 准备弹 sheet - actions=${actions.length}');
+
+    // 弹出底部面板（顶部标签编辑 + 底部动作宫格；即使数据准备失败也弹出）
     if (!context.mounted) return;
     final result = await showMoreActionsSheet(
       context,
@@ -896,9 +957,14 @@ class DetailLogic extends GetxController {
     if (result == null) return; // 取消/关闭，不保存
 
     try {
+      final agg = aggregator;
+      if (agg == null) {
+        AppDialogs.showError('聚合模块未启用，标签未保存');
+        return;
+      }
       // 保存标签（用规范化 appId，与聚合库 key 一致）
-      await aggregator.setTags(
-        channel: req.channel,
+      await agg.setTags(
+        channelCode: req.channelCode ?? req.channel.code,
         appId: canonicalId,
         tags: result,
       );
@@ -907,6 +973,25 @@ class DetailLogic extends GetxController {
       appLog.error('DetailLogic: 保存标签失败 - $e');
       AppDialogs.showError('保存标签失败: $e', title: '保存失败');
     }
+  } catch (e, stackTrace) {
+    debugPrint('DetailLogic: showMoreActions 未捕获异常 - $e');
+    debugPrint('DetailLogic: 堆栈 - $stackTrace');
+    // 即使异常也尝试弹一个最小 sheet（仅含错误提示）
+    if (!context.mounted) return;
+    await showMoreActionsSheet(
+      context,
+      appName: request?.name ?? '未知应用',
+      presetTags: const [],
+      currentTags: const [],
+      actions: [
+        MoreActionItem(
+          icon: Icons.error_outline,
+          label: '操作加载失败',
+          onTap: () {},
+        ),
+      ],
+    );
+  }
   }
 
   /// 打开"切换版本"选择器（仅脚本渠道；detailMenu 未实现时的写死入口）。
@@ -1029,7 +1114,7 @@ class DetailLogic extends GetxController {
 
   /// host.ui.showBuildHistory 的 Flutter 实现：弹 [ChannelBuildHistorySheet] 单选构建。
   ///
-  /// options: `{version, env, builds:[{num, publishedAt, size, changelog, installTimes, builtBy, ipaName}]}`
+  /// options: `{version, env, builds:[{num, publishedAt, size, changelog, installTimes, builtBy, ipaName}], selectedBuild: num}`
   /// 返回选中 build Map（num/ipaName 等，脚本据此刷新详情）或 null（取消/关闭）。
   Future<Map<String, dynamic>?> _showBuildHistoryFromScript(
     BuildContext context,
@@ -1056,12 +1141,21 @@ class DetailLogic extends GetxController {
             })
             .toList() ??
         const <BuildOption>[];
+    // 从 options 中读取当前选中的构建 num，在 builds 列表中定位
+    final selectedNum = (options['selectedBuild'] as num?)?.toInt();
+    final initialSelected = (selectedNum != null)
+        ? builds.cast<BuildOption?>().firstWhere(
+              (b) => b?.num == selectedNum,
+              orElse: () => null,
+            )
+        : null;
 
     final sel = await ChannelBuildHistorySheet.show(
       context: context,
       version: version,
       env: env,
       builds: builds,
+      initialSelected: initialSelected,
     );
     if (sel == null) return null; // 取消/关闭
     return {
@@ -1073,18 +1167,117 @@ class DetailLogic extends GetxController {
     };
   }
 
+  /// host.ui.showUAPicker 的 Flutter 实现：弹 UA 选择对话框。
+  ///
+  /// options: `{title, options:[{label, ua}], current}`
+  /// 返回选中 UA `{ua: string}` 或 null（取消）。
+  Future<Map<String, dynamic>?> _showUAPickerFromScript(
+    BuildContext context,
+    Map<String, dynamic> options,
+  ) async {
+    if (!context.mounted) return null;
+    final title = options['title']?.toString() ?? '切换 UA';
+    final uaOptions = (options['options'] as List?)
+            ?.map((e) => e as Map<String, dynamic>)
+            .toList() ??
+        const [];
+    final current = options['current']?.toString() ?? '';
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+
+    var selectedUA = current;
+    final sel = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: colorScheme.dialogSurface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // 标题
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Text(title,
+                    style: textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w600)),
+              ),
+              const SizedBox(height: 8),
+              // UA 选项列表（单选圆点 + label）
+              ...uaOptions.map((opt) {
+                final ua = opt['ua']?.toString() ?? '';
+                final label = opt['label']?.toString() ?? ua;
+                final isSelected = ua == selectedUA;
+                return InkWell(
+                  onTap: () {
+                    selectedUA = ua;
+                    Navigator.of(ctx).pop(ua);
+                  },
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    child: Row(
+                      children: [
+                        Icon(
+                          isSelected
+                              ? Icons.radio_button_checked
+                              : Icons.radio_button_off,
+                          size: 20,
+                          color: isSelected
+                              ? colorScheme.primary
+                              : colorScheme.outlineVariant,
+                        ),
+                        const SizedBox(width: 12),
+                        Text(label,
+                            style: textTheme.bodyMedium?.copyWith(
+                              fontWeight: isSelected
+                                  ? FontWeight.w600
+                                  : FontWeight.normal,
+                              color: isSelected
+                                  ? colorScheme.primary
+                                  : colorScheme.onSurface,
+                            )),
+                      ],
+                    ),
+                  ),
+                );
+              }),
+              const SizedBox(height: 16),
+              // 底部按钮
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed: () => Navigator.of(ctx).pop(),
+                    child: const Text('取消'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    if (sel == null) return null;
+    return {'ua': sel};
+  }
+
   /// host.ui.refreshDetail 的 Flutter 实现（脚本详情页动作内部调用）。
   ///
   /// [params]：`{appId, env, version}` → 调脚本 switchVersion 拿该 env+version
   /// 详情 → 整体刷新 state.detailInfo（与选择器确认共用刷新逻辑）。
-  Future<void> _refreshDetailFromScript(
+Future<void> _refreshDetailFromScript(
     _DetailScriptSource source,
     Map<String, dynamic> params,
   ) async {
-    final env = params['env']?.toString() ?? '';
-    final version = params['version']?.toString() ?? '';
+    var env = params['env']?.toString() ?? '';
+    var version = params['version']?.toString() ?? '';
     if (env.isEmpty || version.isEmpty) return;
-    // build 可选：历史构建选中项 {num, ipaName} → 刷新详情时切换到该构建
     final build = params['build'];
     await _refreshDetailAfterSwitch(
       source,
@@ -1115,6 +1308,148 @@ class DetailLogic extends GetxController {
     if (method == null || method.isEmpty) return;
 
     await source.invokeScriptMethod(method, {'appId': req.appId});
+  }
+
+  /// 常用 Material 图标名 → IconData 映射（供 JS detailMenu icon 字段使用）。
+  /// 未映射的名称返回 null（调用方用默认图标）。
+  static IconData? _materialIconFromName(String name) {
+    const map = <String, IconData>{
+      'swap_vert': Icons.swap_vert,
+      'history': Icons.history,
+      'phone_android': Icons.phone_android,
+      'download': Icons.download,
+      'refresh': Icons.refresh,
+      'info': Icons.info,
+      'settings': Icons.settings,
+      'language': Icons.language,
+      'extension': Icons.extension,
+      'more_vert': Icons.more_vert,
+      'more_horiz': Icons.more_horiz,
+      'list': Icons.list,
+      'search': Icons.search,
+      'star': Icons.star,
+      'build': Icons.build,
+      'update': Icons.update,
+      'sync': Icons.sync,
+      'cloud_upload': Icons.cloud_upload,
+      'cloud_download': Icons.cloud_download,
+      'security': Icons.security,
+      'lock': Icons.lock,
+      'key': Icons.key,
+      'check_circle': Icons.check_circle,
+      'error': Icons.error,
+      'warning': Icons.warning,
+      'help': Icons.help,
+      'menu_book': Icons.menu_book,
+      'code': Icons.code,
+      'bug_report': Icons.bug_report,
+      'terminal': Icons.terminal,
+      'api': Icons.api,
+      'shield': Icons.shield,
+      'fingerprint': Icons.fingerprint,
+      'tune': Icons.tune,
+      'category': Icons.category,
+      'tag': Icons.tag,
+      'filter_alt': Icons.filter_alt,
+      'sort': Icons.sort,
+      'archive': Icons.archive,
+      'unarchive': Icons.unarchive,
+      'delete': Icons.delete,
+      'edit': Icons.edit,
+      'save': Icons.save,
+      'add': Icons.add,
+      'remove': Icons.remove,
+      'share': Icons.share,
+      'link': Icons.link,
+      'open_in_new': Icons.open_in_new,
+      'content_copy': Icons.content_copy,
+      'content_paste': Icons.content_paste,
+      'visibility': Icons.visibility,
+      'visibility_off': Icons.visibility_off,
+      'expand_more': Icons.expand_more,
+      'expand_less': Icons.expand_less,
+      'arrow_forward': Icons.arrow_forward,
+      'arrow_back': Icons.arrow_back,
+      'arrow_upward': Icons.arrow_upward,
+      'arrow_downward': Icons.arrow_downward,
+      'unfold_more': Icons.unfold_more,
+      'unfold_less': Icons.unfold_less,
+      'drag_handle': Icons.drag_handle,
+      'power_settings_new': Icons.power_settings_new,
+      'logout': Icons.logout,
+      'person': Icons.person,
+      'people': Icons.people,
+      'group': Icons.group,
+      'public': Icons.public,
+      'domain': Icons.domain,
+      'business': Icons.business,
+      'store': Icons.store,
+      'shopping_cart': Icons.shopping_cart,
+      'apps': Icons.apps,
+      'dashboard': Icons.dashboard,
+      'home': Icons.home,
+      'folder': Icons.folder,
+      'file_copy': Icons.file_copy,
+      'attachment': Icons.attachment,
+      'image': Icons.image,
+      'photo': Icons.photo,
+      'videocam': Icons.videocam,
+      'audiotrack': Icons.audiotrack,
+      'play_arrow': Icons.play_arrow,
+      'pause': Icons.pause,
+      'stop': Icons.stop,
+      'skip_next': Icons.skip_next,
+      'skip_previous': Icons.skip_previous,
+      'fast_forward': Icons.fast_forward,
+      'fast_rewind': Icons.fast_rewind,
+      'volume_up': Icons.volume_up,
+      'volume_down': Icons.volume_down,
+      'volume_mute': Icons.volume_mute,
+      'fullscreen': Icons.fullscreen,
+      'fullscreen_exit': Icons.fullscreen_exit,
+      'zoom_in': Icons.zoom_in,
+      'zoom_out': Icons.zoom_out,
+      'print': Icons.print,
+      'email': Icons.email,
+      'call': Icons.call,
+      'message': Icons.message,
+      'notifications': Icons.notifications,
+      'notifications_off': Icons.notifications_off,
+      'calendar_today': Icons.calendar_today,
+      'schedule': Icons.schedule,
+      'timer': Icons.timer,
+      'stopwatch': Icons.timer,
+      'alarm': Icons.alarm,
+      'event': Icons.event,
+      'event_note': Icons.event_note,
+      'today': Icons.today,
+      'wb_sunny': Icons.wb_sunny,
+      'nights_stay': Icons.nights_stay,
+      'light_mode': Icons.light_mode,
+      'dark_mode': Icons.dark_mode,
+      'palette': Icons.palette,
+      'color_lens': Icons.color_lens,
+      'brush': Icons.brush,
+      'format_paint': Icons.format_paint,
+      'science': Icons.science,
+      'biotech': Icons.biotech,
+      'memory': Icons.memory,
+      'developer_board': Icons.developer_board,
+      'integration_instructions': Icons.integration_instructions,
+      'source': Icons.source,
+      'data_object': Icons.data_object,
+      'schema': Icons.schema,
+      'storage': Icons.storage,
+      'dns': Icons.dns,
+      'router': Icons.router,
+      'wifi': Icons.wifi,
+      'wifi_off': Icons.wifi_off,
+      'signal_cellular_4_bar': Icons.signal_cellular_4_bar,
+      'battery_full': Icons.battery_full,
+      'battery_alert': Icons.battery_alert,
+      'battery_charging_full': Icons.battery_charging_full,
+    };
+    return map[name];
   }
 
   /// switchVersion → state.detailInfo 整体刷新（选择器确认与 host.ui.refreshDetail 共用）。
@@ -1270,14 +1605,12 @@ class DetailLogic extends GetxController {
   @override
   void onClose() {
     // Wave 3：释放页面级 detail runtime（工厂缓存一致性——经
-    // JsChannel.releaseDetailChannel 移除 appId 缓存并 dispose，页面退出即释放；
+    // IChannel.releaseDetailChannel 统一入口移除 appId 缓存并 dispose，页面退出即释放；
     // 未创建过该 appId 的 detail 通道 → 幂等无操作）。
     final req = request;
     if (req != null) {
-      final ch = _channelManager?.getChannel(req.channel);
-      if (ch is JsChannel) {
-        ch.releaseDetailChannel(req.appId);
-      }
+      final code = req.channelCode ?? req.channel.code;
+      _channelManager?.getChannelByCode(code)?.releaseDetailChannel(req.appId);
     }
     _detailChannel = null;
     counterController.close();

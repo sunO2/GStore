@@ -242,6 +242,7 @@ class ApplistLogic extends GetxController with GithubRequestMix {
       icon: app.appInfo.icon,
       description: app.appInfo.des,
       channel: app.channel,
+      channelCode: app.channelCode,
     );
     Get.toNamed(AppRoute.appDetail, arguments: request);
   }
@@ -250,7 +251,7 @@ class ApplistLogic extends GetxController with GithubRequestMix {
   Future<void> removeApp(AggregatedAppInfo app) async {
     try {
       await _aggregator?.removeApp(
-        channel: app.channel,
+        channelCode: app.channelCode,
         appId: app.appInfo.appId,
       );
 

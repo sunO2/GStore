@@ -23,10 +23,16 @@ class AppDetailRequest {
   /// 来源渠道
   final ChannelType channel;
 
+  /// 渠道唯一标识（枚举渠道 = type.code；脚本渠道 = channelKey，如 'js_pingan'）
+  /// 用于详情页精确查找渠道（getChannelByCode），区分同属 custom 的不同 JS 渠道。
+  /// 为 null 时回退到 channel.code（兼容旧调用方）。
+  final String? channelCode;
+
   const AppDetailRequest({
     required this.appId,
     required this.name,
     required this.channel,
+    this.channelCode,
     this.packageName,
     this.icon,
     this.description,
@@ -54,6 +60,8 @@ class AppDetailRequest {
         packageName ??= appInfo?.repositories;
 
         // 注意：appId 原样传递（渠道查询键），不做格式转换——由渠道内部处理
+        // AggregatedAppInfo 现在有 channelCode 属性
+        final channelCode = (aggregatedInfo as dynamic).channelCode as String?;
         return AppDetailRequest(
           appId: appInfo?.appId ?? '',
           name: appInfo?.name ?? '',
@@ -61,6 +69,7 @@ class AppDetailRequest {
           icon: appInfo?.icon,
           description: appInfo?.des,
           channel: channel,
+          channelCode: channelCode,
         );
       } catch (e) {
         // 如果转换失败，返回默认值
@@ -68,6 +77,7 @@ class AppDetailRequest {
           appId: '',
           name: 'Unknown',
           channel: ChannelType.localDb,
+          channelCode: null,
         );
       }
     }
@@ -82,14 +92,16 @@ class AppDetailRequest {
       channel: map['channel'] is ChannelType
           ? map['channel'] as ChannelType
           : ChannelType.localDb,
+      channelCode: null,
     );
   }
 
   /// 从 AppInfo 转换
   factory AppDetailRequest.fromAppInfo(
     Map<String, dynamic> appInfoMap,
-    ChannelType channel,
-  ) {
+    ChannelType channel, {
+    String? channelCode,
+  }) {
     return AppDetailRequest(
       appId: appInfoMap['appId']?.toString() ?? '',
       name: appInfoMap['name']?.toString() ?? 'Unknown',
@@ -97,11 +109,12 @@ class AppDetailRequest {
       icon: appInfoMap['icon']?.toString(),
       description: appInfoMap['des']?.toString(),
       channel: channel,
+      channelCode: channelCode,
     );
   }
 
   @override
   String toString() {
-    return 'AppDetailRequest{appId: $appId, name: $name, channel: $channel}';
+    return 'AppDetailRequest{appId: $appId, name: $name, channel: $channel, channelCode: $channelCode}';
   }
 }

@@ -4,12 +4,18 @@ import 'package:gstore/core/design/design_tokens.dart';
 /// 更多操作项（宫格中的一个动作）
 class MoreActionItem {
   const MoreActionItem({
-    required this.icon,
+    this.icon,
+    this.iconImage,
     required this.label,
     required this.onTap,
   });
 
-  final IconData icon;
+  /// Material 图标（与 iconImage 二选一，优先 iconImage）
+  final IconData? icon;
+
+  /// 内存图片图标（zip 内置图标，优先于 icon）
+  final MemoryImage? iconImage;
+
   final String label;
   final VoidCallback onTap;
 }
@@ -342,11 +348,18 @@ class _ActionTile extends StatelessWidget {
               ),
               borderRadius: AppRadius.allMD,
             ),
-            child: Icon(
-              action.icon,
-              size: AppTypography.iconMD,
-              color: colorScheme.onSecondaryContainer,
-            ),
+            // 图标渲染：iconImage（zip 内置图标）优先，fallback Material 图标
+            child: action.iconImage != null
+                ? Image(
+                    image: action.iconImage!,
+                    width: AppTypography.iconMD,
+                    height: AppTypography.iconMD,
+                  )
+                : Icon(
+                    action.icon ?? Icons.extension,
+                    size: AppTypography.iconMD,
+                    color: colorScheme.onSecondaryContainer,
+                  ),
           ),
           const SizedBox(height: AppSpacing.xs),
           Text(

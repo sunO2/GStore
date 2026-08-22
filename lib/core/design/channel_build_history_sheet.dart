@@ -17,11 +17,13 @@ class ChannelBuildHistorySheet {
   ///
   /// [version] / [env] 当前版本与环境（标题展示用）
   /// [builds] 历史构建列表（按 num 降序由调用方保证；单选）
+  /// [initialSelected] 可选：当前选中的构建（弹框预选中；null 表示无选中）
   static Future<BuildOption?> show({
     required BuildContext context,
     required String version,
     required String env,
     required List<BuildOption> builds,
+    BuildOption? initialSelected,
   }) {
     return showModalBottomSheet<BuildOption>(
       context: context,
@@ -36,6 +38,7 @@ class ChannelBuildHistorySheet {
         version: version,
         env: env,
         builds: builds,
+        initialSelected: initialSelected,
       ),
     );
   }
@@ -46,11 +49,13 @@ class _ChannelBuildHistorySheet extends StatefulWidget {
     required this.version,
     required this.env,
     required this.builds,
+    this.initialSelected,
   });
 
   final String version;
   final String env;
   final List<BuildOption> builds;
+  final BuildOption? initialSelected;
 
   @override
   State<_ChannelBuildHistorySheet> createState() =>
@@ -58,7 +63,13 @@ class _ChannelBuildHistorySheet extends StatefulWidget {
 }
 
 class _ChannelBuildHistorySheetState extends State<_ChannelBuildHistorySheet> {
-  BuildOption? _selected;
+  late BuildOption? _selected;
+
+  @override
+  void initState() {
+    super.initState();
+    _selected = widget.initialSelected;
+  }
 
   void _confirm() {
     final selected = _selected;
