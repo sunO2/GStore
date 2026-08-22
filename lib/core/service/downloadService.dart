@@ -521,11 +521,13 @@ class DownloadService extends GetxService
         start = await downloadTempFile.length();
       }
 
-      // 构建请求头
+      // 构建请求头：仅续传时（start > 0）发 Range 头，首次下载不发以免混淆不支持 Range 的服务器
       final requestHeaders = <String, String>{
-        'Range': 'bytes=$start-',
         ...?context?.headers,
       };
+      if (start > 0) {
+        requestHeaders['Range'] = 'bytes=$start-';
+      }
 
       // 配置请求选项
       final options = Options(
