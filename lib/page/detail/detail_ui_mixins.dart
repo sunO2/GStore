@@ -307,13 +307,13 @@ mixin DetailVersionPickerMixin on GetxController {
   }
 
   @override
-  void showUAPicker({
+  Future<String?> showUAPicker({
     required List<String>? uaOptions,
     required String appId,
-  }) {
+  }) async {
     final ctx = Get.context;
-    if (ctx == null || uaOptions == null || uaOptions.isEmpty) return;
-    showModalBottomSheet<String>(
+    if (ctx == null || uaOptions == null || uaOptions.isEmpty) return null;
+    return showModalBottomSheet<String>(
       context: ctx,
       builder: (c) => SafeArea(
         child: Column(mainAxisSize: MainAxisSize.min, children: [

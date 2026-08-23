@@ -41,8 +41,8 @@ abstract class DetailCallbacks {
     required String env,
   });
 
-  /// 显示 UA 选择器
-  void showUAPicker({
+  /// 显示 UA 选择器，返回用户选中的 UA（取消返回 null）
+  Future<String?> showUAPicker({
     required List<String>? uaOptions,
     required String appId,
   });

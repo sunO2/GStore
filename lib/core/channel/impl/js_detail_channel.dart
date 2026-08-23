@@ -253,8 +253,7 @@ class JsDetailChannel implements IDetailChannel {
             .map((e) => (e as Map)['ua']?.toString() ?? '')
             .where((s) => s.isNotEmpty)
             .toList();
-        cb.showUAPicker(uaOptions: uas, appId: appId);
-        return null;
+        return await cb.showUAPicker(uaOptions: uas, appId: appId);
       });
     setNativeHost(host);
   }
