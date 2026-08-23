@@ -257,18 +257,6 @@ class DetailLogic extends GetxController
     final channelActions = channel?.getActions() ?? <DetailAction>[];
 
     final allActions = [
-      if (canSubmitAppMetadata)
-        DetailAction(
-          label: '完善应用信息',
-          icon: Icons.manage_search,
-          onTap: () => submitAppMetadata(),
-        ),
-      if (state.detailInfo.value?.projectUrl != null)
-        DetailAction(
-          label: '项目主页',
-          icon: Icons.language,
-          onTap: () async => openProjectBrowser(),
-        ),
       ...channelActions,
     ];
 
