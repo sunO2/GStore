@@ -20,5 +20,26 @@ abstract class IDetailChannel {
   /// 发起下载。
   Future<void> startDownload(DownloadInfo info);
 
+  /// 版本/环境切换选项（JS 渠道实现；标准渠道默认 null = 不支持）
+  Future<Map<String, dynamic>?> versionOptions(String appId, {String? env}) async => null;
+
+  /// 切换版本/环境（JS 渠道实现；默认 null）
+  Future<Map<String, dynamic>?> switchVersion({
+    required String appId,
+    required String env,
+    required String version,
+    Map<String, dynamic>? build,
+  }) async => null;
+
+  /// 指定版本历史构建（JS 渠道实现；默认 null）
+  Future<Map<String, dynamic>?> buildHistory({
+    required String appId,
+    required String version,
+    required String env,
+  }) async => null;
+
+  /// 更新下载区（JS 代理数据专用；默认 no-op）
+  Future<void> updateDownloads(List<DownloadInfo> downloads) async {}
+
   Future<void> dispose();
 }

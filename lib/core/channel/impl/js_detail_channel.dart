@@ -1,10 +1,14 @@
 import 'package:dio/dio.dart';
 import 'package:gstore/core/channel/database/channel_added_app_dao.dart';
+import 'package:gstore/core/channel/detail_callbacks.dart';
 import 'package:gstore/core/channel/IDetailChannel.dart';
+import 'package:gstore/core/channel/impl/JsChannel.dart';
 import 'package:gstore/core/channel/impl/js_script_utils.dart';
 import 'package:gstore/core/js/js_channel_runtime.dart';
 import 'package:gstore/core/js/js_native_host.dart';
 import 'package:gstore/core/logger/LogManager.dart';
+import 'package:gstore/core/model/AppDetailInfo.dart';
+import 'package:gstore/page/detail/state.dart';
 
 /// 页面级详情通道：独立 runtime 加载 detail.js（状态隔离，页面退出释放）。
 /// 由 [JsChannel.getDetailChannel] 工厂创建；dispose 释放（数据免缓存管理）。
@@ -186,6 +190,152 @@ class JsDetailChannel implements IDetailChannel {
   /// showMoreActions 的 host.native 注入），此处允许注入晚于创建——脚本下次调用
   /// `host.native.call('ui.showVersionPicker', ...)` 等即生效。
   void setNativeHost(JSNativeHost host) => _runtime.setNativeHost(host);
+
+  // ==================== bind 模式（构造后注入 state + callbacks） ====================
+
+  /// bind 注入的详情状态容器（[load] 及后续交互写入数据；未 bind → null）
+  DetailState? _boundState;
+
+  /// bind 注入的 UI 回调接口（[load]/脚本交互经其刷新 UI；未 bind → null）
+  DetailCallbacks? _boundCallbacks;
+
+  /// [getActions] 返回的操作项缓存（[load] 时从脚本 detailMenu 刷新）
+  List<DetailAction> _actions = const [];
+
+  /// bind 模式：构造后注入状态容器 + UI 回调接口。
+  ///
+  /// 工厂 [JsChannel.getDetailChannel] 只负责按 appId 创建实例（不改签名），
+  /// 页面打开后调用方（DetailLogic）经此方法注入 state + callbacks，
+  /// 后续 [load] 及脚本交互把数据写入 [state]。
+  /// 同时安装 native host 回调（脚本 jscall 时可立即调起 UI 交互）。
+  @override
+  void bind(DetailState state, DetailCallbacks callbacks) {
+    _boundState = state;
+    _boundCallbacks = callbacks;
+    _installNativeHost(callbacks);
+  }
+
+  /// 安装 native host 回调：注册 'ui' 命名空间的五个 handler，
+  /// 脚本内部经 `host.native.call('ui.showVersionPicker', ...)` 等驱动 UI 交互。
+  void _installNativeHost(DetailCallbacks cb) {
+    final host = JSNativeHost()
+      ..register('ui', 'showVersionPicker', (p) async {
+        await cb.showVersionPicker(
+          options: Map<String, dynamic>.from(p),
+          appId: appId,
+        );
+        return null;
+      })
+      ..register('ui', 'showBuildHistory', (p) async {
+        final builds = ((p['builds'] as List?) ?? [])
+            .map((b) => Map<String, dynamic>.from(b as Map))
+            .toList();
+        await cb.showBuildHistory(
+          builds: builds,
+          appId: appId,
+          version: p['version']?.toString() ?? '',
+          env: p['env']?.toString() ?? '',
+        );
+        return null;
+      })
+      ..register('ui', 'refreshDetail', (p) async {
+        await cb.refreshDetail(detailData: Map<String, dynamic>.from(p));
+        return null;
+      })
+      ..register('ui', 'updateDownloadList', (p) async {
+        final downloads = (p['downloads'] as List?) ?? [];
+        final parsed = JsChannelDetailProxy({'downloads': downloads}).downloads;
+        await cb.updateDownloadList(downloads: parsed);
+        return null;
+      })
+      ..register('ui', 'showUAPicker', (p) async {
+        final uas = ((p['options'] as List?) ?? [])
+            .map((e) => (e as Map)['ua']?.toString() ?? '')
+            .where((s) => s.isNotEmpty)
+            .toList();
+        cb.showUAPicker(uaOptions: uas, appId: appId);
+        return null;
+      });
+    setNativeHost(host);
+  }
+
+  /// 加载详情数据并写入 bound 的 [DetailState]。
+  ///
+  /// 经脚本 main('getAppDetail') 拉取原始详情 Map，再经
+  /// [DetailCallbacks.refreshDetail] 让 UI 侧（DetailLogic 实现内部用
+  /// JsChannelDetailProxy）整体刷新 state.detailInfo——与 switchVersion 后刷新同路径。
+  /// 同时刷新 [getActions] 操作项缓存。
+  /// 未 bind → 仅日志（脚本直调/单测场景），不崩溃；脚本失败 → null 兜底（同回退路径）。
+  @override
+  Future<void> load() async {
+    final state = _boundState;
+    final callbacks = _boundCallbacks;
+    if (state == null || callbacks == null) {
+      _logError('load 未 bind（state/callbacks 未注入），跳过');
+      return;
+    }
+    final raw = await getAppDetail(appId);
+    if (raw == null) {
+      _logError('load: getAppDetail 返回 null，调用方兜底');
+      return;
+    }
+    await callbacks.refreshDetail(detailData: raw);
+    await _refreshActions();
+  }
+
+  /// 脚本 detailMenu → [DetailAction] 列表缓存（[getActions] 消费）。
+  ///
+  /// onTap 语义与 DetailLogic._handleJsAction 一致：调脚本方法（交互由 host.ui 驱动）；
+  /// 脚本未实现 / 返回非列表 → 空列表（调用方维持现状兜底）。
+  Future<void> _refreshActions() async {
+    final menu = await detailMenu(appId);
+    if (menu == null) {
+      _actions = const [];
+      return;
+    }
+    _actions = menu.map((e) {
+      final label = e['action']?.toString() ?? '';
+      final jscall = e['jscall']?.toString() ?? '';
+      return DetailAction(
+        label: label.isEmpty ? (jscall.isEmpty ? '未知动作' : jscall) : label,
+        onTap: () async {
+          if (jscall.isEmpty) return;
+          await callMain(jscall, {'appId': appId});
+        },
+      );
+    }).toList();
+  }
+
+  /// 返回脚本 detailMenu 声明的操作项（"更多"面板展示）。
+  /// 未 [load]/未 bind/脚本未实现 → 空列表（调用方兜底）。
+  @override
+  List<DetailAction> getActions() => _actions;
+
+  /// 发起下载：透传脚本 main('download')（语义同 [callMain]，脚本未实现 →
+  /// null + 日志，调用方维持现状兜底；下载结果由 host.ui 回调驱动注入 UI）。
+  @override
+  Future<void> startDownload(DownloadInfo info) async {
+    await callMain('download', {
+      'appId': appId,
+      'url': info.url,
+      'name': info.name,
+      if (info.version != null) 'version': info.version,
+      if (info.size != null) 'size': info.size,
+    });
+  }
+
+  /// 更新下载区：替换 bound state 的 detailInfo 中 downloads 字段（局部更新，不重载）。
+  /// 脚本调用 `host.native.call('updateDownloadList', {downloads})` 时触发。
+  @override
+  Future<void> updateDownloads(List<DownloadInfo> downloads) async {
+    final state = _boundState;
+    final current = state?.detailInfo.value;
+    if (current is JsChannelDetailProxy) {
+      final data = Map<String, dynamic>.from(current.data);
+      data['downloads'] = downloads;
+      state!.detailInfo.value = JsChannelDetailProxy(data);
+    }
+  }
 
   /// 释放 runtime（页面退出调用；数据/缓存随实例释放，免缓存管理）
   @override
