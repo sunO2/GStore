@@ -1,14 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:gstore/core/channel/detail_callbacks.dart';
 import 'package:gstore/core/channel/IChannel.dart';
 import 'package:gstore/core/channel/IDetailChannel.dart';
 import 'package:gstore/core/channel/model/AppUpdateCheckResult.dart';
 import 'package:gstore/core/channel/model/ChannelInfo.dart';
 import 'package:gstore/core/channel/model/ChannelResult.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
+import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/db/apps/AppInfo.dart' as db;
+import 'package:gstore/page/detail/state.dart';
 
 /// 方案 A 核心契约：IChannel 默认 getDetailChannel/releaseDetailChannel。
 ///
@@ -124,14 +127,39 @@ class _PlainChannel extends IChannel {
   Future<void> dispose() async {}
 }
 
-/// 最小 IDetailChannel 实现（appId 独立 + dispose 计数）
+/// 最小 IDetailChannel 实现（appId 独立 + 方法调用计数）
 class _DetailChannel extends IDetailChannel {
   _DetailChannel(this.appId);
 
   @override
   final String appId;
 
+  int bindCalls = 0;
+  int loadCalls = 0;
+  int getActionsCalls = 0;
+  int startDownloadCalls = 0;
   int disposeCalls = 0;
+
+  @override
+  void bind(DetailState state, DetailCallbacks callbacks) {
+    bindCalls++;
+  }
+
+  @override
+  Future<void> load() async {
+    loadCalls++;
+  }
+
+  @override
+  List<DetailAction> getActions() {
+    getActionsCalls++;
+    return [];
+  }
+
+  @override
+  Future<void> startDownload(DownloadInfo info) async {
+    startDownloadCalls++;
+  }
 
   @override
   Future<void> dispose() async {

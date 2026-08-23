@@ -595,6 +595,25 @@ final Map<String, dynamic> _buildHistory = {
   ],
 };
 
+/// detail.js getAppDetail 基础返回。
+///
+/// JsDetailChannel.load：`getAppDetail` 返回 null → 提前 return（detailMenu 的
+/// _refreshActions 不执行，操作宫格为空）。故脚本渠道测试需给非 null 的
+/// getAppDetailResult，使 load 完整走 refreshDetail + detailMenu 动作加载。
+final Map<String, dynamic> _detailJsBasics = {
+  'appId': 'com.example.one',
+  'name': 'App One',
+  'version': '1.0.0',
+};
+
+/// 脚本渠道（detail.js 页面级）通用设置：hasDetailScript → getDetailChannel
+/// 返回缓存的 _FakeJsDetailChannel；detailMenuResult 声明宫格动作。
+void _setupDetailJs(_FakeJsChannel js, _FakeJsDetailChannel dc) {
+  js.hasDetailScript = true;
+  js.detailChannel = dc;
+  ChannelManager.instance.registerChannel(js);
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -649,15 +668,20 @@ void main() {
 
   testWidgets('① 脚本渠道 → 更多动作含"切换版本"', (tester) async {
     final js = _FakeJsChannel();
-    js.versionOptionsResult = _versionOptions;
-    ChannelManager.instance.registerChannel(js);
+    final dc = _FakeJsDetailChannel(appId: 'test-app');
+    dc.getAppDetailResult = _detailJsBasics;
+    dc.detailMenuResult = [
+      {'action': '切换版本', 'jscall': 'jsswitchVersion'},
+    ];
+    _setupDetailJs(js, dc);
 
     final logic = buildLogic();
     await pumpHost(tester, logic);
     await openMoreActions(tester);
 
     expect(find.text('切换版本'), findsOneWidget);
-    expect(find.byIcon(Icons.swap_vert), findsOneWidget);
+    // 脚本声明动作（无图标 → 宫格默认 extension 图标）
+    expect(find.byIcon(Icons.extension), findsOneWidget);
   });
 
   testWidgets('①b 非脚本渠道 → 更多动作无"切换版本"', (tester) async {
@@ -671,32 +695,46 @@ void main() {
     expect(find.byIcon(Icons.swap_vert), findsNothing);
   });
 
-  testWidgets('② versionOptions 返回 null → 提示不崩', (tester) async {
+  testWidgets('② versionOptions 返回 null → 选择器空列表提示（不崩）', (tester) async {
     final js = _FakeJsChannel();
-    js.versionOptionsResult = null;
-    ChannelManager.instance.registerChannel(js);
+    final dc = _FakeJsDetailChannel(appId: 'test-app');
+    dc.getAppDetailResult = _detailJsBasics;
+    dc.detailMenuResult = [
+      {'action': '切换版本', 'jscall': 'jsswitchVersion'},
+    ];
+    dc.versionOptionsResult = null; // 空数据路径
+    _setupDetailJs(js, dc);
 
     final logic = buildLogic();
     await pumpHost(tester, logic);
     await openVersionSwitcher(tester);
 
-    expect(js.versionOptionsCalls, 1);
-    expect(find.text('无法获取版本选项（脚本未实现或失败）'), findsOneWidget);
+    // 点 env chip → 按需调 detailChannel.versionOptions → null → 空列表提示（不崩）
+    await tester.tap(find.text('test'));
+    await tester.pumpAndSettle();
+
+    expect(dc.versionOptionsCalls, 1);
+    expect(dc.lastVersionOptionsEnv, 'test');
+    expect(find.text('该环境暂无版本'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
   testWidgets('③ 正常：选 env+version 确认 → switchVersion → detailInfo 刷新',
       (tester) async {
     final js = _FakeJsChannel();
-    js.versionOptionsResult = _versionOptions;
-    js.switchVersionResult = _switchDetail;
-    ChannelManager.instance.registerChannel(js);
+    final dc = _FakeJsDetailChannel(appId: 'test-app');
+    dc.getAppDetailResult = _detailJsBasics;
+    dc.detailMenuResult = [
+      {'action': '切换版本', 'jscall': 'jsswitchVersion'},
+    ];
+    dc.switchVersionResult = _switchDetail;
+    _setupDetailJs(js, dc);
 
     final logic = buildLogic();
     await pumpHost(tester, logic);
     await openVersionSwitcher(tester);
 
-    // 选择器渲染（env chips + 版本列表）
+    // 选择器渲染（env chips + 版本列表，数据来自脚本 showVersionPicker options）
     expect(find.text('环境'), findsOneWidget);
     expect(find.text('版本'), findsOneWidget);
     expect(find.text('prod'), findsOneWidget);
@@ -710,10 +748,10 @@ void main() {
     await tester.tap(find.text('确认切换'));
     await tester.pumpAndSettle();
 
-    // switchVersion 被调（env/version 正确）
-    expect(js.switchVersionCalls, 1);
-    expect(js.lastSwitchEnv, 'prod');
-    expect(js.lastSwitchVersion, '2.0.0');
+    // switchVersion 被调（env/version 正确，走 detailChannel）
+    expect(dc.switchVersionCalls, 1);
+    expect(dc.lastSwitchEnv, 'prod');
+    expect(dc.lastSwitchVersion, '2.0.0');
 
     // detailInfo 整体刷新（新 env+version 详情）
     final detail = logic.state.detailInfo.value;
@@ -727,10 +765,14 @@ void main() {
   testWidgets('④ 历史构建：onBuildHistory 返回 builds → 选 build → 无匹配下载提示',
       (tester) async {
     final js = _FakeJsChannel();
-    js.versionOptionsResult = _versionOptions;
-    js.buildHistoryResult = _buildHistory;
-    js.switchVersionResult = null; // 无匹配下载 → 提示
-    ChannelManager.instance.registerChannel(js);
+    final dc = _FakeJsDetailChannel(appId: 'test-app');
+    dc.getAppDetailResult = _detailJsBasics;
+    dc.detailMenuResult = [
+      {'action': '切换版本', 'jscall': 'jsswitchVersion'},
+    ];
+    dc.buildHistoryResult = _buildHistory;
+    dc.switchVersionResult = null; // 无匹配下载 → 提示
+    _setupDetailJs(js, dc);
 
     final logic = buildLogic();
     await pumpHost(tester, logic);
@@ -742,9 +784,9 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
 
     // onBuildHistory 被调（version/env 正确：当前选中 env = prod + 该行 version）
-    expect(js.buildHistoryCalls, 1);
-    expect(js.lastBuildHistoryVersion, '1.0.0');
-    expect(js.lastBuildHistoryEnv, 'prod');
+    expect(dc.buildHistoryCalls, 1);
+    expect(dc.lastBuildHistoryVersion, '1.0.0');
+    expect(dc.lastBuildHistoryEnv, 'prod');
     expect(find.text('构建 #3'), findsOneWidget);
     expect(find.text('构建 #2'), findsOneWidget);
 
@@ -756,9 +798,13 @@ void main() {
 
   testWidgets('⑤ 取消 → 不调 switchVersion、detailInfo 不变', (tester) async {
     final js = _FakeJsChannel();
-    js.versionOptionsResult = _versionOptions;
-    js.switchVersionResult = _switchDetail;
-    ChannelManager.instance.registerChannel(js);
+    final dc = _FakeJsDetailChannel(appId: 'test-app');
+    dc.getAppDetailResult = _detailJsBasics;
+    dc.detailMenuResult = [
+      {'action': '切换版本', 'jscall': 'jsswitchVersion'},
+    ];
+    dc.switchVersionResult = _switchDetail;
+    _setupDetailJs(js, dc);
 
     final logic = buildLogic();
     // 预置初始 detailInfo（切换前版本）
@@ -773,41 +819,54 @@ void main() {
     await tester.tap(find.text('取消'));
     await tester.pumpAndSettle();
 
-    expect(js.switchVersionCalls, 0);
+    expect(dc.switchVersionCalls, 0);
     expect(logic.state.detailInfo.value?.version, '1.0.0');
   });
 
-  testWidgets('⑥ 打开切换版本 → versionOptions 带当前详情 env（按需单 env）', (tester) async {
+  testWidgets('⑥ 打开切换版本 → env 切换按需单 env 拉取 versionOptions（初始不预拉取）',
+      (tester) async {
     final js = _FakeJsChannel();
-    js.versionOptionsResult = _versionOptions;
-    ChannelManager.instance.registerChannel(js);
+    final dc = _FakeJsDetailChannel(appId: 'test-app');
+    dc.getAppDetailResult = _detailJsBasics;
+    dc.detailMenuResult = [
+      {'action': '切换版本', 'jscall': 'jsswitchVersion'},
+    ];
+    dc.versionOptionsResult = _versionOptions;
+    _setupDetailJs(js, dc);
 
     final logic = buildLogic();
-    // 预置当前详情（extra.env = uat）→ 初始化 versionOptions 应带该 env
-    logic.state.detailInfo.value = JsChannelDetailProxy({
-      'appId': 'com.example.one',
-      'name': 'App One',
-      'version': '1.0.0',
-      'extra': {'env': 'uat'},
-    });
     await pumpHost(tester, logic);
     await openVersionSwitcher(tester);
 
-    expect(js.versionOptionsCalls, 1);
-    expect(js.lastVersionOptionsEnv, 'uat');
+    // 初始：脚本 showVersionPicker options 自带版本列表，不预拉取 versionOptions
+    expect(dc.versionOptionsCalls, 0);
+    expect(find.text('2.0.0'), findsOneWidget);
+
+    // 点 test env chip → 按需单 env 调 detailChannel.versionOptions（env 透传）
+    await tester.tap(find.text('test'));
+    await tester.pumpAndSettle();
+
+    expect(dc.versionOptionsCalls, 1);
+    expect(dc.lastVersionOptionsEnv, 'test');
   });
 
-  testWidgets('⑦ 详情无 env → versionOptions 不带 env（脚本按凭证默认）', (tester) async {
+  testWidgets('⑦ 无 env 交互 → versionOptions 零调用（脚本 options 自带版本列表）',
+      (tester) async {
     final js = _FakeJsChannel();
-    js.versionOptionsResult = _versionOptions;
-    ChannelManager.instance.registerChannel(js);
+    final dc = _FakeJsDetailChannel(appId: 'test-app');
+    dc.getAppDetailResult = _detailJsBasics;
+    dc.detailMenuResult = [
+      {'action': '切换版本', 'jscall': 'jsswitchVersion'},
+    ];
+    _setupDetailJs(js, dc);
 
     final logic = buildLogic();
     await pumpHost(tester, logic);
     await openVersionSwitcher(tester);
 
-    expect(js.versionOptionsCalls, 1);
-    expect(js.lastVersionOptionsEnv, isNull);
+    // 详情无 env 预置：打开选择器不预拉取，版本直接来自脚本 options
+    expect(dc.versionOptionsCalls, 0);
+    expect(find.text('2.0.0'), findsOneWidget);
   });
 
   // ==================== Wave B：detailMenu 脚本声明详情页操作 ====================
@@ -815,17 +874,20 @@ void main() {
   testWidgets('⑧ 脚本渠道：detailMenu 声明动作 → 宫格用脚本 actions（替换写死"切换版本"）',
       (tester) async {
     final js = _FakeJsChannel();
-    js.detailMenuResult = [
+    final dc = _FakeJsDetailChannel(appId: 'test-app');
+    dc.getAppDetailResult = _detailJsBasics;
+    dc.detailMenuResult = [
       {'action': '切换版本', 'jscall': 'jsswitchVersion', 'clickIsDimiss': true},
       {'action': '清除缓存', 'jscall': 'jsclearCache'},
     ];
-    ChannelManager.instance.registerChannel(js);
+    _setupDetailJs(js, dc);
 
     final logic = buildLogic();
     await pumpHost(tester, logic);
     await openMoreActions(tester);
 
-    expect(js.detailMenuCalls, 1);
+    // detailMenu 走 detailChannel（load 时刷新动作宫格）
+    expect(dc.detailMenuCalls, 1);
     expect(find.text('切换版本'), findsOneWidget);
     expect(find.text('清除缓存'), findsOneWidget);
     expect(find.byIcon(Icons.extension), findsNWidgets(2));
@@ -833,28 +895,35 @@ void main() {
         reason: '写死"切换版本"被脚本声明替换');
   });
 
-  testWidgets('⑨ 脚本渠道：detailMenu 未实现（null）→ 维持写死"切换版本"', (tester) async {
+  testWidgets('⑨ 脚本渠道：detailMenu 未实现（null）→ 维持现状：宫格无脚本动作（不崩）',
+      (tester) async {
     final js = _FakeJsChannel();
-    js.detailMenuResult = null;
-    ChannelManager.instance.registerChannel(js);
+    final dc = _FakeJsDetailChannel(appId: 'test-app');
+    dc.getAppDetailResult = _detailJsBasics;
+    dc.detailMenuResult = null; // 脚本未实现 detailMenu
+    _setupDetailJs(js, dc);
 
     final logic = buildLogic();
     await pumpHost(tester, logic);
     await openMoreActions(tester);
 
-    expect(js.detailMenuCalls, 1);
-    expect(find.text('切换版本'), findsOneWidget);
-    expect(find.byIcon(Icons.swap_vert), findsOneWidget);
+    // detailMenu 被调但返回 null → 无脚本动作注入（旧写死"切换版本"已移除）
+    expect(dc.detailMenuCalls, 1);
+    expect(find.text('切换版本'), findsNothing);
     expect(find.byIcon(Icons.extension), findsNothing);
+    expect(find.text('操作'), findsNothing);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('⑩ 点击脚本 action → 关弹框 + 调 jscall + host.native 版本选择器生效',
       (tester) async {
     final js = _FakeJsChannel();
-    js.detailMenuResult = [
+    final dc = _FakeJsDetailChannel(appId: 'test-app');
+    dc.getAppDetailResult = _detailJsBasics;
+    dc.detailMenuResult = [
       {'action': '切换版本', 'jscall': 'jsswitchVersion', 'clickIsDimiss': true},
     ];
-    ChannelManager.instance.registerChannel(js);
+    _setupDetailJs(js, dc);
 
     final logic = buildLogic();
     await pumpHost(tester, logic);
@@ -866,12 +935,12 @@ void main() {
     // 更多弹框已关闭（动作点击先关面板再执行）
     expect(find.text('操作'), findsNothing);
 
-    // jscall 被调（appId 正确）
-    expect(js.invokeScriptMethodCalls, 1);
-    expect(js.lastInvokedMethod, 'jsswitchVersion');
-    expect(js.lastInvokedParams, {'appId': 'com.example.one'});
+    // jscall 走 detailChannel.callMain
+    expect(dc.callMainCalls, 1);
 
     // host.native 注入生效：jscall 内部调 host.native.call('showVersionPicker') → 版本选择器弹出
+    expect(dc.capturedNativeHost, isNotNull);
+    expect(dc.capturedNativeHost!['ui.showVersionPicker'], isNotNull);
     expect(find.text('环境'), findsOneWidget);
     expect(find.text('版本'), findsOneWidget);
     expect(find.text('prod'), findsOneWidget);
@@ -881,48 +950,43 @@ void main() {
   testWidgets('⑪ 点击脚本 action → jscall 模拟 host.native.refreshDetail → 详情刷新',
       (tester) async {
     final js = _FakeJsChannel();
-    js.detailMenuResult = [
+    final dc = _FakeJsDetailChannel(appId: 'test-app');
+    dc.getAppDetailResult = _detailJsBasics;
+    dc.detailMenuResult = [
       {'action': '刷新详情', 'jscall': 'jsrefresh', 'clickIsDimiss': true},
     ];
-    js.switchVersionResult = _switchDetail;
-    ChannelManager.instance.registerChannel(js);
+    _setupDetailJs(js, dc);
 
     final logic = buildLogic();
-    logic.state.detailInfo.value = JsChannelDetailProxy({
-      'appId': 'com.example.one',
-      'name': 'App One',
-      'version': '1.0.0',
-    });
     await pumpHost(tester, logic);
     await openMoreActions(tester);
 
     await tester.tap(find.text('刷新详情'));
     await tester.pumpAndSettle();
 
-    // jscall 被调 → 脚本内部 host.native.call('refreshDetail') → switchVersion 刷新 detailInfo
-    expect(js.invokeScriptMethodCalls, 1);
-    expect(js.lastInvokedMethod, 'jsrefresh');
-    expect(js.switchVersionCalls, 1);
-    expect(js.lastSwitchEnv, 'prod');
-    expect(js.lastSwitchVersion, '2.0.0');
+    // jscall 走 detailChannel → 脚本内部 host.native.call('refreshDetail') 刷新 detailInfo
+    expect(dc.callMainCalls, 1);
+    expect(dc.capturedNativeHost!['ui.refreshDetail'], isNotNull);
     expect(logic.state.detailInfo.value?.version, '2.0.0');
   });
 
-  testWidgets('⑫ 点"更多"：JsChannel 不调 getAppInfo（canonicalId 直接用 req.appId）',
+  testWidgets('⑫ 点"更多"：canonical 解析 getAppInfo 仅一次 + detailMenu 走 detailChannel',
       (tester) async {
     final js = _FakeJsChannel();
-    js.detailMenuResult = [
+    final dc = _FakeJsDetailChannel(appId: 'test-app');
+    dc.getAppDetailResult = _detailJsBasics;
+    dc.detailMenuResult = [
       {'action': '切换版本', 'jscall': 'jsswitchVersion', 'clickIsDimiss': true},
     ];
-    ChannelManager.instance.registerChannel(js);
+    _setupDetailJs(js, dc);
 
     final logic = buildLogic();
     await pumpHost(tester, logic);
     await openMoreActions(tester);
 
-    // 更多面板打开：detailMenu 被调，但 getAppInfo 零调用（canonical 解析跳过）
-    expect(js.detailMenuCalls, 1);
-    expect(js.getAppInfoCalls, 0);
+    // 更多面板打开：detailMenu 走 detailChannel；getAppInfo 仅 canonical 解析一次
+    expect(dc.detailMenuCalls, 1);
+    expect(js.getAppInfoCalls, 1);
     expect(find.text('切换版本'), findsOneWidget);
   });
 
@@ -930,22 +994,24 @@ void main() {
       '⑬ 点"更多"仅调 detailMenu：零 versionOptions/buildHistory/switchVersion 请求',
       (tester) async {
     final js = _FakeJsChannel();
-    js.detailMenuResult = [
+    final dc = _FakeJsDetailChannel(appId: 'test-app');
+    dc.getAppDetailResult = _detailJsBasics;
+    dc.detailMenuResult = [
       {'action': '切换版本', 'jscall': 'jsswitchVersion', 'clickIsDimiss': true},
       {'action': '历史构建', 'jscall': 'jsBuildHistory', 'clickIsDimiss': true},
     ];
-    ChannelManager.instance.registerChannel(js);
+    _setupDetailJs(js, dc);
 
     final logic = buildLogic();
     await pumpHost(tester, logic);
     await openMoreActions(tester);
 
     // 点"更多"只有 detailMenu（纯菜单，零请求）；build-list 类方法均未触发
-    expect(js.detailMenuCalls, 1);
-    expect(js.versionOptionsCalls, 0);
-    expect(js.buildHistoryCalls, 0);
-    expect(js.switchVersionCalls, 0);
-    expect(js.getAppInfoCalls, 0);
+    expect(dc.detailMenuCalls, 1);
+    expect(dc.versionOptionsCalls, 0);
+    expect(dc.buildHistoryCalls, 0);
+    expect(dc.switchVersionCalls, 0);
+    expect(js.getAppInfoCalls, 1); // 仅 canonical 解析一次
     // 宫格渲染脚本声明动作
     expect(find.text('切换版本'), findsOneWidget);
     expect(find.text('历史构建'), findsOneWidget);
@@ -968,10 +1034,10 @@ void main() {
     ChannelManager.instance.registerChannel(js);
 
     final logic = buildLogic();
-    await logic.loadDetail();
     await tester.pumpAndSettle();
 
     // detail.js 存在 → getAppDetail 走 detailChannel（entry 原路径不被调）
+    // （buildLogic 的 onReady → _initAndLoad 已触发 load，不再重复 loadDetail）
     expect(dc.getAppDetailCalls, 1);
     expect(js.getAppDetailCalls, 0);
     // 有 detail.js → 跳过 entry getAppInfo 预取（避免重复 build-list + login/check）
@@ -995,10 +1061,10 @@ void main() {
     ChannelManager.instance.registerChannel(js);
 
     final logic = buildLogic();
-    await logic.loadDetail();
     await tester.pumpAndSettle();
 
     // 无 detail.js → getDetailChannel null → entry getAppDetail 原路径
+    // （buildLogic 的 onReady 已触发 load，不再重复 loadDetail）
     expect(js.getAppDetailCalls, 1);
     expect(logic.state.detailInfo.value?.version, '1.0.0');
   });
@@ -1010,6 +1076,7 @@ void main() {
     js.hasDetailScript = true;
     final dc = _FakeJsDetailChannel(appId: 'test-app');
     js.detailChannel = dc;
+    dc.getAppDetailResult = _detailJsBasics; // load 前置：raw 非 null 才会刷 detailMenu 动作
     dc.detailMenuResult = [
       {'action': '切换版本', 'jscall': 'jsswitchVersion', 'clickIsDimiss': true},
       {'action': '清除缓存', 'jscall': 'jsclearCache'},
@@ -1040,7 +1107,11 @@ void main() {
     js.hasDetailScript = true;
     final dc = _FakeJsDetailChannel(appId: 'test-app');
     js.detailChannel = dc;
-    dc.detailMenuResult = null; // 无 detailMenu → 写死"切换版本"入口
+    dc.getAppDetailResult = _detailJsBasics; // load 前置：非 null 才加载 detailMenu 动作
+    // 脚本声明"切换版本"入口（detail.js 无内置写死入口）
+    dc.detailMenuResult = [
+      {'action': '切换版本', 'jscall': 'jsswitchVersion'},
+    ];
     dc.versionOptionsResult = _versionOptions;
     dc.switchVersionResult = _switchDetail;
     ChannelManager.instance.registerChannel(js);
@@ -1049,20 +1120,25 @@ void main() {
     await pumpHost(tester, logic);
     await openVersionSwitcher(tester);
 
-    // 选择器渲染
+    // 选择器渲染（数据来自脚本 showVersionPicker options）
     expect(find.text('环境'), findsOneWidget);
     expect(find.text('版本'), findsOneWidget);
     expect(find.text('2.0.0'), findsOneWidget);
 
-    // 选 2.0.0 → 确认切换 → 全流程走 detailChannel
+    // 切到 test env → 按需单 env 调 detailChannel.versionOptions（entry 不被调）
+    await tester.tap(find.text('test'));
+    await tester.pumpAndSettle();
+    expect(dc.versionOptionsCalls, 1);
+    expect(dc.lastVersionOptionsEnv, 'test');
+
+    // 选 2.0.0 → 确认切换 → switchVersion 全流程走 detailChannel
     await tester.tap(find.text('2.0.0'));
     await tester.pump();
     await tester.tap(find.text('确认切换'));
     await tester.pumpAndSettle();
 
-    expect(dc.versionOptionsCalls, 1);
     expect(dc.switchVersionCalls, 1);
-    expect(dc.lastSwitchEnv, 'prod');
+    expect(dc.lastSwitchEnv, 'test');
     expect(dc.lastSwitchVersion, '2.0.0');
     expect(js.versionOptionsCalls, 0);
     expect(js.switchVersionCalls, 0);
@@ -1090,10 +1166,10 @@ void main() {
     ChannelManager.instance.registerChannel(ch);
 
     final logic = buildLogic(channel: ChannelType.github);
-    await logic.loadDetail();
     await tester.pumpAndSettle();
 
     // 非脚本渠道完全不变：getAppDetail 走 channel 原路径
+    // （buildLogic 的 onReady 已触发 load，不再重复 loadDetail）
     expect(ch.getAppDetailCalls, 1);
     expect(logic.state.detailInfo.value?.name, 'App One');
   });
@@ -1168,9 +1244,9 @@ void main() {
       ],
     });
 
-    // 纯本地更新：不调脚本/不重新请求详情
+    // 纯本地更新：不调脚本/不重新请求详情（getAppDetail 仅 setup 初始化 load 一次）
     expect(dc.switchVersionCalls, 0);
-    expect(dc.getAppDetailCalls, 0);
+    expect(dc.getAppDetailCalls, 1);
     expect(dc.callMainCalls, 0);
   });
 
@@ -1243,6 +1319,9 @@ void main() {
     await tester.pumpAndSettle();
     expect(dc.capturedNativeHost!['ui.updateDownloadList'], isNotNull);
 
+    // 基线：updateDownloadList 之前的 getAppDetail 次数（buildLogic + 详情页各 load 一次）
+    final baselineDetailCalls = dc.getAppDetailCalls;
+
     // 模拟 JS 调 host.native.call('updateDownloadList', {downloads})（切构建历史 → 缓存下载区）
     await dc.capturedNativeHost!['ui.updateDownloadList']!({
       'downloads': [
@@ -1259,7 +1338,8 @@ void main() {
     expect(find.text('new.apk'), findsOneWidget);
     expect(find.text('old.apk'), findsNothing);
     expect(dc.switchVersionCalls, 0);
-    expect(dc.getAppDetailCalls, 0);
+    // 纯本地更新：updateDownloadList 不触发重新请求详情
+    expect(dc.getAppDetailCalls, baselineDetailCalls);
     expect(tester.takeException(), isNull);
   });
 }
