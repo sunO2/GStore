@@ -158,7 +158,8 @@ class _FakePinganApi {
           'builds': [
             {
               'identifier': 'com.pingan.ios',
-              'versionname': '2.0.0',
+              // 生产形态：versionname = 应用显示名（≠ 组号 version），锁死字段语义
+              'versionname': '平安口袋银行',
               'num': 2,
               'size': 8000,
               'installTimes': 1,
@@ -179,7 +180,8 @@ class _FakePinganApi {
           'builds': [
             {
               'identifier': 'com.pingan.app',
-              'versionname': '1.9.0',
+              // 生产形态：versionname = 应用显示名（≠ 组号 version 1.9.0），锁死字段语义
+              'versionname': '平安口袋银行',
               'num': 7,
               'size': 12345678,
               'installTimes': 99,
@@ -221,7 +223,8 @@ class _FakePinganApi {
           'builds': [
             {
               'identifier': 'com.pingan.pabank.activity',
-              'versionname': '8.8.0',
+              // 生产形态：versionname = 应用显示名（≠ 组号 version 8.8.0）
+              'versionname': '平安口袋银行',
               'num': 35,
               'size': 23456789,
               'installTimes': 88,
@@ -245,7 +248,8 @@ class _FakePinganApi {
         'builds': [
           {
             'identifier': 'com.pingan.pabank.activity',
-            'versionname': '8.8.0',
+            // 生产形态：versionname = 应用显示名（≠ 组号 version 8.8.0）
+            'versionname': '平安口袋银行',
             'num': 35,
             'size': 23456789,
             'installTimes': 88,
@@ -315,6 +319,8 @@ void main() {
     Map<String, String> Function()? env,
     Map<String, dynamic> Function(RequestOptions options)? handler,
     String? scriptOverride,
+    Future<Map<String, dynamic>> Function(String packageName)?
+        installedInfoReader,
   }) {
     final dio = Dio();
     dio.httpClientAdapter = _FakeDioAdapter(handler ?? defaultHandler, requestLog);
@@ -326,6 +332,7 @@ void main() {
       envReader: env ?? () => const <String, String>{},
       logInfo: (msg) => logMessages.add('info: $msg'),
       logError: (msg) => logMessages.add('error: $msg'),
+      installedInfoReader: installedInfoReader,
     );
   }
 
@@ -466,7 +473,7 @@ void main() {
       // 真实包名移入 packageName / extra.identifier（否则详情/聚合请求 appId 变包名 → ok:false）
       expect(app['appId'], 'app-1'); // 查询键
       expect(app['packageName'], 'com.pingan.app'); // 真实包名（安装检测用）
-      expect(app['name'], '1.9.0'); // versionname
+      expect(app['name'], '平安口袋银行'); // versionname（生产语义=应用显示名，非版本号）
       expect(app['des'], 'app-1'); // des = 查询用 appId
       expect(app['icon'], '$_apiBase/logo/app.png'); // appLogo 补全 API_BASE
 
@@ -474,7 +481,7 @@ void main() {
       expect(extra['_id'], 'bg-android');
       expect(extra['identifier'], 'com.pingan.app'); // 真实包名
       expect(extra['version'], '1.9.0');
-      expect(extra['versionname'], '1.9.0');
+      expect(extra['versionname'], '平安口袋银行'); // versionname = 显示名（生产语义）
       expect(extra['num'], 7);
       expect(extra['size'], 12345678);
       expect(extra['installTimes'], 99);
@@ -673,9 +680,9 @@ void main() {
       final d = result['data'] as Map;
 
       expect(d['appId'], 'app-1'); // 查询键（修复：不再用 identifier 包名覆盖）
-      expect(d['name'], '1.9.0');
+      expect(d['name'], '平安口袋银行'); // versionname = 显示名（生产语义，非版本号）
       expect(d['packageName'], 'com.pingan.app'); // 真实包名
-      expect(d['version'], '1.9.0');
+      expect(d['version'], '1.9.0'); // 版本一律取组号 group.version（语义锁死）
       expect(d['description'], 'app-1');
 
       // extra 完整（含降级 note）
@@ -1033,6 +1040,7 @@ void main() {
     test('㉓b getAppDetail 不带 version（真实结构）→ 默认取最新 android 版本 8.8.0（8.9.0 无 android 构建）', () async {
       // 与 ㉑c 同款真实结构 mock：最新「版本」8.9.0 只有 ios/harmony，
       // android 最新是 8.8.0 → 详情默认版本必须是 8.8.0（android 组列表排序）。
+      // 生产形态：versionname = 应用显示名（≠ 组号 version），锁死字段语义。
       final runtime = buildRuntime(scriptOverride: detailScript, handler: (options) {
         if (options.path.contains('/sunflower/i/build-list')) {
           return {
@@ -1047,7 +1055,7 @@ void main() {
                 'builds': [
                   {
                     'identifier': 'com.pingan.ios',
-                    'versionname': '8.9.0',
+                    'versionname': '平安口袋银行',
                     'num': 1,
                     'size': 500,
                     'fileurl': <Object>[],
@@ -1063,7 +1071,7 @@ void main() {
                 'builds': [
                   {
                     'identifier': 'com.pingan.harmony',
-                    'versionname': '8.9.0',
+                    'versionname': '平安口袋银行',
                     'num': 1,
                     'size': 300,
                     'fileurl': <Object>[],
@@ -1079,7 +1087,7 @@ void main() {
                 'builds': [
                   {
                     'identifier': 'com.pingan.app',
-                    'versionname': '8.8.0',
+                    'versionname': '平安口袋银行',
                     'num': 35,
                     'size': 100,
                     'fileurl': <Object>[],
@@ -1095,7 +1103,7 @@ void main() {
                 'builds': [
                   {
                     'identifier': 'com.pingan.ios',
-                    'versionname': '8.8.0',
+                    'versionname': '平安口袋银行',
                     'num': 4,
                     'size': 500,
                     'fileurl': <Object>[],
@@ -1115,7 +1123,7 @@ void main() {
           for (var num = 35; num >= 1; num--) {
             builds.add({
               'identifier': 'com.pingan.app',
-              'versionname': '8.8.0',
+              'versionname': '平安口袋银行', // 生产形态：显示名（≠ 组号 version）
               'num': num,
               'size': 100 + num,
               'ipa': [
@@ -1159,7 +1167,7 @@ void main() {
           'main', ['getAppInfo', {'appId': 'app-1', 'version': '1.9.0'}]) as Map;
       expect(result['ok'], isTrue);
       final app = result['data'] as Map;
-      expect(app['name'], '1.9.0'); // versionname
+      expect(app['name'], '平安口袋银行'); // versionname = 显示名（生产语义）
       expect((app['extra'] as Map)['version'], '1.9.0');
 
       final buildRequests =
@@ -1318,7 +1326,7 @@ void main() {
                   'builds': [
                     {
                       'identifier': 'com.pingan.real',
-                      'versionname': '3.2.1',
+                      'versionname': '平安口袋银行', // 生产形态：显示名（≠ 组号 version 3.2.1）
                       'num': 42,
                       'size': 56789012,
                       'installTimes': 1024,
@@ -1340,7 +1348,7 @@ void main() {
                   'builds': [
                     {
                       'identifier': 'com.pingan.file',
-                      'versionname': '1.0.0',
+                      'versionname': '平安口袋银行', // 生产形态：显示名（≠ 组号 version 1.0.0）
                       'num': 1,
                       'size': 1000,
                       'fileurl': ['/apk/direct.apk'],
@@ -1730,6 +1738,7 @@ void main() {
             return api.buildListNoAndroid();
           }
           // 渠道查询名 → 构建组 identifier = com.pingan.pabank.activity（触发缓存记录）
+          // 生产形态：versionname = 应用显示名（≠ 组号 version 1.9.0）
           return {
             'appLogo': '/logo/app.png',
             'buildList': [
@@ -1742,7 +1751,7 @@ void main() {
                 'builds': [
                   {
                     'identifier': 'com.pingan.pabank.activity',
-                    'versionname': '1.9.0',
+                    'versionname': '平安口袋银行',
                     'num': 7,
                     'size': 12345678,
                     'installTimes': 99,
@@ -1941,7 +1950,7 @@ void main() {
       expect(result['ok'], isTrue); // 补全失败降级，不抛
       final downloads = (result['data'] as Map)['downloads'] as List;
       final dl = downloads.first as Map;
-      expect(dl['name'], '8.8.0.apk'); // 降级：versionname + '.apk' 合成
+      expect(dl['name'], '平安口袋银行.apk'); // 降级：versionname(显示名) + '.apk' 合成
       expect(dl['url'], ''); // ipaName 缺失 → proxy URL 拼不出（降级行为）
       expect(dl['downloadable'], isFalse);
       expect((dl['note'] as String), isNotEmpty);
@@ -2037,7 +2046,7 @@ void main() {
               'builds': [
                 {
                   'identifier': 'com.pingan.app',
-                  'versionname': '1.9.0',
+                  'versionname': '平安口袋银行', // 生产形态：显示名（≠ 组号 version 1.9.0）
                   'num': 7,
                   'size': 12345678,
                   'ipa': [
@@ -2097,6 +2106,89 @@ void main() {
       final d = result['data'] as Map;
       expect(d['downloads'], isA<List>());
       expect((d['downloads'] as List).length, 1);
+
+      await runtime.dispose();
+    });
+
+    test('㊣a 假 reader 三态① installed:true → 真实 detail.js getAppDetail 携带 installedVersion/installedVersionCode', () async {
+      // todo-1 探针正式化：不再用内联迷你脚本，直接跑真实 pingan detail.js
+      // （D5 接线：getAppDetail 内 host.utils.call('checkVersion', {packageName: identifier})）。
+      final readerPkgs = <String>[];
+      final runtime = buildRuntime(
+        scriptOverride: detailScript,
+        installedInfoReader: (pkg) async {
+          readerPkgs.add(pkg);
+          return const {
+            'installed': true,
+            'version': '8.8.0',
+            'versionCode': 8080,
+            'name': 'Probe App',
+          };
+        },
+      );
+      await runtime.initialize();
+
+      final result =
+          await runtime.call('main', ['getAppDetail', {'appId': 'app-1'}]) as Map;
+      expect(result['ok'], isTrue, reason: '脚本侧 try/catch 包裹——桥异常绝不影响主链');
+      final d = result['data'] as Map;
+
+      // 断言读真实返回 Map（非 mock 回显）：reader 被真实调用且实参 = identifier 包名，
+      // 桥 + reader 链路可用时才可能有该键。
+      expect(readerPkgs, contains('com.pingan.app'),
+          reason: 'checkVersion 实参必须是构建 identifier 真实包名');
+      expect(d['installedVersion'], '8.8.0');
+      expect(d['installedVersionCode'], 8080);
+
+      await runtime.dispose();
+    });
+
+    test('㊣b 假 reader 三态② installed:false → 无 installedVersion 键', () async {
+      var readerCalls = 0;
+      final runtime = buildRuntime(
+        scriptOverride: detailScript,
+        installedInfoReader: (pkg) async {
+          readerCalls++;
+          return const {'installed': false};
+        },
+      );
+      await runtime.initialize();
+
+      final result =
+          await runtime.call('main', ['getAppDetail', {'appId': 'app-1'}]) as Map;
+      expect(result['ok'], isTrue);
+      final d = result['data'] as Map;
+
+      // reader 必须被真实调用（防桥缺失时本断言假绿）；未安装 → presence-driven 缺键
+      expect(readerCalls, greaterThan(0), reason: 'checkVersion 链路必须真实执行');
+      expect(d.containsKey('installedVersion'), isFalse,
+          reason: 'installed:false → 详情不得携带 installedVersion 键');
+      expect(d.containsKey('installedVersionCode'), isFalse);
+
+      await runtime.dispose();
+    });
+
+    test('㊣c 假 reader 三态③ reader 抛异常 → 脚本不崩且无 installedVersion 键', () async {
+      var readerCalls = 0;
+      final runtime = buildRuntime(
+        scriptOverride: detailScript,
+        installedInfoReader: (pkg) async {
+          readerCalls++;
+          throw StateError('installedInfoReader boom');
+        },
+      );
+      await runtime.initialize();
+
+      final result =
+          await runtime.call('main', ['getAppDetail', {'appId': 'app-1'}]) as Map;
+      // D3 契约：handler 内全捕获返回 {ok:false,error}，脚本侧再 try/catch 吞掉
+      expect(result['ok'], isTrue, reason: 'reader 抛异常绝不影响详情主链');
+      final d = result['data'] as Map;
+
+      expect(readerCalls, greaterThan(0), reason: 'checkVersion 链路必须真实执行');
+      expect(d.containsKey('installedVersion'), isFalse);
+      expect(d.containsKey('installedVersionCode'), isFalse);
+      expect((d['downloads'] as List).length, 1, reason: '主链数据完整（降级不残缺）');
 
       await runtime.dispose();
     });

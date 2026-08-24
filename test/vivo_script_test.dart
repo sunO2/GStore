@@ -252,6 +252,8 @@ void main() {
   JsChannelRuntime buildRuntime({
     Map<String, dynamic> Function(RequestOptions options)? handler,
     String? scriptOverride,
+    Future<Map<String, dynamic>> Function(String packageName)?
+        installedInfoReader,
   }) {
     final dio = Dio();
     dio.httpClientAdapter = _FakeDioAdapter(handler ?? defaultHandler, requestLog);
@@ -262,6 +264,7 @@ void main() {
       appDao: appDao,
       logInfo: (msg) => logMessages.add('info: $msg'),
       logError: (msg) => logMessages.add('error: $msg'),
+      installedInfoReader: installedInfoReader,
     );
   }
 
@@ -800,6 +803,65 @@ void main() {
       expect(await runtime.call('main', ['versionOptions', {}]), isNull);
       expect(await runtime.call('main', ['switchVersion', {}]), isNull);
       expect(await runtime.call('main', ['buildHistory', {}]), isNull);
+
+      await runtime.dispose();
+    });
+
+    test('⑲a 假 reader 三态① installed:true → checkAppUpdate 携带 installedVersion/installedVersionCode', () async {
+      // vivo detail.js D6 接线：checkAppUpdate 内 host.utils.call('checkVersion',
+      // {packageName})，try/catch 包裹——与 pingan ㊣a 等价（vivo 接线点在 checkAppUpdate）。
+      await insertSavedApp();
+      final readerPkgs = <String>[];
+      final runtime = buildRuntime(
+        scriptOverride: detailScript,
+        installedInfoReader: (pkg) async {
+          readerPkgs.add(pkg);
+          return const {
+            'installed': true,
+            'version': '8.8.0',
+            'versionCode': 8080,
+            'name': '微信',
+          };
+        },
+      );
+      await runtime.initialize();
+
+      final result = await runtime.call(
+          'main', ['checkAppUpdate', {'appId': 'com.tencent.mm'}]) as Map;
+      expect(result['ok'], isTrue);
+      final data = result['data'] as Map;
+
+      // 断言读真实返回 Map（非 mock 回显）：reader 被真实调用且实参 = 详情 packageName
+      expect(readerPkgs, contains('com.tencent.mm'),
+          reason: 'checkVersion 实参必须是详情 packageName 真实包名');
+      expect(data['installedVersion'], '8.8.0');
+      expect(data['installedVersionCode'], 8080);
+
+      await runtime.dispose();
+    });
+
+    test('⑲b 假 reader 三态③ reader 抛异常 → 不崩且无 installedVersion 键', () async {
+      await insertSavedApp();
+      var readerCalls = 0;
+      final runtime = buildRuntime(
+        scriptOverride: detailScript,
+        installedInfoReader: (pkg) async {
+          readerCalls++;
+          throw StateError('installedInfoReader boom');
+        },
+      );
+      await runtime.initialize();
+
+      final result = await runtime.call(
+          'main', ['checkAppUpdate', {'appId': 'com.tencent.mm'}]) as Map;
+      // D3 契约：handler 内全捕获返回 {ok:false,error}，脚本侧再 try/catch 吞掉
+      expect(result['ok'], isTrue, reason: 'reader 抛异常绝不影响更新检测主链');
+      final data = result['data'] as Map;
+
+      expect(readerCalls, greaterThan(0), reason: 'checkVersion 链路必须真实执行');
+      expect(data.containsKey('installedVersion'), isFalse);
+      expect(data.containsKey('installedVersionCode'), isFalse);
+      expect(data['version'], '8.0.49', reason: '主链版本字段完整（降级不残缺）');
 
       await runtime.dispose();
     });
