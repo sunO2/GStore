@@ -63,7 +63,13 @@ class _FakeDetailInfo implements IDetailInfo {
   @override
   List<DetailSection> get sections => const [DetailSection.statistics];
   @override
-  Map<String, dynamic> get extra => const {};
+  Map<String, dynamic> get extra => {
+        if (packageNameValue.isNotEmpty) 'packageName': packageNameValue,
+        if (versionValue != null) 'version': versionValue,
+        if (developerValue != null) 'developer': developerValue,
+        if (channelIdValue != null) 'channelId': channelIdValue,
+        if (projectUrlValue != null) 'projectUrl': projectUrlValue,
+      };
   @override
   String? get readme => null;
   @override
@@ -171,7 +177,7 @@ void main() {
   });
 
   testWidgets(
-      'vivo 场景：buildStatTags 为空时展开 fallback 到 statistics.buildStatTags()',
+      'buildStatTags 为空 → 无可展开内容（fallback 已移除）',
       (tester) async {
     final info = _FakeDetailInfo(
       channelIdValue: 'vivo',
@@ -180,13 +186,11 @@ void main() {
 
     await _pumpAppInfo(tester, info);
 
-    await tester.tap(find.byIcon(Icons.expand_more));
-    await tester.pumpAndSettle();
-
-    expect(find.byIcon(Icons.cloud_download_outlined), findsOneWidget);
-    expect(find.text('1.0万'), findsOneWidget);
-    expect(find.byIcon(Icons.grade), findsOneWidget);
-    expect(find.text('4.8'), findsOneWidget);
+    // buildStatTags() 为空 → 无 tags，无 projectUrl → 无可展开内容
+    expect(find.byIcon(Icons.expand_more), findsNothing);
+    expect(find.byIcon(Icons.expand_less), findsNothing);
+    expect(find.byIcon(Icons.cloud_download_outlined), findsNothing);
+    expect(find.byIcon(Icons.grade), findsNothing);
     expect(tester.takeException(), isNull);
   });
 

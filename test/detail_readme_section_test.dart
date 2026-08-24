@@ -67,7 +67,9 @@ class _FakeDetailInfo implements IDetailInfo {
   @override
   List<DetailSection> get sections => const [DetailSection.readme];
   @override
-  Map<String, dynamic> get extra => const {};
+  Map<String, dynamic> get extra => {
+        if (readmeValue != null) 'readme': readmeValue,
+      };
   @override
   String? get readme => readmeValue;
   @override

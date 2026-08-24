@@ -250,7 +250,7 @@ void main() {
   }
 
   group('pingan.js Hybrid 详情页', () {
-    test('① detailMenu 返回 Actions 声明（切换版本/历史构建，clickIsDimiss=true）', () async {
+    test('① detailMenu 返回 Actions 声明（切换版本/历史构建/切换UA，clickIsDimiss=true）', () async {
       final runtime = buildRuntime();
       await runtime.initialize();
 
@@ -260,7 +260,7 @@ void main() {
       ]) as Map;
       expect(result['ok'], isTrue);
       final actions = result['data'] as List;
-      expect(actions.length, 2);
+      expect(actions.length, 3);
 
       final switchAction = actions[0] as Map;
       expect(switchAction['action'], '切换版本');
@@ -271,6 +271,11 @@ void main() {
       expect(historyAction['action'], '历史构建');
       expect(historyAction['jscall'], 'jsBuildHistory');
       expect(historyAction['clickIsDimiss'], isTrue);
+
+      final uaAction = actions[2] as Map;
+      expect(uaAction['action'], '切换UA');
+      expect(uaAction['jscall'], 'jsswitchUA');
+      expect(uaAction['clickIsDimiss'], isTrue);
 
       // 纯声明：不发任何网络请求
       expect(requestLog, isEmpty);
@@ -567,12 +572,13 @@ void main() {
       // 切构建历史不再 refreshDetail 全量重拉
       expect(refreshCalled, isFalse);
 
-      // 两次 build-list（versionOptions + getBuildHistory）+ 一次 build 接口（android 组 _id）
+      // 单次 build-list：getVersionOptions（version 空，全量）→ getBuildHistory 按
+      // version 过滤并复用同一全量缓存（0 新请求）+ build 接口（android 组 _id）
       final buildRequests =
           requestLog.where((r) => r.contains('build-list')).toList();
-      expect(buildRequests.length, 2);
+      expect(buildRequests.length, 1);
       expect(buildRequests[0], contains('env=sit'));
-      expect(buildRequests[1], contains('version=8.9.0'));
+      expect(buildRequests[0], contains('version=-'));
       expect(
           requestLog.where((r) => r.contains('/sunflower/i/build&')).length, 1);
 
@@ -795,14 +801,14 @@ void main() {
       // 切构建历史不再 refreshDetail 全量重拉
       expect(refreshCalled, isFalse);
 
-      // 两次 build-list：第一次全量（versionOptions，version 空）→ 第二次 version=8.8.0；
+      // 单次 build-list（全量，version 空）→ getBuildHistory 复用全量缓存按 8.8.0 过滤；
       // 绝不携带 8.9.0（旧实现误取路径）
       final buildRequests =
           requestLog.where((r) => r.contains('build-list')).toList();
-      expect(buildRequests.length, 2);
+      expect(buildRequests.length, 1);
       expect(buildRequests[0], contains('env=sit'));
       expect(buildRequests[0], contains('version=-'));
-      expect(buildRequests[1], contains('version=8.8.0'));
+      expect(buildRequests[0], isNot(contains('version=8.9.0')));
       expect(
           requestLog.where((r) => r.contains('/sunflower/i/build&')).length, 1);
 
@@ -820,7 +826,7 @@ void main() {
         envReader: () => {'PINGAN_USER': 'user1', 'PINGAN_PASS': 'pass1'},
         handler: (options) {
           if (options.path.contains('/login/check')) {
-            return {'url': 'https://auth-ok'};
+            return {'code': '000000'}; // login/check 真实契约：code=000000 通过
           }
           return fullHistoryHandler(options);
         },
@@ -846,6 +852,8 @@ void main() {
       expect(result['data'], isTrue);
 
       // updateDownloadList 单条：proxy URL 含凭证（um/value），downloadable:true，note 空
+      // （proxy env 恒为 prd：resolveDownloadUrl/buildDownloads 硬编码 buildApkUrl('prd');
+      //   base 为 BASE_HOST + /mcd-api/mcd-api，无 istore 前缀——旧 zip 前缀已变更）
       expect(updateDownloads, isNotNull);
       expect(updateDownloads!.length, 1);
       final dl = updateDownloads!.first as Map;
@@ -853,7 +861,7 @@ void main() {
       expect(dl['size'], 105);
       expect(dl['version'], '8.9.0');
       expect(dl['url'],
-          'https://test-b-fat.pingan.com.cn/istore/istore-api/mcd-api/mcd-api/proxy/sit/PABank-8.9.0-5.apk?um=user1&value=pass1');
+          'https://test-b-fat.pingan.com.cn/mcd-api/mcd-api/proxy/prd/PABank-8.9.0-5.apk?um=user1&value=pass1');
       expect(dl['downloadable'], isTrue);
       expect(dl['note'], '');
 
@@ -866,8 +874,8 @@ void main() {
     test('⑦d jsBuildHistory：缓存复用——两次 jsBuildHistory（同版本）build 接口只拉一次',
         () async {
       // 第一次 jsBuildHistory：versionOptions（build-list 无 version）+ getBuildHistory
-      // （build-list 带 version + build 接口）→ 缓存完整 builds；
-      // 第二次 jsBuildHistory：getBuildHistory 缓存命中 → 不再拉 build-list/build 接口。
+      // （复用全量 build-list 缓存 + build 接口）→ 缓存完整 builds；
+      // 第二次 jsBuildHistory：build-list/build 缓存命中 → 0 新请求。
       var updateCount = 0;
       final runtime = buildRuntime(
         handler: fullHistoryHandler,
@@ -892,13 +900,13 @@ void main() {
       // 两次都局部更新下载区
       expect(updateCount, 2);
 
-      // build 接口只拉一次（缓存复用）；build-list 两次（第一次 versionOptions 全量 +
-      // 第一次 getBuildHistory 带 version；第二次两者均缓存命中 → 0 新请求）
+      // build 接口只拉一次（缓存复用）；build-list 也只拉一次（第一次 versionOptions
+      // 全量缓存供 getBuildHistory 复用；第二次两者均缓存命中 → 0 新请求）
       expect(
           requestLog.where((r) => r.contains('/sunflower/i/build&')).length, 1);
       final buildRequests =
           requestLog.where((r) => r.contains('build-list')).toList();
-      expect(buildRequests.length, 2);
+      expect(buildRequests.length, 1);
 
       await runtime.dispose();
     });
@@ -1072,10 +1080,10 @@ void main() {
   });
 
   group('请求风暴防护（build-list 缓存 + login 冷却 + 空参防护）', () {
-    /// 真实结构 handler：build-list 全量 + build 接口完整历史 + login/check 成功
+    /// 真实结构 handler：build-list 全量 + build 接口完整历史 + login/check 成功（code=000000）
     Map<String, dynamic> stormHandler(RequestOptions options) {
       if (options.path.contains('login/check')) {
-        return {'url': 'https://auth-ok'};
+        return {'code': '000000'};
       }
       return fullHistoryHandler(options);
     }
@@ -1084,8 +1092,10 @@ void main() {
         () async {
       // 模拟 Flutter 新流程（有 detail.js 跳过 entry getAppInfo）：
       // getAppDetail（1 build-list + 1 build + 1 login）→ jsBuildHistory ×2
-      // （首次 versionOptions 缓存命中 + getBuildHistory 1 build-list，build 接口
-      //  同 groupId 缓存命中；二次全缓存命中 0 请求）→ switchVersion（全缓存命中 0 请求）。
+      // （首次 versionOptions 复用 getAppDetail 全量 build-list 缓存 0 新请求 +
+      //  getBuildHistory 全量缓存命中 + build 接口同 groupId 缓存命中；
+      //  二次 jsBuildHistory 全缓存命中 0 请求）→ switchVersion（build-list 带
+      //  version 首次发 1 次，build 接口缓存命中）。
       var updateCount = 0;
       final runtime = buildRuntime(
         handler: stormHandler,
@@ -1109,14 +1119,14 @@ void main() {
       expect(requestLog.where((r) => r.contains('login/check')).length, 1);
 
       // ② 首次 jsBuildHistory：versionOptions 命中 getAppDetail 的全量缓存（0 请求），
-      //    getBuildHistory 拉带 version 的 build-list（build 接口同 groupId 缓存命中）
+      //    getBuildHistory 复用全量 build-list 缓存（0 请求，build 接口同 groupId 缓存命中）
       final r2 = await runtime.call('main', [
         'jsBuildHistory',
         {'appId': 'app-1'}
       ]) as Map;
       expect(r2['ok'], isTrue);
       expect(updateCount, 1);
-      expect(requestLog.where((r) => r.contains('build-list')).length, 2);
+      expect(requestLog.where((r) => r.contains('build-list')).length, 1);
       expect(
           requestLog.where((r) => r.contains('/sunflower/i/build&')).length, 1);
       expect(requestLog.where((r) => r.contains('login/check')).length, 1);
@@ -1128,12 +1138,13 @@ void main() {
       ]) as Map;
       expect(r3['ok'], isTrue);
       expect(updateCount, 2);
-      expect(requestLog.where((r) => r.contains('build-list')).length, 2);
+      expect(requestLog.where((r) => r.contains('build-list')).length, 1);
       expect(
           requestLog.where((r) => r.contains('/sunflower/i/build&')).length, 1);
       expect(requestLog.where((r) => r.contains('login/check')).length, 1);
 
-      // ④ 切版本（switchVersion 同 env+version）：build-list/build 缓存命中 → 0 新请求
+      // ④ 切版本（switchVersion 同 env+version）：build-list 带 version 首次请求
+      // （key name|8.9.0|sit 未缓存）→ +1；build 接口缓存命中 → 0
       final r4 = await runtime.call('main', [
         'switchVersion',
         {'appId': 'app-1', 'env': 'sit', 'version': '8.9.0'}
@@ -1167,7 +1178,8 @@ void main() {
       await runtime.dispose();
     });
 
-    test('ⓒ login/check 失败 → 60s 冷却：连续操作只发 2 次（main+doc），不再每次重发', () async {
+test('ⓒ login/check 失败 → 60s 冷却：连续操作只发 1 次（会话级单次），不再每次重发',
+        () async {
       var loginCheckCount = 0;
       final runtime = buildRuntime(
         handler: (options) {
@@ -1187,26 +1199,26 @@ void main() {
       );
       await runtime.initialize();
 
-      // getAppDetail（main+doc 失败 = 2 次）→ 进入冷却
+      // getAppDetail（单次 login/check 失败）→ 进入冷却
       await runtime.call('main', [
         'getAppDetail',
         {'appId': 'app-1'}
       ]);
-      expect(loginCheckCount, 2);
+      expect(loginCheckCount, 1);
 
       // jsBuildHistory（groupNeedsAuth → ensureAuthChecked）→ 冷却命中，不重发
       await runtime.call('main', [
         'jsBuildHistory',
         {'appId': 'app-1'}
       ]);
-      expect(loginCheckCount, 2);
+      expect(loginCheckCount, 1);
 
       // switchVersion → 冷却命中，不重发
       await runtime.call('main', [
         'switchVersion',
         {'appId': 'app-1', 'env': 'sit', 'version': '8.9.0'}
       ]);
-      expect(loginCheckCount, 2);
+      expect(loginCheckCount, 1);
 
       expect(logMessages.any((m) => m.contains('[login/check] 失败冷却中跳过重发')),
           isTrue);
