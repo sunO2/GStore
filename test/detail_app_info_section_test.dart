@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:gstore/core/channel/impl/JsChannel.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
@@ -84,7 +85,86 @@ class _FakeDetailInfo implements IDetailInfo {
   List<StatTag> buildStatTags() => statTags;
 }
 
+/// 模型字段与 extra 解耦的假实现（模拟 LocalDb/GitHub 渐进路径：
+/// extra 为纯存储 map，不含 version/packageName/channelId 镜像）
+class _SplitDetailInfo implements IDetailInfo {
+  String packageNameValue;
+  String? versionValue;
+  String? developerValue;
+  String channelIdValue;
+  String? projectUrlValue;
+  Map<String, dynamic> extraValue;
+  List<StatTag> statTags;
+  StatisticsInfo? statisticsValue;
+
+  _SplitDetailInfo({
+    this.packageNameValue = '',
+    this.versionValue,
+    this.developerValue,
+    this.channelIdValue = '',
+    this.projectUrlValue,
+    this.extraValue = const {},
+    this.statTags = const [],
+    this.statisticsValue,
+  });
+
+  @override
+  String get packageName => packageNameValue;
+  @override
+  String get appName => '测试应用';
+  @override
+  String get icon => '';
+  @override
+  String get description => '';
+  @override
+  String get appId => packageName.isEmpty ? 'test-app' : packageName;
+  @override
+  String get name => appName;
+  @override
+  bool get isValid => packageName.isNotEmpty && appName.isNotEmpty;
+  @override
+  String get channelId => channelIdValue;
+  @override
+  ChannelType get channelType => ChannelType.github;
+  @override
+  String? get version => versionValue;
+  @override
+  String? get developer => developerValue;
+  @override
+  String? get projectUrl => projectUrlValue;
+  @override
+  List<DownloadInfo> get downloads => const [];
+  @override
+  List<DetailSection> get sections => const [DetailSection.statistics];
+  @override
+  Map<String, dynamic> get extra => extraValue;
+  @override
+  String? get readme => null;
+  @override
+  List<ScreenshotInfo>? get screenshots => null;
+  @override
+  String? get changelog => null;
+  @override
+  List<String>? get permissions => null;
+  @override
+  StatisticsInfo? get statistics => statisticsValue;
+  @override
+  List<StatTag> buildStatTags() => statTags;
+}
+
 Future<void> _pumpAppInfo(WidgetTester tester, _FakeDetailInfo info) async {
+  await tester.pumpWidget(
+    MaterialApp(
+      home: Scaffold(
+        body: SingleChildScrollView(
+          child: AppInfoSection(info: info),
+        ),
+      ),
+    ),
+  );
+}
+
+Future<void> _pumpAny(WidgetTester tester, IDetailInfo info) async {
   await tester.pumpWidget(
     MaterialApp(
       home: Scaffold(
@@ -177,7 +257,7 @@ void main() {
   });
 
   testWidgets(
-      'buildStatTags 为空 → 无可展开内容（fallback 已移除）',
+      'buildStatTags 为空 → fallback 到 statistics 构建统计 chips（e59d0c4 误删已恢复）',
       (tester) async {
     final info = _FakeDetailInfo(
       channelIdValue: 'vivo',
@@ -186,11 +266,15 @@ void main() {
 
     await _pumpAppInfo(tester, info);
 
-    // buildStatTags() 为空 → 无 tags，无 projectUrl → 无可展开内容
-    expect(find.byIcon(Icons.expand_more), findsNothing);
-    expect(find.byIcon(Icons.expand_less), findsNothing);
-    expect(find.byIcon(Icons.cloud_download_outlined), findsNothing);
-    expect(find.byIcon(Icons.grade), findsNothing);
+    // buildStatTags() 为空但 statistics 非空 → 兜底生成 tags → 可展开
+    expect(find.byIcon(Icons.expand_more), findsOneWidget);
+
+    await tester.tap(find.byIcon(Icons.expand_more));
+    await tester.pumpAndSettle();
+
+    // 展开后可见下载量/评分 chips
+    expect(find.byIcon(Icons.cloud_download_outlined), findsOneWidget);
+    expect(find.byIcon(Icons.grade), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -274,6 +358,57 @@ void main() {
     final rotated =
         tester.widget<AnimatedRotation>(find.byType(AnimatedRotation));
     expect(rotated.turns, 0.5);
+    expect(tester.takeException(), isNull);
+  });
+
+  // ── e59d0c4 回归锁定：模型字段优先，extra 兜底 ──
+
+  testWidgets('回归①：extra 无键时回落模型字段——当前版本/包名/渠道行渲染（修复前红）',
+      (tester) async {
+    final info = _SplitDetailInfo(
+      packageNameValue: 'com.example.app',
+      versionValue: '1.2.3',
+      channelIdValue: 'localdb',
+    );
+
+    await _pumpAny(tester, info);
+
+    expect(find.text('当前版本'), findsOneWidget);
+    expect(find.text('1.2.3'), findsOneWidget);
+    expect(find.text('包名'), findsOneWidget);
+    expect(find.text('com.example.app'), findsOneWidget);
+    expect(find.text('渠道'), findsOneWidget);
+    expect(find.text('localdb'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('回归②：extra 有键（JS 渠道代理）→ 三行照常渲染（extra 路径不回归）',
+      (tester) async {
+    final proxy = JsChannelDetailProxy({
+      'version': '2.0.0',
+      'packageName': 'com.via.extra',
+      'channelId': 'js_x',
+    });
+
+    await _pumpAny(tester, proxy);
+
+    expect(find.text('当前版本'), findsOneWidget);
+    expect(find.text('2.0.0'), findsOneWidget);
+    expect(find.text('包名'), findsOneWidget);
+    expect(find.text('com.via.extra'), findsOneWidget);
+    expect(find.text('渠道'), findsOneWidget);
+    expect(find.text(ChannelType.custom.code), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('回归③：模型字段与 extra 皆空 → 基础行不渲染（SizedBox.shrink 分支）',
+      (tester) async {
+    final info = _SplitDetailInfo();
+
+    await _pumpAny(tester, info);
+
+    expect(find.text('应用信息'), findsNothing);
+    expect(find.byType(AppInfoSection), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }

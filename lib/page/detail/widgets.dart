@@ -428,12 +428,22 @@ class _AppInfoSectionState extends State<AppInfoSection> {
   Widget build(BuildContext context) {
     final info = widget.info;
     final extra = info.extra;
-    final version = extra['version']?.toString();
+    // 模型字段优先，extra 兜底（e59d0c4 回归修复：GitHub/LocalDb 渐进路径
+    // 的 extra 为纯存储 map，不含 version/packageName/channelId 镜像）
+    final version = (info.version?.isNotEmpty == true)
+        ? info.version
+        : extra['version']?.toString();
     final developer = extra['developer']?.toString();
     final projectUrl = extra['projectUrl']?.toString();
-    final channelId = extra['channelId']?.toString() ?? '';
-    final packageName = extra['packageName']?.toString() ?? '';
-    final tags = info.buildStatTags();
+    final chFromExtra = extra['channelId']?.toString() ?? '';
+    final channelId = info.channelId.isNotEmpty ? info.channelId : chFromExtra;
+    final pkgFromExtra = extra['packageName']?.toString() ?? '';
+    final packageName =
+        info.packageName.isNotEmpty ? info.packageName : pkgFromExtra;
+    var tags = info.buildStatTags();
+    if (tags.isEmpty) {
+      tags = info.statistics?.buildStatTags() ?? const [];
+    }
 
     final hasBasicRows = packageName.isNotEmpty ||
         version != null ||
