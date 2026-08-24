@@ -9,6 +9,7 @@ import 'package:gstore/core/config/config_service.dart';
 import 'package:gstore/core/js/js_native_host.dart';
 import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/http/github/dio_client.dart';
+import 'package:installed_apps/installed_apps.dart';
 import 'package:quickjs_engine/quickjs_engine.dart';
 
 /// JS 渠道运行时异常（JS 抛错 / 脚本加载失败 / Promise 超时）
@@ -68,6 +69,8 @@ class JsChannelRuntime {
   final Map<String, String> Function()? _envReaderOverride;
   final void Function(String message)? _logInfoOverride;
   final void Function(String message)? _logErrorOverride;
+  final Future<Map<String, dynamic>> Function(String packageName)?
+      _installedInfoReaderOverride;
 
   /// 通用原生能力注册表：通过 [JSNativeHost] 注册/注销任意 UI 及平台能力。
   /// 构造时自动创建空实例，也可经 [setNativeHost] 运行时注入已有实例。
@@ -90,12 +93,15 @@ class JsChannelRuntime {
     void Function(String message)? logInfo,
     void Function(String message)? logError,
     JSNativeHost? nativeHost,
+    Future<Map<String, dynamic>> Function(String packageName)?
+        installedInfoReader,
   })  : _dioOverride = dio,
         _appDaoOverride = appDao,
         _configGetterOverride = configGetter,
         _envReaderOverride = envReader,
         _logInfoOverride = logInfo,
         _logErrorOverride = logError,
+        _installedInfoReaderOverride = installedInfoReader,
         _nativeHost = nativeHost ?? JSNativeHost();
   bool get isInitialized => _initialized;
   bool get isDisposed => _disposed;
@@ -138,6 +144,9 @@ class JsChannelRuntime {
       _configGetterOverride;
 
   Map<String, String> Function()? get envReaderOverride => _envReaderOverride;
+
+  Future<Map<String, dynamic>> Function(String packageName)?
+      get installedInfoReaderOverride => _installedInfoReaderOverride;
 
   void Function(String message)? get logInfoOverride => _logInfoOverride;
 
@@ -232,6 +241,7 @@ class JsChannelRuntime {
     _registerEnvHost(engine);
     _registerLogHost(engine);
     _registerNativeHost(engine);
+    _registerUtilsHost(engine);
   }
 
   void _registerNetworkHost(JavascriptRuntime engine) {
@@ -383,6 +393,23 @@ class JsChannelRuntime {
     });
   }
 
+  /// host.utils：脚本侧工具能力（引擎内建，非 [JSNativeHost] 注册表成员）。
+  /// 脚本侧调 `host.utils.call(method, payload)` 经此 dispatch，
+  /// 键为 `'host.utils.$method'`；handler 内全捕获，绝不向脚本抛。
+  void _registerUtilsHost(JavascriptRuntime engine) {
+    engine.onMessage('host.utils.checkVersion', (dynamic args) async {
+      try {
+        final pkg = _asMap(args)['packageName']?.toString() ?? '';
+        if (pkg.isEmpty) return {'ok': true, 'data': {'installed': false}};
+        final r = await _installedInfoReader(pkg);
+        return {'ok': true, 'data': r ?? {'installed': false}};
+      } catch (e) {
+        _logError('host.utils.checkVersion 失败: $e');
+        return {'ok': false, 'error': e.toString()};
+      }
+    });
+  }
+
   // ==================== 依赖解析 ====================
 
   Dio _getDio() => _dioOverride ?? DioClient().get();
@@ -396,6 +423,31 @@ class JsChannelRuntime {
   /// 从 envReader 快照 env（未注入 → 空 map）
   Map<String, String> _readEnv() =>
       _envReaderOverride?.call() ?? const <String, String>{};
+
+  /// 安装信息读取器解析：优先测试/上层注入 override，否则走默认插件实现。
+  /// 返回可空：reader 异常返回 null 时由 handler 侧降级 `{installed:false}`。
+  Future<Map<String, dynamic>?> _installedInfoReader(String packageName) =>
+      _installedInfoReaderOverride?.call(packageName) ??
+      _defaultInstalledInfoReader(packageName);
+
+  /// 默认安装信息读取器：经 installed_apps 插件查询设备已安装应用版本。
+  /// 未安装 / 插件返回空 → `{installed:false}`；否则携带 version/versionCode/name。
+  Future<Map<String, dynamic>> _defaultInstalledInfoReader(
+      String packageName) async {
+    if (await InstalledApps.isAppInstalled(packageName) != true) {
+      return {'installed': false};
+    }
+    final info = await InstalledApps.getAppInfo(packageName);
+    if (info == null) {
+      return {'installed': false};
+    }
+    return {
+      'installed': true,
+      'version': info.versionName,
+      'versionCode': info.versionCode,
+      'name': info.name,
+    };
+  }
 
   void _logInfo(String message) {
     final override = _logInfoOverride;
@@ -564,6 +616,11 @@ var host = {
     },
     error: function(msg) {
       return sendMessage('host.log.error', JSON.stringify({msg: msg}));
+    }
+  },
+  utils: {
+    call: function(method, payload) {
+      return sendMessage('host.utils.' + method, JSON.stringify(payload || {}));
     }
   },
   ui: {

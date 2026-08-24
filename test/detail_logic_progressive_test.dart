@@ -18,6 +18,7 @@ import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/model/StatTag.dart';
 import 'package:gstore/db/apps/AppInfo.dart' as db;
 import 'package:gstore/page/detail/logic.dart';
+import 'package:installed_apps/app_info.dart';
 
 /// 详情页分块渐进加载（state/logic 层）纯逻辑单测。
 ///
@@ -621,6 +622,90 @@ void main() {
       expect(proxy.screenshots, isNotNull);
       expect(proxy.extra['extra'], 'not-a-map',
           reason: '非 Map 的 extra 不展开，按普通顶层键浅覆盖（文档化边界语义）');
+    });
+  });
+
+  group('installedVersion 提取合成 installInfo（D4 presence-driven）', () {
+    test('IV1) refreshDetail 带 installedVersion/Code → 合成 AppInfo 写入 installInfo',
+        () async {
+      expect(logic.state.installInfo.value, isNull);
+
+      await logic.refreshDetail(detailData: {
+        'name': '平安口袋银行',
+        'packageName': 'com.pingan.bank',
+        'version': '10.0.0',
+        'installedVersion': '8.8.0',
+        'installedVersionCode': 80808,
+      });
+
+      final info = logic.state.installInfo.value;
+      expect(info, isNotNull);
+      expect(info!.versionName, '8.8.0');
+      expect(info.versionCode, 80808);
+      expect(info.packageName, 'com.pingan.bank');
+      expect(info.name, '平安口袋银行', reason: '数据 name 非空优先于 packageName');
+      expect(info.builtWith, BuiltWith.native_or_others);
+      expect(info.installedTimestamp, 0);
+    });
+
+    test('IV2) updateDetail partial 带 installedVersion → 合并后提取写入', () async {
+      logic.state.detailInfo.value = JsChannelDetailProxy({
+        'name': '平安口袋银行',
+        'packageName': 'com.pingan.bank',
+      });
+      expect(logic.state.installInfo.value, isNull);
+
+      await logic.updateDetail(partial: {
+        'installedVersion': '9.1.2',
+        'installedVersionCode': 90102,
+      });
+
+      final info = logic.state.installInfo.value;
+      expect(info, isNotNull);
+      expect(info!.versionName, '9.1.2');
+      expect(info.versionCode, 90102);
+      expect(info.packageName, 'com.pingan.bank');
+      expect(info.name, '平安口袋银行', reason: 'name 来自既有详情数据而非 partial');
+    });
+
+    test('IV3) 缺键调用不清既有 installInfo（stale_state：presence-driven）', () async {
+      final sentinel = AppInfo(
+        name: '旧安装信息',
+        icon: null,
+        packageName: 'com.old.pkg',
+        versionName: '0.9.0',
+        versionCode: 900,
+        builtWith: BuiltWith.flutter,
+        installedTimestamp: 42,
+      );
+      logic.state.installInfo.value = sentinel;
+
+      await logic.refreshDetail(detailData: {'name': 'x', 'description': 'd'});
+      expect(identical(logic.state.installInfo.value, sentinel), isTrue,
+          reason: '无 installedVersion 键不得重置/覆盖 installInfo');
+
+      await logic.updateDetail(partial: {'description': 'd2'});
+      expect(identical(logic.state.installInfo.value, sentinel), isTrue,
+          reason: 'updateDetail 缺键同样保持 installInfo 原值');
+    });
+
+    test('IV4/MALFORMED) installedVersionCode null/字符串数字/非数字/负数 归一定义',
+        () async {
+      Future<int> codeOf(dynamic raw) async {
+        logic.state.installInfo.value = null;
+        await logic.refreshDetail(detailData: {
+          'packageName': 'p',
+          'installedVersion': '1.0',
+          'installedVersionCode': raw,
+        });
+        return logic.state.installInfo.value!.versionCode;
+      }
+
+      expect(await codeOf(null), 0, reason: 'null → 0');
+      expect(await codeOf('123'), 123, reason: '数字字符串解析为 int');
+      expect(await codeOf('not-a-num'), 0, reason: '非数值字符串 → 0');
+      expect(await codeOf(-5), -5, reason: '负数按原值透传（仅类型归一不钳制语义）');
+      expect(await codeOf(12.7), 12, reason: 'num 截断为 int');
     });
   });
 

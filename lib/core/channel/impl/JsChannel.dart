@@ -118,6 +118,8 @@ class JsChannel extends IChannel implements DynamicChannel {
     void Function(String message)? logInfo,
     void Function(String message)? logError,
     JSNativeHost? nativeHost,
+    Future<Map<String, dynamic>> Function(String packageName)?
+        installedInfoReader,
     int? priority,
     bool enabled = true,
   })  : _pkg = pkg,
@@ -134,6 +136,7 @@ class JsChannel extends IChannel implements DynamicChannel {
           logInfo: logInfo,
           logError: logError,
           nativeHost: nativeHost,
+          installedInfoReader: installedInfoReader,
         ) {
     _info = ChannelInfo(
       type: ChannelType.custom,
@@ -700,6 +703,7 @@ class JsChannel extends IChannel implements DynamicChannel {
           logInfo: _runtime.logInfoOverride,
           logError: _runtime.logErrorOverride,
           nativeHost: _runtime.nativeHost,
+          installedInfoReader: _runtime.installedInfoReaderOverride,
         ));
   }
 

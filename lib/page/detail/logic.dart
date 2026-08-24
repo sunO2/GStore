@@ -15,6 +15,7 @@ import 'package:gstore/core/download/strategy/impl/GitHubDownloadStrategy.dart';
 import 'package:gstore/core/download/strategy/impl/HttpDownloadStrategy.dart';
 import 'package:gstore/core/download/strategy/impl/FdroidDownloadStrategy.dart';
 import 'package:gstore/http/download/DownloadStatus.dart';
+import 'package:installed_apps/app_info.dart' as installed;
 import 'state.dart';
 import 'detail_ui_mixins.dart';
 import 'widgets/more_actions_sheet.dart' as mas;
@@ -296,6 +297,7 @@ class DetailLogic extends GetxController
   Future<void> refreshDetail(
       {required Map<String, dynamic> detailData}) async {
     state.detailInfo.value = JsChannelDetailProxy(detailData);
+    _applyInstalledInfo(detailData);
   }
 
   @override
@@ -314,6 +316,7 @@ class DetailLogic extends GetxController
         }
       });
       state.detailInfo.value = JsChannelDetailProxy(merged);
+      _applyInstalledInfo(merged);
     } else {
       // 首次推送（null 或非 JS proxy）：以 partial 创建，
       // extra 键同样展开写入顶层——与上一分支语义完全一致。
@@ -323,7 +326,44 @@ class DetailLogic extends GetxController
         extra.forEach((ek, ev) => flat[ek.toString()] = ev);
       }
       state.detailInfo.value = JsChannelDetailProxy(flat);
+      _applyInstalledInfo(flat);
     }
+  }
+
+  /// 详情数据顶层 `installedVersion`(String)/`installedVersionCode`(num)
+  /// → 合成 [installed.AppInfo] 写入 installInfo（点亮 VersionBadge 当前版本）。
+  ///
+  /// presence-driven：键缺失或 installedVersion 为空串 → 不动 installInfo
+  /// （不重置不覆盖，保留既有安装检测结果）。
+  void _applyInstalledInfo(Map<String, dynamic> data) {
+    final rawVersion = data['installedVersion'];
+    if (rawVersion == null) return;
+    final versionName = rawVersion.toString().trim();
+    if (versionName.isEmpty) return;
+    final pkg = data['packageName']?.toString() ?? '';
+    final name = data['name']?.toString() ?? '';
+    state.installInfo.value = installed.AppInfo(
+      name: name.isNotEmpty ? name : pkg,
+      icon: null,
+      packageName: pkg,
+      versionName: versionName,
+      versionCode: _asVersionCode(data['installedVersionCode']),
+      builtWith: installed.BuiltWith.native_or_others,
+      installedTimestamp: 0,
+    );
+  }
+
+  /// installedVersionCode 宽松归一：int 直取；num 截断；数字字符串解析；
+  /// 其余（null / 非数值字符串 / 其它类型）→ 0。负数按原值透传（仅类型归一，
+  /// 不做语义钳制——渠道脚本侧已保证来源为插件返回的 versionCode）。
+  int _asVersionCode(dynamic raw) {
+    if (raw is int) return raw;
+    if (raw is num) return raw.toInt();
+    if (raw is String) {
+      final trimmed = raw.trim();
+      return int.tryParse(trimmed) ?? double.tryParse(trimmed)?.toInt() ?? 0;
+    }
+    return 0;
   }
 
   @override

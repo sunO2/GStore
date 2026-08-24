@@ -51,6 +51,8 @@ class JsDetailChannel implements IDetailChannel {
     void Function(String message)? logInfo,
     void Function(String message)? logError,
     JSNativeHost? nativeHost,
+    Future<Map<String, dynamic>> Function(String packageName)?
+        installedInfoReader,
   }) : _runtime = JsChannelRuntime(
           channelKey: channelKey,
           script: detailScript,
@@ -61,6 +63,7 @@ class JsDetailChannel implements IDetailChannel {
           logInfo: logInfo,
           logError: logError,
           nativeHost: nativeHost,
+          installedInfoReader: installedInfoReader,
         );
 
   /// 已释放（dispose 后 true；释放后调用方法 → 降级 null）
