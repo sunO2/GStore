@@ -178,8 +178,10 @@ class _FakeVivoApi {
       'categoryName': '社交',
       'version_name': '8.0.49',
       'version_code': '1555',
-      'size': 260000000,
-      'download_count': 10000000,
+      // vivo 接口真实口径：size 单位 KB（264192 KB = 258 MB）；
+      // 下载量 20 亿覆盖 formatCount 亿分支
+      'size': 264192,
+      'download_count': 2000000000,
       'score': 4.5,
       'raters_count': 88888,
       'favorite_count': 1234,
@@ -549,9 +551,14 @@ void main() {
       final dl = downloads.first as Map;
       expect(dl['url'], 'https://cdn.vivo.com/apk/mm.apk'); // download_url
       expect(dl['name'], 'com.tencent.mm_1555.apk');
-      expect(dl['size'], 260000000);
+      expect(dl['size'], 270532608); // 264192 KB × 1024 = 字节契约
       expect(dl['version'], '8.0.49');
       expect(dl['platform'], 'android');
+
+      // extra 标签文本（JS 端归一化后格式化：258.0 MB / 亿分支）
+      final extra = dl['extra'] as Map;
+      expect((extra['size'] as Map)['text'], '258.0 MB');
+      expect((extra['download_count'] as Map)['text'], '20.0亿');
 
       // sections（对齐 _buildSections：version/statistics/rating/downloads/readme/permissions）
       expect(d['sections'], [
@@ -564,7 +571,7 @@ void main() {
       ]);
 
       // 统计/截图/权限
-      expect(d['downloadCount'], 10000000);
+      expect(d['downloadCount'], 2000000000);
       expect(d['rating'], 4.5);
       expect(d['ratingCount'], 88888);
       expect(d['favorites'], 1234);

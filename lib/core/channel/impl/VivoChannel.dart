@@ -264,8 +264,11 @@ class VivoChannel extends IChannel with AppUpdateCheckMixin {
           detail['version']?.toString();
       final versionCode = detail['version_code']?.toString() ??
           detail['versionCode']?.toString();
-      final size = (detail['size'] as num?)?.toInt() ??
+      // vivo 接口 size/apkSize 单位为 KB → 统一归一化为字节（DownloadInfo.size 契约，
+      // 与 formatFileSize/formattedSize 及下载进度等下游消费对齐）
+      final sizeKb = (detail['size'] as num?)?.toInt() ??
           (detail['apkSize'] as num?)?.toInt();
+      final size = sizeKb == null ? null : sizeKb * 1024;
       final developer = detail['developerName']?.toString() ??
           detail['developer']?.toString() ??
           appInfo?.user ??
