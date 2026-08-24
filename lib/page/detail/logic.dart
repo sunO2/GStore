@@ -312,8 +312,9 @@ class DetailLogic extends GetxController
       // 首次推送（null 或非 JS proxy）：以 partial 创建，
       // extra 键同样展开写入顶层——与上一分支语义完全一致。
       final flat = Map<String, dynamic>.from(partial);
-      if (partial['extra'] is Map) {
-        (partial['extra'] as Map).forEach((ek, ev) => flat[ek.toString()] = ev);
+      if (flat['extra'] is Map) {
+        final extra = flat.remove('extra') as Map;
+        extra.forEach((ek, ev) => flat[ek.toString()] = ev);
       }
       state.detailInfo.value = JsChannelDetailProxy(flat);
     }

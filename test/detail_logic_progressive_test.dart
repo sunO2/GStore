@@ -586,6 +586,8 @@ void main() {
       final proxy = logic.state.detailInfo.value as JsChannelDetailProxy;
       expect(proxy.name, 'n');
       expect(proxy.extra['k'], 'v', reason: '首次推送的 extra 同样展开到顶层可读');
+      expect(proxy.extra.containsKey('extra'), isFalse,
+          reason: '与分支 A 一致：展开后不存在字面 extra 嵌套键');
     });
 
     test('F-PROBE) 推 extra.screenshots 后顶层 screenshots 必须非空（防嵌套回归）',
