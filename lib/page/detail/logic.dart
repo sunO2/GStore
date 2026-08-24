@@ -293,6 +293,33 @@ class DetailLogic extends GetxController
   }
 
   @override
+  Future<void> updateDetail({required Map<String, dynamic> partial}) async {
+    final current = state.detailInfo.value;
+    if (current is JsChannelDetailProxy) {
+      // 已有 JS 详情：在原数据副本上展开合并。
+      // extra 是 _data 的别名 → partial.extra 必须逐键展开写入顶层，
+      // 禁止嵌套进 merged['extra']（嵌套键无任何 getter 消费）。
+      final merged = Map<String, dynamic>.from(current.data);
+      partial.forEach((k, v) {
+        if (k == 'extra' && v is Map) {
+          v.forEach((ek, ev) => merged[ek.toString()] = ev);
+        } else {
+          merged[k] = v;
+        }
+      });
+      state.detailInfo.value = JsChannelDetailProxy(merged);
+    } else {
+      // 首次推送（null 或非 JS proxy）：以 partial 创建，
+      // extra 键同样展开写入顶层——与上一分支语义完全一致。
+      final flat = Map<String, dynamic>.from(partial);
+      if (partial['extra'] is Map) {
+        (partial['extra'] as Map).forEach((ek, ev) => flat[ek.toString()] = ev);
+      }
+      state.detailInfo.value = JsChannelDetailProxy(flat);
+    }
+  }
+
+  @override
   Future<void> updateDownloadList(
       {required List<DownloadInfo> downloads}) async {
     await detailChannel?.updateDownloads(downloads);

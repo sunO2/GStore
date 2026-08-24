@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/IChannel.dart';
+import 'package:gstore/core/channel/impl/JsChannel.dart';
 import 'package:gstore/core/channel/model/AppUpdateCheckResult.dart';
 import 'package:gstore/core/channel/model/ChannelInfo.dart';
 import 'package:gstore/core/channel/model/ChannelResult.dart';
@@ -533,6 +534,92 @@ void main() {
     expect(detail.version, '1.2.0');
     expect(detail.extra.containsKey('metadata'), isFalse);
     expect(logic.state.isLoadingDetail.value, isFalse);
+  });
+
+  group('updateDetail 粒度推送原语（展开合并契约）', () {
+    test('T1) null 创建：detailInfo 为 null 时以 partial 创建新详情', () async {
+      expect(logic.state.detailInfo.value, isNull);
+
+      await logic.updateDetail(partial: {'name': 'x', 'description': 'd'});
+
+      final proxy = logic.state.detailInfo.value;
+      expect(proxy, isA<JsChannelDetailProxy>());
+      expect(proxy!.name, 'x');
+      expect(proxy.description, 'd');
+    });
+
+    test('T2) 顶层浅覆盖：未推送旧键保留，同名键覆盖', () async {
+      logic.state.detailInfo.value = JsChannelDetailProxy({'a': 1, 'b': 2});
+
+      await logic.updateDetail(partial: {'b': 3});
+
+      final proxy = logic.state.detailInfo.value as JsChannelDetailProxy;
+      expect(proxy.extra['a'], 1, reason: '未推送的旧键必须保留');
+      expect(proxy.extra['b'], 3, reason: '同名顶层键浅覆盖');
+    });
+
+    test('T3) extra 展开合并不丢旧键（分支 A：已有 JsChannelDetailProxy）', () async {
+      logic.state.detailInfo.value = JsChannelDetailProxy({
+        'name': 'old',
+        'screenshots': ['https://example.com/s0.png'],
+      });
+
+      await logic.updateDetail(partial: {
+        'extra': {'versionName': '1.2'},
+      });
+
+      final proxy = logic.state.detailInfo.value as JsChannelDetailProxy;
+      expect(proxy.name, 'old', reason: 'extra 展开合并不得丢掉既有顶层键');
+      expect(proxy.extra['versionName'], '1.2', reason: 'extra 键逐键展开写入顶层');
+      expect(proxy.extra.containsKey('extra'), isFalse,
+          reason: 'extra 是 _data 别名，展开后不存在字面 extra 嵌套键');
+    });
+
+    test('T4) null 创建且含 extra 键同样展开可读（分支 B 与分支 A 语义一致）', () async {
+      expect(logic.state.detailInfo.value, isNull);
+
+      await logic.updateDetail(partial: {
+        'name': 'n',
+        'extra': {'k': 'v'},
+      });
+
+      final proxy = logic.state.detailInfo.value as JsChannelDetailProxy;
+      expect(proxy.name, 'n');
+      expect(proxy.extra['k'], 'v', reason: '首次推送的 extra 同样展开到顶层可读');
+    });
+
+    test('F-PROBE) 推 extra.screenshots 后顶层 screenshots 必须非空（防嵌套回归）',
+        () async {
+      logic.state.detailInfo.value = JsChannelDetailProxy({'name': 'p'});
+
+      await logic.updateDetail(partial: {
+        'extra': {
+          'screenshots': ['s1'],
+        },
+      });
+
+      final proxy = logic.state.detailInfo.value as JsChannelDetailProxy;
+      expect(proxy.screenshots, isNotNull,
+          reason: '若为 null 说明 partial.extra 被错误嵌套进 merged["extra"]');
+      expect(proxy.screenshots, hasLength(1));
+      expect(proxy.screenshots!.first.url, 's1');
+    });
+
+    test('MALFORMED) extra 非 Map → 按普通顶层键浅覆盖，不抛异常且旧数据不受损',
+        () async {
+      logic.state.detailInfo.value = JsChannelDetailProxy({
+        'name': 'm',
+        'screenshots': ['s0'],
+      });
+
+      await logic.updateDetail(partial: {'extra': 'not-a-map'});
+
+      final proxy = logic.state.detailInfo.value as JsChannelDetailProxy;
+      expect(proxy.name, 'm', reason: '畸形 extra 不影响既有数据');
+      expect(proxy.screenshots, isNotNull);
+      expect(proxy.extra['extra'], 'not-a-map',
+          reason: '非 Map 的 extra 不展开，按普通顶层键浅覆盖（文档化边界语义）');
+    });
   });
 }
 

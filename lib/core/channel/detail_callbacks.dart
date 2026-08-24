@@ -53,6 +53,16 @@ abstract class DetailCallbacks {
     required Map<String, dynamic> detailData,
   });
 
+  /// 粒度推送详情数据（渐进加载原语，可多次调用）。
+  ///
+  /// [partial] 是详情数据的任意键子集，合并语义为「展开合并」：
+  /// - `extra` 键：因 `ChannelDetailProxy.extra` 是原始数据 `_data` 的别名
+  ///   （见 ChannelDetailProxy.dart），其值若为 Map 则**逐键展开写入顶层**，
+  ///   禁止嵌套存储（嵌套键无任何 getter 消费，等于丢数据）；
+  /// - 其余顶层键：浅覆盖（`{...old, ...new}`），数组整体替换不做 diff；
+  /// - 当前无详情时以 partial 创建新详情。
+  Future<void> updateDetail({required Map<String, dynamic> partial});
+
   /// 更新下载列表（脚本调用后）
   Future<void> updateDownloadList({
     required List<DownloadInfo> downloads,
