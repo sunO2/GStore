@@ -1,7 +1,6 @@
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:gstore/core/channel/IChannel.dart';
 import 'package:gstore/core/channel/database/channel_added_app.dart';
@@ -13,6 +12,7 @@ import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/AppSummary.dart';
+import 'package:gstore/core/model/detail_extra_keys.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/model/proxy/VivoChannelDetailProxy.dart';
 import 'package:gstore/db/apps/AppInfo.dart' as db;
@@ -350,6 +350,24 @@ class VivoChannel extends IChannel with AppUpdateCheckMixin {
           size: size,
           version: version,
           platform: 'android',
+          extra: {
+            DownloadItemExtra.size: DownloadTag(
+              text: formatFileSize(size),
+              iconName: 'sd_storage',
+            ),
+            DownloadItemExtra.platform: const DownloadTag(
+              text: 'android',
+              iconName: 'phone_android',
+            ),
+            DownloadItemExtra.version: DownloadTag(
+              text: version ?? '',
+              iconName: 'tag',
+            ),
+            DownloadItemExtra.downloadCount: DownloadTag(
+              text: formatFileCount(downloads),
+              iconName: 'download',
+            ),
+          },
         );
         downloadsList.add(downloadInfo);
         debugPrint('VivoChannel: 添加下载文件 - ${downloadInfo.name}');
@@ -773,10 +791,10 @@ class VivoChannel extends IChannel with AppUpdateCheckMixin {
             results = searchResponse['value'] as List<dynamic>;
           }
         } else if (dataObj is List) {
-          results = dataObj as List<dynamic>;
+          results = dataObj;
         }
       } else if (data is List) {
-        results = data as List<dynamic>;
+        results = data;
       } else {
         return [];
       }
@@ -830,6 +848,8 @@ class VivoChannel extends IChannel with AppUpdateCheckMixin {
       return [];
     }
   }
+
+  
 }
 
 /// vivo 渠道添加应用 Widget
@@ -839,11 +859,10 @@ class _VivoAddAppWidget extends StatefulWidget {
   final VoidCallback? onAppSaved;
 
   const _VivoAddAppWidget({
-    Key? key,
     required this.channel,
     required this.onAppAdded,
     this.onAppSaved,
-  }) : super(key: key);
+  });
 
   @override
   State<_VivoAddAppWidget> createState() => _VivoAddAppState();
@@ -1004,7 +1023,7 @@ class _VivoAddAppState extends State<_VivoAddAppWidget> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.error_outline, color: Colors.red),
+              const Icon(Icons.error_outline, color: Colors.red),
               const SizedBox(height: 8),
               Text(
                 _errorMessage!,
@@ -1087,7 +1106,7 @@ class _VivoAddAppState extends State<_VivoAddAppWidget> {
                 ? CircleAvatar(
                     backgroundImage: NetworkImage(app.icon),
                   )
-                : CircleAvatar(
+                : const CircleAvatar(
                     child: Icon(Icons.apps, size: 20),
                   ),
             title: Text(app.name),

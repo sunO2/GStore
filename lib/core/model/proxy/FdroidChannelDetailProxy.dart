@@ -3,6 +3,7 @@ import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/StatTag.dart';
+import 'package:gstore/core/model/detail_extra_keys.dart';
 import 'package:gstore/core/model/proxy/ChannelDetailProxy.dart';
 
 /// F-Droid 渠道详情数据代理
@@ -12,6 +13,8 @@ class FdroidChannelDetailProxy extends ChannelDetailProxy {
 
   // 缓存 downloads 列表，避免重复解析
   List<DownloadInfo>? _cachedDownloads;
+
+  
 
 
   ChannelType get channelType => ChannelType.fdroid;
@@ -59,21 +62,38 @@ class FdroidChannelDetailProxy extends ChannelDetailProxy {
           result.add(item);
         } else if (item is Map) {
           try {
+            final size = item['size'] as int?;
+            final platform = item['platform']?.toString();
+            final version = item['version']?.toString();
             final info = DownloadInfo(
               url: item['url']?.toString() ?? '',
               name: item['name']?.toString() ?? '',
-              size: item['size'] as int?,
+              size: size,
               downloadCount: item['downloadCount'] as int?,
-              version: item['version']?.toString(),
+              version: version,
+              // 功能数据（hash/hashType/versionCode 等）仍从 item 顶层键读取
+              // （extra == _data，非嵌套）
               versionCode: item['versionCode'] as int?,
               publishedAt: item['publishedAt'] is DateTime
                   ? item['publishedAt'] as DateTime
                   : (item['publishedAt'] is String
                       ? DateTime.tryParse(item['publishedAt'])
                       : null),
-              platform: item['platform']?.toString(),
+              platform: platform,
               hash: item['hash']?.toString(),
               hashType: item['hashType']?.toString(),
+              // extra 仅承载展示标签（与 FdroidChannel 构造行为一致）
+              extra: {
+                if (size != null)
+                  DownloadItemExtra.size:
+                      DownloadTag(text: formatFileSize(size), iconName: 'sd_card'),
+                if (platform != null && platform.isNotEmpty)
+                  DownloadItemExtra.platform:
+                      DownloadTag(text: platform, iconName: 'phone_android'),
+                if (version != null && version.isNotEmpty)
+                  DownloadItemExtra.version:
+                      DownloadTag(text: version, iconName: 'label'),
+              },
             );
             result.add(info);
           } catch (e) {

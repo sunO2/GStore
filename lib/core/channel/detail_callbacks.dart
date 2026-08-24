@@ -45,6 +45,7 @@ abstract class DetailCallbacks {
   Future<String?> showUAPicker({
     required List<String>? uaOptions,
     required String appId,
+    String? current, // 新增：当前选中的 UA，用于回显
   });
 
   /// 刷新详情信息（switchVersion 后调用）

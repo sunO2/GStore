@@ -9,6 +9,7 @@ import 'package:gstore/core/channel/model/ChannelResult.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/AppSummary.dart';
+import 'package:gstore/core/model/detail_extra_keys.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/model/proxy/HttpChannelDetailProxy.dart';
 import 'package:gstore/db/apps/AppInfo.dart' as db;
@@ -502,16 +503,42 @@ class HttpChannel extends IChannel with AppUpdateCheckMixin {
       if (downloadsData is List) {
         for (var item in downloadsData) {
           if (item is Map) {
+            final itemDownloadCount = (item['downloadCount'] as num?)?.toInt();
             downloads.add(DownloadInfo(
               url: item['url']?.toString() ?? '',
               name: item['name']?.toString() ?? 'unknown',
               size: item['size'] as int?,
               version: version,
               platform: item['platform']?.toString(),
+              extra: {
+                DownloadItemExtra.size: DownloadTag(
+                  text: formatFileSize(item['size'] as int?),
+                  iconName: 'sd_storage',
+                ),
+                DownloadItemExtra.platform: DownloadTag(
+                  text: item['platform']?.toString() ?? '',
+                  iconName: 'phone_android',
+                ),
+                DownloadItemExtra.version: DownloadTag(
+                  text: version ?? '',
+                  iconName: 'tag',
+                ),
+                if (itemDownloadCount != null && itemDownloadCount > 0)
+                  DownloadItemExtra.downloadCount: DownloadTag(
+                    text: formatFileCount(itemDownloadCount),
+                    iconName: 'download',
+                  ),
+              },
             ));
           }
         }
       }
+
+      // 解析统计信息
+      final downloadCount = (json['downloadCount'] as num?)?.toInt();
+      final rating = (json['rating'] as num?)?.toDouble();
+      final ratingCount = (json['ratingCount'] as num?)?.toInt();
+      final favorites = (json['favorites'] as num?)?.toInt();
 
       // 解析 README
       final readme = json['readme']?.toString() ?? json['description']?.toString();
@@ -529,6 +556,10 @@ class HttpChannel extends IChannel with AppUpdateCheckMixin {
         'sections': _buildSections(downloads, readme),
         'downloads': downloads,
         'readme': readme,
+        if (downloadCount != null) 'downloadCount': downloadCount,
+        if (rating != null) 'rating': rating,
+        if (ratingCount != null) 'ratingCount': ratingCount,
+        if (favorites != null) 'favorites': favorites,
       };
 
       return ChannelResult.success(
@@ -620,4 +651,6 @@ class HttpChannel extends IChannel with AppUpdateCheckMixin {
 
     return 0;
   }
+
+  
 }

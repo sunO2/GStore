@@ -10,6 +10,7 @@ import 'package:gstore/core/channel/model/ChannelResult.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/AppSummary.dart';
+import 'package:gstore/core/model/detail_extra_keys.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/data/metadata_repository.dart';
 import 'package:gstore/core/model/proxy/LocalDbChannelDetailProxy.dart';
@@ -508,14 +509,35 @@ class LocalDbChannel extends IChannel with AppUpdateCheckMixin {
 
         for (var asset in assets) {
           if (asset is Map<String, dynamic>) {
+            final assetSize = asset['size'] as int?;
+            final assetDownloadCount = asset['download_count'] as int?;
+            final assetPlatform = _parsePlatformFromAssetName(asset['name']?.toString() ?? '');
             final downloadInfo = DownloadInfo(
               url: asset['browser_download_url']?.toString() ?? '',
               name: asset['name']?.toString() ?? '',
-              size: asset['size'] as int?,
-              downloadCount: asset['download_count'] as int?,
+              size: assetSize,
+              downloadCount: assetDownloadCount,
               version: latestVersion,
               publishedAt: publishedAt,
-              platform: _parsePlatformFromAssetName(asset['name']?.toString() ?? ''),
+              platform: assetPlatform,
+              extra: {
+                DownloadItemExtra.size: DownloadTag(
+                  text: formatFileSize(assetSize),
+                  iconName: 'sd_storage',
+                ),
+                DownloadItemExtra.platform: DownloadTag(
+                  text: assetPlatform ?? '',
+                  iconName: 'phone_android',
+                ),
+                DownloadItemExtra.downloadCount: DownloadTag(
+                  text: assetDownloadCount?.toString() ?? '',
+                  iconName: 'download',
+                ),
+                DownloadItemExtra.version: DownloadTag(
+                  text: latestVersion ?? '',
+                  iconName: 'tag',
+                ),
+              },
             );
             downloads.add(downloadInfo);
             debugPrint('LocalDbChannel: ✓ 添加下载文件 - ${downloadInfo.name} (${downloadInfo.formattedSize})');

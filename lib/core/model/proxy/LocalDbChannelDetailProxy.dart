@@ -3,6 +3,7 @@ import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/StatTag.dart';
+import 'package:gstore/core/model/detail_extra_keys.dart';
 import 'package:gstore/core/model/proxy/ChannelDetailProxy.dart';
 
 /// LocalDbChannel 详情数据代理
@@ -68,18 +69,40 @@ class LocalDbChannelDetailProxy extends ChannelDetailProxy {
         } else if (item is Map) {
           // 尝试从 Map 构造 DownloadInfo
           try {
+            final itemSize = item['size'] as int?;
+            final itemPlatform = item['platform']?.toString();
+            final itemDownloadCount = item['downloadCount'] as int?;
+            final itemVersion = item['version']?.toString();
             final info = DownloadInfo(
               url: item['url']?.toString() ?? '',
               name: item['name']?.toString() ?? '',
-              size: item['size'] as int?,
-              downloadCount: item['downloadCount'] as int?,
-              version: item['version']?.toString(),
+              size: itemSize,
+              downloadCount: itemDownloadCount,
+              version: itemVersion,
               publishedAt: item['publishedAt'] is DateTime
                   ? item['publishedAt'] as DateTime
                   : (item['publishedAt'] is String
                       ? DateTime.tryParse(item['publishedAt'])
                       : null),
-              platform: item['platform']?.toString(),
+              platform: itemPlatform,
+              extra: {
+                DownloadItemExtra.size: DownloadTag(
+                  text: formatFileSize(itemSize),
+                  iconName: 'sd_storage',
+                ),
+                DownloadItemExtra.platform: DownloadTag(
+                  text: itemPlatform ?? '',
+                  iconName: 'phone_android',
+                ),
+                DownloadItemExtra.downloadCount: DownloadTag(
+                  text: itemDownloadCount?.toString() ?? '',
+                  iconName: 'download',
+                ),
+                DownloadItemExtra.version: DownloadTag(
+                  text: itemVersion ?? '',
+                  iconName: 'tag',
+                ),
+              },
             );
             debugPrint('LocalDbChannelDetailProxy: ✓ 从 Map 构造 DownloadInfo - ${info.name}');
             result.add(info);

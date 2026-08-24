@@ -1,6 +1,7 @@
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/StatTag.dart';
+import 'package:gstore/core/model/detail_extra_keys.dart';
 import 'package:gstore/core/model/proxy/ChannelDetailProxy.dart';
 
 /// HttpChannel 详情数据代理
@@ -61,6 +62,24 @@ class HttpChannelDetailProxy extends ChannelDetailProxy {
                       ? DateTime.tryParse(item['publishedAt'])
                       : null),
               platform: item['platform']?.toString(),
+              extra: {
+                DownloadItemExtra.size: DownloadTag(
+                  text: formatFileSize(item['size'] as int?),
+                  iconName: 'sd_storage',
+                ),
+                DownloadItemExtra.platform: DownloadTag(
+                  text: item['platform']?.toString() ?? '',
+                  iconName: 'phone_android',
+                ),
+                DownloadItemExtra.version: DownloadTag(
+                  text: item['version']?.toString() ?? '',
+                  iconName: 'tag',
+                ),
+                DownloadItemExtra.downloadCount: DownloadTag(
+                  text: formatFileCount(item['downloadCount'] as int?),
+                  iconName: 'download',
+                ),
+              },
             ));
           } catch (e) {
             // 忽略无法转换的项
@@ -95,4 +114,5 @@ class HttpChannelDetailProxy extends ChannelDetailProxy {
     // HTTP 渠道默认没有统计标签
     return const [];
   }
-}
+
+  }

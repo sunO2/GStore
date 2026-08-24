@@ -20,6 +20,7 @@ import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
+import 'package:gstore/core/model/detail_extra_keys.dart';
 import 'package:gstore/core/model/proxy/FdroidChannelDetailProxy.dart';
 import 'package:gstore/core/service/app_icon_service.dart';
 import 'package:gstore/db/apps/AppInfo.dart' as db;
@@ -736,6 +737,7 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
           downloadUrl = '$_currentRepoUrl/$fileName';
         }
 
+        final platform = _extractArch(fileName);
         downloads.add(DownloadInfo(
           url: downloadUrl,
           name: fileName,
@@ -744,7 +746,20 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
           versionCode: versionCode,
           hash: hash,
           hashType: 'sha256',
-          platform: _extractArch(fileName),
+          // 功能数据（hash/hashType/versionCode/platform 等）保留为顶层字段
+          platform: platform,
+          // extra 仅承载展示标签（带 Material 图标名）
+          extra: {
+            if (size != null)
+              DownloadItemExtra.size:
+                  DownloadTag(text: formatFileSize(size), iconName: 'sd_card'),
+            if (platform != null && platform.isNotEmpty)
+              DownloadItemExtra.platform:
+                  DownloadTag(text: platform, iconName: 'phone_android'),
+            if (versionName != null && versionName.isNotEmpty)
+              DownloadItemExtra.version:
+                  DownloadTag(text: versionName, iconName: 'label'),
+          },
         ));
       }
 
@@ -892,6 +907,7 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
         final hashType = pkg['hashType'] as String?;
 
         if (apkName != null) {
+          final platform = _extractArch(apkName);
           downloads.add(DownloadInfo(
             url: '$_currentRepoUrl/$apkName',
             name: apkName,
@@ -900,7 +916,19 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
             versionCode: versionCode,
             hash: hash,
             hashType: hashType,
-            platform: _extractArch(apkName),
+            // 功能数据保留顶层；extra 仅承载展示标签
+            platform: platform,
+            extra: {
+              if (size != null)
+                DownloadItemExtra.size:
+                    DownloadTag(text: formatFileSize(size), iconName: 'sd_card'),
+              if (platform != null && platform.isNotEmpty)
+                DownloadItemExtra.platform:
+                    DownloadTag(text: platform, iconName: 'phone_android'),
+              if (versionName != null && versionName.isNotEmpty)
+                DownloadItemExtra.version:
+                    DownloadTag(text: versionName, iconName: 'label'),
+            },
           ));
         }
       }
@@ -1107,6 +1135,8 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
       category: null,
     );
   }
+
+  
 
   /// 从 APK 文件名提取架构信息
   String? _extractArch(String apkName) {
