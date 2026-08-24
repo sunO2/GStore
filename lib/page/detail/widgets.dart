@@ -618,40 +618,6 @@ class VersionBadge extends StatelessWidget {
   }
 }
 
-/// 应用截图 Section
-class ScreenshotsSection extends StatelessWidget {
-  final IDetailInfo info;
-
-  const ScreenshotsSection({super.key, required this.info});
-
-  @override
-  Widget build(BuildContext context) {
-    final raw = info.extra['screenshots'];
-    final screenshots = raw is List
-        ? raw.map((e) {
-            if (e is ScreenshotInfo) return e;
-            if (e is String) return ScreenshotInfo(url: e);
-            if (e is Map) {
-              return ScreenshotInfo(
-                url: e['url']?.toString() ?? '',
-                description: e['description']?.toString(),
-              );
-            }
-            return ScreenshotInfo(url: e.toString());
-          }).toList()
-        : <ScreenshotInfo>[];
-    if (screenshots.isEmpty) {
-      return const SizedBox.shrink();
-    }
-
-    return SectionCard(
-      title: '应用截图',
-      icon: Icons.photo_library_outlined,
-      children: [_ScreenshotGallery(screenshots: screenshots)],
-    );
-  }
-}
-
 /// 应用截图横向滑动列表（懒加载；点击卡片全屏预览）
 /// 卡片按标准 9:16 竖屏比例：宽 = 高 × 9/16
 class _ScreenshotGallery extends StatelessWidget {

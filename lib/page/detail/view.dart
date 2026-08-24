@@ -314,7 +314,9 @@ class DetailPage extends StatelessWidget {
           s != DetailSection.downloads && s != DetailSection.readme),
       if (state.downloadsLoading.value || detail.downloads.isNotEmpty)
         DetailSection.downloads,
-      if (state.readmeLoading.value || (detail.readme?.isNotEmpty ?? false))
+      if (state.readmeLoading.value ||
+          (detail.readme?.isNotEmpty ?? false) ||
+          (detail.screenshots?.isNotEmpty ?? false))
         DetailSection.readme,
     ];
 
@@ -328,7 +330,8 @@ class DetailPage extends StatelessWidget {
           // 统计已并入 AppInfoSection 展开区，不再单独渲染
           break;
         case DetailSection.screenshots:
-          sections.add(ScreenshotsSection(info: detail));
+          // 截图已统一内嵌详细介绍卡（ReadmeSection 复用 _ScreenshotGallery），
+          // 不再单独渲染独立截图卡片
           break;
         case DetailSection.readme:
           // 加载中 → 轻量占位；完成且非空 → 正文；完成空 → 不进入此分支。

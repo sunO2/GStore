@@ -368,9 +368,9 @@ void main() {
       final extra = first['extra'] as Map;
       expect(extra['_id'], 'id-1');
       expect(extra['screenshots'], [
-        '$_pinganHost/shots/1a.png',
-        '$_pinganHost/shots/1b.png',
-      ]); // screenshots 补全
+        '$_pinganHost/istore-api/sunflower/shots/1a.png',
+        '$_pinganHost/istore-api/sunflower/shots/1b.png',
+      ]); // screenshots 补全（shotAbs：资源位于 istore-api/sunflower 下）
 
       // 分页请求只到第 2 页（第 3 页 appList 空提前结束）
       final pageRequests =
@@ -2065,8 +2065,10 @@ void main() {
 
       // 最终 return 双顶层键（绝对化截图 + 区块声明）
       expect(d['sections'], ['downloads', 'screenshots']);
-      expect(d['screenshots'],
-          ['$_pinganHost/shots/x1.png', '$_pinganHost/shots/x2.png']); // abs 绝对化
+      expect(d['screenshots'], [
+        '$_pinganHost/istore-api/sunflower/shots/x1.png',
+        '$_pinganHost/istore-api/sunflower/shots/x2.png',
+      ]); // shotAbs 绝对化（资源位于 istore-api/sunflower 下）
 
       // 以最终 return 数据构造代理（模拟 load 成功后 refreshDetail 全量替换）：
       // UI getter 必须能读到截图区块，否则全量替换后截图闪现即逝。
@@ -2075,7 +2077,8 @@ void main() {
       expect(proxy.screenshots, isNotNull);
       expect(proxy.screenshots!, isNotEmpty);
       expect(proxy.screenshots!.length, 2);
-      expect(proxy.screenshots!.first.url, '$_pinganHost/shots/x1.png');
+      expect(proxy.screenshots!.first.url,
+          '$_pinganHost/istore-api/sunflower/shots/x1.png');
 
       await runtime.dispose();
     });
