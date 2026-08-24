@@ -8,6 +8,7 @@ import 'package:gstore/core/channel/database/channel_added_app.dart';
 import 'package:gstore/core/channel/database/channel_added_app_dao.dart';
 import 'package:gstore/core/channel/impl/channel_package.dart';
 import 'package:gstore/core/js/js_channel_runtime.dart';
+import 'package:gstore/core/js/js_native_host.dart';
 
 /// vivo.js 渠道脚本测试（zip 渠道包）：验证脚本语法正确 + 引擎加载无错 + 分发器各方法行为。
 ///
@@ -578,6 +579,89 @@ void main() {
       expect((d['detailData'] as Map)['version_code'], '1555');
 
       await runtime.dispose();
+    });
+
+    test('⑩b getAppDetail 库命中 → 预填推送 ui.updateDetail（name/icon/description/packageName 来自库记录 + sections=[readme]）',
+        () async {
+      await insertSavedApp(); // extra.packageName = 'com.tencent.mm'
+      final captured = <Map<String, dynamic>>[];
+      final runtime = buildRuntime(scriptOverride: detailScript);
+      // buildRuntime 未注册 nativeHost：必须注入捕获用 host，否则推送静默 no-op 无法断言
+      runtime.setNativeHost(JSNativeHost()
+        ..register('ui', 'updateDetail', (p) async {
+          captured.add(Map<String, dynamic>.from(p));
+          return null;
+        }));
+      await runtime.initialize();
+
+      final result = await runtime.call(
+          'main', ['getAppDetail', {'appId': 'com.tencent.mm'}]) as Map;
+      expect(result['ok'], isTrue);
+
+      // 恰好一次预填推送（网络请求前）
+      expect(captured.length, 1);
+      final push = captured.first;
+      expect(push['appId'], 'com.tencent.mm');
+      expect(push['name'], '微信'); // 库记录 name
+      expect(push['icon'], 'https://cdn.vivo.com/icon.png'); // 库记录 icon
+      expect(push['description'], '微信，超过10亿人使用'); // 库记录 description
+      expect(push['packageName'], 'com.tencent.mm'); // 从 extra.packageName 提升
+      expect(push['sections'], ['readme']);
+
+      // 推送发生在网络请求之前：推送后主流程照旧发 detailInfo 请求
+      expect(
+          requestLog.where((r) => r.contains('/detailInfo')).length, 1);
+
+      await runtime.dispose();
+    });
+
+    test('⑩c getAppDetail 库未命中 → 无预填推送，主流程正常返回全量', () async {
+      final captured = <Map<String, dynamic>>[];
+      final runtime = buildRuntime(scriptOverride: detailScript);
+      runtime.setNativeHost(JSNativeHost()
+        ..register('ui', 'updateDetail', (p) async {
+          captured.add(Map<String, dynamic>.from(p));
+          return null;
+        }));
+      await runtime.initialize();
+
+      final result = await runtime.call(
+          'main', ['getAppDetail', {'appId': 'com.tencent.mm'}]) as Map;
+      expect(result['ok'], isTrue);
+      expect(captured, isEmpty); // 无库记录 → 不推送
+
+      // 主流程不受影响：全量 return 结构完整
+      final d = result['data'] as Map;
+      expect(d['version'], '8.0.49');
+      expect(d['packageName'], 'com.tencent.mm');
+      expect((d['downloads'] as List).length, 1);
+      expect((d['sections'] as List).contains('downloads'), isTrue);
+
+      await runtime.dispose();
+    });
+
+    test('⑩d 预填推送 host 抛错 → 静默吞掉，最终 return 与未注入 host 时一致', () async {
+      final throwingRuntime = buildRuntime(scriptOverride: detailScript);
+      throwingRuntime.setNativeHost(JSNativeHost()
+        ..register('ui', 'updateDetail', (p) async =>
+            throw StateError('updateDetail handler boom')));
+      await throwingRuntime.initialize();
+
+      final result = await throwingRuntime.call(
+          'main', ['getAppDetail', {'appId': 'com.tencent.mm'}]) as Map;
+      expect(result['ok'], isTrue); // 推送失败不影响主流程
+
+      // 基线：无 nativeHost 注入（host.ui.call 返回未注册错误，同样被脚本 try/catch 吞掉）
+      final baselineRuntime = buildRuntime(scriptOverride: detailScript);
+      await baselineRuntime.initialize();
+      final baseline = await baselineRuntime.call(
+          'main', ['getAppDetail', {'appId': 'com.tencent.mm'}]) as Map;
+
+      // 最终 return 完全一致（含 detailData 原始透传）
+      expect(jsonEncode(result['data']), jsonEncode(baseline['data']));
+
+      await throwingRuntime.dispose();
+      await baselineRuntime.dispose();
     });
 
     test('⑪ getAppDetail：无 extra.vivoId → 库 repositories 兜底为 vivoId', () async {

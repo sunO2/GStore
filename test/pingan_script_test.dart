@@ -7,7 +7,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/channel/database/channel_added_app.dart';
 import 'package:gstore/core/channel/database/channel_added_app_dao.dart';
 import 'package:gstore/core/channel/impl/channel_package.dart';
+import 'package:gstore/core/channel/impl/JsChannel.dart';
 import 'package:gstore/core/js/js_channel_runtime.dart';
+import 'package:gstore/core/js/js_native_host.dart';
+import 'package:gstore/core/model/AppDetailInfo.dart';
 
 /// pingan.js 渠道脚本测试（zip 渠道包）：验证脚本语法正确 + 引擎加载无错 + 分发器各方法行为。
 ///
@@ -1974,6 +1977,123 @@ void main() {
         '$_mcdBase/proxy/prd/PABank-Debug-8.8.0-35.apk?um=tester&value=secret',
       );
       expect(dl['downloadable'], isTrue);
+
+      await runtime.dispose();
+    });
+
+    test('㉜ 渐进推送：getAppDetail 三阶段 ui.updateDetail 序列（S1 选组/S2 截图/S3 下载项）', () async {
+      // buildRuntime 默认不注册 nativeHost → host.ui.call 静默 no-op 无法断言，
+      // 必须先注入捕获用 host（ui.updateDetail handler 收集推送 payload）。
+      final captured = <Map<String, dynamic>>[];
+      final runtime = buildRuntime(scriptOverride: detailScript);
+      runtime.setNativeHost(JSNativeHost()
+        ..register('ui', 'updateDetail', (p) async {
+          captured.add(Map<String, dynamic>.from(p));
+          return null;
+        }));
+      await runtime.initialize();
+
+      final result =
+          await runtime.call('main', ['getAppDetail', {'appId': 'app-1'}]) as Map;
+      expect(result['ok'], isTrue);
+      expect(captured.length, 3, reason: 'S1 选组/S2 build 补全/S3 下载项各推一次');
+
+      // S1：选组完成 → 名称/版本 + 下载区骨架声明（extra 展开键）
+      final s1 = captured[0];
+      expect(s1['name'], 'app-1');
+      expect(s1['version'], '1.9.0');
+      expect(s1['sections'], ['downloads']);
+      final s1Extra = s1['extra'] as Map;
+      expect(s1Extra['identifier'], 'com.pingan.app');
+      expect(s1Extra['env'], 'sit'); // envReader 空 → 凭证默认 sit
+      expect(s1Extra['platform'], 'android');
+
+      // S2：build 补全 → sections 含 screenshots 且 screenshots 在顶层（非嵌 extra）
+      final s2 = captured[1];
+      expect(s2['sections'], ['downloads', 'screenshots']);
+      expect(s2.containsKey('extra'), isFalse,
+          reason: 'screenshots 必须顶层键（UI getter 读 _data[\'screenshots\']）');
+      expect(s2['screenshots'], isA<List>());
+
+      // S3：真实下载项填充（与最终 return 同一数组内容）
+      final s3 = captured[2];
+      final finalDownloads = (result['data'] as Map)['downloads'] as List;
+      expect(s3['downloads'], isA<List>());
+      expect((s3['downloads'] as List).length, finalDownloads.length);
+      expect((s3['downloads'] as List).first, finalDownloads.first);
+
+      await runtime.dispose();
+    });
+
+    test('㉝ 全量替换持久性：最终 return 顶层 sections+screenshots 经 JsChannelDetailProxy 可读', () async {
+      // 防"推送时显示、全量替换后消失"回归：截图区块依赖最终 return 的
+      // 顶层 screenshots 键 + sections 声明（仅 extra.screenshots 嵌套不够）。
+      final runtime = buildRuntime(scriptOverride: detailScript, handler: (options) {
+        if (options.path.endsWith('/sunflower/i/build')) {
+          return {
+            'build': {
+              '_id': 'bg-android',
+              'version': '1.9.0',
+              'builds': [
+                {
+                  'identifier': 'com.pingan.app',
+                  'versionname': '1.9.0',
+                  'num': 7,
+                  'size': 12345678,
+                  'ipa': [
+                    {'name': 'com.pingan.app-1.9.0.apk', '_id': 'ipa-1'},
+                  ],
+                  'fileurl': <Object>[],
+                },
+              ],
+            },
+            'appInfo': {
+              'displayname': '应用1',
+              'intro': '应用1 的简介',
+              'screenshots': ['/shots/x1.png', '/shots/x2.png'],
+            },
+          };
+        }
+        return defaultHandler(options);
+      });
+      await runtime.initialize();
+
+      final result =
+          await runtime.call('main', ['getAppDetail', {'appId': 'app-1'}]) as Map;
+      expect(result['ok'], isTrue);
+      final d = result['data'] as Map;
+
+      // 最终 return 双顶层键（绝对化截图 + 区块声明）
+      expect(d['sections'], ['downloads', 'screenshots']);
+      expect(d['screenshots'],
+          ['$_pinganHost/shots/x1.png', '$_pinganHost/shots/x2.png']); // abs 绝对化
+
+      // 以最终 return 数据构造代理（模拟 load 成功后 refreshDetail 全量替换）：
+      // UI getter 必须能读到截图区块，否则全量替换后截图闪现即逝。
+      final proxy = JsChannelDetailProxy(Map<String, dynamic>.from(d));
+      expect(proxy.sections, contains(DetailSection.screenshots));
+      expect(proxy.screenshots, isNotNull);
+      expect(proxy.screenshots!, isNotEmpty);
+      expect(proxy.screenshots!.length, 2);
+      expect(proxy.screenshots!.first.url, '$_pinganHost/shots/x1.png');
+
+      await runtime.dispose();
+    });
+
+    test('㉞ 推送抛错不阻塞主链：updateDetail handler throw → getAppDetail 仍 ok:true', () async {
+      final runtime = buildRuntime(scriptOverride: detailScript);
+      runtime.setNativeHost(JSNativeHost()
+        ..register('ui', 'updateDetail', (p) async {
+          throw StateError('模拟 UI 推送失败');
+        }));
+      await runtime.initialize();
+
+      final result =
+          await runtime.call('main', ['getAppDetail', {'appId': 'app-1'}]) as Map;
+      expect(result['ok'], isTrue, reason: '脚本侧 try/catch 包裹——推送失败绝不影响主链');
+      final d = result['data'] as Map;
+      expect(d['downloads'], isA<List>());
+      expect((d['downloads'] as List).length, 1);
 
       await runtime.dispose();
     });
