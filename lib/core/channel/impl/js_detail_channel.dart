@@ -1,4 +1,5 @@
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:gstore/core/channel/database/channel_added_app_dao.dart';
 import 'package:gstore/core/channel/detail_callbacks.dart';
 import 'package:gstore/core/channel/IDetailChannel.dart';
@@ -191,6 +192,11 @@ class JsDetailChannel implements IDetailChannel {
   /// `host.native.call('ui.showVersionPicker', ...)` 等即生效。
   void setNativeHost(JSNativeHost host) => _runtime.setNativeHost(host);
 
+  /// bind 后安装的 native host（含 ui.* 六个 handler）。
+  /// 仅供单测直接触发 handler（无需 JS 引擎），生产代码勿用。
+  @visibleForTesting
+  JSNativeHost get nativeHostForTest => _runtime.nativeHost;
+
   // ==================== bind 模式（构造后注入 state + callbacks） ====================
 
   /// bind 注入的详情状态容器（[load] 及后续交互写入数据；未 bind → null）
@@ -201,6 +207,12 @@ class JsDetailChannel implements IDetailChannel {
 
   /// [getActions] 返回的操作项缓存（[load] 时从脚本 detailMenu 刷新）
   List<DetailAction> _actions = const [];
+
+  /// 本次 [load] 期间脚本是否已推送过阶段数据（ui.updateDetail）。
+  ///
+  /// load 进入即复位；失败判别用：已推送 → 保内容 + 提示（不设错误页）；
+  /// 未推送（纯 prefill）→ 错误页可重试。
+  bool _receivedUpdateDetail = false;
 
   /// bind 模式：构造后注入状态容器 + UI 回调接口。
   ///
@@ -215,7 +227,7 @@ class JsDetailChannel implements IDetailChannel {
     _installNativeHost(callbacks);
   }
 
-  /// 安装 native host 回调：注册 'ui' 命名空间的五个 handler，
+  /// 安装 native host 回调：注册 'ui' 命名空间的六个 handler，
   /// 脚本内部经 `host.native.call('ui.showVersionPicker', ...)` 等驱动 UI 交互。
   void _installNativeHost(DetailCallbacks cb) {
     final host = JSNativeHost()
@@ -258,17 +270,33 @@ class JsDetailChannel implements IDetailChannel {
             : null;
         return await cb.showUAPicker(
             uaOptions: uas, appId: appId, current: current);
+      })
+      ..register('ui', 'updateDetail', (p) async {
+        // 粒度推送原语：脚本分阶段上屏数据（任意键子集，展开合并语义见
+        // DetailCallbacks.updateDetail）。置位标志供 load 失败判别。
+        _receivedUpdateDetail = true;
+        await cb.updateDetail(partial: Map<String, dynamic>.from(p));
+        return null;
       });
     setNativeHost(host);
   }
 
-  /// 加载详情数据并写入 bound 的 [DetailState]。
+  /// 加载详情数据并写入 bound 的 [DetailState]（六步纪律）：
   ///
-  /// 经脚本 main('getAppDetail') 拉取原始详情 Map，再经
-  /// [DetailCallbacks.refreshDetail] 让 UI 侧（DetailLogic 实现内部用
-  /// JsChannelDetailProxy）整体刷新 state.detailInfo——与 switchVersion 后刷新同路径。
-  /// 同时刷新 [getActions] 操作项缓存。
-  /// 未 bind → 仅日志（脚本直调/单测场景），不崩溃；脚本失败 → null 兜底（同回退路径）。
+  /// ① 进入即复位推送标志 + 打开基础 loading（`isLoadingDetail`，骨架 spinner）；
+  /// ② 从 request 构建保底 prefill（仅非空字段 + downloads 空数组 +
+  ///    sections:['downloads']）经 [DetailCallbacks.refreshDetail] 注入——
+  ///    基础信息即时上屏，网络前不再整页空白（AppDetailRequest 无 version 字段，
+  ///    prefill 不含 version）；
+  /// ③ 下载/README/统计三区块 loading 骨架置 true；
+  /// ④ 经脚本 main('getAppDetail') 拉取全量详情；
+  /// ⑤ 成功 → refreshDetail 全量替换 + 三标志复位 + 刷新操作项缓存；
+  ///    失败(null) → 显式 [_receivedUpdateDetail] 判别：脚本已推送过阶段数据
+  ///    则 showError 提示并保留已上屏内容；纯 prefill 则设 errorMessage
+  ///    （错误页可重试），失败不再静默白屏；
+  /// ⑥ finally 复位 isLoadingDetail。
+  ///
+  /// 未 bind → 仅日志（脚本直调/单测场景），不崩溃。
   @override
   Future<void> load() async {
     final state = _boundState;
@@ -277,13 +305,66 @@ class JsDetailChannel implements IDetailChannel {
       _logError('load 未 bind（state/callbacks 未注入），跳过');
       return;
     }
-    final raw = await getAppDetail(appId);
-    if (raw == null) {
-      _logError('load: getAppDetail 返回 null，调用方兜底');
-      return;
+    // ① 进入即复位推送标志 + 打开基础 loading
+    _receivedUpdateDetail = false;
+    state.isLoadingDetail.value = true;
+    try {
+      // ② 保底 prefill：request 基础信息即时上屏 + 下载区骨架声明
+      await callbacks.refreshDetail(detailData: _buildPrefill(state));
+      // ③ 三区块 loading 骨架
+      state.downloadsLoading.value = true;
+      state.readmeLoading.value = true;
+      state.statisticsLoading.value = true;
+      // ④ 拉取全量详情
+      final raw = await getAppDetail(appId);
+      if (raw != null) {
+        // ⑤a 成功：全量替换 + 三标志复位 + 操作项缓存刷新
+        await callbacks.refreshDetail(detailData: raw);
+        state.downloadsLoading.value = false;
+        state.readmeLoading.value = false;
+        state.statisticsLoading.value = false;
+        await _refreshActions();
+      } else {
+        // ⑤b 失败判别：已推送过阶段数据 → 保内容提示；纯 prefill → 错误页可重试
+        _logError('load: getAppDetail 返回 null，调用方兜底');
+        if (_receivedUpdateDetail) {
+          callbacks.showError('详情加载失败，当前显示为已加载内容');
+        } else {
+          state.errorMessage.value = '详情加载失败';
+        }
+      }
+    } finally {
+      // ⑥ 基础 loading 复位
+      state.isLoadingDetail.value = false;
     }
-    await callbacks.refreshDetail(detailData: raw);
-    await _refreshActions();
+  }
+
+  /// 从 bound state 的 request 构建保底 prefill Map：
+  /// appId/name/icon/description/packageName 仅含非空字段（缺失跳过该键）；
+  /// 固定附 `downloads` 空数组与 `sections: ['downloads']`（下载区骨架声明）；
+  /// packageName 非空时附 `extra: {packageName}`。不含 version
+  /// （AppDetailRequest 无该字段）。request 为 null 时仅含固定键。
+  Map<String, dynamic> _buildPrefill(DetailState state) {
+    final req = state.request;
+    final prefill = <String, dynamic>{
+      'downloads': const <DownloadInfo>[],
+      'sections': const ['downloads'],
+    };
+    if (req == null) return prefill;
+    if (req.appId.isNotEmpty) prefill['appId'] = req.appId;
+    if (req.name.isNotEmpty) prefill['name'] = req.name;
+    final icon = req.icon;
+    if (icon != null && icon.isNotEmpty) prefill['icon'] = icon;
+    final description = req.description;
+    if (description != null && description.isNotEmpty) {
+      prefill['description'] = description;
+    }
+    final packageName = req.packageName;
+    if (packageName != null && packageName.isNotEmpty) {
+      prefill['packageName'] = packageName;
+      prefill['extra'] = {'packageName': packageName};
+    }
+    return prefill;
   }
 
   /// 脚本 detailMenu → [DetailAction] 列表缓存（[getActions] 消费）。

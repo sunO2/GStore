@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -5,10 +6,15 @@ import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/channel/database/channel_added_app.dart';
 import 'package:gstore/core/channel/database/channel_added_app_dao.dart';
+import 'package:gstore/core/channel/detail_callbacks.dart';
 import 'package:gstore/core/channel/impl/JsChannel.dart';
 import 'package:gstore/core/channel/impl/js_detail_channel.dart';
+import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/config/config_store.dart';
 import 'package:gstore/core/config/config_storage.dart';
+import 'package:gstore/core/model/AppDetailInfo.dart';
+import 'package:gstore/core/model/AppDetailRequest.dart';
+import 'package:gstore/page/detail/state.dart';
 
 /// 内存版 ChannelAddedAppDao（测试用，模拟渠道数据库）
 class _FakeAppDao implements ChannelAddedAppDao {
@@ -162,6 +168,140 @@ Future<void> initStoreForTest() async {
     MemoryConfigStorage(),
     MemoryConfigStorage(),
   ]);
+}
+
+/// load 纪律测试桩：覆写 getAppDetail 返回可编程响应，
+/// 不依赖 JS 引擎（qjs .so 缺失环境亦可跑）；detailMenu 走真实 callMain
+/// （引擎缺失 → null → actions 空，确定性）。
+class _StubAppDetailChannel extends JsDetailChannel {
+  _StubAppDetailChannel({required super.appId})
+      : super(
+          channelKey: 'js.detail',
+          detailScript: 'async function main(method, params) { return null; }',
+        );
+
+  /// getAppDetail 响应器（返回 null → 模拟脚本失败/未实现；
+  /// 可返回挂起的 Future 以观察 load 中间态）
+  Future<Map<String, dynamic>?> Function(String appId)? detailResponder;
+
+  @override
+  Future<Map<String, dynamic>?> getAppDetail(
+    String appId, {
+    String? version,
+  }) async =>
+      detailResponder?.call(appId);
+}
+
+/// 捕获式 callbacks：记录 refreshDetail/updateDetail/showError 调用，
+/// 并按 DetailLogic 同款语义把数据写入 bound state（供内容保留断言）。
+class _CapturingCallbacks implements DetailCallbacks {
+  final List<Map<String, dynamic>> refreshCalls = [];
+  final List<Map<String, dynamic>> updateCalls = [];
+  final List<String> errors = [];
+  final List<String> successes = [];
+
+  DetailState? state;
+
+  @override
+  Future<void> refreshDetail({
+    required Map<String, dynamic> detailData,
+  }) async {
+    refreshCalls.add(Map<String, dynamic>.from(detailData));
+    final s = state;
+    if (s != null) s.detailInfo.value = JsChannelDetailProxy(detailData);
+  }
+
+  @override
+  Future<void> updateDetail({required Map<String, dynamic> partial}) async {
+    updateCalls.add(Map<String, dynamic>.from(partial));
+    final s = state;
+    if (s == null) return;
+    // 与 DetailLogic.updateDetail 展开合并语义一致
+    final current = s.detailInfo.value;
+    if (current is JsChannelDetailProxy) {
+      final merged = Map<String, dynamic>.from(current.data);
+      partial.forEach((k, v) {
+        if (k == 'extra' && v is Map) {
+          v.forEach((ek, ev) => merged[ek.toString()] = ev);
+        } else {
+          merged[k] = v;
+        }
+      });
+      s.detailInfo.value = JsChannelDetailProxy(merged);
+    } else {
+      final flat = Map<String, dynamic>.from(partial);
+      if (partial['extra'] is Map) {
+        (partial['extra'] as Map)
+            .forEach((ek, ev) => flat[ek.toString()] = ev);
+      }
+      s.detailInfo.value = JsChannelDetailProxy(flat);
+    }
+  }
+
+  @override
+  void showError(String message, {String? title}) => errors.add(message);
+
+  @override
+  void showSuccess(String message, {String? title}) => successes.add(message);
+
+  // 以下交互回调测试不触达，no-op 兜底
+  @override
+  Future<void> showVersionPicker({
+    required Map<String, dynamic> options,
+    required String appId,
+  }) async {}
+
+  @override
+  Future<void> showBuildHistory({
+    required List<Map<String, dynamic>> builds,
+    required String appId,
+    required String version,
+    required String env,
+  }) async {}
+
+  @override
+  Future<String?> showUAPicker({
+    required List<String>? uaOptions,
+    required String appId,
+    String? current,
+  }) async =>
+      null;
+
+  @override
+  Future<void> updateDownloadList({
+    required List<DownloadInfo> downloads,
+  }) async {}
+
+  @override
+  Future<bool?> showWarningDialog({
+    required String title,
+    required String content,
+    String? confirmText,
+    String? cancelText,
+    bool isDangerous = false,
+  }) async =>
+      null;
+
+  @override
+  void startApp(String packageName) {}
+
+  @override
+  void openBrowser(String url) {}
+
+  @override
+  void openProjectBrowser() {}
+
+  @override
+  Future<void> submitAppMetadata() async {}
+
+  @override
+  Future<List<String>?> showMoreActionsSheet({
+    required String appName,
+    required List<String> presetTags,
+    required List<String> currentTags,
+    required List<DetailAction> actions,
+  }) async =>
+      null;
 }
 
 void main() {
@@ -405,6 +545,196 @@ void main() {
       expect(after['value'], 'TOKEN-NEW');
 
       await channel.dispose();
+    });
+  });
+
+  group('JsDetailChannel load 纪律 + ui.updateDetail 桥', () {
+    test('⑨ ui.updateDetail 桥：转发 partial 到 callbacks + 既有 5 handler 保留',
+        () async {
+      final detail = _StubAppDetailChannel(appId: 'com.example.one');
+      final cb = _CapturingCallbacks()..state = DetailState();
+      final state = cb.state!;
+      state.request = const AppDetailRequest(
+        appId: 'com.example.one',
+        name: 'Req App',
+        channel: ChannelType.custom,
+      );
+      detail.bind(state, cb);
+
+      // 向后兼容：既有 5 个 ui.* handler 未删改
+      final host = detail.nativeHostForTest;
+      expect(
+        host.names,
+        containsAll([
+          'ui.showVersionPicker',
+          'ui.showBuildHistory',
+          'ui.refreshDetail',
+          'ui.updateDownloadList',
+          'ui.showUAPicker',
+        ]),
+      );
+      expect(host.names, contains('ui.updateDetail'));
+
+      // 经桥触发：payload 等价转发到 cb.updateDetail 并写入 state
+      await host['ui.updateDetail']!({
+        'name': 'Pushed Name',
+        'sections': ['downloads'],
+        'extra': {'identifier': 'id-1'},
+      });
+      expect(cb.updateCalls, hasLength(1));
+      expect(cb.updateCalls.first['name'], 'Pushed Name');
+      expect(cb.updateCalls.first['sections'], ['downloads']);
+      expect(state.detailInfo.value, isA<JsChannelDetailProxy>());
+      expect(state.detailInfo.value!.name, 'Pushed Name');
+      // extra 展开合并写入顶层（非嵌套）
+      expect((state.detailInfo.value as JsChannelDetailProxy).data['identifier'],
+          'id-1');
+
+      // 空 payload / 缺键不抛（partial 任意键子集语义）
+      await host['ui.updateDetail']!(<String, dynamic>{});
+      expect(cb.updateCalls, hasLength(2));
+
+      await detail.dispose();
+    });
+
+    test('⑩ load 成功路径：prefill 先注入 → 全量替换 + loading 复位', () async {
+      final detail = _StubAppDetailChannel(appId: 'com.example.one');
+      final gate = Completer<void>();
+      detail.detailResponder = (_) => gate.future.then((_) =>
+          <String, dynamic>{
+            'appId': 'com.example.one',
+            'name': 'Full App',
+            'des': '全量描述',
+            'packageName': 'com.example.one',
+            'readme': 'README',
+            'downloads': const [],
+            'sections': ['downloads', 'readme'],
+          });
+      final cb = _CapturingCallbacks()..state = DetailState();
+      final state = cb.state!;
+      state.request = const AppDetailRequest(
+        appId: 'com.example.one',
+        name: 'Req App',
+        channel: ChannelType.custom,
+        packageName: 'com.example.one',
+        icon: 'icon://req',
+        description: '请求描述',
+      );
+      detail.bind(state, cb);
+
+      final loading = detail.load();
+      // 排空 microtask：prefill 注入完成、getAppDetail 挂起在 gate
+      await Future<void>.delayed(Duration.zero);
+
+      // prefill 先注入（detailInfo 非 null 且为 request 内容）+ 骨架标志 true
+      expect(cb.refreshCalls, hasLength(1));
+      expect(state.detailInfo.value, isNotNull);
+      expect(state.detailInfo.value!.name, 'Req App');
+      expect(state.isLoadingDetail.value, isTrue);
+      expect(state.downloadsLoading.value, isTrue);
+      expect(state.readmeLoading.value, isTrue);
+      expect(state.statisticsLoading.value, isTrue);
+
+      gate.complete();
+      await loading;
+
+      // 全量替换 + 复位
+      expect(cb.refreshCalls, hasLength(2));
+      expect(state.detailInfo.value!.name, 'Full App');
+      expect(state.isLoadingDetail.value, isFalse);
+      expect(state.downloadsLoading.value, isFalse);
+      expect(state.readmeLoading.value, isFalse);
+      expect(state.statisticsLoading.value, isFalse);
+      expect(state.errorMessage.value, '');
+      expect(cb.errors, isEmpty);
+
+      await detail.dispose();
+    });
+
+    test('⑪ load 失败分支 A（纯 prefill 未推送）：errorMessage 设置且无异常',
+        () async {
+      final detail = _StubAppDetailChannel(appId: 'com.example.one');
+      detail.detailResponder = (_) async => null;
+      final cb = _CapturingCallbacks()..state = DetailState();
+      final state = cb.state!;
+      state.request = const AppDetailRequest(
+        appId: 'com.example.one',
+        name: 'Req App',
+        channel: ChannelType.custom,
+      );
+      detail.bind(state, cb);
+
+      await detail.load();
+
+      expect(state.errorMessage.value, '详情加载失败');
+      expect(cb.errors, isEmpty, reason: '未推送过阶段数据 → 走错误页而非 toast');
+      expect(state.isLoadingDetail.value, isFalse);
+
+      await detail.dispose();
+    });
+
+    test('⑫ load 失败分支 B（已推送）：showError 保内容，errorMessage 不设置',
+        () async {
+      final detail = _StubAppDetailChannel(appId: 'com.example.one');
+      // 模拟生产时序：脚本在 getAppDetail 执行窗口内推送阶段数据后返回 null
+      // （load 进入即复位标志 → 推送必须发生在本次 load 的拉取窗口内才置位）
+      detail.detailResponder = (_) async {
+        await detail.nativeHostForTest['ui.updateDetail']!({
+          'name': 'Pushed Name',
+          'sections': ['downloads'],
+        });
+        return null;
+      };
+      final cb = _CapturingCallbacks()..state = DetailState();
+      final state = cb.state!;
+      state.request = const AppDetailRequest(
+        appId: 'com.example.one',
+        name: 'Req App',
+        channel: ChannelType.custom,
+      );
+      detail.bind(state, cb);
+
+      await detail.load();
+
+      expect(cb.errors, ['详情加载失败，当前显示为已加载内容']);
+      expect(state.errorMessage.value, '', reason: '已推送 → 不设错误页');
+      expect(state.detailInfo.value!.name, 'Pushed Name',
+          reason: '已推送内容保留不被清除');
+      expect(state.isLoadingDetail.value, isFalse);
+
+      await detail.dispose();
+    });
+
+    test('⑬ prefill 形状：仅含非空字段、绝不含 version、固定 downloads/sections',
+        () async {
+      final detail = _StubAppDetailChannel(appId: 'com.example.one');
+      detail.detailResponder = (_) async => null; // 失败不影响已捕获的 prefill
+      final cb = _CapturingCallbacks()..state = DetailState();
+      final state = cb.state!;
+      // icon/description/packageName 缺省 null → 对应键缺席
+      state.request = const AppDetailRequest(
+        appId: 'com.example.one',
+        name: 'Req App',
+        channel: ChannelType.custom,
+      );
+      detail.bind(state, cb);
+
+      await detail.load();
+
+      final prefill = cb.refreshCalls.first;
+      expect(prefill.containsKey('version'), isFalse,
+          reason: 'AppDetailRequest 无 version 字段，prefill 绝不含 version');
+      expect(prefill['appId'], 'com.example.one');
+      expect(prefill['name'], 'Req App');
+      expect(prefill.containsKey('icon'), isFalse, reason: '空字段跳过该键');
+      expect(prefill.containsKey('description'), isFalse, reason: '空字段跳过该键');
+      expect(prefill.containsKey('packageName'), isFalse, reason: '空字段跳过该键');
+      expect(prefill.containsKey('extra'), isFalse,
+          reason: 'packageName 为空时 extra 键缺席');
+      expect(prefill['sections'], ['downloads']);
+      expect(prefill['downloads'], isEmpty);
+
+      await detail.dispose();
     });
   });
 }
