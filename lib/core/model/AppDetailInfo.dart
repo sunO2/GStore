@@ -36,6 +36,17 @@ enum DetailSection {
   permissions,
 }
 
+/// 下载项扩展标签（脚本渠道传入，带可选图标名）
+class DownloadTag {
+  /// 标签文本
+  final String text;
+
+  /// Material 图标名（如 'build'/'cloud'），null → UI 默认
+  final String? iconName;
+
+  const DownloadTag({required this.text, this.iconName});
+}
+
 /// 下载信息
 class DownloadInfo {
   /// 下载链接
@@ -74,11 +85,8 @@ class DownloadInfo {
   /// 不可下载原因提示（脚本渠道提供，如"需在渠道环境变量配置 PINGAN_USER/PINGAN_PASS 后下载"）
   final String? note;
 
-  /// 构建编号（脚本渠道，如 35）
-  final int? buildNum;
-
-  /// 环境标识（脚本渠道，如 prd/sit）
-  final String? env;
+  /// 扩展标签映射（key=唯一标识，value=标签；支持 icon+text）
+  final Map<String, DownloadTag>? extra;
 
   DownloadInfo({
     required this.url,
@@ -93,9 +101,14 @@ class DownloadInfo {
     this.hashType,
     this.downloadable = true,
     this.note,
-    this.buildNum,
-    this.env,
+    this.extra,
   });
+
+  /// 更新时间文本（读取 extra['updateTime'] 标签，非空才返回）
+  String? get updateTimeText {
+    final text = extra?['updateTime']?.text ?? '';
+    return text.isEmpty ? null : text;
+  }
 
   /// 格式化文件大小
   String get formattedSize {
@@ -106,6 +119,30 @@ class DownloadInfo {
     if (bytes < 1024 * 1024 * 1024) return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
     return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
   }
+}
+
+// ==================== 公共格式化工具函数 ====================
+
+/// 格式化文件大小（字节 → 可读文本，与 DownloadInfo.formattedSize 逻辑一致）
+String formatFileSize(int? bytes) {
+  if (bytes == null) return '';
+  if (bytes < 1024) return '$bytes B';
+  if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+  if (bytes < 1024 * 1024 * 1024) {
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
+  return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
+}
+
+/// 格式化计数（千分位 → 万/亿 中文缩写，用于中文商店渠道）
+String formatFileCount(int? count) {
+  if (count == null || count <= 0) return '';
+  if (count >= 100000000) {
+    return '${(count / 100000000).toStringAsFixed(1)}亿';
+  } else if (count >= 10000) {
+    return '${(count / 10000).toStringAsFixed(1)}万';
+  }
+  return '$count';
 }
 
 /// 应用截图信息
