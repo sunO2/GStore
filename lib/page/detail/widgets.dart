@@ -427,20 +427,18 @@ class _AppInfoSectionState extends State<AppInfoSection> {
   @override
   Widget build(BuildContext context) {
     final info = widget.info;
-    final version = info.version;
-    final developer = info.developer;
-    final projectUrl = info.projectUrl;
-    final channelId = info.channelId;
+    final extra = info.extra;
+    final version = extra['version']?.toString();
+    final developer = extra['developer']?.toString();
+    final projectUrl = extra['projectUrl']?.toString();
+    final channelId = extra['channelId']?.toString() ?? '';
+    final packageName = extra['packageName']?.toString() ?? '';
+    final tags = info.buildStatTags();
 
-    var tags = info.buildStatTags();
-    if (tags.isEmpty) {
-      tags = info.statistics?.buildStatTags() ?? const <StatTag>[];
-    }
-
-    final hasBasicRows = info.packageName.isNotEmpty ||
+    final hasBasicRows = packageName.isNotEmpty ||
         version != null ||
         developer != null ||
-        info.channelId.isNotEmpty;
+        channelId.isNotEmpty;
     final hasExpandable = projectUrl != null || tags.isNotEmpty;
 
     // 全空（无基础行且无可展开内容）→ 不渲染
@@ -469,11 +467,11 @@ class _AppInfoSectionState extends State<AppInfoSection> {
             )
           : null,
       children: [
-        if (info.packageName.isNotEmpty)
+        if (packageName.isNotEmpty)
           _InfoRow(
             icon: Icons.smartphone,
             label: '包名',
-            value: info.packageName,
+            value: packageName,
           ),
         if (version != null)
           _InfoRow(
@@ -628,8 +626,21 @@ class ScreenshotsSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final screenshots = info.screenshots;
-    if (screenshots == null || screenshots.isEmpty) {
+    final raw = info.extra['screenshots'];
+    final screenshots = raw is List
+        ? raw.map((e) {
+            if (e is ScreenshotInfo) return e;
+            if (e is String) return ScreenshotInfo(url: e);
+            if (e is Map) {
+              return ScreenshotInfo(
+                url: e['url']?.toString() ?? '',
+                description: e['description']?.toString(),
+              );
+            }
+            return ScreenshotInfo(url: e.toString());
+          }).toList()
+        : <ScreenshotInfo>[];
+    if (screenshots.isEmpty) {
       return const SizedBox.shrink();
     }
 
@@ -804,7 +815,7 @@ class _ReadmeSectionState extends State<ReadmeSection> {
     }
 
     final info = widget.info;
-    final readme = info.readme;
+    final readme = info.extra['readme']?.toString();
     // 截图统一内嵌详情区：有截图或正文任一存在即渲染（截图为横向滑动列表）
     final screenshots = info.screenshots ?? const <ScreenshotInfo>[];
     if ((readme == null || readme.isEmpty) && screenshots.isEmpty) {
@@ -1309,6 +1320,7 @@ class _DownloadItem extends StatelessWidget {
                             ],
                           ),
                         ],
+                        
                         // 不可下载原因提示（脚本渠道：未配置凭证/认证失败）
                         if (!download.downloadable &&
                             download.note?.isNotEmpty == true) ...[
@@ -1370,41 +1382,15 @@ class _DownloadItem extends StatelessWidget {
                 spacing: 8,
                 runSpacing: 4,
                 children: [
-                  if (download.size != null)
-                    _buildInfoChip(
+                  // extra 标签（优先，带 icon）
+                  if (download.extra != null)
+                    ...download.extra!.entries.map((e) => _buildInfoChip(
                       context,
-                      Icons.sd_card,
-                      download.formattedSize,
-                      Colors.blue,
-                    ),
-                  if (download.platform != null)
-                    _buildInfoChip(
-                      context,
-                      Icons.phone_android,
-                      download.platform!,
-                      Colors.green,
-                    ),
-                  if (download.buildNum != null)
-                    _buildInfoChip(
-                      context,
-                      Icons.build,
-                      '#${download.buildNum}',
-                      Colors.orange,
-                    ),
-                  if (download.env != null)
-                    _buildInfoChip(
-                      context,
-                      Icons.cloud,
-                      download.env!,
-                      Colors.purple,
-                    ),
-                  if (download.downloadCount != null)
-                    _buildInfoChip(
-                      context,
-                      Icons.cloud_download,
-                      _formatNumber(download.downloadCount!),
-                      Colors.orange,
-                    ),
+                      _iconFromName(e.value.iconName) ?? Icons.info_outline,
+                      e.value.text,
+                      _colorForTag(e.key),
+                    )),
+                  
                 ],
               ),
             ],
@@ -1412,6 +1398,36 @@ class _DownloadItem extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  /// Material 图标名 → IconData 映射（未知返回 null）
+  IconData? _iconFromName(String? name) {
+    switch (name) {
+      case 'sd_card': return Icons.sd_card;
+      case 'sd_storage': return Icons.sd_storage;
+      case 'phone_android': return Icons.phone_android;
+      case 'build': return Icons.build;
+      case 'cloud': return Icons.cloud;
+      case 'download': return Icons.download_rounded;
+      case 'cloud_download': return Icons.cloud_download;
+      case 'schedule': return Icons.schedule;
+      case 'label': return Icons.label;
+      case 'install': return Icons.download_done;
+      default: return null;
+    }
+  }
+
+  /// 标签 key → 颜色（稳定映射）
+  Color _colorForTag(String key) {
+    switch (key) {
+      case 'size': return Colors.blue;
+      case 'platform': return Colors.green;
+      case 'build': return Colors.orange;
+      case 'env': return Colors.purple;
+      case 'installTimes': case 'install': case 'download_count': case 'downloadCount':
+        return Colors.orange;
+      default: return Colors.teal;
+    }
   }
 
   Widget _buildInfoChip(
@@ -1445,12 +1461,7 @@ class _DownloadItem extends StatelessWidget {
     );
   }
 
-  String _formatNumber(int num) {
-    if (num >= 1000000) return '${(num / 1000000).toStringAsFixed(1)}M';
-    if (num >= 1000) return '${(num / 1000).toStringAsFixed(1)}K';
-    return '$num';
   }
-}
 
 /// 开发者信息行：[xs icon + onSurfaceVariant label + onSurface value]
 class _InfoRow extends StatelessWidget {
@@ -1506,10 +1517,11 @@ class DeveloperSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final developer = info.developer;
-    final projectUrl = info.projectUrl;
-    final version = info.version;
-    final channelId = info.channelId;
+    final extra = info.extra;
+    final developer = extra['developer']?.toString();
+    final projectUrl = extra['projectUrl']?.toString();
+    final version = extra['version']?.toString();
+    final channelId = extra['channelId']?.toString() ?? '';
 
     // 四字段全空才隐藏
     if (developer == null &&
@@ -1562,7 +1574,7 @@ class ChangelogSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final changelog = info.changelog;
+    final changelog = info.extra['changelog']?.toString();
     if (changelog == null || changelog.isEmpty) {
       return const SizedBox.shrink();
     }
@@ -1588,7 +1600,10 @@ class PermissionsSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final permissions = info.permissions;
+    final raw = info.extra['permissions'];
+    final permissions = raw is List
+        ? raw.map((e) => e.toString()).toList()
+        : null;
     if (permissions == null || permissions.isEmpty) {
       return const SizedBox.shrink();
     }

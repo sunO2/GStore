@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'package:gstore/core/design/design_tokens.dart';
+import 'package:gstore/core/model/AppDetailInfo.dart';
 
 /// 版本/环境选择器（通用）：env 独立 chips + 版本列表（随 env 过滤）+ 历史构建入口。
 ///
@@ -548,15 +549,7 @@ class _BuildRow extends StatelessWidget {
         '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
   }
 
-  String _formatSize(int bytes) {
-    if (bytes >= 1024 * 1024) {
-      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
-    }
-    if (bytes >= 1024) {
-      return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    }
-    return '$bytes B';
-  }
+  
 
   @override
   Widget build(BuildContext context) {
@@ -565,7 +558,7 @@ class _BuildRow extends StatelessWidget {
 
     final meta = [
       if (option.publishedAt != null) _formatDateTime(option.publishedAt!),
-      if (option.size != null) _formatSize(option.size!),
+      if (option.size != null) formatFileSize(option.size!),
     ].join(' · ');
 
     return InkWell(

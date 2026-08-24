@@ -310,25 +310,119 @@ mixin DetailVersionPickerMixin on GetxController {
   Future<String?> showUAPicker({
     required List<String>? uaOptions,
     required String appId,
+    String? current,
   }) async {
     final ctx = Get.context;
     if (ctx == null || uaOptions == null || uaOptions.isEmpty) return null;
     return showModalBottomSheet<String>(
       context: ctx,
-      builder: (c) => SafeArea(
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child:
-                Text('切换 UA', style: Theme.of(c).textTheme.titleLarge),
-          ),
-          ...uaOptions.map((ua) => ListTile(
-                title: Text(ua),
-                onTap: () => Navigator.of(c).pop(ua),
-              )),
-        ]),
+      isScrollControlled: true,
+      backgroundColor: Theme.of(ctx).colorScheme.dialogSurface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(
+          top: Radius.circular(AppRadius.radiusSheet),
+        ),
       ),
+      builder: (c) {
+        final colorScheme = Theme.of(c).colorScheme;
+        final textTheme = Theme.of(c).textTheme;
+        final maxHeight = MediaQuery.of(c).size.height * 0.7;
+        return ConstrainedBox(
+          constraints: BoxConstraints(maxHeight: maxHeight),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // ===== 固定头部：标题 =====
+              Padding(
+                padding: const EdgeInsets.fromLTRB(
+                  AppSpacing.xl,
+                  AppSpacing.xl,
+                  AppSpacing.xl,
+                  AppSpacing.sm,
+                ),
+                child: Text(
+                  '切换 UA',
+                  style: textTheme.titleLarge?.copyWith(
+                    fontWeight: AppTypography.weightSemiBold,
+                  ),
+                ),
+              ),
+              // 副标题
+              Padding(
+                padding: const EdgeInsets.fromLTRB(
+                  AppSpacing.xl,
+                  0,
+                  AppSpacing.xl,
+                  AppSpacing.sm,
+                ),
+                child: Text(
+                  '选择 User-Agent，确认后下载使用该 UA 请求',
+                  style: textTheme.bodySmall?.copyWith(
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+              // ===== UA 选项列表（单选）=====
+              Expanded(
+                child: ListView.builder(
+                  padding: AppSpacing.onlyHorizontalXL,
+                  itemCount: uaOptions.length,
+                  itemBuilder: (context, index) {
+                    final ua = uaOptions[index];
+                    final isSelected =
+                        _uaDisplayName(ua) == _uaDisplayName(current ?? '');
+                    return Column(
+                      children: [
+                        InkWell(
+                          onTap: () => Navigator.of(c).pop(ua),
+                          child: Padding(
+                            padding: AppSpacing.onlyVerticalMD,
+                            child: Row(
+                              children: [
+                                Icon(
+                                  isSelected
+                                      ? Icons.radio_button_checked
+                                      : Icons.radio_button_off,
+                                  size: AppTypography.iconMD,
+                                  color: isSelected
+                                      ? colorScheme.primary
+                                      : colorScheme.outlineVariant,
+                                ),
+                                const SizedBox(width: AppSpacing.sm),
+                                Expanded(
+                                  child: Text(
+                                    _uaDisplayName(ua),
+                                    style: textTheme.bodyMedium?.copyWith(
+                                      fontWeight: AppTypography.weightMedium,
+                                      color: isSelected
+                                          ? colorScheme.primary
+                                          : colorScheme.onSurface,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        const Divider(height: 1),
+                      ],
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
+  }
+
+  String _uaDisplayName(String ua) {
+    if (ua.contains('Android')) return 'Android';
+    if (ua.contains('iPhone') || ua.contains('iOS')) return 'iOS';
+    if (ua.contains('HarmonyOS')) return 'Harmony';
+    return 'Android'; // fallback
   }
 
   List<VersionOption> _parseVersionOptions(Map<String, dynamic>? opts) {
