@@ -100,21 +100,11 @@ class StandardDetailChannel implements IDetailChannel {
       }
 
       // 基础 detailInfo 就绪即注入（头部/应用信息卡立即可渲染）
-      final baseDetail = _buildBaseDetailInfo(basic);
-      // 包名回退：getAppInfo（keepExistingPackageName: false）无 metadata 时
-      // packageName 为 null（离线 LocalDb 应用检测丢失）——回退请求参数包名，
-      // 使 packageName 语义与旧 getAppDetail（keepExistingPackageName: true）对齐。
-      final effectivePackageName = (baseDetail.packageName?.isNotEmpty ?? false)
-          ? baseDetail.packageName!
-          : request.packageName;
-      final effectiveBase = (effectivePackageName != null &&
-              effectivePackageName.isNotEmpty)
-          ? baseDetail.copyWith(packageName: effectivePackageName)
-          : baseDetail;
+      final effectiveBase = _buildEffectiveBaseDetailInfo(basic);
       state.detailInfo.value = _ProgressiveDetailInfo(effectiveBase);
 
       // packageName 就绪即执行安装检测（插件调用失败已容忍，不影响加载流程）
-      await _checkInstalledState(state, effectivePackageName?.trim());
+      await _checkInstalledState(state, effectiveBase.packageName?.trim());
 
       // ② 三路并行分块加载（统计/下载/README），各自独立降级互不阻塞
       await Future.wait([
@@ -127,26 +117,60 @@ class StandardDetailChannel implements IDetailChannel {
     } finally {
       _loadInFlight = false;
       state.isLoadingDetail.value = false;
+      // 三区块 loading 兜底复位（共享出口）：legacy 失败路径经此处复位；
+      // 渐进路径各路 finally 已复位，幂等无副作用。
+      state.downloadsLoading.value = false;
+      state.readmeLoading.value = false;
+      state.statisticsLoading.value = false;
     }
   }
 
-  /// 旧流程加载详情（非分块渠道回退路径）：还原分块改造前的 loadDetail 主体。
+  /// 基础信息 + 请求参数回退构造 effective base（渐进路径与 legacy 两段式共用）。
   ///
-  /// `getAppInfo`（缓存基础信息，失败仅日志不阻塞）→ `getAppDetail` 一次性完整注入
-  /// （截图/下载/更新日志/权限/评分等全部区块）→ 基于详情 packageName 检测安装状态。
+  /// 包名回退：getAppInfo（keepExistingPackageName: false）无 metadata 时
+  /// packageName 为 null（离线 LocalDb 应用检测丢失）——回退请求参数包名，
+  /// 使 packageName 语义与旧 getAppDetail（keepExistingPackageName: true）对齐。
+  AppDetailInfo _buildEffectiveBaseDetailInfo(AppSummary? basic) {
+    final baseDetail = _buildBaseDetailInfo(basic);
+    final effectivePackageName = (baseDetail.packageName?.isNotEmpty ?? false)
+        ? baseDetail.packageName!
+        : request.packageName;
+    final effectiveBase = (effectivePackageName != null &&
+            effectivePackageName.isNotEmpty)
+        ? baseDetail.copyWith(packageName: effectivePackageName)
+        : baseDetail;
+    return effectiveBase;
+  }
+
+  /// 旧流程加载详情（非分块渠道回退路径）：两段式渐进注入。
+  ///
+  /// ① `getAppInfo`（缓存基础信息，失败仅日志不阻塞）成功后**立即**复用渐进路径的
+  ///    base 构造（[_buildEffectiveBaseDetailInfo]）注入 detailInfo——头部/应用信息卡
+  ///    先上屏，下载/README/统计区块显示骨架（三 loading 标志置 true）；
+  /// ② `getAppDetail` 完成后全量替换 detailInfo 并复位三标志 → 基于详情 packageName
+  ///    检测安装状态；失败维持 throw（外层 catch 设 errorMessage，finally 兜底复位三标志）。
   /// isLoadingDetail 的复位由外层 [load] 的 finally 统一负责。
   Future<void> _loadDetailLegacy(DetailState state) async {
-    // 先获取基本信息（缓存数据；失败不阻塞，请求参数/详情兜底显示）
+    // 两段式①：先获取基本信息（缓存数据；失败不阻塞，请求参数兜底显示）
+    AppSummary? basic;
     try {
-      await channel.getAppInfo(
+      final basicInfoResult = await channel.getAppInfo(
         request.appId,
         forceRefresh: false,
       );
+      basic = basicInfoResult.success ? basicInfoResult.data : null;
     } catch (e) {
       appLog.error('StandardDetailChannel: 获取基础信息失败（不阻塞详情加载） - $e');
     }
 
-    // 再获取详情信息（一次性完整注入）
+    // base 即时注入：getAppDetail 未完成前基础信息已可渲染，区块显示骨架
+    state.detailInfo.value =
+        _ProgressiveDetailInfo(_buildEffectiveBaseDetailInfo(basic));
+    state.downloadsLoading.value = true;
+    state.readmeLoading.value = true;
+    state.statisticsLoading.value = true;
+
+    // 两段式②：获取详情信息（完成后一次性完整替换）
     final result = await channel.getAppDetail(
       request.appId,
       forceRefresh: false,
@@ -156,6 +180,9 @@ class StandardDetailChannel implements IDetailChannel {
     }
 
     state.detailInfo.value = result.data;
+    state.downloadsLoading.value = false;
+    state.readmeLoading.value = false;
+    state.statisticsLoading.value = false;
 
     // 详情加载后，使用详情中的 packageName 检测安装状态
     await _checkInstalledState(state, result.data?.packageName.trim());

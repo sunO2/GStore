@@ -1,17 +1,33 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
 
 import 'package:dio/dio.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/cache/ReadmeCache.dart';
+import 'package:gstore/core/channel/IChannel.dart';
+import 'package:gstore/core/channel/detail_callbacks.dart';
 import 'package:gstore/core/channel/impl/GitHubChannel.dart';
-import 'package:gstore/core/core.dart' show getProxy;
 import 'package:gstore/core/channel/impl/LocalDbChannel.dart';
+import 'package:gstore/core/channel/impl/standard_detail_channel.dart';
+import 'package:gstore/core/channel/model/AppUpdateCheckResult.dart';
+import 'package:gstore/core/channel/model/ChannelInfo.dart';
+import 'package:gstore/core/channel/model/ChannelResult.dart';
+import 'package:gstore/core/channel/model/ChannelType.dart';
+import 'package:gstore/core/core.dart' show getProxy;
 import 'package:gstore/core/data/metadata_repository.dart';
+import 'package:gstore/core/model/AppDetailInfo.dart';
+import 'package:gstore/core/model/AppDetailRequest.dart';
+import 'package:gstore/core/model/AppSummary.dart';
+import 'package:gstore/core/model/IDetailInfo.dart';
+import 'package:gstore/core/model/StatTag.dart';
+import 'package:gstore/db/apps/AppInfo.dart' as db;
 import 'package:gstore/db/apps/AppInfoDatabase.dart';
 import 'package:gstore/http/github/github_client.dart';
 import 'package:gstore/http/github/user_info/user_info.dart';
+import 'package:gstore/page/detail/state.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:retrofit/retrofit.dart' show HttpResponse;
@@ -34,7 +50,7 @@ class FakeGithubRestClient implements GithubRestClient {
     this.throwOnApiList = false,
     this.apiListFailuresRemaining = 0,
   }) : apiListData = apiList ??
-            ApiList(
+            const ApiList(
               full_name: 'termux/termux-app',
               description: '仓库描述',
               html_url: 'https://github.com/termux/termux-app',
@@ -446,7 +462,7 @@ void main() {
           MockClient((request) async => http.Response('Not Found', 404));
 
       final fake = FakeGithubRestClient(
-        apiList: ApiList(
+        apiList: const ApiList(
           full_name: 'termux/termux-app',
           html_url: 'https://github.com/termux/termux-app',
           stargazers_count: 100,
@@ -826,4 +842,392 @@ void main() {
       expect(result.data, 'DB 描述');
     });
   });
+
+  group('StandardDetailChannel._loadDetailLegacy（两段式：base 先现 + 骨架 + 全量替换）', () {
+    late DetailState state;
+    late _LegacyChannelFake fakeChannel;
+    late StandardDetailChannel detailChannel;
+
+    setUpAll(() {
+      // _checkInstalledState 走 InstalledApps 插件：单测环境 MissingPluginException
+      // 由其内部 try/catch 容忍，不阻塞断言
+      TestWidgetsFlutterBinding.ensureInitialized();
+    });
+
+    setUp(() {
+      state = DetailState();
+      fakeChannel = _LegacyChannelFake();
+      detailChannel = StandardDetailChannel(
+        appId: 'com.example.app',
+        channel: fakeChannel,
+        request: const AppDetailRequest(
+          appId: 'com.example.app',
+          name: '请求名应用',
+          packageName: 'com.example.app',
+          channel: ChannelType.http,
+        ),
+        channelCode: ChannelType.http.code,
+      );
+      detailChannel.bind(state, _NoopDetailCallbacks());
+    });
+
+    test('T-A) getAppDetail 未完成前 base 已注入且三区块骨架 loading 置位', () async {
+      fakeChannel.detailCompleter = Completer<ChannelResult<IDetailInfo>>();
+
+      final future = detailChannel.load();
+      await pumpEventQueue();
+
+      // 核心验收：detailInfo 非空（base 先上屏）+ 下载/README/统计骨架标志置位
+      expect(fakeChannel.getAppDetailCalls, 1);
+      final base = state.detailInfo.value;
+      expect(base, isNotNull);
+      expect(base!.name, '测试应用', reason: 'base 来自 getAppInfo 基础信息');
+      expect(base.packageName, 'com.example.app',
+          reason: 'getAppInfo 无包名时回退请求参数（共享 base 构造路径）');
+      expect(state.downloadsLoading.value, isTrue);
+      expect(state.readmeLoading.value, isTrue);
+      expect(state.statisticsLoading.value, isTrue);
+
+      // 收尾放行挂起的 getAppDetail，避免悬挂 future
+      fakeChannel.detailCompleter!.complete(
+        ChannelResult.success(
+          data: _FakeFullDetailInfo(),
+          from: ChannelType.http,
+        ),
+      );
+      await future;
+    });
+
+    test('T-B) getAppDetail 完成 → detailInfo 全量替换 + 三标志复位', () async {
+      fakeChannel.detailCompleter = Completer<ChannelResult<IDetailInfo>>();
+
+      final future = detailChannel.load();
+      await pumpEventQueue();
+      expect(state.detailInfo.value, isNotNull, reason: '前置：base 先现已注入');
+
+      final full = _FakeFullDetailInfo();
+      fakeChannel.detailCompleter!.complete(
+        ChannelResult.success(data: full, from: ChannelType.http),
+      );
+      await future;
+
+      // 全量替换为 getAppDetail 结果（同一实例）
+      expect(identical(state.detailInfo.value, full), isTrue);
+      expect(state.downloadsLoading.value, isFalse);
+      expect(state.readmeLoading.value, isFalse);
+      expect(state.statisticsLoading.value, isFalse);
+      expect(state.errorMessage.value, isEmpty);
+      expect(state.isLoadingDetail.value, isFalse);
+    });
+
+    test('T-C) getAppDetail 失败 → errorMessage 设置且三标志经 finally 兜底复位', () async {
+      fakeChannel.throwOnGetAppDetail = true;
+
+      await detailChannel.load();
+
+      // 外层 catch 生效
+      expect(state.errorMessage.value, isNotEmpty);
+      // 失败前已注入的 base 保留（不静默白屏）
+      expect(state.detailInfo.value, isNotNull);
+      // finally 兜底复位三区块 loading
+      expect(state.downloadsLoading.value, isFalse);
+      expect(state.readmeLoading.value, isFalse);
+      expect(state.statisticsLoading.value, isFalse);
+      expect(state.isLoadingDetail.value, isFalse);
+    });
+  });
+}
+
+/// legacy 渠道假实现（supportsProgressiveLoading=false → 走 _loadDetailLegacy 两段式）
+class _LegacyChannelFake extends IChannel {
+  _LegacyChannelFake();
+
+  final ChannelType channelType = ChannelType.http;
+
+  /// getAppDetail 挂起控制（非 null 时挂起等待测试放行，构造两段式中间态）
+  Completer<ChannelResult<IDetailInfo>>? detailCompleter;
+
+  /// getAppDetail 抛错（失败路径：外层 catch 设 errorMessage）
+  bool throwOnGetAppDetail = false;
+
+  /// getAppDetail 成功返回的完整详情（detailCompleter 为 null 时使用）
+  IDetailInfo? fullDetail;
+
+  int getAppInfoCalls = 0;
+  int getAppDetailCalls = 0;
+
+  /// getAppInfo 返回的基础信息（packageName 置空以覆盖请求参数回退分支）
+  AppSummary basic = const AppSummary(
+    appId: 'com.example.app',
+    packageName: null,
+    name: '测试应用',
+    user: '',
+    repositories: '',
+    icon: 'https://example.com/icon.png',
+    des: '基础描述',
+  );
+
+  @override
+  ChannelInfo get info => ChannelInfo(
+        type: channelType,
+        name: channelType.code,
+        description: '',
+        priority: 1,
+        enabled: true,
+      );
+
+  @override
+  bool get supportsProgressiveLoading => false;
+
+  @override
+  Future<ChannelResult<AppSummary?>> getAppInfo(
+    String appId, {
+    bool forceRefresh = false,
+  }) async {
+    getAppInfoCalls++;
+    return ChannelResult.success(data: basic, from: channelType);
+  }
+
+  @override
+  Future<ChannelResult<IDetailInfo>> getAppDetail(
+    String appId, {
+    bool forceRefresh = false,
+  }) async {
+    getAppDetailCalls++;
+    if (throwOnGetAppDetail) {
+      throw Exception('详情获取失败');
+    }
+    if (detailCompleter != null) {
+      return detailCompleter!.future;
+    }
+    return ChannelResult.success(data: fullDetail!, from: channelType);
+  }
+
+  // ==================== 其余 IChannel 抽象成员最小实现 ====================
+
+  @override
+  Future<void> initialize() async {}
+
+  @override
+  bool get isInitialized => true;
+
+  @override
+  Future<bool> checkAvailable() async => true;
+
+  @override
+  Future<String> canonicalAppId(AppSummary appInfo) async => appInfo.appId;
+
+  @override
+  Widget? getAddAppWidget(
+    BuildContext context,
+    Function(AppSummary) onAppAdded, {
+    VoidCallback? onAppSaved,
+  }) =>
+      null;
+
+  @override
+  Future<ChannelResult<List<AppSummary>>> getAllApps({
+    bool forceRefresh = false,
+  }) async =>
+      ChannelResult.success(data: const [], from: channelType);
+
+  @override
+  Future<ChannelResult<AppUpdateCheckResult>> checkAppUpdate(
+    String appId,
+  ) async {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<ChannelResult<void>> addApp(AppSummary app) async =>
+      ChannelResult.success(data: null, from: channelType);
+
+  @override
+  Future<ChannelResult<void>> removeApp(String appId) async =>
+      ChannelResult.success(data: null, from: channelType);
+
+  @override
+  Future<ChannelResult<List<AppSummary>>> searchApps(
+    String keyword, {
+    bool forceRefresh = false,
+  }) async =>
+      ChannelResult.success(data: const [], from: channelType);
+
+  @override
+  Future<ChannelResult<List<AppSummary>>> searchByCategory(
+    String categoryId, {
+    bool forceRefresh = false,
+  }) async =>
+      ChannelResult.success(data: const [], from: channelType);
+
+  @override
+  Future<ChannelResult<List<db.AppCategory>>> getAllCategories({
+    bool forceRefresh = false,
+  }) async =>
+      ChannelResult.success(data: const [], from: channelType);
+
+  @override
+  Future<ChannelResult<bool>> checkUpdate() async =>
+      ChannelResult.success(data: false, from: channelType);
+
+  @override
+  Future<ChannelResult<bool>> doUpdate({
+    Function(int current, int total)? onProgress,
+  }) async =>
+      ChannelResult.success(data: true, from: channelType);
+
+  @override
+  Future<ChannelResult<db.AppInfoConfig?>> getConfig({
+    bool forceRefresh = false,
+  }) async =>
+      ChannelResult.success(data: null, from: channelType);
+
+  @override
+  Future<void> clearCache() async {}
+
+  @override
+  Future<int> getCacheSize() async => 0;
+
+  @override
+  Future<void> dispose() async {}
+}
+
+/// bind 注入的 UI 回调假实现（legacy 两段式路径不触达，全部 no-op）
+class _NoopDetailCallbacks extends DetailCallbacks {
+  @override
+  Future<void> showVersionPicker({
+    required Map<String, dynamic> options,
+    required String appId,
+  }) async {}
+
+  @override
+  Future<void> showBuildHistory({
+    required List<Map<String, dynamic>> builds,
+    required String appId,
+    required String version,
+    required String env,
+  }) async {}
+
+  @override
+  Future<String?> showUAPicker({
+    required List<String>? uaOptions,
+    required String appId,
+    String? current,
+  }) async =>
+      null;
+
+  @override
+  Future<void> refreshDetail({required Map<String, dynamic> detailData}) async {}
+
+  @override
+  Future<void> updateDetail({required Map<String, dynamic> partial}) async {}
+
+  @override
+  Future<void> updateDownloadList({
+    required List<DownloadInfo> downloads,
+  }) async {}
+
+  @override
+  void showSuccess(String message, {String? title}) {}
+
+  @override
+  void showError(String message, {String? title}) {}
+
+  @override
+  Future<bool?> showWarningDialog({
+    required String title,
+    required String content,
+    String? confirmText,
+    String? cancelText,
+    bool isDangerous = false,
+  }) async =>
+      null;
+
+  @override
+  void startApp(String packageName) {}
+
+  @override
+  void openBrowser(String url) {}
+
+  @override
+  void openProjectBrowser() {}
+
+  @override
+  Future<void> submitAppMetadata() async {}
+
+  @override
+  Future<List<String>?> showMoreActionsSheet({
+    required String appName,
+    required List<String> presetTags,
+    required List<String> currentTags,
+    required List<DetailAction> actions,
+  }) async =>
+      null;
+}
+
+/// legacy 渠道 getAppDetail 返回的完整详情（截图/下载/更新日志/权限等区块齐备）
+class _FakeFullDetailInfo extends IDetailInfo {
+  @override
+  String get packageName => 'com.example.full';
+
+  @override
+  String get appName => '完整详情应用';
+
+  @override
+  String get name => '完整详情应用';
+
+  @override
+  String get icon => 'https://example.com/full-icon.png';
+
+  @override
+  String get description => '完整详情描述';
+
+  @override
+  String get appId => 'com.example.app';
+
+  @override
+  String get channelId => ChannelType.http.code;
+
+  @override
+  ChannelType get channelType => ChannelType.http;
+
+  @override
+  String? get version => '2.0.0';
+
+  @override
+  String? get developer => null;
+
+  @override
+  String? get projectUrl => null;
+
+  @override
+  List<DownloadInfo> get downloads => const [];
+
+  @override
+  List<DetailSection> get sections => const [
+        DetailSection.downloads,
+        DetailSection.readme,
+      ];
+
+  @override
+  Map<String, dynamic> get extra => const {};
+
+  @override
+  String? get readme => '# 完整 README';
+
+  @override
+  List<ScreenshotInfo>? get screenshots =>
+      [ScreenshotInfo(url: 'https://example.com/s1.png')];
+
+  @override
+  String? get changelog => '更新日志';
+
+  @override
+  List<String>? get permissions => const ['INTERNET'];
+
+  @override
+  StatisticsInfo? get statistics => null;
+
+  @override
+  List<StatTag> buildStatTags() => const [];
 }
