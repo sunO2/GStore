@@ -29,6 +29,12 @@ class DetailLogic extends GetxController
       StreamController<DownloadStatus>.broadcast();
   StreamSubscription? downloadListenerSubscription;
 
+  /// 更多按钮忙碌态兜底超时（防脚本异常挂死状态）
+  static const Duration _actionBusyTimeout = Duration(seconds: 15);
+
+  /// 忙碌态兜底 Timer（重复开启重置，false/超时/dispose 时取消）
+  Timer? _actionBusyTimer;
+
   final DetailState state = DetailState();
 
   /// 请求参数
@@ -327,6 +333,30 @@ class DetailLogic extends GetxController
   }
 
   @override
+  Future<void> setActionBusy({required bool visible, String? label}) async {
+    if (!visible) {
+      debugPrint('DetailLogic: setActionBusy(false)');
+      _actionBusyTimer?.cancel();
+      _actionBusyTimer = null;
+      state.actionBusy.value = false;
+      state.actionBusyLabel.value = '';
+      return;
+    }
+    debugPrint('DetailLogic: setActionBusy(true, label=${label ?? ''})');
+    if (label != null && label.isNotEmpty) {
+      state.actionBusyLabel.value = label;
+    }
+    state.actionBusy.value = true;
+    // 兜底：重复开启重置 Timer，到时自动复位防脚本异常挂死状态
+    _actionBusyTimer?.cancel();
+    _actionBusyTimer = Timer(_actionBusyTimeout, () {
+      debugPrint('DetailLogic: actionBusy 超时自动复位');
+      state.actionBusy.value = false;
+      state.actionBusyLabel.value = '';
+    });
+  }
+
+  @override
   void showSuccess(String message, {String? title}) =>
       AppDialogs.showSuccess(message, title: title);
 
@@ -377,6 +407,8 @@ class DetailLogic extends GetxController
 
   @override
   void onClose() {
+    _actionBusyTimer?.cancel();
+    _actionBusyTimer = null;
     final req = request;
     if (req != null) {
       final code = req.channelCode ?? req.channel.code;

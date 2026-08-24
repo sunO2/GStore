@@ -227,7 +227,7 @@ class JsDetailChannel implements IDetailChannel {
     _installNativeHost(callbacks);
   }
 
-  /// 安装 native host 回调：注册 'ui' 命名空间的六个 handler，
+  /// 安装 native host 回调：注册 'ui' 命名空间的七个 handler，
   /// 脚本内部经 `host.native.call('ui.showVersionPicker', ...)` 等驱动 UI 交互。
   void _installNativeHost(DetailCallbacks cb) {
     final host = JSNativeHost()
@@ -276,6 +276,12 @@ class JsDetailChannel implements IDetailChannel {
         // DetailCallbacks.updateDetail）。置位标志供 load 失败判别。
         _receivedUpdateDetail = true;
         await cb.updateDetail(partial: Map<String, dynamic>.from(p));
+        return null;
+      })
+      ..register('ui', 'setBusy', (p) async {
+        await cb.setActionBusy(
+            visible: p['visible'] == true,
+            label: p['label']?.toString() ?? '');
         return null;
       });
     setNativeHost(host);

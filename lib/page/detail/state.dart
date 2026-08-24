@@ -42,6 +42,12 @@ class DetailState {
   /// 统计区块加载中
   final RxBool statisticsLoading = false.obs;
 
+  /// 更多按钮忙碌态（慢操作如切版本/切 UA 进行中，AppBar actions 响应式渲染）
+  final RxBool actionBusy = false.obs;
+
+  /// 忙碌态描述文案（如「正在切换版本…」，空串用默认提示）
+  final RxString actionBusyLabel = ''.obs;
+
   DetailState() {
     ///Initialize variables
   }

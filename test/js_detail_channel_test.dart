@@ -242,6 +242,20 @@ class _CapturingCallbacks implements DetailCallbacks {
   void showError(String message, {String? title}) => errors.add(message);
 
   @override
+  Future<void> setActionBusy({required bool visible, String? label}) async {
+    final s = state;
+    if (s == null) return;
+    // 与 DetailLogic.setActionBusy 写 state 语义一致（单测无需 Timer 兜底）
+    if (visible) {
+      if (label != null && label.isNotEmpty) s.actionBusyLabel.value = label;
+      s.actionBusy.value = true;
+    } else {
+      s.actionBusy.value = false;
+      s.actionBusyLabel.value = '';
+    }
+  }
+
+  @override
   void showSuccess(String message, {String? title}) => successes.add(message);
 
   // 以下交互回调测试不触达，no-op 兜底
@@ -561,7 +575,7 @@ void main() {
       );
       detail.bind(state, cb);
 
-      // 向后兼容：既有 5 个 ui.* handler 未删改
+      // 向后兼容：既有 6 个 ui.* handler 未删改 + 新增 ui.setBusy 共 7 个
       final host = detail.nativeHostForTest;
       expect(
         host.names,
@@ -574,6 +588,8 @@ void main() {
         ]),
       );
       expect(host.names, contains('ui.updateDetail'));
+      expect(host.names, contains('ui.setBusy'));
+      expect(host.names, hasLength(7));
 
       // 经桥触发：payload 等价转发到 cb.updateDetail 并写入 state
       await host['ui.updateDetail']!({
@@ -593,6 +609,29 @@ void main() {
       // 空 payload / 缺键不抛（partial 任意键子集语义）
       await host['ui.updateDetail']!(<String, dynamic>{});
       expect(cb.updateCalls, hasLength(2));
+
+      await detail.dispose();
+    });
+
+    test('⑨b ui.setBusy 桥：visible/label 转发写入 state.actionBusy', () async {
+      final detail = _StubAppDetailChannel(appId: 'com.example.one');
+      final cb = _CapturingCallbacks()..state = DetailState();
+      final state = cb.state!;
+      state.request = const AppDetailRequest(
+        appId: 'com.example.one',
+        name: 'Req App',
+        channel: ChannelType.custom,
+      );
+      detail.bind(state, cb);
+
+      final host = detail.nativeHostForTest;
+      await host['ui.setBusy']!({'visible': true, 'label': 'x'});
+      expect(state.actionBusy.value, isTrue);
+      expect(state.actionBusyLabel.value, 'x');
+
+      await host['ui.setBusy']!({'visible': false});
+      expect(state.actionBusy.value, isFalse);
+      expect(state.actionBusyLabel.value, '');
 
       await detail.dispose();
     });

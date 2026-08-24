@@ -86,12 +86,28 @@ class DetailPage extends StatelessWidget {
         );
       }),
       actions: [
-        // 更多：分类标签编辑 + 动作宫格（完善应用信息 / 项目主页等）
-        IconButton(
-          onPressed: () => logic.showMoreActions(context),
-          icon: const Icon(Icons.more_vert),
-          tooltip: "更多",
-        ),
+        // 更多：分类标签编辑 + 动作宫格（完善应用信息 / 项目主页等）；
+        // JS 慢操作（切版本/切 UA 等）进行中 → 忙碌 spinner 禁点，
+        // 消除「选择器已关、refreshDetail 未到」的无反馈死窗口
+        Obx(() {
+          if (state.actionBusy.value) {
+            final busyLabel = state.actionBusyLabel.value;
+            return IconButton(
+              onPressed: null,
+              tooltip: busyLabel.isNotEmpty ? busyLabel : '处理中…',
+              icon: const SizedBox(
+                width: 20,
+                height: 20,
+                child: AppLoading(size: AppLoadingSize.small),
+              ),
+            );
+          }
+          return IconButton(
+            onPressed: () => logic.showMoreActions(context),
+            icon: const Icon(Icons.more_vert),
+            tooltip: "更多",
+          );
+        }),
       ],
     );
   }

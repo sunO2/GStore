@@ -63,6 +63,11 @@ abstract class DetailCallbacks {
   /// - 当前无详情时以 partial 创建新详情。
   Future<void> updateDetail({required Map<String, dynamic> partial});
 
+  /// 更多按钮忙碌态（慢操作如切版本/切 UA 进行中）。
+  /// visible=true 开启（可选 label 描述当前操作），false 结束；
+  /// 实现方需带超时兜底防脚本异常挂死状态。
+  Future<void> setActionBusy({required bool visible, String? label});
+
   /// 更新下载列表（脚本调用后）
   Future<void> updateDownloadList({
     required List<DownloadInfo> downloads,

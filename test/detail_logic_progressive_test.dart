@@ -623,6 +623,46 @@ void main() {
           reason: '非 Map 的 extra 不展开，按普通顶层键浅覆盖（文档化边界语义）');
     });
   });
+
+  group('setActionBusy 更多按钮忙碌态', () {
+    test('B1) true 置位 + label 写入；false 复位两值', () async {
+      expect(logic.state.actionBusy.value, isFalse);
+
+      await logic.setActionBusy(visible: true, label: '正在切换版本…');
+      expect(logic.state.actionBusy.value, isTrue);
+      expect(logic.state.actionBusyLabel.value, '正在切换版本…');
+
+      await logic.setActionBusy(visible: false);
+      expect(logic.state.actionBusy.value, isFalse);
+      expect(logic.state.actionBusyLabel.value, '');
+    });
+
+    test('B2) 重复开启且 label 为空 → 保留既有 label（Timer 重置不复位）', () async {
+      await logic.setActionBusy(visible: true, label: 'first');
+      await logic.setActionBusy(visible: true);
+
+      expect(logic.state.actionBusy.value, isTrue);
+      expect(logic.state.actionBusyLabel.value, 'first');
+    });
+
+    testWidgets('B3) 15s 兜底超时自动复位（testWidgets 假时钟）',
+        (tester) async {
+      final busyLogic = DetailLogic();
+      await busyLogic.setActionBusy(visible: true, label: 'busy');
+      expect(busyLogic.state.actionBusy.value, isTrue);
+
+      await tester.pump(const Duration(seconds: 14));
+      expect(busyLogic.state.actionBusy.value, isTrue,
+          reason: '未到 15s 不得提前复位');
+
+      await tester.pump(const Duration(seconds: 1));
+      expect(busyLogic.state.actionBusy.value, isFalse,
+          reason: '15s 兜底到时自动复位');
+      expect(busyLogic.state.actionBusyLabel.value, '');
+
+      busyLogic.onClose();
+    });
+  });
 }
 
 /// 旧流程 getAppDetail 返回的完整详情（覆盖截图/下载/更新日志/权限/评分等全部区块）

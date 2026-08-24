@@ -1123,6 +1123,9 @@ class _NoopDetailCallbacks extends DetailCallbacks {
   Future<void> updateDetail({required Map<String, dynamic> partial}) async {}
 
   @override
+  Future<void> setActionBusy({required bool visible, String? label}) async {}
+
+  @override
   Future<void> updateDownloadList({
     required List<DownloadInfo> downloads,
   }) async {}
