@@ -775,5 +775,77 @@ void main() {
 
       await detail.dispose();
     });
+
+    test('⑮a load 失败兜底：纯 prefill 失败后三区块 loading 标志全复位',
+        () async {
+      final detail = _StubAppDetailChannel(appId: 'com.example.one');
+      detail.detailResponder = (_) async => null;
+      final cb = _CapturingCallbacks()..state = DetailState();
+      final state = cb.state!;
+      state.request = const AppDetailRequest(
+        appId: 'com.example.one',
+        name: 'Req App',
+        channel: ChannelType.custom,
+      );
+      detail.bind(state, cb);
+
+      await detail.load();
+
+      expect(state.errorMessage.value, '详情加载失败');
+      expect(state.downloadsLoading.value, isFalse,
+          reason: 'F-2：失败路径 finally 兜底复位，骨架不永久转圈');
+      expect(state.readmeLoading.value, isFalse);
+      expect(state.statisticsLoading.value, isFalse);
+      expect(state.isLoadingDetail.value, isFalse);
+      expect(cb.errors, isEmpty, reason: '纯 prefill 未推送 → 错误页而非 toast');
+
+      await detail.dispose();
+    });
+
+    test('⑮b load 失败兜底：先推后败（已推送分支）三区块标志同样全复位',
+        () async {
+      final detail = _StubAppDetailChannel(appId: 'com.example.one');
+      final cb = _CapturingCallbacks()..state = DetailState();
+      final state = cb.state!;
+      state.request = const AppDetailRequest(
+        appId: 'com.example.one',
+        name: 'Req App',
+        channel: ChannelType.custom,
+      );
+      detail.bind(state, cb);
+      // 捕获 native host：bind 后即可直触发桥 handler（无需 JS 引擎）
+      final capturedNativeHost = detail.nativeHostForTest;
+
+      final gate = Completer<Map<String, dynamic>?>();
+      detail.detailResponder = (_) => gate.future;
+      final loading = detail.load();
+      // 排空 microtask：prefill 注入完成、getAppDetail 挂起在 gate
+      await Future<void>.delayed(Duration.zero);
+      expect(state.downloadsLoading.value, isTrue,
+          reason: '前置确认：拉取窗口内三区块骨架确已置 true');
+
+      // 先推：拉取窗口内经桥推送阶段数据（置位 _receivedUpdateDetail）
+      await capturedNativeHost['ui.updateDetail']!({
+        'name': 'Pushed Name',
+        'sections': ['downloads'],
+      });
+      expect(state.detailInfo.value!.name, 'Pushed Name');
+
+      // 后败：getAppDetail 返回 null → 已推送分支（showError 保内容）
+      gate.complete(null);
+      await loading;
+
+      expect(cb.errors, ['详情加载失败，当前显示为已加载内容']);
+      expect(state.errorMessage.value, '', reason: '已推送 → 不设错误页');
+      expect(state.detailInfo.value!.name, 'Pushed Name',
+          reason: '已推送内容保留不被清除');
+      expect(state.downloadsLoading.value, isFalse,
+          reason: 'F-2：失败路径 finally 兜底复位，骨架不永久转圈');
+      expect(state.readmeLoading.value, isFalse);
+      expect(state.statisticsLoading.value, isFalse);
+      expect(state.isLoadingDetail.value, isFalse);
+
+      await detail.dispose();
+    });
   });
 }

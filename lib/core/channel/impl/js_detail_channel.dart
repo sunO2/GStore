@@ -303,7 +303,9 @@ class JsDetailChannel implements IDetailChannel {
   ///    失败(null) → 显式 [_receivedUpdateDetail] 判别：脚本已推送过阶段数据
   ///    则 showError 提示并保留已上屏内容；纯 prefill 则设 errorMessage
   ///    （错误页可重试），失败不再静默白屏；
-  /// ⑥ finally 复位 isLoadingDetail。
+  /// ⑥ finally 复位 isLoadingDetail + 三区块 loading 兜底复位
+///    （⑤a 成功路径已复位则幂等；⑤b 失败/异常路径在此兜底，
+///    杜绝 getAppDetail 失败时骨架永久转圈）。
   ///
   /// 未 bind → 仅日志（脚本直调/单测场景），不崩溃。
   @override
@@ -345,6 +347,12 @@ class JsDetailChannel implements IDetailChannel {
     } finally {
       // ⑥ 基础 loading 复位
       state.isLoadingDetail.value = false;
+      // 三区块 loading 兜底复位（对齐 Standard 渠道共享出口语义）：
+      // ⑤a 成功路径已复位则幂等无副作用；⑤b/异常路径在此兜底，
+      // 杜绝 getAppDetail 失败时骨架永久转圈。
+      state.downloadsLoading.value = false;
+      state.readmeLoading.value = false;
+      state.statisticsLoading.value = false;
     }
   }
 
