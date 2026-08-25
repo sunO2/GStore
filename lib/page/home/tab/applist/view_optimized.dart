@@ -99,7 +99,7 @@ class _QuickSearchDialogState extends State<QuickSearchDialog> {
     try {
       final aggregator = AppAggregatorManager.instance;
       await aggregator.addApp(
-        channelCode: _currentSearchChannel?.code ?? 'localDb',
+        channelCode: _currentSearchChannel?.code ?? ChannelType.localDb.code,
         appInfo: app,
       );
 

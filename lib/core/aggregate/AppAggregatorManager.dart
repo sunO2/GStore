@@ -378,7 +378,7 @@ class AppAggregatorManager implements IAggregateService {
   /// 渠道缺失/查询失败/异常一律返回空映射（降级为原样合并），绝不影响聚合流程。
   Future<Map<String, String>> _loadCategoryIdToDescription() async {
     try {
-      final channel = _channelManager.getChannelByCode('localDb');
+      final channel = _channelManager.getChannelByCode(ChannelType.localDb.code);
       if (channel == null) return {};
 
       final result = await channel.getAllCategories();
