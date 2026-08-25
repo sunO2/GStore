@@ -10,6 +10,7 @@ import 'package:gstore/page/home/tab/discovery/view.dart';
 import 'logic.dart';
 import 'package:gstore/core/icons/Icons.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/design/app_borders.dart';
 
 /// tab 切换交叉淡入（M3 fadeThrough，无平移）：
 /// - 两段式（fromIndex/toIndex 均非空）：源页随 fadeValue 0→0.5 淡出，
@@ -93,7 +94,8 @@ class _HomePageState extends State<HomePage>
   int? _toIndex;
 
   /// agent_tools 模块是否在线（随模块上下线实时更新，控制 AI 助手入口显隐）
-  bool _agentModuleEnabled = ModuleManager.instance.isModuleEnabled('agent_tools');
+  bool _agentModuleEnabled =
+      ModuleManager.instance.isModuleEnabled('agent_tools');
 
   /// agent_tools 模块上下线事件订阅（dispose 取消，防泄漏）
   StreamSubscription<ModuleEvent>? _agentSub;
@@ -250,135 +252,149 @@ class _HomePageState extends State<HomePage>
                         AppSpacing.lg,
                         AppSpacing.md,
                       ),
-                      child: ClipRRect(
-                        // 大圆角胶囊（高度 64 时近似全圆）
-                        borderRadius: BorderRadius.circular(
-                          AppRadius.xxl + AppRadius.sm,
+                      child: Container(
+                        // 细描边层次试验：描边必须在 ClipRRect 外层（内层会被
+                        // 磨砂/圆角裁掉），圆角半径与内层完全一致避免错位。
+                        // outlineVariant 深浅色自适应；宽度随主题 borderStyle
+                        // （AppBorders，无边框档真不绘制）。
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(
+                            AppRadius.xxl + AppRadius.sm,
+                          ),
+                          border: AppBorders.all(
+                            context,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .outlineVariant
+                                .withValues(alpha: 0.6),
+                          ),
                         ),
-                        child: BackdropFilter(
-                          filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-                          child: Obx(() {
-                            // 局部压缩胶囊高度（M3 默认 80 → 64，更紧凑；主题其他属性不变）
-                            return Theme(
-                              data: Theme.of(context).copyWith(
-                                navigationBarTheme:
-                                    const NavigationBarThemeData(height: 64),
-                              ),
-                              child: NavigationBar(
-                                selectedIndex: _displayIndex(
-                                    logic.state.index.value),
-                                onDestinationSelected: (index) {
-                                  // 视图内跳转：两段式交叉淡入（中点由 _onFadeTick 瞬移）
-                                  // display 下标 → raw 下标（AI 隐藏时 display2=我的→raw3）
-                                  _crossFadeTo(_rawIndex(index));
-                                },
-                                destinations: [
-                                  NavigationDestination(
-                                    // 选中项图标微放大（AnimatedScale 包在 AnimatedSwitcher 外，
-                                    // 两动画独立叠加：切换淡入淡出 + 缩放）
-                                    icon: AnimatedScale(
-                                      scale: (logic.state.index.value == 0)
-                                          ? 1.15
-                                          : 1.0,
-                                      duration: AppAnimation.fast,
-                                      curve: AppAnimation.curve,
-                                      child: AnimatedSwitcher(
-                                        duration: AppAnimations.normal,
-                                        child: ColorFiltered(
-                                          // AliIcon 是 COLR 彩色字体，不响应 IconTheme 颜色，强制染色
-                                          colorFilter: ColorFilter.mode(
-                                            (logic.state.index.value == 0)
-                                                ? Theme.of(context)
-                                                    .colorScheme
-                                                    .primary
-                                                : Theme.of(context)
-                                                    .colorScheme
-                                                    .onSurfaceVariant,
-                                            BlendMode.srcATop,
-                                          ),
-                                          child: Icon(
-                                            (logic.state.index.value == 0)
-                                                ? AliIcon.appStoreActive
-                                                : AliIcon.appStore,
-                                            key: ValueKey(
-                                              logic.state.index.value == 0
-                                                  ? 0
-                                                  : 1,
-                                            ),
-                                            size: AppTypography.iconLG,
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                    label: "首页",
-                                  ),
-                                  NavigationDestination(
-                                    icon: AnimatedScale(
-                                      scale: (logic.state.index.value == 1)
-                                          ? 1.15
-                                          : 1.0,
-                                      duration: AppAnimation.fast,
-                                      curve: AppAnimation.curve,
-                                      child: AnimatedSwitcher(
-                                        duration: AppAnimations.normal,
-                                        child:
-                                            (logic.state.index.value == 1)
-                                                ? const Icon(Icons.explore,
-                                                    key: ValueKey(2))
-                                                : const Icon(
-                                                    Icons.explore_outlined,
-                                                    key: ValueKey(3)),
-                                      ),
-                                    ),
-                                    label: "发现",
-                                  ),
-                                  // AI 助手入口随 agent_tools 模块上下线显隐
-                                  if (_agentModuleEnabled)
+                        child: ClipRRect(
+                          // 大圆角胶囊（高度 64 时近似全圆）
+                          borderRadius: BorderRadius.circular(
+                            AppRadius.xxl + AppRadius.sm,
+                          ),
+                          child: BackdropFilter(
+                            filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+                            child: Obx(() {
+                              // 局部压缩胶囊高度（M3 默认 80 → 64，更紧凑；主题其他属性不变）
+                              return Theme(
+                                data: Theme.of(context).copyWith(
+                                  navigationBarTheme:
+                                      const NavigationBarThemeData(height: 64),
+                                ),
+                                child: NavigationBar(
+                                  selectedIndex:
+                                      _displayIndex(logic.state.index.value),
+                                  onDestinationSelected: (index) {
+                                    // 视图内跳转：两段式交叉淡入（中点由 _onFadeTick 瞬移）
+                                    // display 下标 → raw 下标（AI 隐藏时 display2=我的→raw3）
+                                    _crossFadeTo(_rawIndex(index));
+                                  },
+                                  destinations: [
                                     NavigationDestination(
+                                      // 选中项图标微放大（AnimatedScale 包在 AnimatedSwitcher 外，
+                                      // 两动画独立叠加：切换淡入淡出 + 缩放）
                                       icon: AnimatedScale(
-                                        scale: (logic.state.index.value == 2)
+                                        scale: (logic.state.index.value == 0)
                                             ? 1.15
                                             : 1.0,
                                         duration: AppAnimation.fast,
                                         curve: AppAnimation.curve,
                                         child: AnimatedSwitcher(
                                           duration: AppAnimations.normal,
-                                          child:
-                                              (logic.state.index.value == 2)
-                                                  ? const Icon(
-                                                      Icons.smart_toy,
-                                                      key: ValueKey(6))
-                                                  : const Icon(
-                                                      Icons.smart_toy_outlined,
-                                                      key: ValueKey(7)),
+                                          child: ColorFiltered(
+                                            // AliIcon 是 COLR 彩色字体，不响应 IconTheme 颜色，强制染色
+                                            colorFilter: ColorFilter.mode(
+                                              (logic.state.index.value == 0)
+                                                  ? Theme.of(context)
+                                                      .colorScheme
+                                                      .primary
+                                                  : Theme.of(context)
+                                                      .colorScheme
+                                                      .onSurfaceVariant,
+                                              BlendMode.srcATop,
+                                            ),
+                                            child: Icon(
+                                              (logic.state.index.value == 0)
+                                                  ? AliIcon.appStoreActive
+                                                  : AliIcon.appStore,
+                                              key: ValueKey(
+                                                logic.state.index.value == 0
+                                                    ? 0
+                                                    : 1,
+                                              ),
+                                              size: AppTypography.iconLG,
+                                            ),
+                                          ),
                                         ),
                                       ),
-                                      label: "AI 助手",
+                                      label: "首页",
                                     ),
-                                  NavigationDestination(
-                                    icon: AnimatedScale(
-                                      scale: (logic.state.index.value == 3)
-                                          ? 1.15
-                                          : 1.0,
-                                      duration: AppAnimation.fast,
-                                      curve: AppAnimation.curve,
-                                      child: AnimatedSwitcher(
-                                        duration: AppAnimations.normal,
-                                        child:
-                                            (logic.state.index.value == 3)
-                                                ? const Icon(Icons.person,
-                                                    key: ValueKey(4))
-                                                : const Icon(
-                                                    Icons.person_outline,
-                                                    key: ValueKey(5)),
+                                    NavigationDestination(
+                                      icon: AnimatedScale(
+                                        scale: (logic.state.index.value == 1)
+                                            ? 1.15
+                                            : 1.0,
+                                        duration: AppAnimation.fast,
+                                        curve: AppAnimation.curve,
+                                        child: AnimatedSwitcher(
+                                          duration: AppAnimations.normal,
+                                          child: (logic.state.index.value == 1)
+                                              ? const Icon(Icons.explore,
+                                                  key: ValueKey(2))
+                                              : const Icon(
+                                                  Icons.explore_outlined,
+                                                  key: ValueKey(3)),
+                                        ),
                                       ),
+                                      label: "发现",
                                     ),
-                                    label: "我的",
-                                  ),
-                                ],
-                              ),
-                            );
-                          }),
+                                    // AI 助手入口随 agent_tools 模块上下线显隐
+                                    if (_agentModuleEnabled)
+                                      NavigationDestination(
+                                        icon: AnimatedScale(
+                                          scale: (logic.state.index.value == 2)
+                                              ? 1.15
+                                              : 1.0,
+                                          duration: AppAnimation.fast,
+                                          curve: AppAnimation.curve,
+                                          child: AnimatedSwitcher(
+                                            duration: AppAnimations.normal,
+                                            child: (logic.state.index.value ==
+                                                    2)
+                                                ? const Icon(Icons.smart_toy,
+                                                    key: ValueKey(6))
+                                                : const Icon(
+                                                    Icons.smart_toy_outlined,
+                                                    key: ValueKey(7)),
+                                          ),
+                                        ),
+                                        label: "AI 助手",
+                                      ),
+                                    NavigationDestination(
+                                      icon: AnimatedScale(
+                                        scale: (logic.state.index.value == 3)
+                                            ? 1.15
+                                            : 1.0,
+                                        duration: AppAnimation.fast,
+                                        curve: AppAnimation.curve,
+                                        child: AnimatedSwitcher(
+                                          duration: AppAnimations.normal,
+                                          child: (logic.state.index.value == 3)
+                                              ? const Icon(Icons.person,
+                                                  key: ValueKey(4))
+                                              : const Icon(Icons.person_outline,
+                                                  key: ValueKey(5)),
+                                        ),
+                                      ),
+                                      label: "我的",
+                                    ),
+                                  ],
+                                ),
+                              );
+                            }),
+                          ),
                         ),
                       ),
                     ),
