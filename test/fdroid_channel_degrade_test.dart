@@ -160,6 +160,19 @@ void main() {
       expect(result.data!.packageName, 'com.example.app');
     });
 
+    test("getAppDetail：extra['readme'] 非空且与 description 同源", () async {
+      ModuleManager.instance.bind<IFdroidRepoService>(_FakeFdroidRepoService());
+
+      final channel = buildChannel();
+      final result = await channel.getAppDetail('com.example.app');
+      expect(result.success, isTrue);
+      final data = result.data!;
+      // extra['readme'] 必须存在且与 description 同源（metadata.en-US 描述）
+      expect(data.extra['readme'], isNotNull);
+      expect(data.extra['readme'], isNotEmpty);
+      expect(data.extra['readme'], data.description);
+    });
+
     test('checkAppUpdate：本地索引检查更新成功', () async {
       ModuleManager.instance.bind<IFdroidRepoService>(_FakeFdroidRepoService());
 
