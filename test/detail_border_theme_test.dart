@@ -83,7 +83,7 @@ class _FakeDetailInfo extends IDetailInfo {
   List<DetailSection> get sections => const [];
 
   @override
-  Map<String, dynamic> get extra => const {};
+  Map<String, dynamic> get extra => {'readme': readme};
 
   @override
   List<ScreenshotInfo>? get screenshots => null;
