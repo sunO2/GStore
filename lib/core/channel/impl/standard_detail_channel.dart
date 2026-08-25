@@ -26,6 +26,10 @@ class StandardDetailChannel implements IDetailChannel {
   @override
   final String appId;
 
+  /// 标准渠道不由自身驱动下载——实际下载编排由宿主（DetailLogic）负责。
+  @override
+  bool get drivesOwnDownloads => false;
+
   /// 被包装的渠道实例（getAppInfo/getAppDetail/fetch* 消费入口）
   final IChannel channel;
 
@@ -418,7 +422,10 @@ class StandardDetailChannel implements IDetailChannel {
     ];
   }
 
-  /// 发起下载：经 UI 回调触发（空 URL 守卫提示；下载编排由页面层负责）。
+  /// 发起下载：标准渠道此方法为空壳——实际下载编排由宿主（DetailLogic）负责
+  /// （DownloadStatus.create → listener → IDownloadService）。
+  /// IDetailChannel.drivesOwnDownloads 默认 false，DetailLogic.startDownload
+  /// 仅在 drivesOwnDownloads=true（JS 渠道）时委托，标准渠道走宿主编排路径。
   @override
   Future<void> startDownload(DownloadInfo info) async {
     final callbacks = _callbacks;

@@ -30,6 +30,10 @@ class JsDetailChannel implements IDetailChannel {
   @override
   final String appId;
 
+  /// JS 渠道由脚本自身驱动下载（callMain('download')），不走宿主编排。
+  @override
+  bool get drivesOwnDownloads => true;
+
   /// 所属渠道唯一标识（与 JsChannel 同 key，数据隔离一致）
   final String channelKey;
 

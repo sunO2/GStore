@@ -131,7 +131,9 @@ class DetailLogic extends GetxController
     int? downloadSize,
   }) async {
     final channel = detailChannel;
-    if (channel != null) {
+    // 仅脚本驱动型渠道（JS）委托通道——其余渠道（StandardDetailChannel 等）由宿主编排。
+    // 防递归：StandardDetailChannel.startDownload 是 stub，直接委托会死循环。
+    if (channel != null && channel.drivesOwnDownloads) {
       await channel.startDownload(download);
       return;
     }

@@ -17,6 +17,11 @@ abstract class IDetailChannel {
   /// 返回操作项列表（"更多"按钮面板展示）。
   List<DetailAction> getActions();
 
+  /// 是否由渠道自身驱动下载（如 JS 渠道经脚本 callMain('download') 真实触发）。
+  /// false（默认）：下载由宿主（DetailLogic）编排（DownloadStatus.create → listener → service）。
+  /// true：DetailLogic 直接委托 [startDownload] 后 return，不走宿主编排。
+  bool get drivesOwnDownloads => false;
+
   /// 发起下载。
   Future<void> startDownload(DownloadInfo info);
 

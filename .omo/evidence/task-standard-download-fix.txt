@@ -1,0 +1,29 @@
+# Task: 标准渠道详情页下载断链修复
+# Date: 2026-08-25
+
+## 考古结论
+
+### 断裂引入提交
+- **a3b58c9** `refactor(detail): DetailLogic 瘦身 1834→375 行 + 测试适配`
+  - 此提交将 DetailLogic 从 1834 行瘦身至 375 行，引入了 `_initAndLoad` 统一初始化路径
+  - `_initAndLoad` 对所有渠道都设置 `detailChannel`（无 channel 时兜底创建 StandardDetailChannel）
+  - `startDownload` 委托分支改为 `if (channel != null) { await channel.startDownload(download); return; }`
+  - StandardDetailChannel.startDownload 是空壳 stub（仅校验 URL 非空+日志，从不触发下载）
+  - 结果：GitHub/LocalDb/Vivo/Http/Fdroid 渠道详情页点下载完全无反应
+
+### 根因分析
+1. `_initAndLoad` (L67-83): `dc ??= StandardDetailChannel(...)` 兜底创建 → detailChannel 恒非 null
+2. `startDownload` (L129-136): `if (channel != null) { await channel.startDownload(download); return; }` → 恒走 stub 分支并 return
+3. `StandardDetailChannel.startDownload` (L423-444): 空壳 stub，仅 URL 非空守卫+日志，不触发实际下载
+4. JS 渠道不受影响：其 startDownload 经 callMain('download') 真实驱动下载
+
+### 修复方案
+- IDetailChannel 新增 `bool get drivesOwnDownloads => false;`
+- JsDetailChannel override 为 true（JS 渠道经脚本 callMain('download') 真实驱动）
+- DetailLogic.startDownload 委托分支改为 `if (ch != null && ch.drivesOwnDownloads)`
+- StandardDetailChannel 不再被 UI 委托调用（stub 保留+注释说明）
+
+### 测试结果
+- 新增测试 6/6 通过：drivesOwnDownloads 属性默认值 + 标准渠道不委托 + JS 渠道委托 + null 路径
+- 回归测试 83/83 通过：js_detail_channel_test + detail_logic_progressive_test + background_download_engine_test + channel_loader_test
+- dart analyze 触碰文件 0 error
