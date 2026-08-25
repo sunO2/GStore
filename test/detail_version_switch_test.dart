@@ -1252,7 +1252,9 @@ void main() {
 
   testWidgets('ⓘ detailInfo 为 null → updateDownloadList 不崩', (tester) async {
     final (logic, dc) = await setupDetailChannel(tester);
-    // detailInfo 保持 null
+    // prefill 纪元：setup 的 bind+load 会无条件注入 prefill proxy，
+    // 手动置 null 构造真实 null 场景（绕过 load 的 prefill）。
+    logic.state.detailInfo.value = null;
 
     await dc.capturedNativeHost!['ui.updateDownloadList']!({
       'downloads': [
@@ -1297,17 +1299,30 @@ void main() {
     ChannelManager.instance.registerChannel(js);
 
     final logic = buildLogic();
+    Get.put(logic);
+    await tester.pumpWidget(const GetMaterialApp(home: DetailPage()));
+    // 两次 bind+load 落定：buildLogic 手动 onReady + DisposableInterface
+    // post-frame onReady 各触发一次（getAppDetail 均 null）。
+    await tester.pump();
+    await tester.pump();
+    logic.state.errorMessage.value = '';
+
+    // prefill 纪元：step② 无条件注入 prefill proxy（覆盖先期手动构造），
+    // 且 getAppDetail null 失败路径不复位 downloadsLoading —— 等 load 落定后
+    // 重新注入全量 proxy 并复位下载区 loading，构造「详情已就绪」的真实消费场景。
     logic.state.detailInfo.value = JsChannelDetailProxy({
       'appId': 'com.example.one',
       'name': 'App One',
       'version': '1.0.0',
+      // 对齐 view.dart/_buildPrefill：sections 声明下载区
+      'sections': ['downloads'],
       'downloads': [
         {'url': 'https://example.com/old.apk', 'name': 'old.apk'},
       ],
     });
-    Get.put(logic);
-    await tester.pumpWidget(const GetMaterialApp(home: DetailPage()));
-    logic.state.errorMessage.value = '';
+    logic.state.downloadsLoading.value = false;
+    logic.state.readmeLoading.value = false;
+    logic.state.statisticsLoading.value = false;
     await tester.pump();
 
     // 初始下载区显示旧下载项
