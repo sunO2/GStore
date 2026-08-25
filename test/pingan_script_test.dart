@@ -273,6 +273,15 @@ class _FakePinganApi {
 }
 
 void main() {
+  final zipFile = File('scripts/channels/pingan.zip');
+  if (!zipFile.existsSync()) {
+    test('渠道 zip 缺失，本套件跳过（scripts/channels/pack.sh 可生成）', () {
+      markTestSkipped(
+          'pingan.zip 不存在：gitignore 构建产物，bash scripts/channels/pack.sh pingan 生成后重跑');
+    });
+    return;
+  }
+
   late _FakeAppDao appDao;
   late List<String> requestLog;
   late List<String> logMessages;
