@@ -1,12 +1,13 @@
 /// background_download_engine.dart
 ///
-/// 混合下载引擎适配层：将标准（非多段、无代理）下载路由到
-/// background_downloader 包，获得进程死亡后任务自动恢复能力。
+/// 混合下载引擎适配层：将大文件下载路由到 background_downloader 包，
+/// 获得进程死亡后任务自动恢复能力。
 ///
 /// 路由规则（AD1）：
-/// - 多段条件满足 → legacy（自研多段引擎，此处不处理）
-/// - ctx.proxy != null → legacy（Dio 单段，代理按任务区分）
-/// - 其余 → background（本引擎）
+/// - ctx.proxy != null → legacy（Dio 路径，代理按任务区分）
+/// - fileSize == null   → legacy（未知大小，保守走 legacy）
+/// - fileSize < 420MB   → legacy（Dio 单段/多段由 legacy 内部自行决定）
+/// - fileSize >= 420MB  → background（本引擎）
 library;
 
 import 'dart:async';
@@ -16,7 +17,7 @@ import 'dart:io';
 import 'package:background_downloader/background_downloader.dart';
 import 'package:flutter/foundation.dart';
 import 'package:gstore/core/download/model/DownloadContext.dart';
-import 'package:gstore/core/download/segment/segment_planner.dart';
+
 import 'package:gstore/http/download/DownloadStatus.dart';
 
 // ─── 路由决策枚举 ────────────────────────────────────────────
@@ -91,6 +92,9 @@ class BackgroundDownloadEngine {
   /// 最大并发数（与 AD1.5 holdingQueue 对齐）
   static const int maxConcurrent = 3;
 
+  /// 大文件阈值：≥ 此值走 background_downloader，< 此值走 legacy（Dio）
+  static const int largeFileSizeThreshold = 420 * 1024 * 1024;
+
   // ─── 静态更新流分发器（单例监听，多引擎实例共享） ───────
   static StreamSubscription? _globalUpdatesSub;
   static final Map<String, BackgroundDownloadEngine> _engines = {};
@@ -105,27 +109,31 @@ class BackgroundDownloadEngine {
 
   /// 判断下载应走哪条路径（纯函数，可直接测试）
   ///
-  /// - 满足多段条件（开关开 + breakPoint + ≥2MB）→ legacy
-  /// - ctx.proxy != null → legacy（Dio 按任务区分代理）
-  /// - 其余 → background
+  /// 路由规则（AD1 新语义）：
+  /// - ctx.proxy != null → legacy（Dio 路径，代理按任务区分）
+  /// - fileSize == null   → legacy（未知大小，保守走 legacy）
+  /// - fileSize < [largeFileSizeThreshold]  → legacy（Dio 内部自行决定单段/多段）
+  /// - fileSize >= [largeFileSizeThreshold] → background（本引擎）
   static DownloadEngineRoute routeDecision(
     DownloadContext ctx, {
-    required bool multiSegmentEnabled,
+    @Deprecated('路由不再依赖多段判定，保留参数以兼容调用方') bool multiSegmentEnabled = false,
   }) {
-    // 多段条件：开关开 + 断点支持 + 文件 ≥ 2MB
-    if (multiSegmentEnabled &&
-        ctx.supportBreakpoint &&
-        ctx.fileSize != null &&
-        ctx.fileSize! >= SegmentPlanner.minMultiSegmentSize) {
-      return DownloadEngineRoute.legacy;
-    }
-
     // 代理例外：BD 的 Config.proxy 是全局设置，无法按任务区分
     if (ctx.proxy != null && ctx.proxy!.isNotEmpty) {
       return DownloadEngineRoute.legacy;
     }
 
-    return DownloadEngineRoute.background;
+    // 未知文件大小：保守走 legacy
+    if (ctx.fileSize == null) {
+      return DownloadEngineRoute.legacy;
+    }
+
+    // 大文件（≥ 420MB）走 background_downloader，小文件走 legacy
+    if (ctx.fileSize! >= largeFileSizeThreshold) {
+      return DownloadEngineRoute.background;
+    }
+
+    return DownloadEngineRoute.legacy;
   }
 
   // ═══════════════════════════════════════════════════════════

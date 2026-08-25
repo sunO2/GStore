@@ -87,57 +87,58 @@ DownloadStatus _makeDs({
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   group('R1: 路由判定（routeDecision）', () {
-    test('满足多段条件 → 返回 legacy', () {
-      final ctx = _makeCtx(fileSize: 5 * 1024 * 1024, supportBreakpoint: true);
-      final decision = BackgroundDownloadEngine.routeDecision(
-        ctx,
-        multiSegmentEnabled: true,
-      );
+    test('无代理 + 小文件(10MB) → legacy', () {
+      final ctx = _makeCtx(fileSize: 10 * 1024 * 1024);
+      final decision = BackgroundDownloadEngine.routeDecision(ctx);
       expect(decision, DownloadEngineRoute.legacy);
     });
 
-    test('无代理 + 非多段 → 返回 background', () {
-      final ctx = _makeCtx(
-        fileSize: 500 * 1024,
-        supportBreakpoint: false,
-        proxy: null,
-      );
-      final decision = BackgroundDownloadEngine.routeDecision(
-        ctx,
-        multiSegmentEnabled: true,
-      );
+    test('无代理 + 中等文件(100MB) → legacy', () {
+      final ctx = _makeCtx(fileSize: 100 * 1024 * 1024);
+      final decision = BackgroundDownloadEngine.routeDecision(ctx);
+      expect(decision, DownloadEngineRoute.legacy);
+    });
+
+    test('无代理 + 文件420MB（=阈值）→ background', () {
+      final ctx = _makeCtx(fileSize: 420 * 1024 * 1024);
+      final decision = BackgroundDownloadEngine.routeDecision(ctx);
       expect(decision, DownloadEngineRoute.background);
     });
 
-    test('有代理 → 返回 legacy（Dio 单段路径）', () {
+    test('无代理 + 大文件(500MB) → background', () {
+      final ctx = _makeCtx(fileSize: 500 * 1024 * 1024);
+      final decision = BackgroundDownloadEngine.routeDecision(ctx);
+      expect(decision, DownloadEngineRoute.background);
+    });
+
+    test('有代理 + 大文件(500MB) → legacy', () {
       final ctx = _makeCtx(
-        fileSize: 500 * 1024,
-        supportBreakpoint: false,
+        fileSize: 500 * 1024 * 1024,
         proxy: 'https://ghproxy.com/',
       );
-      final decision = BackgroundDownloadEngine.routeDecision(
-        ctx,
-        multiSegmentEnabled: true,
-      );
+      final decision = BackgroundDownloadEngine.routeDecision(ctx);
       expect(decision, DownloadEngineRoute.legacy);
     });
 
-    test('多段开关关 → 返回 background（即使文件够大）', () {
-      final ctx = _makeCtx(fileSize: 5 * 1024 * 1024, supportBreakpoint: true);
-      final decision = BackgroundDownloadEngine.routeDecision(
-        ctx,
-        multiSegmentEnabled: false,
+    test('有代理 + 小文件(10MB) → legacy', () {
+      final ctx = _makeCtx(
+        fileSize: 10 * 1024 * 1024,
+        proxy: 'https://ghproxy.com/',
       );
-      expect(decision, DownloadEngineRoute.background);
+      final decision = BackgroundDownloadEngine.routeDecision(ctx);
+      expect(decision, DownloadEngineRoute.legacy);
     });
 
-    test('breakPoint=false + 无代理 → 返回 background', () {
-      final ctx = _makeCtx(fileSize: 5 * 1024 * 1024, supportBreakpoint: false);
-      final decision = BackgroundDownloadEngine.routeDecision(
-        ctx,
-        multiSegmentEnabled: true,
+    test('fileSize == null → legacy（未知大小保守走 legacy）', () {
+      final ctx = DownloadContext(
+        originalUrl: 'https://example.com/test.apk',
+        channelType: ChannelType.github,
+        fileName: 'test.apk',
+        fileSize: null,
+        version: '1.0.0',
       );
-      expect(decision, DownloadEngineRoute.background);
+      final decision = BackgroundDownloadEngine.routeDecision(ctx);
+      expect(decision, DownloadEngineRoute.legacy);
     });
   });
 
