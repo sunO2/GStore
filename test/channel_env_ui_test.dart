@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -65,6 +66,19 @@ Uint8List makeZip({
 Future<({String name, Uint8List bytes})?> pickZip(String fileName) async =>
     (name: fileName, bytes: makeZip(entry: _script));
 
+/// 注入「选择 zip 渠道包」：meta.json 声明 requiredEnvVars，
+/// 触发导入 BottomSheet 的必需环境变量引导（键预填只读，仅填值）
+Future<({String name, Uint8List bytes})?> pickZipWithRequired(
+        String fileName,
+        List<String> requiredVars) async =>
+    (
+      name: fileName,
+      bytes: makeZip(
+        entry: _script,
+        metaJson: jsonEncode({'requiredEnvVars': requiredVars}),
+      ),
+    );
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -117,44 +131,37 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  /// 打开导入对话框（expandEnv: 展开环境变量区）
-  Future<void> openImportDialog(WidgetTester tester,
-      {bool expandEnv = false}) async {
+  /// 打开导入 BottomSheet（db8fa14 起：环境变量区改由 requiredEnvVars 引导，
+  /// 选文件后按需出现，不再有可展开 section）
+  Future<void> openImportDialog(WidgetTester tester) async {
     await tester.tap(find.text('脚本渠道'));
     await tester.pumpAndSettle();
-    if (expandEnv) {
-      await tester.ensureVisible(
-          find.byKey(const Key('script_channel_env_section')));
-      await tester.tap(find.byKey(const Key('script_channel_env_section')));
-      await tester.pumpAndSettle();
-    }
   }
 
-  /// 通过导入对话框导入 zip 渠道包（可选 env），返回 channelKey（js_ 前缀）
+  /// 通过导入 BottomSheet 导入 zip 渠道包（可选 env：
+  /// 注入的 zip 需以 [pickZipWithRequired] 声明同名 requiredEnvVars，
+  /// 行序 = 声明序，键只读仅填值），返回 channelKey（js_ 前缀）
   Future<String> importChannel(
     WidgetTester tester, {
     String fileName = 'vivo.zip',
     Map<String, String>? env,
   }) async {
-    await openImportDialog(tester, expandEnv: env != null);
+    await openImportDialog(tester);
     await tester
         .ensureVisible(find.byKey(const Key('script_channel_file_button')));
     await tester.tap(find.byKey(const Key('script_channel_file_button')));
     await tester.pumpAndSettle();
     if (env != null) {
+      // requiredEnvVars 预填行：键只读，仅填值（行序 = meta.json 声明序）
       var row = 0;
       for (final entry in env.entries) {
-        await tester
-            .ensureVisible(find.byKey(const Key('script_channel_env_add')));
-        await tester.tap(find.byKey(const Key('script_channel_env_add')));
-        await tester.pumpAndSettle();
-        await tester.enterText(
-            find.byKey(Key('script_channel_env_key_$row')), entry.key);
         await tester.enterText(
             find.byKey(Key('script_channel_env_value_$row')), entry.value);
         row++;
       }
+      await tester.pumpAndSettle();
     }
+    await tester.ensureVisible(find.text('导入'));
     await tester.tap(find.text('导入'));
     await tester.pump();
     await settleAsync(tester);
@@ -197,10 +204,14 @@ void main() {
     expect(find.textContaining('渠道包已导入'), findsOneWidget);
   });
 
-  testWidgets('② 导入对话框添加环境变量 → 导入后 channel.getAllEnv 含该项（存储落盘）',
+  testWidgets('② 导入对话框填写必需环境变量 → 导入后 channel.getAllEnv 含该项（存储落盘）',
       (tester) async {
-    await pumpSettings(tester, filePicker: () => pickZip('envch.zip'));
-    await importChannel(tester, fileName: 'envch.zip', env: {'PINGAN_USER': 'alice'});
+    await pumpSettings(
+        tester,
+        filePicker: () =>
+            pickZipWithRequired('envch.zip', ['PINGAN_USER']));
+    await importChannel(tester,
+        fileName: 'envch.zip', env: {'PINGAN_USER': 'alice'});
 
     final channel = ChannelManager.instance.getChannelByKey('js_envch');
     expect(channel, isNotNull);
@@ -214,22 +225,29 @@ void main() {
     expect(find.textContaining('host.env.get'), findsOneWidget);
   });
 
-  testWidgets('③ 删除环境变量行 → 导入后仅保留剩余项', (tester) async {
-    await pumpSettings(tester, filePicker: () => pickZip('envdel.zip'));
-    await openImportDialog(tester, expandEnv: true);
+  testWidgets('③ 删除新增环境变量行 → 导入后仅保留剩余项', (tester) async {
+    await pumpSettings(
+        tester,
+        filePicker: () => pickZipWithRequired('envdel.zip', ['KEEP']));
+    await openImportDialog(tester);
 
-    // 添加两行并填写
-    Future<void> addRow(int i, String k, String v) async {
-      await tester
-          .ensureVisible(find.byKey(const Key('script_channel_env_add')));
-      await tester.tap(find.byKey(const Key('script_channel_env_add')));
-      await tester.pumpAndSettle();
-      await tester.enterText(find.byKey(Key('script_channel_env_key_$i')), k);
-      await tester.enterText(find.byKey(Key('script_channel_env_value_$i')), v);
-    }
+    // 选择 zip 包 → 必需环境变量 KEEP 行预填（键只读、不可删除）
+    await tester
+        .ensureVisible(find.byKey(const Key('script_channel_file_button')));
+    await tester.tap(find.byKey(const Key('script_channel_file_button')));
+    await tester.pumpAndSettle();
 
-    await addRow(0, 'KEEP', '1');
-    await addRow(1, 'DROP', '2');
+    // 填必需值 + 新增一行 DROP
+    await tester.enterText(
+        find.byKey(const Key('script_channel_env_value_0')), '1');
+    await tester
+        .ensureVisible(find.byKey(const Key('script_channel_env_add')));
+    await tester.tap(find.byKey(const Key('script_channel_env_add')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+        find.byKey(const Key('script_channel_env_key_1')), 'DROP');
+    await tester.enterText(
+        find.byKey(const Key('script_channel_env_value_1')), '2');
 
     // 删除第二行（DROP）
     await tester.ensureVisible(
@@ -238,11 +256,8 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('script_channel_env_remove_1')), findsNothing);
 
-    // 选择 zip 包并导入
-    await tester
-        .ensureVisible(find.byKey(const Key('script_channel_file_button')));
-    await tester.tap(find.byKey(const Key('script_channel_file_button')));
-    await tester.pumpAndSettle();
+    // 导入：仅保留 KEEP
+    await tester.ensureVisible(find.text('导入'));
     await tester.tap(find.text('导入'));
     await tester.pump();
     await settleAsync(tester);
@@ -270,7 +285,10 @@ void main() {
   });
 
   testWidgets('⑤ 管理入口编辑环境变量 → setEnv 生效（持久化更新）', (tester) async {
-    await pumpSettings(tester, filePicker: () => pickZip('envedit.zip'));
+    await pumpSettings(
+        tester,
+        filePicker: () =>
+            pickZipWithRequired('envedit.zip', ['PINGAN_USER']));
     await importChannel(tester,
         fileName: 'envedit.zip', env: {'PINGAN_USER': 'alice'});
 
@@ -309,7 +327,9 @@ void main() {
   });
 
   testWidgets('⑥ 删除渠道 → 注销 + 文件删除 + env 清空', (tester) async {
-    await pumpSettings(tester, filePicker: () => pickZip('del.zip'));
+    await pumpSettings(
+        tester,
+        filePicker: () => pickZipWithRequired('del.zip', ['SECRET']));
     await importChannel(tester, fileName: 'del.zip', env: {'SECRET': 'x'});
 
     // 前置：注册 + 文件 + env 均存在
