@@ -265,10 +265,6 @@ class _HomePageState extends State<HomePage>
                                     const NavigationBarThemeData(height: 64),
                               ),
                               child: NavigationBar(
-                                backgroundColor: Theme.of(context)
-                                    .colorScheme
-                                    .surface
-                                    .withValues(alpha: 0.82),
                                 selectedIndex: _displayIndex(
                                     logic.state.index.value),
                                 onDestinationSelected: (index) {

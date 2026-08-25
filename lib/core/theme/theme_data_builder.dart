@@ -267,7 +267,8 @@ class ThemeDataBuilder {
 
       // Navigation bar theme
       navigationBarTheme: NavigationBarThemeData(
-        backgroundColor: _lightenColor(colorScheme.secondaryContainer, 0.4),
+        // 磨砂胶囊底色：surface 半透明，与页面底保持原视觉（原内联值收编至全局主题）
+        backgroundColor: colorScheme.surface.withValues(alpha: 0.82),
         elevation: 0,
         height: 80,
         indicatorColor: colorScheme.primaryContainer,
@@ -593,7 +594,10 @@ class ThemeDataBuilder {
 
       // Navigation bar theme
       navigationBarTheme: NavigationBarThemeData(
-        backgroundColor: _darkenColor(colorScheme.secondaryContainer, 0.72),
+        // 深色磨砂胶囊底色：surfaceContainerHighest 比页面底（darken secondaryContainer）
+        // 提升两档亮度层次（实测 computeLuminance 差 ~0.028 > 0.02），
+        // 避免与 scaffold 背景融合
+        backgroundColor: colorScheme.surfaceContainerHighest.withValues(alpha: 0.90),
         elevation: 0,
         height: 80,
         indicatorColor: colorScheme.primaryContainer,
