@@ -222,24 +222,16 @@ void main() {
 
   testWidgets('⑤ 环境变量区保留：导入时配置 env → 导入后 setEnv 持久化',
       (tester) async {
-    final zipBytes = makeZip(entry: _script);
+    // meta.json 声明 requiredEnvVars → 选包后环境变量编辑器自动渲染
+    final zipBytes = makeZip(entry: _script,
+        metaJson: '{"requiredEnvVars": ["PINGAN_USER"]}');
     await pumpSettings(tester,
         filePicker: () async => (name: 'envch.zip', bytes: zipBytes));
 
     await selectZip(tester,
         pick: () async => (name: 'envch.zip', bytes: zipBytes));
 
-    // 展开环境变量区并添加一行
-    await tester.ensureVisible(
-        find.byKey(const Key('script_channel_env_section')));
-    await tester.tap(find.byKey(const Key('script_channel_env_section')));
-    await tester.pumpAndSettle();
-    await tester
-        .ensureVisible(find.byKey(const Key('script_channel_env_add')));
-    await tester.tap(find.byKey(const Key('script_channel_env_add')));
-    await tester.pumpAndSettle();
-    await tester.enterText(
-        find.byKey(const Key('script_channel_env_key_0')), 'PINGAN_USER');
+    // requiredEnvVars 预填行：键只读，仅填值（channel_env_ui_test ② 同款模式）
     await tester.enterText(
         find.byKey(const Key('script_channel_env_value_0')), 'alice');
 
