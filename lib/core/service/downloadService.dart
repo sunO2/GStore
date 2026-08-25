@@ -9,6 +9,7 @@ import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:dio/dio.dart';
 import 'package:gstore/http/download/DownloadStatusDataBase.dart';
 import 'package:gstore/core/download/model/DownloadContext.dart';
+import 'package:gstore/core/download/engine/background_download_engine.dart';
 import 'package:gstore/core/service/download_notification_service.dart';
 import 'package:gstore/core/service/apk_info_service.dart';
 
@@ -71,6 +72,9 @@ class DownloadService extends GetxService
 
   /// 多段下载开关的订阅
   StreamSubscription? _multiSegmentSub;
+
+  /// BackgroundDownloadEngine 单例（懒初始化，首次路由到 BD 路径时创建）
+  BackgroundDownloadEngine? _bgEngine;
 
   DownloadService(this._dio);
 
@@ -271,6 +275,7 @@ class DownloadService extends GetxService
   }
 
   /// 执行实际下载（支持断点续传、非Range服务器处理、失败自动重试）
+  /// 混合路由（AD1）：多段 → legacy；无代理 → BackgroundDownloadEngine；有代理 → Dio 单段
   Future<void> _performDownload(
     DownloadStatus downloadStatus, {
     DownloadContext? context,
@@ -303,7 +308,24 @@ class DownloadService extends GetxService
       return;
     }
 
-    // 单段（原逻辑）
+    // 混合路由（AD1）：无代理 + 非多段 → BackgroundDownloadEngine
+    if (context != null &&
+        context.proxy == null &&
+        BackgroundDownloadEngine.routeDecision(
+          context,
+          multiSegmentEnabled: _multiSegmentEnabled,
+        ) == DownloadEngineRoute.background) {
+      appLog.info('DownloadService: 路由到 BackgroundDownloadEngine - ${downloadStatus.fileName}');
+      await _performDownloadBackground(
+        downloadStatus,
+        context: context,
+        notifId: notifId,
+        notifTitle: notifTitle,
+      );
+      return;
+    }
+
+    // 有代理 → 单段（原逻辑）
     await _performDownloadSingle(
       downloadStatus,
       context: context,
@@ -670,6 +692,65 @@ class DownloadService extends GetxService
     }
   }
 
+  /// BackgroundDownloadEngine 路径（AD1：无代理 + 非多段）
+  /// 将下载委托给 BackgroundDownloadEngine，完成后执行成功钩子序列
+  Future<void> _performDownloadBackground(
+    DownloadStatus downloadStatus, {
+    required DownloadContext context,
+    required int notifId,
+    required String notifTitle,
+  }) async {
+    final engine = _bgEngine ??= BackgroundDownloadEngine(
+      successHook: _DownloadServiceSuccessHook(this),
+    );
+
+    final tag = '${downloadStatus.appId}-${downloadStatus.version}-${downloadStatus.fileName}';
+    final enqueued = await engine.enqueue(context, downloadStatus);
+    if (!enqueued) {
+      appLog.error('DownloadService: BackgroundDownloadEngine enqueue 失败 - ${downloadStatus.fileName}');
+      downloadStatus.downloadError();
+      DownloadNotificationService.instance.onDownloadError(notifId, notifTitle);
+      return;
+    }
+
+    appLog.info('DownloadService: 已委托 BackgroundDownloadEngine - $tag');
+    // BD 引擎通过 updates 流异步通知完成/失败，此处不阻塞等待
+    // 成功钩子由 engine 内部 _onDownloadComplete 触发
+  }
+
+  /// 提取的成功收尾钩子（AD2：两条路径共用，禁止复制逻辑）
+  /// 序列：install → downloadSuccess → notifyComplete → afterInstalled → apkInfo
+  @visibleForTesting
+  void performSuccessHook(
+    DownloadStatus downloadStatus, {
+    required int notifId,
+    required String notifTitle,
+  }) {
+    final file = File(downloadStatus.savePath);
+
+    // 1. 触发安装
+    _install(downloadStatus.fileName, downloadStatus.savePath);
+
+    // 2. 标记成功
+    downloadStatus.downloadSuccess();
+
+    // 3. 通知完成
+    DownloadNotificationService.instance.onDownloadComplete(notifId);
+
+    // 4. 刷新更新状态
+    _afterDownloadInstalled(downloadStatus);
+
+    // 5. APK 文件：异步解析并更新真实包名/图标
+    if (file.path.endsWith('.apk')) {
+      unawaited(
+        ApkInfoService.instance.handleDownloadedApk(
+          appId: downloadStatus.appId,
+          apkPath: file.path,
+        ),
+      );
+    }
+  }
+
   _install(String fileName, String filePath) {
     if (GetPlatform.isAndroid && fileName.endsWith(".apk")) {
       // 安装模块下线 → 注册表取不到服务，短路不安装
@@ -692,5 +773,38 @@ class DownloadService extends GetxService
     } catch (e) {
       // 更新状态刷新失败不影响下载本身
     }
+  }
+}
+
+/// BackgroundDownloadEngine 的成功收尾钩子实现
+/// 委托给 DownloadService.performSuccessHook，禁止复制逻辑
+class _DownloadServiceSuccessHook implements DownloadSuccessHook {
+  final DownloadService _service;
+
+  _DownloadServiceSuccessHook(this._service);
+
+  @override
+  Future<void> onInstall(String fileName, String savePath) async {
+    _service._install(fileName, savePath);
+  }
+
+  @override
+  Future<void> onNotifyComplete(int notifId, String notifTitle) async {
+    DownloadNotificationService.instance.onDownloadComplete(notifId);
+  }
+
+  @override
+  Future<void> onApkInfo({required String appId, required String apkPath}) async {
+    unawaited(
+      ApkInfoService.instance.handleDownloadedApk(
+        appId: appId,
+        apkPath: apkPath,
+      ),
+    );
+  }
+
+  @override
+  Future<void> onAfterDownloadInstalled(DownloadStatus status) async {
+    _service._afterDownloadInstalled(status);
   }
 }

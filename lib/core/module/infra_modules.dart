@@ -12,6 +12,7 @@ library;
 import 'package:dio/dio.dart';
 import 'package:get/get.dart';
 import 'package:rhttp/rhttp.dart';
+import 'package:background_downloader/background_downloader.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/config/config_initializer.dart';
 import 'package:gstore/core/config/config_service.dart';
@@ -136,6 +137,15 @@ class DbModule extends AppModule {
     // OAuth API 需要使用单独的 Dio 实例（不包含 GitHub REST API 专用 headers）
     Get.lazyPut<GithubAuthApi>(() => GithubAuthApi(DioClient.createOAuthClient()));
     Get.lazyPut<DownloadService>(() => DownloadService(DioClient().get()));
+
+    // AD3: 初始化 background_downloader（触发 rescheduleKilledTasks 对账）
+    try {
+      await FileDownloader().configure(globalConfig: (Config.holdingQueue, (3, null, null)));
+      await FileDownloader().start();
+      appLog.info('FileDownloader initialized with holdingQueue concurrency=3');
+    } catch (e) {
+      appLog.error('FileDownloader initialization failed: $e');
+    }
 
     await Get.putAsync<DbManager>(() async => await DbManager().init());
     Get.put(DatabaseEventBus());
