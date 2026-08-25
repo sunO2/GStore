@@ -282,7 +282,7 @@ void main() {
     test('appId 保持包名（LocalDb appId 本就是包名）', () async {
       final manager = AppAggregatorManager.instance;
       await manager.addApp(
-        channelCode: 'localDb',
+        channelCode: ChannelType.localDb.code,
         appInfo: localDbResult('com.termux', 'termux', 'termux-app'),
       );
 
@@ -295,7 +295,7 @@ void main() {
     test('普通应用：保持原 ID', () async {
       final manager = AppAggregatorManager.instance;
       await manager.addApp(
-        channelCode: 'localDb',
+        channelCode: ChannelType.localDb.code,
         appInfo: AppSummary(
           appId: 'com.vivo.app',
           packageName: null,
