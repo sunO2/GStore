@@ -1364,7 +1364,7 @@ class _DownloadItem extends StatelessWidget {
                       context,
                       _iconFromName(e.value.iconName) ?? Icons.info_outline,
                       e.value.text,
-                      _colorForTag(e.key),
+                      _colorForTag(e.key, Theme.of(context).colorScheme),
                     )),
                   
                 ],
@@ -1393,16 +1393,25 @@ class _DownloadItem extends StatelessWidget {
     }
   }
 
-  /// 标签 key → 颜色（稳定映射）
-  Color _colorForTag(String key) {
+  /// 标签 key → 主题色（稳定映射，M3 色彩角色，禁止硬编码颜色）
+  Color _colorForTag(String key, ColorScheme scheme) {
     switch (key) {
-      case 'size': return Colors.blue;
-      case 'platform': return Colors.green;
-      case 'build': return Colors.orange;
-      case 'env': return Colors.purple;
-      case 'installTimes': case 'install': case 'download_count': case 'downloadCount':
-        return Colors.orange;
-      default: return Colors.teal;
+      case 'size':
+        return scheme.primary;
+      case 'platform':
+        return scheme.secondary;
+      case 'env':
+        // 环境标识：中性色（非错误/危险语义）
+        return scheme.onSurfaceVariant;
+      case 'build':
+      case 'installTimes':
+      case 'install':
+      case 'download_count':
+      case 'downloadCount':
+        // 构建号与各类计数同族
+        return scheme.tertiary;
+      default:
+        return scheme.outline;
     }
   }
 
