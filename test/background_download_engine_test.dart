@@ -87,31 +87,31 @@ DownloadStatus _makeDs({
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   group('R1: 路由判定（routeDecision）', () {
-    test('无代理 + 小文件(10MB) → legacy', () {
+    test('无代理 + 小文件(10MB) → background（≤450MB 走 BD）', () {
       final ctx = _makeCtx(fileSize: 10 * 1024 * 1024);
       final decision = BackgroundDownloadEngine.routeDecision(ctx);
-      expect(decision, DownloadEngineRoute.legacy);
+      expect(decision, DownloadEngineRoute.background);
     });
 
-    test('无代理 + 中等文件(100MB) → legacy', () {
+    test('无代理 + 中等文件(100MB) → background（≤450MB 走 BD）', () {
       final ctx = _makeCtx(fileSize: 100 * 1024 * 1024);
       final decision = BackgroundDownloadEngine.routeDecision(ctx);
+      expect(decision, DownloadEngineRoute.background);
+    });
+
+    test('无代理 + 文件450MB（=阈值）→ background（≤450MB 走 BD）', () {
+      final ctx = _makeCtx(fileSize: 450 * 1024 * 1024);
+      final decision = BackgroundDownloadEngine.routeDecision(ctx);
+      expect(decision, DownloadEngineRoute.background);
+    });
+
+    test('无代理 + 大文件(500MB) → legacy/dio（>450MB 走自研引擎）', () {
+      final ctx = _makeCtx(fileSize: 500 * 1024 * 1024);
+      final decision = BackgroundDownloadEngine.routeDecision(ctx);
       expect(decision, DownloadEngineRoute.legacy);
     });
 
-    test('无代理 + 文件420MB（=阈值）→ background', () {
-      final ctx = _makeCtx(fileSize: 420 * 1024 * 1024);
-      final decision = BackgroundDownloadEngine.routeDecision(ctx);
-      expect(decision, DownloadEngineRoute.background);
-    });
-
-    test('无代理 + 大文件(500MB) → background', () {
-      final ctx = _makeCtx(fileSize: 500 * 1024 * 1024);
-      final decision = BackgroundDownloadEngine.routeDecision(ctx);
-      expect(decision, DownloadEngineRoute.background);
-    });
-
-    test('有代理 + 大文件(500MB) → legacy', () {
+    test('有代理 + 大文件(500MB) → legacy/dio（代理恒走 dio）', () {
       final ctx = _makeCtx(
         fileSize: 500 * 1024 * 1024,
         proxy: 'https://ghproxy.com/',
@@ -120,7 +120,7 @@ void main() {
       expect(decision, DownloadEngineRoute.legacy);
     });
 
-    test('有代理 + 小文件(10MB) → legacy', () {
+    test('有代理 + 小文件(10MB) → legacy/dio（代理恒走 dio）', () {
       final ctx = _makeCtx(
         fileSize: 10 * 1024 * 1024,
         proxy: 'https://ghproxy.com/',
@@ -129,7 +129,7 @@ void main() {
       expect(decision, DownloadEngineRoute.legacy);
     });
 
-    test('fileSize == null → legacy（未知大小保守走 legacy）', () {
+    test('fileSize == null → legacy/dio（未知大小兜底走 dio）', () {
       final ctx = DownloadContext(
         originalUrl: 'https://example.com/test.apk',
         channelType: ChannelType.github,

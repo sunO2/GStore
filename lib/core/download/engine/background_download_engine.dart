@@ -3,11 +3,11 @@
 /// 混合下载引擎适配层：将大文件下载路由到 background_downloader 包，
 /// 获得进程死亡后任务自动恢复能力。
 ///
-/// 路由规则（AD1）：
-/// - ctx.proxy != null → legacy（Dio 路径，代理按任务区分）
-/// - fileSize == null   → legacy（未知大小，保守走 legacy）
-/// - fileSize < 420MB   → legacy（Dio 单段/多段由 legacy 内部自行决定）
-/// - fileSize >= 420MB  → background（本引擎）
+/// 路由规则（AD1 修正版）：
+/// - ctx.proxy != null   → dio（自研引擎，代理按任务区分）
+/// - fileSize == null     → dio（未知大小，保守走自研引擎）
+/// - fileSize > 450MB     → dio（legacy 自研，内部自行决定单段/多段）
+/// - fileSize <= 450MB    → background（background_downloader）
 library;
 
 import 'dart:async';
@@ -92,8 +92,8 @@ class BackgroundDownloadEngine {
   /// 最大并发数（与 AD1.5 holdingQueue 对齐）
   static const int maxConcurrent = 3;
 
-  /// 大文件阈值：≥ 此值走 background_downloader，< 此值走 legacy（Dio）
-  static const int largeFileSizeThreshold = 420 * 1024 * 1024;
+  /// 文件大小阈值：≤ 此值走 background_downloader，> 此值走自研引擎（Dio）
+  static const int backgroundEngineMaxBytes = 450 * 1024 * 1024;
 
   // ─── 静态更新流分发器（单例监听，多引擎实例共享） ───────
   static StreamSubscription? _globalUpdatesSub;
@@ -109,11 +109,11 @@ class BackgroundDownloadEngine {
 
   /// 判断下载应走哪条路径（纯函数，可直接测试）
   ///
-  /// 路由规则（AD1 新语义）：
-  /// - ctx.proxy != null → legacy（Dio 路径，代理按任务区分）
-  /// - fileSize == null   → legacy（未知大小，保守走 legacy）
-  /// - fileSize < [largeFileSizeThreshold]  → legacy（Dio 内部自行决定单段/多段）
-  /// - fileSize >= [largeFileSizeThreshold] → background（本引擎）
+  /// 路由规则（AD1 修正版）：
+  /// - ctx.proxy != null   → dio（自研引擎，代理按任务区分）
+  /// - fileSize == null     → dio（未知大小，保守走自研引擎）
+  /// - fileSize > [backgroundEngineMaxBytes]  → dio（自研引擎，内部自行决定单段/多段）
+  /// - fileSize <= [backgroundEngineMaxBytes] → background（background_downloader）
   static DownloadEngineRoute routeDecision(
     DownloadContext ctx, {
     @Deprecated('路由不再依赖多段判定，保留参数以兼容调用方') bool multiSegmentEnabled = false,
@@ -123,17 +123,17 @@ class BackgroundDownloadEngine {
       return DownloadEngineRoute.legacy;
     }
 
-    // 未知文件大小：保守走 legacy
+    // 未知文件大小：保守走自研引擎
     if (ctx.fileSize == null) {
       return DownloadEngineRoute.legacy;
     }
 
-    // 大文件（≥ 420MB）走 background_downloader，小文件走 legacy
-    if (ctx.fileSize! >= largeFileSizeThreshold) {
-      return DownloadEngineRoute.background;
+    // 大文件（> 450MB）走自研引擎，≤450MB 走 background_downloader
+    if ((ctx.fileSize ?? -1) > backgroundEngineMaxBytes) {
+      return DownloadEngineRoute.legacy;
     }
 
-    return DownloadEngineRoute.legacy;
+    return DownloadEngineRoute.background;
   }
 
   // ═══════════════════════════════════════════════════════════
