@@ -270,6 +270,27 @@ void main() {
     return channel;
   }
 
+  /// 向内存 DAO 预置应用数据（适配 getAllApps 只读库语义）。
+  /// getAllApps 改为读 appDao.getAppsByChannel(channelKey) 后，
+  /// 脚本不再驱动 getAllApps 数据，需在 setup 阶段预置。
+  Future<void> seedAppsFor(
+    String channelCode,
+    List<({String appId, String name})> apps,
+  ) async {
+    for (final app in apps) {
+      await appDao.insertApp(ChannelAddedApp(
+        channelCode: channelCode,
+        appId: app.appId,
+        name: app.name,
+        user: '',
+        repositories: '',
+        icon: '',
+        description: '',
+        addTime: 0,
+      ));
+    }
+  }
+
   group('DiscoveryLogic 脚本渠道按 code 独立显示', () {
     test('① 未注册脚本渠道：sortedChannelCodes 仅含已加载渠道（空）', () {
       final logic = DiscoveryLogic();
@@ -288,6 +309,13 @@ void main() {
     });
 
     test('③ loadData 后 channelApps 有两个独立槽位（code 键），数据不串', () async {
+      // B3 适配：getAllApps 只读本地已添加库 → 预置 DAO 数据（不再依赖脚本执行）
+      await seedAppsFor('js_pingan', [
+        (appId: 'com.a.one', name: 'App A One'),
+      ]);
+      await seedAppsFor('js_vivo', [
+        (appId: 'com.b.one', name: 'App B One'),
+      ]);
       await registerScriptChannel('js_pingan', _scriptA);
       await registerScriptChannel('js_vivo', _scriptB);
 
@@ -306,6 +334,13 @@ void main() {
     });
 
     test('④ selectedChannel 按 code 切换', () async {
+      // B3 适配：getAllApps 只读本地已添加库 → 预置 DAO 数据
+      await seedAppsFor('js_pingan', [
+        (appId: 'com.a.one', name: 'App A One'),
+      ]);
+      await seedAppsFor('js_vivo', [
+        (appId: 'com.b.one', name: 'App B One'),
+      ]);
       await registerScriptChannel('js_pingan', _scriptA);
       await registerScriptChannel('js_vivo', _scriptB);
 
@@ -336,6 +371,13 @@ void main() {
 
     test('⑤ 重启模拟：重新注册渠道后再次加载，各自槽位数据仍在（不复盖丢失）',
         () async {
+      // B3 适配：getAllApps 只读本地已添加库 → 预置 DAO 数据
+      await seedAppsFor('js_pingan', [
+        (appId: 'com.a.one', name: 'App A One'),
+      ]);
+      await seedAppsFor('js_vivo', [
+        (appId: 'com.b.one', name: 'App B One'),
+      ]);
       await registerScriptChannel('js_pingan', _scriptA);
       await registerScriptChannel('js_vivo', _scriptB);
 

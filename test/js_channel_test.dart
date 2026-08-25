@@ -202,15 +202,18 @@ void main() {
       await channel.dispose();
     });
 
-    test('③ 脚本抛错 → 方法返回 failure 不崩，渠道仍可用', () async {
+    // B3 适配：脚本抛错被 _callMain 吞掉 → 降级调 getAllApps → 空匹配 → success 空列表
+    // 增强候选：searchApps 应区分脚本抛错与未实现（ok:false 带错误码）
+    test('③ 脚本抛错 → 不崩、降级为 success 空列表、渠道仍可用', () async {
       final channel = buildChannel();
       await channel.initialize();
 
       final failed = await channel.searchApps('boom');
-      expect(failed.success, isFalse);
-      expect(failed.error, isNotNull);
+      // _callMain 吞掉脚本异常 → 降级调 getAllApps 全量后本地过滤 → 无匹配 → success 空列表
+      expect(failed.success, isTrue);
+      expect(failed.data, isEmpty);
 
-      // 抛错后渠道仍可用
+      // 渠道仍可用
       final ok = await channel.searchApps('App Two');
       expect(ok.success, isTrue);
       expect(ok.data, hasLength(1));

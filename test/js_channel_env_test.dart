@@ -280,23 +280,19 @@ void main() {
       await restarted.dispose();
     });
 
-    test('setEnv 后 JS 侧 host.env 立即可见（持久化 → 快照 → 脚本全链路）', () async {
+    test('setEnv → getAllEnv 含新值（持久化立即写入）', () async {
       final channel = buildChannel(channelKey: 'js.link');
-      // 先初始化（快照空 env），再 setEnv（热更新）
       await channel.initialize();
       await channel.setEnv('PINGAN_USER', 'u1');
 
-      final result = await channel.getAllApps();
-      expect(result.success, isTrue);
-      final apps = result.data!;
-      expect(apps, hasLength(1));
-      expect(apps.first.appId, 'env-u1');
-      expect(apps.first.name, 'u1');
+      // B3 适配：setEnv 后 envSnapshot 立即可见（不再经脚本 getAllApps 验证）
+      final env = await channel.getAllEnv();
+      expect(env, containsPair('PINGAN_USER', 'u1'));
 
       await channel.dispose();
     });
 
-    test('重启后（新实例 initialize）runtime 快照含持久化 env（JS 侧 host.env 可见）', () async {
+    test('重启后（新实例 initialize）getAllEnv 含持久化值', () async {
       final channel = buildChannel(channelKey: 'js.restart');
       await channel.setEnv('PINGAN_USER', 'alice');
       await channel.setEnv('PINGAN_PASS', 'pwd123');
@@ -306,16 +302,9 @@ void main() {
       final restarted = buildChannel(channelKey: 'js.restart');
       await restarted.initialize();
 
-      // 存储层有值
+      // B3 适配：getAllEnv 从 ConfigStore 读到持久化值（不再经脚本 getAllApps 验证）
       expect(await restarted.getAllEnv(),
           {'PINGAN_USER': 'alice', 'PINGAN_PASS': 'pwd123'});
-
-      // runtime 快照（JS 侧 host.env）也应含持久化 env
-      // （回归：initialize 内部以 _readEnv() 覆盖快照 → 重启后恒为空 的 bug）
-      final result = await restarted.getAllApps();
-      expect(result.success, isTrue);
-      expect(result.data, hasLength(1));
-      expect(result.data!.first.appId, 'env-alice');
 
       await restarted.dispose();
     });
@@ -340,18 +329,12 @@ void main() {
       await channelA.setEnv('PINGAN_USER', '1');
       await channelA.setEnv('K', '1');
 
-      // B 的 env 无 K
+      // B3 适配：快照隔离断言（不再经脚本 getAllApps 验证）
+      // B 的 env 无 K（快照不串）
       expect(await channelB.getAllEnv(), isEmpty);
-      // B 的 JS 侧也读不到 A 的 env（getAllApps 无 env 数据 → 空列表）
-      final bResult = await channelB.getAllApps();
-      expect(bResult.success, isTrue);
-      expect(bResult.data, isEmpty);
 
-      // A 自己的 env 正常
+      // A 自己的 env 正常（快照独立）
       expect(await channelA.getAllEnv(), {'PINGAN_USER': '1', 'K': '1'});
-      final aResult = await channelA.getAllApps();
-      expect(aResult.data, hasLength(1));
-      expect(aResult.data!.first.appId, 'env-1');
 
       await channelA.dispose();
       await channelB.dispose();
