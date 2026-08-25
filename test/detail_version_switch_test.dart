@@ -1307,9 +1307,6 @@ void main() {
     await tester.pump();
     logic.state.errorMessage.value = '';
 
-    // prefill 纪元：step② 无条件注入 prefill proxy（覆盖先期手动构造），
-    // 且 getAppDetail null 失败路径不复位 downloadsLoading —— 等 load 落定后
-    // 重新注入全量 proxy 并复位下载区 loading，构造「详情已就绪」的真实消费场景。
     logic.state.detailInfo.value = JsChannelDetailProxy({
       'appId': 'com.example.one',
       'name': 'App One',
@@ -1320,9 +1317,6 @@ void main() {
         {'url': 'https://example.com/old.apk', 'name': 'old.apk'},
       ],
     });
-    logic.state.downloadsLoading.value = false;
-    logic.state.readmeLoading.value = false;
-    logic.state.statisticsLoading.value = false;
     await tester.pump();
 
     // 初始下载区显示旧下载项
