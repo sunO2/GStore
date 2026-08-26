@@ -243,8 +243,7 @@ class BackgroundDownloadEngine {
         ds.status = DownloadStatus.DOWNLOAD_LOADING;
         break;
       case TaskStatus.complete:
-        ds.count = ds.total;
-        ds.status = DownloadStatus.DOWNLOAD_SUCCESS;
+        ds.downloadSuccess(); // count/status/stream/DB 一步到位
         break;
       case TaskStatus.failed:
       case TaskStatus.notFound:
