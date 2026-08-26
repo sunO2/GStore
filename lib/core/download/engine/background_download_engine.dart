@@ -191,6 +191,14 @@ class BackgroundDownloadEngine {
     // 追踪状态（供 queryAllTaskStates 使用）
     _taskStatusMap[taskId] = status;
 
+    // failed/notFound → 记录异常详情，便于 logcat 诊断
+    if (status == TaskStatus.failed || status == TaskStatus.notFound) {
+      final ex = update.exception;
+      debugPrint('BackgroundDownloadEngine: 下载失败 taskId=$taskId '
+          'status=$status httpCode=${ex is TaskHttpException ? ex.httpResponseCode : null} '
+          'desc=${ex?.description ?? ex}');
+    }
+
     // 映射到 DownloadStatus 状态机
     applyTaskStatus(ds, status);
 
