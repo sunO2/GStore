@@ -739,7 +739,12 @@ class DownloadService extends GetxService
         context.downloadUrl,
         options: Options(validateStatus: (_) => true, followRedirects: true),
       );
-      final realUri = resp.realUri.toString();
+      var realUri = resp.realUri.toString();
+      // HTTP→HTTPS 转写：Android 明文流量限制兜底
+      if (realUri.startsWith('http://')) {
+        realUri = 'https://${realUri.substring(7)}';
+        debugPrint('DownloadService: HTTP→HTTPS 转写 $realUri');
+      }
       if (realUri.isNotEmpty && realUri != context.downloadUrl) {
         debugPrint('DownloadService: URL 重定向已解析 ${context.downloadUrl} → $realUri');
         resolvedContext = context.copyWith(finalUrl: realUri);

@@ -15,7 +15,8 @@
         android:label="GStore"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher_foreground"
-        android:largeHeap="true">
+        android:largeHeap="true"
+        android:networkSecurityConfig="@xml/network_security_config">
         <activity
             android:name=".MainActivity"
             android:exported="true"
