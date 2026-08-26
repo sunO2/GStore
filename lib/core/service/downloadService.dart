@@ -724,7 +724,7 @@ class DownloadService extends GetxService
     }
   }
 
-  /// BackgroundDownloadEngine 路径（AD1：无代理 + 非多段）
+  /// BackgroundDownloadEngine 路径（AD1：无代理 + ≤450MB）
   /// 将下载委托给 BackgroundDownloadEngine，完成后执行成功钩子序列
   Future<void> _performDownloadBackground(
     DownloadStatus downloadStatus, {
@@ -732,12 +732,28 @@ class DownloadService extends GetxService
     required int notifId,
     required String notifTitle,
   }) async {
+    // 预解析302重定向：BD引擎Android端不跟随重定向（Dio自动跟随）
+    DownloadContext resolvedContext = context;
+    try {
+      final resp = await _dio.head(
+        context.downloadUrl,
+        options: Options(validateStatus: (_) => true, followRedirects: true),
+      );
+      final realUri = resp.realUri.toString();
+      if (realUri.isNotEmpty && realUri != context.downloadUrl) {
+        debugPrint('DownloadService: URL 重定向已解析 ${context.downloadUrl} → $realUri');
+        resolvedContext = context.copyWith(finalUrl: realUri);
+      }
+    } catch (e) {
+      debugPrint('DownloadService: URL 预解析跳过（将用原URL）: $e');
+    }
+
     final engine = _bgEngine ??= BackgroundDownloadEngine(
       successHook: _DownloadServiceSuccessHook(this),
     );
 
     final tag = '${downloadStatus.appId}-${downloadStatus.version}-${downloadStatus.fileName}';
-    final enqueued = await engine.enqueue(context, downloadStatus);
+    final enqueued = await engine.enqueue(resolvedContext, downloadStatus);
     if (!enqueued) {
       appLog.error('DownloadService: BackgroundDownloadEngine enqueue 失败 - ${downloadStatus.fileName}');
       downloadStatus.downloadError();
