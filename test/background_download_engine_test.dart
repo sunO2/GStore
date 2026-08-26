@@ -352,5 +352,28 @@ void main() {
 
       engine.dispose();
     });
+
+    // ─── R6: 进度通知 UI（applyTaskProgress 必须触发 observer 流）───
+    test('R6: applyTaskProgress 触发 observer 通知 UI', () {
+      final engine = BackgroundDownloadEngine();
+      final ds = _makeDownloadStatus('r6-progress-notify');
+
+      // 注册 observer 监听
+      final events = <DownloadStatus>[];
+      ds.observer.listen(events.add);
+
+      // 50% 进度（1MB 文件）
+      engine.applyTaskProgress(ds, 0.5, expectedFileSize: 1024 * 1024);
+      expect(ds.count, 512 * 1024);
+      expect(ds.total, 1024 * 1024);
+      expect(events, hasLength(1));
+      expect(events.first.count, 512 * 1024);
+
+      // 80% 进度（文件大小未知时保持 count/total 但推送通知）
+      engine.applyTaskProgress(ds, 0.8);
+      expect(events, hasLength(2)); // 第二次通知到达
+
+      engine.dispose();
+    });
   });
 }

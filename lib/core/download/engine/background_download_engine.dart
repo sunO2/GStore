@@ -267,13 +267,10 @@ class BackgroundDownloadEngine {
     int expectedFileSize = -1,
   }) {
     if (expectedFileSize > 0) {
-      // 有明确文件大小：更新 total 并按比例计算 count
-      ds.total = expectedFileSize;
-      ds.count = (progress * expectedFileSize).round();
+      ds.updateDownload((progress * expectedFileSize).round(), expectedFileSize);
     } else {
-      // expectedFileSize=-1 或未知：保持 total 不变，仅刷新状态为 LOADING
+      ds.updateDownload(ds.count, ds.total);
     }
-    ds.status = DownloadStatus.DOWNLOAD_LOADING;
   }
 
   // ═══════════════════════════════════════════════════════════
