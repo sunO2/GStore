@@ -326,6 +326,7 @@ class DownloadService extends GetxService
     }
 
     // 有代理 → 单段（原逻辑）
+    debugPrint('DownloadService: 路由到 Dio 单段（有代理或无上下文）- ${downloadStatus.fileName} ${_formatSize(downloadStatus.total)}');
     await _performDownloadSingle(
       downloadStatus,
       context: context,
@@ -333,6 +334,14 @@ class DownloadService extends GetxService
       notifId: notifId,
       notifTitle: notifTitle,
     );
+  }
+
+  /// 文件大小格式化（仅用于日志）
+  String _formatSize(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1048576) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    if (bytes < 1073741824) return '${(bytes / 1048576).toStringAsFixed(1)} MB';
+    return '${(bytes / 1073741824).toStringAsFixed(2)} GB';
   }
 
   /// 判断是否使用多段下载
