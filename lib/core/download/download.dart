@@ -18,6 +18,3 @@ export 'exception/DownloadException.dart';
 export 'segment/segment_planner.dart';
 export 'segment/segment_downloader.dart';
 export 'segment/segment_merger.dart';
-
-// 混合下载引擎（background_downloader 适配层）
-export 'engine/background_download_engine.dart';

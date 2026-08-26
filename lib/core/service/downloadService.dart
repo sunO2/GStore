@@ -9,7 +9,6 @@ import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:dio/dio.dart';
 import 'package:gstore/http/download/DownloadStatusDataBase.dart';
 import 'package:gstore/core/download/model/DownloadContext.dart';
-import 'package:gstore/core/download/engine/background_download_engine.dart';
 import 'package:gstore/core/service/download_notification_service.dart';
 import 'package:gstore/core/service/apk_info_service.dart';
 
@@ -72,9 +71,6 @@ class DownloadService extends GetxService
 
   /// 多段下载开关的订阅
   StreamSubscription? _multiSegmentSub;
-
-  /// BackgroundDownloadEngine 单例（懒初始化，首次路由到 BD 路径时创建）
-  BackgroundDownloadEngine? _bgEngine;
 
   DownloadService(this._dio);
 
@@ -275,7 +271,6 @@ class DownloadService extends GetxService
   }
 
   /// 执行实际下载（支持断点续传、非Range服务器处理、失败自动重试）
-  /// 混合路由（AD1）：多段 → legacy；无代理 → BackgroundDownloadEngine；有代理 → Dio 单段
   Future<void> _performDownload(
     DownloadStatus downloadStatus, {
     DownloadContext? context,
@@ -294,62 +289,21 @@ class DownloadService extends GetxService
       downloadStatus.fileName,
     );
 
-    // AD1 路由判定：450MB 阈值 / 代理优先（始终先做路由分发）
-    // 构造路由所需的 DownloadContext（context 为 null 时用 downloadStatus 回填）
-    final routeCtx = context ??
-        DownloadContext(
-          originalUrl: downloadStatus.downloadUrl,
-          channelType: ChannelType.github,
-          fileName: downloadStatus.fileName,
-          fileSize: downloadStatus.total,
-          version: downloadStatus.version,
-        );
-    final route = BackgroundDownloadEngine.routeDecision(
-      routeCtx,
-      multiSegmentEnabled: _multiSegmentEnabled,
-    );
-    debugPrint('DownloadService._performDownload: file=${downloadStatus.fileName} '
-        'size=${_formatSize(downloadStatus.total)} route=$route '
-        'proxy=${context?.proxy != null}');
+    // 读取多段下载配置
+    final useMultiSegment = await _shouldUseMultiSegment(downloadStatus, breakPoint);
 
-    // >450MB 或有代理 → 自研引擎（内部自行决定多段/单段）
-    if (route == DownloadEngineRoute.legacy) {
-      final useMultiSegment = await _shouldUseMultiSegment(downloadStatus, breakPoint);
-      if (useMultiSegment) {
-        debugPrint('DownloadService: 自研多段 - ${downloadStatus.fileName}');
-        await _performDownloadMultiSegment(
-          downloadStatus,
-          context: context,
-          notifId: notifId,
-          notifTitle: notifTitle,
-        );
-        return;
-      }
-      debugPrint('DownloadService: Dio 单段 - ${downloadStatus.fileName} ${_formatSize(downloadStatus.total)}');
-      await _performDownloadSingle(
+    if (useMultiSegment) {
+      appLog.info('DownloadService: 使用多段下载 - ${downloadStatus.fileName} (${downloadStatus.total} B)');
+      await _performDownloadMultiSegment(
         downloadStatus,
         context: context,
-        breakPoint: breakPoint,
         notifId: notifId,
         notifTitle: notifTitle,
       );
       return;
     }
 
-    // ≤450MB 无代理 → background_downloader
-    if (route == DownloadEngineRoute.background) {
-      debugPrint('DownloadService: BackgroundDownloadEngine - ${downloadStatus.fileName} ${_formatSize(downloadStatus.total)}');
-      await _performDownloadBackground(
-        downloadStatus,
-        context: routeCtx,
-        notifId: notifId,
-        notifTitle: notifTitle,
-      );
-      return;
-    }
-
-    // 兜底（不应到达）
-    debugPrint('DownloadService: 未知路由兜底到单段 - ${downloadStatus.fileName}');
+    // 单段（原逻辑）
     await _performDownloadSingle(
       downloadStatus,
       context: context,
@@ -357,14 +311,6 @@ class DownloadService extends GetxService
       notifId: notifId,
       notifTitle: notifTitle,
     );
-  }
-
-  /// 文件大小格式化（仅用于日志）
-  String _formatSize(int bytes) {
-    if (bytes < 1024) return '$bytes B';
-    if (bytes < 1048576) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    if (bytes < 1073741824) return '${(bytes / 1048576).toStringAsFixed(1)} MB';
-    return '${(bytes / 1073741824).toStringAsFixed(2)} GB';
   }
 
   /// 判断是否使用多段下载
@@ -724,86 +670,6 @@ class DownloadService extends GetxService
     }
   }
 
-  /// BackgroundDownloadEngine 路径（AD1：无代理 + ≤450MB）
-  /// 将下载委托给 BackgroundDownloadEngine，完成后执行成功钩子序列
-  Future<void> _performDownloadBackground(
-    DownloadStatus downloadStatus, {
-    required DownloadContext context,
-    required int notifId,
-    required String notifTitle,
-  }) async {
-    // 预解析302重定向：BD引擎Android端不跟随重定向（Dio自动跟随）
-    DownloadContext resolvedContext = context;
-    try {
-      final resp = await _dio.head(
-        context.downloadUrl,
-        options: Options(validateStatus: (_) => true, followRedirects: true),
-      );
-      var realUri = resp.realUri.toString();
-      // HTTP→HTTPS 转写：Android 明文流量限制兜底
-      if (realUri.startsWith('http://')) {
-        realUri = 'https://${realUri.substring(7)}';
-        debugPrint('DownloadService: HTTP→HTTPS 转写 $realUri');
-      }
-      if (realUri.isNotEmpty && realUri != context.downloadUrl) {
-        debugPrint('DownloadService: URL 重定向已解析 ${context.downloadUrl} → $realUri');
-        resolvedContext = context.copyWith(finalUrl: realUri);
-      }
-    } catch (e) {
-      debugPrint('DownloadService: URL 预解析跳过（将用原URL）: $e');
-    }
-
-    final engine = _bgEngine ??= BackgroundDownloadEngine(
-      successHook: _DownloadServiceSuccessHook(this),
-    );
-
-    final tag = '${downloadStatus.appId}-${downloadStatus.version}-${downloadStatus.fileName}';
-    final enqueued = await engine.enqueue(resolvedContext, downloadStatus);
-    if (!enqueued) {
-      appLog.error('DownloadService: BackgroundDownloadEngine enqueue 失败 - ${downloadStatus.fileName}');
-      downloadStatus.downloadError();
-      DownloadNotificationService.instance.onDownloadError(notifId, notifTitle);
-      return;
-    }
-
-    appLog.info('DownloadService: 已委托 BackgroundDownloadEngine - $tag');
-    // BD 引擎通过 updates 流异步通知完成/失败，此处不阻塞等待
-    // 成功钩子由 engine 内部 _onDownloadComplete 触发
-  }
-
-  /// 提取的成功收尾钩子（AD2：两条路径共用，禁止复制逻辑）
-  /// 序列：install → downloadSuccess → notifyComplete → afterInstalled → apkInfo
-  @visibleForTesting
-  void performSuccessHook(
-    DownloadStatus downloadStatus, {
-    required int notifId,
-    required String notifTitle,
-  }) {
-    final file = File(downloadStatus.savePath);
-
-    // 1. 触发安装
-    _install(downloadStatus.fileName, downloadStatus.savePath);
-
-    // 2. 标记成功
-    downloadStatus.downloadSuccess();
-
-    // 3. 通知完成
-    DownloadNotificationService.instance.onDownloadComplete(notifId);
-
-    // 4. 刷新更新状态
-    _afterDownloadInstalled(downloadStatus);
-
-    // 5. APK 文件：异步解析并更新真实包名/图标
-    if (file.path.endsWith('.apk')) {
-      unawaited(
-        ApkInfoService.instance.handleDownloadedApk(
-          appId: downloadStatus.appId,
-          apkPath: file.path,
-        ),
-      );
-    }
-  }
-
   _install(String fileName, String filePath) {
     if (GetPlatform.isAndroid && fileName.endsWith(".apk")) {
       // 安装模块下线 → 注册表取不到服务，短路不安装
@@ -826,38 +692,5 @@ class DownloadService extends GetxService
     } catch (e) {
       // 更新状态刷新失败不影响下载本身
     }
-  }
-}
-
-/// BackgroundDownloadEngine 的成功收尾钩子实现
-/// 委托给 DownloadService.performSuccessHook，禁止复制逻辑
-class _DownloadServiceSuccessHook implements DownloadSuccessHook {
-  final DownloadService _service;
-
-  _DownloadServiceSuccessHook(this._service);
-
-  @override
-  Future<void> onInstall(String fileName, String savePath) async {
-    _service._install(fileName, savePath);
-  }
-
-  @override
-  Future<void> onNotifyComplete(int notifId, String notifTitle) async {
-    DownloadNotificationService.instance.onDownloadComplete(notifId);
-  }
-
-  @override
-  Future<void> onApkInfo({required String appId, required String apkPath}) async {
-    unawaited(
-      ApkInfoService.instance.handleDownloadedApk(
-        appId: appId,
-        apkPath: apkPath,
-      ),
-    );
-  }
-
-  @override
-  Future<void> onAfterDownloadInstalled(DownloadStatus status) async {
-    _service._afterDownloadInstalled(status);
   }
 }
