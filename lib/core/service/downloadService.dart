@@ -294,39 +294,62 @@ class DownloadService extends GetxService
       downloadStatus.fileName,
     );
 
-    // 读取多段下载配置
-    final useMultiSegment = await _shouldUseMultiSegment(downloadStatus, breakPoint);
+    // AD1 路由判定：450MB 阈值 / 代理优先（始终先做路由分发）
+    // 构造路由所需的 DownloadContext（context 为 null 时用 downloadStatus 回填）
+    final routeCtx = context ??
+        DownloadContext(
+          originalUrl: downloadStatus.downloadUrl,
+          channelType: ChannelType.github,
+          fileName: downloadStatus.fileName,
+          fileSize: downloadStatus.total,
+          version: downloadStatus.version,
+        );
+    final route = BackgroundDownloadEngine.routeDecision(
+      routeCtx,
+      multiSegmentEnabled: _multiSegmentEnabled,
+    );
+    debugPrint('DownloadService._performDownload: file=${downloadStatus.fileName} '
+        'size=${_formatSize(downloadStatus.total)} route=$route '
+        'proxy=${context?.proxy != null}');
 
-    if (useMultiSegment) {
-      appLog.info('DownloadService: 使用多段下载 - ${downloadStatus.fileName} (${downloadStatus.total} B)');
-      await _performDownloadMultiSegment(
+    // >450MB 或有代理 → 自研引擎（内部自行决定多段/单段）
+    if (route == DownloadEngineRoute.legacy) {
+      final useMultiSegment = await _shouldUseMultiSegment(downloadStatus, breakPoint);
+      if (useMultiSegment) {
+        debugPrint('DownloadService: 自研多段 - ${downloadStatus.fileName}');
+        await _performDownloadMultiSegment(
+          downloadStatus,
+          context: context,
+          notifId: notifId,
+          notifTitle: notifTitle,
+        );
+        return;
+      }
+      debugPrint('DownloadService: Dio 单段 - ${downloadStatus.fileName} ${_formatSize(downloadStatus.total)}');
+      await _performDownloadSingle(
         downloadStatus,
         context: context,
+        breakPoint: breakPoint,
         notifId: notifId,
         notifTitle: notifTitle,
       );
       return;
     }
 
-    // 混合路由（AD1）：无代理 + 非多段 → BackgroundDownloadEngine
-    if (context != null &&
-        context.proxy == null &&
-        BackgroundDownloadEngine.routeDecision(
-          context,
-          multiSegmentEnabled: _multiSegmentEnabled,
-        ) == DownloadEngineRoute.background) {
-      appLog.info('DownloadService: 路由到 BackgroundDownloadEngine - ${downloadStatus.fileName}');
+    // ≤450MB 无代理 → background_downloader
+    if (route == DownloadEngineRoute.background) {
+      debugPrint('DownloadService: BackgroundDownloadEngine - ${downloadStatus.fileName} ${_formatSize(downloadStatus.total)}');
       await _performDownloadBackground(
         downloadStatus,
-        context: context,
+        context: routeCtx,
         notifId: notifId,
         notifTitle: notifTitle,
       );
       return;
     }
 
-    // 有代理 → 单段（原逻辑）
-    debugPrint('DownloadService: 路由到 Dio 单段（有代理或无上下文）- ${downloadStatus.fileName} ${_formatSize(downloadStatus.total)}');
+    // 兜底（不应到达）
+    debugPrint('DownloadService: 未知路由兜底到单段 - ${downloadStatus.fileName}');
     await _performDownloadSingle(
       downloadStatus,
       context: context,

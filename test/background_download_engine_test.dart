@@ -142,6 +142,29 @@ void main() {
     });
   });
 
+  // ─── R1.5: 路由顺序修正断言 ──────────────────────────────────
+
+  group('R1.5: 路由顺序修正（450MB 阈值优先于多段判定）', () {
+    test('180MB + 无代理 + multiSegmentEnabled=true → background（路由规则盖过多段开关）', () {
+      final ctx = _makeCtx(fileSize: 180 * 1024 * 1024);
+      final decision = BackgroundDownloadEngine.routeDecision(
+        ctx,
+        multiSegmentEnabled: true,
+      );
+      // ≤450MB 无代理 → background，即使 multiSegmentEnabled=true 也不走 legacy
+      expect(decision, DownloadEngineRoute.background);
+    });
+
+    test('180MB + 无代理 + multiSegmentEnabled=false → background（开关关也走 BD）', () {
+      final ctx = _makeCtx(fileSize: 180 * 1024 * 1024);
+      final decision = BackgroundDownloadEngine.routeDecision(
+        ctx,
+        multiSegmentEnabled: false,
+      );
+      expect(decision, DownloadEngineRoute.background);
+    });
+  });
+
   // ─── R2: 状态映射测试 ────────────────────────────────────────
 
   group('R2: 状态映射（BD TaskStatus/Progress → DownloadStatus）', () {
