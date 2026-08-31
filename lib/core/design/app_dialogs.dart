@@ -600,7 +600,9 @@ class AppDialogs {
   // ========== Loading ==========
 
   /// 显示加载对话框
+  /// 测试环境（无 GetMaterialApp/overlay）静默跳过，避免 Get.dialog NPE（与 snackbar fallback 同守卫）。
   static void showLoading({String message = '加载中...'}) {
+    if (Get.overlayContext == null) return;
     Get.dialog(
       _buildLoadingDialog(message),
       barrierDismissible: false,

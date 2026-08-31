@@ -581,7 +581,7 @@ void main() {
       );
       detail.bind(state, cb);
 
-      // 向后兼容：既有 6 个 ui.* handler 未删改 + 新增 ui.setBusy 共 7 个
+      // 向后兼容：既有 7 个 ui.* handler 未删改 + ui.download 共 8 个
       final host = detail.nativeHostForTest;
       expect(
         host.names,
@@ -595,7 +595,8 @@ void main() {
       );
       expect(host.names, contains('ui.updateDetail'));
       expect(host.names, contains('ui.setBusy'));
-      expect(host.names, hasLength(7));
+      expect(host.names, contains('ui.download'));
+      expect(host.names, hasLength(8));
 
       // 经桥触发：payload 等价转发到 cb.updateDetail 并写入 state
       await host['ui.updateDetail']!({

@@ -486,7 +486,7 @@ class _AppInfoSectionState extends State<AppInfoSection> {
         if (version != null)
           _InfoRow(
             icon: Icons.tag,
-            label: '最新版本',
+            label: '当前版本',
             value: version,
           ),
         if (developer != null)
