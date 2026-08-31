@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_html/flutter_html.dart';
 import 'package:get/get.dart';
@@ -5,8 +7,9 @@ import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/design/app_borders.dart';
-import 'package:gstore/http/download/DownloadStatus.dart';
+import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/page/detail/widgets.dart';
+import 'package:installed_apps/installed_apps.dart';
 import 'logic.dart';
 import 'state.dart';
 
@@ -33,37 +36,83 @@ class DetailPage extends StatelessWidget {
         final data = state.currentDownload.value;
         if (data == null) return const SizedBox();
 
-        final total = data.total;
-        final count = data.count;
-        // 防止除零错误
-        final hasTotal = total > 0;
-        final progress = hasTotal ? (count / total).clamp(0.0, 1.0) : null;
-        final percent =
-            hasTotal ? ((count / total) * 100).toInt().clamp(0, 100) : 0;
-        final downloading = data.status == DownloadStatus.DOWNLOAD_LOADING;
-
-        if (!downloading && data.status != DownloadStatus.DOWNLOAD_SUCCESS) {
-          return const SizedBox();
-        }
-
-        return FloatingActionButton(
-          onPressed: null,
-          backgroundColor: downloading
-              ? null
-              : Theme.of(context).colorScheme.primaryContainer,
-          child: Stack(
-            alignment: AlignmentDirectional.center,
-            children: [
-              CircularProgressIndicator(
-                value: progress,
+        // FAB 状态机：按 DownloadStatusEnum 路由，下载中禁用、终态可点。
+        // 已完成任务可安装，失败可重试，暂停可继续，已取消无操作。
+        switch (data.status) {
+          // 下载中 / 连接中 / 排队中：禁用进度环
+          case DownloadStatusEnum.downloading:
+          case DownloadStatusEnum.connecting:
+          case DownloadStatusEnum.queued:
+            final total = data.total;
+            final count = data.received;
+            // 防止除零错误
+            final hasTotal = total > 0;
+            final progress =
+                hasTotal ? (count / total).clamp(0.0, 1.0) : null;
+            final percent =
+                hasTotal ? ((count / total) * 100).toInt().clamp(0, 100) : 0;
+            return FloatingActionButton(
+              onPressed: null,
+              child: Stack(
+                alignment: AlignmentDirectional.center,
+                children: [
+                  CircularProgressIndicator(
+                    value: progress,
+                  ),
+                  Text(
+                    hasTotal ? "$percent" : "...",
+                    style: Theme.of(context).textTheme.labelSmall,
+                  )
+                ],
               ),
-              Text(
-                hasTotal ? "$percent" : "...",
-                style: Theme.of(context).textTheme.labelSmall,
-              )
-            ],
-          ),
-        );
+            );
+
+          // 已下载完成：可点击安装
+          case DownloadStatusEnum.completed:
+            return FloatingActionButton.extended(
+              onPressed: () => logic.installCurrentTask(data),
+              backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+              foregroundColor:
+                  Theme.of(context).colorScheme.onPrimaryContainer,
+              icon: const Icon(Icons.system_update_alt),
+              label: Text(
+                '安装',
+                style: Theme.of(context).textTheme.labelLarge,
+              ),
+            );
+
+          // 下载失败：可点击重试（断点续传）
+          case DownloadStatusEnum.failed:
+            return FloatingActionButton.extended(
+              onPressed: () => logic.retryCurrentTask(data),
+              backgroundColor: Theme.of(context).colorScheme.tertiaryContainer,
+              foregroundColor:
+                  Theme.of(context).colorScheme.onTertiaryContainer,
+              icon: const Icon(Icons.refresh),
+              label: Text(
+                '重试',
+                style: Theme.of(context).textTheme.labelLarge,
+              ),
+            );
+
+          // 下载暂停：可点击继续
+          case DownloadStatusEnum.paused:
+            return FloatingActionButton.extended(
+              onPressed: () => logic.resumeCurrentTask(data),
+              backgroundColor: Theme.of(context).colorScheme.secondaryContainer,
+              foregroundColor:
+                  Theme.of(context).colorScheme.onSecondaryContainer,
+              icon: const Icon(Icons.play_arrow),
+              label: Text(
+                '继续',
+                style: Theme.of(context).textTheme.labelLarge,
+              ),
+            );
+
+          // 已取消：无操作可做
+          case DownloadStatusEnum.cancelled:
+            return const SizedBox();
+        }
       }),
     );
   }
@@ -198,32 +247,11 @@ class DetailPage extends StatelessWidget {
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // 图标
-                Hero(
-                  tag: icon,
-                  child: ClipRRect(
-                    borderRadius: AppRadius.allMD,
-                    child: icon.isNotEmpty
-                        ? AppIcon(
-                            url: icon,
-                            width: AppSpacing.xxxl * 2,
-                            height: AppSpacing.xxxl * 2,
-                            borderRadius: 0,
-                          )
-                        : Container(
-                            width: AppSpacing.xxxl * 2,
-                            height: AppSpacing.xxxl * 2,
-                            color: Theme.of(context)
-                                .colorScheme
-                                .surfaceContainerHighest,
-                            child: Icon(
-                              Icons.apps,
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .onSurfaceVariant,
-                            ),
-                          ),
-                  ),
+                // 图标（已安装：点按启动应用 / 长按打开系统应用详情；未安装无交互）
+                _buildHeaderIcon(
+                  context,
+                  icon,
+                  state.installInfo.value?.packageName,
                 ),
                 const SizedBox(width: AppSpacing.lg),
                 // 名称 + 版本 + 描述
@@ -235,9 +263,8 @@ class DetailPage extends StatelessWidget {
                         name,
                         style: Theme.of(context).textTheme.titleLarge,
                       ),
-                      // 版本信息（已安装显示当前版本 + 最新角标；未安装显示最新版本）
-                      if ((version != null && version.isNotEmpty) ||
-                          state.installInfo.value != null)
+                      // 仅已安装显示真实版本（当前版本 + 有新版本时右上角 v最新 角标）；未安装不显示版本
+                      if (state.installInfo.value != null)
                         Padding(
                           padding: const EdgeInsets.only(top: AppSpacing.xs),
                           child: VersionBadge(
@@ -304,6 +331,52 @@ class DetailPage extends StatelessWidget {
         );
       }),
     );
+  }
+
+  /// 头部图标：已安装应用点按启动 / 长按进入系统应用详情；未安装仅静态展示。
+  Widget _buildHeaderIcon(
+    BuildContext context,
+    String icon,
+    String? installedPackageName,
+  ) {
+    final iconWidget = Hero(
+      tag: icon,
+      child: ClipRRect(
+        borderRadius: AppRadius.allMD,
+        child: icon.isNotEmpty
+            ? AppIcon(
+                url: icon,
+                width: AppSpacing.xxxl * 2,
+                height: AppSpacing.xxxl * 2,
+                borderRadius: 0,
+              )
+            : Container(
+                width: AppSpacing.xxxl * 2,
+                height: AppSpacing.xxxl * 2,
+                color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                child: Icon(
+                  Icons.apps,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+      ),
+    );
+    if (installedPackageName == null || installedPackageName.isEmpty) {
+      return iconWidget;
+    }
+    return GestureDetector(
+      onTap: () => unawaited(_launchInstalledApp(installedPackageName)),
+      onLongPress: () => InstalledApps.openSettings(installedPackageName),
+      child: iconWidget,
+    );
+  }
+
+  /// 启动已安装应用；失败时提示。
+  Future<void> _launchInstalledApp(String packageName) async {
+    final ok = await InstalledApps.startApp(packageName);
+    if (ok != true) {
+      AppDialogs.showError('应用启动失败');
+    }
   }
 
   List<Widget> _buildSections(

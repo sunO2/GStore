@@ -8,8 +8,8 @@ import 'package:flutter/services.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/utils/unit.dart';
 import 'package:gstore/db/apps/AppInfoDatabase.dart';
-import 'package:gstore/http/download/DownloadStatus.dart';
-import 'package:gstore/core/service/downloadService.dart';
+import 'package:gstore/core/module/interfaces/service_interfaces.dart';
+import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/channel/impl/LocalDbChannel.dart';
@@ -17,6 +17,23 @@ import 'package:gstore/page/home/tab/discovery/logic.dart';
 import 'package:gstore/http/github/github_client.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:gstore/db/apps/AppInfoDatabase.dart' as db;
+
+/// 数据库更新结果码（checkUpdate() 返回值的语义契约，勿改动数值）。
+///
+/// 原直接引用旧 `DownloadStatus.DOWNLOAD_SUCCESS/ERROR` 常量（int 3 / -1），
+/// 旧下载管线删除后在此原地定义，供 DbManager 与页面消费方比较返回值。
+abstract final class DbUpdateResult {
+  DbUpdateResult._();
+
+  /// 更新成功（原 DownloadStatus.DOWNLOAD_SUCCESS）
+  static const int success = 3;
+
+  /// 更新失败（原 DownloadStatus.DOWNLOAD_ERROR）
+  static const int error = -1;
+
+  /// 无可用更新
+  static const int noUpdate = -2;
+}
 
 class DBRepository {
   final String target;
@@ -195,8 +212,13 @@ class DbManager extends GetxService {
           final dbDownloadPath = '${appDir.path}/gstore/apps.db.download';
           await File(dbDownloadPath).parent.create(recursive: true);
           debugPrint('DbManager: 数据库下载临时文件: $dbDownloadPath');
-          // download() 会阻塞到下载完成返回，返回的 status 已包含最终状态
-          var status = await Get.find<DownloadService>().download(
+          // download() 会阻塞到下载完成返回，返回的 task 已包含最终状态
+          final service = ModuleManager.instance.get<IDownloadService>();
+          if (service == null) {
+            appLog.error('DbManager: 下载服务未启用');
+            throw StateError('下载服务未启用');
+          }
+          var task = await service.download(
               "com.sunO2.gstore.db",
               "GStore.db",
               version,
@@ -205,8 +227,8 @@ class DbManager extends GetxService {
               downloadSize: assets["size"],
               saveFileName: dbDownloadPath,
               forceDownload: true); // 强制重新下载，确保数据库更新
-          appLog.info('DbManager: 下载完成，状态: ${status.status}, 保存路径: ${status.savePath}');
-          return status;
+          appLog.info('DbManager: 下载完成，状态: ${task.status}, 保存路径: ${task.filePath}');
+          return task;
         },
         loadingWidget: Center(
           child: SizedBox(
@@ -239,7 +261,7 @@ class DbManager extends GetxService {
         ),
         opacity: .0,
       ).then((value) async {
-        if (value.status == DownloadStatus.DOWNLOAD_SUCCESS) {
+        if (value.status == DownloadStatusEnum.completed) {
           appLog.info('DbManager: 下载成功，准备替换数据库');
           final appDir = await getApplicationDocumentsDirectory();
           final dbDownloadPath = '${appDir.path}/gstore/apps.db.download';
@@ -257,11 +279,11 @@ class DbManager extends GetxService {
             debugPrint('DbManager: 文件头校验=${isSqlite ? "有效SQLite" : "无效文件!"}');
             if (!isSqlite) {
               appLog.error('DbManager: 下载文件无效，保留原数据库');
-              return value.status;
+              return DbUpdateResult.success;
             }
           } else {
             appLog.error('DbManager: 下载临时文件不存在，保留原数据库');
-            return value.status;
+            return DbUpdateResult.success;
           }
 
           // 关键步骤（用户提示的正确顺序）：
@@ -292,7 +314,7 @@ class DbManager extends GetxService {
             appLog.info('DbManager: 新数据库文件已就位');
           } catch (e) {
             appLog.error('DbManager: 覆盖新数据库失败 - $e');
-            return value.status;
+            return DbUpdateResult.success;
           }
 
           // 4. 重新打开新的数据库连接
@@ -335,7 +357,9 @@ class DbManager extends GetxService {
         } else {
           appLog.error('DbManager: 下载未成功，状态=${value.status}，保留原数据库');
         }
-        return value.status;
+        return value.status == DownloadStatusEnum.completed
+            ? DbUpdateResult.success
+            : DbUpdateResult.error;
       });
   }
 }

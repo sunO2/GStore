@@ -14,6 +14,22 @@ bool isPmSuccess(String? result) {
   return result.trim().startsWith('Success');
 }
 
+/// am 命令成功判定：am 类命令（如 force-stop）成功时通常无输出（''）。
+/// - null（命令未执行）→ false
+/// - 空输出（''）→ true（am 成功无输出，不再依赖非 null 误判）
+/// - 输出含 'Failure' / 'Exception' / 'Error' / 'Unknown command' → false
+/// - 其它输出 → true
+bool _isAmSuccess(String? result) {
+  if (result == null) return false;
+  final trimmed = result.trim();
+  if (trimmed.isEmpty) return true;
+  final lower = trimmed.toLowerCase();
+  return !(lower.contains('failure') ||
+      lower.contains('exception') ||
+      lower.contains('error') ||
+      lower.contains('unknown command'));
+}
+
 /// 安装方式
 enum InstallMethod {
   /// 系统安装（弹系统确认框）
@@ -134,6 +150,32 @@ class InstallManager extends GetxService implements IInstallService {
     _preferredMethod = method;
   }
 
+  /// Shell 单引号包裹路径，转义字符串内的内嵌单引号（用于拼接 sh -c 命令）
+  String _shQuote(String value) => "'${value.replaceAll("'", r"'\''")}'";
+
+  /// 判断 pm install 结果是否为"用户拒绝安装"（此时不应回退系统安装）
+  bool _isUserRejected(String? result) {
+    if (result == null) return false;
+    final r = result.toLowerCase();
+    return r.contains('rejected permissions') || r.contains('install_failed_aborted');
+  }
+
+  /// 生成"暂存 APK 到 /data/local/tmp 再安装再清理"的 sh -c 兼容命令。
+  /// system_server 无法读取 app 作用域外置存储（Android/data/<pkg>）下的文件，
+  /// pm install 会报 "System server has no access to read file ..."，
+  /// 故先把 APK 复制到 shell 与 system_server 均可读写的 /data/local/tmp 再安装。
+  /// `;` 保证 cp/install 失败时临时文件仍被清理；cp 失败时 `&&` 短路，
+  /// 输出不以 "Success" 开头 → isPmSuccess false → 走既有回退路径。
+  String _stageAndInstallCommand(String filePath) {
+    final stageName = 'gstore_install_'
+        '${DateTime.now().millisecondsSinceEpoch}_'
+        '${filePath.hashCode.abs()}.apk';
+    final stage = '/data/local/tmp/$stageName';
+    return "cp ${_shQuote(filePath)} ${_shQuote(stage)} && "
+        "pm install -r ${_shQuote(stage)}; "
+        "rm -f ${_shQuote(stage)}";
+  }
+
   /// 安装 APK
   /// 优先使用 Shizuku 静默安装（可用时），否则回退系统安装
   /// 返回 (是否成功, 使用的安装方式)
@@ -153,11 +195,23 @@ class InstallManager extends GetxService implements IInstallService {
     }
 
     if (_binderRunning && _permissionGranted) {
+      // 显示加载框，避免 Shizuku 暂存+安装期间界面无反馈
+      if (Get.isDialogOpen != true) {
+        AppDialogs.showLoading(message: '正在通过 Shizuku 安装...');
+      }
       try {
-        final result = await _shizukuApi.runCommand('pm install -r "$filePath"');
+        final result = await _shizukuApi.runCommand(_stageAndInstallCommand(filePath));
         if (isPmSuccess(result)) {
           appLog.info('InstallManager: Shizuku 静默安装成功');
           return (true, InstallMethod.shizuku);
+        }
+        if (_isUserRejected(result)) {
+          // 用户明确拒绝安装：不再回退系统安装
+          appLog.error('InstallManager: 用户拒绝安装，停止安装', data: {
+            'result': result,
+            'filePath': filePath,
+          });
+          return (false, InstallMethod.shizuku);
         }
         // 失败：记录完整输出（pm 的 Failure [...] 即失败原因），落入回退系统安装
         appLog.error('InstallManager: Shizuku 静默安装失败，回退系统安装', data: {
@@ -170,6 +224,8 @@ class InstallManager extends GetxService implements IInstallService {
         appLog.error('InstallManager: Shizuku 安装异常 - $e，回退系统安装', data: {
           'filePath': filePath,
         });
+      } finally {
+        AppDialogs.dismissLoading();
       }
     }
 
@@ -185,7 +241,7 @@ class InstallManager extends GetxService implements IInstallService {
 
   /// 静默安装（仅 Shizuku，返回是否成功）
   Future<bool> silentInstall(String filePath) async {
-    return _runShizukuCommand('pm install -r "$filePath"');
+    return _runShizukuCommand(_stageAndInstallCommand(filePath));
   }
 
   /// 卸载/停用/启用应用（Shizuku）
@@ -222,11 +278,16 @@ class InstallManager extends GetxService implements IInstallService {
 
   /// 执行 Shizuku 命令（统一权限检查 + 执行）
   /// [checkPmSuccess] 为 true（默认，pm 类命令）时按输出 "Success" 开头判定成功；
-  /// false（am 类命令，成功无输出）时仅按结果非 null 判定
+  /// false（am 类命令，成功无输出）时用 [_isAmSuccess] 判定（空输出=成功，
+  /// 含 Failure/Exception/Error/Unknown command 关键词=失败）
   Future<bool> _runShizukuCommand(String command,
       {bool checkPmSuccess = true}) async {
+    // 每次执行前都确保 Shizuku 状态是最新的：
+    // 不依赖 _checked 一次性标记——Shizuku 可能在上次检测后才启动/授权，
+    // 也可能之后被用户停止/撤销授权，陈旧状态会导致命令误判不可用或误发。
+    // pingBinder/checkPermission 均为轻量调用，重复检测开销可忽略。
     if (!_binderRunning || !_permissionGranted) {
-      if (!_checked) await checkShizuku();
+      await checkShizuku();
       if (!_binderRunning || !_permissionGranted) {
         appLog.error('InstallManager: 命令未执行（Shizuku 不可用）', data: {
           'command': command,
@@ -236,8 +297,13 @@ class InstallManager extends GetxService implements IInstallService {
     }
     try {
       final result = await _shizukuApi.runCommand(command);
-      final ok = checkPmSuccess ? isPmSuccess(result) : result != null;
-      if (!ok) {
+      final ok = checkPmSuccess ? isPmSuccess(result) : _isAmSuccess(result);
+      if (ok) {
+        appLog.info('InstallManager: 命令执行成功', data: {
+          'command': command,
+          'result': result ?? '(无输出)',
+        });
+      } else {
         appLog.error('InstallManager: 命令执行失败', data: {
           'command': command,
           'result': result ?? '(无输出)',

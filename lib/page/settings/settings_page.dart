@@ -14,7 +14,6 @@ import 'package:gstore/core/config/config_manager.dart';
 import 'package:gstore/core/config/providers/download_config_provider.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/theme/theme_controller.dart';
-import 'package:gstore/http/download/DownloadStatus.dart';
 
 /// GitHub 代理预设地址
 const List<String> presetProxyHosts = [
@@ -816,6 +815,15 @@ class _SettingsPageState extends State<SettingsPage> {
         children: [
           // 多段下载开关
           const _MultiSegmentDownloadTile(),
+          const Divider(height: 1),
+          // 最大并发下载数
+          const _MaxConcurrentDownloadTile(),
+          const Divider(height: 1),
+          // 仅WiFi下载
+          const _WifiOnlyDownloadTile(),
+          const Divider(height: 1),
+          // 最大重试次数
+          const _MaxRetryCountTile(),
         ],
       ),
     );
@@ -1186,7 +1194,7 @@ class _DataUpdateTileState extends State<_DataUpdateTile> {
         _downloading = false;
         _hasUpdate = false;
       });
-      if (result == DownloadStatus.DOWNLOAD_SUCCESS) {
+      if (result == DbUpdateResult.success) {
         await _loadCurrentVersion();
         setState(() => _latestVersion = null);
         Get.snackbar(
@@ -1439,6 +1447,256 @@ class _MultiSegmentDownloadTileState extends State<_MultiSegmentDownloadTile> {
       subtitle: const Text('自适应分段并行下载（最大 8 段），大文件下载更快。弱网或不稳定时可关闭'),
       value: _enabled,
       onChanged: _loaded ? _toggle : null,
+    );
+  }
+}
+
+/// 最大并发下载数 Tile
+///
+/// 滑块控制同时下载的最大任务数（范围 1-10），
+/// 多任务同时下载可提高总带宽利用率，但过高可能导致网络拥塞。
+class _MaxConcurrentDownloadTile extends StatefulWidget {
+  const _MaxConcurrentDownloadTile();
+
+  @override
+  State<_MaxConcurrentDownloadTile> createState() =>
+      _MaxConcurrentDownloadTileState();
+}
+
+class _MaxConcurrentDownloadTileState
+    extends State<_MaxConcurrentDownloadTile> {
+  int _value = 3;
+  bool _loaded = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final provider = ConfigManager.instance.providers['download_config'];
+      if (provider is DownloadConfigProvider) {
+        _value = await provider.getMaxConcurrentDownloads();
+        if (mounted) {
+          setState(() {
+            _loaded = true;
+          });
+        }
+        return;
+      }
+    } catch (e) {
+      debugPrint('SettingsPage: 读取并发数配置失败 - $e');
+    }
+    if (mounted) {
+      setState(() {
+        _value = 3;
+        _loaded = true;
+      });
+    }
+  }
+
+  Future<void> _update(int value) async {
+    setState(() => _value = value);
+    try {
+      final provider = ConfigManager.instance.providers['download_config'];
+      if (provider is DownloadConfigProvider) {
+        await provider.setMaxConcurrentDownloads(value);
+      }
+    } catch (e) {
+      debugPrint('SettingsPage: 保存并发数配置失败 - $e');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      leading: Icon(
+        Icons.download,
+        size: AppTypography.iconMD,
+        color: Theme.of(context).colorScheme.primary,
+      ),
+      title: const Text('最大并发下载数'),
+      subtitle: Text('同时下载的最大任务数: $_value'),
+      trailing: SizedBox(
+        width: 150,
+        child: Row(
+          children: [
+            Expanded(
+              child: Slider(
+                value: _value.toDouble(),
+                min: 1,
+                max: 10,
+                divisions: 9,
+                label: '$_value',
+                onChanged: _loaded ? (v) => _update(v.round()) : null,
+              ),
+            ),
+            Text('$_value', style: Theme.of(context).textTheme.bodyMedium),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 仅WiFi下载 Tile
+///
+/// 开关控制是否仅在 WiFi 环境下下载，
+/// 开启后可避免消耗移动数据流量。
+class _WifiOnlyDownloadTile extends StatefulWidget {
+  const _WifiOnlyDownloadTile();
+
+  @override
+  State<_WifiOnlyDownloadTile> createState() => _WifiOnlyDownloadTileState();
+}
+
+class _WifiOnlyDownloadTileState extends State<_WifiOnlyDownloadTile> {
+  bool _enabled = false;
+  bool _loaded = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final provider = ConfigManager.instance.providers['download_config'];
+      if (provider is DownloadConfigProvider) {
+        _enabled = await provider.isWifiOnly();
+        if (mounted) {
+          setState(() {
+            _loaded = true;
+          });
+        }
+        return;
+      }
+    } catch (e) {
+      debugPrint('SettingsPage: 读取WiFi-only配置失败 - $e');
+    }
+    if (mounted) {
+      setState(() {
+        _enabled = false;
+        _loaded = true;
+      });
+    }
+  }
+
+  Future<void> _toggle(bool value) async {
+    setState(() => _enabled = value);
+    try {
+      final provider = ConfigManager.instance.providers['download_config'];
+      if (provider is DownloadConfigProvider) {
+        await provider.setWifiOnly(value);
+      }
+    } catch (e) {
+      debugPrint('SettingsPage: 保存WiFi-only配置失败 - $e');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SwitchListTile(
+      secondary: Icon(
+        Icons.wifi,
+        size: AppTypography.iconMD,
+        color: Theme.of(context).colorScheme.primary,
+      ),
+      title: const Text('仅WiFi下载'),
+      subtitle: const Text('开启后仅在WiFi环境下下载，避免消耗移动数据'),
+      value: _enabled,
+      onChanged: _loaded ? _toggle : null,
+    );
+  }
+}
+
+/// 最大重试次数 Tile
+///
+/// 滑块控制下载失败后的自动重试次数（范围 0-5），
+/// 设为 0 表示不重试，较高的重试次数可提高弱网环境下的成功率。
+class _MaxRetryCountTile extends StatefulWidget {
+  const _MaxRetryCountTile();
+
+  @override
+  State<_MaxRetryCountTile> createState() => _MaxRetryCountTileState();
+}
+
+class _MaxRetryCountTileState extends State<_MaxRetryCountTile> {
+  int _value = 3;
+  bool _loaded = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final provider = ConfigManager.instance.providers['download_config'];
+      if (provider is DownloadConfigProvider) {
+        _value = await provider.getMaxRetryCount();
+        if (mounted) {
+          setState(() {
+            _loaded = true;
+          });
+        }
+        return;
+      }
+    } catch (e) {
+      debugPrint('SettingsPage: 读取重试次数配置失败 - $e');
+    }
+    if (mounted) {
+      setState(() {
+        _value = 3;
+        _loaded = true;
+      });
+    }
+  }
+
+  Future<void> _update(int value) async {
+    setState(() => _value = value);
+    try {
+      final provider = ConfigManager.instance.providers['download_config'];
+      if (provider is DownloadConfigProvider) {
+        await provider.setMaxRetryCount(value);
+      }
+    } catch (e) {
+      debugPrint('SettingsPage: 保存重试次数配置失败 - $e');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      leading: Icon(
+        Icons.replay,
+        size: AppTypography.iconMD,
+        color: Theme.of(context).colorScheme.primary,
+      ),
+      title: const Text('最大重试次数'),
+      subtitle: Text('下载失败后自动重试: $_value 次'),
+      trailing: SizedBox(
+        width: 150,
+        child: Row(
+          children: [
+            Expanded(
+              child: Slider(
+                value: _value.toDouble(),
+                min: 0,
+                max: 5,
+                divisions: 5,
+                label: '$_value',
+                onChanged: _loaded ? (v) => _update(v.round()) : null,
+              ),
+            ),
+            Text('$_value', style: Theme.of(context).textTheme.bodyMedium),
+          ],
+        ),
+      ),
     );
   }
 }

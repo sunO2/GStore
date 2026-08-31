@@ -1,8 +1,6 @@
 import 'package:flutter/foundation.dart';
-import 'package:gstore/core/channel/model/ChannelType.dart';
-import 'package:gstore/core/download/model/DownloadContext.dart';
+import 'package:gstore/core/download/core/download_request.dart';
 import 'package:gstore/core/download/strategy/IDownloadStrategy.dart';
-import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 
 /// 下载策略抽象基类
@@ -12,12 +10,16 @@ abstract class BaseDownloadStrategy implements IDownloadStrategy {
   String get strategyName => supportedChannel.code;
 
   @override
-  Future<bool> validateContext(DownloadContext context) {
-    return Future.value(context.downloadUrl.isNotEmpty);
+  Future<bool> validateRequest(DownloadRequest request) {
+    if (request.url.isEmpty) {
+      return Future.value(false);
+    }
+    final uri = Uri.tryParse(request.url);
+    return Future.value(uri != null && (uri.scheme == 'http' || uri.scheme == 'https'));
   }
 
   @override
-  Future<void>? postProcess(String savedPath, DownloadContext context) {
+  Future<void>? postProcess(String savedPath, DownloadRequest request) {
     return null;
   }
 
@@ -39,23 +41,17 @@ abstract class BaseDownloadStrategy implements IDownloadStrategy {
     return null;
   }
 
-  /// 辅助方法：构建基础下载上下文
-  DownloadContext buildBaseContext(
-    DownloadInfo downloadInfo,
-    IDetailInfo detailData,
-  ) {
-    return DownloadContext(
-      originalUrl: downloadInfo.url,
-      channelType: detailData.channelType,
-      fileName: downloadInfo.name,
-      fileSize: downloadInfo.size,
-      version: downloadInfo.version,
-      supportBreakpoint: true,
-      metadata: {
-        'appId': detailData.appId,
-        'appName': detailData.name,
-        'developer': detailData.developer,
-      },
+  /// 辅助方法：构建基础下载请求（不包含保存路径，由DownloadManager填充）
+  DownloadRequest buildBaseRequest({
+    required String url,
+    Map<String, String>? headers,
+    int? fileSize,
+  }) {
+    return DownloadRequest(
+      url: url,
+      savePath: null,
+      headers: headers,
+      fileSize: fileSize,
     );
   }
 

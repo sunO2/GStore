@@ -15,11 +15,13 @@ import 'package:rhttp/rhttp.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/config/config_initializer.dart';
 import 'package:gstore/core/config/config_service.dart';
+import 'package:gstore/core/download/core/dio_download_engine.dart';
+import 'package:gstore/core/download/manager/download_manager.dart';
+import 'package:gstore/core/download/manager/download_repository.dart';
 import 'package:gstore/core/event/database_event.dart';
 import 'package:gstore/core/module/module.dart';
 import 'package:gstore/core/service/db_manager.dart';
 import 'package:gstore/core/service/download_notification_service.dart';
-import 'package:gstore/core/service/downloadService.dart';
 import 'package:gstore/core/service/metadata_submit_service.dart';
 import 'package:gstore/core/service/user_manager.dart';
 import 'package:gstore/http/github/dio_client.dart';
@@ -135,7 +137,14 @@ class DbModule extends AppModule {
     Get.lazyPut<GithubRestClient>(() => GithubRestClient(DioClient().get()));
     // OAuth API 需要使用单独的 Dio 实例（不包含 GitHub REST API 专用 headers）
     Get.lazyPut<GithubAuthApi>(() => GithubAuthApi(DioClient.createOAuthClient()));
-    Get.lazyPut<DownloadService>(() => DownloadService(DioClient().get()));
+    Get.lazyPut<DownloadManager>(() => DownloadManager(
+          engine: DioDownloadEngine(dio: DioClient().get()),
+          repository: DownloadRepository(),
+          onApkReady: (filePath) {
+            final m = ModuleManager.instance.get<InstallManager>();
+            if (m != null) m.installApk(filePath);
+          },
+        ));
 
     await Get.putAsync<DbManager>(() async => await DbManager().init());
     Get.put(DatabaseEventBus());

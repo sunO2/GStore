@@ -19,7 +19,6 @@ export 'package:gstore/core/data/metadata_repository.dart';
 // 核心服务
 export 'package:gstore/core/service/db_manager.dart';
 export 'package:gstore/core/service/user_manager.dart';
-export 'package:gstore/core/service/downloadService.dart';
 export 'package:gstore/core/service/backup_service.dart';
 export 'package:gstore/core/service/install_manager.dart';
 export 'package:gstore/core/service/badge_service.dart';

@@ -1131,6 +1131,12 @@ class _NoopDetailCallbacks extends DetailCallbacks {
   }) async {}
 
   @override
+  Future<void> startDownload(DownloadInfo download, {int? downloadSize, bool fromScript = false}) async {}
+
+  @override
+  void syncDownloadToFB(DownloadInfo download) {}
+
+  @override
   void showSuccess(String message, {String? title}) {}
 
   @override

@@ -1,8 +1,8 @@
 import 'package:get/get.dart';
+import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/AppDetailRequest.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
-import 'package:gstore/http/download/DownloadStatus.dart';
 import 'package:installed_apps/app_info.dart';
 
 class DetailState {
@@ -24,8 +24,8 @@ class DetailState {
   /// 是否正在加载详情（基础信息已显示）
   final RxBool isLoadingDetail = false.obs;
 
-  /// 当前下载状态（响应式，用于 FAB 进度显示）
-  final Rx<DownloadStatus?> currentDownload = Rx<DownloadStatus?>(null);
+  /// 当前下载任务（响应式，用于 FAB 进度显示）
+  final Rx<DownloadTask?> currentDownload = Rx<DownloadTask?>(null);
 
   /// 下载列表（分块加载独立注入，null=未就绪/失败降级）
   final Rx<List<DownloadInfo>?> downloads = Rx<List<DownloadInfo>?>(null);

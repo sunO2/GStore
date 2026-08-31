@@ -16,12 +16,12 @@ import 'package:gstore/core/agent/agent_tool_module.dart';
 import 'package:gstore/core/agent/tools/builtin_tools.dart';
 import 'package:gstore/core/channel/ChannelIntegration.dart';
 import 'package:gstore/core/config/config_registry.dart';
+import 'package:gstore/core/download/manager/download_manager.dart';
 import 'package:gstore/core/fdroid/FdroidRepoManager.dart';
 import 'package:gstore/core/module/module.dart';
 import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/service/backup_service.dart';
 import 'package:gstore/core/service/badge_service.dart';
-import 'package:gstore/core/service/downloadService.dart';
 import 'package:gstore/core/service/install_manager.dart';
 import 'package:gstore/core/theme/theme_controller.dart';
 import 'package:gstore/core/webdav/webdav_service.dart';
@@ -101,7 +101,7 @@ class DownloadModule extends AppModule {
   Future<void> onRegister(ModuleContext context) async {
     final config = context.config;
     config?.registerModule(AppCoreConfigModule());
-    context.bindService?.call(IDownloadService, Get.find<DownloadService>());
+    context.bindService?.call(IDownloadService, Get.find<DownloadManager>());
   }
 
   @override

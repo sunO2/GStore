@@ -30,11 +30,13 @@ class JSNativeHost {
 
   /// 注册单个能力。
   ///
-  /// 双参数形式：`register('showVersionPicker', handler)` → key = `'showVersionPicker'`（兼容旧调用）。
   /// 三参数形式：`register('ui', 'showVersionPicker', handler)` → key = `'ui.showVersionPicker'`（命名空间）。
+  /// 两参数形式：`register('download', handler)` → key = `'download'`（无命名空间）。
   void register(String nameOrNs, [String? method, JsNativeHandler? handler]) {
     if (method != null && handler != null) {
       _handlers['$nameOrNs.$method'] = handler;
+    } else if (handler != null) {
+      _handlers[nameOrNs] = handler;
     } else {
       _handlers[nameOrNs] = method as JsNativeHandler;
     }

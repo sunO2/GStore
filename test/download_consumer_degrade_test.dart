@@ -7,12 +7,12 @@ import 'package:gstore/core/config/config_service.dart';
 import 'package:gstore/core/config/config_store.dart';
 import 'package:gstore/core/config/config_storage.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/module/app_modules.dart';
 import 'package:gstore/core/module/module.dart';
 import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/service/db_manager.dart';
 import 'package:gstore/db/apps/AppInfoDatabase.dart';
-import 'package:gstore/http/download/DownloadStatus.dart';
 import 'package:gstore/http/github/dio_client.dart';
 import 'package:gstore/http/github/github_client.dart';
 import 'package:gstore/page/download/logic.dart';
@@ -76,20 +76,29 @@ void main() {
   group('下载消费点 null 降级（IDownloadService 未绑定 → 提示不抛）', () {
     testWidgets('DownloadManagerLogic.retryDownload：showWarning「下载模块未启用」不抛',
         (tester) async {
-      final context = await pumpApp(tester);
+      await pumpApp(tester);
       final logic = DownloadManagerLogic();
-      final status = DownloadStatus(
-        'com.example.a',
-        'App A',
-        '1.0.0',
-        'a.apk',
-        'https://example.com/a.apk',
-        '/tmp/a.apk',
+      final task = DownloadTask(
+        id: 1,
+        appId: 'com.example.a',
+        appName: 'App A',
+        version: '1.0.0',
+        fileName: 'a.apk',
+        url: 'https://example.com/a.apk',
+        filePath: '/tmp/a.apk',
+        total: 0,
+        received: 0,
+        status: DownloadStatusEnum.failed,
+        speedBps: 0,
+        etaSec: null,
+        error: null,
+        segments: null,
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
       );
 
       // 模块下线（GREEN）：方法立即降级提示；旧实现（RED）Get.find 抛异常。
-      // restartCount: 1 跳过 File.exists 真实 I/O（FakeAsync 下不恢复）
-      logic.retryDownload(status, restartCount: 1);
+      logic.retryDownload(task);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
 

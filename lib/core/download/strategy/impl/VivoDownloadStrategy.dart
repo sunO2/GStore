@@ -1,5 +1,5 @@
 import 'package:gstore/core/channel/model/ChannelType.dart';
-import 'package:gstore/core/download/model/DownloadContext.dart';
+import 'package:gstore/core/download/core/download_request.dart';
 import 'package:gstore/core/download/strategy/BaseDownloadStrategy.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
@@ -24,46 +24,25 @@ class VivoDownloadStrategy extends BaseDownloadStrategy {
   String get strategyName => 'vivo_download';
 
   @override
-  Future<DownloadContext> createContext(
+  Future<DownloadRequest?> createRequest(
     DownloadInfo downloadInfo,
     IDetailInfo detailData,
   ) async {
-    log('创建下载上下文: url=${downloadInfo.url}, name=${downloadInfo.name}');
-
-    // 构建基础上下文
-    final context = buildBaseContext(downloadInfo, detailData);
+    log('创建下载请求: url=${downloadInfo.url}, name=${downloadInfo.name}');
 
     // 添加 vivo 特定的 headers
-    context.headers = {
+    final headers = <String, String>{
       'User-Agent': _defaultUserAgent,
       'Accept-Language': _defaultAcceptLanguage,
       'Accept': '*/*',
       'Connection': 'keep-alive',
     };
 
-    log('添加 vivo 特定 headers: ${context.headers}');
+    log('添加 vivo 特定 headers: $headers');
 
     // Vivo 渠道直接使用原始 URL
     log('使用原始 URL: ${downloadInfo.url}');
 
-    return context;
-  }
-
-  @override
-  Future<bool> validateContext(DownloadContext context) async {
-    final isValid = await super.validateContext(context);
-    if (!isValid) {
-      log('下载上下文验证失败: URL为空');
-      return false;
-    }
-
-    // 验证是否为 HTTPS URL（vivo 应用市场通常使用 HTTPS）
-    final uri = Uri.tryParse(context.downloadUrl);
-    if (uri == null || !uri.hasScheme || uri.scheme != 'https') {
-      log('警告: vivo 渠道建议使用 HTTPS URL: ${context.downloadUrl}');
-    }
-
-    log('下载上下文验证通过: ${context.downloadUrl}');
-    return true;
+    return buildBaseRequest(url: downloadInfo.url, headers: headers);
   }
 }

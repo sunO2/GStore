@@ -8,11 +8,11 @@ import 'package:gstore/core/download/strategy/impl/VivoDownloadStrategy.dart';
 import 'package:gstore/core/download/strategy/impl/GitHubDownloadStrategy.dart';
 import 'package:gstore/core/download/strategy/impl/HttpDownloadStrategy.dart';
 import 'package:gstore/core/download/strategy/impl/FdroidDownloadStrategy.dart';
+import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/update/apk_matcher.dart';
 import 'package:gstore/core/update/update_cache.dart';
-import 'package:gstore/http/download/DownloadStatus.dart';
 
 import 'state.dart';
 
@@ -207,66 +207,17 @@ class UpdateLogic extends GetxController {
       final version = download.version ?? info.latestVersion;
       final fileName = download.name;
 
-      // 预创建下载状态用于进度监听
-      final status = await DownloadStatus.create(
-        info.appId,
-        info.appName,
-        version,
-        fileName,
-        download.url,
-        downloadSize: download.size,
-      );
-      state.currentDownload.value = status;
-
-      // 监听进度
-      StreamSubscription? sub;
-      sub = status.observer.listen((da) {
-        state.currentDownload.value = da;
-      });
-
       // 确保下载策略已注册
       _ensureDownloadStrategies();
 
       // 尝试使用策略模式下载（含代理处理），失败/缓存恢复无详情时降级到普通下载
+      DownloadTask task;
       try {
-        final detail = info.detail;
-        if (detail != null) {
-          final context = await DownloadStrategyManager.instance.createContext(
-            download,
-            detail,
-          );
-          if (context != null) {
-            await service.downloadWithContext(
-              context,
-              info.appId,
-              info.appName,
-              version,
-              fileName,
-            );
-          } else {
-            await service.download(
-              info.appId,
-              info.appName,
-              version,
-              download.url,
-              fileName,
-              downloadSize: download.size,
-            );
-          }
-        } else {
-          // 缓存恢复（detail 未持久化）→ 直接普通下载
-          await service.download(
-            info.appId,
-            info.appName,
-            version,
-            download.url,
-            fileName,
-            downloadSize: download.size,
-          );
-        }
+        task = await _startDownloadTask(
+            service, info, download, version, fileName);
       } catch (e) {
         appLog.error('UpdateLogic: 策略下载失败，降级到普通下载 - $e');
-        await service.download(
+        task = await service.download(
           info.appId,
           info.appName,
           version,
@@ -276,9 +227,15 @@ class UpdateLogic extends GetxController {
         );
       }
 
-      await sub.cancel();
+      // 监听进度并等待任务进入终止态（完成/失败/取消/暂停）
+      state.currentDownload.value = task;
+      final done = await _awaitDownloadTerminal(service, task);
 
-      // 下载完成（DownloadService 内部已自动安装 APK）：
+      if (done.status != DownloadStatusEnum.completed) {
+        throw StateError('下载未完成（状态：${done.status}）');
+      }
+
+      // 下载完成（DownloadManager 内部已自动安装 APK）：
       // 通知 UpdateManager 刷新状态（复核版本后从可更新列表移除，红点自动更新）
       await UpdateManagerService.instance.markUpdated(info.appId);
       // 同步页面列表（UpdateManager 订阅也会同步，这里双保险）
@@ -303,6 +260,75 @@ class UpdateLogic extends GetxController {
       state.currentDownload.value = null;
     }
   }
+
+  /// 启动一次下载：优先策略模式（含代理处理），无详情/策略不可用时回退普通下载
+  Future<DownloadTask> _startDownloadTask(
+    IDownloadService service,
+    AppUpdateInfo info,
+    DownloadInfo download,
+    String version,
+    String fileName,
+  ) async {
+    final detail = info.detail;
+    if (detail != null) {
+      final request = await DownloadStrategyManager.instance.createRequest(
+        download,
+        detail,
+      );
+      if (request != null) {
+        return service.downloadWithContext(
+          request,
+          info.appId,
+          info.appName,
+          version,
+          fileName,
+        );
+      }
+    }
+    return service.download(
+      info.appId,
+      info.appName,
+      version,
+      download.url,
+      fileName,
+      downloadSize: download.size,
+    );
+  }
+
+  /// 订阅下载任务流同步进度，并等待任务进入终止态（完成/失败/取消/暂停）
+  Future<DownloadTask> _awaitDownloadTerminal(
+    IDownloadService service,
+    DownloadTask task,
+  ) async {
+    final id = task.id;
+    if (id == null) return task;
+    final completer = Completer<DownloadTask>();
+    StreamSubscription<DownloadTask>? sub;
+    sub = service.watch(id).listen((da) {
+      state.currentDownload.value = da;
+      if (_isTerminal(da.status) && !completer.isCompleted) {
+        completer.complete(da);
+      }
+    });
+    // 竞态兜底：任务在订阅前已终止（极快完成 / 已有完成态记录）时
+    // watch 不再推送，直接读取当前状态终结等待
+    final current = await service.getTask(id);
+    if (current != null &&
+        _isTerminal(current.status) &&
+        !completer.isCompleted) {
+      completer.complete(current);
+    }
+    final done = await completer.future;
+    await sub.cancel();
+    return done;
+  }
+
+  /// 是否为下载终止态
+  bool _isTerminal(DownloadStatusEnum status) =>
+      status == DownloadStatusEnum.completed ||
+      status == DownloadStatusEnum.failed ||
+      status == DownloadStatusEnum.cancelled ||
+      status == DownloadStatusEnum.paused;
 
   /// 更新所有可更新应用
   Future<void> updateAll() async {

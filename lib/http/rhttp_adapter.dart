@@ -1,3 +1,4 @@
+import 'dart:io' show gzip, zlib;
 import 'dart:typed_data';
 import 'package:dio/dio.dart';
 import 'package:dio/io.dart';
@@ -106,8 +107,11 @@ class RhttpAdapter implements HttpClientAdapter {
       // 使用 rhttp 发送请求
       final http.StreamedResponse response = await _client.send(request);
 
+      // 读取 Content-Encoding，判断响应体是否经过了压缩
+      final encoding = response.headers['content-encoding'];
+
       // 将 ByteStream (Stream<List<int>>) 转换为 Stream<Uint8List>
-      final responseBodyStream = response.stream.map((data) {
+      var responseBodyStream = response.stream.map((data) {
         return data is Uint8List ? data : Uint8List.fromList(data);
       });
 
@@ -116,6 +120,25 @@ class RhttpAdapter implements HttpClientAdapter {
       response.headers.forEach((key, values) {
         headers[key] = values.split(',');
       });
+
+      // rhttp 若已解压会自动移除 content-encoding 头，
+      // 因此头部仍存在时，说明响应体是压缩字节，需要在此解压
+      if (encoding != null) {
+        final lower = encoding.toLowerCase();
+        if (lower.contains('gzip') || lower.contains('x-gzip')) {
+          responseBodyStream = gzip.decoder
+              .bind(responseBodyStream)
+              .map((data) => data is Uint8List ? data : Uint8List.fromList(data));
+        } else if (lower.contains('deflate')) {
+          responseBodyStream = zlib.decoder
+              .bind(responseBodyStream)
+              .map((data) => data is Uint8List ? data : Uint8List.fromList(data));
+        }
+        // 移除原始 Content-Encoding，避免下游引擎再次解压或缓存压缩字节
+        headers.remove('content-encoding');
+        // 标记已解码，供下游引擎识别
+        headers['x-gstore-decoded-encoding'] = [encoding];
+      }
 
       return ResponseBody(
         responseBodyStream,

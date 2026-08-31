@@ -12,20 +12,20 @@ import 'package:flutter/material.dart';
 import 'package:gstore/core/aggregate/AppAddedDatabase.dart';
 import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
-import 'package:gstore/core/download/model/DownloadContext.dart';
+import 'package:gstore/core/download/core/download_request.dart';
 import 'package:gstore/core/fdroid/FdroidRepoModels.dart';
 import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/model/BackupData.dart';
 import 'package:gstore/core/service/backup_service.dart';
 import 'package:gstore/core/theme/app_theme_config.dart';
 import 'package:gstore/core/webdav/webdav_client.dart';
+import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/webdav/webdav_config.dart';
-import 'package:gstore/http/download/DownloadStatus.dart';
 
 /// 下载服务接口
 abstract class IDownloadService {
   /// 下载应用 APK
-  Future<DownloadStatus> download(
+  Future<DownloadTask> download(
     String appid,
     String appName,
     String version,
@@ -38,8 +38,8 @@ abstract class IDownloadService {
   });
 
   /// 使用下载上下文下载（策略模式：自定义请求头/代理/URL 转换/超时）
-  Future<DownloadStatus> downloadWithContext(
-    DownloadContext context,
+  Future<DownloadTask> downloadWithContext(
+    DownloadRequest request,
     String appid,
     String appName,
     String version,
@@ -47,6 +47,24 @@ abstract class IDownloadService {
     bool breakPoint = true,
     String? saveFileName,
   });
+
+  /// 暂停下载任务
+  Future<void> pause(int id);
+
+  /// 恢复下载任务
+  Future<void> resume(int id);
+
+  /// 取消下载任务
+  Future<void> cancel(int id);
+
+  /// 重试下载任务
+  Future<void> retry(int id);
+
+  /// 获取下载任务
+  Future<DownloadTask?> getTask(int id);
+
+  /// 监听下载任务状态
+  Stream<DownloadTask> watch(int id);
 }
 
 /// 备份服务接口

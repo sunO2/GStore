@@ -7,8 +7,10 @@ import 'package:gstore/core/channel/impl/JsChannel.dart';
 import 'package:gstore/core/channel/impl/js_script_utils.dart';
 import 'package:gstore/core/js/js_channel_runtime.dart';
 import 'package:gstore/core/js/js_native_host.dart';
+import 'package:gstore/core/core.dart';
 import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
+import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/page/detail/state.dart';
 
 /// 页面级详情通道：独立 runtime 加载 detail.js（状态隔离，页面退出释放）。
@@ -93,7 +95,8 @@ class JsDetailChannel implements IDetailChannel {
       if (raw is Map && raw['ok'] is bool) {
         final ok = raw['ok'] as bool;
         if (ok) return raw['data'];
-        _logError('detail 脚本 $method 返回 ok: false');
+        final error = raw['error']?.toString() ?? '未知错误';
+        _logError('detail 脚本 $method 返回 ok: false - $error');
         return null;
       }
       return raw;
@@ -290,6 +293,31 @@ class JsDetailChannel implements IDetailChannel {
             visible: p['visible'] == true,
             label: p['label']?.toString() ?? '');
         return null;
+      })
+      // 下载：脚本调用 host.ui.call('download', {...}) 触发真实下载
+      ..register('ui', 'download', (p) async {
+        _logError('脚本 download 收到参数: $p');
+        final url = p['url']?.toString() ?? '';
+        final name = p['name']?.toString() ?? '';
+        final version = p['version']?.toString() ?? 'unknown';
+        final size = (p['size'] as num?)?.toInt();
+
+        if (url.isEmpty) {
+          _logError('脚本 download: url 为空，跳过');
+          return {'ok': false, 'error': '下载地址为空'};
+        }
+
+        final downloadInfo = DownloadInfo(
+          url: url,
+          name: name,
+          size: size,
+          version: version,
+        );
+        // 委托宿主走标准下载流程（创建 DownloadStatus → FB 连接 → 异步下载）
+        // fromScript=true 跳过 JS 渠道委托，防递归
+        await cb.startDownload(downloadInfo, downloadSize: size, fromScript: true);
+
+        return {'ok': true};
       });
     setNativeHost(host);
   }

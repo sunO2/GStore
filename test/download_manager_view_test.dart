@@ -2,9 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/design/app_components.dart';
+import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/service/db_manager.dart';
 import 'package:gstore/db/apps/AppInfoDatabase.dart';
-import 'package:gstore/http/download/DownloadStatus.dart';
 import 'package:gstore/http/github/github_client.dart';
 import 'package:gstore/page/download/download_status_utils.dart';
 import 'package:gstore/page/download/logic.dart';
@@ -28,18 +28,18 @@ class MockAppInfoDatabase extends Mock implements AppInfoDatabase {}
 
 class _TestDownloadManagerLogic extends DownloadManagerLogic {
   /// 测试注入的原始分组数据（setFilter 重放用）
-  List<List<DownloadStatus>> baseGroups = [];
+  List<List<DownloadTask>> baseGroups = [];
 
   /// deleteDownload 调用记录（spy）
-  final deleted = <DownloadStatus>[];
+  final deleted = <DownloadTask>[];
 
   @override
   void onReady() {
-    // 不订阅真实数据库（downloadStatusDatabase），数据由测试手动注入
+    // 不订阅真实数据库（downloadTaskDatabase），数据由测试手动注入
   }
 
   /// 注入分组数据并按当前筛选重建列表
-  void seed(List<List<DownloadStatus>> groups) {
+  void seed(List<List<DownloadTask>> groups) {
     baseGroups = List.of(groups);
     downloadGroups.value = _applyFilter(baseGroups, currentFilter.value);
   }
@@ -51,8 +51,8 @@ class _TestDownloadManagerLogic extends DownloadManagerLogic {
     downloadGroups.value = _applyFilter(baseGroups, filter);
   }
 
-  List<List<DownloadStatus>> _applyFilter(
-    List<List<DownloadStatus>> groups,
+  List<List<DownloadTask>> _applyFilter(
+    List<List<DownloadTask>> groups,
     DownloadFilter filter,
   ) {
     if (filter == DownloadFilter.all) return groups;
@@ -64,7 +64,7 @@ class _TestDownloadManagerLogic extends DownloadManagerLogic {
   }
 
   @override
-  Future<void> deleteDownload(DownloadStatus downStatus) async {
+  Future<void> deleteDownload(DownloadTask downStatus) async {
     deleted.add(downStatus);
   }
 }
@@ -73,26 +73,33 @@ class _TestDownloadManagerLogic extends DownloadManagerLogic {
 // 工具函数
 // ---------------------------------------------------------------------------
 
-/// 构造 DownloadStatus 后直接赋 status 字段：
-/// 构造器会把 LOADING 重置为 READY（同 download_status_utils_test.dart 做法）。
-DownloadStatus _item(
-  int status, {
+/// 构造 DownloadTask（新管线状态枚举直接指定）。
+DownloadTask _item(
+  DownloadStatusEnum status, {
   required String appId,
   String appName = '测试应用',
   String version = '1.0.0',
   String fileName = 'app.apk',
   String? downloadUrl,
 }) {
-  final item = DownloadStatus(
-    appId,
-    appName,
-    version,
-    fileName,
-    downloadUrl ?? 'https://example.com/$fileName',
-    '/data/media/0/Download/$fileName',
+  return DownloadTask(
+    id: appId.hashCode,
+    appId: appId,
+    appName: appName,
+    version: version,
+    fileName: fileName,
+    url: downloadUrl ?? 'https://example.com/$fileName',
+    filePath: '/data/media/0/Download/$fileName',
+    total: 1000,
+    received: 500,
+    status: status,
+    speedBps: 0,
+    etaSec: null,
+    error: null,
+    segments: null,
+    createdAt: DateTime.now(),
+    updatedAt: DateTime.now(),
   );
-  item.status = status;
-  return item;
 }
 
 /// 放大测试视口，确保多卡片全部进入 ListView 构建范围
@@ -153,26 +160,30 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('主操作按钮按状态渲染：LOADING→暂停/READY→继续/ERROR→重试/SUCCESS+.apk→安装',
+  testWidgets('主操作按钮按状态渲染：LOADING→暂停/READY→继续/ERROR→重试/SUCCESS+.apk→安装/QUEUED→取消',
       (tester) async {
     _useTallView(tester);
 
     logic.seed([
       [
-        _item(DownloadStatus.DOWNLOAD_LOADING,
+        _item(DownloadStatusEnum.downloading,
             appId: 'com.example.loading', fileName: 'loading.apk'),
       ],
       [
-        _item(DownloadStatus.DOWNLOAD_READY,
+        _item(DownloadStatusEnum.paused,
             appId: 'com.example.ready', fileName: 'ready.apk'),
       ],
       [
-        _item(DownloadStatus.DOWNLOAD_ERROR,
+        _item(DownloadStatusEnum.failed,
             appId: 'com.example.error', fileName: 'error.apk'),
       ],
       [
-        _item(DownloadStatus.DOWNLOAD_SUCCESS,
+        _item(DownloadStatusEnum.completed,
             appId: 'com.example.success', fileName: 'success.apk'),
+      ],
+      [
+        _item(DownloadStatusEnum.queued,
+            appId: 'com.example.queued', fileName: 'queued.apk'),
       ],
     ]);
 
@@ -182,11 +193,31 @@ void main() {
     expect(find.text('继续'), findsOneWidget);
     expect(find.text('重试'), findsOneWidget);
     expect(find.text('安装'), findsOneWidget);
+    expect(find.text('取消'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('QUEUED 状态：徽标显示「排队中」，操作按钮显示「取消」', (tester) async {
+    _useTallView(tester);
+
+    logic.seed([
+      [
+        _item(DownloadStatusEnum.queued,
+            appId: 'com.example.queued', fileName: 'queued.apk'),
+      ],
+    ]);
+
+    await pumpPage(tester);
+
+    // 状态徽标
+    expect(find.text('排队中'), findsOneWidget);
+    // 主操作按钮（cancel 映射为「取消」）
+    expect(find.text('取消'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
   testWidgets('删除确认：点删除图标弹出确认框，确认后调用 deleteDownload', (tester) async {
-    final item = _item(DownloadStatus.DOWNLOAD_READY,
+    final item = _item(DownloadStatusEnum.paused,
         appId: 'com.example.del', fileName: 'del.apk');
     logic.seed([
       [item],
@@ -214,7 +245,7 @@ void main() {
   });
 
   testWidgets('Dismissible 滑动触发删除确认：取消不删除，确认后删除', (tester) async {
-    final item = _item(DownloadStatus.DOWNLOAD_SUCCESS,
+    final item = _item(DownloadStatusEnum.completed,
         appId: 'com.example.swipe', fileName: 'swipe.apk');
     logic.seed([
       [item],
@@ -259,15 +290,15 @@ void main() {
 
     logic.seed([
       [
-        _item(DownloadStatus.DOWNLOAD_ERROR,
+        _item(DownloadStatusEnum.failed,
             appId: 'com.example.fail', appName: '失败应用', fileName: 'f.apk'),
       ],
       [
-        _item(DownloadStatus.DOWNLOAD_SUCCESS,
+        _item(DownloadStatusEnum.completed,
             appId: 'com.example.done', appName: '完成应用', fileName: 's.apk'),
       ],
       [
-        _item(DownloadStatus.DOWNLOAD_LOADING,
+        _item(DownloadStatusEnum.downloading,
             appId: 'com.example.dling', appName: '下载应用', fileName: 'l.apk'),
       ],
     ]);
@@ -310,7 +341,7 @@ void main() {
 
   testWidgets('卡片显示应用名/版本/状态徽标', (tester) async {
     final item = _item(
-      DownloadStatus.DOWNLOAD_LOADING,
+      DownloadStatusEnum.downloading,
       appId: 'com.example.card',
       appName: '示例应用',
       version: '2.3.4',
@@ -342,7 +373,7 @@ void main() {
 
     const longFileName = 'a-very-long-download-file-name-that-would-be-truncated-in-list.apk';
     final item = _item(
-      DownloadStatus.DOWNLOAD_SUCCESS,
+      DownloadStatusEnum.completed,
       appId: 'gkd-kit/gkd',
       appName: 'GKD',
       version: '1.2.3',

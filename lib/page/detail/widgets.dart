@@ -486,7 +486,7 @@ class _AppInfoSectionState extends State<AppInfoSection> {
         if (version != null)
           _InfoRow(
             icon: Icons.tag,
-            label: '当前版本',
+            label: '最新版本',
             value: version,
           ),
         if (developer != null)
@@ -538,9 +538,8 @@ class _AppInfoSectionState extends State<AppInfoSection> {
 
 /// 版本角标组件
 ///
-/// 展示当前安装版本与最新版本对比：
-/// - 已安装 → chip 标签 '当前版本 {installedVersion}'
-/// - 未安装 → chip 直接显示 {latestVersion}
+/// 展示当前安装版本与最新版本对比（仅由调用方在应用已安装时渲染）：
+/// - chip 标签 '当前版本 {installedVersion}'
 /// - 已安装且 latest != installed → 右上角小胶囊角标 'v{latestVersion}'
 /// - 两者皆空 → SizedBox.shrink
 class VersionBadge extends StatelessWidget {

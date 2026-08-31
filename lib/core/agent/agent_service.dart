@@ -27,8 +27,9 @@ import 'package:gstore/core/utils/unit.dart';
 import 'package:gstore/core/webdav/webdav_config.dart';
 import 'package:gstore/core/webdav/webdav_client.dart';
 import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
-import 'package:gstore/http/download/DownloadStatus.dart';
-import 'package:gstore/http/download/DownloadStatusDataBase.dart';
+import 'package:gstore/core/download/manager/download_repository.dart';
+import 'package:gstore/core/download/model/download_task.dart';
+import 'package:gstore/core/download/model/download_task_database.dart';
 import 'package:gstore/core/download/strategy/impl/LocalDbDownloadStrategy.dart';
 import 'package:gstore/core/download/strategy/impl/VivoDownloadStrategy.dart';
 import 'package:gstore/core/download/strategy/impl/GitHubDownloadStrategy.dart';
@@ -77,7 +78,7 @@ class AgentMessage {
   String? toolDetail;
 
   /// 下载状态（下载工具使用，用于显示进度）
-  DownloadStatus? downloadStatus;
+  DownloadTask? downloadStatus;
 
   final DateTime time;
 
@@ -308,7 +309,7 @@ class AgentService extends GetxService {
   AgentMessage? _activeStreamMsg;
 
   /// 当前正在执行的下载任务状态（停止时取消）
-  DownloadStatus? _currentDownloadStatus;
+  DownloadTask? _currentDownloadStatus;
 
   /// 用户确认回调（view 注入，弹确认 UI）
   /// 参数为确认问题，返回 true=用户确认，false=取消
@@ -1329,7 +1330,7 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
     bool? done,
     AgentToolStatus? status,
     String? detail,
-    DownloadStatus? downloadStatus,
+    DownloadTask? downloadStatus,
   }) {
     final idx = messages.indexWhere((e) => e.id == msg.id);
     if (idx < 0) return;
@@ -1721,7 +1722,7 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
   /// [onStatus] 下载状态回调（用于 UI 显示进度）
   Future<String> _downloadApp(String appId, String channel, String url,
       String name, String version,
-      {String? vivoId, void Function(DownloadStatus)? onStatus}) async {
+      {String? vivoId, void Function(DownloadTask)? onStatus}) async {
     if (appId.isEmpty) return '下载参数不完整（缺少 appId）';
 
     try {
@@ -1731,7 +1732,6 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
         return '未知渠道: $channel（支持: github/fdroid/vivo/http/local_db）';
       }
 
-      DownloadStatus? status;
       // 下载模块下线 → 注册表取不到服务，降级提示不抛
       final service = ModuleManager.instance.get<IDownloadService>();
       if (service == null) {
@@ -1740,15 +1740,15 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
 
       // 方式1：已有完整 URL，直接下载
       if (url.isNotEmpty && (url.startsWith('http://') || url.startsWith('https://'))) {
-        status = await service.download(
+        final task = await service.download(
           appId,
           name,
           version,
           url,
           name,
         );
-        onStatus?.call(status);
-        return '已开始下载 $name，保存路径: ${status.savePath}';
+        onStatus?.call(task);
+        return '已开始下载 $name，保存路径: ${task.filePath}';
       }
 
       // 方式2：通过渠道详情获取真实下载地址
@@ -1793,7 +1793,7 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
       debugPrint(
           'AgentService: 选择下载文件 ${download.name} (平台: ${download.platform ?? '未知'}, 设备 ABI: ${PlatformArch.abi})');
 
-      // 使用策略管理器创建下载上下文（自动选择对应渠道策略）
+      // 使用策略管理器创建下载请求（自动选择对应渠道策略）
       final strategyManager = DownloadStrategyManager.instance;
       if (strategyManager.strategyCount == 0) {
         // 首次使用，注册所有策略
@@ -1806,10 +1806,11 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
         ]);
       }
 
-      final context = await strategyManager.createContext(download, detail);
-      if (context == null) {
+      final request = await strategyManager.createRequest(download, detail);
+      final DownloadTask task;
+      if (request == null) {
         // 策略创建失败，降级为直接下载（用详情 URL）
-        status = await service.download(
+        task = await service.download(
           appId,
           name,
           download.version ?? version,
@@ -1817,8 +1818,8 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
           download.name,
         );
       } else {
-        status = await service.downloadWithContext(
-          context,
+        task = await service.downloadWithContext(
+          request,
           appId,
           name,
           download.version ?? version,
@@ -1826,8 +1827,8 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
         );
       }
 
-      onStatus?.call(status);
-      return '已开始下载 $name，保存路径: ${status.savePath}';
+      onStatus?.call(task);
+      return '已开始下载 $name，保存路径: ${task.filePath}';
     } catch (e) {
       return '下载失败: $e';
     }
@@ -2109,10 +2110,11 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
   /// 下载管理
   Future<String> _manageDownloads(String action, String fileName) async {
     try {
-      final db = await downloadStatusDatabase;
+      final repository = DownloadRepository();
+      final service = ModuleManager.instance.get<IDownloadService>();
       switch (action) {
         case 'list':
-          final items = await db.downloadStatusDao.getAllDownload().first;
+          final items = await repository.all();
           if (items.isEmpty) return '暂无下载记录';
           final lines = items
               .map((d) => '• ${d.appName} ${d.fileName} 状态: ${_statusLabel(d.status)}')
@@ -2121,33 +2123,42 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
 
         case 'pause':
           if (fileName.isEmpty) return '暂停需要 fileName';
-          final items = await db.downloadStatusDao.getAllDownload().first;
+          if (service == null) return '下载模块未启用';
+          final items = await repository.all();
           final item = items.where((d) => d.fileName == fileName).firstOrNull;
           if (item == null) return '未找到下载: $fileName';
-          item.cancelDownload();
+          final id = item.id;
+          if (id == null) return '未找到下载: $fileName';
+          await service.pause(id);
           return '已暂停 $fileName';
 
         case 'resume':
           if (fileName.isEmpty) return '恢复需要 fileName';
-          final items = await db.downloadStatusDao.getAllDownload().first;
+          if (service == null) return '下载模块未启用';
+          final items = await repository.all();
           final item = items.where((d) => d.fileName == fileName).firstOrNull;
           if (item == null) return '未找到下载: $fileName';
-          final service = ModuleManager.instance.get<IDownloadService>();
-          if (service == null) {
-            return '下载模块未启用';
-          }
-          await service.download(
-            item.appId, item.appName, item.version, item.downloadUrl, item.fileName,
-            downloadSize: item.total,
-          );
+          final id = item.id;
+          if (id == null) return '未找到下载: $fileName';
+          await service.resume(id);
           return '已恢复下载 $fileName';
 
         case 'cleanCompleted':
-          await db.downloadStatusDao.deleteCompletedDownloads();
+          final db = await downloadTaskDatabase;
+          await db.database.delete(
+            'DownloadTaskEntity',
+            where: 'status IN (?, ?, ?)',
+            whereArgs: [
+              DownloadStatusEnum.completed.index,
+              DownloadStatusEnum.failed.index,
+              DownloadStatusEnum.cancelled.index,
+            ],
+          );
           return '已清理所有已完成下载记录';
 
         case 'clearAll':
-          await db.downloadStatusDao.deleteAllDownloads();
+          final db = await downloadTaskDatabase;
+          await db.database.delete('DownloadTaskEntity');
           return '已清空所有下载记录';
 
         default:
@@ -2159,16 +2170,20 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
   }
 
   /// 下载状态文字
-  String _statusLabel(int status) {
+  String _statusLabel(DownloadStatusEnum status) {
     switch (status) {
-      case DownloadStatus.DOWNLOAD_LOADING:
+      case DownloadStatusEnum.queued:
+      case DownloadStatusEnum.connecting:
+      case DownloadStatusEnum.downloading:
         return '下载中';
-      case DownloadStatus.DOWNLOAD_SUCCESS:
+      case DownloadStatusEnum.paused:
+        return '已暂停';
+      case DownloadStatusEnum.completed:
         return '已完成';
-      case DownloadStatus.DOWNLOAD_ERROR:
+      case DownloadStatusEnum.failed:
         return '失败';
-      default:
-        return '等待中';
+      case DownloadStatusEnum.cancelled:
+        return '已取消';
     }
   }
 
@@ -2466,9 +2481,13 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
     _cancelRequested = true;
     // 中断正在执行的下载工具
     final download = _currentDownloadStatus;
-    if (download != null && download.status == DownloadStatus.DOWNLOAD_LOADING) {
+    if (download != null && download.isActive) {
       appLog.info('AgentService: 停止下载 - ${download.fileName}');
-      download.cancelDownload();
+      final service = ModuleManager.instance.get<IDownloadService>();
+      final id = download.id;
+      if (service != null && id != null) {
+        service.cancel(id);
+      }
     }
     appLog.info('AgentService: 请求停止生成');
   }

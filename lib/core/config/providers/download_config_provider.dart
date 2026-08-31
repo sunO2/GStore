@@ -20,10 +20,22 @@ class DownloadConfig {
   /// 单段大小（字节，默认 8MB）
   final int segmentSizeBytes;
 
+  /// 最大并发下载数（默认 3，范围 1-10）
+  final int maxConcurrentDownloads;
+
+  /// 是否仅在 WiFi 下下载（默认关闭）
+  final bool wifiOnly;
+
+  /// 最大重试次数（默认 3，范围 0-5）
+  final int maxRetryCount;
+
   const DownloadConfig({
     this.multiSegmentEnabled = true,
     this.maxSegments = 8,
     this.segmentSizeBytes = 8 * 1024 * 1024,
+    this.maxConcurrentDownloads = 3,
+    this.wifiOnly = false,
+    this.maxRetryCount = 3,
   });
 
   /// 复制并修改
@@ -31,11 +43,17 @@ class DownloadConfig {
     bool? multiSegmentEnabled,
     int? maxSegments,
     int? segmentSizeBytes,
+    int? maxConcurrentDownloads,
+    bool? wifiOnly,
+    int? maxRetryCount,
   }) {
     return DownloadConfig(
       multiSegmentEnabled: multiSegmentEnabled ?? this.multiSegmentEnabled,
       maxSegments: maxSegments ?? this.maxSegments,
       segmentSizeBytes: segmentSizeBytes ?? this.segmentSizeBytes,
+      maxConcurrentDownloads: maxConcurrentDownloads ?? this.maxConcurrentDownloads,
+      wifiOnly: wifiOnly ?? this.wifiOnly,
+      maxRetryCount: maxRetryCount ?? this.maxRetryCount,
     );
   }
 
@@ -45,6 +63,9 @@ class DownloadConfig {
       'multiSegmentEnabled': multiSegmentEnabled,
       'maxSegments': maxSegments,
       'segmentSizeBytes': segmentSizeBytes,
+      'maxConcurrentDownloads': maxConcurrentDownloads,
+      'wifiOnly': wifiOnly,
+      'maxRetryCount': maxRetryCount,
     };
   }
 
@@ -54,6 +75,9 @@ class DownloadConfig {
       multiSegmentEnabled: json['multiSegmentEnabled'] as bool? ?? true,
       maxSegments: json['maxSegments'] as int? ?? 8,
       segmentSizeBytes: json['segmentSizeBytes'] as int? ?? 8 * 1024 * 1024,
+      maxConcurrentDownloads: json['maxConcurrentDownloads'] as int? ?? 3,
+      wifiOnly: json['wifiOnly'] as bool? ?? false,
+      maxRetryCount: json['maxRetryCount'] as int? ?? 3,
     );
   }
 }
@@ -72,6 +96,9 @@ class DownloadConfigProvider extends ConfigProvider<DownloadConfig> {
 
   /// 存储键
   static const String _multiSegmentKey = 'download_multi_segment';
+  static const String _maxConcurrentKey = 'download_max_concurrent';
+  static const String _wifiOnlyKey = 'download_wifi_only';
+  static const String _maxRetryKey = 'download_max_retry';
 
   /// 变化控制器
   final _controller = StreamController<DownloadConfig>.broadcast();
@@ -88,10 +115,16 @@ class DownloadConfigProvider extends ConfigProvider<DownloadConfig> {
   Future<DownloadConfig?> load() async {
     try {
       final multi = await _storage.getBool(_multiSegmentKey);
+      final concurrent = await _storage.getInt(_maxConcurrentKey);
+      final wifi = await _storage.getBool(_wifiOnlyKey);
+      final retry = await _storage.getInt(_maxRetryKey);
       _cached = DownloadConfig(
         multiSegmentEnabled: multi ?? true,
         maxSegments: _cached.maxSegments,
         segmentSizeBytes: _cached.segmentSizeBytes,
+        maxConcurrentDownloads: concurrent ?? 3,
+        wifiOnly: wifi ?? false,
+        maxRetryCount: retry ?? 3,
       );
       return _cached;
     } catch (e) {
@@ -120,10 +153,73 @@ class DownloadConfigProvider extends ConfigProvider<DownloadConfig> {
     return config?.multiSegmentEnabled ?? true;
   }
 
+  /// 设置最大并发下载数
+  Future<bool> setMaxConcurrentDownloads(int count) async {
+    final clamped = count.clamp(1, 10);
+    _cached = _cached.copyWith(maxConcurrentDownloads: clamped);
+    final ok = await _storage.setInt(_maxConcurrentKey, clamped);
+    if (ok) {
+      _controller.add(_cached);
+    }
+    return ok;
+  }
+
+  /// 获取最大并发下载数
+  Future<int> getMaxConcurrentDownloads() async {
+    if (_cached.maxConcurrentDownloads != 3) {
+      return _cached.maxConcurrentDownloads;
+    }
+    final config = await load();
+    return config?.maxConcurrentDownloads ?? 3;
+  }
+
+  /// 设置是否仅 WiFi 下载
+  Future<bool> setWifiOnly(bool enabled) async {
+    _cached = _cached.copyWith(wifiOnly: enabled);
+    final ok = await _storage.setBool(_wifiOnlyKey, enabled);
+    if (ok) {
+      _controller.add(_cached);
+    }
+    return ok;
+  }
+
+  /// 是否仅 WiFi 下载
+  Future<bool> isWifiOnly() async {
+    if (_cached.wifiOnly) {
+      return true;
+    }
+    final config = await load();
+    return config?.wifiOnly ?? false;
+  }
+
+  /// 设置最大重试次数
+  Future<bool> setMaxRetryCount(int count) async {
+    final clamped = count.clamp(0, 5);
+    _cached = _cached.copyWith(maxRetryCount: clamped);
+    final ok = await _storage.setInt(_maxRetryKey, clamped);
+    if (ok) {
+      _controller.add(_cached);
+    }
+    return ok;
+  }
+
+  /// 获取最大重试次数
+  Future<int> getMaxRetryCount() async {
+    if (_cached.maxRetryCount != 3) {
+      return _cached.maxRetryCount;
+    }
+    final config = await load();
+    return config?.maxRetryCount ?? 3;
+  }
+
   @override
   Future<bool> save(DownloadConfig config) async {
     _cached = config;
-    final ok = await _storage.setBool(_multiSegmentKey, config.multiSegmentEnabled);
+    final ok1 = await _storage.setBool(_multiSegmentKey, config.multiSegmentEnabled);
+    final ok2 = await _storage.setInt(_maxConcurrentKey, config.maxConcurrentDownloads);
+    final ok3 = await _storage.setBool(_wifiOnlyKey, config.wifiOnly);
+    final ok4 = await _storage.setInt(_maxRetryKey, config.maxRetryCount);
+    final ok = ok1 && ok2 && ok3 && ok4;
     if (ok) {
       _controller.add(config);
     }
@@ -134,6 +230,9 @@ class DownloadConfigProvider extends ConfigProvider<DownloadConfig> {
   Future<bool> clear() async {
     _cached = const DownloadConfig();
     await _storage.remove(_multiSegmentKey);
+    await _storage.remove(_maxConcurrentKey);
+    await _storage.remove(_wifiOnlyKey);
+    await _storage.remove(_maxRetryKey);
     _controller.add(_cached);
     return true;
   }

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:get/get.dart';
@@ -8,6 +10,10 @@ import 'package:gstore/core/routers.dart';
 /// 职责：
 /// - flutter_local_notifications：每个下载任务的进度通知（通知栏可见进度）
 /// - flutter_foreground_task：前台服务，保持进程存活使下载在后台继续运行
+///
+/// 注意：此服务仅在任务进入 LOADING 状态后才会被调用（通过
+/// DownloadService._performDownload()）。QUEUED 状态的任务不会
+/// 触发任何通知，因为它们尚未获取下载信号量。
 class DownloadNotificationService {
   DownloadNotificationService._();
 
@@ -101,6 +107,18 @@ class DownloadNotificationService {
     }
   }
 
+  /// 安全执行通知操作：同步与异步错误都兜住，通知失败绝不影响下载流程。
+  /// （单元测试等无 Flutter binding 环境下，插件 Future 会以异步错误抛出）
+  void _safeNotify(Future<void> Function() action) {
+    try {
+      unawaited(action().catchError((Object e) {
+        appLog.error('DownloadNotificationService: 通知操作失败 - $e');
+      }));
+    } catch (e) {
+      appLog.error('DownloadNotificationService: 通知操作失败 - $e');
+    }
+  }
+
   // ==================== 任务进度通知 ====================
 
   /// 下载开始
@@ -129,11 +147,7 @@ class DownloadNotificationService {
   void onDownloadComplete(int id) {
     _lastNotify.remove(id);
     _activeDownloads = (_activeDownloads - 1) < 0 ? 0 : _activeDownloads - 1;
-    try {
-      _local.cancel(id: id);
-    } catch (e) {
-      appLog.error('DownloadNotificationService: 取消通知失败 - $e');
-    }
+    _safeNotify(() => _local.cancel(id: id));
     _stopIfIdle();
   }
 
@@ -141,24 +155,20 @@ class DownloadNotificationService {
   void onDownloadError(int id, String title) {
     _lastNotify.remove(id);
     _activeDownloads = (_activeDownloads - 1) < 0 ? 0 : _activeDownloads - 1;
-    try {
-      _local.show(
-        id: id,
-        title: '下载失败',
-        body: title,
-        notificationDetails: const NotificationDetails(
-          android: AndroidNotificationDetails(
-            _channelId,
-            _channelName,
-            importance: Importance.high,
-            priority: Priority.high,
-            autoCancel: true,
+    _safeNotify(() => _local.show(
+          id: id,
+          title: '下载失败',
+          body: title,
+          notificationDetails: const NotificationDetails(
+            android: AndroidNotificationDetails(
+              _channelId,
+              _channelName,
+              importance: Importance.high,
+              priority: Priority.high,
+              autoCancel: true,
+            ),
           ),
-        ),
-      );
-    } catch (e) {
-      appLog.error('DownloadNotificationService: 显示失败通知错误 - $e');
-    }
+        ));
     _stopIfIdle();
   }
 
@@ -166,11 +176,7 @@ class DownloadNotificationService {
   void onDownloadCancel(int id) {
     _lastNotify.remove(id);
     _activeDownloads = (_activeDownloads - 1) < 0 ? 0 : _activeDownloads - 1;
-    try {
-      _local.cancel(id: id);
-    } catch (e) {
-      appLog.error('DownloadNotificationService: 取消通知失败 - $e');
-    }
+    _safeNotify(() => _local.cancel(id: id));
     _stopIfIdle();
   }
 
@@ -183,30 +189,26 @@ class DownloadNotificationService {
     int total,
   ) {
     final percent = total > 0 ? (count / total * 100).round() : 0;
-    try {
-      _local.show(
-        id: id,
-        title: title,
-        body: '下载中 $percent% · $fileName',
-        notificationDetails: NotificationDetails(
-          android: AndroidNotificationDetails(
-            _channelId,
-            _channelName,
-            importance: Importance.low,
-            priority: Priority.low,
-            onlyAlertOnce: true,
-            showProgress: true,
-            progress: total > 0 ? count : 0,
-            maxProgress: total > 0 ? total : 0,
-            indeterminate: total <= 0,
-            autoCancel: false,
+    _safeNotify(() => _local.show(
+          id: id,
+          title: title,
+          body: '下载中 $percent% · $fileName',
+          notificationDetails: NotificationDetails(
+            android: AndroidNotificationDetails(
+              _channelId,
+              _channelName,
+              importance: Importance.low,
+              priority: Priority.low,
+              onlyAlertOnce: true,
+              showProgress: true,
+              progress: total > 0 ? count : 0,
+              maxProgress: total > 0 ? total : 0,
+              indeterminate: total <= 0,
+              autoCancel: false,
+            ),
           ),
-        ),
-        payload: 'download_center',
-      );
-    } catch (e) {
-      appLog.error('DownloadNotificationService: 显示进度通知失败 - $e');
-    }
+          payload: 'download_center',
+        ));
   }
 
   // ==================== 前台服务（后台保活）====================

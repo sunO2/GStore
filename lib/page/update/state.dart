@@ -1,7 +1,7 @@
 import 'package:get/get.dart';
+import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/update/app_update_info.dart';
 import 'package:gstore/core/update/update_log.dart';
-import 'package:gstore/http/download/DownloadStatus.dart';
 
 export 'package:gstore/core/update/update_log.dart'
     show CheckLogLevel, CheckLogEntry;
@@ -25,8 +25,8 @@ class UpdateState {
   /// 正在更新的应用 ID
   final RxnString updatingAppId = RxnString();
 
-  /// 当前下载进度
-  final Rxn<DownloadStatus> currentDownload = Rxn<DownloadStatus>();
+  /// 当前下载任务（进度/状态）
+  final Rxn<DownloadTask> currentDownload = Rxn<DownloadTask>();
 
   /// 当前正在检测的应用名（用于滚动动画展示）
   final RxnString checkingAppName = RxnString();

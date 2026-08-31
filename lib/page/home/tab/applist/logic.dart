@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:gstore/core/aggregate/aggregate.dart';
 import 'package:gstore/core/model/AppDetailRequest.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
-import 'package:gstore/http/download/DownloadStatus.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/http/github/dio_client.dart';
 
@@ -144,7 +143,7 @@ class ApplistLogic extends GetxController with GithubRequestMix {
     }
 
     var downloadStatus = await "gstore".checkUpdate();
-    if (downloadStatus == DownloadStatus.DOWNLOAD_SUCCESS) {
+    if (downloadStatus == DbUpdateResult.success) {
       await loadAggregatedApps();
     }
   }

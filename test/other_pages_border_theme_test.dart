@@ -8,10 +8,10 @@ import 'package:gstore/core/config/config_manager.dart';
 import 'package:gstore/core/config/config_storage.dart';
 import 'package:gstore/core/config/providers/theme_config_provider.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/module/app_modules.dart';
 import 'package:gstore/core/theme/app_theme_config.dart';
 import 'package:gstore/db/apps/AppInfoDatabase.dart';
-import 'package:gstore/http/download/DownloadStatus.dart';
 import 'package:gstore/http/github/github_client.dart';
 import 'package:gstore/page/download/download_status_utils.dart';
 import 'package:gstore/page/download/logic.dart';
@@ -67,12 +67,12 @@ class MockAppInfoDatabase extends Mock implements AppInfoDatabase {}
 /// 下载逻辑测试替身（同 download_manager_view_test.dart 模式）：
 /// 不订阅真实数据库，数据由测试手动注入。
 class _TestDownloadManagerLogic extends DownloadManagerLogic {
-  List<List<DownloadStatus>> baseGroups = [];
+  List<List<DownloadTask>> baseGroups = [];
 
   @override
   void onReady() {}
 
-  void seed(List<List<DownloadStatus>> groups) {
+  void seed(List<List<DownloadTask>> groups) {
     baseGroups = List.of(groups);
     downloadGroups.value = _applyFilter(baseGroups, currentFilter.value);
   }
@@ -83,8 +83,8 @@ class _TestDownloadManagerLogic extends DownloadManagerLogic {
     downloadGroups.value = _applyFilter(baseGroups, filter);
   }
 
-  List<List<DownloadStatus>> _applyFilter(
-    List<List<DownloadStatus>> groups,
+  List<List<DownloadTask>> _applyFilter(
+    List<List<DownloadTask>> groups,
     DownloadFilter filter,
   ) {
     if (filter == DownloadFilter.all) return groups;
@@ -96,24 +96,32 @@ class _TestDownloadManagerLogic extends DownloadManagerLogic {
   }
 }
 
-/// 构造 DownloadStatus 后直接赋 status 字段（构造器会把 LOADING 重置为 READY）
-DownloadStatus _item(
-  int status, {
+/// 构造 DownloadTask（状态由枚举直接指定）
+DownloadTask _item(
+  DownloadStatusEnum status, {
   required String appId,
   String appName = '测试应用',
   String version = '1.0.0',
   String fileName = 'app.apk',
 }) {
-  final item = DownloadStatus(
-    appId,
-    appName,
-    version,
-    fileName,
-    'https://example.com/$fileName',
-    '/data/media/0/Download/$fileName',
+  return DownloadTask(
+    id: appId.hashCode,
+    appId: appId,
+    appName: appName,
+    version: version,
+    fileName: fileName,
+    url: 'https://example.com/$fileName',
+    filePath: '/data/media/0/Download/$fileName',
+    total: 1000,
+    received: 500,
+    status: status,
+    speedBps: 0,
+    etaSec: null,
+    error: null,
+    segments: null,
+    createdAt: DateTime.now(),
+    updatedAt: DateTime.now(),
   );
-  item.status = status;
-  return item;
 }
 
 /// 放大测试视口，确保 ListView 懒构建范围内包含目标内容
@@ -235,7 +243,7 @@ void main() {
       Get.put<DownloadManagerLogic>(logic);
       logic.seed([
         [
-          _item(DownloadStatus.DOWNLOAD_READY,
+          _item(DownloadStatusEnum.paused,
               appId: 'com.example.a', appName: '下载应用'),
         ],
       ]);

@@ -287,6 +287,12 @@ class _CapturingCallbacks implements DetailCallbacks {
   }) async {}
 
   @override
+  void syncDownloadToFB(DownloadInfo download) {}
+
+  @override
+  Future<void> startDownload(DownloadInfo download, {int? downloadSize, bool fromScript = false}) async {}
+
+  @override
   Future<bool?> showWarningDialog({
     required String title,
     required String content,

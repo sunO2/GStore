@@ -111,6 +111,8 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
       _showMessage('安装模块未启用');
       return false;
     }
+    // 每次请求前都刷新状态，避免陈旧标记误判"未运行"
+    await _refreshShizukuState();
     if (manager.isShizukuAvailable) return true;
 
     if (!manager.isBinderRunning) {
@@ -129,6 +131,17 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
     return granted;
   }
 
+  /// 重新检测 Shizuku 状态并刷新显示标记
+  /// 每次操作前调用，避免依赖首检后陈旧的 _checked 标记
+  Future<void> _refreshShizukuState() async {
+    final manager = _installManager;
+    if (manager == null) return;
+    await manager.checkShizuku();
+    if (mounted) {
+      setState(() => _shizukuAvailable = manager.isShizukuAvailable);
+    }
+  }
+
   /// 卸载应用
   Future<void> _uninstallApp(installed.AppInfo app) async {
     final manager = _installManager;
@@ -144,32 +157,44 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
     );
     if (confirmed != true) return;
 
-    // 有 Shizuku 时静默卸载，否则跳系统卸载界面
+    // 有 Shizuku 时静默卸载，否则/失败时跳系统卸载界面
+    await _refreshShizukuState();
     if (manager.isShizukuAvailable) {
       final ok = await manager.managePackage(app.packageName, 'uninstall');
       if (ok) {
+        appLog.info('InstalledApps: 静默卸载成功', data: {
+          'package': app.packageName,
+        });
         _showMessage('已卸载 ${app.name}');
         await _loadApps();
       } else {
+        appLog.error('InstalledApps: 静默卸载失败，回退系统卸载界面', data: {
+          'package': app.packageName,
+        });
         _showMessage('静默卸载失败，将打开系统卸载界面');
         await manager.openUninstallInSystem(app.packageName);
       }
     } else {
+      appLog.info('InstalledApps: Shizuku 不可用，打开系统卸载界面', data: {
+        'package': app.packageName,
+      });
       final ok = await manager.openUninstallInSystem(app.packageName);
       if (!ok) {
         _showMessage('无法打开系统卸载界面');
       }
     }
+    await _refreshShizukuState();
   }
 
   /// 清理应用数据
-  /// 有 Shizuku 时静默清理，否则跳系统应用详情页由用户手动操作
+  /// 有 Shizuku 时静默清理，否则/失败时跳系统应用详情页由用户手动操作
   Future<void> _clearData(installed.AppInfo app) async {
     final manager = _installManager;
     if (manager == null) {
       _showMessage('安装模块未启用');
       return;
     }
+    await _refreshShizukuState();
     if (manager.isShizukuAvailable) {
       final confirmed = await _confirmDialog(
         '清理数据',
@@ -179,12 +204,28 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
       );
       if (confirmed != true) return;
       final ok = await manager.clearAppData(app.packageName);
-      _showMessage(ok ? '已清理 ${app.name} 的数据' : '清理数据失败');
+      if (ok) {
+        appLog.info('InstalledApps: 清理数据成功', data: {
+          'package': app.packageName,
+        });
+        _showMessage('已清理 ${app.name} 的数据');
+      } else {
+        // Shizuku 清理失败，回退系统应用详情页，用户手动点"清除数据"
+        appLog.error('InstalledApps: 清理数据失败，回退系统应用详情', data: {
+          'package': app.packageName,
+        });
+        _showMessage('清理数据失败，已打开应用详情，请在系统中手动清除数据');
+        await manager.openAppDetailsInSystem(app.packageName);
+      }
     } else {
       // 跳系统应用详情页，用户手动点"清除数据"
+      appLog.info('InstalledApps: Shizuku 不可用，打开系统应用详情', data: {
+        'package': app.packageName,
+      });
       _showMessage('已打开 ${app.name} 的应用详情，请在系统中手动清除数据');
       await manager.openAppDetailsInSystem(app.packageName);
     }
+    await _refreshShizukuState();
   }
 
   /// 清理应用缓存
@@ -195,33 +236,63 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
       _showMessage('安装模块未启用');
       return;
     }
+    await _refreshShizukuState();
     if (manager.isShizukuAvailable) {
       final ok = await manager.clearAppCache(app.packageName);
       if (ok) {
+        appLog.info('InstalledApps: 清理缓存成功', data: {
+          'package': app.packageName,
+        });
         _showMessage('已清理 ${app.name} 的缓存');
+        await _refreshShizukuState();
         return;
       }
       // Shizuku 清理失败，回退系统详情页
+      appLog.error('InstalledApps: 清理缓存失败，回退系统应用详情', data: {
+        'package': app.packageName,
+      });
+    } else {
+      appLog.info('InstalledApps: Shizuku 不可用，打开系统应用详情', data: {
+        'package': app.packageName,
+      });
     }
     _showMessage('已打开 ${app.name} 的应用详情，请在系统中手动清除缓存');
     await manager.openAppDetailsInSystem(app.packageName);
+    await _refreshShizukuState();
   }
 
   /// 强制停止应用
-  /// 有 Shizuku 时静默停止，否则跳系统应用详情页
+  /// 有 Shizuku 时静默停止，否则/失败时跳系统应用详情页（系统详情页含"强制停止"按钮）
   Future<void> _forceStop(installed.AppInfo app) async {
     final manager = _installManager;
     if (manager == null) {
       _showMessage('安装模块未启用');
       return;
     }
+    await _refreshShizukuState();
     if (manager.isShizukuAvailable) {
       final ok = await manager.forceStopApp(app.packageName);
-      _showMessage(ok ? '已强制停止 ${app.name}' : '强制停止失败');
+      if (ok) {
+        appLog.info('InstalledApps: 强制停止成功', data: {
+          'package': app.packageName,
+        });
+        _showMessage('已强制停止 ${app.name}');
+      } else {
+        // Shizuku 停止失败，回退系统应用详情页，用户手动点"强制停止"
+        appLog.error('InstalledApps: 强制停止失败，回退系统应用详情', data: {
+          'package': app.packageName,
+        });
+        _showMessage('强制停止失败，已打开应用详情，请在系统中手动停止');
+        await manager.openAppDetailsInSystem(app.packageName);
+      }
     } else {
+      appLog.info('InstalledApps: Shizuku 不可用，打开系统应用详情', data: {
+        'package': app.packageName,
+      });
       _showMessage('已打开 ${app.name} 的应用详情，请在系统中手动停止');
       await manager.openAppDetailsInSystem(app.packageName);
     }
+    await _refreshShizukuState();
   }
 
   Future<bool?> _confirmDialog(

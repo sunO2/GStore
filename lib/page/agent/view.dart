@@ -9,11 +9,30 @@ import 'package:gstore/core/icons/Icons.dart';
 import 'package:gstore/page/home/logic.dart';
 import 'package:gstore/core/agent/agent_service.dart';
 import 'package:gstore/core/core.dart';
-import 'package:gstore/http/download/DownloadStatus.dart';
+import 'package:gstore/core/download/model/download_task.dart';
 
 import 'logic.dart';
 import 'state.dart';
 import 'markdown_message.dart';
+
+/// 下载状态中文标签（Agent 工具消息展示用）
+String _downloadStatusLabel(DownloadStatusEnum status) {
+  switch (status) {
+    case DownloadStatusEnum.queued:
+    case DownloadStatusEnum.connecting:
+      return '队列中';
+    case DownloadStatusEnum.downloading:
+      return '下载中';
+    case DownloadStatusEnum.paused:
+      return '已暂停';
+    case DownloadStatusEnum.completed:
+      return '已完成';
+    case DownloadStatusEnum.failed:
+      return '失败';
+    case DownloadStatusEnum.cancelled:
+      return '已取消';
+  }
+}
 
 class AgentPage extends StatefulWidget {
   /// 是否内嵌在首页 tab（底部有悬浮导航胶囊需避让）；
@@ -1338,7 +1357,7 @@ class _TurnTimeline extends StatelessWidget {
       buffer.writeln(tool.toolDetail);
     }
     if (tool.downloadStatus != null) {
-      buffer.writeln('下载状态：${tool.downloadStatus!.status}');
+      buffer.writeln('下载状态：${_downloadStatusLabel(tool.downloadStatus!.status)}');
     }
     final detailText = buffer.toString().trimRight();
 
@@ -1839,66 +1858,62 @@ class _ToolBubbleState extends State<_ToolBubble> {
       buffer.writeln(msg.toolDetail);
     }
     if (msg.downloadStatus != null) {
-      buffer.writeln('下载状态：${msg.downloadStatus!.status}');
+      buffer.writeln('下载状态：${_downloadStatusLabel(msg.downloadStatus!.status)}');
     }
     return buffer.toString().trimRight();
   }
 
-  Widget _buildDownloadProgress(BuildContext context, DownloadStatus status) {
-    return StreamBuilder<DownloadStatus>(
-      stream: status.observer,
-      builder: (context, snap) {
-        final data = snap.data ?? status;
-        final total = data.total;
-        final count = data.count;
-        final downloading = data.status == DownloadStatus.DOWNLOAD_LOADING;
+  Widget _buildDownloadProgress(BuildContext context, DownloadTask task) {
+    final total = task.total;
+    final count = task.received;
+    final downloading = task.status == DownloadStatusEnum.downloading ||
+        task.status == DownloadStatusEnum.connecting ||
+        task.status == DownloadStatusEnum.queued;
 
-        final progress = total > 0 ? (count / total).clamp(0.0, 1.0) : 0.0;
-        final percent = (progress * 100).toInt();
+    final progress = total > 0 ? (count / total).clamp(0.0, 1.0) : 0.0;
+    final percent = (progress * 100).toInt();
 
-        return Padding(
-          padding: EdgeInsets.only(top: AppSpacing.sm),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+    return Padding(
+      padding: EdgeInsets.only(top: AppSpacing.sm),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(AppRadius.sm),
+            child: LinearProgressIndicator(
+              value: progress,
+              minHeight: 6,
+              backgroundColor:
+                  Theme.of(context).colorScheme.surfaceContainerHighest,
+              color: Colors.orange,
+            ),
+          ),
+          const SizedBox(height: AppSpacing.xs),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              ClipRRect(
-                borderRadius: BorderRadius.circular(AppRadius.sm),
-                child: LinearProgressIndicator(
-                  value: progress,
-                  minHeight: 6,
-                  backgroundColor:
-                      Theme.of(context).colorScheme.surfaceContainerHighest,
-                  color: Colors.orange,
-                ),
+              Text(
+                _formatBytes(count) + ' / ' + _formatBytes(total),
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                      color: AppColors.textSecondary,
+                    ),
               ),
-              const SizedBox(height: AppSpacing.xs),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    _formatBytes(count) + ' / ' + _formatBytes(total),
-                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                          color: AppColors.textSecondary,
-                        ),
-                  ),
-                  Text(
-                    downloading
-                        ? '$percent%'
-                        : (data.status == DownloadStatus.DOWNLOAD_SUCCESS
-                            ? '已完成'
-                            : '已暂停'),
-                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                          color: data.status == DownloadStatus.DOWNLOAD_SUCCESS
-                              ? AppColors.success
-                              : AppColors.textSecondary,
-                        ),
-                  ),
-                ],
+              Text(
+                downloading
+                    ? '$percent%'
+                    : (task.status == DownloadStatusEnum.completed
+                        ? '已完成'
+                        : '已暂停'),
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                      color: task.status == DownloadStatusEnum.completed
+                          ? AppColors.success
+                          : AppColors.textSecondary,
+                    ),
               ),
             ],
           ),
-        );
-      },
+        ],
+      ),
     );
   }
 

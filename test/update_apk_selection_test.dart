@@ -1,12 +1,12 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
-import 'package:gstore/core/download/model/DownloadContext.dart';
+import 'package:gstore/core/download/core/download_request.dart';
+import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/model/StatTag.dart';
@@ -14,8 +14,6 @@ import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/service/badge_service.dart';
-import 'package:gstore/core/service/downloadService.dart';
-import 'package:gstore/http/download/DownloadStatus.dart';
 import 'package:gstore/core/update/app_update_info.dart';
 import 'package:gstore/core/update/update_cache.dart';
 import 'package:gstore/core/update/update_log.dart';
@@ -225,28 +223,50 @@ AppUpdateInfo _cacheRestoredInfo() {
   );
 }
 
-/// 假 DownloadService：记录 download / downloadWithContext 调用参数
-class _FakeDownloadService extends DownloadService {
-  _FakeDownloadService() : super(Dio());
-
+/// 假下载服务：实现新 IDownloadService，记录 download / downloadWithContext 调用参数
+class _FakeDownloadService implements IDownloadService {
   /// 记录的下载调用：(appId, appName, version, fileName, url)
   final List<(String, String, String, String, String)> calls = [];
 
+  /// 构造一个处于"排队中"且无 id 的最小任务；
+  /// id=null 使 UpdateLogic._awaitDownloadTerminal 立即返回（不订阅 watch），
+  /// updateApp 只断言本次下载的 fileName/version/url 参数。
+  DownloadTask _task(String appid, String appName, String version,
+      String fileName, String url) {
+    return DownloadTask(
+      id: null,
+      appId: appid,
+      appName: appName,
+      version: version,
+      fileName: fileName,
+      url: url,
+      filePath: '/tmp/fake-$fileName.apk',
+      total: 0,
+      received: 0,
+      status: DownloadStatusEnum.queued,
+      speedBps: 0,
+      etaSec: null,
+      error: null,
+      segments: null,
+      createdAt: DateTime.now(),
+      updatedAt: DateTime.now(),
+    );
+  }
+
   @override
-  Future<DownloadStatus> download(String appid, appName, version, url,
+  Future<DownloadTask> download(String appid, appName, version, url,
       fileName,
       {int? downloadSize,
       bool breakPoint = true,
       String? saveFileName,
       bool forceDownload = false}) async {
     calls.add((appid, appName, version, fileName, url));
-    return DownloadStatus(appid, appName, version, fileName, url,
-        '/tmp/fake-$fileName.apk');
+    return _task(appid, appName, version, fileName, url);
   }
 
   @override
-  Future<DownloadStatus> downloadWithContext(
-    DownloadContext context,
+  Future<DownloadTask> downloadWithContext(
+    DownloadRequest request,
     String appid,
     String appName,
     String version,
@@ -254,10 +274,27 @@ class _FakeDownloadService extends DownloadService {
     bool breakPoint = true,
     String? saveFileName,
   }) async {
-    calls.add((appid, appName, version, fileName, context.downloadUrl));
-    return DownloadStatus(appid, appName, version, fileName,
-        context.downloadUrl, '/tmp/fake-$fileName.apk');
+    calls.add((appid, appName, version, fileName, request.url));
+    return _task(appid, appName, version, fileName, request.url);
   }
+
+  @override
+  Future<void> pause(int id) async {}
+
+  @override
+  Future<void> resume(int id) async {}
+
+  @override
+  Future<void> cancel(int id) async {}
+
+  @override
+  Future<void> retry(int id) async {}
+
+  @override
+  Future<DownloadTask?> getTask(int id) async => null;
+
+  @override
+  Stream<DownloadTask> watch(int id) => const Stream.empty();
 }
 
 /// mock path_provider 插件方法通道：getDownloadsDirectory 返回系统临时目录
@@ -450,15 +487,14 @@ void main() {
     // 同款注释），用 runZonedGuarded 吞掉后断言下载调用参数
     test('换选后 updateApp：下载使用用户所选（version/fileName/url）', () async {
       final info = _multiCandidateInfo();
-      Get.put<DownloadService>(_FakeDownloadService());
-      // UpdateLogic 已改注册表取用（todo 14）：同步绑定 ModuleManager 注册表
-      ModuleManager.instance.bindByType(IDownloadService, Get.find<DownloadService>());
+      final fakeDownload = _FakeDownloadService();
+      // UpdateLogic 经注册表取用：同步绑定 ModuleManager 注册表
+      ModuleManager.instance.bindByType(IDownloadService, fakeDownload);
       Get.put<UpdateManagerService>(_FakeUpdateManager([info]));
       final logic = UpdateLogic();
       final arm = info.detail!.downloads[1];
       await logic.selectApk(info, arm);
 
-      final fakeDownload = Get.find<DownloadService>() as _FakeDownloadService;
       final zoneErrors = <Object>[];
       await runZonedGuarded(() => logic.updateApp(info), (e, _) {
         zoneErrors.add(e);
@@ -477,13 +513,12 @@ void main() {
 
     test('未换选 updateApp：下载使用默认 latestDownload', () async {
       final info = _multiCandidateInfo();
-      Get.put<DownloadService>(_FakeDownloadService());
-      // UpdateLogic 已改注册表取用（todo 14）：同步绑定 ModuleManager 注册表
-      ModuleManager.instance.bindByType(IDownloadService, Get.find<DownloadService>());
+      final fakeDownload = _FakeDownloadService();
+      // UpdateLogic 经注册表取用：同步绑定 ModuleManager 注册表
+      ModuleManager.instance.bindByType(IDownloadService, fakeDownload);
       Get.put<UpdateManagerService>(_FakeUpdateManager([info]));
       final logic = UpdateLogic();
 
-      final fakeDownload = Get.find<DownloadService>() as _FakeDownloadService;
       // 上个用例的 snackbar 异常已使 GetQueue 卡死（_active 永不复位），
       // 本用例的 snackbar 只排队不执行 → 无 zone 异常；仅断言下载调用
       await runZonedGuarded(() => logic.updateApp(info), (e, _) {});

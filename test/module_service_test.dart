@@ -1,10 +1,33 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:gstore/core/download/model/DownloadContext.dart';
-import 'package:gstore/http/download/DownloadStatus.dart';
+import 'package:gstore/core/download/core/download_request.dart';
+import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/module/module.dart';
 import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/module/module_proxy.dart';
+
+/// 构造最小 DownloadTask
+DownloadTask _task(String appid, String appName, String version, String fileName,
+    {String? url}) {
+  return DownloadTask(
+    id: 1,
+    appId: appid,
+    appName: appName,
+    version: version,
+    fileName: fileName,
+    url: url ?? 'https://example.com/$fileName',
+    filePath: '/tmp/$fileName',
+    total: 0,
+    received: 0,
+    status: DownloadStatusEnum.queued,
+    speedBps: 0,
+    etaSec: null,
+    error: null,
+    segments: null,
+    createdAt: DateTime.now(),
+    updatedAt: DateTime.now(),
+  );
+}
 
 /// 测试下载服务实现
 class _FakeDownloadService implements IDownloadService {
@@ -12,24 +35,41 @@ class _FakeDownloadService implements IDownloadService {
   _FakeDownloadService(this.tag);
 
   @override
-  Future<DownloadStatus> download(String appid, String appName, String version,
+  Future<DownloadTask> download(String appid, String appName, String version,
       String url, String fileName,
       {int? downloadSize, bool breakPoint = true, String? saveFileName, bool forceDownload = false}) async {
-    return DownloadStatus(appid, appName, version, fileName, url, '/tmp/$fileName');
+    return _task(appid, appName, version, fileName, url: url);
   }
 
   @override
-  Future<DownloadStatus> downloadWithContext(
-      DownloadContext context,
+  Future<DownloadTask> downloadWithContext(
+      DownloadRequest request,
       String appid,
       String appName,
       String version,
       String fileName,
       {bool breakPoint = true,
       String? saveFileName}) async {
-    return DownloadStatus(
-        appid, appName, version, fileName, context.downloadUrl, '/tmp/$fileName');
+    return _task(appid, appName, version, fileName, url: request.url);
   }
+
+  @override
+  Future<void> pause(int id) async {}
+
+  @override
+  Future<void> resume(int id) async {}
+
+  @override
+  Future<void> cancel(int id) async {}
+
+  @override
+  Future<void> retry(int id) async {}
+
+  @override
+  Future<DownloadTask?> getTask(int id) async => null;
+
+  @override
+  Stream<DownloadTask> watch(int id) => const Stream.empty();
 
   /// 测试标记（模拟执行结果）
   String get marker => tag;

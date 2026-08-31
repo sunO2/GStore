@@ -7,10 +7,10 @@ import 'package:gstore/core/config/config_service.dart';
 import 'package:gstore/core/config/config_storage.dart';
 import 'package:gstore/core/config/config_store.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/module/app_modules.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/db/apps/AppInfoDatabase.dart';
-import 'package:gstore/http/download/DownloadStatus.dart';
 import 'package:gstore/http/github/dio_client.dart';
 import 'package:gstore/http/github/github_client.dart';
 import 'package:gstore/page/download/logic.dart';
@@ -195,13 +195,23 @@ void main() {
       await pumpApp(tester);
 
       final logic = DownloadManagerLogic();
-      final status = DownloadStatus(
-        'com.example.a',
-        'App A',
-        '1.0.0',
-        'a.apk',
-        'https://example.com/a.apk',
-        '/tmp/a.apk',
+      final status = DownloadTask(
+        id: 1,
+        appId: 'com.example.a',
+        appName: 'App A',
+        version: '1.0.0',
+        fileName: 'a.apk',
+        url: 'https://example.com/a.apk',
+        filePath: '/tmp/a.apk',
+        total: 0,
+        received: 0,
+        status: DownloadStatusEnum.completed,
+        speedBps: 0,
+        etaSec: null,
+        error: null,
+        segments: null,
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
       );
       expect(ModuleManager.instance.get<InstallManager>(), isNull,
           reason: '前置：未绑定 InstallManager');

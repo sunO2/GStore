@@ -1,5 +1,5 @@
 import 'package:gstore/core/channel/model/ChannelType.dart';
-import 'package:gstore/core/download/model/DownloadContext.dart';
+import 'package:gstore/core/download/core/download_request.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 
@@ -12,23 +12,23 @@ abstract interface class IDownloadStrategy {
   /// 支持的渠道类型
   ChannelType get supportedChannel;
 
-  /// 创建下载上下文
+  /// 创建下载请求
   /// [downloadInfo] 下载信息（包含url, name, size等）
   /// [detailData] 详情数据（包含extra等扩展信息）
-  /// 返回配置好的下载上下文
-  Future<DownloadContext> createContext(
+  /// 返回配置好的下载请求，无法创建时返回null
+  Future<DownloadRequest?> createRequest(
     DownloadInfo downloadInfo,
     IDetailInfo detailData,
   );
 
-  /// 验证下载上下文是否有效
-  /// [context] 待验证的下载上下文
-  /// 返回true表示上下文有效，可以开始下载
-  Future<bool> validateContext(DownloadContext context);
+  /// 验证下载请求是否有效
+  /// [request] 待验证的下载请求
+  /// 返回true表示请求有效，可以开始下载
+  Future<bool> validateRequest(DownloadRequest request);
 
   /// 下载后处理（可选）
   /// [savedPath] 保存的文件路径
-  /// [context] 使用的下载上下文
+  /// [request] 使用的下载请求
   /// 子类可以覆盖此方法实现下载后的特殊处理
-  Future<void>? postProcess(String savedPath, DownloadContext context);
+  Future<void>? postProcess(String savedPath, DownloadRequest request);
 }

@@ -14,7 +14,7 @@ import 'package:gstore/core/download/strategy/impl/VivoDownloadStrategy.dart';
 import 'package:gstore/core/download/strategy/impl/GitHubDownloadStrategy.dart';
 import 'package:gstore/core/download/strategy/impl/HttpDownloadStrategy.dart';
 import 'package:gstore/core/download/strategy/impl/FdroidDownloadStrategy.dart';
-import 'package:gstore/http/download/DownloadStatus.dart';
+import 'package:gstore/core/download/model/download_task.dart';
 import 'package:installed_apps/app_info.dart' as installed;
 import 'state.dart';
 import 'detail_ui_mixins.dart';
@@ -26,8 +26,8 @@ class DetailLogic extends GetxController
         DetailMetadataMixin,
         DetailVersionPickerMixin
     implements DetailCallbacks {
-  final StreamController<DownloadStatus> counterController =
-      StreamController<DownloadStatus>.broadcast();
+  final StreamController<DownloadTask> counterController =
+      StreamController<DownloadTask>.broadcast();
   StreamSubscription? downloadListenerSubscription;
 
   /// 更多按钮忙碌态兜底超时（防脚本异常挂死状态）
@@ -126,14 +126,16 @@ class DetailLogic extends GetxController
   }
 
   /// 开始下载
+  /// [fromScript] true = 从脚本 download handler 回调（跳过 JS 渠道委托，防递归）
+  @override
   Future<void> startDownload(
     DownloadInfo download, {
     int? downloadSize,
+    bool fromScript = false,
   }) async {
     final channel = detailChannel;
-    // 仅脚本驱动型渠道（JS）委托通道——其余渠道（StandardDetailChannel 等）由宿主编排。
-    // 防递归：StandardDetailChannel.startDownload 是 stub，直接委托会死循环。
-    if (channel != null && channel.drivesOwnDownloads) {
+    // 仅 UI 入口触发时委托脚本——脚本 download handler 回调直接走标准流程，防递归。
+    if (!fromScript && channel != null && channel.drivesOwnDownloads) {
       await channel.startDownload(download);
       return;
     }
@@ -155,19 +157,28 @@ class DetailLogic extends GetxController
     final version = download.version ?? 'unknown';
     final fileName = download.name;
     appLog.info('DetailLogic: startDownload - name=$fileName url=$downloadUrl');
-    final status = await DownloadStatus.create(
-      appId, appName, version, fileName, downloadUrl,
-      downloadSize: download.size ?? downloadSize,
-    );
-    state.currentDownload.value = status;
-    counterController.sink.add(status);
-    downloadListenerSubscription = status.observer.listen((da) {
-      state.currentDownload.value = da;
-      state.currentDownload.refresh();
-      counterController.sink.add(da);
-    });
-    unawaited(
-        _startDownloadTask(download, appId, appName, version, fileName));
+    final service = ModuleManager.instance.get<IDownloadService>();
+    if (service == null) {
+      AppDialogs.showWarning('下载模块未启用');
+      return;
+    }
+    unawaited(() async {
+      final task = await service.download(
+        appId, appName, version, downloadUrl, fileName,
+        downloadSize: download.size ?? downloadSize,
+      );
+      state.currentDownload.value = task;
+      counterController.sink.add(task);
+      final id = task.id;
+      if (id != null) {
+        downloadListenerSubscription?.cancel();
+        downloadListenerSubscription = service.watch(id).listen((da) {
+          state.currentDownload.value = da;
+          state.currentDownload.refresh();
+          counterController.sink.add(da);
+        });
+      }
+    }());
   }
 
   Future<void> _startDownloadTask(
@@ -186,13 +197,13 @@ class DetailLogic extends GetxController
       _initializeDownloadStrategies();
       final detail = state.detailInfo.value;
       if (detail == null) return;
-      final context =
-          await DownloadStrategyManager.instance.createContext(download, detail);
-      if (context != null) {
+      final request =
+          await DownloadStrategyManager.instance.createRequest(download, detail);
+      if (request != null) {
         await service.downloadWithContext(
-            context, appId, appName, version, fileName);
+            request, appId, appName, version, fileName);
       } else {
-        throw Exception('Failed to create download context');
+        throw Exception('Failed to create download request');
       }
     } catch (e) {
       appLog.error('DetailLogic: 下载失败 - $e');
@@ -216,6 +227,40 @@ class DetailLogic extends GetxController
         FdroidDownloadStrategy(),
       ]);
     }
+  }
+
+  /// 安装已下载完成的 APK（Shizuku 优先，回退系统安装）
+  Future<void> installCurrentTask(DownloadTask task) async {
+    final manager = ModuleManager.instance.get<InstallManager>();
+    if (manager == null) {
+      AppDialogs.showWarning('安装模块未启用');
+      return;
+    }
+    if (GetPlatform.isAndroid && task.fileName.endsWith('.apk')) {
+      await manager.installApk(task.filePath);
+    }
+  }
+
+  /// 重试失败的下载（断点续传）
+  Future<void> retryCurrentTask(DownloadTask task) async {
+    final id = task.id;
+    final service = ModuleManager.instance.get<IDownloadService>();
+    if (id == null || service == null) {
+      AppDialogs.showWarning('下载模块未启用');
+      return;
+    }
+    service.retry(id);
+  }
+
+  /// 继续暂停的下载
+  Future<void> resumeCurrentTask(DownloadTask task) async {
+    final id = task.id;
+    final service = ModuleManager.instance.get<IDownloadService>();
+    if (id == null || service == null) {
+      AppDialogs.showWarning('下载模块未启用');
+      return;
+    }
+    service.resume(id);
   }
 
   /// 打开"更多"底部面板：标签编辑 + 渠道动作宫格
@@ -372,6 +417,43 @@ class DetailLogic extends GetxController
   Future<void> updateDownloadList(
       {required List<DownloadInfo> downloads}) async {
     await detailChannel?.updateDownloads(downloads);
+  }
+
+  @override
+  void syncDownloadToFB(DownloadInfo download) {
+    final req = request;
+    final appId = req?.appId ?? download.url;
+    final appName = req?.name ?? download.name;
+    final version = download.version ?? 'unknown';
+    final fileName = download.name;
+    final downloadUrl = download.url.trim();
+    if (downloadUrl.isEmpty) return;
+
+    unawaited(() async {
+      final service = ModuleManager.instance.get<IDownloadService>();
+      if (service == null) return;
+
+      try {
+        final task = await service.download(
+          appId, appName, version, downloadUrl, fileName,
+          downloadSize: download.size,
+        );
+
+        state.currentDownload.value = task;
+        counterController.sink.add(task);
+        downloadListenerSubscription?.cancel();
+        final id = task.id;
+        if (id != null) {
+          downloadListenerSubscription = service.watch(id).listen((da) {
+            state.currentDownload.value = da;
+            state.currentDownload.refresh();
+            counterController.sink.add(da);
+          });
+        }
+      } catch (e) {
+        appLog.error('DetailLogic: syncDownloadToFB 失败 - $e');
+      }
+    }());
   }
 
   @override

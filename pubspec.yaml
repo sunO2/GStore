@@ -79,7 +79,8 @@ dependencies:
   genkit_google_genai: ^0.2.12
   genkit_openai: ^0.3.7
   device_info_plus: ^12.4.0
-  shizuku_api: ^1.2.2
+  shizuku_api:
+    path: packages/shizuku_api
   flutter_local_notifications: ^22.2.0
   flutter_foreground_task: ^10.0.0
   flutter_gen_ai_chat_ui: ^2.15.0

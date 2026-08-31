@@ -1,8 +1,7 @@
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/core.dart';
-import 'package:gstore/core/download/model/DownloadContext.dart';
+import 'package:gstore/core/download/core/download_request.dart';
 import 'package:gstore/core/download/strategy/IDownloadStrategy.dart';
-import 'package:gstore/core/download/exception/DownloadException.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 
@@ -54,11 +53,11 @@ class DownloadStrategyManager {
     return _strategies.containsKey(channel);
   }
 
-  /// 创建下载上下文（自动选择策略）
+  /// 创建下载请求（自动选择策略）
   /// [downloadInfo] 下载信息
   /// [detailData] 详情数据
-  /// 返回配置好的下载上下文，失败返回null
-  Future<DownloadContext?> createContext(
+  /// 返回配置好的下载请求，无法创建时返回null
+  Future<DownloadRequest?> createRequest(
     DownloadInfo downloadInfo,
     IDetailInfo detailData,
   ) async {
@@ -71,18 +70,22 @@ class DownloadStrategyManager {
     }
 
     try {
-      final context = await strategy.createContext(downloadInfo, detailData);
-      final isValid = await strategy.validateContext(context);
+      final request = await strategy.createRequest(downloadInfo, detailData);
+      if (request == null) {
+        appLog.error('DownloadStrategyManager: 渠道 $channel 创建下载请求失败');
+        return null;
+      }
+      final ok = await strategy.validateRequest(request);
 
-      if (!isValid) {
-        appLog.error('DownloadStrategyManager: 下载上下文验证失败 - $context');
+      if (!ok) {
+        appLog.error('DownloadStrategyManager: 下载请求验证失败 - ${request.url}');
         return null;
       }
 
-      appLog.info('DownloadStrategyManager: 创建下载上下文成功 - ${context.downloadUrl}');
-      return context;
+      appLog.info('DownloadStrategyManager: 创建下载请求成功 - ${request.url}');
+      return request;
     } catch (e) {
-      appLog.error('DownloadStrategyManager: 创建下载上下文异常 - $e');
+      appLog.error('DownloadStrategyManager: 创建下载请求异常 - $e');
       return null;
     }
   }

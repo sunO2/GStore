@@ -4,6 +4,7 @@ import 'dart:ui' show FontFeature;
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/design/design_tokens.dart';
+import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/compent/entrance_list.dart';
 import 'package:gstore/compent/pressable_scale.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
@@ -11,7 +12,6 @@ import 'package:gstore/core/update/apk_matcher.dart';
 import 'package:gstore/core/update/app_update_info.dart';
 import 'package:gstore/core/update/update_manager.dart';
 import 'package:gstore/core/update/update_time_format.dart';
-import 'package:gstore/http/download/DownloadStatus.dart';
 
 import 'logic.dart';
 import 'state.dart';
@@ -286,7 +286,7 @@ class _UpdateListBody extends StatelessWidget {
 class _UpdateTile extends StatelessWidget {
   final AppUpdateInfo info;
   final bool isUpdating;
-  final DownloadStatus? download;
+  final DownloadTask? download;
   final VoidCallback onUpdate;
 
   /// 用户选择的 APK 文件名（null/空 = 未选，默认 latestDownload）
@@ -396,8 +396,8 @@ class _UpdateTile extends StatelessWidget {
   }
 
   /// 下载进度
-  Widget _buildDownloadProgress(BuildContext context, DownloadStatus data) {
-    final progress = data.total > 0 ? data.count / data.total : 0.0;
+  Widget _buildDownloadProgress(BuildContext context, DownloadTask data) {
+    final progress = data.total > 0 ? data.received / data.total : 0.0;
     final percent = (progress * 100).toInt();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,

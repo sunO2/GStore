@@ -73,6 +73,13 @@ abstract class DetailCallbacks {
     required List<DownloadInfo> downloads,
   });
 
+  /// 同步当前下载状态到 FB 浮标（JS 渠道下载触发后调用）
+  void syncDownloadToFB(DownloadInfo download);
+
+  /// 发起下载（JS 渠道委托宿主编排，复用标准 DownloadStatus 流程）
+  /// [fromScript] true = 从脚本 download handler 回调（跳过 JS 渠道委托，防递归）
+  Future<void> startDownload(DownloadInfo download, {int? downloadSize, bool fromScript});
+
   /// 显示成功提示
   void showSuccess(String message, {String? title});
 

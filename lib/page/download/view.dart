@@ -3,9 +3,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/design/app_borders.dart';
+import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/compent/entrance_list.dart';
 import 'package:gstore/compent/pressable_scale.dart';
-import 'package:gstore/http/download/DownloadStatus.dart';
 import 'package:gstore/page/download/download_status_utils.dart';
 import 'package:gstore/page/download/logic.dart';
 
@@ -27,12 +27,22 @@ class _DownloadManagerState extends State<DownloadManager> {
       appBar: AppBar(
         title: const Text('下载管理'),
         actions: [
-          // 更多操作
+          // 批量操作（暂停全部/取消排队/重试失败）+ 清理：放入导航头部，
+          // 避免 body 中条件显示整行导致布局跳动。
           PopupMenuButton<String>(
             icon: const Icon(Icons.more_vert),
             tooltip: '更多操作',
             onSelected: (value) {
               switch (value) {
+                case 'pause_all':
+                  logic.pauseAll();
+                  break;
+                case 'cancel_queued':
+                  logic.cancelAllQueued();
+                  break;
+                case 'retry_failed':
+                  logic.retryAllFailed();
+                  break;
                 case 'clear_completed':
                   logic.clearCompleted();
                   break;
@@ -41,36 +51,7 @@ class _DownloadManagerState extends State<DownloadManager> {
                   break;
               }
             },
-            itemBuilder: (context) => [
-              const PopupMenuItem(
-                value: 'clear_completed',
-                child: Row(
-                  children: [
-                    Icon(Icons.cleaning_services),
-                    SizedBox(width: AppSpacing.md),
-                    Text('清理已完成'),
-                  ],
-                ),
-              ),
-              PopupMenuItem(
-                value: 'clear_all',
-                child: Row(
-                  children: [
-                    Icon(
-                      Icons.delete_sweep,
-                      color: Theme.of(context).colorScheme.error,
-                    ),
-                    const SizedBox(width: AppSpacing.md),
-                    Text(
-                      '清空全部',
-                      style: TextStyle(
-                        color: Theme.of(context).colorScheme.error,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
+            itemBuilder: (context) => _buildMoreMenuItems(context, logic),
           ),
         ],
       ),
@@ -181,14 +162,14 @@ class _DownloadManagerState extends State<DownloadManager> {
   Widget _buildDownloadGroup(
     BuildContext context,
     DownloadManagerLogic logic,
-    List<DownloadStatus> items,
+    List<DownloadTask> items,
     AppInfo? info,
   ) {
     final scheme = Theme.of(context).colorScheme;
     final isMulti = items.length > 1;
     final groupKey = '${items[0].appId}_${items[0].version}';
     final isExpanded = _expandedKeys.contains(groupKey);
-    // 组内进行中的文件（LOADING，或 READY 且已下载部分字节）
+    // 组内进行中的文件（downloading/connecting，或 queued，或 paused 且已下载部分字节）
     final activeItem = _activeDownloadItem(items);
 
     // 外层 PressableScale 仅做按压反馈；多文件组展开/收起由内部 header
@@ -222,12 +203,7 @@ class _DownloadManagerState extends State<DownloadManager> {
                 AppSpacing.lg,
                 AppSpacing.sm,
               ),
-              child: StreamBuilder<DownloadStatus>(
-                stream: activeItem.observer,
-                builder: (context, snap) {
-                  return _buildProgressBar(context, snap.data ?? activeItem);
-                },
-              ),
+              child: _buildProgressBar(context, activeItem),
             ),
 
           // 文件行：多文件组点击卡片头展开显示；单文件组直接显示
@@ -253,7 +229,7 @@ class _DownloadManagerState extends State<DownloadManager> {
   Widget _buildGroupHeader(
     BuildContext context,
     DownloadManagerLogic logic,
-    List<DownloadStatus> items,
+    List<DownloadTask> items,
     AppInfo? info, {
     required bool isMulti,
     required String groupKey,
@@ -297,13 +273,8 @@ class _DownloadManagerState extends State<DownloadManager> {
             ),
           ),
           const SizedBox(width: AppSpacing.sm),
-          // 聚合组内主文件状态（实时监听）
-          StreamBuilder<DownloadStatus>(
-            stream: items[0].observer,
-            builder: (context, snap) {
-              return _buildStatusBadge(context, snap.data ?? items[0]);
-            },
-          ),
+          // 聚合组内主文件状态（logic 已通过 watch 推送进 downloadGroups）
+          _buildStatusBadge(context, items[0]),
           // 多文件组：展开指示
           if (isMulti) ...[
             const SizedBox(width: AppSpacing.xs),
@@ -362,7 +333,7 @@ class _DownloadManagerState extends State<DownloadManager> {
   Widget _buildDownloadItem(
     BuildContext context,
     DownloadManagerLogic logic,
-    DownloadStatus downStatus,
+    DownloadTask downStatus,
   ) {
     return Dismissible(
       key: Key(downStatus.id?.toString() ??
@@ -399,91 +370,87 @@ class _DownloadManagerState extends State<DownloadManager> {
           ],
         ),
       ),
-      child: StreamBuilder<DownloadStatus>(
-        stream: downStatus.observer,
-        builder: (context, snap) {
-          final data = snap.data ?? downStatus;
-          return Padding(
-            padding: const EdgeInsets.symmetric(
-              horizontal: AppSpacing.lg,
-              vertical: AppSpacing.sm,
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.lg,
+          vertical: AppSpacing.sm,
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // 文件名（完整信息见 info 弹窗；状态徽标保留在卡片头，避免重复）
+            Row(
               children: [
-                // 文件名（完整信息见 info 弹窗；状态徽标保留在卡片头，避免重复）
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        data.fileName,
-                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                              fontWeight: AppTypography.weightMedium,
-                            ),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: AppSpacing.sm),
-
-                // 进度条或文件大小
-                if (data.status == DownloadStatus.DOWNLOAD_LOADING ||
-                    (data.total > 0 && data.count < data.total))
-                  _buildProgressBar(context, data)
-                else if (data.total > 0)
-                  Text(
-                    '文件大小: ${_formatFileSize(data.total)}',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                Expanded(
+                  child: Text(
+                    downStatus.fileName,
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          fontWeight: AppTypography.weightMedium,
                         ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
-
-                const SizedBox(height: AppSpacing.sm),
-
-                // 主操作按钮 + 辅助操作
-                Row(
-                  children: [
-                    _buildPrimaryAction(context, logic, data),
-                    const Spacer(),
-                    IconButton(
-                      tooltip: '重新下载',
-                      icon: const Icon(
-                        Icons.refresh,
-                        size: AppTypography.iconSM,
-                      ),
-                      visualDensity: VisualDensity.compact,
-                      onPressed: () => logic.retryDownload(data),
-                    ),
-                    IconButton(
-                      tooltip: '删除',
-                      icon: const Icon(
-                        Icons.delete_outline,
-                        size: AppTypography.iconSM,
-                      ),
-                      visualDensity: VisualDensity.compact,
-                      onPressed: () async {
-                        if (await _confirmDelete(context, data)) {
-                          logic.deleteDownload(data);
-                        }
-                      },
-                    ),
-                    IconButton(
-                      tooltip: '下载信息',
-                      icon: const Icon(
-                        Icons.info_outline,
-                        size: AppTypography.iconSM,
-                      ),
-                      visualDensity: VisualDensity.compact,
-                      onPressed: () => _showDownloadInfo(context, data),
-                    ),
-                  ],
                 ),
               ],
             ),
-          );
-        },
+            const SizedBox(height: AppSpacing.sm),
+
+            // 进度条或文件大小
+            if (downStatus.status == DownloadStatusEnum.downloading ||
+                downStatus.status == DownloadStatusEnum.connecting ||
+                downStatus.status == DownloadStatusEnum.queued ||
+                (downStatus.total > 0 && downStatus.received < downStatus.total))
+              _buildProgressBar(context, downStatus)
+            else if (downStatus.total > 0)
+              Text(
+                '文件大小: ${_formatFileSize(downStatus.total)}',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+              ),
+
+            const SizedBox(height: AppSpacing.sm),
+
+            // 主操作按钮 + 辅助操作
+            Row(
+              children: [
+                _buildPrimaryAction(context, logic, downStatus),
+                const Spacer(),
+                IconButton(
+                  tooltip: '重新下载',
+                  icon: const Icon(
+                    Icons.refresh,
+                    size: AppTypography.iconSM,
+                  ),
+                  visualDensity: VisualDensity.compact,
+                  onPressed: () => logic.retryDownload(downStatus),
+                ),
+                IconButton(
+                  tooltip: '删除',
+                  icon: const Icon(
+                    Icons.delete_outline,
+                    size: AppTypography.iconSM,
+                  ),
+                  visualDensity: VisualDensity.compact,
+                  onPressed: () async {
+                    if (await _confirmDelete(context, downStatus)) {
+                      logic.deleteDownload(downStatus);
+                    }
+                  },
+                ),
+                IconButton(
+                  tooltip: '下载信息',
+                  icon: const Icon(
+                    Icons.info_outline,
+                    size: AppTypography.iconSM,
+                  ),
+                  visualDensity: VisualDensity.compact,
+                  onPressed: () => _showDownloadInfo(context, logic, downStatus),
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -492,7 +459,7 @@ class _DownloadManagerState extends State<DownloadManager> {
   Widget _buildPrimaryAction(
     BuildContext context,
     DownloadManagerLogic logic,
-    DownloadStatus item,
+    DownloadTask item,
   ) {
     final action = primaryActionFor(item);
     if (action == null) return const SizedBox.shrink();
@@ -502,12 +469,14 @@ class _DownloadManagerState extends State<DownloadManager> {
       DownloadAction.resume => ('继续', Icons.play_arrow),
       DownloadAction.retry => ('重试', Icons.refresh),
       DownloadAction.install => ('安装', Icons.install_mobile),
+      DownloadAction.cancel => ('取消', Icons.cancel),
     };
     final onPressed = switch (action) {
       DownloadAction.pause => () => logic.pauseDownload(item),
       DownloadAction.resume => () => logic.resumeDownload(item),
       DownloadAction.retry => () => logic.retryDownload(item),
       DownloadAction.install => () => logic.installApp(item),
+      DownloadAction.cancel => () => logic.cancelDownload(item),
     };
 
     return FilledButton.tonalIcon(
@@ -531,7 +500,7 @@ class _DownloadManagerState extends State<DownloadManager> {
   }
 
   /// 删除确认（危险操作，红色确认按钮）
-  Future<bool> _confirmDelete(BuildContext context, DownloadStatus item) async {
+  Future<bool> _confirmDelete(BuildContext context, DownloadTask item) async {
     final confirmed = await AppDialogs.showDialog(
       title: '删除下载',
       content: '确定要删除「${item.fileName}」的下载记录吗？此操作不可恢复。',
@@ -545,10 +514,11 @@ class _DownloadManagerState extends State<DownloadManager> {
   /// 下载信息弹窗（文件名/链接/渠道等完整信息，不受列表截断影响）
   Future<void> _showDownloadInfo(
     BuildContext context,
-    DownloadStatus item,
+    DownloadManagerLogic logic,
+    DownloadTask item,
   ) async {
     final scheme = Theme.of(context).colorScheme;
-    final channel = inferChannelLabel(item.downloadUrl);
+    final channel = inferChannelLabel(item.url);
 
     Widget infoRow(String label, String value) {
       return Padding(
@@ -589,8 +559,16 @@ class _DownloadManagerState extends State<DownloadManager> {
               infoRow('应用', '${item.appName}（${item.version}）'),
               infoRow('应用标识', item.appId),
               if (item.total > 0) infoRow('文件大小', _formatFileSize(item.total)),
-              infoRow('保存路径', item.savePath),
-              infoRow('创建时间', _formatCreateTime(item.createTime)),
+              if (item.status == DownloadStatusEnum.downloading &&
+                  item.speedBps > 0)
+                infoRow('下载速度', formatSpeed(item.speedBps)),
+              if (item.status == DownloadStatusEnum.downloading &&
+                  (item.etaSec ?? 0) > 0)
+                infoRow('剩余时间', formatDuration(item.etaSec!)),
+              if (item.status == DownloadStatusEnum.queued)
+                infoRow('状态', '排队中，等待下载槽位'),
+              infoRow('保存路径', item.filePath),
+              infoRow('创建时间', _formatCreateTime(item.createdAt)),
               if (channel != null) infoRow('来源渠道', channel),
               // 下载链接（可复制）
               Padding(
@@ -609,7 +587,7 @@ class _DownloadManagerState extends State<DownloadManager> {
                     ),
                     Expanded(
                       child: Text(
-                        item.downloadUrl,
+                        item.url,
                         style: Theme.of(context).textTheme.bodyMedium,
                       ),
                     ),
@@ -622,8 +600,7 @@ class _DownloadManagerState extends State<DownloadManager> {
                       ),
                       visualDensity: VisualDensity.compact,
                       onPressed: () async {
-                        await Clipboard.setData(
-                            ClipboardData(text: item.downloadUrl));
+                        await Clipboard.setData(ClipboardData(text: item.url));
                         AppDialogs.showSuccess('已复制下载链接');
                       },
                     ),
@@ -637,17 +614,15 @@ class _DownloadManagerState extends State<DownloadManager> {
     );
   }
 
-  /// 创建时间格式化（毫秒时间戳 → yyyy-MM-dd HH:mm；0/未知显示"未知"）
-  String _formatCreateTime(int millis) {
-    if (millis <= 0) return '未知';
-    final dt = DateTime.fromMillisecondsSinceEpoch(millis);
+  /// 创建时间格式化（DateTime → yyyy-MM-dd HH:mm）
+  String _formatCreateTime(DateTime dt) {
     String pad(int n) => n.toString().padLeft(2, '0');
     return '${dt.year}-${pad(dt.month)}-${pad(dt.day)} '
         '${pad(dt.hour)}:${pad(dt.minute)}';
   }
 
   /// 构建状态标签（颜色全部取自主题）
-  Widget _buildStatusBadge(BuildContext context, DownloadStatus item) {
+  Widget _buildStatusBadge(BuildContext context, DownloadTask item) {
     final scheme = Theme.of(context).colorScheme;
     final (label, color, icon) = switch (statusKindOf(item)) {
       DownloadStatusKind.downloading => (
@@ -661,6 +636,11 @@ class _DownloadManagerState extends State<DownloadManager> {
           Icons.check_circle,
         ),
       DownloadStatusKind.failed => ('失败', scheme.error, Icons.error),
+      DownloadStatusKind.queued => (
+          '排队中',
+          scheme.secondary,
+          Icons.queue,
+        ),
       DownloadStatusKind.waiting => (
           '等待中',
           scheme.onSurfaceVariant,
@@ -689,8 +669,8 @@ class _DownloadManagerState extends State<DownloadManager> {
   }
 
   /// 构建进度条
-  Widget _buildProgressBar(BuildContext context, DownloadStatus data) {
-    final progress = data.total > 0 ? data.count / data.total : 0.0;
+  Widget _buildProgressBar(BuildContext context, DownloadTask data) {
+    final progress = data.total > 0 ? data.received / data.total : 0.0;
     final percent = (progress * 100).toInt();
 
     return Column(
@@ -720,7 +700,7 @@ class _DownloadManagerState extends State<DownloadManager> {
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
             Text(
-              '${_formatFileSize(data.count)} / ${_formatFileSize(data.total)}',
+              '${_formatFileSize(data.received)} / ${_formatFileSize(data.total)}',
               style: Theme.of(context).textTheme.bodySmall,
             ),
             Text(
@@ -731,24 +711,158 @@ class _DownloadManagerState extends State<DownloadManager> {
             ),
           ],
         ),
+        // 下载速度与预估剩余时间：两端始终渲染固定行（内容随状态变化），
+        // 避免显示/隐藏导致每行高度跳变、页面跳动。
+        Padding(
+          padding: const EdgeInsets.only(top: AppSpacing.xs),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                _statusLineLeft(data),
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: data.status == DownloadStatusEnum.downloading
+                          ? null
+                          : Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+              ),
+              Text(
+                _statusLineRight(data),
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
+          ),
+        ),
       ],
     );
   }
 
-  /// 获取组内进行中的文件（LOADING 优先，其次 READY 且已下载部分字节）
-  DownloadStatus? _activeDownloadItem(List<DownloadStatus> items) {
+  /// 进度条底部左文案：下载中显示速度，否则显示状态（空串保留行高）。
+  String _statusLineLeft(DownloadTask data) {
+    if (data.status == DownloadStatusEnum.downloading) {
+      return data.speedBps > 0 ? formatSpeed(data.speedBps) : '';
+    }
+    switch (data.status) {
+      case DownloadStatusEnum.paused:
+      case DownloadStatusEnum.queued:
+      case DownloadStatusEnum.cancelled:
+        return '已暂停';
+      case DownloadStatusEnum.completed:
+        return '已完成';
+      case DownloadStatusEnum.failed:
+        return '已失败';
+      case DownloadStatusEnum.downloading:
+      case DownloadStatusEnum.connecting:
+        return '';
+    }
+  }
+
+  /// 进度条底部右文案：下载中显示剩余时间，否则空串（保留行高）。
+  String _statusLineRight(DownloadTask data) {
+    if (data.status == DownloadStatusEnum.downloading &&
+        (data.etaSec ?? 0) > 0) {
+      return formatDuration(data.etaSec!);
+    }
+    return '';
+  }
+
+  /// 获取组内进行中的文件（downloading/connecting 优先，其次 queued，
+  /// 其次 paused 且已下载部分字节）
+  DownloadTask? _activeDownloadItem(List<DownloadTask> items) {
     for (final item in items) {
-      if (item.status == DownloadStatus.DOWNLOAD_LOADING) return item;
+      if (item.status == DownloadStatusEnum.downloading ||
+          item.status == DownloadStatusEnum.connecting) {
+        return item;
+      }
     }
     for (final item in items) {
-      if (item.status == DownloadStatus.DOWNLOAD_READY &&
+      if (item.status == DownloadStatusEnum.queued) return item;
+    }
+    for (final item in items) {
+      if (item.status == DownloadStatusEnum.paused &&
           item.total > 0 &&
-          item.count > 0 &&
-          item.count < item.total) {
+          item.received > 0 &&
+          item.received < item.total) {
         return item;
       }
     }
     return null;
+  }
+
+  /// 构建头部"更多操作"菜单项：批量操作（暂停全部/取消排队/重试失败）按存在性
+  /// 条件显示，末尾固定清理项。放入 AppBar 后不再有 body 中整行显示/隐藏的布局跳动。
+  List<PopupMenuEntry<String>> _buildMoreMenuItems(
+      BuildContext context, DownloadManagerLogic logic) {
+    final groups = logic.downloadGroups.value;
+    final hasDownloading = groups.any((g) => g.any(
+        (item) =>
+            item.status == DownloadStatusEnum.downloading ||
+            item.status == DownloadStatusEnum.connecting));
+    final hasQueued = groups.any(
+        (g) => g.any((item) => item.status == DownloadStatusEnum.queued));
+    final hasFailed = groups.any(
+        (g) => g.any((item) => item.status == DownloadStatusEnum.failed));
+    final scheme = Theme.of(context).colorScheme;
+
+    final items = <PopupMenuEntry<String>>[
+      if (hasDownloading)
+        PopupMenuItem(
+          value: 'pause_all',
+          child: Row(
+            children: [
+              Icon(Icons.pause_circle_outline, size: AppTypography.iconSM),
+              const SizedBox(width: AppSpacing.md),
+              const Text('暂停全部'),
+            ],
+          ),
+        ),
+      if (hasQueued)
+        PopupMenuItem(
+          value: 'cancel_queued',
+          child: Row(
+            children: [
+              Icon(Icons.cancel_outlined,
+                  size: AppTypography.iconSM, color: scheme.error),
+              const SizedBox(width: AppSpacing.md),
+              const Text('取消排队'),
+            ],
+          ),
+        ),
+      if (hasFailed)
+        PopupMenuItem(
+          value: 'retry_failed',
+          child: Row(
+            children: [
+              Icon(Icons.refresh, size: AppTypography.iconSM),
+              const SizedBox(width: AppSpacing.md),
+              const Text('重试失败'),
+            ],
+          ),
+        ),
+      if (hasDownloading || hasQueued || hasFailed)
+        const PopupMenuDivider(),
+      const PopupMenuItem(
+        value: 'clear_completed',
+        child: Row(
+          children: [
+            Icon(Icons.cleaning_services),
+            SizedBox(width: AppSpacing.md),
+            Text('清理已完成'),
+          ],
+        ),
+      ),
+      PopupMenuItem(
+        value: 'clear_all',
+        child: Row(
+          children: [
+            Icon(Icons.delete_sweep, color: scheme.error),
+            const SizedBox(width: AppSpacing.md),
+            Text('清空全部', style: TextStyle(color: scheme.error)),
+          ],
+        ),
+      ),
+    ];
+    return items;
   }
 
   /// 获取筛选标签文本
