@@ -1,6 +1,25 @@
+import 'dart:io';
+
 const int KB = 1024;
 const int MB = KB * 1024;
 const int GB = MB * 1024;
+
+/// 递归统计目录内所有文件的总字节数（容错：单文件读取失败跳过，不中断）。
+Future<int> directorySize(Directory dir) async {
+  if (!await dir.exists()) return 0;
+  var total = 0;
+  await for (final entity
+      in dir.list(recursive: true, followLinks: false)) {
+    if (entity is File) {
+      try {
+        total += await entity.length();
+      } catch (_) {
+        // 单个文件读取失败跳过，不影响整体统计。
+      }
+    }
+  }
+  return total;
+}
 
 String byteSize(int bytes) {
   if (bytes >= GB) {

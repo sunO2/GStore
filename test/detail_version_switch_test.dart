@@ -534,6 +534,13 @@ class _FakeAggregateService implements IAggregateService {
 
   @override
   Future<List<AggregatedAppInfo>> getAggregatedApps() async => [];
+
+  @override
+  Future<(List<AggregatedAppInfo> apps, int total)> getAggregatedAppsPage({
+    required int offset,
+    required int limit,
+  }) async =>
+      (<AggregatedAppInfo>[], 0);
 }
 
 /// versionOptions 返回（脚本契约）

@@ -156,6 +156,22 @@ class AgentSkills {
       workflow: '1. 先向用户说明问题，不假装成功\n2. 分类处理：\n   - 搜索无结果：换关键词/检查渠道\n   - 下载失败：网络/URL失效/服务器不支持断点\n   - 安装失败：APK完整性/手动从下载中心安装\n   - 备份失败：存储权限/路径\n   - 模型/API失败：检查API Key/网络\n   - 配置失败：用 configManager list 确认可用项\n3. 给出可行的下一步建议\n4. 避免重复无意义重试',
       workflowEn: '1. Explain the issue first; never pretend success\n2. Handle by category:\n   - No search results: change keywords / check channels\n   - Download failed: network / invalid URL / server without resumable support\n   - Install failed: APK integrity / manual install from download center\n   - Backup failed: storage permission / path\n   - Model/API failure: check API key / network\n   - Config failed: use configManager list to confirm valid items\n3. Give actionable next steps\n4. Avoid meaningless repeated retries',
     ),
+  AgentSkill(
+      name: '脚本渠道应用操作',
+      nameEn: 'JS Script Channel Apps',
+      triggers: '用户提到 js_ 开头渠道、自定义脚本渠道、或应用来自脚本渠道（如平安渠道）时',
+      triggersEn: 'When the user mentions a js_-prefixed channel, a custom script channel, or an app that came from a script channel',
+      workflow: '1. 脚本渠道标识为 js_ 开头（如 js_pingan），不在常规渠道枚举中\n2. 搜索：searchApp 的 channel 参数直接传脚本渠道 key（如 js_pingan）\n3. 查详情：getAppInfo 的 channel 传脚本渠道 key\n4. 下载：downloadApp 的 channel 传脚本渠道 key；脚本渠道详情会给出完整下载 URL，agent 直接下载即可，无需猜架构\n5. 管理渠道应用：channelApp 的 channel 传脚本渠道 key\n6. 检查更新：updateApps 的 channel 传脚本渠道 key\n7. 脚本渠道可能需先配置环境变量（如账号密码）才能搜索/下载；失败时提示用户到 设置→脚本渠道 配置',
+      workflowEn: '1. Script channels are identified by the js_ prefix (e.g. js_pingan); they are not in the regular channel enum\n2. Search: pass the script channel key (e.g. js_pingan) as the channel param of searchApp\n3. Details: pass the script channel key as channel of getAppInfo\n4. Download: pass the script channel key as channel of downloadApp; the script channel detail returns a full download URL, so download it directly without guessing the architecture\n5. Manage channel apps: pass the script channel key as channel of channelApp\n6. Update check: pass the script channel key as channel of updateApps\n7. Script channels may require environment variables (e.g. credentials) to search/download; if it fails, direct the user to Settings → Script Channels',
+    ),
+    AgentSkill(
+      name: '脚本渠道方法执行',
+      nameEn: 'JS Channel Method Execution',
+      triggers: '需要调用脚本渠道特有方法（配置读取、版本/环境切换、自定义脚本能力）时',
+      triggersEn: 'When a script channel-specific method is needed (config read, version/environment switching, custom script capability)',
+      workflow: '1. 调用 runJsChannel 执行脚本渠道暴露的方法\n2. 参数：channel（脚本渠道 key，如 js_pingan）、method（脚本方法名）、params（可选参数 map）\n3. 常见方法：getConfig（渠道配置）、versionOptions（版本/环境选项）、switchVersion（切换版本/环境）\n4. 脚本未实现该方法时返回提示，改用预置工具或告知用户\n5. 先搜索确认渠道是否为脚本渠道（js_ 前缀）再调用',
+      workflowEn: '1. Call runJsChannel to execute a method exposed by the script channel\n2. Params: channel (script channel key, e.g. js_pingan), method (script method name), params (optional map)\n3. Common methods: getConfig (channel config), versionOptions (version/env options), switchVersion (switch version/env)\n4. If the script does not implement the method, a hint is returned; fall back to preset tools or inform the user\n5. Confirm the channel is a script channel (js_ prefix) before calling',
+    ),
   ];
 
   /// 渲染全部启用的技能为系统提示片段

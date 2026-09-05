@@ -199,7 +199,9 @@ class _AgentPageState extends State<AgentPage>
     }
   }
 
-  /// 工具消息签名（用于检测工具新增/状态变化）
+  /// 工具消息签名（用于检测工具新增/状态变化——**不含 downloadStatus 进度**）
+  /// 进度条刷新由 _ToolBubble 局部订阅 AgentService.messages 驱动，
+  /// 避免每次进度更新触发全量 _rebuildAll（setMessages 全量重建会闪烁）。
   String _toolSignature(List<AgentMessage> messages) {
     final buf = StringBuffer();
     for (final msg in messages) {
@@ -816,7 +818,7 @@ class _AgentPageState extends State<AgentPage>
       AppDialogs.showError('Agent 模块未启用');
       return;
     }
-    await _logic.sendText(text);
+    _logic.sendText(text);
   }
 
   /// 消息气泡样式（匹配现有风格）
@@ -1214,7 +1216,16 @@ class _TurnTimeline extends StatelessWidget {
               ),
             ],
           ),
-          if (pending && options.isNotEmpty) ...[
+          if (pending && options.isNotEmpty && msg.confirmMultiSelect) ...[
+            const SizedBox(height: AppSpacing.sm),
+            // 多选：勾选多个选项后统一确认
+            _MultiSelectConfirmView(
+              msgId: msg.id,
+              options: options,
+              onResolve: (selected) => _resolve(context, msg.id, selected),
+            ),
+          ],
+          if (pending && options.isNotEmpty && !msg.confirmMultiSelect) ...[
             const SizedBox(height: AppSpacing.sm),
             // 多选一：选项列表
             ...options.map((opt) => _buildOptionItem(context, msg, opt)),
@@ -1532,7 +1543,51 @@ class _ToolBubbleState extends State<_ToolBubble> {
   /// 是否展开
   bool _expanded = false;
 
+  /// 订阅 AgentService.messages：下载进度等 downloadStatus 字段变化时
+  /// 局部重绘（无需父级全量重建，避免频繁 setMessages 造成滚动闪烁）
+  StreamSubscription<List<AgentMessage>>? _messagesSub;
+
   AgentMessage get msg => widget.msg;
+
+  @override
+  void initState() {
+    super.initState();
+    final service = ModuleManager.instance.get<AgentService>();
+    if (service != null) {
+      _messagesSub = service.messages.listen((msgs) {
+        if (!mounted) return;
+        // 该工具消息的 downloadStatus 变化（进度条刷新）或终态 → 局部重绘
+        final updated = _findById(msgs, msg.id);
+        if (updated != null) {
+          final old = widget.msg.downloadStatus;
+          final neu = updated.downloadStatus;
+          final statusChanged =
+              updated.toolStatus != widget.msg.toolStatus;
+          if (statusChanged ||
+              (old != null && neu != null &&
+                  (old.received != neu.received ||
+                      old.status != neu.status ||
+                      old.total != neu.total)) ||
+              (old == null && neu != null)) {
+            setState(() {});
+          }
+        }
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _messagesSub?.cancel();
+    super.dispose();
+  }
+
+  AgentMessage? _findById(List<AgentMessage> msgs, String id) {
+    for (final m in msgs) {
+      if (m.id == id) return m;
+    }
+    return null;
+  }
 
   Color get _toolColor => _toolColorOf(msg.toolType);
 
@@ -1921,5 +1976,113 @@ class _ToolBubbleState extends State<_ToolBubble> {
     if (bytes < 1024) return '$bytes B';
     if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
     return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
+}
+
+/// 多选确认面板（确认工具多选模式 UI）
+///
+/// 渲染选项 checkbox 列表 + 底部"确定/取消"；确定时把勾选项用 "、" 连接
+/// 回传 [onResolve]（AgentService.resolveConfirmation 通道，等待结束）。
+class _MultiSelectConfirmView extends StatefulWidget {
+  const _MultiSelectConfirmView({
+    required this.msgId,
+    required this.options,
+    required this.onResolve,
+  });
+
+  final String msgId;
+  final List<String> options;
+  final ValueChanged<String> onResolve;
+
+  @override
+  State<_MultiSelectConfirmView> createState() =>
+      _MultiSelectConfirmViewState();
+}
+
+class _MultiSelectConfirmViewState extends State<_MultiSelectConfirmView> {
+  final Set<String> _selected = {};
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      padding: EdgeInsets.symmetric(
+        horizontal: AppSpacing.sm,
+        vertical: AppSpacing.xs,
+      ),
+      decoration: BoxDecoration(
+        color: scheme.surface.withValues(alpha: 0.4),
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+        border: Border.all(color: scheme.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // 勾选提示 + 已选计数
+          Padding(
+            padding: EdgeInsets.only(left: AppSpacing.xs),
+            child: Text(
+              '可多选（已选 ${_selected.length}/${widget.options.length}）',
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+            ),
+          ),
+          const SizedBox(height: AppSpacing.xs),
+          // 选项列表
+          ...widget.options.map(
+            (opt) => CheckboxListTile(
+              dense: true,
+              value: _selected.contains(opt),
+              title: Text(
+                opt,
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              controlAffinity: ListTileControlAffinity.leading,
+              contentPadding: EdgeInsets.zero,
+              onChanged: (checked) {
+                setState(() {
+                  if (checked == true) {
+                    _selected.add(opt);
+                  } else {
+                    _selected.remove(opt);
+                  }
+                });
+              },
+            ),
+          ),
+          const SizedBox(height: AppSpacing.xs),
+          // 确定 / 取消
+          Row(
+            children: [
+              Expanded(
+                child: FilledButton(
+                  onPressed: _selected.isEmpty
+                      ? null
+                      : () {
+                          widget.onResolve(_selected.join('、'));
+                        },
+                  style: FilledButton.styleFrom(
+                    padding: EdgeInsets.symmetric(vertical: 8),
+                    backgroundColor: scheme.primary,
+                  ),
+                  child: const Text('确定'),
+                ),
+              ),
+              const SizedBox(width: AppSpacing.sm),
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => widget.onResolve('取消'),
+                  style: OutlinedButton.styleFrom(
+                    padding: EdgeInsets.symmetric(vertical: 8),
+                  ),
+                  child: const Text('取消'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
   }
 }

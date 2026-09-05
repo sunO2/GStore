@@ -34,6 +34,12 @@ class AgentLogic extends GetxController {
         if (svc.isPaginatingHistory) return;
         _scrollToBottom();
       });
+
+      // 生成状态由服务层 Rx 驱动（页面退出不影响执行，重进自动恢复）
+      svc.busy.listen((busy) {
+        state.isGenerating.value = busy;
+      });
+      state.isGenerating.value = svc.busy.value;
     }
 
     await _init();
@@ -67,8 +73,9 @@ class AgentLogic extends GetxController {
     }
   }
 
-  /// 发送消息
-  Future<void> sendMessage() async {
+  /// 发送消息（fire-and-forget：执行在 AgentService 全局层，退出页面不中断；
+  /// isGenerating 由订阅 service.busy 驱动，不再 await chat 后写本地 state）
+  void sendMessage() {
     final text = inputController.text.trim();
     if (text.isEmpty) return;
 
@@ -79,16 +86,11 @@ class AgentLogic extends GetxController {
     }
 
     inputController.clear();
-    state.isGenerating.value = true;
-
-    await svc.chat(text);
-
-    state.isGenerating.value = false;
-    _scrollToBottom();
+    unawaited(svc.chat(text));
   }
 
   /// 发送指定文本（供 AiChatWidget.onSendMessage 使用）
-  Future<void> sendText(String text) async {
+  void sendText(String text) {
     final trimmed = text.trim();
     if (trimmed.isEmpty) return;
 
@@ -99,12 +101,7 @@ class AgentLogic extends GetxController {
     }
 
     inputController.clear();
-    state.isGenerating.value = true;
-
-    await svc.chat(trimmed);
-
-    state.isGenerating.value = false;
-    _scrollToBottom();
+    unawaited(svc.chat(trimmed));
   }
 
   /// 新建会话

@@ -7,7 +7,10 @@ import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/database/channel_database.dart';
+import 'package:gstore/core/channel/impl/JsChannel.dart';
+import 'package:gstore/core/channel/impl/channel_loader.dart';
 import 'package:gstore/core/config/config_manager.dart';
 import 'package:gstore/core/config/config_backup.dart';
 import 'package:gstore/core/config/config_initializer.dart';
@@ -30,7 +33,7 @@ class BackupService implements IBackupService {
   BackupService._internal();
 
   late AppAddedDatabase _aggregatorDb;
-  late ChannelDatabase _channelDb;
+  ChannelDatabase? _channelDb;
 
   /// 是否已初始化
   bool _isInitialized = false;
@@ -65,9 +68,20 @@ class BackupService implements IBackupService {
     if (!_isInitialized) await initialize();
 
     final exportOptions = options ?? const BackupOptions();
-    final targetChannels = channels ?? ChannelType.values;
 
-    appLog.info('BackupService: 开始导出数据（包含渠道数据库）');
+    // 目标渠道 code 集合：显式 channels（枚举）或全部枚举渠道 + 动态脚本渠道 channelKey
+    // + 聚合库数据反推（已添加应用的所有 channelId）。
+    // 脚本渠道应用存于 channel_added_app.channelCode = channelKey（如 'js_pingan'），
+    // 不在 ChannelType.values 内——必须显式并入，否则通过 JS 渠道添加的应用不会被备份。
+    // 从聚合库反推保证：即使脚本渠道已卸载（未注册），历史添加的应用仍能被备份。
+    final allAddedApps = await _aggregatorDb.addedAppDao.getAllAddedApps();
+    final targetCodes = <String>{
+      for (final c in (channels ?? ChannelType.values)) c.code,
+      for (final ch in ChannelManager.instance.dynamicChannels) channelCode(ch),
+      for (final app in allAddedApps) app.channelId,
+    };
+
+    appLog.info('BackupService: 开始导出数据（包含渠道数据库），目标渠道: $targetCodes');
     if (includeAppConfig) {
       debugPrint('BackupService: 将包含应用配置（主题等）');
     }
@@ -75,16 +89,13 @@ class BackupService implements IBackupService {
     // 收集聚合数据库应用
     final allApps = <BackupAppItem>[];
 
-    // 从聚合数据库获取应用
-    final addedApps = await _aggregatorDb.addedAppDao.getAllAddedApps();
-
-    for (final addedApp in addedApps) {
+    for (final addedApp in allAddedApps) {
       // 过滤条件
       if (exportOptions.enabledOnly && !addedApp.isEnabled) {
         continue;
       }
 
-      if (targetChannels.any((c) => c.code == addedApp.channelId)) {
+      if (targetCodes.contains(addedApp.channelId)) {
         final backupItem = BackupAppItem.fromAddedAppInfo(
           addedApp,
           exportOptions,
@@ -96,22 +107,24 @@ class BackupService implements IBackupService {
     // 收集渠道数据库应用
     final channelAppsMap = <String, List<ChannelAppBackupItem>>{};
 
-    for (final channel in targetChannels) {
+    for (final code in targetCodes) {
       try {
-        appLog.info('BackupService: 导出渠道 ${channel.name} 的数据');
-        final channelApps = await _channelDb.dao.getAppsByChannel(channel.code);
+        final channelDb = _channelDb;
+        if (channelDb == null) continue;
+        appLog.info('BackupService: 导出渠道 $code 的数据');
+        final channelApps = await channelDb.dao.getAppsByChannel(code);
 
         if (channelApps.isNotEmpty) {
           final backupItems = channelApps
               .map((app) => ChannelAppBackupItem.fromChannelAddedApp(app))
               .toList();
-          channelAppsMap[channel.code] = backupItems;
-          appLog.info('BackupService: ${channel.name} 渠道导出 ${backupItems.length} 个应用');
+          channelAppsMap[code] = backupItems;
+          appLog.info('BackupService: 渠道 $code 导出 ${backupItems.length} 个应用');
 
           // 更新聚合数据中的 extra 字段
           for (final backupItem in backupItems) {
             final existingApp = allApps.indexWhere((app) =>
-              app.appId == backupItem.appId && app.channelId == channel.code);
+              app.appId == backupItem.appId && app.channelId == code);
 
             if (existingApp != -1) {
               // 更新 extra 字段
@@ -132,7 +145,7 @@ class BackupService implements IBackupService {
           }
         }
       } catch (e) {
-        appLog.error('BackupService: 导出渠道 ${channel.name} 失败 - $e');
+        appLog.error('BackupService: 导出渠道 $code 失败 - $e');
       }
     }
 
@@ -162,6 +175,19 @@ class BackupService implements IBackupService {
           }
         } catch (e) {
           appLog.error('BackupService: 导出代理配置失败 - $e');
+        }
+
+        // WebDAV 配置（敏感，WebDavConfigManager 直写 FlutterSecureStorage，
+        // key 无前缀，与 ConfigManager 的 WebDavConfigProvider（secure_config_ 前缀）
+        // 存储不一致——exportAll 读不到——故 B 轨直接读 WebDavConfigManager 并入）
+        try {
+          final webdav = await WebDavConfigManager.instance.loadConfig();
+          if (webdav != null) {
+            appConfig['webdav_config'] = webdav.toJson();
+            appLog.info('BackupService: 导出 WebDAV 配置完成');
+          }
+        } catch (e) {
+          appLog.error('BackupService: 导出 WebDAV 配置失败 - $e');
         }
       }
     }
@@ -199,6 +225,26 @@ class BackupService implements IBackupService {
       }
     } catch (e) {
       appLog.error('BackupService: 导出 Agent 配置失败 - $e');
+    }
+
+    // 导出脚本渠道环境变量（channelKey → env map）
+    // zip 本体经 tar.gz 的 channels/ 条目原样打包；env 随 apps.json 的 extras 走（JSON 明文）
+    try {
+      final jsEnvs = <String, Map<String, String>>{};
+      for (final channel in ChannelManager.instance.dynamicChannels) {
+        if (channel is JsChannel) {
+          final env = await channel.getAllEnv();
+          if (env.isNotEmpty) {
+            jsEnvs[channel.channelKey] = env;
+          }
+        }
+      }
+      if (jsEnvs.isNotEmpty) {
+        extras['js_envs'] = jsEnvs.map((k, v) => MapEntry(k, v));
+        appLog.info('BackupService: 导出脚本渠道环境变量 ${jsEnvs.length} 个渠道');
+      }
+    } catch (e) {
+      appLog.error('BackupService: 导出脚本渠道环境变量失败 - $e');
     }
 
     // 导出用户分类标签（v2.1 新增）
@@ -242,76 +288,6 @@ class BackupService implements IBackupService {
 
     appLog.info('BackupService: 导出完成 - ${allApps.length} 个聚合应用, ${channelAppsMap.length} 个渠道有额外数据${includeAppConfig ? ", 包含应用配置" : ""}, 扩展数据 ${extras.length} 类');
     return backupData;
-  }
-
-  /// 导出到文件
-  ///
-  /// [filePath] 文件路径
-  /// [options] 导出选项
-  /// [channels] 指定导出的渠道
-  Future<String> exportToFile({
-    String? filePath,
-    BackupOptions? options,
-    List<ChannelType>? channels,
-  }) async {
-    final backupData = await exportData(options: options, channels: channels);
-
-    // 如果没有指定路径，使用默认路径
-    final targetPath = filePath ?? await _getDefaultBackupPath();
-
-    // 确保目录存在
-    final directory = Directory(path.dirname(targetPath));
-    if (!await directory.exists()) {
-      await directory.create(recursive: true);
-    }
-
-    // 转换为 JSON
-    final jsonString = jsonEncode(backupData.toJson());
-
-    // 写入文件
-    final file = File(targetPath);
-    await file.writeAsString(jsonString);
-
-    appLog.info('BackupService: 已导出到 $targetPath');
-    return targetPath;
-  }
-
-  /// 导出到压缩文件（gzip）
-  ///
-  /// [filePath] 文件路径
-  /// [options] 导出选项
-  /// [channels] 指定导出的渠道
-  Future<String> exportToCompressedFile({
-    String? filePath,
-    BackupOptions? options,
-    List<ChannelType>? channels,
-  }) async {
-    final backupData = await exportData(
-      options: options?.copyWith(compressed: true),
-      channels: channels,
-    );
-
-    // 如果没有指定路径，使用默认路径
-    final targetPath = filePath ?? await _getDefaultBackupPath(compressed: true);
-
-    // 确保目录存在
-    final directory = Directory(path.dirname(targetPath));
-    if (!await directory.exists()) {
-      await directory.create(recursive: true);
-    }
-
-    // 转换为 JSON
-    final jsonString = jsonEncode(backupData.toJson());
-
-    // 压缩并写入文件
-    final bytes = utf8.encode(jsonString);
-    final compressedBytes = gzip.encode(bytes);
-
-    final file = File(targetPath);
-    await file.writeAsBytes(compressedBytes);
-
-    appLog.info('BackupService: 已导出到 $targetPath');
-    return targetPath;
   }
 
   /// 导出备份压缩包（tar.gz bytes）
@@ -384,6 +360,16 @@ class BackupService implements IBackupService {
         }
       }
 
+      // 渠道包（脚本渠道 zip）——tar.gz 原生二进制条目，无需 base64
+      final channelFiles = await buildChannelPackageArchiveFiles();
+      for (final entry in channelFiles) {
+        archive.addFile(entry);
+        debugPrint('BackupService: channels 条目已添加 ${entry.name}');
+      }
+      if (channelFiles.isNotEmpty) {
+        onLog?.call('导出渠道包（${channelFiles.length} 个）');
+      }
+
       // 打包压缩
       onLog?.call('打包压缩备份数据...');
       // 将 Archive 编码为 tar 字节
@@ -449,6 +435,7 @@ class BackupService implements IBackupService {
     debugPrint('BackupService: Tar 解包完成，包含 ${archive.files.length} 个文件');
 
     // 提取文件
+    final channelZipEntries = <String, List<int>>{};
     for (final archiveFile in archive.files) {
       debugPrint('BackupService: 找到文件: ${archiveFile.name} (${archiveFile.size} bytes)');
 
@@ -461,6 +448,11 @@ class BackupService implements IBackupService {
         final configJsonString = utf8.decode(fileBytes);
         configData = jsonDecode(configJsonString) as Map<String, dynamic>;
         debugPrint('BackupService: app_config.json 已加载，包含 ${configData.length} 项配置');
+      } else if (archiveFile.name.startsWith('channels/')) {
+        // JS 脚本渠道 zip 包：暂存，数据导入完成后写回渠道包目录
+        final fileBytes = archiveFile.content as List<int>;
+        channelZipEntries[archiveFile.name] = fileBytes;
+        debugPrint('BackupService: 捕获渠道包条目 ${archiveFile.name} (${fileBytes.length} bytes)');
       }
     }
 
@@ -536,6 +528,12 @@ class BackupService implements IBackupService {
 
     final result = await importData(backupData, mode: mode);
 
+    // 写回脚本渠道 zip 包 + 重新注册（旧备份无 channels/ 条目时为空，自动跳过）
+    if (channelZipEntries.isNotEmpty) {
+      final restored = await _restoreChannelPackages(channelZipEntries);
+      debugPrint('BackupService: 渠道包恢复完成 ${restored} 个');
+    }
+
     appLog.info('BackupService: ========== 导入完成 ==========');
     appLog.info('BackupService: 成功: ${result.success}');
     debugPrint('BackupService: 总数: ${result.totalCount}');
@@ -571,6 +569,7 @@ class BackupService implements IBackupService {
       final archive = tarDecoder.decodeBytes(decompressedBytes);
 
       // 提取文件
+      final channelZipEntries = <String, List<int>>{};
       for (final archiveFile in archive.files) {
         if (archiveFile.name == 'apps.json') {
           final fileBytes = archiveFile.content as List<int>;
@@ -579,6 +578,10 @@ class BackupService implements IBackupService {
           final fileBytes = archiveFile.content as List<int>;
           final configJsonString = utf8.decode(fileBytes);
           configData = jsonDecode(configJsonString) as Map<String, dynamic>;
+        } else if (archiveFile.name.startsWith('channels/')) {
+          // JS 脚本渠道 zip 包：暂存，数据导入完成后写回渠道包目录
+          final fileBytes = archiveFile.content as List<int>;
+          channelZipEntries[archiveFile.name] = fileBytes;
         }
       }
 
@@ -626,6 +629,13 @@ class BackupService implements IBackupService {
 
       // 导入数据（内部各阶段同步输出 onLog）
       final result = await importData(backupData, mode: mode, onLog: onLog);
+
+      // 写回脚本渠道 zip 包 + 重新注册（旧备份无 channels/ 条目时为空，自动跳过）
+      if (channelZipEntries.isNotEmpty) {
+        final restored = await _restoreChannelPackages(channelZipEntries);
+        onLog?.call('渠道包恢复完成（$restored 个）');
+      }
+
       onLog?.call('恢复完成');
       return result;
     } catch (e) {
@@ -800,6 +810,26 @@ class BackupService implements IBackupService {
         debugPrint('BackupService: 备份中不包含代理配置');
       }
 
+      // WebDAV 配置（B 轨：直写 WebDavConfigManager，与导出侧对称；
+      // ConfigManager 的 WebDavConfigProvider 存储 key 前缀不一致，不走 importAll）
+      final webdavConfigValue = backupData.appConfig?['webdav_config'];
+      if (webdavConfigValue is Map && webdavConfigValue.isNotEmpty) {
+        onLog?.call('恢复 WebDAV 配置...');
+        try {
+          final webdav = WebDavConfig.fromJson(
+            Map<String, dynamic>.from(webdavConfigValue),
+          );
+          await WebDavConfigManager.instance.saveConfig(webdav);
+          appLog.info('BackupService: ✅ WebDAV 配置恢复完成');
+          onLog?.call('WebDAV 配置恢复完成');
+        } catch (e) {
+          appLog.error('BackupService: 恢复 WebDAV 配置失败 - $e');
+          onLog?.call('WebDAV 配置恢复失败: $e', isError: true);
+        }
+      } else {
+        debugPrint('BackupService: 备份中不包含 WebDAV 配置');
+      }
+
       // 导入用户分类标签（v2.1 新增；insertTags 复合主键冲突 replace，幂等追加）
       if (backupData.tags != null && backupData.tags!.isNotEmpty) {
         onLog?.call('恢复用户分类标签（${backupData.tags!.length} 个）...');
@@ -883,6 +913,31 @@ class BackupService implements IBackupService {
             appLog.info('BackupService: ✅ Agent 模型配置恢复完成');
           } catch (e) {
             appLog.error('BackupService: 恢复 Agent 配置失败 - $e');
+          }
+        }
+
+        // JS 脚本渠道环境变量（channelKey → env map；备份含敏感配置明文，markSensitive 路由加密存储）
+        final jsEnvs = backupData.extras!['js_envs'];
+        if (jsEnvs is Map && jsEnvs.isNotEmpty) {
+          onLog?.call('恢复脚本渠道环境变量（${jsEnvs.length} 个渠道）...');
+          try {
+            // 确保 ConfigStore 就绪（ConfigJsChannelEnvStore 依赖）
+            await ConfigInitializer.initialize();
+            var restoredCount = 0;
+            for (final entry in jsEnvs.entries) {
+              final key = entry.key.toString();
+              final envRaw = entry.value;
+              if (envRaw is! Map) continue;
+              final env = envRaw.map((k, v) => MapEntry(k.toString(), v.toString()));
+              if (env.isEmpty) continue;
+              await ConfigJsChannelEnvStore(key).save(env);
+              restoredCount++;
+            }
+            appLog.info('BackupService: ✅ 脚本渠道环境变量恢复完成（$restoredCount 个）');
+            onLog?.call('脚本渠道环境变量恢复完成');
+          } catch (e) {
+            appLog.error('BackupService: 恢复脚本渠道环境变量失败 - $e');
+            onLog?.call('脚本渠道环境变量恢复失败: $e', isError: true);
           }
         }
       } else {
@@ -987,9 +1042,9 @@ class BackupService implements IBackupService {
 
         // 检查是否需要清空该渠道
         if (mode == BackupImportMode.replace) {
-          final beforeCount = await _channelDb.dao.getCountByChannel(channelCode);
+          final beforeCount = await _channelDb!.dao.getCountByChannel(channelCode);
           debugPrint('BackupService: - 清空前数量: $beforeCount');
-          await _channelDb.dao.clearChannel(channelCode);
+          await _channelDb!.dao.clearChannel(channelCode);
           appLog.info('BackupService: - 已清空渠道 $channelCode');
         }
 
@@ -1011,7 +1066,7 @@ class BackupService implements IBackupService {
         for (final app in channelApps) {
           if (mode == BackupImportMode.merge) {
             // 检查是否已存在
-            final existing = await _channelDb.dao.getApp(app.appId, channelCode);
+            final existing = await _channelDb!.dao.getApp(app.appId, channelCode);
             if (existing != null) {
               debugPrint('BackupService:   - 跳过已存在: ${app.appId}');
               skippedCount++;
@@ -1020,7 +1075,7 @@ class BackupService implements IBackupService {
           }
 
           try {
-            await _channelDb.dao.insertApp(app);
+            await _channelDb!.dao.insertApp(app);
             insertedCount++;
             appLog.info('BackupService:   - ✅ 插入成功: ${app.appId} (${app.name})');
           } catch (e) {
@@ -1029,7 +1084,7 @@ class BackupService implements IBackupService {
         }
 
         // 验证导入结果
-        final afterCount = await _channelDb.dao.getCountByChannel(channelCode);
+        final afterCount = await _channelDb!.dao.getCountByChannel(channelCode);
         appLog.info('BackupService: 渠道 $channelCode 导入完成');
         debugPrint('BackupService: - 插入: $insertedCount 个');
         debugPrint('BackupService: - 跳过: $skippedCount 个');
@@ -1043,10 +1098,10 @@ class BackupService implements IBackupService {
     appLog.info('BackupService: ========== 渠道数据库导入完成 ==========');
 
     // 最终验证
-    final totalCount = await _channelDb.dao.getTotalCount();
+    final totalCount = await _channelDb!.dao.getTotalCount();
     debugPrint('BackupService: 验证 - 渠道数据库当前总数: $totalCount');
 
-    final allApps = await _channelDb.dao.getAllApps();
+    final allApps = await _channelDb!.dao.getAllApps();
     debugPrint('BackupService: 渠道数据库所有应用:');
     for (final app in allApps.take(10)) {
       debugPrint('BackupService:   - ${app.channelCode}/${app.appId} (${app.name})');
@@ -1071,6 +1126,110 @@ class BackupService implements IBackupService {
   void setTestDatabases(AppAddedDatabase aggregatorDb) {
     _aggregatorDb = aggregatorDb;
     _isInitialized = true;
+  }
+
+  /// 测试用：注入渠道数据库（跳过 initialize 的 path_provider 依赖）
+  @visibleForTesting
+  void setTestChannelDatabase(ChannelDatabase channelDb) {
+    _channelDb = channelDb;
+  }
+
+  /// 测试注入：渠道包目录（跳过 path_provider 的 getApplicationDocumentsDirectory）
+  @visibleForTesting
+  Directory? debugChannelsDirectory;
+
+  /// 解析渠道包目录（channels/*.zip 所在目录，与 ChannelLoader 约定一致）
+  Future<Directory?> _resolveChannelsDirectory() async {
+    try {
+      final override = debugChannelsDirectory;
+      if (override != null) return override;
+      final docs = await getApplicationDocumentsDirectory();
+      return Directory(path.join(docs.path, 'channels'));
+    } catch (e) {
+      appLog.error('BackupService: 解析渠道包目录失败 - $e');
+      return null;
+    }
+  }
+
+  /// 收集渠道包归档条目（channels/<fileName>.zip），供 tar.gz 导出。
+  ///
+  /// 读取渠道包目录下所有 *.zip（脚本渠道包 = entry.js + detail.js + meta.json + 图标），
+  /// 以原始 zip 字节打入备份包（tar 原生二进制，无需 base64/解压重组）。
+  Future<List<ArchiveFile>> buildChannelPackageArchiveFiles() async {
+    final files = <ArchiveFile>[];
+    try {
+      final dir = await _resolveChannelsDirectory();
+      if (dir == null || !await dir.exists()) return files;
+      final zipFiles = dir
+          .listSync()
+          .whereType<File>()
+          .where((f) => f.path.endsWith('.zip'))
+          .toList()
+        ..sort((a, b) => a.path.compareTo(b.path));
+      for (final file in zipFiles) {
+        final bytes = await file.readAsBytes();
+        final name = file.uri.pathSegments.last;
+        files.add(ArchiveFile('channels/$name', bytes.length, bytes));
+        appLog.info('BackupService: 打包渠道包 $name (${bytes.length} bytes)');
+      }
+    } catch (e) {
+      appLog.error('BackupService: 收集渠道包失败 - $e');
+    }
+    return files;
+  }
+
+  /// 恢复脚本渠道 zip 包：写入渠道包目录（`channels/` 条目名 → 取文件名），
+  /// 随后重跑 [ChannelLoader.loadAndRegister] 重新注册（幂等：内容未变跳过、变化更新）。
+  ///
+  /// 返回恢复（写入）的渠道包数量。单包失败不阻塞其他；整个恢复失败仅记日志不抛
+  /// （数据导入已完成，渠道包恢复失败不影响应用数据恢复的成败语义）。
+  Future<int> _restoreChannelPackages(Map<String, List<int>> channelZipEntries) async {
+    if (channelZipEntries.isEmpty) return 0;
+    try {
+      final dir = await _resolveChannelsDirectory();
+      if (dir == null) {
+        appLog.error('BackupService: 无法解析渠道包目录，跳过渠道包恢复');
+        return 0;
+      }
+      if (!await dir.exists()) {
+        await dir.create(recursive: true);
+      }
+
+      // 写入 zip（条目名 'channels/<name>.zip' → 只取文件名，防路径穿越）
+      var restored = 0;
+      for (final entry in channelZipEntries.entries) {
+        final parts = entry.key.split('/');
+        final fileName = parts.length == 2 ? parts[1] : entry.key;
+        if (!fileName.endsWith('.zip') ||
+            fileName.contains('..') ||
+            fileName.contains('/')) {
+          appLog.error('BackupService: 跳过非法渠道包文件名 - ${entry.key}');
+          continue;
+        }
+        try {
+          final file = File('${dir.path}/$fileName');
+          await file.writeAsBytes(entry.value);
+          restored++;
+          appLog.info('BackupService: 渠道包已写回 - $fileName');
+        } catch (e) {
+          appLog.error('BackupService: 写入渠道包 $fileName 失败 - $e');
+        }
+      }
+
+      // 重新注册（幂等；失败不阻塞——zip 已落盘，下次启动扫描同样会加载）
+      if (restored > 0) {
+        try {
+          await ChannelLoader(directory: dir).loadAndRegister();
+          appLog.info('BackupService: ✅ 渠道包重新注册完成（$restored 个）');
+        } catch (e) {
+          appLog.error('BackupService: 渠道包重新注册失败（zip 已落盘，重启会重新加载）- $e');
+        }
+      }
+      return restored;
+    } catch (e) {
+      appLog.error('BackupService: 恢复渠道包失败 - $e');
+      return 0;
+    }
   }
 
   /// 获取默认导出目录
@@ -1104,22 +1263,6 @@ class BackupService implements IBackupService {
       final docDir = await getApplicationDocumentsDirectory();
       return docDir.path;
     }
-  }
-
-  /// 获取默认备份路径
-  Future<String> _getDefaultBackupPath({bool compressed = false}) async {
-    final directory = await getApplicationDocumentsDirectory();
-    final backupDir = Directory(path.join(directory.path, 'backups'));
-
-    if (!await backupDir.exists()) {
-      await backupDir.create(recursive: true);
-    }
-
-    final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.')[0];
-    final extension = compressed ? '.json.gz' : '.json';
-    final fileName = 'gstore_backup_$timestamp$extension';
-
-    return path.join(backupDir.path, fileName);
   }
 
   /// 获取所有备份文件

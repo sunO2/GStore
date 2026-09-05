@@ -40,9 +40,9 @@ class DelegateTool extends AgentToolModule {
 
 void main() {
   group('AgentToolModule 元数据', () {
-    test('内置 15 个工具注册完整', () {
+    test('内置 17 个工具注册完整', () {
       final tools = BuiltinAgentTools.all;
-      expect(tools.length, 15);
+      expect(tools.length, 17);
       final names = tools.map((t) => t.toolName).toSet();
       expect(names, containsAll([
         'searchApp',
@@ -60,6 +60,8 @@ void main() {
         'webdavSync',
         'installedApps',
         'confirmAction',
+        'cacheManage',
+        'runJsChannel',
       ]));
     });
 

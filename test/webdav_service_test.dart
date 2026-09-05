@@ -46,14 +46,6 @@ class FakeBackupService implements IBackupService {
       throw UnimplementedError();
 
   @override
-  Future<String> exportToFile({BackupOptions? options}) =>
-      throw UnimplementedError();
-
-  @override
-  Future<String> exportToCompressedFile({BackupOptions? options}) =>
-      throw UnimplementedError();
-
-  @override
   Future<BackupImportResult> importFromFile(
     String filePath, {
     BackupImportMode mode = BackupImportMode.merge,

@@ -107,7 +107,7 @@ void main() {
 
     test('③b 服务 null 时 sendText 不抛且置未启用提示', () async {
       final logic = AgentLogic();
-      await logic.sendText('hello');
+      logic.sendText('hello');
 
       expect(logic.state.errorMessage.value, 'Agent 模块未启用');
     });

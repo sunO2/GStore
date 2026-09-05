@@ -232,6 +232,28 @@ class _SettingsPageState extends State<SettingsPage> {
                 const Icon(Icons.chevron_right, size: AppTypography.iconSM),
             onTap: () => _showScriptChannelManageDialog(context),
           ),
+          const Divider(height: 1),
+          // 缓存管理（图片/README/图标等可再生缓存，单项或一键清理）
+          ListTile(
+            leading: const Icon(Icons.cleaning_services_outlined,
+                size: AppTypography.iconMD),
+            title: const Text('缓存管理'),
+            subtitle: const Text('清理图片 / README 等缓存与已下载文件'),
+            trailing:
+                const Icon(Icons.chevron_right, size: AppTypography.iconSM),
+            onTap: () => Get.toNamed(AppRoute.cacheManage),
+          ),
+          const Divider(height: 1),
+          // 数据库管理（浏览各库表与记录，删除误添加/失效记录）
+          ListTile(
+            leading: const Icon(Icons.storage_outlined,
+                size: AppTypography.iconMD),
+            title: const Text('数据库管理'),
+            subtitle: const Text('查看 / 管理本地数据库记录'),
+            trailing:
+                const Icon(Icons.chevron_right, size: AppTypography.iconSM),
+            onTap: () => Get.toNamed(AppRoute.databaseManage),
+          ),
         ],
       ),
     );
@@ -843,10 +865,9 @@ class _SettingsPageState extends State<SettingsPage> {
           ListTile(
             leading: const Icon(Icons.description_outlined),
             title: const Text('开源协议'),
+            subtitle: const Text('第三方依赖的许可证清单'),
             trailing: const Icon(Icons.chevron_right),
-            onTap: () {
-              // TODO: Show license information
-            },
+            onTap: () => Get.toNamed(AppRoute.licenses),
           ),
         ],
       ),

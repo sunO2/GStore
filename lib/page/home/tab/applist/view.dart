@@ -30,11 +30,34 @@ class AppListState extends State<ApplistPage>
   late ApplistLogic logic;
   late ApplistState state;
 
+  /// 滚动控制器：接近底部时触发分页加载（loadMoreApps）
+  final ScrollController _scrollController = ScrollController();
+
+  /// 距底部多少像素内触发加载更多
+  static const double _loadMoreThreshold = 400;
+
   @override
   void initState() {
     super.initState();
     logic = Get.put(ApplistLogic());
     state = logic.state;
+    _scrollController.addListener(_onScroll);
+  }
+
+  @override
+  void dispose() {
+    _scrollController
+      ..removeListener(_onScroll)
+      ..dispose();
+    super.dispose();
+  }
+
+  void _onScroll() {
+    if (!_scrollController.hasClients) return;
+    final position = _scrollController.position;
+    if (position.pixels >= position.maxScrollExtent - _loadMoreThreshold) {
+      logic.loadMoreApps();
+    }
   }
 
   @override
@@ -276,6 +299,7 @@ class AppListState extends State<ApplistPage>
     return RefreshIndicator(
       onRefresh: logic.loadAggregatedApps,
       child: CustomScrollView(
+        controller: _scrollController,
         slivers: [
           // 分类筛选 Chips + 排序
           SliverToBoxAdapter(
@@ -329,7 +353,9 @@ class AppListState extends State<ApplistPage>
           SliverToBoxAdapter(
             child: SectionTitle(
               title: isSearching ? '搜索结果' : '全部应用',
-              subtitle: '${state.filteredApps.length} 个应用 · 添加时间排序',
+              subtitle: logic.hasMore
+                  ? '已加载 ${state.filteredApps.length}/${state.totalCount} 个应用 · 添加时间排序'
+                  : '${state.filteredApps.length} 个应用 · 添加时间排序',
             ),
           ),
           SliverPadding(
@@ -360,6 +386,10 @@ class AppListState extends State<ApplistPage>
               },
             ),
           ),
+          // 底部加载更多 / 已全部加载 指示
+          SliverToBoxAdapter(
+            child: Obx(() => _buildLoadMoreFooter(context)),
+          ),
           // 底部避让悬浮导航胶囊（extendBody 后内容延伸至胶囊后方）
           SliverPadding(
             padding: EdgeInsets.only(
@@ -370,6 +400,54 @@ class AppListState extends State<ApplistPage>
         ],
       ),
     );
+  }
+
+  /// 底部加载状态组件（滚动分页时显示 loading，全部加载完成时显示提示）
+  Widget _buildLoadMoreFooter(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    // 首屏/错误/搜索无结果时不显示“加载更多”脚注（避免空态下出现多余 UI）
+    if (state.isLoading.value ||
+        state.errorMessage.value.isNotEmpty ||
+        state.filteredApps.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    // 正在加载更多：显示小型 loading
+    if (state.isLoadingMore.value) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: AppSpacing.lg),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const AppLoading(size: AppLoadingSize.small),
+            const SizedBox(width: AppSpacing.sm),
+            Text(
+              '加载更多...',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    // 已全部加载：显示完成提示（仅当列表超过一屏数据时）
+    if (!logic.hasMore && state.totalCount > 0) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: AppSpacing.lg),
+        child: Center(
+          child: Text(
+            '已全部加载 · 共 ${state.totalCount} 个应用',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: scheme.onSurfaceVariant,
+                ),
+          ),
+        ),
+      );
+    }
+
+    return const SizedBox.shrink();
   }
 
   @override

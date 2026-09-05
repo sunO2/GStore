@@ -182,7 +182,8 @@ void main() {
       final d0 = result.data![0];
       expect(
         d0.url,
-        'https://github.com/termux/termux-app/releases/download/v1.2.3/app-arm64-v8a.apk',
+        // 渠道层已拼代理前缀（getProxy 默认 https://gh-proxy.org/）
+        'https://gh-proxy.org/https://github.com/termux/termux-app/releases/download/v1.2.3/app-arm64-v8a.apk',
       );
       expect(d0.name, 'app-arm64-v8a.apk');
       expect(d0.size, 12345);
@@ -728,6 +729,11 @@ void main() {
       expect(result.data!.single.name, 'app-arm64-v8a.apk');
       expect(result.data!.single.version, 'v1.2.3');
       expect(result.data!.single.size, 12345);
+      // 渠道层已拼代理前缀（getProxy 默认 https://gh-proxy.org/）
+      expect(
+        result.data!.single.url,
+        'https://gh-proxy.org/https://github.com/termux/termux-app/releases/download/v1.2.3/app-arm64-v8a.apk',
+      );
     });
 
     test('fetchDownloads：releases API 失败 → 空列表（success，不阻塞）', () async {

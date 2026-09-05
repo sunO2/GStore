@@ -144,8 +144,8 @@ class MetadataRepository {
     }
   }
 
-  /// 清除全部缓存（测试/调试用）
-  @visibleForTesting
+  /// 清除全部缓存（内存 + 偏好设置中的磁盘缓存）。
+  /// 供缓存管理页在用户主动清理时调用。
   Future<void> clearCache() async {
     _memoryCache.clear();
     try {

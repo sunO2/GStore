@@ -259,7 +259,8 @@ class _FakeDownloadService implements IDownloadService {
       {int? downloadSize,
       bool breakPoint = true,
       String? saveFileName,
-      bool forceDownload = false}) async {
+      bool forceDownload = false,
+      bool installAfterDownload = true}) async {
     calls.add((appid, appName, version, fileName, url));
     return _task(appid, appName, version, fileName, url);
   }
@@ -273,6 +274,7 @@ class _FakeDownloadService implements IDownloadService {
     String fileName, {
     bool breakPoint = true,
     String? saveFileName,
+    bool installAfterDownload = true,
   }) async {
     calls.add((appid, appName, version, fileName, request.url));
     return _task(appid, appName, version, fileName, request.url);

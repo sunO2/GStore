@@ -22,10 +22,17 @@ class AuthPage extends StatelessWidget {
           onPressed: () async {
             final currentStatus = logic.state.status.value;
 
-            // 登录成功或正在验证中，直接返回
-            if (currentStatus == AuthStatus.success ||
-                currentStatus == AuthStatus.verifying) {
+            // 登录成功，直接返回 success
+            if (currentStatus == AuthStatus.success) {
               Get.back(result: AuthStatus.success);
+              return;
+            }
+
+            // 正在验证中：验证码已拿到但 token 尚未确认——此时关闭不应判登录成功，
+            // 取消防抖轮询后普通返回（不携带 result，调用方不会弹"登录成功"）
+            if (currentStatus == AuthStatus.verifying) {
+              logic.cancelLogin();
+              Get.back();
               return;
             }
 

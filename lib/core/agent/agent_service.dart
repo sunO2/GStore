@@ -9,7 +9,9 @@ import 'package:genkit/genkit.dart';
 import 'package:genkit_google_genai/genkit_google_genai.dart';
 import 'package:genkit_openai/genkit_openai.dart';
 import 'package:installed_apps/installed_apps.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:gstore/core/agent/agent_model_store.dart';
+import 'package:gstore/core/agent/agent_notification_service.dart';
 import 'package:gstore/core/agent/agent_session_store.dart';
 import 'package:gstore/core/agent/agent_skills.dart';
 import 'package:gstore/core/agent/agent_tool_module.dart';
@@ -17,9 +19,13 @@ import 'package:gstore/core/agent/platform_arch.dart';
 import 'package:gstore/core/agent/tools/builtin_tools.dart';
 import 'package:gstore/core/module/app_modules.dart';
 import 'package:gstore/core/module/module_manager.dart';
+import 'package:gstore/page/home/logic.dart';
+import 'package:gstore/page/cache_manage/logic.dart';
+import 'package:gstore/page/cache_manage/state.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
+import 'package:gstore/core/channel/impl/JsChannel.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/theme/app_theme_config.dart';
 import 'package:gstore/core/fdroid/FdroidRepoManager.dart';
@@ -56,6 +62,47 @@ enum AgentToolType {
 
 /// 工具执行状态
 enum AgentToolStatus { running, done, error }
+
+/// Agent 会话级异步任务（下载等长任务）
+///
+/// 与 [AgentSession] 绑定（sessionId），完成回调只影响归属会话，
+/// 防止会话切换时任务结果串扰。
+class AgentAsyncTask {
+  /// 任务唯一 ID
+  final String id;
+
+  /// 归属会话 ID（关键：防串扰）
+  final String sessionId;
+
+  /// 工具名（如 downloadApp）
+  final String toolName;
+
+  /// 启动时的回合 ID（绑定对话轮次）
+  final String? turnId;
+
+  /// 初始描述（如"下载 X"）
+  final String detail;
+
+  /// 是否已结束
+  bool finished = false;
+
+  /// 是否成功
+  bool success = false;
+
+  /// 终态消息（成功/失败描述）
+  String message = '';
+
+  /// 下载进度（下载工具专用，UI 进度条实时更新）
+  DownloadTask? downloadStatus;
+
+  AgentAsyncTask({
+    required this.id,
+    required this.sessionId,
+    required this.toolName,
+    this.turnId,
+    required this.detail,
+  });
+}
 
 /// Agent 对话消息（UI 层模型）
 /// 支持流式文本更新与工具调用状态展示
@@ -94,6 +141,13 @@ class AgentMessage {
   /// 确认工具的选项列表（多选一时使用；二选一时为 null）
   /// 仅运行时使用，不持久化（恢复历史时确认已解决，无需选项）
   List<String>? confirmOptions;
+
+  /// 是否为多选模式（勾选多个选项后统一确认）。
+  /// 仅运行时使用，不持久化（恢复历史时确认已解决）。
+  bool confirmMultiSelect = false;
+
+  /// 已勾选项集合（多选模式 UI 回传选中结果后置空）。
+  List<String>? confirmSelected;
 
   AgentMessage({
     String? id,
@@ -146,6 +200,8 @@ class AgentService extends GetxService {
   static const String installedAppsToolName = 'installedApps';
   static const String channelAppToolName = 'channelApp';
   static const String configManagerToolName = 'configManager';
+  static const String runJsChannelToolName = 'runJsChannel';
+  static const String cacheManageToolName = 'cacheManage';
 
   Genkit? _ai;
   AgentModel? _model;
@@ -154,6 +210,9 @@ class AgentService extends GetxService {
   List<Message> _messages = [];
   bool _initialized = false;
   bool _busy = false;
+
+  /// 是否正在生成回复（响应式：页面/通知订阅，脱离页面仍可感知）
+  final RxBool busy = false.obs;
 
   /// 已注册的 Agent 工具模块（内置 + 模块化热插拔工具）
   final List<AgentToolModule> _agentTools = [];
@@ -206,6 +265,9 @@ class AgentService extends GetxService {
           params['name']?.toString() ?? '',
           params['version']?.toString() ?? '',
           vivoId: params['vivoId']?.toString(),
+          installAfterDownload:
+              params['installAfterDownload'] == true ||
+              params['installAfterDownload'] == 'true',
         );
       case installToolName:
         return _installApp(params['savePath']?.toString() ?? '');
@@ -271,6 +333,14 @@ class AgentService extends GetxService {
         );
       case confirmToolName:
         return _confirmAction(params);
+      case cacheManageToolName:
+        return _cacheManageAction(params);
+      case runJsChannelToolName:
+        return _runJsChannel(
+          params['channel']?.toString() ?? '',
+          params['method']?.toString() ?? '',
+          params['params'],
+        );
       default:
         // 尝试模块化工具自身的 execute（可扩展执行体）
         for (final tool in _agentTools) {
@@ -282,7 +352,7 @@ class AgentService extends GetxService {
     }
   }
 
-  /// 确认工具执行（用户确认/选项选择）
+  /// 确认工具执行（用户确认/选项选择/多选勾选）
   Future<String> _confirmAction(Map<String, dynamic> params) async {
     final question = params['question']?.toString() ?? '';
     List<String>? options;
@@ -298,7 +368,129 @@ class AgentService extends GetxService {
           .toList();
     }
     if (options != null && options.isEmpty) options = null;
-    return _requestUserConfirmation(question, options: options);
+    // 多选模式：模型传 multiSelect=true（或 multiSelect='true'）
+    final multiSelect = params['multiSelect'] == true ||
+        params['multiSelect']?.toString() == 'true';
+    return _requestUserConfirmation(question,
+        options: options, multiSelect: multiSelect);
+  }
+
+  /// 下载文件选项前缀（与 _cacheManageAction 解析保持一致）
+  static const String _dlFilePrefix = '[下载文件] ';
+
+  /// 缓存管理工具执行（枚举 → 多选 → 清理）
+  ///
+  /// 一次调用完成：
+  /// 1. 扫描缓存类别（网络图片/README/图标/通用/内存/临时等）与下载目录文件
+  /// 2. 发起多选确认，用户勾选要清理的内容（可同时勾缓存类别与下载文件）
+  /// 3. 按勾选执行清理，返回结果汇总
+  Future<String> _cacheManageAction(Map<String, dynamic> params) async {
+    // 工具执行前定稿流式文本（与其它工具一致）
+    _commitActiveStreamText();
+
+    // 1. 枚举缓存类别与下载文件
+    final manager = CacheManageLogic();
+    String categoriesText;
+    try {
+      final cats = await manager.cacheCategorySizes();
+      // 过滤占用为 0 的类别（无可清理内容不展示）
+      final nonEmpty = cats.where((c) => c.$3 > 0).toList();
+      categoriesText = nonEmpty.isEmpty
+          ? '（当前无可清理的缓存）'
+          : nonEmpty.map((c) => '${c.$2}(${byteSize(c.$3)})').join('、');
+    } catch (e) {
+      appLog.error('AgentService: cacheManage 枚举缓存失败 - $e');
+      categoriesText = '（枚举失败）';
+    }
+
+    // 下载文件（completed 且存在的）
+    final files = <DownloadedFileItem>[];
+    try {
+      await manager.loadDownloads();
+      files.addAll(manager.state.downloads);
+    } catch (e) {
+      appLog.error('AgentService: cacheManage 枚举下载失败 - $e');
+    }
+
+    if (categoriesText == '（当前无可清理的缓存）' && files.isEmpty) {
+      return '当前没有可清理的缓存或已下载文件，无需清理。';
+    }
+
+    // 2. 组装选项并多选确认
+    final options = <String>[
+      if (categoriesText != '（当前无可清理的缓存）')
+        ...manager.state.groups.expand((g) => g.items).map((i) => i.name),
+      ...files.map((f) => '$_dlFilePrefix${f.fileName}'),
+    ];
+    // 控制单次选项数量（避免过长）
+    if (options.length > 12) {
+      return '可清理项较多（缓存 ${options.length} 项），'
+          '建议打开「缓存管理」页手动选择清理。'
+          '当前缓存概况：$categoriesText'
+          '${files.isNotEmpty ? '；已下载文件 ${files.length} 个' : ''}。';
+    }
+
+    final question = StringBuffer('请勾选要清理的内容（可多选）：\n');
+    if (categoriesText != '（当前无可清理的缓存）') {
+      question.write('缓存：$categoriesText\n');
+    }
+    if (files.isNotEmpty) {
+      question.write('已下载文件：${files.length} 个（删除后不可恢复）');
+    }
+    final choice = await _requestUserConfirmation(
+      question.toString().trim(),
+      options: options,
+      multiSelect: true,
+    );
+    if (choice == '用户已取消' || choice == '已取消') {
+      return '已取消清理';
+    }
+    // 返回形如 "用户已选择：A、B" → 取 "：" 后拆分
+    final selectedRaw = choice.contains('：')
+        ? choice.substring(choice.indexOf('：') + 1)
+        : choice;
+    final selected = selectedRaw
+        .split('、')
+        .map((s) => s.trim())
+        .where((s) => s.isNotEmpty)
+        .toList();
+    if (selected.isEmpty) {
+      return '未选择任何清理项';
+    }
+
+    // 3. 分类执行：缓存类别名 → clearByNames；下载文件前缀 → deleteDownloads
+    final cacheNames = selected
+        .where((s) => !s.startsWith(_dlFilePrefix))
+        .toList();
+    final fileNames = selected
+        .where((s) => s.startsWith(_dlFilePrefix))
+        .map((s) => s.substring(_dlFilePrefix.length))
+        .toList();
+
+    final results = <String>[];
+    if (cacheNames.isNotEmpty) {
+      try {
+        final ok = await manager.clearByNames(cacheNames);
+        results.add('已清理缓存 $ok 项');
+      } catch (e) {
+        appLog.error('AgentService: 清理缓存失败 - $e');
+        results.add('缓存清理失败');
+      }
+    }
+    if (fileNames.isNotEmpty) {
+      final paths = files
+          .where((f) => fileNames.contains(f.fileName))
+          .map((f) => f.filePath)
+          .toList();
+      try {
+        final ok = await manager.deleteDownloads(paths);
+        results.add('已删除下载文件 $ok 个');
+      } catch (e) {
+        appLog.error('AgentService: 删除下载文件失败 - $e');
+        results.add('下载文件删除失败');
+      }
+    }
+    return results.isEmpty ? '未执行任何清理' : results.join('；');
   }
 
   /// 是否请求停止当前生成（用户点击停止按钮）
@@ -310,6 +502,132 @@ class AgentService extends GetxService {
 
   /// 当前正在执行的下载任务状态（停止时取消）
   DownloadTask? _currentDownloadStatus;
+
+  /// 当前工具下载进度订阅（taskId → subscription），终态后移除
+  final Map<int, StreamSubscription<DownloadTask>> _downloadWatchSubs = {};
+
+  /// 当前正在执行的工具消息（供下载等长任务通过 handler 回调实时更新进度卡）
+  AgentMessage? _currentToolMsg;
+
+  /// 当前正在执行的异步任务（下载等；完成回调经 onFinished 定位归属会话）
+  AgentAsyncTask? _currentAsyncTask;
+
+  /// 会话级异步任务表（key = sessionId → 该会话的任务列表）。
+  ///
+  /// 异步工具（下载等）启动时记录归属会话，完成时**只对归属会话生效**：
+  /// - 更新归属会话的持久化工具消息（切走/重启后仍可见）
+  /// - 仅当归属会话 == 当前会话且页面可见时，更新当前 UI 消息卡 + 触发 agent 续接
+  /// 防止"会话 A 的任务结果串扰到会话 B"。
+  final Map<String, List<AgentAsyncTask>> _sessionTasks = {};
+
+  /// 当前活跃任务 ID → 任务（用于完成回调快速定位）
+  final Map<String, AgentAsyncTask> _tasksById = {};
+
+  /// 记录一次异步工具启动（下载等），绑定归属会话
+  AgentAsyncTask _registerAsyncTask({
+    required String toolName,
+    required String detail,
+  }) {
+    final sessionId = _sessionStore?.current?.id ?? '';
+    final task = AgentAsyncTask(
+      id: 'task-${DateTime.now().microsecondsSinceEpoch}',
+      sessionId: sessionId,
+      toolName: toolName,
+      turnId: _currentTurnId,
+      detail: detail,
+    );
+    _sessionTasks.putIfAbsent(sessionId, () => []).add(task);
+    _tasksById[task.id] = task;
+    return task;
+  }
+
+  /// 异步任务终态处理（**会话绑定**，防切换串扰）。
+  ///
+  /// 规则：
+  /// 1. 更新任务记录（finished/success/message）并持久化到**归属会话**的消息列表
+  ///    （切走会话/重启后切回仍可见结果）；
+  /// 2. 仅当任务归属会话 == 当前会话，且 AI 页在前台时：
+  ///    更新当前 UI 消息卡（running → done/error）+ 触发 agent 续接生成；
+  /// 3. 否则（已切走/页面不可见）：不触碰当前对话，只落库 + 后台通知。
+  void _finalizeAsyncTask({
+    required AgentAsyncTask? task,
+    required bool success,
+    required String message,
+  }) {
+    final t = task;
+    if (t == null) return;
+    t.finished = true;
+    t.success = success;
+    t.message = message;
+
+    // 持久化到归属会话（不依赖"当前会话"）
+    _persistAsyncTaskToSession(t);
+
+    // 归属会话仍是当前会话 → 更新 UI 消息卡 + 触发续接
+    final currentSessionId = _sessionStore?.current?.id;
+    if (t.sessionId.isNotEmpty && t.sessionId == currentSessionId) {
+      // 更新当前 UI 中的对应工具消息（running → done/error）
+      final idx = messages.indexWhere((m) =>
+          m.isToolResult &&
+          m.toolType == AgentToolType.download &&
+          m.toolStatus == AgentToolStatus.running &&
+          (t.turnId == null || m.turnId == t.turnId));
+      if (idx >= 0) {
+        _updateToolMessage(
+          messages[idx],
+          status: success ? AgentToolStatus.done : AgentToolStatus.error,
+          detail: message,
+        );
+      }
+      // 页面在前台且不忙 → 触发 agent 续接（如"下载完成，是否安装？"）
+      if (_isAgentPageVisible()) {
+        _continueAfterAsyncTool(success, message);
+      }
+    }
+    // 已切走：只通知（B2），不注入对话、不续接
+    _publishToolDoneNotification(
+      success: success,
+      toolLabel: _toolLabelForName(t.toolName),
+      message: message,
+    );
+  }
+
+  /// 把异步任务终态写入归属会话的持久化消息（切回/重启后可见）
+  void _persistAsyncTaskToSession(AgentAsyncTask task) {
+    final store = _sessionStore;
+    if (store == null) return;
+    final session = store.sessions
+        .where((s) => s.id == task.sessionId)
+        .firstOrNull;
+    if (session == null) return;
+    // 找到该会话中对应的 running 下载工具消息，更新为终态
+    for (var i = 0; i < session.messages.length; i++) {
+      final m = session.messages[i];
+      if (m.isToolResult &&
+          m.toolType == AgentToolType.download.name &&
+          m.toolStatus == AgentToolStatus.running.name &&
+          (task.turnId == null || m.turnId == task.turnId)) {
+        session.messages[i] = SessionMessage(
+          isUser: false,
+          text: task.message,
+          isToolResult: true,
+          toolType: m.toolType,
+          toolStatus: task.success
+              ? AgentToolStatus.done.name
+              : AgentToolStatus.error.name,
+          toolDetail: task.message,
+          time: m.time,
+          seq: m.seq,
+          turnId: m.turnId,
+          confirmOptions: m.confirmOptions,
+        );
+        session.updatedAt = DateTime.now().millisecondsSinceEpoch;
+        store.save();
+        _syncSessionCache(session);
+        return;
+      }
+    }
+  }
 
   /// 用户确认回调（view 注入，弹确认 UI）
   /// 参数为确认问题，返回 true=用户确认，false=取消
@@ -389,7 +707,7 @@ ${PlatformArch.platformDescription}
 
 可用工具：
 1. searchApp - 搜索应用。输入 keyword（关键词）。返回匹配的应用列表（含名称、包名、简介、来源渠道）。支持 GitHub 渠道（走代理搜索仓库）。
-2. downloadApp - 下载应用。输入 appId（包名/仓库名）、channel（渠道代码，如 github/fdroid/vivo）、url（下载地址，可选）、name（应用名）、version（版本号）。GitHub 渠道时系统会自动选择匹配当前 CPU 架构的 APK。vivo 渠道需传 vivoId。下载完成后自动解析 APK 获取真实包名/图标/应用名并更新。
+2. downloadApp - 下载应用。输入 appId（包名/仓库名）、channel（渠道代码，如 github/fdroid/vivo）、url（下载地址，可选）、name（应用名）、version（版本号）。GitHub 渠道时系统会自动选择匹配当前 CPU 架构的 APK。vivo 渠道需传 vivoId。如需下载完成后自动安装，传入 installAfterDownload=true；仅说下载则不传。下载完成后自动解析 APK 获取真实包名/图标/应用名并更新。
 3. installApp - 安装已下载的 APK。输入 savePath（APK 文件路径）。
 4. manageApp - 管理"我的应用"列表（首页聚合）。action 为 list/add/remove/isAdded。
 5. channelApp - 管理应用渠道中的已添加应用（渠道数据库）。action 为 list（列出渠道应用，需 channel）、add（添加应用到渠道，需 appId+channel+name）、remove（从渠道移除，需 appId+channel）。GitHub 渠道 appId 用 owner/repo（如 termux/termux-app）。
@@ -401,8 +719,9 @@ ${PlatformArch.platformDescription}
 11. fdroidRepo - 管理 F-Droid 仓库。action 为 list/load/search/stats。
 12. webdavSync - WebDAV 云备份。action 为 list（查询网盘备份数据列表）/upload/download/status。
 13. installedApps - 管理已安装应用。action 为 list/check/uninstall/clearData/clearCache/forceStop。卸载/清理/停止需 Shizuku 授权。
- 14. confirmAction - 向用户发起确认。输入 question（确认问题，需清晰说明要执行的操作）。用于敏感/不可逆操作，用户需在界面上确认或取消。
-15. configManager - 管理应用配置。action 为 list（列出可配置项）/get（读取，需 key）/set（修改，需 key 和 value）/clear（清除，需 key）。修改后相关功能自动生效。敏感配置读取脱敏。
+ 14. confirmAction - 向用户发起确认或选择。输入 question（确认问题，需清晰说明要执行的操作）。用于敏感/不可逆操作；需要用户选择时传 options（选项数组或逗号分隔），需要用户**多选**（勾选多个）时再传 multiSelect=true。用户需在界面上确认/勾选。
+15. cacheManage - 管理缓存与已下载文件（清理/释放空间）。无需参数：工具会枚举当前可清理项（缓存类别 + 已下载 APK）并弹多选框让用户勾选，确认后清理。
+16. configManager - 管理应用配置。action 为 list（列出可配置项）/get（读取，需 key）/set（修改，需 key 和 value）/clear（清除，需 key）。修改后相关功能自动生效。敏感配置读取脱敏。
 
 敏感操作清单（执行前**必须**调用 confirmAction 让用户确认）：
 - 卸载应用（installedApps 的 uninstall）
@@ -411,6 +730,7 @@ ${PlatformArch.platformDescription}
 - 恢复备份/覆盖现有数据（backup 的 import 且会影响当前数据）
 - 删除会话/清空数据（manageDownload 的 clearAll、backup 相关删除）
 - 移除"我的应用"或渠道中的应用（manageApp remove / channelApp remove）
+- 清理缓存/删除已下载文件（cacheManage，会弹多选框让用户勾选）
 - 其他不可逆或影响较大的操作
 
 确认流程：先调用 confirmAction 展示操作内容，用户确认后再执行实际操作；用户取消则不要执行并告知用户。
@@ -418,6 +738,7 @@ ${PlatformArch.platformDescription}
 选项选择场景（也必须调用 confirmAction，带 options 让用户选择）：
 - 用户需要决策时：如"你想怎么处理""要不要继续""用哪个版本""选哪个方案"等
 - 多选一：当存在 2 个以上合理选项时，用 options 传入选项数组，让用户点选
+- 多选：需要用户勾选多项（如清理时勾选多个缓存/下载文件）时，传 options 并加 multiSelect=true；返回结果含被选项
 - 示例：卸载应用前问"卸载后是否保留数据？"（options: ["保留数据", "清除数据"]）
 - 示例：安装多个版本时问"安装哪个版本？"（options: ["稳定版", "测试版"]）
 - 用户犹豫/征求建议且涉及实际执行时，优先用 confirmAction 给选项，而不是只回文字
@@ -435,8 +756,9 @@ ${PlatformArch.platformDescription}
 - 用户要求"暂停/恢复/清理下载"时，调用 manageDownload。
 - 用户要求"切换主题/换颜色"时，调用 themeControl。
 - 用户要求"我装了什么应用"/"XX 装了吗"时，调用 installedApps。
+- 用户要求"清理缓存""释放空间""删除下载的安装包/APK""清理下载文件"时，调用 cacheManage。
 - 用户要求修改应用配置（如"修改下载设置""设置代理""修改更新策略""查看配置"）时，调用 configManager（list/get/set/clear），修改后功能自动生效。
-- 下载完成后询问用户是否安装；确认后调用 installApp。
+- 若用户只说"下载"则仅下载不安装；若用户明确要求下载后安装，在 downloadApp 中传 installAfterDownload=true（Agent 会话内不再主动询问安装）。
 - 执行上述敏感操作前，先调用 confirmAction 让用户确认；用户确认后再执行。
 - 用户需要做选择或表达犹豫（"怎么弄""选哪个""要不要"等）时，调用 confirmAction 并提供 options 选项，让用户直接点选。
 - 回答简洁，中文回复。当用户提到具体应用时，给出推荐并询问是否下载。
@@ -577,6 +899,42 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
     messages.value = _buildAgentMessages(
       _allSessionMessages.sublist(anchorStart),
     );
+
+    // B3：重启后恢复"待确认"交互——为 running 的确认消息重新注册 completer，
+    // 用户重新进入页面点确认/取消仍能完成工具等待（原 completer 在内存中已丢失）
+    _restorePendingConfirmations();
+  }
+
+  /// 为持久化的 running 确认消息重新注册等待 completer（重启/重进恢复交互）
+  void _restorePendingConfirmations() {
+    for (final msg in messages) {
+      if (msg.isToolResult &&
+          msg.toolType == AgentToolType.confirm &&
+          msg.toolStatus == AgentToolStatus.running) {
+        if (!_pendingConfirmations.containsKey(msg.id)) {
+          final completer = Completer<String>();
+          _pendingConfirmations[msg.id] = completer;
+          // 挂起等待：resolveConfirmation 完成时收尾消息状态
+          unawaited(completer.future.then((choice) {
+            // 先清持久化中的 running 记录，避免重启后残留"待确认"UI
+            _clearPendingConfirmation(msg.id);
+            if (choice.isEmpty || choice == '取消') {
+              _updateToolMessage(msg, status: AgentToolStatus.error, detail: '已取消');
+            } else {
+              _updateToolMessage(
+                msg,
+                status: AgentToolStatus.done,
+                detail: msg.confirmOptions != null && msg.confirmOptions!.isNotEmpty
+                    ? '已选择：$choice'
+                    : '已确认',
+              );
+            }
+            _pendingConfirmations.remove(msg.id);
+            AgentNotificationService.instance.onConfirmResolved();
+          }).catchError((_) {}));
+        }
+      }
+    }
   }
 
   /// 加载更早的一组完整对话（以用户消息为锚点）
@@ -614,7 +972,7 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
     return list.map((m) {
       if (m.isToolResult) {
         // 工具消息：还原工具类型/状态/详情
-        return AgentMessage(
+        final message = AgentMessage(
           isUser: false,
           text: m.text,
           toolType: _toolTypeFromName(m.toolType),
@@ -624,7 +982,13 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
           time: DateTime.fromMillisecondsSinceEpoch(m.time),
           seq: m.seq,
           turnId: m.turnId,
+          confirmOptions: m.confirmOptions,
         );
+        // 多选标记（运行时字段，持久化恢复后补设）
+        if (m.confirmMultiSelect) {
+          message.confirmMultiSelect = true;
+        }
+        return message;
       } else {
         return AgentMessage(
           isUser: m.isUser,
@@ -901,6 +1265,9 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
         final name = input['name']?.toString() ?? '';
         final version = input['version']?.toString() ?? 'unknown';
         final vivoId = input['vivoId']?.toString();
+        final installAfterDownload =
+            input['installAfterDownload'] == true ||
+            input['installAfterDownload'] == 'true';
         return _runAction(
           downloadToolName,
           {
@@ -910,6 +1277,7 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
             'name': name,
             'version': version,
             'vivoId': vivoId,
+            'installAfterDownload': installAfterDownload,
           },
           detail: '下载 $name ($version)',
         );
@@ -1156,6 +1524,28 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
       },
     );
 
+    // 脚本渠道自定义方法执行（Agent 渠道包 JS 执行能力）
+    ai.defineTool<Map<String, dynamic>, String>(
+      name: runJsChannelToolName,
+      description:
+          '执行自定义脚本渠道（js_xxx）暴露的方法。用于脚本渠道特有的能力，'
+          '如 getConfig（渠道配置）、versionOptions/switchVersion（版本/环境切换）、'
+          '或脚本自定义的查询/操作方法。输入 channel（脚本渠道 key，如 js_pingan）、'
+          'method（脚本 main 分发的函数名）、params（可选参数 map）。'
+          '仅对脚本渠道可用；脚本未实现该方法时返回提示。',
+      fn: (input, _) async {
+        return _runAction(
+          runJsChannelToolName,
+          {
+            'channel': input['channel']?.toString() ?? '',
+            'method': input['method']?.toString() ?? '',
+            'params': input['params'],
+          },
+          detail: '执行脚本方法 ${input['method']?.toString() ?? ''}',
+        );
+      },
+    );
+
     // 模块化工具（热插拔）：注册 _agentTools 中未被硬编码覆盖的工具
     const builtinDefined = {
       searchToolName,
@@ -1173,6 +1563,7 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
       installedAppsToolName,
       confirmToolName,
       configManagerToolName,
+      runJsChannelToolName,
     };
     for (final tool in _agentTools) {
       if (builtinDefined.contains(tool.toolName)) continue;
@@ -1187,11 +1578,16 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
   }
 
   /// 请求用户确认（创建确认节点，等待用户选择）
-  /// [question] 确认问题；[options] 多选一的选项列表（null 时二选一确认/取消）
-  /// 返回用户的选择结果字符串供模型使用
+  /// [question] 确认问题；[options] 选项列表（null 时二选一确认/取消）
+  /// [multiSelect] 是否多选（勾选多个选项后统一确认，默认单选/二选一）
+  /// 返回用户的选择结果字符串供模型使用：
+  /// - 多选：多个选项用 "、" 连接（如 "缓存、图标"）
+  /// - 单选：所选选项
+  /// - 二选一：'确认' / '取消'
   Future<String> _requestUserConfirmation(
     String question, {
     List<String>? options,
+    bool multiSelect = false,
   }) async {
     if (question.isEmpty) {
       return '确认问题不能为空';
@@ -1203,16 +1599,30 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
     // 创建确认工具消息（step 节点显示确认 UI）
     final msg = _addToolMessage(AgentToolType.confirm, question);
     msg.confirmOptions = options;
+    msg.confirmMultiSelect = multiSelect;
     final completer = Completer<String>();
     _pendingConfirmations[msg.id] = completer;
+
+    // B3：持久化待确认消息（退出/重启后可恢复确认 UI）
+    _persistPendingConfirmation(msg, question, options, multiSelect: multiSelect);
+
+    // B3：页面不可见时升级为通知栏确认（带按钮，点按回写 resolveConfirmation）
+    _notifyConfirmIfBackground(msg.id, question, options, multiSelect: multiSelect);
 
     // 等待 UI 选择（resolveConfirmation 完成）
     final choice = await completer.future;
     _pendingConfirmations.remove(msg.id);
+    // 确认已解决：清理待确认持久化 + 关闭通知
+    _clearPendingConfirmation(msg.id);
+    AgentNotificationService.instance.onConfirmResolved();
 
     if (choice.isEmpty || choice == '取消') {
       _updateToolMessage(msg, status: AgentToolStatus.error, detail: '已取消');
       return '用户已取消';
+    }
+    if (multiSelect) {
+      _updateToolMessage(msg, status: AgentToolStatus.done, detail: '已选择：$choice');
+      return '用户已选择：$choice';
     }
     if (options != null && options.isNotEmpty) {
       _updateToolMessage(msg, status: AgentToolStatus.done, detail: '已选择：$choice');
@@ -1220,6 +1630,83 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
     }
     _updateToolMessage(msg, status: AgentToolStatus.done, detail: '已确认');
     return '用户已确认';
+  }
+
+  /// 持久化待确认消息（B3：写入当前会话，重启后可恢复确认 UI）
+  void _persistPendingConfirmation(
+    AgentMessage msg,
+    String question,
+    List<String>? options, {
+    bool multiSelect = false,
+  }) {
+    final session = _sessionStore?.current;
+    if (session == null) return;
+    session.messages.removeWhere((m) =>
+        m.isToolResult && m.toolType == AgentToolType.confirm.name &&
+        m.toolDetail == question);
+    session.messages.add(SessionMessage(
+      isUser: false,
+      text: question,
+      isToolResult: true,
+      toolType: AgentToolType.confirm.name,
+      toolStatus: AgentToolStatus.running.name,
+      toolDetail: question,
+      time: msg.time.millisecondsSinceEpoch,
+      seq: msg.seq,
+      turnId: msg.turnId,
+      confirmOptions: options,
+      confirmMultiSelect: multiSelect,
+    ));
+    // 登记为"已持久化的工具消息"：用户选择后 _updateToolMessage(done) →
+    // _persistMessage 会走更新分支覆盖本条 running 记录，
+    // 避免 session 中残留 running 确认导致重启后仍显示多选框。
+    _persistedToolIds.add(msg.id);
+    session.updatedAt = DateTime.now().millisecondsSinceEpoch;
+    _sessionStore?.save();
+    _syncSessionCache(session);
+  }
+
+  /// 清理已解决的待确认（从持久化中移除 running 记录）
+  ///
+  /// 该确认已解决（用户已选择/取消）时调用：删除会话中 running 状态的
+  /// confirm 记录。终态记录由 _updateToolMessage(done/error) → _persistMessage
+  /// 随后新增——若残留 running 记录，重启后 _restorePendingConfirmations 会
+  /// 把它恢复成"待确认"UI（多选框/按钮仍可点），与实际已选择不符。
+  void _clearPendingConfirmation(String msgId) {
+    final session = _sessionStore?.current;
+    if (session == null) return;
+    final before = session.messages.length;
+    session.messages.removeWhere((m) =>
+        m.isToolResult &&
+        m.toolType == AgentToolType.confirm.name &&
+        m.toolStatus == AgentToolStatus.running.name);
+    if (session.messages.length != before) {
+      session.updatedAt = DateTime.now().millisecondsSinceEpoch;
+      _sessionStore?.save();
+      _syncSessionCache(session);
+    }
+  }
+
+  /// 页面不可见时，将确认请求升级为通知栏按钮（B3）
+  void _notifyConfirmIfBackground(
+    String msgId,
+    String question,
+    List<String>? options, {
+    bool multiSelect = false,
+  }) {
+    // 页面内对话：确认 UI 已在消息卡展示，无需通知打扰
+    if (!_notifyOnlyWhenBackground) return;
+    try {
+      AgentNotificationService.instance.init();
+      AgentNotificationService.instance.onConfirmRequest(
+        msgId: msgId,
+        question: question,
+        options: options,
+        multiSelect: multiSelect,
+      );
+    } catch (e) {
+      appLog.error('AgentService: 确认通知失败 - $e');
+    }
   }
 
   /// 处理用户确认结果（UI 调用）
@@ -1245,11 +1732,29 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
     if (_cancelRequested) {
       return '已停止，工具调用被取消';
     }
+    // B5 安全护栏：敏感工具（卸载/清数据/恢复备份等）必须先经 confirmAction 确认。
+    // 页面不可见（后台执行）时，敏感工具未经用户确认 → 拒绝执行，避免静默破坏。
+    // （confirmAction 是独立的确认工具调用；此处拦截的是"跳过确认直接执行敏感操作"）
+    if (_isSensitiveTool(name, params) && !_isAgentPageVisible()) {
+      return '安全拦截：$name 需要用户确认，但 AI 助手页不在前台。'
+          '已通过通知发起确认，请先确认后再让助手执行。';
+    }
     // 工具调用前，把已输出的流式文本定稿为独立 agent 消息
     // （实现"回复→工具→回复→工具"的分步展示）
     _commitActiveStreamText();
     // 创建工具消息（加入消息流，持久显示）
     final msg = _addToolMessage(_toolTypeForName(name), detail ?? name);
+    // 记录当前工具消息：长任务（下载等）经 handler 回调实时更新进度卡
+    _currentToolMsg = msg;
+    // 异步长任务：注册会话级任务记录（绑定归属会话，防切换串扰）
+    AgentAsyncTask? asyncTask;
+    if (_isAsyncTool(name)) {
+      asyncTask = _registerAsyncTask(
+        toolName: name,
+        detail: detail ?? name,
+      );
+      _currentAsyncTask = asyncTask;
+    }
     try {
       // 确保 action 已注册（AiActionProvider 可能尚未 build）
       if (!_actionController.actions.containsKey(name)) {
@@ -1273,15 +1778,123 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
               ? data['result'].toString()
               : '执行成功')
           : (result.error ?? '执行失败');
-      _updateToolMessage(
-        msg,
-        status: result.success ? AgentToolStatus.done : AgentToolStatus.error,
-        detail: text,
-      );
+      // 异步长任务工具（下载）：保持 running（进度条跟随），由 onFinished 终态定稿。
+      // 其余工具立即定稿 done/error。
+      if (_isAsyncTool(name)) {
+        _updateToolMessage(msg, status: AgentToolStatus.running, detail: text);
+      } else {
+        _updateToolMessage(
+          msg,
+          status: result.success ? AgentToolStatus.done : AgentToolStatus.error,
+          detail: text,
+        );
+        // 工具终态通知（B2：退出页面后仍可见结果）
+        _publishToolDoneNotification(
+          success: result.success,
+          toolLabel: _toolLabelForName(name),
+          message: text,
+        );
+      }
       return text;
     } catch (e) {
       _updateToolMessage(msg, status: AgentToolStatus.error, detail: '执行失败: $e');
+      _publishToolDoneNotification(
+        success: false,
+        toolLabel: _toolLabelForName(name),
+        message: '执行失败: $e',
+      );
       return '执行失败: $e';
+    } finally {
+      _currentToolMsg = null;
+      _currentAsyncTask = null;
+    }
+  }
+
+  /// 是否为异步长任务工具（工具调用后后台继续，消息卡保持 running 直到终态）
+  bool _isAsyncTool(String name) => name == downloadToolName;
+
+  /// 异步工具完成后的 agent 继续生成。
+  ///
+  /// 下载等后台任务终态后调用：触发一轮新的 agent 生成（fire-and-forget，
+  /// 不阻塞用户后续输入）——让 agent 能基于结果继续（如"下载完成，是否安装？"）。
+  /// 若用户正在输入/其他生成中（busy），跳过继续（用户下条消息会自然带上上下文）。
+  void _continueAfterAsyncTool(bool success, String message) {
+    // busy 时（用户正在生成/输入中）不打断，留给下一条用户消息自然衔接
+    if (_busy) return;
+    appLog.info('AgentService: 异步工具完成，触发 agent 继续 - $message');
+    unawaited(_runAgentContinuation(success, message));
+  }
+
+  /// 执行一轮"后台继续生成"：把异步工具结果作为续接指令注入 Genkit 上下文，
+  /// 复用一个内部生成回合（不加用户消息，模型依据结果继续回复）。
+  Future<void> _runAgentContinuation(bool success, String toolResult) async {
+    if (!_initialized || _busy) return;
+    _busy = true;
+    busy.value = true;
+    try {
+      // 注入"异步工具完成"续接指令到上下文（用 user 角色——所有 LLM API 均接受，
+      // 不依赖 Genkit 工具消息内部协议；内容明确告知模型应继续回复）
+      _messages.add(Message(
+        role: Role.user,
+        content: [
+          TextPart(
+            text: '（系统续接：上一个异步工具已结束。结果：$toolResult）'
+                ' 请基于此结果继续：若成功给出下一步建议（如是否安装），若失败说明原因与建议。',
+          ),
+        ],
+      ));
+      // 用新的 turnId，独立展示这一轮"完成 → 建议"的回复
+      _currentTurnId = 'turn-${DateTime.now().millisecondsSinceEpoch}';
+      _activeStreamMsg = AgentMessage(
+        isUser: false,
+        text: '',
+        turnId: _currentTurnId,
+      );
+      messages.add(_activeStreamMsg!);
+
+      final stream = _ai!.generateStream<dynamic, void>(
+        model: _getModelRef(_model!) as ModelRef<dynamic>,
+        messages: _messages,
+        toolNames: registeredToolNames.isNotEmpty ? registeredToolNames : null,
+        maxTurns: 6,
+      );
+      await for (final chunk in stream) {
+        if (_cancelRequested) break;
+        final t = chunk.text;
+        if (t.isNotEmpty) {
+          if (_activeStreamMsg == null) {
+            _activeStreamMsg = AgentMessage(
+              isUser: false,
+              text: '',
+              turnId: _currentTurnId,
+            );
+            messages.add(_activeStreamMsg!);
+          }
+          _activeStreamMsg?.text = (_activeStreamMsg?.text ?? '') + t;
+          messages.refresh();
+        }
+      }
+      final response = await stream.onResult;
+      _messages = List.of(response.messages ?? _messages);
+      final msg = _activeStreamMsg;
+      if (msg != null) {
+        if (msg.text.trim().isNotEmpty) {
+          msg.text = msg.text.trim();
+          messages.refresh();
+          _persistStreamMessage(msg);
+        } else {
+          messages.remove(msg);
+        }
+      }
+      _activeStreamMsg = null;
+    } catch (e) {
+      appLog.error('AgentService: 后台继续生成失败 - $e');
+    } finally {
+      _activeStreamMsg = null;
+      _busy = false;
+      busy.value = false;
+      _currentTurnId = null;
+      _cancelRequested = false;
     }
   }
 
@@ -1352,6 +1965,138 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
     messages.refresh();
   }
 
+  /// 更新当前执行中工具消息的阶段详情（step 进度：如"检查 1/N → 备份中 → 上传中"）。
+  ///
+  /// 供长任务工具（下载/更新检查/备份/WebDAV）内部多阶段调用：
+  /// 保持工具状态 running，仅更新 toolDetail（UI 显示当前阶段），
+  /// 不产生新的消息记录。工具结束时由 [_updateToolMessage] 定稿。
+  void _updateToolStep(String step) {
+    final msg = _currentToolMsg;
+    if (msg == null) return;
+    final idx = messages.indexWhere((e) => e.id == msg.id);
+    if (idx < 0) return;
+    final current = messages[idx];
+    current.toolDetail = step;
+    current.text = step;
+    messages.refresh();
+  }
+
+  /// 推送工具阶段通知（B2：退出页面后仍可见执行进度；页面内对话时消息卡已展示，跳过）
+  void _publishToolStepNotification(String title, String step) {
+    if (!_notifyOnlyWhenBackground) return;
+    try {
+      AgentNotificationService.instance.init();
+      AgentNotificationService.instance.onToolProgress(
+        title: 'AI 助手 · $title',
+        message: step,
+      );
+    } catch (e) {
+      appLog.error('AgentService: 工具阶段通知失败 - $e');
+    }
+  }
+
+  /// 推送工具终态通知（B2：退出页面后仍可见结果；页面内对话时消息卡已展示，跳过）
+  void _publishToolDoneNotification({
+    required bool success,
+    required String toolLabel,
+    required String message,
+  }) {
+    if (!_notifyOnlyWhenBackground) return;
+    try {
+      AgentNotificationService.instance.init();
+      AgentNotificationService.instance.onToolDone(
+        success: success,
+        message: '$toolLabel · ${message.length > 80 ? '${message.substring(0, 80)}…' : message}',
+      );
+    } catch (e) {
+      appLog.error('AgentService: 工具终态通知失败 - $e');
+    }
+  }
+
+  /// B5：AI 助手页是否在前台（后台执行时敏感操作需确认）
+  /// AI 页是首页 tab 的内嵌子页（home PageView index 2）——不能只看 Get.currentRoute
+  bool _isAgentPageVisible() {
+    try {
+      if (Get.isRegistered<HomeLogic>()) {
+        return Get.find<HomeLogic>().state.index.value == 2;
+      }
+      return Get.currentRoute?.contains('/GStore/agent') ?? true;
+    } catch (_) {
+      return true; // 无法判断时视为可见（避免误拦截）
+    }
+  }
+
+  /// 通知门控：仅当用户**不在** AI 助手页时才发通知。
+  /// 页面内对话时消息卡已实时展示进度/结果，通知会重复打扰；
+  /// 用户离开页面（后台执行）才需通知兜底汇报。
+  bool get _notifyOnlyWhenBackground => !_isAgentPageVisible();
+
+  /// B5：敏感工具判定——破坏性/不可逆操作，必须经 confirmAction 确认
+  /// 后台执行时未经确认直接调用将被安全拦截
+  bool _isSensitiveTool(String name, Map<String, dynamic> params) {
+    if (name == installedAppsToolName) {
+      final action = params['action']?.toString() ?? '';
+      return action == 'uninstall' ||
+          action == 'clearData' ||
+          action == 'clearCache' ||
+          action == 'forceStop';
+    }
+    if (name == backupToolName) {
+      return (params['action']?.toString() ?? '') == 'import'; // 恢复会覆盖数据
+    }
+    if (name == manageDownloadToolName) {
+      final action = params['action']?.toString() ?? '';
+      return action == 'clearAll' || action == 'cleanCompleted';
+    }
+    // 缓存管理会删除下载文件/缓存（不可逆），需页面可见 + 用户多选确认
+    if (name == cacheManageToolName) {
+      return true;
+    }
+    return false;
+  }
+
+  /// 工具名 → 中文标签（通知文案用）
+  String _toolLabelForName(String name) {
+    switch (name) {
+      case searchToolName:
+        return '搜索应用';
+      case downloadToolName:
+        return '下载应用';
+      case installToolName:
+        return '安装应用';
+      case manageAppToolName:
+        return '管理我的应用';
+      case channelAppToolName:
+        return '渠道应用管理';
+      case appInfoToolName:
+        return '应用详情';
+      case updateAppsToolName:
+        return '检查更新';
+      case backupToolName:
+        return '备份恢复';
+      case manageDownloadToolName:
+        return '下载管理';
+      case themeToolName:
+        return '主题控制';
+      case fdroidRepoToolName:
+        return 'F-Droid 仓库';
+      case webdavSyncToolName:
+        return 'WebDAV 云备份';
+      case installedAppsToolName:
+        return '已安装应用';
+      case configManagerToolName:
+        return '配置管理';
+      case confirmToolName:
+        return '确认操作';
+      case cacheManageToolName:
+        return '缓存管理';
+      case runJsChannelToolName:
+        return '脚本渠道执行';
+      default:
+        return name;
+    }
+  }
+
   /// 工具名 → AgentToolType（用于工具消息图标/标签）
   AgentToolType _toolTypeForName(String name) {
     switch (name) {
@@ -1382,6 +2127,8 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
       case installedAppsToolName:
         return AgentToolType.installed;
       case configManagerToolName:
+        return AgentToolType.config;
+      case runJsChannelToolName:
         return AgentToolType.config;
       default:
         return AgentToolType.manageApp;
@@ -1414,6 +2161,11 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
           ActionParameter.string(name: 'name', description: '应用名'),
           ActionParameter.string(name: 'version', description: '版本号'),
           ActionParameter.string(name: 'vivoId', description: 'vivo 应用 ID（vivo 渠道必需）'),
+          ActionParameter.boolean(
+            name: 'installAfterDownload',
+            description:
+                '是否下载完成后自动安装（用户明确要求"下载完就安装"时传 true；仅说"下载"则不传或传 false）',
+          ),
         ],
         handler: (params) async {
           final appId = params['appId']?.toString() ?? '';
@@ -1422,14 +2174,35 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
           final name = params['name']?.toString() ?? '';
           final version = params['version']?.toString() ?? 'unknown';
           final vivoId = params['vivoId']?.toString();
+          final installAfterDownload =
+              params['installAfterDownload'] == true ||
+              params['installAfterDownload'] == 'true';
+          final asyncTask = _currentAsyncTask; // 同步段捕获（onFinished 异步触发时该字段已清空）
+          final toolMsg = _currentToolMsg; // 同步段捕获（进度回调触发时该字段已被 finally 清空）
           final result = await _downloadApp(
             appId, channel, url, name, version,
             vivoId: vivoId,
+            installAfterDownload: installAfterDownload,
             onStatus: (status) {
               _currentDownloadStatus = status;
+              // 实时推送下载状态到工具消息（进度条/百分比 live 更新）。
+              // 必须用同步段捕获的 toolMsg 引用——下载进度异步触发时
+              // _currentToolMsg 已被 _runAction finally 置 null。
+              if (toolMsg != null) {
+                _updateToolMessage(toolMsg, downloadStatus: status);
+              }
+            },
+            onFinished: (success, message) {
+              _currentDownloadStatus = null;
+              if (asyncTask != null) {
+                _finalizeAsyncTask(
+                  task: asyncTask,
+                  success: success,
+                  message: message,
+                );
+              }
             },
           );
-          _currentDownloadStatus = null;
           return _successAction(result);
         },
       ),
@@ -1614,6 +2387,23 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
           return _successAction(result);
         },
       ),
+      AiAction(
+        name: runJsChannelToolName,
+        description: '执行自定义脚本渠道（js_xxx）暴露的方法（getConfig/versionOptions/switchVersion 或脚本自定义方法）。',
+        parameters: [
+          ActionParameter.string(name: 'channel', description: '脚本渠道 key（如 js_pingan）', required: true),
+          ActionParameter.string(name: 'method', description: '脚本 main 分发的函数名', required: true),
+          ActionParameter.string(name: 'params', description: '可选参数 map（JSON 对象）'),
+        ],
+        handler: (params) async {
+          final result = await _runJsChannel(
+            params['channel']?.toString() ?? '',
+            params['method']?.toString() ?? '',
+            params['params'],
+          );
+          return _successAction(result);
+        },
+      ),
       // 模块化工具（热插拔）：生成 _agentTools 中未被硬编码覆盖的工具
       ..._extraActions(),
     ];
@@ -1637,6 +2427,7 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
       installedAppsToolName,
       confirmToolName,
       configManagerToolName,
+      runJsChannelToolName,
     };
     final result = <AiAction>[];
     for (final tool in _agentTools) {
@@ -1720,25 +2511,23 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
   /// 若传入 URL 有效则直接下载；否则通过渠道详情获取真实下载地址
   /// [vivoId] vivo 渠道专用：vivo 应用在 vivo 应用市场的 ID（详情接口必需）
   /// [onStatus] 下载状态回调（用于 UI 显示进度）
+  /// [installAfterDownload] 是否在下载完成后自动安装（默认 false，仅下载不安装）
   Future<String> _downloadApp(String appId, String channel, String url,
       String name, String version,
-      {String? vivoId, void Function(DownloadTask)? onStatus}) async {
+      {String? vivoId,
+      bool installAfterDownload = false,
+      void Function(DownloadTask)? onStatus,
+      void Function(bool success, String message)? onFinished}) async {
     if (appId.isEmpty) return '下载参数不完整（缺少 appId）';
 
     try {
-      // 解析渠道类型
-      final channelType = ChannelType.fromCode(channel);
-      if (channelType == null) {
-        return '未知渠道: $channel（支持: github/fdroid/vivo/http/local_db）';
-      }
-
-      // 下载模块下线 → 注册表取不到服务，降级提示不抛
+      // 下载模块下线 → 注册表取不到服务，降级提示不抛（先于渠道解析，保持降级语义）
       final service = ModuleManager.instance.get<IDownloadService>();
       if (service == null) {
         return '下载模块未启用';
       }
 
-      // 方式1：已有完整 URL，直接下载
+      // 方式1：已有完整 URL → 直接下载（只需下载服务，不依赖渠道注册）
       if (url.isNotEmpty && (url.startsWith('http://') || url.startsWith('https://'))) {
         final task = await service.download(
           appId,
@@ -1746,23 +2535,26 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
           version,
           url,
           name,
+          installAfterDownload: installAfterDownload,
         );
-        onStatus?.call(task);
+        _watchDownloadProgress(service, task, onStatus, onFinished);
         return '已开始下载 $name，保存路径: ${task.filePath}';
       }
 
-      // 方式2：通过渠道详情获取真实下载地址
-      final manager = ChannelManager.instance;
-      final channelInst = manager.getChannel(channelType);
+      // 解析渠道：优先枚举渠道 type.code，其次动态脚本渠道 channelKey（js_xxx）。
+      // 脚本渠道不在 ChannelType 枚举内，必须用 _resolveChannel 才能解析。
+      final channelInst = _resolveChannel(channel);
       if (channelInst == null) {
-        return '渠道 $channel 不可用';
+        return '未知渠道: $channel（支持: github/fdroid/vivo/http/local_db，及自定义脚本渠道 js_xxx）';
       }
 
+      // 方式2：通过渠道详情获取真实下载地址
       // vivo 渠道需使用 vivoId 查询详情
       var detailAppId = appId;
-      if (channelType == ChannelType.vivo && vivoId != null && vivoId.isNotEmpty) {
+      final isVivo = channelInst.info.type == ChannelType.vivo;
+      if (isVivo && vivoId != null && vivoId.isNotEmpty) {
         detailAppId = vivoId;
-      } else if (channelType == ChannelType.vivo) {
+      } else if (isVivo) {
         // 无 vivoId：尝试通过搜索获取（搜索结果含 vivoId）
         detailAppId = await _resolveVivoId(appId);
         if (detailAppId.isEmpty) {
@@ -1816,6 +2608,7 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
           download.version ?? version,
           download.url,
           download.name,
+          installAfterDownload: installAfterDownload,
         );
       } else {
         task = await service.downloadWithContext(
@@ -1824,13 +2617,179 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
           name,
           download.version ?? version,
           download.name,
+          installAfterDownload: installAfterDownload,
         );
       }
 
-      onStatus?.call(task);
+      _watchDownloadProgress(service, task, onStatus, onFinished);
       return '已开始下载 $name，保存路径: ${task.filePath}';
     } catch (e) {
       return '下载失败: $e';
+    }
+  }
+
+  /// 订阅下载任务流，实时推送进度（进度条/百分比/终态）。
+  ///
+  /// [IDownloadService.download] 只创建排队任务（status=queued）并异步启动，
+  /// 立即返回——需订阅 [IDownloadService.watch] 才能拿到真实进度与终态。
+  /// 每次状态变化回调 [onStatus]（节流由引擎/仓库层保证），终态后自动取消订阅。
+  /// [onFinished] 终态回调（success, message）——供异步任务等待：下载完成/失败时
+  /// 更新消息卡并触发 agent 继续生成（不阻塞本轮生成流）。
+  /// 附带下载进度通知汇报（退出 AI 页面后仍可见，B2）。
+  void _watchDownloadProgress(
+    IDownloadService service,
+    DownloadTask task,
+    void Function(DownloadTask)? onStatus,
+    void Function(bool success, String message)? onFinished,
+  ) {
+    final id = task.id;
+    if (id == null) {
+      onStatus?.call(task);
+      return;
+    }
+
+    // 先推送一次当前状态（可能已是终态：极快完成/缓存命中）
+    onStatus?.call(task);
+    _publishDownloadNotification(task);
+
+    // 订阅流：progress/merging/completed/failed 均推送，终态后取消
+    StreamSubscription<DownloadTask>? sub;
+    sub = service.watch(id).listen((da) {
+      if (_cancelRequested) {
+        // 用户停止：取消下载并结束订阅
+        try {
+          service.cancel(id);
+        } catch (_) {}
+        sub?.cancel();
+        _downloadWatchSubs.remove(id);
+        return;
+      }
+      onStatus?.call(da);
+      _publishDownloadNotification(da);
+      _currentDownloadStatus = da;
+      final terminal = da.status == DownloadStatusEnum.completed ||
+          da.status == DownloadStatusEnum.failed ||
+          da.status == DownloadStatusEnum.cancelled ||
+          da.status == DownloadStatusEnum.paused;
+      if (terminal) {
+        sub?.cancel();
+        _downloadWatchSubs.remove(id);
+        _currentDownloadStatus = null;
+        // 终态通知（成功/失败）
+        _publishDownloadTerminal(da);
+        // 异步任务完成回调：驱动 agent 继续
+        final success = da.status == DownloadStatusEnum.completed;
+        onFinished?.call(
+          success,
+          success
+              ? '${da.appName} 已下载完成，保存路径: ${da.filePath}'
+              : '${da.appName} 下载失败：${da.error ?? '未知原因'}',
+        );
+      }
+    });
+
+    // 竞态兜底：任务在订阅前已终态（watch 不再推送）时，读一次当前状态收尾
+    unawaited(service.getTask(id).then((current) {
+      if (current != null) {
+        final terminal = current.status == DownloadStatusEnum.completed ||
+            current.status == DownloadStatusEnum.failed ||
+            current.status == DownloadStatusEnum.cancelled ||
+            current.status == DownloadStatusEnum.paused;
+        if (terminal) {
+          onStatus?.call(current);
+          _publishDownloadTerminal(current);
+          sub?.cancel();
+          _downloadWatchSubs.remove(id);
+          _currentDownloadStatus = null;
+          final success = current.status == DownloadStatusEnum.completed;
+          onFinished?.call(
+            success,
+            success
+                ? '${current.appName} 已下载完成，保存路径: ${current.filePath}'
+                : '${current.appName} 下载失败：${current.error ?? '未知原因'}',
+          );
+        }
+      }
+    }));
+
+    // 保留引用防止被 GC；终态后由回调 cancel
+    _downloadWatchSubs[id] = sub;
+  }
+
+  /// 推送下载进度通知（B2：退出页面后仍可见；页面内对话时消息卡进度条已实时展示，跳过）
+  void _publishDownloadNotification(DownloadTask task) {
+    if (!_notifyOnlyWhenBackground) return;
+    try {
+      AgentNotificationService.instance.init();
+      final percent =
+          task.total > 0 ? (task.received / task.total * 100).round() : 0;
+      AgentNotificationService.instance.onToolProgress(
+        title: 'AI 助手 · 下载中',
+        message: '${task.appName} · $percent%',
+        progress: task.received,
+        maxProgress: task.total,
+      );
+    } catch (e) {
+      appLog.error('AgentService: 下载进度通知失败 - $e');
+    }
+  }
+
+  /// 推送下载终态通知（成功/失败；页面内对话时消息卡已展示，跳过）
+  void _publishDownloadTerminal(DownloadTask task) {
+    if (!_notifyOnlyWhenBackground) return;
+    try {
+      AgentNotificationService.instance.init();
+      final success = task.status == DownloadStatusEnum.completed;
+      AgentNotificationService.instance.onToolDone(
+        success: success,
+        message: success
+            ? '${task.appName} 已下载完成'
+            : '${task.appName} 下载失败：${task.error ?? '未知原因'}',
+      );
+    } catch (e) {
+      appLog.error('AgentService: 下载终态通知失败 - $e');
+    }
+  }
+
+  /// 解析渠道实例：枚举渠道 type.code 优先，其次动态脚本渠道 channelKey（js_xxx）。
+  /// 脚本渠道不在 ChannelType 枚举内，统一走 getChannelByCode 才能命中。
+  IChannel? _resolveChannel(String code) {
+    if (code.isEmpty) return null;
+    final manager = ChannelManager.instance;
+    final type = ChannelType.fromCode(code);
+    if (type != null) {
+      final ch = manager.getChannel(type);
+      if (ch != null) return ch;
+    }
+    return manager.getChannelByCode(code);
+  }
+
+  /// 执行脚本渠道（js_xxx）的自定义方法——Agent 渠道包 JS 执行能力。
+  ///
+  /// [channel] 脚本渠道 channelKey（如 js_pingan）；
+  /// [method] 脚本 main 分发的函数名（如 getConfig/versionOptions/自定义方法）；
+  /// [params] 透传给脚本的参数 map。
+  /// 依赖 JsChannel.callMethod 入口；脚本未实现/失败 → 返回 null 提示降级。
+  Future<String> _runJsChannel(String channel, String method, dynamic params) async {
+    if (channel.isEmpty) return '执行脚本渠道方法需要 channel（如 js_pingan）';
+    if (method.isEmpty) return '执行脚本渠道方法需要 method';
+    try {
+      final inst = _resolveChannel(channel);
+      if (inst is! JsChannel) {
+        return '渠道 $channel 不是脚本渠道（js_xxx），无法执行脚本方法';
+      }
+      final args = params is Map
+          ? params.map((k, v) => MapEntry(k.toString(), v))
+          : null;
+      _updateToolStep('执行脚本方法 $method…');
+      final result = await inst.callMethod(method, args);
+      _updateToolStep('脚本方法 $method 已返回');
+      if (result == null) {
+        return '脚本 $channel 未实现方法 $method 或执行失败（返回 null）';
+      }
+      return '脚本 $channel.$method 返回：\n${result.toString()}';
+    } catch (e) {
+      return '执行脚本方法失败: $e';
     }
   }
 
@@ -1953,11 +2912,11 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
   ) async {
     if (channel.isEmpty) return '渠道管理需要指定 channel';
     try {
-      final channelType = ChannelType.fromCode(channel);
-      if (channelType == null) return '未知渠道: $channel';
       final manager = ChannelManager.instance;
-      final inst = manager.getChannel(channelType);
-      if (inst == null) return '渠道 $channel 不可用';
+      final inst = _resolveChannel(channel);
+      if (inst == null) return '未知渠道: $channel';
+      final channelLabel =
+          ChannelType.fromCode(channel)?.description ?? '脚本渠道 $channel';
 
       switch (action) {
         case 'list':
@@ -1966,12 +2925,12 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
             return '获取渠道应用失败: ${result.error ?? '未知错误'}';
           }
           if (result.data!.isEmpty) {
-            return '${channelType.description} 渠道暂无已添加应用';
+            return '$channelLabel 渠道暂无已添加应用';
           }
           final lines = result.data!
               .map((a) => '• ${a.name} (${a.appId})')
               .toList();
-          return '${channelType.description} 渠道应用共 ${result.data!.length} 个：\n${lines.join('\n')}';
+          return '$channelLabel 渠道应用共 ${result.data!.length} 个：\n${lines.join('\n')}';
 
         case 'add':
           if (appId.isEmpty) return '添加渠道应用需要 appId';
@@ -1986,14 +2945,14 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
           );
           final r = await inst.addApp(appInfo);
           return r.success
-              ? '已添加 ${name.isEmpty ? appId : name} 到${channelType.description}渠道'
+              ? '已添加 ${name.isEmpty ? appId : name} 到$channelLabel渠道'
               : '添加失败: ${r.error ?? '未知错误'}';
 
         case 'remove':
           if (appId.isEmpty) return '移除渠道应用需要 appId';
           final r = await inst.removeApp(appId);
           return r.success
-              ? '已从${channelType.description}渠道移除 $appId'
+              ? '已从$channelLabel渠道移除 $appId'
               : '移除失败: ${r.error ?? '未知错误'}';
 
         default:
@@ -2008,27 +2967,26 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
   Future<String> _getAppInfo(String appId, String channel) async {
     if (appId.isEmpty) return '需要 appId';
     try {
-      final channelType = channel.isNotEmpty ? ChannelType.fromCode(channel) : null;
       final manager = ChannelManager.instance;
-      if (channelType == null) {
+      final inst = channel.isNotEmpty ? _resolveChannel(channel) : null;
+      if (inst == null) {
         // 未指定渠道，尝试从所有渠道获取
         for (final ch in ChannelType.values) {
-          final inst = manager.getChannel(ch);
-          if (inst == null) continue;
-          final r = await inst.getAppInfo(appId);
+          final c = manager.getChannel(ch);
+          if (c == null) continue;
+          final r = await c.getAppInfo(appId);
           if (r.success && r.data != null) {
             return _formatAppInfo(r.data!, ch);
           }
         }
         return '未找到应用 $appId';
       }
-      final inst = manager.getChannel(channelType);
-      if (inst == null) return '渠道 $channel 不可用';
       final r = await inst.getAppInfo(appId, forceRefresh: true);
       if (!r.success || r.data == null) {
         return '获取应用信息失败: ${r.error ?? '未知错误'}';
       }
-      return _formatAppInfo(r.data!, channelType);
+      final type = inst.info.type;
+      return _formatAppInfo(r.data!, type);
     } catch (e) {
       return '获取应用详情失败: $e';
     }
@@ -2054,10 +3012,8 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
 
       // 指定应用时只查该应用（渠道直查或读缓存，不污染全量）
       if (appId.isNotEmpty) {
-        final channelType = channel.isNotEmpty
-            ? ChannelType.fromCode(channel)
-            : null;
-        if (channelType == null) {
+        _updateToolStep('检查 $appId 更新…');
+        if (channel.isEmpty) {
           return '检查更新需要指定渠道 channel';
         }
         final info = await manager.checkApp(appId, channelCode: channel);
@@ -2069,8 +3025,10 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
       }
 
       // 检查所有已添加应用：触发懒检测（锁+时间窗防重），然后读共享结果
+      _updateToolStep('正在检查全部已添加应用的更新…');
       await manager.ensureChecked();
       final updates = manager.updatableApps;
+      _updateToolStep('检查完成：发现 ${updates.length} 个可更新');
       if (updates.isEmpty) {
         return '已检查所有应用，均是最新版本。';
       }
@@ -2093,11 +3051,27 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
       }
       switch (action) {
         case 'export':
-          final result = await service.exportToCompressedFile();
-          return '备份已导出: ${result ?? '未知路径'}';
+          // 统一 tar.gz 格式：生成压缩包字节并写入默认备份文件
+          _updateToolStep('正在导出备份数据…');
+          final bytes = await service.exportCompressedBackup();
+          if (bytes.isEmpty) return '备份导出失败：生成字节为空';
+          _updateToolStep('备份数据生成完成，写入文件…');
+          final directory = await getApplicationDocumentsDirectory();
+          final backupDir = Directory('${directory.path}/backups');
+          if (!await backupDir.exists()) {
+            await backupDir.create(recursive: true);
+          }
+          final timestamp =
+              DateTime.now().toIso8601String().replaceAll(':', '-').split('.')[0];
+          final target = '${backupDir.path}/gstore_backup_$timestamp.tar.gz';
+          await File(target).writeAsBytes(bytes);
+          _updateToolStep('备份完成');
+          return '备份已导出: $target';
         case 'import':
           if (filePath.isEmpty) return '导入需要 filePath';
+          _updateToolStep('正在从备份恢复…');
           await service.importFromFile(filePath);
+          _updateToolStep('恢复完成');
           return '已从 $filePath 恢复';
         default:
           return '未知操作: $action（支持 export/import）';
@@ -2359,6 +3333,7 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
 
       switch (action) {
         case 'list':
+          _updateToolStep('正在读取 WebDAV 网盘备份列表…');
           final client = WebDavClient(config!);
           final files = await client.listFiles(
             config.backupPath,
@@ -2373,10 +3348,13 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
               .map((f) =>
                   '• ${f.name}  (${f.formattedSize}, ${f.modified.toLocal().toString().substring(0, 16)})')
               .toList();
+          _updateToolStep('读取完成：${files.length} 个备份');
           return 'WebDAV 网盘共有 ${files.length} 个备份（显示前 ${lines.length} 个）：\n${lines.join('\n')}';
 
         case 'upload':
+          _updateToolStep('正在上传备份到 WebDAV…');
           await service.uploadToWebDav(config: config!, compressed: true);
+          _updateToolStep('上传完成');
           return '已备份到 WebDAV 网盘';
 
         case 'download':
@@ -2505,6 +3483,7 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
 
     if (_busy) return;
     _busy = true;
+    busy.value = true;
 
     // 开启新回合（该轮的用户/助手/工具消息共享 turnId）
     _currentTurnId = 'turn-${DateTime.now().millisecondsSinceEpoch}';
@@ -2611,6 +3590,7 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
     } finally {
       _activeStreamMsg = null;
       _busy = false;
+      busy.value = false;
       _currentTurnId = null;
       _cancelRequested = false;
     }

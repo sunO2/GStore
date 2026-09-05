@@ -44,6 +44,10 @@ app.*.map.json
 
 .codegpt
 
+# AI 辅助工具工作目录（会话/草稿/证据，不进版本库）
+.commandcode/
+.omo/
+
 # Rust
 rust/fdroid_repo/target/
 

@@ -394,5 +394,111 @@ void main() {
           reason: '引擎 progress 的 total=1 不得覆盖调用方提供的 downloadSize');
       expect(done.received, done.total);
     });
+
+    group('installAfterDownload 完成路径门控', () {
+      test('默认 installAfterDownload=true：下载完成后回调安装', () async {
+        final repo = _MemoryRepository();
+        final engine = _ScriptedEngine();
+        final installedPaths = <String>[];
+        final manager = DownloadManager(
+          engine: engine,
+          repository: repo,
+          onApkReady: (p) => installedPaths.add(p),
+        );
+
+        final initial = await manager.download(
+          'com.install',
+          'InstallApp',
+          '1.0',
+          'https://example.com/ins.apk',
+          'a.apk',
+          downloadSize: 200,
+          saveFileName: await filePathFor('install'),
+        );
+
+        await _waitFor(manager, repo, initial.id!, (t) => t.isCompleted);
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+
+        expect(installedPaths.length, 1,
+            reason: '默认 installAfterDownload=true 应触发 onApkReady');
+        expect(installedPaths.single, isNotEmpty);
+        expect(File(installedPaths.single).existsSync(), isTrue,
+            reason: '回调应携带真实下载完成的 APK 路径');
+      });
+
+      test('installAfterDownload=false：下载完成但不回调安装', () async {
+        final repo = _MemoryRepository();
+        final engine = _ScriptedEngine();
+        final installedPaths = <String>[];
+        final manager = DownloadManager(
+          engine: engine,
+          repository: repo,
+          onApkReady: (p) => installedPaths.add(p),
+        );
+
+        final initial = await manager.download(
+          'com.noinstall',
+          'NoInstallApp',
+          '1.0',
+          'https://example.com/noins.apk',
+          'a.apk',
+          downloadSize: 200,
+          saveFileName: await filePathFor('noinstall'),
+          installAfterDownload: false,
+        );
+
+        await _waitFor(manager, repo, initial.id!, (t) => t.isCompleted);
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+
+        expect(installedPaths, isEmpty,
+            reason: 'installAfterDownload=false 不得触发 onApkReady');
+      });
+
+      test('排队任务保持各自 installAfterDownload 参数', () async {
+        final repo = _MemoryRepository();
+        final engine =
+            _ScriptedEngine(pendingTimer: const Duration(milliseconds: 2));
+        final installedPaths = <String>[];
+        final manager = DownloadManager(
+          engine: engine,
+          repository: repo,
+          maxConcurrent: 1,
+          onApkReady: (p) => installedPaths.add(p),
+        );
+
+        // 第一个任务：默认 true，立即启动并占用唯一并发槽。
+        final first = await manager.download(
+          'com.qa',
+          'QueueA',
+          '1.0',
+          'https://example.com/qa.apk',
+          'a.apk',
+          downloadSize: 200,
+          saveFileName: await filePathFor('qa'),
+        );
+        // 第二个任务：显式 false，进入排队。
+        final second = await manager.download(
+          'com.qb',
+          'QueueB',
+          '1.0',
+          'https://example.com/qb.apk',
+          'a.apk',
+          downloadSize: 200,
+          saveFileName: await filePathFor('qb'),
+          installAfterDownload: false,
+        );
+
+        for (final t in [first, second]) {
+          await _waitFor(manager, repo, t.id!, (task) => task.isCompleted);
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+
+        expect(engine.maxActive, 1,
+            reason: 'maxConcurrent=1 时第二个任务必须排队');
+        expect(installedPaths.length, 1,
+            reason: '只有默认 true 的第一个任务触发安装，排队中的 false 任务完成也不触发');
+        expect(installedPaths.single, first.filePath);
+      });
+    });
   });
 }

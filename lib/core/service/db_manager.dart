@@ -212,7 +212,8 @@ class DbManager extends GetxService {
           final dbDownloadPath = '${appDir.path}/gstore/apps.db.download';
           await File(dbDownloadPath).parent.create(recursive: true);
           debugPrint('DbManager: 数据库下载临时文件: $dbDownloadPath');
-          // download() 会阻塞到下载完成返回，返回的 task 已包含最终状态
+          // download() 只创建排队任务（status=queued）并异步启动，立即返回；
+          // 需再等待任务进入终态（completed/failed）才能真正判断成败。
           final service = ModuleManager.instance.get<IDownloadService>();
           if (service == null) {
             appLog.error('DbManager: 下载服务未启用');
@@ -227,7 +228,9 @@ class DbManager extends GetxService {
               downloadSize: assets["size"],
               saveFileName: dbDownloadPath,
               forceDownload: true); // 强制重新下载，确保数据库更新
-          appLog.info('DbManager: 下载完成，状态: ${task.status}, 保存路径: ${task.filePath}');
+          appLog.info('DbManager: 下载任务已创建，状态: ${task.status}, 保存路径: ${task.filePath}');
+          task = await _awaitDownloadTerminal(service, task);
+          appLog.info('DbManager: 下载结束，最终状态: ${task.status}');
           return task;
         },
         loadingWidget: Center(
@@ -362,6 +365,49 @@ class DbManager extends GetxService {
             : DbUpdateResult.error;
       });
   }
+
+  /// 订阅下载任务流并等待进入终止态（完成/失败/取消/暂停）。
+  ///
+  /// [IDownloadService.download] 只创建排队任务（status=queued）并异步启动下载，
+  /// 立即返回——不能以返回对象的状态判断成败。需订阅 [IDownloadService.watch]
+  /// 等待终态（与更新页 UpdateLogic._awaitDownloadTerminal 同范式）。
+  ///
+  /// 带超时护栏：任务若长时间不推进（如并发占满/引擎异常卡死），
+  /// 超时后返回当前非终态任务，由调用方按失败处理（保留原数据库），
+  /// 避免加载遮罩永久卡住用户。
+  Future<DownloadTask> _awaitDownloadTerminal(
+    IDownloadService service,
+    DownloadTask task,
+  ) async {
+    final id = task.id;
+    if (id == null) return task;
+    final completer = Completer<DownloadTask>();
+    StreamSubscription<DownloadTask>? sub;
+    sub = service.watch(id).listen((da) {
+      if (_isTerminal(da.status) && !completer.isCompleted) {
+        completer.complete(da);
+      }
+    });
+    // 竞态兜底：任务在订阅前已终止（极快完成/已有终态记录）时
+    // watch 不再推送，直接读取当前状态终结等待
+    final current = await service.getTask(id);
+    if (current != null &&
+        _isTerminal(current.status) &&
+        !completer.isCompleted) {
+      completer.complete(current);
+    }
+    final done = await completer.future
+        .timeout(const Duration(minutes: 5), onTimeout: () => task);
+    await sub.cancel();
+    return done;
+  }
+
+  /// 是否为下载终止态
+  bool _isTerminal(DownloadStatusEnum status) =>
+      status == DownloadStatusEnum.completed ||
+      status == DownloadStatusEnum.failed ||
+      status == DownloadStatusEnum.cancelled ||
+      status == DownloadStatusEnum.paused;
 }
 
 extension DBRepositoryExtension on String {

@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:dynamic_color/dynamic_color.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:gstore/core/theme/theme_utils.dart';
 import 'package:gstore/core/theme/theme_controller.dart';
 import 'package:gstore/core/theme/theme_data_builder.dart';
@@ -175,6 +177,12 @@ main() async {
   await ConfigInitializer.initialize();
   await registerService();
 
+  // 系统"管理空间"入口（ManageSpaceActivity）：Android 系统设置 →
+  // 应用 → GStore → 存储 → 管理空间。中转 Activity 会复用 MainActivity
+  // 并置位一次性请求标记，此处消费（冷启动）并交由 _ManageSpaceRouter
+  // 在首帧后跳转缓存管理页（返回键回首页）；后台恢复场景由 Router 监听处理。
+  _ManageSpaceRouterState.coldHit = await _consumeManageSpaceEntry();
+
   runApp(DynamicColorBuilder(builder: (light, dark) {
     return Obx(() {
       // theme 模块关闭时 Get 未注册 → 兜底创建默认 ThemeController（共享实例防主题分裂；
@@ -182,36 +190,131 @@ main() async {
       final controller = Get.isRegistered<ThemeController>()
           ? Get.find<ThemeController>()
           : Get.put(ThemeController());
-      return GetMaterialApp(
-        // AppDialogs Snackbar 通道：ScaffoldMessenger 优先于 GetX overlay
-        // （Get.snackbar 与新版 Flutter overlay 兼容问题导致真机提示静默不显示）
-        scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
-        builder: (context, child) {
-          configStatusBar();
-          return Material(
-            child: SafeArea(
-              top: false,
-              bottom: false,
-              child: child!,
-            ),
-          );
-        },
-        initialRoute: AppRoute.home,
-        getPages: AppRoute.pages,
-        // 返回首页时重置键盘焦点（见 HomeFocusResetObserver）
-        navigatorObservers: [HomeFocusResetObserver()],
-        themeMode: controller.themeModeValue,
-        theme: ThemeDataBuilder.buildLightTheme(
-          light,
-          config: controller.themeConfig,
-        ),
-        darkTheme: ThemeDataBuilder.buildDarkTheme(
-          dark,
-          config: controller.themeConfig,
+      return _ManageSpaceRouter(
+        child: GetMaterialApp(
+          // AppDialogs Snackbar 通道：ScaffoldMessenger 优先于 GetX overlay
+          // （Get.snackbar 与新版 Flutter overlay 兼容问题导致真机提示静默不显示）
+          scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
+          builder: (context, child) {
+            configStatusBar();
+            return Material(
+              child: SafeArea(
+                top: false,
+                bottom: false,
+                child: child!,
+              ),
+            );
+          },
+          initialRoute: AppRoute.home,
+          getPages: AppRoute.pages,
+          // 返回首页时重置键盘焦点（见 HomeFocusResetObserver）
+          navigatorObservers: [HomeFocusResetObserver()],
+          themeMode: controller.themeModeValue,
+          theme: ThemeDataBuilder.buildLightTheme(
+            light,
+            config: controller.themeConfig,
+          ),
+          darkTheme: ThemeDataBuilder.buildDarkTheme(
+            dark,
+            config: controller.themeConfig,
+          ),
         ),
       );
     });
   }));
+}
+
+/// 消费"管理空间"入口请求。
+///
+/// MainActivity 冷启动（onCreate）或热启动（onNewIntent）收到
+/// ManageSpaceActivity 转发的请求后置位一次性标记，此处经 MethodChannel
+/// `consumeManageSpace` 查询并消费。非 Android / 普通启动 → false，零开销。
+Future<bool> _consumeManageSpaceEntry() async {
+  if (!Platform.isAndroid) return false;
+  try {
+    const channel = MethodChannel('gstore/manage_space');
+    final hit = await channel.invokeMethod<bool>('consumeManageSpace');
+    if (hit == true) {
+      appLog.info('启动入口：系统"管理空间"请求已消费，将跳转缓存管理页');
+    }
+    return hit == true;
+  } catch (e) {
+    return false;
+  }
+}
+
+/// 管理空间入口路由封装。
+///
+/// 冷启动时 main() 已在 runApp 前消费过一次请求（[coldManageSpace] 为 true），
+/// 此处等首帧渲染完成后 push 缓存管理页（在首页之上，返回键回首页）；
+/// 应用已在后台运行时 main() 不会重跑，原生 onNewIntent 置位发生在引擎存活期，
+/// 故监听 AppLifecycleState.resumed 再次消费——回到前台即跳转。
+class _ManageSpaceRouter extends StatefulWidget {
+  const _ManageSpaceRouter({required this.child});
+
+  final Widget child;
+
+  @override
+  State<_ManageSpaceRouter> createState() => _ManageSpaceRouterState();
+}
+
+class _ManageSpaceRouterState extends State<_ManageSpaceRouter>
+    with WidgetsBindingObserver {
+  /// 冷启动消费结果（main() 在 runApp 前写入）。
+  static bool coldHit = false;
+
+  /// 首帧跳转是否已执行（防重复 push）。
+  bool _handledCold = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    // 冷启动：首帧后跳转（此时 GetMaterialApp 路由已就绪）
+    if (coldHit) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || _handledCold) return;
+        _handledCold = true;
+        _openCacheManage();
+      });
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // 热启动恢复：应用已在后台被 ManageSpaceActivity 带回前台，onNewIntent
+    // 已在原生置位 → 回到 resumed 时消费并跳转
+    if (state == AppLifecycleState.resumed) {
+      _consumeOnResume();
+    }
+  }
+
+  Future<void> _consumeOnResume() async {
+    if (!Platform.isAndroid) return;
+    try {
+      const channel = MethodChannel('gstore/manage_space');
+      final hit = await channel.invokeMethod<bool>('consumeManageSpace');
+      if (hit == true && mounted) {
+        appLog.info('后台恢复：消费系统"管理空间"请求，跳转缓存管理页');
+        _openCacheManage();
+      }
+    } catch (_) {
+      // 非管理空间通道（普通恢复）→ 忽略
+    }
+  }
+
+  void _openCacheManage() {
+    Get.toNamed(AppRoute.cacheManage);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
 }
 
 /// flutter_gen_ai_chat_ui 库内部调试日志的关键词

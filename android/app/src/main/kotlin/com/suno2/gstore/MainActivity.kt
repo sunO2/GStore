@@ -8,16 +8,47 @@ import android.graphics.Canvas
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.net.Uri
+import android.os.Bundle
 import android.provider.Settings
+import android.util.Log
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.ByteArrayOutputStream
 
-class MainActivity: FlutterActivity() {
+class MainActivity : FlutterActivity() {
     companion object {
         private const val CHANNEL = "gstore/system_intent"
         private const val APK_INFO_CHANNEL = "gstore/apk_info"
+
+        /// 管理空间入口通道：Dart 侧启动/恢复时查询是否有待处理的"管理空间"请求
+        private const val MANAGE_SPACE_CHANNEL = "gstore/manage_space"
+
+        /// ManageSpaceActivity 携带的 action：用于识别"系统管理空间入口"
+        const val ACTION_MANAGE_SPACE = "com.suno2.gstore.action.MANAGE_SPACE"
+
+        private const val TAG = "MainActivity"
+    }
+
+    /// 待处理的"管理空间"请求标记（冷启动 onCreate / 热启动 onNewIntent 置位，
+    /// Dart 侧查询消费后清除）。@Volatile 保证跨线程可见。
+    @Volatile
+    private var pendingManageSpace = false
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        if (intent?.action == ACTION_MANAGE_SPACE) {
+            pendingManageSpace = true
+            Log.i(TAG, "onCreate: 收到管理空间入口请求")
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        if (intent.action == ACTION_MANAGE_SPACE) {
+            pendingManageSpace = true
+            Log.i(TAG, "onNewIntent: 收到管理空间入口请求")
+        }
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -47,6 +78,18 @@ class MainActivity: FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+
+        // 管理空间入口查询：Dart 探测/恢复时调用。返回是否存在待处理请求并消费。
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, MANAGE_SPACE_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "consumeManageSpace" -> {
+                        result.success(pendingManageSpace)
+                        pendingManageSpace = false
+                    }
+                    else -> result.notImplemented()
+                }
+            }
 
         // APK 信息解析：通过 PackageManager.getPackageArchiveInfo 提取包名/应用名/版本/图标
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, APK_INFO_CHANNEL).setMethodCallHandler { call, result ->

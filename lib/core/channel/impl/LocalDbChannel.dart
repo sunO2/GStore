@@ -513,7 +513,8 @@ class LocalDbChannel extends IChannel with AppUpdateCheckMixin {
             final assetDownloadCount = asset['download_count'] as int?;
             final assetPlatform = _parsePlatformFromAssetName(asset['name']?.toString() ?? '');
             final downloadInfo = DownloadInfo(
-              url: asset['browser_download_url']?.toString() ?? '',
+              url: applyProxyIfNeeded(
+                  asset['browser_download_url']?.toString() ?? '', getProxy()),
               name: asset['name']?.toString() ?? '',
               size: assetSize,
               downloadCount: assetDownloadCount,

@@ -208,6 +208,20 @@ class BackupLogic extends GetxController {
         debugPrint('BackupLogic: 不包含应用配置');
       }
 
+      // 渠道包（脚本渠道 zip 原样打包进 tar.gz，无需 base64）
+      try {
+        final channelFiles = await _backupService?.buildChannelPackageArchiveFiles() ?? const [];
+        for (final entry in channelFiles) {
+          archive.addFile(entry);
+          debugPrint('BackupLogic: channels 条目已添加 ${entry.name}');
+        }
+        if (channelFiles.isNotEmpty) {
+          debugPrint('BackupLogic: 渠道包 ${channelFiles.length} 个已打包');
+        }
+      } catch (e) {
+        appLog.error('BackupLogic: 收集渠道包失败（不影响应用数据导出）- $e');
+      }
+
       // 将 Archive 编码为 tar 字节
       final tarBytes = TarEncoder().encode(archive);
 

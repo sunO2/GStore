@@ -21,8 +21,8 @@ class UserManager extends GetxService {
     return _instance!;
   }
 
-  late final GithubAuthApi _authApi;
-  late final GithubRestClient _githubApi;
+  late GithubAuthApi _authApi;
+  late GithubRestClient _githubApi;
   final _secureStorage = const FlutterSecureStorage();
   final userInfo = const UserInfo().obs;
   Timer? _loginRequestTimer;
@@ -68,6 +68,18 @@ class UserManager extends GetxService {
 
     // 调用内部初始化
     await _initialize();
+  }
+
+  /// 测试用：重置登录状态与依赖绑定（UserManager 是全局单例，跨测试需
+  /// 重新注入 fake 后才能再次 initialize——否则残留上一用例的 _authApi/_githubApi；
+  /// 同时清空 _prefs 缓存，避免读取到上一用例写入的存储残留）
+  @visibleForTesting
+  void resetForTest() {
+    cancelLogin();
+    _isInitialized = false;
+    userInfo.value = const UserInfo();
+    _prefs = null;
+    _secureStorage.deleteAll();
   }
 
   /// 获取当前用户信息
@@ -154,10 +166,19 @@ class UserManager extends GetxService {
   }
 
   /// 开始登录轮询
+  /// [expiresIn] 设备码有效期（秒，GitHub device/code 返回）；到期后终止轮询，
+  /// 避免无效轮询空转（否则需等 GitHub 返回 expired_token 才停止）。
   Future<UserInfo?> startLoginOfTimer(
-      String deviceCode, int interval, CancelToken cancelToken) {
+    String deviceCode,
+    int interval,
+    CancelToken cancelToken, {
+    int? expiresIn,
+  }) {
     final completer = Completer<UserInfo?>();
-    _nextTimer(deviceCode, interval, completer, cancelToken);
+    final deadline = expiresIn != null
+        ? DateTime.now().add(Duration(seconds: expiresIn))
+        : null;
+    _nextTimer(deviceCode, interval, completer, cancelToken, deadline);
     return completer.future;
   }
 
@@ -167,6 +188,7 @@ class UserManager extends GetxService {
     int interval,
     Completer<UserInfo?> completer,
     CancelToken cancelToken,
+    DateTime? deadline,
   ) {
     if (_loginRequestTimer?.isActive ?? false) {
       _loginRequestTimer?.cancel();
@@ -175,7 +197,7 @@ class UserManager extends GetxService {
       if (_loginRequestTimer?.isActive ?? false) {
         _loginRequestTimer?.cancel();
       }
-      _login(deviceCode, completer, cancelToken);
+      _login(deviceCode, completer, cancelToken, deadline);
     });
   }
 
@@ -184,7 +206,22 @@ class UserManager extends GetxService {
     String deviceCode,
     Completer<UserInfo?> completer,
     CancelToken cancelToken,
+    DateTime? deadline,
   ) async {
+    // 设备码已过期：终止轮询，提示重新获取（不再发起无效的 access_token 请求）
+    if (deadline != null && !DateTime.now().isBefore(deadline)) {
+      _loginRequestTimer?.cancel();
+      appLog.error('UserManager: 设备码已过期，终止轮询');
+      AppDialogs.showError('验证码已过期，请重新获取', title: '登录失败');
+      completer.completeError(
+        DioException.requestCancelled(
+          requestOptions: RequestOptions(),
+          reason: '设备码已过期',
+        ),
+      );
+      return;
+    }
+
     try {
       // 检查是否已取消
       if (cancelToken.isCancelled) {
@@ -209,25 +246,25 @@ class UserManager extends GetxService {
             reason: '登录请求已取消',
           );
         }
-        _nextTimer(deviceCode, auth.interval ?? 5, completer, cancelToken);
+        _nextTimer(deviceCode, auth.interval ?? 5, completer, cancelToken, deadline);
         return;
       }
 
       // 登录成功，保存 token 和用户信息
       if (auth.accessToken?.isNotEmpty ?? false) {
-        // 保存 token
-        await saveToken(auth.accessToken!);
-
-        // 设置全局授权头
+        // 先设置全局授权头（内存态，供 user() 校验携带 token）
         DioClient.instance.authorization = auth.accessToken;
 
-        // 获取用户信息
+        // 先验证用户信息：拉取成功才持久化 token（避免"token 已落库但用户拉取失败"
+        // 的半登录态——下次启动会误判已登录）；失败则清除内存授权头，不残留。
         final user = await _githubApi.user();
         if (user != null) {
+          await saveToken(auth.accessToken!);
           userInfo.value = user;
           await _secureStorage.write(key: _userInfoKey, value: user.toJson());
           completer.complete(user);
         } else {
+          DioClient.instance.authorization = null;
           completer.complete(null);
         }
       }
@@ -238,6 +275,8 @@ class UserManager extends GetxService {
       } else if (e.response?.statusCode == 401 ||
           e.response?.statusCode == 403) {
         appLog.error('UserManager: 认证失败 - ${e.response?.statusCode}');
+        // 401/403：设备码过期/无效/授权被拒——提示用户重新获取验证码
+        AppDialogs.showError('认证失败，请重新获取验证码', title: '登录失败');
         completer.completeError(e);
       } else {
         appLog.error('UserManager: 登录请求失败 - $e');
@@ -321,7 +360,9 @@ class UserManager extends GetxService {
     try {
       debugPrint('UserManager: 开始保存 Token...');
       debugPrint('  - Token 长度: ${token.length}');
-      debugPrint('  - Token 前缀: ${token.substring(0, 10)}...');
+      // 仅打印前缀前 10 字符（token 短于 10 时原样打印，避免 substring 越界
+      // 被 catch 吞掉导致 token 保存静默失败）
+      debugPrint('  - Token 前缀: ${token.substring(0, token.length < 10 ? token.length : 10)}...');
 
       // 确保 SharedPreferences 已初始化
       await _initPrefs();

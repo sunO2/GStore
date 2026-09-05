@@ -86,17 +86,63 @@ jobs:
           echo "prev_tag=$PREV" >> "$GITHUB_OUTPUT"
           echo "Previous release tag: $PREV"
 
+      - name: Resolve note range (tag push)
+        id: note_range
+        run: |
+          # 推送的是 tag（打包 tag，如 refs/tags/v1.0.26）：
+          #   终点 = 该 tag 指向的 commit（GITHUB_SHA）
+          #   起点 = 该 tag 之前最近的版本 tag（v 开头）的 commit
+          # 分支 push（无 tag）：保留原逻辑起点 = 上一个 release tag，终点 = HEAD
+          REF="$GITHUB_REF"
+          if [[ "$REF" == refs/tags/* ]]; then
+            END_COMMIT="${GITHUB_SHA}"
+            # 取当前 tag 之前最近的 v* tag（排除当前 tag 与非版本 tag）
+            START_TAG=$(git tag --sort=-creatordate --merged "${END_COMMIT}" \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+' \
+              | grep -v "^${REF#refs/tags/}$" \
+              | head -n 1 || true)
+            if [[ -n "$START_TAG" ]]; then
+              START_COMMIT=$(git rev-list -n 1 "$START_TAG")
+            else
+              # 首个版本 tag：无更早 v tag 可对比，起点为空 → 空日志由后续处理
+              START_COMMIT=""
+            fi
+            echo "range_kind=tag" >> "$GITHUB_OUTPUT"
+            echo "start_commit=$START_COMMIT" >> "$GITHUB_OUTPUT"
+            echo "end_commit=$END_COMMIT" >> "$GITHUB_OUTPUT"
+            echo "start_tag=$START_TAG" >> "$GITHUB_OUTPUT"
+            echo "Tag push: notes range ${START_TAG:-∅}..${REF#refs/tags/}"
+          else
+            # 分支 push：走原逻辑（上一个 release tag → HEAD）
+            echo "range_kind=branch" >> "$GITHUB_OUTPUT"
+            echo "Tag push? No (branch ${REF#refs/heads/})"
+          fi
+
       - name: Generate release notes
         id: get_notes
         run: |
-          CURRENT="v${{ steps.get_version.outputs.version }}"
-          PREV="${{ steps.prev_release.outputs.prev_tag }}"
-          if [[ -n "$PREV" && "$PREV" != "$CURRENT" ]]; then
-            # 上一次打包（release tag）之后的所有 commit
-            git log "$PREV..HEAD" --pretty=format:"* %s" > notes.txt
+          KIND="${{ steps.note_range.outputs.range_kind }}"
+          if [[ "$KIND" == "tag" ]]; then
+            START="${{ steps.note_range.outputs.start_commit }}"
+            END="${{ steps.note_range.outputs.end_commit }}"
+            if [[ -n "$START" && -n "$END" && "$START" != "$END" ]]; then
+              # 上一个版本 tag 的 commit → 本次 tag 的 commit 之间的日志（不含更早全量）
+              git log "$START..$END" --pretty=format:"* %s" > notes.txt
+              echo "tag range: $START..$END"
+            else
+              # 首个版本 tag / 无更早 tag：该 tag 起全量（或空则占位）
+              : > notes.txt
+              echo "* 无新增提交（首个版本或区间为空）" > notes.txt
+            fi
           else
-            # 首个 release 或重跑：全量 commit 历史
-            git log --pretty=format:"* %s" > notes.txt
+            # 分支 push：原逻辑（上一次 release tag 之后的所有 commit，无则全量）
+            CURRENT="v${{ steps.get_version.outputs.version }}"
+            PREV="${{ steps.prev_release.outputs.prev_tag }}"
+            if [[ -n "$PREV" && "$PREV" != "$CURRENT" ]]; then
+              git log "$PREV..HEAD" --pretty=format:"* %s" > notes.txt
+            else
+              git log --pretty=format:"* %s" > notes.txt
+            fi
           fi
           echo "--- release notes ---"
           cat notes.txt

@@ -53,6 +53,7 @@ class DownloadManager extends GetxService implements IDownloadService {
     bool breakPoint = true,
     String? saveFileName,
     bool forceDownload = false,
+    bool installAfterDownload = true,
   }) async {
     final savePath = await _savePathFor(saveFileName, fileName);
 
@@ -89,6 +90,7 @@ class DownloadManager extends GetxService implements IDownloadService {
       headers: null,
       fileSize: size,
       resume: breakPoint,
+      installAfterDownload: installAfterDownload,
     ));
     return saved;
   }
@@ -102,6 +104,7 @@ class DownloadManager extends GetxService implements IDownloadService {
     String fileName, {
     bool breakPoint = true,
     String? saveFileName,
+    bool installAfterDownload = true,
   }) async {
     final savePath = await _savePathFor(saveFileName, fileName);
     final req = request.copyWithSavePath(savePath);
@@ -139,6 +142,7 @@ class DownloadManager extends GetxService implements IDownloadService {
       headers: req.headers,
       fileSize: size,
       resume: req.resume,
+      installAfterDownload: installAfterDownload,
     ));
     return saved;
   }
@@ -176,6 +180,7 @@ class DownloadManager extends GetxService implements IDownloadService {
       headers: null,
       fileSize: task.total > 0 ? task.total : null,
       resume: true,
+      installAfterDownload: true,
     ));
   }
 
@@ -219,6 +224,7 @@ class DownloadManager extends GetxService implements IDownloadService {
       headers: null,
       fileSize: task.total > 0 ? task.total : null,
       resume: !isReDownload,
+      installAfterDownload: true,
     ));
   }
 
@@ -235,6 +241,7 @@ class DownloadManager extends GetxService implements IDownloadService {
     required Map<String, String>? headers,
     required int? fileSize,
     required bool resume,
+    required bool installAfterDownload,
   }) async {
     final id = task.id!;
 
@@ -272,6 +279,7 @@ class DownloadManager extends GetxService implements IDownloadService {
         headers: headers,
         fileSize: fileSize,
         resume: resume,
+        installAfterDownload: installAfterDownload,
       ));
       return;
     }
@@ -400,7 +408,7 @@ class DownloadManager extends GetxService implements IDownloadService {
         await repository.save(done);
         _cancelTokens.remove(id);
         DownloadNotificationService.instance.onDownloadComplete(notifId);
-        if (onApkReady != null) {
+        if (onApkReady != null && installAfterDownload) {
           unawaited(Future<void>(() => onApkReady!(task.filePath)));
         }
       } catch (e) {
@@ -455,6 +463,7 @@ class DownloadManager extends GetxService implements IDownloadService {
         headers: run.headers,
         fileSize: run.fileSize,
         resume: run.resume,
+        installAfterDownload: run.installAfterDownload,
       ));
     }
   }
@@ -574,6 +583,7 @@ class _QueuedRun {
   final Map<String, String>? headers;
   final int? fileSize;
   final bool resume;
+  final bool installAfterDownload;
 
   const _QueuedRun({
     required this.task,
@@ -581,5 +591,6 @@ class _QueuedRun {
     required this.headers,
     required this.fileSize,
     required this.resume,
+    required this.installAfterDownload,
   });
 }

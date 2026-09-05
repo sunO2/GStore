@@ -35,6 +35,7 @@ abstract class IDownloadService {
     bool breakPoint = true,
     String? saveFileName,
     bool forceDownload = false,
+    bool installAfterDownload = true,
   });
 
   /// 使用下载上下文下载（策略模式：自定义请求头/代理/URL 转换/超时）
@@ -46,6 +47,7 @@ abstract class IDownloadService {
     String fileName, {
     bool breakPoint = true,
     String? saveFileName,
+    bool installAfterDownload = true,
   });
 
   /// 暂停下载任务
@@ -71,12 +73,6 @@ abstract class IDownloadService {
 abstract class IBackupService {
   /// 导出备份数据
   Future<BackupData> exportData({BackupOptions? options});
-
-  /// 导出到文件
-  Future<String> exportToFile({BackupOptions? options});
-
-  /// 导出压缩文件（tar.gz）
-  Future<String> exportToCompressedFile({BackupOptions? options});
 
   /// 从文件导入
   Future<BackupImportResult> importFromFile(
@@ -297,6 +293,13 @@ abstract class IAggregateService {
 
   /// 从渠道获取已添加应用的详细信息（聚合所有渠道）
   Future<List<AggregatedAppInfo>> getAggregatedApps();
+
+  /// 分页获取聚合应用详情（首页列表用，避免一次性全量加载耗时）
+  /// 返回 (本页聚合应用, 已添加应用总数)
+  Future<(List<AggregatedAppInfo> apps, int total)> getAggregatedAppsPage({
+    required int offset,
+    required int limit,
+  });
 }
 
 /// 已安装应用服务接口

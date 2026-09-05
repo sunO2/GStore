@@ -46,6 +46,7 @@ class _FakeDownloadService implements IDownloadService {
     bool breakPoint = true,
     String? saveFileName,
     bool forceDownload = false,
+    bool installAfterDownload = true,
   }) =>
       throw UnimplementedError();
 
@@ -58,6 +59,7 @@ class _FakeDownloadService implements IDownloadService {
     String fileName, {
     bool breakPoint = true,
     String? saveFileName,
+    bool installAfterDownload = true,
   }) =>
       throw UnimplementedError();
 

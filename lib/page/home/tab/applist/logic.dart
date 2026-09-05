@@ -75,18 +75,26 @@ class ApplistLogic extends GetxController with GithubRequestMix {
     return result;
   }
 
-  /// 加载聚合应用
+  /// 加载聚合应用（首页/下拉刷新：只取第一页，滚动到底再加载更多）
   Future<void> loadAggregatedApps() async {
     appLog.info('ApplistLogic: ========== 开始加载聚合应用 ==========');
     state.isLoading.value = true;
     state.errorMessage.value = '';
+    _loadedOffset = 0; // 重置分页游标
 
     try {
-      debugPrint('ApplistLogic: 调用 _aggregator.getAggregatedApps()');
-      final apps = await _aggregator?.getAggregatedApps() ?? const [];
-      appLog.info('ApplistLogic: ✅ 获取到 ${apps.length} 个聚合应用');
+      debugPrint('ApplistLogic: 调用 _aggregator.getAggregatedAppsPage(0, $_pageSize)');
+      final (apps, total) = await _aggregator?.getAggregatedAppsPage(
+            offset: 0,
+            limit: _pageSize,
+          ) ??
+          (const <AggregatedAppInfo>[], 0);
+      appLog.info('ApplistLogic: ✅ 获取到 ${apps.length} 个聚合应用（共 $total）');
 
       state.apps = apps;
+      state.totalCount = total;
+      // 首页已按页大小消费 addedApps（与返回条数解耦）
+      _loadedOffset = total >= _pageSize ? _pageSize : total;
       // 重新应用当前筛选（分类/搜索/排序）——不能直接显示全部，
       // 否则下拉刷新后 filteredApps 变为全部而 selectedCategory 仍选中旧分类（状态/显示不一致）
       _buildCategories();
@@ -103,6 +111,55 @@ class ApplistLogic extends GetxController with GithubRequestMix {
     appLog.info('ApplistLogic: ========== 加载聚合应用完成 ==========');
   }
 
+  /// 滚动到底部时加载更多（追加到 state.apps，再重新应用筛选）
+  Future<void> loadMoreApps() async {
+    final aggregator = _aggregator;
+    if (aggregator == null) return;
+    // 首屏加载或已在上拉加载中 → 跳过（防重入）
+    if (state.isLoading.value || state.isLoadingMore.value) return;
+    // 已全部加载 → 跳过
+    if (_loadedOffset >= state.totalCount) return;
+
+    state.isLoadingMore.value = true;
+    try {
+      final (moreApps, total) = await aggregator.getAggregatedAppsPage(
+        offset: _loadedOffset,
+        limit: _pageSize,
+      );
+      state.totalCount = total;
+      if (moreApps.isEmpty) {
+        // 无更多或 offset 越界：对齐总数，防止反复加载
+        _loadedOffset = total;
+        return;
+      }
+      // 原始偏移量按页大小推进（不依赖返回条数——未知渠道 null 会被压缩，
+      // 返回数可能少于页大小，但原始 addedApps 索引仍按页推进）
+      _loadedOffset = (_loadedOffset + _pageSize > total)
+          ? total
+          : _loadedOffset + _pageSize;
+      state.apps = [...state.apps, ...moreApps];
+      // 新加载应用的可更新状态需要同步（红点/可更新分区）
+      _syncUpdateStates();
+      // 追加后重新应用筛选（新分类/可更新状态可能随之出现）
+      _buildCategories();
+      _applyFilter();
+      appLog.info('ApplistLogic: 加载更多完成，累计 ${state.apps.length}/$total');
+    } catch (e) {
+      appLog.error('ApplistLogic: ❌ 加载更多失败 - $e');
+    } finally {
+      state.isLoadingMore.value = false;
+    }
+  }
+
+  /// 是否还有更多可分页加载的应用
+  bool get hasMore => _loadedOffset < state.totalCount;
+
+  /// 分页大小：首页一次加载的应用数（避免一次性加载太多导致读取耗时）
+  static const int _pageSize = 20;
+
+  /// 原始已加载偏移（addedApps 索引游标，与返回条数解耦）
+  int _loadedOffset = 0;
+
   /// 执行搜索（带防抖，与分类/排序组合）
   void searchApps(String keyword) {
     _searchDebounce?.cancel();
@@ -114,6 +171,8 @@ class ApplistLogic extends GetxController with GithubRequestMix {
     }
 
     _searchDebounce = Timer(const Duration(milliseconds: 300), () {
+      // 搜索需要完整结果：先补齐未加载的分页（避免只搜到已加载的前几页）
+      _ensureSearchedAllLoaded();
       _applyFilter();
     });
   }
@@ -122,7 +181,24 @@ class ApplistLogic extends GetxController with GithubRequestMix {
   void searchAppsImmediate(String keyword) {
     _searchDebounce?.cancel();
     state.searchKeyword.value = keyword;
+    if (keyword.isNotEmpty) {
+      // 搜索需要完整结果：补齐剩余分页（前台 fire-and-forget，list 逐页追加刷新）
+      unawaited(_ensureSearchedAllLoaded());
+    }
     _applyFilter();
+  }
+
+  /// 搜索关键词非空时补齐所有剩余分页，保证搜索结果覆盖全部应用
+  Future<void> _ensureSearchedAllLoaded() async {
+    if (state.searchKeyword.value.isEmpty) return;
+    while (hasMore) {
+      // 分批补齐；若用户已清空搜索则立即停止
+      if (state.searchKeyword.value.isEmpty) return;
+      final before = state.apps.length;
+      await loadMoreApps();
+      // 无进展（全量加载中/已在加载更多/异常）时停止，避免死循环
+      if (state.apps.length <= before) return;
+    }
   }
 
   Future<void> checkUpdata() async {

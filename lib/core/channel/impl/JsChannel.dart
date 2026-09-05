@@ -597,6 +597,28 @@ class JsChannel extends IChannel implements DynamicChannel {
   /// 读取当前渠道的全部环境变量（持久化层最新值）
   Future<Map<String, String>> getAllEnv() => _envStore.load();
 
+  /// 执行脚本渠道自定义方法（Agent 渠道包 JS 执行能力入口）。
+  ///
+  /// 调用脚本 `main(method, params)`，返回脚本原始返回（Map / List / String / bool / null）。
+  /// 供 Agent `runJsChannel` 工具调用，让模型能操作脚本渠道暴露的任意方法
+  /// （如 `getConfig` / `versionOptions` / 脚本特有的查询/操作），
+  /// 而不局限于预置工具枚举。
+  ///
+  /// [method] 脚本 main 分发的函数名（如 'getConfig'）；
+  /// [params] 透传给脚本的参数 map（可空）。
+  /// 脚本未实现 / 执行失败 / 返回 null → 返回 null（调用方降级提示）。
+  Future<dynamic> callMethod(String method, [Map<String, dynamic>? params]) async {
+    try {
+      return await _callMain(method, params ?? const {});
+    } catch (e) {
+      _logError('callMethod($method) 失败: $e');
+      return null;
+    }
+  }
+
+  /// 脚本渠道是否已注册（供 Agent 判断渠道可用性）
+  String get channelId => channelKey;
+
   // ==================== 版本切换 ====================
 
   /// 获取版本/环境切换选项（脚本 main('versionOptions')）

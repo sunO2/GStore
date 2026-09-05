@@ -28,7 +28,7 @@ class DownloadTool extends AgentToolModule {
 
   @override
   String get toolDescription =>
-      '下载应用 APK。需要 appId、channel（如 github/fdroid/vivo）、url（可选）、name、version。vivo 渠道还需 vivoId。GitHub 渠道自动匹配 CPU 架构。';
+      '下载应用 APK。需要 appId、channel（如 github/fdroid/vivo）、url（可选）、name、version。vivo 渠道还需 vivoId。GitHub 渠道自动匹配 CPU 架构。如需下载完成后自动安装，传入 installAfterDownload=true；仅说下载则不传。';
 
   @override
   List<AgentToolParam> get toolParams => const [
@@ -38,6 +38,12 @@ class DownloadTool extends AgentToolModule {
         AgentToolParam(name: 'name', description: '应用名'),
         AgentToolParam(name: 'version', description: '版本号'),
         AgentToolParam(name: 'vivoId', description: 'vivo 应用 ID（vivo 渠道必需）'),
+        AgentToolParam(
+          name: 'installAfterDownload',
+          description:
+              '是否下载完成后自动安装（用户明确要求"下载完就安装"时传 true；仅说"下载"则不传或传 false）',
+          type: 'bool',
+        ),
       ];
 }
 
@@ -239,6 +245,28 @@ class InstalledAppsTool extends AgentToolModule {
       ];
 }
 
+/// 缓存管理工具
+///
+/// 用户表达清理缓存/释放空间/清理下载文件等意图时调用。
+/// 工具会枚举当前可清理的缓存类别（网络图片/README/图标/通用缓存等）与
+/// 已下载文件，自动弹出多选框让用户勾选要清理的内容，勾选后执行清理。
+/// 无需额外参数——选项由工具根据当前占用动态生成。
+class CacheManageTool extends AgentToolModule {
+  @override
+  String get toolName => 'cacheManage';
+
+  @override
+  String get toolDescription =>
+      '管理缓存与已下载文件（清理/释放空间）。当用户说"清理缓存""释放空间""删除下载的安装包/APK"'
+      '"清理下载文件"等时调用。工具会枚举当前可清理项并弹出多选框（checkbox）'
+      '让用户勾选要删除的内容——包括各类缓存（网络图片缓存、README 缓存、应用图标缓存、'
+      '通用缓存、临时文件等）与已下载的 APK 文件。勾选确认后执行清理并反馈结果。'
+      '删除下载文件不可恢复，务必通过多选确认让用户明确勾选。';
+
+  @override
+  List<AgentToolParam> get toolParams => const [];
+}
+
 /// 用户确认工具
 class ConfirmTool extends AgentToolModule {
   @override
@@ -252,6 +280,26 @@ class ConfirmTool extends AgentToolModule {
   List<AgentToolParam> get toolParams => const [
         AgentToolParam(name: 'question', description: '确认问题', required: true),
         AgentToolParam(name: 'options', description: '选项数组或逗号分隔字符串'),
+      ];
+}
+
+/// 脚本渠道方法执行工具（Agent 渠道包 JS 执行能力）
+class RunJsChannelTool extends AgentToolModule {
+  @override
+  String get toolName => 'runJsChannel';
+
+  @override
+  String get toolDescription =>
+      '执行自定义脚本渠道（js_xxx）暴露的方法。用于脚本渠道特有能力的调用，'
+      '如 getConfig（渠道配置）、versionOptions/switchVersion（版本/环境切换）、'
+      '或脚本自定义的查询/操作方法。输入 channel（脚本渠道 key，如 js_pingan）、'
+      'method（脚本 main 分发的函数名）、params（可选参数 map）。仅对脚本渠道可用。';
+
+  @override
+  List<AgentToolParam> get toolParams => const [
+        AgentToolParam(name: 'channel', description: '脚本渠道 key（如 js_pingan）', required: true),
+        AgentToolParam(name: 'method', description: '脚本 main 分发的函数名', required: true),
+        AgentToolParam(name: 'params', description: '可选参数 map（JSON 对象）'),
       ];
 }
 
@@ -276,5 +324,7 @@ class BuiltinAgentTools {
         WebdavSyncTool(),
         InstalledAppsTool(),
         ConfirmTool(),
+        CacheManageTool(),
+        RunJsChannelTool(),
       ];
 }

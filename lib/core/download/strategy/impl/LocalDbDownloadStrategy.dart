@@ -22,13 +22,16 @@ class LocalDbDownloadStrategy extends BaseDownloadStrategy {
 
     // 使用全局代理配置
     String finalUrl = downloadInfo.url;
-    final proxy = getProxy();
-    if (proxy.isNotEmpty) {
-      log('使用全局代理配置: $proxy');
+    final globalProxy = getProxy();
+    if (globalProxy.isNotEmpty) {
+      log('使用全局代理配置: $globalProxy');
 
-      // 设置了代理则直接拼接：代理前缀 + 完整URL
-      finalUrl = '${proxy.endsWith('/') ? proxy : '$proxy/'}${downloadInfo.url}';
-      log('使用代理URL: $finalUrl');
+      // 复用 applyProxy（含已带代理跳过，避免二次拼）
+      final transformed = applyProxy(downloadInfo.url, globalProxy);
+      if (transformed != null) {
+        finalUrl = transformed;
+        log('使用代理URL: $finalUrl');
+      }
     } else {
       log('未配置代理，使用原始URL');
     }

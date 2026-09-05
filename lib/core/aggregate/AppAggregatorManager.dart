@@ -486,10 +486,41 @@ class AppAggregatorManager implements IAggregateService {
   /// 分片并行：每片 8 个 addedApp 用 Future.wait 并发查询；
   /// 结果按输入索引回填、跳过 null（未知渠道/渠道实例为空，等价原串行 continue）并压缩顺序，
   /// 最终列表顺序与 addedApps（addTime 倒序）一致
+  ///
+  /// 全量聚合：一次性取所有已添加应用的渠道详情（分页场景请用 [getAggregatedAppsPage]，
+  /// 避免应用数量大时首屏阻塞）。内部与分页版共享分片逻辑。
   @override
   Future<List<AggregatedAppInfo>> getAggregatedApps() async {
-    const sliceSize = 8;
     final addedApps = await getAllAddedApps();
+    return _aggregateWithMeta(addedApps);
+  }
+
+  /// 分页获取聚合应用详情
+  ///
+  /// 仅对 addedApps 中 [offset, offset+limit) 的应用发起渠道详情查询（保持 8 并发的
+  /// 分片逻辑），返回 (本页聚合应用, 已添加应用总数)。首屏只取第一页 → 快速渲染；
+  /// 滚动到底部再取下一页 → 避免一次性加载太多应用导致网络读取耗时。
+  @override
+  Future<(List<AggregatedAppInfo> apps, int total)> getAggregatedAppsPage({
+    required int offset,
+    required int limit,
+  }) async {
+    final addedApps = await getAllAddedApps();
+    final total = addedApps.length;
+    if (offset >= total || limit <= 0) {
+      return (<AggregatedAppInfo>[], total);
+    }
+
+    final end = (offset + limit > total) ? total : offset + limit;
+    final apps = await _aggregateWithMeta(addedApps.sublist(offset, end));
+    return (apps, total);
+  }
+
+  /// 读取标签索引 + 分类映射，并对给定切片执行分片并行渠道详情聚合
+  Future<List<AggregatedAppInfo>> _aggregateWithMeta(
+    List<AddedAppInfo> addedApps,
+  ) async {
+    const sliceSize = 8;
     debugPrint('AppAggregatorManager: 从聚合数据库获取到 ${addedApps.length} 个应用');
 
     // 一次性读取全部用户标签索引（channelId:appId → tags），供合并展示
@@ -498,10 +529,6 @@ class AppAggregatorManager implements IAggregateService {
     // 一次性读取 localdb 渠道分类映射（英文 ID → 中文 description）；
     // 失败/缺失时为空映射，mergeCategories 降级为原样合并
     final categoryIdToDesc = await _loadCategoryIdToDescription();
-
-    int successCount = 0;
-    int failedCount = 0;
-    int cacheCount = 0;
 
     /// 合并渠道自带分类与用户标签（去重），并将 localdb 英文分类 ID
     /// 归一化为中文 description（映射表外自定义标签保留原文，跳过空值）
@@ -522,84 +549,7 @@ class AppAggregatorManager implements IAggregateService {
           ? addedApps.length
           : start + sliceSize;
       final slice = addedApps.sublist(start, end);
-
-      // 片内局部计数，片结束后合并（闭包与 Future.wait 同 isolate 同步推进）
-      var sliceSuccess = 0;
-      var sliceFailed = 0;
-      var sliceCache = 0;
-
-      final sliceResults = await Future.wait(slice.map((addedApp) async {
-        final channelCode = addedApp.channelId;
-        try {
-          final channel = _channelManager.getChannelByCode(channelCode);
-          if (channel == null) {
-            debugPrint('AppAggregatorManager: 跳过未知渠道 - $channelCode');
-            sliceFailed++;
-            return null;
-          }
-
-          debugPrint('AppAggregatorManager: 正在获取应用详情 - ${addedApp.appId} ($channelCode)');
-          final result = await channel.getAppInfo(addedApp.appId);
-
-          if (result.success && result.data != null) {
-            sliceSuccess++;
-            final summary = result.data!;
-            final key = '${addedApp.channelId}:${addedApp.appId}';
-            final merged = mergeCategories(summary, key);
-            return AggregatedAppInfo(
-              addedAppInfo: addedApp,
-              appInfo: merged.isEmpty
-                  ? summary
-                  : summary.copyWith(category: merged),
-              channel: channel.info.type,
-              channelCode: channelCode,
-            );
-          } else {
-            // 渠道获取失败，使用本地缓存的数据
-            appLog.error('AppAggregatorManager: 渠道获取失败，使用缓存 - ${addedApp.appId}, error: ${result.error}');
-            sliceCache++;
-            final summary = _createAppSummaryFromAdded(addedApp);
-            final key = '${addedApp.channelId}:${addedApp.appId}';
-            final merged = mergeCategories(summary, key);
-            return AggregatedAppInfo(
-              addedAppInfo: addedApp,
-              appInfo: merged.isEmpty
-                  ? summary
-                  : summary.copyWith(category: merged),
-              channel: channel.info.type,
-              channelCode: channelCode,
-              isFromCache: true,
-            );
-          }
-        } catch (e, stackTrace) {
-          appLog.error('AppAggregatorManager: ❌ 获取应用详情异常');
-          debugPrint('  - appId: ${addedApp.appId}');
-          debugPrint('  - channelId: ${addedApp.channelId}');
-          debugPrint('  - 异常类型: ${e.runtimeType}');
-          debugPrint('  - 异常信息: $e');
-          debugPrint('  - 堆栈跟踪: $stackTrace');
-          // 使用本地缓存的数据
-          sliceFailed++;
-          final summary = _createAppSummaryFromAdded(addedApp);
-          final key = '${addedApp.channelId}:${addedApp.appId}';
-          final merged = mergeCategories(summary, key);
-          return AggregatedAppInfo(
-            addedAppInfo: addedApp,
-            appInfo: merged.isEmpty
-                ? summary
-                : summary.copyWith(category: merged),
-            channel: ChannelType.localDb,
-            channelCode: channelCode,
-            isFromCache: true,
-            error: e.toString(),
-          );
-        }
-      }));
-
-      successCount += sliceSuccess;
-      failedCount += sliceFailed;
-      cacheCount += sliceCache;
-      results.addAll(sliceResults);
+      results.addAll(await _aggregateSlice(slice, mergeCategories));
     }
 
     // 按输入索引回填：跳过 null（未知渠道/渠道实例为空的 continue 语义），压缩顺序
@@ -608,8 +558,83 @@ class AppAggregatorManager implements IAggregateService {
         if (result != null) result,
     ];
 
-    appLog.info('AppAggregatorManager: 聚合完成 - 成功: $successCount, 缓存: $cacheCount, 失败: $failedCount');
+    // 从最终结果统计（与逐片计数语义一致）：成功 = 非缓存；缓存兜底 = isFromCache 且无错误；
+    // 失败 = 渠道异常兜底（error 非空）；未知渠道（null 被压缩）计入失败
+    final failed = aggregatedApps.where((e) => e.error != null).length;
+    final cache = aggregatedApps.where((e) => e.isFromCache && e.error == null).length;
+    final success = aggregatedApps.where((e) => !e.isFromCache).length;
+    appLog.info('AppAggregatorManager: 聚合完成 - 成功: $success, 缓存: $cache, 失败: $failed');
     return aggregatedApps;
+  }
+
+  /// 单分片聚合：片内 Future.wait 并发取详情，返回与输入等序的列表
+  /// （成功/缓存兜底/异常兜底三种 AggregatedAppInfo；未知渠道返回 null 由调用方压缩）
+  Future<List<AggregatedAppInfo?>> _aggregateSlice(
+    List<AddedAppInfo> slice,
+    List<String> Function(AppSummary summary, String key) mergeCategories,
+  ) async {
+    return Future.wait(slice.map((addedApp) async {
+      final channelCode = addedApp.channelId;
+      try {
+        final channel = _channelManager.getChannelByCode(channelCode);
+        if (channel == null) {
+          debugPrint('AppAggregatorManager: 跳过未知渠道 - $channelCode');
+          return null;
+        }
+
+        debugPrint('AppAggregatorManager: 正在获取应用详情 - ${addedApp.appId} ($channelCode)');
+        final result = await channel.getAppInfo(addedApp.appId);
+        final key = '${addedApp.channelId}:${addedApp.appId}';
+
+        if (result.success && result.data != null) {
+          final summary = result.data!;
+          final merged = mergeCategories(summary, key);
+          return AggregatedAppInfo(
+            addedAppInfo: addedApp,
+            appInfo: merged.isEmpty
+                ? summary
+                : summary.copyWith(category: merged),
+            channel: channel.info.type,
+            channelCode: channelCode,
+          );
+        } else {
+          // 渠道获取失败，使用本地缓存的数据
+          appLog.error('AppAggregatorManager: 渠道获取失败，使用缓存 - ${addedApp.appId}, error: ${result.error}');
+          final summary = _createAppSummaryFromAdded(addedApp);
+          final merged = mergeCategories(summary, key);
+          return AggregatedAppInfo(
+            addedAppInfo: addedApp,
+            appInfo: merged.isEmpty
+                ? summary
+                : summary.copyWith(category: merged),
+            channel: channel.info.type,
+            channelCode: channelCode,
+            isFromCache: true,
+          );
+        }
+      } catch (e, stackTrace) {
+        appLog.error('AppAggregatorManager: ❌ 获取应用详情异常');
+        debugPrint('  - appId: ${addedApp.appId}');
+        debugPrint('  - channelId: ${addedApp.channelId}');
+        debugPrint('  - 异常类型: ${e.runtimeType}');
+        debugPrint('  - 异常信息: $e');
+        debugPrint('  - 堆栈跟踪: $stackTrace');
+        // 使用本地缓存的数据
+        final summary = _createAppSummaryFromAdded(addedApp);
+        final key = '${addedApp.channelId}:${addedApp.appId}';
+        final merged = mergeCategories(summary, key);
+        return AggregatedAppInfo(
+          addedAppInfo: addedApp,
+          appInfo: merged.isEmpty
+              ? summary
+              : summary.copyWith(category: merged),
+          channel: ChannelType.localDb,
+          channelCode: channelCode,
+          isFromCache: true,
+          error: e.toString(),
+        );
+      }
+    }));
   }
 
   // ==================== 私有方法 ====================

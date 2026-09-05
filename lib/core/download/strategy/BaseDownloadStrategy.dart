@@ -73,26 +73,15 @@ abstract class BaseDownloadStrategy implements IDownloadStrategy {
   /// 辅助方法：使用代理转换URL
   String? applyProxy(String originalUrl, String proxy) {
     if (proxy.isEmpty) return null;
-
-    // 确保代理URL以 / 结尾
+    if (originalUrl.startsWith(proxy)) return null; // 已带代理，防二次拼（同 applyProxyIfNeeded）
     final normalizedProxy = proxy.endsWith('/') ? proxy : '$proxy/';
-
-    // 如果已经是完整URL，不转换
-    if (isFullGitHubUrl(originalUrl)) {
-      return null;
-    }
-
-    // 对于GitHub releases URL，使用代理转换
     if (isGitHubReleasesUrl(originalUrl)) {
-      // 提取 GitHub 路径部分
-      // 例如: https://github.com/user/repo/releases/download/v1.0/file.apk
-      // 转换为: {proxy}/user/repo/releases/download/v1.0/file.apk
       final uri = Uri.tryParse(originalUrl);
       if (uri != null && uri.path.isNotEmpty) {
-        return '$normalizedProxy${uri.path.substring(1)}'; // 移除开头的 /
+        return '$normalizedProxy${uri.path.substring(1)}';
       }
     }
-
+    if (isFullGitHubUrl(originalUrl)) return null;
     return null;
   }
 

@@ -34,6 +34,12 @@ class ApplistState {
   /// 是否正在加载
   final RxBool isLoading = false.obs;
 
+  /// 是否正在分页加载更多（滚动到底加载下一页时置位，与首屏 isLoading 区分）
+  final RxBool isLoadingMore = false.obs;
+
+  /// 已添加应用总数（分页用：已加载 app 数 < totalCount 时可继续加载）
+  int totalCount = 0;
+
   /// 错误信息
   final RxString errorMessage = ''.obs;
 

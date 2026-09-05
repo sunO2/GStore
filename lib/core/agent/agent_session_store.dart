@@ -80,6 +80,12 @@ class SessionMessage {
   /// 回合 ID（同一轮"用户提问→助手回复→工具调用"共享，用于绑定工具记录）
   final String? turnId;
 
+  /// 确认工具的选项列表（B3：待确认消息持久化，退出/重启后可恢复确认 UI）
+  final List<String>? confirmOptions;
+
+  /// 是否为多选确认（勾选多个选项后统一确认；B3 持久化）
+  final bool confirmMultiSelect;
+
   SessionMessage({
     required this.isUser,
     required this.text,
@@ -90,6 +96,8 @@ class SessionMessage {
     int? time,
     this.seq = 0,
     this.turnId,
+    this.confirmOptions,
+    this.confirmMultiSelect = false,
   }) : time = time ?? DateTime.now().millisecondsSinceEpoch;
 
   Map<String, dynamic> toJson() {
@@ -103,6 +111,8 @@ class SessionMessage {
       'time': time,
       'seq': seq,
       'turnId': turnId,
+      if (confirmOptions != null) 'confirmOptions': confirmOptions,
+      if (confirmMultiSelect) 'confirmMultiSelect': true,
     };
   }
 
@@ -117,6 +127,10 @@ class SessionMessage {
       time: json['time'] as int?,
       seq: json['seq'] as int? ?? 0,
       turnId: json['turnId'] as String?,
+      confirmOptions: (json['confirmOptions'] as List?)
+          ?.map((e) => e.toString())
+          .toList(),
+      confirmMultiSelect: json['confirmMultiSelect'] as bool? ?? false,
     );
   }
 }

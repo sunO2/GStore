@@ -14,6 +14,14 @@ class AuthPageLogic extends GetxController with GithubRequestMix {
   final userManager = Get.find<UserManager>();
   final AuthPageState state = AuthPageState();
 
+  /// 取消进行中的登录轮询（页面主动关闭/外部取消时调用；onClose 同样清理）
+  void cancelLogin() {
+    userManager.cancelLogin();
+    if (!loginRequestCancelToken.isCancelled) {
+      loginRequestCancelToken.cancel();
+    }
+  }
+
   void loadUrl(String url) {
     log("开始加载url $url ${null != webViewController}");
     webViewController?.loadUrl(
@@ -36,23 +44,41 @@ class AuthPageLogic extends GetxController with GithubRequestMix {
         });
   }
 
-  void startVerification(String code, int interval, String? deviceCode) {}
-
   getDeviceCode() {
     state.status.value = AuthStatus.requestUserCode;
     userManager.deviceId.then((value) async {
       if (value.deviceCode?.isNotEmpty ?? false) {
         state.verificationCode.value = value.userCode ?? "";
         state.status.value = AuthStatus.verifying;
-        await webViewController?.evaluateJavascript(
+
+        // 自动填充验证码到 GitHub 页面（JS 返回 true/false）；失败降级提示手动输入
+        try {
+          final filled = await webViewController?.evaluateJavascript(
             source:
-                "fillUserCode('${state.verificationCode.value.replaceAll("-", "")}')");
+                "fillUserCode('${state.verificationCode.value.replaceAll("-", "")}')",
+          );
+          if (filled != true && filled != 'true') {
+            log('fillUserCode 自动填充失败（页面结构可能已变化）');
+            // 页面可能未加载完成/结构不匹配 → 提示手动输入（不阻塞后续轮询）
+            if (Get.isRegistered<AuthPageLogic>() && navigator != null) {
+              try {
+                AppDialogs.showWarning('未能自动填入验证码，请在网页中手动输入',
+                    title: '验证码');
+              } catch (e) {
+                log("提示失败：$e");
+              }
+            }
+          }
+        } catch (e) {
+          log("填充验证码失败：$e");
+        }
 
         // 开始轮询登录状态
         Future.delayed(Duration(seconds: value.interval ?? 5), () async {
           try {
             final userInfo = await userManager.startLoginOfTimer(
-                value.deviceCode!, value.interval ?? 5, loginRequestCancelToken);
+                value.deviceCode!, value.interval ?? 5, loginRequestCancelToken,
+                expiresIn: value.expiresIn);
 
             // 以 API 轮询结果为准，不依赖页面 URL
             if (userInfo != null) {

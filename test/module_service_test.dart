@@ -37,7 +37,7 @@ class _FakeDownloadService implements IDownloadService {
   @override
   Future<DownloadTask> download(String appid, String appName, String version,
       String url, String fileName,
-      {int? downloadSize, bool breakPoint = true, String? saveFileName, bool forceDownload = false}) async {
+      {int? downloadSize, bool breakPoint = true, String? saveFileName, bool forceDownload = false, bool installAfterDownload = true}) async {
     return _task(appid, appName, version, fileName, url: url);
   }
 
@@ -49,7 +49,8 @@ class _FakeDownloadService implements IDownloadService {
       String version,
       String fileName,
       {bool breakPoint = true,
-      String? saveFileName}) async {
+      String? saveFileName,
+      bool installAfterDownload = true}) async {
     return _task(appid, appName, version, fileName, url: request.url);
   }
 
@@ -205,6 +206,7 @@ class _DownloadProxy extends DynamicProxy implements IDownloadService {
       bool breakPoint = true,
       String? saveFileName,
       bool forceDownload = false,
+      bool installAfterDownload = true,
     }) {
       final svc = resolveT<IDownloadService>();
       return svc.download(
@@ -217,6 +219,7 @@ class _DownloadProxy extends DynamicProxy implements IDownloadService {
         breakPoint: breakPoint,
         saveFileName: saveFileName,
         forceDownload: forceDownload,
+        installAfterDownload: installAfterDownload,
       );
     });
   }
