@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
+import 'package:go_router/go_router.dart';
 
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/design/design_tokens.dart';
@@ -508,7 +509,7 @@ class _BackupPageState extends State<BackupPage> {
                 ),
                 trailing: _buildStatusIndicator(status),
                 onTap: () async {
-                  final result = await Get.toNamed(AppRoute.webdavConfig);
+                  final result = await context.push<bool>(AppRoute.webdavConfig);
                   if (result == true) {
                     await logic.checkWebDavConfig();
                   }

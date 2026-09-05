@@ -8,6 +8,7 @@ import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/design/app_borders.dart';
 import 'package:gstore/core/download/model/download_task.dart';
+import 'package:gstore/core/router/app_router.dart';
 import 'package:gstore/page/detail/widgets.dart';
 import 'package:installed_apps/installed_apps.dart';
 import 'logic.dart';
@@ -20,6 +21,8 @@ class DetailPage extends StatelessWidget {
   Widget build(BuildContext context) {
     final logic = Get.put(DetailLogic());
     final state = Get.find<DetailLogic>().state;
+    // go_router extra（原 Get.arguments）→ logic（onReady 前设置，幂等）
+    logic.setRouteExtra(goRouterExtraOf(context));
 
     return Scaffold(
       appBar: _buildAppBar(context, logic, state),

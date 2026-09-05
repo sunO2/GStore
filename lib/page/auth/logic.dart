@@ -2,6 +2,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter/services.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/design/design_tokens.dart';
+import 'package:gstore/core/router/app_router.dart';
 import 'package:gstore/core/service/user_manager.dart';
 import 'state.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
@@ -96,11 +97,11 @@ class AuthPageLogic extends GetxController with GithubRequestMix {
                 }
               }
 
-              // 延迟自动返回
+              // 延迟自动返回（GoRouter 无 context pop；success toast 已在上方提示）
               await Future.delayed(const Duration(milliseconds: 800));
               if (Get.isRegistered<AuthPageLogic>()) {
                 try {
-                  Get.back(result: AuthStatus.success);
+                  appRouter.pop();
                 } catch (e) {
                   log("返回失败（页面可能已关闭）：$e");
                 }

@@ -3,7 +3,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:get/get.dart';
+import 'package:go_router/go_router.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/router/app_router.dart';
 import 'package:markdown/markdown.dart' as md;
 
 /// 对话消息 Markdown 渲染组件（增强版）
@@ -153,7 +155,7 @@ class AgentMarkdownMessage extends StatelessWidget {
       styleSheet: styleSheet,
       onTapLink: (text, href, title) {
         if (href != null && href.isNotEmpty) {
-          _openLink(href);
+          _openLink(context, href);
         }
       },
       imageBuilder: (uri, title, alt) {
@@ -210,11 +212,13 @@ class AgentMarkdownMessage extends StatelessWidget {
 
   /// 图片全屏预览
   void _previewImage(BuildContext context, Uri uri) {
-    Get.dialog(
-      Dialog(
+    showDialog<void>(
+      context: context,
+      barrierColor: Colors.black87,
+      builder: (dialogContext) => Dialog(
         backgroundColor: Colors.black87,
         child: GestureDetector(
-          onTap: () => Get.back(),
+          onTap: () => Navigator.of(dialogContext).pop(),
           child: InteractiveViewer(
             maxScale: 5,
             child: Center(
@@ -238,12 +242,12 @@ class AgentMarkdownMessage extends StatelessWidget {
   }
 
   /// 打开链接（用内置浏览器）
-  void _openLink(String url) {
+  void _openLink(BuildContext context, String url) {
     // 相对链接补全
     if (url.startsWith('#')) return;
     if (url.startsWith('mailto:')) return;
 
-    Get.toNamed(AppRoute.webView, arguments: {
+    context.push(AppRoute.webView, extra: {
       'url': url,
       'title': '链接',
     });

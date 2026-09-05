@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/agent/agent_service.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/router/app_router.dart';
 
 import 'state.dart';
 
@@ -161,7 +162,7 @@ class AgentLogic extends GetxController {
 
   /// 打开设置
   Future<void> openSettings() async {
-    await Get.toNamed(AppRoute.agentSettings);
+    await appRouter.push(AppRoute.agentSettings);
     // 返回后重新加载配置并初始化（配置可能已变化）
     await _init();
   }

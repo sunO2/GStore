@@ -1,6 +1,7 @@
 import 'dart:ffi';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/config/config_registry.dart';
 import 'package:gstore/core/config/config_service.dart';
@@ -145,7 +146,8 @@ void main() {
       await manager.setModuleEnabled('install', false);
       putSettingsPageDeps();
 
-      await tester.pumpWidget(const MaterialApp(home: SettingsPage()));
+      await tester.pumpWidget(
+          const ProviderScope(child: MaterialApp(home: SettingsPage())));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
 
@@ -251,7 +253,8 @@ void main() {
       expect(manager.isModuleEnabled('theme'), isFalse);
       putSettingsPageDeps();
 
-      await tester.pumpWidget(const MaterialApp(home: SettingsPage()));
+      await tester.pumpWidget(
+          const ProviderScope(child: MaterialApp(home: SettingsPage())));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
 
@@ -270,7 +273,8 @@ void main() {
       await registerThemeModule();
       await manager.setModuleEnabled('theme', false);
 
-      await tester.pumpWidget(const MaterialApp(home: ThemeSettingsPage()));
+      await tester.pumpWidget(
+          const ProviderScope(child: MaterialApp(home: ThemeSettingsPage())));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
 
@@ -313,7 +317,8 @@ void main() {
       await registerThemeModule();
       await manager.setModuleEnabled('theme', false);
 
-      await tester.pumpWidget(const MaterialApp(home: ThemeSettingsPage()));
+      await tester.pumpWidget(
+          const ProviderScope(child: MaterialApp(home: ThemeSettingsPage())));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
       expect(find.text('主题模块未启用'), findsOneWidget);

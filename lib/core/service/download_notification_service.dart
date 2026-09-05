@@ -4,6 +4,7 @@ import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/router/app_router.dart';
 import 'package:gstore/core/routers.dart';
 
 /// 下载通知服务
@@ -52,7 +53,7 @@ class DownloadNotificationService {
           // 点击进度通知跳转下载中心
           if (response.payload == 'download_center') {
             try {
-              Get.toNamed(AppRoute.downloadCenter);
+              appRouter.push(AppRoute.downloadCenter);
             } catch (e) {
               appLog.error('DownloadNotificationService: 跳转下载中心失败 - $e');
             }

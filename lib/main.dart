@@ -4,8 +4,9 @@ import 'dart:io';
 import 'package:dynamic_color/dynamic_color.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gstore/core/theme/theme_utils.dart';
-import 'package:gstore/core/theme/theme_controller.dart';
+import 'package:gstore/core/theme/theme_provider.dart';
 import 'package:gstore/core/theme/theme_data_builder.dart';
 import 'package:gstore/core/logger/LogManager.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
@@ -17,54 +18,12 @@ import 'package:gstore/core/module/infra_modules.dart';
 import 'package:gstore/core/module/module.dart';
 import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/module/module_toggle_config.dart';
+import 'package:gstore/core/navigation/nav_key.dart';
+import 'package:gstore/core/router/app_router.dart';
 import 'package:gstore/core/routers.dart';
 
-/// 返回首页时重置键盘焦点
-///
-/// Flutter 路由 pop 存在焦点恢复机制：pop 回首页时会把焦点恢复到
-/// 推入二级页前持有焦点的首页 TextField（搜索框/AI 输入栏），导致键盘自动弹出。
-/// 此 observer 在 pop 回首页（previousRoute 为 home）后统一 unfocus，
-/// 语义：返回首页不自动弹键盘（想继续输入点一下输入框即可）。
-/// 不影响"搜索页 → 详情 → 返回搜索页"等键盘应保留的流程（previousRoute 非 home）。
-class HomeFocusResetObserver extends NavigatorObserver {
-  @override
-  void didPop(Route<dynamic> route, Route<dynamic>? previousRoute) {
-    super.didPop(route, previousRoute);
-    if (previousRoute?.settings.name == AppRoute.home) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        FocusManager.instance.primaryFocus?.unfocus();
-      });
-    }
-  }
-}
-
-/// M3 fadeThrough 近似全局页面过渡（交叉淡入 + 轻微上移）
-///
-/// Get（4.7.2）的 [CustomTransition] 是抽象类，需实现 buildTransition：
-/// (context, curve, alignment, animation, secondaryAnimation, child)。
-/// default: 分支（get_transition_mixin.dart:641）调用时 animation 已被
-/// defaultTransitionCurve（easeOutQuad）包裹；忽略 secondaryAnimation
-/// （fadeThrough 近似只做 primary 动画）。
-class _FadeThroughPageTransition extends CustomTransition {
-  @override
-  Widget buildTransition(
-    BuildContext context,
-    Curve? curve,
-    Alignment? alignment,
-    Animation<double> animation,
-    Animation<double> secondaryAnimation,
-    Widget child,
-  ) {
-    return FadeTransition(
-      opacity: animation,
-      child: SlideTransition(
-        position: Tween<Offset>(begin: const Offset(0, 0.02), end: Offset.zero)
-            .animate(animation),
-        child: child,
-      ),
-    );
-  }
-}
+/// 首页焦点重置与全局转场已迁移至 lib/core/router/app_router.dart
+/// （HomeFocusResetObserver）与主题 pageTransitionsTheme（转场复刻）。
 
 registerService() async {
   // 初始化日志管理器（必须在最开始，因为其他模块可能需要使用日志）
@@ -164,13 +123,6 @@ main() async {
     appLog.debug(message);
   };
 
-  Get.config(enableLog: true, defaultPopGesture: true);
-  // 全局页面过渡：M3 fadeThrough 近似（交叉淡入 + 轻微上移，无位移过场）。
-  // Get.customTransition 类型为 CustomTransition?（abstract class，非函数赋值），
-  // default: 分支经 buildTransition 调用（get_transition_mixin.dart:641），
-  // 传入的 animation 已被 Get 用 defaultTransitionCurve（easeOutQuad）包裹。
-  Get.customTransition = _FadeThroughPageTransition();
-
   // 配置系统前置初始化（静态 _initialized 幂等；ConfigModule.onInit 保留原调用，
   // 第二次调用为 no-op）。必须在 registerService 之前：启动装配
   //（_initModuleManager 预置禁用）需要按持久化开关读配置。
@@ -183,45 +135,47 @@ main() async {
   // 在首帧后跳转缓存管理页（返回键回首页）；后台恢复场景由 Router 监听处理。
   _ManageSpaceRouterState.coldHit = await _consumeManageSpaceEntry();
 
-  runApp(DynamicColorBuilder(builder: (light, dark) {
-    return Obx(() {
-      // theme 模块关闭时 Get 未注册 → 兜底创建默认 ThemeController（共享实例防主题分裂；
-      // re-enable 后 ThemeModule.onInit 的 isRegistered 守卫复用同一实例）
-      final controller = Get.isRegistered<ThemeController>()
-          ? Get.find<ThemeController>()
-          : Get.put(ThemeController());
-      return _ManageSpaceRouter(
-        child: GetMaterialApp(
-          // AppDialogs Snackbar 通道：ScaffoldMessenger 优先于 GetX overlay
-          // （Get.snackbar 与新版 Flutter overlay 兼容问题导致真机提示静默不显示）
-          scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
-          builder: (context, child) {
-            configStatusBar();
-            return Material(
-              child: SafeArea(
-                top: false,
-                bottom: false,
-                child: child!,
-              ),
-            );
-          },
-          initialRoute: AppRoute.home,
-          getPages: AppRoute.pages,
-          // 返回首页时重置键盘焦点（见 HomeFocusResetObserver）
-          navigatorObservers: [HomeFocusResetObserver()],
-          themeMode: controller.themeModeValue,
-          theme: ThemeDataBuilder.buildLightTheme(
-            light,
-            config: controller.themeConfig,
+  // 把 GoRouter 的 Navigator 注册为 GetX 全局 navigator key：
+  // GetX overlay（Get.dialog/bottomSheet/snackbar）在 MaterialApp.router 下继续可用
+  // （状态管理 Get.put/Obx 与之无关，天然可用）。
+  Get.addKey(appNavigatorKey);
+
+  // ProviderScope：Riverpod 根容器（与 GetX DI 共存；已迁移页面使用 ConsumerWidget/Notifier）
+  runApp(ProviderScope(
+    child: DynamicColorBuilder(builder: (light, dark) {
+      return Consumer(builder: (context, ref, _) {
+        // 主题状态由 Riverpod 权威管理（themeProvider 常驻，不随 theme 模块
+        // 上下线而失效——模块开关只影响 IThemeService 服务绑定/agent 工具）
+        final theme = ref.watch(themeProvider);
+        return _ManageSpaceRouter(
+          child: MaterialApp.router(
+            // AppDialogs Snackbar 通道：ScaffoldMessenger 优先于 GetX overlay
+            scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
+            routerConfig: appRouter,
+            builder: (context, child) {
+              configStatusBar();
+              return Material(
+                child: SafeArea(
+                  top: false,
+                  bottom: false,
+                  child: child!,
+                ),
+              );
+            },
+            themeMode: theme.themeModeValue,
+            theme: ThemeDataBuilder.buildLightTheme(
+              light,
+              config: theme.config,
+            ),
+            darkTheme: ThemeDataBuilder.buildDarkTheme(
+              dark,
+              config: theme.config,
+            ),
           ),
-          darkTheme: ThemeDataBuilder.buildDarkTheme(
-            dark,
-            config: controller.themeConfig,
-          ),
-        ),
-      );
-    });
-  }));
+        );
+      });
+    }),
+  ));
 }
 
 /// 消费"管理空间"入口请求。
@@ -304,7 +258,7 @@ class _ManageSpaceRouterState extends State<_ManageSpaceRouter>
   }
 
   void _openCacheManage() {
-    Get.toNamed(AppRoute.cacheManage);
+    appRouter.push(AppRoute.cacheManage);
   }
 
   @override

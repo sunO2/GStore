@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/module/module_manager.dart';
@@ -55,16 +56,18 @@ void main() {
   });
 
   group('非响应式点 null 降级', () {
-    testWidgets('settings_page：IThemeService 未绑定 → 显示默认文案不崩', (tester) async {
-      await tester.pumpWidget(const MaterialApp(home: SettingsPage()));
+    testWidgets('settings_page：无持久化配置 → 主题入口显示默认主题模式不崩', (tester) async {
+      await tester.pumpWidget(
+          const ProviderScope(child: MaterialApp(home: SettingsPage())));
 
-      expect(find.text('默认'), findsOneWidget,
-          reason: 'theme 模块下线时主题入口显示降级文案，不抛 Get.find 异常');
+      expect(find.text(AppThemeMode.system.displayName), findsOneWidget,
+          reason: 'themeProvider 恒可读（不依赖 GetX/模块绑定），默认跟随系统');
     });
 
     testWidgets('settings_page：ThemeController 已注册 → 显示当前主题模式', (tester) async {
       Get.put(ThemeController());
-      await tester.pumpWidget(const MaterialApp(home: SettingsPage()));
+      await tester.pumpWidget(
+          const ProviderScope(child: MaterialApp(home: SettingsPage())));
 
       expect(find.text(AppThemeMode.system.displayName), findsOneWidget);
     });

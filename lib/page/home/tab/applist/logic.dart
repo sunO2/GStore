@@ -3,6 +3,7 @@ import 'package:gstore/core/aggregate/aggregate.dart';
 import 'package:gstore/core/model/AppDetailRequest.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/router/app_router.dart';
 import 'package:gstore/http/github/dio_client.dart';
 
 import 'state.dart';
@@ -226,7 +227,7 @@ class ApplistLogic extends GetxController with GithubRequestMix {
 
   //搜索页面
   void search() {
-    Get.toNamed(AppRoute.search);
+    appRouter.push(AppRoute.search);
   }
 
   /// 构建分类列表（从应用数据去重提取，含"全部"）
@@ -319,7 +320,7 @@ class ApplistLogic extends GetxController with GithubRequestMix {
       channel: app.channel,
       channelCode: app.channelCode,
     );
-    Get.toNamed(AppRoute.appDetail, arguments: request);
+    appRouter.push(AppRoute.appDetail, extra: request);
   }
 
   /// 移除应用

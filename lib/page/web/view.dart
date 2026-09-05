@@ -8,11 +8,10 @@ class WebPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final logic = Get.put(WebPageLogic());
-    var args = Get.arguments;
     return Scaffold(
       // body: WebViewWidget(controller: logic.controller),
       floatingActionButton: FloatingActionButton(
-        onPressed: () => Get.back(),
+        onPressed: () => Navigator.of(context).pop(),
         child: const Icon(Icons.close),
       ),
     );

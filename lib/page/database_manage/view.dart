@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:gstore/core/core.dart';
 
@@ -6,44 +7,40 @@ import 'logic.dart';
 import 'state.dart';
 
 /// 数据库管理页：列出应用全部 SQLite 库，逐库→逐表→逐行浏览与删除。
-class DatabaseManagePage extends StatelessWidget {
+class DatabaseManagePage extends ConsumerWidget {
   const DatabaseManagePage({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    final logic = Get.put(DatabaseManageLogic());
-    final state = logic.state;
+  Widget build(BuildContext context, WidgetRef ref) {
+    final state = ref.watch(databaseManageProvider);
+    final notifier = ref.read(databaseManageProvider.notifier);
 
     return Scaffold(
       appBar: AppBar(title: const Text('数据库管理')),
-      body: Obx(() {
-        if (state.loading.value && state.dbs.isEmpty) {
-          return const LoadingState(message: '正在扫描数据库…');
-        }
-        if (state.dbs.isEmpty) {
-          return const Center(child: Text('未发现数据库文件'));
-        }
-        return RefreshIndicator(
-          onRefresh: logic.reload,
-          child: ListView(
-            physics: const AlwaysScrollableScrollPhysics(),
-            padding: const EdgeInsets.only(bottom: AppSpacing.xl),
-            children: [
-              _buildHint(context),
-              for (final db in state.dbs)
-                _DbCard(
-                  db: db,
-                  onTap: () {
-                    logic.loadTables(db);
-                    Navigator.of(context).push(MaterialPageRoute<void>(
-                      builder: (_) => const _DbTablesPage(),
-                    ));
-                  },
+      body: state.loading && state.dbs.isEmpty
+          ? const LoadingState(message: '正在扫描数据库…')
+          : state.dbs.isEmpty
+              ? const Center(child: Text('未发现数据库文件'))
+              : RefreshIndicator(
+                  onRefresh: notifier.reload,
+                  child: ListView(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    padding: const EdgeInsets.only(bottom: AppSpacing.xl),
+                    children: [
+                      _buildHint(context),
+                      for (final db in state.dbs)
+                        _DbCard(
+                          db: db,
+                          onTap: () {
+                            notifier.loadTables(db);
+                            Navigator.of(context).push(MaterialPageRoute<void>(
+                              builder: (_) => const _DbTablesPage(),
+                            ));
+                          },
+                        ),
+                    ],
+                  ),
                 ),
-            ],
-          ),
-        );
-      }),
     );
   }
 
@@ -59,16 +56,16 @@ class DatabaseManagePage extends StatelessWidget {
   }
 }
 
-class _DbCard extends StatelessWidget {
+class _DbCard extends ConsumerWidget {
   const _DbCard({required this.db, required this.onTap});
 
   final DbEntry db;
   final VoidCallback onTap;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
-    final logic = Get.find<DatabaseManageLogic>();
+    final notifier = ref.read(databaseManageProvider.notifier);
     return Card(
       margin: AppSpacing.allLG,
       child: ListTile(
@@ -90,7 +87,7 @@ class _DbCard extends StatelessWidget {
             ),
             const SizedBox(height: AppSpacing.xs),
             Text(
-              '版本 ${db.version} · ${logic.formatSize(db.size)}'
+              '版本 ${db.version} · ${notifier.formatSize(db.size)}'
               '${db.totalRows != null ? ' · ${db.totalRows} 行' : ''}'
               '${db.managed ? ' · 受管' : ''}',
               style: theme.textTheme.bodySmall,
@@ -106,212 +103,139 @@ class _DbCard extends StatelessWidget {
 }
 
 /// 库详情页：展示表列表。
-class _DbTablesPage extends StatelessWidget {
+class _DbTablesPage extends ConsumerWidget {
   const _DbTablesPage();
 
   @override
-  Widget build(BuildContext context) {
-    final logic = Get.find<DatabaseManageLogic>();
-    final state = logic.state;
+  Widget build(BuildContext context, WidgetRef ref) {
+    final state = ref.watch(databaseManageProvider);
+    final notifier = ref.read(databaseManageProvider.notifier);
+    final db = state.selectedDb;
 
     return Scaffold(
-      appBar: AppBar(
-        title: Obx(() {
-          final db = state.selectedDb.value;
-          return Text('${db?.displayName ?? '数据库'} · 表');
-        }),
-      ),
-      body: Obx(() {
-        if (state.tablesLoading.value) {
-          return const LoadingState(message: '正在读取表…');
-        }
-        if (state.tables.isEmpty) {
-          return const Center(child: Text('该数据库没有可浏览的表'));
-        }
-        return ListView(
-          children: [
-            for (final table in state.tables)
-              ListTile(
-                leading: Icon(
-                  table.readonly ? Icons.lock_outline : Icons.table_rows_outlined,
-                  color: table.readonly
-                      ? Theme.of(context).colorScheme.tertiary
-                      : Theme.of(context).colorScheme.primary,
+      appBar: AppBar(title: Text('${db?.displayName ?? '数据库'} · 表')),
+      body: state.tablesLoading
+          ? const LoadingState(message: '正在读取表…')
+          : state.tables.isEmpty
+              ? const Center(child: Text('该数据库没有可浏览的表'))
+              : ListView(
+                  children: [
+                    for (final table in state.tables)
+                      ListTile(
+                        leading: Icon(
+                          table.readonly
+                              ? Icons.lock_outline
+                              : Icons.table_rows_outlined,
+                          color: table.readonly
+                              ? Theme.of(context).colorScheme.tertiary
+                              : Theme.of(context).colorScheme.primary,
+                        ),
+                        title: Text(table.displayName != null
+                            ? '${table.displayName}  ·  ${table.name}'
+                            : table.name),
+                        subtitle: Text(
+                          '${table.count} 行${table.readonly ? ' · 受 App 管理，只读' : ' · 可删除记录'}',
+                        ),
+                        trailing: const Icon(Icons.chevron_right),
+                        onTap: () {
+                          notifier.loadRows(table.name);
+                          Navigator.of(context).push(MaterialPageRoute<void>(
+                            builder: (_) => const _DbRowsPage(),
+                          ));
+                        },
+                      ),
+                  ],
                 ),
-                title: Text(table.displayName != null
-                    ? '${table.displayName}  ·  ${table.name}'
-                    : table.name),
-                subtitle: Text(
-                  '${table.count} 行${table.readonly ? ' · 受 App 管理，只读' : ' · 可删除记录'}',
-                ),
-                trailing: const Icon(Icons.chevron_right),
-                onTap: () {
-                  logic.loadRows(table.name);
-                  Navigator.of(context).push(MaterialPageRoute<void>(
-                    builder: (_) => const _DbRowsPage(),
-                  ));
-                },
-              ),
-          ],
-        );
-      }),
     );
   }
 }
 
 /// 行浏览页：分页展示表数据，支持行级删除。
-class _DbRowsPage extends StatelessWidget {
+class _DbRowsPage extends ConsumerWidget {
   const _DbRowsPage();
 
   int _totalPages(DatabaseManageState state) {
-    final total = state.tableTotal.value;
+    final total = state.tableTotal;
     if (total <= 0) return 1;
     return (total / state.pageSize).ceil();
   }
 
   @override
-  Widget build(BuildContext context) {
-    final logic = Get.find<DatabaseManageLogic>();
-    final state = logic.state;
+  Widget build(BuildContext context, WidgetRef ref) {
+    final state = ref.watch(databaseManageProvider);
+    final notifier = ref.read(databaseManageProvider.notifier);
+    final totalPages = _totalPages(state);
+    final canPrev = state.page > 0;
+    final canNext = state.page < totalPages - 1;
 
     return Scaffold(
       appBar: AppBar(
-        title: Obx(() {
-          final table = state.browsingTable.value;
-          final db = state.selectedDb.value;
-          return Text('${db?.displayName ?? ''} · $table');
-        }),
+        title: Text('${state.selectedDb?.displayName ?? ''} · ${state.browsingTable}'),
         actions: [
-          Obx(() {
-            if (state.rowsLoading.value) {
-              return const Padding(
-                padding: EdgeInsets.all(AppSpacing.md),
-                child: AppLoading(size: AppLoadingSize.small),
-              );
-            }
-            final totalPages = _totalPages(state);
-            final canPrev = state.page.value > 0;
-            final canNext = state.page.value < totalPages - 1;
-            return Row(
+          if (state.rowsLoading)
+            const Padding(
+              padding: EdgeInsets.all(AppSpacing.md),
+              child: AppLoading(size: AppLoadingSize.small),
+            )
+          else
+            Row(
               children: [
                 IconButton(
                   icon: const Icon(Icons.chevron_left),
-                  onPressed: canPrev ? logic.prevPage : null,
+                  onPressed: canPrev ? notifier.prevPage : null,
                 ),
                 Center(
                   child: Text(
-                    '${state.page.value + 1} / $totalPages 页',
+                    '${state.page + 1} / $totalPages 页',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ),
                 IconButton(
                   icon: const Icon(Icons.chevron_right),
-                  onPressed: canNext ? logic.nextPage : null,
+                  onPressed: canNext ? notifier.nextPage : null,
                 ),
               ],
-            );
-          }),
+            ),
         ],
       ),
-      body: Obx(() {
-        if (state.rowsLoading.value && state.rows.isEmpty) {
-          return const LoadingState(message: '正在读取数据…');
-        }
-        if (state.columns.isEmpty || state.rows.isEmpty) {
-          return const Center(child: Text('该表暂无数据'));
-        }
-        return Column(
-          children: [
-            // 操作提示
-            Padding(
-              padding: AppSpacing.onlyVerticalSM,
-              child: Text(
-                '左右滑动查看字段 · 点按行选中，选中后可查看详情 / 删除',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-            ),
-            Expanded(child: _buildTable(context, logic, state)),
-          ],
-        );
-      }),
+      body: state.rowsLoading && state.rows.isEmpty
+          ? const LoadingState(message: '正在读取数据…')
+          : state.columns.isEmpty || state.rows.isEmpty
+              ? const Center(child: Text('该表暂无数据'))
+              : Column(
+                  children: [
+                    // 操作提示
+                    Padding(
+                      padding: AppSpacing.onlyVerticalSM,
+                      child: Text(
+                        '左右滑动查看字段 · 点按行选中，选中后可查看详情 / 删除',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ),
+                    Expanded(
+                      child: _DbTableBody(columns: state.columns, rows: state.rows),
+                    ),
+                  ],
+                ),
       // 底部固定操作栏：删除入口不随横向滚动移动，字段再多也始终可见
-      bottomNavigationBar: Obx(() {
-        final hasRows = state.rows.isNotEmpty;
-        final idx = state.selectedRowIndex.value;
-        final hasSelection = hasRows && idx >= 0 && idx < state.rows.length;
-        if (!hasRows) return const SizedBox.shrink();
-        return SafeArea(
-          child: Container(
-            padding: AppSpacing.onlyHorizontalLG,
-            decoration: BoxDecoration(
-              color: Theme.of(context).colorScheme.surface,
-              border: Border(
-                top: BorderSide(
-                  color: Theme.of(context).colorScheme.outlineVariant,
-                  width: 0.5,
-                ),
-              ),
-            ),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    hasSelection
-                        ? '已选中第 ${idx + 1} 行'
-                        : '点按行以选中',
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                ),
-                if (hasSelection) ...[
-                  TextButton.icon(
-                    onPressed: () {
-                      final row = state.rows[idx];
-                      _showRowDetail(context, logic, row);
-                    },
-                    icon: const Icon(Icons.visibility_outlined, size: 18),
-                    label: const Text('详情'),
-                  ),
-                  const SizedBox(width: AppSpacing.sm),
-                ],
-                FilledButton.tonalIcon(
-                  style: FilledButton.styleFrom(
-                    foregroundColor: Theme.of(context).colorScheme.error,
-                    backgroundColor: Theme.of(context)
-                        .colorScheme
-                        .errorContainer,
-                  ),
-                  onPressed: hasSelection
-                      ? () async {
-                          final row = state.rows[idx];
-                          final ok = await logic.deleteRow(
-                            state.browsingTable.value,
-                            row,
-                          );
-                          if (ok) {
-                            AppDialogs.showSuccess('已删除该记录');
-                            state.selectedRowIndex.value = -1;
-                            await logic.afterDelete(state.browsingTable.value);
-                          }
-                        }
-                      : null,
-                  icon: const Icon(Icons.delete_outline, size: 18),
-                  label: const Text('删除'),
-                ),
-              ],
-            ),
-          ),
-        );
-      }),
+      bottomNavigationBar: _DbBottomBar(
+        canDelete: state.selectedRowIndex >= 0 &&
+            state.selectedRowIndex < state.rows.length,
+      ),
     );
   }
+}
 
-  Widget _buildTable(
-    BuildContext context,
-    DatabaseManageLogic logic,
-    DatabaseManageState state,
-  ) {
+/// 表头 + 行（横向滚动）。行内按选中态细粒度重建（Consumer 行）。
+class _DbTableBody extends ConsumerWidget {
+  const _DbTableBody({required this.columns, required this.rows});
+
+  final List<String> columns;
+  final List<Map<String, Object?>> rows;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
-    final columns = state.columns;
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       child: SizedBox(
@@ -338,50 +262,143 @@ class _DbRowsPage extends StatelessWidget {
                 ],
               ),
             ),
-            // 数据行（选中高亮用行内 Obx，避免整表重建导致滚动位置丢失）
+            // 数据行
             Expanded(
               child: ListView.builder(
-                itemCount: state.rows.length,
+                itemCount: rows.length,
                 itemBuilder: (context, index) {
-                  final row = state.rows[index];
-                  return InkWell(
-                    onTap: () {
-                      state.selectedRowIndex.value = index;
-                    },
-                    child: Obx(() {
-                      final selected = state.selectedRowIndex.value == index;
-                      return Container(
-                        color: selected
-                            ? theme.colorScheme.secondaryContainer
-                                .withValues(alpha: 0.5)
-                            : null,
-                        padding: AppSpacing.allSM,
-                        decoration: BoxDecoration(
-                          border: Border(
-                            bottom: BorderSide(
-                              color: theme.colorScheme.outlineVariant,
-                              width: 0.5,
-                            ),
-                          ),
-                        ),
-                        child: Row(
-                          children: [
-                            for (final col in columns)
-                              SizedBox(
-                                width: 140,
-                                child: Text(
-                                  _valueToString(row[col]),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                          ],
-                        ),
-                      );
-                    }),
+                  return _DbRow(
+                    index: index,
+                    columns: columns,
+                    row: rows[index],
                   );
                 },
               ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 单行（自身 watch selectedRowIndex，仅选中变化时重建该行）。
+class _DbRow extends ConsumerWidget {
+  const _DbRow({
+    required this.index,
+    required this.columns,
+    required this.row,
+  });
+
+  final int index;
+  final List<String> columns;
+  final Map<String, Object?> row;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final selected = ref.watch(
+      databaseManageProvider.select((s) => s.selectedRowIndex == index),
+    );
+    final notifier = ref.read(databaseManageProvider.notifier);
+
+    return InkWell(
+      onTap: () => notifier.selectRow(index),
+      child: Container(
+        color: selected
+            ? theme.colorScheme.secondaryContainer.withValues(alpha: 0.5)
+            : null,
+        padding: AppSpacing.allSM,
+        decoration: BoxDecoration(
+          border: Border(
+            bottom: BorderSide(
+              color: theme.colorScheme.outlineVariant,
+              width: 0.5,
+            ),
+          ),
+        ),
+        child: Row(
+          children: [
+            for (final col in columns)
+              SizedBox(
+                width: 140,
+                child: Text(
+                  _valueToString(row[col]),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 底部固定操作栏（详情/删除）。
+class _DbBottomBar extends ConsumerWidget {
+  const _DbBottomBar({required this.canDelete});
+
+  final bool canDelete;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final state = ref.watch(databaseManageProvider);
+    final notifier = ref.read(databaseManageProvider.notifier);
+    if (state.rows.isEmpty) return const SizedBox.shrink();
+
+    final idx = state.selectedRowIndex;
+    final hasSelection = canDelete;
+    final row = hasSelection ? state.rows[idx] : null;
+
+    return SafeArea(
+      child: Container(
+        padding: AppSpacing.onlyHorizontalLG,
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.surface,
+          border: Border(
+            top: BorderSide(
+              color: Theme.of(context).colorScheme.outlineVariant,
+              width: 0.5,
+            ),
+          ),
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                hasSelection ? '已选中第 ${idx + 1} 行' : '点按行以选中',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ),
+            if (hasSelection) ...[
+              TextButton.icon(
+                onPressed: () => _showRowDetail(context, ref, row!),
+                icon: const Icon(Icons.visibility_outlined, size: 18),
+                label: const Text('详情'),
+              ),
+              const SizedBox(width: AppSpacing.sm),
+            ],
+            FilledButton.tonalIcon(
+              style: FilledButton.styleFrom(
+                foregroundColor: Theme.of(context).colorScheme.error,
+                backgroundColor:
+                    Theme.of(context).colorScheme.errorContainer,
+              ),
+              onPressed: hasSelection
+                  ? () async {
+                      final ok = await notifier.deleteRow(
+                        state.browsingTable,
+                        row!,
+                      );
+                      if (ok) {
+                        AppDialogs.showSuccess('已删除该记录');
+                        await notifier.afterDelete(state.browsingTable);
+                      }
+                    }
+                  : null,
+              icon: const Icon(Icons.delete_outline, size: 18),
+              label: const Text('删除'),
             ),
           ],
         ),
@@ -392,10 +409,11 @@ class _DbRowsPage extends StatelessWidget {
   /// 弹出完整行内容（固定高度可滚动，内含删除入口）。
   void _showRowDetail(
     BuildContext context,
-    DatabaseManageLogic logic,
+    WidgetRef ref,
     Map<String, Object?> row,
   ) {
     final theme = Theme.of(context);
+    final notifier = ref.read(databaseManageProvider.notifier);
     final maxHeight = MediaQuery.of(context).size.height * 0.55;
     AppDialogs.showDialog(
       title: '记录详情',
@@ -428,7 +446,8 @@ class _DbRowsPage extends StatelessWidget {
                               ),
                             ),
                             Expanded(
-                              child: SelectableText(_valueToString(entry.value)),
+                              child:
+                                  SelectableText(_valueToString(entry.value)),
                             ),
                           ],
                         ),
@@ -449,15 +468,14 @@ class _DbRowsPage extends StatelessWidget {
                 onPressed: row['_rowid_'] == null
                     ? null
                     : () async {
-                        final ok = await logic.deleteRow(
-                          logic.state.browsingTable.value,
+                        final ok = await notifier.deleteRow(
+                          ref.read(databaseManageProvider).browsingTable,
                           row,
                         );
                         if (ok) {
                           AppDialogs.showSuccess('已删除该记录');
-                          logic.state.selectedRowIndex.value = -1;
-                          await logic.afterDelete(
-                            logic.state.browsingTable.value,
+                          await notifier.afterDelete(
+                            ref.read(databaseManageProvider).browsingTable,
                           );
                           if (dialogContext.mounted) {
                             Navigator.of(dialogContext).pop();
@@ -471,9 +489,9 @@ class _DbRowsPage extends StatelessWidget {
       ),
     );
   }
+}
 
-  String _valueToString(Object? v) {
-    if (v == null) return 'null';
-    return v.toString();
-  }
+String _valueToString(Object? v) {
+  if (v == null) return 'null';
+  return v.toString();
 }

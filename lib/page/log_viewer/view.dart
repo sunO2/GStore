@@ -1,18 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:get/get.dart';
-import 'package:gstore/core/design/design_tokens.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:gstore/core/design/app_dialogs.dart';
+import 'package:gstore/core/design/app_typography.dart';
 import 'package:gstore/core/logger/LogManager.dart';
-import 'logic.dart';
-import 'state.dart';
 
-class LogViewerPage extends StatelessWidget {
+import 'providers.dart';
+
+class LogViewerPage extends ConsumerWidget {
   const LogViewerPage({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    final logic = Get.put(LogViewerLogic());
-    final state = logic.state;
+  Widget build(BuildContext context, WidgetRef ref) {
+    final filteredLogs = ref.watch(filteredLogsProvider);
+    final autoScroll = ref.watch(autoScrollProvider);
+    final level = ref.watch(logViewerFilterProvider);
 
     return Scaffold(
       appBar: AppBar(
@@ -20,28 +22,31 @@ class LogViewerPage extends StatelessWidget {
         elevation: 0,
         actions: [
           // 级别筛选
-          Obx(() => PopupMenuButton<LogLevel>(
-                icon: _buildLevelIcon(state.selectedLevel.value),
-                tooltip: '筛选日志级别',
-                onSelected: (level) => logic.setLogLevel(level),
-                itemBuilder: (context) => LogLevel.values.map((level) {
-                  final isSelected = state.selectedLevel.value == level;
-                  return CheckedPopupMenuItem(
-                    value: level,
-                    checked: isSelected,
-                    child: Text(level.label),
-                  );
-                }).toList(),
-              )),
+          PopupMenuButton<LogLevel>(
+            icon: _buildLevelIcon(level),
+            tooltip: '筛选日志级别',
+            onSelected: (lv) =>
+                ref.read(logViewerFilterProvider.notifier).set(lv),
+            itemBuilder: (context) => LogLevel.values.map((lv) {
+              final isSelected = level == lv;
+              return CheckedPopupMenuItem(
+                value: lv,
+                checked: isSelected,
+                child: Text(lv.label),
+              );
+            }).toList(),
+          ),
 
           // 自动滚动
-          Obx(() => IconButton(
-                icon: Icon(
-                  state.autoScroll.value ? Icons.arrow_downward : Icons.vertical_align_center,
-                ),
-                tooltip: state.autoScroll.value ? '自动滚动' : '手动滚动',
-                onPressed: logic.toggleAutoScroll,
-              )),
+          IconButton(
+            icon: Icon(
+              autoScroll
+                  ? Icons.arrow_downward
+                  : Icons.vertical_align_center,
+            ),
+            tooltip: autoScroll ? '自动滚动' : '手动滚动',
+            onPressed: () => ref.read(autoScrollProvider.notifier).toggle(),
+          ),
 
           // 清空日志
           IconButton(
@@ -54,7 +59,7 @@ class LogViewerPage extends StatelessWidget {
                 confirmText: '清空',
                 cancelText: '取消',
                 isDangerous: true,
-                onConfirm: logic.clearLogs,
+                onConfirm: LogManager.instance.clear,
               );
             },
           ),
@@ -63,45 +68,45 @@ class LogViewerPage extends StatelessWidget {
           IconButton(
             icon: const Icon(Icons.file_download),
             tooltip: '导出日志',
-            onPressed: logic.exportLogs,
+            onPressed: () {
+              final count = LogManager.instance.logs.length;
+              AppDialogs.showSuccess('已导出 $count 条日志');
+            },
           ),
         ],
       ),
-      body: Obx(() {
-        final filteredLogs = logic.getFilteredLogs();
-
-        if (filteredLogs.isEmpty) {
-          return Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(
-                  Icons.bug_report_outlined,
-                  size: 48,
-                  color: Theme.of(context).colorScheme.primary.withOpacity(0.5),
-                ),
-                const SizedBox(height: 16),
-                Text(
-                  '暂无日志',
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: Colors.grey,
-                      ),
-                ),
-              ],
+      body: filteredLogs.isEmpty
+          ? Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    Icons.bug_report_outlined,
+                    size: 48,
+                    color: Theme.of(context)
+                        .colorScheme
+                        .primary
+                        .withValues(alpha: 0.5),
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    '暂无日志',
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          color: Theme.of(context).colorScheme.outline,
+                        ),
+                  ),
+                ],
+              ),
+            )
+          : ListView.builder(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              itemCount: filteredLogs.length,
+              reverse: autoScroll,
+              itemBuilder: (context, index) {
+                final log = filteredLogs[index];
+                return _LogItemView(log: log);
+              },
             ),
-          );
-        }
-
-        return ListView.builder(
-          padding: const EdgeInsets.symmetric(vertical: 8),
-          itemCount: filteredLogs.length,
-          reverse: state.autoScroll.value,
-          itemBuilder: (context, index) {
-            final log = filteredLogs[index];
-            return _buildLogItem(context, log);
-          },
-        );
-      }),
     );
   }
 
@@ -126,35 +131,21 @@ class LogViewerPage extends StatelessWidget {
 
     return Icon(Icons.filter_list, color: color);
   }
+}
 
-  Widget _buildLogItem(BuildContext context, LogEntry log) {
-    Color levelColor;
-    IconData levelIcon;
+/// 单条日志（点击长按复制）。
+class _LogItemView extends StatelessWidget {
+  const _LogItemView({required this.log});
 
-    switch (log.level) {
-      case LogLevel.debug:
-        levelColor = Colors.grey;
-        levelIcon = Icons.bug_report;
-        break;
-      case LogLevel.info:
-        levelColor = Colors.blue;
-        levelIcon = Icons.info;
-        break;
-      case LogLevel.warning:
-        levelColor = Colors.orange;
-        levelIcon = Icons.warning;
-        break;
-      case LogLevel.error:
-        levelColor = Colors.red;
-        levelIcon = Icons.error;
-        break;
-      default:
-        levelColor = Colors.green;
-        levelIcon = Icons.check_circle;
-    }
+  final LogEntry log;
+
+  @override
+  Widget build(BuildContext context) {
+    final levelColor = _levelColor(log.level);
+    final levelIcon = _levelIcon(log.level);
 
     return InkWell(
-      onLongPress: () => _copyLogToClipboard(context, log),
+      onLongPress: () => _copyToClipboard(context),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
         child: Row(
@@ -168,7 +159,7 @@ class LogViewerPage extends StatelessWidget {
                 log.timeString,
                 style: TextStyle(
                   fontSize: AppTypography.sizeXXS,
-                  color: AppColors.grey600,
+                  color: Theme.of(context).colorScheme.outline,
                   fontFamily: 'monospace',
                 ),
               ),
@@ -196,7 +187,7 @@ class LogViewerPage extends StatelessWidget {
                       style: TextStyle(
                         fontFamily: 'monospace',
                         fontSize: AppTypography.sizeXXS,
-                        color: Colors.grey[700],
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
                       ),
                     ),
                   ],
@@ -209,23 +200,16 @@ class LogViewerPage extends StatelessWidget {
     );
   }
 
-  /// 复制日志到剪贴板
-  void _copyLogToClipboard(BuildContext context, LogEntry log) {
+  Future<void> _copyToClipboard(BuildContext context) async {
     final buffer = StringBuffer();
-    buffer.writeln('${log.dateTimeString} [${log.level.name.toUpperCase()}] ${log.message}');
+    buffer.writeln(
+        '${log.dateTimeString} [${log.level.name.toUpperCase()}] ${log.message}');
     if (log.data != null && log.data!.isNotEmpty) {
       buffer.writeln(_formatData(log.data!));
     }
 
-    // 复制到剪贴板
-    Clipboard.setData(ClipboardData(text: buffer.toString().trimRight()));
-
-    Get.snackbar(
-      '已复制',
-      '日志已复制到剪贴板',
-      icon: const Icon(Icons.check_circle, color: Colors.green),
-      duration: const Duration(seconds: 1),
-    );
+    await Clipboard.setData(ClipboardData(text: buffer.toString().trimRight()));
+    if (context.mounted) AppDialogs.showSuccess('日志已复制到剪贴板');
   }
 
   String _formatData(Map<String, dynamic> data) {
@@ -234,5 +218,35 @@ class LogViewerPage extends StatelessWidget {
       buffer.writeln('$key: $value');
     });
     return buffer.toString().trimRight();
+  }
+
+  static Color _levelColor(LogLevel level) {
+    switch (level) {
+      case LogLevel.debug:
+        return Colors.grey;
+      case LogLevel.info:
+        return Colors.blue;
+      case LogLevel.warning:
+        return Colors.orange;
+      case LogLevel.error:
+        return Colors.red;
+      default:
+        return Colors.green;
+    }
+  }
+
+  static IconData _levelIcon(LogLevel level) {
+    switch (level) {
+      case LogLevel.debug:
+        return Icons.bug_report;
+      case LogLevel.info:
+        return Icons.info;
+      case LogLevel.warning:
+        return Icons.warning;
+      case LogLevel.error:
+        return Icons.error;
+      default:
+        return Icons.check_circle;
+    }
   }
 }

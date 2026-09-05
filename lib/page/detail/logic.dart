@@ -41,6 +41,12 @@ class DetailLogic extends GetxController
   /// 请求参数
   AppDetailRequest? request;
 
+  /// go_router extra 传入的路由参数（原 Get.arguments），view 构造后设置。
+  Object? _extra;
+
+  /// 设置路由 extra（DetailPage build 内经 GoRouterState.of(context).extra 传入）。
+  void setRouteExtra(Object? extra) => _extra = extra;
+
   /// 渠道管理器（channel 模块下线时为 null，消费点软降级）
   ChannelManager? _channelManager;
 
@@ -95,7 +101,7 @@ class DetailLogic extends GetxController
 
   /// 从参数初始化基础信息
   void _initializeFromArguments() {
-    final args = Get.arguments;
+    final args = _extra;
     if (args == null) {
       state.errorMessage.value = '缺少参数';
       state.isLoading.value = false;

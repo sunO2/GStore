@@ -1,4 +1,5 @@
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/router/app_router.dart';
 import 'state.dart';
 
 class MineLogic extends GetxController {
@@ -11,10 +12,10 @@ class MineLogic extends GetxController {
   }
 
   search() {
-    Get.toNamed(AppRoute.search);
+    appRouter.push(AppRoute.search);
   }
 
   category(AppCategory category) {
-    Get.toNamed(AppRoute.categoryPage, arguments: category);
+    appRouter.push(AppRoute.categoryPage, extra: category);
   }
 }

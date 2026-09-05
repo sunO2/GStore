@@ -11,6 +11,7 @@ import 'package:gstore/core/design/channel_version_picker_sheet.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/AppDetailRequest.dart';
 import 'package:gstore/core/model/AppSummary.dart';
+import 'package:gstore/core/router/app_router.dart';
 import 'package:gstore/core/service/metadata_submit_service.dart';
 import 'package:gstore/page/detail/state.dart';
 import 'package:gstore/page/web/browser.dart';
@@ -155,7 +156,7 @@ mixin DetailMetadataMixin on GetxController {
         confirmText: '去登录',
         cancelText: '取消',
       );
-      if (goLogin == true) Get.toNamed(AppRoute.auth);
+      if (goLogin == true) appRouter.push(AppRoute.auth);
       return;
     }
     final confirmed = await AppDialogs.showDialog(

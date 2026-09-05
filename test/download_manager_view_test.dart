@@ -407,4 +407,48 @@ void main() {
     expect(find.byTooltip('复制链接'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('已完成但文件被外部删除：不显示安装，显示「已删除」徽标/按钮', (tester) async {
+    _useTallView(tester);
+
+    final item = _item(DownloadStatusEnum.completed,
+        appId: 'com.example.missing', fileName: 'missing.apk');
+    final id = item.id!;
+    // 模拟文件已被（缓存管理页等）删除：logic 的 missingFileIds 命中该任务
+    logic.missingFileIds
+      ..clear()
+      ..add(id);
+    logic.seed([
+      [item],
+    ]);
+
+    await pumpPage(tester);
+
+    // 不显示「安装」按钮
+    expect(find.text('安装'), findsNothing);
+    // 徽标（组头）与主按钮位均显示「已删除」
+    expect(find.text('已删除'), findsNWidgets(2));
+    // 仍保留「重新下载」入口（行尾 refresh 图标）
+    expect(find.byTooltip('重新下载'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('已完成且文件存在：正常显示「已完成」徽标与「安装」按钮', (tester) async {
+    _useTallView(tester);
+
+    final item = _item(DownloadStatusEnum.completed,
+        appId: 'com.example.exists', fileName: 'exists.apk');
+    logic.missingFileIds.clear(); // 文件存在：不在缺失集合
+    logic.seed([
+      [item],
+    ]);
+
+    await pumpPage(tester);
+
+    // 徽标为「已完成」（筛选 chip「已完成」等也会命中该文本，故用 findsWidgets）
+    expect(find.text('已完成'), findsWidgets);
+    expect(find.text('安装'), findsOneWidget);
+    expect(find.text('已删除'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
 }

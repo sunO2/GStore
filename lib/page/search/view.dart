@@ -1,6 +1,7 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
-import 'package:get/get.dart';
+import 'package:go_router/go_router.dart';
+import 'package:gstore/core/router/app_router.dart';
 import 'package:gstore/core/routers.dart';
 import 'package:gstore/core/utils/logger.dart';
 import 'package:gstore/core/core.dart';
@@ -16,7 +17,9 @@ class SearchPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final logic = Get.put(SearchLogic());
-    var args = Get.arguments;
+    // go_router extra 传入浏览参数（原 Get.arguments）；无参为搜索入口
+    final args = goRouterExtraOf(context);
+    logic.loadCategory(args is AppCategory ? args : null);
     return Scaffold(
       appBar: AppBar(
         title: args == null
@@ -68,7 +71,7 @@ class SearchPage extends StatelessWidget {
                 return PressableScale(
                   child: ListTile(
                     onTap: () {
-                      Get.toNamed(AppRoute.appDetail, arguments: app);
+                      context.push(AppRoute.appDetail, extra: app);
                     },
                     leading: Hero(
                       tag: app.icon,

@@ -1,36 +1,35 @@
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/module/module_toggle_config.dart';
 
 import 'state.dart';
 
-/// 模块管理逻辑
+/// 模块管理逻辑（Riverpod Notifier）
 ///
-/// - onInit 构建模块清单（9 可开关业务模块 + 8 系统置灰模块）并订阅
-///   [ModuleManager.onChange] 实时刷新各模块启用状态（onClose 取消订阅）
+/// - build 构建模块清单（9 可开关业务模块 + 8 系统置灰模块）并订阅
+///   [ModuleManager.onChange] 实时刷新各模块启用状态
 /// - [toggle]：经 [ModuleToggleConfig.setEnabled] 持久化 + 运行时上下线；
 ///   切换中置灰防连击；因活跃依赖者被拒时 AppDialogs 提示"关闭 X 将影响 Y/Z 模块"
-class ModuleManageLogic extends GetxController {
-  final ModuleManageState state = ModuleManageState();
-
-  /// onChange 订阅（onClose 取消，订阅卫生契约）
+class ModuleManageNotifier extends Notifier<ModuleManageState> {
+  /// onChange 订阅（Notifier 销毁时经 ref.onDispose 取消）
   StreamSubscription<ModuleEvent>? _changeSubscription;
 
   @override
-  void onInit() {
-    super.onInit();
-    _buildEntries();
-    _refreshEnabled();
-    state.loading.value = false;
-    // 实时刷新：模块上下线事件 → 重读各模块启用状态
+  ModuleManageState build() {
+    // 构建清单 + 初始化状态
+    final entries = _buildEntries();
+    final refreshed = _withEnabled(entries);
+    final state = ModuleManageState(
+      entries: refreshed,
+      loading: false,
+    );
+    // 订阅模块上下线事件实时刷新
     _changeSubscription = ModuleManager.instance.onChange.listen((_) {
       _refreshEnabled();
     });
-  }
-
-  @override
-  void onClose() {
-    _changeSubscription?.cancel();
-    super.onClose();
+    ref.onDispose(() => _changeSubscription?.cancel());
+    return state;
   }
 
   /// 切换模块开关
@@ -38,63 +37,67 @@ class ModuleManageLogic extends GetxController {
   /// [enabled] 目标状态；切换期间 [state.toggling] 防连击（UI 同时置灰）。
   /// 关闭被活跃依赖者拒绝时 AppDialogs 提示。
   Future<void> toggle(String name, bool enabled) async {
-    if (state.toggling.contains(name)) return; // 防连击
-    state.toggling.add(name);
+    final toggling = state.toggling;
+    if (toggling.contains(name)) return; // 防连击
+    state = state.copyWith(
+      toggling: {...toggling, name},
+    );
     try {
       final ok = await ModuleToggleConfig.instance.setEnabled(name, enabled);
       if (!ok && !enabled) {
         _showRejectedWarning(name);
       }
     } finally {
-      state.toggling.remove(name);
+      final next = {...state.toggling}..remove(name);
+      state = state.copyWith(toggling: next);
       _refreshEnabled();
     }
   }
 
   /// 构建模块清单：9 可开关业务模块 + 8 系统置灰模块
-  void _buildEntries() {
-    state.entries.value = [
+  List<ModuleEntry> _buildEntries() {
+    return const [
       // ---- 可开关业务模块（9）----
       ModuleEntry(
         name: 'channel',
         title: '渠道',
         description: '多来源应用聚合（GitHub / F-Droid / vivo / 本地库）',
-        dependencies: const ['db'],
+        dependencies: ['db'],
         togglable: true,
       ),
       ModuleEntry(
         name: 'download',
         title: '下载',
         description: '应用下载与断点续传',
-        dependencies: const ['channel', 'config'],
+        dependencies: ['channel', 'config'],
         togglable: true,
       ),
       ModuleEntry(
         name: 'backup',
         title: '备份',
         description: '本地与 WebDAV 数据备份恢复',
-        dependencies: const ['db', 'config', 'channel'],
+        dependencies: ['db', 'config', 'channel'],
         togglable: true,
       ),
       ModuleEntry(
         name: 'webdav',
         title: 'WebDAV',
         description: 'WebDAV 云端备份同步',
-        dependencies: const ['backup', 'config'],
+        dependencies: ['backup', 'config'],
         togglable: true,
       ),
       ModuleEntry(
         name: 'fdroid',
         title: 'F-Droid',
         description: 'F-Droid 仓库解析与源管理',
-        dependencies: const ['config', 'db'],
+        dependencies: ['config', 'db'],
         togglable: true,
       ),
       ModuleEntry(
         name: 'theme',
         title: '主题',
         description: '主题模式与动态配色',
-        dependencies: const ['config'],
+        dependencies: ['config'],
         togglable: true,
       ),
       ModuleEntry(
@@ -107,14 +110,14 @@ class ModuleManageLogic extends GetxController {
         name: 'aggregate',
         title: '我的应用',
         description: '已添加应用聚合管理',
-        dependencies: const ['db'],
+        dependencies: ['db'],
         togglable: true,
       ),
       ModuleEntry(
         name: 'agent_tools',
         title: 'Agent 助手',
         description: 'AI 对话与内置工具',
-        dependencies: const ['config', 'channel'],
+        dependencies: ['config', 'channel'],
         togglable: true,
       ),
       // ---- 系统置灰模块（8）----
@@ -179,10 +182,17 @@ class ModuleManageLogic extends GetxController {
 
   /// 从 ModuleManager 重读各模块启用状态（同步；系统模块恒启用）
   void _refreshEnabled() {
+    state = state.copyWith(
+      entries: _withEnabled(state.entries),
+    );
+  }
+
+  /// 返回 enabled 按 ModuleManager 实时状态填充的新列表。
+  List<ModuleEntry> _withEnabled(List<ModuleEntry> entries) {
     final manager = ModuleManager.instance;
-    for (final entry in state.entries) {
-      entry.enabled.value = manager.isModuleEnabled(entry.name);
-    }
+    return entries
+        .map((e) => e.copyWith(enabled: manager.isModuleEnabled(e.name)))
+        .toList();
   }
 
   /// 活跃依赖者拒绝提示：关闭 [name] 将影响 Y/Z 模块
@@ -213,3 +223,9 @@ class ModuleManageLogic extends GetxController {
     return name;
   }
 }
+
+/// 模块管理页 Provider。
+final moduleManageProvider =
+    NotifierProvider<ModuleManageNotifier, ModuleManageState>(
+  ModuleManageNotifier.new,
+);

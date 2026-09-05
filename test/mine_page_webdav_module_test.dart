@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/test/test_flutter_secure_storage_platform.dart';
 // ignore: depend_on_referenced_packages
 import 'package:flutter_secure_storage_platform_interface/flutter_secure_storage_platform_interface.dart';
@@ -92,7 +93,8 @@ void main() {
 
   /// 泵起我的页并等异步初始化（_checkWebDavConfig + BackupLogic）完成
   Future<void> pumpMinePage(WidgetTester tester) async {
-    await tester.pumpWidget(const GetMaterialApp(home: MinePage()));
+    await tester.pumpWidget(
+        const ProviderScope(child: GetMaterialApp(home: MinePage())));
     await tester.pumpAndSettle();
   }
 

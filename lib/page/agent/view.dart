@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_gen_ai_chat_ui/flutter_gen_ai_chat_ui.dart'
     hide AgentState;
 import 'package:get/get.dart';
+import 'package:go_router/go_router.dart';
 import 'package:gstore/core/icons/Icons.dart';
 import 'package:gstore/page/home/logic.dart';
 import 'package:gstore/core/agent/agent_service.dart';
@@ -486,7 +487,8 @@ class _AgentPageState extends State<AgentPage>
                               child: Text('Agent 模块未启用，对话不可用'),
                             ),
                             TextButton(
-                              onPressed: () => Get.toNamed(AppRoute.moduleManage),
+                              onPressed: () =>
+                                  context.push(AppRoute.moduleManage),
                               child: const Text('去启用'),
                             ),
                           ],

@@ -15,8 +15,23 @@ class SearchLogic extends GetxController with GithubRequestMix {
   void onReady() async {
     database = "gstore".repoDB.db;
     textEditingController.addListener(inputListener);
-    queryCaertory();
     super.onReady();
+  }
+
+  /// 分类浏览入口参数已通过 GoRouter extra 由页面传入（go_router 无 Get.arguments）。
+  bool _categoryLoaded = false;
+
+  void loadCategory(AppCategory? category) {
+    if (category == null || _categoryLoaded) return;
+    _categoryLoaded = true;
+    _queryCategory(category);
+  }
+
+  void _queryCategory(AppCategory category) async {
+    var searchList = await database?.dao.queryCategory(category.id);
+    if (searchList?.isNotEmpty ?? false) {
+      state.searchList.value = searchList!;
+    }
   }
 
   void inputListener() async {
@@ -39,16 +54,6 @@ class SearchLogic extends GetxController with GithubRequestMix {
         state.searchList.clear();
       }
     });
-  }
-
-  void queryCaertory() async {
-    var category = Get.arguments;
-    if (category is AppCategory) {
-      var searchList = await database?.dao.queryCategory(category.id);
-      if (searchList?.isNotEmpty ?? false) {
-        state.searchList.value = searchList!;
-      }
-    }
   }
 
   @override

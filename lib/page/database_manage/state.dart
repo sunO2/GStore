@@ -1,8 +1,9 @@
-import 'package:get/get.dart';
+/// 数据库管理页模型与 UI 状态（Riverpod 不可变 state）。
+library;
 
 /// 单个数据库文件的信息。
 class DbEntry {
-  DbEntry({
+  const DbEntry({
     required this.filePath,
     required this.fileName,
     required this.displayName,
@@ -16,7 +17,7 @@ class DbEntry {
   final String filePath;
   final String fileName;
 
-  /// 展示名（如“应用目录库”“我的应用”）。
+  /// 展示名（如"应用目录库""我的应用"）。
   final String displayName;
 
   /// 用途说明。
@@ -32,29 +33,12 @@ class DbEntry {
   final bool managed;
 
   /// 行数（懒加载）。
-  int? totalRows;
-
-  DbEntry copyWith({
-    int? size,
-    int? version,
-    int? totalRows,
-  }) {
-    return DbEntry(
-      filePath: filePath,
-      fileName: fileName,
-      displayName: displayName,
-      description: description,
-      size: size ?? this.size,
-      version: version ?? this.version,
-      managed: managed,
-      totalRows: totalRows ?? this.totalRows,
-    );
-  }
+  final int? totalRows;
 }
 
 /// 单个表的信息。
 class DbTable {
-  DbTable({
+  const DbTable({
     required this.name,
     required this.count,
     this.displayName,
@@ -73,50 +57,74 @@ class DbTable {
   final bool readonly;
 }
 
-/// 数据库管理页状态。
+/// 数据库管理页 UI 状态。
 class DatabaseManageState {
-  /// 首页加载中。
-  final RxBool loading = false.obs;
-
-  /// 发现的数据库列表。
-  final RxList<DbEntry> dbs = <DbEntry>[].obs;
-
-  /// 当前选中的库（进入库详情时设置）。
-  final Rxn<DbEntry> selectedDb = Rxn<DbEntry>();
-
-  /// 当前库的表列表。
-  final RxList<DbTable> tables = <DbTable>[].obs;
-
-  /// 表加载中。
-  final RxBool tablesLoading = false.obs;
-
-  /// 当前浏览的库文件路径。
-  final RxString browsingPath = ''.obs;
-
-  /// 当前浏览的表名。
-  final RxString browsingTable = ''.obs;
-
-  /// 当前表行数据。
-  final RxList<Map<String, Object?>> rows = <Map<String, Object?>>[].obs;
-
-  /// 当前表列名。
-  final RxList<String> columns = <String>[].obs;
-
-  /// 当前表总行数。
-  final RxInt tableTotal = 0.obs;
-
-  /// 当前页（从 0 开始）。
-  final RxInt page = 0.obs;
-
-  /// 选中行的行内索引（-1 表示未选中，用于高亮与详情定位）。
-  final RxInt selectedRowIndex = (-1).obs;
+  final bool loading;
+  final List<DbEntry> dbs;
+  final DbEntry? selectedDb;
+  final List<DbTable> tables;
+  final bool tablesLoading;
+  final String browsingTable;
+  final List<Map<String, Object?>> rows;
+  final List<String> columns;
+  final int tableTotal;
+  final int page;
+  final int selectedRowIndex;
+  final bool rowsLoading;
+  final bool busy;
 
   /// 每页行数。
-  final int pageSize = 50;
+  final int pageSize;
 
-  /// 行浏览加载中。
-  final RxBool rowsLoading = false.obs;
+  const DatabaseManageState({
+    this.loading = false,
+    this.dbs = const [],
+    this.selectedDb,
+    this.tables = const [],
+    this.tablesLoading = false,
+    this.browsingTable = '',
+    this.rows = const [],
+    this.columns = const [],
+    this.tableTotal = 0,
+    this.page = 0,
+    this.selectedRowIndex = -1,
+    this.rowsLoading = false,
+    this.busy = false,
+    this.pageSize = 50,
+  });
 
-  /// 操作进行中（删除等）。
-  final RxBool busy = false.obs;
+  DatabaseManageState copyWith({
+    bool? loading,
+    List<DbEntry>? dbs,
+    DbEntry? selectedDb,
+    bool clearSelectedDb = false,
+    List<DbTable>? tables,
+    bool? tablesLoading,
+    String? browsingTable,
+    List<Map<String, Object?>>? rows,
+    List<String>? columns,
+    int? tableTotal,
+    int? page,
+    int? selectedRowIndex,
+    bool? rowsLoading,
+    bool? busy,
+  }) {
+    return DatabaseManageState(
+      loading: loading ?? this.loading,
+      dbs: dbs ?? this.dbs,
+      selectedDb:
+          clearSelectedDb ? null : (selectedDb ?? this.selectedDb),
+      tables: tables ?? this.tables,
+      tablesLoading: tablesLoading ?? this.tablesLoading,
+      browsingTable: browsingTable ?? this.browsingTable,
+      rows: rows ?? this.rows,
+      columns: columns ?? this.columns,
+      tableTotal: tableTotal ?? this.tableTotal,
+      page: page ?? this.page,
+      selectedRowIndex: selectedRowIndex ?? this.selectedRowIndex,
+      rowsLoading: rowsLoading ?? this.rowsLoading,
+      busy: busy ?? this.busy,
+      pageSize: pageSize,
+    );
+  }
 }

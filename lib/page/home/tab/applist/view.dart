@@ -1,6 +1,7 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+import 'package:go_router/go_router.dart';
 import 'package:gstore/core/icons/Icons.dart';
 import 'package:gstore/core/service/user_manager.dart';
 import 'package:gstore/http/github/user_info/user_info.dart';
@@ -146,7 +147,7 @@ class AppListState extends State<ApplistPage>
                 ),
               );
             }),
-            onPressed: () => Get.toNamed(AppRoute.updateCenter),
+            onPressed: () => context.push(AppRoute.updateCenter),
           ),
           IconButton(
             tooltip: "下载中心",
@@ -155,7 +156,7 @@ class AppListState extends State<ApplistPage>
               // 与 AppBar 默认图标/用户头像(iconXL) 对齐
               size: AppTypography.iconXL,
             ),
-            onPressed: () => Get.toNamed(AppRoute.downloadCenter),
+            onPressed: () => context.push(AppRoute.downloadCenter),
           ),
           Obx(() {
             var user = Get.find<UserManager>().userInfo.value;
@@ -197,7 +198,7 @@ class AppListState extends State<ApplistPage>
 
             onPressed() async {
               if (user.avatarUrl?.isEmpty ?? true) {
-                final result = await Get.toNamed<AuthStatus>(AppRoute.auth);
+                final result = await context.push<AuthStatus>(AppRoute.auth);
                 if (result == AuthStatus.success) {
                   if (mounted) {
                     Get.snackbar(
@@ -323,7 +324,7 @@ class AppListState extends State<ApplistPage>
                           icon: AliIcon.appUpdateCenter,
                           size: AppTypography.iconSM,
                         ),
-                        onPressed: () => Get.toNamed(AppRoute.updateCenter),
+                        onPressed: () => context.push(AppRoute.updateCenter),
                       ),
                     ),
                     HorizontalAppRow(

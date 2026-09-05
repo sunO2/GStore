@@ -1,19 +1,19 @@
 import 'package:flutter/material.dart';
-import 'package:get/get.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/design/app_borders.dart';
-import 'package:gstore/core/theme/theme_controller.dart';
+import 'package:gstore/core/theme/theme_provider.dart';
 import 'package:gstore/core/theme/app_theme_config.dart';
 
 /// Theme settings page with live preview
-class ThemeSettingsPage extends StatefulWidget {
+class ThemeSettingsPage extends ConsumerStatefulWidget {
   const ThemeSettingsPage({super.key});
 
   @override
-  State<ThemeSettingsPage> createState() => _ThemeSettingsPageState();
+  ConsumerState<ThemeSettingsPage> createState() => _ThemeSettingsPageState();
 }
 
-class _ThemeSettingsPageState extends State<ThemeSettingsPage> {
+class _ThemeSettingsPageState extends ConsumerState<ThemeSettingsPage> {
   /// theme 模块是否在线（随模块上下线实时更新；下线时整页未启用占位）
   bool _moduleOnline = false;
 
@@ -82,64 +82,68 @@ class _ThemeSettingsPageState extends State<ThemeSettingsPage> {
   }
 
   Widget _buildBody(BuildContext context) {
+    // 主题状态：Riverpod 权威（变化 → 本页 rebuild，selector 以新值渲染）
+    final theme = ref.watch(themeProvider);
+    final notifier = ref.read(themeProvider.notifier);
     return ListView(
-        children: [
-          // Info banner
-          Container(
-            margin: AppSpacing.allLG,
-            padding: AppSpacing.allMD,
-            decoration: BoxDecoration(
-              color: Theme.of(context).colorScheme.primaryContainer.withOpacity(0.5),
-              borderRadius: AppRadius.allMD,
-            ),
-            child: Row(
-              children: [
-                Icon(
-                  Icons.info_outline,
-                  color: Theme.of(context).colorScheme.primary,
-                  size: AppTypography.iconLG,
-                ),
-                const SizedBox(width: AppSpacing.md),
-                Expanded(
-                  child: Text(
-                    '点击下方选项即可立即切换主题，可在预览区域查看效果',
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                ),
-              ],
-            ),
+      children: [
+        // Info banner
+        Container(
+          margin: AppSpacing.allLG,
+          padding: AppSpacing.allMD,
+          decoration: BoxDecoration(
+            color:
+                Theme.of(context).colorScheme.primaryContainer.withOpacity(0.5),
+            borderRadius: AppRadius.allMD,
           ),
+          child: Row(
+            children: [
+              Icon(
+                Icons.info_outline,
+                color: Theme.of(context).colorScheme.primary,
+                size: AppTypography.iconLG,
+              ),
+              const SizedBox(width: AppSpacing.md),
+              Expanded(
+                child: Text(
+                  '点击下方选项即可立即切换主题，可在预览区域查看效果',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ),
+            ],
+          ),
+        ),
 
-          // Theme mode selector
-          _buildSectionHeader('主题模式'),
-          _buildThemeModeSelector(context),
-          const SizedBox(height: AppSpacing.xxl),
+        // Theme mode selector
+        _buildSectionHeader('主题模式'),
+        _buildThemeModeSelector(context, theme, notifier),
+        const SizedBox(height: AppSpacing.xxl),
 
-          // Color customization
-          _buildSectionHeader('颜色设置'),
-          _buildColorSettings(context),
-          const SizedBox(height: AppSpacing.xxl),
+        // Color customization
+        _buildSectionHeader('颜色设置'),
+        _buildColorSettings(context, theme, notifier),
+        const SizedBox(height: AppSpacing.xxl),
 
-          // Font style
-          _buildSectionHeader('字体风格'),
-          _buildFontStyleSelector(context),
-          const SizedBox(height: AppSpacing.xxl),
+        // Font style
+        _buildSectionHeader('字体风格'),
+        _buildFontStyleSelector(context, theme, notifier),
+        const SizedBox(height: AppSpacing.xxl),
 
-          // Radius style
-          _buildSectionHeader('圆角风格'),
-          _buildRadiusStyleSelector(context),
-          const SizedBox(height: AppSpacing.xxl),
+        // Radius style
+        _buildSectionHeader('圆角风格'),
+        _buildRadiusStyleSelector(context, theme, notifier),
+        const SizedBox(height: AppSpacing.xxl),
 
-          // Border style
-          _buildSectionHeader('边框风格'),
-          _buildBorderStyleSelector(context),
-          const SizedBox(height: AppSpacing.xxl),
+        // Border style
+        _buildSectionHeader('边框风格'),
+        _buildBorderStyleSelector(context, theme, notifier),
+        const SizedBox(height: AppSpacing.xxl),
 
-          // Preview section
-          _buildSectionHeader('预览'),
-          _buildPreviewSection(context),
-        ],
-      );
+        // Preview section
+        _buildSectionHeader('预览'),
+        _buildPreviewSection(context),
+      ],
+    );
   }
 
   Widget _buildSectionHeader(String title) {
@@ -156,186 +160,35 @@ class _ThemeSettingsPageState extends State<ThemeSettingsPage> {
     );
   }
 
-  Widget _buildThemeModeSelector(BuildContext context) {
+  Widget _buildThemeModeSelector(
+    BuildContext context,
+    ThemeState theme,
+    ThemeNotifier notifier,
+  ) {
     return Card(
       margin: AppSpacing.allLG,
-      child: Obx(() {
-        final controller = Get.find<ThemeController>();
-        return Column(
-          children: AppThemeMode.values.map((mode) {
-            final isSelected = controller.themeMode == mode;
-            return Column(
-              children: [
-                if (mode != AppThemeMode.system) const Divider(height: 1),
-                ListTile(
-                  leading: Icon(_getIconForMode(mode)),
-                  title: Text(mode.displayName),
-                  trailing: isSelected
-                      ? Icon(
-                          Icons.check,
-                          color: Theme.of(context).colorScheme.primary,
-                        )
-                      : null,
-                  onTap: () async {
-                    await controller.setThemeMode(mode);
-                    // 显示简短的反馈
-                    if (context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text('已切换到${mode.displayName}'),
-                          duration: AppAnimations.snackBar,
-                        ),
-                      );
-                    }
-                  },
-                ),
-              ],
-            );
-          }).toList(),
-        );
-      }),
-    );
-  }
-
-  Widget _buildColorSettings(BuildContext context) {
-    return Card(
-      margin: AppSpacing.allLG,
-      child: Obx(() {
-        final controller = Get.find<ThemeController>();
-        final config = controller.themeConfig;
-        final useCustom = config.useCustomColors;
-
-        return Column(
-          children: [
-            // Toggle custom colors
-            SwitchListTile(
-              title: const Text('自定义颜色'),
-              subtitle: Text(useCustom ? '使用自定义颜色' : '使用壁纸动态色'),
-              value: useCustom,
-              onChanged: (value) async {
-                await controller.toggleCustomColors();
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text(value ? '已启用自定义颜色' : '已恢复动态色'),
-                      duration: AppAnimations.snackBar,
-                    ),
-                  );
-                }
-              },
-            ),
-
-            // Custom color options
-            if (useCustom) ...[
-              const Divider(height: 1),
+      child: Column(
+        children: AppThemeMode.values.map((mode) {
+          final isSelected = theme.mode == mode;
+          return Column(
+            children: [
+              if (mode != AppThemeMode.system) const Divider(height: 1),
               ListTile(
-                leading: const Icon(Icons.palette),
-                title: const Text('主色'),
-                subtitle: Text(config.primaryColor != null
-                    ? '#${config.primaryColor!.value.toRadixString(16).substring(2).toUpperCase()}'
-                    : '未设置'),
-                trailing: Container(
-                  width: 24,
-                  height: 24,
-                  decoration: BoxDecoration(
-                    color: config.primaryColor ?? Theme.of(context).colorScheme.primary,
-                    borderRadius: BorderRadius.circular(4),
-                    border: Border.all(
-                      color: Theme.of(context)
-                          .colorScheme
-                          .outlineVariant
-                          .withValues(alpha: 0.3),
-                    ),
-                  ),
-                ),
-                onTap: () => _showColorPicker(
-                  context,
-                  '主色',
-                  config.primaryColor ?? Theme.of(context).colorScheme.primary,
-                  (color) => controller.setCustomColorTheme(
-                    primaryColor: color,
-                    secondaryColor: config.secondaryColor,
-                    tertiaryColor: config.tertiaryColor,
-                  ),
-                ),
-              ),
-              ListTile(
-                leading: const Icon(Icons.palette_outlined),
-                title: const Text('次要色'),
-                subtitle: Text(config.secondaryColor != null
-                    ? '#${config.secondaryColor!.value.toRadixString(16).substring(2).toUpperCase()}'
-                    : '自动生成'),
-                trailing: Container(
-                  width: 24,
-                  height: 24,
-                  decoration: BoxDecoration(
-                    color: config.secondaryColor ?? Colors.grey,
-                    borderRadius: BorderRadius.circular(4),
-                    border: Border.all(
-                      color: Theme.of(context)
-                          .colorScheme
-                          .outlineVariant
-                          .withValues(alpha: 0.3),
-                    ),
-                  ),
-                ),
-                onTap: () => _showColorPicker(
-                  context,
-                  '次要色',
-                  config.secondaryColor ?? Colors.grey,
-                  (color) => controller.setCustomColorTheme(
-                    primaryColor: config.primaryColor ?? Theme.of(context).colorScheme.primary,
-                    secondaryColor: color,
-                    tertiaryColor: config.tertiaryColor,
-                  ),
-                ),
-              ),
-              ListTile(
-                leading: const Icon(Icons.brush),
-                title: const Text('第三色'),
-                subtitle: Text(config.tertiaryColor != null
-                    ? '#${config.tertiaryColor!.value.toRadixString(16).substring(2).toUpperCase()}'
-                    : '自动生成'),
-                trailing: Container(
-                  width: 24,
-                  height: 24,
-                  decoration: BoxDecoration(
-                    color: config.tertiaryColor ?? Colors.grey,
-                    borderRadius: BorderRadius.circular(4),
-                    border: Border.all(
-                      color: Theme.of(context)
-                          .colorScheme
-                          .outlineVariant
-                          .withValues(alpha: 0.3),
-                    ),
-                  ),
-                ),
-                onTap: () => _showColorPicker(
-                  context,
-                  '第三色',
-                  config.tertiaryColor ?? Colors.grey,
-                  (color) => controller.setCustomColorTheme(
-                    primaryColor: config.primaryColor ?? Theme.of(context).colorScheme.primary,
-                    secondaryColor: config.secondaryColor,
-                    tertiaryColor: color,
-                  ),
-                ),
-              ),
-            ],
-
-            // Reset button
-            if (useCustom) ...[
-              const Divider(height: 1),
-              ListTile(
-                leading: const Icon(Icons.restore),
-                title: const Text('恢复默认'),
-                subtitle: const Text('恢复为壁纸动态色'),
+                leading: Icon(_getIconForMode(mode)),
+                title: Text(mode.displayName),
+                trailing: isSelected
+                    ? Icon(
+                        Icons.check,
+                        color: Theme.of(context).colorScheme.primary,
+                      )
+                    : null,
                 onTap: () async {
-                  await controller.resetToDefault();
+                  await notifier.setThemeMode(mode);
+                  // 显示简短的反馈
                   if (context.mounted) {
                     ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('已恢复为默认主题'),
+                      SnackBar(
+                        content: Text('已切换到${mode.displayName}'),
                         duration: AppAnimations.snackBar,
                       ),
                     );
@@ -343,164 +196,327 @@ class _ThemeSettingsPageState extends State<ThemeSettingsPage> {
                 },
               ),
             ],
+          );
+        }).toList(),
+      ),
+    );
+  }
+
+  Widget _buildColorSettings(
+    BuildContext context,
+    ThemeState theme,
+    ThemeNotifier notifier,
+  ) {
+    final config = theme.config;
+    final useCustom = config.useCustomColors;
+
+    return Card(
+      margin: AppSpacing.allLG,
+      child: Column(
+        children: [
+          // Toggle custom colors
+          SwitchListTile(
+            title: const Text('自定义颜色'),
+            subtitle: Text(useCustom ? '使用自定义颜色' : '使用壁纸动态色'),
+            value: useCustom,
+            onChanged: (value) async {
+              await notifier.toggleCustomColors();
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(value ? '已启用自定义颜色' : '已恢复动态色'),
+                    duration: AppAnimations.snackBar,
+                  ),
+                );
+              }
+            },
+          ),
+
+          // Custom color options
+          if (useCustom) ...[
+            const Divider(height: 1),
+            ListTile(
+              leading: const Icon(Icons.palette),
+              title: const Text('主色'),
+              subtitle: Text(config.primaryColor != null
+                  ? '#${config.primaryColor!.value.toRadixString(16).substring(2).toUpperCase()}'
+                  : '未设置'),
+              trailing: Container(
+                width: 24,
+                height: 24,
+                decoration: BoxDecoration(
+                  color: config.primaryColor ??
+                      Theme.of(context).colorScheme.primary,
+                  borderRadius: BorderRadius.circular(4),
+                  border: Border.all(
+                    color: Theme.of(context)
+                        .colorScheme
+                        .outlineVariant
+                        .withValues(alpha: 0.3),
+                  ),
+                ),
+              ),
+              onTap: () => _showColorPicker(
+                context,
+                '主色',
+                config.primaryColor ?? Theme.of(context).colorScheme.primary,
+                (color) => notifier.setCustomColorTheme(
+                  primaryColor: color,
+                  secondaryColor: config.secondaryColor,
+                  tertiaryColor: config.tertiaryColor,
+                ),
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.palette_outlined),
+              title: const Text('次要色'),
+              subtitle: Text(config.secondaryColor != null
+                  ? '#${config.secondaryColor!.value.toRadixString(16).substring(2).toUpperCase()}'
+                  : '自动生成'),
+              trailing: Container(
+                width: 24,
+                height: 24,
+                decoration: BoxDecoration(
+                  color: config.secondaryColor ?? Colors.grey,
+                  borderRadius: BorderRadius.circular(4),
+                  border: Border.all(
+                    color: Theme.of(context)
+                        .colorScheme
+                        .outlineVariant
+                        .withValues(alpha: 0.3),
+                  ),
+                ),
+              ),
+              onTap: () => _showColorPicker(
+                context,
+                '次要色',
+                config.secondaryColor ?? Colors.grey,
+                (color) => notifier.setCustomColorTheme(
+                  primaryColor: config.primaryColor ??
+                      Theme.of(context).colorScheme.primary,
+                  secondaryColor: color,
+                  tertiaryColor: config.tertiaryColor,
+                ),
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.brush),
+              title: const Text('第三色'),
+              subtitle: Text(config.tertiaryColor != null
+                  ? '#${config.tertiaryColor!.value.toRadixString(16).substring(2).toUpperCase()}'
+                  : '自动生成'),
+              trailing: Container(
+                width: 24,
+                height: 24,
+                decoration: BoxDecoration(
+                  color: config.tertiaryColor ?? Colors.grey,
+                  borderRadius: BorderRadius.circular(4),
+                  border: Border.all(
+                    color: Theme.of(context)
+                        .colorScheme
+                        .outlineVariant
+                        .withValues(alpha: 0.3),
+                  ),
+                ),
+              ),
+              onTap: () => _showColorPicker(
+                context,
+                '第三色',
+                config.tertiaryColor ?? Colors.grey,
+                (color) => notifier.setCustomColorTheme(
+                  primaryColor: config.primaryColor ??
+                      Theme.of(context).colorScheme.primary,
+                  secondaryColor: config.secondaryColor,
+                  tertiaryColor: color,
+                ),
+              ),
+            ),
           ],
-        );
-      }),
+
+          // Reset button
+          if (useCustom) ...[
+            const Divider(height: 1),
+            ListTile(
+              leading: const Icon(Icons.restore),
+              title: const Text('恢复默认'),
+              subtitle: const Text('恢复为壁纸动态色'),
+              onTap: () async {
+                await notifier.resetToDefault();
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('已恢复为默认主题'),
+                      duration: AppAnimations.snackBar,
+                    ),
+                  );
+                }
+              },
+            ),
+          ],
+        ],
+      ),
     );
   }
 
-  Widget _buildFontStyleSelector(BuildContext context) {
+  Widget _buildFontStyleSelector(
+    BuildContext context,
+    ThemeState theme,
+    ThemeNotifier notifier,
+  ) {
+    final currentStyle = theme.config.fontStyle;
+
     return Card(
       margin: AppSpacing.allLG,
-      child: Obx(() {
-        final controller = Get.find<ThemeController>();
-        final currentStyle = controller.themeConfig.fontStyle;
-
-        return Column(
-          children: AppFontStyle.values.map((style) {
-            final isSelected = currentStyle == style;
-            final styleName = _getFontStyleName(style);
-            return Column(
-              children: [
-                if (style != AppFontStyle.default_) const Divider(height: 1),
-                ListTile(
-                  title: Text(styleName,
-                      style: TextStyle(
-                        fontSize: _getFontScale(style) * 14,
-                      )),
-                  subtitle: Text(_getFontStyleDescription(style)),
-                  trailing: isSelected
-                      ? Icon(
-                          Icons.check,
-                          color: Theme.of(context).colorScheme.primary,
-                        )
-                      : null,
-                  onTap: () async {
-                    await controller.setFontStyle(style);
-                    if (context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text('已设置为$styleName'),
-                          duration: AppAnimations.snackBar,
-                        ),
-                      );
-                    }
-                  },
-                ),
-              ],
-            );
-          }).toList(),
-        );
-      }),
-    );
-  }
-
-  Widget _buildRadiusStyleSelector(BuildContext context) {
-    return Card(
-      margin: AppSpacing.allLG,
-      child: Obx(() {
-        final controller = Get.find<ThemeController>();
-        final currentStyle = controller.themeConfig.radiusStyle;
-
-        return Column(
-          children: AppRadiusStyle.values.map((style) {
-            final isSelected = currentStyle == style;
-            final styleName = _getRadiusStyleName(style);
-            return Column(
-              children: [
-                if (style != AppRadiusStyle.default_) const Divider(height: 1),
-                ListTile(
-                  title: Text(styleName),
-                  subtitle: Text(_getRadiusStyleDescription(style)),
-                  leading: Container(
-                    width: 32,
-                    height: 32,
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.primaryContainer,
-                      borderRadius: BorderRadius.circular(_getRadiusPreview(style)),
-                      border: Border.all(
-                        color: Theme.of(context).colorScheme.outline.withOpacity(0.5),
+      child: Column(
+        children: AppFontStyle.values.map((style) {
+          final isSelected = currentStyle == style;
+          final styleName = _getFontStyleName(style);
+          return Column(
+            children: [
+              if (style != AppFontStyle.default_) const Divider(height: 1),
+              ListTile(
+                title: Text(styleName,
+                    style: TextStyle(
+                      fontSize: _getFontScale(style) * 14,
+                    )),
+                subtitle: Text(_getFontStyleDescription(style)),
+                trailing: isSelected
+                    ? Icon(
+                        Icons.check,
+                        color: Theme.of(context).colorScheme.primary,
+                      )
+                    : null,
+                onTap: () async {
+                  await notifier.setFontStyle(style);
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('已设置为$styleName'),
+                        duration: AppAnimations.snackBar,
                       ),
+                    );
+                  }
+                },
+              ),
+            ],
+          );
+        }).toList(),
+      ),
+    );
+  }
+
+  Widget _buildRadiusStyleSelector(
+    BuildContext context,
+    ThemeState theme,
+    ThemeNotifier notifier,
+  ) {
+    final currentStyle = theme.config.radiusStyle;
+
+    return Card(
+      margin: AppSpacing.allLG,
+      child: Column(
+        children: AppRadiusStyle.values.map((style) {
+          final isSelected = currentStyle == style;
+          final styleName = _getRadiusStyleName(style);
+          return Column(
+            children: [
+              if (style != AppRadiusStyle.default_) const Divider(height: 1),
+              ListTile(
+                title: Text(styleName),
+                subtitle: Text(_getRadiusStyleDescription(style)),
+                leading: Container(
+                  width: 32,
+                  height: 32,
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.primaryContainer,
+                    borderRadius:
+                        BorderRadius.circular(_getRadiusPreview(style)),
+                    border: Border.all(
+                      color: Theme.of(context)
+                          .colorScheme
+                          .outline
+                          .withOpacity(0.5),
                     ),
                   ),
-                  trailing: isSelected
-                      ? Icon(
-                          Icons.check,
-                          color: Theme.of(context).colorScheme.primary,
-                        )
-                      : null,
-                  onTap: () async {
-                    await controller.setRadiusStyle(style);
-                    if (context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text('已设置为$styleName'),
-                          duration: AppAnimations.snackBar,
-                        ),
-                      );
-                    }
-                  },
                 ),
-              ],
-            );
-          }).toList(),
-        );
-      }),
+                trailing: isSelected
+                    ? Icon(
+                        Icons.check,
+                        color: Theme.of(context).colorScheme.primary,
+                      )
+                    : null,
+                onTap: () async {
+                  await notifier.setRadiusStyle(style);
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('已设置为$styleName'),
+                        duration: AppAnimations.snackBar,
+                      ),
+                    );
+                  }
+                },
+              ),
+            ],
+          );
+        }).toList(),
+      ),
     );
   }
 
-  Widget _buildBorderStyleSelector(BuildContext context) {
+  Widget _buildBorderStyleSelector(
+    BuildContext context,
+    ThemeState theme,
+    ThemeNotifier notifier,
+  ) {
+    final currentStyle = theme.config.borderStyle;
+
     return Card(
       margin: AppSpacing.allLG,
-      child: Obx(() {
-        final controller = Get.find<ThemeController>();
-        final currentStyle = controller.themeConfig.borderStyle;
-
-        return Column(
-          children: AppBorderStyle.values.map((style) {
-            final isSelected = currentStyle == style;
-            final styleName = _getBorderStyleName(style);
-            return Column(
-              children: [
-                if (style != AppBorderStyle.default_) const Divider(height: 1),
-                ListTile(
-                  title: Text(styleName),
-                  subtitle: Text(_getBorderStyleDescription(style)),
-                  leading: Container(
-                    width: 32,
-                    height: 32,
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.surface,
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(
-                        color: Theme.of(context).colorScheme.outline,
-                        width: AppBorders.sideOf(context).width,
-                      ),
+      child: Column(
+        children: AppBorderStyle.values.map((style) {
+          final isSelected = currentStyle == style;
+          final styleName = _getBorderStyleName(style);
+          return Column(
+            children: [
+              if (style != AppBorderStyle.default_) const Divider(height: 1),
+              ListTile(
+                title: Text(styleName),
+                subtitle: Text(_getBorderStyleDescription(style)),
+                leading: Container(
+                  width: 32,
+                  height: 32,
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.surface,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: Theme.of(context).colorScheme.outline,
+                      width: AppBorders.sideOf(context).width,
                     ),
                   ),
-                  trailing: isSelected
-                      ? Icon(
-                          Icons.check,
-                          color: Theme.of(context).colorScheme.primary,
-                        )
-                      : null,
-                  onTap: () async {
-                    await controller.setBorderStyle(style);
-                    if (context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text('已设置为$styleName'),
-                          duration: AppAnimations.snackBar,
-                        ),
-                      );
-                    }
-                  },
                 ),
-              ],
-            );
-          }).toList(),
-        );
-      }),
+                trailing: isSelected
+                    ? Icon(
+                        Icons.check,
+                        color: Theme.of(context).colorScheme.primary,
+                      )
+                    : null,
+                onTap: () async {
+                  await notifier.setBorderStyle(style);
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('已设置为$styleName'),
+                        duration: AppAnimations.snackBar,
+                      ),
+                    );
+                  }
+                },
+              ),
+            ],
+          );
+        }).toList(),
+      ),
     );
   }
 
@@ -881,11 +897,11 @@ class _ColorPickerState extends State<ColorPicker> {
             color: _selectedColor,
             borderRadius: BorderRadius.circular(8),
             border: Border.all(
-                      color: Theme.of(context)
-                          .colorScheme
-                          .outlineVariant
-                          .withValues(alpha: 0.3),
-                    ),
+              color: Theme.of(context)
+                  .colorScheme
+                  .outlineVariant
+                  .withValues(alpha: 0.3),
+            ),
           ),
           child: Center(
             child: Text(

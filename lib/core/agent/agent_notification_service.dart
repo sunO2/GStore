@@ -1,8 +1,8 @@
 import 'dart:async';
 
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:get/get.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/router/app_router.dart';
 import 'package:gstore/core/routers.dart';
 
 /// Agent 助手后台通知服务
@@ -112,11 +112,11 @@ class AgentNotificationService {
         return;
       }
       if (payload == 'agent:open') {
-        Get.toNamed(AppRoute.agent);
+        appRouter.push(AppRoute.agent);
         return;
       }
       if (payload == 'download_center') {
-        Get.toNamed(AppRoute.downloadCenter);
+        appRouter.push(AppRoute.downloadCenter);
         return;
       }
     } catch (e) {

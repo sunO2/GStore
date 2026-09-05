@@ -274,7 +274,7 @@ class _DownloadManagerState extends State<DownloadManager> {
           ),
           const SizedBox(width: AppSpacing.sm),
           // 聚合组内主文件状态（logic 已通过 watch 推送进 downloadGroups）
-          _buildStatusBadge(context, items[0]),
+          _buildStatusBadge(context, items[0], logic.missingFileIds),
           // 多文件组：展开指示
           if (isMulti) ...[
             const SizedBox(width: AppSpacing.xs),
@@ -456,11 +456,39 @@ class _DownloadManagerState extends State<DownloadManager> {
   }
 
   /// 主操作按钮（由 download_status_utils.dart 的 primaryActionFor 决定）
+  /// 已完成但文件已被外部删除时不再提供"安装"，改为红框"已删除"占位。
   Widget _buildPrimaryAction(
     BuildContext context,
     DownloadManagerLogic logic,
     DownloadTask item,
   ) {
+    if (isCompletedFileMissing(item, logic.missingFileIds)) {
+      // 文件已删除：禁用按钮占位（红/黄警示边框），提示用户文件不在了
+      return OutlinedButton.icon(
+        onPressed: null,
+        icon: Icon(
+          Icons.delete_outline,
+          size: AppTypography.iconSM,
+          color: Theme.of(context).colorScheme.error,
+        ),
+        label: Text(
+          '已删除',
+          style: TextStyle(color: Theme.of(context).colorScheme.error),
+        ),
+        style: OutlinedButton.styleFrom(
+          visualDensity: VisualDensity.compact,
+          padding: const EdgeInsets.symmetric(
+            horizontal: AppSpacing.md,
+            vertical: AppSpacing.xs,
+          ),
+          side: BorderSide(color: Theme.of(context).colorScheme.error),
+          shape: const RoundedRectangleBorder(
+            borderRadius: AppRadius.allSM,
+          ),
+        ),
+      );
+    }
+
     final action = primaryActionFor(item);
     if (action == null) return const SizedBox.shrink();
 
@@ -622,8 +650,22 @@ class _DownloadManagerState extends State<DownloadManager> {
   }
 
   /// 构建状态标签（颜色全部取自主题）
-  Widget _buildStatusBadge(BuildContext context, DownloadTask item) {
+  /// [missingFileIds] 已完成但文件已被外部删除的任务 id（命中显示"已删除"）
+  Widget _buildStatusBadge(
+    BuildContext context,
+    DownloadTask item,
+    Set<int> missingFileIds,
+  ) {
     final scheme = Theme.of(context).colorScheme;
+    // 已完成但文件已被删除 → 降级为"已删除"（红色，与失败同级警示）
+    if (isCompletedFileMissing(item, missingFileIds)) {
+      final (label, color, icon) = (
+        '已删除',
+        scheme.error,
+        Icons.delete_outline,
+      );
+      return _statusChip(context, label: label, color: color, icon: icon);
+    }
     final (label, color, icon) = switch (statusKindOf(item)) {
       DownloadStatusKind.downloading => (
           '下载中',
@@ -648,6 +690,16 @@ class _DownloadManagerState extends State<DownloadManager> {
         ),
     };
 
+    return _statusChip(context, label: label, color: color, icon: icon);
+  }
+
+  /// 状态徽标外观（label + 彩色边框/图标 + 文本同色）
+  Widget _statusChip(
+    BuildContext context, {
+    required String label,
+    required Color color,
+    required IconData icon,
+  }) {
     return Chip(
       label: Row(
         mainAxisSize: MainAxisSize.min,

@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/channel/impl/JsChannel.dart';
 import 'package:gstore/core/channel/impl/channel_loader.dart';
@@ -13,7 +14,8 @@ import 'package:gstore/core/config/config_store.dart';
 import 'package:gstore/core/config/config_manager.dart';
 import 'package:gstore/core/config/providers/download_config_provider.dart';
 import 'package:gstore/core/core.dart';
-import 'package:gstore/core/theme/theme_controller.dart';
+import 'package:gstore/core/theme/theme_provider.dart';
+import 'package:go_router/go_router.dart';
 
 /// GitHub 代理预设地址
 const List<String> presetProxyHosts = [
@@ -145,31 +147,23 @@ class _SettingsPageState extends State<SettingsPage> {
             trailing: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                // 响应式点（Obx 内读 _themeMode.value）：theme 模块关闭时 Get 未注册
-                // → 降级显示默认文案不崩（此时无 Obx，避免 GetX 无响应式依赖报错）；
-                // 上线时保持响应式订阅
-                Get.isRegistered<ThemeController>()
-                    ? Obx(() {
-                        final controller = Get.find<ThemeController>();
-                        return Text(
-                          controller.themeMode.displayName,
-                          style: TextStyle(
-                            color: Theme.of(context).colorScheme.primary,
-                            fontWeight: AppTypography.weightMedium,
-                          ),
-                        );
-                      })
-                    : Text(
-                        '默认',
-                        style: TextStyle(
-                          color: Theme.of(context).colorScheme.primary,
-                          fontWeight: AppTypography.weightMedium,
-                        ),
-                      ),
+                // 当前主题模式（Riverpod 权威；theme 模块下线仅禁用入口，此处仍可读）
+                Consumer(builder: (context, ref, _) {
+                  final modeName = ref.watch(
+                    themeProvider.select((t) => t.mode.displayName),
+                  );
+                  return Text(
+                    modeName,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.primary,
+                      fontWeight: AppTypography.weightMedium,
+                    ),
+                  );
+                }),
                 const Icon(Icons.chevron_right),
               ],
             ),
-            onTap: _themeModuleOnline ? () => Get.toNamed(AppRoute.themeSettings) : null,
+            onTap: _themeModuleOnline ? () => context.push(AppRoute.themeSettings) : null,
           ),
         ],
       ),
@@ -186,7 +180,7 @@ class _SettingsPageState extends State<SettingsPage> {
             title: const Text('F-Droid 源管理'),
             trailing:
                 const Icon(Icons.chevron_right, size: AppTypography.iconSM),
-            onTap: () => Get.toNamed(AppRoute.fdroidRepo),
+            onTap: () => context.push(AppRoute.fdroidRepo),
           ),
           const Divider(height: 1),
           ListTile(
@@ -194,7 +188,7 @@ class _SettingsPageState extends State<SettingsPage> {
             title: const Text('数据备份'),
             trailing:
                 const Icon(Icons.chevron_right, size: AppTypography.iconSM),
-            onTap: () => Get.toNamed(AppRoute.backup),
+            onTap: () => context.push(AppRoute.backup),
           ),
           const Divider(height: 1),
           // GitHub 代理设置
@@ -241,7 +235,7 @@ class _SettingsPageState extends State<SettingsPage> {
             subtitle: const Text('清理图片 / README 等缓存与已下载文件'),
             trailing:
                 const Icon(Icons.chevron_right, size: AppTypography.iconSM),
-            onTap: () => Get.toNamed(AppRoute.cacheManage),
+            onTap: () => context.push(AppRoute.cacheManage),
           ),
           const Divider(height: 1),
           // 数据库管理（浏览各库表与记录，删除误添加/失效记录）
@@ -252,7 +246,7 @@ class _SettingsPageState extends State<SettingsPage> {
             subtitle: const Text('查看 / 管理本地数据库记录'),
             trailing:
                 const Icon(Icons.chevron_right, size: AppTypography.iconSM),
-            onTap: () => Get.toNamed(AppRoute.databaseManage),
+            onTap: () => context.push(AppRoute.databaseManage),
           ),
         ],
       ),
@@ -269,7 +263,7 @@ class _SettingsPageState extends State<SettingsPage> {
             title: const Text('模块管理'),
             trailing:
                 const Icon(Icons.chevron_right, size: AppTypography.iconSM),
-            onTap: () => Get.toNamed(AppRoute.moduleManage),
+            onTap: () => context.push(AppRoute.moduleManage),
           ),
         ],
       ),
@@ -867,7 +861,7 @@ class _SettingsPageState extends State<SettingsPage> {
             title: const Text('开源协议'),
             subtitle: const Text('第三方依赖的许可证清单'),
             trailing: const Icon(Icons.chevron_right),
-            onTap: () => Get.toNamed(AppRoute.licenses),
+            onTap: () => context.push(AppRoute.licenses),
           ),
         ],
       ),

@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart' as sqflite;
@@ -28,17 +29,16 @@ class _DeleteGuard {
   final String? blockedReason;
 }
 
-/// 数据库管理逻辑：枚举各 SQLite 库、浏览表与行、行级删除。
+/// 数据库管理逻辑（Riverpod Notifier）：枚举各 SQLite 库、浏览表与行、行级删除。
 ///
 /// 库发现范围：应用文档目录（Documents）+ sqflite 默认库目录（databases），
 /// 排除备份/渠道包等非库目录。删除前对受管库/表做保护判定。
-class DatabaseManageLogic extends GetxController {
-  final DatabaseManageState state = DatabaseManageState();
-
+class DatabaseManageNotifier extends Notifier<DatabaseManageState> {
   @override
-  void onInit() {
-    super.onInit();
-    reload();
+  DatabaseManageState build() {
+    // 首帧加载（onInit 语义）；fire-and-forget，状态变更自动通知 UI
+    Future.microtask(reload);
+    return const DatabaseManageState();
   }
 
   // ---------- 目录注入（测试） ----------
@@ -95,7 +95,7 @@ class DatabaseManageLogic extends GetxController {
 
   /// 刷新数据库列表。
   Future<void> reload() async {
-    state.loading.value = true;
+    state = state.copyWith(loading: true);
     try {
       final found = <DbEntry>[];
       final seen = <String>{};
@@ -115,12 +115,12 @@ class DatabaseManageLogic extends GetxController {
       }
 
       found.sort((a, b) => a.fileName.compareTo(b.fileName));
-      state.dbs.value = found;
+      state = state.copyWith(dbs: found);
     } catch (e) {
       appLog.error('DatabaseManage: 枚举数据库失败 - $e');
-      state.dbs.value = [];
+      state = state.copyWith(dbs: const []);
     } finally {
-      state.loading.value = false;
+      state = state.copyWith(loading: false);
     }
   }
 
@@ -190,12 +190,13 @@ class DatabaseManageLogic extends GetxController {
 
   /// 加载选中库的表列表。
   Future<void> loadTables(DbEntry db) async {
-    state.selectedDb.value = db;
-    state.tablesLoading.value = true;
-    state.tables.value = [];
-    state.browsingPath.value = '';
-    state.browsingTable.value = '';
-    state.selectedRowIndex.value = -1;
+    state = state.copyWith(
+      selectedDb: db,
+      tablesLoading: true,
+      tables: const [],
+      browsingTable: '',
+      selectedRowIndex: -1,
+    );
     try {
       final conn = await _openReadOnly(db.filePath);
       try {
@@ -221,14 +222,14 @@ class DatabaseManageLogic extends GetxController {
             readonly: _readonlyTables.containsKey(name),
           ));
         }
-        state.tables.value = tables;
+        state = state.copyWith(tables: tables);
       } finally {
         await conn.close();
       }
     } catch (e) {
       appLog.error('DatabaseManage: 读取表失败 - $e');
     } finally {
-      state.tablesLoading.value = false;
+      state = state.copyWith(tablesLoading: false);
     }
   }
 
@@ -250,19 +251,21 @@ class DatabaseManageLogic extends GetxController {
 
   /// 加载某表的一页数据。
   Future<void> loadRows(String table, {int page = 0}) async {
-    final dbPath = state.selectedDb.value?.filePath;
+    final dbPath = state.selectedDb?.filePath;
     if (dbPath == null) return;
-    state.rowsLoading.value = true;
-    state.browsingTable.value = table;
-    state.page.value = page;
-    state.selectedRowIndex.value = -1;
+    state = state.copyWith(
+      rowsLoading: true,
+      browsingTable: table,
+      page: page,
+      selectedRowIndex: -1,
+    );
     try {
       final conn = await _openReadOnly(dbPath);
       try {
         final countRow = await conn.rawQuery(
           'SELECT COUNT(*) AS c FROM "${_quoteIdent(table)}"',
         );
-        state.tableTotal.value = sqflite.Sqflite.firstIntValue(countRow) ?? 0;
+        final tableTotal = sqflite.Sqflite.firstIntValue(countRow) ?? 0;
 
         final ident = _quoteIdent(table);
         final rows = await conn.rawQuery(
@@ -271,37 +274,52 @@ class DatabaseManageLogic extends GetxController {
           'LIMIT ${state.pageSize} OFFSET ${page * state.pageSize}',
         );
         if (rows.isEmpty) {
-          state.columns.value = [];
-          state.rows.value = [];
+          state = state.copyWith(
+            columns: const [],
+            rows: const [],
+            tableTotal: tableTotal,
+          );
           return;
         }
-        state.columns.value = rows.first.keys.toList();
-        state.rows.value = rows;
+        state = state.copyWith(
+          columns: rows.first.keys.toList(),
+          rows: rows,
+          tableTotal: tableTotal,
+        );
       } finally {
         await conn.close();
       }
     } catch (e) {
       appLog.error('DatabaseManage: 读取行失败 - $e');
-      state.rows.value = [];
-      state.columns.value = [];
+      state = state.copyWith(rows: const [], columns: const []);
     } finally {
-      state.rowsLoading.value = false;
+      state = state.copyWith(rowsLoading: false);
     }
   }
 
   Future<void> nextPage() async {
-    final table = state.browsingTable.value;
+    final table = state.browsingTable;
     if (table.isEmpty) return;
-    final maxPage = (state.tableTotal.value / state.pageSize).ceil() - 1;
-    if (state.page.value >= maxPage) return;
-    await loadRows(table, page: state.page.value + 1);
+    final maxPage = (state.tableTotal / state.pageSize).ceil() - 1;
+    if (state.page >= maxPage) return;
+    await loadRows(table, page: state.page + 1);
   }
 
   Future<void> prevPage() async {
-    final table = state.browsingTable.value;
+    final table = state.browsingTable;
     if (table.isEmpty) return;
-    if (state.page.value <= 0) return;
-    await loadRows(table, page: state.page.value - 1);
+    if (state.page <= 0) return;
+    await loadRows(table, page: state.page - 1);
+  }
+
+  /// 选中当前页某行（行高亮用）。
+  void selectRow(int index) {
+    state = state.copyWith(selectedRowIndex: index);
+  }
+
+  /// 清除行选中。
+  void clearRowSelection() {
+    state = state.copyWith(selectedRowIndex: -1);
   }
 
   // ---------- 行级删除 ----------
@@ -338,11 +356,11 @@ class DatabaseManageLogic extends GetxController {
 
   /// 删除一行。row 需含 _rowid_（来自 loadRows）。
   Future<bool> deleteRow(String table, Map<String, Object?> row) async {
-    final dbPath = state.selectedDb.value?.filePath;
+    final dbPath = state.selectedDb?.filePath;
     final rowid = row['_rowid_'];
     if (dbPath == null || rowid == null) return false;
-    if (state.busy.value) return false;
-    state.busy.value = true;
+    if (state.busy) return false;
+    state = state.copyWith(busy: true);
     try {
       final conn = await _openWritable(dbPath);
       try {
@@ -379,18 +397,18 @@ class DatabaseManageLogic extends GetxController {
       );
       return false;
     } finally {
-      state.busy.value = false;
+      state = state.copyWith(busy: false);
     }
   }
 
   /// 删除后的联动：刷新当前页行数据 + 通知聚合列表刷新。
   Future<void> afterDelete(String table) async {
-    final page = state.page.value;
+    final page = state.page;
     // 当前页删空后回退一页
     final targetPage = state.rows.length <= 1 && page > 0 ? page - 1 : page;
     await loadRows(table, page: targetPage);
 
-    // 通知“我的应用/发现页”刷新（聚合器订阅了事件总线全量刷新）
+    // 通知"我的应用/发现页"刷新（聚合器订阅了事件总线全量刷新）
     final isUserAppTable = table == 'added_apps' ||
         table == 'channel_added_app' ||
         table == 'added_app_tags';
@@ -410,3 +428,9 @@ class DatabaseManageLogic extends GetxController {
   /// 格式化字节数。
   String formatSize(int bytes) => byteSize(bytes);
 }
+
+/// 数据库管理页 Provider。
+final databaseManageProvider =
+    NotifierProvider<DatabaseManageNotifier, DatabaseManageState>(
+  DatabaseManageNotifier.new,
+);

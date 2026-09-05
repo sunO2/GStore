@@ -1,35 +1,40 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/material.dart' as m show showDialog;
 import 'package:get/get.dart';
+
+import 'package:gstore/core/navigation/nav_key.dart';
 
 import 'app_colors.dart';
 import 'app_borders.dart';
 import 'app_spacing.dart';
 import 'app_radius.dart';
-import 'app_animations.dart';
 import 'app_typography.dart';
 import 'app_components.dart';
 
 /// 统一的弹框组件
 ///
-/// 提供符合 GStore 设计规范的 Dialog、Snackbar、BottomSheet、Alert 组件
-/// 使用 GetX 实现路由和动画
+/// 提供符合 GStore 设计规范的 Dialog、Snackbar、BottomSheet、Alert 组件。
+/// 双通道：生产（MaterialApp.router）经全局 appNavigatorKey 呈现；
+/// 测试/无 key 环境回退 GetX overlay（GetMaterialApp 测试宿主），保证两环境可用。
 class AppDialogs {
   AppDialogs._();
 
-  /// Snackbar 显示通道：挂载到 GetMaterialApp（main.dart），
-  /// 替代 GetX overlay snackbar（Get.snackbar 与新版 Flutter overlay 兼容问题
-  /// 导致真机提示静默不显示）。
+  /// Snackbar 显示通道：挂载到 MaterialApp.router（main.dart）。
   static final GlobalKey<ScaffoldMessengerState> scaffoldMessengerKey =
       GlobalKey();
 
-  // ========== 主题获取 ==========
+  // ========== 上下文与主题获取 ==========
+
+  /// 全局 Navigator context（MaterialApp.router 挂载后可用；测试环境为 null）。
+  static BuildContext? get _navContext => appNavigatorKey.currentContext;
 
   static ThemeData get _theme {
+    final ctx = _navContext;
+    if (ctx != null) return Theme.of(ctx);
+    // GetX 宿主（测试 GetMaterialApp / 早期）
     try {
       return Get.theme;
     } catch (_) {
-      // GetX 未初始化（测试环境/启动早期无 GetMaterialApp 上下文）
-      // → 降级默认亮色主题，保证不崩（仅影响视觉 token，不影响逻辑）
       return ThemeData.light();
     }
   }
@@ -38,13 +43,24 @@ class AppDialogs {
   static ColorScheme get _colorScheme => _theme.colorScheme;
 
   /// 主题边框侧边：宽度随主题 borderStyle（cardTheme.shape.side），颜色可覆盖。
-  /// GetX 未初始化（测试环境/启动早期）时回退 1.0 宽度，保证不崩。
+  /// 无任何宿主 context 时回退 1.0 宽度，保证不崩。
   static BorderSide _themeBorderSide({Color? color}) {
-    final context = Get.context;
-    if (context != null) {
-      return AppBorders.sideOf(context, color: color);
+    final ctx = _navContext ?? Get.context;
+    if (ctx != null) {
+      return AppBorders.sideOf(ctx, color: color);
     }
     return BorderSide(color: color ?? _colorScheme.borderLight, width: 1);
+  }
+
+  /// 底部安全区 padding（无宿主 context 时为 0）。
+  static double _bottomSafePadding() {
+    final ctx = _navContext;
+    if (ctx != null) return MediaQuery.of(ctx).padding.bottom;
+    try {
+      return Get.mediaQuery.padding.bottom;
+    } catch (_) {
+      return 0;
+    }
   }
 
   // ========== Dialog ==========
@@ -69,8 +85,30 @@ class AppDialogs {
     Widget? icon,
     Color? iconColor,
   }) {
-    return Get.dialog<bool>(
-      _buildDialog(
+    final ctx = _navContext;
+    if (ctx == null) {
+      // 测试/无 navigatorKey 宿主 → 回退 GetX overlay（GetMaterialApp 测试环境）
+      if (Get.overlayContext != null) {
+        return Get.dialog<bool>(
+          _buildDialog(
+            title: title,
+            content: content,
+            confirmText: confirmText,
+            cancelText: cancelText,
+            onConfirm: onConfirm,
+            onCancel: onCancel,
+            isDangerous: isDangerous,
+            icon: icon,
+            iconColor: iconColor,
+          ),
+          barrierDismissible: true,
+        );
+      }
+      return Future.value(null);
+    }
+    return m.showDialog<bool>(
+      context: ctx,
+      builder: (_) => _buildDialog(
         title: title,
         content: content,
         confirmText: confirmText,
@@ -307,11 +345,11 @@ class AppDialogs {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                if (title != null && title!.isNotEmpty)
+                if (title != null && title.isNotEmpty)
                   Padding(
                     padding: const EdgeInsets.only(bottom: AppSpacing.xs),
                     child: Text(
-                      title!,
+                      title,
                       style: _textTheme.titleSmall?.copyWith(
                         fontWeight: AppTypography.weightMedium,
                       ),
@@ -340,28 +378,19 @@ class AppDialogs {
       return;
     }
 
-    // fallback：key 未挂载（启动早期）时退回 GetX overlay snackbar。
-    // 必须先同步检查 overlay 是否可用：Get.snackbar 的异常在异步队列
-    // （SnackbarController._configureOverlay）中抛出，try/catch 无法捕获；
-    // 测试环境（无 GetMaterialApp）overlayContext 为 null → 静默跳过，保证不崩。
+    // ScaffoldMessenger 未挂载（测试 GetMaterialApp 宿主 / 早期）→ 回退 GetX overlay
     if (Get.overlayContext != null) {
       try {
         Get.snackbar(
           title ?? '',
           message,
+          snackPosition: SnackPosition.BOTTOM,
           backgroundColor: _colorScheme.surface,
+          colorText: _colorScheme.onSurface,
           borderRadius: AppRadius.md,
-          boxShadows: const [],
           margin: AppSpacing.allLG,
           padding: AppSpacing.allMD,
-          snackPosition: SnackPosition.BOTTOM,
           duration: duration,
-          animationDuration: AppAnimations.normal,
-          forwardAnimationCurve: Curves.easeOutCubic,
-          reverseAnimationCurve: Curves.easeInCubic,
-          barBlur: 0,
-          snackStyle: SnackStyle.GROUNDED,
-          colorText: _colorScheme.onSurface,
           leftBarIndicatorColor: indicatorColor,
           titleText: title != null
               ? Text(
@@ -378,19 +407,13 @@ class AppDialogs {
                 const SizedBox(width: AppSpacing.sm),
               ],
               Expanded(
-                child: Text(
-                  message,
-                  style: _textTheme.bodySmall,
-                ),
+                child: Text(message, style: _textTheme.bodySmall),
               ),
             ],
           ),
-          icon: icon != null
-              ? Icon(icon, color: indicatorColor, size: 24)
-              : null,
         );
       } catch (_) {
-        // 同步阶段的兜底（Get.snackbar 内部异步异常无法捕获，见上）
+        // Get.snackbar 内部异步异常无法同步捕获，忽略
       }
     }
   }
@@ -409,16 +432,35 @@ class AppDialogs {
     bool isScrollControlled = true,
     VoidCallback? onClose,
   }) {
-    return Get.bottomSheet<T>(
-      _buildBottomSheet(
-        title: title,
-        children: children,
-        onClose: onClose,
-      ),
+    final ctx = _navContext;
+    if (ctx == null) {
+      // 测试/无 navigatorKey 宿主 → 回退 GetX overlay
+      if (Get.overlayContext != null) {
+        return Get.bottomSheet<T>(
+          _buildBottomSheet(
+            title: title,
+            children: children,
+            onClose: onClose,
+          ),
+          backgroundColor: Colors.transparent,
+          isDismissible: true,
+          enableDrag: true,
+          isScrollControlled: isScrollControlled,
+        );
+      }
+      return Future.value(null);
+    }
+    return showModalBottomSheet<T>(
+      context: ctx,
       backgroundColor: Colors.transparent,
       isDismissible: true,
       enableDrag: true,
       isScrollControlled: isScrollControlled,
+      builder: (_) => _buildBottomSheet(
+        title: title,
+        children: children,
+        onClose: onClose,
+      ),
     );
   }
 
@@ -442,7 +484,12 @@ class AppDialogs {
               label: itemLabel(item),
               isSelected: item == selectedItem,
               onTap: () {
-                Get.back(result: item);
+                final navigator = appNavigatorKey.currentState;
+                if (navigator != null) {
+                  navigator.pop<T>(item);
+                } else {
+                  Get.back(result: item);
+                }
               },
             ),
           )
@@ -499,7 +546,7 @@ class AppDialogs {
           ...children,
 
           // 底部安全区域
-          SizedBox(height: Get.mediaQuery.padding.bottom),
+          SizedBox(height: _bottomSafePadding()),
         ],
       ),
     );
@@ -599,19 +646,32 @@ class AppDialogs {
 
   // ========== Loading ==========
 
-  /// 显示加载对话框
-  /// 测试环境（无 GetMaterialApp/overlay）静默跳过，避免 Get.dialog NPE（与 snackbar fallback 同守卫）。
+  /// 显示加载对话框（可叠加；navigator 未挂载时静默跳过）。
   static void showLoading({String message = '加载中...'}) {
-    if (Get.overlayContext == null) return;
-    Get.dialog(
-      _buildLoadingDialog(message),
+    final navigator = appNavigatorKey.currentState;
+    if (navigator == null) {
+      // 测试 GetMaterialApp 宿主回退 GetX overlay
+      if (Get.overlayContext != null) {
+        Get.dialog(
+          _buildLoadingDialog(message),
+          barrierDismissible: false,
+        );
+      }
+      return;
+    }
+    m.showDialog<void>(
+      context: navigator.context,
       barrierDismissible: false,
+      builder: (_) => _buildLoadingDialog(message),
     );
   }
 
-  /// 关闭加载对话框
+  /// 关闭加载对话框（关闭最顶部的对话框）。
   static void dismissLoading() {
-    if (Get.isDialogOpen == true) {
+    final navigator = appNavigatorKey.currentState;
+    if (navigator != null) {
+      navigator.pop();
+    } else if (Get.isDialogOpen == true) {
       Get.back();
     }
   }
@@ -706,21 +766,4 @@ class _SelectionItem extends StatelessWidget {
       ),
     );
   }
-}
-
-// ========== 便捷扩展方法 ==========
-
-/// AppDialogs 便捷扩展
-extension AppDialogsExtensions on GetInterface {
-  /// 显示成功提示
-  void showSuccess(String message) => AppDialogs.showSuccess(message);
-
-  /// 显示错误提示
-  void showError(String message) => AppDialogs.showError(message);
-
-  /// 显示警告提示
-  void showWarning(String message) => AppDialogs.showWarning(message);
-
-  /// 显示信息提示
-  void showInfo(String message) => AppDialogs.showInfo(message);
 }

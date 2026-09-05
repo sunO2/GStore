@@ -1,8 +1,10 @@
 import 'dart:ffi';
 import 'dart:io';
 
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/page/database_manage/logic.dart';
+import 'package:gstore/page/database_manage/state.dart';
 import 'package:sqflite/sqflite.dart' as sqflite;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:sqlite3/open.dart';
@@ -49,6 +51,25 @@ void main() {
     return path;
   }
 
+  /// 构建注入测试目录的 Notifier（override 预构造实例，测试可设 debug 目录）。
+  ///
+  /// Riverpod 要求 state 写入前 provider 已被首次 read（建立 element）；
+  /// 因此先 read 触发 build，再设置注入目录，最后测试内显式 reload。
+  (ProviderContainer, DatabaseManageNotifier) makeContainer({
+    Directory? docs,
+    Directory? databases,
+  }) {
+    final notifier = DatabaseManageNotifier();
+    final container = ProviderContainer(overrides: [
+      databaseManageProvider.overrideWith(() => notifier),
+    ]);
+    // 触发 build 建立 element（build 的自动 reload 走真实目录，随后会被覆盖）
+    container.read(databaseManageProvider);
+    notifier.debugDocsDir = docs ?? Directory('${docsDir.path}/none');
+    notifier.debugDatabasesDir = databases ?? dbDir;
+    return (container, notifier);
+  }
+
   test('枚举文档与 sqflite 目录下的全部库并读取版本', () async {
     // docs 根: added_apps.db（v5 语义版本号测试：手动建）
     final addedPath = '${docsDir.path}/added_apps.db';
@@ -71,12 +92,12 @@ void main() {
     // sqflite 目录: download_task.db
     await createTestDb(dbDir.path, 'download_task.db');
 
-    final logic = DatabaseManageLogic()
-      ..debugDocsDir = docsDir
-      ..debugDatabasesDir = dbDir;
-    await logic.reload();
+    final (container, notifier) = makeContainer(docs: docsDir);
+    addTearDown(container.dispose);
+    await notifier.reload();
 
-    final dbs = logic.state.dbs;
+    final state = container.read(databaseManageProvider);
+    final dbs = state.dbs;
     final names = dbs.map((e) => e.fileName).toList();
     expect(names, contains('added_apps.db'));
     expect(names, contains('apps.db'));
@@ -107,17 +128,19 @@ void main() {
         ));
     await db.close();
 
-    final logic = DatabaseManageLogic()
-      ..debugDocsDir = Directory('${docsDir.path}/empty')
-      ..debugDatabasesDir = dbDir;
-    await logic.reload();
-    expect(logic.state.dbs, isNotEmpty);
+    final (container, notifier) =
+        makeContainer(docs: Directory('${docsDir.path}/empty'));
+    addTearDown(container.dispose);
+    await notifier.reload();
+    expect(container.read(databaseManageProvider).dbs, isNotEmpty);
 
-    final entry = logic.state.dbs.firstWhere((e) => e.fileName == 't.db');
-    await logic.loadTables(entry);
-    expect(logic.state.tables.any((t) => t.name == 't_fts'), isFalse);
+    final entry =
+        container.read(databaseManageProvider).dbs.firstWhere((e) => e.fileName == 't.db');
+    await notifier.loadTables(entry);
+    final state = container.read(databaseManageProvider);
+    expect(state.tables.any((t) => t.name == 't_fts'), isFalse);
 
-    final t1 = logic.state.tables.firstWhere((t) => t.name == 't1');
+    final t1 = state.tables.firstWhere((t) => t.name == 't1');
     expect(t1.count, 3);
     expect(t1.readonly, isFalse);
   });
@@ -137,23 +160,22 @@ void main() {
         ));
     await db.close();
 
-    final logic = DatabaseManageLogic()
-      ..debugDocsDir = docsDir
-      ..debugDatabasesDir = dbDir;
-    await logic.reload();
-    final entry = logic.state.dbs.firstWhere((e) => e.fileName == 'apps.db');
-    await logic.loadTables(entry);
-    await logic.loadRows('category');
-    expect(logic.state.rows, isNotEmpty);
+    final (container, notifier) = makeContainer(docs: docsDir);
+    addTearDown(container.dispose);
+    await notifier.reload();
+    final entry =
+        container.read(databaseManageProvider).dbs.firstWhere((e) => e.fileName == 'apps.db');
+    await notifier.loadTables(entry);
+    await notifier.loadRows('category');
+    final state = container.read(databaseManageProvider);
+    expect(state.rows, isNotEmpty);
 
-    final row = logic.state.rows.first;
+    final row = state.rows.first;
     // apps 主表应只读
     expect(
-      logic.state.tables.firstWhere((t) => t.name == 'apps').readonly,
+      state.tables.firstWhere((t) => t.name == 'apps').readonly,
       isTrue,
     );
-    // 删除普通表的一行（category）
-    // deleteRow 有 AppDialogs.showConfirmDialog 依赖 Get 环境，这里不直接调；
     // 直接验证 loadRows 正常、表行数与 rowid 存在即可。
     expect(row.containsKey('_rowid_'), isTrue);
     expect(row['des'], '游戏');
@@ -174,16 +196,19 @@ void main() {
 
     try {
       // 管理页 reload：内部 _describe 以 singleInstance: false 打开并 close
-      final logic = DatabaseManageLogic()
-        ..debugDocsDir = Directory('${docsDir.path}/empty')
-        ..debugDatabasesDir = dbDir;
-      await logic.reload();
+      final (container, notifier) =
+          makeContainer(docs: Directory('${docsDir.path}/empty'));
+      addTearDown(container.dispose);
+      await notifier.reload();
 
       // loadTables / loadRows 也走独立连接（打开 + close）
-      final entry = logic.state.dbs.firstWhere((e) => e.fileName == 'apps.db');
-      await logic.loadTables(entry);
-      await logic.loadRows('apps');
-      expect(logic.state.rows, isNotEmpty);
+      final entry = container
+          .read(databaseManageProvider)
+          .dbs
+          .firstWhere((e) => e.fileName == 'apps.db');
+      await notifier.loadTables(entry);
+      await notifier.loadRows('apps');
+      expect(container.read(databaseManageProvider).rows, isNotEmpty);
 
       // 关键断言：常驻连接未被误关，仍可查询
       final rows = await resident.query('apps');

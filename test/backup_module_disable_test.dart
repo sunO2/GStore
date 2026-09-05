@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -160,7 +161,8 @@ void main() {
     });
 
     Future<void> pumpMinePage(WidgetTester tester) async {
-      await tester.pumpWidget(const GetMaterialApp(home: MinePage()));
+      await tester.pumpWidget(
+          const ProviderScope(child: GetMaterialApp(home: MinePage())));
       await tester.pumpAndSettle();
     }
 

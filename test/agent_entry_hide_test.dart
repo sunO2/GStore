@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/test/test_flutter_secure_storage_platform.dart';
 // ignore: depend_on_referenced_packages
 import 'package:flutter_secure_storage_platform_interface/flutter_secure_storage_platform_interface.dart';
@@ -76,7 +77,8 @@ void main() {
 
   /// 泵起首页（PageView 四页：首页/发现/AI 助手/我的）并等异步初始化完成
   Future<void> pumpHome(WidgetTester tester) async {
-    await tester.pumpWidget(const GetMaterialApp(home: HomePage()));
+    await tester.pumpWidget(
+        const ProviderScope(child: GetMaterialApp(home: HomePage())));
     await tester.pumpAndSettle();
   }
 
@@ -168,7 +170,8 @@ void main() {
 
   group('我的页 quick action（agent_tools 上下线）', () {
     Future<void> pumpMinePage(WidgetTester tester) async {
-      await tester.pumpWidget(const GetMaterialApp(home: MinePage()));
+      await tester.pumpWidget(
+          const ProviderScope(child: GetMaterialApp(home: MinePage())));
       await tester.pumpAndSettle();
     }
 

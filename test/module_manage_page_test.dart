@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:get/get.dart';
+import 'package:go_router/go_router.dart';
 
 import 'package:gstore/core/config/config_registry.dart';
 import 'package:gstore/core/config/config_service.dart';
@@ -70,8 +72,6 @@ void main() {
 
   setUp(() async {
     await initForTest();
-    // 清理上个用例的页面控制器（onClose 取消订阅，防跨用例泄漏）
-    Get.delete<ModuleManageLogic>(force: true);
     if (!Get.isRegistered<ThemeController>()) {
       Get.put(ThemeController());
     }
@@ -84,11 +84,14 @@ void main() {
     addTearDown(tester.view.reset);
   }
 
+  /// 包 ProviderScope 的页面挂载（ConsumerWidget 需要）
+  Widget wrapApp(Widget home) => ProviderScope(child: home);
+
   group('模块管理页渲染', () {
     testWidgets('渲染 9 可开关业务模块 + 8 系统置灰模块', (tester) async {
       useTallViewport(tester);
 
-      await tester.pumpWidget(const GetMaterialApp(home: ModuleManagePage()));
+      await tester.pumpWidget(wrapApp(const GetMaterialApp(home: ModuleManagePage())));
       await tester.pumpAndSettle();
 
       expect(find.byType(ModuleManagePage), findsOneWidget);
@@ -134,7 +137,8 @@ void main() {
       // re-enable 需要从 known-modules 查实例
       manager.registerKnownModules(() => [ToggleTestModule('channel')]);
 
-      await tester.pumpWidget(const GetMaterialApp(home: ModuleManagePage()));
+      await tester.pumpWidget(
+          wrapApp(const GetMaterialApp(home: ModuleManagePage())));
       await tester.pumpAndSettle();
 
       // 初始：渠道开启
@@ -168,17 +172,26 @@ void main() {
         _SlowMemoryConfigStorage(),
       ]);
 
-      await tester.pumpWidget(const GetMaterialApp(home: ModuleManagePage()));
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      await tester.pumpWidget(UncontrolledProviderScope(
+        container: container,
+        child: const GetMaterialApp(home: ModuleManagePage()),
+      ));
       await tester.pumpAndSettle();
 
-      final logic = Get.find<ModuleManageLogic>();
+      final notifier = container.read(moduleManageProvider.notifier);
 
       // 逻辑层：第一次 toggle 同步进入 toggling；第二次调用被忽略
-      final f1 = logic.toggle('channel', false);
-      expect(logic.state.toggling.contains('channel'), isTrue);
-      final f2 = logic.toggle('channel', false);
+      final f1 = notifier.toggle('channel', false);
+      expect(
+          container.read(moduleManageProvider).toggling.contains('channel'),
+          isTrue);
+      final f2 = notifier.toggle('channel', false);
       await f2; // 立即返回，未重复操作
-      expect(logic.state.toggling.contains('channel'), isTrue);
+      expect(
+          container.read(moduleManageProvider).toggling.contains('channel'),
+          isTrue);
 
       // 界面层：切换中 Switch 置灰（onChanged null）
       await tester.pump();
@@ -188,7 +201,7 @@ void main() {
       await tester.pump(const Duration(seconds: 6));
       await f1;
       await tester.pump();
-      expect(logic.state.toggling.length, 0);
+      expect(container.read(moduleManageProvider).toggling, isEmpty);
       expect(tester.widget<Switch>(_switchOf('渠道')).onChanged, isNotNull);
       expect(tester.widget<Switch>(_switchOf('渠道')).value, false);
       expect(tester.takeException(), isNull);
@@ -209,9 +222,11 @@ void main() {
       expect(manager.isInitialized('channel'), true);
       expect(manager.isInitialized('backup'), true);
 
-      await tester.pumpWidget(GetMaterialApp(
-        scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
-        home: const ModuleManagePage(),
+      await tester.pumpWidget(ProviderScope(
+        child: GetMaterialApp(
+          scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
+          home: const ModuleManagePage(),
+        ),
       ));
       await tester.pumpAndSettle();
 
@@ -241,7 +256,8 @@ void main() {
       manager.registerKnownModules(() => [ToggleTestModule('channel')]);
       await manager.activate(ToggleTestModule('channel'));
 
-      await tester.pumpWidget(const GetMaterialApp(home: ModuleManagePage()));
+      await tester.pumpWidget(
+          wrapApp(const GetMaterialApp(home: ModuleManagePage())));
       await tester.pumpAndSettle();
       expect(tester.widget<Switch>(_switchOf('渠道')).value, true);
 
@@ -263,9 +279,18 @@ void main() {
 
   group('路由导航', () {
     testWidgets('AppRoute.moduleManage 路由可达 ModuleManagePage', (tester) async {
-      await tester.pumpWidget(GetMaterialApp(
-        initialRoute: AppRoute.moduleManage,
-        getPages: AppRoute.pages,
+      await tester.pumpWidget(ProviderScope(
+        child: MaterialApp.router(
+          routerConfig: GoRouter(
+            initialLocation: AppRoute.moduleManage,
+            routes: [
+              GoRoute(
+                path: AppRoute.moduleManage,
+                builder: (context, state) => const ModuleManagePage(),
+              ),
+            ],
+          ),
+        ),
       ));
       await tester.pumpAndSettle();
 
@@ -286,9 +311,22 @@ void main() {
       tester.view.devicePixelRatio = 1.0;
       addTearDown(tester.view.reset);
 
-      await tester.pumpWidget(GetMaterialApp(
-        getPages: AppRoute.pages,
-        home: const SettingsPage(),
+      await tester.pumpWidget(ProviderScope(
+        child: MaterialApp.router(
+          routerConfig: GoRouter(
+            initialLocation: AppRoute.settings,
+            routes: [
+              GoRoute(
+                path: AppRoute.settings,
+                builder: (context, state) => const SettingsPage(),
+              ),
+              GoRoute(
+                path: AppRoute.moduleManage,
+                builder: (context, state) => const ModuleManagePage(),
+              ),
+            ],
+          ),
+        ),
       ));
       await tester.pumpAndSettle();
 

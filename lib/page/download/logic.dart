@@ -39,6 +39,10 @@ class DownloadManagerLogic extends GetxController with GithubRequestMix {
 
   IDownloadService? _service;
 
+  /// 已标记为"已完成但磁盘文件已被外部删除"的任务 id 集合
+  /// （如经缓存管理页删除下载文件后，install 按钮/已完成徽标不应继续显示）。
+  final RxSet<int> missingFileIds = <int>{}.obs;
+
   @override
   void onReady() async {
     _service = ModuleManager.instance.get<IDownloadService>();
@@ -74,6 +78,54 @@ class DownloadManagerLogic extends GetxController with GithubRequestMix {
     _resubscribeWatches(tasks);
     // 预取应用信息（异步，不阻塞 UI）
     _prefetchAppInfos(_latestGroups);
+    // 异步核对已完成任务的文件是否仍存在（外部删除后更新缺失标记）
+    unawaited(_refreshMissingFiles(tasks));
+  }
+
+  /// 检查已完成任务的主文件是否仍存在；缺失的记入 [missingFileIds]。
+  ///
+  /// 文件可能被用户经缓存管理页等外部入口删除——此时"已完成"徽标与
+  /// "安装"按钮不再准确，UI 应显示"已删除"并隐藏安装入口。
+  Future<void> _refreshMissingFiles(List<DownloadTask> tasks) async {
+    final missing = <int>{};
+    final checks = <Future<void>>[];
+    for (final t in tasks) {
+      final id = t.id;
+      if (id == null || t.status != DownloadStatusEnum.completed) continue;
+      checks.add(() async {
+        try {
+          final file = File(t.filePath);
+          if (!await file.exists()) missing.add(id);
+        } catch (_) {
+          missing.add(id);
+        }
+      }());
+    }
+    await Future.wait(checks);
+    // 仅标记 completed 的缺失任务（进行中/暂停等文件缺失不在此列）
+    final same = missingFileIds.length == missing.length &&
+        missingFileIds.containsAll(missing);
+    if (!same) {
+      missingFileIds
+        ..clear()
+        ..addAll(missing);
+    }
+  }
+
+  /// 核对单个已完成任务的文件存在性，同步 [missingFileIds]。
+  Future<void> _checkSingleFilePresence(DownloadTask task) async {
+    final id = task.id;
+    if (id == null) return;
+    try {
+      final exists = await File(task.filePath).exists();
+      if (exists) {
+        missingFileIds.remove(id);
+      } else {
+        missingFileIds.add(id);
+      }
+    } catch (_) {
+      missingFileIds.add(id);
+    }
   }
 
   /// 由全量任务构建分组并发布
@@ -133,6 +185,13 @@ class DownloadManagerLogic extends GetxController with GithubRequestMix {
           // 复制外层：GetX 相等性跳过逻辑要求“新引用”才通知 Obx
           downloadGroups.value =
               List.of(_applyFilter(_latestGroups, currentFilter.value));
+          // 状态回到 completed（如重新下载完成）后重新核对文件存在性，
+          // 清除旧的"已删除"标记
+          if (task.status == DownloadStatusEnum.completed) {
+            unawaited(_checkSingleFilePresence(task));
+          } else {
+            missingFileIds.remove(id);
+          }
           return;
         }
       }

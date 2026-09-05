@@ -1,26 +1,29 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gstore/http/github/user_info/user_info.dart';
 import 'package:gstore/page/web/browser.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/theme/theme_provider.dart';
 import 'package:gstore/core/design/app_borders.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/theme/app_theme_config.dart';
+import 'package:go_router/go_router.dart';
 import 'package:gstore/page/backup/logic.dart';
 import 'package:gstore/page/backup/state.dart';
 
-class MinePage extends StatefulWidget {
+class MinePage extends ConsumerStatefulWidget {
   const MinePage({super.key});
 
   @override
-  State<MinePage> createState() => _MinePageState();
+  ConsumerState<MinePage> createState() => _MinePageState();
 }
 
 /// 保持页面状态（tab 切换不销毁：滚动位置/折叠状态保留）
-class _MinePageState extends State<MinePage>
+class _MinePageState extends ConsumerState<MinePage>
     with TickerProviderStateMixin, AutomaticKeepAliveClientMixin {
   /// 外观卡片展开状态
   bool _appearanceExpanded = false;
@@ -239,6 +242,9 @@ class _MinePageState extends State<MinePage>
   @override
   Widget build(BuildContext context) {
     super.build(context); // AutomaticKeepAliveClientMixin 要求
+    // 主题状态：Riverpod 权威（变化 → 本 State rebuild → Obx 内外观卡以新值重建）
+    final theme = ref.watch(themeProvider);
+    final themeNotifier = ref.read(themeProvider.notifier);
     return Scaffold(
       appBar: AppBar(
         title: const Text('我的'),
@@ -269,7 +275,7 @@ class _MinePageState extends State<MinePage>
               const SizedBox(height: AppSpacing.md),
 
               // 外观卡片（始终显示）
-              _buildAppearanceCard(context),
+              _buildAppearanceCard(context, theme, themeNotifier),
 
               const SizedBox(height: AppSpacing.md),
 
@@ -312,7 +318,7 @@ class _MinePageState extends State<MinePage>
         subtitle: const Text('登录 GitHub 以访问更多功能'),
         trailing: FilledButton.tonalIcon(
           onPressed: () {
-            Get.toNamed(AppRoute.auth);
+            context.push(AppRoute.auth);
           },
           icon: const Icon(Icons.login, size: AppTypography.iconSM),
           label: const Text('登录'),
@@ -418,7 +424,7 @@ class _MinePageState extends State<MinePage>
               title: const Text('AI 助手'),
               trailing:
                   const Icon(Icons.chevron_right, size: AppTypography.iconSM),
-              onTap: () => Get.toNamed(AppRoute.agent),
+              onTap: () => context.push(AppRoute.agent),
             ),
             const Divider(height: 1),
           ],
@@ -427,7 +433,7 @@ class _MinePageState extends State<MinePage>
             title: const Text('已安装应用'),
             trailing:
                 const Icon(Icons.chevron_right, size: AppTypography.iconSM),
-            onTap: () => Get.toNamed(AppRoute.installedApps),
+            onTap: () => context.push(AppRoute.installedApps),
           ),
           const Divider(height: 1),
           ListTile(
@@ -435,7 +441,7 @@ class _MinePageState extends State<MinePage>
             title: const Text('设置'),
             trailing:
                 const Icon(Icons.chevron_right, size: AppTypography.iconSM),
-            onTap: () => Get.toNamed(AppRoute.settings),
+            onTap: () => context.push(AppRoute.settings),
           ),
           const Divider(height: 1),
           ListTile(
@@ -444,7 +450,7 @@ class _MinePageState extends State<MinePage>
             title: const Text('查看日志'),
             trailing:
                 const Icon(Icons.chevron_right, size: AppTypography.iconSM),
-            onTap: () => Get.toNamed(AppRoute.logViewer),
+            onTap: () => context.push(AppRoute.logViewer),
           ),
         ],
       ),
@@ -452,9 +458,11 @@ class _MinePageState extends State<MinePage>
   }
 
   /// 构建外观卡片
-  Widget _buildAppearanceCard(BuildContext context) {
-    final themeController = Get.find<ThemeController>();
-
+  Widget _buildAppearanceCard(
+    BuildContext context,
+    ThemeState theme,
+    ThemeNotifier notifier,
+  ) {
     return Card(
       key: _appearanceCardKey,
       elevation: 0,
@@ -512,44 +520,41 @@ class _MinePageState extends State<MinePage>
             const SizedBox(height: AppSpacing.lg),
 
             // 主题模式设置
-            Obx(() {
-              final currentMode = themeController.themeMode;
-              return Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Text(
-                    '主题模式',
-                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          color: AppColors.textSecondary,
-                        ),
-                  ),
-                  const SizedBox(height: AppSpacing.md),
-                  AppSegmentedButton<AppThemeMode>(
-                    value: currentMode,
-                    segments: const [
-                      AppSegment(
-                        value: AppThemeMode.system,
-                        label: '系统',
-                        icon: Icons.brightness_auto,
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  '主题模式',
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: AppColors.textSecondary,
                       ),
-                      AppSegment(
-                        value: AppThemeMode.light,
-                        label: '浅色',
-                        icon: Icons.light_mode,
-                      ),
-                      AppSegment(
-                        value: AppThemeMode.dark,
-                        label: '深色',
-                        icon: Icons.dark_mode,
-                      ),
-                    ],
-                    onChanged: (AppThemeMode newMode) {
-                      themeController.setThemeMode(newMode);
-                    },
-                  ),
-                ],
-              );
-            }),
+                ),
+                const SizedBox(height: AppSpacing.md),
+                AppSegmentedButton<AppThemeMode>(
+                  value: theme.mode,
+                  segments: const [
+                    AppSegment(
+                      value: AppThemeMode.system,
+                      label: '系统',
+                      icon: Icons.brightness_auto,
+                    ),
+                    AppSegment(
+                      value: AppThemeMode.light,
+                      label: '浅色',
+                      icon: Icons.light_mode,
+                    ),
+                    AppSegment(
+                      value: AppThemeMode.dark,
+                      label: '深色',
+                      icon: Icons.dark_mode,
+                    ),
+                  ],
+                  onChanged: (AppThemeMode newMode) {
+                    notifier.setThemeMode(newMode);
+                  },
+                ),
+              ],
+            ),
 
             // 展开的详细设置
             SizeTransition(
@@ -564,19 +569,19 @@ class _MinePageState extends State<MinePage>
                   const SizedBox(height: AppSpacing.lg),
 
                   // 颜色设置
-                  _buildColorSetting(context, themeController),
+                  _buildColorSetting(context, theme, notifier),
                   const SizedBox(height: AppSpacing.lg),
 
                   // 字体风格
-                  _buildFontStyleSetting(context, themeController),
+                  _buildFontStyleSetting(context, theme, notifier),
                   const SizedBox(height: AppSpacing.lg),
 
                   // 圆角风格
-                  _buildRadiusStyleSetting(context, themeController),
+                  _buildRadiusStyleSetting(context, theme, notifier),
                   const SizedBox(height: AppSpacing.lg),
 
                   // 边框风格
-                  _buildBorderStyleSetting(context, themeController),
+                  _buildBorderStyleSetting(context, theme, notifier),
                 ],
               ),
             ),
@@ -587,244 +592,245 @@ class _MinePageState extends State<MinePage>
   }
 
   /// 构建颜色设置
-  Widget _buildColorSetting(BuildContext context, ThemeController controller) {
-    return Obx(() {
-      final config = controller.themeConfig;
-      final useCustom = config.useCustomColors;
-      final currentPrimaryColor = config.primaryColor;
+  Widget _buildColorSetting(
+    BuildContext context,
+    ThemeState theme,
+    ThemeNotifier notifier,
+  ) {
+    final config = theme.config;
+    final useCustom = config.useCustomColors;
+    final currentPrimaryColor = config.primaryColor;
 
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Text(
+              '颜色设置',
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: AppColors.textSecondary,
+                  ),
+            ),
+            const Spacer(),
+            Switch(
+              value: useCustom,
+              onChanged: (value) {
+                notifier.toggleCustomColors();
+              },
+              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+          ],
+        ),
+        if (useCustom) ...[
+          const SizedBox(height: AppSpacing.md),
+          // 颜色预设选择器
+          Wrap(
+            spacing: AppSpacing.sm,
+            runSpacing: AppSpacing.sm,
             children: [
-              Text(
-                '颜色设置',
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: AppColors.textSecondary,
-                    ),
+              _ColorPresetButton(
+                color: const Color(0xFF1976D2),
+                isSelected: currentPrimaryColor == const Color(0xFF1976D2),
+                onTap: () => _setPrimaryColor(
+                    context, notifier, const Color(0xFF1976D2)),
               ),
-              const Spacer(),
-              Switch(
-                value: useCustom,
-                onChanged: (value) {
-                  controller.toggleCustomColors();
-                },
-                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              _ColorPresetButton(
+                color: const Color(0xFF388E3C),
+                isSelected: currentPrimaryColor == const Color(0xFF388E3C),
+                onTap: () => _setPrimaryColor(
+                    context, notifier, const Color(0xFF388E3C)),
+              ),
+              _ColorPresetButton(
+                color: const Color(0xFFD32F2F),
+                isSelected: currentPrimaryColor == const Color(0xFFD32F2F),
+                onTap: () => _setPrimaryColor(
+                    context, notifier, const Color(0xFFD32F2F)),
+              ),
+              _ColorPresetButton(
+                color: const Color(0xFFF57C00),
+                isSelected: currentPrimaryColor == const Color(0xFFF57C00),
+                onTap: () => _setPrimaryColor(
+                    context, notifier, const Color(0xFFF57C00)),
+              ),
+              _ColorPresetButton(
+                color: const Color(0xFF7B1FA2),
+                isSelected: currentPrimaryColor == const Color(0xFF7B1FA2),
+                onTap: () => _setPrimaryColor(
+                    context, notifier, const Color(0xFF7B1FA2)),
+              ),
+              _ColorPresetButton(
+                color: const Color(0xFF0097A7),
+                isSelected: currentPrimaryColor == const Color(0xFF0097A7),
+                onTap: () => _setPrimaryColor(
+                    context, notifier, const Color(0xFF0097A7)),
               ),
             ],
           ),
-          if (useCustom) ...[
-            const SizedBox(height: AppSpacing.md),
-            // 颜色预设选择器
-            Wrap(
-              spacing: AppSpacing.sm,
-              runSpacing: AppSpacing.sm,
-              children: [
-                _ColorPresetButton(
-                  color: const Color(0xFF1976D2),
-                  isSelected: currentPrimaryColor == const Color(0xFF1976D2),
-                  onTap: () => _setPrimaryColor(
-                      context, controller, const Color(0xFF1976D2)),
-                ),
-                _ColorPresetButton(
-                  color: const Color(0xFF388E3C),
-                  isSelected: currentPrimaryColor == const Color(0xFF388E3C),
-                  onTap: () => _setPrimaryColor(
-                      context, controller, const Color(0xFF388E3C)),
-                ),
-                _ColorPresetButton(
-                  color: const Color(0xFFD32F2F),
-                  isSelected: currentPrimaryColor == const Color(0xFFD32F2F),
-                  onTap: () => _setPrimaryColor(
-                      context, controller, const Color(0xFFD32F2F)),
-                ),
-                _ColorPresetButton(
-                  color: const Color(0xFFF57C00),
-                  isSelected: currentPrimaryColor == const Color(0xFFF57C00),
-                  onTap: () => _setPrimaryColor(
-                      context, controller, const Color(0xFFF57C00)),
-                ),
-                _ColorPresetButton(
-                  color: const Color(0xFF7B1FA2),
-                  isSelected: currentPrimaryColor == const Color(0xFF7B1FA2),
-                  onTap: () => _setPrimaryColor(
-                      context, controller, const Color(0xFF7B1FA2)),
-                ),
-                _ColorPresetButton(
-                  color: const Color(0xFF0097A7),
-                  isSelected: currentPrimaryColor == const Color(0xFF0097A7),
-                  onTap: () => _setPrimaryColor(
-                      context, controller, const Color(0xFF0097A7)),
-                ),
-              ],
-            ),
-          ],
         ],
-      );
-    });
+      ],
+    );
   }
 
   /// 构建字体风格设置
   Widget _buildFontStyleSetting(
-      BuildContext context, ThemeController controller) {
-    return Obx(() {
-      final currentStyle = controller.themeConfig.fontStyle;
+    BuildContext context,
+    ThemeState theme,
+    ThemeNotifier notifier,
+  ) {
+    final currentStyle = theme.config.fontStyle;
 
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            '字体风格',
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: AppColors.textSecondary,
-                ),
-          ),
-          const SizedBox(height: AppSpacing.sm),
-          Wrap(
-            spacing: AppSpacing.sm,
-            children: AppFontStyle.values.map((style) {
-              final isSelected = currentStyle == style;
-              return FilterChip(
-                label: Text(_getFontStyleName(style)),
-                selected: isSelected,
-                onSelected: (selected) {
-                  if (selected) {
-                    controller.setFontStyle(style);
-                  }
-                },
-                backgroundColor:
-                    Theme.of(context).colorScheme.surfaceContainerHighest,
-                selectedColor: Theme.of(context).colorScheme.primaryContainer,
-                checkmarkColor:
-                    Theme.of(context).colorScheme.onPrimaryContainer,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(_smallRadius),
-                  side: _borderSide,
-                ),
-              );
-            }).toList(),
-          ),
-        ],
-      );
-    });
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '字体风格',
+          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                color: AppColors.textSecondary,
+              ),
+        ),
+        const SizedBox(height: AppSpacing.sm),
+        Wrap(
+          spacing: AppSpacing.sm,
+          children: AppFontStyle.values.map((style) {
+            final isSelected = currentStyle == style;
+            return FilterChip(
+              label: Text(_getFontStyleName(style)),
+              selected: isSelected,
+              onSelected: (selected) {
+                if (selected) {
+                  notifier.setFontStyle(style);
+                }
+              },
+              backgroundColor:
+                  Theme.of(context).colorScheme.surfaceContainerHighest,
+              selectedColor: Theme.of(context).colorScheme.primaryContainer,
+              checkmarkColor: Theme.of(context).colorScheme.onPrimaryContainer,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(_smallRadius),
+                side: _borderSide,
+              ),
+            );
+          }).toList(),
+        ),
+      ],
+    );
   }
 
   /// 构建圆角风格设置
   Widget _buildRadiusStyleSetting(
-      BuildContext context, ThemeController controller) {
-    return Obx(() {
-      final currentStyle = controller.themeConfig.radiusStyle;
+    BuildContext context,
+    ThemeState theme,
+    ThemeNotifier notifier,
+  ) {
+    final currentStyle = theme.config.radiusStyle;
 
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            '圆角风格',
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: AppColors.textSecondary,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '圆角风格',
+          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                color: AppColors.textSecondary,
+              ),
+        ),
+        const SizedBox(height: AppSpacing.sm),
+        Wrap(
+          spacing: AppSpacing.sm,
+          children: AppRadiusStyle.values.map((style) {
+            final isSelected = currentStyle == style;
+            return FilterChip(
+              label: Text(_getRadiusStyleName(style)),
+              selected: isSelected,
+              onSelected: (selected) {
+                if (selected) {
+                  notifier.setRadiusStyle(style);
+                }
+              },
+              backgroundColor:
+                  Theme.of(context).colorScheme.surfaceContainerHighest,
+              selectedColor: Theme.of(context).colorScheme.primaryContainer,
+              checkmarkColor: Theme.of(context).colorScheme.onPrimaryContainer,
+              avatar: Container(
+                width: 16,
+                height: 16,
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.primary,
+                  borderRadius: BorderRadius.circular(_getRadiusPreview(style)),
                 ),
-          ),
-          const SizedBox(height: AppSpacing.sm),
-          Wrap(
-            spacing: AppSpacing.sm,
-            children: AppRadiusStyle.values.map((style) {
-              final isSelected = currentStyle == style;
-              return FilterChip(
-                label: Text(_getRadiusStyleName(style)),
-                selected: isSelected,
-                onSelected: (selected) {
-                  if (selected) {
-                    controller.setRadiusStyle(style);
-                  }
-                },
-                backgroundColor:
-                    Theme.of(context).colorScheme.surfaceContainerHighest,
-                selectedColor: Theme.of(context).colorScheme.primaryContainer,
-                checkmarkColor:
-                    Theme.of(context).colorScheme.onPrimaryContainer,
-                avatar: Container(
-                  width: 16,
-                  height: 16,
-                  decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.primary,
-                    borderRadius:
-                        BorderRadius.circular(_getRadiusPreview(style)),
-                  ),
-                ),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(_smallRadius),
-                  side: _borderSide,
-                ),
-              );
-            }).toList(),
-          ),
-        ],
-      );
-    });
+              ),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(_smallRadius),
+                side: _borderSide,
+              ),
+            );
+          }).toList(),
+        ),
+      ],
+    );
   }
 
   /// 构建边框风格设置
   Widget _buildBorderStyleSetting(
-      BuildContext context, ThemeController controller) {
-    return Obx(() {
-      final currentStyle = controller.themeConfig.borderStyle;
+    BuildContext context,
+    ThemeState theme,
+    ThemeNotifier notifier,
+  ) {
+    final currentStyle = theme.config.borderStyle;
 
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            '边框风格',
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: AppColors.textSecondary,
-                ),
-          ),
-          const SizedBox(height: AppSpacing.sm),
-          Wrap(
-            spacing: AppSpacing.sm,
-            children: AppBorderStyle.values.map((style) {
-              final isSelected = currentStyle == style;
-              return FilterChip(
-                label: Text(_getBorderStyleName(style)),
-                selected: isSelected,
-                onSelected: (selected) {
-                  if (selected) {
-                    controller.setBorderStyle(style);
-                  }
-                },
-                backgroundColor:
-                    Theme.of(context).colorScheme.surfaceContainerHighest,
-                selectedColor: Theme.of(context).colorScheme.primaryContainer,
-                checkmarkColor:
-                    Theme.of(context).colorScheme.onPrimaryContainer,
-                avatar: Container(
-                  width: 16,
-                  height: 16,
-                  decoration: BoxDecoration(
-                    color: Colors.transparent,
-                    borderRadius: BorderRadius.circular(4),
-                    border: Border.all(
-                      color: Theme.of(context).colorScheme.outline,
-                      width: AppBorders.sideOf(context).width,
-                    ),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '边框风格',
+          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                color: AppColors.textSecondary,
+              ),
+        ),
+        const SizedBox(height: AppSpacing.sm),
+        Wrap(
+          spacing: AppSpacing.sm,
+          children: AppBorderStyle.values.map((style) {
+            final isSelected = currentStyle == style;
+            return FilterChip(
+              label: Text(_getBorderStyleName(style)),
+              selected: isSelected,
+              onSelected: (selected) {
+                if (selected) {
+                  notifier.setBorderStyle(style);
+                }
+              },
+              backgroundColor:
+                  Theme.of(context).colorScheme.surfaceContainerHighest,
+              selectedColor: Theme.of(context).colorScheme.primaryContainer,
+              checkmarkColor: Theme.of(context).colorScheme.onPrimaryContainer,
+              avatar: Container(
+                width: 16,
+                height: 16,
+                decoration: BoxDecoration(
+                  color: Colors.transparent,
+                  borderRadius: BorderRadius.circular(4),
+                  border: Border.all(
+                    color: Theme.of(context).colorScheme.outline,
+                    width: AppBorders.sideOf(context).width,
                   ),
                 ),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(_smallRadius),
-                  side: _borderSide,
-                ),
-              );
-            }).toList(),
-          ),
-        ],
-      );
-    });
+              ),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(_smallRadius),
+                side: _borderSide,
+              ),
+            );
+          }).toList(),
+        ),
+      ],
+    );
   }
 
   /// 设置主色
   void _setPrimaryColor(
-      BuildContext context, ThemeController controller, Color color) {
-    controller.setCustomColorTheme(primaryColor: color);
+      BuildContext context, ThemeNotifier notifier, Color color) {
+    notifier.setCustomColorTheme(primaryColor: color);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text('已设置主题颜色'),

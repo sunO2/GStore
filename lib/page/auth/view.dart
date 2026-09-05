@@ -24,7 +24,7 @@ class AuthPage extends StatelessWidget {
 
             // 登录成功，直接返回 success
             if (currentStatus == AuthStatus.success) {
-              Get.back(result: AuthStatus.success);
+              Navigator.of(context).pop(AuthStatus.success);
               return;
             }
 
@@ -32,7 +32,7 @@ class AuthPage extends StatelessWidget {
             // 取消防抖轮询后普通返回（不携带 result，调用方不会弹"登录成功"）
             if (currentStatus == AuthStatus.verifying) {
               logic.cancelLogin();
-              Get.back();
+              Navigator.of(context).pop();
               return;
             }
 
@@ -58,7 +58,7 @@ class AuthPage extends StatelessWidget {
             );
 
             if (shouldPop == true) {
-              Get.back();
+              Navigator.of(context).pop();
             }
           },
         ),

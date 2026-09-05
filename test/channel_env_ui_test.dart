@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
@@ -114,9 +115,11 @@ void main() {
     WidgetTester tester, {
     Future<({String name, Uint8List bytes})?> Function()? filePicker,
   }) async {
-    await tester.pumpWidget(GetMaterialApp(
-      scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
-      home: SettingsPage(filePicker: filePicker),
+    await tester.pumpWidget(ProviderScope(
+      child: GetMaterialApp(
+        scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
+        home: SettingsPage(filePicker: filePicker),
+      ),
     ));
     await tester.pumpAndSettle();
   }

@@ -1,64 +1,61 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:gstore/core/core.dart';
 
 import 'logic.dart';
 import 'state.dart';
 
-/// 模块管理页
+/// 模块管理页（Riverpod）
 ///
-/// 9 个可开关业务模块（SwitchListTile，切换经 [ModuleManageLogic.toggle]
-/// 持久化 + 运行时上下线）+ 8 个系统模块置灰（Switch 禁用，不可关闭）。
-/// Obx 渲染 + [ModuleManager.onChange] 实时刷新。
-class ModuleManagePage extends StatelessWidget {
+/// 9 个可开关业务模块（SwitchListTile，切换经 toggle 持久化 + 运行时上下线）
+/// + 8 个系统模块置灰（Switch 禁用，不可关闭）。
+/// 订阅 [ModuleManager.onChange] 实时刷新。
+class ModuleManagePage extends ConsumerWidget {
   const ModuleManagePage({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    // 使用 Get.put 确保 ModuleManageLogic 被初始化
-    final logic = Get.put<ModuleManageLogic>(ModuleManageLogic());
-    final state = logic.state;
+  Widget build(BuildContext context, WidgetRef ref) {
+    final state = ref.watch(moduleManageProvider);
+
+    final business = state.entries.where((e) => e.togglable).toList();
+    final system = state.entries.where((e) => !e.togglable).toList();
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('模块管理'),
       ),
-      body: Obx(() {
-        if (state.loading.value) {
-          return const Center(child: AppLoading(size: AppLoadingSize.medium));
-        }
-        final business = state.entries.where((e) => e.togglable).toList();
-        final system = state.entries.where((e) => !e.togglable).toList();
-        return ListView(
-          children: [
-            _buildSectionHeader(context, '业务模块'),
-            Card(
-              margin: AppSpacing.allLG,
-              child: Column(
-                children: [
-                  for (var i = 0; i < business.length; i++) ...[
-                    if (i > 0) const Divider(height: 1),
-                    _buildBusinessTile(context, logic, business[i]),
-                  ],
-                ],
-              ),
+      body: state.loading
+          ? const Center(child: AppLoading(size: AppLoadingSize.medium))
+          : ListView(
+              children: [
+                _buildSectionHeader(context, '业务模块'),
+                Card(
+                  margin: AppSpacing.allLG,
+                  child: Column(
+                    children: [
+                      for (var i = 0; i < business.length; i++) ...[
+                        if (i > 0) const Divider(height: 1),
+                        _buildBusinessTile(context, ref, business[i]),
+                      ],
+                    ],
+                  ),
+                ),
+                const SizedBox(height: AppSpacing.xxl),
+                _buildSectionHeader(context, '系统模块'),
+                Card(
+                  margin: AppSpacing.allLG,
+                  child: Column(
+                    children: [
+                      for (var i = 0; i < system.length; i++) ...[
+                        if (i > 0) const Divider(height: 1),
+                        _buildSystemTile(context, system[i]),
+                      ],
+                    ],
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: AppSpacing.xxl),
-            _buildSectionHeader(context, '系统模块'),
-            Card(
-              margin: AppSpacing.allLG,
-              child: Column(
-                children: [
-                  for (var i = 0; i < system.length; i++) ...[
-                    if (i > 0) const Divider(height: 1),
-                    _buildSystemTile(context, system[i]),
-                  ],
-                ],
-              ),
-            ),
-          ],
-        );
-      }),
     );
   }
 
@@ -78,9 +75,13 @@ class ModuleManagePage extends StatelessWidget {
   /// 可开关业务模块：SwitchListTile（切换中置灰防连击）
   Widget _buildBusinessTile(
     BuildContext context,
-    ModuleManageLogic logic,
+    WidgetRef ref,
     ModuleEntry entry,
   ) {
+    final notifier = ref.read(moduleManageProvider.notifier);
+    final toggling = ref.watch(
+      moduleManageProvider.select((s) => s.toggling.contains(entry.name)),
+    );
     return SwitchListTile(
       secondary: Icon(
         _iconOf(entry.name),
@@ -89,10 +90,9 @@ class ModuleManagePage extends StatelessWidget {
       ),
       title: Text(entry.title),
       subtitle: Text(_subtitleOf(entry)),
-      value: entry.enabled.value,
-      onChanged: logic.state.toggling.contains(entry.name)
-          ? null
-          : (value) => logic.toggle(entry.name, value),
+      value: entry.enabled,
+      onChanged:
+          toggling ? null : (value) => notifier.toggle(entry.name, value),
     );
   }
 
@@ -106,7 +106,7 @@ class ModuleManagePage extends StatelessWidget {
       ),
       title: Text(entry.title),
       subtitle: Text('${entry.description} · ${entry.note}'),
-      value: entry.enabled.value,
+      value: entry.enabled,
       onChanged: null, // 系统模块不可关
     );
   }

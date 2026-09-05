@@ -48,6 +48,15 @@ DownloadStatusKind statusKindOf(DownloadTask item) {
   }
 }
 
+/// 已完成任务的文件是否已被外部删除（如缓存管理页删除下载文件）。
+///
+/// 命中时 UI 应将"已完成/安装"降级为"已删除"（徽标变色、隐藏安装按钮）。
+bool isCompletedFileMissing(DownloadTask item, Set<int> missingFileIds) {
+  if (item.status != DownloadStatusEnum.completed) return false;
+  final id = item.id;
+  return id != null && missingFileIds.contains(id);
+}
+
 /// 主操作按钮：downloading/connecting→pause、paused/cancelled→resume、
 /// queued→cancel、failed→retry、completed 且文件名以 .apk 结尾→install，否则 null
 DownloadAction? primaryActionFor(DownloadTask item) {
