@@ -1,28 +1,42 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/design/app_borders.dart';
 import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/compent/entrance_list.dart';
 import 'package:gstore/compent/pressable_scale.dart';
 import 'package:gstore/page/download/download_status_utils.dart';
-import 'package:gstore/page/download/logic.dart';
+import 'package:gstore/page/download/download_page_providers.dart';
 
-class DownloadManager extends StatefulWidget {
+class DownloadManager extends ConsumerStatefulWidget {
   const DownloadManager({super.key});
 
   @override
-  State<DownloadManager> createState() => _DownloadManagerState();
+  ConsumerState<DownloadManager> createState() => _DownloadManagerState();
 }
 
-class _DownloadManagerState extends State<DownloadManager> {
-  /// 多文件组的展开状态（key: appId_version，与 logic 分组 key 一致）
+class _DownloadManagerState extends ConsumerState<DownloadManager> {
+  /// 多文件组的展开状态（key: appId_version，与分组 key 一致）
   final Set<String> _expandedKeys = {};
+
+  /// 页面控制器与状态（build 时从 ref 取，供各构建子方法使用）
+  DownloadManagerNotifier get notifier =>
+      ref.read(downloadManagerProvider.notifier);
+  DownloadPageState get state => ref.watch(downloadManagerProvider);
+
+  @override
+  void initState() {
+    super.initState();
+    // 首次挂载加载任务（等价原 GetxController.onReady）
+    Future.microtask(
+      () => ref.read(downloadManagerProvider.notifier).load(),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
-    final logic = Get.put(DownloadManagerLogic());
     return Scaffold(
       appBar: AppBar(
         title: const Text('下载管理'),
@@ -35,38 +49,38 @@ class _DownloadManagerState extends State<DownloadManager> {
             onSelected: (value) {
               switch (value) {
                 case 'pause_all':
-                  logic.pauseAll();
+                  notifier.pauseAll();
                   break;
                 case 'cancel_queued':
-                  logic.cancelAllQueued();
+                  notifier.cancelAllQueued();
                   break;
                 case 'retry_failed':
-                  logic.retryAllFailed();
+                  notifier.retryAllFailed();
                   break;
                 case 'clear_completed':
-                  logic.clearCompleted();
+                  notifier.clearCompleted();
                   break;
                 case 'clear_all':
-                  logic.clearAll();
+                  notifier.clearAll();
                   break;
               }
             },
-            itemBuilder: (context) => _buildMoreMenuItems(context, logic),
+            itemBuilder: (context) => _buildMoreMenuItems(context),
           ),
         ],
       ),
       body: Column(
         children: [
           // 筛选标签（筛选语义见 download_status_utils.dart 的 matchesFilter）
-          _buildFilterChips(context, logic),
+          _buildFilterChips(context),
           const SizedBox(height: AppSpacing.md),
 
           // 下载列表
           Expanded(
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg),
-              child: Obx(() {
-                final downloadList = logic.downloadGroups.value;
+              child: Builder(builder: (context) {
+                final downloadList = state.groups;
 
                 if (downloadList.isEmpty) {
                   return _buildEmptyState(context);
@@ -78,10 +92,9 @@ class _DownloadManagerState extends State<DownloadManager> {
                   itemCount: downloadList.length,
                   itemBuilder: (context, index) {
                     final item = downloadList[index];
-                    final info = logic.getCachedAppInfo(item[0].appId);
+                    final info = state.cachedAppInfo(item[0].appId);
                     return _buildDownloadGroup(
                       context,
-                      logic,
                       item,
                       info,
                     );
@@ -96,36 +109,35 @@ class _DownloadManagerState extends State<DownloadManager> {
   }
 
   /// 构建筛选标签
-  Widget _buildFilterChips(BuildContext context, DownloadManagerLogic logic) {
-    return Obx(() {
-      return Container(
-        padding: const EdgeInsets.symmetric(
-          horizontal: AppSpacing.lg,
-        ),
-        height: AppSpacing.xl * 2,
-        child: ListView(
-          scrollDirection: Axis.horizontal,
-          children: DownloadFilter.values.map((filter) {
-            final isSelected = logic.currentFilter.value == filter;
-            return Padding(
-              padding: const EdgeInsets.only(right: AppSpacing.md),
-              child: FilterChip(
-                label: Text(_getFilterLabel(filter)),
-                selected: isSelected,
-                onSelected: (_) => logic.setFilter(filter),
-                selectedColor: Theme.of(context).colorScheme.primaryContainer,
-                checkmarkColor: Theme.of(context).colorScheme.primary,
-                side: BorderSide(
-                  color: isSelected
-                      ? Theme.of(context).colorScheme.primary
-                      : Theme.of(context).colorScheme.outline,
-                ),
+  Widget _buildFilterChips(BuildContext context) {
+    final currentFilter = state.filter;
+    return Container(
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.lg,
+      ),
+      height: AppSpacing.xl * 2,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        children: DownloadFilter.values.map((filter) {
+          final isSelected = currentFilter == filter;
+          return Padding(
+            padding: const EdgeInsets.only(right: AppSpacing.md),
+            child: FilterChip(
+              label: Text(_getFilterLabel(filter)),
+              selected: isSelected,
+              onSelected: (_) => notifier.setFilter(filter),
+              selectedColor: Theme.of(context).colorScheme.primaryContainer,
+              checkmarkColor: Theme.of(context).colorScheme.primary,
+              side: BorderSide(
+                color: isSelected
+                    ? Theme.of(context).colorScheme.primary
+                    : Theme.of(context).colorScheme.outline,
               ),
-            );
-          }).toList(),
-        ),
-      );
-    });
+            ),
+          );
+        }).toList(),
+      ),
+    );
   }
 
   /// 构建空状态
@@ -161,7 +173,6 @@ class _DownloadManagerState extends State<DownloadManager> {
   /// 构建下载分组卡片
   Widget _buildDownloadGroup(
     BuildContext context,
-    DownloadManagerLogic logic,
     List<DownloadTask> items,
     AppInfo? info,
   ) {
@@ -186,7 +197,6 @@ class _DownloadManagerState extends State<DownloadManager> {
           // 卡片首行：图标 + 应用名 + 版本 + 聚合状态徽标
           _buildGroupHeader(
             context,
-            logic,
             items,
             info,
             isMulti: isMulti,
@@ -217,7 +227,7 @@ class _DownloadManagerState extends State<DownloadManager> {
                   indent: AppSpacing.lg,
                   endIndent: AppSpacing.lg,
                 ),
-              _buildDownloadItem(context, logic, items[i]),
+              _buildDownloadItem(context, items[i]),
             ],
         ],
       ),
@@ -228,7 +238,6 @@ class _DownloadManagerState extends State<DownloadManager> {
   /// 卡片首行：应用图标 + 应用名 + 版本 + 状态徽标（聚合组内主文件状态）
   Widget _buildGroupHeader(
     BuildContext context,
-    DownloadManagerLogic logic,
     List<DownloadTask> items,
     AppInfo? info, {
     required bool isMulti,
@@ -273,8 +282,8 @@ class _DownloadManagerState extends State<DownloadManager> {
             ),
           ),
           const SizedBox(width: AppSpacing.sm),
-          // 聚合组内主文件状态（logic 已通过 watch 推送进 downloadGroups）
-          _buildStatusBadge(context, items[0], logic.missingFileIds),
+          // 聚合组内主文件状态（notifier 已通过 watch 推送进 groups）
+          _buildStatusBadge(context, items[0], state.missingFileIds),
           // 多文件组：展开指示
           if (isMulti) ...[
             const SizedBox(width: AppSpacing.xs),
@@ -332,7 +341,6 @@ class _DownloadManagerState extends State<DownloadManager> {
   /// 构建下载项
   Widget _buildDownloadItem(
     BuildContext context,
-    DownloadManagerLogic logic,
     DownloadTask downStatus,
   ) {
     return Dismissible(
@@ -342,7 +350,7 @@ class _DownloadManagerState extends State<DownloadManager> {
       // 删除前先确认
       confirmDismiss: (_) => _confirmDelete(context, downStatus),
       onDismissed: (_) {
-        logic.deleteDownload(downStatus);
+        notifier.deleteDownload(downStatus);
       },
       background: Container(
         decoration: BoxDecoration(
@@ -414,7 +422,7 @@ class _DownloadManagerState extends State<DownloadManager> {
             // 主操作按钮 + 辅助操作
             Row(
               children: [
-                _buildPrimaryAction(context, logic, downStatus),
+                _buildPrimaryAction(context, downStatus),
                 const Spacer(),
                 IconButton(
                   tooltip: '重新下载',
@@ -423,7 +431,7 @@ class _DownloadManagerState extends State<DownloadManager> {
                     size: AppTypography.iconSM,
                   ),
                   visualDensity: VisualDensity.compact,
-                  onPressed: () => logic.retryDownload(downStatus),
+                  onPressed: () => notifier.retryDownload(downStatus),
                 ),
                 IconButton(
                   tooltip: '删除',
@@ -434,7 +442,7 @@ class _DownloadManagerState extends State<DownloadManager> {
                   visualDensity: VisualDensity.compact,
                   onPressed: () async {
                     if (await _confirmDelete(context, downStatus)) {
-                      logic.deleteDownload(downStatus);
+                      notifier.deleteDownload(downStatus);
                     }
                   },
                 ),
@@ -445,7 +453,7 @@ class _DownloadManagerState extends State<DownloadManager> {
                     size: AppTypography.iconSM,
                   ),
                   visualDensity: VisualDensity.compact,
-                  onPressed: () => _showDownloadInfo(context, logic, downStatus),
+                  onPressed: () => _showDownloadInfo(context, downStatus),
                 ),
               ],
             ),
@@ -459,10 +467,9 @@ class _DownloadManagerState extends State<DownloadManager> {
   /// 已完成但文件已被外部删除时不再提供"安装"，改为红框"已删除"占位。
   Widget _buildPrimaryAction(
     BuildContext context,
-    DownloadManagerLogic logic,
     DownloadTask item,
   ) {
-    if (isCompletedFileMissing(item, logic.missingFileIds)) {
+    if (isCompletedFileMissing(item, state.missingFileIds)) {
       // 文件已删除：禁用按钮占位（红/黄警示边框），提示用户文件不在了
       return OutlinedButton.icon(
         onPressed: null,
@@ -500,11 +507,11 @@ class _DownloadManagerState extends State<DownloadManager> {
       DownloadAction.cancel => ('取消', Icons.cancel),
     };
     final onPressed = switch (action) {
-      DownloadAction.pause => () => logic.pauseDownload(item),
-      DownloadAction.resume => () => logic.resumeDownload(item),
-      DownloadAction.retry => () => logic.retryDownload(item),
-      DownloadAction.install => () => logic.installApp(item),
-      DownloadAction.cancel => () => logic.cancelDownload(item),
+      DownloadAction.pause => () => notifier.pauseDownload(item),
+      DownloadAction.resume => () => notifier.resumeDownload(item),
+      DownloadAction.retry => () => notifier.retryDownload(item),
+      DownloadAction.install => () => notifier.installApp(item),
+      DownloadAction.cancel => () => notifier.cancelDownload(item),
     };
 
     return FilledButton.tonalIcon(
@@ -542,7 +549,6 @@ class _DownloadManagerState extends State<DownloadManager> {
   /// 下载信息弹窗（文件名/链接/渠道等完整信息，不受列表截断影响）
   Future<void> _showDownloadInfo(
     BuildContext context,
-    DownloadManagerLogic logic,
     DownloadTask item,
   ) async {
     final scheme = Theme.of(context).colorScheme;
@@ -843,9 +849,8 @@ class _DownloadManagerState extends State<DownloadManager> {
 
   /// 构建头部"更多操作"菜单项：批量操作（暂停全部/取消排队/重试失败）按存在性
   /// 条件显示，末尾固定清理项。放入 AppBar 后不再有 body 中整行显示/隐藏的布局跳动。
-  List<PopupMenuEntry<String>> _buildMoreMenuItems(
-      BuildContext context, DownloadManagerLogic logic) {
-    final groups = logic.downloadGroups.value;
+  List<PopupMenuEntry<String>> _buildMoreMenuItems(BuildContext context) {
+    final groups = state.groups;
     final hasDownloading = groups.any((g) => g.any(
         (item) =>
             item.status == DownloadStatusEnum.downloading ||

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:ffi';
 
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/download/core/download_request.dart';
@@ -13,7 +14,7 @@ import 'package:gstore/core/service/db_manager.dart';
 import 'package:gstore/db/apps/AppInfoDatabase.dart';
 import 'package:gstore/http/github/dio_client.dart';
 import 'package:gstore/http/github/github_client.dart';
-import 'package:gstore/page/download/logic.dart';
+import 'package:gstore/page/download/download_page_providers.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 // sqlite3 为 sqflite_common_ffi 传递依赖，仅用其 `open` 覆写动态库加载路径。
@@ -126,9 +127,8 @@ void main() {
     Get.reset();
     await ModuleManager.instance.clear();
 
-    // 满足 DownloadManagerLogic 构造期依赖：
-    //   GithubRequestMix.githubApi = Get.find<GithubRestClient>()
-    //   appInfoDB = "gstore".repoDB.db = Get.find<DbManager>()._getDB("gstore")
+    // DbManager 构造依赖 Get.find<GithubRestClient>()；appInfoDB 经 ModuleManager
+    // 绑定 DbManager（Notifier 的 downloadAppInfoDbProvider 读取路径）
     Get.put(GithubRestClient(DioClient().get()));
     final dm = DbManager();
     dm.dbRepositroies['gstore'] = DBRepository(
@@ -137,7 +137,7 @@ void main() {
       'GStore-Repositorys',
       await ($FloorAppInfoDatabase.inMemoryDatabaseBuilder()).build(),
     );
-    Get.put(dm);
+    ModuleManager.instance.bindByType(DbManager, dm);
   });
 
   tearDown(() async {
@@ -153,7 +153,7 @@ void main() {
     await ModuleManager.instance.clear();
   });
 
-  test('筛选=全部时 watch 推送更大 received：Rx 必须通知且列表值更新', () async {
+  test('筛选=全部时 watch 推送更大 received：state 必须更新且通知监听者', () async {
     // 0. 宿主环境 sqflite(Floor) 不可用时安全跳过（同 migration_test）
     try {
       await downloadTaskDatabase;
@@ -162,7 +162,7 @@ void main() {
       return;
     }
 
-    // 1. 绑定假下载服务（onReady 里 _service = get<IDownloadService>()）
+    // 1. 绑定假下载服务（load() 里 _service = get<IDownloadService>()）
     final fake = _FakeDownloadService();
     ModuleManager.instance.bind<IDownloadService>(fake);
 
@@ -171,41 +171,44 @@ void main() {
     expect(saved, isNotNull, reason: '种子任务应拿到自增 id');
     final seededId = saved!.id!;
 
-    // 3. 预取应用信息，避免 loadTasks 尾部 _prefetchAppInfos 的额外 emit 干扰计数
-    final logic = DownloadManagerLogic();
-    await logic.getAppInfo(saved.appId);
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final notifier = container.read(downloadManagerProvider.notifier);
 
-    // 4. 监听 downloadGroups 流：只数 _onTaskUpdate 之后的通知次数
+    // 3. 预取应用信息，避免 loadTasks 尾部 _prefetchAppInfos 的额外 state 更新干扰计数
+    await notifier.getAppInfo(saved.appId);
+
+    // 4. 监听 state 流：只数 _onTaskUpdate 之后的更新次数
     var emissions = 0;
-    final sub = logic.downloadGroups.stream.listen((_) => emissions++);
-    addTearDown(sub.cancel);
+    final sub = container.listen(downloadManagerProvider,
+        (_, __) => emissions++);
+    addTearDown(sub.close);
 
-    logic.onReady(); // _service + loadTasks + watch 订阅（void，内部 async）
-    await _waitUntil(() => logic.downloadGroups.value.isNotEmpty);
+    notifier.load(); // _service + loadTasks + watch 订阅（void，内部 async）
+    await _waitUntil(() =>
+        container.read(downloadManagerProvider).groups.isNotEmpty);
 
     // 初始加载完成、列表就绪
-    expect(logic.downloadGroups.value, hasLength(1));
+    expect(container.read(downloadManagerProvider).groups, hasLength(1));
     final baseline = emissions;
 
     // 5. push 一个 received 更大的任务（相当于下载进度推进）
     fake.push(saved.copyWith(received: saved.received + 200));
     await _waitUntil(() => emissions > baseline);
 
-    // 回归断言：Rx 必须发生通知（旧实现同一引用 → 0 次 emit → Obx 不刷新）
+    // 回归断言：state 必须更新（旧实现同一引用 → 0 次通知 → UI 不刷新）
     expect(emissions, greaterThan(baseline),
-        reason: '筛选=全部时 watch 更新必须通知 Obx（新引用）');
+        reason: '筛选=全部时 watch 更新必须通知监听者（新引用）');
     // 数据本身也要更新
     expect(
-      logic.downloadGroups.value.first.first.id,
+      container.read(downloadManagerProvider).groups.first.first.id,
       seededId,
       reason: '更新应落在同一任务上',
     );
     expect(
-      logic.downloadGroups.value.first.first.received,
+      container.read(downloadManagerProvider).groups.first.first.received,
       saved.received + 200,
     );
-
-    addTearDown(logic.onClose);
   });
 }
 

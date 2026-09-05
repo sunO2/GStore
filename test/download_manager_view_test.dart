@@ -1,66 +1,50 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:get/get.dart';
 import 'package:gstore/core/design/app_components.dart';
 import 'package:gstore/core/download/model/download_task.dart';
-import 'package:gstore/core/service/db_manager.dart';
-import 'package:gstore/db/apps/AppInfoDatabase.dart';
-import 'package:gstore/http/github/github_client.dart';
+import 'package:gstore/core/navigation/nav_key.dart';
+import 'package:gstore/page/download/download_page_providers.dart';
 import 'package:gstore/page/download/download_status_utils.dart';
-import 'package:gstore/page/download/logic.dart';
 import 'package:gstore/page/download/view.dart';
-import 'package:mockito/mockito.dart';
 
 // ---------------------------------------------------------------------------
 // 测试替身
 //
-// DownloadManagerLogic 的 `database` / `appInfoDB` 是 final 实例字段（非 getter），
-// 子类无法覆写；且构造时即执行 `Get.find<GithubRestClient>()`（GithubRequestMix）
-// 与 `"gstore".repoDB.db` → `Get.find<DbManager>()`。因此：
-//  1. 测试前先注册 GithubRestClient / DbManager 占位实现，满足构造期依赖；
-//  2. 子类覆写 onReady（不订阅真实 sqlite 数据库），由测试直接注入 downloadGroups；
-//  3. 覆写 setFilter（真实实现依赖私有 _latestGroups 流，测试中不可达）。
+// 页面状态经 Riverpod 注入：子类 Notifier 覆写 load()（不订阅真实 sqlite 数据库）
+// 与 deleteDownload（spy），由测试直接 seed 分组数据。
 // ---------------------------------------------------------------------------
 
-class MockGithubRestClient extends Mock implements GithubRestClient {}
-
-class MockAppInfoDatabase extends Mock implements AppInfoDatabase {}
-
-class _TestDownloadManagerLogic extends DownloadManagerLogic {
-  /// 测试注入的原始分组数据（setFilter 重放用）
-  List<List<DownloadTask>> baseGroups = [];
-
+class _TestDownloadNotifier extends DownloadManagerNotifier {
   /// deleteDownload 调用记录（spy）
   final deleted = <DownloadTask>[];
 
+  /// seed 注入的数据（build() 时读，避免在 provider 挂载前写 state）
+  List<List<DownloadTask>> _seedGroups = [];
+  Set<int> _seedMissing = const {};
+
   @override
-  void onReady() {
+  Future<void> load() async {
     // 不订阅真实数据库（downloadTaskDatabase），数据由测试手动注入
   }
 
-  /// 注入分组数据并按当前筛选重建列表
-  void seed(List<List<DownloadTask>> groups) {
-    baseGroups = List.of(groups);
-    downloadGroups.value = _applyFilter(baseGroups, currentFilter.value);
-  }
-
   @override
-  void setFilter(DownloadFilter filter) {
-    currentFilter.value = filter;
-    // 与生产 _applyFilter 语义一致：基于原始分组重放（matchesFilter 已有单测覆盖）
-    downloadGroups.value = _applyFilter(baseGroups, filter);
+  DownloadPageState build() {
+    return DownloadPageState(
+      filter: DownloadFilter.all,
+      latestGroups: List.of(_seedGroups),
+      groups: List.of(_seedGroups),
+      missingFileIds: _seedMissing,
+    );
   }
 
-  List<List<DownloadTask>> _applyFilter(
-    List<List<DownloadTask>> groups,
-    DownloadFilter filter,
-  ) {
-    if (filter == DownloadFilter.all) return groups;
-    return groups
-        .map((group) =>
-            group.where((item) => matchesFilter(item, filter)).toList())
-        .where((group) => group.isNotEmpty)
-        .toList();
+  /// 注入分组数据与缺失文件标记（初始筛选为「全部」）
+  void seed(
+    List<List<DownloadTask>> groups, {
+    Set<int> missing = const {},
+  }) {
+    _seedGroups = List.of(groups);
+    _seedMissing = missing;
   }
 
   @override
@@ -110,46 +94,33 @@ void _useTallView(WidgetTester tester) {
 }
 
 void main() {
-  late _TestDownloadManagerLogic logic;
+  late _TestDownloadNotifier notifier;
 
-  // 注意：不在 setUpAll 做 sqfliteFfiInit——widget 测试环境（flutter_test binding
-  // 已初始化）下 ffi isolate 模式会与测试框架挂起；下载数据库由逻辑构造时
-  // 懒打开（依赖宿主 libsqlite3，运行需 LD_LIBRARY_PATH 提供 .so）
   setUp(() {
-    Get.reset();
-
-    // 1. 满足 DownloadManagerLogic 构造期依赖：
-    //    GithubRequestMix.githubApi = Get.find<GithubRestClient>()
-    //    appInfoDB = "gstore".repoDB.db = Get.find<DbManager>()._getDB("gstore")
-    Get.put<GithubRestClient>(MockGithubRestClient());
-    final dbManager = DbManager();
-    Get.put<DbManager>(dbManager);
-    dbManager.dbRepositroies['gstore'] = DBRepository(
-      'gstore',
-      'sunO2',
-      'GStore-Repositorys',
-      MockAppInfoDatabase(),
-    );
-
-    // 2. 预注册测试子类（view 内 Get.put(DownloadManagerLogic()) 命中已注册实例）
-    logic = _TestDownloadManagerLogic();
-    Get.put<DownloadManagerLogic>(logic);
-  });
-
-  tearDown(() {
-    Get.reset();
+    notifier = _TestDownloadNotifier();
   });
 
   /// 渲染下载管理页。用固定时长 pump 而非 pumpAndSettle：
   /// 卡片图标 placeholder（AppLoading）是无限循环动画，pumpAndSettle 会超时。
   Future<void> pumpPage(WidgetTester tester) async {
-    await tester.pumpWidget(const GetMaterialApp(home: DownloadManager()));
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          downloadManagerProvider.overrideWith(() => notifier),
+        ],
+        // navigatorKey 挂全局 key：AppDialogs 生产通道（非 GetX 回退）可弹框
+        child: MaterialApp(
+          navigatorKey: appNavigatorKey,
+          home: const DownloadManager(),
+        ),
+      ),
+    );
     // 让 CachedNetworkImage 空 URL 加载失败 → 展示 errorWidget（停掉占位动画）
     await tester.pump();
   }
 
   testWidgets('空状态：无下载记录时显示「暂无下载记录」', (tester) async {
-    logic.seed([]);
+    notifier.seed([]);
 
     await pumpPage(tester);
 
@@ -164,7 +135,7 @@ void main() {
       (tester) async {
     _useTallView(tester);
 
-    logic.seed([
+    notifier.seed([
       [
         _item(DownloadStatusEnum.downloading,
             appId: 'com.example.loading', fileName: 'loading.apk'),
@@ -200,7 +171,7 @@ void main() {
   testWidgets('QUEUED 状态：徽标显示「排队中」，操作按钮显示「取消」', (tester) async {
     _useTallView(tester);
 
-    logic.seed([
+    notifier.seed([
       [
         _item(DownloadStatusEnum.queued,
             appId: 'com.example.queued', fileName: 'queued.apk'),
@@ -219,7 +190,7 @@ void main() {
   testWidgets('删除确认：点删除图标弹出确认框，确认后调用 deleteDownload', (tester) async {
     final item = _item(DownloadStatusEnum.paused,
         appId: 'com.example.del', fileName: 'del.apk');
-    logic.seed([
+    notifier.seed([
       [item],
     ]);
 
@@ -240,14 +211,14 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
     await tester.pump(const Duration(milliseconds: 300));
 
-    expect(logic.deleted, [item]);
+    expect(notifier.deleted, [item]);
     expect(find.text('删除下载'), findsNothing);
   });
 
   testWidgets('Dismissible 滑动触发删除确认：取消不删除，确认后删除', (tester) async {
     final item = _item(DownloadStatusEnum.completed,
         appId: 'com.example.swipe', fileName: 'swipe.apk');
-    logic.seed([
+    notifier.seed([
       [item],
     ]);
 
@@ -266,7 +237,7 @@ void main() {
     await tester.tap(find.text('取消'));
     await tester.pump(const Duration(milliseconds: 300));
     await tester.pump(const Duration(milliseconds: 300));
-    expect(logic.deleted, isEmpty);
+    expect(notifier.deleted, isEmpty);
 
     // 再次左滑 → 确认删除 → onDismissed 调用 deleteDownload
     await tester.timedDrag(
@@ -282,13 +253,13 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
     await tester.pump(const Duration(milliseconds: 300));
 
-    expect(logic.deleted, [item]);
+    expect(notifier.deleted, [item]);
   });
 
   testWidgets('筛选 chips 渲染（全部/下载中/已完成/失败）且切换生效', (tester) async {
     _useTallView(tester);
 
-    logic.seed([
+    notifier.seed([
       [
         _item(DownloadStatusEnum.failed,
             appId: 'com.example.fail', appName: '失败应用', fileName: 'f.apk'),
@@ -347,7 +318,7 @@ void main() {
       version: '2.3.4',
       fileName: 'card.apk',
     );
-    logic.seed([
+    notifier.seed([
       [item],
     ]);
 
@@ -380,7 +351,7 @@ void main() {
       fileName: longFileName,
       downloadUrl: 'https://api.github.com/repos/gkd-kit/gkd/releases/download/v1.2.3/gkd.apk',
     );
-    logic.seed([
+    notifier.seed([
       [item],
     ]);
 
@@ -414,13 +385,10 @@ void main() {
     final item = _item(DownloadStatusEnum.completed,
         appId: 'com.example.missing', fileName: 'missing.apk');
     final id = item.id!;
-    // 模拟文件已被（缓存管理页等）删除：logic 的 missingFileIds 命中该任务
-    logic.missingFileIds
-      ..clear()
-      ..add(id);
-    logic.seed([
+    // 模拟文件已被（缓存管理页等）删除：missingFileIds 命中该任务
+    notifier.seed([
       [item],
-    ]);
+    ], missing: {id});
 
     await pumpPage(tester);
 
@@ -438,10 +406,9 @@ void main() {
 
     final item = _item(DownloadStatusEnum.completed,
         appId: 'com.example.exists', fileName: 'exists.apk');
-    logic.missingFileIds.clear(); // 文件存在：不在缺失集合
-    logic.seed([
+    notifier.seed([
       [item],
-    ]);
+    ]); // 文件存在：不在缺失集合
 
     await pumpPage(tester);
 

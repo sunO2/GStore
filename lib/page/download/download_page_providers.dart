@@ -1,37 +1,90 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart' show debugPrint;
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/download/manager/download_repository.dart';
 import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/download/model/download_task_database.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
+import 'package:gstore/core/service/db_manager.dart';
+import 'package:gstore/db/apps/AppInfo.dart';
 import 'package:gstore/db/apps/AppInfoDatabase.dart';
 
 import 'download_status_utils.dart';
-import 'state.dart';
 
-class DownloadManagerLogic extends GetxController with GithubRequestMix {
-  final DownloadManagerState state = DownloadManagerState();
-  final DownloadRepository repository = DownloadRepository();
-  final AppInfoDatabase appInfoDB = "gstore".repoDB.db;
+/// 应用信息数据库（经模块注册表取 DbManager，避免 GetX 服务定位）。
+///
+/// db 模块经 `context.bindService` 以具体类型注册进 ModuleManager（非 GetX），
+/// 模块下线时 null（页面按默认图标处理）。
+final downloadAppInfoDbProvider = Provider<AppInfoDatabase?>((ref) {
+  return ModuleManager.instance.get<DbManager>()?.dbRepositroies['gstore']?.db;
+});
 
-  /// 应用信息缓存（避免列表滚动时重复查询数据库）
-  final Map<String, AppInfo?> _appInfoCache = {};
-  final Set<String> _appInfoLoading = {};
+/// 下载任务仓库（读/写下载数据库；watch 流由 service 内部仓库负责，
+/// 页面侧实例仅供 CRUD）。
+final downloadRepositoryProvider = Provider<DownloadRepository>((ref) {
+  return DownloadRepository();
+});
 
+/// 下载管理页聚合状态（不可变）。
+class DownloadPageState {
   /// 当前筛选类型
-  final Rx<DownloadFilter> currentFilter = DownloadFilter.all.obs;
+  final DownloadFilter filter;
 
-  /// 筛选后的下载分组数据（按应用分组）
-  /// 使用 Rx 保证订阅时立即有当前值，避免 broadcast 流数据丢失
-  final Rx<List<List<DownloadTask>>> downloadGroups =
-      Rx<List<List<DownloadTask>>>([]);
+  /// 筛选后的下载分组数据（按应用分组，view 直接消费）
+  final List<List<DownloadTask>> groups;
 
   /// 原始分组数据（用于筛选切换时重放）
-  List<List<DownloadTask>> _latestGroups = [];
+  final List<List<DownloadTask>> latestGroups;
 
-  /// 各任务 watch 订阅（新管线：service.watch(task.id) 推送 DownloadTask 到页面 state）
+  /// 已标记为"已完成但磁盘文件已被外部删除"的任务 id 集合
+  /// （如经缓存管理页删除下载文件后，install 按钮/已完成徽标不应继续显示）。
+  final Set<int> missingFileIds;
+
+  /// 应用信息缓存（appId → AppInfo?；避免列表滚动时重复查询数据库）
+  final Map<String, AppInfo?> appInfoCache;
+
+  const DownloadPageState({
+    this.filter = DownloadFilter.all,
+    this.groups = const [],
+    this.latestGroups = const [],
+    this.missingFileIds = const {},
+    this.appInfoCache = const {},
+  });
+
+  DownloadPageState copyWith({
+    DownloadFilter? filter,
+    List<List<DownloadTask>>? groups,
+    List<List<DownloadTask>>? latestGroups,
+    Set<int>? missingFileIds,
+    Map<String, AppInfo?>? appInfoCache,
+  }) {
+    return DownloadPageState(
+      filter: filter ?? this.filter,
+      groups: groups ?? this.groups,
+      latestGroups: latestGroups ?? this.latestGroups,
+      missingFileIds: missingFileIds ?? this.missingFileIds,
+      appInfoCache: appInfoCache ?? this.appInfoCache,
+    );
+  }
+
+  /// 同步读取缓存中的应用信息（缓存未命中返回 null，view 显示默认图标）
+  AppInfo? cachedAppInfo(String appId) => appInfoCache[appId];
+}
+
+/// 下载管理页控制器（Riverpod 版，替代原 GetxController）。
+///
+/// 职责：加载/分组/筛选下载任务、订阅 service.watch(id) 实时状态、
+/// 已完成文件存在性核对、CRUD（删除/清理/批量操作）、应用信息预取缓存。
+class DownloadManagerNotifier extends Notifier<DownloadPageState> {
+  final DownloadRepository repository = DownloadRepository();
+  final AppInfoDatabase? appInfoDB;
+
+  DownloadManagerNotifier({this.appInfoDB});
+
+  /// 各任务 watch 订阅（service.watch(task.id) 推送 DownloadTask 到 state）
   final Map<int, StreamSubscription<DownloadTask>> _watchSubs = {};
 
   /// watch 关闭/出错后的延迟重载（debounce，防 onDone 风暴）
@@ -39,15 +92,25 @@ class DownloadManagerLogic extends GetxController with GithubRequestMix {
 
   IDownloadService? _service;
 
-  /// 已标记为"已完成但磁盘文件已被外部删除"的任务 id 集合
-  /// （如经缓存管理页删除下载文件后，install 按钮/已完成徽标不应继续显示）。
-  final RxSet<int> missingFileIds = <int>{}.obs;
+  /// 应用信息并发加载中集合（防同一应用重复查询）
+  final Set<String> _appInfoLoading = {};
 
   @override
-  void onReady() async {
+  DownloadPageState build() {
+    ref.onDispose(() {
+      _reloadTimer?.cancel();
+      for (final sub in _watchSubs.values) {
+        sub.cancel();
+      }
+      _watchSubs.clear();
+    });
+    return const DownloadPageState();
+  }
+
+  /// 页面挂载后加载任务（view initState 调用，等价原 onReady）。
+  Future<void> load() async {
     _service = ModuleManager.instance.get<IDownloadService>();
     await loadTasks();
-    super.onReady();
   }
 
   /// 应用筛选条件到分组列表
@@ -58,7 +121,8 @@ class DownloadManagerLogic extends GetxController with GithubRequestMix {
     if (filter == DownloadFilter.all) return groups;
 
     return groups
-        .map((group) => group.where((item) => matchesFilter(item, filter)).toList())
+        .map((group) =>
+            group.where((item) => matchesFilter(item, filter)).toList())
         .where((group) => group.isNotEmpty)
         .toList();
   }
@@ -77,15 +141,12 @@ class DownloadManagerLogic extends GetxController with GithubRequestMix {
     _buildGroups(tasks);
     _resubscribeWatches(tasks);
     // 预取应用信息（异步，不阻塞 UI）
-    _prefetchAppInfos(_latestGroups);
+    unawaited(_prefetchAppInfos(state.latestGroups));
     // 异步核对已完成任务的文件是否仍存在（外部删除后更新缺失标记）
     unawaited(_refreshMissingFiles(tasks));
   }
 
   /// 检查已完成任务的主文件是否仍存在；缺失的记入 [missingFileIds]。
-  ///
-  /// 文件可能被用户经缓存管理页等外部入口删除——此时"已完成"徽标与
-  /// "安装"按钮不再准确，UI 应显示"已删除"并隐藏安装入口。
   Future<void> _refreshMissingFiles(List<DownloadTask> tasks) async {
     final missing = <int>{};
     final checks = <Future<void>>[];
@@ -102,13 +163,11 @@ class DownloadManagerLogic extends GetxController with GithubRequestMix {
       }());
     }
     await Future.wait(checks);
-    // 仅标记 completed 的缺失任务（进行中/暂停等文件缺失不在此列）
-    final same = missingFileIds.length == missing.length &&
-        missingFileIds.containsAll(missing);
+    // 仅标记 completed 的缺失任务
+    final prev = state.missingFileIds;
+    final same = prev.length == missing.length && prev.containsAll(missing);
     if (!same) {
-      missingFileIds
-        ..clear()
-        ..addAll(missing);
+      state = state.copyWith(missingFileIds: missing);
     }
   }
 
@@ -118,13 +177,16 @@ class DownloadManagerLogic extends GetxController with GithubRequestMix {
     if (id == null) return;
     try {
       final exists = await File(task.filePath).exists();
+      final next = Set<int>.from(state.missingFileIds);
       if (exists) {
-        missingFileIds.remove(id);
+        next.remove(id);
       } else {
-        missingFileIds.add(id);
+        next.add(id);
       }
+      state = state.copyWith(missingFileIds: next);
     } catch (_) {
-      missingFileIds.add(id);
+      final next = Set<int>.from(state.missingFileIds)..add(id);
+      state = state.copyWith(missingFileIds: next);
     }
   }
 
@@ -136,11 +198,14 @@ class DownloadManagerLogic extends GetxController with GithubRequestMix {
       var list = map[key] ??= [];
       list.add(item);
     }
-    _latestGroups = List.from(map.values);
-    downloadGroups.value = _applyFilter(_latestGroups, currentFilter.value);
+    final latest = List<List<DownloadTask>>.from(map.values);
+    state = state.copyWith(
+      latestGroups: latest,
+      groups: _applyFilter(latest, state.filter),
+    );
   }
 
-  /// 为每个任务订阅 service.watch(id)，推送更新进页面 state
+  /// 为每个任务订阅 service.watch(id)，推送更新进 state
   void _resubscribeWatches(List<DownloadTask> tasks) {
     final ids = tasks.map((t) => t.id).whereType<int>().toSet();
     // 取消已不存在任务的订阅
@@ -175,22 +240,26 @@ class DownloadManagerLogic extends GetxController with GithubRequestMix {
   void _onTaskUpdate(DownloadTask task) {
     final id = task.id;
     if (id == null) return;
-    for (var i = 0; i < _latestGroups.length; i++) {
-      final group = _latestGroups[i];
+    final latest = state.latestGroups;
+    for (var i = 0; i < latest.length; i++) {
+      final group = latest[i];
       for (var j = 0; j < group.length; j++) {
         if (group[j].id == id) {
           final newGroup = List.of(group); // 复制内层，避免原地修改
           newGroup[j] = task;
-          _latestGroups[i] = newGroup;
-          // 复制外层：GetX 相等性跳过逻辑要求“新引用”才通知 Obx
-          downloadGroups.value =
-              List.of(_applyFilter(_latestGroups, currentFilter.value));
+          final nextLatest = List.of(latest);
+          nextLatest[i] = newGroup;
+          state = state.copyWith(
+            latestGroups: nextLatest,
+            groups: List.of(_applyFilter(nextLatest, state.filter)),
+          );
           // 状态回到 completed（如重新下载完成）后重新核对文件存在性，
           // 清除旧的"已删除"标记
           if (task.status == DownloadStatusEnum.completed) {
             unawaited(_checkSingleFilePresence(task));
           } else {
-            missingFileIds.remove(id);
+            final nextMissing = Set<int>.from(state.missingFileIds)..remove(id);
+            state = state.copyWith(missingFileIds: nextMissing);
           }
           return;
         }
@@ -211,49 +280,42 @@ class DownloadManagerLogic extends GetxController with GithubRequestMix {
 
   /// 获取应用信息（带缓存）
   Future<AppInfo?> getAppInfo(String appId) async {
+    final db = appInfoDB ?? ref.read(downloadAppInfoDbProvider);
     // 命中缓存
-    if (_appInfoCache.containsKey(appId)) {
-      return _appInfoCache[appId];
+    if (state.appInfoCache.containsKey(appId)) {
+      return state.appInfoCache[appId];
     }
-
     // 防止同一应用并发重复查询
     if (_appInfoLoading.contains(appId)) {
       return null;
     }
-
     _appInfoLoading.add(appId);
     try {
-      final info = await appInfoDB.dao.getAppInfo(appId);
-      _appInfoCache[appId] = info;
+      final info = await db?.dao.getAppInfo(appId);
+      _setAppInfoCache(appId, info);
       return info;
     } catch (e) {
-      _appInfoCache[appId] = null;
+      _setAppInfoCache(appId, null);
       return null;
     } finally {
       _appInfoLoading.remove(appId);
     }
   }
 
-  /// 同步获取缓存的应用信息
-  /// 缓存未命中时返回 null（view 会显示默认图标）
-  AppInfo? getCachedAppInfo(String appId) {
-    return _appInfoCache[appId];
+  void _setAppInfoCache(String appId, AppInfo? info) {
+    state = state.copyWith(
+      appInfoCache: {...state.appInfoCache, appId: info},
+    );
   }
 
   /// 预取应用信息到缓存
   Future<void> _prefetchAppInfos(List<List<DownloadTask>> groups) async {
-    var hasNewInfo = false;
     for (final group in groups) {
       if (group.isEmpty) continue;
       final appId = group[0].appId;
-      if (!_appInfoCache.containsKey(appId)) {
+      if (!state.appInfoCache.containsKey(appId)) {
         await getAppInfo(appId);
-        hasNewInfo = true;
       }
-    }
-    // 预取完成后刷新 UI（让图标显示）
-    if (hasNewInfo && downloadGroups.value.isNotEmpty) {
-      downloadGroups.value = List.from(downloadGroups.value);
     }
   }
 
@@ -567,23 +629,15 @@ class DownloadManagerLogic extends GetxController with GithubRequestMix {
 
   /// 切换筛选类型
   void setFilter(DownloadFilter filter) {
-    currentFilter.value = filter;
-    // 基于最新数据重新应用筛选
-    downloadGroups.value = List.of(_applyFilter(_latestGroups, filter));
-  }
-
-  /// 获取筛选后的流
-  Stream<List<List<DownloadTask>>> getFilteredStream() {
-    return downloadGroups.stream;
-  }
-
-  @override
-  void onClose() {
-    _reloadTimer?.cancel();
-    for (final sub in _watchSubs.values) {
-      sub.cancel();
-    }
-    _watchSubs.clear();
-    super.onClose();
+    state = state.copyWith(
+      filter: filter,
+      // 基于最新数据重新应用筛选
+      groups: List.of(_applyFilter(state.latestGroups, filter)),
+    );
   }
 }
+
+final downloadManagerProvider =
+    NotifierProvider<DownloadManagerNotifier, DownloadPageState>(
+  DownloadManagerNotifier.new,
+);

@@ -3,18 +3,11 @@ import 'dart:ffi';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:gstore/core/config/config_registry.dart';
-import 'package:gstore/core/config/config_service.dart';
-import 'package:gstore/core/config/config_storage.dart';
-import 'package:gstore/core/config/config_store.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/module/app_modules.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
-import 'package:gstore/db/apps/AppInfoDatabase.dart';
-import 'package:gstore/http/github/dio_client.dart';
-import 'package:gstore/http/github/github_client.dart';
-import 'package:gstore/page/download/logic.dart';
+import 'package:gstore/page/download/download_page_providers.dart';
 import 'package:gstore/page/installed_apps/view.dart';
 import 'package:gstore/page/settings/settings_page.dart';
 import 'package:gstore/page/settings/theme_settings_page.dart';
@@ -178,25 +171,13 @@ void main() {
       ));
     }
 
-  setUp(() async {
-      // DownloadManagerLogic 构造时经 "gstore".repoDB 取 DbManager 仓库；
-      // DB 构建放 setUp（真实 zone），避免 testWidgets FakeAsync 下真实 I/O 挂起
-      Get.put(GithubRestClient(DioClient().get()));
-      final dm = DbManager();
-      dm.dbRepositroies['gstore'] = DBRepository(
-        'gstore',
-        'sunO2',
-        'GStore-Repositorys',
-        await ($FloorAppInfoDatabase.inMemoryDatabaseBuilder()).build(),
-      );
-      Get.put(dm);
-    });
-
-    testWidgets('④ 服务 null 时 DownloadManagerLogic.installApp 短路提示「安装模块未启用」不抛',
+    testWidgets('④ 服务 null 时下载页 Notifier.installApp 短路提示「安装模块未启用」不抛',
         (tester) async {
       await pumpApp(tester);
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
 
-      final logic = DownloadManagerLogic();
+      final notifier = container.read(downloadManagerProvider.notifier);
       final status = DownloadTask(
         id: 1,
         appId: 'com.example.a',
@@ -218,7 +199,7 @@ void main() {
       expect(ModuleManager.instance.get<InstallManager>(), isNull,
           reason: '前置：未绑定 InstallManager');
 
-      unawaited(logic.installApp(status));
+      unawaited(notifier.installApp(status));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
 

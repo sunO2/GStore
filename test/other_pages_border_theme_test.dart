@@ -12,17 +12,14 @@ import 'package:gstore/core/core.dart';
 import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/module/app_modules.dart';
 import 'package:gstore/core/theme/app_theme_config.dart';
-import 'package:gstore/db/apps/AppInfoDatabase.dart';
-import 'package:gstore/http/github/github_client.dart';
+import 'package:gstore/page/download/download_page_providers.dart';
 import 'package:gstore/page/download/download_status_utils.dart';
-import 'package:gstore/page/download/logic.dart';
 import 'package:gstore/page/download/view.dart';
 import 'package:gstore/page/home/tab/discovery/logic.dart';
 import 'package:gstore/page/home/tab/discovery/view.dart';
 import 'package:gstore/page/home/tab/mine/view.dart';
 import 'package:gstore/page/installed_apps/view.dart';
 import 'package:gstore/page/settings/theme_settings_page.dart';
-import 'package:mockito/mockito.dart';
 
 // ---------------------------------------------------------------------------
 // 主题边框一致性 Wave 2：其他页面边框响应主题 borderStyle（AppBorders）
@@ -61,39 +58,25 @@ Future<void> _registerCustomColorConfig() async {
   ConfigManager.instance.registerProvider(ThemeConfigProvider(storage));
 }
 
-class MockGithubRestClient extends Mock implements GithubRestClient {}
-
-class MockAppInfoDatabase extends Mock implements AppInfoDatabase {}
-
 /// 下载逻辑测试替身（同 download_manager_view_test.dart 模式）：
 /// 不订阅真实数据库，数据由测试手动注入。
-class _TestDownloadManagerLogic extends DownloadManagerLogic {
-  List<List<DownloadTask>> baseGroups = [];
+class _TestDownloadNotifier extends DownloadManagerNotifier {
+  List<List<DownloadTask>> _seedGroups = [];
 
   @override
-  void onReady() {}
+  Future<void> load() async {}
+
+  @override
+  DownloadPageState build() {
+    return DownloadPageState(
+      filter: DownloadFilter.all,
+      latestGroups: List.of(_seedGroups),
+      groups: List.of(_seedGroups),
+    );
+  }
 
   void seed(List<List<DownloadTask>> groups) {
-    baseGroups = List.of(groups);
-    downloadGroups.value = _applyFilter(baseGroups, currentFilter.value);
-  }
-
-  @override
-  void setFilter(DownloadFilter filter) {
-    currentFilter.value = filter;
-    downloadGroups.value = _applyFilter(baseGroups, filter);
-  }
-
-  List<List<DownloadTask>> _applyFilter(
-    List<List<DownloadTask>> groups,
-    DownloadFilter filter,
-  ) {
-    if (filter == DownloadFilter.all) return groups;
-    return groups
-        .map((group) =>
-            group.where((item) => matchesFilter(item, filter)).toList())
-        .where((group) => group.isNotEmpty)
-        .toList();
+    _seedGroups = List.of(groups);
   }
 }
 
@@ -232,27 +215,20 @@ void main() {
   group('③ 下载分组卡片边框宽度随主题', () {
     testWidgets('分组卡片边框宽度随主题（bold 1.5）', (tester) async {
       Get.reset();
-      Get.put<GithubRestClient>(MockGithubRestClient());
-      final dbManager = DbManager();
-      Get.put<DbManager>(dbManager);
-      dbManager.dbRepositroies['gstore'] = DBRepository(
-        'gstore',
-        'sunO2',
-        'GStore-Repositorys',
-        MockAppInfoDatabase(),
-      );
-      final logic = _TestDownloadManagerLogic();
-      Get.put<DownloadManagerLogic>(logic);
-      logic.seed([
+      final notifier = _TestDownloadNotifier();
+      notifier.seed([
         [
           _item(DownloadStatusEnum.paused,
               appId: 'com.example.a', appName: '下载应用'),
         ],
       ]);
 
-      await tester.pumpWidget(GetMaterialApp(
-        theme: _boldTheme(),
-        home: const DownloadManager(),
+      await tester.pumpWidget(ProviderScope(
+        overrides: [downloadManagerProvider.overrideWith(() => notifier)],
+        child: GetMaterialApp(
+          theme: _boldTheme(),
+          home: const DownloadManager(),
+        ),
       ));
       await tester.pump();
 

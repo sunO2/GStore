@@ -1,6 +1,7 @@
 import 'dart:ffi';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/config/config_registry.dart';
 import 'package:gstore/core/config/config_service.dart';
@@ -10,12 +11,7 @@ import 'package:gstore/core/core.dart';
 import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/module/app_modules.dart';
 import 'package:gstore/core/module/module.dart';
-import 'package:gstore/core/module/module_manager.dart';
-import 'package:gstore/core/service/db_manager.dart';
-import 'package:gstore/db/apps/AppInfoDatabase.dart';
-import 'package:gstore/http/github/dio_client.dart';
-import 'package:gstore/http/github/github_client.dart';
-import 'package:gstore/page/download/logic.dart';
+import 'package:gstore/page/download/download_page_providers.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:sqlite3/open.dart';
 
@@ -33,7 +29,7 @@ Future<void> initForTest() async {
 ///
 /// 验证：
 /// - `ModuleManager.get<IDownloadService>()` 未绑定（download 模块下线）时
-///   DownloadManagerLogic.retryDownload / agent downloadApp 降级提示不抛
+///   下载页 Notifier 的 retryDownload / agent downloadApp 降级提示不抛
 /// - DownloadModule.onUnregister 不再注销 app_core 配置：
 ///   关 download 后 ConfigService.get(themeMode) 仍返回注册值
 void main() {
@@ -51,17 +47,6 @@ void main() {
     await ModuleManager.instance.clear();
     ModuleManager.instance.injectContext(null);
     await initForTest();
-    // DownloadManagerLogic 构造时经 "gstore".repoDB 取 DbManager 仓库；
-    // DB 构建放 setUp（真实 zone），避免 testWidgets FakeAsync 下真实 I/O 挂起
-    Get.put(GithubRestClient(DioClient().get()));
-    final dm = DbManager();
-    dm.dbRepositroies['gstore'] = DBRepository(
-      'gstore',
-      'sunO2',
-      'GStore-Repositorys',
-      await ($FloorAppInfoDatabase.inMemoryDatabaseBuilder()).build(),
-    );
-    Get.put(dm);
   });
 
   /// 环境：AppDialogs snackbar 需要 MaterialApp + scaffoldMessengerKey
@@ -74,10 +59,12 @@ void main() {
   }
 
   group('下载消费点 null 降级（IDownloadService 未绑定 → 提示不抛）', () {
-    testWidgets('DownloadManagerLogic.retryDownload：showWarning「下载模块未启用」不抛',
+    testWidgets('下载页 Notifier.retryDownload：showWarning「下载模块未启用」不抛',
         (tester) async {
       await pumpApp(tester);
-      final logic = DownloadManagerLogic();
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final notifier = container.read(downloadManagerProvider.notifier);
       final task = DownloadTask(
         id: 1,
         appId: 'com.example.a',
@@ -98,7 +85,7 @@ void main() {
       );
 
       // 模块下线（GREEN）：方法立即降级提示；旧实现（RED）Get.find 抛异常。
-      logic.retryDownload(task);
+      notifier.retryDownload(task);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
 
