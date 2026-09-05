@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:get/get.dart';
+import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/page/cache_manage/logic.dart';
 import 'package:gstore/page/cache_manage/view.dart';
 import 'package:gstore/page/database_manage/logic.dart';
@@ -75,6 +76,25 @@ void main() {
       await tester.pump();
 
       expect(find.text('应用日志'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('日志查看页打开时展示已存在的日志（种子流回归）', (tester) async {
+      // 预置一条已存在日志（模拟进入页面时 LogManager 已有内容）。
+      // RxList.stream 是 broadcast：新订阅者拿不到历史值，改造前此处列表为空。
+      final logManager = LogManager.instance;
+      logManager.logs.clear();
+      logManager.log(level: LogLevel.info, message: '历史日志应可见');
+
+      await tester.pumpWidget(
+        const ProviderScope(child: MaterialApp(home: LogViewerPage())),
+      );
+      // StreamProvider 种子事件经 microtask 到达
+      await tester.pump();
+      await tester.pump();
+
+      expect(find.text('历史日志应可见'), findsOneWidget,
+          reason: '进入页面时应立即显示已存在的日志');
       expect(tester.takeException(), isNull);
     });
 
