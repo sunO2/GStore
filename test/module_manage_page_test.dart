@@ -10,6 +10,7 @@ import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/module/module.dart';
 import 'package:gstore/core/module/module_toggle_config.dart';
 import 'package:gstore/core/routers.dart';
+import 'package:gstore/core/service/badge_service.dart';
 import 'package:gstore/core/theme/theme_controller.dart';
 import 'package:gstore/page/module_manage/logic.dart';
 import 'package:gstore/page/module_manage/view.dart';
@@ -274,11 +275,14 @@ void main() {
     });
 
     testWidgets('设置页「模块」入口点击可达模块管理页', (tester) async {
-      // 默认视口即可（入口位于设置页前部）；过高的视口会触发
-      // _DataUpdateTile leading AppBadge 的既有布局断言（与本次改动无关）
-      // 新增「已导入渠道」入口后模块入口下移 → 用 720px 视口使其可见，
-      // 同时不越过 _DataUpdateTile（约 984px）的构建边界，避免既有断言
-      tester.view.physicalSize = const Size(800, 720);
+      // 设置页整体是 ListView：「模块」分组位于「数据与同步」之后，默认视口
+      // 下可能未构建。这里用滚动定位入口（贴近真实用户操作），
+      // 并注册 BadgeService ——「关于」组的 _DataUpdateTile 若被滚入视口，
+      // 其 Obx 读取 BadgeService 未注册会抛 Get.find 异常（先例见
+      // install_theme_module_disable_test.putSettingsPageDeps）。
+      if (!Get.isRegistered<BadgeService>()) Get.put(BadgeService());
+      // 大视口：让「模块」分组直接可见，无需滚动也能命中
+      tester.view.physicalSize = const Size(800, 1400);
       tester.view.devicePixelRatio = 1.0;
       addTearDown(tester.view.reset);
 
@@ -288,11 +292,17 @@ void main() {
       ));
       await tester.pumpAndSettle();
 
-      // 「数据与同步」分组后的「模块」分组入口
-      expect(find.text('模块管理'), findsOneWidget);
+      // 「数据与同步」分组（首屏可见，作为模块入口所在分组的锚点）
       expect(find.text('数据与同步'), findsOneWidget);
 
-      await tester.tap(find.text('模块管理'));
+      // 「模块」入口（滚动定位，避免依赖具体视口高度）
+      final moduleEntry = find.text('模块管理');
+      await tester.scrollUntilVisible(moduleEntry, 200,
+          scrollable: find.byType(Scrollable).first);
+      await tester.pumpAndSettle();
+      expect(moduleEntry, findsOneWidget);
+
+      await tester.tap(moduleEntry);
       await tester.pumpAndSettle();
 
       expect(find.byType(ModuleManagePage), findsOneWidget);
