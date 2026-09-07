@@ -71,11 +71,11 @@ class ApplistNotifier extends AutoDisposeNotifier<ApplistState> {
     // 订阅用户信息（登录/登出 → 头像刷新）
     try {
       final um = UserManager.instance;
-      _userSub = um.userInfo.listen((user) {
+      _userSub = um.userInfoStream.listen((user) {
         if (_disposed) return;
         state = state.copyWith(user: user);
       });
-      state = state.copyWith(user: um.userInfo.value);
+      state = state.copyWith(user: um.userInfo);
     } catch (_) {
       // UserManager 未注册：保持默认用户
     }

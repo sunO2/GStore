@@ -7,6 +7,7 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/utils/unit.dart';
 import 'package:gstore/db/apps/AppInfoDatabase.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
@@ -233,8 +234,9 @@ class DbManager {
     debugPrint('DbManager: 最终下载URL: $downloadUrl');
     debugPrint('DbManager: 文件大小: ${assets["size"]}');
 
-    return Get.showOverlay(
-        asyncFunction: () async {
+    AppDialogs.showLoading(message: '数据更新中...');
+    try {
+      final value = await (() async {
           debugPrint('DbManager: 调用 DownloadService.download...');
           // 下载到独立的临时文件（避免旧数据库连接占用导致覆盖失败）
           final appDir = await getApplicationDocumentsDirectory();
@@ -261,38 +263,7 @@ class DbManager {
           task = await _awaitDownloadTerminal(service, task);
           appLog.info('DbManager: 下载结束，最终状态: ${task.status}');
           return task;
-        },
-        loadingWidget: Center(
-          child: SizedBox(
-            width: 120,
-            height: 120,
-            child: Container(
-              decoration: const BoxDecoration(
-                  color: Color.fromARGB(126, 0, 0, 0),
-                  borderRadius: BorderRadius.all(Radius.circular(16))),
-              child: const Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.center,
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  CupertinoActivityIndicator(
-                    color: Color.fromARGB(255, 244, 244, 244),
-                    radius: 18.0,
-                  ),
-                  SizedBox(
-                    height: 16,
-                  ),
-                  Text("数据更新中... ",
-                      style: TextStyle(
-                          color: Color.fromARGB(255, 215, 215, 215),
-                          fontWeight: FontWeight.bold)),
-                ],
-              ),
-            ),
-          ),
-        ),
-        opacity: .0,
-      ).then((value) async {
+      })();
         if (value.status == DownloadStatusEnum.completed) {
           appLog.info('DbManager: 下载成功，准备替换数据库');
           final appDir = await getApplicationDocumentsDirectory();
@@ -387,7 +358,9 @@ class DbManager {
         return value.status == DownloadStatusEnum.completed
             ? DbUpdateResult.success
             : DbUpdateResult.error;
-      });
+    } finally {
+      AppDialogs.dismissLoading();
+    }
   }
 
   /// 订阅下载任务流并等待进入终止态（完成/失败/取消/暂停）。

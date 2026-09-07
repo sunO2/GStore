@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show TargetPlatform, defaultTargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gstore/core/channel/IDetailChannel.dart';
@@ -217,7 +218,7 @@ class DetailLogic
       AppDialogs.showWarning('安装模块未启用');
       return;
     }
-    if (GetPlatform.isAndroid && task.fileName.endsWith('.apk')) {
+    if (defaultTargetPlatform == TargetPlatform.android && task.fileName.endsWith('.apk')) {
       await manager.installApk(task.filePath);
     }
   }

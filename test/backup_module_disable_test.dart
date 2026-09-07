@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/module/app_modules.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
+import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/page/backup/logic.dart';
 import 'package:gstore/page/backup/view.dart';
 import 'package:gstore/page/home/tab/mine/view.dart';
@@ -54,7 +55,6 @@ void main() {
   setUp(() async {
     await manager.clear();
     manager.injectContext(null);
-    Get.reset();
   });
 
   group('BackupModule 管理 IBackupService（注册表化）', () {
@@ -140,12 +140,9 @@ void main() {
       await registerBackupModule();
       expect(manager.isModuleEnabled('backup'), isTrue);
 
-      // 清理解析页面依赖
-      Get.delete<BackupLogic>(force: true);
-      Get.delete<ThemeController>(force: true);
-      Get.delete<UserManager>(force: true);
-      if (!Get.isRegistered<ThemeController>()) Get.put(ThemeController());
-      if (!Get.isRegistered<UserManager>()) Get.put(UserManager.instance);
+      // 解析页面依赖（ThemeController/UserManager 经 ModuleManager 绑定）
+      manager.bind<ThemeController>(ThemeController());
+      manager.bind<UserManager>(UserManager.instance);
 
       // 防 flutter_secure_storage 真实 channel 挂起
       const channel =
@@ -154,15 +151,15 @@ void main() {
           .setMockMethodCallHandler(channel, (call) async => null);
     });
 
-    tearDown(() {
-      Get.delete<BackupLogic>(force: true);
-      Get.delete<ThemeController>(force: true);
-      Get.delete<UserManager>(force: true);
-    });
-
     Future<void> pumpMinePage(WidgetTester tester) async {
       await tester.pumpWidget(
-          const ProviderScope(child: GetMaterialApp(home: MinePage())));
+          ProviderScope(
+            child: MaterialApp(
+              navigatorKey: appNavigatorKey,
+              scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
+              home: const MinePage(),
+            ),
+          ));
       await tester.pumpAndSettle();
     }
 
@@ -194,8 +191,8 @@ void main() {
       await manager.setModuleEnabled('backup', false);
       expect(manager.get<IBackupService>(), isNull);
 
-      Get.delete<BackupLogic>(force: true);
-      await tester.pumpWidget(GetMaterialApp(
+      await tester.pumpWidget(MaterialApp(
+        navigatorKey: appNavigatorKey,
         scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
         home: const BackupPage(),
       ));

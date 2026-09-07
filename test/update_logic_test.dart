@@ -1,6 +1,5 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:get/get.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/service/badge_service.dart';
@@ -84,7 +83,6 @@ void main() {
   });
 
   tearDown(() async {
-    Get.reset();
     await ModuleManager.instance.clear();
   });
 

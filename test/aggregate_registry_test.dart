@@ -1,6 +1,5 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:get/get.dart';
 import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
 import 'package:gstore/core/module/app_modules.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
@@ -23,8 +22,7 @@ void main() {
   setUp(() async {
     await ModuleManager.instance.clear();
     ModuleManager.instance.injectContext(null);
-    Get.reset();
-    // ApplistNotifier 不再混入 GithubRequestMix（无 Get.find 构造依赖）
+    // ApplistNotifier 不再混入 GithubRequestMix（无服务查找构造依赖）
   });
 
   group('模块绑定 → 注册表可取；解绑 → null', () {
@@ -100,7 +98,7 @@ void main() {
       container.read(applistProvider);
       await Future<void>.delayed(const Duration(milliseconds: 10));
 
-      // 降级路径：不订阅、不加载，页面空态（不抛 Get.find 异常）
+      // 降级路径：不订阅、不加载，页面空态（不抛服务解析异常）
       expect(container.read(applistProvider).apps, isEmpty);
       expect(notifier.searchController.text, isEmpty); // 控制器正常创建
     });

@@ -4,9 +4,11 @@ import 'package:flutter_secure_storage/test/test_flutter_secure_storage_platform
 // ignore: depend_on_referenced_packages
 import 'package:flutter_secure_storage_platform_interface/flutter_secure_storage_platform_interface.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:get/get.dart';
 
 import 'package:gstore/core/module/module.dart';
+import 'package:gstore/core/module/module_manager.dart';
+import 'package:gstore/core/navigation/nav_key.dart';
+import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/service/user_manager.dart';
 import 'package:gstore/core/theme/theme_controller.dart';
 import 'package:gstore/page/backup/logic.dart';
@@ -56,31 +58,17 @@ void main() {
   final manager = ModuleManager.instance;
 
   setUp(() async {
-    // 清理上个用例的页面控制器（onClose 取消订阅，防跨用例泄漏）
-    Get.delete<BackupLogic>(force: true);
-    Get.delete<ThemeController>(force: true);
-    Get.delete<UserManager>(force: true);
-    if (!Get.isRegistered<ThemeController>()) {
-      Get.put(ThemeController());
-    }
-    if (!Get.isRegistered<UserManager>()) {
-      Get.put(UserManager.instance);
-    }
-
     // 重置模块注册中心；webdav 模块初始在线（registered + initialized）
     await manager.clear();
+    // 页面依赖（ThemeController/UserManager 经 ModuleManager 绑定）
+    manager.bind<ThemeController>(ThemeController());
+    manager.bind<UserManager>(UserManager.instance);
     manager.registerKnownModules(() => [TestWebDavModule()]);
     await manager.activate(TestWebDavModule());
     expect(manager.isModuleEnabled('webdav'), isTrue);
     expect(manager.isInitialized('webdav'), isTrue);
 
     _mockWebDavConfig(hasConfig: true);
-  });
-
-  tearDown(() {
-    Get.delete<BackupLogic>(force: true);
-    Get.delete<ThemeController>(force: true);
-    Get.delete<UserManager>(force: true);
   });
 
   /// 备份卡（'备份管理' 标题所在的 Card）
@@ -94,7 +82,13 @@ void main() {
   /// 泵起我的页并等异步初始化（_checkWebDavConfig + BackupLogic）完成
   Future<void> pumpMinePage(WidgetTester tester) async {
     await tester.pumpWidget(
-        const ProviderScope(child: GetMaterialApp(home: MinePage())));
+        ProviderScope(
+          child: MaterialApp(
+            navigatorKey: appNavigatorKey,
+            scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
+            home: const MinePage(),
+          ),
+        ));
     await tester.pumpAndSettle();
   }
 

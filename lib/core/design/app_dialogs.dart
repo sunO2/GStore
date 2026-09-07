@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/material.dart' as m show showDialog;
-import 'package:get/get.dart';
 
 import 'package:gstore/core/navigation/nav_key.dart';
 
@@ -14,8 +13,8 @@ import 'app_components.dart';
 /// 统一的弹框组件
 ///
 /// 提供符合 GStore 设计规范的 Dialog、Snackbar、BottomSheet、Alert 组件。
-/// 双通道：生产（MaterialApp.router）经全局 appNavigatorKey 呈现；
-/// 测试/无 key 环境回退 GetX overlay（GetMaterialApp 测试宿主），保证两环境可用。
+/// 呈现通道：生产（MaterialApp.router）与测试宿主（MaterialApp +
+/// appNavigatorKey / scaffoldMessengerKey）均经全局 key 呈现。
 class AppDialogs {
   AppDialogs._();
 
@@ -31,12 +30,7 @@ class AppDialogs {
   static ThemeData get _theme {
     final ctx = _navContext;
     if (ctx != null) return Theme.of(ctx);
-    // GetX 宿主（测试 GetMaterialApp / 早期）
-    try {
-      return Get.theme;
-    } catch (_) {
-      return ThemeData.light();
-    }
+    return ThemeData.light();
   }
 
   static TextTheme get _textTheme => _theme.textTheme;
@@ -45,7 +39,7 @@ class AppDialogs {
   /// 主题边框侧边：宽度随主题 borderStyle（cardTheme.shape.side），颜色可覆盖。
   /// 无任何宿主 context 时回退 1.0 宽度，保证不崩。
   static BorderSide _themeBorderSide({Color? color}) {
-    final ctx = _navContext ?? Get.context;
+    final ctx = _navContext;
     if (ctx != null) {
       return AppBorders.sideOf(ctx, color: color);
     }
@@ -59,12 +53,7 @@ class AppDialogs {
       final media = MediaQuery.of(ctx);
       return media.padding.bottom + media.viewInsets.bottom;
     }
-    try {
-      final media = Get.mediaQuery;
-      return media.padding.bottom + media.viewInsets.bottom;
-    } catch (_) {
-      return 0;
-    }
+    return 0;
   }
 
   // ========== Dialog ==========
@@ -91,23 +80,6 @@ class AppDialogs {
   }) {
     final ctx = _navContext;
     if (ctx == null) {
-      // 测试/无 navigatorKey 宿主 → 回退 GetX overlay（GetMaterialApp 测试环境）
-      if (Get.overlayContext != null) {
-        return Get.dialog<bool>(
-          _buildDialog(
-            title: title,
-            content: content,
-            confirmText: confirmText,
-            cancelText: cancelText,
-            onConfirm: onConfirm,
-            onCancel: onCancel,
-            isDangerous: isDangerous,
-            icon: icon,
-            iconColor: iconColor,
-          ),
-          barrierDismissible: true,
-        );
-      }
       return Future.value(null);
     }
     return m.showDialog<bool>(
@@ -337,8 +309,7 @@ class AppDialogs {
         break;
     }
 
-    // 优先 ScaffoldMessenger（挂载于 GetMaterialApp，见 main.dart）：
-    // 根治 Get.snackbar（GetX overlay）与新版 Flutter overlay 兼容问题导致的真机静默不显示。
+    // 呈现通道：ScaffoldMessenger（挂载于 MaterialApp，见 main.dart）。
     final messenger = scaffoldMessengerKey.currentState;
     if (messenger != null) {
       messenger
@@ -381,45 +352,6 @@ class AppDialogs {
         );
       return;
     }
-
-    // ScaffoldMessenger 未挂载（测试 GetMaterialApp 宿主 / 早期）→ 回退 GetX overlay
-    if (Get.overlayContext != null) {
-      try {
-        Get.snackbar(
-          title ?? '',
-          message,
-          snackPosition: SnackPosition.BOTTOM,
-          backgroundColor: _colorScheme.surface,
-          colorText: _colorScheme.onSurface,
-          borderRadius: AppRadius.md,
-          margin: AppSpacing.allLG,
-          padding: AppSpacing.allMD,
-          duration: duration,
-          leftBarIndicatorColor: indicatorColor,
-          titleText: title != null
-              ? Text(
-                  title,
-                  style: _textTheme.titleSmall?.copyWith(
-                    fontWeight: AppTypography.weightMedium,
-                  ),
-                )
-              : const SizedBox.shrink(),
-          messageText: Row(
-            children: [
-              if (icon != null) ...[
-                Icon(icon, size: 20, color: indicatorColor),
-                const SizedBox(width: AppSpacing.sm),
-              ],
-              Expanded(
-                child: Text(message, style: _textTheme.bodySmall),
-              ),
-            ],
-          ),
-        );
-      } catch (_) {
-        // Get.snackbar 内部异步异常无法同步捕获，忽略
-      }
-    }
   }
 
   // ========== BottomSheet ==========
@@ -438,20 +370,6 @@ class AppDialogs {
   }) {
     final ctx = _navContext;
     if (ctx == null) {
-      // 测试/无 navigatorKey 宿主 → 回退 GetX overlay
-      if (Get.overlayContext != null) {
-        return Get.bottomSheet<T>(
-          _buildBottomSheet(
-            title: title,
-            children: children,
-            onClose: onClose,
-          ),
-          backgroundColor: Colors.transparent,
-          isDismissible: true,
-          enableDrag: true,
-          isScrollControlled: isScrollControlled,
-        );
-      }
       return Future.value(null);
     }
     return showModalBottomSheet<T>(
@@ -468,8 +386,7 @@ class AppDialogs {
     );
   }
 
-  /// 关闭底部弹层并返回结果（双通道：生产走 appNavigatorKey，
-  /// 测试/无 key 宿主回退 Get.back —— 与 [showBottomSheet] 的呈现通道对应）。
+  /// 关闭底部弹层并返回结果（经 appNavigatorKey 的 Navigator pop）。
   ///
   /// [AppDialogs.showBottomSheet] 的 children 是预构建 widget、拿不到 sheet
   /// 自身的 context，关闭/返回值统一走这里。
@@ -477,8 +394,6 @@ class AppDialogs {
     final navigator = appNavigatorKey.currentState;
     if (navigator != null) {
       navigator.pop<T?>(result);
-    } else if (Get.overlayContext != null) {
-      Get.back<T?>(result: result);
     }
   }
 
@@ -505,8 +420,6 @@ class AppDialogs {
                 final navigator = appNavigatorKey.currentState;
                 if (navigator != null) {
                   navigator.pop<T>(item);
-                } else {
-                  Get.back(result: item);
                 }
               },
             ),
@@ -668,13 +581,6 @@ class AppDialogs {
   static void showLoading({String message = '加载中...'}) {
     final navigator = appNavigatorKey.currentState;
     if (navigator == null) {
-      // 测试 GetMaterialApp 宿主回退 GetX overlay
-      if (Get.overlayContext != null) {
-        Get.dialog(
-          _buildLoadingDialog(message),
-          barrierDismissible: false,
-        );
-      }
       return;
     }
     m.showDialog<void>(
@@ -689,8 +595,6 @@ class AppDialogs {
     final navigator = appNavigatorKey.currentState;
     if (navigator != null) {
       navigator.pop();
-    } else if (Get.isDialogOpen == true) {
-      Get.back();
     }
   }
 

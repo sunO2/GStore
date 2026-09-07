@@ -3,12 +3,13 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:get/get.dart';
 import 'package:gstore/core/aggregate/AppAddedDatabase.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/event/database_event.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
+import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/core/service/backup_service.dart';
 import 'package:gstore/core/webdav/webdav_task_manager.dart';
 import 'package:gstore/page/backup/logic.dart';
@@ -105,7 +106,6 @@ void main() {
     // 重置模块注册中心（webdav 默认下线）+ 隔离 BackupLogic
     await ModuleManager.instance.clear();
     ModuleManager.instance.injectContext(null);
-    Get.delete<BackupLogic>(force: true);
 
     // 注入测试数据库（BackupLogic 初始化/统计走测试 DB，不触碰 path_provider）
     final dbFile = p.join(
@@ -132,7 +132,11 @@ void main() {
   testWidgets('webdav 模块下线：卡片不展示上传/下载', (tester) async {
     useTallViewport(tester);
 
-    await tester.pumpWidget(const GetMaterialApp(home: BackupPage()));
+    await tester.pumpWidget(MaterialApp(
+        navigatorKey: appNavigatorKey,
+        scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
+        home: const BackupPage(),
+      ));
     await settle(tester);
 
     expect(find.text('WebDAV 云端备份'), findsNothing);
@@ -143,7 +147,11 @@ void main() {
   testWidgets('webdav 模块上线展示卡片，再下线隐藏', (tester) async {
     useTallViewport(tester);
 
-    await tester.pumpWidget(const GetMaterialApp(home: BackupPage()));
+    await tester.pumpWidget(MaterialApp(
+        navigatorKey: appNavigatorKey,
+        scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
+        home: const BackupPage(),
+      ));
     await settle(tester);
     expect(find.text('WebDAV 云端备份'), findsNothing);
 

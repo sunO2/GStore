@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'dart:ffi';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:get/get.dart';
 import 'package:gstore/core/aggregate/AppAddedDatabase.dart';
 import 'package:gstore/core/config/config_registry.dart';
 import 'package:gstore/core/config/config_service.dart';

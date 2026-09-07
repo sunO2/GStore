@@ -1,23 +1,21 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:get/get.dart';
 import 'package:go_router/go_router.dart';
 
-/// GoRouter 与 GetX 共存验证
+/// GoRouter 与 MaterialApp.router 共存验证
 ///
-/// 架构：MaterialApp.router + GoRouter（navigatorKey = rootKey），并把
-/// rootKey 经 `Get.addKey` 注册为 GetX 全局 navigator key —— GetX 的
-/// overlay（dialog/snackbar）从 rootKey.currentState.overlay 取，状态管理
-/// （Get.put/Obx）与路由解耦不受影响。
+/// 架构：MaterialApp.router + GoRouter（navigatorKey = appNavigatorKey），
+/// 项目 overlay（dialog/snackbar）经 navigatorKey / scaffoldMessengerKey 呈现。
 ///
 /// 验证点：
 /// 1. GoRouter 路由可达并正常跳转
-/// 2. GetX 状态管理（Get.put + Obx）在 MaterialApp.router 下可用
-/// 3. GetX overlay（Get.dialog / Get.snackbar）在 MaterialApp.router 下可用
+/// 2. 普通 showDialog 在 MaterialApp.router 下可用
+/// 3. ScaffoldMessenger Snackbar 通道（AppDialogs 同款）可用
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('MaterialApp.router + GoRouter 下 GetX 状态与 overlay 均可用',
+  testWidgets(
+      'MaterialApp.router + GoRouter 下 Navigator/overlay/snackbar 均可用',
       (tester) async {
     final rootKey = GlobalKey<NavigatorState>();
 
@@ -36,42 +34,31 @@ void main() {
       ],
     );
 
-    // 关键：GetX overlay 指向 GoRouter 的 Navigator
-    Get.addKey(rootKey);
-
     await tester.pumpWidget(MaterialApp.router(
       routerConfig: goRouter,
       scaffoldMessengerKey: _messengerKey,
     ));
     await tester.pumpAndSettle();
 
-    // 1. GoRouter 首页可达 + GetX 状态（Obx 计数）
+    // 1. GoRouter 首页可达
     expect(find.text('共存验证首页'), findsOneWidget);
-    expect(find.text('计数: 0'), findsOneWidget);
 
-    // GetX 状态更新（Get.put 控制器 + Rx）
-    await tester.tap(find.text('计数+1'));
-    await tester.pump();
-    expect(find.text('计数: 1'), findsOneWidget);
-
-    // 2. GetX overlay：dialog 可用
-    await tester.tap(find.text('弹 Get.dialog'));
+    // 2. overlay：showDialog 可用
+    await tester.tap(find.text('弹 Dialog'));
     await tester.pumpAndSettle();
-    expect(find.text('GetX Dialog 内容'), findsOneWidget);
+    expect(find.text('Dialog 内容'), findsOneWidget);
     await tester.tap(find.text('关闭'));
     await tester.pumpAndSettle();
-    expect(find.text('GetX Dialog 内容'), findsNothing);
+    expect(find.text('Dialog 内容'), findsNothing);
 
-    // 3. 项目实际 Snackbar 通道（ScaffoldMessenger）可用
-    //    （Get.snackbar 是 GetX 与新版 Flutter overlay 的已知兼容问题，
-    //    项目已用 AppDialogs + scaffoldMessengerKey 替代，故此处验证该通道）
+    // 3. ScaffoldMessenger Snackbar 通道（AppDialogs 同款）可用
     final messenger = _messengerKey.currentState!;
     messenger.showSnackBar(const SnackBar(content: Text('snackbar 标题')));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
     expect(find.text('snackbar 标题'), findsWidgets);
 
-    // 4. GoRouter 跳转正常
+    // 1b. GoRouter 跳转正常
     await tester.tap(find.text('去第二页'));
     await tester.pumpAndSettle();
     expect(find.text('第二页内容'), findsOneWidget);
@@ -83,36 +70,37 @@ void main() {
 final GlobalKey<ScaffoldMessengerState> _messengerKey =
     GlobalKey<ScaffoldMessengerState>();
 
-/// 简单 GetX 计数器控制器。
-class _CounterController extends GetxController {
-  final count = 0.obs;
-  void inc() => count.value++;
-}
-
-class _HomePage extends StatelessWidget {
+class _HomePage extends StatefulWidget {
   const _HomePage();
 
   @override
+  State<_HomePage> createState() => _HomePageState();
+}
+
+class _HomePageState extends State<_HomePage> {
+  int _count = 0;
+
+  @override
   Widget build(BuildContext context) {
-    final ctrl = Get.put(_CounterController());
     return Scaffold(
       appBar: AppBar(title: const Text('共存验证首页')),
       body: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Obx(() => Text('计数: ${ctrl.count.value}')),
+            Text('计数: $_count'),
             const SizedBox(height: 8),
             ElevatedButton(
-              onPressed: ctrl.inc,
+              onPressed: () => setState(() => _count++),
               child: const Text('计数+1'),
             ),
             const SizedBox(height: 8),
             ElevatedButton(
-              onPressed: () => Get.dialog(
-                AlertDialog(
-                  title: const Text('GetX Dialog'),
-                  content: const Text('GetX Dialog 内容'),
+              onPressed: () => showDialog<void>(
+                context: context,
+                builder: (_) => AlertDialog(
+                  title: const Text('Dialog'),
+                  content: const Text('Dialog 内容'),
                   actions: [
                     TextButton(
                       onPressed: () => Navigator.of(context).pop(),
@@ -121,16 +109,7 @@ class _HomePage extends StatelessWidget {
                   ],
                 ),
               ),
-              child: const Text('弹 Get.dialog'),
-            ),
-            const SizedBox(height: 8),
-            ElevatedButton(
-              onPressed: () => Get.snackbar(
-                'snackbar 标题',
-                'snackbar 内容',
-                snackPosition: SnackPosition.BOTTOM,
-              ),
-              child: const Text('弹 Get.snackbar'),
+              child: const Text('弹 Dialog'),
             ),
             const SizedBox(height: 8),
             ElevatedButton(

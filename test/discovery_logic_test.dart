@@ -6,7 +6,6 @@ import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:get/get.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/IChannel.dart';
 import 'package:gstore/core/channel/database/channel_added_app.dart';
@@ -246,7 +245,6 @@ void main() {
   setUp(() async {
     await ModuleManager.instance.clear();
     ModuleManager.instance.injectContext(null);
-    Get.reset();
     // 绑定 ChannelManager 单例（DiscoveryNotifier 经 ModuleManager 取渠道管理器）
     ModuleManager.instance.bind<ChannelManager>(ChannelManager.instance);
     appDao = _FakeAppDao();
@@ -268,7 +266,6 @@ void main() {
       }
     }
     ModuleManager.instance.unbind<ChannelManager>();
-    Get.reset();
   });
 
   Future<JsChannel> registerScriptChannel(String key, String script) async {

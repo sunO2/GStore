@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:get/get.dart';
 import 'package:gstore/core/aggregate/aggregate.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/IChannel.dart';
@@ -14,6 +13,7 @@ import 'package:gstore/core/channel/model/ChannelInfo.dart';
 import 'package:gstore/core/channel/model/ChannelResult.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
+import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/js/js_native_host.dart';
@@ -626,7 +626,6 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   setUp(() {
-    Get.reset();
     ModuleManager.instance.bindByType(ChannelManager, ChannelManager.instance);
     ModuleManager.instance
         .bindByType(IAggregateService, _FakeAggregateService());
@@ -647,7 +646,8 @@ void main() {
 
   Future<void> pumpHost(WidgetTester tester, DetailLogic logic) async {
     await tester.pumpWidget(
-      GetMaterialApp(
+      MaterialApp(
+        navigatorKey: appNavigatorKey,
         scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
         home: Scaffold(
           body: Builder(
@@ -1314,7 +1314,11 @@ void main() {
           // 使 DetailPage 内部渲染与测试断言共享同一 detailInfo。
           detailStateProvider.overrideWith((ref) => logic.state),
         ],
-        child: const GetMaterialApp(home: DetailPage()),
+        child: MaterialApp(
+          navigatorKey: appNavigatorKey,
+          scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
+          home: const DetailPage(),
+        ),
       ),
     );
     // 两次 bind+load 落定：buildLogic 手动 start + 页面自身 start

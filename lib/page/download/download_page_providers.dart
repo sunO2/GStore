@@ -327,7 +327,7 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
       AppDialogs.showWarning('安装模块未启用');
       return;
     }
-    if (GetPlatform.isAndroid && downStatus.fileName.endsWith(".apk")) {
+    if (Platform.isAndroid && downStatus.fileName.endsWith(".apk")) {
       await manager.installApk(downStatus.filePath);
     }
   }

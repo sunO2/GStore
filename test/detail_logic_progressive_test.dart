@@ -2,7 +2,6 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:get/get.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/IChannel.dart';
 import 'package:gstore/core/channel/impl/JsChannel.dart';
@@ -223,11 +222,9 @@ void main() {
   late DetailLogic logic;
 
   setUp(() {
-    Get.reset();
     channel = FakeChannel();
     ChannelManager.instance.registerChannel(channel);
-    Get.put(ChannelManager.instance, tag: 'channelManager');
-    // DetailLogic 已改注册表取用（todo 16）：同步绑定 ModuleManager 注册表
+    // DetailLogic 经 ModuleManager 注册表取用（todo 16）
     ModuleManager.instance.bindByType(ChannelManager, ChannelManager.instance);
 
     logic = DetailLogic();
@@ -241,7 +238,6 @@ void main() {
 
   tearDown(() {
     logic.shutdown();
-    Get.reset();
   });
 
   test('a) getAppInfo 就绪后基础 detailInfo 立即可用（不等待三路）', () async {

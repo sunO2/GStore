@@ -6,13 +6,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:get/get.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
+import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/image/app_image.dart';
 import 'package:gstore/core/image/app_image_loader.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/model/StatTag.dart';
+import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/core/utils/unit.dart';
 import 'package:gstore/page/detail/widgets.dart';
 import 'package:http/http.dart' as http;
@@ -127,7 +128,9 @@ const double kDisplayWidth = 768;
 /// 固定 pump（AppLoading 占位与 Snackbar 为无限/定时动画，勿 pumpAndSettle）。
 Future<void> pumpReadme(WidgetTester tester, _FakeDetailInfo info) async {
   await tester.pumpWidget(
-    GetMaterialApp(
+    MaterialApp(
+      navigatorKey: appNavigatorKey,
+      scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
       home: Scaffold(
         body: SingleChildScrollView(
           child: ReadmeSection(info: info),
@@ -291,8 +294,8 @@ void main() {
       (call) async {
         calls.add(call);
         // 永不完成：_copyUrl 停在 await Clipboard.setData，
-        // 不会走到 AppDialogs.showSuccess（Get.snackbar 在测试环境
-        // 因 GetX 4.7.2 overlayContext 与新版 Flutter LookupBoundary
+        // 不会走到 AppDialogs.showSuccess（在测试环境
+        // 因 overlayContext 与新版 Flutter LookupBoundary
         // 不兼容而抛异步异常，只能从源头截断）
         return Completer<ByteData?>().future;
       },

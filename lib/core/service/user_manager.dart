@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -24,7 +26,24 @@ class UserManager {
   late GithubAuthApi _authApi;
   late GithubRestClient _githubApi;
   final _secureStorage = const FlutterSecureStorage();
-  final userInfo = const UserInfo().obs;
+  UserInfo _userInfo = const UserInfo();
+  final _userInfoController = StreamController<UserInfo>.broadcast();
+
+  /// 当前用户信息（只读）
+  UserInfo get userInfo => _userInfo;
+
+  /// 用户信息变更流（登录/登出/启动恢复写入时推送）
+  Stream<UserInfo> get userInfoStream => _userInfoController.stream;
+
+  /// 仅测试使用：直接注入用户信息（等价原 test 写 `userInfo.value = ...`）
+  @visibleForTesting
+  void setUserInfoForTest(UserInfo user) => _setUserInfo(user);
+
+  void _setUserInfo(UserInfo user) {
+    _userInfo = user;
+    _userInfoController.add(user);
+  }
+
   Timer? _loginRequestTimer;
 
   /// SharedPreferences 实例（备用存储）
@@ -68,7 +87,7 @@ class UserManager {
   void resetForTest() {
     cancelLogin();
     _isInitialized = false;
-    userInfo.value = const UserInfo();
+    _setUserInfo(const UserInfo());
     _prefs = null;
     _secureStorage.deleteAll();
   }
@@ -107,8 +126,8 @@ class UserManager {
       final userInfoJson = await _secureStorage.read(key: _userInfoKey);
       if (userInfoJson != null && userInfoJson.isNotEmpty) {
         try {
-          userInfo.value = UserInfo.fromJsonString(userInfoJson);
-          appLog.info('UserManager: 已加载用户信息 - ${userInfo.value.login}');
+          _setUserInfo(UserInfo.fromJsonString(userInfoJson));
+          appLog.info('UserManager: 已加载用户信息 - ${userInfo.login}');
         } catch (e) {
           appLog.error('UserManager: 解析用户信息失败 - $e');
           appLog.error('UserManager: ⚠️ 解析失败，清除 Token');
@@ -135,7 +154,7 @@ class UserManager {
     try {
       final user = await getUserInfo();
       if (user != null) {
-        userInfo.value = user;
+        _setUserInfo(user);
         await _secureStorage.write(key: _userInfoKey, value: user.toJson());
         appLog.info('UserManager: 已异步获取用户信息 - ${user.login}');
       } else {
@@ -251,7 +270,7 @@ class UserManager {
         final user = await _githubApi.user();
         if (user != null) {
           await saveToken(auth.accessToken!);
-          userInfo.value = user;
+          _setUserInfo(user);
           await _secureStorage.write(key: _userInfoKey, value: user.toJson());
           completer.complete(user);
         } else {
@@ -431,7 +450,7 @@ class UserManager {
       final user = await getUserInfo();
 
       if (user != null) {
-        userInfo.value = user;
+        _setUserInfo(user);
         return true;
       }
 
@@ -453,7 +472,7 @@ class UserManager {
     if (token == null || token.isEmpty) {
       return false;
     }
-    return userInfo.value.avatarUrl?.isNotEmpty ?? false;
+    return userInfo.avatarUrl?.isNotEmpty ?? false;
   }
 
   /// 退出登录
@@ -463,7 +482,7 @@ class UserManager {
       debugPrint('  - 调用堆栈: ${StackTrace.current}');
 
       // 清除内存中的用户信息
-      userInfo.value = const UserInfo();
+      _setUserInfo(const UserInfo());
 
       // 确保 SharedPreferences 已初始化
       await _initPrefs();

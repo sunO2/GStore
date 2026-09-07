@@ -34,7 +34,6 @@ dependencies:
   retrofit: ^4.4.0
   logger: ^2.4.0  # for logging purpose
   json_annotation: ^4.9.0
-  get:
   flutter_riverpod: ^2.6.1
   go_router: ^14.6.2
   flutter_markdown_plus: ^1.0.12

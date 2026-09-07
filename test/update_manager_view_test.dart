@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:get/get.dart';
+import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/module/module_manager.dart';
+import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/core/service/badge_service.dart';
 import 'package:gstore/core/update/app_update_info.dart';
 import 'package:gstore/core/update/update_log.dart';
@@ -59,7 +60,6 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   tearDown(() async {
-    Get.reset();
     await ModuleManager.instance.clear();
   });
 
@@ -79,8 +79,12 @@ void main() {
     ModuleManager.instance.bind<BadgeService>(BadgeService());
 
     await tester.pumpWidget(
-      const ProviderScope(
-        child: GetMaterialApp(home: UpdateManager()),
+      ProviderScope(
+        child: MaterialApp(
+          navigatorKey: appNavigatorKey,
+          scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
+          home: const UpdateManager(),
+        ),
       ),
     );
     await tester.pumpAndSettle();
@@ -111,8 +115,12 @@ void main() {
     ModuleManager.instance.bind<BadgeService>(BadgeService());
 
     await tester.pumpWidget(
-      const ProviderScope(
-        child: GetMaterialApp(home: UpdateManager()),
+      ProviderScope(
+        child: MaterialApp(
+          navigatorKey: appNavigatorKey,
+          scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
+          home: const UpdateManager(),
+        ),
       ),
     );
     await tester.pumpAndSettle();

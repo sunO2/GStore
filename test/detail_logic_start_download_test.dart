@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:get/get.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/IChannel.dart';
 import 'package:gstore/core/channel/IDetailChannel.dart';
@@ -13,6 +12,7 @@ import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/AppDetailRequest.dart';
 import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
+import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/model/StatTag.dart';
 import 'package:gstore/db/apps/AppInfo.dart' as db;
 import 'package:gstore/page/detail/logic.dart';
@@ -279,14 +279,12 @@ void main() {
   late _StubChannel stubChannel;
 
   setUp(() {
-    Get.reset();
     stubChannel = _StubChannel();
     ChannelManager.instance.registerChannel(stubChannel);
-    Get.put(ChannelManager.instance, tag: 'channelManager');
+    ModuleManager.instance.bindByType(ChannelManager, ChannelManager.instance);
   });
 
   tearDown(() {
-    Get.reset();
   });
 
   group('drivesOwnDownloads 属性', () {

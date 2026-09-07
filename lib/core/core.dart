@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
-import 'package:get/get.dart';
 import 'package:gstore/db/apps/AppInfo.dart';
 import 'package:gstore/core/config/config_service.dart';
 import 'package:gstore/core/config/config_registry.dart';
@@ -85,7 +84,6 @@ export 'package:gstore/core/update/update_manager.dart';
 export 'package:gstore/core/resource/Disposable.dart';
 
 // 第三方库
-export 'package:get/get.dart';
 export 'package:gstore/db/apps/AppInfo.dart';
 export 'dart:async';
 export 'dart:convert';

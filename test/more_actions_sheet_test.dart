@@ -1,17 +1,22 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:get/get.dart';
+import 'package:gstore/core/design/app_dialogs.dart';
+import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/page/detail/widgets/more_actions_sheet.dart';
 
 void main() {
   testWidgets('更多底部面板：渲染应用名、当前标签、预置 chips 与动作宫格', (tester) async {
     await tester.pumpWidget(
-      const GetMaterialApp(home: Scaffold(body: SizedBox())),
+      MaterialApp(
+        navigatorKey: appNavigatorKey,
+        scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
+        home: const Scaffold(body: SizedBox()),
+      ),
     );
 
     var actionFired = false;
     final future = showMoreActionsSheet(
-      Get.context!,
+      appNavigatorKey.currentContext!,
       appName: '测试应用',
       presetTags: ['工具', '游戏', '社交'],
       currentTags: ['工具'],
@@ -66,11 +71,15 @@ void main() {
 
   testWidgets('更多底部面板：chip 切换选中、自定义输入追加、确定返回标签', (tester) async {
     await tester.pumpWidget(
-      const GetMaterialApp(home: Scaffold(body: SizedBox())),
+      MaterialApp(
+        navigatorKey: appNavigatorKey,
+        scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
+        home: const Scaffold(body: SizedBox()),
+      ),
     );
 
     final future = showMoreActionsSheet(
-      Get.context!,
+      appNavigatorKey.currentContext!,
       appName: '测试应用',
       presetTags: ['工具', '游戏'],
       currentTags: const [],
@@ -120,12 +129,16 @@ void main() {
 
   testWidgets('更多底部面板：取消返回 null，清空后确定返回空列表', (tester) async {
     await tester.pumpWidget(
-      const GetMaterialApp(home: Scaffold(body: SizedBox())),
+      MaterialApp(
+        navigatorKey: appNavigatorKey,
+        scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
+        home: const Scaffold(body: SizedBox()),
+      ),
     );
 
     // 取消
     final cancelFuture = showMoreActionsSheet(
-      Get.context!,
+      appNavigatorKey.currentContext!,
       appName: '测试应用',
       presetTags: ['工具'],
       currentTags: const ['工具'],
@@ -138,7 +151,7 @@ void main() {
 
     // 清空后确认返回空列表
     final clearFuture = showMoreActionsSheet(
-      Get.context!,
+      appNavigatorKey.currentContext!,
       appName: '测试应用',
       presetTags: ['工具'],
       currentTags: const ['工具'],
@@ -166,11 +179,15 @@ void main() {
 
   testWidgets('更多底部面板：actions 为空时隐藏"操作"区（无标题、无宫格）', (tester) async {
     await tester.pumpWidget(
-      const GetMaterialApp(home: Scaffold(body: SizedBox())),
+      MaterialApp(
+        navigatorKey: appNavigatorKey,
+        scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
+        home: const Scaffold(body: SizedBox()),
+      ),
     );
 
     final future = showMoreActionsSheet(
-      Get.context!,
+      appNavigatorKey.currentContext!,
       appName: '测试应用',
       presetTags: ['工具'],
       currentTags: const [],

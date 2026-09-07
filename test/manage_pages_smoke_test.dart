@@ -3,7 +3,6 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:get/get.dart';
 import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/page/cache_manage/cache_service.dart';
 import 'package:gstore/page/cache_manage/download_clean_page.dart';
@@ -25,11 +24,9 @@ void main() {
 
     setUp(() async {
       tmpDir = await Directory.systemTemp.createTemp('manage_page_smoke');
-      Get.testMode = true;
     });
 
     tearDown(() async {
-      Get.reset();
       if (await tmpDir.exists()) {
         await tmpDir.delete(recursive: true);
       }

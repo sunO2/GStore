@@ -3,10 +3,10 @@ import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:get/get.dart';
 import 'package:gstore/core/aggregate/AppAddedDatabase.dart';
 import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
+import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/service/badge_service.dart';
 import 'package:gstore/core/service/user_manager.dart';
@@ -151,25 +151,28 @@ void main() {
 
     setUp(() {
       SharedPreferences.setMockInitialValues({});
-      Get.reset();
-      // ApplistNotifier 经 GetX 容器取 UserManager/BadgeService/UpdateManager 镜像
-      Get.put<GithubRestClient>(GithubRestClient(Dio()));
-      Get.put(BadgeService());
-      Get.put(UpdateManagerService());
-      Get.put(UserManager.instance);
+      // ApplistNotifier 经 ModuleManager 注册表取 UserManager/BadgeService/
+      // UpdateManagerService 镜像（未绑定 → 尽力而为跳过）
+      ModuleManager.instance
+          .bind<GithubRestClient>(GithubRestClient(Dio()));
+      ModuleManager.instance.bind<BadgeService>(BadgeService());
+      ModuleManager.instance
+          .bind<UpdateManagerService>(UpdateManagerService());
+      ModuleManager.instance.bind<UserManager>(UserManager.instance);
       container = ProviderContainer();
     });
 
     tearDown(() {
-      Get.reset();
       container.dispose();
     });
 
     testWidgets('头像边框非黑色（outlineVariant 系色），宽度随主题', (tester) async {
-      UserManager.instance.userInfo.value = const UserInfo(
-        login: 'tester',
-        name: 'tester',
-        avatarUrl: 'https://example.com/avatar.png',
+      UserManager.instance.setUserInfoForTest(
+        const UserInfo(
+          login: 'tester',
+          name: 'tester',
+          avatarUrl: 'https://example.com/avatar.png',
+        ),
       );
 
       await tester.pumpWidget(

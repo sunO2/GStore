@@ -1,13 +1,16 @@
 import 'dart:typed_data';
 
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:get/get.dart';
 import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
+import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/image/app_image_loader.dart';
+import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/module/module_manager.dart';
+import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/model/StatTag.dart';
@@ -91,13 +94,10 @@ final Uint8List kPngBytes = Uint8List.fromList(const [
 
 void main() {
   setUp(() {
-    Get.reset();
-    // DetailLogic.onReady 会 Get.find 这两个 tag（空参数时仅置 errorMessage，
-    // 不发起任何渠道请求）——先注册避免 find 抛错
-    Get.put(ChannelManager.instance, tag: 'channelManager');
-    Get.put(AppAggregatorManager.instance, tag: 'aggregatorManager');
-    // DetailLogic 已改注册表取用（todo 16）：同步绑定 ModuleManager 注册表
-    ModuleManager.instance.bindByType(ChannelManager, ChannelManager.instance);
+    // DetailLogic 经 ModuleManager 注册表取用（channel/aggregate 服务）
+    ModuleManager.instance.bind<ChannelManager>(ChannelManager.instance);
+    ModuleManager.instance
+        .bind<IAggregateService>(AppAggregatorManager.instance);
     // README 图片走 AppImageLoader，注入 MockClient 返回 1×1 PNG 避免真实网络
     AppImageLoader.instance.debugClient = MockClient((request) async {
       return http.Response.bytes(
@@ -116,7 +116,6 @@ void main() {
     _FakeSectionOrderDetail detail,
   ) async {
     final logic = DetailLogic();
-    Get.put(logic);
     logic.state.detailInfo = detail;
 
     await tester.pumpWidget(
@@ -126,7 +125,11 @@ void main() {
           // 使 DetailPage 渲染的 detailInfo 与测试注入的同一实例。
           detailStateProvider.overrideWith((ref) => logic.state),
         ],
-        child: const GetMaterialApp(home: DetailPage()),
+        child: MaterialApp(
+          navigatorKey: appNavigatorKey,
+          scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
+          home: const DetailPage(),
+        ),
       ),
     );
     // 页面 start（post-frame microtask）已把 errorMessage 置 '缺少参数' → 清掉，正文生效

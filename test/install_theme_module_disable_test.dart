@@ -7,6 +7,7 @@ import 'package:gstore/core/core.dart';
 import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/module/app_modules.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
+import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/page/download/download_page_providers.dart';
 import 'package:gstore/page/installed_apps/view.dart';
 import 'package:gstore/page/settings/settings_page.dart';
@@ -69,16 +70,17 @@ void main() {
     await manager.initializeModule('theme');
   }
 
-  /// 设置页深滚动到「安装与权限」分组时，数据更新 tile 的 Obx 读取 BadgeService；
-  /// 未注册会抛 Get.find 异常（与本次改动无关的既有依赖，注册即可）
+  /// 设置页深滚动到「安装与权限」分组时，数据更新 tile 读取 BadgeService；
+  /// 未注册会异常（与本次改动无关的既有依赖，绑定即可）
   void putSettingsPageDeps() {
-    if (!Get.isRegistered<BadgeService>()) Get.put(BadgeService());
+    if (!ModuleManager.instance.hasService<BadgeService>()) {
+      ModuleManager.instance.bind<BadgeService>(BadgeService.instance);
+    }
   }
 
   setUp(() async {
     await manager.clear();
     manager.injectContext(null);
-    Get.reset();
   });
 
   group('InstallModule 管理 InstallManager（按具体类型注册表化）', () {
@@ -119,7 +121,8 @@ void main() {
       await manager.setModuleEnabled('install', false);
       expect(manager.get<InstallManager>(), isNull);
 
-      await tester.pumpWidget(GetMaterialApp(
+      await tester.pumpWidget(MaterialApp(
+        navigatorKey: appNavigatorKey,
         scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
         home: const InstalledAppsPage(),
       ));
@@ -273,7 +276,8 @@ void main() {
       await registerInstallModule();
       await manager.setModuleEnabled('install', false);
 
-      await tester.pumpWidget(GetMaterialApp(
+      await tester.pumpWidget(MaterialApp(
+        navigatorKey: appNavigatorKey,
         scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
         home: const InstalledAppsPage(),
       ));

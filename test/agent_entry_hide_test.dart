@@ -60,19 +60,17 @@ void main() {
     container = ProviderContainer();
     addTearDown(container.dispose);
 
-    // ApplistLogic 的 GithubRequestMix 构造时 Get.find<GithubRestClient>()（applist 页未迁）
-    Get.put(GithubRestClient(DioClient().get()));
-    // MinePage 依赖：用户/主题控制器 + secure storage mock（WebDAV 配置读取）
-    Get.put(UserManager.instance);
-    Get.put(ThemeController());
-    // ApplistPage 红点服务（Obx 内 Get.find<BadgeService>()）
-    Get.put(BadgeService());
+    // 绑定页面依赖服务（GithubRestClient/UserManager/ThemeController/BadgeService
+    // 经 ModuleManager 注册表取用；unbind 由 setUp 的 manager.clear() 清理）
+    manager.bind<GithubRestClient>(GithubRestClient(DioClient().get()));
+    manager.bind<UserManager>(UserManager.instance);
+    manager.bind<ThemeController>(ThemeController());
+    manager.bind<BadgeService>(BadgeService());
     FlutterSecureStoragePlatform.instance =
         TestFlutterSecureStoragePlatform(const {});
   });
 
   tearDown(() {
-    Get.reset();
   });
 
   /// NavigationBar 内指定 label 的 destination

@@ -6,13 +6,13 @@ import 'package:archive/archive.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:get/get.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/impl/JsChannel.dart';
 import 'package:gstore/core/config/config_store.dart';
 import 'package:gstore/core/config/config_storage.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/module/module_manager.dart';
+import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/page/settings/settings_page.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -94,7 +94,6 @@ void main() {
         .initialize(storages: [MemoryConfigStorage(), MemoryConfigStorage()]);
     await ModuleManager.instance.clear();
     ModuleManager.instance.injectContext(null);
-    Get.reset();
     tempDir = await Directory.systemTemp.createTemp('channel_env_ui');
     originalPathProvider = PathProviderPlatform.instance;
     PathProviderPlatform.instance = _FakePathProvider(tempDir.path);
@@ -108,7 +107,6 @@ void main() {
       }
     }
     await tempDir.delete(recursive: true);
-    Get.reset();
   });
 
   Future<void> pumpSettings(
@@ -116,7 +114,8 @@ void main() {
     Future<({String name, Uint8List bytes})?> Function()? filePicker,
   }) async {
     await tester.pumpWidget(ProviderScope(
-      child: GetMaterialApp(
+      child: MaterialApp(
+        navigatorKey: appNavigatorKey,
         scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
         home: SettingsPage(filePicker: filePicker),
       ),

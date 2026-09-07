@@ -5,7 +5,6 @@ import 'package:flutter_secure_storage/test/test_flutter_secure_storage_platform
 // ignore: depend_on_referenced_packages
 import 'package:flutter_secure_storage_platform_interface/flutter_secure_storage_platform_interface.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:get/get.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/service/user_manager.dart';
 import 'package:gstore/http/github/dio_client.dart';
@@ -82,7 +81,6 @@ void main() {
   late UserManager manager;
 
   setUp(() async {
-    Get.reset();
     SharedPreferences.setMockInitialValues({});
 
     // 凭据安全存储走 mock 平台（可变 map——write 需写入；const {} 会抛
@@ -103,7 +101,6 @@ void main() {
   });
 
   tearDown(() async {
-    Get.reset();
     DioClient.instance.authorization = null;
     await ModuleManager.instance.clear();
   });

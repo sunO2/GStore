@@ -3,7 +3,6 @@ import 'dart:ffi';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:get/get.dart';
 import 'package:gstore/core/download/core/download_request.dart';
 import 'package:gstore/core/download/manager/download_repository.dart';
 import 'package:gstore/core/download/model/download_task.dart';
@@ -124,12 +123,12 @@ void main() {
   });
 
   setUp(() async {
-    Get.reset();
     await ModuleManager.instance.clear();
 
-    // DbManager 构造依赖 Get.find<GithubRestClient>()；appInfoDB 经 ModuleManager
+    // DbManager 构造依赖 GithubRestClient；appInfoDB 经 ModuleManager
     // 绑定 DbManager（Notifier 的 downloadAppInfoDbProvider 读取路径）
-    Get.put(GithubRestClient(DioClient().get()));
+    ModuleManager.instance
+        .bind<GithubRestClient>(GithubRestClient(DioClient().get()));
     final dm = DbManager();
     dm.dbRepositroies['gstore'] = DBRepository(
       'gstore',
@@ -149,7 +148,6 @@ void main() {
     } catch (_) {
       // 文件可能不存在，忽略
     }
-    Get.reset();
     await ModuleManager.instance.clear();
   });
 

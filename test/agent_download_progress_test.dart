@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:get/get.dart';
 import 'package:gstore/core/agent/agent_service.dart';
 import 'package:gstore/core/download/core/download_request.dart';
 import 'package:gstore/core/download/model/download_task.dart';
@@ -129,7 +128,6 @@ void main() {
   late _FakeDownloadService fakeService;
 
   setUp(() {
-    Get.reset();
     ModuleManager.instance.injectContext(null);
     fakeService = _FakeDownloadService();
     // 绑定 IDownloadService（download 模块在线语义）
@@ -138,7 +136,6 @@ void main() {
 
   tearDown(() {
     ModuleManager.instance.unbindByType(IDownloadService);
-    Get.reset();
   });
 
   test('URL 直下路径：watch 流推送进度时 onStatus 收到下载中状态', () async {

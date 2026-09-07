@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:get/get.dart';
 import 'package:go_router/go_router.dart';
 
 import 'package:gstore/core/config/config_registry.dart';
@@ -10,7 +9,9 @@ import 'package:gstore/core/config/config_store.dart';
 import 'package:gstore/core/config/config_storage.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/module/module.dart';
+import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/module/module_toggle_config.dart';
+import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/core/routers.dart';
 import 'package:gstore/core/service/badge_service.dart';
 import 'package:gstore/core/theme/theme_controller.dart';
@@ -72,9 +73,7 @@ void main() {
 
   setUp(() async {
     await initForTest();
-    if (!Get.isRegistered<ThemeController>()) {
-      Get.put(ThemeController());
-    }
+    ModuleManager.instance.bind<ThemeController>(ThemeController());
   });
 
   /// 铺满 17 个条目的大视口（避免 ListView 懒构建导致 offscreen 找不到）
@@ -87,11 +86,19 @@ void main() {
   /// 包 ProviderScope 的页面挂载（ConsumerWidget 需要）
   Widget wrapApp(Widget home) => ProviderScope(child: home);
 
+  /// 测试宿主 MaterialApp（挂载 appNavigatorKey / scaffoldMessengerKey）
+  Widget appHost(Widget home) => MaterialApp(
+        navigatorKey: appNavigatorKey,
+        scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
+        home: home,
+      );
+
   group('模块管理页渲染', () {
     testWidgets('渲染 9 可开关业务模块 + 8 系统置灰模块', (tester) async {
       useTallViewport(tester);
 
-      await tester.pumpWidget(wrapApp(const GetMaterialApp(home: ModuleManagePage())));
+      await tester.pumpWidget(
+          wrapApp(appHost(const ModuleManagePage())));
       await tester.pumpAndSettle();
 
       expect(find.byType(ModuleManagePage), findsOneWidget);
@@ -138,7 +145,7 @@ void main() {
       manager.registerKnownModules(() => [ToggleTestModule('channel')]);
 
       await tester.pumpWidget(
-          wrapApp(const GetMaterialApp(home: ModuleManagePage())));
+          wrapApp(appHost(const ModuleManagePage())));
       await tester.pumpAndSettle();
 
       // 初始：渠道开启
@@ -176,7 +183,7 @@ void main() {
       addTearDown(container.dispose);
       await tester.pumpWidget(UncontrolledProviderScope(
         container: container,
-        child: const GetMaterialApp(home: ModuleManagePage()),
+        child: appHost(const ModuleManagePage()),
       ));
       await tester.pumpAndSettle();
 
@@ -223,10 +230,7 @@ void main() {
       expect(manager.isInitialized('backup'), true);
 
       await tester.pumpWidget(ProviderScope(
-        child: GetMaterialApp(
-          scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
-          home: const ModuleManagePage(),
-        ),
+        child: appHost(const ModuleManagePage()),
       ));
       await tester.pumpAndSettle();
 
@@ -257,7 +261,7 @@ void main() {
       await manager.activate(ToggleTestModule('channel'));
 
       await tester.pumpWidget(
-          wrapApp(const GetMaterialApp(home: ModuleManagePage())));
+          wrapApp(appHost(const ModuleManagePage())));
       await tester.pumpAndSettle();
       expect(tester.widget<Switch>(_switchOf('渠道')).value, true);
 
@@ -303,9 +307,11 @@ void main() {
       // 设置页整体是 ListView：「模块」分组位于「数据与同步」之后，默认视口
       // 下可能未构建。这里用滚动定位入口（贴近真实用户操作），
       // 并注册 BadgeService ——「关于」组的 _DataUpdateTile 若被滚入视口，
-      // 其 Obx 读取 BadgeService 未注册会抛 Get.find 异常（先例见
+      // 其读取 BadgeService 未注册会异常（先例见
       // install_theme_module_disable_test.putSettingsPageDeps）。
-      if (!Get.isRegistered<BadgeService>()) Get.put(BadgeService());
+      if (!ModuleManager.instance.hasService<BadgeService>()) {
+        ModuleManager.instance.bind<BadgeService>(BadgeService());
+      }
       // 大视口：让「模块」分组直接可见，无需滚动也能命中
       tester.view.physicalSize = const Size(800, 1400);
       tester.view.devicePixelRatio = 1.0;

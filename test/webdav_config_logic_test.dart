@@ -7,7 +7,7 @@ import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/webdav/webdav_config.dart';
 import 'package:gstore/page/webdav_config/providers.dart';
 
-/// WebDAV 配置 Notifier 降级测试（Riverpod 版，替代原 GetxController 测试）
+/// WebDAV 配置 Notifier 降级测试（Riverpod 版，替代原 GetX 控制器测试）
 ///
 /// 验证：WebDavService 未绑定（webdav 模块下线）时，
 /// testConnection 短路降级提示"模块未启用"，不抛异常、不置位 testing。

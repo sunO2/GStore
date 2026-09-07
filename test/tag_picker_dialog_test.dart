@@ -1,16 +1,21 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:get/get.dart';
+import 'package:gstore/core/design/app_dialogs.dart';
+import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/page/home/tab/discovery/widgets/tag_picker_dialog.dart';
 
 void main() {
   testWidgets('标签选择对话框：预置分类渲染与选中态切换', (tester) async {
     await tester.pumpWidget(
-      const GetMaterialApp(home: Scaffold(body: SizedBox())),
+      MaterialApp(
+        navigatorKey: appNavigatorKey,
+        scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
+        home: const Scaffold(body: SizedBox()),
+      ),
     );
 
     final future = showTagPickerDialog(
-      Get.context!,
+      appNavigatorKey.currentContext!,
       presetTags: ['工具', '游戏', '社交'],
       currentTags: ['工具'],
     );
@@ -48,18 +53,22 @@ void main() {
     );
 
     // 避免对话框残留影响后续用例
-    Navigator.of(Get.context!).pop();
+    Navigator.of(appNavigatorKey.currentContext!).pop();
     await tester.pumpAndSettle();
     await future;
   });
 
   testWidgets('标签选择对话框：自定义输入追加可移除标签，确定返回结果', (tester) async {
     await tester.pumpWidget(
-      const GetMaterialApp(home: Scaffold(body: SizedBox())),
+      MaterialApp(
+        navigatorKey: appNavigatorKey,
+        scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
+        home: const Scaffold(body: SizedBox()),
+      ),
     );
 
     final future = showTagPickerDialog(
-      Get.context!,
+      appNavigatorKey.currentContext!,
       presetTags: ['工具', '游戏'],
       currentTags: const [],
     );
@@ -98,12 +107,16 @@ void main() {
 
   testWidgets('标签选择对话框：取消返回 null，清空后确认返回空列表', (tester) async {
     await tester.pumpWidget(
-      const GetMaterialApp(home: Scaffold(body: SizedBox())),
+      MaterialApp(
+        navigatorKey: appNavigatorKey,
+        scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
+        home: const Scaffold(body: SizedBox()),
+      ),
     );
 
     // 取消
     final cancelFuture = showTagPickerDialog(
-      Get.context!,
+      appNavigatorKey.currentContext!,
       presetTags: ['工具'],
       currentTags: const ['工具'],
     );
@@ -114,7 +127,7 @@ void main() {
 
     // 清空后确认
     final clearFuture = showTagPickerDialog(
-      Get.context!,
+      appNavigatorKey.currentContext!,
       presetTags: ['工具'],
       currentTags: const ['工具'],
     );

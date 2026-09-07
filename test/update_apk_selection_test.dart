@@ -4,8 +4,9 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:get/get.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
+import 'package:gstore/core/design/app_dialogs.dart';
+import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/core/download/core/download_request.dart';
 import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
@@ -311,7 +312,11 @@ Future<void> _pumpUpdatePage(WidgetTester tester, AppUpdateInfo info) async {
   ModuleManager.instance.bind<BadgeService>(BadgeService());
   await tester.pumpWidget(
     ProviderScope(
-      child: GetMaterialApp(home: const UpdateManager()),
+      child: MaterialApp(
+        navigatorKey: appNavigatorKey,
+        scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
+        home: const UpdateManager(),
+      ),
     ),
   );
   await tester.pumpAndSettle();
@@ -344,7 +349,6 @@ void main() {
 
   tearDown(() async {
     PathProviderPlatform.instance = originalPathProvider;
-    Get.reset();
     await ModuleManager.instance.clear();
   });
 

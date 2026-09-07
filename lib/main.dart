@@ -133,12 +133,7 @@ main() async {
   // 在首帧后跳转缓存管理页（返回键回首页）；后台恢复场景由 Router 监听处理。
   _ManageSpaceRouterState.coldHit = await _consumeManageSpaceEntry();
 
-  // 把 GoRouter 的 Navigator 注册为 GetX 全局 navigator key：
-  // GetX overlay（Get.dialog/bottomSheet/snackbar）在 MaterialApp.router 下继续可用
-  // （状态管理 Get.put/Obx 与之无关，天然可用）。
-  Get.addKey(appNavigatorKey);
-
-  // ProviderScope：Riverpod 根容器（与 GetX DI 共存；已迁移页面使用 ConsumerWidget/Notifier）
+  // ProviderScope：Riverpod 根容器（已迁移页面使用 ConsumerWidget/Notifier）
   runApp(ProviderScope(
     child: DynamicColorBuilder(builder: (light, dark) {
       return Consumer(builder: (context, ref, _) {
@@ -151,7 +146,7 @@ main() async {
             scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
             routerConfig: appRouter,
             builder: (context, child) {
-              configStatusBar();
+              configStatusBar(context);
               return Material(
                 child: SafeArea(
                   top: false,
@@ -222,7 +217,7 @@ class _ManageSpaceRouterState extends State<_ManageSpaceRouter>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    // 冷启动：首帧后跳转（此时 GetMaterialApp 路由已就绪）
+    // 冷启动：首帧后跳转（此时 MaterialApp.router 路由已就绪）
     if (coldHit) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted || _handledCold) return;

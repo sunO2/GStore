@@ -7,23 +7,23 @@ import 'user_manager.dart';
 
 /// 当前登录用户信息（Riverpod 主状态源）。
 ///
-/// 权威真源仍是 [UserManager]（GetX 服务，登录/登出/启动恢复写入 userInfo）；
-/// 本 Notifier 订阅其 userInfo Rx 并镜像，使已迁移 Riverpod 的页面
-/// 无需再 `Get.find<UserManager>()` 也能响应登录状态变化。
+/// 权威真源仍是 [UserManager]（登录/登出/启动恢复写入 userInfo）；
+/// 本 Notifier 订阅其 userInfoStream 并镜像，使已迁移 Riverpod 的页面
+/// 无需再依赖 GetX 也能响应登录状态变化。
 class UserInfoNotifier extends Notifier<UserInfo> {
   StreamSubscription<UserInfo>? _sub;
 
   @override
   UserInfo build() {
-    // 订阅 UserManager.userInfo：登录/登出/启动恢复 → 同步
+    // 订阅 UserManager.userInfoStream：登录/登出/启动恢复 → 同步
     try {
       final manager = UserManager.instance;
-      _sub = manager.userInfo.listen((user) {
+      _sub = manager.userInfoStream.listen((user) {
         state = user;
       });
       ref.onDispose(() => _sub?.cancel());
       // 初始同步当前值（登录返回后 userInfo 已写入，先订阅再取值保证不丢帧）
-      return manager.userInfo.value;
+      return manager.userInfo;
     } catch (_) {
       // UserManager 不可用（极端降级）：保持默认
       return const UserInfo();

@@ -84,7 +84,7 @@ void main() {
         updatedAt: DateTime.now(),
       );
 
-      // 模块下线（GREEN）：方法立即降级提示；旧实现（RED）Get.find 抛异常。
+      // 模块下线（GREEN）：方法立即降级提示；旧实现（RED）服务查找抛异常。
       notifier.retryDownload(task);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));

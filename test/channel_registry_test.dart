@@ -1,7 +1,6 @@
 import 'dart:ffi';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:get/get.dart';
 import 'package:gstore/core/channel/ChannelIntegration.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
@@ -20,7 +19,7 @@ import 'package:sqlite3/open.dart';
 /// 验证：
 /// - ChannelModule.onRegister 按类型绑定 → get<ChannelManager>() 返回实例；
 ///   onUnregister 对称解绑 → null
-/// - ChannelIntegration.initialize 幂等：重复调用渠道只注册一次、不重复 Get.put
+/// - ChannelIntegration.initialize 幂等：重复调用渠道只注册一次、不重复绑定
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -33,12 +32,13 @@ void main() {
   });
 
   setUp(() async {
-    Get.reset();
     await ModuleManager.instance.clear();
     ModuleManager.instance.injectContext(null);
     await ChannelManager.instance.disposeAll();
-    // ChannelIntegration.initialize 依赖 DbManager + GithubRestClient
-    Get.put(GithubRestClient(DioClient().get()));
+    // ChannelIntegration.initialize 依赖 ModuleManager 取 GithubRestClient；
+    // DbManager.instance 首构造函数自置 _instance（无需额外绑定）
+    ModuleManager.instance
+        .bind<GithubRestClient>(GithubRestClient(DioClient().get()));
     final dm = DbManager();
     dm.dbRepositroies['gstore'] = DBRepository(
       'gstore',
@@ -46,7 +46,6 @@ void main() {
       'GStore-Repositorys',
       await ($FloorAppInfoDatabase.inMemoryDatabaseBuilder()).build(),
     );
-    Get.put(dm);
   });
 
   group('ChannelModule 按类型绑定', () {
@@ -75,8 +74,8 @@ void main() {
   });
 
   group('ChannelIntegration.initialize 幂等', () {
-    test('重复调用：渠道只注册一次、不重复 Get.put、不抛', () async {
-      // 首次初始化（真实渠道注册 + Get.put tag）
+    test('重复调用：渠道只注册一次、不重复绑定、不抛', () async {
+      // 首次初始化（真实渠道注册，ChannelManager 单例复用）
       await ChannelIntegration.initialize();
 
       final manager = ChannelManager.instance;
@@ -84,7 +83,7 @@ void main() {
       expect(manager.getChannel(ChannelType.github), isNotNull);
       expect(manager.getChannel(ChannelType.vivo), isNotNull);
       expect(manager.getChannel(ChannelType.fdroid), isNotNull);
-      expect(Get.find<ChannelManager>(tag: 'channelManager'), same(manager));
+      expect(ChannelIntegration.instance, same(manager));
       final localDbFirst = manager.getChannel(ChannelType.localDb);
 
       // 重复调用（re-enable 场景）：幂等直接返回，渠道不重复注册/不重建实例
@@ -94,7 +93,7 @@ void main() {
       expect(manager.getChannel(ChannelType.github), isNotNull);
       expect(manager.getChannel(ChannelType.vivo), isNotNull);
       expect(manager.getChannel(ChannelType.fdroid), isNotNull);
-      expect(Get.find<ChannelManager>(tag: 'channelManager'), same(manager));
+      expect(ChannelIntegration.instance, same(manager));
     });
   });
 }

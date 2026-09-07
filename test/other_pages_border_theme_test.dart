@@ -9,8 +9,10 @@ import 'package:gstore/core/config/config_manager.dart';
 import 'package:gstore/core/config/config_storage.dart';
 import 'package:gstore/core/config/providers/theme_config_provider.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/module/app_modules.dart';
+import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/core/theme/app_theme_config.dart';
 import 'package:gstore/page/download/download_page_providers.dart';
 import 'package:gstore/page/download/download_status_utils.dart';
@@ -152,7 +154,6 @@ void main() {
 
   group('① 发现页应用卡片边框宽度随 cardTheme', () {
     testWidgets('应用卡片边框宽度随主题（bold 1.5）', (tester) async {
-      Get.reset();
       await tester.pumpWidget(ProviderScope(
         overrides: [
           // 预置带数据的 Notifier：build 返回含 github 应用的状态（不触发真实加载）
@@ -190,19 +191,24 @@ void main() {
 
   group('② 我的页 Divider 继承 dividerTheme', () {
     testWidgets('外观卡展开后 Divider 不指定 color（继承 dividerTheme）', (tester) async {
-      Get.reset();
       FlutterSecureStoragePlatform.instance =
           TestFlutterSecureStoragePlatform(const {});
-      Get.put(ThemeController());
-      Get.put(UserManager.instance);
 
       final manager = ModuleManager.instance;
       await manager.clear();
+      manager.bind<ThemeController>(ThemeController());
+      manager.bind<UserManager>(UserManager.instance);
       manager.registerKnownModules(() => [TestWebDavModule()]);
       await manager.activate(TestWebDavModule());
 
       await tester.pumpWidget(
-          const ProviderScope(child: GetMaterialApp(home: MinePage())));
+          ProviderScope(
+            child: MaterialApp(
+              navigatorKey: appNavigatorKey,
+              scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
+              home: const MinePage(),
+            ),
+          ));
       await tester.pumpAndSettle();
 
       final appearanceCard =
@@ -231,7 +237,6 @@ void main() {
 
   group('③ 下载分组卡片边框宽度随主题', () {
     testWidgets('分组卡片边框宽度随主题（bold 1.5）', (tester) async {
-      Get.reset();
       final notifier = _TestDownloadNotifier();
       notifier.seed([
         [
@@ -242,7 +247,9 @@ void main() {
 
       await tester.pumpWidget(ProviderScope(
         overrides: [downloadManagerProvider.overrideWith(() => notifier)],
-        child: GetMaterialApp(
+        child: MaterialApp(
+          navigatorKey: appNavigatorKey,
+          scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
           theme: _boldTheme(),
           home: const DownloadManager(),
         ),
@@ -262,7 +269,6 @@ void main() {
 
   group('④ 已安装应用卡片侧边宽度随主题', () {
     testWidgets('卡片侧边宽度随主题（bold 1.5）', (tester) async {
-      Get.reset();
       // mock 平台通道：installed_apps 返回假应用列表；shizuku 无 binder
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(
@@ -303,7 +309,9 @@ void main() {
       await manager.registerModule(InstallModule());
       await manager.initializeModule('install');
 
-      await tester.pumpWidget(GetMaterialApp(
+      await tester.pumpWidget(MaterialApp(
+        navigatorKey: appNavigatorKey,
+        scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
         theme: _boldTheme(),
         home: const InstalledAppsPage(),
       ));
@@ -355,12 +363,17 @@ void main() {
 
     testWidgets('主题设置页自定义色块边框用 outlineVariant（非 Colors.grey）', (tester) async {
       _useTallView(tester);
-      Get.reset();
       await _registerCustomColorConfig();
-      Get.put(ThemeController());
+      ModuleManager.instance.bind<ThemeController>(ThemeController());
 
       await tester.pumpWidget(
-          const ProviderScope(child: MaterialApp(home: ThemeSettingsPage())));
+          ProviderScope(
+            child: MaterialApp(
+              navigatorKey: appNavigatorKey,
+              scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
+              home: const ThemeSettingsPage(),
+            ),
+          ));
       await tester.pumpAndSettle();
 
       // 自定义色块：24x24 带边框 Container（主色/次要色/第三色预览）

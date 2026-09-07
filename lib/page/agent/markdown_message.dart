@@ -262,7 +262,7 @@ class _CodeBlockBuilder extends MarkdownElementBuilder {
 
     // 提取语言（pre > code[class="language-xx"]）
     String language = '';
-    for (final child in element.children ?? const <Node>[]) {
+    for (final child in element.children ?? const <md.Node>[]) {
       if (child is md.Element && child.tag == 'code') {
         final cls = child.attributes['class'] ?? '';
         final idx = cls.indexOf('language-');
@@ -421,10 +421,10 @@ class _StyledTableBuilder extends MarkdownElementBuilder {
 
     // 解析表格
     final rows = <List<md.Element>>[];
-    for (final child in element.children ?? const <Node>[]) {
+    for (final child in element.children ?? const <md.Node>[]) {
       if (child is! md.Element) continue;
       if (child.tag == 'thead' || child.tag == 'tbody') {
-        for (final tr in child.children ?? const <Node>[]) {
+        for (final tr in child.children ?? const <md.Node>[]) {
           if (tr is md.Element && tr.tag == 'tr') {
             final cells = tr.children
                 ?.whereType<md.Element>()
