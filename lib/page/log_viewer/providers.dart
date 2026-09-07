@@ -26,10 +26,9 @@ final autoScrollProvider = NotifierProvider<AutoScrollNotifier, bool>(
   AutoScrollNotifier.new,
 );
 
-/// 全局日志流（订阅 LogManager 的 RxList 变更）。
+/// 全局日志流（订阅 LogManager 的 broadcast 流）。
 ///
-/// LogManager 仍由全局 GetX 服务持有（渐进迁移：页面层已切 Riverpod，
-/// 底层服务暂不动）。GetX `RxList.stream` 是 broadcast 流——只在写入新日志时
+/// LogManager 由全局单例持有。`logsStream` 是 broadcast 流——只在写入新日志时
 /// 推送、不会向新订阅者重放当前已有内容。若直接暴露该 stream，首次进入页面时
 /// 拿不到已存在的日志（`StreamProvider` 停在 loading，列表为空）。
 ///
@@ -40,7 +39,7 @@ final logEntriesStreamProvider = StreamProvider<List<LogEntry>>((ref) {
 
 Stream<List<LogEntry>> _logSnapshotStream() async* {
   yield List.unmodifiable(LogManager.instance.logs);
-  yield* LogManager.instance.logs.stream;
+  yield* LogManager.instance.logsStream;
 }
 
 /// 按当前筛选级别过滤日志（组合 logs 流 + 筛选状态）。

@@ -1,6 +1,6 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
-import 'package:get/get.dart';
 
 /// 全局日志管理器
 /// 用于在整个应用中记录和查看日志
@@ -14,8 +14,17 @@ class LogManager {
 
   LogManager._();
 
-  /// 日志条目
-  final RxList<LogEntry> logs = <LogEntry>[].obs;
+  /// 日志条目（live 列表，仅读；写操作仅发生在类内部）
+  final List<LogEntry> _logs = [];
+
+  /// 日志变更通知（broadcast：新订阅者不重放历史，由消费方自行先取快照）
+  final _logsController = StreamController<List<LogEntry>>.broadcast();
+
+  /// 日志条目（只读访问）
+  List<LogEntry> get logs => _logs;
+
+  /// 日志变更流
+  Stream<List<LogEntry>> get logsStream => _logsController.stream;
 
   /// 最大日志数量
   static const int maxLogs = 2000;
@@ -34,12 +43,15 @@ class LogManager {
     );
 
     // 添加到日志列表
-    logs.add(entry);
+    _logs.add(entry);
 
     // 限制日志数量
-    if (logs.length > maxLogs) {
-      logs.removeAt(0);
+    if (_logs.length > maxLogs) {
+      _logs.removeAt(0);
     }
+
+    // 通知监听者（添加后统一推送，避免 removeAt 产生二次事件）
+    _logsController.add(List.of(_logs));
 
     // 同时输出到控制台
     _printToConsole(entry);
@@ -67,7 +79,8 @@ class LogManager {
 
   /// 清空日志
   void clear() {
-    logs.clear();
+    _logs.clear();
+    _logsController.add(List.of(_logs));
     info('日志已清空');
   }
 

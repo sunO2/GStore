@@ -1,4 +1,5 @@
-import 'package:get/get.dart';
+import 'dart:async';
+
 import 'package:gstore/core/core.dart';
 
 /// 红点键（未来可扩展：新增枚举值即可）
@@ -29,10 +30,16 @@ class BadgeService {
   BadgeService();
 
   /// 红点数据（key -> 数量，>0 显示红点）
-  final RxMap<String, int> _badges = <String, int>{}.obs;
+  final Map<String, int> _badges = <String, int>{};
 
-  /// 红点数据（供 Obx 监听）
-  RxMap<String, int> get badges => _badges;
+  /// 红点变更通知（broadcast）
+  final _badgesController = StreamController<Map<String, int>>.broadcast();
+
+  /// 红点数据（只读访问）
+  Map<String, int> get badges => _badges;
+
+  /// 红点变更流（每次变更推送完整快照）
+  Stream<Map<String, int>> get badgesStream => _badgesController.stream;
 
   /// 获取指定红点数量
   int countOf(BadgeKey key) => _badges[key.code] ?? 0;
@@ -47,6 +54,7 @@ class BadgeService {
     } else {
       _badges[key.code] = count;
     }
+    _badgesController.add(Map.of(_badges));
   }
 
   /// 增加红点数量
@@ -57,11 +65,13 @@ class BadgeService {
   /// 清除指定红点
   void clearBadge(BadgeKey key) {
     _badges.remove(key.code);
+    _badgesController.add(Map.of(_badges));
   }
 
   /// 清空所有红点
   void clearAll() {
     _badges.clear();
+    _badgesController.add(Map.of(_badges));
   }
 
   /// 启动后检测所有红点来源
@@ -81,7 +91,7 @@ class BadgeService {
   void _subscribeUpdateManagerService() {
     if (_subscribed) return;
     _subscribed = true;
-    UpdateManagerService.instance.updateList.listen((list) {
+    UpdateManagerService.instance.updateListStream.listen((list) {
       setBadge(BadgeKey.appUpdate, list.length);
       appLog.info('BadgeService: 应用更新红点数量 = ${list.length}');
     });

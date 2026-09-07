@@ -1097,7 +1097,7 @@ class _DataUpdateTileState extends State<_DataUpdateTile> {
     // 红点流是 broadcast（仅推送变更、不重放当前值），先读现值再订阅，
     // 保证进入页面时红点状态正确且后续变更能刷新 leading。
     _hasDbBadge = BadgeService.instance.hasBadge(BadgeKey.dbUpdate);
-    _badgeSub = BadgeService.instance.badges.stream.listen((badges) {
+    _badgeSub = BadgeService.instance.badgesStream.listen((badges) {
       if (!mounted) return;
       setState(() => _hasDbBadge = badges[BadgeKey.dbUpdate.code] != null);
     });

@@ -2,7 +2,6 @@ import 'dart:io';
 import 'package:app_installer/app_installer.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
-import 'package:get/get.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:shizuku_api/shizuku_api.dart';

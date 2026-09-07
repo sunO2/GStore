@@ -8,8 +8,9 @@
 /// - 检测过程输出详细日志（onLog）与逐应用进度（onProgress），供更新页滚轮/图标/日志展示
 library;
 
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
-import 'package:get/get.dart';
 import 'package:installed_apps/installed_apps.dart';
 import 'package:gstore/core/aggregate/AppAddedDatabase.dart';
 import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
@@ -35,38 +36,93 @@ class UpdateManagerService {
   /// 测试可自由构造自建实例（行为与 GetX 时代一致）；生产统一走 [instance]
   UpdateManagerService();
 
+  // ===== 共享状态（纯 Dart + broadcast stream，替代旧 GetX Rx）=====
+  //
+  // 迁移约定：内部写操作一律走 `_xxx` 私有字段然后调用对应 `_notifyXxx()`
+  // （统一通知一次）。对外暴露：live getter（读当前值/迭代）+ `xxxStream`
+  // （订阅后续变更，broadcast：不重放历史）。
+
   /// 可更新应用列表（单次检测的完整明细）
-  final RxList<AppUpdateInfo> updateList = <AppUpdateInfo>[].obs;
+  final List<AppUpdateInfo> _updateList = [];
+  List<AppUpdateInfo> get updateList => _updateList;
+  final _updateListController = StreamController<List<AppUpdateInfo>>.broadcast();
+  Stream<List<AppUpdateInfo>> get updateListStream => _updateListController.stream;
+  void _notifyUpdateList() => _updateListController.add(List.of(_updateList));
 
   /// 是否正在检测
-  final RxBool isChecking = false.obs;
+  bool _isChecking = false;
+  bool get isChecking => _isChecking;
+  final _isCheckingController = StreamController<bool>.broadcast();
+  Stream<bool> get isCheckingStream => _isCheckingController.stream;
+  void _notifyIsChecking() => _isCheckingController.add(_isChecking);
 
-  /// 上次检测时间（内存态）
-  /// 上次检测时间（Rx：页面副标题/时间窗实时响应）
-  final Rx<DateTime?> lastCheckedAt = Rx<DateTime?>(null);
+  /// 上次检测时间（内存态；页面副标题/时间窗实时响应）
+  DateTime? _lastCheckedAt;
+  DateTime? get lastCheckedAt => _lastCheckedAt;
+  final _lastCheckedAtController =
+      StreamController<DateTime?>.broadcast();
+  Stream<DateTime?> get lastCheckedAtStream =>
+      _lastCheckedAtController.stream;
+  void _notifyLastCheckedAt() => _lastCheckedAtController.add(_lastCheckedAt);
 
   /// 检测日志（前台/后台检测同源产出，格式一致；持久化缓存，二次进入可查看）
-  final RxList<CheckLogEntry> checkLog = <CheckLogEntry>[].obs;
+  final List<CheckLogEntry> _checkLog = [];
+  List<CheckLogEntry> get checkLog => _checkLog;
+  final _checkLogController = StreamController<List<CheckLogEntry>>.broadcast();
+  Stream<List<CheckLogEntry>> get checkLogStream => _checkLogController.stream;
+  void _notifyCheckLog() => _checkLogController.add(List.of(_checkLog));
 
   // ===== 检测进度状态（前台/后台检测共享，页面订阅镜像展示）=====
 
   /// 当前检测进度（逐应用更新）
-  final Rxn<UpdateCheckProgress> currentProgress = Rxn<UpdateCheckProgress>();
+  UpdateCheckProgress? _currentProgress;
+  UpdateCheckProgress? get currentProgress => _currentProgress;
+  final _currentProgressController =
+      StreamController<UpdateCheckProgress?>.broadcast();
+  Stream<UpdateCheckProgress?> get currentProgressStream =>
+      _currentProgressController.stream;
+  void _notifyCurrentProgress() =>
+      _currentProgressController.add(_currentProgress);
 
   /// 待检测应用名列表（检测前一次性提供，供滚轮预填完整名单）
-  final RxList<String> checkList = <String>[].obs;
+  final List<String> _checkList = [];
+  List<String> get checkList => _checkList;
+  final _checkListController = StreamController<List<String>>.broadcast();
+  Stream<List<String>> get checkListStream => _checkListController.stream;
+  void _notifyCheckList() => _checkListController.add(List.of(_checkList));
 
   /// 已检测数量
-  final RxInt checkedCount = 0.obs;
+  int _checkedCount = 0;
+  int get checkedCount => _checkedCount;
+  final _checkedCountController = StreamController<int>.broadcast();
+  Stream<int> get checkedCountStream => _checkedCountController.stream;
+  void _notifyCheckedCount() => _checkedCountController.add(_checkedCount);
 
   /// 总应用数
-  final RxInt totalCount = 0.obs;
+  int _totalCount = 0;
+  int get totalCount => _totalCount;
+  final _totalCountController = StreamController<int>.broadcast();
+  Stream<int> get totalCountStream => _totalCountController.stream;
+  void _notifyTotalCount() => _totalCountController.add(_totalCount);
 
   /// 当前正在检测的应用名（滚轮展示）
-  final RxString checkingAppName = RxString('');
+  String _checkingAppName = '';
+  String get checkingAppName => _checkingAppName;
+  final _checkingAppNameController = StreamController<String>.broadcast();
+  Stream<String> get checkingAppNameStream =>
+      _checkingAppNameController.stream;
+  void _notifyCheckingAppName() =>
+      _checkingAppNameController.add(_checkingAppName);
 
   /// 当前正在检测的应用图标 URL（loading 叠加展示）
-  final RxnString checkingIconUrl = RxnString();
+  String? _checkingIconUrl;
+  String? get checkingIconUrl => _checkingIconUrl;
+  final _checkingIconUrlController =
+      StreamController<String?>.broadcast();
+  Stream<String?> get checkingIconUrlStream =>
+      _checkingIconUrlController.stream;
+  void _notifyCheckingIconUrl() =>
+      _checkingIconUrlController.add(_checkingIconUrl);
 
   /// 缓存恢复完成标志（页面进入时等待，避免恢复未完成误判"从未检测"）
   late final Future<void> cacheRestored = _restoreCache();
@@ -84,15 +140,24 @@ class UpdateManagerService {
     try {
       final cached = await UpdateCache.loadResults();
       if (cached.isNotEmpty) {
-        updateList.assignAll(cached);
+        _updateList
+          ..clear()
+          ..addAll(cached);
+        _notifyUpdateList();
         appLog.info('UpdateManager: 已恢复缓存结果 ${cached.length} 个可更新应用');
       }
       final last = await UpdateCache.lastCheckedAt();
-      if (last != null) lastCheckedAt.value = last;
+      if (last != null) {
+        _lastCheckedAt = last;
+        _notifyLastCheckedAt();
+      }
       // 恢复上次检测日志（二次进入检测页直接可见）
       final logs = await UpdateCache.loadLogs();
       if (logs.isNotEmpty) {
-        checkLog.assignAll(logs);
+        _checkLog
+          ..clear()
+          ..addAll(logs);
+        _notifyCheckLog();
         appLog.info('UpdateManager: 已恢复检测日志 ${logs.length} 条');
       }
     } catch (e) {
@@ -105,7 +170,7 @@ class UpdateManagerService {
   /// 不能因时间窗跳过而导致启动后看不到可更新应用
   Future<void> ensureChecked({bool force = false}) async {
     // 锁：检测中直接返回（不重复、不排队）
-    if (isChecking.value) return;
+    if (isChecking) return;
 
     // 时间窗：非强制、已有结果、缓存有效 → 跳过
     if (!force && updateList.isNotEmpty && await _isCacheValid()) return;
@@ -123,19 +188,22 @@ class UpdateManagerService {
     void Function(CheckLogLevel level, String message)? onLog,
     void Function(List<String> appNames)? onCheckList,
   }) async {
-    if (isChecking.value) return; // 并发锁
-    isChecking.value = true;
+    if (isChecking) return; // 并发锁
+    _isChecking = true;
+    _notifyIsChecking();
 
     void log(CheckLogLevel level, String msg) {
       appLog.debug('[UpdateManager] $msg');
       // 统一收集（前台页面回调 + 内存流 + 持久化，保证前后台格式一致）
-      checkLog.add(CheckLogEntry(level: level, text: msg));
+      _checkLog.add(CheckLogEntry(level: level, text: msg));
+      _notifyCheckLog();
       onLog?.call(level, msg);
     }
 
     try {
       // 新一轮检测：清空历史日志，开始提示统一由 manager 产出
-      checkLog.clear();
+      _checkLog.clear();
+      _notifyCheckLog();
       log(CheckLogLevel.info, '开始检测应用更新...');
 
       final aggregator = AppAggregatorManager.instance;
@@ -163,8 +231,12 @@ class UpdateManagerService {
       }
       onCheckList?.call(appNames);
       // 共享状态：待检测名单/总数（页面订阅镜像，后台检测同样产出）
-      checkList.assignAll(appNames);
-      totalCount.value = total;
+      _checkList
+        ..clear()
+        ..addAll(appNames);
+      _notifyCheckList();
+      _totalCount = total;
+      _notifyTotalCount();
       log(CheckLogLevel.info, '已添加应用共 $total 个');
 
       final newUpdateList = <AppUpdateInfo>[];
@@ -196,12 +268,16 @@ class UpdateManagerService {
         }
       }
 
-      updateList.assignAll(newUpdateList);
-      lastCheckedAt.value = DateTime.now();
+      _updateList
+        ..clear()
+        ..addAll(newUpdateList);
+      _notifyUpdateList();
+      _lastCheckedAt = DateTime.now();
+      _notifyLastCheckedAt();
       // 持久化检测时间 + 结果 + 日志（跨重启时间窗 + 结果展示 + 日志回看）
-      await UpdateCache.saveCheckedAt(lastCheckedAt.value!);
+      await UpdateCache.saveCheckedAt(_lastCheckedAt!);
       await UpdateCache.saveResults(newUpdateList);
-      await UpdateCache.saveLogs(List.of(checkLog));
+      await UpdateCache.saveLogs(List.of(_checkLog));
       log(CheckLogLevel.update, '检测完成：发现 ${newUpdateList.length} 个可更新应用');
       if (newUpdateList.isEmpty) {
         log(CheckLogLevel.none, '所有已添加应用均已是最新版本');
@@ -210,18 +286,24 @@ class UpdateManagerService {
       appLog.error('UpdateManager: 检测更新失败 - $e');
       onLog?.call(CheckLogLevel.error, '检测失败: $e');
     } finally {
-      isChecking.value = false;
+      _isChecking = false;
+      _notifyIsChecking();
     }
   }
 
-  /// 发布进度到共享 Rx（前台/后台检测同源，页面订阅镜像）
+  /// 发布进度到共享状态（前台/后台检测同源，页面订阅镜像）
   void _publishProgress(UpdateCheckProgress progress) {
-    currentProgress.value = progress;
-    checkedCount.value = progress.index + 1;
-    totalCount.value = progress.total;
-    checkingAppName.value = progress.appName;
+    _currentProgress = progress;
+    _notifyCurrentProgress();
+    _checkedCount = progress.index + 1;
+    _notifyCheckedCount();
+    _totalCount = progress.total;
+    _notifyTotalCount();
+    _checkingAppName = progress.appName;
+    _notifyCheckingAppName();
     if (progress.iconUrl != null && progress.iconUrl!.isNotEmpty) {
-      checkingIconUrl.value = progress.iconUrl;
+      _checkingIconUrl = progress.iconUrl;
+      _notifyCheckingIconUrl();
     }
   }
 
@@ -379,22 +461,24 @@ class UpdateManagerService {
           installedVersion.isNotEmpty &&
           compareVersion(installedVersion, info.latestVersion) == 1) {
         // 版本已提升 → 从列表移除
-        updateList.removeWhere((e) => e.appId == appId);
-        await UpdateCache.saveResults(List.of(updateList));
+        _updateList.removeWhere((e) => e.appId == appId);
+        _notifyUpdateList();
+        await UpdateCache.saveResults(List.of(_updateList));
         appLog.info('UpdateManager: 应用已更新，移除可更新项 - $appId');
       } else {
         appLog.info('UpdateManager: 应用安装后版本未提升，保留可更新项 - $appId');
       }
     } catch (e) {
       // 复核失败（如插件不可用）→ 直接移除（调用方确已触发安装）
-      updateList.removeWhere((e) => e.appId == appId);
-      await UpdateCache.saveResults(List.of(updateList));
+      _updateList.removeWhere((e) => e.appId == appId);
+      _notifyUpdateList();
+      await UpdateCache.saveResults(List.of(_updateList));
     }
   }
 
   /// 缓存是否有效（距上次检测未超时间窗）
   Future<bool> _isCacheValid() async {
-    final last = lastCheckedAt.value ?? await UpdateCache.lastCheckedAt();
+    final last = _lastCheckedAt ?? await UpdateCache.lastCheckedAt();
     if (last == null) return false;
     return DateTime.now().difference(last).inHours < cacheValidHours;
   }
@@ -402,8 +486,68 @@ class UpdateManagerService {
   /// 重置状态（测试用）
   @visibleForTesting
   void resetForTest() {
-    updateList.clear();
-    isChecking.value = false;
-    lastCheckedAt.value = null;
+    _updateList.clear();
+    _notifyUpdateList();
+    _isChecking = false;
+    _notifyIsChecking();
+    _lastCheckedAt = null;
+    _notifyLastCheckedAt();
+  }
+
+  /// 测试注入：批量设置共享状态并通知（fake UpdateManager 回放用）。
+  @visibleForTesting
+  void debugSetState({
+    List<AppUpdateInfo>? updateList,
+    bool? isChecking,
+    DateTime? lastCheckedAt,
+    List<CheckLogEntry>? checkLog,
+    List<String>? checkList,
+    int? checkedCount,
+    int? totalCount,
+    String? checkingAppName,
+    String? checkingIconUrl,
+  }) {
+    if (updateList != null) {
+      _updateList
+        ..clear()
+        ..addAll(updateList);
+      _notifyUpdateList();
+    }
+    if (isChecking != null) {
+      _isChecking = isChecking;
+      _notifyIsChecking();
+    }
+    if (lastCheckedAt != null) {
+      _lastCheckedAt = lastCheckedAt;
+      _notifyLastCheckedAt();
+    }
+    if (checkLog != null) {
+      _checkLog
+        ..clear()
+        ..addAll(checkLog);
+      _notifyCheckLog();
+    }
+    if (checkList != null) {
+      _checkList
+        ..clear()
+        ..addAll(checkList);
+      _notifyCheckList();
+    }
+    if (checkedCount != null) {
+      _checkedCount = checkedCount;
+      _notifyCheckedCount();
+    }
+    if (totalCount != null) {
+      _totalCount = totalCount;
+      _notifyTotalCount();
+    }
+    if (checkingAppName != null) {
+      _checkingAppName = checkingAppName;
+      _notifyCheckingAppName();
+    }
+    if (checkingIconUrl != null) {
+      _checkingIconUrl = checkingIconUrl;
+      _notifyCheckingIconUrl();
+    }
   }
 }

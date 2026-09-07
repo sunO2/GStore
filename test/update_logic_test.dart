@@ -11,26 +11,17 @@ import 'package:gstore/page/update/logic.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// 假 UpdateManager：跳过真实渠道检测，回放固定结果并触发全部回调
-/// （UpdateNotifier 通过 UpdateManagerService.instance 查找，Get.put 注册后即可替换）
+/// （UpdateNotifier 通过 UpdateManagerService.instance 查找，注册后即可替换）
 class _FakeUpdateManager extends UpdateManagerService {
   _FakeUpdateManager(this.items);
 
   /// 本次检测的结果
   final List<AppUpdateInfo> items;
 
-  final RxList<AppUpdateInfo> fakeUpdateList = <AppUpdateInfo>[].obs;
-  final RxBool fakeIsChecking = false.obs;
-
   /// 回调是否被接线（验证 UpdateNotifier → UpdateManager 的连线）
   bool checkListFired = false;
   bool progressFired = false;
   bool logFired = false;
-
-  @override
-  RxList<AppUpdateInfo> get updateList => fakeUpdateList;
-
-  @override
-  RxBool get isChecking => fakeIsChecking;
 
   @override
   void onInit() {
@@ -44,19 +35,16 @@ class _FakeUpdateManager extends UpdateManagerService {
     void Function(CheckLogLevel level, String message)? onLog,
     void Function(List<String> appNames)? onCheckList,
   }) async {
-    fakeIsChecking.value = true;
-    // 共享状态 Rx（页面订阅镜像，与真实 manager 行为一致）
-    checkList.assignAll(['示例应用']);
-    checkedCount.value = 1;
-    totalCount.value = 1;
-    checkingAppName.value = '示例应用';
-    checkLog
-        .assignAll([CheckLogEntry(level: CheckLogLevel.info, text: '检测中...')]);
-    currentProgress.value = const UpdateCheckProgress(
-      appId: 'com.example.app',
-      appName: '示例应用',
-      index: 0,
-      total: 1,
+    debugSetState(isChecking: true);
+    // 共享状态（页面订阅镜像，与真实 manager 行为一致）
+    debugSetState(
+      checkList: ['示例应用'],
+      checkedCount: 1,
+      totalCount: 1,
+      checkingAppName: '示例应用',
+      checkLog: [
+        CheckLogEntry(level: CheckLogLevel.info, text: '检测中...'),
+      ],
     );
     onCheckList?.call(['示例应用']);
     checkListFired = onCheckList != null;
@@ -69,8 +57,7 @@ class _FakeUpdateManager extends UpdateManagerService {
     progressFired = onProgress != null;
     onLog?.call(CheckLogLevel.info, '检测中...');
     logFired = onLog != null;
-    fakeUpdateList.assignAll(items);
-    fakeIsChecking.value = false;
+    debugSetState(updateList: items, isChecking: false);
   }
 }
 
@@ -160,9 +147,12 @@ void main() {
   test('订阅前已恢复的缓存日志/结果：订阅后立即同步显示（回归）', () async {
     final fake = _FakeUpdateManager([]);
     // 模拟缓存已在页面订阅前恢复（启动时 BadgeService 触发恢复）
-    fake.checkLog
-        .assignAll([CheckLogEntry(level: CheckLogLevel.info, text: '历史日志')]);
-    fake.lastCheckedAt.value = DateTime.now();
+    fake.debugSetState(
+      checkLog: [
+        CheckLogEntry(level: CheckLogLevel.info, text: '历史日志'),
+      ],
+      lastCheckedAt: DateTime.now(),
+    );
     ModuleManager.instance.bind<UpdateManagerService>(fake);
     ModuleManager.instance.bind<BadgeService>(BadgeService());
 

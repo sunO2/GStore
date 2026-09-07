@@ -17,14 +17,6 @@ class _FakeUpdateManager extends UpdateManagerService {
   _FakeUpdateManager(this.items);
 
   final List<AppUpdateInfo> items;
-  final RxList<AppUpdateInfo> fakeUpdateList = <AppUpdateInfo>[].obs;
-  final RxBool fakeIsChecking = false.obs;
-
-  @override
-  RxList<AppUpdateInfo> get updateList => fakeUpdateList;
-
-  @override
-  RxBool get isChecking => fakeIsChecking;
 
   @override
   void onInit() {}
@@ -36,12 +28,15 @@ class _FakeUpdateManager extends UpdateManagerService {
     void Function(CheckLogLevel level, String message)? onLog,
     void Function(List<String> appNames)? onCheckList,
   }) async {
-    checkList.assignAll(['示例应用']);
-    checkedCount.value = 1;
-    totalCount.value = 1;
-    checkLog.assignAll(
-        [CheckLogEntry(level: CheckLogLevel.info, text: '检测完成：发现 1 个可更新应用')]);
-    fakeUpdateList.assignAll(items);
+    debugSetState(
+      checkList: ['示例应用'],
+      checkedCount: 1,
+      totalCount: 1,
+      checkLog: [
+        CheckLogEntry(level: CheckLogLevel.info, text: '检测完成：发现 1 个可更新应用'),
+      ],
+      updateList: items,
+    );
   }
 }
 
@@ -72,12 +67,14 @@ void main() {
     SharedPreferences.setMockInitialValues({});
     final fake = _FakeUpdateManager([_sampleInfo()]);
     // 模拟缓存已恢复：有可更新结果 + 历史日志 + 上次检测时间
-    fake.fakeUpdateList.assignAll([_sampleInfo()]);
-    fake.checkLog.assignAll([
-      CheckLogEntry(level: CheckLogLevel.update, text: '示例应用：发现更新 2.0.0'),
-      CheckLogEntry(level: CheckLogLevel.info, text: '检测完成：发现 1 个可更新应用'),
-    ]);
-    fake.lastCheckedAt.value = DateTime.now();
+    fake.debugSetState(
+      updateList: [_sampleInfo()],
+      checkLog: [
+        CheckLogEntry(level: CheckLogLevel.update, text: '示例应用：发现更新 2.0.0'),
+        CheckLogEntry(level: CheckLogLevel.info, text: '检测完成：发现 1 个可更新应用'),
+      ],
+      lastCheckedAt: DateTime.now(),
+    );
     ModuleManager.instance.bind<UpdateManagerService>(fake);
     ModuleManager.instance.bind<BadgeService>(BadgeService());
 
@@ -104,10 +101,12 @@ void main() {
   testWidgets('无更新缓存：进入直接显示检测完成页（含历史日志）', (tester) async {
     SharedPreferences.setMockInitialValues({});
     final fake = _FakeUpdateManager([]);
-    fake.checkLog.assignAll([
-      CheckLogEntry(level: CheckLogLevel.none, text: '所有已添加应用均已是最新版本'),
-    ]);
-    fake.lastCheckedAt.value = DateTime.now();
+    fake.debugSetState(
+      checkLog: [
+        CheckLogEntry(level: CheckLogLevel.none, text: '所有已添加应用均已是最新版本'),
+      ],
+      lastCheckedAt: DateTime.now(),
+    );
     ModuleManager.instance.bind<UpdateManagerService>(fake);
     ModuleManager.instance.bind<BadgeService>(BadgeService());
 

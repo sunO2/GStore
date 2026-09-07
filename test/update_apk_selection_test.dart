@@ -44,14 +44,6 @@ class _FakeUpdateManager extends UpdateManagerService {
   _FakeUpdateManager(this.items);
 
   final List<AppUpdateInfo> items;
-  final RxList<AppUpdateInfo> fakeUpdateList = <AppUpdateInfo>[].obs;
-  final RxBool fakeIsChecking = false.obs;
-
-  @override
-  RxList<AppUpdateInfo> get updateList => fakeUpdateList;
-
-  @override
-  RxBool get isChecking => fakeIsChecking;
 
   @override
   void onInit() {
@@ -65,7 +57,7 @@ class _FakeUpdateManager extends UpdateManagerService {
     void Function(CheckLogLevel level, String message)? onLog,
     void Function(List<String> appNames)? onCheckList,
   }) async {
-    fakeUpdateList.assignAll(items);
+    debugSetState(updateList: items);
   }
 }
 
@@ -310,8 +302,10 @@ class _FakePathProvider extends PathProviderPlatform {
 
 Future<void> _pumpUpdatePage(WidgetTester tester, AppUpdateInfo info) async {
   final fake = _FakeUpdateManager([info]);
-  fake.fakeUpdateList.assignAll([info]);
-  fake.lastCheckedAt.value = DateTime.now();
+  fake.debugSetState(
+    updateList: [info],
+    lastCheckedAt: DateTime.now(),
+  );
   // 服务单例经 ModuleManager 解析：bind 让 UpdateManagerService.instance 命中 fake
   ModuleManager.instance.bind<UpdateManagerService>(fake);
   ModuleManager.instance.bind<BadgeService>(BadgeService());

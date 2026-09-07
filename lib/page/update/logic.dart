@@ -62,11 +62,11 @@ class UpdateNotifier extends AutoDisposeNotifier<UpdateState> {
     // - 从未检测过 → 自动检测一次
     await manager.cacheRestored;
     if (_disposed) return;
-    if (manager.isChecking.value) {
+    if (manager.isChecking) {
       state = state.copyWith(isLoading: true);
       return;
     }
-    if (manager.lastCheckedAt.value != null) {
+    if (manager.lastCheckedAt != null) {
       state = state.copyWith(
         updateList: List.of(manager.updateList),
         showLog: false,
@@ -82,7 +82,7 @@ class UpdateNotifier extends AutoDisposeNotifier<UpdateState> {
   void _subscribeManager(UpdateManagerService manager) {
     if (_subscribed) return;
     _subscribed = true;
-    _subs.add(manager.updateList.listen((list) {
+    _subs.add(manager.updateListStream.listen((list) {
       if (_disposed) return;
       state = state.copyWith(updateList: List.of(list));
       // 结果同步后计算各应用默认选中（偏好匹配；无偏好不设，视图回退 latestDownload）
@@ -91,53 +91,53 @@ class UpdateNotifier extends AutoDisposeNotifier<UpdateState> {
       BadgeService.instance.setBadge(BadgeKey.appUpdate, list.length);
     }));
     // 检测日志统一由 UpdateManager 产出（前台/后台同源，含持久化恢复）
-    _subs.add(manager.checkLog.listen((logs) {
+    _subs.add(manager.checkLogStream.listen((logs) {
       if (_disposed) return;
       state = state.copyWith(checkLog: List.of(logs));
     }));
     // 进度镜像：isLoading 随 isChecking（后台检测中进入页面自动显示检测页）
-    _subs.add(manager.isChecking.listen((checking) {
+    _subs.add(manager.isCheckingStream.listen((checking) {
       if (_disposed) return;
       state = state.copyWith(isLoading: checking);
     }));
-    _subs.add(manager.checkList.listen((list) {
+    _subs.add(manager.checkListStream.listen((list) {
       if (_disposed) return;
       state = state.copyWith(checkList: List.of(list));
     }));
-    _subs.add(manager.checkedCount.listen((v) {
+    _subs.add(manager.checkedCountStream.listen((v) {
       if (_disposed) return;
       state = state.copyWith(checkedCount: v);
     }));
-    _subs.add(manager.totalCount.listen((v) {
+    _subs.add(manager.totalCountStream.listen((v) {
       if (_disposed) return;
       state = state.copyWith(totalCount: v);
     }));
-    _subs.add(manager.checkingAppName.listen((v) {
+    _subs.add(manager.checkingAppNameStream.listen((v) {
       if (_disposed) return;
       state = state.copyWith(checkingAppName: v);
     }));
-    _subs.add(manager.checkingIconUrl.listen((v) {
+    _subs.add(manager.checkingIconUrlStream.listen((v) {
       if (_disposed) return;
       state = state.copyWith(checkingIconUrl: v);
     }));
-    _subs.add(manager.currentProgress.listen((p) {
+    _subs.add(manager.currentProgressStream.listen((p) {
       if (_disposed) return;
       if (p != null) state = state.copyWith(checkIndex: p.index);
     }));
-    // RxList/Rx 的 listen 不回调初始值：缓存可能已在订阅前恢复
+    // broadcast stream 的 listen 不回调初始值：缓存可能已在订阅前恢复
     // （如启动时 BadgeService 触发恢复），订阅后必须显式同步当前状态
     state = state.copyWith(
       updateList: List.of(manager.updateList),
       checkLog: List.of(manager.checkLog),
       checkList: List.of(manager.checkList),
-      checkedCount: manager.checkedCount.value,
-      totalCount: manager.totalCount.value,
-      checkingAppName: manager.checkingAppName.value,
-      checkingIconUrl: manager.checkingIconUrl.value,
-      isLoading: manager.isChecking.value,
+      checkedCount: manager.checkedCount,
+      totalCount: manager.totalCount,
+      checkingAppName: manager.checkingAppName,
+      checkingIconUrl: manager.checkingIconUrl,
+      isLoading: manager.isChecking,
     );
-    if (manager.currentProgress.value != null) {
-      state = state.copyWith(checkIndex: manager.currentProgress.value!.index);
+    if (manager.currentProgress != null) {
+      state = state.copyWith(checkIndex: manager.currentProgress!.index);
     }
     unawaited(_syncDefaultSelections(List.of(manager.updateList)));
   }
@@ -149,7 +149,7 @@ class UpdateNotifier extends AutoDisposeNotifier<UpdateState> {
   /// - 手动刷新：checkUpdates(force: true) 强制重新检测
   Future<void> checkUpdates({bool force = false}) async {
     final manager = _manager;
-    if (manager.isChecking.value) return;
+    if (manager.isChecking) return;
 
     // 幂等订阅（_initialize 已订阅时跳过；直接调用场景兜底）
     _subscribeManager(manager);

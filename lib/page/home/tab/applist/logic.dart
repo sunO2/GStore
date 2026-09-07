@@ -83,7 +83,7 @@ class ApplistNotifier extends AutoDisposeNotifier<ApplistState> {
     // 订阅更新红点
     try {
       final bs = BadgeService.instance;
-      _badgeSub = bs.badges.listen((_) {
+      _badgeSub = bs.badgesStream.listen((_) {
         if (_disposed) return;
         state = state.copyWith(
           appUpdateBadge: bs.countOf(BadgeKey.appUpdate),
@@ -120,7 +120,7 @@ class ApplistNotifier extends AutoDisposeNotifier<ApplistState> {
 
     // 订阅 UpdateManager：可更新状态变化 → 刷新红点/分区/排序
     try {
-      _updateSub = UpdateManagerService.instance.updateList.listen((_) {
+      _updateSub = UpdateManagerService.instance.updateListStream.listen((_) {
         _syncUpdateStates();
         _applyFilter();
       });

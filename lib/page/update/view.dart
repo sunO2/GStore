@@ -33,7 +33,7 @@ class UpdateManager extends ConsumerWidget {
           children: [
             const Text('应用更新'),
             Builder(builder: (context) {
-              final last = UpdateManagerService.instance.lastCheckedAt.value;
+              final last = UpdateManagerService.instance.lastCheckedAt;
               final subtitle = state.isLoading
                   ? '检测中...'
                   : formatLastChecked(last, DateTime.now());
