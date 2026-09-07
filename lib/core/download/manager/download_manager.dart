@@ -327,9 +327,9 @@ class DownloadManager extends GetxService implements IDownloadService {
             // 直接落库即可，无需额外节流。
             current = current.copyWith(
               received: ev.received,
-              total: current.total > 0
-                  ? current.total
-                  : (ev.total ?? current.total),
+              // 服务器真实 total 优先：渠道元数据（如 vivo KB 换算）可能
+              // 与实际字节数不一致，进度分母统一用引擎探测到的真实大小。
+              total: ev.total ?? current.total,
               status: DownloadStatusEnum.downloading,
               speedBps: speed,
               updatedAt: now,
@@ -349,7 +349,10 @@ class DownloadManager extends GetxService implements IDownloadService {
             if (_pausedIds.contains(id)) continue;
             final now = DateTime.now();
             current = current.copyWith(
-              received: current.total > 0 ? current.total : ev.total,
+              // 合并入口：received/total 统一为服务器真实大小（引擎在 merge 前
+              // 已按服务器 total 下完全部分片），避免元数据大小参与进度与校验。
+              received: ev.total,
+              total: ev.total,
               status: DownloadStatusEnum.downloading,
               updatedAt: now,
             );
@@ -382,22 +385,31 @@ class DownloadManager extends GetxService implements IDownloadService {
           }
         }
 
-        if (!_isValidFile(task.filePath, current.total)) {
+        // 完成收尾：以磁盘真值为准对账。引擎层已保证字节数（分片合并长度=
+        // 服务器 total、单流 tempLength>=effectiveTotal），这里只做损坏性校验
+        // （存在/非空/APK 魔数），不再拿渠道元数据 total（如 vivo KB 换算误差）
+        // 与磁盘长度比对——否则会误删已完整下载的 APK。
+        final finalFile = File(task.filePath);
+        final diskLength =
+            finalFile.existsSync() ? finalFile.lengthSync() : 0;
+        if (!_isValidFile(task.filePath, diskLength)) {
           await repository.save(current.copyWith(
             status: DownloadStatusEnum.failed,
             error: '下载文件校验失败',
             updatedAt: DateTime.now(),
           ));
           try {
-            await File(task.filePath).delete();
+            await finalFile.delete();
           } catch (_) {}
           DownloadNotificationService.instance.onDownloadError(
               notifId, notifTitle);
           throw StateError('下载文件校验失败');
         }
+        // 大小对账：以磁盘实际字节数为准收口（收到的即真实的）。
+        current = current.copyWith(total: diskLength, received: diskLength);
 
         final done = current.copyWith(
-          received: current.total,
+          received: diskLength,
           status: DownloadStatusEnum.completed,
           speedBps: 0,
           etaSec: 0,
