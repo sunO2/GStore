@@ -9,6 +9,7 @@ import 'package:gstore/core/service/apk_library_analyzer.dart';
 import 'package:gstore/core/service/apk_source_service.dart';
 import 'package:gstore/core/service/install_manager.dart';
 import 'package:gstore/core/rust/FdroidRustRepoManager.dart';
+import 'package:gstore/page/installed_apps/sdk_analysis_page.dart';
 import 'package:installed_apps/installed_apps.dart';
 import 'package:installed_apps/app_info.dart' as installed;
 
@@ -298,7 +299,8 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
     await _refreshShizukuState();
   }
 
-  /// 分析应用内嵌的第三方 SDK（原生库 .so 文件名匹配）
+  /// 分析应用内嵌的第三方 SDK（原生 .so / DEX 类名 / Manifest 组件）
+  /// 跳转独立分析页（LibChecker 式分组展示），替代原对话框方案
   Future<void> _analyzeSdk(installed.AppInfo app) async {
     final sourceDir = await ApkSourceService.instance.getSourceDir(app.packageName);
     if (sourceDir == null || !mounted) {
@@ -309,67 +311,11 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
       'package': app.packageName,
       'sourceDir': sourceDir,
     });
-
-    // 分析对话框（含 loading）：原生 .so + DEX 类名 + Manifest 组件三路并行，合并展示
-    final analysisFuture = () async {
-      final results = await (
-        ApkLibraryAnalyzer.instance.analyzeNativeLibraries(sourceDir),
-        ApkLibraryAnalyzer.instance.analyzeDexLibraries(sourceDir),
-        ApkLibraryAnalyzer.instance.analyzeComponents(sourceDir),
-      ).wait;
-      final all = <LibraryHit>[
-        ...results.$1,
-        ...results.$2,
-        ...results.$3,
-      ]..sort((a, b) => a.label.compareTo(b.label));
-      return all;
-    }();
-
-    AppDialogs.showDialog(
-      title: 'SDK 分析',
-      content: FutureBuilder<List<LibraryHit>>(
-        future: analysisFuture,
-        builder: (context, snapshot) {
-          if (snapshot.connectionState != ConnectionState.done) {
-            return const Padding(
-              padding: AppSpacing.allXL,
-              child: AppLoading(size: AppLoadingSize.medium),
-            );
-          }
-          final hits = snapshot.data ?? const <LibraryHit>[];
-          if (hits.isEmpty) {
-            return Text(
-              snapshot.hasError ? '分析失败' : '未检测到已知 SDK',
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
-            );
-          }
-          return Wrap(
-            spacing: AppSpacing.sm,
-            runSpacing: AppSpacing.sm,
-            children: [
-              for (final hit in hits)
-                Chip(
-                  label: Text(hit.label),
-                  avatar: Icon(
-                    hit is NativeLibraryHit
-                        ? Icons.memory
-                        : hit is DexLibraryHit
-                            ? Icons.code
-                            : Icons.view_module,
-                    size: AppTypography.iconSM,
-                    color: hit.isRegex
-                        ? Theme.of(context).colorScheme.tertiary
-                        : Theme.of(context).colorScheme.primary,
-                  ),
-                ),
-            ],
-          );
-        },
+    if (!mounted) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => SdkAnalysisPage(app: app, sourceDir: sourceDir),
       ),
-      confirmText: '关闭',
-      cancelText: null,
     );
   }
 
