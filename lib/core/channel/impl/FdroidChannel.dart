@@ -55,7 +55,7 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
 
   /// 获取当前仓库地址（动态；模块下线时使用默认地址）
   String get _currentRepoUrl {
-    return _repoManager?.currentSource.value?.repoUrl ?? 'https://f-droid.org/repo';
+    return _repoManager?.currentSource?.repoUrl ?? 'https://f-droid.org/repo';
   }
 
   FdroidChannel({
@@ -1383,7 +1383,7 @@ class _FdroidSearchWidgetState extends State<_FdroidSearchWidget> {
                 // app.icon 现在已经是完整URL（由 searchApps 构造）
                 // 如果为空字符串，使用默认
                 final icon = app.icon.isEmpty
-                    ? '${widget.channel._repoManager?.currentSource.value?.repoUrl ?? 'https://f-droid.org/repo'}/icons/${app.appId}.png'
+                    ? '${widget.channel._repoManager?.currentSource?.repoUrl ?? 'https://f-droid.org/repo'}/icons/${app.appId}.png'
                     : app.icon;
                 return icon;
               }(),

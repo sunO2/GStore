@@ -1,26 +1,25 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:get/get.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/fdroid/FdroidRepoManager.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/page/fdroid_repo/logic.dart';
 
-/// FdroidRepoLogic 注册表注入 + 下线降级测试（todo 13）
+/// FdroidRepoNotifier 注册表注入 + 下线降级测试（todo 13）
 ///
 /// 验证：
 /// - `ModuleManager.get<IFdroidRepoService>()` 未绑定（fdroid 模块下线）时
-///   onInit 不订阅不抛、置「F-Droid 模块未启用」错误提示（页面空状态）；
+///   build 不订阅不抛、置「F-Droid 模块未启用」错误提示（页面空状态）；
 ///   loadRepository / searchApps 短路提示不抛
-/// - 服务已绑定（真实 FdroidRepoManager 实例）时不降级：onInit 正常订阅、
+/// - 服务已绑定（真实 FdroidRepoManager 实例）时不降级：start 正常初始化、
 ///   不置「未启用」提示
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   setUp(() async {
     await ModuleManager.instance.clear();
-    Get.reset();
     // 页面内不读 secure storage；此处仅为防御性 mock（fake-async 环境下防挂起）
     const channel = MethodChannel('plugins.it_nomads.com/flutter_secure_storage');
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
@@ -36,19 +35,30 @@ void main() {
     return tester.element(find.byType(Scaffold));
   }
 
+  /// 在 ProviderScope 中读取 notifier 并触发初始化
+  FdroidRepoNotifier buildNotifier(ProviderContainer container) {
+    final notifier = container.read(fdroidRepoProvider.notifier);
+    // 触发 build（同步完成），等价页面挂载时首次 watch
+    container.read(fdroidRepoProvider);
+    return notifier;
+  }
+
   group('模块未绑定（get<IFdroidRepoService>() null）→ 安全降级', () {
-    test('onInit：短路置「F-Droid 模块未启用」错误提示，不订阅不抛', () {
-      final logic = FdroidRepoLogic();
-      Get.put(logic);
-      expect(logic.state.errorMessage.value, contains('未启用'));
+    test('build：短路置「F-Droid 模块未启用」错误提示，不订阅不抛', () {
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final notifier = buildNotifier(container);
+
+      expect(notifier.state.errorMessage, contains('未启用'));
     });
 
     testWidgets('loadRepository：提示「F-Droid 模块未启用」不抛', (tester) async {
       await pumpApp(tester);
 
-      final logic = FdroidRepoLogic();
-      Get.put(logic);
-      unawaited(logic.loadRepository());
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final notifier = buildNotifier(container);
+      unawaited(notifier.loadRepository());
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
 
@@ -58,29 +68,32 @@ void main() {
     testWidgets('searchApps：提示「F-Droid 模块未启用」且不置搜索状态', (tester) async {
       await pumpApp(tester);
 
-      final logic = FdroidRepoLogic();
-      Get.put(logic);
-      unawaited(logic.searchApps('termux'));
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final notifier = buildNotifier(container);
+      unawaited(notifier.searchApps('termux'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
 
       expect(find.text('F-Droid 模块未启用'), findsWidgets);
-      expect(logic.state.isSearching.value, isFalse);
-      expect(logic.state.searchResults, isEmpty);
+      expect(notifier.state.isSearching, isFalse);
+      expect(notifier.state.searchResults, isEmpty);
     });
   });
 
   group('服务已绑定（FdroidRepoManager）→ 不降级', () {
-    test('onInit：绑定真实管理器时不置「未启用」提示', () async {
+    test('start：绑定真实管理器时不置「未启用」提示', () async {
       ModuleManager.instance
           .bind<IFdroidRepoService>(FdroidRepoManager.instance);
 
-      final logic = FdroidRepoLogic();
-      Get.put(logic);
-      // 等待异步 _initData 完成（测试环境无 Rust FFI，内部已捕获降级）
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final notifier = buildNotifier(container);
+      await notifier.start();
+      // 等待异步初始化完成（测试环境无 Rust FFI，内部已捕获降级）
       await Future<void>.delayed(const Duration(milliseconds: 200));
 
-      expect(logic.state.errorMessage.value, isNot(contains('未启用')));
+      expect(notifier.state.errorMessage, isNot(contains('未启用')));
     });
   });
 }

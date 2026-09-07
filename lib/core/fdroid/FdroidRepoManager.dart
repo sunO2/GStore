@@ -1,7 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
-import 'package:get/get.dart';
 import 'package:gstore/core/config/config_registry.dart';
 import 'package:gstore/core/config/config_service.dart';
 import 'package:gstore/core/fdroid/FdroidRepoModels.dart';
@@ -13,7 +12,10 @@ import 'package:path_provider/path_provider.dart';
 
 /// F-Droid 仓库管理器
 /// 使用 Rust 实现提供更快的下载和解析速度
-class FdroidRepoManager implements IFdroidRepoService {
+///
+/// 响应式状态承载：以 [ChangeNotifier] 暴露源列表/当前源/加载进度等字段，
+/// 任何字段变更均调用 [notifyListeners]（页面 Notifier 订阅同步展示）。
+class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
   static FdroidRepoManager? _instance;
 
   static FdroidRepoManager get instance {
@@ -24,20 +26,41 @@ class FdroidRepoManager implements IFdroidRepoService {
   /// 测试可自由构造自建实例；生产统一走 [instance]
   FdroidRepoManager();
 
+  FdroidSource? _currentSource;
+
   /// 当前激活的源
-  final Rx<FdroidSource?> currentSource = Rx<FdroidSource?>(null);
+  FdroidSource? get currentSource => _currentSource;
+
+  final List<FdroidSource> _sources = [];
 
   /// 已配置的源列表
-  final RxList<FdroidSource> sources = <FdroidSource>[].obs;
+  List<FdroidSource> get sources => _sources;
+
+  bool _isLoading = false;
 
   /// 是否正在加载数据
-  final RxBool isLoading = false.obs;
+  bool get isLoading => _isLoading;
+
+  double _loadingProgress = 0.0;
 
   /// 加载进度 (0-1)
-  final RxDouble loadingProgress = 0.0.obs;
+  double get loadingProgress => _loadingProgress;
+
+  String? _errorMessage;
 
   /// 最后的错误信息
-  final RxnString errorMessage = RxnString('');
+  String? get errorMessage => _errorMessage;
+
+  /// 在列表中查找首个满足条件的元素（无则返回 null）。
+  static FdroidSource? _firstWhereOrNull(
+    List<FdroidSource> list,
+    bool Function(FdroidSource) test,
+  ) {
+    for (final s in list) {
+      if (test(s)) return s;
+    }
+    return null;
+  }
 
   /// 初始化管理器
   Future<void> initialize() async {
@@ -60,35 +83,41 @@ class FdroidRepoManager implements IFdroidRepoService {
       // 设置默认源（如果没有保存的源，或者只有官方源，则添加清华镜像）
       if (sources.isEmpty || (sources.length == 1 && sources.first.id == 'official')) {
         debugPrint('FdroidRepoManager: 没有自定义源，添加清华镜像和官方源');
-        sources.clear();
-        sources.add(FdroidSource.tunaMirror); // 添加清华镜像（优先级更高）
-        sources.add(FdroidSource.official); // 添加官方源作为备份
+        _sources.clear();
+        notifyListeners();
+        _sources.add(FdroidSource.tunaMirror); // 添加清华镜像（优先级更高）
+        _sources.add(FdroidSource.official); // 添加官方源作为备份
+        notifyListeners();
         await _saveSources();
       }
 
       // 设置当前源
-      final enabledSource = sources.firstWhereOrNull((s) => s.enabled);
+      final enabledSource = _firstWhereOrNull(_sources, (s) => s.enabled);
       debugPrint('FdroidRepoManager: 找到启用源: $enabledSource');
 
       // 尝试加载上次选中的源
       final lastSourceId =
           await ConfigService.instance.getT<String>(ConfigKeys.lastSourceId);
       if (lastSourceId != null && lastSourceId.isNotEmpty) {
-        final lastSource = sources.firstWhereOrNull((s) => s.id == lastSourceId);
+        final lastSource = _firstWhereOrNull(_sources, (s) => s.id == lastSourceId);
         if (lastSource != null) {
-          currentSource.value = lastSource;
+          _currentSource = lastSource;
+          notifyListeners();
           appLog.info('FdroidRepoManager: 恢复上次选中的源: $lastSource');
         } else {
-          currentSource.value = enabledSource;
+          _currentSource = enabledSource;
+          notifyListeners();
         }
       } else {
-        currentSource.value = enabledSource;
+        _currentSource = enabledSource;
+        notifyListeners();
       }
 
-      appLog.info('FdroidRepoManager: 初始化完成，当前源: ${currentSource.value}');
+      appLog.info('FdroidRepoManager: 初始化完成，当前源: $currentSource');
     } catch (e) {
       appLog.error('FdroidRepoManager: 初始化失败 - $e');
-      errorMessage.value = '初始化失败: $e';
+      _errorMessage = '初始化失败: $e';
+      notifyListeners();
       rethrow;
     }
   }
@@ -104,16 +133,20 @@ class FdroidRepoManager implements IFdroidRepoService {
         final loadedSources = sourcesList
             .map((json) => FdroidSource.fromJson(json as Map<String, dynamic>))
             .toList();
-        sources.clear();
-        sources.addAll(loadedSources);
+        _sources
+          ..clear()
+          ..addAll(loadedSources);
+        notifyListeners();
         appLog.info('FdroidRepoManager: 已加载 ${sources.length} 个保存的源');
       } else {
-        sources.clear();
+        _sources.clear();
+        notifyListeners();
         debugPrint('FdroidRepoManager: 没有保存的源配置');
       }
     } catch (e) {
       appLog.error('FdroidRepoManager: 加载源配置失败 - $e');
-      sources.clear();
+      _sources.clear();
+      notifyListeners();
     }
   }
 
@@ -134,17 +167,19 @@ class FdroidRepoManager implements IFdroidRepoService {
 
   /// 切换源
   Future<void> switchSource(String sourceId) async {
-    final source = sources.firstWhereOrNull((s) => s.id == sourceId);
+    final source = _firstWhereOrNull(_sources, (s) => s.id == sourceId);
     if (source == null) {
       throw Exception('未找到源: $sourceId');
     }
 
     if (!sources.contains(source)) {
-      sources.add(source);
+      _sources.add(source);
+      notifyListeners();
       await _saveSources();
     }
 
-    currentSource.value = source;
+    _currentSource = source;
+    notifyListeners();
 
     // 保存当前选中的源
     await ConfigService.instance.set(
@@ -160,12 +195,12 @@ class FdroidRepoManager implements IFdroidRepoService {
 
   /// 获取源列表
   List<FdroidSource> getSources() {
-    return sources.toList();
+    return List<FdroidSource>.from(_sources);
   }
 
   /// 获取当前源
   FdroidSource? getCurrentSource() {
-    return currentSource.value;
+    return _currentSource;
   }
 
   /// 加载仓库数据
@@ -173,47 +208,54 @@ class FdroidRepoManager implements IFdroidRepoService {
     debugPrint('FdroidRepoManager: loadRepository 被调用');
 
     // 防止重复加载
-    if (isLoading.value) {
+    if (_isLoading) {
       debugPrint('FdroidRepoManager: 已在加载中，跳过重复请求');
       return;
     }
 
-    final source = currentSource.value;
+    final source = _currentSource;
     if (source == null) {
       appLog.error('FdroidRepoManager: 源为 null，返回错误');
-      errorMessage.value = '请先选择一个源';
+      _errorMessage = '请先选择一个源';
+      notifyListeners();
       return;
     }
 
     appLog.info('FdroidRepoManager: 开始加载源: ${source.name} (${source.repoUrl})');
 
-    isLoading.value = true;
-    errorMessage.value = '';
-    loadingProgress.value = 0.0;
+    _isLoading = true;
+    notifyListeners();
+    _errorMessage = '';
+    _loadingProgress = 0.0;
+    notifyListeners();
 
     try {
       debugPrint('FdroidRepoManager: 使用 Rust 后端下载...');
-      loadingProgress.value = 0.5;
+      _loadingProgress = 0.5;
+      notifyListeners();
 
       await rust.FdroidRustRepoManager.downloadRepository(
         repoUrl: source.repoUrl,
       );
 
-      loadingProgress.value = 1.0;
+      _loadingProgress = 1.0;
+      notifyListeners();
       appLog.info('FdroidRepoManager: Rust 后端下载完成');
       appLog.info('FdroidRepoManager: 仓库加载完成');
     } catch (e) {
       appLog.error('FdroidRepoManager: 加载仓库失败 - $e');
-      errorMessage.value = '加载失败: $e';
+      _errorMessage = '加载失败: $e';
+      notifyListeners();
       rethrow;
     } finally {
-      isLoading.value = false;
+      _isLoading = false;
+      notifyListeners();
     }
   }
 
   /// 搜索应用
   Future<List<Map<String, dynamic>>> searchApps(String keyword, {int limit = 50}) async {
-    final source = currentSource.value;
+    final source = _currentSource;
     if (source == null) {
       throw Exception('请先选择一个源');
     }
@@ -276,7 +318,7 @@ class FdroidRepoManager implements IFdroidRepoService {
 
   /// 精确查询应用（通过 packageName）
   Future<Map<String, dynamic>?> getAppByPackageName(String packageName) async {
-    final source = currentSource.value;
+    final source = _currentSource;
     if (source == null) {
       throw Exception('请先选择一个源');
     }
@@ -325,7 +367,7 @@ class FdroidRepoManager implements IFdroidRepoService {
 
   /// 获取所有应用
   Future<List<Map<String, dynamic>>> getAllApps() async {
-    final source = currentSource.value;
+    final source = _currentSource;
     if (source == null) {
       throw Exception('请先选择一个源');
     }
@@ -423,20 +465,23 @@ class FdroidRepoManager implements IFdroidRepoService {
 
   /// 添加自定义源
   Future<void> addSource(FdroidSource source) async {
-    sources.add(source);
+    _sources.add(source);
+    notifyListeners();
     await _saveSources();
   }
 
   /// 移除源
   Future<void> removeSource(String sourceId) async {
-    sources.removeWhere((s) => s.id == sourceId);
+    _sources.removeWhere((s) => s.id == sourceId);
+    notifyListeners();
     await _saveSources();
 
     // 如果删除的是当前源，切换到第一个可用源
-    if (currentSource.value?.id == sourceId) {
-      final nextSource = sources.firstWhereOrNull((s) => s.enabled);
+    if (_currentSource?.id == sourceId) {
+      final nextSource = _firstWhereOrNull(_sources, (s) => s.enabled);
       if (nextSource != null) {
-        currentSource.value = nextSource;
+        _currentSource = nextSource;
+        notifyListeners();
       }
     }
   }

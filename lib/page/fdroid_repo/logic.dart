@@ -2,7 +2,7 @@
 library;
 
 import 'package:flutter/material.dart';
-import 'package:get/get.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/fdroid/FdroidRepoManager.dart';
 import 'package:gstore/core/fdroid/FdroidRepoModels.dart';
@@ -11,10 +11,8 @@ import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/page/fdroid_repo/state.dart';
 
-/// F-Droid 仓库管理业务逻辑
-class FdroidRepoLogic extends GetxController {
-  final FdroidRepoState state = FdroidRepoState();
-
+/// F-Droid 仓库管理业务逻辑（Riverpod 版）。
+class FdroidRepoNotifier extends Notifier<FdroidRepoState> {
   final TextEditingController searchController = TextEditingController();
 
   /// F-Droid 仓库服务（注册表注入：fdroid 模块下线时为 null → 软降级）
@@ -25,70 +23,72 @@ class FdroidRepoLogic extends GetxController {
   FdroidRepoManager? get _manager =>
       _service is FdroidRepoManager ? _service as FdroidRepoManager : null;
 
+  /// 是否已执行过 [start]（防止重复初始化）
+  bool _started = false;
+
   @override
-  void onInit() {
-    super.onInit();
+  FdroidRepoState build() {
     final manager = _manager;
     if (manager == null) {
       // fdroid 模块未启用 → 页面降级为空状态提示
-      state.errorMessage.value = 'F-Droid 模块未启用';
-      return;
+      return const FdroidRepoState(errorMessage: 'F-Droid 模块未启用');
     }
-    _initData();
-
-    // 监听加载进度
-    ever(manager.loadingProgress, (progress) {
-      state.loadingProgress.value = progress * 100;
+    // 订阅管理器响应式字段（源列表/加载进度/错误信息等）同步到页面状态
+    manager.addListener(_syncFromManager);
+    ref.onDispose(() {
+      manager.removeListener(_syncFromManager);
+      searchController.dispose();
     });
-
-    // 监听加载状态
-    ever(manager.isLoading, (loading) {
-      state.isLoading.value = loading;
-    });
-
-    // 监听错误信息
-    ever(manager.errorMessage, (error) {
-      if (error?.isNotEmpty == true) {
-        state.errorMessage.value = error;
-      }
-    });
-
-    // 监听源列表变化
-    ever(manager.sources, (sources) {
-      state.sources.value = sources;
-    });
-
-    // 监听当前源变化
-    ever(manager.currentSource, (source) {
-      state.currentSource.value = source;
-    });
+    return FdroidRepoState(
+      sources: List.of(manager.sources),
+      currentSource: manager.currentSource,
+      isLoading: manager.isLoading,
+      loadingProgress: manager.loadingProgress * 100,
+      errorMessage: manager.errorMessage?.isNotEmpty == true
+          ? manager.errorMessage
+          : null,
+    );
   }
 
-  @override
-  void onClose() {
-    searchController.dispose();
-    super.onClose();
+  /// 页面挂载后初始化（view initState 调用，等价原 GetX onInit）。
+  /// 幂等：重复调用自动跳过（模块重新启用后可再次触发初始化）。
+  Future<void> start() async {
+    if (_started) return;
+    _started = true;
+    await _initData();
+  }
+
+  /// 将管理器的响应式字段同步到页面状态。
+  void _syncFromManager() {
+    final manager = _manager;
+    if (manager == null) return;
+    final error = manager.errorMessage;
+    state = state.copyWith(
+      sources: List.of(manager.sources),
+      currentSource: manager.currentSource,
+      isLoading: manager.isLoading,
+      loadingProgress: manager.loadingProgress * 100,
+      errorMessage: error?.isNotEmpty == true ? error : null,
+    );
   }
 
   /// 初始化数据
   Future<void> _initData() async {
     final manager = _manager;
     if (manager == null) {
-      state.errorMessage.value = 'F-Droid 模块未启用';
+      state = state.copyWith(errorMessage: 'F-Droid 模块未启用');
       return;
     }
+    // 首帧后管理器字段已就绪，先同步一次
+    _syncFromManager();
     try {
-      // 加载源列表
-      state.sources.value = manager.getSources();
-      state.currentSource.value = manager.getCurrentSource();
-
       // 加载统计信息
       await _loadStatistics();
 
       // 检查更新
       await _checkUpdate();
     } catch (e) {
-      state.errorMessage.value = '初始化失败: $e';
+      state = state.copyWith(errorMessage: '初始化失败: $e');
     }
   }
 
@@ -97,7 +97,7 @@ class FdroidRepoLogic extends GetxController {
     final manager = _manager;
     if (manager == null) return;
     try {
-      state.statistics.value = await manager.getStatistics();
+      state = state.copyWith(statistics: await manager.getStatistics());
     } catch (e) {
       appLog.error('加载统计信息失败: $e');
     }
@@ -109,11 +109,12 @@ class FdroidRepoLogic extends GetxController {
     if (manager == null) return;
     try {
       final result = await manager.checkIncrementalUpdate();
-      if (result != null) {
-        state.hasUpdate.value = result['hasUpdate'] ?? false;
-        state.currentVersion.value = result['currentVersion'] ?? 0;
-        state.latestVersion.value = result['latestVersion'] ?? 0;
-      }
+      if (result == null) return; // Rust 实现暂不支持增量更新
+      state = state.copyWith(
+        hasUpdate: result['hasUpdate'] ?? false,
+        currentVersion: result['currentVersion'] ?? 0,
+        latestVersion: result['latestVersion'] ?? 0,
+      );
     } catch (e) {
       appLog.error('检查更新失败: $e');
     }
@@ -127,28 +128,28 @@ class FdroidRepoLogic extends GetxController {
       AppDialogs.showError('F-Droid 模块未启用');
       return;
     }
-    debugPrint('FdroidRepoLogic: loadRepository 被调用');
-    debugPrint('FdroidRepoLogic: state.currentSource.value = ${state.currentSource.value}');
-    debugPrint('FdroidRepoLogic: _manager.currentSource.value = ${manager?.currentSource.value}');
+    debugPrint('FdroidRepoNotifier: loadRepository 被调用');
+    debugPrint('FdroidRepoNotifier: state.currentSource = ${state.currentSource}');
+    debugPrint('FdroidRepoNotifier: _manager.currentSource = ${manager?.currentSource}');
 
-    if (state.currentSource.value == null) {
-      debugPrint('FdroidRepoLogic: currentSource 为 null，尝试从 manager 同步');
-      state.currentSource.value = manager?.currentSource.value;
+    if (state.currentSource == null) {
+      debugPrint('FdroidRepoNotifier: currentSource 为 null，尝试从 manager 同步');
+      state = state.copyWith(currentSource: manager?.currentSource);
     }
 
-    if (state.currentSource.value == null) {
+    if (state.currentSource == null) {
       AppDialogs.showError('请先选择一个源');
       return;
     }
 
     try {
-      appLog.info('FdroidRepoLogic: 开始加载仓库: ${state.currentSource.value?.repoUrl}');
+      appLog.info('FdroidRepoNotifier: 开始加载仓库: ${state.currentSource?.repoUrl}');
       await service.loadRepository();
 
       await _loadStatistics();
       AppDialogs.showSuccess('仓库数据加载完成');
     } catch (e) {
-      appLog.error('FdroidRepoLogic: 加载失败 - $e');
+      appLog.error('FdroidRepoNotifier: 加载失败 - $e');
       AppDialogs.showError('加载失败: $e');
     }
   }
@@ -200,12 +201,13 @@ class FdroidRepoLogic extends GetxController {
   }
 
   /// 添加自定义源
-  Future<void> addSource() async {
+  Future<void> addSource(BuildContext context) async {
     final nameController = TextEditingController();
     final urlController = TextEditingController();
 
-    final result = await Get.dialog(
-      Dialog(
+    final result = await showDialog<Map<String, String>>(
+      context: context,
+      builder: (dialogContext) => Dialog(
         child: Padding(
           padding: AppSpacing.allLG,
           child: Column(
@@ -236,7 +238,7 @@ class FdroidRepoLogic extends GetxController {
                 children: [
                   Expanded(
                     child: TextButton(
-                      onPressed: () => Get.back(),
+                      onPressed: () => Navigator.of(dialogContext).pop(),
                       child: const Text('取消'),
                     ),
                   ),
@@ -250,7 +252,8 @@ class FdroidRepoLogic extends GetxController {
                           AppDialogs.showError('请填写完整信息');
                           return;
                         }
-                        Get.back(result: {'name': name, 'url': url});
+                        Navigator.of(dialogContext)
+                            .pop({'name': name, 'url': url});
                       },
                       child: const Text('添加'),
                     ),
@@ -262,6 +265,8 @@ class FdroidRepoLogic extends GetxController {
         ),
       ),
     );
+    nameController.dispose();
+    urlController.dispose();
 
     if (result == null) return;
 
@@ -303,19 +308,19 @@ class FdroidRepoLogic extends GetxController {
   /// 搜索应用
   Future<void> searchApps(String keyword) async {
     if (keyword.trim().isEmpty) {
-      state.searchResults.clear();
+      state = state.copyWith(searchResults: const []);
       return;
     }
 
     final service = _service;
     if (service == null) {
-      state.searchResults.clear();
+      state = state.copyWith(searchResults: const []);
       AppDialogs.showError('F-Droid 模块未启用');
       return;
     }
 
     try {
-      state.isSearching.value = true;
+      state = state.copyWith(isSearching: true);
 
       final results = await service.searchApps(keyword, limit: 50);
       // 将 Map 转换为 FdroidApp 对象
@@ -333,11 +338,11 @@ class FdroidRepoLogic extends GetxController {
         lastUpdated: map['lastUpdated'],
       )).toList();
 
-      state.searchResults.value = fdroidApps;
+      state = state.copyWith(searchResults: fdroidApps);
     } catch (e) {
       AppDialogs.showError('搜索失败: $e');
     } finally {
-      state.isSearching.value = false;
+      state = state.copyWith(isSearching: false);
     }
   }
 
@@ -373,3 +378,9 @@ class FdroidRepoLogic extends GetxController {
     AppDialogs.showInfo('应用详情功能开发中');
   }
 }
+
+/// F-Droid 仓库管理页 provider。
+final fdroidRepoProvider =
+    NotifierProvider<FdroidRepoNotifier, FdroidRepoState>(
+  FdroidRepoNotifier.new,
+);
