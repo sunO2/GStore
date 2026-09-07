@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gstore/core/logger/LogManager.dart';
 
@@ -26,25 +28,40 @@ final autoScrollProvider = NotifierProvider<AutoScrollNotifier, bool>(
   AutoScrollNotifier.new,
 );
 
-/// 全局日志流（订阅 LogManager 的 broadcast 流）。
+/// 日志条目快照（订阅 LogManager 的 broadcast 流）。
 ///
-/// LogManager 由全局单例持有。`logsStream` 是 broadcast 流——只在写入新日志时
-/// 推送、不会向新订阅者重放当前已有内容。若直接暴露该 stream，首次进入页面时
-/// 拿不到已存在的日志（`StreamProvider` 停在 loading，列表为空）。
+/// 历史教训：StreamProvider + `async*` 种子流（先 yield 快照再 `yield*`
+/// logsStream）会把后续变更事件丢弃——Riverpod 将单订阅生成器转 broadcast
+/// 订阅后，`yield*` 转发的事件不进入 StreamProvider 的 state，导致页面内
+/// 新增日志/清空不实时刷新（重进页面因重新订阅快照才显示）。
 ///
-/// 因此这里包一层种子流：订阅建立后先发送一次当前日志快照，再透传后续变更。
-final logEntriesStreamProvider = StreamProvider<List<LogEntry>>((ref) {
-  return _logSnapshotStream();
-});
+/// 因此改为 Notifier：build 时先取当前日志快照，再订阅 logsStream，每次
+/// 变更同步更新 state——页面实时刷新稳定可靠。
+class LogEntriesNotifier extends Notifier<List<LogEntry>> {
+  StreamSubscription<List<LogEntry>>? _sub;
 
-Stream<List<LogEntry>> _logSnapshotStream() async* {
-  yield List.unmodifiable(LogManager.instance.logs);
-  yield* LogManager.instance.logsStream;
+  @override
+  List<LogEntry> build() {
+    // 先取当前快照（避免订阅前已存在的日志丢失）
+    final initial = List<LogEntry>.from(LogManager.instance.logs);
+    // 订阅后续变更（broadcast：每次写入推送完整列表）
+    _sub = LogManager.instance.logsStream.listen((logs) {
+      state = List<LogEntry>.from(logs);
+    });
+    ref.onDispose(() => _sub?.cancel());
+    return initial;
+  }
 }
 
-/// 按当前筛选级别过滤日志（组合 logs 流 + 筛选状态）。
+/// 全局日志快照（实时响应 LogManager 写入/清空）。
+final logEntriesProvider =
+    NotifierProvider<LogEntriesNotifier, List<LogEntry>>(
+  LogEntriesNotifier.new,
+);
+
+/// 按当前筛选级别过滤日志（组合日志快照 + 筛选状态）。
 final filteredLogsProvider = Provider<List<LogEntry>>((ref) {
-  final logs = ref.watch(logEntriesStreamProvider).value ?? const [];
+  final logs = ref.watch(logEntriesProvider);
   final level = ref.watch(logViewerFilterProvider);
   if (level == LogLevel.all) return logs;
   return logs.where((log) => log.level == level).toList();
