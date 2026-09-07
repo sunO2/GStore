@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
@@ -116,11 +117,20 @@ void main() {
   ) async {
     final logic = DetailLogic();
     Get.put(logic);
-    logic.state.detailInfo.value = detail;
+    logic.state.detailInfo = detail;
 
-    await tester.pumpWidget(const GetMaterialApp(home: DetailPage()));
-    // onReady（post-frame）已把 errorMessage 置 '缺少参数' → 清掉，正文生效
-    logic.state.errorMessage.value = '';
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          // 页面经 detailStateProvider 取状态：注入测试 logic 同款状态，
+          // 使 DetailPage 渲染的 detailInfo 与测试注入的同一实例。
+          detailStateProvider.overrideWith((ref) => logic.state),
+        ],
+        child: const GetMaterialApp(home: DetailPage()),
+      ),
+    );
+    // 页面 start（post-frame microtask）已把 errorMessage 置 '缺少参数' → 清掉，正文生效
+    logic.state.errorMessage = '';
     await tester.pump();
     return logic;
   }
@@ -159,7 +169,7 @@ void main() {
 
     final logic = await pumpDetailPage(tester, detail);
     // 加载中态：downloads 尚未注入 sections、列表仍空 → 骨架占位
-    logic.state.downloadsLoading.value = true;
+    logic.state.downloadsLoading = true;
     await tester.pump();
 
     // 下载骨架（loading 分支）仍在渲染

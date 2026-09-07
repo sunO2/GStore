@@ -80,8 +80,8 @@ class StandardDetailChannel implements IDetailChannel {
       return;
     }
     _loadInFlight = true;
-    state.isLoadingDetail.value = true;
-    state.errorMessage.value = '';
+    state.isLoadingDetail = true;
+    state.errorMessage = '';
 
     try {
       // 非分块渠道（Vivo/Fdroid/Http 等）：回退旧流程 getAppDetail 一次性完整注入。
@@ -105,7 +105,7 @@ class StandardDetailChannel implements IDetailChannel {
 
       // 基础 detailInfo 就绪即注入（头部/应用信息卡立即可渲染）
       final effectiveBase = _buildEffectiveBaseDetailInfo(basic);
-      state.detailInfo.value = _ProgressiveDetailInfo(effectiveBase);
+      state.detailInfo = _ProgressiveDetailInfo(effectiveBase);
 
       // packageName 就绪即执行安装检测（插件调用失败已容忍，不影响加载流程）
       await _checkInstalledState(state, effectiveBase.packageName?.trim());
@@ -117,15 +117,15 @@ class StandardDetailChannel implements IDetailChannel {
         _loadReadme(state),
       ]);
     } catch (e) {
-      state.errorMessage.value = '加载详情失败: $e';
+      state.errorMessage = '加载详情失败: $e';
     } finally {
       _loadInFlight = false;
-      state.isLoadingDetail.value = false;
+      state.isLoadingDetail = false;
       // 三区块 loading 兜底复位（共享出口）：legacy 失败路径经此处复位；
       // 渐进路径各路 finally 已复位，幂等无副作用。
-      state.downloadsLoading.value = false;
-      state.readmeLoading.value = false;
-      state.statisticsLoading.value = false;
+      state.downloadsLoading = false;
+      state.readmeLoading = false;
+      state.statisticsLoading = false;
     }
   }
 
@@ -168,11 +168,11 @@ class StandardDetailChannel implements IDetailChannel {
     }
 
     // base 即时注入：getAppDetail 未完成前基础信息已可渲染，区块显示骨架
-    state.detailInfo.value =
+    state.detailInfo =
         _ProgressiveDetailInfo(_buildEffectiveBaseDetailInfo(basic));
-    state.downloadsLoading.value = true;
-    state.readmeLoading.value = true;
-    state.statisticsLoading.value = true;
+    state.downloadsLoading = true;
+    state.readmeLoading = true;
+    state.statisticsLoading = true;
 
     // 两段式②：获取详情信息（完成后一次性完整替换）
     final result = await channel.getAppDetail(
@@ -183,10 +183,10 @@ class StandardDetailChannel implements IDetailChannel {
       throw Exception(result.error ?? 'Failed to load app detail');
     }
 
-    state.detailInfo.value = result.data;
-    state.downloadsLoading.value = false;
-    state.readmeLoading.value = false;
-    state.statisticsLoading.value = false;
+    state.detailInfo = result.data;
+    state.downloadsLoading = false;
+    state.readmeLoading = false;
+    state.statisticsLoading = false;
 
     // 详情加载后，使用详情中的 packageName 检测安装状态
     await _checkInstalledState(state, result.data?.packageName.trim());
@@ -246,8 +246,8 @@ class StandardDetailChannel implements IDetailChannel {
     try {
       final isInstalled = await InstalledApps.isAppInstalled(packageToCheck);
       if (isInstalled == true) {
-        state.installInfo.value = await InstalledApps.getAppInfo(packageToCheck);
-        appLog.info('StandardDetailChannel: ✓ 应用已安装 - ${state.installInfo.value?.packageName}');
+        state.installInfo = await InstalledApps.getAppInfo(packageToCheck);
+        appLog.info('StandardDetailChannel: ✓ 应用已安装 - ${state.installInfo?.packageName}');
       } else {
         appLog.info('StandardDetailChannel: ✗ 应用未安装 - "$packageToCheck"');
       }
@@ -258,16 +258,16 @@ class StandardDetailChannel implements IDetailChannel {
 
   /// 区块数据到达后对当前 detailInfo 做 copyWith 增补（渐进组装，每次注入即渲染对应区块）
   void _updateDetailInfo(AppDetailInfo Function(AppDetailInfo) transform) {
-    final current = _state?.detailInfo.value;
+    final current = _state?.detailInfo;
     if (current is _ProgressiveDetailInfo) {
-      // 新包装实例触发 Rx 通知
-      _state!.detailInfo.value = _ProgressiveDetailInfo(transform(current.inner));
+      // 新包装实例触发通知
+      _state!.detailInfo = _ProgressiveDetailInfo(transform(current.inner));
     }
   }
 
   /// 分块加载：统计（apiList → extra.apiData，供 buildStatTags / createContext 解析）
   Future<void> _loadStatistics(DetailState state) async {
-    state.statisticsLoading.value = true;
+    state.statisticsLoading = true;
     try {
       final result = await channel.fetchStatistics(request.appId);
       if (result.success && result.data != null) {
@@ -300,18 +300,18 @@ class StandardDetailChannel implements IDetailChannel {
     } catch (e) {
       appLog.error('StandardDetailChannel: 加载统计失败（独立降级，不阻塞其他区块） - $e');
     } finally {
-      state.statisticsLoading.value = false;
+      state.statisticsLoading = false;
     }
   }
 
   /// 分块加载：下载列表（state.downloads + detailInfo.downloads/version + sections）
   Future<void> _loadDownloads(DetailState state) async {
-    state.downloadsLoading.value = true;
+    state.downloadsLoading = true;
     try {
       final result = await channel.fetchDownloads(request.appId);
       if (result.success) {
         final downloads = result.data ?? const <DownloadInfo>[];
-        state.downloads.value = downloads;
+        state.downloads = downloads;
         _updateDetailInfo((inner) {
           final sections = [...inner.sections];
           // 与原 _buildSections 语义一致：有下载项才声明下载区块
@@ -331,18 +331,18 @@ class StandardDetailChannel implements IDetailChannel {
     } catch (e) {
       appLog.error('StandardDetailChannel: 加载下载列表失败（独立降级，不阻塞其他区块） - $e');
     } finally {
-      state.downloadsLoading.value = false;
+      state.downloadsLoading = false;
     }
   }
 
   /// 分块加载：README（state.readme + detailInfo.extra.readme + sections）
   Future<void> _loadReadme(DetailState state) async {
-    state.readmeLoading.value = true;
+    state.readmeLoading = true;
     try {
       final result = await channel.fetchReadme(request.appId);
       if (result.success && result.data != null) {
         final readme = result.data!;
-        state.readme.value = readme;
+        state.readme = readme;
         _updateDetailInfo((inner) {
           final extra = Map<String, dynamic>.from(inner.extra);
           extra['readme'] = readme;
@@ -357,7 +357,7 @@ class StandardDetailChannel implements IDetailChannel {
     } catch (e) {
       appLog.error('StandardDetailChannel: 加载 README 失败（独立降级，不阻塞其他区块） - $e');
     } finally {
-      state.readmeLoading.value = false;
+      state.readmeLoading = false;
     }
   }
 
@@ -368,7 +368,7 @@ class StandardDetailChannel implements IDetailChannel {
   /// - GitHub 渠道：apiData.full_name 或 appId（owner/repo）
   /// - LocalDb 渠道：extra 中的 repositoryName + developer（GitHub 仓库类型应用）
   ({String owner, String repo})? _githubRepo() {
-    final detail = _state?.detailInfo.value;
+    final detail = _state?.detailInfo;
 
     if (request.channel == ChannelType.github) {
       // 优先从 apiData.full_name 解析
@@ -413,7 +413,7 @@ class StandardDetailChannel implements IDetailChannel {
           onTap: callbacks.submitAppMetadata,
         ),
       // 项目主页（打开项目的 GitHub 地址 / 项目详情地址）
-      if (_state?.detailInfo.value?.projectUrl != null)
+      if (_state?.detailInfo?.projectUrl != null)
         DetailAction(
           label: '项目主页',
           icon: Icons.language,

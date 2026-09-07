@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_html/flutter_html.dart';
-import 'package:get/get.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/design/design_tokens.dart';
@@ -14,134 +14,57 @@ import 'package:installed_apps/installed_apps.dart';
 import 'logic.dart';
 import 'state.dart';
 
-class DetailPage extends StatefulWidget {
+class DetailPage extends ConsumerStatefulWidget {
   const DetailPage({super.key});
 
   @override
-  State<DetailPage> createState() => _DetailPageState();
+  ConsumerState<DetailPage> createState() => _DetailPageState();
 }
 
-class _DetailPageState extends State<DetailPage> {
-  /// 页面逻辑。
+class _DetailPageState extends ConsumerState<DetailPage> {
+  /// 页面逻辑（每 push 独立实例）。
   ///
-  /// 详情页是"每 push 独立状态"语义：若复用 GetX 容器里上一页残留的实例
-  /// （MaterialApp.router 下路由 pop 不触发 GetX 生命周期清理），切到另一
-  /// 应用详情会复用到上一应用的缓存数据（显示旧详情）。故本页 dispose 时
-  /// 显式 Get.delete，保证下一次 push 拿到全新实例。
-  late final DetailLogic logic;
-  late final DetailState state;
+  /// 详情页是"每 push 独立状态"语义：Riverpod 下 [detailStateProvider] 为
+  /// autoDispose，页面 pop、状态 provider 无监听即自动销毁，下一次 push 拿到
+  /// 全新状态（等价旧实现「dispose 时显式删除控制器」）。
+  DetailLogic? _logicCached;
+  DetailLogic get logic => _logicCached!;
 
   @override
   void initState() {
     super.initState();
-    logic = Get.put(DetailLogic());
-    state = logic.state;
+    // 与状态 provider（autoDispose ChangeNotifier 状态）绑定同一实例；
+    // 页面自身持有逻辑实例，start 顺延到首帧后（等价原 GetX onReady post-frame）。
+    _logicCached = DetailLogic(state: ref.read(detailStateProvider));
+    Future.microtask(() {
+      if (!mounted) return;
+      logic.start();
+    });
   }
 
   @override
   void dispose() {
-    Get.delete<DetailLogic>();
+    _logicCached?.shutdown();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    // go_router extra（原 Get.arguments）→ logic（onReady 前设置，幂等）
+    final logic = this.logic;
+    // 任一状态字段变更（channel 写入 / loadDetail / setActionBusy 等）
+    // → ref.watch 触发整页重建，等价原 Obx 覆盖范围。
+    final state = ref.watch(detailStateProvider);
+    // go_router extra（等价原路由 arguments）→ logic（start 前设置，幂等）
     logic.setRouteExtra(goRouterExtraOf(context));
+    // UI 上下文注入（channel 回调驱动选择器/弹窗时消费）
+    logic.setContext(context);
 
     return Scaffold(
       appBar: _buildAppBar(context, logic, state),
-      body: Obx(() {
-        // 有错误
-        if (state.errorMessage.value.isNotEmpty) {
-          return _buildErrorBody(context, logic, state);
-        }
-
-        // 直接显示内容（移除大块 loading，避免布局跳动）
-        return _buildBody(context, logic, state);
-      }),
-      floatingActionButton: Obx(() {
-        final data = state.currentDownload.value;
-        if (data == null) return const SizedBox();
-
-        // FAB 状态机：按 DownloadStatusEnum 路由，下载中禁用、终态可点。
-        // 已完成任务可安装，失败可重试，暂停可继续，已取消无操作。
-        switch (data.status) {
-          // 下载中 / 连接中 / 排队中：禁用进度环
-          case DownloadStatusEnum.downloading:
-          case DownloadStatusEnum.connecting:
-          case DownloadStatusEnum.queued:
-            final total = data.total;
-            final count = data.received;
-            // 防止除零错误
-            final hasTotal = total > 0;
-            final progress =
-                hasTotal ? (count / total).clamp(0.0, 1.0) : null;
-            final percent =
-                hasTotal ? ((count / total) * 100).toInt().clamp(0, 100) : 0;
-            return FloatingActionButton(
-              onPressed: null,
-              child: Stack(
-                alignment: AlignmentDirectional.center,
-                children: [
-                  CircularProgressIndicator(
-                    value: progress,
-                  ),
-                  Text(
-                    hasTotal ? "$percent" : "...",
-                    style: Theme.of(context).textTheme.labelSmall,
-                  )
-                ],
-              ),
-            );
-
-          // 已下载完成：可点击安装
-          case DownloadStatusEnum.completed:
-            return FloatingActionButton.extended(
-              onPressed: () => logic.installCurrentTask(data),
-              backgroundColor: Theme.of(context).colorScheme.primaryContainer,
-              foregroundColor:
-                  Theme.of(context).colorScheme.onPrimaryContainer,
-              icon: const Icon(Icons.system_update_alt),
-              label: Text(
-                '安装',
-                style: Theme.of(context).textTheme.labelLarge,
-              ),
-            );
-
-          // 下载失败：可点击重试（断点续传）
-          case DownloadStatusEnum.failed:
-            return FloatingActionButton.extended(
-              onPressed: () => logic.retryCurrentTask(data),
-              backgroundColor: Theme.of(context).colorScheme.tertiaryContainer,
-              foregroundColor:
-                  Theme.of(context).colorScheme.onTertiaryContainer,
-              icon: const Icon(Icons.refresh),
-              label: Text(
-                '重试',
-                style: Theme.of(context).textTheme.labelLarge,
-              ),
-            );
-
-          // 下载暂停：可点击继续
-          case DownloadStatusEnum.paused:
-            return FloatingActionButton.extended(
-              onPressed: () => logic.resumeCurrentTask(data),
-              backgroundColor: Theme.of(context).colorScheme.secondaryContainer,
-              foregroundColor:
-                  Theme.of(context).colorScheme.onSecondaryContainer,
-              icon: const Icon(Icons.play_arrow),
-              label: Text(
-                '继续',
-                style: Theme.of(context).textTheme.labelLarge,
-              ),
-            );
-
-          // 已取消：无操作可做
-          case DownloadStatusEnum.cancelled:
-            return const SizedBox();
-        }
-      }),
+      body: state.errorMessage.isNotEmpty
+          ? _buildErrorBody(context, logic, state)
+          : _buildBody(context, logic, state),
+      floatingActionButton: _buildFab(context, logic, state),
     );
   }
 
@@ -151,7 +74,7 @@ class _DetailPageState extends State<DetailPage> {
     DetailState state,
   ) {
     return AppBar(
-      title: Obx(() {
+      title: Builder(builder: (context) {
         final title = state.displayName;
         if (title.isEmpty) return const SizedBox();
 
@@ -166,25 +89,25 @@ class _DetailPageState extends State<DetailPage> {
         // 更多：分类标签编辑 + 动作宫格（完善应用信息 / 项目主页等）；
         // JS 慢操作（切版本/切 UA 等）进行中 → 忙碌 spinner 禁点，
         // 消除「选择器已关、refreshDetail 未到」的无反馈死窗口
-        Obx(() {
-          if (state.actionBusy.value) {
-            final busyLabel = state.actionBusyLabel.value;
-            return IconButton(
-              onPressed: null,
-              tooltip: busyLabel.isNotEmpty ? busyLabel : '处理中…',
-              icon: const SizedBox(
-                width: 20,
-                height: 20,
-                child: AppLoading(size: AppLoadingSize.small),
-              ),
-            );
-          }
-          return IconButton(
+        if (state.actionBusy) ...[
+          IconButton(
+            onPressed: null,
+            tooltip: state.actionBusyLabel.isNotEmpty
+                ? state.actionBusyLabel
+                : '处理中…',
+            icon: const SizedBox(
+              width: 20,
+              height: 20,
+              child: AppLoading(size: AppLoadingSize.small),
+            ),
+          ),
+        ] else ...[
+          IconButton(
             onPressed: () => logic.showMoreActions(context),
             icon: const Icon(Icons.more_vert),
             tooltip: "更多",
-          );
-        }),
+          ),
+        ],
       ],
     );
   }
@@ -195,7 +118,7 @@ class _DetailPageState extends State<DetailPage> {
     DetailState state,
   ) {
     return ErrorState(
-      message: state.errorMessage.value,
+      message: state.errorMessage,
       retryLabel: '重试',
       onRetryPressed: () => logic.loadDetail(),
     );
@@ -220,32 +143,35 @@ class _DetailPageState extends State<DetailPage> {
           // 区块级 skeleton（下载/README）已覆盖主要加载场景，避免双 loading 叠加；
           // sections 入场动画由各区块 _FadeSlideIn 提供（loading→sections 直接切换，
           // 消除 switcher 保留新旧两树导致的切换帧双倍布局）。
-          Obx(() {
-            final detail = state.detailInfo.value;
-            final showSpinner = state.isLoadingDetail.value &&
-                detail == null &&
-                !state.downloadsLoading.value &&
-                !state.readmeLoading.value &&
-                !state.statisticsLoading.value;
-
-            final Widget child;
-            if (showSpinner) {
-              child = const Padding(
-                padding: AppSpacing.allLG,
-                child: Center(child: AppLoading(size: AppLoadingSize.medium)),
-              );
-            } else if (detail == null) {
-              child = const SizedBox.shrink();
-            } else {
-              child = Column(
-                children: _buildSections(context, logic, state, detail),
-              );
-            }
-
-            return child;
-          }),
+          _buildDetailSections(context, logic, state),
         ],
       ),
+    );
+  }
+
+  Widget _buildDetailSections(
+    BuildContext context,
+    DetailLogic logic,
+    DetailState state,
+  ) {
+    final detail = state.detailInfo;
+    final showSpinner = state.isLoadingDetail &&
+        detail == null &&
+        !state.downloadsLoading &&
+        !state.readmeLoading &&
+        !state.statisticsLoading;
+
+    if (showSpinner) {
+      return const Padding(
+        padding: AppSpacing.allLG,
+        child: Center(child: AppLoading(size: AppLoadingSize.medium)),
+      );
+    }
+    if (detail == null) {
+      return const SizedBox.shrink();
+    }
+    return Column(
+      children: _buildSections(context, logic, state, detail),
     );
   }
 
@@ -263,12 +189,12 @@ class _DetailPageState extends State<DetailPage> {
         right: border(context),
       ),
       borderRadius: AppRadius.allLG,
-      child: Obx(() {
+      child: Builder(builder: (context) {
         final icon = state.displayIcon;
         final name = state.displayName;
         final description = state.displayDescription;
         final version = state.displayVersion;
-        final detailInfo = state.detailInfo.value;
+        final detailInfo = state.detailInfo;
 
         return Column(
           children: [
@@ -279,7 +205,7 @@ class _DetailPageState extends State<DetailPage> {
                 _buildHeaderIcon(
                   context,
                   icon,
-                  state.installInfo.value?.packageName,
+                  state.installInfo?.packageName,
                 ),
                 const SizedBox(width: AppSpacing.lg),
                 // 名称 + 版本 + 描述
@@ -292,13 +218,12 @@ class _DetailPageState extends State<DetailPage> {
                         style: Theme.of(context).textTheme.titleLarge,
                       ),
                       // 仅已安装显示真实版本（当前版本 + 有新版本时右上角 v最新 角标）；未安装不显示版本
-                      if (state.installInfo.value != null)
+                      if (state.installInfo != null)
                         Padding(
                           padding: const EdgeInsets.only(top: AppSpacing.xs),
                           child: VersionBadge(
                             latestVersion: version,
-                            installedVersion:
-                                state.installInfo.value?.versionName,
+                            installedVersion: state.installInfo?.versionName,
                           ),
                         ),
                       if (description.isNotEmpty &&
@@ -407,6 +332,89 @@ class _DetailPageState extends State<DetailPage> {
     }
   }
 
+  /// FAB 进度浮标：按 DownloadStatusEnum 状态机渲染（下载中禁用、终态可点）。
+  Widget _buildFab(
+    BuildContext context,
+    DetailLogic logic,
+    DetailState state,
+  ) {
+    final data = state.currentDownload;
+    if (data == null) return const SizedBox();
+
+    switch (data.status) {
+      // 下载中 / 连接中 / 排队中：禁用进度环
+      case DownloadStatusEnum.downloading:
+      case DownloadStatusEnum.connecting:
+      case DownloadStatusEnum.queued:
+        final total = data.total;
+        final count = data.received;
+        // 防止除零错误
+        final hasTotal = total > 0;
+        final progress =
+            hasTotal ? (count / total).clamp(0.0, 1.0) : null;
+        final percent =
+            hasTotal ? ((count / total) * 100).toInt().clamp(0, 100) : 0;
+        return FloatingActionButton(
+          onPressed: null,
+          child: Stack(
+            alignment: AlignmentDirectional.center,
+            children: [
+              CircularProgressIndicator(
+                value: progress,
+              ),
+              Text(
+                hasTotal ? "$percent" : "...",
+                style: Theme.of(context).textTheme.labelSmall,
+              )
+            ],
+          ),
+        );
+
+      // 已下载完成：可点击安装
+      case DownloadStatusEnum.completed:
+        return FloatingActionButton.extended(
+          onPressed: () => logic.installCurrentTask(data),
+          backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+          foregroundColor: Theme.of(context).colorScheme.onPrimaryContainer,
+          icon: const Icon(Icons.system_update_alt),
+          label: Text(
+            '安装',
+            style: Theme.of(context).textTheme.labelLarge,
+          ),
+        );
+
+      // 下载失败：可点击重试（断点续传）
+      case DownloadStatusEnum.failed:
+        return FloatingActionButton.extended(
+          onPressed: () => logic.retryCurrentTask(data),
+          backgroundColor: Theme.of(context).colorScheme.tertiaryContainer,
+          foregroundColor: Theme.of(context).colorScheme.onTertiaryContainer,
+          icon: const Icon(Icons.refresh),
+          label: Text(
+            '重试',
+            style: Theme.of(context).textTheme.labelLarge,
+          ),
+        );
+
+      // 下载暂停：可点击继续
+      case DownloadStatusEnum.paused:
+        return FloatingActionButton.extended(
+          onPressed: () => logic.resumeCurrentTask(data),
+          backgroundColor: Theme.of(context).colorScheme.secondaryContainer,
+          foregroundColor: Theme.of(context).colorScheme.onSecondaryContainer,
+          icon: const Icon(Icons.play_arrow),
+          label: Text(
+            '继续',
+            style: Theme.of(context).textTheme.labelLarge,
+          ),
+        );
+
+      // 已取消：无操作可做
+      case DownloadStatusEnum.cancelled:
+        return const SizedBox();
+    }
+  }
+
   List<Widget> _buildSections(
     BuildContext context,
     DetailLogic logic,
@@ -422,16 +430,16 @@ class _DetailPageState extends State<DetailPage> {
     // 区块渲染顺序：固定为「基础区块（sections 中非下载/README，按到达顺序）→
     // downloads → readme」——下载永远在 README 前，加载中/加载后位置一致，永不跳动。
     // （README 304 命中近瞬时先完成 append 时，不再把下载挤到下方）
-    // 下载/README 区块以独立 Rx（downloadsLoading/readmeLoading）兜底：
+    // 下载/README 区块以独立字段（downloadsLoading/readmeLoading）兜底：
     // 加载中即使 sections 尚未声明也要渲染骨架，完成且空则不渲染——
     // 避免"加载完成后区块才凭空出现"的闪烁。List 而非 Set：基础区块显式过滤
     // 下载/README 后各区块单实例，顺序由固定拼装保证。
     final sectionTypes = <DetailSection>[
       ...detail.sections.where((s) =>
           s != DetailSection.downloads && s != DetailSection.readme),
-      if (state.downloadsLoading.value || detail.downloads.isNotEmpty)
+      if (state.downloadsLoading || detail.downloads.isNotEmpty)
         DetailSection.downloads,
-      if (state.readmeLoading.value ||
+      if (state.readmeLoading ||
           (detail.readme?.isNotEmpty ?? false) ||
           (detail.screenshots?.isNotEmpty ?? false))
         DetailSection.readme,
@@ -455,7 +463,7 @@ class _DetailPageState extends State<DetailPage> {
           // 区块首次出现时做一次渐进入场（loading→内容切换保持原逻辑，动画仅作用于首现）
           sections.add(
             _FadeSlideIn(
-              child: state.readmeLoading.value
+              child: state.readmeLoading
                   ? ReadmeSection(info: detail, loading: true)
                   : ReadmeSection(
                       info: detail,
@@ -468,7 +476,7 @@ class _DetailPageState extends State<DetailPage> {
           // 加载中 → 骨架占位；完成非空 → 列表；完成空 → 不进入此分支
           sections.add(
             _FadeSlideIn(
-              child: state.downloadsLoading.value
+              child: state.downloadsLoading
                   ? DownloadsSection(info: detail, loading: true)
                   : DownloadsSection(
                       info: detail,

@@ -318,7 +318,7 @@ void main() {
       );
 
       // 设置 state.detailInfo 使编排路径可执行（虽然后续 service 为 null 会提前 return）
-      logic.state.detailInfo.value = _FakeDetailInfo();
+      logic.state.detailInfo = _FakeDetailInfo();
 
       final download = DownloadInfo(
         url: 'https://example.com/test.apk',

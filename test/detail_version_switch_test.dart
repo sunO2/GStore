@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/aggregate/aggregate.dart';
@@ -640,7 +641,7 @@ void main() {
       packageName: 'com.example.one',
       channel: channel,
     );
-    logic.onReady();
+    logic.start();
     return logic;
   }
 
@@ -761,7 +762,7 @@ void main() {
     expect(dc.lastSwitchVersion, '2.0.0');
 
     // detailInfo 整体刷新（新 env+version 详情）
-    final detail = logic.state.detailInfo.value;
+    final detail = logic.state.detailInfo;
     expect(detail, isNotNull);
     expect(detail!.version, '2.0.0');
     expect(detail.name, 'App One');
@@ -815,7 +816,7 @@ void main() {
 
     final logic = buildLogic();
     // 预置初始 detailInfo（切换前版本）
-    logic.state.detailInfo.value = JsChannelDetailProxy({
+    logic.state.detailInfo = JsChannelDetailProxy({
       'appId': 'com.example.one',
       'name': 'App One',
       'version': '1.0.0',
@@ -827,7 +828,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(dc.switchVersionCalls, 0);
-    expect(logic.state.detailInfo.value?.version, '1.0.0');
+    expect(logic.state.detailInfo?.version, '1.0.0');
   });
 
   testWidgets('⑥ 打开切换版本 → env 切换按需单 env 拉取 versionOptions（初始不预拉取）',
@@ -974,7 +975,7 @@ void main() {
     // jscall 走 detailChannel → 脚本内部 host.native.call('refreshDetail') 刷新 detailInfo
     expect(dc.callMainCalls, 1);
     expect(dc.capturedNativeHost!['ui.refreshDetail'], isNotNull);
-    expect(logic.state.detailInfo.value?.version, '2.0.0');
+    expect(logic.state.detailInfo?.version, '2.0.0');
   });
 
   testWidgets('⑫ 点"更多"：canonical 解析 getAppInfo 仅一次 + detailMenu 走 detailChannel',
@@ -1049,8 +1050,8 @@ void main() {
     expect(js.getAppDetailCalls, 0);
     // 有 detail.js → 跳过 entry getAppInfo 预取（避免重复 build-list + login/check）
     expect(js.getAppInfoCalls, 0);
-    expect(logic.state.detailInfo.value?.version, '1.0.0');
-    expect(logic.state.detailInfo.value?.name, 'App One');
+    expect(logic.state.detailInfo?.version, '1.0.0');
+    expect(logic.state.detailInfo?.name, 'App One');
   });
 
   testWidgets('ⓑ 无 detail.js（getDetailChannel null）→ 详情加载走 entry 原路径（兼容）',
@@ -1073,7 +1074,7 @@ void main() {
     // 无 detail.js → getDetailChannel null → entry getAppDetail 原路径
     // （buildLogic 的 onReady 已触发 load，不再重复 loadDetail）
     expect(js.getAppDetailCalls, 1);
-    expect(logic.state.detailInfo.value?.version, '1.0.0');
+    expect(logic.state.detailInfo?.version, '1.0.0');
   });
 
   testWidgets(
@@ -1149,7 +1150,7 @@ void main() {
     expect(dc.lastSwitchVersion, '2.0.0');
     expect(js.versionOptionsCalls, 0);
     expect(js.switchVersionCalls, 0);
-    expect(logic.state.detailInfo.value?.version, '2.0.0');
+    expect(logic.state.detailInfo?.version, '2.0.0');
   });
 
   testWidgets('ⓔ 页面退出（onClose）→ JsChannel.releaseDetailChannel 被调（工厂缓存清理）',
@@ -1162,7 +1163,7 @@ void main() {
     expect(js.detailChannel, isNotNull,
         reason: '有 detail.js → getDetailChannel 被调');
 
-    logic.onClose();
+    logic.shutdown();
 
     expect(js.releaseDetailChannelCalls, 1);
   });
@@ -1178,7 +1179,7 @@ void main() {
     // 非脚本渠道完全不变：getAppDetail 走 channel 原路径
     // （buildLogic 的 onReady 已触发 load，不再重复 loadDetail）
     expect(ch.getAppDetailCalls, 1);
-    expect(logic.state.detailInfo.value?.name, 'App One');
+    expect(logic.state.detailInfo?.name, 'App One');
   });
 
   // ==================== Wave 2：host.native updateDownloadList（切构建历史局部更新下载区） ====================
@@ -1206,7 +1207,7 @@ void main() {
       (tester) async {
     final (logic, dc) = await setupDetailChannel(tester);
     // 预置当前详情（旧下载区）
-    logic.state.detailInfo.value = JsChannelDetailProxy({
+    logic.state.detailInfo = JsChannelDetailProxy({
       'appId': 'com.example.one',
       'name': 'App One',
       'version': '1.0.0',
@@ -1227,7 +1228,7 @@ void main() {
     });
 
     // detailInfo.downloads 局部更新（新下载项），其余字段保持
-    final detail = logic.state.detailInfo.value;
+    final detail = logic.state.detailInfo;
     expect(detail, isNotNull);
     expect(detail!.downloads, hasLength(1));
     expect(detail.downloads.first.name, 'new.apk');
@@ -1239,7 +1240,7 @@ void main() {
   testWidgets('ⓗ updateDownloadList 不触发重新请求（switchVersion/getAppDetail 零调用）',
       (tester) async {
     final (logic, dc) = await setupDetailChannel(tester);
-    logic.state.detailInfo.value = JsChannelDetailProxy({
+    logic.state.detailInfo = JsChannelDetailProxy({
       'appId': 'com.example.one',
       'name': 'App One',
       'version': '1.0.0',
@@ -1261,7 +1262,7 @@ void main() {
     final (logic, dc) = await setupDetailChannel(tester);
     // prefill 纪元：setup 的 bind+load 会无条件注入 prefill proxy，
     // 手动置 null 构造真实 null 场景（绕过 load 的 prefill）。
-    logic.state.detailInfo.value = null;
+    logic.state.detailInfo = null;
 
     await dc.capturedNativeHost!['ui.updateDownloadList']!({
       'downloads': [
@@ -1269,13 +1270,13 @@ void main() {
       ],
     });
 
-    expect(logic.state.detailInfo.value, isNull);
+    expect(logic.state.detailInfo, isNull);
     expect(tester.takeException(), isNull);
   });
 
   testWidgets('ⓙ 下载项 downloadable/note 字段正确透传', (tester) async {
     final (logic, dc) = await setupDetailChannel(tester);
-    logic.state.detailInfo.value = JsChannelDetailProxy({
+    logic.state.detailInfo = JsChannelDetailProxy({
       'appId': 'com.example.one',
       'name': 'App One',
       'version': '1.0.0',
@@ -1292,7 +1293,7 @@ void main() {
       ],
     });
 
-    final detail = logic.state.detailInfo.value;
+    final detail = logic.state.detailInfo;
     final item = detail!.downloads.first;
     expect(item.downloadable, isFalse);
     expect(item.note, '需配置凭证后下载');
@@ -1306,15 +1307,23 @@ void main() {
     ChannelManager.instance.registerChannel(js);
 
     final logic = buildLogic();
-    Get.put(logic);
-    await tester.pumpWidget(const GetMaterialApp(home: DetailPage()));
-    // 两次 bind+load 落定：buildLogic 手动 onReady + DisposableInterface
-    // post-frame onReady 各触发一次（getAppDetail 均 null）。
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          // 页面经 detailStateProvider 取状态：注入测试 logic 同款状态，
+          // 使 DetailPage 内部渲染与测试断言共享同一 detailInfo。
+          detailStateProvider.overrideWith((ref) => logic.state),
+        ],
+        child: const GetMaterialApp(home: DetailPage()),
+      ),
+    );
+    // 两次 bind+load 落定：buildLogic 手动 start + 页面自身 start
+    // 各触发一次（getAppDetail 均 null）。
     await tester.pump();
     await tester.pump();
-    logic.state.errorMessage.value = '';
+    logic.state.errorMessage = '';
 
-    logic.state.detailInfo.value = JsChannelDetailProxy({
+    logic.state.detailInfo = JsChannelDetailProxy({
       'appId': 'com.example.one',
       'name': 'App One',
       'version': '1.0.0',

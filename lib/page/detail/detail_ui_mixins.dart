@@ -1,9 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:get/get.dart';
 import 'package:gstore/core/channel/IDetailChannel.dart';
-import 'package:gstore/core/channel/detail_callbacks.dart';
 import 'package:gstore/core/channel/impl/JsChannel.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/design/channel_build_history_sheet.dart';
@@ -23,22 +21,20 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 /// 浏览器/应用启动相关方法提取。
 ///
 /// 需要宿主类提供 [state]、[request]、[detailChannel] 字段。
-mixin DetailBrowserMixin on GetxController {
+mixin DetailBrowserMixin {
   DetailState get state;
   AppDetailRequest? get request;
   IDetailChannel? get detailChannel;
 
-  @override
   void startApp(String packageName) => InstalledApps.startApp(packageName);
 
-  @override
   void openBrowser(String url) {
     if (!url.startsWith("http://") &&
         !url.startsWith("https://") &&
         !url.startsWith("file://")) return;
     url = _stripProxyPrefix(url);
     try {
-      final detail = state.detailInfo.value;
+      final detail = state.detailInfo;
       final inAppBrowser = GStoreInAppBrowser(
         appInfo: detail != null
             ? _detailToAppInfo(detail)
@@ -68,13 +64,12 @@ mixin DetailBrowserMixin on GetxController {
     return url;
   }
 
-  @override
   void openProjectBrowser() {
-    final detail = state.detailInfo.value;
+    final detail = state.detailInfo;
     if (detail?.projectUrl != null) {
       openBrowser(detail!.projectUrl!);
     } else if (request != null && request!.channel == ChannelType.github) {
-      final apiData = state.detailInfo.value?.extra['apiData'];
+      final apiData = state.detailInfo?.extra['apiData'];
       if (apiData is Map && apiData['full_name'] is String) {
         openBrowser('https://github.com/${apiData['full_name']}');
         return;
@@ -113,14 +108,14 @@ mixin DetailBrowserMixin on GetxController {
 // ==================== DetailMetadataMixin ====================
 
 /// 应用元数据提交相关方法提取。
-mixin DetailMetadataMixin on GetxController {
+mixin DetailMetadataMixin {
   DetailState get state;
   AppDetailRequest? get request;
 
   bool get canSubmitAppMetadata => _githubRepo() != null;
 
   ({String owner, String repo})? _githubRepo() {
-    final detail = state.detailInfo.value;
+    final detail = state.detailInfo;
     if (request?.channel == ChannelType.github) {
       final apiData = detail?.extra['apiData'];
       if (apiData is Map && apiData['full_name'] is String) {
@@ -140,7 +135,6 @@ mixin DetailMetadataMixin on GetxController {
     return null;
   }
 
-  @override
   Future<void> submitAppMetadata() async {
     final repo = _githubRepo();
     if (repo == null) {
@@ -186,10 +180,13 @@ mixin DetailMetadataMixin on GetxController {
 // ==================== DetailVersionPickerMixin ====================
 
 /// 版本/环境切换、历史构建、UA 选择器相关方法提取。
-mixin DetailVersionPickerMixin on GetxController {
+mixin DetailVersionPickerMixin {
   DetailState get state;
   AppDetailRequest? get request;
   IDetailChannel? get detailChannel;
+
+  /// 宿主类提供的 UI 上下文（view 注入，未注入时回退全局 navigator key）。
+  BuildContext? get uiContext;
 
   /// 宿主类（DetailLogic）实现的 DetailCallbacks 方法抽象声明
   Future<void> refreshDetail({required Map<String, dynamic> detailData});
@@ -197,12 +194,11 @@ mixin DetailVersionPickerMixin on GetxController {
   void showError(String message, {String? title});
   Future<void> startDownload(DownloadInfo download, {int? downloadSize});
 
-  @override
   Future<void> showVersionPicker({
     required Map<String, dynamic> options,
     required String appId,
   }) async {
-    final ctx = Get.context;
+    final ctx = uiContext;
     if (ctx == null) return;
     final envs = (options['envs'] as List?)
             ?.map((e) => e.toString())
@@ -219,8 +215,7 @@ mixin DetailVersionPickerMixin on GetxController {
       onEnvChanged: (env) async {
         final dc = detailChannel;
         return _parseVersionOptions(
-                await dc?.versionOptions(appId, env: env)) ??
-            const <VersionOption>[];
+            await dc?.versionOptions(appId, env: env));
       },
       onBuildHistory: ({required version, required env}) async {
         final dc = detailChannel;
@@ -261,14 +256,13 @@ mixin DetailVersionPickerMixin on GetxController {
     }
   }
 
-  @override
   Future<void> showBuildHistory({
     required List<Map<String, dynamic>> builds,
     required String appId,
     required String version,
     required String env,
   }) async {
-    final ctx = Get.context;
+    final ctx = uiContext;
     if (ctx == null) return;
     final parsed = builds.map((b) => BuildOption(
       num: (b['num'] as num?)?.toInt() ?? 0,
@@ -307,13 +301,12 @@ mixin DetailVersionPickerMixin on GetxController {
     if (match != null) await startDownload(match);
   }
 
-  @override
   Future<String?> showUAPicker({
     required List<String>? uaOptions,
     required String appId,
     String? current,
   }) async {
-    final ctx = Get.context;
+    final ctx = uiContext;
     if (ctx == null || uaOptions == null || uaOptions.isEmpty) return null;
     return showModalBottomSheet<String>(
       context: ctx,

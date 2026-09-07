@@ -885,14 +885,14 @@ void main() {
 
       // 核心验收：detailInfo 非空（base 先上屏）+ 下载/README/统计骨架标志置位
       expect(fakeChannel.getAppDetailCalls, 1);
-      final base = state.detailInfo.value;
+      final base = state.detailInfo;
       expect(base, isNotNull);
       expect(base!.name, '测试应用', reason: 'base 来自 getAppInfo 基础信息');
       expect(base.packageName, 'com.example.app',
           reason: 'getAppInfo 无包名时回退请求参数（共享 base 构造路径）');
-      expect(state.downloadsLoading.value, isTrue);
-      expect(state.readmeLoading.value, isTrue);
-      expect(state.statisticsLoading.value, isTrue);
+      expect(state.downloadsLoading, isTrue);
+      expect(state.readmeLoading, isTrue);
+      expect(state.statisticsLoading, isTrue);
 
       // 收尾放行挂起的 getAppDetail，避免悬挂 future
       fakeChannel.detailCompleter!.complete(
@@ -909,7 +909,7 @@ void main() {
 
       final future = detailChannel.load();
       await pumpEventQueue();
-      expect(state.detailInfo.value, isNotNull, reason: '前置：base 先现已注入');
+      expect(state.detailInfo, isNotNull, reason: '前置：base 先现已注入');
 
       final full = _FakeFullDetailInfo();
       fakeChannel.detailCompleter!.complete(
@@ -918,12 +918,12 @@ void main() {
       await future;
 
       // 全量替换为 getAppDetail 结果（同一实例）
-      expect(identical(state.detailInfo.value, full), isTrue);
-      expect(state.downloadsLoading.value, isFalse);
-      expect(state.readmeLoading.value, isFalse);
-      expect(state.statisticsLoading.value, isFalse);
-      expect(state.errorMessage.value, isEmpty);
-      expect(state.isLoadingDetail.value, isFalse);
+      expect(identical(state.detailInfo, full), isTrue);
+      expect(state.downloadsLoading, isFalse);
+      expect(state.readmeLoading, isFalse);
+      expect(state.statisticsLoading, isFalse);
+      expect(state.errorMessage, isEmpty);
+      expect(state.isLoadingDetail, isFalse);
     });
 
     test('T-C) getAppDetail 失败 → errorMessage 设置且三标志经 finally 兜底复位', () async {
@@ -932,14 +932,14 @@ void main() {
       await detailChannel.load();
 
       // 外层 catch 生效
-      expect(state.errorMessage.value, isNotEmpty);
+      expect(state.errorMessage, isNotEmpty);
       // 失败前已注入的 base 保留（不静默白屏）
-      expect(state.detailInfo.value, isNotNull);
+      expect(state.detailInfo, isNotNull);
       // finally 兜底复位三区块 loading
-      expect(state.downloadsLoading.value, isFalse);
-      expect(state.readmeLoading.value, isFalse);
-      expect(state.statisticsLoading.value, isFalse);
-      expect(state.isLoadingDetail.value, isFalse);
+      expect(state.downloadsLoading, isFalse);
+      expect(state.readmeLoading, isFalse);
+      expect(state.statisticsLoading, isFalse);
+      expect(state.isLoadingDetail, isFalse);
     });
   });
 }

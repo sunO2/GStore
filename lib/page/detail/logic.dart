@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gstore/core/channel/IDetailChannel.dart';
 import 'package:gstore/core/channel/detail_callbacks.dart';
 import 'package:gstore/core/channel/impl/JsChannel.dart';
@@ -9,18 +10,22 @@ import 'package:gstore/core/core.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/AppDetailRequest.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
-import 'package:gstore/core/download/strategy/impl/LocalDbDownloadStrategy.dart';
-import 'package:gstore/core/download/strategy/impl/VivoDownloadStrategy.dart';
-import 'package:gstore/core/download/strategy/impl/GitHubDownloadStrategy.dart';
-import 'package:gstore/core/download/strategy/impl/HttpDownloadStrategy.dart';
-import 'package:gstore/core/download/strategy/impl/FdroidDownloadStrategy.dart';
 import 'package:gstore/core/download/model/download_task.dart';
+import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:installed_apps/app_info.dart' as installed;
 import 'state.dart';
 import 'detail_ui_mixins.dart';
 import 'widgets/more_actions_sheet.dart' as mas;
 
-class DetailLogic extends GetxController
+/// 详情页业务逻辑（Riverpod 版，取代旧 GetX 控制器）。
+///
+/// 生命周期由详情页 [DetailPage] 驱动：
+/// - 构造：持有 [DetailState]（页面经 [detailStateProvider] 注入同一实例；
+///   直接构造时自建一份，兼容单测）；
+/// - [start]：页面挂载后调用（等价原 GetX onReady，幂等）；
+/// - [shutdown]：页面销毁时调用（等价原 GetX onClose）。channel 清理 /
+///   Timer / 流订阅均在 [shutdown] 完成。
+class DetailLogic
     with
         DetailBrowserMixin,
         DetailMetadataMixin,
@@ -36,16 +41,31 @@ class DetailLogic extends GetxController
   /// 忙碌态兜底 Timer（重复开启重置，false/超时/dispose 时取消）
   Timer? _actionBusyTimer;
 
-  final DetailState state = DetailState();
+  final DetailState state;
 
   /// 请求参数
   AppDetailRequest? request;
 
-  /// go_router extra 传入的路由参数（原 Get.arguments），view 构造后设置。
+  /// go_router extra 传入的路由参数，view 构造后设置（等价原路由 arguments）。
   Object? _extra;
+
+  /// UI 上下文（view build 注入，幂等；未注入时回退全局 navigator key）。
+  BuildContext? _uiContext;
+
+  /// 已完成初始化/已释放标记（[start]/[shutdown] 幂等）
+  bool _started = false;
+  bool _shutDown = false;
+
+  DetailLogic({DetailState? state}) : state = state ?? DetailState();
 
   /// 设置路由 extra（DetailPage build 内经 GoRouterState.of(context).extra 传入）。
   void setRouteExtra(Object? extra) => _extra = extra;
+
+  /// 注入 UI 上下文（供 channel 回调驱动的选择器/弹窗使用）。
+  void setContext(BuildContext? ctx) => _uiContext = ctx;
+
+  /// UI 上下文：优先 view 注入的 context；未注入时回退全局 navigator key。
+  BuildContext? get uiContext => _uiContext ?? appNavigatorKey.currentContext;
 
   /// 渠道管理器（channel 模块下线时为 null，消费点软降级）
   ChannelManager? _channelManager;
@@ -60,13 +80,15 @@ class DetailLogic extends GetxController
     '工具', '游戏', '社交', '影音', '阅读', '效率', '系统',
   ];
 
-  @override
-  void onReady() {
+  /// 页面挂载后初始化（view initState → microtask 调用，等价原 GetX onReady）。
+  /// 幂等：重复调用自动跳过（页面重建不重复 bind/load）。
+  Future<void> start() async {
+    if (_started) return;
+    _started = true;
     _channelManager = ModuleManager.instance.get<ChannelManager>();
     _aggregator = ModuleManager.instance.get<IAggregateService>();
     _initializeFromArguments();
-    _initAndLoad();
-    super.onReady();
+    await _initAndLoad();
   }
 
   /// 获取 channel → bind → load
@@ -90,9 +112,9 @@ class DetailLogic extends GetxController
 
   /// 加载详情（错误页重试 / 单测直调入口）。
   Future<void> loadDetail() async {
-    state.errorMessage.value = '';
+    state.errorMessage = '';
     if (request == null) {
-      state.errorMessage.value = '缺少请求参数';
+      state.errorMessage = '缺少请求参数';
       return;
     }
     _channelManager = ModuleManager.instance.get<ChannelManager>();
@@ -103,8 +125,8 @@ class DetailLogic extends GetxController
   void _initializeFromArguments() {
     final args = _extra;
     if (args == null) {
-      state.errorMessage.value = '缺少参数';
-      state.isLoading.value = false;
+      state.errorMessage = '缺少参数';
+      state.isLoading = false;
       return;
     }
     if (args is AppDetailRequest) {
@@ -122,13 +144,13 @@ class DetailLogic extends GetxController
       try {
         request = AppDetailRequest.fromAggregatedAppInfo(args);
       } catch (e) {
-        state.errorMessage.value = '无效的参数类型: ${args.runtimeType}';
-        state.isLoading.value = false;
+        state.errorMessage = '无效的参数类型: ${args.runtimeType}';
+        state.isLoading = false;
         return;
       }
     }
     state.request = request;
-    state.isLoading.value = false;
+    state.isLoading = false;
   }
 
   /// 开始下载
@@ -145,7 +167,7 @@ class DetailLogic extends GetxController
       await channel.startDownload(download);
       return;
     }
-    final detail = state.detailInfo.value;
+    final detail = state.detailInfo;
     final req = request;
     if (detail == null && req == null) return;
     final downloadUrl = download.url.trim();
@@ -173,66 +195,19 @@ class DetailLogic extends GetxController
         appId, appName, version, downloadUrl, fileName,
         downloadSize: download.size ?? downloadSize,
       );
-      state.currentDownload.value = task;
+      state.currentDownload = task;
       counterController.sink.add(task);
       final id = task.id;
       if (id != null) {
         downloadListenerSubscription?.cancel();
         downloadListenerSubscription = service.watch(id).listen((da) {
-          state.currentDownload.value = da;
-          state.currentDownload.refresh();
+          state.currentDownload = da;
+          // 下载服务可能原地更新同一实例 → 强制发通知保证进度刷新
+          state.refresh();
           counterController.sink.add(da);
         });
       }
     }());
-  }
-
-  Future<void> _startDownloadTask(
-    DownloadInfo download,
-    String appId,
-    String appName,
-    String version,
-    String fileName,
-  ) async {
-    final service = ModuleManager.instance.get<IDownloadService>();
-    if (service == null) {
-      AppDialogs.showWarning('下载模块未启用');
-      return;
-    }
-    try {
-      _initializeDownloadStrategies();
-      final detail = state.detailInfo.value;
-      if (detail == null) return;
-      final request =
-          await DownloadStrategyManager.instance.createRequest(download, detail);
-      if (request != null) {
-        await service.downloadWithContext(
-            request, appId, appName, version, fileName);
-      } else {
-        throw Exception('Failed to create download request');
-      }
-    } catch (e) {
-      appLog.error('DetailLogic: 下载失败 - $e');
-      try {
-        await service.download(appId, appName, version, download.url, fileName,
-            downloadSize: download.size);
-      } catch (e2) {
-        appLog.error('DetailLogic: 下载降级失败 - $e2');
-      }
-    }
-  }
-
-  void _initializeDownloadStrategies() {
-    final manager = DownloadStrategyManager.instance;
-    if (manager.strategyCount == 0) {
-      manager.registerAll([
-        LocalDbDownloadStrategy(),
-        VivoDownloadStrategy(),
-        GitHubDownloadStrategy(),
-        HttpDownloadStrategy(),
-        FdroidDownloadStrategy(),
-      ]);
-    }
   }
 
   /// 安装已下载完成的 APK（Shizuku 优先，回退系统安装）
@@ -271,6 +246,7 @@ class DetailLogic extends GetxController
 
   /// 打开"更多"底部面板：标签编辑 + 渠道动作宫格
   Future<void> showMoreActions(BuildContext context) async {
+    setContext(context);
     final req = request;
     if (req == null) return;
     final code = req.channelCode ?? req.channel.code;
@@ -349,13 +325,13 @@ class DetailLogic extends GetxController
   @override
   Future<void> refreshDetail(
       {required Map<String, dynamic> detailData}) async {
-    state.detailInfo.value = JsChannelDetailProxy(detailData);
+    state.detailInfo = JsChannelDetailProxy(detailData);
     _applyInstalledInfo(detailData);
   }
 
   @override
   Future<void> updateDetail({required Map<String, dynamic> partial}) async {
-    final current = state.detailInfo.value;
+    final current = state.detailInfo;
     if (current is JsChannelDetailProxy) {
       // 已有 JS 详情：在原数据副本上展开合并。
       // extra 是 _data 的别名 → partial.extra 必须逐键展开写入顶层，
@@ -368,7 +344,7 @@ class DetailLogic extends GetxController
           merged[k] = v;
         }
       });
-      state.detailInfo.value = JsChannelDetailProxy(merged);
+      state.detailInfo = JsChannelDetailProxy(merged);
       _applyInstalledInfo(merged);
     } else {
       // 首次推送（null 或非 JS proxy）：以 partial 创建，
@@ -378,7 +354,7 @@ class DetailLogic extends GetxController
         final extra = flat.remove('extra') as Map;
         extra.forEach((ek, ev) => flat[ek.toString()] = ev);
       }
-      state.detailInfo.value = JsChannelDetailProxy(flat);
+      state.detailInfo = JsChannelDetailProxy(flat);
       _applyInstalledInfo(flat);
     }
   }
@@ -395,7 +371,7 @@ class DetailLogic extends GetxController
     if (versionName.isEmpty) return;
     final pkg = data['packageName']?.toString() ?? '';
     final name = data['name']?.toString() ?? '';
-    state.installInfo.value = installed.AppInfo(
+    state.installInfo = installed.AppInfo(
       name: name.isNotEmpty ? name : pkg,
       icon: null,
       packageName: pkg,
@@ -445,14 +421,15 @@ class DetailLogic extends GetxController
           downloadSize: download.size,
         );
 
-        state.currentDownload.value = task;
+        state.currentDownload = task;
         counterController.sink.add(task);
         downloadListenerSubscription?.cancel();
         final id = task.id;
         if (id != null) {
           downloadListenerSubscription = service.watch(id).listen((da) {
-            state.currentDownload.value = da;
-            state.currentDownload.refresh();
+            state.currentDownload = da;
+            // 下载服务可能原地更新同一实例 → 强制发通知保证进度刷新
+            state.refresh();
             counterController.sink.add(da);
           });
         }
@@ -468,21 +445,21 @@ class DetailLogic extends GetxController
       debugPrint('DetailLogic: setActionBusy(false)');
       _actionBusyTimer?.cancel();
       _actionBusyTimer = null;
-      state.actionBusy.value = false;
-      state.actionBusyLabel.value = '';
+      state.actionBusy = false;
+      state.actionBusyLabel = '';
       return;
     }
     debugPrint('DetailLogic: setActionBusy(true, label=${label ?? ''})');
     if (label != null && label.isNotEmpty) {
-      state.actionBusyLabel.value = label;
+      state.actionBusyLabel = label;
     }
-    state.actionBusy.value = true;
+    state.actionBusy = true;
     // 兜底：重复开启重置 Timer，到时自动复位防脚本异常挂死状态
     _actionBusyTimer?.cancel();
     _actionBusyTimer = Timer(_actionBusyTimeout, () {
       debugPrint('DetailLogic: actionBusy 超时自动复位');
-      state.actionBusy.value = false;
-      state.actionBusyLabel.value = '';
+      state.actionBusy = false;
+      state.actionBusyLabel = '';
     });
   }
 
@@ -517,7 +494,7 @@ class DetailLogic extends GetxController
     required List<String> currentTags,
     required List<DetailAction> actions,
   }) async {
-    final ctx = Get.context;
+    final ctx = uiContext;
     if (ctx == null) return null;
     return mas.showMoreActionsSheet(
       ctx,
@@ -535,8 +512,11 @@ class DetailLogic extends GetxController
     );
   }
 
-  @override
-  void onClose() {
+  /// 释放资源（等价原 GetX onClose）：取消忙碌态 Timer、释放 detail 通道、
+  /// 关闭下载进度流、取消下载监听。幂等。
+  void shutdown() {
+    if (_shutDown) return;
+    _shutDown = true;
     _actionBusyTimer?.cancel();
     _actionBusyTimer = null;
     final req = request;
@@ -549,6 +529,19 @@ class DetailLogic extends GetxController
     detailChannel = null;
     counterController.close();
     downloadListenerSubscription?.cancel();
-    super.onClose();
   }
 }
+
+/// 详情页状态 provider（每 push 独立实例）。
+///
+/// `autoDispose`：页面 pop 后无监听 → 状态与监听器自动清理，保证下一次 push
+/// 拿到全新实例（等价旧实现「dispose 时显式删除控制器」语义）。
+/// 详情页构造其 [DetailLogic] 时经 `ref.read(detailStateProvider)` 注入同一
+/// 状态；channel 经 [IDetailChannel.bind] 注入后直接改写该状态（mutable
+/// [DetailState]，见 state.dart）。
+final detailStateProvider =
+    ChangeNotifierProvider.autoDispose<DetailState>((ref) {
+  final state = DetailState();
+  ref.onDispose(state.dispose);
+  return state;
+});

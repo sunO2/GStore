@@ -10,7 +10,6 @@ import 'package:gstore/core/js/js_native_host.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
-import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/page/detail/state.dart';
 
 /// 页面级详情通道：独立 runtime 加载 detail.js（状态隔离，页面退出释放）。
@@ -350,22 +349,22 @@ class JsDetailChannel implements IDetailChannel {
     }
     // ① 进入即复位推送标志 + 打开基础 loading
     _receivedUpdateDetail = false;
-    state.isLoadingDetail.value = true;
+    state.isLoadingDetail = true;
     try {
       // ② 保底 prefill：request 基础信息即时上屏 + 下载区骨架声明
       await callbacks.refreshDetail(detailData: _buildPrefill(state));
       // ③ 三区块 loading 骨架
-      state.downloadsLoading.value = true;
-      state.readmeLoading.value = true;
-      state.statisticsLoading.value = true;
+      state.downloadsLoading = true;
+      state.readmeLoading = true;
+      state.statisticsLoading = true;
       // ④ 拉取全量详情
       final raw = await getAppDetail(appId);
       if (raw != null) {
         // ⑤a 成功：全量替换 + 三标志复位 + 操作项缓存刷新
         await callbacks.refreshDetail(detailData: raw);
-        state.downloadsLoading.value = false;
-        state.readmeLoading.value = false;
-        state.statisticsLoading.value = false;
+        state.downloadsLoading = false;
+        state.readmeLoading = false;
+        state.statisticsLoading = false;
         await _refreshActions();
       } else {
         // ⑤b 失败判别：已推送过阶段数据 → 保内容提示；纯 prefill → 错误页可重试
@@ -373,18 +372,18 @@ class JsDetailChannel implements IDetailChannel {
         if (_receivedUpdateDetail) {
           callbacks.showError('详情加载失败，当前显示为已加载内容');
         } else {
-          state.errorMessage.value = '详情加载失败';
+          state.errorMessage = '详情加载失败';
         }
       }
     } finally {
       // ⑥ 基础 loading 复位
-      state.isLoadingDetail.value = false;
+      state.isLoadingDetail = false;
       // 三区块 loading 兜底复位（对齐 Standard 渠道共享出口语义）：
       // ⑤a 成功路径已复位则幂等无副作用；⑤b/异常路径在此兜底，
       // 杜绝 getAppDetail 失败时骨架永久转圈。
-      state.downloadsLoading.value = false;
-      state.readmeLoading.value = false;
-      state.statisticsLoading.value = false;
+      state.downloadsLoading = false;
+      state.readmeLoading = false;
+      state.statisticsLoading = false;
     }
   }
 
@@ -462,11 +461,11 @@ class JsDetailChannel implements IDetailChannel {
   @override
   Future<void> updateDownloads(List<DownloadInfo> downloads) async {
     final state = _boundState;
-    final current = state?.detailInfo.value;
+    final current = state?.detailInfo;
     if (current is JsChannelDetailProxy) {
       final data = Map<String, dynamic>.from(current.data);
       data['downloads'] = downloads;
-      state!.detailInfo.value = JsChannelDetailProxy(data);
+      state!.detailInfo = JsChannelDetailProxy(data);
     }
   }
 

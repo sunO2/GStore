@@ -240,7 +240,7 @@ void main() {
   });
 
   tearDown(() {
-    logic.onClose();
+    logic.shutdown();
     Get.reset();
   });
 
@@ -249,7 +249,7 @@ void main() {
     // 推进微任务：getAppInfo 完成 → 基础 detailInfo 已注入
     await pumpEventQueue();
 
-    final detail = logic.state.detailInfo.value;
+    final detail = logic.state.detailInfo;
     expect(detail, isNotNull);
     expect(detail!.name, '测试应用');
     expect(detail.icon, 'https://example.com/icon.png');
@@ -264,7 +264,7 @@ void main() {
     expect(detail.sections, isEmpty);
 
     await future;
-    expect(logic.state.isLoadingDetail.value, isFalse);
+    expect(logic.state.isLoadingDetail, isFalse);
   });
 
   test('b) 三路并行渐进：downloads 先完成先注入，readme 后到达不阻塞', () async {
@@ -277,11 +277,11 @@ void main() {
     await pumpEventQueue();
 
     // 基础注入完成，三路都在等待
-    expect(logic.state.detailInfo.value, isNotNull);
-    expect(logic.state.downloadsLoading.value, isTrue);
-    expect(logic.state.readmeLoading.value, isTrue);
-    expect(logic.state.downloads.value, isNull);
-    expect(logic.state.readme.value, isNull);
+    expect(logic.state.detailInfo, isNotNull);
+    expect(logic.state.downloadsLoading, isTrue);
+    expect(logic.state.readmeLoading, isTrue);
+    expect(logic.state.downloads, isNull);
+    expect(logic.state.readme, isNull);
 
     // downloads 先完成
     downloadsCompleter.complete(
@@ -298,13 +298,13 @@ void main() {
     );
     await pumpEventQueue();
 
-    expect(logic.state.downloads.value, hasLength(1));
-    expect(logic.state.downloadsLoading.value, isFalse);
+    expect(logic.state.downloads, hasLength(1));
+    expect(logic.state.downloadsLoading, isFalse);
     // readme 未完成：不阻塞，仍加载中
-    expect(logic.state.readme.value, isNull);
-    expect(logic.state.readmeLoading.value, isTrue);
+    expect(logic.state.readme, isNull);
+    expect(logic.state.readmeLoading, isTrue);
 
-    final detail = logic.state.detailInfo.value!;
+    final detail = logic.state.detailInfo!;
     expect(detail.downloads, hasLength(1));
     expect(detail.downloads.first.url, 'https://example.com/a.apk');
     expect(detail.version, '1.2.0'); // 最新版本随下载注入
@@ -317,9 +317,9 @@ void main() {
     );
     await future;
 
-    expect(logic.state.readme.value, '# README 内容');
-    expect(logic.state.readmeLoading.value, isFalse);
-    final finalDetail = logic.state.detailInfo.value!;
+    expect(logic.state.readme, '# README 内容');
+    expect(logic.state.readmeLoading, isFalse);
+    final finalDetail = logic.state.detailInfo!;
     expect(finalDetail.readme, '# README 内容');
     expect(finalDetail.sections, contains(DetailSection.readme));
     expect(finalDetail.sections, contains(DetailSection.downloads));
@@ -353,21 +353,21 @@ void main() {
     await future;
 
     // downloads 区块独立降级
-    expect(logic.state.downloads.value, isNull);
-    expect(logic.state.downloadsLoading.value, isFalse);
-    expect(logic.state.errorMessage.value, isEmpty); // 不触发整体错误
+    expect(logic.state.downloads, isNull);
+    expect(logic.state.downloadsLoading, isFalse);
+    expect(logic.state.errorMessage, isEmpty); // 不触发整体错误
 
     // readme/statistics 不受阻
-    expect(logic.state.readme.value, '# README');
-    expect(logic.state.readmeLoading.value, isFalse);
-    expect(logic.state.statisticsLoading.value, isFalse);
+    expect(logic.state.readme, '# README');
+    expect(logic.state.readmeLoading, isFalse);
+    expect(logic.state.statisticsLoading, isFalse);
 
-    final detail = logic.state.detailInfo.value!;
+    final detail = logic.state.detailInfo!;
     expect(detail.sections, contains(DetailSection.readme));
     expect(detail.sections, contains(DetailSection.statistics));
     expect(detail.sections, isNot(contains(DetailSection.downloads)));
     expect(detail.extra['apiData'], {'stargazers_count': 100, 'forks_count': 20});
-    expect(logic.state.isLoadingDetail.value, isFalse);
+    expect(logic.state.isLoadingDetail, isFalse);
   });
 
   test('d) 三路全部完成：detailInfo 含 downloads/readme/statistics/version（createContext 可用）',
@@ -398,7 +398,7 @@ void main() {
 
     await logic.loadDetail();
 
-    final detail = logic.state.detailInfo.value!;
+    final detail = logic.state.detailInfo!;
     // 下载 / README / 统计 / 版本全部就绪
     expect(detail.downloads, hasLength(1));
     expect(detail.downloads.first.url, 'https://example.com/a.apk');
@@ -422,7 +422,7 @@ void main() {
     expect(detail.projectUrl, 'https://github.com/owner/repo');
     expect(detail.extra['repositoryName'], 'repo');
     expect(detail.extra['developer'], 'owner');
-    expect(logic.state.isLoadingDetail.value, isFalse);
+    expect(logic.state.isLoadingDetail, isFalse);
   });
 
   test('e) fetchReadme 返回 null：readme 保持 null + loading 复位，不增补区块', () async {
@@ -431,13 +431,13 @@ void main() {
 
     await logic.loadDetail();
 
-    expect(logic.state.readme.value, isNull);
-    expect(logic.state.readmeLoading.value, isFalse);
-    final detail = logic.state.detailInfo.value!;
+    expect(logic.state.readme, isNull);
+    expect(logic.state.readmeLoading, isFalse);
+    final detail = logic.state.detailInfo!;
     expect(detail.readme, isNull);
     expect(detail.sections, isNot(contains(DetailSection.readme)));
     expect(detail.extra.containsKey('readme'), isFalse);
-    expect(logic.state.isLoadingDetail.value, isFalse);
+    expect(logic.state.isLoadingDetail, isFalse);
   });
 
   test('f) 非分块渠道（supportsProgressiveLoading=false）→ 旧流程 getAppDetail 一次性完整注入，三路 fetch 不调用',
@@ -463,7 +463,7 @@ void main() {
     expect(legacyChannel.fetchCalls, 0);
 
     // detailInfo 一次性完整注入（与 getAppDetail 返回同一实例）
-    final detail = logic.state.detailInfo.value;
+    final detail = logic.state.detailInfo;
     expect(identical(detail, fullDetail), isTrue);
     expect(detail!.sections, contains(DetailSection.downloads));
     expect(detail.sections, contains(DetailSection.readme));
@@ -472,8 +472,8 @@ void main() {
     expect(detail.changelog, '更新日志');
     expect(detail.permissions, contains('INTERNET'));
     expect(detail.version, '1.2.0');
-    expect(logic.state.isLoadingDetail.value, isFalse);
-    expect(logic.state.errorMessage.value, isEmpty);
+    expect(logic.state.isLoadingDetail, isFalse);
+    expect(logic.state.errorMessage, isEmpty);
   });
 
   test('g) fetchStatistics 带 metadata versionName → version 优先于 downloads 首项', () async {
@@ -502,13 +502,13 @@ void main() {
 
     await logic.loadDetail();
 
-    final detail = logic.state.detailInfo.value!;
+    final detail = logic.state.detailInfo!;
     // metadata versionName（APK 提取）优先于 releases 首项 version
     expect(detail.version, '2.1.0');
     // metadata 全量进入 extra（versionCode 供更新检测消费）
     expect(detail.extra['metadata'], {'versionName': '2.1.0', 'versionCode': 210});
     expect(detail.extra['apiData'], isA<Map<String, dynamic>>());
-    expect(logic.state.isLoadingDetail.value, isFalse);
+    expect(logic.state.isLoadingDetail, isFalse);
   });
 
   test('h) fetchStatistics 无 versionName → version 保持 downloads 首项（回归）', () async {
@@ -531,36 +531,36 @@ void main() {
 
     await logic.loadDetail();
 
-    final detail = logic.state.detailInfo.value!;
+    final detail = logic.state.detailInfo!;
     expect(detail.version, '1.2.0');
     expect(detail.extra.containsKey('metadata'), isFalse);
-    expect(logic.state.isLoadingDetail.value, isFalse);
+    expect(logic.state.isLoadingDetail, isFalse);
   });
 
   group('updateDetail 粒度推送原语（展开合并契约）', () {
     test('T1) null 创建：detailInfo 为 null 时以 partial 创建新详情', () async {
-      expect(logic.state.detailInfo.value, isNull);
+      expect(logic.state.detailInfo, isNull);
 
       await logic.updateDetail(partial: {'name': 'x', 'description': 'd'});
 
-      final proxy = logic.state.detailInfo.value;
+      final proxy = logic.state.detailInfo;
       expect(proxy, isA<JsChannelDetailProxy>());
       expect(proxy!.name, 'x');
       expect(proxy.description, 'd');
     });
 
     test('T2) 顶层浅覆盖：未推送旧键保留，同名键覆盖', () async {
-      logic.state.detailInfo.value = JsChannelDetailProxy({'a': 1, 'b': 2});
+      logic.state.detailInfo = JsChannelDetailProxy({'a': 1, 'b': 2});
 
       await logic.updateDetail(partial: {'b': 3});
 
-      final proxy = logic.state.detailInfo.value as JsChannelDetailProxy;
+      final proxy = logic.state.detailInfo as JsChannelDetailProxy;
       expect(proxy.extra['a'], 1, reason: '未推送的旧键必须保留');
       expect(proxy.extra['b'], 3, reason: '同名顶层键浅覆盖');
     });
 
     test('T3) extra 展开合并不丢旧键（分支 A：已有 JsChannelDetailProxy）', () async {
-      logic.state.detailInfo.value = JsChannelDetailProxy({
+      logic.state.detailInfo = JsChannelDetailProxy({
         'name': 'old',
         'screenshots': ['https://example.com/s0.png'],
       });
@@ -569,7 +569,7 @@ void main() {
         'extra': {'versionName': '1.2'},
       });
 
-      final proxy = logic.state.detailInfo.value as JsChannelDetailProxy;
+      final proxy = logic.state.detailInfo as JsChannelDetailProxy;
       expect(proxy.name, 'old', reason: 'extra 展开合并不得丢掉既有顶层键');
       expect(proxy.extra['versionName'], '1.2', reason: 'extra 键逐键展开写入顶层');
       expect(proxy.extra.containsKey('extra'), isFalse,
@@ -577,14 +577,14 @@ void main() {
     });
 
     test('T4) null 创建且含 extra 键同样展开可读（分支 B 与分支 A 语义一致）', () async {
-      expect(logic.state.detailInfo.value, isNull);
+      expect(logic.state.detailInfo, isNull);
 
       await logic.updateDetail(partial: {
         'name': 'n',
         'extra': {'k': 'v'},
       });
 
-      final proxy = logic.state.detailInfo.value as JsChannelDetailProxy;
+      final proxy = logic.state.detailInfo as JsChannelDetailProxy;
       expect(proxy.name, 'n');
       expect(proxy.extra['k'], 'v', reason: '首次推送的 extra 同样展开到顶层可读');
       expect(proxy.extra.containsKey('extra'), isFalse,
@@ -593,7 +593,7 @@ void main() {
 
     test('F-PROBE) 推 extra.screenshots 后顶层 screenshots 必须非空（防嵌套回归）',
         () async {
-      logic.state.detailInfo.value = JsChannelDetailProxy({'name': 'p'});
+      logic.state.detailInfo = JsChannelDetailProxy({'name': 'p'});
 
       await logic.updateDetail(partial: {
         'extra': {
@@ -601,7 +601,7 @@ void main() {
         },
       });
 
-      final proxy = logic.state.detailInfo.value as JsChannelDetailProxy;
+      final proxy = logic.state.detailInfo as JsChannelDetailProxy;
       expect(proxy.screenshots, isNotNull,
           reason: '若为 null 说明 partial.extra 被错误嵌套进 merged["extra"]');
       expect(proxy.screenshots, hasLength(1));
@@ -610,14 +610,14 @@ void main() {
 
     test('MALFORMED) extra 非 Map → 按普通顶层键浅覆盖，不抛异常且旧数据不受损',
         () async {
-      logic.state.detailInfo.value = JsChannelDetailProxy({
+      logic.state.detailInfo = JsChannelDetailProxy({
         'name': 'm',
         'screenshots': ['s0'],
       });
 
       await logic.updateDetail(partial: {'extra': 'not-a-map'});
 
-      final proxy = logic.state.detailInfo.value as JsChannelDetailProxy;
+      final proxy = logic.state.detailInfo as JsChannelDetailProxy;
       expect(proxy.name, 'm', reason: '畸形 extra 不影响既有数据');
       expect(proxy.screenshots, isNotNull);
       expect(proxy.extra['extra'], 'not-a-map',
@@ -628,7 +628,7 @@ void main() {
   group('installedVersion 提取合成 installInfo（D4 presence-driven）', () {
     test('IV1) refreshDetail 带 installedVersion/Code → 合成 AppInfo 写入 installInfo',
         () async {
-      expect(logic.state.installInfo.value, isNull);
+      expect(logic.state.installInfo, isNull);
 
       await logic.refreshDetail(detailData: {
         'name': '平安口袋银行',
@@ -638,7 +638,7 @@ void main() {
         'installedVersionCode': 80808,
       });
 
-      final info = logic.state.installInfo.value;
+      final info = logic.state.installInfo;
       expect(info, isNotNull);
       expect(info!.versionName, '8.8.0');
       expect(info.versionCode, 80808);
@@ -649,18 +649,18 @@ void main() {
     });
 
     test('IV2) updateDetail partial 带 installedVersion → 合并后提取写入', () async {
-      logic.state.detailInfo.value = JsChannelDetailProxy({
+      logic.state.detailInfo = JsChannelDetailProxy({
         'name': '平安口袋银行',
         'packageName': 'com.pingan.bank',
       });
-      expect(logic.state.installInfo.value, isNull);
+      expect(logic.state.installInfo, isNull);
 
       await logic.updateDetail(partial: {
         'installedVersion': '9.1.2',
         'installedVersionCode': 90102,
       });
 
-      final info = logic.state.installInfo.value;
+      final info = logic.state.installInfo;
       expect(info, isNotNull);
       expect(info!.versionName, '9.1.2');
       expect(info.versionCode, 90102);
@@ -678,27 +678,27 @@ void main() {
         builtWith: BuiltWith.flutter,
         installedTimestamp: 42,
       );
-      logic.state.installInfo.value = sentinel;
+      logic.state.installInfo = sentinel;
 
       await logic.refreshDetail(detailData: {'name': 'x', 'description': 'd'});
-      expect(identical(logic.state.installInfo.value, sentinel), isTrue,
+      expect(identical(logic.state.installInfo, sentinel), isTrue,
           reason: '无 installedVersion 键不得重置/覆盖 installInfo');
 
       await logic.updateDetail(partial: {'description': 'd2'});
-      expect(identical(logic.state.installInfo.value, sentinel), isTrue,
+      expect(identical(logic.state.installInfo, sentinel), isTrue,
           reason: 'updateDetail 缺键同样保持 installInfo 原值');
     });
 
     test('IV4/MALFORMED) installedVersionCode null/字符串数字/非数字/负数 归一定义',
         () async {
       Future<int> codeOf(dynamic raw) async {
-        logic.state.installInfo.value = null;
+        logic.state.installInfo = null;
         await logic.refreshDetail(detailData: {
           'packageName': 'p',
           'installedVersion': '1.0',
           'installedVersionCode': raw,
         });
-        return logic.state.installInfo.value!.versionCode;
+        return logic.state.installInfo!.versionCode;
       }
 
       expect(await codeOf(null), 0, reason: 'null → 0');
@@ -711,41 +711,41 @@ void main() {
 
   group('setActionBusy 更多按钮忙碌态', () {
     test('B1) true 置位 + label 写入；false 复位两值', () async {
-      expect(logic.state.actionBusy.value, isFalse);
+      expect(logic.state.actionBusy, isFalse);
 
       await logic.setActionBusy(visible: true, label: '正在切换版本…');
-      expect(logic.state.actionBusy.value, isTrue);
-      expect(logic.state.actionBusyLabel.value, '正在切换版本…');
+      expect(logic.state.actionBusy, isTrue);
+      expect(logic.state.actionBusyLabel, '正在切换版本…');
 
       await logic.setActionBusy(visible: false);
-      expect(logic.state.actionBusy.value, isFalse);
-      expect(logic.state.actionBusyLabel.value, '');
+      expect(logic.state.actionBusy, isFalse);
+      expect(logic.state.actionBusyLabel, '');
     });
 
     test('B2) 重复开启且 label 为空 → 保留既有 label（Timer 重置不复位）', () async {
       await logic.setActionBusy(visible: true, label: 'first');
       await logic.setActionBusy(visible: true);
 
-      expect(logic.state.actionBusy.value, isTrue);
-      expect(logic.state.actionBusyLabel.value, 'first');
+      expect(logic.state.actionBusy, isTrue);
+      expect(logic.state.actionBusyLabel, 'first');
     });
 
     testWidgets('B3) 15s 兜底超时自动复位（testWidgets 假时钟）',
         (tester) async {
       final busyLogic = DetailLogic();
       await busyLogic.setActionBusy(visible: true, label: 'busy');
-      expect(busyLogic.state.actionBusy.value, isTrue);
+      expect(busyLogic.state.actionBusy, isTrue);
 
       await tester.pump(const Duration(seconds: 14));
-      expect(busyLogic.state.actionBusy.value, isTrue,
+      expect(busyLogic.state.actionBusy, isTrue,
           reason: '未到 15s 不得提前复位');
 
       await tester.pump(const Duration(seconds: 1));
-      expect(busyLogic.state.actionBusy.value, isFalse,
+      expect(busyLogic.state.actionBusy, isFalse,
           reason: '15s 兜底到时自动复位');
-      expect(busyLogic.state.actionBusyLabel.value, '');
+      expect(busyLogic.state.actionBusyLabel, '');
 
-      busyLogic.onClose();
+      busyLogic.shutdown();
     });
   });
 }

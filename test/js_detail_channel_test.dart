@@ -208,7 +208,7 @@ class _CapturingCallbacks implements DetailCallbacks {
   }) async {
     refreshCalls.add(Map<String, dynamic>.from(detailData));
     final s = state;
-    if (s != null) s.detailInfo.value = JsChannelDetailProxy(detailData);
+    if (s != null) s.detailInfo = JsChannelDetailProxy(detailData);
   }
 
   @override
@@ -217,7 +217,7 @@ class _CapturingCallbacks implements DetailCallbacks {
     final s = state;
     if (s == null) return;
     // 与 DetailLogic.updateDetail 展开合并语义一致
-    final current = s.detailInfo.value;
+    final current = s.detailInfo;
     if (current is JsChannelDetailProxy) {
       final merged = Map<String, dynamic>.from(current.data);
       partial.forEach((k, v) {
@@ -227,14 +227,14 @@ class _CapturingCallbacks implements DetailCallbacks {
           merged[k] = v;
         }
       });
-      s.detailInfo.value = JsChannelDetailProxy(merged);
+      s.detailInfo = JsChannelDetailProxy(merged);
     } else {
       final flat = Map<String, dynamic>.from(partial);
       if (partial['extra'] is Map) {
         (partial['extra'] as Map)
             .forEach((ek, ev) => flat[ek.toString()] = ev);
       }
-      s.detailInfo.value = JsChannelDetailProxy(flat);
+      s.detailInfo = JsChannelDetailProxy(flat);
     }
   }
 
@@ -247,11 +247,11 @@ class _CapturingCallbacks implements DetailCallbacks {
     if (s == null) return;
     // 与 DetailLogic.setActionBusy 写 state 语义一致（单测无需 Timer 兜底）
     if (visible) {
-      if (label != null && label.isNotEmpty) s.actionBusyLabel.value = label;
-      s.actionBusy.value = true;
+      if (label != null && label.isNotEmpty) s.actionBusyLabel = label;
+      s.actionBusy = true;
     } else {
-      s.actionBusy.value = false;
-      s.actionBusyLabel.value = '';
+      s.actionBusy = false;
+      s.actionBusyLabel = '';
     }
   }
 
@@ -607,10 +607,9 @@ void main() {
       expect(cb.updateCalls, hasLength(1));
       expect(cb.updateCalls.first['name'], 'Pushed Name');
       expect(cb.updateCalls.first['sections'], ['downloads']);
-      expect(state.detailInfo.value, isA<JsChannelDetailProxy>());
-      expect(state.detailInfo.value!.name, 'Pushed Name');
-      // extra 展开合并写入顶层（非嵌套）
-      expect((state.detailInfo.value as JsChannelDetailProxy).data['identifier'],
+expect(state.detailInfo, isA<JsChannelDetailProxy>());
+      expect(state.detailInfo!.name, 'Pushed Name');
+      expect((state.detailInfo as JsChannelDetailProxy).data['identifier'],
           'id-1');
 
       // 空 payload / 缺键不抛（partial 任意键子集语义）
@@ -633,12 +632,12 @@ void main() {
 
       final host = detail.nativeHostForTest;
       await host['ui.setBusy']!({'visible': true, 'label': 'x'});
-      expect(state.actionBusy.value, isTrue);
-      expect(state.actionBusyLabel.value, 'x');
+      expect(state.actionBusy, isTrue);
+      expect(state.actionBusyLabel, 'x');
 
       await host['ui.setBusy']!({'visible': false});
-      expect(state.actionBusy.value, isFalse);
-      expect(state.actionBusyLabel.value, '');
+      expect(state.actionBusy, isFalse);
+      expect(state.actionBusyLabel, '');
 
       await detail.dispose();
     });
@@ -674,24 +673,24 @@ void main() {
 
       // prefill 先注入（detailInfo 非 null 且为 request 内容）+ 骨架标志 true
       expect(cb.refreshCalls, hasLength(1));
-      expect(state.detailInfo.value, isNotNull);
-      expect(state.detailInfo.value!.name, 'Req App');
-      expect(state.isLoadingDetail.value, isTrue);
-      expect(state.downloadsLoading.value, isTrue);
-      expect(state.readmeLoading.value, isTrue);
-      expect(state.statisticsLoading.value, isTrue);
+      expect(state.detailInfo, isNotNull);
+      expect(state.detailInfo!.name, 'Req App');
+      expect(state.isLoadingDetail, isTrue);
+      expect(state.downloadsLoading, isTrue);
+      expect(state.readmeLoading, isTrue);
+      expect(state.statisticsLoading, isTrue);
 
       gate.complete();
       await loading;
 
       // 全量替换 + 复位
       expect(cb.refreshCalls, hasLength(2));
-      expect(state.detailInfo.value!.name, 'Full App');
-      expect(state.isLoadingDetail.value, isFalse);
-      expect(state.downloadsLoading.value, isFalse);
-      expect(state.readmeLoading.value, isFalse);
-      expect(state.statisticsLoading.value, isFalse);
-      expect(state.errorMessage.value, '');
+      expect(state.detailInfo!.name, 'Full App');
+      expect(state.isLoadingDetail, isFalse);
+      expect(state.downloadsLoading, isFalse);
+      expect(state.readmeLoading, isFalse);
+      expect(state.statisticsLoading, isFalse);
+      expect(state.errorMessage, '');
       expect(cb.errors, isEmpty);
 
       await detail.dispose();
@@ -712,9 +711,9 @@ void main() {
 
       await detail.load();
 
-      expect(state.errorMessage.value, '详情加载失败');
+      expect(state.errorMessage, '详情加载失败');
       expect(cb.errors, isEmpty, reason: '未推送过阶段数据 → 走错误页而非 toast');
-      expect(state.isLoadingDetail.value, isFalse);
+      expect(state.isLoadingDetail, isFalse);
 
       await detail.dispose();
     });
@@ -743,10 +742,10 @@ void main() {
       await detail.load();
 
       expect(cb.errors, ['详情加载失败，当前显示为已加载内容']);
-      expect(state.errorMessage.value, '', reason: '已推送 → 不设错误页');
-      expect(state.detailInfo.value!.name, 'Pushed Name',
+      expect(state.errorMessage, '', reason: '已推送 → 不设错误页');
+      expect(state.detailInfo!.name, 'Pushed Name',
           reason: '已推送内容保留不被清除');
-      expect(state.isLoadingDetail.value, isFalse);
+      expect(state.isLoadingDetail, isFalse);
 
       await detail.dispose();
     });
@@ -798,12 +797,12 @@ void main() {
 
       await detail.load();
 
-      expect(state.errorMessage.value, '详情加载失败');
-      expect(state.downloadsLoading.value, isFalse,
+      expect(state.errorMessage, '详情加载失败');
+      expect(state.downloadsLoading, isFalse,
           reason: 'F-2：失败路径 finally 兜底复位，骨架不永久转圈');
-      expect(state.readmeLoading.value, isFalse);
-      expect(state.statisticsLoading.value, isFalse);
-      expect(state.isLoadingDetail.value, isFalse);
+      expect(state.readmeLoading, isFalse);
+      expect(state.statisticsLoading, isFalse);
+      expect(state.isLoadingDetail, isFalse);
       expect(cb.errors, isEmpty, reason: '纯 prefill 未推送 → 错误页而非 toast');
 
       await detail.dispose();
@@ -828,7 +827,7 @@ void main() {
       final loading = detail.load();
       // 排空 microtask：prefill 注入完成、getAppDetail 挂起在 gate
       await Future<void>.delayed(Duration.zero);
-      expect(state.downloadsLoading.value, isTrue,
+      expect(state.downloadsLoading, isTrue,
           reason: '前置确认：拉取窗口内三区块骨架确已置 true');
 
       // 先推：拉取窗口内经桥推送阶段数据（置位 _receivedUpdateDetail）
@@ -836,21 +835,21 @@ void main() {
         'name': 'Pushed Name',
         'sections': ['downloads'],
       });
-      expect(state.detailInfo.value!.name, 'Pushed Name');
+      expect(state.detailInfo!.name, 'Pushed Name');
 
       // 后败：getAppDetail 返回 null → 已推送分支（showError 保内容）
       gate.complete(null);
       await loading;
 
       expect(cb.errors, ['详情加载失败，当前显示为已加载内容']);
-      expect(state.errorMessage.value, '', reason: '已推送 → 不设错误页');
-      expect(state.detailInfo.value!.name, 'Pushed Name',
+      expect(state.errorMessage, '', reason: '已推送 → 不设错误页');
+      expect(state.detailInfo!.name, 'Pushed Name',
           reason: '已推送内容保留不被清除');
-      expect(state.downloadsLoading.value, isFalse,
+      expect(state.downloadsLoading, isFalse,
           reason: 'F-2：失败路径 finally 兜底复位，骨架不永久转圈');
-      expect(state.readmeLoading.value, isFalse);
-      expect(state.statisticsLoading.value, isFalse);
-      expect(state.isLoadingDetail.value, isFalse);
+      expect(state.readmeLoading, isFalse);
+      expect(state.statisticsLoading, isFalse);
+      expect(state.isLoadingDetail, isFalse);
 
       await detail.dispose();
     });
