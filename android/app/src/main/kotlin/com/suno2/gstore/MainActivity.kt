@@ -20,6 +20,7 @@ class MainActivity : FlutterActivity() {
     companion object {
         private const val CHANNEL = "gstore/system_intent"
         private const val APK_INFO_CHANNEL = "gstore/apk_info"
+        private const val APK_SOURCE_CHANNEL = "gstore/apk_source"
 
         /// 管理空间入口通道：Dart 侧启动/恢复时查询是否有待处理的"管理空间"请求
         private const val MANAGE_SPACE_CHANNEL = "gstore/manage_space"
@@ -126,6 +127,26 @@ class MainActivity : FlutterActivity() {
                         ))
                     } catch (e: Exception) {
                         result.error("PARSE", "解析 APK 失败: ${e.message}", null)
+                    }
+                }
+                else -> result.notImplemented()
+            }
+        }
+
+        // 已安装应用 APK 路径（sourceDir）：供 SDK 分析（lib/<abi>/*.so 枚举）使用
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, APK_SOURCE_CHANNEL).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "getSourceDir" -> {
+                    val packageName = call.argument<String>("packageName")
+                    if (packageName == null || packageName.isEmpty()) {
+                        result.error("ARG", "packageName required", null)
+                        return@setMethodCallHandler
+                    }
+                    try {
+                        val appInfo = packageManager.getApplicationInfo(packageName, 0)
+                        result.success(appInfo.sourceDir)
+                    } catch (e: Exception) {
+                        result.error("SOURCE", "获取 sourceDir 失败: ${e.message}", null)
                     }
                 }
                 else -> result.notImplemented()

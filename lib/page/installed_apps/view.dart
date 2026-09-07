@@ -5,6 +5,8 @@ import 'package:gstore/core/core.dart';
 import 'package:gstore/core/design/app_borders.dart';
 import 'package:gstore/compent/entrance_list.dart';
 import 'package:gstore/compent/pressable_scale.dart';
+import 'package:gstore/core/service/apk_library_analyzer.dart';
+import 'package:gstore/core/service/apk_source_service.dart';
 import 'package:gstore/core/service/install_manager.dart';
 import 'package:installed_apps/installed_apps.dart';
 import 'package:installed_apps/app_info.dart' as installed;
@@ -295,6 +297,63 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
     await _refreshShizukuState();
   }
 
+  /// 分析应用内嵌的第三方 SDK（原生库 .so 文件名匹配）
+  Future<void> _analyzeSdk(installed.AppInfo app) async {
+    final sourceDir = await ApkSourceService.instance.getSourceDir(app.packageName);
+    if (sourceDir == null || !mounted) {
+      _showMessage('无法获取 ${app.name} 的 APK 路径');
+      return;
+    }
+    appLog.info('InstalledApps: SDK 分析开始', data: {
+      'package': app.packageName,
+      'sourceDir': sourceDir,
+    });
+
+    // 分析对话框（含 loading）
+    AppDialogs.showDialog(
+      title: 'SDK 分析',
+      content: FutureBuilder<List<NativeLibraryHit>>(
+        future: ApkLibraryAnalyzer.instance.analyzeNativeLibraries(sourceDir),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState != ConnectionState.done) {
+            return const Padding(
+              padding: AppSpacing.allXL,
+              child: AppLoading(size: AppLoadingSize.medium),
+            );
+          }
+          final hits = snapshot.data ?? const <NativeLibraryHit>[];
+          if (hits.isEmpty) {
+            return Text(
+              snapshot.hasError ? '分析失败' : '未检测到已知 SDK',
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+            );
+          }
+          return Wrap(
+            spacing: AppSpacing.sm,
+            runSpacing: AppSpacing.sm,
+            children: [
+              for (final hit in hits)
+                Chip(
+                  label: Text(hit.label),
+                  avatar: Icon(
+                    Icons.memory,
+                    size: AppTypography.iconSM,
+                    color: hit.isRegex
+                        ? Theme.of(context).colorScheme.tertiary
+                        : Theme.of(context).colorScheme.primary,
+                  ),
+                ),
+            ],
+          );
+        },
+      ),
+      confirmText: '关闭',
+      cancelText: null,
+    );
+  }
+
   Future<bool?> _confirmDialog(
     String title,
     String content, {
@@ -502,6 +561,9 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
               case 'force_stop':
                 _forceStop(app);
                 break;
+              case 'sdk_analysis':
+                _analyzeSdk(app);
+                break;
             }
           },
           itemBuilder: (context) => [
@@ -542,6 +604,16 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
                   Icon(Icons.stop_circle_outlined, color: Colors.blueGrey, size: 18),
                   SizedBox(width: AppSpacing.sm),
                   Text('强制停止'),
+                ],
+              ),
+            ),
+            const PopupMenuItem(
+              value: 'sdk_analysis',
+              child: Row(
+                children: [
+                  Icon(Icons.memory_outlined, color: Colors.indigo, size: 18),
+                  SizedBox(width: AppSpacing.sm),
+                  Text('SDK 分析'),
                 ],
               ),
             ),
