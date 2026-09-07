@@ -84,4 +84,30 @@ void main() {
     expect(find.text('日志已清空'), findsOneWidget,
         reason: '清空提示本身应显示');
   });
+
+  /// 最新日志贴底：反转列表后，底部渲染最新、顶部渲染最旧
+  testWidgets('LogViewerPage 最新日志在底部（chat 反转）', (tester) async {
+    LogManager.instance.clear();
+    LogManager.instance.debug('最旧日志');
+    LogManager.instance.debug('中间日志');
+    LogManager.instance.debug('最新日志');
+
+    await tester.pumpWidget(
+      const ProviderScope(
+        child: MaterialApp(home: LogViewerPage()),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 100));
+
+    // 三条日志都可见（列表很短无需滚动）
+    final oldest = tester.getTopLeft(find.text('最旧日志'));
+    final middle = tester.getTopLeft(find.text('中间日志'));
+    final latest = tester.getTopLeft(find.text('最新日志'));
+    expect(latest.dy, greaterThan(oldest.dy),
+        reason: '最新日志应在底部（dy 更大 = 更靠下）');
+    expect(middle.dy, greaterThan(oldest.dy),
+        reason: '中间日志应在最旧之上');
+    expect(latest.dy, greaterThan(middle.dy),
+        reason: '最新日志应在中间日志之下');
+  });
 }

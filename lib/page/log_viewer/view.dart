@@ -7,14 +7,39 @@ import 'package:gstore/core/logger/LogManager.dart';
 
 import 'providers.dart';
 
-class LogViewerPage extends ConsumerWidget {
+class LogViewerPage extends ConsumerStatefulWidget {
   const LogViewerPage({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<LogViewerPage> createState() => _LogViewerPageState();
+}
+
+class _LogViewerPageState extends ConsumerState<LogViewerPage> {
+  /// 列表滚动控制器（reverse 模式下 offset 0 = 底部 = 最新日志）。
+  final ScrollController _scrollController = ScrollController();
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  /// 新日志到达且开启自动滚动 → 贴底（reverse 下 jumpTo(0) = 最新）。
+  void _maybeScrollToLatest() {
+    if (!ref.read(autoScrollProvider)) return;
+    if (_scrollController.hasClients) {
+      _scrollController.jumpTo(0);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final filteredLogs = ref.watch(filteredLogsProvider);
     final autoScroll = ref.watch(autoScrollProvider);
     final level = ref.watch(logViewerFilterProvider);
+
+    // 日志变更 → 自动滚动跟随最新（仅 autoScroll 开启时）
+    ref.listen(filteredLogsProvider, (_, __) => _maybeScrollToLatest());
 
     return Scaffold(
       appBar: AppBar(
@@ -37,7 +62,7 @@ class LogViewerPage extends ConsumerWidget {
             }).toList(),
           ),
 
-          // 自动滚动
+          // 自动滚动（最新贴底跟随）
           IconButton(
             icon: Icon(
               autoScroll
@@ -45,7 +70,13 @@ class LogViewerPage extends ConsumerWidget {
                   : Icons.vertical_align_center,
             ),
             tooltip: autoScroll ? '自动滚动' : '手动滚动',
-            onPressed: () => ref.read(autoScrollProvider.notifier).toggle(),
+            onPressed: () {
+              ref.read(autoScrollProvider.notifier).toggle();
+              // 开启自动滚动时立即贴底一次
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                _maybeScrollToLatest();
+              });
+            },
           ),
 
           // 清空日志
@@ -99,11 +130,14 @@ class LogViewerPage extends ConsumerWidget {
               ),
             )
           : ListView.builder(
+              controller: _scrollController,
               padding: const EdgeInsets.symmetric(vertical: 8),
               itemCount: filteredLogs.length,
-              reverse: autoScroll,
+              // 固定反转：offset 0 = 底部，显示最新日志
+              reverse: true,
               itemBuilder: (context, index) {
-                final log = filteredLogs[index];
+                // 倒序取数：index 0（底部）渲染最新日志
+                final log = filteredLogs[filteredLogs.length - 1 - index];
                 return _LogItemView(log: log);
               },
             ),
