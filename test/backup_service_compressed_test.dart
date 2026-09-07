@@ -40,7 +40,7 @@ void main() {
       buildSignature: '',
       installerStore: null,
     );
-    Get.put(DatabaseEventBus());
+    DatabaseEventBus.instance;
   });
 
   late AppAddedDatabase aggregatorDb;

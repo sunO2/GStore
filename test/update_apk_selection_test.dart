@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
@@ -311,9 +312,14 @@ Future<void> _pumpUpdatePage(WidgetTester tester, AppUpdateInfo info) async {
   final fake = _FakeUpdateManager([info]);
   fake.fakeUpdateList.assignAll([info]);
   fake.lastCheckedAt.value = DateTime.now();
-  Get.put<UpdateManagerService>(fake);
-  Get.put(BadgeService());
-  await tester.pumpWidget(const GetMaterialApp(home: UpdateManager()));
+  // 服务单例经 ModuleManager 解析：bind 让 UpdateManagerService.instance 命中 fake
+  ModuleManager.instance.bind<UpdateManagerService>(fake);
+  ModuleManager.instance.bind<BadgeService>(BadgeService());
+  await tester.pumpWidget(
+    ProviderScope(
+      child: GetMaterialApp(home: const UpdateManager()),
+    ),
+  );
   await tester.pumpAndSettle();
 }
 
@@ -342,9 +348,10 @@ void main() {
     PathProviderPlatform.instance = _FakePathProvider();
   });
 
-  tearDown(() {
+  tearDown(() async {
     PathProviderPlatform.instance = originalPathProvider;
     Get.reset();
+    await ModuleManager.instance.clear();
   });
 
   group('APK 候选展开选择', () {
@@ -484,27 +491,34 @@ void main() {
   });
 
   group('updateApp 下载使用所选 APK（logic 级）', () {
-    // GetX 4.7.2 overlayContext 与新版 Flutter LookupBoundary 不兼容，
-    // updateApp 末尾的 Get.snackbar 在测试环境抛异步异常（见 detail_readme_image_test
-    // 同款注释），用 runZonedGuarded 吞掉后断言下载调用参数
+    /// 构建注册 fake 服务 + 可读 notifier 的 container（listen 保活 autoDispose）。
+    (ProviderContainer, UpdateNotifier) makeLogic(
+        List<AppUpdateInfo> items) {
+      // 服务单例经 ModuleManager 解析：bind 让 UpdateManagerService.instance 命中 fake
+      ModuleManager.instance.bind<UpdateManagerService>(_FakeUpdateManager(items));
+      ModuleManager.instance.bind<BadgeService>(BadgeService());
+      final notifier = UpdateNotifier();
+      final container = ProviderContainer(overrides: [
+        updateProvider.overrideWith(() => notifier),
+      ]);
+      final sub = container.listen(updateProvider, (_, __) {});
+      addTearDown(sub.close);
+      addTearDown(container.dispose);
+      return (container, notifier);
+    }
+
     test('换选后 updateApp：下载使用用户所选（version/fileName/url）', () async {
       final info = _multiCandidateInfo();
       final fakeDownload = _FakeDownloadService();
-      // UpdateLogic 经注册表取用：同步绑定 ModuleManager 注册表
+      // UpdateNotifier 经注册表取用：同步绑定 ModuleManager 注册表
       ModuleManager.instance.bindByType(IDownloadService, fakeDownload);
-      Get.put<UpdateManagerService>(_FakeUpdateManager([info]));
-      final logic = UpdateLogic();
+      final (_, notifier) = makeLogic([info]);
       final arm = info.detail!.downloads[1];
-      await logic.selectApk(info, arm);
+      await notifier.selectApk(info, arm);
 
-      final zoneErrors = <Object>[];
-      await runZonedGuarded(() => logic.updateApp(info), (e, _) {
-        zoneErrors.add(e);
-      });
-      // GetQueue 的 snackbar 任务异步执行：等微任务链落定后异常才进 zoneErrors
+      // updateApp 内部下载失败路径走 AppDialogs（无宿主静默），不影响下载断言
+      await notifier.updateApp(info);
       await Future<void>.delayed(const Duration(milliseconds: 20));
-      // Get.snackbar 在测试环境因 GetX/Flutter 不兼容抛异步异常（不影响下载结果）
-      expect(zoneErrors, isNotEmpty);
 
       expect(fakeDownload.calls, isNotEmpty);
       final (_, _, version, fileName, url) = fakeDownload.calls.last;
@@ -516,14 +530,11 @@ void main() {
     test('未换选 updateApp：下载使用默认 latestDownload', () async {
       final info = _multiCandidateInfo();
       final fakeDownload = _FakeDownloadService();
-      // UpdateLogic 经注册表取用：同步绑定 ModuleManager 注册表
+      // UpdateNotifier 经注册表取用：同步绑定 ModuleManager 注册表
       ModuleManager.instance.bindByType(IDownloadService, fakeDownload);
-      Get.put<UpdateManagerService>(_FakeUpdateManager([info]));
-      final logic = UpdateLogic();
+      final (_, notifier) = makeLogic([info]);
 
-      // 上个用例的 snackbar 异常已使 GetQueue 卡死（_active 永不复位），
-      // 本用例的 snackbar 只排队不执行 → 无 zone 异常；仅断言下载调用
-      await runZonedGuarded(() => logic.updateApp(info), (e, _) {});
+      await notifier.updateApp(info);
       await Future<void>.delayed(const Duration(milliseconds: 20));
 
       expect(fakeDownload.calls, isNotEmpty);

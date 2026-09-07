@@ -1,15 +1,16 @@
-import 'package:get/get.dart';
-
 import 'package:gstore/core/core.dart';
 
 /// WebDAV 连接状态
 enum WebDavConnectionStatus {
   /// 未配置
   notConfigured,
+
   /// 连接成功
   connected,
+
   /// 连接失败
   failed,
+
   /// 测试中
   testing,
 }
@@ -18,55 +19,114 @@ enum WebDavConnectionStatus {
 enum RestoreMode {
   /// 覆盖模式
   replace,
+
   /// 合并模式
   merge,
+
   /// 更新模式
   update,
 }
 
+/// 备份页状态（不可变，配合 ChangeNotifier 使用）。
 class BackupState {
   /// 是否正在导出
-  final RxBool isExporting = false.obs;
+  final bool isExporting;
 
   /// 是否正在导入
-  final RxBool isImporting = false.obs;
+  final bool isImporting;
 
   /// 统计信息
-  final Rx<BackupStatistics?> statistics = Rx<BackupStatistics?>(null);
+  final BackupStatistics? statistics;
 
   /// 错误信息
-  final RxString errorMessage = ''.obs;
+  final String errorMessage;
 
   /// 是否已配置 WebDAV
-  final RxBool hasWebDavConfig = false.obs;
+  final bool hasWebDavConfig;
 
   /// 是否正在上传到 WebDAV
-  final RxBool isUploadingWebDav = false.obs;
+  final bool isUploadingWebDav;
 
   /// WebDAV 连接状态
-  final Rx<WebDavConnectionStatus> webDavStatus = WebDavConnectionStatus.notConfigured.obs;
+  final WebDavConnectionStatus webDavStatus;
 
   /// 是否包含应用配置（导出时）
-  final RxBool includeAppConfig = true.obs;
+  final bool includeAppConfig;
 
   /// 是否恢复应用配置（导入时）
-  final RxBool restoreAppConfig = true.obs;
+  final bool restoreAppConfig;
 
   /// 导出选项：是否包含图标 URL
-  final RxBool includeIconUrls = true.obs;
+  final bool includeIconUrls;
 
   /// 导出选项：是否包含描述
-  final RxBool includeDescription = true.obs;
+  final bool includeDescription;
 
   /// 导出选项：是否包含分类
-  final RxBool includeCategory = true.obs;
+  final bool includeCategory;
 
   /// 导出选项：是否包含 extra 字段
-  final RxBool includeExtra = true.obs;
+  final bool includeExtra;
 
   /// 导出选项：是否仅包含已启用的应用
-  final RxBool enabledOnly = false.obs;
+  final bool enabledOnly;
 
   /// 恢复模式
-  final Rx<RestoreMode> restoreMode = RestoreMode.merge.obs;
+  final RestoreMode restoreMode;
+
+  const BackupState({
+    this.isExporting = false,
+    this.isImporting = false,
+    this.statistics,
+    this.errorMessage = '',
+    this.hasWebDavConfig = false,
+    this.isUploadingWebDav = false,
+    this.webDavStatus = WebDavConnectionStatus.notConfigured,
+    this.includeAppConfig = true,
+    this.restoreAppConfig = true,
+    this.includeIconUrls = true,
+    this.includeDescription = true,
+    this.includeCategory = true,
+    this.includeExtra = true,
+    this.enabledOnly = false,
+    this.restoreMode = RestoreMode.merge,
+  });
+
+  BackupState copyWith({
+    bool? isExporting,
+    bool? isImporting,
+    BackupStatistics? statistics,
+    bool clearStatistics = false,
+    String? errorMessage,
+    bool? hasWebDavConfig,
+    bool? isUploadingWebDav,
+    WebDavConnectionStatus? webDavStatus,
+    bool? includeAppConfig,
+    bool? restoreAppConfig,
+    bool? includeIconUrls,
+    bool? includeDescription,
+    bool? includeCategory,
+    bool? includeExtra,
+    bool? enabledOnly,
+    RestoreMode? restoreMode,
+  }) {
+    return BackupState(
+      isExporting: isExporting ?? this.isExporting,
+      isImporting: isImporting ?? this.isImporting,
+      statistics:
+          clearStatistics ? null : statistics ?? this.statistics,
+      errorMessage: errorMessage ?? this.errorMessage,
+      hasWebDavConfig: hasWebDavConfig ?? this.hasWebDavConfig,
+      isUploadingWebDav: isUploadingWebDav ?? this.isUploadingWebDav,
+      webDavStatus: webDavStatus ?? this.webDavStatus,
+      includeAppConfig: includeAppConfig ?? this.includeAppConfig,
+      restoreAppConfig: restoreAppConfig ?? this.restoreAppConfig,
+      includeIconUrls: includeIconUrls ?? this.includeIconUrls,
+      includeDescription: includeDescription ?? this.includeDescription,
+      includeCategory: includeCategory ?? this.includeCategory,
+      includeExtra: includeExtra ?? this.includeExtra,
+      enabledOnly: enabledOnly ?? this.enabledOnly,
+      restoreMode: restoreMode ?? this.restoreMode,
+    );
+  }
 }

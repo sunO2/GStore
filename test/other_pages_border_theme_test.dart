@@ -16,6 +16,7 @@ import 'package:gstore/page/download/download_page_providers.dart';
 import 'package:gstore/page/download/download_status_utils.dart';
 import 'package:gstore/page/download/view.dart';
 import 'package:gstore/page/home/tab/discovery/logic.dart';
+import 'package:gstore/page/home/tab/discovery/state.dart';
 import 'package:gstore/page/home/tab/discovery/view.dart';
 import 'package:gstore/page/home/tab/mine/view.dart';
 import 'package:gstore/page/installed_apps/view.dart';
@@ -115,6 +116,28 @@ void _useTallView(WidgetTester tester) {
   addTearDown(tester.view.reset);
 }
 
+/// 预置数据的发现页 Notifier（测试用）：build 直接返回含应用的状态，
+/// 不触发真实渠道加载/订阅（页面纯展示验证场景）。
+class _SeededDiscoveryNotifier extends DiscoveryNotifier {
+  @override
+  DiscoveryState build() {
+    return DiscoveryState(
+      channelApps: const {
+        'github': [
+          AppSummary(
+            appId: 'com.example.test',
+            name: '测试应用',
+            user: 'user',
+            repositories: 'repo',
+            icon: '',
+            des: '',
+          ),
+        ],
+      },
+    );
+  }
+}
+
 /// 主题：cardTheme 侧边宽度 1.5（模拟 borderStyle bold）
 ThemeData _boldTheme() => ThemeData(
       cardTheme: const CardThemeData(
@@ -130,22 +153,15 @@ void main() {
   group('① 发现页应用卡片边框宽度随 cardTheme', () {
     testWidgets('应用卡片边框宽度随主题（bold 1.5）', (tester) async {
       Get.reset();
-      final logic = DiscoveryLogic();
-      Get.put<DiscoveryLogic>(logic);
-      logic.state.channelApps['github'] = [
-        const AppSummary(
-          appId: 'com.example.test',
-          name: '测试应用',
-          user: 'user',
-          repositories: 'repo',
-          icon: '',
-          des: '',
+      await tester.pumpWidget(ProviderScope(
+        overrides: [
+          // 预置带数据的 Notifier：build 返回含 github 应用的状态（不触发真实加载）
+          discoveryProvider.overrideWith(_SeededDiscoveryNotifier.new),
+        ],
+        child: MaterialApp(
+          theme: _boldTheme(),
+          home: const DiscoveryPage(),
         ),
-      ];
-
-      await tester.pumpWidget(GetMaterialApp(
-        theme: _boldTheme(),
-        home: const DiscoveryPage(),
       ));
       await tester.pump();
 
@@ -158,8 +174,9 @@ void main() {
             (w.decoration! as BoxDecoration).border is Border),
       );
       expect(appCard, findsOneWidget);
-      final container = tester.widget<Container>(appCard);
-      final border = (container.decoration! as BoxDecoration).border! as Border;
+      final containerWidget = tester.widget<Container>(appCard);
+      final border =
+          (containerWidget.decoration! as BoxDecoration).border! as Border;
       expect(border.top.width, 1.5,
           reason: '应用卡片边框宽度应随主题 borderStyle（bold=1.5）');
       expect(

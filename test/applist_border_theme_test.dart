@@ -1,6 +1,7 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/aggregate/AppAddedDatabase.dart';
@@ -146,18 +147,22 @@ void main() {
   });
 
   group('ApplistPage 头像边框', () {
+    late ProviderContainer container;
+
     setUp(() {
       SharedPreferences.setMockInitialValues({});
       Get.reset();
-      // ApplistLogic(GithubRequestMix) 构造期依赖 + view 内 Get.find 依赖
+      // ApplistNotifier 经 GetX 容器取 UserManager/BadgeService/UpdateManager 镜像
       Get.put<GithubRestClient>(GithubRestClient(Dio()));
       Get.put(BadgeService());
       Get.put(UpdateManagerService());
       Get.put(UserManager.instance);
+      container = ProviderContainer();
     });
 
     tearDown(() {
       Get.reset();
+      container.dispose();
     });
 
     testWidgets('头像边框非黑色（outlineVariant 系色），宽度随主题', (tester) async {
@@ -167,8 +172,12 @@ void main() {
         avatarUrl: 'https://example.com/avatar.png',
       );
 
-      await tester.pumpWidget(const GetMaterialApp(home: ApplistPage()));
-      // 固定 pump：头像 placeholder（AppLoading）为无限动画，pumpAndSettle 会超时
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: const MaterialApp(home: ApplistPage()),
+        ),
+      );
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
 

@@ -1,5 +1,6 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
-import 'package:get/get.dart';
 import 'package:go_router/go_router.dart';
 
 import 'package:gstore/core/core.dart';
@@ -16,8 +17,8 @@ class BackupPage extends StatefulWidget {
 }
 
 class _BackupPageState extends State<BackupPage> {
-  // 使用 Get.put 确保 BackupLogic 被初始化
-  final BackupLogic _logic = Get.put<BackupLogic>(BackupLogic());
+  // 页面私有逻辑实例（独立于 mine 页的备份卡实例，选项互不共享）
+  late final BackupLogic _logic;
 
   /// WebDAV 模块是否在线（订阅模块上下线事件，驱动卡片显隐）
   bool _webdavModuleOnline = false;
@@ -30,6 +31,7 @@ class _BackupPageState extends State<BackupPage> {
   @override
   void initState() {
     super.initState();
+    _logic = BackupLogic();
     _webdavModuleOnline = ModuleManager.instance.isInitialized('webdav');
     _webdavSub = ModuleManager.instance.watchModule('webdav').listen((event) {
       if (!mounted) return;
@@ -54,13 +56,13 @@ class _BackupPageState extends State<BackupPage> {
   void dispose() {
     _webdavSub?.cancel();
     _backupSub?.cancel();
+    _logic.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final logic = _logic;
-    final state = logic.state;
 
     return Scaffold(
       appBar: AppBar(
@@ -68,7 +70,10 @@ class _BackupPageState extends State<BackupPage> {
       ),
       // backup 模块下线 → 整页未启用占位（不渲染功能内容）
       body: _backupModuleOnline
-          ? Obx(() => _buildBody(context, logic, state))
+          ? ListenableBuilder(
+              listenable: logic,
+              builder: (context, _) => _buildBody(context, logic),
+            )
           : _buildBackupModuleOffline(context),
     );
   }
@@ -108,10 +113,10 @@ class _BackupPageState extends State<BackupPage> {
   Widget _buildBody(
     BuildContext context,
     BackupLogic logic,
-    BackupState state,
   ) {
+    final state = logic.state;
     // 显示错误信息（如果有）
-    if (state.errorMessage.value.isNotEmpty) {
+    if (state.errorMessage.isNotEmpty) {
       return Center(
         child: Padding(
           padding: AppSpacing.allXL,
@@ -130,16 +135,13 @@ class _BackupPageState extends State<BackupPage> {
               ),
               const SizedBox(height: AppSpacing.md),
               Text(
-                state.errorMessage.value,
+                state.errorMessage,
                 style: Theme.of(context).textTheme.bodyMedium,
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: AppSpacing.xl),
               ElevatedButton(
-                onPressed: () {
-                  state.errorMessage.value = '';
-                  logic.loadStatistics();
-                },
+                onPressed: logic.loadStatistics,
                 child: const Text('重试'),
               ),
             ],
@@ -152,22 +154,22 @@ class _BackupPageState extends State<BackupPage> {
       padding: AppSpacing.allLG,
       children: [
         // 统计信息卡片
-        _buildStatisticsCard(context, logic, state),
+        _buildStatisticsCard(context, logic),
 
         const SizedBox(height: AppSpacing.lg),
 
         // 备份恢复配置区域
-        _buildBackupRestoreConfigCard(context, logic, state),
+        _buildBackupRestoreConfigCard(context, logic),
 
         const SizedBox(height: AppSpacing.lg),
 
         // 本地备份
-        _buildLocalBackupCard(context, logic, state),
+        _buildLocalBackupCard(context, logic),
 
         // WebDAV 云端备份（模块下线时隐藏，含配置入口）
         if (_webdavModuleOnline) ...[
           const SizedBox(height: AppSpacing.lg),
-          _buildWebDavBackupCard(context, logic, state),
+          _buildWebDavBackupCard(context, logic),
         ],
       ],
     );
@@ -177,58 +179,61 @@ class _BackupPageState extends State<BackupPage> {
   Widget _buildStatisticsCard(
     BuildContext context,
     BackupLogic logic,
-    BackupState state,
   ) {
-    return Obx(() {
-      final stats = state.statistics.value;
+    final state = logic.state;
+    return ListenableBuilder(
+      listenable: logic,
+      builder: (context, _) {
+        final stats = state.statistics;
 
-      if (stats == null) {
-        return const Center(
-          child: AppLoading(size: AppLoadingSize.medium),
+        if (stats == null) {
+          return const Center(
+            child: AppLoading(size: AppLoadingSize.medium),
+          );
+        }
+
+        return AppCard(
+          padding: AppSpacing.allLG,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(
+                    Icons.bar_chart,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                  const SizedBox(width: AppSpacing.sm),
+                  Text(
+                    '数据统计',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                ],
+              ),
+              const SizedBox(height: AppSpacing.md),
+              _buildStatItem(
+                context,
+                '总应用数',
+                '${stats.totalApps}',
+                Icons.apps,
+              ),
+              _buildStatItem(
+                context,
+                '已启用',
+                '${stats.enabledApps}',
+                Icons.check_circle,
+              ),
+              _buildStatItem(
+                context,
+                '已禁用',
+                '${stats.disabledApps}',
+                Icons.block,
+              ),
+            ],
+          ),
         );
-      }
-
-      return AppCard(
-        padding: AppSpacing.allLG,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(
-                  Icons.bar_chart,
-                  color: Theme.of(context).colorScheme.primary,
-                ),
-                const SizedBox(width: AppSpacing.sm),
-                Text(
-                  '数据统计',
-                  style: Theme.of(context).textTheme.titleMedium,
-                ),
-              ],
-            ),
-            const SizedBox(height: AppSpacing.md),
-            _buildStatItem(
-              context,
-              '总应用数',
-              '${stats!.totalApps}',
-              Icons.apps,
-            ),
-            _buildStatItem(
-              context,
-              '已启用',
-              '${stats.enabledApps}',
-              Icons.check_circle,
-            ),
-            _buildStatItem(
-              context,
-              '已禁用',
-              '${stats.disabledApps}',
-              Icons.block,
-            ),
-          ],
-        ),
-      );
-    });
+      },
+    );
   }
 
   Widget _buildStatItem(
@@ -264,10 +269,12 @@ class _BackupPageState extends State<BackupPage> {
   Widget _buildBackupRestoreConfigCard(
     BuildContext context,
     BackupLogic logic,
-    BackupState state,
   ) {
-    return Obx(() {
-      final restoreMode = state.restoreMode.value;
+    return ListenableBuilder(
+      listenable: logic,
+      builder: (context, _) {
+        final state = logic.state;
+        final restoreMode = state.restoreMode;
 
       return AppCard(
         padding: AppSpacing.allLG,
@@ -293,7 +300,7 @@ class _BackupPageState extends State<BackupPage> {
             SwitchListTile(
               title: const Text('导出时包含应用配置'),
               subtitle: const Text('导出备份时同时导出主题、WebDAV 等应用设置'),
-              value: state.includeAppConfig.value,
+              value: state.includeAppConfig,
               onChanged: (value) => logic.toggleIncludeAppConfig(value),
             ),
 
@@ -310,31 +317,31 @@ class _BackupPageState extends State<BackupPage> {
                 SwitchListTile(
                   dense: true,
                   title: const Text('包含图标 URL'),
-                  value: state.includeIconUrls.value,
+                  value: state.includeIconUrls,
                   onChanged: (value) => logic.toggleIncludeIconUrls(value),
                 ),
                 SwitchListTile(
                   dense: true,
                   title: const Text('包含描述'),
-                  value: state.includeDescription.value,
+                  value: state.includeDescription,
                   onChanged: (value) => logic.toggleIncludeDescription(value),
                 ),
                 SwitchListTile(
                   dense: true,
                   title: const Text('包含分类'),
-                  value: state.includeCategory.value,
+                  value: state.includeCategory,
                   onChanged: (value) => logic.toggleIncludeCategory(value),
                 ),
                 SwitchListTile(
                   dense: true,
                   title: const Text('包含扩展字段 (extra)'),
-                  value: state.includeExtra.value,
+                  value: state.includeExtra,
                   onChanged: (value) => logic.toggleIncludeExtra(value),
                 ),
                 SwitchListTile(
                   dense: true,
                   title: const Text('仅导出已启用的应用'),
-                  value: state.enabledOnly.value,
+                  value: state.enabledOnly,
                   onChanged: (value) => logic.toggleEnabledOnly(value),
                 ),
               ],
@@ -346,7 +353,7 @@ class _BackupPageState extends State<BackupPage> {
             SwitchListTile(
               title: const Text('导入时恢复应用配置'),
               subtitle: const Text('导入备份时同时恢复主题、WebDAV 等应用设置'),
-              value: state.restoreAppConfig.value,
+              value: state.restoreAppConfig,
               onChanged: (value) => logic.toggleRestoreAppConfig(value),
             ),
 
@@ -401,7 +408,8 @@ class _BackupPageState extends State<BackupPage> {
           ],
         ),
       );
-    });
+      },
+    );
   }
 
   String _getRestoreModeDescription(RestoreMode mode) {
@@ -419,143 +427,149 @@ class _BackupPageState extends State<BackupPage> {
   Widget _buildLocalBackupCard(
     BuildContext context,
     BackupLogic logic,
-    BackupState state,
   ) {
-    return Obx(() {
-      final isExporting = state.isExporting.value;
-      final isImporting = state.isImporting.value;
+    return ListenableBuilder(
+      listenable: logic,
+      builder: (context, _) {
+        final state = logic.state;
+        final isExporting = state.isExporting;
+        final isImporting = state.isImporting;
 
-      return AppCard(
-        padding: EdgeInsets.zero,
-        child: Column(
-          children: [
-            // 标题栏
-            ListTile(
-              leading: Icon(
-                Icons.smartphone,
-                color: Theme.of(context).colorScheme.primary,
-              ),
-              title: Text(
-                '本地备份',
-                style: Theme.of(context).textTheme.titleMedium,
-              ),
-            ),
-            const Divider(height: 1),
-
-            // 导出到本地
-            ListTile(
-              leading: const Icon(Icons.save_alt),
-              title: const Text('导出到本地'),
-              subtitle: const Text('将备份数据保存到本地文件'),
-              trailing: isExporting
-                  ? const AppLoading(size: AppLoadingSize.small)
-                  : const Icon(Icons.chevron_right),
-              onTap: isExporting ? null : () => logic.exportCompressed(context),
-            ),
-            const Divider(height: 1),
-
-            // 从本地文件恢复
-            ListTile(
-              leading: const Icon(Icons.folder_open),
-              title: const Text('从本地文件恢复'),
-              subtitle: const Text('选择本地备份文件进行恢复'),
-              trailing: isImporting
-                  ? const AppLoading(size: AppLoadingSize.small)
-                  : const Icon(Icons.chevron_right),
-              onTap: isImporting ? null : () => logic.selectAndImportFile(context),
-            ),
-          ],
-        ),
-      );
-    });
-  }
-
-  /// WebDAV 云端备份卡片
-  Widget _buildWebDavBackupCard(
-    BuildContext context,
-    BackupLogic logic,
-    BackupState state,
-  ) {
-    return Obx(() {
-      final hasConfig = state.hasWebDavConfig.value;
-      final isExporting = state.isUploadingWebDav.value;
-      final isImporting = state.isImporting.value;
-      final status = state.webDavStatus.value;
-
-      // 根据配置状态决定卡片是否可用
-      final isEnabled = hasConfig;
-
-      return Opacity(
-        opacity: isEnabled ? 1.0 : 0.5,
-        child: AppCard(
+        return AppCard(
           padding: EdgeInsets.zero,
           child: Column(
             children: [
               // 标题栏
               ListTile(
                 leading: Icon(
-                  Icons.cloud_outlined,
-                  color: isEnabled
-                      ? Theme.of(context).colorScheme.primary
-                      : Theme.of(context).colorScheme.outlineVariant,
+                  Icons.smartphone,
+                  color: Theme.of(context).colorScheme.primary,
                 ),
                 title: Text(
-                  'WebDAV 云端备份',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        color: isEnabled
-                            ? null
-                            : Theme.of(context).colorScheme.outlineVariant,
-                      ),
+                  '本地备份',
+                  style: Theme.of(context).textTheme.titleMedium,
                 ),
-                trailing: _buildStatusIndicator(status),
-                onTap: () async {
-                  final result = await context.push<bool>(AppRoute.webdavConfig);
-                  if (result == true) {
-                    await logic.checkWebDavConfig();
-                  }
-                },
               ),
               const Divider(height: 1),
 
-              // 备份到网盘
+              // 导出到本地
               ListTile(
-                leading: const Icon(Icons.cloud_upload),
-                title: const Text('备份到网盘'),
-                subtitle: Text(
-                  hasConfig
-                      ? '将备份数据上传到 WebDAV 云端'
-                      : '请先配置 WebDAV 信息',
-                ),
+                leading: const Icon(Icons.save_alt),
+                title: const Text('导出到本地'),
+                subtitle: const Text('将备份数据保存到本地文件'),
                 trailing: isExporting
                     ? const AppLoading(size: AppLoadingSize.small)
                     : const Icon(Icons.chevron_right),
-                onTap: isEnabled && !isExporting
-                    ? () => logic.uploadToWebDav(context, compressed: true)
-                    : null,
+                onTap: isExporting ? null : () => logic.exportCompressed(context),
               ),
               const Divider(height: 1),
 
-              // 从网盘恢复备份
+              // 从本地文件恢复
               ListTile(
-                leading: const Icon(Icons.cloud_download),
-                title: const Text('从网盘恢复备份'),
-                subtitle: Text(
-                  hasConfig
-                      ? '从 WebDAV 云端下载备份并恢复'
-                      : '请先配置 WebDAV 信息',
-                ),
+                leading: const Icon(Icons.folder_open),
+                title: const Text('从本地文件恢复'),
+                subtitle: const Text('选择本地备份文件进行恢复'),
                 trailing: isImporting
                     ? const AppLoading(size: AppLoadingSize.small)
                     : const Icon(Icons.chevron_right),
-                onTap: isEnabled && !isImporting
-                    ? () => logic.downloadFromWebDav(context)
-                    : null,
+                onTap: isImporting ? null : () => logic.selectAndImportFile(context),
               ),
             ],
           ),
-        ),
-      );
-    });
+        );
+      },
+    );
+  }
+
+  /// WebDAV 云端备份卡片
+  Widget _buildWebDavBackupCard(
+    BuildContext context,
+    BackupLogic logic,
+  ) {
+    return ListenableBuilder(
+      listenable: logic,
+      builder: (context, _) {
+        final state = logic.state;
+        final hasConfig = state.hasWebDavConfig;
+        final isExporting = state.isUploadingWebDav;
+        final isImporting = state.isImporting;
+        final status = state.webDavStatus;
+
+        // 根据配置状态决定卡片是否可用
+        final isEnabled = hasConfig;
+
+        return Opacity(
+          opacity: isEnabled ? 1.0 : 0.5,
+          child: AppCard(
+            padding: EdgeInsets.zero,
+            child: Column(
+              children: [
+                // 标题栏
+                ListTile(
+                  leading: Icon(
+                    Icons.cloud_outlined,
+                    color: isEnabled
+                        ? Theme.of(context).colorScheme.primary
+                        : Theme.of(context).colorScheme.outlineVariant,
+                  ),
+                  title: Text(
+                    'WebDAV 云端备份',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                          color: isEnabled
+                              ? null
+                              : Theme.of(context).colorScheme.outlineVariant,
+                        ),
+                  ),
+                  trailing: _buildStatusIndicator(status),
+                  onTap: () async {
+                    final result = await context.push<bool>(AppRoute.webdavConfig);
+                    if (result == true) {
+                      await logic.checkWebDavConfig();
+                    }
+                  },
+                ),
+                const Divider(height: 1),
+
+                // 备份到网盘
+                ListTile(
+                  leading: const Icon(Icons.cloud_upload),
+                  title: const Text('备份到网盘'),
+                  subtitle: Text(
+                    hasConfig
+                        ? '将备份数据上传到 WebDAV 云端'
+                        : '请先配置 WebDAV 信息',
+                  ),
+                  trailing: isExporting
+                      ? const AppLoading(size: AppLoadingSize.small)
+                      : const Icon(Icons.chevron_right),
+                  onTap: isEnabled && !isExporting
+                      ? () => logic.uploadToWebDav(context, compressed: true)
+                      : null,
+                ),
+                const Divider(height: 1),
+
+                // 从网盘恢复备份
+                ListTile(
+                  leading: const Icon(Icons.cloud_download),
+                  title: const Text('从网盘恢复备份'),
+                  subtitle: Text(
+                    hasConfig
+                        ? '从 WebDAV 云端下载备份并恢复'
+                        : '请先配置 WebDAV 信息',
+                  ),
+                  trailing: isImporting
+                      ? const AppLoading(size: AppLoadingSize.small)
+                      : const Icon(Icons.chevron_right),
+                  onTap: isEnabled && !isImporting
+                      ? () => logic.downloadFromWebDav(context)
+                      : null,
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 
   /// 构建状态指示器

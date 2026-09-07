@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:get/get.dart';
 import 'package:gstore/core/agent/agent_model_store.dart';
 import 'package:gstore/core/agent/agent_service.dart';
 import 'package:gstore/core/core.dart';
@@ -476,10 +475,7 @@ class _ModelEditSheetState extends State<_ModelEditSheet> {
   Future<void> _save() async {
     final apiKey = _apiKeyController.text.trim();
     if (apiKey.isEmpty) {
-      Get.snackbar('无法保存', '请填写 API Key',
-          snackPosition: SnackPosition.BOTTOM,
-          backgroundColor: AppColors.error,
-          duration: const Duration(seconds: 2));
+      AppDialogs.showError('请填写 API Key');
       return;
     }
 

@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
@@ -230,11 +231,23 @@ void main() {
   late _FakeAppDao appDao;
   late Dio dio;
 
+  /// 构建注入 DiscoveryNotifier 的容器（override 预构造实例）。
+  /// 返回 (container, notifier)；测试用 notifier.loadData() 显式驱动加载。
+  (ProviderContainer, DiscoveryNotifier) makeContainer() {
+    final notifier = DiscoveryNotifier();
+    final container = ProviderContainer(overrides: [
+      discoveryProvider.overrideWith(() => notifier),
+    ]);
+    // 首次 read 建立 element（触发 build；随后测试显式 loadData 覆盖自动加载）
+    container.read(discoveryProvider);
+    return (container, notifier);
+  }
+
   setUp(() async {
     await ModuleManager.instance.clear();
     ModuleManager.instance.injectContext(null);
     Get.reset();
-    // 绑定 ChannelManager 单例（DiscoveryLogic 经 ModuleManager 取渠道管理器）
+    // 绑定 ChannelManager 单例（DiscoveryNotifier 经 ModuleManager 取渠道管理器）
     ModuleManager.instance.bind<ChannelManager>(ChannelManager.instance);
     appDao = _FakeAppDao();
     dio = Dio();
@@ -291,10 +304,11 @@ void main() {
     }
   }
 
-  group('DiscoveryLogic 脚本渠道按 code 独立显示', () {
+  group('DiscoveryNotifier 脚本渠道按 code 独立显示', () {
     test('① 未注册脚本渠道：sortedChannelCodes 仅含已加载渠道（空）', () {
-      final logic = DiscoveryLogic();
-      expect(logic.sortedChannelCodes, isEmpty);
+      final (container, notifier) = makeContainer();
+      addTearDown(container.dispose);
+      expect(notifier.sortedChannelCodes, isEmpty);
     });
 
     test('② 注册两个脚本渠道 → sortedChannelCodes 含两个 code（未加载也占位）',
@@ -302,10 +316,11 @@ void main() {
       await registerScriptChannel('js_pingan', _scriptA);
       await registerScriptChannel('js_vivo', _scriptB);
 
-      final logic = DiscoveryLogic();
-      expect(logic.sortedChannelCodes, containsAll(['js_pingan', 'js_vivo']));
+      final (container, notifier) = makeContainer();
+      addTearDown(container.dispose);
+      expect(notifier.sortedChannelCodes, containsAll(['js_pingan', 'js_vivo']));
       // 不再出现共享的 custom 槽位
-      expect(logic.sortedChannelCodes, isNot(contains('custom')));
+      expect(notifier.sortedChannelCodes, isNot(contains('custom')));
     });
 
     test('③ loadData 后 channelApps 有两个独立槽位（code 键），数据不串', () async {
@@ -319,18 +334,17 @@ void main() {
       await registerScriptChannel('js_pingan', _scriptA);
       await registerScriptChannel('js_vivo', _scriptB);
 
-      final logic = DiscoveryLogic();
-      // onReady 设置 _channelManager 并触发 loadData（与真实页面生命周期一致）
-      logic.onReady();
-      await logic.loadData();
+      final (container, notifier) = makeContainer();
+      addTearDown(container.dispose);
+      await notifier.loadData();
 
-      expect(logic.state.channelApps.keys, containsAll(['js_pingan', 'js_vivo']));
-      expect(logic.state.channelApps['js_pingan'], hasLength(1));
-      expect(logic.state.channelApps['js_vivo'], hasLength(1));
-      expect(logic.state.channelApps['js_pingan']!.first.name, 'App A One');
-      expect(logic.state.channelApps['js_vivo']!.first.name, 'App B One');
+      expect(notifier.state.channelApps.keys, containsAll(['js_pingan', 'js_vivo']));
+      expect(notifier.state.channelApps['js_pingan'], hasLength(1));
+      expect(notifier.state.channelApps['js_vivo'], hasLength(1));
+      expect(notifier.state.channelApps['js_pingan']!.first.name, 'App A One');
+      expect(notifier.state.channelApps['js_vivo']!.first.name, 'App B One');
       // 无 custom 合并槽位（后注册不再覆盖先注册）
-      expect(logic.state.channelApps.containsKey('custom'), isFalse);
+      expect(notifier.state.channelApps.containsKey('custom'), isFalse);
     });
 
     test('④ selectedChannel 按 code 切换', () async {
@@ -344,29 +358,29 @@ void main() {
       await registerScriptChannel('js_pingan', _scriptA);
       await registerScriptChannel('js_vivo', _scriptB);
 
-      final logic = DiscoveryLogic();
-      logic.onReady();
-      await logic.loadData();
+      final (container, notifier) = makeContainer();
+      addTearDown(container.dispose);
+      await notifier.loadData();
 
       // 全部：两个渠道应用都显示
-      expect(logic.getDisplayApps(), hasLength(2));
+      expect(notifier.getDisplayApps(), hasLength(2));
 
-      logic.selectChannel('js_pingan');
-      expect(logic.state.selectedChannel.value, 'js_pingan');
-      final pinganApps = logic.getDisplayApps();
+      notifier.selectChannel('js_pingan');
+      expect(notifier.state.selectedChannel, 'js_pingan');
+      final pinganApps = notifier.getDisplayApps();
       expect(pinganApps, hasLength(1));
       expect(pinganApps.first.$1.name, 'App A One');
       expect(pinganApps.first.$2, 'js_pingan');
 
-      logic.selectChannel('js_vivo');
-      final vivoApps = logic.getDisplayApps();
+      notifier.selectChannel('js_vivo');
+      final vivoApps = notifier.getDisplayApps();
       expect(vivoApps, hasLength(1));
       expect(vivoApps.first.$1.name, 'App B One');
       expect(vivoApps.first.$2, 'js_vivo');
 
-      logic.selectChannel(null);
-      expect(logic.state.selectedChannel.value, isNull);
-      expect(logic.getDisplayApps(), hasLength(2));
+      notifier.selectChannel(null);
+      expect(notifier.state.selectedChannel, isNull);
+      expect(notifier.getDisplayApps(), hasLength(2));
     });
 
     test('⑤ 重启模拟：重新注册渠道后再次加载，各自槽位数据仍在（不复盖丢失）',
@@ -381,11 +395,11 @@ void main() {
       await registerScriptChannel('js_pingan', _scriptA);
       await registerScriptChannel('js_vivo', _scriptB);
 
-      final logic = DiscoveryLogic();
-      logic.onReady();
-      await logic.loadData();
-      expect(logic.state.channelApps['js_pingan']!.first.name, 'App A One');
-      expect(logic.state.channelApps['js_vivo']!.first.name, 'App B One');
+      final (container, notifier) = makeContainer();
+      addTearDown(container.dispose);
+      await notifier.loadData();
+      expect(notifier.state.channelApps['js_pingan']!.first.name, 'App A One');
+      expect(notifier.state.channelApps['js_vivo']!.first.name, 'App B One');
 
       // 模拟重启：注销全部脚本渠道后重新注册（新实例、同 key）
       for (final channel in ChannelManager.instance.dynamicChannels.toList()) {
@@ -396,12 +410,12 @@ void main() {
       await registerScriptChannel('js_pingan', _scriptA);
       await registerScriptChannel('js_vivo', _scriptB);
 
-      await logic.loadData();
+      await notifier.loadData();
 
-      expect(logic.state.channelApps['js_pingan'], isNotNull);
-      expect(logic.state.channelApps['js_vivo'], isNotNull);
-      expect(logic.state.channelApps['js_pingan']!.first.name, 'App A One');
-      expect(logic.state.channelApps['js_vivo']!.first.name, 'App B One');
+      expect(notifier.state.channelApps['js_pingan'], isNotNull);
+      expect(notifier.state.channelApps['js_vivo'], isNotNull);
+      expect(notifier.state.channelApps['js_pingan']!.first.name, 'App A One');
+      expect(notifier.state.channelApps['js_vivo']!.first.name, 'App B One');
     });
 
     test('⑥ 枚举渠道（vivo）仍正常（code 映射）', () async {
@@ -417,16 +431,16 @@ void main() {
       ]);
       ChannelManager.instance.registerChannel(vivo);
 
-      final logic = DiscoveryLogic();
-      logic.onReady();
-      await logic.loadData();
+      final (container, notifier) = makeContainer();
+      addTearDown(container.dispose);
+      await notifier.loadData();
 
-      expect(logic.state.channelApps['vivo'], hasLength(1));
-      expect(logic.state.channelApps['vivo']!.first.name, 'Vivo App');
-      expect(logic.sortedChannelCodes, contains('vivo'));
+      expect(notifier.state.channelApps['vivo'], hasLength(1));
+      expect(notifier.state.channelApps['vivo']!.first.name, 'Vivo App');
+      expect(notifier.sortedChannelCodes, contains('vivo'));
 
-      logic.selectChannel('vivo');
-      final apps = logic.getDisplayApps();
+      notifier.selectChannel('vivo');
+      final apps = notifier.getDisplayApps();
       expect(apps, hasLength(1));
       expect(apps.first.$2, 'vivo');
     });

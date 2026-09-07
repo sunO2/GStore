@@ -1,5 +1,4 @@
 import 'package:gstore/core/core.dart';
-import 'package:gstore/page/page.dart';
 
 class AppRoute {
   static String home = "/";
@@ -16,7 +15,6 @@ class AppRoute {
   static String themeSettings = "/GStore/themeSettings";
   static String backup = "/GStore/backup";
   static String webdavConfig = "/GStore/webdavConfig";
-  static String workflowDesigner = "/GStore/workflowDesigner";
   static String agent = "/GStore/agent";
   static String agentSettings = "/GStore/agentSettings";
   static String installedApps = "/GStore/installedApps";
@@ -24,37 +22,4 @@ class AppRoute {
   static String cacheManage = "/GStore/cacheManage";
   static String databaseManage = "/GStore/databaseManage";
   static String licenses = "/GStore/licenses";
-
-  static List<GetPage> pages = [
-    GetPage(
-        name: home,
-        page: () => const HomePage(),
-        transitionDuration: const Duration(milliseconds: 0),
-        transition: Transition.noTransition),
-    GetPage(name: appDetail, page: () => const DetailPage()),
-    GetPage(name: categoryPage, page: () => const SearchPage()),
-    GetPage(
-        name: search,
-        page: () => const SearchPage(),
-        transitionDuration: const Duration(milliseconds: 0),
-        transition: Transition.noTransition),
-    GetPage(name: downloadCenter, page: () => const DownloadManager()),
-    GetPage(name: updateCenter, page: () => const UpdateManager()),
-    GetPage(name: webView, page: () => const WebPage()),
-    GetPage(name: auth, page: () => const AuthPage()),
-    GetPage(name: fdroidRepo, page: () => FdroidRepoPage()),
-    GetPage(name: logViewer, page: () => const LogViewerPage()),
-    GetPage(name: settings, page: () => const SettingsPage()),
-    GetPage(name: themeSettings, page: () => const ThemeSettingsPage()),
-    GetPage(name: backup, page: () => const BackupPage()),
-    GetPage(name: webdavConfig, page: () => const WebDavConfigPage()),
-    GetPage(name: workflowDesigner, page: () => const WorkflowDesignerPage()),
-    GetPage(name: agent, page: () => const AgentPage()),
-    GetPage(name: agentSettings, page: () => const AgentSettingsPage()),
-    GetPage(name: installedApps, page: () => const InstalledAppsPage()),
-    GetPage(name: moduleManage, page: () => const ModuleManagePage()),
-    GetPage(name: cacheManage, page: () => const CacheManagePage()),
-    GetPage(name: databaseManage, page: () => const DatabaseManagePage()),
-    GetPage(name: licenses, page: () => const LicensesPage()),
-  ];
 }

@@ -13,15 +13,16 @@ import 'package:path_provider/path_provider.dart';
 
 /// F-Droid 仓库管理器
 /// 使用 Rust 实现提供更快的下载和解析速度
-class FdroidRepoManager extends GetxController implements IFdroidRepoService {
+class FdroidRepoManager implements IFdroidRepoService {
   static FdroidRepoManager? _instance;
 
   static FdroidRepoManager get instance {
-    _instance ??= FdroidRepoManager._();
+    _instance ??= FdroidRepoManager();
     return _instance!;
   }
 
-  FdroidRepoManager._();
+  /// 测试可自由构造自建实例；生产统一走 [instance]
+  FdroidRepoManager();
 
   /// 当前激活的源
   final Rx<FdroidSource?> currentSource = Rx<FdroidSource?>(null);
@@ -37,12 +38,6 @@ class FdroidRepoManager extends GetxController implements IFdroidRepoService {
 
   /// 最后的错误信息
   final RxnString errorMessage = RxnString('');
-
-  @override
-  void onInit() {
-    super.onInit();
-    // 不自动初始化，需要手动调用 initialize()
-  }
 
   /// 初始化管理器
   Future<void> initialize() async {
@@ -502,10 +497,5 @@ class FdroidRepoManager extends GetxController implements IFdroidRepoService {
       return Directory(path.join(home, '.gstore'));
     }
     return Directory.current;
-  }
-
-  @override
-  void onClose() {
-    super.onClose();
   }
 }

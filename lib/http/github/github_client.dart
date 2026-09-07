@@ -1,5 +1,4 @@
 import 'package:dio/dio.dart';
-import 'package:get/get.dart';
 import 'package:gstore/http/github/user_info/user_info.dart';
 import 'package:json_annotation/json_annotation.dart';
 import 'package:retrofit/retrofit.dart';
@@ -8,7 +7,7 @@ import 'package:retrofit/http.dart' as retrofit;
 part 'github_client.g.dart';
 
 @RestApi(baseUrl: 'https://api.github.com')
-abstract class GithubRestClient with GetxServiceMixin {
+abstract class GithubRestClient {
   factory GithubRestClient(Dio dio, {String? baseUrl}) =>
       _GithubRestClient(dio);
 

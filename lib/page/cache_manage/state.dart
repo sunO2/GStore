@@ -1,14 +1,14 @@
 import 'dart:typed_data';
 
-import 'package:get/get.dart';
-
-/// 单个缓存项（展示数据；清理动作在 logic 层按 id 路由）。
+/// 单个缓存项（展示数据；清理动作在逻辑层按 id 路由）。
 class CacheItem {
   CacheItem({
     required this.id,
     required this.name,
     required this.description,
     required this.icon,
+    this.size = 0,
+    this.failed = false,
   });
 
   final String id;
@@ -16,11 +16,22 @@ class CacheItem {
   final String description;
   final String icon;
 
-  /// 当前占用字节数（由 logic 统计后写入）。
-  int size = 0;
+  /// 当前占用字节数。
+  final int size;
 
   /// 是否清理失败（单项清理后仍残留时置位，用于提示）。
-  bool failed = false;
+  final bool failed;
+
+  CacheItem copyWith({int? size, bool? failed}) {
+    return CacheItem(
+      id: id,
+      name: name,
+      description: description,
+      icon: icon,
+      size: size ?? this.size,
+      failed: failed ?? this.failed,
+    );
+  }
 }
 
 /// 缓存分组（同类型缓存归为一组展示）。
@@ -30,37 +41,73 @@ class CacheGroup {
   final String title;
   final List<CacheItem> items;
 
-  int get totalSize =>
-      items.fold(0, (sum, item) => sum + item.size);
+  int get totalSize => items.fold(0, (sum, item) => sum + item.size);
+
+  CacheGroup copyWith({List<CacheItem>? items}) {
+    return CacheGroup(title: title, items: items ?? this.items);
+  }
 }
 
-/// 缓存管理页状态。
+/// 缓存管理页状态（Riverpod 不可变 state）。
 class CacheManageState {
   /// 统计加载中。
-  final RxBool loading = false.obs;
+  final bool loading;
 
   /// 正在清理的缓存项 id（为空表示无清理进行中）。
-  final RxString clearing = ''.obs;
+  final String clearing;
 
   /// 全部分组（按注册顺序）。
-  final RxList<CacheGroup> groups = <CacheGroup>[].obs;
+  final List<CacheGroup> groups;
 
   /// 缓存总大小。
-  final RxInt totalSize = 0.obs;
+  final int totalSize;
 
   // ---------- 已下载文件清理 ----------
 
   /// 已完成且文件存在的下载任务列表（供二级清理页展示）。
-  final RxList<DownloadedFileItem> downloads = <DownloadedFileItem>[].obs;
+  final List<DownloadedFileItem> downloads;
 
   /// 已下载文件总占用。
-  final RxInt downloadTotalSize = 0.obs;
+  final int downloadTotalSize;
 
   /// 下载列表是否在加载。
-  final RxBool downloadsLoading = false.obs;
+  final bool downloadsLoading;
 
   /// 正在删除中的文件路径集合（多选批量删除期间禁止再次操作）。
-  final RxSet<String> deletingIds = <String>{}.obs;
+  final Set<String> deletingIds;
+
+  const CacheManageState({
+    this.loading = false,
+    this.clearing = '',
+    this.groups = const [],
+    this.totalSize = 0,
+    this.downloads = const [],
+    this.downloadTotalSize = 0,
+    this.downloadsLoading = false,
+    this.deletingIds = const {},
+  });
+
+  CacheManageState copyWith({
+    bool? loading,
+    String? clearing,
+    List<CacheGroup>? groups,
+    int? totalSize,
+    List<DownloadedFileItem>? downloads,
+    int? downloadTotalSize,
+    bool? downloadsLoading,
+    Set<String>? deletingIds,
+  }) {
+    return CacheManageState(
+      loading: loading ?? this.loading,
+      clearing: clearing ?? this.clearing,
+      groups: groups ?? this.groups,
+      totalSize: totalSize ?? this.totalSize,
+      downloads: downloads ?? this.downloads,
+      downloadTotalSize: downloadTotalSize ?? this.downloadTotalSize,
+      downloadsLoading: downloadsLoading ?? this.downloadsLoading,
+      deletingIds: deletingIds ?? this.deletingIds,
+    );
+  }
 }
 
 /// 已下载文件条目（下载目录中的文件）。

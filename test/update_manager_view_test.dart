@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
+import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/service/badge_service.dart';
 import 'package:gstore/core/update/app_update_info.dart';
 import 'package:gstore/core/update/update_log.dart';
@@ -61,8 +63,9 @@ AppUpdateInfo _sampleInfo() => AppUpdateInfo(
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  tearDown(() {
+  tearDown(() async {
     Get.reset();
+    await ModuleManager.instance.clear();
   });
 
   testWidgets('缓存有更新：点日志按钮后标题显示"检测完成"而非"正在检测"', (tester) async {
@@ -75,10 +78,14 @@ void main() {
       CheckLogEntry(level: CheckLogLevel.info, text: '检测完成：发现 1 个可更新应用'),
     ]);
     fake.lastCheckedAt.value = DateTime.now();
-    Get.put<UpdateManagerService>(fake);
-    Get.put(BadgeService());
+    ModuleManager.instance.bind<UpdateManagerService>(fake);
+    ModuleManager.instance.bind<BadgeService>(BadgeService());
 
-    await tester.pumpWidget(const GetMaterialApp(home: UpdateManager()));
+    await tester.pumpWidget(
+      const ProviderScope(
+        child: GetMaterialApp(home: UpdateManager()),
+      ),
+    );
     await tester.pumpAndSettle();
 
     // 缓存优先：直接显示更新列表
@@ -101,10 +108,14 @@ void main() {
       CheckLogEntry(level: CheckLogLevel.none, text: '所有已添加应用均已是最新版本'),
     ]);
     fake.lastCheckedAt.value = DateTime.now();
-    Get.put<UpdateManagerService>(fake);
-    Get.put(BadgeService());
+    ModuleManager.instance.bind<UpdateManagerService>(fake);
+    ModuleManager.instance.bind<BadgeService>(BadgeService());
 
-    await tester.pumpWidget(const GetMaterialApp(home: UpdateManager()));
+    await tester.pumpWidget(
+      const ProviderScope(
+        child: GetMaterialApp(home: UpdateManager()),
+      ),
+    );
     await tester.pumpAndSettle();
 
     // 检测完成页（标题 + 历史日志），非"正在检测"

@@ -1,14 +1,12 @@
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
 import 'package:gstore/core/module/app_modules.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/module/module.dart';
-import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/service/backup_service.dart';
 import 'package:gstore/core/service/install_manager.dart';
-import 'package:gstore/http/github/dio_client.dart';
-import 'package:gstore/http/github/github_client.dart';
 import 'package:gstore/page/home/tab/applist/logic.dart';
 
 /// aggregate/install/backup 消费方注册表化测试（todo 17）
@@ -17,7 +15,7 @@ import 'package:gstore/page/home/tab/applist/logic.dart';
 /// - AggregateModule/InstallModule/BackupModule onRegister 绑定服务接口 →
 ///   get<IAggregateService>()/get<IInstallService>()/get<IBackupService>() 返回实例；
 ///   onUnregister 对称解绑 → null
-/// - ApplistLogic 迁移点 null 降级：aggregate 模块下线时 onReady 不抛
+/// - ApplistNotifier 迁移点 null 降级：aggregate 模块下线时初始化不抛
 ///   （不订阅、不加载，页面空态）
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -25,8 +23,8 @@ void main() {
   setUp(() async {
     await ModuleManager.instance.clear();
     ModuleManager.instance.injectContext(null);
-    // ApplistLogic 混入 GithubRequestMix，构造时 Get.find<GithubRestClient>()
-    Get.put(GithubRestClient(DioClient().get()));
+    Get.reset();
+    // ApplistNotifier 不再混入 GithubRequestMix（无 Get.find 构造依赖）
   });
 
   group('模块绑定 → 注册表可取；解绑 → null', () {
@@ -92,13 +90,19 @@ void main() {
     });
   });
 
-  group('ApplistLogic 迁移点 null 降级', () {
-    test('aggregate 模块下线（get<IAggregateService>() == null）→ onReady 不抛', () async {
-      final logic = ApplistLogic();
-      logic.onReady();
+  group('ApplistNotifier 迁移点 null 降级', () {
+    test('aggregate 模块下线（get<IAggregateService>() == null）→ 初始化不抛', () async {
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+
+      final notifier = container.read(applistProvider.notifier);
+      // 触发首帧初始化 microtask
+      container.read(applistProvider);
+      await Future<void>.delayed(const Duration(milliseconds: 10));
 
       // 降级路径：不订阅、不加载，页面空态（不抛 Get.find 异常）
-      expect(logic.state.apps, isEmpty);
+      expect(container.read(applistProvider).apps, isEmpty);
+      expect(notifier.searchController.text, isEmpty); // 控制器正常创建
     });
   });
 }

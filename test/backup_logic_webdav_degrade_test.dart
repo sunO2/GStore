@@ -80,14 +80,14 @@ void main() {
     test('checkWebDavConfig：短路置 notConfigured，不读 secure storage 不抛', () async {
       final logic = BackupLogic();
       await logic.checkWebDavConfig();
-      expect(logic.state.hasWebDavConfig.value, isFalse);
-      expect(logic.state.webDavStatus.value, WebDavConnectionStatus.notConfigured);
+      expect(logic.state.hasWebDavConfig, isFalse);
+      expect(logic.state.webDavStatus, WebDavConnectionStatus.notConfigured);
     });
 
     test('testWebDavConnection：短路置 notConfigured，不抛', () async {
       final logic = BackupLogic();
       await logic.testWebDavConnection();
-      expect(logic.state.webDavStatus.value, WebDavConnectionStatus.notConfigured);
+      expect(logic.state.webDavStatus, WebDavConnectionStatus.notConfigured);
     });
 
     testWidgets('uploadToWebDav：showWarning「模块未启用」且不弹面板、不置位', (tester) async {
@@ -102,7 +102,7 @@ void main() {
 
       expect(find.text('WebDAV 模块未启用'), findsOneWidget);
       expect(find.byType(BackupProgressSheet), findsNothing);
-      expect(logic.state.isUploadingWebDav.value, isFalse);
+      expect(logic.state.isUploadingWebDav, isFalse);
       expect(find.text('备份/恢复任务进行中，请稍候'), findsNothing);
     });
 
@@ -116,7 +116,7 @@ void main() {
 
       expect(find.text('WebDAV 模块未启用'), findsOneWidget);
       expect(find.byType(BackupRestoreSheet), findsNothing);
-      expect(logic.state.isImporting.value, isFalse);
+      expect(logic.state.isImporting, isFalse);
     });
   });
 
@@ -142,7 +142,7 @@ void main() {
 
       await tester.tap(find.text('关闭'));
       await tester.pumpAndSettle();
-      expect(logic.state.isUploadingWebDav.value, isFalse);
+      expect(logic.state.isUploadingWebDav, isFalse);
     });
 
     testWidgets('downloadFromWebDav：不短路、恢复面板正常弹出', (tester) async {
@@ -162,7 +162,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 200));
       await tester.tap(find.text('关闭').first);
       await tester.pumpAndSettle();
-      expect(logic.state.isImporting.value, isFalse);
+      expect(logic.state.isImporting, isFalse);
     });
   });
 
@@ -183,7 +183,7 @@ void main() {
 
       expect(find.text('备份/恢复任务进行中，请稍候'), findsOneWidget);
       expect(find.byType(BackupProgressSheet), findsNothing);
-      expect(logic.state.isUploadingWebDav.value, isFalse);
+      expect(logic.state.isUploadingWebDav, isFalse);
     });
   });
 }

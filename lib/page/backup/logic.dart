@@ -5,7 +5,6 @@ import 'dart:typed_data';
 import 'package:archive/archive.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:get/get.dart';
 import 'package:file_picker/file_picker.dart';
 
 import 'package:gstore/core/core.dart';
@@ -17,8 +16,25 @@ import 'package:gstore/page/backup/state.dart';
 import 'package:gstore/page/backup/widgets/backup_progress_sheet.dart';
 import 'package:gstore/page/backup/widgets/backup_restore_sheet.dart';
 
-class BackupLogic extends GetxController {
-  final BackupState state = BackupState();
+/// 备份逻辑控制器（纯 Dart ChangeNotifier，非 GetX）。
+///
+/// 被 backup 页与 mine 页各自持有独立实例（导出选项/恢复模式互不共享），
+/// 实例通过 [state] + [addListener] 驱动 UI 重建。
+class BackupLogic extends ChangeNotifier {
+  BackupLogic() {
+    _initialize();
+  }
+
+  BackupState _state = const BackupState();
+
+  /// 当前状态（不可变）。
+  BackupState get state => _state;
+
+  /// 更新状态并通知监听者。
+  void _update(BackupState next) {
+    _state = next;
+    notifyListeners();
+  }
 
   /// 备份服务（注册表注入：backup 模块下线时为 null → 本地备份/恢复功能软降级）。
   /// BackupModule 恒绑定 [BackupService.instance]（app_modules.dart），
@@ -28,12 +44,6 @@ class BackupLogic extends GetxController {
 
   /// WebDAV 服务（注册表注入：webdav 模块下线时为 null → 相关功能软降级）
   final IWebDavService? _webdavService = ModuleManager.instance.get<IWebDavService>();
-
-  @override
-  void onInit() {
-    super.onInit();
-    _initialize();
-  }
 
   /// 初始化
   Future<void> _initialize() async {
@@ -53,7 +63,7 @@ class BackupLogic extends GetxController {
     } catch (e, stackTrace) {
       appLog.error('BackupLogic: 初始化失败 - $e');
       appLog.error('BackupLogic: 堆栈跟踪: $stackTrace');
-      state.errorMessage.value = '初始化失败: $e';
+      _update(_state.copyWith(errorMessage: '初始化失败: $e'));
     }
   }
 
@@ -61,25 +71,32 @@ class BackupLogic extends GetxController {
   Future<void> checkWebDavConfig() async {
     // webdav 模块下线 → 降级为未配置（不读 secure storage）
     if (_webdavService == null) {
-      state.hasWebDavConfig.value = false;
-      state.webDavStatus.value = WebDavConnectionStatus.notConfigured;
+      _update(_state.copyWith(
+        hasWebDavConfig: false,
+        webDavStatus: WebDavConnectionStatus.notConfigured,
+      ));
       return;
     }
     try {
       final hasConfig = await WebDavConfigManager.instance.hasConfig();
-      state.hasWebDavConfig.value = hasConfig;
       debugPrint('BackupLogic: WebDAV 配置状态 - $hasConfig');
 
       // 如果有配置，测试连接
       if (hasConfig) {
+        _update(_state.copyWith(hasWebDavConfig: true));
         await testWebDavConnection();
       } else {
-        state.webDavStatus.value = WebDavConnectionStatus.notConfigured;
+        _update(_state.copyWith(
+          hasWebDavConfig: false,
+          webDavStatus: WebDavConnectionStatus.notConfigured,
+        ));
       }
     } catch (e) {
       appLog.error('BackupLogic: 检查 WebDAV 配置失败 - $e');
-      state.hasWebDavConfig.value = false;
-      state.webDavStatus.value = WebDavConnectionStatus.notConfigured;
+      _update(_state.copyWith(
+        hasWebDavConfig: false,
+        webDavStatus: WebDavConnectionStatus.notConfigured,
+      ));
     }
   }
 
@@ -88,30 +105,30 @@ class BackupLogic extends GetxController {
     final webdav = _webdavService;
     // webdav 模块下线 → 降级为未配置
     if (webdav == null) {
-      state.webDavStatus.value = WebDavConnectionStatus.notConfigured;
+      _update(_state.copyWith(webDavStatus: WebDavConnectionStatus.notConfigured));
       return;
     }
     try {
-      state.webDavStatus.value = WebDavConnectionStatus.testing;
+      _update(_state.copyWith(webDavStatus: WebDavConnectionStatus.testing));
 
       final config = await WebDavConfigManager.instance.loadConfig();
       if (config == null) {
-        state.webDavStatus.value = WebDavConnectionStatus.notConfigured;
+        _update(_state.copyWith(webDavStatus: WebDavConnectionStatus.notConfigured));
         return;
       }
 
       final success = await webdav.testWebDavConnection(config);
 
       if (success) {
-        state.webDavStatus.value = WebDavConnectionStatus.connected;
+        _update(_state.copyWith(webDavStatus: WebDavConnectionStatus.connected));
         appLog.info('BackupLogic: WebDAV 连接测试成功');
       } else {
-        state.webDavStatus.value = WebDavConnectionStatus.failed;
+        _update(_state.copyWith(webDavStatus: WebDavConnectionStatus.failed));
         appLog.error('BackupLogic: WebDAV 连接测试失败');
       }
     } catch (e) {
       appLog.error('BackupLogic: WebDAV 连接测试异常 - $e');
-      state.webDavStatus.value = WebDavConnectionStatus.failed;
+      _update(_state.copyWith(webDavStatus: WebDavConnectionStatus.failed));
     }
   }
 
@@ -123,12 +140,12 @@ class BackupLogic extends GetxController {
     try {
       debugPrint('BackupLogic: 开始加载统计信息');
       final statistics = await backup.getStatistics();
-      state.statistics.value = statistics;
+      _update(_state.copyWith(statistics: statistics));
       debugPrint('BackupLogic: 统计信息加载成功 - 总数: ${statistics.totalApps}');
     } catch (e, stackTrace) {
       appLog.error('BackupLogic: 加载统计信息失败 - $e');
       appLog.error('BackupLogic: 堆栈跟踪: $stackTrace');
-      state.errorMessage.value = '加载统计信息失败: $e';
+      _update(_state.copyWith(errorMessage: '加载统计信息失败: $e'));
     }
   }
 
@@ -142,7 +159,7 @@ class BackupLogic extends GetxController {
     }
     try {
       appLog.info('BackupLogic: 开始导出压缩备份');
-      state.isExporting.value = true;
+      _update(_state.copyWith(isExporting: true));
 
       // 创建 Archive 对象
       final archive = Archive();
@@ -165,7 +182,7 @@ class BackupLogic extends GetxController {
       debugPrint('BackupLogic: apps.json 已添加 (${appsBytes.length} bytes)');
 
       // 检查是否需要包含应用配置
-      if (state.includeAppConfig.value) {
+      if (_state.includeAppConfig) {
         debugPrint('BackupLogic: 包含应用配置');
         try {
           // 确保配置管理器已初始化
@@ -194,15 +211,7 @@ class BackupLogic extends GetxController {
         } catch (e, stackTrace) {
           appLog.error('BackupLogic: 导出应用配置失败: $e');
           appLog.error('BackupLogic: 堆栈跟踪: $stackTrace');
-
-          if (context.mounted) {
-            Get.snackbar(
-              '提示',
-              '导出应用配置失败，仅导出应用数据',
-              duration: const Duration(seconds: 2),
-              snackPosition: SnackPosition.BOTTOM,
-            );
-          }
+          AppDialogs.showWarning('导出应用配置失败，仅导出应用数据');
         }
       } else {
         debugPrint('BackupLogic: 不包含应用配置');
@@ -234,16 +243,8 @@ class BackupLogic extends GetxController {
     } catch (e, stackTrace) {
       appLog.error('BackupLogic: 导出失败 - $e');
       appLog.error('BackupLogic: 堆栈跟踪: $stackTrace');
-      state.isExporting.value = false;
-
-      if (context.mounted) {
-        Get.snackbar(
-          '导出失败',
-          '导出数据失败: $e',
-          duration: const Duration(seconds: 3),
-          snackPosition: SnackPosition.BOTTOM,
-        );
-      }
+      _update(_state.copyWith(isExporting: false));
+      AppDialogs.showError('导出数据失败: $e', title: '导出失败');
     }
   }
 
@@ -279,82 +280,66 @@ class BackupLogic extends GetxController {
     // 如果用户取消选择，提示用户
     if (outputPath == null || outputPath.isEmpty) {
       debugPrint('BackupLogic: 用户取消选择或文件选择器返回空路径');
-      state.isExporting.value = false;
-
-      if (context.mounted) {
-        Get.snackbar(
-          '已取消',
-          '您取消了导出操作',
-          duration: const Duration(seconds: 2),
-          snackPosition: SnackPosition.BOTTOM,
-        );
-      }
+      _update(_state.copyWith(isExporting: false));
+      AppDialogs.showSnackbar('您取消了导出操作', title: '已取消');
       return;
     }
 
     appLog.info('BackupLogic: 导出成功');
-    state.isExporting.value = false;
-
-    if (context.mounted) {
-      Get.snackbar(
-        '导出成功',
-        '备份已保存到：$outputPath',
-        duration: const Duration(seconds: 5),
-        snackPosition: SnackPosition.BOTTOM,
-      );
-    }
+    _update(_state.copyWith(isExporting: false));
+    AppDialogs.showSuccess('备份已保存到：$outputPath', title: '导出成功');
   }
 
   /// 切换是否包含应用配置
   void toggleIncludeAppConfig(bool value) {
-    state.includeAppConfig.value = value;
+    _update(_state.copyWith(includeAppConfig: value));
   }
 
   /// 切换导出选项：图标 URL
   void toggleIncludeIconUrls(bool value) {
-    state.includeIconUrls.value = value;
+    _update(_state.copyWith(includeIconUrls: value));
   }
 
   /// 切换导出选项：描述
   void toggleIncludeDescription(bool value) {
-    state.includeDescription.value = value;
+    _update(_state.copyWith(includeDescription: value));
   }
 
   /// 切换导出选项：分类
   void toggleIncludeCategory(bool value) {
-    state.includeCategory.value = value;
+    _update(_state.copyWith(includeCategory: value));
   }
 
   /// 切换导出选项：extra
   void toggleIncludeExtra(bool value) {
-    state.includeExtra.value = value;
+    _update(_state.copyWith(includeExtra: value));
   }
 
   /// 切换导出选项：仅已启用
   void toggleEnabledOnly(bool value) {
-    state.enabledOnly.value = value;
+    _update(_state.copyWith(enabledOnly: value));
   }
 
   /// 构建导出选项
   BackupOptions _buildBackupOptions() {
     return BackupOptions(
-      includeIconUrls: state.includeIconUrls.value,
-      includeDescription: state.includeDescription.value,
-      includeCategory: state.includeCategory.value,
-      includeExtra: state.includeExtra.value,
-      enabledOnly: state.enabledOnly.value,
-      includeAppConfig: state.includeAppConfig.value,
+      includeIconUrls: _state.includeIconUrls,
+      includeDescription: _state.includeDescription,
+      includeCategory: _state.includeCategory,
+      includeExtra: _state.includeExtra,
+      enabledOnly: _state.enabledOnly,
+      includeAppConfig: _state.includeAppConfig,
     );
   }
 
   /// 切换是否恢复应用配置
   void toggleRestoreAppConfig(bool value) {
-    state.restoreAppConfig.value = value;
+    _update(_state.copyWith(restoreAppConfig: value));
   }
 
   /// 设置恢复模式
   void setRestoreMode(RestoreMode mode) {
-    state.restoreMode.value = mode;
+    _update(_state.copyWith(restoreMode: mode));
   }
 
   /// 将 RestoreMode 转换为 BackupImportMode
@@ -394,28 +379,16 @@ class BackupLogic extends GetxController {
       final filePath = result.files.single.path;
       if (filePath == null) {
         appLog.error('BackupLogic: 无法获取文件路径');
-        if (context.mounted) {
-          Get.snackbar(
-            '文件路径错误',
-            '无法获取选择的文件路径',
-            duration: const Duration(seconds: 3),
-          );
-        }
+        AppDialogs.showError('无法获取选择的文件路径', title: '文件路径错误');
         return;
       }
 
       debugPrint('BackupLogic: 选择的文件: $filePath');
-      debugPrint('BackupLogic: 恢复模式: ${state.restoreMode.value}');
+      debugPrint('BackupLogic: 恢复模式: ${_state.restoreMode}');
       await importFromFile(context, filePath);
     } catch (e) {
       appLog.error('BackupLogic: 选择文件失败 - $e');
-      if (context.mounted) {
-        Get.snackbar(
-          '选择文件失败',
-          '选择备份文件失败: $e',
-          duration: const Duration(seconds: 3),
-        );
-      }
+      AppDialogs.showError('选择备份文件失败: $e', title: '选择文件失败');
     }
   }
 
@@ -431,7 +404,7 @@ class BackupLogic extends GetxController {
       return;
     }
     try {
-      state.isImporting.value = true;
+      _update(_state.copyWith(isImporting: true));
 
       // 显示进度对话框
       showDialog(
@@ -448,14 +421,14 @@ class BackupLogic extends GetxController {
       // 使用 state 中的恢复模式
       final result = await backup.importFromFile(
         filePath,
-        mode: _convertRestoreMode(state.restoreMode.value),
-        restoreAppConfig: state.restoreAppConfig.value,
+        mode: _convertRestoreMode(_state.restoreMode),
+        restoreAppConfig: _state.restoreAppConfig,
       );
 
       Navigator.pop(context); // 关闭进度对话框
 
       if (result.success) {
-        state.isImporting.value = false;
+        _update(_state.copyWith(isImporting: false));
 
         // 发送数据库变化事件
         DatabaseEventBus.instance.send(const DatabaseChangeEvent(
@@ -468,37 +441,21 @@ class BackupLogic extends GetxController {
           message += '，跳过 ${result.skippedCount} 个已存在的应用';
         }
 
-        Get.snackbar(
-          '导入成功',
-          message,
-          duration: const Duration(seconds: 3),
-          snackPosition: SnackPosition.BOTTOM,
-        );
+        AppDialogs.showSuccess(message, title: '导入成功');
 
         // 刷新数据
         await loadStatistics();
       } else {
-        state.isImporting.value = false;
-
-        Get.snackbar(
-          '导入失败',
-          result.error ?? '未知错误',
-          duration: const Duration(seconds: 3),
-          snackPosition: SnackPosition.BOTTOM,
-        );
+        _update(_state.copyWith(isImporting: false));
+        AppDialogs.showError(result.error ?? '未知错误', title: '导入失败');
       }
     } catch (e) {
-      state.isImporting.value = false;
+      _update(_state.copyWith(isImporting: false));
 
       // 确保关闭对话框
       Navigator.of(context, rootNavigator: true).pop();
 
-      Get.snackbar(
-        '导入失败',
-        '导入失败: $e',
-        duration: const Duration(seconds: 3),
-        snackPosition: SnackPosition.BOTTOM,
-      );
+      AppDialogs.showError('导入失败: $e', title: '导入失败');
     }
   }
 
@@ -523,7 +480,7 @@ class BackupLogic extends GetxController {
 
     // 打开进度面板（config 加载移入面板 task 内，点击立即弹面板；
     // isUploadingWebDav 保持 true 使源按钮禁用，防止重复触发）
-    state.isUploadingWebDav.value = true;
+    _update(_state.copyWith(isUploadingWebDav: true));
     try {
       await showModalBottomSheet<bool>(
         context: context,
@@ -543,14 +500,14 @@ class BackupLogic extends GetxController {
             await webdav.uploadToWebDav(
               config: config,
               compressed: compressed,
-              includeAppConfig: state.includeAppConfig.value,
+              includeAppConfig: _state.includeAppConfig,
               onLog: onLog,
             );
           },
         ),
       );
     } finally {
-      state.isUploadingWebDav.value = false;
+      _update(_state.copyWith(isUploadingWebDav: false));
     }
   }
 
@@ -573,7 +530,7 @@ class BackupLogic extends GetxController {
 
     // 打开恢复面板（面板内：阶段1 加载配置+列文件 → 阶段2 选择 →
     // 阶段3 恢复；isImporting 保持 true 防重复触发）
-    state.isImporting.value = true;
+    _update(_state.copyWith(isImporting: true));
     try {
       final success = await showModalBottomSheet<bool>(
         context: context,
@@ -605,8 +562,8 @@ class BackupLogic extends GetxController {
             await webdav.downloadFromWebDav(
               config: config,
               remotePath: file.path,
-              mode: _convertRestoreMode(state.restoreMode.value),
-              restoreAppConfig: state.restoreAppConfig.value,
+              mode: _convertRestoreMode(_state.restoreMode),
+              restoreAppConfig: _state.restoreAppConfig,
               onLog: onLog,
             );
           },
@@ -622,13 +579,7 @@ class BackupLogic extends GetxController {
         await loadStatistics();
       }
     } finally {
-      state.isImporting.value = false;
+      _update(_state.copyWith(isImporting: false));
     }
-  }
-
-  @override
-  void onClose() {
-    // TODO: implement dispose
-    super.onClose();
   }
 }

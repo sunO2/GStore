@@ -41,7 +41,7 @@ void main() {
       installerStore: null,
     );
     // importData 结束时 DatabaseEventBus.instance 走 GetX 容器，需预注册
-    Get.put(DatabaseEventBus());
+    DatabaseEventBus.instance;
   });
 
   late AppAddedDatabase aggregatorDb;

@@ -42,7 +42,7 @@ enum InstallMethod {
 /// 应用安装管理器
 /// 统一管理安装方式：优先 Shizuku 静默安装，未授权时回退系统安装
 /// 使用策略模式，可灵活切换安装方式
-class InstallManager extends GetxService implements IInstallService {
+class InstallManager implements IInstallService {
   static InstallManager? _instance;
   static InstallManager get instance => _instance ??= InstallManager._();
   InstallManager._();
@@ -89,7 +89,7 @@ class InstallManager extends GetxService implements IInstallService {
   }
 
   /// 当前是否视为 Android 平台
-  bool get _isAndroid => _isAndroidOverride || GetPlatform.isAndroid;
+  bool get _isAndroid => _isAndroidOverride || Platform.isAndroid;
 
   /// 当前安装方式偏好（默认系统安装）
   InstallMethod _preferredMethod = InstallMethod.system;
@@ -195,10 +195,8 @@ class InstallManager extends GetxService implements IInstallService {
     }
 
     if (_binderRunning && _permissionGranted) {
-      // 显示加载框，避免 Shizuku 暂存+安装期间界面无反馈
-      if (Get.isDialogOpen != true) {
-        AppDialogs.showLoading(message: '正在通过 Shizuku 安装...');
-      }
+      // 显示加载框，避免 Shizuku 暂存+安装期间界面无反馈（finally 必 dismiss）
+      AppDialogs.showLoading(message: '正在通过 Shizuku 安装...');
       try {
         final result = await _shizukuApi.runCommand(_stageAndInstallCommand(filePath));
         if (isPmSuccess(result)) {

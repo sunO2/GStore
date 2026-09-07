@@ -100,10 +100,6 @@ final GoRouter appRouter = GoRouter(
       builder: (context, state) => const WebDavConfigPage(),
     ),
     GoRoute(
-      path: AppRoute.workflowDesigner,
-      builder: (context, state) => const WorkflowDesignerPage(),
-    ),
-    GoRoute(
       path: AppRoute.agent,
       builder: (context, state) => const AgentPage(),
     ),

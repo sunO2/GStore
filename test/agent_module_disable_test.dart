@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/config/config_store.dart';
 import 'package:gstore/core/config/config_storage.dart';
@@ -6,9 +7,6 @@ import 'package:gstore/core/core.dart';
 import 'package:gstore/core/module/app_modules.dart';
 import 'package:gstore/page/agent/logic.dart';
 import 'package:gstore/page/agent/view.dart';
-import 'package:gstore/page/home/logic.dart';
-import 'package:gstore/http/github/dio_client.dart';
-import 'package:gstore/http/github/github_client.dart';
 
 /// 测试用统一初始化：全部使用内存存储（避免插件依赖）
 Future<void> initForTest() async {
@@ -33,7 +31,7 @@ class _StubModule extends AppModule {
 /// 验证：
 /// ① AgentToolsModule 上线（onInit + onRegister）后 get<AgentService>() 返回实例
 /// ② agent_tools 禁用（setModuleEnabled(false)）→ onUnregister 解绑 → get<AgentService>() null
-/// ③ AgentLogic 服务 null 时初始化/发送不抛且置「Agent 模块未启用」提示
+/// ③ AgentNotifier 服务 null 时初始化/发送不抛且置「Agent 模块未启用」提示
 /// ④ Agent 页对话提交在服务 null 时弹提示不发送（widget 测试）
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -41,7 +39,6 @@ void main() {
   setUp(() async {
     await ModuleManager.instance.clear();
     ModuleManager.instance.injectContext(null);
-    Get.reset();
     await initForTest();
   });
 
@@ -63,8 +60,6 @@ void main() {
         manager: manager,
       ));
 
-      expect(Get.isRegistered<AgentService>(), isTrue,
-          reason: 'onInit 应 Get.put AgentService');
       expect(manager.get<AgentService>(), isNotNull,
           reason: 'onRegister 应按类型绑定 AgentService');
     });
@@ -95,33 +90,42 @@ void main() {
     });
   });
 
-  group('AgentLogic 服务 null 降级', () {
+  group('AgentNotifier 服务 null 降级', () {
     test('③ 服务 null 时初始化不抛且置未启用提示', () async {
-      final logic = AgentLogic();
-      await logic.ensureInitialized();
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final notifier = container.read(agentProvider.notifier);
+      await notifier.ensureInitialized();
 
-      expect(logic.agentUnavailable, isTrue);
-      expect(logic.state.isInitialized.value, isFalse);
-      expect(logic.state.errorMessage.value, 'Agent 模块未启用');
+      expect(notifier.agentUnavailable, isTrue);
+      expect(container.read(agentProvider).isInitialized, isFalse);
+      expect(container.read(agentProvider).errorMessage, 'Agent 模块未启用');
     });
 
     test('③b 服务 null 时 sendText 不抛且置未启用提示', () async {
-      final logic = AgentLogic();
-      logic.sendText('hello');
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final notifier = container.read(agentProvider.notifier);
+      notifier.sendText('hello');
 
-      expect(logic.state.errorMessage.value, 'Agent 模块未启用');
+      expect(container.read(agentProvider).errorMessage, 'Agent 模块未启用');
     });
   });
 
   group('Agent 页对话提交降级（widget）', () {
     testWidgets('④ 服务 null 时提交弹提示不发送', (tester) async {
-      // HomeLogic 的 GithubRequestMix 构造时 Get.find<GithubRestClient>()
-      Get.put(GithubRestClient(DioClient().get()));
-      Get.put(HomeLogic());
-      await tester.pumpWidget(MaterialApp(
-        scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
-        home: const AgentPage(),
-      ));
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: MaterialApp(
+            scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
+            home: const AgentPage(),
+          ),
+        ),
+      );
       await tester.pump();
 
       // 未启用提示可见（页面不崩）

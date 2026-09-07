@@ -10,7 +10,6 @@
 library;
 
 import 'package:dio/dio.dart';
-import 'package:get/get.dart';
 import 'package:rhttp/rhttp.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/config/config_initializer.dart';
@@ -53,10 +52,8 @@ class LogModule extends AppModule {
 
   @override
   Future<void> onInit(ModuleContext context) async {
-    // main() 可能已 put（须最先拦截日志）；此处幂等
-    if (!Get.isRegistered<LogManager>()) {
-      Get.put(LogManager.instance);
-    }
+    // 单例注册进模块注册表（main() 可能已触发初始化；bind 幂等覆盖）
+    ModuleManager.instance.bind<LogManager>(LogManager.instance);
   }
 }
 
@@ -132,27 +129,29 @@ class DbModule extends AppModule {
 
   @override
   Future<void> onInit(ModuleContext context) async {
+    final manager = ModuleManager.instance;
     // 注册 Dio 实例（供 FdroidRepoManager 使用）
-    Get.lazyPut<Dio>(() => DioClient().get());
-    Get.lazyPut<GithubRestClient>(() => GithubRestClient(DioClient().get()));
+    manager.lazyPut<Dio>(() => DioClient().get());
+    manager.lazyPut<GithubRestClient>(() => GithubRestClient(DioClient().get()));
     // OAuth API 需要使用单独的 Dio 实例（不包含 GitHub REST API 专用 headers）
-    Get.lazyPut<GithubAuthApi>(() => GithubAuthApi(DioClient.createOAuthClient()));
-    Get.lazyPut<DownloadManager>(() => DownloadManager(
+    manager.lazyPut<GithubAuthApi>(() => GithubAuthApi(DioClient.createOAuthClient()));
+    manager.lazyPut<DownloadManager>(() => DownloadManager(
           engine: DioDownloadEngine(dio: DioClient().get()),
           repository: DownloadRepository(),
           onApkReady: (filePath) {
-            final m = ModuleManager.instance.get<InstallManager>();
+            final m = manager.get<InstallManager>();
             if (m != null) m.installApk(filePath);
           },
         ));
 
-    await Get.putAsync<DbManager>(() async => await DbManager().init());
-    Get.put(DatabaseEventBus());
+    await DbManager().init();
+    manager.bind<DbManager>(DbManager.instance);
+    manager.bind<DatabaseEventBus>(DatabaseEventBus.instance);
   }
 
   @override
   Future<void> onRegister(ModuleContext context) async {
-    context.bindService?.call(DbManager, Get.find<DbManager>());
+    context.bindService?.call(DbManager, DbManager.instance);
   }
 }
 
@@ -170,11 +169,10 @@ class UserModule extends AppModule {
   @override
   Future<void> onInit(ModuleContext context) async {
     final userManager = UserManager.instance;
-    if (!Get.isRegistered<UserManager>()) {
-      Get.put(userManager);
-    }
+    ModuleManager.instance.bind<UserManager>(userManager);
     await userManager.initialize();
     // 元数据提交服务（依赖用户登录态，首次使用时创建）
-    Get.lazyPut<MetadataSubmitService>(() => MetadataSubmitService());
+    ModuleManager.instance.lazyPut<MetadataSubmitService>(
+        () => MetadataSubmitService.instance);
   }
 }

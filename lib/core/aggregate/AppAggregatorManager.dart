@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
-import 'package:get/get.dart';
 import 'package:gstore/core/aggregate/AppAddedDatabase.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/channel.dart';
@@ -44,6 +43,9 @@ class AppAggregatorManager implements IAggregateService {
   /// 是否已初始化
   bool _isInitialized = false;
 
+  /// 数据库事件订阅（initialize 建立，可取消）
+  StreamSubscription<DatabaseChangeEvent>? _eventSub;
+
   /// 初始化
   Future<void> initialize() async {
     if (_isInitialized) return;
@@ -60,13 +62,11 @@ class AppAggregatorManager implements IAggregateService {
       // 监听数据库变化事件
       try {
         final eventBus = DatabaseEventBus.instance;
-        ever(eventBus.eventStream, (event) {
-          if (event != null) {
-            appLog.info('AppAggregatorManager: ✅ 收到数据库事件 - ${event.type}');
-            debugPrint('AppAggregatorManager: 开始刷新应用列表...');
-            // 任何数据库变化都触发应用列表刷新
-            _notifyAppsChanged();
-          }
+        _eventSub = eventBus.eventStream.listen((event) {
+          appLog.info('AppAggregatorManager: ✅ 收到数据库事件 - ${event.type}');
+          debugPrint('AppAggregatorManager: 开始刷新应用列表...');
+          // 任何数据库变化都触发应用列表刷新
+          _notifyAppsChanged();
         });
         appLog.info('AppAggregatorManager: 数据库事件监听已注册');
       } catch (e) {

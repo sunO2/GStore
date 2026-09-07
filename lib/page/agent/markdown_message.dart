@@ -2,7 +2,6 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
-import 'package:get/get.dart';
 import 'package:go_router/go_router.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/router/app_router.dart';
@@ -163,7 +162,7 @@ class AgentMarkdownMessage extends StatelessWidget {
       },
       builders: {
         'pre': _CodeBlockBuilder(),
-        'table': _StyledTableBuilder(),
+        'table': _StyledTableBuilder(scheme),
       },
       selectable: true,
     );
@@ -412,9 +411,13 @@ const Color _codeBackground = Color(0xFF1E1E2E);
 
 /// 表格构建器：斑马纹行
 class _StyledTableBuilder extends MarkdownElementBuilder {
+  _StyledTableBuilder(this.scheme);
+
+  final ColorScheme scheme;
+
   @override
   Widget? visitElementAfter(md.Element element, TextStyle? preferredStyle) {
-    final scheme = Get.theme.colorScheme;
+    final scheme = this.scheme;
 
     // 解析表格
     final rows = <List<md.Element>>[];
@@ -533,7 +536,7 @@ class _StyledTableBuilder extends MarkdownElementBuilder {
   }
 
   TextStyle? _cellInlineStyle(String tag) {
-    final primary = Get.theme.colorScheme.primary;
+    final primary = scheme.primary;
     switch (tag) {
       case 'strong':
       case 'b':
@@ -558,7 +561,6 @@ class _StyledTableBuilder extends MarkdownElementBuilder {
   }
 
   Color schemeOnSurface(bool isHeader) {
-    final scheme = Get.theme.colorScheme;
     return isHeader ? scheme.onPrimaryContainer : scheme.onSurface;
   }
 }

@@ -22,8 +22,18 @@ import 'package:gstore/core/update/update_cache.dart';
 import 'package:gstore/core/update/update_log.dart';
 
 /// 更新检测状态
-class UpdateManagerService extends GetxService {
-  static UpdateManagerService get instance => Get.find<UpdateManagerService>();
+class UpdateManagerService {
+  static UpdateManagerService? _instance;
+
+  /// 全局访问：模块注册表优先（模块 bind / 测试注入 fake），未注册懒创建单例
+  static UpdateManagerService get instance {
+    final registered = ModuleManager.instance.get<UpdateManagerService>();
+    if (registered != null) return registered;
+    return _instance ??= UpdateManagerService();
+  }
+
+  /// 测试可自由构造自建实例（行为与 GetX 时代一致）；生产统一走 [instance]
+  UpdateManagerService();
 
   /// 可更新应用列表（单次检测的完整明细）
   final RxList<AppUpdateInfo> updateList = <AppUpdateInfo>[].obs;
@@ -64,10 +74,8 @@ class UpdateManagerService extends GetxService {
   /// 时间窗（小时）：非强制检测时，距上次检测不足该时长则跳过
   static const int cacheValidHours = 1;
 
-  @override
-  void onInit() {
-    super.onInit();
-    // 启动恢复缓存结果：重启后立即展示上次检测出的可更新应用（后台静默刷新）
+  /// 模块初始化时调用：启动恢复缓存结果（重启后立即展示上次检测出的可更新应用）
+  void restoreCacheInBackground() {
     unawaited(cacheRestored);
   }
 

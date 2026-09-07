@@ -23,6 +23,7 @@ import 'package:gstore/page/home/tab/mine/view.dart';
 ///
 /// 状态流转：ModuleManager 事件 → _HomePageState._agentModuleEnabled /
 /// _MinePageState._agentModuleOnline → 入口显示/隐藏（rawIndex 0-3 语义不变）。
+/// 首页 tab 状态由 Riverpod homeProvider 管理。
 
 /// 测试用 agent_tools 模块（无依赖、无副作用，不绑定服务）
 class TestAgentToolsModule extends AppModule {
@@ -44,8 +45,9 @@ void main() {
 
   final manager = ModuleManager.instance;
 
+  late ProviderContainer container;
+
   setUp(() async {
-    Get.reset();
     await manager.clear();
     manager.injectContext(null);
     // agent_tools 模块初始在线（registered + initialized）
@@ -54,10 +56,12 @@ void main() {
     expect(manager.isModuleEnabled('agent_tools'), isTrue);
     expect(manager.isInitialized('agent_tools'), isTrue);
 
-    // HomeLogic / ApplistLogic 的 GithubRequestMix 构造时 Get.find<GithubRestClient>()
-    Get.put(GithubRestClient(DioClient().get()));
-    Get.put(HomeLogic());
+    // Riverpod 容器（homeProvider 首读即建）
+    container = ProviderContainer();
+    addTearDown(container.dispose);
 
+    // ApplistLogic 的 GithubRequestMix 构造时 Get.find<GithubRestClient>()（applist 页未迁）
+    Get.put(GithubRestClient(DioClient().get()));
     // MinePage 依赖：用户/主题控制器 + secure storage mock（WebDAV 配置读取）
     Get.put(UserManager.instance);
     Get.put(ThemeController());
@@ -75,10 +79,17 @@ void main() {
   Finder navBarDest(String label) => find.descendant(
       of: find.byType(NavigationBar), matching: find.text(label));
 
+  /// 首页 tab 控制器（homeProvider）
+  HomeNotifier homeNotifier() => container.read(homeProvider.notifier);
+
   /// 泵起首页（PageView 四页：首页/发现/AI 助手/我的）并等异步初始化完成
   Future<void> pumpHome(WidgetTester tester) async {
     await tester.pumpWidget(
-        const ProviderScope(child: GetMaterialApp(home: HomePage())));
+      UncontrolledProviderScope(
+        container: container,
+        child: const MaterialApp(home: HomePage()),
+      ),
+    );
     await tester.pumpAndSettle();
   }
 
@@ -93,7 +104,6 @@ void main() {
   group('首页底部 tab（agent_tools 上下线）', () {
     testWidgets('① 上线 → NavigationBar 含 AI 助手 destination，raw==display 映射',
         (tester) async {
-      final logic = Get.find<HomeLogic>();
       await pumpHome(tester);
 
       expect(navBarDest('AI 助手'), findsOneWidget);
@@ -105,17 +115,16 @@ void main() {
       expect(navBar.selectedIndex, 0);
 
       // raw3（我的）→ display3（上线时 raw==display）
-      logic.jumpToPage(3);
+      homeNotifier().jumpToPage(3);
       await tester.pumpAndSettle();
       navBar = tester.widget<NavigationBar>(find.byType(NavigationBar));
       expect(navBar.selectedIndex, 3, reason: '上线时 raw3 应映射到 display3');
-      expect(logic.state.index.value, 3);
+      expect(container.read(homeProvider).index, 3);
       expect(tester.takeException(), isNull);
     });
 
     testWidgets('② 下线 → AI 助手 destination 隐藏，display 映射（raw3→display2）',
         (tester) async {
-      final logic = Get.find<HomeLogic>();
       await pumpHome(tester);
       expect(navBarDest('AI 助手'), findsOneWidget);
 
@@ -127,41 +136,40 @@ void main() {
       expect(navBarDest('我的'), findsOneWidget);
 
       // raw3（我的）→ display2
-      logic.jumpToPage(3);
+      homeNotifier().jumpToPage(3);
       await tester.pumpAndSettle();
       final navBar = tester.widget<NavigationBar>(find.byType(NavigationBar));
       expect(navBar.selectedIndex, 2, reason: '下线后 raw3 应映射到 display2');
-      expect(logic.state.index.value, 3);
+      expect(container.read(homeProvider).index, 3);
       expect(tester.takeException(), isNull);
     });
 
     testWidgets('③ 下线时点 display2（我的）→ 实际切到 raw3（我的页）',
         (tester) async {
-      final logic = Get.find<HomeLogic>();
       await pumpHome(tester);
       await disableAgent(tester);
 
       await tester.tap(navBarDest('我的'));
       await tester.pumpAndSettle();
 
-      expect(logic.state.index.value, 3, reason: 'display2 应映射到 raw3（我的页）');
+      expect(container.read(homeProvider).index, 3,
+          reason: 'display2 应映射到 raw3（我的页）');
       final navBar = tester.widget<NavigationBar>(find.byType(NavigationBar));
       expect(navBar.selectedIndex, 2);
       expect(tester.takeException(), isNull);
     });
 
     testWidgets('⑤ 运行中下线且当前在 AI tab → 自动跳回来源 tab', (tester) async {
-      final logic = Get.find<HomeLogic>();
       await pumpHome(tester);
 
       // 进入 AI tab（raw2），sourceIndex 记录 0（首页）
-      logic.jumpToPage(2);
+      homeNotifier().jumpToPage(2);
       await tester.pumpAndSettle();
-      expect(logic.state.index.value, 2);
+      expect(container.read(homeProvider).index, 2);
 
       await disableAgent(tester);
 
-      expect(logic.state.index.value, 0,
+      expect(container.read(homeProvider).index, 0,
           reason: '下线时应自动跳回来源 tab（首页 raw0）');
       expect(navBarDest('AI 助手'), findsNothing);
       expect(tester.takeException(), isNull);
@@ -171,7 +179,11 @@ void main() {
   group('我的页 quick action（agent_tools 上下线）', () {
     Future<void> pumpMinePage(WidgetTester tester) async {
       await tester.pumpWidget(
-          const ProviderScope(child: GetMaterialApp(home: MinePage())));
+        UncontrolledProviderScope(
+          container: container,
+          child: const MaterialApp(home: MinePage()),
+        ),
+      );
       await tester.pumpAndSettle();
     }
 

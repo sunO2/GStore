@@ -1,8 +1,7 @@
 import 'package:cached_network_image/cached_network_image.dart';
-import 'dart:async';
 import 'dart:ui' show FontFeature;
 import 'package:flutter/material.dart';
-import 'package:get/get.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/compent/entrance_list.dart';
@@ -18,12 +17,13 @@ import 'state.dart';
 
 /// 应用更新页面
 /// 检测已添加且已安装的应用是否有新版本，支持单个/全部更新
-class UpdateManager extends StatelessWidget {
+class UpdateManager extends ConsumerWidget {
   const UpdateManager({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    final logic = Get.put(UpdateLogic());
+  Widget build(BuildContext context, WidgetRef ref) {
+    final logic = ref.read(updateProvider.notifier);
+    final state = ref.watch(updateProvider);
     return Scaffold(
       appBar: AppBar(
         // 标题 + 上次检测时间副标题（1 小时内显示 x 分钟前，超过显示实际时间）
@@ -32,10 +32,9 @@ class UpdateManager extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             const Text('应用更新'),
-            Obx(() {
-              final state = logic.state;
+            Builder(builder: (context) {
               final last = UpdateManagerService.instance.lastCheckedAt.value;
-              final subtitle = state.isLoading.value
+              final subtitle = state.isLoading
                   ? '检测中...'
                   : formatLastChecked(last, DateTime.now());
               return Text(
@@ -49,45 +48,42 @@ class UpdateManager extends StatelessWidget {
         ),
         actions: [
           // 检测日志 ⇄ 更新列表 切换（仅在有可更新应用时显示）
-          Obx(() {
-            final state = logic.state;
-            if (state.updateList.isEmpty) return const SizedBox.shrink();
-            final showLog = state.showLog.value;
-            return IconButton(
-              tooltip: showLog ? '查看更新列表' : '检测日志',
-              icon: Icon(showLog ? Icons.list_alt : Icons.receipt_long),
-              onPressed: () => logic.toggleLogView(),
-            );
-          }),
+          if (state.updateList.isNotEmpty)
+            IconButton(
+              tooltip: state.showLog ? '查看更新列表' : '检测日志',
+              icon: Icon(
+                  state.showLog ? Icons.list_alt : Icons.receipt_long),
+              onPressed: logic.toggleLogView,
+            ),
           IconButton(
             tooltip: '检查更新',
             icon: const Icon(Icons.refresh),
-            onPressed: logic.state.isLoading.value
+            onPressed: state.isLoading
                 ? null
                 : () => logic.checkUpdates(force: true),
           ),
           const SizedBox(width: AppSpacing.xs),
         ],
       ),
-      body: Obx(() {
-        final state = logic.state;
+      body: Builder(builder: (context) {
+        final state = ref.watch(updateProvider);
         // 检测中：停留在检测页展示滚轮/图标/进度/日志
-        if (state.isLoading.value) {
+        if (state.isLoading) {
           return _buildChecking(context, state);
         }
         // 无更新完成：停留检测页展示完整日志
-        if (state.checkFinished.value && state.updateList.isEmpty) {
+        if (state.checkFinished && state.updateList.isEmpty) {
           return _buildChecking(context, state);
         }
         // 有更新：showLog 控制"检测日志页 ⇄ 更新列表页"切换
         if (state.updateList.isNotEmpty) {
-          if (state.showLog.value) {
+          if (state.showLog) {
             return _buildChecking(context, state);
           }
           return _buildUpdateList(context, logic, state);
         }
-        if (state.errorMessage.value != null && state.updateList.isEmpty) {
-          return _buildEmpty(context, state.errorMessage.value!,
+        if (state.errorMessage != null && state.updateList.isEmpty) {
+          return _buildEmpty(context, state.errorMessage!,
               hasError: true);
         }
         return _buildEmpty(context, '所有已添加应用均已是最新版本');
@@ -97,12 +93,12 @@ class UpdateManager extends StatelessWidget {
 
   /// 检测中 / 检测完成（日志页）
   Widget _buildChecking(BuildContext context, UpdateState state) {
-    final total = state.totalCount.value;
+    final total = state.totalCount;
     final percent =
-        total > 0 ? (state.checkedCount.value / total).clamp(0.0, 1.0) : 0.0;
+        total > 0 ? (state.checkedCount / total).clamp(0.0, 1.0) : 0.0;
     // 完成态判定：无更新完成（checkFinished）或有更新时手动切到日志页（showLog）
-    final finished = state.checkFinished.value ||
-        (state.updateList.isNotEmpty && state.showLog.value);
+    final finished = state.checkFinished ||
+        (state.updateList.isNotEmpty && state.showLog);
     final hasUpdates = state.updateList.isNotEmpty;
     return Column(
       children: [
@@ -119,10 +115,14 @@ class UpdateManager extends StatelessWidget {
                 )
               else
                 // loading 圆环 + 被检测应用图标叠加
-                _CheckingAppIconLoading(state: state),
+                _CheckingAppIconLoading(iconUrl: state.checkingIconUrl),
               const SizedBox(height: AppSpacing.lg),
               // 正在检测的应用名（滚轮效果：完整预填待检测名单，随进度滚动）
-              _CheckingWheel(state: state),
+              _CheckingWheel(
+                names: state.checkList,
+                index: state.checkIndex,
+                finished: finished,
+              ),
               const SizedBox(height: AppSpacing.xs),
               Text(
                 finished
@@ -132,10 +132,10 @@ class UpdateManager extends StatelessWidget {
                             ? '检测完成（$total 个应用，均无更新）'
                             : '检测完成：所有应用均已是最新版本'))
                     : (total > 0
-                        ? '正在检测更新 ${state.checkedCount.value}/$total'
+                        ? '正在检测更新 ${state.checkedCount}/$total'
                         : '正在检测更新...'),
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: AppColors.textSecondary,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
                     ),
               ),
               if (total > 0) ...[
@@ -159,7 +159,7 @@ class UpdateManager extends StatelessWidget {
         // 底部：检测日志输出
         const SizedBox(height: AppSpacing.sm),
         Expanded(
-          child: _CheckLogView(state: state),
+          child: _CheckLogView(logs: state.checkLog),
         ),
       ],
     );
@@ -196,7 +196,7 @@ class UpdateManager extends StatelessWidget {
   /// 更新列表
   Widget _buildUpdateList(
     BuildContext context,
-    UpdateLogic logic,
+    UpdateNotifier logic,
     UpdateState state,
   ) {
     return Column(
@@ -215,15 +215,14 @@ class UpdateManager extends StatelessWidget {
                 child: Text(
                   '发现 ${state.updateList.length} 个可更新应用',
                   style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: AppColors.textSecondary,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
                       ),
                 ),
               ),
               // 切换到检测日志的按钮已移至导航头（AppBar actions）
               const SizedBox(width: AppSpacing.xs),
               FilledButton.tonalIcon(
-                onPressed:
-                    state.updatingAppId.value != null ? null : logic.updateAll,
+                onPressed: state.updatingAppId != null ? null : logic.updateAll,
                 icon: const Icon(Icons.system_update_alt, size: 18),
                 label: const Text('全部更新'),
               ),
@@ -232,53 +231,43 @@ class UpdateManager extends StatelessWidget {
         ),
         const Divider(height: 1),
         Expanded(
-          // 显式订阅用户 APK 选择（RxMap.operator[] 不注册依赖，
-          // 且 ListView itemBuilder 惰性布局时 Obx 代理已失效 → 直接订阅 length）
-          child: _UpdateListBody(
-            state: state,
-            logic: logic,
-          ),
+          child: const _UpdateListBody(),
         ),
       ],
     );
   }
 }
 
-/// 更新列表主体：独立 Obx 订阅 selectedApkName，换选后即时刷新勾选
-class _UpdateListBody extends StatelessWidget {
-  final UpdateState state;
-  final UpdateLogic logic;
-
-  const _UpdateListBody({required this.state, required this.logic});
+/// 更新列表主体：watch updateProvider，selectedApkName 变化即重建刷新勾选
+class _UpdateListBody extends ConsumerWidget {
+  const _UpdateListBody();
 
   @override
-  Widget build(BuildContext context) {
-    return Obx(() {
-      // 订阅 RxMap 变更（map 值读取在 itemBuilder 惰性布局期，无法注册依赖）
-      state.selectedApkName.length;
-      return EntranceList(
-        key: ValueKey(state.updateList.length),
-        separated: true,
-        padding: AppSpacing.onlyBottomXL,
-        itemCount: state.updateList.length,
-        separatorBuilder: (_, __) => const Divider(height: 1),
-        itemBuilder: (context, index) {
-          final info = state.updateList[index];
-          // 外层 PressableScale 仅做按压反馈（onTap 传 null；
-          // 更新按钮/APK 选择器由各自内层手势承接）
-          return PressableScale(
-            child: _UpdateTile(
-              info: info,
-              isUpdating: state.updatingAppId.value == info.appId,
-              download: state.currentDownload.value,
-              selectedApkName: state.selectedApkName[info.appId],
-              onUpdate: () => logic.updateApp(info),
-              onSelectApk: (dl) => logic.selectApk(info, dl),
-            ),
-          );
-        },
-      );
-    });
+  Widget build(BuildContext context, WidgetRef ref) {
+    final state = ref.watch(updateProvider);
+    final logic = ref.read(updateProvider.notifier);
+    return EntranceList(
+      key: ValueKey(state.updateList.length),
+      separated: true,
+      padding: AppSpacing.onlyBottomXL,
+      itemCount: state.updateList.length,
+      separatorBuilder: (_, __) => const Divider(height: 1),
+      itemBuilder: (context, index) {
+        final info = state.updateList[index];
+        // 外层 PressableScale 仅做按压反馈（onTap 传 null；
+        // 更新按钮/APK 选择器由各自内层手势承接）
+        return PressableScale(
+          child: _UpdateTile(
+            info: info,
+            isUpdating: state.updatingAppId == info.appId,
+            download: state.currentDownload,
+            selectedApkName: state.selectedApkName[info.appId],
+            onUpdate: () => logic.updateApp(info),
+            onSelectApk: (dl) => logic.selectApk(info, dl),
+          ),
+        );
+      },
+    );
   }
 }
 
@@ -708,13 +697,12 @@ class _ChannelTag extends StatelessWidget {
 
 /// 检测中 loading：圆环 + 被检测应用图标叠加
 class _CheckingAppIconLoading extends StatelessWidget {
-  final UpdateState state;
+  final String? iconUrl;
 
-  const _CheckingAppIconLoading({required this.state});
+  const _CheckingAppIconLoading({this.iconUrl});
 
   @override
   Widget build(BuildContext context) {
-    final iconUrl = state.checkingIconUrl.value;
     const double iconSize = 26.0;
 
     return SizedBox(
@@ -727,9 +715,9 @@ class _CheckingAppIconLoading extends StatelessWidget {
           // 被检测应用图标（无图标用默认安卓图标）
           ClipRRect(
             borderRadius: BorderRadius.circular(7),
-            child: iconUrl != null && iconUrl.isNotEmpty
+            child: iconUrl != null && iconUrl!.isNotEmpty
                 ? CachedNetworkImage(
-                    imageUrl: iconUrl,
+                    imageUrl: iconUrl!,
                     width: iconSize,
                     height: iconSize,
                     fit: BoxFit.cover,
@@ -751,7 +739,7 @@ class _CheckingAppIconLoading extends StatelessWidget {
       child: Icon(
         Icons.android,
         size: 16,
-        color: AppColors.textSecondary,
+        color: Theme.of(context).colorScheme.onSurfaceVariant,
       ),
     );
   }
@@ -760,9 +748,18 @@ class _CheckingAppIconLoading extends StatelessWidget {
 /// 检测中的应用名滚轮
 /// 类似日期选择器：中间高亮当前项，上下可见相邻项
 class _CheckingWheel extends StatefulWidget {
-  final UpdateState state;
+  final List<String> names;
+  final int index;
 
-  const _CheckingWheel({required this.state});
+  /// 检测是否已结束（决定空名单时的占位文案）
+  final bool finished;
+
+  const _CheckingWheel({
+    required this.names,
+    required this.index,
+    required this.finished,
+  });
+
   @override
   State<_CheckingWheel> createState() => _CheckingWheelState();
 }
@@ -780,7 +777,7 @@ class _CheckingWheelState extends State<_CheckingWheel> {
   @override
   void didUpdateWidget(_CheckingWheel oldWidget) {
     super.didUpdateWidget(oldWidget);
-    final idx = widget.state.checkIndex.value;
+    final idx = widget.index;
     if (idx != _lastIndex) {
       _lastIndex = idx;
       final c = _controller;
@@ -802,17 +799,15 @@ class _CheckingWheelState extends State<_CheckingWheel> {
 
   @override
   Widget build(BuildContext context) {
-    final names = widget.state.checkList;
+    final names = widget.names;
     if (names.isEmpty) {
       // 缓存优先场景无本次检测名单：完成态显示"暂无检测记录"，
       // 检测中才显示"正在检测更新..."
-      final finished = widget.state.checkFinished.value ||
-          (widget.state.updateList.isNotEmpty && widget.state.showLog.value);
       return SizedBox(
         height: 96,
         child: Center(
           child: Text(
-            finished ? '暂无检测记录' : '正在检测更新...',
+            widget.finished ? '暂无检测记录' : '正在检测更新...',
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
                   color: Theme.of(context).colorScheme.onSurfaceVariant,
                 ),
@@ -862,9 +857,9 @@ class _CheckingWheelState extends State<_CheckingWheel> {
 /// - skip 跳过   ：浅橙
 /// - error 错误  ：浅红
 class _CheckLogView extends StatefulWidget {
-  final UpdateState state;
+  final List<CheckLogEntry> logs;
 
-  const _CheckLogView({required this.state});
+  const _CheckLogView({required this.logs});
 
   @override
   State<_CheckLogView> createState() => _CheckLogViewState();
@@ -872,30 +867,41 @@ class _CheckLogView extends StatefulWidget {
 
 class _CheckLogViewState extends State<_CheckLogView> {
   final ScrollController _scrollController = ScrollController();
-  StreamSubscription? _logSubscription;
   int _lastCount = 0;
 
   @override
   void initState() {
     super.initState();
-    // 监听日志追加，自动滚动到底部
-    _logSubscription = widget.state.checkLog.listen((logs) {
-      if (logs.length != _lastCount) {
-        _lastCount = logs.length;
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (_scrollController.hasClients) {
-            _scrollController.jumpTo(
-              _scrollController.position.maxScrollExtent,
-            );
-          }
-        });
+    _lastCount = widget.logs.length;
+    // 首次挂载已有日志（缓存恢复场景）→ 直接滚到底
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _scrollController.hasClients) {
+        _scrollController.jumpTo(
+          _scrollController.position.maxScrollExtent,
+        );
       }
     });
   }
 
   @override
+  void didUpdateWidget(_CheckLogView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final count = widget.logs.length;
+    // 日志追加（长度变化）时自动滚动到底部
+    if (count != _lastCount) {
+      _lastCount = count;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _scrollController.hasClients) {
+          _scrollController.jumpTo(
+            _scrollController.position.maxScrollExtent,
+          );
+        }
+      });
+    }
+  }
+
+  @override
   void dispose() {
-    _logSubscription?.cancel();
     _scrollController.dispose();
     super.dispose();
   }
@@ -905,13 +911,13 @@ class _CheckLogViewState extends State<_CheckLogView> {
     final scheme = Theme.of(context).colorScheme;
     switch (level) {
       case CheckLogLevel.info:
-        return AppColors.textSecondary;
+        return scheme.onSurfaceVariant;
       case CheckLogLevel.installed:
         return scheme.primary.withAlpha(200);
       case CheckLogLevel.update:
         return scheme.tertiary.withAlpha(200);
       case CheckLogLevel.none:
-        return AppColors.textTertiary;
+        return scheme.outline;
       case CheckLogLevel.skip:
         return const Color(0xFFB08D57);
       case CheckLogLevel.error:
@@ -921,58 +927,56 @@ class _CheckLogViewState extends State<_CheckLogView> {
 
   @override
   Widget build(BuildContext context) {
-    return Obx(() {
-      final logs = widget.state.checkLog;
-      if (logs.isEmpty) {
-        // 缓存优先进入时无本次检测日志（未触发检测）
-        return Center(
-          child: Text(
-            '暂无检测日志\n点击右上角"检查更新"执行一次检测',
-            textAlign: TextAlign.center,
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+    final logs = widget.logs;
+    if (logs.isEmpty) {
+      // 缓存优先进入时无本次检测日志（未触发检测）
+      return Center(
+        child: Text(
+          '暂无检测日志\n点击右上角"检查更新"执行一次检测',
+          textAlign: TextAlign.center,
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+        ),
+      );
+    }
+    return ListView.builder(
+      controller: _scrollController,
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.lg,
+        AppSpacing.xs,
+        AppSpacing.lg,
+        AppSpacing.lg,
+      ),
+      itemCount: logs.length,
+      itemBuilder: (context, index) {
+        final entry = logs[index];
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 4),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                entry.timeText,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).colorScheme.outline,
+                      fontFeatures: const [FontFeature.tabularFigures()],
+                    ),
+              ),
+              const SizedBox(width: AppSpacing.sm),
+              Expanded(
+                child: Text(
+                  entry.text,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: _logColor(entry.level, context),
+                        height: 1.4,
+                      ),
                 ),
+              ),
+            ],
           ),
         );
-      }
-      return ListView.builder(
-        controller: _scrollController,
-        padding: const EdgeInsets.fromLTRB(
-          AppSpacing.lg,
-          AppSpacing.xs,
-          AppSpacing.lg,
-          AppSpacing.lg,
-        ),
-        itemCount: logs.length,
-        itemBuilder: (context, index) {
-          final entry = logs[index];
-          return Padding(
-            padding: const EdgeInsets.only(bottom: 4),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  entry.timeText,
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: AppColors.textTertiary,
-                    fontFeatures: const [FontFeature.tabularFigures()],
-                  ),
-                ),
-                const SizedBox(width: AppSpacing.sm),
-                Expanded(
-                  child: Text(
-                    entry.text,
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: _logColor(entry.level, context),
-                          height: 1.4,
-                        ),
-                  ),
-                ),
-              ],
-            ),
-          );
-        },
-      );
-    });
+      },
+    );
   }
 }

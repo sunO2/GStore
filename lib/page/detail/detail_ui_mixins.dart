@@ -147,7 +147,7 @@ mixin DetailMetadataMixin on GetxController {
       AppDialogs.showError('该应用不是 GitHub 仓库类型，无法完善应用信息');
       return;
     }
-    final userManager = Get.find<UserManager>();
+    final userManager = UserManager.instance;
     final loggedIn = await userManager.isLoggedIn();
     if (!loggedIn) {
       final goLogin = await AppDialogs.showDialog(

@@ -52,12 +52,16 @@ class AppDialogs {
     return BorderSide(color: color ?? _colorScheme.borderLight, width: 1);
   }
 
-  /// 底部安全区 padding（无宿主 context 时为 0）。
+  /// 底部安全区 padding + 键盘 inset（无宿主 context 时为 0）。
   static double _bottomSafePadding() {
     final ctx = _navContext;
-    if (ctx != null) return MediaQuery.of(ctx).padding.bottom;
+    if (ctx != null) {
+      final media = MediaQuery.of(ctx);
+      return media.padding.bottom + media.viewInsets.bottom;
+    }
     try {
-      return Get.mediaQuery.padding.bottom;
+      final media = Get.mediaQuery;
+      return media.padding.bottom + media.viewInsets.bottom;
     } catch (_) {
       return 0;
     }
@@ -462,6 +466,20 @@ class AppDialogs {
         onClose: onClose,
       ),
     );
+  }
+
+  /// 关闭底部弹层并返回结果（双通道：生产走 appNavigatorKey，
+  /// 测试/无 key 宿主回退 Get.back —— 与 [showBottomSheet] 的呈现通道对应）。
+  ///
+  /// [AppDialogs.showBottomSheet] 的 children 是预构建 widget、拿不到 sheet
+  /// 自身的 context，关闭/返回值统一走这里。
+  static void popSheet<T>(T? result) {
+    final navigator = appNavigatorKey.currentState;
+    if (navigator != null) {
+      navigator.pop<T?>(result);
+    } else if (Get.overlayContext != null) {
+      Get.back<T?>(result: result);
+    }
   }
 
   /// 显示选择列表底部弹窗

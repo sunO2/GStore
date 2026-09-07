@@ -9,7 +9,6 @@
 /// 由 ModuleManager 拓扑排序按依赖顺序初始化（类似 Linux 包管理器）。
 library;
 
-import 'package:get/get.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
 import 'package:gstore/core/agent/agent_tool_module.dart';
@@ -101,7 +100,8 @@ class DownloadModule extends AppModule {
   Future<void> onRegister(ModuleContext context) async {
     final config = context.config;
     config?.registerModule(AppCoreConfigModule());
-    context.bindService?.call(IDownloadService, Get.find<DownloadManager>());
+    final manager = ModuleManager.instance;
+    context.bindService?.call(IDownloadService, manager.require<DownloadManager>());
   }
 
   @override
@@ -181,10 +181,8 @@ class FdroidModule extends AppModule {
       // Rust 库缺失/FFI/存储异常 → 降级：F-Droid 渠道懒初始化（不阻塞启动、不闪退）
       appLog.error('FdroidModule: F-Droid 初始化失败（降级，渠道懒初始化） - $e');
     }
-    // 无论初始化成败都注册到 Get（失败时服务仍可解析，功能侧自行降级）
-    if (!Get.isRegistered<FdroidRepoManager>()) {
-      Get.put(fdroidManager);
-    }
+    // 无论初始化成败都注册到 ModuleManager（失败时服务仍可解析，功能侧自行降级）
+    ModuleManager.instance.bind<FdroidRepoManager>(fdroidManager);
   }
 
   @override
@@ -213,14 +211,15 @@ class ThemeModule extends AppModule {
 
   @override
   Future<void> onInit(ModuleContext context) async {
-    if (!Get.isRegistered<ThemeController>()) {
-      Get.put(ThemeController());
-    }
+    final controller = ThemeController.instance;
+    controller.initialize();
+    ModuleManager.instance.bind<ThemeController>(controller);
   }
 
   @override
   Future<void> onRegister(ModuleContext context) async {
-    context.bindService?.call(IThemeService, Get.find<ThemeController>());
+    context.bindService?.call(
+        IThemeService, ThemeController.instance);
   }
 
   @override
@@ -269,9 +268,7 @@ class AggregateModule extends AppModule {
   Future<void> onInit(ModuleContext context) async {
     final aggregator = AppAggregatorManager.instance;
     await aggregator.initialize();
-    if (!Get.isRegistered<AppAggregatorManager>()) {
-      Get.put(aggregator, tag: 'aggregatorManager');
-    }
+    ModuleManager.instance.bind<AppAggregatorManager>(aggregator);
   }
 
   @override
@@ -288,10 +285,10 @@ class AggregateModule extends AppModule {
 /// Agent 工具模块（依赖 config + channel）
 ///
 /// 管理 AgentService 生命周期 + 内置 Agent 工具：
-/// - 上线（onInit）：Get.put AgentService（替代 main.dart lazyPut，模块体系内注册）
+/// - 上线（onInit）：创建并自持 AgentService 实例（模块体系内注册，不依赖 GetX）
 /// - 上线（onRegister）：按类型绑定 AgentService 到注册表（消费方经
 ///   ModuleManager.get<AgentService>() 取用，模块下线后软降级）+ 注册内置工具
-/// - 下线（onUnregister）：解绑 AgentService + 注销内置工具
+/// - 下线（onUnregister）：解绑 AgentService + 注销内置工具 + dispose 实例
 class AgentToolsModule extends AppModule {
   @override
   String get moduleName => 'agent_tools';
@@ -305,17 +302,18 @@ class AgentToolsModule extends AppModule {
   /// 内置工具模块列表
   List<AgentToolModule> get tools => BuiltinAgentTools.all;
 
+  /// 模块自持的 AgentService 实例（替代 Get.put；模块上下线管理生命周期）
+  AgentService? _agentService;
+
   @override
   Future<void> onInit(ModuleContext context) async {
     // AgentService 归模块管理：agent_tools 禁用时永不注册（对话不可用）
-    if (!Get.isRegistered<AgentService>()) {
-      Get.put(AgentService());
-    }
+    _agentService ??= AgentService();
   }
 
   @override
   Future<void> onRegister(ModuleContext context) async {
-    context.bindService?.call(AgentService, Get.find<AgentService>());
+    context.bindService?.call(AgentService, _agentService!);
     context.registerAgentTools?.call(tools);
   }
 
@@ -323,6 +321,9 @@ class AgentToolsModule extends AppModule {
   Future<void> onUnregister(ModuleContext context) async {
     context.unbindService?.call(AgentService);
     context.unregisterAgentTools?.call(tools.map((t) => t.toolName).toList());
+    // 释放资源；重新上线时重建新实例（会话数据持久化在 AgentSessionStore，无丢失）
+    _agentService?.dispose();
+    _agentService = null;
   }
 }
 
@@ -341,9 +342,10 @@ class UpdateModule extends AppModule {
 
   @override
   Future<void> onInit(ModuleContext context) async {
-    if (!Get.isRegistered<UpdateManagerService>()) {
-      Get.put(UpdateManagerService());
-    }
+    final service = UpdateManagerService.instance;
+    ModuleManager.instance.bind<UpdateManagerService>(service);
+    // 启动恢复上次检测缓存（重启后立即展示可更新应用，后台静默）
+    service.restoreCacheInBackground();
   }
 }
 
@@ -362,9 +364,7 @@ class BadgeModule extends AppModule {
 
   @override
   Future<void> onInit(ModuleContext context) async {
-    if (!Get.isRegistered<BadgeService>()) {
-      Get.put(BadgeService());
-    }
+    ModuleManager.instance.bind<BadgeService>(BadgeService.instance);
     // 启动后异步检测红点（应用更新走 UpdateManager 懒检测 / 数据库更新等），不阻塞 UI
     // catchError：检测异常不成为未处理异步异常（红点缺失可接受，不影响启动）
     unawaited(BadgeService.instance.checkAll().catchError((Object e, StackTrace st) {

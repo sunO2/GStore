@@ -1,5 +1,4 @@
 import 'package:dio/dio.dart';
-import 'package:get/get.dart';
 import 'package:json_annotation/json_annotation.dart';
 import 'package:retrofit/retrofit.dart';
 import 'package:retrofit/http.dart' as retrofit;
@@ -7,7 +6,7 @@ import 'package:retrofit/http.dart' as retrofit;
 part 'github_auth_api.g.dart';
 
 @RestApi(baseUrl: 'https://github.com/login')
-abstract class GithubAuthApi with GetxServiceMixin {
+abstract class GithubAuthApi {
   factory GithubAuthApi(Dio dio, {String? baseUrl}) => _GithubAuthApi(dio);
 
   @POST('/device/code')

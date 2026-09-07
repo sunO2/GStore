@@ -33,7 +33,7 @@ void main() {
     AgentMessage? confirmMsg;
     for (var i = 0; i < 50; i++) {
       await Future<void>.delayed(const Duration(milliseconds: 10));
-      for (final m in agent.messages) {
+      for (final m in agent.messages.value) {
         if (m.isToolResult &&
             m.toolType == AgentToolType.confirm &&
             m.toolStatus == AgentToolStatus.running) {
@@ -90,7 +90,7 @@ void main() {
     AgentMessage? confirmMsg;
     for (var i = 0; i < 50; i++) {
       await Future<void>.delayed(const Duration(milliseconds: 10));
-      for (final m in agent.messages) {
+      for (final m in agent.messages.value) {
         if (m.isToolResult &&
             m.toolType == AgentToolType.confirm &&
             m.toolStatus == AgentToolStatus.running) {

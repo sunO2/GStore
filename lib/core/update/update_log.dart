@@ -1,8 +1,6 @@
 /// 更新检测日志模型（core 层，供 UpdateManager 输出检测过程日志）
 library;
 
-import 'package:get/get.dart';
-
 /// 检测日志级别（决定颜色规则）
 enum CheckLogLevel {
   /// 信息（检测过程）
@@ -93,16 +91,4 @@ class UpdateCheckProgress {
     required this.total,
     this.hasResult = false,
   });
-}
-
-/// 检测日志流（UpdateManager → UpdateLogic → UpdateState.checkLog）
-class UpdateLogController extends GetxController {
-  /// 日志列表（页面订阅后追加到本地 checkLog）
-  final RxList<CheckLogEntry> logs = <CheckLogEntry>[].obs;
-
-  void add(CheckLogLevel level, String text) {
-    logs.add(CheckLogEntry(level: level, text: text));
-  }
-
-  void clear() => logs.clear();
 }

@@ -12,7 +12,7 @@ class AuthPageLogic extends GetxController with GithubRequestMix {
 
   final loginRequestCancelToken = CancelToken();
 
-  final userManager = Get.find<UserManager>();
+  final userManager = UserManager.instance;
   final AuthPageState state = AuthPageState();
 
   /// 取消进行中的登录轮询（页面主动关闭/外部取消时调用；onClose 同样清理）

@@ -1,6 +1,8 @@
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
+import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/service/badge_service.dart';
 import 'package:gstore/core/update/app_update_info.dart';
 import 'package:gstore/core/update/update_log.dart';
@@ -9,7 +11,7 @@ import 'package:gstore/page/update/logic.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// 假 UpdateManager：跳过真实渠道检测，回放固定结果并触发全部回调
-/// （UpdateLogic 通过 UpdateManagerService.instance 查找，Get.put 注册后即可替换）
+/// （UpdateNotifier 通过 UpdateManagerService.instance 查找，Get.put 注册后即可替换）
 class _FakeUpdateManager extends UpdateManagerService {
   _FakeUpdateManager(this.items);
 
@@ -19,7 +21,7 @@ class _FakeUpdateManager extends UpdateManagerService {
   final RxList<AppUpdateInfo> fakeUpdateList = <AppUpdateInfo>[].obs;
   final RxBool fakeIsChecking = false.obs;
 
-  /// 回调是否被接线（验证 UpdateLogic → UpdateManager 的连线）
+  /// 回调是否被接线（验证 UpdateNotifier → UpdateManager 的连线）
   bool checkListFired = false;
   bool progressFired = false;
   bool logFired = false;
@@ -90,70 +92,95 @@ AppUpdateInfo _sampleInfo() => AppUpdateInfo(
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  tearDown(() {
-    Get.reset();
+  setUp(() {
+    SharedPreferences.setMockInitialValues({});
   });
 
+  tearDown(() async {
+    Get.reset();
+    await ModuleManager.instance.clear();
+  });
+
+  /// 注册 fake 服务并构建可读 notifier 的 container。
+  (ProviderContainer, UpdateNotifier) makeNotifier(
+      List<AppUpdateInfo> items) {
+    ModuleManager.instance.bind<UpdateManagerService>(_FakeUpdateManager(items));
+    ModuleManager.instance.bind<BadgeService>(BadgeService());
+    final notifier = UpdateNotifier();
+    final container = ProviderContainer(overrides: [
+      updateProvider.overrideWith(() => notifier),
+    ]);
+    // listen（非裸 read）保持 autoDispose provider 活跃，避免 await 期间被回收
+    final sub = container.listen(updateProvider, (_, __) {});
+    addTearDown(sub.close);
+    addTearDown(container.dispose);
+    return (container, notifier);
+  }
+
   test('有更新：checkFinished=false 且默认展示更新列表（showLog=false）', () async {
-    Get.put<UpdateManagerService>(_FakeUpdateManager([_sampleInfo()]));
-    Get.put(BadgeService());
-    final logic = UpdateLogic();
+    final (container, notifier) = makeNotifier([_sampleInfo()]);
 
-    await logic.checkUpdates();
+    await notifier.checkUpdates();
 
+    final state = container.read(updateProvider);
     // 回调全部接线（onCheckList 预填滚轮名单 / onProgress 进度 / onLog 日志）
-    expect(logic.state.checkList, ['示例应用']);
-    expect(logic.state.checkLog, isNotEmpty);
+    expect(state.checkList, ['示例应用']);
+    expect(state.checkLog, isNotEmpty);
     // 回归点：有更新时不得进入"均无更新"完成态，默认展示更新列表
-    expect(logic.state.checkFinished.value, isFalse);
-    expect(logic.state.showLog.value, isFalse);
-    expect(logic.state.updateList, hasLength(1));
-    expect(logic.state.updateList.first.appName, '示例应用');
+    expect(state.checkFinished, isFalse);
+    expect(state.showLog, isFalse);
+    expect(state.updateList, hasLength(1));
+    expect(state.updateList.first.appName, '示例应用');
   });
 
   test('toggleLogView 在检测日志页与更新列表页之间切换', () async {
-    Get.put<UpdateManagerService>(_FakeUpdateManager([_sampleInfo()]));
-    Get.put(BadgeService());
-    final logic = UpdateLogic();
+    final (container, notifier) = makeNotifier([_sampleInfo()]);
 
-    await logic.checkUpdates();
-    expect(logic.state.showLog.value, isFalse);
+    await notifier.checkUpdates();
+    expect(container.read(updateProvider).showLog, isFalse);
 
-    logic.toggleLogView(); // → 检测日志页
-    expect(logic.state.showLog.value, isTrue);
+    notifier.toggleLogView(); // → 检测日志页
+    expect(container.read(updateProvider).showLog, isTrue);
 
-    logic.toggleLogView(); // → 更新列表页
-    expect(logic.state.showLog.value, isFalse);
+    notifier.toggleLogView(); // → 更新列表页
+    expect(container.read(updateProvider).showLog, isFalse);
   });
 
   test('无更新：checkFinished=true 停留检测日志页展示完整日志', () async {
-    Get.put<UpdateManagerService>(_FakeUpdateManager([]));
-    Get.put(BadgeService());
-    final logic = UpdateLogic();
+    final (container, notifier) = makeNotifier([]);
 
-    await logic.checkUpdates();
+    await notifier.checkUpdates();
 
-    expect(logic.state.checkFinished.value, isTrue);
-    expect(logic.state.showLog.value, isFalse);
-    expect(logic.state.updateList, isEmpty);
+    final state = container.read(updateProvider);
+    expect(state.checkFinished, isTrue);
+    expect(state.showLog, isFalse);
+    expect(state.updateList, isEmpty);
   });
 
   test('订阅前已恢复的缓存日志/结果：订阅后立即同步显示（回归）', () async {
-    SharedPreferences.setMockInitialValues({});
     final fake = _FakeUpdateManager([]);
     // 模拟缓存已在页面订阅前恢复（启动时 BadgeService 触发恢复）
     fake.checkLog
         .assignAll([CheckLogEntry(level: CheckLogLevel.info, text: '历史日志')]);
     fake.lastCheckedAt.value = DateTime.now();
-    Get.put<UpdateManagerService>(fake);
-    Get.put(BadgeService());
+    ModuleManager.instance.bind<UpdateManagerService>(fake);
+    ModuleManager.instance.bind<BadgeService>(BadgeService());
 
-    final logic = UpdateLogic();
-    await logic.onReady();
+    final notifier = UpdateNotifier();
+    final container = ProviderContainer(overrides: [
+      updateProvider.overrideWith(() => notifier),
+    ]);
+    addTearDown(container.dispose);
+    // listen（非裸 read）保持 autoDispose provider 活跃，避免 microtask 间被回收
+    final sub = container.listen(updateProvider, (_, __) {});
+    addTearDown(sub.close);
+    // build 的 _initialize 异步订阅服务并同步当前状态
+    await Future<void>.delayed(Duration.zero);
 
+    final state = container.read(updateProvider);
     // RxList.listen 不回调初始值 → 依赖订阅后显式同步
-    expect(logic.state.checkLog, isNotEmpty);
-    expect(logic.state.checkLog.first.text, '历史日志');
-    expect(logic.state.isLoading.value, isFalse);
+    expect(state.checkLog, isNotEmpty);
+    expect(state.checkLog.first.text, '历史日志');
+    expect(state.isLoading, isFalse);
   });
 }

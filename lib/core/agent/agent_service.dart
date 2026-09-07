@@ -4,7 +4,6 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/painting.dart' show Color;
 import 'package:flutter_gen_ai_chat_ui/flutter_gen_ai_chat_ui.dart'
     hide AgentState;
-import 'package:get/get.dart';
 import 'package:genkit/genkit.dart';
 import 'package:genkit_google_genai/genkit_google_genai.dart';
 import 'package:genkit_openai/genkit_openai.dart';
@@ -19,8 +18,7 @@ import 'package:gstore/core/agent/platform_arch.dart';
 import 'package:gstore/core/agent/tools/builtin_tools.dart';
 import 'package:gstore/core/module/app_modules.dart';
 import 'package:gstore/core/module/module_manager.dart';
-import 'package:gstore/page/home/logic.dart';
-import 'package:gstore/page/cache_manage/logic.dart';
+import 'package:gstore/page/cache_manage/cache_service.dart';
 import 'package:gstore/page/cache_manage/state.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/core.dart';
@@ -184,7 +182,7 @@ class AgentMessage {
 /// - 搜索应用（跨渠道）
 /// - 下载应用
 /// - 安装应用
-class AgentService extends GetxService {
+class AgentService {
   /// 工具名称常量
   static const String searchToolName = 'searchApp';
   static const String downloadToolName = 'downloadApp';
@@ -212,7 +210,7 @@ class AgentService extends GetxService {
   bool _busy = false;
 
   /// 是否正在生成回复（响应式：页面/通知订阅，脱离页面仍可感知）
-  final RxBool busy = false.obs;
+  final ValueNotifier<bool> busy = ValueNotifier(false);
 
   /// 已注册的 Agent 工具模块（内置 + 模块化热插拔工具）
   final List<AgentToolModule> _agentTools = [];
@@ -388,11 +386,13 @@ class AgentService extends GetxService {
     // 工具执行前定稿流式文本（与其它工具一致）
     _commitActiveStreamText();
 
+    final service = CacheManageService.instance;
     // 1. 枚举缓存类别与下载文件
-    final manager = CacheManageLogic();
     String categoriesText;
+    final cacheNames = <String>[];
     try {
-      final cats = await manager.cacheCategorySizes();
+      final cats = await service.cacheCategorySizes();
+      cacheNames.addAll(cats.map((c) => c.$2));
       // 过滤占用为 0 的类别（无可清理内容不展示）
       final nonEmpty = cats.where((c) => c.$3 > 0).toList();
       categoriesText = nonEmpty.isEmpty
@@ -403,11 +403,11 @@ class AgentService extends GetxService {
       categoriesText = '（枚举失败）';
     }
 
-    // 下载文件（completed 且存在的）
+    // 下载目录文件（跳过下载残留分片）
     final files = <DownloadedFileItem>[];
     try {
-      await manager.loadDownloads();
-      files.addAll(manager.state.downloads);
+      final (items, _) = await service.scanDownloads();
+      files.addAll(items);
     } catch (e) {
       appLog.error('AgentService: cacheManage 枚举下载失败 - $e');
     }
@@ -418,8 +418,7 @@ class AgentService extends GetxService {
 
     // 2. 组装选项并多选确认
     final options = <String>[
-      if (categoriesText != '（当前无可清理的缓存）')
-        ...manager.state.groups.expand((g) => g.items).map((i) => i.name),
+      if (categoriesText != '（当前无可清理的缓存）') ...cacheNames,
       ...files.map((f) => '$_dlFilePrefix${f.fileName}'),
     ];
     // 控制单次选项数量（避免过长）
@@ -459,7 +458,7 @@ class AgentService extends GetxService {
     }
 
     // 3. 分类执行：缓存类别名 → clearByNames；下载文件前缀 → deleteDownloads
-    final cacheNames = selected
+    final cacheNamesSelected = selected
         .where((s) => !s.startsWith(_dlFilePrefix))
         .toList();
     final fileNames = selected
@@ -468,9 +467,9 @@ class AgentService extends GetxService {
         .toList();
 
     final results = <String>[];
-    if (cacheNames.isNotEmpty) {
+    if (cacheNamesSelected.isNotEmpty) {
       try {
-        final ok = await manager.clearByNames(cacheNames);
+        final ok = await service.clearByNames(cacheNamesSelected);
         results.add('已清理缓存 $ok 项');
       } catch (e) {
         appLog.error('AgentService: 清理缓存失败 - $e');
@@ -483,7 +482,7 @@ class AgentService extends GetxService {
           .map((f) => f.filePath)
           .toList();
       try {
-        final ok = await manager.deleteDownloads(paths);
+        final ok = await service.deleteDownloads(paths);
         results.add('已删除下载文件 $ok 个');
       } catch (e) {
         appLog.error('AgentService: 删除下载文件失败 - $e');
@@ -567,14 +566,14 @@ class AgentService extends GetxService {
     final currentSessionId = _sessionStore?.current?.id;
     if (t.sessionId.isNotEmpty && t.sessionId == currentSessionId) {
       // 更新当前 UI 中的对应工具消息（running → done/error）
-      final idx = messages.indexWhere((m) =>
+      final idx = messages.value.indexWhere((m) =>
           m.isToolResult &&
           m.toolType == AgentToolType.download &&
           m.toolStatus == AgentToolStatus.running &&
           (t.turnId == null || m.turnId == t.turnId));
       if (idx >= 0) {
         _updateToolMessage(
-          messages[idx],
+          messages.value[idx],
           status: success ? AgentToolStatus.done : AgentToolStatus.error,
           detail: message,
         );
@@ -696,8 +695,26 @@ class AgentService extends GetxService {
   /// 当前会话 ID
   String? get currentSessionId => _sessionStore?.currentSessionId;
 
-  /// 对话消息（UI 监听）
-  final RxList<AgentMessage> messages = <AgentMessage>[].obs;
+  /// 对话消息（UI 监听；快照列表，元素对象引用稳定，字段变化后显式 notify）
+  final ValueNotifier<List<AgentMessage>> messages =
+      ValueNotifier(const []);
+
+  /// 发布消息列表变更（结构性增删/整体替换后调用）。
+  void _notifyMessages() => messages.value = List.of(messages.value);
+
+  /// 追加一条消息（尾部）。
+  void _addMessage(AgentMessage m) => messages.value = [...messages.value, m];
+
+  /// 移除一条消息（按对象引用）。
+  void _removeMessage(AgentMessage m) =>
+      messages.value = messages.value.where((e) => e != m).toList();
+
+  /// 头部插入更早历史消息。
+  void _prependMessages(List<AgentMessage> older) =>
+      messages.value = [...older, ...messages.value];
+
+  /// 清空全部消息。
+  void _clearMessages() => messages.value = const [];
 
   /// 系统提示词（含设备架构信息）
   String get _systemPrompt => '''
@@ -849,7 +866,7 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
     _persistedToolIds.clear();
     final session = _sessionStore?.current;
     if (session == null) {
-      messages.clear();
+      _clearMessages();
       _allSessionMessages = [];
       _loadedMessageCount = 0;
       return;
@@ -907,7 +924,7 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
 
   /// 为持久化的 running 确认消息重新注册等待 completer（重启/重进恢复交互）
   void _restorePendingConfirmations() {
-    for (final msg in messages) {
+    for (final msg in messages.value) {
       if (msg.isToolResult &&
           msg.toolType == AgentToolType.confirm &&
           msg.toolStatus == AgentToolStatus.running) {
@@ -961,7 +978,7 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
       _allSessionMessages.sublist(from, from + count),
     );
     // 插入头部（更早消息在前）
-    messages.insertAll(0, older);
+    _prependMessages(older);
     _loadedMessageCount += count;
     appLog.info('AgentService: 加载更早历史 $count 条 (累计 $_loadedMessageCount)');
     return older;
@@ -1850,7 +1867,7 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
         text: '',
         turnId: _currentTurnId,
       );
-      messages.add(_activeStreamMsg!);
+      _addMessage(_activeStreamMsg!);
 
       final stream = _ai!.generateStream<dynamic, void>(
         model: _getModelRef(_model!) as ModelRef<dynamic>,
@@ -1868,10 +1885,10 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
               text: '',
               turnId: _currentTurnId,
             );
-            messages.add(_activeStreamMsg!);
+            _addMessage(_activeStreamMsg!);
           }
           _activeStreamMsg?.text = (_activeStreamMsg?.text ?? '') + t;
-          messages.refresh();
+          _notifyMessages();
         }
       }
       final response = await stream.onResult;
@@ -1880,10 +1897,10 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
       if (msg != null) {
         if (msg.text.trim().isNotEmpty) {
           msg.text = msg.text.trim();
-          messages.refresh();
+          _notifyMessages();
           _persistStreamMessage(msg);
         } else {
-          messages.remove(msg);
+          _removeMessage(msg);
         }
       }
       _activeStreamMsg = null;
@@ -1909,7 +1926,7 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
       isToolResult: true,
       turnId: _currentTurnId,
     );
-    messages.add(msg);
+    _addMessage(msg);
     return msg;
   }
 
@@ -1928,11 +1945,11 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
         text: text,
         turnId: current.turnId,
       );
-      messages.add(committed);
+      _addMessage(committed);
       _persistMessage(committed);
     }
     // 移除原流式消息（有文本则已定稿，无文本则丢弃空占位）
-    messages.remove(current);
+    _removeMessage(current);
     // 置空：后续文本由流式循环懒创建（在工具消息之后）
     _activeStreamMsg = null;
   }
@@ -1945,9 +1962,9 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
     String? detail,
     DownloadTask? downloadStatus,
   }) {
-    final idx = messages.indexWhere((e) => e.id == msg.id);
+    final idx = messages.value.indexWhere((e) => e.id == msg.id);
     if (idx < 0) return;
-    final current = messages[idx];
+    final current = messages.value[idx];
     current.toolStatus = status ?? (done == true ? AgentToolStatus.done : AgentToolStatus.running);
     if (detail != null) {
       current.toolDetail = detail;
@@ -1962,7 +1979,7 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
       _persistMessage(current);
     }
     // 触发 Rx 更新
-    messages.refresh();
+    _notifyMessages();
   }
 
   /// 更新当前执行中工具消息的阶段详情（step 进度：如"检查 1/N → 备份中 → 上传中"）。
@@ -1973,12 +1990,12 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
   void _updateToolStep(String step) {
     final msg = _currentToolMsg;
     if (msg == null) return;
-    final idx = messages.indexWhere((e) => e.id == msg.id);
+    final idx = messages.value.indexWhere((e) => e.id == msg.id);
     if (idx < 0) return;
-    final current = messages[idx];
+    final current = messages.value[idx];
     current.toolDetail = step;
     current.text = step;
-    messages.refresh();
+    _notifyMessages();
   }
 
   /// 推送工具阶段通知（B2：退出页面后仍可见执行进度；页面内对话时消息卡已展示，跳过）
@@ -2014,17 +2031,9 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
   }
 
   /// B5：AI 助手页是否在前台（后台执行时敏感操作需确认）
-  /// AI 页是首页 tab 的内嵌子页（home PageView index 2）——不能只看 Get.currentRoute
-  bool _isAgentPageVisible() {
-    try {
-      if (Get.isRegistered<HomeLogic>()) {
-        return Get.find<HomeLogic>().state.index.value == 2;
-      }
-      return Get.currentRoute?.contains('/GStore/agent') ?? true;
-    } catch (_) {
-      return true; // 无法判断时视为可见（避免误拦截）
-    }
-  }
+  /// AI 页是首页 tab 的内嵌子页（home PageView index 2）+ 独立路由页。
+  /// 可见性由 UI 侧写入 [HomeTabVisibility]（服务层不反向依赖页面）。
+  bool _isAgentPageVisible() => HomeTabVisibility.instance.agentActive;
 
   /// 通知门控：仅当用户**不在** AI 助手页时才发通知。
   /// 页面内对话时消息卡已实时展示进度/结果，通知会重复打扰；
@@ -3506,7 +3515,7 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
         text: '',
         turnId: _currentTurnId,
       );
-      messages.add(_activeStreamMsg!);
+      _addMessage(_activeStreamMsg!);
 
       final stream = ai.generateStream<dynamic, void>(
         model: model as ModelRef<dynamic>,
@@ -3546,10 +3555,10 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
               text: '',
               turnId: _currentTurnId,
             );
-            messages.add(_activeStreamMsg!);
+            _addMessage(_activeStreamMsg!);
           }
           _activeStreamMsg?.text = (_activeStreamMsg?.text ?? '') + text;
-          messages.refresh();
+          _notifyMessages();
         }
       }
 
@@ -3559,7 +3568,7 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
         final msg = _activeStreamMsg;
         if (msg != null) {
           msg.text = msg.text.trim().isEmpty ? '（已停止生成）' : msg.text.trim();
-          messages.refresh();
+          _notifyMessages();
           _persistStreamMessage(msg);
         }
         _activeStreamMsg = null;
@@ -3575,10 +3584,10 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
       if (msg != null) {
         if (msg.text.trim().isEmpty) {
           // 工具调用后无后续文本的残留空消息：移除，不展示
-          messages.remove(msg);
+          _removeMessage(msg);
         } else {
           msg.text = msg.text.trim();
-          messages.refresh();
+          _notifyMessages();
           // 持久化助手消息
           _persistStreamMessage(msg);
         }
@@ -3602,7 +3611,7 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
       text: text,
       turnId: _currentTurnId,
     );
-    messages.add(msg);
+    _addMessage(msg);
     _persistMessage(msg);
   }
 
@@ -3615,7 +3624,7 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
       isToolResult: isToolResult,
       turnId: _currentTurnId,
     );
-    messages.add(msg);
+    _addMessage(msg);
     _persistMessage(msg);
   }
 
@@ -3624,11 +3633,12 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
     _persistMessage(msg);
   }
 
-  @override
-  void onClose() {
+  /// 释放资源（模块下线时由 AgentToolsModule 调用；替代原 GetX onClose）
+  void dispose() {
     _ai = null;
-    _messages.clear();
-    messages.clear();
-    super.onClose();
+    _modelChangeSub?.cancel();
+    _messages = [];
+    messages.dispose();
+    busy.dispose();
   }
 }

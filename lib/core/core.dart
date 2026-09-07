@@ -19,6 +19,7 @@ export 'package:gstore/core/data/metadata_repository.dart';
 // 核心服务
 export 'package:gstore/core/service/db_manager.dart';
 export 'package:gstore/core/service/user_manager.dart';
+export 'package:gstore/core/service/user_provider.dart';
 export 'package:gstore/core/service/backup_service.dart';
 export 'package:gstore/core/service/install_manager.dart';
 export 'package:gstore/core/service/badge_service.dart';
@@ -72,6 +73,7 @@ export 'package:gstore/core/agent/agent_service.dart';
 export 'package:gstore/core/agent/platform_arch.dart';
 
 // 模块化框架（ModuleManager + 动态代理）
+export 'package:gstore/core/navigation/home_tab_visibility.dart';
 export 'package:gstore/core/module/module.dart';
 
 // 更新管理模块
@@ -89,15 +91,13 @@ export 'package:gstore/db/apps/AppInfo.dart';
 export 'dart:async';
 export 'dart:convert';
 
-/// 更新内存中的应用版本配置（version-only，代理配置走 ConfigService B 轨）。
+/// 内存中的应用版本配置（version-only，代理配置走 ConfigService B 轨）。
 ///
-/// Get.put 在已注册（如启动时 db_manager 注册）时静默保留旧实例（不替换），
-/// 先 delete 再 put 保证新配置立即生效。
+/// 静态 holder：DbManager 更新版本时写入，getConfig 读取（替代原 GetX tagged DI）。
+AppInfoConfig? _configHolder;
+
 void updateConfig(String? version) {
-  if (Get.isRegistered<AppInfoConfig>(tag: "config")) {
-    Get.delete<AppInfoConfig>(tag: "config");
-  }
-  Get.put(AppInfoConfig(version ?? "0.0.0", null), tag: "config");
+  _configHolder = AppInfoConfig(version ?? "0.0.0", null);
 }
 
 void updateDataBaseVersion(String? version) {
@@ -164,14 +164,7 @@ Future<void> updateProxy(String? proxyUrl) async {
 }
 
 AppInfoConfig? getConfig() {
-  try {
-    // 必须带类型参数：GetX 的 key = Type + tag，无类型（dynamic）与
-    // AppInfoConfig 注册的 key 不匹配 → 永远找不到 → getProxy 恒返回默认值
-    AppInfoConfig? config = Get.find<AppInfoConfig>(tag: "config");
-    return config;
-  } catch (e) {
-    return null;
-  }
+  return _configHolder;
 }
 
 /// 默认 GitHub 代理前缀

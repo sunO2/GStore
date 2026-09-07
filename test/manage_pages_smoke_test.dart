@@ -5,6 +5,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:get/get.dart';
 import 'package:gstore/core/logger/LogManager.dart';
+import 'package:gstore/page/cache_manage/cache_service.dart';
+import 'package:gstore/page/cache_manage/download_clean_page.dart';
 import 'package:gstore/page/cache_manage/logic.dart';
 import 'package:gstore/page/cache_manage/view.dart';
 import 'package:gstore/page/database_manage/logic.dart';
@@ -33,14 +35,54 @@ void main() {
       }
     });
 
-    testWidgets('缓存管理页可挂载并展示标题', (tester) async {
-      final logic = CacheManageLogic()..debugCacheDir = tmpDir;
-      Get.put(logic);
+    testWidgets('缓存管理页可挂载并展示标题（Riverpod）', (tester) async {
+      final downloadsDir = Directory('${tmpDir.path}/downloads')
+        ..createSync();
+      final service = CacheManageService()
+        ..debugCacheDir = tmpDir
+        ..debugDownloadsDir = downloadsDir;
+      final notifier = CacheManageNotifier()..debugService = service;
+      final container = ProviderContainer(overrides: [
+        cacheManageProvider.overrideWith(() => notifier),
+      ]);
+      addTearDown(container.dispose);
+      // 触发 build 建立 element
+      container.read(cacheManageProvider);
 
-      await tester.pumpWidget(const MaterialApp(home: CacheManagePage()));
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: const MaterialApp(home: CacheManagePage()),
+        ),
+      );
       await tester.pump();
 
       expect(find.text('缓存管理'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('已下载文件清理页可挂载（Riverpod ConsumerState）', (tester) async {
+      final downloadsDir = Directory('${tmpDir.path}/downloads2')
+        ..createSync();
+      final service = CacheManageService()
+        ..debugCacheDir = tmpDir
+        ..debugDownloadsDir = downloadsDir;
+      final notifier = CacheManageNotifier()..debugService = service;
+      final container = ProviderContainer(overrides: [
+        cacheManageProvider.overrideWith(() => notifier),
+      ]);
+      addTearDown(container.dispose);
+      container.read(cacheManageProvider);
+
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: const MaterialApp(home: DownloadCleanPage()),
+        ),
+      );
+      await tester.pump();
+
+      expect(find.text('已下载文件'), findsOneWidget);
       expect(tester.takeException(), isNull);
     });
 

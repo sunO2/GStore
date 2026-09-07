@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:gstore/core/core.dart';
 
@@ -6,28 +7,30 @@ import 'logic.dart';
 import 'state.dart';
 
 /// 已下载文件清理页：列出已完成且文件存在的下载，支持逐条 / 多选 / 全选删除。
-class DownloadCleanPage extends StatefulWidget {
+class DownloadCleanPage extends ConsumerStatefulWidget {
   const DownloadCleanPage({super.key});
 
   @override
-  State<DownloadCleanPage> createState() => _DownloadCleanPageState();
+  ConsumerState<DownloadCleanPage> createState() => _DownloadCleanPageState();
 }
 
-class _DownloadCleanPageState extends State<DownloadCleanPage> {
-  late final CacheManageLogic logic = Get.find<CacheManageLogic>();
-  late final CacheManageState state = logic.state;
-
+class _DownloadCleanPageState extends ConsumerState<DownloadCleanPage> {
   /// 选中的文件路径集合。
   final Set<String> _selected = {};
+
+  CacheManageNotifier get _notifier =>
+      ref.read(cacheManageProvider.notifier);
 
   @override
   void initState() {
     super.initState();
-    logic.loadDownloads();
+    // Riverpod 禁止在 build/initState 期间修改 provider 状态，
+    // 延迟到首帧构建完成后刷新下载列表
+    Future.microtask(_notifier.loadDownloads);
   }
 
   bool get _allSelected {
-    final items = state.downloads;
+    final items = ref.read(cacheManageProvider).downloads;
     return items.isNotEmpty && _selected.length == items.length;
   }
 
@@ -44,7 +47,7 @@ class _DownloadCleanPageState extends State<DownloadCleanPage> {
     if (ok != true) return;
 
     final paths = _selected.toList();
-    final success = await logic.deleteDownloads(paths);
+    final success = await _notifier.deleteDownloads(paths);
     if (!mounted) return;
     setState(() => _selected.clear());
     if (success > 0) {
@@ -57,10 +60,11 @@ class _DownloadCleanPageState extends State<DownloadCleanPage> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final state = ref.watch(cacheManageProvider);
     return Scaffold(
       appBar: AppBar(title: const Text('已下载文件')),
-      body: Obx(() {
-        if (state.downloadsLoading.value && state.downloads.isEmpty) {
+      body: (() {
+        if (state.downloadsLoading && state.downloads.isEmpty) {
           return const LoadingState(message: '正在加载下载列表…');
         }
         if (state.downloads.isEmpty) {
@@ -121,7 +125,7 @@ class _DownloadCleanPageState extends State<DownloadCleanPage> {
                     ],
                     Text(
                       '${item.fileName}\n'
-                      '${logic.formatSize(item.size)} · '
+                      '${_notifier.formatSize(item.size)} · '
                       '${_formatTime(item.modifiedAt)}',
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
@@ -159,58 +163,57 @@ class _DownloadCleanPageState extends State<DownloadCleanPage> {
             );
           },
         );
-      }),
+      })(),
       // 底部操作栏：全选 + 删除选中（有选中才可点）
-      bottomNavigationBar: Obx(() {
-        if (state.downloads.isEmpty) return const SizedBox.shrink();
-        return SafeArea(
-          child: Container(
-            padding: AppSpacing.onlyHorizontalLG,
-            decoration: BoxDecoration(
-              color: theme.colorScheme.surface,
-              border: Border(
-                top: BorderSide(
-                  color: theme.colorScheme.outlineVariant,
-                  width: 0.5,
+      bottomNavigationBar: state.downloads.isEmpty
+          ? null
+          : SafeArea(
+              child: Container(
+                padding: AppSpacing.onlyHorizontalLG,
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.surface,
+                  border: Border(
+                    top: BorderSide(
+                      color: theme.colorScheme.outlineVariant,
+                      width: 0.5,
+                    ),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    TextButton(
+                      onPressed: () {
+                        setState(() {
+                          if (_allSelected) {
+                            _selected.clear();
+                          } else {
+                            _selected
+                              ..clear()
+                              ..addAll(state.downloads.map((e) => e.filePath));
+                          }
+                        });
+                      },
+                      child: Text(_allSelected ? '取消全选' : '全选'),
+                    ),
+                    const Spacer(),
+                    Text(
+                      '已选 ${_selected.length}',
+                      style: theme.textTheme.bodySmall,
+                    ),
+                    const SizedBox(width: AppSpacing.md),
+                    FilledButton.tonalIcon(
+                      style: FilledButton.styleFrom(
+                        foregroundColor: theme.colorScheme.error,
+                        backgroundColor: theme.colorScheme.errorContainer,
+                      ),
+                      onPressed: _selected.isEmpty ? null : _deleteSelected,
+                      icon: const Icon(Icons.delete_outline, size: 18),
+                      label: const Text('删除'),
+                    ),
+                  ],
                 ),
               ),
             ),
-            child: Row(
-              children: [
-                TextButton(
-                  onPressed: () {
-                    setState(() {
-                      if (_allSelected) {
-                        _selected.clear();
-                      } else {
-                        _selected
-                          ..clear()
-                          ..addAll(state.downloads.map((e) => e.filePath));
-                      }
-                    });
-                  },
-                  child: Text(_allSelected ? '取消全选' : '全选'),
-                ),
-                const Spacer(),
-                Text(
-                  '已选 ${_selected.length}',
-                  style: theme.textTheme.bodySmall,
-                ),
-                const SizedBox(width: AppSpacing.md),
-                FilledButton.tonalIcon(
-                  style: FilledButton.styleFrom(
-                    foregroundColor: theme.colorScheme.error,
-                    backgroundColor: theme.colorScheme.errorContainer,
-                  ),
-                  onPressed: _selected.isEmpty ? null : _deleteSelected,
-                  icon: const Icon(Icons.delete_outline, size: 18),
-                  label: const Text('删除'),
-                ),
-              ],
-            ),
-          ),
-        );
-      }),
     );
   }
 

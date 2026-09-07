@@ -93,18 +93,19 @@ void main() {
     authApi = _FakeAuthApi();
     restClient = _FakeRestClient();
 
-    // 注入依赖：UserManager.initialize() 用 Get.find 取 authApi / restClient
-    Get.put<GithubAuthApi>(authApi);
-    Get.put<GithubRestClient>(restClient);
+    // 注入依赖：UserManager.initialize() 经 ModuleManager 取 authApi / restClient
+    ModuleManager.instance.bind<GithubAuthApi>(authApi);
+    ModuleManager.instance.bind<GithubRestClient>(restClient);
     manager = UserManager.instance;
     // 单例跨测试重置：强制重新绑定本轮 fake（否则残留上一用例的 _authApi）
     manager.resetForTest();
     await manager.initialize();
   });
 
-  tearDown(() {
+  tearDown(() async {
     Get.reset();
     DioClient.instance.authorization = null;
+    await ModuleManager.instance.clear();
   });
 
   group('P2: user() 失败不残留 token', () {

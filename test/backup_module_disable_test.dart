@@ -103,7 +103,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 300));
 
       expect(find.text('备份模块未启用'), findsOneWidget);
-      expect(logic.state.isExporting.value, isFalse,
+      expect(logic.state.isExporting, isFalse,
           reason: '不应进入导出流程');
       expect(tester.takeException(), isNull);
     });
@@ -117,7 +117,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 300));
 
       expect(find.text('备份模块未启用'), findsOneWidget);
-      expect(logic.state.isImporting.value, isFalse,
+      expect(logic.state.isImporting, isFalse,
           reason: '不应进入导入流程');
       expect(tester.takeException(), isNull);
     });
@@ -126,9 +126,9 @@ void main() {
       final logic = BackupLogic();
       await logic.loadStatistics();
 
-      expect(logic.state.errorMessage.value, isEmpty,
+      expect(logic.state.errorMessage, isEmpty,
           reason: '不应触发真实统计加载');
-      expect(logic.state.statistics.value, isNull);
+      expect(logic.state.statistics, isNull);
     });
   });
 

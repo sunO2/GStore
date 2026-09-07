@@ -154,7 +154,7 @@ class _ThemeSettingsPageState extends ConsumerState<ThemeSettingsPage> {
         style: TextStyle(
           fontSize: AppTypography.sizeSM,
           fontWeight: AppTypography.weightMedium,
-          color: Colors.grey,
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
         ),
       ),
     );

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -13,7 +14,6 @@ import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/channel/ChannelManager.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/channel/impl/LocalDbChannel.dart';
-import 'package:gstore/page/home/tab/discovery/logic.dart';
 import 'package:gstore/http/github/github_client.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:gstore/db/apps/AppInfoDatabase.dart' as db;
@@ -50,11 +50,40 @@ class DBRepository {
   }
 }
 
-class DbManager extends GetxService {
-  final githubApi = Get.find<GithubRestClient>();
+class DbManager {
+  /// 全局访问入口（模块注册后可用；测试可直构并经 [ModuleManager.bind] 覆盖）
+  static DbManager? _instance;
+
+  static DbManager get instance {
+    final cached = _instance;
+    if (cached != null) return cached;
+    final registered = ModuleManager.instance.get<DbManager>();
+    if (registered != null) {
+      _instance = registered;
+      return registered;
+    }
+    throw StateError('DbManager 尚未初始化（DbModule 未上线或测试未 bind）');
+  }
+
+  GithubRestClient? _githubApi;
+  GithubRestClient get githubApi =>
+      _githubApi ??= ModuleManager.instance.require<GithubRestClient>();
   var dbRepositroies = <String, DBRepository>{};
 
+  // 数据库重建通知：应用数据库下载更新重建后广播，数据依赖方（如发现页）
+  // 订阅刷新。core 层不反向依赖页面，仅暴露事件由页面自行订阅。
+  final StreamController<void> _dbRebuiltController =
+      StreamController<void>.broadcast();
+  Stream<void> get dbRebuiltStream => _dbRebuiltController.stream;
+
+  /// 广播数据库重建事件（重建完成后调用）
+  void notifyDbRebuilt() {
+    if (_dbRebuiltController.isClosed) return;
+    _dbRebuiltController.add(null);
+  }
+
   Future<DbManager> init() async {
+    _instance ??= this;
     // 使用应用私有目录（Android 11+ 外部共享目录受作用域存储限制，可能返回 null 导致 ANR）
     final dir = await getApplicationDocumentsDirectory();
     var dbDir = Directory("${dir.path}/gstore");
@@ -336,8 +365,8 @@ class DbManager extends GetxService {
 
           // 更新 LocalDbChannel 的数据库引用（避免使用已关闭的旧数据库）
           try {
-            final channelManager = Get.find<ChannelManager>(tag: 'channelManager');
-            final localDb = channelManager.getChannel(ChannelType.localDb);
+            final channelManager = ModuleManager.instance.get<ChannelManager>();
+            final localDb = channelManager?.getChannel(ChannelType.localDb);
             if (localDb is LocalDbChannel) {
               localDb.updateDatabase(dbRepositroies[target]!.db);
               appLog.info('DbManager: LocalDbChannel 数据库引用已更新');
@@ -346,14 +375,9 @@ class DbManager extends GetxService {
             appLog.error('DbManager: 更新 LocalDbChannel 引用失败 - $e');
           }
 
-          // 通知发现页刷新数据（数据库已更新，重新加载应用列表）
-          try {
-            final discovery = Get.find<DiscoveryLogic>();
-            await discovery.loadData();
-            appLog.info('DbManager: 已通知发现页刷新');
-          } catch (e) {
-            appLog.error('DbManager: 通知发现页刷新失败（可能未打开）- $e');
-          }
+          // 通知数据依赖方刷新（数据库已更新；发现页等订阅 dbRebuiltStream 重载）
+          notifyDbRebuilt();
+          appLog.info('DbManager: 已广播数据库重建事件');
 
           // 数据库已更新到最新，清除红点
           BadgeService.instance.setBadge(BadgeKey.dbUpdate, 0);
@@ -411,9 +435,9 @@ class DbManager extends GetxService {
 }
 
 extension DBRepositoryExtension on String {
-  DBRepository get repoDB => Get.find<DbManager>()._getDB(this);
+  DBRepository get repoDB => DbManager.instance._getDB(this);
   Future<int> checkUpdate() =>
-      Get.find<DbManager>()._checkUpdateDBOfRepositroy(this);
+      DbManager.instance._checkUpdateDBOfRepositroy(this);
   Future<bool> checkUpdateOnly() =>
-      Get.find<DbManager>()._checkUpdateOnly(this);
+      DbManager.instance._checkUpdateOnly(this);
 }

@@ -1,4 +1,3 @@
-import 'package:get/get.dart';
 import 'package:gstore/core/core.dart';
 
 /// 数据库变化事件类型
@@ -31,37 +30,50 @@ class DatabaseChangeEvent {
   String toString() => 'DatabaseChangeEvent(type: $type, data: $data)';
 }
 
-/// 数据库事件总线 - 使用 Rx 实现全局响应式
-class DatabaseEventBus extends GetxController {
-  static DatabaseEventBus get instance => Get.find<DatabaseEventBus>();
+/// 数据库事件总线 - broadcast 流全局事件分发
+class DatabaseEventBus {
+  DatabaseEventBus._();
 
-  /// 当前事件（响应式）
-  final Rx<DatabaseChangeEvent?> _currentEvent = Rx<DatabaseChangeEvent?>(null);
+  static DatabaseEventBus? _instance;
 
-  /// 获取当前事件流
-  Rx<DatabaseChangeEvent?> get eventStream => _currentEvent;
+  static DatabaseEventBus get instance => _instance ??= DatabaseEventBus._();
+
+  /// 事件广播流
+  final StreamController<DatabaseChangeEvent> _controller =
+      StreamController<DatabaseChangeEvent>.broadcast();
+
+  /// 事件流（数据库变化广播，发送后推送给订阅方）
+  Stream<DatabaseChangeEvent> get eventStream => _controller.stream;
 
   /// 发送数据库变化事件
   void send(DatabaseChangeEvent event) {
     appLog.info('DatabaseEventBus: 发送事件 - ${event.type}');
-    _currentEvent.value = event;
+    if (_controller.isClosed) return;
+    _controller.add(event);
   }
 
-  /// 监听特定类型的事件
-  void on(DatabaseChangeType type, Function(DatabaseChangeEvent) callback) {
-    ever(_currentEvent, (event) {
-      if (event?.type == type) {
-        callback(event!);
-      }
-    });
+  /// 监听特定类型的事件（返回订阅，调用方可取消）
+  StreamSubscription<DatabaseChangeEvent> on(
+    DatabaseChangeType type,
+    Function(DatabaseChangeEvent) callback,
+  ) {
+    return _controller.stream
+        .where((e) => e.type == type)
+        .listen(callback);
   }
 
-  /// 监听多个类型的事件
-  void onTypes(List<DatabaseChangeType> types, Function(DatabaseChangeEvent) callback) {
-    ever(_currentEvent, (event) {
-      if (event != null && types.contains(event.type)) {
-        callback(event);
-      }
-    });
+  /// 监听多个类型的事件（返回订阅，调用方可取消）
+  StreamSubscription<DatabaseChangeEvent> onTypes(
+    List<DatabaseChangeType> types,
+    Function(DatabaseChangeEvent) callback,
+  ) {
+    return _controller.stream
+        .where((e) => types.contains(e.type))
+        .listen(callback);
+  }
+
+  /// 释放资源（测试/重置用）
+  void dispose() {
+    if (!_controller.isClosed) _controller.close();
   }
 }

@@ -15,7 +15,6 @@ import 'providers/theme_config_provider.dart';
 import 'providers/webdav_config_provider.dart';
 import 'providers/update_config_provider.dart';
 import 'providers/download_config_provider.dart';
-import '../workflow/workflow.dart';
 
 /// 配置初始化器
 ///
@@ -60,10 +59,6 @@ class ConfigInitializer {
 
     // 初始化统一 ConfigService（注册表 + 桥接 provider + 存量迁移）
     await _initializeConfigService(manager, storage);
-
-    // 初始化工作流管理器
-    await WorkflowManager.instance.initialize(storage);
-    appLog.info('ConfigInitializer: 工作流管理器初始化完成');
 
     _initialized = true;
     appLog.info('ConfigInitializer: 配置管理系统初始化完成');

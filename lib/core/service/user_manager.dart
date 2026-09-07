@@ -13,7 +13,7 @@ import 'package:gstore/http/github/user_info/user_info.dart';
 /// 用户管理服务
 ///
 /// 负责用户登录、token 管理、用户信息存储等功能
-class UserManager extends GetxService {
+class UserManager {
   static UserManager? _instance;
 
   static UserManager get instance {
@@ -43,18 +43,9 @@ class UserManager extends GetxService {
   }
 
   /// 私有构造函数
-  UserManager._internal() {
-    // 在 initialize() 中初始化依赖
-  }
+  UserManager._internal();
 
-  @override
-  onInit() {
-    debugPrint('UserManager: onInit 被调用 (instance: ${identityHashCode(this)})');
-    // 不要在这里调用 _initialize()，因为 initialize() 会调用它
-    super.onInit();
-  }
-
-  /// 初始化（必须在使用前调用）
+  /// 初始化（必须在使用前调用；依赖经 ModuleManager 解析——DbModule 先于 UserModule 初始化）
   Future<void> initialize() async {
     if (_isInitialized) {
       debugPrint('UserManager: 已经初始化过，跳过');
@@ -62,9 +53,9 @@ class UserManager extends GetxService {
     }
 
     appLog.info('UserManager: 开始公共初始化');
-    // 初始化依赖
-    _authApi = Get.find<GithubAuthApi>();
-    _githubApi = Get.find<GithubRestClient>();
+    // 初始化依赖（ModuleManager lazyPut 首次解析即创建）
+    _authApi = ModuleManager.instance.require<GithubAuthApi>();
+    _githubApi = ModuleManager.instance.require<GithubRestClient>();
 
     // 调用内部初始化
     await _initialize();

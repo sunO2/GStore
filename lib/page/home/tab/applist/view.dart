@@ -1,14 +1,12 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:go_router/go_router.dart';
 import 'package:gstore/core/icons/Icons.dart';
-import 'package:gstore/core/service/user_manager.dart';
-import 'package:gstore/http/github/user_info/user_info.dart';
 import 'package:gstore/page/web/browser.dart';
-import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/design/app_borders.dart';
-import 'package:gstore/core/design/app_components.dart';
+import 'package:gstore/page/home/logic.dart';
 
 import 'logic.dart';
 import 'state.dart';
@@ -19,20 +17,23 @@ import 'widgets/empty_state_widget.dart';
 import 'widgets/horizontal_app_row.dart';
 import 'widgets/section_title_widget.dart';
 
-class ApplistPage extends StatefulWidget {
+class ApplistPage extends ConsumerStatefulWidget {
   const ApplistPage({super.key});
 
   @override
-  State<StatefulWidget> createState() => AppListState();
+  ConsumerState<ApplistPage> createState() => AppListState();
 }
 
-class AppListState extends State<ApplistPage>
+class AppListState extends ConsumerState<ApplistPage>
     with AutomaticKeepAliveClientMixin {
-  late ApplistLogic logic;
-  late ApplistState state;
+  /// 页面控制器（Riverpod；build 中取，保活 tab 不销毁）
+  late ApplistNotifier logic;
 
-  /// 滚动控制器：接近底部时触发分页加载（loadMoreApps）
-  final ScrollController _scrollController = ScrollController();
+  @override
+  bool get wantKeepAlive => true;
+
+  /// 列表滚动控制器（ApplistNotifier 持有；initState 取引用，dispose 时 ref 不可用）
+  late final ScrollController _scroll;
 
   /// 距底部多少像素内触发加载更多
   static const double _loadMoreThreshold = 400;
@@ -40,22 +41,21 @@ class AppListState extends State<ApplistPage>
   @override
   void initState() {
     super.initState();
-    logic = Get.put(ApplistLogic());
-    state = logic.state;
-    _scrollController.addListener(_onScroll);
+    // 触发 Notifier 建立（首帧初始化）
+    ref.read(applistProvider);
+    _scroll = ref.read(applistProvider.notifier).scrollController;
+    _scroll.addListener(_onScroll);
   }
 
   @override
   void dispose() {
-    _scrollController
-      ..removeListener(_onScroll)
-      ..dispose();
+    _scroll.removeListener(_onScroll);
     super.dispose();
   }
 
   void _onScroll() {
-    if (!_scrollController.hasClients) return;
-    final position = _scrollController.position;
+    if (!_scroll.hasClients) return;
+    final position = _scroll.position;
     if (position.pixels >= position.maxScrollExtent - _loadMoreThreshold) {
       logic.loadMoreApps();
     }
@@ -64,6 +64,7 @@ class AppListState extends State<ApplistPage>
   @override
   Widget build(BuildContext context) {
     super.build(context);
+    logic = ref.read(applistProvider.notifier);
     return Scaffold(
       appBar: AppBar(
         title: Container(
@@ -84,21 +85,7 @@ class AppListState extends State<ApplistPage>
                 fontSize: 16,
               ),
               prefixIcon: const Icon(Icons.search, size: 20),
-              suffixIcon: Obx(() {
-                if (state.searchKeyword.value.isNotEmpty) {
-                  return IconButton(
-                    icon: const Icon(Icons.clear, size: 18),
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(),
-                    onPressed: () {
-                      logic.searchController.clear();
-                      logic.searchAppsImmediate('');
-                      logic.searchFocusNode.unfocus();
-                    },
-                  );
-                }
-                return const SizedBox.shrink();
-              }),
+              suffixIcon: const _SearchClearSuffix(),
               border: OutlineInputBorder(
                 // 胶囊形搜索框（48 高 + 全圆）
                 borderRadius: BorderRadius.circular(AppRadius.circle),
@@ -136,119 +123,165 @@ class AppListState extends State<ApplistPage>
         actions: [
           IconButton(
             tooltip: "应用更新",
-            icon: Obx(() {
-              final count = BadgeService.instance.countOf(BadgeKey.appUpdate);
-              return AppBadge(
-                count: count,
-                child: ColoredAliIcon(
-                  icon: AliIcon.appUpdateCenter,
-                  // 与 AppBar 默认图标/用户头像(iconXL) 对齐，避免与其他 tab 不协调
-                  size: AppTypography.iconXL,
-                ),
-              );
-            }),
+            icon: const _UpdateBadgeIcon(),
             onPressed: () => context.push(AppRoute.updateCenter),
           ),
           IconButton(
             tooltip: "下载中心",
-            icon: ColoredAliIcon(
+            icon: const ColoredAliIcon(
               icon: AliIcon.appDownloadCenter,
               // 与 AppBar 默认图标/用户头像(iconXL) 对齐
               size: AppTypography.iconXL,
             ),
             onPressed: () => context.push(AppRoute.downloadCenter),
           ),
-          Obx(() {
-            var user = Get.find<UserManager>().userInfo.value;
-
-            icon(UserInfo fuser) {
-              if (fuser.avatarUrl?.isNotEmpty ?? false) {
-                return Container(
-                  width: Theme.of(context).appBarTheme.iconTheme?.size ??
-                      AppTypography.iconXL,
-                  height: Theme.of(context).appBarTheme.iconTheme?.size ??
-                      AppTypography.iconXL,
-                  decoration: BoxDecoration(
-                      border: AppBorders.all(
-                        context,
-                        color: Theme.of(context).colorScheme.outlineVariant,
-                      ),
-                      borderRadius: AppRadius.allCircle),
-                  child: ClipOval(
-                    child: CachedNetworkImage(
-                      width: Theme.of(context).appBarTheme.iconTheme?.size ??
-                          AppTypography.iconXL,
-                      height: Theme.of(context).appBarTheme.iconTheme?.size ??
-                          AppTypography.iconXL,
-                      placeholder: (context, url) =>
-                          const AppLoading(size: AppLoadingSize.small),
-                      errorWidget: (context, url, error) => const Icon(
-                        Icons.account_circle_outlined,
-                      ),
-                      imageUrl: fuser.avatarUrl ?? "",
-                    ),
-                  ),
-                );
-              } else {
-                return const Icon(
-                  Icons.account_circle_outlined,
-                );
-              }
-            }
-
-            onPressed() async {
-              if (user.avatarUrl?.isEmpty ?? true) {
-                final result = await context.push<AuthStatus>(AppRoute.auth);
-                if (result == AuthStatus.success) {
-                  if (mounted) {
-                    Get.snackbar(
-                      '登录成功',
-                      '您可以访问更多功能了！',
-                      icon: const Icon(
-                        Icons.check_circle,
-                        color: AppColors.success,
-                      ),
-                      duration: const Duration(seconds: 2),
-                    );
-                  }
-                }
-              } else {
-                GStoreInAppBrowser inAppBrowser = GStoreInAppBrowser();
-                final settings = ChromeSafariBrowserSettings(
-                  shareState: CustomTabsShareState.SHARE_STATE_ON,
-                  barCollapsingEnabled: true,
-                );
-                inAppBrowser.open(
-                    url: WebUri(user.htmlUrl ?? ""), settings: settings);
-              }
-            }
-
-            return IconButton(
-              tooltip: user.name ?? "登陆",
-              icon: icon(user),
-              onPressed: onPressed,
-            );
-          }),
+          const _UserActionButton(),
         ],
       ),
       body: GestureDetector(
         onTap: () => logic.searchFocusNode.unfocus(),
         behavior: HitTestBehavior.translucent,
-        child: Obx(() => _buildBody(context)),
+        child: const _ApplistBody(),
       ),
     );
   }
+}
 
-  Widget _buildBody(BuildContext context) {
+/// 搜索框清空按钮（搜索词非空时显示）
+class _SearchClearSuffix extends ConsumerWidget {
+  const _SearchClearSuffix();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final notifier = ref.read(applistProvider.notifier);
+    final hasKeyword = ref.watch(
+      applistProvider.select((s) => s.searchKeyword.isNotEmpty),
+    );
+    if (!hasKeyword) return const SizedBox.shrink();
+    return IconButton(
+      icon: const Icon(Icons.clear, size: 18),
+      padding: EdgeInsets.zero,
+      constraints: const BoxConstraints(),
+      onPressed: () {
+        notifier.searchController.clear();
+        notifier.searchAppsImmediate('');
+        notifier.searchFocusNode.unfocus();
+      },
+    );
+  }
+}
+
+/// 应用更新红点角标
+class _UpdateBadgeIcon extends ConsumerWidget {
+  const _UpdateBadgeIcon();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final count = ref.watch(applistProvider.select((s) => s.appUpdateBadge));
+    return AppBadge(
+      count: count,
+      child: const ColoredAliIcon(
+        icon: AliIcon.appUpdateCenter,
+        // 与 AppBar 默认图标/用户头像(iconXL) 对齐，避免与其他 tab 不协调
+        size: AppTypography.iconXL,
+      ),
+    );
+  }
+}
+
+/// 用户头像/登录按钮（读 applist state 镜像的用户信息）
+class _UserActionButton extends ConsumerWidget {
+  const _UserActionButton();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final user = ref.watch(applistProvider.select((s) => s.user));
+
+    Widget icon() {
+      if (user.avatarUrl?.isNotEmpty ?? false) {
+        return Container(
+          width: Theme.of(context).appBarTheme.iconTheme?.size ??
+              AppTypography.iconXL,
+          height: Theme.of(context).appBarTheme.iconTheme?.size ??
+              AppTypography.iconXL,
+          decoration: BoxDecoration(
+              border: AppBorders.all(
+                context,
+                color: Theme.of(context).colorScheme.outlineVariant,
+              ),
+              borderRadius: AppRadius.allCircle),
+          child: ClipOval(
+            child: CachedNetworkImage(
+              width: Theme.of(context).appBarTheme.iconTheme?.size ??
+                  AppTypography.iconXL,
+              height: Theme.of(context).appBarTheme.iconTheme?.size ??
+                  AppTypography.iconXL,
+              placeholder: (context, url) =>
+                  const AppLoading(size: AppLoadingSize.small),
+              errorWidget: (context, url, error) => const Icon(
+                Icons.account_circle_outlined,
+              ),
+              imageUrl: user.avatarUrl ?? "",
+            ),
+          ),
+        );
+      }
+      return const Icon(
+        Icons.account_circle_outlined,
+      );
+    }
+
+    Future<void> onPressed() async {
+      if (user.avatarUrl?.isEmpty ?? true) {
+        final result = await context.push<AuthStatus>(AppRoute.auth);
+        if (result == AuthStatus.success && context.mounted) {
+          AppDialogs.showSuccess('您可以访问更多功能了！');
+        }
+      } else {
+        GStoreInAppBrowser inAppBrowser = GStoreInAppBrowser();
+        final settings = ChromeSafariBrowserSettings(
+          shareState: CustomTabsShareState.SHARE_STATE_ON,
+          barCollapsingEnabled: true,
+        );
+        inAppBrowser.open(
+            url: WebUri(user.htmlUrl ?? ""), settings: settings);
+      }
+    }
+
+    return IconButton(
+      tooltip: user.name ?? "登陆",
+      icon: icon(),
+      onPressed: onPressed,
+    );
+  }
+}
+
+/// 首页应用列表主体（加载/错误/空态/列表 + 分页）
+class _ApplistBody extends ConsumerWidget {
+  const _ApplistBody();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final state = ref.watch(applistProvider);
+    final logic = ref.read(applistProvider.notifier);
+    return _buildBody(context, ref, state, logic);
+  }
+
+  Widget _buildBody(
+    BuildContext context,
+    WidgetRef ref,
+    ApplistState state,
+    ApplistNotifier logic,
+  ) {
     // 加载状态
-    if (state.isLoading.value) {
+    if (state.isLoading) {
       return const LoadingState();
     }
 
     // 错误状态
-    if (state.errorMessage.value.isNotEmpty) {
+    if (state.errorMessage.isNotEmpty) {
       return ErrorState(
-        message: state.errorMessage.value,
+        message: state.errorMessage,
         retryLabel: '重试',
         onRetryPressed: logic.loadAggregatedApps,
       );
@@ -257,14 +290,14 @@ class AppListState extends State<ApplistPage>
     // 空状态
     if (state.filteredApps.isEmpty) {
       // 搜索无结果
-      if (state.searchKeyword.value.isNotEmpty) {
+      if (state.searchKeyword.isNotEmpty) {
         return Center(
           child: Padding(
             padding: AppSpacing.allXXL,
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(
+                const Icon(
                   Icons.search_off,
                   size: AppTypography.iconXXXL,
                   color: AppColors.grey400,
@@ -291,20 +324,23 @@ class AppListState extends State<ApplistPage>
 
       // 还没有添加任何应用 - 使用独立的空状态组件
       return EmptyStateWidget(
-        onImportSample: logic.importSampleApps,
+        onImportSample: () {
+          ref.read(homeProvider.notifier).jumpToPage(1); // 切换到发现页
+          AppDialogs.showSuccess('请在"发现"页面浏览并添加您感兴趣的应用');
+        },
       );
     }
 
     // 应用列表
-    final isSearching = state.searchKeyword.value.isNotEmpty;
+    final isSearching = state.searchKeyword.isNotEmpty;
     return RefreshIndicator(
       onRefresh: logic.loadAggregatedApps,
       child: CustomScrollView(
-        controller: _scrollController,
+        controller: ref.read(applistProvider.notifier).scrollController,
         slivers: [
           // 分类筛选 Chips + 排序
           SliverToBoxAdapter(
-            child: _CategoryFilterBar(logic: logic, state: state),
+            child: _CategoryFilterBar(state: state, logic: logic),
           ),
 
           // 搜索时只显示搜索结果，隐藏分区
@@ -320,7 +356,7 @@ class AppListState extends State<ApplistPage>
                       subtitle: '有可用新版本的应用',
                       trailing: IconButton(
                         tooltip: '去更新中心',
-                        icon: ColoredAliIcon(
+                        icon: const ColoredAliIcon(
                           icon: AliIcon.appUpdateCenter,
                           size: AppTypography.iconSM,
                         ),
@@ -378,7 +414,8 @@ class AppListState extends State<ApplistPage>
                     final app = state.filteredApps[index];
                     return AppCardWidget(
                       app: app,
-                      hasUpdate: state.updateStates[app.appInfo.appId] ?? false,
+                      hasUpdate:
+                          state.updateStates[app.appInfo.appId] ?? false,
                       onTap: () => logic.appDetail(app),
                     );
                   },
@@ -389,7 +426,7 @@ class AppListState extends State<ApplistPage>
           ),
           // 底部加载更多 / 已全部加载 指示
           SliverToBoxAdapter(
-            child: Obx(() => _buildLoadMoreFooter(context)),
+            child: _buildLoadMoreFooter(context, state, logic),
           ),
           // 底部避让悬浮导航胶囊（extendBody 后内容延伸至胶囊后方）
           SliverPadding(
@@ -404,17 +441,21 @@ class AppListState extends State<ApplistPage>
   }
 
   /// 底部加载状态组件（滚动分页时显示 loading，全部加载完成时显示提示）
-  Widget _buildLoadMoreFooter(BuildContext context) {
+  Widget _buildLoadMoreFooter(
+    BuildContext context,
+    ApplistState state,
+    ApplistNotifier logic,
+  ) {
     final scheme = Theme.of(context).colorScheme;
-    // 首屏/错误/搜索无结果时不显示“加载更多”脚注（避免空态下出现多余 UI）
-    if (state.isLoading.value ||
-        state.errorMessage.value.isNotEmpty ||
+    // 首屏/错误/搜索无结果时不显示"加载更多"脚注（避免空态下出现多余 UI）
+    if (state.isLoading ||
+        state.errorMessage.isNotEmpty ||
         state.filteredApps.isEmpty) {
       return const SizedBox.shrink();
     }
 
     // 正在加载更多：显示小型 loading
-    if (state.isLoadingMore.value) {
+    if (state.isLoadingMore) {
       return Padding(
         padding: const EdgeInsets.symmetric(vertical: AppSpacing.lg),
         child: Row(
@@ -450,17 +491,14 @@ class AppListState extends State<ApplistPage>
 
     return const SizedBox.shrink();
   }
-
-  @override
-  bool get wantKeepAlive => true;
 }
 
 /// 分类筛选 + 排序栏
 class _CategoryFilterBar extends StatelessWidget {
-  final ApplistLogic logic;
   final ApplistState state;
+  final ApplistNotifier logic;
 
-  const _CategoryFilterBar({required this.logic, required this.state});
+  const _CategoryFilterBar({required this.state, required this.logic});
 
   @override
   Widget build(BuildContext context) {
@@ -475,27 +513,24 @@ class _CategoryFilterBar extends StatelessWidget {
         children: [
           // 分类 Chips（横向滚动）
           Expanded(
-            child: Obx(() {
-              final selected = state.selectedCategory.value;
-              return SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: Row(
-                  children: [
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  _CategoryChip(
+                    label: '全部',
+                    selected: state.selectedCategory.isEmpty,
+                    onTap: () => logic.setCategory(''),
+                  ),
+                  for (final cat in state.categories)
                     _CategoryChip(
-                      label: '全部',
-                      selected: selected.isEmpty,
-                      onTap: () => logic.setCategory(''),
+                      label: cat,
+                      selected: state.selectedCategory == cat,
+                      onTap: () => logic.setCategory(cat),
                     ),
-                    for (final cat in state.categories)
-                      _CategoryChip(
-                        label: cat,
-                        selected: selected == cat,
-                        onTap: () => logic.setCategory(cat),
-                      ),
-                  ],
-                ),
-              );
-            }),
+                ],
+              ),
+            ),
           ),
           const SizedBox(width: AppSpacing.xs),
           // 排序菜单

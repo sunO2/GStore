@@ -14,9 +14,19 @@ enum BadgeKey {
 }
 
 /// 红点服务
-/// 统一管理各功能入口的红点状态，供 UI 通过 Obx 监听
-class BadgeService extends GetxService {
-  static BadgeService get instance => Get.find<BadgeService>();
+/// 统一管理各功能入口的红点状态，供 UI 通过监听刷新
+class BadgeService {
+  static BadgeService? _instance;
+
+  /// 全局访问：模块注册表优先（模块 bind / 测试注入 fake），未注册则懒创建单例
+  static BadgeService get instance {
+    final registered = ModuleManager.instance.get<BadgeService>();
+    if (registered != null) return registered;
+    return _instance ??= BadgeService();
+  }
+
+  /// 测试可自由构造自建实例；生产统一走 [instance]
+  BadgeService();
 
   /// 红点数据（key -> 数量，>0 显示红点）
   final RxMap<String, int> _badges = <String, int>{}.obs;
@@ -84,7 +94,7 @@ class BadgeService extends GetxService {
   /// 检测数据库版本更新红点
   Future<void> _checkDbUpdateBadge() async {
     try {
-      final info = await Get.find<DbManager>().checkUpdateInfo('gstore');
+      final info = await DbManager.instance.checkUpdateInfo('gstore');
       final hasUpdate = info != null;
       setBadge(BadgeKey.dbUpdate, hasUpdate ? 1 : 0);
       appLog.info('BadgeService: 数据库更新红点 = $hasUpdate');

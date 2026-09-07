@@ -31,7 +31,7 @@ class _MinePageState extends ConsumerState<MinePage>
   /// 备份卡片展开状态
   bool _backupExpanded = false;
 
-  /// 备份逻辑控制器
+  /// 备份逻辑控制器（页面私有实例；操作区监听其 ChangeNotifier 驱动重建）
   late final BackupLogic _backupLogic;
 
   /// WebDAV 配置状态
@@ -73,7 +73,9 @@ class _MinePageState extends ConsumerState<MinePage>
   @override
   void initState() {
     super.initState();
-    _backupLogic = Get.put(BackupLogic());
+    // 备份逻辑：页面私有实例（不再经 Get.put 全局容器；操作区监听其状态变化重建）
+    _backupLogic = BackupLogic();
+    _backupLogic.addListener(_reloadBackupArea);
     _checkWebDavConfig();
 
     // 监听 webdav 模块上下线：下线隐藏备份入口，上线恢复
@@ -132,9 +134,16 @@ class _MinePageState extends ConsumerState<MinePage>
     _moduleSub?.cancel();
     _agentSub?.cancel();
     _backupSub?.cancel();
+    _backupLogic.removeListener(_reloadBackupArea);
+    _backupLogic.dispose();
     _appearanceController.dispose();
     _backupController.dispose();
     super.dispose();
+  }
+
+  /// 备份操作区任一 Rx 变化 → 安全重建（mounted 检查由 setState 内部隐含）
+  void _reloadBackupArea() {
+    if (mounted) setState(() {});
   }
 
   /// 切换外观卡片展开状态
@@ -242,9 +251,11 @@ class _MinePageState extends ConsumerState<MinePage>
   @override
   Widget build(BuildContext context) {
     super.build(context); // AutomaticKeepAliveClientMixin 要求
-    // 主题状态：Riverpod 权威（变化 → 本 State rebuild → Obx 内外观卡以新值重建）
+    // 主题状态：Riverpod 权威（变化 → 本 State rebuild）
     final theme = ref.watch(themeProvider);
     final themeNotifier = ref.read(themeProvider.notifier);
+    // 用户信息：Riverpod 镜像（登录/登出变化 → 本 State rebuild）
+    final user = ref.watch(userInfoProvider);
     return Scaffold(
       appBar: AppBar(
         title: const Text('我的'),
@@ -257,9 +268,7 @@ class _MinePageState extends ConsumerState<MinePage>
           top: AppSpacing.lg,
           bottom: 80 + MediaQuery.of(context).padding.bottom,
         ),
-        child: Obx(() {
-          final user = Get.find<UserManager>().userInfo.value;
-
+        child: Builder(builder: (context) {
           // 判断是否已登录
           final isLoggedIn = user.avatarUrl?.isNotEmpty ?? false;
 
@@ -398,7 +407,7 @@ class _MinePageState extends ConsumerState<MinePage>
           icon: const Icon(Icons.logout, size: AppTypography.iconSM),
           tooltip: '退出登录',
           onPressed: () {
-            Get.find<UserManager>().logout();
+            UserManager.instance.logout();
             AppDialogs.showSuccess(
               '您已成功退出 GitHub 账号',
               title: '已退出登录',
@@ -972,7 +981,7 @@ class _MinePageState extends ConsumerState<MinePage>
             const SizedBox(height: AppSpacing.lg),
 
             // 备份选项和操作
-            Obx(() {
+            Builder(builder: (context) {
               final state = _backupLogic.state;
               // WebDAV 传输任务进行中（防重复：其他入口/Agent 触发时按钮同样禁用；
               // 经注册表取实现，webdav 模块下线时降级为不忙）
@@ -988,7 +997,7 @@ class _MinePageState extends ConsumerState<MinePage>
                     title: const Text('导出时包含应用配置'),
                     subtitle: const Text('导出备份时同时导出主题、WebDAV 等应用设置'),
                     contentPadding: EdgeInsets.zero,
-                    value: state.includeAppConfig.value,
+                    value: state.includeAppConfig,
                     onChanged: (value) =>
                         _backupLogic.toggleIncludeAppConfig(value),
                   ),
@@ -1004,7 +1013,7 @@ class _MinePageState extends ConsumerState<MinePage>
 
                   // 恢复方式描述
                   Text(
-                    _getRestoreModeDescription(state.restoreMode.value),
+                    _getRestoreModeDescription(state.restoreMode),
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
                           color: AppColors.textSecondary,
                         ),
@@ -1015,7 +1024,7 @@ class _MinePageState extends ConsumerState<MinePage>
                   SizedBox(
                     width: double.infinity,
                     child: AppSegmentedButton<RestoreMode>(
-                      value: state.restoreMode.value,
+                      value: state.restoreMode,
                       segments: const [
                         AppSegment(
                           value: RestoreMode.replace,
@@ -1045,10 +1054,10 @@ class _MinePageState extends ConsumerState<MinePage>
                     children: [
                       Expanded(
                         child: FilledButton.tonalIcon(
-                          onPressed: state.isExporting.value
+                          onPressed: state.isExporting
                               ? null
                               : () => _backupLogic.exportCompressed(context),
-                          icon: state.isExporting.value
+                          icon: state.isExporting
                               ? const SizedBox(
                                   width: 16,
                                   height: 16,
@@ -1056,16 +1065,16 @@ class _MinePageState extends ConsumerState<MinePage>
                                 )
                               : const Icon(Icons.save_alt),
                           label: Text(
-                              state.isExporting.value ? '导出中...' : '导出到本地'),
+                              state.isExporting ? '导出中...' : '导出到本地'),
                         ),
                       ),
                       const SizedBox(width: AppSpacing.md),
                       Expanded(
                         child: FilledButton.tonalIcon(
-                          onPressed: state.isImporting.value
+                          onPressed: state.isImporting
                               ? null
                               : () => _backupLogic.selectAndImportFile(context),
-                          icon: state.isImporting.value
+                          icon: state.isImporting
                               ? const SizedBox(
                                   width: 16,
                                   height: 16,
@@ -1073,7 +1082,7 @@ class _MinePageState extends ConsumerState<MinePage>
                                 )
                               : const Icon(Icons.folder_open),
                           label: Text(
-                              state.isImporting.value ? '导入中...' : '从本地恢复'),
+                              state.isImporting ? '导入中...' : '从本地恢复'),
                         ),
                       ),
                     ],
@@ -1109,7 +1118,7 @@ class _MinePageState extends ConsumerState<MinePage>
                               Expanded(
                                 child: FilledButton.icon(
                                   onPressed:
-                                      (state.isUploadingWebDav.value ||
+                                      (state.isUploadingWebDav ||
                                               taskBusy ||
                                               !_webdavModuleOnline)
                                           ? null
@@ -1117,7 +1126,7 @@ class _MinePageState extends ConsumerState<MinePage>
                                               context,
                                               compressed: true),
                                   icon:
-                                      (state.isUploadingWebDav.value || taskBusy)
+                                      (state.isUploadingWebDav || taskBusy)
                                           ? const SizedBox(
                                               width: 16,
                                               height: 16,
@@ -1126,7 +1135,7 @@ class _MinePageState extends ConsumerState<MinePage>
                                             )
                                           : const Icon(Icons.cloud_upload),
                                   label: Text(
-                                      (state.isUploadingWebDav.value || taskBusy)
+                                      (state.isUploadingWebDav || taskBusy)
                                           ? '上传中...'
                                           : '备份到网盘'),
                                 ),
@@ -1135,13 +1144,13 @@ class _MinePageState extends ConsumerState<MinePage>
                               Expanded(
                                 child: FilledButton.icon(
                                   onPressed:
-                                      (state.isImporting.value ||
+                                      (state.isImporting ||
                                               taskBusy ||
                                               !_webdavModuleOnline)
                                           ? null
                                           : () => _backupLogic
                                               .downloadFromWebDav(context),
-                                  icon: (state.isImporting.value || taskBusy)
+                                  icon: (state.isImporting || taskBusy)
                                       ? const SizedBox(
                                           width: 16,
                                           height: 16,
@@ -1150,7 +1159,7 @@ class _MinePageState extends ConsumerState<MinePage>
                                         )
                                       : const Icon(Icons.cloud_download),
                                   label: Text(
-                                      (state.isImporting.value || taskBusy)
+                                      (state.isImporting || taskBusy)
                                           ? '下载中...'
                                           : '从网盘恢复'),
                                 ),

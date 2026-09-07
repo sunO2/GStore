@@ -26,8 +26,7 @@ import 'package:gstore/core/routers.dart';
 /// （HomeFocusResetObserver）与主题 pageTransitionsTheme（转场复刻）。
 
 registerService() async {
-  // 初始化日志管理器（必须在最开始，因为其他模块可能需要使用日志）
-  Get.put(LogManager.instance);
+  // LogManager 单例惰性初始化（appLog 首次访问即创建；LogModule 负责注册到注册表）
   appLog.info('registerService: 开始');
   final sw = Stopwatch()..start();
 
@@ -107,8 +106,7 @@ main() async {
   // 初始化前台任务通信端口（后台 isolate 保活）
   FlutterForegroundTask.initCommunicationPort();
 
-  // 先初始化 LogManager（必须在最开始，用于拦截日志）
-  Get.put(LogManager.instance);
+  // LogManager 惰性单例（appLog 首次访问即创建，用于拦截日志）
   final appVersion = await AppVersionService.versionName() ?? 'unknown';
   appLog.info('应用启动', data: {
     'version': appVersion,

@@ -1,18 +1,18 @@
 import 'package:gstore/core/channel/channel.dart';
 import 'package:gstore/core/channel/impl/channel_loader.dart';
 import 'package:gstore/core/logger/LogManager.dart';
+import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/service/db_manager.dart';
 import 'package:gstore/http/github/dio_client.dart';
 import 'package:gstore/http/github/github_client.dart';
 import 'package:dio/dio.dart';
-import 'package:get/get.dart';
 
 /// 渠道系统初始化和配置
 class ChannelIntegration {
   static ChannelManager? _manager;
 
   /// 幂等标志：首次初始化完成后置位，重复调用直接返回
-  /// （防 channel 模块 re-enable 时重复 registerChannels / Get.put / initializeAll）
+  /// （防 channel 模块 re-enable 时重复 registerChannels / initializeAll）
   static bool _initialized = false;
 
   static ChannelManager get manager {
@@ -21,12 +21,12 @@ class ChannelIntegration {
   }
 
   /// 初始化渠道系统
-  /// 在 main.dart 的 registerService 中调用
+  /// 在模块初始化（ChannelModule.onInit）中调用
   static Future<void> initialize() async {
     if (_initialized) return;
 
-    final dbManager = Get.find<DbManager>();
-    final githubApi = Get.find<GithubRestClient>();
+    final dbManager = DbManager.instance;
+    final githubApi = ModuleManager.instance.require<GithubRestClient>();
 
     // 1. 注册本地数据库渠道
     var localDbChannel = LocalDbChannel(
@@ -82,8 +82,6 @@ class ChannelIntegration {
 
     // 设置默认渠道
     manager.setDefaultChannel(ChannelType.localDb);
-
-    Get.put(manager, tag: 'channelManager');
 
     _initialized = true;
   }

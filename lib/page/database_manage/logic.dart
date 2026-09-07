@@ -71,7 +71,6 @@ class DatabaseManageNotifier extends Notifier<DatabaseManageState> {
     'channel_apps.db': ('渠道收藏', '各渠道添加的应用记录', false),
     'download_task.db': ('下载任务', '下载队列/进度/历史记录', true),
     'fdroid_repo.db': ('F-Droid 仓库', 'F-Droid 源与索引缓存', false),
-    'workflow.db': ('工作流', '工作流引擎运行时数据', false),
   };
 
   /// 展示用表中文名（表名 → 中文）。
@@ -84,13 +83,11 @@ class DatabaseManageNotifier extends Notifier<DatabaseManageState> {
     'added_app_tags': '应用标签',
     'channel_added_app': '渠道已添加应用',
     'DownloadTaskEntity': '下载任务',
-    'workflow': '工作流',
   };
 
   /// 受管只读主表：不允许行级删除（属 App 运行时管理的数据）。
   static const _readonlyTables = <String, String>{
     'apps': '应用目录主表受版本管理，删除会导致列表异常，请用「数据库更新」整库刷新',
-    'workflow': '工作流数据受引擎管理，不建议手动删除',
   };
 
   /// 刷新数据库列表。
@@ -108,7 +105,7 @@ class DatabaseManageNotifier extends Notifier<DatabaseManageState> {
         await _scanDir(gstoreDir, found, seen);
       }
 
-      // 2. sqflite 默认库目录（download_task.db / workflow.db 等）
+      // 2. sqflite 默认库目录（download_task.db 等）
       final dbDir = await _sqfliteDir();
       if (!p.equals(dbDir.path, docs.path)) {
         await _scanDir(dbDir, found, seen);

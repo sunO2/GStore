@@ -44,6 +44,9 @@ class ModuleManager {
   /// 服务接口绑定（Type → 实现）
   final Map<Type, Object> _services = {};
 
+  /// 延迟工厂注册（Type → factory；首次 get 时创建并缓存）
+  final Map<Type, dynamic Function()> _lazyFactories = {};
+
   /// 内置模块清单（自动补注册依赖时查找）
   List<AppModule> Function()? _knownModulesProvider;
 
@@ -256,9 +259,23 @@ class ModuleManager {
   /// 获取服务实现（未注册返回 null）
   ///
   /// 主路径性能入口：调用方缓存返回值后直接调用接口方法。
+  /// 若注册了延迟工厂（[lazyPut]）且尚未创建，则首次调用创建并缓存。
   T? get<T>() {
     final impl = _services[T];
-    return impl is T ? impl : null;
+    if (impl != null) return impl is T ? impl as T : null;
+    final factory = _lazyFactories[T];
+    if (factory != null) {
+      final created = factory();
+      _services[T] = created as Object;
+      _lazyFactories.remove(T);
+      return created is T ? created as T : null;
+    }
+    return null;
+  }
+
+  /// 注册延迟工厂（等价 GetX lazyPut：首次 [get]/[require] 时创建并缓存）
+  void lazyPut<T>(T Function() factory) {
+    _lazyFactories[T] = factory as dynamic Function();
   }
 
   /// 获取服务实现（未注册抛异常）
@@ -273,21 +290,25 @@ class ModuleManager {
   /// 绑定服务实现（模块上线时调用）
   void bind<T>(T impl) {
     _services[T] = impl as Object;
+    _lazyFactories.remove(T);
   }
 
   /// 按运行时类型绑定（供 ModuleContext.bindService 回调使用）
   void bindByType(Type type, Object impl) {
     _services[type] = impl;
+    _lazyFactories.remove(type);
   }
 
   /// 解绑服务实现（模块下线时调用）
   void unbind<T>() {
     _services.remove(T);
+    _lazyFactories.remove(T);
   }
 
   /// 按运行时类型解绑（供 ModuleContext.unbindService 回调使用）
   void unbindByType(Type type) {
     _services.remove(type);
+    _lazyFactories.remove(type);
   }
 
   /// 是否已绑定服务
@@ -370,6 +391,7 @@ class ModuleManager {
       await unregisterModule(name);
     }
     _services.clear();
+    _lazyFactories.clear();
     _initialized.clear();
     _disabledModules.clear();
     _toggleChains.clear();

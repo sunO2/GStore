@@ -1,20 +1,35 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
-import 'package:get/get.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gstore/core/agent/agent_service.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/router/app_router.dart';
 
 import 'state.dart';
 
-class AgentLogic extends GetxController {
-  final AgentState state = AgentState();
-
+/// AI 助手页控制器（Riverpod Notifier）。
+///
+/// 持有页面级 UI 物（输入框/滚动/焦点）与对 [AgentService] 的桥接：
+/// - 订阅 service.busy → isGenerating（生成状态由服务层驱动，页面退出不影响执行）
+/// - 订阅 service.messages → 流式输出自动滚底（分页时跳过）
+/// 服务实例经 ModuleManager 懒取（模块热插拔，下线返回 null → 页面降级）。
+class AgentNotifier extends AutoDisposeNotifier<AgentState> {
   final TextEditingController inputController = TextEditingController();
   final FocusNode inputFocusNode = FocusNode();
   final ScrollController scrollController = ScrollController();
 
   /// 是否已完成初始加载（初始化加载历史消息时不触发滚动跳动）
   bool _initialLoaded = false;
+
+  /// 滚动 debounce（dispose 取消）
+  Timer? _scrollDebounce;
+
+  /// 是否正在加载更早历史（去重）
+  bool _loadingHistory = false;
+
+  /// service 订阅句柄（dispose 取消，防泄漏）
+  final List<VoidCallback> _serviceListeners = [];
 
   /// Agent 服务（每次从模块注册表取，避免模块运行中切换后的过期引用；
   /// agent_tools 模块下线后返回 null → 消费方降级）
@@ -23,47 +38,79 @@ class AgentLogic extends GetxController {
   /// Agent 模块是否未启用（服务未注册）
   bool get agentUnavailable => service == null;
 
+  /// 是否已释放（async 回调后写 state 前检查，避免写已销毁 provider）
+  bool _disposed = false;
+
   @override
-  void onReady() async {
-    super.onReady();
+  AgentState build() {
+    // 生命周期清理（UI 物 + 订阅）
+    ref.onDispose(() {
+      _disposed = true;
+      _scrollDebounce?.cancel();
+      for (final l in _serviceListeners) {
+        l();
+      }
+      _serviceListeners.clear();
+      inputController.dispose();
+      inputFocusNode.dispose();
+      scrollController.dispose();
+    });
 
-    // 监听消息变化，流式输出时自动滚动到底部
-    // 分页加载历史时跳过（避免加载更多后跳回底部）
-    final svc = service;
-    if (svc != null) {
-      svc.messages.listen((_) {
-        if (svc.isPaginatingHistory) return;
-        _scrollToBottom();
-      });
-
-      // 生成状态由服务层 Rx 驱动（页面退出不影响执行，重进自动恢复）
-      svc.busy.listen((busy) {
-        state.isGenerating.value = busy;
-      });
-      state.isGenerating.value = svc.busy.value;
-    }
-
-    await _init();
+    // 首帧初始化（onReady 语义）：订阅 + 初始化
+    Future.microtask(() {
+      if (!_disposed) _init();
+    });
+    return const AgentState();
   }
 
-  /// 初始化 Agent
+  /// 初始化 Agent（首帧 + 设置返回后重载）
   Future<void> _init() async {
     final svc = service;
     if (svc == null) {
       // 模块未启用：降级提示，不抛异常
-      state.isInitialized.value = false;
-      state.errorMessage.value = 'Agent 模块未启用';
+      state = state.copyWith(
+        isInitialized: false,
+        errorMessage: 'Agent 模块未启用',
+      );
       _initialLoaded = true;
       return;
     }
+    // 订阅生成状态（幂等：仅首帧注册）
+    if (_serviceListeners.isEmpty) {
+      // 生成状态由服务层驱动（页面退出不影响执行，重进自动恢复）
+      _serviceListeners.add(() => svc.busy.removeListener(_onBusyChanged));
+      svc.busy.addListener(_onBusyChanged);
+      _onBusyChanged();
+
+      // 消息变化 → 流式时滚底（分页加载历史时跳过）
+      _serviceListeners.add(() => svc.messages.removeListener(_onMessagesChanged));
+      svc.messages.addListener(_onMessagesChanged);
+    }
+
     final ok = await svc.initialize();
-    state.isInitialized.value = ok;
+    if (_disposed) return;
+    state = state.copyWith(isInitialized: ok, errorMessage: '');
     // 初始化加载完成后允许后续滚动
     _initialLoaded = true;
     // 进入页面显示最新消息（滚动到底部，列表就绪后执行）
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _scrollToBottom();
     });
+  }
+
+  void _onBusyChanged() {
+    final svc = service;
+    if (svc == null) return;
+    state = state.copyWith(isGenerating: svc.busy.value);
+  }
+
+  void _onMessagesChanged() {
+    final svc = service;
+    if (svc == null) return;
+    // 同步消息条数（页面据此重建空态/欢迎页）
+    state = state.copyWith(messageCount: svc.messages.value.length);
+    if (svc.isPaginatingHistory) return;
+    _scrollToBottom();
   }
 
   /// 确保 Agent 已初始化（用于会话列表等需要存储已加载的场景）
@@ -82,7 +129,7 @@ class AgentLogic extends GetxController {
 
     final svc = service;
     if (svc == null) {
-      state.errorMessage.value = 'Agent 模块未启用';
+      state = state.copyWith(errorMessage: 'Agent 模块未启用');
       return;
     }
 
@@ -97,7 +144,7 @@ class AgentLogic extends GetxController {
 
     final svc = service;
     if (svc == null) {
-      state.errorMessage.value = 'Agent 模块未启用';
+      state = state.copyWith(errorMessage: 'Agent 模块未启用');
       return;
     }
 
@@ -109,7 +156,7 @@ class AgentLogic extends GetxController {
   Future<void> newSession() async {
     final svc = service;
     if (svc == null) {
-      state.errorMessage.value = 'Agent 模块未启用';
+      state = state.copyWith(errorMessage: 'Agent 模块未启用');
       return;
     }
     await svc.newSession();
@@ -120,7 +167,7 @@ class AgentLogic extends GetxController {
   Future<void> switchSession(String id) async {
     final svc = service;
     if (svc == null) {
-      state.errorMessage.value = 'Agent 模块未启用';
+      state = state.copyWith(errorMessage: 'Agent 模块未启用');
       return;
     }
     await svc.switchSession(id);
@@ -131,26 +178,22 @@ class AgentLogic extends GetxController {
   Future<void> deleteSession(String id) async {
     final svc = service;
     if (svc == null) {
-      state.errorMessage.value = 'Agent 模块未启用';
+      state = state.copyWith(errorMessage: 'Agent 模块未启用');
       return;
     }
     await svc.deleteSession(id);
-    Get.snackbar('已删除', '对话已删除',
-        snackPosition: SnackPosition.BOTTOM,
-        duration: const Duration(seconds: 1));
+    AppDialogs.showSuccess('对话已删除');
   }
 
   /// 清空当前会话
   Future<void> clearCurrentSession() async {
     final svc = service;
     if (svc == null) {
-      state.errorMessage.value = 'Agent 模块未启用';
+      state = state.copyWith(errorMessage: 'Agent 模块未启用');
       return;
     }
     await svc.clearCurrentSession();
-    Get.snackbar('已清空', '当前对话已清空',
-        snackPosition: SnackPosition.BOTTOM,
-        duration: const Duration(seconds: 1));
+    AppDialogs.showSuccess('当前对话已清空');
   }
 
   /// 当前使用的模型显示名
@@ -168,9 +211,6 @@ class AgentLogic extends GetxController {
   }
 
   /// 滚动到底部（普通列表，底部 = maxScrollExtent）
-  Timer? _scrollDebounce;
-
-  /// 滚动到底部
   /// 库使用 reverse 列表（reverseOrder=true），offset 0 = 视觉底部（最新消息）
   /// jumpTo(0) 无动画跳动；初始化加载历史消息阶段跳过，避免进入页面时跳动
   void _scrollToBottom() {
@@ -216,15 +256,12 @@ class AgentLogic extends GetxController {
       }
     });
   }
-
-  bool _loadingHistory = false;
-
-  @override
-  void onClose() {
-    _scrollDebounce?.cancel();
-    inputController.dispose();
-    inputFocusNode.dispose();
-    scrollController.dispose();
-    super.onClose();
-  }
 }
+
+/// AI 助手页 provider（页面级 autoDispose：
+/// 页面挂载时被 watch 创建，独立路由 pop / 页面销毁后自动释放
+/// 控制器与订阅；作为首页 tab keepAlive 时切走不销毁，状态保留）。
+final agentProvider =
+    NotifierProvider.autoDispose<AgentNotifier, AgentState>(
+  AgentNotifier.new,
+);

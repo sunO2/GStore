@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:get/get.dart';
 import 'package:gstore/core/design/design_tokens.dart';
 
 /// 展示分类标签选择对话框
@@ -13,9 +12,11 @@ Future<List<String>?> showTagPickerDialog(
   required List<String> presetTags,
   required List<String> currentTags,
 }) {
-  return Get.dialog<List<String>>(
-    _TagPickerDialog(presetTags: presetTags, currentTags: currentTags),
+  return showDialog<List<String>>(
+    context: context,
     barrierDismissible: true,
+    builder: (_) =>
+        _TagPickerDialog(presetTags: presetTags, currentTags: currentTags),
   );
 }
 

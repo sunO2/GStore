@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_gen_ai_chat_ui/flutter_gen_ai_chat_ui.dart'
     hide AgentState;
-import 'package:get/get.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:gstore/core/icons/Icons.dart';
 import 'package:gstore/page/home/logic.dart';
@@ -35,7 +35,7 @@ String _downloadStatusLabel(DownloadStatusEnum status) {
   }
 }
 
-class AgentPage extends StatefulWidget {
+class AgentPage extends ConsumerStatefulWidget {
   /// 是否内嵌在首页 tab（底部有悬浮导航胶囊需避让）；
   /// 独立路由进入（我的页 → AI 助手）时无胶囊，输入栏贴底常规间距
   final bool isTabEmbedded;
@@ -43,15 +43,12 @@ class AgentPage extends StatefulWidget {
   const AgentPage({super.key, this.isTabEmbedded = false});
 
   @override
-  State<AgentPage> createState() => _AgentPageState();
+  ConsumerState<AgentPage> createState() => _AgentPageState();
 }
 
 /// 保持页面状态（作为首页 tab 时切换不销毁：输入/滚动/对话状态保留）
-class _AgentPageState extends State<AgentPage>
+class _AgentPageState extends ConsumerState<AgentPage>
     with AutomaticKeepAliveClientMixin {
-  late final AgentLogic _logic;
-  late final AgentState _state;
-
   @override
   bool get wantKeepAlive => true;
 
@@ -61,8 +58,14 @@ class _AgentPageState extends State<AgentPage>
   /// 悬浮输入框焦点（tab 内嵌时离开 AI tab 自动失焦收键盘）
   final FocusNode _inputFocusNode = FocusNode();
 
-  /// tab 切换监听（离开 AI tab 自动失焦收键盘）
-  Worker? _indexWorker;
+  /// 首页 tab index 监听注册标记（listenManual 一次性）
+  bool _listeningHomeTab = false;
+
+  /// service.messages 订阅句柄（dispose 取消）
+  VoidCallback? _messagesSub;
+
+  /// 滚动控制器（AgentNotifier 持有；initState 取引用，dispose 时 ref 不可用）
+  late final ScrollController _scroll;
 
   /// 当前用户（本机用户）与 AI 用户
   late final ChatUser _currentUser;
@@ -80,45 +83,67 @@ class _AgentPageState extends State<AgentPage>
   /// 是否已初始化同步
   bool _initialSyncDone = false;
 
+  AgentNotifier get _notifier => ref.read(agentProvider.notifier);
+
   @override
   void initState() {
     super.initState();
-    _logic = Get.put(AgentLogic());
-    _state = _logic.state;
+    // 独立路由进入：标记 AI 页可见（服务层后台通知/敏感拦截门控）
+    if (!widget.isTabEmbedded) {
+      HomeTabVisibility.instance.setAgentRoute(true);
+    }
+    // 触发 AgentNotifier 建立（首帧初始化）
+    ref.read(agentProvider);
     _currentUser = ChatUser(id: 'me', name: '我');
     _aiUser = ChatUser(id: 'ai', name: 'GStore 助手');
 
     // 监听消息变化，增量同步到聊天控制器
     // （agent_tools 模块未启用时 service 为 null，跳过监听）
-    _logic.service?.messages.listen(_onMessagesChanged);
+    final svc = _notifier.service;
+    if (svc != null) {
+      _messagesSub = () => svc.messages.removeListener(_syncMessages);
+      svc.messages.addListener(_syncMessages);
+    }
 
     // 监听滚动：reverse 列表接近顶部（最早消息）时加载更早历史
-    // 库内部使用 logic.scrollController（传给 AiChatWidget），此处直接监听
-    _logic.scrollController.addListener(_onScrollChanged);
+    // 库内部使用 notifier.scrollController（传给 AiChatWidget），此处直接监听
+    _scroll = _notifier.scrollController;
+    _scroll.addListener(_onScrollChanged);
 
     // 初始化同步（若 service 已加载历史消息）
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _onMessagesChanged(_logic.service?.messages ?? const []);
+      _syncMessages();
     });
 
     // tab 内嵌场景：离开 AI tab 自动失焦（收键盘），进入不自动聚焦——由用户点击输入框唤起键盘
     if (widget.isTabEmbedded) {
-      final homeLogic = Get.find<HomeLogic>();
-      _indexWorker = ever(homeLogic.state.index, (index) {
-        // 等一帧确保输入框已构建（keepAlive 页输入框常驻，index 变化后立即失焦）
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (index != 2) {
-            _inputFocusNode.unfocus();
-          }
+      _listeningHomeTab = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        ref.listenManual(homeProvider.select((s) => s.index), (prev, next) {
+          if (!mounted) return;
+          // 等一帧确保输入框已构建（keepAlive 页输入框常驻，index 变化后立即失焦）
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (next != 2) {
+              _inputFocusNode.unfocus();
+            }
+          });
         });
       });
     }
   }
 
+  /// 消息变化时同步（从 service 拉当前列表；ValueNotifier 回调无参）
+  void _syncMessages() {
+    final svc = _notifier.service;
+    if (svc == null) return;
+    _onMessagesChanged(svc.messages.value);
+  }
+
   /// 滚动位置变化：接近 reverse 列表顶部时加载更早历史
   void _onScrollChanged() {
-    if (!_logic.scrollController.hasClients) return;
-    final position = _logic.scrollController.position;
+    if (!_scroll.hasClients) return;
+    final position = _scroll.position;
     // reverse 列表：offset 0 = 底部（最新），maxScrollExtent = 顶部（最早）
     if (position.maxScrollExtent > 0 &&
         position.pixels >= position.maxScrollExtent - 100) {
@@ -130,9 +155,13 @@ class _AgentPageState extends State<AgentPage>
 
   @override
   void dispose() {
-    _indexWorker?.dispose();
+    // 独立路由退出：复位 AI 页可见性（首页 tab 场景由 HomeNotifier 管理）
+    if (!widget.isTabEmbedded) {
+      HomeTabVisibility.instance.setAgentRoute(false);
+    }
+    _messagesSub?.call();
     _inputFocusNode.dispose();
-    _logic.scrollController.removeListener(_onScrollChanged);
+    _scroll.removeListener(_onScrollChanged);
     _chatController.dispose();
     super.dispose();
   }
@@ -147,9 +176,8 @@ class _AgentPageState extends State<AgentPage>
       _initialSyncDone = true;
       // 首次加载完成：定位到底部（最新消息），避免停留在顶部
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        final sc = _logic.scrollController;
-        if (sc.hasClients) {
-          sc.jumpTo(0);
+        if (_scroll.hasClients) {
+          _scroll.jumpTo(0);
         }
       });
       return;
@@ -227,8 +255,8 @@ class _AgentPageState extends State<AgentPage>
 
   /// 全量重建消息列表（同回合消息按 turnId 聚合为时间轴）
   void _rebuildAll() {
-    if (_logic.agentUnavailable) return;
-    final msgs = _logic.service!.messages;
+    if (_notifier.agentUnavailable) return;
+    final msgs = _notifier.service!.messages.value;
     final grouped = _groupTimeline(msgs);
     final list = <ChatMessage>[];
     for (var i = 0; i < grouped.length; i++) {
@@ -251,8 +279,8 @@ class _AgentPageState extends State<AgentPage>
 
   /// 触发加载更早历史（增量 addMessages，不重置滚动位置）
   void _triggerLoadMore() {
-    if (_logic.agentUnavailable) return;
-    final svc = _logic.service!;
+    if (_notifier.agentUnavailable) return;
+    final svc = _notifier.service!;
     debugPrint(
         'AgentView triggerLoadMore: hasMore=${svc.hasMoreHistory} paginating=$_isPaginating loaded=${svc.loadedHistoryCount}');
     if (!svc.hasMoreHistory) return;
@@ -290,12 +318,12 @@ class _AgentPageState extends State<AgentPage>
           _syncedMessages[msg.id] = _toChatMessage(msg);
         }
       }
-      _lastToolSignature = _toolSignature(svc.messages);
+      _lastToolSignature = _toolSignature(svc.messages.value);
     } catch (e) {
       appLog.error('AgentView: 加载更早历史失败 - $e');
     } finally {
       _isPaginating = false;
-      // 延迟重置：等 RxList 通知（异步）派发完成后，避免 logic 的滚动监听误触发
+      // 延迟重置：等消息通知（异步）派发完成后，避免滚动监听误触发
       WidgetsBinding.instance.addPostFrameCallback((_) {
         svc.isPaginatingHistory = false;
       });
@@ -404,30 +432,27 @@ class _AgentPageState extends State<AgentPage>
   @override
   Widget build(BuildContext context) {
     super.build(context); // AutomaticKeepAliveClientMixin 要求
-    final logic = _logic;
-    final state = _state;
+    final agentState = ref.watch(agentProvider);
+    final logic = ref.read(agentProvider.notifier);
     return Scaffold(
       // 手动键盘布局：禁用内嵌 Scaffold 自动压缩（否则 body 内 viewInsets 被
       // 消费为 0，悬浮输入栏的 viewInsets 顶起逻辑失效，输入栏停在半空）
       resizeToAvoidBottomInset: false,
       appBar: AppBar(
-        title: Obx(() {
-          final isInit = state.isInitialized.value;
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Text('AI 助手'),
-              if (isInit)
-                Text(
-                  logic.currentModelName,
-                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                        color: Theme.of(context).colorScheme.onSurfaceVariant,
-                      ),
-                ),
-            ],
-          );
-        }),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('AI 助手'),
+            if (agentState.isInitialized)
+              Text(
+                logic.currentModelName,
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+              ),
+          ],
+        ),
         actions: [
           IconButton(
             tooltip: '新建会话',
@@ -463,181 +488,11 @@ class _AgentPageState extends State<AgentPage>
               child: Column(
                 children: [
                   // 未配置提示
-                  Obx(() {
-                    // 无条件读 Rx（Obx 需至少一个依赖；agentUnavailable 非响应式）
-                    final isInit = state.isInitialized.value;
-                    if (logic.agentUnavailable) {
-                      // Agent 模块未启用：降级提示（不渲染聊天区）
-                      return Container(
-                        width: double.infinity,
-                        margin: AppSpacing.onlyHorizontalMD,
-                        padding: AppSpacing.allMD,
-                        decoration: BoxDecoration(
-                          color: Theme.of(context)
-                              .colorScheme
-                              .surfaceContainerHighest,
-                          borderRadius: AppRadius.allMD,
-                        ),
-                        child: Row(
-                          children: [
-                            const Icon(Icons.info_outline,
-                                color: AppColors.warning),
-                            const SizedBox(width: AppSpacing.md),
-                            const Expanded(
-                              child: Text('Agent 模块未启用，对话不可用'),
-                            ),
-                            TextButton(
-                              onPressed: () =>
-                                  context.push(AppRoute.moduleManage),
-                              child: const Text('去启用'),
-                            ),
-                          ],
-                        ),
-                      );
-                    }
-                    if (isInit) return const SizedBox.shrink();
-                    return Container(
-                      width: double.infinity,
-                      margin: AppSpacing.onlyHorizontalMD,
-                      padding: AppSpacing.allMD,
-                      decoration: BoxDecoration(
-                        color: Theme.of(context).colorScheme.primaryContainer,
-                        borderRadius: AppRadius.allMD,
-                      ),
-                      child: Row(
-                        children: [
-                          const Icon(Icons.warning_amber_rounded,
-                              color: AppColors.warning),
-                          const SizedBox(width: AppSpacing.md),
-                          const Expanded(
-                            child: Text('请先配置 LLM 模型（API Key）'),
-                          ),
-                          TextButton(
-                            onPressed: logic.openSettings,
-                            child: const Text('去设置'),
-                          ),
-                        ],
-                      ),
-                    );
-                  }),
+                  _buildConfigBanner(context, agentState, logic),
 
                   // AI 聊天界面（始终渲染 AiChatWidget，空消息时显示欢迎页）
                   Expanded(
-                    child: Obx(() {
-                      // 无条件读 Rx（Obx 需至少一个依赖；agentUnavailable 非响应式）
-                      final errMsg = state.errorMessage.value;
-                      if (logic.agentUnavailable) {
-                        // Agent 模块未启用：占位提示（不渲染聊天组件）
-                        return Center(
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(
-                                Icons.smart_toy_outlined,
-                                size: AppTypography.iconXXXL,
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .onSurfaceVariant,
-                              ),
-                              const SizedBox(height: AppSpacing.md),
-                              Text(
-                                errMsg.isEmpty ? 'Agent 模块未启用' : errMsg,
-                                style: Theme.of(context)
-                                    .textTheme
-                                    .titleMedium
-                                    ?.copyWith(
-                                      color: Theme.of(context)
-                                          .colorScheme
-                                          .onSurfaceVariant,
-                                    ),
-                              ),
-                            ],
-                          ),
-                        );
-                      }
-                      final messages = logic.service!.messages;
-                      final isEmpty = messages.isEmpty;
-                      // 原生工具调用系统：注册 Agent 工具到 AiActionProvider
-                      return AiActionProvider(
-                        config: AiActionConfig(
-                          actions: logic.service!.buildActions(),
-                        ),
-                        controller: logic.service!.actionController,
-                        child: AiChatWidget(
-                          currentUser: _currentUser,
-                          aiUser: _aiUser,
-                          controller: _chatController,
-                          // 共享 scrollController，让库的分页滚动检测与 loadMoreHistoryIfNeeded 使用同一 controller
-                          scrollController: logic.scrollController,
-                          onSendMessage: (chatMsg) {
-                            _handleSendMessage(chatMsg);
-                          },
-                          // 停止生成（对话流 + 工具调用）
-                          onCancelGenerating: () {
-                            if (!logic.agentUnavailable) {
-                              logic.service!.stopGenerating();
-                            }
-                          },
-                          welcomeMessageConfig: isEmpty
-                              ? WelcomeMessageConfig(
-                                  title: 'GStore AI 助手',
-                                  questionsSectionTitle: '可以试试这样问我：',
-                                )
-                              : null,
-                          exampleQuestions: [
-                            ExampleQuestion(question: '帮我找一个截图工具'),
-                            ExampleQuestion(question: '帮我下载 Termux'),
-                            ExampleQuestion(question: '检查我的应用是否有更新'),
-                          ],
-                          messageOptions: _buildMessageOptions(context),
-                          // readOnly：隐藏库内置输入栏（由外部悬浮磨砂输入栏接管）
-                          readOnly: true,
-                          // 减小消息列表左右间距（默认 16 → 8）；
-                          // 底部避让：键盘时仅输入栏(56)+呼吸；无键盘时
-                          // tab 内嵌分胶囊在场(156)/AI 激活滑出(80)两态，
-                          // 独立页面仅输入栏+呼吸
-                          spacingConfig: ChatSpacingConfig(
-                            messageListPadding: EdgeInsets.only(
-                              left: 8,
-                              right: 8,
-                              top: 8,
-                              bottom:
-                                  MediaQuery.of(context).viewInsets.bottom > 0
-                                      ? 72
-                                      : widget.isTabEmbedded
-                                          ? (Get.find<HomeLogic>()
-                                                      .state
-                                                      .index
-                                                      .value ==
-                                                  2
-                                              ? 80
-                                              : 156)
-                                          : 80,
-                            ),
-                          ),
-                          enableMarkdownStreaming: true,
-                          streamingWordByWord: false,
-                          loadingConfig: LoadingConfig(
-                            isLoading: state.isGenerating.value,
-                            loadingIndicator:
-                                const AppLoading(size: AppLoadingSize.small),
-                          ),
-                          messageListOptions: MessageListOptions(
-                            onLoadMore: () async {
-                              // 官方方案：controller.loadMore 增量加载（addMessages，不重置滚动）
-                              _triggerLoadMore();
-                            },
-                            hasMoreMessages: logic.service!.hasMoreHistory,
-                            paginationConfig: PaginationConfig(
-                              enabled: true,
-                              // 库的 reverse 分页触发方向与"向上加载更早"不符，关闭自动加载，
-                              // 由 scrollController 监听视觉顶部触发
-                              autoLoadOnScroll: false,
-                            ),
-                          ),
-                        ),
-                      );
-                    }),
+                    child: _buildChatArea(context, agentState, logic),
                   ),
                 ],
               ),
@@ -651,25 +506,188 @@ class _AgentPageState extends State<AgentPage>
             left: 0,
             right: 0,
             bottom: 0,
-            child: Obx(() {
-              // 无条件读 Rx（Obx 需至少一个依赖；HomeLogic 在导航栈底层必然存在）
-              final homeIndex = Get.find<HomeLogic>().state.index.value;
-              final aiActive = widget.isTabEmbedded && homeIndex == 2;
-              return AnimatedPadding(
-                duration: const Duration(milliseconds: 200),
-                curve: Curves.easeOut,
-                padding: EdgeInsets.only(
-                  bottom: MediaQuery.of(context).viewInsets.bottom > 0
-                      ? MediaQuery.of(context).viewInsets.bottom + AppSpacing.md
-                      : widget.isTabEmbedded
-                          ? (aiActive ? 16 : 100)
-                          : 16,
-                ),
-                child: _buildFloatingInput(context, showBack: aiActive),
-              );
-            }),
+            child: _buildFloatingInputWrapper(context),
           ),
         ],
+      ),
+    );
+  }
+
+  /// 悬浮输入栏外层：按键盘高度与 AI tab 激活状态计算贴底/上浮
+  Widget _buildFloatingInputWrapper(BuildContext context) {
+    final homeIndex = ref.watch(homeProvider.select((s) => s.index));
+    final aiActive = widget.isTabEmbedded && homeIndex == 2;
+    return AnimatedPadding(
+      duration: const Duration(milliseconds: 200),
+      curve: Curves.easeOut,
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.of(context).viewInsets.bottom > 0
+            ? MediaQuery.of(context).viewInsets.bottom + AppSpacing.md
+            : widget.isTabEmbedded
+                ? (aiActive ? 16 : 100)
+                : 16,
+      ),
+      child: _buildFloatingInput(context, showBack: aiActive),
+    );
+  }
+
+  /// 顶部提示条：模块未启用 →「去启用」；未配置模型 →「去设置」
+  Widget _buildConfigBanner(
+    BuildContext context,
+    AgentState agentState,
+    AgentNotifier logic,
+  ) {
+    if (logic.agentUnavailable) {
+      // Agent 模块未启用：降级提示（不渲染聊天区）
+      return Container(
+        width: double.infinity,
+        margin: AppSpacing.onlyHorizontalMD,
+        padding: AppSpacing.allMD,
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.surfaceContainerHighest,
+          borderRadius: AppRadius.allMD,
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.info_outline, color: AppColors.warning),
+            const SizedBox(width: AppSpacing.md),
+            const Expanded(
+              child: Text('Agent 模块未启用，对话不可用'),
+            ),
+            TextButton(
+              onPressed: () => context.push(AppRoute.moduleManage),
+              child: const Text('去启用'),
+            ),
+          ],
+        ),
+      );
+    }
+    if (agentState.isInitialized) return const SizedBox.shrink();
+    return Container(
+      width: double.infinity,
+      margin: AppSpacing.onlyHorizontalMD,
+      padding: AppSpacing.allMD,
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.primaryContainer,
+        borderRadius: AppRadius.allMD,
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.warning_amber_rounded, color: AppColors.warning),
+          const SizedBox(width: AppSpacing.md),
+          const Expanded(
+            child: Text('请先配置 LLM 模型（API Key）'),
+          ),
+          TextButton(
+            onPressed: logic.openSettings,
+            child: const Text('去设置'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 聊天区：模块未启用占位 / 消息列表 + 工具调用系统
+  Widget _buildChatArea(
+    BuildContext context,
+    AgentState agentState,
+    AgentNotifier logic,
+  ) {
+    final errMsg = agentState.errorMessage;
+    if (logic.agentUnavailable) {
+      // Agent 模块未启用：占位提示（不渲染聊天组件）
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.smart_toy_outlined,
+              size: AppTypography.iconXXXL,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+            const SizedBox(height: AppSpacing.md),
+            Text(
+              errMsg.isEmpty ? 'Agent 模块未启用' : errMsg,
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+            ),
+          ],
+        ),
+      );
+    }
+    final svc = logic.service!;
+    final isEmpty = agentState.messageCount == 0;
+    // 原生工具调用系统：注册 Agent 工具到 AiActionProvider
+    return AiActionProvider(
+      config: AiActionConfig(
+        actions: svc.buildActions(),
+      ),
+      controller: svc.actionController,
+      child: AiChatWidget(
+        currentUser: _currentUser,
+        aiUser: _aiUser,
+        controller: _chatController,
+        // 共享 scrollController，让库的分页滚动检测与 loadMoreHistoryIfNeeded 使用同一 controller
+        scrollController: logic.scrollController,
+        onSendMessage: (chatMsg) {
+          _handleSendMessage(chatMsg);
+        },
+        // 停止生成（对话流 + 工具调用）
+        onCancelGenerating: () {
+          if (!logic.agentUnavailable) {
+            svc.stopGenerating();
+          }
+        },
+        welcomeMessageConfig: isEmpty
+            ? WelcomeMessageConfig(
+                title: 'GStore AI 助手',
+                questionsSectionTitle: '可以试试这样问我：',
+              )
+            : null,
+        exampleQuestions: [
+          ExampleQuestion(question: '帮我找一个截图工具'),
+          ExampleQuestion(question: '帮我下载 Termux'),
+          ExampleQuestion(question: '检查我的应用是否有更新'),
+        ],
+        messageOptions: _buildMessageOptions(context),
+        // readOnly：隐藏库内置输入栏（由外部悬浮磨砂输入栏接管）
+        readOnly: true,
+        // 减小消息列表左右间距（默认 16 → 8）；
+        // 底部避让：键盘时仅输入栏(56)+呼吸；无键盘时
+        // tab 内嵌分胶囊在场(156)/AI 激活滑出(80)两态，
+        // 独立页面仅输入栏+呼吸
+        spacingConfig: ChatSpacingConfig(
+          messageListPadding: EdgeInsets.only(
+            left: 8,
+            right: 8,
+            top: 8,
+            bottom: MediaQuery.of(context).viewInsets.bottom > 0
+                ? 72
+                : widget.isTabEmbedded
+                    ? (ref.read(homeProvider).index == 2 ? 80 : 156)
+                    : 80,
+          ),
+        ),
+        enableMarkdownStreaming: true,
+        streamingWordByWord: false,
+        loadingConfig: LoadingConfig(
+          isLoading: agentState.isGenerating,
+          loadingIndicator: const AppLoading(size: AppLoadingSize.small),
+        ),
+        messageListOptions: MessageListOptions(
+          onLoadMore: () async {
+            // 官方方案：controller.loadMore 增量加载（addMessages，不重置滚动）
+            _triggerLoadMore();
+          },
+          hasMoreMessages: svc.hasMoreHistory,
+          paginationConfig: PaginationConfig(
+            enabled: true,
+            // 库的 reverse 分页触发方向与"向上加载更早"不符，关闭自动加载，
+            // 由 scrollController 监听视觉顶部触发
+            autoLoadOnScroll: false,
+          ),
+        ),
       ),
     );
   }
@@ -679,8 +697,7 @@ class _AgentPageState extends State<AgentPage>
   /// [showBack] 为 true（AI tab 激活、胶囊滑出）时，左侧显示"返回来源 tab"按钮
   Widget _buildFloatingInput(BuildContext context, {bool showBack = false}) {
     final scheme = Theme.of(context).colorScheme;
-    final logic = _logic;
-    final state = _state;
+    final logic = ref.read(agentProvider.notifier);
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
       child: ClipRRect(
@@ -733,16 +750,7 @@ class _AgentPageState extends State<AgentPage>
                   ),
                 ),
                 const SizedBox(width: AppSpacing.xs),
-                Obx(() {
-                  final sending = state.isGenerating.value;
-                  return IconButton.filled(
-                    onPressed: sending ? null : _submitInput,
-                    icon: sending
-                        ? const AppLoading(size: AppLoadingSize.small)
-                        : const Icon(Icons.send),
-                    tooltip: '发送',
-                  );
-                }),
+                _buildSendButton(),
               ],
             ),
           ),
@@ -751,25 +759,38 @@ class _AgentPageState extends State<AgentPage>
     );
   }
 
+  /// 发送按钮（生成中禁用 + loading）
+  Widget _buildSendButton() {
+    final sending = ref.watch(agentProvider.select((s) => s.isGenerating));
+    return IconButton.filled(
+      onPressed: sending ? null : _submitInput,
+      icon: sending
+          ? const AppLoading(size: AppLoadingSize.small)
+          : const Icon(Icons.send),
+      tooltip: '发送',
+    );
+  }
+
   /// 悬浮输入栏发送：与库内置输入栏等价（清空输入框后调用 sendText）
   void _submitInput() {
-    final text = _logic.inputController.text.trim();
+    final notifier = ref.read(agentProvider.notifier);
+    final text = notifier.inputController.text.trim();
     if (text.isEmpty) return;
-    if (_logic.agentUnavailable) {
+    if (notifier.agentUnavailable) {
       // Agent 模块未启用：弹提示不发送
       AppDialogs.showError('Agent 模块未启用');
       return;
     }
-    _logic.inputController.clear();
-    _logic.sendText(text);
+    notifier.inputController.clear();
+    notifier.sendText(text);
   }
 
   /// 返回来源 tab 按钮（图标 = 进入 AI 页前的 tab，点击直接跳回并展开导航）
   /// filledTonal 圆底装饰，与右侧发送按钮（filled）视觉对称
   Widget _buildBackButton(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final homeLogic = Get.find<HomeLogic>();
-    final sourceIndex = homeLogic.state.sourceIndex.value;
+    final homeState = ref.read(homeProvider);
+    final sourceIndex = homeState.sourceIndex;
     final (icon, tooltip) = switch (sourceIndex) {
       0 => (
           ColoredAliIcon(
@@ -807,7 +828,8 @@ class _AgentPageState extends State<AgentPage>
     return IconButton.filledTonal(
       tooltip: tooltip,
       icon: icon,
-      onPressed: () => homeLogic.jumpToPage(sourceIndex),
+      onPressed: () =>
+          ref.read(homeProvider.notifier).jumpToPage(sourceIndex),
     );
   }
 
@@ -815,12 +837,13 @@ class _AgentPageState extends State<AgentPage>
   Future<void> _handleSendMessage(ChatMessage chatMsg) async {
     final text = chatMsg.text.trim();
     if (text.isEmpty) return;
-    if (_logic.agentUnavailable) {
+    final notifier = ref.read(agentProvider.notifier);
+    if (notifier.agentUnavailable) {
       // Agent 模块未启用：弹提示不发送
       AppDialogs.showError('Agent 模块未启用');
       return;
     }
-    _logic.sendText(text);
+    notifier.sendText(text);
   }
 
   /// 消息气泡样式（匹配现有风格）
@@ -932,116 +955,134 @@ class _AgentPageState extends State<AgentPage>
 
   /// 空状态
   /// 显示会话列表弹窗（切换/删除）
-  Future<void> _showSessionList(BuildContext context, AgentLogic logic) async {
+  Future<void> _showSessionList(BuildContext context, AgentNotifier logic) async {
     if (logic.agentUnavailable) return;
     // 确保 Agent 已初始化（会话存储已加载）
     await logic.ensureInitialized();
+
+    final svc = logic.service;
+    if (svc == null) return;
 
     showModalBottomSheet(
       context: context,
       showDragHandle: true,
       builder: (context) {
-        return Obx(() {
-          // 订阅消息变化，保证列表在有会话变化时刷新
-          logic.service!.messages.length;
-          final currentId = logic.service!.currentSessionId;
-          final sessions = logic.service!.sessions;
-          return Padding(
-            padding: AppSpacing.allMD,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Row(
-                  children: [
-                    Text(
-                      '会话列表',
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            fontWeight: AppTypography.weightSemiBold,
-                          ),
-                    ),
-                    const Spacer(),
-                    TextButton.icon(
-                      onPressed: () {
-                        Navigator.pop(context);
-                        logic.newSession();
-                      },
-                      icon: const Icon(Icons.add, size: 18),
-                      label: const Text('新建'),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: AppSpacing.sm),
-                if (sessions.isEmpty)
-                  Padding(
-                    padding: AppSpacing.allXL,
-                    child: Text(
-                      '暂无会话，点击"新建"开始对话',
-                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                            color: AppColors.textSecondary,
-                          ),
-                    ),
-                  )
-                else
-                  ConstrainedBox(
-                    constraints: BoxConstraints(
-                      maxHeight: MediaQuery.of(context).size.height * 0.5,
-                    ),
-                    child: ListView.builder(
-                      shrinkWrap: true,
-                      itemCount: sessions.length,
-                      itemBuilder: (context, index) {
-                        final session = sessions[index];
-                        final isCurrent = session.id == currentId;
-                        return ListTile(
-                          dense: true,
-                          leading: Icon(
-                            isCurrent ? Icons.forum : Icons.chat_bubble_outline,
-                            size: AppTypography.iconMD,
-                            color: isCurrent
-                                ? Theme.of(context).colorScheme.primary
-                                : AppColors.textSecondary,
-                          ),
-                          title: Text(
-                            session.title,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: Theme.of(context)
-                                .textTheme
-                                .bodyMedium
-                                ?.copyWith(
-                                  fontWeight: isCurrent
-                                      ? AppTypography.weightSemiBold
-                                      : FontWeight.w400,
-                                ),
-                          ),
-                          subtitle: Text(
-                            _formatSessionTime(session.updatedAt),
-                            style: Theme.of(context)
-                                .textTheme
-                                .labelSmall
-                                ?.copyWith(
-                                  color: AppColors.textTertiary,
-                                ),
-                          ),
-                          trailing: IconButton(
-                            icon: const Icon(Icons.delete_outline, size: 18),
-                            onPressed: () async {
-                              Navigator.pop(context);
-                              await logic.deleteSession(session.id);
-                            },
-                          ),
-                          onTap: () {
-                            Navigator.pop(context);
-                            logic.switchSession(session.id);
-                          },
-                        );
-                      },
-                    ),
+        // 消息变化时刷新列表（会话增删/切换）
+        return ValueListenableBuilder<List<AgentMessage>>(
+          valueListenable: svc.messages,
+          builder: (context, _, __) {
+            final service = logic.service;
+            if (service == null) {
+              return const SizedBox.shrink();
+            }
+            final currentId = service.currentSessionId;
+            final sessions = service.sessions;
+            return Padding(
+              padding: AppSpacing.allMD,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    children: [
+                      Text(
+                        '会话列表',
+                        style: Theme.of(context)
+                            .textTheme
+                            .titleMedium
+                            ?.copyWith(
+                              fontWeight: AppTypography.weightSemiBold,
+                            ),
+                      ),
+                      const Spacer(),
+                      TextButton.icon(
+                        onPressed: () {
+                          Navigator.pop(context);
+                          logic.newSession();
+                        },
+                        icon: const Icon(Icons.add, size: 18),
+                        label: const Text('新建'),
+                      ),
+                    ],
                   ),
-              ],
-            ),
-          );
-        });
+                  const SizedBox(height: AppSpacing.sm),
+                  if (sessions.isEmpty)
+                    Padding(
+                      padding: AppSpacing.allXL,
+                      child: Text(
+                        '暂无会话，点击"新建"开始对话',
+                        style: Theme.of(context)
+                            .textTheme
+                            .bodyMedium
+                            ?.copyWith(
+                              color: AppColors.textSecondary,
+                            ),
+                      ),
+                    )
+                  else
+                    ConstrainedBox(
+                      constraints: BoxConstraints(
+                        maxHeight: MediaQuery.of(context).size.height * 0.5,
+                      ),
+                      child: ListView.builder(
+                        shrinkWrap: true,
+                        itemCount: sessions.length,
+                        itemBuilder: (context, index) {
+                          final session = sessions[index];
+                          final isCurrent = session.id == currentId;
+                          return ListTile(
+                            dense: true,
+                            leading: Icon(
+                              isCurrent
+                                  ? Icons.forum
+                                  : Icons.chat_bubble_outline,
+                              size: AppTypography.iconMD,
+                              color: isCurrent
+                                  ? Theme.of(context).colorScheme.primary
+                                  : AppColors.textSecondary,
+                            ),
+                            title: Text(
+                              session.title,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodyMedium
+                                  ?.copyWith(
+                                    fontWeight: isCurrent
+                                        ? AppTypography.weightSemiBold
+                                        : FontWeight.w400,
+                                  ),
+                            ),
+                            subtitle: Text(
+                              _formatSessionTime(session.updatedAt),
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .labelSmall
+                                  ?.copyWith(
+                                    color: AppColors.textTertiary,
+                                  ),
+                            ),
+                            trailing: IconButton(
+                              icon: const Icon(Icons.delete_outline,
+                                  size: 18),
+                              onPressed: () async {
+                                Navigator.pop(context);
+                                await logic.deleteSession(session.id);
+                              },
+                            ),
+                            onTap: () {
+                              Navigator.pop(context);
+                              logic.switchSession(session.id);
+                            },
+                          );
+                        },
+                      ),
+                    ),
+                ],
+              ),
+            );
+          },
+        );
       },
     );
   }
@@ -1401,12 +1442,7 @@ class _TurnTimeline extends StatelessWidget {
             TextButton.icon(
               onPressed: () {
                 Clipboard.setData(ClipboardData(text: detailText));
-                Get.snackbar(
-                  '已复制',
-                  '工具调用详情已复制到剪贴板',
-                  snackPosition: SnackPosition.BOTTOM,
-                  duration: const Duration(seconds: 1),
-                );
+                AppDialogs.showSuccess('工具调用详情已复制到剪贴板');
               },
               icon: const Icon(Icons.copy, size: 16),
               label: const Text('复制'),
@@ -1547,7 +1583,7 @@ class _ToolBubbleState extends State<_ToolBubble> {
 
   /// 订阅 AgentService.messages：下载进度等 downloadStatus 字段变化时
   /// 局部重绘（无需父级全量重建，避免频繁 setMessages 造成滚动闪烁）
-  StreamSubscription<List<AgentMessage>>? _messagesSub;
+  VoidCallback? _messagesSub;
 
   AgentMessage get msg => widget.msg;
 
@@ -1556,31 +1592,36 @@ class _ToolBubbleState extends State<_ToolBubble> {
     super.initState();
     final service = ModuleManager.instance.get<AgentService>();
     if (service != null) {
-      _messagesSub = service.messages.listen((msgs) {
-        if (!mounted) return;
-        // 该工具消息的 downloadStatus 变化（进度条刷新）或终态 → 局部重绘
-        final updated = _findById(msgs, msg.id);
-        if (updated != null) {
-          final old = widget.msg.downloadStatus;
-          final neu = updated.downloadStatus;
-          final statusChanged =
-              updated.toolStatus != widget.msg.toolStatus;
-          if (statusChanged ||
-              (old != null && neu != null &&
-                  (old.received != neu.received ||
-                      old.status != neu.status ||
-                      old.total != neu.total)) ||
-              (old == null && neu != null)) {
-            setState(() {});
-          }
-        }
-      });
+      _messagesSub = () => service.messages.removeListener(_onMessagesChanged);
+      service.messages.addListener(_onMessagesChanged);
+    }
+  }
+
+  void _onMessagesChanged() {
+    if (!mounted) return;
+    final service = ModuleManager.instance.get<AgentService>();
+    if (service == null) return;
+    final msgs = service.messages.value;
+    // 该工具消息的 downloadStatus 变化（进度条刷新）或终态 → 局部重绘
+    final updated = _findById(msgs, msg.id);
+    if (updated != null) {
+      final old = widget.msg.downloadStatus;
+      final neu = updated.downloadStatus;
+      final statusChanged = updated.toolStatus != widget.msg.toolStatus;
+      if (statusChanged ||
+          (old != null && neu != null &&
+              (old.received != neu.received ||
+                  old.status != neu.status ||
+                  old.total != neu.total)) ||
+          (old == null && neu != null)) {
+        setState(() {});
+      }
     }
   }
 
   @override
   void dispose() {
-    _messagesSub?.cancel();
+    _messagesSub?.call();
     super.dispose();
   }
 
@@ -1879,12 +1920,7 @@ class _ToolBubbleState extends State<_ToolBubble> {
             TextButton.icon(
               onPressed: () {
                 Clipboard.setData(ClipboardData(text: detailText));
-                Get.snackbar(
-                  '已复制',
-                  '工具调用详情已复制到剪贴板',
-                  snackPosition: SnackPosition.BOTTOM,
-                  duration: const Duration(seconds: 1),
-                );
+                AppDialogs.showSuccess('工具调用详情已复制到剪贴板');
               },
               icon: const Icon(Icons.copy, size: 16),
               label: const Text('复制'),

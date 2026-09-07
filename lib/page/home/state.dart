@@ -1,12 +1,17 @@
-import 'package:get/get.dart';
-
+/// 首页 tab 状态（Riverpod 不可变 state）。
 class HomeState {
-  final index = 0.obs;
+  /// 当前原始 tab 下标（0-3：首页/发现/AI 助手/我的）。
+  final int index;
 
-  /// 进入 AI 助手页前的 tab（AI 页输入栏左侧"返回"按钮的目标）
-  final sourceIndex = 0.obs;
+  /// 进入 AI 助手页（index 2）前的来源 tab（AI 页返回按钮/系统返回的目标）。
+  final int sourceIndex;
 
-  HomeState() {
-    ///Initialize variables
+  const HomeState({this.index = 0, this.sourceIndex = 0});
+
+  HomeState copyWith({int? index, int? sourceIndex}) {
+    return HomeState(
+      index: index ?? this.index,
+      sourceIndex: sourceIndex ?? this.sourceIndex,
+    );
   }
 }

@@ -43,7 +43,7 @@ void main() {
     await tester.pump();
 
     expect(find.byType(BackupProgressSheet), findsNothing);
-    expect(logic.state.isUploadingWebDav.value, isFalse);
+    expect(logic.state.isUploadingWebDav, isFalse);
     expect(find.text('备份/恢复任务进行中，请稍候'), findsOneWidget);
   });
 
@@ -60,7 +60,7 @@ void main() {
     await tester.pump();
 
     expect(find.byType(BackupProgressSheet), findsNothing);
-    expect(logic.state.isImporting.value, isFalse);
+    expect(logic.state.isImporting, isFalse);
     expect(find.text('备份/恢复任务进行中，请稍候'), findsOneWidget);
   });
 }

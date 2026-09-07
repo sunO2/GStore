@@ -1,4 +1,3 @@
-import 'package:get/get.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/data/metadata_repository.dart';
 import 'package:gstore/core/service/user_manager.dart';
@@ -8,8 +7,13 @@ import 'package:gstore/http/github/github_client.dart';
 ///
 /// 向 GStore-Repositorys 提交 issue，触发 Actions 自动提取
 /// GitHub release APK 的应用名、包名、图标、版本信息，写入 metadata/ 目录。
-class MetadataSubmitService extends GetxService {
-  static MetadataSubmitService get instance => Get.find<MetadataSubmitService>();
+class MetadataSubmitService {
+  MetadataSubmitService();
+
+  static MetadataSubmitService? _instance;
+
+  static MetadataSubmitService get instance =>
+      _instance ??= MetadataSubmitService();
 
   /// 目标仓库（存储元数据的开源仓库）
   static const String repoOwner = MetadataRepository.repoOwner;
@@ -25,14 +29,14 @@ class MetadataSubmitService extends GetxService {
     required String repo,
     String? assetKeyword,
   }) async {
-    final userManager = Get.find<UserManager>();
+    final userManager = UserManager.instance;
     final token = await userManager.getToken();
     if (token == null || token.isEmpty) {
       appLog.error('MetadataSubmitService: 未登录，无法提交 issue');
       return null;
     }
 
-    final api = Get.find<GithubRestClient>();
+    final api = ModuleManager.instance.require<GithubRestClient>();
     final resp = await api.createIssue(
       repoOwner,
       repoName,

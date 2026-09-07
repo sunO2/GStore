@@ -12,17 +12,15 @@ import 'package:gstore/core/service/db_manager.dart';
 import 'package:gstore/db/apps/AppInfoDatabase.dart';
 import 'package:gstore/http/github/dio_client.dart';
 import 'package:gstore/http/github/github_client.dart';
-import 'package:gstore/page/home/tab/channeltest/logic.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:sqlite3/open.dart';
 
-/// channel 按类型绑定注册表 + 幂等化 + 迁移安全点测试（todo 16）
+/// channel 按类型绑定注册表 + 幂等化测试（todo 16）
 ///
 /// 验证：
 /// - ChannelModule.onRegister 按类型绑定 → get<ChannelManager>() 返回实例；
 ///   onUnregister 对称解绑 → null
 /// - ChannelIntegration.initialize 幂等：重复调用渠道只注册一次、不重复 Get.put
-/// - ChannelTestLogic 迁移点 null 降级：模块下线时 onReady/executeQuery 不抛
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -97,19 +95,6 @@ void main() {
       expect(manager.getChannel(ChannelType.vivo), isNotNull);
       expect(manager.getChannel(ChannelType.fdroid), isNotNull);
       expect(Get.find<ChannelManager>(tag: 'channelManager'), same(manager));
-    });
-  });
-
-  group('ChannelTestLogic 迁移点 null 降级', () {
-    test('模块下线（get<ChannelManager>() == null）→ onReady/executeQuery 不抛', () async {
-      final logic = ChannelTestLogic();
-      logic.onReady();
-
-      expect(logic.channelList, isEmpty);
-      expect(logic.enabledChannels, isEmpty);
-
-      await logic.executeQuery('getAllApps');
-      expect(logic.state.errorMessage.value, '渠道管理器未初始化');
     });
   });
 }

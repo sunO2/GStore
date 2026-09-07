@@ -3,10 +3,8 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
-import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:get/get.dart';
 import 'package:gstore/core/channel/impl/JsChannel.dart';
 import 'package:gstore/core/channel/impl/channel_loader.dart';
 import 'package:gstore/core/channel/impl/channel_package.dart';
@@ -125,7 +123,7 @@ class _SettingsPageState extends State<SettingsPage> {
         style: TextStyle(
           fontSize: AppTypography.sizeSM,
           fontWeight: AppTypography.weightMedium,
-          color: Colors.grey,
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
         ),
       ),
     );
@@ -270,106 +268,118 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
-  /// 显示 GitHub 代理设置对话框
+  /// 显示 GitHub 代理设置底部弹层
   Future<void> _showProxySettingDialog(BuildContext context) async {
     final controller = TextEditingController(text: getProxy());
-    final result = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('GitHub 代理设置'),
-        content: StatefulBuilder(
-          builder: (context, setDialogState) => Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text('设置 GitHub 相关下载的代理前缀，用于加速国内访问。'),
-              const SizedBox(height: AppSpacing.md),
-              // 代理输入框 + 右侧下拉选择（可手动输入；下拉选择即生效）
-              LayoutBuilder(
-                builder: (context, constraints) => DropdownMenu<String>(
-                  controller: controller,
-                  // 必须开启：Android 平台默认 canRequestFocus=false → 输入框只读
-                  requestFocusOnTap: true,
-                  // 手动输入不过滤菜单（始终显示全部预设）
-                  enableFilter: false,
-                  width: constraints.maxWidth,
-                  onSelected: (value) {
-                    if (value != null) {
-                      controller.text = value;
-                      // 下拉选择即生效（手动输入仍走保存按钮）
-                      updateProxy(value);
-                      setDialogState(() {});
-                    }
-                  },
-                  // 无边框胶囊样式（高对比容器底色，与对话框背景区分）
-                  decorationBuilder: (context, controller) {
-                    final scheme = Theme.of(context).colorScheme;
-                    final capsuleBorder = OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(AppRadius.circle),
-                      borderSide: BorderSide.none,
-                    );
-                    return InputDecoration(
-                      labelText: '代理前缀',
-                      hintText: 'https://gh-proxy.org/',
-                      hintStyle: TextStyle(color: scheme.onSurfaceVariant),
-                      filled: true,
-                      fillColor: scheme.surfaceContainerHighest,
-                      border: capsuleBorder,
-                      enabledBorder: capsuleBorder,
-                      focusedBorder: capsuleBorder,
-                      contentPadding: const EdgeInsets.symmetric(
-                        horizontal: AppSpacing.lg,
-                        vertical: AppSpacing.md,
-                      ),
-                    );
-                  },
-                  dropdownMenuEntries: [
-                    for (final host in presetProxyHosts)
-                      DropdownMenuEntry(
-                        value: host,
-                        label: host,
-                        // 当前选中项前 ✅ 标记
-                        labelWidget: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            if (controller.text == host)
-                              const Text(
-                                '✅ ',
-                                style: TextStyle(fontSize: 14),
-                              ),
-                            Flexible(
-                              child: Text(
-                                host,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                          ],
+    final result = await AppDialogs.showBottomSheet<String>(
+      title: 'GitHub 代理设置',
+      children: [
+        StatefulBuilder(
+          builder: (context, setDialogState) {
+            // children 无水平 padding（标题才带），内容整体补左右边距避免贴边
+            return Padding(
+              padding: AppSpacing.onlyHorizontalLG,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('设置 GitHub 相关下载的代理前缀，用于加速国内访问。'),
+                  const SizedBox(height: AppSpacing.md),
+                  // 代理输入框 + 下拉选择预设（可手动输入；下拉选择即生效）
+                  DropdownMenu<String>(
+                    controller: controller,
+                    // 必须开启：Android 平台默认 canRequestFocus=false → 输入框只读
+                    requestFocusOnTap: true,
+                    // 手动输入不过滤菜单（始终显示全部预设）
+                    enableFilter: false,
+                    // 撑满弹层宽度（bottom sheet 内容宽度受左右 padding 约束）
+                    width: double.infinity,
+                    onSelected: (value) {
+                      if (value != null) {
+                        controller.text = value;
+                        // 下拉选择即生效（手动输入仍走保存按钮）
+                        updateProxy(value);
+                        setDialogState(() {});
+                      }
+                    },
+                    // 无边框胶囊样式（高对比容器底色，与弹层背景区分）
+                    decorationBuilder: (context, controller) {
+                      final scheme = Theme.of(context).colorScheme;
+                      final capsuleBorder = OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(AppRadius.circle),
+                        borderSide: BorderSide.none,
+                      );
+                      return InputDecoration(
+                        labelText: '代理前缀',
+                        hintText: 'https://gh-proxy.org/',
+                        hintStyle: TextStyle(color: scheme.onSurfaceVariant),
+                        filled: true,
+                        fillColor: scheme.surfaceContainerHighest,
+                        border: capsuleBorder,
+                        enabledBorder: capsuleBorder,
+                        focusedBorder: capsuleBorder,
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: AppSpacing.lg,
+                          vertical: AppSpacing.md,
                         ),
+                      );
+                    },
+                    dropdownMenuEntries: [
+                      for (final host in presetProxyHosts)
+                        DropdownMenuEntry(
+                          value: host,
+                          label: host,
+                          // 当前选中项前 ✅ 标记
+                          labelWidget: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (controller.text == host)
+                                const Text('✅ ',
+                                    style: TextStyle(fontSize: 14)),
+                              Flexible(
+                                child: Text(
+                                  host,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: AppSpacing.sm),
+                  Text(
+                    '设置了代理则下载走代理；留空表示不使用代理',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                  const SizedBox(height: AppSpacing.md),
+                  // 操作按钮
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      TextButton(
+                        // 取消：返回 null，不触发保存逻辑（此前与保存按钮同样返回输入值导致误保存）
+                        onPressed: () => AppDialogs.popSheet<String?>(null),
+                        child: const Text('取消'),
                       ),
-                  ],
-                ),
+                      const SizedBox(width: AppSpacing.sm),
+                      FilledButton(
+                        onPressed: () =>
+                            AppDialogs.popSheet<String?>(controller.text.trim()),
+                        child: const Text('保存'),
+                      ),
+                    ],
+                  ),
+                ],
               ),
-              const SizedBox(height: AppSpacing.sm),
-              const Text(
-                '设置了代理则下载走代理；留空表示不使用代理',
-                style: TextStyle(fontSize: 12, color: Colors.grey),
-              ),
-            ],
-          ),
+            );
+          },
         ),
-        actions: [
-          TextButton(
-            // 取消：返回 null，不触发保存逻辑（此前与保存按钮同样返回输入值导致误保存）
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, controller.text.trim()),
-            child: const Text('保存'),
-          ),
-        ],
-      ),
+      ],
     );
+    controller.dispose();
 
     if (result != null) {
       var value = result;
@@ -469,152 +479,144 @@ class _SettingsPageState extends State<SettingsPage> {
     // 必需环境变量键集合（导入时用户不可修改键名，只填值）
     var requiredKeys = <String>{};
 
-    final confirmed = await showModalBottomSheet<bool>(
-      context: context,
-      isScrollControlled: true,
-      useSafeArea: true,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (sheetContext) => StatefulBuilder(
-        builder: (dialogContext, setDialogState) => Padding(
-          padding: EdgeInsets.only(
-            left: 16,
-            right: 16,
-            top: 16,
-            bottom: MediaQuery.of(sheetContext).viewInsets.bottom + 16,
-          ),
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // 标题
-                Text('导入渠道包',
-                    style: textTheme.titleLarge?.copyWith(
-                        fontWeight: FontWeight.w600)),
-                const SizedBox(height: AppSpacing.sm),
-                Text(
-                  '从 .zip 渠道包文件导入自定义渠道',
-                  style: textTheme.bodySmall?.copyWith(
-                    color: scheme.onSurfaceVariant,
-                  ),
-                ),
-                const SizedBox(height: AppSpacing.md),
-                // 从文件选择 .zip 渠道包
-                OutlinedButton.icon(
-                  key: const Key('script_channel_file_button'),
-                  onPressed: () async {
-                    final picked = await _pickZipPackage();
-                    if (picked == null) return;
-                    final baseName =
-                        picked.name.toLowerCase().endsWith('.zip')
-                            ? picked.name.substring(0, picked.name.length - 4)
-                            : picked.name;
-                    if (!RegExp(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
-                        .hasMatch(baseName)) {
-                      AppDialogs.showError(
-                          '渠道包文件名不能作为渠道标识（需字母/下划线开头，仅含字母数字/下划线）');
-                      return;
-                    }
-                    final pkg = ChannelPackage.decode(picked.bytes);
-                    if (pkg == null) {
-                      AppDialogs.showError(
-                          '无效的渠道包：非 zip 文件 / 缺 entry.js / 含路径穿越');
-                      return;
-                    }
-                    // 从 meta.json 读取必需环境变量，预填入编辑器
-                    final reqVars = pkg.requiredEnvVars;
-                    final channelKey = 'js_$baseName';
-                    // 尝试加载已存在的环境变量（回显之前填过的值）
-                    var existingEnv = <String, String>{};
-                    try {
-                      final existingRaw = await ConfigStore.instance
-                          .readString('channel_env_$channelKey');
-                      if (existingRaw != null && existingRaw.isNotEmpty) {
-                        final decoded = jsonDecode(existingRaw);
-                        if (decoded is Map) {
-                          existingEnv = decoded.map(
-                              (k, v) => MapEntry(k.toString(), v.toString()));
-                        }
-                      }
-                    } catch (_) {
-                      // 读取失败不影响，使用空值
-                    }
-                    final initial = <String, String>{};
-                    for (final key in reqVars) {
-                      initial[key] = existingEnv[key] ?? '';
-                    }
-                    requiredKeys = reqVars.toSet();
-                    envVars = Map.from(initial);
-                    setDialogState(() {
-                      selected = (
-                        fileName: picked.name,
-                        channelKey: 'js_$baseName',
-                        pkg: pkg,
-                        bytes: picked.bytes,
-                      );
-                    });
-                  },
-                  icon: const Icon(Icons.upload_file),
-                  label: const Text('从文件选择渠道包 (.zip)'),
-                ),
-                if (selected != null) ...[
-                  const SizedBox(height: AppSpacing.sm),
-                  _buildZipPackagePreview(dialogContext, selected!),
-                  const SizedBox(height: AppSpacing.sm),
-                  // 必需环境变量（meta.json 声明）
-                  if (requiredKeys.isNotEmpty) ...[
-                    Text('必需环境变量',
-                        style: textTheme.titleSmall?.copyWith(
-                            fontWeight: FontWeight.w600)),
-                    const SizedBox(height: AppSpacing.xs),
-                    Text('脚本通过 host.env.get 读取，请填写以下值',
-                        style: textTheme.bodySmall?.copyWith(
-                            color: scheme.onSurfaceVariant)),
-                    const SizedBox(height: AppSpacing.sm),
-                    _ScriptChannelEnvEditor(
-                      initial: envVars,
-                      readOnlyKeys: requiredKeys,
-                      onChanged: (map) => envVars = map,
-                    ),
-                  ],
-                ],
-                const SizedBox(height: AppSpacing.lg),
-                // 操作按钮
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
+    final confirmed = await AppDialogs.showBottomSheet<bool>(
+      title: '导入渠道包',
+      children: [
+        StatefulBuilder(
+          builder: (dialogContext, setDialogState) {
+            // children 无水平 padding（标题才带），内容整体补左右边距避免贴边
+            return Padding(
+              padding: AppSpacing.onlyHorizontalLG,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    TextButton(
-                      onPressed: () => Navigator.of(sheetContext).pop(false),
-                      child: const Text('取消'),
+                    Text(
+                      '从 .zip 渠道包文件导入自定义渠道',
+                      style: textTheme.bodySmall?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
                     ),
-                    const SizedBox(width: AppSpacing.sm),
-                    FilledButton(
+                    const SizedBox(height: AppSpacing.md),
+                    // 从文件选择 .zip 渠道包
+                    OutlinedButton.icon(
+                      key: const Key('script_channel_file_button'),
                       onPressed: () async {
-                        final pkg = selected;
-                        if (pkg == null) {
-                          AppDialogs.showError('请先选择 .zip 渠道包文件');
+                        final picked = await _pickZipPackage();
+                        if (picked == null) return;
+                        final baseName =
+                            picked.name.toLowerCase().endsWith('.zip')
+                                ? picked.name
+                                    .substring(0, picked.name.length - 4)
+                                : picked.name;
+                        if (!RegExp(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
+                            .hasMatch(baseName)) {
+                          AppDialogs.showError(
+                              '渠道包文件名不能作为渠道标识（需字母/下划线开头，仅含字母数字/下划线）');
                           return;
                         }
-                        // 校验必需环境变量是否已填写
-                        for (final key in requiredKeys) {
-                          if ((envVars[key] ?? '').trim().isEmpty) {
-                            AppDialogs.showError('请填写必需环境变量 $key');
-                            return;
-                          }
+                        final pkg = ChannelPackage.decode(picked.bytes);
+                        if (pkg == null) {
+                          AppDialogs.showError(
+                              '无效的渠道包：非 zip 文件 / 缺 entry.js / 含路径穿越');
+                          return;
                         }
-                        Navigator.of(sheetContext).pop(true);
+                        // 从 meta.json 读取必需环境变量，预填入编辑器
+                        final reqVars = pkg.requiredEnvVars;
+                        final channelKey = 'js_$baseName';
+                        // 尝试加载已存在的环境变量（回显之前填过的值）
+                        var existingEnv = <String, String>{};
+                        try {
+                          final existingRaw = await ConfigStore.instance
+                              .readString('channel_env_$channelKey');
+                          if (existingRaw != null && existingRaw.isNotEmpty) {
+                            final decoded = jsonDecode(existingRaw);
+                            if (decoded is Map) {
+                              existingEnv = decoded.map(
+                                  (k, v) =>
+                                      MapEntry(k.toString(), v.toString()));
+                            }
+                          }
+                        } catch (_) {
+                          // 读取失败不影响，使用空值
+                        }
+                        final initial = <String, String>{};
+                        for (final key in reqVars) {
+                          initial[key] = existingEnv[key] ?? '';
+                        }
+                        requiredKeys = reqVars.toSet();
+                        envVars = Map.from(initial);
+                        setDialogState(() {
+                          selected = (
+                            fileName: picked.name,
+                            channelKey: 'js_$baseName',
+                            pkg: pkg,
+                            bytes: picked.bytes,
+                          );
+                        });
                       },
-                      child: const Text('导入'),
+                      icon: const Icon(Icons.upload_file),
+                      label: const Text('从文件选择渠道包 (.zip)'),
+                    ),
+                    if (selected != null) ...[
+                      const SizedBox(height: AppSpacing.sm),
+                      _buildZipPackagePreview(dialogContext, selected!),
+                      const SizedBox(height: AppSpacing.sm),
+                      // 必需环境变量（meta.json 声明）
+                      if (requiredKeys.isNotEmpty) ...[
+                        Text('必需环境变量',
+                            style: textTheme.titleSmall?.copyWith(
+                                fontWeight: FontWeight.w600)),
+                        const SizedBox(height: AppSpacing.xs),
+                        Text('脚本通过 host.env.get 读取，请填写以下值',
+                            style: textTheme.bodySmall?.copyWith(
+                                color: scheme.onSurfaceVariant)),
+                        const SizedBox(height: AppSpacing.sm),
+                        _ScriptChannelEnvEditor(
+                          initial: envVars,
+                          readOnlyKeys: requiredKeys,
+                          onChanged: (map) => envVars = map,
+                        ),
+                      ],
+                    ],
+                    const SizedBox(height: AppSpacing.lg),
+                    // 操作按钮
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        TextButton(
+                          onPressed: () => AppDialogs.popSheet(false),
+                          child: const Text('取消'),
+                        ),
+                        const SizedBox(width: AppSpacing.sm),
+                        FilledButton(
+                          onPressed: () async {
+                            final pkg = selected;
+                            if (pkg == null) {
+                              AppDialogs.showError('请先选择 .zip 渠道包文件');
+                              return;
+                            }
+                            // 校验必需环境变量是否已填写
+                            for (final key in requiredKeys) {
+                              if ((envVars[key] ?? '').trim().isEmpty) {
+                                AppDialogs.showError('请填写必需环境变量 $key');
+                                return;
+                              }
+                            }
+                            AppDialogs.popSheet(true);
+                          },
+                          child: const Text('导入'),
+                        ),
+                      ],
                     ),
                   ],
                 ),
-              ],
-            ),
-          ),
+              ),
+            );
+          },
         ),
-      ),
+      ],
     );
 
     if (confirmed != true) return;
@@ -1082,16 +1084,35 @@ class _DataUpdateTileState extends State<_DataUpdateTile> {
   /// 可更新版本
   String? _latestVersion;
 
+  /// 数据库更新红点（数据库更新完成后由 DbManager 清除）
+  bool _hasDbBadge = false;
+
+  /// 红点变更订阅（dispose 取消）
+  StreamSubscription<Map<String, int>>? _badgeSub;
+
   @override
   void initState() {
     super.initState();
     _loadCurrentVersion();
+    // 红点流是 broadcast（仅推送变更、不重放当前值），先读现值再订阅，
+    // 保证进入页面时红点状态正确且后续变更能刷新 leading。
+    _hasDbBadge = BadgeService.instance.hasBadge(BadgeKey.dbUpdate);
+    _badgeSub = BadgeService.instance.badges.stream.listen((badges) {
+      if (!mounted) return;
+      setState(() => _hasDbBadge = badges[BadgeKey.dbUpdate.code] != null);
+    });
+  }
+
+  @override
+  void dispose() {
+    _badgeSub?.cancel();
+    super.dispose();
   }
 
   /// 读取当前数据库版本
   Future<void> _loadCurrentVersion() async {
     try {
-      final version = await Get.find<DbManager>().getDBVersion('gstore');
+      final version = await DbManager.instance.getDBVersion('gstore');
       if (mounted) {
         setState(() => _currentVersion = version);
       }
@@ -1138,15 +1159,11 @@ class _DataUpdateTileState extends State<_DataUpdateTile> {
     }
 
     return ListTile(
-      leading: Obx(() {
-        final hasDbUpdate = BadgeService.instance.hasBadge(BadgeKey.dbUpdate);
-        return AppBadge(
-          count: hasDbUpdate ? 1 : 0,
-          showCount: false,
-          child:
-              const Icon(Icons.system_update_alt, size: AppTypography.iconMD),
-        );
-      }),
+      leading: AppBadge(
+        count: _hasDbBadge ? 1 : 0,
+        showCount: false,
+        child: const Icon(Icons.system_update_alt, size: AppTypography.iconMD),
+      ),
       title: Text(_downloading ? '正在更新数据库...' : '数据库更新'),
       subtitle: Text(
         _hasUpdate && _latestVersion != null
@@ -1167,7 +1184,7 @@ class _DataUpdateTileState extends State<_DataUpdateTile> {
     });
 
     try {
-      final info = await Get.find<DbManager>().checkUpdateInfo('gstore');
+      final info = await DbManager.instance.checkUpdateInfo('gstore');
       if (!mounted) return;
       setState(() {
         _checking = false;
@@ -1176,23 +1193,12 @@ class _DataUpdateTileState extends State<_DataUpdateTile> {
         if (info != null) _currentVersion = info['current']!;
       });
       if (info == null) {
-        Get.snackbar(
-          '已是最新',
-          '本地数据库已是最新版本',
-          snackPosition: SnackPosition.BOTTOM,
-          duration: const Duration(seconds: 2),
-        );
+        AppDialogs.showInfo('本地数据库已是最新版本', title: '已是最新');
       }
     } catch (e) {
       if (mounted) {
         setState(() => _checking = false);
-        Get.snackbar(
-          '检查失败',
-          '检查更新出错: $e',
-          snackPosition: SnackPosition.BOTTOM,
-          backgroundColor: Get.theme.colorScheme.errorContainer,
-          duration: const Duration(seconds: 3),
-        );
+        AppDialogs.showError('检查更新出错: $e', title: '检查失败');
       }
     }
   }
@@ -1212,31 +1218,15 @@ class _DataUpdateTileState extends State<_DataUpdateTile> {
       if (result == DbUpdateResult.success) {
         await _loadCurrentVersion();
         setState(() => _latestVersion = null);
-        Get.snackbar(
-          '更新成功',
-          '本地数据库已更新',
-          snackPosition: SnackPosition.BOTTOM,
-          duration: const Duration(seconds: 2),
-        );
+        AppDialogs.showSuccess('本地数据库已更新', title: '更新成功');
       } else {
-        Get.snackbar(
-          '更新失败',
-          '数据库更新失败，请检查网络或代理设置',
-          snackPosition: SnackPosition.BOTTOM,
-          backgroundColor: Get.theme.colorScheme.errorContainer,
-          duration: const Duration(seconds: 3),
-        );
+        AppDialogs.showError('数据库更新失败，请检查网络或代理设置',
+            title: '更新失败');
       }
     } catch (e) {
       if (mounted) {
         setState(() => _downloading = false);
-        Get.snackbar(
-          '更新失败',
-          '更新出错: $e',
-          snackPosition: SnackPosition.BOTTOM,
-          backgroundColor: Get.theme.colorScheme.errorContainer,
-          duration: const Duration(seconds: 3),
-        );
+        AppDialogs.showError('更新出错: $e', title: '更新失败');
       }
     }
   }

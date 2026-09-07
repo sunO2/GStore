@@ -14,13 +14,38 @@ import 'package:installed_apps/installed_apps.dart';
 import 'logic.dart';
 import 'state.dart';
 
-class DetailPage extends StatelessWidget {
+class DetailPage extends StatefulWidget {
   const DetailPage({super.key});
 
   @override
+  State<DetailPage> createState() => _DetailPageState();
+}
+
+class _DetailPageState extends State<DetailPage> {
+  /// 页面逻辑。
+  ///
+  /// 详情页是"每 push 独立状态"语义：若复用 GetX 容器里上一页残留的实例
+  /// （MaterialApp.router 下路由 pop 不触发 GetX 生命周期清理），切到另一
+  /// 应用详情会复用到上一应用的缓存数据（显示旧详情）。故本页 dispose 时
+  /// 显式 Get.delete，保证下一次 push 拿到全新实例。
+  late final DetailLogic logic;
+  late final DetailState state;
+
+  @override
+  void initState() {
+    super.initState();
+    logic = Get.put(DetailLogic());
+    state = logic.state;
+  }
+
+  @override
+  void dispose() {
+    Get.delete<DetailLogic>();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final logic = Get.put(DetailLogic());
-    final state = Get.find<DetailLogic>().state;
     // go_router extra（原 Get.arguments）→ logic（onReady 前设置，幂等）
     logic.setRouteExtra(goRouterExtraOf(context));
 

@@ -4,7 +4,7 @@ import 'package:get/get.dart';
 
 /// 全局日志管理器
 /// 用于在整个应用中记录和查看日志
-class LogManager extends GetxController {
+class LogManager {
   static LogManager? _instance;
 
   static LogManager get instance {

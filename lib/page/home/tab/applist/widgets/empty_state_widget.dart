@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
-import 'package:get/get.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/design/app_borders.dart';
-import '../../../logic.dart';
+import 'package:gstore/page/home/logic.dart';
 
-class EmptyStateWidget extends StatelessWidget {
+class EmptyStateWidget extends ConsumerWidget {
   final VoidCallback onImportSample;
 
   const EmptyStateWidget({
@@ -13,14 +13,14 @@ class EmptyStateWidget extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     return Center(
       child: Padding(
         padding: AppSpacing.allXXL,
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(
+            const Icon(
               Icons.apps_outlined,
               size: AppTypography.iconXXXL,
               color: AppColors.grey400,
@@ -55,12 +55,7 @@ class EmptyStateWidget extends StatelessWidget {
               title: '浏览发现页',
               description: '切换到"发现"标签浏览应用',
               onTap: () {
-                try {
-                  final homeLogic = Get.find();
-                  homeLogic.jumpToPage(1);
-                } catch (e) {
-                  appLog.error('跳转失败: $e');
-                }
+                ref.read(homeProvider.notifier).jumpToPage(1);
               },
             ),
             const SizedBox(height: AppSpacing.sm),
@@ -70,12 +65,7 @@ class EmptyStateWidget extends StatelessWidget {
               title: '我的频道',
               description: '管理已添加的应用频道',
               onTap: () {
-                try {
-                  final homeLogic = Get.find();
-                  homeLogic.jumpToPage(2);
-                } catch (e) {
-                  appLog.error('跳转失败: $e');
-                }
+                ref.read(homeProvider.notifier).jumpToPage(2);
               },
             ),
             const SizedBox(height: AppSpacing.xl),
@@ -148,7 +138,7 @@ class EmptyStateWidget extends StatelessWidget {
                 ],
               ),
             ),
-            Icon(
+            const Icon(
               Icons.chevron_right,
               color: AppColors.grey400,
             ),
@@ -173,7 +163,7 @@ class EmptyStateWidget extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
+            const Text(
               '点击上方的"快速搜索"按钮，然后：',
               style: AppTypography.bodyMedium,
             ),

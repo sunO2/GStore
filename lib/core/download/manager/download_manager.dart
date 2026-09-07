@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:dio/dio.dart' show CancelToken, DioException, DioExceptionType;
-import 'package:get/get.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../../module/interfaces/service_interfaces.dart';
@@ -20,7 +19,7 @@ import 'download_repository.dart';
 /// - 进度上报（3s 滚动窗口计算速度）
 /// - 完成校验（APK 需带 ZIP 魔数 `PK`，且长度不小于声明大小）
 /// - 暂停/恢复/取消/重试的状态机
-class DownloadManager extends GetxService implements IDownloadService {
+class DownloadManager implements IDownloadService {
   final DownloadEngine engine;
   final DownloadRepository repository;
 

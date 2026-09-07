@@ -10,7 +10,14 @@ import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 
 /// Theme controller for managing app theme persistence and customization
 /// Uses ConfigProvider system to store the user's theme preference
-class ThemeController extends GetxController implements IThemeService {
+class ThemeController implements IThemeService {
+  static ThemeController? _instance;
+
+  static ThemeController get instance => _instance ??= ThemeController();
+
+  /// 测试可自由构造自建实例；生产统一走 [instance]
+  ThemeController();
+
   final Rx<AppThemeMode> _themeMode = AppThemeMode.system.obs;
   final Rx<AppThemeConfig> _themeConfig = AppThemeConfig.default_.obs;
 
@@ -41,9 +48,8 @@ class ThemeController extends GetxController implements IThemeService {
   /// Stream of theme config changes
   Rx<AppThemeConfig> get themeConfigStream => _themeConfig;
 
-  @override
-  void onInit() {
-    super.onInit();
+  /// 模块初始化时调用（替代 GetX onInit）：加载持久化配置并订阅变化
+  void initialize() {
     _loadThemeMode();
     _loadThemeConfig();
 
@@ -211,12 +217,11 @@ class ThemeController extends GetxController implements IThemeService {
     await setThemeConfig(_themeConfig.value.copyWith(useCustomColors: newValue));
   }
 
-  @override
-  void onClose() {
+  /// 释放订阅（模块下线/测试重置时调用）
+  void dispose() {
     for (final sub in _subscriptions) {
       sub.cancel();
     }
     _subscriptions.clear();
-    super.onClose();
   }
 }
