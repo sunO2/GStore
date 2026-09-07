@@ -1,5 +1,3 @@
-import 'package:get/get.dart';
-
 /// 认证状态枚举
 enum AuthStatus {
   /// 空状态
@@ -14,10 +12,26 @@ enum AuthStatus {
   success,
 }
 
+/// 认证页状态（不可变）。
 class AuthPageState {
-  final RxString verificationCode = ''.obs;
-  final Rx<AuthStatus> status = AuthStatus.empty.obs;
-  AuthPageState() {
-    ///Initialize variables
+  const AuthPageState({
+    this.verificationCode = '',
+    this.status = AuthStatus.empty,
+  });
+
+  /// GitHub 设备流程用户码。
+  final String verificationCode;
+
+  /// 当前认证状态。
+  final AuthStatus status;
+
+  AuthPageState copyWith({
+    String? verificationCode,
+    AuthStatus? status,
+  }) {
+    return AuthPageState(
+      verificationCode: verificationCode ?? this.verificationCode,
+      status: status ?? this.status,
+    );
   }
 }

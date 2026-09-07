@@ -1,17 +1,30 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/design/design_tokens.dart';
 import 'logic.dart';
 import 'state.dart';
 
-class AuthPage extends StatelessWidget {
+/// GitHub 认证页
+class AuthPage extends ConsumerStatefulWidget {
   const AuthPage({super.key});
 
   @override
+  ConsumerState<AuthPage> createState() => _AuthPageState();
+}
+
+class _AuthPageState extends ConsumerState<AuthPage> {
+  /// 页面逻辑（build 时从 ref 取，供各构建子方法使用）
+  AuthPageNotifier get logic => ref.read(authPageProvider.notifier);
+
+  /// 页面状态（ref.watch，状态变化触发 build 重建）
+  AuthPageState get state => ref.watch(authPageProvider);
+
+  @override
   Widget build(BuildContext context) {
-    final logic = Get.put(AuthPageLogic());
+    final state = this.state;
     return Scaffold(
       appBar: AppBar(
         centerTitle: true,
@@ -20,7 +33,7 @@ class AuthPage extends StatelessWidget {
         leading: IconButton(
           icon: const Icon(Icons.close),
           onPressed: () async {
-            final currentStatus = logic.state.status.value;
+            final currentStatus = state.status;
 
             // 登录成功，直接返回 success
             if (currentStatus == AuthStatus.success) {
@@ -78,7 +91,7 @@ class AuthPage extends StatelessWidget {
           // 检测是否到达设备登录页面
           if (urlString
               .endsWith("/login/device?skip_account_picker=true")) {
-            logic.state.status.value = AuthStatus.initial;
+            logic.setStatus(AuthStatus.initial);
           }
           // 注意：登录成功判断已改为使用 API 轮询结果（logic.dart），
           // 不再依赖页面 URL 跳转到 /login/device/success
@@ -88,65 +101,68 @@ class AuthPage extends StatelessWidget {
           javaScriptEnabled: true,
         ),
       ),
-      floatingActionButton: Obx(() {
-        if (logic.state.status.value == AuthStatus.initial ||
-            logic.state.status.value == AuthStatus.requestUserCode) {
-          return FloatingActionButton.extended(
-            backgroundColor: Theme.of(context).colorScheme.primaryContainer,
-            onPressed: () {
-              if (logic.state.status.value != AuthStatus.requestUserCode) {
-                logic.getDeviceCode();
-              }
-            },
-            label: Row(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.center,
-              children: [
-                Text(
-                  "获取验证码",
-                  style: Theme.of(context)
-                      .textTheme
-                      .displaySmall
-                      ?.copyWith(fontSize: 14, fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(
-                  width: 8,
-                ),
-                if (logic.state.status.value == AuthStatus.requestUserCode)
-                  const CupertinoActivityIndicator(
-                    radius: 6,
-                  ),
-              ],
-            ),
-          );
-        } else if (logic.state.status.value == AuthStatus.verifying) {
-          return FloatingActionButton.extended(
-            onPressed: logic.copyVerificationCode,
-            label: Row(
-              crossAxisAlignment: CrossAxisAlignment.center,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  '验证码: ${logic.state.verificationCode.value}',
-                  style: Theme.of(context)
-                      .textTheme
-                      .displaySmall
-                      ?.copyWith(fontSize: 12, fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(
-                  width: 4,
-                ),
-                const Icon(
-                  Icons.copy,
-                  size: 10,
-                ),
-              ],
-            ),
-          );
-        } else {
-          return const SizedBox();
-        }
-      }),
+      floatingActionButton: _buildFab(context, state),
     );
+  }
+
+  /// 底部 FAB（获取验证码 / 复制验证码；依赖外层 [state] watch 响应式重建）。
+  Widget _buildFab(BuildContext context, AuthPageState state) {
+    if (state.status == AuthStatus.initial ||
+        state.status == AuthStatus.requestUserCode) {
+      return FloatingActionButton.extended(
+        backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+        onPressed: () {
+          if (state.status != AuthStatus.requestUserCode) {
+            logic.getDeviceCode();
+          }
+        },
+        label: Row(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Text(
+              "获取验证码",
+              style: Theme.of(context)
+                  .textTheme
+                  .displaySmall
+                  ?.copyWith(fontSize: 14, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(
+              width: 8,
+            ),
+            if (state.status == AuthStatus.requestUserCode)
+              const CupertinoActivityIndicator(
+                radius: 6,
+              ),
+          ],
+        ),
+      );
+    } else if (state.status == AuthStatus.verifying) {
+      return FloatingActionButton.extended(
+        onPressed: logic.copyVerificationCode,
+        label: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              '验证码: ${state.verificationCode}',
+              style: Theme.of(context)
+                  .textTheme
+                  .displaySmall
+                  ?.copyWith(fontSize: 12, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(
+              width: 4,
+            ),
+            const Icon(
+              Icons.copy,
+              size: 10,
+            ),
+          ],
+        ),
+      );
+    } else {
+      return const SizedBox();
+    }
   }
 }

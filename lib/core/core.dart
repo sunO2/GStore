@@ -86,7 +86,6 @@ export 'package:gstore/core/resource/Disposable.dart';
 
 // 第三方库
 export 'package:get/get.dart';
-export 'package:gstore/http/github_request_mix.dart';
 export 'package:gstore/db/apps/AppInfo.dart';
 export 'dart:async';
 export 'dart:convert';
