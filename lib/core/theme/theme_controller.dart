@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:get/get.dart';
 import 'package:gstore/core/theme/app_theme_config.dart';
 import 'package:gstore/core/config/config_initializer.dart';
 import 'package:gstore/core/config/config_registry.dart';
@@ -18,35 +17,31 @@ class ThemeController implements IThemeService {
   /// 测试可自由构造自建实例；生产统一走 [instance]
   ThemeController();
 
-  final Rx<AppThemeMode> _themeMode = AppThemeMode.system.obs;
-  final Rx<AppThemeConfig> _themeConfig = AppThemeConfig.default_.obs;
+  AppThemeMode _themeMode = AppThemeMode.system;
+  AppThemeConfig _themeConfig = AppThemeConfig.default_;
 
   // 配置提供者（延迟加载）
-  final _themeConfigProvider = Rxn<ThemeConfigProvider>();
+  ThemeConfigProvider? _themeConfigProvider;
 
   /// 订阅集合（dispose 时清理）
   final List<StreamSubscription> _subscriptions = [];
 
   /// 获取主题配置提供者
   ThemeConfigProvider get _provider {
-    _themeConfigProvider.value ??= ConfigInitializer.getThemeConfigProvider();
-    return _themeConfigProvider.value!;
+    _themeConfigProvider ??= ConfigInitializer.getThemeConfigProvider();
+    return _themeConfigProvider!;
   }
 
   /// The current theme mode
-  AppThemeMode get themeMode => _themeMode.value;
+  @override
+  AppThemeMode get themeMode => _themeMode;
 
   /// The ThemeMode value for MaterialApp
-  ThemeMode get themeModeValue => _themeMode.value.toThemeMode();
-
-  /// Stream of theme mode changes
-  Rx<AppThemeMode> get themeModeStream => _themeMode;
+  ThemeMode get themeModeValue => _themeMode.toThemeMode();
 
   /// The current theme config
-  AppThemeConfig get themeConfig => _themeConfig.value;
-
-  /// Stream of theme config changes
-  Rx<AppThemeConfig> get themeConfigStream => _themeConfig;
+  @override
+  AppThemeConfig get themeConfig => _themeConfig;
 
   /// 模块初始化时调用（替代 GetX onInit）：加载持久化配置并订阅变化
   void initialize() {
@@ -70,14 +65,14 @@ class ThemeController implements IThemeService {
     // 监听主题配置变化
     _subscriptions.add(
       provider.themeConfigStream.listen((config) {
-        _themeConfig.value = config;
+        _themeConfig = config;
       }),
     );
 
     // 监听主题模式变化
     _subscriptions.add(
       provider.watchMode().listen((mode) {
-        _themeMode.value = mode;
+        _themeMode = mode;
       }),
     );
   }
@@ -90,13 +85,13 @@ class ThemeController implements IThemeService {
           case ConfigKeys.themeMode:
             final v = event.newValue;
             if (v is int && v >= 0 && v < AppThemeMode.values.length) {
-              _themeMode.value = AppThemeMode.values[v];
+              _themeMode = AppThemeMode.values[v];
             }
           case ConfigKeys.themeConfig:
             final v = event.newValue;
             if (v is Map<String, dynamic>) {
               try {
-                _themeConfig.value = AppThemeConfig.fromJson(v);
+                _themeConfig = AppThemeConfig.fromJson(v);
               } catch (_) {
                 // 解析失败保持当前配置
               }
@@ -111,11 +106,11 @@ class ThemeController implements IThemeService {
     try {
       final mode = await _provider.loadMode();
       if (mode != null) {
-        _themeMode.value = mode;
+        _themeMode = mode;
       }
     } catch (e) {
       // If loading fails, default to system theme
-      _themeMode.value = AppThemeMode.system;
+      _themeMode = AppThemeMode.system;
     }
   }
 
@@ -124,22 +119,23 @@ class ThemeController implements IThemeService {
     try {
       final config = await _provider.load();
       if (config != null) {
-        _themeConfig.value = config;
+        _themeConfig = config;
       }
     } catch (e) {
       // If loading fails, default to default config
-      _themeConfig.value = AppThemeConfig.default_;
+      _themeConfig = AppThemeConfig.default_;
     }
   }
 
   /// Set the theme mode and persist it
+  @override
   Future<void> setThemeMode(AppThemeMode mode) async {
     await ConfigService.instance.set(
       ConfigKeys.themeMode,
       mode.index,
       source: ConfigChangeSource.user,
     );
-    _themeMode.value = mode;
+    _themeMode = mode;
   }
 
   /// Set the theme config and persist it
@@ -149,13 +145,14 @@ class ThemeController implements IThemeService {
       config.toJson(),
       source: ConfigChangeSource.user,
     );
-    _themeConfig.value = config;
+    _themeConfig = config;
   }
 
   /// Toggle between light and dark mode
   /// If currently in system mode, switch to light
+  @override
   Future<void> toggleTheme() async {
-    final newMode = switch (_themeMode.value) {
+    final newMode = switch (_themeMode) {
       AppThemeMode.system => AppThemeMode.light,
       AppThemeMode.light => AppThemeMode.dark,
       AppThemeMode.dark => AppThemeMode.light,
@@ -164,6 +161,7 @@ class ThemeController implements IThemeService {
   }
 
   /// 重置为主题默认配置（使用动态色）
+  @override
   Future<void> resetToDefault() async {
     await ConfigService.instance.reset(
       ConfigKeys.themeConfig,
@@ -174,11 +172,12 @@ class ThemeController implements IThemeService {
       AppThemeMode.system.index,
       source: ConfigChangeSource.user,
     );
-    _themeConfig.value = AppThemeConfig.default_;
-    _themeMode.value = AppThemeMode.system;
+    _themeConfig = AppThemeConfig.default_;
+    _themeMode = AppThemeMode.system;
   }
 
   /// 设置自定义颜色主题
+  @override
   Future<void> setCustomColorTheme({
     required Color primaryColor,
     Color? secondaryColor,
@@ -189,32 +188,32 @@ class ThemeController implements IThemeService {
       primaryColor: primaryColor,
       secondaryColor: secondaryColor,
       tertiaryColor: tertiaryColor,
-      fontStyle: _themeConfig.value.fontStyle,
-      radiusStyle: _themeConfig.value.radiusStyle,
-      borderStyle: _themeConfig.value.borderStyle,
+      fontStyle: _themeConfig.fontStyle,
+      radiusStyle: _themeConfig.radiusStyle,
+      borderStyle: _themeConfig.borderStyle,
     );
     await setThemeConfig(config);
   }
 
   /// 设置字体风格
   Future<void> setFontStyle(AppFontStyle fontStyle) async {
-    await setThemeConfig(_themeConfig.value.copyWith(fontStyle: fontStyle));
+    await setThemeConfig(_themeConfig.copyWith(fontStyle: fontStyle));
   }
 
   /// 设置圆角风格
   Future<void> setRadiusStyle(AppRadiusStyle radiusStyle) async {
-    await setThemeConfig(_themeConfig.value.copyWith(radiusStyle: radiusStyle));
+    await setThemeConfig(_themeConfig.copyWith(radiusStyle: radiusStyle));
   }
 
   /// 设置边框风格
   Future<void> setBorderStyle(AppBorderStyle borderStyle) async {
-    await setThemeConfig(_themeConfig.value.copyWith(borderStyle: borderStyle));
+    await setThemeConfig(_themeConfig.copyWith(borderStyle: borderStyle));
   }
 
   /// 切换是否使用自定义颜色
   Future<void> toggleCustomColors() async {
-    final newValue = !_themeConfig.value.useCustomColors;
-    await setThemeConfig(_themeConfig.value.copyWith(useCustomColors: newValue));
+    final newValue = !_themeConfig.useCustomColors;
+    await setThemeConfig(_themeConfig.copyWith(useCustomColors: newValue));
   }
 
   /// 释放订阅（模块下线/测试重置时调用）

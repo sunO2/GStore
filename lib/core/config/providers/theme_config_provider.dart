@@ -3,10 +3,6 @@
 /// 管理应用主题相关的配置
 library;
 
-import 'dart:async';
-import 'dart:convert';
-
-import 'package:get/get.dart';
 import 'package:flutter/material.dart';
 import 'package:gstore/core/core.dart';
 
@@ -36,25 +32,25 @@ class ThemeConfigProvider extends ConfigProvider<AppThemeConfig> {
   final _configController = StreamController<AppThemeConfig>.broadcast();
 
   /// 当前主题模式
-  final Rx<AppThemeMode> _themeMode = AppThemeMode.system.obs;
+  AppThemeMode _themeMode = AppThemeMode.system;
 
   /// 当前主题配置
-  final Rx<AppThemeConfig> _themeConfig = AppThemeConfig.default_.obs;
+  AppThemeConfig _themeConfig = AppThemeConfig.default_;
 
   /// 当前主题模式
-  AppThemeMode get themeMode => _themeMode.value;
+  AppThemeMode get themeMode => _themeMode;
 
   /// ThemeMode 值（用于 MaterialApp）
-  ThemeMode get themeModeValue => _themeMode.value.toThemeMode();
+  ThemeMode get themeModeValue => _themeMode.toThemeMode();
 
   /// 当前主题配置
-  AppThemeConfig get themeConfig => _themeConfig.value;
+  AppThemeConfig get themeConfig => _themeConfig;
 
   /// 主题模式流
-  Rx<AppThemeMode> get themeModeStream => _themeMode;
+  Stream<AppThemeMode> get themeModeStream => _modeController.stream;
 
   /// 主题配置流
-  Rx<AppThemeConfig> get themeConfigStream => _themeConfig;
+  Stream<AppThemeConfig> get themeConfigStream => _configController.stream;
 
   @override
   Future<AppThemeConfig?> load() async {
@@ -67,7 +63,7 @@ class ThemeConfigProvider extends ConfigProvider<AppThemeConfig> {
         debugPrint('ThemeConfigProvider: useCustomColors = ${json['useCustomColors']}');
 
         final config = AppThemeConfig.fromJson(json);
-        _themeConfig.value = config;
+        _themeConfig = config;
 
         appLog.info('ThemeConfigProvider: 配置加载成功 - useCustomColors = ${config.useCustomColors}');
         return config;
@@ -91,7 +87,7 @@ class ThemeConfigProvider extends ConfigProvider<AppThemeConfig> {
 
       final success = await _storage.setString(configKey, jsonString);
       if (success) {
-        _themeConfig.value = config;
+        _themeConfig = config;
         _configController.add(config);
         appLog.info('ThemeConfigProvider: 配置已保存并发出变化事件');
       } else {
@@ -108,7 +104,7 @@ class ThemeConfigProvider extends ConfigProvider<AppThemeConfig> {
   Future<bool> clear() async {
     final success = await _storage.remove(configKey);
     if (success) {
-      _themeConfig.value = AppThemeConfig.default_;
+      _themeConfig = AppThemeConfig.default_;
       _configController.add(AppThemeConfig.default_);
       appLog.info('ThemeConfigProvider: 配置已清除并发出变化事件');
     }
@@ -117,7 +113,7 @@ class ThemeConfigProvider extends ConfigProvider<AppThemeConfig> {
 
   @override
   Stream<AppThemeConfig?> watch() {
-    return _configController.stream.map((_) => _themeConfig.value);
+    return _configController.stream.map((_) => _themeConfig);
   }
 
   /// 加载主题模式
@@ -126,7 +122,7 @@ class ThemeConfigProvider extends ConfigProvider<AppThemeConfig> {
       final modeIndex = await _storage.getInt(_modeKey);
       if (modeIndex != null) {
         final mode = AppThemeMode.values[modeIndex];
-        _themeMode.value = mode;
+        _themeMode = mode;
         return mode;
       }
       return AppThemeMode.system;
@@ -140,7 +136,7 @@ class ThemeConfigProvider extends ConfigProvider<AppThemeConfig> {
     try {
       final success = await _storage.setInt(_modeKey, mode.index);
       if (success) {
-        _themeMode.value = mode;
+        _themeMode = mode;
         _modeController.add(mode);
         appLog.info('ThemeConfigProvider: 主题模式已保存并发出变化事件 - $mode');
       }
@@ -157,7 +153,7 @@ class ThemeConfigProvider extends ConfigProvider<AppThemeConfig> {
 
   /// 切换主题（浅色/深色）
   Future<void> toggleTheme() async {
-    final newMode = switch (_themeMode.value) {
+    final newMode = switch (_themeMode) {
       AppThemeMode.system => AppThemeMode.light,
       AppThemeMode.light => AppThemeMode.dark,
       AppThemeMode.dark => AppThemeMode.light,
@@ -181,40 +177,40 @@ class ThemeConfigProvider extends ConfigProvider<AppThemeConfig> {
       primaryColor: primaryColor,
       secondaryColor: secondaryColor,
       tertiaryColor: tertiaryColor,
-      fontStyle: _themeConfig.value.fontStyle,
-      radiusStyle: _themeConfig.value.radiusStyle,
-      borderStyle: _themeConfig.value.borderStyle,
+      fontStyle: _themeConfig.fontStyle,
+      radiusStyle: _themeConfig.radiusStyle,
+      borderStyle: _themeConfig.borderStyle,
     );
     await save(config);
   }
 
   /// 设置字体风格
   Future<void> setFontStyle(AppFontStyle fontStyle) async {
-    final config = _themeConfig.value.copyWith(fontStyle: fontStyle);
+    final config = _themeConfig.copyWith(fontStyle: fontStyle);
     await save(config);
   }
 
   /// 设置圆角风格
   Future<void> setRadiusStyle(AppRadiusStyle radiusStyle) async {
-    final config = _themeConfig.value.copyWith(radiusStyle: radiusStyle);
+    final config = _themeConfig.copyWith(radiusStyle: radiusStyle);
     await save(config);
   }
 
   /// 设置边框风格
   Future<void> setBorderStyle(AppBorderStyle borderStyle) async {
-    final config = _themeConfig.value.copyWith(borderStyle: borderStyle);
+    final config = _themeConfig.copyWith(borderStyle: borderStyle);
     await save(config);
   }
 
   /// 切换是否使用自定义颜色
   Future<void> toggleCustomColors() async {
-    final oldValue = _themeConfig.value.useCustomColors;
+    final oldValue = _themeConfig.useCustomColors;
     final newValue = !oldValue;
 
     debugPrint('ThemeConfigProvider: toggleCustomColors 被调用');
     debugPrint('ThemeConfigProvider: 旧值 = $oldValue, 新值 = $newValue');
 
-    final config = _themeConfig.value.copyWith(
+    final config = _themeConfig.copyWith(
       useCustomColors: newValue,
     );
 
@@ -222,7 +218,7 @@ class ThemeConfigProvider extends ConfigProvider<AppThemeConfig> {
 
     await save(config);
 
-    debugPrint('ThemeConfigProvider: 保存完成，当前值 = ${_themeConfig.value.useCustomColors}');
+    debugPrint('ThemeConfigProvider: 保存完成，当前值 = ${_themeConfig.useCustomColors}');
   }
 
   /// 释放资源
