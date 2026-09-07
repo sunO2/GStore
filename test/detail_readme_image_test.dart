@@ -8,6 +8,7 @@ import 'package:flutter_svg/flutter_svg.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
+import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/image/app_image.dart';
 import 'package:gstore/core/image/app_image_loader.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
@@ -138,6 +139,9 @@ Future<void> pumpReadme(WidgetTester tester, _FakeDetailInfo info) async {
       ),
     ),
   );
+  // HTML→markdown 转换在后台 isolate（compute）完成：轮询真实异步直至
+  // 结果回写，避免 fake-async 时钟下 compute 永不完成。
+  await _pumpUntilConverted(tester);
   // Html 解析 + 图片下载（300ms 延迟）各自推进
   await tester.pump(const Duration(milliseconds: 100));
 }
@@ -146,6 +150,17 @@ Future<void> pumpReadme(WidgetTester tester, _FakeDetailInfo info) async {
 Future<void> pumpReadmeLoaded(WidgetTester tester, _FakeDetailInfo info) async {
   await pumpReadme(tester, info);
   await tester.pump(const Duration(milliseconds: 400));
+}
+
+/// 反复推进真实异步 + 刷新帧，直到不再出现 AppLoading 占位（转换完成）。
+Future<void> _pumpUntilConverted(WidgetTester tester) async {
+  for (var i = 0; i < 50; i++) {
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 20)),
+    );
+    await tester.pump();
+    if (find.byType(AppLoading).evaluate().isEmpty) return;
+  }
 }
 
 void main() {

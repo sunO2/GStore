@@ -13,6 +13,17 @@ import 'package:gstore/core/model/StatTag.dart';
 import 'package:gstore/page/detail/widgets.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
+
+/// 假 path_provider：截图 CachedNetworkImage 的 cache_manager 依赖
+/// getApplicationSupportDirectory/getTemporaryDirectory（runAsync 真实异步下
+/// 会真实触发插件通道，需替换平台实现避免 MissingPluginException）。
+class _FakePathProvider extends PathProviderPlatform {
+  @override
+  Future<String?> getApplicationSupportPath() async => '.';
+  @override
+  Future<String?> getTemporaryPath() async => '.';
+}
 
 /// 1×1 RGBA 透明 PNG（可被 Flutter 解码）。
 final Uint8List kPngBytes = Uint8List.fromList(const [
@@ -94,8 +105,26 @@ Future<void> pumpReadme(WidgetTester tester, _FakeDetailInfo info) async {
       ),
     ),
   );
+  // 转换在后台 isolate（compute）完成：轮询 runAsync（真实异步）直到
+  // isolate 结果回写并渲染，避免 fake-async 时钟下 compute 永不完成。
+  await _pumpUntilConverted(tester);
   // AppLoading 占位是无限动画，用固定时长 pump 而非 pumpAndSettle
   await tester.pump(const Duration(milliseconds: 100));
+  // 截图 CachedNetworkImage 写入缓存时会在真实异步下启动 10s 清理 Timer
+  // （runAsync 窗口内创建、不受 fake 时钟控制），此处推进时钟使其过期，
+  // 避免测试收尾报 "Timer is still pending"。
+  await tester.pump(const Duration(seconds: 11));
+}
+
+/// 反复推进真实异步 + 刷新帧，直到不再出现 AppLoading 占位（转换完成）。
+Future<void> _pumpUntilConverted(WidgetTester tester) async {
+  for (var i = 0; i < 50; i++) {
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 20)),
+    );
+    await tester.pump();
+    if (find.byType(AppLoading).evaluate().isEmpty) return;
+  }
 }
 
 void main() {
@@ -109,6 +138,10 @@ void main() {
       );
     });
     AppImageLoader.instance.clearCache();
+    // runAsync 真实异步会触发截图 image cache 的磁盘访问 → 替换平台实现
+    final original = PathProviderPlatform.instance;
+    PathProviderPlatform.instance = _FakePathProvider();
+    addTearDown(() => PathProviderPlatform.instance = original);
   });
 
   testWidgets('有截图+正文：横向列表与 Markdown 同容器渲染', (tester) async {

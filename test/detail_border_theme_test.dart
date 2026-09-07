@@ -1,11 +1,23 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
+import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/model/StatTag.dart';
 import 'package:gstore/page/detail/view.dart' as detail_view;
 import 'package:gstore/page/detail/widgets.dart';
+
+/// 反复推进真实异步 + 刷新帧，直到不再出现 AppLoading 占位（README 转换完成）。
+Future<void> _pumpUntilConverted(WidgetTester tester) async {
+  for (var i = 0; i < 50; i++) {
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 20)),
+    );
+    await tester.pump();
+    if (find.byType(AppLoading).evaluate().isEmpty) return;
+  }
+}
 
 /// 详情页边框主题一致性（Wave 2）：
 /// 卡片/区块边框宽度应响应主题 cardTheme.shape.side（borderStyle 配置），
@@ -201,7 +213,11 @@ void main() {
           home: Scaffold(body: ReadmeSection(info: info)),
         ),
       );
-      await tester.pumpAndSettle();
+      // HTML→markdown 转换在后台 isolate（compute）完成；转换完成前渲染
+      // AppLoading 占位（无限动画，pumpAndSettle 永不 settle）→ 先轮询真实
+      // 异步等转换结果回写，再推进动画帧。
+      await _pumpUntilConverted(tester);
+      await tester.pump(const Duration(milliseconds: 100));
 
       final quote = find.byWidgetPredicate((w) {
         final decoration = switch (w) {

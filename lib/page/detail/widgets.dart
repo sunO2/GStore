@@ -1,6 +1,7 @@
 /// 详情页面可复用的 Section 组件
 library;
 
+import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:cached_network_image/cached_network_image.dart';
@@ -762,12 +763,101 @@ class _ReadmeSectionState extends State<ReadmeSection> {
   /// postFrame 后一帧才构建 MarkdownBody——详情页进入/返回不再被解析阻塞。
   bool _ready = false;
 
+  /// —— 渲染缓存（A+D）——
+  ///
+  /// 卡顿根因：flutter_markdown_plus 的 didUpdateWidget 在 data **或
+  /// styleSheet** 变化时同步重解析；而 build 每次新建 styleSheet，下载进度
+  /// 触发父级 rebuild 时超长 README 被反复解析。这里缓存「原始 readme →
+  /// 转换结果」，并按（结果, 主题）缓存已构建的 MarkdownBody 整树——
+  /// theme 不变时 Element 走 identical fast-path，彻底跳过重复解析。
+
+  /// 已缓存的原始 readme（变化时失效转换结果）
+  String? _cachedRaw;
+
+  /// convertHtmlImgsToMarkdown 结果（compute isolate 产出，跨 rebuild 缓存）
+  String? _convertedMarkdown;
+
+  /// 后台转换进行中（防重复触发，防止完成回调写回已失效的缓存）
+  bool _converting = false;
+  int _conversionEpoch = 0;
+
+  /// 已构建的 MarkdownBody 整树（theme 一致则复用，避免重复解析/构建）
+  Widget? _cachedBody;
+  ThemeData? _cachedBodyTheme;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) setState(() => _ready = true);
     });
+  }
+
+  @override
+  void didUpdateWidget(ReadmeSection oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // readme 内容变化（refreshDetail/重进）→ 失效缓存，下一帧 build 重新转换
+    final raw = widget.info.extra['readme']?.toString();
+    if (raw != _cachedRaw) {
+      _cachedRaw = raw;
+      _convertedMarkdown = null;
+      _cachedBody = null;
+    }
+  }
+
+  /// 后台转换 readme → markdown（纯函数，compute isolate 不阻塞主线程）。
+  /// 幂等：已有结果/转换中跳过；epoch 防过期回调写回已失效缓存。
+  void _ensureConverted(String raw) {
+    if (_convertedMarkdown != null || _converting) return;
+    _converting = true;
+    final epoch = ++_conversionEpoch;
+    compute(convertHtmlImgsToMarkdown, raw).then((converted) {
+      if (!mounted || epoch != _conversionEpoch) return;
+      setState(() {
+        _convertedMarkdown = converted;
+        _converting = false;
+      });
+    }).catchError((Object _) {
+      if (!mounted || epoch != _conversionEpoch) return;
+      // 转换失败：回退原始文本（保底不空白）
+      setState(() {
+        _convertedMarkdown = raw;
+        _converting = false;
+      });
+    });
+  }
+
+  /// 构建并缓存 MarkdownBody 整树（仅当主题变化或首次时执行）。
+  Widget _markdownBody(BuildContext context, ThemeData theme, String markdown) {
+    final body = MarkdownBody(
+      data: markdown,
+      selectable: true,
+      onTapLink: (text, href, title) {
+        if (href != null && href.isNotEmpty && widget.onLinkTap != null) {
+          widget.onLinkTap?.call(href);
+        }
+      },
+      imageBuilder: (uri, title, alt) {
+        final size = _parseImageTitleSize(title);
+        return Padding(
+          padding: const EdgeInsets.symmetric(vertical: AppSpacing.xs),
+          child: _ReadmeImage(
+            url: uri.toString(),
+            buildContext: context,
+            htmlWidth: size?.$1,
+            htmlHeight: size?.$2,
+          ),
+        );
+      },
+      // README 代码块：复制按钮 + 深色工具栏（复用旧 _CodeBlockWidget）
+      builders: {
+        'pre': _ReadmeCodeBlockBuilder(),
+      },
+      styleSheet: _buildReadmeStyleSheet(context, theme),
+    );
+    _cachedBody = body;
+    _cachedBodyTheme = theme;
+    return body;
   }
 
   @override
@@ -797,15 +887,44 @@ class _ReadmeSectionState extends State<ReadmeSection> {
       return const SizedBox.shrink();
     }
 
+    final theme = Theme.of(context);
+    final hasReadme = readme != null && readme.isNotEmpty;
+
     // README 文本流：相对路径图片已在渠道层经 rawBaseUrl 绝对化
     // （resolveReadmeImageUrls，见 GitHubChannel/LocalDbChannel），
     // 此处仅将内嵌 <img> HTML 转换为 markdown 图片语法
-    // （flutter_markdown_plus 不支持内联 HTML；尺寸经 title "WxH" 传递）
-    final markdown = (readme == null || readme.isEmpty)
-        ? ''
-        : convertHtmlImgsToMarkdown(readme);
+    // （flutter_markdown_plus 不支持内联 HTML；尺寸经 title "WxH" 传递）。
+    // 转换在后台 isolate 完成并缓存，避免每次 rebuild 重跑正则。
+    if (hasReadme) {
+      _ensureConverted(readme);
+    }
 
-    final theme = Theme.of(context);
+    // 有正文但转换未完成：整卡轻量占位（截图与正文同帧出现——
+    // 避免大文本转换期间截图先行渲染造成的内容闪烁/真实异步抖动）
+    final converted = _convertedMarkdown;
+    if (hasReadme && (converted == null || converted.isEmpty)) {
+      return const SectionCard(
+        title: '详细介绍',
+        icon: Icons.description_outlined,
+        children: [
+          SizedBox(
+            height: 60,
+            child: Center(
+              child: AppLoading(size: AppLoadingSize.small),
+            ),
+          ),
+        ],
+      );
+    }
+
+    Widget? body;
+    if (converted != null && converted.isNotEmpty) {
+      // theme 未变 → 复用已构建的 MarkdownBody 整树（identical fast-path，
+      // 彻底避免下载进度 rebuild 触发重复解析/构建）
+      body = (_cachedBody != null && identical(_cachedBodyTheme, theme))
+          ? _cachedBody
+          : _markdownBody(context, theme, converted);
+    }
 
     return SectionCard(
       title: '详细介绍',
@@ -816,33 +935,10 @@ class _ReadmeSectionState extends State<ReadmeSection> {
           _ScreenshotGallery(screenshots: screenshots),
           const SizedBox(height: AppSpacing.md),
         ],
-        if (markdown.isNotEmpty)
-          MarkdownBody(
-            data: markdown,
-            selectable: true,
-            onTapLink: (text, href, title) {
-              if (href != null && href.isNotEmpty && widget.onLinkTap != null) {
-                widget.onLinkTap?.call(href);
-              }
-            },
-            imageBuilder: (uri, title, alt) {
-              final size = _parseImageTitleSize(title);
-              return Padding(
-                padding: const EdgeInsets.symmetric(vertical: AppSpacing.xs),
-                child: _ReadmeImage(
-                  url: uri.toString(),
-                  buildContext: context,
-                  htmlWidth: size?.$1,
-                  htmlHeight: size?.$2,
-                ),
-              );
-            },
-            // README 代码块：复制按钮 + 深色工具栏（复用旧 _CodeBlockWidget）
-            builders: {
-              'pre': _ReadmeCodeBlockBuilder(),
-            },
-            styleSheet: _buildReadmeStyleSheet(context, theme),
-          ),
+        if (hasReadme)
+          body ??
+              // 极低概率兜底：转换完成但构建未就绪
+              const SizedBox.shrink(),
       ],
     );
   }
