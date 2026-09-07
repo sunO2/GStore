@@ -157,7 +157,7 @@ class MainActivity : FlutterActivity() {
                     }
                     try {
                         val packageInfo = packageManager.getPackageInfo(packageName, PackageManager.GET_PERMISSIONS)
-                        result.success(packageInfo.requestedPermissions ?: emptyList())
+                        result.success(packageInfo.requestedPermissions?.toList() ?: emptyList<String>())
                     } catch (e: Exception) {
                         result.error("PERMS", "获取权限列表失败: ${e.message}", null)
                     }
