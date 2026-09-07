@@ -1,0 +1,494 @@
+[
+  {
+    "name": "android.support.v4",
+    "label": "Support Library",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "android.support.v7",
+    "label": "Support Library",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "androidx.activity",
+    "label": "Jetpack Activity",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "androidx.annotation",
+    "label": "Jetpack Annotation",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "androidx.appcompat",
+    "label": "Jetpack AppCompat",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "androidx.arch",
+    "label": "Jetpack Arch Core",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "androidx.asynclayoutinflater",
+    "label": "Jetpack AsyncLayoutInflater",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "androidx.browser",
+    "label": "Jetpack Browser",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "androidx.cardview",
+    "label": "Jetpack CardView",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "androidx.collection",
+    "label": "Jetpack Collection",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "androidx.compose",
+    "label": "Jetpack Compose",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "androidx.constraintlayout",
+    "label": "Jetpack ConstraintLayout",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "androidx.coordinatorlayout",
+    "label": "Jetpack CoordinatorLayout",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "androidx.core",
+    "label": "Jetpack Core",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "androidx.cursoradapter",
+    "label": "Jetpack CursorAdapter",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "androidx.customview",
+    "label": "Jetpack CustomView",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "androidx.databinding",
+    "label": "Jetpack DataBinding",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "androidx.documentfile",
+    "label": "Jetpack DocumentFile",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "androidx.drawerlayout",
+    "label": "Jetpack DrawerLayout",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "androidx.exifinterface",
+    "label": "Jetpack ExifInterface",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "androidx.fragment",
+    "label": "Jetpack Fragment",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "androidx.interpolator",
+    "label": "Jetpack Interpolator",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "androidx.legacy",
+    "label": "Jetpack Legacy",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "androidx.lifecycle",
+    "label": "Jetpack Lifecycle",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "androidx.loader",
+    "label": "Jetpack Loader",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "androidx.localbroadcastmanager",
+    "label": "Jetpack LocalBroadcastManager",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "androidx.media",
+    "label": "Jetpack Media",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "androidx.multidex",
+    "label": "Jetpack MultiDex",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "androidx.preference",
+    "label": "Jetpack Preference",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "androidx.print",
+    "label": "Jetpack Print",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "androidx.recyclerview",
+    "label": "Jetpack RecyclerView",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "androidx.room",
+    "label": "Jetpack Room",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "androidx.savedstate",
+    "label": "Jetpack Savedstate",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "androidx.slidingpanelayout",
+    "label": "Jetpack SlidingPaneLayout",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "androidx.sqlite",
+    "label": "Jetpack SQLite",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "androidx.swiperefreshlayout",
+    "label": "Jetpack SwipeRefreshLayout",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "androidx.transition",
+    "label": "Jetpack Transition",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "androidx.vectordrawable",
+    "label": "Jetpack VectorDrawable",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "androidx.versionedparcelable",
+    "label": "Jetpack Versionedparcelable",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "androidx.viewpager",
+    "label": "Jetpack ViewPager",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "androidx.viewpager2",
+    "label": "Jetpack ViewPager2",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "androidx.work",
+    "label": "Jetpack WorkManager",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "butterknife.internal",
+    "label": "Butter Knife",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "butterknife.runtime",
+    "label": "Butter Knife",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "com.airbnb.lottie",
+    "label": "Lottie",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "com.alibaba.fastjson",
+    "label": "fastjson",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "com.amap.api",
+    "label": "高德 SDK",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "com.bumptech.glide",
+    "label": "Glide",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "com.facebook.fresco",
+    "label": "Fresco",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "com.google.android.exoplayer2",
+    "label": "ExoPlayer",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "com.google.android.flexbox",
+    "label": "FlexBox",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "com.google.android.gms",
+    "label": "Google Mobile Service",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "com.google.android.material",
+    "label": "Material Design Components",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "com.google.firebase",
+    "label": "Firebase",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "com.google.gson",
+    "label": "gson",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "com.google.protobuf",
+    "label": "Protocol Buffer",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "com.google.zxing",
+    "label": "ZXing",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "com.huawei.hianalytics",
+    "label": "HMS Analytics Kit",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "com.microsoft.appcenter",
+    "label": "App Center",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "com.sina.weibo",
+    "label": "微博 SDK",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "com.ta.utdid2",
+    "label": "UTDID",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "com.tencent.bugly",
+    "label": "Bugly",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "com.tencent.map",
+    "label": "腾讯地图 SDK",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "com.tencent.smtt",
+    "label": "TBS",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "com.tencent.tbs",
+    "label": "TBS",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "com.xiaomi.mipush",
+    "label": "MiPush",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "com.xiaomi.push",
+    "label": "MiPush",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "com.xiaomi.xmpush",
+    "label": "MiPush",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "com\\.alipay\\.(.*)",
+    "label": "支付宝 SDK",
+    "type": 5,
+    "isRegexRule": 1
+  },
+  {
+    "name": "io\\.flutter\\.(.*)",
+    "label": "Flutter",
+    "type": 5,
+    "isRegexRule": 1
+  },
+  {
+    "name": "kotlin.reflect",
+    "label": "Kotlin Reflect",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "kotlin.sequences",
+    "label": "Kotlin Sequences",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "kotlin\\.(.*)",
+    "label": "Kotlin",
+    "type": 5,
+    "isRegexRule": 1
+  },
+  {
+    "name": "kotlin\\.coroutines\\.(.*)",
+    "label": "Kotlin Coroutines",
+    "type": 5,
+    "isRegexRule": 1
+  },
+  {
+    "name": "kotlinx\\.coroutines\\.(.*)",
+    "label": "Kotlin Coroutines",
+    "type": 5,
+    "isRegexRule": 1
+  },
+  {
+    "name": "okhttp3\\.(.*)",
+    "label": "OkHttp3",
+    "type": 5,
+    "isRegexRule": 1
+  },
+  {
+    "name": "okio\\.(.*)",
+    "label": "Okio",
+    "type": 5,
+    "isRegexRule": 1
+  },
+  {
+    "name": "org.greenbot.eventbus",
+    "label": "EventBus",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "org.greenbot.greendao",
+    "label": "GreenDAO",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "org.lsposed.lspatch",
+    "label": "LSPatch",
+    "type": 5,
+    "isRegexRule": 0
+  },
+  {
+    "name": "retrofit2\\.(.*)",
+    "label": "Retrofit2",
+    "type": 5,
+    "isRegexRule": 1
+  },
+  {
+    "name": "tv.danmaku.ijk",
+    "label": "IJKPlayer",
+    "type": 5,
+    "isRegexRule": 0
+  }
+]

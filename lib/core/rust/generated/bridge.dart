@@ -6,9 +6,14 @@
 import 'frb_generated.dart';
 import 'models.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
+import 'repo.dart';
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<FdroidRepoManager>>
 abstract class FdroidRepoManager implements RustOpaqueInterface {
+  RepoManager? get manager;
+
+  set manager(RepoManager? manager);
+
   /// 清空所有应用数据
   Future<int> clearApps();
 
@@ -35,6 +40,17 @@ abstract class FdroidRepoManager implements RustOpaqueInterface {
   /// 解析 APK 文件，提取真实包名/版本/应用名等信息
   /// 在安装前调用，避免依赖安装结果判断包名
   Future<ApkInfo> parseApkInfo({required String apkPath});
+
+  /// 扫描 APK 内所有 classes*.dex 的类名，与 class patterns 匹配
+  ///
+  /// patterns 为 LibChecker `matchesClassPattern` 语义：
+  /// 以 `*` 结尾 → 前缀匹配（`androidx.lifecycle.*` 命中 `androidx.lifecycle.LiveData`）；
+  /// 否则整串精确匹配。
+  ///
+  /// 规则 name 列（rules.db DEX 规则）为点分格式（如 `com.tencent.smtt`），
+  /// 本函数返回的类名也已转换为点分格式，与规则直接可比。
+  Future<List<String>> scanDexClasses(
+      {required String apkPath, required List<String> patterns});
 
   /// 搜索应用
   Future<List<AppInfo>> searchApps(

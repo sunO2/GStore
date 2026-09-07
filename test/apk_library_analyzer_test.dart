@@ -12,6 +12,15 @@ NativeLibraryRule _rule(String name, String label, {bool regex = false}) =>
       isRegexRule: regex,
     );
 
+/// DEX 规则（type=5）合成器
+NativeLibraryRule _dexRule(String name, String label, {bool regex = false}) =>
+    NativeLibraryRule(
+      name: name,
+      label: label,
+      type: 5,
+      isRegexRule: regex,
+    );
+
 /// 生成包含指定条目的假 APK（zip）
 Future<String> _buildFakeApk(List<String> entries) async {
   final dir = await Directory.systemTemp.createTemp('gstore_apk_test');
@@ -148,6 +157,143 @@ void main() {
       final path = '${dir.path}/notzip.apk';
       await File(path).writeAsString('not a zip file at all');
       final hits = await ApkLibraryAnalyzer.instance.analyzeNativeLibraries(path);
+      expect(hits, isEmpty);
+    });
+  });
+
+  group('dexScanPatterns', () {
+    test('非正则包名规则 → 点边界前缀模式', () {
+      final patterns = ApkLibraryAnalyzer.dexScanPatterns([
+        _dexRule('androidx.lifecycle', 'AndroidX Lifecycle'),
+        _dexRule('com.tencent.smtt', '腾讯 X5'),
+      ]);
+      expect(patterns, [
+        'androidx.lifecycle.*',
+        'com.tencent.smtt.*',
+      ]);
+    });
+
+    test('正则规则 → 提取字面量前缀', () {
+      final patterns = ApkLibraryAnalyzer.dexScanPatterns([
+        _dexRule(r'kotlin\.(.*)', 'Kotlin', regex: true),
+        _dexRule(r'io\.flutter\.(.*)', 'Flutter Engine', regex: true),
+        _dexRule(r'kotlin\.coroutines\.(.*)', 'Kotlin Coroutines', regex: true),
+      ]);
+      expect(patterns, ['io.flutter.*', 'kotlin.*', 'kotlin.coroutines.*']);
+    });
+
+    test('已以 * 结尾的规则名保持原样，结果去重排序', () {
+      final patterns = ApkLibraryAnalyzer.dexScanPatterns([
+        _dexRule('com.z.b*', 'Z'),
+        _dexRule('com.z.b*', 'Z 重复'),
+        _dexRule('androidx.appcompat', 'AppCompat'),
+      ]);
+      expect(patterns, ['androidx.appcompat.*', 'com.z.b*']);
+    });
+  });
+
+  group('matchDexClassNames', () {
+    test('包名命名空间规则命中（点边界前缀）', () {
+      final hits = ApkLibraryAnalyzer.matchDexClassNames(
+        {'androidx.lifecycle.LiveData', 'androidx.lifecycle.ViewModel'},
+        rules: [_dexRule('androidx.lifecycle', 'AndroidX Lifecycle')],
+      );
+      expect(hits, hasLength(1));
+      expect(hits.first.label, 'AndroidX Lifecycle');
+      expect(hits.first.ruleName, 'androidx.lifecycle');
+      expect(hits.first.matchedClassName, 'androidx.lifecycle.LiveData');
+      expect(hits.first.isRegex, isFalse);
+    });
+
+    test('点边界：包名下无点不命中（防止前缀粘连）', () {
+      final hits = ApkLibraryAnalyzer.matchDexClassNames(
+        {'androidx.lifecycleExtra', 'androidx.lifecyclex.Oops'},
+        rules: [_dexRule('androidx.lifecycle', 'AndroidX Lifecycle')],
+      );
+      expect(hits, isEmpty);
+    });
+
+    test('* 规则：去掉 * 前缀匹配', () {
+      final hits = ApkLibraryAnalyzer.matchDexClassNames(
+        {'com.foo.Bar', 'com.foobar.Baz'},
+        rules: [_dexRule('com.foo.*', 'Foobar 库')],
+      );
+      expect(hits, hasLength(1));
+      expect(hits.first.matchedClassName, 'com.foo.Bar');
+    });
+
+    test('正则规则：整串匹配（子串不命中）', () {
+      final hits = ApkLibraryAnalyzer.matchDexClassNames(
+        {
+          'kotlin.jvm.functions.Function1',
+          'kotlinx.coroutines.CoroutineScope', // kotlin\. 要求 kotlin 后紧跟 '.'
+          'my.app.KotlinHelper',
+        },
+        rules: [_dexRule(r'kotlin\.(.*)', 'Kotlin', regex: true)],
+      );
+      expect(hits, hasLength(1));
+      expect(hits.first.isRegex, isTrue);
+      expect(hits.first.matchedClassName, 'kotlin.jvm.functions.Function1');
+    });
+
+    test('同一类名命中多条规则，按规则名去重', () {
+      final hits = ApkLibraryAnalyzer.matchDexClassNames(
+        {'androidx.core.view.ViewCompat'},
+        rules: [
+          _dexRule('androidx.core', 'AndroidX Core'),
+          _dexRule('androidx.core.view', 'AndroidX Core View'),
+          _dexRule(r'androidx\.(.*)', 'AndroidX 全部', regex: true),
+        ],
+      );
+      expect(hits, hasLength(3));
+      expect(
+        hits.map((h) => h.ruleName).toSet(),
+        {'androidx.core', 'androidx.core.view', r'androidx\.(.*)'},
+      );
+    });
+
+    test('结果按 label 排序', () {
+      final hits = ApkLibraryAnalyzer.matchDexClassNames(
+        {'z.pkg.ZClass', 'a.pkg.AClass'},
+        rules: [
+          _dexRule('z.pkg', 'Z 库'),
+          _dexRule('a.pkg', 'A 库'),
+        ],
+      );
+      expect(hits.map((h) => h.label).toList(), ['A 库', 'Z 库']);
+    });
+  });
+
+  group('analyzeDexLibraries', () {
+    tearDown(() {
+      ApkLibraryAnalyzer.instance.debugSetDexRules(null);
+    });
+
+    test('无法调用 Rust 时优雅降级为空列表（不抛异常）', () async {
+      ApkLibraryAnalyzer.instance.debugSetDexRules([
+        _dexRule('androidx.lifecycle', 'AndroidX Lifecycle'),
+      ]);
+      final apk = await _buildFakeApk(['classes.dex', 'AndroidManifest.xml']);
+      // 测试环境无 Rust 原生库（libfdroid_repo.so 为 Android ABI），
+      // RustLib.init 失败 → analyzeDexLibraries 捕获并返回空列表。
+      final hits = await ApkLibraryAnalyzer.instance.analyzeDexLibraries(apk);
+      expect(hits, isEmpty);
+      final hits2 = await ApkLibraryAnalyzer.instance.analyzeDexLibraries(apk);
+      expect(identical(hits, hits2), isTrue); // 缓存已写入（空结果同样缓存）
+    });
+
+    test('文件不存在 → 空列表且不抛异常', () async {
+      ApkLibraryAnalyzer.instance.debugSetDexRules([
+        _dexRule('androidx.lifecycle', 'AndroidX Lifecycle'),
+      ]);
+      final hits = await ApkLibraryAnalyzer.instance
+          .analyzeDexLibraries('/no/such/file.apk');
+      expect(hits, isEmpty);
+    });
+
+    test('无 DEX 规则 → 直接空列表，不触发 Rust', () async {
+      final hits = await ApkLibraryAnalyzer.instance
+          .analyzeDexLibraries('/no/such/file.apk');
       expect(hits, isEmpty);
     });
   });

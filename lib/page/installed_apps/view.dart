@@ -309,11 +309,21 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
       'sourceDir': sourceDir,
     });
 
-    // 分析对话框（含 loading）
+    // 分析对话框（含 loading）：原生 .so + DEX 类名两路并行，合并展示
+    final analysisFuture = () async {
+      final results = await (
+        ApkLibraryAnalyzer.instance.analyzeNativeLibraries(sourceDir),
+        ApkLibraryAnalyzer.instance.analyzeDexLibraries(sourceDir),
+      ).wait;
+      final all = <LibraryHit>[...results.$1, ...results.$2]
+        ..sort((a, b) => a.label.compareTo(b.label));
+      return all;
+    }();
+
     AppDialogs.showDialog(
       title: 'SDK 分析',
-      content: FutureBuilder<List<NativeLibraryHit>>(
-        future: ApkLibraryAnalyzer.instance.analyzeNativeLibraries(sourceDir),
+      content: FutureBuilder<List<LibraryHit>>(
+        future: analysisFuture,
         builder: (context, snapshot) {
           if (snapshot.connectionState != ConnectionState.done) {
             return const Padding(
@@ -321,7 +331,7 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
               child: AppLoading(size: AppLoadingSize.medium),
             );
           }
-          final hits = snapshot.data ?? const <NativeLibraryHit>[];
+          final hits = snapshot.data ?? const <LibraryHit>[];
           if (hits.isEmpty) {
             return Text(
               snapshot.hasError ? '分析失败' : '未检测到已知 SDK',
@@ -338,7 +348,7 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
                 Chip(
                   label: Text(hit.label),
                   avatar: Icon(
-                    Icons.memory,
+                    hit is NativeLibraryHit ? Icons.memory : Icons.code,
                     size: AppTypography.iconSM,
                     color: hit.isRegex
                         ? Theme.of(context).colorScheme.tertiary

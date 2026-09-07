@@ -13,6 +13,22 @@ impl FdroidRepoManager {
     pub fn parse_apk_info(&self, apk_path: String) -> Result<ApkInfo, String> {
         crate::apk::parse_apk_info(apk_path)
     }
+
+    /// 扫描 APK 内所有 classes*.dex 的类名，与 class patterns 匹配
+    ///
+    /// patterns 为 LibChecker `matchesClassPattern` 语义：
+    /// 以 `*` 结尾 → 前缀匹配（`androidx.lifecycle.*` 命中 `androidx.lifecycle.LiveData`）；
+    /// 否则整串精确匹配。
+    ///
+    /// 规则 name 列（rules.db DEX 规则）为点分格式（如 `com.tencent.smtt`），
+    /// 本函数返回的类名也已转换为点分格式，与规则直接可比。
+    pub fn scan_dex_classes(
+        &self,
+        apk_path: String,
+        patterns: Vec<String>,
+    ) -> Result<Vec<String>, String> {
+        crate::dex_scan::scan_dex_classes(&apk_path, &patterns)
+    }
 }
 
 /// F-Droid 仓库管理器

@@ -175,4 +175,19 @@ class FdroidRustRepoManager {
     }
     return await _manager!.parseApkInfo(apkPath: apkPath);
   }
+
+  /// 扫描 APK 内所有 classes*.dex 的类名并与 patterns 匹配（方案 B DEX 检测）
+  ///
+  /// Rust 实现（fdroid_repo::dex_scan）：patterns 为 LibChecker matchesClassPattern
+  /// 语义，`*` 结尾=前缀匹配，否则精确。返回命中的点分类名（如 androidx.lifecycle.LiveData）。
+  /// 调用方负责容错（Rust 不可用/失败时降级为空）。
+  static Future<List<String>> scanDexClasses(
+    String apkPath,
+    List<String> patterns,
+  ) async {
+    if (_manager == null) {
+      await initialize();
+    }
+    return await _manager!.scanDexClasses(apkPath: apkPath, patterns: patterns);
+  }
 }
