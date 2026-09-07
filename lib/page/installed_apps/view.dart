@@ -8,6 +8,7 @@ import 'package:gstore/compent/pressable_scale.dart';
 import 'package:gstore/core/service/apk_library_analyzer.dart';
 import 'package:gstore/core/service/apk_source_service.dart';
 import 'package:gstore/core/service/install_manager.dart';
+import 'package:gstore/core/rust/FdroidRustRepoManager.dart';
 import 'package:installed_apps/installed_apps.dart';
 import 'package:installed_apps/app_info.dart' as installed;
 
@@ -309,14 +310,18 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
       'sourceDir': sourceDir,
     });
 
-    // 分析对话框（含 loading）：原生 .so + DEX 类名两路并行，合并展示
+    // 分析对话框（含 loading）：原生 .so + DEX 类名 + Manifest 组件三路并行，合并展示
     final analysisFuture = () async {
       final results = await (
         ApkLibraryAnalyzer.instance.analyzeNativeLibraries(sourceDir),
         ApkLibraryAnalyzer.instance.analyzeDexLibraries(sourceDir),
+        ApkLibraryAnalyzer.instance.analyzeComponents(sourceDir),
       ).wait;
-      final all = <LibraryHit>[...results.$1, ...results.$2]
-        ..sort((a, b) => a.label.compareTo(b.label));
+      final all = <LibraryHit>[
+        ...results.$1,
+        ...results.$2,
+        ...results.$3,
+      ]..sort((a, b) => a.label.compareTo(b.label));
       return all;
     }();
 
@@ -348,7 +353,11 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
                 Chip(
                   label: Text(hit.label),
                   avatar: Icon(
-                    hit is NativeLibraryHit ? Icons.memory : Icons.code,
+                    hit is NativeLibraryHit
+                        ? Icons.memory
+                        : hit is DexLibraryHit
+                            ? Icons.code
+                            : Icons.view_module,
                     size: AppTypography.iconSM,
                     color: hit.isRegex
                         ? Theme.of(context).colorScheme.tertiary
@@ -361,6 +370,166 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
       ),
       confirmText: '关闭',
       cancelText: null,
+    );
+  }
+
+  /// 加载应用详细信息（sourceDir/minSdk/targetSdk/ABI/权限），各来源并行收集；
+  /// Rust/原生通道不可用时对应字段降级为空，绝不抛给调用方。
+  Future<_AppDetails> _loadAppDetails(installed.AppInfo app) async {
+    final sourceDir =
+        await ApkSourceService.instance.getSourceDir(app.packageName);
+
+    final permissionsF = ApkSourceService.instance.getPermissions(app.packageName);
+    final abisF = sourceDir == null
+        ? Future.value(const <String>[])
+        : ApkLibraryAnalyzer.instance.listNativeAbis(sourceDir);
+    final sdkF = () async {
+      if (sourceDir == null) return ('', '');
+      try {
+        final components =
+            await FdroidRustRepoManager.parseComponents(sourceDir);
+        return (components.minSdk, components.targetSdk);
+      } catch (e) {
+        appLog.error('InstalledApps: 解析 SDK 版本失败（降级为空） - $e');
+        return ('', '');
+      }
+    }();
+
+    final results = await (permissionsF, abisF, sdkF).wait;
+    return _AppDetails(
+      app: app,
+      sourceDir: sourceDir,
+      permissions: results.$1,
+      abis: results.$2,
+      minSdk: results.$3.$1,
+      targetSdk: results.$3.$2,
+    );
+  }
+
+  /// 展示应用「详细信息」对话框（包名/版本/路径/minSdk/targetSdk/ABI/权限）
+  Future<void> _showDetails(installed.AppInfo app) async {
+    final detailsFuture = _loadAppDetails(app);
+
+    AppDialogs.showDialog(
+      title: '${app.name} 详细信息',
+      content: FutureBuilder<_AppDetails>(
+        future: detailsFuture,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState != ConnectionState.done) {
+            return const Padding(
+              padding: AppSpacing.allXL,
+              child: AppLoading(size: AppLoadingSize.medium),
+            );
+          }
+          final details = snapshot.data;
+          if (details == null) {
+            return Text(
+              '获取详细信息失败',
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+            );
+          }
+          return _buildDetailsContent(context, details);
+        },
+      ),
+      confirmText: '关闭',
+      cancelText: null,
+    );
+  }
+
+  /// 详细信息内容：键值行 + ABI chips + 权限列表（滚动受限区域）
+  Widget _buildDetailsContent(BuildContext context, _AppDetails details) {
+    final textTheme = Theme.of(context).textTheme;
+    final colorScheme = Theme.of(context).colorScheme;
+
+    final rows = <(String, String)>[
+      ('包名', details.app.packageName),
+      ('版本', '${details.app.versionName} (${details.app.versionCode})'),
+      ('安装路径', details.sourceDir ?? '未知'),
+      ('minSdk', details.minSdk.isEmpty ? '未知' : details.minSdk),
+      ('targetSdk', details.targetSdk.isEmpty ? '未知' : details.targetSdk),
+    ];
+
+    final labelStyle = textTheme.bodySmall?.copyWith(
+      color: colorScheme.onSurfaceVariant,
+    );
+    final valueStyle = textTheme.bodySmall;
+
+    return SingleChildScrollView(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (final (label, value) in rows)
+            Padding(
+              padding: const EdgeInsets.only(bottom: AppSpacing.xs),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SizedBox(
+                    width: 84,
+                    child: Text(label, style: labelStyle),
+                  ),
+                  Expanded(
+                    child: Text(
+                      value,
+                      style: valueStyle,
+                      maxLines: 3,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          if (details.abis.isNotEmpty) ...[
+            const SizedBox(height: AppSpacing.sm),
+            Text('ABI 架构', style: labelStyle),
+            const SizedBox(height: AppSpacing.xs),
+            Wrap(
+              spacing: AppSpacing.xs,
+              runSpacing: AppSpacing.xs,
+              children: [
+                for (final abi in details.abis)
+                  Chip(
+                    visualDensity: VisualDensity.compact,
+                    label: Text(abi, style: textTheme.labelMedium),
+                  ),
+              ],
+            ),
+          ],
+          const SizedBox(height: AppSpacing.md),
+          Text(
+            '权限（${details.permissions.length}）',
+            style: labelStyle,
+          ),
+          const SizedBox(height: AppSpacing.xs),
+          if (details.permissions.isEmpty)
+            Text('无权限声明', style: textTheme.bodySmall)
+          else
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 160),
+              child: SingleChildScrollView(
+                child: Wrap(
+                  spacing: AppSpacing.xs,
+                  runSpacing: AppSpacing.xs,
+                  children: [
+                    for (final permission in details.permissions)
+                      Chip(
+                        visualDensity: VisualDensity.compact,
+                        label: Text(
+                          permission,
+                          style: textTheme.labelSmall,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      ),
     );
   }
 
@@ -574,6 +743,9 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
               case 'sdk_analysis':
                 _analyzeSdk(app);
                 break;
+              case 'details':
+                _showDetails(app);
+                break;
             }
           },
           itemBuilder: (context) => [
@@ -627,10 +799,49 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
                 ],
               ),
             ),
+            const PopupMenuItem(
+              value: 'details',
+              child: Row(
+                children: [
+                  Icon(Icons.info_outline, color: Colors.teal, size: 18),
+                  SizedBox(width: AppSpacing.sm),
+                  Text('详细信息'),
+                ],
+              ),
+            ),
           ],
         ),
       ),
       ),
     );
   }
+}
+
+/// 应用详细信息聚合结果（供「详细信息」对话框展示）
+class _AppDetails {
+  final installed.AppInfo app;
+
+  /// sourceDir（APK 路径），获取失败时为 null
+  final String? sourceDir;
+
+  /// 声明的权限列表（可能为空）
+  final List<String> permissions;
+
+  /// 原生库 ABI 架构列表（可能为空）
+  final List<String> abis;
+
+  /// minSdk（Rust 解析失败为空字符串）
+  final String minSdk;
+
+  /// targetSdk（Rust 解析失败为空字符串）
+  final String targetSdk;
+
+  const _AppDetails({
+    required this.app,
+    this.sourceDir,
+    this.permissions = const [],
+    this.abis = const [],
+    this.minSdk = '',
+    this.targetSdk = '',
+  });
 }

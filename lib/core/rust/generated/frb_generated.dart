@@ -4,6 +4,7 @@
 // ignore_for_file: unused_import, unused_element, unnecessary_import, duplicate_ignore, invalid_use_of_internal_member, annotate_overrides, non_constant_identifier_names, curly_braces_in_flow_control_structures, prefer_const_literals_to_create_immutables, unused_field
 
 import 'bridge.dart';
+import 'components.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'frb_generated.dart';
@@ -73,7 +74,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.11.1';
 
   @override
-  int get rustContentHash => 209543246;
+  int get rustContentHash => 1661713296;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -111,6 +112,9 @@ abstract class RustLibApi extends BaseApi {
   Future<FdroidRepoManager> crateBridgeFdroidRepoManagerNew();
 
   Future<ApkInfo> crateBridgeFdroidRepoManagerParseApkInfo(
+      {required FdroidRepoManager that, required String apkPath});
+
+  Future<ApkComponents> crateBridgeFdroidRepoManagerParseComponents(
       {required FdroidRepoManager that, required String apkPath});
 
   Future<List<String>> crateBridgeFdroidRepoManagerScanDexClasses(
@@ -427,6 +431,34 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<ApkComponents> crateBridgeFdroidRepoManagerParseComponents(
+      {required FdroidRepoManager that, required String apkPath}) {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
+        final serializer = SseSerializer(generalizedFrbRustBinding);
+        sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFdroidRepoManager(
+            that, serializer);
+        sse_encode_String(apkPath, serializer);
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 11, port: port_);
+      },
+      codec: SseCodec(
+        decodeSuccessData: sse_decode_apk_components,
+        decodeErrorData: sse_decode_String,
+      ),
+      constMeta: kCrateBridgeFdroidRepoManagerParseComponentsConstMeta,
+      argValues: [that, apkPath],
+      apiImpl: this,
+    ));
+  }
+
+  TaskConstMeta get kCrateBridgeFdroidRepoManagerParseComponentsConstMeta =>
+      const TaskConstMeta(
+        debugName: "FdroidRepoManager_parse_components",
+        argNames: ["that", "apkPath"],
+      );
+
+  @override
   Future<List<String>> crateBridgeFdroidRepoManagerScanDexClasses(
       {required FdroidRepoManager that,
       required String apkPath,
@@ -439,7 +471,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_String(apkPath, serializer);
         sse_encode_list_String(patterns, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 11, port: port_);
+            funcId: 12, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_list_String,
@@ -470,7 +502,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_String(keyword, serializer);
         sse_encode_i_32(limit, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 12, port: port_);
+            funcId: 13, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_list_app_info,
@@ -494,7 +526,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       callFfi: (port_) {
         final serializer = SseSerializer(generalizedFrbRustBinding);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 13, port: port_);
+            funcId: 14, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_flutter_progress_callback,
@@ -580,6 +612,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   String dco_decode_String(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw as String;
+  }
+
+  @protected
+  ApkComponents dco_decode_apk_components(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 7)
+      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
+    return ApkComponents(
+      packageName: dco_decode_String(arr[0]),
+      minSdk: dco_decode_String(arr[1]),
+      targetSdk: dco_decode_String(arr[2]),
+      services: dco_decode_list_String(arr[3]),
+      activities: dco_decode_list_String(arr[4]),
+      receivers: dco_decode_list_String(arr[5]),
+      providers: dco_decode_list_String(arr[6]),
+    );
   }
 
   @protected
@@ -799,6 +848,26 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var inner = sse_decode_list_prim_u_8_strict(deserializer);
     return utf8.decoder.convert(inner);
+  }
+
+  @protected
+  ApkComponents sse_decode_apk_components(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_packageName = sse_decode_String(deserializer);
+    var var_minSdk = sse_decode_String(deserializer);
+    var var_targetSdk = sse_decode_String(deserializer);
+    var var_services = sse_decode_list_String(deserializer);
+    var var_activities = sse_decode_list_String(deserializer);
+    var var_receivers = sse_decode_list_String(deserializer);
+    var var_providers = sse_decode_list_String(deserializer);
+    return ApkComponents(
+        packageName: var_packageName,
+        minSdk: var_minSdk,
+        targetSdk: var_targetSdk,
+        services: var_services,
+        activities: var_activities,
+        receivers: var_receivers,
+        providers: var_providers);
   }
 
   @protected
@@ -1066,6 +1135,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_apk_components(ApkComponents self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.packageName, serializer);
+    sse_encode_String(self.minSdk, serializer);
+    sse_encode_String(self.targetSdk, serializer);
+    sse_encode_list_String(self.services, serializer);
+    sse_encode_list_String(self.activities, serializer);
+    sse_encode_list_String(self.receivers, serializer);
+    sse_encode_list_String(self.providers, serializer);
+  }
+
+  @protected
   void sse_encode_apk_info(ApkInfo self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.packageName, serializer);
@@ -1303,6 +1384,15 @@ class FdroidRepoManagerImpl extends RustOpaque implements FdroidRepoManager {
   Future<ApkInfo> parseApkInfo({required String apkPath}) => RustLib
       .instance.api
       .crateBridgeFdroidRepoManagerParseApkInfo(that: this, apkPath: apkPath);
+
+  /// 解析 APK 的 AndroidManifest.xml，枚举四类组件完整类名
+  /// （activity 含 activity-alias）与 minSdk/targetSdk。
+  ///
+  /// 相对类名（`.Foo`）按 Android 语义补全为 `<package>.Foo`。
+  /// 与 LibChecker 从 PackageManager 读已安装应用组件等价。
+  Future<ApkComponents> parseComponents({required String apkPath}) =>
+      RustLib.instance.api.crateBridgeFdroidRepoManagerParseComponents(
+          that: this, apkPath: apkPath);
 
   /// 扫描 APK 内所有 classes*.dex 的类名，与 class patterns 匹配
   ///

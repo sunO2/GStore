@@ -7,6 +7,9 @@ use super::repo::*;
 /// APK 解析结果（结构体将自动生成 Dart 侧对应类）
 pub use crate::models::ApkInfo;
 
+/// Manifest 组件枚举结果（结构体将自动生成 Dart 侧对应类）
+pub use crate::components::ApkComponents;
+
 impl FdroidRepoManager {
     /// 解析 APK 文件，提取真实包名/版本/应用名等信息
     /// 在安装前调用，避免依赖安装结果判断包名
@@ -28,6 +31,15 @@ impl FdroidRepoManager {
         patterns: Vec<String>,
     ) -> Result<Vec<String>, String> {
         crate::dex_scan::scan_dex_classes(&apk_path, &patterns)
+    }
+
+    /// 解析 APK 的 AndroidManifest.xml，枚举四类组件完整类名
+    /// （activity 含 activity-alias）与 minSdk/targetSdk。
+    ///
+    /// 相对类名（`.Foo`）按 Android 语义补全为 `<package>.Foo`。
+    /// 与 LibChecker 从 PackageManager 读已安装应用组件等价。
+    pub fn parse_components(&self, apk_path: String) -> Result<ApkComponents, String> {
+        crate::components::parse_components(&apk_path)
     }
 }
 

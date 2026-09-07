@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as path;
 import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/rust/generated/bridge.dart' show FdroidRepoManager;
+import 'package:gstore/core/rust/generated/components.dart' show ApkComponents;
 import 'package:gstore/core/rust/generated/frb_generated.dart' show RustLib;
 import 'package:gstore/core/rust/generated/models.dart'
     show AppInfo, ApkInfo, DownloadResult;
@@ -189,5 +190,15 @@ class FdroidRustRepoManager {
       await initialize();
     }
     return await _manager!.scanDexClasses(apkPath: apkPath, patterns: patterns);
+  }
+
+  /// 解析 APK 的 AndroidManifest.xml，枚举四类组件名与 minSdk/targetSdk
+  /// （方案 C 组件库检测）。Rust 实现（fdroid_repo::components）。
+  /// 调用方负责容错（Rust 不可用/失败时降级为空）。
+  static Future<ApkComponents> parseComponents(String apkPath) async {
+    if (_manager == null) {
+      await initialize();
+    }
+    return await _manager!.parseComponents(apkPath: apkPath);
   }
 }

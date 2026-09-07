@@ -3,6 +3,7 @@
 
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
+import 'components.dart';
 import 'frb_generated.dart';
 import 'models.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
@@ -40,6 +41,13 @@ abstract class FdroidRepoManager implements RustOpaqueInterface {
   /// 解析 APK 文件，提取真实包名/版本/应用名等信息
   /// 在安装前调用，避免依赖安装结果判断包名
   Future<ApkInfo> parseApkInfo({required String apkPath});
+
+  /// 解析 APK 的 AndroidManifest.xml，枚举四类组件完整类名
+  /// （activity 含 activity-alias）与 minSdk/targetSdk。
+  ///
+  /// 相对类名（`.Foo`）按 Android 语义补全为 `<package>.Foo`。
+  /// 与 LibChecker 从 PackageManager 读已安装应用组件等价。
+  Future<ApkComponents> parseComponents({required String apkPath});
 
   /// 扫描 APK 内所有 classes*.dex 的类名，与 class patterns 匹配
   ///

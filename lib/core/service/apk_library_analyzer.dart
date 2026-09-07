@@ -127,12 +127,56 @@ class DexLibraryHit implements LibraryHit {
   String toString() => 'DexLibraryHit($matchedClassName -> $label)';
 }
 
+/// 一次组件命中（一个组件完整类名匹配到一条 type=1/2/3/4 组件规则）
+class ComponentLibraryHit implements LibraryHit {
+  /// 实际匹配到的组件完整类名（如 com.xiaomi.mipush.sdk.MessageHandleService）
+  final String componentName;
+
+  /// 组件类型（LibChecker LibType：SERVICE=1 / ACTIVITY=2 / RECEIVER=3 / PROVIDER=4）
+  final int componentType;
+
+  /// 命中的规则名（规则 name 列：精确类名或正则表达式）
+  final String ruleName;
+
+  /// 展示名
+  @override
+  final String label;
+
+  /// 是否由正则规则命中
+  @override
+  final bool isRegex;
+
+  const ComponentLibraryHit({
+    required this.componentName,
+    required this.componentType,
+    required this.ruleName,
+    required this.label,
+    required this.isRegex,
+  });
+
+  @override
+  bool operator ==(Object other) =>
+      other is ComponentLibraryHit &&
+      other.componentType == componentType &&
+      other.componentName == componentName &&
+      other.ruleName == ruleName;
+
+  @override
+  int get hashCode => Object.hash(componentType, componentName, ruleName);
+
+  @override
+  String toString() => 'ComponentLibraryHit(type=$componentType, $componentName -> $label)';
+}
+
 /// APK 内嵌第三方库检测
 ///
 /// - 方案 A（纯 Dart）：解压 APK 枚举 lib/<abi>/*.so 文件名，
 ///   与 LibChecker 规则库（assets/lcrules/rules_native.json，type=0）匹配。
 /// - 方案 B（Rust FFI）：扫描 classes*.dex 类名，与 LibChecker DEX 规则库
 ///   （assets/lcrules/rules_dex.json，type=5）匹配；Rust 不可用时优雅降级为空。
+/// - 方案 C（Rust FFI）：解析 AndroidManifest.xml 组件名，与 LibChecker 组件
+///   规则库（assets/lcrules/rules_component.json，type=1/2/3/4）匹配；
+///   同时提供 listNativeAbis 供「详细信息」展示 ABI。
 class ApkLibraryAnalyzer {
   ApkLibraryAnalyzer._();
 
@@ -144,17 +188,29 @@ class ApkLibraryAnalyzer {
   /// DEX 类名规则资源路径
   static const String dexAssetPath = 'assets/lcrules/rules_dex.json';
 
+  /// 组件规则资源路径（type=1 SERVICE / 2 ACTIVITY / 3 RECEIVER / 4 PROVIDER）
+  static const String componentAssetPath = 'assets/lcrules/rules_component.json';
+
   /// APK 路径 → 原生库命中结果缓存（同路径重复分析直接返回）
   final Map<String, List<NativeLibraryHit>> _cache = {};
 
   /// APK 路径 → DEX 命中结果缓存
   final Map<String, List<DexLibraryHit>> _dexCache = {};
 
+  /// APK 路径 → 组件命中结果缓存
+  final Map<String, List<ComponentLibraryHit>> _componentCache = {};
+
+  /// APK 路径 → ABI 列表缓存
+  final Map<String, List<String>> _abiCache = {};
+
   /// 已加载原生库规则（懒加载缓存；测试注入覆盖）
   List<NativeLibraryRule>? _rules;
 
   /// 已加载 DEX 规则
   List<NativeLibraryRule>? _dexRules;
+
+  /// 已加载组件规则
+  List<NativeLibraryRule>? _componentRules;
 
   /// 测试用：注入合成原生库规则，跳过真实资产读取。
   /// 传 null 恢复默认资产加载。
@@ -169,6 +225,13 @@ class ApkLibraryAnalyzer {
   void debugSetDexRules(List<NativeLibraryRule>? rules) {
     _dexRules = rules;
     _dexCache.clear();
+  }
+
+  /// 测试用：注入合成组件规则。
+  @visibleForTesting
+  void debugSetComponentRules(List<NativeLibraryRule>? rules) {
+    _componentRules = rules;
+    _componentCache.clear();
   }
 
   /// 加载规则（首次从资产读取并缓存）
@@ -203,7 +266,26 @@ class ApkLibraryAnalyzer {
       _dexRules = rules;
       appLog.info('ApkLibraryAnalyzer: 已加载 DEX 规则 ${rules.length} 条');
     } catch (e) {
-      appLog.error('ApkLibraryAnalyzer: 加载 DEX 规则失败 - $e');
+      appLog.error('ApkLibraryAnalyzer: 加载规则失败 - $e');
+      rules = const [];
+    }
+    return rules;
+  }
+
+  /// 加载组件规则（type=1/2/3/4，首次从资产读取并缓存）
+  Future<List<NativeLibraryRule>> _loadComponentRules() async {
+    var rules = _componentRules;
+    if (rules != null) return rules;
+    try {
+      final raw = await rootBundle.loadString(componentAssetPath);
+      final list = jsonDecode(raw) as List<dynamic>;
+      rules = list
+          .map((e) => NativeLibraryRule.fromJson(e as Map<String, dynamic>))
+          .toList();
+      _componentRules = rules;
+      appLog.info('ApkLibraryAnalyzer: 已加载组件规则 ${rules.length} 条');
+    } catch (e) {
+      appLog.error('ApkLibraryAnalyzer: 加载组件规则失败 - $e');
       rules = const [];
     }
     return rules;
@@ -415,6 +497,124 @@ class ApkLibraryAnalyzer {
     );
   }
 
+  /// 分析 APK 的 Manifest 组件命中（方案 C，Rust FFI 解析 AXML）。
+  ///
+  /// 流程：加载组件规则 → FdroidRustRepoManager.parseComponents 拿到四类组件名
+  /// → matchComponentNames 映射命中。优雅失败：Rust 库缺失/解析失败/路径不存在
+  /// → 返回空列表，组件检测仅作增强。已分析过的路径直接返回缓存。
+  Future<List<ComponentLibraryHit>> analyzeComponents(String apkPath) async {
+    final cached = _componentCache[apkPath];
+    if (cached != null) return cached;
+
+    final rules = await _loadComponentRules();
+    if (rules.isEmpty) return const [];
+
+    try {
+      final components = await FdroidRustRepoManager.parseComponents(apkPath);
+      final namesByType = <int, Set<String>>{
+        1: components.services.toSet(),
+        2: components.activities.toSet(),
+        3: components.receivers.toSet(),
+        4: components.providers.toSet(),
+      };
+      final hits = matchComponentNames(namesByType, rules: rules);
+      _componentCache[apkPath] = hits;
+      appLog.info('ApkLibraryAnalyzer: $apkPath 组件命中 ${hits.length} 条规则');
+      return hits;
+    } catch (e) {
+      appLog.error('ApkLibraryAnalyzer: 组件分析失败（降级为空） - $e');
+      return const [];
+    }
+  }
+
+  /// 纯函数：组件类型→类名集合 × 组件规则列表 → 命中列表（可单元测试）。
+  ///
+  /// 匹配策略（对齐 LibChecker RuleStore.findRule(name, type, useRegex=true)）：
+  /// - 先精确：name == rule.name（所有规则均入精确索引，含正则规则）
+  /// - 未命中再对 isRegexRule=1 规则整串匹配（Kotlin Pattern.matches 语义）
+  /// - 规则按组件类型（type 字段）过滤，不同类型互不匹配
+  /// 同一组件名可命中多条规则；按（类型, 规则名）去重后按 label 排序。
+  @visibleForTesting
+  static List<ComponentLibraryHit> matchComponentNames(
+    Map<int, Set<String>> namesByType, {
+    required List<NativeLibraryRule> rules,
+  }) {
+    final rulesByType = <int, List<NativeLibraryRule>>{};
+    for (final rule in rules) {
+      rulesByType.putIfAbsent(rule.type, () => []).add(rule);
+    }
+
+    final hitsByRule = <String, ComponentLibraryHit>{};
+    for (final entry in namesByType.entries) {
+      final type = entry.key;
+      final typeRules = rulesByType[type];
+      if (typeRules == null || typeRules.isEmpty) continue;
+
+      final exactRules = <String, NativeLibraryRule>{
+        for (final r in typeRules)
+          if (r.name.isNotEmpty) r.name: r,
+      };
+      final regexRules = <(RegExp, NativeLibraryRule)>[
+        for (final r in typeRules)
+          if (r.isRegexRule && r.name.isNotEmpty)
+            (RegExp('^(?:${r.name})\$'), r),
+      ];
+
+      for (final name in entry.value) {
+        final exact = exactRules[name];
+        if (exact != null) {
+          _putComponentHit(hitsByRule, exact, name, type);
+        }
+        for (final (regex, rule) in regexRules) {
+          if (regex.hasMatch(name)) {
+            _putComponentHit(hitsByRule, rule, name, type);
+          }
+        }
+      }
+    }
+
+    final hits = hitsByRule.values.toList()
+      ..sort((a, b) => a.label.compareTo(b.label));
+    return hits;
+  }
+
+  static void _putComponentHit(
+    Map<String, ComponentLibraryHit> hitsByRule,
+    NativeLibraryRule rule,
+    String componentName,
+    int componentType,
+  ) {
+    hitsByRule.putIfAbsent(
+      '$componentType:${rule.name}',
+      () => ComponentLibraryHit(
+        componentName: componentName,
+        componentType: componentType,
+        ruleName: rule.name,
+        label: rule.label,
+        isRegex: rule.isRegexRule,
+      ),
+    );
+  }
+
+  /// 枚举 APK 内 lib/<abi>/ 目录（原生库 ABI 架构），按常见优先级排序。
+  ///
+  /// 复用 isolate 解压扫描（与 analyzeNativeLibraries 同一套 zip 读取）；
+  /// 失败 → 空列表。已分析过的路径直接返回缓存。
+  Future<List<String>> listNativeAbis(String apkPath) async {
+    final cached = _abiCache[apkPath];
+    if (cached != null) return cached;
+
+    try {
+      final abis = await compute(_listAbisInIsolate, apkPath);
+      _abiCache[apkPath] = abis;
+      appLog.info('ApkLibraryAnalyzer: $apkPath ABI: $abis');
+      return abis;
+    } catch (e) {
+      appLog.error('ApkLibraryAnalyzer: 枚举 ABI 失败 - $e');
+      return const [];
+    }
+  }
+
   /// 从正则规则名提取字面量包名前缀（如 `kotlin\.coroutines\.(.*)` → `kotlin.coroutines.`）。
   /// 规则库中 DEX 正则均形如 `pkg\d\.pkg\.(...)`；解析失败返回 null（跳过该规则）。
   static String? _regexLiteralPrefix(String regexName) {
@@ -447,4 +647,39 @@ List<NativeLibraryHit> _analyzeInIsolate(_AnalyzeRequest request) {
   }
 
   return ApkLibraryAnalyzer.matchNativeSoNames(soNames, rules: rules);
+}
+
+/// isolate 内执行：读取 APK 字节 → 解压枚举 lib/<abi>/ 目录集合
+List<String> _listAbisInIsolate(String apkPath) {
+  final bytes = File(apkPath).readAsBytesSync();
+  final archive = ZipDecoder().decodeBytes(bytes);
+
+  final libEntryRegex = RegExp(r'^lib/([^/]+)/[^/]+\.so$');
+  final abis = <String>{};
+  for (final entry in archive) {
+    if (entry.isFile) {
+      final match = libEntryRegex.firstMatch(entry.name);
+      if (match != null) abis.add(match.group(1)!);
+    }
+  }
+
+  // 常见 ABI 优先级排序（arm64 在前，符合主流分发习惯）
+  const priority = [
+    'arm64-v8a',
+    'armeabi-v7a',
+    'x86_64',
+    'x86',
+    'armeabi',
+    'mips64',
+    'mips',
+  ];
+  final list = abis.toList()
+    ..sort((a, b) {
+      final ia = priority.indexOf(a);
+      final ib = priority.indexOf(b);
+      final oa = ia < 0 ? priority.length : ia;
+      final ob = ib < 0 ? priority.length : ib;
+      return oa != ob ? oa.compareTo(ob) : a.compareTo(b);
+    });
+  return list;
 }

@@ -31,4 +31,19 @@ class ApkSourceService {
       return null;
     }
   }
+
+  /// 获取已安装应用声明的权限列表（PackageManager.GET_PERMISSIONS），
+  /// 失败/不支持时返回空列表
+  Future<List<String>> getPermissions(String packageName) async {
+    if (!isSupported || packageName.isEmpty) return const [];
+    try {
+      final result = await _channel.invokeListMethod<String>('getPermissions', {
+        'packageName': packageName,
+      });
+      return result ?? const [];
+    } catch (e) {
+      appLog.error('ApkSourceService: 获取权限列表失败 - $e');
+      return const [];
+    }
+  }
 }

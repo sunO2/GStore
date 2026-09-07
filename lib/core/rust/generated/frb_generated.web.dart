@@ -7,6 +7,7 @@
 // ignore_for_file: argument_type_not_assignable
 
 import 'bridge.dart';
+import 'components.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'frb_generated.dart';
@@ -62,6 +63,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   String dco_decode_String(dynamic raw);
+
+  @protected
+  ApkComponents dco_decode_apk_components(dynamic raw);
 
   @protected
   ApkInfo dco_decode_apk_info(dynamic raw);
@@ -156,6 +160,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   String sse_decode_String(SseDeserializer deserializer);
+
+  @protected
+  ApkComponents sse_decode_apk_components(SseDeserializer deserializer);
 
   @protected
   ApkInfo sse_decode_apk_info(SseDeserializer deserializer);
@@ -254,6 +261,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_String(String self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_apk_components(ApkComponents self, SseSerializer serializer);
 
   @protected
   void sse_encode_apk_info(ApkInfo self, SseSerializer serializer);

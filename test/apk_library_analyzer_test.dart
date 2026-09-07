@@ -21,6 +21,20 @@ NativeLibraryRule _dexRule(String name, String label, {bool regex = false}) =>
       isRegexRule: regex,
     );
 
+/// 组件规则（type=1/2/3/4）合成器
+NativeLibraryRule _componentRule(
+  String name,
+  String label, {
+  int type = 2,
+  bool regex = false,
+}) =>
+    NativeLibraryRule(
+      name: name,
+      label: label,
+      type: type,
+      isRegexRule: regex,
+    );
+
 /// 生成包含指定条目的假 APK（zip）
 Future<String> _buildFakeApk(List<String> entries) async {
   final dir = await Directory.systemTemp.createTemp('gstore_apk_test');
@@ -294,6 +308,149 @@ void main() {
     test('无 DEX 规则 → 直接空列表，不触发 Rust', () async {
       final hits = await ApkLibraryAnalyzer.instance
           .analyzeDexLibraries('/no/such/file.apk');
+      expect(hits, isEmpty);
+    });
+  });
+
+  group('matchComponentNames', () {
+    test('精确规则命中（同类型）', () {
+      final hits = ApkLibraryAnalyzer.matchComponentNames(
+        {2: {'com.tencent.midas.wx.APMidasWXPayActivity'}},
+        rules: [
+          _componentRule('com.tencent.midas.wx.APMidasWXPayActivity', '米大师'),
+        ],
+      );
+      expect(hits, hasLength(1));
+      expect(hits.first.componentName, 'com.tencent.midas.wx.APMidasWXPayActivity');
+      expect(hits.first.componentType, 2);
+      expect(hits.first.label, '米大师');
+      expect(hits.first.isRegex, isFalse);
+    });
+
+    test('类型过滤：不同类型不互配', () {
+      final hits = ApkLibraryAnalyzer.matchComponentNames(
+        {1: {'com.xiaomi.mipush.sdk.MessageHandleService'}},
+        rules: [
+          // 同名但 type=2（ACTIVITY）的规则，不应命中 type=1（SERVICE）组件
+          _componentRule('com.xiaomi.mipush.sdk.MessageHandleService', 'MiPush', type: 2),
+        ],
+      );
+      expect(hits, isEmpty);
+    });
+
+    test('正则规则整串匹配（同类型）', () {
+      final hits = ApkLibraryAnalyzer.matchComponentNames(
+        {1: {'com.bytedance.sdk.openadsdk.core.X'}},
+        rules: [
+          _componentRule(r'com\.bytedance\.sdk\.openadsdk\.(.*)', 'Pangle SDK', type: 1, regex: true),
+        ],
+      );
+      expect(hits, hasLength(1));
+      expect(hits.first.label, 'Pangle SDK');
+      expect(hits.first.isRegex, isTrue);
+    });
+
+    test('正则规则要求整串匹配（子串不命中）', () {
+      final hits = ApkLibraryAnalyzer.matchComponentNames(
+        {1: {'com.bytedance.other.app.Y'}},
+        rules: [
+          _componentRule(r'com\.bytedance\.sdk\.(.*)', 'Pangle SDK', type: 1, regex: true),
+        ],
+      );
+      expect(hits, isEmpty);
+    });
+
+    test('按（类型,规则名）去重：同名同类型去重，跨类型保留', () {
+      final hits = ApkLibraryAnalyzer.matchComponentNames(
+        {
+          1: {'com.example.Comp'},
+          2: {'com.example.Comp'},
+        },
+        rules: [
+          _componentRule('com.example.Comp', '库A', type: 1),
+          _componentRule('com.example.Comp', '库A重复', type: 1),
+          _componentRule('com.example.Comp', '库A活动', type: 2),
+        ],
+      );
+      // 同（类型,规则名）合并为一条；跨类型（SERVICE/ACTIVITY）各保留一条
+      expect(hits, hasLength(2));
+      expect(
+        hits.map((h) => '${h.componentType}:${h.ruleName}').toSet(),
+        {'1:com.example.Comp', '2:com.example.Comp'},
+      );
+    });
+
+    test('结果按 label 排序', () {
+      final hits = ApkLibraryAnalyzer.matchComponentNames(
+        {
+          1: {'com.z.ServiceZ'},
+          2: {'com.a.ActivityA'},
+        },
+        rules: [
+          _componentRule('com.z.ServiceZ', 'Z 库', type: 1),
+          _componentRule('com.a.ActivityA', 'A 库', type: 2),
+        ],
+      );
+      expect(hits.map((h) => h.label).toList(), ['A 库', 'Z 库']);
+    });
+  });
+
+  group('listNativeAbis', () {
+    test('枚举 lib/<abi> 目录并按常见优先级排序', () async {
+      final apk = await _buildFakeApk([
+        'lib/armeabi-v7a/libx.so',
+        'lib/x86_64/liby.so',
+        'lib/arm64-v8a/libz.so',
+        'lib/arm64-v8a/libw.so',
+        'assets/nope/x.so',
+      ]);
+      final abis = await ApkLibraryAnalyzer.instance.listNativeAbis(apk);
+      expect(abis, ['arm64-v8a', 'armeabi-v7a', 'x86_64']);
+    });
+
+    test('无原生库 → 空列表', () async {
+      final apk = await _buildFakeApk(['classes.dex', 'AndroidManifest.xml']);
+      final abis = await ApkLibraryAnalyzer.instance.listNativeAbis(apk);
+      expect(abis, isEmpty);
+    });
+
+    test('文件不存在 → 空列表且不抛异常', () async {
+      final abis =
+          await ApkLibraryAnalyzer.instance.listNativeAbis('/no/such/file.apk');
+      expect(abis, isEmpty);
+    });
+  });
+
+  group('analyzeComponents', () {
+    tearDown(() {
+      ApkLibraryAnalyzer.instance.debugSetComponentRules(null);
+    });
+
+    test('无法调用 Rust 时优雅降级为空列表（不抛异常）', () async {
+      ApkLibraryAnalyzer.instance.debugSetComponentRules([
+        _componentRule('com.xiaomi.mipush.sdk.MessageHandleService', 'MiPush', type: 1),
+      ]);
+      final apk = await _buildFakeApk(['classes.dex', 'AndroidManifest.xml']);
+      // 测试环境无 Rust 原生库（libfdroid_repo.so 为 Android ABI），
+      // RustLib.init 失败 → analyzeComponents 捕获并返回空列表。
+      final hits = await ApkLibraryAnalyzer.instance.analyzeComponents(apk);
+      expect(hits, isEmpty);
+      final hits2 = await ApkLibraryAnalyzer.instance.analyzeComponents(apk);
+      expect(identical(hits, hits2), isTrue); // 缓存已写入（空结果同样缓存）
+    });
+
+    test('文件不存在 → 空列表且不抛异常', () async {
+      ApkLibraryAnalyzer.instance.debugSetComponentRules([
+        _componentRule('com.xiaomi.mipush.sdk.MessageHandleService', 'MiPush', type: 1),
+      ]);
+      final hits = await ApkLibraryAnalyzer.instance
+          .analyzeComponents('/no/such/file.apk');
+      expect(hits, isEmpty);
+    });
+
+    test('无组件规则 → 直接空列表，不触发 Rust', () async {
+      final hits = await ApkLibraryAnalyzer.instance
+          .analyzeComponents('/no/such/file.apk');
       expect(hits, isEmpty);
     });
   });

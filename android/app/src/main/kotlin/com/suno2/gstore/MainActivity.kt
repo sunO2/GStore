@@ -149,6 +149,19 @@ class MainActivity : FlutterActivity() {
                         result.error("SOURCE", "获取 sourceDir 失败: ${e.message}", null)
                     }
                 }
+                "getPermissions" -> {
+                    val packageName = call.argument<String>("packageName")
+                    if (packageName == null || packageName.isEmpty()) {
+                        result.error("ARG", "packageName required", null)
+                        return@setMethodCallHandler
+                    }
+                    try {
+                        val packageInfo = packageManager.getPackageInfo(packageName, PackageManager.GET_PERMISSIONS)
+                        result.success(packageInfo.requestedPermissions ?: emptyList())
+                    } catch (e: Exception) {
+                        result.error("PERMS", "获取权限列表失败: ${e.message}", null)
+                    }
+                }
                 else -> result.notImplemented()
             }
         }
