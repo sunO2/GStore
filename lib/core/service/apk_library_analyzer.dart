@@ -437,7 +437,23 @@ class ApkLibraryAnalyzer {
     }
   }
 
-  /// 纯函数：so 文件名集合 × 规则列表 → 命中列表（可单元测试）。
+  /// 分析多个 APK 源（base + split APK）的第三方原生库命中并合并去重。
+  ///
+  /// split APK 分发时 SDK 库可能位于 split_config.*.apk，单独读 base 会漏；
+  /// 对每个源调用 [analyzeNativeLibraries] 后按（soFileName, ruleName）去重。
+  Future<List<NativeLibraryHit>> analyzeNativeLibrariesFromDirs(
+      List<String> apkPaths) async {
+    final seen = <String>{};
+    final hits = <NativeLibraryHit>[];
+    for (final path in apkPaths) {
+      final pathHits = await analyzeNativeLibraries(path);
+      for (final hit in pathHits) {
+        final key = '${hit.soFileName}|${hit.ruleName}';
+        if (seen.add(key)) hits.add(hit);
+      }
+    }
+    return hits;
+  }
   ///
   /// 匹配策略（对齐 LibChecker RulesRepository.getRulesWithRegex）：
   /// - isRegexRule=0：精确匹配规则名（.so 文件名）
@@ -761,7 +777,80 @@ class ApkLibraryAnalyzer {
     }
   }
 
-  /// 枚举 APK 内全部 DEX 文件（classes*.dex，zip 任意层级），LibChecker 风格展示。
+  /// 枚举多个 APK 源（base + split APK）的全部原生库并按 ABI 合并去重。
+  ///
+  /// split APK 分发时原生库位于 split_config.*.apk 中，单独读 base 会漏掉；
+  /// 本方法对每个源调用 [analyzeNativeLibsFull] 后合并（同名同 ABI 去重）。
+  /// 同时纳入 `assets/*.so`（LibChecker getApkLibEntryDir 同样匹配 assets 前缀），
+  /// 归入名为 `assets` 的分组。
+  Future<List<NativeAbiLibs>> analyzeNativeLibsFullFromDirs(
+      List<String> apkPaths) async {
+    final debug = _debugFullNativeLibs;
+    final merged = <String, Map<String, NativeSoFile>>{};
+    for (final path in apkPaths) {
+      final libs = await analyzeNativeLibsFull(path);
+      for (final group in libs) {
+        merged.putIfAbsent(group.abi, () => {});
+        for (final so in group.soFiles) {
+          merged[group.abi]![so.name] = so;
+        }
+      }
+      // seam 注入时跳过 assets 解压扫描：注入值即完整输出（含 assets 分组），
+      // 避免 FakeAsync 测试环境里 compute isolate 永不完成。
+      if (debug == null) {
+        final assets = await _listAssetsSo(path);
+        if (assets != null) {
+          merged.putIfAbsent('assets', () => {});
+          for (final so in assets) {
+            merged['assets']![so.name] = so;
+          }
+        }
+      }
+    }
+    return _sortedAbiGroups(merged);
+  }
+
+  /// 枚举单个 APK 内 `assets/*.so`（LibChecker 将 assets 下的 .so 单列分组）。
+  /// 失败 → null（调用方忽略该源）。
+  Future<List<NativeSoFile>?> _listAssetsSo(String apkPath) async {
+    try {
+      return await compute(_listAssetsSoInIsolate, apkPath);
+    } catch (e) {
+      appLog.error('ApkLibraryAnalyzer: 枚举 assets .so 失败 - $e');
+      return null;
+    }
+  }
+
+  /// 将「ABI → 文件表」按常见 ABI 优先级排序输出（assets 分组排最后）。
+  static List<NativeAbiLibs> _sortedAbiGroups(
+      Map<String, Map<String, NativeSoFile>> merged) {
+    const priority = [
+      'arm64-v8a',
+      'armeabi-v7a',
+      'x86_64',
+      'x86',
+      'armeabi',
+      'mips64',
+      'mips',
+    ];
+    final list = <NativeAbiLibs>[
+      for (final entry in merged.entries)
+        NativeAbiLibs(
+          abi: entry.key,
+          soFiles: entry.value.values.toList()
+            ..sort((a, b) => a.name.compareTo(b.name)),
+        ),
+    ]..sort((a, b) {
+        if (a.abi == 'assets' && b.abi != 'assets') return 1;
+        if (b.abi == 'assets' && a.abi != 'assets') return -1;
+        final ia = priority.indexOf(a.abi);
+        final ib = priority.indexOf(b.abi);
+        final oa = ia < 0 ? priority.length : ia;
+        final ob = ib < 0 ? priority.length : ib;
+        return oa != ob ? oa.compareTo(ob) : a.abi.compareTo(b.abi);
+      });
+    return list;
+  }
   ///
   /// 匹配 zip 内所有名称形如 `classes\d*\.dex` 的条目（忽略大小写，
   /// 含分包 classes2.dex / classes3.dex …），记录文件名与解压后字节数，
@@ -876,6 +965,25 @@ List<String> _listAbisInIsolate(String apkPath) {
       final ob = ib < 0 ? priority.length : ib;
       return oa != ob ? oa.compareTo(ob) : a.compareTo(b);
     });
+  return list;
+}
+
+/// isolate 内执行：读取 APK 字节 → 解压枚举 assets/*.so（LibChecker 单列分组）
+List<NativeSoFile> _listAssetsSoInIsolate(String apkPath) {
+  final bytes = File(apkPath).readAsBytesSync();
+  final archive = ZipDecoder().decodeBytes(bytes);
+
+  final assetsSoRegex = RegExp(r'^assets/.+\.so$');
+  final soByAbi = <String, NativeSoFile>{};
+  for (final entry in archive) {
+    if (!entry.isFile) continue;
+    if (!assetsSoRegex.hasMatch(entry.name)) continue;
+    final name = entry.name.split('/').last;
+    soByAbi.putIfAbsent(
+        name, () => NativeSoFile(name: name, size: entry.size));
+  }
+  final list = soByAbi.values.toList()
+    ..sort((a, b) => a.name.compareTo(b.name));
   return list;
 }
 

@@ -300,19 +300,33 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
   /// 分析应用内嵌的第三方 SDK（原生 .so / DEX 类名 / Manifest 组件）
   /// 跳转独立分析页（LibChecker 式分组展示），替代原对话框方案
   Future<void> _analyzeSdk(installed.AppInfo app) async {
-    final sourceDir = await ApkSourceService.instance.getSourceDir(app.packageName);
+    // 优先取全部 APK 源路径（base + split，split 分发时 .so 在 split 包里），
+    // 失败回退单一 sourceDir。
+    final sourceDirs =
+        await ApkSourceService.instance.getSourceDirs(app.packageName);
+    String? sourceDir;
+    if (sourceDirs.isNotEmpty) {
+      sourceDir = sourceDirs.first;
+    } else {
+      sourceDir = await ApkSourceService.instance.getSourceDir(app.packageName);
+    }
     if (sourceDir == null || !mounted) {
       _showMessage('无法获取 ${app.name} 的 APK 路径');
       return;
     }
+    final sdkSourceDir = sourceDir;
     appLog.info('InstalledApps: 应用分析开始', data: {
       'package': app.packageName,
-      'sourceDir': sourceDir,
+      'sourceDirs': sourceDirs,
     });
     if (!mounted) return;
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => SdkAnalysisPage(app: app, sourceDir: sourceDir),
+        builder: (_) => SdkAnalysisPage(
+          app: app,
+          sourceDir: sdkSourceDir,
+          sourceDirs: sourceDirs.isNotEmpty ? sourceDirs : null,
+        ),
       ),
     );
   }

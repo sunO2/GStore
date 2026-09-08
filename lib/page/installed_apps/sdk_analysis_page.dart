@@ -22,13 +22,22 @@ class SdkAnalysisPage extends StatefulWidget {
     super.key,
     required this.app,
     required this.sourceDir,
+    this.sourceDirs,
   });
 
   /// 被分析的应用
   final installed.AppInfo app;
 
-  /// 应用 APK 路径（sourceDir）
+  /// 应用 APK 路径（sourceDir，兼容单一 APK 场景）
   final String sourceDir;
+
+  /// 全部 APK 源路径（base + split APK）；为 null 时回退 [sourceDir]。
+  /// split APK 分发（AAB/Play）时原生库位于 split_config.*.apk，
+  /// 仅读 base 会漏掉 .so，故优先使用本列表。
+  final List<String>? sourceDirs;
+
+  /// 实际参与原生库分析的路径集合。
+  List<String> get effectiveSourceDirs => sourceDirs ?? [sourceDir];
 
   /// 组件类型展示名（对齐 LibChecker LibType：SERVICE=1 / ACTIVITY=2 /
   /// RECEIVER=3 / PROVIDER=4，参考 ComponentAnalysisFragment 的按类型分组）。
@@ -191,14 +200,16 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
       }
     }();
 
+    final dirs = widget.effectiveSourceDirs;
+
     final results = await (
-      ApkLibraryAnalyzer.instance.analyzeNativeLibraries(widget.sourceDir),
+      ApkLibraryAnalyzer.instance.analyzeNativeLibrariesFromDirs(dirs),
       ApkLibraryAnalyzer.instance.analyzeDexLibraries(widget.sourceDir),
       ApkLibraryAnalyzer.instance.analyzeComponents(widget.sourceDir),
       ApkSourceService.instance.getPermissions(widget.app.packageName),
       ApkLibraryAnalyzer.instance.listNativeAbis(widget.sourceDir),
       sdkF,
-      ApkLibraryAnalyzer.instance.analyzeNativeLibsFull(widget.sourceDir),
+      ApkLibraryAnalyzer.instance.analyzeNativeLibsFullFromDirs(dirs),
       ApkSourceService.instance.getInstalledAppDetail(widget.app.packageName),
       ApkLibraryAnalyzer.instance.analyzeDexFilesFull(widget.sourceDir),
       ApkLibraryAnalyzer.instance.detectBuildVersions(widget.sourceDir),

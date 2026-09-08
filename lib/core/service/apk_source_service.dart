@@ -145,6 +145,10 @@ class ApkSourceService {
   /// 传 null 恢复真实通道调用。
   InstalledAppDetail? _debugInstalledAppDetail;
 
+  /// 测试用：注入合成的 APK 源路径列表，跳过平台通道调用。
+  /// 传 null 恢复真实通道调用。
+  List<String>? _debugSourceDirs;
+
   /// 是否支持（仅 Android 平台）
   bool get isSupported =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
@@ -160,6 +164,42 @@ class ApkSourceService {
     } catch (e) {
       appLog.error('ApkSourceService: 获取 sourceDir 失败 - $e');
       return null;
+    }
+  }
+
+  /// 获取已安装应用的全部 APK 源路径（base + split APK）。
+  ///
+  /// split APK 分发（Android App Bundle / Play）时原生库位于
+  /// split_config.*.apk，单独读 base 的 `lib/` 会漏掉全部 .so；
+  /// 失败/不支持时返回空列表。
+  Future<List<String>> getSourceDirs(String packageName) async {
+    final debug = _debugSourceDirs;
+    if (debug != null) return debug;
+    if (!isSupported || packageName.isEmpty) return const [];
+    try {
+      final result = await _channel.invokeListMethod<String>('getSourceDirs', {
+        'packageName': packageName,
+      });
+      return result ?? const [];
+    } catch (e) {
+      appLog.error('ApkSourceService: 获取 sourceDirs 失败 - $e');
+      return const [];
+    }
+  }
+
+  /// 获取系统解压后的原生库目录（nativeLibraryDir，LibChecker 第三层兜底）。
+  /// 失败/不支持时返回空字符串。
+  Future<String> getNativeLibraryDir(String packageName) async {
+    if (!isSupported || packageName.isEmpty) return '';
+    try {
+      final result = await _channel.invokeMethod<String>(
+          'getNativeLibraryDir', {
+        'packageName': packageName,
+      });
+      return result ?? '';
+    } catch (e) {
+      appLog.error('ApkSourceService: 获取 nativeLibraryDir 失败 - $e');
+      return '';
     }
   }
 
@@ -210,5 +250,11 @@ class ApkSourceService {
   @visibleForTesting
   void debugSetInstalledAppDetail(InstalledAppDetail? detail) {
     _debugInstalledAppDetail = detail;
+  }
+
+  /// 测试用：注入合成的 APK 源路径列表（null 恢复真实通道调用）。
+  @visibleForTesting
+  void debugSetSourceDirs(List<String>? dirs) {
+    _debugSourceDirs = dirs;
   }
 }

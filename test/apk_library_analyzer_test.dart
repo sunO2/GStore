@@ -516,6 +516,49 @@ void main() {
     });
   });
 
+  group('analyzeNativeLibsFullFromDirs', () {
+    tearDown(() {
+      ApkLibraryAnalyzer.instance.debugSetFullNativeLibs(null);
+    });
+
+    test('多 APK 源合并：同名同 ABI 去重，assets 分组排最后', () async {
+      // 注入 seam：两个"源"返回同一份数据，合并后应只剩一份（去重生效）
+      ApkLibraryAnalyzer.instance.debugSetFullNativeLibs([
+        const NativeAbiLibs(abi: 'arm64-v8a', soFiles: [
+          NativeSoFile(name: 'libshared.so', size: 1024),
+        ]),
+        const NativeAbiLibs(abi: 'x86', soFiles: [
+          NativeSoFile(name: 'libx.so', size: 2048),
+        ]),
+      ]);
+      final libs = await ApkLibraryAnalyzer.instance
+          .analyzeNativeLibsFullFromDirs(['/fake/base.apk', '/fake/split.apk']);
+      // 两个源注入相同数据 → 合并去重后仍为 2 组
+      expect(libs, hasLength(2));
+      expect(libs[0].abi, 'arm64-v8a');
+      expect(libs[0].soFiles.map((f) => f.name).toList(), ['libshared.so']);
+      expect(libs[1].abi, 'x86');
+      expect(libs[1].soFiles.map((f) => f.name).toList(), ['libx.so']);
+    });
+
+    test('真实 zip 扫描：base 无 lib、split 有 lib（KMP/AAB 场景）', () async {
+      ApkLibraryAnalyzer.instance.debugSetFullNativeLibs(null);
+      // base APK：只有 classes.dex / manifest，无 lib/
+      final base = await _buildFakeApk(['classes.dex', 'AndroidManifest.xml']);
+      // split APK：原生库在 split_config.arm64_v8a.apk
+      final split = await _buildFakeApk([
+        'lib/arm64-v8a/libnative.so',
+        'assets/libembedded.so',
+      ]);
+      final libs = await ApkLibraryAnalyzer.instance
+          .analyzeNativeLibsFullFromDirs([base, split]);
+      // arm64-v8a（lib/）+ assets（assets/）两组
+      expect(libs.map((g) => g.abi).toList(), ['arm64-v8a', 'assets']);
+      expect(libs[0].soFiles.map((f) => f.name).toList(), ['libnative.so']);
+      expect(libs[1].soFiles.map((f) => f.name).toList(), ['libembedded.so']);
+    });
+  });
+
   group('analyzeDexFilesFull', () {
     tearDown(() {
       ApkLibraryAnalyzer.instance.debugSetDexFilesFull(null);

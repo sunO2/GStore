@@ -155,6 +155,39 @@ class MainActivity : FlutterActivity() {
                         result.error("SOURCE", "获取 sourceDir 失败: ${e.message}", null)
                     }
                 }
+                // 获取全部 APK 源路径（base + split，split APK 分发时原生库
+                // 位于 split_config.*.apk，单独读 base 会漏掉 .so）。
+                "getSourceDirs" -> {
+                    val packageName = call.argument<String>("packageName")
+                    if (packageName == null || packageName.isEmpty()) {
+                        result.error("ARG", "packageName required", null)
+                        return@setMethodCallHandler
+                    }
+                    try {
+                        val appInfo = packageManager.getApplicationInfo(packageName, 0)
+                        val dirs = mutableListOf<String>()
+                        appInfo.sourceDir?.let(dirs::add)
+                        appInfo.splitSourceDirs?.let { dirs.addAll(it) }
+                        result.success(dirs)
+                    } catch (e: Exception) {
+                        result.error("SOURCE", "获取 sourceDirs 失败: ${e.message}", null)
+                    }
+                }
+                // 系统解压后的原生库目录（nativeLibraryDir）：已安装应用
+                // .so 的第三层兜底来源（LibChecker getNativeDirLibs）。
+                "getNativeLibraryDir" -> {
+                    val packageName = call.argument<String>("packageName")
+                    if (packageName == null || packageName.isEmpty()) {
+                        result.error("ARG", "packageName required", null)
+                        return@setMethodCallHandler
+                    }
+                    try {
+                        val appInfo = packageManager.getApplicationInfo(packageName, 0)
+                        result.success(appInfo.nativeLibraryDir ?: "")
+                    } catch (e: Exception) {
+                        result.error("SOURCE", "获取 nativeLibraryDir 失败: ${e.message}", null)
+                    }
+                }
                 "getPermissions" -> {
                     val packageName = call.argument<String>("packageName")
                     if (packageName == null || packageName.isEmpty()) {
