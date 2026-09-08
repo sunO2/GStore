@@ -13,6 +13,8 @@ import 'package:gstore/core/model/AppDetailRequest.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
+import 'package:gstore/core/service/apk_source_service.dart';
+import 'package:gstore/page/installed_apps/sdk_analysis_page.dart';
 import 'package:installed_apps/app_info.dart' as installed;
 import 'state.dart';
 import 'detail_ui_mixins.dart';
@@ -295,6 +297,12 @@ class DetailLogic
 
     final allActions = [
       ...channelActions,
+      if (state.isInstalled)
+        DetailAction(
+          label: '应用分析',
+          icon: Icons.memory_outlined,
+          onTap: _openAppAnalysis,
+        ),
     ];
 
     if (!context.mounted) return;
@@ -319,6 +327,36 @@ class DetailLogic
     } catch (e) {
       AppDialogs.showError('保存标签失败: $e', title: '保存失败');
     }
+  }
+
+  /// 打开应用分析页（仅已安装时入口存在）：
+  /// 优先取 base + split 全部 APK 源路径，失败回退单一 sourceDir。
+  Future<void> _openAppAnalysis() async {
+    final app = state.installInfo;
+    final ctx = uiContext;
+    if (app == null || ctx == null) return;
+    final sourceDirs = await ApkSourceService.instance.getSourceDirs(app.packageName);
+    String? sourceDir;
+    if (sourceDirs.isNotEmpty) {
+      sourceDir = sourceDirs.first;
+    } else {
+      sourceDir = await ApkSourceService.instance.getSourceDir(app.packageName);
+    }
+    if (sourceDir == null || !ctx.mounted) {
+      AppDialogs.showError('无法获取 ${app.name} 的 APK 路径');
+      return;
+    }
+    if (!ctx.mounted) return;
+    final dir = sourceDir;
+    Navigator.of(ctx).push(
+      MaterialPageRoute<void>(
+        builder: (_) => SdkAnalysisPage(
+          app: app,
+          sourceDir: dir,
+          sourceDirs: sourceDirs.isNotEmpty ? sourceDirs : null,
+        ),
+      ),
+    );
   }
 
   // ==================== DetailCallbacks 留在 logic 的薄委托实现 ====================

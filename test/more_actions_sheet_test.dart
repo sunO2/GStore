@@ -206,4 +206,42 @@ void main() {
     await tester.pumpAndSettle();
     expect(await future, isEmpty);
   });
+
+  testWidgets('更多底部面板：actions 含「应用分析」项时宫格渲染该 label 与图标并可点击', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        navigatorKey: appNavigatorKey,
+        scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
+        home: const Scaffold(body: SizedBox()),
+      ),
+    );
+
+    var analysisFired = false;
+    final future = showMoreActionsSheet(
+      appNavigatorKey.currentContext!,
+      appName: '测试应用',
+      presetTags: ['工具'],
+      currentTags: const [],
+      actions: [
+        MoreActionItem(
+          icon: Icons.memory_outlined,
+          label: '应用分析',
+          onTap: () => analysisFired = true,
+        ),
+      ],
+    );
+    await tester.pumpAndSettle();
+
+    // 「应用分析」项渲染在动作宫格中（含 label 与图标，"操作"区存在）
+    expect(find.text('操作'), findsOneWidget);
+    expect(find.byType(GridView), findsOneWidget);
+    expect(find.text('应用分析'), findsOneWidget);
+    expect(find.byIcon(Icons.memory_outlined), findsOneWidget);
+
+    // 点击：回调触发 + 面板关闭（future 返回 null，不保存标签）
+    await tester.tap(find.text('应用分析'));
+    await tester.pumpAndSettle();
+    expect(analysisFired, isTrue);
+    expect(await future, isNull);
+  });
 }
