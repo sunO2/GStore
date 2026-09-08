@@ -1,3 +1,4 @@
+import 'dart:collection';
 import 'dart:io';
 
 import 'package:archive/archive.dart';
@@ -447,5 +448,27 @@ void main() {
     await switchTab(tester, 'meta 数据');
     expect(find.text('无 meta-data'), findsOneWidget);
     expect(tester.takeException(), isNull);
+  });
+
+  test('InstalledAppDetail.fromJson：兼容 MethodChannel 的 HashMap<Object?, Object?> 嵌套签名（回归）', () {
+    // MethodChannel 解码嵌套 map 的类型是 HashMap<Object?, Object?>，
+    // 曾因 whereType<Map<String, dynamic>>() 的 reified 检查全部被过滤 → 签名恒为空。
+    final rawSignature = HashMap<Object?, Object?>.from({
+      'algorithm': 'SHA256withRSA',
+      'subject': 'CN=MethodChannel',
+      'sha256': 'ab:cd:ef:01',
+      'sha1': '11:22:33:44',
+    });
+
+    final detail = InstalledAppDetail.fromJson({
+      'signatures': <Object?>[rawSignature],
+      'metaData': <Object?, Object?>{},
+    });
+
+    expect(detail.signatures, hasLength(1));
+    expect(detail.signatures.single.subject, 'CN=MethodChannel');
+    expect(detail.signatures.single.algorithm, 'SHA256withRSA');
+    expect(detail.signatures.single.sha256, 'ab:cd:ef:01');
+    expect(detail.signatures.single.sha1, '11:22:33:44');
   });
 }

@@ -364,7 +364,7 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
                   title: abiLibs.abi,
                   count: abiLibs.soFiles.length,
                 ),
-                const Divider(height: 1),
+                Divider(height: AppSpacing.md),
                 for (final so in abiLibs.soFiles)
                   if (hitBySo[so.name] case final hit?)
                     _buildItem(
@@ -402,7 +402,7 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
                 title: 'DEX 类名',
                 count: _dexHits.length,
               ),
-              const Divider(height: 1),
+              Divider(height: AppSpacing.md),
               for (final hit in _dexHits)
                 _buildItem(hit, icon: Icons.code, matchedName: hit.matchedClassName),
             ],
@@ -438,11 +438,7 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
                     count: group.items.length,
                   ),
                   for (final hit in group.items)
-                    _buildItem(
-                      hit,
-                      icon: Icons.view_module,
-                      matchedName: hit.componentName,
-                    ),
+                    _buildItem(hit, matchedName: hit.componentName),
                 ],
               ],
             ),
@@ -457,7 +453,7 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
                   title: '全部组件',
                   count: fullTotal,
                 ),
-                const Divider(height: 1),
+                Divider(height: AppSpacing.md),
                 for (final (i, group) in fullGroups.indexed) ...[
                   if (i > 0) const Divider(height: 1),
                   _buildSubGroupHeader(
@@ -465,7 +461,7 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
                     count: group.count,
                   ),
                   for (final name in group.items)
-                    _buildPlainRow(icon: Icons.view_module, title: name),
+                    _buildPlainRow(title: name, wrapTitle: true),
                 ],
               ],
             ),
@@ -474,9 +470,10 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
     );
   }
 
-  /// 权限 chips；为空时展示「无权限声明」。
+  /// 权限药丸列表（可换行）；为空时展示「无权限声明」。
   Widget _buildPermissionTab() {
     if (_permissions.isEmpty) return _buildEmptyState('无权限声明');
+    final colorScheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
     return ListView(
       padding: AppSpacing.onlyVerticalMD,
@@ -489,13 +486,17 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
               runSpacing: AppSpacing.xs,
               children: [
                 for (final permission in _permissions)
-                  Chip(
-                    visualDensity: VisualDensity.compact,
-                    label: Text(
+                  Container(
+                    padding: AppSpacing.chipPadding,
+                    decoration: BoxDecoration(
+                      color: colorScheme.secondaryContainer,
+                      borderRadius: BorderRadius.circular(AppRadius.sm),
+                    ),
+                    child: Text(
                       permission,
-                      style: textTheme.labelSmall,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+                      style: textTheme.labelSmall?.copyWith(
+                        color: colorScheme.onSecondaryContainer,
+                      ),
                     ),
                   ),
               ],
@@ -596,7 +597,7 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
                 title: 'meta 数据',
                 count: entries.length,
               ),
-              const Divider(height: 1),
+              Divider(height: AppSpacing.md),
               Padding(
                 padding: AppSpacing.cardPadding,
                 child: Column(
@@ -604,18 +605,15 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
                   children: [
                     for (final (i, entry) in entries.indexed) ...[
                       if (i > 0) const SizedBox(height: AppSpacing.sm),
-                      Row(
+                      // 键药丸在上、值全文在下：长键可完整换行，值也不被截断。
+                      Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           _buildMetaKeyPill(entry.key),
-                          const SizedBox(width: AppSpacing.md),
-                          Expanded(
-                            child: Text(
-                              entry.value,
-                              maxLines: 3,
-                              overflow: TextOverflow.ellipsis,
-                              style: textTheme.bodyMedium,
-                            ),
+                          const SizedBox(height: AppSpacing.xs),
+                          Text(
+                            entry.value,
+                            style: textTheme.bodyMedium,
                           ),
                         ],
                       ),
@@ -630,13 +628,12 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
     );
   }
 
-  /// meta 数据键药丸（secondaryContainer 底色 + 等宽 bodySmall，
-  /// 最大宽度 ~140，超出省略），与 [Text] 值形成「键 + 值」两级层次。
+  /// meta 数据键药丸（secondaryContainer 底色 + 等宽 bodySmall，完整换行），
+  /// 与 [Text] 值形成「键 + 值」两级层次。
   Widget _buildMetaKeyPill(String key) {
     final colorScheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
     return Container(
-      constraints: const BoxConstraints(maxWidth: 140),
       padding: AppSpacing.chipPadding,
       decoration: BoxDecoration(
         color: colorScheme.secondaryContainer,
@@ -644,8 +641,6 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
       ),
       child: Text(
         key,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
         style: textTheme.bodySmall?.copyWith(
           fontFamily: 'monospace',
           color: colorScheme.onSecondaryContainer,
@@ -694,7 +689,7 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
     final textTheme = Theme.of(context).textTheme;
 
     return Padding(
-      padding: AppSpacing.onlyHorizontalMD,
+      padding: AppSpacing.horizontalMD_verticalSM,
       child: Row(
         children: [
           Icon(icon, size: AppTypography.iconMD, color: colorScheme.primary),
@@ -769,11 +764,12 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
     );
   }
 
-  /// 单个命中项：图标 + label（标题行）+ 匹配名（等宽副标题）+ 正则标签；
+  /// 单个命中项：可选图标 + label（标题行）+ 匹配名（等宽副标题）+ 正则标签；
   /// 可选的 [trailing] 右对齐展示在行尾（如 .so 文件大小）。
+  /// [icon] 为 null 时不渲染前导图标（组件 tab 行无需图标）。
   Widget _buildItem(
     LibraryHit hit, {
-    required IconData icon,
+    IconData? icon,
     required String matchedName,
     String? trailing,
   }) {
@@ -785,15 +781,17 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Padding(
-            padding: AppSpacing.onlyTopXS,
-            child: Icon(
-              icon,
-              size: AppTypography.iconSM,
-              color: hit.isRegex ? colorScheme.tertiary : colorScheme.primary,
+          if (icon != null) ...[
+            Padding(
+              padding: AppSpacing.onlyTopXS,
+              child: Icon(
+                icon,
+                size: AppTypography.iconSM,
+                color: hit.isRegex ? colorScheme.tertiary : colorScheme.primary,
+              ),
             ),
-          ),
-          const SizedBox(width: AppSpacing.md),
+            const SizedBox(width: AppSpacing.md),
+          ],
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -842,13 +840,16 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
     );
   }
 
-  /// 未命中规则的普通列表行：onSurfaceVariant 图标 + 标题（+ 副标题）；
+  /// 未命中规则的普通列表行：可选 onSurfaceVariant 图标 + 标题（+ 副标题）；
   /// 可选的 [trailing] 右对齐展示在行尾（如 .so 文件大小）。
+  /// [icon] 为 null 时不渲染前导图标；[wrapTitle] 为 true 时标题完整换行
+  /// （组件全量行等无尾随尺寸的文本），否则单行省略。
   Widget _buildPlainRow({
-    required IconData icon,
+    IconData? icon,
     required String title,
     String? subtitle,
     String? trailing,
+    bool wrapTitle = false,
   }) {
     final colorScheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
@@ -858,23 +859,25 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Padding(
-            padding: AppSpacing.onlyTopXS,
-            child: Icon(
-              icon,
-              size: AppTypography.iconSM,
-              color: colorScheme.onSurfaceVariant,
+          if (icon != null) ...[
+            Padding(
+              padding: AppSpacing.onlyTopXS,
+              child: Icon(
+                icon,
+                size: AppTypography.iconSM,
+                color: colorScheme.onSurfaceVariant,
+              ),
             ),
-          ),
-          const SizedBox(width: AppSpacing.md),
+            const SizedBox(width: AppSpacing.md),
+          ],
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
                   title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+                  maxLines: wrapTitle ? null : 1,
+                  overflow: wrapTitle ? null : TextOverflow.ellipsis,
                   style: textTheme.bodyMedium,
                 ),
                 if (subtitle != null) ...[

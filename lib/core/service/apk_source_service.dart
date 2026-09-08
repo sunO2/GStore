@@ -72,10 +72,16 @@ class InstalledAppDetail {
     final rawSignatures = (json['signatures'] as List<dynamic>?) ?? const [];
     final rawMetaData = (json['metaData'] as Map<dynamic, dynamic>?) ?? const {};
     return InstalledAppDetail(
-      signatures: rawSignatures
-          .whereType<Map<String, dynamic>>()
-          .map(SignatureInfo.fromJson)
-          .toList(),
+      signatures: [
+        for (final raw in rawSignatures)
+          if (raw is Map)
+            SignatureInfo.fromJson(
+              // MethodChannel 解码的嵌套 map 类型是 Map<Object?, Object?>，
+              // 不能直接用 whereType<Map<String, dynamic>>() 过滤（会全部落空），
+              // 此处镜像 metaData 的处理：key 经 toString 归一，value 保持 dynamic。
+              raw.map((k, v) => MapEntry(k.toString(), v as dynamic)),
+            ),
+      ],
       metaData: rawMetaData.map(
         (k, v) => MapEntry(k.toString(), v.toString()),
       ),
