@@ -87,6 +87,24 @@ class SdkAnalysisPage extends StatefulWidget {
 /// Manifest 全量组件分组（「全部组件」区段按类型展示）
 typedef _FullComponentGroup = ({String label, int count, List<String> items});
 
+/// 10 元记录并行等待（dart:async 内建 `.wait` 仅支持到 9 元）。
+extension _FutureRecord10Ext<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10>
+    on (Future<T1>, Future<T2>, Future<T3>, Future<T4>, Future<T5>,
+        Future<T6>, Future<T7>, Future<T8>, Future<T9>, Future<T10>) {
+  Future<(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10)> get wait async => (
+        await $1,
+        await $2,
+        await $3,
+        await $4,
+        await $5,
+        await $6,
+        await $7,
+        await $8,
+        await $9,
+        await $10,
+      );
+}
+
 class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
   bool _loading = true;
   List<NativeLibraryHit> _nativeHits = const [];
@@ -118,6 +136,9 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
   /// Manifest 组件全量清单（Rust 解析失败为 null → 组件页仅展示规则命中）
   ApkComponents? _components;
 
+  /// 构建版本检测结果（Kotlin / Gradle / Java，检测失败为默认空实例 → 「未知」）
+  BuildVersionInfo _buildInfo = const BuildVersionInfo();
+
   @override
   void initState() {
     super.initState();
@@ -148,6 +169,7 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
       ApkLibraryAnalyzer.instance.analyzeNativeLibsFull(widget.sourceDir),
       ApkSourceService.instance.getInstalledAppDetail(widget.app.packageName),
       ApkLibraryAnalyzer.instance.analyzeDexFilesFull(widget.sourceDir),
+      ApkLibraryAnalyzer.instance.detectBuildVersions(widget.sourceDir),
     ).wait;
     if (!mounted) return;
     setState(() {
@@ -163,6 +185,7 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
       _fullNativeLibs = results.$7;
       _detail = results.$8;
       _dexFiles = results.$9;
+      _buildInfo = results.$10;
       _loading = false;
     });
   }
@@ -310,6 +333,19 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
       ),
     ];
 
+    // 构建版本行（Kotlin/Gradle/Java，检测缺失字段 → 「未知」降级，恒展示）
+    final buildRows = <(String, String)>[
+      (
+        'Kotlin',
+        _buildInfo.kotlinVersion.isEmpty ? '未知' : _buildInfo.kotlinVersion,
+      ),
+      (
+        'Gradle',
+        _buildInfo.gradleVersion.isEmpty ? '未知' : _buildInfo.gradleVersion,
+      ),
+      ('Java', _buildInfo.javaVersion.isEmpty ? '未知' : _buildInfo.javaVersion),
+    ];
+
     // 系统信息行（detail 缺失字段 → 「未知」/「否」降级，恒展示）
     final systemRows = <(String, String)>[
       ('UID', _detail.uid > 0 ? '${_detail.uid}' : '未知'),
@@ -333,6 +369,15 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 for (final (label, value) in rows)
+                  _buildKeyValueRow(
+                    label: label,
+                    value: value,
+                    labelStyle: labelStyle,
+                    valueStyle: valueStyle,
+                    onLongPress: () => _copyText(context, value, label: label),
+                  ),
+                const Divider(height: AppSpacing.lg),
+                for (final (label, value) in buildRows)
                   _buildKeyValueRow(
                     label: label,
                     value: value,

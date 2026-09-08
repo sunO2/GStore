@@ -50,7 +50,8 @@ void main() {
     });
   }
 
-  /// 注入合成详情数据（ABI/权限/全量原生库/全量 DEX/应用详情/组件清单）并清理。
+  /// 注入合成详情数据（ABI/权限/全量原生库/全量 DEX/应用详情/组件清单/
+  /// 构建版本）并清理。
   void injectDetails({
     List<String> abis = const [],
     List<String> permissions = const [],
@@ -58,10 +59,12 @@ void main() {
     List<DexFile> dexFiles = const [],
     InstalledAppDetail detail = const InstalledAppDetail(),
     ApkComponents? components,
+    BuildVersionInfo buildVersions = const BuildVersionInfo(),
   }) {
     ApkLibraryAnalyzer.instance.debugSetAbis(abis);
     ApkLibraryAnalyzer.instance.debugSetFullNativeLibs(fullLibs);
     ApkLibraryAnalyzer.instance.debugSetDexFilesFull(dexFiles);
+    ApkLibraryAnalyzer.instance.debugSetBuildVersions(buildVersions);
     ApkSourceService.instance.debugSetPermissions(permissions);
     ApkSourceService.instance.debugSetInstalledAppDetail(detail);
     SdkAnalysisPage.debugSetComponents(components);
@@ -69,6 +72,7 @@ void main() {
       ApkLibraryAnalyzer.instance.debugSetAbis(null);
       ApkLibraryAnalyzer.instance.debugSetFullNativeLibs(null);
       ApkLibraryAnalyzer.instance.debugSetDexFilesFull(null);
+      ApkLibraryAnalyzer.instance.debugSetBuildVersions(null);
       ApkSourceService.instance.debugSetPermissions(null);
       ApkSourceService.instance.debugSetInstalledAppDetail(null);
       SdkAnalysisPage.debugSetComponents(null);
@@ -191,12 +195,12 @@ void main() {
     expect(find.text('APK 大小'), findsOneWidget);
     expect(find.text('安装时间'), findsOneWidget);
     expect(find.text('最近更新'), findsOneWidget);
-    // SDK 版本解析失败 + 详情缺失 → 共 10 处「未知」降级
+    // SDK 版本解析失败 + 详情缺失 → 共 13 处「未知」降级
     // （主 Activity/APK 大小/安装时间/最近更新/minSdk/targetSdk + 新增
-    // UID/共享 UID/安装来源/数据目录）
+    // UID/共享 UID/安装来源/数据目录 + Kotlin/Gradle/Java 构建版本）
     expect(find.text('minSdk'), findsOneWidget);
     expect(find.text('targetSdk'), findsOneWidget);
-    expect(find.text('未知'), findsNWidgets(10));
+    expect(find.text('未知'), findsNWidgets(13));
     // ABI 非空 → 渲染 chips
     expect(find.text('ABI 架构'), findsOneWidget);
     expect(find.text('arm64-v8a'), findsOneWidget);
@@ -224,10 +228,36 @@ void main() {
     expect(find.text('APK 大小'), findsOneWidget);
     expect(find.text('12.5 MB'), findsOneWidget);
     // 安装时间/最近更新为 0 → 未知；minSdk/targetSdk 回退详情值；
-    // 新增系统行（UID/共享 UID/安装来源/数据目录）详情缺失 → 未知
-    expect(find.text('未知'), findsNWidgets(6));
+    // 新增系统行（UID/共享 UID/安装来源/数据目录）与构建版本行
+    // （Kotlin/Gradle/Java）详情缺失 → 未知
+    expect(find.text('未知'), findsNWidgets(9));
     expect(find.text('24'), findsOneWidget);
     expect(find.text('34'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('SDK 分析页：概览展示 Kotlin/Gradle/Java 构建版本，缺失降级未知', (tester) async {
+    injectEmptyRules();
+    injectDetails(
+      buildVersions: const BuildVersionInfo(
+        kotlinVersion: '2.0.20',
+        gradleVersion: '8.7',
+        javaVersion: '17',
+      ),
+    );
+
+    await pumpPage(tester);
+
+    // 三行标签 + 注入的版本值
+    expect(find.text('Kotlin'), findsOneWidget);
+    expect(find.text('Gradle'), findsOneWidget);
+    expect(find.text('Java'), findsOneWidget);
+    expect(find.text('2.0.20'), findsOneWidget);
+    expect(find.text('8.7'), findsOneWidget);
+    expect(find.text('17'), findsOneWidget);
+    // 构建版本全部命中 → 此轮无构建版本相关的「未知」
+    // （其余 detail/系统行缺失 → 10 处未知）
+    expect(find.text('未知'), findsNWidgets(10));
     expect(tester.takeException(), isNull);
   });
 
@@ -508,8 +538,9 @@ void main() {
     expect(find.text('是否系统应用'), findsOneWidget);
     expect(find.text('是否调试'), findsOneWidget);
     expect(find.text('数据目录'), findsOneWidget);
-    // 系统行 UID/共享 UID/安装来源/数据目录 → 未知（版本/包名等行不叠加）
-    expect(find.text('未知'), findsNWidgets(10));
+    // 系统行 UID/共享 UID/安装来源/数据目录 + 构建版本行 Kotlin/Gradle/Java
+    // → 未知（版本/包名等行不叠加）
+    expect(find.text('未知'), findsNWidgets(13));
     expect(find.text('是'), findsNothing);
     expect(find.text('否'), findsNWidgets(2));
     expect(tester.takeException(), isNull);
