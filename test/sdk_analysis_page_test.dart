@@ -1,5 +1,9 @@
+import 'dart:io';
+
+import 'package:archive/archive.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:gstore/core/rust/generated/components.dart';
 import 'package:gstore/core/service/apk_library_analyzer.dart';
 import 'package:gstore/core/service/apk_source_service.dart';
 import 'package:gstore/page/installed_apps/sdk_analysis_page.dart';
@@ -8,8 +12,10 @@ import 'package:installed_apps/app_info.dart' as installed;
 /// SDK 分析页（LibChecker 式多 Tab 分类）测试。
 ///
 /// 注入空规则集使三路分析器短路（无 isolate/FFI 真实 IO），
-/// 详情数据（权限/ABI）同样通过测试注入短路；
+/// 详情数据（权限/ABI/全量原生库/应用详情/组件清单）同样通过测试注入短路；
 /// Future 仅经 microtask 完成，可在 testWidgets 的 FakeAsync 内推进。
+/// 「原生库 tab 全量 .so」测试使用真实假 APK（zip）+ compute，
+/// 通过 runAsync 轮询（参考 detail_readme_section_test）等待 isolate 结果。
 void main() {
   installed.AppInfo buildApp() => installed.AppInfo(
         name: '测试应用',
@@ -33,16 +39,25 @@ void main() {
     });
   }
 
-  /// 注入合成详情数据（ABI/权限）并清理。
+  /// 注入合成详情数据（ABI/权限/全量原生库/应用详情/组件清单）并清理。
   void injectDetails({
     List<String> abis = const [],
     List<String> permissions = const [],
+    List<NativeAbiLibs> fullLibs = const [],
+    InstalledAppDetail detail = const InstalledAppDetail(),
+    ApkComponents? components,
   }) {
     ApkLibraryAnalyzer.instance.debugSetAbis(abis);
+    ApkLibraryAnalyzer.instance.debugSetFullNativeLibs(fullLibs);
     ApkSourceService.instance.debugSetPermissions(permissions);
+    ApkSourceService.instance.debugSetInstalledAppDetail(detail);
+    SdkAnalysisPage.debugSetComponents(components);
     addTearDown(() {
       ApkLibraryAnalyzer.instance.debugSetAbis(null);
+      ApkLibraryAnalyzer.instance.debugSetFullNativeLibs(null);
       ApkSourceService.instance.debugSetPermissions(null);
+      ApkSourceService.instance.debugSetInstalledAppDetail(null);
+      SdkAnalysisPage.debugSetComponents(null);
     });
   }
 
@@ -61,12 +76,43 @@ void main() {
   }
 
   /// 点击 Tab 标签切换到对应分类页（默认展示首个「概览」）。
+  /// Tab 数量较多需横向滚动，先 ensureVisible 再点击。
   Future<void> switchTab(WidgetTester tester, String label) async {
+    await tester.ensureVisible(find.text(label));
+    await tester.pumpAndSettle();
     await tester.tap(find.text(label));
     await tester.pumpAndSettle();
   }
 
-  testWidgets('SDK 分析页：加载完成后出现五个 Tab 分类', (tester) async {
+  /// 反复推进真实异步 + 刷新帧直到 TabBar 出现（分析完成），
+  /// 避免 fake-async 时钟下 compute isolate 永不完成。
+  Future<void> pumpUntilTabBar(WidgetTester tester) async {
+    for (var i = 0; i < 100; i++) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 20)),
+      );
+      await tester.pump();
+      if (find.byType(TabBar).evaluate().isNotEmpty) return;
+    }
+    fail('SDK 分析页加载超时（TabBar 未出现）');
+  }
+
+  /// 生成包含指定条目的假 APK（zip，同步写盘——FakeAsync 内不可 await 真实 IO）
+  String buildFakeApkSync(List<String> entries) {
+    final dir = Directory.systemTemp.createTempSync('gstore_sdk_page_test');
+    final archive = Archive();
+    for (final name in entries) {
+      archive.addFile(ArchiveFile(name, 4, [1, 2, 3, 4]));
+    }
+    final bytes = ZipEncoder().encode(archive)!;
+    File('${dir.path}/fake.apk').writeAsBytesSync(bytes);
+    addTearDown(() {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+    });
+    return '${dir.path}/fake.apk';
+  }
+
+  testWidgets('SDK 分析页：加载完成后出现七个 Tab 分类', (tester) async {
     injectEmptyRules();
     injectDetails();
 
@@ -88,9 +134,17 @@ void main() {
     await tester.pump();
     await tester.pump();
 
-    // 五个 Tab 按序出现
+    // 七个 Tab 按序出现
     expect(find.byType(TabBar), findsOneWidget);
-    for (final label in ['概览', '原生库', 'DEX 类名', '组件', '权限']) {
+    for (final label in [
+      '概览',
+      '原生库',
+      'DEX 类名',
+      '组件',
+      '权限',
+      '签名',
+      'meta 数据',
+    ]) {
       expect(find.text(label), findsOneWidget);
     }
     expect(tester.takeException(), isNull);
@@ -109,14 +163,193 @@ void main() {
     expect(find.text('1.0.0 (1)'), findsOneWidget);
     expect(find.text('安装路径'), findsOneWidget);
     expect(find.text('/no/such/file.apk'), findsOneWidget);
-    // SDK 版本解析失败 → 降级为「未知」
+    // 新增行（详情为空 → 全部「未知」）
+    expect(find.text('主 Activity'), findsOneWidget);
+    expect(find.text('APK 大小'), findsOneWidget);
+    expect(find.text('安装时间'), findsOneWidget);
+    expect(find.text('最近更新'), findsOneWidget);
+    // SDK 版本解析失败 + 详情缺失 → 共 6 处「未知」降级
     expect(find.text('minSdk'), findsOneWidget);
     expect(find.text('targetSdk'), findsOneWidget);
-    expect(find.text('未知'), findsNWidgets(2));
+    expect(find.text('未知'), findsNWidgets(6));
     // ABI 非空 → 渲染 chips
     expect(find.text('ABI 架构'), findsOneWidget);
     expect(find.text('arm64-v8a'), findsOneWidget);
     expect(find.text('armeabi-v7a'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('SDK 分析页：概览展示主 Activity/APK 大小/安装时间与详情 SDK 版本', (tester) async {
+    injectEmptyRules();
+    injectDetails(
+      detail: const InstalledAppDetail(
+        mainActivity: 'com.example.MainActivity',
+        apkSize: 13107200, // 12.5 * 1024 * 1024 → 12.5 MB
+        firstInstallTime: 0,
+        lastUpdateTime: 0,
+        minSdk: 24,
+        targetSdk: 34,
+      ),
+    );
+
+    await pumpPage(tester);
+
+    expect(find.text('主 Activity'), findsOneWidget);
+    expect(find.text('com.example.MainActivity'), findsOneWidget);
+    expect(find.text('APK 大小'), findsOneWidget);
+    expect(find.text('12.5 MB'), findsOneWidget);
+    // 安装时间/最近更新为 0 → 未知；minSdk/targetSdk 回退详情值
+    expect(find.text('未知'), findsNWidgets(2));
+    expect(find.text('24'), findsOneWidget);
+    expect(find.text('34'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('SDK 分析页：概览安装/更新时间按 yyyy-MM-dd 格式化', (tester) async {
+    injectEmptyRules();
+    injectDetails(
+      detail: const InstalledAppDetail(
+        firstInstallTime: 1704412800000, // 2024-01-05 00:00 UTC
+        lastUpdateTime: 1717200000000, // 2024-06-01 00:00 UTC
+      ),
+    );
+
+    await pumpPage(tester);
+
+    expect(find.text('2024-01-05'), findsOneWidget);
+    expect(find.text('2024-06-01'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('SDK 分析页：原生库 tab 展示全量 .so 按 ABI 分组，命中高亮 vs 未命中平淡', (tester) async {
+    final apkPath = buildFakeApkSync([
+      'lib/arm64-v8a/libmatched.so',
+      'lib/arm64-v8a/libplain.so',
+      'lib/x86/libother.so',
+      'classes.dex',
+      'AndroidManifest.xml',
+    ]);
+
+    // 只注入原生库规则：libmatched.so 命中；DEX/组件规则保持空 → 短路
+    ApkLibraryAnalyzer.instance.debugSetRules([
+      NativeLibraryRule(
+        name: 'libmatched.so',
+        label: '匹配 SDK',
+        type: 0,
+        isRegexRule: false,
+      ),
+    ]);
+    ApkLibraryAnalyzer.instance.debugSetDexRules(const []);
+    ApkLibraryAnalyzer.instance.debugSetComponentRules(const []);
+    ApkLibraryAnalyzer.instance.debugSetFullNativeLibs(null); // 走真实扫描
+    addTearDown(() {
+      ApkLibraryAnalyzer.instance.debugSetRules(null);
+      ApkLibraryAnalyzer.instance.debugSetDexRules(null);
+      ApkLibraryAnalyzer.instance.debugSetComponentRules(null);
+      ApkLibraryAnalyzer.instance.debugSetFullNativeLibs(null);
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SdkAnalysisPage(app: buildApp(), sourceDir: apkPath),
+      ),
+    );
+    // compute isolate + 真实 zip 扫描：runAsync 轮询直到加载完成
+    await pumpUntilTabBar(tester);
+
+    await switchTab(tester, '原生库');
+
+    // ABI 分组头（各 `.so` 一条）
+    expect(find.text('arm64-v8a'), findsOneWidget);
+    expect(find.text('x86'), findsOneWidget);
+    expect(find.text('libmatched.so'), findsOneWidget);
+    expect(find.text('libplain.so'), findsOneWidget);
+    expect(find.text('libother.so'), findsOneWidget);
+    // 命中行：SDK 标签可见（高亮样式走 _buildItem）
+    expect(find.text('匹配 SDK'), findsOneWidget);
+    // 未命中行副标题：libplain / libother 各一处
+    expect(find.text('未匹配规则'), findsNWidgets(2));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('SDK 分析页：组件 tab 展示全部组件区段并按类型计数', (tester) async {
+    injectEmptyRules();
+    injectDetails(
+      components: const ApkComponents(
+        packageName: 'com.example.test',
+        minSdk: '24',
+        targetSdk: '34',
+        services: ['com.example.Svc'],
+        activities: ['com.example.ActA', 'com.example.ActB'],
+        receivers: [],
+        providers: ['com.example.Prov'],
+      ),
+    );
+
+    await pumpPage(tester);
+    await switchTab(tester, '组件');
+
+    // 全部组件区段 + 全局计数（1+2+1=4）
+    expect(find.text('全部组件'), findsOneWidget);
+    expect(find.text('4'), findsOneWidget);
+    // 类型分组头（空类型不出现）
+    expect(find.text('Service'), findsOneWidget);
+    expect(find.text('Activity'), findsOneWidget);
+    expect(find.text('Provider'), findsOneWidget);
+    expect(find.text('Receiver'), findsNothing);
+    // 类型计数徽标：Activity 为 2
+    expect(find.text('2'), findsOneWidget);
+    // 组件名全部列出
+    expect(find.text('com.example.Svc'), findsOneWidget);
+    expect(find.text('com.example.ActA'), findsOneWidget);
+    expect(find.text('com.example.ActB'), findsOneWidget);
+    expect(find.text('com.example.Prov'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('SDK 分析页：签名 tab 列出证书主题与 SHA-256 指纹', (tester) async {
+    injectEmptyRules();
+    injectDetails(
+      detail: const InstalledAppDetail(
+        signatures: [
+          SignatureInfo(
+            algorithm: 'SHA256withRSA',
+            subject: 'CN=Google, O=Android',
+            sha256: 'aa:bb:cc:dd',
+            sha1: '11:22:33:44',
+          ),
+        ],
+      ),
+    );
+
+    await pumpPage(tester);
+    await switchTab(tester, '签名');
+
+    expect(find.text('CN=Google, O=Android'), findsOneWidget);
+    expect(find.textContaining('aa:bb:cc:dd'), findsOneWidget);
+    expect(find.text('SHA256withRSA'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('SDK 分析页：meta 数据 tab 键值行展示（键排序）', (tester) async {
+    injectEmptyRules();
+    injectDetails(
+      detail: const InstalledAppDetail(
+        metaData: {
+          'flavor': 'release',
+          'channel': 'play',
+        },
+      ),
+    );
+
+    await pumpPage(tester);
+    await switchTab(tester, 'meta 数据');
+
+    expect(find.text('meta 数据'), findsNWidgets(2)); // TabBar 标签 + 组头
+    expect(find.text('channel'), findsOneWidget);
+    expect(find.text('play'), findsOneWidget);
+    expect(find.text('flavor'), findsOneWidget);
+    expect(find.text('release'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -181,7 +414,7 @@ void main() {
     expect(groups[2].items, hasLength(1));
   });
 
-  testWidgets('SDK 分析页：原生库/DEX/组件/权限空态提示', (tester) async {
+  testWidgets('SDK 分析页：各 Tab 空态提示', (tester) async {
     injectEmptyRules();
     injectDetails();
 
@@ -198,6 +431,12 @@ void main() {
 
     await switchTab(tester, '权限');
     expect(find.text('无权限声明'), findsOneWidget);
+
+    await switchTab(tester, '签名');
+    expect(find.text('无签名信息'), findsOneWidget);
+
+    await switchTab(tester, 'meta 数据');
+    expect(find.text('无 meta-data'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }
