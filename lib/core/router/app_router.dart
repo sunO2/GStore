@@ -84,6 +84,10 @@ final GoRouter appRouter = GoRouter(
       builder: (context, state) => const LogViewerPage(),
     ),
     GoRoute(
+      path: AppRoute.qrTool,
+      builder: (context, state) => const QrToolPage(),
+    ),
+    GoRoute(
       path: AppRoute.settings,
       builder: (context, state) => const SettingsPage(),
     ),

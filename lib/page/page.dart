@@ -7,6 +7,7 @@ export 'package:gstore/page/web/view.dart';
 export 'package:gstore/page/auth/view.dart';
 export 'package:gstore/page/fdroid_repo/view.dart';
 export 'package:gstore/page/log_viewer/view.dart';
+export 'package:gstore/page/qr_tool/view.dart';
 export 'package:gstore/page/settings/settings_page.dart';
 export 'package:gstore/page/settings/theme_settings_page.dart';
 export 'package:gstore/page/backup/view.dart';

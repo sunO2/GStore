@@ -31,6 +31,9 @@ class _MinePageState extends ConsumerState<MinePage>
   /// 备份卡片展开状态
   bool _backupExpanded = false;
 
+  /// 工具卡片展开状态（默认展开）
+  bool _toolsExpanded = true;
+
   /// 备份逻辑控制器（页面私有实例；操作区监听其 ChangeNotifier 驱动重建）
   late final BackupLogic _backupLogic;
 
@@ -65,6 +68,10 @@ class _MinePageState extends ConsumerState<MinePage>
   /// 备份卡片动画控制器
   late AnimationController _backupController;
   late Animation<double> _backupAnimation;
+
+  /// 工具卡片动画控制器
+  late AnimationController _toolsController;
+  late Animation<double> _toolsAnimation;
 
   /// 卡片 GlobalKey
   final GlobalKey _appearanceCardKey = GlobalKey();
@@ -127,6 +134,16 @@ class _MinePageState extends ConsumerState<MinePage>
       parent: _backupController,
       curve: Curves.easeInOut,
     );
+
+    // 初始化工具卡片动画（默认展开 → 初始 forward）
+    _toolsController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 300),
+    )..forward();
+    _toolsAnimation = CurvedAnimation(
+      parent: _toolsController,
+      curve: Curves.easeInOut,
+    );
   }
 
   @override
@@ -138,6 +155,7 @@ class _MinePageState extends ConsumerState<MinePage>
     _backupLogic.dispose();
     _appearanceController.dispose();
     _backupController.dispose();
+    _toolsController.dispose();
     super.dispose();
   }
 
@@ -163,6 +181,16 @@ class _MinePageState extends ConsumerState<MinePage>
       _backupController.forward();
     } else {
       _backupController.reverse();
+    }
+  }
+
+  /// 切换工具卡片展开状态
+  void _toggleToolsExpanded() {
+    setState(() => _toolsExpanded = !_toolsExpanded);
+    if (_toolsExpanded) {
+      _toolsController.forward();
+    } else {
+      _toolsController.reverse();
     }
   }
 
@@ -293,6 +321,11 @@ class _MinePageState extends ConsumerState<MinePage>
                 _buildBackupCard(context),
                 const SizedBox(height: AppSpacing.md),
               ],
+
+              // 工具卡片（始终显示，默认展开）
+              _buildToolsCard(context),
+
+              const SizedBox(height: AppSpacing.md),
 
               // 快捷功能卡片（始终显示）
               _buildQuickActionsCard(context),
@@ -452,16 +485,92 @@ class _MinePageState extends ConsumerState<MinePage>
                 const Icon(Icons.chevron_right, size: AppTypography.iconSM),
             onTap: () => context.push(AppRoute.settings),
           ),
-          const Divider(height: 1),
-          ListTile(
-            leading: const Icon(Icons.bug_report_outlined,
-                size: AppTypography.iconMD),
-            title: const Text('查看日志'),
-            trailing:
-                const Icon(Icons.chevron_right, size: AppTypography.iconSM),
-            onTap: () => context.push(AppRoute.logViewer),
-          ),
         ],
+      ),
+    );
+  }
+
+  /// 构建工具卡片（默认展开；内含「查看日志」「二维码」入口）
+  Widget _buildToolsCard(BuildContext context) {
+    return Card(
+      elevation: 0,
+      shape: _cardShape,
+      child: Padding(
+        padding: AppSpacing.allLG,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // 标题栏（带展开/收起按钮）
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                Icon(
+                  Icons.handyman_outlined,
+                  size: AppTypography.iconMD,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+                const SizedBox(width: AppSpacing.md),
+                Text(
+                  '工具',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: AppTypography.weightSemiBold,
+                      ),
+                ),
+                const Spacer(),
+                InkWell(
+                  onTap: _toggleToolsExpanded,
+                  borderRadius: BorderRadius.circular(20),
+                  child: const SizedBox(
+                    width: 32,
+                    height: 32,
+                    child: Center(
+                      child: Padding(
+                        padding: EdgeInsets.all(6),
+                        child: Icon(
+                          Icons.expand_more,
+                          size: 18,
+                          color: AppColors.textSecondary,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: AppSpacing.lg),
+
+            // 折叠区：工具入口列表
+            SizeTransition(
+              sizeFactor: _toolsAnimation,
+              axis: Axis.vertical,
+              axisAlignment: -1.0, // 从顶部开始
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.bug_report_outlined,
+                        size: AppTypography.iconMD),
+                    title: const Text('查看日志'),
+                    trailing: const Icon(Icons.chevron_right,
+                        size: AppTypography.iconSM),
+                    onTap: () => context.push(AppRoute.logViewer),
+                  ),
+                  const Divider(height: 1),
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.qr_code_2,
+                        size: AppTypography.iconMD),
+                    title: const Text('二维码'),
+                    trailing: const Icon(Icons.chevron_right,
+                        size: AppTypography.iconSM),
+                    onTap: () => context.push(AppRoute.qrTool),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
