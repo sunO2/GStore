@@ -7,6 +7,7 @@ import 'bridge.dart';
 import 'components.dart';
 import 'dart:async';
 import 'dart:convert';
+import 'elf.dart';
 import 'frb_generated.dart';
 import 'frb_generated.io.dart'
     if (dart.library.js_interop) 'frb_generated.web.dart';
@@ -74,7 +75,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.11.1';
 
   @override
-  int get rustContentHash => 1661713296;
+  int get rustContentHash => -768278085;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -121,6 +122,9 @@ abstract class RustLibApi extends BaseApi {
       {required FdroidRepoManager that,
       required String apkPath,
       required List<String> patterns});
+
+  Future<ApkElfScanResult> crateBridgeFdroidRepoManagerScanElfPageSizes(
+      {required FdroidRepoManager that, required String apkPath});
 
   Future<List<AppInfo>> crateBridgeFdroidRepoManagerSearchApps(
       {required FdroidRepoManager that,
@@ -490,6 +494,34 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<ApkElfScanResult> crateBridgeFdroidRepoManagerScanElfPageSizes(
+      {required FdroidRepoManager that, required String apkPath}) {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
+        final serializer = SseSerializer(generalizedFrbRustBinding);
+        sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFdroidRepoManager(
+            that, serializer);
+        sse_encode_String(apkPath, serializer);
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 13, port: port_);
+      },
+      codec: SseCodec(
+        decodeSuccessData: sse_decode_apk_elf_scan_result,
+        decodeErrorData: sse_decode_String,
+      ),
+      constMeta: kCrateBridgeFdroidRepoManagerScanElfPageSizesConstMeta,
+      argValues: [that, apkPath],
+      apiImpl: this,
+    ));
+  }
+
+  TaskConstMeta get kCrateBridgeFdroidRepoManagerScanElfPageSizesConstMeta =>
+      const TaskConstMeta(
+        debugName: "FdroidRepoManager_scan_elf_page_sizes",
+        argNames: ["that", "apkPath"],
+      );
+
+  @override
   Future<List<AppInfo>> crateBridgeFdroidRepoManagerSearchApps(
       {required FdroidRepoManager that,
       required String keyword,
@@ -502,7 +534,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_String(keyword, serializer);
         sse_encode_i_32(limit, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 13, port: port_);
+            funcId: 14, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_list_app_info,
@@ -526,7 +558,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       callFfi: (port_) {
         final serializer = SseSerializer(generalizedFrbRustBinding);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 14, port: port_);
+            funcId: 15, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_flutter_progress_callback,
@@ -632,6 +664,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  ApkElfScanResult dco_decode_apk_elf_scan_result(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 1)
+      throw Exception('unexpected arr length: expect 1 but see ${arr.length}');
+    return ApkElfScanResult(
+      soFiles: dco_decode_list_elf_so_info(arr[0]),
+    );
+  }
+
+  @protected
   ApkInfo dco_decode_apk_info(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -671,6 +714,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  bool dco_decode_bool(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw as bool;
+  }
+
+  @protected
   RepoManager
       dco_decode_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRepoManager(
           dynamic raw) {
@@ -700,6 +749,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     return DownloadResult(
       totalApps: dco_decode_i_32(arr[0]),
       downloadTimeMs: dco_decode_i_32(arr[1]),
+    );
+  }
+
+  @protected
+  ElfSoInfo dco_decode_elf_so_info(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    return ElfSoInfo(
+      abi: dco_decode_String(arr[0]),
+      soName: dco_decode_String(arr[1]),
+      minPageSize: dco_decode_i_64(arr[2]),
+      aligned16Kb: dco_decode_bool(arr[3]),
     );
   }
 
@@ -734,6 +797,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   List<AppInfo> dco_decode_list_app_info(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>).map(dco_decode_app_info).toList();
+  }
+
+  @protected
+  List<ElfSoInfo> dco_decode_list_elf_so_info(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_elf_so_info).toList();
   }
 
   @protected
@@ -871,6 +940,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  ApkElfScanResult sse_decode_apk_elf_scan_result(
+      SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_soFiles = sse_decode_list_elf_so_info(deserializer);
+    return ApkElfScanResult(soFiles: var_soFiles);
+  }
+
+  @protected
   ApkInfo sse_decode_apk_info(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_packageName = sse_decode_String(deserializer);
@@ -921,6 +998,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  bool sse_decode_bool(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return deserializer.buffer.getUint8() != 0;
+  }
+
+  @protected
   RepoManager
       sse_decode_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRepoManager(
           SseDeserializer deserializer) {
@@ -948,6 +1031,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_downloadTimeMs = sse_decode_i_32(deserializer);
     return DownloadResult(
         totalApps: var_totalApps, downloadTimeMs: var_downloadTimeMs);
+  }
+
+  @protected
+  ElfSoInfo sse_decode_elf_so_info(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_abi = sse_decode_String(deserializer);
+    var var_soName = sse_decode_String(deserializer);
+    var var_minPageSize = sse_decode_i_64(deserializer);
+    var var_aligned16Kb = sse_decode_bool(deserializer);
+    return ElfSoInfo(
+        abi: var_abi,
+        soName: var_soName,
+        minPageSize: var_minPageSize,
+        aligned16Kb: var_aligned16Kb);
   }
 
   @protected
@@ -989,6 +1086,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var ans_ = <AppInfo>[];
     for (var idx_ = 0; idx_ < len_; ++idx_) {
       ans_.add(sse_decode_app_info(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<ElfSoInfo> sse_decode_list_elf_so_info(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <ElfSoInfo>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_elf_so_info(deserializer));
     }
     return ans_;
   }
@@ -1062,12 +1171,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   BigInt sse_decode_usize(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return deserializer.buffer.getBigUint64();
-  }
-
-  @protected
-  bool sse_decode_bool(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return deserializer.buffer.getUint8() != 0;
   }
 
   @protected
@@ -1147,6 +1250,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_apk_elf_scan_result(
+      ApkElfScanResult self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_list_elf_so_info(self.soFiles, serializer);
+  }
+
+  @protected
   void sse_encode_apk_info(ApkInfo self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.packageName, serializer);
@@ -1173,6 +1283,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_box_autoadd_i_64(self.lastUpdated, serializer);
     sse_encode_opt_String(self.metadata, serializer);
     sse_encode_opt_String(self.versions, serializer);
+  }
+
+  @protected
+  void sse_encode_bool(bool self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    serializer.buffer.putUint8(self ? 1 : 0);
   }
 
   @protected
@@ -1203,6 +1319,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_32(self.totalApps, serializer);
     sse_encode_i_32(self.downloadTimeMs, serializer);
+  }
+
+  @protected
+  void sse_encode_elf_so_info(ElfSoInfo self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.abi, serializer);
+    sse_encode_String(self.soName, serializer);
+    sse_encode_i_64(self.minPageSize, serializer);
+    sse_encode_bool(self.aligned16Kb, serializer);
   }
 
   @protected
@@ -1238,6 +1363,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_i_32(self.length, serializer);
     for (final item in self) {
       sse_encode_app_info(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_elf_so_info(
+      List<ElfSoInfo> self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_elf_so_info(item, serializer);
     }
   }
 
@@ -1309,12 +1444,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   void sse_encode_usize(BigInt self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     serializer.buffer.putBigUint64(self);
-  }
-
-  @protected
-  void sse_encode_bool(bool self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    serializer.buffer.putUint8(self ? 1 : 0);
   }
 }
 
@@ -1406,6 +1535,15 @@ class FdroidRepoManagerImpl extends RustOpaque implements FdroidRepoManager {
           {required String apkPath, required List<String> patterns}) =>
       RustLib.instance.api.crateBridgeFdroidRepoManagerScanDexClasses(
           that: this, apkPath: apkPath, patterns: patterns);
+
+  /// 扫描 APK 内所有 lib/<abi>/*.so 的 ELF 16KB 页对齐情况
+  ///
+  /// 逐文件解析 ELF 程序头 PT_LOAD 段的 p_align 最小值
+  /// （对齐 LibChecker ElfParser.getMinPageSize）；min_page_size 为 -1
+  /// 表示非 ELF / 无 PT_LOAD / 解析失败，aligned_16kb = min>0 且可被 16384 整除。
+  Future<ApkElfScanResult> scanElfPageSizes({required String apkPath}) =>
+      RustLib.instance.api.crateBridgeFdroidRepoManagerScanElfPageSizes(
+          that: this, apkPath: apkPath);
 
   /// 搜索应用
   Future<List<AppInfo>> searchApps(

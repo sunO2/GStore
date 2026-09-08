@@ -4,6 +4,7 @@ mod repo;
 mod apk;
 mod dex_scan;
 mod components;
+pub mod elf;
 mod bridge;
 
 pub use bridge::FdroidRepoManager;

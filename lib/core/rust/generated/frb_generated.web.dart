@@ -10,6 +10,7 @@ import 'bridge.dart';
 import 'components.dart';
 import 'dart:async';
 import 'dart:convert';
+import 'elf.dart';
 import 'frb_generated.dart';
 import 'models.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated_web.dart';
@@ -68,10 +69,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   ApkComponents dco_decode_apk_components(dynamic raw);
 
   @protected
+  ApkElfScanResult dco_decode_apk_elf_scan_result(dynamic raw);
+
+  @protected
   ApkInfo dco_decode_apk_info(dynamic raw);
 
   @protected
   AppInfo dco_decode_app_info(dynamic raw);
+
+  @protected
+  bool dco_decode_bool(dynamic raw);
 
   @protected
   RepoManager
@@ -88,6 +95,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DownloadResult dco_decode_download_result(dynamic raw);
 
   @protected
+  ElfSoInfo dco_decode_elf_so_info(dynamic raw);
+
+  @protected
   FlutterProgressCallback dco_decode_flutter_progress_callback(dynamic raw);
 
   @protected
@@ -101,6 +111,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<AppInfo> dco_decode_list_app_info(dynamic raw);
+
+  @protected
+  List<ElfSoInfo> dco_decode_list_elf_so_info(dynamic raw);
 
   @protected
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
@@ -165,10 +178,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   ApkComponents sse_decode_apk_components(SseDeserializer deserializer);
 
   @protected
+  ApkElfScanResult sse_decode_apk_elf_scan_result(SseDeserializer deserializer);
+
+  @protected
   ApkInfo sse_decode_apk_info(SseDeserializer deserializer);
 
   @protected
   AppInfo sse_decode_app_info(SseDeserializer deserializer);
+
+  @protected
+  bool sse_decode_bool(SseDeserializer deserializer);
 
   @protected
   RepoManager
@@ -185,6 +204,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DownloadResult sse_decode_download_result(SseDeserializer deserializer);
 
   @protected
+  ElfSoInfo sse_decode_elf_so_info(SseDeserializer deserializer);
+
+  @protected
   FlutterProgressCallback sse_decode_flutter_progress_callback(
       SseDeserializer deserializer);
 
@@ -199,6 +221,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<AppInfo> sse_decode_list_app_info(SseDeserializer deserializer);
+
+  @protected
+  List<ElfSoInfo> sse_decode_list_elf_so_info(SseDeserializer deserializer);
 
   @protected
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
@@ -225,9 +250,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BigInt sse_decode_usize(SseDeserializer deserializer);
-
-  @protected
-  bool sse_decode_bool(SseDeserializer deserializer);
 
   @protected
   void
@@ -266,10 +288,17 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_apk_components(ApkComponents self, SseSerializer serializer);
 
   @protected
+  void sse_encode_apk_elf_scan_result(
+      ApkElfScanResult self, SseSerializer serializer);
+
+  @protected
   void sse_encode_apk_info(ApkInfo self, SseSerializer serializer);
 
   @protected
   void sse_encode_app_info(AppInfo self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_bool(bool self, SseSerializer serializer);
 
   @protected
   void
@@ -288,6 +317,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
       DownloadResult self, SseSerializer serializer);
 
   @protected
+  void sse_encode_elf_so_info(ElfSoInfo self, SseSerializer serializer);
+
+  @protected
   void sse_encode_flutter_progress_callback(
       FlutterProgressCallback self, SseSerializer serializer);
 
@@ -302,6 +334,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_list_app_info(List<AppInfo> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_elf_so_info(
+      List<ElfSoInfo> self, SseSerializer serializer);
 
   @protected
   void sse_encode_list_prim_u_8_strict(
@@ -331,9 +367,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_usize(BigInt self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_bool(bool self, SseSerializer serializer);
 }
 
 // Section: wire_class

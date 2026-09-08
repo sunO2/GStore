@@ -10,6 +10,12 @@ pub use crate::models::ApkInfo;
 /// Manifest 组件枚举结果（结构体将自动生成 Dart 侧对应类）
 pub use crate::components::ApkComponents;
 
+/// APK 内 ELF .so 16KB 页对齐扫描结果（结构体将自动生成 Dart 侧对应类）
+// ElfSoInfo 未直接出现在本 crate 方法签名（仅作为 ApkElfScanResult 的字段），
+// 保留 re-export 供 FRB 生成 Dart 侧对应类。
+#[allow(unused_imports)]
+pub use crate::elf::{ApkElfScanResult, ElfSoInfo};
+
 impl FdroidRepoManager {
     /// 解析 APK 文件，提取真实包名/版本/应用名等信息
     /// 在安装前调用，避免依赖安装结果判断包名
@@ -40,6 +46,15 @@ impl FdroidRepoManager {
     /// 与 LibChecker 从 PackageManager 读已安装应用组件等价。
     pub fn parse_components(&self, apk_path: String) -> Result<ApkComponents, String> {
         crate::components::parse_components(&apk_path)
+    }
+
+    /// 扫描 APK 内所有 lib/<abi>/*.so 的 ELF 16KB 页对齐情况
+    ///
+    /// 逐文件解析 ELF 程序头 PT_LOAD 段的 p_align 最小值
+    /// （对齐 LibChecker ElfParser.getMinPageSize）；min_page_size 为 -1
+    /// 表示非 ELF / 无 PT_LOAD / 解析失败，aligned_16kb = min>0 且可被 16384 整除。
+    pub fn scan_elf_page_sizes(&self, apk_path: String) -> Result<ApkElfScanResult, String> {
+        crate::elf::scan_elf_page_sizes(&apk_path)
     }
 }
 

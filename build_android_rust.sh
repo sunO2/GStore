@@ -51,8 +51,13 @@ build_arch() {
 
     # 设置环境变量 (dart-sys 需要这些)
     # NDK 工具链名称: <target><api_level>-clang, 例如 aarch64-linux-android33-clang
-    export "CC_${target_underscore}=$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin/${target}33-clang"
-    export "CXX_${target_underscore}=$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin/${target}33-clang++"
+    # armv7 例外：NDK 实际文件名带 `a`（armv7a-linux-androideabi33-clang），直接拼接会得到不存在的路径
+    local clang_name="${target}33-clang"
+    if [ "$target" = "armv7-linux-androideabi" ]; then
+        clang_name="armv7a-linux-androideabi33-clang"
+    fi
+    export "CC_${target_underscore}=$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin/$clang_name"
+    export "CXX_${target_underscore}=$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin/${clang_name%clang}clang++"
     export "AR_${target_underscore}=$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
 
     # armv7: ring/cc 等需要旧式工具链名（arm-linux-androideabi-clang）

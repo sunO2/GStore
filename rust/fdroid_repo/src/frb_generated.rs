@@ -39,7 +39,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.11.1";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1661713296;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -768278085;
 
 // Section: executor
 
@@ -652,6 +652,59 @@ fn wire__crate__bridge__FdroidRepoManager_scan_dex_classes_impl(
         },
     )
 }
+fn wire__crate__bridge__FdroidRepoManager_scan_elf_page_sizes_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "FdroidRepoManager_scan_elf_page_sizes",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<FdroidRepoManager>,
+            >>::sse_decode(&mut deserializer);
+            let api_apk_path = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = crate::bridge::FdroidRepoManager::scan_elf_page_sizes(
+                        &*api_that_guard,
+                        api_apk_path,
+                    )?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
 fn wire__crate__bridge__FdroidRepoManager_search_apps_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -822,6 +875,16 @@ impl SseDecode for crate::components::ApkComponents {
     }
 }
 
+impl SseDecode for crate::elf::ApkElfScanResult {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_soFiles = <Vec<crate::elf::ElfSoInfo>>::sse_decode(deserializer);
+        return crate::elf::ApkElfScanResult {
+            so_files: var_soFiles,
+        };
+    }
+}
+
 impl SseDecode for crate::models::ApkInfo {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -876,6 +939,13 @@ impl SseDecode for crate::models::AppInfo {
     }
 }
 
+impl SseDecode for bool {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        deserializer.cursor.read_u8().unwrap() != 0
+    }
+}
+
 impl SseDecode for crate::models::DownloadResult {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -884,6 +954,22 @@ impl SseDecode for crate::models::DownloadResult {
         return crate::models::DownloadResult {
             total_apps: var_totalApps,
             download_time_ms: var_downloadTimeMs,
+        };
+    }
+}
+
+impl SseDecode for crate::elf::ElfSoInfo {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_abi = <String>::sse_decode(deserializer);
+        let mut var_soName = <String>::sse_decode(deserializer);
+        let mut var_minPageSize = <i64>::sse_decode(deserializer);
+        let mut var_aligned16Kb = <bool>::sse_decode(deserializer);
+        return crate::elf::ElfSoInfo {
+            abi: var_abi,
+            so_name: var_soName,
+            min_page_size: var_minPageSize,
+            aligned_16kb: var_aligned16Kb,
         };
     }
 }
@@ -928,6 +1014,18 @@ impl SseDecode for Vec<crate::models::AppInfo> {
         let mut ans_ = vec![];
         for idx_ in 0..len_ {
             ans_.push(<crate::models::AppInfo>::sse_decode(deserializer));
+        }
+        return ans_;
+    }
+}
+
+impl SseDecode for Vec<crate::elf::ElfSoInfo> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = vec![];
+        for idx_ in 0..len_ {
+            ans_.push(<crate::elf::ElfSoInfo>::sse_decode(deserializer));
         }
         return ans_;
     }
@@ -1008,13 +1106,6 @@ impl SseDecode for usize {
     }
 }
 
-impl SseDecode for bool {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        deserializer.cursor.read_u8().unwrap() != 0
-    }
-}
-
 fn pde_ffi_dispatcher_primary_impl(
     func_id: i32,
     port: flutter_rust_bridge::for_generated::MessagePort,
@@ -1079,13 +1170,19 @@ fn pde_ffi_dispatcher_primary_impl(
             rust_vec_len,
             data_len,
         ),
-        13 => wire__crate__bridge__FdroidRepoManager_search_apps_impl(
+        13 => wire__crate__bridge__FdroidRepoManager_scan_elf_page_sizes_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        14 => wire__crate__bridge__flutter_progress_callback_new_impl(
+        14 => wire__crate__bridge__FdroidRepoManager_search_apps_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        15 => wire__crate__bridge__flutter_progress_callback_new_impl(
             port,
             ptr,
             rust_vec_len,
@@ -1176,6 +1273,20 @@ impl flutter_rust_bridge::IntoIntoDart<crate::components::ApkComponents>
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::elf::ApkElfScanResult {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [self.so_files.into_into_dart().into_dart()].into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::elf::ApkElfScanResult {}
+impl flutter_rust_bridge::IntoIntoDart<crate::elf::ApkElfScanResult>
+    for crate::elf::ApkElfScanResult
+{
+    fn into_into_dart(self) -> crate::elf::ApkElfScanResult {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::models::ApkInfo {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -1237,6 +1348,24 @@ impl flutter_rust_bridge::IntoIntoDart<crate::models::DownloadResult>
     for crate::models::DownloadResult
 {
     fn into_into_dart(self) -> crate::models::DownloadResult {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::elf::ElfSoInfo {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.abi.into_into_dart().into_dart(),
+            self.so_name.into_into_dart().into_dart(),
+            self.min_page_size.into_into_dart().into_dart(),
+            self.aligned_16kb.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::elf::ElfSoInfo {}
+impl flutter_rust_bridge::IntoIntoDart<crate::elf::ElfSoInfo> for crate::elf::ElfSoInfo {
+    fn into_into_dart(self) -> crate::elf::ElfSoInfo {
         self
     }
 }
@@ -1314,6 +1443,13 @@ impl SseEncode for crate::components::ApkComponents {
     }
 }
 
+impl SseEncode for crate::elf::ApkElfScanResult {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Vec<crate::elf::ElfSoInfo>>::sse_encode(self.so_files, serializer);
+    }
+}
+
 impl SseEncode for crate::models::ApkInfo {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -1345,11 +1481,28 @@ impl SseEncode for crate::models::AppInfo {
     }
 }
 
+impl SseEncode for bool {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        serializer.cursor.write_u8(self as _).unwrap();
+    }
+}
+
 impl SseEncode for crate::models::DownloadResult {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <i32>::sse_encode(self.total_apps, serializer);
         <i32>::sse_encode(self.download_time_ms, serializer);
+    }
+}
+
+impl SseEncode for crate::elf::ElfSoInfo {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.abi, serializer);
+        <String>::sse_encode(self.so_name, serializer);
+        <i64>::sse_encode(self.min_page_size, serializer);
+        <bool>::sse_encode(self.aligned_16kb, serializer);
     }
 }
 
@@ -1388,6 +1541,16 @@ impl SseEncode for Vec<crate::models::AppInfo> {
         <i32>::sse_encode(self.len() as _, serializer);
         for item in self {
             <crate::models::AppInfo>::sse_encode(item, serializer);
+        }
+    }
+}
+
+impl SseEncode for Vec<crate::elf::ElfSoInfo> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::elf::ElfSoInfo>::sse_encode(item, serializer);
         }
     }
 }
@@ -1461,13 +1624,6 @@ impl SseEncode for usize {
             .cursor
             .write_u64::<NativeEndian>(self as _)
             .unwrap();
-    }
-}
-
-impl SseEncode for bool {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        serializer.cursor.write_u8(self as _).unwrap();
     }
 }
 

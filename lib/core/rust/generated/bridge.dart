@@ -4,6 +4,7 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import 'components.dart';
+import 'elf.dart';
 import 'frb_generated.dart';
 import 'models.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
@@ -59,6 +60,13 @@ abstract class FdroidRepoManager implements RustOpaqueInterface {
   /// 本函数返回的类名也已转换为点分格式，与规则直接可比。
   Future<List<String>> scanDexClasses(
       {required String apkPath, required List<String> patterns});
+
+  /// 扫描 APK 内所有 lib/<abi>/*.so 的 ELF 16KB 页对齐情况
+  ///
+  /// 逐文件解析 ELF 程序头 PT_LOAD 段的 p_align 最小值
+  /// （对齐 LibChecker ElfParser.getMinPageSize）；min_page_size 为 -1
+  /// 表示非 ELF / 无 PT_LOAD / 解析失败，aligned_16kb = min>0 且可被 16384 整除。
+  Future<ApkElfScanResult> scanElfPageSizes({required String apkPath});
 
   /// 搜索应用
   Future<List<AppInfo>> searchApps(
