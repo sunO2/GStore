@@ -36,40 +36,47 @@ class _QrToolPageState extends State<QrToolPage> {
     final colorScheme = Theme.of(context).colorScheme;
     return Scaffold(
       appBar: AppBar(title: const Text('二维码')),
-      body: SingleChildScrollView(
+      body: Padding(
         padding: AppSpacing.allLG,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // 输入区
-            TextField(
-              controller: _controller,
-              maxLines: 4,
-              minLines: 1,
-              decoration: InputDecoration(
-                hintText: '输入文本或链接生成二维码',
-                hintStyle: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: colorScheme.outline,
-                    ),
-                prefixIcon: const Icon(Icons.edit_outlined),
-                border: OutlineInputBorder(
-                  borderRadius: AppRadius.allLG,
-                ),
+            // 二维码预览区（上，flex 2 居中；占位 / 实时二维码）
+            Expanded(
+              flex: 2,
+              child: Center(
+                child:
+                    _text.isEmpty ? _buildPlaceholder(context) : _buildQr(),
               ),
-              onChanged: (value) => setState(() => _text = value.trim()),
             ),
 
-            const SizedBox(height: AppSpacing.lg),
-
-            // 实时预览 / 占位
-            Center(
-              child: _text.isEmpty ? _buildPlaceholder(context) : _buildQr(),
+            // 输入区（下，flex 1 ≈ 屏高 1/3，撑开多行输入）
+            Expanded(
+              flex: 1,
+              child: TextField(
+                controller: _controller,
+                maxLines: null,
+                expands: true,
+                textAlignVertical: TextAlignVertical.top,
+                decoration: InputDecoration(
+                  hintText: '输入文本或链接生成二维码',
+                  hintStyle: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: colorScheme.outline,
+                      ),
+                  prefixIcon: const Icon(Icons.edit_outlined),
+                  border: OutlineInputBorder(
+                    borderRadius: AppRadius.allLG,
+                  ),
+                ),
+                onChanged: (value) => setState(() => _text = value.trim()),
+              ),
             ),
 
-            const SizedBox(height: AppSpacing.lg),
-
-            // 操作区（有内容才显示）
-            if (_text.isNotEmpty) _buildActions(context),
+            // 操作区（有内容才显示，置于底部）
+            if (_text.isNotEmpty) ...[
+              const SizedBox(height: AppSpacing.lg),
+              _buildActions(context),
+            ],
           ],
         ),
       ),
