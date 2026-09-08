@@ -1,6 +1,7 @@
 package com.suno2.gstore
 
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -257,6 +258,20 @@ class MainActivity : FlutterActivity() {
                         }
                         val targetSdk = packageInfo.applicationInfo?.targetSdkVersion
 
+                        // 系统信息字段（LibChecker 风格详情展示）
+                        val appInfo = packageInfo.applicationInfo
+                        val uid = appInfo?.uid ?: 0
+                        val sharedUserId = packageInfo.sharedUserId ?: ""
+                        var installer = ""
+                        try {
+                            installer = pm.getInstallerPackageName(packageName) ?: ""
+                        } catch (e: Exception) {
+                            installer = ""
+                        }
+                        val isSystemApp = (appInfo?.flags?.and(ApplicationInfo.FLAG_SYSTEM) != 0)
+                        val isDebuggable = (appInfo?.flags?.and(ApplicationInfo.FLAG_DEBUGGABLE) != 0)
+                        val dataDir = appInfo?.dataDir ?: ""
+
                         result.success(mapOf(
                             "signatures" to signatures,
                             "metaData" to metaData,
@@ -266,6 +281,12 @@ class MainActivity : FlutterActivity() {
                             "lastUpdateTime" to packageInfo.lastUpdateTime,
                             "minSdk" to minSdk,
                             "targetSdk" to targetSdk,
+                            "uid" to uid,
+                            "sharedUserId" to sharedUserId,
+                            "installer" to installer,
+                            "isSystemApp" to isSystemApp,
+                            "isDebuggable" to isDebuggable,
+                            "dataDir" to dataDir,
                         ))
                     } catch (e: Exception) {
                         result.error("DETAIL", "获取应用详情失败: ${e.message}", null)

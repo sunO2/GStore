@@ -490,6 +490,58 @@ void main() {
     });
   });
 
+  group('analyzeDexFilesFull', () {
+    tearDown(() {
+      ApkLibraryAnalyzer.instance.debugSetDexFilesFull(null);
+    });
+
+    test('注入 2 个 DEX 文件，验证名字与大小透传', () async {
+      ApkLibraryAnalyzer.instance.debugSetDexFilesFull([
+        const DexFile(name: 'classes.dex', size: 1048576),
+        const DexFile(name: 'classes2.dex', size: 524288),
+      ]);
+      final files = await ApkLibraryAnalyzer.instance.analyzeDexFilesFull('/fake/apk.apk');
+      expect(files, hasLength(2));
+      expect(files[0].name, 'classes.dex');
+      expect(files[0].size, 1048576);
+      expect(files[1].name, 'classes2.dex');
+      expect(files[1].size, 524288);
+    });
+
+    test('注入后传 null 恢复真实扫描路径', () async {
+      ApkLibraryAnalyzer.instance.debugSetDexFilesFull([
+        const DexFile(name: 'classes.dex', size: 42),
+      ]);
+      final injected =
+          await ApkLibraryAnalyzer.instance.analyzeDexFilesFull('/fake/apk.apk');
+      expect(injected, hasLength(1));
+      expect(injected.first.name, 'classes.dex');
+      expect(injected.first.size, 42);
+
+      // 恢复真实路径后走真实 zip 解压扫描
+      ApkLibraryAnalyzer.instance.debugSetDexFilesFull(null);
+      final apk = await _buildFakeApk([
+        'classes.dex',
+        'classes2.dex',
+        'assets/classes3.dex', // 非根目录分包也应枚举
+        'classes.dex.bak', // 非精确 classes*.dex 名，不应枚举
+        'AndroidManifest.xml',
+        'lib/arm64-v8a/libx.so',
+      ]);
+      final files = await ApkLibraryAnalyzer.instance.analyzeDexFilesFull(apk);
+      expect(files, hasLength(3));
+      expect(files.map((f) => f.name).toList(), ['classes.dex', 'classes2.dex', 'classes3.dex']);
+      // 每个 DEX 条目按 4 字节内容写入 → 解压后大小即 4 B
+      expect(files.map((f) => f.size).toList(), [4, 4, 4]);
+    });
+
+    test('文件不存在 → 空列表且不抛异常', () async {
+      final files =
+          await ApkLibraryAnalyzer.instance.analyzeDexFilesFull('/no/such/file.apk');
+      expect(files, isEmpty);
+    });
+  });
+
   group('analyzeComponents', () {
     tearDown(() {
       ApkLibraryAnalyzer.instance.debugSetComponentRules(null);

@@ -31,7 +31,7 @@ class SignatureInfo {
       );
 }
 
-/// 已安装应用详情（签名 / meta-data / 主 Activity / 安装信息 / APK 大小 / SDK 版本）
+/// 已安装应用详情（签名 / meta-data / 主 Activity / 安装信息 / APK 大小 / SDK 版本 / 系统信息）
 class InstalledAppDetail {
   const InstalledAppDetail({
     this.signatures = const [],
@@ -42,6 +42,12 @@ class InstalledAppDetail {
     this.lastUpdateTime = 0,
     this.minSdk,
     this.targetSdk,
+    this.uid = 0,
+    this.sharedUserId = '',
+    this.installer = '',
+    this.isSystemApp = false,
+    this.isDebuggable = false,
+    this.dataDir = '',
   });
 
   /// 签名证书列表（可能为空）
@@ -68,6 +74,24 @@ class InstalledAppDetail {
   /// 目标 SDK
   final int? targetSdk;
 
+  /// 应用 UID（Linux 用户标识）
+  final int uid;
+
+  /// sharedUserId（共享 UID 标识，无则空字符串）
+  final String sharedUserId;
+
+  /// 安装来源包名（如 com.android.vending），无则空字符串
+  final String installer;
+
+  /// 是否为系统应用
+  final bool isSystemApp;
+
+  /// 是否可调试（android:debuggable）
+  final bool isDebuggable;
+
+  /// 应用数据目录（/data/data/<pkg> 或 /data/user/0/<pkg>）
+  final String dataDir;
+
   factory InstalledAppDetail.fromJson(Map<String, dynamic> json) {
     final rawSignatures = (json['signatures'] as List<dynamic>?) ?? const [];
     final rawMetaData = (json['metaData'] as Map<dynamic, dynamic>?) ?? const {};
@@ -91,6 +115,12 @@ class InstalledAppDetail {
       lastUpdateTime: (json['lastUpdateTime'] as int?) ?? 0,
       minSdk: (json['minSdk'] as int?),
       targetSdk: (json['targetSdk'] as int?),
+      uid: (json['uid'] as int?) ?? 0,
+      sharedUserId: (json['sharedUserId'] as String?) ?? '',
+      installer: (json['installer'] as String?) ?? '',
+      isSystemApp: (json['isSystemApp'] as bool?) ?? false,
+      isDebuggable: (json['isDebuggable'] as bool?) ?? false,
+      dataDir: (json['dataDir'] as String?) ?? '',
     );
   }
 }

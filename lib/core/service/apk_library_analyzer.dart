@@ -190,6 +190,17 @@ class NativeAbiLibs {
   final List<NativeSoFile> soFiles;
 }
 
+/// 单个 DEX 文件：文件名 + zip 解压后字节数（LibChecker 风格展示）
+class DexFile {
+  const DexFile({required this.name, required this.size});
+
+  /// DEX 文件名（如 classes.dex / classes2.dex）
+  final String name;
+
+  /// zip 解压后字节数（uncompressed size）
+  final int size;
+}
+
 /// APK 内嵌第三方库检测
 ///
 /// - 方案 A（纯 Dart）：解压 APK 枚举 lib/<abi>/*.so 文件名，
@@ -228,11 +239,17 @@ class ApkLibraryAnalyzer {
   /// APK 路径 → 全量原生库（按 ABI 分组）缓存
   final Map<String, List<NativeAbiLibs>> _fullCache = {};
 
+  /// APK 路径 → 全量 DEX 文件列表缓存
+  final Map<String, List<DexFile>> _dexFullCache = {};
+
   /// 测试用：注入的合成 ABI 列表（非 null 时跳过真实扫描）
   List<String>? _debugAbis;
 
   /// 测试用：注入的合成全量原生库（非 null 时跳过真实扫描）
   List<NativeAbiLibs>? _debugFullNativeLibs;
+
+  /// 测试用：注入的合成全量 DEX 文件列表（非 null 时跳过真实扫描）
+  List<DexFile>? _debugDexFull;
 
   /// 已加载原生库规则（懒加载缓存；测试注入覆盖）
   List<NativeLibraryRule>? _rules;
@@ -279,6 +296,14 @@ class ApkLibraryAnalyzer {
   void debugSetFullNativeLibs(List<NativeAbiLibs>? libs) {
     _debugFullNativeLibs = libs;
     _fullCache.clear();
+  }
+
+  /// 测试用：注入合成全量 DEX 文件列表，跳过 isolate 解压扫描。
+  /// 传 null 恢复真实扫描。
+  @visibleForTesting
+  void debugSetDexFilesFull(List<DexFile>? files) {
+    _debugDexFull = files;
+    _dexFullCache.clear();
   }
 
   /// 加载规则（首次从资产读取并缓存）
@@ -690,6 +715,29 @@ class ApkLibraryAnalyzer {
     }
   }
 
+  /// 枚举 APK 内全部 DEX 文件（classes*.dex，zip 任意层级），LibChecker 风格展示。
+  ///
+  /// 匹配 zip 内所有名称形如 `classes\d*\.dex` 的条目（忽略大小写，
+  /// 含分包 classes2.dex / classes3.dex …），记录文件名与解压后字节数，
+  /// 按文件名字母序返回。失败 → 空列表。已分析过的路径直接返回缓存。
+  Future<List<DexFile>> analyzeDexFilesFull(String apkPath) async {
+    final debug = _debugDexFull;
+    if (debug != null) return debug;
+    final cached = _dexFullCache[apkPath];
+    if (cached != null) return cached;
+
+    try {
+      final files = await compute(_listDexFilesInIsolate, apkPath);
+      _dexFullCache[apkPath] = files;
+      appLog.info('ApkLibraryAnalyzer: $apkPath 全量 DEX: '
+          '${files.map((f) => '${f.name}(${f.size})').join(', ')}');
+      return files;
+    } catch (e) {
+      appLog.error('ApkLibraryAnalyzer: 枚举全量 DEX 失败 - $e');
+      return const [];
+    }
+  }
+
   /// 从正则规则名提取字面量包名前缀（如 `kotlin\.coroutines\.(.*)` → `kotlin.coroutines.`）。
   /// 规则库中 DEX 正则均形如 `pkg\d\.pkg\.(...)`；解析失败返回 null（跳过该规则）。
   static String? _regexLiteralPrefix(String regexName) {
@@ -801,4 +849,20 @@ List<NativeAbiLibs> _listFullNativeLibsInIsolate(String apkPath) {
       return oa != ob ? oa.compareTo(ob) : a.abi.compareTo(b.abi);
     });
   return list;
+}
+
+/// isolate 内执行：读取 APK 字节 → 解压枚举 classes*.dex（zip 任意层级）
+List<DexFile> _listDexFilesInIsolate(String apkPath) {
+  final bytes = File(apkPath).readAsBytesSync();
+  final archive = ZipDecoder().decodeBytes(bytes);
+
+  // classes*.dex（忽略大小写，含分包 classes2.dex …；不处理目录条目）
+  // 每个文件记录 zip 解压后字节数（entry.size），供 UI 行尾展示大小。
+  final dexEntryRegex = RegExp(r'^classes\d*\.dex$', caseSensitive: false);
+  final files = <DexFile>[
+    for (final entry in archive)
+      if (entry.isFile && dexEntryRegex.hasMatch(entry.name.split('/').last))
+        DexFile(name: entry.name.split('/').last, size: entry.size),
+  ]..sort((a, b) => a.name.compareTo(b.name));
+  return files;
 }
