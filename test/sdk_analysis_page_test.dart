@@ -368,12 +368,12 @@ void main() {
     expect(find.text('16KB 对齐'), findsOneWidget);
     expect(find.text('1 个不兼容 / 2 个'), findsOneWidget);
 
-    // 原生库 tab：命中与否均展示徽标
+    // 原生库 tab：仅 16KB 对齐的行展示「16KB」胶囊（libok.so），
+    // 未对齐（libbad.so）与数据缺失不展示。
     await switchTab(tester, '原生库');
     expect(find.text('libok.so'), findsOneWidget);
     expect(find.text('libbad.so'), findsOneWidget);
-    expect(find.text('16KB ✓'), findsOneWidget);
-    expect(find.text('16KB ✗'), findsOneWidget);
+    expect(find.text('16KB'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -396,9 +396,8 @@ void main() {
 
     await switchTab(tester, '原生库');
     expect(find.text('libplain.so'), findsOneWidget);
-    // 无 16KB 徽标
-    expect(find.text('16KB ✓'), findsNothing);
-    expect(find.text('16KB ✗'), findsNothing);
+    // 无 16KB 胶囊
+    expect(find.text('16KB'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 

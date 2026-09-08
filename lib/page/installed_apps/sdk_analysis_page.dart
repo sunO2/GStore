@@ -471,16 +471,12 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
     final elfBySo = <String, ElfSoInfo>{
       for (final f in _elfScan.soFiles) f.soName: f,
     };
-    final colorScheme = Theme.of(context).colorScheme;
 
-    // 16KB 徽标：数据存在时展示；对齐 → ✓ 绿色语义色，不对齐/未知 → ✗ 错误色。
-    ({String text, Color color})? elfBadge(String soName) {
+    // 16KB 对齐标记：仅当 ELF 数据存在且该 .so 为 16KB 对齐时展示胶囊「16KB」。
+    bool show16Kb(String soName) {
       final f = elfBySo[soName];
-      if (f == null) return null;
-      if (f.aligned16Kb) {
-        return (text: '16KB ✓', color: colorScheme.primary);
-      }
-      return (text: '16KB ✗', color: colorScheme.error);
+      if (f == null) return false;
+      return f.aligned16Kb;
     }
 
     return ListView(
@@ -504,8 +500,7 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
                       icon: Icons.memory,
                       matchedName: so.name,
                       trailing: _formatBytes(so.size),
-                      badgeText: elfBadge(so.name)?.text,
-                      badgeColor: elfBadge(so.name)?.color,
+                      show16Kb: show16Kb(so.name),
                       onLongPress: () =>
                           _copyText(context, so.name, label: so.name),
                     )
@@ -515,8 +510,7 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
                       title: so.name,
                       subtitle: '未匹配规则',
                       trailing: _formatBytes(so.size),
-                      badgeText: elfBadge(so.name)?.text,
-                      badgeColor: elfBadge(so.name)?.color,
+                      show16Kb: show16Kb(so.name),
                       onLongPress: () =>
                           _copyText(context, so.name, label: so.name),
                     ),
@@ -1042,15 +1036,14 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
 
   /// 单个命中项：可选图标 + label（标题行）+ 匹配名（等宽副标题）+ 正则标签；
   /// 可选的 [trailing] 右对齐展示在行尾（如 .so 文件大小）；
-  /// 可选的 [badgeText]/[badgeColor] 在 trailing 之后追加彩色徽标（如 16KB 对齐标记）。
+  /// [show16Kb] 为 true 时在副标题行尾渲染「16KB」胶囊标记（仅对齐时展示）。
   /// [icon] 为 null 时不渲染前导图标（组件 tab 行无需图标）。
   Widget _buildItem(
     LibraryHit hit, {
     IconData? icon,
     required String matchedName,
     String? trailing,
-    String? badgeText,
-    Color? badgeColor,
+    bool show16Kb = false,
     VoidCallback? onLongPress,
   }) {
     final colorScheme = Theme.of(context).colorScheme;
@@ -1093,14 +1086,25 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
                   ],
                 ),
                 const SizedBox(height: AppSpacing.xs),
-                Text(
-                  matchedName,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: textTheme.bodySmall?.copyWith(
-                    color: colorScheme.onSurfaceVariant,
-                    fontFamily: 'monospace',
-                  ),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Flexible(
+                      child: Text(
+                        matchedName,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: textTheme.bodySmall?.copyWith(
+                          color: colorScheme.onSurfaceVariant,
+                          fontFamily: 'monospace',
+                        ),
+                      ),
+                    ),
+                    if (show16Kb) ...[
+                      const SizedBox(width: AppSpacing.xs),
+                      _build16KbCapsule(context),
+                    ],
+                  ],
                 ),
               ],
             ),
@@ -1112,17 +1116,6 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
               maxLines: 1,
               style: textTheme.bodySmall?.copyWith(
                 color: colorScheme.onSurfaceVariant,
-              ),
-            ),
-          ],
-          if (badgeText != null) ...[
-            const SizedBox(width: AppSpacing.xs),
-            Text(
-              badgeText,
-              maxLines: 1,
-              style: textTheme.bodySmall?.copyWith(
-                color: badgeColor ?? colorScheme.primary,
-                fontWeight: AppTypography.weightSemiBold,
               ),
             ),
           ],
@@ -1139,7 +1132,7 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
 
   /// 未命中规则的普通列表行：可选 onSurfaceVariant 图标 + 标题（+ 副标题）；
   /// 可选的 [trailing] 右对齐展示在行尾（如 .so 文件大小）；
-  /// 可选的 [badgeText]/[badgeColor] 在 trailing 之后追加彩色徽标（如 16KB 对齐标记）。
+  /// [show16Kb] 为 true 时在副标题行尾渲染「16KB」胶囊标记（仅对齐时展示）。
   /// [icon] 为 null 时不渲染前导图标；[wrapTitle] 为 true 时标题完整换行
   /// （组件全量行等无尾随尺寸的文本），否则单行省略。
   Widget _buildPlainRow({
@@ -1147,8 +1140,7 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
     required String title,
     String? subtitle,
     String? trailing,
-    String? badgeText,
-    Color? badgeColor,
+    bool show16Kb = false,
     bool wrapTitle = false,
     VoidCallback? onLongPress,
   }) {
@@ -1183,13 +1175,24 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
                 ),
                 if (subtitle != null) ...[
                   const SizedBox(height: AppSpacing.xs),
-                  Text(
-                    subtitle,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: textTheme.bodySmall?.copyWith(
-                      color: colorScheme.onSurfaceVariant,
-                    ),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Flexible(
+                        child: Text(
+                          subtitle,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: textTheme.bodySmall?.copyWith(
+                            color: colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ),
+                      if (show16Kb) ...[
+                        const SizedBox(width: AppSpacing.xs),
+                        _build16KbCapsule(context),
+                      ],
+                    ],
                   ),
                 ],
               ],
@@ -1205,17 +1208,6 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
               ),
             ),
           ],
-          if (badgeText != null) ...[
-            const SizedBox(width: AppSpacing.xs),
-            Text(
-              badgeText,
-              maxLines: 1,
-              style: textTheme.bodySmall?.copyWith(
-                color: badgeColor ?? colorScheme.primary,
-                fontWeight: AppTypography.weightSemiBold,
-              ),
-            ),
-          ],
         ],
       ),
     );
@@ -1224,6 +1216,28 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
       behavior: HitTestBehavior.opaque,
       onLongPress: onLongPress,
       child: row,
+    );
+  }
+
+  /// 「16KB」对齐胶囊标记（secondaryContainer 底色小圆角，仅对齐时展示）。
+  Widget _build16KbCapsule(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.sm,
+        vertical: 1,
+      ),
+      decoration: BoxDecoration(
+        color: colorScheme.secondaryContainer,
+        borderRadius: BorderRadius.circular(AppRadius.circle),
+      ),
+      child: Text(
+        '16KB',
+        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+              color: colorScheme.onSecondaryContainer,
+              fontWeight: AppTypography.weightSemiBold,
+            ),
+      ),
     );
   }
 

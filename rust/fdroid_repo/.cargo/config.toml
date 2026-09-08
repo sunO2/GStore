@@ -1,11 +1,15 @@
 # Rust Android 构建配置
 # NDK 路径: /home/hezhihu89/develop/android/sdk/ndk/26.3.11579264
 
+# 16KB 页对齐：-Wl,-z,max-page-size=16384 使链接器将 ELF 段 p_align 对齐到 16384，
+# 满足 Android 16KB page size 设备要求（否则 Rust 库在 16KB 设备上无法加载）。
+
 [target.aarch64-linux-android]
 ar = "/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
 linker = "/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android33-clang"
 rustflags = [
     "-C", "link-arg=-fuse-ld=lld",
+    "-C", "link-arg=-Wl,-z,max-page-size=16384",
 ]
 
 [target.armv7-linux-androideabi]
@@ -14,6 +18,7 @@ linker = "/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/
 rustflags = [
     "-C", "link-arg=-fuse-ld=lld",
     "-C", "link-arg=-Wl,--export-dynamic-symbol=__rust...",
+    "-C", "link-arg=-Wl,-z,max-page-size=16384",
 ]
 
 [target.i686-linux-android]
@@ -21,6 +26,7 @@ ar = "/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/preb
 linker = "/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android33-clang"
 rustflags = [
     "-C", "link-arg=-fuse-ld=lld",
+    "-C", "link-arg=-Wl,-z,max-page-size=16384",
 ]
 
 [target.x86_64-linux-android]
@@ -28,4 +34,5 @@ ar = "/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/preb
 linker = "/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android33-clang"
 rustflags = [
     "-C", "link-arg=-fuse-ld=lld",
+    "-C", "link-arg=-Wl,-z,max-page-size=16384",
 ]
