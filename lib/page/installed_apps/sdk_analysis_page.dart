@@ -189,11 +189,20 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
     }();
 
     // Rust 通道不可用时解析失败 → 降级为全空实例，绝不抛给调用方。
+    // split APK 分发时 .so 位于 split_config.*.apk，需对每个源分别扫描后合并。
     final elfF = () async {
       final override = SdkAnalysisPage._debugElfScanOverride;
       if (override != null) return override;
       try {
-        return await FdroidRustRepoManager.scanElfPageSizes(widget.sourceDir);
+        final merged = <String, ElfSoInfo>{};
+        for (final dir in widget.effectiveSourceDirs) {
+          final result =
+              await FdroidRustRepoManager.scanElfPageSizes(dir);
+          for (final f in result.soFiles) {
+            merged['${f.abi}|${f.soName}'] = f;
+          }
+        }
+        return ApkElfScanResult(soFiles: merged.values.toList());
       } catch (e) {
         appLog.error('SdkAnalysisPage: 扫描 ELF 16KB 对齐失败（降级为空） - $e');
         return SdkAnalysisPage._emptyElfScan;

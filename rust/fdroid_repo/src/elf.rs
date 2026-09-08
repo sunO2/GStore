@@ -36,7 +36,8 @@ pub struct ApkElfScanResult {
     pub so_files: Vec<ElfSoInfo>,
 }
 
-/// 扫描 APK 内所有 `lib/<abi>/<name>.so`，逐文件检测 ELF 16KB 页对齐。
+/// 扫描 APK 内所有 `lib/<abi>/<name>.so` 与 `assets/<name>.so`，
+/// 逐文件检测 ELF 16KB 页对齐（assets 下的库归入 `assets` 分组）。
 ///
 /// 单个库读取/解析失败不中断整包扫描（记为 min_page_size=-1、aligned_16kb=false）。
 pub fn scan_elf_page_sizes(apk_path: &str) -> Result<ApkElfScanResult, String> {
@@ -74,9 +75,13 @@ pub fn scan_elf_page_sizes(apk_path: &str) -> Result<ApkElfScanResult, String> {
     Ok(ApkElfScanResult { so_files })
 }
 
-/// `lib/<abi>/<name>.so` → (abi, so_name)；其余路径返回 None。
+/// `lib/<abi>/<name>.so` → (abi, so_name)；`assets/<name>.so` → ("assets", name)；
+/// 其余路径返回 None。
 fn parse_lib_path(path: &str) -> Option<(String, String)> {
     let parts: Vec<&str> = path.split('/').collect();
+    if parts.len() == 2 && parts[0] == "assets" && parts[1].ends_with(".so") {
+        return Some(("assets".to_string(), parts[1].to_string()));
+    }
     if parts.len() != 3 || parts[0] != "lib" || parts[1].is_empty() || !parts[2].ends_with(".so") {
         return None;
     }
@@ -272,6 +277,9 @@ mod tests {
             // 4KB 库
             zip.start_file("lib/arm64-v8a/libb.so", opts).ok();
             std::io::Write::write_all(&mut zip, &elf64(4096, false)).ok();
+            // assets 下的 .so（归入 assets 分组）
+            zip.start_file("assets/libembedded.so", opts).ok();
+            std::io::Write::write_all(&mut zip, &elf64(16384, false)).ok();
             // 非 lib 文件，应被跳过
             zip.start_file("res/xml/config.xml", opts).ok();
             std::io::Write::write_all(&mut zip, b"<xml/>").ok();
@@ -279,7 +287,7 @@ mod tests {
         }
 
         let result = scan_elf_page_sizes(apk_path.to_str().unwrap()).unwrap();
-        assert_eq!(result.so_files.len(), 2);
+        assert_eq!(result.so_files.len(), 3);
 
         let by_name = |n: &str| result.so_files.iter().find(|f| f.so_name == n).unwrap();
         let a = by_name("liba.so");
@@ -291,5 +299,10 @@ mod tests {
         assert_eq!(b.abi, "arm64-v8a");
         assert_eq!(b.min_page_size, 4096);
         assert!(!b.aligned_16kb);
+
+        let embedded = by_name("libembedded.so");
+        assert_eq!(embedded.abi, "assets");
+        assert_eq!(embedded.min_page_size, 16384);
+        assert!(embedded.aligned_16kb);
     }
 }
