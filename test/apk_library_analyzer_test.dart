@@ -1,4 +1,6 @@
+import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -46,6 +48,30 @@ Future<String> _buildFakeApk(List<String> entries) async {
   final bytes = ZipEncoder().encode(archive)!;
   await File(path).writeAsBytes(bytes);
   return path;
+}
+
+/// 生成包含指定条目及自定义字节内容的假 APK（zip）
+Future<String> _buildFakeApkWithContent(
+  Map<String, List<int>> entries,
+) async {
+  final dir = await Directory.systemTemp.createTemp('gstore_apk_test');
+  final path = '${dir.path}/fake.apk';
+  final archive = Archive();
+  entries.forEach((name, content) {
+    archive.addFile(ArchiveFile(name, content.length, content));
+  });
+  final bytes = ZipEncoder().encode(archive)!;
+  await File(path).writeAsBytes(bytes);
+  return path;
+}
+
+/// 4 字节大端 int 序列（kotlin_module 二进制头）
+Uint8List _bigEndianInts(List<int> values) {
+  final data = ByteData(values.length * 4);
+  for (var i = 0; i < values.length; i++) {
+    data.setInt32(i * 4, values[i]);
+  }
+  return data.buffer.asUint8List();
 }
 
 void main() {
@@ -539,6 +565,152 @@ void main() {
       final files =
           await ApkLibraryAnalyzer.instance.analyzeDexFilesFull('/no/such/file.apk');
       expect(files, isEmpty);
+    });
+  });
+
+  group('detectBuildVersions', () {
+    tearDown(() {
+      ApkLibraryAnalyzer.instance.debugSetBuildVersions(null);
+    });
+
+    test('注入合成结果直接返回；传 null 恢复真实检测', () async {
+      ApkLibraryAnalyzer.instance.debugSetBuildVersions(
+        const BuildVersionInfo(
+          kotlinVersion: '2.0.20',
+          gradleVersion: '8.7',
+          javaVersion: '17',
+        ),
+      );
+      final injected =
+          await ApkLibraryAnalyzer.instance.detectBuildVersions('/fake/apk.apk');
+      expect(injected.kotlinVersion, '2.0.20');
+      expect(injected.gradleVersion, '8.7');
+      expect(injected.javaVersion, '17');
+
+      // 恢复真实检测路径
+      ApkLibraryAnalyzer.instance.debugSetBuildVersions(null);
+      final apk = await _buildFakeApk(['classes.dex', 'AndroidManifest.xml']);
+      final info = await ApkLibraryAnalyzer.instance.detectBuildVersions(apk);
+      expect(info, const BuildVersionInfo());
+    });
+
+    test('同一路径重复检测命中缓存', () async {
+      final apk = await _buildFakeApkWithContent({
+        'kotlin-tooling-metadata.json': utf8.encode(jsonEncode({
+          'buildSystem': 'Gradle',
+          'buildSystemVersion': '8.7',
+          'buildPlugin': 'org.jetbrains.kotlin.gradle.plugin.KotlinAndroidPluginWrapper',
+          'buildPluginVersion': '2.0.20',
+          'projectTargets': [
+            {
+              'target': 'org.jetbrains.kotlin.gradle.plugin.mpp.KotlinAndroidTarget',
+              'platformType': 'androidJvm',
+              'extras': {
+                'android': {
+                  'sourceCompatibility': '17',
+                  'targetCompatibility': '17',
+                },
+              },
+            },
+          ],
+        })),
+      });
+      final first = await ApkLibraryAnalyzer.instance.detectBuildVersions(apk);
+      final second = await ApkLibraryAnalyzer.instance.detectBuildVersions(apk);
+      expect(identical(first, second), isTrue);
+      expect(first.kotlinVersion, '2.0.20');
+    });
+
+    test('kotlin-tooling-metadata.json：解析 Kotlin/Gradle/Java 三版本', () async {
+      final apk = await _buildFakeApkWithContent({
+        'kotlin-tooling-metadata.json': utf8.encode(jsonEncode({
+          'buildSystem': 'Gradle',
+          'buildSystemVersion': '8.7',
+          'buildPlugin': 'org.jetbrains.kotlin.gradle.plugin.KotlinAndroidPluginWrapper',
+          'buildPluginVersion': '2.0.20',
+          'projectTargets': [
+            {
+              'target': 'org.jetbrains.kotlin.gradle.plugin.mpp.KotlinAndroidTarget',
+              'platformType': 'androidJvm',
+              'extras': {
+                'android': {
+                  'sourceCompatibility': '17',
+                  'targetCompatibility': '17',
+                },
+              },
+            },
+          ],
+        })),
+        'classes.dex': [1, 2, 3, 4],
+      });
+      final info = await ApkLibraryAnalyzer.instance.detectBuildVersions(apk);
+      expect(info.kotlinVersion, '2.0.20');
+      expect(info.gradleVersion, '8.7');
+      expect(info.javaVersion, '17');
+    });
+
+    test('非 Kotlin Android 插件且无 KotlinAndroidTarget → kotlin 置空，Gradle 保留', () async {
+      final apk = await _buildFakeApkWithContent({
+        'kotlin-tooling-metadata.json': utf8.encode(jsonEncode({
+          'buildSystem': 'Gradle',
+          'buildSystemVersion': '8.7',
+          'buildPlugin': 'org.gradle.kotlin.dsl.plugins.dsl.KotlinDslPlugin',
+          'buildPluginVersion': '2.0.20',
+          'projectTargets': [
+            {
+              'target': 'org.gradle.kotlin.dsl.plugins.dsl.KotlinDslPluginTarget',
+            },
+          ],
+        })),
+      });
+      final info = await ApkLibraryAnalyzer.instance.detectBuildVersions(apk);
+      expect(info.kotlinVersion, '');
+      expect(info.gradleVersion, '8.7');
+      expect(info.javaVersion, '');
+    });
+
+    test('无 tooling 元数据：降级 META-INF/*.kotlin_module 推断 Kotlin 版本', () async {
+      // 二进制头：componentCount=2，版本分量 [2, 0] → '2.0.x'
+      final apk = await _buildFakeApkWithContent({
+        'META-INF/foo.kotlin_module': _bigEndianInts([2, 2, 0]),
+        'classes.dex': [1, 2, 3, 4],
+      });
+      final info = await ApkLibraryAnalyzer.instance.detectBuildVersions(apk);
+      expect(info.kotlinVersion, '2.0.x');
+      expect(info.gradleVersion, '');
+      expect(info.javaVersion, '');
+    });
+
+    test('多个不同 kotlin_module 版本 → Kotlin 版本置空', () async {
+      final apk = await _buildFakeApkWithContent({
+        'META-INF/a.kotlin_module': _bigEndianInts([2, 2, 0]),
+        'META-INF/b.kotlin_module': _bigEndianInts([2, 1, 9]),
+      });
+      final info = await ApkLibraryAnalyzer.instance.detectBuildVersions(apk);
+      expect(info, const BuildVersionInfo());
+    });
+
+    test('非法 kotlin_module 布局（分量越界）→ 忽略该条目', () async {
+      // 分量 100 超出 0..99 → 拒绝；无其他合法版本 → kotlin 置空
+      final apk = await _buildFakeApkWithContent({
+        'META-INF/bad.kotlin_module': _bigEndianInts([2, 2, 100]),
+      });
+      final info = await ApkLibraryAnalyzer.instance.detectBuildVersions(apk);
+      expect(info.kotlinVersion, '');
+    });
+
+    test('既无 tooling 元数据也无 kotlin_module → 全部空串', () async {
+      final apk = await _buildFakeApk(['classes.dex', 'AndroidManifest.xml']);
+      final info = await ApkLibraryAnalyzer.instance.detectBuildVersions(apk);
+      expect(info.kotlinVersion, '');
+      expect(info.gradleVersion, '');
+      expect(info.javaVersion, '');
+    });
+
+    test('文件不存在 → 全空串且不抛异常', () async {
+      final info =
+          await ApkLibraryAnalyzer.instance.detectBuildVersions('/no/such/file.apk');
+      expect(info, const BuildVersionInfo());
     });
   });
 

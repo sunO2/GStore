@@ -201,6 +201,38 @@ class DexFile {
   final int size;
 }
 
+/// 一次构建版本检测结果（Kotlin / Gradle / Java；空串表示未知/未检测到）
+class BuildVersionInfo {
+  const BuildVersionInfo({
+    this.kotlinVersion = '',
+    this.gradleVersion = '',
+    this.javaVersion = '',
+  });
+
+  /// Kotlin 版本（如 '2.0.20'；kotlin_module 降级推断时为 '2.0.x' 形式）
+  final String kotlinVersion;
+
+  /// Gradle 版本（如 '8.7'）
+  final String gradleVersion;
+
+  /// Java 编译目标版本（如 '17'）
+  final String javaVersion;
+
+  @override
+  bool operator ==(Object other) =>
+      other is BuildVersionInfo &&
+      other.kotlinVersion == kotlinVersion &&
+      other.gradleVersion == gradleVersion &&
+      other.javaVersion == javaVersion;
+
+  @override
+  int get hashCode => Object.hash(kotlinVersion, gradleVersion, javaVersion);
+
+  @override
+  String toString() =>
+      'BuildVersionInfo(kotlin=$kotlinVersion, gradle=$gradleVersion, java=$javaVersion)';
+}
+
 /// APK 内嵌第三方库检测
 ///
 /// - 方案 A（纯 Dart）：解压 APK 枚举 lib/<abi>/*.so 文件名，
@@ -242,6 +274,9 @@ class ApkLibraryAnalyzer {
   /// APK 路径 → 全量 DEX 文件列表缓存
   final Map<String, List<DexFile>> _dexFullCache = {};
 
+  /// APK 路径 → 构建版本检测结果缓存
+  final Map<String, BuildVersionInfo> _buildVersionCache = {};
+
   /// 测试用：注入的合成 ABI 列表（非 null 时跳过真实扫描）
   List<String>? _debugAbis;
 
@@ -250,6 +285,9 @@ class ApkLibraryAnalyzer {
 
   /// 测试用：注入的合成全量 DEX 文件列表（非 null 时跳过真实扫描）
   List<DexFile>? _debugDexFull;
+
+  /// 测试用：注入的合成构建版本结果（非 null 时跳过真实检测）
+  BuildVersionInfo? _debugBuildVersions;
 
   /// 已加载原生库规则（懒加载缓存；测试注入覆盖）
   List<NativeLibraryRule>? _rules;
@@ -304,6 +342,14 @@ class ApkLibraryAnalyzer {
   void debugSetDexFilesFull(List<DexFile>? files) {
     _debugDexFull = files;
     _dexFullCache.clear();
+  }
+
+  /// 测试用：注入合成构建版本结果，跳过 isolate 解压检测。
+  /// 传 null 恢复真实检测。
+  @visibleForTesting
+  void debugSetBuildVersions(BuildVersionInfo? info) {
+    _debugBuildVersions = info;
+    _buildVersionCache.clear();
   }
 
   /// 加载规则（首次从资产读取并缓存）
@@ -738,6 +784,32 @@ class ApkLibraryAnalyzer {
     }
   }
 
+  /// 检测 APK 的构建版本（Kotlin / Gradle / Java）。
+  ///
+  /// 主路径：解析根目录 `kotlin-tooling-metadata.json`（Kotlin Gradle Plugin
+  /// 2.0+ 生成），规则对齐 LibChecker KotlinBuildMetadataDetector；
+  /// kotlinVersion 未解析出时降级扫描 `META-INF/*.kotlin_module` 二进制版本推断。
+  /// 任一字段未知 → 空串。优雅失败：文件缺失/非 zip/解析失败 → 全部空串，
+  /// 绝不抛给调用方。已检测过的路径直接返回缓存。
+  Future<BuildVersionInfo> detectBuildVersions(String apkPath) async {
+    final debug = _debugBuildVersions;
+    if (debug != null) return debug;
+    final cached = _buildVersionCache[apkPath];
+    if (cached != null) return cached;
+
+    try {
+      final info = await compute(_detectBuildVersionsInIsolate, apkPath);
+      _buildVersionCache[apkPath] = info;
+      appLog.info('ApkLibraryAnalyzer: $apkPath 构建信息: '
+          'Kotlin=${info.kotlinVersion}, Gradle=${info.gradleVersion}, '
+          'Java=${info.javaVersion}');
+      return info;
+    } catch (e) {
+      appLog.error('ApkLibraryAnalyzer: 检测构建信息失败 - $e');
+      return const BuildVersionInfo();
+    }
+  }
+
   /// 从正则规则名提取字面量包名前缀（如 `kotlin\.coroutines\.(.*)` → `kotlin.coroutines.`）。
   /// 规则库中 DEX 正则均形如 `pkg\d\.pkg\.(...)`；解析失败返回 null（跳过该规则）。
   static String? _regexLiteralPrefix(String regexName) {
@@ -865,4 +937,174 @@ List<DexFile> _listDexFilesInIsolate(String apkPath) {
         DexFile(name: entry.name.split('/').last, size: entry.size),
   ]..sort((a, b) => a.name.compareTo(b.name));
   return files;
+}
+
+/// kotlin-tooling-metadata.json 条目名（Kotlin Gradle Plugin 2.0+ 生成）
+const String _kKotlinToolingMetadataEntry = 'kotlin-tooling-metadata.json';
+
+/// Kotlin Android 插件名（LibChecker KOTLIN_ANDROID_PLUGIN）
+const String _kKotlinAndroidPlugin =
+    'org.jetbrains.kotlin.gradle.plugin.KotlinAndroidPluginWrapper';
+
+/// Kotlin Android target 名（LibChecker KOTLIN_ANDROID_TARGET）
+const String _kKotlinAndroidTarget =
+    'org.jetbrains.kotlin.gradle.plugin.mpp.KotlinAndroidTarget';
+
+/// Gradle 构建系统名（LibChecker GRADLE_BUILD_SYSTEM）
+const String _kGradleBuildSystem = 'Gradle';
+
+/// kotlin_module 元数据目录前缀（LibChecker KOTLIN_MODULE_DIRECTORY）
+const String _kKotlinModuleDirectory = 'META-INF/';
+
+/// kotlin_module 元数据文件后缀（LibChecker KOTLIN_MODULE_SUFFIX）
+const String _kKotlinModuleSuffix = '.kotlin_module';
+
+/// 版本组件数合法区间（LibChecker MIN/MAX_VERSION_COMPONENTS）
+const int _kMinVersionComponents = 2;
+const int _kMaxVersionComponents = 16;
+
+/// 版本分量值合法区间（0..99，含 0）
+const int _kMinVersionNumber = 0;
+const int _kMaxVersionNumber = 99;
+
+/// isolate 内执行：读取 APK 字节 → 解析 kotlin-tooling-metadata.json；
+/// kotlinVersion 未解析出时降级扫描 META-INF/*.kotlin_module 二进制版本推断。
+///
+/// 主路径 kotlinVersion 已解析出 → 直接返回；否则保留 tooling 已解析出的
+/// gradleVersion/javaVersion（对齐 LibChecker：降级结果基于 toolingMetadata 拷贝）。
+/// 全部未知 → 全空串。
+BuildVersionInfo _detectBuildVersionsInIsolate(String apkPath) {
+  final bytes = File(apkPath).readAsBytesSync();
+  final archive = ZipDecoder().decodeBytes(bytes);
+
+  // 主路径：kotlin-tooling-metadata.json（根目录精确条目）
+  var tooling = const BuildVersionInfo();
+  for (final entry in archive) {
+    if (!entry.isFile || entry.name != _kKotlinToolingMetadataEntry) continue;
+    final content = entry.content;
+    tooling = content is List<int>
+        ? _parseKotlinToolingMetadata(content)
+        : const BuildVersionInfo();
+    // kotlinVersion 已解析出 → 直接返回；否则降级 kotlin_module
+    if (tooling.kotlinVersion.isNotEmpty) return tooling;
+    break;
+  }
+
+  // 降级：META-INF/*.kotlin_module 二进制版本推断（对齐 LibChecker
+  // readKotlinModuleVersions）：仅当恰好一种 distinct 版本时采用。
+  final versions = <String>{};
+  for (final entry in archive) {
+    if (!entry.isFile) continue;
+    final name = entry.name;
+    if (!name.startsWith(_kKotlinModuleDirectory) ||
+        !name.endsWith(_kKotlinModuleSuffix)) {
+      continue;
+    }
+    final version = _readKotlinModuleVersion(entry);
+    if (version != null) versions.add(version);
+  }
+  if (versions.length == 1) {
+    return BuildVersionInfo(
+      kotlinVersion: versions.single,
+      gradleVersion: tooling.gradleVersion,
+      javaVersion: tooling.javaVersion,
+    );
+  }
+  // 无 kotlin_module 可推断 → 返回 tooling 已解析出的 gradle/java（可能全空串）
+  return tooling;
+}
+
+/// 解析 kotlin-tooling-metadata.json → 构建版本（规则对齐 LibChecker
+/// readToolingMetadata）：
+///
+/// - kotlinVersion = buildPluginVersion，仅当 buildPlugin 为
+///   KotlinAndroidPluginWrapper 或存在 KotlinAndroidTarget 时采用
+/// - gradleVersion = buildSystemVersion，仅当 buildSystem == Gradle
+/// - javaVersion = 首个 KotlinAndroidTarget 的 extras.android.sourceCompatibility，
+///   仅当其非空且全为数字字符
+BuildVersionInfo _parseKotlinToolingMetadata(List<int> content) {
+  try {
+    final decoded = jsonDecode(utf8.decode(content)) as Map<String, dynamic>;
+    final buildSystem = decoded['buildSystem'] as String? ?? '';
+    final buildSystemVersion = decoded['buildSystemVersion'] as String? ?? '';
+    final buildPlugin = decoded['buildPlugin'] as String? ?? '';
+    final buildPluginVersion = decoded['buildPluginVersion'] as String? ?? '';
+
+    var hasKotlinAndroidTarget = false;
+    var sourceCompatibility = '';
+    final projectTargets = decoded['projectTargets'];
+    if (projectTargets is List) {
+      for (final target in projectTargets) {
+        if (target is! Map) continue;
+        if (target['target'] != _kKotlinAndroidTarget) continue;
+        hasKotlinAndroidTarget = true;
+        final extras = target['extras'];
+        if (extras is Map) {
+          final android = extras['android'];
+          if (android is Map) {
+            final sc = android['sourceCompatibility'];
+            if (sc is String) sourceCompatibility = sc;
+          }
+        }
+        break; // 只取首个 KotlinAndroidTarget
+      }
+    }
+
+    final kotlinVersion = buildPluginVersion.isNotEmpty &&
+            (buildPlugin == _kKotlinAndroidPlugin || hasKotlinAndroidTarget)
+        ? buildPluginVersion
+        : '';
+    final gradleVersion =
+        buildSystem == _kGradleBuildSystem && buildSystemVersion.isNotEmpty
+            ? buildSystemVersion
+            : '';
+    final javaVersion = sourceCompatibility.isNotEmpty &&
+            _isAllDigits(sourceCompatibility)
+        ? sourceCompatibility
+        : '';
+
+    return BuildVersionInfo(
+      kotlinVersion: kotlinVersion,
+      gradleVersion: gradleVersion,
+      javaVersion: javaVersion,
+    );
+  } catch (e) {
+    return const BuildVersionInfo();
+  }
+}
+
+/// 解析 kotlin_module 二进制头 → 'major.minor.x' 版本串；非法布局返回 null。
+///
+/// 布局：int componentCount（4 字节大端），随后 componentCount 个 int
+/// （版本分量 [major, minor, …]）。仅当 componentCount ∈ [2,16] 且每个
+/// 分量 ∈ [0,99] 时接受（对齐 LibChecker MIN/MAX_VERSION_COMPONENTS）。
+String? _readKotlinModuleVersion(ArchiveFile entry) {
+  final content = entry.content;
+  if (content is! List<int> || content.length < 4) return null;
+  final bytes = content is Uint8List ? content : Uint8List.fromList(content);
+
+  final data = ByteData.sublistView(bytes);
+  final componentCount = data.getInt32(0);
+  if (componentCount < _kMinVersionComponents ||
+      componentCount > _kMaxVersionComponents) {
+    return null;
+  }
+  if (bytes.length < 4 + componentCount * 4) return null;
+
+  final components = <int>[];
+  for (var i = 0; i < componentCount; i++) {
+    final value = data.getInt32(4 + i * 4);
+    if (value < _kMinVersionNumber || value > _kMaxVersionNumber) return null;
+    components.add(value);
+  }
+  return '${components[0]}.${components[1]}.x';
+}
+
+/// 字符串是否全为数字字符（ASCII 0-9，非空）
+bool _isAllDigits(String s) {
+  if (s.isEmpty) return false;
+  for (final c in s.codeUnits) {
+    if (c < 0x30 || c > 0x39) return false;
+  }
+  return true;
 }
