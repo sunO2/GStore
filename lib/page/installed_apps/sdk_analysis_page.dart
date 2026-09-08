@@ -4,6 +4,8 @@ import 'package:gstore/core/core.dart';
 import 'package:gstore/core/design/app_borders.dart';
 import 'package:gstore/core/rust/FdroidRustRepoManager.dart';
 import 'package:gstore/core/rust/generated/components.dart' show ApkComponents;
+import 'package:gstore/core/rust/generated/elf.dart'
+    show ApkElfScanResult, ElfSoInfo;
 import 'package:gstore/core/service/apk_library_analyzer.dart';
 import 'package:gstore/core/service/apk_source_service.dart';
 import 'package:installed_apps/app_info.dart' as installed;
@@ -69,6 +71,16 @@ class SdkAnalysisPage extends StatefulWidget {
     _debugComponentsOverride = components;
   }
 
+  /// 测试用：注入合成 ELF 页对齐扫描结果，跳过 Rust FFI 调用。
+  /// 传 null 恢复真实扫描。
+  static ApkElfScanResult? _debugElfScanOverride;
+
+  /// 测试用：设置合成的 ELF 页对齐扫描结果（null 恢复真实扫描）。
+  @visibleForTesting
+  static void debugSetElfScan(ApkElfScanResult? result) {
+    _debugElfScanOverride = result;
+  }
+
   /// Rust 通道不可用时解析失败 → 全空的降级实例。
   static const ApkComponents _emptyComponents = ApkComponents(
     packageName: '',
@@ -80,6 +92,9 @@ class SdkAnalysisPage extends StatefulWidget {
     providers: [],
   );
 
+  /// Rust 通道不可用时扫描失败 → 全空的降级实例（原生库行不展示徽标）。
+  static const ApkElfScanResult _emptyElfScan = ApkElfScanResult(soFiles: []);
+
   @override
   State<SdkAnalysisPage> createState() => _SdkAnalysisPageState();
 }
@@ -87,11 +102,12 @@ class SdkAnalysisPage extends StatefulWidget {
 /// Manifest 全量组件分组（「全部组件」区段按类型展示）
 typedef _FullComponentGroup = ({String label, int count, List<String> items});
 
-/// 10 元记录并行等待（dart:async 内建 `.wait` 仅支持到 9 元）。
-extension _FutureRecord10Ext<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10>
+/// 11 元记录并行等待（dart:async 内建 `.wait` 仅支持到 9 元）。
+extension _FutureRecord11Ext<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11>
     on (Future<T1>, Future<T2>, Future<T3>, Future<T4>, Future<T5>,
-        Future<T6>, Future<T7>, Future<T8>, Future<T9>, Future<T10>) {
-  Future<(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10)> get wait async => (
+        Future<T6>, Future<T7>, Future<T8>, Future<T9>, Future<T10>,
+        Future<T11>) {
+  Future<(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11)> get wait async => (
         await $1,
         await $2,
         await $3,
@@ -102,6 +118,7 @@ extension _FutureRecord10Ext<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10>
         await $8,
         await $9,
         await $10,
+        await $11,
       );
 }
 
@@ -139,6 +156,9 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
   /// 构建版本检测结果（Kotlin / Gradle / Java，检测失败为默认空实例 → 「未知」）
   BuildVersionInfo _buildInfo = const BuildVersionInfo();
 
+  /// ELF 页对齐扫描结果（.so → 16KB 对齐；Rust 不可用/失败为空 → 不展示徽标）
+  ApkElfScanResult _elfScan = const ApkElfScanResult(soFiles: []);
+
   @override
   void initState() {
     super.initState();
@@ -159,6 +179,18 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
       }
     }();
 
+    // Rust 通道不可用时解析失败 → 降级为全空实例，绝不抛给调用方。
+    final elfF = () async {
+      final override = SdkAnalysisPage._debugElfScanOverride;
+      if (override != null) return override;
+      try {
+        return await FdroidRustRepoManager.scanElfPageSizes(widget.sourceDir);
+      } catch (e) {
+        appLog.error('SdkAnalysisPage: 扫描 ELF 16KB 对齐失败（降级为空） - $e');
+        return SdkAnalysisPage._emptyElfScan;
+      }
+    }();
+
     final results = await (
       ApkLibraryAnalyzer.instance.analyzeNativeLibraries(widget.sourceDir),
       ApkLibraryAnalyzer.instance.analyzeDexLibraries(widget.sourceDir),
@@ -170,6 +202,7 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
       ApkSourceService.instance.getInstalledAppDetail(widget.app.packageName),
       ApkLibraryAnalyzer.instance.analyzeDexFilesFull(widget.sourceDir),
       ApkLibraryAnalyzer.instance.detectBuildVersions(widget.sourceDir),
+      elfF,
     ).wait;
     if (!mounted) return;
     setState(() {
@@ -186,6 +219,7 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
       _detail = results.$8;
       _dexFiles = results.$9;
       _buildInfo = results.$10;
+      _elfScan = results.$11;
       _loading = false;
     });
   }
@@ -344,6 +378,7 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
         _buildInfo.gradleVersion.isEmpty ? '未知' : _buildInfo.gradleVersion,
       ),
       ('Java', _buildInfo.javaVersion.isEmpty ? '未知' : _buildInfo.javaVersion),
+      ('16KB 对齐', _elfSummaryText()),
     ];
 
     // 系统信息行（detail 缺失字段 → 「未知」/「否」降级，恒展示）
@@ -433,6 +468,20 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
     final hitBySo = <String, NativeLibraryHit>{
       for (final hit in _nativeHits) hit.soFileName: hit,
     };
+    final elfBySo = <String, ElfSoInfo>{
+      for (final f in _elfScan.soFiles) f.soName: f,
+    };
+    final colorScheme = Theme.of(context).colorScheme;
+
+    // 16KB 徽标：数据存在时展示；对齐 → ✓ 绿色语义色，不对齐/未知 → ✗ 错误色。
+    ({String text, Color color})? elfBadge(String soName) {
+      final f = elfBySo[soName];
+      if (f == null) return null;
+      if (f.aligned16Kb) {
+        return (text: '16KB ✓', color: colorScheme.primary);
+      }
+      return (text: '16KB ✗', color: colorScheme.error);
+    }
 
     return ListView(
       padding: AppSpacing.onlyVerticalMD,
@@ -455,6 +504,8 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
                       icon: Icons.memory,
                       matchedName: so.name,
                       trailing: _formatBytes(so.size),
+                      badgeText: elfBadge(so.name)?.text,
+                      badgeColor: elfBadge(so.name)?.color,
                       onLongPress: () =>
                           _copyText(context, so.name, label: so.name),
                     )
@@ -464,6 +515,8 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
                       title: so.name,
                       subtitle: '未匹配规则',
                       trailing: _formatBytes(so.size),
+                      badgeText: elfBadge(so.name)?.text,
+                      badgeColor: elfBadge(so.name)?.color,
                       onLongPress: () =>
                           _copyText(context, so.name, label: so.name),
                     ),
@@ -988,13 +1041,16 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
   }
 
   /// 单个命中项：可选图标 + label（标题行）+ 匹配名（等宽副标题）+ 正则标签；
-  /// 可选的 [trailing] 右对齐展示在行尾（如 .so 文件大小）。
+  /// 可选的 [trailing] 右对齐展示在行尾（如 .so 文件大小）；
+  /// 可选的 [badgeText]/[badgeColor] 在 trailing 之后追加彩色徽标（如 16KB 对齐标记）。
   /// [icon] 为 null 时不渲染前导图标（组件 tab 行无需图标）。
   Widget _buildItem(
     LibraryHit hit, {
     IconData? icon,
     required String matchedName,
     String? trailing,
+    String? badgeText,
+    Color? badgeColor,
     VoidCallback? onLongPress,
   }) {
     final colorScheme = Theme.of(context).colorScheme;
@@ -1059,6 +1115,17 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
               ),
             ),
           ],
+          if (badgeText != null) ...[
+            const SizedBox(width: AppSpacing.xs),
+            Text(
+              badgeText,
+              maxLines: 1,
+              style: textTheme.bodySmall?.copyWith(
+                color: badgeColor ?? colorScheme.primary,
+                fontWeight: AppTypography.weightSemiBold,
+              ),
+            ),
+          ],
         ],
       ),
     );
@@ -1071,7 +1138,8 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
   }
 
   /// 未命中规则的普通列表行：可选 onSurfaceVariant 图标 + 标题（+ 副标题）；
-  /// 可选的 [trailing] 右对齐展示在行尾（如 .so 文件大小）。
+  /// 可选的 [trailing] 右对齐展示在行尾（如 .so 文件大小）；
+  /// 可选的 [badgeText]/[badgeColor] 在 trailing 之后追加彩色徽标（如 16KB 对齐标记）。
   /// [icon] 为 null 时不渲染前导图标；[wrapTitle] 为 true 时标题完整换行
   /// （组件全量行等无尾随尺寸的文本），否则单行省略。
   Widget _buildPlainRow({
@@ -1079,6 +1147,8 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
     required String title,
     String? subtitle,
     String? trailing,
+    String? badgeText,
+    Color? badgeColor,
     bool wrapTitle = false,
     VoidCallback? onLongPress,
   }) {
@@ -1132,6 +1202,17 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
               maxLines: 1,
               style: textTheme.bodySmall?.copyWith(
                 color: colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+          if (badgeText != null) ...[
+            const SizedBox(width: AppSpacing.xs),
+            Text(
+              badgeText,
+              maxLines: 1,
+              style: textTheme.bodySmall?.copyWith(
+                color: badgeColor ?? colorScheme.primary,
+                fontWeight: AppTypography.weightSemiBold,
               ),
             ),
           ],
@@ -1248,5 +1329,15 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
     final mm = d.month.toString().padLeft(2, '0');
     final dd = d.day.toString().padLeft(2, '0');
     return '${d.year}-$mm-$dd';
+  }
+
+  /// 16KB 对齐汇总文案：无数据 → 「未知」；全部兼容 → 「兼容（n 个 .so）」；
+  /// 存在不兼容 → 「n 个不兼容 / 总数 个」。
+  String _elfSummaryText() {
+    final files = _elfScan.soFiles;
+    if (files.isEmpty) return '未知';
+    final bad = files.where((f) => !f.aligned16Kb).length;
+    if (bad == 0) return '兼容（${files.length} 个 .so）';
+    return '$bad 个不兼容 / ${files.length} 个';
   }
 }

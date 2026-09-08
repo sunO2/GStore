@@ -8,6 +8,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/core/rust/generated/components.dart';
+import 'package:gstore/core/rust/generated/elf.dart';
 import 'package:gstore/core/service/apk_library_analyzer.dart';
 import 'package:gstore/core/service/apk_source_service.dart';
 import 'package:gstore/page/installed_apps/sdk_analysis_page.dart';
@@ -51,7 +52,7 @@ void main() {
   }
 
   /// 注入合成详情数据（ABI/权限/全量原生库/全量 DEX/应用详情/组件清单/
-  /// 构建版本）并清理。
+  /// 构建版本/ELF 16KB 扫描）并清理。
   void injectDetails({
     List<String> abis = const [],
     List<String> permissions = const [],
@@ -60,6 +61,7 @@ void main() {
     InstalledAppDetail detail = const InstalledAppDetail(),
     ApkComponents? components,
     BuildVersionInfo buildVersions = const BuildVersionInfo(),
+    ApkElfScanResult elfScan = const ApkElfScanResult(soFiles: []),
   }) {
     ApkLibraryAnalyzer.instance.debugSetAbis(abis);
     ApkLibraryAnalyzer.instance.debugSetFullNativeLibs(fullLibs);
@@ -68,6 +70,7 @@ void main() {
     ApkSourceService.instance.debugSetPermissions(permissions);
     ApkSourceService.instance.debugSetInstalledAppDetail(detail);
     SdkAnalysisPage.debugSetComponents(components);
+    SdkAnalysisPage.debugSetElfScan(elfScan);
     addTearDown(() {
       ApkLibraryAnalyzer.instance.debugSetAbis(null);
       ApkLibraryAnalyzer.instance.debugSetFullNativeLibs(null);
@@ -76,6 +79,7 @@ void main() {
       ApkSourceService.instance.debugSetPermissions(null);
       ApkSourceService.instance.debugSetInstalledAppDetail(null);
       SdkAnalysisPage.debugSetComponents(null);
+      SdkAnalysisPage.debugSetElfScan(null);
     });
   }
 
@@ -195,12 +199,13 @@ void main() {
     expect(find.text('APK 大小'), findsOneWidget);
     expect(find.text('安装时间'), findsOneWidget);
     expect(find.text('最近更新'), findsOneWidget);
-    // SDK 版本解析失败 + 详情缺失 → 共 13 处「未知」降级
+    // SDK 版本解析失败 + 详情缺失 → 共 14 处「未知」降级
     // （主 Activity/APK 大小/安装时间/最近更新/minSdk/targetSdk + 新增
-    // UID/共享 UID/安装来源/数据目录 + Kotlin/Gradle/Java 构建版本）
+    // UID/共享 UID/安装来源/数据目录 + Kotlin/Gradle/Java 构建版本 +
+    // 16KB 对齐（无 ELF 扫描数据））
     expect(find.text('minSdk'), findsOneWidget);
     expect(find.text('targetSdk'), findsOneWidget);
-    expect(find.text('未知'), findsNWidgets(13));
+    expect(find.text('未知'), findsNWidgets(14));
     // ABI 非空 → 渲染 chips
     expect(find.text('ABI 架构'), findsOneWidget);
     expect(find.text('arm64-v8a'), findsOneWidget);
@@ -229,8 +234,8 @@ void main() {
     expect(find.text('12.5 MB'), findsOneWidget);
     // 安装时间/最近更新为 0 → 未知；minSdk/targetSdk 回退详情值；
     // 新增系统行（UID/共享 UID/安装来源/数据目录）与构建版本行
-    // （Kotlin/Gradle/Java）详情缺失 → 未知
-    expect(find.text('未知'), findsNWidgets(9));
+    // （Kotlin/Gradle/Java）详情缺失 + 16KB 对齐（无 ELF 扫描数据） → 未知
+    expect(find.text('未知'), findsNWidgets(10));
     expect(find.text('24'), findsOneWidget);
     expect(find.text('34'), findsOneWidget);
     expect(tester.takeException(), isNull);
@@ -256,8 +261,8 @@ void main() {
     expect(find.text('8.7'), findsOneWidget);
     expect(find.text('17'), findsOneWidget);
     // 构建版本全部命中 → 此轮无构建版本相关的「未知」
-    // （其余 detail/系统行缺失 → 10 处未知）
-    expect(find.text('未知'), findsNWidgets(10));
+    // （其余 detail/系统行 + 16KB 对齐缺失 → 11 处未知）
+    expect(find.text('未知'), findsNWidgets(11));
     expect(tester.takeException(), isNull);
   });
 
@@ -329,6 +334,71 @@ void main() {
     expect(find.text('4 B'), findsOneWidget); // 命中行 libmatched.so
     expect(find.text('1.5 MB'), findsOneWidget); // 未命中行 libplain.so
     expect(find.text('3.0 KB'), findsOneWidget); // 未命中行 libother.so
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('SDK 分析页：原生库 .so 行展示 16KB 对齐徽标（命中/未命中），概览汇总', (tester) async {
+    injectEmptyRules();
+    injectDetails(
+      fullLibs: const [
+        NativeAbiLibs(abi: 'arm64-v8a', soFiles: [
+          NativeSoFile(name: 'libok.so', size: 4096),
+          NativeSoFile(name: 'libbad.so', size: 8192),
+        ]),
+      ],
+      elfScan: const ApkElfScanResult(soFiles: [
+        ElfSoInfo(
+          abi: 'arm64-v8a',
+          soName: 'libok.so',
+          minPageSize: 16384,
+          aligned16Kb: true,
+        ),
+        ElfSoInfo(
+          abi: 'arm64-v8a',
+          soName: 'libbad.so',
+          minPageSize: 4096,
+          aligned16Kb: false,
+        ),
+      ]),
+    );
+
+    await pumpPage(tester);
+
+    // 概览汇总：1 个不兼容 / 2 个
+    expect(find.text('16KB 对齐'), findsOneWidget);
+    expect(find.text('1 个不兼容 / 2 个'), findsOneWidget);
+
+    // 原生库 tab：命中与否均展示徽标
+    await switchTab(tester, '原生库');
+    expect(find.text('libok.so'), findsOneWidget);
+    expect(find.text('libbad.so'), findsOneWidget);
+    expect(find.text('16KB ✓'), findsOneWidget);
+    expect(find.text('16KB ✗'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('SDK 分析页：16KB 数据缺失时原生库行无徽标、概览汇总未知', (tester) async {
+    injectEmptyRules();
+    injectDetails(
+      fullLibs: const [
+        NativeAbiLibs(abi: 'arm64-v8a', soFiles: [
+          NativeSoFile(name: 'libplain.so', size: 4096),
+        ]),
+      ],
+      // elfScan 默认空 → 不注入
+    );
+
+    await pumpPage(tester);
+
+    // 概览汇总「未知」
+    expect(find.text('16KB 对齐'), findsOneWidget);
+    expect(find.text('未知'), findsWidgets);
+
+    await switchTab(tester, '原生库');
+    expect(find.text('libplain.so'), findsOneWidget);
+    // 无 16KB 徽标
+    expect(find.text('16KB ✓'), findsNothing);
+    expect(find.text('16KB ✗'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
@@ -539,8 +609,8 @@ void main() {
     expect(find.text('是否调试'), findsOneWidget);
     expect(find.text('数据目录'), findsOneWidget);
     // 系统行 UID/共享 UID/安装来源/数据目录 + 构建版本行 Kotlin/Gradle/Java
-    // → 未知（版本/包名等行不叠加）
-    expect(find.text('未知'), findsNWidgets(13));
+    // + 16KB 对齐（无 ELF 扫描数据） → 未知（版本/包名等行不叠加）
+    expect(find.text('未知'), findsNWidgets(14));
     expect(find.text('是'), findsNothing);
     expect(find.text('否'), findsNWidgets(2));
     expect(tester.takeException(), isNull);

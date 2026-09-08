@@ -4,6 +4,7 @@ import 'package:path/path.dart' as path;
 import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/rust/generated/bridge.dart' show FdroidRepoManager;
 import 'package:gstore/core/rust/generated/components.dart' show ApkComponents;
+import 'package:gstore/core/rust/generated/elf.dart' show ApkElfScanResult;
 import 'package:gstore/core/rust/generated/frb_generated.dart' show RustLib;
 import 'package:gstore/core/rust/generated/models.dart'
     show AppInfo, ApkInfo, DownloadResult;
@@ -200,5 +201,16 @@ class FdroidRustRepoManager {
       await initialize();
     }
     return await _manager!.parseComponents(apkPath: apkPath);
+  }
+
+  /// 扫描 APK 内所有 `lib/<abi>/*.so` 的 PT_LOAD 段页对齐（16KB 兼容检测）。
+  /// Rust 实现（fdroid_repo::elf_scan）：返回每个 .so 的 ABI/文件名/
+  /// 最小 p_align 与是否 16KB 对齐。
+  /// 调用方负责容错（Rust 不可用/失败时降级为空）。
+  static Future<ApkElfScanResult> scanElfPageSizes(String apkPath) async {
+    if (_manager == null) {
+      await initialize();
+    }
+    return await _manager!.scanElfPageSizes(apkPath: apkPath);
   }
 }
