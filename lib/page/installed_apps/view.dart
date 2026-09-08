@@ -305,7 +305,7 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
       _showMessage('无法获取 ${app.name} 的 APK 路径');
       return;
     }
-    appLog.info('InstalledApps: SDK 分析开始', data: {
+    appLog.info('InstalledApps: 应用分析开始', data: {
       'package': app.packageName,
       'sourceDir': sourceDir,
     });
@@ -576,7 +576,7 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
                 children: [
                   Icon(Icons.memory_outlined, color: Colors.indigo, size: 18),
                   SizedBox(width: AppSpacing.sm),
-                  Text('SDK 分析'),
+                  Text('应用分析'),
                 ],
               ),
             ),

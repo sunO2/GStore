@@ -1,12 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/design/app_borders.dart';
 import 'package:gstore/core/rust/FdroidRustRepoManager.dart';
 import 'package:gstore/core/rust/generated/components.dart' show ApkComponents;
 import 'package:gstore/core/service/apk_library_analyzer.dart';
 import 'package:gstore/core/service/apk_source_service.dart';
 import 'package:installed_apps/app_info.dart' as installed;
 
-/// SDK 分析页：LibChecker 式多 Tab 分类展示 APK 内嵌第三方 SDK 检测结果。
+/// 应用分析页：LibChecker 式多 Tab 分类展示 APK 内嵌第三方 SDK 检测结果。
 ///
 /// 进入页面即并行发起多路分析（原生 .so 规则命中 / 全量 .so 按 ABI 枚举 /
 /// DEX 类名 / Manifest 组件命中与全量组件清单）与应用详细信息收集
@@ -163,7 +164,7 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('SDK 分析')),
+      appBar: AppBar(title: const Text('应用分析')),
       body: _buildBody(context),
     );
   }
@@ -297,36 +298,42 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
     return ListView(
       padding: AppSpacing.onlyVerticalMD,
       children: [
-        Padding(
-          padding: AppSpacing.onlyHorizontalMD,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              for (final (label, value) in rows)
-                _buildKeyValueRow(
-                  label: label,
-                  value: value,
-                  labelStyle: labelStyle,
-                  valueStyle: valueStyle,
-                ),
-              if (_abis.isNotEmpty) ...[
-                const SizedBox(height: AppSpacing.sm),
-                Text('ABI 架构', style: labelStyle),
-                const SizedBox(height: AppSpacing.xs),
-                Wrap(
-                  spacing: AppSpacing.xs,
-                  runSpacing: AppSpacing.xs,
-                  children: [
-                    for (final abi in _abis)
-                      Chip(
-                        visualDensity: VisualDensity.compact,
-                        label: Text(abi, style: textTheme.labelMedium),
-                      ),
-                  ],
-                ),
+        _buildSectionCard(
+          child: Padding(
+            padding: AppSpacing.cardPadding,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                for (final (label, value) in rows)
+                  _buildKeyValueRow(
+                    label: label,
+                    value: value,
+                    labelStyle: labelStyle,
+                    valueStyle: valueStyle,
+                  ),
+                if (_abis.isNotEmpty) ...[
+                  const Divider(height: AppSpacing.lg),
+                  Text(
+                    'ABI 架构',
+                    style: textTheme.labelLarge?.copyWith(
+                      color: colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                  const SizedBox(height: AppSpacing.xs),
+                  Wrap(
+                    spacing: AppSpacing.xs,
+                    runSpacing: AppSpacing.xs,
+                    children: [
+                      for (final abi in _abis)
+                        Chip(
+                          visualDensity: VisualDensity.compact,
+                          label: Text(abi, style: textTheme.labelMedium),
+                        ),
+                    ],
+                  ),
+                ],
               ],
-              const SizedBox(height: AppSpacing.md),
-            ],
+            ),
           ),
         ),
       ],
@@ -347,30 +354,35 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
     return ListView(
       padding: AppSpacing.onlyVerticalMD,
       children: [
-        for (final abiLibs in _fullNativeLibs) ...[
-          _buildGroupHeader(
-            icon: Icons.memory,
-            title: abiLibs.abi,
-            count: abiLibs.soFiles.length,
+        for (final abiLibs in _fullNativeLibs)
+          _buildSectionCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _buildGroupHeader(
+                  icon: Icons.memory,
+                  title: abiLibs.abi,
+                  count: abiLibs.soFiles.length,
+                ),
+                const Divider(height: 1),
+                for (final so in abiLibs.soFiles)
+                  if (hitBySo[so.name] case final hit?)
+                    _buildItem(
+                      hit,
+                      icon: Icons.memory,
+                      matchedName: so.name,
+                      trailing: _formatBytes(so.size),
+                    )
+                  else
+                    _buildPlainRow(
+                      icon: Icons.memory,
+                      title: so.name,
+                      subtitle: '未匹配规则',
+                      trailing: _formatBytes(so.size),
+                    ),
+              ],
+            ),
           ),
-          const SizedBox(height: AppSpacing.xs),
-          for (final so in abiLibs.soFiles)
-            if (hitBySo[so.name] case final hit?)
-              _buildItem(
-                hit,
-                icon: Icons.memory,
-                matchedName: so.name,
-                trailing: _formatBytes(so.size),
-              )
-            else
-              _buildPlainRow(
-                icon: Icons.memory,
-                title: so.name,
-                subtitle: '未匹配规则',
-                trailing: _formatBytes(so.size),
-              ),
-          const SizedBox(height: AppSpacing.md),
-        ],
       ],
     );
   }
@@ -381,15 +393,21 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
     return ListView(
       padding: AppSpacing.onlyVerticalMD,
       children: [
-        _buildGroupHeader(
-          icon: Icons.code,
-          title: 'DEX 类名',
-          count: _dexHits.length,
+        _buildSectionCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _buildGroupHeader(
+                icon: Icons.code,
+                title: 'DEX 类名',
+                count: _dexHits.length,
+              ),
+              const Divider(height: 1),
+              for (final hit in _dexHits)
+                _buildItem(hit, icon: Icons.code, matchedName: hit.matchedClassName),
+            ],
+          ),
         ),
-        const SizedBox(height: AppSpacing.xs),
-        for (final hit in _dexHits)
-          _buildItem(hit, icon: Icons.code, matchedName: hit.matchedClassName),
-        const SizedBox(height: AppSpacing.md),
       ],
     );
   }
@@ -407,38 +425,51 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
     return ListView(
       padding: AppSpacing.onlyVerticalMD,
       children: [
-        for (final group in matchGroups) ...[
-          _buildGroupHeader(
-            icon: Icons.view_module,
-            title: group.label,
-            count: group.items.length,
-          ),
-          const SizedBox(height: AppSpacing.xs),
-          for (final hit in group.items)
-            _buildItem(
-              hit,
-              icon: Icons.view_module,
-              matchedName: hit.componentName,
+        if (matchGroups.isNotEmpty)
+          _buildSectionCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                for (final (i, group) in matchGroups.indexed) ...[
+                  if (i > 0) const Divider(height: 1),
+                  _buildGroupHeader(
+                    icon: Icons.view_module,
+                    title: group.label,
+                    count: group.items.length,
+                  ),
+                  for (final hit in group.items)
+                    _buildItem(
+                      hit,
+                      icon: Icons.view_module,
+                      matchedName: hit.componentName,
+                    ),
+                ],
+              ],
             ),
-          const SizedBox(height: AppSpacing.md),
-        ],
-        if (fullGroups.isNotEmpty) ...[
-          _buildGroupHeader(
-            icon: Icons.view_module,
-            title: '全部组件',
-            count: fullTotal,
           ),
-          const SizedBox(height: AppSpacing.xs),
-          for (final group in fullGroups) ...[
-            _buildSubGroupHeader(
-              title: group.label,
-              count: group.count,
+        if (fullGroups.isNotEmpty)
+          _buildSectionCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _buildGroupHeader(
+                  icon: Icons.view_module,
+                  title: '全部组件',
+                  count: fullTotal,
+                ),
+                const Divider(height: 1),
+                for (final (i, group) in fullGroups.indexed) ...[
+                  if (i > 0) const Divider(height: 1),
+                  _buildSubGroupHeader(
+                    title: group.label,
+                    count: group.count,
+                  ),
+                  for (final name in group.items)
+                    _buildPlainRow(icon: Icons.view_module, title: name),
+                ],
+              ],
             ),
-            for (final name in group.items)
-              _buildPlainRow(icon: Icons.view_module, title: name),
-          ],
-          const SizedBox(height: AppSpacing.md),
-        ],
+          ),
       ],
     );
   }
@@ -450,23 +481,25 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
     return ListView(
       padding: AppSpacing.onlyVerticalMD,
       children: [
-        Padding(
-          padding: AppSpacing.onlyHorizontalMD,
-          child: Wrap(
-            spacing: AppSpacing.xs,
-            runSpacing: AppSpacing.xs,
-            children: [
-              for (final permission in _permissions)
-                Chip(
-                  visualDensity: VisualDensity.compact,
-                  label: Text(
-                    permission,
-                    style: textTheme.labelSmall,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
+        _buildSectionCard(
+          child: Padding(
+            padding: AppSpacing.cardPadding,
+            child: Wrap(
+              spacing: AppSpacing.xs,
+              runSpacing: AppSpacing.xs,
+              children: [
+                for (final permission in _permissions)
+                  Chip(
+                    visualDensity: VisualDensity.compact,
+                    label: Text(
+                      permission,
+                      style: textTheme.labelSmall,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
-                ),
-            ],
+              ],
+            ),
           ),
         ),
       ],
@@ -487,62 +520,57 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
     return ListView(
       padding: AppSpacing.onlyVerticalMD,
       children: [
-        _buildGroupHeader(
-          icon: Icons.verified_user,
-          title: '签名',
-          count: _detail.signatures.length,
-        ),
-        const SizedBox(height: AppSpacing.xs),
         for (final sig in _detail.signatures)
-          Padding(
-            padding: AppSpacing.horizontalLG_verticalSM,
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Padding(
-                  padding: AppSpacing.onlyTopXS,
-                  child: Icon(
-                    Icons.verified_user,
-                    size: AppTypography.iconSM,
-                    color: colorScheme.primary,
+          _buildSectionCard(
+            child: Padding(
+              padding: AppSpacing.cardPadding,
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Padding(
+                    padding: AppSpacing.onlyTopXS,
+                    child: Icon(
+                      Icons.verified_user,
+                      size: AppTypography.iconSM,
+                      color: colorScheme.primary,
+                    ),
                   ),
-                ),
-                const SizedBox(width: AppSpacing.md),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Flexible(
-                            child: Text(
-                              sig.subject.isEmpty ? '未知主题' : sig.subject,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: textTheme.bodyMedium,
+                  const SizedBox(width: AppSpacing.md),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Flexible(
+                              child: Text(
+                                sig.subject.isEmpty ? '未知主题' : sig.subject,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: textTheme.bodyMedium,
+                              ),
                             ),
-                          ),
-                          if (sig.algorithm.isNotEmpty) ...[
-                            const SizedBox(width: AppSpacing.xs),
-                            _buildSmallTag(sig.algorithm),
+                            if (sig.algorithm.isNotEmpty) ...[
+                              const SizedBox(width: AppSpacing.xs),
+                              _buildSmallTag(sig.algorithm),
+                            ],
                           ],
+                        ),
+                        if (sig.sha256.isNotEmpty) ...[
+                          const SizedBox(height: AppSpacing.xs),
+                          Text('SHA-256 ${sig.sha256}', style: fingerprintStyle),
                         ],
-                      ),
-                      if (sig.sha256.isNotEmpty) ...[
-                        const SizedBox(height: AppSpacing.xs),
-                        Text('SHA-256 ${sig.sha256}', style: fingerprintStyle),
+                        if (sig.sha1.isNotEmpty) ...[
+                          const SizedBox(height: AppSpacing.xs),
+                          Text('SHA-1 ${sig.sha1}', style: fingerprintStyle),
+                        ],
                       ],
-                      if (sig.sha1.isNotEmpty) ...[
-                        const SizedBox(height: AppSpacing.xs),
-                        Text('SHA-1 ${sig.sha1}', style: fingerprintStyle),
-                      ],
-                    ],
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
-        const SizedBox(height: AppSpacing.md),
       ],
     );
   }
@@ -551,42 +579,78 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
   /// 为空时展示「无 meta-data」。
   Widget _buildMetaTab() {
     final textTheme = Theme.of(context).textTheme;
-    final colorScheme = Theme.of(context).colorScheme;
     if (_detail.metaData.isEmpty) return _buildEmptyState('无 meta-data');
 
     final entries = _detail.metaData.entries.toList()
       ..sort((a, b) => a.key.compareTo(b.key));
-    final labelStyle = textTheme.bodySmall?.copyWith(
-      color: colorScheme.onSurfaceVariant,
-    );
 
     return ListView(
       padding: AppSpacing.onlyVerticalMD,
       children: [
-        _buildGroupHeader(
-          icon: Icons.tune,
-          title: 'meta 数据',
-          count: entries.length,
-        ),
-        const SizedBox(height: AppSpacing.xs),
-        Padding(
-          padding: AppSpacing.onlyHorizontalMD,
+        _buildSectionCard(
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              for (final entry in entries)
-                _buildKeyValueRow(
-                  label: entry.key,
-                  value: entry.value,
-                  labelStyle: labelStyle,
-                  valueStyle: textTheme.bodySmall,
-                  valueMaxLines: 1,
+              _buildGroupHeader(
+                icon: Icons.tune,
+                title: 'meta 数据',
+                count: entries.length,
+              ),
+              const Divider(height: 1),
+              Padding(
+                padding: AppSpacing.cardPadding,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    for (final (i, entry) in entries.indexed) ...[
+                      if (i > 0) const SizedBox(height: AppSpacing.sm),
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          _buildMetaKeyPill(entry.key),
+                          const SizedBox(width: AppSpacing.md),
+                          Expanded(
+                            child: Text(
+                              entry.value,
+                              maxLines: 3,
+                              overflow: TextOverflow.ellipsis,
+                              style: textTheme.bodyMedium,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ],
                 ),
+              ),
             ],
           ),
         ),
-        const SizedBox(height: AppSpacing.md),
       ],
+    );
+  }
+
+  /// meta 数据键药丸（secondaryContainer 底色 + 等宽 bodySmall，
+  /// 最大宽度 ~140，超出省略），与 [Text] 值形成「键 + 值」两级层次。
+  Widget _buildMetaKeyPill(String key) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+    return Container(
+      constraints: const BoxConstraints(maxWidth: 140),
+      padding: AppSpacing.chipPadding,
+      decoration: BoxDecoration(
+        color: colorScheme.secondaryContainer,
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+      ),
+      child: Text(
+        key,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: textTheme.bodySmall?.copyWith(
+          fontFamily: 'monospace',
+          color: colorScheme.onSecondaryContainer,
+        ),
+      ),
     );
   }
 
@@ -599,6 +663,25 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
               color: Theme.of(context).colorScheme.onSurfaceVariant,
             ),
       ),
+    );
+  }
+
+  /// 分组区块卡片：圆角 + 主题边框（镜像 view.dart `_buildAppTile` 卡片样式），
+  /// 横向外边距与底部间距统一（AppSpacing.onlyHorizontalMD + bottom）。
+  Widget _buildSectionCard({required Widget child}) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Card(
+      margin: const EdgeInsets.only(
+        left: AppSpacing.md,
+        right: AppSpacing.md,
+        bottom: AppSpacing.md,
+      ),
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(AppRadius.md),
+        side: AppBorders.sideOf(context, color: colorScheme.outlineVariant),
+      ),
+      child: child,
     );
   }
 
