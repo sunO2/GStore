@@ -203,6 +203,9 @@ class ApkLibraryAnalyzer {
   /// APK 路径 → ABI 列表缓存
   final Map<String, List<String>> _abiCache = {};
 
+  /// 测试用：注入的合成 ABI 列表（非 null 时跳过真实扫描）
+  List<String>? _debugAbis;
+
   /// 已加载原生库规则（懒加载缓存；测试注入覆盖）
   List<NativeLibraryRule>? _rules;
 
@@ -232,6 +235,14 @@ class ApkLibraryAnalyzer {
   void debugSetComponentRules(List<NativeLibraryRule>? rules) {
     _componentRules = rules;
     _componentCache.clear();
+  }
+
+  /// 测试用：注入合成 ABI 列表，跳过 isolate 解压扫描。
+  /// 传 null 恢复真实扫描。
+  @visibleForTesting
+  void debugSetAbis(List<String>? abis) {
+    _debugAbis = abis;
+    _abiCache.clear();
   }
 
   /// 加载规则（首次从资产读取并缓存）
@@ -601,6 +612,8 @@ class ApkLibraryAnalyzer {
   /// 复用 isolate 解压扫描（与 analyzeNativeLibraries 同一套 zip 读取）；
   /// 失败 → 空列表。已分析过的路径直接返回缓存。
   Future<List<String>> listNativeAbis(String apkPath) async {
+    final debug = _debugAbis;
+    if (debug != null) return debug;
     final cached = _abiCache[apkPath];
     if (cached != null) return cached;
 

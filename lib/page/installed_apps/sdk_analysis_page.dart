@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/rust/FdroidRustRepoManager.dart';
 import 'package:gstore/core/service/apk_library_analyzer.dart';
+import 'package:gstore/core/service/apk_source_service.dart';
 import 'package:installed_apps/app_info.dart' as installed;
 
 /// SDK 分析页：LibChecker 式分组展示 APK 内嵌第三方 SDK 检测结果。
 ///
-/// 进入页面即并行发起三路分析（原生 .so / DEX 类名 / Manifest 组件），
+/// 进入页面即并行发起三路分析（原生 .so / DEX 类名 / Manifest 组件）与
+/// 应用详细信息收集（权限 / ABI / minSdk / targetSdk），
 /// 完成后按分析类型分组以列表展示，替代原先的对话框方案。
 class SdkAnalysisPage extends StatefulWidget {
   const SdkAnalysisPage({
@@ -30,24 +33,55 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
   List<DexLibraryHit> _dexHits = const [];
   List<ComponentLibraryHit> _componentHits = const [];
 
+  /// 声明的权限列表（获取失败为空列表）
+  List<String> _permissions = const [];
+
+  /// 原生库 ABI 架构列表（获取失败为空列表）
+  List<String> _abis = const [];
+
+  /// minSdk（Rust 解析失败为空字符串，渲染为「未知」）
+  String _minSdk = '';
+
+  /// targetSdk（Rust 解析失败为空字符串，渲染为「未知」）
+  String _targetSdk = '';
+
   @override
   void initState() {
     super.initState();
     _analyze();
   }
 
-  /// 三路并行分析；分析器内部优雅降级为空列表，不会抛给调用方。
+  /// 三路并行分析 + 应用详情收集；分析器内部优雅降级为空，不会抛给调用方。
   Future<void> _analyze() async {
+    // Rust 通道不可用时解析失败 → 降级为空字符串，绝不抛给调用方。
+    final sdkF = () async {
+      try {
+        final components =
+            await FdroidRustRepoManager.parseComponents(widget.sourceDir);
+        return (components.minSdk, components.targetSdk);
+      } catch (e) {
+        appLog.error('SdkAnalysisPage: 解析 SDK 版本失败（降级为空） - $e');
+        return ('', '');
+      }
+    }();
+
     final results = await (
       ApkLibraryAnalyzer.instance.analyzeNativeLibraries(widget.sourceDir),
       ApkLibraryAnalyzer.instance.analyzeDexLibraries(widget.sourceDir),
       ApkLibraryAnalyzer.instance.analyzeComponents(widget.sourceDir),
+      ApkSourceService.instance.getPermissions(widget.app.packageName),
+      ApkLibraryAnalyzer.instance.listNativeAbis(widget.sourceDir),
+      sdkF,
     ).wait;
     if (!mounted) return;
     setState(() {
       _nativeHits = results.$1;
       _dexHits = results.$2;
       _componentHits = results.$3;
+      _permissions = results.$4;
+      _abis = results.$5;
+      _minSdk = results.$6.$1;
+      _targetSdk = results.$6.$2;
       _loading = false;
     });
   }
@@ -103,20 +137,112 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
     }
 
     final groups = _buildGroups();
-    if (groups.isEmpty) {
-      return Center(
-        child: Text(
-          '未检测到已知 SDK',
-          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
-        ),
-      );
-    }
-
     return ListView(
       padding: AppSpacing.onlyVerticalMD,
-      children: groups,
+      children: [
+        _buildDetailsSection(context),
+        if (groups.isEmpty)
+          Padding(
+            padding: AppSpacing.onlyHorizontalMD,
+            child: Text(
+              '未检测到已知 SDK',
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+            ),
+          )
+        else
+          ...groups,
+      ],
+    );
+  }
+
+  /// 应用详细信息区：键值行 + ABI chips + 权限 chips。
+  /// 数据缺失/为空时降级展示（路径与 SDK 版本「未知」、权限「无权限声明」）。
+  Widget _buildDetailsSection(BuildContext context) {
+    final textTheme = Theme.of(context).textTheme;
+    final colorScheme = Theme.of(context).colorScheme;
+
+    final rows = <(String, String)>[
+      ('包名', widget.app.packageName),
+      ('版本', '${widget.app.versionName} (${widget.app.versionCode})'),
+      ('安装路径', widget.sourceDir),
+      ('minSdk', _minSdk.isEmpty ? '未知' : _minSdk),
+      ('targetSdk', _targetSdk.isEmpty ? '未知' : _targetSdk),
+    ];
+
+    final labelStyle = textTheme.bodySmall?.copyWith(
+      color: colorScheme.onSurfaceVariant,
+    );
+    final valueStyle = textTheme.bodySmall;
+
+    return Padding(
+      padding: AppSpacing.onlyHorizontalMD,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (final (label, value) in rows)
+            Padding(
+              padding: const EdgeInsets.only(bottom: AppSpacing.xs),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SizedBox(
+                    width: 84,
+                    child: Text(label, style: labelStyle),
+                  ),
+                  Expanded(
+                    child: Text(
+                      value,
+                      style: valueStyle,
+                      maxLines: 3,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          if (_abis.isNotEmpty) ...[
+            const SizedBox(height: AppSpacing.sm),
+            Text('ABI 架构', style: labelStyle),
+            const SizedBox(height: AppSpacing.xs),
+            Wrap(
+              spacing: AppSpacing.xs,
+              runSpacing: AppSpacing.xs,
+              children: [
+                for (final abi in _abis)
+                  Chip(
+                    visualDensity: VisualDensity.compact,
+                    label: Text(abi, style: textTheme.labelMedium),
+                  ),
+              ],
+            ),
+          ],
+          const SizedBox(height: AppSpacing.md),
+          Text('权限（${_permissions.length}）', style: labelStyle),
+          const SizedBox(height: AppSpacing.xs),
+          if (_permissions.isEmpty)
+            Text('无权限声明', style: textTheme.bodySmall)
+          else
+            Wrap(
+              spacing: AppSpacing.xs,
+              runSpacing: AppSpacing.xs,
+              children: [
+                for (final permission in _permissions)
+                  Chip(
+                    visualDensity: VisualDensity.compact,
+                    label: Text(
+                      permission,
+                      style: textTheme.labelSmall,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+              ],
+            ),
+          const SizedBox(height: AppSpacing.md),
+        ],
+      ),
     );
   }
 

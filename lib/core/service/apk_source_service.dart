@@ -14,6 +14,10 @@ class ApkSourceService {
 
   static const MethodChannel _channel = MethodChannel('gstore/apk_source');
 
+  /// 测试用：注入合成权限列表，跳过平台通道调用。
+  /// 传 null 恢复真实通道调用。
+  List<String>? _debugPermissions;
+
   /// 是否支持（仅 Android 平台）
   bool get isSupported =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
@@ -35,6 +39,8 @@ class ApkSourceService {
   /// 获取已安装应用声明的权限列表（PackageManager.GET_PERMISSIONS），
   /// 失败/不支持时返回空列表
   Future<List<String>> getPermissions(String packageName) async {
+    final debug = _debugPermissions;
+    if (debug != null) return debug;
     if (!isSupported || packageName.isEmpty) return const [];
     try {
       final result = await _channel.invokeListMethod<String>('getPermissions', {
@@ -45,5 +51,11 @@ class ApkSourceService {
       appLog.error('ApkSourceService: 获取权限列表失败 - $e');
       return const [];
     }
+  }
+
+  /// 测试用：注入合成权限列表（null 恢复真实通道调用）。
+  @visibleForTesting
+  void debugSetPermissions(List<String>? permissions) {
+    _debugPermissions = permissions;
   }
 }
