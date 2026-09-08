@@ -421,6 +421,60 @@ void main() {
     });
   });
 
+  group('analyzeNativeLibsFull', () {
+    tearDown(() {
+      ApkLibraryAnalyzer.instance.debugSetFullNativeLibs(null);
+    });
+
+    test('注入 2 个 ABI（2/1 个 so），验证分组与顺序', () async {
+      ApkLibraryAnalyzer.instance.debugSetFullNativeLibs([
+        const NativeAbiLibs(abi: 'arm64-v8a', soFiles: ['libc.so', 'liba.so']),
+        const NativeAbiLibs(abi: 'x86', soFiles: ['libd.so']),
+      ]);
+      final libs =
+          await ApkLibraryAnalyzer.instance.analyzeNativeLibsFull('/fake/apk.apk');
+      expect(libs, hasLength(2));
+      expect(libs[0].abi, 'arm64-v8a');
+      expect(libs[0].soFiles, ['libc.so', 'liba.so']);
+      expect(libs[1].abi, 'x86');
+      expect(libs[1].soFiles, ['libd.so']);
+    });
+
+    test('注入后传 null 恢复真实扫描路径', () async {
+      ApkLibraryAnalyzer.instance.debugSetFullNativeLibs([
+        const NativeAbiLibs(abi: 'arm64-v8a', soFiles: ['libfake.so']),
+      ]);
+      final injected =
+          await ApkLibraryAnalyzer.instance.analyzeNativeLibsFull('/fake/apk.apk');
+      expect(injected, hasLength(1));
+      expect(injected.first.soFiles, ['libfake.so']);
+
+      // 恢复真实路径后走真实 zip 解压扫描
+      ApkLibraryAnalyzer.instance.debugSetFullNativeLibs(null);
+      final apk = await _buildFakeApk([
+        'lib/armeabi-v7a/libx.so',
+        'lib/x86_64/liby.so',
+        'lib/arm64-v8a/libz.so',
+        'lib/arm64-v8a/liba.so',
+        'assets/nope/x.so',
+      ]);
+      final libs = await ApkLibraryAnalyzer.instance.analyzeNativeLibsFull(apk);
+      expect(libs, hasLength(3));
+      expect(libs[0].abi, 'arm64-v8a');
+      expect(libs[0].soFiles, ['liba.so', 'libz.so']);
+      expect(libs[1].abi, 'armeabi-v7a');
+      expect(libs[1].soFiles, ['libx.so']);
+      expect(libs[2].abi, 'x86_64');
+      expect(libs[2].soFiles, ['liby.so']);
+    });
+
+    test('文件不存在 → 空列表且不抛异常', () async {
+      final libs =
+          await ApkLibraryAnalyzer.instance.analyzeNativeLibsFull('/no/such/file.apk');
+      expect(libs, isEmpty);
+    });
+  });
+
   group('analyzeComponents', () {
     tearDown(() {
       ApkLibraryAnalyzer.instance.debugSetComponentRules(null);

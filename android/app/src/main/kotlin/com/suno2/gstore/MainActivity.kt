@@ -14,7 +14,12 @@ import android.util.Log
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.security.MessageDigest
+import java.security.cert.CertificateFactory
+import java.security.cert.X509Certificate
 
 class MainActivity : FlutterActivity() {
     companion object {
@@ -160,6 +165,110 @@ class MainActivity : FlutterActivity() {
                         result.success(packageInfo.requestedPermissions?.toList() ?: emptyList<String>())
                     } catch (e: Exception) {
                         result.error("PERMS", "获取权限列表失败: ${e.message}", null)
+                    }
+                }
+                "getInstalledAppDetail" -> {
+                    val packageName = call.argument<String>("packageName")
+                    if (packageName == null || packageName.isEmpty()) {
+                        result.error("ARG", "packageName required", null)
+                        return@setMethodCallHandler
+                    }
+                    try {
+                        val pm = packageManager
+                        val packageInfo = pm.getPackageInfo(
+                            packageName,
+                            PackageManager.GET_SIGNATURES or PackageManager.GET_META_DATA
+                        )
+
+                        // 签名列表：每张证书解析 X509，提取 Subject DN 与 SHA-256/SHA-1 指纹
+                        val signatures = mutableListOf<Map<String, String>>()
+                        packageInfo.signatures?.let { sigs ->
+                            for (sig in sigs) {
+                                var algorithm = "SHA256withRSA"
+                                var subject = ""
+                                var sha256 = ""
+                                var sha1 = ""
+                                try {
+                                    val cert = CertificateFactory.getInstance("X509")
+                                        .generateCertificate(ByteArrayInputStream(sig.toByteArray()))
+                                        as X509Certificate
+                                    subject = cert.subjectDN.name
+                                    algorithm = cert.sigAlgName?.ifEmpty { "SHA256withRSA" }
+                                        ?: "SHA256withRSA"
+                                    sha256 = MessageDigest.getInstance("SHA-256")
+                                        .digest(sig.toByteArray())
+                                        .joinToString(":") { "%02x".format(it.toInt() and 0xFF) }
+                                    sha1 = MessageDigest.getInstance("SHA-1")
+                                        .digest(sig.toByteArray())
+                                        .joinToString(":") { "%02x".format(it.toInt() and 0xFF) }
+                                } catch (e: Exception) {
+                                    // 单张证书解析失败：降级为空字段，不影响其余证书
+                                }
+                                signatures.add(mapOf(
+                                    "algorithm" to algorithm,
+                                    "subject" to subject,
+                                    "sha256" to sha256,
+                                    "sha1" to sha1,
+                                ))
+                            }
+                        }
+
+                        // meta-data：Bundle → Map<String, String>（跳过 null 值）
+                        val metaData = mutableMapOf<String, String>()
+                        packageInfo.applicationInfo?.metaData?.let { bundle ->
+                            for (key in bundle.keySet()) {
+                                val value = bundle.get(key)?.toString()
+                                if (value != null) metaData[key] = value
+                            }
+                        }
+
+                        // 主 Activity：优先查 MAIN/LAUNCHER intent；失败回退到第一个非空 activity
+                        var mainActivity = ""
+                        try {
+                            val launchIntent = Intent(Intent.ACTION_MAIN)
+                                .addCategory(Intent.CATEGORY_LAUNCHER)
+                                .setPackage(packageName)
+                            mainActivity = pm.resolveActivity(launchIntent, 0)
+                                ?.activityInfo?.name ?: ""
+                        } catch (e: Exception) {
+                            mainActivity = ""
+                        }
+                        if (mainActivity.isEmpty()) {
+                            packageInfo.activities?.firstOrNull { it.name != null }
+                                ?.let { mainActivity = it.name ?: "" }
+                        }
+
+                        // APK 大小（sourceDir 文件字节数）
+                        var apkSize = 0L
+                        try {
+                            packageInfo.applicationInfo?.sourceDir?.let {
+                                apkSize = File(it).length()
+                            }
+                        } catch (e: Exception) {
+                            apkSize = 0L
+                        }
+
+                        // minSdk 仅 API 24+ 提供；两者均按可空返回
+                        var minSdk: Int? = null
+                        try {
+                            minSdk = packageInfo.applicationInfo?.minSdkVersion
+                        } catch (e: Exception) {
+                            minSdk = null
+                        }
+                        val targetSdk = packageInfo.applicationInfo?.targetSdkVersion
+
+                        result.success(mapOf(
+                            "signatures" to signatures,
+                            "metaData" to metaData,
+                            "mainActivity" to mainActivity,
+                            "apkSize" to apkSize,
+                            "firstInstallTime" to packageInfo.firstInstallTime,
+                            "lastUpdateTime" to packageInfo.lastUpdateTime,
+                            "minSdk" to minSdk,
+                            "targetSdk" to targetSdk,
+                        ))
+                    } catch (e: Exception) {
+                        result.error("DETAIL", "获取应用详情失败: ${e.message}", null)
                     }
                 }
                 else -> result.notImplemented()

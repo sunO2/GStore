@@ -168,6 +168,17 @@ class ComponentLibraryHit implements LibraryHit {
   String toString() => 'ComponentLibraryHit(type=$componentType, $componentName -> $label)';
 }
 
+/// 一个 ABI 下的全部原生库 .so 文件（LibChecker 风格展示）
+class NativeAbiLibs {
+  const NativeAbiLibs({required this.abi, required this.soFiles});
+
+  /// ABI 目录名（如 arm64-v8a）
+  final String abi;
+
+  /// 该 ABI 下的 .so 文件名（按字母序排序）
+  final List<String> soFiles;
+}
+
 /// APK 内嵌第三方库检测
 ///
 /// - 方案 A（纯 Dart）：解压 APK 枚举 lib/<abi>/*.so 文件名，
@@ -203,8 +214,14 @@ class ApkLibraryAnalyzer {
   /// APK 路径 → ABI 列表缓存
   final Map<String, List<String>> _abiCache = {};
 
+  /// APK 路径 → 全量原生库（按 ABI 分组）缓存
+  final Map<String, List<NativeAbiLibs>> _fullCache = {};
+
   /// 测试用：注入的合成 ABI 列表（非 null 时跳过真实扫描）
   List<String>? _debugAbis;
+
+  /// 测试用：注入的合成全量原生库（非 null 时跳过真实扫描）
+  List<NativeAbiLibs>? _debugFullNativeLibs;
 
   /// 已加载原生库规则（懒加载缓存；测试注入覆盖）
   List<NativeLibraryRule>? _rules;
@@ -243,6 +260,14 @@ class ApkLibraryAnalyzer {
   void debugSetAbis(List<String>? abis) {
     _debugAbis = abis;
     _abiCache.clear();
+  }
+
+  /// 测试用：注入合成全量原生库列表，跳过 isolate 解压扫描。
+  /// 传 null 恢复真实扫描。
+  @visibleForTesting
+  void debugSetFullNativeLibs(List<NativeAbiLibs>? libs) {
+    _debugFullNativeLibs = libs;
+    _fullCache.clear();
   }
 
   /// 加载规则（首次从资产读取并缓存）
@@ -628,6 +653,31 @@ class ApkLibraryAnalyzer {
     }
   }
 
+  /// 枚举 APK 内全部原生库（lib/<abi>/*.so），按 ABI 分组（LibChecker 风格）。
+  ///
+  /// 与 analyzeNativeLibraries 的规则命中不同：这里返回 APK 内**每个** .so 文件名，
+  /// 按 ABI 目录分组；ABI 排序与 listNativeAbis 一致，各 ABI 内文件名按字母序。
+  /// 失败 → 空列表。已分析过的路径直接返回缓存。
+  Future<List<NativeAbiLibs>> analyzeNativeLibsFull(String apkPath) async {
+    final debug = _debugFullNativeLibs;
+    if (debug != null) return debug;
+    final cached = _fullCache[apkPath];
+    if (cached != null) return cached;
+
+    try {
+      final libs = await compute(_listFullNativeLibsInIsolate, apkPath);
+      _fullCache[apkPath] = libs;
+      appLog.info(
+        'ApkLibraryAnalyzer: $apkPath 全量原生库: '
+        '${libs.map((l) => '${l.abi}(${l.soFiles.length})').join(', ')}',
+      );
+      return libs;
+    } catch (e) {
+      appLog.error('ApkLibraryAnalyzer: 枚举全量原生库失败 - $e');
+      return const [];
+    }
+  }
+
   /// 从正则规则名提取字面量包名前缀（如 `kotlin\.coroutines\.(.*)` → `kotlin.coroutines.`）。
   /// 规则库中 DEX 正则均形如 `pkg\d\.pkg\.(...)`；解析失败返回 null（跳过该规则）。
   static String? _regexLiteralPrefix(String regexName) {
@@ -693,6 +743,44 @@ List<String> _listAbisInIsolate(String apkPath) {
       final oa = ia < 0 ? priority.length : ia;
       final ob = ib < 0 ? priority.length : ib;
       return oa != ob ? oa.compareTo(ob) : a.compareTo(b);
+    });
+  return list;
+}
+
+/// isolate 内执行：读取 APK 字节 → 解压枚举 lib/<abi>/*.so → 按 ABI 分组
+List<NativeAbiLibs> _listFullNativeLibsInIsolate(String apkPath) {
+  final bytes = File(apkPath).readAsBytesSync();
+  final archive = ZipDecoder().decodeBytes(bytes);
+
+  // lib/<abi>/<name>.so（忽略大小写目录下的 .so 文件；不处理目录条目）
+  final libEntryRegex = RegExp(r'^lib/([^/]+)/[^/]+\.so$');
+  final soByAbi = <String, List<String>>{};
+  for (final entry in archive) {
+    if (!entry.isFile) continue;
+    final match = libEntryRegex.firstMatch(entry.name);
+    if (match == null) continue;
+    soByAbi.putIfAbsent(match.group(1)!, () => []).add(entry.name.split('/').last);
+  }
+
+  // 常见 ABI 优先级排序（与 _listAbisInIsolate 一致）
+  const priority = [
+    'arm64-v8a',
+    'armeabi-v7a',
+    'x86_64',
+    'x86',
+    'armeabi',
+    'mips64',
+    'mips',
+  ];
+  final list = <NativeAbiLibs>[
+    for (final entry in soByAbi.entries)
+      NativeAbiLibs(abi: entry.key, soFiles: entry.value..sort()),
+  ]..sort((a, b) {
+      final ia = priority.indexOf(a.abi);
+      final ib = priority.indexOf(b.abi);
+      final oa = ia < 0 ? priority.length : ia;
+      final ob = ib < 0 ? priority.length : ib;
+      return oa != ob ? oa.compareTo(ob) : a.abi.compareTo(b.abi);
     });
   return list;
 }
