@@ -426,28 +426,38 @@ void main() {
       ApkLibraryAnalyzer.instance.debugSetFullNativeLibs(null);
     });
 
-    test('注入 2 个 ABI（2/1 个 so），验证分组与顺序', () async {
+    test('注入 2 个 ABI（2/1 个 so），验证分组与大小透传', () async {
       ApkLibraryAnalyzer.instance.debugSetFullNativeLibs([
-        const NativeAbiLibs(abi: 'arm64-v8a', soFiles: ['libc.so', 'liba.so']),
-        const NativeAbiLibs(abi: 'x86', soFiles: ['libd.so']),
+        const NativeAbiLibs(abi: 'arm64-v8a', soFiles: [
+          NativeSoFile(name: 'libc.so', size: 1048576),
+          NativeSoFile(name: 'liba.so', size: 524288),
+        ]),
+        const NativeAbiLibs(abi: 'x86', soFiles: [
+          NativeSoFile(name: 'libd.so', size: 4096),
+        ]),
       ]);
       final libs =
           await ApkLibraryAnalyzer.instance.analyzeNativeLibsFull('/fake/apk.apk');
       expect(libs, hasLength(2));
       expect(libs[0].abi, 'arm64-v8a');
-      expect(libs[0].soFiles, ['libc.so', 'liba.so']);
+      expect(libs[0].soFiles.map((f) => f.name).toList(), ['libc.so', 'liba.so']);
+      expect(libs[0].soFiles.map((f) => f.size).toList(), [1048576, 524288]);
       expect(libs[1].abi, 'x86');
-      expect(libs[1].soFiles, ['libd.so']);
+      expect(libs[1].soFiles.map((f) => f.name).toList(), ['libd.so']);
+      expect(libs[1].soFiles.map((f) => f.size).toList(), [4096]);
     });
 
     test('注入后传 null 恢复真实扫描路径', () async {
       ApkLibraryAnalyzer.instance.debugSetFullNativeLibs([
-        const NativeAbiLibs(abi: 'arm64-v8a', soFiles: ['libfake.so']),
+        const NativeAbiLibs(abi: 'arm64-v8a', soFiles: [
+          NativeSoFile(name: 'libfake.so', size: 42),
+        ]),
       ]);
       final injected =
           await ApkLibraryAnalyzer.instance.analyzeNativeLibsFull('/fake/apk.apk');
       expect(injected, hasLength(1));
-      expect(injected.first.soFiles, ['libfake.so']);
+      expect(injected.first.soFiles.map((f) => f.name).toList(), ['libfake.so']);
+      expect(injected.first.soFiles.map((f) => f.size).toList(), [42]);
 
       // 恢复真实路径后走真实 zip 解压扫描
       ApkLibraryAnalyzer.instance.debugSetFullNativeLibs(null);
@@ -461,11 +471,16 @@ void main() {
       final libs = await ApkLibraryAnalyzer.instance.analyzeNativeLibsFull(apk);
       expect(libs, hasLength(3));
       expect(libs[0].abi, 'arm64-v8a');
-      expect(libs[0].soFiles, ['liba.so', 'libz.so']);
+      // 组内按文件名字母序：liba.so 在 libz.so 前
+      expect(libs[0].soFiles.map((f) => f.name).toList(), ['liba.so', 'libz.so']);
+      // 每个 .so 条目按 4 字节内容写入 → 解压后大小即 4 B
+      expect(libs[0].soFiles.map((f) => f.size).toList(), [4, 4]);
       expect(libs[1].abi, 'armeabi-v7a');
-      expect(libs[1].soFiles, ['libx.so']);
+      expect(libs[1].soFiles.map((f) => f.name).toList(), ['libx.so']);
+      expect(libs[1].soFiles.map((f) => f.size).toList(), [4]);
       expect(libs[2].abi, 'x86_64');
-      expect(libs[2].soFiles, ['liby.so']);
+      expect(libs[2].soFiles.map((f) => f.name).toList(), ['liby.so']);
+      expect(libs[2].soFiles.map((f) => f.size).toList(), [4]);
     });
 
     test('文件不存在 → 空列表且不抛异常', () async {

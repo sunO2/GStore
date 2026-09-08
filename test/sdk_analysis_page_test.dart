@@ -97,12 +97,17 @@ void main() {
     fail('SDK 分析页加载超时（TabBar 未出现）');
   }
 
-  /// 生成包含指定条目的假 APK（zip，同步写盘——FakeAsync 内不可 await 真实 IO）
+  /// 生成包含指定条目的假 APK（zip，同步写盘——FakeAsync 内不可 await 真实 IO）。
+  /// 条目形如 `lib/arm64-v8a/libx.so`；可用冒号后缀 `lib/x86/liby.so:2048`
+  /// 指定该文件的 zip 解压后字节数（默认 4，与内容字节数一致）。
   String buildFakeApkSync(List<String> entries) {
     final dir = Directory.systemTemp.createTempSync('gstore_sdk_page_test');
     final archive = Archive();
-    for (final name in entries) {
-      archive.addFile(ArchiveFile(name, 4, [1, 2, 3, 4]));
+    for (final entry in entries) {
+      final parts = entry.split(':');
+      final name = parts.first;
+      final size = parts.length > 1 ? int.parse(parts[1]) : 4;
+      archive.addFile(ArchiveFile(name, size, List<int>.filled(size, 1)));
     }
     final bytes = ZipEncoder().encode(archive)!;
     File('${dir.path}/fake.apk').writeAsBytesSync(bytes);
@@ -221,11 +226,11 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('SDK 分析页：原生库 tab 展示全量 .so 按 ABI 分组，命中高亮 vs 未命中平淡', (tester) async {
+  testWidgets('SDK 分析页：原生库 tab 展示全量 .so 按 ABI 分组，命中高亮 vs 未命中平淡，行尾展示文件大小', (tester) async {
     final apkPath = buildFakeApkSync([
-      'lib/arm64-v8a/libmatched.so',
-      'lib/arm64-v8a/libplain.so',
-      'lib/x86/libother.so',
+      'lib/arm64-v8a/libmatched.so', // 命中 → 4 B
+      'lib/arm64-v8a/libplain.so:1572864', // 未命中 → 1.5 MB
+      'lib/x86/libother.so:3072', // 未命中 → 3.0 KB
       'classes.dex',
       'AndroidManifest.xml',
     ]);
@@ -269,6 +274,10 @@ void main() {
     expect(find.text('匹配 SDK'), findsOneWidget);
     // 未命中行副标题：libplain / libother 各一处
     expect(find.text('未匹配规则'), findsNWidgets(2));
+    // 行尾文件大小（_formatBytes）：命中行与未命中行均展示
+    expect(find.text('4 B'), findsOneWidget); // 命中行 libmatched.so
+    expect(find.text('1.5 MB'), findsOneWidget); // 未命中行 libplain.so
+    expect(find.text('3.0 KB'), findsOneWidget); // 未命中行 libother.so
     expect(tester.takeException(), isNull);
   });
 

@@ -334,7 +334,8 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
   }
 
   /// 原生库（.so）：按 ABI 分组展示 APK 内**全部** .so，命中规则的
-  /// 行以 SDK 标签 + 匹配名高亮（`_buildItem`），未命中的行平铺展示.
+  /// 行以 SDK 标签 + 匹配名高亮（`_buildItem`），未命中的行平铺展示。
+  /// 每行行尾展示该 .so 的文件大小（zip 解压后字节数）。
   /// 为空时展示居中空态。
   Widget _buildNativeTab() {
     if (_fullNativeLibs.isEmpty) return _buildEmptyState('未检测到原生库');
@@ -354,13 +355,19 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
           ),
           const SizedBox(height: AppSpacing.xs),
           for (final so in abiLibs.soFiles)
-            if (hitBySo[so] case final hit?)
-              _buildItem(hit, icon: Icons.memory, matchedName: so)
+            if (hitBySo[so.name] case final hit?)
+              _buildItem(
+                hit,
+                icon: Icons.memory,
+                matchedName: so.name,
+                trailing: _formatBytes(so.size),
+              )
             else
               _buildPlainRow(
                 icon: Icons.memory,
-                title: so,
+                title: so.name,
                 subtitle: '未匹配规则',
+                trailing: _formatBytes(so.size),
               ),
           const SizedBox(height: AppSpacing.md),
         ],
@@ -679,11 +686,13 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
     );
   }
 
-  /// 单个命中项：图标 + label（标题行）+ 匹配名（等宽副标题）+ 正则标签
+  /// 单个命中项：图标 + label（标题行）+ 匹配名（等宽副标题）+ 正则标签；
+  /// 可选的 [trailing] 右对齐展示在行尾（如 .so 文件大小）。
   Widget _buildItem(
     LibraryHit hit, {
     required IconData icon,
     required String matchedName,
+    String? trailing,
   }) {
     final colorScheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
@@ -735,16 +744,28 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
               ],
             ),
           ),
+          if (trailing != null) ...[
+            const SizedBox(width: AppSpacing.xs),
+            Text(
+              trailing,
+              maxLines: 1,
+              style: textTheme.bodySmall?.copyWith(
+                color: colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
         ],
       ),
     );
   }
 
-  /// 未命中规则的普通列表行：onSurfaceVariant 图标 + 标题（+ 副标题）。
+  /// 未命中规则的普通列表行：onSurfaceVariant 图标 + 标题（+ 副标题）；
+  /// 可选的 [trailing] 右对齐展示在行尾（如 .so 文件大小）。
   Widget _buildPlainRow({
     required IconData icon,
     required String title,
     String? subtitle,
+    String? trailing,
   }) {
     final colorScheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
@@ -787,6 +808,16 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
               ],
             ),
           ),
+          if (trailing != null) ...[
+            const SizedBox(width: AppSpacing.xs),
+            Text(
+              trailing,
+              maxLines: 1,
+              style: textTheme.bodySmall?.copyWith(
+                color: colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
         ],
       ),
     );

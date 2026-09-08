@@ -168,6 +168,17 @@ class ComponentLibraryHit implements LibraryHit {
   String toString() => 'ComponentLibraryHit(type=$componentType, $componentName -> $label)';
 }
 
+/// 单个原生库 .so 文件：文件名 + zip 解压后字节数（LibChecker 风格展示）
+class NativeSoFile {
+  const NativeSoFile({required this.name, required this.size});
+
+  /// .so 文件名（如 libcrypto.so）
+  final String name;
+
+  /// zip 解压后字节数（uncompressed size）
+  final int size;
+}
+
 /// 一个 ABI 下的全部原生库 .so 文件（LibChecker 风格展示）
 class NativeAbiLibs {
   const NativeAbiLibs({required this.abi, required this.soFiles});
@@ -175,8 +186,8 @@ class NativeAbiLibs {
   /// ABI 目录名（如 arm64-v8a）
   final String abi;
 
-  /// 该 ABI 下的 .so 文件名（按字母序排序）
-  final List<String> soFiles;
+  /// 该 ABI 下的 .so 文件（按文件名字母序排序；含解压后字节数）
+  final List<NativeSoFile> soFiles;
 }
 
 /// APK 内嵌第三方库检测
@@ -655,8 +666,9 @@ class ApkLibraryAnalyzer {
 
   /// 枚举 APK 内全部原生库（lib/<abi>/*.so），按 ABI 分组（LibChecker 风格）。
   ///
-  /// 与 analyzeNativeLibraries 的规则命中不同：这里返回 APK 内**每个** .so 文件名，
-  /// 按 ABI 目录分组；ABI 排序与 listNativeAbis 一致，各 ABI 内文件名按字母序。
+  /// 与 analyzeNativeLibraries 的规则命中不同：这里返回 APK 内**每个** .so 文件
+  /// （文件名 + zip 解压后字节数，见 [NativeSoFile]），按 ABI 目录分组；
+  /// ABI 排序与 listNativeAbis 一致，各 ABI 内文件名按字母序。
   /// 失败 → 空列表。已分析过的路径直接返回缓存。
   Future<List<NativeAbiLibs>> analyzeNativeLibsFull(String apkPath) async {
     final debug = _debugFullNativeLibs;
@@ -753,13 +765,16 @@ List<NativeAbiLibs> _listFullNativeLibsInIsolate(String apkPath) {
   final archive = ZipDecoder().decodeBytes(bytes);
 
   // lib/<abi>/<name>.so（忽略大小写目录下的 .so 文件；不处理目录条目）
+  // 每个文件记录 zip 解压后字节数（entry.size），供 UI 行尾展示大小。
   final libEntryRegex = RegExp(r'^lib/([^/]+)/[^/]+\.so$');
-  final soByAbi = <String, List<String>>{};
+  final soByAbi = <String, List<NativeSoFile>>{};
   for (final entry in archive) {
     if (!entry.isFile) continue;
     final match = libEntryRegex.firstMatch(entry.name);
     if (match == null) continue;
-    soByAbi.putIfAbsent(match.group(1)!, () => []).add(entry.name.split('/').last);
+    soByAbi
+        .putIfAbsent(match.group(1)!, () => [])
+        .add(NativeSoFile(name: entry.name.split('/').last, size: entry.size));
   }
 
   // 常见 ABI 优先级排序（与 _listAbisInIsolate 一致）
@@ -774,7 +789,10 @@ List<NativeAbiLibs> _listFullNativeLibsInIsolate(String apkPath) {
   ];
   final list = <NativeAbiLibs>[
     for (final entry in soByAbi.entries)
-      NativeAbiLibs(abi: entry.key, soFiles: entry.value..sort()),
+      NativeAbiLibs(
+        abi: entry.key,
+        soFiles: entry.value..sort((a, b) => a.name.compareTo(b.name)),
+      ),
   ]..sort((a, b) {
       final ia = priority.indexOf(a.abi);
       final ib = priority.indexOf(b.abi);
