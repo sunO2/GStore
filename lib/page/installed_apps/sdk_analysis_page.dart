@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/design/app_borders.dart';
 import 'package:gstore/core/rust/FdroidRustRepoManager.dart';
@@ -111,6 +112,9 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
   /// 获取失败为默认空实例）
   InstalledAppDetail _detail = const InstalledAppDetail();
 
+  /// 全量 DEX 文件（文件名 + 大小，LibChecker 风格；获取失败为空列表）
+  List<DexFile> _dexFiles = const [];
+
   /// Manifest 组件全量清单（Rust 解析失败为 null → 组件页仅展示规则命中）
   ApkComponents? _components;
 
@@ -143,6 +147,7 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
       sdkF,
       ApkLibraryAnalyzer.instance.analyzeNativeLibsFull(widget.sourceDir),
       ApkSourceService.instance.getInstalledAppDetail(widget.app.packageName),
+      ApkLibraryAnalyzer.instance.analyzeDexFilesFull(widget.sourceDir),
     ).wait;
     if (!mounted) return;
     setState(() {
@@ -157,8 +162,18 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
       _targetSdk = components.targetSdk;
       _fullNativeLibs = results.$7;
       _detail = results.$8;
+      _dexFiles = results.$9;
       _loading = false;
     });
+  }
+
+  /// 复制文本到剪贴板并弹出统一 SnackBar 提示（'已复制 …'，超长截断）。
+  /// 长按复制全页数据统一走此入口。
+  void _copyText(BuildContext context, String text, {String? label}) {
+    Clipboard.setData(ClipboardData(text: text));
+    final full = '已复制 ${label ?? text}';
+    final msg = full.length > 40 ? '${full.substring(0, 40)}…' : full;
+    AppDialogs.showSnackbar(msg);
   }
 
   @override
@@ -295,6 +310,19 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
       ),
     ];
 
+    // 系统信息行（detail 缺失字段 → 「未知」/「否」降级，恒展示）
+    final systemRows = <(String, String)>[
+      ('UID', _detail.uid > 0 ? '${_detail.uid}' : '未知'),
+      (
+        '共享 UID',
+        _detail.sharedUserId.isEmpty ? '未知' : _detail.sharedUserId,
+      ),
+      ('安装来源', _detail.installer.isEmpty ? '未知' : _detail.installer),
+      ('是否系统应用', _detail.isSystemApp ? '是' : '否'),
+      ('是否调试', _detail.isDebuggable ? '是' : '否'),
+      ('数据目录', _detail.dataDir.isEmpty ? '未知' : _detail.dataDir),
+    ];
+
     return ListView(
       padding: AppSpacing.onlyVerticalMD,
       children: [
@@ -310,6 +338,16 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
                     value: value,
                     labelStyle: labelStyle,
                     valueStyle: valueStyle,
+                    onLongPress: () => _copyText(context, value, label: label),
+                  ),
+                const Divider(height: AppSpacing.lg),
+                for (final (label, value) in systemRows)
+                  _buildKeyValueRow(
+                    label: label,
+                    value: value,
+                    labelStyle: labelStyle,
+                    valueStyle: valueStyle,
+                    onLongPress: () => _copyText(context, value, label: label),
                   ),
                 if (_abis.isNotEmpty) ...[
                   const Divider(height: AppSpacing.lg),
@@ -372,6 +410,8 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
                       icon: Icons.memory,
                       matchedName: so.name,
                       trailing: _formatBytes(so.size),
+                      onLongPress: () =>
+                          _copyText(context, so.name, label: so.name),
                     )
                   else
                     _buildPlainRow(
@@ -379,6 +419,8 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
                       title: so.name,
                       subtitle: '未匹配规则',
                       trailing: _formatBytes(so.size),
+                      onLongPress: () =>
+                          _copyText(context, so.name, label: so.name),
                     ),
               ],
             ),
@@ -387,27 +429,52 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
     );
   }
 
-  /// DEX 类名命中列表；为空时展示居中空态。
+  /// DEX 类名命中列表 + 全量 DEX 文件（名称 + 大小）；
+  /// 两者皆空时展示居中空态。
   Widget _buildDexTab() {
-    if (_dexHits.isEmpty) return _buildEmptyState('未检测到 DEX 类名');
+    if (_dexHits.isEmpty && _dexFiles.isEmpty) {
+      return _buildEmptyState('未检测到 DEX 类名');
+    }
     return ListView(
       padding: AppSpacing.onlyVerticalMD,
       children: [
-        _buildSectionCard(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              _buildGroupHeader(
-                icon: Icons.code,
-                title: 'DEX 类名',
-                count: _dexHits.length,
-              ),
-              Divider(height: AppSpacing.md),
-              for (final hit in _dexHits)
-                _buildItem(hit, icon: Icons.code, matchedName: hit.matchedClassName),
-            ],
+        if (_dexHits.isNotEmpty)
+          _buildSectionCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _buildGroupHeader(
+                  icon: Icons.code,
+                  title: 'DEX 类名',
+                  count: _dexHits.length,
+                ),
+                Divider(height: AppSpacing.md),
+                for (final hit in _dexHits)
+                  _buildItem(hit, icon: Icons.code, matchedName: hit.matchedClassName),
+              ],
+            ),
           ),
-        ),
+        if (_dexFiles.isNotEmpty)
+          _buildSectionCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _buildGroupHeader(
+                  icon: Icons.code,
+                  title: 'DEX 文件',
+                  count: _dexFiles.length,
+                ),
+                const Divider(height: AppSpacing.md),
+                for (final f in _dexFiles)
+                  _buildPlainRow(
+                    icon: Icons.code,
+                    title: f.name,
+                    trailing: _formatBytes(f.size),
+                    onLongPress: () => _copyText(context, f.name, label: f.name),
+                  ),
+              ],
+            ),
+          ),
       ],
     );
   }
@@ -438,7 +505,15 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
                     count: group.items.length,
                   ),
                   for (final hit in group.items)
-                    _buildItem(hit, matchedName: hit.componentName),
+                    _buildItem(
+                      hit,
+                      matchedName: hit.componentName,
+                      onLongPress: () => _copyText(
+                        context,
+                        hit.componentName,
+                        label: hit.componentName,
+                      ),
+                    ),
                 ],
               ],
             ),
@@ -461,7 +536,11 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
                     count: group.count,
                   ),
                   for (final name in group.items)
-                    _buildPlainRow(title: name, wrapTitle: true),
+                    _buildPlainRow(
+                      title: name,
+                      wrapTitle: true,
+                      onLongPress: () => _copyText(context, name, label: name),
+                    ),
                 ],
               ],
             ),
@@ -486,16 +565,24 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
               runSpacing: AppSpacing.xs,
               children: [
                 for (final permission in _permissions)
-                  Container(
-                    padding: AppSpacing.chipPadding,
-                    decoration: BoxDecoration(
-                      color: colorScheme.secondaryContainer,
-                      borderRadius: BorderRadius.circular(AppRadius.sm),
-                    ),
-                    child: Text(
+                  GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onLongPress: () => _copyText(
+                      context,
                       permission,
-                      style: textTheme.labelSmall?.copyWith(
-                        color: colorScheme.onSecondaryContainer,
+                      label: permission,
+                    ),
+                    child: Container(
+                      padding: AppSpacing.chipPadding,
+                      decoration: BoxDecoration(
+                        color: colorScheme.secondaryContainer,
+                        borderRadius: BorderRadius.circular(AppRadius.sm),
+                      ),
+                      child: Text(
+                        permission,
+                        style: textTheme.labelSmall?.copyWith(
+                          color: colorScheme.onSecondaryContainer,
+                        ),
                       ),
                     ),
                   ),
@@ -507,7 +594,8 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
     );
   }
 
-  /// 签名：列出每张证书的 subject DN、SHA-256/SHA-1 指纹与签名算法。
+  /// 签名：列出每张证书的 subject DN（完整换行不截断）、SHA-256/SHA-1
+  /// 指纹与签名算法；点击卡片打开签名详情弹窗，长按复制完整证书信息。
   /// 为空时展示「无签名信息」。
   Widget _buildSignatureTab() {
     if (_detail.signatures.isEmpty) return _buildEmptyState('无签名信息');
@@ -523,58 +611,130 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
       children: [
         for (final sig in _detail.signatures)
           _buildSectionCard(
-            child: Padding(
-              padding: AppSpacing.cardPadding,
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Padding(
-                    padding: AppSpacing.onlyTopXS,
-                    child: Icon(
-                      Icons.verified_user,
-                      size: AppTypography.iconSM,
-                      color: colorScheme.primary,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => _showSignatureDetail(context, sig),
+              onLongPress: () =>
+                  _copyText(context, _signatureCopyText(sig), label: '签名信息'),
+              child: Padding(
+                padding: AppSpacing.cardPadding,
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Padding(
+                      padding: AppSpacing.onlyTopXS,
+                      child: Icon(
+                        Icons.verified_user,
+                        size: AppTypography.iconSM,
+                        color: colorScheme.primary,
+                      ),
                     ),
-                  ),
-                  const SizedBox(width: AppSpacing.md),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            Flexible(
-                              child: Text(
-                                sig.subject.isEmpty ? '未知主题' : sig.subject,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: textTheme.bodyMedium,
-                              ),
+                    const SizedBox(width: AppSpacing.md),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          // 证书主题：独立整行、完整换行（不再截断）
+                          Text(
+                            sig.subject.isEmpty ? '未知主题' : sig.subject,
+                            style: textTheme.bodyMedium,
+                          ),
+                          if (sig.algorithm.isNotEmpty) ...[
+                            const SizedBox(height: AppSpacing.xs),
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [_buildSmallTag(sig.algorithm)],
                             ),
-                            if (sig.algorithm.isNotEmpty) ...[
-                              const SizedBox(width: AppSpacing.xs),
-                              _buildSmallTag(sig.algorithm),
-                            ],
                           ],
-                        ),
-                        if (sig.sha256.isNotEmpty) ...[
-                          const SizedBox(height: AppSpacing.xs),
-                          Text('SHA-256 ${sig.sha256}', style: fingerprintStyle),
+                          if (sig.sha256.isNotEmpty) ...[
+                            const SizedBox(height: AppSpacing.xs),
+                            Text('SHA-256 ${sig.sha256}', style: fingerprintStyle),
+                          ],
+                          if (sig.sha1.isNotEmpty) ...[
+                            const SizedBox(height: AppSpacing.xs),
+                            Text('SHA-1 ${sig.sha1}', style: fingerprintStyle),
+                          ],
                         ],
-                        if (sig.sha1.isNotEmpty) ...[
-                          const SizedBox(height: AppSpacing.xs),
-                          Text('SHA-1 ${sig.sha1}', style: fingerprintStyle),
-                        ],
-                      ],
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),
       ],
     );
   }
+
+  /// 打开签名详情弹窗：subject / 算法 / SHA-256 / SHA-1 全字段，每行可长按复制。
+  void _showSignatureDetail(BuildContext context, SignatureInfo sig) {
+    AppDialogs.showDialog(
+      title: '签名详情',
+      content: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.of(context).size.height * 0.5,
+        ),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildDialogCopyRow(
+                context,
+                '主题',
+                sig.subject.isEmpty ? '未知主题' : sig.subject,
+              ),
+              if (sig.algorithm.isNotEmpty)
+                _buildDialogCopyRow(context, '算法', sig.algorithm),
+              if (sig.sha256.isNotEmpty)
+                _buildDialogCopyRow(context, 'SHA-256', sig.sha256),
+              if (sig.sha1.isNotEmpty)
+                _buildDialogCopyRow(context, 'SHA-1', sig.sha1),
+            ],
+          ),
+        ),
+      ),
+      confirmText: '关闭',
+      cancelText: null,
+    );
+  }
+
+  /// 签名详情弹窗内可复制行：label（onSurfaceVariant）+ 等宽 value，长按复制。
+  Widget _buildDialogCopyRow(BuildContext context, String label, String value) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: AppSpacing.sm),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onLongPress: () => _copyText(context, value, label: label),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              label,
+              style: textTheme.bodySmall?.copyWith(
+                color: colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: AppSpacing.xs),
+            Text(
+              value,
+              style: textTheme.bodyMedium?.copyWith(fontFamily: 'monospace'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 完整证书信息（算法/主题/SHA-256/SHA-1 拼接，长按复制用）。
+  static String _signatureCopyText(SignatureInfo sig) => [
+        if (sig.algorithm.isNotEmpty) '算法: ${sig.algorithm}',
+        if (sig.subject.isNotEmpty) '主题: ${sig.subject}',
+        if (sig.sha256.isNotEmpty) 'SHA-256: ${sig.sha256}',
+        if (sig.sha1.isNotEmpty) 'SHA-1: ${sig.sha1}',
+      ].join('\n');
 
   /// meta 数据：Manifest <meta-data> 键值行（键排序展示）。
   /// 为空时展示「无 meta-data」。
@@ -609,11 +769,23 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
                       Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          _buildMetaKeyPill(entry.key),
+                          _buildMetaKeyPill(
+                            entry.key,
+                            onLongPress: () =>
+                                _copyText(context, entry.key, label: entry.key),
+                          ),
                           const SizedBox(height: AppSpacing.xs),
-                          Text(
-                            entry.value,
-                            style: textTheme.bodyMedium,
+                          GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onLongPress: () => _copyText(
+                              context,
+                              entry.value,
+                              label: entry.value,
+                            ),
+                            child: Text(
+                              entry.value,
+                              style: textTheme.bodyMedium,
+                            ),
                           ),
                         ],
                       ),
@@ -630,10 +802,10 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
 
   /// meta 数据键药丸（secondaryContainer 底色 + 等宽 bodySmall，完整换行），
   /// 与 [Text] 值形成「键 + 值」两级层次。
-  Widget _buildMetaKeyPill(String key) {
+  Widget _buildMetaKeyPill(String key, {VoidCallback? onLongPress}) {
     final colorScheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
-    return Container(
+    final pill = Container(
       padding: AppSpacing.chipPadding,
       decoration: BoxDecoration(
         color: colorScheme.secondaryContainer,
@@ -646,6 +818,12 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
           color: colorScheme.onSecondaryContainer,
         ),
       ),
+    );
+    if (onLongPress == null) return pill;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onLongPress: onLongPress,
+      child: pill,
     );
   }
 
@@ -772,11 +950,12 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
     IconData? icon,
     required String matchedName,
     String? trailing,
+    VoidCallback? onLongPress,
   }) {
     final colorScheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
 
-    return Padding(
+    final row = Padding(
       padding: AppSpacing.horizontalLG_verticalSM,
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -838,6 +1017,12 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
         ],
       ),
     );
+    if (onLongPress == null) return row;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onLongPress: onLongPress,
+      child: row,
+    );
   }
 
   /// 未命中规则的普通列表行：可选 onSurfaceVariant 图标 + 标题（+ 副标题）；
@@ -850,11 +1035,12 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
     String? subtitle,
     String? trailing,
     bool wrapTitle = false,
+    VoidCallback? onLongPress,
   }) {
     final colorScheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
 
-    return Padding(
+    final row = Padding(
       padding: AppSpacing.horizontalLG_verticalSM,
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -907,6 +1093,12 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
         ],
       ),
     );
+    if (onLongPress == null) return row;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onLongPress: onLongPress,
+      child: row,
+    );
   }
 
   /// 概览 / meta 数据共用的键值行（label 固定宽度 84，值最多三行省略）。
@@ -916,8 +1108,9 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
     required TextStyle? labelStyle,
     required TextStyle? valueStyle,
     int valueMaxLines = 3,
+    VoidCallback? onLongPress,
   }) {
-    return Padding(
+    final row = Padding(
       padding: const EdgeInsets.only(bottom: AppSpacing.xs),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -936,6 +1129,12 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
           ),
         ],
       ),
+    );
+    if (onLongPress == null) return row;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onLongPress: onLongPress,
+      child: row,
     );
   }
 

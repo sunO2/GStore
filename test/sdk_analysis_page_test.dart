@@ -3,7 +3,10 @@ import 'dart:io';
 
 import 'package:archive/archive.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:gstore/core/design/app_dialogs.dart';
+import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/core/rust/generated/components.dart';
 import 'package:gstore/core/service/apk_library_analyzer.dart';
 import 'package:gstore/core/service/apk_source_service.dart';
@@ -18,6 +21,13 @@ import 'package:installed_apps/app_info.dart' as installed;
 /// 「原生库 tab 全量 .so」测试使用真实假 APK（zip）+ compute，
 /// 通过 runAsync 轮询（参考 detail_readme_section_test）等待 isolate 结果。
 void main() {
+  // Clipboard.setData 走 SystemChannels.platform：测试环境 mock 为直接成功，
+  // 供「长按复制」用例推进（AppDialogs snaker 呈现需要 scaffoldMessengerKey）。
+  setUp(() {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(SystemChannels.platform, (call) async => null);
+  });
+
   installed.AppInfo buildApp() => installed.AppInfo(
         name: '测试应用',
         icon: null,
@@ -40,22 +50,25 @@ void main() {
     });
   }
 
-  /// 注入合成详情数据（ABI/权限/全量原生库/应用详情/组件清单）并清理。
+  /// 注入合成详情数据（ABI/权限/全量原生库/全量 DEX/应用详情/组件清单）并清理。
   void injectDetails({
     List<String> abis = const [],
     List<String> permissions = const [],
     List<NativeAbiLibs> fullLibs = const [],
+    List<DexFile> dexFiles = const [],
     InstalledAppDetail detail = const InstalledAppDetail(),
     ApkComponents? components,
   }) {
     ApkLibraryAnalyzer.instance.debugSetAbis(abis);
     ApkLibraryAnalyzer.instance.debugSetFullNativeLibs(fullLibs);
+    ApkLibraryAnalyzer.instance.debugSetDexFilesFull(dexFiles);
     ApkSourceService.instance.debugSetPermissions(permissions);
     ApkSourceService.instance.debugSetInstalledAppDetail(detail);
     SdkAnalysisPage.debugSetComponents(components);
     addTearDown(() {
       ApkLibraryAnalyzer.instance.debugSetAbis(null);
       ApkLibraryAnalyzer.instance.debugSetFullNativeLibs(null);
+      ApkLibraryAnalyzer.instance.debugSetDexFilesFull(null);
       ApkSourceService.instance.debugSetPermissions(null);
       ApkSourceService.instance.debugSetInstalledAppDetail(null);
       SdkAnalysisPage.debugSetComponents(null);
@@ -63,9 +76,13 @@ void main() {
   }
 
   /// 挂载页面并推进 microtask 等待全部异步完成。
+  /// 注册 AppDialogs 所需的全局 navigator / scaffoldMessenger key，
+  /// 使弹窗与 SnackBar 提示可在测试宿主内呈现。
   Future<void> pumpPage(WidgetTester tester) async {
     await tester.pumpWidget(
       MaterialApp(
+        navigatorKey: appNavigatorKey,
+        scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
         home: SdkAnalysisPage(
           app: buildApp(),
           sourceDir: '/no/such/file.apk',
@@ -174,10 +191,12 @@ void main() {
     expect(find.text('APK 大小'), findsOneWidget);
     expect(find.text('安装时间'), findsOneWidget);
     expect(find.text('最近更新'), findsOneWidget);
-    // SDK 版本解析失败 + 详情缺失 → 共 6 处「未知」降级
+    // SDK 版本解析失败 + 详情缺失 → 共 10 处「未知」降级
+    // （主 Activity/APK 大小/安装时间/最近更新/minSdk/targetSdk + 新增
+    // UID/共享 UID/安装来源/数据目录）
     expect(find.text('minSdk'), findsOneWidget);
     expect(find.text('targetSdk'), findsOneWidget);
-    expect(find.text('未知'), findsNWidgets(6));
+    expect(find.text('未知'), findsNWidgets(10));
     // ABI 非空 → 渲染 chips
     expect(find.text('ABI 架构'), findsOneWidget);
     expect(find.text('arm64-v8a'), findsOneWidget);
@@ -204,8 +223,9 @@ void main() {
     expect(find.text('com.example.MainActivity'), findsOneWidget);
     expect(find.text('APK 大小'), findsOneWidget);
     expect(find.text('12.5 MB'), findsOneWidget);
-    // 安装时间/最近更新为 0 → 未知；minSdk/targetSdk 回退详情值
-    expect(find.text('未知'), findsNWidgets(2));
+    // 安装时间/最近更新为 0 → 未知；minSdk/targetSdk 回退详情值；
+    // 新增系统行（UID/共享 UID/安装来源/数据目录）详情缺失 → 未知
+    expect(find.text('未知'), findsNWidgets(6));
     expect(find.text('24'), findsOneWidget);
     expect(find.text('34'), findsOneWidget);
     expect(tester.takeException(), isNull);
@@ -338,6 +358,184 @@ void main() {
     expect(find.text('CN=Google, O=Android'), findsOneWidget);
     expect(find.textContaining('aa:bb:cc:dd'), findsOneWidget);
     expect(find.text('SHA256withRSA'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('SDK 分析页：签名主体长文本完整换行不截断', (tester) async {
+    const longSubject =
+        'CN=Android Debug, OU=Android Department, O=Example Inc, '
+        'L=Mountain View, ST=California, C=US';
+    injectEmptyRules();
+    injectDetails(
+      detail: const InstalledAppDetail(
+        signatures: [
+          SignatureInfo(
+            algorithm: 'SHA256withRSA',
+            subject: longSubject,
+            sha256: 'aa:bb:cc:dd',
+            sha1: '11:22:33:44',
+          ),
+        ],
+      ),
+    );
+
+    await pumpPage(tester);
+    await switchTab(tester, '签名');
+
+    // 完整主题文本整段渲染（非单行省略）
+    expect(find.text(longSubject), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('SDK 分析页：点击签名卡片打开签名详情弹窗并关闭', (tester) async {
+    injectEmptyRules();
+    injectDetails(
+      detail: const InstalledAppDetail(
+        signatures: [
+          SignatureInfo(
+            algorithm: 'SHA256withRSA',
+            subject: 'CN=Google, O=Android',
+            sha256: 'aa:bb:cc:dd',
+            sha1: '11:22:33:44',
+          ),
+        ],
+      ),
+    );
+
+    await pumpPage(tester);
+    await switchTab(tester, '签名');
+
+    await tester.tap(find.text('CN=Google, O=Android'));
+    await tester.pumpAndSettle();
+
+    // 详情弹窗：标题 + 全字段（主题/算法/SHA-256/SHA-1）
+    expect(find.text('签名详情'), findsOneWidget);
+    expect(find.text('主题'), findsOneWidget);
+    expect(find.text('算法'), findsOneWidget);
+    expect(find.text('SHA-256'), findsOneWidget);
+    expect(find.text('SHA-1'), findsOneWidget);
+    expect(find.text('CN=Google, O=Android'), findsNWidgets(2)); // 卡片 + 弹窗
+    // 弹窗内值独立成段（卡片内为 'SHA-256 aa:bb:cc:dd' 拼接文本）
+    expect(find.text('aa:bb:cc:dd'), findsOneWidget);
+    expect(find.text('11:22:33:44'), findsOneWidget);
+
+    await tester.tap(find.text('关闭'));
+    await tester.pumpAndSettle();
+    expect(find.text('签名详情'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('SDK 分析页：长按签名卡片复制完整证书并弹出 SnackBar', (tester) async {
+    injectEmptyRules();
+    injectDetails(
+      detail: const InstalledAppDetail(
+        signatures: [
+          SignatureInfo(
+            algorithm: 'SHA256withRSA',
+            subject: 'CN=Google, O=Android',
+            sha256: 'aa:bb:cc:dd',
+            sha1: '11:22:33:44',
+          ),
+        ],
+      ),
+    );
+
+    await pumpPage(tester);
+    await switchTab(tester, '签名');
+
+    await tester.longPress(find.text('CN=Google, O=Android'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.textContaining('已复制'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('SDK 分析页：长按 meta 键药丸复制键并弹出 SnackBar', (tester) async {
+    injectEmptyRules();
+    injectDetails(
+      detail: const InstalledAppDetail(
+        metaData: {
+          'flavor': 'release',
+        },
+      ),
+    );
+
+    await pumpPage(tester);
+    await switchTab(tester, 'meta 数据');
+
+    await tester.longPress(find.text('flavor'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.textContaining('已复制'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('SDK 分析页：DEX 类名 tab 展示全量 DEX 文件名称与格式化大小', (tester) async {
+    injectEmptyRules();
+    injectDetails(
+      dexFiles: const [
+        DexFile(name: 'classes.dex', size: 1024), // 1.0 KB
+        DexFile(name: 'classes2.dex', size: 1572864), // 1.5 MB
+      ],
+    );
+
+    await pumpPage(tester);
+    await switchTab(tester, 'DEX 类名');
+
+    // 规则命中为空、全量 DEX 非空 → 仅「DEX 文件」区段（非空态）
+    expect(find.text('DEX 文件'), findsOneWidget);
+    expect(find.text('未检测到 DEX 类名'), findsNothing);
+    expect(find.text('classes.dex'), findsOneWidget);
+    expect(find.text('classes2.dex'), findsOneWidget);
+    expect(find.text('1.0 KB'), findsOneWidget);
+    expect(find.text('1.5 MB'), findsOneWidget);
+    // 计数徽标为 2
+    expect(find.text('2'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('SDK 分析页：概览系统信息行默认降级（未知/否）', (tester) async {
+    injectEmptyRules();
+    injectDetails();
+
+    await pumpPage(tester);
+
+    expect(find.text('UID'), findsOneWidget);
+    expect(find.text('共享 UID'), findsOneWidget);
+    expect(find.text('安装来源'), findsOneWidget);
+    expect(find.text('是否系统应用'), findsOneWidget);
+    expect(find.text('是否调试'), findsOneWidget);
+    expect(find.text('数据目录'), findsOneWidget);
+    // 系统行 UID/共享 UID/安装来源/数据目录 → 未知（版本/包名等行不叠加）
+    expect(find.text('未知'), findsNWidgets(10));
+    expect(find.text('是'), findsNothing);
+    expect(find.text('否'), findsNWidgets(2));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('SDK 分析页：概览系统信息行展示真实 detail 值', (tester) async {
+    injectEmptyRules();
+    injectDetails(
+      detail: const InstalledAppDetail(
+        uid: 10123,
+        sharedUserId: 'com.android.shared',
+        installer: 'com.android.vending',
+        isSystemApp: true,
+        isDebuggable: false,
+        dataDir: '/data/data/com.example.test',
+      ),
+    );
+
+    await pumpPage(tester);
+
+    expect(find.text('10123'), findsOneWidget);
+    expect(find.text('com.android.shared'), findsOneWidget);
+    expect(find.text('com.android.vending'), findsOneWidget);
+    expect(find.text('是'), findsOneWidget);
+    expect(find.text('否'), findsOneWidget);
+    expect(find.text('/data/data/com.example.test'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
