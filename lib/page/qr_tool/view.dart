@@ -143,6 +143,7 @@ class _QrToolPageState extends State<QrToolPage> {
             if (_history.isNotEmpty) ...[
               const SizedBox(height: AppSpacing.sm),
               SizedBox(height: 64, child: _buildHistory(context)),
+              const SizedBox(height: AppSpacing.sm),
             ],
 
             // 输入区（flex 1 ≈ 剩余空间，撑开多行输入）
