@@ -814,8 +814,13 @@ class _QrToolPageState extends State<QrToolPage> {
         color: colorScheme.surfaceContainerHighest,
         borderRadius: AppRadius.allLG,
       ),
+      // Center 松约束：容器是 tight 240×240，直接放 AppLoading 会被父约束
+      // 拉伸成满窗大小（SizedBox 内部尺寸被 tight 覆盖）；包 Center 后
+      // loading 按自身尺寸(24)居中显示。
       child: _cameraInitializing
-          ? const AppLoading(size: AppLoadingSize.small)
+          ? const Center(
+              child: AppLoading(size: AppLoadingSize.small),
+            )
           : Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
