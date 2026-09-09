@@ -4,6 +4,7 @@ import 'dart:ui' as ui;
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/design/app_components.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
@@ -87,18 +88,16 @@ void main() {
     expect(find.byType(QrImageView), findsNothing);
   });
 
-  testWidgets('输入停顿 900ms 后出现历史 chip，点击回填输入并重新生成二维码', (tester) async {
+  testWidgets('输入停顿 900ms 后写入历史；上滑弹出历史 sheet，点击回填输入并重新生成二维码', (tester) async {
     await pumpPage(tester);
     await tester.enterText(find.byType(TextField), 'hello');
     await tester.pump();
 
-    // 防抖期内（未满 800ms）：历史区不出现
+    // 防抖期内（未满 800ms）：页面内不再常驻历史区
     expect(find.text('历史记录'), findsNothing);
 
-    // 推进防抖计时（900ms > 800ms）→ 历史写入，chip 出现
+    // 推进防抖计时（900ms > 800ms）→ 历史写入
     await tester.pump(const Duration(milliseconds: 900));
-    expect(find.text('历史记录'), findsOneWidget);
-    expect(find.widgetWithText(ActionChip, 'hello'), findsOneWidget);
 
     // FAB 清除输入 → 占位
     await tester.tap(find.byType(FloatingActionButton));
@@ -106,24 +105,44 @@ void main() {
     expect(find.text('输入内容后生成二维码'), findsOneWidget);
     expect(find.byType(QrImageView), findsNothing);
 
-    // 点击历史 chip → 回填输入并重新生成二维码
-    await tester.tap(find.widgetWithText(ActionChip, 'hello'));
-    await tester.pump();
+    // 上滑手势 → 弹出历史 bottom sheet；点击历史项回填输入并重新生成二维码
+    await tester.drag(
+      find.byType(TextField),
+      const Offset(0, -200),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('历史记录'), findsOneWidget);
+    await tester.tap(find.text('hello'));
+    await tester.pumpAndSettle();
     expect(find.byType(QrImageView), findsOneWidget);
     final textField = tester.widget<TextField>(find.byType(TextField));
     expect(textField.controller!.text, 'hello');
   });
 
-  testWidgets('清空历史按钮移除历史 chips', (tester) async {
+  testWidgets('上滑弹出历史 sheet，清空按钮移除历史记录', (tester) async {
     await pumpPage(tester);
     await tester.enterText(find.byType(TextField), '历史A');
     await tester.pump(const Duration(milliseconds: 900));
-    expect(find.widgetWithText(ActionChip, '历史A'), findsOneWidget);
+
+    // 上滑 → 历史 sheet 出现，点击「清空」→ sheet 关闭、历史清空
+    await tester.drag(
+      find.byType(TextField),
+      const Offset(0, -200),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('历史记录'), findsOneWidget);
 
     await tester.tap(find.text('清空'));
-    await tester.pump();
-    expect(find.byType(ActionChip), findsNothing);
+    await tester.pumpAndSettle();
     expect(find.text('历史记录'), findsNothing);
+
+    // 再次上滑：历史为空 → 提示「暂无历史记录」，不弹空列表
+    await tester.drag(
+      find.byType(TextField),
+      const Offset(0, -200),
+    );
+    await tester.pumpAndSettle();
+    expect(find.textContaining('暂无'), findsWidgets);
   });
 
   testWidgets('长按保存成功：写入临时目录 qr_codes 并提示已保存到相册', (tester) async {
@@ -330,5 +349,71 @@ void main() {
     expect(h, 1);
     expect(out, Uint8List.fromList([0, 0, 255, 255, 255, 0, 0, 255]),
         reason: '左=原下(蓝)、右=原上(红)，通道顺序保持 RGBA');
+  });
+
+  testWidgets('左滑切换为识别模式；README：scan 模式输入框 readOnly', (tester) async {
+    await pumpPage(tester);
+    // 初始为「生成」模式，输入框可编辑
+    TextField field() => tester.widget<TextField>(find.byType(TextField));
+    expect(field().readOnly, isFalse);
+
+    // 左滑（水平 >80px，方向锁定水平）→ 切换为「识别」
+    await tester.drag(find.byType(TextField), const Offset(-150, 0));
+    await tester.pump();
+    // 识别模式：输入框只读；相机 seam 失败 → 占位不崩溃
+    await tester.pump();
+    expect(field().readOnly, isTrue);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('下滑清空输入框（起点在预览区；输入区起点不触发）', (tester) async {
+    await pumpPage(tester);
+    await tester.enterText(find.byType(TextField), '下滑清空我');
+    await tester.pump();
+
+    // 起点在预览区（页面上半部分）下滑 → 清空输入
+    await tester.dragFrom(
+      const Offset(120, 80), // 预览区（flex 2 顶部）
+      const Offset(0, 160),
+    );
+    await tester.pump();
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      isEmpty,
+    );
+  });
+
+  testWidgets('长按输入框出现复制菜单，点击复制内容（识别模式）', (tester) async {
+    // 识别模式输入框 readOnly + 有内容 → 长按弹出自定义「复制」菜单 → 复制全文
+    final clipboardLog = <String>[];
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'Clipboard.setData') {
+          clipboardLog.add((call.arguments as Map)['text'] as String);
+        }
+        return null;
+      },
+    );
+    addTearDown(() => tester.binding.defaultBinaryMessenger
+        .setMockMethodCallHandler(SystemChannels.platform, null));
+
+    QrToolPage.debugAvailableCameras =
+        () async => throw CameraException('noCamera', 'test');
+    await pumpPage(tester);
+    // 切到识别模式（readOnly）
+    await tester.tap(find.text('识别'));
+    await tester.pump();
+    // 注入识别结果（直接设置 controller 文本，等价于识别成功回填）
+    final field = tester.widget<TextField>(find.byType(TextField));
+    field.controller!.text = '扫码结果-ABC';
+    await tester.pump();
+
+    // 长按输入框 → 自定义菜单「复制」出现；点击复制
+    await tester.longPress(find.byType(TextField));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('复制'));
+    await tester.pump();
+    expect(clipboardLog, contains('扫码结果-ABC'));
   });
 }

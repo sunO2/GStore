@@ -7,6 +7,7 @@ import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform, listEquals;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData, HapticFeedback;
 import 'package:gal/gal.dart';
 import 'package:gstore/core/core.dart';
 import 'package:path_provider/path_provider.dart';
@@ -201,6 +202,21 @@ class _QrToolPageState extends State<QrToolPage> {
   /// 置「靠近一点」/「拿远一点」引导用户调整距离。
   String _scanHint = '将二维码对准框内';
 
+  /// 整页滑动手势跟踪：
+  /// 手势累计位移（起手指针原始事件累计；用于方向锁定 + 上滑/下滑/左右滑判定）。
+  double _gestureDx = 0, _gestureDy = 0;
+
+  /// 当前手势锁定的方向：'h' 水平 / 'v' 垂直 / null 未锁定。
+  /// 首 2~3 帧按「|dx| > |dy|×1.2 锁定水平，|dy| > |dx|×1.2 锁定垂直」，
+  /// 锁定后忽略另一方向位移，避免斜滑/抖动误触发。
+  String? _gestureAxis;
+
+  /// 手势起点的全局 Y（用于向下滑清空时排除输入区——起点落在 TextField 范围内不认领）
+  bool _gestureStartedInInput = false;
+
+  /// 下一次 [TextField] 构建时用于标记其局部坐标（供手势命中判定）
+  final GlobalKey _inputFieldKey = GlobalKey();
+
   /// 保存中标志（防重复触发长按保存）
   bool _saving = false;
 
@@ -355,92 +371,217 @@ class _QrToolPageState extends State<QrToolPage> {
         onPressed: _clear,
         child: const Icon(Icons.clear),
       ),
-      body: Padding(
-        padding: AppSpacing.allLG,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
+      body: Listener(
+        // 整页滑动手势：上滑=历史 / 下滑=清空(起点非输入区) / 左右滑=切模式。
+        // 必须放在 Stack 最外层：Stack hitTest 逆序、命中即停——若 Listener 作为
+        // Stack 的兄弟层，会被上层 TextField 拦截而收不到任何指针事件。
+        behavior: HitTestBehavior.translucent,
+        onPointerDown: _onGestureDown,
+        onPointerMove: _onGestureMove,
+        onPointerUp: _onGestureUp,
+        child: Stack(
           children: [
-            // 二维码预览区 / 相机识别预览区（flex 2；高度充足时原尺寸居中，键盘压缩时等比缩小完整可见）
-            Expanded(flex: 2, child: _buildQrArea(context)),
+            // 主体内容：预览区 + 输入区（历史记录已移入底部弹窗）
+            Padding(
+            padding: AppSpacing.allLG,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // 二维码预览区 / 相机识别预览区（flex 2；高度充足时原尺寸居中，键盘压缩时等比缩小完整可见）
+                Expanded(flex: 2, child: _buildQrArea(context)),
 
-            // 历史记录区（固定高，不参与 flex，横向滚动 chips；数据源随模式切换）
-            if (_activeHistory.isNotEmpty) ...[
-              const SizedBox(height: AppSpacing.sm),
-              SizedBox(height: 64, child: _buildHistory(context)),
-              const SizedBox(height: AppSpacing.sm),
-            ],
-
-            // 输入区（flex 1 ≈ 剩余空间，撑开多行输入）
-            Expanded(
-              flex: 1,
-              child: TextField(
-                controller: _controller,
-                focusNode: _focusNode,
-                maxLines: null,
-                expands: true,
-                textAlignVertical: TextAlignVertical.top,
-                decoration: InputDecoration(
-                  hintText: _mode == QrToolMode.scan
-                      ? '将二维码对准相机，识别结果自动填入此处'
-                      : '输入文本或链接生成二维码',
-                  hintStyle: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: colorScheme.outline,
+                // 输入区（flex 1 ≈ 剩余空间，撑开多行输入；识别模式下只读展示识别结果）
+                Expanded(
+                  flex: 1,
+                  child: TextField(
+                    key: _inputFieldKey,
+                    controller: _controller,
+                    focusNode: _focusNode,
+                    // 识别模式结果只读；生成模式可编辑
+                    readOnly: _mode == QrToolMode.scan,
+                    // 识别结果长按可选择/复制（系统选择菜单）
+                    enableInteractiveSelection: true,
+                    // 长按输入框 → 自定义菜单：识别/只读模式提供「复制全文」（生成模式保留系统菜单）
+                    contextMenuBuilder: _mode == QrToolMode.scan
+                        ? (context, editableTextState) {
+                            return AdaptiveTextSelectionToolbar.buttonItems(
+                              anchors: editableTextState.contextMenuAnchors,
+                              buttonItems: [
+                                ContextMenuButtonItem(
+                                  label: '复制',
+                                  onPressed: () => _copyResult(),
+                                ),
+                              ],
+                            );
+                          }
+                        : null,
+                    maxLines: null,
+                    expands: true,
+                    textAlignVertical: TextAlignVertical.top,
+                    decoration: InputDecoration(
+                      hintText: _mode == QrToolMode.scan
+                          ? '将二维码对准相机，识别结果自动填入此处'
+                          : '输入文本或链接生成二维码',
+                      hintStyle: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            color: colorScheme.outline,
+                          ),
+                      border: const OutlineInputBorder(
+                        borderRadius: AppRadius.allLG,
                       ),
-                  border: const OutlineInputBorder(
-                    borderRadius: AppRadius.allLG,
+                    ),
+                    onChanged: _onTextChanged,
                   ),
                 ),
-                onChanged: _onTextChanged,
-              ),
+              ],
             ),
+          ),
+          // 右上角手势规则说明入口
+          Positioned(
+            top: AppSpacing.sm,
+            right: AppSpacing.sm,
+            child: IconButton(
+              tooltip: '手势操作说明',
+              icon: const Icon(Icons.info_outline, size: AppTypography.iconSM),
+              onPressed: _showGestureHelp,
+            ),
+          ),
           ],
         ),
       ),
     );
   }
 
-  /// 历史记录区：标题（含清空）+ 固定高横向滚动 chips；数据源随模式切换
-  Widget _buildHistory(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
+  /// ===== 整页滑动手势系统 =====
+
+  /// 手势方向锁定比例：|dx| > |dy|×1.2 → 水平；|dy| > |dx|×1.2 → 垂直。
+  static const double _gestureLockRatio = 1.2;
+
+  /// 触发阈值（逻辑像素）：上滑弹历史 / 下滑清空 / 左右滑切模式。
+  static const double _swipeUpHistory = 80;
+  static const double _swipeDownClear = 120;
+  static const double _swipeHorizontalSwitch = 80;
+
+  /// 重置手势跟踪状态（起手指针时）
+  void _onGestureDown(PointerDownEvent e) {
+    _gestureDx = 0;
+    _gestureDy = 0;
+    _gestureAxis = null;
+    _gestureStartedInInput = _isPointInsideInput(e.position);
+  }
+
+  /// 手势移动：方向锁定（首帧按比例定轴，锁定后只累计该轴位移）
+  void _onGestureMove(PointerMoveEvent e) {
+    _gestureDx += e.delta.dx;
+    _gestureDy += e.delta.dy;
+    if (_gestureAxis == null) {
+      if (_gestureDx.abs() > _gestureDy.abs() * _gestureLockRatio) {
+        _gestureAxis = 'h';
+      } else if (_gestureDy.abs() > _gestureDx.abs() * _gestureLockRatio) {
+        _gestureAxis = 'v';
+      }
+    }
+  }
+
+  /// 手势结束：按锁定方向分派动作
+  void _onGestureUp(PointerUpEvent e) {
+    final axis = _gestureAxis;
+    _gestureAxis = null;
+    if (axis == null) return;
+    final horizontal = _gestureDx;
+    final vertical = _gestureDy;
+
+    if (axis == 'h' && horizontal.abs() >= _swipeHorizontalSwitch) {
+      // 左右滑切换模式：右滑=生成（预览区），左滑=识别（扫码）
+      final target = horizontal > 0 ? QrToolMode.generate : QrToolMode.scan;
+      if (target != _mode) {
+        HapticFeedback.mediumImpact();
+        _onModeChanged(target);
+      }
+      return;
+    }
+
+    if (axis != 'v') return;
+
+    if (vertical <= -_swipeUpHistory) {
+      // 上滑 → 弹出历史记录 sheet
+      HapticFeedback.mediumImpact();
+      _showHistorySheet();
+    } else if (vertical >= _swipeDownClear && !_gestureStartedInInput) {
+      // 下滑 → 清空输入框（起点在输入框内除外——避免编辑时误触发）
+      HapticFeedback.mediumImpact();
+      _clear();
+    }
+  }
+
+  /// 判断指针是否落在输入框内（起点在输入区时不认领“下滑清空”，尊重编辑手势）
+  bool _isPointInsideInput(Offset globalPos) {
+    final box = _inputFieldKey.currentContext?.findRenderObject();
+    if (box is! RenderBox) return false;
+    final topLeft = box.localToGlobal(Offset.zero);
+    final size = box.size;
+    return globalPos.dx >= topLeft.dx &&
+        globalPos.dx <= topLeft.dx + size.width &&
+        globalPos.dy >= topLeft.dy &&
+        globalPos.dy <= topLeft.dy + size.height;
+  }
+
+  /// 上滑手势：弹出当前模式的历史记录底部弹窗（复用 AppDialogs.showBottomSheet）
+  void _showHistorySheet() {
     final history = _activeHistory;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+    final title = _mode == QrToolMode.scan ? '识别历史' : '历史记录';
+    if (history.isEmpty) {
+      AppDialogs.showInfo('暂无$title');
+      return;
+    }
+    AppDialogs.showBottomSheet(
+      title: title,
       children: [
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Text(
-              _mode == QrToolMode.scan ? '识别历史' : '历史记录',
-              style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                    color: colorScheme.outline,
-                  ),
+        // 清空按钮（顶部右侧）
+        Align(
+          alignment: Alignment.centerRight,
+          child: TextButton.icon(
+            onPressed: () {
+              _clearHistory();
+              AppDialogs.popSheet<void>(null);
+            },
+            icon: const Icon(Icons.delete_outline, size: AppTypography.iconSM),
+            label: const Text('清空'),
+            style: TextButton.styleFrom(
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              minimumSize: const Size(0, 32),
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
             ),
-            TextButton.icon(
-              onPressed: _clearHistory,
-              icon: const Icon(Icons.delete_outline, size: AppTypography.iconSM),
-              label: const Text('清空'),
-              style: TextButton.styleFrom(
-                visualDensity: VisualDensity.compact,
-                padding: EdgeInsets.zero,
-                minimumSize: const Size(0, 32),
-                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              ),
-            ),
-          ],
+          ),
         ),
         const SizedBox(height: AppSpacing.xs),
-        Expanded(
+// 历史列表（点击回填输入框并关闭弹窗）
+        ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: 300),
           child: ListView.separated(
-            scrollDirection: Axis.horizontal,
+            shrinkWrap: true,
             itemCount: history.length,
-            separatorBuilder: (_, __) => const SizedBox(width: AppSpacing.sm),
+            separatorBuilder: (_, __) => Divider(
+              height: 1,
+              color: Theme.of(context).colorScheme.borderLight,
+            ),
             itemBuilder: (context, index) {
               final item = history[index];
-              return ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 160),
-                child: ActionChip(
-                  label: Text(item, overflow: TextOverflow.ellipsis),
-                  onPressed: () => _applyHistory(item),
+              return InkWell(
+                onTap: () {
+                  _applyHistory(item);
+                  AppDialogs.popSheet<void>(null);
+                },
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: AppSpacing.lg,
+                    vertical: AppSpacing.md,
+                  ),
+                  child: Text(
+                    item,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodyLarge,
+                  ),
                 ),
               );
             },
@@ -448,6 +589,56 @@ class _QrToolPageState extends State<QrToolPage> {
         ),
       ],
     );
+  }
+
+  /// 右上角「手势操作说明」弹窗
+  void _showGestureHelp() {
+    const rules = [
+      ('已启用手势', '就像在聊天软件里滑动一样，在页面内滑动即可快捷操作'),
+      ('上滑', '查看历史记录'),
+      ('下滑', '清空输入框（在输入框内下滑除外）'),
+      ('左滑 / 右滑', '切换「识别」/「生成」模式'),
+      ('长按输入框', '复制识别结果（识别模式）'),
+    ];
+    AppDialogs.showDialog(
+      title: '手势操作说明',
+      icon: const Icon(Icons.swipe),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (final (action, desc) in rules)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SizedBox(
+                    width: 96,
+                    child: Text(
+                      action,
+                      style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                            color: Theme.of(context).colorScheme.primary,
+                          ),
+                    ),
+                  ),
+                  Expanded(child: Text(desc)),
+                ],
+              ),
+            ),
+        ],
+      ),
+      confirmText: '知道了',
+    );
+  }
+
+  /// 长按输入框复制当前内容（识别/只读模式；内容为空时不动作）。
+  /// 以 controller 实际文本为准（与识别回填 / 手输路径均一致）。
+  void _copyResult() {
+    final content = _controller.text;
+    if (content.isEmpty) return;
+    Clipboard.setData(ClipboardData(text: content));
+    AppDialogs.showSuccess('已复制');
   }
 
   /// 二维码预览区：生成模式显示占位/二维码；识别模式显示相机实时预览 + 识别框
