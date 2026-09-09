@@ -708,8 +708,9 @@ class _QrToolPageState extends State<QrToolPage> {
         desc,
         ResolutionPreset.medium,
         enableAudio: false,
-        // BGRA8888：解码直接取 planes[0] 亮度灰度；识别成功时该帧即为定格显示数据
-        imageFormatGroup: ImageFormatGroup.bgra8888,
+        // 注意：不设 imageFormatGroup（保持默认 YUV420）——CameraX 默认帧即 YUV420，
+        // 请求 bgra8888 时转换布局/宽高与 CameraImage 报告值可能不匹配，导致 luma 错乱解码失败。
+        // 解码走 Y 平面灰度；定格帧也从 Y 平面构造灰度图。
       );
       await controller.initialize();
       // 变焦范围缓存一次（平台不支持时降级默认 1.0，仅记录日志）
@@ -904,12 +905,12 @@ class _QrToolPageState extends State<QrToolPage> {
     });
   }
 
-  /// 解码单帧：BGRA8888 平面抽亮度灰度 → RGBLuminanceSource → GlobalHistogramBinarizer → QRCodeReader。
+  /// 解码单帧：取 YUV420 首平面（Y）灰度 → RGBLuminanceSource → GlobalHistogramBinarizer → QRCodeReader。
   /// 仅解码**中心 3/4 区域**（与识别框 180/240 对应），排除框外干扰；解码前清空码眼候选，
   /// 解码过程中通过 ResultPointCallback 实时收集码眼点（即使最终失败也能拿到，供失败引导判断）。
   String? _decodeQr(CameraImage image) {
     if (image.planes.isEmpty) return null;
-    final luma = _extractBgraLuma(image);
+    final luma = _extractLuma(image);
     const roi = 0.75; // 与识别框 180/240 对应：只解框内区域
     final w = image.width, h = image.height;
     final cropW = (w * roi).round();
@@ -928,26 +929,21 @@ class _QrToolPageState extends State<QrToolPage> {
     return QRCodeReader().decode(bitmap, hints: hints).text;
   }
 
-  /// 从 BGRA8888 单平面抽亮度灰度（处理 bytesPerRow 行对齐 padding）
-  Int8List _extractBgraLuma(CameraImage image) {
+  /// 从 YUV420 首平面（Y）抽取灰度字节（处理 bytesPerRow 行对齐 padding）
+  Int8List _extractLuma(CameraImage image) {
     final plane = image.planes[0];
     final w = image.width;
     final h = image.height;
     final rowStride = plane.bytesPerRow;
-    // bgra8888：每像素 4 字节（B,G,R,A），rowStride = width*4（兼容存在 padding 的情况）
-    const bytesPerPixel = 4;
     final luma = Int8List(w * h);
     final bytes = plane.bytes;
-    for (var y = 0; y < h; y++) {
-      final row = y * rowStride;
-      final dst = y * w;
-      for (var x = 0; x < w; x++) {
-        final i = row + x * bytesPerPixel;
-        // 亮度近似：Y = (0.299R + 0.587G + 0.114B) ≈ (306R + 601G + 117B) >> 10
-        final r = bytes[i + 2];
-        final g = bytes[i + 1];
-        final b = bytes[i];
-        luma[dst + x] = ((r * 306 + g * 601 + b * 117) >> 10).clamp(0, 255);
+    if (rowStride == w) {
+      luma.setAll(0, bytes);
+    } else {
+      for (var y = 0; y < h; y++) {
+        final src = y * rowStride;
+        final dst = y * w;
+        luma.setRange(dst, dst + w, bytes, src);
       }
     }
     return luma;
@@ -977,8 +973,8 @@ class _QrToolPageState extends State<QrToolPage> {
     AppDialogs.showSuccess('已识别二维码');
   }
 
-  /// 把识别成功那一帧转成可显示图片：接 BGRA8888 首平面（rowStride 行对齐），
-  /// 重组为 RGBA8888（交换 R/B）后交给 [ui.decodeImageFromPixels] 生成 [ui.Image]。
+  /// 把识别成功那一帧转成可显示图片：接 YUV420 首平面（Y，1 字节/像素，rowStride 行对齐），
+  /// 构造灰度 RGBA8888 后交给 [ui.decodeImageFromPixels] 生成 [ui.Image]。
   /// 失败仅记录日志（不影响识别结果与历史）；生成后 setState 交给预览窗渲染。
   void _captureFreezeFrame(CameraImage image) {
     final plane = image.planes.isEmpty ? null : image.planes[0];
@@ -986,17 +982,17 @@ class _QrToolPageState extends State<QrToolPage> {
     final w = image.width, h = image.height;
     final rowStride = plane.bytesPerRow;
     final bytes = plane.bytes;
-    if (rowStride < w * 4) return; // 缺 4 字节/像素的格式不做定格（防御）
+    if (rowStride < w) return; // 缺 1 字节/像素的格式不做定格（防御）
     final rgba = Uint8List(w * h * 4);
     for (var y = 0; y < h; y++) {
       final srcRow = y * rowStride;
       final dstRow = y * w * 4;
       for (var x = 0; x < w; x++) {
-        final si = srcRow + x * 4;
+        final yv = bytes[srcRow + x];
         final di = dstRow + x * 4;
-        rgba[di] = bytes[si + 2]; // R ← B
-        rgba[di + 1] = bytes[si + 1]; // G
-        rgba[di + 2] = bytes[si]; // B ← R
+        rgba[di] = yv; // R = Y（灰度）
+        rgba[di + 1] = yv; // G = Y
+        rgba[di + 2] = yv; // B = Y
         rgba[di + 3] = 0xFF; // A
       }
     }
