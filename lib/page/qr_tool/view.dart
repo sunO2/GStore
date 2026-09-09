@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
@@ -478,26 +479,48 @@ class _QrToolPageState extends State<QrToolPage> {
               : Stack(
                   fit: StackFit.expand,
                   children: [
-                    // 相机预览：CameraPreview 内部已按屏幕方向处理比例（竖屏 1/aspectRatio）与旋转，
-                    // 外层仅用 FittedBox cover 等比裁切适配 240×240 窗口——
-                    // 注意不能给 CameraPreview 加 tight SizedBox(240×240) 约束，
-                    // 否则会覆盖其内部 AspectRatio 导致纹理被拉伸变形（与定格帧比例不一致）。
-                    // FittedBox 会自动对子组件松约束并按相机比例 cover，与 RawImage cover 等价。
+                    // 相机预览：CameraPreview 内部是 AspectRatio（竖屏 1/aspectRatio）。
+                    // 关键：不能把它塞进 tight SizedBox(240×240)（AspectRatio 受 tight 约束
+                    // → 纹理拉伸变形），也不能直接放 FittedBox（FittedBox 以无限约束布局子
+                    // 组件，AspectRatio 双轴无界时塌缩为 0 → 预览黑屏）。
+                    // 正确做法：LayoutBuilder 拿到 240×240 有界区域，按相机比例算 cover 尺寸
+                    //（等比放大填满窗口、长边溢出居中裁切），用 OverflowBox 提供有界约束，
+                    // 与定格帧 RawImage(cover) 等价。
                     if (controller.value.aspectRatio > 0)
                       GestureDetector(
                         // 点按重新对焦：CameraX 的 setFocusPoint 会主动触发对焦，
                         // 应对长时间扫描后自动对焦漂移导致的模糊（不支持的平台忽略）。
                         behavior: HitTestBehavior.opaque,
                         onTapDown: (d) => _refocusAt(d.localPosition),
-                        child: FittedBox(
-                          fit: BoxFit.cover,
-                          clipBehavior: Clip.hardEdge,
-                          child: (_scanningStopped && _capturedFrame != null)
-                              ? RawImage(
-                                  image: _capturedFrame,
-                                  fit: BoxFit.cover,
-                                )
-                              : _buildCameraPreview(controller),
+                        child: LayoutBuilder(
+                          builder: (context, constraints) {
+                            final box = constraints.biggest; // 240×240
+                            if (box.isEmpty) return const SizedBox.shrink();
+                            // 相机自然方向已是竖屏规格（aspectRatio<1）直接用，否则转竖屏比例
+                            final ratio = controller.value.aspectRatio < 1
+                                ? controller.value.aspectRatio
+                                : 1 / controller.value.aspectRatio;
+                            // cover：等比放大完全覆盖 box（min 边填满，长边溢出居中裁切）
+                            final scale = math.max(box.width / ratio, box.height);
+                            final size = Size(ratio * scale, scale);
+                            return OverflowBox(
+                              minWidth: 0,
+                              minHeight: 0,
+                              maxWidth: double.infinity,
+                              maxHeight: double.infinity,
+                              alignment: Alignment.center,
+                              child: SizedBox.fromSize(
+                                size: size,
+                                child:
+                                    (_scanningStopped && _capturedFrame != null)
+                                        ? RawImage(
+                                            image: _capturedFrame,
+                                            fit: BoxFit.cover,
+                                          )
+                                        : _buildCameraPreview(controller),
+                              ),
+                            );
+                          },
                         ),
                       ),
                     // 码眼映射点绘制（识别框之下；IgnorePointer 避免挡点击）
