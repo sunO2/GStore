@@ -1199,8 +1199,11 @@ class _QrToolPageState extends State<QrToolPage> {
   /// 码眼自动变焦（闭环状态机）：
   /// - **触发**：≥1 码眼即评估（原 ≥3 才动，导致"1~2 码眼完全不管"=只会放大的根因）；
   /// - **判据**：码眼包围盒占 0.75 ROI 面积比例——占比 <[_zoomInRatio] 放大、>[_zoomOutRatio]
-  ///   缩小，中间为滞回带不动（临界防抖）。单码眼无包围盒时借"趋势记忆"分远近：
-  ///   此前 3 码眼且占比偏大→掉到 1 码眼 = 放大过头 → **缩小**；一直单码眼 = 码太小 → **放大**；
+  ///   缩小，中间为滞回带不动（临界防抖）。单码眼无包围盒时借「趋势记忆 + 码眼位置」分远近：
+  ///   ① 此前 ≥2 码眼且占比偏大 → 掉到 1 码眼 = 放大过头 → **缩小**；
+  ///   ② 码眼明显偏离 ROI 中心（靠近边缘，offCenter > 0.6）= 码太大只露一角 → **缩小**；
+  ///   ③ 码眼居中（offCenter < 0.3）= 码太小/太远 → **放大**；
+  ///   （②③解决"一直单码眼"死循环——趋势记忆对从未出现过 ≥2 码眼的情况无信号）
   /// - **去抖**：连续超界 [_zoomDebounceFrames] 帧才真正动作一次；两次动作间隔 ≥150ms；与
   ///   [_applyZoom] 0.05 差值防抖叠加，避免镜头持续抖动；
   /// - **数字变焦上限**：目标 clamp 到 [_minZoomLevel, min(_maxZoomLevel, _zoomDigitalCap)]；
@@ -1217,7 +1220,7 @@ class _QrToolPageState extends State<QrToolPage> {
     final side = (shortSide * 0.75).round();
     if (side <= 0) return;
 
-    // 计算当前码眼包围盒占比（≥2 码眼才有；单码眼时用趋势记忆判方向）
+    // 计算当前码眼包围盒占比（≥2 码眼才有；单码眼时用趋势记忆+位置判方向）
     double? ratio;
     if (eyes.length >= 2) {
       var minX = double.infinity, minY = double.infinity;
@@ -1245,11 +1248,22 @@ class _QrToolPageState extends State<QrToolPage> {
         direction = 'zoomOut';
       }
     } else if (eyes.length == 1) {
-      // 单码眼（本帧无包围盒）：此前 ≥2 码眼且占比偏大 → 掉到 1 个 = 放大过头
-      //（其余码眼被移出 ROI）→ **缩小**寻回完整；否则（一直单码眼）= 码太小/太远 → **放大**。
-      direction = (_lastEyeCount >= 2 && _lastEyesRatio >= _zoomInRatio)
-          ? 'zoomOut'
-          : 'zoomIn';
+      // 单码眼（本帧无包围盒）：结合趋势记忆 + 码眼位置判远近——
+      // ① 此前 ≥2 码眼且占比偏大 → 掉到 1 个 = 放大过头 → 缩小寻回完整；
+      // ② 码眼偏离 ROI 中心较远（靠近边缘）→ 码太大只露出一角 → 缩小；
+      // ③ 码眼居中 → 码太小/太远 → 放大。
+      final eye = eyes.first;
+      final offCenter = math.sqrt(
+        math.pow((eye.x - side / 2) / (side / 2), 2) +
+            math.pow((eye.y - side / 2) / (side / 2), 2),
+      );
+      final wasBigDropped = _lastEyeCount >= 2 && _lastEyesRatio >= _zoomInRatio;
+      if (wasBigDropped || offCenter > 0.6) {
+        direction = 'zoomOut';
+      } else if (offCenter < 0.3) {
+        direction = 'zoomIn';
+      }
+      // 0.3~0.6 之间：滞回带不动，避免居中/边缘临界抖动
     }
     // 记录本次码眼数量供下一帧用作“上次”趋势记忆（必须在方向判定之后，否则读不到旧值）
     _lastEyeCount = eyes.length;
