@@ -32,6 +32,9 @@ class _QrToolPageState extends State<QrToolPage> {
   /// 输入控制器（「清除」时清空并复位 [_text]）
   final TextEditingController _controller = TextEditingController();
 
+  /// 输入框焦点节点（保存完成后保持失焦，用户主动点击才重新聚焦）
+  final FocusNode _focusNode = FocusNode();
+
   /// 当前要生成二维码的内容（空 → 显示占位）
   String _text = '';
 
@@ -57,6 +60,7 @@ class _QrToolPageState extends State<QrToolPage> {
   void dispose() {
     _historyDebounce?.cancel();
     _controller.dispose();
+    _focusNode.dispose();
     super.dispose();
   }
 
@@ -152,6 +156,7 @@ class _QrToolPageState extends State<QrToolPage> {
               flex: 1,
               child: TextField(
                 controller: _controller,
+                focusNode: _focusNode,
                 maxLines: null,
                 expands: true,
                 textAlignVertical: TextAlignVertical.top,
@@ -287,6 +292,8 @@ class _QrToolPageState extends State<QrToolPage> {
   /// 长按确认后保存图片（确认框 → 真保存）
   Future<void> _confirmSaveImage() async {
     if (_saving) return;
+    // 长按先收起键盘
+    _focusNode.unfocus();
     final confirmed = await AppDialogs.showDialog(
       title: '保存二维码',
       content: '将二维码图片保存到系统相册?',
@@ -295,6 +302,8 @@ class _QrToolPageState extends State<QrToolPage> {
     );
     if (confirmed != true || !mounted) return;
     await _saveImage();
+    // 抵消确认框关闭时的焦点恢复：保存后输入框保持失焦，用户主动点击才重新聚焦
+    _focusNode.unfocus();
   }
 
   /// 保存二维码：PNG 写应用文档目录 qr_codes/<时间戳>.png（保留落盘），
@@ -328,7 +337,7 @@ class _QrToolPageState extends State<QrToolPage> {
   static const double _qrSaveSize = 512;
 
   /// 保存用 QR 与白底之间留白（px）
-  static const double _qrSavePadding = 24;
+  static const double _qrSavePadding = 48;
 
   /// 保存用白底圆角半径（px）
   static const double _qrSaveRadius = 32;
