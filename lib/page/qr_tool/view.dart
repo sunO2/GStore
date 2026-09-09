@@ -78,6 +78,10 @@ class _QrToolPageState extends State<QrToolPage> {
   /// 已识别一次即停（避免连续触发）：true 时不再处理新帧，显示「重新扫描」入口
   bool _scanningStopped = false;
 
+  /// 识别成功当帧解码出的可显示图（BGRA→RGBA 经 [ui.decodeImageFromPixels]，
+  /// 预览窗定格显示用；重新扫描/清除/销毁时 dispose 清空）
+  ui.Image? _capturedFrame;
+
   /// 最近一帧解码收集的码眼候选点（zxing2 [DecodeHintType.needResultPointCallback]
   /// 逐候选点回调追加；每次解码前清空，解码后保留供失败引导判断）
   final List<ResultPoint> _eyePoints = [];
@@ -127,6 +131,8 @@ class _QrToolPageState extends State<QrToolPage> {
     }
     _controller.dispose();
     _focusNode.dispose();
+    _capturedFrame?.dispose();
+    _capturedFrame = null;
     super.dispose();
   }
 
@@ -377,15 +383,27 @@ class _QrToolPageState extends State<QrToolPage> {
                   fit: StackFit.expand,
                   children: [
                     // 相机预览：CameraPreview 内部已按屏幕方向处理比例（竖屏 1/aspectRatio），
-                    // 外层仅用 FittedBox cover 等比裁切适配 240×240 窗口，避免双重换算比例错乱
+                    // 外层仅用 FittedBox cover 等比裁切适配 240×240 窗口，避免双重换算比例错乱；
+                    // 识别成功后定格显示识别到的那一帧（_capturedFrame），停流后实时预览不再刷新。
                     if (controller.value.aspectRatio > 0)
-                      FittedBox(
-                        fit: BoxFit.cover,
-                        clipBehavior: Clip.hardEdge,
-                        child: SizedBox(
-                          width: 240,
-                          height: 240,
-                          child: _buildCameraPreview(controller),
+                      GestureDetector(
+                        // 点按重新对焦：CameraX 的 setFocusPoint 会主动触发对焦，
+                        // 应对长时间扫描后自动对焦漂移导致的模糊（不支持的平台忽略）。
+                        behavior: HitTestBehavior.opaque,
+                        onTapDown: (d) => _refocusAt(d.localPosition),
+                        child: FittedBox(
+                          fit: BoxFit.cover,
+                          clipBehavior: Clip.hardEdge,
+                          child: SizedBox(
+                            width: 240,
+                            height: 240,
+                            child: (_scanningStopped && _capturedFrame != null)
+                                ? RawImage(
+                                    image: _capturedFrame,
+                                    fit: BoxFit.cover,
+                                  )
+                                : _buildCameraPreview(controller),
+                          ),
                         ),
                       ),
                     // 码眼映射点绘制（识别框之下；IgnorePointer 避免挡点击）
@@ -666,6 +684,9 @@ class _QrToolPageState extends State<QrToolPage> {
       _cameraError = null;
       _scanningStopped = false;
       _scanHint = '将二维码对准框内';
+      // 重新进入识别：丢弃上次的定格帧，回到实时预览
+      _capturedFrame?.dispose();
+      _capturedFrame = null;
     });
     _eyePoints.clear();
     try {
@@ -683,8 +704,13 @@ class _QrToolPageState extends State<QrToolPage> {
       if (desc == null) {
         throw CameraException('noCamera', '未检测到可用相机');
       }
-      final controller =
-          CameraController(desc, ResolutionPreset.low, enableAudio: false);
+      final controller = CameraController(
+        desc,
+        ResolutionPreset.medium,
+        enableAudio: false,
+        // BGRA8888：解码直接取 planes[0] 亮度灰度；识别成功时该帧即为定格显示数据
+        imageFormatGroup: ImageFormatGroup.bgra8888,
+      );
       await controller.initialize();
       // 变焦范围缓存一次（平台不支持时降级默认 1.0，仅记录日志）
       try {
@@ -701,6 +727,13 @@ class _QrToolPageState extends State<QrToolPage> {
         await controller.setFocusMode(FocusMode.auto);
       } catch (e) {
         appLog.error('QrToolPage: 设置自动对焦失败（平台不支持则忽略） - $e');
+      }
+      // 主动触发一次对焦（CameraX 会在 setFocusPoint 时重新对焦，
+      // 避免初始化后对焦未收敛导致画面模糊；失败忽略不中断启动）
+      try {
+        await controller.setFocusPoint(const Offset(0.5, 0.5));
+      } catch (e) {
+        appLog.error('QrToolPage: 触发对焦失败（平台不支持则忽略） - $e');
       }
       try {
         await controller.setExposureMode(ExposureMode.auto);
@@ -724,6 +757,21 @@ class _QrToolPageState extends State<QrToolPage> {
         _cameraError = '相机不可用';
       });
       AppDialogs.showError('无法启动相机，请检查相机权限');
+    }
+  }
+
+  /// 点按预览触发重新对焦（CameraX 的 setFocusPoint 主动触发对焦；坐标归一化 0-1，
+  /// 失败仅记录日志——不支持的平台忽略，不阻断扫码）
+  Future<void> _refocusAt(Offset localPosition) async {
+    final controller = _cameraController;
+    if (controller == null || !controller.value.isInitialized) return;
+    try {
+      await controller.setFocusPoint(Offset(
+        (localPosition.dx / 240).clamp(0.0, 1.0),
+        (localPosition.dy / 240).clamp(0.0, 1.0),
+      ));
+    } catch (e) {
+      appLog.error('QrToolPage: 点按对焦失败（平台不支持则忽略） - $e');
     }
   }
 
@@ -759,7 +807,7 @@ class _QrToolPageState extends State<QrToolPage> {
       }
       final text = _decodeQr(image);
       if (text != null && text.isNotEmpty) {
-        _onScanSuccess(text);
+        _onScanSuccess(text, image);
       }
     } catch (e) {
       // 单帧解码失败：按码眼有无区分引导——有码眼候选（≥3）说明检测到但解析失败，
@@ -856,12 +904,12 @@ class _QrToolPageState extends State<QrToolPage> {
     });
   }
 
-  /// 解码单帧：取 Y 平面灰度 → RGBLuminanceSource → GlobalHistogramBinarizer → QRCodeReader。
+  /// 解码单帧：BGRA8888 平面抽亮度灰度 → RGBLuminanceSource → GlobalHistogramBinarizer → QRCodeReader。
   /// 仅解码**中心 3/4 区域**（与识别框 180/240 对应），排除框外干扰；解码前清空码眼候选，
   /// 解码过程中通过 ResultPointCallback 实时收集码眼点（即使最终失败也能拿到，供失败引导判断）。
   String? _decodeQr(CameraImage image) {
     if (image.planes.isEmpty) return null;
-    final luma = _extractLuma(image);
+    final luma = _extractBgraLuma(image);
     const roi = 0.75; // 与识别框 180/240 对应：只解框内区域
     final w = image.width, h = image.height;
     final cropW = (w * roi).round();
@@ -880,29 +928,36 @@ class _QrToolPageState extends State<QrToolPage> {
     return QRCodeReader().decode(bitmap, hints: hints).text;
   }
 
-  /// 从 YUV420 首平面（Y）抽取灰度字节（处理 bytesPerRow 行对齐 padding）
-  Int8List _extractLuma(CameraImage image) {
+  /// 从 BGRA8888 单平面抽亮度灰度（处理 bytesPerRow 行对齐 padding）
+  Int8List _extractBgraLuma(CameraImage image) {
     final plane = image.planes[0];
     final w = image.width;
     final h = image.height;
     final rowStride = plane.bytesPerRow;
+    // bgra8888：每像素 4 字节（B,G,R,A），rowStride = width*4（兼容存在 padding 的情况）
+    const bytesPerPixel = 4;
     final luma = Int8List(w * h);
     final bytes = plane.bytes;
-    if (rowStride == w) {
-      luma.setAll(0, bytes);
-    } else {
-      for (var y = 0; y < h; y++) {
-        final src = y * rowStride;
-        final dst = y * w;
-        luma.setRange(dst, dst + w, bytes, src);
+    for (var y = 0; y < h; y++) {
+      final row = y * rowStride;
+      final dst = y * w;
+      for (var x = 0; x < w; x++) {
+        final i = row + x * bytesPerPixel;
+        // 亮度近似：Y = (0.299R + 0.587G + 0.114B) ≈ (306R + 601G + 117B) >> 10
+        final r = bytes[i + 2];
+        final g = bytes[i + 1];
+        final b = bytes[i];
+        luma[dst + x] = ((r * 306 + g * 601 + b * 117) >> 10).clamp(0, 255);
       }
     }
     return luma;
   }
 
-  /// 识别命中：回填输入框 + 写入识别历史（去重置顶、上限、持久化）+ 停止图像流
-  void _onScanSuccess(String text) {
+  /// 识别命中：定格保存当帧 + 回填输入框 + 写入识别历史（去重置顶、上限、持久化）+ 停止图像流
+  void _onScanSuccess(String text, CameraImage image) {
     _scanningStopped = true;
+    // 定格保存识别到的那一帧（BGR888 → RGBA8888 后交给 ui.Image，供预览窗定格显示）
+    _captureFreezeFrame(image);
     final controller = _cameraController;
     if (controller != null && controller.value.isStreamingImages) {
       unawaited(controller.stopImageStream().catchError((Object e) {
@@ -922,6 +977,51 @@ class _QrToolPageState extends State<QrToolPage> {
     AppDialogs.showSuccess('已识别二维码');
   }
 
+  /// 把识别成功那一帧转成可显示图片：接 BGRA8888 首平面（rowStride 行对齐），
+  /// 重组为 RGBA8888（交换 R/B）后交给 [ui.decodeImageFromPixels] 生成 [ui.Image]。
+  /// 失败仅记录日志（不影响识别结果与历史）；生成后 setState 交给预览窗渲染。
+  void _captureFreezeFrame(CameraImage image) {
+    final plane = image.planes.isEmpty ? null : image.planes[0];
+    if (plane == null) return;
+    final w = image.width, h = image.height;
+    final rowStride = plane.bytesPerRow;
+    final bytes = plane.bytes;
+    if (rowStride < w * 4) return; // 缺 4 字节/像素的格式不做定格（防御）
+    final rgba = Uint8List(w * h * 4);
+    for (var y = 0; y < h; y++) {
+      final srcRow = y * rowStride;
+      final dstRow = y * w * 4;
+      for (var x = 0; x < w; x++) {
+        final si = srcRow + x * 4;
+        final di = dstRow + x * 4;
+        rgba[di] = bytes[si + 2]; // R ← B
+        rgba[di + 1] = bytes[si + 1]; // G
+        rgba[di + 2] = bytes[si]; // B ← R
+        rgba[di + 3] = 0xFF; // A
+      }
+    }
+    try {
+      ui.decodeImageFromPixels(
+        rgba,
+        w,
+        h,
+        ui.PixelFormat.rgba8888,
+        (img) {
+          if (!mounted) {
+            img.dispose();
+            return;
+          }
+          setState(() {
+            _capturedFrame?.dispose();
+            _capturedFrame = img;
+          });
+        },
+      );
+    } catch (e) {
+      appLog.error('QrToolPage: 定格帧生成失败（忽略） - $e');
+    }
+  }
+
   /// 重新扫描：图像流已停止时重新启动
   Future<void> _restartScan() async {
     final controller = _cameraController;
@@ -930,6 +1030,9 @@ class _QrToolPageState extends State<QrToolPage> {
     setState(() {
       _scanningStopped = false;
       _scanHint = '将二维码对准框内';
+      // 清掉定格帧，预览回到实时相机画面
+      _capturedFrame?.dispose();
+      _capturedFrame = null;
     });
     _eyePoints.clear();
     _mappedEyePoints.clear();
@@ -941,11 +1044,15 @@ class _QrToolPageState extends State<QrToolPage> {
     }
   }
 
-  /// 清除输入与内容（取消待写的历史防抖计时）
+  /// 清除输入与内容（取消待写的历史防抖计时；识别模式下同时清掉定格帧）
   void _clear() {
     _historyDebounce?.cancel();
     _controller.clear();
-    setState(() => _text = '');
+    setState(() {
+      _text = '';
+      _capturedFrame?.dispose();
+      _capturedFrame = null;
+    });
   }
 }
 
