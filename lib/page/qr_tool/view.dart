@@ -410,7 +410,11 @@ class _QrToolPageState extends State<QrToolPage> {
                                 buttonItems: [
                                   ContextMenuButtonItem(
                                     label: '复制',
-                                    onPressed: () => _copyResult(),
+                                    onPressed: () {
+                                      // 点击后收起工具栏（自定义按钮不会自动隐藏）
+                                      editableTextState.hideToolbar();
+                                      _copyResult();
+                                    },
                                   ),
                                 ],
                               );
@@ -535,6 +539,8 @@ class _QrToolPageState extends State<QrToolPage> {
       AppDialogs.showInfo('暂无$title');
       return;
     }
+    // 弹窗打开前收起键盘/失焦，避免关闭后焦点自动归还输入框、键盘重新弹出
+    _focusNode.unfocus();
     AppDialogs.showBottomSheet(
       title: title,
       children: [
@@ -593,8 +599,8 @@ class _QrToolPageState extends State<QrToolPage> {
     );
   }
 
-  /// 右上角「手势操作说明」弹窗
-  void _showGestureHelp() {
+  /// 右上角「手势操作说明」弹窗（打开前收起键盘/失焦，避免关闭后焦点归还输入框）
+  Future<void> _showGestureHelp() async {
     const rules = [
       ('已启用手势', '就像在聊天软件里滑动一样，在页面内滑动即可快捷操作'),
       ('上滑', '查看历史记录'),
@@ -602,7 +608,9 @@ class _QrToolPageState extends State<QrToolPage> {
       ('左滑 / 右滑', '切换「识别」/「生成」模式'),
       ('长按输入框', '复制识别结果（识别模式）'),
     ];
-    AppDialogs.showDialog(
+    // 弹窗打开前收起键盘/失焦，避免关闭后焦点自动归还输入框、键盘重新弹出
+    _focusNode.unfocus();
+    await AppDialogs.showDialog(
       title: '手势操作说明',
       icon: const Icon(Icons.swipe),
       content: Column(
@@ -632,6 +640,8 @@ class _QrToolPageState extends State<QrToolPage> {
       ),
       confirmText: '知道了',
     );
+    // 弹窗关闭后再确保失焦（不归还输入框焦点）
+    _focusNode.unfocus();
   }
 
   /// 长按输入框复制当前内容（识别/只读模式；内容为空时不动作）。
@@ -805,7 +815,7 @@ class _QrToolPageState extends State<QrToolPage> {
         borderRadius: AppRadius.allLG,
       ),
       child: _cameraInitializing
-          ? const AppLoading(size: AppLoadingSize.medium)
+          ? const AppLoading(size: AppLoadingSize.small)
           : Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
