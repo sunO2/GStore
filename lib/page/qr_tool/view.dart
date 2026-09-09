@@ -172,6 +172,10 @@ class _QrToolPageState extends State<QrToolPage> {
   /// 上一次有效变焦动作时间（变焦时间限频：两次调整至少间隔此值，避免镜头频繁微动）
   DateTime _lastZoomAdjustAt = DateTime.fromMillisecondsSinceEpoch(0);
 
+  /// 上一次自动重新对焦时间（周期对焦限频：每 ~1.5s 触发一次中心对焦，
+  /// 补偿 CameraX 一次性 AF 不持续跟焦导致的扫描中焦距漂移）
+  DateTime _lastAutoFocusAt = DateTime.fromMillisecondsSinceEpoch(0);
+
   /// 上一次码眼包围盒占比（记忆：单码眼时没有包围盒，借“上次数”与「此前是否偏大」
   /// 判断该缩小还是放大——3 码眼占比大掉到 1 码眼 = 放大过头 → 缩小；一直单码眼 = 太小 → 放大）
   double _lastEyesRatio = 0;
@@ -474,9 +478,11 @@ class _QrToolPageState extends State<QrToolPage> {
               : Stack(
                   fit: StackFit.expand,
                   children: [
-                    // 相机预览：CameraPreview 内部已按屏幕方向处理比例（竖屏 1/aspectRatio），
-                    // 外层仅用 FittedBox cover 等比裁切适配 240×240 窗口，避免双重换算比例错乱；
-                    // 识别成功后定格显示识别到的那一帧（_capturedFrame），停流后实时预览不再刷新。
+                    // 相机预览：CameraPreview 内部已按屏幕方向处理比例（竖屏 1/aspectRatio）与旋转，
+                    // 外层仅用 FittedBox cover 等比裁切适配 240×240 窗口——
+                    // 注意不能给 CameraPreview 加 tight SizedBox(240×240) 约束，
+                    // 否则会覆盖其内部 AspectRatio 导致纹理被拉伸变形（与定格帧比例不一致）。
+                    // FittedBox 会自动对子组件松约束并按相机比例 cover，与 RawImage cover 等价。
                     if (controller.value.aspectRatio > 0)
                       GestureDetector(
                         // 点按重新对焦：CameraX 的 setFocusPoint 会主动触发对焦，
@@ -486,16 +492,12 @@ class _QrToolPageState extends State<QrToolPage> {
                         child: FittedBox(
                           fit: BoxFit.cover,
                           clipBehavior: Clip.hardEdge,
-                          child: SizedBox(
-                            width: 240,
-                            height: 240,
-                            child: (_scanningStopped && _capturedFrame != null)
-                                ? RawImage(
-                                    image: _capturedFrame,
-                                    fit: BoxFit.cover,
-                                  )
-                                : _buildCameraPreview(controller),
-                          ),
+                          child: (_scanningStopped && _capturedFrame != null)
+                              ? RawImage(
+                                  image: _capturedFrame,
+                                  fit: BoxFit.cover,
+                                )
+                              : _buildCameraPreview(controller),
                         ),
                       ),
                     // 码眼映射点绘制（识别框之下；IgnorePointer 避免挡点击）
@@ -880,6 +882,18 @@ class _QrToolPageState extends State<QrToolPage> {
     }
   }
 
+  /// 周期性自动重新对焦（每 1.5s 一次中心对焦）：CameraX 的 setFocusMode(auto) 只触发
+  /// 一次对焦动作，不持续跟焦；长时间扫描焦距漂移 → 模糊 → 解码率骤降。
+  /// 主动 setFocusPoint(0.5, 0.5) 会让 CameraX 重新发起自动对焦，保持镜头收敛。
+  /// 限频避免对焦动作过于频繁；扫描已停止（识别成功）时不再触发。
+  void _maybeAutoRefocus() {
+    if (_scanningStopped) return;
+    final now = DateTime.now();
+    if (now.difference(_lastAutoFocusAt).inMilliseconds < 1500) return;
+    _lastAutoFocusAt = now;
+    unawaited(_refocusAt(const Offset(120, 120))); // 中心点
+  }
+
   /// 释放相机：停止图像流 + dispose（异常仅记录日志）
   Future<void> _releaseCamera(CameraController? controller) async {
     if (controller == null) return;
@@ -905,7 +919,13 @@ class _QrToolPageState extends State<QrToolPage> {
     _lastFrameW = image.width;
     _lastFrameH = image.height;
     try {
-      // 码眼自动变焦：≥1 码眼即进入状态机评估（单码眼也借“趋势记忆”区分远近，
+      // 周期性重新对焦：CameraX 的 setFocusMode(auto) 只触发一次自动对焦动作，
+      // 不会持续跟焦——长时间扫描（移近/移远/稳定后）焦距会漂移导致画面模糊、
+      // 解码率骤降。这里每 ~1.5s 主动用 setFocusPoint 重新触发一次中心对焦，
+      // 保证扫码过程中镜头持续收敛（平台不支持/异常仅记录日志，不影响解码）。
+      _maybeAutoRefocus();
+
+      // 码眼自动变焦：≥1 码眼即进入状态机评估（单码眼也借"趋势记忆"区分远近，
       // 见 _adjustZoomToEyes；内部有连续帧去抖 + 时间限频；不阻断解码，平台不支持/异常仅记录日志）
       if (_eyePoints.isNotEmpty) {
         unawaited(_adjustZoomToEyes());
