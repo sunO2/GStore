@@ -693,6 +693,7 @@ class AppSegmentedButton<T> extends StatelessWidget {
     required this.segments,
     required this.onChanged,
     this.enabled = true,
+    this.density,
   });
 
   /// 当前选中的值
@@ -706,6 +707,9 @@ class AppSegmentedButton<T> extends StatelessWidget {
 
   /// 是否启用
   final bool enabled;
+
+  /// 紧凑度（如 AppBar 内使用 [VisualDensity.compact]；null = 保持默认外观）
+  final VisualDensity? density;
 
   @override
   Widget build(BuildContext context) {
@@ -734,6 +738,9 @@ class AppSegmentedButton<T> extends StatelessWidget {
             }
           : null,
       style: ButtonStyle(
+        // 紧凑度（SegmentedButton 仅通过 style 支持 visualDensity）：
+        // null = 不覆盖，保留默认密度（既有调用点外观零变化）
+        visualDensity: density,
         // 背景色
         backgroundColor: WidgetStateProperty.resolveWith<Color?>(
           (states) {

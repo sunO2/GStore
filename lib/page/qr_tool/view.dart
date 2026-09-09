@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:camera/camera.dart';
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
 import 'package:gal/gal.dart';
 import 'package:gstore/core/core.dart';
@@ -80,6 +81,20 @@ class _QrToolPageState extends State<QrToolPage> {
   /// 最近一帧解码收集的码眼候选点（zxing2 [DecodeHintType.needResultPointCallback]
   /// 逐候选点回调追加；每次解码前清空，解码后保留供失败引导判断）
   final List<ResultPoint> _eyePoints = [];
+
+  /// 最近一帧码眼映射到 240×240 预览窗的坐标（空则不绘制；随帧刷新仅变化时 setState）
+  final List<Offset> _mappedEyePoints = [];
+
+  /// 最近一帧图像尺寸（码眼包围盒占 0.75 ROI 面积比例估算用）
+  int _lastFrameW = 0;
+  int _lastFrameH = 0;
+
+  /// 当前生效变焦倍率（自动变焦防抖基准：相邻期望差值 <0.05 跳过）
+  double _currentZoom = 0;
+
+  /// 变焦范围（initialize 后缓存一次；平台不支持时保持 1.0）
+  double _minZoomLevel = 1;
+  double _maxZoomLevel = 1;
 
   /// 识别框下方引导文案：解码失败时按码眼有无区分「检测到但解析失败」/「未检测到」，
   /// 默认提示「将二维码对准框内」（扫描区初始与重新扫描时复位）
@@ -214,7 +229,24 @@ class _QrToolPageState extends State<QrToolPage> {
     final colorScheme = Theme.of(context).colorScheme;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('二维码生成和扫码'),
+        // 生成/识别分段切换移入导航头标题位（紧凑密度适配 AppBar 高度）
+        title: AppSegmentedButton<QrToolMode>(
+          value: _mode,
+          segments: const [
+            AppSegment(
+              value: QrToolMode.generate,
+              label: '生成二维码',
+              icon: Icons.qr_code_2,
+            ),
+            AppSegment(
+              value: QrToolMode.scan,
+              label: '识别二维码',
+              icon: Icons.qr_code_scanner,
+            ),
+          ],
+          onChanged: _onModeChanged,
+          density: VisualDensity.compact,
+        ),
         actions: [
           IconButton(
             tooltip: '清除',
@@ -228,25 +260,6 @@ class _QrToolPageState extends State<QrToolPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // 生成/识别分段切换胶囊
-            AppSegmentedButton<QrToolMode>(
-              value: _mode,
-              segments: const [
-                AppSegment(
-                  value: QrToolMode.generate,
-                  label: '生成二维码',
-                  icon: Icons.qr_code_2,
-                ),
-                AppSegment(
-                  value: QrToolMode.scan,
-                  label: '识别二维码',
-                  icon: Icons.qr_code_scanner,
-                ),
-              ],
-              onChanged: _onModeChanged,
-            ),
-            const SizedBox(height: AppSpacing.md),
-
             // 二维码预览区 / 相机识别预览区（flex 2；高度充足时原尺寸居中，键盘压缩时等比缩小完整可见）
             Expanded(flex: 2, child: _buildQrArea(context)),
 
@@ -366,26 +379,29 @@ class _QrToolPageState extends State<QrToolPage> {
               : Stack(
                   fit: StackFit.expand,
                   children: [
-                    // 相机预览 center-crop：按传感器比例等比覆盖 240×240 窗口，不变形。
-                    // 宽占比≥1（横）等宽撑满、超高部分上下居中裁掉；<1（竖）等高撑满、超宽左右裁掉。
+                    // 相机预览：CameraPreview 内部已按屏幕方向处理比例（竖屏 1/aspectRatio），
+                    // 外层仅用 FittedBox cover 等比裁切适配 240×240 窗口，避免双重换算比例错乱
                     if (controller.value.aspectRatio > 0)
-                      AspectRatio(
-                        aspectRatio: controller.value.aspectRatio,
-                        child: OverflowBox(
-                          alignment: Alignment.center,
-                          child: controller.value.aspectRatio >= 1
-                              ? SizedBox(
-                                  width: 240 * controller.value.aspectRatio,
-                                  height: 240,
-                                  child: _buildCameraPreview(controller),
-                                )
-                              : SizedBox(
-                                  width: 240,
-                                  height: 240 / controller.value.aspectRatio,
-                                  child: _buildCameraPreview(controller),
-                                ),
+                      FittedBox(
+                        fit: BoxFit.cover,
+                        clipBehavior: Clip.hardEdge,
+                        child: SizedBox(
+                          width: 240,
+                          height: 240,
+                          child: _buildCameraPreview(controller),
                         ),
                       ),
+                    // 码眼映射点绘制（识别框之下；IgnorePointer 避免挡点击）
+                    Positioned.fill(
+                      child: IgnorePointer(
+                        child: CustomPaint(
+                          painter: _EyePointsPainter(
+                            points: _mappedEyePoints,
+                            color: colorScheme.primary,
+                          ),
+                        ),
+                      ),
+                    ),
                     // 居中识别框 + 底部提示
                     IgnorePointer(
                       child: Column(
@@ -673,6 +689,15 @@ class _QrToolPageState extends State<QrToolPage> {
       final controller =
           CameraController(desc, ResolutionPreset.low, enableAudio: false);
       await controller.initialize();
+      // 变焦范围缓存一次（平台不支持时降级默认 1.0，仅记录日志）
+      try {
+        _minZoomLevel = await controller.getMinZoomLevel();
+        _maxZoomLevel = await controller.getMaxZoomLevel();
+      } catch (e) {
+        appLog.error('QrToolPage: 读取变焦范围失败（平台不支持则忽略） - $e');
+      }
+      // 变焦防抖基准：以最小倍率为起点（后续期望差 <0.05 才真正 setZoomLevel）
+      _currentZoom = _minZoomLevel;
       // 自动对焦/曝光：连续识别场景下避免锁焦/锁曝光导致越扫越糊；
       // 平台不支持时降级（不中断相机启动）。
       try {
@@ -727,7 +752,14 @@ class _QrToolPageState extends State<QrToolPage> {
   void _onFrame(CameraImage image) {
     if (_processingFrame || _scanningStopped) return;
     _processingFrame = true;
+    _lastFrameW = image.width;
+    _lastFrameH = image.height;
     try {
+      // 码眼自动变焦：≥3 码眼时按包围盒占比引导缩放（使用上一帧收集的码眼；
+      // 不阻断解码，平台不支持/异常仅记录日志）
+      if (_eyePoints.length >= 3) {
+        unawaited(_adjustZoomToEyes());
+      }
       final text = _decodeQr(image);
       if (text != null && text.isNotEmpty) {
         _onScanSuccess(text);
@@ -744,6 +776,87 @@ class _QrToolPageState extends State<QrToolPage> {
     } finally {
       _processingFrame = false;
     }
+    // 码眼映射点随帧刷新（仅变化时 setState，避免逐帧重建）
+    _syncEyePointsOverlay();
+  }
+
+  /// 码眼自动变焦：由 3 码眼包围盒面积占 0.75 ROI 帧面积的比例估算覆盖占比——
+  /// 占比过小（<0.08，二维码偏小）放大 ×1.3；过大（>0.5，未对准/过大）缩小 ×0.8；
+  /// 目标倍率 clamp 到 [getMinZoomLevel, getMaxZoomLevel] 缓存值，
+  /// 与当前期望 zoom 差值 <0.05 跳过（防抖，避免镜头持续抖动）。
+  Future<void> _adjustZoomToEyes() async {
+    final controller = _cameraController;
+    if (controller == null || !controller.value.isInitialized) return;
+    if (_lastFrameW <= 0 || _lastFrameH <= 0) return;
+    final eyes = _eyePoints;
+    if (eyes.length < 3) return;
+    // 码眼包围盒（zxing2 回调坐标为 0.75 ROI 裁切后坐标，直接与 ROI 尺寸比）
+    var minX = double.infinity, minY = double.infinity;
+    var maxX = double.negativeInfinity, maxY = double.negativeInfinity;
+    for (final p in eyes) {
+      if (p.x < minX) minX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y > maxY) maxY = p.y;
+    }
+    final bboxW = maxX - minX;
+    final bboxH = maxY - minY;
+    if (bboxW <= 0 || bboxH <= 0) return;
+    const roi = 0.75; // 与 _decodeQr 解码 ROI 一致
+    final cropW = (_lastFrameW * roi).round();
+    final cropH = (_lastFrameH * roi).round();
+    if (cropW <= 0 || cropH <= 0) return;
+    final ratio = (bboxW * bboxH) / (cropW * cropH);
+    final base = _currentZoom > 0 ? _currentZoom : 1.0;
+    if (ratio < 0.08) {
+      // 偏小 → 放大（clamp 上限）
+      await _applyZoom((base * 1.3).clamp(_minZoomLevel, _maxZoomLevel));
+    } else if (ratio > 0.5) {
+      // 偏大 → 缩小（clamp 下限）
+      await _applyZoom((base * 0.8).clamp(_minZoomLevel, _maxZoomLevel));
+    }
+  }
+
+  /// 执行变焦：与当前期望 zoom 差 <0.05 跳过（防抖）；平台不支持/异常仅记录日志
+  Future<void> _applyZoom(double target) async {
+    if ((target - _currentZoom).abs() < 0.05) return;
+    final controller = _cameraController;
+    if (controller == null || !controller.value.isInitialized) return;
+    try {
+      await controller.setZoomLevel(target);
+      _currentZoom = target;
+    } catch (e) {
+      appLog.error('QrToolPage: 设置变焦失败（平台不支持则忽略） - $e');
+    }
+  }
+
+  /// 将码眼 ROI 裁切坐标映射到 240×240 预览窗坐标：
+  /// 先加回 left/top 偏移还原帧坐标，再按 cover 近似（scale = 240/帧宽，纵向居中）转 Offset。
+  List<Offset> _computeMappedEyePoints(int w, int h) {
+    if (_eyePoints.isEmpty || w <= 0) return const [];
+    const roi = 0.75;
+    final cropW = (w * roi).round();
+    final cropH = (h * roi).round();
+    final left = ((w - cropW) / 2).round();
+    final top = ((h - cropH) / 2).round();
+    final scale = 240 / w;
+    final dy = (240 - h * scale) / 2; // cover 纵向居中近似
+    return [
+      for (final p in _eyePoints)
+        Offset((p.x + left) * scale, (p.y + top) * scale + dy),
+    ];
+  }
+
+  /// 码眼映射点同步到 [_mappedEyePoints]（仅变化时 setState，避免逐帧重建）
+  void _syncEyePointsOverlay() {
+    if (!mounted) return;
+    final mapped = _computeMappedEyePoints(_lastFrameW, _lastFrameH);
+    if (listEquals(mapped, _mappedEyePoints)) return;
+    setState(() {
+      _mappedEyePoints
+        ..clear()
+        ..addAll(mapped);
+    });
   }
 
   /// 解码单帧：取 Y 平面灰度 → RGBLuminanceSource → GlobalHistogramBinarizer → QRCodeReader。
@@ -822,6 +935,7 @@ class _QrToolPageState extends State<QrToolPage> {
       _scanHint = '将二维码对准框内';
     });
     _eyePoints.clear();
+    _mappedEyePoints.clear();
     try {
       await controller.startImageStream(_onFrame);
     } catch (e) {
@@ -836,4 +950,34 @@ class _QrToolPageState extends State<QrToolPage> {
     _controller.clear();
     setState(() => _text = '');
   }
+}
+
+/// 码眼预览绘制：在 240×240 预览窗上绘制码眼映射点（实心小圆点 + 描边提高可见性）。
+/// 坐标由 [_QrToolPageState._mappedEyePoints] 提供（帧坐标 → 预览窗 cover 近似映射）。
+class _EyePointsPainter extends CustomPainter {
+  _EyePointsPainter({required this.points, required this.color});
+
+  /// 码眼在预览窗中的坐标列表
+  final List<Offset> points;
+
+  /// 码眼颜色（主题 primary）
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (points.isEmpty) return;
+    final fill = Paint()..color = color;
+    final stroke = Paint()
+      ..color = color.withValues(alpha: 0.9)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5;
+    for (final p in points) {
+      canvas.drawCircle(p, 3.5, fill);
+      canvas.drawCircle(p, 3.5, stroke);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_EyePointsPainter oldDelegate) =>
+      oldDelegate.color != color || !listEquals(oldDelegate.points, points);
 }
