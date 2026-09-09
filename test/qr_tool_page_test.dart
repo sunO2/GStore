@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:ui' as ui;
 
+import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
@@ -9,6 +10,7 @@ import 'package:gstore/page/qr_tool/view.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:zxing2/qrcode.dart';
 
 /// mock path_provider：getApplicationDocumentsPath 返回临时目录
 /// （保存图片测试注入，避免污染真实文档目录）
@@ -37,10 +39,13 @@ void main() {
     PathProviderPlatform.instance = _FakePathProvider(tempDir.path);
     // 相册 seam 默认走真实 gal（测试内显式注入成败）
     QrToolPage.debugGallerySucceeds = null;
+    // 相机 seam 默认走真实 availableCameras（测试内切换到识别模式时注入失败路径）
+    QrToolPage.debugAvailableCameras = null;
   });
 
   tearDown(() {
     QrToolPage.debugGallerySucceeds = null;
+    QrToolPage.debugAvailableCameras = null;
     PathProviderPlatform.instance = originalPathProvider;
     if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
   });
@@ -200,5 +205,65 @@ void main() {
     final qrDir = Directory('${tempDir.path}/qr_codes');
     expect(qrDir.existsSync(), isTrue);
     expect(qrDir.listSync().whereType<File>().toList(), hasLength(1));
+  });
+
+  testWidgets('分段胶囊默认「生成二维码」；切换到「识别二维码」相机不可用显示占位不崩溃', (tester) async {
+    await pumpPage(tester);
+
+    // 分段胶囊出现，默认生成模式
+    expect(find.text('生成二维码'), findsOneWidget);
+    expect(find.text('识别二维码'), findsOneWidget);
+    expect(find.text('输入内容后生成二维码'), findsOneWidget);
+
+    // 注入相机不可用（测试环境平台通道未注册，真实 availableCameras 会挂起；
+    // 注入后确定性走初始化失败路径）
+    QrToolPage.debugAvailableCameras =
+        () async => throw CameraException('noCamera', 'test');
+
+    // 切换到识别二维码：初始化失败 → 保持在识别模式显示「相机不可用」占位（不崩溃）
+    await tester.tap(find.text('识别二维码'));
+    await tester.pump(); // 重建：扫描区 loading
+    await tester.pump(); // 注入的 availableCameras 抛异常 → catch 置占位
+    await tester.pump(); // 重建占位
+    expect(find.text('相机不可用'), findsOneWidget);
+    expect(tester.takeException(), isNull, reason: '相机不可用时不应崩溃');
+
+    // 切回生成模式 → 生成占位恢复（相机释放路径不抛异常）
+    await tester.tap(find.text('生成二维码'));
+    await tester.pump();
+    expect(find.text('输入内容后生成二维码'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('zxing2 解码合成二维码：RGBLuminanceSource + GlobalHistogramBinarizer 可识别 qr_flutter 生成的二维码', (tester) async {
+    // 真实引擎光栅化必须在 runAsync（真实事件循环）中执行
+    await tester.runAsync(() async {
+      final recorder = ui.PictureRecorder();
+      final canvas = Canvas(recorder);
+      // QrPainter 只画黑色模块、背景透明 → 先铺白底，保证直方图有亮暗分布
+      canvas.drawRect(
+        const Rect.fromLTWH(0, 0, 200, 200),
+        Paint()..color = const Color(0xFFFFFFFF),
+      );
+      QrPainter(
+        data: 'HELLO-ZXING2',
+        version: QrVersions.auto,
+        errorCorrectionLevel: QrErrorCorrectLevel.M,
+      ).paint(canvas, const Size(200, 200));
+      final picture = recorder.endRecording();
+      final image = await picture.toImage(200, 200);
+      final byteData = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
+      image.dispose();
+
+      // 与识别模式同一解码路径：RGBA Int32 像素 → RGBLuminanceSource → 二值化 → 解码
+      final source = RGBLuminanceSource(
+        200,
+        200,
+        byteData!.buffer.asInt32List(),
+      );
+      final bitmap = BinaryBitmap(GlobalHistogramBinarizer(source));
+      final result = QRCodeReader().decode(bitmap);
+      expect(result.text, 'HELLO-ZXING2');
+    });
   });
 }

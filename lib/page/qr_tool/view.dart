@@ -2,21 +2,33 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:gal/gal.dart';
 import 'package:gstore/core/core.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:zxing2/qrcode.dart';
+
+/// 二维码工具模式：生成二维码 / 识别二维码
+enum QrToolMode { generate, scan }
 
 /// 二维码工具页：输入文本/链接 → 实时生成二维码；支持长按保存图片（应用目录 + 系统相册）；
 /// 历史生成记录防抖持久化（shared_preferences），点击历史可回填输入。
+/// 「识别二维码」模式复用同一预览区显示相机实时预览，识别结果自动回填输入框，
+/// 识别历史独立持久化（qr_tool_scan_history）。
 class QrToolPage extends StatefulWidget {
   const QrToolPage({super.key});
 
   /// 测试注入：系统相册写入结果（null = 走真实 gal；true/false = 模拟结果，不触发真实相册）。
   @visibleForTesting
   static bool? debugGallerySucceeds;
+
+  /// 测试注入：枚举可用相机（null = 走真实 availableCameras()）。
+  /// 测试环境平台通道未注册会挂起，注入后可确定性走「相机不可用」失败路径。
+  @visibleForTesting
+  static Future<List<CameraDescription>> Function()? debugAvailableCameras;
 
   @override
   State<QrToolPage> createState() => _QrToolPageState();
@@ -26,8 +38,14 @@ class _QrToolPageState extends State<QrToolPage> {
   /// 历史记录存储键
   static const String _historyKey = 'qr_tool_history';
 
+  /// 识别历史存储键
+  static const String _scanHistoryKey = 'qr_tool_scan_history';
+
   /// 历史记录上限
   static const int _historyLimit = 20;
+
+  /// 当前模式：生成二维码 / 识别二维码
+  QrToolMode _mode = QrToolMode.generate;
 
   /// 输入控制器（「清除」时清空并复位 [_text]）
   final TextEditingController _controller = TextEditingController();
@@ -40,6 +58,24 @@ class _QrToolPageState extends State<QrToolPage> {
 
   /// 历史生成记录（去重置顶，最近的在最前，上限 [_historyLimit]）
   List<String> _history = [];
+
+  /// 识别历史记录（同样去重置顶 + 上限 + 持久化；chips 点击回填输入框）
+  List<String> _scanHistory = [];
+
+  /// 相机控制器（仅识别模式持有；切回生成模式时释放）
+  CameraController? _cameraController;
+
+  /// 相机初始化中（用于扫描区占位显示 loading）
+  bool _cameraInitializing = false;
+
+  /// 相机初始化失败原因（非空 → 扫描区显示「相机不可用」占位，不崩溃）
+  String? _cameraError;
+
+  /// 帧解码防重：上一帧未处理完时跳过新帧
+  bool _processingFrame = false;
+
+  /// 已识别一次即停（避免连续触发）：true 时不再处理新帧，显示「重新扫描」入口
+  bool _scanningStopped = false;
 
   /// 保存中标志（防重复触发长按保存）
   bool _saving = false;
@@ -54,11 +90,18 @@ class _QrToolPageState extends State<QrToolPage> {
   void initState() {
     super.initState();
     _loadHistory();
+    _loadScanHistory();
   }
 
   @override
   void dispose() {
     _historyDebounce?.cancel();
+    final controller = _cameraController;
+    _cameraController = null;
+    if (controller != null) {
+      // 页面销毁：停止图像流并释放相机（fire-and-forget，异常仅记录日志）
+      unawaited(_releaseCamera(controller));
+    }
     _controller.dispose();
     _focusNode.dispose();
     super.dispose();
@@ -78,10 +121,26 @@ class _QrToolPageState extends State<QrToolPage> {
     }
   }
 
-  /// 输入变化：即时更新二维码内容；历史写入改为防抖（停顿 800ms 后 [_commitHistory]）
+  /// 从 shared_preferences 加载识别历史（失败不阻塞 UI）
+  Future<void> _loadScanHistory() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final stored = prefs.getStringList(_scanHistoryKey) ?? const [];
+      if (!mounted) return;
+      setState(() {
+        _scanHistory = stored.where((e) => e.trim().isNotEmpty).toList();
+      });
+    } catch (e) {
+      appLog.error('QrToolPage: 加载识别历史失败 - $e');
+    }
+  }
+
+  /// 输入变化：即时更新二维码内容；历史写入改为防抖（停顿 800ms 后 [_commitHistory]）。
+  /// 防抖只在生成模式生效（识别模式的回填走 [_onScanSuccess]/[_applyHistory]，不走防抖）。
   void _onTextChanged(String value) {
     final text = value.trim();
     setState(() => _text = text);
+    if (_mode != QrToolMode.generate) return;
     _historyDebounce?.cancel();
     _historyDebounce = Timer(_historyDebounceDuration, _commitHistory);
   }
@@ -108,7 +167,17 @@ class _QrToolPageState extends State<QrToolPage> {
     }
   }
 
-  /// 点击历史 chip：回填输入框并重新生成二维码
+  /// 将当前识别历史写回 shared_preferences（fire-and-forget，失败仅记录日志）
+  Future<void> _persistScanHistory() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList(_scanHistoryKey, _scanHistory);
+    } catch (e) {
+      appLog.error('QrToolPage: 写入识别历史失败 - $e');
+    }
+  }
+
+  /// 点击历史 chip：回填输入框并重新生成二维码（识别模式回填后不再自动重新扫描）
   void _applyHistory(String item) {
     _historyDebounce?.cancel();
     _controller.text = item;
@@ -116,18 +185,28 @@ class _QrToolPageState extends State<QrToolPage> {
     setState(() => _text = item);
   }
 
-  /// 清空历史记录
+  /// 清空当前模式对应的历史记录
   void _clearHistory() {
-    setState(() => _history = []);
-    unawaited(_persistHistory());
+    setState(() {
+      if (_mode == QrToolMode.scan) {
+        _scanHistory = [];
+      } else {
+        _history = [];
+      }
+    });
+    unawaited(_mode == QrToolMode.scan ? _persistScanHistory() : _persistHistory());
   }
+
+  /// 当前模式对应的历史记录（生成历史 / 识别历史）
+  List<String> get _activeHistory =>
+      _mode == QrToolMode.scan ? _scanHistory : _history;
 
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('二维码'),
+        title: const Text('二维码生成和扫码'),
         actions: [
           IconButton(
             tooltip: '清除',
@@ -141,11 +220,30 @@ class _QrToolPageState extends State<QrToolPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // 二维码预览区（flex 2；高度充足时原尺寸居中，键盘压缩时等比缩小完整可见）
+            // 生成/识别分段切换胶囊
+            AppSegmentedButton<QrToolMode>(
+              value: _mode,
+              segments: const [
+                AppSegment(
+                  value: QrToolMode.generate,
+                  label: '生成二维码',
+                  icon: Icons.qr_code_2,
+                ),
+                AppSegment(
+                  value: QrToolMode.scan,
+                  label: '识别二维码',
+                  icon: Icons.qr_code_scanner,
+                ),
+              ],
+              onChanged: _onModeChanged,
+            ),
+            const SizedBox(height: AppSpacing.md),
+
+            // 二维码预览区 / 相机识别预览区（flex 2；高度充足时原尺寸居中，键盘压缩时等比缩小完整可见）
             Expanded(flex: 2, child: _buildQrArea(context)),
 
-            // 历史记录区（固定高，不参与 flex，横向滚动 chips）
-            if (_history.isNotEmpty) ...[
+            // 历史记录区（固定高，不参与 flex，横向滚动 chips；数据源随模式切换）
+            if (_activeHistory.isNotEmpty) ...[
               const SizedBox(height: AppSpacing.sm),
               SizedBox(height: 64, child: _buildHistory(context)),
               const SizedBox(height: AppSpacing.sm),
@@ -161,7 +259,9 @@ class _QrToolPageState extends State<QrToolPage> {
                 expands: true,
                 textAlignVertical: TextAlignVertical.top,
                 decoration: InputDecoration(
-                  hintText: '输入文本或链接生成二维码',
+                  hintText: _mode == QrToolMode.scan
+                      ? '将二维码对准相机，识别结果自动填入此处'
+                      : '输入文本或链接生成二维码',
                   hintStyle: Theme.of(context).textTheme.bodyMedium?.copyWith(
                         color: colorScheme.outline,
                       ),
@@ -178,9 +278,10 @@ class _QrToolPageState extends State<QrToolPage> {
     );
   }
 
-  /// 历史记录区：标题（含清空）+ 固定高横向滚动 chips
+  /// 历史记录区：标题（含清空）+ 固定高横向滚动 chips；数据源随模式切换
   Widget _buildHistory(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
+    final history = _activeHistory;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -188,7 +289,7 @@ class _QrToolPageState extends State<QrToolPage> {
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
             Text(
-              '历史记录',
+              _mode == QrToolMode.scan ? '识别历史' : '历史记录',
               style: Theme.of(context).textTheme.labelMedium?.copyWith(
                     color: colorScheme.outline,
                   ),
@@ -210,10 +311,10 @@ class _QrToolPageState extends State<QrToolPage> {
         Expanded(
           child: ListView.separated(
             scrollDirection: Axis.horizontal,
-            itemCount: _history.length,
+            itemCount: history.length,
             separatorBuilder: (_, __) => const SizedBox(width: AppSpacing.sm),
             itemBuilder: (context, index) {
-              final item = _history[index];
+              final item = history[index];
               return ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 160),
                 child: ActionChip(
@@ -228,13 +329,122 @@ class _QrToolPageState extends State<QrToolPage> {
     );
   }
 
-  /// 二维码预览区：高度充足时原尺寸居中；键盘压缩高度不足时 FittedBox 等比缩小，完整可见
+  /// 二维码预览区：生成模式显示占位/二维码；识别模式显示相机实时预览 + 识别框
   Widget _buildQrArea(BuildContext context) {
+    if (_mode == QrToolMode.scan) {
+      return _buildScanArea(context);
+    }
     return Center(
       child: FittedBox(
         fit: BoxFit.contain,
         child: _text.isEmpty ? _buildPlaceholder(context) : _buildQr(),
       ),
+    );
+  }
+
+  /// 识别模式预览区：相机预览（圆角裁剪 + 识别框 overlay）；
+  /// 相机未初始化 → loading 占位；初始化失败 → 「相机不可用」提示（绝不崩溃）。
+  Widget _buildScanArea(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final controller = _cameraController;
+    return Center(
+      child: SizedBox(
+        width: 240,
+        height: 240,
+        child: ClipRRect(
+          borderRadius: AppRadius.allLG,
+          child: (controller == null || !controller.value.isInitialized)
+              ? _buildScanPlaceholder(context)
+              : Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    // 相机预览等比覆盖填满 240×240（超出部分裁剪），与识别框同窗口
+                    if (controller.value.aspectRatio > 0)
+                      FittedBox(
+                        fit: BoxFit.cover,
+                        clipBehavior: Clip.hardEdge,
+                        child: SizedBox(
+                          width: 240,
+                          height: 240 / controller.value.aspectRatio,
+                          child: CameraPreview(controller),
+                        ),
+                      ),
+                    // 居中识别框 + 底部提示
+                    IgnorePointer(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Container(
+                            width: 180,
+                            height: 180,
+                            decoration: BoxDecoration(
+                              border: Border.all(
+                                color: colorScheme.primary,
+                                width: 2,
+                              ),
+                              borderRadius: AppRadius.allLG,
+                            ),
+                          ),
+                          const SizedBox(height: AppSpacing.md),
+                          Text(
+                            '将二维码对准框内',
+                            style: Theme.of(context)
+                                .textTheme
+                                .bodySmall
+                                ?.copyWith(
+                                  color: colorScheme.onSurface,
+                                  backgroundColor: colorScheme.surface
+                                      .withValues(alpha: 0.7),
+                                ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    // 识别成功后提供「重新扫描」入口
+                    if (_scanningStopped)
+                      Positioned(
+                        top: AppSpacing.sm,
+                        right: AppSpacing.sm,
+                        child: IconButton.filledTonal(
+                          tooltip: '重新扫描',
+                          icon: const Icon(Icons.refresh),
+                          onPressed: _restartScan,
+                        ),
+                      ),
+                  ],
+                ),
+        ),
+      ),
+    );
+  }
+
+  /// 相机未初始化 / 初始化失败占位（AppLoading 或「相机不可用」提示）
+  Widget _buildScanPlaceholder(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Container(
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHighest,
+        borderRadius: AppRadius.allLG,
+      ),
+      child: _cameraInitializing
+          ? const AppLoading(size: AppLoadingSize.medium)
+          : Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  Icons.qr_code_scanner,
+                  size: AppTypography.iconMassive,
+                  color: colorScheme.outline,
+                ),
+                const SizedBox(height: AppSpacing.md),
+                Text(
+                  _cameraError ?? '相机不可用',
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: colorScheme.outline,
+                      ),
+                ),
+              ],
+            ),
     );
   }
 
@@ -394,6 +604,172 @@ class _QrToolPageState extends State<QrToolPage> {
     await file.writeAsBytes(byteData.buffer.asUint8List());
     debugPrint('QrToolPage: 二维码已保存 - ${file.path}');
     return file.path;
+  }
+
+  /// 模式切换：切到识别 → 初始化并启动相机；切回生成 → 释放相机（切回识别再重新初始化）
+  void _onModeChanged(QrToolMode mode) {
+    if (mode == _mode) return;
+    setState(() => _mode = mode);
+    if (mode == QrToolMode.scan) {
+      unawaited(_initCamera());
+    } else {
+      unawaited(_releaseCamera(_cameraController));
+      _cameraController = null;
+    }
+  }
+
+  /// 初始化相机：后置优先 → 低分辨率 → 关闭音频 → 启动逐帧图像流。
+  /// 任何失败都不崩溃：记录错误、置 [_cameraError] 显示占位、提示用户，保持在识别模式。
+  Future<void> _initCamera() async {
+    if (_cameraController != null || _cameraInitializing) return;
+    setState(() {
+      _cameraInitializing = true;
+      _cameraError = null;
+      _scanningStopped = false;
+    });
+    try {
+      final cameras = await (QrToolPage.debugAvailableCameras?.call() ??
+          availableCameras());
+      if (!mounted) return;
+      CameraDescription? back;
+      for (final c in cameras) {
+        if (c.lensDirection == CameraLensDirection.back) {
+          back = c;
+          break;
+        }
+      }
+      final desc = back ?? (cameras.isNotEmpty ? cameras.first : null);
+      if (desc == null) {
+        throw CameraException('noCamera', '未检测到可用相机');
+      }
+      final controller =
+          CameraController(desc, ResolutionPreset.low, enableAudio: false);
+      await controller.initialize();
+      if (!mounted) {
+        await controller.dispose();
+        return;
+      }
+      setState(() {
+        _cameraController = controller;
+        _cameraInitializing = false;
+      });
+      await controller.startImageStream(_onFrame);
+    } catch (e) {
+      appLog.error('QrToolPage: 相机初始化失败 - $e');
+      if (!mounted) return;
+      setState(() {
+        _cameraInitializing = false;
+        _cameraError = '相机不可用';
+      });
+      AppDialogs.showError('无法启动相机，请检查相机权限');
+    }
+  }
+
+  /// 释放相机：停止图像流 + dispose（异常仅记录日志）
+  Future<void> _releaseCamera(CameraController? controller) async {
+    if (controller == null) return;
+    try {
+      if (controller.value.isStreamingImages) {
+        await controller.stopImageStream();
+      }
+    } catch (e) {
+      appLog.error('QrToolPage: 停止图像流失败 - $e');
+    }
+    try {
+      await controller.dispose();
+    } catch (e) {
+      appLog.error('QrToolPage: 释放相机失败 - $e');
+    }
+  }
+
+  /// 逐帧回调：防重（上一帧未处理完跳过）→ YUV→灰度 → zxing2 解码。
+  /// 未识别异常忽略继续下一帧；识别命中 → 回填输入框 + 写识别历史 + 停止图像流。
+  void _onFrame(CameraImage image) {
+    if (_processingFrame || _scanningStopped) return;
+    _processingFrame = true;
+    try {
+      final text = _decodeQr(image);
+      if (text != null && text.isNotEmpty) {
+        _onScanSuccess(text);
+      }
+    } catch (e) {
+      // 单帧解码失败（未识别/格式异常）忽略，继续下一帧
+    } finally {
+      _processingFrame = false;
+    }
+  }
+
+  /// 解码单帧：取 Y 平面灰度 → RGBLuminanceSource → GlobalHistogramBinarizer → QRCodeReader。
+  String? _decodeQr(CameraImage image) {
+    if (image.planes.isEmpty) return null;
+    final luma = _extractLuma(image);
+    final source = RGBLuminanceSource.crop(
+      luma,
+      image.width,
+      image.height,
+      0,
+      0,
+      image.width,
+      image.height,
+    );
+    final bitmap = BinaryBitmap(GlobalHistogramBinarizer(source));
+    return QRCodeReader().decode(bitmap).text;
+  }
+
+  /// 从 YUV420 首平面（Y）抽取灰度字节（处理 bytesPerRow 行对齐 padding）
+  Int8List _extractLuma(CameraImage image) {
+    final plane = image.planes[0];
+    final w = image.width;
+    final h = image.height;
+    final rowStride = plane.bytesPerRow;
+    final luma = Int8List(w * h);
+    final bytes = plane.bytes;
+    if (rowStride == w) {
+      luma.setAll(0, bytes);
+    } else {
+      for (var y = 0; y < h; y++) {
+        final src = y * rowStride;
+        final dst = y * w;
+        luma.setRange(dst, dst + w, bytes, src);
+      }
+    }
+    return luma;
+  }
+
+  /// 识别命中：回填输入框 + 写入识别历史（去重置顶、上限、持久化）+ 停止图像流
+  void _onScanSuccess(String text) {
+    _scanningStopped = true;
+    final controller = _cameraController;
+    if (controller != null && controller.value.isStreamingImages) {
+      unawaited(controller.stopImageStream().catchError((Object e) {
+        appLog.error('QrToolPage: 停止图像流失败 - $e');
+      }));
+    }
+    _historyDebounce?.cancel();
+    _controller.text = text;
+    _controller.selection = TextSelection.collapsed(offset: text.length);
+    setState(() {
+      _text = text;
+      _scanHistory = [text, ..._scanHistory.where((e) => e != text)]
+          .take(_historyLimit)
+          .toList();
+    });
+    unawaited(_persistScanHistory());
+    AppDialogs.showSuccess('已识别二维码');
+  }
+
+  /// 重新扫描：图像流已停止时重新启动
+  Future<void> _restartScan() async {
+    final controller = _cameraController;
+    if (controller == null || !controller.value.isInitialized) return;
+    if (controller.value.isStreamingImages) return;
+    setState(() => _scanningStopped = false);
+    try {
+      await controller.startImageStream(_onFrame);
+    } catch (e) {
+      appLog.error('QrToolPage: 重新扫描失败 - $e');
+      if (mounted) AppDialogs.showError('重新扫描失败');
+    }
   }
 
   /// 清除输入与内容（取消待写的历史防抖计时）
