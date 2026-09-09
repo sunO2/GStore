@@ -4,6 +4,7 @@ import 'dart:ui' as ui;
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:gstore/core/design/app_components.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/page/qr_tool/view.dart';
@@ -65,16 +66,11 @@ void main() {
 
   testWidgets('输入文本后实时生成二维码，AppBar 清除后恢复占位', (tester) async {
     await pumpPage(tester);
-    // 初始：无内容 → 占位；AppBar 清除按钮禁用
+    // 初始：无内容 → 占位；FAB 悬浮清除存在（恒可点）
     expect(find.text('输入内容后生成二维码'), findsOneWidget);
     expect(find.byType(QrImageView), findsNothing);
-    expect(
-      tester
-          .widget<IconButton>(find.widgetWithIcon(IconButton, Icons.clear))
-          .onPressed,
-      isNull,
-      reason: '空输入时清除按钮应禁用',
-    );
+    expect(find.byType(FloatingActionButton), findsOneWidget);
+    expect(find.byTooltip('清除'), findsOneWidget);
 
     // 输入 → QrImageView 出现（布局无溢出）
     await tester.enterText(find.byType(TextField), 'https://example.com');
@@ -83,8 +79,8 @@ void main() {
     expect(find.text('输入内容后生成二维码'), findsNothing);
     expect(tester.takeException(), isNull, reason: '键盘/布局不应产生 overflow');
 
-    // AppBar 清除 → 占位恢复
-    await tester.tap(find.widgetWithIcon(IconButton, Icons.clear));
+    // FAB 清除 → 占位恢复
+    await tester.tap(find.byType(FloatingActionButton));
     await tester.pump();
     expect(find.text('输入内容后生成二维码'), findsOneWidget);
     expect(find.byType(QrImageView), findsNothing);
@@ -103,8 +99,8 @@ void main() {
     expect(find.text('历史记录'), findsOneWidget);
     expect(find.widgetWithText(ActionChip, 'hello'), findsOneWidget);
 
-    // AppBar 清除输入 → 占位
-    await tester.tap(find.widgetWithIcon(IconButton, Icons.clear));
+    // FAB 清除输入 → 占位
+    await tester.tap(find.byType(FloatingActionButton));
     await tester.pump();
     expect(find.text('输入内容后生成二维码'), findsOneWidget);
     expect(find.byType(QrImageView), findsNothing);
@@ -207,12 +203,12 @@ void main() {
     expect(qrDir.listSync().whereType<File>().toList(), hasLength(1));
   });
 
-  testWidgets('分段胶囊默认「生成二维码」；切换到「识别二维码」相机不可用显示占位不崩溃', (tester) async {
+  testWidgets('分段胶囊默认「生成」；切换到「识别」相机不可用显示占位不崩溃', (tester) async {
     await pumpPage(tester);
 
-    // 分段胶囊出现，默认生成模式
-    expect(find.text('生成二维码'), findsOneWidget);
-    expect(find.text('识别二维码'), findsOneWidget);
+    // 分段胶囊出现，默认生成模式（短标签移动端：生成|识别）
+    expect(find.widgetWithText(AppSegmentedButton<QrToolMode>, '生成'), findsOneWidget);
+    expect(find.widgetWithText(AppSegmentedButton<QrToolMode>, '识别'), findsOneWidget);
     expect(find.text('输入内容后生成二维码'), findsOneWidget);
 
     // 注入相机不可用（测试环境平台通道未注册，真实 availableCameras 会挂起；
@@ -220,8 +216,8 @@ void main() {
     QrToolPage.debugAvailableCameras =
         () async => throw CameraException('noCamera', 'test');
 
-    // 切换到识别二维码：初始化失败 → 保持在识别模式显示「相机不可用」占位（不崩溃）
-    await tester.tap(find.text('识别二维码'));
+    // 切换到识别：初始化失败 → 保持在识别模式显示「相机不可用」占位（不崩溃）
+    await tester.tap(find.text('识别'));
     await tester.pump(); // 重建：扫描区 loading
     await tester.pump(); // 注入的 availableCameras 抛异常 → catch 置占位
     await tester.pump(); // 重建占位
@@ -229,7 +225,7 @@ void main() {
     expect(tester.takeException(), isNull, reason: '相机不可用时不应崩溃');
 
     // 切回生成模式 → 生成占位恢复（相机释放路径不抛异常）
-    await tester.tap(find.text('生成二维码'));
+    await tester.tap(find.text('生成'));
     await tester.pump();
     expect(find.text('输入内容后生成二维码'), findsOneWidget);
     expect(tester.takeException(), isNull);

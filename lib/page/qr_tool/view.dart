@@ -229,31 +229,28 @@ class _QrToolPageState extends State<QrToolPage> {
     final colorScheme = Theme.of(context).colorScheme;
     return Scaffold(
       appBar: AppBar(
-        // 生成/识别分段切换移入导航头标题位（紧凑密度适配 AppBar 高度）
-        title: AppSegmentedButton<QrToolMode>(
-          value: _mode,
-          segments: const [
-            AppSegment(
-              value: QrToolMode.generate,
-              label: '生成二维码',
-              icon: Icons.qr_code_2,
-            ),
-            AppSegment(
-              value: QrToolMode.scan,
-              label: '识别二维码',
-              icon: Icons.qr_code_scanner,
-            ),
-          ],
-          onChanged: _onModeChanged,
-          density: VisualDensity.compact,
-        ),
+        // 无标题；分段切换放右侧 actions（与返回按钮不挤；短标签「生成|识别」，去图标）
         actions: [
-          IconButton(
-            tooltip: '清除',
-            icon: const Icon(Icons.clear),
-            onPressed: _text.isEmpty ? null : _clear,
+          Padding(
+            padding: const EdgeInsets.only(right: AppSpacing.sm),
+            child: AppSegmentedButton<QrToolMode>(
+              value: _mode,
+              segments: const [
+                AppSegment(value: QrToolMode.generate, label: '生成'),
+                AppSegment(value: QrToolMode.scan, label: '识别'),
+              ],
+              onChanged: _onModeChanged,
+              density: VisualDensity.compact,
+            ),
           ),
         ],
+      ),
+      // 悬浮清除：恒可点（空输入为无操作），heroTag 防冲突
+      floatingActionButton: FloatingActionButton.small(
+        tooltip: '清除',
+        heroTag: 'qr_tool_clear',
+        onPressed: _clear,
+        child: const Icon(Icons.clear),
       ),
       body: Padding(
         padding: AppSpacing.allLG,
