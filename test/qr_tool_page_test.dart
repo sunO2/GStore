@@ -66,13 +66,12 @@ void main() {
     await tester.pump();
   }
 
-  testWidgets('输入文本后实时生成二维码，AppBar 清除后恢复占位', (tester) async {
+  testWidgets('输入文本后实时生成二维码，下滑清空后恢复占位', (tester) async {
     await pumpPage(tester);
-    // 初始：无内容 → 占位；FAB 悬浮清除存在（恒可点）
+    // 初始：无内容 → 占位（FAB 清除已移除，清空由下滑手势承担）
     expect(find.text('输入内容后生成二维码'), findsOneWidget);
     expect(find.byType(QrImageView), findsNothing);
-    expect(find.byType(FloatingActionButton), findsOneWidget);
-    expect(find.byTooltip('清除'), findsOneWidget);
+    expect(find.byType(FloatingActionButton), findsNothing);
 
     // 输入 → QrImageView 出现（布局无溢出）
     await tester.enterText(find.byType(TextField), 'https://example.com');
@@ -81,8 +80,11 @@ void main() {
     expect(find.text('输入内容后生成二维码'), findsNothing);
     expect(tester.takeException(), isNull, reason: '键盘/布局不应产生 overflow');
 
-    // FAB 清除 → 占位恢复
-    await tester.tap(find.byType(FloatingActionButton));
+    // 下滑手势（起点在预览区）→ 清空 → 占位恢复
+    await tester.dragFrom(
+      const Offset(120, 80), // 预览区（flex 2 顶部）
+      const Offset(0, 160),
+    );
     await tester.pump();
     expect(find.text('输入内容后生成二维码'), findsOneWidget);
     expect(find.byType(QrImageView), findsNothing);
@@ -99,8 +101,11 @@ void main() {
     // 推进防抖计时（900ms > 800ms）→ 历史写入
     await tester.pump(const Duration(milliseconds: 900));
 
-    // FAB 清除输入 → 占位
-    await tester.tap(find.byType(FloatingActionButton));
+    // 下滑手势（起点在预览区）→ 清除输入 → 占位
+    await tester.dragFrom(
+      const Offset(120, 80), // 预览区（flex 2 顶部）
+      const Offset(0, 160),
+    );
     await tester.pump();
     expect(find.text('输入内容后生成二维码'), findsOneWidget);
     expect(find.byType(QrImageView), findsNothing);

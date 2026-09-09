@@ -364,13 +364,8 @@ class _QrToolPageState extends State<QrToolPage> {
           ),
         ],
       ),
-      // 悬浮清除：恒可点（空输入为无操作），heroTag 防冲突
-      floatingActionButton: FloatingActionButton.small(
-        tooltip: '清除',
-        heroTag: 'qr_tool_clear',
-        onPressed: _clear,
-        child: const Icon(Icons.clear),
-      ),
+      // 悬浮清除按钮已移除：清空输入由「下滑」手势承担（见 _onGestureUp），
+      // 避免与手势系统重复、也减少页面冗余控件。
       body: Listener(
         // 整页滑动手势：上滑=历史 / 下滑=清空(起点非输入区) / 左右滑=切模式。
         // 必须放在 Stack 最外层：Stack hitTest 逆序、命中即停——若 Listener 作为
@@ -391,33 +386,37 @@ class _QrToolPageState extends State<QrToolPage> {
                 Expanded(flex: 2, child: _buildQrArea(context)),
 
                 // 输入区（flex 1 ≈ 剩余空间，撑开多行输入；识别模式下只读展示识别结果）
+                // 底部留白避免输入框贴地（视觉上浮起，与页面留白协调）
                 Expanded(
                   flex: 1,
-                  child: TextField(
-                    key: _inputFieldKey,
-                    controller: _controller,
-                    focusNode: _focusNode,
-                    // 识别模式结果只读；生成模式可编辑
-                    readOnly: _mode == QrToolMode.scan,
-                    // 识别结果长按可选择/复制（系统选择菜单）
-                    enableInteractiveSelection: true,
-                    // 长按输入框 → 自定义菜单：识别/只读模式提供「复制全文」（生成模式保留系统菜单）
-                    contextMenuBuilder: _mode == QrToolMode.scan
-                        ? (context, editableTextState) {
-                            return AdaptiveTextSelectionToolbar.buttonItems(
-                              anchors: editableTextState.contextMenuAnchors,
-                              buttonItems: [
-                                ContextMenuButtonItem(
-                                  label: '复制',
-                                  onPressed: () => _copyResult(),
-                                ),
-                              ],
-                            );
-                          }
-                        : null,
-                    maxLines: null,
-                    expands: true,
-                    textAlignVertical: TextAlignVertical.top,
+                  child: Padding(
+                    padding: const EdgeInsets.only(bottom: AppSpacing.md),
+                    child: TextField(
+                      key: _inputFieldKey,
+                      controller: _controller,
+                      focusNode: _focusNode,
+                      // 识别模式结果只读；生成模式可编辑
+                      readOnly: _mode == QrToolMode.scan,
+                      // 识别结果长按可选择/复制（系统选择菜单）
+                      enableInteractiveSelection: true,
+                      // 长按输入框 → 自定义菜单：识别/只读模式提供「复制全文」（生成模式保留系统菜单）
+                      contextMenuBuilder: _mode == QrToolMode.scan
+                          ? (context, editableTextState) {
+                              return AdaptiveTextSelectionToolbar.buttonItems(
+                                anchors:
+                                    editableTextState.contextMenuAnchors,
+                                buttonItems: [
+                                  ContextMenuButtonItem(
+                                    label: '复制',
+                                    onPressed: () => _copyResult(),
+                                  ),
+                                ],
+                              );
+                            }
+                          : null,
+                      maxLines: null,
+                      expands: true,
+                      textAlignVertical: TextAlignVertical.top,
                     decoration: InputDecoration(
                       hintText: _mode == QrToolMode.scan
                           ? '将二维码对准相机，识别结果自动填入此处'
@@ -430,6 +429,7 @@ class _QrToolPageState extends State<QrToolPage> {
                       ),
                     ),
                     onChanged: _onTextChanged,
+                    ),
                   ),
                 ),
               ],
