@@ -1,16 +1,21 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import 'package:gal/gal.dart';
 import 'package:gstore/core/core.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// 二维码工具页：输入文本/链接 → 实时生成二维码；支持复制内容与长按保存图片；
-/// 历史生成记录持久化（shared_preferences），点击历史可回填输入。
+/// 二维码工具页：输入文本/链接 → 实时生成二维码；支持长按保存图片（应用目录 + 系统相册）；
+/// 历史生成记录防抖持久化（shared_preferences），点击历史可回填输入。
 class QrToolPage extends StatefulWidget {
   const QrToolPage({super.key});
+
+  /// 测试注入：系统相册写入结果（null = 走真实 gal；true/false = 模拟结果，不触发真实相册）。
+  @visibleForTesting
+  static bool? debugGallerySucceeds;
 
   @override
   State<QrToolPage> createState() => _QrToolPageState();
@@ -35,6 +40,12 @@ class _QrToolPageState extends State<QrToolPage> {
   /// 保存中标志（防重复触发长按保存）
   bool _saving = false;
 
+  /// 历史写入防抖计时器（输入停顿 [_historyDebounceDuration] 后才落历史）
+  Timer? _historyDebounce;
+
+  /// 历史写入防抖时长：输入停顿 800ms 后才写入历史（避免逐字符记录）
+  static const Duration _historyDebounceDuration = Duration(milliseconds: 800);
+
   @override
   void initState() {
     super.initState();
@@ -43,6 +54,7 @@ class _QrToolPageState extends State<QrToolPage> {
 
   @override
   void dispose() {
+    _historyDebounce?.cancel();
     _controller.dispose();
     super.dispose();
   }
@@ -61,20 +73,24 @@ class _QrToolPageState extends State<QrToolPage> {
     }
   }
 
-  /// 输入变化：更新二维码内容，并把非空内容去重置顶写入历史（异步持久化）
+  /// 输入变化：即时更新二维码内容；历史写入改为防抖（停顿 800ms 后 [_commitHistory]）
   void _onTextChanged(String value) {
     final text = value.trim();
-    final shouldRecord =
-        text.isNotEmpty && (_history.isEmpty || _history.first != text);
+    setState(() => _text = text);
+    _historyDebounce?.cancel();
+    _historyDebounce = Timer(_historyDebounceDuration, _commitHistory);
+  }
+
+  /// 防抖到期：把当前非空内容去重置顶写入历史（与首条相同则跳过），异步持久化
+  void _commitHistory() {
+    final text = _text.trim();
+    if (text.isEmpty || (_history.isNotEmpty && _history.first == text)) return;
     setState(() {
-      _text = text;
-      if (shouldRecord) {
-        _history = [text, ..._history.where((e) => e != text)]
-            .take(_historyLimit)
-            .toList();
-      }
+      _history = [text, ..._history.where((e) => e != text)]
+          .take(_historyLimit)
+          .toList();
     });
-    if (shouldRecord) unawaited(_persistHistory());
+    unawaited(_persistHistory());
   }
 
   /// 将当前历史写回 shared_preferences（fire-and-forget，失败仅记录日志）
@@ -89,6 +105,7 @@ class _QrToolPageState extends State<QrToolPage> {
 
   /// 点击历史 chip：回填输入框并重新生成二维码
   void _applyHistory(String item) {
+    _historyDebounce?.cancel();
     _controller.text = item;
     _controller.selection = TextSelection.collapsed(offset: item.length);
     setState(() => _text = item);
@@ -104,7 +121,16 @@ class _QrToolPageState extends State<QrToolPage> {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     return Scaffold(
-      appBar: AppBar(title: const Text('二维码')),
+      appBar: AppBar(
+        title: const Text('二维码'),
+        actions: [
+          IconButton(
+            tooltip: '清除',
+            icon: const Icon(Icons.clear),
+            onPressed: _text.isEmpty ? null : _clear,
+          ),
+        ],
+      ),
       body: Padding(
         padding: AppSpacing.allLG,
         child: Column(
@@ -139,12 +165,6 @@ class _QrToolPageState extends State<QrToolPage> {
                 onChanged: _onTextChanged,
               ),
             ),
-
-            // 操作区（有内容才显示，置于底部）
-            if (_text.isNotEmpty) ...[
-              const SizedBox(height: AppSpacing.lg),
-              _buildActions(context),
-            ],
           ],
         ),
       ),
@@ -269,35 +289,12 @@ class _QrToolPageState extends State<QrToolPage> {
     );
   }
 
-  /// 操作区：复制 / 清除（保存图片改为长按二维码触发）
-  Widget _buildActions(BuildContext context) {
-    return Row(
-      children: [
-        Expanded(
-          child: FilledButton.tonalIcon(
-            onPressed: _copyText,
-            icon: const Icon(Icons.copy, size: AppTypography.iconMD),
-            label: const Text('复制'),
-          ),
-        ),
-        const SizedBox(width: AppSpacing.md),
-        Expanded(
-          child: OutlinedButton.icon(
-            onPressed: _clear,
-            icon: const Icon(Icons.clear, size: AppTypography.iconMD),
-            label: const Text('清除'),
-          ),
-        ),
-      ],
-    );
-  }
-
   /// 长按确认后保存图片（确认框 → 真保存）
   Future<void> _confirmSaveImage() async {
     if (_saving) return;
     final confirmed = await AppDialogs.showDialog(
       title: '保存二维码',
-      content: '将二维码图片保存到应用目录?',
+      content: '将二维码图片保存到系统相册?',
       confirmText: '保存',
       cancelText: '取消',
     );
@@ -305,13 +302,8 @@ class _QrToolPageState extends State<QrToolPage> {
     await _saveImage();
   }
 
-  /// 复制当前内容到剪贴板
-  Future<void> _copyText() async {
-    await Clipboard.setData(ClipboardData(text: _text));
-    if (mounted) AppDialogs.showSnackbar('已复制');
-  }
-
-  /// 保存二维码为 PNG（应用文档目录 qr_codes/<时间戳>.png，不申请相册权限）
+  /// 保存二维码：PNG 写应用文档目录 qr_codes/<时间戳>.png（保留落盘），
+  /// 并同步写入系统相册（gal）；提示以相册结果为准。
   Future<void> _saveImage() async {
     setState(() => _saving = true);
     try {
@@ -323,14 +315,38 @@ class _QrToolPageState extends State<QrToolPage> {
       if (byteData == null) {
         throw const FileSystemException('生成二维码图片失败');
       }
-      final path = await _writePng(byteData);
-      if (mounted) {
-        AppDialogs.showSuccess('已保存到 $path');
+      // 应用目录落盘保留（不再作为主提示）
+      await _writePng(byteData);
+      // 系统相册写入（gal）：成功为主提示；失败仅提示，不影响已落盘文件
+      final galleryOk =
+          await _saveToGallery(byteData.buffer.asUint8List());
+      if (!mounted) return;
+      if (galleryOk) {
+        AppDialogs.showSuccess('已保存到相册');
+      } else {
+        AppDialogs.showError('保存到相册失败');
       }
     } catch (e) {
       if (mounted) AppDialogs.showError('保存二维码失败：$e');
     } finally {
       if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  /// 将 PNG 字节写入系统相册（gal）。返回是否成功；失败仅记录日志不抛出。
+  /// 测试通过 [QrToolPage.debugGallerySucceeds] 注入结果，避免依赖真实相册。
+  Future<bool> _saveToGallery(Uint8List bytes) async {
+    final injected = QrToolPage.debugGallerySucceeds;
+    if (injected != null) return injected;
+    try {
+      await Gal.putImageBytes(
+        bytes,
+        name: 'qr_${DateTime.now().millisecondsSinceEpoch}',
+      );
+      return true;
+    } catch (e) {
+      appLog.error('QrToolPage: 写入系统相册失败 - $e');
+      return false;
     }
   }
 
@@ -345,8 +361,9 @@ class _QrToolPageState extends State<QrToolPage> {
     return file.path;
   }
 
-  /// 清除输入与内容
+  /// 清除输入与内容（取消待写的历史防抖计时）
   void _clear() {
+    _historyDebounce?.cancel();
     _controller.clear();
     setState(() => _text = '');
   }

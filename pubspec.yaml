@@ -87,6 +87,7 @@ dependencies:
   flutter_gen_ai_chat_ui: ^2.15.0
   flutter_svg: ^2.3.0
   package_info_plus: ^8.0.0
+  gal: ^2.3.3
 dev_dependencies:
   flutter_test:
     sdk: flutter

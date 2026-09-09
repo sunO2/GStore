@@ -1,7 +1,6 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
@@ -21,9 +20,10 @@ class _FakePathProvider extends PathProviderPlatform {
 }
 
 /// 二维码工具页测试：
-/// 输入 → 实时 QrImageView；清空 → 占位；复制 → 剪贴板 + SnackBar；
-/// 长按二维码 → 确认框 → 临时目录写入 PNG（runAsync 驱动真实异步光栅化与文件 IO）；
-/// 历史记录 → chip 出现/点击回填/清空。
+/// 输入 → 实时 QrImageView；AppBar 清除 → 占位；
+/// 历史防抖（输入停顿 900ms 后 chip 出现）→ 点击回填/清空；
+/// 长按二维码 → 确认框 → 临时目录写入 PNG + 相册结果提示（gal seam 注入成败，
+/// 不触发真实系统相册；runAsync 驱动真实异步光栅化与文件 IO）。
 void main() {
   late Directory tempDir;
   late PathProviderPlatform originalPathProvider;
@@ -34,16 +34,13 @@ void main() {
     tempDir = Directory.systemTemp.createTempSync('qr_tool_test_');
     originalPathProvider = PathProviderPlatform.instance;
     PathProviderPlatform.instance = _FakePathProvider(tempDir.path);
-    // Clipboard.setData 走 SystemChannels.platform：测试环境 mock 为直接成功，
-    // 供「复制」用例推进（AppDialogs SnackBar 呈现需要 scaffoldMessengerKey）。
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(SystemChannels.platform, (call) async => null);
+    // 相册 seam 默认走真实 gal（测试内显式注入成败）
+    QrToolPage.debugGallerySucceeds = null;
   });
 
   tearDown(() {
+    QrToolPage.debugGallerySucceeds = null;
     PathProviderPlatform.instance = originalPathProvider;
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(SystemChannels.platform, null);
     if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
   });
 
@@ -60,11 +57,18 @@ void main() {
     await tester.pump();
   }
 
-  testWidgets('输入文本后实时生成二维码，清空后恢复占位', (tester) async {
+  testWidgets('输入文本后实时生成二维码，AppBar 清除后恢复占位', (tester) async {
     await pumpPage(tester);
-    // 初始：无内容 → 占位
+    // 初始：无内容 → 占位；AppBar 清除按钮禁用
     expect(find.text('输入内容后生成二维码'), findsOneWidget);
     expect(find.byType(QrImageView), findsNothing);
+    expect(
+      tester
+          .widget<IconButton>(find.widgetWithIcon(IconButton, Icons.clear))
+          .onPressed,
+      isNull,
+      reason: '空输入时清除按钮应禁用',
+    );
 
     // 输入 → QrImageView 出现（布局无溢出）
     await tester.enterText(find.byType(TextField), 'https://example.com');
@@ -73,36 +77,28 @@ void main() {
     expect(find.text('输入内容后生成二维码'), findsNothing);
     expect(tester.takeException(), isNull, reason: '键盘/布局不应产生 overflow');
 
-    // 清除 → 占位恢复
-    await tester.tap(find.text('清除'));
+    // AppBar 清除 → 占位恢复
+    await tester.tap(find.widgetWithIcon(IconButton, Icons.clear));
     await tester.pump();
     expect(find.text('输入内容后生成二维码'), findsOneWidget);
     expect(find.byType(QrImageView), findsNothing);
   });
 
-  testWidgets('复制按钮写入剪贴板并弹 SnackBar', (tester) async {
-    await pumpPage(tester);
-    await tester.enterText(find.byType(TextField), '复制我');
-    await tester.pump();
-
-    await tester.tap(find.text('复制'));
-    await tester.pump(); // Clipboard.setData 异步
-    await tester.pump(const Duration(milliseconds: 300)); // SnackBar 入场
-
-    expect(find.text('已复制'), findsOneWidget);
-  });
-
-  testWidgets('输入内容后出现历史 chip，点击回填输入并重新生成二维码', (tester) async {
+  testWidgets('输入停顿 900ms 后出现历史 chip，点击回填输入并重新生成二维码', (tester) async {
     await pumpPage(tester);
     await tester.enterText(find.byType(TextField), 'hello');
     await tester.pump();
 
-    // 历史区出现，chip 显示输入内容
+    // 防抖期内（未满 800ms）：历史区不出现
+    expect(find.text('历史记录'), findsNothing);
+
+    // 推进防抖计时（900ms > 800ms）→ 历史写入，chip 出现
+    await tester.pump(const Duration(milliseconds: 900));
     expect(find.text('历史记录'), findsOneWidget);
     expect(find.widgetWithText(ActionChip, 'hello'), findsOneWidget);
 
-    // 清空输入 → 占位
-    await tester.tap(find.text('清除'));
+    // AppBar 清除输入 → 占位
+    await tester.tap(find.widgetWithIcon(IconButton, Icons.clear));
     await tester.pump();
     expect(find.text('输入内容后生成二维码'), findsOneWidget);
     expect(find.byType(QrImageView), findsNothing);
@@ -118,7 +114,7 @@ void main() {
   testWidgets('清空历史按钮移除历史 chips', (tester) async {
     await pumpPage(tester);
     await tester.enterText(find.byType(TextField), '历史A');
-    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 900));
     expect(find.widgetWithText(ActionChip, '历史A'), findsOneWidget);
 
     await tester.tap(find.text('清空'));
@@ -127,10 +123,13 @@ void main() {
     expect(find.text('历史记录'), findsNothing);
   });
 
-  testWidgets('长按二维码确认后保存图片写入临时目录 qr_codes 并提示路径', (tester) async {
+  testWidgets('长按保存成功：写入临时目录 qr_codes 并提示已保存到相册', (tester) async {
     await pumpPage(tester);
     await tester.enterText(find.byType(TextField), '保存我');
-    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 900));
+
+    // 注入相册成功（不触发真实 gal）
+    QrToolPage.debugGallerySucceeds = true;
 
     // 长按二维码 → 确认框
     await tester.longPress(find.byType(QrImageView));
@@ -154,6 +153,32 @@ void main() {
     final files = qrDir.listSync().whereType<File>().toList();
     expect(files, hasLength(1));
     expect(files.single.path, endsWith('.png'));
-    expect(find.textContaining('已保存到'), findsOneWidget);
+    expect(find.textContaining('已保存到相册'), findsOneWidget);
+  });
+
+  testWidgets('相册写入失败：提示失败但应用目录文件保留', (tester) async {
+    await pumpPage(tester);
+    await tester.enterText(find.byType(TextField), '失败我');
+    await tester.pump(const Duration(milliseconds: 900));
+
+    // 注入相册失败（不触发真实 gal）
+    QrToolPage.debugGallerySucceeds = false;
+
+    await tester.longPress(find.byType(QrImageView));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('保存'));
+    for (var i = 0; i < 100; i++) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 20)),
+      );
+      await tester.pump();
+    }
+    await tester.pump(const Duration(milliseconds: 300)); // SnackBar 入场
+
+    expect(find.textContaining('保存到相册失败'), findsOneWidget);
+    // 应用目录落盘保留（相册失败不删文件）
+    final qrDir = Directory('${tempDir.path}/qr_codes');
+    expect(qrDir.existsSync(), isTrue);
+    expect(qrDir.listSync().whereType<File>().toList(), hasLength(1));
   });
 }
