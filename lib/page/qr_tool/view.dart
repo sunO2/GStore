@@ -77,6 +77,14 @@ class _QrToolPageState extends State<QrToolPage> {
   /// 已识别一次即停（避免连续触发）：true 时不再处理新帧，显示「重新扫描」入口
   bool _scanningStopped = false;
 
+  /// 最近一帧解码收集的码眼候选点（zxing2 [DecodeHintType.needResultPointCallback]
+  /// 逐候选点回调追加；每次解码前清空，解码后保留供失败引导判断）
+  final List<ResultPoint> _eyePoints = [];
+
+  /// 识别框下方引导文案：解码失败时按码眼有无区分「检测到但解析失败」/「未检测到」，
+  /// 默认提示「将二维码对准框内」（扫描区初始与重新扫描时复位）
+  String _scanHint = '将二维码对准框内';
+
   /// 保存中标志（防重复触发长按保存）
   bool _saving = false;
 
@@ -358,15 +366,24 @@ class _QrToolPageState extends State<QrToolPage> {
               : Stack(
                   fit: StackFit.expand,
                   children: [
-                    // 相机预览等比覆盖填满 240×240（超出部分裁剪），与识别框同窗口
+                    // 相机预览 center-crop：按传感器比例等比覆盖 240×240 窗口，不变形。
+                    // 宽占比≥1（横）等宽撑满、超高部分上下居中裁掉；<1（竖）等高撑满、超宽左右裁掉。
                     if (controller.value.aspectRatio > 0)
-                      FittedBox(
-                        fit: BoxFit.cover,
-                        clipBehavior: Clip.hardEdge,
-                        child: SizedBox(
-                          width: 240,
-                          height: 240 / controller.value.aspectRatio,
-                          child: CameraPreview(controller),
+                      AspectRatio(
+                        aspectRatio: controller.value.aspectRatio,
+                        child: OverflowBox(
+                          alignment: Alignment.center,
+                          child: controller.value.aspectRatio >= 1
+                              ? SizedBox(
+                                  width: 240 * controller.value.aspectRatio,
+                                  height: 240,
+                                  child: _buildCameraPreview(controller),
+                                )
+                              : SizedBox(
+                                  width: 240,
+                                  height: 240 / controller.value.aspectRatio,
+                                  child: _buildCameraPreview(controller),
+                                ),
                         ),
                       ),
                     // 居中识别框 + 底部提示
@@ -387,7 +404,7 @@ class _QrToolPageState extends State<QrToolPage> {
                           ),
                           const SizedBox(height: AppSpacing.md),
                           Text(
-                            '将二维码对准框内',
+                            _scanHint,
                             style: Theme.of(context)
                                 .textTheme
                                 .bodySmall
@@ -416,6 +433,15 @@ class _QrToolPageState extends State<QrToolPage> {
         ),
       ),
     );
+  }
+
+  /// 相机预览 Widget：前置相机水平镜像（与系统相机自拍观感一致）
+  Widget _buildCameraPreview(CameraController controller) {
+    final preview = CameraPreview(controller);
+    if (controller.description.lensDirection == CameraLensDirection.front) {
+      return Transform.scale(scaleX: -1, child: preview);
+    }
+    return preview;
   }
 
   /// 相机未初始化 / 初始化失败占位（AppLoading 或「相机不可用」提示）
@@ -626,7 +652,9 @@ class _QrToolPageState extends State<QrToolPage> {
       _cameraInitializing = true;
       _cameraError = null;
       _scanningStopped = false;
+      _scanHint = '将二维码对准框内';
     });
+    _eyePoints.clear();
     try {
       final cameras = await (QrToolPage.debugAvailableCameras?.call() ??
           availableCameras());
@@ -645,6 +673,18 @@ class _QrToolPageState extends State<QrToolPage> {
       final controller =
           CameraController(desc, ResolutionPreset.low, enableAudio: false);
       await controller.initialize();
+      // 自动对焦/曝光：连续识别场景下避免锁焦/锁曝光导致越扫越糊；
+      // 平台不支持时降级（不中断相机启动）。
+      try {
+        await controller.setFocusMode(FocusMode.auto);
+      } catch (e) {
+        appLog.error('QrToolPage: 设置自动对焦失败（平台不支持则忽略） - $e');
+      }
+      try {
+        await controller.setExposureMode(ExposureMode.auto);
+      } catch (e) {
+        appLog.error('QrToolPage: 设置自动曝光失败（平台不支持则忽略） - $e');
+      }
       if (!mounted) {
         await controller.dispose();
         return;
@@ -693,27 +733,41 @@ class _QrToolPageState extends State<QrToolPage> {
         _onScanSuccess(text);
       }
     } catch (e) {
-      // 单帧解码失败（未识别/格式异常）忽略，继续下一帧
+      // 单帧解码失败：按码眼有无区分引导——有码眼候选（≥3）说明检测到但解析失败，
+      // 提示移近/对准；一个都没有说明没看到二维码。文案变化才 setState，避免逐帧重建。
+      final hint = _eyePoints.length >= 3
+          ? '检测到二维码，请移近/对准框内'
+          : '未检测到，请将二维码对准框内';
+      if (mounted && hint != _scanHint) {
+        setState(() => _scanHint = hint);
+      }
     } finally {
       _processingFrame = false;
     }
   }
 
   /// 解码单帧：取 Y 平面灰度 → RGBLuminanceSource → GlobalHistogramBinarizer → QRCodeReader。
+  /// 仅解码**中心 3/4 区域**（与识别框 180/240 对应），排除框外干扰；解码前清空码眼候选，
+  /// 解码过程中通过 ResultPointCallback 实时收集码眼点（即使最终失败也能拿到，供失败引导判断）。
   String? _decodeQr(CameraImage image) {
     if (image.planes.isEmpty) return null;
     final luma = _extractLuma(image);
-    final source = RGBLuminanceSource.crop(
-      luma,
-      image.width,
-      image.height,
-      0,
-      0,
-      image.width,
-      image.height,
-    );
+    const roi = 0.75; // 与识别框 180/240 对应：只解框内区域
+    final w = image.width, h = image.height;
+    final cropW = (w * roi).round();
+    final cropH = (h * roi).round();
+    final left = ((w - cropW) / 2).round();
+    final top = ((h - cropH) / 2).round();
+    final source =
+        RGBLuminanceSource.crop(luma, w, h, left, top, cropW, cropH);
     final bitmap = BinaryBitmap(GlobalHistogramBinarizer(source));
-    return QRCodeReader().decode(bitmap).text;
+    _eyePoints.clear();
+    final hints = DecodeHints()
+      ..put(
+        DecodeHintType.needResultPointCallback,
+        (ResultPoint p) => _eyePoints.add(p),
+      );
+    return QRCodeReader().decode(bitmap, hints: hints).text;
   }
 
   /// 从 YUV420 首平面（Y）抽取灰度字节（处理 bytesPerRow 行对齐 padding）
@@ -763,7 +817,11 @@ class _QrToolPageState extends State<QrToolPage> {
     final controller = _cameraController;
     if (controller == null || !controller.value.isInitialized) return;
     if (controller.value.isStreamingImages) return;
-    setState(() => _scanningStopped = false);
+    setState(() {
+      _scanningStopped = false;
+      _scanHint = '将二维码对准框内';
+    });
+    _eyePoints.clear();
     try {
       await controller.startImageStream(_onFrame);
     } catch (e) {
