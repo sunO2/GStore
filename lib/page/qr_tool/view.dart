@@ -382,13 +382,15 @@ class _QrToolPageState extends State<QrToolPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                // 二维码预览区 / 相机识别预览区（flex 2；高度充足时原尺寸居中，键盘压缩时等比缩小完整可见）
-                Expanded(flex: 2, child: _buildQrArea(context)),
+                // 预览区 / 输入区 5:4：预览(取景/生成)与输入框区域接近均衡，
+                // 视觉比例协调；键盘弹出时输入区先收缩、预览等比缩小。
+                Expanded(flex: 5, child: _buildQrArea(context)),
+                const SizedBox(height: AppSpacing.sm),
 
-                // 输入区（flex 1 ≈ 剩余空间，撑开多行输入；识别模式下只读展示识别结果）
+                // 输入区（flex 4 ≈ 剩余空间，撑开多行输入；识别模式下只读展示识别结果）
                 // 底部留白避免输入框贴地（视觉上浮起，与页面留白协调）
                 Expanded(
-                  flex: 1,
+                  flex: 4,
                   child: Padding(
                     padding: const EdgeInsets.only(bottom: AppSpacing.md),
                     child: TextField(
@@ -641,16 +643,27 @@ class _QrToolPageState extends State<QrToolPage> {
     AppDialogs.showSuccess('已复制');
   }
 
-  /// 二维码预览区：生成模式显示占位/二维码；识别模式显示相机实时预览 + 识别框
+  /// 二维码预览区：生成模式显示占位/二维码；识别模式显示相机实时预览 + 识别框。
+  /// 统一包一层与输入框同款的圆角描边容器（宽度一致、视觉成组），
+  /// 内部内容居中；扫码相机 240 取景居中，生成内容等比放大填满可用空间。
   Widget _buildQrArea(BuildContext context) {
-    if (_mode == QrToolMode.scan) {
-      return _buildScanArea(context);
-    }
-    return Center(
-      child: FittedBox(
-        fit: BoxFit.contain,
-        child: _text.isEmpty ? _buildPlaceholder(context) : _buildQr(),
+    final colorScheme = Theme.of(context).colorScheme;
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerLow,
+        borderRadius: AppRadius.allLG,
+        border: Border.all(color: colorScheme.borderLight),
       ),
+      clipBehavior: Clip.antiAlias,
+      child: _mode == QrToolMode.scan
+          ? _buildScanArea(context)
+          : Center(
+              child: FittedBox(
+                fit: BoxFit.contain,
+                child: _text.isEmpty ? _buildPlaceholder(context) : _buildQr(),
+              ),
+            ),
     );
   }
 
