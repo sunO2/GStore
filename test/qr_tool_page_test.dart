@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -153,6 +154,25 @@ void main() {
     final files = qrDir.listSync().whereType<File>().toList();
     expect(files, hasLength(1));
     expect(files.single.path, endsWith('.png'));
+
+    // 新增：保存的 PNG 应为白色圆角背景（非透明）——解码取中心像素断言 alpha 不透明。
+    // 真实引擎解码必须在 runAsync（真实事件循环）中执行。
+    final centerAlpha = await tester.runAsync(() async {
+      final bytes = await files.single.readAsBytes();
+      final codec = await ui.instantiateImageCodec(bytes);
+      final frame = await codec.getNextFrame();
+      final data = await frame.image
+          .toByteData(format: ui.ImageByteFormat.rawRgba);
+      frame.image.dispose();
+      codec.dispose();
+      expect(data, isNotNull, reason: '保存的 PNG 应可解码');
+      // 512×512 rawRgba：中心像素 (256,256) 的 alpha 通道
+      const stride = 512 * 4;
+      return data!.getUint8(256 * stride + 256 * 4 + 3);
+    });
+    expect(centerAlpha, greaterThanOrEqualTo(200),
+        reason: '中心像素应不透明（白底圆角背景，非透明输出）');
+
     expect(find.textContaining('已保存到相册'), findsOneWidget);
   });
 

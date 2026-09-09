@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:gal/gal.dart';
@@ -136,7 +137,7 @@ class _QrToolPageState extends State<QrToolPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // 二维码预览区（flex 2；高度充足时居中，键盘压缩时可滚动查看完整二维码）
+            // 二维码预览区（flex 2；高度充足时原尺寸居中，键盘压缩时等比缩小完整可见）
             Expanded(flex: 2, child: _buildQrArea(context)),
 
             // 历史记录区（固定高，不参与 flex，横向滚动 chips）
@@ -222,20 +223,13 @@ class _QrToolPageState extends State<QrToolPage> {
     );
   }
 
-  /// 二维码预览区：高度充足时居中；键盘压缩高度不足时可滚动查看完整二维码
+  /// 二维码预览区：高度充足时原尺寸居中；键盘压缩高度不足时 FittedBox 等比缩小，完整可见
   Widget _buildQrArea(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        return SingleChildScrollView(
-          child: ConstrainedBox(
-            constraints: BoxConstraints(minHeight: constraints.maxHeight),
-            child: Center(
-              child:
-                  _text.isEmpty ? _buildPlaceholder(context) : _buildQr(),
-            ),
-          ),
-        );
-      },
+    return Center(
+      child: FittedBox(
+        fit: BoxFit.contain,
+        child: _text.isEmpty ? _buildPlaceholder(context) : _buildQr(),
+      ),
     );
   }
 
@@ -308,11 +302,7 @@ class _QrToolPageState extends State<QrToolPage> {
   Future<void> _saveImage() async {
     setState(() => _saving = true);
     try {
-      final byteData = await QrPainter(
-        data: _text,
-        version: QrVersions.auto,
-        errorCorrectionLevel: QrErrorCorrectLevel.M,
-      ).toImageData(512);
+      final byteData = await _renderQrImage();
       if (byteData == null) {
         throw const FileSystemException('生成二维码图片失败');
       }
@@ -332,6 +322,41 @@ class _QrToolPageState extends State<QrToolPage> {
     } finally {
       if (mounted) setState(() => _saving = false);
     }
+  }
+
+  /// 保存用画布边长（px）
+  static const double _qrSaveSize = 512;
+
+  /// 保存用 QR 与白底之间留白（px）
+  static const double _qrSavePadding = 24;
+
+  /// 保存用白底圆角半径（px）
+  static const double _qrSaveRadius = 32;
+
+  /// 合成保存用二维码 PNG：512×512 白色圆角背景 + 居中 QR（padding 留白），
+  /// 替代 QrPainter.toImageData 的透明背景输出；失败返回 null。
+  Future<ByteData?> _renderQrImage() async {
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    const rect = Rect.fromLTWH(0, 0, _qrSaveSize, _qrSaveSize);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(rect, const Radius.circular(_qrSaveRadius)),
+      Paint()..color = Colors.white,
+    );
+    canvas.translate(_qrSavePadding, _qrSavePadding);
+    QrPainter(
+      data: _text,
+      version: QrVersions.auto,
+      errorCorrectionLevel: QrErrorCorrectLevel.M,
+    ).paint(
+      canvas,
+      const Size(_qrSaveSize - 2 * _qrSavePadding, _qrSaveSize - 2 * _qrSavePadding),
+    );
+    final picture = recorder.endRecording();
+    final image = await picture.toImage(_qrSaveSize.round(), _qrSaveSize.round());
+    final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+    image.dispose();
+    return byteData;
   }
 
   /// 将 PNG 字节写入系统相册（gal）。返回是否成功；失败仅记录日志不抛出。
