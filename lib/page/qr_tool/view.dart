@@ -531,7 +531,9 @@ class _QrToolPageState extends State<QrToolPage> {
         globalPos.dy <= topLeft.dy + size.height;
   }
 
-  /// 上滑手势：弹出当前模式的历史记录底部弹窗（复用 AppDialogs.showBottomSheet）
+  /// 上滑手势：弹出当前模式的历史记录底部弹窗（复用 AppDialogs.showBottomSheet）。
+  /// 样式与「导入渠道包」sheet 保持一致：内容整体左右 padding 不贴边，
+  /// 底部操作按钮右下角（取消 + 确认风格清空）。
   void _showHistorySheet() {
     final history = _activeHistory;
     final title = _mode == QrToolMode.scan ? '识别历史' : '历史记录';
@@ -544,55 +546,73 @@ class _QrToolPageState extends State<QrToolPage> {
     AppDialogs.showBottomSheet(
       title: title,
       children: [
-        // 清空按钮（顶部右侧）
-        Align(
-          alignment: Alignment.centerRight,
-          child: TextButton.icon(
-            onPressed: () {
-              _clearHistory();
-              AppDialogs.popSheet<void>(null);
-            },
-            icon: const Icon(Icons.delete_outline, size: AppTypography.iconSM),
-            label: const Text('清空'),
-            style: TextButton.styleFrom(
-              visualDensity: VisualDensity.compact,
-              padding: EdgeInsets.zero,
-              minimumSize: const Size(0, 32),
-              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-            ),
-          ),
-        ),
-        const SizedBox(height: AppSpacing.xs),
-// 历史列表（点击回填输入框并关闭弹窗）
-        ConstrainedBox(
-          constraints: const BoxConstraints(maxHeight: 300),
-          child: ListView.separated(
-            shrinkWrap: true,
-            itemCount: history.length,
-            separatorBuilder: (_, __) => Divider(
-              height: 1,
-              color: Theme.of(context).colorScheme.borderLight,
-            ),
-            itemBuilder: (context, index) {
-              final item = history[index];
-              return InkWell(
-                onTap: () {
-                  _applyHistory(item);
-                  AppDialogs.popSheet<void>(null);
-                },
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: AppSpacing.lg,
-                    vertical: AppSpacing.md,
+        // children 无水平 padding（标题才带），内容整体补左右边距避免贴边（对齐渠道包 sheet）
+        Padding(
+          padding: AppSpacing.onlyHorizontalLG,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '点击历史项回填输入框',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+              ),
+              const SizedBox(height: AppSpacing.md),
+              // 历史列表（点击回填输入框并关闭弹窗）
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 300),
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  itemCount: history.length,
+                  separatorBuilder: (_, __) => Divider(
+                    height: 1,
+                    color: Theme.of(context).colorScheme.borderLight,
                   ),
-                  child: Text(
-                    item,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.bodyLarge,
-                  ),
+                  itemBuilder: (context, index) {
+                    final item = history[index];
+                    return InkWell(
+                      onTap: () {
+                        _applyHistory(item);
+                        AppDialogs.popSheet<void>(null);
+                      },
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          vertical: AppSpacing.md,
+                        ),
+                        child: Text(
+                          item,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.bodyLarge,
+                        ),
+                      ),
+                    );
+                  },
                 ),
-              );
-            },
+              ),
+              const SizedBox(height: AppSpacing.lg),
+              // 操作按钮（右下角，对齐渠道包 sheet：取消 + 确认风格清空）
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed: () => AppDialogs.popSheet<void>(null),
+                    child: const Text('取消'),
+                  ),
+                  const SizedBox(width: AppSpacing.sm),
+                  FilledButton.icon(
+                    onPressed: () {
+                      _clearHistory();
+                      AppDialogs.popSheet<void>(null);
+                    },
+                    icon: const Icon(Icons.delete_outline,
+                        size: AppTypography.iconSM),
+                    label: const Text('清空'),
+                  ),
+                ],
+              ),
+            ],
           ),
         ),
       ],
