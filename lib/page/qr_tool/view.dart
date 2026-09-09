@@ -3,7 +3,8 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:camera/camera.dart';
-import 'package:flutter/foundation.dart' show listEquals;
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform, listEquals;
 import 'package:flutter/material.dart';
 import 'package:gal/gal.dart';
 import 'package:gstore/core/core.dart';
@@ -30,6 +31,60 @@ class QrToolPage extends StatefulWidget {
   /// 测试环境平台通道未注册会挂起，注入后可确定性走「相机不可用」失败路径。
   @visibleForTesting
   static Future<List<CameraDescription>> Function()? debugAvailableCameras;
+
+  /// 将紧凑像素帧按【顺时针 quarterTurns 次 90°】旋转，再可选水平镜像——
+  /// 把 CameraImage（传感器方向）转成与 CameraPreview 一致的预览方向。
+  /// 纯函数（无状态依赖），供解码/码眼/定格统一复用，且可直接单测。
+  /// [w]/[h] 为输入宽高、[bytesPerPixel] 每像素字节数（灰度 1 / RGBA 4），
+  /// 返回 <像素数据, 旋转后宽, 旋转后高>。
+  @visibleForTesting
+  static (Uint8List, int, int) rotateLumaToPreview(
+    Uint8List luma,
+    int w,
+    int h, {
+    required int quarterTurns,
+    bool mirrorX = false,
+    int bytesPerPixel = 1,
+  }) {
+    Uint8List out = luma.buffer.asUint8List(
+      luma.offsetInBytes,
+      luma.lengthInBytes,
+    );
+    var cw = w, ch = h;
+    final bpp = bytesPerPixel;
+    for (var t = 0; t < quarterTurns % 4; t++) {
+      // 顺时针 90°：目标 (r, c) ← 源 (ch-1-c, r)；目标宽=源高、目标高=源宽
+      final dst = Uint8List(ch * cw * bpp);
+      for (var r = 0; r < cw; r++) {
+        for (var c = 0; c < ch; c++) {
+          final s = ((ch - 1 - c) * cw + r) * bpp;
+          final d = (r * ch + c) * bpp;
+          for (var b = 0; b < bpp; b++) {
+            dst[d + b] = out[s + b];
+          }
+        }
+      }
+      final tmp = cw;
+      cw = ch;
+      ch = tmp;
+      out = dst;
+    }
+    if (mirrorX) {
+      // 水平镜像：目标 (r, c) ← 源 (r, cw-1-c)
+      final dst = Uint8List(cw * ch * bpp);
+      for (var r = 0; r < ch; r++) {
+        for (var c = 0; c < cw; c++) {
+          final s = (r * cw + c) * bpp;
+          final d = (r * cw + (cw - 1 - c)) * bpp;
+          for (var b = 0; b < bpp; b++) {
+            dst[d + b] = out[s + b];
+          }
+        }
+      }
+      out = dst;
+    }
+    return (out, cw, ch);
+  }
 
   @override
   State<QrToolPage> createState() => _QrToolPageState();
@@ -127,6 +182,14 @@ class _QrToolPageState extends State<QrToolPage> {
   /// 自动变焦边界引导文案（非空 = 已到变焦边界仍偏离目标，如「请靠近一点」「请拿远一点」）。
   /// 解码失败引导（_onFrame catch）不覆盖它；条件解除（方向归滞回带/变焦成功动作）时清空。
   String? _zoomBoundaryHint;
+
+  /// 帧→预览方向旋转（顺时针 quarterTurns）。CameraX 输出的 CameraImage 是**传感器方向**
+  ///（横屏），而 CameraPreview 已由插件按 sensorOrientation 转成竖屏显示；
+  /// 解码/码眼/定格想做到「所见即所扫」，必须先把帧旋转到与预览一致的方向。
+  int _previewQuarterTurns = 0;
+
+  /// 帧→预览方向水平镜像（前置相机预览做了 scaleX:-1，解码须配对，否则图像镜像无法识别）
+  bool _previewMirrorX = false;
 
   /// 识别框下方引导文案：解码失败时按码眼有无区分「检测到但解析失败」/「未检测到」，
   /// 默认提示「将二维码对准框内」（扫描区初始与重新扫描时复位）；自动变焦到边界时
@@ -738,6 +801,13 @@ class _QrToolPageState extends State<QrToolPage> {
       if (desc == null) {
         throw CameraException('noCamera', '未检测到可用相机');
       }
+      // 帧→预览方向：Android 上 CameraImage 是传感器方向（横屏），预览已按 sensorOrientation
+      // 旋转成竖屏；解码/码眼/定格须先旋转到同一方向才能「所见即所扫」。
+      // iOS 预览输出已竖向（插件内部已处理），不做旋转，仅前置镜像与预览 scaleX:-1 配对。
+      _previewQuarterTurns = defaultTargetPlatform == TargetPlatform.android
+          ? (desc.sensorOrientation ~/ 90) % 4
+          : 0;
+      _previewMirrorX = desc.lensDirection == CameraLensDirection.front;
       final controller = CameraController(
         desc,
         ResolutionPreset.medium,
@@ -879,10 +949,11 @@ class _QrToolPageState extends State<QrToolPage> {
     if (_lastFrameW <= 0 || _lastFrameH <= 0) return;
     final eyes = _eyePoints;
     if (eyes.isEmpty) return;
-    const roi = 0.75; // 与 _decodeQr 解码 ROI 一致
-    final cropW = (_lastFrameW * roi).round();
-    final cropH = (_lastFrameH * roi).round();
-    if (cropW <= 0 || cropH <= 0) return;
+    // 解码 ROI 为**中心正方形**（边长 = 帧短边×0.75），码眼坐标即该 ROI 内坐标，
+    // 包围盒占比直接与 side×side 比（旋转不改变短边，短边×0.75 与旋转前一致）。
+    final shortSide = _lastFrameW < _lastFrameH ? _lastFrameW : _lastFrameH;
+    final side = (shortSide * 0.75).round();
+    if (side <= 0) return;
 
     // 计算当前码眼包围盒占比（≥2 码眼才有；单码眼时用趋势记忆判方向）
     double? ratio;
@@ -898,7 +969,7 @@ class _QrToolPageState extends State<QrToolPage> {
       final bboxW = maxX - minX;
       final bboxH = maxY - minY;
       if (bboxW > 0 && bboxH > 0) {
-        ratio = (bboxW * bboxH) / (cropW * cropH);
+        ratio = (bboxW * bboxH) / (side * side);
         _lastEyesRatio = ratio;
       }
     }
@@ -991,19 +1062,18 @@ class _QrToolPageState extends State<QrToolPage> {
   }
 
   /// 将码眼 ROI 裁切坐标映射到 240×240 预览窗坐标：
-  /// 先加回 left/top 偏移还原帧坐标，再按 cover 近似（scale = 240/帧宽，纵向居中）转 Offset。
+  /// 解码 ROI 为帧中心正方形（边长 side = 帧短边×0.75），识别框 180×180 在预览窗中心
+  /// （left/top = 30），ROI 与识别框 1:1 对应 → 预览坐标 = 30 + p × (180 / side)。
   List<Offset> _computeMappedEyePoints(int w, int h) {
-    if (_eyePoints.isEmpty || w <= 0) return const [];
-    const roi = 0.75;
-    final cropW = (w * roi).round();
-    final cropH = (h * roi).round();
-    final left = ((w - cropW) / 2).round();
-    final top = ((h - cropH) / 2).round();
-    final scale = 240 / w;
-    final dy = (240 - h * scale) / 2; // cover 纵向居中近似
+    if (_eyePoints.isEmpty || w <= 0 || h <= 0) return const [];
+    final side = ((w < h ? w : h) * 0.75).round();
+    if (side <= 0) return const [];
+    const boxSize = 180.0; // 识别框边长（预览窗 240×240 居中，left/top = 30）
+    const boxOffset = (240 - boxSize) / 2; // 30
+    final scale = boxSize / side; // ROI 内坐标 → 识别框内坐标
     return [
       for (final p in _eyePoints)
-        Offset((p.x + left) * scale, (p.y + top) * scale + dy),
+        Offset(boxOffset + p.x * scale, boxOffset + p.y * scale),
     ];
   }
 
@@ -1019,20 +1089,23 @@ class _QrToolPageState extends State<QrToolPage> {
     });
   }
 
-  /// 解码单帧：取 YUV420 首平面（Y）灰度 → RGBLuminanceSource → GlobalHistogramBinarizer → QRCodeReader。
-  /// 仅解码**中心 3/4 区域**（与识别框 180/240 对应），排除框外干扰；解码前清空码眼候选，
-  /// 解码过程中通过 ResultPointCallback 实时收集码眼点（即使最终失败也能拿到，供失败引导判断）。
+  /// 解码单帧：取 YUV420 首平面（Y）灰度 → **旋转到预览方向**（见 [_previewQuarterTurns]/
+  /// [_previewMirrorX]）→ 取**中心正方形 ROI**（边长 = 短边×0.75，与识别框 180/240 严格 1:1，
+  /// 预览 FittedBox cover 显示的正是旋转图中心短边正方形区域）→ RGBLuminanceSource →
+  /// GlobalHistogramBinarizer → QRCodeReader。
+  /// 仅解码中心区域排除框外干扰；解码前清空码眼候选，解码过程中通过 ResultPointCallback
+  /// 实时收集码眼点（即使最终失败也能拿到，供失败引导判断）。
   String? _decodeQr(CameraImage image) {
     if (image.planes.isEmpty) return null;
-    final luma = _extractLuma(image);
-    const roi = 0.75; // 与识别框 180/240 对应：只解框内区域
-    final w = image.width, h = image.height;
-    final cropW = (w * roi).round();
-    final cropH = (h * roi).round();
-    final left = ((w - cropW) / 2).round();
-    final top = ((h - cropH) / 2).round();
-    final source =
-        RGBLuminanceSource.crop(luma, w, h, left, top, cropW, cropH);
+    final (data, w, h) = _extractLumaRotated(image);
+    // 中心正方形 ROI：边长 = 短边×0.75（对应识别框 180/240，预览与解码 1:1）
+    final side = ((w < h ? w : h) * 0.75).round();
+    if (side <= 0 || side > w || side > h) return null;
+    final left = (w - side) ~/ 2;
+    final top = (h - side) ~/ 2;
+    // zxing2 的 RGBLuminanceSource 需要 Int8List；旋转结果 Uint8List → 视图零拷贝转换
+    final luma = data.buffer.asInt8List(data.offsetInBytes, data.lengthInBytes);
+    final source = RGBLuminanceSource.crop(luma, w, h, left, top, side, side);
     final bitmap = BinaryBitmap(GlobalHistogramBinarizer(source));
     _eyePoints.clear();
     final hints = DecodeHints()
@@ -1043,24 +1116,33 @@ class _QrToolPageState extends State<QrToolPage> {
     return QRCodeReader().decode(bitmap, hints: hints).text;
   }
 
-  /// 从 YUV420 首平面（Y）抽取灰度字节（处理 bytesPerRow 行对齐 padding）
-  Int8List _extractLuma(CameraImage image) {
+  /// 从 YUV420 首平面（Y）抽取灰度并把帧**旋转/镜像到预览方向**。
+  /// 返回 (预览方向灰度, 旋转后宽, 旋转后高)。
+  /// - 旋转：顺时针 [_previewQuarterTurns]×90°（与 CameraPreview 的 RotatedBox 一致）；
+  /// - 镜像：前置相机预览 scaleX:-1，解码配对水平翻转（否则镜像图像无法识别）。
+  /// 旋转/镜像逻辑复用可单测的 [QrToolPage.rotateLumaToPreview]。
+  (Uint8List, int, int) _extractLumaRotated(CameraImage image) {
     final plane = image.planes[0];
     final w = image.width;
     final h = image.height;
     final rowStride = plane.bytesPerRow;
-    final luma = Int8List(w * h);
     final bytes = plane.bytes;
+    // 源紧凑灰度（处理 bytesPerRow 行对齐 padding）
+    final src = Int8List(w * h);
     if (rowStride == w) {
-      luma.setAll(0, bytes);
+      src.setAll(0, bytes);
     } else {
       for (var y = 0; y < h; y++) {
-        final src = y * rowStride;
-        final dst = y * w;
-        luma.setRange(dst, dst + w, bytes, src);
+        src.setRange(y * w, (y + 1) * w, bytes, y * rowStride);
       }
     }
-    return luma;
+    return QrToolPage.rotateLumaToPreview(
+      src.buffer.asUint8List(src.offsetInBytes, src.lengthInBytes),
+      w,
+      h,
+      quarterTurns: _previewQuarterTurns,
+      mirrorX: _previewMirrorX,
+    );
   }
 
   /// 识别命中：定格保存当帧 + 回填输入框 + 写入识别历史（去重置顶、上限、持久化）+ 停止图像流
@@ -1087,16 +1169,88 @@ class _QrToolPageState extends State<QrToolPage> {
     AppDialogs.showSuccess('已识别二维码');
   }
 
-  /// 把识别成功那一帧转成可显示图片：接 YUV420 首平面（Y，1 字节/像素，rowStride 行对齐），
-  /// 构造灰度 RGBA8888 后交给 [ui.decodeImageFromPixels] 生成 [ui.Image]。
+  /// 把识别成功那一帧转成可显示图片：YUV420 三平面 → **彩色 RGB**，再旋转/镜像到预览方向
+  /// （与 [_buildCameraPreview] 显示一致，避免黑白、方向相反的问题）。
   /// 失败仅记录日志（不影响识别结果与历史）；生成后 setState 交给预览窗渲染。
   void _captureFreezeFrame(CameraImage image) {
+    if (image.planes.length < 3) {
+      // 仅 Y 平面（非标准 YUV420）时降级灰度静态帧，方向仍统一到预览
+      _captureFreezeFrameGrayscale(image);
+      return;
+    }
+    final w = image.width, h = image.height;
+    final yPlane = image.planes[0], uPlane = image.planes[1], vPlane = image.planes[2];
+    // 先按当前（传感器）方向转全帧彩色 RGB → 再旋转/镜像到预览方向
+    final rgb = Uint8List(w * h * 4); // RGBA
+    for (var y = 0; y < h; y++) {
+      for (var x = 0; x < w; x++) {
+        final yi = yPlane.bytesPerRow == w
+            ? y * w + x
+            : y * yPlane.bytesPerRow + x;
+        final ui = uPlane.bytesPerRow == (w / 2).ceil()
+            ? (y ~/ 2) * (w ~/ 2) + x ~/ 2
+            : (y ~/ 2) * uPlane.bytesPerRow + x ~/ 2;
+        final vi = vPlane.bytesPerRow == (w / 2).ceil()
+            ? (y ~/ 2) * (w ~/ 2) + x ~/ 2
+            : (y ~/ 2) * vPlane.bytesPerRow + x ~/ 2;
+        final yv = yPlane.bytes[yi];
+        final u = uPlane.bytes[ui] - 128;
+        final v = vPlane.bytes[vi] - 128;
+        // BT.601 full-range YUV→RGB
+        final r = yv + (1.402 * v).round();
+        final g = yv - (0.344 * u).round() - (0.714 * v).round();
+        final b = yv + (1.772 * u).round();
+        final di = (y * w + x) * 4;
+        rgb[di] = r.clamp(0, 255);
+        rgb[di + 1] = g.clamp(0, 255);
+        rgb[di + 2] = b.clamp(0, 255);
+        rgb[di + 3] = 0xFF;
+      }
+    }
+    final (rotated, rw, rh) = _rotateRgbaToPreview(rgb, w, h);
+    try {
+      ui.decodeImageFromPixels(
+        rotated,
+        rw,
+        rh,
+        ui.PixelFormat.rgba8888,
+        (img) {
+          if (!mounted) {
+            img.dispose();
+            return;
+          }
+          setState(() {
+            _capturedFrame?.dispose();
+            _capturedFrame = img;
+          });
+        },
+      );
+    } catch (e) {
+      appLog.error('QrToolPage: 定格帧生成失败（忽略） - $e');
+    }
+  }
+
+  /// RGBA8888（4 字节/像素）旋转/镜像到预览方向——复用可单测的
+  /// [QrToolPage.rotateLumaToPreview]（bytesPerPixel=4）
+  (Uint8List, int, int) _rotateRgbaToPreview(Uint8List src, int w, int h) {
+    return QrToolPage.rotateLumaToPreview(
+      src,
+      w,
+      h,
+      quarterTurns: _previewQuarterTurns,
+      mirrorX: _previewMirrorX,
+      bytesPerPixel: 4,
+    );
+  }
+
+  /// 降级：仅 Y 平面时构造灰度定格帧（同样旋转到预览方向）
+  void _captureFreezeFrameGrayscale(CameraImage image) {
     final plane = image.planes.isEmpty ? null : image.planes[0];
     if (plane == null) return;
     final w = image.width, h = image.height;
     final rowStride = plane.bytesPerRow;
     final bytes = plane.bytes;
-    if (rowStride < w) return; // 缺 1 字节/像素的格式不做定格（防御）
+    if (rowStride < w) return;
     final rgba = Uint8List(w * h * 4);
     for (var y = 0; y < h; y++) {
       final srcRow = y * rowStride;
@@ -1104,17 +1258,18 @@ class _QrToolPageState extends State<QrToolPage> {
       for (var x = 0; x < w; x++) {
         final yv = bytes[srcRow + x];
         final di = dstRow + x * 4;
-        rgba[di] = yv; // R = Y（灰度）
-        rgba[di + 1] = yv; // G = Y
-        rgba[di + 2] = yv; // B = Y
-        rgba[di + 3] = 0xFF; // A
+        rgba[di] = yv;
+        rgba[di + 1] = yv;
+        rgba[di + 2] = yv;
+        rgba[di + 3] = 0xFF;
       }
     }
+    final (rotated, rw, rh) = _rotateRgbaToPreview(rgba, w, h);
     try {
       ui.decodeImageFromPixels(
-        rgba,
-        w,
-        h,
+        rotated,
+        rw,
+        rh,
         ui.PixelFormat.rgba8888,
         (img) {
           if (!mounted) {

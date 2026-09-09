@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:camera/camera.dart';
@@ -261,5 +262,73 @@ void main() {
       final result = QRCodeReader().decode(bitmap);
       expect(result.text, 'HELLO-ZXING2');
     });
+  });
+
+  test('rotateLumaToPreview：顺时针 90°×4 还原，宽高交换正确', () {
+    // 2×3 图案：行 0 = [1,2]，行 1 = [3,4]，行 2 = [5,6]（行优先）
+    // 顺时针 90° → 3×2：列变行，新行 0 = 原末列向上逐行 = [2,4,6] ...
+    // 用「旋转 4 次 = 原图」这一不变量验证宽高交换与像素迁移正确。
+    final src = Uint8List.fromList([1, 2, 3, 4, 5, 6]);
+    var data = src;
+    var cw = 2, ch = 3;
+    for (var t = 1; t <= 4; t++) {
+      final (out, w, h) = QrToolPage.rotateLumaToPreview(
+        data,
+        cw,
+        ch,
+        quarterTurns: 1,
+      );
+      // 每次顺时针 90°：宽高互换
+      expect(w, ch);
+      expect(h, cw);
+      data = out;
+      cw = w;
+      ch = h;
+    }
+    expect(cw, 2, reason: '旋转 4 次宽应还原为 2');
+    expect(ch, 3, reason: '旋转 4 次高应还原为 3');
+    expect(data, src, reason: '旋转 4 次像素应逐点还原');
+  });
+
+  test('rotateLumaToPreview：顺时针 90° 单次迁移正确', () {
+    // 2×2：a=1 b=2 / c=3 d=4 → 顺时针 90° → c=3 a=1 / d=4 b=2 → [3,1,4,2]
+    final src = Uint8List.fromList([1, 2, 3, 4]);
+    final (out, w, h) = QrToolPage.rotateLumaToPreview(src, 2, 2, quarterTurns: 1);
+    expect(w, 2);
+    expect(h, 2);
+    expect(out, Uint8List.fromList([3, 1, 4, 2]));
+  });
+
+  test('rotateLumaToPreview：水平镜像翻转 X 顺序', () {
+    // 2×2：a=1 b=2 / c=3 d=4 → 水平镜像 → b=2 a=1 / d=4 c=3 → [2,1,4,3]
+    final src = Uint8List.fromList([1, 2, 3, 4]);
+    final (out, w, h) = QrToolPage.rotateLumaToPreview(
+      src,
+      2,
+      2,
+      quarterTurns: 0,
+      mirrorX: true,
+    );
+    expect(w, 2);
+    expect(h, 2);
+    expect(out, Uint8List.fromList([2, 1, 4, 3]));
+  });
+
+  test('rotateLumaToPreview：RGBA（4 字节/像素）旋转不破坏通道顺序', () {
+    // 1×2 两个像素：上=红(255,0,0,255)、下=蓝(0,0,255,255)
+    // 顺时针 90°（1×2 → 2×1）：顶部旋转到右侧 → 左=蓝、右=红，
+    // 每个像素内 RGBA 通道顺序保持不变。
+    final src = Uint8List.fromList([255, 0, 0, 255, 0, 0, 255, 255]);
+    final (out, w, h) = QrToolPage.rotateLumaToPreview(
+      src,
+      1,
+      2,
+      quarterTurns: 1,
+      bytesPerPixel: 4,
+    );
+    expect(w, 2);
+    expect(h, 1);
+    expect(out, Uint8List.fromList([0, 0, 255, 255, 255, 0, 0, 255]),
+        reason: '左=原下(蓝)、右=原上(红)，通道顺序保持 RGBA');
   });
 }
