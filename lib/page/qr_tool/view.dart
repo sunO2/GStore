@@ -100,8 +100,37 @@ class _QrToolPageState extends State<QrToolPage> {
   double _minZoomLevel = 1;
   double _maxZoomLevel = 1;
 
+  /// 数字变焦有效上限：CameraX 放大为 crop+上采样，不增加细节，过度放大只会更糊且无解码收益。
+  /// 放大目标一律 clamp 到 [minZoom, min(maxZoom, 此上限)]。
+  static const double _zoomDigitalCap = 3.0;
+
+  /// 自动变焦目标区间（bbox 占 0.75 ROI 面积比例）与去抖参数：
+  /// 占比 < [_zoomInRatio] → 放大；> [_zoomOutRatio] → 缩小；介于两者之间为滞回带不动，
+  /// 避免临界抖动。连续超界 [_zoomDebounceFrames] 帧才真正动作一次（单帧噪声不影响）。
+  static const double _zoomInRatio = 0.25;
+  static const double _zoomOutRatio = 0.50;
+  static const int _zoomDebounceFrames = 4;
+
+  /// 自动变焦去抖：连续超界帧计数（累计到 [_zoomDebounceFrames] 才触发一次变焦）
+  int _zoomOutOfRangeFrames = 0;
+
+  /// 上一次有效变焦动作时间（变焦时间限频：两次调整至少间隔此值，避免镜头频繁微动）
+  DateTime _lastZoomAdjustAt = DateTime.fromMillisecondsSinceEpoch(0);
+
+  /// 上一次码眼包围盒占比（记忆：单码眼时没有包围盒，借“上次数”与「此前是否偏大」
+  /// 判断该缩小还是放大——3 码眼占比大掉到 1 码眼 = 放大过头 → 缩小；一直单码眼 = 太小 → 放大）
+  double _lastEyesRatio = 0;
+
+  /// 上一次码眼数量（与 [_lastEyesRatio] 一起用于单码眼场景的方向判定）
+  int _lastEyeCount = 0;
+
+  /// 自动变焦边界引导文案（非空 = 已到变焦边界仍偏离目标，如「请靠近一点」「请拿远一点」）。
+  /// 解码失败引导（_onFrame catch）不覆盖它；条件解除（方向归滞回带/变焦成功动作）时清空。
+  String? _zoomBoundaryHint;
+
   /// 识别框下方引导文案：解码失败时按码眼有无区分「检测到但解析失败」/「未检测到」，
-  /// 默认提示「将二维码对准框内」（扫描区初始与重新扫描时复位）
+  /// 默认提示「将二维码对准框内」（扫描区初始与重新扫描时复位）；自动变焦到边界时
+  /// 置「靠近一点」/「拿远一点」引导用户调整距离。
   String _scanHint = '将二维码对准框内';
 
   /// 保存中标志（防重复触发长按保存）
@@ -689,6 +718,11 @@ class _QrToolPageState extends State<QrToolPage> {
       _capturedFrame = null;
     });
     _eyePoints.clear();
+    // 重置自动变焦状态机（去抖计数 + 趋势记忆），避免跨会话残留
+    _zoomOutOfRangeFrames = 0;
+    _lastEyesRatio = 0;
+    _lastEyeCount = 0;
+    _zoomBoundaryHint = null;
     try {
       final cameras = await (QrToolPage.debugAvailableCameras?.call() ??
           availableCameras());
@@ -801,9 +835,9 @@ class _QrToolPageState extends State<QrToolPage> {
     _lastFrameW = image.width;
     _lastFrameH = image.height;
     try {
-      // 码眼自动变焦：≥3 码眼时按包围盒占比引导缩放（使用上一帧收集的码眼；
-      // 不阻断解码，平台不支持/异常仅记录日志）
-      if (_eyePoints.length >= 3) {
+      // 码眼自动变焦：≥1 码眼即进入状态机评估（单码眼也借“趋势记忆”区分远近，
+      // 见 _adjustZoomToEyes；内部有连续帧去抖 + 时间限频；不阻断解码，平台不支持/异常仅记录日志）
+      if (_eyePoints.isNotEmpty) {
         unawaited(_adjustZoomToEyes());
       }
       final text = _decodeQr(image);
@@ -812,12 +846,16 @@ class _QrToolPageState extends State<QrToolPage> {
       }
     } catch (e) {
       // 单帧解码失败：按码眼有无区分引导——有码眼候选（≥3）说明检测到但解析失败，
-      // 提示移近/对准；一个都没有说明没看到二维码。文案变化才 setState，避免逐帧重建。
-      final hint = _eyePoints.length >= 3
-          ? '检测到二维码，请移近/对准框内'
-          : '未检测到，请将二维码对准框内';
-      if (mounted && hint != _scanHint) {
-        setState(() => _scanHint = hint);
+      // 提示移近/对准；一个都没有说明没看到二维码。
+      // 若处于变焦边界引导（_zoomBoundaryHint 非空，如「请靠近一点」「请拿远一点」），
+      // 保持边界提示优先，不覆盖。文案变化才 setState，避免逐帧重建。
+      if (_zoomBoundaryHint == null) {
+        final hint = _eyePoints.length >= 3
+            ? '检测到二维码，请移近/对准框内'
+            : '未检测到，请将二维码对准框内';
+        if (mounted && hint != _scanHint) {
+          setState(() => _scanHint = hint);
+        }
       }
     } finally {
       _processingFrame = false;
@@ -826,41 +864,117 @@ class _QrToolPageState extends State<QrToolPage> {
     _syncEyePointsOverlay();
   }
 
-  /// 码眼自动变焦：由 3 码眼包围盒面积占 0.75 ROI 帧面积的比例估算覆盖占比——
-  /// 占比过小（<0.08，二维码偏小）放大 ×1.3；过大（>0.5，未对准/过大）缩小 ×0.8；
-  /// 目标倍率 clamp 到 [getMinZoomLevel, getMaxZoomLevel] 缓存值，
-  /// 与当前期望 zoom 差值 <0.05 跳过（防抖，避免镜头持续抖动）。
+  /// 码眼自动变焦（闭环状态机）：
+  /// - **触发**：≥1 码眼即评估（原 ≥3 才动，导致"1~2 码眼完全不管"=只会放大的根因）；
+  /// - **判据**：码眼包围盒占 0.75 ROI 面积比例——占比 <[_zoomInRatio] 放大、>[_zoomOutRatio]
+  ///   缩小，中间为滞回带不动（临界防抖）。单码眼无包围盒时借"趋势记忆"分远近：
+  ///   此前 3 码眼且占比偏大→掉到 1 码眼 = 放大过头 → **缩小**；一直单码眼 = 码太小 → **放大**；
+  /// - **去抖**：连续超界 [_zoomDebounceFrames] 帧才真正动作一次；两次动作间隔 ≥150ms；与
+  ///   [_applyZoom] 0.05 差值防抖叠加，避免镜头持续抖动；
+  /// - **数字变焦上限**：目标 clamp 到 [_minZoomLevel, min(_maxZoomLevel, _zoomDigitalCap)]；
+  /// - **边界引导**：已到上限仍该放大 → 提示「靠近一点」；已到最小仍该缩小 → 「拿远一点」。
   Future<void> _adjustZoomToEyes() async {
     final controller = _cameraController;
     if (controller == null || !controller.value.isInitialized) return;
     if (_lastFrameW <= 0 || _lastFrameH <= 0) return;
     final eyes = _eyePoints;
-    if (eyes.length < 3) return;
-    // 码眼包围盒（zxing2 回调坐标为 0.75 ROI 裁切后坐标，直接与 ROI 尺寸比）
-    var minX = double.infinity, minY = double.infinity;
-    var maxX = double.negativeInfinity, maxY = double.negativeInfinity;
-    for (final p in eyes) {
-      if (p.x < minX) minX = p.x;
-      if (p.y < minY) minY = p.y;
-      if (p.x > maxX) maxX = p.x;
-      if (p.y > maxY) maxY = p.y;
-    }
-    final bboxW = maxX - minX;
-    final bboxH = maxY - minY;
-    if (bboxW <= 0 || bboxH <= 0) return;
+    if (eyes.isEmpty) return;
     const roi = 0.75; // 与 _decodeQr 解码 ROI 一致
     final cropW = (_lastFrameW * roi).round();
     final cropH = (_lastFrameH * roi).round();
     if (cropW <= 0 || cropH <= 0) return;
-    final ratio = (bboxW * bboxH) / (cropW * cropH);
-    final base = _currentZoom > 0 ? _currentZoom : 1.0;
-    if (ratio < 0.08) {
-      // 偏小 → 放大（clamp 上限）
-      await _applyZoom((base * 1.3).clamp(_minZoomLevel, _maxZoomLevel));
-    } else if (ratio > 0.5) {
-      // 偏大 → 缩小（clamp 下限）
-      await _applyZoom((base * 0.8).clamp(_minZoomLevel, _maxZoomLevel));
+
+    // 计算当前码眼包围盒占比（≥2 码眼才有；单码眼时用趋势记忆判方向）
+    double? ratio;
+    if (eyes.length >= 2) {
+      var minX = double.infinity, minY = double.infinity;
+      var maxX = double.negativeInfinity, maxY = double.negativeInfinity;
+      for (final p in eyes) {
+        if (p.x < minX) minX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y > maxY) maxY = p.y;
+      }
+      final bboxW = maxX - minX;
+      final bboxH = maxY - minY;
+      if (bboxW > 0 && bboxH > 0) {
+        ratio = (bboxW * bboxH) / (cropW * cropH);
+        _lastEyesRatio = ratio;
+      }
     }
+
+    // 方向判定：none=在滞回带内不动
+    String? direction;
+    if (ratio != null) {
+      if (ratio < _zoomInRatio) {
+        direction = 'zoomIn';
+      } else if (ratio > _zoomOutRatio) {
+        direction = 'zoomOut';
+      }
+    } else if (eyes.length == 1) {
+      // 单码眼（本帧无包围盒）：此前 ≥2 码眼且占比偏大 → 掉到 1 个 = 放大过头
+      //（其余码眼被移出 ROI）→ **缩小**寻回完整；否则（一直单码眼）= 码太小/太远 → **放大**。
+      direction = (_lastEyeCount >= 2 && _lastEyesRatio >= _zoomInRatio)
+          ? 'zoomOut'
+          : 'zoomIn';
+    }
+    // 记录本次码眼数量供下一帧用作“上次”趋势记忆（必须在方向判定之后，否则读不到旧值）
+    _lastEyeCount = eyes.length;
+    if (direction == null) {
+      _zoomOutOfRangeFrames = 0; // 回到滞回带：清去抖计数
+      // 目标已居中：若此前有边界提示则清除（回到常规解码引导文案）
+      if (_zoomBoundaryHint != null) {
+        _zoomBoundaryHint = null;
+        if (mounted) setState(() {}); // 让 _scanHint 恢复常规文案由 _onFrame catch 更新
+      }
+      return;
+    }
+
+    // 连续帧去抖 + 时间限频（避免每帧微动）
+    final now = DateTime.now();
+    if (now.difference(_lastZoomAdjustAt) < const Duration(milliseconds: 150)) {
+      return;
+    }
+    _zoomOutOfRangeFrames++;
+    if (_zoomOutOfRangeFrames < _zoomDebounceFrames) return;
+    _zoomOutOfRangeFrames = 0;
+    _lastZoomAdjustAt = now;
+
+    final base = _currentZoom > 0 ? _currentZoom : 1.0;
+    // 有效放大上限 = min(平台 maxZoom, 数字变焦上限)；目标一律 clamp 到 [minZoom, 该上限]
+    final effectiveMax = _maxZoomLevel < _zoomDigitalCap
+        ? _maxZoomLevel
+        : _zoomDigitalCap;
+    if (direction == 'zoomIn') {
+      if (base >= effectiveMax - 0.01) {
+        // 已到数字变焦上限仍偏小 → 引导靠近（放大无收益）
+        if (_zoomBoundaryHint != '请靠近一点') {
+          _zoomBoundaryHint = '请靠近一点';
+          _setScanHint('请靠近一点');
+        }
+        return;
+      }
+      _zoomBoundaryHint = null;
+      await _applyZoom((base * 1.2).clamp(_minZoomLevel, effectiveMax));
+    } else {
+      if (base <= _minZoomLevel + 0.01) {
+        // 已缩到最小仍偏大 → 引导拿远（无法更小）
+        const hint = '请拿远一点，让二维码完整入框';
+        if (_zoomBoundaryHint != hint) {
+          _zoomBoundaryHint = hint;
+          _setScanHint('请拿远一点，让二维码完整入框');
+        }
+        return;
+      }
+      _zoomBoundaryHint = null;
+      await _applyZoom((base * 0.8).clamp(_minZoomLevel, effectiveMax));
+    }
+  }
+
+  /// 更新扫描引导文案（仅变化时 setState，避免逐帧重建）
+  void _setScanHint(String hint) {
+    if (!mounted || hint == _scanHint) return;
+    setState(() => _scanHint = hint);
   }
 
   /// 执行变焦：与当前期望 zoom 差 <0.05 跳过（防抖）；平台不支持/异常仅记录日志
@@ -1032,6 +1146,11 @@ class _QrToolPageState extends State<QrToolPage> {
     });
     _eyePoints.clear();
     _mappedEyePoints.clear();
+    // 重置自动变焦状态机（去抖计数 + 趋势记忆），重新扫码从默认倍率重新评估
+    _zoomOutOfRangeFrames = 0;
+    _lastEyesRatio = 0;
+    _lastEyeCount = 0;
+    _zoomBoundaryHint = null;
     try {
       await controller.startImageStream(_onFrame);
     } catch (e) {
