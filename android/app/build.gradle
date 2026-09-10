@@ -21,17 +21,9 @@ android {
         jvmTarget = JavaVersion.VERSION_11
     }
 
-    // 读取 flutter build 的 --target-platform 参数，动态过滤 jniLibs 的 ABI。
-    // 未指定参数时不设 abiFilters（与 Flutter 默认全 ABI 行为一致）。
-    def flutterAbiFilters = []
-    if (project.hasProperty('target-platform')) {
-        def platformAbiMap = [
-            'android-arm':   'armeabi-v7a',
-            'android-arm64': 'arm64-v8a',
-            'android-x64':   'x86_64',
-        ]
-        flutterAbiFilters = project.property('target-platform').split(',').collect { platformAbiMap[it] }.findAll { it != null }
-    }
+    // 使用 Flutter 的 --target-platform/--split-per-abi 自动管理 ABI：
+    // 此处不设 abiFilters，避免与 --split-per-abi 的 splits.abi 冲突
+    //（split-per-abi 已按 ABI 正确打包 hand-placed jniLibs）。
 
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
@@ -42,13 +34,6 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
-
-        // 按 --target-platform 动态过滤 jniLibs ABI（与 Flutter 引擎行为一致）
-        if (!flutterAbiFilters.isEmpty()) {
-            ndk {
-                abiFilters = flutterAbiFilters
-            }
-        }
     }
 
     // 指定 jniLibs 目录位置
