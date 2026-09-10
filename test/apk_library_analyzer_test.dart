@@ -201,6 +201,109 @@ void main() {
     });
   });
 
+  group('applySpecialSoValidation（P0 伴随验证）', () {
+    NativeLibraryHit hit(String so, String label) =>
+        NativeLibraryHit(
+          soFileName: so,
+          ruleName: so,
+          label: label,
+          isRegex: false,
+        );
+
+    test('非特殊 .so 全部保留', () {
+      final out = ApkLibraryAnalyzer.applySpecialSoValidation(
+        hits: [hit('libxguardian.so', 'X')],
+        allSoNames: const ['libxguardian.so'],
+        foundClasses: const {},
+      );
+      expect(out, hasLength(1));
+    });
+
+    test('Flutter(libapp.so) 无伴生无类佐证 → 拒绝', () {
+      final out = ApkLibraryAnalyzer.applySpecialSoValidation(
+        hits: [hit('libapp.so', 'Flutter')],
+        allSoNames: const ['libapp.so'],
+        foundClasses: const {},
+      );
+      expect(out, isEmpty);
+    });
+
+    test('Flutter 有 io.flutter.FlutterInjector 类佐证 → 保留', () {
+      final out = ApkLibraryAnalyzer.applySpecialSoValidation(
+        hits: [hit('libapp.so', 'Flutter')],
+        allSoNames: const ['libapp.so'],
+        foundClasses: const {'io.flutter.FlutterInjector', 'io.flutter.embedding.engine.FlutterEngine'},
+      );
+      expect(out, hasLength(1));
+    });
+
+    test('Flutter 有 libflutter.so 伴生 → 直接保留（无需类佐证）', () {
+      final out = ApkLibraryAnalyzer.applySpecialSoValidation(
+        hits: [hit('libapp.so', 'Flutter')],
+        allSoNames: const ['libapp.so', 'libflutter.so'],
+        foundClasses: const {},
+      );
+      expect(out, hasLength(1));
+    });
+
+    test('Unity(libmain.so) 无 libunity.so 伴生 → 拒绝', () {
+      final out = ApkLibraryAnalyzer.applySpecialSoValidation(
+        hits: [hit('libmain.so', 'Unity')],
+        allSoNames: const ['libmain.so'],
+        foundClasses: const {},
+      );
+      expect(out, isEmpty);
+    });
+
+    test('Unity 有 libunity.so 伴生 → 保留', () {
+      final out = ApkLibraryAnalyzer.applySpecialSoValidation(
+        hits: [hit('libmain.so', 'Unity')],
+        allSoNames: const ['libmain.so', 'libunity.so'],
+        foundClasses: const {},
+      );
+      expect(out, hasLength(1));
+    });
+
+    test('360(libjiagu.so) 类佐证命中 com.qihoo.util.* → 保留', () {
+      final out = ApkLibraryAnalyzer.applySpecialSoValidation(
+        hits: [hit('libjiagu.so', '360 加固')],
+        allSoNames: const ['libjiagu.so'],
+        foundClasses: const {'com.qihoo.util.StubApplication'},
+      );
+      expect(out, hasLength(1));
+    });
+
+    test('360 无类佐证 → 拒绝', () {
+      final out = ApkLibraryAnalyzer.applySpecialSoValidation(
+        hits: [hit('libjiagu.so', '360 加固')],
+        allSoNames: const ['libjiagu.so'],
+        foundClasses: const {'com.example.Other'},
+      );
+      expect(out, isEmpty);
+    });
+
+    test('SecNeo(libDexHelper.so) 类佐证命中 com.secneo.* → 保留', () {
+      final out = ApkLibraryAnalyzer.applySpecialSoValidation(
+        hits: [hit('libDexHelper.so', 'SecNeo 加固')],
+        allSoNames: const ['libDexHelper.so'],
+        foundClasses: const {'com.secneo.apkwrapper.ApplicationWrapper'},
+      );
+      expect(out, hasLength(1));
+    });
+
+    test('混合：普通 so + 无佐证 Flutter → 只保留普通', () {
+      final out = ApkLibraryAnalyzer.applySpecialSoValidation(
+        hits: [
+          hit('libxguardian.so', '信鸽'),
+          hit('libapp.so', 'Flutter'),
+        ],
+        allSoNames: const ['libxguardian.so', 'libapp.so'],
+        foundClasses: const {},
+      );
+      expect(out.map((h) => h.soFileName).toList(), ['libxguardian.so']);
+    });
+  });
+
   group('dexScanPatterns', () {
     test('非正则包名规则 → 点边界前缀模式', () {
       final patterns = ApkLibraryAnalyzer.dexScanPatterns([

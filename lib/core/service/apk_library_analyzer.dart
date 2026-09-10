@@ -168,7 +168,7 @@ class ComponentLibraryHit implements LibraryHit {
   String toString() => 'ComponentLibraryHit(type=$componentType, $componentName -> $label)';
 }
 
-/// 单个原生库 .so 文件：文件名 + zip 解压后字节数（LibChecker 风格展示）
+/// 单一原生库 .so 文件：文件名 + zip 解压后字节数（LibChecker 风格展示）
 class NativeSoFile {
   const NativeSoFile({required this.name, required this.size});
 
@@ -178,6 +178,51 @@ class NativeSoFile {
   /// zip 解压后字节数（uncompressed size）
   final int size;
 }
+
+/// ===== LibChecker 特殊原生库伴随验证（requiresNativeLibValidation）=====
+///
+/// 某些 .so 文件名**过于通用**（或代表框架/加固壳），仅凭文件名命中规则会误报：
+/// 例如任何应用都可能有 `libapp.so`，但只有真正 Flutter 应用才附带 `io.flutter.FlutterInjector`。
+/// LibChecker 对以下 4 组特殊 .so 做二次验证（对齐 `RulesRepository` 的
+/// NATIVE_SET_* / CLASS_PATTERNS_* / hasCompanionNativeLibValidation）：
+
+/// 360 加固壳 .so（需配套 com.qihoo.util.* / com.tianyu.util.* 类佐证）
+const Set<String> _nativeSetQihoo = {
+  'libjiagu.so',
+  'libjiagu_a64.so',
+  'libjiagu_x86.so',
+  'libjiagu_x64.so',
+};
+
+/// SecNeo 加固壳 .so（需配套 com.secneo.apkwrapper.* 类佐证）
+const Set<String> _nativeSetSecneo = {
+  'libDexHelper.so',
+  'libDexHelper-x86.so',
+  'libdexjni.so',
+};
+
+/// Flutter 引擎 .so（有 libflutter.so 伴生则直接通过；否则需 io.flutter.FlutterInjector）
+const Set<String> _nativeSetFlutter = {'libapp.so'};
+
+/// Unity 引擎 .so（**必须**有 libunity.so 伴生才命中，否则排除）
+const Set<String> _nativeSetUnity = {'libmain.so'};
+
+/// 上述 4 组特殊 .so 的并集（凡命中此集合的规则都需要伴随验证）
+const Set<String> _nativeAllSpecial = {
+  ..._nativeSetQihoo,
+  ..._nativeSetSecneo,
+  ..._nativeSetFlutter,
+  ..._nativeSetUnity,
+};
+
+/// 360 加固类佐证 pattern（以 * 结尾 = 前缀匹配，对齐 Rust scanDexClasses 语义）
+const List<String> _classPatternsQihoo = ['com.qihoo.util.*', 'com.tianyu.util.*'];
+
+/// SecNeo 加固类佐证 pattern
+const List<String> _classPatternsSecneo = ['com.secneo.apkwrapper.*'];
+
+/// Flutter 类佐证 pattern
+const List<String> _classPatternsFlutter = ['io.flutter.FlutterInjector'];
 
 /// 一个 ABI 下的全部原生库 .so 文件（LibChecker 风格展示）
 class NativeAbiLibs {
@@ -424,9 +469,17 @@ class ApkLibraryAnalyzer {
       // 规则已序列化为 JSON 字符串传入 isolate（List<Object> 可跨 isolate 传递，
       // 但避免传 1491 个对象的深拷贝；JSON 字符串更轻且稳定）
       final rulesJson = jsonEncode(rules.map((r) => r.toJson()).toList());
-      final hits = await compute(
+      final result = await compute(
         _analyzeInIsolate,
         (apkPath: apkPath, rulesJson: rulesJson),
+      );
+      var hits = result.hits;
+      // 伴随验证：Flutter/Unity/360/SecNeo 等特殊 .so 仅凭文件名命中会误报，
+      // 对齐 LibChecker 需二次验证（伴生 .so 或 DEX 类佐证，见 _validateSpecialSo）。
+      hits = await _applySpecialSoValidation(
+        apkPath: apkPath,
+        hits: hits,
+        allSoNames: result.allSoNames,
       );
       _cache[apkPath] = hits;
       appLog.info('ApkLibraryAnalyzer: $apkPath 命中 ${hits.length} 条规则');
@@ -435,6 +488,124 @@ class ApkLibraryAnalyzer {
       appLog.error('ApkLibraryAnalyzer: 分析 APK 失败 - $e');
       return const [];
     }
+  }
+
+  /// 特殊 .so 伴随验证（对齐 LibChecker RulesRepository.checkNativeLibValidations）：
+  /// 命中 [_nativeAllSpecial] 的规则必须通过验证才保留——
+  /// ① Flutter(libapp.so)：有 libflutter.so 伴生 → 直接通过；否则需
+  ///    io.flutter.FlutterInjector 类佐证；
+  /// ② Unity(libmain.so)：有 libunity.so 伴生 → 通过；无伴生 → **排除**；
+  /// ③ 360(libjiagu*)：需 com.qihoo.util.* / com.tianyu.util.* 类佐证；
+  /// ④ SecNeo(libDexHelper*)：需 com.secneo.apkwrapper.* 类佐证。
+  /// 需类佐证时调用 Rust scanDexClasses 检查 APK DEX（扫描失败 → 保留原命中，
+  /// 避免误杀；类命中 → 通过）。
+  Future<List<NativeLibraryHit>> _applySpecialSoValidation({
+    required String apkPath,
+    required List<NativeLibraryHit> hits,
+    required List<String> allSoNames,
+  }) async {
+    // 无特殊 .so 命中 → 快速返回
+    final specialHits =
+        hits.where((h) => _nativeAllSpecial.contains(h.soFileName)).toList();
+    if (specialHits.isEmpty) return hits;
+
+    // 收集需要类佐证的模式
+    final patterns = <String>{};
+    for (final hit in specialHits) {
+      final so = hit.soFileName;
+      if (_nativeSetQihoo.contains(so)) patterns.addAll(_classPatternsQihoo);
+      if (_nativeSetSecneo.contains(so)) patterns.addAll(_classPatternsSecneo);
+      if (_nativeSetFlutter.contains(so)) patterns.addAll(_classPatternsFlutter);
+    }
+
+    // Rust 类扫描（失败 → 空集合，调用方据此保留原命中避免误杀）
+    final foundSet = patterns.isEmpty
+        ? <String>{}
+        : await _scanDexClassesSafe(apkPath, patterns.toList());
+
+    return applySpecialSoValidation(
+      hits: hits,
+      allSoNames: allSoNames,
+      foundClasses: foundSet,
+    );
+  }
+
+  /// 特殊 .so 验证决策（纯函数，可单测）：返回过滤后的命中列表。
+  ///
+  /// 对齐 LibChecker requiresNativeLibValidation 语义：
+  /// - 非特殊 .so → 保留
+  /// - Flutter/Unity：有伴生库（libflutter/libunity）→ 保留
+  /// - Unity 无伴生 → 拒绝
+  /// - 360/SecNeo/Flutter 无伴生：类佐证命中任一 pattern → 保留，否则拒绝
+  @visibleForTesting
+  static List<NativeLibraryHit> applySpecialSoValidation({
+    required List<NativeLibraryHit> hits,
+    required List<String> allSoNames,
+    required Set<String> foundClasses,
+  }) {
+    return [
+      for (final hit in hits)
+        if (!_specialSoRejected(
+          hit.soFileName,
+          allSoNames,
+          foundClasses,
+        ))
+          hit,
+    ];
+  }
+
+  /// 调用 Rust scanDexClasses 扫描类佐证（失败返回空集合，调用方据此保留原命中）
+  Future<Set<String>> _scanDexClassesSafe(String apkPath, List<String> patterns) async {
+    try {
+      final found = await FdroidRustRepoManager.scanDexClasses(apkPath, patterns);
+      return found.toSet();
+    } catch (e) {
+      appLog.error('ApkLibraryAnalyzer: 特殊 so 类佐证扫描失败（保留命中） - $e');
+      return const {};
+    }
+  }
+
+  /// 判断某特殊 so 命中是否被拒绝（对齐 LibChecker hasCompanionNativeLibValidation）：
+  /// - 非特殊 so → 不拒绝
+  /// - Flutter(libapp.so)：有 libflutter.so 伴生 → 不拒绝；否则需 io.flutter.FlutterInjector
+  /// - Unity(libmain.so)：有 libunity.so 伴生 → 不拒绝；无伴生 → **拒绝**
+  /// - 360(libjiagu*) / SecNeo(libDexHelper*)：需对应类佐证，类命中 → 不拒绝
+  static bool _specialSoRejected(
+    String so,
+    List<String> allSoNames,
+    Set<String> foundClasses,
+  ) {
+    if (!_nativeAllSpecial.contains(so)) return false;
+    if (_nativeSetFlutter.contains(so)) {
+      // Flutter：libflutter.so 伴生（LibChecker hasCompanionNativeLibValidation）
+      if (allSoNames.contains('libflutter.so')) return false;
+      // 或 io.flutter.FlutterInjector 类佐证
+      return !_patternMatchesAny(foundClasses, _classPatternsFlutter.first);
+    }
+    if (_nativeSetUnity.contains(so)) {
+      // Unity：libunity.so 伴生才通过；无伴生恒拒绝（无类佐证可依）
+      return !allSoNames.contains('libunity.so');
+    }
+    if (_nativeSetQihoo.contains(so)) {
+      return !_patternsHitAny(foundClasses, _classPatternsQihoo);
+    }
+    if (_nativeSetSecneo.contains(so)) {
+      return !_patternsHitAny(foundClasses, _classPatternsSecneo);
+    }
+    return false;
+  }
+
+  /// 任一 pattern 命中任一类名（前缀 `*` 语义 + 精确）
+  static bool _patternsHitAny(Set<String> classNames, List<String> patterns) =>
+      patterns.any((p) => _patternMatchesAny(classNames, p));
+
+  /// pattern（`pkg.*` 前缀语义，对齐 Rust scanDexClasses）是否命中任一已扫类名
+  static bool _patternMatchesAny(Set<String> classNames, String pattern) {
+    if (pattern.endsWith('*')) {
+      final prefix = pattern.substring(0, pattern.length - 1);
+      return classNames.any((c) => c.startsWith(prefix));
+    }
+    return classNames.contains(pattern);
   }
 
   /// 分析多个 APK 源（base + split APK）的第三方原生库命中并合并去重。
@@ -912,8 +1083,11 @@ class ApkLibraryAnalyzer {
 /// compute isolate 入参
 typedef _AnalyzeRequest = ({String apkPath, String rulesJson});
 
-/// isolate 内执行：读取 APK 字节 → 解压枚举 lib/*/*.so → 匹配规则
-List<NativeLibraryHit> _analyzeInIsolate(_AnalyzeRequest request) {
+/// isolate 内执行：读取 APK 字节 → 解压枚举 lib/*/*.so → 匹配规则。
+/// 返回 (命中列表, 全部 .so 文件名)——全部 so 名供主 isolate 做伴随验证
+///（Flutter/Unity 等特殊库需判断伴生 .so 是否存在）。
+({List<NativeLibraryHit> hits, List<String> allSoNames}) _analyzeInIsolate(
+    _AnalyzeRequest request) {
   final rules = (jsonDecode(request.rulesJson) as List<dynamic>)
       .map((e) => NativeLibraryRule.fromJson(e as Map<String, dynamic>))
       .toList();
@@ -930,7 +1104,10 @@ List<NativeLibraryHit> _analyzeInIsolate(_AnalyzeRequest request) {
     }
   }
 
-  return ApkLibraryAnalyzer.matchNativeSoNames(soNames, rules: rules);
+  return (
+    hits: ApkLibraryAnalyzer.matchNativeSoNames(soNames, rules: rules),
+    allSoNames: soNames.toList()..sort(),
+  );
 }
 
 /// isolate 内执行：读取 APK 字节 → 解压枚举 lib/<abi>/ 目录集合
