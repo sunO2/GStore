@@ -2,6 +2,7 @@ package com.suno2.gstore
 
 import android.content.Intent
 import android.content.pm.ApplicationInfo
+import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -200,6 +201,88 @@ class MainActivity : FlutterActivity() {
                         result.success(packageInfo.requestedPermissions?.toList() ?: emptyList<String>())
                     } catch (e: Exception) {
                         result.error("PERMS", "获取权限列表失败: ${e.message}", null)
+                    }
+                }
+                // 组件详情（LibChecker 风格）：四类组件的 exported/enabled/processName 状态
+                // + 权限授权状态（granted 与 maxSdkVersion 限制）。
+                "getComponentsDetail" -> {
+                    val packageName = call.argument<String>("packageName")
+                    if (packageName == null || packageName.isEmpty()) {
+                        result.error("ARG", "packageName required", null)
+                        return@setMethodCallHandler
+                    }
+                    try {
+                        val pm = packageManager
+                        val packageInfo = pm.getPackageInfo(
+                            packageName,
+                            PackageManager.GET_ACTIVITIES or
+                                PackageManager.GET_SERVICES or
+                                PackageManager.GET_RECEIVERS or
+                                PackageManager.GET_PROVIDERS or
+                                PackageManager.GET_PERMISSIONS
+                        )
+
+                        // 组件状态：完整类名 → map(type × name → exported/enabled/processName)
+                        fun componentStates(
+                            name: String?,
+                            type: String,
+                            exported: Boolean,
+                            enabled: Boolean,
+                            processName: String?
+                        ): Map<String, Any>? {
+                            if (name.isNullOrEmpty()) return null
+                            return mapOf(
+                                "type" to type,
+                                "name" to name,
+                                "exported" to exported,
+                                "enabled" to enabled,
+                                "processName" to (processName ?: "")
+                            )
+                        }
+
+                        val components = mutableListOf<Map<String, Any>>()
+                        packageInfo.activities?.forEach {
+                            componentStates(it.name, "ACTIVITY", it.exported, it.enabled, it.processName)
+                                ?.let(components::add)
+                        }
+                        packageInfo.services?.forEach {
+                            componentStates(it.name, "SERVICE", it.exported, it.enabled, it.processName)
+                                ?.let(components::add)
+                        }
+                        packageInfo.receivers?.forEach {
+                            componentStates(it.name, "RECEIVER", it.exported, it.enabled, it.processName)
+                                ?.let(components::add)
+                        }
+                        packageInfo.providers?.forEach {
+                            componentStates(it.name, "PROVIDER", it.exported, it.enabled, it.processName)
+                                ?.let(components::add)
+                        }
+
+                        // 权限状态：granted + maxSdkVersion（requestedPermissions/requestedPermissionsFlags）
+                        val permissionStates = mutableListOf<Map<String, Any>>()
+                        val perms = packageInfo.requestedPermissions ?: emptyArray()
+                        val permFlags = packageInfo.requestedPermissionsFlags ?: IntArray(0)
+                        for (i in perms.indices) {
+                            val granted = i < permFlags.size &&
+                                (permFlags[i] and PackageInfo.REQUESTED_PERMISSION_GRANTED) != 0
+                            val level = if (i < permFlags.size) {
+                                (permFlags[i] and PackageInfo.REQUESTED_PERMISSION_NEVER_FOR_LOCATION) != 0
+                            } else {
+                                false
+                            }
+                            permissionStates.add(mapOf(
+                                "name" to perms[i],
+                                "granted" to granted,
+                                "neverForLocation" to level
+                            ))
+                        }
+
+                        result.success(mapOf(
+                            "components" to components,
+                            "permissionStates" to permissionStates
+                        ))
+                    } catch (e: Exception) {
+                        result.error("COMPONENTS", "获取组件详情失败: ${e.message}", null)
                     }
                 }
                 "getInstalledAppDetail" -> {

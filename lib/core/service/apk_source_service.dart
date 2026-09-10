@@ -135,6 +135,66 @@ class InstalledAppDetail {
   }
 }
 
+/// 组件状态（LibChecker 风格：exported/enabled/processName）
+class ComponentStateDetail {
+  const ComponentStateDetail({
+    required this.type,
+    required this.name,
+    required this.exported,
+    required this.enabled,
+    this.processName = '',
+  });
+
+  /// 组件类型（ACTIVITY/SERVICE/RECEIVER/PROVIDER）
+  final String type;
+
+  /// 完整类名（如 com.foo.BarActivity）
+  final String name;
+
+  /// 是否导出（可被其他应用唤起）
+  final bool exported;
+
+  /// 是否启用（android:enabled）
+  final bool enabled;
+
+  /// 所属进程名（默认进程为空串）
+  final String processName;
+
+  factory ComponentStateDetail.fromJson(Map<String, dynamic> json) =>
+      ComponentStateDetail(
+        type: (json['type'] as String?) ?? '',
+        name: (json['name'] as String?) ?? '',
+        exported: (json['exported'] as bool?) ?? false,
+        enabled: (json['enabled'] as bool?) ?? true,
+        processName: (json['processName'] as String?) ?? '',
+      );
+}
+
+/// 权限授权状态（granted / neverForLocation）
+class PermissionStateDetail {
+  const PermissionStateDetail({
+    required this.name,
+    required this.granted,
+    this.neverForLocation = false,
+  });
+
+  /// 权限名（如 android.permission.ACCESS_FINE_LOCATION）
+  final String name;
+
+  /// 是否已授权
+  final bool granted;
+
+  /// 是否声明 neverForLocation（定位权限但声明不用于定位）
+  final bool neverForLocation;
+
+  factory PermissionStateDetail.fromJson(Map<String, dynamic> json) =>
+      PermissionStateDetail(
+        name: (json['name'] as String?) ?? '',
+        granted: (json['granted'] as bool?) ?? false,
+        neverForLocation: (json['neverForLocation'] as bool?) ?? false,
+      );
+}
+
 /// 已安装应用 APK 路径（sourceDir）获取服务
 ///
 /// installed_apps 插件的 AppInfo 不含 sourceDir/apkPath 字段，
@@ -150,6 +210,11 @@ class ApkSourceService {
   /// 测试用：注入合成权限列表，跳过平台通道调用。
   /// 传 null 恢复真实通道调用。
   List<String>? _debugPermissions;
+
+  /// 测试用：注入合成组件/权限详情，跳过平台通道调用。
+  /// 传 null 恢复真实通道调用。
+  ({List<ComponentStateDetail> components, List<PermissionStateDetail> permissions})?
+      _debugComponentsDetail;
 
   /// 测试用：注入合成的应用详情，跳过平台通道调用。
   /// 传 null 恢复真实通道调用。
@@ -250,10 +315,62 @@ class ApkSourceService {
     }
   }
 
+  /// 获取已安装应用的组件与权限授权状态（LibChecker 风格）：
+  /// 四类组件（ACTIVITY/SERVICE/RECEIVER/PROVIDER）的 exported/enabled/processName，
+  /// 以及权限 granted/neverForLocation。失败/不支持时返回空。
+  Future<({List<ComponentStateDetail> components, List<PermissionStateDetail> permissions})>
+      getComponentsDetail(String packageName) async {
+    final debug = _debugComponentsDetail;
+    if (debug != null) return debug;
+    if (!isSupported || packageName.isEmpty) {
+      return (components: const <ComponentStateDetail>[], permissions: const <PermissionStateDetail>[]);
+    }
+    try {
+      final result = await _channel.invokeMapMethod<String, dynamic>(
+        'getComponentsDetail',
+        {'packageName': packageName},
+      );
+      if (result == null) {
+        return (components: const <ComponentStateDetail>[], permissions: const <PermissionStateDetail>[]);
+      }
+      final rawComponents =
+          (result['components'] as List<dynamic>?) ?? const [];
+      final rawPermissions =
+          (result['permissionStates'] as List<dynamic>?) ?? const [];
+      final components = <ComponentStateDetail>[
+        for (final raw in rawComponents)
+          if (raw is Map)
+            ComponentStateDetail.fromJson(raw.map(
+              (k, v) => MapEntry(k.toString(), v as dynamic),
+            )),
+      ];
+      final permissions = <PermissionStateDetail>[
+        for (final raw in rawPermissions)
+          if (raw is Map)
+            PermissionStateDetail.fromJson(raw.map(
+              (k, v) => MapEntry(k.toString(), v as dynamic),
+            )),
+      ];
+      return (components: components, permissions: permissions);
+    } catch (e) {
+      appLog.error('ApkSourceService: 获取组件详情失败 - $e');
+      return (components: const <ComponentStateDetail>[], permissions: const <PermissionStateDetail>[]);
+    }
+  }
+
   /// 测试用：注入合成权限列表（null 恢复真实通道调用）。
   @visibleForTesting
   void debugSetPermissions(List<String>? permissions) {
     _debugPermissions = permissions;
+  }
+
+  /// 测试用：注入合成组件/权限详情（null 恢复真实通道调用）。
+  @visibleForTesting
+  void debugSetComponentsDetail(
+    ({List<ComponentStateDetail> components, List<PermissionStateDetail> permissions})?
+        detail,
+  ) {
+    _debugComponentsDetail = detail;
   }
 
   /// 测试用：注入合成的应用详情（null 恢复真实通道调用）。

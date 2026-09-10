@@ -164,6 +164,14 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
   /// Manifest 组件全量清单（Rust 解析失败为 null → 组件页仅展示规则命中）
   ApkComponents? _components;
 
+  /// 组件状态详情（Android PackageManager 获取：exported/enabled/processName；
+  /// 获取失败为空列表）。key 为「类型:完整类名」。
+  Map<String, ComponentStateDetail> _componentsState = const {};
+
+  /// 权限授权状态（Android PackageManager 获取：granted/neverForLocation；
+  /// 获取失败为空列表）
+  List<PermissionStateDetail> _permissionStates = const [];
+
   /// 构建版本检测结果（Kotlin / Gradle / Java，检测失败为默认空实例 → 「未知」）
   BuildVersionInfo _buildInfo = const BuildVersionInfo();
 
@@ -213,37 +221,49 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
 
     final dirs = widget.effectiveSourceDirs;
 
-    final results = await (
-      ApkLibraryAnalyzer.instance.analyzeNativeLibrariesFromDirs(dirs),
-      ApkLibraryAnalyzer.instance.analyzeDexLibraries(widget.sourceDir),
-      ApkLibraryAnalyzer.instance.analyzeComponents(widget.sourceDir),
-      ApkSourceService.instance.getPermissions(widget.app.packageName),
-      ApkLibraryAnalyzer.instance.listNativeAbis(widget.sourceDir),
-      sdkF,
-      ApkLibraryAnalyzer.instance.analyzeNativeLibsFullFromDirs(dirs),
-      ApkSourceService.instance.getInstalledAppDetail(widget.app.packageName),
-      ApkLibraryAnalyzer.instance.analyzeDexFilesFull(widget.sourceDir),
-      ApkLibraryAnalyzer.instance.detectBuildVersions(widget.sourceDir),
-      elfF,
-    ).wait;
-    if (!mounted) return;
-    setState(() {
-      _nativeHits = results.$1;
-      _dexHits = results.$2;
-      _componentHits = results.$3;
-      _permissions = results.$4;
-      _abis = results.$5;
-      final components = results.$6;
-      _components = components;
-      _minSdk = components.minSdk;
-      _targetSdk = components.targetSdk;
-      _fullNativeLibs = results.$7;
-      _detail = results.$8;
-      _dexFiles = results.$9;
-      _buildInfo = results.$10;
-      _elfScan = results.$11;
-      _loading = false;
-    });
+// 组件/权限授权状态（Android PackageManager）——并行启动，
+      // 独立于 Rust 解析记录（record wait 有字段上限，单独 awlet 合并）。
+      final componentsDetailF =
+          ApkSourceService.instance.getComponentsDetail(widget.app.packageName);
+
+      final results = await (
+        ApkLibraryAnalyzer.instance.analyzeNativeLibrariesFromDirs(dirs),
+        ApkLibraryAnalyzer.instance.analyzeDexLibraries(widget.sourceDir),
+        ApkLibraryAnalyzer.instance.analyzeComponents(widget.sourceDir),
+        ApkSourceService.instance.getPermissions(widget.app.packageName),
+        ApkLibraryAnalyzer.instance.listNativeAbis(widget.sourceDir),
+        sdkF,
+        ApkLibraryAnalyzer.instance.analyzeNativeLibsFullFromDirs(dirs),
+        ApkSourceService.instance.getInstalledAppDetail(widget.app.packageName),
+        ApkLibraryAnalyzer.instance.analyzeDexFilesFull(widget.sourceDir),
+        ApkLibraryAnalyzer.instance.detectBuildVersions(widget.sourceDir),
+        elfF,
+      ).wait;
+      final componentsDetail = await componentsDetailF;
+      if (!mounted) return;
+      setState(() {
+        _nativeHits = results.$1;
+        _dexHits = results.$2;
+        _componentHits = results.$3;
+        _permissions = results.$4;
+        _abis = results.$5;
+        final components = results.$6;
+        _components = components;
+        _minSdk = components.minSdk;
+        _targetSdk = components.targetSdk;
+        _fullNativeLibs = results.$7;
+        _detail = results.$8;
+        _dexFiles = results.$9;
+        _buildInfo = results.$10;
+        _elfScan = results.$11;
+        // 组件/权限授权状态：组件状态按「类型:完整类名」索引
+        _componentsState = {
+          for (final c in componentsDetail.components)
+            '${c.type}:${c.name}': c,
+        };
+        _permissionStates = componentsDetail.permissions;
+        _loading = false;
+      });
   }
 
   /// 复制文本到剪贴板并弹出统一 SnackBar 提示（'已复制 …'，超长截断）。
@@ -655,6 +675,10 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
                       title: name,
                       wrapTitle: true,
                       onLongPress: () => _copyText(context, name, label: name),
+                      // 组件状态徽标：停用(disabled) → 灰化提示；导出(exported)
+                      // → 「已导出」；有独立进程 → 「进程 <name>」
+                      subtitle: _componentStateSubtitle(groupLabel: group.label, name: name),
+                      trailing: _componentStateTrailing(groupLabel: group.label, name: name),
                     ),
                 ],
               ],
@@ -665,10 +689,15 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
   }
 
   /// 权限药丸列表（可换行）；为空时展示「无权限声明」。
+  /// 有授权状态时：已授权保持主题强调色，未授权变灰并附「未授权」小标，
+  /// neverForLocation 附「不用于定位」。
   Widget _buildPermissionTab() {
     if (_permissions.isEmpty) return _buildEmptyState('无权限声明');
     final colorScheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
+    final stateByName = {
+      for (final p in _permissionStates) p.name: p,
+    };
     return ListView(
       padding: AppSpacing.onlyVerticalMD,
       children: [
@@ -679,28 +708,43 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
               spacing: AppSpacing.xs,
               runSpacing: AppSpacing.xs,
               children: [
-                for (final permission in _permissions)
-                  GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onLongPress: () => _copyText(
-                      context,
-                      permission,
-                      label: permission,
-                    ),
-                    child: Container(
-                      padding: AppSpacing.chipPadding,
-                      decoration: BoxDecoration(
-                        color: colorScheme.secondaryContainer,
-                        borderRadius: BorderRadius.circular(AppRadius.sm),
-                      ),
-                      child: Text(
+                for (final permission in _permissions) ...[
+                  Builder(builder: (context) {
+                    final state = stateByName[permission];
+                    final granted = state?.granted ?? true;
+                    final bg = granted
+                        ? colorScheme.secondaryContainer
+                        : colorScheme.surfaceContainerHighest;
+                    final fg = granted
+                        ? colorScheme.onSecondaryContainer
+                        : colorScheme.outline;
+                    final badge = state?.neverForLocation == true
+                        ? ' · 不用于定位'
+                        : granted
+                            ? null
+                            : ' · 未授权';
+                    final label = '$permission${badge ?? ''}';
+                    return GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onLongPress: () => _copyText(
+                        context,
                         permission,
-                        style: textTheme.labelSmall?.copyWith(
-                          color: colorScheme.onSecondaryContainer,
+                        label: permission,
+                      ),
+                      child: Container(
+                        padding: AppSpacing.chipPadding,
+                        decoration: BoxDecoration(
+                          color: bg,
+                          borderRadius: BorderRadius.circular(AppRadius.sm),
+                        ),
+                        child: Text(
+                          label,
+                          style: textTheme.labelSmall?.copyWith(color: fg),
                         ),
                       ),
-                    ),
-                  ),
+                    );
+                  }),
+                ],
               ],
             ),
           ),
@@ -1158,6 +1202,26 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
   /// [show16Kb] 为 true 时在副标题行尾渲染「16KB」胶囊标记（仅对齐时展示）。
   /// [icon] 为 null 时不渲染前导图标；[wrapTitle] 为 true 时标题完整换行
   /// （组件全量行等无尾随尺寸的文本），否则单行省略。
+  /// 组件状态副标题：停用（disabled）→ 「已停用」；独立进程 → 「进程 <name>」。
+  /// [groupLabel] 为英文类型名（Service/Activity/Receiver/Provider），与
+  /// [_componentsState] 的 key「类型:类名」对齐。
+  String? _componentStateSubtitle({required String groupLabel, required String name}) {
+    final state = _componentsState['${groupLabel.toUpperCase()}:$name'];
+    if (state == null) return null;
+    final parts = <String>[
+      if (!state.enabled) '已停用',
+      if (state.processName.isNotEmpty) '进程 ${state.processName}',
+    ];
+    return parts.isEmpty ? null : parts.join(' · ');
+  }
+
+  /// 组件状态尾部徽标：导出（exported）→ 「已导出」。
+  String? _componentStateTrailing({required String groupLabel, required String name}) {
+    final state = _componentsState['${groupLabel.toUpperCase()}:$name'];
+    if (state == null || !state.exported) return null;
+    return '已导出';
+  }
+
   Widget _buildPlainRow({
     IconData? icon,
     required String title,
