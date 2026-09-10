@@ -2,10 +2,10 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as path;
 import 'package:gstore/core/logger/LogManager.dart';
+import 'package:gstore/core/rust/RustBridge.dart';
 import 'package:gstore/core/rust/generated/bridge.dart' show FdroidRepoManager;
 import 'package:gstore/core/rust/generated/components.dart' show ApkComponents;
 import 'package:gstore/core/rust/generated/elf.dart' show ApkElfScanResult;
-import 'package:gstore/core/rust/generated/frb_generated.dart' show RustLib;
 import 'package:gstore/core/rust/generated/models.dart'
     show AppInfo, ApkInfo, DownloadResult;
 
@@ -21,8 +21,8 @@ class FdroidRustRepoManager {
   /// 初始化管理器和 bridge
   static Future<void> initialize({String? dbPath}) async {
     if (!_initialized) {
-      // 初始化 flutter_rust_bridge
-      await RustLib.init();
+      // 初始化 flutter_rust_bridge（经全局守卫，幂等 + 并发安全）
+      await RustBridge.ensureInitialized();
       _initialized = true;
       appLog.info('FdroidRustRepoManager: Bridge initialized');
     }

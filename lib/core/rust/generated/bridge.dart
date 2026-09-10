@@ -8,14 +8,10 @@ import 'elf.dart';
 import 'frb_generated.dart';
 import 'models.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
-import 'repo.dart';
+import 'qr_decode.dart';
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<FdroidRepoManager>>
 abstract class FdroidRepoManager implements RustOpaqueInterface {
-  RepoManager? get manager;
-
-  set manager(RepoManager? manager);
-
   /// 清空所有应用数据
   Future<int> clearApps();
 
@@ -71,6 +67,18 @@ abstract class FdroidRepoManager implements RustOpaqueInterface {
   /// 搜索应用
   Future<List<AppInfo>> searchApps(
       {required String keyword, required int limit});
+}
+
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<QrDecoder>>
+abstract class QrDecoder implements RustOpaqueInterface {
+  /// 解码一帧灰度图
+  Future<QrDecodeResult?> decodeLuma(
+      {required List<int> luma, required int width, required int height});
+
+  // HINT: Make it `#[frb(sync)]` to let it become the default constructor of Dart class.
+  /// 创建解码器实例
+  static Future<QrDecoder> newInstance() =>
+      RustLib.instance.api.crateBridgeQrDecoderNew();
 }
 
 /// 进度回调（占位符，暂时不使用）

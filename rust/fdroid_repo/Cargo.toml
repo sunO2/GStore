@@ -30,6 +30,8 @@ chrono = { version = "0.4", features = ["serde"] }
 # Android 日志
 log = "0.4"
 android_logger = "0.13"
+# 二维码解码（zxing-cpp C++ 核心，bundled 自动编译静态链接；替换纯 Dart zxing2 解码）
+zxing-cpp = { version = "0.5", features = ["bundled"] }
 
 [profile.release]
 opt-level = "z"

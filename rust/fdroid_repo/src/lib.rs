@@ -5,6 +5,10 @@ mod apk;
 mod dex_scan;
 mod components;
 pub mod elf;
+mod qr_decode;
 mod bridge;
 
 pub use bridge::FdroidRepoManager;
+
+#[allow(dead_code)]
+pub fn _qr_debug_hook() {}

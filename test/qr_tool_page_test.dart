@@ -13,7 +13,6 @@ import 'package:gstore/page/qr_tool/view.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:zxing2/qrcode.dart';
 
 /// mock path_provider：getApplicationDocumentsPath 返回临时目录
 /// （保存图片测试注入，避免污染真实文档目录）
@@ -254,38 +253,6 @@ void main() {
     await tester.pump();
     expect(find.text('输入内容后生成二维码'), findsOneWidget);
     expect(tester.takeException(), isNull);
-  });
-
-  testWidgets('zxing2 解码合成二维码：RGBLuminanceSource + GlobalHistogramBinarizer 可识别 qr_flutter 生成的二维码', (tester) async {
-    // 真实引擎光栅化必须在 runAsync（真实事件循环）中执行
-    await tester.runAsync(() async {
-      final recorder = ui.PictureRecorder();
-      final canvas = Canvas(recorder);
-      // QrPainter 只画黑色模块、背景透明 → 先铺白底，保证直方图有亮暗分布
-      canvas.drawRect(
-        const Rect.fromLTWH(0, 0, 200, 200),
-        Paint()..color = const Color(0xFFFFFFFF),
-      );
-      QrPainter(
-        data: 'HELLO-ZXING2',
-        version: QrVersions.auto,
-        errorCorrectionLevel: QrErrorCorrectLevel.M,
-      ).paint(canvas, const Size(200, 200));
-      final picture = recorder.endRecording();
-      final image = await picture.toImage(200, 200);
-      final byteData = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
-      image.dispose();
-
-      // 与识别模式同一解码路径：RGBA Int32 像素 → RGBLuminanceSource → 二值化 → 解码
-      final source = RGBLuminanceSource(
-        200,
-        200,
-        byteData!.buffer.asInt32List(),
-      );
-      final bitmap = BinaryBitmap(GlobalHistogramBinarizer(source));
-      final result = QRCodeReader().decode(bitmap);
-      expect(result.text, 'HELLO-ZXING2');
-    });
   });
 
   test('rotateLumaToPreview：顺时针 90°×4 还原，宽高交换正确', () {

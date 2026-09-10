@@ -39,12 +39,29 @@ declare -A ARCHS=(
     ["i686-linux-android"]="x86"
 )
 
+# zxing-cpp bundled 依赖 cmake；Android 交叉编译必须显式指定 NDK 工具链，
+# 否则 cmake 用宿主编译器产出错误架构对象。为每个 ABI 生成包装 toolchain 文件
+# （强制 ANDROID_ABI/PLATFORM 后 include NDK 官方 android.toolchain.cmake）。
+TOOLCHAIN_DIR="$PROJECT_DIR/target/cmake-toolchain"
+mkdir -p "$TOOLCHAIN_DIR"
+
 # 构建函数
 build_arch() {
     local target=$1
     local arch_name=$2
 
     echo_info "Building for $arch_name ($target)..."
+
+    # 目标->ANDROID_ABI（arm64-v8a / armeabi-v7a / x86_64 / x86）
+    local android_abi="$arch_name"
+
+    # 生成该 ABI 的 cmake 包装 toolchain 文件
+    local toolchain_file="$TOOLCHAIN_DIR/$arch_name.cmake"
+    cat > "$toolchain_file" << EOF
+set(ANDROID_ABI $android_abi CACHE STRING "" FORCE)
+set(ANDROID_PLATFORM android-33 CACHE STRING "" FORCE)
+include(\$ENV{ANDROID_NDK_ROOT}/build/cmake/android.toolchain.cmake)
+EOF
 
     # 将 target 名称中的 - 替换为 _ 用于环境变量
     local target_underscore="${target//-/_}"
@@ -59,6 +76,18 @@ build_arch() {
     export "CC_${target_underscore}=$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin/$clang_name"
     export "CXX_${target_underscore}=$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin/${clang_name%clang}clang++"
     export "AR_${target_underscore}=$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+
+    # zxing-cpp cmake 构建所需的 NDK 环境（cmake crate 不转发 ANDROID_ABI 环境变量，
+    # 只能通过 CMAKE_TOOLCHAIN_FILE 包装文件强制 ABI）
+    export ANDROID_NDK_HOME="$NDK_PATH"
+    export ANDROID_NDK_ROOT="$NDK_PATH"
+    export CMAKE_TOOLCHAIN_FILE="$toolchain_file"
+
+    # 静态链接 libc++：zxing-cpp 的 C++ 对象引用 libc++ 符号（std::string 等），
+    # 其 build.rs 对含 linux 的 target 发出 -lstdc++ → NDK 空壳 libstdc++.so 无法解析，
+    # 导致 dlopen 报 cannot locate symbol。rustc 的链接对 clang 驱动而言是 C 链接，
+    # -static-libstdc++ 被忽略（argument unused），必须显式链入 libc++_static.a + libc++abi.a。
+    export RUSTFLAGS="-C link-arg=-l:libc++_static.a -C link-arg=-l:libc++abi.a"
 
     # armv7: ring/cc 等需要旧式工具链名（arm-linux-androideabi-clang）
     # NDK 的 armv7a...clang 是相对 symlink（复制会断链），改用包装脚本调用真实 NDK 包装
@@ -157,8 +186,8 @@ if [ $FAILED -eq 0 ]; then
     echo_info "Generated files:"
     for arch_dir in "$ANDROID_LIB_DIR"/*/; do
         if [ -f "$arch_dir/libfdroid_repo.so" ]; then
-            local arch=$(basename "$arch_dir")
-            local size=$(ls -lh "$arch_dir/libfdroid_repo.so" | awk '{print $5}')
+            arch=$(basename "$arch_dir")
+            size=$(ls -lh "$arch_dir/libfdroid_repo.so" | awk '{print $5}')
             echo_info "  - $arch: libfdroid_repo.so ($size)"
         fi
     done

@@ -3,6 +3,7 @@ use flutter_rust_bridge::frb;
 use super::apk::*;
 use super::models::*;
 use super::repo::*;
+use super::qr_decode::*;
 
 /// APK 解析结果（结构体将自动生成 Dart 侧对应类）
 pub use crate::models::ApkInfo;
@@ -15,6 +16,34 @@ pub use crate::components::ApkComponents;
 // 保留 re-export 供 FRB 生成 Dart 侧对应类。
 #[allow(unused_imports)]
 pub use crate::elf::{ApkElfScanResult, ElfSoInfo};
+
+/// 二维码单帧解码结果（zxing-cpp；结构体将自动生成 Dart 侧对应类）
+pub use crate::qr_decode::QrDecodeResult;
+
+/// 二维码解码器（zxing-cpp 封装）
+///
+/// 解码一帧灰度图（紧凑布局，row_stride == width；ROI 局部坐标）。
+/// 返回 None 表示完全未检测到；text 为空但 points 非空 = 检测到候选但解析失败。
+#[frb(opaque)]
+pub struct QrDecoder;
+
+impl QrDecoder {
+    /// 创建解码器实例
+    #[frb(init)]
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// 解码一帧灰度图
+    pub fn decode_luma(
+        &self,
+        luma: Vec<u8>,
+        width: i32,
+        height: i32,
+    ) -> Result<Option<QrDecodeResult>, String> {
+        crate::qr_decode::decode_qr_luma(&luma, width, height)
+    }
+}
 
 impl FdroidRepoManager {
     /// 解析 APK 文件，提取真实包名/版本/应用名等信息

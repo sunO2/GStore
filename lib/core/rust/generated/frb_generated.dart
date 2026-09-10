@@ -13,7 +13,7 @@ import 'frb_generated.io.dart'
     if (dart.library.js_interop) 'frb_generated.web.dart';
 import 'models.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
-import 'repo.dart';
+import 'qr_decode.dart';
 
 /// Main entrypoint of the Rust API
 class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
@@ -64,6 +64,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   @override
   Future<void> executeRustInitializers() async {
     await api.crateBridgeFdroidRepoManagerNew();
+    await api.crateBridgeQrDecoderNew();
     await api.crateBridgeFlutterProgressCallbackNew();
   }
 
@@ -75,7 +76,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.11.1';
 
   @override
-  int get rustContentHash => -768278085;
+  int get rustContentHash => -853295442;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -86,12 +87,6 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
 }
 
 abstract class RustLibApi extends BaseApi {
-  RepoManager? crateBridgeFdroidRepoManagerAutoAccessorGetManager(
-      {required FdroidRepoManager that});
-
-  void crateBridgeFdroidRepoManagerAutoAccessorSetManager(
-      {required FdroidRepoManager that, RepoManager? manager});
-
   Future<int> crateBridgeFdroidRepoManagerClearApps(
       {required FdroidRepoManager that});
 
@@ -131,6 +126,14 @@ abstract class RustLibApi extends BaseApi {
       required String keyword,
       required int limit});
 
+  Future<QrDecodeResult?> crateBridgeQrDecoderDecodeLuma(
+      {required QrDecoder that,
+      required List<int> luma,
+      required int width,
+      required int height});
+
+  Future<QrDecoder> crateBridgeQrDecoderNew();
+
   Future<FlutterProgressCallback> crateBridgeFlutterProgressCallbackNew();
 
   RustArcIncrementStrongCountFnType
@@ -143,12 +146,12 @@ abstract class RustLibApi extends BaseApi {
       get rust_arc_decrement_strong_count_FdroidRepoManagerPtr;
 
   RustArcIncrementStrongCountFnType
-      get rust_arc_increment_strong_count_RepoManager;
+      get rust_arc_increment_strong_count_QrDecoder;
 
   RustArcDecrementStrongCountFnType
-      get rust_arc_decrement_strong_count_RepoManager;
+      get rust_arc_decrement_strong_count_QrDecoder;
 
-  CrossPlatformFinalizerArg get rust_arc_decrement_strong_count_RepoManagerPtr;
+  CrossPlatformFinalizerArg get rust_arc_decrement_strong_count_QrDecoderPtr;
 }
 
 class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
@@ -160,63 +163,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   });
 
   @override
-  RepoManager? crateBridgeFdroidRepoManagerAutoAccessorGetManager(
-      {required FdroidRepoManager that}) {
-    return handler.executeSync(SyncTask(
-      callFfi: () {
-        final serializer = SseSerializer(generalizedFrbRustBinding);
-        sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFdroidRepoManager(
-            that, serializer);
-        return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 1)!;
-      },
-      codec: SseCodec(
-        decodeSuccessData:
-            sse_decode_opt_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRepoManager,
-        decodeErrorData: null,
-      ),
-      constMeta: kCrateBridgeFdroidRepoManagerAutoAccessorGetManagerConstMeta,
-      argValues: [that],
-      apiImpl: this,
-    ));
-  }
-
-  TaskConstMeta
-      get kCrateBridgeFdroidRepoManagerAutoAccessorGetManagerConstMeta =>
-          const TaskConstMeta(
-            debugName: "FdroidRepoManager_auto_accessor_get_manager",
-            argNames: ["that"],
-          );
-
-  @override
-  void crateBridgeFdroidRepoManagerAutoAccessorSetManager(
-      {required FdroidRepoManager that, RepoManager? manager}) {
-    return handler.executeSync(SyncTask(
-      callFfi: () {
-        final serializer = SseSerializer(generalizedFrbRustBinding);
-        sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFdroidRepoManager(
-            that, serializer);
-        sse_encode_opt_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRepoManager(
-            manager, serializer);
-        return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 2)!;
-      },
-      codec: SseCodec(
-        decodeSuccessData: sse_decode_unit,
-        decodeErrorData: null,
-      ),
-      constMeta: kCrateBridgeFdroidRepoManagerAutoAccessorSetManagerConstMeta,
-      argValues: [that, manager],
-      apiImpl: this,
-    ));
-  }
-
-  TaskConstMeta
-      get kCrateBridgeFdroidRepoManagerAutoAccessorSetManagerConstMeta =>
-          const TaskConstMeta(
-            debugName: "FdroidRepoManager_auto_accessor_set_manager",
-            argNames: ["that", "manager"],
-          );
-
-  @override
   Future<int> crateBridgeFdroidRepoManagerClearApps(
       {required FdroidRepoManager that}) {
     return handler.executeNormal(NormalTask(
@@ -225,7 +171,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFdroidRepoManager(
             that, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 3, port: port_);
+            funcId: 1, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_i_32,
@@ -253,7 +199,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that, serializer);
         sse_encode_String(repoUrl, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 4, port: port_);
+            funcId: 2, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_download_result,
@@ -280,7 +226,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFdroidRepoManager(
             that, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 5, port: port_);
+            funcId: 3, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_i_32,
@@ -308,7 +254,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that, serializer);
         sse_encode_String(packageName, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 6, port: port_);
+            funcId: 4, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_opt_box_autoadd_app_info,
@@ -335,7 +281,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFdroidRepoManager(
             that, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 7, port: port_);
+            funcId: 5, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_opt_box_autoadd_app_info,
@@ -363,7 +309,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that, serializer);
         sse_encode_String(dbPath, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 8, port: port_);
+            funcId: 6, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_unit,
@@ -387,7 +333,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       callFfi: (port_) {
         final serializer = SseSerializer(generalizedFrbRustBinding);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 9, port: port_);
+            funcId: 7, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData:
@@ -416,7 +362,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that, serializer);
         sse_encode_String(apkPath, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 10, port: port_);
+            funcId: 8, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_apk_info,
@@ -444,7 +390,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that, serializer);
         sse_encode_String(apkPath, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 11, port: port_);
+            funcId: 9, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_apk_components,
@@ -475,7 +421,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_String(apkPath, serializer);
         sse_encode_list_String(patterns, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 12, port: port_);
+            funcId: 10, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_list_String,
@@ -503,7 +449,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that, serializer);
         sse_encode_String(apkPath, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 13, port: port_);
+            funcId: 11, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_apk_elf_scan_result,
@@ -534,7 +480,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_String(keyword, serializer);
         sse_encode_i_32(limit, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 14, port: port_);
+            funcId: 12, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_list_app_info,
@@ -550,6 +496,63 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(
         debugName: "FdroidRepoManager_search_apps",
         argNames: ["that", "keyword", "limit"],
+      );
+
+  @override
+  Future<QrDecodeResult?> crateBridgeQrDecoderDecodeLuma(
+      {required QrDecoder that,
+      required List<int> luma,
+      required int width,
+      required int height}) {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
+        final serializer = SseSerializer(generalizedFrbRustBinding);
+        sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerQrDecoder(
+            that, serializer);
+        sse_encode_list_prim_u_8_loose(luma, serializer);
+        sse_encode_i_32(width, serializer);
+        sse_encode_i_32(height, serializer);
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 13, port: port_);
+      },
+      codec: SseCodec(
+        decodeSuccessData: sse_decode_opt_box_autoadd_qr_decode_result,
+        decodeErrorData: sse_decode_String,
+      ),
+      constMeta: kCrateBridgeQrDecoderDecodeLumaConstMeta,
+      argValues: [that, luma, width, height],
+      apiImpl: this,
+    ));
+  }
+
+  TaskConstMeta get kCrateBridgeQrDecoderDecodeLumaConstMeta =>
+      const TaskConstMeta(
+        debugName: "QrDecoder_decode_luma",
+        argNames: ["that", "luma", "width", "height"],
+      );
+
+  @override
+  Future<QrDecoder> crateBridgeQrDecoderNew() {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
+        final serializer = SseSerializer(generalizedFrbRustBinding);
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 14, port: port_);
+      },
+      codec: SseCodec(
+        decodeSuccessData:
+            sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerQrDecoder,
+        decodeErrorData: null,
+      ),
+      constMeta: kCrateBridgeQrDecoderNewConstMeta,
+      argValues: [],
+      apiImpl: this,
+    ));
+  }
+
+  TaskConstMeta get kCrateBridgeQrDecoderNewConstMeta => const TaskConstMeta(
+        debugName: "QrDecoder_new",
+        argNames: [],
       );
 
   @override
@@ -585,12 +588,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFdroidRepoManager;
 
   RustArcIncrementStrongCountFnType
-      get rust_arc_increment_strong_count_RepoManager => wire
-          .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRepoManager;
+      get rust_arc_increment_strong_count_QrDecoder => wire
+          .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerQrDecoder;
 
   RustArcDecrementStrongCountFnType
-      get rust_arc_decrement_strong_count_RepoManager => wire
-          .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRepoManager;
+      get rust_arc_decrement_strong_count_QrDecoder => wire
+          .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerQrDecoder;
 
   @protected
   FdroidRepoManager
@@ -601,11 +604,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  RepoManager
-      dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRepoManager(
+  QrDecoder
+      dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerQrDecoder(
           dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
-    return RepoManagerImpl.frbInternalDcoDecode(raw as List<dynamic>);
+    return QrDecoderImpl.frbInternalDcoDecode(raw as List<dynamic>);
   }
 
   @protected
@@ -625,6 +628,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  QrDecoder
+      dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerQrDecoder(
+          dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return QrDecoderImpl.frbInternalDcoDecode(raw as List<dynamic>);
+  }
+
+  @protected
   FdroidRepoManager
       dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFdroidRepoManager(
           dynamic raw) {
@@ -633,11 +644,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  RepoManager
-      dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRepoManager(
+  QrDecoder
+      dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerQrDecoder(
           dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
-    return RepoManagerImpl.frbInternalDcoDecode(raw as List<dynamic>);
+    return QrDecoderImpl.frbInternalDcoDecode(raw as List<dynamic>);
   }
 
   @protected
@@ -720,15 +731,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  RepoManager
-      dco_decode_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRepoManager(
-          dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRepoManager(
-        raw);
-  }
-
-  @protected
   AppInfo dco_decode_box_autoadd_app_info(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_app_info(raw);
@@ -738,6 +740,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   PlatformInt64 dco_decode_box_autoadd_i_64(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_i_64(raw);
+  }
+
+  @protected
+  QrDecodeResult dco_decode_box_autoadd_qr_decode_result(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_qr_decode_result(raw);
   }
 
   @protected
@@ -764,6 +772,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       minPageSize: dco_decode_i_64(arr[2]),
       aligned16Kb: dco_decode_bool(arr[3]),
     );
+  }
+
+  @protected
+  double dco_decode_f_64(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw as double;
   }
 
   @protected
@@ -806,6 +820,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  Float64List dco_decode_list_prim_f_64_strict(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw as Float64List;
+  }
+
+  @protected
+  List<int> dco_decode_list_prim_u_8_loose(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw as List<int>;
+  }
+
+  @protected
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw as Uint8List;
@@ -818,17 +844,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  RepoManager?
-      dco_decode_opt_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRepoManager(
-          dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return raw == null
-        ? null
-        : dco_decode_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRepoManager(
-            raw);
-  }
-
-  @protected
   AppInfo? dco_decode_opt_box_autoadd_app_info(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_box_autoadd_app_info(raw);
@@ -838,6 +853,29 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   PlatformInt64? dco_decode_opt_box_autoadd_i_64(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_box_autoadd_i_64(raw);
+  }
+
+  @protected
+  QrDecodeResult? dco_decode_opt_box_autoadd_qr_decode_result(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_box_autoadd_qr_decode_result(raw);
+  }
+
+  @protected
+  QrDecodeResult dco_decode_qr_decode_result(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 7)
+      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
+    return QrDecodeResult(
+      text: dco_decode_String(arr[0]),
+      format: dco_decode_String(arr[1]),
+      points: dco_decode_list_prim_f_64_strict(arr[2]),
+      rawBytes: dco_decode_list_prim_u_8_strict(arr[3]),
+      symbologyIdentifier: dco_decode_String(arr[4]),
+      isMirrored: dco_decode_bool(arr[5]),
+      isInverted: dco_decode_bool(arr[6]),
+    );
   }
 
   @protected
@@ -868,11 +906,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  RepoManager
-      sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRepoManager(
+  QrDecoder
+      sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerQrDecoder(
           SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
-    return RepoManagerImpl.frbInternalSseDecode(
+    return QrDecoderImpl.frbInternalSseDecode(
         sse_decode_usize(deserializer), sse_decode_i_32(deserializer));
   }
 
@@ -895,6 +933,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  QrDecoder
+      sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerQrDecoder(
+          SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return QrDecoderImpl.frbInternalSseDecode(
+        sse_decode_usize(deserializer), sse_decode_i_32(deserializer));
+  }
+
+  @protected
   FdroidRepoManager
       sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFdroidRepoManager(
           SseDeserializer deserializer) {
@@ -904,11 +951,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  RepoManager
-      sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRepoManager(
+  QrDecoder
+      sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerQrDecoder(
           SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
-    return RepoManagerImpl.frbInternalSseDecode(
+    return QrDecoderImpl.frbInternalSseDecode(
         sse_decode_usize(deserializer), sse_decode_i_32(deserializer));
   }
 
@@ -1004,15 +1051,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  RepoManager
-      sse_decode_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRepoManager(
-          SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return (sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRepoManager(
-        deserializer));
-  }
-
-  @protected
   AppInfo sse_decode_box_autoadd_app_info(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_app_info(deserializer));
@@ -1022,6 +1060,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   PlatformInt64 sse_decode_box_autoadd_i_64(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_i_64(deserializer));
+  }
+
+  @protected
+  QrDecodeResult sse_decode_box_autoadd_qr_decode_result(
+      SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_qr_decode_result(deserializer));
   }
 
   @protected
@@ -1045,6 +1090,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         soName: var_soName,
         minPageSize: var_minPageSize,
         aligned16Kb: var_aligned16Kb);
+  }
+
+  @protected
+  double sse_decode_f_64(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return deserializer.buffer.getFloat64();
   }
 
   @protected
@@ -1103,6 +1154,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  Float64List sse_decode_list_prim_f_64_strict(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var len_ = sse_decode_i_32(deserializer);
+    return deserializer.buffer.getFloat64List(len_);
+  }
+
+  @protected
+  List<int> sse_decode_list_prim_u_8_loose(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var len_ = sse_decode_i_32(deserializer);
+    return deserializer.buffer.getUint8List(len_);
+  }
+
+  @protected
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var len_ = sse_decode_i_32(deserializer);
@@ -1115,20 +1180,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
     if (sse_decode_bool(deserializer)) {
       return (sse_decode_String(deserializer));
-    } else {
-      return null;
-    }
-  }
-
-  @protected
-  RepoManager?
-      sse_decode_opt_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRepoManager(
-          SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    if (sse_decode_bool(deserializer)) {
-      return (sse_decode_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRepoManager(
-          deserializer));
     } else {
       return null;
     }
@@ -1154,6 +1205,38 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     } else {
       return null;
     }
+  }
+
+  @protected
+  QrDecodeResult? sse_decode_opt_box_autoadd_qr_decode_result(
+      SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_qr_decode_result(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
+  QrDecodeResult sse_decode_qr_decode_result(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_text = sse_decode_String(deserializer);
+    var var_format = sse_decode_String(deserializer);
+    var var_points = sse_decode_list_prim_f_64_strict(deserializer);
+    var var_rawBytes = sse_decode_list_prim_u_8_strict(deserializer);
+    var var_symbologyIdentifier = sse_decode_String(deserializer);
+    var var_isMirrored = sse_decode_bool(deserializer);
+    var var_isInverted = sse_decode_bool(deserializer);
+    return QrDecodeResult(
+        text: var_text,
+        format: var_format,
+        points: var_points,
+        rawBytes: var_rawBytes,
+        symbologyIdentifier: var_symbologyIdentifier,
+        isMirrored: var_isMirrored,
+        isInverted: var_isInverted);
   }
 
   @protected
@@ -1185,11 +1268,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @protected
   void
-      sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRepoManager(
-          RepoManager self, SseSerializer serializer) {
+      sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerQrDecoder(
+          QrDecoder self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_usize(
-        (self as RepoManagerImpl).frbInternalSseEncode(move: true), serializer);
+        (self as QrDecoderImpl).frbInternalSseEncode(move: true), serializer);
   }
 
   @protected
@@ -1214,6 +1297,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @protected
   void
+      sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerQrDecoder(
+          QrDecoder self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_usize(
+        (self as QrDecoderImpl).frbInternalSseEncode(move: false), serializer);
+  }
+
+  @protected
+  void
       sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFdroidRepoManager(
           FdroidRepoManager self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
@@ -1224,11 +1316,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   @protected
   void
-      sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRepoManager(
-          RepoManager self, SseSerializer serializer) {
+      sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerQrDecoder(
+          QrDecoder self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_usize(
-        (self as RepoManagerImpl).frbInternalSseEncode(move: null), serializer);
+        (self as QrDecoderImpl).frbInternalSseEncode(move: null), serializer);
   }
 
   @protected
@@ -1292,15 +1384,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  void
-      sse_encode_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRepoManager(
-          RepoManager self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRepoManager(
-        self, serializer);
-  }
-
-  @protected
   void sse_encode_box_autoadd_app_info(AppInfo self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_app_info(self, serializer);
@@ -1311,6 +1394,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       PlatformInt64 self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_64(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_qr_decode_result(
+      QrDecodeResult self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_qr_decode_result(self, serializer);
   }
 
   @protected
@@ -1328,6 +1418,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.soName, serializer);
     sse_encode_i_64(self.minPageSize, serializer);
     sse_encode_bool(self.aligned16Kb, serializer);
+  }
+
+  @protected
+  void sse_encode_f_64(double self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    serializer.buffer.putFloat64(self);
   }
 
   @protected
@@ -1377,6 +1473,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_list_prim_f_64_strict(
+      Float64List self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    serializer.buffer.putFloat64List(self);
+  }
+
+  @protected
+  void sse_encode_list_prim_u_8_loose(
+      List<int> self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    serializer.buffer
+        .putUint8List(self is Uint8List ? self : Uint8List.fromList(self));
+  }
+
+  @protected
   void sse_encode_list_prim_u_8_strict(
       Uint8List self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
@@ -1391,19 +1504,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self != null, serializer);
     if (self != null) {
       sse_encode_String(self, serializer);
-    }
-  }
-
-  @protected
-  void
-      sse_encode_opt_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRepoManager(
-          RepoManager? self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    sse_encode_bool(self != null, serializer);
-    if (self != null) {
-      sse_encode_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerRepoManager(
-          self, serializer);
     }
   }
 
@@ -1427,6 +1527,30 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     if (self != null) {
       sse_encode_box_autoadd_i_64(self, serializer);
     }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_qr_decode_result(
+      QrDecodeResult? self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_qr_decode_result(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_qr_decode_result(
+      QrDecodeResult self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.text, serializer);
+    sse_encode_String(self.format, serializer);
+    sse_encode_list_prim_f_64_strict(self.points, serializer);
+    sse_encode_list_prim_u_8_strict(self.rawBytes, serializer);
+    sse_encode_String(self.symbologyIdentifier, serializer);
+    sse_encode_bool(self.isMirrored, serializer);
+    sse_encode_bool(self.isInverted, serializer);
   }
 
   @protected
@@ -1466,15 +1590,6 @@ class FdroidRepoManagerImpl extends RustOpaque implements FdroidRepoManager {
     rustArcDecrementStrongCountPtr: RustLib
         .instance.api.rust_arc_decrement_strong_count_FdroidRepoManagerPtr,
   );
-
-  RepoManager? get manager =>
-      RustLib.instance.api.crateBridgeFdroidRepoManagerAutoAccessorGetManager(
-        that: this,
-      );
-
-  set manager(RepoManager? manager) =>
-      RustLib.instance.api.crateBridgeFdroidRepoManagerAutoAccessorSetManager(
-          that: this, manager: manager);
 
   /// 清空所有应用数据
   Future<int> clearApps() =>
@@ -1553,21 +1668,27 @@ class FdroidRepoManagerImpl extends RustOpaque implements FdroidRepoManager {
 }
 
 @sealed
-class RepoManagerImpl extends RustOpaque implements RepoManager {
+class QrDecoderImpl extends RustOpaque implements QrDecoder {
   // Not to be used by end users
-  RepoManagerImpl.frbInternalDcoDecode(List<dynamic> wire)
+  QrDecoderImpl.frbInternalDcoDecode(List<dynamic> wire)
       : super.frbInternalDcoDecode(wire, _kStaticData);
 
   // Not to be used by end users
-  RepoManagerImpl.frbInternalSseDecode(BigInt ptr, int externalSizeOnNative)
+  QrDecoderImpl.frbInternalSseDecode(BigInt ptr, int externalSizeOnNative)
       : super.frbInternalSseDecode(ptr, externalSizeOnNative, _kStaticData);
 
   static final _kStaticData = RustArcStaticData(
     rustArcIncrementStrongCount:
-        RustLib.instance.api.rust_arc_increment_strong_count_RepoManager,
+        RustLib.instance.api.rust_arc_increment_strong_count_QrDecoder,
     rustArcDecrementStrongCount:
-        RustLib.instance.api.rust_arc_decrement_strong_count_RepoManager,
+        RustLib.instance.api.rust_arc_decrement_strong_count_QrDecoder,
     rustArcDecrementStrongCountPtr:
-        RustLib.instance.api.rust_arc_decrement_strong_count_RepoManagerPtr,
+        RustLib.instance.api.rust_arc_decrement_strong_count_QrDecoderPtr,
   );
+
+  /// 解码一帧灰度图
+  Future<QrDecodeResult?> decodeLuma(
+          {required List<int> luma, required int width, required int height}) =>
+      RustLib.instance.api.crateBridgeQrDecoderDecodeLuma(
+          that: this, luma: luma, width: width, height: height);
 }
