@@ -23,7 +23,7 @@ void main() {
     test('theme_mode 写入后 ThemeController 自动切换', () async {
       // 初始化主题控制器（内部订阅 ConfigService）
       final controller = ThemeController();
-      controller.onInit();
+      controller.initialize();
       await Future<void>.delayed(const Duration(milliseconds: 50));
       expect(controller.themeMode, AppThemeMode.system);
 
@@ -37,12 +37,12 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 100));
       expect(controller.themeMode, AppThemeMode.dark);
 
-      controller.onClose();
+      controller.dispose();
     });
 
     test('theme_mode 写入浅色模式', () async {
       final controller = ThemeController();
-      controller.onInit();
+      controller.initialize();
       await Future<void>.delayed(const Duration(milliseconds: 50));
 
       await ConfigService.instance.set(
@@ -53,12 +53,12 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 100));
       expect(controller.themeMode, AppThemeMode.light);
 
-      controller.onClose();
+      controller.dispose();
     });
 
     test('通过 ThemeController.setThemeMode 写入后配置可读', () async {
       final controller = ThemeController();
-      controller.onInit();
+      controller.initialize();
       await Future<void>.delayed(const Duration(milliseconds: 50));
 
       await controller.setThemeMode(AppThemeMode.dark);
@@ -68,12 +68,12 @@ void main() {
       final saved = await ConfigService.instance.getT<int>(ConfigKeys.themeMode);
       expect(saved, AppThemeMode.dark.index);
 
-      controller.onClose();
+      controller.dispose();
     });
 
     test('theme_config 写入后 ThemeController 配置同步', () async {
       final controller = ThemeController();
-      controller.onInit();
+      controller.initialize();
       await Future<void>.delayed(const Duration(milliseconds: 50));
 
       final config = AppThemeConfig(
@@ -86,7 +86,7 @@ void main() {
       expect(controller.themeConfig.useCustomColors, true);
       expect(controller.themeConfig.primaryColor, const Color(0xFF1976D2));
 
-      controller.onClose();
+      controller.dispose();
     });
   });
 }
