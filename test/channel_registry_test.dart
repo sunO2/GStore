@@ -35,6 +35,7 @@ void main() {
     await ModuleManager.instance.clear();
     ModuleManager.instance.injectContext(null);
     await ChannelManager.instance.disposeAll();
+    ChannelIntegration.resetForTest();
     // ChannelIntegration.initialize 依赖 ModuleManager 取 GithubRestClient；
     // DbManager.instance 首构造函数自置 _instance（无需额外绑定）
     ModuleManager.instance
@@ -46,6 +47,7 @@ void main() {
       'GStore-Repositorys',
       await ($FloorAppInfoDatabase.inMemoryDatabaseBuilder()).build(),
     );
+    ModuleManager.instance.bind<DbManager>(dm);
   });
 
   group('ChannelModule 按类型绑定', () {

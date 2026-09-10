@@ -88,6 +88,12 @@ class ChannelIntegration {
 
   /// 获取渠道管理器单例
   static ChannelManager get instance => manager;
+
+  /// 重置状态（测试用）
+  static void resetForTest() {
+    _initialized = false;
+    _manager = null;
+  }
 }
 
 // ==================== 使用示例 ====================
