@@ -1246,8 +1246,10 @@ class _QrToolPageState extends State<QrToolPage> {
   ///   ② 码眼明显偏离 ROI 中心（靠近边缘，offCenter > 0.6）= 码太大只露一角 → **缩小**；
   ///   ③ 码眼居中（offCenter < 0.3）= 码太小/太远 → **放大**；
   ///   （②③解决"一直单码眼"死循环——趋势记忆对从未出现过 ≥2 码眼的情况无信号）
-  /// - **去抖**：连续超界 [_zoomDebounceFrames] 帧才真正动作一次；两次动作间隔 ≥150ms；与
-  ///   [_applyZoom] 0.05 差值防抖叠加，避免镜头持续抖动；
+/// - **去抖**：连续超界 [_zoomDebounceFrames] 帧才真正动作一次；两次动作间隔 ≥300ms，
+///   给相机稳定与帧反映新倍率留出时间；与 [_applyZoom] 0.1 差值防抖叠加。
+/// - **比例目标控制**：放大/缩小时按「期望倍率 = 当前 × √(目标占比/当前占比)」
+///   一步收敛到正确焦段（面积 ∝ 倍率²；固定倍率步进会跨过滞回带造成焦段跳变）。
   /// - **数字变焦上限**：目标 clamp 到 [_minZoomLevel, min(_maxZoomLevel, _zoomDigitalCap)]；
   /// - **边界引导**：已到上限仍该放大 → 提示「靠近一点」；已到最小仍该缩小 → 「拿远一点」。
   Future<void> _adjustZoomToEyes() async {
@@ -1319,9 +1321,9 @@ class _QrToolPageState extends State<QrToolPage> {
       return;
     }
 
-    // 连续帧去抖 + 时间限频（避免每帧微动）
+    // 连续帧去抖 + 时间限频（避免每帧微动；300ms 给相机稳定与帧反映新倍率时间）
     final now = DateTime.now();
-    if (now.difference(_lastZoomAdjustAt) < const Duration(milliseconds: 150)) {
+    if (now.difference(_lastZoomAdjustAt) < const Duration(milliseconds: 300)) {
       return;
     }
     _zoomOutOfRangeFrames++;
@@ -1334,6 +1336,11 @@ class _QrToolPageState extends State<QrToolPage> {
     final effectiveMax = _maxZoomLevel < _zoomDigitalCap
         ? _maxZoomLevel
         : _zoomDigitalCap;
+
+    // 比例目标控制：一步收敛到目标焦段（面积 ∝ 倍率²）。
+    // 目标占比取滞回带中点 0.375，期望倍率 = base × √(target/ratio)。
+    // 单码眼无占比时退化为温和方向步进(×1.15 / ÷1.15)。
+    double target;
     if (direction == 'zoomIn') {
       if (base >= effectiveMax - 0.01) {
         // 已到数字变焦上限仍偏小 → 引导靠近（放大无收益）
@@ -1344,7 +1351,9 @@ class _QrToolPageState extends State<QrToolPage> {
         return;
       }
       _zoomBoundaryHint = null;
-      await _applyZoom((base * 1.2).clamp(_minZoomLevel, effectiveMax));
+      target = (ratio != null)
+          ? base * math.sqrt(0.375 / ratio.clamp(0.01, 1.0))
+          : base * 1.15;
     } else {
       if (base <= _minZoomLevel + 0.01) {
         // 已缩到最小仍偏大 → 引导拿远（无法更小）
@@ -1356,8 +1365,11 @@ class _QrToolPageState extends State<QrToolPage> {
         return;
       }
       _zoomBoundaryHint = null;
-      await _applyZoom((base * 0.8).clamp(_minZoomLevel, effectiveMax));
+      target = (ratio != null)
+          ? base * math.sqrt(0.375 / ratio.clamp(0.01, 1.0))
+          : base / 1.15;
     }
+    await _applyZoom(target.clamp(_minZoomLevel, effectiveMax));
   }
 
   /// 更新扫描引导文案（仅变化时 setState，避免逐帧重建）
@@ -1366,19 +1378,16 @@ class _QrToolPageState extends State<QrToolPage> {
     setState(() => _scanHint = hint);
   }
 
-  /// 执行变焦：与当前期望 zoom 差 <0.05 跳过（防抖）；平台不支持/异常仅记录日志。
-  /// 变焦成功后重新触发对焦——CameraX 缩放会改变焦平面，需重新对焦到目标点。
+  /// 执行变焦：与当前期望 zoom 差 <0.1 跳过（防抖）；平台不支持/异常仅记录日志。
+  /// 注意：setZoomLevel 为数字变焦（裁剪放大），**不改变焦平面**，
+  /// 变焦后无需强制重新对焦——避免频繁 AF 触发打断对焦收敛。
   Future<void> _applyZoom(double target) async {
-    if ((target - _currentZoom).abs() < 0.05) return;
+    if ((target - _currentZoom).abs() < 0.1) return;
     final controller = _cameraController;
     if (controller == null || !controller.value.isInitialized) return;
     try {
       await controller.setZoomLevel(target);
       _currentZoom = target;
-      // 变焦后对焦基准失效：立即对焦到码眼中心（无码眼回退中心），
-      // 触觉反馈提示用户镜头在收敛
-      final focusTarget = _eyePointsCenterInPreview();
-      await _refocusAt(focusTarget ?? const Offset(120, 120));
     } catch (e) {
       appLog.error('QrToolPage: 设置变焦失败（平台不支持则忽略） - $e');
     }
