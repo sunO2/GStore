@@ -1144,16 +1144,38 @@ class _QrToolPageState extends State<QrToolPage> {
     }
   }
 
-  /// 周期性自动重新对焦（每 1.5s 一次中心对焦）：CameraX 的 setFocusMode(auto) 只触发
+  /// 周期性自动重新对焦（每 1.5s 一次）：CameraX 的 setFocusMode(auto) 只触发
   /// 一次对焦动作，不持续跟焦；长时间扫描焦距漂移 → 模糊 → 解码率骤降。
-  /// 主动 setFocusPoint(0.5, 0.5) 会让 CameraX 重新发起自动对焦，保持镜头收敛。
-  /// 限频避免对焦动作过于频繁；扫描已停止（识别成功）时不再触发。
+  /// 有码眼时对焦**码眼几何中心**（码在哪对焦哪，对齐扫码对焦标准做法），
+  /// 无码眼回退画面中心。限频避免过频；扫描已停止（识别成功）时不再触发。
   void _maybeAutoRefocus() {
     if (_scanningStopped) return;
     final now = DateTime.now();
     if (now.difference(_lastAutoFocusAt).inMilliseconds < 1500) return;
     _lastAutoFocusAt = now;
-    unawaited(_refocusAt(const Offset(120, 120))); // 中心点
+    final target = _eyePointsCenterInPreview();
+    unawaited(_refocusAt(target ?? const Offset(120, 120)));
+  }
+
+  /// 当前码眼几何中心在预览窗中的坐标（码眼在 0.75 ROI 内，映射到 240×240 预览窗，
+  /// 与 [_computeMappedEyePoints] 同比例；无码眼返回 null）。
+  Offset? _eyePointsCenterInPreview() {
+    if (_eyePoints.isEmpty) return null;
+    final shortSide = _lastFrameW < _lastFrameH ? _lastFrameW : _lastFrameH;
+    final side = (shortSide * 0.75).round();
+    if (side <= 0) return null;
+    const boxSize = 180.0; // 识别框边长（预览窗 240×240 居中，left/top = 30）
+    const boxOffset = (240 - boxSize) / 2; // 30
+    final scale = boxSize / side;
+    var cx = 0.0, cy = 0.0;
+    for (final p in _eyePoints) {
+      cx += p.x;
+      cy += p.y;
+    }
+    return Offset(
+      boxOffset + (cx / _eyePoints.length) * scale,
+      boxOffset + (cy / _eyePoints.length) * scale,
+    );
   }
 
   /// 释放相机：停止图像流 + dispose（异常仅记录日志）
@@ -1344,7 +1366,8 @@ class _QrToolPageState extends State<QrToolPage> {
     setState(() => _scanHint = hint);
   }
 
-  /// 执行变焦：与当前期望 zoom 差 <0.05 跳过（防抖）；平台不支持/异常仅记录日志
+  /// 执行变焦：与当前期望 zoom 差 <0.05 跳过（防抖）；平台不支持/异常仅记录日志。
+  /// 变焦成功后重新触发对焦——CameraX 缩放会改变焦平面，需重新对焦到目标点。
   Future<void> _applyZoom(double target) async {
     if ((target - _currentZoom).abs() < 0.05) return;
     final controller = _cameraController;
@@ -1352,6 +1375,10 @@ class _QrToolPageState extends State<QrToolPage> {
     try {
       await controller.setZoomLevel(target);
       _currentZoom = target;
+      // 变焦后对焦基准失效：立即对焦到码眼中心（无码眼回退中心），
+      // 触觉反馈提示用户镜头在收敛
+      final focusTarget = _eyePointsCenterInPreview();
+      await _refocusAt(focusTarget ?? const Offset(120, 120));
     } catch (e) {
       appLog.error('QrToolPage: 设置变焦失败（平台不支持则忽略） - $e');
     }
