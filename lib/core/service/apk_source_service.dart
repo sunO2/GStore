@@ -45,6 +45,8 @@ class InstalledAppDetail {
     this.uid = 0,
     this.sharedUserId = '',
     this.installer = '',
+    this.installerAppName = '',
+    this.installerIconPng = '',
     this.isSystemApp = false,
     this.isDebuggable = false,
     this.dataDir = '',
@@ -83,6 +85,12 @@ class InstalledAppDetail {
   /// 安装来源包名（如 com.android.vending），无则空字符串
   final String installer;
 
+  /// 安装来源应用名（如「Google Play」；来源应用已卸载/不可达时为空）
+  final String installerAppName;
+
+  /// 安装来源应用图标（PNG base64，无则空字符串）
+  final String installerIconPng;
+
   /// 是否为系统应用
   final bool isSystemApp;
 
@@ -118,6 +126,8 @@ class InstalledAppDetail {
       uid: (json['uid'] as int?) ?? 0,
       sharedUserId: (json['sharedUserId'] as String?) ?? '',
       installer: (json['installer'] as String?) ?? '',
+      installerAppName: (json['installerAppName'] as String?) ?? '',
+      installerIconPng: (json['installerIconPng'] as String?) ?? '',
       isSystemApp: (json['isSystemApp'] as bool?) ?? false,
       isDebuggable: (json['isDebuggable'] as bool?) ?? false,
       dataDir: (json['dataDir'] as String?) ?? '',

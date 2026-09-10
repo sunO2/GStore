@@ -11,6 +11,7 @@ import android.graphics.drawable.Drawable
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
+import android.util.Base64
 import android.util.Log
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -295,9 +296,31 @@ class MainActivity : FlutterActivity() {
                         val appInfo = packageInfo.applicationInfo
                         val uid = appInfo?.uid ?: 0
                         val sharedUserId = packageInfo.sharedUserId ?: ""
+                        // 安装来源：优先 installer 包名 → 解析来源应用名与图标
+                        //（如 com.android.vending → Google Play），资源图标转 PNG base64。
                         var installer = ""
+                        var installerAppName = ""
+                        var installerIconPng = ""
                         try {
                             installer = pm.getInstallerPackageName(packageName) ?: ""
+                            if (installer.isNotEmpty()) {
+                                runCatching {
+                                    val installerInfo = pm.getApplicationInfo(
+                                        installer,
+                                        PackageManager.GET_META_DATA
+                                    )
+                                    installerAppName = pm.getApplicationLabel(installerInfo)
+                                        ?.toString() ?: ""
+                                    pm.getApplicationIcon(installerInfo)?.let {
+                                        drawableToPngBytes(it)?.let { bytes ->
+                                            installerIconPng =
+                                                Base64.encodeToString(bytes, Base64.NO_WRAP)
+                                        }
+                                    }
+                                }.onFailure {
+                                    // 来源应用已卸载或不可达：保留包名，名称为空
+                                }
+                            }
                         } catch (e: Exception) {
                             installer = ""
                         }
@@ -317,6 +340,8 @@ class MainActivity : FlutterActivity() {
                             "uid" to uid,
                             "sharedUserId" to sharedUserId,
                             "installer" to installer,
+                            "installerAppName" to installerAppName,
+                            "installerIconPng" to installerIconPng,
                             "isSystemApp" to isSystemApp,
                             "isDebuggable" to isDebuggable,
                             "dataDir" to dataDir,

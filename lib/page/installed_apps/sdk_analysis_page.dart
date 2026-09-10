@@ -1,3 +1,5 @@
+import 'dart:convert' show base64Decode;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:gstore/core/core.dart';
@@ -408,7 +410,6 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
         '共享 UID',
         _detail.sharedUserId.isEmpty ? '未知' : _detail.sharedUserId,
       ),
-      ('安装来源', _detail.installer.isEmpty ? '未知' : _detail.installer),
       ('是否系统应用', _detail.isSystemApp ? '是' : '否'),
       ('是否调试', _detail.isDebuggable ? '是' : '否'),
       ('数据目录', _detail.dataDir.isEmpty ? '未知' : _detail.dataDir),
@@ -441,6 +442,8 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
                     onLongPress: () => _copyText(context, value, label: label),
                   ),
                 const Divider(height: AppSpacing.lg),
+                // 安装来源：来源应用图标 + 应用名 + 包名（来源信息缺失 → 「未知」）
+                _buildInstallerRow(context, labelStyle: labelStyle, valueStyle: valueStyle),
                 for (final (label, value) in systemRows)
                   _buildKeyValueRow(
                     label: label,
@@ -1262,6 +1265,58 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
   }
 
   /// 概览 / meta 数据共用的键值行（label 固定宽度 84，值最多三行省略）。
+  /// 安装来源行：来源应用图标 + 应用名 + 包名；来源信息缺失 → 「未知」。
+  /// 图标为 Android 端传入的 PNG base64,经内存解码为 Image。
+  Widget _buildInstallerRow(BuildContext context, {
+    required TextStyle? labelStyle,
+    required TextStyle? valueStyle,
+  }) {
+    final hasSource = _detail.installer.isNotEmpty;
+    final displayName = _detail.installerAppName.isNotEmpty
+        ? _detail.installerAppName
+        : _detail.installer;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: AppSpacing.xs),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(width: 84, child: Text('安装来源', style: labelStyle)),
+          Expanded(
+            child: hasSource
+                ? Row(
+                    children: [
+                      if (_detail.installerIconPng.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(right: AppSpacing.sm),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(4),
+                            child: Image.memory(
+                              base64Decode(_detail.installerIconPng),
+                              width: 20,
+                              height: 20,
+                              gaplessPlayback: true,
+                              errorBuilder: (_, __, ___) =>
+                                  const SizedBox.shrink(),
+                            ),
+                          ),
+                        ),
+                      Expanded(
+                        child: Text(
+                          '$displayName (${_detail.installer})',
+                          style: valueStyle,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  )
+                : Text('未知', style: valueStyle),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildKeyValueRow({
     required String label,
     required String value,
