@@ -858,6 +858,42 @@ void main() {
           await ApkLibraryAnalyzer.instance.detectBuildVersions('/no/such/file.apk');
       expect(info, const BuildVersionInfo());
     });
+
+    test('Compose 版本：META-INF/androidx.compose.*.version 首行', () async {
+      final apk = await _buildFakeApkWithContent({
+        'META-INF/androidx.compose.runtime_runtime.version':
+            utf8.encode('1.7.0\n'),
+        'classes.dex': [1, 2, 3, 4],
+      });
+      final info = await ApkLibraryAnalyzer.instance.detectBuildVersions(apk);
+      expect(info.composeVersion, '1.7.0');
+    });
+
+    test('AGP 版本：app-metadata.properties 的 androidGradlePluginVersion', () async {
+      final apk = await _buildFakeApkWithContent({
+        'META-INF/com/android/build/gradle/app-metadata.properties':
+            utf8.encode('androidGradlePluginVersion=8.5.2\n'),
+        'classes.dex': [1, 2, 3, 4],
+      });
+      final info = await ApkLibraryAnalyzer.instance.detectBuildVersions(apk);
+      expect(info.agpVersion, '8.5.2');
+    });
+
+    test('AGP 兜底：MANIFEST.MF Created-By: Android Gradle', () async {
+      final apk = await _buildFakeApkWithContent({
+        'META-INF/MANIFEST.MF': utf8.encode('Created-By: Android Gradle 7.4.2\n'),
+        'classes.dex': [1, 2, 3, 4],
+      });
+      final info = await ApkLibraryAnalyzer.instance.detectBuildVersions(apk);
+      expect(info.agpVersion, '7.4.2');
+    });
+
+    test('无 Compose/AGP 元数据 → 新字段保持空串', () async {
+      final apk = await _buildFakeApk(['classes.dex']);
+      final info = await ApkLibraryAnalyzer.instance.detectBuildVersions(apk);
+      expect(info.composeVersion, '');
+      expect(info.agpVersion, '');
+    });
   });
 
   group('analyzeComponents', () {

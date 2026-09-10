@@ -246,12 +246,14 @@ class DexFile {
   final int size;
 }
 
-/// 一次构建版本检测结果（Kotlin / Gradle / Java；空串表示未知/未检测到）
+/// 一次构建版本检测结果（Kotlin / Gradle / Java / Compose / AGP；空串表示未知/未检测到）
 class BuildVersionInfo {
   const BuildVersionInfo({
     this.kotlinVersion = '',
     this.gradleVersion = '',
     this.javaVersion = '',
+    this.composeVersion = '',
+    this.agpVersion = '',
   });
 
   /// Kotlin 版本（如 '2.0.20'；kotlin_module 降级推断时为 '2.0.x' 形式）
@@ -263,19 +265,34 @@ class BuildVersionInfo {
   /// Java 编译目标版本（如 '17'）
   final String javaVersion;
 
+  /// Jetpack Compose 版本（如 '1.7.0'；读 META-INF/androidx.compose.*.version 首行）
+  final String composeVersion;
+
+  /// Android Gradle Plugin 版本（如 '8.5.2'；读 app-metadata.properties 或 MANIFEST.MF）
+  final String agpVersion;
+
   @override
   bool operator ==(Object other) =>
       other is BuildVersionInfo &&
       other.kotlinVersion == kotlinVersion &&
       other.gradleVersion == gradleVersion &&
-      other.javaVersion == javaVersion;
+      other.javaVersion == javaVersion &&
+      other.composeVersion == composeVersion &&
+      other.agpVersion == agpVersion;
 
   @override
-  int get hashCode => Object.hash(kotlinVersion, gradleVersion, javaVersion);
+  int get hashCode => Object.hash(
+        kotlinVersion,
+        gradleVersion,
+        javaVersion,
+        composeVersion,
+        agpVersion,
+      );
 
   @override
   String toString() =>
-      'BuildVersionInfo(kotlin=$kotlinVersion, gradle=$gradleVersion, java=$javaVersion)';
+      'BuildVersionInfo(kotlin=$kotlinVersion, gradle=$gradleVersion, '
+      'java=$javaVersion, compose=$composeVersion, agp=$agpVersion)';
 }
 
 /// APK 内嵌第三方库检测
@@ -1262,6 +1279,34 @@ BuildVersionInfo _detectBuildVersionsInIsolate(String apkPath) {
   final bytes = File(apkPath).readAsBytesSync();
   final archive = ZipDecoder().decodeBytes(bytes);
 
+  // Compose / AGP 版本：与 kotlin/gradle 独立，META-INF 内元数据文件首行/属性
+  //（对齐 LibChecker BuildMetadataEntries / readAgpVersion）。
+  var composeVersion = '';
+  var agpVersion = '';
+  for (final entry in archive) {
+    if (!entry.isFile) continue;
+    final name = entry.name;
+    // Compose：META-INF/androidx.compose.*.version 首行即版本号
+    if (composeVersion.isEmpty &&
+        name.startsWith('META-INF/androidx.compose.') &&
+        name.endsWith('.version')) {
+      final line = _readFirstLine(entry);
+      if (line != null) composeVersion = line;
+      continue;
+    }
+    // AGP：app-metadata.properties 的 androidGradlePluginVersion
+    if (agpVersion.isEmpty &&
+        name == 'META-INF/com/android/build/gradle/app-metadata.properties') {
+      agpVersion = _readAgpFromProperties(entry) ?? '';
+      continue;
+    }
+    // AGP 兜底：MANIFEST.MF 的 Created-By: Android Gradle
+    if (agpVersion.isEmpty && name == 'META-INF/MANIFEST.MF') {
+      final createdBy = _readCreatedByGradle(entry);
+      if (createdBy != null) agpVersion = createdBy;
+    }
+  }
+
   // 主路径：kotlin-tooling-metadata.json（根目录精确条目）
   var tooling = const BuildVersionInfo();
   for (final entry in archive) {
@@ -1270,33 +1315,79 @@ BuildVersionInfo _detectBuildVersionsInIsolate(String apkPath) {
     tooling = content is List<int>
         ? _parseKotlinToolingMetadata(content)
         : const BuildVersionInfo();
-    // kotlinVersion 已解析出 → 直接返回；否则降级 kotlin_module
-    if (tooling.kotlinVersion.isNotEmpty) return tooling;
-    break;
+    // kotlinVersion 已解析出 → 不再降级 kotlin_module
+    if (tooling.kotlinVersion.isNotEmpty) break;
   }
 
   // 降级：META-INF/*.kotlin_module 二进制版本推断（对齐 LibChecker
   // readKotlinModuleVersions）：仅当恰好一种 distinct 版本时采用。
-  final versions = <String>{};
-  for (final entry in archive) {
-    if (!entry.isFile) continue;
-    final name = entry.name;
-    if (!name.startsWith(_kKotlinModuleDirectory) ||
-        !name.endsWith(_kKotlinModuleSuffix)) {
-      continue;
+  if (tooling.kotlinVersion.isEmpty) {
+    final versions = <String>{};
+    for (final entry in archive) {
+      if (!entry.isFile) continue;
+      final name = entry.name;
+      if (!name.startsWith(_kKotlinModuleDirectory) ||
+          !name.endsWith(_kKotlinModuleSuffix)) {
+        continue;
+      }
+      final version = _readKotlinModuleVersion(entry);
+      if (version != null) versions.add(version);
     }
-    final version = _readKotlinModuleVersion(entry);
-    if (version != null) versions.add(version);
+    if (versions.length == 1) {
+      tooling = BuildVersionInfo(
+        kotlinVersion: versions.single,
+        gradleVersion: tooling.gradleVersion,
+        javaVersion: tooling.javaVersion,
+      );
+    }
   }
-  if (versions.length == 1) {
-    return BuildVersionInfo(
-      kotlinVersion: versions.single,
-      gradleVersion: tooling.gradleVersion,
-      javaVersion: tooling.javaVersion,
-    );
+
+  return BuildVersionInfo(
+    kotlinVersion: tooling.kotlinVersion,
+    gradleVersion: tooling.gradleVersion,
+    javaVersion: tooling.javaVersion,
+    composeVersion: composeVersion,
+    agpVersion: agpVersion,
+  );
+}
+
+/// 读取 zip 条目首行文本（UTF-8；空/异常 → null）
+String? _readFirstLine(ArchiveFile entry) {
+  final content = entry.content;
+  if (content is! List<int> || content.isEmpty) return null;
+  final text = utf8.decode(content, allowMalformed: true);
+  final line = text.split('\n').first.trim();
+  return line.isEmpty ? null : line;
+}
+
+/// 解析 AGP 版本：app-metadata.properties 的 androidGradlePluginVersion
+String? _readAgpFromProperties(ArchiveFile entry) {
+  final content = entry.content;
+  if (content is! List<int>) return null;
+  final text = utf8.decode(content, allowMalformed: true);
+  for (final line in text.split('\n')) {
+    final trimmed = line.trim();
+    if (trimmed.startsWith('androidGradlePluginVersion=')) {
+      final value = trimmed.substring('androidGradlePluginVersion='.length).trim();
+      return value.isEmpty ? null : value;
+    }
   }
-  // 无 kotlin_module 可推断 → 返回 tooling 已解析出的 gradle/java（可能全空串）
-  return tooling;
+  return null;
+}
+
+/// 解析 MANIFEST.MF 的 Created-By: Android Gradle <version>
+String? _readCreatedByGradle(ArchiveFile entry) {
+  final content = entry.content;
+  if (content is! List<int>) return null;
+  final text = utf8.decode(content, allowMalformed: true);
+  for (final line in text.split('\n')) {
+    final trimmed = line.trim();
+    if (trimmed.startsWith('Created-By: Android Gradle ')) {
+      final value = trimmed.substring('Created-By: Android Gradle '.length).trim();
+      return value.isEmpty ? null : value;
+    }
+  }
+  return null;
 }
 
 /// 解析 kotlin-tooling-metadata.json → 构建版本（规则对齐 LibChecker

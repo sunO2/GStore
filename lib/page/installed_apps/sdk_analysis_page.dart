@@ -283,6 +283,49 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
     );
   }
 
+  /// 头部概览徽标（小圆角胶囊：图标 + 文本，secondaryContainer 底）
+  Widget _buildHeaderChip(BuildContext context, {
+    required IconData icon,
+    required String label,
+  }) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.sm,
+        vertical: 4,
+      ),
+      decoration: BoxDecoration(
+        color: colorScheme.secondaryContainer,
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: AppTypography.iconXS, color: colorScheme.onSecondaryContainer),
+          const SizedBox(width: 4),
+          Text(
+            label,
+            style: textTheme.labelSmall?.copyWith(
+              color: colorScheme.onSecondaryContainer,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// SDK 摘要：「minSdk – targetSdk」（缺失字段回退「未知」，恒展示）
+  String _sdkSummaryText() {
+    final min = _minSdk.isNotEmpty
+        ? _minSdk
+        : (_detail.minSdk?.toString() ?? '未知');
+    final target = _targetSdk.isNotEmpty
+        ? _targetSdk
+        : (_detail.targetSdk?.toString() ?? '未知');
+    return '$min – $target';
+  }
+
   Widget _buildBody(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
@@ -290,7 +333,7 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // 应用信息头部（名称 + 包名）
+        // 应用信息头部（名称 + 包名 + 概览徽标行：版本 / APK 大小 / SDK / CPU 架构）
         Padding(
           padding: AppSpacing.onlyHorizontalMD,
           child: Column(
@@ -310,6 +353,36 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
                 style: textTheme.bodySmall?.copyWith(
                   color: colorScheme.onSurfaceVariant,
                 ),
+              ),
+              const SizedBox(height: AppSpacing.sm),
+              // 概览徽标行：版本(code) / APK 大小 / minSdk·targetSdk / CPU 架构
+              Wrap(
+                spacing: AppSpacing.xs,
+                runSpacing: AppSpacing.xs,
+                children: [
+                  _buildHeaderChip(
+                    context,
+                    icon: Icons.tag,
+                    label: '${widget.app.versionName} (${widget.app.versionCode})',
+                  ),
+                  if (_detail.apkSize > 0)
+                    _buildHeaderChip(
+                      context,
+                      icon: Icons.sd_storage,
+                      label: _formatBytes(_detail.apkSize),
+                    ),
+                  _buildHeaderChip(
+                    context,
+                    icon: Icons.settings_suggest,
+                    label: 'SDK ${_sdkSummaryText()}',
+                  ),
+                  if (_abis.isNotEmpty)
+                    _buildHeaderChip(
+                      context,
+                      icon: Icons.memory,
+                      label: _abis.join(' · '),
+                    ),
+                ],
               ),
             ],
           ),
@@ -388,13 +461,13 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
 
     final rows = <(String, String)>[
       ('包名', widget.app.packageName),
-      ('版本', '${widget.app.versionName} (${widget.app.versionCode})'),
+      // 版本已由头部徽标行展示（name + versionName(code)），概览不重复
       ('安装路径', widget.sourceDir),
       (
         '主 Activity',
         _detail.mainActivity.isEmpty ? '未知' : _detail.mainActivity,
       ),
-      ('APK 大小', _detail.apkSize > 0 ? _formatBytes(_detail.apkSize) : '未知'),
+      // APK 大小已由头部徽标行展示，概览不重复
       ('安装时间', _formatInstallTime(_detail.firstInstallTime)),
       ('最近更新', _formatInstallTime(_detail.lastUpdateTime)),
       (
@@ -409,7 +482,7 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
       ),
     ];
 
-    // 构建版本行（Kotlin/Gradle/Java，检测缺失字段 → 「未知」降级，恒展示）
+    // 构建版本行（Kotlin/Gradle/Java/Compose/AGP，检测缺失字段 → 「未知」降级，恒展示）
     final buildRows = <(String, String)>[
       (
         'Kotlin',
@@ -420,6 +493,14 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
         _buildInfo.gradleVersion.isEmpty ? '未知' : _buildInfo.gradleVersion,
       ),
       ('Java', _buildInfo.javaVersion.isEmpty ? '未知' : _buildInfo.javaVersion),
+      (
+        'Jetpack Compose',
+        _buildInfo.composeVersion.isEmpty ? '未知' : _buildInfo.composeVersion,
+      ),
+      (
+        'AGP',
+        _buildInfo.agpVersion.isEmpty ? '未知' : _buildInfo.agpVersion,
+      ),
       ('16KB 对齐', _elfSummaryText()),
     ];
 
@@ -1339,6 +1420,9 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
     final displayName = _detail.installerAppName.isNotEmpty
         ? _detail.installerAppName
         : _detail.installer;
+final displayText = _detail.installerAppName.isNotEmpty
+      ? '$displayName (${_detail.installer})'
+      : displayName;
     return Padding(
       padding: const EdgeInsets.only(bottom: AppSpacing.xs),
       child: Row(
@@ -1366,7 +1450,7 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
                         ),
                       Expanded(
                         child: Text(
-                          '$displayName (${_detail.installer})',
+                          displayText,
                           style: valueStyle,
                           maxLines: 2,
                           overflow: TextOverflow.ellipsis,

@@ -62,6 +62,8 @@ void main() {
     ApkComponents? components,
     BuildVersionInfo buildVersions = const BuildVersionInfo(),
     ApkElfScanResult elfScan = const ApkElfScanResult(soFiles: []),
+    ({List<ComponentStateDetail> components, List<PermissionStateDetail> permissions})?
+        componentsDetail = const (components: [], permissions: []),
   }) {
     ApkLibraryAnalyzer.instance.debugSetAbis(abis);
     ApkLibraryAnalyzer.instance.debugSetFullNativeLibs(fullLibs);
@@ -69,6 +71,7 @@ void main() {
     ApkLibraryAnalyzer.instance.debugSetBuildVersions(buildVersions);
     ApkSourceService.instance.debugSetPermissions(permissions);
     ApkSourceService.instance.debugSetInstalledAppDetail(detail);
+    ApkSourceService.instance.debugSetComponentsDetail(componentsDetail);
     SdkAnalysisPage.debugSetComponents(components);
     SdkAnalysisPage.debugSetElfScan(elfScan);
     addTearDown(() {
@@ -78,6 +81,7 @@ void main() {
       ApkLibraryAnalyzer.instance.debugSetBuildVersions(null);
       ApkSourceService.instance.debugSetPermissions(null);
       ApkSourceService.instance.debugSetInstalledAppDetail(null);
+      ApkSourceService.instance.debugSetComponentsDetail(null);
       SdkAnalysisPage.debugSetComponents(null);
       SdkAnalysisPage.debugSetElfScan(null);
     });
@@ -187,25 +191,25 @@ void main() {
 
     await pumpPage(tester);
 
-    // 包名/版本/安装路径
+    // 包名/安装路径（版本已移至头部徽标行，概览不再重复）
     expect(find.text('包名'), findsOneWidget);
     expect(find.text('com.example.test'), findsNWidgets(2)); // 头部 + 概览行
-    expect(find.text('版本'), findsOneWidget);
-    expect(find.text('1.0.0 (1)'), findsOneWidget);
     expect(find.text('安装路径'), findsOneWidget);
     expect(find.text('/no/such/file.apk'), findsOneWidget);
+    // 头部概览徽标：版本(code) / SDK 摘要
+    expect(find.text('1.0.0 (1)'), findsOneWidget);
+    expect(find.text('SDK 未知 – 未知'), findsOneWidget);
     // 新增行（详情为空 → 全部「未知」）
     expect(find.text('主 Activity'), findsOneWidget);
-    expect(find.text('APK 大小'), findsOneWidget);
     expect(find.text('安装时间'), findsOneWidget);
     expect(find.text('最近更新'), findsOneWidget);
-    // SDK 版本解析失败 + 详情缺失 → 共 14 处「未知」降级
-    // （主 Activity/APK 大小/安装时间/最近更新/minSdk/targetSdk + 新增
-    // UID/共享 UID/安装来源/数据目录 + Kotlin/Gradle/Java 构建版本 +
-    // 16KB 对齐（无 ELF 扫描数据））
+    // SDK 版本解析失败 + 详情缺失 → 共 15 处「未知」降级
+    // （主 Activity/安装时间/最近更新/minSdk/targetSdk + 新增
+    // UID/共享 UID/安装来源/数据目录 + Kotlin/Gradle/Java/Compose/AGP 构建版本 +
+    // 16KB 对齐（无 ELF 扫描数据）；APK 大小/版本已移至头部徽标）
     expect(find.text('minSdk'), findsOneWidget);
     expect(find.text('targetSdk'), findsOneWidget);
-    expect(find.text('未知'), findsNWidgets(14));
+    expect(find.text('未知'), findsNWidgets(15));
     // ABI 非空 → 渲染 chips
     expect(find.text('ABI 架构'), findsOneWidget);
     expect(find.text('arm64-v8a'), findsOneWidget);
@@ -230,12 +234,12 @@ void main() {
 
     expect(find.text('主 Activity'), findsOneWidget);
     expect(find.text('com.example.MainActivity'), findsOneWidget);
-    expect(find.text('APK 大小'), findsOneWidget);
+    // APK 大小已移至头部徽标行（唯一展示）
     expect(find.text('12.5 MB'), findsOneWidget);
     // 安装时间/最近更新为 0 → 未知；minSdk/targetSdk 回退详情值；
     // 新增系统行（UID/共享 UID/安装来源/数据目录）与构建版本行
-    // （Kotlin/Gradle/Java）详情缺失 + 16KB 对齐（无 ELF 扫描数据） → 未知
-    expect(find.text('未知'), findsNWidgets(10));
+    // （Kotlin/Gradle/Java/Compose/AGP）详情缺失 + 16KB 对齐（无 ELF 扫描数据） → 未知
+    expect(find.text('未知'), findsNWidgets(12));
     expect(find.text('24'), findsOneWidget);
     expect(find.text('34'), findsOneWidget);
     expect(tester.takeException(), isNull);
@@ -261,8 +265,9 @@ void main() {
     expect(find.text('8.7'), findsOneWidget);
     expect(find.text('17'), findsOneWidget);
     // 构建版本全部命中 → 此轮无构建版本相关的「未知」
-    // （其余 detail/系统行 + 16KB 对齐缺失 → 11 处未知）
-    expect(find.text('未知'), findsNWidgets(11));
+    // （其余 detail/系统行 + Compose/AGP 缺失 + 16KB 对齐缺失 → 12 处未知；
+    // APK 大小/版本已移至头部徽标）
+    expect(find.text('未知'), findsNWidgets(12));
     expect(tester.takeException(), isNull);
   });
 
@@ -608,8 +613,8 @@ void main() {
     expect(find.text('是否调试'), findsOneWidget);
     expect(find.text('数据目录'), findsOneWidget);
     // 系统行 UID/共享 UID/安装来源/数据目录 + 构建版本行 Kotlin/Gradle/Java
-    // + 16KB 对齐（无 ELF 扫描数据） → 未知（版本/包名等行不叠加）
-    expect(find.text('未知'), findsNWidgets(14));
+    // + Compose/AGP 缺失 + 16KB 对齐（无 ELF 扫描数据） → 未知（版本/包名/APK 大小等行不叠加）
+    expect(find.text('未知'), findsNWidgets(15));
     expect(find.text('是'), findsNothing);
     expect(find.text('否'), findsNWidgets(2));
     expect(tester.takeException(), isNull);
