@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
+import 'package:gstore/core/design/design_tokens.dart' show AppIcon;
 import 'package:gstore/core/core.dart' show applyProxyIfNeeded, getProxy;
 import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
@@ -12,7 +13,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 ///
 /// 验证下载二维码弹窗内容：
 /// - 白底 QR 平板（AppColors.white 可扫码性）
-/// - QrImageView：data=下载链接、size=108、无 embeddedImage
+/// - QrImageView：data=下载链接、size=200（大尺寸保证长 URL 可扫）、中心衬板叠加应用图标（EC H）
 /// - 下方 AppIcon(24×24) + 应用名称（bodySmall）
 class _FakeDetailInfo implements IDetailInfo {
   @override
@@ -60,7 +61,7 @@ class _FakeDetailInfo implements IDetailInfo {
 }
 
 void main() {
-  testWidgets('渲染 QR 平板：白底、无 embeddedImage、size 108', (tester) async {
+  testWidgets('渲染 QR 平板：白底、中心衬板叠加应用图标、size 200、EC H', (tester) async {
     final detail = _FakeDetailInfo();
     final download = DownloadInfo(
       url: 'https://example.com/app.apk',
@@ -77,10 +78,15 @@ void main() {
       ),
     );
 
-    // QrImageView：size=108 + 无 embeddedImage
+    // QrImageView：size=200 + EC H（图标覆盖数据区需要高纠错）+ 无 embeddedImage
+    //（图标经 Stack 白底衬板叠加）
     final qr = tester.widget<QrImageView>(find.byType(QrImageView));
-    expect(qr.size, 108);
+    expect(qr.size, 200);
     expect(qr.embeddedImage, isNull);
+    expect(qr.errorCorrectionLevel, QrErrorCorrectLevel.H);
+
+    // 两个 AppIcon：QR 中心衬板 + 下方应用名行
+    expect(find.byType(AppIcon), findsNWidgets(2));
 
     // 白底容器
     final whiteContainer = tester.widget<Container>(

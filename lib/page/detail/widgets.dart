@@ -1756,10 +1756,41 @@ class _QrDialogContentState extends State<_QrDialogContent> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          QrImageView(
-            data: qrData,
-            version: QrVersions.auto,
-            size: 108,
+          // 200×200：长代理 URL 会生成高版本二维码，108px 时模块过小无法识别
+          //（实测 180px+ 才稳定），放大保证可扫。
+          SizedBox(
+            width: 200,
+            height: 200,
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                QrImageView(
+                  data: qrData,
+                  version: QrVersions.auto,
+                  size: 200,
+                  // 中心图标覆盖数据区须用高纠错（H）才能恢复
+                  errorCorrectionLevel: QrErrorCorrectLevel.H,
+                ),
+                // 白底圆角衬板 + 当前应用图标（标准 QR logo 样式；白衬板使图标
+                // 边缘不直接触碰模块，解码器将其视为干净的"空白损坏区"）
+                Container(
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: AppRadius.allSM,
+                  ),
+                  alignment: Alignment.center,
+                  padding: const EdgeInsets.all(6),
+                  child: AppIcon(
+                    url: widget.detail.icon,
+                    width: 32,
+                    height: 32,
+                    borderRadius: AppRadius.xs,
+                  ),
+                ),
+              ],
+            ),
           ),
           // 当前二维码 URL 小字（便于确认代理前后差异）
           Padding(
