@@ -207,13 +207,23 @@ void main() {
     testWidgets('④b 下线后 AI ListTile 与其下方 Divider 一并隐藏（视觉无残留分割线）',
         (tester) async {
       await pumpMinePage(tester);
+
+      // 上线态：AI/已安装/设置 三个 tile → 2 个 Divider
+      expect(
+          find.descendant(
+              of: find.ancestor(
+                  of: find.text('已安装应用'), matching: find.byType(Card)),
+              matching: find.byType(Divider)),
+          findsNWidgets(2));
+
       await disableAgent(tester);
 
-      // 卡片内剩余 ListTile 之间的 Divider 数量 = 2（已安装/设置 之间）
+      // 下线态：已安装/设置 两个 tile → 恰好 1 个 Divider（AI 与其 Divider 一并隐藏；
+      // 若 Divider 残留会检出 2 个）
       final quickCard = find.ancestor(
           of: find.text('已安装应用'), matching: find.byType(Card));
       expect(find.descendant(of: quickCard, matching: find.byType(Divider)),
-          findsNWidgets(2));
+          findsNWidgets(1));
       expect(tester.takeException(), isNull);
     });
   });
