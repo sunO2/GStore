@@ -37,7 +37,7 @@ DEFAULT_BUNDLE = (
     os.path.expanduser("~/develop/flutter/project/github/LibChecker-Rules-Bundle")
 )
 DEFAULT_OUT = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "lcrules"
+    os.path.dirname(os.path.abspath(__file__)), "assets", "lcrules"
 )
 
 
