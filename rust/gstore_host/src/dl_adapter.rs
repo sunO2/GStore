@@ -319,3 +319,85 @@ mod analyzer_tests {
         mgr.unref(id);
     }
 }
+
+#[cfg(test)]
+
+#[cfg(test)]
+mod repo_tests {
+    use super::*;
+    use gstore_contract::envelope::{EnvelopeRequest, EnvelopeResponse};
+    use std::sync::Mutex as TestMutex;
+
+    /// 测试级互斥锁：repo/gstore_mod_repo.so 的实例状态是进程级共享的，
+    /// 多个测试并发操作会互相清空（shutdown/unref clear 共享表）。
+    /// 生产用 ModuleManager::global()（单例）无此问题，测试必须串行。
+    static SHARED_STATE_LOCK: TestMutex<()> = TestMutex::new(());
+
+    /// 集成测试：dlopen gstore_mod_repo.so → create（SQLite 内存库）
+    /// → ping / get_one_app（空库 null）→ destroy。
+    /// 验证 repo 域拆分三要素：register 符号按名解析 / 有状态实例 / 生命周期。
+    /// 注：download_repo 需外网，不入单测（用 ping + 空库查询验证链路）。
+    #[test]
+    fn repo_module_handshake_state_and_lifecycle() {
+        let _lock = SHARED_STATE_LOCK.lock().unwrap();
+        let so_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../gstore_mod_repo/target/debug/libgstore_mod_repo.so");
+        if !so_path.exists() {
+            eprintln!("SKIP: repo module .so not built: {}", so_path.display());
+            return;
+        }
+
+        let adapter = DlModuleAdapter::load(&so_path).expect("dlopen + handshake");
+        assert_eq!(adapter.name(), "repo");
+
+        // create：SQLite 内存库实例（create 传 db_path config）
+        let inst = adapter.create(b":memory:").expect("create instance");
+        // ping
+        let out = adapter.call(Some(inst), "ping", &[]).expect("call ping");
+        assert_eq!(out, b"pong");
+
+        // get_one_app：空库 → JSON null（有状态 SQLite 连接可用）
+        let out = adapter.call(Some(inst), "get_one_app", &[]).expect("get_one_app");
+        let text = String::from_utf8_lossy(&out);
+        assert_eq!(text, "null", "empty db should return null, got: {text}");
+
+        // get_app_count：0
+        let out = adapter.call(Some(inst), "get_app_count", &[]).expect("get_app_count");
+        assert!(String::from_utf8_lossy(&out).contains("\"count\":0"));
+
+        // destroy
+        adapter.destroy(inst).expect("destroy");
+        adapter.shutdown();
+    }
+
+    /// 通过 ModuleManager 信封级调用 repo 模块（ping 路由）
+    #[test]
+    fn module_manager_loads_repo_module_from_so() {
+        let _lock = SHARED_STATE_LOCK.lock().unwrap();
+        let so_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../gstore_mod_repo/target/debug/libgstore_mod_repo.so");
+        if !so_path.exists() {
+            eprintln!("SKIP: repo module .so not built");
+            return;
+        }
+
+        let mgr = crate::manager::ModuleManager::new();
+        let id = mgr.load_module_from_so(&so_path).expect("load repo");
+        assert!(mgr.is_loaded(id));
+
+        // 信封级调用 ping：按模块名 "repo" 路由
+        let req = EnvelopeRequest::new("repo", None, "ping", vec![]);
+        let resp = EnvelopeResponse::decode(&mgr.call_envelope(&req.encode().unwrap())).unwrap();
+        assert!(resp.is_ok());
+        assert_eq!(resp.payload(), b"pong");
+
+        // 证书信封调用 get_one_app（需实例）：create → 信封
+        let inst = mgr.call_create(id, b":memory:").expect("create");
+        let req = EnvelopeRequest::new("repo", Some(&inst.to_string()), "get_one_app", vec![]);
+        let resp = EnvelopeResponse::decode(&mgr.call_envelope(&req.encode().unwrap())).unwrap();
+        assert!(resp.is_ok(), "resp status={} err={}", resp.status(), resp.error_message());
+        assert_eq!(String::from_utf8_lossy(resp.payload()), "null");
+
+        mgr.unref(id);
+    }
+}

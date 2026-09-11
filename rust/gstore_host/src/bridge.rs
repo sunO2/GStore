@@ -1,20 +1,6 @@
 // Flutter FFI Bridge - 暴露给 Dart 的接口
 use flutter_rust_bridge::frb;
 use super::models::*;
-use super::repo::*;
-
-/// APK 解析结果（结构体将自动生成 Dart 侧对应类；实现已移至 gstore_mod_analyzer 模块）
-pub use crate::models::ApkInfo;
-
-/// 二维码单帧解码结果（结构体将自动生成 Dart 侧对应类；实现已移至 gstore_mod_qr 模块）
-pub use crate::models::QrDecodeResult;
-
-/// Manifest 组件枚举结果（结构体将自动生成 Dart 侧对应类；实现已移至 gstore_mod_analyzer 模块）
-pub use crate::models::ApkComponents;
-
-/// APK 内 ELF .so 16KB 页对齐扫描结果（结构体将自动生成 Dart 侧对应类；实现已移至 gstore_mod_analyzer 模块）
-#[allow(unused_imports)]
-pub use crate::models::{ApkElfScanResult, ElfSoInfo};
 
 /// 日志消息数据类（架构文档 6.8；普通数据类，跨模块 re-export 可被 FRB 跟随）
 pub use crate::log_bridge::LogMessage;
@@ -53,71 +39,6 @@ impl EventBridge {
     /// 订阅模块事件流。首次订阅时补发环形缓冲中的历史事件。
     pub fn events_stream(&self, sink: crate::frb_generated::StreamSink<ModuleEvent>) {
         crate::event_bridge::subscribe(sink);
-    }
-}
-
-/// F-Droid 仓库管理器
-#[frb(opaque)]
-pub struct FdroidRepoManager {
-    manager: Option<RepoManager>,
-}
-
-impl FdroidRepoManager {
-    /// 创建新实例（构造函数）
-    #[frb(init)]
-    pub fn new() -> Self {
-        Self {
-            manager: None,
-        }
-    }
-
-    /// 初始化管理器
-    pub fn initialize(&mut self, db_path: String) -> Result<(), String> {
-        // 初始化 Android logger
-        #[cfg(target_os = "android")]
-        android_logger::init_once(
-            android_logger::Config::default()
-                .with_max_level(log::LevelFilter::Info)
-                .with_tag("FdroidRust")
-        );
-
-        match RepoManager::new(&db_path) {
-            Ok(manager) => {
-                self.manager = Some(manager);
-                Ok(())
-            }
-            Err(e) => Err(e.to_string()),
-        }
-    }
-
-    /// 下载并解析 F-Droid 仓库（异步）
-    pub async fn download_repo(&self, repo_url: String) -> Result<DownloadResult, String> {
-        let manager = self.manager.as_ref().ok_or("Manager not initialized")?;
-        manager.download_repo(&repo_url).await
-    }
-
-    /// 获取应用数量
-    pub fn get_app_count(&self) -> Result<i32, String> {
-        let manager = self.manager.as_ref().ok_or("Manager not initialized")?;
-        manager.get_app_count().map_err(|e| e.to_string())
-    }
-
-    /// 搜索应用
-    pub fn search_apps(&self, keyword: String, limit: i32) -> Result<Vec<AppInfo>, String> {
-        let manager = self.manager.as_ref().ok_or("Manager not initialized")?;
-        manager.search_apps(&keyword, limit).map_err(|e| e.to_string())
-    }
-
-    /// 清空所有应用数据
-    pub fn clear_apps(&self) -> Result<i32, String> {
-        let manager = self.manager.as_ref().ok_or("Manager not initialized")?;
-        manager.clear_apps()
-    }
-
-    /// 获取一个应用（用于调试）
-    pub fn get_one_app(&self) -> Result<Option<AppInfo>, String> {
-        let manager = self.manager.as_ref().ok_or("Manager not initialized")?;
-        manager.get_one_app()
     }
 }
 

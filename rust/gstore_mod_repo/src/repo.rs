@@ -16,7 +16,7 @@ macro_rules! debug_print {
 
 /// 仓库管理器 (简化版)
 #[derive(Clone)]
-pub(crate) struct RepoManager {
+pub struct RepoManager {
     db: Arc<Mutex<Connection>>,
 }
 
