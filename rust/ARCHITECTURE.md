@@ -657,6 +657,54 @@ SHA-256 单独即可自洽的理由：GStore 走 GitHub Release 分发（不经 
 
 ---
 
+## 附录 A：repo 域拆分（已完成 2026-09-11）
+
+> **前置验证**：拆分前用 `gstore_mod_repo_poc` 独立 cdylib 验证三要素（async 跨 C ABI / SQLite 有状态 / 实例生命周期），
+> 结论已实施。PoC 为临时验证产物，拆分完成后已移除。
+
+**拆分成果**：
+
+| 项 | 内容 |
+|---|---|
+| 新 crate | `gstore_mod_repo`（cdylib）：RepoManager + AppInfo/DownloadResult + async block_on + SQLite 有状态实例 |
+| 宿主瘦身 | 移除 FdroidRepoManager FRB + repo.rs + reqwest/tokio/rusqlite/quick-xml/chrono/zip 依赖 → 宿主机身 **3.7M → 644K**（arm64） |
+| Dart 适配 | `FdroidRustRepoManager` 改走模块路由（ModuleLoader → dlopen → 信封调用 gstore_mod_repo），服务层 API 签名不变 |
+| 集成测试 | host 15 passed（含 repo 模块握手/状态/信封全链路；测试互斥锁规避共享 .so 静态状态竞争） |
+| 内置方案 | `libgstore_mod_repo.so` 入 jniLibs 4 ABI，经 extractModule 通道加载 |
+
+**关键约束（PoC 验证 + 实施确认）**：
+
+1. **rusqlite `Connection` 非 Send** → 实例整体 `Arc<Mutex<RepoInstance>>`，call 时锁实例串行（单写者）
+2. **全局注册表锁绝不跨越 async 任务** → call_impl 先从全局锁取 Arc clone 立即释放，再锁实例执行 `runtime.block_on`。否则全局锁被长任务持有导致所有实例串行
+3. **tokio Runtime 每实例一个** → 下载不共享线程池，避免跨 .so 冲突
+4. **测试互斥锁**：同一 .so 的进程级静态状态（INSTANCES 表）被多个测试并发操作会互相 clear——测试须串行（生产用 `ModuleManager::global()` 单例无此问题）
+
+
+
+**背景**：repo 是唯一有状态（SQLite）+ async（reqwest 下载）+ 高频的域。拆分前用
+`gstore_mod_repo_poc` 独立 cdylib 验证三要素（与架构讨论同步，避免实施后返工）。
+
+**验证点与结论**：
+
+| 验证点 | 方法 | 结论 |
+|---|---|---|
+| **async 跨 C ABI** | 模块内 tokio `Runtime::new()` + `runtime.block_on(async)` 模拟 300ms 下载，`call` 同步返回 | ✅ 可行。耗时断言 ≥250ms 证明 async 真实生效；C ABI 同步返回封装 async 无问题 |
+| **有状态实例** | create 时 `:memory:` SQLite 开库建表；download 写库 → search 跨 call 读取 count=1 | ✅ 连接跨 call 保持，实例状态串行读写正确（rusqlite 单写者） |
+| **跨实例并发** | 两个实例并行 download（错开 100ms），断言总耗时 < 500ms | ✅ 修复后通过（0.40s）。**重要约束见下** |
+
+**关键约束（PoC 发现的架构纪律，拆分 repo 必须遵守）**：
+
+1. **rusqlite `Connection` 非 Send** → 实例必须整体 `Arc<Mutex<RepoInstance>>`，`call` 时锁实例串行访问（单写者语义，与现在 `RepoManager` 的 `Arc<Mutex<Connection>>` 一致）
+2. **全局注册表锁绝不能跨越 async 任务** → `call_impl` 先从 `instances()` 全局锁取 `Arc`（clone）**立即释放**，再锁实例执行 `block_on`。否则全局锁在 300ms 任务期间被持有，**所有实例的 call 都串行**（首版 PoC 正是此 bug：602ms 而非并发 300ms）
+3. **tokio Runtime 每实例一个**（`Runtime::new()` 多线程版）→ 下载不共享线程池，避免跨 .so 的 tokio 冲突
+
+**性能基线**：download（300ms async sleep + SQLite 写）经 block_on 总耗时 ≈300ms；跨实例并发启动后 0.40s（两个任务并行）。可接受。
+
+**拆分成本评估**（更新决策 10.2 后记）：
+- 收益：宿主再瘦 ~1.5-2M（移除 tokio/reqwest/rusqlite/quick-xml/chrono/zip）；架构全统一
+- 成本：async 跨 C ABI（如上约束）+ Dart 侧 35 处调用迁移 + SQLite 生命周期跨 .so（`InstanceHandle.dispose` 兜底）
+- **建议**：保持 repo 常驻 preload（决策 2），拆分后 APK 体积不降但宿主更薄；若同时把 repo 改为"不启用 F-Droid 渠道就不加载"才能真正省体积。优先级低于 P0-P4 已交付项。
+
 ## 附录 A：FRB 2.11 实证约束（P1 实测，实施 P2/P3 必须遵守）
 
 P1 实施中通过 3 组实验确认的 flutter_rust_bridge 2.11.1 行为（`rust_input: gstore_host::bridge` 配置下）：

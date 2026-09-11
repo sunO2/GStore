@@ -11,7 +11,7 @@ ANDROID_LIB_DIR="${GSTORE_LIB_DIR:-/home/hezhihu89/develop/flutter/project/GStor
 # 可下载模块的输出目录（不进 APK，发布时作为 GitHub Release 附件分发）
 MODULE_DIR="${GSTORE_MODULE_DIR:-/home/hezhihu89/develop/flutter/project/GStore/rust/release-modules}"
 # 需要构建的可下载模块（crate 名 -> 目录）
-MODULES=("gstore_mod_qr" "gstore_mod_analyzer")
+MODULES=("gstore_mod_qr" "gstore_mod_analyzer" "gstore_mod_repo")
 
 # 颜色输出
 GREEN='\033[0;32m'

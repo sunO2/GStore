@@ -6,7 +6,6 @@
 import 'event_bridge.dart';
 import 'frb_generated.dart';
 import 'log_bridge.dart';
-import 'models.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<EventBridge>>
@@ -17,33 +16,6 @@ abstract class EventBridge implements RustOpaqueInterface {
   // HINT: Make it `#[frb(sync)]` to let it become the default constructor of Dart class.
   static Future<EventBridge> newInstance() =>
       RustLib.instance.api.crateBridgeEventBridgeNew();
-}
-
-// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<FdroidRepoManager>>
-abstract class FdroidRepoManager implements RustOpaqueInterface {
-  /// 清空所有应用数据
-  Future<int> clearApps();
-
-  /// 下载并解析 F-Droid 仓库（异步）
-  Future<DownloadResult> downloadRepo({required String repoUrl});
-
-  /// 获取应用数量
-  Future<int> getAppCount();
-
-  /// 获取一个应用（用于调试）
-  Future<AppInfo?> getOneApp();
-
-  /// 初始化管理器
-  Future<void> initialize({required String dbPath});
-
-  // HINT: Make it `#[frb(sync)]` to let it become the default constructor of Dart class.
-  /// 创建新实例（构造函数）
-  static Future<FdroidRepoManager> newInstance() =>
-      RustLib.instance.api.crateBridgeFdroidRepoManagerNew();
-
-  /// 搜索应用
-  Future<List<AppInfo>> searchApps(
-      {required String keyword, required int limit});
 }
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<InstanceHandle>>

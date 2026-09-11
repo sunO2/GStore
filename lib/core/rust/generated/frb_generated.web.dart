@@ -12,7 +12,6 @@ import 'dart:convert';
 import 'event_bridge.dart';
 import 'frb_generated.dart';
 import 'log_bridge.dart';
-import 'models.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated_web.dart';
 
 abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
@@ -26,10 +25,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   CrossPlatformFinalizerArg
       get rust_arc_decrement_strong_count_EventBridgePtr => wire
           .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerEventBridge;
-
-  CrossPlatformFinalizerArg
-      get rust_arc_decrement_strong_count_FdroidRepoManagerPtr => wire
-          .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFdroidRepoManager;
 
   CrossPlatformFinalizerArg
       get rust_arc_decrement_strong_count_InstanceHandlePtr => wire
@@ -51,11 +46,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
           dynamic raw);
 
   @protected
-  FdroidRepoManager
-      dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFdroidRepoManager(
-          dynamic raw);
-
-  @protected
   InstanceHandle
       dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerInstanceHandle(
           dynamic raw);
@@ -71,18 +61,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
           dynamic raw);
 
   @protected
-  FdroidRepoManager
-      dco_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFdroidRepoManager(
-          dynamic raw);
-
-  @protected
   EventBridge
       dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerEventBridge(
-          dynamic raw);
-
-  @protected
-  FdroidRepoManager
-      dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFdroidRepoManager(
           dynamic raw);
 
   @protected
@@ -103,11 +83,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   EventBridge
       dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerEventBridge(
-          dynamic raw);
-
-  @protected
-  FdroidRepoManager
-      dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFdroidRepoManager(
           dynamic raw);
 
   @protected
@@ -136,31 +111,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String dco_decode_String(dynamic raw);
 
   @protected
-  AppInfo dco_decode_app_info(dynamic raw);
-
-  @protected
   bool dco_decode_bool(dynamic raw);
-
-  @protected
-  AppInfo dco_decode_box_autoadd_app_info(dynamic raw);
-
-  @protected
-  PlatformInt64 dco_decode_box_autoadd_i_64(dynamic raw);
-
-  @protected
-  DownloadResult dco_decode_download_result(dynamic raw);
 
   @protected
   int dco_decode_i_32(dynamic raw);
 
   @protected
   PlatformInt64 dco_decode_i_64(dynamic raw);
-
-  @protected
-  List<String> dco_decode_list_String(dynamic raw);
-
-  @protected
-  List<AppInfo> dco_decode_list_app_info(dynamic raw);
 
   @protected
   List<int> dco_decode_list_prim_u_8_loose(dynamic raw);
@@ -173,15 +130,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   ModuleEvent dco_decode_module_event(dynamic raw);
-
-  @protected
-  String? dco_decode_opt_String(dynamic raw);
-
-  @protected
-  AppInfo? dco_decode_opt_box_autoadd_app_info(dynamic raw);
-
-  @protected
-  PlatformInt64? dco_decode_opt_box_autoadd_i_64(dynamic raw);
 
   @protected
   BigInt dco_decode_u_64(dynamic raw);
@@ -204,11 +152,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
           SseDeserializer deserializer);
 
   @protected
-  FdroidRepoManager
-      sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFdroidRepoManager(
-          SseDeserializer deserializer);
-
-  @protected
   InstanceHandle
       sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerInstanceHandle(
           SseDeserializer deserializer);
@@ -224,18 +167,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
           SseDeserializer deserializer);
 
   @protected
-  FdroidRepoManager
-      sse_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFdroidRepoManager(
-          SseDeserializer deserializer);
-
-  @protected
   EventBridge
       sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerEventBridge(
-          SseDeserializer deserializer);
-
-  @protected
-  FdroidRepoManager
-      sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFdroidRepoManager(
           SseDeserializer deserializer);
 
   @protected
@@ -256,11 +189,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   EventBridge
       sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerEventBridge(
-          SseDeserializer deserializer);
-
-  @protected
-  FdroidRepoManager
-      sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFdroidRepoManager(
           SseDeserializer deserializer);
 
   @protected
@@ -290,31 +218,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String sse_decode_String(SseDeserializer deserializer);
 
   @protected
-  AppInfo sse_decode_app_info(SseDeserializer deserializer);
-
-  @protected
   bool sse_decode_bool(SseDeserializer deserializer);
-
-  @protected
-  AppInfo sse_decode_box_autoadd_app_info(SseDeserializer deserializer);
-
-  @protected
-  PlatformInt64 sse_decode_box_autoadd_i_64(SseDeserializer deserializer);
-
-  @protected
-  DownloadResult sse_decode_download_result(SseDeserializer deserializer);
 
   @protected
   int sse_decode_i_32(SseDeserializer deserializer);
 
   @protected
   PlatformInt64 sse_decode_i_64(SseDeserializer deserializer);
-
-  @protected
-  List<String> sse_decode_list_String(SseDeserializer deserializer);
-
-  @protected
-  List<AppInfo> sse_decode_list_app_info(SseDeserializer deserializer);
 
   @protected
   List<int> sse_decode_list_prim_u_8_loose(SseDeserializer deserializer);
@@ -327,15 +237,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   ModuleEvent sse_decode_module_event(SseDeserializer deserializer);
-
-  @protected
-  String? sse_decode_opt_String(SseDeserializer deserializer);
-
-  @protected
-  AppInfo? sse_decode_opt_box_autoadd_app_info(SseDeserializer deserializer);
-
-  @protected
-  PlatformInt64? sse_decode_opt_box_autoadd_i_64(SseDeserializer deserializer);
 
   @protected
   BigInt sse_decode_u_64(SseDeserializer deserializer);
@@ -360,11 +261,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
-      sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFdroidRepoManager(
-          FdroidRepoManager self, SseSerializer serializer);
-
-  @protected
-  void
       sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerInstanceHandle(
           InstanceHandle self, SseSerializer serializer);
 
@@ -380,18 +276,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
-      sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFdroidRepoManager(
-          FdroidRepoManager self, SseSerializer serializer);
-
-  @protected
-  void
       sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerEventBridge(
           EventBridge self, SseSerializer serializer);
-
-  @protected
-  void
-      sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFdroidRepoManager(
-          FdroidRepoManager self, SseSerializer serializer);
 
   @protected
   void
@@ -412,11 +298,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void
       sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerEventBridge(
           EventBridge self, SseSerializer serializer);
-
-  @protected
-  void
-      sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFdroidRepoManager(
-          FdroidRepoManager self, SseSerializer serializer);
 
   @protected
   void
@@ -445,33 +326,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_String(String self, SseSerializer serializer);
 
   @protected
-  void sse_encode_app_info(AppInfo self, SseSerializer serializer);
-
-  @protected
   void sse_encode_bool(bool self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_box_autoadd_app_info(AppInfo self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_box_autoadd_i_64(
-      PlatformInt64 self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_download_result(
-      DownloadResult self, SseSerializer serializer);
 
   @protected
   void sse_encode_i_32(int self, SseSerializer serializer);
 
   @protected
   void sse_encode_i_64(PlatformInt64 self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_list_String(List<String> self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_list_app_info(List<AppInfo> self, SseSerializer serializer);
 
   @protected
   void sse_encode_list_prim_u_8_loose(List<int> self, SseSerializer serializer);
@@ -485,17 +346,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_module_event(ModuleEvent self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_opt_String(String? self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_opt_box_autoadd_app_info(
-      AppInfo? self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_opt_box_autoadd_i_64(
-      PlatformInt64? self, SseSerializer serializer);
 
   @protected
   void sse_encode_u_64(BigInt self, SseSerializer serializer);
@@ -525,18 +375,6 @@ class RustLibWire implements BaseWire {
           int ptr) =>
       wasmModule
           .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerEventBridge(
-              ptr);
-
-  void rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFdroidRepoManager(
-          int ptr) =>
-      wasmModule
-          .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFdroidRepoManager(
-              ptr);
-
-  void rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFdroidRepoManager(
-          int ptr) =>
-      wasmModule
-          .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFdroidRepoManager(
               ptr);
 
   void rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerInstanceHandle(
@@ -588,14 +426,6 @@ extension type RustLibWasmModule._(JSObject _) implements JSObject {
 
   external void
       rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerEventBridge(
-          int ptr);
-
-  external void
-      rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFdroidRepoManager(
-          int ptr);
-
-  external void
-      rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFdroidRepoManager(
           int ptr);
 
   external void
