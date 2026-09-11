@@ -1,0 +1,26 @@
+[package]
+name = "gstore_mod_qr"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "gstore_mod_qr"
+crate-type = ["cdylib"]
+
+[dependencies]
+# 模块契约层（C ABI 结构体、错误模型）
+gstore_contract = { path = "../gstore_contract" }
+# 二维码解码（zxing-cpp C++ 核心，bundled 自动编译静态链接）
+zxing-cpp = { version = "0.5", features = ["bundled"] }
+# JSON（响应编码）
+serde_json = "1.0"
+# libc malloc/free（跨 .so 边界内存配对）
+libc = "0.2"
+
+# 模块发布构建：panic 必须 unwind（宿主是 abort），边界 catch_unwind 兜底
+[profile.release]
+panic = "unwind"
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true

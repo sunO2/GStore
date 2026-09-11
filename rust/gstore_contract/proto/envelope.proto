@@ -1,0 +1,97 @@
+// GStore 模块通信协议（架构文档 6.1/6.2）
+// 宿主与模块共享的统一数据模型：信封 + 状态码 + 取消消息。
+// P1 用 serde_json 过渡实现同构字段；P3 切换 protobuf。
+
+syntax = "proto3";
+
+package gstore.contract;
+
+// ============ payload 编码格式 ============
+enum PayloadFormat {
+  PAYLOAD_PROTOBUF = 0; // 默认：域 schema 也是 proto
+  PAYLOAD_JSON = 1;    // 调试/快速原型
+  PAYLOAD_RAW_BYTES = 2; // 纯字节透传（QR luma 帧直接裸传）
+}
+
+// ============ 请求信封（类似 HTTP Request） ============
+message EnvelopeRequest {
+  uint32 protocol_version = 1;
+
+  // --- 路由头（代替 URL）---
+  string module = 2;
+  string instance = 3; // 空 = 模块级静态调用
+  string method = 4;
+
+  // --- 元数据 ---
+  string request_id = 5;
+  int64 timestamp_ms = 6;
+  PayloadFormat payload_format = 7;
+  map<string, string> metadata = 8;
+  bytes payload = 10;
+}
+
+// ============ 响应信封（类似 HTTP Response） ============
+message EnvelopeResponse {
+  uint32 protocol_version = 1;
+  string request_id = 2;
+
+  // --- 状态（仿 HTTP 语义分层）---
+  StatusCode status = 3;
+  string error_code = 4;
+  string error_message = 5;
+
+  // --- 元数据 ---
+  int64 timestamp_ms = 6;
+  int64 duration_ms = 7;
+  map<string, string> metadata = 8;
+  bytes payload = 10;
+}
+
+// ============ 取消消息（主动中断长任务） ============
+message EnvelopeCancel {
+  uint32 protocol_version = 1;
+  string request_id = 2;
+  string module = 3;
+  string instance = 4;
+  string method = 5; // 可为空 = 取消该实例所有 in-flight
+  CancelReason reason = 6;
+}
+
+enum CancelReason {
+  CANCEL_USER = 0;
+  CANCEL_TIMEOUT = 1;
+  CANCEL_SHUTDOWN = 2;
+}
+
+// ============ 状态码规范 ============
+// 同 HTTP 逻辑：status 决定处理策略（重试/降级/提示/报 bug），
+// error_code 决定具体原因（日志与排障）。
+enum StatusCode {
+  // 0 占位（proto3 开放枚举强制首值为 0；不用作业务状态）
+  STATUS_UNKNOWN = 0;
+
+  // 2xx 成功
+  STATUS_OK = 200;
+  STATUS_CREATED = 201;
+
+  // 3xx 需要客户端配合（流程，非错误）
+  STATUS_MODULE_NOT_LOADED = 301;
+  STATUS_INSTANCE_EXPIRED = 302;
+
+  // 4xx 调用方错误
+  STATUS_BAD_REQUEST = 400;
+  STATUS_MODULE_NOT_FOUND = 404;
+  STATUS_METHOD_NOT_FOUND = 405;
+  STATUS_INSTANCE_NOT_FOUND = 410;
+  STATUS_INVALID_ARGUMENT = 422;
+  STATUS_VERSION_MISMATCH = 426;
+
+  // 499 主动取消（区别于 5xx 错误）
+  STATUS_ABORTED = 499;
+
+  // 5xx 模块内部错误
+  STATUS_INTERNAL_ERROR = 500;
+  STATUS_PANIC_CAUGHT = 5001;
+  STATUS_RESOURCE_EXHAUSTED = 507;
+  STATUS_TIMEOUT = 504;
+}

@@ -1,0 +1,23 @@
+[package]
+name = "gstore_contract"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "gstore_contract"
+
+[dependencies]
+# JSON 信封（P1 过渡实现，切 protobuf 时换 prost + 结构不变）
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# 日志 trait（HostLogger 实现 log::Log；std 启用 set_boxed_logger）
+log = { version = "0.4", features = ["std"] }
+prost = { version = "0.14.4", default-features = true, features = ["derive"] }
+ed25519-dalek = { version = "2", features = ["rand_core"], default-features = false }
+sha2 = "0.11.0"
+hex = "0.4.3"
+rand_core = { version = "0.6", features = ["std"] }
+
+[build-dependencies]
+prost-build = "0.14.4"
+protoc-bin-vendored = "3.2.0"

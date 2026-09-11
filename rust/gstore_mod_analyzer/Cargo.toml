@@ -1,0 +1,31 @@
+[package]
+name = "gstore_mod_analyzer"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "gstore_mod_analyzer"
+crate-type = ["cdylib"]
+
+[dependencies]
+# 模块契约层（C ABI 结构体、错误模型）
+gstore_contract = { path = "../gstore_contract" }
+# JSON（响应编码 + Serialize derive）
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# ZIP 解析（APK 容器）
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
+# APK 二进制 XML 解析（AndroidManifest.xml）
+apk-info-axml = "=1.0.11"
+# libc malloc/free（跨 .so 边界内存配对）
+libc = "0.2"
+# 日志（debug_print 宏）
+log = "0.4"
+
+# 模块发布构建：panic 必须 unwind（宿主是 abort），边界 catch_unwind 兜底
+[profile.release]
+panic = "unwind"
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
