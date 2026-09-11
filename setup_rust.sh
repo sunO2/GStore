@@ -19,7 +19,7 @@ flutter pub get
 
 # 4. 生成 bridge 代码
 echo "Generating bridge code..."
-cd rust/fdroid_repo
+cd rust/gstore_host
 FRB_DEBUG_SKIP_SANITY_CHECK_CLASS_NAME_DUPLICATES=1 \
 flutter_rust_bridge_codegen generate \
   --config-file frb_config.yaml
@@ -35,8 +35,8 @@ echo ""
 echo "Setup complete!"
 echo ""
 echo "Rust library compiled successfully:"
-echo "  - target/release/libfdroid_repo.so (Linux)"
-echo "  - target/release/libfdroid_repo.a (Static library)"
+echo "  - target/release/libgstore_host.so (Linux)"
+echo "  - target/release/libgstore_host.a (Static library)"
 echo ""
 echo "Generated Dart bridge code:"
 echo "  - lib/core/rust/generated/"

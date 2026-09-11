@@ -64,7 +64,7 @@ chmod +x setup_rust.sh
 
 ```bash
 # 1. 生成 bridge 代码
-cd rust/fdroid_repo
+cd rust/gstore_host
 flutter_rust_bridge_codegen \
   --rust-input src/bridge.rs \
   --dart-output ../../lib/core/rust/generated/ \
@@ -77,7 +77,7 @@ cd ../..
 flutter pub get
 
 # 4. 构建 Rust 库
-cd rust/fdroid_repo
+cd rust/gstore_host
 cargo build --release
 
 # 5. 运行 Flutter 应用
@@ -113,10 +113,10 @@ android {
 
 ```bash
 # macOS/Linux
-ln -s ../../../../../rust/target/release/libfdroid_repo.so libfdroid_repo.so
+ln -s ../../../../../rust/target/release/libgstore_host.so libgstore_host.so
 
 # Windows
-copy ..\..\..\..\rust\target\release\fdroid_repo.dll libfdroid_repo.dll
+copy ..\..\..\..\rust\target\release\fdroid_repo.dll libgstore_host.dll
 ```
 
 ## 使用方法
@@ -174,7 +174,7 @@ class FdroidRepoManager extends GetxController {
 
 **解决方案**：
 ```bash
-cd rust/fdroid_repo
+cd rust/gstore_host
 cargo build --release
 ```
 
@@ -182,7 +182,7 @@ cargo build --release
 
 **解决方案**：
 ```bash
-cd rust/fdroid_repo
+cd rust/gstore_host
 flutter_rust_bridge_codegen --clean
 flutter_rust_bridge_codegen \
   --rust-input src/bridge.rs \

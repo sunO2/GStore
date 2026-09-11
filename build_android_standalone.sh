@@ -14,7 +14,7 @@ echo_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
 echo_success() { echo -e "${GREEN}[✓]${NC} $1"; }
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RUST_DIR="$PROJECT_ROOT/rust/fdroid_repo"
+RUST_DIR="$PROJECT_ROOT/rust/gstore_host"
 ANDROID_LIB_DIR="$PROJECT_ROOT/android/app/src/main/jniLibs"
 
 # Android 架构配置
@@ -63,13 +63,13 @@ for arch_config in "${ARCHS[@]}"; do
     echo "  正在编译..."
     if cargo build --release --target "$target" 2>&1 | grep -E "Compiling|Finished"; then
         # 复制 so 文件
-        so_file="target/$target/release/libfdroid_repo.so"
+        so_file="target/$target/release/libgstore_host.so"
         if [ -f "$so_file" ]; then
             mkdir -p "$ANDROID_LIB_DIR/$arch_name"
             cp "$so_file" "$ANDROID_LIB_DIR/$arch_name/"
 
             # 显示文件大小
-            size=$(du -h "$ANDROID_LIB_DIR/$arch_name/libfdroid_repo.so" | cut -f1)
+            size=$(du -h "$ANDROID_LIB_DIR/$arch_name/libgstore_host.so" | cut -f1)
             echo_success "$arch_name: $size"
         else
             echo "$arch_name: 构建失败 (文件不存在)"
@@ -96,7 +96,7 @@ echo ""
 echo_info "生成的库文件:"
 for arch_config in "${ARCHS[@]}"; do
     IFS=':' read -r target arch_name <<< "$arch_config"
-    so_file="$ANDROID_LIB_DIR/$arch_name/libfdroid_repo.so"
+    so_file="$ANDROID_LIB_DIR/$arch_name/libgstore_host.so"
     if [ -f "$so_file" ]; then
         size=$(du -h "$so_file" | cut -f1)
         echo "  ✓ $arch_name: $size"

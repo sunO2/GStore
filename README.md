@@ -107,7 +107,7 @@ flutter run
 flutter build apk --release --target-platform android-arm64
 ```
 
-> **F-Droid 渠道（可选）**：高性能仓库解析依赖 Rust 库（`rust/fdroid_repo`）。
+> **F-Droid 渠道（可选）**：高性能仓库解析依赖 Rust 库（`rust/gstore_host`）。
 > 如需启用，先执行 `./build_android_rust.sh` 构建 Rust Android 库。
 
 ## 项目结构
@@ -124,7 +124,7 @@ lib/
 ├── page/            # 页面层：首页、发现、下载、设置、备份、WebDAV 配置等
 ├── rust/            # flutter_rust_bridge 生成的 FFI 绑定
 └── compent/         # 通用组件
-rust/fdroid_repo/    # Rust 实现的 F-Droid 仓库解析库
+rust/gstore_host/    # Rust 实现的 F-Droid 仓库解析库
 assets/              # 静态资源（图标、默认数据库等）
 ```
 

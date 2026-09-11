@@ -4,10 +4,14 @@
 
 set -e  # 遇到错误立即退出
 
-# 配置
-NDK_PATH="/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264"
-PROJECT_DIR="/home/hezhihu89/develop/flutter/project/GStore/rust/fdroid_repo"
-ANDROID_LIB_DIR="/home/hezhihu89/develop/flutter/project/GStore/android/app/src/main/jniLibs"
+# 配置（支持环境变量覆盖：CI runner 可传 GSTORE_NDK_PATH/GSTORE_MODULE_DIR 等）
+NDK_PATH="${GSTORE_NDK_PATH:-/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264}"
+PROJECT_DIR="${GSTORE_PROJECT_DIR:-/home/hezhihu89/develop/flutter/project/GStore/rust/gstore_host}"
+ANDROID_LIB_DIR="${GSTORE_LIB_DIR:-/home/hezhihu89/develop/flutter/project/GStore/android/app/src/main/jniLibs}"
+# 可下载模块的输出目录（不进 APK，发布时作为 GitHub Release 附件分发）
+MODULE_DIR="${GSTORE_MODULE_DIR:-/home/hezhihu89/develop/flutter/project/GStore/rust/release-modules}"
+# 需要构建的可下载模块（crate 名 -> 目录）
+MODULES=("gstore_mod_qr" "gstore_mod_analyzer")
 
 # 颜色输出
 GREEN='\033[0;32m'
@@ -118,18 +122,83 @@ EOF
     cargo build --release --target "$target"
 
     # 检查构建结果
-    if [ -f "target/$target/release/libfdroid_repo.so" ]; then
-        local size=$(ls -lh "target/$target/release/libfdroid_repo.so" | awk '{print $5}')
-        echo_success "✓ Built libfdroid_repo.so ($size) for $arch_name"
+    if [ -f "target/$target/release/libgstore_host.so" ]; then
+        local size=$(ls -lh "target/$target/release/libgstore_host.so" | awk '{print $5}')
+        echo_success "✓ Built libgstore_host.so ($size) for $arch_name"
 
         # 复制到 Android 目录
         mkdir -p "$ANDROID_LIB_DIR/$arch_name"
-        cp "target/$target/release/libfdroid_repo.so" "$ANDROID_LIB_DIR/$arch_name/"
+        cp "target/$target/release/libgstore_host.so" "$ANDROID_LIB_DIR/$arch_name/"
         echo_info "✓ Copied to $ANDROID_LIB_DIR/$arch_name/"
     else
         echo_error "✗ Build failed for $arch_name"
         return 1
     fi
+}
+
+# 构建可下载模块（zxing-cpp 等重依赖独立成 .so，不进 APK）
+# 自包含：独立生成 cmake toolchain 包装 + 设置 NDK 环境（不依赖 build_arch）
+build_module() {
+    local module=$1
+    local module_dir="$(dirname "$PROJECT_DIR")/$module"
+    echo_info "Building module: $module"
+    local toolchain_dir="$module_dir/target/cmake-toolchain"
+    mkdir -p "$toolchain_dir"
+
+    cd "$module_dir" || { echo_error "module dir not found: $module_dir"; return 1; }
+
+    for target in "${!ARCHS[@]}"; do
+        local arch_name="${ARCHS[$target]}"
+        local android_abi="$arch_name"
+
+        # 生成该 ABI 的 cmake 包装 toolchain 文件（zxing-cpp bundled 必需）
+        local toolchain_file="$toolchain_dir/$arch_name.cmake"
+        cat > "$toolchain_file" << EOF
+set(ANDROID_ABI $android_abi CACHE STRING "" FORCE)
+set(ANDROID_PLATFORM android-33 CACHE STRING "" FORCE)
+include(\$ENV{ANDROID_NDK_ROOT}/build/cmake/android.toolchain.cmake)
+EOF
+
+        local target_underscore="${target//-/_}"
+        # 关键：勿手动设置 CC/CXX —— NDK android.toolchain.cmake 会正确设置编译器+target+sysroot。
+        # 手动指定（如 aarch64-linux-android33-clang）会触发 zxing-cpp 的 va_list 头文件
+        # 冲突（__bsd_locale_fallbacks.h）且丢失 crt 路径（crtbegin_dynamic.o 找不到）。
+        export ANDROID_NDK_HOME="$NDK_PATH"
+        export ANDROID_NDK_ROOT="$NDK_PATH"
+        export CMAKE_TOOLCHAIN_FILE="$toolchain_file"
+        export RUSTFLAGS="-C link-arg=-l:libc++_static.a -C link-arg=-l:libc++abi.a"
+
+        # cc crate 需要不带版本号的 clang（NDK 只有带 API 版本的）→ 包装脚本
+        local toolchain_bin="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin"
+        local symlink_dir="$module_dir/target/toolchain-bin"
+        mkdir -p "$symlink_dir"
+        if [ "$target" = "aarch64-linux-android" ]; then
+            cat > "$symlink_dir/aarch64-linux-android-clang" << EOF
+#!/bin/sh
+exec "$toolchain_bin/aarch64-linux-android33-clang" "\$@"
+EOF
+            cat > "$symlink_dir/aarch64-linux-android-clang++" << EOF
+#!/bin/sh
+exec "$toolchain_bin/aarch64-linux-android33-clang++" "\$@"
+EOF
+            ln -sf "$toolchain_bin/llvm-ar" "$symlink_dir/aarch64-linux-android-ar"
+        fi
+        chmod +x "$symlink_dir/"*-clang* 2>/dev/null
+        export PATH="$symlink_dir:$PATH"
+
+        cargo build --release --target "$target" 2>&1 | tail -1
+        local out_dir="$MODULE_DIR/$arch_name"
+        mkdir -p "$out_dir"
+        if [ -f "target/$target/release/lib${module}.so" ]; then
+            cp "target/$target/release/lib${module}.so" "$out_dir/"
+            echo_success "✓ $module/$arch_name: $(du -h "$out_dir/lib${module}.so" | cut -f1)"
+        else
+            echo_error "✗ $module build failed for $arch_name"
+        fi
+    done
+
+    # 回到宿主目录
+    cd "$PROJECT_DIR"
 }
 
 # 主流程
@@ -162,6 +231,12 @@ for target in "${!ARCHS[@]}"; do
     echo ""
 done
 
+# 构建可下载模块（可选：MODULES 为空则跳过）
+for module in "${MODULES[@]}"; do
+    build_module "$module"
+    echo ""
+done
+
 # 计算总耗时
 end_time=$(date +%s)
 duration=$((end_time - start_time))
@@ -185,10 +260,10 @@ if [ $FAILED -eq 0 ]; then
     echo ""
     echo_info "Generated files:"
     for arch_dir in "$ANDROID_LIB_DIR"/*/; do
-        if [ -f "$arch_dir/libfdroid_repo.so" ]; then
+        if [ -f "$arch_dir/libgstore_host.so" ]; then
             arch=$(basename "$arch_dir")
-            size=$(ls -lh "$arch_dir/libfdroid_repo.so" | awk '{print $5}')
-            echo_info "  - $arch: libfdroid_repo.so ($size)"
+            size=$(ls -lh "$arch_dir/libgstore_host.so" | awk '{print $5}')
+            echo_info "  - $arch: libgstore_host.so ($size)"
         fi
     done
     echo ""
@@ -199,4 +274,10 @@ if [ $FAILED -eq 0 ]; then
 else
     echo_error "✗ Some builds failed. Check the output above."
     exit 1
+fi
+
+# 仅构建模块（快速验证）：./build_android_rust.sh --module-qr
+if [ "$1" = "--module-qr" ]; then
+    build_module "gstore_mod_qr"
+    exit $?
 fi

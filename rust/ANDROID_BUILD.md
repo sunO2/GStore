@@ -44,10 +44,10 @@
 
 ```
 android/app/src/main/jniLibs/
-├── arm64-v8a/libfdroid_repo.so    (~3.5 MB) - 64位 ARM，推荐
-├── armeabi-v7a/libfdroid_repo.so  (~3.2 MB) - 32位 ARM，兼容老设备
-├── x86/libfdroid_repo.so          (~3.6 MB) - 32位 x86，模拟器
-└── x86_64/libfdroid_repo.so        (~3.8 MB) - 64位 x86，模拟器
+├── arm64-v8a/libgstore_host.so    (~3.5 MB) - 64位 ARM，推荐
+├── armeabi-v7a/libgstore_host.so  (~3.2 MB) - 32位 ARM，兼容老设备
+├── x86/libgstore_host.so          (~3.6 MB) - 32位 x86，模拟器
+└── x86_64/libgstore_host.so        (~3.8 MB) - 64位 x86，模拟器
 ```
 
 ## 验证构建
@@ -62,19 +62,19 @@ ls -lh android/app/src/main/jniLibs/*/
 ```
 arm64-v8a/:
 total 3500
--rwxrwxr-x 1 user user 3500000 Mar 15 16:00 libfdroid_repo.so
+-rwxrwxr-x 1 user user 3500000 Mar 15 16:00 libgstore_host.so
 
 armeabi-v7a/:
 total 3200
--rwxrwxr-x 1 user user 3200000 Mar 15 16:00 libfdroid_repo.so
+-rwxrwxr-x 1 user user 3200000 Mar 15 16:00 libgstore_host.so
 
 x86/:
 total 3600
--rwxrwxr-x 1 user user 3600000 Mar 15 16:00 libfdroid_repo.so
+-rwxrwxr-x 1 user user 3600000 Mar 15 16:00 libgstore_host.so
 
 x86_64/:
 total 3800
--rwxrwxr-x 1 user user 3800000 Mar 15 16:00 libfdroid_repo.so
+-rwxrwxr-x 1 user user 3800000 Mar 15 16:00 libgstore_host.so
 ```
 
 ## 构建流程
@@ -94,21 +94,21 @@ total 3800
 ### 只构建特定架构
 
 ```bash
-cd rust/fdroid_repo
+cd rust/gstore_host
 
 # 构建 arm64-v8a (最常用)
 cargo build --release --target aarch64-linux-android
 
 # 复制到 Android 目录
 mkdir -p ../../android/app/src/main/jniLibs/arm64-v8a
-cp target/aarch64-linux-android/release/libfdroid_repo.so \
+cp target/aarch64-linux-android/release/libgstore_host.so \
    ../../android/app/src/main/jniLibs/arm64-v8a/
 ```
 
 ### 构建所有架构
 
 ```bash
-cd rust/fdroid_repo
+cd rust/gstore_host
 
 # 安装所有 targets
 rustup target add aarch64-linux-android
@@ -123,7 +123,7 @@ done
 
 # 复制文件
 mkdir -p ../../android/app/src/main/jniLibs/{arm64-v8a,armeabi-v7a,x86,x86_64}
-cp target/*/release/libfdroid_repo.so ../../android/app/src/main/jniLibs/*/
+cp target/*/release/libgstore_host.so ../../android/app/src/main/jniLibs/*/
 ```
 
 ## APK 打包
@@ -302,9 +302,9 @@ build:
 
 2. 或者只重新构建修改的架构（更快）：
    ```bash
-   cd rust/fdroid_repo
+   cd rust/gstore_host
    cargo build --release --target aarch64-linux-android
-   cp target/aarch64-linux-android/release/libfdroid_repo.so \
+   cp target/aarch64-linux-android/release/libgstore_host.so \
       ../../android/app/src/main/jniLibs/arm64-v8a/
    ```
 
@@ -312,8 +312,8 @@ build:
 
 ## 相关文件
 
-- `rust/fdroid_repo/Cargo.toml` - Rust 项目配置
-- `rust/fdroid_repo/src/` - Rust 源代码
+- `rust/gstore_host/Cargo.toml` - Rust 项目配置
+- `rust/gstore_host/src/` - Rust 源代码
 - `android/app/build.gradle` - Android Gradle 配置
 - `android/app/src/main/jniLibs/` - Native 库输出目录
 

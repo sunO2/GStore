@@ -16,7 +16,7 @@ echo_success() { echo -e "${GREEN}[✓]${NC} $1"; }
 echo_warning() { echo -e "${YELLOW}[!]${NC} $1"; }
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RUST_DIR="$PROJECT_ROOT/rust/fdroid_repo"
+RUST_DIR="$PROJECT_ROOT/rust/gstore_host"
 ANDROID_LIB_DIR="$PROJECT_ROOT/android/app/src/main/jniLibs"
 
 # 自动检测 NDK
@@ -101,10 +101,10 @@ for arch in "${!TARGETS[@]}"; do
     # 构建
     if cargo build --release --target "$target" 2>&1; then
         # 复制 so 文件
-        cp "target/$target/release/libfdroid_repo.so" "$ANDROID_LIB_DIR/$arch/"
+        cp "target/$target/release/libgstore_host.so" "$ANDROID_LIB_DIR/$arch/"
 
         # 显示大小
-        size=$(du -h "$ANDROID_LIB_DIR/$arch/libfdroid_repo.so" | cut -f1)
+        size=$(du -h "$ANDROID_LIB_DIR/$arch/libgstore_host.so" | cut -f1)
         echo_success "$arch: $size"
     else
         echo_warning "$arch: 构建失败"

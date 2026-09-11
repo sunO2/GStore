@@ -22,10 +22,10 @@
 **生成的文件**：
 ```
 android/app/src/main/jniLibs/
-├── arm64-v8a/libfdroid_repo.so
-├── armeabi-v7a/libfdroid_repo.so
-├── x86/libfdroid_repo.so
-└── x86_64/libfdroid_repo.so
+├── arm64-v8a/libgstore_host.so
+├── armeabi-v7a/libgstore_host.so
+├── x86/libgstore_host.so
+└── x86_64/libgstore_host.so
 ```
 
 ### 2. build_android_rust.sh（完整版）
@@ -79,10 +79,10 @@ flutter build apk --release
 
 ```bash
 # 只构建 arm64-v8a (最常用的架构)
-cd rust/fdroid_repo
+cd rust/gstore_host
 cargo build --release --target aarch64-linux-android
 mkdir -p ../../android/app/src/main/jniLibs/arm64-v8a
-cp target/aarch64-linux-android/release/libfdroid_repo.so \
+cp target/aarch64-linux-android/release/libgstore_host.so \
    ../../android/app/src/main/jniLibs/arm64-v8a/
 ```
 

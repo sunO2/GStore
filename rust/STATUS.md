@@ -10,7 +10,7 @@ Rust 后端实现已完成基础架构，但由于 flutter_rust_bridge 的代码
 
 **项目结构**:
 ```
-rust/fdroid_repo/
+rust/gstore_host/
 ├── Cargo.toml              # Rust 项目配置
 ├── frb_config.yaml         # flutter_rust_bridge 配置
 ├── src/
@@ -19,8 +19,8 @@ rust/fdroid_repo/
 │   ├── models.rs          # 数据模型
 │   └── repo.rs            # 核心仓库管理器
 └── target/release/
-    ├── libfdroid_repo.so  # 编译后的动态库 (3.4MB)
-    └── libfdroid_repo.a   # 静态库 (55MB)
+    ├── libgstore_host.so  # 编译后的动态库 (3.4MB)
+    └── libgstore_host.a   # 静态库 (55MB)
 ```
 
 **核心功能**:
@@ -65,7 +65,7 @@ rust/fdroid_repo/
 
 ```bash
 ✓ Flutter APK 构建成功 (app-debug.apk)
-✓ Rust 库编译成功 (libfdroid_repo.so)
+✓ Rust 库编译成功 (libgstore_host.so)
 ⚠️  Bridge 代码生成存在问题（重复类定义）
 ```
 
@@ -100,7 +100,7 @@ rust/fdroid_repo/
 ### 步骤 1: 重新生成 bridge 代码
 
 ```bash
-cd rust/fdroid_repo
+cd rust/gstore_host
 FRB_DEBUG_SKIP_SANITY_CHECK_CLASS_NAME_DUPLICATES=1 \
 flutter_rust_bridge_codegen generate \
   --config-file frb_config.yaml
@@ -146,12 +146,12 @@ flutter run
 
 | 文件 | 说明 |
 |------|------|
-| rust/fdroid_repo/Cargo.toml | Rust 项目配置 |
-| rust/fdroid_repo/frb_config.yaml | bridge 配置 |
-| rust/fdroid_repo/src/lib.rs | 库入口 |
-| rust/fdroid_repo/src/bridge.rs | FFI 层 |
-| rust/fdroid_repo/src/models.rs | 数据模型 |
-| rust/fdroid_repo/src/repo.rs | 核心实现 |
+| rust/gstore_host/Cargo.toml | Rust 项目配置 |
+| rust/gstore_host/frb_config.yaml | bridge 配置 |
+| rust/gstore_host/src/lib.rs | 库入口 |
+| rust/gstore_host/src/bridge.rs | FFI 层 |
+| rust/gstore_host/src/models.rs | 数据模型 |
+| rust/gstore_host/src/repo.rs | 核心实现 |
 | rust/README.md | 文档 |
 | setup_rust.sh | 设置脚本 |
 | lib/core/rust/FdroidRustRepoManager.dart | Dart 封装 |
@@ -182,7 +182,7 @@ flutter run
 
 **解决方案**:
 ```bash
-cd rust/fdroid_repo
+cd rust/gstore_host
 flutter_rust_bridge_codegen generate --config-file frb_config.yaml
 ```
 
