@@ -417,7 +417,7 @@ void main() {
         _dexRule('androidx.lifecycle', 'AndroidX Lifecycle'),
       ]);
       final apk = await _buildFakeApk(['classes.dex', 'AndroidManifest.xml']);
-      // 测试环境无 Rust 原生库（libfdroid_repo.so 为 Android ABI），
+      // 测试环境无 Rust 原生库（libgstore_host.so 为 Android ABI），
       // RustLib.init 失败 → analyzeDexLibraries 捕获并返回空列表。
       final hits = await ApkLibraryAnalyzer.instance.analyzeDexLibraries(apk);
       expect(hits, isEmpty);
@@ -906,7 +906,7 @@ void main() {
         _componentRule('com.xiaomi.mipush.sdk.MessageHandleService', 'MiPush', type: 1),
       ]);
       final apk = await _buildFakeApk(['classes.dex', 'AndroidManifest.xml']);
-      // 测试环境无 Rust 原生库（libfdroid_repo.so 为 Android ABI），
+      // 测试环境无 Rust 原生库（libgstore_host.so 为 Android ABI），
       // RustLib.init 失败 → analyzeComponents 捕获并返回空列表。
       final hits = await ApkLibraryAnalyzer.instance.analyzeComponents(apk);
       expect(hits, isEmpty);

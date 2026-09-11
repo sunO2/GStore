@@ -4,15 +4,14 @@
 // ignore_for_file: unused_import, unused_element, unnecessary_import, duplicate_ignore, invalid_use_of_internal_member, annotate_overrides, non_constant_identifier_names, curly_braces_in_flow_control_structures, prefer_const_literals_to_create_immutables, unused_field
 
 import 'bridge.dart';
-import 'components.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi' as ffi;
-import 'elf.dart';
+import 'event_bridge.dart';
 import 'frb_generated.dart';
+import 'log_bridge.dart';
 import 'models.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated_io.dart';
-import 'qr_decode.dart';
 
 abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   RustLibApiImplPlatform({
@@ -23,11 +22,31 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   });
 
   CrossPlatformFinalizerArg
+      get rust_arc_decrement_strong_count_EventBridgePtr => wire
+          ._rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerEventBridgePtr;
+
+  CrossPlatformFinalizerArg
       get rust_arc_decrement_strong_count_FdroidRepoManagerPtr => wire
           ._rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFdroidRepoManagerPtr;
 
-  CrossPlatformFinalizerArg get rust_arc_decrement_strong_count_QrDecoderPtr =>
-      wire._rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerQrDecoderPtr;
+  CrossPlatformFinalizerArg
+      get rust_arc_decrement_strong_count_InstanceHandlePtr => wire
+          ._rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerInstanceHandlePtr;
+
+  CrossPlatformFinalizerArg get rust_arc_decrement_strong_count_LogBridgePtr =>
+      wire._rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLogBridgePtr;
+
+  CrossPlatformFinalizerArg
+      get rust_arc_decrement_strong_count_ModuleHandlePtr => wire
+          ._rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerModuleHandlePtr;
+
+  @protected
+  AnyhowException dco_decode_AnyhowException(dynamic raw);
+
+  @protected
+  EventBridge
+      dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerEventBridge(
+          dynamic raw);
 
   @protected
   FdroidRepoManager
@@ -35,8 +54,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
           dynamic raw);
 
   @protected
-  QrDecoder
-      dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerQrDecoder(
+  InstanceHandle
+      dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerInstanceHandle(
+          dynamic raw);
+
+  @protected
+  LogBridge
+      dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLogBridge(
+          dynamic raw);
+
+  @protected
+  ModuleHandle
+      dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerModuleHandle(
           dynamic raw);
 
   @protected
@@ -45,13 +74,33 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
           dynamic raw);
 
   @protected
+  EventBridge
+      dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerEventBridge(
+          dynamic raw);
+
+  @protected
   FdroidRepoManager
       dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFdroidRepoManager(
           dynamic raw);
 
   @protected
-  QrDecoder
-      dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerQrDecoder(
+  InstanceHandle
+      dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerInstanceHandle(
+          dynamic raw);
+
+  @protected
+  LogBridge
+      dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLogBridge(
+          dynamic raw);
+
+  @protected
+  ModuleHandle
+      dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerModuleHandle(
+          dynamic raw);
+
+  @protected
+  EventBridge
+      dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerEventBridge(
           dynamic raw);
 
   @protected
@@ -60,21 +109,29 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
           dynamic raw);
 
   @protected
-  QrDecoder
-      dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerQrDecoder(
+  InstanceHandle
+      dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerInstanceHandle(
           dynamic raw);
 
   @protected
+  LogBridge
+      dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLogBridge(
+          dynamic raw);
+
+  @protected
+  ModuleHandle
+      dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerModuleHandle(
+          dynamic raw);
+
+  @protected
+  RustStreamSink<LogMessage> dco_decode_StreamSink_log_message_Sse(dynamic raw);
+
+  @protected
+  RustStreamSink<ModuleEvent> dco_decode_StreamSink_module_event_Sse(
+      dynamic raw);
+
+  @protected
   String dco_decode_String(dynamic raw);
-
-  @protected
-  ApkComponents dco_decode_apk_components(dynamic raw);
-
-  @protected
-  ApkElfScanResult dco_decode_apk_elf_scan_result(dynamic raw);
-
-  @protected
-  ApkInfo dco_decode_apk_info(dynamic raw);
 
   @protected
   AppInfo dco_decode_app_info(dynamic raw);
@@ -89,19 +146,7 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PlatformInt64 dco_decode_box_autoadd_i_64(dynamic raw);
 
   @protected
-  QrDecodeResult dco_decode_box_autoadd_qr_decode_result(dynamic raw);
-
-  @protected
   DownloadResult dco_decode_download_result(dynamic raw);
-
-  @protected
-  ElfSoInfo dco_decode_elf_so_info(dynamic raw);
-
-  @protected
-  double dco_decode_f_64(dynamic raw);
-
-  @protected
-  FlutterProgressCallback dco_decode_flutter_progress_callback(dynamic raw);
 
   @protected
   int dco_decode_i_32(dynamic raw);
@@ -116,16 +161,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<AppInfo> dco_decode_list_app_info(dynamic raw);
 
   @protected
-  List<ElfSoInfo> dco_decode_list_elf_so_info(dynamic raw);
-
-  @protected
-  Float64List dco_decode_list_prim_f_64_strict(dynamic raw);
-
-  @protected
   List<int> dco_decode_list_prim_u_8_loose(dynamic raw);
 
   @protected
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
+
+  @protected
+  LogMessage dco_decode_log_message(dynamic raw);
+
+  @protected
+  ModuleEvent dco_decode_module_event(dynamic raw);
 
   @protected
   String? dco_decode_opt_String(dynamic raw);
@@ -137,10 +182,7 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PlatformInt64? dco_decode_opt_box_autoadd_i_64(dynamic raw);
 
   @protected
-  QrDecodeResult? dco_decode_opt_box_autoadd_qr_decode_result(dynamic raw);
-
-  @protected
-  QrDecodeResult dco_decode_qr_decode_result(dynamic raw);
+  BigInt dco_decode_u_64(dynamic raw);
 
   @protected
   int dco_decode_u_8(dynamic raw);
@@ -152,13 +194,31 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BigInt dco_decode_usize(dynamic raw);
 
   @protected
+  AnyhowException sse_decode_AnyhowException(SseDeserializer deserializer);
+
+  @protected
+  EventBridge
+      sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerEventBridge(
+          SseDeserializer deserializer);
+
+  @protected
   FdroidRepoManager
       sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFdroidRepoManager(
           SseDeserializer deserializer);
 
   @protected
-  QrDecoder
-      sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerQrDecoder(
+  InstanceHandle
+      sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerInstanceHandle(
+          SseDeserializer deserializer);
+
+  @protected
+  LogBridge
+      sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLogBridge(
+          SseDeserializer deserializer);
+
+  @protected
+  ModuleHandle
+      sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerModuleHandle(
           SseDeserializer deserializer);
 
   @protected
@@ -167,13 +227,33 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
           SseDeserializer deserializer);
 
   @protected
+  EventBridge
+      sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerEventBridge(
+          SseDeserializer deserializer);
+
+  @protected
   FdroidRepoManager
       sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFdroidRepoManager(
           SseDeserializer deserializer);
 
   @protected
-  QrDecoder
-      sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerQrDecoder(
+  InstanceHandle
+      sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerInstanceHandle(
+          SseDeserializer deserializer);
+
+  @protected
+  LogBridge
+      sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLogBridge(
+          SseDeserializer deserializer);
+
+  @protected
+  ModuleHandle
+      sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerModuleHandle(
+          SseDeserializer deserializer);
+
+  @protected
+  EventBridge
+      sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerEventBridge(
           SseDeserializer deserializer);
 
   @protected
@@ -182,21 +262,30 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
           SseDeserializer deserializer);
 
   @protected
-  QrDecoder
-      sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerQrDecoder(
+  InstanceHandle
+      sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerInstanceHandle(
           SseDeserializer deserializer);
 
   @protected
+  LogBridge
+      sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLogBridge(
+          SseDeserializer deserializer);
+
+  @protected
+  ModuleHandle
+      sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerModuleHandle(
+          SseDeserializer deserializer);
+
+  @protected
+  RustStreamSink<LogMessage> sse_decode_StreamSink_log_message_Sse(
+      SseDeserializer deserializer);
+
+  @protected
+  RustStreamSink<ModuleEvent> sse_decode_StreamSink_module_event_Sse(
+      SseDeserializer deserializer);
+
+  @protected
   String sse_decode_String(SseDeserializer deserializer);
-
-  @protected
-  ApkComponents sse_decode_apk_components(SseDeserializer deserializer);
-
-  @protected
-  ApkElfScanResult sse_decode_apk_elf_scan_result(SseDeserializer deserializer);
-
-  @protected
-  ApkInfo sse_decode_apk_info(SseDeserializer deserializer);
 
   @protected
   AppInfo sse_decode_app_info(SseDeserializer deserializer);
@@ -211,21 +300,7 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PlatformInt64 sse_decode_box_autoadd_i_64(SseDeserializer deserializer);
 
   @protected
-  QrDecodeResult sse_decode_box_autoadd_qr_decode_result(
-      SseDeserializer deserializer);
-
-  @protected
   DownloadResult sse_decode_download_result(SseDeserializer deserializer);
-
-  @protected
-  ElfSoInfo sse_decode_elf_so_info(SseDeserializer deserializer);
-
-  @protected
-  double sse_decode_f_64(SseDeserializer deserializer);
-
-  @protected
-  FlutterProgressCallback sse_decode_flutter_progress_callback(
-      SseDeserializer deserializer);
 
   @protected
   int sse_decode_i_32(SseDeserializer deserializer);
@@ -240,16 +315,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<AppInfo> sse_decode_list_app_info(SseDeserializer deserializer);
 
   @protected
-  List<ElfSoInfo> sse_decode_list_elf_so_info(SseDeserializer deserializer);
-
-  @protected
-  Float64List sse_decode_list_prim_f_64_strict(SseDeserializer deserializer);
-
-  @protected
   List<int> sse_decode_list_prim_u_8_loose(SseDeserializer deserializer);
 
   @protected
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
+
+  @protected
+  LogMessage sse_decode_log_message(SseDeserializer deserializer);
+
+  @protected
+  ModuleEvent sse_decode_module_event(SseDeserializer deserializer);
 
   @protected
   String? sse_decode_opt_String(SseDeserializer deserializer);
@@ -261,11 +336,7 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PlatformInt64? sse_decode_opt_box_autoadd_i_64(SseDeserializer deserializer);
 
   @protected
-  QrDecodeResult? sse_decode_opt_box_autoadd_qr_decode_result(
-      SseDeserializer deserializer);
-
-  @protected
-  QrDecodeResult sse_decode_qr_decode_result(SseDeserializer deserializer);
+  BigInt sse_decode_u_64(SseDeserializer deserializer);
 
   @protected
   int sse_decode_u_8(SseDeserializer deserializer);
@@ -277,14 +348,33 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BigInt sse_decode_usize(SseDeserializer deserializer);
 
   @protected
+  void sse_encode_AnyhowException(
+      AnyhowException self, SseSerializer serializer);
+
+  @protected
+  void
+      sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerEventBridge(
+          EventBridge self, SseSerializer serializer);
+
+  @protected
   void
       sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFdroidRepoManager(
           FdroidRepoManager self, SseSerializer serializer);
 
   @protected
   void
-      sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerQrDecoder(
-          QrDecoder self, SseSerializer serializer);
+      sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerInstanceHandle(
+          InstanceHandle self, SseSerializer serializer);
+
+  @protected
+  void
+      sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLogBridge(
+          LogBridge self, SseSerializer serializer);
+
+  @protected
+  void
+      sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerModuleHandle(
+          ModuleHandle self, SseSerializer serializer);
 
   @protected
   void
@@ -293,13 +383,33 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
+      sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerEventBridge(
+          EventBridge self, SseSerializer serializer);
+
+  @protected
+  void
       sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFdroidRepoManager(
           FdroidRepoManager self, SseSerializer serializer);
 
   @protected
   void
-      sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerQrDecoder(
-          QrDecoder self, SseSerializer serializer);
+      sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerInstanceHandle(
+          InstanceHandle self, SseSerializer serializer);
+
+  @protected
+  void
+      sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLogBridge(
+          LogBridge self, SseSerializer serializer);
+
+  @protected
+  void
+      sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerModuleHandle(
+          ModuleHandle self, SseSerializer serializer);
+
+  @protected
+  void
+      sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerEventBridge(
+          EventBridge self, SseSerializer serializer);
 
   @protected
   void
@@ -308,21 +418,29 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
-      sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerQrDecoder(
-          QrDecoder self, SseSerializer serializer);
+      sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerInstanceHandle(
+          InstanceHandle self, SseSerializer serializer);
+
+  @protected
+  void
+      sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLogBridge(
+          LogBridge self, SseSerializer serializer);
+
+  @protected
+  void
+      sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerModuleHandle(
+          ModuleHandle self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_StreamSink_log_message_Sse(
+      RustStreamSink<LogMessage> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_StreamSink_module_event_Sse(
+      RustStreamSink<ModuleEvent> self, SseSerializer serializer);
 
   @protected
   void sse_encode_String(String self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_apk_components(ApkComponents self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_apk_elf_scan_result(
-      ApkElfScanResult self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_apk_info(ApkInfo self, SseSerializer serializer);
 
   @protected
   void sse_encode_app_info(AppInfo self, SseSerializer serializer);
@@ -338,22 +456,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
       PlatformInt64 self, SseSerializer serializer);
 
   @protected
-  void sse_encode_box_autoadd_qr_decode_result(
-      QrDecodeResult self, SseSerializer serializer);
-
-  @protected
   void sse_encode_download_result(
       DownloadResult self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_elf_so_info(ElfSoInfo self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_f_64(double self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_flutter_progress_callback(
-      FlutterProgressCallback self, SseSerializer serializer);
 
   @protected
   void sse_encode_i_32(int self, SseSerializer serializer);
@@ -368,19 +472,17 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_list_app_info(List<AppInfo> self, SseSerializer serializer);
 
   @protected
-  void sse_encode_list_elf_so_info(
-      List<ElfSoInfo> self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_list_prim_f_64_strict(
-      Float64List self, SseSerializer serializer);
-
-  @protected
   void sse_encode_list_prim_u_8_loose(List<int> self, SseSerializer serializer);
 
   @protected
   void sse_encode_list_prim_u_8_strict(
       Uint8List self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_log_message(LogMessage self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_module_event(ModuleEvent self, SseSerializer serializer);
 
   @protected
   void sse_encode_opt_String(String? self, SseSerializer serializer);
@@ -394,12 +496,7 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
       PlatformInt64? self, SseSerializer serializer);
 
   @protected
-  void sse_encode_opt_box_autoadd_qr_decode_result(
-      QrDecodeResult? self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_qr_decode_result(
-      QrDecodeResult self, SseSerializer serializer);
+  void sse_encode_u_64(BigInt self, SseSerializer serializer);
 
   @protected
   void sse_encode_u_8(int self, SseSerializer serializer);
@@ -424,6 +521,38 @@ class RustLibWire implements BaseWire {
   /// The symbols are looked up in [dynamicLibrary].
   RustLibWire(ffi.DynamicLibrary dynamicLibrary)
       : _lookup = dynamicLibrary.lookup;
+
+  void
+      rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerEventBridge(
+    ffi.Pointer<ffi.Void> ptr,
+  ) {
+    return _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerEventBridge(
+      ptr,
+    );
+  }
+
+  late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerEventBridgePtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
+          'frbgen_gstore_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerEventBridge');
+  late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerEventBridge =
+      _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerEventBridgePtr
+          .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
+
+  void
+      rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerEventBridge(
+    ffi.Pointer<ffi.Void> ptr,
+  ) {
+    return _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerEventBridge(
+      ptr,
+    );
+  }
+
+  late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerEventBridgePtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
+          'frbgen_gstore_rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerEventBridge');
+  late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerEventBridge =
+      _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerEventBridgePtr
+          .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
 
   void
       rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFdroidRepoManager(
@@ -458,34 +587,98 @@ class RustLibWire implements BaseWire {
           .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
 
   void
-      rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerQrDecoder(
+      rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerInstanceHandle(
     ffi.Pointer<ffi.Void> ptr,
   ) {
-    return _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerQrDecoder(
+    return _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerInstanceHandle(
       ptr,
     );
   }
 
-  late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerQrDecoderPtr =
+  late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerInstanceHandlePtr =
       _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
-          'frbgen_gstore_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerQrDecoder');
-  late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerQrDecoder =
-      _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerQrDecoderPtr
+          'frbgen_gstore_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerInstanceHandle');
+  late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerInstanceHandle =
+      _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerInstanceHandlePtr
           .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
 
   void
-      rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerQrDecoder(
+      rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerInstanceHandle(
     ffi.Pointer<ffi.Void> ptr,
   ) {
-    return _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerQrDecoder(
+    return _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerInstanceHandle(
       ptr,
     );
   }
 
-  late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerQrDecoderPtr =
+  late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerInstanceHandlePtr =
       _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
-          'frbgen_gstore_rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerQrDecoder');
-  late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerQrDecoder =
-      _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerQrDecoderPtr
+          'frbgen_gstore_rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerInstanceHandle');
+  late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerInstanceHandle =
+      _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerInstanceHandlePtr
+          .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
+
+  void
+      rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLogBridge(
+    ffi.Pointer<ffi.Void> ptr,
+  ) {
+    return _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLogBridge(
+      ptr,
+    );
+  }
+
+  late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLogBridgePtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
+          'frbgen_gstore_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLogBridge');
+  late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLogBridge =
+      _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLogBridgePtr
+          .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
+
+  void
+      rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLogBridge(
+    ffi.Pointer<ffi.Void> ptr,
+  ) {
+    return _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLogBridge(
+      ptr,
+    );
+  }
+
+  late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLogBridgePtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
+          'frbgen_gstore_rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLogBridge');
+  late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLogBridge =
+      _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerLogBridgePtr
+          .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
+
+  void
+      rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerModuleHandle(
+    ffi.Pointer<ffi.Void> ptr,
+  ) {
+    return _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerModuleHandle(
+      ptr,
+    );
+  }
+
+  late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerModuleHandlePtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
+          'frbgen_gstore_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerModuleHandle');
+  late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerModuleHandle =
+      _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerModuleHandlePtr
+          .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
+
+  void
+      rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerModuleHandle(
+    ffi.Pointer<ffi.Void> ptr,
+  ) {
+    return _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerModuleHandle(
+      ptr,
+    );
+  }
+
+  late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerModuleHandlePtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
+          'frbgen_gstore_rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerModuleHandle');
+  late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerModuleHandle =
+      _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerModuleHandlePtr
           .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
 }

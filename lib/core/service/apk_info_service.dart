@@ -12,8 +12,8 @@ import 'package:gstore/core/channel/database/channel_added_app.dart';
 import 'package:gstore/core/channel/database/channel_database.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/core.dart';
-import 'package:gstore/core/rust/FdroidRustRepoManager.dart';
-import 'package:gstore/core/rust/generated/models.dart';
+import 'package:gstore/core/rust/AnalyzerRustDecoder.dart';
+import 'package:gstore/core/rust/contract/ModuleTypes.dart';
 import 'package:gstore/core/service/apk_native_service.dart';
 import 'package:gstore/core/service/app_icon_service.dart';
 
@@ -47,10 +47,10 @@ class ApkInfoService {
       }
     }
 
-    // 非 Android 或原生失败：回退 Rust 解析（无图标）
+    // 非 Android 或原生失败：回退 Rust 解析（无图标；模块优先，失败自动降级宿主内置）
     try {
-      final rust = await FdroidRustRepoManager.parseApkInfo(apkPath);
-      if (rust.packageName.isEmpty) return (null, null);
+      final rust = await AnalyzerRustDecoder.parseApkInfo(apkPath);
+      if (rust == null || rust.packageName.isEmpty) return (null, null);
       return (rust, null);
     } catch (e) {
       appLog.error('ApkInfoService: Rust 解析 APK 失败 - $e');

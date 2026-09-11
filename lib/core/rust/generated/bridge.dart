@@ -3,12 +3,21 @@
 
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
-import 'components.dart';
-import 'elf.dart';
+import 'event_bridge.dart';
 import 'frb_generated.dart';
+import 'log_bridge.dart';
 import 'models.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
-import 'qr_decode.dart';
+
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<EventBridge>>
+abstract class EventBridge implements RustOpaqueInterface {
+  /// 订阅模块事件流。首次订阅时补发环形缓冲中的历史事件。
+  Stream<ModuleEvent> eventsStream();
+
+  // HINT: Make it `#[frb(sync)]` to let it become the default constructor of Dart class.
+  static Future<EventBridge> newInstance() =>
+      RustLib.instance.api.crateBridgeEventBridgeNew();
+}
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<FdroidRepoManager>>
 abstract class FdroidRepoManager implements RustOpaqueInterface {
@@ -21,9 +30,6 @@ abstract class FdroidRepoManager implements RustOpaqueInterface {
   /// 获取应用数量
   Future<int> getAppCount();
 
-  /// 根据包名获取应用详情（包含 metadata 和 versions）
-  Future<AppInfo?> getAppDetail({required String packageName});
-
   /// 获取一个应用（用于调试）
   Future<AppInfo?> getOneApp();
 
@@ -35,65 +41,59 @@ abstract class FdroidRepoManager implements RustOpaqueInterface {
   static Future<FdroidRepoManager> newInstance() =>
       RustLib.instance.api.crateBridgeFdroidRepoManagerNew();
 
-  /// 解析 APK 文件，提取真实包名/版本/应用名等信息
-  /// 在安装前调用，避免依赖安装结果判断包名
-  Future<ApkInfo> parseApkInfo({required String apkPath});
-
-  /// 解析 APK 的 AndroidManifest.xml，枚举四类组件完整类名
-  /// （activity 含 activity-alias）与 minSdk/targetSdk。
-  ///
-  /// 相对类名（`.Foo`）按 Android 语义补全为 `<package>.Foo`。
-  /// 与 LibChecker 从 PackageManager 读已安装应用组件等价。
-  Future<ApkComponents> parseComponents({required String apkPath});
-
-  /// 扫描 APK 内所有 classes*.dex 的类名，与 class patterns 匹配
-  ///
-  /// patterns 为 LibChecker `matchesClassPattern` 语义：
-  /// 以 `*` 结尾 → 前缀匹配（`androidx.lifecycle.*` 命中 `androidx.lifecycle.LiveData`）；
-  /// 否则整串精确匹配。
-  ///
-  /// 规则 name 列（rules.db DEX 规则）为点分格式（如 `com.tencent.smtt`），
-  /// 本函数返回的类名也已转换为点分格式，与规则直接可比。
-  Future<List<String>> scanDexClasses(
-      {required String apkPath, required List<String> patterns});
-
-  /// 扫描 APK 内所有 lib/<abi>/*.so 的 ELF 16KB 页对齐情况
-  ///
-  /// 逐文件解析 ELF 程序头 PT_LOAD 段的 p_align 最小值
-  /// （对齐 LibChecker ElfParser.getMinPageSize）；min_page_size 为 -1
-  /// 表示非 ELF / 无 PT_LOAD / 解析失败，aligned_16kb = min>0 且可被 16384 整除。
-  Future<ApkElfScanResult> scanElfPageSizes({required String apkPath});
-
   /// 搜索应用
   Future<List<AppInfo>> searchApps(
       {required String keyword, required int limit});
 }
 
-// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<QrDecoder>>
-abstract class QrDecoder implements RustOpaqueInterface {
-  /// 解码一帧灰度图
-  Future<QrDecodeResult?> decodeLuma(
-      {required List<int> luma, required int width, required int height});
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<InstanceHandle>>
+abstract class InstanceHandle implements RustOpaqueInterface {
+  /// 实例方法调用 —— 外部不用携带任何 id
+  Future<Uint8List> call({required String method, required List<int> payload});
 
-  // HINT: Make it `#[frb(sync)]` to let it become the default constructor of Dart class.
-  /// 创建解码器实例
-  static Future<QrDecoder> newInstance() =>
-      RustLib.instance.api.crateBridgeQrDecoderNew();
+  /// 显式释放实例（幂等）
+  @override
+  Future<void> dispose();
+
+  /// 实例句柄的字符串形式（信封 instance 字段用；Dart 侧拼 EnvelopeRequest 路由）
+  Future<String> instanceId();
 }
 
-/// 进度回调（占位符，暂时不使用）
-class FlutterProgressCallback {
-  const FlutterProgressCallback();
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<LogBridge>>
+abstract class LogBridge implements RustOpaqueInterface {
+  /// 订阅日志流。首次订阅时补发环形缓冲中的历史日志。
+  Stream<LogMessage> logsStream();
 
   // HINT: Make it `#[frb(sync)]` to let it become the default constructor of Dart class.
-  static Future<FlutterProgressCallback> newInstance() =>
-      RustLib.instance.api.crateBridgeFlutterProgressCallbackNew();
+  static Future<LogBridge> newInstance() =>
+      RustLib.instance.api.crateBridgeLogBridgeNew();
+}
 
-  @override
-  int get hashCode => 0;
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<ModuleHandle>>
+abstract class ModuleHandle implements RustOpaqueInterface {
+  /// 信封级调用：Dart 侧传 EnvelopeRequest 编码字节，宿主解包→路由→封包返回
+  Future<Uint8List> callEnvelope({required List<int> requestBytes});
 
+  /// 模块级静态调用（不创建实例）
+  Future<Uint8List> callStatic(
+      {required String method, required List<int> payload});
+
+  /// 实例化：宿主转发给模块 create()，返回实例代理对象
+  Future<InstanceHandle> createInstance({required List<int> config});
+
+  /// 释放模块引用（refcount-1；归零时回收模块状态）
   @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is FlutterProgressCallback && runtimeType == other.runtimeType;
+  Future<void> dispose();
+
+  /// 是否已加载
+  Future<bool> isLoaded();
+
+  /// 按名加载/获取模块（幂等：已注册则 refcount+1 复用）
+  static Future<ModuleHandle> load({required String moduleName}) =>
+      RustLib.instance.api.crateBridgeModuleHandleLoad(moduleName: moduleName);
+
+  /// 从 .so 动态挂载模块（P2 多 .so 按需下载场景）。
+  /// 幂等：同名模块已注册则复用。
+  static Future<ModuleHandle> mountFromSo({required String soPath}) =>
+      RustLib.instance.api.crateBridgeModuleHandleMountFromSo(soPath: soPath);
 }

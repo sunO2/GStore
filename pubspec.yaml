@@ -54,6 +54,7 @@ dependencies:
       ref: master
   jovial_svg: any
   path_provider: any
+  crypto: any
   dio: any
   rhttp: ^0.15.1
   app_installer: any
@@ -89,6 +90,7 @@ dependencies:
   package_info_plus: ^8.0.0
   gal: ^2.3.3
   camera: ^0.12.1
+  protobuf: ^3.1.0
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -112,13 +114,13 @@ dev_dependencies:
 # Rust FFI 配置
 flutter_rust_bridge:
   # Rust 输入（模块路径）
-  rust_input: fdroid_repo::bridge
+  rust_input: gstore_host::bridge
   # Rust 项目根目录
-  rust_root: rust/fdroid_repo
+  rust_root: rust/gstore_host
   # Dart 输出目录
   dart_output: lib/core/rust/generated/
   # Rust 输出文件
-  rust_output: rust/fdroid_repo/src/frb_generated.rs
+  rust_output: rust/gstore_host/src/frb_generated.rs
 
 
 # For information on the generic Dart part of this file, see the

@@ -7,8 +7,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
-import 'package:gstore/core/rust/generated/components.dart';
-import 'package:gstore/core/rust/generated/elf.dart';
+import 'package:gstore/core/rust/contract/ModuleTypes.dart';
+
 import 'package:gstore/core/service/apk_library_analyzer.dart';
 import 'package:gstore/core/service/apk_source_service.dart';
 import 'package:gstore/page/installed_apps/sdk_analysis_page.dart';

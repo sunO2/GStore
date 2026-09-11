@@ -49,10 +49,14 @@ app.*.map.json
 .omo/
 
 # Rust
-rust/fdroid_repo/target/
+# Rust crate 构建产物（host/contract/模块各 crate 的 target）
+rust/*/target/
 
 # GStore-Repositorys 临时克隆
 /git.temp/
 
 # 第三方 API 脚本（用户导入，不进版本库）
-scripts/
+scripts/rust/release-modules/
+
+# Rust 模块发布产物（build_android_rust.sh 输出，按需发布到 GitHub Release）
+rust/release-modules/

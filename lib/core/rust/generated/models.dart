@@ -6,57 +6,6 @@
 import 'frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-/// APK 解析结果（从 AndroidManifest 提取的真实应用信息）
-class ApkInfo {
-  /// 真实包名（如 com.termux）
-  final String packageName;
-
-  /// 版本名（如 0.118.0）
-  final String versionName;
-
-  /// 版本码
-  final String versionCode;
-
-  /// 应用名称
-  final String appName;
-
-  /// 最低支持 SDK
-  final String minSdk;
-
-  /// 主 Activity
-  final String mainActivity;
-
-  const ApkInfo({
-    required this.packageName,
-    required this.versionName,
-    required this.versionCode,
-    required this.appName,
-    required this.minSdk,
-    required this.mainActivity,
-  });
-
-  @override
-  int get hashCode =>
-      packageName.hashCode ^
-      versionName.hashCode ^
-      versionCode.hashCode ^
-      appName.hashCode ^
-      minSdk.hashCode ^
-      mainActivity.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is ApkInfo &&
-          runtimeType == other.runtimeType &&
-          packageName == other.packageName &&
-          versionName == other.versionName &&
-          versionCode == other.versionCode &&
-          appName == other.appName &&
-          minSdk == other.minSdk &&
-          mainActivity == other.mainActivity;
-}
-
 /// F-Droid 应用信息
 class AppInfo {
   final String packageName;

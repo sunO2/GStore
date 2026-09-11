@@ -2,12 +2,10 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as path;
 import 'package:gstore/core/logger/LogManager.dart';
+import 'package:gstore/core/rust/ModuleManager.dart';
 import 'package:gstore/core/rust/RustBridge.dart';
 import 'package:gstore/core/rust/generated/bridge.dart' show FdroidRepoManager;
-import 'package:gstore/core/rust/generated/components.dart' show ApkComponents;
-import 'package:gstore/core/rust/generated/elf.dart' show ApkElfScanResult;
-import 'package:gstore/core/rust/generated/models.dart'
-    show AppInfo, ApkInfo, DownloadResult;
+import 'package:gstore/core/rust/generated/models.dart' show AppInfo;
 
 /// Rust F-Droid 仓库管理器
 ///
@@ -23,6 +21,8 @@ class FdroidRustRepoManager {
     if (!_initialized) {
       // 初始化 flutter_rust_bridge（经全局守卫，幂等 + 并发安全）
       await RustBridge.ensureInitialized();
+      // 启用模块管理门面 + Rust 日志订阅（Rust 日志进入日志查看器）
+      await RustModuleManager.instance.ensureReady();
       _initialized = true;
       appLog.info('FdroidRustRepoManager: Bridge initialized');
     }
@@ -167,50 +167,5 @@ class FdroidRustRepoManager {
       'metadata': rustApp.metadata,
       'versions': rustApp.versions,
     };
-  }
-
-  /// 解析 APK 文件，提取真实包名/版本/应用名等信息
-  /// 在安装前调用（Rust 实现，从 APK 的 AndroidManifest.xml 解析）
-  static Future<ApkInfo> parseApkInfo(String apkPath) async {
-    if (_manager == null) {
-      await initialize();
-    }
-    return await _manager!.parseApkInfo(apkPath: apkPath);
-  }
-
-  /// 扫描 APK 内所有 classes*.dex 的类名并与 patterns 匹配（方案 B DEX 检测）
-  ///
-  /// Rust 实现（fdroid_repo::dex_scan）：patterns 为 LibChecker matchesClassPattern
-  /// 语义，`*` 结尾=前缀匹配，否则精确。返回命中的点分类名（如 androidx.lifecycle.LiveData）。
-  /// 调用方负责容错（Rust 不可用/失败时降级为空）。
-  static Future<List<String>> scanDexClasses(
-    String apkPath,
-    List<String> patterns,
-  ) async {
-    if (_manager == null) {
-      await initialize();
-    }
-    return await _manager!.scanDexClasses(apkPath: apkPath, patterns: patterns);
-  }
-
-  /// 解析 APK 的 AndroidManifest.xml，枚举四类组件名与 minSdk/targetSdk
-  /// （方案 C 组件库检测）。Rust 实现（fdroid_repo::components）。
-  /// 调用方负责容错（Rust 不可用/失败时降级为空）。
-  static Future<ApkComponents> parseComponents(String apkPath) async {
-    if (_manager == null) {
-      await initialize();
-    }
-    return await _manager!.parseComponents(apkPath: apkPath);
-  }
-
-  /// 扫描 APK 内所有 `lib/<abi>/*.so` 的 PT_LOAD 段页对齐（16KB 兼容检测）。
-  /// Rust 实现（fdroid_repo::elf_scan）：返回每个 .so 的 ABI/文件名/
-  /// 最小 p_align 与是否 16KB 对齐。
-  /// 调用方负责容错（Rust 不可用/失败时降级为空）。
-  static Future<ApkElfScanResult> scanElfPageSizes(String apkPath) async {
-    if (_manager == null) {
-      await initialize();
-    }
-    return await _manager!.scanElfPageSizes(apkPath: apkPath);
   }
 }

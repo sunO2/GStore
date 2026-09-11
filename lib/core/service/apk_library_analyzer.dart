@@ -4,7 +4,7 @@ import 'package:archive/archive.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:gstore/core/core.dart';
-import 'package:gstore/core/rust/FdroidRustRepoManager.dart';
+import 'package:gstore/core/rust/AnalyzerRustDecoder.dart';
 
 /// 规则记录（LibChecker rules.db 行；NATIVE/DEX 规则 JSON 结构一致）。
 /// 生成自 rules_native.json（type=0）或 rules_dex.json（type=5）。
@@ -574,8 +574,8 @@ class ApkLibraryAnalyzer {
   /// 调用 Rust scanDexClasses 扫描类佐证（失败返回空集合，调用方据此保留原命中）
   Future<Set<String>> _scanDexClassesSafe(String apkPath, List<String> patterns) async {
     try {
-      final found = await FdroidRustRepoManager.scanDexClasses(apkPath, patterns);
-      return found.toSet();
+      final found = await AnalyzerRustDecoder.scanDexClasses(apkPath, patterns);
+      return (found ?? const []).toSet();
     } catch (e) {
       appLog.error('ApkLibraryAnalyzer: 特殊 so 类佐证扫描失败（保留命中） - $e');
       return const {};
@@ -718,8 +718,8 @@ class ApkLibraryAnalyzer {
 
     try {
       final matched =
-          await FdroidRustRepoManager.scanDexClasses(apkPath, patterns);
-      final hits = matchDexClassNames(matched.toSet(), rules: rules);
+          await AnalyzerRustDecoder.scanDexClasses(apkPath, patterns);
+      final hits = matchDexClassNames((matched ?? const []).toSet(), rules: rules);
       _dexCache[apkPath] = hits;
       appLog.info('ApkLibraryAnalyzer: $apkPath DEX 命中 ${hits.length} 条规则');
       return hits;
@@ -832,7 +832,8 @@ class ApkLibraryAnalyzer {
     if (rules.isEmpty) return const [];
 
     try {
-      final components = await FdroidRustRepoManager.parseComponents(apkPath);
+      final components = await AnalyzerRustDecoder.parseComponents(apkPath);
+      if (components == null) return const [];
       final namesByType = <int, Set<String>>{
         1: components.services.toSet(),
         2: components.activities.toSet(),

@@ -4,10 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/design/app_borders.dart';
-import 'package:gstore/core/rust/FdroidRustRepoManager.dart';
-import 'package:gstore/core/rust/generated/components.dart' show ApkComponents;
-import 'package:gstore/core/rust/generated/elf.dart'
-    show ApkElfScanResult, ElfSoInfo;
+import 'package:gstore/core/rust/AnalyzerRustDecoder.dart';
+import 'package:gstore/core/rust/contract/ModuleTypes.dart'
+    show ApkComponents, ApkElfScanResult, ElfSoInfo;
 import 'package:gstore/core/service/apk_library_analyzer.dart';
 import 'package:gstore/core/service/apk_source_service.dart';
 import 'package:installed_apps/app_info.dart' as installed;
@@ -191,7 +190,8 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
       final override = SdkAnalysisPage._debugComponentsOverride;
       if (override != null) return override;
       try {
-        return await FdroidRustRepoManager.parseComponents(widget.sourceDir);
+        return await AnalyzerRustDecoder.parseComponents(widget.sourceDir) ??
+            SdkAnalysisPage._emptyComponents;
       } catch (e) {
         appLog.error('SdkAnalysisPage: 解析 SDK 版本失败（降级为空） - $e');
         return SdkAnalysisPage._emptyComponents;
@@ -207,7 +207,8 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
         final merged = <String, ElfSoInfo>{};
         for (final dir in widget.effectiveSourceDirs) {
           final result =
-              await FdroidRustRepoManager.scanElfPageSizes(dir);
+              await AnalyzerRustDecoder.scanElfPageSizes(dir);
+          if (result == null) continue;
           for (final f in result.soFiles) {
             merged['${f.abi}|${f.soName}'] = f;
           }

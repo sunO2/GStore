@@ -10,6 +10,7 @@ import android.graphics.Canvas
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.util.Base64
@@ -173,6 +174,58 @@ class MainActivity : FlutterActivity() {
                         result.success(dirs)
                     } catch (e: Exception) {
                         result.error("SOURCE", "获取 sourceDirs 失败: ${e.message}", null)
+                    }
+                }
+                // 本应用 nativeLibraryDir：内置可下载模块 .so 所在目录
+                // （jniLibs 中的 libgstore_mod_*.so 解压后位于此；Dart 侧检索并交给宿主 dlopen）
+                "getSelfNativeLibraryDir" -> {
+                    try {
+                        result.success(applicationInfo.nativeLibraryDir ?: "")
+                    } catch (e: Exception) {
+                        result.error("SOURCE", "获取 self nativeLibraryDir 失败: ${e.message}", null)
+                    }
+                }
+                // 从 APK 提取模块 .so 到应用私有目录（useLegacyPackaging=false 时
+                // nativeLibraryDir 无物理文件，须显式解压 jniLibs 后 dlopen）。
+                // ABI 匹配：优先用传入 abi，失败则遍历 Build.SUPPORTED_ABIS 自动定位
+                //（适配 armv7/x86_64 设备，避免 Dart 侧硬编码）。返回提取后的绝对路径。
+                "extractModule" -> {
+                    val module = call.argument<String>("module")
+                    if (module == null) {
+                        result.error("ARG", "module required", null)
+                        return@setMethodCallHandler
+                    }
+                    try {
+                        val apkFile = File(applicationInfo.sourceDir)
+                        val zipFile = java.util.zip.ZipFile(apkFile)
+                        val requested = call.argument<String>("abi")
+                        val abis = if (requested != null && requested.isNotEmpty()) {
+                            listOf(requested) + Build.SUPPORTED_ABIS.toList()
+                        } else {
+                            Build.SUPPORTED_ABIS.toList()
+                        }
+                        var target: File? = null
+                        for (abi in abis) {
+                            val entryName = "lib/$abi/libgstore_mod_$module.so"
+                            if (zipFile.getEntry(entryName) != null) {
+                                val targetDir = File(filesDir, "gstore_mods/$abi")
+                                targetDir.mkdirs()
+                                val f = File(targetDir, "libgstore_mod_$module.so")
+                                zipFile.getInputStream(zipFile.getEntry(entryName)).use { input ->
+                                    f.outputStream().use { output -> input.copyTo(output) }
+                                }
+                                target = f
+                                break
+                            }
+                        }
+                        zipFile.close()
+                        if (target != null) {
+                            result.success(target.absolutePath)
+                        } else {
+                            result.error("NOTFOUND", "APK 无 libgstore_mod_$module.so（ABI=$abis）", null)
+                        }
+                    } catch (e: Exception) {
+                        result.error("EXTRACT", "提取模块 .so 失败: ${e.message}", null)
                     }
                 }
                 // 系统解压后的原生库目录（nativeLibraryDir）：已安装应用
