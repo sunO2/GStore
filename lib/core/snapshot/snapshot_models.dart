@@ -4,7 +4,7 @@ import 'dart:convert';
 ///
 /// 每次增删字段都要 +1：对比引擎据此判断「旧快照是否具备该字段」，
 /// 缺失时把该节标记为不可比，而不是把所有条目误报成「新增/移除」。
-const int kSnapshotPayloadVersion = 1;
+const int kSnapshotPayloadVersion = 2;
 
 /// 应用快照载荷（一次采集的完整结果）
 ///
@@ -22,6 +22,9 @@ class SnapshotPayload {
     this.elfFiles = const [],
     this.dexFiles = const [],
     this.dexHits = const [],
+    this.assets = const [],
+    this.arsc = const SnapshotArscInfo(),
+    this.structure = const SnapshotStructureInfo(),
     this.features = const SnapshotFeatures(),
     this.buildVersions = const SnapshotBuildVersions(),
     this.metaData = const [],
@@ -51,6 +54,15 @@ class SnapshotPayload {
   /// 命中的 DEX 规则
   final List<SnapshotRuleHit> dexHits;
 
+  /// `assets/**` 全量清单（含 assets 下的 .so）
+  final List<SnapshotAsset> assets;
+
+  /// `resources.arsc` 条目信息（P0：存在性/大小/内容指纹）
+  final SnapshotArscInfo arsc;
+
+  /// 包结构总量（条目数/解压总量/STORED 数）
+  final SnapshotStructureInfo structure;
+
   final SnapshotFeatures features;
   final SnapshotBuildVersions buildVersions;
   final List<SnapshotMetaData> metaData;
@@ -75,6 +87,7 @@ class SnapshotPayload {
         components: components.length,
         permissions: permissions.length,
         deepLinks: deepLinks.length,
+        assets: assets.length,
         ruleHits: nativeHits.length +
             dexHits.length +
             staticLibraries.length +
@@ -105,6 +118,9 @@ class SnapshotPayload {
         'elf_files': [for (final e in elfFiles) e.toJson()],
         'dex_files': [for (final d in dexFiles) d.toJson()],
         'dex_hits': [for (final h in dexHits) h.toJson()],
+        'assets': [for (final a in assets) a.toJson()],
+        'arsc': arsc.toJson(),
+        'structure': structure.toJson(),
         'features': features.toJson(),
         'build_versions': buildVersions.toJson(),
         'meta_data': [for (final m in metaData) m.toJson()],
@@ -158,6 +174,12 @@ class SnapshotPayload {
           for (final e in _list(json['dex_hits']))
             SnapshotRuleHit.fromJson(_map(e)),
         ],
+        assets: [
+          for (final e in _list(json['assets']))
+            SnapshotAsset.fromJson(_map(e)),
+        ],
+        arsc: SnapshotArscInfo.fromJson(_map(json['arsc'])),
+        structure: SnapshotStructureInfo.fromJson(_map(json['structure'])),
         features: SnapshotFeatures.fromJson(_map(json['features'])),
         buildVersions:
             SnapshotBuildVersions.fromJson(_map(json['build_versions'])),
@@ -184,6 +206,7 @@ class SnapshotPayload {
 class SnapshotSummary {
   const SnapshotSummary({
     this.nativeLibs = 0,
+    this.assets = 0,
     this.dexFiles = 0,
     this.classCount = 0,
     this.components = 0,
@@ -195,6 +218,7 @@ class SnapshotSummary {
   });
 
   final int nativeLibs;
+  final int assets;
   final int dexFiles;
   final int classCount;
   final int components;
@@ -206,6 +230,7 @@ class SnapshotSummary {
 
   Map<String, dynamic> toJson() => {
         'native_libs': nativeLibs,
+        'assets': assets,
         'dex_files': dexFiles,
         'class_count': classCount,
         'components': components,
@@ -228,6 +253,7 @@ class SnapshotSummary {
 
   factory SnapshotSummary.fromJson(Map<String, dynamic> json) => SnapshotSummary(
         nativeLibs: (json['native_libs'] as num?)?.toInt() ?? 0,
+        assets: (json['assets'] as num?)?.toInt() ?? 0,
         dexFiles: (json['dex_files'] as num?)?.toInt() ?? 0,
         classCount: (json['class_count'] as num?)?.toInt() ?? 0,
         components: (json['components'] as num?)?.toInt() ?? 0,
@@ -468,19 +494,244 @@ class SnapshotNativeLib {
     required this.abi,
     required this.name,
     this.size = 0,
+    this.compressedSize = 0,
+    this.crc32 = 0,
+    this.stored = false,
+    this.zipAlignment = 0,
+    this.path = '',
   });
 
   final String abi;
   final String name;
   final int size;
 
-  Map<String, dynamic> toJson() => {'abi': abi, 'name': name, 'size': size};
+  /// 压缩后字节数（安装体积口径）
+  final int compressedSize;
+
+  /// zip 条目 CRC32 —— **解压后内容指纹**，用于判定"同名 .so 是否同一个文件"
+  final int crc32;
+
+  /// 是否以 STORED（不压缩）存放
+  final bool stored;
+
+  /// STORED 数据偏移的 2 的幂对齐（16KB 页对齐判定）
+  final int zipAlignment;
+
+  /// zip 内完整路径（改名/移动检测用）
+  final String path;
+
+  Map<String, dynamic> toJson() => {
+        'abi': abi,
+        'name': name,
+        'size': size,
+        'compressed_size': compressedSize,
+        'crc32': crc32,
+        'stored': stored,
+        'zip_alignment': zipAlignment,
+        'path': path,
+      };
 
   factory SnapshotNativeLib.fromJson(Map<String, dynamic> json) =>
       SnapshotNativeLib(
         abi: json['abi'] as String? ?? '',
         name: json['name'] as String? ?? '',
         size: (json['size'] as num?)?.toInt() ?? 0,
+        compressedSize: (json['compressed_size'] as num?)?.toInt() ?? 0,
+        crc32: (json['crc32'] as num?)?.toInt() ?? 0,
+        stored: json['stored'] as bool? ?? false,
+        zipAlignment: (json['zip_alignment'] as num?)?.toInt() ?? 0,
+        path: json['path'] as String? ?? '',
+      );
+}
+
+/// 一个 `assets/**` 条目
+class SnapshotAsset {
+  const SnapshotAsset({
+    required this.name,
+    this.path = '',
+    this.size = 0,
+    this.compressedSize = 0,
+    this.crc32 = 0,
+    this.stored = false,
+  });
+
+  /// 相对 `assets/` 的路径（分组/展示用）
+  final String name;
+
+  /// zip 内完整路径
+  final String path;
+  final int size;
+  final int compressedSize;
+
+  /// **解压后内容指纹** → 同名 asset 是否同一内容可直接判定
+  final int crc32;
+  final bool stored;
+
+  Map<String, dynamic> toJson() => {
+        'name': name,
+        'path': path,
+        'size': size,
+        'compressed_size': compressedSize,
+        'crc32': crc32,
+        'stored': stored,
+      };
+
+  factory SnapshotAsset.fromJson(Map<String, dynamic> json) => SnapshotAsset(
+        name: json['name'] as String? ?? '',
+        path: json['path'] as String? ?? '',
+        size: (json['size'] as num?)?.toInt() ?? 0,
+        compressedSize: (json['compressed_size'] as num?)?.toInt() ?? 0,
+        crc32: (json['crc32'] as num?)?.toInt() ?? 0,
+        stored: json['stored'] as bool? ?? false,
+      );
+}
+
+/// `resources.arsc` 条目信息（当前为 P0 粒度：存在性/大小/内容指纹）
+class SnapshotArscInfo {
+  const SnapshotArscInfo({
+    this.present = false,
+    this.size = 0,
+    this.compressedSize = 0,
+    this.crc32 = 0,
+    this.stored = false,
+    this.parsed = false,
+    this.packageNames = const [],
+    this.typeNames = const [],
+    this.globalStringCount = 0,
+    this.keyCount = 0,
+    this.entryInstances = 0,
+    this.configs = const [],
+    this.resources = const [],
+    this.resourcesTruncated = false,
+  });
+
+  final bool present;
+  final int size;
+  final int compressedSize;
+
+  /// **解压后内容指纹**（是否同一份资源表）
+  final int crc32;
+  final bool stored;
+
+  /// 浅解析是否成功（旧模块/加固包可能失败）
+  final bool parsed;
+
+  /// 包名（通常 1 个，多包见于 split/共享资源）
+  final List<String> packageNames;
+
+  /// 资源类型名（如 string / drawable / mipmap）
+  final List<String> typeNames;
+
+  /// 全局字符串池字符串数
+  final int globalStringCount;
+
+  /// 资源名（key）数量
+  final int keyCount;
+
+  /// 类型条目实例数（同一资源在不同配置下重复计数）
+  final int entryInstances;
+
+  /// 配置维度（语言/地区，已去重）——判定"新增/移除语言"
+  final List<String> configs;
+
+  /// 默认配置下的资源条目（资源级 diff：增/删/改名/改值）
+  final List<SnapshotArscResource> resources;
+
+  /// 资源条目是否因上限被截断
+  final bool resourcesTruncated;
+
+  Map<String, dynamic> toJson() => {
+        'present': present,
+        'size': size,
+        'compressed_size': compressedSize,
+        'crc32': crc32,
+        'stored': stored,
+        'parsed': parsed,
+        'package_names': packageNames,
+        'type_names': typeNames,
+        'global_string_count': globalStringCount,
+        'key_count': keyCount,
+        'entry_instances': entryInstances,
+        'configs': configs,
+        'resources': [for (final r in resources) r.toJson()],
+        'resources_truncated': resourcesTruncated,
+      };
+
+  factory SnapshotArscInfo.fromJson(Map<String, dynamic> json) => SnapshotArscInfo(
+        present: json['present'] as bool? ?? false,
+        size: (json['size'] as num?)?.toInt() ?? 0,
+        compressedSize: (json['compressed_size'] as num?)?.toInt() ?? 0,
+        crc32: (json['crc32'] as num?)?.toInt() ?? 0,
+        stored: json['stored'] as bool? ?? false,
+      );
+}
+
+/// 一个资源条目（默认配置）
+class SnapshotArscResource {
+  const SnapshotArscResource({
+    this.id = 0,
+    this.typeName = '',
+    this.key = '',
+    this.valueKind = '',
+    this.value = '',
+  });
+
+  final int id;
+  final String typeName;
+  final String key;
+  final String valueKind;
+  final String value;
+
+  /// 对比用的稳定标识（资源 id 是资源表的身份证）
+  String get label =>
+      '0x${id.toRadixString(16).padLeft(8, '0')} $typeName/$key';
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'type_name': typeName,
+        'key': key,
+        'value_kind': valueKind,
+        'value': value,
+      };
+
+  factory SnapshotArscResource.fromJson(Map<String, dynamic> json) =>
+      SnapshotArscResource(
+        id: (json['id'] as num?)?.toInt() ?? 0,
+        typeName: json['type_name'] as String? ?? '',
+        key: json['key'] as String? ?? '',
+        valueKind: json['value_kind'] as String? ?? '',
+        value: json['value'] as String? ?? '',
+      );
+}
+
+/// APK 包结构总量（zip 中央目录口径，零解压）
+class SnapshotStructureInfo {
+  const SnapshotStructureInfo({
+    this.entryCount = 0,
+    this.totalUncompressed = 0,
+    this.storedEntryCount = 0,
+  });
+
+  /// zip 条目总数
+  final int entryCount;
+
+  /// 全部条目解压后总字节数
+  final int totalUncompressed;
+
+  /// STORED（未压缩）条目数量
+  final int storedEntryCount;
+
+  Map<String, dynamic> toJson() => {
+        'entry_count': entryCount,
+        'total_uncompressed': totalUncompressed,
+        'stored_entry_count': storedEntryCount,
+      };
+
+  factory SnapshotStructureInfo.fromJson(Map<String, dynamic> json) =>
+      SnapshotStructureInfo(
+        entryCount: (json['entry_count'] as num?)?.toInt() ?? 0,
+        totalUncompressed: (json['total_uncompressed'] as num?)?.toInt() ?? 0,
+        storedEntryCount: (json['stored_entry_count'] as num?)?.toInt() ?? 0,
       );
 }
 
@@ -531,6 +782,8 @@ class SnapshotElfInfo {
     this.needed = const [],
     this.jniEntryPoints = const [],
     this.stripped = false,
+    this.sha256 = '',
+    this.buildId = '',
   });
 
   final String abi;
@@ -543,9 +796,17 @@ class SnapshotElfInfo {
   final List<String> jniEntryPoints;
   final bool stripped;
 
+  /// 解压后内容的 SHA-256：判定"同名 .so 是否同一个文件"的强指纹
+  final String sha256;
+
+  /// `.note.gnu.build-id`：区分"同一份产物 / 同一构建重新链接 / 不同构建"
+  final String buildId;
+
   Map<String, dynamic> toJson() => {
         'abi': abi,
         'so_name': soName,
+        'sha256': sha256,
+        'build_id': buildId,
         'min_page_size': minPageSize,
         'aligned_16kb': aligned16Kb,
         'zip_alignment': zipAlignment,
@@ -565,6 +826,8 @@ class SnapshotElfInfo {
         needed: _strList(json['needed']),
         jniEntryPoints: _strList(json['jni_entry_points']),
         stripped: json['stripped'] as bool? ?? false,
+        sha256: json['sha256'] as String? ?? '',
+        buildId: json['build_id'] as String? ?? '',
       );
 }
 
@@ -573,27 +836,80 @@ class SnapshotDexFile {
   const SnapshotDexFile({
     required this.name,
     this.size = 0,
+    this.compressedSize = 0,
     this.classCount = -1,
     this.crc32 = 0,
+    this.headerSha1 = '',
+    this.checksum = 0,
+    this.stringCount = 0,
+    this.typeCount = 0,
+    this.protoCount = 0,
+    this.fieldCount = 0,
+    this.methodCount = 0,
+    this.classDigest = '',
   });
 
   final String name;
   final int size;
+
+  /// 压缩后字节数
+  final int compressedSize;
+
   final int classCount;
+
+  /// zip 条目 CRC32（内容指纹）
   final int crc32;
+
+  /// DEX 头 signature（SHA-1，小写 hex）——**编译期算好的内容指纹**，
+  /// 40 字符即代表整个 dex 内容，用于判定"同名 dex 是否内容一致"
+  final String headerSha1;
+
+  /// DEX 头 checksum（adler32）
+  final int checksum;
+
+  /// string_ids / type_ids / proto_ids / field_ids / method_ids 数量
+  final int stringCount;
+  final int typeCount;
+  final int protoCount;
+  final int fieldCount;
+  final int methodCount;
+
+  /// 类集合指纹（排序后类描述符的 SHA-256）：判定"这份 dex 的类整体搬到了另一个 dex 文件"
+  final String classDigest;
+
+  /// 是否有头指纹（旧快照/解析失败为 false）
+  bool get hasHeaderFingerprint => headerSha1.isNotEmpty;
 
   Map<String, dynamic> toJson() => {
         'name': name,
         'size': size,
+        'compressed_size': compressedSize,
         'class_count': classCount,
         'crc32': crc32,
+        'header_sha1': headerSha1,
+        'checksum': checksum,
+        'string_count': stringCount,
+        'type_count': typeCount,
+        'proto_count': protoCount,
+        'field_count': fieldCount,
+        'method_count': methodCount,
+        'class_digest': classDigest,
       };
 
   factory SnapshotDexFile.fromJson(Map<String, dynamic> json) => SnapshotDexFile(
         name: json['name'] as String? ?? '',
         size: (json['size'] as num?)?.toInt() ?? 0,
+        compressedSize: (json['compressed_size'] as num?)?.toInt() ?? 0,
         classCount: (json['class_count'] as num?)?.toInt() ?? -1,
         crc32: (json['crc32'] as num?)?.toInt() ?? 0,
+        headerSha1: json['header_sha1'] as String? ?? '',
+        checksum: (json['checksum'] as num?)?.toInt() ?? 0,
+        stringCount: (json['string_count'] as num?)?.toInt() ?? 0,
+        typeCount: (json['type_count'] as num?)?.toInt() ?? 0,
+        protoCount: (json['proto_count'] as num?)?.toInt() ?? 0,
+        fieldCount: (json['field_count'] as num?)?.toInt() ?? 0,
+        methodCount: (json['method_count'] as num?)?.toInt() ?? 0,
+        classDigest: json['class_digest'] as String? ?? '',
       );
 }
 

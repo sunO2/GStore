@@ -51,6 +51,7 @@ ApkStructure? decodeApkStructure(dynamic json) {
     fileSize: (json['file_size'] as num?)?.toInt() ?? 0,
     entryCount: (json['entry_count'] as num?)?.toInt() ?? 0,
     totalUncompressed: (json['total_uncompressed'] as num?)?.toInt() ?? 0,
+    storedEntryCount: (json['stored_entry_count'] as num?)?.toInt() ?? 0,
     abis: [
       for (final e in (json['abis'] as List? ?? []))
         _decodeAbiLibs(e as Map<String, dynamic>),
@@ -59,11 +60,20 @@ ApkStructure? decodeApkStructure(dynamic json) {
       for (final e in (json['assets_so'] as List? ?? []))
         _decodeSoEntry(e as Map<String, dynamic>),
     ],
+    assets: [
+      for (final e in (json['assets'] as List? ?? []))
+        _decodeAssetEntry(e as Map<String, dynamic>),
+    ],
     dexFiles: [
       for (final e in (json['dex_files'] as List? ?? []))
         _decodeDexEntry(e as Map<String, dynamic>),
     ],
     resourcesArscSize: (json['resources_arsc_size'] as num?)?.toInt() ?? 0,
+    resourcesArscCrc32: (json['resources_arsc_crc32'] as num?)?.toInt() ?? 0,
+    resourcesArscStored: json['resources_arsc_stored'] as bool? ?? false,
+    arsc: _decodeArscInfo(json['arsc']),
+    resourcesArscCompressedSize:
+        (json['resources_arsc_compressed_size'] as num?)?.toInt() ?? 0,
     hasManifest: json['has_manifest'] as bool? ?? false,
   );
 }
@@ -85,6 +95,44 @@ ApkSoEntry _decodeSoEntry(Map<String, dynamic> m) => ApkSoEntry(
       crc32: (m['crc32'] as num?)?.toInt() ?? 0,
       stored: m['stored'] as bool? ?? false,
       zipAlignment: (m['zip_alignment'] as num?)?.toInt() ?? 0,
+    );
+
+ApkArscInfo _decodeArscInfo(dynamic json) {
+  if (json is! Map<String, dynamic>) return const ApkArscInfo();
+  List<String> strList(String key) => [
+        for (final e in (json[key] as List? ?? [])) e.toString(),
+      ];
+  return ApkArscInfo(
+    parsed: json['parsed'] as bool? ?? false,
+    packageCount: (json['package_count'] as num?)?.toInt() ?? 0,
+    packageNames: strList('package_names'),
+    typeCount: (json['type_count'] as num?)?.toInt() ?? 0,
+    typeNames: strList('type_names'),
+    globalStringCount: (json['global_string_count'] as num?)?.toInt() ?? 0,
+    keyCount: (json['key_count'] as num?)?.toInt() ?? 0,
+    entryInstances: (json['entry_instances'] as num?)?.toInt() ?? 0,
+    configs: strList('configs'),
+    resources: [
+      for (final e in (json['resources'] as List? ?? []))
+        ApkArscResource(
+          id: ((e as Map<String, dynamic>)['id'] as num?)?.toInt() ?? 0,
+          typeName: e['type_name'] as String? ?? '',
+          key: e['key'] as String? ?? '',
+          valueKind: e['value_kind'] as String? ?? '',
+          value: e['value'] as String? ?? '',
+        ),
+    ],
+    resourcesTruncated: json['resources_truncated'] as bool? ?? false,
+  );
+}
+
+ApkAssetEntry _decodeAssetEntry(Map<String, dynamic> m) => ApkAssetEntry(
+      path: m['path'] as String? ?? '',
+      name: m['name'] as String? ?? '',
+      size: (m['size'] as num?)?.toInt() ?? 0,
+      compressedSize: (m['compressed_size'] as num?)?.toInt() ?? 0,
+      crc32: (m['crc32'] as num?)?.toInt() ?? 0,
+      stored: m['stored'] as bool? ?? false,
     );
 
 ApkDexEntry _decodeDexEntry(Map<String, dynamic> m) => ApkDexEntry(
@@ -198,6 +246,16 @@ ApkDexStats? decodeApkDexStats(dynamic json) {
           compressedSize: (e['compressed_size'] as num?)?.toInt() ?? 0,
           crc32: (e['crc32'] as num?)?.toInt() ?? 0,
           classCount: (e['class_count'] as num?)?.toInt() ?? -1,
+          checksum: (e['checksum'] as num?)?.toInt() ?? 0,
+          headerSha1: e['header_sha1'] as String? ?? '',
+          headerFileSize: (e['header_file_size'] as num?)?.toInt() ?? 0,
+          stringIds: (e['string_ids'] as num?)?.toInt() ?? 0,
+          typeIds: (e['type_ids'] as num?)?.toInt() ?? 0,
+          protoIds: (e['proto_ids'] as num?)?.toInt() ?? 0,
+          fieldIds: (e['field_ids'] as num?)?.toInt() ?? 0,
+          methodIds: (e['method_ids'] as num?)?.toInt() ?? 0,
+          dataSize: (e['data_size'] as num?)?.toInt() ?? 0,
+          classDigest: e['class_digest'] as String? ?? '',
         ),
     ],
     totalClassCount: (json['total_class_count'] as num?)?.toInt() ?? 0,

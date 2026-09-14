@@ -2,6 +2,7 @@ import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/rust/AnalyzerRustDecoder.dart';
 import 'package:gstore/core/rust/contract/ModuleTypes.dart';
 import 'package:gstore/core/service/apk_library_analyzer.dart';
+import 'package:gstore/core/service/apk_native_service.dart';
 import 'package:gstore/core/service/apk_source_service.dart';
 import 'package:gstore/core/snapshot/deep_link_utils.dart';
 import 'package:gstore/core/snapshot/snapshot_models.dart';
@@ -37,13 +38,17 @@ class SnapshotCollector {
   /// 采集指定应用。
   ///
   /// [sourceDir] 为主 APK 路径；[sourceDirs] 覆盖 split 分发（多源目录）。
-  /// [versionName] / [versionCode] 由调用方从 `AppInfo` 提供（平台详情接口不含版本）。
+  /// [appLabel] 仅作**兜底**：名称/版本一律取真实来源（见下），避免上游页面
+  /// 传进来的值（可能来自应用列表缓存）被写进快照，导致版本号与实际 APK 不一致。
+  ///
+  /// 真实来源优先级：
+  /// 1. `PackageManager.getPackageArchiveInfo(sourceDir)`——直接读**当前安装的 APK 文件**；
+  /// 2. 模块解析 APK 内 AndroidManifest 得到的 `versionName/versionCode`；
+  /// 3. 都没有时留空（快照照常生成并记 warning），绝不用调用方传值。
   Future<SnapshotCaptureResult> capture({
     required String packageName,
     required String appLabel,
     required String sourceDir,
-    String versionName = '',
-    String versionCode = '',
     List<String>? sourceDirs,
   }) async {
     final warnings = <String>[];
@@ -63,6 +68,11 @@ class SnapshotCollector {
       () => ApkSourceService.instance.getComponentsDetail(packageName),
       warnings,
       '组件状态',
+    );
+    final apkInfoF = _guard(
+      () => ApkNativeService.instance.parseApk(sourceDir),
+      warnings,
+      'APK 版本信息',
     );
     final abisF = _guard(
       () => ApkLibraryAnalyzer.instance.listNativeAbis(sourceDir),
@@ -102,14 +112,29 @@ class SnapshotCollector {
     final elf = report?.elf;
     final features = report?.features ?? const ApkFeatures();
     final matches = report?.matches;
+    final apkInfo = await apkInfoF;
+
+    // 版本/名称：真实来源 > 兜底，绝不采用调用方传入的版本
+    final realVersionName = _firstNonEmpty([
+      apkInfo?.versionName ?? '',
+      manifest?.versionName ?? '',
+    ]);
+    final realVersionCode = _firstNonEmpty([
+      (apkInfo != null && apkInfo.versionCode > 0) ? '${apkInfo.versionCode}' : '',
+      manifest?.versionCode ?? '',
+    ]);
+    final realLabel = _firstNonEmpty([
+      apkInfo?.appName ?? '',
+      appLabel,
+    ]);
 
     // ===== 3. 组装载荷 =====
     final payload = SnapshotPayload(
       app: SnapshotAppInfo(
         packageName: packageName,
-        label: appLabel,
-        versionName: versionName,
-        versionCode: versionCode,
+        label: realLabel,
+        versionName: realVersionName,
+        versionCode: realVersionCode,
         apkSize: (structure != null && structure.fileSize > 0)
             ? structure.fileSize
             : detail.apkSize,
@@ -148,7 +173,17 @@ class SnapshotCollector {
       nativeLibs: [
         for (final group in structure?.abis ?? const <ApkAbiLibs>[])
           for (final lib in group.libs)
-            SnapshotNativeLib(abi: group.abi, name: lib.name, size: lib.size),
+            SnapshotNativeLib(
+              abi: group.abi,
+              name: lib.name,
+              size: lib.size,
+              // ★ 之前这些字段被丢掉，导致"原生库文件"只能比大小
+              compressedSize: lib.compressedSize,
+              crc32: lib.crc32,
+              stored: lib.stored,
+              zipAlignment: lib.zipAlignment,
+              path: lib.path,
+            ),
       ],
       nativeHits: _ruleHits(matches, (h) => h.kind == 'native'),
       elfFiles: [
@@ -163,6 +198,8 @@ class SnapshotCollector {
             needed: so.needed,
             jniEntryPoints: so.jniEntryPoints,
             stripped: so.stripped,
+            sha256: so.sha256,
+            buildId: so.buildId,
           ),
       ],
       dexFiles: [
@@ -170,10 +207,61 @@ class SnapshotCollector {
           SnapshotDexFile(
             name: dex.name,
             size: dex.size,
+            compressedSize: dex.compressedSize,
             classCount: dex.classCount,
             crc32: dex.crc32,
+            // 头部指纹（编译期算好）与各类 id 数量
+            headerSha1: dex.headerSha1,
+            checksum: dex.checksum,
+            stringCount: dex.stringIds,
+            typeCount: dex.typeIds,
+            protoCount: dex.protoIds,
+            fieldCount: dex.fieldIds,
+            methodCount: dex.methodIds,
+            classDigest: dex.classDigest,
           ),
       ],
+      assets: [
+        for (final a in structure?.assets ?? const <ApkAssetEntry>[])
+          SnapshotAsset(
+            name: a.name,
+            path: a.path,
+            size: a.size,
+            compressedSize: a.compressedSize,
+            crc32: a.crc32,
+            stored: a.stored,
+          ),
+      ],
+      arsc: SnapshotArscInfo(
+        present: (structure?.resourcesArscSize ?? 0) > 0,
+        size: structure?.resourcesArscSize ?? 0,
+        compressedSize: structure?.resourcesArscCompressedSize ?? 0,
+        crc32: structure?.resourcesArscCrc32 ?? 0,
+        stored: structure?.resourcesArscStored ?? false,
+        parsed: structure?.arsc.parsed ?? false,
+        packageNames: structure?.arsc.packageNames ?? const [],
+        typeNames: structure?.arsc.typeNames ?? const [],
+        globalStringCount: structure?.arsc.globalStringCount ?? 0,
+        keyCount: structure?.arsc.keyCount ?? 0,
+        entryInstances: structure?.arsc.entryInstances ?? 0,
+        configs: structure?.arsc.configs ?? const [],
+        resources: [
+          for (final r in structure?.arsc.resources ?? const <ApkArscResource>[])
+            SnapshotArscResource(
+              id: r.id,
+              typeName: r.typeName,
+              key: r.key,
+              valueKind: r.valueKind,
+              value: r.value,
+            ),
+        ],
+        resourcesTruncated: structure?.arsc.resourcesTruncated ?? false,
+      ),
+      structure: SnapshotStructureInfo(
+        entryCount: structure?.entryCount ?? 0,
+        totalUncompressed: structure?.totalUncompressed ?? 0,
+        storedEntryCount: structure?.storedEntryCount ?? 0,
+      ),
       dexHits: _ruleHits(matches, (h) => h.kind == 'dex'),
       features: SnapshotFeatures(
         kotlinUsed: features.kotlinUsed,

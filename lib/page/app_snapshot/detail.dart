@@ -45,11 +45,14 @@ class AppSnapshotDetailPage extends StatelessWidget {
         children: [
           _header(context),
           _appSection(p),
+          _structureSection(p),
           _signatureSection(p),
           _permissionSection(p),
           _componentSection(p),
           _nativeSection(p),
           _dexSection(p),
+          _assetsSection(p),
+          _arscSection(p),
           _featureSection(p),
           _metaSection(p),
           _ruleHitSection(p),
@@ -111,10 +114,114 @@ class AppSnapshotDetailPage extends StatelessWidget {
     );
   }
 
+  /// 包结构（zip 中央目录口径：条目数 / 解压总量 / STORED 数）
+  Widget _structureSection(SnapshotPayload p) {
+    final st = p.structure;
+    final ratio = st.totalUncompressed > 0
+        ? '${(st.storedEntryCount * 100 / (st.entryCount == 0 ? 1 : st.entryCount)).toStringAsFixed(1)}%'
+        : '—';
+    return SnapshotSectionCard(
+      title: '包结构',
+      collapsible: true,
+      initiallyExpanded: false,
+      count: st.entryCount,
+      subtitle: 'zip 条目总量与压缩情况',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SnapshotInfoRow(label: '条目总数', value: '${st.entryCount}'),
+          SnapshotInfoRow(
+            label: '解压总量',
+            value: formatBytes(st.totalUncompressed),
+          ),
+          SnapshotInfoRow(
+            label: 'STORED',
+            value: '${st.storedEntryCount} 个（$ratio）',
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// assets 清单（P0：文件名/大小/压缩后/内容指纹/存放方式）
+  Widget _assetsSection(SnapshotPayload p) {
+    final assets = p.assets;
+    final total = assets.fold<int>(0, (n, a) => n + a.size);
+    // 大包 assets 可上千条：按体积倒序只列前 [_maxAssetRows] 条，其余提示到对比页看差异
+    const maxRows = 50;
+    final sorted = [...assets]..sort((a, b) => b.size.compareTo(a.size));
+    final shown = sorted.take(maxRows).toList();
+    return SnapshotSectionCard(
+      title: 'assets 资源',
+      collapsible: true,
+      initiallyExpanded: false,
+      count: assets.length,
+      subtitle: assets.isEmpty
+          ? '无 assets 资源'
+          : '${assets.length} 个 · 共 ${formatBytes(total)}'
+              '${assets.length > maxRows ? '（按体积列前 $maxRows）' : ''}',
+      child: assets.isEmpty
+          ? const SnapshotEmptyHint(text: '该 APK 没有 assets 资源')
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                for (final a in shown)
+                  SnapshotTextRow(
+                    text: a.name,
+                    subtitle: '${formatBytes(a.size)}'
+                        '${a.compressedSize > 0 ? ' · 压缩后 ${formatBytes(a.compressedSize)}' : ''}',
+                    tags: [
+                      if (a.stored) 'STORED',
+                      if (a.crc32 != 0) _crc32Label(a.crc32),
+                    ],
+                  ),
+              ],
+            ),
+    );
+  }
+
+  /// resources.arsc（P0：存在性/大小/压缩后/存放方式/内容指纹）
+  Widget _arscSection(SnapshotPayload p) {
+    final arsc = p.arsc;
+    return SnapshotSectionCard(
+      title: 'resources.arsc',
+      collapsible: true,
+      initiallyExpanded: false,
+      subtitle: arsc.present ? '资源表条目' : '该 APK 没有 resources.arsc',
+      child: arsc.present
+          ? Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SnapshotInfoRow(label: '大小', value: formatBytes(arsc.size)),
+                SnapshotInfoRow(
+                  label: '压缩后',
+                  value: formatBytes(arsc.compressedSize),
+                ),
+                SnapshotInfoRow(
+                  label: '存放方式',
+                  value: arsc.stored ? 'STORED（未压缩）' : 'DEFLATE',
+                ),
+                SnapshotInfoRow(
+                  label: '内容指纹',
+                  value: _crc32Label(arsc.crc32),
+                  mono: true,
+                ),
+              ],
+            )
+          : const SnapshotEmptyHint(text: '未找到 resources.arsc'),
+    );
+  }
+
+  /// CRC32 → 8 位 hex（与对比页展示口径一致）
+  static String _crc32Label(int crc32) =>
+      'crc32:${crc32.toUnsigned(32).toRadixString(16).padLeft(8, '0')}';
+
   Widget _signatureSection(SnapshotPayload p) {
     final s = p.signature;
     return SnapshotSectionCard(
       title: '签名',
+      collapsible: true,
+      initiallyExpanded: false,
       subtitle: s.certificates.isEmpty ? '无证书信息' : '${s.certificates.length} 张证书',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -150,6 +257,8 @@ class AppSnapshotDetailPage extends StatelessWidget {
   Widget _permissionSection(SnapshotPayload p) {
     return SnapshotSectionCard(
       title: '权限',
+      collapsible: true,
+      initiallyExpanded: false,
       subtitle: '${p.permissions.length} 项',
       child: p.permissions.isEmpty
           ? const SnapshotEmptyHint(text: '未声明权限')
@@ -178,6 +287,8 @@ class AppSnapshotDetailPage extends StatelessWidget {
     }
     return SnapshotSectionCard(
       title: '组件',
+      collapsible: true,
+      initiallyExpanded: false,
       subtitle: '${p.components.length} 个'
           '${byKind.isEmpty ? '' : '（${byKind.entries.map((e) => '${e.key} ${e.value.length}').join(' · ')}）'}',
       child: p.components.isEmpty
@@ -220,9 +331,20 @@ class AppSnapshotDetailPage extends StatelessWidget {
     final elfByKey = {
       for (final e in p.elfFiles) '${e.abi}|${e.soName}': e,
     };
+    // 体积口径：解压后 total 与压缩后 total 都给，装包大小变化才看得出来
+    final totalSize = p.nativeLibs.fold<int>(0, (n, l) => n + l.size);
+    final totalCompressed =
+        p.nativeLibs.fold<int>(0, (n, l) => n + l.compressedSize);
+    final totalNote = p.nativeLibs.isEmpty
+        ? ''
+        : ' · 共 ${formatBytes(totalSize)}'
+            '${totalCompressed > 0 ? '（压缩后 ${formatBytes(totalCompressed)}）' : ''}';
     return SnapshotSectionCard(
       title: '原生库',
-      subtitle: '${p.nativeLibs.length} 个 · 命中 ${p.nativeHits.length} 个第三方库',
+      collapsible: true,
+      initiallyExpanded: false,
+      subtitle: '${p.nativeLibs.length} 个 · 命中 ${p.nativeHits.length} 个第三方库'
+          '$totalNote',
       child: p.nativeLibs.isEmpty
           ? const SnapshotEmptyHint(text: '无原生库')
           : Column(
@@ -232,8 +354,16 @@ class AppSnapshotDetailPage extends StatelessWidget {
                   SnapshotTextRow(
                     text: '${lib.abi} / ${lib.name}',
                     mono: true,
-                    subtitle: _elfSubtitle(elfByKey['${lib.abi}|${lib.name}']),
-                    tags: [formatBytes(lib.size)],
+                    subtitle: [
+                      // 大小 / 压缩后（装包体积）/ 内容指纹，一行给全
+                      formatBytes(lib.size),
+                      if (lib.compressedSize > 0)
+                        '压缩后 ${formatBytes(lib.compressedSize)}',
+                      if (lib.crc32 != 0) _crc32Label(lib.crc32),
+                      if (lib.stored) 'STORED',
+                      _elfSubtitle(elfByKey['${lib.abi}|${lib.name}']) ?? '',
+                    ].where((e) => e.isNotEmpty).join(' · '),
+                    tags: const [],
                   ),
               ],
             ),
@@ -256,6 +386,8 @@ class AppSnapshotDetailPage extends StatelessWidget {
   Widget _dexSection(SnapshotPayload p) {
     return SnapshotSectionCard(
       title: 'DEX',
+      collapsible: true,
+      initiallyExpanded: false,
       subtitle: '${p.dexFiles.length} 个文件 · '
           '${p.dexFiles.fold<int>(0, (n, d) => n + d.classCount)} 个类 · '
           '命中 ${p.dexHits.length} 个库',
@@ -289,6 +421,8 @@ class AppSnapshotDetailPage extends StatelessWidget {
     ];
     return SnapshotSectionCard(
       title: '特征与构建版本',
+      collapsible: true,
+      initiallyExpanded: false,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -310,6 +444,8 @@ class AppSnapshotDetailPage extends StatelessWidget {
   Widget _metaSection(SnapshotPayload p) {
     return SnapshotSectionCard(
       title: 'meta-data',
+      collapsible: true,
+      initiallyExpanded: false,
       subtitle: '${p.metaData.length} 项',
       child: p.metaData.isEmpty
           ? const SnapshotEmptyHint(text: '无 meta-data')
@@ -334,6 +470,8 @@ class AppSnapshotDetailPage extends StatelessWidget {
     final total = groups.values.fold<int>(0, (n, l) => n + l.length);
     return SnapshotSectionCard(
       title: '命中的第三方库',
+      collapsible: true,
+      initiallyExpanded: false,
       subtitle: '共 $total 项',
       child: total == 0
           ? const SnapshotEmptyHint(text: '未命中任何规则')

@@ -18,6 +18,7 @@ import 'package:gstore/core/rust/contract/ModuleTypes.dart'
         ManifestIntentData,
         RuleHit;
 import 'package:gstore/core/service/apk_library_analyzer.dart';
+import 'package:gstore/core/service/apk_native_service.dart';
 import 'package:gstore/core/service/apk_source_service.dart';
 import 'package:installed_apps/app_info.dart' as installed;
 
@@ -362,6 +363,40 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
   /// APK 结构清单（Rust 只读中央目录；APK 大小等以此为准）
   ApkStructure? _structure;
 
+  /// PackageManager 直读安装包的版本/名称（`getPackageArchiveInfo`）。
+  /// 作为版本号的**兜底真实来源**（首选是模块解析出的 APK manifest）。
+  NativeApkInfo? _apkInfo;
+
+  /// 版本名：真实来源优先（APK manifest > PackageManager 读 APK），
+  /// **不用**上游应用列表 DB 里的值——那份可能已过期（真机曾出现页面/快照版本号与实际 APK 不符）。
+  String get _realVersionName =>
+      (_manifest?.versionName.isNotEmpty ?? false)
+          ? _manifest!.versionName
+          : (_apkInfo?.versionName ?? '');
+
+  /// 版本号：同上优先级
+  String get _realVersionCode {
+    final fromManifest = _manifest?.versionCode ?? '';
+    if (fromManifest.isNotEmpty) return fromManifest;
+    final code = _apkInfo?.versionCode ?? 0;
+    return code > 0 ? '$code' : '';
+  }
+
+  /// 应用名：真实来源优先，最后才用上游传进来的名称
+  String get _realAppName {
+    final real = _apkInfo?.appName ?? '';
+    return real.isNotEmpty ? real : widget.app.name;
+  }
+
+  /// 版本徽标文案（拿不到时明确说"版本未知"，不要显示成空白括号）
+  String get _versionChipLabel {
+    final name = _realVersionName;
+    final code = _realVersionCode;
+    if (name.isEmpty && code.isEmpty) return '版本未知';
+    if (code.isEmpty) return name;
+    return '$name ($code)';
+  }
+
   /// static(6) 规则命中（此前宿主实现未覆盖的类别）
   List<RuleHit> _staticHits = const [];
 
@@ -491,6 +526,20 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
         _permissionStates = componentsDetail.permissions;
         _loading = false;
       });
+      _fillVersionFallbackIfNeeded();
+  }
+
+  /// 版本兜底：**只有**模块 manifest 没给出真实版本时，才去问 PackageManager 直读安装包。
+  ///
+  /// 放在主加载之后 fire-and-forget：常见路径（manifest 可用）不多一次平台调用、
+  /// 也不拖慢首帧；拿到后单独 setState 刷新徽标。
+  void _fillVersionFallbackIfNeeded() {
+    if (_realVersionName.isNotEmpty) return;
+    ApkNativeService.instance.parseApk(widget.sourceDir).then((info) {
+      if (!mounted || info == null) return;
+      if (info.versionName.isEmpty && info.versionCode <= 0) return;
+      setState(() => _apkInfo = info);
+    });
   }
 
   /// 复制文本到剪贴板并弹出统一 SnackBar 提示（'已复制 …'，超长截断）。
@@ -553,11 +602,9 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
               MaterialPageRoute(
                 builder: (_) => AppSnapshotPage(
                   packageName: widget.app.packageName,
-                  appLabel: widget.app.name,
+                  appLabel: _realAppName,
                   sourceDir: widget.sourceDir,
                   sourceDirs: widget.sourceDirs,
-                  versionName: widget.app.versionName,
-                  versionCode: '${widget.app.versionCode}',
                 ),
               ),
             ),
@@ -625,7 +672,7 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                widget.app.name,
+                _realAppName,
                 style: textTheme.titleMedium?.copyWith(
                   fontWeight: AppTypography.weightSemiBold,
                 ),
@@ -648,7 +695,7 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
                   _buildHeaderChip(
                     context,
                     icon: Icons.tag,
-                    label: '${widget.app.versionName} (${widget.app.versionCode})',
+                    label: _versionChipLabel,
                   ),
                   if (_apkSize > 0)
                     _buildHeaderChip(

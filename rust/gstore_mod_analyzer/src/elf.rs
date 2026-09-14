@@ -44,6 +44,11 @@ pub struct ElfSoInfo {
     pub jni_entry_points: Vec<String>,
     /// 是否已剥离符号表（无 SHT_SYMTAB 节）
     pub stripped: bool,
+    /// 解压后内容的 SHA-256（小写 hex）——判定"是否同一个文件"的强指纹
+    pub sha256: String,
+    /// `.note.gnu.build-id`（小写 hex）；链接器未写入时为空。
+    /// 与 sha256 搭配可区分「同一份产物」/「同一构建重新链接」/「完全不同的构建」
+    pub build_id: String,
 }
 
 /// 整包扫描结果
@@ -112,10 +117,14 @@ pub fn scan_elf_from(
                 needed: Vec::new(),
                 jni_entry_points: Vec::new(),
                 stripped: false,
+                sha256: String::new(),
+                build_id: String::new(),
             });
             continue;
         }
 
+        // 内容强指纹：字节已在内存，纯 CPU 开销（本机 29 个 .so / 59MB ≈ 0.2s）
+        let sha256 = sha256_hex(&bytes);
         let elf = parse_elf(&bytes);
         let aligned_16kb = is_16kb_aligned(elf.min_page_size, zip_alignment);
         so_files.push(ElfSoInfo {
@@ -130,6 +139,8 @@ pub fn scan_elf_from(
             needed: elf.needed,
             jni_entry_points: elf.jni_entry_points,
             stripped: elf.stripped,
+            sha256,
+            build_id: elf.build_id,
         });
     }
 
@@ -186,6 +197,49 @@ struct ElfParsed {
     needed: Vec<String>,
     jni_entry_points: Vec<String>,
     stripped: bool,
+    /// `.note.gnu.build-id`（小写 hex）；编辑器/链接器未写入时为空
+    build_id: String,
+}
+
+/// 字节内容的 SHA-256（小写 hex）
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// 从 SHT_NOTE 节里取 `.note.gnu.build-id` 的描述符（构建身份）
+///
+/// note 布局：namesz(4) descsz(4) type(4) name(namesz，按 4 对齐) desc(descsz，按 4 对齐)
+fn build_id_of_note(bytes: &[u8], off: usize, size: usize, big: bool) -> Option<String> {
+    if size == 0 || off.checked_add(size)? > bytes.len() {
+        return None;
+    }
+    let end = off + size;
+    let mut cursor = off;
+    while cursor + 12 <= end {
+        let namesz = read_u32(bytes, cursor, big)? as usize;
+        let descsz = read_u32(bytes, cursor + 4, big)? as usize;
+        let ntype = read_u32(bytes, cursor + 8, big)?;
+        let name_start = cursor + 12;
+        let name_end = name_start.checked_add(namesz)?;
+        let name = bytes.get(name_start..name_end)?;
+        let desc_start = name_start + ((namesz + 3) & !3);
+        let desc_end = desc_start.checked_add(descsz)?;
+        if name == b"GNU\0" && ntype == 3 {
+            let desc = bytes.get(desc_start..desc_end)?;
+            if !desc.is_empty() {
+                return Some(desc.iter().map(|b| format!("{b:02x}")).collect());
+            }
+        }
+        cursor = desc_start + ((descsz + 3) & !3);
+    }
+    None
 }
 
 fn parse_elf(bytes: &[u8]) -> ElfParsed {
@@ -232,6 +286,13 @@ fn parse_elf(bytes: &[u8]) -> ElfParsed {
             read_u16(bytes, 0x2E, big),
             read_u16(bytes, 0x30, big),
         )
+    };
+
+    // 节区名表下标（用于按名字找 .note.gnu.build-id）
+    let shstrndx = if is64 {
+        read_u16(bytes, 0x3E, big)
+    } else {
+        read_u16(bytes, 0x32, big)
     };
 
     // 程序头：取 PT_LOAD 的最小 p_align
@@ -283,6 +344,27 @@ fn parse_elf(bytes: &[u8]) -> ElfParsed {
     let mut symtab_found = false;
     let mut dynamic: Option<(usize, usize, usize)> = None; // (offset, size, link)
     let mut dynsym: Option<(usize, usize, usize)> = None;
+    let mut build_id: Option<String> = None;
+
+    // 按节区名表取节名（SHT_NOTE 需要按名字筛选）
+    let name_of = |sh_name: usize| -> Option<(usize, usize)> {
+        let idx = shstrndx? as usize;
+        if idx == 0 || idx >= shnum as usize {
+            return None;
+        }
+        let base = (shentsize as u64)
+            .checked_mul(idx as u64)
+            .and_then(|v| shoff.checked_add(v))
+            .map(|v| v as usize)?;
+        let off = read_addr(bytes, base + sh_off_off, big, size_size).map(|v| v as usize)?;
+        let size = read_addr(bytes, base + sh_size_off, big, size_size).map(|v| v as usize)?;
+        let start = off.checked_add(sh_name)?;
+        let end = off.checked_add(size)?;
+        if start >= end || end > bytes.len() {
+            return None;
+        }
+        Some((start, end))
+    };
 
     for i in 0..shnum {
         let Some(base) = (shentsize as u64)
@@ -308,10 +390,28 @@ fn parse_elf(bytes: &[u8]) -> ElfParsed {
             2 => symtab_found = true,               // SHT_SYMTAB
             6 => dynamic = Some((off, size, link)),  // SHT_DYNAMIC
             11 => dynsym = Some((off, size, link)),  // SHT_DYNSYM
+            7 => {
+                // SHT_NOTE：**按节名**筛出 .note.gnu.build-id（构建身份）
+                if build_id.is_none() {
+                    let sh_name = read_u32(bytes, base, big).unwrap_or(0) as usize;
+                    // 节名表里是 NUL 结尾的字符串：截到 NUL 再精确比较
+                    let is_build_id = name_of(sh_name)
+                        .and_then(|(s, e)| bytes.get(s..e))
+                        .map(|n| {
+                            let end = n.iter().position(|b| *b == 0).unwrap_or(n.len());
+                            &n[..end] == b".note.gnu.build-id"
+                        })
+                        .unwrap_or(false);
+                    if is_build_id {
+                        build_id = build_id_of_note(bytes, off, size, big);
+                    }
+                }
+            }
             _ => {}
         }
     }
     out.stripped = !symtab_found;
+    out.build_id = build_id.unwrap_or_default();
 
     // sh_link 指向节区索引：按下标重新读该节区的 offset/size，作为关联字符串表
     let strtab_by_link = |link: usize| -> Option<(usize, usize)> {
@@ -579,5 +679,81 @@ mod tests {
         // 无过滤全选
         assert!(abi_selected("x86", None));
         assert!(abi_selected("x86", Some(&[])));
+    }
+
+    /// 只含 [null, .note.gnu.build-id, .shstrtab] 三个节区的最小 ELF64，
+    /// 用于验证"按节名筛 note → 取 build-id"的端到端路径
+    fn build_elf64_with_build_id() -> Vec<u8> {
+        let shstr = b"\0.shstrtab\0.note.gnu.build-id\0";
+        let shstrtab_off = 100usize;
+        let shoff = 160usize;
+        let shentsize = 64usize;
+        let mut buf = vec![0u8; shoff + 3 * shentsize];
+
+        buf[0..4].copy_from_slice(&[0x7F, b'E', b'L', b'F']);
+        buf[4] = 2; // ELF64
+        buf[5] = 1; // 小端
+        buf[6] = 1;
+        // e_phoff/e_phnum 保持 0（无程序头）
+        buf[0x28..0x30].copy_from_slice(&(shoff as u64).to_le_bytes());
+        buf[0x3A..0x3C].copy_from_slice(&(shentsize as u16).to_le_bytes());
+        buf[0x3C..0x3E].copy_from_slice(&3u16.to_le_bytes()); // e_shnum
+        buf[0x3E..0x40].copy_from_slice(&2u16.to_le_bytes()); // e_shstrndx
+
+        // note 节（offset 64）：namesz=4 descsz=20 type=3 "GNU\0" + 20 字节描述符
+        let note_off = 64usize;
+        let desc: Vec<u8> = (0..20u8).map(|i| 0xAA + i).collect();
+        buf[note_off..note_off + 4].copy_from_slice(&4u32.to_le_bytes());
+        buf[note_off + 4..note_off + 8].copy_from_slice(&20u32.to_le_bytes());
+        buf[note_off + 8..note_off + 12].copy_from_slice(&3u32.to_le_bytes());
+        buf[note_off + 12..note_off + 16].copy_from_slice(b"GNU\0");
+        buf[note_off + 16..note_off + 36].copy_from_slice(&desc);
+        let note_size = 36usize;
+
+        buf[shstrtab_off..shstrtab_off + shstr.len()].copy_from_slice(shstr);
+
+        let write_shdr =
+            |buf: &mut Vec<u8>, idx: usize, name: u32, sh_type: u32, off: u64, size: u64| {
+                let b = shoff + idx * shentsize;
+                buf[b..b + 4].copy_from_slice(&name.to_le_bytes());
+                buf[b + 4..b + 8].copy_from_slice(&sh_type.to_le_bytes());
+                buf[b + 24..b + 32].copy_from_slice(&off.to_le_bytes());
+                buf[b + 32..b + 40].copy_from_slice(&size.to_le_bytes());
+            };
+        // 节名表的字符串偏移：1=".shstrtab"，11=".note.gnu.build-id"
+        write_shdr(&mut buf, 1, 11, 7, note_off as u64, note_size as u64);
+        write_shdr(
+            &mut buf,
+            2,
+            1,
+            3,
+            shstrtab_off as u64,
+            shstr.len() as u64,
+        );
+        buf
+    }
+
+    #[test]
+    fn extracts_gnu_build_id_from_note_section() {
+        let p = parse_elf(&build_elf64_with_build_id());
+        let expected: String = (0..20u8).map(|i| format!("{:02x}", 0xAA + i)).collect();
+        assert_eq!(p.build_id, expected);
+    }
+
+    #[test]
+    fn build_id_absent_when_no_note_section() {
+        let p = parse_elf(&build_elf64(4096, false));
+        assert!(p.build_id.is_empty());
+    }
+
+    #[test]
+    fn sha256_is_known_answer() {
+        // sha256("abc")
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        // 内容不同 → 指纹必须不同（"同名不同内容"判定依赖这一点）
+        assert_ne!(sha256_hex(b"abc"), sha256_hex(b"abd"));
     }
 }

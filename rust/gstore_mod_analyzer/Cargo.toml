@@ -8,6 +8,8 @@ name = "gstore_mod_analyzer"
 crate-type = ["cdylib"]
 
 [dependencies]
+# 内容强指纹（.so 是否同一个文件）
+sha2 = "0.10"
 # 模块契约层（C ABI 结构体、错误模型）
 gstore_contract = { path = "../gstore_contract" }
 # JSON（响应编码 + Serialize derive）

@@ -10,8 +10,14 @@
 //! 注意：**不含 ELF 内容解析**（页对齐、DT_NEEDED 等需要解压，见 `elf` 模块）。
 
 use std::fs::File;
+use std::io::Read;
 
 use serde::Serialize;
+
+use crate::arsc::ArscInfo;
+
+/// `resources.arsc` 解析上限（防御异常包；正常资源表 1~2MB 级）
+const MAX_ARSC_BYTES: u64 = 32 * 1024 * 1024;
 use zip::ZipArchive;
 
 /// 一个 `.so` 条目（只需中央目录信息）
@@ -45,6 +51,26 @@ pub struct AbiLibs {
     pub total_size: u64,
 }
 
+/// 一个 `assets/**` 条目（只需中央目录信息）
+///
+/// `crc32` 是**解压后内容**的指纹 → "同名 asset 是否内容一致"可直接判定，
+/// 无需解压（与 [`SoEntry`] 同一套零解压思路）。
+#[derive(Clone, Debug, Serialize)]
+pub struct AssetEntry {
+    /// zip 内完整路径（如 `assets/models/x.tflite`）
+    pub path: String,
+    /// 相对 `assets/` 的路径（分组与改名检测用）
+    pub name: String,
+    /// 解压后字节数
+    pub size: u64,
+    /// 压缩后字节数
+    pub compressed_size: u64,
+    /// 条目 CRC32
+    pub crc32: u32,
+    /// 是否以 STORED（不压缩）存放
+    pub stored: bool,
+}
+
 /// 一个 DEX 条目
 #[derive(Clone, Debug, Serialize)]
 pub struct DexFileEntry {
@@ -67,14 +93,26 @@ pub struct ApkStructure {
     pub entry_count: usize,
     /// 全部条目解压后总字节数
     pub total_uncompressed: u64,
+    /// STORED（未压缩）条目数量：影响安装体积与页对齐判定
+    pub stored_entry_count: usize,
     /// 按 ABI 分组的原生库（`lib/<abi>/*.so`）
     pub abis: Vec<AbiLibs>,
     /// `assets/**/*.so`（LibChecker 单列分组）
     pub assets_so: Vec<SoEntry>,
+    /// `assets/**` 全量清单（含 `.so`；与 `assets_so` 语义不同）
+    pub assets: Vec<AssetEntry>,
     /// DEX 文件清单（`classes*.dex`）
     pub dex_files: Vec<DexFileEntry>,
     /// `resources.arsc` 解压后大小（缺失为 0）
     pub resources_arsc_size: u64,
+    /// `resources.arsc` 压缩后字节数（缺失为 0）
+    pub resources_arsc_compressed_size: u64,
+    /// `resources.arsc` 条目 CRC32（缺失为 0）
+    pub resources_arsc_crc32: u32,
+    /// `resources.arsc` 是否 STORED 存放
+    pub resources_arsc_stored: bool,
+    /// `resources.arsc` 浅解析（包名/类型/字符串池/配置维度）；解析失败为空
+    pub arsc: ArscInfo,
     /// 是否含 `AndroidManifest.xml`
     pub has_manifest: bool,
 }
@@ -98,14 +136,20 @@ pub fn scan_structure_from(
 
     let mut abi_map: std::collections::BTreeMap<String, Vec<SoEntry>> = Default::default();
     let mut assets_so: Vec<SoEntry> = Vec::new();
+    let mut assets: Vec<AssetEntry> = Vec::new();
     let mut dex_files: Vec<DexFileEntry> = Vec::new();
+    let mut arsc_info = ArscInfo::default();
     let mut resources_arsc_size = 0u64;
+    let mut resources_arsc_compressed_size = 0u64;
+    let mut resources_arsc_crc32 = 0u32;
+    let mut resources_arsc_stored = false;
+    let mut stored_entry_count = 0usize;
     let mut has_manifest = false;
     let mut total_uncompressed = 0u64;
 
     for index in 0..entry_count {
         // 单个条目元信息读取失败只跳过它，不中断整包扫描
-        let Ok(entry) = archive.by_index(index) else {
+        let Ok(mut entry) = archive.by_index(index) else {
             continue;
         };
         let path = entry.name().to_string();
@@ -114,6 +158,23 @@ pub fn scan_structure_from(
         let crc32 = entry.crc32();
         let stored = entry.compression() == zip::CompressionMethod::Stored;
         total_uncompressed = total_uncompressed.saturating_add(size);
+        if stored {
+            stored_entry_count += 1;
+        }
+
+        // assets/** 全量清单：在分类之前收集（后面 path 会被 move 进 SoEntry）
+        if let Some(rel) = path.strip_prefix("assets/") {
+            if !rel.is_empty() && !rel.ends_with('/') {
+                assets.push(AssetEntry {
+                    path: path.clone(),
+                    name: rel.to_string(),
+                    size,
+                    compressed_size,
+                    crc32,
+                    stored,
+                });
+            }
+        }
 
         if path == "AndroidManifest.xml" {
             has_manifest = true;
@@ -121,6 +182,16 @@ pub fn scan_structure_from(
         }
         if path == "resources.arsc" {
             resources_arsc_size = size;
+            resources_arsc_compressed_size = compressed_size;
+            resources_arsc_crc32 = crc32;
+            resources_arsc_stored = stored;
+            // 浅解析：只读头 + 字符串池 + 类型表（不解每条资源）
+            if size <= MAX_ARSC_BYTES {
+                let mut data = Vec::with_capacity(size as usize);
+                if entry.read_to_end(&mut data).is_ok() {
+                    arsc_info = crate::arsc::parse_arsc(&data);
+                }
+            }
             continue;
         }
         if is_dex_entry(&path) {
@@ -182,16 +253,23 @@ pub fn scan_structure_from(
         .collect();
     abis.sort_by(|a, b| a.abi.cmp(&b.abi));
     assets_so.sort_by(|a, b| a.name.cmp(&b.name));
+    assets.sort_by(|a, b| a.name.cmp(&b.name));
     dex_files.sort_by(|a, b| a.name.cmp(&b.name));
 
     Ok(ApkStructure {
         file_size,
         entry_count,
         total_uncompressed,
+        stored_entry_count,
         abis,
         assets_so,
+        assets,
         dex_files,
         resources_arsc_size,
+        resources_arsc_compressed_size,
+        resources_arsc_crc32,
+        resources_arsc_stored,
+        arsc: arsc_info,
         has_manifest,
     })
 }
@@ -342,6 +420,29 @@ mod tests {
             "对齐值必须是 2 的幂（实际 {}）",
             lib.zip_alignment
         );
+    }
+
+    #[test]
+    fn collects_assets_inventory_and_arsc_fingerprint() {
+        let path = tmp_apk("assets");
+        write_test_apk(&path);
+        let s = scan_apk_structure(path.to_str().unwrap()).unwrap();
+
+        // assets 全量清单：含 .so，但不含 res/、AndroidManifest.xml
+        let names: Vec<&str> = s.assets.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, vec!["embedded.so"]);
+        assert_eq!(s.assets[0].path, "assets/embedded.so");
+        assert_eq!(s.assets[0].size, ASSETS_SO as u64);
+        assert!(!s.assets[0].stored, "测试里 assets 是 deflate 写入的");
+        // 与 assets_so 语义区分：后者是"原生库"分组，前者是"资源清单"
+        assert_eq!(s.assets_so.len(), 1);
+
+        // resources.arsc 指纹（内容级对比的输入）
+        assert_eq!(s.resources_arsc_size, ARSC as u64);
+        assert!(!s.resources_arsc_stored);
+
+        // STORED 计数：测试包只有 libfoo.so 的两个 ABI 是 STORED
+        assert_eq!(s.stored_entry_count, 2);
     }
 
     #[test]

@@ -197,6 +197,34 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('SDK 分析页：版本取真实来源（APK manifest），不用上游应用列表的版本', (tester) async {
+    injectEmptyRules();
+    // 上游（应用列表 DB/传入的 AppInfo）说 1.0.0(1)，而 APK manifest 实际是 9.9.9(42)
+    injectDetails(
+      manifest: const ApkManifestInfo(
+        packageName: 'com.example.test',
+        versionName: '9.9.9',
+        versionCode: '42',
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SdkAnalysisPage(
+          app: buildApp(),
+          sourceDir: '/no/such/file.apk',
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    // 头部徽标必须是真实 APK 的版本
+    expect(find.text('9.9.9 (42)'), findsOneWidget);
+    // 上游传进来的过期版本不得出现
+    expect(find.text('1.0.0 (1)'), findsNothing);
+  });
+
   testWidgets('SDK 分析页：概览键值行 + SDK 版本未知降级 + ABI chips', (tester) async {
     injectEmptyRules();
     injectDetails(abis: const ['arm64-v8a', 'armeabi-v7a']);
@@ -208,8 +236,11 @@ void main() {
     expect(find.text('com.example.test'), findsNWidgets(2)); // 头部 + 概览行
     expect(find.text('安装路径'), findsOneWidget);
     expect(find.text('/no/such/file.apk'), findsOneWidget);
-    // 头部概览徽标：版本(code) / SDK 摘要
-    expect(find.text('1.0.0 (1)'), findsOneWidget);
+    // 头部概览徽标：**真实来源**版本(code) / SDK 摘要。
+    // 本例既没注入 manifest、测试环境也没有 PackageManager，二者都取不到 →
+    // 显示「版本未知」，而不是回退到上游（应用列表）那份可能过期的 1.0.0(1)。
+    expect(find.text('版本未知'), findsOneWidget);
+    expect(find.text('1.0.0 (1)'), findsNothing);
     expect(find.text('SDK 未知 – 未知'), findsOneWidget);
     // 新增行（详情为空 → 全部「未知」）
     expect(find.text('主 Activity'), findsOneWidget);

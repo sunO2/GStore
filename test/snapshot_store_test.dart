@@ -113,4 +113,44 @@ void main() {
     expect(row.payloadVersion, kSnapshotPayloadVersion);
     expect(row.summary.ruleHits, 3);
   });
+
+  test('载荷以 gzip 落库，且历史明文行仍可读（向后兼容）', () async {
+    final store = AppSnapshotStore.instance;
+    await store.insert(_record(versionName: '1.0.0', nativeLibs: 3));
+
+    final db = await databaseFactory.openDatabase(AppSnapshotStore.debugDbPath!);
+    addTearDown(db.close);
+    final raw =
+        (await db.query('app_snapshot', columns: ['payload'])).single['payload']
+            as String;
+    // ① 新写入的载荷已压缩（不是明文 JSON）
+    expect(raw.startsWith('gz:'), isTrue,
+        reason: '载荷应 gzip+base64 落库，体积约为明文 1/4');
+    expect(raw.contains('"native_libs"'), isFalse);
+
+    // ② 压缩载荷能完整读回
+    final rows = await store.listByApp('com.demo.app');
+    expect(rows.single.payload.nativeLibs, hasLength(3));
+
+    // ③ 历史明文行（升级前写入）仍可解析，不会变成"快照损坏"
+    await db.insert('app_snapshot', {
+      'packageName': 'com.legacy.app',
+      'appLabel': 'Legacy',
+      'versionName': '0.9',
+      'versionCode': '1',
+      'createdAt': 1,
+      'payloadVersion': 1,
+      'summary': '{}',
+      'payload': SnapshotPayload(
+        app: const SnapshotAppInfo(
+            packageName: 'com.legacy.app', label: 'Legacy'),
+        nativeLibs: const [
+          SnapshotNativeLib(abi: 'arm64-v8a', name: 'libold.so', size: 1),
+        ],
+      ).encode(),
+      'note': '',
+    });
+    final legacy = await store.listByApp('com.legacy.app');
+    expect(legacy.single.payload.nativeLibs.single.name, 'libold.so');
+  });
 }

@@ -21,16 +21,12 @@ class AppSnapshotPage extends StatefulWidget {
     required this.appLabel,
     required this.sourceDir,
     this.sourceDirs,
-    this.versionName = '',
-    this.versionCode = '',
   });
 
   final String packageName;
   final String appLabel;
   final String sourceDir;
   final List<String>? sourceDirs;
-  final String versionName;
-  final String versionCode;
 
   @override
   State<AppSnapshotPage> createState() => _AppSnapshotPageState();
@@ -76,8 +72,6 @@ class _AppSnapshotPageState extends State<AppSnapshotPage> {
         appLabel: widget.appLabel,
         sourceDir: widget.sourceDir,
         sourceDirs: widget.sourceDirs,
-        versionName: widget.versionName,
-        versionCode: widget.versionCode,
       );
       final record = SnapshotCollector.instance.toRecord(
         result,
@@ -157,6 +151,7 @@ class _AppSnapshotPageState extends State<AppSnapshotPage> {
     await Navigator.push(
       context,
       MaterialPageRoute(
+        // 方向默认「早 → 晚」；勾选顺序不参与决定，避免"先点后点"的歧义
         builder: (_) => AppSnapshotComparePage(
           oldRecord: picked.first,
           newRecord: picked.last,
@@ -249,9 +244,11 @@ class _AppSnapshotPageState extends State<AppSnapshotPage> {
                   children: [
                     Expanded(
                       child: Text(
-                        _selected.length == 2
-                            ? '已选 2 份，可开始对比'
-                            : '已选 1 份，再选一份即可对比',
+                        switch (_selected.length) {
+                          2 => '已选 2 份：默认「旧 → 新」，进入后可互换方向',
+                          1 => '已选 1 份，再选一份即可对比',
+                          _ => '勾选两份快照进行对比',
+                        },
                         style: theme.textTheme.bodySmall,
                       ),
                     ),

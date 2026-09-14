@@ -23,6 +23,7 @@ use gstore_contract::abi::{
 use gstore_contract::error::ModuleError;
 
 mod apk;
+mod arsc;
 mod build_versions;
 mod components;
 mod dex_scan;

@@ -206,4 +206,74 @@ void main() {
       expect(actions.single.kind, 'action');
     });
   });
+
+  group('decodeApkStructure：assets 清单 / arsc 指纹 / 包结构总量', () {
+    test('解析 assets 全量清单与 resources.arsc 内容指纹', () {
+      final json = jsonDecode('''
+      {"file_size": 1000, "entry_count": 42, "total_uncompressed": 2048,
+       "stored_entry_count": 3,
+       "abis": [], "assets_so": [],
+       "assets": [
+         {"path": "assets/models/a.tflite", "name": "models/a.tflite",
+          "size": 128, "compressed_size": 64, "crc32": 305419896, "stored": false},
+         {"path": "assets/raw/b.bin", "name": "raw/b.bin",
+          "size": 9, "compressed_size": 9, "crc32": 7, "stored": true}
+       ],
+       "dex_files": [],
+       "resources_arsc_size": 911, "resources_arsc_crc32": 4242,
+       "resources_arsc_stored": true, "has_manifest": true}''');
+      final st = decodeApkStructure(json)!;
+      expect(st.entryCount, 42);
+      expect(st.totalUncompressed, 2048);
+      expect(st.storedEntryCount, 3);
+      expect(st.assets.length, 2);
+      expect(st.assets.first.name, 'models/a.tflite');
+      expect(st.assets.first.crc32, 305419896);
+      expect(st.assets.last.stored, isTrue);
+      expect(st.resourcesArscSize, 911);
+      expect(st.resourcesArscCrc32, 4242);
+      expect(st.resourcesArscStored, isTrue);
+    });
+
+    test('旧模块输出缺字段时安全降级（不抛异常、计数为 0）', () {
+      final st = decodeApkStructure(jsonDecode('''
+      {"file_size": 1, "entry_count": 1, "total_uncompressed": 1,
+       "abis": [], "assets_so": [], "dex_files": [],
+       "resources_arsc_size": 0, "has_manifest": false}'''))!;
+      expect(st.assets, isEmpty);
+      expect(st.storedEntryCount, 0);
+      expect(st.resourcesArscCrc32, 0);
+      expect(st.resourcesArscStored, isFalse);
+    });
+  });
+
+  group('decodeApkDexStats：DEX 头指纹与各类 id 数量', () {
+    test('解析 checksum / 头 SHA-1 / 方法·字段·字符串数', () {
+      final json = jsonDecode('''
+      {"total_class_count": 10, "dex_files": [
+        {"name": "classes.dex", "size": 100, "compressed_size": 50,
+         "crc32": 123, "class_count": 10, "checksum": 99,
+         "header_sha1": "000102030405060708090a0b0c0d0e0f10111213",
+         "header_file_size": 100, "string_ids": 11, "type_ids": 12,
+         "proto_ids": 13, "field_ids": 14, "method_ids": 15, "data_size": 16}
+      ]}''');
+      final stats = decodeApkDexStats(json)!;
+      final dex = stats.dexFiles.single;
+      expect(dex.checksum, 99);
+      expect(dex.headerSha1, '000102030405060708090a0b0c0d0e0f10111213');
+      expect(dex.hasHeaderFingerprint, isTrue);
+      expect(dex.methodIds, 15);
+      expect(dex.fieldIds, 14);
+      expect(dex.stringIds, 11);
+    });
+
+    test('旧模块输出缺头字段时 hasHeaderFingerprint=false', () {
+      final stats = decodeApkDexStats(jsonDecode('''
+      {"total_class_count": 1, "dex_files": [
+        {"name": "classes.dex", "size": 1, "compressed_size": 1,
+         "crc32": 1, "class_count": 1}]}'''))!;
+      expect(stats.dexFiles.single.hasHeaderFingerprint, isFalse);
+      expect(stats.dexFiles.single.methodIds, 0);
+    });
+  });
 }

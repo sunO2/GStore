@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io' show gzip;
 
 import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:path/path.dart' as p;
@@ -87,7 +88,7 @@ class AppSnapshotStore {
         'note': record.note,
         'payloadVersion': record.payloadVersion,
         'summary': jsonEncode(record.summary.toJson()),
-        'payload': record.payload.encode(),
+        'payload': _encodePayload(record.payload),
       });
     } catch (e) {
       appLog.error('AppSnapshotStore: 写入快照失败 - $e');
@@ -192,7 +193,7 @@ class AppSnapshotStore {
   List<SnapshotRecord> _rowsToRecords(List<Map<String, Object?>> rows) {
     final out = <SnapshotRecord>[];
     for (final row in rows) {
-      final payload = SnapshotPayload.decode(row['payload'] as String? ?? '');
+      final payload = _decodePayload(row['payload'] as String? ?? '');
       if (payload == null) {
         // 载荷损坏：跳过该条而不是让整表查询失败
         appLog.warning('AppSnapshotStore: 快照 ${row['id']} 载荷解析失败，已跳过');
@@ -214,5 +215,27 @@ class AppSnapshotStore {
       );
     }
     return out;
+  }
+
+  /// 载荷落库：gzip + base64 前缀标记
+  ///
+  /// 引入条目级指纹（assets/.so/dex）后，单份载荷可达数十~数百 KB；
+  /// 实测同结构 JSON gzip 后约为原文 1/4，且读侧仍是一次解压。
+  /// 前缀 `gz:` 用于兼容历史明文行（升级后旧快照照常可读）。
+  static String _encodePayload(SnapshotPayload payload) {
+    final raw = utf8.encode(payload.encode());
+    return 'gz:${base64Encode(gzip.encode(raw))}';
+  }
+
+  /// 兼容两种存量格式：`gz:` 前缀的压缩载荷 / 早期明文 JSON
+  static SnapshotPayload? _decodePayload(String stored) {
+    if (stored.isEmpty) return null;
+    if (!stored.startsWith('gz:')) return SnapshotPayload.decode(stored);
+    try {
+      final bytes = base64Decode(stored.substring(3));
+      return SnapshotPayload.decode(utf8.decode(gzip.decode(bytes)));
+    } catch (_) {
+      return null;
+    }
   }
 }

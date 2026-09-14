@@ -77,6 +77,12 @@ class ElfSoInfo {
   /// 是否已剥离符号表
   final bool stripped;
 
+  /// 解压后内容的 SHA-256（小写 hex）——"是否同一个文件"的强指纹
+  final String sha256;
+
+  /// `.note.gnu.build-id`（小写 hex）；未写入时为空
+  final String buildId;
+
   const ElfSoInfo({
     required this.abi,
     required this.soName,
@@ -89,6 +95,8 @@ class ElfSoInfo {
     this.needed = const [],
     this.jniEntryPoints = const [],
     this.stripped = false,
+    this.sha256 = '',
+    this.buildId = '',
   });
 }
 
@@ -252,16 +260,106 @@ class ApkDexStat {
   /// `class_defs_size`；解析失败为 -1
   final int classCount;
 
+  /// DEX 头 checksum（adler32）
+  final int checksum;
+
+  /// DEX 头 signature（SHA-1，小写 hex）——编译期算好的内容指纹
+  final String headerSha1;
+
+  /// DEX 头声明的文件大小
+  final int headerFileSize;
+
+  /// string_ids / type_ids / proto_ids / field_ids / method_ids 数量
+  final int stringIds;
+  final int typeIds;
+  final int protoIds;
+  final int fieldIds;
+  final int methodIds;
+
+  /// data 区大小
+  final int dataSize;
+
+  /// 类集合指纹（排序后类描述符的 SHA-256）——判定 multidex 分包/类搬迁
+  final String classDigest;
+
   const ApkDexStat({
     required this.name,
     required this.size,
     required this.compressedSize,
     required this.crc32,
     required this.classCount,
+    this.checksum = 0,
+    this.headerSha1 = '',
+    this.headerFileSize = 0,
+    this.stringIds = 0,
+    this.typeIds = 0,
+    this.protoIds = 0,
+    this.fieldIds = 0,
+    this.methodIds = 0,
+    this.dataSize = 0,
+    this.classDigest = '',
   });
+
+  /// 是否有可用的头指纹（解析失败/旧模块输出时为 false）
+  bool get hasHeaderFingerprint => headerSha1.isNotEmpty;
 }
 
 /// 整包 DEX 统计（模块 scan_dex_stats 响应）
+/// `resources.arsc` 里的一个资源条目（默认配置）
+class ApkArscResource {
+  /// 资源 id：0xPPTTEEEE
+  final int id;
+  final String typeName;
+  final String key;
+  final String valueKind;
+  final String value;
+
+  const ApkArscResource({
+    this.id = 0,
+    this.typeName = '',
+    this.key = '',
+    this.valueKind = '',
+    this.value = '',
+  });
+
+  /// 展示用标识：`0x7f010001 string/app_name`
+  String get label =>
+      '0x${id.toRadixString(16).padLeft(8, '0')} $typeName/$key';
+}
+
+/// `resources.arsc` 浅解析结果（模块 scan_apk_structure 响应）
+class ApkArscInfo {
+  final bool parsed;
+  final int packageCount;
+  final List<String> packageNames;
+  final int typeCount;
+  final List<String> typeNames;
+  final int globalStringCount;
+  final int keyCount;
+  final int entryInstances;
+  final List<String> configs;
+
+  /// 默认配置下的资源条目（资源级 diff）
+  final List<ApkArscResource> resources;
+
+  /// 资源条目是否因上限被截断
+  final bool resourcesTruncated;
+
+  const ApkArscInfo({
+    this.parsed = false,
+    this.packageCount = 0,
+    this.packageNames = const [],
+    this.typeCount = 0,
+    this.typeNames = const [],
+    this.globalStringCount = 0,
+    this.keyCount = 0,
+    this.entryInstances = 0,
+    this.configs = const [],
+    this.resources = const [],
+    this.resourcesTruncated = false,
+  });
+}
+
 class ApkDexStats {
   final List<ApkDexStat> dexFiles;
   final int totalClassCount;
@@ -509,6 +607,38 @@ class ApkSoEntry {
 }
 
 /// 单个 ABI 目录下的原生库分组
+/// 一个 `assets/**` 条目（模块 scan_apk_structure 响应）
+///
+/// `crc32` 是**解压后内容**指纹 → 可直接判定"同名 asset 是否内容一致"，无需解压。
+class ApkAssetEntry {
+  /// zip 内完整路径（如 `assets/models/x.tflite`）
+  final String path;
+
+  /// 相对 `assets/` 的路径
+  final String name;
+
+  /// 解压后字节数
+  final int size;
+
+  /// 压缩后字节数
+  final int compressedSize;
+
+  /// 条目 CRC32（内容指纹）
+  final int crc32;
+
+  /// 是否以 STORED（不压缩）存放
+  final bool stored;
+
+  const ApkAssetEntry({
+    required this.path,
+    required this.name,
+    required this.size,
+    required this.compressedSize,
+    required this.crc32,
+    required this.stored,
+  });
+}
+
 class ApkAbiLibs {
   /// ABI 目录名（如 arm64-v8a）
   final String abi;
@@ -559,17 +689,35 @@ class ApkStructure {
   /// 全部条目解压后总字节数
   final int totalUncompressed;
 
+  /// STORED（未压缩）条目数量
+  final int storedEntryCount;
+
   /// 按 ABI 分组的原生库（ABI 名升序）
   final List<ApkAbiLibs> abis;
 
   /// `assets/**/*.so`
   final List<ApkSoEntry> assetsSo;
 
+  /// `assets/**` 全量清单（含 `.so`）
+  final List<ApkAssetEntry> assets;
+
   /// DEX 文件清单
   final List<ApkDexEntry> dexFiles;
 
   /// resources.arsc 解压后大小（缺失为 0）
   final int resourcesArscSize;
+
+  /// resources.arsc 条目 CRC32（内容指纹；缺失为 0）
+  final int resourcesArscCrc32;
+
+  /// resources.arsc 是否 STORED 存放
+  final bool resourcesArscStored;
+
+  /// resources.arsc 浅解析（包名/类型/字符串池/配置维度）
+  final ApkArscInfo arsc;
+
+  /// resources.arsc 压缩后字节数
+  final int resourcesArscCompressedSize;
 
   /// 是否含 AndroidManifest.xml
   final bool hasManifest;
@@ -578,10 +726,16 @@ class ApkStructure {
     required this.fileSize,
     required this.entryCount,
     required this.totalUncompressed,
+    required this.storedEntryCount,
     required this.abis,
     required this.assetsSo,
+    required this.assets,
     required this.dexFiles,
     required this.resourcesArscSize,
+    required this.resourcesArscCrc32,
+    required this.resourcesArscStored,
+    this.arsc = const ApkArscInfo(),
+    this.resourcesArscCompressedSize = 0,
     required this.hasManifest,
   });
 
