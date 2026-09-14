@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:gstore/core/design/app_animation.dart';
 import 'package:gstore/core/design/app_components.dart';
 import 'package:gstore/core/design/app_radius.dart';
 import 'package:gstore/core/design/app_spacing.dart';
@@ -54,10 +55,15 @@ class SnapshotSectionCard extends StatefulWidget {
 class _SnapshotSectionCardState extends State<SnapshotSectionCard> {
   late bool _expanded = widget.initiallyExpanded;
 
+  void _toggle() => setState(() => _expanded = !_expanded);
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final muted = theme.colorScheme.onSurfaceVariant;
+    final canToggle = widget.collapsible;
+    final hasSubtitle = widget.subtitle != null && widget.subtitle!.isNotEmpty;
+
     return Opacity(
       opacity: widget.dimmed ? 0.6 : 1,
       child: AppCard(
@@ -65,55 +71,86 @@ class _SnapshotSectionCardState extends State<SnapshotSectionCard> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // 整个标题区（含副标题）都可点：点击区域不再只有那个小箭头
             InkWell(
-              onTap: widget.collapsible
-                  ? () => setState(() => _expanded = !_expanded)
-                  : null,
-              child: Row(
+              onTap: canToggle ? _toggle : null,
+              borderRadius: AppRadius.allLG,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Flexible(
-                    child: Text(
-                      widget.title,
-                      style: theme.textTheme.titleSmall
-                          ?.copyWith(fontWeight: FontWeight.w600),
-                    ),
+                  Row(
+                    children: [
+                      // Expanded 让右侧控件稳定贴右（不再依赖 Spacer 分配空白）
+                      Expanded(
+                        child: Row(
+                          children: [
+                            Flexible(
+                              child: Text(
+                                widget.title,
+                                // 卡片标题按设计系统用 titleMedium(16sp)；
+                                // 之前用 titleSmall(14sp) 明显偏小
+                                style: theme.textTheme.titleMedium?.copyWith(
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                            if (widget.count != null) ...[
+                              const SizedBox(width: AppSpacing.sm),
+                              Text(
+                                '· ${widget.count}',
+                                style: theme.textTheme.labelMedium
+                                    ?.copyWith(color: muted),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                      if (widget.badge != null) ...[
+                        _Badge(
+                          text: widget.badge!,
+                          highlight: widget.badgeHighlight,
+                        ),
+                        const SizedBox(width: AppSpacing.xs),
+                      ],
+                      if (widget.trailing != null) widget.trailing!,
+                      if (canToggle)
+                        // 用 IconButton：自带 ≥48×48 点击区域 + 展开/收起 tooltip，
+                        // 与详情页 SectionCard 的既有做法一致
+                        IconButton(
+                          onPressed: _toggle,
+                          tooltip: _expanded ? '收起' : '展开',
+                          icon: AnimatedRotation(
+                            turns: _expanded ? 0.5 : 0.0,
+                            duration: AppAnimation.fast,
+                            curve: AppAnimation.curve,
+                            child: Icon(
+                              _expanded
+                                  ? Icons.expand_less
+                                  : Icons.expand_more,
+                              size: AppTypography.iconLG,
+                              color: muted,
+                            ),
+                          ),
+                        ),
+                    ],
                   ),
-                  if (widget.count != null) ...[
-                    const SizedBox(width: AppSpacing.xs),
-                    Text(
-                      '· ${widget.count}',
-                      style: theme.textTheme.labelSmall?.copyWith(color: muted),
+                  if (hasSubtitle)
+                    Padding(
+                      padding: const EdgeInsets.only(
+                        top: AppSpacing.xs,
+                        // 右侧留出箭头宽度，副标题不会顶到按钮下面
+                        right: AppSpacing.xxxl,
+                      ),
+                      child: Text(
+                        widget.subtitle!,
+                        style:
+                            theme.textTheme.bodySmall?.copyWith(color: muted),
+                      ),
                     ),
-                  ],
-                  const Spacer(),
-                  if (widget.badge != null)
-                    _Badge(
-                      text: widget.badge!,
-                      highlight: widget.badgeHighlight,
-                    ),
-                  if (widget.trailing != null) ...[
-                    const SizedBox(width: AppSpacing.sm),
-                    widget.trailing!,
-                  ],
-                  if (widget.collapsible) ...[
-                    const SizedBox(width: AppSpacing.xs),
-                    Icon(
-                      _expanded ? Icons.expand_less : Icons.expand_more,
-                      size: AppTypography.iconSM,
-                      color: muted,
-                    ),
-                  ],
                 ],
               ),
             ),
-            if (widget.subtitle != null && widget.subtitle!.isNotEmpty) ...[
-              const SizedBox(height: AppSpacing.xs),
-              Text(
-                widget.subtitle!,
-                style: theme.textTheme.bodySmall?.copyWith(color: muted),
-              ),
-            ],
-            if (!widget.collapsible || _expanded) ...[
+            if (!canToggle || _expanded) ...[
               const SizedBox(height: AppSpacing.sm),
               widget.child,
             ],

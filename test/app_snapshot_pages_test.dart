@@ -5,6 +5,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/snapshot/app_snapshot_store.dart';
 import 'package:gstore/core/snapshot/snapshot_models.dart';
 import 'package:gstore/page/app_snapshot/compare.dart';
+import 'package:gstore/core/design/app_spacing.dart';
+import 'package:gstore/core/design/app_typography.dart';
 import 'package:gstore/page/app_snapshot/detail.dart';
 import 'package:gstore/page/app_snapshot/view.dart';
 
@@ -398,11 +400,64 @@ void main() {
     expect(find.text('+ 1000 B  (−1.0 KB)'), findsOneWidget);
   });
 
+  testWidgets('分区卡标题头：标题用 16sp、箭头贴右且在足够大的点击区内、标题区整体可点', (tester) async {
+    tester.view.physicalSize = const Size(1200, 2000);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    final p = _payload(nativeLibs: const [
+      SnapshotNativeLib(abi: 'arm64-v8a', name: 'libx.so', size: 1, crc32: 1),
+    ]);
+    await tester.pumpWidget(
+      MaterialApp(home: AppSnapshotDetailPage(record: _record(p))),
+    );
+    await tester.pumpAndSettle();
+
+    // ① 标题字号：titleMedium = 16（此前 titleSmall = 14，明显偏小）
+    final title = tester.widget<Text>(find.text('原生库').first);
+    expect(title.style?.fontSize, AppTypography.sizeMD);
+    expect(title.style?.fontSize, greaterThan(AppTypography.sizeSM));
+
+    // ② 箭头在 IconButton 内（自带 ≥44 的点击区），而不是裸小图标
+    final card = find
+        .ancestor(of: find.text('原生库').first, matching: find.byType(Card))
+        .first;
+    final toggle =
+        find.descendant(of: card, matching: find.byType(IconButton)).first;
+    expect(tester.widget<IconButton>(toggle).tooltip, '展开');
+    final size = tester.getSize(toggle);
+    expect(size.width, greaterThanOrEqualTo(44));
+    expect(size.height, greaterThanOrEqualTo(44));
+
+    // ③ 箭头贴右：其右边缘与卡片内容区右边缘基本齐平
+    final cardRect = tester.getRect(card);
+    final iconRect = tester.getRect(toggle);
+    expect(cardRect.right - iconRect.right, lessThan(AppSpacing.lg + 2));
+
+    // ④ 点标题文字（而非箭头）同样能展开——点击区域不止箭头
+    expect(find.text('libx.so (arm64-v8a)'), findsNothing);
+    await tester.tap(find.text('原生库').first);
+    await tester.pumpAndSettle();
+    expect(find.text('arm64-v8a / libx.so'), findsOneWidget);
+    expect(find.byTooltip('收起'), findsOneWidget);
+  });
+
 }
 
-/// 展开某个分区：先把标题滚进视口再点（分区内容高低变化会影响可见性）
+/// 展开某个分区：先把标题滚进视口再点。
+///
+/// 注意 ListView 是懒构建的——分区在视口外时节点压根不存在，
+/// 这种情况 `ensureVisible` 找不到，必须先 `scrollUntilVisible` 滚进来。
 Future<void> _tapSection(WidgetTester tester, String title) async {
   final finder = find.text(title);
+  if (finder.evaluate().isEmpty) {
+    await tester.scrollUntilVisible(
+      finder,
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
+  }
   await tester.ensureVisible(finder.first);
   await tester.pumpAndSettle();
   await tester.tap(finder.first);
