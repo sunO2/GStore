@@ -7,6 +7,7 @@ import 'package:gstore/core/fdroid/FdroidRepoModels.dart';
 import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/rust/FdroidRustRepoManager.dart' as rust;
+import 'package:gstore/core/rust/RustTask.dart';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 
@@ -34,6 +35,14 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
   final List<FdroidSource> _sources = [];
 
   /// 已配置的源列表
+  /// 仓库身份键（委托 Rust 管理器的唯一实现，避免规则漂移）
+  @override
+  String identityKeyFor(FdroidSource source) =>
+      rust.FdroidRustRepoManager.sourceIdentity(
+        fingerprint: source.fingerprint,
+        repoUrl: source.repoUrl,
+      );
+
   List<FdroidSource> get sources => _sources;
 
   bool _isLoading = false;
@@ -78,15 +87,15 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
 
       // 加载保存的源配置
       await _loadSources();
+      await _migrateEmptyMirrors();
       appLog.info('FdroidRepoManager: 已加载 ${sources.length} 个源');
 
-      // 设置默认源（如果没有保存的源，或者只有官方源，则添加清华镜像）
-      if (sources.isEmpty || (sources.length == 1 && sources.first.id == 'official')) {
-        debugPrint('FdroidRepoManager: 没有自定义源，添加清华镜像和官方源');
+      // 默认只有一个"官方源"；**国内镜像作为它的从属镜像**（默认启用并优先），
+      // 不再把镜像注册成独立源（旧行为会造成"源就是镜像"的混乱）
+      if (sources.isEmpty) {
+        debugPrint('FdroidRepoManager: 没有保存的源，初始化官方源（含国内镜像）');
         _sources.clear();
-        notifyListeners();
-        _sources.add(FdroidSource.tunaMirror); // 添加清华镜像（优先级更高）
-        _sources.add(FdroidSource.official); // 添加官方源作为备份
+        _sources.add(FdroidSource.official);
         notifyListeners();
         await _saveSources();
       }
@@ -102,10 +111,13 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
         final lastSource = _firstWhereOrNull(_sources, (s) => s.id == lastSourceId);
         if (lastSource != null) {
           _currentSource = lastSource;
+          rust.FdroidRustRepoManager.setActiveSource(lastSource);
           notifyListeners();
           appLog.info('FdroidRepoManager: 恢复上次选中的源: $lastSource');
         } else {
           _currentSource = enabledSource;
+        rust.FdroidRustRepoManager.setActiveSource(enabledSource);
+          rust.FdroidRustRepoManager.setActiveSource(enabledSource);
           notifyListeners();
         }
       } else {
@@ -123,15 +135,39 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
   }
 
   /// 加载保存的源配置
+  /// 迁移：老数据里官方源的 `mirrors` 是空的（旧版本把镜像建成了**独立源**）
+  ///
+  /// 真机后果：候选里没有镜像 → 只能直连 f-droid.org → 国内一直加载不出来。
+  Future<void> _migrateEmptyMirrors() async {
+    // 内联默认镜像（避免跨文件依赖；与 defaultSources 的官方源一致）
+    final defaults = <FdroidMirror>[
+      const FdroidMirror(url: 'https://mirrors.tuna.tsinghua.edu.cn/fdroid/repo'),
+      const FdroidMirror(url: 'https://mirrors.niyawe.de/fdroid/repo'),
+      const FdroidMirror(url: 'https://ftp.fau.de/fdroid/repo'),
+    ];
+    var changed = false;
+    for (var i = 0; i < _sources.length; i++) {
+      final s = _sources[i];
+      if (s.repoUrl.contains('f-droid.org') && s.mirrors.isEmpty) {
+        _sources[i] = s.copyWith(mirrors: defaults, useMirrors: true);
+        changed = true;
+        appLog.info(
+            'FdroidRepoManager: 为「${s.name}」补默认镜像 ${defaults.length} 个（老数据迁移）');
+      }
+    }
+    if (changed) await _saveSources();
+  }
+
   Future<void> _loadSources() async {
     try {
-      final sourcesJson =
-          await ConfigService.instance.getT<String>(ConfigKeys.fdroidSources);
+      // fdroidSources 为 json 类型：存储层读回 List（Map/List 已由存储层解码）。
+      final raw = await ConfigService.instance.getRaw(ConfigKeys.fdroidSources);
+      final sourcesList = _asSourceList(raw);
 
-      if (sourcesJson != null && sourcesJson.isNotEmpty) {
-        final List<dynamic> sourcesList = jsonDecode(sourcesJson);
+      if (sourcesList != null && sourcesList.isNotEmpty) {
         final loadedSources = sourcesList
-            .map((json) => FdroidSource.fromJson(json as Map<String, dynamic>))
+            .whereType<Map>()
+            .map((json) => FdroidSource.fromJson(Map<String, dynamic>.from(json)))
             .toList();
         _sources
           ..clear()
@@ -150,13 +186,32 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
     }
   }
 
+  /// 归一化存储读回值：
+  /// - List：正常（json 类型已解码）
+  /// - JSON 字符串：兼容旧格式，尝试 jsonDecode
+  /// - 其他（旧版曾以 Dart `toString()` 落成非法 JSON）：丢弃（返回 null → 回退默认源）
+  static List<dynamic>? _asSourceList(Object? raw) {
+    if (raw is List) return raw;
+    if (raw is String && raw.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is List) return decoded;
+      } catch (_) {
+        // 非法 JSON（旧脏数据）→ 丢弃，由调用方回退默认源并重写
+      }
+    }
+    return null;
+  }
+
   /// 保存源配置
   Future<void> _saveSources() async {
     try {
-      final sourcesJson = jsonEncode(sources.map((s) => s.toJson()).toList());
+      // fdroidSources 注册为 ConfigValueType.json：写入 List<Map>，
+      // 由存储层 jsonEncode 落盘（读取侧还原为 List）。不可自行 jsonEncode 成字符串，
+      // 否则会被 ConfigService 解码后再由存储层 toString() 落成非法 JSON。
       await ConfigService.instance.set(
         ConfigKeys.fdroidSources,
-        sourcesJson,
+        sources.map((s) => s.toJson()).toList(),
         source: ConfigChangeSource.internal,
       );
       appLog.info('FdroidRepoManager: 已保存 ${sources.length} 个源配置');
@@ -179,6 +234,7 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
     }
 
     _currentSource = source;
+    rust.FdroidRustRepoManager.setActiveSource(source);
     notifyListeners();
 
     // 保存当前选中的源
@@ -230,13 +286,39 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
     notifyListeners();
 
     try {
-      debugPrint('FdroidRepoManager: 使用 Rust 后端下载...');
-      _loadingProgress = 0.5;
-      notifyListeners();
-
-      await rust.FdroidRustRepoManager.downloadRepository(
+      debugPrint('FdroidRepoManager: 使用 Rust 后端下载（Task 模式）...');
+      // Task 模式：宿主自有线程执行，阶段进度真实上报（不再硬编码 0.5）
+      // 该源**已启用**的镜像：useMirrors 关闭时不传（等价于不用镜像）；
+      // 开启时优先走镜像（国内网络避免先卡在官方站超时）
+      final enabledMirrors = [
+        for (final m in source.mirrors)
+          if (m.enabled) m.url,
+      ];
+      final task = await rust.FdroidRustRepoManager.downloadRepositoryTask(
         repoUrl: source.repoUrl,
+        mirrors: source.useMirrors ? enabledMirrors : const [],
+        mirrorFirst: source.useMirrors && enabledMirrors.isNotEmpty,
       );
+      final sub = task.progress.listen((p) {
+        final phase = p.json?['phase'] as String?;
+        final next = switch (phase) {
+          'downloading' => 0.3,
+          'stored' => 0.9,
+          _ => _loadingProgress,
+        };
+        if (next != _loadingProgress) {
+          _loadingProgress = next;
+          notifyListeners();
+        }
+      });
+      final result = await task.completion;
+      await sub.cancel();
+      if (result.outcome == RustTaskOutcome.error) {
+        throw Exception('仓库下载失败: ${result.error}');
+      }
+      if (result.outcome == RustTaskOutcome.cancelled) {
+        throw Exception('仓库下载已取消');
+      }
 
       _loadingProgress = 1.0;
       notifyListeners();
@@ -254,7 +336,10 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
   }
 
   /// 搜索应用
-  Future<List<Map<String, dynamic>>> searchApps(String keyword, {int limit = 50}) async {
+  Future<List<Map<String, dynamic>>> searchApps(String keyword, {int limit = 50}) =>
+      searchAppsAcross(keyword, limit: limit);
+
+  Future<List<Map<String, dynamic>>> searchAppsLegacy(String keyword, {int limit = 50}) async {
     final source = _currentSource;
     if (source == null) {
       throw Exception('请先选择一个源');
@@ -317,51 +402,99 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
   }
 
   /// 精确查询应用（通过 packageName）
-  Future<Map<String, dynamic>?> getAppByPackageName(String packageName) async {
-    final source = _currentSource;
-    if (source == null) {
-      throw Exception('请先选择一个源');
+  ///
+  /// **多源正解**：应用可能属于任一源，不能靠"当前选中源"定位。
+  /// - 传 [sourceId] → 只查该源（语义正确、一次查询）
+  /// - 不传 → **跨全部已启用源**逐个精确匹配，命中后在结果里回带 `sourceId`/`sourceName`
+  Future<Map<String, dynamic>?> getAppByPackageName(
+    String packageName, {
+    String? sourceId,
+  }) async {
+    final candidates = <FdroidSource>[];
+    if (sourceId != null && sourceId.isNotEmpty) {
+      for (final s in _sources) {
+        // 接受三种标识：记录 id / 指纹 / **仓库身份键**（渠道记录里存的是身份键）
+        if (s.id == sourceId ||
+            s.fingerprint == sourceId ||
+            rust.FdroidRustRepoManager.sourceIdentity(
+                    fingerprint: s.fingerprint, repoUrl: s.repoUrl) ==
+                sourceId) {
+          candidates.add(s);
+        }
+      }
+    }
+    if (candidates.isEmpty) candidates.addAll(enabledSources);
+    if (candidates.isEmpty) throw Exception('请先启用一个源');
+
+    // ★ 定向源优先，**未命中则跨源兜底**：记录里的源标识可能写错/过期（写入侧取的是
+    //   "当前选中源"），不能让一个错误的标识直接导致详情拿不到数据。
+    final scopedCount = (sourceId != null && sourceId.isNotEmpty) ? candidates.length : 0;
+    if (scopedCount > 0) {
+      for (final s in enabledSources) {
+        // ★ 按**仓库身份键**判重：多个来源的 `id` 可能相同（默认源 id 是固定的 'official'），
+        //   按 id 判重会把第三方源当成重复跳过（真机：candidates 只剩 1 个 → 查不到）
+        final k = rust.FdroidRustRepoManager.sourceIdentity(
+            fingerprint: s.fingerprint, repoUrl: s.repoUrl);
+        final dup = candidates.any((c) =>
+            c.id == s.id ||
+            rust.FdroidRustRepoManager.sourceIdentity(
+                    fingerprint: c.fingerprint, repoUrl: c.repoUrl) ==
+                k);
+        if (!dup) candidates.add(s);
+      }
     }
 
     try {
-      appLog.info('开始精确查询应用', data: {
+      appLog.info('开始精确查询应用（跨源）', data: {
         'packageName': packageName,
-        'source': source.name,
+        'sourceId': sourceId ?? '(全部已启用源)',
+        'candidates': candidates.length,
       });
 
-      // 确保数据已加载
-      final appCount = await rust.FdroidRustRepoManager.getAppCount();
-      if (appCount == 0) {
-        appLog.warning('数据库中没有应用，开始加载仓库');
-        await loadRepository();
-      }
-
-      // 使用搜索接口，然后精确匹配 packageName
-      final results = await rust.FdroidRustRepoManager.searchApps(packageName, limit: 100);
-
-      // 精确匹配 packageName
-      for (var app in results) {
-        final appMap = rust.FdroidRustRepoManager.appInfoToMap(app);
-        if (appMap['packageName'] == packageName) {
-          appLog.info('精确查询成功', data: {
-            'packageName': packageName,
-            'name': appMap['name'],
-          });
-          return appMap;
+      // 候选源都为空 → 先加载一次（每源各自独立的库）
+      var hasData = false;
+      for (final s in candidates) {
+        if (await rust.FdroidRustRepoManager.appCountIn(s) > 0) {
+          hasData = true;
+          break;
         }
       }
+      if (!hasData) {
+        appLog.warning('候选源均无数据，开始加载已启用源');
+        await loadAllEnabled();
+      }
 
-      appLog.warning('未找到应用', data: {
-        'packageName': packageName,
-      });
+      for (var ci = 0; ci < candidates.length; ci++) {
+        final src = candidates[ci];
+        if (ci == scopedCount) {
+          appLog.warning('定向源未命中 → 跨源兜底查询', data: {
+            'packageName': packageName,
+            'wrongOrStaleSourceId': sourceId,
+          });
+        }
+        final results =
+            await rust.FdroidRustRepoManager.searchAppsIn(src, packageName, limit: 100);
+        for (final app in results) {
+          final appMap = rust.FdroidRustRepoManager.appInfoToMap(app);
+          if (appMap['packageName'] == packageName) {
+            // ★ 回带来源源：调用方据此按源定位，不再依赖"当前选中源"
+            appMap['sourceId'] = src.id;
+            appMap['sourceName'] = src.name;
+            appLog.info('精确查询成功', data: {
+              'packageName': packageName,
+              'name': appMap['name'],
+              'matchedSource': src.name,
+              'currentSource': _currentSource?.name,
+            });
+            return appMap;
+          }
+        }
+      }
+      appLog.warning('未找到应用（已遍历全部候选源）', data: {'packageName': packageName});
       return null;
     } catch (e) {
-      appLog.error('精确查询失败', data: {
-        'packageName': packageName,
-        'error': e.toString(),
-      });
-      appLog.error('FdroidRepoManager: 精确查询失败 - $e');
-      return null;
+      appLog.error('精确查询失败', data: {'packageName': packageName, 'error': e.toString()});
+      rethrow;
     }
   }
 
@@ -451,15 +584,23 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
   /// 获取数据库统计信息
   Future<Map<String, int>> getStatistics() async {
     try {
-      final appCount = await rust.FdroidRustRepoManager.getAppCount();
-      return {
-        'apps': appCount,
-      };
+      final targets = enabledSources;
+      if (targets.isEmpty) {
+        return {'apps': await rust.FdroidRustRepoManager.getAppCount()};
+      }
+      // 多源：各源应用数之和（每源一个库，互不覆盖）
+      var total = 0;
+      for (final s in targets) {
+        try {
+          total += await rust.FdroidRustRepoManager.appCountIn(s);
+        } catch (e) {
+          appLog.error('FdroidRepoManager: 源 ${s.name} 统计失败 - $e');
+        }
+      }
+      return {'apps': total};
     } catch (e) {
       appLog.error('FdroidRepoManager: 获取统计信息失败 - $e');
-      return {
-        'apps': 0,
-      };
+      return {'apps': 0};
     }
   }
 
@@ -471,6 +612,190 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
   }
 
   /// 移除源
+  /// 从下载结果里取模块提取的签名指纹（只解析证书 DER 后 SHA-256，不验签）
+  static String _fingerprintOf(List<int> payload) {
+    try {
+      final json = jsonDecode(utf8.decode(payload)) as Map<String, dynamic>;
+      return json['signer_fingerprint'] as String? ?? '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  /// 用真实指纹做事后处理：
+  /// 1) 源没记指纹 → **自动回填**（身份从此由密钥决定，换域名/换镜像都不影响）
+  /// 2) 与已有源指纹相同 → 判定**同源重复**并提示
+  /// 3) 与已记指纹不一致 → 可疑（可能换了签名密钥），明确告警
+  /// 下载结果摘要：**增量是否生效一眼可见**（日志导出即可核对省了多少）
+  void _logDownloadSummary(FdroidSource source, List<int> payload) {
+    try {
+      final m = jsonDecode(utf8.decode(payload)) as Map<String, dynamic>;
+      appLog.info('FdroidRepoManager: 「${source.name}」加载完成 → '
+          '${m['incremental'] == true ? '增量更新（entry.json + diff）' : '全量下载'}'
+          '，应用 ${m['total_apps']}，耗时 ${m['download_time_ms']}ms'
+          '${m['verified'] == true ? '，SHA-256 已校验' : ''}'
+          '，地址 ${m['resolved_url']}');
+    } catch (_) {
+      // 摘要仅用于诊断，解析失败不影響主流程
+    }
+  }
+
+  Future<void> _syncSignerFingerprint(FdroidSource source, List<int> payload) async {
+    _logDownloadSummary(source, payload);
+    final fp = _fingerprintOf(payload);
+    if (fp.isEmpty) return;
+    final i = _sources.indexWhere((s) => s.id == source.id);
+    if (i < 0) return;
+    final recorded = (_sources[i].fingerprint ?? '').replaceAll(':', '').toUpperCase();
+    final actual = fp.replaceAll(':', '').toUpperCase();
+
+    for (final other in _sources) {
+      if (other.id == source.id) continue;
+      final o = (other.fingerprint ?? '').replaceAll(':', '').toUpperCase();
+      if (o.isNotEmpty && o == actual) {
+        appLog.warning('FdroidRepoManager: 「${source.name}」与「${other.name}」**同源**'
+            '（签名指纹一致）——按 F-Droid 层级应只保留一个源，其余作为它的镜像');
+      }
+    }
+
+    if (recorded.isEmpty) {
+      _sources[i] = _sources[i].copyWith(fingerprint: fp);
+      await _saveSources();
+      appLog.info('FdroidRepoManager: 已从签名回填「${source.name}」指纹 $fp');
+    } else if (recorded != actual) {
+      appLog.warning('FdroidRepoManager: 「${source.name}」指纹与记录不一致'
+          '（记录=$recorded，实际=$actual）——仓库可能更换了签名密钥');
+    }
+  }
+
+  /// **已启用**的源（多源同时生效；F-Droid 本身就是多源并存的设计）
+  List<FdroidSource> get enabledSources =>
+      _sources.where((s) => s.enabled).toList(growable: false);
+
+  /// 启用/禁用某个源（多选，不是单选）
+  Future<void> setSourceEnabled(String sourceId, bool enabled) async {
+    final i = _sources.indexWhere((s) => s.id == sourceId);
+    if (i < 0) return;
+    _sources[i] = _sources[i].copyWith(enabled: enabled);
+    notifyListeners();
+    await _saveSources();
+    appLog.info('FdroidRepoManager: ${enabled ? "启用" : "禁用"}源 ${_sources[i].name}');
+  }
+
+  /// 逐个加载全部已启用源：每个源用自己的镜像配置下载到自己的库；
+  /// 单个源失败只记错误，不影响其它源（多源的可用性靠这一条保证）。
+  Future<int> loadAllEnabled() async {
+    final targets = enabledSources;
+    if (targets.isEmpty) {
+      _errorMessage = '没有已启用的源';
+      notifyListeners();
+      return 0;
+    }
+    _isLoading = true;
+    _errorMessage = '';
+    _loadingProgress = 0.0;
+    notifyListeners();
+
+    var total = 0;
+    final failures = <String>[];
+    try {
+      for (var i = 0; i < targets.length; i++) {
+        final source = targets[i];
+        try {
+          appLog.info(
+              'FdroidRepoManager: 加载源 ${i + 1}/${targets.length} - ${source.name}');
+          final task = await rust.FdroidRustRepoManager.downloadRepositoryTaskFor(source);
+          final sub = task.progress.listen((p) {
+            final phase = p.json?['phase'] as String?;
+            final base = i / targets.length;
+            final span = 1 / targets.length;
+            if (phase == 'index') {
+              // 索引下载是耗时主体：用**真实字节百分比**在 0.3→0.9 之间推进
+              final pct = (p.json?['percent'] as num?)?.toInt() ?? 0;
+              _loadingProgress =
+                  (base + span * (0.3 + 0.6 * pct / 100)).clamp(0.0, 1.0);
+            } else {
+              final inner = switch (phase) { 'downloading' => 0.3, 'stored' => 0.9, _ => 0.0 };
+              _loadingProgress = (base + span * inner).clamp(0.0, 1.0);
+            }
+            notifyListeners();
+          });
+          final result = await task.completion;
+          await sub.cancel();
+          if (result.outcome == RustTaskOutcome.error) {
+            failures.add('${source.name}: ${result.error}');
+            continue;
+          }
+          // 用**签名里提取的真实指纹**做事后校验：自动回填 + 同源判定
+          await _syncSignerFingerprint(source, result.payload);
+          total += await rust.FdroidRustRepoManager.appCountIn(source);
+        } catch (e) {
+          failures.add('${source.name}: $e');
+        }
+      }
+      _loadingProgress = 1.0;
+      if (failures.isNotEmpty) {
+        _errorMessage = '部分源加载失败: ${failures.join("; ")}';
+      }
+      appLog.info('FdroidRepoManager: 多源加载完成，共 $total 个应用（失败 ${failures.length} 个源）');
+      return total;
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  /// 跨源搜索：合并各已启用源的结果，按包名去重（**优先级高者胜**）
+  Future<List<Map<String, dynamic>>> searchAppsAcross(String keyword, {int limit = 50}) async {
+    final targets = enabledSources.isEmpty ? [_currentSource].whereType<FdroidSource>().toList() : enabledSources;
+    final sorted = [...targets]..sort((a, b) => a.priority.compareTo(b.priority));
+    final merged = <String, Map<String, dynamic>>{};
+    for (final source in sorted) {
+      try {
+        final apps = await rust.FdroidRustRepoManager.searchAppsIn(source, keyword, limit: limit);
+        for (final a in apps) {
+          merged.putIfAbsent(
+            a.packageName,
+            () => {
+              'packageName': a.packageName,
+              'name': a.name,
+              'summary': a.summary,
+              'icon': a.icon,
+              'license': a.license,
+              'authorName': a.authorName,
+              'sourceCode': a.sourceCode,
+              'webSite': a.webSite,
+              'categories': a.categories,
+              'added': a.added,
+              'lastUpdated': a.lastUpdated,
+              // 来源源 ID：详情/安装需要路由回正确的库
+              'sourceId': source.id,
+              // 版本级元数据（原始 JSON；由 Dart 侧宽松解析）
+              'metadata': a.metadata,
+              'versions': a.versions,
+            },
+          );
+        }
+      } catch (e) {
+        appLog.error('FdroidRepoManager: 源 ${source.name} 搜索失败 - $e');
+      }
+    }
+    return merged.values.take(limit).toList();
+  }
+
+  /// 更新一个源的配置（如镜像启用/增删、是否启用镜像回退）并持久化
+  Future<void> updateSource(FdroidSource source) async {
+    final i = _sources.indexWhere((s) => s.id == source.id);
+    if (i < 0) return;
+    _sources[i] = source;
+    if (_currentSource?.id == source.id) {
+      _currentSource = source;
+      rust.FdroidRustRepoManager.setActiveSource(source);
+    }
+    notifyListeners();
+    await _saveSources();
+  }
+
   Future<void> removeSource(String sourceId) async {
     _sources.removeWhere((s) => s.id == sourceId);
     notifyListeners();
@@ -481,6 +806,7 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
       final nextSource = _firstWhereOrNull(_sources, (s) => s.enabled);
       if (nextSource != null) {
         _currentSource = nextSource;
+        rust.FdroidRustRepoManager.setActiveSource(nextSource);
         notifyListeners();
       }
     }

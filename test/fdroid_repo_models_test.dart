@@ -9,7 +9,7 @@ void main() {
         name: '测试源',
         repoUrl: 'https://example.com/repo',
         priority: 3,
-        mirrors: ['https://m1.example.com'],
+        mirrors: ['https://m1.example.com'], // 旧格式（字符串）应被兼容
       );
       expect(source.enabled, true);
 
@@ -18,13 +18,21 @@ void main() {
       expect(json['name'], '测试源');
       expect(json['repoUrl'], 'https://example.com/repo');
       expect(json['priority'], 3);
-      expect(json['mirrors'], ['https://m1.example.com']);
+      // 镜像从属于源：字符串旧格式被转为「默认启用」的镜像对象
+      expect(source.mirrors.single.url, 'https://m1.example.com');
+      expect(source.mirrors.single.enabled, true);
+      expect(source.useMirrors, true, reason: '默认启用镜像回退（国内网络优先走镜像）');
+      expect(json['useMirrors'], true);
+      expect((json['mirrors'] as List).first['enabled'], true);
+      expect((json['mirrors'] as List).single, containsPair('url', 'https://m1.example.com'));
 
       final restored = FdroidSource.fromJson(json);
       expect(restored.id, 's1');
       expect(restored.name, '测试源');
       expect(restored.priority, 3);
-      expect(restored.mirrors, ['https://m1.example.com']);
+      expect(restored.mirrors.single.url, 'https://m1.example.com');
+      expect(restored.mirrors.single.enabled, true);
+      expect(restored.useMirrors, true);
     });
 
     test('fromJson 缺省字段使用默认值', () {

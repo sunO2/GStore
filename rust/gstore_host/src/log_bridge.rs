@@ -107,6 +107,14 @@ pub fn subscribe(sink: StreamSink<LogMessage>) {
     }
 }
 
+/// 清空订阅 sink。引擎被销毁并在同进程内重建时，宿主仍持有指向上一个 Dart
+/// isolate 的 StreamSink（端口已失效）；新 isolate 订阅前调用本函数丢弃它，
+/// 避免向已销毁端口推送（二次启动崩溃的次因之一）。
+pub fn clear_sink() {
+    let bridge = global();
+    let _ = bridge.sink.lock().unwrap().take();
+}
+
 /// 写入一条宿主日志（内部辅助：bridge 层方法调用，供宿主自身代码记录日志）
 pub fn push_host_log(level: c_int, message: String) {
     global().push(LogMessage {

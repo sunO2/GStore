@@ -1,4 +1,9 @@
-// 数据模型定义（宿主保留：供 FRB 生成 Dart 类型；AppInfo/DownloadResult 已迁 gstore_mod_repo 模块）
+// 数据模型定义（宿主保留：**仅为满足 FRB 生成的 Dart 类型**；实现均已迁至对应模块）
+//
+// 注意：这些结构体当前不参与宿主业务逻辑。Dart 业务侧解码用的是手写的
+// `lib/core/rust/contract/ModuleTypes.dart` / `Contract.dart`，而非此处生成的 Dart 类。
+// 删除本文件需要同步重跑 flutter_rust_bridge codegen（生成的 frb_generated.rs /
+// lib/core/rust/generated/*.dart 引用这些类型），因此暂以注释形式标注为待清理。
 
 /// APK 解析结果（从 AndroidManifest 提取的真实应用信息；实现已移至 gstore_mod_analyzer 模块）
 #[derive(Clone, Debug, Default)]

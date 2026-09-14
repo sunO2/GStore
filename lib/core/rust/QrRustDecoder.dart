@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/rust/ModuleLoader.dart';
 import 'package:gstore/core/rust/ModuleManager.dart';
+import 'package:gstore/core/rust/Contract.dart' show decodeQrDecodeResult;
 import 'package:gstore/core/rust/contract/GStoreException.dart'
     show GStoreException;
 import 'package:gstore/core/rust/contract/ModuleTypes.dart' show QrDecodeResult;
@@ -46,7 +47,7 @@ class QrRustDecoder {
       _moduleHandle = await RustModuleManager.instance.loadModule('qr');
       if (_moduleHandle == null) return false;
 
-      _moduleInstance = await RustModuleInstance.create('qr', _moduleHandle!);
+      _moduleInstance = await RustModuleInstance.createWithContext('qr', _moduleHandle!);
       _moduleAvailable = _moduleInstance != null;
       return _moduleAvailable;
     } catch (e) {
@@ -89,22 +90,10 @@ class QrRustDecoder {
     return b.buffer.asUint8List();
   }
 
-  /// 解析模块返回的 JSON 为 QrDecodeResult
+  /// 解析模块返回的 JSON 为 QrDecodeResult（复用契约层统一解析，避免字段两边漂移）
   static QrDecodeResult? _parseModuleResponse(String json) {
     try {
-      final map = jsonDecode(json) as Map<String, dynamic>;
-      return QrDecodeResult(
-        text: map['text'] as String? ?? '',
-        format: map['format'] as String? ?? '',
-        points: Float64List.fromList(
-          (map['points'] as List<dynamic>? ?? []).map((e) => (e as num).toDouble()).toList(),
-        ),
-        rawBytes: Uint8List.fromList(
-          (map['raw_bytes'] as List<dynamic>? ?? []).map((e) => e as int).toList(),
-        ),
-        isMirrored: map['is_mirrored'] as bool? ?? false,
-        isInverted: map['is_inverted'] as bool? ?? false,
-      );
+      return decodeQrDecodeResult(jsonDecode(json));
     } catch (e) {
       appLog.error('QrRustDecoder: 模块响应解析失败 - $e');
       return null;

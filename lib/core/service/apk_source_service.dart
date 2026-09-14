@@ -9,6 +9,7 @@ class SignatureInfo {
     this.subject = '',
     this.sha256 = '',
     this.sha1 = '',
+    this.kind = '',
   });
 
   /// 签名算法（如 SHA256withRSA）
@@ -23,12 +24,20 @@ class SignatureInfo {
   /// SHA-1 指纹（小写十六进制，冒号分隔）
   final String sha1;
 
+  /// 证书角色：`signer`（并列签名者之一）/ `current`（当前证书）/ `history`（轮换前历史证书）。
+  /// 旧版 Android 通道不带该字段 → 空串（按「当前证书」展示）。
+  final String kind;
+
   factory SignatureInfo.fromJson(Map<String, dynamic> json) => SignatureInfo(
         algorithm: (json['algorithm'] as String?) ?? '',
         subject: (json['subject'] as String?) ?? '',
         sha256: (json['sha256'] as String?) ?? '',
         sha1: (json['sha1'] as String?) ?? '',
+        kind: (json['kind'] as String?) ?? '',
       );
+
+  /// 是否为轮换前的历史证书
+  bool get isHistory => kind == 'history';
 }
 
 /// 已安装应用详情（签名 / meta-data / 主 Activity / 安装信息 / APK 大小 / SDK 版本 / 系统信息）
@@ -50,10 +59,14 @@ class InstalledAppDetail {
     this.isSystemApp = false,
     this.isDebuggable = false,
     this.dataDir = '',
+    this.signingShape = 'single',
   });
 
   /// 签名证书列表（可能为空）
   final List<SignatureInfo> signatures;
+
+  /// 签名形态：`single`（单证书）/ `multiple`（多个并列签名者）/ `rotation`（含轮换历史）
+  final String signingShape;
 
   /// 清单 meta-data（String → String）
   final Map<String, String> metaData;
@@ -118,6 +131,7 @@ class InstalledAppDetail {
         (k, v) => MapEntry(k.toString(), v.toString()),
       ),
       mainActivity: (json['mainActivity'] as String?) ?? '',
+      signingShape: (json['signingShape'] as String?) ?? 'single',
       apkSize: (json['apkSize'] as int?) ?? 0,
       firstInstallTime: (json['firstInstallTime'] as int?) ?? 0,
       lastUpdateTime: (json['lastUpdateTime'] as int?) ?? 0,

@@ -8,11 +8,15 @@ name = "gstore_mod_repo"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+# 索引完整性校验（entry.json 的 sha256）
+sha2 = "0.11.0"
+# 基线索引压缩存盘（增量更新用；已随 zip 在依赖锁中）
+flate2 = "1.0"
 # 模块契约层（C ABI 结构体）
 gstore_contract = { path = "../gstore_contract" }
 # JSON（响应编码）
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+serde_json = { version = "1.0", features = ["raw_value"] }
 # async 运行时（download_repo 跨 C ABI block_on）
 tokio = { version = "1", features = ["full"] }
 # HTTP 客户端（index 下载）

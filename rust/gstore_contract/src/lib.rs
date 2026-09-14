@@ -8,8 +8,10 @@
 #![allow(dead_code)]
 
 pub mod abi;
+pub mod context;
 pub mod envelope;
 pub mod error;
+pub mod events;
 pub mod logging;
 pub mod security;
 

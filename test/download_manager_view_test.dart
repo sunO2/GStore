@@ -198,9 +198,11 @@ void main() {
 
     // 点击行尾删除图标
     await tester.tap(find.byTooltip('删除'));
+    // 统一底部弹层入场动画：首帧启动 ticker，第二帧完成滑入（首帧仍停在屏外）
+    await tester.pump(const Duration(milliseconds: 300));
     await tester.pump(const Duration(milliseconds: 300));
 
-    // AppDialogs 风格确认框出现
+    // AppDialogs 统一弹层风格确认框出现
     expect(find.text('删除下载'), findsOneWidget);
     expect(find.textContaining('此操作不可恢复'), findsOneWidget);
     expect(find.widgetWithText(FilledButton, '删除'), findsOneWidget);

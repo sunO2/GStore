@@ -17,6 +17,12 @@ import 'package:gstore/core/module/module_manager.dart';
 /// - 服务已绑定（bind 假实现）时功能路径正常：搜索返回成功结果、
 ///   本地 Rust 数据解析详情/检查更新成功（不触网）
 class _FakeFdroidRepoService implements IFdroidRepoService {
+
+  @override
+  FdroidSource? get currentSource => null;
+
+  @override
+  String identityKeyFor(FdroidSource source) => 'test:${source.id}';
   int searchCalls = 0;
 
   @override
@@ -38,7 +44,7 @@ class _FakeFdroidRepoService implements IFdroidRepoService {
   }
 
   @override
-  Future<Map<String, dynamic>?> getAppByPackageName(String packageName) async {
+  Future<Map<String, dynamic>?> getAppByPackageName(String packageName, {String? sourceId}) async {
     return {
       'packageName': packageName,
       'name': 'Example App',
@@ -74,6 +80,18 @@ class _FakeFdroidRepoService implements IFdroidRepoService {
 
   @override
   Future<void> addSource(FdroidSource source) async {}
+
+  @override
+  Future<void> updateSource(FdroidSource source) async {}
+
+  @override
+  List<FdroidSource> get sources => const [];
+
+  @override
+  Future<void> setSourceEnabled(String sourceId, bool enabled) async {}
+
+  @override
+  Future<int> loadAllEnabled() async => 0;
 
   @override
   Future<void> removeSource(String sourceId) async {}

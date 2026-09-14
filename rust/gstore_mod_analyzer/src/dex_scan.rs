@@ -30,7 +30,14 @@ pub fn scan_dex_classes(apk_path: &str, patterns: &[String]) -> Result<Vec<Strin
     let file = File::open(apk_path).map_err(|e| format!("无法打开 APK: {e}"))?;
     let mut archive =
         ZipArchive::new(file).map_err(|e| format!("APK 不是有效 zip: {e}"))?;
+    scan_dex_classes_from(&mut archive, patterns)
+}
 
+/// 复用已打开的 archive（聚合入口用：一次打开产出全部节）
+pub fn scan_dex_classes_from(
+    archive: &mut ZipArchive<File>,
+    patterns: &[String],
+) -> Result<Vec<String>, String> {
     let mut matched: HashSet<String> = HashSet::new();
     for index in 0..archive.len() {
         let mut entry = archive

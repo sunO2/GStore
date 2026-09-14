@@ -98,6 +98,11 @@ pub extern "C" fn host_emit_event(
         return;
     };
     let event_type = String::from_utf8_lossy(type_bytes).into_owned();
+    // 优先归属到「当前线程正在执行的长任务」；未命中才走全局事件总线。
+    // 这样模块无需感知 Task（C ABI 零变更），而任务内的进度/token 会进该任务流。
+    if crate::task_bridge::emit_current_thread(&event_type, payload.to_vec()) {
+        return;
+    }
     global().push(ModuleEvent {
         module_id,
         instance_id,
@@ -122,6 +127,12 @@ pub fn subscribe(sink: StreamSink<ModuleEvent>) {
             let _ = sink.add(event);
         }
     }
+}
+
+/// 清空订阅 sink（与 log_bridge::clear_sink 同理：丢弃指向上一个 isolate 的端口）
+pub fn clear_sink() {
+    let bridge = global();
+    let _ = bridge.sink.lock().unwrap().take();
 }
 
 /// 便捷：宿主内部推送一条模块事件（供 Rust 侧测试/内嵌模块使用）

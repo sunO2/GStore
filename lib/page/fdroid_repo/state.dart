@@ -38,7 +38,15 @@ class FdroidRepoState {
   /// 是否正在搜索
   final bool isSearching;
 
+  /// 已启用的源数量（多源并存，展示用）
+  int get enabledSourcesCount => sources.where((s) => s.enabled).length;
+
+  /// 索引声明的仓库元信息（来自模块 get_repo_meta）：
+  /// name / description / mirrors / resolved_url / verified
+  final Map<String, dynamic>? repoMeta;
+
   const FdroidRepoState({
+    this.repoMeta,
     this.sources = const [],
     this.currentSource,
     this.isLoading = false,
@@ -53,6 +61,7 @@ class FdroidRepoState {
   });
 
   FdroidRepoState copyWith({
+    Map<String, dynamic>? repoMeta,
     List<FdroidSource>? sources,
     FdroidSource? currentSource,
     bool? isLoading,
@@ -66,6 +75,7 @@ class FdroidRepoState {
     bool? isSearching,
   }) {
     return FdroidRepoState(
+      repoMeta: repoMeta ?? this.repoMeta,
       sources: sources ?? this.sources,
       currentSource: currentSource ?? this.currentSource,
       isLoading: isLoading ?? this.isLoading,

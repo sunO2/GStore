@@ -1,54 +1,101 @@
-//! APK 内 ELF .so 的 16KB 页对齐检测
+//! APK 内 ELF `.so` 元数据与 16KB 页对齐检测
 //!
-//! 输入：APK 路径。输出：`lib/<abi>/<name>.so` 每个文件的 ELF 最小页对齐
-//! （min_page_size）与是否 16KB 对齐（aligned_16kb）。
+//! 输入：APK 路径（可选 ABI 过滤）。输出：`lib/<abi>/<name>.so` 与
+//! `assets/*.so` 的：
+//! - ELF 类型（`e_type`）、最小页对齐（PT_LOAD `p_align`）、是否 16KB 对齐；
+//! - `DT_NEEDED` 动态依赖、JNI 导出入口（`Java_*`/`JNI_*`）、是否剥离符号表。
 //!
 //! 与 LibChecker 的对齐说明：
-//! - 逻辑对齐 `ElfParser.getMinPageSize()`：遍历程序头中全部 PT_LOAD 段，
-//!   取 p_align 最小值；无 PT_LOAD 段返回 -1。
-//! - 仅解析 ELF 头 + 程序头（不解析节区/符号表），纯字节切片读取：
-//!   失败（非 ELF / 越界 / 非法 class 或字节序）对该库记为
-//!   min_page_size=-1、aligned_16kb=false，不中断整包扫描。
-//! - p_align 0/1 视为未知，不判定为 16KB 对齐。
+//! - 页对齐 = `ElfParser.getMinPageSize()`：遍历程序头全部 PT_LOAD 取 `p_align` 最小值。
+//! - 16KB 判定 = `PackageInfoExtensions.is16KBAligned()`：页对齐是 16KB 的倍数，
+//!   **且** zip 数据偏移对齐满足（未压缩存放时 ≥0x4000；压缩存放或未知则跳过该条件）。
+//! - `DT_NEEDED` / JNI 入口 / stripped 对齐 `AppElfDetail`（deps / entryPoints / isStripped）。
+//!
+//! 只解析 ELF 头 / 程序头 / 节区头 / 动态段 / 动态符号表，不解析指令、不做重定位。
+//! 任何解析失败都只影响该库自身（记为失败值），不中断整包扫描。
 
 use std::fs::File;
 use std::io::Read;
 
 use zip::ZipArchive;
 
-/// 单个 ELF .so 的页对齐检测结果
+/// 单个 ELF `.so` 的检测结果
 #[derive(Clone, Debug, Default, serde::Serialize)]
 pub struct ElfSoInfo {
-    /// 所在 ABI 目录（如 `arm64-v8a`）
+    /// 所在分组：ABI 目录名（如 `arm64-v8a`）或 `assets`
     pub abi: String,
     /// .so 文件名（如 `libfoo.so`）
     pub so_name: String,
+    /// zip 内完整路径
+    pub path: String,
+    /// 解压后字节数
+    pub size: u64,
     /// PT_LOAD 段最小 p_align；-1 表示非 ELF / 无 PT_LOAD / 解析失败
     pub min_page_size: i64,
-    /// min_page_size > 0 且能被 16384 整除
+    /// STORED 条目数据起始偏移的最大 2 的幂因子；0 = 压缩存放或未知
+    pub zip_alignment: u64,
+    /// 最终 16KB 判定（页对齐 + zip 对齐两个条件都满足）
     pub aligned_16kb: bool,
+    /// `e_type`：2=ET_EXEC / 3=ET_DYN / 4=ET_CORE；-1 非 ELF
+    pub elf_type: i32,
+    /// `DT_NEEDED` 依赖库名（上限 [`MAX_LIST`] 条）
+    pub needed: Vec<String>,
+    /// JNI 导出入口符号（`Java_*` / `JNI_*`，上限 [`MAX_LIST`] 条）
+    pub jni_entry_points: Vec<String>,
+    /// 是否已剥离符号表（无 SHT_SYMTAB 节）
+    pub stripped: bool,
 }
 
 /// 整包扫描结果
 #[derive(Clone, Debug, Default, serde::Serialize)]
 pub struct ApkElfScanResult {
-    /// 命中的 `lib/<abi>/*.so` 检测结果列表
+    /// 命中的 `lib/<abi>/*.so` 与 `assets/*.so` 检测结果列表
     pub so_files: Vec<ElfSoInfo>,
 }
 
-/// 扫描 APK 内所有 `lib/<abi>/<name>.so` 与 `assets/<name>.so`，
-/// 逐文件检测 ELF 16KB 页对齐（assets 下的库归入 `assets` 分组）。
+/// 依赖与 JNI 入口的返回条数上限（避免超大 .so 撑爆响应）
+const MAX_LIST: usize = 64;
+
+/// 16KB 页大小（LibChecker 常量 0x4000）
+const PAGE_16KB: i64 = 0x4000;
+
+/// 扫描 APK 内 `.so` 并解析 ELF 元数据。
 ///
-/// 单个库读取/解析失败不中断整包扫描（记为 min_page_size=-1、aligned_16kb=false）。
-pub fn scan_elf_page_sizes(apk_path: &str) -> Result<ApkElfScanResult, String> {
+/// `abi_filter` 非空时只扫描这些 ABI 分组（对齐 LibChecker 的「只解析选中 ABI」，
+/// 避免把所有 ABI 的库全部解压）。`assets` 分组始终扫描。
+pub fn scan_elf_page_sizes(
+    apk_path: &str,
+    abi_filter: Option<&[String]>,
+) -> Result<ApkElfScanResult, String> {
     let file = File::open(apk_path).map_err(|e| format!("无法打开 APK: {e}"))?;
     let mut archive = ZipArchive::new(file).map_err(|e| format!("APK 不是有效 zip: {e}"))?;
+    scan_elf_from(&mut archive, abi_filter)
+}
 
+/// 复用已打开的 archive（聚合入口用：一次打开产出全部节）
+pub fn scan_elf_from(
+    archive: &mut ZipArchive<File>,
+    abi_filter: Option<&[String]>,
+) -> Result<ApkElfScanResult, String> {
     let mut so_files = Vec::new();
     for i in 0..archive.len() {
-        let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
+        let mut entry = match archive.by_index(i) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
         let Some((abi, so_name)) = parse_lib_path(entry.name()) else {
             continue;
+        };
+        if !abi_selected(&abi, abi_filter) {
+            continue;
+        }
+        let path = entry.name().to_string();
+        let size = entry.size();
+        let stored = entry.compression() == zip::CompressionMethod::Stored;
+        let zip_alignment = if stored {
+            zip_alignment(entry.data_start())
+        } else {
+            0
         };
 
         let mut bytes = Vec::new();
@@ -56,27 +103,52 @@ pub fn scan_elf_page_sizes(apk_path: &str) -> Result<ApkElfScanResult, String> {
             so_files.push(ElfSoInfo {
                 abi,
                 so_name,
+                path,
+                size,
                 min_page_size: -1,
+                zip_alignment,
                 aligned_16kb: false,
+                elf_type: -1,
+                needed: Vec::new(),
+                jni_entry_points: Vec::new(),
+                stripped: false,
             });
             continue;
         }
 
-        let min_page_size = parse_elf_min_page_size(&bytes);
-        let aligned_16kb = min_page_size > 0 && min_page_size % 16384 == 0;
+        let elf = parse_elf(&bytes);
+        let aligned_16kb = is_16kb_aligned(elf.min_page_size, zip_alignment);
         so_files.push(ElfSoInfo {
             abi,
             so_name,
-            min_page_size,
+            path,
+            size,
+            min_page_size: elf.min_page_size,
+            zip_alignment,
             aligned_16kb,
+            elf_type: elf.elf_type,
+            needed: elf.needed,
+            jni_entry_points: elf.jni_entry_points,
+            stripped: elf.stripped,
         });
     }
 
     Ok(ApkElfScanResult { so_files })
 }
 
-/// `lib/<abi>/<name>.so` → (abi, so_name)；`assets/<name>.so` → ("assets", name)；
-/// 其余路径返回 None。
+/// 16KB 判定：页对齐是 16KB 的倍数，且 zip 对齐满足。
+/// zip 对齐为 0（压缩存放 / 未知）时不参与判定（对齐 LibChecker 语义）。
+fn is_16kb_aligned(min_page_size: i64, zip_alignment: u64) -> bool {
+    if min_page_size <= 0 || min_page_size % PAGE_16KB != 0 {
+        return false;
+    }
+    if zip_alignment == 0 {
+        return true;
+    }
+    zip_alignment >= PAGE_16KB as u64
+}
+
+/// `lib/<abi>/<name>.so` → (abi, name)；`assets/<name>.so` → ("assets", name)
 fn parse_lib_path(path: &str) -> Option<(String, String)> {
     let parts: Vec<&str> = path.split('/').collect();
     if parts.len() == 2 && parts[0] == "assets" && parts[1].ends_with(".so") {
@@ -88,93 +160,252 @@ fn parse_lib_path(path: &str) -> Option<(String, String)> {
     Some((parts[1].to_string(), parts[2].to_string()))
 }
 
-/// 解析单个 ELF 文件 PT_LOAD 段的最小 p_align（LibChecker getMinPageSize 语义）。
-///
-/// 规则：
-/// 1. 魔数 `0x7F 45 4C 46`；byte4 class（1=ELF32，2=ELF64）；byte5 data（1=LE，2=BE）。
-/// 2. ELF32：e_phoff@0x1C(u32)、e_phentsize@0x2A(u16)、e_phnum@0x2C(u16)、phdr=32B；
-///    ELF64：e_phoff@0x20(u64)、e_phentsize@0x36(u16)、e_phnum@0x38(u16)、phdr=56B。
-/// 3. 程序头 p_type@0(u32)==1（PT_LOAD）时收集 p_align：
-///    ELF32 p_align@28(u32)、ELF64 p_align@48(u64)。
-/// 4. 返回全部 PT_LOAD 中最小 p_align；无 PT_LOAD 或任何解析失败返回 -1。
-fn parse_elf_min_page_size(bytes: &[u8]) -> i64 {
-    if bytes.len() < 6 || bytes.get(0..4) != Some(&[0x7F, b'E', b'L', b'F']) {
-        return -1;
+/// ABI 过滤：无过滤时全选；有过滤时只保留列出的 ABI（`assets` 始终保留）
+fn abi_selected(abi: &str, filter: Option<&[String]>) -> bool {
+    match filter {
+        None => true,
+        Some(list) if list.is_empty() => true,
+        Some(list) => abi == "assets" || list.iter().any(|a| a == abi),
     }
-    let class = bytes[4]; // 1=ELF32，2=ELF64
-    let data = bytes[5]; // 1=LE，2=BE
+}
+
+fn zip_alignment(data_start: u64) -> u64 {
+    if data_start == 0 {
+        return 0;
+    }
+    1u64 << data_start.trailing_zeros()
+}
+
+// ==================== ELF 解析 ====================
+
+/// 解析结果（失败时为默认值）
+#[derive(Default)]
+struct ElfParsed {
+    min_page_size: i64,
+    elf_type: i32,
+    needed: Vec<String>,
+    jni_entry_points: Vec<String>,
+    stripped: bool,
+}
+
+fn parse_elf(bytes: &[u8]) -> ElfParsed {
+    let mut out = ElfParsed {
+        min_page_size: -1,
+        elf_type: -1,
+        ..Default::default()
+    };
+    if bytes.len() < 0x34 || bytes.get(0..4) != Some(&[0x7F, b'E', b'L', b'F']) {
+        return out;
+    }
+    let class = bytes[4]; // 1=ELF32, 2=ELF64
+    let data = bytes[5]; // 1=LE, 2=BE
     if (class != 1 && class != 2) || (data != 1 && data != 2) {
-        return -1;
+        return out;
     }
     let big = data == 2;
-    let is_elf64 = class == 2;
+    let is64 = class == 2;
 
-    let (phoff, phentsize, phnum, align_off, align_size) = if is_elf64 {
-        let phoff = match read_u64(bytes, 0x20, big) {
-            Some(v) => v,
-            None => return -1,
-        };
-        let phentsize = match read_u16(bytes, 0x36, big) {
-            Some(v) => v,
-            None => return -1,
-        };
-        let phnum = match read_u16(bytes, 0x38, big) {
-            Some(v) => v,
-            None => return -1,
-        };
-        (phoff, phentsize, phnum, 48usize, 8usize)
+    out.elf_type = read_u16(bytes, 0x10, big).map(|v| v as i32).unwrap_or(-1);
+
+    let (phoff, phentsize, phnum) = if is64 {
+        (
+            read_u64(bytes, 0x20, big),
+            read_u16(bytes, 0x36, big),
+            read_u16(bytes, 0x38, big),
+        )
     } else {
-        let phoff = match read_u32(bytes, 0x1C, big) {
-            Some(v) => v as u64,
-            None => return -1,
-        };
-        let phentsize = match read_u16(bytes, 0x2A, big) {
-            Some(v) => v,
-            None => return -1,
-        };
-        let phnum = match read_u16(bytes, 0x2C, big) {
-            Some(v) => v,
-            None => return -1,
-        };
-        (phoff, phentsize, phnum, 28usize, 4usize)
+        (
+            read_u32(bytes, 0x1C, big).map(|v| v as u64),
+            read_u16(bytes, 0x2A, big),
+            read_u16(bytes, 0x2C, big),
+        )
     };
-    // 表项必须大到能读 p_align，否则视为失败
-    if (phentsize as usize) < align_off + align_size {
-        return -1;
+    let (shoff, shentsize, shnum) = if is64 {
+        (
+            read_u64(bytes, 0x28, big),
+            read_u16(bytes, 0x3A, big),
+            read_u16(bytes, 0x3C, big),
+        )
+    } else {
+        (
+            read_u32(bytes, 0x20, big).map(|v| v as u64),
+            read_u16(bytes, 0x2E, big),
+            read_u16(bytes, 0x30, big),
+        )
+    };
+
+    // 程序头：取 PT_LOAD 的最小 p_align
+    if let (Some(phoff), Some(phentsize), Some(phnum)) = (phoff, phentsize, phnum) {
+        let align_off = if is64 { 48 } else { 28 };
+        let align_size = if is64 { 8 } else { 4 };
+        if (phentsize as usize) >= align_off + align_size {
+            let mut min_align: Option<i64> = None;
+            for i in 0..phnum {
+                let Some(off) = (phentsize as u64)
+                    .checked_mul(i as u64)
+                    .and_then(|s| phoff.checked_add(s))
+                    .map(|v| v as usize)
+                else {
+                    continue;
+                };
+                if read_u32(bytes, off, big) != Some(1) {
+                    continue; // 非 PT_LOAD
+                }
+                let align = if is64 {
+                    read_u64(bytes, off + align_off, big).map(|v| v as i64)
+                } else {
+                    read_u32(bytes, off + align_off, big).map(|v| v as i64)
+                };
+                if let Some(a) = align {
+                    min_align = Some(min_align.map_or(a, |m: i64| m.min(a)));
+                }
+            }
+            out.min_page_size = min_align.unwrap_or(-1);
+        }
     }
 
-    let mut min_align: Option<i64> = None;
-    for i in 0..phnum {
-        let Some(offset) = (phentsize as u64)
+    // 节区头：找 SHT_SYMTAB（2，→ stripped）、SHT_DYNAMIC（6，→ DT_NEEDED）、
+    // SHT_DYNSYM（11，→ JNI 入口）
+    let (Some(shoff), Some(shentsize), Some(shnum)) = (shoff, shentsize, shnum) else {
+        return out;
+    };
+    if shnum == 0 || (shentsize as usize) < 40 {
+        return out;
+    }
+    // 节区头字段偏移（按 class 区分）
+    let (sh_type_off, sh_off_off, sh_size_off, sh_link_off) = if is64 {
+        (4usize, 24usize, 32usize, 40usize)
+    } else {
+        (4usize, 16usize, 20usize, 24usize)
+    };
+    let size_size = if is64 { 8 } else { 4 };
+
+    let mut symtab_found = false;
+    let mut dynamic: Option<(usize, usize, usize)> = None; // (offset, size, link)
+    let mut dynsym: Option<(usize, usize, usize)> = None;
+
+    for i in 0..shnum {
+        let Some(base) = (shentsize as u64)
             .checked_mul(i as u64)
-            .and_then(|s| phoff.checked_add(s))
+            .and_then(|s| shoff.checked_add(s))
+            .map(|v| v as usize)
         else {
             continue;
         };
-        let offset = offset as usize;
-        let Some(p_type) = read_u32(bytes, offset, big) else {
+        let Some(sh_type) = read_u32(bytes, base + sh_type_off, big) else {
             continue;
         };
-        if p_type != 1 {
-            continue; // 非 PT_LOAD
+        let Some(off) = read_addr(bytes, base + sh_off_off, big, size_size).map(|v| v as usize)
+        else {
+            continue;
+        };
+        let Some(size) = read_addr(bytes, base + sh_size_off, big, size_size).map(|v| v as usize)
+        else {
+            continue;
+        };
+        let link = read_u32(bytes, base + sh_link_off, big).unwrap_or(0) as usize;
+        match sh_type {
+            2 => symtab_found = true,               // SHT_SYMTAB
+            6 => dynamic = Some((off, size, link)),  // SHT_DYNAMIC
+            11 => dynsym = Some((off, size, link)),  // SHT_DYNSYM
+            _ => {}
         }
-        let Some(align) = read_align(bytes, offset + align_off, big, align_size) else {
-            continue;
-        };
-        min_align = Some(match min_align {
-            Some(m) => m.min(align),
-            None => align,
-        });
+    }
+    out.stripped = !symtab_found;
+
+    // sh_link 指向节区索引：按下标重新读该节区的 offset/size，作为关联字符串表
+    let strtab_by_link = |link: usize| -> Option<(usize, usize)> {
+        let base = (shentsize as u64)
+            .checked_mul(link as u64)
+            .and_then(|s| shoff.checked_add(s))
+            .map(|v| v as usize)?;
+        if base >= bytes.len() {
+            return None;
+        }
+        let off = read_addr(bytes, base + sh_off_off, big, size_size)? as usize;
+        let size = read_addr(bytes, base + sh_size_off, big, size_size)? as usize;
+        Some((off, size))
+    };
+
+    // DT_NEEDED（tag=1）：d_val 是 strtab（sh_link）内的偏移
+    if let Some((dyn_off, dyn_size, link)) = dynamic {
+        let entsize = if is64 { 16 } else { 8 };
+        if let Some((str_off, str_size)) = strtab_by_link(link) {
+            let count = dyn_size / entsize;
+            for k in 0..count.min(4096) {
+                let e = dyn_off + k * entsize;
+                let Some(tag) = read_addr(bytes, e, big, size_size) else {
+                    break;
+                };
+                if tag == 0 {
+                    break; // DT_NULL
+                }
+                if tag == 1 {
+                    if let Some(val) = read_addr(bytes, e + size_size, big, size_size) {
+                        if let Some(s) = read_cstr(bytes, str_off + val as usize, str_size) {
+                            if out.needed.len() < MAX_LIST {
+                                out.needed.push(s);
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
-    min_align.unwrap_or(-1)
+    // JNI 入口（SHT_DYNSYM 中 STT_FUNC 且名字以 Java_/JNI_ 开头）
+    if let Some((sym_off, sym_size, link)) = dynsym {
+        let entsize = if is64 { 24 } else { 16 };
+        let info_off = if is64 { 4 } else { 12 };
+        if let Some((str_off, str_size)) = strtab_by_link(link) {
+            let count = sym_size / entsize;
+            for k in 0..count.min(200_000) {
+                if out.jni_entry_points.len() >= MAX_LIST {
+                    break;
+                }
+                let e = sym_off + k * entsize;
+                let Some(name_off) = read_u32(bytes, e, big) else {
+                    break;
+                };
+                let Some(info) = bytes.get(e + info_off).copied() else {
+                    break;
+                };
+                if info & 0x0F != 2 {
+                    continue; // 非 STT_FUNC
+                }
+                if let Some(name) = read_cstr(bytes, str_off + name_off as usize, str_size) {
+                    if name.starts_with("Java_") || name.starts_with("JNI_") {
+                        out.jni_entry_points.push(name);
+                    }
+                }
+            }
+        }
+    }
+
+    out
 }
 
-fn read_align(buf: &[u8], off: usize, big: bool, size: usize) -> Option<i64> {
+/// 读字符串表内的 NUL 结尾字符串（限制在 strtab 范围内）
+fn read_cstr(bytes: &[u8], offset: usize, strtab_size: usize) -> Option<String> {
+    let end = offset.checked_add(strtab_size)?;
+    let limit = end.min(bytes.len());
+    if offset >= limit {
+        return None;
+    }
+    let slice = &bytes[offset..limit];
+    let nul = slice.iter().position(|&b| b == 0)?;
+    let s = std::str::from_utf8(&slice[..nul]).ok()?;
+    if s.is_empty() {
+        return None;
+    }
+    Some(s.to_string())
+}
+
+fn read_addr(buf: &[u8], off: usize, big: bool, size: usize) -> Option<u64> {
     if size == 8 {
-        read_u64(buf, off, big).map(|v| v as i64)
+        read_u64(buf, off, big)
     } else {
-        read_u32(buf, off, big).map(|v| v as i64)
+        read_u32(buf, off, big).map(|v| v as u64)
     }
 }
 
@@ -209,100 +440,144 @@ fn read_u64(buf: &[u8], off: usize, big: bool) -> Option<u64> {
 mod tests {
     use super::*;
 
-    /// 构造最小 ELF64：e_phoff=64、e_phentsize=56、e_phnum=1，
-    /// 单个 PT_LOAD phdr p_align=p_align。
-    fn elf64(p_align: u64, big_endian: bool) -> Vec<u8> {
-        let mut buf = vec![0u8; 64 + 56];
+    /// 构造最小 ELF64，用于验证 e_type / p_align / stripped / DT_NEEDED / JNI 入口。
+    ///
+    /// 节区布局（索引 → 用途）：
+    /// 0 = NULL，1 = STRTAB（DT_NEEDED 用），2 = DYNAMIC（sh_link=1），
+    /// 3 = STRTAB（符号名用），4 = DYNSYM（sh_link=3），5 = SYMTAB（可选，sh_link=1）
+    fn build_elf64(p_align: u64, with_symtab: bool) -> Vec<u8> {
+        let ehsize = 64usize;
+        let phentsize = 56usize;
+        let shentsize = 64usize;
+        let phoff = ehsize;
+        let after_ph = phoff + phentsize;
+
+        let strtab = b"libc.so\0".to_vec();
+        let strtab_off = after_ph;
+        let dyn_off = strtab_off + strtab.len();
+        let dyn_size = 32usize; // 2 项 × 16 字节：DT_NEEDED + DT_NULL
+        let symstr = b"Java_com_example_Foo_bar\0notjni\0".to_vec();
+        let symstr_off = dyn_off + dyn_size;
+        let sym_off = symstr_off + symstr.len();
+        let sym_size = 48usize; // 2 项 × 24 字节：NULL 符号 + 1 个 FUNC 符号
+        let shoff = sym_off + sym_size;
+
+        const NULL: usize = 0;
+        const STR_DYN: usize = 1;
+        const DYNAMIC: usize = 2;
+        const STR_SYM: usize = 3;
+        const DYNSYM: usize = 4;
+        const SYMTAB: usize = 5;
+        let n_shdrs = if with_symtab { 6 } else { 5 };
+        let mut buf = vec![0u8; shoff + n_shdrs * shentsize];
+
         buf[0..4].copy_from_slice(&[0x7F, b'E', b'L', b'F']);
         buf[4] = 2; // ELF64
-        buf[5] = if big_endian { 2 } else { 1 };
-        buf[6] = 1; // EI_VERSION
-        let phoff = 64u64;
-        if big_endian {
-            buf[0x20..0x28].copy_from_slice(&phoff.to_be_bytes());
-            buf[0x36..0x38].copy_from_slice(&56u16.to_be_bytes());
-            buf[0x38..0x3A].copy_from_slice(&1u16.to_be_bytes());
-            buf[64..68].copy_from_slice(&1u32.to_be_bytes()); // p_type = PT_LOAD
-            buf[64 + 48..64 + 56].copy_from_slice(&p_align.to_be_bytes());
-        } else {
-            buf[0x20..0x28].copy_from_slice(&phoff.to_le_bytes());
-            buf[0x36..0x38].copy_from_slice(&56u16.to_le_bytes());
-            buf[0x38..0x3A].copy_from_slice(&1u16.to_le_bytes());
-            buf[64..68].copy_from_slice(&1u32.to_le_bytes()); // p_type = PT_LOAD
-            buf[64 + 48..64 + 56].copy_from_slice(&p_align.to_le_bytes());
+        buf[5] = 1; // 小端
+        buf[6] = 1;
+        buf[0x10..0x12].copy_from_slice(&3u16.to_le_bytes()); // e_type = ET_DYN
+        buf[0x20..0x28].copy_from_slice(&(phoff as u64).to_le_bytes()); // e_phoff
+        buf[0x28..0x30].copy_from_slice(&(shoff as u64).to_le_bytes()); // e_shoff
+        buf[0x36..0x38].copy_from_slice(&(phentsize as u16).to_le_bytes());
+        buf[0x38..0x3A].copy_from_slice(&1u16.to_le_bytes());
+        buf[0x3A..0x3C].copy_from_slice(&(shentsize as u16).to_le_bytes());
+        buf[0x3C..0x3E].copy_from_slice(&(n_shdrs as u16).to_le_bytes());
+
+        // PT_LOAD：p_type=1，p_align@48
+        buf[phoff..phoff + 4].copy_from_slice(&1u32.to_le_bytes());
+        buf[phoff + 48..phoff + 56].copy_from_slice(&p_align.to_le_bytes());
+
+        buf[strtab_off..strtab_off + strtab.len()].copy_from_slice(&strtab);
+        // DT_NEEDED(tag=1, val=0) + DT_NULL
+        buf[dyn_off..dyn_off + 8].copy_from_slice(&1i64.to_le_bytes());
+        buf[dyn_off + 8..dyn_off + 16].copy_from_slice(&0u64.to_le_bytes());
+        buf[symstr_off..symstr_off + symstr.len()].copy_from_slice(&symstr);
+        // 符号 1：st_info=0x12（GLOBAL|FUNC），st_name=0 指向 "Java_com_example_Foo_bar"
+        buf[sym_off + 24 + 4] = 0x12;
+
+        let write_shdr =
+            |buf: &mut Vec<u8>, idx: usize, sh_type: u32, off: u64, size: u64, link: u32| {
+                let b = shoff + idx * shentsize;
+                buf[b + 4..b + 8].copy_from_slice(&sh_type.to_le_bytes());
+                buf[b + 24..b + 32].copy_from_slice(&off.to_le_bytes());
+                buf[b + 32..b + 40].copy_from_slice(&size.to_le_bytes());
+                buf[b + 40..b + 44].copy_from_slice(&link.to_le_bytes());
+            };
+        let _ = NULL;
+        write_shdr(&mut buf, STR_DYN, 3, strtab_off as u64, strtab.len() as u64, 0);
+        write_shdr(&mut buf, DYNAMIC, 6, dyn_off as u64, dyn_size as u64, STR_DYN as u32);
+        write_shdr(&mut buf, STR_SYM, 3, symstr_off as u64, symstr.len() as u64, 0);
+        write_shdr(&mut buf, DYNSYM, 11, sym_off as u64, sym_size as u64, STR_SYM as u32);
+        if with_symtab {
+            write_shdr(&mut buf, SYMTAB, 2, sym_off as u64, sym_size as u64, STR_DYN as u32);
         }
         buf
     }
 
     #[test]
-    fn elf64_le_16kb_aligned() {
-        let min = parse_elf_min_page_size(&elf64(16384, false));
-        assert_eq!(min, 16384);
+    fn parse_elf64_basic_metadata() {
+        let bytes = build_elf64(16384, false);
+        let p = parse_elf(&bytes);
+        assert_eq!(p.elf_type, 3, "e_type 应为 ET_DYN");
+        assert_eq!(p.min_page_size, 16384);
+        assert!(p.stripped, "无 SHT_SYMTAB 应判定为已剥离");
     }
 
     #[test]
-    fn elf64_le_4kb_not_aligned() {
-        let min = parse_elf_min_page_size(&elf64(4096, false));
-        assert_eq!(min, 4096);
+    fn parse_elf64_with_symtab_not_stripped() {
+        let bytes = build_elf64(4096, true);
+        let p = parse_elf(&bytes);
+        assert_eq!(p.min_page_size, 4096);
+        assert!(!p.stripped);
     }
 
     #[test]
-    fn non_elf_returns_minus_one() {
-        assert_eq!(parse_elf_min_page_size(&[0u8; 64]), -1);
-        assert_eq!(parse_elf_min_page_size(&[]), -1);
-        assert_eq!(parse_elf_min_page_size(b"MZ\x90\x00..."), -1);
+    fn dt_needed_is_parsed() {
+        let bytes = build_elf64(16384, false);
+        let p = parse_elf(&bytes);
+        assert_eq!(p.needed, vec!["libc.so".to_string()]);
     }
 
     #[test]
-    fn elf64_be_0x4000_aligned() {
-        let min = parse_elf_min_page_size(&elf64(0x4000, true));
-        assert_eq!(min, 16384);
+    fn jni_entry_points_filtered_by_prefix() {
+        let bytes = build_elf64(16384, false);
+        let p = parse_elf(&bytes);
+        // 构造的符号名以 Java_ 开头 → 命中；其余（"notjni" 未被符号引用）不入列
+        assert_eq!(p.jni_entry_points, vec!["Java_com_example_Foo_bar".to_string()]);
     }
 
     #[test]
-    fn scan_apk_elf_files() {
-        let dir = std::env::temp_dir().join(format!(
-            "gstore_elf_test_{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&dir).ok();
-        let apk_path = dir.join("scan_test.apk");
-        let file = File::create(&apk_path).ok();
-        if let Some(file) = file {
-            let mut zip = zip::ZipWriter::new(file);
-            let opts = zip::write::SimpleFileOptions::default();
-            // 16KB 对齐库
-            zip.start_file("lib/arm64-v8a/liba.so", opts).ok();
-            std::io::Write::write_all(&mut zip, &elf64(16384, false)).ok();
-            // 4KB 库
-            zip.start_file("lib/arm64-v8a/libb.so", opts).ok();
-            std::io::Write::write_all(&mut zip, &elf64(4096, false)).ok();
-            // assets 下的 .so（归入 assets 分组）
-            zip.start_file("assets/libembedded.so", opts).ok();
-            std::io::Write::write_all(&mut zip, &elf64(16384, false)).ok();
-            // 非 lib 文件，应被跳过
-            zip.start_file("res/xml/config.xml", opts).ok();
-            std::io::Write::write_all(&mut zip, b"<xml/>").ok();
-            zip.finish().ok();
-        }
+    fn non_elf_degrades() {
+        let p = parse_elf(&[0u8; 128]);
+        assert_eq!(p.min_page_size, -1);
+        assert_eq!(p.elf_type, -1);
+        assert!(p.needed.is_empty());
+        assert!(!p.stripped, "非 ELF 不应误报为已剥离");
+    }
 
-        let result = scan_elf_page_sizes(apk_path.to_str().unwrap()).unwrap();
-        assert_eq!(result.so_files.len(), 3);
+    #[test]
+    fn sixteen_kb_verdict() {
+        // 页对齐 16KB + zip 对齐未知 → 兼容
+        assert!(is_16kb_aligned(16384, 0));
+        // 页对齐 16KB + zip 对齐 4KB → 不兼容
+        assert!(!is_16kb_aligned(16384, 4096));
+        // 页对齐 16KB + zip 对齐 16KB → 兼容
+        assert!(is_16kb_aligned(16384, 16384));
+        // 页对齐 4KB → 不兼容
+        assert!(!is_16kb_aligned(4096, 16384));
+        // 解析失败 → 不兼容
+        assert!(!is_16kb_aligned(-1, 16384));
+    }
 
-        let by_name = |n: &str| result.so_files.iter().find(|f| f.so_name == n).unwrap();
-        let a = by_name("liba.so");
-        assert_eq!(a.abi, "arm64-v8a");
-        assert_eq!(a.min_page_size, 16384);
-        assert!(a.aligned_16kb);
-
-        let b = by_name("libb.so");
-        assert_eq!(b.abi, "arm64-v8a");
-        assert_eq!(b.min_page_size, 4096);
-        assert!(!b.aligned_16kb);
-
-        let embedded = by_name("libembedded.so");
-        assert_eq!(embedded.abi, "assets");
-        assert_eq!(embedded.min_page_size, 16384);
-        assert!(embedded.aligned_16kb);
+    #[test]
+    fn abi_filter_semantics() {
+        let filter = vec!["arm64-v8a".to_string()];
+        assert!(abi_selected("arm64-v8a", Some(&filter)));
+        assert!(!abi_selected("x86", Some(&filter)));
+        // assets 分组始终保留
+        assert!(abi_selected("assets", Some(&filter)));
+        // 无过滤全选
+        assert!(abi_selected("x86", None));
+        assert!(abi_selected("x86", Some(&[])));
     }
 }

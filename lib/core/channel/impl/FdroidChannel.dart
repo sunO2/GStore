@@ -30,7 +30,56 @@ import 'package:gstore/core/channel/AppUpdateCheckMixin.dart';
 /// 架构：
 /// - 使用 Rust RepoManager 搜索应用
 /// - 使用 ChannelDatabase 存储用户添加的应用
+/// 仓库内相对路径归一化（**纯函数**，便于单测；见 FdroidChannel._absoluteIconUrl）
+///
+/// 真机踩坑：库里存下来的 icon 形态很杂 —— `/repo/repo/com.x/en-US/icon_….png`、
+/// `/fdroid/repo/icons/x.png`、`/icons/x.png`、`x.png`，而**源地址本身已带 `/repo`**。
+/// 规则：取**最后一个 `/repo/` 之后**的部分作为仓库内相对路径。
+@visibleForTesting
+String normalizeRepoAssetPath(String iconKey) {
+  if (iconKey.isEmpty) return '';
+  if (iconKey.startsWith('http://') || iconKey.startsWith('https://')) return iconKey;
+  var path = iconKey.split('?').first;
+  final m = RegExp(r'^[a-zA-Z][a-zA-Z0-9+.-]*://[^/]+(.*)$').firstMatch(path);
+  if (m != null) path = m.group(1) ?? path;
+  final idx = path.lastIndexOf('/repo/');
+  if (idx >= 0) path = path.substring(idx + '/repo/'.length);
+  return path.replaceAll(RegExp(r'^/+'), '');
+}
+
+/// 源地址 + 仓库内相对路径（**纯函数**）：两边斜杠归一，避免 `…/repo//x` 或 `…/repo/repo/repo/x`
+@visibleForTesting
+String joinRepoUrl(String base, String path) {
+  final p = path.trim();
+  // ★ 契约：path 若**已是绝对地址** → 原样返回。
+  //   必须与 normalizeRepoAssetPath（同样保留绝对地址）保持一致；
+  //   两者契约不一致会出现 `https://镜像/https://第三方源/…` 的二次拼接（真机：图标 404）。
+  if (p.startsWith('http://') || p.startsWith('https://')) return p;
+  final b = base.replaceAll(RegExp(r'/+$'), '');
+  final q = p.replaceAll(RegExp(r'^/+'), '');
+  return q.isEmpty ? b : '$b/$q';
+}
+
 class FdroidChannel extends IChannel with AppUpdateCheckMixin {
+
+  /// 图标地址归一化（**唯一入口**，别再在调用点特判形态）
+  ///
+  /// 真机踩到的坑：索引/库里存下来的 icon 形态很杂——
+  /// `/repo/repo/com.x/en-US/icon_….png`、`/fdroid/repo/icons/x.png`、`/icons/x.png`、`x.png`，
+  /// 而**源地址本身已经带 `/repo`**。旧实现只特判前两种，遇到 `/repo/repo/…` 就落到
+  /// "补个 / 再拼" → 结果 `https://f-droid.org/repo/repo/repo/…`（必然 404）。
+  ///
+  /// 规则：取**最后一个 `/repo/` 之后**的部分作为仓库内相对路径，再与源地址拼接。
+  String _absoluteIconUrl(String iconKey, {String? appId, String? sourceId}) {
+    if (iconKey.isEmpty) {
+      return appId == null
+          ? _assetBaseFor(sourceId)
+          : joinRepoUrl(_assetBaseFor(sourceId), 'icons/$appId.png');
+    }
+    // 纯逻辑在 normalizeRepoAssetPath / joinRepoUrl（有单测）
+    return joinRepoUrl(_assetBaseFor(sourceId), normalizeRepoAssetPath(iconKey));
+  }
+
   final Dio _dio;
 
   /// F-Droid 仓库服务（注册表注入：fdroid 模块下线时为 null → 软降级）
@@ -53,9 +102,19 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
   /// API 基础地址（固定）
   static const String _apiBaseUrl = 'https://f-droid.org/api';
 
-  /// 获取当前仓库地址（动态；模块下线时使用默认地址）
+  /// 资源基地址（**镜像优先**）
+  ///
+  /// 真机：国内直连 f-droid.org 会连接超时（详情/图片都拉不到），
+  /// 所以图片等静态资源**同样要走镜像**——不是只有索引/diff 才走镜像。
+  /// 规则：源启用镜像回退且有**启用**镜像 → 取第一个启用镜像；否则用源地址。
   String get _currentRepoUrl {
-    return _repoManager?.currentSource?.repoUrl ?? 'https://f-droid.org/repo';
+    final src = _repoManager?.currentSource;
+    if (src != null && src.useMirrors) {
+      for (final m in src.mirrors) {
+        if (m.enabled && m.url.isNotEmpty) return m.url;
+      }
+    }
+    return src?.repoUrl ?? 'https://f-droid.org/repo';
   }
 
   FdroidChannel({
@@ -128,48 +187,10 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
         final categories = channelApp.category?.split(',') ?? [];
 
         // 处理图标 URL
-        String iconUrl;
-        final iconKey = channelApp.icon;
+        // 图标地址统一归一化（见 _absoluteIconUrl 注释）
+        final iconUrl = _absoluteIconUrl(channelApp.icon, appId: channelApp.appId);
 
-        if (iconKey.isNotEmpty) {
-          // 检查是否已经是完整 URL
-          if (iconKey.startsWith('http://') || iconKey.startsWith('https://')) {
-            // 已经是完整 URL，直接使用
-            iconUrl = iconKey;
-          } else {
-            // 是相对路径，需要拼接完整 URL
-            // icon 可能是：/fdroid/repo/icons/xxx.png 或 /icons/xxx.png 或 xxx.png
-            String iconPath = iconKey;
-
-            // _currentRepoUrl 格式：https://mirrors.tuna.tsinghua.edu.cn/fdroid/repo
-            // 如果 icon 已经包含 /fdroid/repo，需要从源地址提取基础域名
-            if (iconPath.startsWith('/fdroid/repo')) {
-              // 提取源地址的基础域名（去掉 /fdroid/repo）
-              final uri = Uri.tryParse(_currentRepoUrl);
-              if (uri != null) {
-                iconUrl = '${uri.scheme}://${uri.host}$iconPath';
-              } else {
-                iconUrl = iconKey;
-              }
-            }
-            // 如果只包含 /icons，去掉 /icons 然后拼接完整路径
-            else if (iconPath.startsWith('/icons')) {
-              iconUrl = '$_currentRepoUrl$iconPath';
-            }
-            // 其他情况，确保以 / 开头后拼接
-            else {
-              if (!iconPath.startsWith('/')) {
-                iconPath = '/$iconPath';
-              }
-              iconUrl = '$_currentRepoUrl$iconPath';
-            }
-          }
-        } else {
-          // 默认图标
-          iconUrl = '$_currentRepoUrl/icons/${channelApp.appId}.png';
-        }
-
-        debugPrint('FdroidChannel: 图标处理 - 原始=$iconKey, 最终=$iconUrl');
+        debugPrint('FdroidChannel: 图标处理 - 原始=${channelApp.icon}, 最终=$iconUrl');
 
         return AppSummary(
           appId: channelApp.appId,
@@ -222,56 +243,10 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
         final categories = appMap['categories'] as List<dynamic>? ?? [];
         final packageName = appMap['packageName'] ?? '';
 
-        // 处理图标 URL
-        String iconUrl;
-        final iconKey = appMap['icon'];
-
-        if (iconKey != null && iconKey is String && iconKey.isNotEmpty) {
-          // 检查是否已经是完整 URL
-          if (iconKey.startsWith('http://') || iconKey.startsWith('https://')) {
-            // 已经是完整 URL，直接使用
-            iconUrl = iconKey;
-          } else {
-            // 是相对路径，需要拼接完整 URL
-            // icon 可能是：/fdroid/repo/icons/xxx.png 或 /icons/xxx.png 或 xxx.png
-            String iconPath = iconKey;
-
-            // _currentRepoUrl 格式：https://mirrors.tuna.tsinghua.edu.cn/fdroid/repo
-            // 如果 icon 已经包含 /fdroid/repo，需要从源地址提取基础域名
-            if (iconPath.startsWith('/fdroid/repo')) {
-              // 提取源地址的基础域名（去掉 /fdroid/repo）
-              final uri = Uri.tryParse(_currentRepoUrl);
-              if (uri != null) {
-                iconUrl = '${uri.scheme}://${uri.host}$iconPath';
-              } else {
-                iconUrl = iconKey;
-              }
-            }
-            // 如果只包含 /icons，去掉 /icons 然后拼接完整路径
-            else if (iconPath.startsWith('/icons')) {
-              iconUrl = '$_currentRepoUrl$iconPath';
-            }
-            // 其他情况，确保以 / 开头后拼接
-            else {
-              if (!iconPath.startsWith('/')) {
-                iconPath = '/$iconPath';
-              }
-              iconUrl = '$_currentRepoUrl$iconPath';
-            }
-          }
-        } else {
-          // 没有图标数据，尝试获取已安装应用的图标
-          final installedIcon = await AppIconService.instance.getInstalledAppIcon(packageName);
-          if (installedIcon != null) {
-            iconUrl = installedIcon;
-            debugPrint('FdroidChannel: 使用已安装应用图标 - $packageName');
-          } else {
-            // 使用默认图标
-            iconUrl = '$_currentRepoUrl/icons/$packageName.png';
-          }
-        }
-
-        debugPrint('FdroidChannel: 图标处理 - packageName=$packageName, iconKey=$iconKey, 最终=$iconUrl');
+        // 处理图标 URL（统一归一化，见 _absoluteIconUrl）
+        final iconUrl =
+            _absoluteIconUrl(appMap['icon']?.toString() ?? '', appId: packageName);
+        debugPrint('FdroidChannel: 图标处理 - packageName=$packageName, 最终=$iconUrl');
 
         return AppSummary(
           appId: packageName,
@@ -280,6 +255,12 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
           user: appMap['authorName'] ?? '',
           repositories: packageName,
           icon: iconUrl,
+          // ① 携带"结果所属源"：服务层带了就用它（跨源查询场景），否则用当前源
+          //    （这批结果正是从当前源查出来的）。写入侧据此落库，避免"猜源"。
+          extra: {
+            if ((appMap['sourceId'] ?? _currentSourceKey()) != null)
+              'sourceId': (appMap['sourceId'] ?? _currentSourceKey()).toString(),
+          },
           des: appMap['summary'] ?? '',
           category: categories.cast<String>(),
         );
@@ -348,6 +329,20 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
 
       debugPrint('FdroidChannel: 添加应用，归一化图标路径 = $iconPath');
 
+      // ① 源标识随记录落库：**存在渠道自己的库**（聚合库只存记录 id，不承担域语义）。
+      //    用仓库身份键（指纹优先）——换域名/换镜像都不影响；详情时据此精确定位源。
+      // ① 优先用**应用自己携带的源**（搜索结果已打标）；缺失才回退当前源并明确标记
+      final carried = app.extra?['sourceId']?.toString();
+      final sourceKey = (carried != null && carried.isNotEmpty)
+          ? carried
+          : _currentSourceKey();
+      if (carried == null || carried.isEmpty) {
+        appLog.warning('添加应用：记录未携带源标识，回退当前源（可能写错）', data: {
+          'appId': app.appId,
+          'fallbackSourceId': sourceKey,
+        });
+      }
+
       final channelApp = ChannelAddedApp.withChannel(
         appId: app.appId,
         name: app.name,
@@ -358,6 +353,7 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
         category: categoryStr,
         addTime: DateTime.now().millisecondsSinceEpoch,
         channel: ChannelType.fdroid,
+        extra: sourceKey == null ? null : jsonEncode({'sourceId': sourceKey}),
       );
 
       await _database!.dao.insertApp(channelApp);
@@ -426,46 +422,8 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
             final categories = app.category?.split(',') ?? [];
 
             // 处理图标 URL（使用与 searchApps 相同的逻辑）
-            String iconUrl;
-            final iconKey = app.icon;
-
-            if (iconKey.isNotEmpty) {
-              // 检查是否已经是完整 URL
-              if (iconKey.startsWith('http://') || iconKey.startsWith('https://')) {
-                // 已经是完整 URL，直接使用
-                iconUrl = iconKey;
-              } else {
-                // 是相对路径，需要拼接完整 URL
-                String iconPath = iconKey;
-
-                // _currentRepoUrl 格式：https://mirrors.tuna.tsinghua.edu.cn/fdroid/repo
-                // 如果 icon 已经包含 /fdroid/repo，提取源地址的基础域名
-                if (iconPath.startsWith('/fdroid/repo')) {
-                  final uri = Uri.tryParse(_currentRepoUrl);
-                  if (uri != null) {
-                    iconUrl = '${uri.scheme}://${uri.host}$iconPath';
-                  } else {
-                    iconUrl = iconKey;
-                  }
-                }
-                // 如果只包含 /icons，直接拼接完整路径
-                else if (iconPath.startsWith('/icons')) {
-                  iconUrl = '$_currentRepoUrl$iconPath';
-                }
-                // 其他情况，确保以 / 开头后拼接
-                else {
-                  if (!iconPath.startsWith('/')) {
-                    iconPath = '/$iconPath';
-                  }
-                  iconUrl = '$_currentRepoUrl$iconPath';
-                }
-              }
-            } else {
-              // 默认图标
-              iconUrl = '$_currentRepoUrl/icons/${app.appId}.png';
-            }
-
-            debugPrint('FdroidChannel: 从数据库读取应用信息，图标处理 - 原始=$iconKey, 最终=$iconUrl');
+            final iconUrl = _absoluteIconUrl(app.icon, appId: app.appId);
+            debugPrint('FdroidChannel: 从数据库读取应用信息，图标处理 - 原始=${app.icon}, 最终=$iconUrl');
             final appInfo = AppSummary(
               appId: app.appId,
               name: app.name,
@@ -509,41 +467,9 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
         );
       }
 
-      // 构造完整的图标URL（API返回的可能不包含完整路径）
-      String iconUrl;
-      final iconKey = data['icon'] as String?;
-
-      if (iconKey != null && iconKey.isNotEmpty) {
-        if (iconKey.startsWith('http://') || iconKey.startsWith('https://')) {
-          // 已经是完整的 URL
-          iconUrl = iconKey;
-        } else {
-          String iconPath = iconKey;
-          // 确保以 / 开头
-          if (!iconPath.startsWith('/')) {
-            iconPath = '/$iconPath';
-          }
-
-          // 如果 iconPath 包含 /fdroid/repo，使用 scheme://host + iconPath
-          if (iconPath.startsWith('/fdroid/repo')) {
-            final uri = Uri.tryParse(_currentRepoUrl);
-            if (uri != null) {
-              iconUrl = '${uri.scheme}://${uri.host}$iconPath';
-            } else {
-              iconUrl = iconKey;
-            }
-          } else if (iconPath.startsWith('/icons')) {
-            // 如果以 /icons 开头，直接拼接
-            iconUrl = '$_currentRepoUrl$iconPath';
-          } else {
-            // 其他情况，正常拼接
-            iconUrl = '$_currentRepoUrl$iconPath';
-          }
-        }
-      } else {
-        // 默认图标
-        iconUrl = '$_currentRepoUrl/icons/$packageName.png';
-      }
+      // 构造完整的图标URL（API 返回的常是相对路径；统一归一化 + 镜像优先）
+      final iconUrl =
+          _absoluteIconUrl(data['icon']?.toString() ?? '', appId: packageName);
       final app = AppSummary(
         appId: packageName,
         packageName: packageName,
@@ -569,6 +495,37 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
     }
   }
 
+  /// 资源基址：**按记录所属源**取（镜像优先），而不是"当前选中源"
+  ///
+  /// 真机问题：Bitwarden 的应用图标被拼上了 f-droid 官方源的镜像前缀 ——
+  /// 因为基址取的是"当前选中源"。资源必须与**它所属的源**走同一地址。
+  String _assetBaseFor(String? sourceId) {
+    final svc = _repoService;
+    if (svc != null && sourceId != null && sourceId.isNotEmpty) {
+      for (final s in svc.sources) {
+        final k = svc.identityKeyFor(s);
+        if (s.id == sourceId || s.fingerprint == sourceId || k == sourceId) {
+          if (s.useMirrors) {
+            for (final m in s.mirrors) {
+              if (m.enabled && m.url.isNotEmpty) return m.url;
+            }
+          }
+          return s.repoUrl;
+        }
+      }
+      appLog.warning('图标基址：记录里的源标识未匹配到任何源，退回当前源',
+          data: {'sourceId': sourceId});
+    }
+    return _currentRepoUrl;
+  }
+
+  /// 当前源的**仓库身份键**（指纹优先，其次归一化地址）——与模块的库/实例选择同一套键
+  String? _currentSourceKey() {
+    final src = _repoService?.currentSource;
+    if (src == null) return null;
+    return _repoService!.identityKeyFor(src);
+  }
+
   @override
   Future<ChannelResult<IDetailInfo>> getAppDetail(
     String appId, {
@@ -581,8 +538,23 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
       // 步骤 1: 尝试从 Rust 数据库精确查询应用数据（包含 metadata 和 versions）
       final service = _repoService;
       if (!forceRefresh && service != null) {
+        // ② 源标识来自**本渠道记录**（不依赖"当前选中源"这个全局状态）
+        String? sourceId;
         try {
-          final appData = await service.getAppByPackageName(appId);
+          final recs = await _database!.dao.getAppsByChannel(ChannelType.fdroid.code);
+          for (final r in recs) {
+            if (r.appId == appId) {
+              sourceId = r.getExtra<String>('sourceId');
+              break;
+            }
+          }
+        } catch (_) {}
+        appLog.info('详情查询定位源', data: {
+          'appId': appId,
+          'sourceId': sourceId ?? '(记录无源标识→跨源兜底)',
+        });
+        try {
+          final appData = await service.getAppByPackageName(appId, sourceId: sourceId);
           if (appData != null) {
             final metadataJson = appData['metadata'] as String?;
             final versionsJson = appData['versions'] as String?;
@@ -1383,7 +1355,7 @@ class _FdroidSearchWidgetState extends State<_FdroidSearchWidget> {
                 // app.icon 现在已经是完整URL（由 searchApps 构造）
                 // 如果为空字符串，使用默认
                 final icon = app.icon.isEmpty
-                    ? '${widget.channel._repoManager?.currentSource?.repoUrl ?? 'https://f-droid.org/repo'}/icons/${app.appId}.png'
+                    ? widget.channel._absoluteIconUrl('', appId: app.appId)
                     : app.icon;
                 return icon;
               }(),

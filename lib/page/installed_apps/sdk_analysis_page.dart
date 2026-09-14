@@ -2,11 +2,21 @@ import 'dart:convert' show base64Decode;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:gstore/page/app_snapshot/view.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/design/app_borders.dart';
 import 'package:gstore/core/rust/AnalyzerRustDecoder.dart';
 import 'package:gstore/core/rust/contract/ModuleTypes.dart'
-    show ApkComponents, ApkElfScanResult, ElfSoInfo;
+    show
+        ApkComponents,
+        ApkElfScanResult,
+        ApkFeatures,
+        ApkStructure,
+        ApkManifestInfo,
+        ApkSignatureSchemes,
+        ElfSoInfo,
+        ManifestIntentData,
+        RuleHit;
 import 'package:gstore/core/service/apk_library_analyzer.dart';
 import 'package:gstore/core/service/apk_source_service.dart';
 import 'package:installed_apps/app_info.dart' as installed;
@@ -71,6 +81,80 @@ class SdkAnalysisPage extends StatefulWidget {
     return groups;
   }
 
+  /// 从 manifest 提取「快捷启动」（深链）条目。
+  ///
+  /// 判定：intent-filter 的 `<data>` 能拼出 URI（scheme 或 host 非空）即计入。
+  /// 同一个 `<data>` 是一组**组合条件**，同一 filter 下的多条 `<data>` 则是**并列规则**，
+  /// 故此处逐条展开。按 (URI, 组件) 去重后按 scheme / URI / 组件名排序，保证展示稳定。
+  static List<QuickLaunchEntry> quickLaunchEntries(ApkManifestInfo? manifest) {
+    if (manifest == null) return const [];
+    final out = <QuickLaunchEntry>[];
+    final seen = <String>{};
+    for (final c in manifest.components) {
+      for (final f in c.intentFilters) {
+        for (final d in f.data) {
+          final uri = intentDataToUri(d);
+          if (uri == null) continue;
+          if (!seen.add('$uri|${c.name}')) continue;
+          out.add(
+            QuickLaunchEntry(
+              uri: uri,
+              scheme: d.scheme.isNotEmpty ? d.scheme : '(无 scheme)',
+              componentKind: c.kind,
+              componentName: c.name,
+              autoVerify: f.autoVerify,
+              browsable:
+                  f.categories.contains('android.intent.category.BROWSABLE'),
+              viewAction: f.actions.contains('android.intent.action.VIEW'),
+            ),
+          );
+        }
+      }
+    }
+    out.sort((a, b) {
+      final byScheme = a.scheme.toLowerCase().compareTo(b.scheme.toLowerCase());
+      if (byScheme != 0) return byScheme;
+      final byUri = a.uri.compareTo(b.uri);
+      if (byUri != 0) return byUri;
+      return a.componentName.compareTo(b.componentName);
+    });
+    return out;
+  }
+
+  /// `<data>` → URI 文案；scheme 与 host 都为空时返回 null（不是深链）。
+  ///
+  /// 路径按「精确 path > pathPrefix（补 `*` 表示前缀匹配）> pathPattern（正则原样保留）」取值。
+  @visibleForTesting
+  static String? intentDataToUri(ManifestIntentData d) {
+    if (!d.hasUri) return null;
+    final path = d.path.isNotEmpty
+        ? d.path
+        : d.pathPrefix.isNotEmpty
+            ? '${d.pathPrefix}*'
+            : d.pathPattern;
+    final sb = StringBuffer();
+    if (d.scheme.isNotEmpty) sb.write('${d.scheme}://');
+    if (d.host.isNotEmpty) sb.write(d.host);
+    if (d.host.isNotEmpty && d.port.isNotEmpty) sb.write(':${d.port}');
+    if (path.isNotEmpty) {
+      if (!path.startsWith('/')) sb.write('/');
+      sb.write(path);
+    }
+    return sb.toString();
+  }
+
+  /// 按 scheme 分组（分组顺序沿用 quickLaunchEntries 的排序，稳定）
+  static List<({String scheme, List<QuickLaunchEntry> items})>
+      groupQuickLaunchByScheme(List<QuickLaunchEntry> entries) {
+    final groups = <String, List<QuickLaunchEntry>>{};
+    for (final e in entries) {
+      groups.putIfAbsent(e.scheme, () => []).add(e);
+    }
+    return [
+      for (final e in groups.entries) (scheme: e.key, items: e.value),
+    ];
+  }
+
   /// 测试用：注入合成 Manifest 组件解析结果，跳过 Rust FFI 调用。
   /// 传 null 恢复真实解析。
   static ApkComponents? _debugComponentsOverride;
@@ -89,6 +173,50 @@ class SdkAnalysisPage extends StatefulWidget {
   @visibleForTesting
   static void debugSetElfScan(ApkElfScanResult? result) {
     _debugElfScanOverride = result;
+  }
+
+  /// 测试用：注入合成签名方案检测结果，跳过 Rust FFI 调用。
+  static ApkSignatureSchemes? _debugSchemesOverride;
+
+  /// 测试用：设置合成签名方案检测结果（null 恢复真实检测）。
+  @visibleForTesting
+  static void debugSetSignatureSchemes(ApkSignatureSchemes? schemes) {
+    _debugSchemesOverride = schemes;
+  }
+
+  /// 测试用：注入合成 APK 特征识别结果，跳过 Rust FFI 调用。
+  static ApkFeatures? _debugFeaturesOverride;
+
+  /// 测试用：设置合成特征识别结果（null 恢复真实检测）。
+  @visibleForTesting
+  static void debugSetFeatures(ApkFeatures? features) {
+    _debugFeaturesOverride = features;
+  }
+
+  /// 测试用：注入合成 Manifest 深度提取结果，跳过 Rust FFI 调用。
+  static ApkManifestInfo? _debugManifestOverride;
+
+  /// 测试用：设置合成 Manifest 深度提取结果（null 恢复真实解析）。
+  @visibleForTesting
+  static void debugSetManifest(ApkManifestInfo? manifest) {
+    _debugManifestOverride = manifest;
+  }
+
+  /// 测试用：注入合成的 static(6) / action(9) 规则命中。
+  static List<RuleHit>? _debugStaticActionOverride;
+
+  /// 测试用：注入 APK 结构清单（Rust 只读中央目录的产物）
+  static ApkStructure? _debugStructureOverride;
+
+  /// 测试用：设置合成结构清单
+  static void debugSetStructure(ApkStructure? structure) {
+    _debugStructureOverride = structure;
+  }
+
+  /// 测试用：设置合成 static/action 命中的完整列表（按 kind 自动分流）。
+  @visibleForTesting
+  static void debugSetStaticActionHits(List<RuleHit>? hits) {
+    _debugStaticActionOverride = hits;
   }
 
   /// Rust 通道不可用时解析失败 → 全空的降级实例。
@@ -111,6 +239,51 @@ class SdkAnalysisPage extends StatefulWidget {
 
 /// Manifest 全量组件分组（「全部组件」区段按类型展示）
 typedef _FullComponentGroup = ({String label, int count, List<String> items});
+
+/// 一条「快捷启动」（深链）规则：intent-filter 的 `<data>` 组合出的 URI + 来源组件
+class QuickLaunchEntry {
+  const QuickLaunchEntry({
+    required this.uri,
+    required this.scheme,
+    required this.componentKind,
+    required this.componentName,
+    required this.autoVerify,
+    required this.browsable,
+    required this.viewAction,
+  });
+
+  /// 拼好的 URI（`scheme://host[:port]/path`；pathPrefix 以 `*` 结尾）
+  final String uri;
+
+  /// scheme（无 scheme 的 host-only 规则用 `(无 scheme)` 归类）
+  final String scheme;
+
+  /// 来源组件类型与完整类名
+  final String componentKind;
+  final String componentName;
+
+  /// filter 上的 `autoVerify`
+  final bool autoVerify;
+
+  /// 是否声明了 BROWSABLE（可被浏览器调起）
+  final bool browsable;
+
+  /// 是否声明了 VIEW action（可被外部查看请求触发）
+  final bool viewAction;
+
+  /// 是否为 http/https 网页链接（区别于自定义 scheme）
+  bool get isWeb => scheme == 'http' || scheme == 'https';
+
+  /// 性质与调起条件标签（顺序固定，便于比对）
+  List<String> get tags => [
+        if (isWeb && autoVerify) 'App Links',
+        if (isWeb && !autoVerify) 'Web',
+        if (!isWeb) '自定义 scheme',
+        if (browsable) 'BROWSABLE',
+        if (autoVerify) 'autoVerify',
+        if (viewAction) 'VIEW',
+      ];
+}
 
 /// 11 元记录并行等待（dart:async 内建 `.wait` 仅支持到 9 元）。
 extension _FutureRecord11Ext<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11>
@@ -177,6 +350,24 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
   /// ELF 页对齐扫描结果（.so → 16KB 对齐；Rust 不可用/失败为空 → 不展示徽标）
   ApkElfScanResult _elfScan = const ApkElfScanResult(soFiles: []);
 
+  /// 签名方案检测（V1–V4；模块不可用为 null → 不展示方案区段）
+  ApkSignatureSchemes? _signatureSchemes;
+
+  /// APK 特征（Kotlin/Compose/KMP/Xposed/PlaySigning/PWA；不可用为 null）
+  ApkFeatures? _features;
+
+  /// Manifest 深度提取（权限 maxSdkVersion / 静态库 / 组件 action；不可用为 null）
+  ApkManifestInfo? _manifest;
+
+  /// APK 结构清单（Rust 只读中央目录；APK 大小等以此为准）
+  ApkStructure? _structure;
+
+  /// static(6) 规则命中（此前宿主实现未覆盖的类别）
+  List<RuleHit> _staticHits = const [];
+
+  /// action(9) 规则命中（此前宿主实现未覆盖的类别）
+  List<RuleHit> _actionHits = const [];
+
   @override
   void initState() {
     super.initState();
@@ -241,6 +432,29 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
         elfF,
       ).wait;
       final componentsDetail = await componentsDetailF;
+
+      // 第二轮并行：manifest 深挖 / 签名方案 / 特征 / 规则补充类别（static+action）。
+      // 各 decoder 内部失败即返回 null，不影响已完成的第一轮结果。
+      final extras = await (
+        AnalyzerRustDecoder.parseManifest(widget.sourceDir),
+        AnalyzerRustDecoder.detectSignatureSchemes(widget.sourceDir),
+        AnalyzerRustDecoder.scanFeatures(widget.sourceDir),
+        ApkLibraryAnalyzer.instance.analyzeAllLibraries(widget.sourceDir),
+        AnalyzerRustDecoder.scanApkStructure(widget.sourceDir),
+      ).wait;
+      final manifest = SdkAnalysisPage._debugManifestOverride ?? extras.$1;
+      final schemes = SdkAnalysisPage._debugSchemesOverride ?? extras.$2;
+      final features = SdkAnalysisPage._debugFeaturesOverride ?? extras.$3;
+      final ruleMatch = extras.$4;
+      final structure = SdkAnalysisPage._debugStructureOverride ?? extras.$5;
+      final staticAction = SdkAnalysisPage._debugStaticActionOverride ??
+          (ruleMatch == null
+              ? const <RuleHit>[]
+              : <RuleHit>[
+                  ...ApkLibraryAnalyzer.staticLibraryHitsOf(ruleMatch),
+                  ...ApkLibraryAnalyzer.actionHitsOf(ruleMatch),
+                ]);
+
       if (!mounted) return;
       setState(() {
         _nativeHits = results.$1;
@@ -257,6 +471,18 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
         _dexFiles = results.$9;
         _buildInfo = results.$10;
         _elfScan = results.$11;
+        _manifest = manifest;
+        _structure = structure;
+        _signatureSchemes = schemes;
+        _features = features;
+        _staticHits = [
+          for (final h in staticAction)
+            if (h.kind == 'static') h,
+        ];
+        _actionHits = [
+          for (final h in staticAction)
+            if (h.kind == 'action') h,
+        ];
         // 组件/权限授权状态：组件状态按「类型:完整类名」索引
         _componentsState = {
           for (final c in componentsDetail.components)
@@ -276,10 +502,68 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
     AppDialogs.showSnackbar(msg);
   }
 
+  /// ===== 统一数据来源：优先 Rust（模块）解析，缺失时回落平台 =====
+  ///
+  /// 这几项两边都有（Rust 从 APK 文件解析、平台从 PackageManager 取），
+  /// 双源会产生漂移，因此统一以 Rust 为准，平台值仅作降级兜底。
+  /// 平台独有的「安装态」信息（授权状态、组件启用状态、安装时间、安装器等）仍走平台。
+  String get _mainActivity => _manifest != null && _manifest!.mainActivity.isNotEmpty
+      ? _manifest!.mainActivity
+      : _detail.mainActivity;
+
+  int get _apkSize =>
+      _structure != null && _structure!.fileSize > 0
+          ? _structure!.fileSize
+          : _detail.apkSize;
+
+  String get _minSdkValue {
+    final rust = _manifest?.minSdk ?? '';
+    if (rust.isNotEmpty) return rust;
+    return _detail.minSdk?.toString() ?? '';
+  }
+
+  String get _targetSdkValue {
+    final rust = _manifest?.targetSdk ?? '';
+    if (rust.isNotEmpty) return rust;
+    return _detail.targetSdk?.toString() ?? '';
+  }
+
+  /// meta-data：Rust（清单原文）优先，平台值兜底
+  Map<String, String> get _metaDataEntries {
+    final rust = _manifest?.metaData ?? const [];
+    if (rust.isNotEmpty) {
+      return {
+        for (final m in rust) if (m.name.isNotEmpty) m.name: m.value,
+      };
+    }
+    return _detail.metaData;
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('应用分析')),
+      appBar: AppBar(
+        title: const Text('应用分析'),
+        actions: [
+          IconButton(
+            tooltip: '应用快照',
+            icon: const Icon(Icons.history_outlined),
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => AppSnapshotPage(
+                  packageName: widget.app.packageName,
+                  appLabel: widget.app.name,
+                  sourceDir: widget.sourceDir,
+                  sourceDirs: widget.sourceDirs,
+                  versionName: widget.app.versionName,
+                  versionCode: '${widget.app.versionCode}',
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
       body: _buildBody(context),
     );
   }
@@ -320,10 +604,10 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
   String _sdkSummaryText() {
     final min = _minSdk.isNotEmpty
         ? _minSdk
-        : (_detail.minSdk?.toString() ?? '未知');
+        : (_minSdkValue.isEmpty ? '未知' : _minSdkValue);
     final target = _targetSdk.isNotEmpty
         ? _targetSdk
-        : (_detail.targetSdk?.toString() ?? '未知');
+        : (_targetSdkValue.isEmpty ? '未知' : _targetSdkValue);
     return '$min – $target';
   }
 
@@ -366,11 +650,11 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
                     icon: Icons.tag,
                     label: '${widget.app.versionName} (${widget.app.versionCode})',
                   ),
-                  if (_detail.apkSize > 0)
+                  if (_apkSize > 0)
                     _buildHeaderChip(
                       context,
                       icon: Icons.sd_storage,
-                      label: _formatBytes(_detail.apkSize),
+                      label: _formatBytes(_apkSize),
                     ),
                   _buildHeaderChip(
                     context,
@@ -466,20 +750,20 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
       ('安装路径', widget.sourceDir),
       (
         '主 Activity',
-        _detail.mainActivity.isEmpty ? '未知' : _detail.mainActivity,
+        _mainActivity.isEmpty ? '未知' : _mainActivity,
       ),
       // APK 大小已由头部徽标行展示，概览不重复
       ('安装时间', _formatInstallTime(_detail.firstInstallTime)),
       ('最近更新', _formatInstallTime(_detail.lastUpdateTime)),
       (
         'minSdk',
-        _minSdk.isNotEmpty ? _minSdk : (_detail.minSdk?.toString() ?? '未知'),
+        _minSdk.isNotEmpty ? _minSdk : (_minSdkValue.isEmpty ? '未知' : _minSdkValue),
       ),
       (
         'targetSdk',
         _targetSdk.isNotEmpty
             ? _targetSdk
-            : (_detail.targetSdk?.toString() ?? '未知'),
+            : (_targetSdkValue.isEmpty ? '未知' : _targetSdkValue),
       ),
     ];
 
@@ -503,6 +787,8 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
         _buildInfo.agpVersion.isEmpty ? '未知' : _buildInfo.agpVersion,
       ),
       ('16KB 对齐', _elfSummaryText()),
+      // 签名方案（V1–V4）：仅当模块给出结果时展示，避免与「未知」降级行重复占位
+      if (_signatureSchemes != null) ('签名方案', _schemeSummaryText()),
     ];
 
     // 系统信息行（detail 缺失字段 → 「未知」/「否」降级，恒展示）
@@ -520,6 +806,34 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
     return ListView(
       padding: AppSpacing.onlyVerticalMD,
       children: [
+        // APK 特征（Kotlin / Compose / KMP / Xposed / Play 签名 / PWA）：
+        // 模块基于 DEX 类名、zip 条目与 manifest meta-data 判定；无特征时不占位。
+        // 置于概览首屏，保证有可发现的入口。
+        if (_features != null && _features!.labels.isNotEmpty)
+          _buildSectionCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _buildGroupHeader(
+                  icon: Icons.local_offer_outlined,
+                  title: '特征',
+                  count: _features!.labels.length,
+                ),
+                const Divider(height: AppSpacing.md),
+                Padding(
+                  padding: AppSpacing.cardPadding,
+                  child: Wrap(
+                    spacing: AppSpacing.xs,
+                    runSpacing: AppSpacing.xs,
+                    children: [
+                      for (final label in _features!.labels)
+                        _buildSmallTag(label),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
         _buildSectionCard(
           child: Padding(
             padding: AppSpacing.cardPadding,
@@ -579,6 +893,42 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
             ),
           ),
         ),
+        // 快捷启动（深链）：Manifest intent-filter 里可由外部调起的 scheme://host/path 规则
+        if (_quickLaunch.isNotEmpty)
+          _buildSectionCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _buildGroupHeader(
+                  icon: Icons.link,
+                  title: '快捷启动',
+                  count: _quickLaunch.length,
+                ),
+                Divider(height: AppSpacing.md),
+                for (final (i, group) in _quickLaunchGroups.indexed) ...[
+                  if (i > 0) const Divider(height: 1),
+                  _buildSubGroupHeader(
+                    title: group.scheme,
+                    count: group.items.length,
+                  ),
+                  for (final entry in group.items)
+                    _buildPlainRow(
+                      icon: entry.isWeb ? Icons.public : Icons.link,
+                      title: entry.uri,
+                      wrapTitle: true,
+                      // 两行：性质标签 / 来源组件。组件是全类名，必须换行完整展示
+                      subtitle: [
+                        if (entry.tags.isNotEmpty) entry.tags.join(' · '),
+                        '${entry.componentKind} ${entry.componentName}',
+                      ].join('\n'),
+                      wrapSubtitle: true,
+                      onLongPress: () =>
+                          _copyText(context, entry.uri, label: entry.uri),
+                    ),
+                ],
+              ],
+            ),
+          ),
       ],
     );
   }
@@ -624,6 +974,7 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
                       hit,
                       icon: Icons.memory,
                       matchedName: so.name,
+                      subtitle: _elfMetaText(abiLibs.abi, so.name),
                       trailing: _formatBytes(so.size),
                       show16Kb: show16Kb(so.name),
                       onLongPress: () =>
@@ -633,7 +984,8 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
                     _buildPlainRow(
                       icon: Icons.memory,
                       title: so.name,
-                      subtitle: '未匹配规则',
+                      subtitle: _elfMetaText(abiLibs.abi, so.name) ??
+                          '未匹配规则',
                       trailing: _formatBytes(so.size),
                       show16Kb: show16Kb(so.name),
                       onLongPress: () =>
@@ -686,7 +1038,10 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
                   _buildPlainRow(
                     icon: Icons.code,
                     title: f.name,
-                    trailing: _formatBytes(f.size),
+                    // 类数量来自模块读 dex 头（class_defs_size）；未知时不显示
+                    trailing: f.classCount >= 0
+                        ? '${_formatBytes(f.size)} · ${f.classCount} 类'
+                        : _formatBytes(f.size),
                     onLongPress: () => _copyText(context, f.name, label: f.name),
                   ),
               ],
@@ -701,7 +1056,10 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
   Widget _buildComponentTab() {
     final matchGroups = SdkAnalysisPage.groupComponentsByType(_componentHits);
     final fullGroups = _groupFullComponents();
-    if (matchGroups.isEmpty && fullGroups.isEmpty) {
+    if (matchGroups.isEmpty &&
+        fullGroups.isEmpty &&
+        _staticHits.isEmpty &&
+        _actionHits.isEmpty) {
       return _buildEmptyState('未检测到组件');
     }
 
@@ -766,6 +1124,52 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
               ],
             ),
           ),
+        // 静态库命中（规则 type=6，匹配 uses-static-library）
+        if (_staticHits.isNotEmpty)
+          _buildSectionCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _buildGroupHeader(
+                  icon: Icons.link,
+                  title: '静态库',
+                  count: _staticHits.length,
+                ),
+                const Divider(height: AppSpacing.md),
+                for (final hit in _staticHits)
+                  _buildPlainRow(
+                    icon: Icons.link,
+                    title: hit.label,
+                    subtitle: hit.matched,
+                    onLongPress: () =>
+                        _copyText(context, hit.matched, label: hit.label),
+                  ),
+              ],
+            ),
+          ),
+        // action 命中（规则 type=9，匹配组件 intent-filter 的 action）
+        if (_actionHits.isNotEmpty)
+          _buildSectionCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _buildGroupHeader(
+                  icon: Icons.bolt,
+                  title: 'action 命中',
+                  count: _actionHits.length,
+                ),
+                const Divider(height: AppSpacing.md),
+                for (final hit in _actionHits)
+                  _buildPlainRow(
+                    icon: Icons.bolt,
+                    title: hit.label,
+                    subtitle: hit.matched,
+                    onLongPress: () =>
+                        _copyText(context, hit.matched, label: hit.label),
+                  ),
+              ],
+            ),
+          ),
       ],
     );
   }
@@ -805,7 +1209,9 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
                         : granted
                             ? null
                             : ' · 未授权';
-                    final label = '$permission${badge ?? ''}';
+                    // maxSdkVersion：> 当前系统版本时该权限实际不生效（manifest 深挖得来）
+                    final maxSdk = _permissionMaxSdkSuffix(permission);
+                    final label = '$permission$maxSdk${badge ?? ''}';
                     return GestureDetector(
                       behavior: HitTestBehavior.opaque,
                       onLongPress: () => _copyText(
@@ -839,7 +1245,13 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
   /// 指纹与签名算法；点击卡片打开签名详情弹窗，长按复制完整证书信息。
   /// 为空时展示「无签名信息」。
   Widget _buildSignatureTab() {
-    if (_detail.signatures.isEmpty) return _buildEmptyState('无签名信息');
+    final schemes = _signatureSchemes;
+    final hasSchemes = schemes != null && schemes.schemes.isNotEmpty;
+    final hasCerts = _detail.signatures.isNotEmpty;
+    // 证书与方案都没有 → 空态（保持原有文案）
+    if (!hasCerts && schemes == null) {
+      return _buildEmptyState('无签名信息');
+    }
     final colorScheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
     final fingerprintStyle = textTheme.bodySmall?.copyWith(
@@ -850,7 +1262,54 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
     return ListView(
       padding: AppSpacing.onlyVerticalMD,
       children: [
-        for (final sig in _detail.signatures)
+        // 签名方案 + 证书张数摘要：只要拿到方案或证书数据就展示
+        if (schemes != null || hasCerts)
+          _buildSectionCard(
+            child: Padding(
+              padding: AppSpacing.cardPadding,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(
+                        Icons.shield_outlined,
+                        size: AppTypography.iconSM,
+                        color: colorScheme.primary,
+                      ),
+                      const SizedBox(width: AppSpacing.md),
+                      Text('签名方案', style: textTheme.bodyMedium),
+                      const Spacer(),
+                      // 证书张数 + 形态：多签名者 / 含轮换历史（均为多证书场景）
+                      Text(
+                        _signatureCountText(),
+                        style: textTheme.bodySmall?.copyWith(
+                          color: colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: AppSpacing.sm),
+                  if (hasSchemes)
+                    Wrap(
+                      spacing: AppSpacing.xs,
+                      runSpacing: AppSpacing.xs,
+                      children: [
+                        for (final s in schemes.schemes) _buildSmallTag(s),
+                      ],
+                    )
+                  else
+                    Text(
+                      '未检测到签名方案',
+                      style: textTheme.bodySmall?.copyWith(
+                        color: colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        for (final sig in _orderedSignatures)
           _buildSectionCard(
             child: GestureDetector(
               behavior: HitTestBehavior.opaque,
@@ -865,9 +1324,13 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
                     Padding(
                       padding: AppSpacing.onlyTopXS,
                       child: Icon(
-                        Icons.verified_user,
+                        sig.isHistory
+                            ? Icons.history
+                            : Icons.verified_user,
                         size: AppTypography.iconSM,
-                        color: colorScheme.primary,
+                        color: sig.isHistory
+                            ? colorScheme.outline
+                            : colorScheme.primary,
                       ),
                     ),
                     const SizedBox(width: AppSpacing.md),
@@ -875,6 +1338,14 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
+                          // 证书角色标签：并列签名者 / 历史（轮换前）证书；单证书不占位
+                          if (_signatureKindLabel(sig) case final kindLabel?) ...[
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [_buildSmallTag(kindLabel)],
+                            ),
+                            const SizedBox(height: AppSpacing.xs),
+                          ],
                           // 证书主题：独立整行、完整换行（不再截断）
                           Text(
                             sig.subject.isEmpty ? '未知主题' : sig.subject,
@@ -907,19 +1378,44 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
     );
   }
 
+  /// 快捷启动（深链）条目：来自 manifest 的 intent-filter `<data>`
+  List<QuickLaunchEntry> get _quickLaunch =>
+      SdkAnalysisPage.quickLaunchEntries(_manifest);
+
+  /// 快捷启动按 scheme 分组（多条规则时分段展示）
+  List<({String scheme, List<QuickLaunchEntry> items})>
+      get _quickLaunchGroups =>
+          SdkAnalysisPage.groupQuickLaunchByScheme(_quickLaunch);
+
+  /// 签名证书展示顺序：当前证书 / 并列签名者在前，轮换历史在后（稳定排序）。
+  List<SignatureInfo> get _orderedSignatures {
+    final list = [..._detail.signatures];
+    list.sort((a, b) {
+      final pa = a.isHistory ? 1 : 0;
+      final pb = b.isHistory ? 1 : 0;
+      return pa.compareTo(pb);
+    });
+    return list;
+  }
+
+  /// 证书角色标签；单证书（`single` / 旧通道空 kind）返回 null 不占位。
+  String? _signatureKindLabel(SignatureInfo sig) {
+    if (_detail.signingShape == 'multiple' || sig.kind == 'signer') {
+      return '并列签名者';
+    }
+    return sig.isHistory ? '历史证书' : null;
+  }
+
   /// 打开签名详情弹窗：subject / 算法 / SHA-256 / SHA-1 全字段，每行可长按复制。
   void _showSignatureDetail(BuildContext context, SignatureInfo sig) {
     AppDialogs.showDialog(
       title: '签名详情',
-      content: ConstrainedBox(
-        constraints: BoxConstraints(
-          maxHeight: MediaQuery.of(context).size.height * 0.5,
-        ),
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+              if (_signatureKindLabel(sig) case final kindLabel?)
+                _buildDialogCopyRow(context, '角色', kindLabel),
               _buildDialogCopyRow(
                 context,
                 '主题',
@@ -931,9 +1427,7 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
                 _buildDialogCopyRow(context, 'SHA-256', sig.sha256),
               if (sig.sha1.isNotEmpty)
                 _buildDialogCopyRow(context, 'SHA-1', sig.sha1),
-            ],
-          ),
-        ),
+        ],
       ),
       confirmText: '关闭',
       cancelText: null,
@@ -971,6 +1465,7 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
 
   /// 完整证书信息（算法/主题/SHA-256/SHA-1 拼接，长按复制用）。
   static String _signatureCopyText(SignatureInfo sig) => [
+        if (sig.kind.isNotEmpty) '角色: ${sig.kind}',
         if (sig.algorithm.isNotEmpty) '算法: ${sig.algorithm}',
         if (sig.subject.isNotEmpty) '主题: ${sig.subject}',
         if (sig.sha256.isNotEmpty) 'SHA-256: ${sig.sha256}',
@@ -981,9 +1476,10 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
   /// 为空时展示「无 meta-data」。
   Widget _buildMetaTab() {
     final textTheme = Theme.of(context).textTheme;
-    if (_detail.metaData.isEmpty) return _buildEmptyState('无 meta-data');
+    final metaData = _metaDataEntries;
+    if (metaData.isEmpty) return _buildEmptyState('无 meta-data');
 
-    final entries = _detail.metaData.entries.toList()
+    final entries = metaData.entries.toList()
       ..sort((a, b) => a.key.compareTo(b.key));
 
     return ListView(
@@ -1191,6 +1687,7 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
     LibraryHit hit, {
     IconData? icon,
     required String matchedName,
+    String? subtitle,
     String? trailing,
     bool show16Kb = false,
     VoidCallback? onLongPress,
@@ -1255,6 +1752,18 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
                     ],
                   ],
                 ),
+                // ELF 元数据（依赖 / JNI 入口 / 符号表）——仅原生库行会传入
+                if (subtitle != null) ...[
+                  const SizedBox(height: AppSpacing.xs),
+                  Text(
+                    subtitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: textTheme.bodySmall?.copyWith(
+                      color: colorScheme.outline,
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
@@ -1311,6 +1820,9 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
     String? trailing,
     bool show16Kb = false,
     bool wrapTitle = false,
+    /// 副标题是否允许多行换行（默认单行省略）。
+    /// 深链行的来源组件全类名很长，截断后无法辨认，需要换行完整展示。
+    bool wrapSubtitle = false,
     VoidCallback? onLongPress,
   }) {
     final colorScheme = Theme.of(context).colorScheme;
@@ -1350,8 +1862,10 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
                       Flexible(
                         child: Text(
                           subtitle,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
+                          maxLines: wrapSubtitle ? null : 1,
+                          overflow: wrapSubtitle
+                              ? TextOverflow.clip
+                              : TextOverflow.ellipsis,
                           style: textTheme.bodySmall?.copyWith(
                             color: colorScheme.onSurfaceVariant,
                           ),
@@ -1577,5 +2091,63 @@ final displayText = _detail.installerAppName.isNotEmpty
     final bad = files.where((f) => !f.aligned16Kb).length;
     if (bad == 0) return '兼容（${files.length} 个 .so）';
     return '$bad 个不兼容 / ${files.length} 个';
+  }
+
+  /// 签名方案摘要（如「V1 · V2 · V3」）；无签名块与 JAR 签名时「无」，模块不可用「未知」
+  String _schemeSummaryText() {
+    final s = _signatureSchemes;
+    if (s == null) return '未知';
+    if (s.schemes.isEmpty) return '无';
+    return s.schemes.join(' · ');
+  }
+
+  /// 单个 .so 的 ELF 元数据摘要（依赖 / JNI 入口 / 符号表）；无数据返回 null。
+  /// 这些字段来自模块的 ELF 解析（此前只有页对齐一项）。
+  /// 按 ABI + 文件名精确匹配，避免同名 .so 跨 ABI 串数据。
+  String? _elfMetaText(String abi, String soName) {
+    ElfSoInfo? f;
+    for (final e in _elfScan.soFiles) {
+      if (e.abi == abi && e.soName == soName) {
+        f = e;
+        break;
+      }
+    }
+    if (f == null) return null;
+    final parts = <String>[
+      if (f.needed.isNotEmpty) '依赖 ${f.needed.length}',
+      if (f.jniEntryPoints.isNotEmpty) 'JNI ${f.jniEntryPoints.length}',
+      if (f.stripped) '已剥离',
+      if (f.zipAlignment > 0) 'zip 对齐 ${f.zipAlignment}',
+    ];
+    if (parts.isEmpty) return null;
+    return parts.join(' · ');
+  }
+
+  /// 签名证书摘要（张数 + 形态）；无证书时提示无证书信息。
+  ///
+  /// 形态来自 Android `SigningInfo`：`multiple` = 多个并列签名者，
+  /// `rotation` = 同一签名者的证书轮换（历史证书一并列出）。
+  String _signatureCountText() {
+    final total = _detail.signatures.length;
+    if (total == 0) return '无证书信息';
+    final shape = switch (_detail.signingShape) {
+      'multiple' => ' · 并列签名者',
+      'rotation' => ' · 含轮换历史',
+      _ => '',
+    };
+    return '$total 张证书$shape';
+  }
+
+  /// 权限的 maxSdkVersion 后缀（如「 · maxSdk 29」）；无声明返回空串。
+  /// 来源于 manifest 深度提取，用于解释「当前系统上不生效」的高版本权限。
+  String _permissionMaxSdkSuffix(String permission) {
+    final m = _manifest;
+    if (m == null) return '';
+    for (final p in m.permissions) {
+      if (p.name == permission && p.maxSdkVersion.isNotEmpty) {
+        return ' · maxSdk ${p.maxSdkVersion}';
+      }
+    }
+    return '';
   }
 }

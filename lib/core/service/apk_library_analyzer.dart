@@ -5,6 +5,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/rust/AnalyzerRustDecoder.dart';
+import 'package:gstore/core/service/apk_zip_index.dart';
+import 'package:gstore/core/rust/contract/ModuleTypes.dart';
 
 /// 规则记录（LibChecker rules.db 行；NATIVE/DEX 规则 JSON 结构一致）。
 /// 生成自 rules_native.json（type=0）或 rules_dex.json（type=5）。
@@ -237,13 +239,24 @@ class NativeAbiLibs {
 
 /// 单个 DEX 文件：文件名 + zip 解压后字节数（LibChecker 风格展示）
 class DexFile {
-  const DexFile({required this.name, required this.size});
+  const DexFile({
+    required this.name,
+    required this.size,
+    this.classCount = -1,
+    this.crc32 = 0,
+  });
 
   /// DEX 文件名（如 classes.dex / classes2.dex）
   final String name;
 
   /// zip 解压后字节数（uncompressed size）
   final int size;
+
+  /// `class_defs_size`（模块读 dex 头得出；-1 = 未知/解析失败）
+  final int classCount;
+
+  /// zip 中央目录里的 CRC32
+  final int crc32;
 }
 
 /// 一次构建版本检测结果（Kotlin / Gradle / Java / Compose / AGP；空串表示未知/未检测到）
@@ -318,6 +331,12 @@ class ApkLibraryAnalyzer {
   /// 组件规则资源路径（type=1 SERVICE / 2 ACTIVITY / 3 RECEIVER / 4 PROVIDER）
   static const String componentAssetPath = 'assets/lcrules/rules_component.json';
 
+  /// 静态库规则资源路径（type=6，匹配 `uses-static-library`）
+  static const String staticAssetPath = 'assets/lcrules/rules_static.json';
+
+  /// action 规则资源路径（type=9，内容实为 intent-filter action）
+  static const String actionAssetPath = 'assets/lcrules/rules_package.json';
+
   /// APK 路径 → 原生库命中结果缓存（同路径重复分析直接返回）
   final Map<String, List<NativeLibraryHit>> _cache = {};
 
@@ -338,6 +357,161 @@ class ApkLibraryAnalyzer {
 
   /// APK 路径 → 构建版本检测结果缓存
   final Map<String, BuildVersionInfo> _buildVersionCache = {};
+
+  /// APK 路径 → 结构清单缓存（Rust 只读中央目录扫描）
+  final Map<String, ApkStructure> _structureCache = {};
+
+  /// APK 路径 → 模块整包规则匹配结果缓存（一次调用覆盖全部规则类型）
+  final Map<String, RuleMatchResult> _ruleMatchCache = {};
+
+  /// 合并后的全量规则 JSON（惰性构建一次）
+  String? _mergedRulesJson;
+
+  /// 合并五类规则（native/dex/component/static/action）为单个 JSON 数组。
+  ///
+  /// 模块侧按规则 `type` 自行分派，因此一次调用即可覆盖全部规则类型——
+  /// 其中 static(6) / action(9) 是此前宿主实现完全未消费的两类。
+  Future<String?> _loadMergedRulesJson() async {
+    if (_mergedRulesJson != null) return _mergedRulesJson;
+    try {
+      final merged = <dynamic>[];
+      for (final path in const [
+        assetPath,
+        dexAssetPath,
+        componentAssetPath,
+        staticAssetPath,
+        actionAssetPath,
+      ]) {
+        final raw = await rootBundle.loadString(path);
+        merged.addAll(jsonDecode(raw) as List);
+      }
+      _mergedRulesJson = jsonEncode(merged);
+      return _mergedRulesJson;
+    } catch (e) {
+      appLog.error('ApkLibraryAnalyzer: 合并规则集失败 - $e');
+      return null;
+    }
+  }
+
+  /// 合并规则集（native/dex/component/static/action）为单个 JSON 数组字符串。
+  ///
+  /// 供需要「一次匹配覆盖全部规则类型」的调用方复用（如快照采集走模块聚合入口），
+  /// 与 [analyzeAllLibraries] 共用同一份缓存，不会重复加载资产。
+  /// 规则集为空或加载失败返回 null。
+  Future<String?> mergedRulesJson() async {
+    final rules = await _loadRules();
+    if (rules.isEmpty) return null;
+    return _loadMergedRulesJson();
+  }
+
+  /// 整包规则匹配（走模块，一次覆盖 native/dex/component/static/action）。
+  ///
+  /// 返回 null 表示模块不可用或规则集加载失败——调用方应回退到宿主侧实现。
+  Future<RuleMatchResult?> analyzeAllLibraries(String apkPath) async {
+    final cached = _ruleMatchCache[apkPath];
+    if (cached != null) return cached;
+    // 与其它分析入口一致的空规则缝：注入空规则时直接不可用，
+    // 既不做资产加载、也不调用模块（测试注入用）。
+    final rules = await _loadRules();
+    if (rules.isEmpty) return null;
+    final rulesJson = await _loadMergedRulesJson();
+    if (rulesJson == null) return null;
+    try {
+      final result = await AnalyzerRustDecoder.matchLibraries(apkPath, rulesJson);
+      if (result == null) return null;
+      _ruleMatchCache[apkPath] = result;
+      return result;
+    } catch (e) {
+      appLog.error('ApkLibraryAnalyzer: 模块规则匹配失败 - $e');
+      return null;
+    }
+  }
+
+  /// 去重（按模型自身 `==`）并稳定按 label 排序
+  static List<T> _dedupSorted<T>(List<T> hits) {
+    final out = <T>[];
+    for (final h in hits) {
+      if (!out.contains(h)) out.add(h);
+    }
+    out.sort((a, b) {
+      final la = (a as LibraryHit).label;
+      final lb = (b as LibraryHit).label;
+      return la.compareTo(lb);
+    });
+    return out;
+  }
+
+  static List<NativeLibraryHit> _nativeHitsOf(RuleMatchResult r) => _dedupSorted([
+        for (final h in r.hits)
+          if (h.kind == 'native')
+            NativeLibraryHit(
+              soFileName: h.matched,
+              ruleName: h.ruleName,
+              label: h.label,
+              isRegex: h.isRegex,
+            ),
+      ]);
+
+  static List<DexLibraryHit> _dexHitsOf(RuleMatchResult r) => _dedupSorted([
+        for (final h in r.hits)
+          if (h.kind == 'dex')
+            DexLibraryHit(
+              matchedClassName: h.matched,
+              ruleName: h.ruleName,
+              label: h.label,
+              isRegex: h.isRegex,
+            ),
+      ]);
+
+  static List<ComponentLibraryHit> _componentHitsOf(RuleMatchResult r) =>
+      _dedupSorted([
+        for (final h in r.hits)
+          if (h.kind == 'component')
+            ComponentLibraryHit(
+              componentName: h.matched,
+              componentType: h.componentType,
+              ruleName: h.ruleName,
+              label: h.label,
+              isRegex: h.isRegex,
+            ),
+      ]);
+
+  /// static(6) 规则的命中（此前宿主未覆盖）
+  static List<RuleHit> staticLibraryHitsOf(RuleMatchResult r) =>
+      _dedupSortedRuleHits([for (final h in r.hits) if (h.kind == 'static') h]);
+
+  /// action(9) 规则的命中（此前宿主未覆盖）
+  static List<RuleHit> actionHitsOf(RuleMatchResult r) =>
+      _dedupSortedRuleHits([for (final h in r.hits) if (h.kind == 'action') h]);
+
+  static List<RuleHit> _dedupSortedRuleHits(List<RuleHit> hits) {
+    final seen = <String>{};
+    final out = <RuleHit>[];
+    for (final h in hits) {
+      if (seen.add('${h.ruleName}|${h.matched}')) out.add(h);
+    }
+    out.sort((a, b) => a.label.compareTo(b.label));
+    return out;
+  }
+
+  /// 取 APK 结构清单：Rust 模块只读 zip 中央目录、**不解压**，一次拿到
+  /// lib/<abi>/*.so（含大小/CRC32/zip 对齐）、assets 下的 .so、DEX 清单等。
+  ///
+  /// 原先这些信息要靠三处独立的全量解压（lib 清单 / assets .so / ABI 集合），
+  /// 每处都把整包读进内存再 `ZipDecoder().decodeBytes`。模块不可用（Web / 未挂载）
+  /// 时返回 null，调用方回退到原来的 isolate 解压路径，行为不变。
+  Future<ApkStructure?> _apkStructure(String apkPath) async {
+    final cached = _structureCache[apkPath];
+    if (cached != null) return cached;
+    try {
+      final structure = await AnalyzerRustDecoder.scanApkStructure(apkPath);
+      if (structure != null) _structureCache[apkPath] = structure;
+      return structure;
+    } catch (e) {
+      appLog.error('ApkLibraryAnalyzer: 扫描 APK 结构失败（回退 isolate） - $e');
+      return null;
+    }
+  }
 
   /// 测试用：注入的合成 ABI 列表（非 null 时跳过真实扫描）
   List<String>? _debugAbis;
@@ -366,6 +540,8 @@ class ApkLibraryAnalyzer {
   void debugSetRules(List<NativeLibraryRule>? rules) {
     _rules = rules;
     _cache.clear();
+    // 整包匹配结果同样派生自该规则集，注入新规则后必须失效
+    _ruleMatchCache.clear();
   }
 
   /// 测试用：注入合成 DEX 规则。
@@ -483,20 +659,48 @@ class ApkLibraryAnalyzer {
     if (rules.isEmpty) return const [];
 
     try {
-      // 规则已序列化为 JSON 字符串传入 isolate（List<Object> 可跨 isolate 传递，
-      // 但避免传 1491 个对象的深拷贝；JSON 字符串更轻且稳定）
-      final rulesJson = jsonEncode(rules.map((r) => r.toJson()).toList());
-      final result = await compute(
-        _analyzeInIsolate,
-        (apkPath: apkPath, rulesJson: rulesJson),
-      );
-      var hits = result.hits;
+      // 首选：模块整包规则匹配（一次调用覆盖 native/dex/component/static/action，
+      // 且特殊库伴随验证在模块内完成）。顺带填充 dex/component 缓存，避免各自再扫。
+      final moduleResult = await analyzeAllLibraries(apkPath);
+      if (moduleResult != null) {
+        final hits = _nativeHitsOf(moduleResult);
+        _cache[apkPath] = hits;
+        _dexCache[apkPath] = _dexHitsOf(moduleResult);
+        _componentCache[apkPath] = _componentHitsOf(moduleResult);
+        if (moduleResult.skippedRegex > 0) {
+          appLog.info(
+            'ApkLibraryAnalyzer: 模块跳过了 ${moduleResult.skippedRegex} 条超出支持子集的正则规则',
+          );
+        }
+        return hits;
+      }
+
+      final structure = await _apkStructure(apkPath);
+      final List<NativeLibraryHit> matched;
+      final List<String> allSoNames;
+      if (structure != null) {
+        // 结构清单路径：so 名来自 Rust 中央目录扫描（不解压整包），
+        // 规则匹配本身是纯函数，直接在宿主 isolate 完成，无需再起 isolate 解压。
+        allSoNames = structure.nativeSoNames.toList()..sort();
+        matched = matchNativeSoNames(structure.nativeSoNames, rules: rules);
+      } else {
+        // 回退路径：规则序列化为 JSON 字符串传入 isolate（List<Object> 可跨 isolate
+        // 传递，但避免传上千个对象的深拷贝；JSON 字符串更轻且稳定）
+        final rulesJson = jsonEncode(rules.map((r) => r.toJson()).toList());
+        final result = await compute(
+          _analyzeInIsolate,
+          (apkPath: apkPath, rulesJson: rulesJson),
+        );
+        matched = result.hits;
+        allSoNames = result.allSoNames;
+      }
+      var hits = matched;
       // 伴随验证：Flutter/Unity/360/SecNeo 等特殊 .so 仅凭文件名命中会误报，
       // 对齐 LibChecker 需二次验证（伴生 .so 或 DEX 类佐证，见 _validateSpecialSo）。
       hits = await _applySpecialSoValidation(
         apkPath: apkPath,
         hits: hits,
-        allSoNames: result.allSoNames,
+        allSoNames: allSoNames,
       );
       _cache[apkPath] = hits;
       appLog.info('ApkLibraryAnalyzer: $apkPath 命中 ${hits.length} 条规则');
@@ -713,6 +917,16 @@ class ApkLibraryAnalyzer {
     final rules = await _loadDexRules();
     if (rules.isEmpty) return const [];
 
+    // 首选：模块整包规则匹配（缓存命中即复用，未命中则一次调用覆盖全部规则类型）
+    final moduleResult = await analyzeAllLibraries(apkPath);
+    if (moduleResult != null) {
+      final hits = _dexHitsOf(moduleResult);
+      _dexCache[apkPath] = hits;
+      _componentCache[apkPath] = _componentHitsOf(moduleResult);
+      _cache[apkPath] = _nativeHitsOf(moduleResult);
+      return hits;
+    }
+
     final patterns = dexScanPatterns(rules);
     if (patterns.isEmpty) return const [];
 
@@ -831,6 +1045,16 @@ class ApkLibraryAnalyzer {
     final rules = await _loadComponentRules();
     if (rules.isEmpty) return const [];
 
+    // 首选：模块整包规则匹配（同时覆盖组件与 action 两类）
+    final moduleResult = await analyzeAllLibraries(apkPath);
+    if (moduleResult != null) {
+      final hits = _componentHitsOf(moduleResult);
+      _componentCache[apkPath] = hits;
+      _dexCache[apkPath] = _dexHitsOf(moduleResult);
+      _cache[apkPath] = _nativeHitsOf(moduleResult);
+      return hits;
+    }
+
     try {
       final components = await AnalyzerRustDecoder.parseComponents(apkPath);
       if (components == null) return const [];
@@ -930,7 +1154,11 @@ class ApkLibraryAnalyzer {
     if (cached != null) return cached;
 
     try {
-      final abis = await compute(_listAbisInIsolate, apkPath);
+      // 结构清单优先：只读中央目录，不解压整包；模块不可用才回退 isolate
+      final structure = await _apkStructure(apkPath);
+      final abis = structure != null
+          ? sortAbis(structure.abiNames)
+          : await compute(_listAbisInIsolate, apkPath);
       _abiCache[apkPath] = abis;
       appLog.info('ApkLibraryAnalyzer: $apkPath ABI: $abis');
       return abis;
@@ -953,7 +1181,16 @@ class ApkLibraryAnalyzer {
     if (cached != null) return cached;
 
     try {
-      final libs = await compute(_listFullNativeLibsInIsolate, apkPath);
+      final structure = await _apkStructure(apkPath);
+      final libs = structure != null
+          ? _sortedAbiGroups({
+              for (final group in structure.abis)
+                group.abi: {
+                  for (final so in group.libs)
+                    so.name: NativeSoFile(name: so.name, size: so.size),
+                },
+            })
+          : await compute(_listFullNativeLibsInIsolate, apkPath);
       _fullCache[apkPath] = libs;
       appLog.info(
         'ApkLibraryAnalyzer: $apkPath 全量原生库: '
@@ -1003,11 +1240,41 @@ class ApkLibraryAnalyzer {
   /// 失败 → null（调用方忽略该源）。
   Future<List<NativeSoFile>?> _listAssetsSo(String apkPath) async {
     try {
+      final structure = await _apkStructure(apkPath);
+      if (structure != null) {
+        return [
+          for (final so in structure.assetsSo)
+            NativeSoFile(name: so.name, size: so.size),
+        ];
+      }
       return await compute(_listAssetsSoInIsolate, apkPath);
     } catch (e) {
       appLog.error('ApkLibraryAnalyzer: 枚举 assets .so 失败 - $e');
       return null;
     }
+  }
+
+  /// 常见 ABI 优先级排序（arm64 在前，符合主流分发习惯；未知 ABI 排最后）。
+  /// 结构清单路径与 isolate 回退路径共用，避免两处排序规则漂移。
+  static List<String> sortAbis(Iterable<String> abis) {
+    const priority = [
+      'arm64-v8a',
+      'armeabi-v7a',
+      'x86_64',
+      'x86',
+      'armeabi',
+      'mips64',
+      'mips',
+    ];
+    final list = abis.toSet().toList()
+      ..sort((a, b) {
+        final ia = priority.indexOf(a);
+        final ib = priority.indexOf(b);
+        final oa = ia < 0 ? priority.length : ia;
+        final ob = ib < 0 ? priority.length : ib;
+        return oa != ob ? oa.compareTo(ob) : a.compareTo(b);
+      });
+    return list;
   }
 
   /// 将「ABI → 文件表」按常见 ABI 优先级排序输出（assets 分组排最后）。
@@ -1051,10 +1318,27 @@ class ApkLibraryAnalyzer {
     if (cached != null) return cached;
 
     try {
-      final files = await compute(_listDexFilesInIsolate, apkPath);
+      final structure = await _apkStructure(apkPath);
+      // 类数量与 CRC32 由模块读 dex 头得出（只解压头部，不整包解压）
+      final stats = await AnalyzerRustDecoder.scanDexStats(apkPath);
+      final byName = {
+        if (stats != null)
+          for (final s in stats.dexFiles) s.name: s,
+      };
+      final files = structure != null
+          ? [
+              for (final dex in structure.dexFiles)
+                DexFile(
+                  name: dex.name,
+                  size: dex.size,
+                  classCount: byName[dex.name]?.classCount ?? -1,
+                  crc32: byName[dex.name]?.crc32 ?? dex.crc32,
+                ),
+            ]
+          : await compute(_listDexFilesInIsolate, apkPath);
       _dexFullCache[apkPath] = files;
       appLog.info('ApkLibraryAnalyzer: $apkPath 全量 DEX: '
-          '${files.map((f) => '${f.name}(${f.size})').join(', ')}');
+          '${files.map((f) => '${f.name}(${f.size}/${f.classCount}类)').join(', ')}');
       return files;
     } catch (e) {
       appLog.error('ApkLibraryAnalyzer: 枚举全量 DEX 失败 - $e');
@@ -1075,12 +1359,34 @@ class ApkLibraryAnalyzer {
     final cached = _buildVersionCache[apkPath];
     if (cached != null) return cached;
 
+    // 首选模块：只读中央目录 + 少量小条目（不再是「整包解压」）
+    try {
+      final rust = await AnalyzerRustDecoder.detectBuildVersions(apkPath);
+      if (rust != null) {
+        final info = BuildVersionInfo(
+          kotlinVersion: rust.kotlinVersion,
+          gradleVersion: rust.gradleVersion,
+          javaVersion: rust.javaVersion,
+          composeVersion: rust.composeVersion,
+          agpVersion: rust.agpVersion,
+        );
+        _buildVersionCache[apkPath] = info;
+        appLog.info('ApkLibraryAnalyzer: $apkPath 构建信息(模块): '
+            'Kotlin=${info.kotlinVersion}, Gradle=${info.gradleVersion}, '
+            'Java=${info.javaVersion}, AGP=${info.agpVersion}');
+        return info;
+      }
+    } catch (e) {
+      appLog.error('ApkLibraryAnalyzer: 模块检测构建信息失败 - $e');
+    }
+
+    // 兜底：Dart 侧同样只读中央目录（按需解压少量条目）
     try {
       final info = await compute(_detectBuildVersionsInIsolate, apkPath);
       _buildVersionCache[apkPath] = info;
-      appLog.info('ApkLibraryAnalyzer: $apkPath 构建信息: '
+      appLog.info('ApkLibraryAnalyzer: $apkPath 构建信息(兜底): '
           'Kotlin=${info.kotlinVersion}, Gradle=${info.gradleVersion}, '
-          'Java=${info.javaVersion}');
+          'Java=${info.javaVersion}, AGP=${info.agpVersion}');
       return info;
     } catch (e) {
       appLog.error('ApkLibraryAnalyzer: 检测构建信息失败 - $e');
@@ -1110,14 +1416,15 @@ typedef _AnalyzeRequest = ({String apkPath, String rulesJson});
       .map((e) => NativeLibraryRule.fromJson(e as Map<String, dynamic>))
       .toList();
 
-  final bytes = File(request.apkPath).readAsBytesSync();
-  final archive = ZipDecoder().decodeBytes(bytes);
+  // 只读中央目录（不解压整包）：模块不可用时的兜底路径
+  final index = ApkZipIndex.read(request.apkPath);
+  if (index == null) return (hits: const [], allSoNames: const []);
 
   // lib/<abi>/<name>.so（忽略大小写目录下的 .so 文件；不处理目录条目）
   final libEntryRegex = RegExp(r'^lib/[^/]+/[^/]+\.so$');
   final soNames = <String>{};
-  for (final entry in archive) {
-    if (entry.isFile && libEntryRegex.hasMatch(entry.name)) {
+  for (final entry in index.files) {
+    if (libEntryRegex.hasMatch(entry.name)) {
       soNames.add(entry.name.split('/').last);
     }
   }
@@ -1130,69 +1437,45 @@ typedef _AnalyzeRequest = ({String apkPath, String rulesJson});
 
 /// isolate 内执行：读取 APK 字节 → 解压枚举 lib/<abi>/ 目录集合
 List<String> _listAbisInIsolate(String apkPath) {
-  final bytes = File(apkPath).readAsBytesSync();
-  final archive = ZipDecoder().decodeBytes(bytes);
+  final index = ApkZipIndex.read(apkPath);
+  if (index == null) return const [];
 
   final libEntryRegex = RegExp(r'^lib/([^/]+)/[^/]+\.so$');
   final abis = <String>{};
-  for (final entry in archive) {
-    if (entry.isFile) {
-      final match = libEntryRegex.firstMatch(entry.name);
-      if (match != null) abis.add(match.group(1)!);
-    }
+  for (final entry in index.files) {
+    final match = libEntryRegex.firstMatch(entry.name);
+    if (match != null) abis.add(match.group(1)!);
   }
 
-  // 常见 ABI 优先级排序（arm64 在前，符合主流分发习惯）
-  const priority = [
-    'arm64-v8a',
-    'armeabi-v7a',
-    'x86_64',
-    'x86',
-    'armeabi',
-    'mips64',
-    'mips',
-  ];
-  final list = abis.toList()
-    ..sort((a, b) {
-      final ia = priority.indexOf(a);
-      final ib = priority.indexOf(b);
-      final oa = ia < 0 ? priority.length : ia;
-      final ob = ib < 0 ? priority.length : ib;
-      return oa != ob ? oa.compareTo(ob) : a.compareTo(b);
-    });
-  return list;
+  // 常见 ABI 优先级排序（与结构清单路径共用同一套规则）
+  return ApkLibraryAnalyzer.sortAbis(abis);
 }
 
 /// isolate 内执行：读取 APK 字节 → 解压枚举 assets/*.so（LibChecker 单列分组）
 List<NativeSoFile> _listAssetsSoInIsolate(String apkPath) {
-  final bytes = File(apkPath).readAsBytesSync();
-  final archive = ZipDecoder().decodeBytes(bytes);
+  final index = ApkZipIndex.read(apkPath);
+  if (index == null) return const [];
 
   final assetsSoRegex = RegExp(r'^assets/.+\.so$');
-  final soByAbi = <String, NativeSoFile>{};
-  for (final entry in archive) {
-    if (!entry.isFile) continue;
+  final soByName = <String, NativeSoFile>{};
+  for (final entry in index.files) {
     if (!assetsSoRegex.hasMatch(entry.name)) continue;
     final name = entry.name.split('/').last;
-    soByAbi.putIfAbsent(
-        name, () => NativeSoFile(name: name, size: entry.size));
+    soByName.putIfAbsent(name, () => NativeSoFile(name: name, size: entry.size));
   }
-  final list = soByAbi.values.toList()
-    ..sort((a, b) => a.name.compareTo(b.name));
-  return list;
+  return soByName.values.toList()..sort((a, b) => a.name.compareTo(b.name));
 }
 
 /// isolate 内执行：读取 APK 字节 → 解压枚举 lib/<abi>/*.so → 按 ABI 分组
 List<NativeAbiLibs> _listFullNativeLibsInIsolate(String apkPath) {
-  final bytes = File(apkPath).readAsBytesSync();
-  final archive = ZipDecoder().decodeBytes(bytes);
+  final index = ApkZipIndex.read(apkPath);
+  if (index == null) return const [];
 
   // lib/<abi>/<name>.so（忽略大小写目录下的 .so 文件；不处理目录条目）
   // 每个文件记录 zip 解压后字节数（entry.size），供 UI 行尾展示大小。
   final libEntryRegex = RegExp(r'^lib/([^/]+)/[^/]+\.so$');
   final soByAbi = <String, List<NativeSoFile>>{};
-  for (final entry in archive) {
-    if (!entry.isFile) continue;
+  for (final entry in index.files) {
     final match = libEntryRegex.firstMatch(entry.name);
     if (match == null) continue;
     soByAbi
@@ -1204,9 +1487,9 @@ List<NativeAbiLibs> _listFullNativeLibsInIsolate(String apkPath) {
   const priority = [
     'arm64-v8a',
     'armeabi-v7a',
+    'armeabi',
     'x86_64',
     'x86',
-    'armeabi',
     'mips64',
     'mips',
   ];
@@ -1228,15 +1511,15 @@ List<NativeAbiLibs> _listFullNativeLibsInIsolate(String apkPath) {
 
 /// isolate 内执行：读取 APK 字节 → 解压枚举 classes*.dex（zip 任意层级）
 List<DexFile> _listDexFilesInIsolate(String apkPath) {
-  final bytes = File(apkPath).readAsBytesSync();
-  final archive = ZipDecoder().decodeBytes(bytes);
+  final index = ApkZipIndex.read(apkPath);
+  if (index == null) return const [];
 
   // classes*.dex（忽略大小写，含分包 classes2.dex …；不处理目录条目）
   // 每个文件记录 zip 解压后字节数（entry.size），供 UI 行尾展示大小。
   final dexEntryRegex = RegExp(r'^classes\d*\.dex$', caseSensitive: false);
   final files = <DexFile>[
-    for (final entry in archive)
-      if (entry.isFile && dexEntryRegex.hasMatch(entry.name.split('/').last))
+    for (final entry in index.files)
+      if (dexEntryRegex.hasMatch(entry.name.split('/').last))
         DexFile(name: entry.name.split('/').last, size: entry.size),
   ]..sort((a, b) => a.name.compareTo(b.name));
   return files;
@@ -1277,62 +1560,53 @@ const int _kMaxVersionNumber = 99;
 /// gradleVersion/javaVersion（对齐 LibChecker：降级结果基于 toolingMetadata 拷贝）。
 /// 全部未知 → 全空串。
 BuildVersionInfo _detectBuildVersionsInIsolate(String apkPath) {
-  final bytes = File(apkPath).readAsBytesSync();
-  final archive = ZipDecoder().decodeBytes(bytes);
+  // 只读中央目录 + 按需解压**少量小条目**（原先整包 readAsBytes + ZipDecoder 全量解压）
+  final index = ApkZipIndex.read(apkPath);
+  if (index == null) return const BuildVersionInfo();
 
-  // Compose / AGP 版本：与 kotlin/gradle 独立，META-INF 内元数据文件首行/属性
-  //（对齐 LibChecker BuildMetadataEntries / readAgpVersion）。
+  // Compose / AGP：META-INF 内元数据文件（对齐 LibChecker BuildMetadataEntries）
   var composeVersion = '';
   var agpVersion = '';
-  for (final entry in archive) {
-    if (!entry.isFile) continue;
+  for (final entry in index.files) {
     final name = entry.name;
-    // Compose：META-INF/androidx.compose.*.version 首行即版本号
     if (composeVersion.isEmpty &&
         name.startsWith('META-INF/androidx.compose.') &&
         name.endsWith('.version')) {
-      final line = _readFirstLine(entry);
+      final line = _readFirstLineOf(index, name);
       if (line != null) composeVersion = line;
       continue;
     }
-    // AGP：app-metadata.properties 的 androidGradlePluginVersion
     if (agpVersion.isEmpty &&
-        name == 'META-INF/com/android/build/gradle/app-metadata.properties') {
-      agpVersion = _readAgpFromProperties(entry) ?? '';
+        name.startsWith('META-INF/') &&
+        name.endsWith('app-metadata.properties')) {
+      agpVersion = _readAgpFromProperties(index.readEntryBytes(name)) ?? '';
       continue;
     }
-    // AGP 兜底：MANIFEST.MF 的 Created-By: Android Gradle
     if (agpVersion.isEmpty && name == 'META-INF/MANIFEST.MF') {
-      final createdBy = _readCreatedByGradle(entry);
+      final createdBy = _readCreatedByGradle(index.readEntryBytes(name));
       if (createdBy != null) agpVersion = createdBy;
     }
   }
 
   // 主路径：kotlin-tooling-metadata.json（根目录精确条目）
   var tooling = const BuildVersionInfo();
-  for (final entry in archive) {
-    if (!entry.isFile || entry.name != _kKotlinToolingMetadataEntry) continue;
-    final content = entry.content;
-    tooling = content is List<int>
-        ? _parseKotlinToolingMetadata(content)
-        : const BuildVersionInfo();
-    // kotlinVersion 已解析出 → 不再降级 kotlin_module
-    if (tooling.kotlinVersion.isNotEmpty) break;
+  final toolingBytes = index.readEntryBytes(_kKotlinToolingMetadataEntry);
+  if (toolingBytes != null) {
+    tooling = _parseKotlinToolingMetadata(toolingBytes);
   }
 
-  // 降级：META-INF/*.kotlin_module 二进制版本推断（对齐 LibChecker
-  // readKotlinModuleVersions）：仅当恰好一种 distinct 版本时采用。
+  // 降级：META-INF/*.kotlin_module 二进制版本推断（仅当恰好一种 distinct 版本）
   if (tooling.kotlinVersion.isEmpty) {
     final versions = <String>{};
-    for (final entry in archive) {
-      if (!entry.isFile) continue;
+    for (final entry in index.files) {
       final name = entry.name;
       if (!name.startsWith(_kKotlinModuleDirectory) ||
           !name.endsWith(_kKotlinModuleSuffix)) {
         continue;
       }
-      final version = _readKotlinModuleVersion(entry);
+      final version = _readKotlinModuleVersion(index.readEntryBytes(name));
       if (version != null) versions.add(version);
+      if (versions.length > 1) break;
     }
     if (versions.length == 1) {
       tooling = BuildVersionInfo(
@@ -1352,19 +1626,21 @@ BuildVersionInfo _detectBuildVersionsInIsolate(String apkPath) {
   );
 }
 
-/// 读取 zip 条目首行文本（UTF-8；空/异常 → null）
-String? _readFirstLine(ArchiveFile entry) {
-  final content = entry.content;
-  if (content is! List<int> || content.isEmpty) return null;
+/// 读取条目首行文本（UTF-8；空/异常 → null）——只解压该条目
+String? _readFirstLineOf(ApkZipIndex index, String name) {
+  final content = index.readEntryBytes(name);
+  if (content == null || content.isEmpty) return null;
   final text = utf8.decode(content, allowMalformed: true);
-  final line = text.split('\n').first.trim();
-  return line.isEmpty ? null : line;
+  for (final line in text.split('\n')) {
+    final trimmed = line.trim();
+    if (trimmed.isNotEmpty) return trimmed;
+  }
+  return null;
 }
 
 /// 解析 AGP 版本：app-metadata.properties 的 androidGradlePluginVersion
-String? _readAgpFromProperties(ArchiveFile entry) {
-  final content = entry.content;
-  if (content is! List<int>) return null;
+String? _readAgpFromProperties(List<int>? content) {
+  if (content == null) return null;
   final text = utf8.decode(content, allowMalformed: true);
   for (final line in text.split('\n')) {
     final trimmed = line.trim();
@@ -1377,9 +1653,8 @@ String? _readAgpFromProperties(ArchiveFile entry) {
 }
 
 /// 解析 MANIFEST.MF 的 Created-By: Android Gradle <version>
-String? _readCreatedByGradle(ArchiveFile entry) {
-  final content = entry.content;
-  if (content is! List<int>) return null;
+String? _readCreatedByGradle(List<int>? content) {
+  if (content == null) return null;
   final text = utf8.decode(content, allowMalformed: true);
   for (final line in text.split('\n')) {
     final trimmed = line.trim();
@@ -1455,9 +1730,8 @@ BuildVersionInfo _parseKotlinToolingMetadata(List<int> content) {
 /// 布局：int componentCount（4 字节大端），随后 componentCount 个 int
 /// （版本分量 [major, minor, …]）。仅当 componentCount ∈ [2,16] 且每个
 /// 分量 ∈ [0,99] 时接受（对齐 LibChecker MIN/MAX_VERSION_COMPONENTS）。
-String? _readKotlinModuleVersion(ArchiveFile entry) {
-  final content = entry.content;
-  if (content is! List<int> || content.length < 4) return null;
+String? _readKotlinModuleVersion(List<int>? content) {
+  if (content == null || content.length < 4) return null;
   final bytes = content is Uint8List ? content : Uint8List.fromList(content);
 
   final data = ByteData.sublistView(bytes);

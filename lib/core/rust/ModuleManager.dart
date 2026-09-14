@@ -1,15 +1,21 @@
-import 'dart:async' show unawaited;
+import 'dart:async' show unawaited, StreamController;
+import 'dart:convert' show base64Encode, jsonEncode, utf8;
 import 'dart:typed_data';
 
+import 'package:path/path.dart' as p;
+
+import 'package:gstore/core/event/app_event.dart';
 import 'package:gstore/core/logger/LogManager.dart';
+import 'package:gstore/core/rust/ModuleContext.dart';
 import 'package:gstore/core/rust/RustBridge.dart';
 import 'package:gstore/core/rust/contract/GStoreException.dart';
 import 'package:gstore/core/rust/generated/bridge.dart'
-    show EventBridge, LogBridge, ModuleHandle;
+    show EventBridge, HostInspector, LogBridge, ModuleHandle;
 import 'package:gstore/core/rust/generated/contract/envelope.pb.dart';
 import 'package:gstore/core/rust/generated/event_bridge.dart'
     show ModuleEvent;
 import 'package:gstore/core/rust/generated/log_bridge.dart' show LogMessage;
+import 'package:gstore/core/rust/generated/manager.dart' show ModuleInfo;
 
 /// 模块事件回调（架构文档 6.8：Dart 侧订阅模块推送的事件，如进度/流式）
 typedef ModuleEventHandler = void Function(ModuleEvent event);
@@ -32,8 +38,18 @@ class RustModuleManager {
   static final Map<String, ModuleHandle> _handles = {};
   static bool _logSubscribed = false;
   static bool _eventSubscribed = false;
+  static bool _bridgesReset = false;
   static int _requestCounter = 0;
   static ModuleEventHandler? _moduleEventHandler;
+
+  static final StreamController<ModuleEvent> _eventController =
+      StreamController<ModuleEvent>.broadcast();
+
+  /// 事件桥实例（订阅时创建，供下行 broadcast 复用）
+  static EventBridge? _eventBridge;
+
+  /// 模块事件广播流（进度/流式等；业务层可多处订阅）
+  Stream<ModuleEvent> get moduleEvents => _eventController.stream;
 
   /// 注册模块事件处理器（业务层订阅模块推送的事件，如下载进度）
   void setModuleEventHandler(ModuleEventHandler handler) {
@@ -43,6 +59,19 @@ class RustModuleManager {
   /// 确保 bridge 初始化 + 日志订阅（幂等，可多次调用）
   Future<void> ensureReady() async {
     await RustBridge.ensureInitialized();
+
+    // 引擎在同进程内被销毁重建时，宿主仍持有指向上一个 isolate 的失效 StreamSink。
+    // 新 isolate 在本轮订阅前清空它们，避免向已销毁端口推送（二次启动崩溃的次因）。
+    if (!_bridgesReset) {
+      _bridgesReset = true;
+      try {
+        final inspector = await HostInspector.newInstance();
+        await inspector.resetBridges();
+      } catch (e) {
+        appLog.warning('RustModuleManager: 重置桥接 sink 失败 - $e');
+      }
+    }
+
     if (!_logSubscribed) {
       _logSubscribed = true;
       unawaited(_subscribeLogs());
@@ -75,22 +104,29 @@ class RustModuleManager {
     String module,
     String? instance,
     String method,
-    Uint8List payload,
-  ) async {
+    Uint8List payload, {
+    int? timeoutMs,
+    String? requestId,
+  }) async {
     await ensureReady();
-    final requestId = 'req_${DateTime.now().microsecondsSinceEpoch}_${_requestCounter++}';
+    final reqId = requestId ??
+        'req_${DateTime.now().microsecondsSinceEpoch}_${_requestCounter++}';
     final request = EnvelopeRequest(
       protocolVersion: 1,
       module: module,
       instance: instance ?? '',
       method: method,
-      requestId: requestId,
+      requestId: reqId,
       payload: payload,
     );
 
     final handle = await loadModule(module);
-    final respBytes =
-        await handle.callEnvelope(requestBytes: request.writeToBuffer());
+    final respBytes = timeoutMs == null
+        ? await handle.callEnvelope(requestBytes: request.writeToBuffer())
+        : await handle.callEnvelopeTimed(
+            requestBytes: request.writeToBuffer(),
+            timeoutMs: BigInt.from(timeoutMs),
+          );
     final response = EnvelopeResponse.fromBuffer(respBytes);
 
     if (response.status.value == 200) {
@@ -103,11 +139,23 @@ class RustModuleManager {
       status: status,
       errorCode: response.errorCode.isEmpty ? 'UNKNOWN' : response.errorCode,
       message: response.errorMessage,
-      requestId: requestId,
+      requestId: reqId,
     );
     appLog.warning(
-        '[CallModule] $module.$method -> ${exception.status.name} $requestId: ${exception.errorCode} ${exception.message}');
+        '[CallModule] $module.$method -> ${exception.status.name} $reqId: ${exception.errorCode} ${exception.message}');
     throw exception;
+  }
+
+  /// 取消某次在途调用（requestId 需与 callModule 传入/生成的一致）。
+  /// 模块未实现 cancel（如无长任务的 qr/analyzer）则为无操作。
+  Future<void> cancelCall(String module, String requestId) async {
+    final handle = _handles[module];
+    if (handle == null) return;
+    try {
+      await handle.cancelCall(requestId: requestId);
+    } catch (e) {
+      appLog.warning('RustModuleManager: cancelCall($module, $requestId) 失败 - $e');
+    }
   }
 
   /// 加载模块（幂等：已注册则复用句柄，refcount+1 由 Rust 侧管理）
@@ -128,6 +176,13 @@ class RustModuleManager {
     return handle.isLoaded();
   }
 
+  /// 宿主已加载的原生插件快照（只读诊断；查宿主注册表，不触发模块加载）
+  Future<List<ModuleInfo>> loadedModules() async {
+    await ensureReady();
+    final inspector = await HostInspector.newInstance();
+    return inspector.loadedModules();
+  }
+
   /// 释放模块引用（业务层一般无需调用，模块常驻）
   Future<void> releaseModule(String name) async {
     final handle = _handles.remove(name);
@@ -141,13 +196,28 @@ class RustModuleManager {
     await ensureReady();
     try {
       final handle = await ModuleHandle.mountFromSo(soPath: soPath);
-      // 挂载成功即入句柄缓存（模块名由宿主侧在挂载时确认，Dart 侧按路径首次加载）
-      _handles.putIfAbsent(soPath, () => handle);
+      // 统一以模块名为 key（与 loadModule/isLoaded/releaseModule 一致），
+      // 避免同一模块在 name 与 soPath 两个 key 下重复持有句柄造成泄漏。
+      final name = _moduleNameFromSoPath(soPath);
+      if (name != null) {
+        _handles.putIfAbsent(name, () => handle);
+      } else {
+        _handles.putIfAbsent(soPath, () => handle);
+      }
       return handle;
     } catch (e) {
       appLog.error('RustModuleManager: mountFromSo($soPath) 失败 - $e');
       return null;
     }
+  }
+
+  /// 从 .so 路径解析模块名（libgstore_mod_<name>[_<version>].so → name）。
+  /// 宿主侧 ModuleHandle 不暴露名字，故按打包命名约定回推。
+  static String? _moduleNameFromSoPath(String soPath) {
+    final base = p.basename(soPath);
+    final m = RegExp(r'^libgstore_mod_([a-z0-9_]+?)(?:_\d+\.\d+\.\d+)?\.so$')
+        .firstMatch(base);
+    return m?.group(1);
   }
 
   /// 订阅 Rust 日志流到 LogManager（Rust 日志可在日志查看器中查看）
@@ -156,18 +226,56 @@ class RustModuleManager {
     bridge.logsStream().listen(_handleLogMessage);
   }
 
-  /// 订阅模块事件流（模块经 emit_event 推送的事件，转发给注册的处理器共消费）
+  /// 订阅模块事件流（模块经 emit_event 推送的事件，转发给注册的处理器 + 广播流），
+  /// 并把上行事件接入统一 AppEventBus；同时注册下行 sink（AppEventBus → 模块）。
   Future<void> _subscribeEvents() async {
     final bridge = await EventBridge.newInstance();
+    _eventBridge = bridge;
     bridge.eventsStream().listen((event) {
       _moduleEventHandler?.call(event);
+      if (!_eventController.isClosed) {
+        _eventController.add(event);
+      }
+      // 上行接入统一事件总线
+      AppEventBus.instance.publish(AppEvent(
+        type: AppEventTypes.rustEvent,
+        source: AppEventSource.rust,
+        data: {
+          'eventType': event.eventType,
+          'moduleId': event.moduleId.toString(),
+          'instanceId': event.instanceId.toString(),
+          'data': base64Encode(event.data),
+        },
+      ));
+      appLog.debug(
+          '[ModuleEvent] ${event.eventType} module=${event.moduleId} instance=${event.instanceId}');
     });
+
+    // 下行：统一总线中标记 downlink 的事件 → 广播给所有已加载 Rust 模块
+    AppEventBus.instance.registerDownlinkSink((evt) {
+      unawaited(broadcastEvent(evt));
+    });
+  }
+
+  /// 应用事件下行：广播给所有已加载 Rust 模块（模块经 ABI `on_event` 订阅）
+  Future<void> broadcastEvent(AppEvent event) async {
+    final bridge = _eventBridge;
+    if (bridge == null) return;
+    try {
+      final payload =
+          Uint8List.fromList(utf8.encode(jsonEncode(event.data ?? const {})));
+      await bridge.broadcast(kind: event.type, data: payload);
+    } catch (e) {
+      appLog.warning('RustModuleManager: 下行事件 ${event.type} 失败 - $e');
+    }
   }
 
   void _handleLogMessage(LogMessage msg) {
     final level = _mapLevel(msg.level);
-    final message =
-        msg.module.isEmpty ? msg.message : '[${msg.module}] ${msg.message}';
+    // Rust 统一日志接口：target 统一加 RUST- 前缀（如 [RUST-rust]），
+    // 便于在日志页用 "RUST-" 关键字筛出全部 Rust 日志。
+    final module = msg.module.isEmpty ? 'rust' : msg.module;
+    final message = '[RUST-$module] ${msg.message}';
     LogManager.instance.log(level: level, message: message);
   }
 
@@ -197,6 +305,19 @@ class RustModuleInstance {
   Future<String> get instanceId async =>
       instanceIdCache ??= await _handle.instanceId();
   String? instanceIdCache;
+
+  /// 按**标准上下文**创建实例（宿主分配 data_dir/cache_dir，并带上 abi）。
+  ///
+  /// 约定见 `ModuleContext` / `rust/gstore_contract/src/context.rs`：
+  /// 复用既有 `create(config)` 字节流，**零 ABI 变更**。新模块一律走这里。
+  static Future<RustModuleInstance> createWithContext(
+    String moduleName,
+    ModuleHandle module, {
+    String? dbPath,
+  }) async {
+    final ctx = await ModuleContext.forModule(moduleName, dbPath: dbPath);
+    return create(moduleName, module, config: ctx.encode());
+  }
 
   /// 创建实例（模块实现 create()）
   static Future<RustModuleInstance> create(

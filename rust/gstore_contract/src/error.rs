@@ -1,5 +1,6 @@
 // gstore_contract：统一错误模型（协议层 + 域层错误码，见架构文档 6.4/6.5）
 
+use std::borrow::Cow;
 use std::fmt;
 use std::error::Error as StdError;
 
@@ -29,6 +30,30 @@ pub enum StatusCode {
     Timeout = 504,
 }
 
+impl StatusCode {
+    /// i32 → StatusCode（未知值归 InternalError）。与信封 status 数值一致。
+    pub fn from_i32(v: i32) -> Self {
+        match v {
+            200 => StatusCode::Ok,
+            201 => StatusCode::Created,
+            301 => StatusCode::ModuleNotLoaded,
+            302 => StatusCode::InstanceExpired,
+            400 => StatusCode::BadRequest,
+            404 => StatusCode::ModuleNotFound,
+            405 => StatusCode::MethodNotFound,
+            410 => StatusCode::InstanceNotFound,
+            422 => StatusCode::InvalidArgument,
+            426 => StatusCode::VersionMismatch,
+            499 => StatusCode::Aborted,
+            500 => StatusCode::InternalError,
+            5001 => StatusCode::PanicCaught,
+            507 => StatusCode::ResourceExhausted,
+            504 => StatusCode::Timeout,
+            _ => StatusCode::InternalError,
+        }
+    }
+}
+
 /// 协议层错误码（宿主兜底，所有模块通用；域层错误码由模块以 `模块名_` 前缀自填）
 pub const ERR_MODULE_NOT_FOUND: &str = "MODULE_NOT_FOUND";
 pub const ERR_METHOD_NOT_FOUND: &str = "METHOD_NOT_FOUND";
@@ -44,14 +69,19 @@ pub const ERR_CANCELLED: &str = "CANCELLED";
 #[derive(Debug)]
 pub struct ModuleError {
     pub status: StatusCode,
-    pub code: &'static str,
+    /// 错误码：内置常量（`Cow::Borrowed`）或跨 ABI 解码得到的运行时字符串（`Cow::Owned`）
+    pub code: Cow<'static, str>,
     pub message: String,
     pub cause: Option<Box<dyn StdError + Send + Sync>>,
 }
 
 impl ModuleError {
-    pub fn new(status: StatusCode, code: &'static str, message: impl Into<String>) -> Self {
-        Self { status, code, message: message.into(), cause: None }
+    pub fn new(
+        status: StatusCode,
+        code: impl Into<Cow<'static, str>>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self { status, code: code.into(), message: message.into(), cause: None }
     }
 
     pub fn invalid_arg(message: impl Into<String>) -> Self {
@@ -85,6 +115,45 @@ impl ModuleError {
     pub fn with_cause(mut self, cause: impl StdError + Send + Sync + 'static) -> Self {
         self.cause = Some(Box::new(cause));
         self
+    }
+
+    /// 编码为跨 ABI 错误载荷（JSON）。模块在 C ABI 边界以 `ABI_ERR_DETAIL` 返回时，
+    /// 把本载荷写入 out 缓冲，宿主据此还原 StatusCode/code/message（不再塌成 500）。
+    pub fn to_payload(&self) -> Vec<u8> {
+        ErrorPayload {
+            status: self.status as i32,
+            code: self.code.to_string(),
+            message: self.message.clone(),
+        }
+        .encode()
+    }
+
+    /// 从跨 ABI 错误载荷还原（解码失败返回 None，调用方回退通用错误）
+    pub fn from_payload(bytes: &[u8]) -> Option<Self> {
+        let payload = ErrorPayload::decode(bytes)?;
+        Some(Self::new(
+            StatusCode::from_i32(payload.status),
+            payload.code,
+            payload.message,
+        ))
+    }
+}
+
+/// 跨 ABI 错误载荷（仅 status/code/message；cause 属进程内诊断，不过边界）
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ErrorPayload {
+    status: i32,
+    code: String,
+    message: String,
+}
+
+impl ErrorPayload {
+    fn encode(&self) -> Vec<u8> {
+        serde_json::to_vec(self).unwrap_or_default()
+    }
+
+    fn decode(bytes: &[u8]) -> Option<Self> {
+        serde_json::from_slice(bytes).ok()
     }
 }
 

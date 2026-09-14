@@ -167,7 +167,7 @@ abstract class IFdroidRepoService {
   Future<List<Map<String, dynamic>>> searchApps(String keyword, {int limit = 50});
 
   /// 获取应用详情
-  Future<Map<String, dynamic>?> getAppByPackageName(String packageName);
+  Future<Map<String, dynamic>?> getAppByPackageName(String packageName, {String? sourceId});
 
   /// 获取全部应用
   Future<List<Map<String, dynamic>>> getAllApps();
@@ -181,8 +181,26 @@ abstract class IFdroidRepoService {
   /// 切换源
   Future<void> switchSource(String sourceId);
 
+  /// 当前配置的源列表（含启用状态与镜像配置）
+  List<FdroidSource> get sources;
+
+  /// 当前选中源（**仅用于显示/默认**，不得用于数据定位）
+  FdroidSource? get currentSource;
+
+  /// 仓库身份键（指纹优先，其次归一化地址）——渠道把源标识写入自有记录时使用
+  String identityKeyFor(FdroidSource source);
+
+  /// 启用/禁用某个源（**多源可同时启用**）
+  Future<void> setSourceEnabled(String sourceId, bool enabled);
+
+  /// 逐个加载**全部已启用**的源（每个源独立库；单个失败不影响其它源）
+  Future<int> loadAllEnabled();
+
   /// 添加源
   Future<void> addSource(FdroidSource source);
+
+  /// 更新源配置（镜像启用/增删、是否启用镜像回退等）并持久化
+  Future<void> updateSource(FdroidSource source);
 
   /// 移除源
   Future<void> removeSource(String sourceId);

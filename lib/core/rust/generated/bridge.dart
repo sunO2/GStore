@@ -6,16 +6,45 @@
 import 'event_bridge.dart';
 import 'frb_generated.dart';
 import 'log_bridge.dart';
+import 'manager.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
+import 'task_bridge.dart';
+
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `drop`, `drop`
+
+/// 宿主侧静默 panic hook：宿主与模块 .so 各自静态链接一份 std，各自持有独立的
+/// panic hook 全局状态。宿主 std 副本默认 hook 在 panic 时生成 backtrace，
+/// gimli 符号化器在 Android dlopen 场景二次崩溃为 SIGSEGV（真机崩溃放大器）。
+/// 模块 register 时已安装自己的静默 hook；此处安装宿主副本的，双保险。
+Future<void> installHostPanicHook() =>
+    RustLib.instance.api.crateBridgeInstallHostPanicHook();
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<EventBridge>>
 abstract class EventBridge implements RustOpaqueInterface {
+  /// 应用侧事件下行：广播给所有已加载模块（模块经 ABI `on_event` 订阅）。
+  /// [kind] 事件类型（如 "config.changed"），[data] 为 JSON 载荷字节。
+  Future<void> broadcast({required String kind, required List<int> data});
+
   /// 订阅模块事件流。首次订阅时补发环形缓冲中的历史事件。
   Stream<ModuleEvent> eventsStream();
 
   // HINT: Make it `#[frb(sync)]` to let it become the default constructor of Dart class.
   static Future<EventBridge> newInstance() =>
       RustLib.instance.api.crateBridgeEventBridgeNew();
+}
+
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<HostInspector>>
+abstract class HostInspector implements RustOpaqueInterface {
+  /// 已加载的原生插件快照（名字/版本/常驻/引用计数）
+  Future<List<ModuleInfo>> loadedModules();
+
+  // HINT: Make it `#[frb(sync)]` to let it become the default constructor of Dart class.
+  static Future<HostInspector> newInstance() =>
+      RustLib.instance.api.crateBridgeHostInspectorNew();
+
+  /// 清空日志/事件桥的订阅 sink。引擎在同进程内被销毁重建时，宿主仍持有指向
+  /// 上一个 Dart isolate 的失效端口；新 isolate 应在订阅前调用本函数。
+  Future<void> resetBridges();
 }
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<InstanceHandle>>
@@ -43,12 +72,23 @@ abstract class LogBridge implements RustOpaqueInterface {
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<ModuleHandle>>
 abstract class ModuleHandle implements RustOpaqueInterface {
+  BigInt get id;
+
+  set id(BigInt id);
+
   /// 信封级调用：Dart 侧传 EnvelopeRequest 编码字节，宿主解包→路由→封包返回
   Future<Uint8List> callEnvelope({required List<int> requestBytes});
+
+  /// 带超时的信封级调用（毫秒；0 = 不超时）。超时后尽力 cancel 并返回 504 信封。
+  Future<Uint8List> callEnvelopeTimed(
+      {required List<int> requestBytes, required BigInt timeoutMs});
 
   /// 模块级静态调用（不创建实例）
   Future<Uint8List> callStatic(
       {required String method, required List<int> payload});
+
+  /// 取消某次在途调用（按 request_id 路由到模块 cancel；模块未实现则无操作）
+  Future<void> cancelCall({required String requestId});
 
   /// 实例化：宿主转发给模块 create()，返回实例代理对象
   Future<InstanceHandle> createInstance({required List<int> config});
@@ -68,4 +108,30 @@ abstract class ModuleHandle implements RustOpaqueInterface {
   /// 幂等：同名模块已注册则复用。
   static Future<ModuleHandle> mountFromSo({required String soPath}) =>
       RustLib.instance.api.crateBridgeModuleHandleMountFromSo(soPath: soPath);
+}
+
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<TaskBridge>>
+abstract class TaskBridge implements RustOpaqueInterface {
+  /// 取消任务（协作式：模块在检查点退出）
+  Future<void> cancel({required String taskId});
+
+  static Future<TaskBridge> default_() =>
+      RustLib.instance.api.crateBridgeTaskBridgeDefault();
+
+  // HINT: Make it `#[frb(sync)]` to let it become the default constructor of Dart class.
+  static Future<TaskBridge> newInstance() =>
+      RustLib.instance.api.crateBridgeTaskBridgeNew();
+
+  /// 在跑任务数（诊断）
+  Future<int> runningCount();
+
+  /// 启动长任务：**立即返回** task_id，工作在宿主自有线程执行（不占 FRB 任务池）
+  Future<String> start(
+      {required String module,
+      BigInt? instance,
+      required String method,
+      required List<int> payload});
+
+  /// 订阅任务事件流（先补发缓冲，再转实时）
+  Stream<TaskEvent> watch({required String taskId});
 }

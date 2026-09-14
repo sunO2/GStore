@@ -148,6 +148,14 @@ class _FdroidRepoPageState extends ConsumerState<FdroidRepoPage> {
                 currentSource.repoUrl,
                 style: TextStyle(fontSize: AppTypography.sizeXS, color: AppColors.grey600),
               ),
+              // 索引声明的元信息（名称/镜像数/完整性校验）——由模块 get_repo_meta 回填
+              if (state.repoMeta != null) ...[
+                SizedBox(height: AppSpacing.xs),
+                Text(
+                  _repoMetaLine(state.repoMeta!),
+                  style: TextStyle(fontSize: AppTypography.sizeXS, color: AppColors.grey600),
+                ),
+              ],
             ] else ...[
               const Text('未选择源', style: TextStyle(color: Colors.grey)),
             ],
@@ -250,7 +258,7 @@ class _FdroidRepoPageState extends ConsumerState<FdroidRepoPage> {
             ElevatedButton.icon(
               icon: const Icon(Icons.download),
               label: const Text('加载/重新加载数据'),
-              onPressed: state.isLoading ? null : notifier.loadRepository,
+              onPressed: state.isLoading ? null : notifier.loadAllSources,
             ),
             SizedBox(height: AppSpacing.sm),
             OutlinedButton.icon(
@@ -290,12 +298,44 @@ class _FdroidRepoPageState extends ConsumerState<FdroidRepoPage> {
           Divider(height: 1),
           ...state.sources.map((source) {
             final isSelected = state.currentSource?.id == source.id;
+            // 副标题展示地址 + （有则）镜像数/已固定指纹：第三方源的身份与可用性一眼可见
+            final meta = <String>[
+              source.repoUrl,
+              if (source.mirrors.isNotEmpty) '镜像 ${source.mirrors.length}',
+              if (source.fingerprint != null && source.fingerprint!.isNotEmpty)
+                '指纹已固定 ${_shortFingerprint(source.fingerprint!)}',
+            ].join(' · ');
             return ListTile(
               title: Text(source.name),
-              subtitle: Text(source.repoUrl),
-              trailing: isSelected
-                  ? const Icon(Icons.check_circle, color: Colors.green)
-                  : const Icon(Icons.radio_button_unchecked),
+              subtitle: Text(meta),
+              isThreeLine: source.fingerprint != null,
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // 多源：勾选 = 是否启用（可同时启用多个），不再单选
+                  Checkbox(
+                    value: source.enabled,
+                    onChanged: (v) => notifier.setSourceEnabled(source, v ?? false),
+                  ),
+                  PopupMenuButton<String>(
+                    tooltip: '更多',
+                    onSelected: (v) {
+                      if (v == 'mirrors') {
+                        notifier.configureMirrors(context, source);
+                      } else if (v == 'edit') {
+                        notifier.editSource(context, source);
+                      } else if (v == 'delete') {
+                        notifier.deleteSource(context, source);
+                      }
+                    },
+                    itemBuilder: (_) => const [
+                      PopupMenuItem(value: 'mirrors', child: Text('配置镜像')),
+                      PopupMenuItem(value: 'edit', child: Text('编辑源')),
+                      PopupMenuItem(value: 'delete', child: Text('删除源')),
+                    ],
+                  ),
+                ],
+              ),
               onTap: () => notifier.switchSource(source),
             );
           }).toList(),
@@ -317,6 +357,37 @@ class _FdroidRepoPageState extends ConsumerState<FdroidRepoPage> {
               style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
             ),
           ),
+          if (notifier.availableCategories.isNotEmpty ||
+              notifier.onlyCompatible ||
+              notifier.hideAntiFeature ||
+              notifier.categoryFilter != null)
+            Padding(
+              padding: EdgeInsets.symmetric(
+                  horizontal: AppSpacing.lg, vertical: AppSpacing.xs),
+              child: Wrap(
+                spacing: AppSpacing.xs,
+                runSpacing: AppSpacing.xs,
+                children: [
+                  FilterChip(
+                    label: const Text('仅兼容本机'),
+                    selected: notifier.onlyCompatible,
+                    onSelected: notifier.setOnlyCompatible,
+                  ),
+                  FilterChip(
+                    label: const Text('隐藏含抗特性'),
+                    selected: notifier.hideAntiFeature,
+                    onSelected: notifier.setHideAntiFeature,
+                  ),
+                  for (final c in notifier.availableCategories)
+                    FilterChip(
+                      label: Text(c),
+                      selected: notifier.categoryFilter == c,
+                      onSelected: (on) =>
+                          notifier.setCategoryFilter(on ? c : null),
+                    ),
+                ],
+              ),
+            ),
           Divider(height: 1),
           ...state.searchResults.map((app) {
             return ListTile(
@@ -331,34 +402,58 @@ class _FdroidRepoPageState extends ConsumerState<FdroidRepoPage> {
     );
   }
 
-  /// 显示搜索对话框
+  /// 显示搜索弹层（统一底部 sheet 风格）
   void _showSearchDialog(BuildContext context) {
-    showDialog<void>(
+    AppSheet.show<void>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('搜索应用'),
-        content: TextField(
-          controller: notifier.searchController,
-          decoration: const InputDecoration(
-            hintText: '输入应用名称或包名',
-            prefixIcon: Icon(Icons.search),
-          ),
-          autofocus: true,
+      title: '搜索应用',
+      contentPadding: AppSpacing.onlyHorizontalXL,
+      content: TextField(
+        controller: notifier.searchController,
+        decoration: const InputDecoration(
+          hintText: '输入应用名称或包名',
+          prefixIcon: Icon(Icons.search),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const Text('取消'),
-          ),
-          TextButton(
-            onPressed: () {
-              notifier.searchApps(notifier.searchController.text);
-              Navigator.of(dialogContext).pop();
-            },
-            child: const Text('搜索'),
-          ),
-        ],
+        autofocus: true,
       ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: () {
+            notifier.searchApps(notifier.searchController.text);
+            Navigator.of(context).pop();
+          },
+          child: const Text('搜索'),
+        ),
+      ],
     );
+  }
+
+  /// 指纹短展示（完整值在「添加源」对话框里核对；此处只做身份提示）
+  String _shortFingerprint(String fp) {
+    final clean = fp.replaceAll(':', '').toUpperCase();
+    if (clean.length <= 16) return clean;
+    return '${clean.substring(0, 8)}…${clean.substring(clean.length - 8)}';
+  }
+
+  /// 索引声明的仓库元信息一行文案（无可用字段时返回空串，由调用方折叠）
+  String _repoMetaLine(Map<String, dynamic> meta) {
+    final parts = <String>[];
+    final name = (meta['name'] as String?) ?? '';
+    if (name.isNotEmpty) parts.add('索引名称 $name');
+    final mirrors = meta['mirrors'];
+    if (mirrors is List && mirrors.isNotEmpty) parts.add('镜像 ${mirrors.length}');
+    final resolved = (meta['resolved_url'] as String?) ?? '';
+    final declared = (meta['declared_url'] as String?) ?? '';
+    if (resolved.isNotEmpty && declared.isNotEmpty && resolved != declared) {
+      parts.add('实际地址 $resolved');
+    }
+    parts.add(meta['verified'] == true ? 'SHA-256 已校验' : '未校验');
+    final fails = (meta['fail_count'] as num?)?.toInt() ?? 0;
+    if (fails > 0) parts.add('连续失败 $fails 次');
+    return parts.join(' · ');
   }
 }

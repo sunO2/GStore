@@ -4,7 +4,7 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show kIsWeb;
 
 import 'package:gstore/core/logger/LogManager.dart';
-import 'package:gstore/core/rust/Contract.dart' show decodeApkInfo, decodeApkComponents, decodeElfScanResult, decodeDexClasses;
+import 'package:gstore/core/rust/Contract.dart' show decodeApkFeatures, decodeApkReport, decodeApkBuildVersions, decodeApkInfo, decodeApkComponents, decodeApkDexStats, decodeApkManifestInfo, decodeApkStructure, decodeElfScanResult, decodeDexClasses, decodeRuleMatchResult, decodeSignatureSchemes;
 import 'package:gstore/core/rust/ModuleLoader.dart';
 import 'package:gstore/core/rust/ModuleManager.dart';
 import 'package:gstore/core/rust/generated/bridge.dart' show ModuleHandle;
@@ -33,7 +33,7 @@ class AnalyzerRustDecoder {
       if (!ok) return false;
       _moduleHandle = await RustModuleManager.instance.loadModule('analyzer');
       if (_moduleHandle == null) return false;
-      _moduleInstance = await RustModuleInstance.create('analyzer', _moduleHandle!);
+      _moduleInstance = await RustModuleInstance.createWithContext('analyzer', _moduleHandle!);
       _moduleAvailable = _moduleInstance != null;
       return _moduleAvailable;
     } catch (e) {
@@ -83,12 +83,147 @@ class AnalyzerRustDecoder {
     return null; // 宿主已删内置实现，仅模块路径（模块失败即不可用）
   }
 
-  /// 扫描 ELF 16KB 页对齐（模块先试，失败降级宿主内置）
-  static Future<ApkElfScanResult?> scanElfPageSizes(String apkPath) async {
+  /// 扫描 ELF 元数据与 16KB 页对齐（模块先试，失败降级宿主内置）。
+  ///
+  /// [abis] 非空时只解析这些 ABI 分组（对齐 LibChecker「只解析选中 ABI」，
+  /// 避免把所有 ABI 的库全部解压）；`assets` 分组始终解析。
+  static Future<ApkElfScanResult?> scanElfPageSizes(
+    String apkPath, {
+    List<String> abis = const [],
+  }) async {
+    final payload = BytesBuilder(copy: false)..add(utf8.encode(apkPath));
+    if (abis.isNotEmpty) {
+      payload
+        ..addByte(0)
+        ..add(utf8.encode(abis.join(',')));
+    }
     final moduleResult = await _roundtripJson(
       'scan_elf_page_sizes',
-      utf8.encode(apkPath),
+      payload.takeBytes(),
       (json) => decodeElfScanResult(json),
+    );
+    if (moduleResult != null) return moduleResult;
+    return null; // 宿主已删内置实现，仅模块路径（模块失败即不可用）
+  }
+
+  /// Manifest 深度提取（权限含 maxSdkVersion / 组件 intent-filter / meta-data /
+  /// 静态库 / compileSdk / sharedUserId）
+  static Future<ApkManifestInfo?> parseManifest(String apkPath) async {
+    final moduleResult = await _roundtripJson(
+      'parse_manifest',
+      utf8.encode(apkPath),
+      (json) => decodeApkManifestInfo(json),
+    );
+    if (moduleResult != null) return moduleResult;
+    return null;
+  }
+
+  /// DEX 统计：每文件类数量（只读 dex 头）+ CRC32 + 总量
+  static Future<ApkDexStats?> scanDexStats(String apkPath) async {
+    final moduleResult = await _roundtripJson(
+      'scan_dex_stats',
+      utf8.encode(apkPath),
+      (json) => decodeApkDexStats(json),
+    );
+    if (moduleResult != null) return moduleResult;
+    return null;
+  }
+
+  /// 签名方案检测 V1–V4（纯字节解析，不做密码学校验）
+  static Future<ApkSignatureSchemes?> detectSignatureSchemes(String apkPath) async {
+    final moduleResult = await _roundtripJson(
+      'detect_signature_schemes',
+      utf8.encode(apkPath),
+      (json) => decodeSignatureSchemes(json),
+    );
+    if (moduleResult != null) return moduleResult;
+    return null;
+  }
+
+  /// 特征识别：Kotlin / Compose / KMP / Xposed / PlaySigning / PWA / AGP 版本
+  static Future<ApkFeatures?> scanFeatures(String apkPath) async {
+    final moduleResult = await _roundtripJson(
+      'scan_features',
+      utf8.encode(apkPath),
+      (json) => decodeApkFeatures(json),
+    );
+    if (moduleResult != null) return moduleResult;
+    return null;
+  }
+
+  /// 聚合报告：**一次打开 APK** 产出全部节（快照采集专用）。
+  ///
+  /// 相比逐节调用多个方法，这里省掉了重复的 manifest 解析 / DEX 扫描 / 中央目录遍历
+  /// 与多次 FFI 往返，并且结果是**同一时点**的一致切片（快照语义要求）。
+  /// 各节独立容错：某节失败该节为 null，原因在 `ApkReport.errors`。
+  ///
+  /// payload = `apk_path NUL rules_json [NUL abis_csv]`（[rulesJson] 为空则跳过规则匹配）
+  static Future<ApkReport?> scanApkReport(
+    String apkPath,
+    String rulesJson, {
+    List<String> abis = const [],
+  }) async {
+    final payload = BytesBuilder(copy: false)
+      ..add(utf8.encode(apkPath))
+      ..addByte(0)
+      ..add(utf8.encode(rulesJson));
+    if (abis.isNotEmpty) {
+      payload
+        ..addByte(0)
+        ..add(utf8.encode(abis.join(',')));
+    }
+    final moduleResult = await _roundtripJson(
+      'scan_apk_report',
+      payload.takeBytes(),
+      (json) => decodeApkReport(json),
+    );
+    return moduleResult;
+  }
+
+  /// 构建版本检测（Kotlin / Gradle / Java / Compose / AGP）。
+  ///
+  /// 模块侧只读**中央目录 + 少量小条目**（不整包解压）。
+  /// 返回 null 表示模块不可用（宿主降级为「未知」）。
+  static Future<ApkBuildVersions?> detectBuildVersions(String apkPath) async {
+    return _roundtripJson<ApkBuildVersions?>(
+      'scan_build_versions',
+      utf8.encode(apkPath),
+      (json) => decodeApkBuildVersions(json),
+    );
+  }
+
+  /// 规则匹配（native / dex / component / static / action）。
+  /// [rulesJson] 为规则数组 JSON（多个规则文件需先合并）。
+  /// 返回 null 表示模块不可用（调用方回退到宿主侧匹配实现）。
+  ///
+  /// 注意：快照采集请用 [scanApkReport]（一次打开覆盖全部节），不要逐节调用。
+  static Future<RuleMatchResult?> matchLibraries(
+    String apkPath,
+    String rulesJson,
+  ) async {
+    final payload = BytesBuilder(copy: false)
+      ..add(utf8.encode(apkPath))
+      ..addByte(0)
+      ..add(utf8.encode(rulesJson));
+    final moduleResult = await _roundtripJson(
+      'match_libraries',
+      payload.takeBytes(),
+      (json) => decodeRuleMatchResult(json),
+    );
+    if (moduleResult != null) return moduleResult;
+    return null;
+  }
+
+  /// 扫描 APK 结构清单（只读 zip 中央目录、**不解压**）。
+  ///
+  /// 一次调用即可拿到：按 ABI 分组的原生库（名/大小/CRC32/zip 对齐）、
+  /// assets 下的 .so、DEX 清单、resources.arsc 大小、条目总数与总体积。
+  /// 用于替代宿主侧「整包读入内存 + 全量解压」的多次扫描。
+  static Future<ApkStructure?> scanApkStructure(String apkPath) async {
+    final moduleResult = await _roundtripJson(
+      'scan_apk_structure',
+      utf8.encode(apkPath),
+      (json) => decodeApkStructure(json),
     );
     if (moduleResult != null) return moduleResult;
     return null; // 宿主已删内置实现，仅模块路径（模块失败即不可用）

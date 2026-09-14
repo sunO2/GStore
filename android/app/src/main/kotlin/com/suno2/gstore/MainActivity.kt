@@ -4,6 +4,7 @@ import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
+import android.content.pm.Signature
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
@@ -196,36 +197,41 @@ class MainActivity : FlutterActivity() {
                         return@setMethodCallHandler
                     }
                     try {
-                        val apkFile = File(applicationInfo.sourceDir)
-                        val zipFile = java.util.zip.ZipFile(apkFile)
-                        val requested = call.argument<String>("abi")
-                        val abis = if (requested != null && requested.isNotEmpty()) {
-                            listOf(requested) + Build.SUPPORTED_ABIS.toList()
-                        } else {
-                            Build.SUPPORTED_ABIS.toList()
-                        }
-                        var target: File? = null
-                        for (abi in abis) {
-                            val entryName = "lib/$abi/libgstore_mod_$module.so"
-                            if (zipFile.getEntry(entryName) != null) {
-                                val targetDir = File(filesDir, "gstore_mods/$abi")
-                                targetDir.mkdirs()
-                                val f = File(targetDir, "libgstore_mod_$module.so")
-                                zipFile.getInputStream(zipFile.getEntry(entryName)).use { input ->
-                                    f.outputStream().use { output -> input.copyTo(output) }
-                                }
-                                target = f
-                                break
-                            }
-                        }
-                        zipFile.close()
+                        val target = extractModuleFile(module, call.argument<String>("abi"), allowWrite = true)
                         if (target != null) {
                             result.success(target.absolutePath)
                         } else {
-                            result.error("NOTFOUND", "APK 无 libgstore_mod_$module.so（ABI=$abis）", null)
+                            result.error("NOTFOUND", "APK 无 libgstore_mod_$module.so（ABI=${call.argument<String>("abi")}）", null)
                         }
                     } catch (e: Exception) {
                         result.error("EXTRACT", "提取模块 .so 失败: ${e.message}", null)
+                    }
+                }
+                // 只读查询：模块 .so 是否已解压（绝不写入，供状态查询用）
+                "moduleSoPath" -> {
+                    val module = call.argument<String>("module")
+                    if (module == null) {
+                        result.error("ARG", "module required", null)
+                        return@setMethodCallHandler
+                    }
+                    try {
+                        val target = extractModuleFile(module, call.argument<String>("abi"), allowWrite = false)
+                        result.success(target?.absolutePath)
+                    } catch (e: Exception) {
+                        result.error("EXTRACT", "查询模块 .so 失败: ${e.message}", null)
+                    }
+                }
+                // 只读探测：模块是否可用（APK 内含 或 已解压），供 UI 决定是否显示入口
+                "hasModule" -> {
+                    val module = call.argument<String>("module")
+                    if (module == null) {
+                        result.error("ARG", "module required", null)
+                        return@setMethodCallHandler
+                    }
+                    try {
+                        result.success(hasModule(module, call.argument<String>("abi")))
+                    } catch (e: Exception) {
+                        result.error("PROBE", "探测模块失败: ${e.message}", null)
                     }
                 }
                 // 系统解压后的原生库目录（nativeLibraryDir）：已安装应用
@@ -346,42 +352,99 @@ class MainActivity : FlutterActivity() {
                     }
                     try {
                         val pm = packageManager
+                        // API 28 起 GET_SIGNATURES 已废弃：改用 GET_SIGNING_CERTIFICATES +
+                        // PackageInfo.signingInfo，才能拿到「多签名者」与「签名轮换历史」。
+                        val signFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                            PackageManager.GET_SIGNING_CERTIFICATES
+                        } else {
+                            @Suppress("DEPRECATION")
+                            PackageManager.GET_SIGNATURES
+                        }
                         val packageInfo = pm.getPackageInfo(
                             packageName,
-                            PackageManager.GET_SIGNATURES or PackageManager.GET_META_DATA
+                            signFlags or PackageManager.GET_META_DATA
                         )
 
-                        // 签名列表：每张证书解析 X509，提取 Subject DN 与 SHA-256/SHA-1 指纹
-                        val signatures = mutableListOf<Map<String, String>>()
-                        packageInfo.signatures?.let { sigs ->
-                            for (sig in sigs) {
-                                var algorithm = "SHA256withRSA"
-                                var subject = ""
-                                var sha256 = ""
-                                var sha1 = ""
-                                try {
-                                    val cert = CertificateFactory.getInstance("X509")
-                                        .generateCertificate(ByteArrayInputStream(sig.toByteArray()))
-                                        as X509Certificate
-                                    subject = cert.subjectDN.name
-                                    algorithm = cert.sigAlgName?.ifEmpty { "SHA256withRSA" }
-                                        ?: "SHA256withRSA"
-                                    sha256 = MessageDigest.getInstance("SHA-256")
-                                        .digest(sig.toByteArray())
-                                        .joinToString(":") { "%02x".format(it.toInt() and 0xFF) }
-                                    sha1 = MessageDigest.getInstance("SHA-1")
-                                        .digest(sig.toByteArray())
-                                        .joinToString(":") { "%02x".format(it.toInt() and 0xFF) }
-                                } catch (e: Exception) {
-                                    // 单张证书解析失败：降级为空字段，不影响其余证书
+                        // 签名列表：每张证书解析 X509，提取 Subject DN 与 SHA-256/SHA-1 指纹。
+                        // 证书来源按官方语义二选一（两者互斥）：
+                        //   - hasMultipleSigners() → apkContentsSigners：并列的**全部**签名者
+                        //     （此时 getSigningCertificateHistory() 会返回 null）
+                        //   - 否则 → signingCertificateHistory：原始→当前，含**轮换历史**
+                        //     （末位为当前证书，其余为历史证书）
+                        // kind: signer=并列签名者 / current=当前证书 / history=历史证书
+                        val certEntries = mutableListOf<Pair<Signature, String>>()
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                            val signingInfo = packageInfo.signingInfo
+                            if (signingInfo != null) {
+                                if (signingInfo.hasMultipleSigners()) {
+                                    signingInfo.apkContentsSigners?.forEach {
+                                        certEntries.add(it to "signer")
+                                    }
+                                } else {
+                                    val history = signingInfo.signingCertificateHistory
+                                    if (history != null) {
+                                        for (index in history.indices) {
+                                            val isCurrent = index == history.lastIndex
+                                            certEntries.add(
+                                                history[index] to
+                                                    if (isCurrent) "current" else "history"
+                                            )
+                                        }
+                                    }
                                 }
-                                signatures.add(mapOf(
-                                    "algorithm" to algorithm,
-                                    "subject" to subject,
-                                    "sha256" to sha256,
-                                    "sha1" to sha1,
-                                ))
                             }
+                        } else {
+                            @Suppress("DEPRECATION")
+                            packageInfo.signatures?.forEach { certEntries.add(it to "current") }
+                        }
+
+                        val signatures = mutableListOf<Map<String, String>>()
+                        // 按 SHA-256 去重：多签名者与轮换历史理论上互斥，防御性兜底
+                        val seenDigests = mutableSetOf<String>()
+                        for ((sig, kind) in certEntries) {
+                            var algorithm = "SHA256withRSA"
+                            var subject = ""
+                            var sha256 = ""
+                            var sha1 = ""
+                            try {
+                                val cert = CertificateFactory.getInstance("X509")
+                                    .generateCertificate(ByteArrayInputStream(sig.toByteArray()))
+                                    as X509Certificate
+                                subject = cert.subjectDN.name
+                                algorithm = cert.sigAlgName?.ifEmpty { "SHA256withRSA" }
+                                    ?: "SHA256withRSA"
+                                sha256 = MessageDigest.getInstance("SHA-256")
+                                    .digest(sig.toByteArray())
+                                    .joinToString(":") { "%02x".format(it.toInt() and 0xFF) }
+                                sha1 = MessageDigest.getInstance("SHA-1")
+                                    .digest(sig.toByteArray())
+                                    .joinToString(":") { "%02x".format(it.toInt() and 0xFF) }
+                            } catch (e: Exception) {
+                                // 单张证书解析失败：降级为空字段，不影响其余证书
+                            }
+                            if (sha256.isNotEmpty() && !seenDigests.add(sha256)) continue
+                            signatures.add(mapOf(
+                                "algorithm" to algorithm,
+                                "subject" to subject,
+                                "sha256" to sha256,
+                                "sha1" to sha1,
+                                "kind" to kind,
+                            ))
+                        }
+
+                        // 签名形态摘要（供 UI 提示：并列多签名 / 含轮换历史）
+                        var signingShape = "single"
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                            val signingInfo = packageInfo.signingInfo
+                            if (signingInfo != null) {
+                                signingShape = when {
+                                    signingInfo.hasMultipleSigners() -> "multiple"
+                                    signingInfo.hasPastSigningCertificates() -> "rotation"
+                                    else -> "single"
+                                }
+                            }
+                        } else if (signatures.size > 1) {
+                            signingShape = "multiple"
                         }
 
                         // meta-data：Bundle → Map<String, String>（跳过 null 值）
@@ -466,6 +529,8 @@ class MainActivity : FlutterActivity() {
 
                         result.success(mapOf(
                             "signatures" to signatures,
+                            // single / multiple（并列多签名者）/ rotation（含轮换历史）
+                            "signingShape" to signingShape,
                             "metaData" to metaData,
                             "mainActivity" to mainActivity,
                             "apkSize" to apkSize,
@@ -489,6 +554,63 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+    }
+
+    /// 模块是否可用：APK 内含该 .so，或已解压到私有目录（只读：不解压、不写入）。
+    private fun hasModule(module: String, requestedAbi: String?): Boolean {
+        val abis = if (!requestedAbi.isNullOrEmpty()) {
+            listOf(requestedAbi) + Build.SUPPORTED_ABIS.toList()
+        } else {
+            Build.SUPPORTED_ABIS.toList()
+        }
+        java.util.zip.ZipFile(File(applicationInfo.sourceDir)).use { zip ->
+            for (abi in abis) {
+                if (zip.getEntry("lib/$abi/libgstore_mod_$module.so") != null) return true
+                if (File(File(filesDir, "gstore_mods/$abi"), "libgstore_mod_$module.so").exists()) return true
+            }
+        }
+        return false
+    }
+
+    /// 解压模块 .so 到私有目录并返回目标文件（供 extractModule / moduleSoPath 复用）。
+    ///
+    /// 关键：**绝不原地覆写已解压的 .so**。该文件可能已被 dlopen 映射，而宿主 mount-once
+    /// 永不 dlclose，原地截断重写会让已映射的代码页失效（二次启动 SIGSEGV 的根因）。
+    /// 因此：
+    ///  - 已存在且大小与 APK 内条目一致 → 直接复用，不写入；
+    ///  - 需要更新时写临时文件后原子 rename（生成新 inode，旧映射不受影响）；
+    ///  - [allowWrite] = false 时只查存在，绝不写入（状态查询专用）。
+    private fun extractModuleFile(module: String, requestedAbi: String?, allowWrite: Boolean): File? {
+        val apkFile = File(applicationInfo.sourceDir)
+        java.util.zip.ZipFile(apkFile).use { zipFile ->
+            val abis = if (!requestedAbi.isNullOrEmpty()) {
+                listOf(requestedAbi) + Build.SUPPORTED_ABIS.toList()
+            } else {
+                Build.SUPPORTED_ABIS.toList()
+            }
+            for (abi in abis) {
+                val entry = zipFile.getEntry("lib/$abi/libgstore_mod_$module.so") ?: continue
+                val targetDir = File(filesDir, "gstore_mods/$abi")
+                val target = File(targetDir, "libgstore_mod_$module.so")
+
+                // 已存在且与 APK 条目同尺寸 → 复用（避免覆写在用文件）
+                if (target.exists() && target.length() == entry.size) return target
+                if (!allowWrite) return if (target.exists()) target else null
+
+                targetDir.mkdirs()
+                val tmp = File(targetDir, "${target.name}.tmp-${System.nanoTime()}")
+                zipFile.getInputStream(entry).use { input ->
+                    tmp.outputStream().use { output -> input.copyTo(output) }
+                }
+                // 原子替换：rename 到目标路径；失败则回退为覆盖写并清理临时文件
+                if (!tmp.renameTo(target)) {
+                    tmp.copyTo(target, overwrite = true)
+                    tmp.delete()
+                }
+                return target
+            }
+        }
+        return null
     }
 
     /// 将 Drawable 图标转为 PNG 字节数组

@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'dart:convert' show jsonDecode, utf8;
+import 'dart:convert' show jsonDecode, jsonEncode, utf8;
 import 'dart:io';
 import 'dart:typed_data' show BytesBuilder, Uint8List;
 
@@ -39,6 +39,47 @@ class ModuleManifestEntry {
   }
 }
 
+/// 原生插件状态（只读展示：是否存在 / 来源 / 是否已加载）
+class RustModuleStatus {
+  final String name;
+
+  /// 是否存在可用产物（本地产物或可远程获取）
+  final bool exists;
+
+  /// 产物来源：'builtin'（APK 内置）/ 'downloaded'（本地已下载）/ 'remote'（仅远程）/ 'none'
+  final String source;
+
+  /// 本地产物路径（若有）
+  final String? soPath;
+
+  /// 本地已下载版本（若有记录）
+  final String? version;
+
+  /// 运行时是否已挂载（宿主注册表）
+  final bool loaded;
+
+  /// 宿主回报的模块版本（已加载时）
+  final int? loadedVersion;
+
+  const RustModuleStatus({
+    required this.name,
+    required this.exists,
+    required this.source,
+    this.soPath,
+    this.version,
+    this.loaded = false,
+    this.loadedVersion,
+  });
+
+  /// 来源中文标签
+  String get sourceLabel => switch (source) {
+        'builtin' => '内置',
+        'downloaded' => '已下载',
+        'remote' => '可远程',
+        _ => '缺失',
+      };
+}
+
 /// 模块加载器：负责模块 .so 的按需下载 → 哈希校验 → 宿主 dlopen 挂载。
 ///
 /// 架构文档 4.4：按需注册（主路径）。模块存应用私有目录
@@ -51,6 +92,9 @@ class RustModuleLoader {
 
   /// 模块 .so 远端根 URL（发布端配置；空 = 禁用远程模块）
   String? remoteBaseUrl;
+
+  /// 远端清单缓存（同一次加载流程复用，避免重复 HTTP）
+  Map<String, dynamic>? _manifestCache;
 
   /// 默认 ABI 名（与 Rust target 对应：arm64-v8a / armeabi-v7a / x86 / x86_64）
   String get currentAbi {
@@ -99,6 +143,77 @@ class RustModuleLoader {
     return _downloadAndMount(name, remote);
   }
 
+  /// 模块是否可用（**不加载、不解压**）：APK 内置 或 已下载到本地。
+  /// 供 UI 决定是否显示"本地模型"等入口。
+  Future<bool> isAvailable(String name) async {
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      try {
+        const channel = MethodChannel('gstore/apk_source');
+        final has = await channel.invokeMethod<bool>(
+          'hasModule',
+          {'module': name, 'abi': currentAbi},
+        );
+        if (has == true) return true;
+      } catch (_) {
+        // 平台不支持则退化为只查本地文件
+      }
+    }
+    return (await _localSoPath(name)) != null;
+  }
+
+  /// 探测模块状态（**不加载、不下载**）：
+  /// 查本地产物（已下载 → 内置）与运行时是否已挂载，供 UI 只读展示。
+  Future<RustModuleStatus> probe(String name) async {
+    // 1) 运行时是否已挂载（宿主注册表）
+    var loaded = false;
+    int? loadedVersion;
+    try {
+      final mods = await RustModuleManager.instance.loadedModules();
+      for (final m in mods) {
+        if (m.name == name) {
+          loaded = true;
+          loadedVersion = m.version;
+          break;
+        }
+      }
+    } catch (_) {
+      // Rust 未初始化/不可用 → 视为未加载
+    }
+
+    // 2) 产物存在性（不 dlopen）；平台不可用（如无 path_provider）→ 回退 none
+    var source = 'none';
+    String? soPath;
+    String? localVersion;
+    try {
+      final local = await _localSoPath(name);
+      if (local != null) {
+        source = 'downloaded';
+        soPath = local;
+      } else {
+        final builtin = await _builtinSoPathReadOnly(name);
+        if (builtin != null && File(builtin).existsSync()) {
+          source = 'builtin';
+          soPath = builtin;
+        } else if ((remoteBaseUrl ?? '').isNotEmpty) {
+          source = 'remote';
+        }
+      }
+      localVersion = await _localVersion(name);
+    } catch (_) {
+      // 平台不可用 → 保持 none
+    }
+
+    return RustModuleStatus(
+      name: name,
+      exists: source != 'none',
+      source: source,
+      soPath: soPath,
+      version: localVersion,
+      loaded: loaded,
+      loadedVersion: loadedVersion,
+    );
+  }
+
   /// 远端清单是否比本地已下载的模块版本更新（无清单信息/无本地版本 → false 不更新）
   Future<bool> _remoteHasNewerVersion(String name) async {
     final manifestEntry = await _remoteManifestEntry(name);
@@ -118,20 +233,35 @@ class RustModuleLoader {
     return newer;
   }
 
-  /// 读取远端清单的模块条目（version + sha256 + abi）
-  Future<Map<String, dynamic>?> _remoteManifestEntry(String name) async {
+  /// 拉取并缓存远端清单
+  Future<Map<String, dynamic>?> _remoteManifest() async {
+    if (_manifestCache != null) return _manifestCache;
     final base = remoteBaseUrl;
     if (base == null || base.isEmpty) return null;
     try {
       final manifestBytes = await _httpGetBytes('$base/modules.json');
       if (manifestBytes == null) return null;
-      final manifest = jsonDecode(utf8.decode(manifestBytes)) as Map<String, dynamic>;
-      final modules = manifest['modules'] as Map<String, dynamic>?;
-      return modules?[name] as Map<String, dynamic>?;
+      _manifestCache =
+          jsonDecode(utf8.decode(manifestBytes)) as Map<String, dynamic>;
+      return _manifestCache;
     } catch (e) {
       appLog.warning('RustModuleLoader: 读取远端清单失败 - $e');
       return null;
     }
+  }
+
+  /// 读取远端清单的模块条目（version + sha256 + abi）
+  Future<Map<String, dynamic>?> _remoteManifestEntry(String name) async {
+    final manifest = await _remoteManifest();
+    final modules = manifest?['modules'] as Map<String, dynamic>?;
+    return modules?[name] as Map<String, dynamic>?;
+  }
+
+  /// 读取远端清单中该模块当前 ABI 的条目（sha256 + signature）
+  Future<Map<String, dynamic>?> _remoteAbiEntry(String name) async {
+    final entry = await _remoteManifestEntry(name);
+    final abi = entry?['abi'] as Map<String, dynamic>?;
+    return abi?[currentAbi] as Map<String, dynamic>?;
   }
 
   /// 本地已下载模块的版本（挂载时写入 <module>/version）
@@ -194,16 +324,49 @@ class RustModuleLoader {
     }
   }
 
+  /// 内置模块路径（**只读**）：不解压，仅查已解压文件是否存在。
+  /// 供状态查询使用——解压接口会写盘，绝不能在只读诊断里触发。
+  Future<String?> _builtinSoPathReadOnly(String name) async {
+    if (defaultTargetPlatform != TargetPlatform.android) return null;
+    try {
+      const channel = MethodChannel('gstore/apk_source');
+      final path = await channel.invokeMethod<String>(
+        'moduleSoPath',
+        {'module': name, 'abi': currentAbi},
+      );
+      if (path == null || path.isEmpty) return null;
+      return path;
+    } catch (e) {
+      return null;
+    }
+  }
+
   /// 下载 → SHA-256 校验 → 宿主 dlopen 挂载
   Future<bool> _downloadAndMount(String name, String baseUrl) async {
     try {
       final dir = await _moduleDir(name);
       await Directory(dir).create(recursive: true);
-      final fileName = 'libgstore_mod_$name.so';
-      final file = File(p.join(dir, fileName));
+
+      // 清单条目：远程文件名 / 版本 / 签名
+      final entry = await _remoteAbiEntry(name);
+      final signature = entry?['signature'] as String?;
+      final version = (await _remoteManifestEntry(name))?['version'] as String?;
+      // 远程模块强制签名：清单缺 signature 直接拒绝（fail-closed，
+      // 避免仅靠同一通道的 SHA-256 形成"安全剧场"）
+      if (signature == null || signature.isEmpty) {
+        appLog.error('RustModuleLoader: $name 清单缺少 signature，拒绝加载');
+        return false;
+      }
+      final remoteFileName =
+          (entry?['file_name'] as String?) ?? 'libgstore_mod_$name.so';
+      // 本地落到版本化文件名：mount-once 下新版本走独立路径，下次启动即加载新版
+      final localFileName = (version != null && version.isNotEmpty)
+          ? 'libgstore_mod_${name}_$version.so'
+          : 'libgstore_mod_$name.so';
+      final file = File(p.join(dir, localFileName));
 
       // 1. 下载
-      final url = '$baseUrl/$currentAbi/$fileName';
+      final url = '$baseUrl/$currentAbi/$remoteFileName';
       appLog.info('RustModuleLoader: 下载模块 $name <- $url');
       final resp = await _httpGetBytes(url);
       if (resp == null) {
@@ -221,13 +384,12 @@ class RustModuleLoader {
         }
       }
 
-      // 3. 原子写入 + 版本记录 + 挂载
+      // 3. 原子写入 + 版本记录 + 写签名侧车 + 挂载
       await file.writeAsBytes(resp, flush: true);
-      final entry = await _remoteManifestEntry(name);
-      final version = entry?['version'] as String?;
       if (version != null) {
         await _writeLocalVersion(name, version);
       }
+      await _writeSidecars(name, version ?? '0.0.0', signature, file.path);
       return _mountLocal(name, file.path);
     } catch (e) {
       appLog.error('RustModuleLoader: $name 下载/挂载失败 - $e');
@@ -249,8 +411,25 @@ class RustModuleLoader {
 
   Future<String?> _localSoPath(String name) async {
     final dir = await _moduleDir(name);
-    final file = File(p.join(dir, 'libgstore_mod_$name.so'));
-    return file.existsSync() ? file.path : null;
+    try {
+      // 版本化文件优先：取最近修改的一个（新版本独立文件名）
+      final candidates = Directory(dir)
+          .listSync()
+          .whereType<File>()
+          .where((f) {
+            final base = p.basename(f.path);
+            return base.startsWith('libgstore_mod_${name}_') &&
+                base.endsWith('.so');
+          })
+          .toList()
+        ..sort((a, b) =>
+            b.statSync().modified.compareTo(a.statSync().modified));
+      if (candidates.isNotEmpty) return candidates.first.path;
+    } catch (_) {
+      // 目录不存在/不可读 → 回退旧命名
+    }
+    final legacy = File(p.join(dir, 'libgstore_mod_$name.so'));
+    return legacy.existsSync() ? legacy.path : null;
   }
 
   Future<String> _moduleDir(String name) async {
@@ -258,23 +437,27 @@ class RustModuleLoader {
     return p.join(docs.path, 'gstore_modules', name);
   }
 
-  /// 清单 SHA-256：从发布端 modules.json 读取（远端 URL 方案专用校验）。
+  /// 清单 SHA-256：从远端 modules.json 的当前 ABI 条目读取。
   /// 内置方案（jniLibs 打包）与 APK 同信任锚，不做校验。
   Future<String?> _expectedSha256(String name) async {
-    final base = remoteBaseUrl;
-    if (base == null || base.isEmpty) return null;
+    final entry = await _remoteAbiEntry(name);
+    return entry?['sha256'] as String?;
+  }
+
+  /// 写签名/元数据侧车文件（宿主 dlopen 前校验用；与 .so 同目录、同名前缀）
+  Future<void> _writeSidecars(
+    String name,
+    String version,
+    String signatureHex,
+    String soPath,
+  ) async {
     try {
-      final manifestBytes = await _httpGetBytes('$base/modules.json');
-      if (manifestBytes == null) return null;
-      final manifest = jsonDecode(utf8.decode(manifestBytes)) as Map<String, dynamic>;
-      final modules = manifest['modules'] as Map<String, dynamic>?;
-      final module = modules?[name] as Map<String, dynamic>?;
-      final abi = module?['abi'] as Map<String, dynamic>?;
-      final entry = abi?[currentAbi] as Map<String, dynamic>?;
-      return entry?['sha256'] as String?;
+      await File('$soPath.sig').writeAsString('$signatureHex\n', flush: true);
+      final meta = jsonEncode({'name': name, 'version': version, 'abi': currentAbi});
+      await File('$soPath.meta').writeAsString(meta, flush: true);
+      appLog.info('RustModuleLoader: $name 已写入签名侧车（宿主校验后 dlopen）');
     } catch (e) {
-      appLog.warning('RustModuleLoader: 读取清单失败 - $e');
-      return null;
+      appLog.error('RustModuleLoader: $name 写签名侧车失败 - $e');
     }
   }
 

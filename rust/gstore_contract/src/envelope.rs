@@ -226,24 +226,7 @@ pub(crate) fn status_to_pb(status: StatusCode) -> i32 {
 
 /// 反向：i32 → Rust 内部 StatusCode（未知值归 InternalError）
 pub fn status_from_i32(v: i32) -> StatusCode {
-    match v {
-        200 => StatusCode::Ok,
-        201 => StatusCode::Created,
-        301 => StatusCode::ModuleNotLoaded,
-        302 => StatusCode::InstanceExpired,
-        400 => StatusCode::BadRequest,
-        404 => StatusCode::ModuleNotFound,
-        405 => StatusCode::MethodNotFound,
-        410 => StatusCode::InstanceNotFound,
-        422 => StatusCode::InvalidArgument,
-        426 => StatusCode::VersionMismatch,
-        499 => StatusCode::Aborted,
-        500 => StatusCode::InternalError,
-        5001 => StatusCode::PanicCaught,
-        507 => StatusCode::ResourceExhausted,
-        504 => StatusCode::Timeout,
-        _ => StatusCode::InternalError,
-    }
+    StatusCode::from_i32(v)
 }
 
 #[cfg(test)]

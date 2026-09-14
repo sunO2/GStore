@@ -8,7 +8,7 @@ use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::sync::Arc;
 
 use gstore_contract::abi::{
-    GStoreModuleApi, GStoreModuleEntry, GSTORE_MODULE_ABI_VERSION,
+    ABI_ERR_DETAIL, ABI_OK, GStoreModuleApi, GStoreModuleEntry, GSTORE_MODULE_ABI_VERSION,
 };
 use gstore_contract::error::ModuleError;
 
@@ -25,39 +25,136 @@ type CallFn = extern "C" fn(
     *mut *mut u8,
     *mut usize,
 ) -> c_int;
+type CancelFn = extern "C" fn(u64, *const c_char) -> c_int;
+type OnEventFn = extern "C" fn(u64, *const c_char, *const u8, usize) -> c_int;
 type DestroyFn = extern "C" fn(u64) -> c_int;
 type ShutdownFn = extern "C" fn() -> c_int;
 type AllocFn = extern "C" fn(usize) -> *mut c_void;
 type FreeFn = extern "C" fn(*mut c_void);
 
 pub struct DlModuleAdapter {
+    #[cfg(unix)]
+    _lib: Arc<libloading::os::unix::Library>, // 保持 .so 加载（永不 unload）
+    #[cfg(not(unix))]
     _lib: Arc<libloading::Library>, // 保持 .so 加载（永不 unload）
     name: &'static str,             // load 时泄漏一次（模块生命周期内固定）
     version: u32,
     create: CreateFn,
     call: CallFn,
+    cancel: Option<CancelFn>,
+    on_event: Option<OnEventFn>,
     destroy: DestroyFn,
     shutdown: Option<ShutdownFn>,
     free: FreeFn, // 释放模块分配的内存（谁分配谁释放）
 }
 
-/// 从 .so 文件名推导模块名：libgstore_mod_qr.so → qr；libgstore_mod_analyzer.so → analyzer
+/// 从 .so 文件名推导模块名：libgstore_mod_qr.so → qr；
+/// 版本化文件（libgstore_mod_qr_0.2.0.so）同样剥离版本后缀 → qr。
 fn parse_module_name(file_name: &str) -> Result<String, String> {
     let stem = file_name
         .strip_prefix("lib")
         .and_then(|s| s.strip_suffix(".so"))
         .unwrap_or(file_name);
-    let name = stem.strip_prefix("gstore_mod_").unwrap_or(stem);
+    let with_version = stem.strip_prefix("gstore_mod_").unwrap_or(stem);
+    // 先剥版本号，再剥 GPU 变体后缀（两者可叠加）
+    let name = strip_variant_suffix(strip_version_suffix(with_version));
     if name.is_empty() {
         return Err(format!("cannot derive module name from {file_name}"));
     }
     Ok(name.to_string())
 }
 
+/// 剥离尾部 GPU 变体后缀（`_cpu` / `_opencl` / `_vulkan`）。
+///
+/// 变体 .so（如 `libgstore_mod_llm_opencl.so`）与主模块同名 → `llm`，
+/// 这样宿主才能按同一模块名加载不同后端（调用方按优先级尝试，谁先成功用谁）。
+fn strip_variant_suffix(s: &str) -> &str {
+    for tag in ["_opencl", "_vulkan", "_cpu"] {
+        if let Some(stripped) = s.strip_suffix(tag) {
+            if !stripped.is_empty() {
+                return stripped;
+            }
+        }
+    }
+    s
+}
+
+/// 剥离尾部形如 `_1.2.3` 的版本后缀（要求全为数字段，至少含一个点）
+fn strip_version_suffix(s: &str) -> &str {
+    if let Some(idx) = s.rfind('_') {
+        let tail = &s[idx + 1..];
+        if tail.contains('.')
+            && tail
+                .split('.')
+                .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+        {
+            return &s[..idx];
+        }
+    }
+    s
+}
+
 impl DlModuleAdapter {
     /// dlopen + 握手，构造适配器
+/// 尽力预加载 OpenCL 运行库（RTLD_GLOBAL）。
+///
+/// OpenCL 版 llm 模块（ggml-opencl）引用一组 `cl*` 未定义符号，而 NEEDED 里没有
+/// libOpenCL.so（Android NDK 不提供），因此必须在 dlopen 该模块之前，让设备上的
+/// libOpenCL 进入**全局符号组**；否则模块会因符号无法解析而加载失败。
+/// 找不到时静默跳过（CPU 构建完全不受影响）。
+fn preload_opencl() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        const CANDIDATES: [&str; 5] = [
+            "libOpenCL.so",
+            "libOpenCL.so.1",
+            "/vendor/lib64/libOpenCL.so",
+            "/system/lib64/libOpenCL.so",
+            "/vendor/lib/libOpenCL.so",
+        ];
+        for path in CANDIDATES {
+            // 句柄故意泄漏：整个进程生命周期保持加载，供后续 dlopen 解析符号
+            let loaded = unsafe {
+                libloading::os::unix::Library::open(
+                    Some(path),
+                    libloading::os::unix::RTLD_NOW | libloading::os::unix::RTLD_GLOBAL,
+                )
+            }
+            .map(|lib| {
+                std::mem::forget(lib);
+                true
+            })
+            .unwrap_or(false);
+            if loaded {
+                crate::log_bridge::push_host_log(1, format!("gstore_host: 已预加载 OpenCL - {path}"));
+                return;
+            }
+        }
+        crate::log_bridge::push_host_log(
+            0,
+            "gstore_host: 未找到 libOpenCL（OpenCL 版 llm 模块将加载失败并回退）".to_string(),
+        );
+    });
+}
+
     pub fn load(path: &std::path::Path) -> Result<Self, String> {
+        Self::preload_opencl();
         // 1. dlopen
+        // 用 RTLD_NOW 强制立即绑定全部符号：libloading::Library::new 默认 RTLD_LAZY，
+        // 在 Android 16 (16KB page) 上对提取到 files/ 目录的 .so 懒绑定解析异常，
+        // GOT 表项停留在链接时虚拟地址（未加加载基址），首次 PLT 调用（如 memcpy）
+        // 跳到未映射地址 SIGSEGV（真机崩溃根因）。RTLD_NOW 与 .so 内 BIND_NOW 一致。
+        #[cfg(unix)]
+        let lib = Arc::new(
+            unsafe {
+                libloading::os::unix::Library::open(
+                    Some(path),
+                    libloading::os::unix::RTLD_NOW | libloading::os::unix::RTLD_LOCAL,
+                )
+            }
+            .map_err(|e| format!("dlopen {}: {e}", path.display()))?,
+        );
+        #[cfg(not(unix))]
         let lib = Arc::new(
             unsafe { libloading::Library::new(path) }
                 .map_err(|e| format!("dlopen {}: {e}", path.display()))?,
@@ -73,7 +170,7 @@ impl DlModuleAdapter {
         let register_sym = format!("gstore_mod_{module_name}_register\0");
 
         // 3. dlsym register 入口（模块按名约定）
-        let register: libloading::Symbol<RegisterFn> = unsafe {
+        let register: libloading::os::unix::Symbol<RegisterFn> = unsafe {
             lib.get(register_sym.as_bytes())
         }
         .map_err(|e| format!("no register symbol {} in {}: {e}", register_sym.trim_end_matches('\0'), path.display()))?;
@@ -107,6 +204,14 @@ impl DlModuleAdapter {
                 "module name mismatch: file says {module_name}, api says {name}"
             ));
         }
+        // ABI 版本协商：模块声明的最低宿主 ABI 不得高于本宿主 ABI，
+        // 否则结构体布局可能不一致（跨边界 UB），必须拒绝加载而非放行。
+        if api.min_host_abi > GSTORE_MODULE_ABI_VERSION {
+            return Err(format!(
+                "module {name} requires host ABI >= {} but host is {}",
+                api.min_host_abi, GSTORE_MODULE_ABI_VERSION
+            ));
+        }
         let create = api.create.ok_or("module missing create")?;
         let call = api.call.ok_or("module missing call")?;
         let destroy = api.destroy.ok_or("module missing destroy")?;
@@ -118,6 +223,8 @@ impl DlModuleAdapter {
             version: api.version,
             create,
             call,
+            cancel: api.cancel,
+            on_event: api.on_event,
             destroy,
             shutdown: api.shutdown,
             free,
@@ -134,11 +241,30 @@ impl DlModuleAdapter {
         (self.free)(ptr as *mut c_void);
         bytes
     }
+
+    /// 请求模块取消某次在途调用（ABI `cancel` 槽；模块未实现则无操作）
+    fn cancel_call(&self, instance: u64, request_id: &str) -> Result<(), ModuleError> {
+        let Some(cancel) = self.cancel else {
+            return Ok(());
+        };
+        let c_req = CString::new(request_id)
+            .map_err(|_| ModuleError::invalid_arg("request_id contains NUL"))?;
+        let code = unsafe { cancel(instance, c_req.as_ptr()) };
+        if code == ABI_OK {
+            Ok(())
+        } else {
+            Err(ModuleError::internal(format!("module cancel failed: code={code}")))
+        }
+    }
 }
 
 impl GStoreModule for DlModuleAdapter {
     fn name(&self) -> &'static str {
         self.name
+    }
+
+    fn version(&self) -> u32 {
+        self.version
     }
 
     fn create(&self, config: &[u8]) -> Result<u64, ModuleError> {
@@ -172,10 +298,34 @@ impl GStoreModule for DlModuleAdapter {
                 &mut out_len,
             )
         };
-        if code == 0 {
+        if code == ABI_OK {
             Ok(unsafe { self.copy_out(out_ptr, out_len) })
+        } else if code == ABI_ERR_DETAIL {
+            // 模块把结构化错误写入 out 缓冲：还原 StatusCode/code/message
+            let bytes = unsafe { self.copy_out(out_ptr, out_len) };
+            Err(ModuleError::from_payload(&bytes).unwrap_or_else(|| {
+                ModuleError::internal(format!("module call {method} failed (undecodable detail)"))
+            }))
         } else {
             Err(ModuleError::internal(format!("module call {method} failed: code={code}")))
+        }
+    }
+
+    fn cancel(&self, instance: Option<u64>, request_id: &str) -> Result<(), ModuleError> {
+        self.cancel_call(instance.unwrap_or(0), request_id)
+    }
+
+    fn on_event(&self, module_id: u64, kind: &str, data: &[u8]) -> Result<(), ModuleError> {
+        let Some(f) = self.on_event else {
+            return Ok(()); // 模块未提供 on_event（旧模块）→ 忽略下发
+        };
+        let c_kind = CString::new(kind)
+            .map_err(|_| ModuleError::invalid_arg("kind contains NUL"))?;
+        let code = unsafe { f(module_id, c_kind.as_ptr(), data.as_ptr(), data.len()) };
+        if code == ABI_OK {
+            Ok(())
+        } else {
+            Err(ModuleError::internal(format!("module on_event failed: code={code}")))
         }
     }
 
@@ -195,6 +345,28 @@ impl GStoreModule for DlModuleAdapter {
     }
 }
 
+/// 定位已构建的模块 .so：缺失即 fail（避免 CI 静默跳过集成测试）。
+/// 设 `GSTORE_ALLOW_MISSING_MODULE=1` 可显式跳过（返回 None）。
+#[cfg(test)]
+fn module_so(rel: &str) -> Option<std::path::PathBuf> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
+    if path.exists() {
+        return Some(path);
+    }
+    if std::env::var("GSTORE_ALLOW_MISSING_MODULE").is_ok() {
+        eprintln!(
+            "SKIP (GSTORE_ALLOW_MISSING_MODULE=1): module .so not built: {}",
+            path.display()
+        );
+        return None;
+    }
+    panic!(
+        "module .so not built: {} — 先运行 rust/build_all.sh 构建模块，\
+         或设 GSTORE_ALLOW_MISSING_MODULE=1 显式跳过",
+        path.display()
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,12 +375,7 @@ mod tests {
     /// （需先构建模块：cd rust/gstore_mod_qr && cargo build）
     #[test]
     fn dlopen_qr_module_full_roundtrip() {
-        let so_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../gstore_mod_qr/target/debug/libgstore_mod_qr.so");
-        if !so_path.exists() {
-            eprintln!("SKIP: module .so not built: {}", so_path.display());
-            return;
-        }
+        let Some(so_path) = module_so("../gstore_mod_qr/target/debug/libgstore_mod_qr.so") else { return; };
 
         let adapter = DlModuleAdapter::load(&so_path).expect("dlopen + handshake");
         assert_eq!(adapter.name(), "qr");
@@ -228,12 +395,7 @@ mod tests {
     /// 通过 ModuleManager 走完整注册表链路
     #[test]
     fn module_manager_load_from_so_and_call() {
-        let so_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../gstore_mod_qr/target/debug/libgstore_mod_qr.so");
-        if !so_path.exists() {
-            eprintln!("SKIP: module .so not built");
-            return;
-        }
+        let Some(so_path) = module_so("../gstore_mod_qr/target/debug/libgstore_mod_qr.so") else { return; };
 
         let mgr = crate::manager::ModuleManager::new();
         let id = mgr.load_module_from_so(&so_path).expect("load from so");
@@ -267,12 +429,7 @@ mod analyzer_tests {
     /// （需先构建模块：cd rust/gstore_mod_analyzer && cargo build）
     #[test]
     fn dlopen_analyzer_module_handshake_and_call() {
-        let so_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../gstore_mod_analyzer/target/debug/libgstore_mod_analyzer.so");
-        if !so_path.exists() {
-            eprintln!("SKIP: analyzer module .so not built: {}", so_path.display());
-            return;
-        }
+        let Some(so_path) = module_so("../gstore_mod_analyzer/target/debug/libgstore_mod_analyzer.so") else { return; };
 
         let adapter = DlModuleAdapter::load(&so_path).expect("dlopen + handshake");
         assert_eq!(adapter.name(), "analyzer");
@@ -298,12 +455,7 @@ mod analyzer_tests {
     /// 通过 ModuleManager 按路径加载 analyzer 模块 + 信封级错误路由
     #[test]
     fn module_manager_loads_analyzer_from_so() {
-        let so_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../gstore_mod_analyzer/target/debug/libgstore_mod_analyzer.so");
-        if !so_path.exists() {
-            eprintln!("SKIP: analyzer module .so not built");
-            return;
-        }
+        let Some(so_path) = module_so("../gstore_mod_analyzer/target/debug/libgstore_mod_analyzer.so") else { return; };
 
         let mgr = crate::manager::ModuleManager::new();
         let id = mgr.load_module_from_so(&so_path).expect("load analyzer");
@@ -315,6 +467,31 @@ mod analyzer_tests {
         let resp = EnvelopeResponse::decode(&resp_bytes).unwrap();
         assert!(resp.is_ok());
         assert_eq!(resp.payload(), b"pong");
+
+        mgr.unref(id);
+    }
+
+    /// P0-2 回归：模块域错误经 ABI_ERR_DETAIL 透传，保留 405/METHOD_NOT_FOUND
+    /// （改造前会被塌成 500/INTERNAL_ERROR）。
+    #[test]
+    fn module_domain_error_preserves_status_and_code() {
+        let Some(so_path) = module_so("../gstore_mod_analyzer/target/debug/libgstore_mod_analyzer.so") else { return; };
+
+        let mgr = crate::manager::ModuleManager::new();
+        let id = mgr.load_module_from_so(&so_path).expect("load analyzer");
+
+        let req = EnvelopeRequest::new("analyzer", None, "no_such_method", vec![])
+            .with_request_id("req-err");
+        let resp = EnvelopeResponse::decode(&mgr.call_envelope(&req.encode().unwrap())).unwrap();
+        assert_eq!(resp.status(), 405, "应保留 MethodNotFound，而非塌成 500");
+        assert_eq!(resp.error_code(), gstore_contract::error::ERR_METHOD_NOT_FOUND);
+
+        // 缺参 → 422 INVALID_ARGUMENT（同一条透传链路）
+        let req = EnvelopeRequest::new("analyzer", None, "parse_apk_info", vec![])
+            .with_request_id("req-arg");
+        let resp = EnvelopeResponse::decode(&mgr.call_envelope(&req.encode().unwrap())).unwrap();
+        assert_eq!(resp.status(), 422);
+        assert_eq!(resp.error_code(), gstore_contract::error::ERR_INVALID_ARGUMENT);
 
         mgr.unref(id);
     }
@@ -340,12 +517,7 @@ mod repo_tests {
     #[test]
     fn repo_module_handshake_state_and_lifecycle() {
         let _lock = SHARED_STATE_LOCK.lock().unwrap();
-        let so_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../gstore_mod_repo/target/debug/libgstore_mod_repo.so");
-        if !so_path.exists() {
-            eprintln!("SKIP: repo module .so not built: {}", so_path.display());
-            return;
-        }
+        let Some(so_path) = module_so("../gstore_mod_repo/target/debug/libgstore_mod_repo.so") else { return; };
 
         let adapter = DlModuleAdapter::load(&so_path).expect("dlopen + handshake");
         assert_eq!(adapter.name(), "repo");
@@ -374,12 +546,7 @@ mod repo_tests {
     #[test]
     fn module_manager_loads_repo_module_from_so() {
         let _lock = SHARED_STATE_LOCK.lock().unwrap();
-        let so_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../gstore_mod_repo/target/debug/libgstore_mod_repo.so");
-        if !so_path.exists() {
-            eprintln!("SKIP: repo module .so not built");
-            return;
-        }
+        let Some(so_path) = module_so("../gstore_mod_repo/target/debug/libgstore_mod_repo.so") else { return; };
 
         let mgr = crate::manager::ModuleManager::new();
         let id = mgr.load_module_from_so(&so_path).expect("load repo");
@@ -399,5 +566,42 @@ mod repo_tests {
         assert_eq!(String::from_utf8_lossy(resp.payload()), "null");
 
         mgr.unref(id);
+    }
+
+    /// 下行事件烟测：向已 dlopen 的 repo 模块广播 config.changed（走 ABI on_event）
+    #[test]
+    fn broadcast_event_to_repo_module() {
+        let _lock = SHARED_STATE_LOCK.lock().unwrap();
+        let Some(so_path) = module_so("../gstore_mod_repo/target/debug/libgstore_mod_repo.so") else { return; };
+
+        let mgr = crate::manager::ModuleManager::new();
+        let id = mgr.load_module_from_so(&so_path).expect("load repo");
+
+        // 不应 panic；模块侧 on_event 解析并记录 key
+        mgr.broadcast_event("config.changed", br#"{"key":"proxyUrl","value":"x"}"#);
+
+        mgr.unref(id);
+    }
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::*;
+
+    #[test]
+    fn parse_module_name_handles_plain_and_versioned() {
+        assert_eq!(parse_module_name("libgstore_mod_qr.so").unwrap(), "qr");
+        assert_eq!(parse_module_name("libgstore_mod_analyzer.so").unwrap(), "analyzer");
+        assert_eq!(parse_module_name("libgstore_mod_repo.so").unwrap(), "repo");
+        // 版本化文件名：剥离 _x.y.z
+        assert_eq!(parse_module_name("libgstore_mod_qr_0.2.0.so").unwrap(), "qr");
+        // GPU 变体：带变体后缀、以及变体+版本叠加，都应归一化回同一模块名
+        assert_eq!(parse_module_name("libgstore_mod_llm_cpu.so").unwrap(), "llm");
+        assert_eq!(parse_module_name("libgstore_mod_llm_opencl.so").unwrap(), "llm");
+        assert_eq!(parse_module_name("libgstore_mod_llm_vulkan.so").unwrap(), "llm");
+        assert_eq!(parse_module_name("libgstore_mod_llm_opencl_1.2.3.so").unwrap(), "llm");
+        assert_eq!(parse_module_name("libgstore_mod_repo_1.0.0.so").unwrap(), "repo");
+        // 下划线模块名（无点版本）不应被误剥
+        assert_eq!(parse_module_name("libgstore_mod_my_mod.so").unwrap(), "my_mod");
     }
 }

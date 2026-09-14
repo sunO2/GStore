@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/logger/LogManager.dart';
+import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/page/log_viewer/providers.dart';
 import 'package:gstore/page/log_viewer/view.dart';
 
@@ -109,5 +110,96 @@ void main() {
         reason: '中间日志应在最旧之上');
     expect(latest.dy, greaterThan(middle.dy),
         reason: '最新日志应在中间日志之下');
+  });
+
+  /// 内容过滤：按 message 关键字（不区分大小写）
+  test('内容过滤按 message 关键字匹配（不区分大小写）', () {
+    LogManager.instance.clear();
+    LogManager.instance.info('Download started');
+    LogManager.instance.info('repo loaded');
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    container.read(logEntriesProvider);
+
+    container.read(logViewerContentFilterProvider.notifier).set('DOWNLOAD');
+    final filtered = container.read(filteredLogsProvider);
+
+    expect(filtered.map((e) => e.message), contains('Download started'));
+    expect(filtered.any((e) => e.message == 'repo loaded'), isFalse);
+  });
+
+  /// 内容过滤：命中 data 的键与值
+  test('内容过滤命中 data 键与值', () {
+    LogManager.instance.clear();
+    LogManager.instance.info('no match', data: {'packageName': 'com.example.app'});
+    LogManager.instance.info('other entry');
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    container.read(logEntriesProvider);
+
+    container.read(logViewerContentFilterProvider.notifier).set('com.example');
+    final filtered = container.read(filteredLogsProvider);
+
+    expect(filtered.any((e) => e.message == 'no match'), isTrue);
+    expect(filtered.any((e) => e.message == 'other entry'), isFalse);
+  });
+
+  /// 内容过滤与级别过滤叠加
+  test('内容过滤与级别过滤叠加生效', () {
+    LogManager.instance.clear();
+    LogManager.instance.error('boom error');
+    LogManager.instance.info('boom info');
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    container.read(logEntriesProvider);
+
+    container.read(logViewerFilterProvider.notifier).set(LogLevel.error);
+    container.read(logViewerContentFilterProvider.notifier).set('boom');
+    final filtered = container.read(filteredLogsProvider);
+
+    expect(filtered.map((e) => e.message), contains('boom error'));
+    expect(filtered.any((e) => e.message == 'boom info'), isFalse);
+  });
+
+  /// 「更多」按钮 → 底部弹层 → target 过滤输入 → 列表过滤
+  testWidgets('更多按钮弹出下载日志/target 过滤，输入后过滤生效', (tester) async {
+    LogManager.instance.clear();
+    LogManager.instance.info('alpha 命中');
+    LogManager.instance.info('beta 不命中');
+
+    await tester.pumpWidget(
+      ProviderScope(
+        child: MaterialApp(
+          navigatorKey: appNavigatorKey,
+          home: const LogViewerPage(),
+        ),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 100));
+
+    // 原「导出日志」按钮已改为「更多」
+    expect(find.byIcon(Icons.file_download), findsNothing);
+    await tester.tap(find.byIcon(Icons.more_vert));
+    await tester.pumpAndSettle();
+
+    expect(find.text('下载日志'), findsOneWidget);
+    expect(find.text('target 过滤'), findsOneWidget);
+
+    // 进入过滤输入弹层
+    await tester.tap(find.text('target 过滤'));
+    await tester.pumpAndSettle();
+    expect(find.byType(TextField), findsOneWidget);
+
+    await tester.enterText(find.byType(TextField), 'alpha');
+    await tester.tap(find.text('应用'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('alpha 命中'), findsOneWidget);
+    expect(find.text('beta 不命中'), findsNothing);
+    // 过滤生效提示条
+    expect(find.textContaining('过滤：alpha'), findsOneWidget);
   });
 }

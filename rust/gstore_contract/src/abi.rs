@@ -6,7 +6,9 @@
 use std::os::raw::{c_char, c_int, c_void};
 
 /// 模块 ABI 版本：任何一端结构体布局变更都必须 +1
-pub const GSTORE_MODULE_ABI_VERSION: u32 = 1;
+///
+/// v2：`GStoreModuleApi` 追加 `on_event`（宿主→模块事件下发）。
+pub const GSTORE_MODULE_ABI_VERSION: u32 = 2;
 
 /// 宿主 → 模块：宿主服务的注入表（按值注入，模块只读保存，不 dlsym 宿主符号）
 #[repr(C)]
@@ -50,6 +52,15 @@ pub struct GStoreModuleApi {
     pub shutdown: Option<extern "C" fn() -> c_int>,
     pub alloc: Option<extern "C" fn(size: usize) -> *mut c_void>,
     pub free: Option<extern "C" fn(ptr: *mut c_void)>,
+    /// 宿主 → 模块 事件下发（下行订阅，ABI v2 追加）：
+    /// [kind] 为事件类型（如 "config.changed"），[data] 为 JSON 载荷。
+    /// 旧宿主不读取此槽；旧模块不提供（None → 宿主跳过下发）。
+    pub on_event: Option<extern "C" fn(
+        module_id: u64,
+        kind: *const c_char,
+        data: *const u8,
+        data_len: usize,
+    ) -> c_int>,
 }
 
 /// C ABI 层错误码（模块 extern "C" 函数返回；为未来模块 .so 契约预留）
@@ -62,3 +73,12 @@ pub const ABI_ERR_NO_INSTANCE: c_int = -4;
 pub const ABI_ERR_NO_METHOD: c_int = -5;
 pub const ABI_ERR_PANIC: c_int = -6;
 pub const ABI_ERR_INTERNAL: c_int = -7;
+/// 模块把结构化错误（`ModuleError::to_payload` 的 JSON）写入 out 缓冲后返回此码；
+/// 宿主据此还原 StatusCode/code/message，避免域错误在 ABI 边界塌成通用内部错误。
+pub const ABI_ERR_DETAIL: c_int = -8;
+
+/// 校验宿主 ABI 是否满足模块要求（模块侧握手调用）。
+/// 返回 true = 兼容。
+pub fn host_abi_satisfies(min_host_abi: u32, host_abi: u32) -> bool {
+    min_host_abi <= host_abi
+}
