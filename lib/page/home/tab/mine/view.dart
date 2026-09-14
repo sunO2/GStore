@@ -549,6 +549,17 @@ class _MinePageState extends ConsumerState<MinePage>
                 children: [
                   ListTile(
                     contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.history_outlined,
+                        size: AppTypography.iconMD),
+                    title: const Text('应用快照'),
+                    subtitle: const Text('查看已生成快照的应用'),
+                    trailing: const Icon(Icons.chevron_right,
+                        size: AppTypography.iconSM),
+                    onTap: () => context.push(AppRoute.appSnapshotList),
+                  ),
+                  const Divider(height: 1),
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
                     leading: const Icon(Icons.qr_code_2,
                         size: AppTypography.iconMD),
                     title: const Text('二维码'),

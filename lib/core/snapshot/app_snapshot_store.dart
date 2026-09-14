@@ -129,6 +129,56 @@ class AppSnapshotStore {
     }
   }
 
+  /// 按应用聚合的**轻量**总览（只取 label/份数/最近时间，不解析 payload）
+  ///
+  /// 快照总览页要列出全部应用，`listAll` 会把每份 payload 都解出来（几十~几百 KB × N），
+  /// 这里改用 GROUP BY 只回读几个标量列。
+  Future<List<SnapshotAppEntry>> listApps() async {
+    try {
+      final db = await _database;
+      final rows = await db.rawQuery('''
+        SELECT packageName,
+               appLabel,
+               COUNT(*) AS c,
+               MAX(createdAt) AS latest
+        FROM $_table
+        GROUP BY packageName
+        ORDER BY latest DESC
+      ''');
+      final out = <SnapshotAppEntry>[];
+      for (final row in rows) {
+        final packageName = row['packageName'] as String? ?? '';
+        if (packageName.isEmpty) continue;
+        final latest = (row['latest'] as num?)?.toInt() ?? 0;
+        // 最近一份的版本名：单条小查询，仅取记录页字段
+        var latestVersion = '';
+        final latestRows = await db.query(
+          _table,
+          columns: ['versionName'],
+          where: 'packageName = ? AND createdAt = ?',
+          whereArgs: [packageName, latest],
+          limit: 1,
+        );
+        if (latestRows.isNotEmpty) {
+          latestVersion = latestRows.first['versionName'] as String? ?? '';
+        }
+        out.add(
+          SnapshotAppEntry(
+            packageName: packageName,
+            appLabel: row['appLabel'] as String? ?? '',
+            count: (row['c'] as num?)?.toInt() ?? 0,
+            latestAt: latest,
+            latestVersionName: latestVersion,
+          ),
+        );
+      }
+      return out;
+    } catch (e) {
+      appLog.error('AppSnapshotStore: 查询快照总览失败 - $e');
+      return const [];
+    }
+  }
+
   /// 按 id 取单条
   Future<SnapshotRecord?> getById(int id) async {
     try {

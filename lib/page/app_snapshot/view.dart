@@ -65,6 +65,14 @@ class _AppSnapshotPageState extends State<AppSnapshotPage> {
 
   Future<void> _capture() async {
     if (_capturing) return;
+    // 入口可能来自「快照总览」（应用可能已卸载，拿不到安装包）：
+    // 此时只允许查看历史，不生成一份全是缺失告警的空快照
+    if (widget.sourceDir.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('未找到安装包，无法新建快照（历史快照仍可查看）')),
+      );
+      return;
+    }
     setState(() => _capturing = true);
     try {
       final result = await SnapshotCollector.instance.capture(

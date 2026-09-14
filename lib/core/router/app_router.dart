@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 
 import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/page/page.dart';
+import 'package:gstore/page/app_snapshot/apps_list.dart';
 
 import '../routers.dart';
 
@@ -86,6 +87,10 @@ final GoRouter appRouter = GoRouter(
     GoRoute(
       path: AppRoute.qrTool,
       builder: (context, state) => const QrToolPage(),
+    ),
+    GoRoute(
+      path: AppRoute.appSnapshotList,
+      builder: (context, state) => const AppSnapshotAppsPage(),
     ),
     GoRoute(
       path: AppRoute.settings,

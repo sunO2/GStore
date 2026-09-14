@@ -202,6 +202,32 @@ class SnapshotPayload {
       );
 }
 
+/// 快照总览条目：**按应用聚合**（不解析 payload，列表页可安全地一次查全部）
+class SnapshotAppEntry {
+  const SnapshotAppEntry({
+    required this.packageName,
+    this.appLabel = '',
+    this.count = 0,
+    this.latestAt = 0,
+    this.latestVersionName = '',
+  });
+
+  final String packageName;
+  final String appLabel;
+
+  /// 该应用已有快照份数
+  final int count;
+
+  /// 最近一份快照的采集时间
+  final int latestAt;
+
+  /// 最近一份快照记录的版本名
+  final String latestVersionName;
+
+  /// 列表展示名（缺 label 时回落包名）
+  String get displayName => appLabel.isNotEmpty ? appLabel : packageName;
+}
+
 /// 列表页用的精简统计
 class SnapshotSummary {
   const SnapshotSummary({
