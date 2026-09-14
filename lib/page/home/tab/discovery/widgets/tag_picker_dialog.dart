@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:gstore/core/design/design_tokens.dart';
 
-/// 展示分类标签选择对话框
+/// 展示分类标签选择弹层（统一底部 sheet 风格）
 ///
 /// [presetTags] 预置分类标签（来自本地库 AppCategory.description，失败时使用内置列表）
 /// [currentTags] 应用当前已有的标签
@@ -12,9 +12,8 @@ Future<List<String>?> showTagPickerDialog(
   required List<String> presetTags,
   required List<String> currentTags,
 }) {
-  return showDialog<List<String>>(
+  return AppSheet.showCustom<List<String>>(
     context: context,
-    barrierDismissible: true,
     builder: (_) =>
         _TagPickerDialog(presetTags: presetTags, currentTags: currentTags),
   );
@@ -97,131 +96,93 @@ class _TagPickerDialogState extends State<_TagPickerDialog> {
     final customTags =
         _selectedTags.where((t) => !widget.presetTags.contains(t)).toList();
 
-    return Dialog(
-      elevation: 0,
-      backgroundColor: colorScheme.dialogSurface,
-      shape: RoundedRectangleBorder(
-        borderRadius: AppRadius.allXL,
-        side: BorderSide(
-          color: colorScheme.borderLight,
-          width: 1,
-        ),
-      ),
-      insetPadding: AppSpacing.onlyHorizontalLG,
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 400),
-        child: Padding(
-          padding: AppSpacing.allXL,
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
+    return AppSheetScaffold(
+      title: '添加分类标签',
+      contentPadding: AppSpacing.onlyHorizontalXL,
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // 预置分类
+          if (widget.presetTags.isNotEmpty) ...[
+            Text(
+              '预置分类',
+              style: textTheme.labelLarge?.copyWith(
+                color: colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: AppSpacing.sm),
+            Wrap(
+              spacing: AppSpacing.sm,
+              runSpacing: AppSpacing.xs,
               children: [
-                // 标题
-                Text(
-                  '添加分类标签',
-                  style: textTheme.titleLarge?.copyWith(
-                    fontWeight: AppTypography.weightSemiBold,
+                for (final tag in widget.presetTags)
+                  FilterChip(
+                    label: Text(tag),
+                    selected: _selectedTags.contains(tag),
+                    onSelected: (_) => _togglePreset(tag),
+                    selectedColor: colorScheme.secondaryContainer,
+                    checkmarkColor: colorScheme.onSecondaryContainer,
                   ),
-                ),
-                const SizedBox(height: AppSpacing.lg),
-
-                // 预置分类
-                if (widget.presetTags.isNotEmpty) ...[
-                  Text(
-                    '预置分类',
-                    style: textTheme.labelLarge?.copyWith(
-                      color: colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-                  const SizedBox(height: AppSpacing.sm),
-                  Wrap(
-                    spacing: AppSpacing.sm,
-                    runSpacing: AppSpacing.xs,
-                    children: [
-                      for (final tag in widget.presetTags)
-                        FilterChip(
-                          label: Text(tag),
-                          selected: _selectedTags.contains(tag),
-                          onSelected: (_) => _togglePreset(tag),
-                          selectedColor: colorScheme.secondaryContainer,
-                          checkmarkColor: colorScheme.onSecondaryContainer,
-                        ),
-                    ],
-                  ),
-                  const SizedBox(height: AppSpacing.lg),
-                ],
-
-                // 自定义标签输入
-                TextField(
-                  controller: _inputController,
-                  decoration: InputDecoration(
-                    hintText: '自定义标签',
-                    hintStyle: textTheme.bodyMedium?.copyWith(
-                      color: colorScheme.onSurfaceVariant,
-                    ),
-                    suffixIcon: IconButton(
-                      icon: const Icon(Icons.add),
-                      tooltip: '添加标签',
-                      onPressed: _addCustomTag,
-                    ),
-                    isDense: true,
-                  ),
-                  onSubmitted: (_) => _addCustomTag(),
-                ),
-
-                // 自定义标签（可移除）
-                if (customTags.isNotEmpty) ...[
-                  const SizedBox(height: AppSpacing.md),
-                  Wrap(
-                    spacing: AppSpacing.sm,
-                    runSpacing: AppSpacing.xs,
-                    children: [
-                      for (final tag in customTags)
-                        InputChip(
-                          label: Text(tag),
-                          onDeleted: () => _removeTag(tag),
-                          backgroundColor: colorScheme.secondaryContainer,
-                          deleteIconColor: colorScheme.onSecondaryContainer,
-                          labelStyle: textTheme.labelMedium?.copyWith(
-                            color: colorScheme.onSecondaryContainer,
-                          ),
-                        ),
-                    ],
-                  ),
-                ],
-
-                const SizedBox(height: AppSpacing.xxl),
-
-                // 操作按钮
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    TextButton(
-                      onPressed: _clearAll,
-                      child: const Text('清空'),
-                    ),
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        TextButton(
-                          onPressed: () => Navigator.of(context).pop(),
-                          child: const Text('取消'),
-                        ),
-                        const SizedBox(width: AppSpacing.sm),
-                        FilledButton(
-                          onPressed: _confirm,
-                          child: const Text('确定'),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
               ],
             ),
+            const SizedBox(height: AppSpacing.lg),
+          ],
+
+          // 自定义标签输入
+          TextField(
+            controller: _inputController,
+            decoration: InputDecoration(
+              hintText: '自定义标签',
+              hintStyle: textTheme.bodyMedium?.copyWith(
+                color: colorScheme.onSurfaceVariant,
+              ),
+              suffixIcon: IconButton(
+                icon: const Icon(Icons.add),
+                tooltip: '添加标签',
+                onPressed: _addCustomTag,
+              ),
+              isDense: true,
+            ),
+            onSubmitted: (_) => _addCustomTag(),
           ),
-        ),
+
+          // 自定义标签（可移除）
+          if (customTags.isNotEmpty) ...[
+            const SizedBox(height: AppSpacing.md),
+            Wrap(
+              spacing: AppSpacing.sm,
+              runSpacing: AppSpacing.xs,
+              children: [
+                for (final tag in customTags)
+                  InputChip(
+                    label: Text(tag),
+                    onDeleted: () => _removeTag(tag),
+                    backgroundColor: colorScheme.secondaryContainer,
+                    deleteIconColor: colorScheme.onSecondaryContainer,
+                    labelStyle: textTheme.labelMedium?.copyWith(
+                      color: colorScheme.onSecondaryContainer,
+                    ),
+                  ),
+              ],
+            ),
+          ],
+        ],
       ),
+      actions: [
+        TextButton(
+          onPressed: _clearAll,
+          child: const Text('清空'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: _confirm,
+          child: const Text('确定'),
+        ),
+      ],
     );
   }
 }

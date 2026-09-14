@@ -60,6 +60,37 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
   /// 最后的错误信息
   String? get errorMessage => _errorMessage;
 
+  /// 源身份键 → 该源**最近一次同步**的真实结果。
+  ///
+  /// 按源记录：多源下不存在"整体上次同步"（那只会是"最后一个完成的源"），
+  /// 界面按源展示才如实。本次会话内有效（冷启动后由 [getStatistics] 给出 null）。
+  final Map<String, FdroidSyncInfo> _syncInfo = {};
+
+  /// 某源最近一次同步结果（未同步过返回 null）
+  FdroidSyncInfo? syncInfoFor(FdroidSource source) => _syncInfo[identityKeyFor(source)];
+
+  /// 源身份键 → 该源**实际生效**的资源基址（模块 `resolved_url`）。
+  ///
+  /// 资源地址的唯一产出方：由下载结果回填，冷启动/换源时用 [ensureBaseFor] 从该源
+  /// 自己的库补读。宿主侧不再用"第一个启用镜像"另算一套。
+  final Map<String, String> _resolvedBases = {};
+
+  @override
+  String? cachedBaseFor(FdroidSource source) => _resolvedBases[identityKeyFor(source)];
+
+  @override
+  Future<void> ensureBaseFor(FdroidSource source) async {
+    final key = identityKeyFor(source);
+    final cached = _resolvedBases[key];
+    if (cached != null && cached.isNotEmpty) return;
+    final meta = await rust.FdroidRustRepoManager.getRepoMetaIn(source);
+    final url = meta?['resolved_url'] as String?;
+    if (url == null || url.isEmpty) return;
+    _resolvedBases[key] = url;
+    appLog.info('FdroidRepoManager: 「${source.name}」资源基址 = $url');
+    notifyListeners();
+  }
+
   /// 在列表中查找首个满足条件的元素（无则返回 null）。
   static FdroidSource? _firstWhereOrNull(
     List<FdroidSource> list,
@@ -323,6 +354,8 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
       _loadingProgress = 1.0;
       notifyListeners();
       appLog.info('FdroidRepoManager: Rust 后端下载完成');
+      // 记录本次同步摘要（增量/全量、实际地址、应用数）——供界面如实展示
+      _logDownloadSummary(source, result.payload);
       appLog.info('FdroidRepoManager: 仓库加载完成');
     } catch (e) {
       appLog.error('FdroidRepoManager: 加载仓库失败 - $e');
@@ -582,26 +615,25 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
   }
 
   /// 获取数据库统计信息
-  Future<Map<String, int>> getStatistics() async {
-    try {
-      final targets = enabledSources;
-      if (targets.isEmpty) {
-        return {'apps': await rust.FdroidRustRepoManager.getAppCount()};
+  ///
+  /// **按源**给出（每个源一个独立的库）：多源下把各源加在一起会掩盖
+  /// "哪个源没同步 / 哪个源一条数据都没有"，这正是排查多源问题时最需要的信息。
+  Future<List<FdroidSourceStat>> getStatistics() async {
+    final out = <FdroidSourceStat>[];
+    for (final s in _sources) {
+      var count = 0;
+      try {
+        count = await rust.FdroidRustRepoManager.appCountIn(s);
+      } catch (e) {
+        appLog.error('FdroidRepoManager: 源 ${s.name} 统计失败 - $e');
       }
-      // 多源：各源应用数之和（每源一个库，互不覆盖）
-      var total = 0;
-      for (final s in targets) {
-        try {
-          total += await rust.FdroidRustRepoManager.appCountIn(s);
-        } catch (e) {
-          appLog.error('FdroidRepoManager: 源 ${s.name} 统计失败 - $e');
-        }
-      }
-      return {'apps': total};
-    } catch (e) {
-      appLog.error('FdroidRepoManager: 获取统计信息失败 - $e');
-      return {'apps': 0};
+      out.add(FdroidSourceStat(
+        source: s,
+        appCount: count,
+        lastSync: _syncInfo[identityKeyFor(s)],
+      ));
     }
+    return out;
   }
 
   /// 添加自定义源
@@ -630,11 +662,26 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
   void _logDownloadSummary(FdroidSource source, List<int> payload) {
     try {
       final m = jsonDecode(utf8.decode(payload)) as Map<String, dynamic>;
+      final incremental = m['incremental'] == true;
+      final resolved = m['resolved_url'] as String?;
       appLog.info('FdroidRepoManager: 「${source.name}」加载完成 → '
-          '${m['incremental'] == true ? '增量更新（entry.json + diff）' : '全量下载'}'
+          '${incremental ? '增量更新（entry.json + diff）' : '全量下载'}'
           '，应用 ${m['total_apps']}，耗时 ${m['download_time_ms']}ms'
           '${m['verified'] == true ? '，SHA-256 已校验' : ''}'
-          '，地址 ${m['resolved_url']}');
+          '，地址 $resolved');
+      // 按源记同步结果（含本次实际生效的基址）——供界面逐源如实展示
+      _syncInfo[identityKeyFor(source)] = FdroidSyncInfo(
+        at: DateTime.now(),
+        incremental: incremental,
+        totalApps: (m['total_apps'] as num?)?.toInt(),
+        elapsedMs: (m['download_time_ms'] as num?)?.toInt(),
+        verified: m['verified'] == true,
+        resolvedUrl: resolved,
+      );
+      if (resolved != null && resolved.isNotEmpty) {
+        _resolvedBases[identityKeyFor(source)] = resolved;
+      }
+      notifyListeners();
     } catch (_) {
       // 摘要仅用于诊断，解析失败不影響主流程
     }
@@ -810,19 +857,6 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
         notifyListeners();
       }
     }
-  }
-
-  /// 检查增量更新（Rust 暂不支持，返回 null）
-  Future<Map<String, dynamic>?> checkIncrementalUpdate({bool force = false}) async {
-    // Rust 实现暂时不支持增量更新
-    debugPrint('FdroidRepoManager: 增量更新暂不支持');
-    return null;
-  }
-
-  /// 应用增量更新（Rust 暂不支持）
-  Future<void> applyIncrementalUpdate() async {
-    // Rust 实现暂时不支持增量更新
-    debugPrint('FdroidRepoManager: 增量更新暂不支持');
   }
 
   /// 清空当前数据

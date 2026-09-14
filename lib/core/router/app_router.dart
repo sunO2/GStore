@@ -108,6 +108,10 @@ final GoRouter appRouter = GoRouter(
       builder: (context, state) => const AgentPage(),
     ),
     GoRoute(
+      path: AppRoute.localLlm,
+      builder: (context, state) => const LocalLlmPage(),
+    ),
+    GoRoute(
       path: AppRoute.agentSettings,
       builder: (context, state) => const AgentSettingsPage(),
     ),

@@ -16,6 +16,21 @@ final logViewerFilterProvider =
   LogViewerFilterNotifier.new,
 );
 
+/// 日志内容过滤关键字（页面局部状态；空串 = 不过滤）。
+class LogViewerContentFilterNotifier extends Notifier<String> {
+  @override
+  String build() => '';
+
+  void set(String keyword) => state = keyword;
+
+  void clear() => state = '';
+}
+
+final logViewerContentFilterProvider =
+    NotifierProvider<LogViewerContentFilterNotifier, String>(
+  LogViewerContentFilterNotifier.new,
+);
+
 /// 是否自动滚动到最新日志（页面局部状态）。
 class AutoScrollNotifier extends Notifier<bool> {
   @override
@@ -59,10 +74,35 @@ final logEntriesProvider =
   LogEntriesNotifier.new,
 );
 
-/// 按当前筛选级别过滤日志（组合日志快照 + 筛选状态）。
+/// 按当前筛选级别 + 内容关键字过滤日志（组合日志快照 + 筛选状态）。
+///
+/// 内容过滤对 `message` 与 `data`（键与值）做不区分大小写的子串匹配。
 final filteredLogsProvider = Provider<List<LogEntry>>((ref) {
   final logs = ref.watch(logEntriesProvider);
   final level = ref.watch(logViewerFilterProvider);
-  if (level == LogLevel.all) return logs;
-  return logs.where((log) => log.level == level).toList();
+  final keyword = ref.watch(logViewerContentFilterProvider).trim().toLowerCase();
+
+  Iterable<LogEntry> result = logs;
+  if (level != LogLevel.all) {
+    result = result.where((log) => log.level == level);
+  }
+  if (keyword.isNotEmpty) {
+    result = result.where((log) => _logMatches(log, keyword));
+  }
+  return result.toList();
 });
+
+/// 日志内容是否匹配关键字（消息 / data 键 / data 值）
+bool _logMatches(LogEntry log, String keyword) {
+  if (log.message.toLowerCase().contains(keyword)) return true;
+  final data = log.data;
+  if (data != null) {
+    for (final entry in data.entries) {
+      if (entry.key.toLowerCase().contains(keyword)) return true;
+      if (entry.value?.toString().toLowerCase().contains(keyword) ?? false) {
+        return true;
+      }
+    }
+  }
+  return false;
+}

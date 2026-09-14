@@ -526,27 +526,24 @@ class _ThemeSettingsPageState extends ConsumerState<ThemeSettingsPage> {
     Color currentColor,
     ValueChanged<Color> onColorSelected,
   ) {
-    showDialog(
+    AppSheet.show<void>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text('选择$title'),
-        content: SingleChildScrollView(
-          child: ColorPicker(
-            color: currentColor,
-            onColorChanged: onColorSelected,
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('确定'),
-          ),
-        ],
+      title: '选择$title',
+      contentPadding: AppSpacing.onlyHorizontalXL,
+      content: ColorPicker(
+        color: currentColor,
+        onColorChanged: onColorSelected,
       ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('确定'),
+        ),
+      ],
     );
   }
 

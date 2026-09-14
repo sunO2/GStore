@@ -1,0 +1,9 @@
+{
+  "name": "平安测试商店",
+  "description": "Iris Store 企业应用分发（需导入环境变量下载）",
+  "requiredEnvVars": [
+    "PINGAN_USER",
+    "PINGAN_PASS",
+    "PINGAN_ENV"
+  ]
+}

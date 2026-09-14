@@ -22,7 +22,6 @@ import 'package:gstore/core/model/AppSummary.dart';
 import 'package:gstore/core/model/IDetailInfo.dart';
 import 'package:gstore/core/model/detail_extra_keys.dart';
 import 'package:gstore/core/model/proxy/FdroidChannelDetailProxy.dart';
-import 'package:gstore/core/service/app_icon_service.dart';
 import 'package:gstore/db/apps/AppInfo.dart' as db;
 import 'package:gstore/core/channel/AppUpdateCheckMixin.dart';
 
@@ -58,6 +57,28 @@ String joinRepoUrl(String base, String path) {
   final b = base.replaceAll(RegExp(r'/+$'), '');
   final q = p.replaceAll(RegExp(r'^/+'), '');
   return q.isEmpty ? b : '$b/$q';
+}
+
+/// 入库用的资源键（**写侧**，与读侧的 [normalizeRepoAssetPath] 分工不同，别混用）
+///
+/// - **属于本仓库**的地址（源地址或它的镜像 → host 与 [baseHost] 相同）：
+///   取*仓库内相对路径*。这样换镜像/换域名后，读侧按"记录所属源"重拼即可跟着变
+///   （存完整 URL 会把图标写死在某个旧镜像上，永久失效）。
+/// - **非同源**的绝对地址（索引里指向外部 CDN 的资源）：原样保留——它本来就不随镜像变化，
+///   强行取相对键会被错误地拼到源地址上。
+///
+/// [baseHost] 传"该记录所属源实际生效基址"的 host（见 `_assetBaseFor`）。
+@visibleForTesting
+String repoAssetKey(String raw, {String baseHost = ''}) {
+  final v = raw.trim();
+  if (v.isEmpty) return '';
+  final uri = Uri.tryParse(v);
+  if (uri != null && uri.hasScheme && uri.host.isNotEmpty) {
+    final own = baseHost.isNotEmpty && uri.host.toLowerCase() == baseHost.toLowerCase();
+    // 外部资源：保留完整地址；本仓库资源：取其路径再归一为仓库内相对路径
+    return own ? normalizeRepoAssetPath(uri.path) : v;
+  }
+  return normalizeRepoAssetPath(v);
 }
 
 class FdroidChannel extends IChannel with AppUpdateCheckMixin {
@@ -102,19 +123,33 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
   /// API 基础地址（固定）
   static const String _apiBaseUrl = 'https://f-droid.org/api';
 
-  /// 资源基地址（**镜像优先**）
+  /// 兜底资源基地址：**仅在确实不知道记录所属源时**使用（例如网络兜底详情）。
   ///
   /// 真机：国内直连 f-droid.org 会连接超时（详情/图片都拉不到），
   /// 所以图片等静态资源**同样要走镜像**——不是只有索引/diff 才走镜像。
-  /// 规则：源启用镜像回退且有**启用**镜像 → 取第一个启用镜像；否则用源地址。
-  String get _currentRepoUrl {
+  ///
+  /// ⚠️ 已知归属的场合一律走 [_assetBaseFor]（按记录所属源），不要用这里——
+  /// 否则第三方源的应用会继承"当前选中源"的镜像前缀（真机 Bitwarden 图标事故）。
+  String get _fallbackRepoUrl {
     final src = _repoManager?.currentSource;
-    if (src != null && src.useMirrors) {
-      for (final m in src.mirrors) {
+    if (src == null) return 'https://f-droid.org/repo';
+    final resolved = _repoService?.cachedBaseFor(src);
+    if (resolved != null && resolved.isNotEmpty) return resolved;
+    return _mirrorFirstUrlOf(src);
+  }
+
+  /// 按源的镜像配置取地址：**只作为 resolved_url 未知时的兜底**。
+  ///
+  /// 别把它当主规则——它不知道镜像当前是否可用，而模块的 `resolved_url` 是
+  /// "镜像回退后真正下载成功"的那个地址。两套规则并存会出现：
+  /// 搜索（模块基址）图标正常、列表/详情（这里）图标 404。
+  static String _mirrorFirstUrlOf(FdroidSource s) {
+    if (s.useMirrors) {
+      for (final m in s.mirrors) {
         if (m.enabled && m.url.isNotEmpty) return m.url;
       }
     }
-    return src?.repoUrl ?? 'https://f-droid.org/repo';
+    return s.repoUrl;
   }
 
   FdroidChannel({
@@ -182,13 +217,19 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
       // 从 Channel 数据库获取 F-Droid 渠道的应用
       final channelApps = await _database!.dao.getAppsByChannel(ChannelType.fdroid.code);
 
+      // 先把这批记录各自所属源的"实际生效基址"备好（冷启动首次为本地库读取）
+      await _ensureBases(channelApps.map((e) => e.sourceIdentity));
+
       // 转换为 AppInfo，构造完整的图标URL
       final apps = channelApps.map((channelApp) {
         final categories = channelApp.category?.split(',') ?? [];
 
         // 处理图标 URL
         // 图标地址统一归一化（见 _absoluteIconUrl 注释）
-        final iconUrl = _absoluteIconUrl(channelApp.icon, appId: channelApp.appId);
+        final iconUrl = _absoluteIconUrl(channelApp.icon,
+            appId: channelApp.appId,
+            // ★ 必须传"记录所属源"：否则基址退回当前源 → 第三方源图标拼上官方镜像 → 404
+            sourceId: channelApp.sourceIdentity);
 
         debugPrint('FdroidChannel: 图标处理 - 原始=${channelApp.icon}, 最终=$iconUrl');
 
@@ -246,6 +287,16 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
         // 处理图标 URL（统一归一化，见 _absoluteIconUrl）
         final iconUrl =
             _absoluteIconUrl(appMap['icon']?.toString() ?? '', appId: packageName);
+
+        // 【搜索结果取证】一次看清"为什么没图标"：模块原始值 vs 我们交给 UI 的最终值
+        //  - rawIcon 为空          → 索引/模块侧就没给图标
+        //  - finalIcon 含 '/https://' → 拼接把绝对地址二次前缀了（拼接契约问题）
+        //  - 两者都正常但图不出     → 该地址本身取不到（镜像/路径问题），需实地取一次
+        debugPrint('FdroidChannel: 搜索结果 - {packageName: $packageName, '
+            'name: ${appMap['name']}, rawIcon: ${appMap['icon']}, '
+            'finalIcon: $iconUrl, sourceId: ${appMap['sourceId'] ?? _currentSourceKey()}, '
+            'keys: ${appMap.keys.join(",")}}');
+        debugPrint('FdroidChannel: 搜索结果字段 - 原始 map = $appMap');
         debugPrint('FdroidChannel: 图标处理 - packageName=$packageName, 最终=$iconUrl');
 
         return AppSummary(
@@ -296,52 +347,26 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
 
       final categoryStr = app.category?.join(',');
 
-      // 归一化图标路径，存储为相对路径（不包含完整URL）
-      // app.icon 现在是完整URL，需要提取路径部分
-      // 例如：https://f-droid.org/repo/icons/com.termux.png -> /com.termux.png
-      String iconPath = '/${app.appId}.png';
-      final icon = app.icon;
-      if (icon.isNotEmpty) {
-        if (icon.startsWith('http')) {
-          // 完整URL，提取路径部分
-          final uri = Uri.tryParse(icon);
-          if (uri != null && uri.path.isNotEmpty) {
-            // 移除 /icons 前缀（如果存在）
-            String path = uri.path;
-            if (path.startsWith('/icons')) {
-              path = path.substring(7); // 移除 "/icons"
-            }
-            if (path.isNotEmpty) {
-              iconPath = path.startsWith('/') ? path : '/$path';
-            }
-          }
-        } else if (icon.startsWith('/icons')) {
-          // 已经包含 /icons 前缀，移除它
-          iconPath = icon.substring(7);
-          if (!iconPath.startsWith('/')) {
-            iconPath = '/$iconPath';
-          }
-        } else {
-          // 相对路径，确保以 / 开头
-          iconPath = icon.startsWith('/') ? icon : '/$icon';
-        }
-      }
-
-      debugPrint('FdroidChannel: 添加应用，归一化图标路径 = $iconPath');
-
       // ① 源标识随记录落库：**存在渠道自己的库**（聚合库只存记录 id，不承担域语义）。
       //    用仓库身份键（指纹优先）——换域名/换镜像都不影响；详情时据此精确定位源。
-      // ① 优先用**应用自己携带的源**（搜索结果已打标）；缺失才回退当前源并明确标记
+      //    只认应用**自己携带**的源（搜索结果/渠道库读回都已打标）；确实没有时宁可留空，
+      //    也不写"当前选中源"——写错源比不写更糟（详情会静默查到别的源上）。
       final carried = app.extra?['sourceId']?.toString();
-      final sourceKey = (carried != null && carried.isNotEmpty)
-          ? carried
-          : _currentSourceKey();
-      if (carried == null || carried.isEmpty) {
-        appLog.warning('添加应用：记录未携带源标识，回退当前源（可能写错）', data: {
+      final sourceKey = (carried != null && carried.isNotEmpty) ? carried : null;
+      if (sourceKey == null) {
+        appLog.warning('添加应用：记录未携带源标识 → 不再猜测源，详情走跨源兜底', data: {
           'appId': app.appId,
-          'fallbackSourceId': sourceKey,
         });
       }
+
+      // 图标**只存仓库内相对路径**（不是完整 URL）：镜像/域名变化时读侧用
+      // "该记录的源 → 基址"重新拼一次，地址自动跟着变（不会写死某个旧镜像）。
+      // 判定"是否本仓库地址"用该源实际生效基址的 host（同一个产出方，见 _assetBaseFor）。
+      final baseHost = Uri.tryParse(_assetBaseFor(sourceKey))?.host ?? '';
+      var iconPath = repoAssetKey(app.icon, baseHost: baseHost);
+      if (iconPath.isEmpty) iconPath = 'icons/${app.appId}.png';
+
+      debugPrint('FdroidChannel: 添加应用，归一化图标路径 = $iconPath');
 
       final channelApp = ChannelAddedApp.withChannel(
         appId: app.appId,
@@ -353,7 +378,7 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
         category: categoryStr,
         addTime: DateTime.now().millisecondsSinceEpoch,
         channel: ChannelType.fdroid,
-        extra: sourceKey == null ? null : jsonEncode({'sourceId': sourceKey}),
+        sourceId: sourceKey,
       );
 
       await _database!.dao.insertApp(channelApp);
@@ -420,9 +445,12 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
           if (app != null) {
             // 从数据库构造 AppInfo，图标需要构造完整URL
             final categories = app.category?.split(',') ?? [];
+            final sourceId = app.sourceIdentity;
+            await _ensureBases([sourceId]);
 
             // 处理图标 URL（使用与 searchApps 相同的逻辑）
-            final iconUrl = _absoluteIconUrl(app.icon, appId: app.appId);
+            final iconUrl = _absoluteIconUrl(app.icon,
+            appId: app.appId, sourceId: sourceId);
             debugPrint('FdroidChannel: 从数据库读取应用信息，图标处理 - 原始=${app.icon}, 最终=$iconUrl');
             final appInfo = AppSummary(
               appId: app.appId,
@@ -432,6 +460,8 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
               icon: iconUrl,
               des: app.description,
               category: categories,
+              // ★ 源标识随应用回传：聚合层再落渠道库时靠它路由，不依赖"当前选中源"
+              extra: {if (sourceId != null) 'sourceId': sourceId},
             );
 
             debugPrint('FdroidChannel: 从数据库读取应用信息 - ${app.name}');
@@ -499,24 +529,63 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
   ///
   /// 真机问题：Bitwarden 的应用图标被拼上了 f-droid 官方源的镜像前缀 ——
   /// 因为基址取的是"当前选中源"。资源必须与**它所属的源**走同一地址。
+  ///
+  /// 地址本身有**唯一产出方**：模块下载时记录的 `resolved_url`（镜像回退后真正
+  /// 可用的地址）。宿主只在它未知时用镜像配置兜底——否则会出现"搜索图标正常、
+  /// 列表图标 404"这种同一应用两套地址的情况。
   String _assetBaseFor(String? sourceId) {
     final svc = _repoService;
     if (svc != null && sourceId != null && sourceId.isNotEmpty) {
       for (final s in svc.sources) {
         final k = svc.identityKeyFor(s);
         if (s.id == sourceId || s.fingerprint == sourceId || k == sourceId) {
-          if (s.useMirrors) {
-            for (final m in s.mirrors) {
-              if (m.enabled && m.url.isNotEmpty) return m.url;
-            }
-          }
-          return s.repoUrl;
+          final resolved = svc.cachedBaseFor(s);
+          if (resolved != null && resolved.isNotEmpty) return resolved;
+          return _mirrorFirstUrlOf(s);
         }
       }
-      appLog.warning('图标基址：记录里的源标识未匹配到任何源，退回当前源',
+      appLog.warning('资源基址：记录里的源标识未匹配到任何源，退回当前源',
           data: {'sourceId': sourceId});
     }
-    return _currentRepoUrl;
+    if (sourceId == null || sourceId.isEmpty) {
+      appLog.warning('资源基址：记录未携带源标识 → 退回当前源（第三方源图标会拼错）',
+          data: {'currentSource': _repoService?.currentSource?.name});
+    }
+    return _fallbackRepoUrl;
+  }
+
+  /// 确保这些源标识对应的源，其"实际生效基址"已就绪（冷启动首次读取时为本地库补读）
+  Future<void> _ensureBases(Iterable<String?> sourceIds) async {
+    final svc = _repoService;
+    if (svc == null) return;
+    for (final id in sourceIds.whereType<String>().where((e) => e.isNotEmpty).toSet()) {
+      for (final s in svc.sources) {
+        if (s.id == id || s.fingerprint == id || svc.identityKeyFor(s) == id) {
+          await svc.ensureBaseFor(s);
+          break;
+        }
+      }
+    }
+  }
+
+  /// 仓库内相对路径 / 已绝对化的地址 → 可直接访问的绝对地址。
+  ///
+  /// 模块出口已把 icon / metadata 资源 / versions 文件名绝对化（见 repo.rs），
+  /// 所以这里对绝对地址是**幂等透传**；只有网络兜底拿到的旧格式相对路径才真正拼接。
+  String _absoluteRepoAsset(String path, String? sourceId) =>
+      joinRepoUrl(_assetBaseFor(sourceId), normalizeRepoAssetPath(path));
+
+  /// 某应用记录的**所属源标识**（渠道库是该记录的唯一归属地）
+  Future<String?> _sourceIdForApp(String appId) async {
+    final db = _database;
+    if (db == null) return null;
+    try {
+      final rec = await db.dao.getApp(appId, ChannelType.fdroid.code);
+      return rec?.sourceIdentity;
+    } catch (e) {
+      appLog.error('查询记录所属源失败 - $e');
+      return null;
+    }
   }
 
   /// 当前源的**仓库身份键**（指纹优先，其次归一化地址）——与模块的库/实例选择同一套键
@@ -537,27 +606,23 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
 
       // 步骤 1: 尝试从 Rust 数据库精确查询应用数据（包含 metadata 和 versions）
       final service = _repoService;
+      // ② 源标识来自**本渠道记录**（不依赖"当前选中源"这个全局状态）
+      final recordSourceId = await _sourceIdForApp(appId);
+      await _ensureBases([recordSourceId]);
       if (!forceRefresh && service != null) {
-        // ② 源标识来自**本渠道记录**（不依赖"当前选中源"这个全局状态）
-        String? sourceId;
-        try {
-          final recs = await _database!.dao.getAppsByChannel(ChannelType.fdroid.code);
-          for (final r in recs) {
-            if (r.appId == appId) {
-              sourceId = r.getExtra<String>('sourceId');
-              break;
-            }
-          }
-        } catch (_) {}
         appLog.info('详情查询定位源', data: {
           'appId': appId,
-          'sourceId': sourceId ?? '(记录无源标识→跨源兜底)',
+          'sourceId': recordSourceId ?? '(记录无源标识→跨源兜底)',
         });
         try {
-          final appData = await service.getAppByPackageName(appId, sourceId: sourceId);
+          final appData =
+              await service.getAppByPackageName(appId, sourceId: recordSourceId);
           if (appData != null) {
             final metadataJson = appData['metadata'] as String?;
             final versionsJson = appData['versions'] as String?;
+            // 服务层回带的"实际命中源"优先：记录里的标识可能缺失/过期
+            final effectiveSourceId =
+                appData['sourceId']?.toString() ?? recordSourceId;
 
             if (metadataJson != null && versionsJson != null) {
               debugPrint('FdroidChannel: 从数据库精确获取到 metadata 和 versions');
@@ -566,6 +631,7 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
                 appData,
                 metadataJson,
                 versionsJson,
+                sourceId: effectiveSourceId,
               );
             }
           } else {
@@ -578,7 +644,7 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
 
       // 步骤 2: 数据库没有或 forceRefresh，通过网络 API 获取（降级方案）
       debugPrint('FdroidChannel: 使用网络 API 获取详情');
-      return await _fetchDetailFromApi(appId);
+      return await _fetchDetailFromApi(appId, sourceId: recordSourceId);
     } catch (e) {
       appLog.error('FdroidChannel: ✗ 获取应用详情失败 - $e');
       return ChannelResult.failure(
@@ -603,7 +669,9 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
       );
     }
     try {
-      final appData = await service.getAppByPackageName(appId);
+      // 更新检测同样要按**记录所属源**查（多源下不同源的版本可能不同）
+      final sourceId = await _sourceIdForApp(appId);
+      final appData = await service.getAppByPackageName(appId, sourceId: sourceId);
       if (appData != null) {
         final metadataJson = appData['metadata'] as String?;
         final versionsJson = appData['versions'] as String?;
@@ -613,6 +681,7 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
             appData,
             metadataJson,
             versionsJson,
+            sourceId: appData['sourceId']?.toString() ?? sourceId,
           );
           if (result.success && result.data != null) {
             final detail = result.data!;
@@ -648,12 +717,16 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
   }
 
   /// 从 JSON 字符串解析详情信息（使用 Rust 数据库的 metadata 和 versions）
+  ///
+  /// [sourceId] 是**该记录所属源**的标识：下载地址/截图都必须与它走同一地址，
+  /// 不能用"当前选中源"（否则第三方源的应用会拿到官方源的镜像地址）。
   Future<ChannelResult<IDetailInfo>> _parseDetailFromJson(
     String appId,
     Map<String, dynamic> appData,
     String metadataJson,
-    String versionsJson,
-  ) async {
+    String versionsJson, {
+    String? sourceId,
+  }) async {
     try {
       // 解析 metadata
       final metadata = jsonDecode(metadataJson) as Map<String, dynamic>;
@@ -672,7 +745,7 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
 
       // 解析 icon
       final iconKey = appData['icon'] as String? ?? '$appId.png';
-      String iconUrl = _constructIconUrl(iconKey, appId);
+      String iconUrl = _constructIconUrl(iconKey, appId, sourceId: sourceId);
 
       // 解析 versions 构建下载列表
       final downloads = <DownloadInfo>[];
@@ -701,13 +774,8 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
         final size = file['size'] as int?;
         final hash = file['sha256'] as String?;
 
-        // 构造下载 URL
-        String downloadUrl;
-        if (fileName.startsWith('/')) {
-          downloadUrl = '$_currentRepoUrl$fileName';
-        } else {
-          downloadUrl = '$_currentRepoUrl/$fileName';
-        }
+        // 构造下载 URL：模块出口已绝对化（幂等透传），旧格式相对路径按所属源拼接
+        final downloadUrl = _absoluteRepoAsset(fileName, sourceId);
 
         final platform = _extractArch(fileName);
         downloads.add(DownloadInfo(
@@ -735,30 +803,12 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
         ));
       }
 
-      // 解析截图
-      final screenshots = <ScreenshotInfo>[];
-      final screenshotsData = metadata['screenshots'] as Map<String, dynamic>?;
-      if (screenshotsData != null) {
-        // 优先使用 phone 类型的截图
-        final phoneShots = screenshotsData['phone'] as Map<String, dynamic>?;
-        if (phoneShots != null) {
-          // 优先使用 en-US，然后使用第一个可用的语言
-          final enUsShots = phoneShots['en-US'] as List<dynamic>?;
-          final shotsList = enUsShots ?? phoneShots.values.firstOrNull as List<dynamic>?;
-
-          if (shotsList != null) {
-            for (final shot in shotsList) {
-              if (shot is Map<String, dynamic>) {
-                final shotPath = shot['name'] as String?;
-                if (shotPath != null) {
-                  final screenshotUrl = '$_currentRepoUrl$shotPath';
-                  screenshots.add(ScreenshotInfo(url: screenshotUrl));
-                }
-              }
-            }
-          }
-        }
-      }
+      // 解析截图：统一走 FdroidAppMeta（兼容 LocalizedFile / 多语言 / 顶层列表等形态），
+      // 再按**所属源**绝对化（模块出口已改写为绝对地址时幂等透传）
+      final screenshots = <ScreenshotInfo>[
+        for (final shotPath in FdroidAppMeta.parse(metadataJson).screenshots)
+          ScreenshotInfo(url: _absoluteRepoAsset(shotPath, sourceId)),
+      ];
 
       // 提取描述（优先使用 en-US）
       String description = summary;
@@ -821,7 +871,14 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
   }
 
   /// 从网络 API 获取详情（降级方案）
-  Future<ChannelResult<IDetailInfo>> _fetchDetailFromApi(String appId) async {
+  ///
+  /// [sourceId] 已知时按**该记录所属源**取索引/资源（镜像优先），未知才退回当前源。
+  Future<ChannelResult<IDetailInfo>> _fetchDetailFromApi(
+    String appId, {
+    String? sourceId,
+  }) async {
+    final base = _assetBaseFor(sourceId);
+
     // 获取单个包的详细信息
     final packageResponse = await _dio.get(
       '$_apiBaseUrl/v1/packages/$appId',
@@ -837,8 +894,8 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
       throw Exception('Invalid response: missing packageName');
     }
 
-    // 获取完整仓库索引以获取更多详细信息
-    final indexResponse = await _dio.get('${_currentRepoUrl}/index-v1.json');
+    // 完整仓库索引也在**该记录所属源**上取（镜像优先），与详情/图标同址
+    final indexResponse = await _dio.get('$base/index-v1.json');
     final indexData = indexResponse.data as Map<String, dynamic>;
     final appsMap = indexData['apps'] as Map<String, dynamic>?;
     final appData = appsMap?[appId] as Map<String, dynamic>?;
@@ -851,7 +908,7 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
     final name = appData['name'] as String? ?? appId;
     final summary = appData['summary'] as String? ?? '';
     final iconKey = appData['icon'] as String? ?? '$appId.png';
-    final iconUrl = _constructIconUrl(iconKey, appId);
+    final iconUrl = _constructIconUrl(iconKey, appId, sourceId: sourceId);
     final sourceCode = appData['sourceCode'] as String?;
     final license = appData['license'] as String?;
     final category = appData['categories'] as List?;
@@ -882,7 +939,7 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
         if (apkName != null) {
           final platform = _extractArch(apkName);
           downloads.add(DownloadInfo(
-            url: '$_currentRepoUrl/$apkName',
+            url: _absoluteRepoAsset(apkName, sourceId),
             name: apkName,
             size: size,
             version: versionName,
@@ -907,7 +964,7 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
       }
     }
 
-    // 获取截图（如果有）
+    // 获取截图（如果有）——按所属源绝对化
     final screenshotsData = appData['screenshots'] as Map?;
     final screenshots = <ScreenshotInfo>[];
     if (screenshotsData != null) {
@@ -915,10 +972,10 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
         if (shots is List) {
           for (final shot in shots) {
             if (shot is String) {
-              screenshots.add(ScreenshotInfo(url: shot));
+              screenshots.add(ScreenshotInfo(url: _absoluteRepoAsset(shot, sourceId)));
             } else if (shot is Map && shot['url'] is String) {
               screenshots.add(ScreenshotInfo(
-                url: shot['url'] as String,
+                url: _absoluteRepoAsset(shot['url'] as String, sourceId),
                 description: shot['description']?.toString(),
               ));
             }
@@ -960,28 +1017,9 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
     );
   }
 
-  /// 构造图标 URL
-  String _constructIconUrl(String iconKey, String appId) {
-    if (iconKey.startsWith('http://') || iconKey.startsWith('https://')) {
-      return iconKey;
-    }
-
-    String iconPath = iconKey;
-    if (!iconPath.startsWith('/')) {
-      iconPath = '/$iconPath';
-    }
-
-    if (iconPath.startsWith('/fdroid/repo')) {
-      final uri = Uri.tryParse(_currentRepoUrl);
-      if (uri != null) {
-        return '${uri.scheme}://${uri.host}$iconPath';
-      }
-    } else if (iconPath.startsWith('/icons')) {
-      return '$_currentRepoUrl$iconPath';
-    }
-
-    return '$_currentRepoUrl$iconPath';
-  }
+  /// 构造图标 URL（与 [_absoluteIconUrl] 同一套规则：所属源 + 镜像优先 + 路径归一）
+  String _constructIconUrl(String iconKey, String appId, {String? sourceId}) =>
+      _absoluteIconUrl(iconKey, appId: appId, sourceId: sourceId);
 
   @override
   Future<ChannelResult<List<AppSummary>>> searchByCategory(
@@ -1032,7 +1070,7 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
   Future<ChannelResult<bool>> checkUpdate() async {
     try {
       // 检查仓库索引是否有更新
-      final response = await _dio.head('${_currentRepoUrl}/index-v1.json');
+      final response = await _dio.head('$_fallbackRepoUrl/index-v1.json');
       final lastModified = response.headers['last-modified'];
       final hasUpdate = lastModified != null;
 
@@ -1090,27 +1128,6 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
     isInitialized = false;
     appLog.info('FdroidChannel: 已释放');
   }
-
-  /// 解析应用信息
-  AppSummary _parseAppInfo(String packageName, Map appData) {
-    final name = appData['name'] as String? ?? packageName;
-    final summary = appData['summary'] as String? ?? '';
-    final icon = appData['icon'] as String? ?? '$packageName.png';
-    final license = appData['license'] as String?;
-
-    return AppSummary(
-      appId: packageName,
-      packageName: packageName,
-      name: name,
-      user: appData['authorName'] ?? '',
-      repositories: packageName,
-      icon: '${_currentRepoUrl}/icons-640/$icon',
-      des: summary,
-      category: null,
-    );
-  }
-
-  
 
   /// 从 APK 文件名提取架构信息
   String? _extractArch(String apkName) {

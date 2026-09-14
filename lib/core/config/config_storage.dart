@@ -4,9 +4,26 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 import 'package:async/async.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+/// 字符串若为 JSON 对象/数组则解码，否则原样返回。
+///
+/// 用于 `json` 类型配置的读取：写入侧对 List/Map 统一 `jsonEncode` 存为字符串，
+/// 读取侧据此还原为 List/Map（避免退回 Dart `toString()` 造成的非法 JSON）。
+Object? decodeIfJsonString(String value) {
+  final t = value.trimLeft();
+  if (t.startsWith('{') || t.startsWith('[')) {
+    try {
+      return jsonDecode(value);
+    } catch (_) {
+      // 非合法 JSON → 原样返回
+    }
+  }
+  return value;
+}
 
 /// 存储类型枚举
 enum StorageType {
@@ -106,6 +123,9 @@ abstract class ConfigStorage {
       final double v => setDouble(key, v),
       final String v => setString(key, v),
       final List<String> v => setStringList(key, v),
+      // JSON 类型（List<Map>/Map 等）统一编码为 JSON 字符串，避免 toString() 非法 JSON
+      final List v => setString(key, jsonEncode(v)),
+      final Map v => setString(key, jsonEncode(v)),
       _ => setString(key, value.toString()),
     };
   }
@@ -114,6 +134,10 @@ abstract class ConfigStorage {
   Future<Object?> getValue(String key) async {
     final value = await getString(key);
     if (value == null) return null;
+    // JSON 字符串优先还原为 List/Map
+    if (value.trimLeft().startsWith('{') || value.trimLeft().startsWith('[')) {
+      return decodeIfJsonString(value);
+    }
     // 尝试按存储原始类型读取
     final intValue = int.tryParse(value);
     if (intValue != null) return intValue;
@@ -285,7 +309,10 @@ class SharedPrefsConfigStorage implements ConfigStorage {
   @override
   Future<Object?> getValue(String key) async {
     // SharedPreferences 原生支持类型化读取，直接返回原始值
-    return (await _getPrefs()).get(_key(key));
+    final value = (await _getPrefs()).get(_key(key));
+    // json 类型存的是 JSON 字符串，读取时还原为 List/Map
+    if (value is String) return decodeIfJsonString(value);
+    return value;
   }
 
   @override
@@ -297,6 +324,9 @@ class SharedPrefsConfigStorage implements ConfigStorage {
       final double v => setDouble(key, v),
       final String v => setString(key, v),
       final List<String> v => setStringList(key, v),
+      // JSON 类型（List<Map>/Map 等）统一编码为 JSON 字符串
+      final List v => setString(key, jsonEncode(v)),
+      final Map v => setString(key, jsonEncode(v)),
       _ => setString(key, value.toString()),
     };
   }
@@ -473,6 +503,10 @@ class SecureConfigStorage implements ConfigStorage {
   Future<Object?> getValue(String key) async {
     final value = await getString(key);
     if (value == null) return null;
+    // json 类型：还原 JSON 字符串为 List/Map
+    if (value.trimLeft().startsWith('{') || value.trimLeft().startsWith('[')) {
+      return decodeIfJsonString(value);
+    }
     final intValue = int.tryParse(value);
     if (intValue != null) return intValue;
     if (value == 'true') return true;
@@ -485,7 +519,17 @@ class SecureConfigStorage implements ConfigStorage {
   @override
   Future<bool> setValue(String key, Object? value) async {
     if (value == null) return remove(key);
-    return setString(key, value.toString());
+    return switch (value) {
+      final bool v => setBool(key, v),
+      final int v => setInt(key, v),
+      final double v => setDouble(key, v),
+      final String v => setString(key, v),
+      final List<String> v => setStringList(key, v),
+      // JSON 类型（List<Map>/Map 等）统一编码为 JSON 字符串
+      final List v => setString(key, jsonEncode(v)),
+      final Map v => setString(key, jsonEncode(v)),
+      _ => setString(key, value.toString()),
+    };
   }
 
   @override

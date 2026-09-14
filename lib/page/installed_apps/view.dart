@@ -3,7 +3,6 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/design/app_borders.dart';
-import 'package:gstore/compent/entrance_list.dart';
 import 'package:gstore/compent/pressable_scale.dart';
 import 'package:gstore/core/service/apk_source_service.dart';
 import 'package:gstore/core/service/install_manager.dart';
@@ -468,8 +467,7 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
                 ? const Center(child: AppLoading(size: AppLoadingSize.medium))
                 : _filteredApps.isEmpty
                     ? const Center(child: Text('未找到已安装应用'))
-                    : EntranceList(
-                        key: ValueKey(_filteredApps.length),
+                    : ListView.builder(
                         padding: AppSpacing.onlyHorizontalMD,
                         itemCount: _filteredApps.length,
                         itemBuilder: (context, index) {
@@ -496,6 +494,8 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
         ),
       ),
       child: ListTile(
+        // 点击条目 → 进入应用分析页（与菜单「应用分析」同一入口）
+        onTap: () => _analyzeSdk(app),
         leading: app.icon != null && app.icon!.isNotEmpty
             ? ClipRRect(
                 borderRadius: BorderRadius.circular(AppRadius.sm),

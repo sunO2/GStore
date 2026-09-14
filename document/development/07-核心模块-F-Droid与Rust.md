@@ -2,6 +2,14 @@
 
 > 开发 Wiki 第七篇 · 仓库管理、index-v2 解析与 Rust FFI
 
+> ⚠️ **结构已更新（本文部分内容为模块化拆分前的旧貌）**：Rust 侧已从单 crate
+> `rust/fdroid_repo/`（宿主内 `bridge.rs`/`repo.rs`/`apk.rs`）重构为
+> `rust/gstore_host/`（宿主）+ `rust/gstore_mod_qr|analyzer|repo/`（按需模块）+
+> `rust/gstore_contract/`（契约）；生成绑定位于 `lib/core/rust/generated/`，
+> Dart 侧封装为 `lib/core/rust/ModuleManager.dart` / `ModuleLoader.dart`
+> 与各域适配器（`QrRustDecoder` / `AnalyzerRustDecoder` / `FdroidRustRepoManager`）。
+> 权威说明见 `rust/ARCHITECTURE.md` 与 `rust/STATUS.md`；下文结构图仅存历史参考。
+
 ## 1. 模块结构
 
 ```

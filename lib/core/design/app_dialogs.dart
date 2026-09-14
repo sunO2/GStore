@@ -9,10 +9,24 @@ import 'app_spacing.dart';
 import 'app_radius.dart';
 import 'app_typography.dart';
 import 'app_components.dart';
+import 'app_sheet.dart';
 
-/// 统一的弹框组件
+/// 统一弹层组件（GStore 设计规范）
 ///
-/// 提供符合 GStore 设计规范的 Dialog、Snackbar、BottomSheet、Alert 组件。
+/// 提供符合 GStore 设计规范的 Snackbar、BottomSheet、确认/提示框与 Loading。
+///
+/// ## 统一约定（新代码务必遵守）
+/// - **确认框 / 提示框 / 选择器 / 表单**：一律走底部弹层（BottomSheet）——
+///   即本类的 [showConfirmSheet] / [showAlertSheet] / [showContentSheet] /
+///   [showBottomSheet]，其底层统一使用 [AppSheetScaffold]（见 app_sheet.dart）。
+///   **禁止**再直接使用 `showDialog` + `AlertDialog` 手写弹框。
+/// - **仅 Loading 遮罩**保留居中 Dialog（[showLoading]），因为它不是交互框。
+/// - 提示类消息（成功/失败/警告）用 [showSuccess] / [showError] 等 Snackbar。
+///
+/// 兼容说明：[showDialog] 保留了旧签名（返回 bool?、支持 onConfirm/onCancel），
+/// 但呈现方式已改为统一底部弹层，因此既有调用点会自动获得统一风格，无需改动。
+/// 新代码建议直接用语义化方法 [showConfirmSheet] / [showAlertSheet]。
+///
 /// 呈现通道：生产（MaterialApp.router）与测试宿主（MaterialApp +
 /// appNavigatorKey / scaffoldMessengerKey）均经全局 key 呈现。
 class AppDialogs {
@@ -46,31 +60,101 @@ class AppDialogs {
     return BorderSide(color: color ?? _colorScheme.borderLight, width: 1);
   }
 
-  /// 底部安全区 padding + 键盘 inset（无宿主 context 时为 0）。
-  static double _bottomSafePadding() {
-    final ctx = _navContext;
-    if (ctx != null) {
-      final media = MediaQuery.of(ctx);
-      return media.padding.bottom + media.viewInsets.bottom;
-    }
-    return 0;
+  // ========== 确认 / 提示框（统一底部弹层）==========
+
+  /// 显示确认弹层（危险/普通操作的通用入口）。
+  ///
+  /// [title] 标题
+  /// [message] 文本内容（与 [content] 二选一）
+  /// [content] 自定义内容 Widget（内容过长会自动内部滚动）
+  /// [confirmText] 确认按钮文字，默认"确定"；传 null 时不显示确认按钮
+  /// [cancelText] 取消按钮文字，默认"取消"；传 null 时不显示取消按钮
+  /// [onConfirm] / [onCancel] 对应按钮的回调
+  /// [isDangerous] 危险操作（确认按钮红色）
+  ///
+  /// 返回：确认 true / 取消或遮罩关闭 false|null。
+  static Future<bool?> showConfirmSheet({
+    required String title,
+    String? message,
+    Widget? content,
+    String? confirmText = '确定',
+    String? cancelText = '取消',
+    VoidCallback? onConfirm,
+    VoidCallback? onCancel,
+    bool isDangerous = false,
+    Widget? icon,
+    Color? iconColor,
+  }) {
+    return showDialog(
+      title: title,
+      content: content ?? (message ?? ''),
+      confirmText: confirmText,
+      cancelText: cancelText,
+      onConfirm: onConfirm,
+      onCancel: onCancel,
+      isDangerous: isDangerous,
+      icon: icon,
+      iconColor: iconColor,
+    );
   }
 
-  // ========== Dialog ==========
+  /// 显示单按钮提示弹层（纯告知，无取消）。
+  static Future<void> showAlertSheet({
+    required String title,
+    String? message,
+    Widget? content,
+    String confirmText = '知道了',
+    Widget? icon,
+    Color? iconColor,
+  }) async {
+    await showDialog(
+      title: title,
+      content: content ?? (message ?? ''),
+      confirmText: confirmText,
+      cancelText: null,
+      icon: icon,
+      iconColor: iconColor,
+    );
+  }
 
-  /// 显示标准对话框
+  /// 显示自定义内容弹层（表单 / 详情 / 列表等）。
   ///
-  /// [title] 对话框标题
-  /// [content] 对话框内容（可以是 Widget 或 String）
-  /// [confirmText] 确认按钮文字，默认"确定"
-  /// [cancelText] 取消按钮文字，默认"取消"，为 null 时不显示取消按钮
-  /// [onConfirm] 确认回调
-  /// [onCancel] 取消回调
-  /// [isDangerous] 是否为危险操作（确认按钮使用红色）
+  /// [content] 内容区，超出限高时自动内部滚动；
+  /// [actions] 底部固定操作按钮；[scrollable] 内容自带滚动区时传 false。
+  static Future<T?> showContentSheet<T>({
+    String? title,
+    String? subtitle,
+    Widget? icon,
+    Color? iconColor,
+    required Widget content,
+    List<Widget> actions = const <Widget>[],
+    bool scrollable = true,
+    double maxHeightFactor = 0.8,
+  }) {
+    final ctx = _navContext;
+    if (ctx == null) return Future<T?>.value(null);
+    return AppSheet.show<T>(
+      context: ctx,
+      title: title,
+      subtitle: subtitle,
+      icon: icon,
+      iconColor: iconColor,
+      content: content,
+      actions: actions,
+      scrollable: scrollable,
+      maxHeightFactor: maxHeightFactor,
+      contentPadding: AppSpacing.onlyHorizontalXL,
+    );
+  }
+
+  /// 显示标准弹层（旧 API，保留签名以兼容既有调用点）。
+  ///
+  /// 呈现方式已统一为底部弹层（BottomSheet）。新代码建议使用
+  /// [showConfirmSheet] / [showAlertSheet] / [showContentSheet]。
   static Future<bool?> showDialog({
     String? title,
     dynamic content,
-    String confirmText = '确定',
+    String? confirmText = '确定',
     String? cancelText,
     VoidCallback? onConfirm,
     VoidCallback? onCancel,
@@ -82,126 +166,41 @@ class AppDialogs {
     if (ctx == null) {
       return Future.value(null);
     }
-    return m.showDialog<bool>(
+    return AppSheet.show<bool>(
       context: ctx,
-      builder: (_) => _buildDialog(
-        title: title,
-        content: content,
-        confirmText: confirmText,
-        cancelText: cancelText,
-        onConfirm: onConfirm,
-        onCancel: onCancel,
-        isDangerous: isDangerous,
-        icon: icon,
-        iconColor: iconColor,
-      ),
-      barrierDismissible: true,
+      title: title,
+      icon: icon,
+      iconColor: iconColor,
+      contentPadding: AppSpacing.onlyHorizontalXL,
+      content: _buildContent(content),
+      actions: [
+        if (cancelText != null)
+          TextButton(
+            onPressed: () {
+              popSheet<bool?>(false);
+              onCancel?.call();
+            },
+            child: Text(cancelText),
+          ),
+        if (confirmText != null)
+          FilledButton(
+            style: isDangerous
+                ? FilledButton.styleFrom(backgroundColor: _colorScheme.error)
+                : null,
+            onPressed: () {
+              popSheet<bool?>(true);
+              onConfirm?.call();
+            },
+            child: Text(confirmText),
+          ),
+      ],
     );
   }
 
-  /// 构建对话框
-  static Widget _buildDialog({
-    String? title,
-    dynamic content,
-    String? confirmText,
-    String? cancelText,
-    VoidCallback? onConfirm,
-    VoidCallback? onCancel,
-    bool isDangerous = false,
-    Widget? icon,
-    Color? iconColor,
-  }) {
-    final contentWidget = content is Widget
-        ? content
-        : Text(
-            content.toString(),
-            style: _textTheme.bodyMedium,
-            textAlign: TextAlign.center,
-          );
-
-    return Dialog(
-      elevation: 0,
-      backgroundColor: _colorScheme.dialogSurface,
-      shape: RoundedRectangleBorder(
-        borderRadius: AppRadius.allXL,
-        side: _themeBorderSide(color: _colorScheme.borderLight),
-      ),
-      insetPadding: AppSpacing.onlyHorizontalLG,
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 400),
-        child: Padding(
-          padding: AppSpacing.allXL,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // 图标（可选）
-              if (icon != null) ...[
-                IconTheme(
-                  data: IconThemeData(
-                    color: iconColor ?? _colorScheme.primary,
-                    size: 48,
-                  ),
-                  child: icon,
-                ),
-                const SizedBox(height: AppSpacing.lg),
-              ],
-
-              // 标题
-              if (title != null) ...[
-                Text(
-                  title,
-                  style: _textTheme.titleLarge?.copyWith(
-                    fontWeight: AppTypography.weightSemiBold,
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: AppSpacing.md),
-              ],
-
-              // 内容
-              contentWidget,
-              const SizedBox(height: AppSpacing.xxl),
-
-              // 操作按钮
-              // 使用 Builder 获取 dialog 自身的 context，用 Navigator.pop 确定性关闭
-              // （避免 Get.back 依赖全局 navigator 状态导致偶发不关闭）
-              Builder(
-                builder: (dialogContext) => Row(
-                  mainAxisAlignment: cancelText == null
-                      ? MainAxisAlignment.center
-                      : MainAxisAlignment.end,
-                  children: [
-                    if (cancelText != null)
-                      TextButton(
-                        onPressed: () {
-                          Navigator.of(dialogContext).pop(false);
-                          onCancel?.call();
-                        },
-                        child: Text(cancelText),
-                      ),
-                    if (cancelText != null)
-                      const SizedBox(width: AppSpacing.sm),
-                    if (confirmText != null)
-                      FilledButton(
-                        style: isDangerous
-                            ? FilledButton.styleFrom(
-                                backgroundColor: _colorScheme.error,
-                              )
-                            : null,
-                        onPressed: () {
-                          Navigator.of(dialogContext).pop(true);
-                          onConfirm?.call();
-                        },
-                        child: Text(confirmText),
-                      ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
+  /// 内容标准化：Widget 原样使用，其余转文本。
+  static Widget _buildContent(dynamic content) {
+    if (content is Widget) return content;
+    return Text(content.toString(), style: _textTheme.bodyMedium);
   }
 
   // ========== Snackbar ==========
@@ -356,12 +355,12 @@ class AppDialogs {
 
   // ========== BottomSheet ==========
 
-  /// 显示底部弹窗
+  /// 显示底部弹层（统一骨架 [AppSheetScaffold]）。
   ///
-  /// [title] 弹窗标题
-  /// [children] 内容组件列表
-  /// [isScrollControlled] 是否可滚动，默认 true
-  /// [onClose] 关闭回调
+  /// [title] 弹层标题
+  /// [children] 内容组件列表（超出限高自动内部滚动）
+  ///
+  /// 说明：[isScrollControlled] / [onClose] 仅为兼容旧签名保留。
   static Future<T?> showBottomSheet<T>({
     String? title,
     required List<Widget> children,
@@ -372,16 +371,13 @@ class AppDialogs {
     if (ctx == null) {
       return Future.value(null);
     }
-    return showModalBottomSheet<T>(
+    return AppSheet.show<T>(
       context: ctx,
-      backgroundColor: Colors.transparent,
-      isDismissible: true,
-      enableDrag: true,
-      isScrollControlled: isScrollControlled,
-      builder: (_) => _buildBottomSheet(
-        title: title,
+      title: title,
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: children,
-        onClose: onClose,
       ),
     );
   }
@@ -397,9 +393,9 @@ class AppDialogs {
     }
   }
 
-  /// 显示选择列表底部弹窗
+  /// 显示选择列表底部弹层
   ///
-  /// [title] 弹窗标题
+  /// [title] 弹层标题
   /// [items] 选择项列表
   /// [selectedItem] 当前选中的项
   /// [onItemSelected] 选中回调
@@ -428,70 +424,9 @@ class AppDialogs {
     );
   }
 
-  /// 构建底部弹窗
-  static Widget _buildBottomSheet({
-    String? title,
-    required List<Widget> children,
-    VoidCallback? onClose,
-  }) {
-    return Container(
-      decoration: BoxDecoration(
-        color: _colorScheme.surface,
-        borderRadius: BorderRadius.only(
-          topLeft: Radius.circular(AppRadius.xxl),
-          topRight: Radius.circular(AppRadius.xxl),
-        ),
-        border: Border(
-          top: _themeBorderSide(color: _colorScheme.borderLight),
-        ),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // 拖拽指示器
-          Container(
-            margin: AppSpacing.onlyVerticalMD,
-            width: 32,
-            height: 4,
-            decoration: BoxDecoration(
-              color: _colorScheme.outlineVariant,
-              borderRadius: AppRadius.allXS,
-            ),
-          ),
+  // ========== Alert（确认框的语义化封装）==========
 
-          // 标题
-          if (title != null) ...[
-            Padding(
-              padding: AppSpacing.onlyHorizontalLG,
-              child: Text(
-                title,
-                style: _textTheme.titleLarge?.copyWith(
-                  fontWeight: AppTypography.weightSemiBold,
-                ),
-              ),
-            ),
-            const SizedBox(height: AppSpacing.md),
-          ],
-
-          // 内容
-          ...children,
-
-          // 底部安全区域
-          SizedBox(height: _bottomSafePadding()),
-        ],
-      ),
-    );
-  }
-
-  // ========== Alert（确认对话框）==========
-
-  /// 显示确认对话框
-  ///
-  /// [title] 对话框标题
-  /// [message] 对话框内容
-  /// [confirmText] 确认按钮文字
-  /// [cancelText] 取消按钮文字
-  /// [isDangerous] 是否为危险操作
+  /// 显示确认弹层
   static Future<bool?> showConfirmDialog({
     required String title,
     required String message,
@@ -499,57 +434,55 @@ class AppDialogs {
     String cancelText = '取消',
     bool isDangerous = false,
   }) {
-    return showDialog(
+    return showConfirmSheet(
       title: title,
-      content: message,
+      message: message,
       confirmText: confirmText,
       cancelText: cancelText,
       isDangerous: isDangerous,
     );
   }
 
-  /// 显示成功确认对话框
+  /// 显示成功提示弹层
   static Future<void> showSuccessDialog({
     String title = '操作成功',
     String? message,
     String confirmText = '确定',
   }) {
-    return showDialog(
+    return showAlertSheet(
       title: title,
-      content: message ?? '',
+      message: message ?? '',
       confirmText: confirmText,
-      cancelText: null,
       icon: const Icon(Icons.check_circle),
       iconColor: AppColors.success,
     );
   }
 
-  /// 显示错误确认对话框
+  /// 显示错误提示弹层
   static Future<void> showErrorDialog({
     String title = '操作失败',
     String? message,
     String confirmText = '确定',
   }) {
-    return showDialog(
+    return showAlertSheet(
       title: title,
-      content: message ?? '',
+      message: message ?? '',
       confirmText: confirmText,
-      cancelText: null,
       icon: const Icon(Icons.error),
       iconColor: AppColors.error,
     );
   }
 
-  /// 显示警告确认对话框
+  /// 显示警告确认弹层
   static Future<bool?> showWarningDialog({
     required String title,
     String? message,
     String confirmText = '继续',
     String cancelText = '取消',
   }) {
-    return showDialog(
+    return showConfirmSheet(
       title: title,
-      content: message ?? '',
+      message: message ?? '',
       confirmText: confirmText,
       cancelText: cancelText,
       icon: const Icon(Icons.warning),
@@ -557,16 +490,16 @@ class AppDialogs {
     );
   }
 
-  /// 显示删除确认对话框
+  /// 显示删除确认弹层
   static Future<bool?> showDeleteDialog({
     String title = '确认删除？',
     String message = '此操作无法撤销，确定要删除吗？',
     String confirmText = '删除',
     String cancelText = '取消',
   }) {
-    return showDialog(
+    return showConfirmSheet(
       title: title,
-      content: message,
+      message: message,
       confirmText: confirmText,
       cancelText: cancelText,
       isDangerous: true,
@@ -578,6 +511,8 @@ class AppDialogs {
   // ========== Loading ==========
 
   /// 显示加载对话框（可叠加；navigator 未挂载时静默跳过）。
+  ///
+  /// 注意：Loading 是遮罩而非交互框，保留居中 Dialog 呈现。
   static void showLoading({String message = '加载中...'}) {
     final navigator = appNavigatorKey.currentState;
     if (navigator == null) {
@@ -635,7 +570,7 @@ enum _SnackbarType {
   normal,
 }
 
-// ========== 底部弹窗选择项组件 ==========
+// ========== 底部弹层选择项组件 ==========
 
 class _SelectionItem extends StatelessWidget {
   final String label;

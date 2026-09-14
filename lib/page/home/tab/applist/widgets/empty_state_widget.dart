@@ -149,44 +149,38 @@ class EmptyStateWidget extends ConsumerWidget {
   }
 
   void _showQuickSearchGuide(BuildContext context) {
-    showDialog(
+    AppSheet.show<void>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Row(
-          children: [
-            Icon(Icons.search, color: Theme.of(context).colorScheme.primary),
-            const SizedBox(width: AppSpacing.sm),
-            const Text('快速搜索应用'),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              '点击上方的"快速搜索"按钮，然后：',
-              style: AppTypography.bodyMedium,
-            ),
-            const SizedBox(height: AppSpacing.md),
-            _buildGuideStep(context, '1', '选择要搜索的渠道'),
-            _buildGuideStep(context, '2', '输入应用名称关键词'),
-            _buildGuideStep(context, '3', '点击添加按钮添加应用'),
-            const SizedBox(height: AppSpacing.md),
-            Text(
-              '💡 提示：也可以切换到"发现"页面浏览更多应用',
-              style: AppTypography.bodySmall.copyWith(
-                    color: AppColors.textSecondary,
-                  ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('知道了'),
+      title: '快速搜索应用',
+      icon: const Icon(Icons.search),
+      contentPadding: AppSpacing.onlyHorizontalXL,
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            '点击上方的"快速搜索"按钮，然后：',
+            style: AppTypography.bodyMedium,
+          ),
+          const SizedBox(height: AppSpacing.md),
+          _buildGuideStep(context, '1', '选择要搜索的渠道'),
+          _buildGuideStep(context, '2', '输入应用名称关键词'),
+          _buildGuideStep(context, '3', '点击添加按钮添加应用'),
+          const SizedBox(height: AppSpacing.md),
+          Text(
+            '💡 提示：也可以切换到"发现"页面浏览更多应用',
+            style: AppTypography.bodySmall.copyWith(
+                  color: AppColors.textSecondary,
+                ),
           ),
         ],
       ),
+      actions: [
+        FilledButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('知道了'),
+        ),
+      ],
     );
   }
 

@@ -92,6 +92,11 @@ class _SettingsPageState extends State<SettingsPage> {
           _buildDataSyncSection(context),
           const SizedBox(height: AppSpacing.xxl),
 
+          // Data source section
+          _buildSectionHeader('数据源管理'),
+          _buildDataSourceSection(context),
+          const SizedBox(height: AppSpacing.xxl),
+
           // Module section
           _buildSectionHeader('模块'),
           _buildModuleSection(context),
@@ -168,19 +173,12 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
+  /// 数据与同步：**本机数据**的维护（备份 / 代理 / 缓存 / 数据库）
   Widget _buildDataSyncSection(BuildContext context) {
     return Card(
       margin: AppSpacing.allLG,
       child: Column(
         children: [
-          ListTile(
-            leading: const Icon(Icons.source, size: AppTypography.iconMD),
-            title: const Text('F-Droid 源管理'),
-            trailing:
-                const Icon(Icons.chevron_right, size: AppTypography.iconSM),
-            onTap: () => context.push(AppRoute.fdroidRepo),
-          ),
-          const Divider(height: 1),
           ListTile(
             leading: const Icon(Icons.backup, size: AppTypography.iconMD),
             title: const Text('数据备份'),
@@ -203,28 +201,6 @@ class _SettingsPageState extends State<SettingsPage> {
             onTap: () => _showProxySettingDialog(context),
           ),
           const Divider(height: 1),
-          // 渠道包导入（Android 应用私有目录无法读取公共 Documents 文件，走应用内导入）
-          ListTile(
-            leading: const Icon(Icons.extension, size: AppTypography.iconMD),
-            title: const Text('脚本渠道'),
-            subtitle: const Text('从 .zip 渠道包文件导入自定义渠道'),
-            trailing:
-                const Icon(Icons.chevron_right, size: AppTypography.iconSM),
-            onTap: () => _showScriptImportDialog(context),
-          ),
-          const Divider(height: 1),
-          // 已导入渠道包管理（列表 + 环境变量编辑 + 删除）
-          ListTile(
-            key: const Key('script_channel_manage_entry'),
-            leading: const Icon(Icons.code, size: AppTypography.iconMD),
-            title: const Text('已导入渠道'),
-            subtitle: Text(
-                '${ChannelManager.instance.dynamicChannels.length} 个渠道包'),
-            trailing:
-                const Icon(Icons.chevron_right, size: AppTypography.iconSM),
-            onTap: () => _showScriptChannelManageDialog(context),
-          ),
-          const Divider(height: 1),
           // 缓存管理（图片/README/图标等可再生缓存，单项或一键清理）
           ListTile(
             leading: const Icon(Icons.cleaning_services_outlined,
@@ -245,6 +221,50 @@ class _SettingsPageState extends State<SettingsPage> {
             trailing:
                 const Icon(Icons.chevron_right, size: AppTypography.iconSM),
             onTap: () => context.push(AppRoute.databaseManage),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 数据源管理：所有决定"应用数据从哪儿来"的入口（F-Droid 源 + 渠道包）
+  ///
+  /// 与「数据与同步」分开：那边是本机数据的维护，这边是**数据来源**的配置。
+  Widget _buildDataSourceSection(BuildContext context) {
+    return Card(
+      margin: AppSpacing.allLG,
+      child: Column(
+        children: [
+          // 多源仓库：源 + 镜像配置
+          ListTile(
+            leading: const Icon(Icons.source, size: AppTypography.iconMD),
+            title: const Text('F-Droid 源管理'),
+            subtitle: const Text('配置多个源与其镜像'),
+            trailing:
+                const Icon(Icons.chevron_right, size: AppTypography.iconSM),
+            onTap: () => context.push(AppRoute.fdroidRepo),
+          ),
+          const Divider(height: 1),
+          // 渠道包导入（Android 应用私有目录无法读取公共 Documents 文件，走应用内导入）
+          ListTile(
+            leading: const Icon(Icons.extension, size: AppTypography.iconMD),
+            title: const Text('脚本渠道'),
+            subtitle: const Text('从 .zip 渠道包文件导入自定义渠道'),
+            trailing:
+                const Icon(Icons.chevron_right, size: AppTypography.iconSM),
+            onTap: () => _showScriptImportDialog(context),
+          ),
+          const Divider(height: 1),
+          // 已导入渠道包管理（列表 + 环境变量编辑 + 删除）
+          ListTile(
+            key: const Key('script_channel_manage_entry'),
+            leading: const Icon(Icons.code, size: AppTypography.iconMD),
+            title: const Text('已导入渠道'),
+            subtitle: Text(
+                '${ChannelManager.instance.dynamicChannels.length} 个渠道包'),
+            trailing:
+                const Icon(Icons.chevron_right, size: AppTypography.iconSM),
+            onTap: () => _showScriptChannelManageDialog(context),
           ),
         ],
       ),
@@ -775,11 +795,10 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
           ),
           const SizedBox(height: AppSpacing.sm),
-          SingleChildScrollView(
-            child: _ScriptChannelEnvEditor(
-              initial: initial,
-              onChanged: (map) => envVars = map,
-            ),
+          // 内容过长时由统一 sheet 内部滚动，无需再包一层滚动视图
+          _ScriptChannelEnvEditor(
+            initial: initial,
+            onChanged: (map) => envVars = map,
           ),
         ],
       ),

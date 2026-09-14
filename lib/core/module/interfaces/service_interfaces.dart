@@ -175,8 +175,8 @@ abstract class IFdroidRepoService {
   /// 应用数量
   Future<int> getAppCount();
 
-  /// 统计信息
-  Future<Map<String, int>> getStatistics();
+  /// 统计信息（**按源**：每个源自己库里的应用数，未同步过为 0）
+  Future<List<FdroidSourceStat>> getStatistics();
 
   /// 切换源
   Future<void> switchSource(String sourceId);
@@ -189,6 +189,16 @@ abstract class IFdroidRepoService {
 
   /// 仓库身份键（指纹优先，其次归一化地址）——渠道把源标识写入自有记录时使用
   String identityKeyFor(FdroidSource source);
+
+  /// 某源**实际生效**的资源基址（模块 `resolved_url`：镜像回退后真正下载成功的地址）。
+  ///
+  /// 这是资源地址的**唯一产出方**：宿主不得再用"第一个启用镜像"另算一套，
+  /// 否则镜像挂掉时搜索走可用地址、列表图标仍指向坏镜像（真机图标 404）。
+  /// 未缓存时返回 null（调用方用 [ensureBaseFor] 补读）。
+  String? cachedBaseFor(FdroidSource source);
+
+  /// 冷启动/缓存未命中时补读该源的 `resolved_url`（只读该源自己的本地库，不触网）
+  Future<void> ensureBaseFor(FdroidSource source);
 
   /// 启用/禁用某个源（**多源可同时启用**）
   Future<void> setSourceEnabled(String sourceId, bool enabled);

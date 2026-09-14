@@ -1,193 +1,69 @@
-# Rust F-Droid 仓库管理器 - 集成状态
+# Rust 模块化后端 - 集成状态
+
+> 本文件描述**当前实现状态**。设计文档见 [ARCHITECTURE.md](./ARCHITECTURE.md)。
 
 ## 概述
 
-Rust 后端实现已完成基础架构，但由于 flutter_rust_bridge 的代码生成问题（重复类定义），暂时禁用。目前使用 Dart 实现。
+Rust 模块化后端**已实施并启用**：宿主 `gstore_host.so` + 三个按需模块
+（`gstore_mod_qr` / `gstore_mod_analyzer` / `gstore_mod_repo`），经 flutter_rust_bridge 2.11.1
+与 Dart 通信，模块经 C ABI + dlopen 由宿主动态挂载。
 
-## 完成的工作
+> 历史说明：本文件早期版本曾记录"Rust 后端因 FRB 重复类定义问题被禁用、暂用 Dart 实现"。
+> 该问题已解决（FRB 2.11 的 opaque 模式），Rust 后端当前为**主路径**，Dart 侧只保留降级实现。
 
-### 1. Rust 后端实现 ✅
+## 结构
 
-**项目结构**:
 ```
-rust/gstore_host/
-├── Cargo.toml              # Rust 项目配置
-├── frb_config.yaml         # flutter_rust_bridge 配置
-├── src/
-│   ├── lib.rs             # 库入口
-│   ├── bridge.rs          # FFI 桥接层
-│   ├── models.rs          # 数据模型
-│   └── repo.rs            # 核心仓库管理器
-└── target/release/
-    ├── libgstore_host.so  # 编译后的动态库 (3.4MB)
-    └── libgstore_host.a   # 静态库 (55MB)
+rust/
+├── gstore_contract/     # 共享契约层：C ABI 结构体 / 信封 / 错误模型 / 签名
+├── gstore_host/         # 宿主（libgstore_host.so）：FRB 桥 + 注册表 + dlopen 适配
+├── gstore_mod_qr/       # 二维码模块（按需）
+├── gstore_mod_analyzer/ # APK 分析模块（按需）
+├── gstore_mod_repo/     # F-Droid 仓库模块（有状态 SQLite + 异步下载）
+├── build_all.sh         # 一键构建全部 crate
+├── test_all.sh          # 一键测试全部 crate
+└── sign_module.py       # 发布端模块签名（Ed25519）
 ```
 
-**核心功能**:
-- 异步 HTTP 下载（tokio + reqwest）
-- JSON 解析（serde_json）
-- SQLite 数据库（rusqlite）
-- 连接池和事务支持
-- 完整的应用搜索和查询
+**无 Cargo workspace**：宿主必须 `panic = "abort"`、模块必须 `panic = "unwind"`（边界
+`catch_unwind` 隔离），而 Cargo 禁止在 `[profile.*.package.*]` 覆盖 `panic`，故各 crate
+独立、由 `build_all.sh` / `test_all.sh` 统一编排。
 
-**性能**:
-- 下载速度: 500-1000 KB/s（Dart: 100-200 KB/s）
-- JSON 解析: 0.3-0.5秒（Dart: 5-10秒）
-- 内存占用: 50-80MB（Dart: 200-300MB）
+## 当前能力
 
-### 2. Dart 集成框架 ✅
+- ✅ 宿主 FRB 桥（`ModuleHandle` / `InstanceHandle` / 日志流 / 事件流）
+- ✅ 模块注册表：单锁 `Registry`，同名幂等，refcount 引用计数，preload 常驻
+- ✅ 动态挂载：`dlopen` + C ABI 握手，ABI 版本双向校验
+- ✅ 统一信封（protobuf）+ 状态码 + 错误码，**域错误跨 ABI 透传**（不塌成 500）
+- ✅ 超时与取消：`call_envelope_with_timeout` + 在途表 + 模块 `cancel`（repo 下载支持）
+- ✅ 下载模块签名校验：宿主 `mount_from_so` 前校验 `.sig`/`.meta`（无签名=内置信任）
+- ✅ 内置（jniLibs）与远程（下载 + SHA-256 + 签名）两条加载路径
+- ✅ 事件通道：模块 `emit_event` → Dart 广播流（`RustModuleManager.moduleEvents`）
+- ✅ 统一事件系统（双向）：Dart `AppEventBus` 收口 DB / 模块生命周期 / 配置事件源；Rust 模块
+  `emit_event` 上行接入统一总线；标记 `downlink` 的事件（如 `config.changed`）经宿主 ABI
+  `on_event` 下发到模块（**ABI v2**）
 
-**FdroidRepoManager.dart**:
-- 添加了 `useRustBackend` 开关（默认禁用）
-- 保留了 Rust 后端的集成代码（已注释）
-- 自动回退到 Dart 实现
-
-### 3. 工具和文档 ✅
-
-- **setup_rust.sh**: 完整的设置脚本
-- **rust/README.md**: 详细的文档
-- **FdroidRustRepoManager.dart**: Dart 封装（暂时禁用）
-
-## 当前状态
-
-### 启用的功能
-- ✅ Dart 实现（FdroidIndexV2Parser）
-- ✅ 临时数据库（FdroidTempDatabase）
-- ✅ JSON Merge Patch
-- ✅ 条件 HTTP 请求（增量更新）
-- ✅ Isolate 后台解析
-
-### 暂时禁用的功能
-- ❌ Rust 后端（由于 bridge 代码生成问题）
-- ❌ Rust 数据库集成
-
-## 构建状态
+## 构建 / 测试
 
 ```bash
-✓ Flutter APK 构建成功 (app-debug.apk)
-✓ Rust 库编译成功 (libgstore_host.so)
-⚠️  Bridge 代码生成存在问题（重复类定义）
+# 本地（debug）构建全部 crate
+rust/build_all.sh
+
+# 全部 crate 测试（会先构建模块 .so；host 集成测试缺 .so 会 fail）
+rust/test_all.sh
+
+# Android（NDK 交叉编译，含模块 release 产物 + 清单）
+./build_android_rust.sh
+./generate_modules_manifest.sh
+python3 rust/sign_module.py rust/release-modules <private_key.pem>   # 可选：发布签名
 ```
 
-## 未来计划
+Android 侧集成测试：`cd rust/gstore_host && cargo test`（需先构建各模块 debug .so；
+无模块时可设 `GSTORE_ALLOW_MISSING_MODULE=1` 显式跳过——CI 不应设置该变量）。
 
-### 短期（启用 Rust 后端）
+## 文档校正（与旧文档的差异）
 
-1. **修复 bridge 代码生成**
-   - 方案 A: 等待 flutter_rust_bridge 更新修复重复类定义问题
-   - 方案 B: 使用不同的 FFI 框架（如 cbindgen + 手动绑定）
-   - 方案 C: 使用 external 函数直接调用，不使用自动生成
-
-2. **集成测试**
-   - 确保 Dart 和 Rust 数据库兼容
-   - 性能对比测试
-   - 降级逻辑验证
-
-### 中期（性能优化）
-
-1. **并发下载**: 多源同时下载
-2. **流式解析**: 大文件流式处理
-3. **增量更新**: 完整实现 JSON Merge Patch
-
-### 长期（功能扩展）
-
-1. **多架构支持**: Android (arm64, armv7), iOS
-2. **WebAssembly**: 浏览器支持
-3. **进度回调**: 实时下载进度
-
-## 如何启用 Rust 后端（实验性）
-
-### 步骤 1: 重新生成 bridge 代码
-
-```bash
-cd rust/gstore_host
-FRB_DEBUG_SKIP_SANITY_CHECK_CLASS_NAME_DUPLICATES=1 \
-flutter_rust_bridge_codegen generate \
-  --config-file frb_config.yaml
-```
-
-### 步骤 2: 修复生成的代码
-
-编辑 `lib/core/rust/generated/bridge.dart`：
-- 删除重复的抽象类 `FdroidRepoManager`（第11-24行）
-- 只保留具体类（第26-59行）
-
-### 步骤 3: 启用 Rust 后端
-
-编辑 `lib/core/fdroid/FdroidRepoManager.dart`：
-```dart
-bool useRustBackend = true;  // 改为 true
-```
-
-### 步骤 4: 取消注释相关代码
-
-- 取消注释 Rust 导入
-- 取消注释 `initialize()` 中的 Rust 初始化代码
-- 取消注释 `loadRepository()` 中的 Rust 调用代码
-
-### 步骤 5: 测试
-
-```bash
-flutter run
-```
-
-## 性能对比（预期）
-
-| 操作 | Dart | Rust | 提升 |
-|------|------|-----|------|
-| JSON 解析 (15MB) | 5-10秒 | 0.5-1秒 | **10倍** |
-| 网络下载 | 100-200 KB/s | 500-1000 KB/s | **2-5倍** |
-| 内存占用 | 200-300MB | 50-80MB | **4倍** |
-| CPU 使用 | 主线程阻塞 | 后台线程 | **不卡顿** |
-
-## 文件清单
-
-### 已创建文件
-
-| 文件 | 说明 |
-|------|------|
-| rust/gstore_host/Cargo.toml | Rust 项目配置 |
-| rust/gstore_host/frb_config.yaml | bridge 配置 |
-| rust/gstore_host/src/lib.rs | 库入口 |
-| rust/gstore_host/src/bridge.rs | FFI 层 |
-| rust/gstore_host/src/models.rs | 数据模型 |
-| rust/gstore_host/src/repo.rs | 核心实现 |
-| rust/README.md | 文档 |
-| setup_rust.sh | 设置脚本 |
-| lib/core/rust/FdroidRustRepoManager.dart | Dart 封装 |
-
-### 已修改文件
-
-| 文件 | 修改内容 |
-|------|---------|
-| lib/core/fdroid/FdroidRepoManager.dart | 添加 Rust 后端开关（暂时禁用）|
-| pubspec.yaml | 添加 flutter_rust_bridge 依赖 |
-
-## 故障排除
-
-### 问题：重复类定义错误
-
-**错误信息**: `'FdroidRepoManager' is already declared in this scope`
-
-**原因**: flutter_rust_bridge 同时生成了抽象类和具体类
-
-**解决方案**:
-1. 删除抽象类定义（第11-24行）
-2. 保留具体类定义（第26-59行）
-3. 或使用 opaque 模式重新生成
-
-### 问题：找不到生成的代码
-
-**错误信息**: `Error when reading 'lib/core/rust/generated/frb_generated.dart'`
-
-**解决方案**:
-```bash
-cd rust/gstore_host
-flutter_rust_bridge_codegen generate --config-file frb_config.yaml
-```
-
-## 总结
-
-Rust 后端实现已经完成，性能预期非常好（2-10倍提升），但由于 flutter_rust_bridge 的代码生成问题需要手动修复。目前的 Dart 实现已经能够正常工作，用户可以先使用 Dart 版本，等 bridge 问题解决后再切换到 Rust 版本。
-
-对于想要提前尝试 Rust 版本的用户，可以按照上述步骤手动修复生成的代码并启用后端。
+- 旧文档提到的 `rust/fdroid_repo/`、`frb_config.yaml`、`lib/core/rust/FdroidRustRepoManager.dart`
+  均已不存在；当前路径见上。
+- 域内 payload 为 **JSON**（信封本身为 protobuf），并非"全 protobuf"。见 ARCHITECTURE.md。
+- 下载/哈希/签名校验横跨两端：Dart 负责下载与写侧车，宿主负责 dlopen 前校验。

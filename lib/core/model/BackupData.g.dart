@@ -68,6 +68,7 @@ BackupAppItem _$BackupAppItemFromJson(Map<String, dynamic> json) =>
       sortOrder: (json['sortOrder'] as num?)?.toInt() ?? 0,
       isEnabled: json['isEnabled'] as bool? ?? true,
       extra: json['extra'] as String?,
+      sourceId: json['sourceId'] as String?,
     );
 
 Map<String, dynamic> _$BackupAppItemToJson(BackupAppItem instance) =>
@@ -82,6 +83,7 @@ Map<String, dynamic> _$BackupAppItemToJson(BackupAppItem instance) =>
       'sortOrder': instance.sortOrder,
       'isEnabled': instance.isEnabled,
       'extra': instance.extra,
+      'sourceId': instance.sourceId,
     };
 
 ChannelAppBackupItem _$ChannelAppBackupItemFromJson(
@@ -97,6 +99,7 @@ ChannelAppBackupItem _$ChannelAppBackupItemFromJson(
       addTime: (json['addTime'] as num).toInt(),
       channelCode: json['channelCode'] as String,
       extra: json['extra'] as String?,
+      sourceId: json['sourceId'] as String?,
     );
 
 Map<String, dynamic> _$ChannelAppBackupItemToJson(
@@ -112,6 +115,7 @@ Map<String, dynamic> _$ChannelAppBackupItemToJson(
       'addTime': instance.addTime,
       'channelCode': instance.channelCode,
       'extra': instance.extra,
+      'sourceId': instance.sourceId,
     };
 
 BackupTagItem _$BackupTagItemFromJson(Map<String, dynamic> json) =>

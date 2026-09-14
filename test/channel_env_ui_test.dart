@@ -136,6 +136,9 @@ void main() {
   /// 打开导入 BottomSheet（db8fa14 起：环境变量区改由 requiredEnvVars 引导，
   /// 选文件后按需出现，不再有可展开 section）
   Future<void> openImportDialog(WidgetTester tester) async {
+    // 入口位于「数据源管理」分组，小视口下需先滚动到可见再点
+    await tester.ensureVisible(find.text('脚本渠道'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('脚本渠道'));
     await tester.pumpAndSettle();
   }
@@ -276,6 +279,8 @@ void main() {
     // 管理入口 subtitle 显示数量
     expect(find.text('1 个渠道包'), findsOneWidget);
 
+    await tester.ensureVisible(find.text('已导入渠道'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('已导入渠道'));
     await tester.pumpAndSettle();
 
@@ -295,6 +300,8 @@ void main() {
         fileName: 'envedit.zip', env: {'PINGAN_USER': 'alice'});
 
     // 打开管理 → 环境变量编辑
+    await tester.ensureVisible(find.text('已导入渠道'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('已导入渠道'));
     await tester.pumpAndSettle();
     await tester
@@ -340,6 +347,8 @@ void main() {
     expect(await ConfigJsChannelEnvStore('js_del').load(), {'SECRET': 'x'});
 
     // 管理 → 删除 → 危险确认
+    await tester.ensureVisible(find.text('已导入渠道'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('已导入渠道'));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('script_channel_delete_js_del')));

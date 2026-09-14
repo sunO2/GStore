@@ -292,6 +292,7 @@ void main() {
         addTime: 123,
         channelCode: 'fdroid',
         extra: '{"k":"v"}',
+        sourceId: 'fp:BITWARDEN',
       );
       final item = ChannelAppBackupItem.fromChannelAddedApp(channelApp);
       final back = item.toChannelAddedApp();
@@ -302,6 +303,27 @@ void main() {
       expect(back.channelCode, 'fdroid');
       expect(back.category, '工具');
       expect(back.extra, '{"k":"v"}');
+      // 源标识必须随备份往返（丢失会让恢复后的记录退回"当前源"→ 多源下挂错源）
+      expect(item.sourceId, 'fp:BITWARDEN');
+      expect(back.sourceId, 'fp:BITWARDEN');
+    });
+
+    test('旧备份（无 sourceId 键）反序列化不报错，读侧回落 extra', () {
+      final legacyJson = <String, dynamic>{
+        'appId': 'com.a',
+        'name': 'A',
+        'user': '',
+        'repositories': '',
+        'icon': 'x.png',
+        'description': '',
+        'addTime': 123,
+        'channelCode': 'fdroid',
+        'extra': '{"sourceId":"fp:OLD"}',
+      };
+      final item = ChannelAppBackupItem.fromJson(legacyJson);
+      expect(item.sourceId, isNull);
+      // ChannelAddedApp.sourceIdentity 回落 extra['sourceId']（v5 之前的历史数据同款）
+      expect(item.toChannelAddedApp().sourceIdentity, 'fp:OLD');
     });
   });
 

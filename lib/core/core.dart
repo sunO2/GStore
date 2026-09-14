@@ -35,7 +35,8 @@ export 'package:gstore/core/aggregate/aggregate.dart';
 export 'package:gstore/core/download/download.dart';
 
 // F-Droid 相关
-export 'package:gstore/core/fdroid/fdroid_repo.dart';
+export 'package:gstore/core/fdroid/FdroidRepoManager.dart';
+export 'package:gstore/core/fdroid/FdroidRepoModels.dart';
 
 // WebDAV 相关
 export 'package:gstore/core/webdav/webdav_client.dart';

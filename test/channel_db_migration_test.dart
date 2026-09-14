@@ -165,4 +165,50 @@ void main() {
       expect(replaced.single['name'], 'A renamed', reason: 'replace 语义应更新整行');
     });
   });
+
+  group('migration4to5（v4 → v5 增加 sourceId 列）', () {
+    /// v4 表结构（复合主键，无 sourceId）——与 v3 迁移后的结果一致
+    const v4CreateTableSql = '''
+CREATE TABLE IF NOT EXISTS `channel_added_app` (
+  `appId` TEXT NOT NULL,
+  `name` TEXT NOT NULL,
+  `user` TEXT NOT NULL,
+  `repositories` TEXT NOT NULL,
+  `apprepo` TEXT,
+  `icon` TEXT NOT NULL,
+  `description` TEXT NOT NULL,
+  `category` TEXT,
+  `addTime` INTEGER NOT NULL,
+  `channelCode` TEXT NOT NULL,
+  `extra` TEXT,
+  PRIMARY KEY (`channelCode`, `appId`)
+)
+''';
+
+    test('加列后历史行保留、新列可写、旧行值为 NULL（源标识靠 extra 兼容）', () async {
+      await db.execute('DROP TABLE IF EXISTS channel_added_app');
+      await db.execute(v4CreateTableSql);
+      await insertV3Row(db, appId: 'com.legacy', channelCode: 'fdroid', name: '旧记录');
+
+      await migration4to5(db);
+
+      // 列已存在
+      final cols = await db.rawQuery('PRAGMA table_info(channel_added_app)');
+      expect(cols.map((c) => c['name']), contains('sourceId'));
+
+      // 历史行保留且新列为 NULL（读侧回落到 extra['sourceId']）
+      final legacy = await db.rawQuery(
+          "SELECT appId, sourceId FROM channel_added_app WHERE appId = 'com.legacy'");
+      expect(legacy, hasLength(1));
+      expect(legacy.single['sourceId'], isNull);
+
+      // 新写入可带源标识，并能读回
+      await db.rawInsert(
+          "INSERT INTO channel_added_app (appId, name, user, repositories, icon, description, addTime, channelCode, sourceId) "
+          "VALUES ('com.new', '新记录', '', '', 'x.png', '', 2000, 'fdroid', 'fp:ABCD')");
+      final fresh = await db.rawQuery(
+          "SELECT sourceId FROM channel_added_app WHERE appId = 'com.new'");
+      expect(fresh.single['sourceId'], 'fp:ABCD');
+    });
+  });
 }

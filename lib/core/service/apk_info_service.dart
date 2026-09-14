@@ -218,6 +218,8 @@ class ApkInfoService {
         addTime: record.addTime,
         channelCode: ChannelType.github.code,
         extra: record.extra,
+        // 重建整行时必须带上源标识（与 extra 同级），否则会把记录挂到错的源上
+        sourceId: record.sourceId,
       );
       await db.dao.insertApp(updated);
       appLog.info('ApkInfoService: 应用名/图标已更新 '

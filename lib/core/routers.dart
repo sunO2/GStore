@@ -18,6 +18,7 @@ class AppRoute {
   static String webdavConfig = "/GStore/webdavConfig";
   static String agent = "/GStore/agent";
   static String agentSettings = "/GStore/agentSettings";
+  static String localLlm = "/GStore/localLlm";
   static String installedApps = "/GStore/installedApps";
   static String moduleManage = "/GStore/moduleManage";
   static String cacheManage = "/GStore/cacheManage";

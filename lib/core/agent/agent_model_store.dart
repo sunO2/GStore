@@ -32,6 +32,10 @@ class AgentModel {
   /// Base URL
   String baseUrl;
 
+  /// 是否启用工具调用（function calling）。
+  /// 本地小模型的 tool calling 普遍不可靠，降级模式下关闭可避免乱调工具。
+  bool toolsEnabled;
+
   AgentModel({
     required this.id,
     this.name = '',
@@ -39,6 +43,7 @@ class AgentModel {
     this.apiKey = '',
     this.model = '',
     this.baseUrl = '',
+    this.toolsEnabled = true,
   });
 
   /// 默认模型名（根据 provider）
@@ -82,6 +87,7 @@ class AgentModel {
       'apiKey': apiKey,
       'model': model,
       'baseUrl': baseUrl,
+      'toolsEnabled': toolsEnabled,
     };
   }
 
@@ -96,6 +102,8 @@ class AgentModel {
       apiKey: json['apiKey'] as String? ?? '',
       model: json['model'] as String? ?? '',
       baseUrl: json['baseUrl'] as String? ?? '',
+      // 旧配置无此字段 → 默认启用，保持既有行为
+      toolsEnabled: json['toolsEnabled'] as bool? ?? true,
     );
   }
 }

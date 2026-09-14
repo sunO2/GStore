@@ -94,8 +94,8 @@ class FdroidRepoNotifier extends Notifier<FdroidRepoState> {
       // 加载统计信息
       await _loadStatistics();
 
-      // 检查更新
-      await _checkUpdate();
+      // 冷启动：把各源实际生效的资源基址备好（只读各自的本地库，不触网）
+      await _prefetchAllBases();
     } catch (e) {
       state = state.copyWith(errorMessage: '初始化失败: $e');
     }
@@ -109,23 +109,6 @@ class FdroidRepoNotifier extends Notifier<FdroidRepoState> {
       state = state.copyWith(statistics: await manager.getStatistics());
     } catch (e) {
       appLog.error('加载统计信息失败: $e');
-    }
-  }
-
-  /// 检查更新
-  Future<void> _checkUpdate() async {
-    final manager = _manager;
-    if (manager == null) return;
-    try {
-      final result = await manager.checkIncrementalUpdate();
-      if (result == null) return; // Rust 实现暂不支持增量更新
-      state = state.copyWith(
-        hasUpdate: result['hasUpdate'] ?? false,
-        currentVersion: result['currentVersion'] ?? 0,
-        latestVersion: result['latestVersion'] ?? 0,
-      );
-    } catch (e) {
-      appLog.error('检查更新失败: $e');
     }
   }
 
@@ -155,71 +138,45 @@ class FdroidRepoNotifier extends Notifier<FdroidRepoState> {
       appLog.info('FdroidRepoNotifier: 开始加载仓库: ${state.currentSource?.repoUrl}');
       await service.loadRepository();
 
-      // 拉取索引声明的仓库元信息（名称/镜像数/是否通过 SHA-256 校验），用于界面回填
-      await refreshRepoMeta();
-
       await _loadStatistics();
-      AppDialogs.showSuccess('仓库数据加载完成');
+      await _prefetchAllBases();
+      AppDialogs.showSuccess('仓库数据同步完成（${_syncSummaryLabel()}）');
     } catch (e) {
       appLog.error('FdroidRepoNotifier: 加载失败 - $e');
       AppDialogs.showError('加载失败: $e');
     }
   }
 
-  /// 拉取索引声明的仓库元信息；模块不可用时静默失败（不影响主流程）
-  Future<void> refreshRepoMeta() async {
-    try {
-      final meta = await FdroidRustRepoManager.getRepoMeta();
-      if (meta != null) state = state.copyWith(repoMeta: meta);
-    } catch (e) {
-      appLog.error('FdroidRepoNotifier: 读取仓库元信息失败 - $e');
-    }
-  }
-
-  /// 检查并应用增量更新
+  /// 同步仓库数据（**真实增量**：模块在 download_repo 内部自动走
+  /// entry.json + diff，必要时才回退全量——宿主侧无需"先检查再应用"两步）。
   Future<void> checkAndUpdate() async {
-    final manager = _manager;
-    if (manager == null) {
-      AppDialogs.showError('F-Droid 模块未启用');
-      return;
-    }
-    try {
-      final result = await manager.checkIncrementalUpdate();
-      if (result == null) {
-        AppDialogs.showInfo('检查更新失败');
-        return;
-      }
-
-      final hasUpdate = result['hasUpdate'] ?? false;
-      if (!hasUpdate) {
-        AppDialogs.showInfo('已是最新版本');
-        return;
-      }
-
-      await manager.applyIncrementalUpdate();
-      await _loadStatistics();
-
-      AppDialogs.showSuccess('更新完成');
-    } catch (e) {
-      AppDialogs.showError('更新失败: $e');
-    }
-  }
-
-  /// 切换源
-  Future<void> switchSource(FdroidSource source) async {
     final service = _service;
     if (service == null) {
       AppDialogs.showError('F-Droid 模块未启用');
       return;
     }
-    try {
-      await service.switchSource(source.id);
-
-      await _loadStatistics();
-      AppDialogs.showSuccess('已切换到 ${source.name}');
-    } catch (e) {
-      AppDialogs.showError('切换源失败: $e');
+    if (state.enabledSourcesCount == 0) {
+      AppDialogs.showError('请先启用至少一个源');
+      return;
     }
+    try {
+      final total = await service.loadAllEnabled();
+      await _loadStatistics();
+      // 各源实际生效的地址（resolved_url）与同步结果刚被回填 → 逐源展示
+      await _prefetchAllBases();
+      AppDialogs.showSuccess('同步完成：$total 个应用（${_syncSummaryLabel()}）');
+    } catch (e) {
+      appLog.error('FdroidRepoNotifier: 同步仓库失败 - $e');
+      AppDialogs.showError('同步失败: $e');
+    }
+  }
+
+  /// 本次同步的可读概括（**按源**统计，不再假装有一个"整体上次同步"）
+  String _syncSummaryLabel() {
+    final synced = state.syncedThisSessionCount;
+    if (synced == 0) return '无源完成同步';
+    final incremental = state.incrementalSourcesCount;
+    return incremental > 0 ? '$synced 个源已同步，其中 $incremental 个走增量' : '$synced 个源已同步（全量）';
   }
 
   /// 添加自定义源（支持 fdroidrepos:// 深链 + 指纹确认）
@@ -377,7 +334,8 @@ class FdroidRepoNotifier extends Notifier<FdroidRepoState> {
     try {
       final total = await service.loadAllEnabled();
       await _loadStatistics();
-      AppDialogs.showSuccess('已加载 ${state.enabledSourcesCount} 个源，共 $total 个应用');
+      await _prefetchAllBases();
+      AppDialogs.showSuccess('已加载 ${state.enabledSourcesCount} 个源，共 $total 个应用（${_syncSummaryLabel()}）');
     } catch (e) {
       appLog.error('FdroidRepoNotifier: 多源加载失败 - $e');
       AppDialogs.showError('加载失败: $e');
@@ -468,6 +426,8 @@ class FdroidRepoNotifier extends Notifier<FdroidRepoState> {
       )).toList();
       _allResults = fdroidApps;
       await _loadDeviceSdk(); // minSdk 兼容判断需要设备 API level
+      // 结果图标要按"各自所属源"的实际地址拼，先把基址备好
+      await _prefetchBases(fdroidApps.map((a) => a.sourceId));
       _applyFilters(); // 由筛选统一写 state.searchResults
     } catch (e) {
       AppDialogs.showError('搜索失败: $e');
@@ -691,20 +651,71 @@ class FdroidRepoNotifier extends Notifier<FdroidRepoState> {
     state = state.copyWith(searchResults: filtered);
   }
 
-  /// 图片相对路径 → 绝对地址（用该应用所属的源；镜像场景由源地址决定）
+  /// 应用所属的源（记录里的标识可能是 id / 指纹 / 仓库身份键，三者都认）
+  FdroidSource? _sourceOf(FdroidApp app) {
+    final id = app.sourceId;
+    if (id != null && id.isNotEmpty) {
+      for (final s in state.sources) {
+        if (s.id == id ||
+            s.fingerprint == id ||
+            FdroidRustRepoManager.sourceIdentity(
+                    fingerprint: s.fingerprint, repoUrl: s.repoUrl) ==
+                id) {
+          return s;
+        }
+      }
+    }
+    return state.currentSource;
+  }
+
+  /// 资源基地址：**按应用所属源**取，源开启镜像回退时**镜像优先**
+  ///
+  /// 真机：国内直连 f-droid.org 会连接超时，图片/截图同样必须走镜像——
+  /// "镜像只服务索引/diff、不参与图片"是不成立的，那样详情页图片一直加载不出来。
+  ///
+  /// 首选源**实际生效的地址**（模块 resolved_url，镜像回退后真正可用的那个）；
+  /// 未知时才按镜像配置兜底（两套规则并存会让同一应用在不同界面拿到不同地址）。
+  String _assetBaseFor(FdroidApp app) {
+    final src = _sourceOf(app);
+    if (src == null) return '(无)';
+    final resolved = _service?.cachedBaseFor(src);
+    if (resolved != null && resolved.isNotEmpty) return resolved;
+    if (src.useMirrors) {
+      for (final m in src.mirrors) {
+        if (m.enabled && m.url.isNotEmpty) return m.url;
+      }
+    }
+    return src.repoUrl;
+  }
+
+  /// 预取这些源标识对应源的"实际生效基址"（冷启动首次为本地库读取，不触网）
+  Future<void> _prefetchBases(Iterable<String?> sourceIds) async {
+    final service = _service;
+    if (service == null) return;
+    for (final id in sourceIds.whereType<String>().where((e) => e.isNotEmpty).toSet()) {
+      for (final s in state.sources) {
+        if (s.id == id ||
+            s.fingerprint == id ||
+            FdroidRustRepoManager.sourceIdentity(
+                    fingerprint: s.fingerprint, repoUrl: s.repoUrl) ==
+                id) {
+          await service.ensureBaseFor(s);
+          break;
+        }
+      }
+    }
+  }
+
+  /// 预取全部已配置源的基址（同步/搜索后调用一次即可覆盖所有展示面）
+  Future<void> _prefetchAllBases() =>
+      _prefetchBases(state.sources.map((s) => s.id));
+
+  /// 图片相对路径 → 绝对地址（已是绝对地址则幂等透传）
   String? _assetUrl(FdroidApp app, String path) {
     if (path.isEmpty) return null;
     if (path.startsWith('http://') || path.startsWith('https://')) return path;
-    FdroidSource? src;
-    for (final s in state.sources) {
-      if (s.id == app.sourceId) {
-        src = s;
-        break;
-      }
-    }
-    src ??= state.currentSource;
-    final base = (src?.repoUrl ?? '').trim();
-    if (base.isEmpty) return null;
+    final base = _assetBaseFor(app);
+    if (base.isEmpty || base == '(无)') return null;
     // 索引里的路径通常以 `/` 开头（如 /com.x8bit.bitwarden/en-US/icon_x.png）
     final b = base.endsWith('/') ? base.substring(0, base.length - 1) : base;
     final p = path.startsWith('/') ? path : '/$path';
@@ -760,14 +771,7 @@ class FdroidRepoNotifier extends Notifier<FdroidRepoState> {
   /// 应用详情：底部弹层展示，并**标明来源源**（多源下必须知道数据来自哪个库）
   Future<void> openAppDetail(FdroidApp app) async {
     // 多源路由：按 sourceId 找到来源源，决定后续查询/安装走哪个库
-    FdroidSource? origin;
-    for (final s in state.sources) {
-      if (s.id == app.sourceId) {
-        origin = s;
-        break;
-      }
-    }
-    origin ??= state.currentSource;
+    final origin = _sourceOf(app);
     appLog.info('FdroidRepoNotifier: 打开详情 ${app.packageName}（来源源=${origin?.name ?? "未知"}）');
 
     final rows = <Widget>[
@@ -799,21 +803,9 @@ class FdroidRepoNotifier extends Notifier<FdroidRepoState> {
   }
 
 
-  /// 图片地址使用的基地址（**源地址**，不是镜像）
-  String _assetBaseFor(FdroidApp app) {
-    for (final s in state.sources) {
-      if (s.id == app.sourceId) return s.repoUrl;
-    }
-    return state.currentSource?.repoUrl ?? '(无)';
-  }
-
   /// 应用所属源名称（多源下用于核对图片走的是哪个源）
-  String _sourceNameOf(FdroidApp app) {
-    for (final s in state.sources) {
-      if (s.id == app.sourceId) return s.name;
-    }
-    return state.currentSource?.name ?? '(当前源)';
-  }
+  String _sourceNameOf(FdroidApp app) =>
+      _sourceOf(app)?.name ?? state.currentSource?.name ?? '(当前源)';
 }
 
 /// F-Droid 仓库管理页 provider。

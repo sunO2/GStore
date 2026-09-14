@@ -195,6 +195,22 @@ class FdroidRustRepoManager {
     }
   }
 
+  /// **指定源**的仓库元信息（含下载时实际生效的 `resolved_url`）。
+  ///
+  /// 与 [getRepoMeta] 是同一个模块方法，区别只是走**该源自己的实例/库**——
+  /// 资源基址必须与索引走同一个可达地址，不能由宿主另猜一套（见 FdroidChannel._assetBaseFor）。
+  static Future<Map<String, dynamic>?> getRepoMetaIn(FdroidSource source) async {
+    try {
+      final inst = await instanceForSource(source);
+      final bytes = await inst.callModule('get_repo_meta');
+      final decoded = jsonDecode(utf8.decode(bytes));
+      return decoded is Map<String, dynamic> ? decoded : null;
+    } catch (e) {
+      appLog.error('FdroidRustRepoManager: 读取源「${source.name}」元信息失败 - $e');
+      return null;
+    }
+  }
+
   /// 获取应用数量
   static Future<int> getAppCount() async {
     final inst = await _ensureInstance();

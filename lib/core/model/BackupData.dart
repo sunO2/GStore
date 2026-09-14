@@ -171,6 +171,9 @@ class BackupAppItem {
   /// 扩展字段（JSON 字符串）
   final String? extra;
 
+  /// 记录所属的源标识（F-Droid 多源用；旧备份没有该键 → null，读侧回落 extra）
+  final String? sourceId;
+
   const BackupAppItem({
     required this.channelId,
     required this.appId,
@@ -182,6 +185,7 @@ class BackupAppItem {
     this.sortOrder = 0,
     this.isEnabled = true,
     this.extra,
+    this.sourceId,
   });
 
   factory BackupAppItem.fromJson(Map<String, dynamic> json) =>
@@ -222,6 +226,9 @@ class BackupAppItem {
       sortOrder: 0,
       isEnabled: true,
       extra: options.includeExtra ? channelApp.extra : null,
+      // 源标识与 extra 是同级的记录属性，且**不受 includeExtra 影响**：
+      // 它决定详情/资源地址路由回哪个源，丢了就等于把记录挂到错的源上。
+      sourceId: channelApp.sourceIdentity,
     );
   }
 
@@ -251,6 +258,7 @@ class BackupAppItem {
       addTime: addTime,
       channelCode: channelId,
       extra: extra,
+      sourceId: sourceId,
     );
   }
 }
@@ -289,6 +297,9 @@ class ChannelAppBackupItem {
   /// 扩展字段（JSON 字符串格式存储额外信息）
   final String? extra;
 
+  /// 记录所属的源标识（F-Droid 多源用；旧备份没有该键 → null，读侧回落 extra）
+  final String? sourceId;
+
   const ChannelAppBackupItem({
     required this.appId,
     required this.name,
@@ -300,6 +311,7 @@ class ChannelAppBackupItem {
     required this.addTime,
     required this.channelCode,
     this.extra,
+    this.sourceId,
   });
 
   factory ChannelAppBackupItem.fromJson(Map<String, dynamic> json) =>
@@ -320,6 +332,8 @@ class ChannelAppBackupItem {
       addTime: app.addTime,
       channelCode: app.channelCode,
       extra: app.extra,
+      // 源标识必须随备份走：否则恢复后记录会退回"当前源"（多源下就是错的源）
+      sourceId: app.sourceIdentity,
     );
   }
 
@@ -336,6 +350,7 @@ class ChannelAppBackupItem {
       addTime: addTime,
       channelCode: channelCode,
       extra: extra,
+      sourceId: sourceId,
     );
   }
 }

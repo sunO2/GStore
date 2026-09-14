@@ -12,7 +12,7 @@ part 'channel_database.g.dart';
 
 /// 渠道应用数据库
 /// 每个渠道维护自己添加的应用列表
-@Database(version: 4, entities: [ChannelAddedApp])
+@Database(version: 5, entities: [ChannelAddedApp])
 abstract class ChannelDatabase extends FloorDatabase {
   ChannelAddedAppDao get dao;
 
@@ -41,6 +41,8 @@ abstract class ChannelDatabase extends FloorDatabase {
           // v3 -> v4：重建表为复合主键 (channelCode, appId)，
           // 同 appId 跨渠道不再互相覆盖（A1）
           Migration(3, 4, migration3to4),
+          // v4 -> v5：添加 sourceId 列（F-Droid 渠道记录所属的源）
+          Migration(4, 5, migration4to5),
         ])
         .addCallback(Callback(
           onCreate: (database, version) async {
@@ -89,6 +91,18 @@ Future<void> migration3to4(sqflite.Database database) async {
       .execute('ALTER TABLE channel_added_app_new RENAME TO channel_added_app');
   appLog.info(
       'ChannelDatabase: v3→v4 迁移完成，channel_added_app 复合主键 (channelCode, appId)');
+}
+
+/// v4 → v5 迁移：channel_added_app 增加 `sourceId` 列（F-Droid 记录所属的源）
+///
+/// 多源下详情查询/资源地址必须按记录自己的源路由，所以源标识要有**自己的列**
+/// （不再塞在 `extra` 的 JSON 里）。历史行的 `extra['sourceId']` 仍可读，
+/// 读侧 `ChannelAddedApp.sourceIdentity` 两者都认，因此本迁移只加列不改数据。
+Future<void> migration4to5(sqflite.Database database) async {
+  await database.execute(
+    'ALTER TABLE channel_added_app ADD COLUMN sourceId TEXT',
+  );
+  appLog.info('ChannelDatabase: v4→v5 迁移完成，已添加 sourceId 列');
 }
 
 /// 渠道数据库单例

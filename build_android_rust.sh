@@ -91,7 +91,7 @@ EOF
     # 其 build.rs 对含 linux 的 target 发出 -lstdc++ → NDK 空壳 libstdc++.so 无法解析，
     # 导致 dlopen 报 cannot locate symbol。rustc 的链接对 clang 驱动而言是 C 链接，
     # -static-libstdc++ 被忽略（argument unused），必须显式链入 libc++_static.a + libc++abi.a。
-    export RUSTFLAGS="-C link-arg=-l:libc++_static.a -C link-arg=-l:libc++abi.a"
+    export RUSTFLAGS="-C link-arg=-l:libc++_static.a -C link-arg=-l:libc++abi.a -C link-arg=-Wl,-z,max-page-size=16384"
 
     # armv7: ring/cc 等需要旧式工具链名（arm-linux-androideabi-clang）
     # NDK 的 armv7a...clang 是相对 symlink（复制会断链），改用包装脚本调用真实 NDK 包装
@@ -166,7 +166,7 @@ EOF
         export ANDROID_NDK_HOME="$NDK_PATH"
         export ANDROID_NDK_ROOT="$NDK_PATH"
         export CMAKE_TOOLCHAIN_FILE="$toolchain_file"
-        export RUSTFLAGS="-C link-arg=-l:libc++_static.a -C link-arg=-l:libc++abi.a"
+        export RUSTFLAGS="-C link-arg=-l:libc++_static.a -C link-arg=-l:libc++abi.a -C link-arg=-Wl,-z,max-page-size=16384"
 
         # cc crate 需要不带版本号的 clang（NDK 只有带 API 版本的）→ 包装脚本
         local toolchain_bin="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin"
@@ -236,6 +236,17 @@ for module in "${MODULES[@]}"; do
     build_module "$module"
     echo ""
 done
+
+# 本地推理模块（可选、仅 arm64）：需要 bindgen/libclang + 编译 llama.cpp，故单独脚本。
+# 失败不阻断整体构建（该模块按需使用）。
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -x "$SCRIPT_DIR/rust/build_llm_android.sh" ]; then
+    echo_info "Building local LLM module (gstore_mod_llm, arm64 only)..."
+    if ! "$SCRIPT_DIR/rust/build_llm_android.sh"; then
+        echo_warn "gstore_mod_llm 构建失败（可选模块，继续）"
+    fi
+    echo ""
+fi
 
 # 计算总耗时
 end_time=$(date +%s)

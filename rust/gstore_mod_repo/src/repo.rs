@@ -231,50 +231,17 @@ pub fn normalize_asset_path(path: &str) -> String {
 }
 
 /// 基址 + 仓库内相对路径（两侧斜杠归一，避免 `…/repo//x`）
+///
+/// ★ 契约：`path` 若**已是绝对地址** → 原样返回。
+///   必须与 [normalize_asset_path]（同样保留绝对地址）保持一致；两者契约不一致会出现
+///   `https://镜像/https://第三方源/…` 的二次拼接（宿主侧同款 bug 已导致真机图标 404）。
 pub fn join_repo_url(base: &str, path: &str) -> String {
+    if path.starts_with("http://") || path.starts_with("https://") {
+        return path.to_string();
+    }
     let b = base.trim_end_matches('/');
     let p = path.trim_start_matches('/');
     if p.is_empty() { b.to_string() } else { format!("{b}/{p}") }
-}
-
-/// 从 LocalizedFile 对象/字符串里取出文件路径（`{locale:{name,…}}` 或 `{name,…}` 或 `"…"`）
-fn localized_name(v: &serde_json::Value) -> String {
-    match v {
-        serde_json::Value::String(s) => s.clone(),
-        serde_json::Value::Object(o) => {
-            if let Some(n) = o.get("name") { return localized_name(n); }
-            for k in ["en-US", "en", "zh-CN", "zh"] {
-                if let Some(x) = o.get(k) {
-                    let s = localized_name(x);
-                    if !s.is_empty() { return s; }
-                }
-            }
-            for x in o.values() {
-                let s = localized_name(x);
-                if !s.is_empty() { return s; }
-            }
-            String::new()
-        }
-        _ => String::new(),
-    }
-}
-
-/// 收集截图路径（值可能是数组，或 `{locale: [..]}`）
-fn collect_paths(v: &serde_json::Value) -> Vec<String> {
-    match v {
-        serde_json::Value::String(s) => if s.is_empty() { vec![] } else { vec![s.clone()] },
-        serde_json::Value::Array(a) => a.iter().flat_map(collect_paths).collect(),
-        serde_json::Value::Object(o) => {
-            for k in ["en-US", "en", "zh-CN", "zh"] {
-                if let Some(x) = o.get(k) {
-                    let r = collect_paths(x);
-                    if !r.is_empty() { return r; }
-                }
-            }
-            o.values().flat_map(collect_paths).collect()
-        }
-        _ => vec![],
-    }
 }
 
 /// 把 metadata JSON 里的资源字段改成**绝对地址**（宿主就完全不需要 URL 逻辑）
@@ -321,6 +288,39 @@ fn absolutize_asset_value(base: &str, v: &mut serde_json::Value) {
         }
         _ => {}
     }
+}
+
+/// 把 versions JSON 里每个版本的 `file.name` 改成**绝对下载地址**
+///
+/// 与 metadata 资源同理：下载地址也只能有一个产出方。出口一次绝对化后，
+/// 宿主侧不再需要「基址 + 相对文件名」的拼接（拼错源/二次前缀都由此杜绝）。
+/// 兼容 map（key=versionCode）与数组两种形态。
+fn rewrite_versions_assets(base: &str, versions: &str) -> String {
+    let Ok(mut v) = serde_json::from_str::<serde_json::Value>(versions) else {
+        return versions.to_string();
+    };
+    let mut absolutize_version = |entry: &mut serde_json::Value| {
+        let Some(ver) = entry.as_object_mut() else { return };
+        let Some(file) = ver.get_mut("file") else { return };
+        if let Some(name) = file.get_mut("name") {
+            absolutize_asset_value(base, name);
+        }
+    };
+    match v.as_object_mut() {
+        Some(obj) => {
+            for (_, entry) in obj.iter_mut() {
+                absolutize_version(entry);
+            }
+        }
+        None => {
+            if let Some(arr) = v.as_array_mut() {
+                for entry in arr.iter_mut() {
+                    absolutize_version(entry);
+                }
+            }
+        }
+    }
+    serde_json::to_string(&v).unwrap_or_else(|_| versions.to_string())
 }
 
 impl RepoManager {
@@ -942,15 +942,6 @@ impl RepoManager {
         Ok(apps)
     }
 
-    /// 解析 index-v2.json 文件 (纯JSON格式)
-    fn parse_index_v2_json(&self, json_bytes: &[u8]) -> Result<Vec<AppInfo>, String> {
-        debug_print!("Parsing index-v2.json (pure JSON format)");
-        let json: serde_json::Value = serde_json::from_slice(json_bytes)
-            .map_err(|e| format!("Failed to parse index-v2.json: {}", e))?;
-        let apps = self.parse_index_v2_value(&json)?;
-        debug_print!("Parsed {} apps from index-v2", apps.len());
-        Ok(apps)
-    }
     pub fn save_apps(&self, apps: &[AppInfo]) -> Result<i32, String> {
         let conn = self.db.lock()
             .map_err(|e| format!("Failed to lock database: {}", e))?;
@@ -1082,7 +1073,7 @@ impl RepoManager {
             .collect::<SqliteResult<Vec<_>>>()
             .map_err(|e| format!("Failed to collect results: {}", e))?;
 
-        // ★ 出口统一处理：icon 与 metadata 里的资源路径 → 绝对地址
+        // ★ 出口统一处理：icon / metadata 资源 / versions 里的 APK 文件名 → 绝对地址
         //   在**读取时**解析而非写库时，因为镜像偏好会变（基址=resolved_url，随下载更新）
         if !base.is_empty() {
             for a in apps.iter_mut() {
@@ -1091,6 +1082,9 @@ impl RepoManager {
                 }
                 if let Some(meta) = a.metadata.clone() {
                     a.metadata = Some(rewrite_metadata_assets(&base, &meta));
+                }
+                if let Some(vs) = a.versions.clone() {
+                    a.versions = Some(rewrite_versions_assets(&base, &vs));
                 }
             }
         }
@@ -1475,9 +1469,6 @@ impl AppInfo {
     }
 }
 
-/// 差异链最大长度：链太长说明本地基线过旧，直接回退全量更划算
-pub const MAX_DIFF_CHAIN: usize = 12;
-
 /// 规划从 `baseline` 到 `target` 的差异链（**纯函数**，便于单测）。
 ///
 /// F-Droid 的 diff 是**逐版本增量**（diff/<version>.json 把 (version-1) 变成 version），
@@ -1537,6 +1528,57 @@ mod repo_meta_tests {
         assert_eq!(super::next_progress_mark(total, total, 95), Some(100));
         // 无 content-length 时不上报（避免除零/乱报）
         assert_eq!(super::next_progress_mark(1024, 0, 0), None);
+    }
+
+    #[test]
+    fn versions_assets_are_absolutized_at_output() {
+        const BASE: &str = "https://mirrors.tuna.tsinghua.edu.cn/fdroid/repo";
+        // map 形态（索引 v2：key = versionCode）
+        let versions = r#"{"1000":{"file":{"name":"com.termux_1000.apk","size":9},
+            "manifest":{"versionCode":1000},"added":1700000000}}"#;
+        let out = super::rewrite_versions_assets(BASE, versions);
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            v["1000"]["file"]["name"],
+            serde_json::json!(format!("{BASE}/com.termux_1000.apk"))
+        );
+        // 其余字段形状不变（宿主直接按原结构解析）
+        assert_eq!(v["1000"]["file"]["size"], serde_json::json!(9));
+        assert_eq!(v["1000"]["manifest"]["versionCode"], serde_json::json!(1000));
+    }
+
+    #[test]
+    fn join_repo_url_never_double_prefixes_absolute_paths() {
+        const BASE: &str = "https://mirrors.tuna.tsinghua.edu.cn/fdroid/repo";
+        const ABS: &str = "https://mobileapp.bitwarden.com/fdroid/repo/com.x8bit.bitwarden/en-US/icon_x=.png";
+        // 真机图标 404 根因：绝对地址被二次前缀（normalize 保留 → join 必须也保留）
+        assert_eq!(
+            super::join_repo_url(BASE, &super::normalize_asset_path(ABS)),
+            ABS
+        );
+        assert!(!super::join_repo_url(BASE, ABS).contains("/https://"));
+        // 相对路径照常拼接
+        assert_eq!(
+            super::join_repo_url(
+                BASE,
+                &super::normalize_asset_path("/fdroid/repo/com.x/en-US/icon_a=.png")
+            ),
+            format!("{BASE}/com.x/en-US/icon_a=.png")
+        );
+    }
+
+    #[test]
+    fn versions_assets_absolutization_is_idempotent_and_handles_arrays() {
+        const BASE: &str = "https://mobileapp.bitwarden.com/fdroid/repo";
+        // 数组形态 + 已是绝对地址（源切换后重复出口不得二次前缀）
+        let abs = "https://mobileapp.bitwarden.com/fdroid/repo/com.x8bit.bitwarden_1.apk";
+        let versions = format!(r#"[{{"file":{{"name":"{abs}"}}}}]"#);
+        let out = super::rewrite_versions_assets(BASE, &versions);
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v[0]["file"]["name"], serde_json::json!(abs));
+        assert!(!out.contains("/https://"));
+        // 非法 JSON 原样返回（不因出口改写丢数据）
+        assert_eq!(super::rewrite_versions_assets(BASE, "not json"), "not json");
     }
 
     fn parse_repo_meta_tolerates_missing_fields() {

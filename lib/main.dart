@@ -13,6 +13,7 @@ import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/config/config_initializer.dart';
+import 'package:gstore/core/event/app_event_bus_bootstrap.dart';
 import 'package:gstore/core/module/app_modules.dart';
 import 'package:gstore/core/module/infra_modules.dart';
 import 'package:gstore/core/module/module.dart';
@@ -29,6 +30,10 @@ registerService() async {
   // LogManager 单例惰性初始化（appLog 首次访问即创建；LogModule 负责注册到注册表）
   appLog.info('registerService: 开始');
   final sw = Stopwatch()..start();
+
+  // 统一事件总线：把 DB / 模块生命周期 / 配置事件源适配进 AppEventBus
+  // （幂等；配置变化将经此下行到 Rust 模块）
+  AppEventBusBootstrap.initialize();
 
   // 初始化模块中心：注入上下文（配置/Agent 工具/服务联动）并注册全部模块。
   // 模块通过 dependencies 声明依赖，ModuleManager 拓扑排序 + 分层并行初始化

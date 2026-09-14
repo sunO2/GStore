@@ -3,7 +3,6 @@ import 'package:gstore/core/model/AppDetailInfo.dart';
 import 'package:gstore/core/model/detail_extra_keys.dart';
 import 'package:gstore/core/model/proxy/GitHubChannelDetailProxy.dart';
 import 'package:gstore/core/model/proxy/VivoChannelDetailProxy.dart';
-import 'package:gstore/core/model/proxy/HttpChannelDetailProxy.dart';
 import 'package:gstore/core/model/proxy/FdroidChannelDetailProxy.dart';
 import 'package:gstore/core/model/proxy/LocalDbChannelDetailProxy.dart';
 import 'package:gstore/core/channel/impl/JsChannel.dart';
@@ -201,21 +200,6 @@ group('DownloadInfo.extra', () {
         expect(extra[DownloadItemExtra.size]?.text, '');
         expect(extra[DownloadItemExtra.platform]?.text, 'android');
         expect(extra[DownloadItemExtra.version]?.text, '1.0');
-      });
-    });
-
-    group('HttpChannelDetailProxy', () {
-      test('全部缺键 → extra 四项均为空文本', () {
-        final proxy = HttpChannelDetailProxy({
-          'downloads': [minimalItem],
-        });
-        final dl = proxy.downloads;
-        expect(dl.length, 1);
-        final extra = dl[0].extra!;
-        expect(extra[DownloadItemExtra.size]?.text, '');
-        expect(extra[DownloadItemExtra.platform]?.text, '');
-        expect(extra[DownloadItemExtra.downloadCount]?.text, '');
-        expect(extra[DownloadItemExtra.version]?.text, '');
       });
     });
 

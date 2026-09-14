@@ -122,6 +122,9 @@ void main() {
     WidgetTester tester, {
     required Future<({String name, Uint8List bytes})?> Function() pick,
   }) async {
+    // 入口位于「数据源管理」分组，小视口下需先滚动到可见再点
+    await tester.ensureVisible(find.text('脚本渠道'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('脚本渠道'));
     await tester.pumpAndSettle();
     expect(find.text('导入渠道包'), findsOneWidget);
@@ -140,7 +143,7 @@ void main() {
       return (name: 'vivo.zip', bytes: zipBytes);
     });
 
-    // 入口存在（数据与同步分组），文案为渠道包语义
+    // 入口存在（数据源管理分组），文案为渠道包语义
     expect(find.text('脚本渠道'), findsOneWidget);
 
     await selectZip(tester, pick: () async => (name: 'vivo.zip', bytes: zipBytes));
@@ -262,6 +265,8 @@ void main() {
     expect(find.text('1 个渠道包'), findsOneWidget);
 
     // 已导入渠道列表显示渠道（名称来自脚本 CHANNEL_META）
+    await tester.ensureVisible(find.text('已导入渠道'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('已导入渠道'));
     await tester.pumpAndSettle();
     expect(find.text('渠道包管理'), findsOneWidget);

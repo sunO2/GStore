@@ -175,6 +175,68 @@ class FdroidSource {
   }
 }
 
+/// 某个源**最近一次同步**的真实结果（来自模块 download_repo 的返回负载）
+///
+/// 按源记录：多源下一个"整体上次同步"是没有意义的（会退化成"最后完成那个源"）。
+class FdroidSyncInfo {
+  const FdroidSyncInfo({
+    required this.at,
+    required this.incremental,
+    this.totalApps,
+    this.elapsedMs,
+    this.verified = false,
+    this.resolvedUrl,
+  });
+
+  /// 本地完成时间
+  final DateTime at;
+
+  /// 是否走了增量（entry.json + diff）；false = 全量下载
+  final bool incremental;
+
+  /// 该源的索引应用数
+  final int? totalApps;
+
+  /// 耗时（毫秒）
+  final int? elapsedMs;
+
+  /// 是否通过 SHA-256 校验
+  final bool verified;
+
+  /// 本次实际生效的地址（镜像回退后真正可用的那个）
+  final String? resolvedUrl;
+
+  @override
+  String toString() =>
+      'FdroidSyncInfo(${at.toIso8601String()}, 增量=$incremental, apps=$totalApps)';
+}
+
+/// 单个源的索引数据统计
+///
+/// 多源下"合计"会掩盖关键信息（哪个源还没同步、哪个源一条数据都没有），
+/// 所以统计以**源**为单位给出；需要合计由调用方自行求和。
+class FdroidSourceStat {
+  const FdroidSourceStat({
+    required this.source,
+    required this.appCount,
+    this.lastSync,
+  });
+
+  final FdroidSource source;
+
+  /// 该源自己库里的应用数（未同步过为 0）
+  final int appCount;
+
+  /// 该源最近一次同步结果（本次会话内）；null = 本会话还没同步过
+  final FdroidSyncInfo? lastSync;
+
+  /// 该源是否参与多源搜索/加载
+  bool get enabled => source.enabled;
+
+  @override
+  String toString() => 'FdroidSourceStat(${source.name}: $appCount)';
+}
+
 /// LocalizedText / LocalizedFile 取值：优先中文，其次英文，再退化为首个非空
 ///
 /// 索引里的本地化字段形态不定（字符串 / {locale: value} 映射），

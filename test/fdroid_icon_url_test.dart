@@ -39,6 +39,62 @@ void main() {
     });
   });
   _regressionTests();
+  _storageTests();
+}
+
+// ── 落库契约：渠道库里**只存仓库内相对路径**，绝不存完整 URL ──
+
+void _storageTests() {
+  const mirrorHost = 'mirrors.tuna.tsinghua.edu.cn';
+  const viaMirror = 'https://$mirrorHost/fdroid/repo/com.termux/en-US/icon.png';
+
+  test('写侧 repoAssetKey：本仓库地址取相对键（无 scheme/host/镜像前缀）', () {
+    final stored = repoAssetKey(viaMirror, baseHost: mirrorHost);
+    expect(stored, 'com.termux/en-US/icon.png');
+    expect(stored, isNot(contains('http')));
+    expect(stored, isNot(contains('tsinghua')));
+  });
+
+  test('换镜像后地址随之变化（同一份库存，基址决定地址）', () {
+    final stored = repoAssetKey(viaMirror, baseHost: mirrorHost);
+    expect(
+      joinRepoUrl('https://mirrors.tuna.tsinghua.edu.cn/fdroid/repo', stored),
+      viaMirror,
+    );
+    expect(
+      joinRepoUrl('https://mirror.example.com/fdroid/repo', stored),
+      'https://mirror.example.com/fdroid/repo/com.termux/en-US/icon.png',
+    );
+  });
+
+  test('写侧 repoAssetKey：非同源的外部绝对地址原样保留（不随镜像变化）', () {
+    const external = 'https://cdn.example.com/assets/icon.png';
+    expect(repoAssetKey(external, baseHost: mirrorHost), external);
+    // 且读侧也不会把它拼到源地址上（绝对地址透传）
+    expect(
+      joinRepoUrl('https://mirror.example.com/fdroid/repo', external),
+      external,
+    );
+  });
+
+  test('写侧 repoAssetKey：相对路径/旧形态同样归一到仓库内相对键', () {
+    expect(repoAssetKey('/fdroid/repo/icons/x.png'), 'icons/x.png');
+    expect(repoAssetKey('/repo/repo/com.x/en-US/icon.png'),
+        'com.x/en-US/icon.png');
+  });
+
+  test('读侧 normalizeRepoAssetPath 仍保留绝对地址（与 joinRepoUrl 同契约）', () {
+    // 两者契约必须一致，否则出现 `https://镜像/https://源/…` 的二次拼接
+    expect(normalizeRepoAssetPath(viaMirror), viaMirror);
+  });
+
+  test('第三方源（无镜像）不会继承官方源前缀', () {
+    final stored = repoAssetKey('/com.x8bit.bitwarden/en-US/icon_a=.png');
+    expect(
+      joinRepoUrl('https://mobileapp.bitwarden.com/fdroid/repo', stored),
+      'https://mobileapp.bitwarden.com/fdroid/repo/com.x8bit.bitwarden/en-US/icon_a=.png',
+    );
+  });
 }
 
 // ── 回归：本次真机问题的组合（模块输出绝对地址 → 渠道再拼一次） ──

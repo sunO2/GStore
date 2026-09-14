@@ -406,7 +406,7 @@ class _DbBottomBar extends ConsumerWidget {
     );
   }
 
-  /// 弹出完整行内容（固定高度可滚动，内含删除入口）。
+  /// 弹出完整行内容（内容过长时由统一 sheet 内部滚动；内含删除入口）。
   void _showRowDetail(
     BuildContext context,
     WidgetRef ref,
@@ -414,78 +414,60 @@ class _DbBottomBar extends ConsumerWidget {
   ) {
     final theme = Theme.of(context);
     final notifier = ref.read(databaseManageProvider.notifier);
-    final maxHeight = MediaQuery.of(context).size.height * 0.55;
     AppDialogs.showDialog(
       title: '记录详情',
       confirmText: '关闭',
-      content: SizedBox(
-        height: maxHeight,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // 字段列表（固定区域内滚动，避免字段过多撑高弹窗）
-            Expanded(
-              child: SingleChildScrollView(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    for (final entry in row.entries)
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: AppSpacing.sm),
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            SizedBox(
-                              width: 110,
-                              child: Text(
-                                entry.key,
-                                style: theme.textTheme.bodySmall?.copyWith(
-                                  color: theme.colorScheme.primary,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ),
-                            Expanded(
-                              child:
-                                  SelectableText(_valueToString(entry.value)),
-                            ),
-                          ],
-                        ),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (final entry in row.entries)
+            Padding(
+              padding: const EdgeInsets.only(bottom: AppSpacing.sm),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SizedBox(
+                    width: 110,
+                    child: Text(
+                      entry.key,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.primary,
+                        fontWeight: FontWeight.w600,
                       ),
-                  ],
-                ),
+                    ),
+                  ),
+                  Expanded(
+                    child: SelectableText(_valueToString(entry.value)),
+                  ),
+                ],
               ),
             ),
-            const Divider(height: 1),
-            // 删除入口（不依赖横向滚动，始终可见）
-            Builder(
-              builder: (dialogContext) => TextButton.icon(
-                style: TextButton.styleFrom(
-                  foregroundColor: theme.colorScheme.error,
-                ),
-                icon: const Icon(Icons.delete_outline, size: 20),
-                label: const Text('删除此记录'),
-                onPressed: row['_rowid_'] == null
-                    ? null
-                    : () async {
-                        final ok = await notifier.deleteRow(
-                          ref.read(databaseManageProvider).browsingTable,
-                          row,
-                        );
-                        if (ok) {
-                          AppDialogs.showSuccess('已删除该记录');
-                          await notifier.afterDelete(
-                            ref.read(databaseManageProvider).browsingTable,
-                          );
-                          if (dialogContext.mounted) {
-                            Navigator.of(dialogContext).pop();
-                          }
-                        }
-                      },
-              ),
+          const Divider(height: 1),
+          // 删除入口（不依赖横向滚动）
+          TextButton.icon(
+            style: TextButton.styleFrom(
+              foregroundColor: theme.colorScheme.error,
             ),
-          ],
-        ),
+            icon: const Icon(Icons.delete_outline, size: 20),
+            label: const Text('删除此记录'),
+            onPressed: row['_rowid_'] == null
+                ? null
+                : () async {
+                    final ok = await notifier.deleteRow(
+                      ref.read(databaseManageProvider).browsingTable,
+                      row,
+                    );
+                    if (ok) {
+                      AppDialogs.showSuccess('已删除该记录');
+                      await notifier.afterDelete(
+                        ref.read(databaseManageProvider).browsingTable,
+                      );
+                      AppDialogs.popSheet<bool?>(false);
+                    }
+                  },
+          ),
+        ],
       ),
     );
   }

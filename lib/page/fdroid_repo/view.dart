@@ -4,6 +4,7 @@ library;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gstore/core/design/design_tokens.dart';
+import 'package:gstore/core/fdroid/FdroidRepoModels.dart';
 import 'package:gstore/page/fdroid_repo/logic.dart';
 import 'package:gstore/page/fdroid_repo/state.dart';
 
@@ -73,18 +74,8 @@ class _FdroidRepoPageState extends ConsumerState<FdroidRepoPage> {
       child: ListView(
         padding: AppSpacing.allLG,
         children: [
-          // 当前源卡片
-          _buildCurrentSourceCard(context, state),
-
-          SizedBox(height: AppSpacing.lg),
-
           // 统计信息卡片
-          _buildStatisticsCard(state),
-
-          SizedBox(height: AppSpacing.lg),
-
-          // 更新信息卡片
-          _buildUpdateCard(state),
+          _buildStatisticsCard(context, state),
 
           SizedBox(height: AppSpacing.lg),
 
@@ -106,9 +97,14 @@ class _FdroidRepoPageState extends ConsumerState<FdroidRepoPage> {
     );
   }
 
-  /// 构建当前源卡片
-  Widget _buildCurrentSourceCard(BuildContext context, FdroidRepoState state) {
-    final currentSource = state.currentSource;
+  /// 构建数据统计卡片：**按源**列出（多源下"合计"会掩盖哪个源没同步/没数据）
+  ///
+  /// 每源同时给出该源**自己的**最近一次同步结果（时间/增量还是全量/实际地址）——
+  /// 多源下不存在"整体上次同步"，单开一个区域只会显示成"最后一个完成的源"。
+  /// 颜色一律取自主题（`colorScheme`），不写死浅色，深色模式下同样正确。
+  Widget _buildStatisticsCard(BuildContext context, FdroidRepoState state) {
+    final theme = Theme.of(context);
+    final stats = state.statistics;
 
     return Card(
       child: Padding(
@@ -119,45 +115,32 @@ class _FdroidRepoPageState extends ConsumerState<FdroidRepoPage> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                const Text(
-                  '当前源',
-                  style: TextStyle(fontSize: AppTypography.sizeLG, fontWeight: AppTypography.weightBold),
-                ),
-                if (state.hasUpdate)
-                  Container(
-                    padding: AppSpacing.horizontalSM_verticalXS,
-                    decoration: BoxDecoration(
-                      color: Colors.orange,
-                      borderRadius: AppRadius.allMD,
-                    ),
-                    child: const Text(
-                      '有更新',
-                      style: TextStyle(color: Colors.white, fontSize: 12),
-                    ),
+                Text('数据统计', style: theme.textTheme.titleMedium),
+                if (stats.isNotEmpty)
+                  Text(
+                    '${state.syncedSourcesCount}/${stats.length} 个源有数据',
+                    style: theme.textTheme.bodySmall,
                   ),
               ],
             ),
             SizedBox(height: AppSpacing.sm),
-            if (currentSource != null) ...[
-              Text(
-                currentSource.name,
-                style: TextStyle(fontSize: AppTypography.sizeMD, fontWeight: AppTypography.weightMedium),
-              ),
-              SizedBox(height: AppSpacing.xs),
-              Text(
-                currentSource.repoUrl,
-                style: TextStyle(fontSize: AppTypography.sizeXS, color: AppColors.grey600),
-              ),
-              // 索引声明的元信息（名称/镜像数/完整性校验）——由模块 get_repo_meta 回填
-              if (state.repoMeta != null) ...[
-                SizedBox(height: AppSpacing.xs),
-                Text(
-                  _repoMetaLine(state.repoMeta!),
-                  style: TextStyle(fontSize: AppTypography.sizeXS, color: AppColors.grey600),
+            if (stats.isEmpty)
+              Text('暂无源', style: theme.textTheme.bodySmall)
+            else
+              for (final stat in stats) _buildStatRow(theme, stat),
+            if (stats.length > 1) ...[
+              const Divider(height: 1),
+              Padding(
+                padding: AppSpacing.onlyVerticalSM,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text('合计', style: theme.textTheme.titleSmall),
+                    Text('${state.totalAppCount} 个应用',
+                        style: theme.textTheme.titleSmall),
+                  ],
                 ),
-              ],
-            ] else ...[
-              const Text('未选择源', style: TextStyle(color: Colors.grey)),
+              ),
             ],
           ],
         ),
@@ -165,86 +148,64 @@ class _FdroidRepoPageState extends ConsumerState<FdroidRepoPage> {
     );
   }
 
-  /// 构建统计信息卡片
-  Widget _buildStatisticsCard(FdroidRepoState state) {
-    final apps = state.statistics['apps'] ?? 0;
-    final packages = state.statistics['packages'] ?? 0;
+  /// 单个源的统计行：名称 / 地址 / 应用数 + 该源自己的上次同步
+  ///
+  /// 不套 ListTile：地址与同步详情可能较长，ListTile 的 subtitle 最多 3 行会截断，
+  /// 这里用 Column 让它自然换行（长文本宁可换行也不省略）。
+  Widget _buildStatRow(ThemeData theme, FdroidSourceStat stat) {
+    final sync = stat.lastSync;
+    final detail = <String>[
+      [
+        stat.source.repoUrl,
+        if (!stat.enabled) '未启用',
+      ].join(' · '),
+      if (sync != null)
+        '上次同步 ${_formatSyncTime(sync.at)} · ${sync.incremental ? '增量' : '全量'}'
+            '${sync.totalApps != null ? ' · ${sync.totalApps} 个应用' : ''}'
+            '${sync.elapsedMs != null ? ' · ${sync.elapsedMs}ms' : ''}'
+            '${sync.resolvedUrl != null && sync.resolvedUrl!.isNotEmpty ? '\n实际地址 ${sync.resolvedUrl}' : ''}'
+      else
+        '本次会话未同步',
+    ].join('\n');
 
-    return Card(
-      child: Padding(
-        padding: AppSpacing.allLG,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              '数据库统计',
-              style: TextStyle(fontSize: AppTypography.sizeLG, fontWeight: AppTypography.weightBold),
-            ),
-            SizedBox(height: AppSpacing.md),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceAround,
+    return Padding(
+      padding: AppSpacing.onlyVerticalSM,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _buildStatItem('应用', apps),
-                _buildStatItem('包', packages),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  /// 构建统计项
-  Widget _buildStatItem(String label, int value) {
-    return Column(
-      children: [
-        Text(
-          value.toString(),
-          style: TextStyle(fontSize: AppTypography.sizeXXL, fontWeight: AppTypography.weightBold),
-        ),
-        Text(
-          label,
-          style: TextStyle(fontSize: AppTypography.sizeXS, color: AppColors.grey600),
-        ),
-      ],
-    );
-  }
-
-  /// 构建更新信息卡片
-  Widget _buildUpdateCard(FdroidRepoState state) {
-    if (!state.hasUpdate) {
-      return const SizedBox.shrink();
-    }
-
-    return Card(
-      color: Colors.orange.shade50,
-      child: Padding(
-        padding: AppSpacing.allLG,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text(
-                  '发现新版本',
-                  style: TextStyle(fontSize: AppTypography.sizeMD, fontWeight: AppTypography.weightSemiBold),
-                ),
+                Text(stat.source.name, style: theme.textTheme.bodyMedium),
+                SizedBox(height: AppSpacing.xs),
                 Text(
-                  'v${state.currentVersion} → v${state.latestVersion}',
-                  style: TextStyle(color: AppColors.warning, fontWeight: AppTypography.weightMedium),
+                  detail,
+                  style: theme.textTheme.bodySmall
+                      ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
                 ),
               ],
             ),
-            SizedBox(height: AppSpacing.md),
-            ElevatedButton(
-              onPressed: notifier.checkAndUpdate,
-              child: const Text('立即更新'),
+          ),
+          SizedBox(width: AppSpacing.sm),
+          Text(
+            '${stat.appCount} 个应用',
+            style: theme.textTheme.titleMedium?.copyWith(
+              color: stat.appCount > 0 ? null : theme.colorScheme.onSurfaceVariant,
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
+  }
+
+  /// 同步时间：今天只显示时分，跨天补上日期
+  String _formatSyncTime(DateTime t) {
+    String two(int v) => v.toString().padLeft(2, '0');
+    final now = DateTime.now();
+    final hm = '${two(t.hour)}:${two(t.minute)}';
+    final sameDay = t.year == now.year && t.month == now.month && t.day == now.day;
+    return sameDay ? hm : '${two(t.month)}-${two(t.day)} $hm';
   }
 
   /// 构建操作按钮
@@ -297,7 +258,6 @@ class _FdroidRepoPageState extends ConsumerState<FdroidRepoPage> {
           ),
           Divider(height: 1),
           ...state.sources.map((source) {
-            final isSelected = state.currentSource?.id == source.id;
             // 副标题展示地址 + （有则）镜像数/已固定指纹：第三方源的身份与可用性一眼可见
             final meta = <String>[
               source.repoUrl,
@@ -336,7 +296,7 @@ class _FdroidRepoPageState extends ConsumerState<FdroidRepoPage> {
                   ),
                 ],
               ),
-              onTap: () => notifier.switchSource(source),
+              // 多源：不再有"当前源"概念，条目点击不做切换（操作走右侧菜单）
             );
           }).toList(),
         ],
@@ -437,23 +397,5 @@ class _FdroidRepoPageState extends ConsumerState<FdroidRepoPage> {
     final clean = fp.replaceAll(':', '').toUpperCase();
     if (clean.length <= 16) return clean;
     return '${clean.substring(0, 8)}…${clean.substring(clean.length - 8)}';
-  }
-
-  /// 索引声明的仓库元信息一行文案（无可用字段时返回空串，由调用方折叠）
-  String _repoMetaLine(Map<String, dynamic> meta) {
-    final parts = <String>[];
-    final name = (meta['name'] as String?) ?? '';
-    if (name.isNotEmpty) parts.add('索引名称 $name');
-    final mirrors = meta['mirrors'];
-    if (mirrors is List && mirrors.isNotEmpty) parts.add('镜像 ${mirrors.length}');
-    final resolved = (meta['resolved_url'] as String?) ?? '';
-    final declared = (meta['declared_url'] as String?) ?? '';
-    if (resolved.isNotEmpty && declared.isNotEmpty && resolved != declared) {
-      parts.add('实际地址 $resolved');
-    }
-    parts.add(meta['verified'] == true ? 'SHA-256 已校验' : '未校验');
-    final fails = (meta['fail_count'] as num?)?.toInt() ?? 0;
-    if (fails > 0) parts.add('连续失败 $fails 次');
-    return parts.join(' · ');
   }
 }

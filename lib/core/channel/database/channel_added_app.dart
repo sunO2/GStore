@@ -42,6 +42,12 @@ class ChannelAddedApp {
   /// 扩展字段，JSON 字符串格式存储额外信息
   final String? extra;
 
+  /// F-Droid 渠道：该记录所属**源**的标识（仓库身份键，指纹优先）。
+  ///
+  /// 多源下详情查询/资源地址都必须按它路由回正确的源，不能用"当前选中源"。
+  /// 其他渠道不使用该列（保持 null）。
+  final String? sourceId;
+
   ChannelAddedApp({
     required this.appId,
     required this.name,
@@ -54,6 +60,7 @@ class ChannelAddedApp {
     required this.addTime,
     required this.channelCode,
     this.extra,
+    this.sourceId,
   });
 
   /// 从 ChannelType 创建 channelCode
@@ -69,6 +76,7 @@ class ChannelAddedApp {
     required int addTime,
     required ChannelType channel,
     String? extra,
+    String? sourceId,
   }) {
     return ChannelAddedApp(
       appId: appId,
@@ -82,8 +90,12 @@ class ChannelAddedApp {
       addTime: addTime,
       channelCode: channel.code,
       extra: extra,
+      sourceId: sourceId,
     );
   }
+
+  /// 记录所属源的标识：列优先，兼容 v5 之前存在 `extra['sourceId']` 的历史数据
+  String? get sourceIdentity => sourceId ?? getExtra<String>('sourceId');
 
   /// 从 extra 中获取 JSON 数据
   Map<String, dynamic>? getExtraData() {

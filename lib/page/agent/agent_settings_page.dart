@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:gstore/core/agent/agent_model_store.dart';
 import 'package:gstore/core/agent/agent_service.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/rust/ModuleLoader.dart';
 
 /// Agent 模型管理设置页
 /// 支持：添加多个模型、选择使用哪个、编辑、删除
@@ -15,6 +17,10 @@ class AgentSettingsPage extends StatefulWidget {
 class _AgentSettingsPageState extends State<AgentSettingsPage> {
   AgentModelStore? _store;
   bool _loading = true;
+
+  /// 本地推理模块是否可用（APK 内置或已下载）；不可用则不显示入口
+  late final Future<bool> _llmAvailable =
+      RustModuleLoader.instance.isAvailable('llm');
 
   @override
   void initState() {
@@ -81,6 +87,20 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('模型管理'),
+        actions: [
+          // 没有 llm 模块（既非内置也未下载）时不显示"本地模型"入口
+          FutureBuilder<bool>(
+            future: _llmAvailable,
+            builder: (context, snap) {
+              if (snap.data != true) return const SizedBox.shrink();
+              return IconButton(
+                tooltip: '本地模型',
+                icon: const Icon(Icons.memory),
+                onPressed: () => context.push(AppRoute.localLlm),
+              );
+            },
+          ),
+        ],
       ),
       floatingActionButton: _loading
           ? null
@@ -306,6 +326,7 @@ class _ModelEditSheetState extends State<_ModelEditSheet> {
   late final TextEditingController _apiKeyController;
   late final TextEditingController _modelController;
   late final TextEditingController _baseUrlController;
+  late bool _toolsEnabled;
 
   @override
   void initState() {
@@ -316,6 +337,7 @@ class _ModelEditSheetState extends State<_ModelEditSheet> {
     _apiKeyController = TextEditingController(text: existing?.apiKey ?? '');
     _modelController = TextEditingController(text: existing?.model ?? '');
     _baseUrlController = TextEditingController(text: existing?.baseUrl ?? '');
+    _toolsEnabled = existing?.toolsEnabled ?? true;
   }
 
   @override
@@ -455,7 +477,17 @@ class _ModelEditSheetState extends State<_ModelEditSheet> {
                 prefixIcon: const Icon(Icons.link),
               ),
             ),
-            const SizedBox(height: AppSpacing.xl),
+            const SizedBox(height: AppSpacing.md),
+
+            // 工具调用开关：本地小模型 tool calling 不可靠，可关闭走纯问答降级
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: _toolsEnabled,
+              onChanged: (v) => setState(() => _toolsEnabled = v),
+              title: const Text('启用工具调用'),
+              subtitle: const Text('关闭后模型只做问答（本地小模型建议关闭）'),
+            ),
+            const SizedBox(height: AppSpacing.md),
 
             // 保存按钮
             SizedBox(
@@ -487,6 +519,7 @@ class _ModelEditSheetState extends State<_ModelEditSheet> {
       apiKey: apiKey,
       model: _modelController.text.trim(),
       baseUrl: _baseUrlController.text.trim(),
+      toolsEnabled: _toolsEnabled,
     );
 
     if (existing != null) {

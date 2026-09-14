@@ -2,6 +2,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/module/module_toggle_config.dart';
+import 'package:gstore/core/rust/ModuleLoader.dart';
 
 import 'state.dart';
 
@@ -229,3 +230,26 @@ final moduleManageProvider =
     NotifierProvider<ModuleManageNotifier, ModuleManageState>(
   ModuleManageNotifier.new,
 );
+
+/// 原生插件（Rust）只读清单：名称 + 中文说明
+const rustPlugins = <({String name, String title, String description})>[
+  (name: 'qr', title: '二维码解码', description: 'zxing-cpp 图像解码'),
+  (name: 'analyzer', title: 'APK 分析', description: 'Manifest / DEX / ELF 解析'),
+  (name: 'repo', title: 'F-Droid 仓库', description: '仓库索引下载与解析'),
+  (name: 'llm', title: '本地大模型', description: 'llama.cpp / GGUF 本地推理（仅 arm64）'),
+];
+
+/// 原生插件状态（只读；不触发加载/下载）
+final rustPluginStatusProvider =
+    FutureProvider<List<RustModuleStatus>>((ref) async {
+  final loader = RustModuleLoader.instance;
+  final out = <RustModuleStatus>[];
+  for (final p in rustPlugins) {
+    try {
+      out.add(await loader.probe(p.name));
+    } catch (_) {
+      out.add(RustModuleStatus(name: p.name, exists: false, source: 'none'));
+    }
+  }
+  return out;
+});

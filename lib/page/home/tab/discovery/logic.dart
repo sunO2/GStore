@@ -425,27 +425,32 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
   void showChannelSearchDialog(BuildContext context) {
     final availableChannels = _channelManager?.enabledChannels ?? [];
 
-    showDialog<void>(
+    AppSheet.show<void>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('选择搜索渠道'),
-        content: availableChannels.isEmpty
-            ? const Text('没有可用的渠道')
-            : Column(
-                mainAxisSize: MainAxisSize.min,
-                children: availableChannels.map((channel) {
-                  return ListTile(
-                    leading: Icon(_getChannelIcon(channel.info.type)),
-                    title: Text(channel.info.name),
-                    subtitle: Text(channel.info.description),
-                    onTap: () {
-                      Navigator.of(dialogContext).pop();
-                      _openChannelSearch(context, channel);
-                    },
-                  );
-                }).toList(),
+      title: '选择搜索渠道',
+      content: availableChannels.isEmpty
+          ? const Padding(
+              padding: EdgeInsets.symmetric(
+                horizontal: AppSpacing.xl,
+                vertical: AppSpacing.md,
               ),
-      ),
+              child: Text('没有可用的渠道'),
+            )
+          : Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: availableChannels.map((channel) {
+                return ListTile(
+                  leading: Icon(_getChannelIcon(channel.info.type)),
+                  title: Text(channel.info.name),
+                  subtitle: Text(channel.info.description),
+                  onTap: () {
+                    Navigator.of(context).pop();
+                    _openChannelSearch(context, channel);
+                  },
+                );
+              }).toList(),
+            ),
     );
   }
 
@@ -458,15 +463,15 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
     );
 
     if (searchWidget != null) {
-      // 渠道提供了搜索组件，直接显示
-      showDialog<void>(
+      // 渠道提供了搜索组件：统一底部弹层承载（固定高度内自滚动）
+      AppSheet.show<void>(
         context: context,
-        builder: (_) => Dialog(
-          child: SizedBox(
-            width: MediaQuery.of(context).size.width * 0.9,
-            height: MediaQuery.of(context).size.height * 0.8,
-            child: searchWidget,
-          ),
+        title: channel.info.name,
+        maxHeightFactor: 0.88,
+        scrollable: false,
+        content: SizedBox(
+          height: MediaQuery.of(context).size.height * 0.62,
+          child: searchWidget,
         ),
       );
     } else {
@@ -691,116 +696,100 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
     }
   }
 
-  /// 显示应用操作菜单（长按触发）
+  /// 显示应用操作弹层（长按触发，统一底部 sheet 风格）
   /// 单应用操作：添加到首页/移除首页、从渠道删除、批量管理
   void showAppActions(BuildContext context, String code, AppSummary app) {
     final isAdded = isAppAdded(code, app.appId);
     final theme = Theme.of(context);
 
-    showModalBottomSheet<void>(
+    AppSheet.show<void>(
       context: context,
-      backgroundColor: theme.scaffoldBackgroundColor,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (sheetContext) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // 拖动指示器
-            Container(
-              margin: const EdgeInsets.symmetric(vertical: 12),
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(
-                color: Colors.grey[300],
-                borderRadius: BorderRadius.circular(2),
-              ),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // 应用信息头
+          Padding(
+            padding: const EdgeInsets.symmetric(
+              horizontal: AppSpacing.xl,
+              vertical: AppSpacing.sm,
             ),
-            // 应用信息头
-            Padding(
-              padding: const EdgeInsets.symmetric(
-                horizontal: AppSpacing.lg,
-                vertical: AppSpacing.sm,
-              ),
-              child: Row(
-                children: [
-                  AppIcon(url: app.icon, width: 40, height: 40),
-                  const SizedBox(width: AppSpacing.md),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          app.name,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: theme.textTheme.titleMedium,
+            child: Row(
+              children: [
+                AppIcon(url: app.icon, width: 40, height: 40),
+                const SizedBox(width: AppSpacing.md),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        app.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.titleMedium,
+                      ),
+                      Text(
+                        '${getChannelName(code)} · '
+                        '${isAdded ? '已在首页' : '未添加到首页'}',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
                         ),
-                        Text(
-                          '${getChannelName(code)} · '
-                          '${isAdded ? '已在首页' : '未添加到首页'}',
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            color: theme.colorScheme.onSurfaceVariant,
-                          ),
-                        ),
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
-            const Divider(height: 1),
-            // 添加到首页 / 从首页移除
-            ListTile(
-              leading: Icon(
-                isAdded
-                    ? Icons.remove_circle_outline
-                    : Icons.add_circle_outline,
-                color: theme.colorScheme.primary,
-              ),
-              title: Text(isAdded ? '从首页移除' : '添加到首页'),
-              onTap: () {
-                Navigator.of(sheetContext).pop();
-                toggleApp(context, code, app);
-              },
+          ),
+          const Divider(height: 1),
+          // 添加到首页 / 从首页移除
+          ListTile(
+            leading: Icon(
+              isAdded
+                  ? Icons.remove_circle_outline
+                  : Icons.add_circle_outline,
+              color: theme.colorScheme.primary,
             ),
-            // 从渠道删除
-            ListTile(
-              leading: const Icon(Icons.delete_outline, color: Colors.red),
-              title: const Text(
-                '从渠道删除',
-                style: TextStyle(color: Colors.red),
-              ),
-              onTap: () {
-                Navigator.of(sheetContext).pop();
-                AppDialogs.showDialog(
-                  title: '移除应用',
-                  content:
-                      '确定从${getChannelName(code)}移除 ${app.name} 吗？',
-                  confirmText: '移除',
-                  cancelText: '取消',
-                  isDangerous: true,
-                  onConfirm: () => removeFromChannel(code, app.appId),
-                );
-              },
+            title: Text(isAdded ? '从首页移除' : '添加到首页'),
+            onTap: () {
+              Navigator.of(context).pop();
+              toggleApp(context, code, app);
+            },
+          ),
+          // 从渠道删除（危险操作：统一走 AppDialogs 确认 sheet）
+          ListTile(
+            leading: Icon(Icons.delete_outline, color: theme.colorScheme.error),
+            title: Text(
+              '从渠道删除',
+              style: TextStyle(color: theme.colorScheme.error),
             ),
-            // 批量管理
-            ListTile(
-              leading: Icon(
-                Icons.checklist,
-                color: theme.colorScheme.secondary,
-              ),
-              title: const Text('批量管理'),
-              onTap: () {
-                Navigator.of(sheetContext).pop();
-                toggleMultiSelectMode();
-                toggleAppSelection(code, app.appId);
-              },
+            onTap: () {
+              Navigator.of(context).pop();
+              AppDialogs.showConfirmSheet(
+                title: '移除应用',
+                message: '确定从${getChannelName(code)}移除 ${app.name} 吗？',
+                confirmText: '移除',
+                cancelText: '取消',
+                isDangerous: true,
+                onConfirm: () => removeFromChannel(code, app.appId),
+              );
+            },
+          ),
+          // 批量管理
+          ListTile(
+            leading: Icon(
+              Icons.checklist,
+              color: theme.colorScheme.secondary,
             ),
-            const SizedBox(height: AppSpacing.sm),
-          ],
-        ),
+            title: const Text('批量管理'),
+            onTap: () {
+              Navigator.of(context).pop();
+              toggleMultiSelectMode();
+              toggleAppSelection(code, app.appId);
+            },
+          ),
+          const SizedBox(height: AppSpacing.sm),
+        ],
       ),
     );
   }
@@ -1078,41 +1067,38 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
 
   /// 显示批量操作菜单
   void showBatchActions(BuildContext context) {
-    showModalBottomSheet<void>(
+    AppSheet.show<void>(
       context: context,
-      builder: (sheetContext) => Container(
-        padding: AppSpacing.allLG,
-        child: SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              ListTile(
-                leading: const Icon(Icons.select_all),
-                title: const Text('全选当前页面'),
-                onTap: () {
-                  Navigator.of(sheetContext).pop();
-                  _selectAllInCurrentView();
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.add_circle_outline),
-                title: const Text('批量添加已选'),
-                onTap: () {
-                  Navigator.of(sheetContext).pop();
-                  _batchAddSelected();
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.remove_circle_outline),
-                title: const Text('批量移除已选'),
-                onTap: () {
-                  Navigator.of(sheetContext).pop();
-                  _batchRemoveSelected();
-                },
-              ),
-            ],
+      title: '批量操作',
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          ListTile(
+            leading: const Icon(Icons.select_all),
+            title: const Text('全选当前页面'),
+            onTap: () {
+              Navigator.of(context).pop();
+              _selectAllInCurrentView();
+            },
           ),
-        ),
+          ListTile(
+            leading: const Icon(Icons.add_circle_outline),
+            title: const Text('批量添加已选'),
+            onTap: () {
+              Navigator.of(context).pop();
+              _batchAddSelected();
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.remove_circle_outline),
+            title: const Text('批量移除已选'),
+            onTap: () {
+              Navigator.of(context).pop();
+              _batchRemoveSelected();
+            },
+          ),
+        ],
       ),
     );
   }

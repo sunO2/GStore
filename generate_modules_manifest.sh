@@ -51,16 +51,27 @@ for abi in abis:
     for f in sorted(os.listdir(abi_dir)):
         if not f.startswith("libgstore_mod_") or not f.endswith(".so"):
             continue
-        module = f[len("libgstore_mod_"):-len(".so")]
+        stem = f[len("libgstore_mod_"):-len(".so")]
+        # GPU 变体用文件名后缀区分（_opencl/_vulkan/_cpu）；剥离后归入同一模块，
+        # 变体挂在 abi 条目的 variants 下；无后缀视为 cpu（base 条目）。
+        module, variant = stem, "cpu"
+        for tag in ("_opencl", "_vulkan", "_cpu"):
+            if stem.endswith(tag) and len(stem) > len(tag):
+                module, variant = stem[: -len(tag)], tag[1:]
+                break
         so_path = os.path.join(abi_dir, f)
         sha = hashlib.sha256(open(so_path, "rb").read()).hexdigest()
         size = os.path.getsize(so_path)
         entry = modules.setdefault(module, {})
-        entry.setdefault("abi", {})[abi] = {
-            "file_name": f,
-            "sha256": sha,
-            "size": size,
-        }
+        abi_entry = entry.setdefault("abi", {}).setdefault(abi, {})
+        if variant == "cpu":
+            abi_entry.update({"file_name": f, "sha256": sha, "size": size})
+        else:
+            abi_entry.setdefault("variants", {})[variant] = {
+                "file_name": f,
+                "sha256": sha,
+                "size": size,
+            }
 
 # 模块版本从 Cargo.toml 读取
 for module in modules:
@@ -83,5 +94,8 @@ print(f"  模块: {', '.join(modules.keys()) or '(无)'}")
 for module, data in modules.items():
     for abi in sorted(data.get("abi", {})):
         e = data["abi"][abi]
-        print(f"  - {module}/{abi}: {e['file_name']} ({e['size']}B)")
+        line = f"  - {module}/{abi}: {e.get('file_name','-')} ({e.get('size',0)}B)"
+        for v, ve in sorted(e.get("variants", {}).items()):
+            line += f" + {v}:{ve['file_name']} ({ve['size']}B)"
+        print(line)
 PYEOF

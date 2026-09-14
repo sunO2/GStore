@@ -1415,45 +1415,30 @@ class _TurnTimeline extends StatelessWidget {
     }
     final detailText = buffer.toString().trimRight();
 
-    showDialog(
+    AppSheet.show<void>(
       context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: Row(
-            children: [
-              Icon(_timelineToolIcon(tool.toolType),
-                  color: _timelineToolColor(tool.toolType)),
-              const SizedBox(width: AppSpacing.sm),
-              Expanded(
-                child: Text(
-                  _timelineToolLabel(tool.toolType),
-                  style: const TextStyle(fontSize: 16),
-                ),
-              ),
-            ],
-          ),
-          content: SingleChildScrollView(
-            child: SelectableText(
-              detailText,
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-          ),
-          actions: [
-            TextButton.icon(
-              onPressed: () {
-                Clipboard.setData(ClipboardData(text: detailText));
-                AppDialogs.showSuccess('工具调用详情已复制到剪贴板');
-              },
-              icon: const Icon(Icons.copy, size: 16),
-              label: const Text('复制'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('关闭'),
-            ),
-          ],
-        );
-      },
+      title: _timelineToolLabel(tool.toolType),
+      icon: Icon(_timelineToolIcon(tool.toolType)),
+      iconColor: _timelineToolColor(tool.toolType),
+      contentPadding: AppSpacing.onlyHorizontalXL,
+      content: SelectableText(
+        detailText,
+        style: Theme.of(context).textTheme.bodySmall,
+      ),
+      actions: [
+        TextButton.icon(
+          onPressed: () {
+            Clipboard.setData(ClipboardData(text: detailText));
+            AppDialogs.showSuccess('工具调用详情已复制到剪贴板');
+          },
+          icon: const Icon(Icons.copy, size: 16),
+          label: const Text('复制'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('关闭'),
+        ),
+      ],
     );
   }
 
@@ -1890,48 +1875,34 @@ class _ToolBubbleState extends State<_ToolBubble> {
     setState(() => _expanded = !_expanded);
   }
 
-  /// 弹出工具调用详情对话框（内容可复制）
+  /// 弹出工具调用详情弹层（统一底部 sheet 风格，内容可复制）
   void _showDetailDialog(BuildContext context) {
-    showDialog(
+    // 拼接完整内容：标题 + 状态 + 详情
+    final detailText = _buildDetailText();
+    AppSheet.show<void>(
       context: context,
-      builder: (context) {
-        // 拼接完整内容：标题 + 状态 + 详情
-        final detailText = _buildDetailText();
-        return AlertDialog(
-          title: Row(
-            children: [
-              Icon(_toolIconOf(msg.toolType), color: _toolColor),
-              const SizedBox(width: AppSpacing.sm),
-              Expanded(
-                child: Text(
-                  _toolLabelOf(msg.toolType),
-                  style: const TextStyle(fontSize: 16),
-                ),
-              ),
-            ],
-          ),
-          content: SingleChildScrollView(
-            child: SelectableText(
-              detailText,
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-          ),
-          actions: [
-            TextButton.icon(
-              onPressed: () {
-                Clipboard.setData(ClipboardData(text: detailText));
-                AppDialogs.showSuccess('工具调用详情已复制到剪贴板');
-              },
-              icon: const Icon(Icons.copy, size: 16),
-              label: const Text('复制'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('关闭'),
-            ),
-          ],
-        );
-      },
+      title: _toolLabelOf(msg.toolType),
+      icon: Icon(_toolIconOf(msg.toolType)),
+      iconColor: _toolColor,
+      contentPadding: AppSpacing.onlyHorizontalXL,
+      content: SelectableText(
+        detailText,
+        style: Theme.of(context).textTheme.bodySmall,
+      ),
+      actions: [
+        TextButton.icon(
+          onPressed: () {
+            Clipboard.setData(ClipboardData(text: detailText));
+            AppDialogs.showSuccess('工具调用详情已复制到剪贴板');
+          },
+          icon: const Icon(Icons.copy, size: 16),
+          label: const Text('复制'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('关闭'),
+        ),
+      ],
     );
   }
 

@@ -1,0 +1,43 @@
+[package]
+name = "gstore_mod_llm"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "gstore_mod_llm"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# 模块契约层（C ABI 结构体 / 错误模型）
+gstore_contract = { path = "../gstore_contract" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+libc = "0.2"
+log = "0.4"
+
+# 本地推理引擎：llama.cpp 的 Rust 绑定（GGUF）。
+# 默认关闭——宿主 CI/桌面单测不编译重型 C++；Android 发布构建用 --features llama。
+#
+# default-features=false + android-static-stdcxx：与现有模块一致地**静态链接 libc++**，
+# 避免同一进程内出现第二份 libc++_shared（现有 qr/analyzer 模块均为静态 libc++）。
+# `common` 提供 chat 模板（apply_chat_template）。
+llama-cpp-2 = { version = "0.1", optional = true, default-features = false, features = [
+    "common",
+    "android-static-stdcxx",
+] }
+
+[features]
+default = []
+llama = ["dep:llama-cpp-2"]
+# GPU 后端：默认**不开**。开启后须在设备上验证（Vulkan/OpenCL 运行库由系统提供）。
+# 注意：build_llm_android.sh 目前只构建 CPU 版；开启 GPU 需同步调整构建脚本。
+gpu-vulkan = ["llama-cpp-2/vulkan"]
+gpu-opencl = ["llama-cpp-2/opencl"]
+
+[profile.release]
+# 推理模块与其它模块不同：性能优先（llama.cpp 主体由 cmake 自编译，此处约束 Rust 胶水层）
+panic = "unwind"
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

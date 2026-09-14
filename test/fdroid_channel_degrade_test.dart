@@ -23,6 +23,16 @@ class _FakeFdroidRepoService implements IFdroidRepoService {
 
   @override
   String identityKeyFor(FdroidSource source) => 'test:${source.id}';
+
+  /// 假实现：资源基址按"源身份键 → 地址"表返回（用于验证按记录所属源取址）
+  final Map<String, String> resolvedBases = {};
+
+  @override
+  String? cachedBaseFor(FdroidSource source) => resolvedBases[identityKeyFor(source)];
+
+  @override
+  Future<void> ensureBaseFor(FdroidSource source) async {}
+
   int searchCalls = 0;
 
   @override
@@ -73,7 +83,7 @@ class _FakeFdroidRepoService implements IFdroidRepoService {
   Future<int> getAppCount() async => 0;
 
   @override
-  Future<Map<String, int>> getStatistics() async => {'apps': 0};
+  Future<List<FdroidSourceStat>> getStatistics() async => const [];
 
   @override
   Future<void> switchSource(String sourceId) async {}

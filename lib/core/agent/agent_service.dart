@@ -246,6 +246,75 @@ class AgentService {
   List<String> get registeredToolNames =>
       _agentTools.map((t) => t.toolName).toList();
 
+  /// 当前模型是否启用工具调用（function calling）。
+  /// 本地小模型（OpenAI 兼容的 loopback 端点）默认关闭，走"无工具"降级模式。
+  bool get toolsEnabled => _model?.toolsEnabled ?? true;
+
+  /// 是否本地小模型：loopback 端点，或显式关闭了工具调用。
+  bool get _isLocalModel {
+    final m = _model;
+    if (m == null) return false;
+    if (!m.toolsEnabled) return true;
+    final b = m.effectiveBaseUrl.toLowerCase();
+    return b.contains('127.0.0.1') || b.contains('localhost');
+  }
+
+  /// 本地小模型的精简系统提示（不含 16 条工具清单——那些对本地模型既不可用也极其占 token）
+  static const String _localSystemPrompt = '''
+你是 GStore 软件商店的智能助手，当前由**本地小模型**驱动（不具备工具调用能力）。
+规则：
+- 只做问答、解释与建议，**不要声称已经执行**搜索/下载/安装/备份等操作。
+- 需要真正执行操作时，提示用户到对应页面操作，或改用云端模型。
+- 回答简短、直接，避免长列表与冗长格式。''';
+
+  /// 本地模型保留的历史轮数（1 轮 = 1 问 + 1 答）
+  static const int _localKeepTurns = 3;
+  /// 本地模型的提示字符上限（约 1~2k token，防止 CPU prefill 拖到分钟级）
+  /// 提示字符上限：关闭工具时压到 4000（prefill 快）；开启工具时放宽以容纳工具清单。
+  int get _localMaxChars => toolsEnabled ? 12000 : 4000;
+
+  int _messageChars(List<Message> msgs) {
+    var n = 0;
+    for (final m in msgs) {
+      for (final p in m.content) {
+        if (p is TextPart) n += p.text.length;
+      }
+    }
+    return n;
+  }
+
+  /// 发给模型的 messages：本地模型走"精简提示 + 裁历史 + 字符上限"，
+  /// 否则原样返回（云端模型行为不变）。
+  List<Message> get _requestMessages {
+    if (!_isLocalModel) return _messages;
+
+    final convo = <Message>[
+      for (final m in _messages)
+        if (m.role != Role.system) m,
+    ];
+    var start = convo.length - _localKeepTurns * 2;
+    if (start < 0) start = 0;
+    final trimmed = convo.sublist(start);
+
+    // 关键：只有当"工具调用关闭"时才用精简提示；开启工具时必须保留完整系统提示
+    //（精简提示里写着"不具备工具调用能力"，会把工具能力显式关死）。
+    final out = <Message>[
+      Message(
+        role: Role.system,
+        content: [TextPart(text: toolsEnabled ? _systemPrompt : _localSystemPrompt)],
+      ),
+      ...trimmed,
+    ];
+    // 仍超上限：从最旧的一条开始丢（保留 system）
+    while (out.length > 1 && _messageChars(out) > _localMaxChars) {
+      out.removeAt(1);
+    }
+    appLog.info(
+        'AgentService: 本地模型提示裁剪 ${_messages.length}→${out.length} 条, '
+        '${_messageChars(out)} 字符（上限 $_localMaxChars）');
+    return out;
+  }
+
   /// 执行工具（模块化工具委托入口；测试可直接调用）
   Future<String> runTool(String toolName, Map<String, dynamic> params) =>
       _executeTool(toolName, params);
@@ -1871,8 +1940,10 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
 
       final stream = _ai!.generateStream<dynamic, void>(
         model: _getModelRef(_model!) as ModelRef<dynamic>,
-        messages: _messages,
-        toolNames: registeredToolNames.isNotEmpty ? registeredToolNames : null,
+        messages: _requestMessages,
+        toolNames: toolsEnabled && registeredToolNames.isNotEmpty
+            ? registeredToolNames
+            : null,
         maxTurns: 6,
       );
       await for (final chunk in stream) {
@@ -3301,7 +3372,7 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
           await manager.loadRepository(forceRefresh: force);
           final stats = await manager.getStatistics();
           appLog.info('AgentService: fdroidRepo load 完成');
-          return 'F-Droid 仓库加载完成。应用总数: ${stats['apps'] ?? 0}';
+          return 'F-Droid 仓库加载完成。${_fdroidStatsLines(stats)}';
 
         case 'search':
           if (keyword.isEmpty) return '搜索需要 keyword';
@@ -3314,8 +3385,7 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
           return '找到 ${apps.length} 个应用（显示前 ${lines.length} 个）：\n${lines.join('\n')}';
 
         case 'stats':
-          final stats = await manager.getStatistics();
-          return 'F-Droid 应用总数: ${stats['apps'] ?? 0}';
+          return 'F-Droid 应用统计（按源）：\n${_fdroidStatsLines(await manager.getStatistics())}';
 
         default:
           return '未知操作: $action（支持 list/load/search/stats）';
@@ -3323,6 +3393,16 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
     } catch (e) {
       return 'F-Droid 操作失败: $e';
     }
+  }
+
+  /// 按源统计的可读文案（多源下逐源列出 + 合计）
+  String _fdroidStatsLines(List<FdroidSourceStat> stats) {
+    if (stats.isEmpty) return '暂无已配置的源';
+    final lines = stats
+        .map((s) => '• ${s.source.name}: ${s.appCount} 个应用${s.enabled ? '' : '（未启用）'}')
+        .toList();
+    final total = stats.fold<int>(0, (sum, s) => sum + s.appCount);
+    return '${lines.join('\n')}\n合计: $total 个应用';
   }
 
   /// WebDAV 云备份
@@ -3519,11 +3599,13 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
 
       final stream = ai.generateStream<dynamic, void>(
         model: model as ModelRef<dynamic>,
-        messages: _messages,
-        toolNames: registeredToolNames.isNotEmpty
-            ? registeredToolNames
-            : [
-                searchToolName,
+        messages: _requestMessages,
+        toolNames: !toolsEnabled
+            ? null
+            : (registeredToolNames.isNotEmpty
+                ? registeredToolNames
+                : [
+                    searchToolName,
                 downloadToolName,
                 installToolName,
                 manageAppToolName,
@@ -3535,9 +3617,9 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
                 fdroidRepoToolName,
                 webdavSyncToolName,
                 installedAppsToolName,
-                confirmToolName,
-                configManagerToolName,
-              ],
+                    confirmToolName,
+                    configManagerToolName,
+                  ]),
         maxTurns: 12,
       );
 
