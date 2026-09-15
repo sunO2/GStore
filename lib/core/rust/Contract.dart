@@ -142,6 +142,47 @@ ApkDexEntry _decodeDexEntry(Map<String, dynamic> m) => ApkDexEntry(
       crc32: (m['crc32'] as num?)?.toInt() ?? 0,
     );
 
+/// JSON → ApkBrowseListing（模块 browse_apk_entries 响应）
+ApkBrowseListing? decodeApkBrowseListing(dynamic json) {
+  if (json is! Map<String, dynamic>) return null;
+  return ApkBrowseListing(
+    container: json['container'] as String? ?? '',
+    dir: json['dir'] as String? ?? '',
+    parentDir: json['parent_dir'] as String? ?? '',
+    canGoUp: json['can_go_up'] as bool? ?? false,
+    entries: [
+      for (final e in (json['entries'] as List? ?? []))
+        _decodeBrowsableEntry(e as Map<String, dynamic>),
+    ],
+    totalFiles: (json['total_files'] as num?)?.toInt() ?? 0,
+    containerSize: (json['container_size'] as num?)?.toInt() ?? 0,
+    truncated: json['truncated'] as bool? ?? false,
+  );
+}
+
+ApkBrowsableEntry _decodeBrowsableEntry(Map<String, dynamic> m) => ApkBrowsableEntry(
+      path: m['path'] as String? ?? '',
+      name: m['name'] as String? ?? '',
+      isDir: m['is_dir'] as bool? ?? false,
+      size: (m['size'] as num?)?.toInt() ?? 0,
+      compressedSize: (m['compressed_size'] as num?)?.toInt() ?? 0,
+      crc32: (m['crc32'] as num?)?.toInt() ?? 0,
+      stored: m['stored'] as bool? ?? false,
+      kind: m['kind'] as String? ?? 'binary',
+      browsable: m['browsable'] as bool? ?? false,
+    );
+
+/// JSON → ApkExportedEntry（模块 export_apk_entry 响应）
+ApkExportedEntry? decodeApkExportedEntry(dynamic json) {
+  if (json is! Map<String, dynamic>) return null;
+  return ApkExportedEntry(
+    path: json['path'] as String? ?? '',
+    size: (json['size'] as num?)?.toInt() ?? 0,
+    crc32: (json['crc32'] as num?)?.toInt() ?? 0,
+    outPath: json['out_path'] as String? ?? '',
+  );
+}
+
 /// JSON → ApkElfScanResult（模块 scan_elf_page_sizes 响应）
 ApkElfScanResult? decodeElfScanResult(dynamic json) {
   if (json is! Map<String, dynamic>) return null;

@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:dio/dio.dart' show CancelToken, DioException, DioExceptionType;
 import 'package:path_provider/path_provider.dart';
 
+import '../download_paths.dart';
+
 import '../../module/interfaces/service_interfaces.dart';
 import '../../service/download_notification_service.dart';
 import '../core/download_engine.dart';
@@ -199,6 +201,10 @@ class DownloadManager implements IDownloadService {
   }
 
   @override
+  /// 见 [IDownloadService.restart]。Dart 引擎没有独立的"清分段重下"，沿用 retry 行为。
+  @override
+  Future<void> restart(int id) => retry(id);
+
   Future<void> retry(int id) async {
     final task = await repository.getById(id);
     if (task == null) return;
@@ -231,7 +237,19 @@ class DownloadManager implements IDownloadService {
   Future<DownloadTask?> getTask(int id) => repository.getById(id);
 
   @override
+  Future<List<DownloadTask>> listTasks() => repository.all();
+
+  @override
   Stream<DownloadTask> watch(int id) => repository.watch(id);
+
+  /// 空流：Dart 管理器在传输过程中已直接调用通知服务并处理自动安装，
+  /// 交给 DownloadTaskWatcher 再发一次会重复。
+  @override
+  Stream<DownloadTask> watchAll() => const Stream<DownloadTask>.empty();
+
+  /// Dart 内核的记录在 Floor 表里
+  @override
+  Future<void> remove(int id) => repository.deleteById(id);
 
   /// 启动一次下载运行，由 download/downloadWithContext/resume/retry/_processQueue 共用。
   Future<void> _startRun({
@@ -518,13 +536,9 @@ class DownloadManager implements IDownloadService {
 
   bool _validAt(DownloadTask t) => _isValidFile(t.filePath, t.total);
 
-  Future<String> _savePathFor(String? saveFileName, String fileName) async {
-    if (saveFileName != null && saveFileName.startsWith('/')) {
-      return saveFileName;
-    }
-    final dir = await getDownloadsDirectory();
-    return '${dir?.path ?? (await getApplicationDocumentsDirectory()).path}/$fileName';
-  }
+  /// 委托 [DownloadPaths]：路径规则必须与 Rust 内核共用同一份，避免两边漂移
+  Future<String> _savePathFor(String? saveFileName, String fileName) =>
+      DownloadPaths.resolveSavePath(saveFileName: saveFileName, fileName: fileName);
 
   /// 磁盘上实际已下载字节：优先最终文件，其次 .temp，其次 .part0..N 之和。
   int _diskBytes(String savePath) {

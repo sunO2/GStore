@@ -1,0 +1,36 @@
+[package]
+name = "gstore_mod_download"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "gstore_mod_download"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# 模块契约层（C ABI v2：GStoreModuleEntry / Api / ModuleError / ModuleContext）
+gstore_contract = { path = "../gstore_contract" }
+# JSON 信封（方法入参/出参、进度事件、任务 DTO）
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# async 运行时：多连接分段下载 / 调度
+tokio = { version = "1", features = ["full"] }
+# HTTP 客户端（Range 分段 + rustls，与 repo 模块同一套已验证可为 Android 编译）
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+# 任务/分段持久化（自带库；bundled 需 ndk 侧显式导出 CC_*/CXX_*/AR_*，见 build 脚本）
+rusqlite = { version = "0.32", features = ["bundled"] }
+# 完整性校验（sha256）
+sha2 = "0.11.0"
+# sha256 摘要转十六进制（sha2 0.11 的 finalize 返回 hybrid-array，不自带 hex 格式化）
+hex = "0.4"
+# libc malloc/free（C ABI 内存所有权）
+libc = "0.2"
+log = "0.4"
+
+[profile.release]
+# 与 repo 模块一致：C ABI 边界用 catch_unwind 兜 panic，必须 unwind
+panic = "unwind"
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true

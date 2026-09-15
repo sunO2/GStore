@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.0.31+1
+version: 1.0.32+1
 
 environment:
   sdk: ^3.5.3
@@ -80,6 +80,10 @@ dependencies:
   genkit: ^0.15.1
   genkit_google_genai: ^0.2.12
   genkit_openai: ^0.3.7
+  # 自建 OpenAI 兼容 model provider 需要（补齐 reasoning 流式；
+  # genkit_openai 只转发 delta.content，会丢弃 delta.reasoningContent）。
+  # 它本就作为 genkit_openai 的传递依赖存在，这里只是提升为直接依赖以便 import。
+  openai_dart: ^5.0.0
   device_info_plus: ^12.4.0
   shizuku_api:
     path: packages/shizuku_api
@@ -141,6 +145,7 @@ flutter:
      - assets/app/db/
      - assets/channels/
      - assets/lcrules/
+     - assets/it_tools/
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

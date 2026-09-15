@@ -289,16 +289,12 @@ mixin DetailVersionPickerMixin {
           if (sel.ipaName != null) 'ipaName': sel.ipaName,
         });
     if (detail == null) {
-      showError('该构建暂不可下载');
+      showError('该构建暂不可切换');
       return;
     }
+    // 只切换数据：把详情数据换成所选构建，下载由用户在下载区自行触发。
+    // （原先这里还会 startDownload 直接拉起下载，见文档 14 号记录）
     await refreshDetail(detailData: detail);
-    // 匹配下载项
-    final proxy = JsChannelDetailProxy(detail);
-    final match = sel.ipaName != null
-        ? proxy.downloads.where((d) => d.name == sel.ipaName).firstOrNull
-        : null;
-    if (match != null) await startDownload(match);
   }
 
   Future<String?> showUAPicker({

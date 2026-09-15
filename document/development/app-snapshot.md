@@ -151,3 +151,39 @@ sudo apt install libsqlite3-dev
 - 快照备注编辑（如「更新前 / 更新后」）与自动快照（安装/更新前自动采集）
 - 跨应用快照总览（LibChecker 的 statistics 页）
 - 载荷 schema 演进：新增节时提升 `payloadVersion`，对比页会自动按不可比处理
+
+## 11. Agent 能力（快照协议化接入）
+
+让助手能直接"看出**版本更新改了什么**"，无需用户手动点页面。
+
+### 统一入口：`AppSnapshotService`
+
+新增 `lib/core/snapshot/snapshot_service.dart`，把「采集 → 落库」「对比」「文本化」
+收敛成一个服务，UI 与 Agent 共用：
+
+| 方法 | 作用 |
+|---|---|
+| `create()` | 解析安装包路径 → `SnapshotCollector.capture` → `AppSnapshotStore.insert` |
+| `listByApp()` / `listApps()` / `getById()` / `delete()` | 查询与删除 |
+| `compare()` | 调 `SnapshotDiffEngine`；省略 id 取最近两份，指定 id 时按时间纠正为"旧 → 新" |
+| `renderDiff()` / `renderDetail()` / `renderRecordList()` / `renderAppList()` | 渲染给模型阅读 |
+
+**版本/应用名一律取真实来源**：`create()` 不使用调用方传入的版本值，采集器从
+`PackageManager` 或 APK 内 AndroidManifest 读取；记录页的应用名同样以采集到的 label 为准。
+
+### Agent 工具（协议注册表，见第五篇 4 节）
+
+| 工具 | 说明 |
+|---|---|
+| `appSnapshot` | `action=create/list/apps/detail/delete`；`delete` 属敏感操作，必须先 `confirmAction` |
+| `snapshotCompare` | 对比两份快照，返回结论 + 各节明细 |
+
+### 差异文本化（`renderDiff`）
+
+给模型的文本包含：结论（重新构建 / 仅资源更新 / 仅原生更新 / 重新签名…）、
+各节指纹是否变化（签名/DEX/原生库/assets/资源表）、逐节明细（字段级 `− 旧` / `+ 新`、
+内容指纹是否同一文件、疑似改名/移动）、**APK 体积差（+/− 直接给出）**、
+以及"待确认"标记的原因（载荷版本不一致）。每节条目数有上限，避免超长包撑爆上下文。
+
+配套技能「版本差异分析」规定了输出顺序（先一句话结论，再分节明细）与约束
+（只陈述差异中的事实，不臆测；签名变化必须提醒用户）。

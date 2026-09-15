@@ -60,3 +60,6 @@ scripts/rust/release-modules/
 
 # Rust 模块发布产物（build_android_rust.sh 输出，按需发布到 GitHub Release）
 rust/release-modules/
+
+# it-tools 离线包由 CI 用「上游 + 补丁」重建（见 scripts/it_tools/build_bundle.sh），不入库
+assets/it_tools/it-tools.zip

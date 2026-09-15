@@ -20,6 +20,7 @@ class CacheManagePage extends ConsumerWidget {
     'memory': Icons.memory_outlined,
     'cleaning': Icons.cleaning_services_outlined,
     'download': Icons.download_done_outlined,
+    'widgets': Icons.widgets_outlined,
   };
 
   @override

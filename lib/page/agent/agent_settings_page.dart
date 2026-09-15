@@ -327,6 +327,7 @@ class _ModelEditSheetState extends State<_ModelEditSheet> {
   late final TextEditingController _modelController;
   late final TextEditingController _baseUrlController;
   late bool _toolsEnabled;
+  late bool _showReasoning;
 
   @override
   void initState() {
@@ -338,6 +339,7 @@ class _ModelEditSheetState extends State<_ModelEditSheet> {
     _modelController = TextEditingController(text: existing?.model ?? '');
     _baseUrlController = TextEditingController(text: existing?.baseUrl ?? '');
     _toolsEnabled = existing?.toolsEnabled ?? true;
+    _showReasoning = existing?.showReasoning ?? true;
   }
 
   @override
@@ -489,6 +491,16 @@ class _ModelEditSheetState extends State<_ModelEditSheet> {
             ),
             const SizedBox(height: AppSpacing.md),
 
+            // 思考过程开关：展示模型 reasoning / think 内容（Gemini 思考、内联 think 标签）
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: _showReasoning,
+              onChanged: (v) => setState(() => _showReasoning = v),
+              title: const Text('显示思考过程'),
+              subtitle: const Text('在对话中展示模型的推理内容（可折叠）'),
+            ),
+            const SizedBox(height: AppSpacing.md),
+
             // 保存按钮
             SizedBox(
               width: double.infinity,
@@ -520,6 +532,7 @@ class _ModelEditSheetState extends State<_ModelEditSheet> {
       model: _modelController.text.trim(),
       baseUrl: _baseUrlController.text.trim(),
       toolsEnabled: _toolsEnabled,
+      showReasoning: _showReasoning,
     );
 
     if (existing != null) {

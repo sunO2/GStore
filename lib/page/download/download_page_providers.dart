@@ -87,6 +87,7 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
   /// 各任务 watch 订阅（service.watch(task.id) 推送 DownloadTask 到 state）
   final Map<int, StreamSubscription<DownloadTask>> _watchSubs = {};
 
+
   /// watch 关闭/出错后的延迟重载（debounce，防 onDone 风暴）
   Timer? _reloadTimer;
 
@@ -127,17 +128,45 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
         .toList();
   }
 
+
+  /// 任务列表的数据源统一走服务接口。
+  ///
+  /// 必须走接口而不是直接读 Floor：Rust 内核的任务写在模块自己的库里，
+  /// 直接读 Floor 会导致「切了内核但面板看不到任务」。
+  Future<List<DownloadTask>> _allTasks() async {
+    final svc = _service ?? ModuleManager.instance.get<IDownloadService>();
+    if (svc != null) return svc.listTasks();
+    debugPrint('下载列表: IDownloadService 不可用，回落 Floor 仓储');
+    return repository.all();
+  }
+
   /// 从新管线仓库加载全部任务并重建分组
   Future<void> loadTasks() async {
     List<DownloadTask> tasks;
     try {
-      tasks = await repository.all();
+      tasks = await _allTasks();
     } catch (e) {
       debugPrint('下载列表加载失败: $e');
       return;
     }
     // 按创建时间倒序（与原 DAO createTime DESC 一致）
-    tasks.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    tasks.sort((a, b) {
+      // 方案 B：按「最后一次开始时间」置顶（重试/重新下载会刷新它，且**跨重启保留**）；
+      // 从未开始过的回落到创建时间
+      // createdAt 是 DateTime，lastStartedAt 是毫秒 → 统一成毫秒再比
+      final ta = a.lastStartedAt > 0
+          ? a.lastStartedAt
+          : a.createdAt.millisecondsSinceEpoch;
+      final tb = b.lastStartedAt > 0
+          ? b.lastStartedAt
+          : b.createdAt.millisecondsSinceEpoch;
+      return tb.compareTo(ta);
+    });
+    // 诊断：打印排序键，用于定位"继续任务被置顶"。
+    // last==created → 继续没有改时间（该任务本来就在最前）；
+    // last> created → 有路径在刷新"最后开始时间"，据此就能定位。
+    debugPrint('下载排序键: ${tasks.take(6).map((t) => '#${t.id} last=${t.lastStartedAt} '
+        'created=${t.createdAt.millisecondsSinceEpoch} ${t.status.name}').join(' | ')}');
     _buildGroups(tasks);
     _resubscribeWatches(tasks);
     // 预取应用信息（异步，不阻塞 UI）
@@ -334,6 +363,7 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
 
   /// 恢复下载（断点续传）
   Future<void> resumeDownload(DownloadTask downStatus) async {
+    debugPrint('DownloadPanel.action: 继续 id=${downStatus.id} status=${downStatus.status.name}');
     final id = downStatus.id;
     final service = ModuleManager.instance.get<IDownloadService>();
     if (id == null || service == null) {
@@ -346,6 +376,7 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
 
   /// 重新下载 / 重试失败任务（交由新 manager 断点续传或强制重下）
   Future<void> retryDownload(DownloadTask downStatus) async {
+    debugPrint('DownloadPanel.action: 重试/重新下载 id=${downStatus.id} status=${downStatus.status.name}');
     final id = downStatus.id;
     final service = ModuleManager.instance.get<IDownloadService>();
     if (id == null || service == null) {
@@ -356,8 +387,22 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
     await loadTasks();
   }
 
+  /// 重新下载：清空已下分段，从 0 开始（区别于"继续/重试"的续传）
+  Future<void> restartDownload(DownloadTask downStatus) async {
+    debugPrint('DownloadPanel.action: 重新下载 id=${downStatus.id} status=${downStatus.status.name}');
+    final id = downStatus.id;
+    final service = ModuleManager.instance.get<IDownloadService>();
+    if (id == null || service == null) {
+      AppDialogs.showWarning('下载模块未启用');
+      return;
+    }
+    await service.restart(id);
+    await loadTasks();
+  }
+
   /// 暂停下载
   Future<void> pauseDownload(DownloadTask downStatus) async {
+    debugPrint('DownloadPanel.action: 暂停 id=${downStatus.id} status=${downStatus.status.name}');
     final id = downStatus.id;
     final service = ModuleManager.instance.get<IDownloadService>();
     if (id == null || service == null) {
@@ -389,7 +434,7 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
 
   /// 暂停所有下载中任务
   void pauseAll() async {
-    final tasks = await repository.all();
+    final tasks = await _allTasks();
     final downloading = tasks
         .where((t) =>
             t.status == DownloadStatusEnum.downloading ||
@@ -407,7 +452,7 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
 
   /// 取消所有排队任务
   void cancelAllQueued() async {
-    final tasks = await repository.all();
+    final tasks = await _allTasks();
     final queued =
         tasks.where((t) => t.status == DownloadStatusEnum.queued).toList();
     final service = ModuleManager.instance.get<IDownloadService>();
@@ -424,7 +469,7 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
 
   /// 重试所有失败任务
   void retryAllFailed() async {
-    final tasks = await repository.all();
+    final tasks = await _allTasks();
     final failed =
         tasks.where((t) => t.status == DownloadStatusEnum.failed).toList();
     final service = ModuleManager.instance.get<IDownloadService>();
@@ -467,11 +512,16 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
         partIndex++;
       }
 
-      // 3. 从新管线数据库删除记录（DAO 无 delete 方法 → 走底层库）
+      // 3. 删除任务记录：**必须走服务接口**
+      //    Rust 内核的任务存在模块自己的库里，只删 Floor 是删不掉的（列表会"复活"）
       if (id != null) {
-        final db = await downloadTaskDatabase;
-        await db.database
-            .delete('DownloadTaskEntity', where: 'id = ?', whereArgs: [id]);
+        if (service != null) {
+          await service.remove(id);
+        } else {
+          final db = await downloadTaskDatabase;
+          await db.database
+              .delete('DownloadTaskEntity', where: 'id = ?', whereArgs: [id]);
+        }
       }
 
       // 4. 刷新列表
@@ -513,7 +563,7 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
   /// 清理已完成的下载记录
   Future<void> clearCompleted() async {
     try {
-      final tasks = await repository.all();
+      final tasks = await _allTasks();
       final completed = tasks
           .where((t) =>
               t.status == DownloadStatusEnum.completed ||
@@ -578,7 +628,7 @@ class DownloadManagerNotifier extends Notifier<DownloadPageState> {
     if (confirmed != true) return;
 
     try {
-      final tasks = await repository.all();
+      final tasks = await _allTasks();
 
       // 取消所有正在下载的任务
       final service = ModuleManager.instance.get<IDownloadService>();

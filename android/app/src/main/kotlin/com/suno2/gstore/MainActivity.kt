@@ -593,8 +593,16 @@ class MainActivity : FlutterActivity() {
                 val targetDir = File(filesDir, "gstore_mods/$abi")
                 val target = File(targetDir, "libgstore_mod_$module.so")
 
-                // 已存在且与 APK 条目同尺寸 → 复用（避免覆写在用文件）
-                if (target.exists() && target.length() == entry.size) return target
+                // 已存在且**内容一致**才复用：只比尺寸会漏掉"改了但大小恰好相同"的更新。
+                // 实测踩坑：原生模块重编后 .so 尺寸常不变 → 设备一直跑第一次解压的旧库，
+                // Rust 侧改动"编译进包了却没生效"（表现像代码没改对）。
+                val crcMarker = File(targetDir, "${target.name}.crc")
+                val cachedCrc = if (crcMarker.exists()) crcMarker.readText().trim() else null
+                if (target.exists() && target.length() == entry.size &&
+                    cachedCrc == entry.crc.toString()
+                ) {
+                    return target
+                }
                 if (!allowWrite) return if (target.exists()) target else null
 
                 targetDir.mkdirs()
@@ -607,6 +615,8 @@ class MainActivity : FlutterActivity() {
                     tmp.copyTo(target, overwrite = true)
                     tmp.delete()
                 }
+                // 记下本次解压的内容指纹，下次据此判断是否需要重新解压
+                runCatching { crcMarker.writeText(entry.crc.toString()) }
                 return target
             }
         }

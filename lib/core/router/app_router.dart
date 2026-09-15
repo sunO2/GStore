@@ -93,6 +93,10 @@ final GoRouter appRouter = GoRouter(
       builder: (context, state) => const AppSnapshotAppsPage(),
     ),
     GoRoute(
+      path: AppRoute.itTools,
+      builder: (context, state) => const ItToolsPage(),
+    ),
+    GoRoute(
       path: AppRoute.settings,
       builder: (context, state) => const SettingsPage(),
     ),

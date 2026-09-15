@@ -88,7 +88,7 @@ void main() {
 
     // 未选中时确认按钮禁用
     final confirm = tester.widget<FilledButton>(
-      find.widgetWithText(FilledButton, '确认下载'),
+      find.widgetWithText(FilledButton, '确认切换'),
     );
     expect(confirm.onPressed, isNull);
   });
@@ -102,11 +102,11 @@ void main() {
     await tester.pump();
 
     final confirm = tester.widget<FilledButton>(
-      find.widgetWithText(FilledButton, '确认下载'),
+      find.widgetWithText(FilledButton, '确认切换'),
     );
     expect(confirm.onPressed, isNotNull);
 
-    await tester.tap(find.text('确认下载'));
+    await tester.tap(find.text('确认切换'));
     await tester.pumpAndSettle();
 
     final result = await h.open();
@@ -138,7 +138,7 @@ void main() {
     final screenH =
         tester.view.physicalSize.height / tester.view.devicePixelRatio;
 
-    final confirm = find.text('确认下载');
+    final confirm = find.text('确认切换');
     final cancel = find.text('取消');
     expect(confirm, findsOneWidget);
     expect(cancel, findsOneWidget);
@@ -151,7 +151,7 @@ void main() {
     await tester.drag(find.byType(ListView), const Offset(0, -400));
     await tester.pump();
     expect(find.text('构建 #1'), findsNothing);
-    expect(find.text('确认下载'), findsOneWidget);
+    expect(find.text('确认切换'), findsOneWidget);
     expect(find.text('取消'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
@@ -163,7 +163,7 @@ void main() {
     expect(find.text('暂无构建记录'), findsOneWidget);
 
     final confirm = tester.widget<FilledButton>(
-      find.widgetWithText(FilledButton, '确认下载'),
+      find.widgetWithText(FilledButton, '确认切换'),
     );
     expect(confirm.onPressed, isNull);
   });

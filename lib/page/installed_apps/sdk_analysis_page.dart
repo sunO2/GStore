@@ -2,6 +2,7 @@ import 'dart:convert' show base64Decode;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:gstore/page/apk_browser/view.dart';
 import 'package:gstore/page/app_snapshot/view.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/design/app_borders.dart';
@@ -594,6 +595,20 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
       appBar: AppBar(
         title: const Text('应用分析'),
         actions: [
+          IconButton(
+            tooltip: '文件浏览',
+            icon: const Icon(Icons.folder_open_outlined),
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => ApkBrowserPage(
+                  apkPath: widget.sourceDir,
+                  appLabel: _realAppName,
+                  packageName: widget.app.packageName,
+                ),
+              ),
+            ),
+          ),
           IconButton(
             tooltip: '应用快照',
             icon: const Icon(Icons.history_outlined),

@@ -39,6 +39,12 @@ void main() {
       expect(prompt, contains('webdavSync'));
     });
 
+    test('工具清单为分组目录且提示按需读取协议', () {
+      final prompt = AgentPrompt.build('platform');
+      expect(prompt, contains('loadProtocol'));
+      expect(prompt, contains('=== AVAILABLE TOOLS ==='));
+    });
+
     test('包含英文技能知识库', () {
       final prompt = AgentPrompt.build('platform');
       expect(prompt, contains('SKILL KNOWLEDGE BASE'));
@@ -48,7 +54,9 @@ void main() {
     test('包含敏感操作清单', () {
       final prompt = AgentPrompt.build('platform');
       expect(prompt, contains('SENSITIVE OPERATIONS'));
-      expect(prompt, contains('Uninstall an app'));
+      // 清单由协议注册表的敏感动作生成（installedApps 的 uninstall 等）
+      expect(prompt, contains('uninstall'));
+      expect(prompt, contains('installedApps'));
     });
 
     test('包含错误处理指引', () {

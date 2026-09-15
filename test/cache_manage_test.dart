@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:gstore/core/service/it_tools_service.dart';
 import 'package:gstore/page/cache_manage/cache_service.dart';
 import 'package:gstore/page/cache_manage/logic.dart';
 import 'package:gstore/page/cache_manage/state.dart';
@@ -252,6 +253,54 @@ void main() {
       expect(await f1.exists(), isFalse);
       expect(container.read(cacheManageProvider).downloads, isEmpty);
       expect(container.read(cacheManageProvider).deletingIds, isEmpty);
+    });
+  });
+
+  group('开发者工具箱离线资源（缓存管理入口）', () {
+    late Directory docs;
+    late Directory bundleDir;
+    late CacheManageService service;
+
+    setUp(() async {
+      docs = await Directory.systemTemp.createTemp('it_tools_cache_test');
+      ItToolsService.debugDocsDir = docs;
+      bundleDir = Directory('${docs.path}/it_tools')..createSync(recursive: true);
+      service = CacheManageService()..debugCacheDir = docs;
+    });
+
+    tearDown(() async {
+      ItToolsService.debugDocsDir = null;
+      if (await docs.exists()) {
+        await docs.delete(recursive: true);
+      }
+    });
+
+    test('离线资源出现在「应用资源」分组，清理后目录连同版本标记一起消失', () async {
+      File('${bundleDir.path}/index.html').writeAsStringSync('<html/>');
+      File('${bundleDir.path}/.extracted_version').writeAsStringSync('1.0.0');
+
+      final (groups, _) = await service.scanCacheGroups();
+      final group = groups.firstWhere((g) => g.title == '应用资源');
+      final item = group.items.single;
+
+      expect(item.id, 'it_tools_bundle');
+      expect(item.name, '开发者工具箱资源');
+      expect(item.size, greaterThan(0), reason: '应统计出解压目录的实际占用');
+
+      expect(await service.clearOne('it_tools_bundle'), isTrue);
+      expect(
+        await bundleDir.exists(),
+        isFalse,
+        reason: '版本标记随目录一并删除，因此下次进入页面必然重新解压',
+      );
+
+      // 再扫一次：占用应归零，且不再报错
+      final (groups2, _) = await service.scanCacheGroups();
+      final item2 = groups2
+          .firstWhere((g) => g.title == '应用资源')
+          .items
+          .single;
+      expect(item2.size, 0);
     });
   });
 }

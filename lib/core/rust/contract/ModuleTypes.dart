@@ -748,3 +748,115 @@ class ApkStructure {
           for (final lib in group.libs) lib.name,
       };
 }
+
+// ==================== APK 内容浏览器 ====================
+// 模块方法：browse_apk_entries / export_apk_entry
+// 架构：容器与解压归 Rust（唯一出口），宿主只拿「路径 + 元数据」，
+// 原始字节经 export 落到缓存文件，不跨 FFI 回传。
+
+/// 一条可浏览条目（模块 browse_apk_entries 响应）
+class ApkBrowsableEntry {
+  /// 当前容器内完整路径（如 `assets/models/x.tflite`）
+  final String path;
+
+  /// 末段名（如 `x.tflite`）
+  final String name;
+
+  /// 是否为目录（zip 不显式存目录，由条目名前缀合成的节点）
+  final bool isDir;
+
+  /// 解压后字节数（目录为后代累计）
+  final int size;
+
+  /// 压缩后字节数（目录为 0）
+  final int compressedSize;
+
+  /// 条目 CRC32（目录为 0）
+  final int crc32;
+
+  /// 是否以 STORED（不压缩）存放
+  final bool stored;
+
+  /// 类型标签：dir/zip/apk/jar/dex/so/arsc/manifest/image/text/json/font/cert/video/audio/binary
+  final String kind;
+
+  /// 是否可进入下一层（仅 zip 家族）
+  final bool browsable;
+
+  const ApkBrowsableEntry({
+    required this.path,
+    required this.name,
+    required this.isDir,
+    required this.size,
+    required this.compressedSize,
+    required this.crc32,
+    required this.stored,
+    required this.kind,
+    required this.browsable,
+  });
+}
+
+/// 一层目录的列举结果（模块 browse_apk_entries 响应）
+class ApkBrowseListing {
+  /// 当前容器（空串 = APK 根；否则为嵌套容器链，段间用 `\u0001` 分隔）
+  final String container;
+
+  /// 当前目录前缀（容器内）
+  final String dir;
+
+  /// 上一级目录（容器根为 ""）
+  final String parentDir;
+
+  /// 是否还能往上层走
+  final bool canGoUp;
+
+  /// 条目（先目录后文件）
+  final List<ApkBrowsableEntry> entries;
+
+  /// 容器内条目总数（含未展示的）
+  final int totalFiles;
+
+  /// 当前容器字节数（APK 为文件大小；嵌套为解压后大小）
+  final int containerSize;
+
+  /// 是否因超过上限被截断
+  final bool truncated;
+
+  const ApkBrowseListing({
+    required this.container,
+    required this.dir,
+    required this.parentDir,
+    required this.canGoUp,
+    required this.entries,
+    required this.totalFiles,
+    required this.containerSize,
+    required this.truncated,
+  });
+
+  /// 当前容器内路径全部拼接用的展示名（面包屑末段）
+  String get displayName => container.isEmpty
+      ? 'APK'
+      : container.split('\u0001').last.split('/').last;
+}
+
+/// 导出结果（模块 export_apk_entry 响应）
+class ApkExportedEntry {
+  /// 容器内路径
+  final String path;
+
+  /// 实际写出字节数
+  final int size;
+
+  /// 条目 CRC32
+  final int crc32;
+
+  /// 落地文件路径
+  final String outPath;
+
+  const ApkExportedEntry({
+    required this.path,
+    required this.size,
+    required this.crc32,
+    required this.outPath,
+  });
+}

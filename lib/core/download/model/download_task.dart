@@ -51,6 +51,15 @@ class DownloadTask {
   final int? etaSec;
   final String? error;
   final List<SegmentInfo>? segments;
+
+  /// 发起下载时携带的请求头（GitHub/OPPO 等源需要；面板展示用）
+  final Map<String, String> headers;
+
+  /// 下载完成后是否自动安装（跨重启保留，Rust 侧持久化）
+  final bool installAfterDownload;
+
+  /// 最后一次开始时间（毫秒）。列表按它置顶；重试/重新下载会刷新
+  final int lastStartedAt;
   final DateTime createdAt;
   final DateTime updatedAt;
 
@@ -69,6 +78,9 @@ class DownloadTask {
     required this.etaSec,
     required this.error,
     required this.segments,
+    this.headers = const {},
+    this.installAfterDownload = false,
+    this.lastStartedAt = 0,
     required this.createdAt,
     required this.updatedAt,
   });
@@ -95,6 +107,9 @@ class DownloadTask {
     int? etaSec,
     String? error,
     List<SegmentInfo>? segments,
+    Map<String, String>? headers,
+    bool? installAfterDownload,
+    int? lastStartedAt,
     DateTime? createdAt,
     DateTime? updatedAt,
   }) {
@@ -113,6 +128,9 @@ class DownloadTask {
       etaSec: etaSec ?? this.etaSec,
       error: error ?? this.error,
       segments: segments ?? this.segments,
+      headers: headers ?? this.headers,
+      installAfterDownload: installAfterDownload ?? this.installAfterDownload,
+      lastStartedAt: lastStartedAt ?? this.lastStartedAt,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
     );

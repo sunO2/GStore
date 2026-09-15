@@ -8,6 +8,7 @@ import 'package:gstore/page/app_snapshot/compare.dart';
 import 'package:gstore/core/design/app_spacing.dart';
 import 'package:gstore/core/design/app_typography.dart';
 import 'package:gstore/page/app_snapshot/detail.dart';
+import 'package:gstore/page/app_snapshot/widgets.dart';
 import 'package:gstore/page/app_snapshot/view.dart';
 
 SnapshotPayload _payload({
@@ -170,6 +171,9 @@ void main() {
     expect(find.text('100 B → 400 B'), findsNothing);
     expect(find.text('+ 400 B  (+300 B)'), findsOneWidget);
     expect(find.text('− 100 B'), findsOneWidget);
+    // 新增/移除的 .so 也带出大小，而不是只剩一个名字
+    expect(find.text('+ 20 B'), findsOneWidget);
+    expect(find.text('− 10 B'), findsOneWidget);
   });
 
   testWidgets('无差异时给出提示', (tester) async {
@@ -429,10 +433,13 @@ void main() {
     expect(size.width, greaterThanOrEqualTo(44));
     expect(size.height, greaterThanOrEqualTo(44));
 
-    // ③ 箭头贴右：其右边缘与卡片内容区右边缘基本齐平
-    final cardRect = tester.getRect(card);
+    // ③ 箭头贴右：其右边缘与**卡片内容区**右边缘基本齐平
+    // （注意 Card 自身盒子是满宽的，左右边距体现在内容上，故用标题行的可点区做参照）
+    final headerRect = tester.getRect(
+      find.descendant(of: card, matching: find.byType(InkWell)).first,
+    );
     final iconRect = tester.getRect(toggle);
-    expect(cardRect.right - iconRect.right, lessThan(AppSpacing.lg + 2));
+    expect(headerRect.right - iconRect.right, lessThan(AppSpacing.sm + 2));
 
     // ④ 点标题文字（而非箭头）同样能展开——点击区域不止箭头
     expect(find.text('libx.so (arm64-v8a)'), findsNothing);
@@ -442,6 +449,27 @@ void main() {
     expect(find.byTooltip('收起'), findsOneWidget);
   });
 
+  testWidgets('分区卡遵守页面级左右边距（AppSpacing.lg），内容不贴屏幕两侧', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ListView(
+            children: const [
+              SnapshotSectionCard(title: '签名', child: Text('内容')),
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // 内容区缩进 = 页面级外边距(lg) + 卡片内边距(cardPadding=lg)
+    const inset = AppSpacing.lg + AppSpacing.lg;
+    final content = tester.getRect(find.byType(InkWell).first);
+    final pageWidth = tester.getSize(find.byType(Scaffold)).width;
+    expect(content.left, inset, reason: '左侧要有页面级边距，内容不贴屏幕');
+    expect(pageWidth - content.right, inset, reason: '右侧边距应对称');
+  });
 }
 
 /// 展开某个分区：先把标题滚进视口再点。
@@ -462,4 +490,5 @@ Future<void> _tapSection(WidgetTester tester, String title) async {
   await tester.pumpAndSettle();
   await tester.tap(finder.first);
   await tester.pumpAndSettle();
+
 }

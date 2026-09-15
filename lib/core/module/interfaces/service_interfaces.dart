@@ -59,14 +59,34 @@ abstract class IDownloadService {
   /// 取消下载任务
   Future<void> cancel(int id);
 
+  /// 删除任务记录。**必须由实现方删除自己的持久化数据**
+  /// （Rust 内核在模块库里，只删 Dart 的 Floor 会导致记录"复活"）
+  Future<void> remove(int id);
+
   /// 重试下载任务
   Future<void> retry(int id);
+
+  /// 重新下载：**清空已下分段与进度，从 0 开始**。
+  ///
+  /// 与 [resume] / [retry]（保留分段续传）语义不同，用于文件损坏、源变更等需要重来的场景。
+  Future<void> restart(int id);
 
   /// 获取下载任务
   Future<DownloadTask?> getTask(int id);
 
+  /// 列出全部下载任务。
+  ///
+  /// **这是面板任务列表的数据源**——换实现即换真源：
+  /// Dart 实现读 Floor，Rust 实现向内核查询。
+  /// 调用方不应再直接读 `DownloadRepository`，否则切内核后面板会看不到任务。
+  Future<List<DownloadTask>> listTasks();
+
   /// 监听下载任务状态
   Stream<DownloadTask> watch(int id);
+
+  /// 全局任务流（所有任务）。供通知栏 / 自动安装统一消费。
+  /// Dart 内核返回空流：它已自行驱动通知，避免重复弹。
+  Stream<DownloadTask> watchAll();
 }
 
 /// 备份服务接口

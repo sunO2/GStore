@@ -249,6 +249,8 @@ class SnapshotDiffEngine {
         ],
         identityOf:
             rich ? (SnapshotNativeLib l) => l.crc32 == 0 ? '' : '${l.crc32}' : null,
+        // 文件类条目固定列出大小：内容变了但体积没变时也要看得到
+        alwaysFields: const ['大小'],
         uncertain: mismatch,
       ),
       _keyedSection(
@@ -307,6 +309,7 @@ class SnapshotDiffEngine {
                 ? d.headerSha1
                 : (d.crc32 == 0 ? '' : '${d.crc32}')
             : null,
+        alwaysFields: const ['大小'],
         uncertain: mismatch,
       ),
       SnapshotDiffSection(
@@ -335,6 +338,7 @@ class SnapshotDiffEngine {
           ('内容指纹', _fpLabel(a.crc32)),
         ],
         identityOf: (a) => a.crc32 == 0 ? '' : '${a.crc32}',
+        alwaysFields: const ['大小'],
         uncertain: mismatch,
         comparable: rich,
       ),
@@ -652,6 +656,8 @@ class SnapshotDiffEngine {
   ///   单独给出「+ 新增 / − 移除」，避免整串拼接被当成"值变了"而看不出增删了哪条。
   /// - [comparable]：载荷版本不支持该节字段时置 false，明确告知"不可比"，
   ///   而不是把缺失当变化。
+  /// - [alwaysFields]：**无论是否变化都列出**的字段名（文件类条目固定列「大小」）。
+  ///   值未变时按单行给出，不重复 `−`/`+`；且**单独的值未变不会把条目误报成 changed**。
   static SnapshotDiffSection _keyedSection<T>(
     String title,
     Map<String, T> before,
@@ -660,6 +666,7 @@ class SnapshotDiffEngine {
     required List<(String, String)> Function(T) fieldsOf,
     String Function(T)? identityOf,
     List<(String, List<String>)> Function(T)? listFieldsOf,
+    List<String> alwaysFields = const [],
     bool uncertain = false,
     bool comparable = true,
   }) {
@@ -677,20 +684,36 @@ class SnapshotDiffEngine {
             kind: SnapshotDiffKind.removed,
             key: labelOf(b),
             oldValue: labelOf(b),
+            fieldChanges: _itemFields(
+              b,
+              fieldsOf: fieldsOf,
+              listFieldsOf: listFieldsOf,
+              added: false,
+            ),
             uncertain: uncertain,
             contentIdentity: identityOf?.call(b) ?? '',
           ),
         );
         continue;
       }
+      // [changes] 只放**真正的差异**（用于判定该条目是否算变化）；
+      // [shown] 是最终输出的字段列表，额外带上 [alwaysFields] 中未变的字段（如文件大小），
+      // 按 fieldsOf 的声明顺序排列，保证「大小」始终在最前。
       final changes = <({String field, String from, String to})>[];
+      final shown = <({String field, String from, String to})>[];
       final beforeFields = {for (final f in fieldsOf(b)) f.$1: f.$2};
       final afterFields = {for (final f in fieldsOf(a)) f.$1: f.$2};
       for (final field in beforeFields.entries) {
         final afterValue = afterFields[field.key];
         if (afterValue == null) continue;
         if (field.value != afterValue) {
-          changes.add((field: field.key, from: field.value, to: afterValue));
+          final change = (field: field.key, from: field.value, to: afterValue);
+          changes.add(change);
+          shown.add(change);
+        } else if (alwaysFields.contains(field.key) &&
+            field.value.isNotEmpty &&
+            field.value != '—') {
+          shown.add((field: field.key, from: field.value, to: afterValue));
         }
       }
 
@@ -704,11 +727,13 @@ class SnapshotDiffEngine {
           final gone = field.value.difference(afterList).toList()..sort();
           final fresh = afterList.difference(field.value).toList()..sort();
           if (gone.isEmpty && fresh.isEmpty) continue;
-          changes.add((
+          final change = (
             field: field.key,
             from: gone.isEmpty ? '—' : '−${gone.join(', −')}',
             to: fresh.isEmpty ? '—' : '+${fresh.join(', +')}',
-          ));
+          );
+          changes.add(change);
+          shown.add(change);
         }
       }
 
@@ -729,7 +754,7 @@ class SnapshotDiffEngine {
             key: labelOf(a),
             oldValue: labelOf(b),
             newValue: labelOf(a),
-            fieldChanges: changes,
+            fieldChanges: shown,
             uncertain: uncertain,
             sameContent: sameContent,
             contentIdentity: identityOf?.call(a) ?? '',
@@ -745,6 +770,12 @@ class SnapshotDiffEngine {
           kind: SnapshotDiffKind.added,
           key: labelOf(e.value),
           newValue: labelOf(e.value),
+          fieldChanges: _itemFields(
+            e.value,
+            fieldsOf: fieldsOf,
+            listFieldsOf: listFieldsOf,
+            added: true,
+          ),
           uncertain: uncertain,
           contentIdentity: identityOf?.call(e.value) ?? '',
         ),
@@ -793,6 +824,40 @@ class SnapshotDiffEngine {
 
     entries.sort(_byKindThenKey);
     return SnapshotDiffSection(title: title, entries: entries);
+  }
+
+  /// 新增 / 移除条目也要带上**条目自身的字段**（大小 / 压缩后 / 指纹…）。
+  ///
+  /// 只给一个名字（[labelOf]）会让「新增了一个 .so」看不到体积——而体积恰恰是
+  /// 快照对比最关心的问题。缺失的一侧用 `—` 占位（与字段级变化同一约定），
+  /// 由渲染层隐藏；值为空或其本身就是 `—` 的字段直接跳过，避免只剩一个字段名。
+  static List<({String field, String from, String to})> _itemFields<T>(
+    T item, {
+    required List<(String, String)> Function(T) fieldsOf,
+    List<(String, List<String>)> Function(T)? listFieldsOf,
+    required bool added,
+  }) {
+    final fields = <({String field, String from, String to})>[];
+    for (final f in fieldsOf(item)) {
+      final value = f.$2;
+      if (value.isEmpty || value == '—') continue;
+      fields.add(
+        added
+            ? (field: f.$1, from: '—', to: value)
+            : (field: f.$1, from: value, to: '—'),
+      );
+    }
+    if (listFieldsOf != null) {
+      for (final f in listFieldsOf(item)) {
+        if (f.$2.isEmpty) continue;
+        fields.add(
+          added
+              ? (field: f.$1, from: '—', to: '+${f.$2.join(', +')}')
+              : (field: f.$1, from: '−${f.$2.join(', −')}', to: '—'),
+        );
+      }
+    }
+    return fields;
   }
 
   static int _byKindThenKey(SnapshotDiffEntry a, SnapshotDiffEntry b) {

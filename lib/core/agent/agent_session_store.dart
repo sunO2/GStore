@@ -86,6 +86,18 @@ class SessionMessage {
   /// 是否为多选确认（勾选多个选项后统一确认；B3 持久化）
   final bool confirmMultiSelect;
 
+  /// 工具名（function calling 名，如 downloadApp；工具消息专用）
+  final String? toolName;
+
+  /// 工具调用参数（JSON 字符串；工具消息专用）
+  final String? toolArgs;
+
+  /// 工具执行结果（原始返回文本；工具消息专用）
+  final String? toolResult;
+
+  /// 思考过程（reasoning / 内联 think 内容；助手消息专用）
+  final String? reasoning;
+
   SessionMessage({
     required this.isUser,
     required this.text,
@@ -98,6 +110,10 @@ class SessionMessage {
     this.turnId,
     this.confirmOptions,
     this.confirmMultiSelect = false,
+    this.toolName,
+    this.toolArgs,
+    this.toolResult,
+    this.reasoning,
   }) : time = time ?? DateTime.now().millisecondsSinceEpoch;
 
   Map<String, dynamic> toJson() {
@@ -113,6 +129,10 @@ class SessionMessage {
       'turnId': turnId,
       if (confirmOptions != null) 'confirmOptions': confirmOptions,
       if (confirmMultiSelect) 'confirmMultiSelect': true,
+      if (toolName != null) 'toolName': toolName,
+      if (toolArgs != null) 'toolArgs': toolArgs,
+      if (toolResult != null) 'toolResult': toolResult,
+      if (reasoning != null && reasoning!.isNotEmpty) 'reasoning': reasoning,
     };
   }
 
@@ -131,6 +151,10 @@ class SessionMessage {
           ?.map((e) => e.toString())
           .toList(),
       confirmMultiSelect: json['confirmMultiSelect'] as bool? ?? false,
+      toolName: json['toolName'] as String?,
+      toolArgs: json['toolArgs'] as String?,
+      toolResult: json['toolResult'] as String?,
+      reasoning: json['reasoning'] as String?,
     );
   }
 }

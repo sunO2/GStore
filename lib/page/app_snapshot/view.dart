@@ -210,7 +210,7 @@ class _AppSnapshotPageState extends State<AppSnapshotPage> {
               : Column(
                   children: [
                     Padding(
-                      padding: AppSpacing.onlyHorizontalMD
+                      padding: AppSpacing.onlyHorizontalLG
                           .add(AppSpacing.onlyTopSM),
                       child: Row(
                         children: [
@@ -278,7 +278,7 @@ class _AppSnapshotPageState extends State<AppSnapshotPage> {
     final selected = _selected.contains(record.id);
     final isLatest = index == 0;
     return AppCard(
-      margin: AppSpacing.onlyHorizontalMD.add(AppSpacing.onlyBottomSM),
+      margin: AppSpacing.onlyHorizontalLG.add(AppSpacing.onlyBottomSM),
       onTap: () => _openDetail(record),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,

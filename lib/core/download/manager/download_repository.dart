@@ -35,6 +35,13 @@ class DownloadRepository {
     return saved;
   }
 
+  /// 删除任务记录（DAO 无 delete 方法 → 走底层库，与页面里既有做法一致）
+  Future<void> deleteById(int id) async {
+    final db = await downloadTaskDatabase;
+    await db.database.delete('DownloadTaskEntity', where: 'id = ?', whereArgs: [id]);
+    await _watchers.remove(id)?.close();
+  }
+
   Future<List<DownloadTask>> all() async {
     final dao = (await downloadTaskDatabase).downloadTaskDao;
     final entities = await dao.getAllTasks();

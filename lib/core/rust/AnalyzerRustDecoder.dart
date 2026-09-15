@@ -4,7 +4,7 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show kIsWeb;
 
 import 'package:gstore/core/logger/LogManager.dart';
-import 'package:gstore/core/rust/Contract.dart' show decodeApkFeatures, decodeApkReport, decodeApkBuildVersions, decodeApkInfo, decodeApkComponents, decodeApkDexStats, decodeApkManifestInfo, decodeApkStructure, decodeElfScanResult, decodeDexClasses, decodeRuleMatchResult, decodeSignatureSchemes;
+import 'package:gstore/core/rust/Contract.dart' show decodeApkFeatures, decodeApkReport, decodeApkBuildVersions, decodeApkInfo, decodeApkComponents, decodeApkDexStats, decodeApkManifestInfo, decodeApkStructure, decodeElfScanResult, decodeDexClasses, decodeRuleMatchResult, decodeSignatureSchemes, decodeApkBrowseListing, decodeApkExportedEntry;
 import 'package:gstore/core/rust/ModuleLoader.dart';
 import 'package:gstore/core/rust/ModuleManager.dart';
 import 'package:gstore/core/rust/generated/bridge.dart' show ModuleHandle;
@@ -227,6 +227,56 @@ class AnalyzerRustDecoder {
     );
     if (moduleResult != null) return moduleResult;
     return null; // 宿主已删内置实现，仅模块路径（模块失败即不可用）
+  }
+
+  /// 嵌套容器链分隔符（与 Rust `browser::CHAIN_SEP` 一致）
+  static const String chainSep = '\u0001';
+
+  /// 列一层目录（APK 内容浏览器）。
+  ///
+  /// [containerChain] 为嵌套容器链（[chainSep] 分隔，空串 = APK 根），
+  /// [dir] 为当前容器内的目录前缀。
+  /// 返回 null 表示模块不可用（调用方应提示「分析模块未就绪」）。
+  static Future<ApkBrowseListing?> browseApkEntries(
+    String apkPath, {
+    String containerChain = '',
+    String dir = '',
+  }) async {
+    final payload = BytesBuilder(copy: false)
+      ..add(utf8.encode(apkPath))
+      ..addByte(0)
+      ..add(utf8.encode(containerChain))
+      ..addByte(0)
+      ..add(utf8.encode(dir));
+    return _roundtripJson<ApkBrowseListing?>(
+      'browse_apk_entries',
+      payload.takeBytes(),
+      (json) => decodeApkBrowseListing(json),
+    );
+  }
+
+  /// 把某条内容解压到 [outPath]（宿主缓存文件），返回落地信息。
+  ///
+  /// 字节不跨 FFI 回传：Rust 直接写到宿主给定的文件路径，Dart 用文件消费。
+  static Future<ApkExportedEntry?> exportApkEntry(
+    String apkPath, {
+    required String entryPath,
+    required String outPath,
+    String containerChain = '',
+  }) async {
+    final payload = BytesBuilder(copy: false)
+      ..add(utf8.encode(apkPath))
+      ..addByte(0)
+      ..add(utf8.encode(containerChain))
+      ..addByte(0)
+      ..add(utf8.encode(entryPath))
+      ..addByte(0)
+      ..add(utf8.encode(outPath));
+    return _roundtripJson<ApkExportedEntry?>(
+      'export_apk_entry',
+      payload.takeBytes(),
+      (json) => decodeApkExportedEntry(json),
+    );
   }
 
   /// 统一模块路径：调用 → JSON 响应 → 解码回 Dart 类型

@@ -21,3 +21,4 @@ export 'package:gstore/page/module_manage/view.dart';
 export 'package:gstore/page/cache_manage/view.dart';
 export 'package:gstore/page/database_manage/view.dart';
 export 'package:gstore/page/licenses/licenses_page.dart';
+export 'package:gstore/page/it_tools/view.dart';

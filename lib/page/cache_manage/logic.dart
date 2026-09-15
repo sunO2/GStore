@@ -62,6 +62,7 @@ class CacheManageNotifier extends Notifier<CacheManageState> {
     final ok = await AppDialogs.showConfirmDialog(
       title: '一键清理',
       message: '将清除全部缓存（网络图片 / README / 图标 / 通用缓存等），\n'
+          '以及开发者工具箱的离线资源（下次进入会重新解压），\n'
           '${dlCount > 0 ? '并删除已下载的 $dlCount 个安装包文件。\n' : ''}'
           '删除后不可恢复，请确认。',
       confirmText: '全部清理',

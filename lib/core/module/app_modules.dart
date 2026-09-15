@@ -15,6 +15,7 @@ import 'package:gstore/core/agent/agent_tool_module.dart';
 import 'package:gstore/core/agent/tools/builtin_tools.dart';
 import 'package:gstore/core/channel/ChannelIntegration.dart';
 import 'package:gstore/core/config/config_registry.dart';
+import 'package:gstore/core/download/download_core_config.dart';
 import 'package:gstore/core/download/manager/download_manager.dart';
 import 'package:gstore/core/fdroid/FdroidRepoManager.dart';
 import 'package:gstore/core/module/module.dart';
@@ -26,6 +27,7 @@ import 'package:gstore/core/theme/theme_controller.dart';
 import 'package:gstore/core/webdav/webdav_service.dart';
 import 'package:gstore/core/webdav/webdav_task_manager.dart';
 import 'interfaces/service_interfaces.dart';
+import '../download/download_task_watcher.dart';
 
 /// 核心业务模块注册器
 ///
@@ -101,7 +103,13 @@ class DownloadModule extends AppModule {
     final config = context.config;
     config?.registerModule(AppCoreConfigModule());
     final manager = ModuleManager.instance;
-    context.bindService?.call(IDownloadService, manager.require<DownloadManager>());
+    // 绑定哪个下载内核由 DownloadCoreConfig 决定：默认 Dart（既有行为），
+    // 可用 --dart-define=DOWNLOAD_CORE_RUST=true 或运行时配置 download.core 切到 Rust 内核。
+    final dartImpl = manager.require<DownloadManager>();
+    final impl = await DownloadCoreConfig.resolve(dartImpl);
+    context.bindService?.call(IDownloadService, impl);
+    // 通知栏 + 自动安装由全局任务流统一驱动（两种内核都覆盖）
+    DownloadTaskWatcher.instance.start(impl);
   }
 
   @override

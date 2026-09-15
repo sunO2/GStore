@@ -62,6 +62,23 @@ Workflow:
 $w
 ''';
   }
+
+  /// 一行简介（常驻系统提示词用：名称 + 触发场景）
+  ///
+  /// 完整工作流不再常驻，模型需要时经 `loadProtocol` 按需获取。
+  String renderBrief(PromptLanguage language) {
+    final isEn = language == PromptLanguage.en;
+    final n = isEn ? nameEn : name;
+    final t = isEn ? triggersEn : triggers;
+    return '  • $n — $t';
+  }
+
+  /// 是否匹配（按中/英文名，忽略大小写与首尾空白）
+  bool matches(String query) {
+    final q = query.trim().toLowerCase();
+    if (q.isEmpty) return false;
+    return name.toLowerCase() == q || nameEn.toLowerCase() == q;
+  }
 }
 
 /// GStore Agent 技能库
@@ -172,11 +189,63 @@ class AgentSkills {
       workflow: '1. 调用 runJsChannel 执行脚本渠道暴露的方法\n2. 参数：channel（脚本渠道 key，如 js_pingan）、method（脚本方法名）、params（可选参数 map）\n3. 常见方法：getConfig（渠道配置）、versionOptions（版本/环境选项）、switchVersion（切换版本/环境）\n4. 脚本未实现该方法时返回提示，改用预置工具或告知用户\n5. 先搜索确认渠道是否为脚本渠道（js_ 前缀）再调用',
       workflowEn: '1. Call runJsChannel to execute a method exposed by the script channel\n2. Params: channel (script channel key, e.g. js_pingan), method (script method name), params (optional map)\n3. Common methods: getConfig (channel config), versionOptions (version/env options), switchVersion (switch version/env)\n4. If the script does not implement the method, a hint is returned; fall back to preset tools or inform the user\n5. Confirm the channel is a script channel (js_ prefix) before calling',
     ),
+    AgentSkill(
+      name: '版本差异分析',
+      nameEn: 'Version Diff Analysis',
+      triggers: '用户问"这个版本更新了什么""新版和旧版有什么区别""帮我对比这两个版本"时',
+      triggersEn:
+          'When the user asks what changed between two versions of an app, or to compare versions',
+      workflow: '1. 确认目标应用：不确定包名时先用 installedApps list 定位（按名称/包名过滤）\n'
+          '2. 查看现有快照：appSnapshot(action=list, packageName)\n'
+          '   - 不足两份：先 appSnapshot(action=create) 采集当前版本（可加 note="更新后"）\n'
+          '3. 对比：snapshotCompare(packageName)；需指定某两份时传 oldId/newId\n'
+          '4. 按重要性解读差异（这是给用户的核心价值）：\n'
+          '   - 签名是否变化：变了必须提醒（可能被重新签名 / 非同一来源发布）\n'
+          '   - 代码 DEX / 原生库是否变化：据此判断是"整体重新构建"还是"仅资源更新"\n'
+          '   - 新增/移除的权限、新导出的组件、新增深链（快捷启动方式）\n'
+          '   - 体积变化：直接转述工具给出的 +/− 数值，不要让用户自己相减\n'
+          '5. 只陈述工具返回的事实，不要臆测差异中没有的改动；「待确认」条目要说明原因\n'
+          '6. 输出顺序：先一句话总结（结论），再按分节列要点明细',
+      workflowEn: '1. Identify the target app; use installedApps list to resolve the package name if unsure\n'
+          '2. List existing snapshots: appSnapshot(action=list, packageName)\n'
+          '   - If fewer than two: create one first with appSnapshot(action=create, note="after update")\n'
+          '3. Compare: snapshotCompare(packageName); pass oldId/newId to pick specific snapshots\n'
+          '4. Interpret by importance (the core value):\n'
+          '   - Signature change: must warn the user (re-signed / not from the same publisher)\n'
+          '   - DEX / native lib changes: decide "full rebuild" vs "resources-only update"\n'
+          '   - Added/removed permissions, newly exported components, new deep links\n'
+          '   - APK size delta: report the +/- value from the tool; do not make the user subtract\n'
+          '5. State only what the diff contains; never invent changes; explain "uncertain" entries\n'
+          '6. Output order: one-line verdict first, then per-section bullets',
+    ),
   ];
 
   /// 渲染全部启用的技能为系统提示片段
   static String renderAll({PromptLanguage language = PromptLanguage.en}) {
     final enabled = all.where((s) => s.enabled).toList();
     return enabled.map((s) => s.render(language)).join('\n');
+  }
+
+  /// 渲染"技能目录"（仅名称 + 触发场景，一行一个）
+  ///
+  /// 常驻系统提示词用；完整工作流经 [protocolFor] 按需加载。
+  static String renderBriefs({PromptLanguage language = PromptLanguage.en}) {
+    final enabled = all.where((s) => s.enabled).toList();
+    return enabled.map((s) => s.renderBrief(language)).join('\n');
+  }
+
+  /// 按名称（中/英文）查找技能
+  static AgentSkill? byKey(String key) {
+    for (final s in all) {
+      if (s.matches(key)) return s;
+    }
+    return null;
+  }
+
+  /// 取某技能的完整协议（loadProtocol 的数据源）
+  static String? protocolFor(String key,
+      {PromptLanguage language = PromptLanguage.en}) {
+    final skill = byKey(key);
+    return skill?.render(language);
   }
 }

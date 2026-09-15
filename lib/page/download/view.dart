@@ -425,13 +425,13 @@ class _DownloadManagerState extends ConsumerState<DownloadManager> {
                 _buildPrimaryAction(context, downStatus),
                 const Spacer(),
                 IconButton(
-                  tooltip: '重新下载',
+                  tooltip: '重新下载（清空已下分段，从 0 开始）',
                   icon: const Icon(
                     Icons.refresh,
                     size: AppTypography.iconSM,
                   ),
                   visualDensity: VisualDensity.compact,
-                  onPressed: () => notifier.retryDownload(downStatus),
+                  onPressed: () => notifier.restartDownload(downStatus),
                 ),
                 IconButton(
                   tooltip: '删除',
@@ -549,10 +549,10 @@ class _DownloadManagerState extends ConsumerState<DownloadManager> {
   /// 下载信息弹窗（文件名/链接/渠道等完整信息，不受列表截断影响）
   Future<void> _showDownloadInfo(
     BuildContext context,
-    DownloadTask item,
+    DownloadTask initial,
   ) async {
     final scheme = Theme.of(context).colorScheme;
-    final channel = inferChannelLabel(item.url);
+    final channel = inferChannelLabel(initial.url);
 
     Widget infoRow(String label, String value) {
       return Padding(
@@ -586,24 +586,58 @@ class _DownloadManagerState extends ConsumerState<DownloadManager> {
       children: [
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg),
-          child: Column(
+          child: Consumer(
+            builder: (context, ref, _) {
+              // 取**实时**任务：页面已订阅 service.watch(id) 并把更新推进 provider，
+              // 这里消费它，弹层才会随进度刷新。否则「已下载」/分段色块都只是打开时的
+              // 死快照（表现为"已下载是一串不动的字符串"）。
+              // 下面整体沿用 `item` 这个名字，内容一行都不用改。
+              // latestGroups 是未筛选的原始分组，保证被筛掉的任务也能查到实时值
+              final item = ref
+                  .watch(downloadManagerProvider)
+                  .latestGroups
+                  .expand((g) => g)
+                  .firstWhere(
+                    (t) => t.id == initial.id,
+                    orElse: () => initial,
+                  );
+              return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              _infoSection(context, '基本信息'),
               infoRow('文件名', item.fileName),
               infoRow('应用', '${item.appName}（${item.version}）'),
               infoRow('应用标识', item.appId),
               if (item.total > 0) infoRow('文件大小', _formatFileSize(item.total)),
+              infoRow('创建时间', _formatCreateTime(item.createdAt)),
+              if (channel != null) infoRow('来源渠道', channel),
+
+              _infoSection(context, '传输详情'),
+              if (item.status == DownloadStatusEnum.queued)
+                infoRow('状态', '排队中，等待下载槽位'),
               if (item.status == DownloadStatusEnum.downloading &&
                   item.speedBps > 0)
                 infoRow('下载速度', formatSpeed(item.speedBps)),
               if (item.status == DownloadStatusEnum.downloading &&
                   (item.etaSec ?? 0) > 0)
                 infoRow('剩余时间', formatDuration(item.etaSec!)),
-              if (item.status == DownloadStatusEnum.queued)
-                infoRow('状态', '排队中，等待下载槽位'),
+              if (item.total > 0)
+                infoRow(
+                    '已下载',
+                    '${_formatFileSize(item.received)} / ${_formatFileSize(item.total)}'
+                        '   ${item.received * 100 ~/ item.total}%'),
+              if (item.segments case final segs? when segs.isNotEmpty) ...[
+                infoRow('分段', '共 ${segs.length} 段'),
+                _segmentBlocks(context, scheme, segs),
+              ],
+
+              _infoSection(context, '来源'),
+              if (item.headers.isNotEmpty)
+                infoRow('请求头',
+                    item.headers.entries.map((e) => '${e.key}: ${e.value}').join('\n')),
+
+              _infoSection(context, '存储'),
               infoRow('保存路径', item.filePath),
-              infoRow('创建时间', _formatCreateTime(item.createdAt)),
-              if (channel != null) infoRow('来源渠道', channel),
               // 下载链接（可复制）
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: AppSpacing.xs),
@@ -642,10 +676,98 @@ class _DownloadManagerState extends ConsumerState<DownloadManager> {
                 ),
               ),
             ],
+              );
+            },
           ),
         ),
       ],
     );
+  }
+
+  /// 信息面板的分组标题（后续新字段直接往对应分组里加即可）
+  Widget _infoSection(BuildContext context, String title) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(top: AppSpacing.md, bottom: AppSpacing.xs),
+      child: Text(
+        title,
+        style: Theme.of(context).textTheme.titleMedium?.copyWith(
+              color: scheme.primary,
+              fontWeight: FontWeight.w600,
+            ),
+      ),
+    );
+  }
+
+  /// 分段进度：**主题色色块**，alpha 越实表示该段下得越多。
+  ///
+  /// 用色块而不是进度条：段数多时更紧凑、不抢视觉焦点；
+  /// 悬浮可看该段的精确数值。
+  Widget _segmentBlocks(
+    BuildContext context,
+    ColorScheme scheme,
+    List<SegmentInfo> segs,
+  ) {
+    return Wrap(
+      spacing: 4,
+      runSpacing: 4,
+      children: [
+        for (final seg in segs)
+          Tooltip(
+            // 自绘内容：段号用主题色强调、百分比用正文色、字节数用次要色
+            richMessage: TextSpan(
+              children: [
+                TextSpan(
+                  text: '#${seg.index}',
+                  style: TextStyle(
+                    color: scheme.primary,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                TextSpan(
+                  text: '  ${(_segPercent(seg) * 100).toStringAsFixed(0)}%',
+                  style: TextStyle(
+                    color: scheme.onSurface,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                TextSpan(
+                  text: '  ${_formatFileSize(seg.received)}'
+                      ' / ${_formatFileSize(seg.endByte - seg.startByte + 1)}',
+                  style: TextStyle(color: scheme.onSurfaceVariant),
+                ),
+              ],
+            ),
+            decoration: BoxDecoration(
+              color: scheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: scheme.outlineVariant),
+            ),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            textStyle: Theme.of(context).textTheme.bodySmall,
+            // 移动端没有 hover：用点击触发气泡（默认是长按）
+            triggerMode: TooltipTriggerMode.tap,
+            child: Container(
+              width: 18,
+              height: 18,
+              decoration: BoxDecoration(
+                color: scheme.primary
+                    .withValues(alpha: 0.12 + 0.88 * _segPercent(seg)),
+                borderRadius: BorderRadius.circular(4),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  /// 单段完成比例
+  double _segPercent(SegmentInfo seg) {
+    final len = seg.endByte - seg.startByte + 1;
+    if (len <= 0) {
+      return 0;
+    }
+    return (seg.received / len).clamp(0.0, 1.0);
   }
 
   /// 创建时间格式化（DateTime → yyyy-MM-dd HH:mm）

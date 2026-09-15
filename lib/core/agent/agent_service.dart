@@ -11,11 +11,19 @@ import 'package:installed_apps/installed_apps.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:gstore/core/agent/agent_model_store.dart';
 import 'package:gstore/core/agent/agent_notification_service.dart';
+import 'package:gstore/core/agent/agent_prompt.dart';
 import 'package:gstore/core/agent/agent_session_store.dart';
 import 'package:gstore/core/agent/agent_skills.dart';
 import 'package:gstore/core/agent/agent_tool_module.dart';
+import 'package:gstore/core/agent/agent_tool_spec.dart';
+import 'package:gstore/core/agent/openai_reasoning_model.dart';
 import 'package:gstore/core/agent/platform_arch.dart';
+import 'package:gstore/core/agent/think_parser.dart';
 import 'package:gstore/core/agent/tools/builtin_tools.dart';
+import 'package:gstore/core/snapshot/snapshot_service.dart';
+import 'package:gstore/core/service/apk_browser_service.dart';
+import 'package:gstore/core/service/apk_source_service.dart';
+import 'package:gstore/core/rust/contract/ModuleTypes.dart' as mt;
 import 'package:gstore/core/module/app_modules.dart';
 import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/page/cache_manage/cache_service.dart';
@@ -56,6 +64,7 @@ enum AgentToolType {
   installed,
   confirm,
   config,
+  snapshot,
 }
 
 /// 工具执行状态
@@ -122,6 +131,24 @@ class AgentMessage {
   /// 工具调用参数描述（如关键词/应用名）
   String? toolDetail;
 
+  /// 工具名（function calling 名，如 downloadApp）
+  final String? toolName;
+
+  /// 工具调用参数（结构化，供详情面板展示）
+  Map<String, dynamic>? toolArgs;
+
+  /// 工具执行结果（原始返回文本）
+  String? toolResult;
+
+  /// 工具执行耗时（毫秒）
+  int? durationMs;
+
+  /// 思考过程（reasoning / 内联 think 内容，流式累积）
+  String reasoning;
+
+  /// 思考是否已结束（用于 UI 折叠态）
+  bool reasoningDone;
+
   /// 下载状态（下载工具使用，用于显示进度）
   DownloadTask? downloadStatus;
 
@@ -154,6 +181,12 @@ class AgentMessage {
     this.toolType,
     this.toolStatus,
     this.toolDetail,
+    this.toolName,
+    this.toolArgs,
+    this.toolResult,
+    this.durationMs,
+    this.reasoning = '',
+    this.reasoningDone = false,
     this.downloadStatus,
     this.isToolResult = false,
     DateTime? time,
@@ -200,9 +233,94 @@ class AgentService {
   static const String configManagerToolName = 'configManager';
   static const String runJsChannelToolName = 'runJsChannel';
   static const String cacheManageToolName = 'cacheManage';
+  static const String loadProtocolToolName = 'loadProtocol';
+  static const String appSnapshotToolName = 'appSnapshot';
+  static const String snapshotCompareToolName = 'snapshotCompare';
+  static const String apkBrowserToolName = 'apkBrowser';
+
+  // ==================== AIAgentResponse 对话全量日志 ====================
+  //
+  // 用途：排查「思考内容不显示 / 回复内容不对 / 工具没被调用」这类问题时，
+  // 把每一次对话的**请求、思考分片、工具调用、最终结果**都落到日志里。
+  // 日志查看器里搜 `AIAgentResponse` 即可过滤出完整的一轮。
+  //
+  // 记录策略：正文分片不逐片记（会刷屏），回合结束汇总；
+  // 思考分片只记"首片到达"，用于确认 reasoning 到底有没有到 App。
+
+  /// 日志 tag（LogManager 无独立 tag 字段，用消息前缀实现）
+  static const String aiResponseLogTag = 'AIAgentResponse';
+
+  void _logAi(String event, {Map<String, dynamic>? data}) {
+    appLog.info('[$aiResponseLogTag] $event', data: data);
+  }
+
+  /// 日志用截断（保留头部并标注截断量，避免超长内容刷屏）
+  String _briefLog(Object? value, {int max = 600}) {
+    final s = value?.toString() ?? '';
+    if (s.length <= max) return s;
+    return '${s.substring(0, max)}…<截断${s.length - max}字>';
+  }
+
+  /// 单个 Part 的日志摘要
+  String _partLog(Part p) {
+    if (p.isReasoning) return '[思考]${p.reasoning ?? ''}';
+    if (p.isText) return p.text ?? '';
+    if (p.isToolRequest) {
+      final r = p.toolRequest;
+      return '[调用工具]${r?.name ?? ''}(${r?.input ?? ''})';
+    }
+    if (p.isToolResponse) return '[工具结果]${p.toolResponse?.name ?? ''}';
+    return '[其他]';
+  }
+
+  /// 请求消息摘要（role + 内容）
+  List<String> _dumpMessagesLog(List<Message> msgs) => [
+        for (final m in msgs)
+          '${m.role?.value ?? '?'}: '
+              '${_briefLog(m.content.map(_partLog).join(''), max: 800)}',
+      ];
+
+  /// 探测最终响应里是否携带**原生**思考内容
+  ///
+  /// 这是判断"思考内容丢失在哪一层"的关键证据：
+  /// - customModel=true 且 reasoningChunks>0 → 自建模型的流式生效；
+  /// - reasoningContentLen>0 但 reasoningLen==0 → 端点确实返回了思维链，
+  ///   但既没进流式分片、也没被补取（问题在解析）；
+  /// - 两者都为 0 → 该模型/端点本次就没有返回思维链。
+  Map<String, dynamic> _probeRawReasoning(dynamic response) {
+    final out = <String, dynamic>{};
+    try {
+      final raw = response?.raw;
+      out['hasRaw'] = raw is Map;
+      if (raw is Map) {
+        final choices = raw['choices'];
+        if (choices is List && choices.isNotEmpty && choices.first is Map) {
+          final message = (choices.first as Map)['message'];
+          out['hasMessage'] = message is Map;
+          if (message is Map) {
+            out['messageKeys'] = message.keys.map((e) => e.toString()).toList();
+            out['reasoningContentLen'] =
+                (message['reasoning_content']?.toString() ?? '').length;
+            out['reasoningLen'] =
+                (message['reasoning']?.toString() ?? '').length;
+          }
+        }
+      }
+    } catch (e) {
+      out['probeError'] = e.toString();
+    }
+    return out;
+  }
 
   Genkit? _ai;
   AgentModel? _model;
+
+  /// 自建的 OpenAI 兼容模型（思考过程可流式）
+  ///
+  /// 官方插件只转发 `delta.content`，会丢掉 `delta.reasoningContent`，
+  /// 导致思考内容只能"事后补取"；这里自建模型把它作为 ReasoningPart 流式下发。
+  /// 构建失败时为 null → 回退官方插件模型。
+  Model? _customModel;
   AgentModelStore? _store;
   AgentSessionStore? _sessionStore;
   List<Message> _messages = [];
@@ -245,6 +363,18 @@ class AgentService {
   /// 当前全部已注册工具名（模型可调用清单）
   List<String> get registeredToolNames =>
       _agentTools.map((t) => t.toolName).toList();
+
+  /// 模型实际可调用的工具名（已上线模块工具 + 元能力工具）
+  ///
+  /// 元能力工具（loadProtocol）不参与模块上下线，但必须暴露给模型，
+  /// 否则"按需读取协议"的通道不可用。
+  List<String> get _modelToolNames {
+    final names = [...registeredToolNames];
+    for (final s in AgentToolCatalog.enabled) {
+      if (s.meta && !names.contains(s.name)) names.add(s.name);
+    }
+    return names;
+  }
 
   /// 当前模型是否启用工具调用（function calling）。
   /// 本地小模型（OpenAI 兼容的 loopback 端点）默认关闭，走"无工具"降级模式。
@@ -408,6 +538,15 @@ class AgentService {
           params['method']?.toString() ?? '',
           params['params'],
         );
+      case loadProtocolToolName:
+        return Future.value(
+            _loadProtocol(params['target']?.toString() ?? ''));
+      case appSnapshotToolName:
+        return _appSnapshot(params);
+      case snapshotCompareToolName:
+        return _snapshotCompare(params);
+      case apkBrowserToolName:
+        return _apkBrowser(params);
       default:
         // 尝试模块化工具自身的 execute（可扩展执行体）
         for (final tool in _agentTools) {
@@ -422,19 +561,7 @@ class AgentService {
   /// 确认工具执行（用户确认/选项选择/多选勾选）
   Future<String> _confirmAction(Map<String, dynamic> params) async {
     final question = params['question']?.toString() ?? '';
-    List<String>? options;
-    final optRaw = params['options'];
-    if (optRaw is List) {
-      options =
-          optRaw.map((o) => o.toString()).where((o) => o.isNotEmpty).toList();
-    } else if (optRaw is String && optRaw.trim().isNotEmpty) {
-      options = optRaw
-          .split(RegExp(r'[,，]'))
-          .map((o) => o.trim())
-          .where((o) => o.isNotEmpty)
-          .toList();
-    }
-    if (options != null && options.isEmpty) options = null;
+    final options = _parseOptions(params['options']);
     // 多选模式：模型传 multiSelect=true（或 multiSelect='true'）
     final multiSelect = params['multiSelect'] == true ||
         params['multiSelect']?.toString() == 'true';
@@ -684,6 +811,9 @@ class AgentService {
               ? AgentToolStatus.done.name
               : AgentToolStatus.error.name,
           toolDetail: task.message,
+          toolName: m.toolName,
+          toolArgs: m.toolArgs,
+          toolResult: task.message,
           time: m.time,
           seq: m.seq,
           turnId: m.turnId,
@@ -785,88 +915,17 @@ class AgentService {
   /// 清空全部消息。
   void _clearMessages() => messages.value = const [];
 
-  /// 系统提示词（含设备架构信息）
-  String get _systemPrompt => '''
-你是 GStore 软件商店的智能助手。你帮助用户搜索、下载和安装开源应用，并管理应用、备份、主题等。
-
-${PlatformArch.platformDescription}
-
-可用工具：
-1. searchApp - 搜索应用。输入 keyword（关键词）。返回匹配的应用列表（含名称、包名、简介、来源渠道）。支持 GitHub 渠道（走代理搜索仓库）。
-2. downloadApp - 下载应用。输入 appId（包名/仓库名）、channel（渠道代码，如 github/fdroid/vivo）、url（下载地址，可选）、name（应用名）、version（版本号）。GitHub 渠道时系统会自动选择匹配当前 CPU 架构的 APK。vivo 渠道需传 vivoId。如需下载完成后自动安装，传入 installAfterDownload=true；仅说下载则不传。下载完成后自动解析 APK 获取真实包名/图标/应用名并更新。
-3. installApp - 安装已下载的 APK。输入 savePath（APK 文件路径）。
-4. manageApp - 管理"我的应用"列表（首页聚合）。action 为 list/add/remove/isAdded。
-5. channelApp - 管理应用渠道中的已添加应用（渠道数据库）。action 为 list（列出渠道应用，需 channel）、add（添加应用到渠道，需 appId+channel+name）、remove（从渠道移除，需 appId+channel）。GitHub 渠道 appId 用 owner/repo（如 termux/termux-app）。
-6. getAppInfo - 获取应用详情或检查版本。输入 appId、channel。
-7. updateApps - 检查应用更新。appId 和 channel 可选（不传则检查全部已添加应用）。返回每个已安装应用是否有更新（当前版本 → 最新版本）。
-8. backup - 备份/恢复应用数据。action 为 export/import。
-9. manageDownload - 管理下载任务。action 为 list/pause/resume/cleanCompleted/clearAll。
-10. themeControl - 控制主题。action 为 mode/toggle/color。
-11. fdroidRepo - 管理 F-Droid 仓库。action 为 list/load/search/stats。
-12. webdavSync - WebDAV 云备份。action 为 list（查询网盘备份数据列表）/upload/download/status。
-13. installedApps - 管理已安装应用。action 为 list/check/uninstall/clearData/clearCache/forceStop。卸载/清理/停止需 Shizuku 授权。
- 14. confirmAction - 向用户发起确认或选择。输入 question（确认问题，需清晰说明要执行的操作）。用于敏感/不可逆操作；需要用户选择时传 options（选项数组或逗号分隔），需要用户**多选**（勾选多个）时再传 multiSelect=true。用户需在界面上确认/勾选。
-15. cacheManage - 管理缓存与已下载文件（清理/释放空间）。无需参数：工具会枚举当前可清理项（缓存类别 + 已下载 APK）并弹多选框让用户勾选，确认后清理。
-16. configManager - 管理应用配置。action 为 list（列出可配置项）/get（读取，需 key）/set（修改，需 key 和 value）/clear（清除，需 key）。修改后相关功能自动生效。敏感配置读取脱敏。
-
-敏感操作清单（执行前**必须**调用 confirmAction 让用户确认）：
-- 卸载应用（installedApps 的 uninstall）
-- 清理应用数据/缓存（installedApps 的 clearData/clearCache）
-- 强制停止应用（installedApps 的 forceStop）
-- 恢复备份/覆盖现有数据（backup 的 import 且会影响当前数据）
-- 删除会话/清空数据（manageDownload 的 clearAll、backup 相关删除）
-- 移除"我的应用"或渠道中的应用（manageApp remove / channelApp remove）
-- 清理缓存/删除已下载文件（cacheManage，会弹多选框让用户勾选）
-- 其他不可逆或影响较大的操作
-
-确认流程：先调用 confirmAction 展示操作内容，用户确认后再执行实际操作；用户取消则不要执行并告知用户。
-
-选项选择场景（也必须调用 confirmAction，带 options 让用户选择）：
-- 用户需要决策时：如"你想怎么处理""要不要继续""用哪个版本""选哪个方案"等
-- 多选一：当存在 2 个以上合理选项时，用 options 传入选项数组，让用户点选
-- 多选：需要用户勾选多项（如清理时勾选多个缓存/下载文件）时，传 options 并加 multiSelect=true；返回结果含被选项
-- 示例：卸载应用前问"卸载后是否保留数据？"（options: ["保留数据", "清除数据"]）
-- 示例：安装多个版本时问"安装哪个版本？"（options: ["稳定版", "测试版"]）
-- 用户犹豫/征求建议且涉及实际执行时，优先用 confirmAction 给选项，而不是只回文字
-
-注意：不要因为"不确定是否该调用"而跳过 confirmAction——只要涉及上述敏感操作或选择决策，就应调用。
-
-使用规则：
-- 用户要求"找/搜索/看看有没有 XX 应用"时，先调用 searchApp。
-- 推荐策略：优先推荐开源应用（GitHub、F-Droid 渠道）；若开源无合适应用或用户明确要热门的，可推荐用户量更大的非开源应用（vivo 渠道）。推荐时标注来源渠道。
-- 用户要求"下载 XX"时，用 searchApp 找到后调用 downloadApp。
-- 用户要求"添加 XX 到我的应用"/"移除 XX"/"我的应用有哪些"时，调用 manageApp。
-- 用户要求"添加 XX 到 XX 渠道"/"从渠道删除/移除 XX"/"XX 渠道有哪些应用"时，调用 channelApp。
-- 用户要求"检查更新"/"更新 XX"时，调用 updateApps。
-- 用户要求"备份"/"恢复"时，调用 backup。
-- 用户要求"暂停/恢复/清理下载"时，调用 manageDownload。
-- 用户要求"切换主题/换颜色"时，调用 themeControl。
-- 用户要求"我装了什么应用"/"XX 装了吗"时，调用 installedApps。
-- 用户要求"清理缓存""释放空间""删除下载的安装包/APK""清理下载文件"时，调用 cacheManage。
-- 用户要求修改应用配置（如"修改下载设置""设置代理""修改更新策略""查看配置"）时，调用 configManager（list/get/set/clear），修改后功能自动生效。
-- 若用户只说"下载"则仅下载不安装；若用户明确要求下载后安装，在 downloadApp 中传 installAfterDownload=true（Agent 会话内不再主动询问安装）。
-- 执行上述敏感操作前，先调用 confirmAction 让用户确认；用户确认后再执行。
-- 用户需要做选择或表达犹豫（"怎么弄""选哪个""要不要"等）时，调用 confirmAction 并提供 options 选项，让用户直接点选。
-- 回答简洁，中文回复。当用户提到具体应用时，给出推荐并询问是否下载。
-
-技能知识库（遇到对应场景时，严格按技能中的步骤执行）：
-${AgentSkills.renderAll(language: PromptLanguage.zh)}
-
-错误处理指引：
-- 工具返回错误或异常时，先向用户说明问题，再给出可行的下一步建议，不要假装操作成功。
-- 搜索无结果时：提示"未找到相关应用"，并建议用户换关键词、或检查网络/渠道是否可用。
-- 下载失败时：提示可能原因（网络、URL 失效、服务器不支持断点续传等），并建议重试或换渠道。
-- 下载地址获取失败时：提示"暂时无法获取该应用的下载地址"，可建议用户到详情页手动查看。
-- 应用已下载但安装失败时：提示检查 APK 完整性，或建议手动从下载中心安装。
-- 备份/恢复失败时：提示检查存储权限或文件路径是否正确。
-- WebDAV 未配置时：明确提示"请先在设置中配置 WebDAV 网盘"。
-- 模型/API 调用失败时：提示检查 API Key 配置、网络连接，或建议更换模型。
-- 不确定如何操作时：明确告知能力边界，给出替代方案，不要编造不存在的功能。
-- 所有失败情况：都要避免重复无意义的重试，及时告知用户当前状态。
-''';
+  /// 系统提示词（由 [AgentPrompt] 依据协议注册表生成）
+  ///
+  /// 内容 = 工具目录（分组+一行简介）+ 生成式敏感清单 + 技能目录（名称+触发）
+  /// + 错误处理指引。完整参数/步骤不再常驻，模型经 `loadProtocol` 按需读取。
+  String get _systemPrompt =>
+      AgentPrompt.build(PlatformArch.platformDescription);
 
   /// 初始化 Agent（加载模型存储并初始化当前选中模型）
   Future<bool> initialize() async {
+    // 运行时提示词使用中文（AgentPrompt 是唯一提示词构建器，内容由协议注册表生成）
+    AgentPrompt.useChinese();
     _store = await AgentModelStore.load();
     _model = _store!.selected;
     _subscribeModelChanges();
@@ -892,6 +951,8 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
       // 根据模型构建插件（使用局部变量让类型推断处理）
       final plugin = _buildPlugin(_model!);
       _ai = Genkit(plugins: [plugin]);
+      // 自建模型：补齐思考过程流式（仅 OpenAI 兼容 provider）
+      _customModel = _buildCustomModel(_ai!, _model!);
 
       // 注册 Agent 工具模块（默认全部上线；优先从 ModuleManager 拉取已注册工具）
       if (_agentTools.isEmpty) {
@@ -1057,13 +1118,16 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
   List<AgentMessage> _buildAgentMessages(List<SessionMessage> list) {
     return list.map((m) {
       if (m.isToolResult) {
-        // 工具消息：还原工具类型/状态/详情
+        // 工具消息：还原工具类型/状态/详情 + 工具名/参数/结果
         final message = AgentMessage(
           isUser: false,
           text: m.text,
           toolType: _toolTypeFromName(m.toolType),
           toolStatus: _toolStatusFromName(m.toolStatus),
           toolDetail: m.toolDetail,
+          toolName: m.toolName,
+          toolArgs: _decodeArgs(m.toolArgs),
+          toolResult: m.toolResult,
           isToolResult: true,
           time: DateTime.fromMillisecondsSinceEpoch(m.time),
           seq: m.seq,
@@ -1076,16 +1140,33 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
         }
         return message;
       } else {
-        return AgentMessage(
+        final message = AgentMessage(
           isUser: m.isUser,
           text: m.text,
           isToolResult: false,
+          reasoning: m.reasoning ?? '',
           time: DateTime.fromMillisecondsSinceEpoch(m.time),
           seq: m.seq,
           turnId: m.turnId,
         );
+        message.reasoningDone = true;
+        return message;
       }
     }).toList();
+  }
+
+  /// 解析持久化的工具参数 JSON（失败返回 null，不抛）
+  Map<String, dynamic>? _decodeArgs(String? raw) {
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      final v = jsonDecode(raw);
+      if (v is Map) {
+        return v.map((k, val) => MapEntry(k.toString(), val));
+      }
+    } catch (_) {
+      // 忽略：旧数据或异常格式
+    }
+    return null;
   }
 
   /// 工具类型枚举名 → AgentToolType
@@ -1133,12 +1214,38 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
     }
   }
 
+  /// 构建自建模型（仅 OpenAI 兼容 provider 需要）
+  ///
+  /// 目的：官方插件 `genkit_openai` 的流式只转发 `delta.content`，
+  /// `delta.reasoningContent`（思考过程）被丢弃 → 只能事后补取（整段出现）。
+  /// 自建模型复用官方 `GenkitConverter`，额外把 reasoning 作为 ReasoningPart 流式下发。
+  Model? _buildCustomModel(Genkit ai, AgentModel model) {
+    if (model.provider != AgentLlmProvider.openai) return null;
+    try {
+      final built = defineReasoningAwareOpenAIModel(
+        ai,
+        modelId: model.effectiveModel,
+        apiKey: model.apiKey,
+        baseUrl: model.effectiveBaseUrl,
+      );
+      appLog.info(
+          'AgentService: 自建 OpenAI 兼容模型已注册（含 reasoning 流式）model=${model.effectiveModel}');
+      return built;
+    } catch (e) {
+      appLog.error('AgentService: 自建模型注册失败，回退官方插件模型 - $e');
+      return null;
+    }
+  }
+
   /// 获取当前使用的模型引用
   ModelRef<dynamic> _getModelRef(AgentModel model) {
     switch (model.provider) {
       case AgentLlmProvider.google:
         return googleAI.gemini(model.effectiveModel) as ModelRef<dynamic>;
       case AgentLlmProvider.openai:
+        // 优先用自建模型（思考过程可流式）；不可用时回退官方插件模型
+        final custom = _customModel;
+        if (custom != null) return custom as ModelRef<dynamic>;
         return openAI.model(
           model.effectiveModel,
           namespace: 'custom',
@@ -1252,6 +1359,9 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
           toolType: msg.toolType?.name,
           toolStatus: msg.toolStatus?.name,
           toolDetail: msg.toolDetail,
+          toolName: msg.toolName,
+          toolArgs: msg.toolArgs == null ? null : jsonEncode(msg.toolArgs),
+          toolResult: msg.toolResult,
           time: session.messages[idx].time,
           seq: session.messages[idx].seq,
           turnId: msg.turnId ?? session.messages[idx].turnId,
@@ -1264,6 +1374,9 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
           toolType: msg.toolType?.name,
           toolStatus: msg.toolStatus?.name,
           toolDetail: msg.toolDetail,
+          toolName: msg.toolName,
+          toolArgs: msg.toolArgs == null ? null : jsonEncode(msg.toolArgs),
+          toolResult: msg.toolResult,
           time: msg.time.millisecondsSinceEpoch,
           seq: msg.seq,
           turnId: msg.turnId,
@@ -1289,6 +1402,7 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
       time: msg.time.millisecondsSinceEpoch,
       seq: msg.seq,
       turnId: msg.turnId,
+      reasoning: msg.reasoning.isEmpty ? null : msg.reasoning,
     ));
     session.updatedAt = DateTime.now().millisecondsSinceEpoch;
     // 异步持久化
@@ -1319,340 +1433,37 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
     }
   }
 
-  /// 定义 Agent 工具
-  /// 定义 Agent 工具（委托到 ActionController 原生执行）
+  /// 定义 Agent 工具（由协议注册表生成，委托到 ActionController 原生执行）
+  ///
+  /// 每个工具的 function-calling 描述取自 [AgentToolSpec.brief]（单一来源）；
+  /// 元能力工具 loadProtocol 直接读取注册表/技能库，不经过 ActionController。
   void _defineTools() {
     final ai = _ai;
     if (ai == null) return;
 
-    // 搜索应用工具
-    ai.defineTool<Map<String, dynamic>, String>(
-      name: searchToolName,
-      description: '在 GStore 软件商店中搜索应用。输入关键词 keyword，返回匹配的应用列表。',
-      fn: (input, _) async {
-        final keyword = input['keyword']?.toString() ?? '';
-        return _runAction(
-          searchToolName,
-          {'keyword': keyword},
-          detail: '搜索"$keyword"',
-        );
-      },
-    );
+    for (final spec in AgentToolCatalog.enabled) {
+      ai.defineTool<Map<String, dynamic>, String>(
+        name: spec.name,
+        description: spec.brief,
+        fn: (input, _) async {
+          if (spec.name == loadProtocolToolName) {
+            return _loadProtocol(input['target']?.toString() ?? '');
+          }
+          if (spec.name == confirmToolName) {
+            final question = input['question']?.toString() ?? '';
+            return _requestUserConfirmation(
+              question,
+              options: _parseOptions(input['options']),
+            );
+          }
+          return _runAction(spec.name, input, detail: _toolDetailFor(spec, input));
+        },
+      );
+    }
 
-    // 下载应用工具
-    ai.defineTool<Map<String, dynamic>, String>(
-      name: downloadToolName,
-      description:
-          '下载应用 APK。需要 appId（包名）、channel（渠道代码，如 github/fdroid/vivo）、url（下载地址，可选）、name（应用名）、version（版本号）。vivo 渠道还需传入 vivoId（vivo 应用 ID）。',
-      fn: (input, _) async {
-        final appId = input['appId']?.toString() ?? '';
-        final channel = input['channel']?.toString() ?? '';
-        final url = input['url']?.toString() ?? '';
-        final name = input['name']?.toString() ?? '';
-        final version = input['version']?.toString() ?? 'unknown';
-        final vivoId = input['vivoId']?.toString();
-        final installAfterDownload =
-            input['installAfterDownload'] == true ||
-            input['installAfterDownload'] == 'true';
-        return _runAction(
-          downloadToolName,
-          {
-            'appId': appId,
-            'channel': channel,
-            'url': url,
-            'name': name,
-            'version': version,
-            'vivoId': vivoId,
-            'installAfterDownload': installAfterDownload,
-          },
-          detail: '下载 $name ($version)',
-        );
-      },
-    );
-
-    // 安装应用工具
-    ai.defineTool<Map<String, dynamic>, String>(
-      name: installToolName,
-      description: '安装已下载的 APK 文件。需要 savePath（APK 文件完整路径）。',
-      fn: (input, _) async {
-        final savePath = input['savePath']?.toString() ?? '';
-        final fileName = savePath.split('/').last;
-        return _runAction(
-          installToolName,
-          {'savePath': savePath},
-          detail: '安装 $fileName',
-        );
-      },
-    );
-
-    // 管理已添加应用工具
-    ai.defineTool<Map<String, dynamic>, String>(
-      name: manageAppToolName,
-      description:
-          '管理"我的应用"列表。action 为 list（列出所有已添加应用）、add（添加应用，需 appId+channel）、remove（移除应用，需 appId+channel）、isAdded（检查是否已添加）。',
-      fn: (input, _) async {
-        final action = input['action']?.toString() ?? 'list';
-        final appId = input['appId']?.toString() ?? '';
-        final channel = input['channel']?.toString() ?? '';
-        final name = input['name']?.toString() ?? '';
-        return _runAction(
-          manageAppToolName,
-          {'action': action, 'appId': appId, 'channel': channel, 'name': name},
-          detail: '管理应用: $action',
-        );
-      },
-    );
-
-    // 渠道应用管理工具
-    ai.defineTool<Map<String, dynamic>, String>(
-      name: channelAppToolName,
-      description:
-          '管理应用渠道中的已添加应用。action 为 list/add/remove。GitHub 渠道 appId 用 owner/repo（如 termux/termux-app）。',
-      fn: (input, _) async {
-        final action = input['action']?.toString() ?? 'list';
-        final appId = input['appId']?.toString() ?? '';
-        final channel = input['channel']?.toString() ?? '';
-        final name = input['name']?.toString() ?? '';
-        return _runAction(
-          channelAppToolName,
-          {'action': action, 'appId': appId, 'channel': channel, 'name': name},
-          detail: '渠道管理: $action',
-        );
-      },
-    );
-
-    // 应用详情/更新检查工具
-    ai.defineTool<Map<String, dynamic>, String>(
-      name: appInfoToolName,
-      description:
-          '获取应用详情或检查是否有更新。需要 appId（包名/仓库名）、channel（渠道代码）。返回应用版本、描述等信息。',
-      fn: (input, _) async {
-        final appId = input['appId']?.toString() ?? '';
-        final channel = input['channel']?.toString() ?? '';
-        return _runAction(
-          appInfoToolName,
-          {'appId': appId, 'channel': channel},
-          detail: '查询应用详情: $appId',
-        );
-      },
-    );
-
-    // 批量更新工具
-    ai.defineTool<Map<String, dynamic>, String>(
-      name: updateAppsToolName,
-      description:
-          '检查已安装应用是否有更新。appId 和 channel 可选（不传则检查全部已添加应用）。返回每个应用的当前版本与最新版本，并标记哪些可更新。',
-      fn: (input, _) async {
-        final appId = input['appId']?.toString() ?? '';
-        final channel = input['channel']?.toString() ?? '';
-        return _runAction(
-          updateAppsToolName,
-          {'appId': appId, 'channel': channel},
-          detail: '检查应用更新',
-        );
-      },
-    );
-
-    // 备份/恢复工具
-    ai.defineTool<Map<String, dynamic>, String>(
-      name: backupToolName,
-      description:
-          '备份或恢复应用数据。action 为 export（导出备份，返回文件路径）、import（从文件导入，需 filePath）。',
-      fn: (input, _) async {
-        final action = input['action']?.toString() ?? 'export';
-        final filePath = input['filePath']?.toString() ?? '';
-        return _runAction(
-          backupToolName,
-          {'action': action, 'filePath': filePath},
-          detail: '备份管理: $action',
-        );
-      },
-    );
-
-    // 下载管理工具
-    ai.defineTool<Map<String, dynamic>, String>(
-      name: manageDownloadToolName,
-      description:
-          '管理下载任务。action 为 list（列出所有下载）、pause（暂停，需 fileName）、resume（恢复，需 fileName）、cleanCompleted（清理已完成）、clearAll（清空全部）。',
-      fn: (input, _) async {
-        final action = input['action']?.toString() ?? 'list';
-        final fileName = input['fileName']?.toString() ?? '';
-        return _runAction(
-          manageDownloadToolName,
-          {'action': action, 'fileName': fileName},
-          detail: '下载管理: $action',
-        );
-      },
-    );
-
-    // 主题控制工具
-    ai.defineTool<Map<String, dynamic>, String>(
-      name: themeToolName,
-      description:
-          '控制应用主题。action 为 mode（切换模式，mode 值 light/dark/system）、toggle（切换深浅色）、color（设置主题色，传 hexColor 如 0xFF1976D2）。',
-      fn: (input, _) async {
-        final action = input['action']?.toString() ?? 'toggle';
-        final mode = input['mode']?.toString() ?? '';
-        final hexColor = input['hexColor']?.toString() ?? '';
-        return _runAction(
-          themeToolName,
-          {'action': action, 'mode': mode, 'hexColor': hexColor},
-          detail: '主题控制: $action',
-        );
-      },
-    );
-
-    // F-Droid 仓库管理工具
-    ai.defineTool<Map<String, dynamic>, String>(
-      name: fdroidRepoToolName,
-      description:
-          '管理 F-Droid 仓库。action 为 list（列出仓库）、load（加载/刷新仓库，force 可选）、search（搜索应用，需 keyword）、stats（统计信息）。',
-      fn: (input, _) async {
-        final action = input['action']?.toString() ?? 'list';
-        final keyword = input['keyword']?.toString() ?? '';
-        final force = input['force']?.toString() == 'true';
-        return _runAction(
-          fdroidRepoToolName,
-          {
-            'action': action,
-            'keyword': keyword,
-            // ActionController 声明 force 为 string 参数，传字符串避免类型校验失败
-            'force': force ? 'true' : 'false',
-          },
-          detail: 'F-Droid 仓库: $action',
-        );
-      },
-    );
-
-    // 应用配置管理工具
-    ai.defineTool<Map<String, dynamic>, String>(
-      name: configManagerToolName,
-      description:
-          '管理 GStore 应用配置。action 为 list（返回结构化 JSON：全部可配置项的 key/类型/当前值/默认值/可选枚举值/示例/分组）、get（读取单配置，需 key，返回结构化 JSON）、set（修改配置，需 key 和 value）、clear（清除配置，需 key）。'
-          '建议先调用 list 了解配置的类型、可选项与示例，再构造正确的 value 调用 set。'
-          'JSON 类型配置（type 为 json）的 value 需传 JSON 对象字符串，如 {"fontStyle":3}；可只传要修改的部分字段（缺失字段用默认值）。'
-          'theme_config 支持字段（数字索引）：fontStyle（0默认/1紧凑/2标准/3宽松/4大号）、radiusStyle（0默认/1圆润/2方正）、borderStyle（0默认/1粗/2细）、useCustomColors（布尔）。'
-          'theme_mode（主题模式 0/1/2）、proxy_url（GitHub 代理前缀）、download_config（下载配置 JSON）、update_config（更新配置 JSON）、webdav_config（WebDAV 配置 JSON，敏感）、agent_selected_model_id（Agent 模型 ID）等。'
-          '修改配置后相关功能会自动生效（如切换主题、更新代理），无需额外操作。'
-          '敏感配置（如 WebDAV 密码）读取时脱敏显示，但可以设置。',
-      fn: (input, _) async {
-        final action = input['action']?.toString() ?? 'list';
-        final key = input['key']?.toString() ?? '';
-        final value = input['value'];
-        return _runAction(
-          configManagerToolName,
-          {'action': action, 'key': key, 'value': value},
-          detail: '配置管理: $action',
-        );
-      },
-    );
-
-    // WebDAV 云备份工具
-    ai.defineTool<Map<String, dynamic>, String>(
-      name: webdavSyncToolName,
-      description:
-          'WebDAV 云备份。action 为 list（查询网盘中的备份数据列表，可查看备份时间/大小）、upload（上传备份到网盘）、download（从网盘恢复）、status（检查配置状态）。',
-      fn: (input, _) async {
-        final action = input['action']?.toString() ?? 'status';
-        return _runAction(
-          webdavSyncToolName,
-          {'action': action},
-          detail: 'WebDAV 同步: $action',
-        );
-      },
-    );
-
-    // 已安装应用查询工具
-    ai.defineTool<Map<String, dynamic>, String>(
-      name: installedAppsToolName,
-      description:
-          '管理设备上已安装的应用。action 为 list（列出已安装应用，可选 keyword 过滤）、check（检查是否已安装，需 packageName）、uninstall（卸载应用，需 packageName）、clearData（清理应用数据，需 packageName）、clearCache（清理应用缓存，需 packageName）、forceStop（强制停止应用，需 packageName）。卸载/清理/停止需要 Shizuku 授权。',
-      fn: (input, _) async {
-        final action = input['action']?.toString() ?? 'list';
-        final keyword = input['keyword']?.toString() ?? '';
-        final packageName = input['packageName']?.toString() ?? '';
-        return _runAction(
-          installedAppsToolName,
-          {'action': action, 'keyword': keyword, 'packageName': packageName},
-          detail: '已安装应用: $action',
-        );
-      },
-    );
-
-    // 用户确认工具（与用户交互：确认/取消/选项选择）
-    ai.defineTool<Map<String, dynamic>, String>(
-      name: confirmToolName,
-      description:
-          '向用户发起确认或选择请求。用于两类场景：'
-          '1) 敏感/不可逆操作需要用户确认（如卸载应用、清理数据、恢复备份、删除会话、移除应用）；'
-          '2) 需要用户在多个选项中做出选择（如"你想怎么处理""用哪个版本""选哪个方案"）。'
-          '输入 question（清晰的问题）。'
-          '当需要用户选择时传 options（选项数组或逗号分隔字符串，2-5 个选项）；不传则显示确认/取消按钮。'
-          '调用后等待用户操作，返回用户的选择。'
-          '遇到下列情况**必须调用**：用户表达犹豫/要求选择/涉及删除卸载清理覆盖/需要二次确认，'
-          '不要用普通文字回复代替选项交互。',
-      fn: (input, _) async {
-        final question = input['question']?.toString() ?? '';
-        // 解析选项：可能是 List 或逗号分隔字符串
-        List<String>? options;
-        final optRaw = input['options'];
-        if (optRaw is List) {
-          options = optRaw.map((o) => o.toString()).where((o) => o.isNotEmpty).toList();
-        } else if (optRaw is String && optRaw.trim().isNotEmpty) {
-          options = optRaw
-              .split(RegExp(r'[,，]'))
-              .map((o) => o.trim())
-              .where((o) => o.isNotEmpty)
-              .toList();
-        }
-        if (options != null && options.isEmpty) options = null;
-        return _requestUserConfirmation(question, options: options);
-      },
-    );
-
-    // 脚本渠道自定义方法执行（Agent 渠道包 JS 执行能力）
-    ai.defineTool<Map<String, dynamic>, String>(
-      name: runJsChannelToolName,
-      description:
-          '执行自定义脚本渠道（js_xxx）暴露的方法。用于脚本渠道特有的能力，'
-          '如 getConfig（渠道配置）、versionOptions/switchVersion（版本/环境切换）、'
-          '或脚本自定义的查询/操作方法。输入 channel（脚本渠道 key，如 js_pingan）、'
-          'method（脚本 main 分发的函数名）、params（可选参数 map）。'
-          '仅对脚本渠道可用；脚本未实现该方法时返回提示。',
-      fn: (input, _) async {
-        return _runAction(
-          runJsChannelToolName,
-          {
-            'channel': input['channel']?.toString() ?? '',
-            'method': input['method']?.toString() ?? '',
-            'params': input['params'],
-          },
-          detail: '执行脚本方法 ${input['method']?.toString() ?? ''}',
-        );
-      },
-    );
-
-    // 模块化工具（热插拔）：注册 _agentTools 中未被硬编码覆盖的工具
-    const builtinDefined = {
-      searchToolName,
-      downloadToolName,
-      installToolName,
-      manageAppToolName,
-      channelAppToolName,
-      appInfoToolName,
-      updateAppsToolName,
-      backupToolName,
-      manageDownloadToolName,
-      themeToolName,
-      fdroidRepoToolName,
-      webdavSyncToolName,
-      installedAppsToolName,
-      confirmToolName,
-      configManagerToolName,
-      runJsChannelToolName,
-    };
+    // 模块化热插拔工具（未在协议注册表中声明的自定义工具）
     for (final tool in _agentTools) {
-      if (builtinDefined.contains(tool.toolName)) continue;
+      if (AgentToolCatalog.byName(tool.toolName) != null) continue;
       ai.defineTool<Map<String, dynamic>, String>(
         name: tool.toolName,
         description: tool.toolDescription,
@@ -1662,6 +1473,241 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
       );
     }
   }
+
+  /// 解析 confirmAction 的 options 参数（数组或逗号分隔字符串）
+  List<String>? _parseOptions(Object? raw) {
+    List<String>? options;
+    if (raw is List) {
+      options = raw.map((o) => o.toString()).where((o) => o.isNotEmpty).toList();
+    } else if (raw is String && raw.trim().isNotEmpty) {
+      options = raw
+          .split(RegExp(r'[,，]'))
+          .map((o) => o.trim())
+          .where((o) => o.isNotEmpty)
+          .toList();
+    }
+    if (options != null && options.isEmpty) return null;
+    return options;
+  }
+
+  /// 工具调用的人类可读详情（时间轴/通知展示）
+  String _toolDetailFor(AgentToolSpec spec, Map<String, dynamic> input) {
+    String val(List<String> keys) {
+      for (final k in keys) {
+        final v = input[k]?.toString();
+        if (v != null && v.isNotEmpty) return v;
+      }
+      return '';
+    }
+
+    switch (spec.name) {
+      case searchToolName:
+        return '搜索"${val(['keyword'])}"';
+      case downloadToolName:
+        final name = val(['name', 'appId']);
+        final ver = val(['version']);
+        return '下载 $name${ver.isEmpty ? '' : ' ($ver)'}';
+      case installToolName:
+        final p = val(['savePath']);
+        return '安装 ${p.split('/').last}';
+      case appInfoToolName:
+        return '查询应用详情: ${val(['appId'])}';
+      case confirmToolName:
+        return val(['question']);
+      case loadProtocolToolName:
+        return '读取协议: ${val(['target'])}';
+    }
+    final action = val(['action']);
+    if (action.isNotEmpty) return '${spec.label}: $action';
+    final key = val([
+      'keyword',
+      'appId',
+      'name',
+      'fileName',
+      'packageName',
+      'target',
+      'method',
+    ]);
+    return key.isEmpty ? spec.label : '${spec.label}: $key';
+  }
+
+  /// 元能力工具：按需读取工具/技能的完整协议
+  ///
+  /// 常驻提示词只含一行简介；模型不确定参数或需要完整步骤时调用本工具，
+  /// 从而把"协议全文"从常驻上下文移到按需加载。
+  String _loadProtocol(String target) {
+    final key = target.trim();
+    if (key.isEmpty) return '需要 target（工具名或技能名）';
+    if (key == 'all') {
+      final buf = StringBuffer('=== 全部工具协议 ===\n');
+      for (final s in AgentToolCatalog.enabled) {
+        buf.writeln();
+        buf.writeln(s.renderProtocol());
+      }
+      buf.writeln('\n=== 全部技能协议 ===');
+      buf.write(AgentSkills.renderAll(language: PromptLanguage.zh));
+      return buf.toString();
+    }
+    final tool = AgentToolCatalog.protocolFor(key);
+    if (tool != null) return tool;
+    final skill = AgentSkills.protocolFor(key, language: PromptLanguage.zh);
+    if (skill != null) return skill;
+    final names = AgentToolCatalog.enabled.map((s) => s.name).join(', ');
+    return '未找到工具或技能 "$key"。可用工具: $names；技能: '
+        '${AgentSkills.all.map((s) => s.name).join('、')}';
+  }
+
+  /// 解析整型参数（模型可能传字符串）
+  int? _asInt(Object? value) {
+    if (value == null) return null;
+    if (value is int) return value;
+    final s = value.toString().trim();
+    return s.isEmpty ? null : int.tryParse(s);
+  }
+
+  /// 应用快照工具：创建 / 列表 / 详情 / 删除
+  ///
+  /// 采集与文本化都在 [AppSnapshotService]，此处只做参数校验与分发。
+  Future<String> _appSnapshot(Map<String, dynamic> params) async {
+    final service = AppSnapshotService.instance;
+    final action = params['action']?.toString() ?? 'list';
+    final packageName = params['packageName']?.toString() ?? '';
+
+    switch (action) {
+      case 'create':
+        if (packageName.isEmpty) return '创建快照需要 packageName';
+        _updateToolStep('正在采集 $packageName 的快照…');
+        final result = await service.create(
+          packageName: packageName,
+          note: params['note']?.toString() ?? '',
+        );
+        if (!result.success) return result.message;
+        _updateToolStep('快照采集完成');
+        return result.message;
+      case 'list':
+        // 未指定应用时退化为"列出已有快照的应用"，避免模型无参调用时报错
+        if (packageName.isEmpty) {
+          return service.renderAppList(await service.listApps());
+        }
+        return service.renderRecordList(
+          packageName,
+          await service.listByApp(packageName),
+        );
+      case 'apps':
+        return service.renderAppList(await service.listApps());
+      case 'detail':
+        final id = _asInt(params['id']);
+        if (id == null) return 'detail 需要 id';
+        final record = await service.getById(id);
+        if (record == null) return '未找到快照 id=$id';
+        return service.renderDetail(record);
+      case 'delete':
+        final id = _asInt(params['id']);
+        if (id == null) return 'delete 需要 id';
+        final ok = await service.delete(id);
+        return ok ? '已删除快照 id=$id' : '删除失败（未找到快照 id=$id）';
+      default:
+        return '未知操作: $action（支持 create/list/apps/detail/delete）';
+    }
+  }
+
+  /// 快照对比工具：省略 id 时对比最近两份
+  Future<String> _snapshotCompare(Map<String, dynamic> params) async {
+    final packageName = params['packageName']?.toString() ?? '';
+    if (packageName.isEmpty) return '对比快照需要 packageName';
+    final service = AppSnapshotService.instance;
+    _updateToolStep('正在对比 $packageName 的快照…');
+    final diff = await service.compare(
+      packageName: packageName,
+      oldId: _asInt(params['oldId']),
+      newId: _asInt(params['newId']),
+    );
+    if (diff == null) {
+      return '对比失败：$packageName 的快照不足两份，或指定的 id 不存在。'
+          '先用 appSnapshot(action=list, packageName=$packageName) 查看现有快照，'
+          '必要时用 appSnapshot(action=create) 采集当前版本。';
+    }
+    _updateToolStep('对比完成');
+    return service.renderDiff(diff);
+  }
+
+  /// APK 内容浏览工具：列目录 / 读取文本内容
+  ///
+  /// 解压与嵌套容器解析在 Rust（唯一出口），此处只做参数校验与文本化。
+  Future<String> _apkBrowser(Map<String, dynamic> params) async {
+    final action = params['action']?.toString() ?? 'browse';
+    final packageName = params['packageName']?.toString() ?? '';
+    if (packageName.isEmpty) return '浏览 APK 需要 packageName';
+
+    final apkPath = await ApkSourceService.instance.getSourceDir(packageName);
+    if (apkPath == null || apkPath.isEmpty) {
+      return '未找到 $packageName 的安装包（应用可能未安装）';
+    }
+    final chain = params['chain']?.toString() ?? '';
+    final service = ApkBrowserService.instance;
+
+    switch (action) {
+      case 'browse':
+        final dir = params['dir']?.toString() ?? '';
+        _updateToolStep('正在列出 APK 目录…');
+        final listing = await service.list(
+          apkPath,
+          containerChain: chain,
+          dir: dir,
+        );
+        if (listing == null) return '分析模块未就绪，无法浏览 APK 内容';
+        return _renderBrowse(listing);
+      case 'read':
+        final entry = params['path']?.toString() ?? '';
+        if (entry.isEmpty) return 'read 需要 path';
+        _updateToolStep('正在读取 $entry…');
+        final text = await service.readEntryText(
+          apkPath,
+          entryPath: entry,
+          containerChain: chain,
+        );
+        return text ?? '读取失败：条目不存在或分析模块未就绪（path=$entry）';
+      default:
+        return '未知操作: $action（支持 browse/read）';
+    }
+  }
+
+  /// 目录列举 → 给模型阅读的文本（条目数有上限，避免超长上下文）
+  String _renderBrowse(mt.ApkBrowseListing listing) {
+    final buf = StringBuffer()
+      ..writeln('容器：${listing.container.isEmpty ? 'APK 根' : listing.container}')
+      ..writeln('目录：${listing.dir.isEmpty ? '（根）' : listing.dir}')
+      ..writeln('条目总数：${listing.totalFiles}　'
+          '当前容器大小：${byteSize(listing.containerSize)}');
+    if (listing.canGoUp) {
+      buf.writeln('可返回：${listing.parentDir.isEmpty ? '上一容器' : listing.parentDir}');
+    }
+    buf.writeln('── 条目 ──');
+    final entries = listing.entries.take(200).toList();
+    for (final e in entries) {
+      final mark = e.isDir ? '[D]' : (e.browsable ? '[Z]' : '[F]');
+      final extra = e.isDir
+          ? '目录'
+          : '${apkEntryKindLabel(e.kind)} · ${byteSize(e.size)}'
+              '${e.stored ? ' · STORED' : ''}'
+              '${e.browsable ? ' · 可进入(chain=${e.path})' : ''}';
+      buf.writeln('$mark ${e.name}  ($extra)');
+    }
+    if (listing.entries.length > entries.length) {
+      buf.writeln('… 其余 ${listing.entries.length - entries.length} 条已省略');
+    }
+    if (listing.truncated) buf.writeln('（条目过多被截断，请用 dir 收窄目录）');
+    return buf.toString().trimRight();
+  }
+
+  /// 工具名 → 中文标签（通知文案 / 时间轴）
+  String _toolLabelForName(String name) =>
+      AgentToolCatalog.byName(name)?.label ?? name;
+
+  /// 判定是否为敏感工具调用（破坏性/不可逆），必须先经 confirmAction 确认。
+  /// 单一来源：协议注册表的 sensitiveActions / alwaysSensitive。
+  bool _isSensitiveTool(String name, Map<String, dynamic> params) =>
+      AgentToolCatalog.byName(name)?.isSensitiveCall(params) ?? false;
 
   /// 请求用户确认（创建确认节点，等待用户选择）
   /// [question] 确认问题；[options] 选项列表（null 时二选一确认/取消）
@@ -1828,10 +1874,20 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
     // 工具调用前，把已输出的流式文本定稿为独立 agent 消息
     // （实现"回复→工具→回复→工具"的分步展示）
     _commitActiveStreamText();
-    // 创建工具消息（加入消息流，持久显示）
-    final msg = _addToolMessage(_toolTypeForName(name), detail ?? name);
+    final stopwatch = Stopwatch()..start();
+    // 参数归一化（bool 参数接受 "true"/"false" 字符串，满足 ActionController 类型校验）
+    final spec = AgentToolCatalog.byName(name);
+    final execParams = _normalizeParams(params, spec);
+    // 创建工具消息（加入消息流，持久显示）；记录工具名与参数以便详情回看
+    final msg = _addToolMessage(
+      _toolTypeForName(name),
+      detail ?? name,
+      toolName: name,
+      toolArgs: execParams,
+    );
     // 记录当前工具消息：长任务（下载等）经 handler 回调实时更新进度卡
     _currentToolMsg = msg;
+    _logAi('◆ 工具调用', data: {'tool': name, 'args': execParams});
     // 异步长任务：注册会话级任务记录（绑定归属会话，防切换串扰）
     AgentAsyncTask? asyncTask;
     if (_isAsyncTool(name)) {
@@ -1851,10 +1907,13 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
           }
         }
       }
-      final result = await _actionController.executeAction(name, params);
+      final result = await _actionController.executeAction(name, execParams);
       // 用户已停止 → 标记工具为取消（不当作错误）
       if (_cancelRequested) {
-        _updateToolMessage(msg, status: AgentToolStatus.error, detail: '已取消');
+        _updateToolMessage(msg,
+            status: AgentToolStatus.error,
+            detail: '已取消',
+            durationMs: stopwatch.elapsedMilliseconds);
         return '已取消（用户停止）';
       }
       // 更新工具消息状态 + 持久化
@@ -1864,6 +1923,11 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
               ? data['result'].toString()
               : '执行成功')
           : (result.error ?? '执行失败');
+      _logAi('◆ 工具结果', data: {
+        'tool': name,
+        'ok': result.success,
+        'result': _briefLog(text, max: 800),
+      });
       // 异步长任务工具（下载）：保持 running（进度条跟随），由 onFinished 终态定稿。
       // 其余工具立即定稿 done/error。
       if (_isAsyncTool(name)) {
@@ -1873,6 +1937,7 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
           msg,
           status: result.success ? AgentToolStatus.done : AgentToolStatus.error,
           detail: text,
+          durationMs: stopwatch.elapsedMilliseconds,
         );
         // 工具终态通知（B2：退出页面后仍可见结果）
         _publishToolDoneNotification(
@@ -1883,7 +1948,10 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
       }
       return text;
     } catch (e) {
-      _updateToolMessage(msg, status: AgentToolStatus.error, detail: '执行失败: $e');
+      _updateToolMessage(msg,
+          status: AgentToolStatus.error,
+          detail: '执行失败: $e',
+          durationMs: stopwatch.elapsedMilliseconds);
       _publishToolDoneNotification(
         success: false,
         toolLabel: _toolLabelForName(name),
@@ -1896,8 +1964,127 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
     }
   }
 
+  /// 参数归一化：bool 类型参数接受 "true"/"false" 字符串
+  ///
+  /// 模型经常把布尔参数以字符串返回，而 ActionController 会按声明的
+  /// [ActionParameterType] 校验，故在此统一转换为真实 bool。
+  Map<String, dynamic> _normalizeParams(
+    Map<String, dynamic> params,
+    AgentToolSpec? spec,
+  ) {
+    if (spec == null || spec.params.isEmpty) return params;
+    Map<String, dynamic>? out;
+    for (final p in spec.params) {
+      if (p.type != 'bool') continue;
+      final v = params[p.name];
+      if (v is! String) continue;
+      final lower = v.toLowerCase();
+      if (lower == 'true') {
+        out ??= Map<String, dynamic>.of(params);
+        out[p.name] = true;
+      } else if (lower == 'false') {
+        out ??= Map<String, dynamic>.of(params);
+        out[p.name] = false;
+      }
+    }
+    return out ?? params;
+  }
+
   /// 是否为异步长任务工具（工具调用后后台继续，消息卡保持 running 直到终态）
-  bool _isAsyncTool(String name) => name == downloadToolName;
+  bool _isAsyncTool(String name) =>
+      AgentToolCatalog.byName(name)?.async ?? (name == downloadToolName);
+
+  /// 当前流式消息的原始文本缓冲（用于内联 think 标签的跨 chunk 解析）
+  String _streamRaw = '';
+
+  /// 取结构化思考内容（Genkit [ReasoningPart]，如 Gemini 的 thought）
+  ///
+  /// 注：OpenAI 兼容插件的流式只发 TextPart，`reasoning_content` 不会到达这里；
+  /// 那种情况由 [_applyStreamText] 的内联 think 解析兜底。
+  String _extractReasoning(dynamic chunk) {
+    try {
+      final content = chunk.content;
+      if (content is List) {
+        final buf = StringBuffer();
+        for (final p in content) {
+          if (p is Part && p.isReasoning) {
+            buf.write(p.reasoning ?? '');
+          }
+        }
+        return buf.toString();
+      }
+    } catch (e) {
+      // 不再静默：chunk 结构异常会直接导致思考内容丢失，必须可见
+      _logAi('⚠ 读取 chunk.content 失败（思考可能丢失）',
+          data: {'error': e.toString()});
+    }
+    return '';
+  }
+
+  /// 应用可见文本增量：把内联 ` thinking…<｜end▁of▁thinking｜>` 拆到 reasoning，正文留在 text
+  void _applyStreamText(AgentMessage msg, String delta) {
+    _streamRaw += delta;
+    final split = splitThink(_streamRaw);
+    if (split.$1.isNotEmpty) {
+      msg.reasoning = split.$1;
+    }
+    msg.text = split.$2;
+  }
+
+  /// 取最终响应里的思考内容（两条来源，任一命中即可）
+  ///
+  /// 1. `raw.choices[0].message.reasoning_content|reasoning`
+  ///    —— OpenAI 兼容端点（genkit 流式会丢弃该字段，只在最终响应里保留）；
+  /// 2. 最终 message 的 `ReasoningPart`（Gemini thought 等）。
+  String _reasoningFromResponse(dynamic response) {
+    try {
+      final fromRaw = reasoningFromOpenAiRaw(response?.raw);
+      if (fromRaw.trim().isNotEmpty) return fromRaw;
+    } catch (e) {
+      _logAi('⚠ 解析 raw 思考字段失败', data: {'error': e.toString()});
+    }
+    try {
+      final content = response?.message?.content;
+      if (content is List) {
+        final buf = StringBuffer();
+        for (final p in content) {
+          if (p is Part && p.isReasoning) buf.write(p.reasoning ?? '');
+        }
+        return buf.toString();
+      }
+    } catch (e) {
+      _logAi('⚠ 读取最终 message.content 失败', data: {'error': e.toString()});
+    }
+    return '';
+  }
+
+  /// 生成结束时补取思考内容
+  ///
+  /// OpenAI 兼容端点的 `reasoning_content` 不在任何流式 chunk 中，
+  /// 只能在最终响应里拿到 —— 补到本回合最后一条 agent 文本消息上，
+  /// 否则用户会"看不到思考过程"。
+  void _backfillReasoning(dynamic response) {
+    final text = _reasoningFromResponse(response);
+    if (text.trim().isEmpty) return;
+    final msg = _activeStreamMsg ?? _lastTurnTextMessage();
+    if (msg == null || msg.reasoning.isNotEmpty) return;
+    msg.reasoning = text;
+    msg.reasoningDone = true;
+    _notifyMessages();
+    appLog.info('AgentService: 补取思考内容 ${text.length} 字');
+  }
+
+  /// 本回合最后一条 agent 文本消息（无活跃流式消息时用于挂载思考内容）
+  AgentMessage? _lastTurnTextMessage() {
+    final turnId = _currentTurnId;
+    final list = messages.value;
+    for (var i = list.length - 1; i >= 0; i--) {
+      final m = list[i];
+      if (m.isUser || m.isToolResult) continue;
+      if (turnId == null || m.turnId == turnId) return m;
+    }
+    return null;
+  }
 
   /// 异步工具完成后的 agent 继续生成。
   ///
@@ -1931,6 +2118,7 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
       ));
       // 用新的 turnId，独立展示这一轮"完成 → 建议"的回复
       _currentTurnId = 'turn-${DateTime.now().millisecondsSinceEpoch}';
+      _streamRaw = '';
       _activeStreamMsg = AgentMessage(
         isUser: false,
         text: '',
@@ -1938,45 +2126,87 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
       );
       _addMessage(_activeStreamMsg!);
 
+      _logAi('▶ 请求(续接)', data: {
+        'turnId': _currentTurnId,
+        'provider': _model!.provider.name,
+        'model': _model!.effectiveModel,
+        'baseUrl': _model!.effectiveBaseUrl,
+        'customModel': _customModel != null,
+        'showReasoning': _model!.showReasoning,
+        'toolsEnabled': toolsEnabled,
+        'tools': toolsEnabled ? _modelToolNames : const <String>[],
+        'maxTurns': 6,
+        'messages': _dumpMessagesLog(_requestMessages),
+      });
+
       final stream = _ai!.generateStream<dynamic, void>(
         model: _getModelRef(_model!) as ModelRef<dynamic>,
         messages: _requestMessages,
-        toolNames: toolsEnabled && registeredToolNames.isNotEmpty
-            ? registeredToolNames
+        toolNames: toolsEnabled && _modelToolNames.isNotEmpty
+            ? _modelToolNames
             : null,
         maxTurns: 6,
       );
       await for (final chunk in stream) {
         if (_cancelRequested) break;
+        final reasoning = _extractReasoning(chunk);
         final t = chunk.text;
-        if (t.isNotEmpty) {
-          if (_activeStreamMsg == null) {
-            _activeStreamMsg = AgentMessage(
-              isUser: false,
-              text: '',
-              turnId: _currentTurnId,
-            );
-            _addMessage(_activeStreamMsg!);
-          }
-          _activeStreamMsg?.text = (_activeStreamMsg?.text ?? '') + t;
-          _notifyMessages();
+        if (reasoning.isEmpty && t.isEmpty) continue;
+        if (_activeStreamMsg == null) {
+          _activeStreamMsg = AgentMessage(
+            isUser: false,
+            text: '',
+            turnId: _currentTurnId,
+          );
+          _streamRaw = '';
+          _addMessage(_activeStreamMsg!);
         }
+        final active = _activeStreamMsg!;
+        if (reasoning.isNotEmpty) {
+          if (active.reasoning.isEmpty) {
+            _logAi('◆ 思考分片开始(结构化/续接)',
+                data: {'head': _briefLog(reasoning, max: 120)});
+          }
+          active.reasoning += reasoning;
+        }
+        if (t.isNotEmpty) {
+          final hadReasoning = active.reasoning.isNotEmpty;
+          _applyStreamText(active, t);
+          if (!hadReasoning && active.reasoning.isNotEmpty) {
+            _logAi('◆ 思考分片开始(内联 think/续接)', data: {
+              'head': _briefLog(active.reasoning, max: 120),
+            });
+          }
+        }
+        _notifyMessages();
       }
       final response = await stream.onResult;
       _messages = List.of(response.messages ?? _messages);
+      // 补取思考内容（与 chat 一致）
+      _backfillReasoning(response);
       final msg = _activeStreamMsg;
       if (msg != null) {
-        if (msg.text.trim().isNotEmpty) {
+        if (msg.text.trim().isNotEmpty || msg.reasoning.isNotEmpty) {
           msg.text = msg.text.trim();
+          msg.reasoningDone = true;
           _notifyMessages();
           _persistStreamMessage(msg);
         } else {
           _removeMessage(msg);
         }
       }
+      _logAi('■ 响应(续接)', data: {
+        'turnId': _currentTurnId,
+        'textLen': msg?.text.length ?? 0,
+        'reasoningLen': msg?.reasoning.length ?? 0,
+        'text': _briefLog(msg?.text, max: 1500),
+        'reasoning': _briefLog(msg?.reasoning, max: 1500),
+        'rawProbe': _probeRawReasoning(response),
+      });
       _activeStreamMsg = null;
     } catch (e) {
       appLog.error('AgentService: 后台继续生成失败 - $e');
+      _logAi('✗ 后台继续生成失败', data: {'error': e.toString()});
     } finally {
       _activeStreamMsg = null;
       _busy = false;
@@ -1987,13 +2217,20 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
   }
 
   /// 添加一条工具消息（running 状态，加入消息流持久显示）
-  AgentMessage _addToolMessage(AgentToolType type, String detail) {
+  AgentMessage _addToolMessage(
+    AgentToolType type,
+    String detail, {
+    String? toolName,
+    Map<String, dynamic>? toolArgs,
+  }) {
     final msg = AgentMessage(
       isUser: false,
       text: '',
       toolType: type,
       toolStatus: AgentToolStatus.running,
       toolDetail: detail,
+      toolName: toolName,
+      toolArgs: toolArgs,
       isToolResult: true,
       turnId: _currentTurnId,
     );
@@ -2009,20 +2246,23 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
     if (current == null) return;
 
     final text = current.text.trim();
-    if (text.isNotEmpty) {
-      // 定稿：创建独立 agent 消息（排在工具消息前）
+    if (text.isNotEmpty || current.reasoning.isNotEmpty) {
+      // 定稿：创建独立 agent 消息（排在工具消息前），思考内容一并带走
       final committed = AgentMessage(
         isUser: false,
         text: text,
         turnId: current.turnId,
+        reasoning: current.reasoning,
       );
+      committed.reasoningDone = true;
       _addMessage(committed);
       _persistMessage(committed);
     }
-    // 移除原流式消息（有文本则已定稿，无文本则丢弃空占位）
+    // 移除原流式消息（有内容则已定稿，无内容则丢弃空占位）
     _removeMessage(current);
-    // 置空：后续文本由流式循环懒创建（在工具消息之后）
+    // 置空：后续文本由流式循环懒创建（在工具消息之后）；缓冲同步重置
     _activeStreamMsg = null;
+    _streamRaw = '';
   }
 
   /// 更新工具消息状态（并持久化）
@@ -2032,6 +2272,7 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
     AgentToolStatus? status,
     String? detail,
     DownloadTask? downloadStatus,
+    int? durationMs,
   }) {
     final idx = messages.value.indexWhere((e) => e.id == msg.id);
     if (idx < 0) return;
@@ -2041,12 +2282,16 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
       current.toolDetail = detail;
       current.text = detail;
     }
+    if (durationMs != null) {
+      current.durationMs = durationMs;
+    }
     if (downloadStatus != null) {
       current.downloadStatus = downloadStatus;
     }
-    // 工具完成或失败时持久化记录
+    // 终态：定稿工具结果（与运行中的阶段详情区分，便于详情面板分开展示）
     if (current.toolStatus == AgentToolStatus.done ||
         current.toolStatus == AgentToolStatus.error) {
+      if (current.text.isNotEmpty) current.toolResult = current.text;
       _persistMessage(current);
     }
     // 触发 Rx 更新
@@ -2111,72 +2356,6 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
   /// 用户离开页面（后台执行）才需通知兜底汇报。
   bool get _notifyOnlyWhenBackground => !_isAgentPageVisible();
 
-  /// B5：敏感工具判定——破坏性/不可逆操作，必须经 confirmAction 确认
-  /// 后台执行时未经确认直接调用将被安全拦截
-  bool _isSensitiveTool(String name, Map<String, dynamic> params) {
-    if (name == installedAppsToolName) {
-      final action = params['action']?.toString() ?? '';
-      return action == 'uninstall' ||
-          action == 'clearData' ||
-          action == 'clearCache' ||
-          action == 'forceStop';
-    }
-    if (name == backupToolName) {
-      return (params['action']?.toString() ?? '') == 'import'; // 恢复会覆盖数据
-    }
-    if (name == manageDownloadToolName) {
-      final action = params['action']?.toString() ?? '';
-      return action == 'clearAll' || action == 'cleanCompleted';
-    }
-    // 缓存管理会删除下载文件/缓存（不可逆），需页面可见 + 用户多选确认
-    if (name == cacheManageToolName) {
-      return true;
-    }
-    return false;
-  }
-
-  /// 工具名 → 中文标签（通知文案用）
-  String _toolLabelForName(String name) {
-    switch (name) {
-      case searchToolName:
-        return '搜索应用';
-      case downloadToolName:
-        return '下载应用';
-      case installToolName:
-        return '安装应用';
-      case manageAppToolName:
-        return '管理我的应用';
-      case channelAppToolName:
-        return '渠道应用管理';
-      case appInfoToolName:
-        return '应用详情';
-      case updateAppsToolName:
-        return '检查更新';
-      case backupToolName:
-        return '备份恢复';
-      case manageDownloadToolName:
-        return '下载管理';
-      case themeToolName:
-        return '主题控制';
-      case fdroidRepoToolName:
-        return 'F-Droid 仓库';
-      case webdavSyncToolName:
-        return 'WebDAV 云备份';
-      case installedAppsToolName:
-        return '已安装应用';
-      case configManagerToolName:
-        return '配置管理';
-      case confirmToolName:
-        return '确认操作';
-      case cacheManageToolName:
-        return '缓存管理';
-      case runJsChannelToolName:
-        return '脚本渠道执行';
-      default:
-        return name;
-    }
-  }
-
   /// 工具名 → AgentToolType（用于工具消息图标/标签）
   AgentToolType _toolTypeForName(String name) {
     switch (name) {
@@ -2210,6 +2389,10 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
         return AgentToolType.config;
       case runJsChannelToolName:
         return AgentToolType.config;
+      case appSnapshotToolName:
+      case snapshotCompareToolName:
+      case apkBrowserToolName:
+        return AgentToolType.snapshot;
       default:
         return AgentToolType.manageApp;
     }
@@ -2217,311 +2400,111 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
 
   /// 构建 13 个工具对应的 AiAction（供 AiActionProvider 原生工具调用）
   /// handler 复用内部工具实现，返回 ActionResult
+  /// 构建工具对应的 AiAction（供 AiActionProvider 原生工具调用）
+  ///
+  /// 描述/参数均取自协议注册表 [AgentToolSpec]（单一来源）。以下工具不注册为
+  /// AiAction：`loadProtocol`（元能力，_defineTools 直接读注册表）、
+  /// `confirmAction`（由 _confirmAction 内部处理）。下载工具保留专用 handler
+  /// （需要进度回调与异步终态续接）。
   List<AiAction> buildActions() {
-    return [
-      AiAction(
-        name: searchToolName,
-        description: '在 GStore 软件商店中搜索应用。输入关键词 keyword，返回匹配的应用列表。',
-        parameters: [
-          ActionParameter.string(name: 'keyword', description: '搜索关键词', required: true),
-        ],
-        handler: (params) async {
-          final keyword = params['keyword']?.toString() ?? '';
-          final result = await _searchApps(keyword);
-          return _successAction(result);
-        },
-      ),
-      AiAction(
-        name: downloadToolName,
-        description: '下载应用 APK。需要 appId、channel（如 github/fdroid/vivo）、url（可选）、name、version。vivo 渠道还需传入 vivoId（vivo 应用 ID）。',
-        parameters: [
-          ActionParameter.string(name: 'appId', description: '包名/仓库名', required: true),
-          ActionParameter.string(name: 'channel', description: '渠道代码', required: true),
-          ActionParameter.string(name: 'url', description: '下载地址'),
-          ActionParameter.string(name: 'name', description: '应用名'),
-          ActionParameter.string(name: 'version', description: '版本号'),
-          ActionParameter.string(name: 'vivoId', description: 'vivo 应用 ID（vivo 渠道必需）'),
-          ActionParameter.boolean(
-            name: 'installAfterDownload',
-            description:
-                '是否下载完成后自动安装（用户明确要求"下载完就安装"时传 true；仅说"下载"则不传或传 false）',
-          ),
-        ],
-        handler: (params) async {
-          final appId = params['appId']?.toString() ?? '';
-          final channel = params['channel']?.toString() ?? '';
-          final url = params['url']?.toString() ?? '';
-          final name = params['name']?.toString() ?? '';
-          final version = params['version']?.toString() ?? 'unknown';
-          final vivoId = params['vivoId']?.toString();
-          final installAfterDownload =
-              params['installAfterDownload'] == true ||
-              params['installAfterDownload'] == 'true';
-          final asyncTask = _currentAsyncTask; // 同步段捕获（onFinished 异步触发时该字段已清空）
-          final toolMsg = _currentToolMsg; // 同步段捕获（进度回调触发时该字段已被 finally 清空）
-          final result = await _downloadApp(
-            appId, channel, url, name, version,
-            vivoId: vivoId,
-            installAfterDownload: installAfterDownload,
-            onStatus: (status) {
-              _currentDownloadStatus = status;
-              // 实时推送下载状态到工具消息（进度条/百分比 live 更新）。
-              // 必须用同步段捕获的 toolMsg 引用——下载进度异步触发时
-              // _currentToolMsg 已被 _runAction finally 置 null。
-              if (toolMsg != null) {
-                _updateToolMessage(toolMsg, downloadStatus: status);
-              }
-            },
-            onFinished: (success, message) {
-              _currentDownloadStatus = null;
-              if (asyncTask != null) {
-                _finalizeAsyncTask(
-                  task: asyncTask,
-                  success: success,
-                  message: message,
-                );
-              }
-            },
-          );
-          return _successAction(result);
-        },
-      ),
-      AiAction(
-        name: installToolName,
-        description: '安装已下载的 APK 文件。需要 savePath（APK 文件完整路径）。',
-        parameters: [
-          ActionParameter.string(name: 'savePath', description: 'APK 文件路径', required: true),
-        ],
-        handler: (params) async {
-          final savePath = params['savePath']?.toString() ?? '';
-          final result = await _installApp(savePath);
-          return _successAction(result);
-        },
-      ),
-      AiAction(
-        name: manageAppToolName,
-        description: '管理"我的应用"列表。action 为 list/add/remove/isAdded。',
-        parameters: [
-          ActionParameter.string(name: 'action', description: '操作类型', required: true),
-          ActionParameter.string(name: 'appId', description: '应用ID'),
-          ActionParameter.string(name: 'channel', description: '渠道代码'),
-          ActionParameter.string(name: 'name', description: '应用名'),
-        ],
-        handler: (params) async {
-          final action = params['action']?.toString() ?? 'list';
-          final appId = params['appId']?.toString() ?? '';
-          final channel = params['channel']?.toString() ?? '';
-          final name = params['name']?.toString() ?? '';
-          final result = await _manageApp(action, appId, channel, name);
-          return _successAction(result);
-        },
-      ),
-      AiAction(
-        name: channelAppToolName,
-        description: '管理应用渠道中的已添加应用。action 为 list/add/remove。',
-        parameters: [
-          ActionParameter.string(name: 'action', description: '操作类型', required: true),
-          ActionParameter.string(name: 'appId', description: '应用ID'),
-          ActionParameter.string(name: 'channel', description: '渠道代码'),
-          ActionParameter.string(name: 'name', description: '应用名'),
-        ],
-        handler: (params) async {
-          final action = params['action']?.toString() ?? 'list';
-          final appId = params['appId']?.toString() ?? '';
-          final channel = params['channel']?.toString() ?? '';
-          final name = params['name']?.toString() ?? '';
-          final result = await _manageChannelApp(action, appId, channel, name);
-          return _successAction(result);
-        },
-      ),
-      AiAction(
-        name: appInfoToolName,
-        description: '获取应用详情或检查是否有更新。需要 appId、channel。',
-        parameters: [
-          ActionParameter.string(name: 'appId', description: '应用ID', required: true),
-          ActionParameter.string(name: 'channel', description: '渠道代码', required: true),
-        ],
-        handler: (params) async {
-          final appId = params['appId']?.toString() ?? '';
-          final channel = params['channel']?.toString() ?? '';
-          final result = await _getAppInfo(appId, channel);
-          return _successAction(result);
-        },
-      ),
-      AiAction(
-        name: updateAppsToolName,
-        description: '检查已安装应用是否有更新。appId 和 channel 可选。',
-        parameters: [
-          ActionParameter.string(name: 'appId', description: '应用ID'),
-          ActionParameter.string(name: 'channel', description: '渠道代码'),
-        ],
-        handler: (params) async {
-          final appId = params['appId']?.toString() ?? '';
-          final channel = params['channel']?.toString() ?? '';
-          final result = await _checkUpdates(appId, channel);
-          return _successAction(result);
-        },
-      ),
-      AiAction(
-        name: backupToolName,
-        description: '备份或恢复应用数据。action 为 export/import。',
-        parameters: [
-          ActionParameter.string(name: 'action', description: 'export/import', required: true),
-          ActionParameter.string(name: 'filePath', description: '导入文件路径'),
-        ],
-        handler: (params) async {
-          final action = params['action']?.toString() ?? 'export';
-          final filePath = params['filePath']?.toString() ?? '';
-          final result = await _backup(action, filePath);
-          return _successAction(result);
-        },
-      ),
-      AiAction(
-        name: manageDownloadToolName,
-        description: '管理下载任务。action 为 list/pause/resume/cleanCompleted/clearAll。',
-        parameters: [
-          ActionParameter.string(name: 'action', description: '操作类型', required: true),
-          ActionParameter.string(name: 'fileName', description: '文件名'),
-        ],
-        handler: (params) async {
-          final action = params['action']?.toString() ?? 'list';
-          final fileName = params['fileName']?.toString() ?? '';
-          final result = await _manageDownloads(action, fileName);
-          return _successAction(result);
-        },
-      ),
-      AiAction(
-        name: themeToolName,
-        description: '控制应用主题。action 为 mode/toggle/color。',
-        parameters: [
-          ActionParameter.string(name: 'action', description: '操作类型', required: true),
-          ActionParameter.string(name: 'mode', description: 'light/dark/system'),
-          ActionParameter.string(name: 'hexColor', description: '主题色'),
-        ],
-        handler: (params) async {
-          final action = params['action']?.toString() ?? 'toggle';
-          final mode = params['mode']?.toString() ?? '';
-          final hexColor = params['hexColor']?.toString() ?? '';
-          final result = await _controlTheme(action, mode, hexColor);
-          return _successAction(result);
-        },
-      ),
-      AiAction(
-        name: fdroidRepoToolName,
-        description: '管理 F-Droid 仓库。action 为 list/load/search/stats。',
-        parameters: [
-          ActionParameter.string(name: 'action', description: '操作类型', required: true),
-          ActionParameter.string(name: 'keyword', description: '搜索关键词'),
-          ActionParameter.string(name: 'force', description: '是否强制刷新'),
-        ],
-        handler: (params) async {
-          final action = params['action']?.toString() ?? 'list';
-          final keyword = params['keyword']?.toString() ?? '';
-          final force = params['force']?.toString() == 'true';
-          final result = await _fdroidRepo(action, keyword, force);
-          return _successAction(result);
-        },
-      ),
-      AiAction(
-        name: webdavSyncToolName,
-        description: 'WebDAV 云备份。action 为 list（查询网盘备份数据列表）/upload/download/status。',
-        parameters: [
-          ActionParameter.string(name: 'action', description: '操作类型', required: true),
-        ],
-        handler: (params) async {
-          final action = params['action']?.toString() ?? 'status';
-          final result = await _webdavSync(action);
-          return _successAction(result);
-        },
-      ),
-      AiAction(
-        name: configManagerToolName,
-        description:
-            '管理 GStore 应用配置。action 为 list（结构化 JSON 快照）/get（需 key）/set（需 key 和 value）/clear（需 key）。修改后功能自动生效。建议先 list 了解类型与可选项。',
-        parameters: [
-          ActionParameter.string(name: 'action', description: '操作类型', required: true),
-          ActionParameter.string(name: 'key', description: '配置键'),
-          ActionParameter.string(name: 'value', description: '配置值（set 时使用）'),
-        ],
-        handler: (params) async {
-          final action = params['action']?.toString() ?? 'list';
-          final key = params['key']?.toString() ?? '';
-          final value = params['value'];
-          final result = await _configManager(action, key, value);
-          return _successAction(result);
-        },
-      ),
-      AiAction(
-        name: installedAppsToolName,
-        description: '管理设备上已安装的应用。action 为 list/check/uninstall/clearData/clearCache/forceStop。',
-        parameters: [
-          ActionParameter.string(name: 'action', description: '操作类型', required: true),
-          ActionParameter.string(name: 'keyword', description: '过滤关键词'),
-          ActionParameter.string(name: 'packageName', description: '包名'),
-        ],
-        handler: (params) async {
-          final action = params['action']?.toString() ?? 'list';
-          final keyword = params['keyword']?.toString() ?? '';
-          final packageName = params['packageName']?.toString() ?? '';
-          final result = await _installedApps(action, keyword, packageName);
-          return _successAction(result);
-        },
-      ),
-      AiAction(
-        name: runJsChannelToolName,
-        description: '执行自定义脚本渠道（js_xxx）暴露的方法（getConfig/versionOptions/switchVersion 或脚本自定义方法）。',
-        parameters: [
-          ActionParameter.string(name: 'channel', description: '脚本渠道 key（如 js_pingan）', required: true),
-          ActionParameter.string(name: 'method', description: '脚本 main 分发的函数名', required: true),
-          ActionParameter.string(name: 'params', description: '可选参数 map（JSON 对象）'),
-        ],
-        handler: (params) async {
-          final result = await _runJsChannel(
-            params['channel']?.toString() ?? '',
-            params['method']?.toString() ?? '',
-            params['params'],
-          );
-          return _successAction(result);
-        },
-      ),
-      // 模块化工具（热插拔）：生成 _agentTools 中未被硬编码覆盖的工具
-      ..._extraActions(),
-    ];
+    final actions = <AiAction>[];
+    for (final spec in AgentToolCatalog.enabled) {
+      if (spec.meta || spec.name == confirmToolName) continue;
+      actions.add(spec.name == downloadToolName
+          ? _buildDownloadAction(spec)
+          : _buildStandardAction(spec));
+    }
+    // 模块化工具（热插拔）：协议注册表未声明的自定义工具
+    actions.addAll(_extraActions());
+    return actions;
   }
 
-  /// 构建模块化工具（未硬编码）的 AiAction 列表
+  /// 标准工具 AiAction：handler 委托 [_executeTool] 分发到内部实现
+  AiAction _buildStandardAction(AgentToolSpec spec) {
+    return AiAction(
+      name: spec.name,
+      description: spec.brief,
+      parameters: [for (final p in spec.params) _actionParameter(p)],
+      handler: (params) async {
+        final result = await _executeTool(spec.name, params);
+        return _successAction(result);
+      },
+    );
+  }
+
+  /// 参数类型映射（协议注册表 type → AiAction 参数类型）
+  ActionParameter _actionParameter(AgentToolParam p) {
+    if (p.type == 'bool') {
+      return ActionParameter.boolean(
+        name: p.name,
+        description: p.description,
+        required: p.required,
+      );
+    }
+    return ActionParameter.string(
+      name: p.name,
+      description: p.description,
+      required: p.required,
+    );
+  }
+
+  /// 下载工具 AiAction（专用：同步段捕获消息卡/任务引用以驱动进度与续接）
+  AiAction _buildDownloadAction(AgentToolSpec spec) {
+    return AiAction(
+      name: spec.name,
+      description: spec.brief,
+      parameters: [for (final p in spec.params) _actionParameter(p)],
+      handler: (params) async {
+        final appId = params['appId']?.toString() ?? '';
+        final channel = params['channel']?.toString() ?? '';
+        final url = params['url']?.toString() ?? '';
+        final name = params['name']?.toString() ?? '';
+        final version = params['version']?.toString() ?? 'unknown';
+        final vivoId = params['vivoId']?.toString();
+        final installAfterDownload = params['installAfterDownload'] == true ||
+            params['installAfterDownload'] == 'true';
+        final asyncTask = _currentAsyncTask; // 同步段捕获（onFinished 异步触发时该字段已清空）
+        final toolMsg = _currentToolMsg; // 同步段捕获（进度回调触发时该字段已被 finally 清空）
+        final result = await _downloadApp(
+          appId,
+          channel,
+          url,
+          name,
+          version,
+          vivoId: vivoId,
+          installAfterDownload: installAfterDownload,
+          onStatus: (status) {
+            _currentDownloadStatus = status;
+            if (toolMsg != null) {
+              _updateToolMessage(toolMsg, downloadStatus: status);
+            }
+          },
+          onFinished: (success, message) {
+            _currentDownloadStatus = null;
+            if (asyncTask != null) {
+              _finalizeAsyncTask(
+                task: asyncTask,
+                success: success,
+                message: message,
+              );
+            }
+          },
+        );
+        return _successAction(result);
+      },
+    );
+  }
+
+  /// 构建模块化工具（协议注册表未声明）的 AiAction 列表
   List<AiAction> _extraActions() {
-    const builtinDefined = {
-      searchToolName,
-      downloadToolName,
-      installToolName,
-      manageAppToolName,
-      channelAppToolName,
-      appInfoToolName,
-      updateAppsToolName,
-      backupToolName,
-      manageDownloadToolName,
-      themeToolName,
-      fdroidRepoToolName,
-      webdavSyncToolName,
-      installedAppsToolName,
-      confirmToolName,
-      configManagerToolName,
-      runJsChannelToolName,
-    };
     final result = <AiAction>[];
     for (final tool in _agentTools) {
-      if (builtinDefined.contains(tool.toolName)) continue;
+      if (AgentToolCatalog.byName(tool.toolName) != null) continue;
       result.add(AiAction(
         name: tool.toolName,
         description: tool.toolDescription,
         parameters: [
-          for (final p in tool.toolParams)
-            ActionParameter.string(
-              name: p.name,
-              description: p.description,
-              required: p.required,
-            ),
+          for (final p in tool.toolParams) _actionParameter(p),
         ],
         handler: (params) async {
           final result = await tool.execute(_toolContext, params);
@@ -3590,6 +3573,7 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
 
       // 创建一条流式消息（初始为空）
       // 工具调用时会被"定稿"为独立消息并新建承接，实现分步展示
+      _streamRaw = '';
       _activeStreamMsg = AgentMessage(
         isUser: false,
         text: '',
@@ -3597,51 +3581,64 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
       );
       _addMessage(_activeStreamMsg!);
 
+      _logAi('▶ 请求', data: {
+        'turnId': _currentTurnId,
+        'provider': _model!.provider.name,
+        'model': _model!.effectiveModel,
+        'baseUrl': _model!.effectiveBaseUrl,
+        'customModel': _customModel != null,
+        'showReasoning': _model!.showReasoning,
+        'toolsEnabled': toolsEnabled,
+        'tools': toolsEnabled ? _modelToolNames : const <String>[],
+        'maxTurns': 12,
+        'messages': _dumpMessagesLog(_requestMessages),
+      });
+
       final stream = ai.generateStream<dynamic, void>(
         model: model as ModelRef<dynamic>,
         messages: _requestMessages,
-        toolNames: !toolsEnabled
-            ? null
-            : (registeredToolNames.isNotEmpty
-                ? registeredToolNames
-                : [
-                    searchToolName,
-                downloadToolName,
-                installToolName,
-                manageAppToolName,
-                appInfoToolName,
-                updateAppsToolName,
-                backupToolName,
-                manageDownloadToolName,
-                themeToolName,
-                fdroidRepoToolName,
-                webdavSyncToolName,
-                installedAppsToolName,
-                    confirmToolName,
-                    configManagerToolName,
-                  ]),
+        toolNames: toolsEnabled ? _modelToolNames : null,
         maxTurns: 12,
       );
 
-      // 流式累积文本
+      // 流式累积文本（含按需解析的思考内容）
       await for (final chunk in stream) {
         // 用户请求停止 → 中断
         if (_cancelRequested) break;
+        final reasoning = _extractReasoning(chunk);
         final text = chunk.text;
-        if (text.isNotEmpty) {
-          // 工具调用后 _activeStreamMsg 被置空：懒创建新消息，
-          // 使其 seq 排在工具消息之后，保证"回复→工具→回复"顺序
-          if (_activeStreamMsg == null) {
-            _activeStreamMsg = AgentMessage(
-              isUser: false,
-              text: '',
-              turnId: _currentTurnId,
-            );
-            _addMessage(_activeStreamMsg!);
-          }
-          _activeStreamMsg?.text = (_activeStreamMsg?.text ?? '') + text;
-          _notifyMessages();
+        if (reasoning.isEmpty && text.isEmpty) continue;
+        // 工具调用后 _activeStreamMsg 被置空：懒创建新消息，
+        // 使其 seq 排在工具消息之后，保证"回复→工具→回复"顺序
+        if (_activeStreamMsg == null) {
+          _activeStreamMsg = AgentMessage(
+            isUser: false,
+            text: '',
+            turnId: _currentTurnId,
+          );
+          _streamRaw = '';
+          _addMessage(_activeStreamMsg!);
         }
+        final active = _activeStreamMsg!;
+        if (reasoning.isNotEmpty) {
+          // 结构化 ReasoningPart 首片到达 → 关键证据：思考是否走了流式
+          if (active.reasoning.isEmpty) {
+            _logAi('◆ 思考分片开始(结构化)',
+                data: {'head': _briefLog(reasoning, max: 120)});
+          }
+          active.reasoning += reasoning;
+        }
+        if (text.isNotEmpty) {
+          final hadReasoning = active.reasoning.isNotEmpty;
+          _applyStreamText(active, text);
+          // 内联  thinking 标签被解析出来 → 另一条思考来源
+          if (!hadReasoning && active.reasoning.isNotEmpty) {
+            _logAi('◆ 思考分片开始(内联 think)', data: {
+              'head': _briefLog(active.reasoning, max: 120),
+            });
+          }
+        }
+        _notifyMessages();
       }
 
       // 若已停止，不再等待最终响应
@@ -3650,6 +3647,7 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
         final msg = _activeStreamMsg;
         if (msg != null) {
           msg.text = msg.text.trim().isEmpty ? '（已停止生成）' : msg.text.trim();
+          msg.reasoningDone = true;
           _notifyMessages();
           _persistStreamMessage(msg);
         }
@@ -3660,23 +3658,35 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
       // 获取最终响应，更新消息历史
       final response = await stream.onResult;
       _messages = List.of(response.messages ?? _messages);
+      // 补取思考内容（OpenAI 兼容端点的 reasoning_content 只在最终响应里）
+      _backfillReasoning(response);
 
       // 最终文本兜底
       final msg = _activeStreamMsg;
       if (msg != null) {
-        if (msg.text.trim().isEmpty) {
-          // 工具调用后无后续文本的残留空消息：移除，不展示
+        if (msg.text.trim().isEmpty && msg.reasoning.isEmpty) {
+          // 既无正文也无思考的残留空消息：移除，不展示
           _removeMessage(msg);
         } else {
           msg.text = msg.text.trim();
+          msg.reasoningDone = true;
           _notifyMessages();
           // 持久化助手消息
           _persistStreamMessage(msg);
         }
       }
+      _logAi('■ 响应', data: {
+        'turnId': _currentTurnId,
+        'textLen': msg?.text.length ?? 0,
+        'reasoningLen': msg?.reasoning.length ?? 0,
+        'text': _briefLog(msg?.text, max: 1500),
+        'reasoning': _briefLog(msg?.reasoning, max: 1500),
+        'rawProbe': _probeRawReasoning(response),
+      });
       _activeStreamMsg = null;
     } catch (e) {
       appLog.error('AgentService: 生成失败 - $e');
+      _logAi('✗ 生成失败', data: {'error': e.toString()});
       _addAssistantMessage('抱歉，请求失败：$e');
     } finally {
       _activeStreamMsg = null;
@@ -3718,6 +3728,7 @@ ${AgentSkills.renderAll(language: PromptLanguage.zh)}
   /// 释放资源（模块下线时由 AgentToolsModule 调用；替代原 GetX onClose）
   void dispose() {
     _ai = null;
+    _customModel = null;
     _modelChangeSub?.cancel();
     _messages = [];
     messages.dispose();

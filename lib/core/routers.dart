@@ -13,6 +13,7 @@ class AppRoute {
   static String logViewer = "/GStore/logViewer";
   static String qrTool = "/GStore/qrTool";
   static String appSnapshotList = "/GStore/appSnapshotList";
+  static String itTools = "/GStore/itTools";
   static String settings = "/GStore/settings";
   static String themeSettings = "/GStore/themeSettings";
   static String backup = "/GStore/backup";

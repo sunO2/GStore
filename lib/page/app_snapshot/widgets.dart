@@ -67,7 +67,9 @@ class _SnapshotSectionCardState extends State<SnapshotSectionCard> {
     return Opacity(
       opacity: widget.dimmed ? 0.6 : 1,
       child: AppCard(
-        margin: AppSpacing.onlyBottomSM,
+        // 页面级左右边距：与设置页等既有卡片一致（AppSpacing.allLG 的横向部分），
+        // 原来只给底部间距，导致分区内容贴屏幕两侧
+        margin: AppSpacing.onlyHorizontalLG.add(AppSpacing.onlyBottomSM),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [

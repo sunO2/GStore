@@ -1066,7 +1066,7 @@ packages:
     source: hosted
     version: "2.1.0"
   openai_dart:
-    dependency: transitive
+    dependency: "direct main"
     description:
       name: openai_dart
       sha256: "96f86ce316c92e5198550168235782ba84695808d85d8b971592c43826d65fba"

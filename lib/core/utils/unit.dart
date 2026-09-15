@@ -5,6 +5,11 @@ const int MB = KB * 1024;
 const int GB = MB * 1024;
 
 /// 递归统计目录内所有文件的总字节数（容错：单文件读取失败跳过，不中断）。
+///
+/// ⚠️ 本函数是**逐文件 `await length()`**，Dart 单线程下这些续体全部落在
+/// 调用方 isolate 上。实测 5000 个文件约 200ms，直接调用会掉帧。
+/// 目录文件数可能较多时，请放到 `compute()` 里跑，并在 isolate 内改用
+/// `listSync` + `lengthSync`（实测快约 10 倍）。缓存管理页即按此处理。
 Future<int> directorySize(Directory dir) async {
   if (!await dir.exists()) return 0;
   var total = 0;

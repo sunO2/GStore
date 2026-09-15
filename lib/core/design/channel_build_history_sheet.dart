@@ -136,7 +136,7 @@ class _ChannelBuildHistorySheetState extends State<_ChannelBuildHistorySheet> {
               AppSpacing.sm,
             ),
             child: Text(
-              '选择历史构建，确认后详情下载区切换为该构建',
+              '选择历史构建，确认后详情下载区切换为该构建（不会自动下载）',
               style: textTheme.bodySmall?.copyWith(
                 color: colorScheme.onSurfaceVariant,
               ),
@@ -193,7 +193,7 @@ class _ChannelBuildHistorySheetState extends State<_ChannelBuildHistorySheet> {
                   const SizedBox(width: AppSpacing.sm),
                   FilledButton(
                     onPressed: _selected != null ? _confirm : null,
-                    child: const Text('确认下载'),
+                    child: const Text('确认切换'),
                   ),
                 ],
               ),

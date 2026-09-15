@@ -76,6 +76,21 @@ jobs:
       - run: flutter build apk --no-shrink --target-platform android-arm,android-arm64,android-x64 --split-per-abi 
       - run: flutter build appbundle
       
+      # 用「上游 it-tools + 补丁」重建离线包（产物直接落到 assets/it_tools/）
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+          run_install: false
+
+      - name: Rebuild it-tools offline bundle (upstream + patch)
+        run: bash scripts/it_tools/build_bundle.sh
+
       - name: Get previous release tag
         id: prev_release
         env:

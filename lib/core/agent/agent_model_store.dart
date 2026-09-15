@@ -36,6 +36,10 @@ class AgentModel {
   /// 本地小模型的 tool calling 普遍不可靠，降级模式下关闭可避免乱调工具。
   bool toolsEnabled;
 
+  /// 是否在对话中展示思考过程（reasoning / think 标签）。
+  /// 关闭后思考内容仍会被记录，只是不在时间轴展开。
+  bool showReasoning;
+
   AgentModel({
     required this.id,
     this.name = '',
@@ -44,6 +48,7 @@ class AgentModel {
     this.model = '',
     this.baseUrl = '',
     this.toolsEnabled = true,
+    this.showReasoning = true,
   });
 
   /// 默认模型名（根据 provider）
@@ -88,6 +93,7 @@ class AgentModel {
       'model': model,
       'baseUrl': baseUrl,
       'toolsEnabled': toolsEnabled,
+      'showReasoning': showReasoning,
     };
   }
 
@@ -104,6 +110,7 @@ class AgentModel {
       baseUrl: json['baseUrl'] as String? ?? '',
       // 旧配置无此字段 → 默认启用，保持既有行为
       toolsEnabled: json['toolsEnabled'] as bool? ?? true,
+      showReasoning: json['showReasoning'] as bool? ?? true,
     );
   }
 }

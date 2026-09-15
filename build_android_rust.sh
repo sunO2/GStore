@@ -11,7 +11,9 @@ ANDROID_LIB_DIR="${GSTORE_LIB_DIR:-/home/hezhihu89/develop/flutter/project/GStor
 # 可下载模块的输出目录（不进 APK，发布时作为 GitHub Release 附件分发）
 MODULE_DIR="${GSTORE_MODULE_DIR:-/home/hezhihu89/develop/flutter/project/GStore/rust/release-modules}"
 # 需要构建的可下载模块（crate 名 -> 目录）
-MODULES=("gstore_mod_qr" "gstore_mod_analyzer" "gstore_mod_repo")
+MODULES=("gstore_mod_qr" "gstore_mod_analyzer" "gstore_mod_repo" "gstore_mod_download")
+# 模块构建失败数（汇总时与宿主 FAILED 一并判定，避免"部分模块失败却报全成功"）
+MODULE_FAILED=0
 
 # 颜色输出
 GREEN='\033[0;32m'
@@ -191,9 +193,11 @@ EOF
         mkdir -p "$out_dir"
         if [ -f "target/$target/release/lib${module}.so" ]; then
             cp "target/$target/release/lib${module}.so" "$out_dir/"
-            echo_success "✓ $module/$arch_name: $(du -h "$out_dir/lib${module}.so" | cut -f1)"
+            # 体积用 ls 而不是 du：du 统计磁盘块，实测会报出与实际不符的值（曾报 1.0K）
+            echo_success "✓ $module/$arch_name: $(ls -lh "$out_dir/lib${module}.so" | awk '{print $5}')"
         else
             echo_error "✗ $module build failed for $arch_name"
+            MODULE_FAILED=$((MODULE_FAILED + 1))
         fi
     done
 
@@ -216,6 +220,26 @@ if [ "$1" = "clean" ]; then
     cargo clean
     echo_success "✓ Clean complete"
     echo ""
+fi
+
+# 仅构建模块（快速验证）
+# 注意：这些分支必须在主流程之前——原来它们位于脚本末尾的 exit 之后，永远不可达，
+# 导致 `--module-qr` 实际会跑全量构建。
+if [ "$1" = "--module-qr" ]; then
+    build_module "gstore_mod_qr"
+    exit $(( MODULE_FAILED > 0 ))
+fi
+
+# 仅构建下载内核模块：./build_android_rust.sh --module-download
+if [ "$1" = "--module-download" ]; then
+    build_module "gstore_mod_download"
+    exit $(( MODULE_FAILED > 0 ))
+fi
+
+# 通用：./build_android_rust.sh --module <crate 名>
+if [ "$1" = "--module" ] && [ -n "$2" ]; then
+    build_module "$2"
+    exit $(( MODULE_FAILED > 0 ))
 fi
 
 # 记录开始时间
@@ -266,7 +290,7 @@ echo_info "======================================"
 echo_info "Total time: $time_str"
 echo ""
 
-if [ $FAILED -eq 0 ]; then
+if [ $FAILED -eq 0 ] && [ "$MODULE_FAILED" -eq 0 ]; then
     echo_success "✓ All architectures built successfully!"
     echo ""
     echo_info "Generated files:"
@@ -285,10 +309,4 @@ if [ $FAILED -eq 0 ]; then
 else
     echo_error "✗ Some builds failed. Check the output above."
     exit 1
-fi
-
-# 仅构建模块（快速验证）：./build_android_rust.sh --module-qr
-if [ "$1" = "--module-qr" ]; then
-    build_module "gstore_mod_qr"
-    exit $?
 fi

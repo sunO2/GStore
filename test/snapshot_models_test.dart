@@ -186,6 +186,32 @@ void main() {
       expect(grow.fieldChanges.single.to, formatBytes(500));
     });
 
+    test('新增/移除的原生库也带出自身字段（大小等），不是只有一个名字', () {
+      final oldP = _payload(nativeLibs: const [
+        SnapshotNativeLib(abi: 'arm64-v8a', name: 'libgone.so', size: 200),
+      ]);
+      final newP = _payload(nativeLibs: const [
+        SnapshotNativeLib(abi: 'arm64-v8a', name: 'libnew.so', size: 400),
+      ]);
+      final libs = _section(
+        SnapshotDiffEngine.compare(_record(oldP), _record(newP, createdAt: 2000)),
+        '原生库文件',
+      );
+
+      final added =
+          libs.entries.firstWhere((e) => e.kind == SnapshotDiffKind.added);
+      final addedSize = added.fieldChanges.firstWhere((f) => f.field == '大小');
+      expect(addedSize.from, '—');
+      expect(addedSize.to, formatBytes(400));
+
+      final removed =
+          libs.entries.firstWhere((e) => e.kind == SnapshotDiffKind.removed);
+      final removedSize =
+          removed.fieldChanges.firstWhere((f) => f.field == '大小');
+      expect(removedSize.from, formatBytes(200));
+      expect(removedSize.to, '—');
+    });
+
     test('权限 maxSdkVersion 变化产生字段级差异（不是整条误报新增）', () {
       final oldP = _payload(
         permissions: const [
@@ -328,6 +354,25 @@ void main() {
       expect(_section(diff, '原生库文件').total, 0);
     });
 
+    test('文件类条目：体积没变也列出大小（不靠"内容变化"触发）', () {
+      final diff = SnapshotDiffEngine.compare(
+        _record(_payload(nativeLibs: const [
+          SnapshotNativeLib(
+              abi: 'arm64-v8a', name: 'liba.so', size: 100, crc32: 111),
+        ])),
+        _record(_payload(nativeLibs: const [
+          SnapshotNativeLib(
+              abi: 'arm64-v8a', name: 'liba.so', size: 100, crc32: 222),
+        ])),
+      );
+      final entry = _section(diff, '原生库文件').entries.single;
+      expect(entry.kind, SnapshotDiffKind.changed);
+      expect(entry.sameContent, isFalse);
+      final size = entry.fieldChanges.firstWhere((f) => f.field == '大小');
+      expect(size.from, formatBytes(100));
+      expect(size.to, formatBytes(100));
+    });
+
     test('dex 头 SHA-1 不同 → 同名 dex 内容已变；相同 → 无差异', () {
       final before = _record(_payload(dexFiles: const [
         SnapshotDexFile(
@@ -404,6 +449,21 @@ void main() {
             .firstWhere((e) => e.key == 'models/a.tflite')
             .sameContent,
         isFalse,
+      );
+    });
+
+    test('assets 新增条目也列出大小', () {
+      final diff = SnapshotDiffEngine.compare(
+        _record(_payload()),
+        _record(_payload(assets: const [
+          SnapshotAsset(name: 'lib/arm64-v8a/libx.so', size: 1234, crc32: 5),
+        ])),
+      );
+      final entry = _section(diff, 'assets 文件').entries.single;
+      expect(entry.kind, SnapshotDiffKind.added);
+      expect(
+        entry.fieldChanges.firstWhere((f) => f.field == '大小').to,
+        formatBytes(1234),
       );
     });
 

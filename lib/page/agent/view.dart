@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/material.dart';
@@ -14,7 +15,7 @@ import 'package:gstore/core/download/model/download_task.dart';
 
 import 'logic.dart';
 import 'state.dart';
-import 'markdown_message.dart';
+import 'step_text.dart';
 
 /// 下载状态中文标签（Agent 工具消息展示用）
 String _downloadStatusLabel(DownloadStatusEnum status) {
@@ -207,9 +208,14 @@ class _AgentPageState extends ConsumerState<AgentPage>
         _syncedMessages[msg.id] = cm;
         _chatController.addMessage(cm);
       } else {
-        // 文本变化才更新（流式）
+        // 正文或思考过程变化才更新（流式）
         final updated = _toChatMessage(msg);
-        if (existing.text != updated.text) {
+        final changed = existing.text != updated.text ||
+            existing.customProperties?['reasoning'] !=
+                updated.customProperties?['reasoning'] ||
+            existing.customProperties?['reasoningDone'] !=
+                updated.customProperties?['reasoningDone'];
+        if (changed) {
           _syncedMessages[msg.id] = updated;
           _chatController.updateMessage(updated);
         }
@@ -420,12 +426,26 @@ class _AgentPageState extends ConsumerState<AgentPage>
         customProperties: {'id': msg.id},
       );
     }
+    // 助手消息统一按"自定义 step"呈现：单条文本也渲染为 **1 步时间轴**。
+    //
+    // 为什么必须这样：本页有两条同步路径——
+    // - 全量重建 `_rebuildAll()` → `_groupTimeline()`：agent 消息（哪怕只有一条）
+    //   都被收进 `turnMsgs` → `_toTimelineMessage()` → step 时间轴；
+    // - 增量 `_onMessagesChanged()`：新消息直接走本方法。
+    // 若这里返回框架默认气泡，"没有工具调用的一步回合"就会与多步回合样式不一致。
     return ChatMessage(
       text: msg.text,
       user: _aiUser,
       createdAt: _displayTime(msg),
       isMarkdown: true,
-      customProperties: {'id': msg.id},
+      customProperties: {
+        'id': msg.id,
+        // 思考变化参与增量 diff（正文变化由 text 比较覆盖；
+        // reasoningDone 参与是为了"思考结束"时能重建成折叠态）
+        'reasoning': msg.reasoning,
+        'reasoningDone': msg.reasoningDone,
+      },
+      customBuilder: (context, _) => _TurnTimeline(turnMsgs: [msg]),
     );
   }
 
@@ -1198,12 +1218,22 @@ class _TurnTimeline extends StatelessWidget {
     );
   }
 
-  /// agent 文本节点（markdown 渲染）
+  /// agent 文本节点（自定义 step：思考折叠块 + markdown 正文）
+  ///
+  /// step 结构保持不变——只是把"文本节点"替换为可复用的 [AgentStepTextBlock]，
+  /// 思考块附加在正文之上，不改变既有展示方式。
   Widget _buildText(BuildContext context, AgentMessage msg) {
-    if (msg.text.trim().isEmpty) {
-      return const SizedBox.shrink();
-    }
-    return AgentMarkdownMessage(text: msg.text);
+    final showReasoning = ModuleManager.instance
+            .get<AgentService>()
+            ?.model
+            ?.showReasoning ??
+        true;
+    return AgentStepTextBlock(
+      text: msg.text,
+      reasoning: msg.reasoning,
+      reasoningDone: msg.reasoningDone,
+      showReasoning: showReasoning,
+    );
   }
 
   /// 确认节点（内联确认/取消按钮）
@@ -1397,23 +1427,7 @@ class _TurnTimeline extends StatelessWidget {
 
   /// 弹框显示工具调用详情（可复制）
   void _showToolDetailDialog(BuildContext context, AgentMessage tool) {
-    final buffer = StringBuffer();
-    buffer.writeln('工具：${_timelineToolLabel(tool.toolType)}');
-    final statusText = switch (tool.toolStatus) {
-      AgentToolStatus.running => '执行中',
-      AgentToolStatus.done => '完成',
-      AgentToolStatus.error => '失败',
-      null => '未知',
-    };
-    buffer.writeln('状态：$statusText');
-    if (tool.toolDetail != null && tool.toolDetail!.isNotEmpty) {
-      buffer.writeln('详情：');
-      buffer.writeln(tool.toolDetail);
-    }
-    if (tool.downloadStatus != null) {
-      buffer.writeln('下载状态：${_downloadStatusLabel(tool.downloadStatus!.status)}');
-    }
-    final detailText = buffer.toString().trimRight();
+    final detailText = _buildToolDetailText(tool, _timelineToolLabel(tool.toolType));
 
     AppSheet.show<void>(
       context: context,
@@ -1470,6 +1484,8 @@ class _TurnTimeline extends StatelessWidget {
         return Colors.lime;
       case AgentToolType.config:
         return Colors.blueGrey;
+      case AgentToolType.snapshot:
+        return Colors.deepPurple;
       case null:
       case AgentToolType.confirm:
         return Colors.indigo;
@@ -1505,6 +1521,8 @@ class _TurnTimeline extends StatelessWidget {
         return Icons.check_circle_outline;
       case AgentToolType.config:
         return Icons.settings_outlined;
+      case AgentToolType.snapshot:
+        return Icons.camera_alt_outlined;
       case null:
       case AgentToolType.confirm:
         return Icons.help_outline;
@@ -1540,6 +1558,8 @@ class _TurnTimeline extends StatelessWidget {
         return '📱 已安装应用';
       case AgentToolType.config:
         return '⚙️ 配置管理';
+      case AgentToolType.snapshot:
+        return '📸 应用快照';
       case null:
       case AgentToolType.confirm:
         return '❓ 确认操作';
@@ -1647,6 +1667,8 @@ class _ToolBubbleState extends State<_ToolBubble> {
         return Colors.lime;
       case AgentToolType.config:
         return Colors.blueGrey;
+      case AgentToolType.snapshot:
+        return Colors.deepPurple;
       case null:
       case AgentToolType.confirm:
         return Colors.indigo;
@@ -1683,6 +1705,8 @@ class _ToolBubbleState extends State<_ToolBubble> {
         return Icons.check_circle_outline;
       case AgentToolType.config:
         return Icons.settings_outlined;
+      case AgentToolType.snapshot:
+        return Icons.camera_alt_outlined;
       case null:
       case AgentToolType.confirm:
         return Icons.help_outline;
@@ -1720,6 +1744,8 @@ class _ToolBubbleState extends State<_ToolBubble> {
         return '📱 已安装应用';
       case AgentToolType.config:
         return '⚙️ 配置管理';
+      case AgentToolType.snapshot:
+        return '📸 应用快照';
       case null:
       case AgentToolType.confirm:
         return '❓ 确认操作';
@@ -1907,25 +1933,7 @@ class _ToolBubbleState extends State<_ToolBubble> {
   }
 
   /// 构建详情文本（用于弹窗显示与复制）
-  String _buildDetailText() {
-    final buffer = StringBuffer();
-    buffer.writeln('工具：${_toolLabelOf(msg.toolType)}');
-    final statusText = switch (msg.toolStatus) {
-      AgentToolStatus.running => '执行中',
-      AgentToolStatus.done => '完成',
-      AgentToolStatus.error => '失败',
-      null => '未知',
-    };
-    buffer.writeln('状态：$statusText');
-    if (msg.toolDetail != null && msg.toolDetail!.isNotEmpty) {
-      buffer.writeln('详情：');
-      buffer.writeln(msg.toolDetail);
-    }
-    if (msg.downloadStatus != null) {
-      buffer.writeln('下载状态：${_downloadStatusLabel(msg.downloadStatus!.status)}');
-    }
-    return buffer.toString().trimRight();
-  }
+  String _buildDetailText() => _buildToolDetailText(msg, _toolLabelOf(msg.toolType));
 
   Widget _buildDownloadProgress(BuildContext context, DownloadTask task) {
     final total = task.total;
@@ -2094,4 +2102,39 @@ class _MultiSelectConfirmViewState extends State<_MultiSelectConfirmView> {
       ),
     );
   }
+}
+
+/// 构建工具调用详情文本（时间轴节点与工具卡共用：弹层展示 + 复制）
+///
+/// 覆盖：工具名/标识、状态、耗时、调用参数（JSON）、执行结果、下载状态。
+String _buildToolDetailText(AgentMessage msg, String label) {
+  final buffer = StringBuffer();
+  buffer.writeln('工具：$label');
+  if (msg.toolName != null && msg.toolName!.isNotEmpty) {
+    buffer.writeln('标识：${msg.toolName}');
+  }
+  final statusText = switch (msg.toolStatus) {
+    AgentToolStatus.running => '执行中',
+    AgentToolStatus.done => '完成',
+    AgentToolStatus.error => '失败',
+    null => '未知',
+  };
+  buffer.writeln('状态：$statusText');
+  if (msg.durationMs != null) {
+    buffer.writeln('耗时：${(msg.durationMs! / 1000).toStringAsFixed(2)} s');
+  }
+  final args = msg.toolArgs;
+  if (args != null && args.isNotEmpty) {
+    buffer.writeln('参数：');
+    buffer.writeln(const JsonEncoder.withIndent('  ').convert(args));
+  }
+  final result = msg.toolResult ?? msg.toolDetail;
+  if (result != null && result.isNotEmpty) {
+    buffer.writeln('结果：');
+    buffer.writeln(result);
+  }
+  if (msg.downloadStatus != null) {
+    buffer.writeln('下载状态：${_downloadStatusLabel(msg.downloadStatus!.status)}');
+  }
+  return buffer.toString().trimRight();
 }

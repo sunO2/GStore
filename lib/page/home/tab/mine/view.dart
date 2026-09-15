@@ -490,7 +490,7 @@ class _MinePageState extends ConsumerState<MinePage>
     );
   }
 
-  /// 构建工具卡片（默认展开；内含「查看日志」「二维码」入口）
+  /// 构建工具卡片（默认展开；内含各工具入口）
   Widget _buildToolsCard(BuildContext context) {
     return Card(
       elevation: 0,
@@ -566,6 +566,17 @@ class _MinePageState extends ConsumerState<MinePage>
                     trailing: const Icon(Icons.chevron_right,
                         size: AppTypography.iconSM),
                     onTap: () => context.push(AppRoute.qrTool),
+                  ),
+                  const Divider(height: 1),
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.widgets_outlined,
+                        size: AppTypography.iconMD),
+                    title: const Text('开发者工具箱'),
+                    subtitle: const Text('离线可用的开发小工具集'),
+                    trailing: const Icon(Icons.chevron_right,
+                        size: AppTypography.iconSM),
+                    onTap: () => context.push(AppRoute.itTools),
                   ),
                   const Divider(height: 1),
                   ListTile(

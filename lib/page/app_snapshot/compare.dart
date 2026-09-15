@@ -111,7 +111,7 @@ class _AppSnapshotComparePageState extends State<AppSnapshotComparePage> {
   Widget _filterBar(BuildContext context, int changedCount, int totalCount) {
     final theme = Theme.of(context);
     return Padding(
-      padding: AppSpacing.onlyHorizontalMD.add(AppSpacing.onlyBottomSM),
+      padding: AppSpacing.onlyHorizontalLG.add(AppSpacing.onlyBottomSM),
       child: Row(
         children: [
           Text(
@@ -133,7 +133,7 @@ class _AppSnapshotComparePageState extends State<AppSnapshotComparePage> {
   /// 关键字搜索（资源级/条目级差异可能有上千条）
   Widget _searchBar(BuildContext context) {
     return Padding(
-      padding: AppSpacing.onlyHorizontalMD.add(AppSpacing.onlyBottomSM),
+      padding: AppSpacing.onlyHorizontalLG.add(AppSpacing.onlyBottomSM),
       child: TextField(
         controller: _queryCtrl,
         onChanged: (v) => setState(() => _query = v.trim()),
@@ -247,7 +247,7 @@ class _AppSnapshotComparePageState extends State<AppSnapshotComparePage> {
   Widget _mismatchBanner(BuildContext context) {
     final theme = Theme.of(context);
     return Container(
-      margin: AppSpacing.onlyHorizontalMD.add(AppSpacing.onlyBottomSM),
+      margin: AppSpacing.onlyHorizontalLG.add(AppSpacing.onlyBottomSM),
       padding: AppSpacing.allMD,
       decoration: BoxDecoration(
         color: theme.colorScheme.errorContainer.withValues(alpha: 0.4),
@@ -388,11 +388,21 @@ class _AppSnapshotComparePageState extends State<AppSnapshotComparePage> {
   }
 
   /// 旧值 `−` / 新值 `+` 各占一行（体积类附差值）
+  ///
+  /// 值未变的常列字段（文件类条目的「大小」）只给一次值，不重复两行同值。
   List<Widget> _beforeAfter(ThemeData theme, String? before, String? after) {
     final hasBefore = before != null && before.isNotEmpty && before != '—';
     final hasAfter = after != null && after.isNotEmpty && after != '—';
-    final delta = (hasBefore && hasAfter) ? formatBytesDelta(before, after) : null;
     final style = theme.textTheme.bodySmall;
+    if (hasBefore && hasAfter && before == after) {
+      return [
+        Text(
+          before,
+          style: style?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+        ),
+      ];
+    }
+    final delta = (hasBefore && hasAfter) ? formatBytesDelta(before, after) : null;
     return [
       if (hasBefore)
         Text(

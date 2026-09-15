@@ -24,6 +24,7 @@ use gstore_contract::error::ModuleError;
 
 mod apk;
 mod arsc;
+mod browser;
 mod build_versions;
 mod components;
 mod dex_scan;
@@ -210,6 +211,26 @@ fn call_impl(
                     .map(|info| serde_json::to_vec(&info).unwrap_or_default())
                     .map_err(ModuleError::internal)
             }
+            // APK 内容浏览器：列一层目录（条目树由条目名前缀合成，不递归）
+            // payload = apk_path NUL chain NUL dir
+            "browse_apk_entries" => {
+                let parts = split_nul(payload, payload_len)
+                    .filter(|p| p.len() >= 3)
+                    .ok_or_else(|| ModuleError::invalid_arg("bad browse args"))?;
+                crate::browser::browse_entries(&parts[0], &parts[1], &parts[2])
+                    .map(|info| serde_json::to_vec(&info).unwrap_or_default())
+                    .map_err(ModuleError::internal)
+            }
+            // 导出单条内容到宿主指定文件（嵌套容器经 chain 定位）
+            // payload = apk_path NUL chain NUL entry NUL out_path
+            "export_apk_entry" => {
+                let parts = split_nul(payload, payload_len)
+                    .filter(|p| p.len() >= 4)
+                    .ok_or_else(|| ModuleError::invalid_arg("bad export args"))?;
+                crate::browser::export_entry(&parts[0], &parts[1], &parts[2], &parts[3])
+                    .map(|info| serde_json::to_vec(&info).unwrap_or_default())
+                    .map_err(ModuleError::internal)
+            }
             "ping" => Ok(b"pong".to_vec()),
             _ => Err(ModuleError::method_not_found(&method)),
         }
@@ -254,6 +275,25 @@ fn read_string_arg(payload: *const u8, payload_len: usize) -> Option<String> {
     }
     let bytes = unsafe { std::slice::from_raw_parts(payload, payload_len) };
     String::from_utf8(bytes.to_vec()).ok()
+}
+
+/// 按 NUL 切分多段 payload（每段都是 UTF-8 字符串，最后一段无需 NUL 结尾）。
+/// 例：`apk_path\0chain\0dir` → ["apk_path","chain","dir"]
+fn split_nul(payload: *const u8, payload_len: usize) -> Option<Vec<String>> {
+    if payload.is_null() || payload_len == 0 {
+        return None;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(payload, payload_len) };
+    let mut parts: Vec<String> = Vec::new();
+    let mut start = 0usize;
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == 0 {
+            parts.push(String::from_utf8(bytes[start..i].to_vec()).ok()?);
+            start = i + 1;
+        }
+    }
+    parts.push(String::from_utf8(bytes[start..].to_vec()).ok()?);
+    Some(parts)
 }
 
 /// 解析 `apk_path [NUL abi1,abi2,...]`：第二段可选，逗号分隔 ABI 过滤列表。
