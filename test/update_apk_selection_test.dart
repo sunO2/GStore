@@ -219,6 +219,19 @@ AppUpdateInfo _cacheRestoredInfo() {
 
 /// 假下载服务：实现新 IDownloadService，记录 download / downloadWithContext 调用参数
 class _FakeDownloadService implements IDownloadService {
+
+  // --- 以下为实现 IDownloadService 新增成员（接口扩展后必须补齐，否则测试无法编译）---
+  @override
+  Future<List<DownloadTask>> listTasks() async => const [];
+
+  @override
+  Future<void> remove(int id) async {}
+
+  @override
+  Future<void> restart(int id) async {}
+
+  @override
+  Stream<DownloadTask> watchAll() => const Stream<DownloadTask>.empty();
   /// 记录的下载调用：(appId, appName, version, fileName, url)
   final List<(String, String, String, String, String)> calls = [];
 

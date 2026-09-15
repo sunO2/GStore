@@ -399,7 +399,7 @@ void main() {
     // 徽标（组头）与主按钮位均显示「已删除」
     expect(find.text('已删除'), findsNWidgets(2));
     // 仍保留「重新下载」入口（行尾 refresh 图标）
-    expect(find.byTooltip('重新下载'), findsOneWidget);
+    expect(find.byTooltip('重新下载（清空已下分段，从 0 开始）'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 

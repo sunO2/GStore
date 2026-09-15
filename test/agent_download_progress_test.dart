@@ -15,6 +15,19 @@ import 'package:gstore/core/module/module_manager.dart';
 ///
 /// 场景：URL 直下路径（无需渠道），fake IDownloadService 流式推送进度。
 class _FakeDownloadService implements IDownloadService {
+
+  // --- 以下为实现 IDownloadService 新增成员（接口扩展后必须补齐，否则测试无法编译）---
+  @override
+  Future<List<DownloadTask>> listTasks() async => const [];
+
+  @override
+  Future<void> remove(int id) async {}
+
+  @override
+  Future<void> restart(int id) async {}
+
+  @override
+  Stream<DownloadTask> watchAll() => const Stream<DownloadTask>.empty();
   /// 已启动的下载任务（key = taskId → 任务）
   final Map<int, DownloadTask> tasks = {};
 

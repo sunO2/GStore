@@ -22,6 +22,24 @@ import 'package:sqlite3/open.dart';
 
 /// 可编程假下载服务：watch(id) 返回可控制的广播流，测试手动 push 更新。
 class _FakeDownloadService implements IDownloadService {
+
+  // --- 以下为实现 IDownloadService 新增成员（接口扩展后必须补齐，否则测试无法编译）---
+  /// 已推送过的任务（fake 自身的数据源：listTasks/getTask 都从这里取）
+  final _tasks = <int, DownloadTask>{};
+
+  /// 委托真实 Floor 仓储——与 Dart 内核 `DownloadManager.listTasks()` 行为一致。
+  /// （面板列表已改为走服务接口，fake 必须如实反映数据源，否则种子任务读不到）
+  @override
+  Future<List<DownloadTask>> listTasks() async => DownloadRepository().all();
+
+  @override
+  Future<void> remove(int id) async {}
+
+  @override
+  Future<void> restart(int id) async {}
+
+  @override
+  Stream<DownloadTask> watchAll() => const Stream<DownloadTask>.empty();
   final _controllers = <int, StreamController<DownloadTask>>{};
 
   StreamController<DownloadTask> _controller(int id) =>
@@ -32,6 +50,8 @@ class _FakeDownloadService implements IDownloadService {
   Stream<DownloadTask> watch(int id) => _controller(id).stream;
 
   void push(DownloadTask task) {
+    final id = task.id;
+    if (id != null) _tasks[id] = task;
     _controllers[task.id]?.add(task);
   }
 
@@ -76,7 +96,7 @@ class _FakeDownloadService implements IDownloadService {
   Future<void> retry(int id) => throw UnimplementedError();
 
   @override
-  Future<DownloadTask?> getTask(int id) => throw UnimplementedError();
+  Future<DownloadTask?> getTask(int id) async => _tasks[id];
 }
 
 DownloadTask _task({int? id}) {
