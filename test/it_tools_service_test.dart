@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 
@@ -119,6 +120,14 @@ void main() {
     test(
       '清理会连版本标记一起删除 → 下次 ensureExtracted 必然重新解压',
       () async {
+      // 离线包现在是 CI 用「上游 + 补丁」重建的产物、不入库。
+      // 本地没跑 scripts/it_tools/build_bundle.sh 时资产不存在——跳过而不是报错。
+      try {
+        await rootBundle.load(ItToolsService.assetZipPath);
+      } catch (_) {
+        markTestSkipped('离线包不存在（先跑 scripts/it_tools/build_bundle.sh 生成）');
+        return;
+      }
         // 首次：目录为空，应当解压真实资产
         final dir = await ItToolsService.ensureExtracted();
         expect(await File(p.join(dir.path, 'index.html')).exists(), isTrue);

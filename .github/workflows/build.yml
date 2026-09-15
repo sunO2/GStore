@@ -72,10 +72,6 @@ jobs:
 
       - name: Install dependencies
         run: flutter pub get
-      - run: flutter test
-      - run: flutter build apk --no-shrink --target-platform android-arm,android-arm64,android-x64 --split-per-abi 
-      - run: flutter build appbundle
-      
       # 用「上游 it-tools + 补丁」重建离线包（产物直接落到 assets/it_tools/）
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -91,6 +87,10 @@ jobs:
       - name: Rebuild it-tools offline bundle (upstream + patch)
         run: bash scripts/it_tools/build_bundle.sh
 
+      - run: flutter test
+      - run: flutter build apk --no-shrink --target-platform android-arm,android-arm64,android-x64 --split-per-abi 
+      - run: flutter build appbundle
+      
       - name: Get previous release tag
         id: prev_release
         env:
