@@ -269,7 +269,10 @@ void main() {
     });
 
     tearDown(() async {
+      // 完整复位注入：debugCacheDir/debugDownloadsDir 若残留会污染后续用例
       ItToolsService.debugDocsDir = null;
+      service.debugCacheDir = null;
+      service.debugDownloadsDir = null;
       if (await docs.exists()) {
         await docs.delete(recursive: true);
       }

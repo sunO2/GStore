@@ -123,6 +123,9 @@ class DownloadNotificationService {
 
   /// 下载开始
   void onDownloadStart(int id, String title, String fileName) {
+    if (!_initialized) {
+      return; // 未初始化（如单测/仅用内核不走通知）时静默跳过，不抛 LateInitializationError
+    }
     _activeDownloads++;
     _showProgress(id, title, fileName, 0, 0);
     startForegroundService();
@@ -136,6 +139,9 @@ class DownloadNotificationService {
     int count,
     int total,
   ) {
+    if (!_initialized) {
+      return; // 未初始化（如单测/仅用内核不走通知）时静默跳过，不抛 LateInitializationError
+    }
     final now = DateTime.now();
     final last = _lastNotify[id];
     if (last != null && now.difference(last).inMilliseconds < 500) return;
@@ -145,6 +151,9 @@ class DownloadNotificationService {
 
   /// 下载完成（移除进度通知）
   void onDownloadComplete(int id) {
+    if (!_initialized) {
+      return; // 未初始化（如单测/仅用内核不走通知）时静默跳过，不抛 LateInitializationError
+    }
     _lastNotify.remove(id);
     _activeDownloads = (_activeDownloads - 1) < 0 ? 0 : _activeDownloads - 1;
     _safeNotify(() => _local.cancel(id: id));
@@ -153,6 +162,9 @@ class DownloadNotificationService {
 
   /// 下载失败（显示失败通知）
   void onDownloadError(int id, String title) {
+    if (!_initialized) {
+      return; // 未初始化（如单测/仅用内核不走通知）时静默跳过，不抛 LateInitializationError
+    }
     _lastNotify.remove(id);
     _activeDownloads = (_activeDownloads - 1) < 0 ? 0 : _activeDownloads - 1;
     _safeNotify(() => _local.show(
@@ -174,6 +186,9 @@ class DownloadNotificationService {
 
   /// 下载取消（移除通知）
   void onDownloadCancel(int id) {
+    if (!_initialized) {
+      return; // 未初始化（如单测/仅用内核不走通知）时静默跳过，不抛 LateInitializationError
+    }
     _lastNotify.remove(id);
     _activeDownloads = (_activeDownloads - 1) < 0 ? 0 : _activeDownloads - 1;
     _safeNotify(() => _local.cancel(id: id));
