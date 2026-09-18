@@ -310,8 +310,22 @@ jobs:
               echo "ERROR: 产物与清单 sha256/size 不符: $src" >&2
               exit 1
             fi
-            gh release upload "$TAG" "$src#$asset" --clobber
+            named_dir="$(mktemp -d)"
+            cp "$src" "$named_dir/$asset"
+            gh release upload "$TAG" "$named_dir/$asset" --clobber
+            rm -rf "$named_dir"
           done < module_assets.tsv
+          # gh release upload 不解析 <file>#<name> 改名（会丢弃 # 片段按源 basename 上传），
+          # 因此改为先复制成目标名再上传；并清理历史遗留的裸名模块资产。
+          cut -f3 module_assets.tsv | sort -u > module_assets_named.txt
+          gh release view "$TAG" --json assets --jq '.assets[].name' > release_names.txt
+          while IFS= read -r asset_name; do
+            [ -n "$asset_name" ] || continue
+            if grep -Eq '^libgstore_mod_[a-z]+\.so$' <<<"$asset_name"; then
+              gh release delete-asset "$TAG" "$asset_name" --yes
+              echo "deleted legacy bare module asset: $asset_name"
+            fi
+          done < release_names.txt
 
       - name: Upload modules.json (commit marker after .so, clobber)
         env:
@@ -329,13 +343,13 @@ jobs:
           # 官方 upload-release-asset@v1 已弃用，改用 gh release upload（file#name 保留原资产名）
           # 完整包与精简包均取自暂存目录（flutter-apk 下同名文件已被精简包覆盖）。
           gh release upload "v${{ steps.get_version.outputs.version }}" \
-            "./build/app/outputs/bundle/release/app-release.aab#app-release.aab" \
-            "./build/apk-release/GStore-armeabi-v7a-release.apk#GStore-armeabi-v7a-release.apk" \
-            "./build/apk-release/GStore-arm64-v8a-release.apk#GStore-arm64-v8a-release.apk" \
-            "./build/apk-release/GStore-x86_64-release.apk#GStore-x86_64-release.apk" \
-            "./build/apk-release/GStore-slim-armeabi-v7a-release.apk#GStore-slim-armeabi-v7a-release.apk" \
-            "./build/apk-release/GStore-slim-arm64-v8a-release.apk#GStore-slim-arm64-v8a-release.apk" \
-            "./build/apk-release/GStore-slim-x86_64-release.apk#GStore-slim-x86_64-release.apk" \
+            "./build/app/outputs/bundle/release/app-release.aab" \
+            "./build/apk-release/GStore-armeabi-v7a-release.apk" \
+            "./build/apk-release/GStore-arm64-v8a-release.apk" \
+            "./build/apk-release/GStore-x86_64-release.apk" \
+            "./build/apk-release/GStore-slim-armeabi-v7a-release.apk" \
+            "./build/apk-release/GStore-slim-arm64-v8a-release.apk" \
+            "./build/apk-release/GStore-slim-x86_64-release.apk" \
             --clobber
 
       - name: Upload it-tools assets (exempt from retention)
@@ -345,8 +359,8 @@ jobs:
           set -euo pipefail
           TAG="v${{ steps.get_version.outputs.version }}"
           gh release upload "$TAG" \
-            "assets/it_tools/it-tools.zip#it-tools.zip" \
-            "assets/it_tools/it_tools.json#it_tools.json" \
+            "assets/it_tools/it-tools.zip" \
+            "assets/it_tools/it_tools.json" \
             --clobber
 
       # 登录后（GITHUB_TOKEN 已认证）仅删除：早于清单 TTL、且不被本次 modules.json 引用、
