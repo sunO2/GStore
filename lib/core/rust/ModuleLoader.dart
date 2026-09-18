@@ -107,6 +107,51 @@ class RustModuleLoader {
     return 'x86_64'; // 桌面调试
   }
 
+  /// Rust 模块支持的 ABI 集合（与 Rust target 对应）
+  static const Set<String> _supportedAbis = {
+    'arm64-v8a',
+    'armeabi-v7a',
+    'x86',
+    'x86_64',
+  };
+
+  /// 设备 ABI 内存缓存（首次解析后复用，避免重复通道往返）
+  String? _deviceAbiCache;
+
+  /// 真实设备 ABI：Android 经 `gstore/apk_source` 通道读取
+  /// `Build.SUPPORTED_ABIS` 首选值；非 Android 返回桌面值。
+  /// 通道异常/返回 null/返回不支持的 ABI 一律回退现有逻辑（Android=arm64-v8a），
+  /// **绝不抛异常**。结果内存缓存，第二次调用不再触发通道。
+  Future<String> deviceAbi() async {
+    final cached = _deviceAbiCache;
+    if (cached != null) return cached;
+
+    var resolved = currentAbi; // 回退：Android=arm64-v8a / 桌面=x86_64
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      try {
+        const channel = MethodChannel('gstore/apk_source');
+        final abi = await channel.invokeMethod<String>('currentAbi');
+        if (abi != null && _supportedAbis.contains(abi)) {
+          resolved = abi;
+        }
+      } catch (_) {
+        // 通道不可用/报错 → 回退，不抛
+      }
+    }
+    _deviceAbiCache = resolved;
+    return resolved;
+  }
+
+  /// 清除设备 ABI 缓存（测试注入通道后需重新解析）
+  @visibleForTesting
+  void resetDeviceAbiCache() {
+    _deviceAbiCache = null;
+  }
+
+  /// 触发内置模块提取通道调用，供测试断言其 ABI 参数（测试专用）
+  @visibleForTesting
+  Future<String?> debugBuiltinSoPath(String name) => _builtinSoPath(name);
+
   /// 确保模块就绪：内置.jniLibs → 本地私有目录 → 远程更新，依次尝试。
   /// 返回 false = 模块不可用（调用方走降级路径）。
   Future<bool> ensureModule(String name) async {
@@ -151,7 +196,7 @@ class RustModuleLoader {
         const channel = MethodChannel('gstore/apk_source');
         final has = await channel.invokeMethod<bool>(
           'hasModule',
-          {'module': name, 'abi': currentAbi},
+          {'module': name, 'abi': await deviceAbi()},
         );
         if (has == true) return true;
       } catch (_) {
@@ -261,7 +306,7 @@ class RustModuleLoader {
   Future<Map<String, dynamic>?> _remoteAbiEntry(String name) async {
     final entry = await _remoteManifestEntry(name);
     final abi = entry?['abi'] as Map<String, dynamic>?;
-    return abi?[currentAbi] as Map<String, dynamic>?;
+    return abi?[await deviceAbi()] as Map<String, dynamic>?;
   }
 
   /// 本地已下载模块的版本（挂载时写入 <module>/version）
@@ -313,7 +358,7 @@ class RustModuleLoader {
       const channel = MethodChannel('gstore/apk_source');
       final path = await channel.invokeMethod<String>(
         'extractModule',
-        {'module': name, 'abi': currentAbi},
+        {'module': name, 'abi': await deviceAbi()},
       );
       if (path == null || path.isEmpty) return null;
       final f = File(path);
@@ -332,7 +377,7 @@ class RustModuleLoader {
       const channel = MethodChannel('gstore/apk_source');
       final path = await channel.invokeMethod<String>(
         'moduleSoPath',
-        {'module': name, 'abi': currentAbi},
+        {'module': name, 'abi': await deviceAbi()},
       );
       if (path == null || path.isEmpty) return null;
       return path;
@@ -366,7 +411,7 @@ class RustModuleLoader {
       final file = File(p.join(dir, localFileName));
 
       // 1. 下载
-      final url = '$baseUrl/$currentAbi/$remoteFileName';
+      final url = '$baseUrl/${await deviceAbi()}/$remoteFileName';
       appLog.info('RustModuleLoader: 下载模块 $name <- $url');
       final resp = await _httpGetBytes(url);
       if (resp == null) {
@@ -453,7 +498,9 @@ class RustModuleLoader {
   ) async {
     try {
       await File('$soPath.sig').writeAsString('$signatureHex\n', flush: true);
-      final meta = jsonEncode({'name': name, 'version': version, 'abi': currentAbi});
+      final meta = jsonEncode(
+        {'name': name, 'version': version, 'abi': await deviceAbi()},
+      );
       await File('$soPath.meta').writeAsString(meta, flush: true);
       appLog.info('RustModuleLoader: $name 已写入签名侧车（宿主校验后 dlopen）');
     } catch (e) {

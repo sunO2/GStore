@@ -234,6 +234,16 @@ class MainActivity : FlutterActivity() {
                         result.error("PROBE", "探测模块失败: ${e.message}", null)
                     }
                 }
+                // 当前设备首选 ABI：Build.SUPPORTED_ABIS 首位（运行时真实解析，
+                // 修正 Dart 侧硬编码 arm64-v8a，适配 armv7/x86/x86_64）。
+                // 失败返回 null（Dart 侧自行回退），不抛。
+                "currentAbi" -> {
+                    try {
+                        result.success(Build.SUPPORTED_ABIS.firstOrNull())
+                    } catch (e: Exception) {
+                        result.success(null)
+                    }
+                }
                 // 系统解压后的原生库目录（nativeLibraryDir）：已安装应用
                 // .so 的第三层兜底来源（LibChecker getNativeDirLibs）。
                 "getNativeLibraryDir" -> {
