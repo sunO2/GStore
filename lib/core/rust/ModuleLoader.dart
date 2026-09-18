@@ -122,6 +122,9 @@ class RustModuleLoader {
   /// 启动清理遗留 `.tmp` 是否已执行（每个进程/测试配置后恰好一次）。
   bool _tempCleanupDone = false;
 
+  /// Phase 2 无签名下载产物迁移是否已执行（每个进程/测试配置后恰好一次）。
+  bool _signatureMigrationDone = false;
+
   /// 默认 ABI 名（与 Rust target 对应：arm64-v8a / armeabi-v7a / x86 / x86_64）
   String get currentAbi {
     // 下载/提取路径均由平台侧（MainActivity extractModule）用
@@ -211,8 +214,9 @@ class RustModuleLoader {
     _manifestCache = null;
     _builtinManifestCache = null;
     _bgInFlight.clear();
-    // 新配置 ⇒ 允许重新执行一次启动 `.tmp` 清理。
+    // 新配置 ⇒ 允许重新执行一次启动 `.tmp` 清理与签名迁移。
     _tempCleanupDone = false;
+    _signatureMigrationDone = false;
   }
 
   /// 还原生产行为（清空全部测试覆盖与缓存）。
@@ -229,6 +233,7 @@ class RustModuleLoader {
     _clockOverride = null;
     _beforeMetaWriteHook = null;
     _tempCleanupDone = false;
+    _signatureMigrationDone = false;
     _manifestCache = null;
     _builtinManifestCache = null;
     _bgInFlight.clear();
@@ -339,6 +344,12 @@ class RustModuleLoader {
   /// 已挂载 → 已下载有效产物（最高三段 semver）→ 内置解压
   /// → 仅当两者皆无时做一次有界远程下载安装并挂载 → 否则 false。
   Future<bool> ensureModule(String name) async {
+    // Phase 2 迁移（启动恰好一次，`requireSignature=false` 时零副作用）：
+    // **必须**先于本地产物解析完成——宿主 `trust.rs` 会把「无 `.sig`」的模块
+    // 当作内置（随包信任）直接放行，若放任 Phase 1 无签名下载产物参与解析，
+    // 它们会被当作内置模块挂载。
+    await _migrateSignaturesOnce();
+
     // 已挂载 → 直接可用（零网络）。
     if (await _isLoaded(name)) return true;
 
@@ -1055,6 +1066,97 @@ class RustModuleLoader {
       return keys;
     } catch (_) {
       return const {};
+    }
+  }
+
+  /// Phase 2 迁移：清理 Phase 1 无签名下载产物（启动一次性）。
+  ///
+  /// 背景：宿主 `trust.rs` 将「无 `.sig`」的模块视为内置模块（随包信任）
+  /// **直接放行**。因此启用签名前（[requireSignature] = true）必须把下载目录中
+  /// 缺**有效** `.sig` 的产物隔离；否则 Phase 1 的无签名产物会被当作内置挂载
+  /// （架构决策 ⑥）。
+  ///
+  /// 规则：
+  /// * 仅扫描 `<support>/gstore_modules/<name>/` 下**带 `.meta`** 的 `.so`，
+  ///   即 downloaded-module set（`.meta` 是远程安装的提交标记）。
+  /// * `.sig` 缺失/空白/非 128 位十六进制 → 写 `<moduleDir>/quarantine.json`
+  ///   标记隔离（复用 Todo 5 机制），下次解析跳过并回退内置或重新下载。
+  /// * **不删除**任何产物；内置解压产物无 `.meta`，不在扫描集合，绝不触碰。
+  /// * `download` 模块遵循同一规则（其远程更新在存在本地/内置后允许）。
+  ///
+  /// `requireSignature == false` → 立即返回，**零副作用**（不扫描、不写、不删）。
+  /// 方法本身幂等：已隔离条目重复调用时跳过，不会重复写入或损坏 `quarantine.json`。
+  /// 返回本次**新增**隔离的条目数。
+  Future<int> migrateUnsignedDownloadedModules() async {
+    if (!requireSignature) return 0;
+
+    var migrated = 0;
+    try {
+      final root = Directory(p.join(await _supportDir(), 'gstore_modules'));
+      if (!await root.exists()) return 0;
+
+      await for (final entity in root.list(followLinks: false)) {
+        if (entity is! Directory) continue;
+        final name = p.basename(entity.path);
+        if (name.isEmpty) continue;
+
+        List<FileSystemEntity> entries;
+        try {
+          entries = entity.listSync();
+        } catch (_) {
+          continue; // 目录不可读 → 跳过，绝不因单个目录失败中断迁移
+        }
+        final quarantined = await _readQuarantineKeys(name);
+
+        for (final f in entries) {
+          if (f is! File) continue;
+          final base = p.basename(f.path);
+          // 仅识别「本地落盘命名的模块 .so」；`.meta/.sig/.tmp/version` → null。
+          final version = _candidateVersion(base, name);
+          if (version == null) continue;
+          // downloaded-module set 判定：带 `.meta`（内置解压产物无 `.meta`）。
+          if (!await File('${f.path}.meta').exists()) continue;
+
+          final versionStr = _renderVersion(version);
+          if (quarantined.contains(base) ||
+              quarantined.contains(versionStr)) {
+            continue; // 幂等：已隔离不重复迁移
+          }
+          if (await _hasValidSignature(f.path)) continue;
+
+          await _recordQuarantine(name, f.path, 'unsigned_migration');
+          migrated++;
+        }
+      }
+    } catch (e) {
+      appLog.warning('RustModuleLoader: 无签名下载产物迁移失败 - $e');
+    }
+    return migrated;
+  }
+
+  /// 启动一次性包装：仅 [requireSignature] = true 时加锁执行迁移。
+  ///
+  /// `requireSignature=false` 时**不设锁**——保持零副作用语义，并允许进程内
+  /// 稍后开启签名时仍能迁移一次。
+  Future<void> _migrateSignaturesOnce() async {
+    if (_signatureMigrationDone || !requireSignature) return;
+    _signatureMigrationDone = true;
+    await migrateUnsignedDownloadedModules();
+  }
+
+  /// `.sig` 是否为**有效** Ed25519 侧车：存在且去空白后为 128 位十六进制。
+  ///
+  /// Dart 侧不持有钉死公钥（密码学校验由 Rust 信任门完成），故此处做结构校验；
+  /// 缺失/空白/畸形一律视为无签名，交由迁移隔离（fail-closed）。
+  Future<bool> _hasValidSignature(String soPath) async {
+    try {
+      final sig = File('$soPath.sig');
+      if (!await sig.exists()) return false;
+      final content = (await sig.readAsString()).trim();
+      if (content.length != 128) return false;
+      return RegExp(r'^[0-9a-fA-F]{128}$').hasMatch(content);
+    } catch (_) {
+      return false;
     }
   }
 

@@ -505,7 +505,11 @@ void main() {
     test('本地产物 + 遗留 .sig + requireSignature=true：保留 .sig 并尝试挂载', () async {
       final supportDir = makeSupportDir();
       final dir = moduleDir(supportDir, 'x')..createSync(recursive: true);
-      final so = writeVerifiedLocal(dir, sigContent: 'REAL_SIGNATURE');
+      final so = writeVerifiedLocal(
+        dir,
+        // 结构有效的 Ed25519 侧车（128 位十六进制）：Phase 2 迁移不得隔离它。
+        sigContent: List.filled(64, 'ab').join(),
+      );
 
       loader.requireSignature = true;
       var sigExistedAtMount = false;
