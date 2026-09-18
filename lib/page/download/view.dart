@@ -180,72 +180,268 @@ class _DownloadManagerState extends ConsumerState<DownloadManager> {
     final isMulti = items.length > 1;
     final groupKey = '${items[0].appId}_${items[0].version}';
     final isExpanded = _expandedKeys.contains(groupKey);
-    // 组内进行中的文件（downloading/connecting，或 queued，或 paused 且已下载部分字节）
-    final activeItem = _activeDownloadItem(items);
+    // 组聚合状态：折叠态展示条数/总大小/聚合进度/失败数，不再用组内第一条代表整组
+    final summary = summarizeGroup(items, state.missingFileIds);
 
     // 外层 PressableScale 仅做按压反馈；多文件组展开/收起由内部 header
     // GestureDetector 承接，单文件组无点击动作
     return PressableScale(
       child: AppCard(
-      margin: const EdgeInsets.only(bottom: AppSpacing.md),
-      padding: EdgeInsets.zero,
-      borderRadius: AppRadius.allMD,
-      border: AppBorders.all(context, color: scheme.outlineVariant),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          // 卡片首行：图标 + 应用名 + 版本 + 聚合状态徽标
-          _buildGroupHeader(
-            context,
-            items,
-            info,
-            isMulti: isMulti,
-            groupKey: groupKey,
-            isExpanded: isExpanded,
-          ),
-
-          // 进行中实时进度条（多文件组收起时也直接显示在卡片上）
-          if (isMulti && !isExpanded && activeItem != null)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(
-                AppSpacing.lg,
-                0,
-                AppSpacing.lg,
-                AppSpacing.sm,
-              ),
-              child: _buildProgressBar(context, activeItem),
+        margin: const EdgeInsets.only(bottom: AppSpacing.md),
+        padding: EdgeInsets.zero,
+        borderRadius: AppRadius.allMD,
+        border: AppBorders.all(context, color: scheme.outlineVariant),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // 卡片首行：图标 + 应用名 + 版本 + 聚合状态徽标 + 展开箭头
+            _buildGroupHeader(
+              context,
+              items,
+              info,
+              summary: summary,
+              isExpanded: isExpanded,
             ),
 
-          // 文件行：多文件组点击卡片头展开显示；单文件组直接显示
-          if (!isMulti || isExpanded)
-            for (var i = 0; i < items.length; i++) ...[
-              if (i > 0)
-                Divider(
-                  height: 1,
-                  thickness: 1,
-                  color: scheme.outlineVariant.withValues(alpha: 0.4),
-                  indent: AppSpacing.lg,
-                  endIndent: AppSpacing.lg,
-                ),
-              _buildDownloadItem(context, items[i]),
-            ],
-        ],
-      ),
+            // 折叠区：收起显示组聚合摘要、展开显示组内每条文件行，二者互斥。
+            // 共用一个 AnimatedSize，让高度切换有过渡（原来直接替换，很生硬）。
+            AnimatedSize(
+              duration: AppAnimation.medium,
+              curve: AppAnimation.curve,
+              alignment: Alignment.topCenter,
+              child: (!isMulti || isExpanded)
+                  ? Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        // 文件行：多文件组点击卡片头展开显示；单文件组直接显示
+                        for (var i = 0; i < items.length; i++) ...[
+                          if (i > 0)
+                            Divider(
+                              height: 1,
+                              thickness: 1,
+                              color:
+                                  scheme.outlineVariant.withValues(alpha: 0.4),
+                              indent: AppSpacing.lg,
+                              endIndent: AppSpacing.lg,
+                            ),
+                          _buildDownloadItem(context, items[i]),
+                        ],
+                      ],
+                    )
+                  : _buildGroupSummary(context, items, summary),
+            ),
+          ],
+        ),
       ),
     );
   }
 
-  /// 卡片首行：应用图标 + 应用名 + 版本 + 状态徽标（聚合组内主文件状态）
+  /// 多文件组收起时的聚合摘要：进度条（可下载时）+ 状态/计数/大小一行。
+  ///
+  /// 按聚合状态分形态，保证收起时也能看出「几个文件、下到哪了、有没有失败」：
+  /// - 下载中：聚合进度条 + 合计速度 + 已完成计数 + 剩余时间
+  /// - 排队/等待：进度条（有已下字节时）+ 状态文案 + 已完成计数
+  /// - 失败：已完成数 + 失败数（红）+「重试失败」快捷按钮
+  /// - 全部完成：总大小 + 来源渠道 + 已删除提示 +「安装」快捷按钮
+  Widget _buildGroupSummary(
+    BuildContext context,
+    List<DownloadTask> items,
+    DownloadGroupSummary summary,
+  ) {
+    final scheme = Theme.of(context).colorScheme;
+    final groupKey = '${items[0].appId}_${items[0].version}';
+    final failedItems = items
+        .where((item) => item.status == DownloadStatusEnum.failed)
+        .toList();
+    // 组内唯一可安装的 apk：多个 apk 不猜，交给展开后逐个操作
+    final installables = items
+        .where((item) =>
+            item.status == DownloadStatusEnum.completed &&
+            item.fileName.endsWith('.apk') &&
+            !isCompletedFileMissing(item, state.missingFileIds))
+        .toList();
+
+    final action = switch (summary.kind) {
+      DownloadGroupKind.failed when failedItems.isNotEmpty => _actionButton(
+          context,
+          label: '重试失败',
+          icon: Icons.refresh,
+          onPressed: () => _retryFailedInGroup(failedItems),
+        ),
+      DownloadGroupKind.completed when installables.length == 1 =>
+        _actionButton(
+          context,
+          label: '安装',
+          icon: Icons.install_mobile,
+          onPressed: () => notifier.installApp(installables.first),
+        ),
+      _ => null,
+    };
+
+    // (文案, 图标, 颜色覆盖)
+    final metas = <(String, IconData?, Color?)>[];
+    switch (summary.kind) {
+      case DownloadGroupKind.downloading:
+        if (summary.speedBps > 0) {
+          metas.add(('合计 ${formatSpeed(summary.speedBps)}', Icons.speed, null));
+        }
+        metas.add(('${summary.completed}/${summary.total} 已完成', null, null));
+        if ((summary.etaSec ?? 0) > 0) {
+          metas.add((formatDuration(summary.etaSec!), Icons.schedule, null));
+        }
+      case DownloadGroupKind.queued:
+        metas.add(('等待下载槽位', Icons.queue, null));
+        metas.add(('${summary.completed}/${summary.total} 已完成', null, null));
+      case DownloadGroupKind.waiting:
+        metas.add(('已暂停', Icons.pause_circle_outline, null));
+        metas.add(('${summary.completed}/${summary.total} 已完成', null, null));
+      case DownloadGroupKind.failed:
+        if (summary.completed > 0) {
+          metas.add((
+            '${summary.completed} 个已完成',
+            Icons.check_circle_outline,
+            null,
+          ));
+        }
+        metas.add(('${summary.failed} 个失败', Icons.error, scheme.error));
+      case DownloadGroupKind.completed:
+        if (summary.totalBytes > 0) {
+          metas.add((
+            _formatFileSize(summary.totalBytes),
+            Icons.folder_outlined,
+            null,
+          ));
+        }
+        final channel = inferChannelLabel(items.first.url);
+        if (channel != null) {
+          metas.add((channel, Icons.storefront_outlined, null));
+        }
+    }
+    if (summary.deleted > 0) {
+      metas.add((
+        '${summary.deleted} 个文件已删除',
+        Icons.delete_outline,
+        scheme.error,
+      ));
+    }
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.lg,
+        0,
+        AppSpacing.lg,
+        AppSpacing.md,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (summary.hasProgress)
+            Padding(
+              padding: const EdgeInsets.only(bottom: AppSpacing.xs),
+              child: ClipRRect(
+                borderRadius: AppRadius.allSM,
+                child: LinearProgressIndicator(
+                  value: summary.progress,
+                  minHeight: AppSpacing.sm,
+                  backgroundColor: scheme.surfaceContainerHighest,
+                  color: scheme.primary,
+                ),
+              ),
+            ),
+          Row(
+            children: [
+              // 点摘要文字区也能展开（右侧按钮单独响应自己的点击）
+              Expanded(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () => setState(() => _toggleGroup(groupKey)),
+                  child: Wrap(
+                    spacing: AppSpacing.sm,
+                    runSpacing: AppSpacing.xs,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      for (var i = 0; i < metas.length; i++) ...[
+                        if (i > 0)
+                          Text(
+                            '·',
+                            style: Theme.of(context)
+                                .textTheme
+                                .bodySmall
+                                ?.copyWith(color: scheme.outline),
+                          ),
+                        _metaChip(
+                          context,
+                          metas[i].$1,
+                          icon: metas[i].$2,
+                          color: metas[i].$3,
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+              if (action != null) ...[
+                const SizedBox(width: AppSpacing.sm),
+                action,
+              ],
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 折叠摘要里的元信息（小号图标 + 次要文字色）
+  Widget _metaChip(
+    BuildContext context,
+    String text, {
+    IconData? icon,
+    Color? color,
+  }) {
+    final scheme = Theme.of(context).colorScheme;
+    final tint = color ?? scheme.onSurfaceVariant;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (icon != null) ...[
+          Icon(icon, size: AppTypography.iconXS, color: tint),
+          const SizedBox(width: AppSpacing.xs),
+        ],
+        Text(
+          text,
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(color: tint),
+        ),
+      ],
+    );
+  }
+
+  /// 重试组内全部失败任务
+  Future<void> _retryFailedInGroup(List<DownloadTask> failed) async {
+    for (final item in failed) {
+      await notifier.retryDownload(item);
+    }
+  }
+
+  /// 多文件组的展开/收起
+  void _toggleGroup(String groupKey) {
+    if (!_expandedKeys.remove(groupKey)) {
+      _expandedKeys.add(groupKey);
+    }
+  }
+
+  /// 卡片首行：应用图标 + 应用名 + 版本 + 状态徽标（多文件组用聚合状态）
   Widget _buildGroupHeader(
     BuildContext context,
     List<DownloadTask> items,
     AppInfo? info, {
-    required bool isMulti,
-    required String groupKey,
+    required DownloadGroupSummary summary,
     required bool isExpanded,
   }) {
     final scheme = Theme.of(context).colorScheme;
     final appName = info?.name ?? items[0].appName;
+    final isMulti = summary.isMulti;
+    final groupKey = '${items[0].appId}_${items[0].version}';
 
     final header = Padding(
       padding: EdgeInsets.fromLTRB(
@@ -271,7 +467,9 @@ class _DownloadManagerState extends ConsumerState<DownloadManager> {
                       ),
                 ),
                 Text(
-                  items[0].version,
+                  isMulti
+                      ? '${items[0].version} · 共 ${summary.total} 个文件'
+                      : items[0].version,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
@@ -282,15 +480,23 @@ class _DownloadManagerState extends ConsumerState<DownloadManager> {
             ),
           ),
           const SizedBox(width: AppSpacing.sm),
-          // 聚合组内主文件状态（notifier 已通过 watch 推送进 groups）
-          _buildStatusBadge(context, items[0], state.missingFileIds),
-          // 多文件组：展开指示
+          // 多文件组用聚合状态徽标（只看第一条会把组内失败藏起来）
+          if (isMulti)
+            _buildGroupStatusBadge(context, summary)
+          else
+            _buildStatusBadge(context, items[0], state.missingFileIds),
+          // 多文件组：展开指示（箭头随展开状态旋转过渡）
           if (isMulti) ...[
             const SizedBox(width: AppSpacing.xs),
-            Icon(
-              isExpanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
-              size: AppTypography.iconMD,
-              color: scheme.onSurfaceVariant,
+            AnimatedRotation(
+              turns: isExpanded ? 0.5 : 0.0,
+              duration: AppAnimation.fast,
+              curve: AppAnimation.curve,
+              child: Icon(
+                Icons.keyboard_arrow_down,
+                size: AppTypography.iconMD,
+                color: scheme.onSurfaceVariant,
+              ),
             ),
           ],
         ],
@@ -303,15 +509,50 @@ class _DownloadManagerState extends ConsumerState<DownloadManager> {
     // 多文件组：点击卡片头展开/收起文件行
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
-      onTap: () {
-        setState(() {
-          if (!_expandedKeys.remove(groupKey)) {
-            _expandedKeys.add(groupKey);
-          }
-        });
-      },
+      onTap: () => setState(() => _toggleGroup(groupKey)),
       child: header,
     );
+  }
+
+  /// 多文件组的聚合状态徽标：展示整组状态而不是组内第一条
+  Widget _buildGroupStatusBadge(
+    BuildContext context,
+    DownloadGroupSummary summary,
+  ) {
+    final scheme = Theme.of(context).colorScheme;
+    // 整组都已完成但文件全部被删 → 与单条一致的"已删除"警示
+    if (summary.allCompleted && summary.deleted == summary.total) {
+      return _statusChip(
+        context,
+        label: '已删除',
+        color: scheme.error,
+        icon: Icons.delete_outline,
+      );
+    }
+    final (label, color, icon) = switch (summary.kind) {
+      DownloadGroupKind.downloading => (
+          '下载中',
+          scheme.primary,
+          Icons.downloading,
+        ),
+      DownloadGroupKind.completed => (
+          '已完成',
+          scheme.tertiary,
+          Icons.check_circle,
+        ),
+      DownloadGroupKind.failed => ('失败', scheme.error, Icons.error),
+      DownloadGroupKind.queued => (
+          '排队中',
+          scheme.secondary,
+          Icons.queue,
+        ),
+      DownloadGroupKind.waiting => (
+          '等待中',
+          scheme.onSurfaceVariant,
+          Icons.schedule,
+        ),
+    };
+    return _statusChip(context, label: label, color: color, icon: icon);
   }
 
   /// 构建应用图标
@@ -514,6 +755,21 @@ class _DownloadManagerState extends ConsumerState<DownloadManager> {
       DownloadAction.cancel => () => notifier.cancelDownload(item),
     };
 
+    return _actionButton(
+      context,
+      label: label,
+      icon: icon,
+      onPressed: onPressed,
+    );
+  }
+
+  /// 卡片内统一的紧凑操作按钮（文件行主操作与折叠摘要快捷动作共用同一视觉规格）
+  Widget _actionButton(
+    BuildContext context, {
+    required String label,
+    required IconData icon,
+    required VoidCallback onPressed,
+  }) {
     return FilledButton.tonalIcon(
       onPressed: onPressed,
       icon: Icon(icon, size: AppTypography.iconSM),
@@ -944,29 +1200,6 @@ class _DownloadManagerState extends ConsumerState<DownloadManager> {
       return formatDuration(data.etaSec!);
     }
     return '';
-  }
-
-  /// 获取组内进行中的文件（downloading/connecting 优先，其次 queued，
-  /// 其次 paused 且已下载部分字节）
-  DownloadTask? _activeDownloadItem(List<DownloadTask> items) {
-    for (final item in items) {
-      if (item.status == DownloadStatusEnum.downloading ||
-          item.status == DownloadStatusEnum.connecting) {
-        return item;
-      }
-    }
-    for (final item in items) {
-      if (item.status == DownloadStatusEnum.queued) return item;
-    }
-    for (final item in items) {
-      if (item.status == DownloadStatusEnum.paused &&
-          item.total > 0 &&
-          item.received > 0 &&
-          item.received < item.total) {
-        return item;
-      }
-    }
-    return null;
   }
 
   /// 构建头部"更多操作"菜单项：批量操作（暂停全部/取消排队/重试失败）按存在性

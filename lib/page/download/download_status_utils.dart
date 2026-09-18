@@ -76,6 +76,159 @@ DownloadAction? primaryActionFor(DownloadTask item) {
   }
 }
 
+/// 多文件组（同一 appId + version）的聚合状态类别。
+///
+/// 优先级：失败 > 下载中 > 排队 > 等待 > 全部完成。
+/// 只要组内有失败就报失败，避免"失败被折叠藏起来"。
+enum DownloadGroupKind { downloading, queued, waiting, failed, completed }
+
+/// 一组下载任务的聚合结果（多文件组折叠态与徽标展示用）。
+///
+/// 折叠态不再用组内第一条代表整组：条数、总大小、聚合进度、合计速度、
+/// 失败/已删除计数都由这里给出。
+class DownloadGroupSummary {
+  /// 文件总数
+  final int total;
+
+  /// 已完成数（含文件已被外部删除的）
+  final int completed;
+
+  /// 失败数
+  final int failed;
+
+  /// 已完成但磁盘文件已被外部删除的数量
+  final int deleted;
+
+  /// 下载中/连接中数量
+  final int active;
+
+  /// 排队中数量
+  final int queued;
+
+  /// 等待中数量（paused / cancelled）
+  final int waiting;
+
+  /// 组内已接收字节合计
+  final int receivedBytes;
+
+  /// 组内总字节合计（大小未知的任务按 0 计）
+  final int totalBytes;
+
+  /// 组内下载中任务的合计速度（bytes/s）
+  final int speedBps;
+
+  /// 组级预估剩余时间（秒）；速度未知或已下完时为 null
+  final int? etaSec;
+
+  /// 聚合状态类别
+  final DownloadGroupKind kind;
+
+  const DownloadGroupSummary({
+    required this.total,
+    required this.completed,
+    required this.failed,
+    required this.deleted,
+    required this.active,
+    required this.queued,
+    required this.waiting,
+    required this.receivedBytes,
+    required this.totalBytes,
+    required this.speedBps,
+    required this.etaSec,
+    required this.kind,
+  });
+
+  /// 是否多文件组（单文件组不走折叠展示）
+  bool get isMulti => total > 1;
+
+  /// 组内是否全部完成
+  bool get allCompleted => total > 0 && completed == total;
+
+  /// 是否有可展示的聚合进度（已知总大小且尚未全部完成）
+  bool get hasProgress => totalBytes > 0 && !allCompleted;
+
+  /// 聚合进度 0.0~1.0（多文件并发时这才是整组进度）
+  double get progress =>
+      totalBytes > 0 ? (receivedBytes / totalBytes).clamp(0.0, 1.0) : 0.0;
+
+  int get percent => (progress * 100).round();
+}
+
+/// 聚合组内所有任务的状态 / 进度 / 速度。
+///
+/// ETA 用「剩余字节 ÷ 合计速度」估算，只有下载中才有意义。
+DownloadGroupSummary summarizeGroup(
+  List<DownloadTask> items,
+  Set<int> missingFileIds,
+) {
+  var completed = 0;
+  var failed = 0;
+  var deleted = 0;
+  var active = 0;
+  var queued = 0;
+  var waiting = 0;
+  var receivedBytes = 0;
+  var totalBytes = 0;
+  var speedBps = 0;
+
+  for (final item in items) {
+    switch (item.status) {
+      case DownloadStatusEnum.completed:
+        completed++;
+        if (isCompletedFileMissing(item, missingFileIds)) deleted++;
+        break;
+      case DownloadStatusEnum.failed:
+        failed++;
+        break;
+      case DownloadStatusEnum.downloading:
+      case DownloadStatusEnum.connecting:
+        active++;
+        break;
+      case DownloadStatusEnum.queued:
+        queued++;
+        break;
+      case DownloadStatusEnum.paused:
+      case DownloadStatusEnum.cancelled:
+        waiting++;
+        break;
+    }
+    receivedBytes += item.received;
+    totalBytes += item.total;
+    if (item.status == DownloadStatusEnum.downloading) {
+      speedBps += item.speedBps;
+    }
+  }
+
+  final remaining = totalBytes - receivedBytes;
+  final etaSec =
+      (speedBps > 0 && remaining > 0) ? (remaining / speedBps).ceil() : null;
+
+  final kind = failed > 0
+      ? DownloadGroupKind.failed
+      : active > 0
+          ? DownloadGroupKind.downloading
+          : queued > 0
+              ? DownloadGroupKind.queued
+              : waiting > 0
+                  ? DownloadGroupKind.waiting
+                  : DownloadGroupKind.completed;
+
+  return DownloadGroupSummary(
+    total: items.length,
+    completed: completed,
+    failed: failed,
+    deleted: deleted,
+    active: active,
+    queued: queued,
+    waiting: waiting,
+    receivedBytes: receivedBytes,
+    totalBytes: totalBytes,
+    speedBps: speedBps,
+    etaSec: etaSec,
+    kind: kind,
+  );
+}
+
 /// 格式化下载速度
 /// bytesPerSec → "12.5 MB/s" / "856 KB/s" / "1.2 KB/s"
 String formatSpeed(num bytesPerSec) {

@@ -58,27 +58,33 @@ class _TestDownloadNotifier extends DownloadManagerNotifier {
 // ---------------------------------------------------------------------------
 
 /// 构造 DownloadTask（新管线状态枚举直接指定）。
+/// 同组的多个文件需显式传 [id] 区分，避免 key 冲突。
 DownloadTask _item(
   DownloadStatusEnum status, {
   required String appId,
+  int? id,
   String appName = '测试应用',
   String version = '1.0.0',
   String fileName = 'app.apk',
   String? downloadUrl,
+  int total = 1000,
+  int received = 500,
+  int speedBps = 0,
+  int? etaSec,
 }) {
   return DownloadTask(
-    id: appId.hashCode,
+    id: id ?? appId.hashCode,
     appId: appId,
     appName: appName,
     version: version,
     fileName: fileName,
     url: downloadUrl ?? 'https://example.com/$fileName',
     filePath: '/data/media/0/Download/$fileName',
-    total: 1000,
-    received: 500,
+    total: total,
+    received: received,
     status: status,
-    speedBps: 0,
-    etaSec: null,
+    speedBps: speedBps,
+    etaSec: etaSec,
     error: null,
     segments: null,
     createdAt: DateTime.now(),
@@ -418,6 +424,151 @@ void main() {
     expect(find.text('已完成'), findsWidgets);
     expect(find.text('安装'), findsOneWidget);
     expect(find.text('已删除'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  // -------------------------------------------------------------------------
+  // 多文件组：折叠/展开与聚合状态
+  // -------------------------------------------------------------------------
+
+  /// 三个文件的同组任务（一个下载中 + 两个已暂停），用于折叠态聚合展示
+  List<DownloadTask> multiGroupDownloading() => [
+        _item(DownloadStatusEnum.downloading,
+            appId: 'com.example.multi',
+            id: 1,
+            fileName: 'a.apk',
+            total: 1000,
+            received: 500,
+            speedBps: 1048576),
+        _item(DownloadStatusEnum.paused,
+            appId: 'com.example.multi', id: 2, fileName: 'b.apk'),
+        _item(DownloadStatusEnum.paused,
+            appId: 'com.example.multi',
+            id: 3,
+            fileName: 'c.apk',
+            received: 0),
+      ];
+
+  testWidgets('多文件组默认收起：显示聚合进度/计数/合计速度，不显示文件行', (tester) async {
+    _useTallView(tester);
+    notifier.seed([multiGroupDownloading()]);
+
+    await pumpPage(tester);
+
+    // 卡片头：版本 + 文件数 + 聚合状态徽标
+    expect(find.text('1.0.0 · 共 3 个文件'), findsOneWidget);
+    expect(
+      find.descendant(of: find.byType(AppCard), matching: find.text('下载中')),
+      findsOneWidget,
+    );
+
+    // 聚合摘要：整个组一条进度条 + 合计速度 + 已完成计数 + 组级剩余时间
+    expect(find.byType(LinearProgressIndicator), findsOneWidget);
+    expect(find.text('合计 1.0 MB/s'), findsOneWidget);
+    expect(find.text('0/3 已完成'), findsOneWidget);
+    expect(find.text('剩余 1s'), findsOneWidget);
+
+    // 收起时组内文件行不渲染
+    expect(find.text('a.apk'), findsNothing);
+    expect(find.text('b.apk'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('多文件组收起：组内失败不会被折叠藏起来（徽标与摘要都反映失败）',
+      (tester) async {
+    _useTallView(tester);
+    // 完成的那条排在组内第一条，旧实现（只看 items[0]）会把整组显示为「已完成」
+    notifier.seed([
+      [
+        _item(DownloadStatusEnum.completed,
+            appId: 'com.example.mixed', id: 1, fileName: 'ok.apk'),
+        _item(DownloadStatusEnum.completed,
+            appId: 'com.example.mixed', id: 2, fileName: 'ok2.apk'),
+        _item(DownloadStatusEnum.failed,
+            appId: 'com.example.mixed', id: 3, fileName: 'bad.apk'),
+      ],
+    ]);
+
+    await pumpPage(tester);
+
+    // 聚合徽标显示「失败」而不是「已完成」
+    expect(
+      find.descendant(of: find.byType(AppCard), matching: find.text('失败')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: find.byType(AppCard),
+        matching: find.text('已完成'),
+      ),
+      findsNothing,
+    );
+
+    // 摘要给出完成/失败的拆分，并提供一键重试
+    expect(find.text('2 个已完成'), findsOneWidget);
+    expect(find.text('1 个失败'), findsOneWidget);
+    expect(find.text('重试失败'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('多文件组收起且全部完成：摘要显示总大小/渠道，并给出「安装」快捷入口',
+      (tester) async {
+    _useTallView(tester);
+    notifier.seed([
+      [
+        _item(DownloadStatusEnum.completed,
+            appId: 'com.example.done',
+            id: 1,
+            fileName: 'app.apk',
+            total: 1024 * 1024,
+            downloadUrl:
+                'https://api.github.com/repos/x/y/releases/download/v1/app.apk'),
+        _item(DownloadStatusEnum.completed,
+            appId: 'com.example.done',
+            id: 2,
+            fileName: 'extra.obb',
+            total: 1024 * 1024 * 2),
+      ],
+    ]);
+
+    await pumpPage(tester);
+
+    expect(find.text('1.0.0 · 共 2 个文件'), findsOneWidget);
+    expect(find.text('3.0 MB'), findsOneWidget);
+    expect(find.text('GitHub'), findsOneWidget);
+    // 收起态即可安装（组内唯一 apk），无需展开
+    expect(find.text('安装'), findsOneWidget);
+    // 已全部完成 → 不再显示聚合进度条
+    expect(find.byType(LinearProgressIndicator), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('多文件组点击卡片头展开：显示各文件行并隐藏聚合摘要', (tester) async {
+    _useTallView(tester);
+    notifier.seed([multiGroupDownloading()]);
+
+    await pumpPage(tester);
+    expect(find.text('a.apk'), findsNothing);
+
+    // 点卡片头展开
+    await tester.tap(find.text('1.0.0 · 共 3 个文件'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    // 组内每条文件行都渲染出来
+    expect(find.text('a.apk'), findsOneWidget);
+    expect(find.text('b.apk'), findsOneWidget);
+    expect(find.text('c.apk'), findsOneWidget);
+    // 聚合摘要让位给文件行
+    expect(find.text('0/3 已完成'), findsNothing);
+
+    // 再点一次收起：回到聚合摘要
+    await tester.tap(find.text('1.0.0 · 共 3 个文件'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(find.text('a.apk'), findsNothing);
+    expect(find.text('0/3 已完成'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }
