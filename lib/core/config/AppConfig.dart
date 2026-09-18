@@ -122,13 +122,20 @@ class AppConfig {
 
   /// ========== 安全配置 ==========
 
-  /// URL 白名单
+  /// URL 白名单（**裸 host**，不含 scheme/path）
+  ///
+  /// 匹配规则见 [isWhitelistedHost]：仅当 `host == w` 或 `host.endsWith('.$w')`
+  /// （点边界）时命中，避免 `github.com.evil.com`、`evilgithub.com` 等欺骗域名通过。
   static const Set<String> urlWhitelist = {
-    'https://api.github.com',
-    'https://github.com',
-    'https://h5-api.appstore.vivo.com.cn',
-    'https://f-droid.org',
-    'https://mirrors.tuna.tsinghua.edu.cn',
+    'api.github.com',
+    'github.com',
+    // GitHub Release 资产实际下载域（objects.githubusercontent.com /
+    // release-assets.githubusercontent.com；勿在此加入代理主机）。
+    'objects.githubusercontent.com',
+    'release-assets.githubusercontent.com',
+    'h5-api.appstore.vivo.com.cn',
+    'f-droid.org',
+    'mirrors.tuna.tsinghua.edu.cn',
   };
 
   /// URL 允许的协议
@@ -303,7 +310,30 @@ class AppConfig {
 
   /// ========== URL 工具方法 ==========
 
+  /// 判断主机名是否命中 [urlWhitelist]（点边界匹配）。
+  ///
+  /// 仅接受精确相等或**子域**（`host.endsWith('.$w')`），绝不使用
+  /// 无边界 `contains`，因此 `github.com.evil.com`、`evilgithub.com`
+  /// 不会命中 `github.com`。传入的 host 会小写归一化。
+  static bool isWhitelistedHost(String host) {
+    if (host.isEmpty) {
+      return false;
+    }
+    final normalized = host.toLowerCase();
+    for (final w in urlWhitelist) {
+      if (normalized == w || normalized.endsWith('.$w')) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /// 验证 URL 是否安全
+  ///
+  /// 规则：协议必须在 [allowedProtocols] 中；由于白名单语义为 **https-only**
+  /// （历史白名单条目是完整 `https://` 前缀，`http` 从不匹配），此处对白名单
+  /// host 强制要求 `https`，不接受明文 `http`。host 必须以点边界命中
+  /// [urlWhitelist]。任何解析失败/空 host 一律返回 false。
   bool isValidUrl(String url) {
     if (!enableUrlValidation) {
       return true;
@@ -317,11 +347,16 @@ class AppConfig {
         return false;
       }
 
-      // 检查是否在白名单中
-      final isWhitelisted = urlWhitelist.any((whitelist) =>
-          url.startsWith(whitelist) || uri.host.contains(whitelist));
+      // 白名单语义为 https-only：明文 http 不通过（与历史行为一致，不放宽到 http）
+      if (uri.scheme != 'https') {
+        return false;
+      }
 
-      return isWhitelisted;
+      // 检查主机名（点边界白名单匹配，禁止对整串/无边界 contains）
+      if (uri.host.isEmpty) {
+        return false;
+      }
+      return isWhitelistedHost(uri.host);
     } catch (e) {
       return false;
     }

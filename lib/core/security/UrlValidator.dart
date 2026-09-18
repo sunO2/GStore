@@ -44,30 +44,21 @@ class UrlValidator {
       return ValidationResult.failure('URL 缺少主机名');
     }
 
-    // HTTPS 安全检查
-    if (uri.scheme == 'http') {
-      // 检查是否在白名单中允许 HTTP
-      final allowsHttp = AppConfig.urlWhitelist.any((whitelist) =>
-          url.startsWith('http://$whitelist'));
-
-      if (!allowsHttp && config.enableUrlValidation) {
-        return ValidationResult.failure(
-          '不安全的 HTTP 连接，请使用 HTTPS',
-        );
-      }
+    // HTTPS 安全检查：本验证器白名单语义为 https-only，明文 http 一律拒绝
+    // （与历史行为一致——旧白名单为完整 `https://` 前缀，http 从不匹配）。
+    if (uri.scheme == 'http' && config.enableUrlValidation) {
+      return ValidationResult.failure(
+        '不安全的 HTTP 连接，请使用 HTTPS',
+      );
     }
 
-    // 检查白名单
+    // 检查白名单（裸 host 点边界匹配）
     if (config.enableUrlValidation) {
-      final isWhitelisted = AppConfig.urlWhitelist.any((whitelist) {
-        return url.startsWith(whitelist) ||
-               (uri != null && (uri.host.contains(whitelist) ||
-               uri.host == whitelist.replaceFirst('https://', '').replaceFirst('http://', '')));
-      });
+      final isWhitelisted = AppConfig.isWhitelistedHost(uri.host);
 
       if (!isWhitelisted) {
         return ValidationResult.failure(
-          'URL 不在白名单中: ${uri?.host ?? "未知"}',
+          'URL 不在白名单中: ${uri.host}',
         );
       }
     }
