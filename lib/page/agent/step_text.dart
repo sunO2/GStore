@@ -18,8 +18,8 @@ import 'package:gstore/page/agent/markdown_message.dart';
 
 /// 思考过程折叠块（reasoning / 内联 think 内容）
 ///
-/// 展示策略：流式进行中默认展开（便于实时观察推理过程），
-/// 生成结束后默认折叠；标题栏点击可手动展开/收起。
+/// 展示策略：**默认折叠**（含流式进行中，标题栏显示「思考中…」+ 转圈表示
+/// 仍在推理），用户点标题栏手动展开；手动展开后不再被自动折叠覆盖。
 class AgentReasoningBlock extends StatefulWidget {
   const AgentReasoningBlock({
     super.key,
@@ -30,7 +30,7 @@ class AgentReasoningBlock extends StatefulWidget {
   /// 思考正文
   final String reasoning;
 
-  /// 思考是否已结束（结束后默认折叠）
+  /// 思考是否已结束（仅用于标题文案「思考中…」/「思考过程」）
   final bool done;
 
   @override
@@ -38,10 +38,10 @@ class AgentReasoningBlock extends StatefulWidget {
 }
 
 class _AgentReasoningBlockState extends State<AgentReasoningBlock> {
-  /// 用户手动覆盖的展开态（null = 按 done 自动决定）
+  /// 用户手动覆盖的展开态（null = 默认折叠）
   bool? _expanded;
 
-  bool get _isExpanded => _expanded ?? !widget.done;
+  bool get _isExpanded => _expanded ?? false;
 
   @override
   Widget build(BuildContext context) {

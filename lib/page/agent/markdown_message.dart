@@ -7,6 +7,34 @@ import 'package:gstore/core/core.dart';
 import 'package:gstore/core/router/app_router.dart';
 import 'package:markdown/markdown.dart' as md;
 
+/// 检测 markdown 文本中是否存在**未闭合的围栏代码块**。
+///
+/// 流式输出时正文是逐 chunk 增长的，` ``` ` 代码块可能只写了开围栏、
+/// 闭合围栏还没到（甚至开围栏本身还在输入中）。此时 `flutter_markdown`
+/// 仍会把未闭合的部分解析成 `pre` 元素 → 代码卡片骨架（顶栏/语言标签/
+/// 粗 padding）一次性插入，消息高度瞬间暴涨 → reverse 列表中跳动。
+///
+/// 判定规则（CommonMark 简版）：
+/// - 逐行匹配围栏开闭标记（三个及以上反引号/波浪号，允许 0-3 空格缩进）；
+/// - 遇开标记进入代码块，遇闭标记离开；
+/// - 文本读完仍处于代码块内 → 未闭合。
+///
+/// [inFence] 用于嵌套解析（本文件不嵌套调用，供测试）。
+bool hasUnclosedCodeBlock(String text, {bool inFence = false}) {
+  var inBlock = inFence;
+  final lines = text.split('\n');
+  for (final line in lines) {
+    final trimmed = line.trimLeft();
+    final indent = line.length - trimmed.length;
+    if (indent > 3) continue;
+    // 围栏：行首 0-3 空格 + 连续 3+ 个 ` 或 ~
+    final match = RegExp(r'^(?<marker>`{3,}|~{3,})').firstMatch(trimmed);
+    if (match == null) continue;
+    inBlock = !inBlock;
+  }
+  return inBlock;
+}
+
 /// 对话消息 Markdown 渲染组件（增强版）
 ///
 /// 增强能力：
@@ -161,7 +189,13 @@ class AgentMarkdownMessage extends StatelessWidget {
         return _buildImage(context, uri);
       },
       builders: {
-        'pre': _CodeBlockBuilder(),
+        // 流式输出期间 markdown 是"未完成"的：围栏代码块可能还没闭合。
+        // 未闭合时库仍会生成 pre 元素 → 完整代码卡片（顶栏+语言标签+粗
+        // padding）一次性插入，消息高度瞬间暴涨（单行 26px → 127px+），
+        // 在 reverse 列表中表现为"新 chunk 一到就跳动"。因此检测到未闭合
+        // 围栏时用 compact 模式（简洁等宽文本，无卡片骨架）渲染，
+        // 闭合后再切回完整代码卡片，高度增量降到 ~20px/行。
+        'pre': _CodeBlockBuilder(compact: hasUnclosedCodeBlock(text)),
         'table': _StyledTableBuilder(scheme),
       },
       selectable: true,
@@ -255,6 +289,16 @@ class AgentMarkdownMessage extends StatelessWidget {
 
 /// 代码块构建器：语言标签 + 复制按钮 + 深色主题
 class _CodeBlockBuilder extends MarkdownElementBuilder {
+  /// 紧凑模式（流式中间态）：只渲染等宽文本，不渲染完整代码卡片骨架。
+  ///
+  /// 流式输出时围栏代码块未闭合，库仍会生成 pre 元素并交给本 builder；
+  /// 完整卡片（顶栏 + 语言标签 + 深色背景 + 粗 padding）会让消息高度瞬间
+  /// 暴涨 100px+，在 reverse 列表中表现为"新 chunk 一到就跳动"。未闭合时
+  /// 退化为简洁等宽文本，高度随行数线性增长；闭合后切回完整卡片。
+  final bool compact;
+
+  _CodeBlockBuilder({this.compact = false});
+
   @override
   Widget? visitElementAfter(md.Element element, TextStyle? preferredStyle) {
     final text = element.textContent;
@@ -276,7 +320,43 @@ class _CodeBlockBuilder extends MarkdownElementBuilder {
     // 去掉结尾多余换行
     final code = text.replaceFirst(RegExp(r'\n+$'), '');
 
+    // 流式中间态：未闭合代码块 → 简洁等宽文本（无卡片骨架，防高度暴涨）
+    if (compact) {
+      return _CompactCodeBlock(text: code, language: language);
+    }
     return _CodeBlock(text: code, language: language);
+  }
+}
+
+/// 流式中间态的代码块：等宽文本 + 淡背景，无顶栏/语言标签/粗 padding。
+/// 高度 ≈ 行数 × 行高，与普通多行文本相当，避免未闭合时 +100px 暴涨。
+class _CompactCodeBlock extends StatelessWidget {
+  final String text;
+  final String language;
+
+  const _CompactCodeBlock({required this.text, required this.language});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.symmetric(vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest.withValues(alpha: 0.5),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          fontSize: 12.5,
+          fontFamily: 'monospace',
+          height: 1.5,
+          color: scheme.onSurface,
+        ),
+      ),
+    );
   }
 }
 
@@ -308,7 +388,13 @@ class _CodeBlockState extends State<_CodeBlock> {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
 
-    return Container(
+    // AnimatedSize：流式闭合瞬间（compact 等宽文本 → 完整代码卡片）高度跳变
+    // 平滑过渡，避免视觉"咔哒"跳动；正常静态消息无高度变化，动画不触发。
+    return AnimatedSize(
+      duration: const Duration(milliseconds: 150),
+      curve: Curves.easeOutCubic,
+      alignment: Alignment.topCenter,
+      child: Container(
       margin: const EdgeInsets.symmetric(vertical: 8),
       decoration: BoxDecoration(
         color: _codeBackground,
@@ -401,6 +487,7 @@ class _CodeBlockState extends State<_CodeBlock> {
             ),
           ),
         ],
+      ),
       ),
     );
   }
