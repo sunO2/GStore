@@ -50,6 +50,10 @@ require_contains "$IT_TOOLS_DOC" "已知风险" "doc/12"
 require_contains "$REMOTE_DOC" "已知风险" "doc/16"
 require_contains "$REMOTE_DOC" "Phase 2" "doc/16"
 require_contains "$REMOTE_DOC" "libgstore_mod_<name>_<major.minor.patch>-<abi>.so" "doc/16 资产命名"
+require_contains "$REMOTE_DOC" "gstoreSlimModules" "doc/16 精简包构建开关"
+require_contains "$REMOTE_DOC" "精简" "doc/16 精简包"
+require_contains "$REMOTE_DOC" "GStore-slim-<abi>-release.apk" "doc/16 精简包命名"
+require_contains "$DOC_INDEX" "精简包" "document/README.md 索引"
 require_contains "$STATUS_DOC" "远程" "rust/STATUS.md"
 
 # 3) 负向控制：删掉「已知风险」的副本必须让 contains 断言失败。
@@ -69,6 +73,22 @@ if (require_contains "$NEG_COPY" "已知风险" "negative-control" >/dev/null 2>
   fail "负向控制失效：对已移除「已知风险」的副本，断言误判为通过"
 else
   echo "[docs_assert] [ok] 负向控制: 断言对缺失字面量返回非零（预期行为）"
+fi
+
+# 4) 负向控制：删掉精简包关键令牌的副本必须让对应 contains 断言失败。
+NEG_SLIM_COPY="$NEG_TMP_DIR/doc16_no_slim_token.md"
+sed 's/gstoreSlimModules/SLIM_TOKEN_REMOVED/g' "$REMOTE_DOC" > "$NEG_SLIM_COPY"
+
+if grep -Fq -- "gstoreSlimModules" "$NEG_SLIM_COPY"; then
+  fail "负向控制失效：精简包副本仍含「gstoreSlimModules」"
+else
+  echo "[docs_assert] [ok] 负向控制: 精简包副本已移除「gstoreSlimModules」"
+fi
+
+if (require_contains "$NEG_SLIM_COPY" "gstoreSlimModules" "negative-control-slim" >/dev/null 2>&1); then
+  fail "负向控制失效：对已移除「gstoreSlimModules」的副本，断言误判为通过"
+else
+  echo "[docs_assert] [ok] 负向控制: 断言对缺失精简包令牌返回非零（预期行为）"
 fi
 
 if [ "$FAIL" -ne 0 ]; then
