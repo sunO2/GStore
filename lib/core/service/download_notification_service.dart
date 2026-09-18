@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:gstore/core/core.dart';
@@ -33,6 +34,17 @@ class DownloadNotificationService {
 
   /// 活跃下载数（用于前台服务启停）
   int _activeDownloads = 0;
+
+  /// 测试专用 spy：用户下载管线通知方法被调用的次数。
+  ///
+  /// 用于证明**模块内部下载**（`RustModuleLoader` / 模块管理页）绝不复用
+  /// 本服务、绝不进入系统通知与下载中心。任何真实调用都会使其递增。
+  @visibleForTesting
+  static int debugCallCount = 0;
+
+  /// 测试专用：重置 spy 计数。
+  @visibleForTesting
+  static void debugResetCallCount() => debugCallCount = 0;
 
   /// 进度通知节流（避免高频刷新）
   final Map<int, DateTime> _lastNotify = {};
@@ -123,6 +135,7 @@ class DownloadNotificationService {
 
   /// 下载开始
   void onDownloadStart(int id, String title, String fileName) {
+    debugCallCount++;
     if (!_initialized) {
       return; // 未初始化（如单测/仅用内核不走通知）时静默跳过，不抛 LateInitializationError
     }
@@ -139,6 +152,7 @@ class DownloadNotificationService {
     int count,
     int total,
   ) {
+    debugCallCount++;
     if (!_initialized) {
       return; // 未初始化（如单测/仅用内核不走通知）时静默跳过，不抛 LateInitializationError
     }
@@ -151,6 +165,7 @@ class DownloadNotificationService {
 
   /// 下载完成（移除进度通知）
   void onDownloadComplete(int id) {
+    debugCallCount++;
     if (!_initialized) {
       return; // 未初始化（如单测/仅用内核不走通知）时静默跳过，不抛 LateInitializationError
     }
@@ -162,6 +177,7 @@ class DownloadNotificationService {
 
   /// 下载失败（显示失败通知）
   void onDownloadError(int id, String title) {
+    debugCallCount++;
     if (!_initialized) {
       return; // 未初始化（如单测/仅用内核不走通知）时静默跳过，不抛 LateInitializationError
     }
@@ -186,6 +202,7 @@ class DownloadNotificationService {
 
   /// 下载取消（移除通知）
   void onDownloadCancel(int id) {
+    debugCallCount++;
     if (!_initialized) {
       return; // 未初始化（如单测/仅用内核不走通知）时静默跳过，不抛 LateInitializationError
     }

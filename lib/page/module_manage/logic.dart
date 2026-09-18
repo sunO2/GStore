@@ -271,24 +271,45 @@ class RustPluginsController extends Notifier<RustPluginsState> {
       }
     }
     if (_disposed) return;
-    state = RustPluginsState(
+    state = state.copyWith(
       loading: false,
       statuses: out,
-      busy: state.busy,
       error: error,
+      clearError: error == null,
     );
   }
 
   /// 下载/更新：触发远端更新路径（后台安装，绝不挂载；下次启动生效）。
+  ///
+  /// 内部下载进度经 [RustModuleLoader.downloadAndInstall] 的 `onProgress`
+  /// 实时回填到 [RustPluginsState.progress]；成功/失败经统一 [AppDialogs]
+  /// Snackbar 提示，失败同时写入 [RustPluginsState.errors]（页面可见）。
+  /// **绝不**进入用户下载管线（无下载任务、无系统通知、无安装）。
   Future<bool> download(String name) async {
     if (state.isBusy(name)) return false;
     _setBusy(name, true);
+    _clearError(name);
+    _setProgress(name, 0);
     var ok = false;
+    String? failure;
     try {
-      ok = await _loader.downloadAndInstall(name);
-    } catch (_) {
+      ok = await _loader.downloadAndInstall(
+        name,
+        onProgress: (fraction) => _setProgress(name, fraction),
+      );
+    } catch (e) {
+      failure = '$e';
       ok = false;
     } finally {
+      // 先清除进度：避免下载结束后残留进度条（stale state）。
+      _clearProgress(name);
+      if (ok) {
+        AppDialogs.showSuccess('模块 $name 下载完成，重启应用后生效');
+      } else {
+        final message = failure ?? '模块 $name 下载未完成（无可更新版本或校验失败）';
+        _setError(name, message);
+        AppDialogs.showError(message);
+      }
       await refresh();
       _setBusy(name, false);
     }
@@ -299,6 +320,7 @@ class RustPluginsController extends Notifier<RustPluginsState> {
   Future<bool> rollback(String name) async {
     if (state.isBusy(name)) return false;
     _setBusy(name, true);
+    _clearError(name);
     var ok = false;
     try {
       ok = await _loader.rollbackToBuiltin(name);
@@ -320,6 +342,36 @@ class RustPluginsController extends Notifier<RustPluginsState> {
       next.remove(name);
     }
     state = state.copyWith(busy: next);
+  }
+
+  /// 记录模块内部下载进度（Notifier 已销毁时忽略）。
+  void _setProgress(String name, double fraction) {
+    if (_disposed) return;
+    state = state.copyWith(
+      progress: {...state.progress, name: ModuleDownloadProgress(fraction)},
+    );
+  }
+
+  /// 清除模块内部下载进度。
+  void _clearProgress(String name) {
+    if (_disposed) return;
+    if (!state.progress.containsKey(name)) return;
+    final next = {...state.progress}..remove(name);
+    state = state.copyWith(progress: next);
+  }
+
+  /// 记录模块内部下载/更新错误（页面可见；绝不进系统通知）。
+  void _setError(String name, String message) {
+    if (_disposed) return;
+    state = state.copyWith(errors: {...state.errors, name: message});
+  }
+
+  /// 清除模块内部下载/更新错误（重新操作前）。
+  void _clearError(String name) {
+    if (_disposed) return;
+    if (!state.errors.containsKey(name)) return;
+    final next = {...state.errors}..remove(name);
+    state = state.copyWith(errors: next);
   }
 }
 

@@ -130,6 +130,8 @@ class ModuleManagePage extends ConsumerWidget {
     final downloadedBlocked =
         hasDownloaded && (status?.source == 'none');
     final busy = state.isBusy(plugin.name);
+    final progress = state.progressOf(plugin.name);
+    final opError = state.errorOf(plugin.name);
 
     final sourceText = status == null
         ? '状态未知'
@@ -205,8 +207,66 @@ class ModuleManagePage extends ConsumerWidget {
               _buildRollbackAction(context, ref, plugin.name, hasDownloaded, busy),
             ],
           ),
+          // 内部下载进度（不进用户下载管线）：下载中显示确定进度条 + 百分比。
+          if (busy && progress != null) ...[
+            const SizedBox(height: AppSpacing.sm),
+            _buildInternalProgress(context, progress),
+          ],
+          // 内部下载/更新错误：页面可见提示（不走系统通知/下载中心）。
+          if (opError != null) ...[
+            const SizedBox(height: AppSpacing.sm),
+            _buildErrorLine(context, opError),
+          ],
         ],
       ),
+    );
+  }
+
+  /// 内部下载进度条 + 百分比（`AppLoading` 仍在按钮区表示 busy）。
+  Widget _buildInternalProgress(
+    BuildContext context,
+    ModuleDownloadProgress progress,
+  ) {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        ClipRRect(
+          borderRadius: AppRadius.allSM,
+          child: LinearProgressIndicator(value: progress.fraction),
+        ),
+        const SizedBox(height: AppSpacing.xs),
+        Text(
+          '下载中 ${progress.percent}%',
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// 内部下载/更新错误行（主题 error 色，页面可见）。
+  Widget _buildErrorLine(BuildContext context, String message) {
+    final theme = Theme.of(context);
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(
+          Icons.error_outline,
+          size: AppTypography.iconSM,
+          color: theme.colorScheme.error,
+        ),
+        const SizedBox(width: AppSpacing.sm),
+        Expanded(
+          child: Text(
+            message,
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.error,
+            ),
+          ),
+        ),
+      ],
     );
   }
 

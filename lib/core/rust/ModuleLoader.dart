@@ -72,6 +72,12 @@ class RustModuleStatus {
       };
 }
 
+/// 内部下载进度回调：`fraction` 为 `[0,1]` 的完成比例。
+///
+/// 仅用于**模块管理页**展示内部下载进度；**绝不**进入用户下载管线
+/// （不产生下载任务/系统通知），见 `.omo/plans/remote-plugin-download.md` Todo 16。
+typedef ModuleProgressCallback = void Function(double fraction);
+
 /// 模块加载器：负责模块 .so 的按需下载 → 哈希校验 → 宿主 dlopen 挂载。
 ///
 /// 架构文档 4.4：按需注册（主路径）。模块存应用私有目录
@@ -137,6 +143,12 @@ class RustModuleLoader {
 
   /// `downloadAndInstall` 覆盖（测试专用；用于无网络/FFI 的下载交互测试）。
   Future<bool> Function(String name)? _downloadOverride;
+
+  /// `downloadAndInstall` **带进度**覆盖（测试专用；优先于 [_downloadOverride]）。
+  ///
+  /// 测试可经此接缝驱动 0→0.5→1.0 等进度，无需真实网络。
+  Future<bool> Function(String name, ModuleProgressCallback? onProgress)?
+      _downloadProgressOverride;
 
   /// 内置清单缓存（每处只读一次；`debugReset` 清空）。
   Map<String, dynamic>? _builtinManifestCache;
@@ -225,6 +237,8 @@ class RustModuleLoader {
     Future<RustModuleStatus> Function(String name)? probeOverride,
     Future<bool> Function(String name)? rollbackOverride,
     Future<bool> Function(String name)? downloadOverride,
+    Future<bool> Function(String name, ModuleProgressCallback? onProgress)?
+        downloadProgressOverride,
     DateTime Function()? clock,
     void Function(String name, String soPath)? beforeMetaWrite,
   }) {
@@ -239,6 +253,7 @@ class RustModuleLoader {
     _probeOverride = probeOverride;
     _rollbackOverride = rollbackOverride;
     _downloadOverride = downloadOverride;
+    _downloadProgressOverride = downloadProgressOverride;
     _clockOverride = clock;
     _beforeMetaWriteHook = beforeMetaWrite;
     // 清单/内置清单可能变化，清缓存避免跨测试泄漏。
@@ -264,6 +279,7 @@ class RustModuleLoader {
     _probeOverride = null;
     _rollbackOverride = null;
     _downloadOverride = null;
+    _downloadProgressOverride = null;
     _clockOverride = null;
     _beforeMetaWriteHook = null;
     _tempCleanupDone = false;
@@ -288,6 +304,7 @@ class RustModuleLoader {
       _probeOverride != null ||
       _rollbackOverride != null ||
       _downloadOverride != null ||
+      _downloadProgressOverride != null ||
       _clockOverride != null ||
       _beforeMetaWriteHook != null;
 
@@ -571,9 +588,19 @@ class RustModuleLoader {
   /// 触发条件：无有效本地产物，**或**远端版本更高，**或**版本相同但清单
   /// sha256 与本地 `.meta.sha256` 不同。完成后失效 [_manifestCache]。
   /// 返回 true 表示完成了一次安装。
-  Future<bool> downloadAndInstall(String name) async {
+  ///
+  /// [onProgress]（可选）：内部下载进度回调（`[0,1]`）。仅用于管理页展示，
+  /// **不产生**用户下载任务或系统通知。
+  Future<bool> downloadAndInstall(
+    String name, {
+    ModuleProgressCallback? onProgress,
+  }) async {
     if (!_bgInFlight.add(name)) return false;
     try {
+      // 测试接缝：带进度覆盖优先（可驱动 0→0.5→1.0，无网络/FFI）。
+      final progressOverride = _downloadProgressOverride;
+      if (progressOverride != null) return progressOverride(name, onProgress);
+
       // 测试接缝：注入下载结果（无网络/FFI）。
       final override = _downloadOverride;
       if (override != null) return override(name);
@@ -596,7 +623,12 @@ class RustModuleLoader {
               target.sha256.toLowerCase() != localMeta.sha256.toLowerCase());
       if (!needed) return false;
 
-      final ok = await _downloadAndInstall(name, mount: false, target: target);
+      final ok = await _downloadAndInstall(
+        name,
+        mount: false,
+        target: target,
+        onProgress: onProgress,
+      );
       // 后台刷新后失效清单缓存：下次解析/展示拿到最新清单。
       _manifestCache = null;
       return ok;
@@ -885,10 +917,14 @@ class RustModuleLoader {
   ///
   /// 任一步失败只留下可被启动清理的 `.tmp`，绝不产生「有 `.so` 无 `.meta`」以外的
   /// 半写提交（后者由挂载期 fail-closed 拦截）。
+  ///
+  /// [onProgress]（可选）：分步进度（下载 0.05 → 落盘 0.7 → 校验 0.85 →
+  /// 安装完成 1.0）。内部下载为一次性字节获取，故按步骤而非字节上报。
   Future<bool> _downloadAndInstall(
     String name, {
     required bool mount,
     _RemoteTarget? target,
+    ModuleProgressCallback? onProgress,
   }) async {
     try {
       final resolved = target ?? await _remoteTarget(name);
@@ -922,6 +958,7 @@ class RustModuleLoader {
 
       // 1. 下载到 `<finalSo>.tmp`（注入下载器优先；测试无网络）。
       appLog.info('RustModuleLoader: 下载模块 $name <- ${resolved.url}');
+      onProgress?.call(0.05);
       final resp = await _fetchBytes(resolved.url);
       if (resp == null) {
         appLog.warning('RustModuleLoader: $name 下载失败');
@@ -929,6 +966,7 @@ class RustModuleLoader {
         return false;
       }
       await tmpFile.writeAsBytes(resp, flush: true);
+      onProgress?.call(0.7);
 
       // 2. 校验清单 SHA-256：不符 → 删除 `.tmp`，无最终 `.so`/`.meta`。
       final actual = _sha256Hex(resp);
@@ -937,6 +975,7 @@ class RustModuleLoader {
         await _deleteQuietly(tmpFile);
         return false;
       }
+      onProgress?.call(0.85);
 
       // 3. **先**提交 `.so`：`.tmp` → 三段式最终文件名。
       await _renameOver(tmpFile, finalSo);
@@ -963,6 +1002,7 @@ class RustModuleLoader {
 
       // 真实版本另记录到 `version`（兼容既有读取路径）。
       await _writeLocalVersion(name, resolved.version);
+      onProgress?.call(1.0);
 
       // 清理本次可能产生的 `.meta.tmp`/`.sig.tmp` 残留。
       await _deleteQuietly(File('${metaFile.path}.tmp'));
