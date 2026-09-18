@@ -51,6 +51,7 @@ app.*.map.json
 # Rust
 # Rust crate 构建产物（host/contract/模块各 crate 的 target）
 rust/*/target/
+rust/target/
 
 # GStore-Repositorys 临时克隆
 /git.temp/

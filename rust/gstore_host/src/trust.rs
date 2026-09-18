@@ -38,17 +38,27 @@ struct ModuleMeta {
     abi: String,
 }
 
-/// 校验模块文件。
+/// 校验模块文件（生产入口）：使用编译期钉死的公钥 [MODULE_SIGNING_PUBKEY_HEX]。
 /// - 无 `<so>.sig` → Ok（内置/未签名，随包信任）
 /// - 有 `<so>.sig` → 必须有钉死公钥 + `<so>.meta`，且签名与 sha256 匹配，否则 Err
 pub fn verify_module_file(so_path: &Path) -> Result<(), String> {
+    verify_module_file_with_key(so_path, pinned_pubkey())
+}
+
+/// 可测校验入口：语义与 [verify_module_file] 完全一致，但显式传入公钥，
+/// 便于单测用固定测试密钥覆盖 `.meta`/签名失败分支，而不依赖钉死常量。
+/// `public_key == None`（未配置）时，任何携带 `.sig` 的模块一律拒绝（fail-closed）。
+pub fn verify_module_file_with_key(
+    so_path: &Path,
+    public_key: Option<[u8; 32]>,
+) -> Result<(), String> {
     let so_str = so_path.to_string_lossy().to_string();
     let sig_path = format!("{so_str}.sig");
     if !Path::new(&sig_path).exists() {
         return Ok(()); // 未签名：按内置模块处理
     }
 
-    let public_key = pinned_pubkey()
+    let public_key = public_key
         .ok_or_else(|| "module is signed but no pinned public key is configured".to_string())?;
 
     let signature_hex = std::fs::read_to_string(&sig_path)
@@ -101,6 +111,79 @@ fn hex_decode(s: &str) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    use ed25519_dalek::{Signer, SigningKey};
+
+    fn test_key() -> SigningKey {
+        SigningKey::from_bytes(&[0x2a; 32])
+    }
+
+    fn test_pubkey() -> [u8; 32] {
+        test_key().verifying_key().to_bytes()
+    }
+
+    fn hex_encode(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        fn new(tag: &str) -> Self {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let dir = std::env::temp_dir().join(format!(
+                "gstore_trust_{tag}_{}_{}_{}",
+                std::process::id(),
+                seq,
+                nanos
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            TestDir(dir)
+        }
+
+        fn so_path(&self) -> PathBuf {
+            self.0.join("libgstore_mod_qr_1.0.0.so")
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn meta_json(name: &str, version: &str, abi: &str) -> String {
+        format!(r#"{{"name":"{name}","version":"{version}","abi":"{abi}"}}"#)
+    }
+
+    fn sign_for(name: &str, version: &str, abi: &str, sha: &str) -> String {
+        let payload = gstore_contract::security::signing_payload(name, version, abi, sha);
+        hex_encode(&test_key().sign(&payload).to_bytes())
+    }
+
+    fn write_module(
+        dir: &TestDir,
+        so_bytes: &[u8],
+        meta: Option<&str>,
+        signature_hex: Option<&str>,
+    ) -> PathBuf {
+        let so_path = dir.so_path();
+        std::fs::write(&so_path, so_bytes).unwrap();
+        if let Some(sig) = signature_hex {
+            std::fs::write(format!("{}.sig", so_path.display()), sig).unwrap();
+        }
+        if let Some(meta) = meta {
+            std::fs::write(format!("{}.meta", so_path.display()), meta).unwrap();
+        }
+        so_path
+    }
 
     #[test]
     fn hex_decode_roundtrip() {
@@ -114,5 +197,172 @@ mod tests {
         // 不存在的路径且无 .sig → 视为未签名，放行
         let p = std::path::Path::new("/nonexistent/libgstore_mod_x.so");
         assert!(verify_module_file(p).is_ok());
+    }
+
+    #[test]
+    fn valid_signature_with_test_key_is_allowed() {
+        let dir = TestDir::new("valid");
+        let so_bytes = b"\x7fELF fake qr module payload";
+        let sha = sha256_hex(so_bytes);
+        let sig = sign_for("qr", "1.0.0", "arm64-v8a", &sha);
+        let so_path = write_module(
+            &dir,
+            so_bytes,
+            Some(&meta_json("qr", "1.0.0", "arm64-v8a")),
+            Some(&sig),
+        );
+        assert!(verify_module_file_with_key(&so_path, Some(test_pubkey())).is_ok());
+    }
+
+    #[test]
+    fn signed_missing_meta_is_rejected() {
+        let dir = TestDir::new("missing-meta");
+        let so_bytes = b"payload-without-meta";
+        let sha = sha256_hex(so_bytes);
+        let sig = sign_for("qr", "1.0.0", "arm64-v8a", &sha);
+        let so_path = write_module(&dir, so_bytes, None, Some(&sig));
+        let err = verify_module_file_with_key(&so_path, Some(test_pubkey())).unwrap_err();
+        assert!(err.contains("read module meta failed"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn signed_malformed_meta_is_rejected() {
+        let dir = TestDir::new("malformed-meta");
+        let so_bytes = b"payload-malformed-meta";
+        let sha = sha256_hex(so_bytes);
+        let sig = sign_for("qr", "1.0.0", "arm64-v8a", &sha);
+        let so_path = write_module(&dir, so_bytes, Some("{ not valid json"), Some(&sig));
+        let err = verify_module_file_with_key(&so_path, Some(test_pubkey())).unwrap_err();
+        assert!(err.contains("parse module meta failed"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn signed_meta_abi_mismatch_is_rejected() {
+        let dir = TestDir::new("abi-mismatch");
+        let so_bytes = b"payload-abi-mismatch";
+        let sha = sha256_hex(so_bytes);
+        // 签名覆盖 abi=arm64-v8a，但 .meta 声称 armeabi-v7a → 签名失配 → 拒绝
+        let sig = sign_for("qr", "1.0.0", "arm64-v8a", &sha);
+        let so_path = write_module(
+            &dir,
+            so_bytes,
+            Some(&meta_json("qr", "1.0.0", "armeabi-v7a")),
+            Some(&sig),
+        );
+        let err = verify_module_file_with_key(&so_path, Some(test_pubkey())).unwrap_err();
+        assert!(err.contains("module signature rejected"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn signed_meta_version_tamper_is_rejected() {
+        let dir = TestDir::new("version-tamper");
+        let so_bytes = b"payload-version-tamper";
+        let sha = sha256_hex(so_bytes);
+        let sig = sign_for("qr", "1.0.0", "arm64-v8a", &sha);
+        let so_path = write_module(
+            &dir,
+            so_bytes,
+            Some(&meta_json("qr", "9.9.9", "arm64-v8a")),
+            Some(&sig),
+        );
+        let err = verify_module_file_with_key(&so_path, Some(test_pubkey())).unwrap_err();
+        assert!(err.contains("module signature rejected"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn signature_mismatch_is_rejected() {
+        let dir = TestDir::new("sig-mismatch");
+        let so_bytes = b"payload-signature-mismatch";
+        // 签名针对其他内容 sha，而非实际 .so 字节
+        let sig = sign_for("qr", "1.0.0", "arm64-v8a", "deadbeef");
+        let so_path = write_module(
+            &dir,
+            so_bytes,
+            Some(&meta_json("qr", "1.0.0", "arm64-v8a")),
+            Some(&sig),
+        );
+        let err = verify_module_file_with_key(&so_path, Some(test_pubkey())).unwrap_err();
+        assert!(err.contains("module signature rejected"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn truncated_signature_is_rejected() {
+        let dir = TestDir::new("truncated-sig");
+        let so_bytes = b"payload-truncated-sig";
+        let sha = sha256_hex(so_bytes);
+        let full = sign_for("qr", "1.0.0", "arm64-v8a", &sha);
+        let so_path = write_module(
+            &dir,
+            so_bytes,
+            Some(&meta_json("qr", "1.0.0", "arm64-v8a")),
+            Some(&full[..16]),
+        );
+        let err = verify_module_file_with_key(&so_path, Some(test_pubkey())).unwrap_err();
+        assert!(err.contains("module signature rejected"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn empty_signature_is_rejected() {
+        let dir = TestDir::new("empty-sig");
+        let so_bytes = b"payload-empty-sig";
+        let so_path = write_module(
+            &dir,
+            so_bytes,
+            Some(&meta_json("qr", "1.0.0", "arm64-v8a")),
+            Some("   \n"),
+        );
+        let err = verify_module_file_with_key(&so_path, Some(test_pubkey())).unwrap_err();
+        assert!(err.contains("empty signature"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn signed_module_without_key_is_rejected() {
+        let dir = TestDir::new("no-key");
+        let so_bytes = b"payload-no-key";
+        let sha = sha256_hex(so_bytes);
+        let sig = sign_for("qr", "1.0.0", "arm64-v8a", &sha);
+        let so_path = write_module(
+            &dir,
+            so_bytes,
+            Some(&meta_json("qr", "1.0.0", "arm64-v8a")),
+            Some(&sig),
+        );
+        // 公钥缺失绝不等于跳过校验
+        let err = verify_module_file_with_key(&so_path, None).unwrap_err();
+        assert!(err.contains("no pinned public key"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn wrong_public_key_is_rejected() {
+        let dir = TestDir::new("wrong-key");
+        let so_bytes = b"payload-wrong-key";
+        let sha = sha256_hex(so_bytes);
+        let sig = sign_for("qr", "1.0.0", "arm64-v8a", &sha);
+        let so_path = write_module(
+            &dir,
+            so_bytes,
+            Some(&meta_json("qr", "1.0.0", "arm64-v8a")),
+            Some(&sig),
+        );
+        let other_key = SigningKey::from_bytes(&[0x11; 32]);
+        let err = verify_module_file_with_key(&so_path, Some(other_key.verifying_key().to_bytes()))
+            .unwrap_err();
+        assert!(err.contains("module signature rejected"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn verify_module_file_delegates_to_pinned_key() {
+        let dir = TestDir::new("pinned-delegate");
+        let so_bytes = b"payload-pinned-delegate";
+        let sha = sha256_hex(so_bytes);
+        let sig = sign_for("qr", "1.0.0", "arm64-v8a", &sha);
+        let so_path = write_module(
+            &dir,
+            so_bytes,
+            Some(&meta_json("qr", "1.0.0", "arm64-v8a")),
+            Some(&sig),
+        );
+        // 无论钉死公钥是否配置，测试密钥签名的模块都不应通过生产入口
+        assert!(verify_module_file(&so_path).is_err());
     }
 }

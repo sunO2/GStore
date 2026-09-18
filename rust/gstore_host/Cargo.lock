@@ -545,6 +545,7 @@ dependencies = [
 name = "gstore_host"
 version = "0.1.0"
 dependencies = [
+ "ed25519-dalek",
  "flutter_rust_bridge",
  "gstore_contract",
  "libloading",
