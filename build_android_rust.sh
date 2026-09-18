@@ -79,9 +79,10 @@ EOF
     if [ "$target" = "armv7-linux-androideabi" ]; then
         clang_name="armv7a-linux-androideabi33-clang"
     fi
-    export "CC_${target_underscore}=$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin/$clang_name"
-    export "CXX_${target_underscore}=$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin/${clang_name%clang}clang++"
-    export "AR_${target_underscore}=$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+    local ndk_bin="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin"
+    export "CC_${target_underscore}=$ndk_bin/$clang_name"
+    export "CXX_${target_underscore}=$ndk_bin/${clang_name%clang}clang++"
+    export "AR_${target_underscore}=$ndk_bin/llvm-ar"
 
     # zxing-cpp cmake 构建所需的 NDK 环境（cmake crate 不转发 ANDROID_ABI 环境变量，
     # 只能通过 CMAKE_TOOLCHAIN_FILE 包装文件强制 ABI）
@@ -121,7 +122,11 @@ EOF
     fi
 
     # 构建
-    cargo build --release --target "$target"
+    # 显式用 --config 注入 NDK linker/ar：各 crate 的 .cargo/config.toml 里写的是
+    # 开发机绝对路径，CI runner 上不存在会导致链接失败。
+    cargo build --release --target "$target" \
+        --config "target.$target.linker=\"$ndk_bin/$clang_name\"" \
+        --config "target.$target.ar=\"$ndk_bin/llvm-ar\""
 
     # 检查构建结果
     if [ -f "target/$target/release/libgstore_host.so" ]; then
@@ -172,6 +177,10 @@ EOF
 
         # cc crate 需要不带版本号的 clang（NDK 只有带 API 版本的）→ 包装脚本
         local toolchain_bin="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin"
+        local clang_name="${target}33-clang"
+        if [ "$target" = "armv7-linux-androideabi" ]; then
+            clang_name="armv7a-linux-androideabi33-clang"
+        fi
         local symlink_dir="$module_dir/target/toolchain-bin"
         mkdir -p "$symlink_dir"
         if [ "$target" = "aarch64-linux-android" ]; then
@@ -188,7 +197,17 @@ EOF
         chmod +x "$symlink_dir/"*-clang* 2>/dev/null
         export PATH="$symlink_dir:$PATH"
 
-        cargo build --release --target "$target" 2>&1 | tail -1
+        local cargo_log
+        cargo_log="$(mktemp)"
+        if cargo build --release --target "$target" \
+            --config "target.$target.linker=\"$toolchain_bin/$clang_name\"" \
+            --config "target.$target.ar=\"$toolchain_bin/llvm-ar\"" >"$cargo_log" 2>&1; then
+            tail -1 "$cargo_log"
+        else
+            echo_error "cargo build failed for $module/$arch_name:"
+            tail -40 "$cargo_log"
+        fi
+        rm -f "$cargo_log"
         local out_dir="$MODULE_DIR/$arch_name"
         mkdir -p "$out_dir"
         if [ -f "target/$target/release/lib${module}.so" ]; then
