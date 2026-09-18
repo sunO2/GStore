@@ -224,5 +224,30 @@ GStore 侧：
   Monaco 走异步组件不会下载（实测移动端 JS 总下载 1.07MB，桌面 4.08MB）。
   `json-viewer` 实际未使用 Monaco（此前文档写错，已更正）。
   如需继续瘦身，可考虑精简 `oui-data` 或按需加载。
-- 离线包**暂不支持独立于 APK 热更新**；若要做，可在版本标记里加入远端版本号比对
 - 内嵌页与 App 的原生交互（复制到剪贴板回传、跳转）尚未接入，目前是可用的闭环
+
+### 8.1 远端更新路径（独立于 APK）
+
+离线包现在可以独立于 APK 从同一 `sunO2/GStore` 的 Release 更新（`it_tools.json` +
+`it-tools.zip`）。核心机制：
+
+| 机制 | 说明 |
+|---|---|
+| 内容哈希标记 | `<目录>/.it_tools_marker` 记录 `{contentHash, source}`；`contentHash` 为 zip 字节 SHA-256，`source` 为 `remote` / `asset`。**不再用应用版本号做标记** |
+| 清单信任锚 | `it_tools.json` 经 `ModuleManifestClient` 的**未代理、默认证书校验**通道获取，绝不走 `getProxy()`；zip 资产可走代理但以清单 `contentHash`/`size` 为准 |
+| 校验 | 先校 `size`，再校 `contentHash`（十六进制小写 64 位），任一不符都不触碰当前目录与标记（fail-closed） |
+| 原子替换 | 解压到 `it_tools.new`，入口 `index.html` 齐备后原子换名：旧当前目录改名为 `it_tools.prev`，`.new` 提升为当前，随后写标记 |
+| `.prev` 回滚 | 当前目录不可用时，`ensureExtracted` 先把 `.prev` 提升为当前；再不行才解压随包资产兜底 |
+| 存活保护 | 页面/WebView 经 `beginUse`/`endUse` 计数；存活期间 `clearExtracted` **拒绝删除当前目录**，清理延迟到最后一个使用者释放后执行 |
+| 后台更新 | `ensureExtracted` 同步返回路径**不联网**；远端更新在后台/按需触发，并发去重 |
+
+实现位于 `lib/core/service/it_tools_service.dart`，缓存统计与清理经
+`managedDirs()`（当前目录 + `.prev` + `.new`）统一收口。
+
+### 8.2 已知风险与后续
+
+- **已知风险**：同源 SHA-256 只保证完整性，不保证真实性。`it_tools.json` 与 zip
+  若被同时攻破，内容哈希会被一并绕过；`file://` 加载的离线包本身不执行原生代码，
+  风险面小于 Rust 模块，但仍应视为内容完整性而非来源认证。
+- **Phase 2**：为离线包与 Rust 模块引入 Ed25519 签名（见
+  `document/development/16-模块远程下载与发布流程.md`）。启用前需先清理无签名下载产物。

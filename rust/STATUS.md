@@ -36,8 +36,16 @@ rust/
 - ✅ 动态挂载：`dlopen` + C ABI 握手，ABI 版本双向校验
 - ✅ 统一信封（protobuf）+ 状态码 + 错误码，**域错误跨 ABI 透传**（不塌成 500）
 - ✅ 超时与取消：`call_envelope_with_timeout` + 在途表 + 模块 `cancel`（repo 下载支持）
-- ✅ 下载模块签名校验：宿主 `mount_from_so` 前校验 `.sig`/`.meta`（无签名=内置信任）
-- ✅ 内置（jniLibs）与远程（下载 + SHA-256 + 签名）两条加载路径
+- ✅ 下载模块信任门：宿主 `mount_from_so` 前校验 `.sig`/`.meta`；无 `.sig` 视为内置信任。
+  **Phase 1 尚未实现 Ed25519**：钉死公钥 `MODULE_SIGNING_PUBKEY_HEX` 仍为空，
+  `requireSignature` 默认 `false`，不写空 `.sig`（Phase 2 迁移见下）。
+- ✅ 内置（jniLibs）与远程两条加载路径。**远程路径已接线**：清单信任锚（未代理、默认证书校验、
+  24h 缓存/ETag）+ 内部下载器（原始 host 校验、代理只做前缀加速、逐跳重定向校验）
+  + 原子安装 + 挂载期 `.meta.sha256` 复核 + 隔离回退 + 后台更新不挂载。
+- ✅ Phase 2 迁移接口：`migrateUnsignedDownloadedModules()`（`requireSignature=true` 时隔离
+  Phase 1 无签名下载产物；`false` 时零副作用）。
+
+远程发布与信任细节见 `document/development/16-模块远程下载与发布流程.md`。
 - ✅ 事件通道：模块 `emit_event` → Dart 广播流（`RustModuleManager.moduleEvents`）
 - ✅ 统一事件系统（双向）：Dart `AppEventBus` 收口 DB / 模块生命周期 / 配置事件源；Rust 模块
   `emit_event` 上行接入统一总线；标记 `downlink` 的事件（如 `config.changed`）经宿主 ABI
