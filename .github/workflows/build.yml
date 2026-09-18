@@ -124,6 +124,13 @@ jobs:
           GSTORE_MODULE_DIR: ${{ github.workspace }}/rust/release-modules
         run: bash scripts/ci/assert_module_artifacts.sh "$GSTORE_MODULE_DIR"
 
+      # 由本次构建产物生成发布清单：modules.json（v2，上传到 Release）
+      # 与 assets/app/modules_builtin.json（随 APK 打包的内置版本兜底）。
+      - name: Generate module manifest (modules.json + modules_builtin.json)
+        env:
+          GSTORE_MODULE_DIR: ${{ github.workspace }}/rust/release-modules
+        run: bash generate_modules_manifest.sh "$GSTORE_MODULE_DIR"
+
       - run: flutter test
       - run: flutter build apk --no-shrink --target-platform android-arm,android-arm64,android-x64 --split-per-abi 
       - run: flutter build appbundle
@@ -217,6 +224,54 @@ jobs:
             --prerelease=false \
           || gh release edit "v${{ steps.get_version.outputs.version }}" \
             --notes-file notes.txt
+      # 同一 Release 上传顺序固定：本次新版 .so（版本化名，--clobber）→ modules.json（提交标记）
+      # → APK/AAB 与 it-tools → 最后按留存策略清理旧模块资产。
+      # 约定：任何模块内容变更必须提升模块 version；--clobber 仅用于同版本重建兜底，客户端按
+      # Todo 5「同版本但 sha256 变化」规则仍能取到修正。
+      - name: Upload Rust module .so assets (per-ABI, versioned, clobber)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GSTORE_MODULE_DIR: ${{ github.workspace }}/rust/release-modules
+        run: |
+          set -euo pipefail
+          TAG="v${{ steps.get_version.outputs.version }}"
+          MANIFEST="$GSTORE_MODULE_DIR/modules.json"
+          python3 - "$MANIFEST" > module_assets.tsv <<'PY'
+          import json, sys
+          manifest = json.load(open(sys.argv[1], encoding="utf-8"))
+          for name, mod in sorted(manifest.get("modules", {}).items()):
+              for abi, entry in sorted(mod.get("abi", {}).items()):
+                  print(f"{name}\t{abi}\t{entry['asset']}\t{entry['sha256']}\t{entry['size']}")
+          PY
+          if [ ! -s module_assets.tsv ]; then
+            echo "ERROR: modules.json 中没有任何模块资产，拒绝发布" >&2
+            exit 1
+          fi
+          while IFS=$'\t' read -r name abi asset sha size; do
+            [ -n "$name" ] || continue
+            src="$GSTORE_MODULE_DIR/$abi/libgstore_mod_$name.so"
+            if [ ! -s "$src" ]; then
+              echo "ERROR: 模块产物缺失或零字节: $src" >&2
+              exit 1
+            fi
+            actual_sha="$(sha256sum "$src" | cut -d' ' -f1)"
+            actual_size="$(stat -c%s "$src")"
+            if [ "$actual_sha" != "$sha" ] || [ "$actual_size" != "$size" ]; then
+              echo "ERROR: 产物与清单 sha256/size 不符: $src" >&2
+              exit 1
+            fi
+            gh release upload "$TAG" "$src#$asset" --clobber
+          done < module_assets.tsv
+
+      - name: Upload modules.json (commit marker after .so, clobber)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GSTORE_MODULE_DIR: ${{ github.workspace }}/rust/release-modules
+        run: |
+          set -euo pipefail
+          TAG="v${{ steps.get_version.outputs.version }}"
+          gh release upload "$TAG" "$GSTORE_MODULE_DIR/modules.json#modules.json" --clobber
+
       - name: Upload Release Assets
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -228,3 +283,65 @@ jobs:
             "./build/app/outputs/flutter-apk/app-arm64-v8a-release.apk#GStore-arm64-v8a-release.apk" \
             "./build/app/outputs/flutter-apk/app-x86_64-release.apk#GStore-x86_64-release.apk" \
             --clobber
+
+      - name: Upload it-tools assets (exempt from retention)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="v${{ steps.get_version.outputs.version }}"
+          gh release upload "$TAG" \
+            "assets/it_tools/it-tools.zip#it-tools.zip" \
+            "assets/it_tools/it_tools.json#it_tools.json" \
+            --clobber
+
+      # 登录后（GITHUB_TOKEN 已认证）仅删除：早于清单 TTL、且不被本次 modules.json 引用、
+      # 且属于模块 .so 的资产。it-tools 资产豁免，绝不在清理范围内。
+      - name: Prune stale module assets (TTL + manifest reference, it-tools exempt)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MODULE_MANIFEST_TTL_DAYS: "30"
+          GSTORE_MODULE_DIR: ${{ github.workspace }}/rust/release-modules
+        run: |
+          set -euo pipefail
+          TAG="v${{ steps.get_version.outputs.version }}"
+          MANIFEST="$GSTORE_MODULE_DIR/modules.json"
+          TTL_DAYS="${MODULE_MANIFEST_TTL_DAYS:-30}"
+          NOW_EPOCH="$(date -u +%s)"
+          python3 - "$MANIFEST" > referenced_assets.txt <<'PY'
+          import json, sys
+          manifest = json.load(open(sys.argv[1], encoding="utf-8"))
+          for mod in manifest.get("modules", {}).values():
+              for entry in mod.get("abi", {}).values():
+                  print(entry["asset"])
+          PY
+          gh release view "$TAG" --json assets \
+            --jq '.assets[] | [.name, .createdAt] | @tsv' > release_assets.tsv
+          while IFS=$'\t' read -r name created_at; do
+            [ -n "$name" ] || continue
+            case "$name" in
+              it-tools.zip|it_tools.json)
+                echo "skip exempt it-tools asset: $name"
+                continue
+                ;;
+            esac
+            case "$name" in
+              libgstore_mod_*.so) ;;
+              *)
+                echo "skip non-module asset: $name"
+                continue
+                ;;
+            esac
+            if grep -Fxq "$name" referenced_assets.txt; then
+              echo "skip referenced module asset: $name"
+              continue
+            fi
+            created_epoch="$(date -u -d "$created_at" +%s)"
+            age_days=$(( (NOW_EPOCH - created_epoch) / 86400 ))
+            if [ "$age_days" -ge "$TTL_DAYS" ]; then
+              gh release delete-asset "$TAG" "$name" --yes
+              echo "deleted stale module asset: $name (age=${age_days}d TTL=${TTL_DAYS}d)"
+            else
+              echo "keep recent module asset: $name (age=${age_days}d < TTL=${TTL_DAYS}d)"
+            fi
+          done < release_assets.tsv
