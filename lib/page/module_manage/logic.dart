@@ -239,17 +239,92 @@ const rustPlugins = <({String name, String title, String description})>[
   (name: 'llm', title: '本地大模型', description: 'llama.cpp / GGUF 本地推理（仅 arm64）'),
 ];
 
-/// 原生插件状态（只读；不触发加载/下载）
-final rustPluginStatusProvider =
-    FutureProvider<List<RustModuleStatus>>((ref) async {
-  final loader = RustModuleLoader.instance;
-  final out = <RustModuleStatus>[];
-  for (final p in rustPlugins) {
-    try {
-      out.add(await loader.probe(p.name));
-    } catch (_) {
-      out.add(RustModuleStatus(name: p.name, exists: false, source: 'none'));
-    }
+/// 原生插件状态 + 下载/更新/回退控制器。
+///
+/// 状态经 [RustModuleLoader.probe]（隔离感知、与解析顺序语义一致）刷新；
+/// 下载/更新走 `downloadAndInstall`（后台安装，不挂载），回退走
+/// `rollbackToBuiltin`（删除已下载产物并挂载内置）。UI 绝不直接 dlopen。
+class RustPluginsController extends Notifier<RustPluginsState> {
+  /// Notifier 销毁标记：异步刷新回来时不再写已废弃 state。
+  bool _disposed = false;
+
+  @override
+  RustPluginsState build() {
+    ref.onDispose(() => _disposed = true);
+    // 首帧返回 loading，异步读取真实状态（不阻塞页面构建）。
+    Future<void>.microtask(refresh);
+    return const RustPluginsState(loading: true);
   }
-  return out;
-});
+
+  RustModuleLoader get _loader => RustModuleLoader.instance;
+
+  /// 经加载器刷新全部插件真实状态（远端版本可解析时一并展示）。
+  Future<void> refresh() async {
+    final out = <RustModuleStatus>[];
+    String? error;
+    for (final p in rustPlugins) {
+      try {
+        out.add(await _loader.probe(p.name, withRemote: true));
+      } catch (e) {
+        error = '$e';
+        out.add(RustModuleStatus(name: p.name, exists: false, source: 'none'));
+      }
+    }
+    if (_disposed) return;
+    state = RustPluginsState(
+      loading: false,
+      statuses: out,
+      busy: state.busy,
+      error: error,
+    );
+  }
+
+  /// 下载/更新：触发远端更新路径（后台安装，绝不挂载；下次启动生效）。
+  Future<bool> download(String name) async {
+    if (state.isBusy(name)) return false;
+    _setBusy(name, true);
+    var ok = false;
+    try {
+      ok = await _loader.downloadAndInstall(name);
+    } catch (_) {
+      ok = false;
+    } finally {
+      await refresh();
+      _setBusy(name, false);
+    }
+    return ok;
+  }
+
+  /// 回退到内置 / 清除已下载：删除下载产物并尝试挂载内置模块。
+  Future<bool> rollback(String name) async {
+    if (state.isBusy(name)) return false;
+    _setBusy(name, true);
+    var ok = false;
+    try {
+      ok = await _loader.rollbackToBuiltin(name);
+    } catch (_) {
+      ok = false;
+    } finally {
+      await refresh();
+      _setBusy(name, false);
+    }
+    return ok;
+  }
+
+  void _setBusy(String name, bool busy) {
+    if (_disposed) return;
+    final next = {...state.busy};
+    if (busy) {
+      next.add(name);
+    } else {
+      next.remove(name);
+    }
+    state = state.copyWith(busy: next);
+  }
+}
+
+/// 原生插件区域 Provider。
+final rustPluginsProvider =
+    NotifierProvider<RustPluginsController, RustPluginsState>(
+  RustPluginsController.new,
+);

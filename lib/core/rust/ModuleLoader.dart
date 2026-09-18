@@ -37,6 +37,18 @@ class RustModuleStatus {
   /// 宿主回报的模块版本（已加载时）
   final int? loadedVersion;
 
+  /// 远端清单可解析到的可用版本（无远端来源/不可解析 → null）。
+  final String? remoteVersion;
+
+  /// 远端版本高于当前本地/内置基线 → 有更新可下载。
+  final bool updateAvailable;
+
+  /// 下载目录存在产物但无有效项，且被 `quarantine.json` 标记隔离。
+  final bool quarantined;
+
+  /// 下载目录内是否存在任一模块 `.so` 产物（含无效/被隔离者）。
+  final bool hasDownloaded;
+
   const RustModuleStatus({
     required this.name,
     required this.exists,
@@ -45,6 +57,10 @@ class RustModuleStatus {
     this.version,
     this.loaded = false,
     this.loadedVersion,
+    this.remoteVersion,
+    this.updateAvailable = false,
+    this.quarantined = false,
+    this.hasDownloaded = false,
   });
 
   /// 来源中文标签
@@ -112,6 +128,15 @@ class RustModuleLoader {
 
   /// 内置 `.so` 路径覆盖（测试专用；桌面测试模拟 Kotlin `extractModule`）。
   Future<String?> Function(String name)? _builtinSoPathOverride;
+
+  /// `probe` 整体覆盖（测试专用；返回注入状态，绕过真实探测）。
+  Future<RustModuleStatus> Function(String name)? _probeOverride;
+
+  /// `rollbackToBuiltin` 覆盖（测试专用；用于断言回退被真实调用）。
+  Future<bool> Function(String name)? _rollbackOverride;
+
+  /// `downloadAndInstall` 覆盖（测试专用；用于无网络/FFI 的下载交互测试）。
+  Future<bool> Function(String name)? _downloadOverride;
 
   /// 内置清单缓存（每处只读一次；`debugReset` 清空）。
   Map<String, dynamic>? _builtinManifestCache;
@@ -197,6 +222,9 @@ class RustModuleLoader {
     Future<bool> Function(String name)? isLoadedOverride,
     Future<bool> Function(String soPath)? mountOverride,
     Future<String?> Function(String name)? builtinSoPathOverride,
+    Future<RustModuleStatus> Function(String name)? probeOverride,
+    Future<bool> Function(String name)? rollbackOverride,
+    Future<bool> Function(String name)? downloadOverride,
     DateTime Function()? clock,
     void Function(String name, String soPath)? beforeMetaWrite,
   }) {
@@ -208,6 +236,9 @@ class RustModuleLoader {
     _isLoadedOverride = isLoadedOverride;
     _mountOverride = mountOverride;
     _builtinSoPathOverride = builtinSoPathOverride;
+    _probeOverride = probeOverride;
+    _rollbackOverride = rollbackOverride;
+    _downloadOverride = downloadOverride;
     _clockOverride = clock;
     _beforeMetaWriteHook = beforeMetaWrite;
     // 清单/内置清单可能变化，清缓存避免跨测试泄漏。
@@ -230,6 +261,9 @@ class RustModuleLoader {
     _isLoadedOverride = null;
     _mountOverride = null;
     _builtinSoPathOverride = null;
+    _probeOverride = null;
+    _rollbackOverride = null;
+    _downloadOverride = null;
     _clockOverride = null;
     _beforeMetaWriteHook = null;
     _tempCleanupDone = false;
@@ -251,6 +285,9 @@ class RustModuleLoader {
       _isLoadedOverride != null ||
       _mountOverride != null ||
       _builtinSoPathOverride != null ||
+      _probeOverride != null ||
+      _rollbackOverride != null ||
+      _downloadOverride != null ||
       _clockOverride != null ||
       _beforeMetaWriteHook != null;
 
@@ -418,7 +455,18 @@ class RustModuleLoader {
 
   /// 探测模块状态（**不加载、不下载**）：内置恒为 true 来源；否则已下载
   /// （有效 `.meta`/sha256 复核/未隔离）→ 远程可更新 → none。
-  Future<RustModuleStatus> probe(String name) async {
+  ///
+  /// 与解析顺序语义一致：先过滤（目录/`.meta`/未隔离/sha256 复核）再取有效项；
+  /// **quarantine-aware**——下载目录存在产物但无有效项（被隔离或 `.meta`/哈希
+  /// 校验失败）时，**绝不**把它展示为可下载的远程源，而是视为不可用。
+  ///
+  /// [withRemote] 为 true 时额外解析远端清单的可用版本（可解析时），供管理页
+  /// 展示「下载 / 更新」。远端不可解析/未配置来源时静默为 null，绝不抛异常。
+  Future<RustModuleStatus> probe(String name, {bool withRemote = false}) async {
+    // 测试接缝：整体覆盖（无 FFI/网络）。
+    final probeOverride = _probeOverride;
+    if (probeOverride != null) return probeOverride(name);
+
     // 1) 运行时是否已挂载（宿主注册表）
     var loaded = false;
     int? loadedVersion;
@@ -439,8 +487,13 @@ class RustModuleLoader {
     var source = 'none';
     String? soPath;
     String? version;
+    var hasDownloaded = false;
+    var quarantined = false;
+    String? remoteVersion;
     try {
       final local = await _resolveLocalSo(name);
+      hasDownloaded = await _hasDownloadedArtifact(name);
+
       if (local != null) {
         source = 'downloaded';
         soPath = local;
@@ -459,15 +512,44 @@ class RustModuleLoader {
           if (builtin != null && File(builtin).existsSync()) {
             source = 'builtin';
             soPath = builtin;
-          } else if ((remoteBaseUrl ?? '').isNotEmpty ||
-              _manifestSource != null) {
-            source = 'remote';
           }
+        }
+      }
+
+      // 下载目录存在产物但无有效项（隔离/无效）→ 不得当作可用下载源。
+      final downloadedBlocked = hasDownloaded && local == null;
+      if (downloadedBlocked) {
+        final keys = await _readQuarantineKeys(name);
+        quarantined = keys.isNotEmpty;
+      }
+
+      // 无有效本地产物且未被下载态阻塞时，才可能展示为「可远程」。
+      if (source == 'none' && !downloadedBlocked) {
+        if ((remoteBaseUrl ?? '').isNotEmpty ||
+            _manifestSource != null ||
+            _manifestOverride != null) {
+          source = 'remote';
+        }
+      }
+
+      // 3) 远端可用版本（可解析时）；隔离/无效下载态不展示为可下载。
+      if (withRemote && !downloadedBlocked) {
+        final entry = await _remoteManifestEntry(name);
+        final remote = entry?.version;
+        if (remote != null && remote.isNotEmpty) {
+          remoteVersion = remote;
         }
       }
     } catch (_) {
       // 平台不可用 → 保持 none
     }
+
+    // 有更新：远端版本高于当前可用基线（本地有效版本或内置版本）。
+    final baseline = version;
+    final updateAvailable = remoteVersion != null &&
+        baseline != null &&
+        baseline.isNotEmpty &&
+        _compareVersions(remoteVersion, baseline) > 0;
 
     return RustModuleStatus(
       name: name,
@@ -477,6 +559,10 @@ class RustModuleLoader {
       version: version,
       loaded: loaded,
       loadedVersion: loadedVersion,
+      remoteVersion: remoteVersion,
+      updateAvailable: updateAvailable,
+      quarantined: quarantined,
+      hasDownloaded: hasDownloaded,
     );
   }
 
@@ -488,6 +574,10 @@ class RustModuleLoader {
   Future<bool> downloadAndInstall(String name) async {
     if (!_bgInFlight.add(name)) return false;
     try {
+      // 测试接缝：注入下载结果（无网络/FFI）。
+      final override = _downloadOverride;
+      if (override != null) return override(name);
+
       // `download` 内核仅在已存在本地/内置产物后允许后台更新（禁止自举）。
       if (name == _downloadModuleName && !await _hasLocalOrBuiltin(name)) {
         return false;
@@ -520,6 +610,10 @@ class RustModuleLoader {
 
   /// 回退内置：删除全部已下载产物（含隔离标记）后尝试挂载内置模块。
   Future<bool> rollbackToBuiltin(String name) async {
+    // 测试接缝：注入回退结果（无 FFI）。生产路径未配置时行为不变。
+    final override = _rollbackOverride;
+    if (override != null) return override(name);
+
     await clearDownloadedModule(name);
     final builtinSo = await _builtinSoPath(name);
     if (builtinSo != null && File(builtinSo).existsSync()) {

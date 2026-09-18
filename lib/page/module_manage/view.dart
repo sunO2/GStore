@@ -81,75 +81,186 @@ class ModuleManagePage extends ConsumerWidget {
           IconButton(
             icon: const Icon(Icons.refresh, size: AppTypography.iconSM),
             tooltip: '刷新状态',
-            onPressed: () => ref.invalidate(rustPluginStatusProvider),
+            onPressed: () => ref.read(rustPluginsProvider.notifier).refresh(),
           ),
         ],
       ),
     );
   }
 
-  /// 原生插件（Rust）只读状态卡片：产物来源 + 是否已加载
+  /// 原生插件（Rust）状态卡片：来源/版本 + 下载/更新 + 回退到内置
   Widget _buildRustPluginsCard(BuildContext context, WidgetRef ref) {
-    final async = ref.watch(rustPluginStatusProvider);
+    final state = ref.watch(rustPluginsProvider);
     return Card(
       margin: AppSpacing.allLG,
-      child: async.when(
-        // 加载态用静态占位（不用动画指示器，避免测试 pumpAndSettle 永不稳定）
-        loading: () => const Padding(
-          padding: EdgeInsets.all(24),
-          child: Center(child: Text('读取中…')),
-        ),
-        error: (e, _) => ListTile(
-          leading: const Icon(Icons.error_outline),
-          title: const Text('状态读取失败'),
-          subtitle: Text('$e'),
-        ),
-        data: (statuses) => Column(
-          children: [
-            for (var i = 0; i < rustPlugins.length; i++) ...[
-              if (i > 0) const Divider(height: 1),
-              _buildRustPluginTile(context, statuses, rustPlugins[i]),
+      child: state.loading
+          // 加载态用静态占位（不用动画指示器，避免测试 pumpAndSettle 永不稳定）
+          ? const Padding(
+              padding: AppSpacing.allXXL,
+              child: Center(child: Text('读取中…')),
+            )
+          : Column(
+              children: [
+                for (var i = 0; i < rustPlugins.length; i++) ...[
+                  if (i > 0) const Divider(height: 1),
+                  _buildRustPluginTile(context, ref, state, rustPlugins[i]),
+                ],
+              ],
+            ),
+    );
+  }
+
+  /// 单个原生插件状态行（版本 + 操作）
+  Widget _buildRustPluginTile(
+    BuildContext context,
+    WidgetRef ref,
+    RustPluginsState state,
+    ({String name, String title, String description}) plugin,
+  ) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final status = state.statusOf(plugin.name);
+    final loaded = status?.loaded ?? false;
+    final localVer = status?.version;
+    final loadedVer = status?.loadedVersion;
+    final remoteVer = status?.remoteVersion;
+    final hasDownloaded = status?.hasDownloaded ?? false;
+    final quarantined = status?.quarantined ?? false;
+    // 下载目录有产物但无有效项（隔离或 .meta/哈希校验失败）→ 不可当作可用下载。
+    final downloadedBlocked =
+        hasDownloaded && (status?.source == 'none');
+    final busy = state.isBusy(plugin.name);
+
+    final sourceText = status == null
+        ? '状态未知'
+        : '产物: ${status.sourceLabel}'
+            '${localVer != null && localVer.isNotEmpty ? ' · 本地 $localVer' : ''}'
+            '${remoteVer != null && remoteVer.isNotEmpty ? ' · 远端 $remoteVer' : ''}';
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.lg,
+        vertical: AppSpacing.md,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(
+                Icons.extension_outlined,
+                size: AppTypography.iconMD,
+                color: loaded ? scheme.primary : scheme.outline,
+              ),
+              const SizedBox(width: AppSpacing.md),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '${plugin.title} · ${plugin.name}',
+                      style: theme.textTheme.titleMedium,
+                    ),
+                    const SizedBox(height: AppSpacing.xs),
+                    Text(
+                      '${plugin.description}\n$sourceText',
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: AppSpacing.sm),
+              _buildRustStatusChip(context, loaded, loadedVer),
             ],
+          ),
+          if (downloadedBlocked) ...[
+            const SizedBox(height: AppSpacing.sm),
+            Text(
+              quarantined
+                  ? '该模块的已下载文件已被隔离（挂载校验未通过），当前不可用。'
+                      '可回退到内置或清除后重试。'
+                  : '该模块的已下载文件无效（缺少或校验未通过的 .meta），当前不可用。'
+                      '可回退到内置或清除后重试。',
+              style: theme.textTheme.bodySmall?.copyWith(color: scheme.error),
+            ),
           ],
-        ),
+          const SizedBox(height: AppSpacing.md),
+          Wrap(
+            spacing: AppSpacing.sm,
+            runSpacing: AppSpacing.sm,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              if (busy)
+                const AppLoading(size: AppLoadingSize.small)
+              else
+                _buildDownloadAction(
+                  ref,
+                  plugin.name,
+                  status,
+                  downloadedBlocked,
+                ),
+              _buildRollbackAction(context, ref, plugin.name, hasDownloaded, busy),
+            ],
+          ),
+        ],
       ),
     );
   }
 
-  /// 单个原生插件状态行
-  Widget _buildRustPluginTile(
-    BuildContext context,
-    List<RustModuleStatus> statuses,
-    ({String name, String title, String description}) plugin,
+  /// 「下载 / 更新」按钮：有可解析远端版本且未被隔离/无效产物阻塞时可用。
+  Widget _buildDownloadAction(
+    WidgetRef ref,
+    String name,
+    RustModuleStatus? status,
+    bool downloadedBlocked,
   ) {
-    RustModuleStatus? s;
-    for (final item in statuses) {
-      if (item.name == plugin.name) {
-        s = item;
-        break;
-      }
-    }
-    final loaded = s?.loaded ?? false;
-    final scheme = Theme.of(context).colorScheme;
-    final localVer = s?.version;
-    final loadedVer = s?.loadedVersion;
-
-    final sourceText = s == null
-        ? '状态未知'
-        : '产物: ${s.sourceLabel}'
-            '${localVer != null && localVer.isNotEmpty ? ' · 本地 $localVer' : ''}';
-
-    return ListTile(
-      leading: Icon(
-        Icons.extension_outlined,
-        size: AppTypography.iconMD,
-        color: loaded ? scheme.primary : scheme.outline,
-      ),
-      title: Text('${plugin.title} · ${plugin.name}'),
-      subtitle: Text('${plugin.description}\n$sourceText'),
-      isThreeLine: true,
-      trailing: _buildRustStatusChip(context, loaded, loadedVer),
+    final remoteVer = status?.remoteVersion;
+    final canDownload = !downloadedBlocked &&
+        remoteVer != null &&
+        remoteVer.isNotEmpty;
+    final hasUpdate = status?.updateAvailable ?? false;
+    return FilledButton.tonal(
+      onPressed: canDownload
+          ? () => ref.read(rustPluginsProvider.notifier).download(name)
+          : null,
+      child: Text(hasUpdate ? '更新' : '下载'),
     );
+  }
+
+  /// 「回退到内置 / 清除已下载」按钮：存在下载产物时可用。
+  Widget _buildRollbackAction(
+    BuildContext context,
+    WidgetRef ref,
+    String name,
+    bool hasDownloaded,
+    bool busy,
+  ) {
+    return OutlinedButton(
+      onPressed: (!busy && hasDownloaded)
+          ? () => _confirmRollback(context, ref, name)
+          : null,
+      child: const Text('回退到内置'),
+    );
+  }
+
+  /// 危险操作确认：统一底部弹层（`showConfirmSheet(isDangerous: true)`）。
+  Future<void> _confirmRollback(
+    BuildContext context,
+    WidgetRef ref,
+    String name,
+  ) async {
+    final confirmed = await AppDialogs.showConfirmSheet(
+      title: '回退到内置',
+      message: '将清除模块 $name 的已下载文件并回退到应用内置版本，确定继续吗？',
+      confirmText: '回退',
+      isDangerous: true,
+    );
+    if (confirmed != true) return;
+    if (!context.mounted) return;
+    await ref.read(rustPluginsProvider.notifier).rollback(name);
   }
 
   /// 状态徽标：已加载(带版本) / 未加载
@@ -157,7 +268,7 @@ class ModuleManagePage extends ConsumerWidget {
     final scheme = Theme.of(context).colorScheme;
     final color = loaded ? scheme.primary : scheme.outline;
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      padding: AppSpacing.horizontalSM_verticalXS,
       decoration: BoxDecoration(
         color: color.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(AppRadius.circle),
