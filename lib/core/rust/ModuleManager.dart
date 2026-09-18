@@ -2,6 +2,7 @@ import 'dart:async' show unawaited, StreamController;
 import 'dart:convert' show base64Encode, jsonEncode, utf8;
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:path/path.dart' as p;
 
 import 'package:gstore/core/event/app_event.dart';
@@ -211,14 +212,24 @@ class RustModuleManager {
     }
   }
 
-  /// 从 .so 路径解析模块名（libgstore_mod_<name>[_<version>].so → name）。
-  /// 宿主侧 ModuleHandle 不暴露名字，故按打包命名约定回推。
+  /// 从 .so 路径解析模块名。
+  ///
+  /// 命名约定：`libgstore_mod_<name>[_<major>.<minor>.<patch>].so`，其中版本段
+  /// **恒为三段纯数字**（与 `RustModuleLoader` 本地落盘命名一致；不得带 ABI 后缀
+  /// 或 `+build`/预发布段）。三段式正则保证 `mountFromSo` 后
+  /// `_handles`/`isLoaded(name)` 对已下载模块成立。
+  static final RegExp _soNamePattern =
+      RegExp(r'^libgstore_mod_([a-z0-9_]+?)(?:_(\d+)\.(\d+)\.(\d+))?\.so$');
+
   static String? _moduleNameFromSoPath(String soPath) {
     final base = p.basename(soPath);
-    final m = RegExp(r'^libgstore_mod_([a-z0-9_]+?)(?:_\d+\.\d+\.\d+)?\.so$')
-        .firstMatch(base);
-    return m?.group(1);
+    return _soNamePattern.firstMatch(base)?.group(1);
   }
+
+  /// 测试专用：暴露 `.so` 路径 → 模块名解析（三段式命名契约验证）。
+  @visibleForTesting
+  static String? debugModuleNameFromSoPath(String soPath) =>
+      _moduleNameFromSoPath(soPath);
 
   /// 订阅 Rust 日志流到 LogManager（Rust 日志可在日志查看器中查看）
   Future<void> _subscribeLogs() async {

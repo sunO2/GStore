@@ -67,6 +67,14 @@ class RustModuleLoader {
   /// 模块 .so 远端根 URL（发布端配置；空 = 禁用远程模块）
   String? remoteBaseUrl;
 
+  /// 是否要求签名（Phase 1 默认 `false`）。
+  ///
+  /// * `true`：清单条目缺非空 `signature` → **拒绝安装**（fail-closed），
+  ///   安装成功时写入非空 `${finalSo}.sig`。
+  /// * `false`：**绝不**写 `.sig`，并删除同名遗留 `${finalSo}.sig`
+  ///   （否则宿主会走签名分支并用空公钥拒绝加载）。
+  bool requireSignature = false;
+
   /// 远端清单缓存（同一次加载流程复用，避免重复 HTTP）；
   /// 解析为 v2 强类型模型，旧 schema 一律拒绝。
   ModuleManifestV2? _manifestCache;
@@ -93,6 +101,12 @@ class RustModuleLoader {
 
   /// 时间源覆盖（测试专用；缓存 TTL 判定用）。
   DateTime Function()? _clockOverride;
+
+  /// `.meta` 写入前钩子（测试专用；用于证明「先 `.so` 后 `.meta`」的顺序）。
+  void Function(String name, String soPath)? _beforeMetaWriteHook;
+
+  /// 启动清理遗留 `.tmp` 是否已执行（每个进程/测试配置后恰好一次）。
+  bool _tempCleanupDone = false;
 
   /// 默认 ABI 名（与 Rust target 对应：arm64-v8a / armeabi-v7a / x86 / x86_64）
   String get currentAbi {
@@ -162,6 +176,7 @@ class RustModuleLoader {
     Future<bool> Function(String name)? isLoadedOverride,
     Future<bool> Function(String soPath)? mountOverride,
     DateTime Function()? clock,
+    void Function(String name, String soPath)? beforeMetaWrite,
   }) {
     _manifestSource = manifestSource;
     _downloader = downloader;
@@ -170,8 +185,11 @@ class RustModuleLoader {
     _isLoadedOverride = isLoadedOverride;
     _mountOverride = mountOverride;
     _clockOverride = clock;
+    _beforeMetaWriteHook = beforeMetaWrite;
     // 清单可能变化，清缓存避免跨测试泄漏。
     _manifestCache = null;
+    // 新配置 ⇒ 允许重新执行一次启动 `.tmp` 清理。
+    _tempCleanupDone = false;
   }
 
   /// 还原生产行为（清空全部测试覆盖与缓存）。
@@ -184,6 +202,8 @@ class RustModuleLoader {
     _isLoadedOverride = null;
     _mountOverride = null;
     _clockOverride = null;
+    _beforeMetaWriteHook = null;
+    _tempCleanupDone = false;
     _manifestCache = null;
     _deviceAbiCache = null;
   }
@@ -197,7 +217,8 @@ class RustModuleLoader {
       _supportDirOverride != null ||
       _isLoadedOverride != null ||
       _mountOverride != null ||
-      _clockOverride != null;
+      _clockOverride != null ||
+      _beforeMetaWriteHook != null;
 
   /// 读取清单（测试专用；覆盖生效时不触发真实网络）。
   @visibleForTesting
@@ -220,6 +241,9 @@ class RustModuleLoader {
     // 已挂载 → 直接可用
     if (await _isLoaded(name)) return true;
 
+    // 启动清理：删除下载目录中上次中断遗留的 `.tmp`（恰好一次）。
+    await _cleanupTempOnce();
+
     // 1. 内置方案：jniLibs（Android nativeLibraryDir）自动检索
     final builtinSo = await _builtinSoPath(name);
     if (builtinSo != null && File(builtinSo).existsSync()) {
@@ -227,8 +251,9 @@ class RustModuleLoader {
       return _mountLocal(name, builtinSo);
     }
 
-    // 2. 本地私有目录（曾下载/缓存的模块）
-    final localSo = await _localSoPath(name);
+    // 2. 本地私有目录（曾下载/缓存的模块）；fail-closed：缺 `.meta` 或
+    //    sha256 复核不通过者一律不挂载。
+    final localSo = await _verifiedLocalSoPath(name);
     if (localSo != null && await File(localSo).exists()) {
       // 2a. 远端已配置且清单版本更新 → 下载替换（更新链路）
       if (await _remoteHasNewerVersion(name)) {
@@ -265,7 +290,7 @@ class RustModuleLoader {
         // 平台不支持则退化为只查本地文件
       }
     }
-    return (await _localSoPath(name)) != null;
+    return (await _verifiedLocalSoPath(name)) != null;
   }
 
   /// 探测模块状态（**不加载、不下载**）：
@@ -292,7 +317,7 @@ class RustModuleLoader {
     String? soPath;
     String? localVersion;
     try {
-      final local = await _localSoPath(name);
+      final local = await _verifiedLocalSoPath(name);
       if (local != null) {
         source = 'downloaded';
         soPath = local;
@@ -444,14 +469,45 @@ class RustModuleLoader {
     return 0;
   }
 
+  /// 解析为三段 `major.minor.patch`（缺失段补 0；`+build`/预发布后缀忽略）。
+  /// 非法版本 → `[0,0,0]`（保守视为最低，绝不抛异常）。
   List<int> _parseVersion(String v) {
-    final parts = v.split('.');
-    return [
-      parts.isNotEmpty ? int.tryParse(parts[0]) ?? 0 : 0,
-      parts.length > 1 ? int.tryParse(parts[1]) ?? 0 : 0,
-      parts.length > 2 ? int.tryParse(parts[2]) ?? 0 : 0,
-    ];
+    final sanitized = _sanitizeVersion(v);
+    if (sanitized == null) return const [0, 0, 0];
+    final parts = sanitized.split('.');
+    return [int.parse(parts[0]), int.parse(parts[1]), int.parse(parts[2])];
   }
+
+  /// 归一化为宿主可解析的三段纯数字版本（`major.minor.patch`）：
+  /// 剥离 `+build` 与 `-pre.release`，缺失段补 0，超过三段截断。
+  ///
+  /// 任一段非数字/负数 → 返回 `null`（调用方拒绝安装，fail-closed）。
+  String? _sanitizeVersion(String raw) {
+    var core = raw.trim();
+    if (core.isEmpty) return null;
+    final plus = core.indexOf('+');
+    if (plus >= 0) core = core.substring(0, plus);
+    final dash = core.indexOf('-');
+    if (dash >= 0) core = core.substring(0, dash);
+    if (core.isEmpty) return null;
+
+    final parts = core.split('.');
+    final nums = <int>[];
+    for (var i = 0; i < parts.length && nums.length < 3; i++) {
+      final n = int.tryParse(parts[i]);
+      if (n == null || n < 0) return null;
+      nums.add(n);
+    }
+    if (nums.isEmpty) return null;
+    while (nums.length < 3) {
+      nums.add(0);
+    }
+    return '${nums[0]}.${nums[1]}.${nums[2]}';
+  }
+
+  /// 测试专用：暴露版本归一化结果（bad version 对抗用例）。
+  @visibleForTesting
+  String? debugSanitizeVersion(String raw) => _sanitizeVersion(raw);
 
   /// 内置模块路径：Android 上从 APK 提取 libgstore_mod_<name>.so 到私有目录
   /// （useLegacyPackaging=false 时 nativeLibraryDir 无物理文件，须显式解压后 dlopen）
@@ -489,55 +545,98 @@ class RustModuleLoader {
     }
   }
 
-  /// 下载 → SHA-256 校验 → 宿主 dlopen 挂载
+  /// 下载 → SHA-256 校验 → **原子配对安装**（`.tmp` → `.so` → `.meta`）→ 挂载。
+  ///
+  /// 顺序不可交换（见 `.omo/plans/remote-plugin-download.md` Todo 4）：
+  /// 1. 下载到 `<support>/gstore_modules/<name>/<finalSo>.tmp`；
+  /// 2. 校验清单 SHA-256（不符 → 删 `.tmp`，无最终产物）；
+  /// 3. **先** rename `.tmp` → `libgstore_mod_<name>_<major.minor.patch>.so`；
+  /// 4. **后** 写 `.meta`（`{name, version, abi, sha256, source:'remote'}`）作为提交标记；
+  /// 5. 仅 `requireSignature=true` 时写非空 `.sig`；`false` 时删除同名遗留 `.sig`。
+  ///
+  /// 任一步失败只留下可被启动清理的 `.tmp`，绝不产生「有 `.so` 无 `.meta`」以外的
+  /// 半写提交（后者由挂载期 fail-closed 拦截）。
   Future<bool> _downloadAndMount(String name, String baseUrl) async {
     try {
+      final entry = await _remoteAbiEntry(name);
+      final version = (await _remoteManifestEntry(name))?.version;
+      if (entry == null || version == null || version.isEmpty) {
+        appLog.error('RustModuleLoader: $name 清单缺少当前 ABI 资产/版本，拒绝安装');
+        return false;
+      }
+
+      // 签名开关：仅 true 时要求清单提供非空 signature（fail-closed）。
+      final signature = entry.signature;
+      if (requireSignature && (signature == null || signature.isEmpty)) {
+        appLog.error(
+            'RustModuleLoader: $name requireSignature=true 但清单缺少 signature，拒绝安装');
+        return false;
+      }
+
+      // 本地文件名恒为三段纯数字版本（剥离 +build / 预发布）。
+      final sanitizedVersion = _sanitizeVersion(version);
+      if (sanitizedVersion == null) {
+        appLog.error('RustModuleLoader: $name 版本号非法（$version），拒绝安装');
+        return false;
+      }
       final dir = await _moduleDir(name);
       await Directory(dir).create(recursive: true);
 
-      // 清单条目：远程资产名 / 版本 / 签名
-      final entry = await _remoteAbiEntry(name);
-      final signature = entry?.signature;
-      final version = (await _remoteManifestEntry(name))?.version;
-      // 远程模块强制签名：清单缺 signature 直接拒绝（fail-closed，
-      // 避免仅靠同一通道的 SHA-256 形成"安全剧场"）
-      if (signature == null || signature.isEmpty) {
-        appLog.error('RustModuleLoader: $name 清单缺少 signature，拒绝加载');
-        return false;
-      }
-      final remoteFileName = entry?.asset ?? 'libgstore_mod_$name.so';
-      // 本地落到版本化文件名：mount-once 下新版本走独立路径，下次启动即加载新版
-      final localFileName = (version != null && version.isNotEmpty)
-          ? 'libgstore_mod_${name}_$version.so'
-          : 'libgstore_mod_$name.so';
-      final file = File(p.join(dir, localFileName));
+      final finalSo = File(p.join(dir, 'libgstore_mod_${name}_$sanitizedVersion.so'));
+      final metaFile = File('${finalSo.path}.meta');
+      final sigFile = File('${finalSo.path}.sig');
+      final tmpFile = File('${finalSo.path}.tmp');
 
-      // 1. 下载（优先注入下载器，测试/后续 Todo 3 复用）
-      final url = '$baseUrl/${await deviceAbi()}/$remoteFileName';
+      // 1. 下载到 `<finalSo>.tmp`（注入下载器优先；测试无网络）。
+      final url = '$baseUrl/${await deviceAbi()}/${entry.asset}';
       appLog.info('RustModuleLoader: 下载模块 $name <- $url');
       final resp = await _fetchBytes(url);
       if (resp == null) {
         appLog.warning('RustModuleLoader: $name 下载失败');
+        await _deleteQuietly(tmpFile);
+        return false;
+      }
+      await tmpFile.writeAsBytes(resp, flush: true);
+
+      // 2. 校验清单 SHA-256：不符 → 删除 `.tmp`，无最终 `.so`/`.meta`。
+      final actual = _sha256Hex(resp);
+      if (actual != entry.sha256.toLowerCase()) {
+        appLog.error('RustModuleLoader: $name SHA-256 不匹配（拒绝安装）');
+        await _deleteQuietly(tmpFile);
         return false;
       }
 
-      // 2. SHA-256 校验（清单对不上则拒绝挂载）
-      final expected = await _expectedSha256(name);
-      if (expected != null) {
-        final actual = _sha256Hex(resp);
-        if (actual != expected) {
-          appLog.error('RustModuleLoader: $name SHA-256 不匹配（拒绝加载）');
-          return false;
-        }
+      // 3. **先**提交 `.so`：`.tmp` → 三段式最终文件名。
+      await _renameOver(tmpFile, finalSo);
+
+      // 测试接缝：在写 `.meta` 前回调，用于证明「.so 已存在」的顺序。
+      _beforeMetaWriteHook?.call(name, finalSo.path);
+
+      // 4. **后**写 `.meta` 作为提交标记（原子：`.meta.tmp` → `.meta`）。
+      final meta = jsonEncode(<String, dynamic>{
+        'name': name,
+        'version': version,
+        'abi': await deviceAbi(),
+        'sha256': actual,
+        'source': 'remote',
+      });
+      await _atomicWrite(metaFile, meta);
+
+      // 5. 签名侧车：true 写非空 `.sig`；false 删除同名遗留 `.sig`。
+      if (requireSignature) {
+        await _atomicWrite(sigFile, '${signature!}\n');
+      } else {
+        await _deleteQuietly(sigFile);
       }
 
-      // 3. 原子写入 + 版本记录 + 写签名侧车 + 挂载
-      await file.writeAsBytes(resp, flush: true);
-      if (version != null) {
-        await _writeLocalVersion(name, version);
-      }
-      await _writeSidecars(name, version ?? '0.0.0', signature, file.path);
-      return _mountLocal(name, file.path);
+      // 真实版本另记录到 `version`（兼容既有读取路径）。
+      await _writeLocalVersion(name, version);
+
+      // 清理本次可能产生的 `.meta.tmp`/`.sig.tmp` 残留。
+      await _deleteQuietly(File('${metaFile.path}.tmp'));
+      await _deleteQuietly(File('${sigFile.path}.tmp'));
+
+      return _mountLocal(name, finalSo.path);
     } catch (e) {
       appLog.error('RustModuleLoader: $name 下载/挂载失败 - $e');
       return false;
@@ -546,6 +645,17 @@ class RustModuleLoader {
 
   /// 宿主 dlopen 挂载本地 .so
   Future<bool> _mountLocal(String name, String soPath) async {
+    // `.sig` 卫生（单点）：`requireSignature=false` 时，**任何**本地 .so 挂载前
+    // 都必须删除同名遗留 `.sig`。宿主 `trust.rs` 在未钉死公钥（Phase 1
+    // `MODULE_SIGNING_PUBKEY_HEX=""`）下会拒绝带 `.sig` 的模块
+    // （"module is signed but no pinned public key is configured"）。
+    // 覆盖两条到达本方法的路径：`_downloadAndMount`（安装）与 `ensureModule` 2b
+    // （直接挂载已验证的本地产物）。`requireSignature=true` 时保留真实签名
+    // （Phase 2 迁移由 Todo 6 负责）。
+    if (!requireSignature) {
+      await _deleteQuietly(File('$soPath.sig'));
+    }
+
     // 测试接缝：注入挂载覆盖时完全绕过真实 FFI。
     final override = _mountOverride;
     if (override != null) {
@@ -566,62 +676,131 @@ class RustModuleLoader {
     }
   }
 
-  Future<String?> _localSoPath(String name) async {
+  /// 本地已下载模块的 .so 路径（**fail-closed**）。
+  ///
+  /// 「已下载」以**目录位置**判定（`<support>/gstore_modules/<name>/`），而非
+  /// `.meta` 存在与否；但挂载要求同目录存在**合法 `.meta` 且 sha256 复核通过**。
+  /// 缺 `.meta`、`.meta` 非法、字节被篡改的 `.so` 一律返回 `null`（不挂载）。
+  Future<String?> _verifiedLocalSoPath(String name) async {
     final dir = await _moduleDir(name);
+    final candidates = <File>[];
     try {
-      // 版本化文件优先：取最近修改的一个（新版本独立文件名）
-      final candidates = Directory(dir)
-          .listSync()
-          .whereType<File>()
-          .where((f) {
-            final base = p.basename(f.path);
-            return base.startsWith('libgstore_mod_${name}_') &&
-                base.endsWith('.so');
-          })
-          .toList()
-        ..sort((a, b) =>
-            b.statSync().modified.compareTo(a.statSync().modified));
-      if (candidates.isNotEmpty) return candidates.first.path;
+      for (final entity in Directory(dir).listSync()) {
+        if (entity is! File) continue;
+        final base = p.basename(entity.path);
+        final matches = base == 'libgstore_mod_$name.so' ||
+            (base.startsWith('libgstore_mod_${name}_') &&
+                base.endsWith('.so'));
+        if (matches) candidates.add(entity);
+      }
     } catch (_) {
-      // 目录不存在/不可读 → 回退旧命名
+      // 目录不存在/不可读 → 视为无本地产物
+      return null;
     }
-    final legacy = File(p.join(dir, 'libgstore_mod_$name.so'));
-    return legacy.existsSync() ? legacy.path : null;
+    // 最近修改优先（新版本独立文件名）；再逐个做 `.meta` + sha256 复核。
+    candidates.sort((a, b) {
+      try {
+        return b.statSync().modified.compareTo(a.statSync().modified);
+      } catch (_) {
+        return 0;
+      }
+    });
+    for (final candidate in candidates) {
+      if (await _verifyMeta(name, candidate.path)) return candidate.path;
+    }
+    return null;
+  }
+
+  /// 复核 `<soPath>.meta`：存在、name 匹配、sha256 与 `.so` 字节一致。
+  Future<bool> _verifyMeta(String name, String soPath) async {
+    try {
+      final metaFile = File('$soPath.meta');
+      if (!await metaFile.exists()) {
+        appLog.warning('RustModuleLoader: $name 本地产物缺少 .meta，拒绝挂载 ($soPath)');
+        return false;
+      }
+      final decoded = jsonDecode(await metaFile.readAsString());
+      if (decoded is! Map) return false;
+      if (decoded['name'] != name) return false;
+      final expected = decoded['sha256'];
+      if (expected is! String || expected.isEmpty) return false;
+      final actual = _sha256Hex(await File(soPath).readAsBytes());
+      if (actual != expected.toLowerCase()) {
+        appLog.error('RustModuleLoader: $name 本地产物 sha256 复核失败，拒绝挂载 ($soPath)');
+        return false;
+      }
+      return true;
+    } catch (e) {
+      appLog.warning('RustModuleLoader: $name 读取 .meta 失败 - $e');
+      return false;
+    }
+  }
+
+  /// 模块私有目录基址（<support> 根）。
+  ///
+  /// 生产基线仍为 `getApplicationDocumentsDirectory()`（Todo 5 迁移到
+  /// `getApplicationSupportDirectory()`）；测试经 [debugConfigure] 覆盖。
+  Future<String> _supportDir() async {
+    final override = _supportDirOverride;
+    if (override != null) return override;
+    final docs = await getApplicationDocumentsDirectory();
+    return docs.path;
   }
 
   Future<String> _moduleDir(String name) async {
-    // 测试接缝：注入支持目录时完全绕过 path_provider。
-    final override = _supportDirOverride;
-    if (override != null) {
-      return p.join(override, 'gstore_modules', name);
-    }
-    final docs = await getApplicationDocumentsDirectory();
-    return p.join(docs.path, 'gstore_modules', name);
+    return p.join(await _supportDir(), 'gstore_modules', name);
   }
 
-  /// 清单 SHA-256：从远端 modules.json 的当前 ABI 条目读取。
-  /// 内置方案（jniLibs 打包）与 APK 同信任锚，不做校验。
-  Future<String?> _expectedSha256(String name) async {
-    final entry = await _remoteAbiEntry(name);
-    return entry?.sha256;
-  }
-
-  /// 写签名/元数据侧车文件（宿主 dlopen 前校验用；与 .so 同目录、同名前缀）
-  Future<void> _writeSidecars(
-    String name,
-    String version,
-    String signatureHex,
-    String soPath,
-  ) async {
+  /// 删除下载目录中上次中断遗留的 `.tmp`（启动清理，幂等）。
+  ///
+  /// 覆盖：下载 `.tmp`、`.meta.tmp`、`.sig.tmp`。**不**触碰 `.so`/`.meta`/`.sig`。
+  @visibleForTesting
+  Future<void> cleanupLeftoverTemp() async {
     try {
-      await File('$soPath.sig').writeAsString('$signatureHex\n', flush: true);
-      final meta = jsonEncode(
-        {'name': name, 'version': version, 'abi': await deviceAbi()},
-      );
-      await File('$soPath.meta').writeAsString(meta, flush: true);
-      appLog.info('RustModuleLoader: $name 已写入签名侧车（宿主校验后 dlopen）');
+      final root = Directory(p.join(await _supportDir(), 'gstore_modules'));
+      if (!await root.exists()) return;
+      await for (final entity
+          in root.list(recursive: true, followLinks: false)) {
+        if (entity is File && entity.path.endsWith('.tmp')) {
+          await _deleteQuietly(entity);
+        }
+      }
     } catch (e) {
-      appLog.error('RustModuleLoader: $name 写签名侧车失败 - $e');
+      appLog.warning('RustModuleLoader: 清理遗留 .tmp 失败 - $e');
+    }
+  }
+
+  /// 启动清理只执行一次（每次 [debugConfigure]/[debugReset] 后重置）。
+  Future<void> _cleanupTempOnce() async {
+    if (_tempCleanupDone) return;
+    _tempCleanupDone = true;
+    await cleanupLeftoverTemp();
+  }
+
+  /// `.tmp` → 最终文件：同目录 rename 原子替换；目标已存在时先删再 rename。
+  Future<void> _renameOver(File src, File dest) async {
+    try {
+      await src.rename(dest.path);
+    } on FileSystemException {
+      await _deleteQuietly(dest);
+      await src.rename(dest.path);
+    }
+  }
+
+  /// 原子写文本：先写 `<target>.tmp` 再 rename（崩溃只留 `.tmp`）。
+  Future<void> _atomicWrite(File target, String content) async {
+    final tmp = File('${target.path}.tmp');
+    await tmp.writeAsString(content, flush: true);
+    await _renameOver(tmp, target);
+  }
+
+  Future<void> _deleteQuietly(File file) async {
+    try {
+      if (await file.exists()) {
+        await file.delete();
+      }
+    } catch (_) {
+      // 清理失败不影响结果
     }
   }
 

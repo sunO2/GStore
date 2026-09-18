@@ -280,8 +280,17 @@ void main() {
       final supportDir = makeTempDir();
       final moduleDir = Directory(p.join(supportDir.path, 'gstore_modules', 'qr'))
         ..createSync(recursive: true);
-      File(p.join(moduleDir.path, 'libgstore_mod_qr_1.0.0.so'))
-          .writeAsBytesSync(utf8.encode('FAKE_SO'));
+      // fail-closed：本地产物必须带合法 `.meta` 且 sha256 复核通过才可挂载。
+      final soBytes = utf8.encode('FAKE_SO');
+      final soFile = File(p.join(moduleDir.path, 'libgstore_mod_qr_1.0.0.so'));
+      soFile.writeAsBytesSync(soBytes);
+      File('${soFile.path}.meta').writeAsStringSync(jsonEncode({
+        'name': 'qr',
+        'version': '1.0.0',
+        'abi': 'x86_64',
+        'sha256': sha256.convert(soBytes).toString(),
+        'source': 'remote',
+      }));
 
       final mountedPaths = <String>[];
       var fetchCalls = 0;
