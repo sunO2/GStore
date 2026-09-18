@@ -12,7 +12,9 @@ import 'package:path_provider/path_provider.dart';
 import 'package:gstore/core/agent/agent_model_store.dart';
 import 'package:gstore/core/agent/agent_notification_service.dart';
 import 'package:gstore/core/agent/agent_prompt.dart';
+import 'package:gstore/core/agent/agent_http_client.dart';
 import 'package:gstore/core/agent/agent_session_store.dart';
+import 'package:http/http.dart' as http;
 import 'package:gstore/core/agent/agent_skills.dart';
 import 'package:gstore/core/agent/agent_tool_module.dart';
 import 'package:gstore/core/agent/agent_tool_spec.dart';
@@ -313,6 +315,11 @@ class AgentService {
   }
 
   Genkit? _ai;
+
+  /// OpenAI 兼容 provider 注入的 http.Client（标准 package:http；注入 Genkit
+  /// 插件与自建模型）。dispose 时关闭。
+  http.Client? _agentHttpClient;
+
   AgentModel? _model;
 
   /// 自建的 OpenAI 兼容模型（思考过程可流式）
@@ -948,11 +955,21 @@ class AgentService {
       // 检测当前设备 CPU 架构（用于 GitHub 下载匹配）
       await PlatformArch.detectAbi();
 
+      // 网络层：OpenAI 兼容 provider 注入标准 http.Client（对流式 SSE 可靠解码，
+      // 见 agent_http_client.dart 的回退说明；Google provider 插件硬编码内部 client）。
+      // Google provider 插件硬编码内部 client，无注入点，保持默认。
+      http.Client? agentHttpClient;
+      if (_model!.provider == AgentLlmProvider.openai) {
+        agentHttpClient = await buildAgentHttpClient();
+        _agentHttpClient = agentHttpClient;
+      }
+
       // 根据模型构建插件（使用局部变量让类型推断处理）
-      final plugin = _buildPlugin(_model!);
+      final plugin = _buildPlugin(_model!, httpClient: agentHttpClient);
       _ai = Genkit(plugins: [plugin]);
       // 自建模型：补齐思考过程流式（仅 OpenAI 兼容 provider）
-      _customModel = _buildCustomModel(_ai!, _model!);
+      _customModel = _buildCustomModel(_ai!, _model!,
+          httpClient: agentHttpClient);
 
       // 注册 Agent 工具模块（默认全部上线；优先从 ModuleManager 拉取已注册工具）
       if (_agentTools.isEmpty) {
@@ -1201,15 +1218,19 @@ class AgentService {
   }
 
   /// 根据模型构建 Genkit 插件
-  dynamic _buildPlugin(AgentModel model) {
+  dynamic _buildPlugin(AgentModel model, {http.Client? httpClient}) {
     switch (model.provider) {
       case AgentLlmProvider.google:
+        // Google 插件硬编码内部 client（httpClientFromApiKey），无注入点；
+        // 保持默认。
         return googleAI(apiKey: model.apiKey);
       case AgentLlmProvider.openai:
+        // 注入标准 http.Client（对流式 SSE 可靠解码）
         return openAI(
           name: 'custom',
           apiKey: model.apiKey,
           baseUrl: model.effectiveBaseUrl,
+          httpClient: httpClient,
         );
     }
   }
@@ -1219,7 +1240,8 @@ class AgentService {
   /// 目的：官方插件 `genkit_openai` 的流式只转发 `delta.content`，
   /// `delta.reasoningContent`（思考过程）被丢弃 → 只能事后补取（整段出现）。
   /// 自建模型复用官方 `GenkitConverter`，额外把 reasoning 作为 ReasoningPart 流式下发。
-  Model? _buildCustomModel(Genkit ai, AgentModel model) {
+  Model? _buildCustomModel(Genkit ai, AgentModel model,
+      {http.Client? httpClient}) {
     if (model.provider != AgentLlmProvider.openai) return null;
     try {
       final built = defineReasoningAwareOpenAIModel(
@@ -1227,6 +1249,7 @@ class AgentService {
         modelId: model.effectiveModel,
         apiKey: model.apiKey,
         baseUrl: model.effectiveBaseUrl,
+        httpClient: httpClient,
       );
       appLog.info(
           'AgentService: 自建 OpenAI 兼容模型已注册（含 reasoning 流式）model=${model.effectiveModel}');
@@ -1257,6 +1280,7 @@ class AgentService {
   Future<bool> reconfigure() async {
     _initialized = false;
     _ai = null;
+    _disposeAgentHttpClient();
     return initialize();
   }
 
@@ -3687,7 +3711,24 @@ class AgentService {
     } catch (e) {
       appLog.error('AgentService: 生成失败 - $e');
       _logAi('✗ 生成失败', data: {'error': e.toString()});
-      _addAssistantMessage('抱歉，请求失败：$e');
+      // 定稿残留的"思考中"流式消息：接口中断/失败时，_activeStreamMsg 还停在
+      // reasoningDone=false（UI 思考块会一直转圈"思考中…"）。这里收尾：
+      // - 有内容（思考或正文）→ 标记 reasoningDone=true 定稿展示；
+      // - 空消息 → 直接移除，不留空白气泡。
+      final pending = _activeStreamMsg;
+      if (pending != null) {
+        pending.reasoningDone = true;
+        if (pending.text.trim().isEmpty && pending.reasoning.isEmpty) {
+          _removeMessage(pending);
+        } else {
+          _notifyMessages();
+        }
+      }
+      _activeStreamMsg = null;
+      // 错误提示独立展示（独立 turnId，不与失败的流式消息同回合；纯文本非工具）。
+      // 用户可见文案保持简短，详细异常（含 GenkitException 上下文）已入 appLog。
+      _addAssistantMessage('抱歉，请求失败：${_friendlyError(e)}',
+          turnId: 'err-${DateTime.now().millisecondsSinceEpoch}');
     } finally {
       _activeStreamMsg = null;
       _busy = false;
@@ -3708,16 +3749,32 @@ class AgentService {
   }
 
   void _addAssistantMessage(String text,
-      {AgentToolType? toolType, bool isToolResult = false}) {
+      {AgentToolType? toolType,
+      bool isToolResult = false,
+      String? turnId}) {
     final msg = AgentMessage(
       isUser: false,
       text: text,
       toolType: toolType,
       isToolResult: isToolResult,
-      turnId: _currentTurnId,
+      turnId: turnId ?? _currentTurnId,
     );
     _addMessage(msg);
     _persistMessage(msg);
+  }
+
+  /// 生成失败时给用户看的简短文案（详细异常已入 appLog）。
+  ///
+  /// GenkitException 的 message 含"xxx 调用失败: 底层异常"，对用户太啰嗦，
+  /// 只保留前缀（"OpenAI 兼容模型调用失败"级别的信息）；其他异常给通用提示。
+  String _friendlyError(Object e) {
+    final s = e.toString();
+    // 取第一个冒号前的部分（如 "GenkitException: OpenAI 兼容模型…调用失败"）
+    final idx = s.indexOf(':');
+    if (idx > 0 && idx < 60) {
+      return s.substring(0, idx).replaceFirst('GenkitException:', '').trim();
+    }
+    return '网络异常或服务不可用，请稍后重试';
   }
 
   /// 持久化流式助手消息（chat 完成后调用）
@@ -3729,9 +3786,23 @@ class AgentService {
   void dispose() {
     _ai = null;
     _customModel = null;
+    _disposeAgentHttpClient();
     _modelChangeSub?.cancel();
     _messages = [];
     messages.dispose();
     busy.dispose();
+  }
+
+  /// 释放 OpenAI 兼容 provider 注入的 http.Client
+  void _disposeAgentHttpClient() {
+    final client = _agentHttpClient;
+    if (client != null) {
+      _agentHttpClient = null;
+      try {
+        client.close();
+      } catch (e) {
+        appLog.warning('AgentService: 释放 agent http 客户端失败 - $e');
+      }
+    }
   }
 }

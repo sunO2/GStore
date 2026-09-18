@@ -21,9 +21,12 @@
 /// 回包侧 `fromOpenAIAssistantMessage`（含 ToolRequestPart）都走同一套转换。
 library;
 
+import 'dart:math' show Random;
+
 import 'package:genkit/genkit.dart';
 import 'package:genkit_openai/genkit_openai.dart';
 import 'package:gstore/core/logger/LogManager.dart';
+import 'package:http/http.dart' as http;
 import 'package:openai_dart/openai_dart.dart' as sdk;
 
 /// 注册名命名空间（与官方插件的 `openai` / `custom` 区分开）
@@ -61,10 +64,12 @@ Model defineReasoningAwareOpenAIModel(
   required String modelId,
   required String apiKey,
   required String baseUrl,
+  http.Client? httpClient,
 }) {
   final client = sdk.OpenAIClient.withApiKey(
     apiKey,
     baseUrl: baseUrl.isEmpty ? null : baseUrl,
+    httpClient: httpClient,
   );
 
   sdk.ChatCompletionCreateRequest buildRequest(ModelRequest request) {
@@ -85,7 +90,8 @@ Model defineReasoningAwareOpenAIModel(
       try {
         // 非流式调用（本应用只用 generateStream，此处仅作兜底）
         if (!ctx.streamingRequested) {
-          final res = await client.chat.completions.create(buildRequest(request));
+          final res = await withRateLimitRetry(
+              () => client.chat.completions.create(buildRequest(request)));
           final choice = res.choices.first;
           return ModelResponse(
             finishReason:
@@ -100,30 +106,36 @@ Model defineReasoningAwareOpenAIModel(
         // 若这里 reasoningChunks==0，说明端点本次没返回思维链（不是解析问题）。
         var reasoningChunks = 0;
         var textChunks = 0;
-        await for (final chunk
-            in client.chat.completions.createStream(buildRequest(request))) {
-          accumulator.add(chunk);
-          final delta = chunk.firstChoice?.delta;
-          final rc = delta?.reasoningContent;
-          final reasoning = (rc != null && rc.isNotEmpty) ? rc : delta?.reasoning;
-          if (reasoning != null && reasoning.isNotEmpty) {
-            reasoningChunks++;
-            if (reasoningChunks == 1) {
-              appLog.info('[AIAgentResponse] ◆ 模型层发出思考分片',
-                  data: {'model': modelId, 'head': reasoning});
+        // 429 重试包住「建立流 + 消费完成」整个流程：
+        // createStream 是 lazy 生成器（请求在 listen 时发出，429 也在消费时抛），
+        // 因此 fn 必须 eager 地 await 完整消费，429 才会进入 withRateLimitRetry 的 catch。
+        await withRateLimitRetry(() async {
+          await for (final chunk
+              in client.chat.completions.createStream(buildRequest(request))) {
+            accumulator.add(chunk);
+            final delta = chunk.firstChoice?.delta;
+            final rc = delta?.reasoningContent;
+            final reasoning =
+                (rc != null && rc.isNotEmpty) ? rc : delta?.reasoning;
+            if (reasoning != null && reasoning.isNotEmpty) {
+              reasoningChunks++;
+              if (reasoningChunks == 1) {
+                appLog.info('[AIAgentResponse] ◆ 模型层发出思考分片',
+                    data: {'model': modelId, 'head': reasoning});
+              }
+            }
+            final parts = openAiDeltaToParts(
+              content: chunk.textDelta,
+              reasoningContent: delta?.reasoningContent,
+              reasoning: delta?.reasoning,
+            );
+            if (parts != null) {
+              final t = chunk.textDelta;
+              if (t != null && t.isNotEmpty) textChunks++;
+              ctx.sendChunk(ModelResponseChunk(index: 0, content: parts));
             }
           }
-          final parts = openAiDeltaToParts(
-            content: chunk.textDelta,
-            reasoningContent: delta?.reasoningContent,
-            reasoning: delta?.reasoning,
-          );
-          if (parts != null) {
-            final t = chunk.textDelta;
-            if (t != null && t.isNotEmpty) textChunks++;
-            ctx.sendChunk(ModelResponseChunk(index: 0, content: parts));
-          }
-        }
+        });
 
         final completion = accumulator.toChatCompletion();
         appLog.info('[AIAgentResponse] ◆ 模型层流式汇总', data: {
@@ -150,4 +162,45 @@ Model defineReasoningAwareOpenAIModel(
       }
     },
   );
+}
+
+/// 429 限流重试（最多 [maxRetries] 次）。
+///
+/// 限流（RateLimitException，statusCode 429）是可恢复的瞬时错误：服务端
+/// 在响应头阶段就拒绝（SSE 流尚未 yield 任何 chunk），重试不会产生重复内容。
+///
+/// 退避策略说明（与实现保持一致）：
+/// - **流式主路径**（本应用只用 generateStream）：openai_dart 的
+///   `parseStreamError`（streaming_resource.dart）构造 `RateLimitException`
+///   时**不传 `retryAfter`**，且流式请求绕过 interceptor 链，因此生产路径下
+///   `e.retryAfter` 恒为 null，实际退避走 [_rateLimitDelay] 的指数退避
+///   （1s→2s）+ 抖动，**并非**"优先尊重服务端 retryAfter"。
+/// - **非流式兜底路径**：error_interceptor 会从响应头填充 `retryAfter`，
+///   此时 [_rateLimitDelay] 才会优先采用该值。该分支为防御性支持而保留。
+Future<T> withRateLimitRetry<T>(
+  Future<T> Function() fn, {
+  int maxRetries = 2,
+}) async {
+  var attempt = 0;
+  while (true) {
+    try {
+      return await fn();
+    } on sdk.RateLimitException catch (e) {
+      if (attempt >= maxRetries) rethrow;
+      attempt++;
+      final delay = _rateLimitDelay(attempt, e.retryAfter);
+      appLog.warning('[AIAgentResponse] 429 限流，第 $attempt 次重试（${delay.inMilliseconds}ms 后）');
+      await Future<void>.delayed(delay);
+    }
+  }
+}
+
+/// 429 重试退避：`retryAfter` 非空时采用（仅非流式 error_interceptor 路径
+/// 会填充该值）；流式主路径因 openai_dart 上游不填充 `retryAfter`，实际走
+/// 指数退避（1s→2s）+ 抖动。
+Duration _rateLimitDelay(int attempt, Duration? retryAfter) {
+  if (retryAfter != null) return retryAfter;
+  final base = Duration(seconds: 1 << (attempt - 1)); // 1s, 2s, ...
+  final jitter = Duration(milliseconds: Random().nextInt(300));
+  return base + jitter;
 }
