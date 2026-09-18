@@ -519,8 +519,30 @@ void main() {
     });
   });
 
-  group('isAvailable / probe（内置恒可用）', () {
-    test('内置 fixture → isAvailable true 且 probe.source=builtin', () async {
+  group('isAvailable / probe（内置以真实产物为准）', () {
+    test('内置真实产物 → isAvailable true 且 probe.source=builtin', () async {
+      final supportDir = makeSupportDir();
+      final builtinFile =
+          File(p.join(supportDir.path, 'builtin_libgstore_mod_qr.so'))
+            ..writeAsBytesSync(utf8.encode('BUILTIN_QR'));
+      loader.debugConfigure(
+        supportDir: supportDir.path,
+        builtinManifestOverride: {
+          'qr': {'version': '0.1.0'},
+        },
+        builtinSoPathOverride: (name) async =>
+            name == 'qr' ? builtinFile.path : null,
+        isLoadedOverride: (_) async => false,
+      );
+
+      expect(await loader.isAvailable('qr'), isTrue);
+      final status = await loader.probe('qr');
+      expect(status.source, 'builtin');
+      expect(status.exists, isTrue);
+      expect(status.version, '0.1.0');
+    });
+
+    test('仅清单声明内置但无产物 → 不报告 builtin（slim 回退语义）', () async {
       final supportDir = makeSupportDir();
       loader.debugConfigure(
         supportDir: supportDir.path,
@@ -530,10 +552,13 @@ void main() {
         isLoadedOverride: (_) async => false,
       );
 
-      expect(await loader.isAvailable('qr'), isTrue);
+      expect(await loader.isAvailable('qr'), isFalse,
+          reason: '清单声明不构成可用产物');
       final status = await loader.probe('qr');
-      expect(status.source, 'builtin');
-      expect(status.exists, isTrue);
+      expect(status.source, isNot('builtin'),
+          reason: '无真实产物不得报告内置');
+      expect(status.exists, isFalse);
+      // 声明版本仍可读用于展示，但不代表可用。
       expect(status.version, '0.1.0');
     });
 
@@ -591,8 +616,8 @@ void main() {
     });
   });
 
-  group('download 内核不自举', () {
-    test('无内置无本地时 download 模块不触发远程下载', () async {
+  group('download 内核自举（slim 变体语义）', () {
+    test('无内置无本地时 download 模块允许一次有界远程自举并挂载', () async {
       final supportDir = makeSupportDir();
       final payload = Uint8List.fromList(utf8.encode('DL_SO'));
       final sha = sha256.convert(payload).toString();
@@ -625,14 +650,16 @@ void main() {
         },
       );
 
-      expect(await loader.ensureModule('download'), isFalse,
-          reason: '不得自举下载内核');
-      expect(fetcher.calls, 0, reason: 'download 自举必须零网络');
-      expect(mounted, isEmpty);
+      // 规则变更：无内置产物且无本地产物（slim 场景）→ 经 Dart 下载器自举。
+      expect(await loader.ensureModule('download'), isTrue,
+          reason: 'slim 场景下 download 内核必须可自举');
+      expect(fetcher.calls, 1, reason: '恰好一次有界自举下载');
+      expect(mounted, hasLength(1), reason: '自举后必须挂载');
+      expect(mounted.single, endsWith('libgstore_mod_download_0.1.0.so'));
 
       // 对照：普通模块仍可走有界远程。
       expect(await loader.ensureModule('x'), isTrue);
-      expect(fetcher.calls, 1);
+      expect(fetcher.calls, 2);
     });
 
     test('download 存在有效本地/内置后仍允许后台更新', () async {

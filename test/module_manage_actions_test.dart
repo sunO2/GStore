@@ -168,14 +168,19 @@ void main() {
       expect(status.updateAvailable, isTrue);
     });
 
-    test('内置随包 → builtin，且远端版本可解析', () async {
+    test('内置真实产物随包 → builtin，且远端版本可解析', () async {
       final supportDir = makeSupportDir();
+      final builtinFile =
+          File(p.join(supportDir.path, 'builtin_libgstore_mod_qr.so'))
+            ..writeAsBytesSync(utf8.encode('BUILTIN_QR'));
       loader.debugConfigure(
         supportDir: supportDir.path,
         manifestOverride: _manifest(module: 'qr', version: '0.2.0'),
         builtinManifestOverride: {
           'qr': {'version': '0.1.0'},
         },
+        builtinSoPathOverride: (name) async =>
+            name == 'qr' ? builtinFile.path : null,
         isLoadedOverride: (_) async => false,
       );
 

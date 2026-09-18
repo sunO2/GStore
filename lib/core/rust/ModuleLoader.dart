@@ -181,7 +181,8 @@ class RustModuleLoader {
     'x86_64',
   };
 
-  /// 下载内核模块名：**禁止**经同步远程路径自举（存在本地/内置后可后台更新）。
+  /// 下载内核模块名：仅在**无内置产物且无本地已下载产物**时允许经 Dart 侧
+  /// 有界自举（slim 变体）；存在本地/内置时走后台更新路径（不自举）。
   static const String _downloadModuleName = 'download';
 
   /// 设备 ABI 内存缓存（首次解析后复用，避免重复通道往返）
@@ -353,12 +354,36 @@ class RustModuleLoader {
     return false;
   }
 
-  /// 内置产物/声明是否存在（内置清单声明 = 随包发布）。
-  Future<bool> _hasBuiltin(String name) async {
-    if (await _builtinVersion(name) != null) return true;
-    final path = await _builtinSoPath(name);
+  /// 内置产物是否**真实存在**（**以随包 `.so` 产物为准，而非清单声明**）。
+  ///
+  /// 语义变更（slim APK 变体）：`modules_builtin.json` 声明不再构成存在性凭证。
+  /// 精简包排除了 `libgstore_mod_*.so`，声明仍在但产物缺失，此时必须回退到
+  /// 本地已下载产物 → 远程下载，而不是误判为内置并降级。
+  ///
+  /// * Android：`hasModule` 通道（APK 内按 ABI 打包的真实产物）优先，
+  ///   回退只读 `moduleSoPath`（已解压产物）。
+  /// * 桌面/测试：`_builtinSoPathReadOnly`（尊重 `builtinSoPathOverride` 接缝）。
+  ///
+  /// [_builtinVersion]（清单版本）仅用于展示/比较，绝不作为存在性凭证。
+  Future<bool> _builtinArtifactExists(String name) async {
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      try {
+        const channel = MethodChannel('gstore/apk_source');
+        final has = await channel.invokeMethod<bool>(
+          'hasModule',
+          {'module': name, 'abi': await deviceAbi()},
+        );
+        if (has == true) return true;
+      } catch (_) {
+        // 通道不可用 → 退化为已解压文件判定
+      }
+    }
+    final path = await _builtinSoPathReadOnly(name);
     return path != null && File(path).existsSync();
   }
+
+  /// 内置产物是否存在（等于 [_builtinArtifactExists]；保留旧名供内部复用）。
+  Future<bool> _hasBuiltin(String name) => _builtinArtifactExists(name);
 
   /// 选择最高三段 semver 的**有效**已下载产物（**先过滤、后排序**）。
   ///
@@ -425,18 +450,20 @@ class RustModuleLoader {
       if (await _mountLocal(name, builtinSo)) return true;
     }
 
-    // 3. 仅当既无内置也无已下载产物时，才做一次有界远程下载安装并挂载。
-    final hasBuiltin = builtinSoExists || await _builtinVersion(name) != null;
+    // 3. 仅当既无内置**真实产物**也无已下载产物时，才做一次有界远程下载安装并挂载。
+    //    语义变更（slim 变体）：内置清单声明不再构成存在性凭证——精简包排除了
+    //    `libgstore_mod_*.so`，声明仍在但产物缺失时，必须回退远程下载而非降级。
+    final hasBuiltin = builtinSoExists;
     final hasDownloaded = await _hasDownloadedArtifact(name);
     if (hasBuiltin || hasDownloaded) {
       appLog.info('RustModuleLoader: $name 本地产物不可用，走降级');
       return false;
     }
-    // `download` 内核不得经本路径自举（存在本地/内置后可由后台更新）。
-    if (name == _downloadModuleName) {
-      appLog.info('RustModuleLoader: $name 禁止自举下载，走降级');
-      return false;
-    }
+    // 规则变更（slim 变体）：`download` 内核在**既无内置产物也无本地已下载产物**
+    // 时，允许经 Dart 侧 `ModuleDownloader`/`ModuleManifestSource` 做一次有界自举
+    // （Rust `gstore_mod_download` 内核此时本就不可用，故必须走 Dart 下载器）。
+    // 存在内置/本地时，上方第 1/2 步已返回、或本步 `hasBuiltin || hasDownloaded`
+    // 已降级，行为与既有「不自举」完全等价。
     final remote = remoteBaseUrl;
     final source = _manifestSource;
     if ((remote == null || remote.isEmpty) &&
@@ -447,31 +474,19 @@ class RustModuleLoader {
     return _downloadAndInstall(name, mount: true);
   }
 
-  /// 模块是否可用（**不加载、不解压**）：内置恒为 true；已下载则要求
-  /// `.meta` 合法、sha256 复核通过且未被隔离。
+  /// 模块是否可用（**不加载、不解压**）：内置以**真实产物**为准；已下载则要求
+  /// `.meta` 合法、sha256 复核通过且未被隔离。清单声明不构成可用性。
   Future<bool> isAvailable(String name) async {
-    // Android：平台内置探测优先（真实 .so 存在；保留既有通道契约）。
-    if (defaultTargetPlatform == TargetPlatform.android) {
-      try {
-        const channel = MethodChannel('gstore/apk_source');
-        final has = await channel.invokeMethod<bool>(
-          'hasModule',
-          {'module': name, 'abi': await deviceAbi()},
-        );
-        if (has == true) return true;
-      } catch (_) {
-        // 平台不支持则退化为清单/本地文件判定
-      }
-    }
+    // 内置真实产物（Android 经 hasModule；桌面/测试经只读路径/接缝）。
+    if (await _builtinArtifactExists(name)) return true;
     // 已下载有效产物（fail-closed）。
     if ((await _resolveLocalSo(name)) != null) return true;
-    // 内置随包发布：清单声明即视为可用。
-    if (await _builtinVersion(name) != null) return true;
     return false;
   }
 
-  /// 探测模块状态（**不加载、不下载**）：内置恒为 true 来源；否则已下载
-  /// （有效 `.meta`/sha256 复核/未隔离）→ 远程可更新 → none。
+  /// 探测模块状态（**不加载、不下载**）：内置**真实产物存在**才为 builtin；
+  /// 否则已下载（有效 `.meta`/sha256 复核/未隔离）→ 远程可更新 → none。
+  /// 内置清单声明的版本仅用于展示（`version`），不构成 `source='builtin'`。
   ///
   /// 与解析顺序语义一致：先过滤（目录/`.meta`/未隔离/sha256 复核）再取有效项；
   /// **quarantine-aware**——下载目录存在产物但无有效项（被隔离或 `.meta`/哈希
@@ -520,16 +535,13 @@ class RustModuleLoader {
             ? metaVersion
             : await _localVersion(name);
       } else {
-        final builtinVersion = await _builtinVersion(name);
-        if (builtinVersion != null) {
+        // 内置声明仅用于**版本展示/比较**，绝不作为可用性凭证（slim 变体：
+        // 声明仍在但 `.so` 被排除）。可用性必须以真实产物（`hasModule`/
+        // 已解压只读路径）为准。
+        version = await _builtinVersion(name);
+        if (await _builtinArtifactExists(name)) {
           source = 'builtin';
-          version = builtinVersion;
-        } else {
-          final builtin = await _builtinSoPathReadOnly(name);
-          if (builtin != null && File(builtin).existsSync()) {
-            source = 'builtin';
-            soPath = builtin;
-          }
+          soPath = await _builtinSoPathReadOnly(name);
         }
       }
 
@@ -890,7 +902,11 @@ class RustModuleLoader {
 
   /// 内置模块路径（**只读**）：不解压，仅查已解压文件是否存在。
   /// 供状态查询使用——解压接口会写盘，绝不能在只读诊断里触发。
+  ///
+  /// 尊重 `builtinSoPathOverride` 测试接缝（桌面/测试模拟内置产物）。
   Future<String?> _builtinSoPathReadOnly(String name) async {
+    final override = _builtinSoPathOverride;
+    if (override != null) return override(name);
     if (defaultTargetPlatform != TargetPlatform.android) return null;
     try {
       const channel = MethodChannel('gstore/apk_source');
