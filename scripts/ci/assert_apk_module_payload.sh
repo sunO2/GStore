@@ -54,9 +54,28 @@ MODULES=(qr analyzer repo download)
 failures=0
 checked=0
 
+# 失败同时输出 ::error:: 工作流注解：CI 失败明细可经 check-runs annotations API 读取，
+# 避免只留 "exit code 1" 的黑箱失败。
+fail() {
+  echo "FAIL  : $*" >&2
+  echo "::error::$*"
+}
+
 # 打印 APK 的条目列表；非 zip / 读取失败返回非零。
 apk_listing() {
-  unzip -l "$1" 2>/dev/null
+  if command -v unzip >/dev/null 2>&1; then
+    unzip -l "$1" 2>/dev/null
+  else
+    python3 - "$1" <<'PY'
+import sys, zipfile
+try:
+    with zipfile.ZipFile(sys.argv[1]) as z:
+        for i in z.infolist():
+            print("%10d   %s" % (i.file_size, i.filename))
+except Exception:
+    sys.exit(1)
+PY
+  fi
 }
 
 # 断言单个 ABI/变体的载荷。参数：<label> <apk> <abi> <full|slim>
@@ -65,12 +84,12 @@ check_apk() {
   local listing
 
   if [ ! -f "$apk" ]; then
-    echo "FAIL  : [$label] 缺少 APK: $apk" >&2
+    fail "[$label] 缺少 APK: $apk"
     failures=$((failures + 1))
     return
   fi
   if ! listing="$(apk_listing "$apk")"; then
-    echo "FAIL  : [$label] 不是有效 zip/APK: $apk" >&2
+    fail "[$label] 不是有效 zip/APK: $apk"
     failures=$((failures + 1))
     return
   fi
@@ -79,7 +98,7 @@ check_apk() {
   local host_entry="lib/${abi}/libgstore_host.so"
 
   if ! printf '%s\n' "$listing" | grep -qF "$host_entry"; then
-    echo "FAIL  : [$label] 缺少 FFI 宿主: $host_entry" >&2
+    fail "[$label] 缺少 FFI 宿主: $host_entry"
     ok=0
   fi
 
@@ -88,13 +107,13 @@ check_apk() {
     for module in "${MODULES[@]}"; do
       local entry="lib/${abi}/libgstore_mod_${module}.so"
       if ! printf '%s\n' "$listing" | grep -qF "$entry"; then
-        echo "FAIL  : [$label] 缺少内置模块: $entry" >&2
+        fail "[$label] 缺少内置模块: $entry"
         ok=0
       fi
     done
   else
     if printf '%s\n' "$listing" | grep -Eq 'lib/[^/]+/libgstore_mod_[^/]+\.so'; then
-      echo "FAIL  : [$label] 精简包不得包含任何模块 .so:" >&2
+      fail "[$label] 精简包不得包含任何模块 .so:"
       printf '%s\n' "$listing" | grep -E 'lib/[^/]+/libgstore_mod_[^/]+\.so' >&2 || true
       ok=0
     fi
@@ -111,6 +130,19 @@ check_apk() {
 for abi in "${ABIS[@]}"; do
   check_apk "full/$abi" "$APK_DIR/GStore-${abi}-release.apk" "$abi" full
   check_apk "slim/$abi" "$APK_DIR/GStore-slim-${abi}-release.apk" "$abi" slim
+
+  # 精简包必须比完整包小：若相等/更大，说明 Gradle gstoreSlimModules 未生效（exclude 未应用），
+  # 这是断言此前无法区分的「静默失效」。
+  full_apk="$APK_DIR/GStore-${abi}-release.apk"
+  slim_apk="$APK_DIR/GStore-slim-${abi}-release.apk"
+  if [ -f "$full_apk" ] && [ -f "$slim_apk" ]; then
+    full_size=$(stat -c%s "$full_apk")
+    slim_size=$(stat -c%s "$slim_apk")
+    if [ "$slim_size" -ge "$full_size" ]; then
+      fail "slim/$abi 体积未减小（slim=$slim_size >= full=$full_size）：gstoreSlimModules 未生效"
+      failures=$((failures + 1))
+    fi
+  fi
 done
 
 if [ "$failures" -gt 0 ]; then
