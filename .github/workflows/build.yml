@@ -27,6 +27,27 @@ jobs:
           echo "=== After ==="
           df -h /
 
+      # ── Rust Android 模块构建所需工具链 ──────────────────────────────────
+      - name: Set up Rust toolchain (Android targets)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # build_android_rust.sh 会为这 4 个 target 构建宿主 + qr/analyzer/repo/download 模块
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Android NDK
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: 26.3.11579264
+
+      - name: Set up CMake and Ninja (zxing-cpp cmake cross-build)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends cmake ninja-build
+
       - name: Download Latest apps.db Asset from sunO2/GStore-repositorys Release
         run: |
           REPO_OWNER="sunO2"
@@ -86,6 +107,22 @@ jobs:
 
       - name: Rebuild it-tools offline bundle (upstream + patch)
         run: bash scripts/it_tools/build_bundle.sh
+
+      # 构建可下载 Rust 模块。llm 为可选、仅 arm64，由脚本既有逻辑决定是否构建，
+      # 不纳入下方断言范围。
+      - name: Build Rust Android modules (qr/analyzer/repo/download)
+        env:
+          GSTORE_NDK_PATH: ${{ steps.setup-ndk.outputs.ndk-path }}
+          GSTORE_PROJECT_DIR: ${{ github.workspace }}/rust/gstore_host
+          GSTORE_LIB_DIR: ${{ github.workspace }}/android/app/src/main/jniLibs
+          GSTORE_MODULE_DIR: ${{ github.workspace }}/rust/release-modules
+        run: bash build_android_rust.sh
+
+      # 非零字节断言：任一模块/ABI 产物缺失或为零字节都会让作业失败。
+      - name: Assert Rust module artifacts are present and non-zero
+        env:
+          GSTORE_MODULE_DIR: ${{ github.workspace }}/rust/release-modules
+        run: bash scripts/ci/assert_module_artifacts.sh "$GSTORE_MODULE_DIR"
 
       - run: flutter test
       - run: flutter build apk --no-shrink --target-platform android-arm,android-arm64,android-x64 --split-per-abi 
