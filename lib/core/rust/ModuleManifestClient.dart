@@ -54,6 +54,32 @@ class ItToolsManifest {
   }
 }
 
+/// IT-Tools 离线包 zip 在 Release 中的定位结果
+/// （`browser_download_url` + `it_tools.json` 的完整性元数据）。
+///
+/// 与 [ItToolsManifest] 的区别：后者是清单正文的强类型视图，本类是
+/// 「同一 Release 资产表中命中的 zip URL」——URL **不**由 `$base/<asset>` 拼接。
+class ItToolsAssetLocation {
+  /// Release 资产的 `browser_download_url`。
+  final String url;
+
+  /// 清单记录的 zip SHA-256（十六进制小写）。
+  final String contentHash;
+
+  /// 清单记录的 zip 字节数。
+  final int size;
+
+  /// 清单记录的资产名（编译脚本固定为 `it-tools.zip`）。
+  final String asset;
+
+  const ItToolsAssetLocation({
+    required this.url,
+    required this.contentHash,
+    required this.size,
+    required this.asset,
+  });
+}
+
 /// 当前 ABI 的模块资产定位结果（Release 资产 URL + 清单完整性元数据）。
 class ModuleAssetLocation {
   /// Release 资产的 `browser_download_url`（**不**由 `$base/<abi>/<file>` 拼接）。
@@ -262,6 +288,40 @@ class ModuleManifestClient implements ModuleManifestSource {
     } catch (e) {
       debugPrint('ModuleManifestClient: it_tools.json 获取失败 - $e');
       return cache?.manifest;
+    }
+  }
+
+  /// 定位同 Release 的 IT-Tools zip 资产（`it_tools.json` 的 `asset` 名在
+  /// Release `assets[]` 中精确匹配），返回 zip 的 `browser_download_url` 与
+  /// 完整性元数据。任何解析/网络失败 → null，绝不抛异常。
+  ///
+  /// 与 [locateModuleAsset] 一样：资产名未命中（Release 元数据陈旧）时失效
+  /// Release 缓存并**恰好重解析一次**。
+  Future<ItToolsAssetLocation?> locateItToolsAsset({
+    bool forceRefresh = false,
+  }) async {
+    try {
+      final manifest = await loadItToolsManifest(forceRefresh: forceRefresh);
+      if (manifest == null) return null;
+
+      var release = await _resolveRelease(force: false);
+      var found = release?.assets[manifest.asset];
+      if (found == null) {
+        _release = null;
+        release = await _resolveRelease(force: true);
+        found = release?.assets[manifest.asset];
+        if (found == null) return null;
+      }
+
+      return ItToolsAssetLocation(
+        url: found.url,
+        contentHash: manifest.contentHash,
+        size: manifest.size,
+        asset: manifest.asset,
+      );
+    } catch (e) {
+      debugPrint('ModuleManifestClient: 定位 it-tools 资产失败 - $e');
+      return null;
     }
   }
 
