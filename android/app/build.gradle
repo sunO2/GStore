@@ -43,6 +43,20 @@ android {
         }
     }
 
+    // 可选「精简包」开关：CI 通过 ORG_GRADLE_PROJECT_gstoreSlimModules=true 传入，
+    // Gradle 会映射为同名项目属性 gstoreSlimModules。开启后打包时排除可下载的原生
+    // 模块库 libgstore_mod_*.so，但保留 FFI 宿主 libgstore_host.so 及其它所有 .so。
+    // 说明：Dart 模块加载器把 modules_builtin.json 中的 "builtin" 声明视为「需要真实
+    // 产物」，精简包中该产物缺失时首次使用会回退到远程下载链路；属性缺省或为 false
+    // 时打包内容与完整包完全一致（字节不变）。
+    if (project.hasProperty("gstoreSlimModules") &&
+            project.property("gstoreSlimModules").toString().toBoolean()) {
+        packaging {
+            jniLibs {
+                excludes += ["**/libgstore_mod_*.so"]
+            }
+        }
+    }
 
     signingConfigs {
         debug {
