@@ -695,5 +695,429 @@ void main() {
         ItToolsService.sourceAsset,
       );
     });
+
+    // 12. 首次安装但盘上已有陈旧 .prev：`_swap` 必须先丢弃，不得把陈旧回滚源留下。
+    test('首次安装丢弃陈旧 it_tools.prev（无旧当前）', () async {
+      final stale = prevDir()..createSync(recursive: true);
+      File(p.join(stale.path, 'index.html')).writeAsStringSync('stale-prev');
+      File(p.join(stale.path, ItToolsService.markerFileName)).writeAsStringSync(
+        jsonEncode(
+          {'contentHash': '1' * 64, 'source': ItToolsService.sourceRemote},
+        ),
+      );
+
+      final zip = buildZip({'index.html': '<html>fresh</html>'});
+      final hash = sha256Hex(zip);
+      serveRemote(hash: hash, size: zip.length, zip: zip);
+      final fetcher = _FakeFetcher(zip);
+      ItToolsService.debugFetcher = fetcher;
+      ItToolsService.debugManifestClientFactory = buildRecordedClient;
+
+      final result = await ItToolsService.updateFromRemote(forceRefresh: true);
+      expect(result.updated, isTrue);
+
+      expect(
+        await File(p.join(currentDir().path, 'index.html')).readAsString(),
+        '<html>fresh</html>',
+      );
+      expect(
+        await prevDir().exists(),
+        isFalse,
+        reason: '无旧当前时不得留下会误导回滚的陈旧 .prev',
+      );
+      expect(await stagingDir().exists(), isFalse);
+    });
+
+    // 13. 回滚链：当前目录存在但损坏（缺 index.html）→ 用 .prev 提升，损坏目录被丢弃。
+    test('当前损坏但 .prev 可用：回滚 .prev 并清掉损坏目录', () async {
+      final broken = currentDir()..createSync(recursive: true);
+      File(p.join(broken.path, 'junk.txt')).writeAsStringSync('broken');
+
+      final prev = prevDir()..createSync(recursive: true);
+      File(p.join(prev.path, 'index.html')).writeAsStringSync('prev-good');
+      File(p.join(prev.path, ItToolsService.markerFileName)).writeAsStringSync(
+        jsonEncode(
+          {'contentHash': '2' * 64, 'source': ItToolsService.sourceRemote},
+        ),
+      );
+
+      var assetUsed = false;
+      ItToolsService.debugAssetLoader = () async {
+        assetUsed = true;
+        return buildZip({'index.html': 'asset'});
+      };
+      serveOffline();
+      ItToolsService.debugManifestClientFactory = buildRecordedClient;
+
+      final dir = await ItToolsService.ensureExtracted();
+
+      expect(
+        await File(p.join(dir.path, 'index.html')).readAsString(),
+        'prev-good',
+      );
+      expect(
+        await File(p.join(dir.path, 'junk.txt')).exists(),
+        isFalse,
+        reason: '损坏的当前目录不得残留进提升后的当前目录',
+      );
+      expect(assetUsed, isFalse, reason: '.prev 可用时不应动用随包资产');
+      final marker = await ItToolsService.readCurrentMarker();
+      expect(marker!.source, ItToolsService.sourceRemote);
+      expect(marker.contentHash, '2' * 64);
+      expect(await prevDir().exists(), isFalse);
+      expect(await stagingDir().exists(), isFalse);
+    });
+
+    // 14. 回退链末段：当前与 .prev 都损坏 → 随包资产；损坏当前被换名进 .prev（可审计）。
+    test('当前与 .prev 均损坏：随包资产兜底且损坏当前移入 .prev', () async {
+      final broken = currentDir()..createSync(recursive: true);
+      File(p.join(broken.path, 'junk.txt')).writeAsStringSync('broken-current');
+
+      final brokenPrev = prevDir()..createSync(recursive: true);
+      File(p.join(brokenPrev.path, 'junk2.txt'))
+          .writeAsStringSync('broken-prev');
+
+      final assetZip = buildZip({'index.html': 'asset-fallback'});
+      ItToolsService.debugAssetLoader = () async => assetZip;
+      serveOffline();
+      ItToolsService.debugManifestClientFactory = buildRecordedClient;
+
+      final dir = await ItToolsService.ensureExtracted();
+
+      expect(
+        await File(p.join(dir.path, 'index.html')).readAsString(),
+        'asset-fallback',
+      );
+      expect(
+        (await ItToolsService.readCurrentMarker())!.source,
+        ItToolsService.sourceAsset,
+      );
+      expect(
+        (await ItToolsService.readCurrentMarker())!.contentHash,
+        sha256Hex(assetZip),
+      );
+      // 原子换名的审计痕迹：损坏的当前目录被换名到 .prev，而不是被静默丢弃
+      expect(await prevDir().exists(), isTrue);
+      expect(await File(p.join(prevDir().path, 'junk.txt')).exists(), isTrue);
+      expect(await stagingDir().exists(), isFalse);
+    });
+
+    // 15. 连续三次成功更新：.prev 只保留紧邻前一份，标记链正确，无 .new / .tmp 残留。
+    test('连续更新：.prev 只保留紧邻前一份且标记链正确', () async {
+      final zips = [
+        buildZip({'index.html': 'v1'}),
+        buildZip({'index.html': 'v2'}),
+        buildZip({'index.html': 'v3'}),
+      ];
+      final hashes = zips.map(sha256Hex).toList();
+
+      final fetcher = _FakeFetcher(zips[0]);
+      ItToolsService.debugFetcher = fetcher;
+      ItToolsService.debugManifestClientFactory = buildRecordedClient;
+
+      for (var i = 0; i < zips.length; i++) {
+        serveRemote(hash: hashes[i], size: zips[i].length, zip: zips[i]);
+        fetcher.bytes = zips[i];
+        final r = await ItToolsService.updateFromRemote(forceRefresh: true);
+        expect(r.updated, isTrue, reason: '第 ${i + 1} 次更新应成功');
+        expect(r.contentHash, hashes[i]);
+      }
+
+      final current = currentDir();
+      expect(
+        await File(p.join(current.path, 'index.html')).readAsString(),
+        'v3',
+      );
+      expect((await ItToolsService.readCurrentMarker())!.contentHash, hashes[2]);
+
+      final prev = prevDir();
+      expect(await File(p.join(prev.path, 'index.html')).readAsString(), 'v2');
+      expect((await readMarkerAt(prev))['contentHash'], hashes[1]);
+      expect((await readMarkerAt(prev))['source'], ItToolsService.sourceRemote);
+
+      expect(await stagingDir().exists(), isFalse);
+      expect(
+        await File(
+          p.join(current.path, '${ItToolsService.markerFileName}.tmp'),
+        ).exists(),
+        isFalse,
+        reason: '标记写必须原子（先 .tmp 后 rename），不得残留半写标记',
+      );
+    });
+
+    // 16. 畸形清单：contentHash 非 64-hex → 视为远端不可用，零下载且状态不变。
+    test('非法 contentHash：远端不可用且不发起下载', () async {
+      final zip = buildZip({'index.html': 'never-downloaded'});
+      final oldHash = '3' * 64;
+      await seedCurrent('old-local', oldHash);
+
+      final fetcher = _FakeFetcher(zip);
+      ItToolsService.debugFetcher = fetcher;
+      ItToolsService.debugManifestClientFactory = buildRecordedClient;
+
+      serveRemote(hash: 'NOT-A-SHA256', size: zip.length, zip: zip);
+
+      final result = await ItToolsService.updateFromRemote(forceRefresh: true);
+
+      expect(result.updated, isFalse);
+      expect(result.reason, 'remote-unavailable');
+      expect(fetcher.calls, 0, reason: '清单都没校验通过，绝不应下载载荷');
+      expect(
+        await File(p.join(currentDir().path, 'index.html')).readAsString(),
+        'old-local',
+      );
+      expect((await ItToolsService.readCurrentMarker())!.contentHash, oldHash);
+    });
+
+    // 17. 畸形清单：size 为 0 → 视为远端不可用（拒绝空资产）。
+    test('非法 size（0）：远端不可用且状态不变', () async {
+      final zip = buildZip({'index.html': 'x'});
+      final oldHash = '4' * 64;
+      await seedCurrent('old-local', oldHash);
+
+      final fetcher = _FakeFetcher(zip);
+      ItToolsService.debugFetcher = fetcher;
+      ItToolsService.debugManifestClientFactory = buildRecordedClient;
+
+      serveRemote(hash: sha256Hex(zip), size: 0, zip: zip);
+
+      final result = await ItToolsService.updateFromRemote(forceRefresh: true);
+
+      expect(result.updated, isFalse);
+      expect(result.reason, 'remote-unavailable');
+      expect(fetcher.calls, 0);
+      expect(
+        await File(p.join(currentDir().path, 'index.html')).readAsString(),
+        'old-local',
+      );
+    });
+
+    // 18. 合法 hash/size 但 zip 缺 index.html → 'missing-entry'，旧目录/标记不变。
+    test('zip 缺入口文件：missing-entry 且旧目录/标记不变', () async {
+      final noEntry = buildZip({'assets/app.js': 'x'});
+      final oldHash = '5' * 64;
+      await seedCurrent('old-local', oldHash);
+
+      final fetcher = _FakeFetcher(noEntry);
+      ItToolsService.debugFetcher = fetcher;
+      ItToolsService.debugManifestClientFactory = buildRecordedClient;
+
+      serveRemote(hash: sha256Hex(noEntry), size: noEntry.length, zip: noEntry);
+
+      final result = await ItToolsService.updateFromRemote(forceRefresh: true);
+
+      expect(result.updated, isFalse);
+      expect(result.reason, 'missing-entry');
+      expect(
+        await File(p.join(currentDir().path, 'index.html')).readAsString(),
+        'old-local',
+      );
+      expect((await ItToolsService.readCurrentMarker())!.contentHash, oldHash);
+      expect(await stagingDir().exists(), isFalse);
+      expect(await prevDir().exists(), isFalse);
+    });
+
+    // 19. 反复中断：一次失败后再次成功；失败不留 .new，首次成功无 .prev。
+    test('失败后重试成功：失败不留 .new，首次成功无 .prev', () async {
+      final zip = buildZip({'index.html': 'recovered'});
+      final hash = sha256Hex(zip);
+      final fetcher = _FakeFetcher(zip);
+      ItToolsService.debugFetcher = fetcher;
+      ItToolsService.debugManifestClientFactory = buildRecordedClient;
+
+      // 第一次：合法但与载荷不符的 hash → hash-mismatch
+      serveRemote(hash: '6' * 64, size: zip.length, zip: zip);
+      final failed = await ItToolsService.updateFromRemote(forceRefresh: true);
+      expect(failed.reason, 'hash-mismatch');
+      expect(await currentDir().exists(), isFalse);
+      expect(await stagingDir().exists(), isFalse);
+
+      // 第二次：修正后的清单 → 成功安装
+      serveRemote(hash: hash, size: zip.length, zip: zip);
+      final ok = await ItToolsService.updateFromRemote(forceRefresh: true);
+      expect(ok.updated, isTrue);
+      expect(
+        await File(p.join(currentDir().path, 'index.html')).readAsString(),
+        'recovered',
+      );
+      expect(await prevDir().exists(), isFalse);
+      expect(await stagingDir().exists(), isFalse);
+    });
+  });
+
+  group('ItToolsMarker 语义（contentHash / source）', () {
+    test('合法 remote/asset 标记可往返序列化', () {
+      for (final source in [
+        ItToolsService.sourceRemote,
+        ItToolsService.sourceAsset,
+      ]) {
+        final marker = ItToolsMarker(contentHash: 'a' * 64, source: source);
+        final decoded = ItToolsMarker.tryFromJson(marker.toJson());
+        expect(decoded, isNotNull);
+        expect(decoded!.contentHash, 'a' * 64);
+        expect(decoded.source, source);
+      }
+      expect(ItToolsService.sourceRemote, isNot(ItToolsService.sourceAsset));
+    });
+
+    test('畸形标记一律返回 null（缺字段/类型错/未知来源绝不崩溃）', () {
+      expect(ItToolsMarker.tryFromJson(null), isNull);
+      expect(ItToolsMarker.tryFromJson('not-a-map'), isNull);
+      expect(ItToolsMarker.tryFromJson(<String, Object?>{}), isNull);
+      expect(
+        ItToolsMarker.tryFromJson({'source': ItToolsService.sourceRemote}),
+        isNull,
+        reason: '缺 contentHash',
+      );
+      expect(
+        ItToolsMarker.tryFromJson(
+          {'contentHash': '', 'source': ItToolsService.sourceRemote},
+        ),
+        isNull,
+        reason: '空 contentHash',
+      );
+      expect(
+        ItToolsMarker.tryFromJson({'contentHash': 123, 'source': 'asset'}),
+        isNull,
+        reason: 'contentHash 类型错误',
+      );
+      expect(
+        ItToolsMarker.tryFromJson({'contentHash': 'a' * 64, 'source': 'evil'}),
+        isNull,
+        reason: '未知 source 不得被当作合法来源',
+      );
+    });
+
+    test('readCurrentMarker：损坏/未知来源标记 → null（fail-closed）', () async {
+      final docs = await Directory.systemTemp.createTemp('it_tools_marker_');
+      ItToolsService.debugDocsDir = docs;
+      ItToolsService.debugDisableAutoUpdate = true;
+      addTearDown(() async {
+        ItToolsService.debugReset();
+        if (await docs.exists()) await docs.delete(recursive: true);
+      });
+
+      final dir = Directory(p.join(docs.path, 'it_tools'));
+      await dir.create(recursive: true);
+      await File(p.join(dir.path, 'index.html')).writeAsString('<html/>');
+
+      final markerFile = File(p.join(dir.path, ItToolsService.markerFileName));
+      await markerFile.writeAsString('{"contentHash":"abc","source":"evil"}');
+      expect(await ItToolsService.readCurrentMarker(), isNull);
+
+      await markerFile.writeAsString('not-json');
+      expect(await ItToolsService.readCurrentMarker(), isNull);
+    });
+  });
+
+  group('ItToolsService 存活保护（服务级 beginUse/endUse/isInUse）', () {
+    late Directory docs;
+    late Directory currentDir;
+    late Directory prevDir;
+    late Directory stagingDir;
+
+    setUp(() async {
+      docs = await Directory.systemTemp.createTemp('it_tools_liveness_');
+      ItToolsService.debugDocsDir = docs;
+      ItToolsService.debugDisableAutoUpdate = true;
+      currentDir = Directory(p.join(docs.path, 'it_tools'));
+      prevDir = Directory(p.join(docs.path, ItToolsService.previousDirName));
+      stagingDir = Directory(p.join(docs.path, ItToolsService.stagingDirName));
+    });
+
+    tearDown(() async {
+      ItToolsService.debugReset();
+      if (await docs.exists()) await docs.delete(recursive: true);
+    });
+
+    void seedDir(Directory dir, String html) {
+      dir.createSync(recursive: true);
+      File(p.join(dir.path, 'index.html')).writeAsStringSync(html);
+      File(p.join(dir.path, ItToolsService.markerFileName)).writeAsStringSync(
+        jsonEncode(
+          {'contentHash': '7' * 64, 'source': ItToolsService.sourceRemote},
+        ),
+      );
+    }
+
+    test('isInUse 可重入：全部释放前保持存活，归零后空闲，零计数释放是 no-op',
+        () async {
+      expect(ItToolsService.isInUse, isFalse);
+
+      ItToolsService.beginUse();
+      ItToolsService.beginUse();
+      expect(ItToolsService.isInUse, isTrue);
+
+      await ItToolsService.endUse();
+      expect(ItToolsService.isInUse, isTrue, reason: '仍有使用者，不得视为空闲');
+
+      await ItToolsService.endUse();
+      expect(ItToolsService.isInUse, isFalse);
+
+      // 计数为 0 时再次释放是安全 no-op
+      await ItToolsService.endUse();
+      expect(ItToolsService.isInUse, isFalse);
+    });
+
+    test('使用中清理被延迟且如实返回，释放后连同 .prev/.new 一起清理', () async {
+      seedDir(currentDir, 'current');
+      seedDir(prevDir, 'prev');
+      seedDir(stagingDir, 'staging');
+
+      ItToolsService.beginUse();
+      expect(
+        await ItToolsService.clearManagedDirs(),
+        ItToolsClearOutcome.deferred,
+      );
+      expect(ItToolsService.isInUse, isTrue);
+      for (final dir in [currentDir, prevDir, stagingDir]) {
+        expect(await dir.exists(), isTrue, reason: '存活期不得删除 ${dir.path}');
+      }
+      // 同一存活状态下再清理仍如实返回 false（不得误报成功）
+      expect(await ItToolsService.clearExtracted(), isFalse);
+      expect(await currentDir.exists(), isTrue);
+
+      await ItToolsService.endUse();
+      expect(ItToolsService.isInUse, isFalse);
+      for (final dir in [currentDir, prevDir, stagingDir]) {
+        expect(await dir.exists(), isFalse, reason: '释放后延迟清理应兑现');
+      }
+    });
+
+    test('清理窗口内新使用者进入：重新延迟，绝不删除活动目录', () async {
+      seedDir(currentDir, 'current');
+      seedDir(prevDir, 'prev');
+      seedDir(stagingDir, 'staging');
+
+      ItToolsService.beginUse();
+      expect(
+        await ItToolsService.clearManagedDirs(),
+        ItToolsClearOutcome.deferred,
+      );
+
+      // 在 endUse#1 的「目录解析后、最终校验前」窗口注入新使用者
+      ItToolsService.debugBeforeClearDelete = () {
+        ItToolsService.debugBeforeClearDelete = null; // 只触发一次
+        ItToolsService.beginUse();
+      };
+
+      await ItToolsService.endUse(); // #1：窗口内新使用者进入
+      expect(ItToolsService.isInUse, isTrue, reason: '新使用者已进入');
+      for (final dir in [currentDir, prevDir, stagingDir]) {
+        expect(
+          await dir.exists(),
+          isTrue,
+          reason: '窗口内新进入者使用的目录绝不能被删除',
+        );
+      }
+      expect(await ItToolsService.readCurrentMarker(), isNotNull);
+
+      // 新使用者退出 → 延迟清理才兑现
+      await ItToolsService.endUse(); // #2
+      expect(ItToolsService.isInUse, isFalse);
+      for (final dir in [currentDir, prevDir, stagingDir]) {
+        expect(await dir.exists(), isFalse);
+      }
+    });
   });
 }
