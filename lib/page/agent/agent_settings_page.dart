@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:gstore/core/agent/agent_model_store.dart';
 import 'package:gstore/core/agent/agent_service.dart';
+import 'package:gstore/core/agent/openai_model_catalog.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/rust/ModuleLoader.dart';
 
@@ -60,13 +61,10 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
 
   /// 打开添加/编辑对话框
   Future<void> _openModelDialog([AgentModel? existing]) async {
-    final result = await showModalBottomSheet<AgentModel>(
-      context: context,
-      isScrollControlled: true,
-      builder: (context) => _ModelEditSheet(
-        store: _store!,
-        existing: existing,
-      ),
+    final result = await ModelEditSheet.show(
+      context,
+      store: _store!,
+      existing: existing,
     );
 
     if (result != null && mounted) {
@@ -310,17 +308,44 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
 }
 
 /// 添加/编辑模型的底部弹出表单
-class _ModelEditSheet extends StatefulWidget {
+///
+/// 走应用统一弹层骨架 [AppSheetScaffold]（拖拽条 + 标题 + 限高可滚动内容 +
+/// 固定底部操作区），与「添加 F-Droid 源」等表单同一套设计；
+/// 关闭用 `Navigator.pop(result)` 返回保存后的模型。
+class ModelEditSheet extends StatefulWidget {
   final AgentModelStore store;
   final AgentModel? existing;
 
-  const _ModelEditSheet({required this.store, this.existing});
+  /// 拉取模型列表的实现（默认走真实接口，测试可注入假实现）
+  final Future<List<String>> Function({
+    required String baseUrl,
+    required String apiKey,
+  })? fetchModels;
+
+  const ModelEditSheet({
+    super.key,
+    required this.store,
+    this.existing,
+    this.fetchModels,
+  });
+
+  /// 弹出表单（统一底部弹层）；返回保存后的模型，取消返回 null
+  static Future<AgentModel?> show(
+    BuildContext context, {
+    required AgentModelStore store,
+    AgentModel? existing,
+  }) {
+    return AppSheet.showCustom<AgentModel>(
+      context: context,
+      builder: (_) => ModelEditSheet(store: store, existing: existing),
+    );
+  }
 
   @override
-  State<_ModelEditSheet> createState() => _ModelEditSheetState();
+  State<ModelEditSheet> createState() => ModelEditSheetState();
 }
 
-class _ModelEditSheetState extends State<_ModelEditSheet> {
+class ModelEditSheetState extends State<ModelEditSheet> {
   late AgentLlmProvider _provider;
   late final TextEditingController _nameController;
   late final TextEditingController _apiKeyController;
@@ -328,6 +353,24 @@ class _ModelEditSheetState extends State<_ModelEditSheet> {
   late final TextEditingController _baseUrlController;
   late bool _toolsEnabled;
   late bool _showReasoning;
+
+  /// 内置常用模型（接口不支持 /models 时的兜底预设）
+  static const List<String> _presetModels = [
+    'gpt-4o-mini',
+    'gpt-4o',
+    'deepseek-chat',
+    'qwen-plus',
+    'glm-4-flash',
+  ];
+
+  /// 正在拉取模型列表（按钮转圈并禁用，防连点）
+  bool _loadingModels = false;
+
+  /// 全部已缓存的模型列表（key = baseUrl，空串按默认地址归并）
+  Map<String, List<String>> _catalogCache = {};
+
+  /// 当前 Base URL 对应的可用模型；null 表示无缓存 → 显示内置预设
+  List<String>? _fetchedModels;
 
   @override
   void initState() {
@@ -340,15 +383,40 @@ class _ModelEditSheetState extends State<_ModelEditSheet> {
     _baseUrlController = TextEditingController(text: existing?.baseUrl ?? '');
     _toolsEnabled = existing?.toolsEnabled ?? true;
     _showReasoning = existing?.showReasoning ?? true;
+    // Base URL 改变后要换成该端点的缓存列表（否则会显示上一个端点的模型）
+    _baseUrlController.addListener(_onBaseUrlChanged);
+    _loadCachedModels();
   }
 
   @override
   void dispose() {
+    _baseUrlController.removeListener(_onBaseUrlChanged);
     _nameController.dispose();
     _apiKeyController.dispose();
     _modelController.dispose();
     _baseUrlController.dispose();
     super.dispose();
+  }
+
+  /// 载入已缓存的模型列表；下次打开表单可直接用缓存替换预设
+  Future<void> _loadCachedModels() async {
+    final cache = await loadModelCatalogCache();
+    if (!mounted) return;
+    setState(() {
+      _catalogCache = cache;
+      _applyCatalog();
+    });
+  }
+
+  void _onBaseUrlChanged() {
+    if (!mounted) return;
+    setState(_applyCatalog);
+  }
+
+  /// 按当前 Base URL 选出要展示的模型列表（无缓存 → null，回落到内置预设）
+  void _applyCatalog() {
+    final cached = _catalogCache[modelCatalogKey(_baseUrlController.text.trim())];
+    _fetchedModels = (cached == null || cached.isEmpty) ? null : cached;
   }
 
   /// 切换 provider 时更新默认提示
@@ -366,154 +434,198 @@ class _ModelEditSheetState extends State<_ModelEditSheet> {
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: EdgeInsets.only(
-        left: AppSpacing.lg,
-        right: AppSpacing.lg,
-        top: AppSpacing.lg,
-        bottom: MediaQuery.of(context).viewInsets.bottom + AppSpacing.lg,
-      ),
-      child: SingleChildScrollView(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
+    return AppSheetScaffold(
+      title: widget.existing == null ? '添加模型' : '编辑模型',
+      contentPadding: AppSpacing.onlyHorizontalXL,
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // 服务商
+          Text('服务商', style: Theme.of(context).textTheme.titleSmall),
+          const SizedBox(height: AppSpacing.sm),
+          SegmentedButton<AgentLlmProvider>(
+            segments: const [
+              ButtonSegment(
+                value: AgentLlmProvider.google,
+                label: Text('Google Gemini'),
+                icon: Icon(Icons.auto_awesome),
+              ),
+              ButtonSegment(
+                value: AgentLlmProvider.openai,
+                label: Text('OpenAI 兼容'),
+                icon: Icon(Icons.cloud_outlined),
+              ),
+            ],
+            selected: {_provider},
+            onSelectionChanged: (selection) {
+              setState(() => _provider = selection.first);
+            },
+          ),
+          const SizedBox(height: AppSpacing.lg),
+
+          // 显示名称（可选）
+          TextField(
+            controller: _nameController,
+            decoration: const InputDecoration(
+              labelText: '显示名称（可选）',
+              hintText: '例如：Gemini Flash / DeepSeek',
+              border: OutlineInputBorder(),
+              prefixIcon: Icon(Icons.badge_outlined),
+            ),
+          ),
+          const SizedBox(height: AppSpacing.md),
+
+          // API Key
+          TextField(
+            controller: _apiKeyController,
+            obscureText: true,
+            decoration: const InputDecoration(
+              labelText: 'API Key',
+              border: OutlineInputBorder(),
+              prefixIcon: Icon(Icons.key),
+            ),
+          ),
+          const SizedBox(height: AppSpacing.md),
+
+          // Base URL（先填地址，再据此拉取/选择模型）
+          TextField(
+            controller: _baseUrlController,
+            decoration: InputDecoration(
+              labelText: 'Base URL',
+              hintText: _baseUrlHint,
+              helperText: _provider == AgentLlmProvider.openai
+                  ? '填写 OpenAI 兼容服务的接口地址'
+                  : null,
+              border: const OutlineInputBorder(),
+              prefixIcon: const Icon(Icons.link),
+            ),
+          ),
+          const SizedBox(height: AppSpacing.md),
+
+          // 模型名称（OpenAI 兼容：右侧刷新按钮拉取 /models 列表后选择）
+          TextField(
+            controller: _modelController,
+            decoration: InputDecoration(
+              labelText: '模型名称',
+              hintText: _modelHint,
+              border: const OutlineInputBorder(),
+              prefixIcon: const Icon(Icons.model_training),
+              suffixIcon: _provider == AgentLlmProvider.openai
+                  ? IconButton(
+                      tooltip: '拉取可用模型列表',
+                      onPressed: _loadingModels ? null : _refreshModels,
+                      icon: _loadingModels
+                          ? const AppLoading(size: AppLoadingSize.small)
+                          : const Icon(Icons.sync),
+                    )
+                  : null,
+            ),
+          ),
+          const SizedBox(height: AppSpacing.sm),
+
+          // 模型候选：拉取成功后整块替换为接口返回的列表，用户点选即回填；
+          // 未拉取（或接口不支持 /models）时显示内置常用模型
+          if (_provider == AgentLlmProvider.openai) ...[
             Text(
-              widget.existing == null ? '添加模型' : '编辑模型',
-              style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    fontWeight: AppTypography.weightSemiBold,
+              _fetchedModels == null
+                  ? '常用模型'
+                  : '可用模型（接口返回 ${_fetchedModels!.length} 个）',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
                   ),
             ),
-            const SizedBox(height: AppSpacing.lg),
-
-            // 服务商
-            Text('服务商', style: Theme.of(context).textTheme.titleSmall),
-            const SizedBox(height: AppSpacing.sm),
-            SegmentedButton<AgentLlmProvider>(
-              segments: const [
-                ButtonSegment(
-                  value: AgentLlmProvider.google,
-                  label: Text('Google Gemini'),
-                  icon: Icon(Icons.auto_awesome),
-                ),
-                ButtonSegment(
-                  value: AgentLlmProvider.openai,
-                  label: Text('OpenAI 兼容'),
-                  icon: Icon(Icons.cloud_outlined),
-                ),
-              ],
-              selected: {_provider},
-              onSelectionChanged: (selection) {
-                setState(() => _provider = selection.first);
-              },
-            ),
-            const SizedBox(height: AppSpacing.lg),
-
-            // 显示名称（可选）
-            TextField(
-              controller: _nameController,
-              decoration: const InputDecoration(
-                labelText: '显示名称（可选）',
-                hintText: '例如：Gemini Flash / DeepSeek',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.badge_outlined),
-              ),
-            ),
-            const SizedBox(height: AppSpacing.md),
-
-            // API Key
-            TextField(
-              controller: _apiKeyController,
-              obscureText: true,
-              decoration: const InputDecoration(
-                labelText: 'API Key',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.key),
-              ),
-            ),
-            const SizedBox(height: AppSpacing.md),
-
-            // 模型名称
-            TextField(
-              controller: _modelController,
-              decoration: InputDecoration(
-                labelText: '模型名称',
-                hintText: _modelHint,
-                border: const OutlineInputBorder(),
-                prefixIcon: const Icon(Icons.model_training),
-              ),
-            ),
-            const SizedBox(height: AppSpacing.sm),
-
-            // OpenAI 常用模型快捷选择
-            if (_provider == AgentLlmProvider.openai)
-              Wrap(
-                spacing: AppSpacing.sm,
-                children: [
-                  'gpt-4o-mini',
-                  'gpt-4o',
-                  'deepseek-chat',
-                  'qwen-plus',
-                  'glm-4-flash',
-                ].map((m) {
-                  return ActionChip(
+            const SizedBox(height: AppSpacing.xs),
+            Wrap(
+              spacing: AppSpacing.sm,
+              runSpacing: AppSpacing.xs,
+              children: [
+                for (final m in _fetchedModels ?? _presetModels)
+                  ActionChip(
                     label: Text(m),
                     onPressed: () {
                       setState(() => _modelController.text = m);
                     },
-                  );
-                }).toList(),
-              ),
-            const SizedBox(height: AppSpacing.md),
-
-            // Base URL
-            TextField(
-              controller: _baseUrlController,
-              decoration: InputDecoration(
-                labelText: 'Base URL',
-                hintText: _baseUrlHint,
-                helperText: _provider == AgentLlmProvider.openai
-                    ? '填写 OpenAI 兼容服务的接口地址'
-                    : null,
-                border: const OutlineInputBorder(),
-                prefixIcon: const Icon(Icons.link),
-              ),
+                  ),
+              ],
             ),
-            const SizedBox(height: AppSpacing.md),
+          ],
+          const SizedBox(height: AppSpacing.md),
 
-            // 工具调用开关：本地小模型 tool calling 不可靠，可关闭走纯问答降级
-            SwitchListTile(
+          // 工具调用开关：本地小模型 tool calling 不可靠，可关闭走纯问答降级
+          // （ListTile 需自带 Material：骨架的 DecoratedBox 背景会遮住 ink）
+          Material(
+            type: MaterialType.transparency,
+            child: SwitchListTile(
               contentPadding: EdgeInsets.zero,
               value: _toolsEnabled,
               onChanged: (v) => setState(() => _toolsEnabled = v),
               title: const Text('启用工具调用'),
               subtitle: const Text('关闭后模型只做问答（本地小模型建议关闭）'),
             ),
-            const SizedBox(height: AppSpacing.md),
+          ),
+          const SizedBox(height: AppSpacing.md),
 
-            // 思考过程开关：展示模型 reasoning / think 内容（Gemini 思考、内联 think 标签）
-            SwitchListTile(
+          // 思考过程开关：展示模型 reasoning / think 内容（Gemini 思考、内联 think 标签）
+          Material(
+            type: MaterialType.transparency,
+            child: SwitchListTile(
               contentPadding: EdgeInsets.zero,
               value: _showReasoning,
               onChanged: (v) => setState(() => _showReasoning = v),
               title: const Text('显示思考过程'),
               subtitle: const Text('在对话中展示模型的推理内容（可折叠）'),
             ),
-            const SizedBox(height: AppSpacing.md),
-
-            // 保存按钮
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton.icon(
-                onPressed: _save,
-                icon: const Icon(Icons.save),
-                label: const Text('保存'),
-              ),
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
+      // 操作区固定在底部，不随内容滚动（统一弹层规范）
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(onPressed: _save, child: const Text('保存')),
+      ],
     );
+  }
+
+  /// 拉取 OpenAI 兼容服务的可用模型列表（GET `{baseUrl}/models`）。
+  ///
+  /// 成功后**直接替换掉预设模型 chips**（不弹二级选择弹层）并写入缓存，
+  /// 下次编辑同一端点时打开表单即用缓存的列表替换预设。
+  Future<void> _refreshModels() async {
+    final apiKey = _apiKeyController.text.trim();
+    if (apiKey.isEmpty) {
+      AppDialogs.showError('请先填写 API Key');
+      return;
+    }
+    final baseUrl = _baseUrlController.text.trim();
+    setState(() => _loadingModels = true);
+    try {
+      final fetch = widget.fetchModels ?? fetchOpenAiModelIds;
+      final ids = await fetch(baseUrl: baseUrl, apiKey: apiKey);
+      if (!mounted) return;
+      if (ids.isEmpty) {
+        AppDialogs.showWarning('接口未返回任何模型，请检查 Base URL');
+        return;
+      }
+      setState(() {
+        _catalogCache = {
+          ..._catalogCache,
+          modelCatalogKey(baseUrl): ids,
+        };
+        _applyCatalog();
+      });
+      // 落库（失败只记日志，不影响本次选择）
+      await cacheModelIds(baseUrl, ids);
+    } catch (e) {
+      if (mounted) AppDialogs.showError('拉取模型列表失败：$e');
+    } finally {
+      if (mounted) {
+        setState(() => _loadingModels = false);
+      }
+    }
   }
 
   Future<void> _save() async {

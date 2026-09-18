@@ -40,6 +40,9 @@ class ConfigKeys {
   /// Agent 当前选中模型 id
   static const String agentSelectedModelId = 'agent_selected_model_id';
 
+  /// Agent 模型列表缓存（JSON：Base URL → 该端点拉取到的模型 ID 列表）
+  static const String agentModelCatalog = 'agent_model_catalog';
+
   /// F-Droid 源列表（JSON）
   static const String fdroidSources = 'fdroid_sources';
 
@@ -168,6 +171,14 @@ class AppCoreConfigModule extends ConfigModule {
           category: 'agent',
           description: 'Agent 当前选中模型 ID',
           descriptionEn: 'Agent selected model ID',
+        ),
+        const ConfigEntry(
+          key: ConfigKeys.agentModelCatalog,
+          type: ConfigValueType.json,
+          agentAccessible: false,
+          category: 'agent',
+          description: 'Agent 模型列表缓存（Base URL → 模型 ID 列表）',
+          descriptionEn: 'Agent model list cache (base URL → model IDs)',
         ),
         const ConfigEntry(
           key: ConfigKeys.fdroidSources,
