@@ -310,13 +310,23 @@ void main() {
       expect(fetchCalls, 0, reason: '已有本地产物 → 零网络/零下载');
     });
 
-    test('manifestOverride 版本更新 + downloader 注入：真实安装路径无网络', () async {
+    test('本地有效产物同步挂载零网络；版本更新走后台安装不挂载', () async {
       debugDefaultTargetPlatformOverride = TargetPlatform.linux;
       final supportDir = makeTempDir();
       final moduleDir = Directory(p.join(supportDir.path, 'gstore_modules', 'qr'))
         ..createSync(recursive: true);
-      File(p.join(moduleDir.path, 'libgstore_mod_qr_1.0.0.so'))
-          .writeAsBytesSync(utf8.encode('OLD'));
+      // 合法本地产物：`.so` + 匹配 `.meta`（fail-closed：缺 .meta 不可挂载）。
+      final oldBytes = utf8.encode('OLD');
+      final oldSo =
+          File(p.join(moduleDir.path, 'libgstore_mod_qr_1.0.0.so'))
+            ..writeAsBytesSync(oldBytes);
+      File('${oldSo.path}.meta').writeAsStringSync(jsonEncode({
+        'name': 'qr',
+        'version': '1.0.0',
+        'abi': 'x86_64',
+        'sha256': sha256.convert(oldBytes).toString(),
+        'source': 'remote',
+      }));
       File(p.join(moduleDir.path, 'version')).writeAsStringSync('1.0.0');
 
       final payload = Uint8List.fromList(utf8.encode('NEW_SO_BYTES'));
@@ -355,12 +365,19 @@ void main() {
         },
       );
 
+      // 同步路径：本地有效产物直接挂载，零网络。
       expect(await loader.ensureModule('qr'), isTrue);
+      expect(fetchedUrls, isEmpty, reason: '同步路径存在本地产物 → 零网络');
+      expect(mountedPaths, hasLength(1));
+      expect(mountedPaths.single, endsWith('libgstore_mod_qr_1.0.0.so'));
+
+      // 后台更新：下载 + 安装（注入下载器，无真实网络），绝不挂载。
+      expect(await loader.downloadAndInstall('qr'), isTrue);
       expect(
         fetchedUrls.single,
         'https://example.com/release/x86_64/libgstore_mod_qr_2.0.0-x86_64.so',
       );
-      expect(mountedPaths, hasLength(1));
+      expect(mountedPaths, hasLength(1), reason: '后台路径绝不挂载');
       expect(
         File(p.join(moduleDir.path, 'libgstore_mod_qr_2.0.0.so')).existsSync(),
         isTrue,

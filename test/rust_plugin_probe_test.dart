@@ -8,8 +8,9 @@ void main() {
     final status = await RustModuleLoader.instance.probe('qr');
     expect(status.name, 'qr');
     expect(status.loaded, isFalse, reason: '测试环境 Rust 未初始化 → 视为未加载');
-    // 测试环境无本地产物；来源为 none（未配置远端时不可能是 remote）
-    expect(status.source, anyOf('none', 'remote'));
+    // 内置清单（assets/app/modules_builtin.json）声明 qr → 视为 builtin；
+    // 测试环境资源不可读时退化为 none/remote。均不得抛异常。
+    expect(status.source, anyOf('none', 'remote', 'builtin'));
     expect(status.exists, status.source != 'none');
   });
 

@@ -5,13 +5,15 @@ import 'dart:typed_data' show BytesBuilder, Uint8List;
 
 import 'package:crypto/crypto.dart' show sha256;
 import 'package:flutter/foundation.dart';
-import 'package:flutter/services.dart' show MethodChannel;
+import 'package:flutter/services.dart' show MethodChannel, rootBundle;
 import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart' show getApplicationDocumentsDirectory;
+import 'package:path_provider/path_provider.dart'
+    show getApplicationSupportDirectory;
 
 import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/rust/ModuleManager.dart';
 import 'package:gstore/core/rust/ModuleManifest.dart';
+import 'package:gstore/core/rust/ModuleManifestClient.dart' show ModuleManifestClient;
 
 /// 原生插件状态（只读展示：是否存在 / 来源 / 是否已加载）
 class RustModuleStatus {
@@ -105,6 +107,18 @@ class RustModuleLoader {
   /// `.meta` 写入前钩子（测试专用；用于证明「先 `.so` 后 `.meta`」的顺序）。
   void Function(String name, String soPath)? _beforeMetaWriteHook;
 
+  /// 内置清单（`assets/app/modules_builtin.json`）覆盖（测试专用）。
+  Map<String, dynamic>? _builtinManifestOverride;
+
+  /// 内置 `.so` 路径覆盖（测试专用；桌面测试模拟 Kotlin `extractModule`）。
+  Future<String?> Function(String name)? _builtinSoPathOverride;
+
+  /// 内置清单缓存（每处只读一次；`debugReset` 清空）。
+  Map<String, dynamic>? _builtinManifestCache;
+
+  /// 后台安装并发去重（同一模块同一时刻只跑一个后台更新）。
+  final Set<String> _bgInFlight = {};
+
   /// 启动清理遗留 `.tmp` 是否已执行（每个进程/测试配置后恰好一次）。
   bool _tempCleanupDone = false;
 
@@ -126,6 +140,9 @@ class RustModuleLoader {
     'x86',
     'x86_64',
   };
+
+  /// 下载内核模块名：**禁止**经同步远程路径自举（存在本地/内置后可后台更新）。
+  static const String _downloadModuleName = 'download';
 
   /// 设备 ABI 内存缓存（首次解析后复用，避免重复通道往返）
   String? _deviceAbiCache;
@@ -172,22 +189,28 @@ class RustModuleLoader {
     ModuleManifestSource? manifestSource,
     ModuleFetcher? downloader,
     Map<String, dynamic>? manifestOverride,
+    Map<String, dynamic>? builtinManifestOverride,
     String? supportDir,
     Future<bool> Function(String name)? isLoadedOverride,
     Future<bool> Function(String soPath)? mountOverride,
+    Future<String?> Function(String name)? builtinSoPathOverride,
     DateTime Function()? clock,
     void Function(String name, String soPath)? beforeMetaWrite,
   }) {
     _manifestSource = manifestSource;
     _downloader = downloader;
     _manifestOverride = manifestOverride;
+    _builtinManifestOverride = builtinManifestOverride;
     _supportDirOverride = supportDir;
     _isLoadedOverride = isLoadedOverride;
     _mountOverride = mountOverride;
+    _builtinSoPathOverride = builtinSoPathOverride;
     _clockOverride = clock;
     _beforeMetaWriteHook = beforeMetaWrite;
-    // 清单可能变化，清缓存避免跨测试泄漏。
+    // 清单/内置清单可能变化，清缓存避免跨测试泄漏。
     _manifestCache = null;
+    _builtinManifestCache = null;
+    _bgInFlight.clear();
     // 新配置 ⇒ 允许重新执行一次启动 `.tmp` 清理。
     _tempCleanupDone = false;
   }
@@ -198,13 +221,17 @@ class RustModuleLoader {
     _manifestSource = null;
     _downloader = null;
     _manifestOverride = null;
+    _builtinManifestOverride = null;
     _supportDirOverride = null;
     _isLoadedOverride = null;
     _mountOverride = null;
+    _builtinSoPathOverride = null;
     _clockOverride = null;
     _beforeMetaWriteHook = null;
     _tempCleanupDone = false;
     _manifestCache = null;
+    _builtinManifestCache = null;
+    _bgInFlight.clear();
     _deviceAbiCache = null;
   }
 
@@ -214,9 +241,11 @@ class RustModuleLoader {
       _manifestSource != null ||
       _downloader != null ||
       _manifestOverride != null ||
+      _builtinManifestOverride != null ||
       _supportDirOverride != null ||
       _isLoadedOverride != null ||
       _mountOverride != null ||
+      _builtinSoPathOverride != null ||
       _clockOverride != null ||
       _beforeMetaWriteHook != null;
 
@@ -235,49 +264,128 @@ class RustModuleLoader {
     return RustModuleManager.instance.isLoaded(name);
   }
 
-  /// 确保模块就绪：内置.jniLibs → 本地私有目录 → 远程更新，依次尝试。
-  /// 返回 false = 模块不可用（调用方走降级路径）。
+  /// 下载目录候选 `.so` 文件名解析（版本段）。`libgstore_mod_<name>.so`
+  /// （无版本，视为 0.0.0）与 `libgstore_mod_<name>_<major.minor.patch>.so`；
+  /// 不匹配 / 版本非法 → null（调用方跳过，绝不用 mtime 猜测）。
+  List<int>? _candidateVersion(String base, String name) {
+    if (base == 'libgstore_mod_$name.so') return const [0, 0, 0];
+    final prefix = 'libgstore_mod_${name}_';
+    if (!base.startsWith(prefix) || !base.endsWith('.so')) return null;
+    final core = base.substring(prefix.length, base.length - 3);
+    final sanitized = _sanitizeVersion(core);
+    if (sanitized == null) return null;
+    return _parseVersion(sanitized);
+  }
+
+  /// 「已下载」以**目录位置**判定（`<support>/gstore_modules/<name>/`）。
+  Future<bool> _hasDownloadedArtifact(String name) async {
+    final dir = await _moduleDir(name);
+    try {
+      if (!await Directory(dir).exists()) return false;
+      for (final entity in Directory(dir).listSync()) {
+        if (entity is! File) continue;
+        if (_candidateVersion(p.basename(entity.path), name) != null) {
+          return true;
+        }
+      }
+    } catch (_) {
+      return false;
+    }
+    return false;
+  }
+
+  /// 内置产物/声明是否存在（内置清单声明 = 随包发布）。
+  Future<bool> _hasBuiltin(String name) async {
+    if (await _builtinVersion(name) != null) return true;
+    final path = await _builtinSoPath(name);
+    return path != null && File(path).existsSync();
+  }
+
+  /// 选择最高三段 semver 的**有效**已下载产物（**先过滤、后排序**）。
+  ///
+  /// 过滤条件（须全部满足）：位于下载目录、版本段可解析、未被隔离、
+  /// `.meta` 合法且 `.meta.sha256` 与字节复核通过。这样「最高版本无效」
+  /// 时仍会命中有效低版本，而不会因排序选到无效文件后放弃。
+  Future<String?> _resolveLocalSo(String name) async {
+    final dir = await _moduleDir(name);
+    final quarantined = await _readQuarantineKeys(name);
+
+    final valid = <({String path, List<int> version})>[];
+    try {
+      for (final entity in Directory(dir).listSync()) {
+        if (entity is! File) continue;
+        final base = p.basename(entity.path);
+        final version = _candidateVersion(base, name);
+        if (version == null) continue;
+        if (quarantined.contains(base) ||
+            quarantined.contains(_renderVersion(version))) {
+          appLog.warning('RustModuleLoader: $name 已隔离版本被跳过（$base）');
+          continue;
+        }
+        if (!await _verifyMeta(name, entity.path)) continue;
+        valid.add((path: entity.path, version: version));
+      }
+    } catch (_) {
+      // 目录不存在/不可读 → 视为无本地产物
+      return null;
+    }
+
+    if (valid.isEmpty) return null;
+    valid.sort((a, b) => _compareVersionLists(b.version, a.version));
+    return valid.first.path;
+  }
+
+  /// 确保模块就绪（**同步路径零网络**）：
+  /// 已挂载 → 已下载有效产物（最高三段 semver）→ 内置解压
+  /// → 仅当两者皆无时做一次有界远程下载安装并挂载 → 否则 false。
   Future<bool> ensureModule(String name) async {
-    // 已挂载 → 直接可用
+    // 已挂载 → 直接可用（零网络）。
     if (await _isLoaded(name)) return true;
 
     // 启动清理：删除下载目录中上次中断遗留的 `.tmp`（恰好一次）。
     await _cleanupTempOnce();
 
-    // 1. 内置方案：jniLibs（Android nativeLibraryDir）自动检索
-    final builtinSo = await _builtinSoPath(name);
-    if (builtinSo != null && File(builtinSo).existsSync()) {
-      appLog.info('RustModuleLoader: $name 命中内置模块 $builtinSo');
-      return _mountLocal(name, builtinSo);
-    }
-
-    // 2. 本地私有目录（曾下载/缓存的模块）；fail-closed：缺 `.meta` 或
-    //    sha256 复核不通过者一律不挂载。
-    final localSo = await _verifiedLocalSoPath(name);
+    // 1. 已下载产物优先：先过滤（目录/.meta/未隔离/sha256 复核）再取最高三段 semver。
+    final localSo = await _resolveLocalSo(name);
     if (localSo != null && await File(localSo).exists()) {
-      // 2a. 远端已配置且清单版本更新 → 下载替换（更新链路）
-      if (await _remoteHasNewerVersion(name)) {
-        final remote = remoteBaseUrl;
-        if (remote != null && remote.isNotEmpty) {
-          return _downloadAndMount(name, remote);
-        }
-      }
-      // 2b. 无更新 / 未配远端 → 直接使用本地
-      return _mountLocal(name, localSo);
+      if (await _mountLocal(name, localSo)) return true;
+      // 挂载/握手失败 → `_mountLocal` 已写 quarantine；继续回退内置。
     }
 
-    // 3. 远程下载（未配置则不可用，走降级）
+    // 2. 内置（必要时 Kotlin `extractModule` 解压）→ 挂载。
+    final builtinSo = await _builtinSoPath(name);
+    final builtinSoExists = builtinSo != null && File(builtinSo).existsSync();
+    if (builtinSoExists) {
+      appLog.info('RustModuleLoader: $name 命中内置模块 $builtinSo');
+      if (await _mountLocal(name, builtinSo)) return true;
+    }
+
+    // 3. 仅当既无内置也无已下载产物时，才做一次有界远程下载安装并挂载。
+    final hasBuiltin = builtinSoExists || await _builtinVersion(name) != null;
+    final hasDownloaded = await _hasDownloadedArtifact(name);
+    if (hasBuiltin || hasDownloaded) {
+      appLog.info('RustModuleLoader: $name 本地产物不可用，走降级');
+      return false;
+    }
+    // `download` 内核不得经本路径自举（存在本地/内置后可由后台更新）。
+    if (name == _downloadModuleName) {
+      appLog.info('RustModuleLoader: $name 禁止自举下载，走降级');
+      return false;
+    }
     final remote = remoteBaseUrl;
-    if (remote == null || remote.isEmpty) {
+    final source = _manifestSource;
+    if ((remote == null || remote.isEmpty) &&
+        source is! ModuleManifestClient) {
       appLog.info('RustModuleLoader: $name 未配置远程源，模块不可用（走降级）');
       return false;
     }
-    return _downloadAndMount(name, remote);
+    return _downloadAndInstall(name, mount: true);
   }
 
-  /// 模块是否可用（**不加载、不解压**）：APK 内置 或 已下载到本地。
-  /// 供 UI 决定是否显示"本地模型"等入口。
+  /// 模块是否可用（**不加载、不解压**）：内置恒为 true；已下载则要求
+  /// `.meta` 合法、sha256 复核通过且未被隔离。
   Future<bool> isAvailable(String name) async {
+    // Android：平台内置探测优先（真实 .so 存在；保留既有通道契约）。
     if (defaultTargetPlatform == TargetPlatform.android) {
       try {
         const channel = MethodChannel('gstore/apk_source');
@@ -287,14 +395,18 @@ class RustModuleLoader {
         );
         if (has == true) return true;
       } catch (_) {
-        // 平台不支持则退化为只查本地文件
+        // 平台不支持则退化为清单/本地文件判定
       }
     }
-    return (await _verifiedLocalSoPath(name)) != null;
+    // 已下载有效产物（fail-closed）。
+    if ((await _resolveLocalSo(name)) != null) return true;
+    // 内置随包发布：清单声明即视为可用。
+    if (await _builtinVersion(name) != null) return true;
+    return false;
   }
 
-  /// 探测模块状态（**不加载、不下载**）：
-  /// 查本地产物（已下载 → 内置）与运行时是否已挂载，供 UI 只读展示。
+  /// 探测模块状态（**不加载、不下载**）：内置恒为 true 来源；否则已下载
+  /// （有效 `.meta`/sha256 复核/未隔离）→ 远程可更新 → none。
   Future<RustModuleStatus> probe(String name) async {
     // 1) 运行时是否已挂载（宿主注册表）
     var loaded = false;
@@ -315,22 +427,33 @@ class RustModuleLoader {
     // 2) 产物存在性（不 dlopen）；平台不可用（如无 path_provider）→ 回退 none
     var source = 'none';
     String? soPath;
-    String? localVersion;
+    String? version;
     try {
-      final local = await _verifiedLocalSoPath(name);
+      final local = await _resolveLocalSo(name);
       if (local != null) {
         source = 'downloaded';
         soPath = local;
+        final meta = await _readMetaMap(local);
+        final metaVersion = meta?['version'];
+        version = metaVersion is String && metaVersion.isNotEmpty
+            ? metaVersion
+            : await _localVersion(name);
       } else {
-        final builtin = await _builtinSoPathReadOnly(name);
-        if (builtin != null && File(builtin).existsSync()) {
+        final builtinVersion = await _builtinVersion(name);
+        if (builtinVersion != null) {
           source = 'builtin';
-          soPath = builtin;
-        } else if ((remoteBaseUrl ?? '').isNotEmpty) {
-          source = 'remote';
+          version = builtinVersion;
+        } else {
+          final builtin = await _builtinSoPathReadOnly(name);
+          if (builtin != null && File(builtin).existsSync()) {
+            source = 'builtin';
+            soPath = builtin;
+          } else if ((remoteBaseUrl ?? '').isNotEmpty ||
+              _manifestSource != null) {
+            source = 'remote';
+          }
         }
       }
-      localVersion = await _localVersion(name);
     } catch (_) {
       // 平台不可用 → 保持 none
     }
@@ -340,35 +463,137 @@ class RustModuleLoader {
       exists: source != 'none',
       source: source,
       soPath: soPath,
-      version: localVersion,
+      version: version,
       loaded: loaded,
       loadedVersion: loadedVersion,
     );
   }
 
-  /// 远端清单是否比本地已下载的模块版本更新（无清单信息/无本地版本 → false 不更新）
-  Future<bool> _remoteHasNewerVersion(String name) async {
-    final manifestEntry = await _remoteManifestEntry(name);
-    if (manifestEntry == null) return false;
-    final remoteVersion = manifestEntry.version;
-    if (remoteVersion.isEmpty) return false;
+  /// 后台更新：**只下载 + 安装，绝不挂载**（下次启动生效）。
+  ///
+  /// 触发条件：无有效本地产物，**或**远端版本更高，**或**版本相同但清单
+  /// sha256 与本地 `.meta.sha256` 不同。完成后失效 [_manifestCache]。
+  /// 返回 true 表示完成了一次安装。
+  Future<bool> downloadAndInstall(String name) async {
+    if (!_bgInFlight.add(name)) return false;
+    try {
+      // `download` 内核仅在已存在本地/内置产物后允许后台更新（禁止自举）。
+      if (name == _downloadModuleName && !await _hasLocalOrBuiltin(name)) {
+        return false;
+      }
+      final target = await _remoteTarget(name, forceRefresh: true);
+      if (target == null) return false;
 
-    final localVersion = await _localVersion(name);
-    if (localVersion == null) {
-      // 本地无版本记录 → 无法对比，保守不更新（已有本地模块可用）
+      // 基线：本地 `.meta` 优先；无已下载产物时用内置版本（远程 vs 内置比较）。
+      final localMeta = await _localMetaInfo(name);
+      final baselineVersion =
+          localMeta?.version ?? await _builtinVersion(name);
+      final needed = baselineVersion == null ||
+          _compareVersions(target.version, baselineVersion) > 0 ||
+          (localMeta != null &&
+              _compareVersions(target.version, localMeta.version) == 0 &&
+              target.sha256.toLowerCase() != localMeta.sha256.toLowerCase());
+      if (!needed) return false;
+
+      final ok = await _downloadAndInstall(name, mount: false, target: target);
+      // 后台刷新后失效清单缓存：下次解析/展示拿到最新清单。
+      _manifestCache = null;
+      return ok;
+    } catch (e) {
+      appLog.warning('RustModuleLoader: $name 后台更新失败 - $e');
       return false;
+    } finally {
+      _bgInFlight.remove(name);
     }
-    final newer = _compareVersions(remoteVersion, localVersion) > 0;
-    if (newer) {
-      appLog.info('RustModuleLoader: $name 检测到更新 $localVersion → $remoteVersion');
-    }
-    return newer;
   }
 
+  /// 回退内置：删除全部已下载产物（含隔离标记）后尝试挂载内置模块。
+  Future<bool> rollbackToBuiltin(String name) async {
+    await clearDownloadedModule(name);
+    final builtinSo = await _builtinSoPath(name);
+    if (builtinSo != null && File(builtinSo).existsSync()) {
+      return _mountLocal(name, builtinSo);
+    }
+    return false;
+  }
+
+  /// 清除某模块的全部已下载产物（`.so`/`.meta`/`.sig`/`quarantine.json`）。
+  Future<void> clearDownloadedModule(String name) async {
+    try {
+      final dir = Directory(await _moduleDir(name));
+      if (await dir.exists()) await dir.delete(recursive: true);
+    } catch (e) {
+      appLog.warning('RustModuleLoader: 清除 $name 已下载产物失败 - $e');
+    }
+  }
+
+  Future<bool> _hasLocalOrBuiltin(String name) async {
+    if (await _hasBuiltin(name)) return true;
+    return _hasDownloadedArtifact(name);
+  }
+
+  /// 本地有效产物记录的版本 + `.meta.sha256`（无有效产物 → null）。
+  Future<({String version, String sha256})?> _localMetaInfo(String name) async {
+    final soPath = await _resolveLocalSo(name);
+    if (soPath == null) return null;
+    final meta = await _readMetaMap(soPath);
+    if (meta == null) return null;
+    final version = meta['version'];
+    final sha = meta['sha256'];
+    if (version is! String || version.isEmpty) return null;
+    if (sha is! String || sha.isEmpty) return null;
+    return (version: version, sha256: sha);
+  }
+
+  /// 解析远端安装目标（URL + sha256 + 真实版本 + 可选签名）。
+  ///
+  /// 生产优先经 Todo 8 [ModuleManifestClient]（真实 Release
+  /// `browser_download_url`）；测试/旧路径回退 `remoteBaseUrl` 拼接。
+  Future<_RemoteTarget?> _remoteTarget(
+    String name, {
+    bool forceRefresh = false,
+  }) async {
+    final source = _manifestSource;
+    if (source is ModuleManifestClient) {
+      final loc = await source.locateModuleAsset(
+        name,
+        forceRefresh: forceRefresh,
+      );
+      if (loc != null) {
+        return _RemoteTarget(
+          url: loc.url,
+          sha256: loc.sha256,
+          version: loc.version,
+          signature: null,
+        );
+      }
+    }
+    final base = remoteBaseUrl;
+    if (base == null || base.isEmpty) return null;
+    final entry = await _remoteManifestEntry(name, forceRefresh: forceRefresh);
+    if (entry == null || entry.version.isEmpty) return null;
+    final abi = await deviceAbi();
+    final abiAsset = entry.forAbi(abi);
+    if (abiAsset == null) return null;
+    return _RemoteTarget(
+      url: '$base/$abi/${abiAsset.asset}',
+      sha256: abiAsset.sha256,
+      version: entry.version,
+      signature: abiAsset.signature,
+    );
+  }
+
+
   /// 拉取并缓存远端清单（强类型 v2）；旧 schema 显式拒绝并安全降级为 null。
-  Future<ModuleManifestV2?> _remoteManifest() async {
-    final cached = _manifestCache;
-    if (cached != null) return cached;
+  ///
+  /// [forceRefresh] 为 true 时先失效内存缓存，并请求来源强制刷新（后台更新用）。
+  Future<ModuleManifestV2?> _remoteManifest({bool forceRefresh = false}) async {
+    if (forceRefresh) {
+      _manifestCache = null;
+    } else {
+      final cached = _manifestCache;
+      if (cached != null) return cached;
+    }
 
     // 1) 测试覆盖直接注入原始 JSON
     final override = _manifestOverride;
@@ -382,7 +607,7 @@ class RustModuleLoader {
     final source = _manifestSource;
     if (source != null) {
       try {
-        final loaded = await source.load();
+        final loaded = await source.load(forceRefresh: forceRefresh);
         if (loaded != null) _manifestCache = loaded;
         return loaded;
       } catch (e) {
@@ -425,16 +650,12 @@ class RustModuleLoader {
   }
 
   /// 读取远端清单的模块条目（version + abi）
-  Future<ModuleEntryV2?> _remoteManifestEntry(String name) async {
-    final manifest = await _remoteManifest();
+  Future<ModuleEntryV2?> _remoteManifestEntry(
+    String name, {
+    bool forceRefresh = false,
+  }) async {
+    final manifest = await _remoteManifest(forceRefresh: forceRefresh);
     return manifest?.entry(name);
-  }
-
-  /// 读取远端清单中该模块当前 ABI 的资产（asset + sha256 + size + signature）
-  Future<ModuleAbiAsset?> _remoteAbiEntry(String name) async {
-    final entry = await _remoteManifestEntry(name);
-    if (entry == null) return null;
-    return entry.forAbi(await deviceAbi());
   }
 
   /// 本地已下载模块的版本（挂载时写入 <module>/version）
@@ -512,6 +733,8 @@ class RustModuleLoader {
   /// 内置模块路径：Android 上从 APK 提取 libgstore_mod_<name>.so 到私有目录
   /// （useLegacyPackaging=false 时 nativeLibraryDir 无物理文件，须显式解压后 dlopen）
   Future<String?> _builtinSoPath(String name) async {
+    final override = _builtinSoPathOverride;
+    if (override != null) return override(name);
     if (defaultTargetPlatform != TargetPlatform.android) return null;
     try {
       const channel = MethodChannel('gstore/apk_source');
@@ -545,7 +768,8 @@ class RustModuleLoader {
     }
   }
 
-  /// 下载 → SHA-256 校验 → **原子配对安装**（`.tmp` → `.so` → `.meta`）→ 挂载。
+  /// 下载 → SHA-256 校验 → **原子配对安装**（`.tmp` → `.so` → `.meta`）；
+  /// [mount] 为 true 时安装后挂载，false 时（后台更新）**绝不挂载**。
   ///
   /// 顺序不可交换（见 `.omo/plans/remote-plugin-download.md` Todo 4）：
   /// 1. 下载到 `<support>/gstore_modules/<name>/<finalSo>.tmp`；
@@ -556,17 +780,20 @@ class RustModuleLoader {
   ///
   /// 任一步失败只留下可被启动清理的 `.tmp`，绝不产生「有 `.so` 无 `.meta`」以外的
   /// 半写提交（后者由挂载期 fail-closed 拦截）。
-  Future<bool> _downloadAndMount(String name, String baseUrl) async {
+  Future<bool> _downloadAndInstall(
+    String name, {
+    required bool mount,
+    _RemoteTarget? target,
+  }) async {
     try {
-      final entry = await _remoteAbiEntry(name);
-      final version = (await _remoteManifestEntry(name))?.version;
-      if (entry == null || version == null || version.isEmpty) {
+      final resolved = target ?? await _remoteTarget(name);
+      if (resolved == null || resolved.version.isEmpty) {
         appLog.error('RustModuleLoader: $name 清单缺少当前 ABI 资产/版本，拒绝安装');
         return false;
       }
 
       // 签名开关：仅 true 时要求清单提供非空 signature（fail-closed）。
-      final signature = entry.signature;
+      final signature = resolved.signature;
       if (requireSignature && (signature == null || signature.isEmpty)) {
         appLog.error(
             'RustModuleLoader: $name requireSignature=true 但清单缺少 signature，拒绝安装');
@@ -574,9 +801,10 @@ class RustModuleLoader {
       }
 
       // 本地文件名恒为三段纯数字版本（剥离 +build / 预发布）。
-      final sanitizedVersion = _sanitizeVersion(version);
+      final sanitizedVersion = _sanitizeVersion(resolved.version);
       if (sanitizedVersion == null) {
-        appLog.error('RustModuleLoader: $name 版本号非法（$version），拒绝安装');
+        appLog.error(
+            'RustModuleLoader: $name 版本号非法（${resolved.version}），拒绝安装');
         return false;
       }
       final dir = await _moduleDir(name);
@@ -588,9 +816,8 @@ class RustModuleLoader {
       final tmpFile = File('${finalSo.path}.tmp');
 
       // 1. 下载到 `<finalSo>.tmp`（注入下载器优先；测试无网络）。
-      final url = '$baseUrl/${await deviceAbi()}/${entry.asset}';
-      appLog.info('RustModuleLoader: 下载模块 $name <- $url');
-      final resp = await _fetchBytes(url);
+      appLog.info('RustModuleLoader: 下载模块 $name <- ${resolved.url}');
+      final resp = await _fetchBytes(resolved.url);
       if (resp == null) {
         appLog.warning('RustModuleLoader: $name 下载失败');
         await _deleteQuietly(tmpFile);
@@ -600,7 +827,7 @@ class RustModuleLoader {
 
       // 2. 校验清单 SHA-256：不符 → 删除 `.tmp`，无最终 `.so`/`.meta`。
       final actual = _sha256Hex(resp);
-      if (actual != entry.sha256.toLowerCase()) {
+      if (actual != resolved.sha256.toLowerCase()) {
         appLog.error('RustModuleLoader: $name SHA-256 不匹配（拒绝安装）');
         await _deleteQuietly(tmpFile);
         return false;
@@ -615,7 +842,7 @@ class RustModuleLoader {
       // 4. **后**写 `.meta` 作为提交标记（原子：`.meta.tmp` → `.meta`）。
       final meta = jsonEncode(<String, dynamic>{
         'name': name,
-        'version': version,
+        'version': resolved.version,
         'abi': await deviceAbi(),
         'sha256': actual,
         'source': 'remote',
@@ -630,28 +857,32 @@ class RustModuleLoader {
       }
 
       // 真实版本另记录到 `version`（兼容既有读取路径）。
-      await _writeLocalVersion(name, version);
+      await _writeLocalVersion(name, resolved.version);
 
       // 清理本次可能产生的 `.meta.tmp`/`.sig.tmp` 残留。
       await _deleteQuietly(File('${metaFile.path}.tmp'));
       await _deleteQuietly(File('${sigFile.path}.tmp'));
 
+      if (!mount) {
+        // 后台路径：只安装，绝不挂载（下次启动生效）。
+        return true;
+      }
       return _mountLocal(name, finalSo.path);
     } catch (e) {
-      appLog.error('RustModuleLoader: $name 下载/挂载失败 - $e');
+      appLog.error('RustModuleLoader: $name 下载/安装失败 - $e');
       return false;
     }
   }
 
-  /// 宿主 dlopen 挂载本地 .so
+  /// 宿主 dlopen 挂载本地 .so。
+  ///
+  /// 挂载/握手失败时写 `<moduleDir>/quarantine.json`（解析期跳过该版本）。
   Future<bool> _mountLocal(String name, String soPath) async {
     // `.sig` 卫生（单点）：`requireSignature=false` 时，**任何**本地 .so 挂载前
     // 都必须删除同名遗留 `.sig`。宿主 `trust.rs` 在未钉死公钥（Phase 1
     // `MODULE_SIGNING_PUBKEY_HEX=""`）下会拒绝带 `.sig` 的模块
     // （"module is signed but no pinned public key is configured"）。
-    // 覆盖两条到达本方法的路径：`_downloadAndMount`（安装）与 `ensureModule` 2b
-    // （直接挂载已验证的本地产物）。`requireSignature=true` 时保留真实签名
-    // （Phase 2 迁移由 Todo 6 负责）。
+    // `requireSignature=true` 时保留真实签名（Phase 2 迁移由 Todo 6 负责）。
     if (!requireSignature) {
       await _deleteQuietly(File('$soPath.sig'));
     }
@@ -660,67 +891,50 @@ class RustModuleLoader {
     final override = _mountOverride;
     if (override != null) {
       try {
-        return await override(soPath);
+        final ok = await override(soPath);
+        if (!ok) await _recordQuarantine(name, soPath, 'mount_override_false');
+        return ok;
       } catch (e) {
         appLog.error('RustModuleLoader: $name 注入挂载失败 - $e');
+        await _recordQuarantine(name, soPath, 'mount_override_error');
         return false;
       }
     }
     try {
       await RustModuleManager.instance.ensureReady();
       final handle = await RustModuleManager.instance.mountFromSo(soPath);
-      return handle != null;
+      if (handle == null) {
+        await _recordQuarantine(name, soPath, 'mount_failed');
+        return false;
+      }
+      return true;
     } catch (e) {
       appLog.error('RustModuleLoader: $name 挂载失败 - $e');
+      await _recordQuarantine(name, soPath, 'mount_error');
       return false;
     }
   }
 
-  /// 本地已下载模块的 .so 路径（**fail-closed**）。
-  ///
-  /// 「已下载」以**目录位置**判定（`<support>/gstore_modules/<name>/`），而非
-  /// `.meta` 存在与否；但挂载要求同目录存在**合法 `.meta` 且 sha256 复核通过**。
-  /// 缺 `.meta`、`.meta` 非法、字节被篡改的 `.so` 一律返回 `null`（不挂载）。
-  Future<String?> _verifiedLocalSoPath(String name) async {
-    final dir = await _moduleDir(name);
-    final candidates = <File>[];
+  /// 读取 `<soPath>.meta` 为 Map（缺失/非法 → null）。
+  Future<Map<String, dynamic>?> _readMetaMap(String soPath) async {
     try {
-      for (final entity in Directory(dir).listSync()) {
-        if (entity is! File) continue;
-        final base = p.basename(entity.path);
-        final matches = base == 'libgstore_mod_$name.so' ||
-            (base.startsWith('libgstore_mod_${name}_') &&
-                base.endsWith('.so'));
-        if (matches) candidates.add(entity);
-      }
+      final metaFile = File('$soPath.meta');
+      if (!await metaFile.exists()) return null;
+      final decoded = jsonDecode(await metaFile.readAsString());
+      return decoded is Map<String, dynamic> ? decoded : null;
     } catch (_) {
-      // 目录不存在/不可读 → 视为无本地产物
       return null;
     }
-    // 最近修改优先（新版本独立文件名）；再逐个做 `.meta` + sha256 复核。
-    candidates.sort((a, b) {
-      try {
-        return b.statSync().modified.compareTo(a.statSync().modified);
-      } catch (_) {
-        return 0;
-      }
-    });
-    for (final candidate in candidates) {
-      if (await _verifyMeta(name, candidate.path)) return candidate.path;
-    }
-    return null;
   }
 
   /// 复核 `<soPath>.meta`：存在、name 匹配、sha256 与 `.so` 字节一致。
   Future<bool> _verifyMeta(String name, String soPath) async {
     try {
-      final metaFile = File('$soPath.meta');
-      if (!await metaFile.exists()) {
-        appLog.warning('RustModuleLoader: $name 本地产物缺少 .meta，拒绝挂载 ($soPath)');
+      final decoded = await _readMetaMap(soPath);
+      if (decoded == null) {
+        appLog.warning('RustModuleLoader: $name 本地产物缺少/非法 .meta，拒绝挂载 ($soPath)');
         return false;
       }
-      final decoded = jsonDecode(await metaFile.readAsString());
-      if (decoded is! Map) return false;
       if (decoded['name'] != name) return false;
       final expected = decoded['sha256'];
       if (expected is! String || expected.isEmpty) return false;
@@ -736,15 +950,132 @@ class RustModuleLoader {
     }
   }
 
+  /// 内置清单（`assets/app/modules_builtin.json`，随包发布；读一次缓存）。
+  Future<Map<String, dynamic>?> _builtinManifest() async {
+    final cached = _builtinManifestCache;
+    if (cached != null) return cached;
+    final override = _builtinManifestOverride;
+    if (override != null) {
+      _builtinManifestCache = override;
+      return override;
+    }
+    try {
+      final raw =
+          await rootBundle.loadString('assets/app/modules_builtin.json');
+      final decoded = jsonDecode(raw);
+      if (decoded is Map<String, dynamic>) {
+        _builtinManifestCache = decoded;
+        return decoded;
+      }
+    } catch (e) {
+      appLog.warning('RustModuleLoader: 读取内置清单失败 - $e');
+    }
+    return null;
+  }
+
+  /// 内置清单声明的模块版本（未声明 → null）。
+  Future<String?> _builtinVersion(String name) async {
+    final manifest = await _builtinManifest();
+    final entry = manifest?[name];
+    if (entry is Map) {
+      final v = entry['version'];
+      if (v is String && v.isNotEmpty) return v;
+    }
+    return null;
+  }
+
+  /// 写 `<moduleDir>/quarantine.json`（合并已有条目）：挂载/握手失败后
+  /// 该版本在解析期被跳过。仅对下载目录内的产物生效（内置不回退隔离）。
+  Future<void> _recordQuarantine(
+    String name,
+    String soPath,
+    String reason,
+  ) async {
+    try {
+      final dir = await _moduleDir(name);
+      if (p.dirname(soPath) != dir) return; // 仅下载产物
+      final base = p.basename(soPath);
+      final version = _renderVersion(
+        _candidateVersion(base, name) ?? const [0, 0, 0],
+      );
+      final file = File(p.join(dir, 'quarantine.json'));
+      final existing = await _readQuarantineRaw(Directory(dir));
+      existing[version] = <String, dynamic>{
+        'version': version,
+        'file': base,
+        'reason': reason,
+        'at': DateTime.now().toIso8601String(),
+      };
+      await file.writeAsString(jsonEncode(existing), flush: true);
+      appLog.warning('RustModuleLoader: $name 版本 $version 已隔离（$reason）');
+    } catch (e) {
+      appLog.warning('RustModuleLoader: 写 $name quarantine 失败 - $e');
+    }
+  }
+
+  Future<Map<String, dynamic>> _readQuarantineRaw(Directory dir) async {
+    try {
+      final file = File(p.join(dir.path, 'quarantine.json'));
+      if (!await file.exists()) return <String, dynamic>{};
+      final decoded = jsonDecode(await file.readAsString());
+      return decoded is Map<String, dynamic> ? decoded : <String, dynamic>{};
+    } catch (_) {
+      return <String, dynamic>{};
+    }
+  }
+
+  /// 读取隔离键集合（版本号与 `.so` 文件名，任一命中即跳过）。
+  /// 兼容多种形态，损坏/缺失 → 空集合（绝不因隔离文件损坏而拒挂全部）。
+  Future<Set<String>> _readQuarantineKeys(String name) async {
+    try {
+      final dir = Directory(await _moduleDir(name));
+      final decoded = await _readQuarantineRaw(dir);
+      final keys = <String>{};
+      void addEntry(Object? item) {
+        if (item is String && item.isNotEmpty) keys.add(item);
+        if (item is Map) {
+          final v = item['version'];
+          if (v is String && v.isNotEmpty) keys.add(v);
+          final f = item['file'];
+          if (f is String && f.isNotEmpty) keys.add(p.basename(f));
+        }
+      }
+
+      for (final value in decoded.values) {
+        addEntry(value);
+      }
+      for (final key in const ['quarantined', 'versions', 'version']) {
+        final value = decoded[key];
+        if (value is List) {
+          value.forEach(addEntry);
+        } else if (value is String) {
+          keys.add(value);
+        }
+      }
+      return keys;
+    } catch (_) {
+      return const {};
+    }
+  }
+
+  String _renderVersion(List<int> v) => '${v[0]}.${v[1]}.${v[2]}';
+
+  int _compareVersionLists(List<int> a, List<int> b) {
+    for (var i = 0; i < 3; i++) {
+      if (a[i] != b[i]) return a[i] - b[i];
+    }
+    return 0;
+  }
+
   /// 模块私有目录基址（<support> 根）。
   ///
-  /// 生产基线仍为 `getApplicationDocumentsDirectory()`（Todo 5 迁移到
-  /// `getApplicationSupportDirectory()`）；测试经 [debugConfigure] 覆盖。
+  /// 统一下载目录与缓存于 `getApplicationSupportDirectory()/gstore_modules/**`
+  /// （自 `getApplicationDocumentsDirectory()` 迁移）；测试经 [debugConfigure] 覆盖。
   Future<String> _supportDir() async {
     final override = _supportDirOverride;
     if (override != null) return override;
-    final docs = await getApplicationDocumentsDirectory();
-    return docs.path;
+    final support = await getApplicationSupportDirectory();
+    return support.path;
   }
 
   Future<String> _moduleDir(String name) async {
@@ -841,4 +1172,19 @@ class RustModuleLoader {
   String _sha256Hex(Uint8List bytes) {
     return sha256.convert(bytes).toString();
   }
+}
+
+/// 远端安装目标：URL + 清单 sha256 + 真实版本 + 可选签名（Phase 2）。
+class _RemoteTarget {
+  final String url;
+  final String sha256;
+  final String version;
+  final String? signature;
+
+  const _RemoteTarget({
+    required this.url,
+    required this.sha256,
+    required this.version,
+    this.signature,
+  });
 }
