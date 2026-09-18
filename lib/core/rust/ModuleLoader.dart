@@ -11,33 +11,7 @@ import 'package:path_provider/path_provider.dart' show getApplicationDocumentsDi
 
 import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/rust/ModuleManager.dart';
-
-/// 模块清单条目（modules.json 结构，与发布端约定）
-///
-/// 模块 .so 托管在 GitHub Release 附件（GStore 分发渠道），
-/// 清单列出各模块的 ABI 文件名与 SHA-256，Dart 侧下载后校验再交给宿主 dlopen。
-class ModuleManifestEntry {
-  final String name; // 模块名（如 "qr"）
-  final String version;
-  final String sha256; // 该 ABI .so 的 SHA-256
-  final String fileName; // 如 "libgstore_mod_qr.so"
-
-  ModuleManifestEntry({
-    required this.name,
-    required this.version,
-    required this.sha256,
-    required this.fileName,
-  });
-
-  factory ModuleManifestEntry.fromJson(Map<String, dynamic> json) {
-    return ModuleManifestEntry(
-      name: json['name'] as String,
-      version: json['version'] as String,
-      sha256: json['sha256'] as String,
-      fileName: json['file_name'] as String,
-    );
-  }
-}
+import 'package:gstore/core/rust/ModuleManifest.dart';
 
 /// 原生插件状态（只读展示：是否存在 / 来源 / 是否已加载）
 class RustModuleStatus {
@@ -93,8 +67,32 @@ class RustModuleLoader {
   /// 模块 .so 远端根 URL（发布端配置；空 = 禁用远程模块）
   String? remoteBaseUrl;
 
-  /// 远端清单缓存（同一次加载流程复用，避免重复 HTTP）
-  Map<String, dynamic>? _manifestCache;
+  /// 远端清单缓存（同一次加载流程复用，避免重复 HTTP）；
+  /// 解析为 v2 强类型模型，旧 schema 一律拒绝。
+  ModuleManifestV2? _manifestCache;
+
+  // ---- 测试接缝（Todo 2）：生产路径未配置覆盖时行为不变 ----
+
+  /// 可注入清单来源（生产：`ModuleManifestClient`，Todo 8）。
+  ModuleManifestSource? _manifestSource;
+
+  /// 可注入资产下载器（生产：`ModuleDownloader`，Todo 3）。
+  ModuleFetcher? _downloader;
+
+  /// 直接注入的原始清单 JSON（测试专用；优先于清单来源/网络）。
+  Map<String, dynamic>? _manifestOverride;
+
+  /// 模块私有目录基址覆盖（测试专用；不触发 path_provider）。
+  String? _supportDirOverride;
+
+  /// `isLoaded` 覆盖（测试专用；默认 → `RustModuleManager.isLoaded`）。
+  Future<bool> Function(String name)? _isLoadedOverride;
+
+  /// 挂载覆盖（测试专用；默认 → `RustModuleManager.mountFromSo`）。
+  Future<bool> Function(String soPath)? _mountOverride;
+
+  /// 时间源覆盖（测试专用；缓存 TTL 判定用）。
+  DateTime Function()? _clockOverride;
 
   /// 默认 ABI 名（与 Rust target 对应：arm64-v8a / armeabi-v7a / x86 / x86_64）
   String get currentAbi {
@@ -152,11 +150,75 @@ class RustModuleLoader {
   @visibleForTesting
   Future<String?> debugBuiltinSoPath(String name) => _builtinSoPath(name);
 
+  /// 配置测试接缝：清单来源/下载器/清单覆盖/支持目录/isLoaded/挂载/时钟。
+  ///
+  /// 未配置的项保持生产行为；配置后 `ensureModule` 可在**无 FFI、无网络**下运行。
+  @visibleForTesting
+  void debugConfigure({
+    ModuleManifestSource? manifestSource,
+    ModuleFetcher? downloader,
+    Map<String, dynamic>? manifestOverride,
+    String? supportDir,
+    Future<bool> Function(String name)? isLoadedOverride,
+    Future<bool> Function(String soPath)? mountOverride,
+    DateTime Function()? clock,
+  }) {
+    _manifestSource = manifestSource;
+    _downloader = downloader;
+    _manifestOverride = manifestOverride;
+    _supportDirOverride = supportDir;
+    _isLoadedOverride = isLoadedOverride;
+    _mountOverride = mountOverride;
+    _clockOverride = clock;
+    // 清单可能变化，清缓存避免跨测试泄漏。
+    _manifestCache = null;
+  }
+
+  /// 还原生产行为（清空全部测试覆盖与缓存）。
+  @visibleForTesting
+  void debugReset() {
+    _manifestSource = null;
+    _downloader = null;
+    _manifestOverride = null;
+    _supportDirOverride = null;
+    _isLoadedOverride = null;
+    _mountOverride = null;
+    _clockOverride = null;
+    _manifestCache = null;
+    _deviceAbiCache = null;
+  }
+
+  /// 是否配置了任一测试覆盖（供测试断言 [debugReset] 生效）。
+  @visibleForTesting
+  bool get debugSeamActive =>
+      _manifestSource != null ||
+      _downloader != null ||
+      _manifestOverride != null ||
+      _supportDirOverride != null ||
+      _isLoadedOverride != null ||
+      _mountOverride != null ||
+      _clockOverride != null;
+
+  /// 读取清单（测试专用；覆盖生效时不触发真实网络）。
+  @visibleForTesting
+  Future<ModuleManifestV2?> debugLoadManifest() => _remoteManifest();
+
+  /// 注入的时钟（测试专用；未配置 → null）。
+  @visibleForTesting
+  DateTime Function()? get debugClock => _clockOverride;
+
+  /// `isLoaded`：优先注入覆盖，否则走宿主导航注册表。
+  Future<bool> _isLoaded(String name) async {
+    final override = _isLoadedOverride;
+    if (override != null) return override(name);
+    return RustModuleManager.instance.isLoaded(name);
+  }
+
   /// 确保模块就绪：内置.jniLibs → 本地私有目录 → 远程更新，依次尝试。
   /// 返回 false = 模块不可用（调用方走降级路径）。
   Future<bool> ensureModule(String name) async {
     // 已挂载 → 直接可用
-    if (await RustModuleManager.instance.isLoaded(name)) return true;
+    if (await _isLoaded(name)) return true;
 
     // 1. 内置方案：jniLibs（Android nativeLibraryDir）自动检索
     final builtinSo = await _builtinSoPath(name);
@@ -263,8 +325,8 @@ class RustModuleLoader {
   Future<bool> _remoteHasNewerVersion(String name) async {
     final manifestEntry = await _remoteManifestEntry(name);
     if (manifestEntry == null) return false;
-    final remoteVersion = manifestEntry['version'] as String?;
-    if (remoteVersion == null || remoteVersion.isEmpty) return false;
+    final remoteVersion = manifestEntry.version;
+    if (remoteVersion.isEmpty) return false;
 
     final localVersion = await _localVersion(name);
     if (localVersion == null) {
@@ -278,35 +340,76 @@ class RustModuleLoader {
     return newer;
   }
 
-  /// 拉取并缓存远端清单
-  Future<Map<String, dynamic>?> _remoteManifest() async {
-    if (_manifestCache != null) return _manifestCache;
+  /// 拉取并缓存远端清单（强类型 v2）；旧 schema 显式拒绝并安全降级为 null。
+  Future<ModuleManifestV2?> _remoteManifest() async {
+    final cached = _manifestCache;
+    if (cached != null) return cached;
+
+    // 1) 测试覆盖直接注入原始 JSON
+    final override = _manifestOverride;
+    if (override != null) {
+      final parsed = _parseManifestSafe(override);
+      if (parsed != null) _manifestCache = parsed;
+      return parsed;
+    }
+
+    // 2) 可注入清单来源（生产：ModuleManifestClient，Todo 8）
+    final source = _manifestSource;
+    if (source != null) {
+      try {
+        final loaded = await source.load();
+        if (loaded != null) _manifestCache = loaded;
+        return loaded;
+      } catch (e) {
+        appLog.warning('RustModuleLoader: 清单源加载失败 - $e');
+        return null;
+      }
+    }
+
+    // 3) 生产网络路径
     final base = remoteBaseUrl;
     if (base == null || base.isEmpty) return null;
     try {
       final manifestBytes = await _httpGetBytes('$base/modules.json');
       if (manifestBytes == null) return null;
-      _manifestCache =
-          jsonDecode(utf8.decode(manifestBytes)) as Map<String, dynamic>;
-      return _manifestCache;
+      final raw = jsonDecode(utf8.decode(manifestBytes));
+      if (raw is! Map<String, dynamic>) {
+        appLog.warning('RustModuleLoader: 远端清单不是对象');
+        return null;
+      }
+      final parsed = _parseManifestSafe(raw);
+      if (parsed != null) _manifestCache = parsed;
+      return parsed;
     } catch (e) {
       appLog.warning('RustModuleLoader: 读取远端清单失败 - $e');
       return null;
     }
   }
 
-  /// 读取远端清单的模块条目（version + sha256 + abi）
-  Future<Map<String, dynamic>?> _remoteManifestEntry(String name) async {
-    final manifest = await _remoteManifest();
-    final modules = manifest?['modules'] as Map<String, dynamic>?;
-    return modules?[name] as Map<String, dynamic>?;
+  /// 防御式解析清单：旧 schema/结构非法 → 记录并返回 null（绝不崩溃）。
+  ModuleManifestV2? _parseManifestSafe(Map<String, dynamic> raw) {
+    try {
+      return ModuleManifestV2.fromJson(raw);
+    } on ModuleManifestFormatException catch (e) {
+      appLog.warning('RustModuleLoader: 清单格式不支持 - ${e.message}');
+      return null;
+    } catch (e) {
+      appLog.warning('RustModuleLoader: 清单解析失败 - $e');
+      return null;
+    }
   }
 
-  /// 读取远端清单中该模块当前 ABI 的条目（sha256 + signature）
-  Future<Map<String, dynamic>?> _remoteAbiEntry(String name) async {
+  /// 读取远端清单的模块条目（version + abi）
+  Future<ModuleEntryV2?> _remoteManifestEntry(String name) async {
+    final manifest = await _remoteManifest();
+    return manifest?.entry(name);
+  }
+
+  /// 读取远端清单中该模块当前 ABI 的资产（asset + sha256 + size + signature）
+  Future<ModuleAbiAsset?> _remoteAbiEntry(String name) async {
     final entry = await _remoteManifestEntry(name);
-    final abi = entry?['abi'] as Map<String, dynamic>?;
-    return abi?[await deviceAbi()] as Map<String, dynamic>?;
+    if (entry == null) return null;
+    return entry.forAbi(await deviceAbi());
   }
 
   /// 本地已下载模块的版本（挂载时写入 <module>/version）
@@ -392,28 +495,27 @@ class RustModuleLoader {
       final dir = await _moduleDir(name);
       await Directory(dir).create(recursive: true);
 
-      // 清单条目：远程文件名 / 版本 / 签名
+      // 清单条目：远程资产名 / 版本 / 签名
       final entry = await _remoteAbiEntry(name);
-      final signature = entry?['signature'] as String?;
-      final version = (await _remoteManifestEntry(name))?['version'] as String?;
+      final signature = entry?.signature;
+      final version = (await _remoteManifestEntry(name))?.version;
       // 远程模块强制签名：清单缺 signature 直接拒绝（fail-closed，
       // 避免仅靠同一通道的 SHA-256 形成"安全剧场"）
       if (signature == null || signature.isEmpty) {
         appLog.error('RustModuleLoader: $name 清单缺少 signature，拒绝加载');
         return false;
       }
-      final remoteFileName =
-          (entry?['file_name'] as String?) ?? 'libgstore_mod_$name.so';
+      final remoteFileName = entry?.asset ?? 'libgstore_mod_$name.so';
       // 本地落到版本化文件名：mount-once 下新版本走独立路径，下次启动即加载新版
       final localFileName = (version != null && version.isNotEmpty)
           ? 'libgstore_mod_${name}_$version.so'
           : 'libgstore_mod_$name.so';
       final file = File(p.join(dir, localFileName));
 
-      // 1. 下载
+      // 1. 下载（优先注入下载器，测试/后续 Todo 3 复用）
       final url = '$baseUrl/${await deviceAbi()}/$remoteFileName';
       appLog.info('RustModuleLoader: 下载模块 $name <- $url');
-      final resp = await _httpGetBytes(url);
+      final resp = await _fetchBytes(url);
       if (resp == null) {
         appLog.warning('RustModuleLoader: $name 下载失败');
         return false;
@@ -444,6 +546,16 @@ class RustModuleLoader {
 
   /// 宿主 dlopen 挂载本地 .so
   Future<bool> _mountLocal(String name, String soPath) async {
+    // 测试接缝：注入挂载覆盖时完全绕过真实 FFI。
+    final override = _mountOverride;
+    if (override != null) {
+      try {
+        return await override(soPath);
+      } catch (e) {
+        appLog.error('RustModuleLoader: $name 注入挂载失败 - $e');
+        return false;
+      }
+    }
     try {
       await RustModuleManager.instance.ensureReady();
       final handle = await RustModuleManager.instance.mountFromSo(soPath);
@@ -478,6 +590,11 @@ class RustModuleLoader {
   }
 
   Future<String> _moduleDir(String name) async {
+    // 测试接缝：注入支持目录时完全绕过 path_provider。
+    final override = _supportDirOverride;
+    if (override != null) {
+      return p.join(override, 'gstore_modules', name);
+    }
     final docs = await getApplicationDocumentsDirectory();
     return p.join(docs.path, 'gstore_modules', name);
   }
@@ -486,7 +603,7 @@ class RustModuleLoader {
   /// 内置方案（jniLibs 打包）与 APK 同信任锚，不做校验。
   Future<String?> _expectedSha256(String name) async {
     final entry = await _remoteAbiEntry(name);
-    return entry?['sha256'] as String?;
+    return entry?.sha256;
   }
 
   /// 写签名/元数据侧车文件（宿主 dlopen 前校验用；与 .so 同目录、同名前缀）
@@ -506,6 +623,21 @@ class RustModuleLoader {
     } catch (e) {
       appLog.error('RustModuleLoader: $name 写签名侧车失败 - $e');
     }
+  }
+
+  /// 获取资产字节：优先注入的 [ModuleFetcher]（测试/Todo 3 下载器），
+  /// 否则走生产 `HttpClient`。
+  Future<Uint8List?> _fetchBytes(String url, {int? maxBytes}) async {
+    final fetcher = _downloader;
+    if (fetcher != null) {
+      try {
+        return await fetcher.fetch(url, maxBytes: maxBytes);
+      } catch (e) {
+        appLog.warning('RustModuleLoader: 注入下载器失败 - $e');
+        return null;
+      }
+    }
+    return _httpGetBytes(url);
   }
 
   Future<Uint8List?> _httpGetBytes(String url) async {
