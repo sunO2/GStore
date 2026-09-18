@@ -1,11 +1,24 @@
+import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
+import 'package:archive/archive.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/service/it_tools_service.dart';
 import 'package:gstore/page/cache_manage/cache_service.dart';
 import 'package:gstore/page/cache_manage/logic.dart';
 import 'package:gstore/page/cache_manage/state.dart';
+
+/// 在测试内构造离线包 zip（不联网、不依赖 `assets/it_tools/it-tools.zip`）。
+Uint8List _buildAssetZip(Map<String, String> files) {
+  final archive = Archive();
+  for (final entry in files.entries) {
+    final data = utf8.encode(entry.value);
+    archive.addFile(ArchiveFile(entry.key, data.length, data));
+  }
+  return Uint8List.fromList(ZipEncoder().encode(archive)!);
+}
 
 void main() {
   group('CacheManageService 缓存扫描与清理', () {
@@ -258,19 +271,25 @@ void main() {
 
   group('开发者工具箱离线资源（缓存管理入口）', () {
     late Directory docs;
-    late Directory bundleDir;
+    late Directory currentDir;
+    late Directory prevDir;
+    late Directory stagingDir;
     late CacheManageService service;
 
     setUp(() async {
       docs = await Directory.systemTemp.createTemp('it_tools_cache_test');
       ItToolsService.debugDocsDir = docs;
-      bundleDir = Directory('${docs.path}/it_tools')..createSync(recursive: true);
+      // 同步返回路径不联网；后台自动更新也关闭，避免用例外呼。
+      ItToolsService.debugDisableAutoUpdate = true;
+      currentDir = Directory('${docs.path}/it_tools');
+      prevDir = Directory('${docs.path}/${ItToolsService.previousDirName}');
+      stagingDir = Directory('${docs.path}/${ItToolsService.stagingDirName}');
       service = CacheManageService()..debugCacheDir = docs;
     });
 
     tearDown(() async {
-      // 完整复位注入：debugCacheDir/debugDownloadsDir 若残留会污染后续用例
-      ItToolsService.debugDocsDir = null;
+      // 完整复位注入：debugCacheDir/debugDownloadsDir/liveness 若残留会污染后续用例
+      ItToolsService.debugReset();
       service.debugCacheDir = null;
       service.debugDownloadsDir = null;
       if (await docs.exists()) {
@@ -278,32 +297,190 @@ void main() {
       }
     });
 
-    test('离线资源出现在「应用资源」分组，清理后目录连同版本标记一起消失', () async {
-      File('${bundleDir.path}/index.html').writeAsStringSync('<html/>');
-      File('${bundleDir.path}/.extracted_version').writeAsStringSync('1.0.0');
+    CacheItem itToolsItem(List<CacheGroup> groups) => groups
+        .firstWhere((g) => g.title == '应用资源')
+        .items
+        .firstWhere((i) => i.id == 'it_tools_bundle');
+
+    test('大小覆盖当前目录 + .prev + .new，且计入目录内标记文件', () async {
+      currentDir.createSync(recursive: true);
+      File('${currentDir.path}/index.html').writeAsBytesSync(List.filled(100, 1));
+      // 标记文件位于当前目录内，必须计入占用
+      File('${currentDir.path}/${ItToolsService.markerFileName}')
+          .writeAsBytesSync(List.filled(10, 2));
+
+      prevDir.createSync(recursive: true);
+      File('${prevDir.path}/index.html').writeAsBytesSync(List.filled(50, 3));
+
+      stagingDir.createSync(recursive: true);
+      File('${stagingDir.path}/index.html').writeAsBytesSync(List.filled(25, 4));
 
       final (groups, _) = await service.scanCacheGroups();
-      final group = groups.firstWhere((g) => g.title == '应用资源');
-      final item = group.items.single;
+      final item = itToolsItem(groups);
 
       expect(item.id, 'it_tools_bundle');
       expect(item.name, '开发者工具箱资源');
-      expect(item.size, greaterThan(0), reason: '应统计出解压目录的实际占用');
+      expect(
+        item.size,
+        185,
+        reason: 'current(100+10) + prev(50) + new(25)，漏掉任一目录都会小于该值',
+      );
+    });
+
+    test('清理后当前目录、.prev、.new 与标记都不存在，大小归零', () async {
+      currentDir.createSync(recursive: true);
+      File('${currentDir.path}/index.html').writeAsStringSync('<html/>');
+      File('${currentDir.path}/${ItToolsService.markerFileName}')
+          .writeAsStringSync('{"contentHash":"x","source":"asset"}');
+
+      prevDir.createSync(recursive: true);
+      File('${prevDir.path}/index.html').writeAsStringSync('<html>prev</html>');
+
+      stagingDir.createSync(recursive: true);
+      File('${stagingDir.path}/index.html').writeAsStringSync('<html>new</html>');
 
       expect(await service.clearOne('it_tools_bundle'), isTrue);
+
+      for (final dir in [currentDir, prevDir, stagingDir]) {
+        expect(await dir.exists(), isFalse, reason: '目录未清除：${dir.path}');
+      }
       expect(
-        await bundleDir.exists(),
+        await File('${currentDir.path}/${ItToolsService.markerFileName}').exists(),
         isFalse,
-        reason: '版本标记随目录一并删除，因此下次进入页面必然重新解压',
+        reason: '标记随当前目录一并删除，下次进入必然重新解析',
       );
 
-      // 再扫一次：占用应归零，且不再报错
-      final (groups2, _) = await service.scanCacheGroups();
-      final item2 = groups2
-          .firstWhere((g) => g.title == '应用资源')
-          .items
-          .single;
-      expect(item2.size, 0);
+      final (groups, _) = await service.scanCacheGroups();
+      expect(itToolsItem(groups).size, 0);
+    });
+
+    test('存活保护：页面使用中不删除当前目录，且 clearOne 如实返回 false', () async {
+      currentDir.createSync(recursive: true);
+      File('${currentDir.path}/index.html').writeAsStringSync('<html/>');
+      File('${currentDir.path}/${ItToolsService.markerFileName}')
+          .writeAsStringSync('{"contentHash":"x","source":"asset"}');
+
+      // 模拟 WebView/页面存活
+      ItToolsService.beginUse();
+
+      // 清理被延迟：不抛异常，但必须如实返回 false（不得误报成功）
+      expect(await service.clearOne('it_tools_bundle'), isFalse);
+      expect(
+        await currentDir.exists(),
+        isTrue,
+        reason: 'WebView 存活期间绝不能删除正在使用的当前目录',
+      );
+      expect(
+        await File('${currentDir.path}/${ItToolsService.markerFileName}').exists(),
+        isTrue,
+      );
+
+      // 页面退出 → 兑现延迟清理
+      await ItToolsService.endUse();
+      expect(await currentDir.exists(), isFalse);
+    });
+
+    test('存活保护可重入：多个使用者全部退出后才兑现延迟清理', () async {
+      currentDir.createSync(recursive: true);
+      File('${currentDir.path}/index.html').writeAsStringSync('<html/>');
+
+      ItToolsService.beginUse();
+      ItToolsService.beginUse();
+      expect(ItToolsService.isInUse, isTrue);
+
+      expect(await service.clearOne('it_tools_bundle'), isFalse);
+      expect(await currentDir.exists(), isTrue);
+
+      // 只退出一个使用者：仍存活，不得清理
+      await ItToolsService.endUse();
+      expect(ItToolsService.isInUse, isTrue);
+      expect(await currentDir.exists(), isTrue);
+
+      // 最后一个退出：兑现延迟清理
+      await ItToolsService.endUse();
+      expect(ItToolsService.isInUse, isFalse);
+      expect(await currentDir.exists(), isFalse);
+    });
+
+    test('竞态：延迟清理窗口内新页面进入时必须重新延迟，绝不删除活动目录', () async {
+      currentDir.createSync(recursive: true);
+      File('${currentDir.path}/index.html').writeAsStringSync('<html/>');
+      File('${currentDir.path}/${ItToolsService.markerFileName}')
+          .writeAsStringSync('{"contentHash":"x","source":"asset"}');
+
+      // 第一个使用者进入 → 清理被延迟
+      ItToolsService.beginUse();
+      expect(await service.clearOne('it_tools_bundle'), isFalse);
+      expect(ItToolsService.isInUse, isTrue);
+
+      // 在 endUse#1 的「目录解析后、最终校验前」窗口注入新页面进入
+      ItToolsService.debugBeforeClearDelete = () {
+        ItToolsService.debugBeforeClearDelete = null; // 只触发一次
+        ItToolsService.beginUse();
+      };
+
+      await ItToolsService.endUse(); // #1：新页面在窗口内进入
+      expect(ItToolsService.isInUse, isTrue, reason: '新页面已进入');
+      expect(
+        await currentDir.exists(),
+        isTrue,
+        reason: '延迟清理不得删除窗口内新进入页面正在使用的目录（修复 TOCTOU）',
+      );
+      expect(
+        await File('${currentDir.path}/${ItToolsService.markerFileName}').exists(),
+        isTrue,
+      );
+
+      // 新页面退出 → 延迟清理兑现
+      await ItToolsService.endUse(); // #2
+      expect(ItToolsService.isInUse, isFalse);
+      expect(await currentDir.exists(), isFalse);
+    });
+
+    test('并发/重复清理不崩溃且不误删活动目录', () async {
+      currentDir.createSync(recursive: true);
+      File('${currentDir.path}/index.html').writeAsStringSync('<html/>');
+
+      // 两个并发清理：同一隔离区，不得抛异常；至少一个真正清理
+      final results = await Future.wait([
+        ItToolsService.clearManagedDirs(),
+        ItToolsService.clearManagedDirs(),
+      ]);
+
+      expect(await currentDir.exists(), isFalse);
+      expect(results, contains(ItToolsClearOutcome.cleared));
+      expect(
+        results.every((r) => r != ItToolsClearOutcome.deferred),
+        isTrue,
+      );
+    });
+
+    test('清理后 ensureExtracted 重新解析并回退随包资产', () async {
+      currentDir.createSync(recursive: true);
+      File('${currentDir.path}/index.html').writeAsStringSync('<html>remote</html>');
+      File('${currentDir.path}/${ItToolsService.markerFileName}')
+          .writeAsStringSync('{"contentHash":"x","source":"remote"}');
+
+      final assetZip = _buildAssetZip({
+        'index.html': '<html>asset-after-clean</html>',
+        'assets/app.js': 'x',
+      });
+      ItToolsService.debugAssetLoader = () async => assetZip;
+
+      expect(await service.clearOne('it_tools_bundle'), isTrue);
+      expect(await currentDir.exists(), isFalse);
+
+      // 无当前、无 .prev → 回退随包资产并落 source=asset 标记
+      final dir = await ItToolsService.ensureExtracted();
+      expect(
+        await File('${dir.path}/index.html').readAsString(),
+        '<html>asset-after-clean</html>',
+      );
+      final marker = await ItToolsService.readCurrentMarker();
+      expect(marker, isNotNull);
+      expect(marker!.source, ItToolsService.sourceAsset);
+      expect(await prevDir.exists(), isFalse);
+      expect(await stagingDir.exists(), isFalse);
     });
   });
 }

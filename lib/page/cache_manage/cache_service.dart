@@ -28,7 +28,11 @@ class _CacheSpec {
   final String icon;
 
   /// 清理动作（同步/异步均转 Future）。
-  final Future<void> Function() clear;
+  ///
+  /// 返回**真实结果**：`true` = 清理已执行（含「本就没有内容」的空操作）；
+  /// `false` = 被拒绝/延迟（如开发者工具箱目录正被 WebView 使用），调用方
+  /// 必须据此如实反馈，不得无条件报成功。
+  final Future<bool> Function() clear;
 }
 
 /// 缓存管理领域服务（无 GetX / Riverpod 依赖的纯能力层）。
@@ -88,7 +92,7 @@ class CacheManageService {
         name: '自研图片缓存',
         description: 'README / 详情大图字节缓存（gstore_image_cache）',
         icon: 'image',
-        clear: () => ImageDiskCache.instance.clear(),
+        clear: _alwaysTrue(() => ImageDiskCache.instance.clear()),
       ),
       // ---- 文档类 ----
       _CacheSpec(
@@ -96,7 +100,7 @@ class CacheManageService {
         name: 'README 缓存',
         description: 'GitHub 仓库 README（ETag 条件缓存）',
         icon: 'article',
-        clear: () => ReadmeCache.instance.clear(),
+        clear: _alwaysTrue(() => ReadmeCache.instance.clear()),
       ),
       // ---- 图标类 ----
       _CacheSpec(
@@ -104,7 +108,7 @@ class CacheManageService {
         name: '已安装应用图标',
         description: '本机应用图标提取缓存（app_icons）',
         icon: 'android',
-        clear: () => AppIconService.instance.clearCache(),
+        clear: _alwaysTrue(() => AppIconService.instance.clearCache()),
       ),
       // ---- 通用缓存 ----
       _CacheSpec(
@@ -112,7 +116,7 @@ class CacheManageService {
         name: '通用缓存',
         description: 'CacheManager 内存 + cache.db 磁盘缓存',
         icon: 'database',
-        clear: () => CacheManager().clearAll(),
+        clear: _alwaysTrue(() => CacheManager().clearAll()),
       ),
       // ---- 内存类 ----
       _CacheSpec(
@@ -120,22 +124,26 @@ class CacheManageService {
         name: '渠道内存缓存',
         description: '各渠道在内存中的搜索结果缓存',
         icon: 'memory',
-        clear: () => ChannelManager.instance.clearCache(),
+        clear: _alwaysTrue(() => ChannelManager.instance.clearCache()),
       ),
       _CacheSpec(
         id: 'metadata_memory',
         name: '元数据缓存',
         description: '应用元数据（info.json，内存 + 偏好设置）',
         icon: 'memory',
-        clear: () => MetadataRepository.instance.clearCache(),
+        clear: _alwaysTrue(() => MetadataRepository.instance.clearCache()),
       ),
       // ---- 应用资源（可重新生成的本地资源）----
       _CacheSpec(
         id: 'it_tools_bundle',
         name: '开发者工具箱资源',
-        description: 'IT Tools 离线包的解压结果；清理后下次进入该页面会重新从资产解压',
+        description: 'IT Tools 离线包（当前 + 上一份回滚 + 暂存目录）；清理后下次进入页面重新解析',
         icon: 'widgets',
-        clear: () => ItToolsService.clearExtracted(),
+        // 唯一清理入口：存活保护在服务内部实现，页面使用期间不会删除当前目录；
+        // deferred 时如实返回 false（空操作 empty 仍视为成功）。
+        clear: () async =>
+            (await ItToolsService.clearManagedDirs()) !=
+            ItToolsClearOutcome.deferred,
       ),
       // ---- 临时文件（受控清理）----
       _CacheSpec(
@@ -148,22 +156,31 @@ class CacheManageService {
     ];
   }
 
+  /// 把不区分结果的清理动作适配为「总是执行成功」的清理动作。
+  Future<bool> Function() _alwaysTrue(Future<void> Function() action) {
+    return () async {
+      await action();
+      return true;
+    };
+  }
+
   /// 构造删除临时目录子项的清理动作。
-  Future<void> Function() _clearDir(String sub) {
+  Future<bool> Function() _clearDir(String sub) {
     return () async {
       final tmp = await _tmpDir();
       final dir = Directory('${tmp.path}/$sub');
       if (await dir.exists()) {
         await dir.delete(recursive: true);
       }
+      return true;
     };
   }
 
   /// 清理临时目录残留：跳过正在下载的分片（.part/.temp）与应用私有子目录
   /// （libCachedImageData 等已由各专项负责），避免影响进行中下载。
-  Future<void> _clearTempResidual() async {
+  Future<bool> _clearTempResidual() async {
     final tmp = await _tmpDir();
-    if (!await tmp.exists()) return;
+    if (!await tmp.exists()) return true;
     await for (final entity in tmp.list()) {
       final name = entity.path.split('/').last;
       // 正在下载的分片 / 已由专项缓存的子目录 → 跳过
@@ -189,6 +206,7 @@ class CacheManageService {
         appLog.warning('CacheManage: 清理临时文件失败 $name - $e');
       }
     }
+    return true;
   }
 
   // ---------- 分组与大小 ----------
@@ -221,12 +239,16 @@ class CacheManageService {
   Future<Map<String, int>> _scanAllSizes() async {
     final tmp = await _tmpDir();
 
-    // 离线包解压目录在文档目录；测试环境可能拿不到（缺平台插件），拿不到就跳过该项
-    String? itToolsPath;
+    // 离线包目录（当前 + .prev + .new）位于文档目录；测试环境可能拿不到
+    // （缺平台插件），拿不到就跳过该项。统一走 ItToolsService.managedDirs()，
+    // 避免离线包路径散落多处导致漏统计。
+    List<String> itToolsPaths = const [];
     try {
-      itToolsPath = (await ItToolsService.extractedDir()).path;
+      itToolsPaths = [
+        for (final dir in await ItToolsService.managedDirs()) dir.path,
+      ];
     } catch (_) {
-      itToolsPath = null;
+      itToolsPaths = const [];
     }
 
     final request = _SizeScanRequest(
@@ -235,7 +257,9 @@ class CacheManageService {
         'gstore_image_cache': '${tmp.path}/gstore_image_cache',
         'readme_cache': '${tmp.path}/readme_cache',
         'app_icons': '${tmp.path}/app_icons',
-        if (itToolsPath != null) 'it_tools_bundle': itToolsPath,
+      },
+      groupDirTargets: {
+        if (itToolsPaths.isNotEmpty) 'it_tools_bundle': itToolsPaths,
       },
       fileTargets: {
         'cache_manager': '${tmp.path}/cache.db',
@@ -281,7 +305,9 @@ class CacheManageService {
 
   // ---------- 清理动作 ----------
 
-  /// 清理单个缓存项。返回是否找到并执行。
+  /// 清理单个缓存项。返回**真实结果**：
+  /// `true` = 找到并已执行（含本就为空的空操作）；`false` = 未找到、被拒绝/
+  /// 延迟（如离线资源正被 WebView 使用）或抛错。调用方须据此如实反馈。
   Future<bool> clearOne(String id) async {
     _CacheSpec? spec;
     for (final s in _specs) {
@@ -292,8 +318,7 @@ class CacheManageService {
     }
     if (spec == null) return false;
     try {
-      await spec.clear();
-      return true;
+      return await spec.clear();
     } catch (e) {
       appLog.error('CacheManage: 清理 ${spec.name} 失败 - $e');
       return false;
@@ -328,8 +353,8 @@ class CacheManageService {
     for (final spec in _specs) {
       if (!names.contains(spec.name)) continue;
       try {
-        await spec.clear();
-        success++;
+        // 仅在真实执行/接受清理时才计入成功（延迟/拒绝不计）。
+        if (await spec.clear()) success++;
       } catch (e) {
         appLog.error('CacheManage: 清理 ${spec.name} 失败 - $e');
       }
@@ -442,6 +467,7 @@ class CacheManageService {
 class _SizeScanRequest {
   const _SizeScanRequest({
     required this.dirTargets,
+    required this.groupDirTargets,
     required this.fileTargets,
     required this.tmpPath,
     required this.reservedDirs,
@@ -449,6 +475,10 @@ class _SizeScanRequest {
 
   /// 需要整体统计占用的目录：spec id → 绝对路径
   final Map<String, String> dirTargets;
+
+  /// 需要合并统计多个目录的项：spec id → 绝对路径列表
+  /// （例：`it_tools_bundle` = 当前目录 + `.prev` + `.new`）
+  final Map<String, List<String>> groupDirTargets;
 
   /// 需要统计单个文件的项：spec id → 绝对路径
   final Map<String, String> fileTargets;
@@ -469,6 +499,13 @@ Map<String, int> _scanSizesInIsolate(_SizeScanRequest req) {
 
   for (final entry in req.dirTargets.entries) {
     result[entry.key] = _directorySizeSync(entry.value);
+  }
+  for (final entry in req.groupDirTargets.entries) {
+    var total = 0;
+    for (final path in entry.value) {
+      total += _directorySizeSync(path);
+    }
+    result[entry.key] = total;
   }
   for (final entry in req.fileTargets.entries) {
     result[entry.key] = _fileSizeSync(entry.value);

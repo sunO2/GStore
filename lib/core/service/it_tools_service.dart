@@ -66,6 +66,10 @@ class ItToolsService {
   /// **不是**应用版本号：离线包变更由 zip 内容哈希区分。
   static const String markerFileName = '.it_tools_marker';
 
+  /// 清理时的临时后缀：先把目录同步换名为 `<dir>.trash` 再异步递归删除，
+  /// 使「摘除活动目录」成为无 await 的原子操作。
+  static const String _trashSuffix = '.trash';
+
   /// 标记 `source`：来自 Release 的远端包
   static const String sourceRemote = 'remote';
 
@@ -77,6 +81,15 @@ class ItToolsService {
 
   /// 在途远端更新（并发去重：同一时刻只跑一次）
   static Future<ItToolsUpdateResult>? _inFlight;
+
+  /// 当前正在使用离线包的页面/WebView 数量（存活保护）。
+  ///
+  /// 页面进入时 [beginUse]，退出时 [endUse]；可重入。大于 0 时
+  /// [clearExtracted] 拒绝删除当前目录，改为延迟到最后一个使用者释放后执行。
+  static int _activeUsers = 0;
+
+  /// 存活期间收到的清理请求（延迟到最后一个使用者释放后兑现）。
+  static bool _cleanupPending = false;
 
   // ---------------------------------------------------------------------------
   // 对外主入口
@@ -160,6 +173,40 @@ class ItToolsService {
   /// 供「缓存管理」等外部方统计占用 / 清理复用，避免离线包路径散落多处。
   static Future<Directory> extractedDir() => _targetDir();
 
+  /// 服务管理的全部落地目录：当前目录 + `.prev`（回滚来源）+ `.new`（暂存）。
+  ///
+  /// 「缓存管理」统计占用与清理都以此为唯一事实来源，避免离线包路径散落
+  /// 多处后出现漏统计 / 漏清理。
+  static Future<List<Directory>> managedDirs() async => [
+        await _targetDir(),
+        await _previousDir(),
+        await _stagingDir(),
+      ];
+
+  /// 标记「离线包正在被使用」。页面/WebView 存活期间调用；可重入，
+  /// 与 [endUse] 成对出现。
+  static void beginUse() {
+    _activeUsers++;
+  }
+
+  /// 释放一次使用（可重入）。当计数归零且期间收到过清理请求时，兑现延迟清理。
+  ///
+  /// 若兑现期间又有新页面进入（[beginUse]），[clearManagedDirs] 会**重新延迟**，
+  /// 绝不删除新页面正在使用的目录。**绝不抛异常**：延迟清理失败只记录日志，
+  /// 避免页面退出路径被文件 IO 打断。
+  static Future<void> endUse() async {
+    if (_activeUsers > 0) _activeUsers--;
+    if (_activeUsers > 0 || !_cleanupPending) return;
+    try {
+      await clearManagedDirs();
+    } catch (e) {
+      debugPrint('ItToolsService: 延迟清理失败 - $e');
+    }
+  }
+
+  /// 当前是否有页面/WebView 正在使用离线包。
+  static bool get isInUse => _activeUsers > 0;
+
   /// 当前目录的标记（不可解析/不存在 → null）。
   @visibleForTesting
   static Future<ItToolsMarker?> readCurrentMarker() async =>
@@ -168,26 +215,83 @@ class ItToolsService {
   /// 清理已落地的离线资源（当前目录 + `.prev` + `.new`，连同标记一起删）。
   ///
   /// 清理后 [ensureExtracted] 找不到可用目录，下次进入页面会重新从资产解压。
-  /// 返回是否真的删除了内容（三者都不存在时为 false）。
+  /// 返回是否真的删除了内容（三者都不存在或清理被延迟时为 false）。
   ///
-  /// > WebView 存活保护（不删除正在使用的当前目录）见 Todo 13；
-  /// > 本方法仅保留既有清理语义，供「缓存管理」入口在页面未使用时调用。
-  static Future<bool> clearExtracted() async {
-    var deleted = false;
-    for (final dir in [
-      await _targetDir(),
-      await _previousDir(),
-      await _stagingDir(),
-    ]) {
-      if (await dir.exists()) {
-        await dir.delete(recursive: true);
-        deleted = true;
+  /// **存活保护**：当 [isInUse] 为 true 时，正在使用的当前目录**绝不删除**，
+  /// 本次清理被延迟；待 [endUse] 使计数归零后自动兑现。
+  ///
+  /// 需要区分「延迟」与「本就为空」的调用方请用 [clearManagedDirs]。
+  static Future<bool> clearExtracted() async =>
+      (await clearManagedDirs()) == ItToolsClearOutcome.cleared;
+
+  /// 与 [clearExtracted] 相同的唯一清理实现，但返回可区分的结果：
+  /// [ItToolsClearOutcome.cleared] / [ItToolsClearOutcome.empty] /
+  /// [ItToolsClearOutcome.deferred]（使用中，已延迟）。
+  ///
+  /// **竞态安全**：检查存活与「换名摘除」活动目录构成一段**无 await 的同步
+  /// 临界区**。解析目录（可能有 await）后立即重新校验 [isInUse]；一旦有页面
+  /// 进入就把待清理重新挂起并如实返回 [ItToolsClearOutcome.deferred]。
+  /// 目录先被同步换名为 `.trash`（与活动路径解耦），随后的递归删除只作用于
+  /// trash，即使期间有新页面进入并重建当前目录也不会被误删。
+  static Future<ItToolsClearOutcome> clearManagedDirs() async {
+    if (isInUse) {
+      _cleanupPending = true;
+      debugPrint('ItToolsService: 离线包使用中，清理延迟到页面退出后执行');
+      return ItToolsClearOutcome.deferred;
+    }
+
+    final dirs = await managedDirs();
+
+    // 清理上一轮可能残留的 `.trash`（非活动目录，可在临界区外进行）。
+    for (final dir in dirs) {
+      final trash = Directory('${dir.path}$_trashSuffix');
+      if (await trash.exists()) {
+        try {
+          await trash.delete(recursive: true);
+        } catch (_) {
+          // 残留清理失败不影响本次
+        }
       }
     }
-    if (deleted) {
-      debugPrint('ItToolsService: 已清理离线资源');
+
+    // 测试注入的竞态窗口：在最终校验前允许模拟「新页面进入」。
+    debugBeforeClearDelete?.call();
+
+    // ===== 同步临界区（不得有任何 await） =====
+    // 重新校验：解析目录期间可能有新页面进入；有则重新挂起，绝不摘除活动目录。
+    if (isInUse) {
+      _cleanupPending = true;
+      debugPrint('ItToolsService: 离线包使用中，清理延迟到页面退出后执行');
+      return ItToolsClearOutcome.deferred;
     }
-    return deleted;
+    _cleanupPending = false;
+
+    // 同步换名把活动目录摘除，避免「检查后删除」之间的竞态。
+    final trashed = <Directory>[];
+    for (final dir in dirs) {
+      if (!dir.existsSync()) continue;
+      final trash = Directory('${dir.path}$_trashSuffix');
+      try {
+        dir.renameSync(trash.path);
+        trashed.add(trash);
+      } catch (e) {
+        debugPrint('ItToolsService: 清理换名失败 ${dir.path} - $e');
+      }
+    }
+    // ===== 临界区结束 =====
+
+    // 破坏性递归删除只针对已换名的 trash，不再触碰可能重建的当前目录。
+    for (final trash in trashed) {
+      try {
+        await trash.delete(recursive: true);
+      } catch (e) {
+        debugPrint('ItToolsService: 清理残留失败 ${trash.path} - $e');
+      }
+    }
+
+    if (trashed.isEmpty) return ItToolsClearOutcome.empty;
+    debugPrint('ItToolsService: 已清理离线资源');
+    return ItToolsClearOutcome.cleared;
   }
 
   // ---------------------------------------------------------------------------
@@ -499,6 +603,13 @@ class ItToolsService {
   @visibleForTesting
   static bool debugDisableAutoUpdate = false;
 
+  /// 测试注入：在 [clearManagedDirs] 完成目录解析后、同步临界区最终校验前调用。
+  ///
+  /// 用于确定性复现「延迟清理的 await 窗口内新页面进入」这一竞态：注入的回调
+  /// 内调用 [beginUse]，临界区的重新校验必须捕获并重新延迟。
+  @visibleForTesting
+  static void Function()? debugBeforeClearDelete;
+
   /// 复位全部测试注入点
   @visibleForTesting
   static void debugReset() {
@@ -507,8 +618,23 @@ class ItToolsService {
     debugFetcher = null;
     debugAssetLoader = null;
     debugDisableAutoUpdate = false;
+    debugBeforeClearDelete = null;
     _inFlight = null;
+    _activeUsers = 0;
+    _cleanupPending = false;
   }
+}
+
+/// 离线资源清理结果（区别于既有 [ItToolsService.clearExtracted] 的 bool）。
+enum ItToolsClearOutcome {
+  /// 至少清理了一个目录
+  cleared,
+
+  /// 本就没有可清理的目录
+  empty,
+
+  /// 页面/WebView 使用中，清理已延迟
+  deferred,
 }
 
 /// 本地标记：`{contentHash, source}`。

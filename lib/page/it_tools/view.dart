@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:path/path.dart' as p;
@@ -73,7 +75,16 @@ class _ItToolsPageState extends State<ItToolsPage> {
   @override
   void initState() {
     super.initState();
+    // 存活保护：页面/WebView 存活期间，缓存清理不得删除正在使用的离线目录
+    ItToolsService.beginUse();
     _prepare();
+  }
+
+  @override
+  void dispose() {
+    // 与 initState 的 beginUse 成对；若期间有清理请求，这里兑现（延迟清理）
+    unawaited(ItToolsService.endUse());
+    super.dispose();
   }
 
   @override
