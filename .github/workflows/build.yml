@@ -43,7 +43,7 @@ jobs:
         id: setup-ndk
         uses: nttld/setup-ndk@v1
         with:
-          ndk-version: 26.3.11579264
+          ndk-version: r26c
 
       - name: Set up CMake and Ninja (zxing-cpp cmake cross-build)
         run: |
