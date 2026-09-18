@@ -132,8 +132,54 @@ jobs:
         run: bash generate_modules_manifest.sh "$GSTORE_MODULE_DIR"
 
       - run: flutter test
-      - run: flutter build apk --no-shrink --target-platform android-arm,android-arm64,android-x64 --split-per-abi 
+
+      # 完整包：内置全部可下载模块 .so（保持既有行为与发布文件名）。
+      - name: Build full APKs (bundled modules)
+        run: flutter build apk --no-shrink --target-platform android-arm,android-arm64,android-x64 --split-per-abi
+
+      # 产物固定写到 flutter-apk/app-<abi>-release.apk；立即改名暂存，避免随后精简包
+      # 的同名产物覆盖，发布上传统一走暂存目录。
+      - name: Stage full APK assets
+        run: |
+          set -euo pipefail
+          SRC="build/app/outputs/flutter-apk"
+          DEST="build/apk-release"
+          mkdir -p "$DEST"
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            src="$SRC/app-${abi}-release.apk"
+            if [ ! -f "$src" ]; then
+              echo "ERROR: 完整包产物缺失: $src" >&2
+              exit 1
+            fi
+            cp "$src" "$DEST/GStore-${abi}-release.apk"
+          done
+
       - run: flutter build appbundle
+
+      # 精简包：Gradle 打包排除 libgstore_mod_*.so（仅保留 libgstore_host.so），
+      # 模块改为首次使用时远程下载。
+      - name: Build slim APKs (host-only, modules excluded)
+        env:
+          ORG_GRADLE_PROJECT_gstoreSlimModules: "true"
+        run: flutter build apk --no-shrink --target-platform android-arm,android-arm64,android-x64 --split-per-abi
+
+      - name: Stage slim APK assets
+        run: |
+          set -euo pipefail
+          SRC="build/app/outputs/flutter-apk"
+          DEST="build/apk-release"
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            src="$SRC/app-${abi}-release.apk"
+            if [ ! -f "$src" ]; then
+              echo "ERROR: 精简包产物缺失: $src" >&2
+              exit 1
+            fi
+            cp "$src" "$DEST/GStore-slim-${abi}-release.apk"
+          done
+
+      # 载荷断言：完整包须含 4 个模块 .so + host；精简包须不含模块 .so 但含 host。
+      - name: Assert APK module payload (full vs slim)
+        run: bash scripts/ci/assert_apk_module_payload.sh build/apk-release
       
       - name: Get previous release tag
         id: prev_release
@@ -277,11 +323,15 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # 官方 upload-release-asset@v1 已弃用，改用 gh release upload（file#name 保留原资产名）
+          # 完整包与精简包均取自暂存目录（flutter-apk 下同名文件已被精简包覆盖）。
           gh release upload "v${{ steps.get_version.outputs.version }}" \
             "./build/app/outputs/bundle/release/app-release.aab#app-release.aab" \
-            "./build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk#GStore-armeabi-v7a-release.apk" \
-            "./build/app/outputs/flutter-apk/app-arm64-v8a-release.apk#GStore-arm64-v8a-release.apk" \
-            "./build/app/outputs/flutter-apk/app-x86_64-release.apk#GStore-x86_64-release.apk" \
+            "./build/apk-release/GStore-armeabi-v7a-release.apk#GStore-armeabi-v7a-release.apk" \
+            "./build/apk-release/GStore-arm64-v8a-release.apk#GStore-arm64-v8a-release.apk" \
+            "./build/apk-release/GStore-x86_64-release.apk#GStore-x86_64-release.apk" \
+            "./build/apk-release/GStore-slim-armeabi-v7a-release.apk#GStore-slim-armeabi-v7a-release.apk" \
+            "./build/apk-release/GStore-slim-arm64-v8a-release.apk#GStore-slim-arm64-v8a-release.apk" \
+            "./build/apk-release/GStore-slim-x86_64-release.apk#GStore-slim-x86_64-release.apk" \
             --clobber
 
       - name: Upload it-tools assets (exempt from retention)
