@@ -97,7 +97,7 @@ check_apk() {
   local ok=1
   local host_entry="lib/${abi}/libgstore_host.so"
 
-  if ! printf '%s\n' "$listing" | grep -qF "$host_entry"; then
+  if ! grep -qF "$host_entry" <<<"$listing"; then
     fail "[$label] 缺少 FFI 宿主: $host_entry"
     ok=0
   fi
@@ -106,15 +106,15 @@ check_apk() {
     local module
     for module in "${MODULES[@]}"; do
       local entry="lib/${abi}/libgstore_mod_${module}.so"
-      if ! printf '%s\n' "$listing" | grep -qF "$entry"; then
+      if ! grep -qF "$entry" <<<"$listing"; then
         fail "[$label] 缺少内置模块: $entry"
         ok=0
       fi
     done
   else
-    if printf '%s\n' "$listing" | grep -Eq 'lib/[^/]+/libgstore_mod_[^/]+\.so'; then
+    if grep -Eq 'lib/[^/]+/libgstore_mod_[^/]+\.so' <<<"$listing"; then
       fail "[$label] 精简包不得包含任何模块 .so:"
-      printf '%s\n' "$listing" | grep -E 'lib/[^/]+/libgstore_mod_[^/]+\.so' >&2 || true
+      grep -E 'lib/[^/]+/libgstore_mod_[^/]+\.so' <<<"$listing" >&2 || true
       ok=0
     fi
   fi
