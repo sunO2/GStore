@@ -441,7 +441,15 @@ class RustModuleLoader {
   /// [allowDownload] 为 false 时**绝不触发远程下载**：本地/内置产物仍可挂载，
   /// 但两者皆无时立即返回 false。启动路径（如 F-Droid 模块 `onInit`）必须传
   /// false，否则精简包会在启动时下载模块并阻塞首帧；真实使用时再按需下载。
-  Future<bool> ensureModule(String name, {bool allowDownload = true}) async {
+  ///
+  /// [onProgress]（可选）：仅在**远程下载安装**分支透传给 [_downloadAndInstall]
+  /// （`[0,1]`，不产生用户下载任务/系统通知）；已挂载/本地/内置短路**不回调**。
+  /// 回调抛出的异常会被捕获并记录，绝不影响安装结果。
+  Future<bool> ensureModule(
+    String name, {
+    bool allowDownload = true,
+    ModuleProgressCallback? onProgress,
+  }) async {
     // Phase 2 迁移（启动恰好一次，`requireSignature=false` 时零副作用）：
     // **必须**先于本地产物解析完成——宿主 `trust.rs` 会把「无 `.sig`」的模块
     // 当作内置（随包信任）直接放行，若放任 Phase 1 无签名下载产物参与解析，
@@ -494,7 +502,7 @@ class RustModuleLoader {
       appLog.info('RustModuleLoader: $name 未配置远程源，模块不可用（走降级）');
       return false;
     }
-    return _downloadAndInstall(name, mount: true);
+    return _downloadAndInstall(name, mount: true, onProgress: onProgress);
   }
 
   /// 模块是否可用（**不加载、不解压**）：内置以**真实产物**为准；已下载则要求
@@ -950,6 +958,16 @@ class RustModuleLoader {
     }
   }
 
+  /// 上报一次内部下载进度；回调抛出的异常被捕获并记录，**绝不**中断安装。
+  void _reportProgress(ModuleProgressCallback? onProgress, double fraction) {
+    if (onProgress == null) return;
+    try {
+      onProgress(fraction);
+    } catch (e) {
+      appLog.warning('RustModuleLoader: 进度回调异常（已忽略）- $e');
+    }
+  }
+
   /// 下载 → SHA-256 校验 → **原子配对安装**（`.tmp` → `.so` → `.meta`）；
   /// [mount] 为 true 时安装后挂载，false 时（后台更新）**绝不挂载**。
   ///
@@ -965,6 +983,8 @@ class RustModuleLoader {
   ///
   /// [onProgress]（可选）：分步进度（下载 0.05 → 落盘 0.7 → 校验 0.85 →
   /// 安装完成 1.0）。内部下载为一次性字节获取，故按步骤而非字节上报。
+  ///
+  /// 进度回调抛出的异常一律被 [_reportProgress] 捕获并记录，**绝不**中断安装。
   Future<bool> _downloadAndInstall(
     String name, {
     required bool mount,
@@ -1003,7 +1023,7 @@ class RustModuleLoader {
 
       // 1. 下载到 `<finalSo>.tmp`（注入下载器优先；测试无网络）。
       appLog.info('RustModuleLoader: 下载模块 $name <- ${resolved.url}');
-      onProgress?.call(0.05);
+      _reportProgress(onProgress, 0.05);
       final resp = await _fetchBytes(resolved.url);
       if (resp == null) {
         appLog.warning('RustModuleLoader: $name 下载失败');
@@ -1011,7 +1031,7 @@ class RustModuleLoader {
         return false;
       }
       await tmpFile.writeAsBytes(resp, flush: true);
-      onProgress?.call(0.7);
+      _reportProgress(onProgress, 0.7);
 
       // 2. 校验清单 SHA-256：不符 → 删除 `.tmp`，无最终 `.so`/`.meta`。
       final actual = _sha256Hex(resp);
@@ -1020,7 +1040,7 @@ class RustModuleLoader {
         await _deleteQuietly(tmpFile);
         return false;
       }
-      onProgress?.call(0.85);
+      _reportProgress(onProgress, 0.85);
 
       // 3. **先**提交 `.so`：`.tmp` → 三段式最终文件名。
       await _renameOver(tmpFile, finalSo);
@@ -1047,7 +1067,7 @@ class RustModuleLoader {
 
       // 真实版本另记录到 `version`（兼容既有读取路径）。
       await _writeLocalVersion(name, resolved.version);
-      onProgress?.call(1.0);
+      _reportProgress(onProgress, 1.0);
 
       // 清理本次可能产生的 `.meta.tmp`/`.sig.tmp` 残留。
       await _deleteQuietly(File('${metaFile.path}.tmp'));

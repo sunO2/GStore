@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/rust/ModuleLoader.dart';
 import 'package:gstore/core/rust/ModuleManifest.dart';
 import 'package:gstore/core/rust/ModuleManifestClient.dart';
@@ -242,5 +243,112 @@ void main() {
       isTrue,
     );
     expect(fetcher.urls, <String>[url]);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Todo 6：`ensureModule` 透传 `onProgress`（远程分支），短路不回调，异常不致命。
+  // ---------------------------------------------------------------------------
+
+  ModuleManifestV2 singleModuleManifest(String module, String version,
+      String sha, int size, String asset) {
+    return ModuleManifestV2.fromJson(<String, dynamic>{
+      'version': 2,
+      'modules': <String, dynamic>{
+        module: <String, dynamic>{
+          'version': version,
+          'abi': <String, dynamic>{
+            'arm64-v8a': <String, dynamic>{
+              'asset': asset,
+              'sha256': sha,
+              'size': size,
+            },
+          },
+        },
+      },
+    });
+  }
+
+  test('ensureModule 远程分支：注入的分步进度原样到达 onProgress', () async {
+    final bytes = Uint8List.fromList(List<int>.generate(72, (i) => i));
+    final sha = sha256.convert(bytes).toString();
+    const url = 'https://example.invalid/libgstore_mod_qr_0.3.0-arm64-v8a.so';
+    final manifest = singleModuleManifest(
+      'qr',
+      '0.3.0',
+      sha,
+      bytes.length,
+      'libgstore_mod_qr_0.3.0-arm64-v8a.so',
+    );
+    final source = _FakeManifestClient(manifest: manifest, url: url);
+    final fetcher = _FakeFetcher(bytes);
+    final fractions = <double>[];
+
+    loader.debugConfigure(
+      supportDir: tmp.path,
+      isLoadedOverride: (_) async => false,
+      mountOverride: (_) async => true,
+    );
+    loader.configureRemote(manifestSource: source, downloader: fetcher);
+
+    final ok = await loader.ensureModule('qr', onProgress: fractions.add);
+
+    expect(ok, isTrue);
+    expect(fetcher.urls, <String>[url]);
+    expect(fractions, <double>[0.05, 0.7, 0.85, 1.0]);
+  });
+
+  test('ensureModule 已挂载短路：不触发 onProgress（零网络）', () async {
+    var called = false;
+    loader.debugConfigure(
+      isLoadedOverride: (_) async => true,
+      mountOverride: (_) async => true,
+    );
+
+    final ok = await loader.ensureModule('qr', onProgress: (_) => called = true);
+
+    expect(ok, isTrue);
+    expect(called, isFalse, reason: '已挂载短路不得回调进度');
+  });
+
+  test('ensureModule：onProgress 抛异常不破坏安装，异常被记录', () async {
+    final bytes = Uint8List.fromList(List<int>.generate(56, (i) => i + 3));
+    final sha = sha256.convert(bytes).toString();
+    const url = 'https://example.invalid/libgstore_mod_qr_0.4.0-arm64-v8a.so';
+    final manifest = singleModuleManifest(
+      'qr',
+      '0.4.0',
+      sha,
+      bytes.length,
+      'libgstore_mod_qr_0.4.0-arm64-v8a.so',
+    );
+    final source = _FakeManifestClient(manifest: manifest, url: url);
+    final fetcher = _FakeFetcher(bytes);
+    final mounted = <String>[];
+
+    appLog.clear();
+    loader.debugConfigure(
+      supportDir: tmp.path,
+      isLoadedOverride: (_) async => false,
+      mountOverride: (soPath) async {
+        mounted.add(soPath);
+        return true;
+      },
+    );
+    loader.configureRemote(manifestSource: source, downloader: fetcher);
+
+    final ok = await loader.ensureModule(
+      'qr',
+      onProgress: (_) => throw StateError('boom-progress'),
+    );
+
+    expect(ok, isTrue, reason: '回调抛异常不得中断安装');
+    expect(fetcher.urls, <String>[url]);
+    expect(mounted, hasLength(1));
+    expect(File(mounted.single).existsSync(), isTrue);
+    expect(
+      appLog.logs.any((l) => l.message.contains('进度回调异常')),
+      isTrue,
+      reason: '回调异常必须被捕获并记录',
+    );
   });
 }
