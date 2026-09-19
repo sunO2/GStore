@@ -479,4 +479,135 @@ void main() {
       expect(factoryCalls, 0);
     });
   });
+
+  group('confirm-policy', () {
+    test('(a) 拒绝：ensure 0 次 + ModuleInstallDeclinedException', () async {
+      var handlerCalls = 0;
+      configure(
+        ensure: (m, {required allowDownload, onProgress}) async => true,
+        confirm: (m) async {
+          handlerCalls++;
+          return false;
+        },
+      );
+
+      await expectLater(
+        bootstrap.acquire('llm', policy: ModuleInstallPolicy.confirm),
+        throwsA(isA<ModuleInstallDeclinedException>()),
+      );
+      expect(handlerCalls, 1);
+      expect(ensureCalls, 0, reason: '拒绝发生在 ensure 之前');
+    });
+
+    test('(b) 接受：先 ensure 再 ready', () async {
+      configure(
+        ensure: (m, {required allowDownload, onProgress}) async => true,
+        confirm: (m) async => true,
+      );
+
+      final states = <ModuleBootstrapState>[];
+      final sub = bootstrap.watch('llm').listen(states.add);
+      await pumpEventQueue();
+
+      final instance =
+          await bootstrap.acquire('llm', policy: ModuleInstallPolicy.confirm);
+      await pumpEventQueue();
+      await sub.cancel();
+
+      expect(instance, isNotNull);
+      expect(ensureCalls, 1);
+      expect(
+        states.map((s) => s.phase),
+        containsAllInOrder(<ModuleBootstrapPhase>[
+          ModuleBootstrapPhase.downloading,
+          ModuleBootstrapPhase.initializing,
+          ModuleBootstrapPhase.ready,
+        ]),
+      );
+    });
+
+    test('(c) 接受后再次 acquire：不再调用确认处理器', () async {
+      var handlerCalls = 0;
+      configure(
+        ensure: (m, {required allowDownload, onProgress}) async => true,
+        confirm: (m) async {
+          handlerCalls++;
+          return true;
+        },
+      );
+
+      await bootstrap.acquire('llm', policy: ModuleInstallPolicy.confirm);
+      expect(handlerCalls, 1);
+
+      await bootstrap.acquire('llm', policy: ModuleInstallPolicy.confirm);
+      expect(handlerCalls, 1, reason: '已缓存实例不再确认');
+      expect(ensureCalls, 1);
+    });
+
+    test('(d) 未注册处理器：StateError 且不 ensure', () async {
+      configure(
+        ensure: (m, {required allowDownload, onProgress}) async => true,
+      );
+
+      await expectLater(
+        bootstrap.acquire('llm', policy: ModuleInstallPolicy.confirm),
+        throwsA(isA<StateError>()),
+      );
+      expect(ensureCalls, 0, reason: '无处理器时绝不静默自动安装');
+    });
+
+    test('(e) 处理器抛错：视为拒绝（不 ensure、不崩溃）', () async {
+      configure(
+        ensure: (m, {required allowDownload, onProgress}) async => true,
+        confirm: (m) async {
+          throw StateError('boom');
+        },
+      );
+
+      await expectLater(
+        bootstrap.acquire('llm', policy: ModuleInstallPolicy.confirm),
+        throwsA(isA<ModuleInstallDeclinedException>()),
+      );
+      expect(ensureCalls, 0);
+    });
+
+    test('(f) policyFor：llm=confirm，其余=auto', () {
+      expect(bootstrap.policyFor('llm'), ModuleInstallPolicy.confirm);
+      for (final module in <String>[
+        'qr',
+        'analyzer',
+        'repo',
+        'download',
+        'unknown',
+      ]) {
+        expect(
+          bootstrap.policyFor(module),
+          ModuleInstallPolicy.auto,
+          reason: module,
+        );
+      }
+    });
+
+    test('(g) 拒绝不缓存：再次 acquire 会重新询问', () async {
+      var handlerCalls = 0;
+      configure(
+        ensure: (m, {required allowDownload, onProgress}) async => true,
+        confirm: (m) async {
+          handlerCalls++;
+          return false;
+        },
+      );
+
+      await expectLater(
+        bootstrap.acquire('llm', policy: ModuleInstallPolicy.confirm),
+        throwsA(isA<ModuleInstallDeclinedException>()),
+      );
+      await expectLater(
+        bootstrap.acquire('llm', policy: ModuleInstallPolicy.confirm),
+        throwsA(isA<ModuleInstallDeclinedException>()),
+      );
+      expect(handlerCalls, 2, reason: '拒绝结果不缓存');
+      expect(ensureCalls, 0);
+    });
+  });
 }
