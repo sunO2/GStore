@@ -392,4 +392,91 @@ void main() {
           reason: 'watch(y) 只会发出 y 的状态');
     });
   });
+
+  group('helpers', () {
+    test('(a) 并发 run：factory 一次，任务体各执行一次且共享同一实例', () async {
+      configure(
+        ensure: (m, {required allowDownload, onProgress}) async => true,
+      );
+
+      final seen = <RustModuleInstance>[];
+      Future<int> task(RustModuleInstance instance) async {
+        seen.add(instance);
+        return seen.length;
+      }
+
+      final results = await Future.wait(<Future<int>>[
+        bootstrap.run<int>('x', task),
+        bootstrap.run<int>('x', task),
+      ]);
+
+      expect(results.length, 2);
+      expect(factoryCalls, 1, reason: '并发 run 共享同一次实例创建');
+      expect(seen.length, 2, reason: '每个 run 各执行一次任务体');
+      expect(identical(seen[0], seen[1]), isTrue, reason: '任务体共享同一实例');
+    });
+
+    test('(b) 获取失败：任务体 0 次且 ModuleInstallFailedException 传播', () async {
+      configure(
+        ensure: (m, {required allowDownload, onProgress}) async => false,
+      );
+
+      var taskCalls = 0;
+      await expectLater(
+        bootstrap.run<int>('x', (instance) async {
+          taskCalls++;
+          return 1;
+        }),
+        throwsA(isA<ModuleInstallFailedException>()),
+      );
+      expect(taskCalls, 0, reason: '获取失败时任务体绝不执行');
+    });
+
+    test('(c) ensureStarted 立即返回且仅触发一次 ensure', () async {
+      final gate = Completer<bool>();
+      configure(
+        ensure: (m, {required allowDownload, onProgress}) async => gate.future,
+      );
+
+      final stopwatch = Stopwatch()..start();
+      bootstrap.ensureStarted('x');
+      bootstrap.ensureStarted('x');
+      stopwatch.stop();
+
+      expect(stopwatch.elapsedMilliseconds, lessThan(100), reason: '立即返回');
+      expect(ensureCalls, 1, reason: '重复触发被单飞去重');
+
+      gate.complete(true);
+      await pumpEventQueue();
+    });
+
+    test('(d) ensureOnly 返回 bool 且不创建实例', () async {
+      configure(
+        ensure: (m, {required allowDownload, onProgress}) async => true,
+      );
+
+      final ok = await bootstrap.ensureOnly('x');
+
+      expect(ok, isTrue);
+      expect(ensureCalls, 1);
+      expect(factoryCalls, 0, reason: 'ensureOnly 不创建实例');
+    });
+
+    test('(e) prepareExisting 传 allowDownload=false 且不下载', () async {
+      final allowFlags = <bool>[];
+      configure(
+        ensure: (m, {required allowDownload, onProgress}) async {
+          allowFlags.add(allowDownload);
+          return false; // 无本地/内置产物
+        },
+      );
+
+      final ok = await bootstrap.prepareExisting('repo');
+
+      expect(ok, isFalse);
+      expect(allowFlags, <bool>[false],
+          reason: 'prepareExisting 必须以 allowDownload=false 调用 ensure');
+      expect(factoryCalls, 0);
+    });
+  });
 }
