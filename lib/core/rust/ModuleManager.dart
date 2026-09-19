@@ -230,14 +230,12 @@ class RustModuleManager {
 
       // ensure 挂载可能已把句柄写入缓存；有则直接复用，无需二次加载。
       final seeded = _handles[name];
-      if (seeded != null) {
-        appLog.info('[CallModule] ensured $name after MODULE_NOT_FOUND');
-        return seeded;
+      final handle = seeded ??
+          (loadOverride != null ? await loadOverride(name) : await loadModule(name));
+      if (seeded == null) {
+        _seedHandle(name, handle);
       }
-
-      final handle =
-          loadOverride != null ? await loadOverride(name) : await loadModule(name);
-      _seedHandle(name, handle);
+      // 成功自愈只在单一出口记录一次日志（失败路径不经过此处）。
       appLog.info('[CallModule] ensured $name after MODULE_NOT_FOUND');
       return handle;
     }
