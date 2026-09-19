@@ -1,10 +1,11 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
+
 import 'package:gstore/core/logger/LogManager.dart';
-import 'package:gstore/core/rust/ModuleLoader.dart';
+import 'package:gstore/core/rust/ModuleBootstrap.dart';
 import 'package:gstore/core/rust/ModuleManager.dart';
-import 'package:gstore/core/rust/generated/bridge.dart' show ModuleHandle;
 
 /// 本地推理引擎 `gstore_mod_llm`（llama.cpp / GGUF）的 Dart 侧薄封装。
 ///
@@ -17,7 +18,6 @@ class LocalLlmEngine {
   static final LocalLlmEngine instance = LocalLlmEngine._();
 
   RustModuleInstance? _instance;
-  bool _tried = false;
   bool _available = false;
 
   /// 模块是否可用（首次 [ensureReady] 之后有效）
@@ -26,28 +26,36 @@ class LocalLlmEngine {
   /// 是否已加载模型（本地缓存，[status] 为准）
   bool get hasModule => _instance != null;
 
-  /// 挂载模块并创建实例（幂等）
+  /// 经统一自举门安装/挂载模块并创建实例。
+  ///
+  /// `llm` 为**确认策略**：首次使用须经确认处理器同意（大体积 arm64 下载）。
+  /// 拒绝或安装失败均返回 `false`（不抛错）；结果**不粘滞**——后续调用会重新
+  /// 询问/重试，绝不永久禁用。成功后的实例由本类缓存，再次调用直接返回
+  /// `true`，不会重复确认。
   Future<bool> ensureReady() async {
     if (_instance != null) return true;
-    if (_tried) return false;
-    _tried = true;
     try {
-      final ok = await RustModuleLoader.instance.ensureModule('llm');
-      if (!ok) {
-        appLog.warning('LocalLlmEngine: 未找到 gstore_mod_llm（内置/本地/远程均不可用）');
-        return false;
-      }
-      final ModuleHandle handle = await RustModuleManager.instance.loadModule('llm');
-      final inst = await RustModuleInstance.create('llm', handle);
+      final inst = await ModuleBootstrap.instance.acquire(
+        'llm',
+        policy: ModuleInstallPolicy.confirm,
+        factory: (h) => RustModuleInstance.create('llm', h),
+      );
       _instance = inst;
       _available = true;
       appLog.info('LocalLlmEngine: 模块就绪');
       return true;
     } catch (e) {
-      appLog.error('LocalLlmEngine: 模块初始化失败 - $e');
+      appLog.warning('LocalLlmEngine: 本地推理模块不可用 - $e');
       _available = false;
       return false;
     }
+  }
+
+  /// 测试专用：清空实例缓存（门缓存的等价清理见 [ModuleBootstrap.debugReset]）。
+  @visibleForTesting
+  void debugReset() {
+    _instance = null;
+    _available = false;
   }
 
   Future<Map<String, dynamic>> _call(
