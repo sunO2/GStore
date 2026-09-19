@@ -46,6 +46,11 @@ ModuleBootstrapState _failed(String module) => ModuleBootstrapState(
       error: StateError('boom'),
     );
 
+ModuleBootstrapState _absent(String module) => ModuleBootstrapState(
+      module: module,
+      phase: ModuleBootstrapPhase.absent,
+    );
+
 /// 测试宿主：注入状态流 + 主题 + 被叠加内容。
 Widget _harness(
   Stream<List<ModuleBootstrapState>> stream, {
@@ -255,6 +260,97 @@ void main() {
     expect(taps, 1, reason: '覆盖层应忽略指针，让点击落到应用内容');
   });
 
+  testWidgets('absent 阶段（显式空闲状态）同样不渲染横幅', (tester) async {
+    await tester.pumpWidget(
+      _harness(Stream.value(<ModuleBootstrapState>[
+        _absent('qr'),
+        _absent('llm'),
+      ])),
+    );
+    await tester.pump();
+
+    expect(find.byType(LinearProgressIndicator), findsNothing);
+    expect(find.byType(AppLoading), findsNothing);
+    expect(find.byKey(contentKey), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('ready 与 downloading 并存时仅渲染进行中的模块', (tester) async {
+    await tester.pumpWidget(
+      _harness(Stream.value(<ModuleBootstrapState>[
+        _ready('analyzer'),
+        _downloading('qr', progress: 0.3),
+      ])),
+    );
+    await tester.pump();
+
+    // 仅 qr 一行可见；已就绪的 analyzer 行被过滤隐藏。
+    expect(find.byType(LinearProgressIndicator), findsOneWidget);
+    expect(find.text('二维码解码'), findsOneWidget);
+    expect(find.text('APK 分析'), findsNothing);
+    expect(find.text('下载中 30%'), findsOneWidget);
+  });
+
+  testWidgets('失败后再次进入 downloading 可重新显示（失败不粘滞）', (tester) async {
+    final controller =
+        StreamController<List<ModuleBootstrapState>>.broadcast();
+    addTearDown(controller.close);
+
+    await tester.pumpWidget(_harness(controller.stream));
+    controller.add(<ModuleBootstrapState>[
+      _downloading('qr', progress: 0.9),
+    ]);
+    await tester.pump();
+    expect(find.byType(LinearProgressIndicator), findsOneWidget);
+
+    controller.add(<ModuleBootstrapState>[_failed('qr')]);
+    await tester.pump();
+    expect(find.byType(LinearProgressIndicator), findsNothing);
+
+    controller.add(<ModuleBootstrapState>[
+      _downloading('qr', progress: 0.1),
+    ]);
+    await tester.pump();
+
+    expect(find.text('二维码解码'), findsOneWidget);
+    expect(find.text('下载中 10%'), findsOneWidget);
+    expect(find.byType(LinearProgressIndicator), findsOneWidget);
+  });
+
+  testWidgets('多行覆盖层仍不改变 child 的布局尺寸', (tester) async {
+    final controller =
+        StreamController<List<ModuleBootstrapState>>.broadcast();
+    addTearDown(controller.close);
+
+    await tester.pumpWidget(_harness(controller.stream));
+    await tester.pump();
+    final idleSize = tester.getSize(find.byKey(contentKey));
+    expect(idleSize, const Size(800, 600));
+
+    controller.add(<ModuleBootstrapState>[
+      _downloading('qr', progress: 0.5),
+      _initializing('llm'),
+      _downloading('download', progress: 0.2),
+    ]);
+    await tester.pump();
+
+    expect(find.byType(LinearProgressIndicator), findsNWidgets(3));
+    final activeSize = tester.getSize(find.byKey(contentKey));
+    expect(activeSize, idleSize, reason: '多行叠加不得位移/缩放被覆盖内容');
+  });
+
+  testWidgets('进度比例按四舍五入渲染百分比（0.756 → 76%）', (tester) async {
+    await tester.pumpWidget(
+      _harness(Stream.value(<ModuleBootstrapState>[
+        _downloading('qr', progress: 0.756),
+      ])),
+    );
+    await tester.pump();
+
+    expect(find.text('下载中 76%'), findsOneWidget);
+    expect(_barValue(tester), closeTo(0.756, 1e-9));
+  });
+
   test('源码仅使用主题令牌，不含硬编码颜色', () {
     final source =
         File('lib/compent/module_install_banner.dart').readAsStringSync();
@@ -265,5 +361,9 @@ void main() {
         reason: '不得使用 AppColors.*');
     expect(RegExp(r'Color\(0x').hasMatch(source), isFalse,
         reason: '不得使用 Color(0x...) 字面量');
+    expect(RegExp(r'Color\.fromARGB').hasMatch(source), isFalse,
+        reason: '不得使用 Color.fromARGB 字面量');
+    expect(RegExp(r'Color\.fromRGBO').hasMatch(source), isFalse,
+        reason: '不得使用 Color.fromRGBO 字面量');
   });
 }
