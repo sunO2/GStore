@@ -1,9 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:gstore/core/config/config_service.dart';
-import 'package:gstore/core/download/manager/download_manager.dart';
-import 'package:gstore/core/download/rust/rust_download_service.dart';
+import 'package:gstore/core/download/rust/lazy_download_service.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
-import 'package:gstore/core/rust/ModuleLoader.dart';
 
 /// 下载内核**实现**的选择开关。
 ///
@@ -36,43 +34,40 @@ class DownloadCoreConfig {
   /// 解析要绑定的下载服务实现。
   ///
   /// [dartImpl] 是既有实现，作为默认与回落目标。
-  static Future<IDownloadService> resolve(DownloadManager dartImpl) async {
+  ///
+  /// 启动期**不做任何模块探测/下载**：
+  /// - 运行时配置显式 `dart` → 直接返回 [dartImpl]（硬回退，可对比/排障）；
+  /// - 其余情况 → 返回 [LazyDownloadService]，把 Rust 内核的可用性判断推迟到
+  ///   首次**变更类**调用（见 `lazy_download_service.dart`），不可用/异常则静默
+  ///   回落 Dart。
+  ///
+  /// 构期开关 [buildTimeRust] 仅作日志参考，**不再**在启动期强制探测 Rust；
+  /// 因此本方法**永不抛错**（即使 Rust 路径不可用），冷启动也不再被内核拖慢。
+  ///
+  /// [rustProbe] / [rustServiceFactory] 仅用于测试注入，生产调用方省略。
+  static Future<IDownloadService> resolve(
+    IDownloadService dartImpl, {
+    Future<bool> Function()? rustProbe,
+    IDownloadService Function()? rustServiceFactory,
+  }) async {
     final runtimeValue = await _readRuntimeValue();
 
-    // 只读探测：走 RustModuleLoader.isAvailable → Kotlin hasModule
-    // （**APK 内含 或 已解压**），且不解压、不 dlopen。
-    //
-    // 注意：不能用 probe()——它只查"已解压产物"，首次安装必然为 false。
-    var present = false;
-    try {
-      present = await RustModuleLoader.instance
-          .isAvailable(RustDownloadService.moduleName);
-    } catch (e) {
-      debugPrint('DownloadCoreConfig: 探测 Rust 内核失败 - $e');
-    }
-
-    debugPrint(
-      'DownloadCoreConfig: 选择开始 —— $configKey=$runtimeValue, '
-      '构建期 DOWNLOAD_CORE_RUST=$buildTimeRust, Rust 模块存在=$present',
-    );
-
-    // 1) 显式配置优先：可强制回退 Dart（对比/排障用）
+    // 1) 显式配置优先：可强制回退 Dart（对比/排障用）。
     if (runtimeValue != null && runtimeValue.toLowerCase() == 'dart') {
       debugPrint('DownloadCoreConfig: 配置强制 Dart，使用 Dart 下载内核');
       return dartImpl;
     }
 
-    // 2) 默认按「模块是否存在」决定。
-    //
-    // 与项目约定一致：**模块不在，能力就不在**——所以不需要任何构建参数，
-    // 把 jniLibs 里的 .so 移除即自动回落 Dart。
-    if (present) {
-      debugPrint('DownloadCoreConfig: 使用 Rust 下载内核（模块存在）');
-      return RustDownloadService.instance;
-    }
-
-    debugPrint('DownloadCoreConfig: Rust 模块不存在，使用 Dart 下载内核');
-    return dartImpl;
+    // 2) 默认返回惰性路由：启动期零探测、零下载。
+    debugPrint(
+      'DownloadCoreConfig: 返回惰性下载路由（启动期不探测内核）—— '
+      '$configKey=$runtimeValue, 构建期 DOWNLOAD_CORE_RUST=$buildTimeRust',
+    );
+    return LazyDownloadService(
+      dartImpl,
+      rustProbe: rustProbe,
+      rustServiceFactory: rustServiceFactory,
+    );
   }
 
   /// 读运行时配置；未注册/读取失败返回 null（不阻塞，交给构建期参数）。
