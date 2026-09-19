@@ -7,7 +7,9 @@ import 'package:path/path.dart' as p;
 
 import 'package:gstore/core/event/app_event.dart';
 import 'package:gstore/core/logger/LogManager.dart';
+import 'package:gstore/core/rust/ModuleBootstrap.dart';
 import 'package:gstore/core/rust/ModuleContext.dart';
+import 'package:gstore/core/rust/ModuleLoader.dart' show ModuleProgressCallback;
 import 'package:gstore/core/rust/RustBridge.dart';
 import 'package:gstore/core/rust/contract/GStoreException.dart';
 import 'package:gstore/core/rust/generated/bridge.dart'
@@ -43,6 +45,24 @@ class RustModuleManager {
   static int _requestCounter = 0;
   static ModuleEventHandler? _moduleEventHandler;
 
+  // ---- callModule 自愈测试接缝（生产未配置覆盖时行为不变） ----
+
+  /// 句柄加载覆盖（生产默认：[loadModule]）。
+  static Future<ModuleHandle> Function(String name)? _loadModuleOverride;
+
+  /// 安装确保覆盖（生产默认：[ModuleBootstrap.ensureOnly]）。
+  static Future<bool> Function(
+    String name, {
+    bool allowDownload,
+    ModuleProgressCallback? onProgress,
+  })? _ensureOverride;
+
+  /// 句柄缓存写入观察钩子（默认仅写 [_handles]）。
+  static void Function(String name, ModuleHandle handle)? _seedHandleOverride;
+
+  /// readiness 覆盖（生产默认：[ensureReady]；测试用于绕过 FFI 初始化）。
+  static Future<void> Function()? _ensureReadyOverride;
+
   static final StreamController<ModuleEvent> _eventController =
       StreamController<ModuleEvent>.broadcast();
 
@@ -59,6 +79,11 @@ class RustModuleManager {
 
   /// 确保 bridge 初始化 + 日志订阅（幂等，可多次调用）
   Future<void> ensureReady() async {
+    final readyOverride = _ensureReadyOverride;
+    if (readyOverride != null) {
+      await readyOverride();
+      return;
+    }
     await RustBridge.ensureInitialized();
 
     // 引擎在同进程内被销毁重建时，宿主仍持有指向上一个 isolate 的失效 StreamSink。
@@ -121,7 +146,7 @@ class RustModuleManager {
       payload: payload,
     );
 
-    final handle = await loadModule(module);
+    final handle = await _loadOrEnsure(module);
     final respBytes = timeoutMs == null
         ? await handle.callEnvelope(requestBytes: request.writeToBuffer())
         : await handle.callEnvelopeTimed(
@@ -167,6 +192,61 @@ class RustModuleManager {
     final handle = await ModuleHandle.load(moduleName: name);
     _handles[name] = handle;
     return handle;
+  }
+
+  /// 加载句柄，失败时对 **自动策略** 模块执行一次 `MODULE_NOT_FOUND` 自愈。
+  ///
+  /// 流程：缓存 → 加载；加载抛错后：
+  /// 1. 若模块策略非 [ModuleInstallPolicy.auto]（如 `llm`）→ 立即重抛，
+  ///    确认策略绝不静默自动安装；
+  /// 2. 否则经门 [ModuleBootstrap.ensureOnly] 补装；补装返回 `false` → 重抛
+  ///    **原始错误**（不吞错）；
+  /// 3. 补装成功后优先复用 ensure 挂载写入缓存的句柄，仍无则再加载一次
+  ///    （至多一次，无循环）。成功自愈记录一条 info 日志。
+  ///
+  /// 注意：宿主 [ModuleHandle.load] 的失败值是**裸 `String`**（非
+  /// `GStoreException`），故此处按任意 [Object] 泛化捕获，不依赖错误码。
+  Future<ModuleHandle> _loadOrEnsure(String name) async {
+    final cached = _handles[name];
+    if (cached != null) return cached;
+
+    final loadOverride = _loadModuleOverride;
+    try {
+      return loadOverride != null ? await loadOverride(name) : await loadModule(name);
+    } catch (_) {
+      if (ModuleBootstrap.instance.policyFor(name) != ModuleInstallPolicy.auto) {
+        // llm 等确认策略：绝不因一次调用失败而自动安装。
+        rethrow;
+      }
+
+      final ensureOverride = _ensureOverride;
+      final healed = ensureOverride != null
+          ? await ensureOverride(name, allowDownload: true)
+          : await ModuleBootstrap.instance.ensureOnly(name);
+      if (!healed) {
+        // 原错误原样传播（可能是裸 String）。
+        rethrow;
+      }
+
+      // ensure 挂载可能已把句柄写入缓存；有则直接复用，无需二次加载。
+      final seeded = _handles[name];
+      if (seeded != null) {
+        appLog.info('[CallModule] ensured $name after MODULE_NOT_FOUND');
+        return seeded;
+      }
+
+      final handle =
+          loadOverride != null ? await loadOverride(name) : await loadModule(name);
+      _seedHandle(name, handle);
+      appLog.info('[CallModule] ensured $name after MODULE_NOT_FOUND');
+      return handle;
+    }
+  }
+
+  /// 写入模块句柄缓存：默认写真实缓存 [_handles]，并在注入钩子时通知观察者。
+  void _seedHandle(String name, ModuleHandle handle) {
+    _handles[name] = handle;
+    _seedHandleOverride?.call(name, handle);
   }
 
   /// 模块是否已加载（查询 Rust 侧注册表）
@@ -230,6 +310,43 @@ class RustModuleManager {
   @visibleForTesting
   static String? debugModuleNameFromSoPath(String soPath) =>
       _moduleNameFromSoPath(soPath);
+
+  /// 配置 `callModule` 自愈测试接缝（生产未配置覆盖时行为不变）。
+  ///
+  /// * [loadModuleOverride] 默认 [loadModule]；
+  /// * [ensureOverride] 默认 [ModuleBootstrap.instance.ensureOnly]；
+  /// * [seedHandle] 在写入 [_handles] 后触发（默认无钩子），供测试观察；
+  /// * [readyOverride] 默认 [ensureReady]（测试用于绕过 FFI 初始化）。
+  @visibleForTesting
+  void debugConfigure({
+    Future<ModuleHandle> Function(String name)? loadModuleOverride,
+    Future<bool> Function(
+      String name, {
+      bool allowDownload,
+      ModuleProgressCallback? onProgress,
+    })? ensureOverride,
+    void Function(String name, ModuleHandle handle)? seedHandle,
+    Future<void> Function()? readyOverride,
+  }) {
+    _loadModuleOverride = loadModuleOverride;
+    _ensureOverride = ensureOverride;
+    _seedHandleOverride = seedHandle;
+    _ensureReadyOverride = readyOverride;
+  }
+
+  /// 清除 `callModule` 自愈的全部测试覆盖。
+  @visibleForTesting
+  void debugReset() {
+    _loadModuleOverride = null;
+    _ensureOverride = null;
+    _seedHandleOverride = null;
+    _ensureReadyOverride = null;
+  }
+
+  /// 测试专用：模拟 ensure/挂载把句柄写入真实缓存（见 [_seedHandle]）。
+  @visibleForTesting
+  void debugSeedHandle(String name, ModuleHandle handle) =>
+      _seedHandle(name, handle);
 
   /// 订阅 Rust 日志流到 LogManager（Rust 日志可在日志查看器中查看）
   Future<void> _subscribeLogs() async {
