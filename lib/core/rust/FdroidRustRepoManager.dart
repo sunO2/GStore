@@ -8,8 +8,9 @@ import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart' show getApplicationDocumentsDirectory;
 import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/rust/RustTask.dart';
-import 'package:gstore/core/rust/ModuleLoader.dart';
+import 'package:gstore/core/rust/ModuleBootstrap.dart';
 import 'package:gstore/core/rust/ModuleManager.dart';
+import 'package:gstore/core/rust/generated/bridge.dart' show ModuleHandle;
 import 'package:gstore/core/rust/generated/models.dart' show AppInfo;
 
 /// F-Droid 仓库管理器（模块化实现）
@@ -22,8 +23,12 @@ class FdroidRustRepoManager {
   /// 当前活动源的稳定身份键（决定数据落在哪个库）
   static String? _activeSourceKey;
 
-  /// 身份键 → 实例（切回旧源无需重建；各源数据天然隔离）
-  static final Map<String, RustModuleInstance> _instances = {};
+  /// 测试专用：替换实例工厂以绕过 FFI/平台通道（生产为 `null`）。
+  ///
+  /// 实例缓存与单飞全部由 [ModuleBootstrap] 门按
+  /// `repo#<身份键>` 维度持有，本类不再自建缓存。
+  @visibleForTesting
+  static ModuleInstanceFactory? debugInstanceFactory;
 
   /// 源的稳定身份键：**优先指纹**（仓库身份就是签名密钥），否则用归一化地址。
   ///
@@ -76,22 +81,32 @@ class FdroidRustRepoManager {
         sourceIdentity(fingerprint: source.fingerprint, repoUrl: source.repoUrl),
       );
 
+  /// 获取（必要时安装并创建）指定源身份的实例。
+  ///
+  /// 安装确保/实例创建/缓存/单飞全部委托 [ModuleBootstrap] 门：`repo` 只确保
+  /// **一次**（按模块去重），而每个身份键各自创建一个实例（按 `instanceKey`
+  /// 去重）——因此「两个源 = 两个实例 + 一次 ensure」。
   static Future<RustModuleInstance> _instanceFor(String key) async {
-    final cached = _instances[key];
-    if (cached != null) return cached;
-    final ok = await RustModuleLoader.instance.ensureModule('repo');
-    if (!ok) {
+    final factory = debugInstanceFactory ??
+        (ModuleHandle handle) async {
+          // 数据库路径按源身份派生（应用文档目录；不能用 Platform.environment['HOME']，
+          // 否则可能得到 /.gstore/... 这类不可写路径导致 create 失败 code=-7）
+          final docs = await getApplicationDocumentsDirectory();
+          final dbPath = dbPathForIdentity(key, docs.path);
+          return RustModuleInstance.createWithContext('repo', handle,
+              dbPath: dbPath);
+        };
+    try {
+      final inst = await ModuleBootstrap.instance.acquire(
+        'repo',
+        instanceKey: key,
+        factory: factory,
+      );
+      appLog.info('FdroidRustRepoManager: repo 实例就绪 (key=$key)');
+      return inst;
+    } on ModuleInstallFailedException {
       throw StateError('FdroidRustRepoManager: repo 模块不可用');
     }
-    final handle = await RustModuleManager.instance.loadModule('repo');
-    // 数据库路径按源身份派生（应用文档目录；不能用 Platform.environment['HOME']，
-    // 否则可能得到 /.gstore/... 这类不可写路径导致 create 失败 code=-7）
-    final docs = await getApplicationDocumentsDirectory();
-    final dbPath = dbPathForIdentity(key, docs.path);
-    final inst = await RustModuleInstance.createWithContext('repo', handle, dbPath: dbPath);
-    _instances[key] = inst;
-    appLog.info('FdroidRustRepoManager: repo 实例就绪 (key=$key, db=$dbPath)');
-    return inst;
   }
 
   /// 初始化（幂等；保留兼容签名——实际挂载在首次调用时发生）
@@ -100,7 +115,8 @@ class FdroidRustRepoManager {
   /// （[instanceForSource]/[downloadRepository]）时才按需安装，避免首帧卡黑。
   static Future<void> initialize({String? dbPath}) async {
     await RustModuleManager.instance.ensureReady();
-    await RustModuleLoader.instance.ensureModule('repo', allowDownload: false);
+    // prepareExisting 只挂载已有本地/内置产物，**绝不触发远程下载**。
+    await ModuleBootstrap.instance.prepareExisting('repo');
     appLog.info('FdroidRustRepoManager: bridge 就绪（repo 模块按需安装）');
   }
 
