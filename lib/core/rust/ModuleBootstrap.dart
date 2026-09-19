@@ -122,6 +122,37 @@ class _EnsureOutcome {
   const _EnsureOutcome.failure(this.error, [this.stackTrace]) : ok = false;
 }
 
+/// 一次**底层**安装 ensure 尝试（未被 `Future.timeout` 取消的原始 future）。
+///
+/// `Future.timeout` 只让等待方超时，**不会取消**底层 `ensureModule`：超时后底层
+/// 仍可能继续下载并在稍后回调进度/成功。本对象持有该原始 future 及其代次、整体
+/// 截止时间与两条状态位，用于：
+/// * 让**重试复用**仍在途的同一底层安装，避免并发跑起第二个安装；
+/// * 让同一次尝试的**晚到进度**在其终结后被丢弃，绝不复活终态。
+class _PendingEnsure {
+  /// 构造一次底层尝试（[future] 随后由 `_startEnsureAttempt` 赋值）。
+  _PendingEnsure(this.generation, this.deadline);
+
+  /// 单调递增的代次序号（每个底层尝试一个）。
+  final int generation;
+
+  /// 该次底层安装的整体截止时间（自启动起算，重试复用时不重置）。
+  final DateTime deadline;
+
+  /// 原始 `ensureModule` future（未经超时包裹，故可被重试复用）。
+  late final Future<bool> future;
+
+  /// 是否**已为本次尝试发布过终态**。为 `true` 后，本次尝试的任何晚到进度
+  /// （[reportProgress]）都被丢弃，防止把 `failed`/`ready` 翻回 `downloading`。
+  bool settled = false;
+
+  /// 是否正有 ensure 调用在 `await` 该 future（用于区分「在途」与「孤儿」）。
+  bool claimed = false;
+
+  /// 底层 future 是否已完成（成功或失败）；用于重试时的复用判定。
+  bool completed = false;
+}
+
 /// 统一模块自举门（on-use install gate）。
 ///
 /// 五个模块消费方（qr / analyzer / repo / download / llm）共用此单一入口：
@@ -148,6 +179,16 @@ class ModuleBootstrap {
   final Map<String, Future<_EnsureOutcome>> _ensureInFlight =
       <String, Future<_EnsureOutcome>>{};
 
+  /// 按模块保存**尚未完成**的底层安装尝试（`Future.timeout` 不取消底层）。
+  ///
+  /// 单飞条目 [_ensureInFlight] 在终态后即移除，但底层 `ensureModule` 仍可能
+  /// 在途；本表跨单飞保留该底层尝试，使重试可以复用它（await 同一个 future）而
+  /// 非新起一次并发安装。尝试完成（成功或失败）后由监听器移除。
+  final Map<String, _PendingEnsure> _pendingEnsure = <String, _PendingEnsure>{};
+
+  /// 底层安装尝试的代次序号（单调递增，供孤儿/晚到回调诊断）。
+  int _ensureGenerationSeq = 0;
+
   /// 按 `module#instanceKey` 去重的实例在途表。
   final Map<String, Future<RustModuleInstance>> _instanceInFlight =
       <String, Future<RustModuleInstance>>{};
@@ -158,14 +199,19 @@ class ModuleBootstrap {
 
   // ---- 挂起保护 ----
 
-  /// 单飞步骤（安装确保 / 实例化）的最长等待时长。
+  /// ensure 安装的**单一整体期限**（自底层安装启动起算的一次性 deadline）。
   ///
-  /// 超过该时长仍未完成即视为挂起：发布 [ModuleBootstrapPhase.failed]、释放在途
-  /// 条目，使下一次调用可重试，**绝不**让单飞条目永久残留。默认值对慢速网络下
-  /// 的大模块（如 llm）下载足够宽松；测试可经 [debugConfigure] 注入更短值。
+  /// 语义：这是**整体（overall）**而非**每次尝试（per-attempt）**的期限。底层
+  /// `ensureModule` 一旦启动，其截止时间即固定；后续重试通过 [_pendingEnsure]
+  /// 复用**同一个**底层 future 并共享该 deadline，因此：
+  /// * 慢而健康的大模块（如 llm）不会被反复重新下载（不会每轮重设 10 分钟）；
+  /// * 一个安装的总等待上限为 [_stepTimeout]，失败也不会拖到 ~30 分钟。
+  ///
+  /// 该值对慢速网络下的大模块下载足够宽松；测试可经 [debugConfigure] 注入更短值。
   static const Duration defaultStepTimeout = Duration(minutes: 10);
 
-  /// 当前生效的步骤超时（生产为 [defaultStepTimeout]）。
+  /// 当前生效的 ensure 整体期限（生产为 [defaultStepTimeout]）；
+  /// 同时作为句柄加载/实例化单步的超时上限。
   Duration _stepTimeout = defaultStepTimeout;
 
   // ---- 状态流 ----
@@ -308,8 +354,10 @@ class ModuleBootstrap {
   ModuleInstallPolicy policyFor(String module) =>
       module == 'llm' ? ModuleInstallPolicy.confirm : ModuleInstallPolicy.auto;
 
-  /// 注入测试接缝：安装确保/句柄加载/工厂/退避等待/确认处理器/步骤超时。
+  /// 注入测试接缝：安装确保/句柄加载/工厂/退避等待/确认处理器/整体超时。
   ///
+  /// [stepTimeout] 为一次底层安装的**整体期限**（同时作为加载/实例化的单步上限），
+  /// 重试复用同一底层尝试时不重置。
   /// 未配置的项保持生产行为；配置后全部门路径在**无 FFI、无网络**下可测。
   @visibleForTesting
   void debugConfigure({
@@ -342,6 +390,7 @@ class ModuleBootstrap {
     _confirmHandler = null;
     _stepTimeout = defaultStepTimeout;
     _ensureInFlight.clear();
+    _pendingEnsure.clear();
     _instanceInFlight.clear();
     _instances.clear();
     _lastStates.clear();
@@ -350,6 +399,10 @@ class ModuleBootstrap {
   /// 当前在途的 ensure 单飞条目数（测试专用，用于断言不被永久污染）。
   @visibleForTesting
   int get debugEnsureInFlightCount => _ensureInFlight.length;
+
+  /// 当前仍保存的底层安装尝试数（测试专用；用于断言孤儿被复用而非重下）。
+  @visibleForTesting
+  int get debugPendingEnsureCount => _pendingEnsure.length;
 
   /// 当前在途的实例单飞条目数（测试专用）。
   @visibleForTesting
@@ -395,6 +448,13 @@ class ModuleBootstrap {
   /// **永不「无终态」退出**：无论 ensure 返回 `false`、抛异常还是超时，都会在
   /// 完成之前发布一次 [ModuleBootstrapPhase.failed]（携带原始错误）。确认门异常
   /// （拒绝/未注册处理器）按既有语义向调用方抛出，不发布 failed、不进入退避。
+  ///
+  /// 重试语义：`Future.timeout` 不取消底层 `ensureModule`，超时后底层仍可能在途。
+  /// 因此若 [_pendingEnsure] 中仍存有**未完成**的同一模块尝试，本方法直接复用该
+  /// 底层 future（受同一整体 deadline 的剩余期限约束），**绝不**再调一次
+  /// `ensureModule`，从根源消除并发重复安装。该次尝试终结后，其晚到的进度回调
+  /// 由 [_PendingEnsure.settled] 丢弃；若孤儿最终成功，则由
+  /// [_startEnsureAttempt] 的完成监听显式对账为 `ready`。
   Future<_EnsureOutcome> _ensureOnlyInternal(
     String module,
     ModuleInstallPolicy? policy,
@@ -423,27 +483,38 @@ class ModuleBootstrap {
       module: module,
       phase: ModuleBootstrapPhase.downloading,
     ));
-    // 下载进度单调不减：忽略任何小于上一次已发布值的 fraction。
-    double? lastProgress;
-    void reportProgress(double fraction) {
-      final previous = lastProgress;
-      if (previous != null && fraction < previous) return;
-      lastProgress = fraction;
+
+    // 复用仍未完成的孤儿底层尝试；否则启动一次新的底层安装。
+    final orphan = _pendingEnsure[module];
+    final attempt = (orphan != null && !orphan.completed)
+        ? orphan
+        : _startEnsureAttempt(module);
+
+    // 单一整体期限：自底层安装启动起算，复用同一尝试时不重置。剩余时间耗尽即
+    // 判超时——避免慢而健康的安装被反复重下，也避免总耗时无限累积。
+    final remaining = attempt.deadline.difference(DateTime.now());
+    if (remaining <= Duration.zero) {
+      attempt.settled = true;
+      final error = TimeoutException(
+        '模块 $module 安装确保整体超时（>${_stepTimeout.inMilliseconds}ms）',
+        _stepTimeout,
+      );
       _emit(ModuleBootstrapState(
         module: module,
-        phase: ModuleBootstrapPhase.downloading,
-        progress: fraction,
+        phase: ModuleBootstrapPhase.failed,
+        error: error,
       ));
+      return _EnsureOutcome.failure(error);
     }
 
+    attempt.claimed = true;
     final bool ok;
     try {
-      ok = await _invokeEnsure(
-        module,
-        allowDownload: true,
-        onProgress: reportProgress,
-      ).timeout(_stepTimeout);
+      ok = await attempt.future.timeout(remaining);
     } on TimeoutException catch (error, stackTrace) {
+      // 底层 future 仍在途（timeout 不取消它）：标记本次尝试已终结，使晚到进度
+      // 被丢弃；尝试保留在 _pendingEnsure 中供下一次重试复用（不重下）。
+      attempt.settled = true;
       debugPrint(
         'ModuleBootstrap: 模块 "$module" 安装确保超时'
         '（>${_stepTimeout.inMilliseconds}ms），已释放单飞以便重试',
@@ -457,15 +528,19 @@ class ModuleBootstrap {
     } catch (error, stackTrace) {
       // 网络/FFI/ABI 等任意异常：先发布终态 failed（保留原始错误），再让上层
       // 释放单飞；绝不从单飞路径逃逸而不留终态。
+      attempt.settled = true;
       _emit(ModuleBootstrapState(
         module: module,
         phase: ModuleBootstrapPhase.failed,
         error: error,
       ));
       return _EnsureOutcome.failure(error, stackTrace);
+    } finally {
+      attempt.claimed = false;
     }
 
     if (!ok) {
+      attempt.settled = true;
       final error = StateError('模块 $module 安装/确保失败');
       _emit(ModuleBootstrapState(
         module: module,
@@ -475,6 +550,72 @@ class ModuleBootstrap {
       return _EnsureOutcome.failure(error);
     }
     return const _EnsureOutcome.success();
+  }
+
+  /// 启动一次**新的**底层安装 ensure，并登记其完成监听。
+  ///
+  /// 不使用超时包裹，故返回的 future 是真正的底层安装：超时后仍可被后续重试
+  /// 复用（见 [_ensureOnlyInternal]）。[reportProgress] 绑定本次尝试的
+  /// [_PendingEnsure.settled]：一旦终结，晚到进度一律丢弃，绝不复活终态。
+  ///
+  /// 完成对账：若该尝试已是**无人 await 的孤儿**（`!claimed`）且此前已发布终态
+  /// （`settled`），却在稍后真正成功，则显式发布一次 `ready`（产物确实就绪），
+  /// 而不是让它停留在 `failed` 或假装仍在 `downloading`。若确有调用方在 await，
+  /// 则由该调用方经 [acquire] 的正常 `initializing → ready` 路径发布。
+  _PendingEnsure _startEnsureAttempt(String module) {
+    final attempt = _PendingEnsure(
+      ++_ensureGenerationSeq,
+      DateTime.now().add(_stepTimeout),
+    );
+    // 下载进度单调不减：忽略任何小于上一次已发布值的 fraction；已终结则丢弃。
+    double? lastProgress;
+    void reportProgress(double fraction) {
+      if (attempt.settled) return;
+      final previous = lastProgress;
+      if (previous != null && fraction < previous) return;
+      lastProgress = fraction;
+      _emit(ModuleBootstrapState(
+        module: module,
+        phase: ModuleBootstrapPhase.downloading,
+        progress: fraction,
+      ));
+    }
+
+    // `Future.sync` 把 `_invokeEnsure` 的**同步**抛错也转换为 error future，
+    // 使其落入下面的 catch 并发布终态 failed（与旧实现语义一致）。
+    attempt.future = Future<bool>.sync(() => _invokeEnsure(
+          module,
+          allowDownload: true,
+          onProgress: reportProgress,
+        ));
+    _pendingEnsure[module] = attempt;
+    unawaited(attempt.future.then(
+      (ok) {
+        attempt.completed = true;
+        final tracked = identical(_pendingEnsure[module], attempt);
+        if (tracked) _pendingEnsure.remove(module);
+        if (ok && attempt.settled && !attempt.claimed && tracked) {
+          // 孤儿在被放弃后成功：显式对账为 ready（产物确实就绪）。
+          debugPrint(
+            'ModuleBootstrap: 模块 "$module" 的孤儿安装（第 ${attempt.generation} '
+            '次底层尝试）稍后成功，对账为 ready',
+          );
+          _emit(ModuleBootstrapState(
+            module: module,
+            phase: ModuleBootstrapPhase.ready,
+            progress: 1.0,
+          ));
+        }
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        attempt.completed = true;
+        if (identical(_pendingEnsure[module], attempt)) {
+          _pendingEnsure.remove(module);
+        }
+        // 孤儿失败：终态 failed 早已发布且保留原始错误，此处不覆盖。
+      },
+    ));
+    return attempt;
   }
 
   /// 在按 `module#instanceKey` 去重的在途 future 内执行：确保 → 创建实例，
