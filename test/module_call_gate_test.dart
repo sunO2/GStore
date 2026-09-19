@@ -259,4 +259,79 @@ void main() {
       expect(healLogCount(), 0, reason: '失败不得记录成功自愈日志');
     });
   });
+
+  group('todo 11 - confirm 策略模块绝不被 callModule 自动安装', () {
+    test('llm guard：重抛原始错误、零 ensure、无 downloading 状态', () async {
+      const module = 'llm';
+      var ensureCalls = 0;
+      final phases = <ModuleBootstrapPhase>[];
+      final sub = bootstrap.watch(module).listen((s) => phases.add(s.phase));
+      addTearDown(sub.cancel);
+
+      manager.debugConfigure(
+        readyOverride: () async {},
+        loadModuleOverride: (String name) async =>
+            throw '[404] MODULE_NOT_FOUND: module not found: $name',
+      );
+      bootstrap.debugConfigure(
+        ensureOverride: (
+          String name, {
+          required bool allowDownload,
+          ModuleProgressCallback? onProgress,
+        }) async {
+          ensureCalls++;
+          return true;
+        },
+      );
+
+      await expectLater(
+        manager.callModule(module, null, 'run', Uint8List(0)),
+        throwsA(contains('module not found: llm')),
+      );
+      await pumpEventQueue();
+
+      expect(ensureCalls, 0, reason: 'confirm 策略绝不因调用失败而自动安装');
+      expect(
+        phases.contains(ModuleBootstrapPhase.downloading),
+        isFalse,
+        reason: '被拦截的 llm 调用不得发出 downloading 状态',
+      );
+      expect(healLogCount(), 0, reason: '被拦截不得记录成功自愈日志');
+    });
+
+    test('llm gate：确认通过后仍经 acquire 正常安装（防止过度拦截）', () async {
+      const module = 'llm';
+      final handle = _FakeModuleHandle(Uint8List(0));
+      final instance = _FakeInstance();
+
+      var ensureCalls = 0;
+      var confirmCalls = 0;
+
+      bootstrap.debugConfigure(
+        ensureOverride: (
+          String name, {
+          required bool allowDownload,
+          ModuleProgressCallback? onProgress,
+        }) async {
+          ensureCalls++;
+          return true;
+        },
+        loadOverride: (String name) async => handle,
+        factoryOverride: (ModuleHandle h) async => instance,
+        confirmHandler: (String name) async {
+          confirmCalls++;
+          return true;
+        },
+      );
+
+      final result = await bootstrap.acquire(
+        module,
+        policy: ModuleInstallPolicy.confirm,
+      );
+      expect(identical(result, instance), isTrue,
+          reason: '确认通过后 acquire 应返回安装好的实例');
+      expect(ensureCalls, 1, reason: '确认通过后恰好一次 ensure');
+      expect(confirmCalls, 1, reason: '确认处理器恰好调用一次');
+    });
+  });
 }
