@@ -231,15 +231,15 @@ void main() {
     );
     await pumpPage(tester);
 
-    // 初始 4 个「下载」按钮（qr 可用 + 其余 3 禁用）。
-    expect(find.widgetWithText(FilledButton, '下载'), findsNWidgets(4));
+    // 初始 5 个「下载」按钮（qr 可用 + 其余 4 禁用）。
+    expect(find.widgetWithText(FilledButton, '下载'), findsNWidgets(5));
 
     await tester.tap(qrDownload());
     await tester.pump();
 
     // busy：AppLoading 呈现；qr 行下载按钮被取代（防连击）；回退按钮禁用。
     expect(find.byType(AppLoading), findsOneWidget);
-    expect(find.widgetWithText(FilledButton, '下载'), findsNWidgets(3),
+    expect(find.widgetWithText(FilledButton, '下载'), findsNWidgets(4),
         reason: 'busy 的 qr 行不再渲染下载按钮');
     final rollback = find.widgetWithText(OutlinedButton, '回退到内置').first;
     expect(tester.widget<OutlinedButton>(rollback).onPressed, isNull);

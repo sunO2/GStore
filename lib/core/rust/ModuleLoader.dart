@@ -183,7 +183,8 @@ class RustModuleLoader {
 
   /// 下载内核模块名：仅在**无内置产物且无本地已下载产物**时允许经 Dart 侧
   /// 有界自举（slim 变体）；存在本地/内置时走后台更新路径（不自举）。
-  static const String _downloadModuleName = 'download';
+  /// 管理页显式下载该内核时，[downloadAndInstall] 需传 `allowBootstrap: true`。
+  static const String downloadModuleName = 'download';
 
   /// 设备 ABI 内存缓存（首次解析后复用，避免重复通道往返）
   String? _deviceAbiCache;
@@ -221,6 +222,20 @@ class RustModuleLoader {
   /// 触发内置模块提取通道调用，供测试断言其 ABI 参数（测试专用）
   @visibleForTesting
   Future<String?> debugBuiltinSoPath(String name) => _builtinSoPath(name);
+
+  /// 生产接线：注入远端清单来源与资产下载器（app 启动时调用一次）。
+  ///
+  /// 未接线时保持「无远程源」行为——`probe` 的 `remoteVersion` 恒为 null、
+  /// 管理页下载按钮禁用、`ensureModule` 在无内置/本地产物时直接降级。
+  /// 接线后远程下载/更新/自举路径方可生效。
+  void configureRemote({
+    ModuleManifestSource? manifestSource,
+    ModuleFetcher? downloader,
+  }) {
+    if (manifestSource != null) _manifestSource = manifestSource;
+    if (downloader != null) _downloader = downloader;
+    _manifestCache = null;
+  }
 
   /// 配置测试接缝：清单来源/下载器/清单覆盖/支持目录/isLoaded/挂载/时钟。
   ///
@@ -422,7 +437,11 @@ class RustModuleLoader {
   /// 确保模块就绪（**同步路径零网络**）：
   /// 已挂载 → 已下载有效产物（最高三段 semver）→ 内置解压
   /// → 仅当两者皆无时做一次有界远程下载安装并挂载 → 否则 false。
-  Future<bool> ensureModule(String name) async {
+  ///
+  /// [allowDownload] 为 false 时**绝不触发远程下载**：本地/内置产物仍可挂载，
+  /// 但两者皆无时立即返回 false。启动路径（如 F-Droid 模块 `onInit`）必须传
+  /// false，否则精简包会在启动时下载模块并阻塞首帧；真实使用时再按需下载。
+  Future<bool> ensureModule(String name, {bool allowDownload = true}) async {
     // Phase 2 迁移（启动恰好一次，`requireSignature=false` 时零副作用）：
     // **必须**先于本地产物解析完成——宿主 `trust.rs` 会把「无 `.sig`」的模块
     // 当作内置（随包信任）直接放行，若放任 Phase 1 无签名下载产物参与解析，
@@ -457,6 +476,10 @@ class RustModuleLoader {
     final hasDownloaded = await _hasDownloadedArtifact(name);
     if (hasBuiltin || hasDownloaded) {
       appLog.info('RustModuleLoader: $name 本地产物不可用，走降级');
+      return false;
+    }
+    if (!allowDownload) {
+      appLog.info('RustModuleLoader: $name 无本地产物且启动路径禁止下载，跳过远程');
       return false;
     }
     // 规则变更（slim 变体）：`download` 内核在**既无内置产物也无本地已下载产物**
@@ -606,6 +629,7 @@ class RustModuleLoader {
   Future<bool> downloadAndInstall(
     String name, {
     ModuleProgressCallback? onProgress,
+    bool allowBootstrap = false,
   }) async {
     if (!_bgInFlight.add(name)) return false;
     try {
@@ -617,17 +641,22 @@ class RustModuleLoader {
       final override = _downloadOverride;
       if (override != null) return override(name);
 
-      // `download` 内核仅在已存在本地/内置产物后允许后台更新（禁止自举）。
-      if (name == _downloadModuleName && !await _hasLocalOrBuiltin(name)) {
+      // `download` 内核仅在已存在本地/内置产物（或调用方显式允许自举）后允许后台更新。
+      if (name == downloadModuleName &&
+          !allowBootstrap &&
+          !await _hasLocalOrBuiltin(name)) {
         return false;
       }
       final target = await _remoteTarget(name, forceRefresh: true);
       if (target == null) return false;
 
-      // 基线：本地 `.meta` 优先；无已下载产物时用内置版本（远程 vs 内置比较）。
+      // 基线：本地 `.meta` 优先；内置**声明**版本仅在**真实内置产物存在**时
+      // 才可作比较基线——slim 包声明仍在但 `.so` 被排除，此时无可回退版本，
+      // 同版本远端产物也必须下载（否则永远判「无需更新」而拒绝安装）。
       final localMeta = await _localMetaInfo(name);
-      final baselineVersion =
-          localMeta?.version ?? await _builtinVersion(name);
+      final builtinArtifactExists = await _builtinArtifactExists(name);
+      final baselineVersion = localMeta?.version ??
+          (builtinArtifactExists ? await _builtinVersion(name) : null);
       final needed = baselineVersion == null ||
           _compareVersions(target.version, baselineVersion) > 0 ||
           (localMeta != null &&

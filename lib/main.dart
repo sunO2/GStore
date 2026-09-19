@@ -22,6 +22,9 @@ import 'package:gstore/core/module/module_toggle_config.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/core/router/app_router.dart';
 import 'package:gstore/core/routers.dart';
+import 'package:gstore/core/rust/DioModuleFetcher.dart';
+import 'package:gstore/core/rust/ModuleLoader.dart';
+import 'package:gstore/core/rust/ModuleManifestClient.dart';
 
 /// 首页焦点重置与全局转场已迁移至 lib/core/router/app_router.dart
 /// （HomeFocusResetObserver）与主题 pageTransitionsTheme（转场复刻）。
@@ -34,6 +37,13 @@ registerService() async {
   // 统一事件总线：把 DB / 模块生命周期 / 配置事件源适配进 AppEventBus
   // （幂等；配置变化将经此下行到 Rust 模块）
   AppEventBusBootstrap.initialize();
+
+  // 接线原生模块远程下载源：slim 包未内置 libgstore_mod_*.so 时，
+  // 首次使用/管理页下载经此清单（未代理、校验证书）解析 Release 资产。
+  RustModuleLoader.instance.configureRemote(
+    manifestSource: ModuleManifestClient(),
+    downloader: DioModuleFetcher.rhttp(),
+  );
 
   // 初始化模块中心：注入上下文（配置/Agent 工具/服务联动）并注册全部模块。
   // 模块通过 dependencies 声明依赖，ModuleManager 拓扑排序 + 分层并行初始化

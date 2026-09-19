@@ -9,6 +9,8 @@
 /// 由 ModuleManager 拓扑排序按依赖顺序初始化（类似 Linux 包管理器）。
 library;
 
+import 'dart:async';
+
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/aggregate/AppAggregatorManager.dart';
 import 'package:gstore/core/agent/agent_tool_module.dart';
@@ -183,13 +185,11 @@ class FdroidModule extends AppModule {
   @override
   Future<void> onInit(ModuleContext context) async {
     final fdroidManager = FdroidRepoManager.instance;
-    try {
-      await fdroidManager.initialize();
-    } catch (e) {
-      // Rust 库缺失/FFI/存储异常 → 降级：F-Droid 渠道懒初始化（不阻塞启动、不闪退）
+    // 启动不阻塞首帧：Rust 后端与源配置加载转后台，服务先绑定；
+    // 功能侧读到未完成状态时按既有语义降级，初始化完成后经 notifyListeners 刷新。
+    unawaited(fdroidManager.ensureInitialized().catchError((Object e) {
       appLog.error('FdroidModule: F-Droid 初始化失败（降级，渠道懒初始化） - $e');
-    }
-    // 无论初始化成败都注册到 ModuleManager（失败时服务仍可解析，功能侧自行降级）
+    }));
     ModuleManager.instance.bind<FdroidRepoManager>(fdroidManager);
   }
 

@@ -236,6 +236,7 @@ const rustPlugins = <({String name, String title, String description})>[
   (name: 'qr', title: '二维码解码', description: 'zxing-cpp 图像解码'),
   (name: 'analyzer', title: 'APK 分析', description: 'Manifest / DEX / ELF 解析'),
   (name: 'repo', title: 'F-Droid 仓库', description: '仓库索引下载与解析'),
+  (name: 'download', title: '下载内核', description: 'Rust 分段/多线程下载内核'),
   (name: 'llm', title: '本地大模型', description: 'llama.cpp / GGUF 本地推理（仅 arm64）'),
 ];
 
@@ -295,6 +296,7 @@ class RustPluginsController extends Notifier<RustPluginsState> {
     try {
       ok = await _loader.downloadAndInstall(
         name,
+        allowBootstrap: name == RustModuleLoader.downloadModuleName,
         onProgress: (fraction) => _setProgress(name, fraction),
       );
     } catch (e) {

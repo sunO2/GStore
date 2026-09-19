@@ -95,10 +95,13 @@ class FdroidRustRepoManager {
   }
 
   /// 初始化（幂等；保留兼容签名——实际挂载在首次调用时发生）
+  ///
+  /// 启动路径禁止下载：精简包无内置 `repo` 产物时，模块在首次真实使用
+  /// （[instanceForSource]/[downloadRepository]）时才按需安装，避免首帧卡黑。
   static Future<void> initialize({String? dbPath}) async {
     await RustModuleManager.instance.ensureReady();
-    await RustModuleLoader.instance.ensureModule('repo');
-    appLog.info('FdroidRustRepoManager: bridge + repo 模块就绪');
+    await RustModuleLoader.instance.ensureModule('repo', allowDownload: false);
+    appLog.info('FdroidRustRepoManager: bridge 就绪（repo 模块按需安装）');
   }
 
   /// 下载并解析仓库（Rust 模块 async block_on，返回应用数）

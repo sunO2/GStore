@@ -7,6 +7,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data' show Uint8List;
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:path/path.dart' as p;
 
 import 'package:gstore/core/config/AppConfig.dart';
@@ -92,6 +93,9 @@ class ModuleDownloader implements ModuleFetcher {
     return getProxy();
   }
 
+  /// 生产代理前缀（供其它 fetcher 复用同一读取规则，避免两套代理语义）。
+  static String configuredProxy() => _readConfiguredProxy();
+
   /// 下载 [url] 并返回字节；失败（校验/网络/超限）返回 `null`，**绝不抛异常**。
   ///
   /// 同一 URL（且相同的有效 `maxBytes`）的并发调用共享同一个 Future，
@@ -161,14 +165,22 @@ class ModuleDownloader implements ModuleFetcher {
     final plan = _buildPlan(url);
     if (plan == null) return _AttemptStatus.fatal;
 
+    var offset = 0;
     var last = _AttemptStatus.fatal;
     for (var attempt = 1; attempt <= _maxAttempts; attempt++) {
-      last = await _runAttempt(plan, dest, limit);
+      final (status, received) = await _runAttempt(plan, dest, limit, offset);
+      last = status;
       if (last != _AttemptStatus.retryable) return last;
+      offset = received;
+      if (offset > 0) {
+        debugPrint('ModuleDownloader: 第 $attempt 次中断，已收 $offset 字节，将从此处续传');
+      }
       if (attempt < _maxAttempts) {
         await _sleep(_backoffFor(attempt));
       }
     }
+    debugPrint('ModuleDownloader: 下载失败 原始=$url 实际请求=${plan.target} '
+        '末次状态=$last（$_maxAttempts 次尝试，已收 $offset 字节）');
     return last;
   }
 
@@ -184,9 +196,13 @@ class ModuleDownloader implements ModuleFetcher {
   _RequestPlan? _buildPlan(String url) {
     final original = Uri.tryParse(url);
     if (original == null) return null;
-    if (!_isAllowed(original)) return null;
+    if (!_isAllowed(original)) {
+      debugPrint('ModuleDownloader: 原始 URL host 不在白名单，拒绝 - $url');
+      return null;
+    }
 
     final proxy = _proxyProvider().trim();
+    debugPrint('ModuleDownloader: 代理="${proxy.isEmpty ? '(直连)' : proxy}" <- $url');
     if (proxy.isEmpty) {
       return _RequestPlan(original: original, target: original, proxied: false);
     }
@@ -195,6 +211,7 @@ class ModuleDownloader implements ModuleFetcher {
     if (proxyUri == null ||
         !_isHttpScheme(proxyUri.scheme) ||
         proxyUri.host.isEmpty) {
+      debugPrint('ModuleDownloader: 代理前缀格式非法，拒绝 - $proxy');
       return null;
     }
 
@@ -236,10 +253,11 @@ class ModuleDownloader implements ModuleFetcher {
   }
 
   /// 单次尝试：手工跟重定向（每跳校验），成功则流式写入 [dest]。
-  Future<_AttemptStatus> _runAttempt(
+  Future<(_AttemptStatus, int)> _runAttempt(
     _RequestPlan plan,
     File dest,
     int limit,
+    int offset,
   ) async {
     final client = _clientFactory();
     try {
@@ -253,31 +271,42 @@ class ModuleDownloader implements ModuleFetcher {
         try {
           request = await client.getUrl(current).timeout(_timeout);
           request.followRedirects = false; // 手工逐跳校验
-        } on TimeoutException {
-          return _AttemptStatus.retryable;
-        } on SocketException {
-          return _AttemptStatus.retryable;
-        } on HttpException {
-          return _AttemptStatus.retryable;
-        } catch (_) {
-          return _AttemptStatus.fatal;
+          if (offset > 0) {
+            request.headers.set(HttpHeaders.rangeHeader, 'bytes=$offset-');
+          }
+        } on TimeoutException catch (e) {
+          debugPrint('ModuleDownloader: 请求超时 - $e');
+          return (_AttemptStatus.retryable, offset);
+        } on SocketException catch (e) {
+          debugPrint('ModuleDownloader: 套接字错误 - $e');
+          return (_AttemptStatus.retryable, offset);
+        } on HttpException catch (e) {
+          debugPrint('ModuleDownloader: HTTP 异常 - $e');
+          return (_AttemptStatus.retryable, offset);
+        } catch (e) {
+          debugPrint('ModuleDownloader: 请求致命错误 - $e');
+          return (_AttemptStatus.fatal, offset);
         }
 
         final HttpClientResponse response;
         try {
           response = await request.close().timeout(_timeout);
-        } on TimeoutException {
+        } on TimeoutException catch (e) {
           request.abort();
-          return _AttemptStatus.retryable;
-        } on SocketException {
+          debugPrint('ModuleDownloader: 响应超时 - $e');
+          return (_AttemptStatus.retryable, offset);
+        } on SocketException catch (e) {
           request.abort();
-          return _AttemptStatus.retryable;
-        } on HttpException {
+          debugPrint('ModuleDownloader: 响应套接字错误 - $e');
+          return (_AttemptStatus.retryable, offset);
+        } on HttpException catch (e) {
           request.abort();
-          return _AttemptStatus.retryable;
-        } catch (_) {
+          debugPrint('ModuleDownloader: 响应 HTTP 异常 - $e');
+          return (_AttemptStatus.retryable, offset);
+        } catch (e) {
           request.abort();
-          return _AttemptStatus.fatal;
+          debugPrint('ModuleDownloader: 响应致命错误 - $e');
+          return (_AttemptStatus.fatal, offset);
         }
 
         final code = response.statusCode;
@@ -285,28 +314,35 @@ class ModuleDownloader implements ModuleFetcher {
         if (_isRedirect(code)) {
           final location = response.headers.value(HttpHeaders.locationHeader);
           await _drainQuietly(response);
-          if (location == null || location.isEmpty) return _AttemptStatus.fatal;
-          if (hops >= _maxRedirects) return _AttemptStatus.fatal;
+          if (location == null || location.isEmpty) {
+            return (_AttemptStatus.fatal, offset);
+          }
+          if (hops >= _maxRedirects) return (_AttemptStatus.fatal, offset);
           final next = current.resolve(location);
           // 逐跳校验：重定向目标 host 必须在资产白名单内，否则拒绝。
-          if (!_isAllowed(next)) return _AttemptStatus.fatal;
+          if (!_isAllowed(next)) {
+            debugPrint('ModuleDownloader: 重定向目标不在白名单，拒绝 - $next');
+            return (_AttemptStatus.fatal, offset);
+          }
           current = next;
           hops++;
           continue;
         }
 
-        if (code == HttpStatus.ok) {
-          return _receiveToFile(response, dest, limit);
+        if (code == HttpStatus.ok || code == HttpStatus.partialContent) {
+          final startOffset = code == HttpStatus.partialContent ? offset : 0;
+          return _receiveToFile(response, dest, limit, startOffset);
         }
 
         await _drainQuietly(response);
+        debugPrint('ModuleDownloader: HTTP $code hop=$hops url=$current');
         if (code == HttpStatus.forbidden ||
             code == HttpStatus.requestTimeout ||
             code == HttpStatus.tooManyRequests ||
             code >= 500) {
-          return _AttemptStatus.retryable;
+          return (_AttemptStatus.retryable, offset);
         }
-        return _AttemptStatus.fatal;
+        return (_AttemptStatus.fatal, offset);
       }
     } finally {
       client.close(force: true);
@@ -314,38 +350,45 @@ class ModuleDownloader implements ModuleFetcher {
   }
 
   /// 流式落盘并强制大小上限；超限视为**致命**（不重试）。
-  Future<_AttemptStatus> _receiveToFile(
+  Future<(_AttemptStatus, int)> _receiveToFile(
     HttpClientResponse response,
     File dest,
     int limit,
+    int startOffset,
   ) async {
     final declared = response.contentLength;
-    if (declared > limit) {
+    if (declared > 0 && startOffset + declared > limit) {
       await _drainQuietly(response);
-      return _AttemptStatus.fatal;
+      return (_AttemptStatus.fatal, startOffset);
     }
 
-    final sink = dest.openWrite(mode: FileMode.write);
-    var received = 0;
+    final sink = dest.openWrite(
+      mode: startOffset > 0 ? FileMode.append : FileMode.write,
+    );
+    var received = startOffset;
     try {
       await for (final chunk in response.timeout(_timeout)) {
         received += chunk.length;
         if (received > limit) {
-          return _AttemptStatus.fatal;
+          return (_AttemptStatus.fatal, received);
         }
         sink.add(chunk);
       }
       await sink.flush();
       await sink.close();
-      return _AttemptStatus.success;
-    } on TimeoutException {
-      return _AttemptStatus.retryable;
-    } on SocketException {
-      return _AttemptStatus.retryable;
-    } on HttpException {
-      return _AttemptStatus.retryable;
-    } catch (_) {
-      return _AttemptStatus.fatal;
+      return (_AttemptStatus.success, received);
+    } on TimeoutException catch (e) {
+      debugPrint('ModuleDownloader: 落盘超时 - $e');
+      return (_AttemptStatus.retryable, received);
+    } on SocketException catch (e) {
+      debugPrint('ModuleDownloader: 落盘套接字错误 - $e');
+      return (_AttemptStatus.retryable, received);
+    } on HttpException catch (e) {
+      debugPrint('ModuleDownloader: 落盘 HTTP 异常 - $e');
+      return (_AttemptStatus.retryable, received);
+    } catch (e) {
+      debugPrint('ModuleDownloader: 落盘致命错误 - $e');
+      return (_AttemptStatus.fatal, received);
     } finally {
       try {
         await sink.close();

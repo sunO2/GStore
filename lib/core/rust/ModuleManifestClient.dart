@@ -132,6 +132,13 @@ class ModuleManifestClient implements ModuleManifestSource {
   static const String defaultReleasesUrl =
       'https://api.github.com/repos/sunO2/GStore/releases/latest';
 
+  /// 免 API 的稳定资产直链前缀（`releases/latest/download/<asset>`）。
+  ///
+  /// Release 资产表不可用（403 限流 / 离线 / 被拦截）时回退使用：清单正文有磁盘
+  /// 缓存而资产表仅在内存，缺此回退会「清单可读但下载必失败」。
+  static const String defaultDownloadsBaseUrl =
+      'https://github.com/sunO2/GStore/releases/latest/download';
+
   /// 清单缓存 TTL（24h）。
   static const Duration defaultTtl = Duration(hours: 24);
 
@@ -151,6 +158,7 @@ class ModuleManifestClient implements ModuleManifestSource {
   static const String cacheDirRelativePath = 'gstore_modules/_cache';
 
   final Uri _releasesUrl;
+  final String _downloadsBaseUrl;
   final HttpClient Function() _clientFactory;
   final Future<String> Function() _abiProvider;
   final Future<Directory> Function() _supportDirProvider;
@@ -163,6 +171,7 @@ class ModuleManifestClient implements ModuleManifestSource {
 
   ModuleManifestClient({
     Uri? releasesUrl,
+    String? downloadsBaseUrl,
     HttpClient Function()? clientFactory,
     Future<String> Function()? abiProvider,
     Future<Directory> Function()? supportDirProvider,
@@ -170,6 +179,7 @@ class ModuleManifestClient implements ModuleManifestSource {
     Duration ttl = defaultTtl,
     Duration timeout = defaultTimeout,
   })  : _releasesUrl = releasesUrl ?? Uri.parse(defaultReleasesUrl),
+        _downloadsBaseUrl = downloadsBaseUrl ?? defaultDownloadsBaseUrl,
         _clientFactory = clientFactory ?? HttpClient.new,
         _abiProvider =
             abiProvider ?? (() => RustModuleLoader.instance.deviceAbi()),
@@ -351,14 +361,24 @@ class ModuleManifestClient implements ModuleManifestSource {
   }) async {
     try {
       final manifest = await load(forceRefresh: forceRefresh);
-      if (manifest == null) return null;
+      if (manifest == null) {
+        debugPrint('ModuleManifestClient: 定位 $moduleName 失败：清单不可用');
+        return null;
+      }
 
       final entry = manifest.entry(moduleName);
-      if (entry == null) return null;
+      if (entry == null) {
+        debugPrint('ModuleManifestClient: 定位 $moduleName 失败：清单无该模块');
+        return null;
+      }
 
       final abi = await _abiProvider();
       final abiAsset = entry.forAbi(abi);
-      if (abiAsset == null) return null;
+      if (abiAsset == null) {
+        debugPrint('ModuleManifestClient: 定位 $moduleName 失败：清单无 ABI $abi'
+            '（可用 ${entry.abi.keys.toList()}）');
+        return null;
+      }
 
       var release = await _resolveRelease(force: false);
       var found = release?.assets[abiAsset.asset];
@@ -367,7 +387,21 @@ class ModuleManifestClient implements ModuleManifestSource {
         _release = null;
         release = await _resolveRelease(force: true);
         found = release?.assets[abiAsset.asset];
-        if (found == null) return null;
+      }
+      if (found == null) {
+        if (_downloadsBaseUrl.isEmpty) return null;
+        final fallback =
+            '$_downloadsBaseUrl/${Uri.encodeComponent(abiAsset.asset)}';
+        debugPrint('ModuleManifestClient: 定位 $moduleName 资产表未命中，'
+            '回退稳定直链 $fallback');
+        return ModuleAssetLocation(
+          url: fallback,
+          asset: abiAsset.asset,
+          sha256: abiAsset.sha256,
+          size: abiAsset.size,
+          version: entry.version,
+          abi: abi,
+        );
       }
 
       return ModuleAssetLocation(

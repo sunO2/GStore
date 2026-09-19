@@ -102,6 +102,22 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
     return null;
   }
 
+  /// 幂等初始化：并发复用同一 Future；失败后清除缓存以便重试。
+  ///
+  /// 启动路径不 await（避免首帧黑屏），需要就绪状态的调用方按需 await。
+  Future<void> ensureInitialized() {
+    final existing = _initFuture;
+    if (existing != null) return existing;
+    final future = initialize();
+    _initFuture = future;
+    return future.catchError((Object e) {
+      _initFuture = null;
+      throw e;
+    });
+  }
+
+  Future<void>? _initFuture;
+
   /// 初始化管理器
   Future<void> initialize() async {
     try {
