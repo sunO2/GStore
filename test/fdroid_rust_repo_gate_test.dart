@@ -85,6 +85,74 @@ void main() {
       expect(factoryCalls, 2, reason: '缓存命中不再创建实例');
     });
 
+    test('未安装：instanceForSource 走 on-use 安装（allowDownload=true），非启动的 prepareExisting', () async {
+      final handle = _FakeModuleHandle();
+      final allowFlags = <bool>[];
+      final modules = <String>[];
+      var factoryCalls = 0;
+
+      bootstrap.debugConfigure(
+        ensureOverride: (
+          String module, {
+          required bool allowDownload,
+          ModuleProgressCallback? onProgress,
+        }) async {
+          modules.add(module);
+          allowFlags.add(allowDownload);
+          return true;
+        },
+        loadOverride: (String module) async => handle,
+        delayOverride: (Duration duration) async {},
+      );
+      FdroidRustRepoManager.debugInstanceFactory = (ModuleHandle h) async {
+        factoryCalls++;
+        return _FakeInstance();
+      };
+
+      final source = _source('a', 'https://a.example/repo');
+      final inst = await FdroidRustRepoManager.instanceForSource(source);
+
+      expect(inst, isNotNull, reason: '首次真实使用按需安装后应返回实例');
+      expect(modules, <String>['repo'], reason: 'on-use 路径确保 repo');
+      expect(allowFlags, <bool>[true],
+          reason: '首次真实使用允许下载（与 initialize 的 allowDownload=false 相反）');
+      expect(factoryCalls, 1, reason: '安装完成后创建一次实例');
+    });
+
+    test('已安装：instanceForSource 命中门缓存，行为不变（零新增 ensure/工厂）', () async {
+      final handle = _FakeModuleHandle();
+      var ensureCalls = 0;
+      var factoryCalls = 0;
+
+      bootstrap.debugConfigure(
+        ensureOverride: (
+          String module, {
+          required bool allowDownload,
+          ModuleProgressCallback? onProgress,
+        }) async {
+          ensureCalls++;
+          return true;
+        },
+        loadOverride: (String module) async => handle,
+        delayOverride: (Duration duration) async {},
+      );
+      FdroidRustRepoManager.debugInstanceFactory = (ModuleHandle h) async {
+        factoryCalls++;
+        return _FakeInstance();
+      };
+
+      final source = _source('a', 'https://a.example/repo');
+      final first = await FdroidRustRepoManager.instanceForSource(source);
+      expect(ensureCalls, 1, reason: '首次安装恰好一次 ensure');
+      expect(factoryCalls, 1, reason: '首次安装创建一次实例');
+
+      final second = await FdroidRustRepoManager.instanceForSource(source);
+      expect(identical(second, first), isTrue,
+          reason: '已安装后复用门缓存实例：行为不变');
+      expect(ensureCalls, 1, reason: '缓存命中不再 ensure');
+      expect(factoryCalls, 1, reason: '缓存命中不再创建实例');
+    });
+
     test('initialize 仅 prepareExisting：allowDownload=false、不建实例、不下载', () async {
       manager.debugConfigure(readyOverride: () async {});
 

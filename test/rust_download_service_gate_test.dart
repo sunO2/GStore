@@ -119,6 +119,51 @@ void main() {
       expect(ensureCalls, 1, reason: '重复调用不再触发 ensure');
     });
 
+    test('未安装：安装期并发 download 调用等待同一次门获取，就绪后各自执行一次', () async {
+      final gate = Completer<bool>();
+      var ensureCalls = 0;
+      var factoryCalls = 0;
+      final instance = _FakeInstance(_startResponse());
+
+      bootstrap.debugConfigure(
+        ensureOverride: (
+          String module, {
+          required bool allowDownload,
+          ModuleProgressCallback? onProgress,
+        }) {
+          ensureCalls++;
+          expect(module, 'download', reason: 'download 走 download 模块');
+          return gate.future; // 安装挂起：模拟仍在下载
+        },
+        loadOverride: (String module) async => _FakeHandle(),
+        factoryOverride: (ModuleHandle handle) async {
+          factoryCalls++;
+          return instance;
+        },
+      );
+
+      final svc = RustDownloadService.instance;
+
+      // 模块尚未安装（ensure 挂起）：并发发起两个真实变更调用。
+      final f1 = _startDownload(svc);
+      final f2 = _startDownload(svc);
+      await pumpEventQueue();
+
+      expect(ensureCalls, 1, reason: '并发调用在 ensure 阶段即单飞去重');
+      expect(factoryCalls, 0, reason: '安装未完成前不得创建实例');
+      expect(instance.callCalls, 0, reason: '实例未就绪前不得执行任务');
+
+      gate.complete(true);
+      final tasks = await Future.wait(<Future<DownloadTask>>[f1, f2]);
+
+      expect(tasks.map((t) => t.id), <int>[7, 7], reason: '两个等待调用各自完成');
+      expect(instance.methods, <String>['download.start', 'download.start'],
+          reason: '就绪后每个等待的调用各执行一次');
+      expect(ensureCalls, 1, reason: '两个调用共享一次安装确保');
+      expect(factoryCalls, 1, reason: '两个调用共享一次实例创建');
+      expect(instance.callCalls, 2, reason: '每个等待的调用各执行一次任务');
+    });
+
     test('两个并发 isAvailable 仅触发一次门获取（单飞）', () async {
       final gate = Completer<bool>();
       var ensureCalls = 0;

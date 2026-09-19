@@ -96,6 +96,47 @@ void main() {
       expect(instance.methods, <String>['scan_dex_classes']);
     });
 
+    test('已安装（门缓存实例）：多次调用复用实例、不新增 ensure，行为与未安装路径一致', () async {
+      final instance = _FakeRustModuleInstance(_dexClassesJson(<String>['a', 'b']));
+      var ensureCalls = 0;
+
+      bootstrap.debugConfigure(
+        ensureOverride: (
+          String module, {
+          required bool allowDownload,
+          ModuleProgressCallback? onProgress,
+        }) async {
+          ensureCalls++;
+          expect(module, 'analyzer', reason: 'analyzer 走 analyzer 模块');
+          return true;
+        },
+        loadOverride: (String module) async => _FakeModuleHandle(),
+        factoryOverride: (ModuleHandle handle) async => instance,
+      );
+
+      // 预热：模拟模块已安装完成、门已缓存 ready 实例。
+      final warmed = await bootstrap.acquire('analyzer');
+      expect(identical(warmed, instance), isTrue, reason: '预热得到门缓存实例');
+      expect(ensureCalls, 1, reason: '预热安装恰好一次 ensure');
+
+      // 已安装后的多次调用：全部经门缓存实例执行，after 阶段不再触发 ensure。
+      for (var i = 0; i < 3; i++) {
+        final result = await AnalyzerRustDecoder.scanDexClasses(
+          '/tmp/fake.apk',
+          <String>['a'],
+        );
+        expect(result, <String>['a', 'b'], reason: '已安装后行为不变：仍返回解码值');
+      }
+
+      expect(ensureCalls, 1, reason: '缓存命中不再 ensure');
+      expect(instance.callCalls, 3, reason: '每次调用各执行一次任务，共享同一实例');
+      expect(instance.methods, <String>[
+        'scan_dex_classes',
+        'scan_dex_classes',
+        'scan_dex_classes',
+      ]);
+    });
+
     test('获取失败：所有公开方法返回 null 且无异常外泄', () async {
       var ensureCalls = 0;
 

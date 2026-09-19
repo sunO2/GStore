@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -20,10 +21,13 @@ class _FakeInstance implements RustModuleInstance {
   _FakeInstance(this.responseBytes);
 
   final Uint8List responseBytes;
+  int callCalls = 0;
 
   @override
-  Future<Uint8List> callModule(String method, [Uint8List? payload]) async =>
-      responseBytes;
+  Future<Uint8List> callModule(String method, [Uint8List? payload]) async {
+    callCalls++;
+    return responseBytes;
+  }
 
   @override
   dynamic noSuchMethod(Invocation invocation) =>
@@ -92,6 +96,52 @@ void main() {
       expect(result.isValid, isTrue);
     }
     expect(ensureCalls, 1, reason: 'N 帧复用门缓存实例：ensure 不得新增');
+  });
+
+  test('未安装/安装中：首帧即发即忘触发一次 ensure 并返回 null，安装期帧合并去重，就绪后解码', () async {
+    var ensureCalls = 0;
+    final ensureGate = Completer<bool>();
+    final handle = _FakeHandle();
+    final instance = _FakeInstance(_okDecodeResponse('hello'));
+
+    bootstrap.debugConfigure(
+      ensureOverride: (
+        String module, {
+        required bool allowDownload,
+        ModuleProgressCallback? onProgress,
+      }) {
+        ensureCalls++;
+        return ensureGate.future; // 安装挂起：模拟仍在下载
+      },
+      loadOverride: (String module) async => handle,
+      factoryOverride: (ModuleHandle h) async => instance,
+      delayOverride: (Duration d) async {},
+    );
+
+    final luma = Uint8List.fromList(<int>[3]);
+
+    // 首帧：未安装 → 触发一次「即发即忘」安装，立即返回 null（不阻塞相机）。
+    final first = await QrRustDecoder.decodeLuma(luma, 1, 1);
+    expect(first, isNull, reason: '未安装帧立即返回 null，不阻塞相机循环');
+    await pumpEventQueue();
+    expect(ensureCalls, 1, reason: '首帧触发一次即发即忘 ensure');
+    expect(instance.callCalls, 0, reason: '安装未完成前不得执行解码任务');
+
+    // 安装进行中（downloading）：后续帧被合并为最新、返回 null，不重复触发 ensure。
+    for (var i = 0; i < 3; i++) {
+      final r = await QrRustDecoder.decodeLuma(luma, 1, 1);
+      expect(r, isNull, reason: '安装期间帧返回 null（帧合并为最新）');
+      await pumpEventQueue();
+    }
+    expect(ensureCalls, 1, reason: '安装期间帧合并：不得重复触发 ensure');
+
+    // 安装完成 → 门缓存 ready；同一解码器订阅应解出下一帧。
+    ensureGate.complete(true);
+    await pumpEventQueue();
+    final result = await QrRustDecoder.decodeLuma(luma, 1, 1);
+    expect(result, isNotNull, reason: '就绪后应解码成功');
+    expect(result!.text, 'hello');
+    expect(ensureCalls, 1, reason: '就绪后复用门缓存实例：ensure 仍只有一次');
   });
 
   test('ensure 失败：全帧返回 null、不抛异常、后续帧重试且不粘滞', () async {

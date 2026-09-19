@@ -157,6 +157,37 @@ void main() {
       expect(ensureCalls, 1, reason: '缓存命中不新增 ensure');
     });
 
+    test('首个真实调用前不确认：仅查询状态零确认，capabilities 才确认并安装一次', () async {
+      final handle = _FakeModuleHandle(_okJsonEnvelope(<String, dynamic>{'ok': true}));
+      var confirmCalls = 0;
+      var ensureCalls = 0;
+
+      configureManager(handle);
+      configureBootstrap(
+        handle: handle,
+        confirm: (String module) async {
+          confirmCalls++;
+          return true;
+        },
+        onEnsure: () => ensureCalls++,
+      );
+
+      // 仅构造/查询状态、尚未发生真实调用：绝不确认、绝不安装。
+      expect(engine.available, isFalse, reason: '未使用前不可用');
+      expect(engine.hasModule, isFalse, reason: '未使用前无实例');
+      expect(confirmCalls, 0, reason: '首个真实调用前不得确认');
+      expect(ensureCalls, 0, reason: '首个真实调用前不得安装');
+      expect(handle.createCalls, 0, reason: '首个真实调用前不得创建实例');
+
+      // 首个真实调用：此时才确认一次并安装。
+      final caps = await engine.capabilities();
+      expect(caps['ok'], isTrue, reason: '确认通过后首个调用成功');
+      expect(confirmCalls, 1, reason: '首个真实调用恰好确认一次');
+      expect(ensureCalls, 1, reason: '确认通过后恰好安装一次');
+      expect(engine.available, isTrue, reason: '安装后可用');
+      expect(engine.hasModule, isTrue, reason: '安装后持有实例');
+    });
+
     test('确认拒绝：ensureReady=false、_call 抛既有 StateError、后续接受仍会安装', () async {
       final handle = _FakeModuleHandle(_okJsonEnvelope(<String, dynamic>{'ok': true}));
       configureManager(handle);
