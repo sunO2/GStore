@@ -231,4 +231,165 @@ void main() {
       expect(delays, isEmpty, reason: 'ModuleInstallDeclinedException 不进入退避');
     });
   });
+
+  group('state-stream', () {
+    test('(a) 进度注入 [0.05,0.7,1.0]：downloading 非递减 → initializing → ready', () async {
+      configure(
+        ensure: (m, {required allowDownload, onProgress}) async {
+          onProgress?.call(0.05);
+          onProgress?.call(0.7);
+          onProgress?.call(1.0);
+          return true;
+        },
+      );
+
+      final states = <ModuleBootstrapState>[];
+      final sub = bootstrap.watch('x').listen(states.add);
+      await pumpEventQueue();
+
+      final instance = await bootstrap.acquire('x');
+      await pumpEventQueue();
+      await sub.cancel();
+
+      expect(instance, isNotNull);
+
+      final progress = states
+          .where((s) => s.phase == ModuleBootstrapPhase.downloading)
+          .where((s) => s.progress != null)
+          .map((s) => s.progress!)
+          .toList();
+      expect(progress, <double>[0.05, 0.7, 1.0],
+          reason: '每个 fraction 各发布一次 downloading 状态');
+      for (var i = 1; i < progress.length; i++) {
+        expect(progress[i] >= progress[i - 1], isTrue,
+            reason: '进度必须单调不减');
+      }
+
+      expect(
+        states.map((s) => s.phase),
+        containsAllInOrder(<ModuleBootstrapPhase>[
+          ModuleBootstrapPhase.downloading,
+          ModuleBootstrapPhase.initializing,
+          ModuleBootstrapPhase.ready,
+        ]),
+      );
+    });
+
+    test('(a2) 乱序 fraction 被忽略：[0.05,0.7,0.3,1.0] → [0.05,0.7,1.0]', () async {
+      configure(
+        ensure: (m, {required allowDownload, onProgress}) async {
+          onProgress?.call(0.05);
+          onProgress?.call(0.7);
+          onProgress?.call(0.3); // 回退：应被忽略
+          onProgress?.call(1.0);
+          return true;
+        },
+      );
+
+      final states = <ModuleBootstrapState>[];
+      final sub = bootstrap.watch('x').listen(states.add);
+      await pumpEventQueue();
+
+      await bootstrap.acquire('x');
+      await pumpEventQueue();
+      await sub.cancel();
+
+      final progress = states
+          .where((s) => s.phase == ModuleBootstrapPhase.downloading)
+          .where((s) => s.progress != null)
+          .map((s) => s.progress!)
+          .toList();
+      expect(progress, <double>[0.05, 0.7, 1.0],
+          reason: '小于上次已发布值的 fraction 必须被丢弃');
+    });
+
+    test('(b) ensure 失败：最后状态为 failed(error != null)，从未 ready', () async {
+      configure(
+        ensure: (m, {required allowDownload, onProgress}) async => false,
+      );
+
+      final states = <ModuleBootstrapState>[];
+      final sub = bootstrap.watch('x').listen(states.add);
+      await pumpEventQueue();
+
+      await expectLater(
+        bootstrap.acquire('x', baseDelay: const Duration(milliseconds: 5)),
+        throwsA(isA<ModuleInstallFailedException>()),
+      );
+      await pumpEventQueue();
+      await sub.cancel();
+
+      expect(states.any((s) => s.phase == ModuleBootstrapPhase.ready), isFalse,
+          reason: '失败过程绝不能发布 ready');
+      expect(states.last.phase, ModuleBootstrapPhase.failed);
+      expect(states.last.error, isNotNull,
+          reason: 'failed 状态必须携带非空错误');
+
+      final snapshot = await bootstrap.states.first;
+      final entry = snapshot.firstWhere((s) => s.module == 'x');
+      expect(entry.phase, ModuleBootstrapPhase.failed);
+      expect(entry.error, isNotNull);
+    });
+
+    test('(c) watch 已 ready 缓存模块：立即收到 ready', () async {
+      configure(
+        ensure: (m, {required allowDownload, onProgress}) async => true,
+      );
+      await bootstrap.acquire('x');
+
+      final states = <ModuleBootstrapState>[];
+      final sub = bootstrap.watch('x').listen(states.add);
+      await pumpEventQueue();
+      await sub.cancel();
+
+      expect(states, isNotEmpty, reason: 'watch 应先发布缓存状态');
+      expect(states.first.phase, ModuleBootstrapPhase.ready);
+    });
+
+    test('(d) states 每模块仅聚合一条最新状态', () async {
+      configure(
+        ensure: (m, {required allowDownload, onProgress}) async => true,
+      );
+      await Future.wait(<Future<RustModuleInstance>>[
+        bootstrap.acquire('x'),
+        bootstrap.acquire('y'),
+      ]);
+
+      final snapshot = await bootstrap.states.first;
+      expect(snapshot.map((s) => s.module).toList(), <String>['x', 'y']);
+      expect(snapshot.where((s) => s.module == 'x').length, 1);
+      expect(snapshot.where((s) => s.module == 'y').length, 1);
+      expect(
+        snapshot.every((s) => s.phase == ModuleBootstrapPhase.ready),
+        isTrue,
+      );
+    });
+
+    test('(e) 不同模块互不串流', () async {
+      configure(
+        ensure: (m, {required allowDownload, onProgress}) async => true,
+      );
+
+      final xStates = <ModuleBootstrapState>[];
+      final yStates = <ModuleBootstrapState>[];
+      final xSub = bootstrap.watch('x').listen(xStates.add);
+      final ySub = bootstrap.watch('y').listen(yStates.add);
+      await pumpEventQueue();
+
+      await Future.wait(<Future<RustModuleInstance>>[
+        bootstrap.acquire('x'),
+        bootstrap.acquire('y'),
+      ]);
+      await pumpEventQueue();
+      await xSub.cancel();
+      await ySub.cancel();
+
+      expect(xStates, isNotEmpty);
+      expect(yStates, isNotEmpty);
+      expect(xStates.every((s) => s.module == 'x'), isTrue,
+          reason: 'watch(x) 只会发出 x 的状态');
+      expect(yStates.every((s) => s.module == 'y'), isTrue,
+          reason: 'watch(y) 只会发出 y 的状态');
+    });
+  });
 }

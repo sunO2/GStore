@@ -173,8 +173,14 @@ class ModuleBootstrap {
   }
 
   /// 订阅某模块的状态流（广播；仅该模块的状态）。
-  Stream<ModuleBootstrapState> watch(String module) =>
-      _stateController.stream.where((state) => state.module == module);
+  ///
+  /// 订阅时**先发布该模块的当前缓存状态**（若存在），因此监听一个已 `ready`
+  /// 的模块会立即收到 `ready`；随后再转发后续的广播状态事件。
+  Stream<ModuleBootstrapState> watch(String module) async* {
+    final cached = _lastStates[module];
+    if (cached != null) yield cached;
+    yield* _stateController.stream.where((state) => state.module == module);
+  }
 
   /// 获取（必要时安装并创建）模块实例。
   ///
@@ -334,11 +340,29 @@ class ModuleBootstrap {
         module: module,
         phase: ModuleBootstrapPhase.downloading,
       ));
-      final ok = await _invokeEnsure(module, allowDownload: true);
+      // 下载进度单调不减：忽略任何小于上一次已发布值的 fraction。
+      double? lastProgress;
+      void reportProgress(double fraction) {
+        final previous = lastProgress;
+        if (previous != null && fraction < previous) return;
+        lastProgress = fraction;
+        _emit(ModuleBootstrapState(
+          module: module,
+          phase: ModuleBootstrapPhase.downloading,
+          progress: fraction,
+        ));
+      }
+
+      final ok = await _invokeEnsure(
+        module,
+        allowDownload: true,
+        onProgress: reportProgress,
+      );
       if (!ok) {
         _emit(ModuleBootstrapState(
           module: module,
           phase: ModuleBootstrapPhase.failed,
+          error: StateError('模块 $module 安装/确保失败'),
         ));
       }
       return ok;
@@ -397,12 +421,14 @@ class ModuleBootstrap {
           }
         } else {
           if (attempt >= maxAttempts) {
+            final error = StateError('模块 $module 安装/确保失败');
             _emit(ModuleBootstrapState(
               module: module,
               phase: ModuleBootstrapPhase.failed,
+              error: error,
               attempt: attempt,
             ));
-            throw ModuleInstallFailedException(module, null);
+            throw ModuleInstallFailedException(module, error);
           }
           await _backoff(attempt, baseDelay);
         }
@@ -437,8 +463,11 @@ class ModuleBootstrap {
         onProgress: onProgress,
       );
     }
-    return RustModuleLoader.instance
-        .ensureModule(module, allowDownload: allowDownload);
+    return RustModuleLoader.instance.ensureModule(
+      module,
+      allowDownload: allowDownload,
+      onProgress: onProgress,
+    );
   }
 
   /// 加载模块句柄（尊重 [_loadOverride] 接缝；生产委托 [RustModuleManager]）。
