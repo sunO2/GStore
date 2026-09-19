@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/rust/ModuleBootstrap.dart';
 import 'package:gstore/core/rust/ModuleLoader.dart' show ModuleProgressCallback;
@@ -138,6 +140,95 @@ void main() {
       expect(ensureCalls, 1, reason: '已缓存实例不应再次 ensure');
       expect(factoryCalls, 1, reason: '已缓存实例不应再次创建');
       expect(identical(first, second), isTrue);
+    });
+  });
+
+  group('retry', () {
+    test('(a) ensure 失败两次后成功：3 次 ensure，退避 [base, 2*base]，返回实例', () async {
+      const base = Duration(milliseconds: 10);
+      configure(
+        ensure: (m, {required allowDownload, onProgress}) async =>
+            ensureCalls >= 3,
+      );
+
+      final instance = await bootstrap.acquire('x', baseDelay: base);
+
+      expect(instance, isNotNull, reason: '第 3 次尝试成功后应返回实例');
+      expect(ensureCalls, 3, reason: '两次失败 + 一次成功 = 3 次 ensure');
+      expect(
+        delays,
+        <Duration>[base, base * 2],
+        reason: '退避 = baseDelay * 2^(attempt-1)',
+      );
+      expect(factoryCalls, 1);
+    });
+
+    test('(b) 全部尝试失败：3 次 ensure + ModuleInstallFailedException', () async {
+      configure(
+        ensure: (m, {required allowDownload, onProgress}) async => false,
+      );
+
+      await expectLater(
+        bootstrap.acquire('x', baseDelay: const Duration(milliseconds: 5)),
+        throwsA(isA<ModuleInstallFailedException>()),
+      );
+
+      expect(ensureCalls, 3);
+      expect(delays.length, 2, reason: '3 次尝试之间只有 2 次退避');
+      expect(factoryCalls, 0, reason: 'ensure 从未成功，不应创建实例');
+    });
+
+    test('(c) 失败 settle 后新 acquire：重新 3 次尝试（不粘滞）', () async {
+      configure(
+        ensure: (m, {required allowDownload, onProgress}) async => false,
+      );
+
+      await expectLater(
+        bootstrap.acquire('x'),
+        throwsA(isA<ModuleInstallFailedException>()),
+      );
+      expect(ensureCalls, 3, reason: '首次耗尽 3 次尝试后失败');
+
+      await expectLater(
+        bootstrap.acquire('x'),
+        throwsA(isA<ModuleInstallFailedException>()),
+      );
+      expect(ensureCalls, 6, reason: '失败不缓存：新的 acquire 重新尝试 3 次');
+    });
+
+    test('(d) 失败在途期间加入的 acquire 共享同一失败，不新增尝试', () async {
+      final gate = Completer<bool>();
+      configure(
+        ensure: (m, {required allowDownload, onProgress}) async => gate.future,
+      );
+
+      final first = bootstrap.acquire('x');
+      final second = bootstrap.acquire('x');
+      expect(identical(first, second), isTrue, reason: '同 key 复用同一在途 future');
+      expect(ensureCalls, 1, reason: '第二次 acquire 不触发新的 ensure');
+
+      final joined1 = first.then<Object?>((v) => v, onError: (Object e) => e);
+      final joined2 = second.then<Object?>((v) => v, onError: (Object e) => e);
+      gate.complete(false);
+
+      expect(await joined1, isA<ModuleInstallFailedException>());
+      expect(await joined2, isA<ModuleInstallFailedException>());
+      expect(ensureCalls, 3, reason: '总尝试次数仍为 3，join 者不新增尝试');
+    });
+
+    test('(e) 确认拒绝：不触发 ensure、不做任何退避', () async {
+      configure(
+        ensure: (m, {required allowDownload, onProgress}) async => true,
+        confirm: (m) async => false,
+      );
+
+      await expectLater(
+        bootstrap.acquire('x', policy: ModuleInstallPolicy.confirm),
+        throwsA(isA<ModuleInstallDeclinedException>()),
+      );
+
+      expect(ensureCalls, 0, reason: '拒绝发生在 ensure 之前');
+      expect(delays, isEmpty, reason: 'ModuleInstallDeclinedException 不进入退避');
     });
   });
 }
