@@ -12,7 +12,7 @@ import 'package:gstore/core/config/config_manager.dart';
 import 'package:gstore/core/config/providers/download_config_provider.dart';
 import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
-import 'package:gstore/core/rust/ModuleLoader.dart';
+import 'package:gstore/core/rust/ModuleBootstrap.dart';
 import 'package:gstore/core/rust/ModuleManager.dart';
 
 /// [IDownloadService] 的 **Rust 内核实现**：把任务管理与传输交给
@@ -34,30 +34,31 @@ class RustDownloadService implements IDownloadService {
   /// 模块名（对应 `libgstore_mod_download.so`）
   static const String moduleName = 'download';
 
-  RustModuleInstance? _inst;
-
   /// 进度/终态事件类型（内核 emit_event 的 type）
   static const String _evProgress = 'download.progress';
   static const String _evDone = 'download.done';
 
-  /// 确保模块挂载 + 实例化（幂等，缓存在本类）
+  /// 确保模块经门自举并取得实例（幂等；缓存/单飞由 [ModuleBootstrap] 门持有）。
+  ///
+  /// [isAvailable] 与所有 `_invoke` 共用此路径：首次真实使用即触发一次门的
+  /// 安装确保（on-use install），并发调用由门的两级单飞去重；失败抛出
+  /// [StateError]（download 模块不可用）。
   Future<RustModuleInstance> _ensureInstance() async {
-    final cached = _inst;
-    if (cached != null) return cached;
-
-    final ok = await RustModuleLoader.instance.ensureModule(moduleName);
-    if (!ok) {
+    try {
+      return await ModuleBootstrap.instance.acquire(
+        moduleName,
+        factory: (handle) =>
+            RustModuleInstance.createWithContext(moduleName, handle),
+      );
+    } on ModuleInstallFailedException {
       throw StateError('RustDownloadService: download 模块不可用');
     }
-    final handle = await RustModuleManager.instance.loadModule(moduleName);
-    // 不传 dbPath：内核经 ModuleContext 从宿主拿到 data_dir/db_path
-    final inst = await RustModuleInstance.createWithContext(moduleName, handle);
-    _inst = inst;
-    appLog.info('RustDownloadService: download 内核实例就绪');
-    return inst;
   }
 
-  /// 模块是否可用（面板可据此决定是否启用新内核；不可用时不抛错）
+  /// 模块是否可用（面板可据此决定是否启用新内核；不可用时不抛错）。
+  ///
+  /// 同时是**首次真实使用**的安装触发器：内部经门获取实例，首次调用会触发
+  /// 一次安装确保（并发调用由门单飞去重）。
   Future<bool> get isAvailable async {
     try {
       await _ensureInstance();
