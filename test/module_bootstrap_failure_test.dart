@@ -162,11 +162,21 @@ void main() {
           reason: '超时后 instance 单飞条目应被释放');
       expect(ensureCalls, 1);
 
-      // 下一次调用复用仍在途的孤儿底层 ensure（`timeout` 不取消底层），
-      // 在已耗尽的整体期限内立即返回 false——不再新起第二个并发安装。
+      // 超时即意味着该孤儿的整体期限已经耗尽（deadline = 启动 + _stepTimeout），
+      // 因此下一次调用走**驱逐**分支：把过期孤儿标记 settled、移出 `_pendingEnsure`，
+      // 并新起一次带新 deadline/代次的底层安装（c28619e 语义）——而不是复用已过期
+      // 的孤儿。否则失败会粘滞，模块将永久不可安装。
       final retried = await bootstrap.ensureOnly('x');
-      expect(retried, isFalse, reason: 'ensure 仍挂起，但重试应在期限内返回 false');
-      expect(ensureCalls, 1, reason: '重试复用孤儿底层 ensure，不得再次调用 ensureModule');
+      expect(retried, isFalse, reason: '新尝试同样挂起，应在期限内返回 false');
+      expect(ensureCalls, 2,
+          reason: '过期孤儿必须被驱逐：重试应重新调用 ensureModule，而非复用已超期孤儿');
+      expect(bootstrap.debugPendingEnsureCount, 1, reason: '新底层尝试应取代被驱逐的过期孤儿');
+      // 驱逐后重试仍发布终态 failed，且单飞条目不得残留。
+      expect(states.last.phase, ModuleBootstrapPhase.failed);
+      expect(bootstrap.debugEnsureInFlightCount, 0,
+          reason: '重试完成后 ensure 单飞条目仍应被释放');
+      expect(bootstrap.debugInstanceInFlightCount, 0,
+          reason: '重试完成后 instance 单飞条目仍应被释放');
 
       await sub.cancel();
     },
