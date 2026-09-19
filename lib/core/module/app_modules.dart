@@ -105,13 +105,16 @@ class DownloadModule extends AppModule {
     final config = context.config;
     config?.registerModule(AppCoreConfigModule());
     final manager = ModuleManager.instance;
-    // 绑定哪个下载内核由 DownloadCoreConfig 决定：默认 Dart（既有行为），
-    // 可用 --dart-define=DOWNLOAD_CORE_RUST=true 或运行时配置 download.core 切到 Rust 内核。
+    // 绑定哪个下载内核由 DownloadCoreConfig 决定：resolve 现返回**惰性路由**
+    // （LazyDownloadService），启动期不探测内核，首次变更类调用才解析 Rust；
+    // 显式配置 download.core=dart 时仍直接返回 Dart 实现（硬回退，可对比/排障）。
     final dartImpl = manager.require<DownloadManager>();
-    final impl = await DownloadCoreConfig.resolve(dartImpl);
-    context.bindService?.call(IDownloadService, impl);
-    // 通知栏 + 自动安装由全局任务流统一驱动（两种内核都覆盖）
-    DownloadTaskWatcher.instance.start(impl);
+    final lazyService = await DownloadCoreConfig.resolve(dartImpl);
+    context.bindService?.call(IDownloadService, lazyService);
+    // 只绑定一次：lazyService.watchAll 是"先 Dart、解析后原地切 Rust"的单条长期流，
+    // 解析完成后同一订阅换源；DownloadTaskWatcher.start 对同一实现重入为空操作，
+    // 因此不会二次绑定、不会清空"已发开始通知"标记。通知与自动安装对两种内核都生效。
+    DownloadTaskWatcher.instance.start(lazyService);
   }
 
   @override

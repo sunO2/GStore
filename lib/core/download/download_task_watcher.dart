@@ -21,13 +21,38 @@ class DownloadTaskWatcher {
 
   static final DownloadTaskWatcher instance = DownloadTaskWatcher._();
 
+  /// 测试专用：另建独立实例，避免单例状态在用例间串扰。
+  @visibleForTesting
+  DownloadTaskWatcher.debug();
+
   StreamSubscription<DownloadTask>? _sub;
+
+  /// 当前绑定的实现。用于识别"重复绑定同一实现"（见 [start]）。
+  IDownloadService? _service;
 
   /// 已经发过"开始"通知的任务（避免每条进度都重建通知）
   final Set<int> _started = {};
 
-  /// 绑定到某个下载实现。重复调用会替换订阅。
+  /// 测试专用：实际建立订阅的次数（证明解析换源后不重绑）。
+  @visibleForTesting
+  int debugStartCount = 0;
+
+  /// 测试专用：当前已发过"开始"通知的任务 id 快照（证明未被 `clear`）。
+  @visibleForTesting
+  Set<int> get debugStartedIds => Set<int>.unmodifiable(_started);
+
+  /// 绑定到某个下载实现。
+  ///
+  /// [LazyDownloadService.watchAll] 是"先 Dart、解析后原地切 Rust"的**单条长期流**，
+  /// 所以同一个实现重复调用 [start] 是空操作——既不重订阅，也不清空已发过的
+  /// "开始"通知标记；只有换成**另一个**实现时才替换订阅（模块真正重绑内核的场景）。
   void start(IDownloadService service) {
+    if (identical(_service, service) && _sub != null) {
+      debugPrint('DownloadTaskWatcher: 同一实现已订阅，跳过重绑');
+      return;
+    }
+    debugStartCount++;
+    _service = service;
     _sub?.cancel();
     _started.clear();
     _sub = service.watchAll().listen(
@@ -40,6 +65,7 @@ class DownloadTaskWatcher {
   void dispose() {
     _sub?.cancel();
     _sub = null;
+    _service = null;
   }
 
   void _onUpdate(DownloadTask task) {
