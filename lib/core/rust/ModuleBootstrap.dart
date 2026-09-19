@@ -389,6 +389,7 @@ class ModuleBootstrap {
     _delayOverride = null;
     _confirmHandler = null;
     _stepTimeout = defaultStepTimeout;
+    _ensureGenerationSeq = 0;
     _ensureInFlight.clear();
     _pendingEnsure.clear();
     _instanceInFlight.clear();
@@ -469,12 +470,27 @@ class ModuleBootstrap {
       }
       var accepted = false;
       try {
-        accepted = await handler(module);
+        accepted = await handler(module).timeout(_stepTimeout);
+      } on TimeoutException catch (error, stackTrace) {
+        // 挂起的确认处理器：用同一整体期限兜底。超时视作**非接受**（失败，非拒绝），
+        // 发布终态 failed 后正常返回，使单飞条目被释放、后续调用可重试；绝不让一个
+        // 永不返回的确认处理器永久污染单飞。
+        debugPrint(
+          'ModuleBootstrap: 模块 "$module" 的确认处理器超时'
+          '（>${_stepTimeout.inMilliseconds}ms），按未接受处理',
+        );
+        _emit(ModuleBootstrapState(
+          module: module,
+          phase: ModuleBootstrapPhase.failed,
+          error: error,
+        ));
+        return _EnsureOutcome.failure(error, stackTrace);
       } catch (_) {
         // 处理器异常一律视为拒绝（不安装、不崩溃）。
         accepted = false;
       }
       if (!accepted) {
+        // 拒绝/未同意立即向上抛出（零退避、不进入 ensure）；后续调用可重新询问。
         throw ModuleInstallDeclinedException(module);
       }
     }
@@ -484,16 +500,33 @@ class ModuleBootstrap {
       phase: ModuleBootstrapPhase.downloading,
     ));
 
-    // 复用仍未完成的孤儿底层尝试；否则启动一次新的底层安装。
+    // 复用仍未完成的孤儿底层尝试；但**已过整体期限**却仍未完成的孤儿必须驱逐：
+    // 先标记 settled（丢弃其晚到进度、且其完成监听因 `identical` 不再成立而绝不会
+    // 发布 stale `ready`），再释放其闭包，随后启动带新 deadline/代次的**全新**尝试。
+    // 这样「失败不粘滞」的重试契约得以恢复，模块绝不会永久不可安装。
     final orphan = _pendingEnsure[module];
-    final attempt = (orphan != null && !orphan.completed)
-        ? orphan
-        : _startEnsureAttempt(module);
+    final _PendingEnsure attempt;
+    if (orphan == null || orphan.completed) {
+      attempt = _startEnsureAttempt(module);
+    } else if (orphan.deadline.difference(DateTime.now()) <= Duration.zero) {
+      orphan.settled = true;
+      if (identical(_pendingEnsure[module], orphan)) {
+        _pendingEnsure.remove(module);
+      }
+      debugPrint(
+        'ModuleBootstrap: 模块 "$module" 的第 ${orphan.generation} 次底层尝试'
+        '已超过整体期限仍未完成，驱逐过期孤儿并重新发起安装',
+      );
+      attempt = _startEnsureAttempt(module);
+    } else {
+      attempt = orphan;
+    }
 
     // 单一整体期限：自底层安装启动起算，复用同一尝试时不重置。剩余时间耗尽即
     // 判超时——避免慢而健康的安装被反复重下，也避免总耗时无限累积。
     final remaining = attempt.deadline.difference(DateTime.now());
     if (remaining <= Duration.zero) {
+      // 新尝试的 remaining 即 _stepTimeout；仅当注入的超时为非正值等退化场景可达。
       attempt.settled = true;
       final error = TimeoutException(
         '模块 $module 安装确保整体超时（>${_stepTimeout.inMilliseconds}ms）',
@@ -549,6 +582,8 @@ class ModuleBootstrap {
       ));
       return _EnsureOutcome.failure(error);
     }
+    // 成功同样标记终结：本次尝试后的晚到进度不得把终态翻回 downloading。
+    attempt.settled = true;
     return const _EnsureOutcome.success();
   }
 
