@@ -187,7 +187,7 @@ void main() {
         )),
         reason: '_call 在不可用时沿用既有 StateError 文案',
       );
-      expect(confirmCalls, 2, reason: '后续 _call 会重新询问（无 _tried 粘滞锁）');
+      expect(confirmCalls, 2, reason: '后续 _call 会重新询问（已移除粘滞失败锁，不永久禁用）');
       expect(ensureCalls, 0, reason: '再次拒绝仍不触发 ensure');
 
       // 之后用户接受：同一引擎仍可安装（未被永久禁用）。
