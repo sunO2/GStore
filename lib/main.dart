@@ -11,8 +11,10 @@ import 'package:gstore/core/theme/theme_data_builder.dart';
 import 'package:gstore/core/logger/LogManager.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
+import 'package:gstore/compent/module_install_banner.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/config/config_initializer.dart';
+import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/event/app_event_bus_bootstrap.dart';
 import 'package:gstore/core/module/app_modules.dart';
 import 'package:gstore/core/module/infra_modules.dart';
@@ -23,6 +25,7 @@ import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/core/router/app_router.dart';
 import 'package:gstore/core/routers.dart';
 import 'package:gstore/core/rust/DioModuleFetcher.dart';
+import 'package:gstore/core/rust/ModuleBootstrap.dart';
 import 'package:gstore/core/rust/ModuleLoader.dart';
 import 'package:gstore/core/rust/ModuleManifestClient.dart';
 
@@ -45,12 +48,36 @@ registerService() async {
     downloader: DioModuleFetcher.rhttp(),
   );
 
+  // 统一「按需安装」门（on-use install gate）：llm 属大体积 arm64 模块，
+  // 安装前必须经统一底部弹层确认（[ModuleInstallPolicy.confirm]）。
+  // 处理器仅在真正请求安装时被调用，不阻塞启动；无宿主 context 时安全拒绝。
+  ModuleBootstrap.instance.setConfirmHandler(confirmLargeModuleInstall);
+
   // 初始化模块中心：注入上下文（配置/Agent 工具/服务联动）并注册全部模块。
   // 模块通过 dependencies 声明依赖，ModuleManager 拓扑排序 + 分层并行初始化
   //（类似 Linux 包管理器：依赖就绪后才初始化下一层，同层无依赖模块并行）。
   await _initModuleManager(sw);
 
   appLog.info('registerService: 全部初始化完成（总耗时 ${sw.elapsedMilliseconds}ms）');
+}
+
+/// llm 大体积 arm64 模块的安装确认处理（[ModuleInstallPolicy.confirm]）。
+///
+/// 经统一底部弹层 [AppDialogs.showConfirmSheet] 呈现（GStore 设计规范：
+/// 禁止裸 `showDialog` / `Get.defaultDialog` / 手写 `showModalBottomSheet`）。
+///
+/// 宿主 Navigator 尚未挂载（`appNavigatorKey.currentContext == null`）时返回
+/// `false`（拒绝安装）且**绝不抛错**，由 [ModuleBootstrap] 归一为「用户拒绝」。
+Future<bool> confirmLargeModuleInstall(String module) async {
+  final ctx = appNavigatorKey.currentContext;
+  if (ctx == null) return false;
+  final ok = await AppDialogs.showConfirmSheet(
+    title: '安装模块',
+    message: '该模块体积较大且仅支持 arm64 设备，需下载后使用。',
+    confirmText: '下载并继续',
+    cancelText: '取消',
+  );
+  return ok ?? false;
 }
 
 colorSchemeSeed(ColorScheme? color, Brightness brightness) {
@@ -162,11 +189,15 @@ main() async {
             routerConfig: appRouter,
             builder: (context, child) {
               configStatusBar(context);
-              return Material(
-                child: SafeArea(
-                  top: false,
-                  bottom: false,
-                  child: child!,
+              // 顶部「模块安装中」横幅：覆盖在 Material 之上，不位移/不遮挡
+              // 应用内容（overlay 包 IgnorePointer，触摸穿透）。
+              return ModuleInstallBanner(
+                child: Material(
+                  child: SafeArea(
+                    top: false,
+                    bottom: false,
+                    child: child!,
+                  ),
                 ),
               );
             },
