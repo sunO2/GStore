@@ -182,4 +182,81 @@ void main() {
       expect(healLogCount(), 0, reason: '自愈失败不得记录成功日志');
     });
   });
+
+  group('todo 10 - 未挂载 auto 模块经 callModule 安装后成功', () {
+    test('qr happy：一次 ensureOnly、至多一次重载、返回 payload 并缓存', () async {
+      const module = 'qr';
+      final payload = Uint8List.fromList(<int>[11, 22, 33]);
+      final handle = _FakeModuleHandle(_okEnvelopeBytes(payload));
+
+      var ensureCalls = 0;
+      var loadCalls = 0;
+
+      // 生产路径不在 manager 侧覆盖 ensure，从而真正走
+      // ModuleBootstrap.instance.ensureOnly（门接缝）。
+      manager.debugConfigure(
+        readyOverride: () async {},
+        loadModuleOverride: (String name) async {
+          loadCalls++;
+          throw '[404] MODULE_NOT_FOUND: module not found: $name';
+        },
+      );
+      bootstrap.debugConfigure(
+        ensureOverride: (
+          String name, {
+          required bool allowDownload,
+          ModuleProgressCallback? onProgress,
+        }) async {
+          ensureCalls++;
+          // 模拟 ensure 挂载写入真实句柄缓存。
+          manager.debugSeedHandle(name, handle);
+          return true;
+        },
+      );
+
+      final result =
+          await manager.callModule(module, null, 'decode', Uint8List(0));
+      expect(result, payload, reason: '自愈后应完成原调用并返回解码 payload');
+      expect(ensureCalls, 1, reason: '一次 ensureOnly(qr)');
+      expect(loadCalls, 1, reason: 'happy 路径宿主只被请求加载一次');
+
+      final second =
+          await manager.callModule(module, null, 'decode', Uint8List(0));
+      expect(second, payload);
+      expect(ensureCalls, 1, reason: '模块已缓存：不得二次 ensure');
+      expect(loadCalls, 1, reason: '宿主不得被要求二次加载');
+    });
+
+    test('qr failure：ensure 失败重抛原始错误，仅一次 ensure 尝试', () async {
+      const module = 'repo';
+      var ensureCalls = 0;
+      var loadCalls = 0;
+
+      manager.debugConfigure(
+        readyOverride: () async {},
+        loadModuleOverride: (String name) async {
+          loadCalls++;
+          throw '[404] MODULE_NOT_FOUND: module not found: $name';
+        },
+      );
+      bootstrap.debugConfigure(
+        ensureOverride: (
+          String name, {
+          required bool allowDownload,
+          ModuleProgressCallback? onProgress,
+        }) async {
+          ensureCalls++;
+          return false;
+        },
+      );
+
+      await expectLater(
+        manager.callModule(module, null, 'decode', Uint8List(0)),
+        throwsA(contains('MODULE_NOT_FOUND')),
+      );
+      expect(ensureCalls, 1, reason: '补装失败仅一次 ensure 尝试，无循环');
+      expect(loadCalls, 1, reason: '补装失败重抛，不吞错、不二次加载');
+      expect(healLogCount(), 0, reason: '失败不得记录成功自愈日志');
+    });
+  });
 }
