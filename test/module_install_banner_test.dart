@@ -332,6 +332,9 @@ void main() {
       _initializing('llm'),
       _downloading('download', progress: 0.2),
     ]);
+    // 广播流事件与 Riverpod 通知跨两轮微任务/帧传递：
+    // 在已泵过一帧（空闲态）后，第一帧仅投递事件，第二帧才反映新状态。
+    await tester.pump();
     await tester.pump();
 
     expect(find.byType(LinearProgressIndicator), findsNWidgets(3));
