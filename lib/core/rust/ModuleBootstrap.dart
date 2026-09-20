@@ -207,6 +207,10 @@ class ModuleBootstrap {
   /// * 慢而健康的大模块（如 llm）不会被反复重新下载（不会每轮重设 10 分钟）；
   /// * 一个安装的总等待上限为 [_stepTimeout]，失败也不会拖到 ~30 分钟。
   ///
+  /// 期限耗尽时底层 future **不可取消**：门不会（也无法）开启「全新安装」，只会
+  /// 发布终态 `failed` 并释放单飞；真正的恢复依赖该底层 future 自行结束——届时
+  /// loader 释放其每模块单飞，后续调用才可能重新安装。
+  ///
   /// 该值对慢速网络下的大模块下载足够宽松；测试可经 [debugConfigure] 注入更短值。
   static const Duration defaultStepTimeout = Duration(minutes: 10);
 
@@ -456,6 +460,11 @@ class ModuleBootstrap {
   /// `ensureModule`，从根源消除并发重复安装。该次尝试终结后，其晚到的进度回调
   /// 由 [_PendingEnsure.settled] 丢弃；若孤儿最终成功，则由
   /// [_startEnsureAttempt] 的完成监听显式对账为 `ready`。
+  ///
+  /// 若该尝试**已过整体期限**却仍未完成：底层 future 不可取消且 loader 每模块单飞
+  /// 仍持有它，**无法**开启全新安装。此时保持终态 `failed`（不发布 downloading）、
+  /// 保留该尝试（以便晚到成功对账 `ready`），并**不**重发 `ensureModule`；恢复依赖
+  /// 该底层 future 自行结束。
   Future<_EnsureOutcome> _ensureOnlyInternal(
     String module,
     ModuleInstallPolicy? policy,
@@ -495,28 +504,43 @@ class ModuleBootstrap {
       }
     }
 
+    // 已过整体期限却仍未完成的底层尝试：其 `ensureModule` future **不可取消**，
+    // 且（生产下）loader 的每模块单飞仍持有它——此刻再调 `ensureModule` 只会拿到
+    // **同一个**陈旧 future，绝不可能开启一次真正的新安装。因此这里不再谎称
+    // 「重新发起安装」，也**不**先发布 downloading：直接保持**终态失败**，把该尝试
+    // 标记 `settled`（丢弃晚到进度）但**保留**在 [_pendingEnsure] 中——它稍后若真正
+    // 成功，完成监听仍能对账为 `ready`。真正的恢复条件是**底层 loader future 结束**
+    // （届时其每模块单飞条目释放，后续调用才会开启一次全新安装）；在此之前重复调用
+    // 快速返回失败，绝不重复安装，也就绝不会与在途落盘并发。
+    final orphan = _pendingEnsure[module];
+    if (orphan != null &&
+        !orphan.completed &&
+        orphan.deadline.difference(DateTime.now()) <= Duration.zero) {
+      orphan.settled = true;
+      final error = TimeoutException(
+        '模块 $module 安装确保整体超时（>${_stepTimeout.inMilliseconds}ms）',
+        _stepTimeout,
+      );
+      debugPrint(
+        'ModuleBootstrap: 模块 "$module" 的第 ${orphan.generation} 次底层尝试'
+        '已超过整体期限且其 loader future 不可取消（每模块单飞仍持有），'
+        '不重发安装；仅当该 future 结束后后续调用才会真正重新安装',
+      );
+      _emit(ModuleBootstrapState(
+        module: module,
+        phase: ModuleBootstrapPhase.failed,
+        error: error,
+      ));
+      return _EnsureOutcome.failure(error);
+    }
+
     _emit(ModuleBootstrapState(
       module: module,
       phase: ModuleBootstrapPhase.downloading,
     ));
 
-    // 复用仍未完成的孤儿底层尝试；但**已过整体期限**却仍未完成的孤儿必须驱逐：
-    // 先标记 settled（丢弃其晚到进度、且其完成监听因 `identical` 不再成立而绝不会
-    // 发布 stale `ready`），再释放其闭包，随后启动带新 deadline/代次的**全新**尝试。
-    // 这样「失败不粘滞」的重试契约得以恢复，模块绝不会永久不可安装。
-    final orphan = _pendingEnsure[module];
     final _PendingEnsure attempt;
     if (orphan == null || orphan.completed) {
-      attempt = _startEnsureAttempt(module);
-    } else if (orphan.deadline.difference(DateTime.now()) <= Duration.zero) {
-      orphan.settled = true;
-      if (identical(_pendingEnsure[module], orphan)) {
-        _pendingEnsure.remove(module);
-      }
-      debugPrint(
-        'ModuleBootstrap: 模块 "$module" 的第 ${orphan.generation} 次底层尝试'
-        '已超过整体期限仍未完成，驱逐过期孤儿并重新发起安装',
-      );
       attempt = _startEnsureAttempt(module);
     } else {
       attempt = orphan;
@@ -587,7 +611,13 @@ class ModuleBootstrap {
     return const _EnsureOutcome.success();
   }
 
-  /// 启动一次**新的**底层安装 ensure，并登记其完成监听。
+  /// 启动/登记一次底层安装 ensure（生产委托 [RustModuleLoader.ensureModule]），
+  /// 并登记其完成监听。
+  ///
+  /// **不保证**底层会开启一次全新安装：`ensureModule` 每模块单飞，若它仍持有同一
+  /// 模块的在途 future（例如上一次尝试已超时但不可取消），本次调用只会拿到
+  /// **同一个**陈旧 future。因此本方法只承诺「启动/复用一个底层尝试」，绝不承诺
+  /// 「重新下载」；真正全新安装的前提是该 future 已结束（单飞条目被释放）。
   ///
   /// 不使用超时包裹，故返回的 future 是真正的底层安装：超时后仍可被后续重试
   /// 复用（见 [_ensureOnlyInternal]）。[reportProgress] 绑定本次尝试的

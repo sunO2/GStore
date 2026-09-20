@@ -160,7 +160,23 @@ class RustModuleLoader {
   /// 避免并发重下与共享 `.tmp`/`.so`/`.meta` 写入竞态。条目在**首个 await
   /// 之前**登记，完成（成功/失败）即移除——失败**非粘滞**，后续调用可重试；
   /// 不同模块各自一条，仍可并行安装。
+  ///
+  /// 注意：本表只覆盖 `ensureModule` **自身**的并发去重，**不**覆盖
+  /// `downloadAndInstall`；跨入口的落盘互斥由 [_installTail]（每模块安装锁）
+  /// 统一保证。
   final Map<String, Future<bool>> _ensureInFlight = {};
+
+  /// **唯一**的每模块安装串行锁（覆盖真实落盘步骤 [_downloadAndInstall]）。
+  ///
+  /// 所有安装入口（[ensureModule] 与 [downloadAndInstall]）都必须经
+  /// [_serializedInstall] 获取同一把按模块名的锁，因此**同一模块**的两个安装
+  /// 永不交错执行共享的 `.tmp`/`.so`/`.meta` 写入：后到者等待先到者完成后再
+  /// 执行（先到先得）。不同模块使用不同键，保持并行。
+  ///
+  /// 这是「尾链」而非所有权锁：每次获取都把新 `gate` 注册为尾节点，先等前一个
+  /// 尾节点完成再执行；`gate` 仅以**正常完成**释放，故任一安装失败/异常都不会
+  /// 粘滞锁，后续调用仍可重试。
+  final Map<String, Future<void>> _installTail = {};
 
   /// 启动清理遗留 `.tmp` 是否已执行（每个进程/测试配置后恰好一次）。
   bool _tempCleanupDone = false;
@@ -283,6 +299,7 @@ class RustModuleLoader {
     _builtinManifestCache = null;
     _bgInFlight.clear();
     _ensureInFlight.clear();
+    _installTail.clear();
     // 新配置 ⇒ 允许重新执行一次启动 `.tmp` 清理与签名迁移。
     _tempCleanupDone = false;
     _signatureMigrationDone = false;
@@ -311,6 +328,7 @@ class RustModuleLoader {
     _builtinManifestCache = null;
     _bgInFlight.clear();
     _ensureInFlight.clear();
+    _installTail.clear();
     _deviceAbiCache = null;
   }
 
@@ -337,6 +355,12 @@ class RustModuleLoader {
   /// 同一模块的并发 `ensureModule` 调用只计 1；成功/失败完成后归零（非粘滞）。
   @visibleForTesting
   int get debugEnsureInFlightCount => _ensureInFlight.length;
+
+  /// 当前持有/排队的每模块安装锁条目数（测试专用）。
+  ///
+  /// 单调用路径完成后必须归零；并发同模块安装期间恒为 1（无论持有者还是等待者）。
+  @visibleForTesting
+  int get debugInstallLockCount => _installTail.length;
 
   /// 读取清单（测试专用；覆盖生效时不触发真实网络）。
   @visibleForTesting
@@ -549,7 +573,12 @@ class RustModuleLoader {
       appLog.info('RustModuleLoader: $name 未配置远程源，模块不可用（走降级）');
       return false;
     }
-    return _downloadAndInstall(name, mount: true, onProgress: onProgress);
+    // 经每模块安装锁串行落盘：与并发的后台更新 `downloadAndInstall` 互斥，
+    // 绝不交错共享 `.tmp`/`.so`/`.meta` 写入（不同模块仍并行）。
+    return _serializedInstall(
+      name,
+      () => _downloadAndInstall(name, mount: true, onProgress: onProgress),
+    );
   }
 
   /// 模块是否可用（**不加载、不解压**）：内置以**真实产物**为准；已下载则要求
@@ -719,11 +748,16 @@ class RustModuleLoader {
               target.sha256.toLowerCase() != localMeta.sha256.toLowerCase());
       if (!needed) return false;
 
-      final ok = await _downloadAndInstall(
+      // 经同一把每模块安装锁串行落盘：若并发的按需安装 `ensureModule`
+      // 正持有该模块锁，本后台更新会**等待其完成后再执行**（而非跳过或交错）。
+      final ok = await _serializedInstall(
         name,
-        mount: false,
-        target: target,
-        onProgress: onProgress,
+        () => _downloadAndInstall(
+          name,
+          mount: false,
+          target: target,
+          onProgress: onProgress,
+        ),
       );
       // 后台刷新后失效清单缓存：下次解析/展示拿到最新清单。
       _manifestCache = null;
@@ -1012,6 +1046,36 @@ class RustModuleLoader {
       onProgress(fraction);
     } catch (e) {
       appLog.warning('RustModuleLoader: 进度回调异常（已忽略）- $e');
+    }
+  }
+
+  /// 在**每模块安装锁**（[_installTail]）下串行执行 [action]。
+  ///
+  /// 供 [ensureModule]（经 `_ensureModuleImpl`）与 [downloadAndInstall] 共用：
+  /// 同一模块的落盘步骤（[_downloadAndInstall]）绝不会并发交错；不同模块互不
+  /// 阻塞。`action` 抛出的异常在释放锁后原样重抛（锁不粘滞）。
+  ///
+  /// 实现为「尾链」：先读到前一个尾节点（若有），再把本次 `gate` 注册为新尾节点
+  /// （**先于 await**，故后到者一定能看到），等待前一个尾节点完成后才执行；无论
+  /// 成功/失败都在 `finally` 中放行 `gate`。`gate` 只以正常完成释放，因此等待链
+  /// 永不因前序失败而断裂。
+  Future<T> _serializedInstall<T>(
+    String name,
+    Future<T> Function() action,
+  ) async {
+    final previous = _installTail[name];
+    final gate = Completer<void>();
+    _installTail[name] = gate.future;
+    if (previous != null) {
+      await previous;
+    }
+    try {
+      return await action();
+    } finally {
+      if (identical(_installTail[name], gate.future)) {
+        _installTail.remove(name);
+      }
+      if (!gate.isCompleted) gate.complete();
     }
   }
 

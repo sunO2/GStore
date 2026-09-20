@@ -162,16 +162,18 @@ void main() {
           reason: '超时后 instance 单飞条目应被释放');
       expect(ensureCalls, 1);
 
-      // 超时即意味着该孤儿的整体期限已经耗尽（deadline = 启动 + _stepTimeout），
-      // 因此下一次调用走**驱逐**分支：把过期孤儿标记 settled、移出 `_pendingEnsure`，
-      // 并新起一次带新 deadline/代次的底层安装（c28619e 语义）——而不是复用已过期
-      // 的孤儿。否则失败会粘滞，模块将永久不可安装。
+      // 超时即意味着该孤儿的整体期限已经耗尽（deadline = 启动 + _stepTimeout）。
+      // 底层 `ensureModule` future 不可取消，且 loader 每模块单飞仍持有它——此刻
+      // 再调 `ensureModule` 只会拿到同一个陈旧 future，**无法**开启真正的新安装。
+      // 因此门不再谎称「重新发起安装」：不重发 ensure，保持终态 failed 并保留该
+      // 尝试（其晚到成功仍可对账 ready）；恢复依赖底层 future 结束。
       final retried = await bootstrap.ensureOnly('x');
-      expect(retried, isFalse, reason: '新尝试同样挂起，应在期限内返回 false');
-      expect(ensureCalls, 2,
-          reason: '过期孤儿必须被驱逐：重试应重新调用 ensureModule，而非复用已超期孤儿');
-      expect(bootstrap.debugPendingEnsureCount, 1, reason: '新底层尝试应取代被驱逐的过期孤儿');
-      // 驱逐后重试仍发布终态 failed，且单飞条目不得残留。
+      expect(retried, isFalse, reason: '过期底层 future 未结束前重试必须返回失败');
+      expect(ensureCalls, 1,
+          reason: '不得谎称全新安装：底层 future 未结束前绝不重发 ensureModule');
+      expect(bootstrap.debugPendingEnsureCount, 1,
+          reason: '过期尝试应保留（晚到成功仍可对账 ready），而非被丢弃');
+      // 重试仍发布终态 failed，且单飞条目不得残留（调用方不被阻塞）。
       expect(states.last.phase, ModuleBootstrapPhase.failed);
       expect(bootstrap.debugEnsureInFlightCount, 0,
           reason: '重试完成后 ensure 单飞条目仍应被释放');
@@ -300,14 +302,15 @@ void main() {
   );
 
   test(
-    'expired hung ensure is evicted and a later call starts a fresh attempt',
+    'expired hung ensure reports terminal failure without claiming a fresh install',
     () async {
-      // 捕获每次底层尝试的进度回调；每次尝试各自一个永不完成的 future。
-      final callbacks = <ModuleProgressCallback?>[];
+      // 每次底层 ensure 调用返回各自一个永不完成的 future（手动控制完成时机）。
+      final completers = <Completer<bool>>[];
       configure(
         ensure: (m, {required allowDownload, onProgress}) {
-          callbacks.add(onProgress);
-          return Completer<bool>().future;
+          final completer = Completer<bool>();
+          completers.add(completer);
+          return completer.future;
         },
         stepTimeout: const Duration(milliseconds: 30),
       );
@@ -316,47 +319,91 @@ void main() {
       final sub = bootstrap.watch('x').listen(states.add);
       await pumpEventQueue();
 
-      // 第一次：永不完成 → 整体期限超时 → 孤儿留在 _pendingEnsure 中。
+      // 第一次：永不完成 → 整体期限超时 → 尝试保留在 _pendingEnsure 中。
       await expectLater(
         bootstrap.acquire('x', maxAttempts: 1),
         throwsA(isA<ModuleInstallFailedException>()),
       );
       await pumpEventQueue();
       expect(ensureCalls, 1, reason: '首次尝试调用一次底层 ensure');
+      expect(completers.length, 1);
       expect(bootstrap.debugPendingEnsureCount, 1);
-      expect(callbacks.length, 1);
 
       // 等到整体期限确实过期。
       await Future<void>.delayed(const Duration(milliseconds: 40));
 
-      // 再次调用：必须驱逐过期孤儿并重新发起底层安装（而非即时失败）。
-      final retried = bootstrap.ensureOnly('x');
-      await pumpEventQueue();
-      expect(ensureCalls, 2, reason: '过期的挂起孤儿必须被驱逐并重新调用 ensureModule');
-      expect(bootstrap.debugPendingEnsureCount, 1, reason: '新的底层尝试取代被驱逐的过期孤儿');
-      expect(callbacks.length, 2, reason: '新尝试应重新注册进度回调');
+      // 再次调用：底层 future 不可取消且仍在途，门**不得**谎称开启全新安装。
+      final retried = await bootstrap.ensureOnly('x');
+      expect(retried, isFalse, reason: '过期且底层 future 未结束 → 返回终态失败');
+      expect(ensureCalls, 1,
+          reason: '不得重新调用 ensureModule（只会拿到同一个陈旧 future）');
+      expect(completers.length, 1, reason: '不得启动第二次底层安装');
+      expect(bootstrap.debugPendingEnsureCount, 1, reason: '过期尝试应保留而非丢弃');
+      expect(states.last.phase, ModuleBootstrapPhase.failed,
+          reason: '过期后必须保持终态 failed，绝不停留在 downloading');
 
-      // 过期孤儿（第 0 次尝试）的晚到进度必须被丢弃；新尝试的进度正常发布。
-      final before = states.length;
-      callbacks[0]!(0.9);
+      // 重复调用仍然快速失败，且不重复安装。
+      expect(await bootstrap.ensureOnly('x'), isFalse);
+      expect(ensureCalls, 1, reason: '反复调用不得重复底层安装');
+      expect(states.last.phase, ModuleBootstrapPhase.failed);
+
+      // 真正的恢复条件：底层 future 结束（此处成功）→ 对账为 ready 并清空在途。
+      completers.first.complete(true);
       await pumpEventQueue();
-      expect(
-        states.skip(before).where((s) => s.progress == 0.9),
-        isEmpty,
-        reason: '被驱逐孤儿的晚到进度不得覆盖新尝试状态',
+      expect(states.last.phase, ModuleBootstrapPhase.ready,
+          reason: '底层 future 结束后，孤儿成功应对账为 ready（observable 状态正确）');
+      expect(bootstrap.debugPendingEnsureCount, 0,
+          reason: '结束的底层尝试应从在途表移除');
+
+      await sub.cancel();
+    },
+  );
+
+  test(
+    'after the hung loader future settles, a later call starts a genuinely new install',
+    () async {
+      final completers = <Completer<bool>>[];
+      configure(
+        ensure: (m, {required allowDownload, onProgress}) {
+          final completer = Completer<bool>();
+          completers.add(completer);
+          return completer.future;
+        },
+        stepTimeout: const Duration(milliseconds: 30),
       );
 
-      callbacks[1]!(0.2);
+      final states = <ModuleBootstrapState>[];
+      final sub = bootstrap.watch('x').listen(states.add);
       await pumpEventQueue();
-      expect(
-        states.skip(before).any((s) =>
-            s.phase == ModuleBootstrapPhase.downloading && s.progress == 0.2),
-        isTrue,
-        reason: '新尝试的进度应正常发布',
-      );
 
-      // 新尝试同样在期限内超时并返回 false（关键：不是即时失败）。
-      expect(await retried, isFalse);
+      // 首次超时，孤儿保留。
+      await expectLater(
+        bootstrap.acquire('x', maxAttempts: 1),
+        throwsA(isA<ModuleInstallFailedException>()),
+      );
+      await pumpEventQueue();
+      expect(ensureCalls, 1);
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+
+      // 在底层 future 未结束前：不得重发安装。
+      expect(await bootstrap.ensureOnly('x'), isFalse);
+      expect(ensureCalls, 1, reason: '底层 future 未结束前绝不重发 ensureModule');
+      expect(bootstrap.debugPendingEnsureCount, 1);
+
+      // 底层 future 以**失败**结束：loader 的每模块单飞会随之释放。
+      completers.first.complete(false);
+      await pumpEventQueue();
+      expect(bootstrap.debugPendingEnsureCount, 0,
+          reason: '底层尝试结束后应从在途表移除');
+
+      // 现在后续调用必须开启一次**真正**的新安装。
+      final fresh = bootstrap.ensureOnly('x');
+      await pumpEventQueue();
+      expect(ensureCalls, 2,
+          reason: '底层 future 结束后，后续调用才真正开启全新安装');
+      expect(completers.length, 2, reason: '应注册第二次底层尝试');
+      completers[1].complete(true);
+      expect(await fresh, isTrue, reason: '新安装成功');
 
       await sub.cancel();
     },

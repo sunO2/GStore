@@ -51,6 +51,47 @@ class _GatedFetcher implements ModuleFetcher {
   }
 }
 
+/// 并发可见的闸门下载器：统计调用次数与**同时在途**的下载数。
+///
+/// 用于证明「同一模块的安装串行化」——若不同入口的安装未被同一把锁串行，
+/// 第二次下载会在第一次仍被 [gate] 挂起时就开始，从而 [maxActive] 达到 2。
+class _ConcurrencyFetcher implements ModuleFetcher {
+  _ConcurrencyFetcher(this.bytes);
+
+  final Uint8List? bytes;
+  int calls = 0;
+  int active = 0;
+  int maxActive = 0;
+  final Completer<void> gate = Completer<void>();
+
+  @override
+  Future<Uint8List?> fetch(String url, {int? maxBytes}) async {
+    calls++;
+    active++;
+    if (active > maxActive) maxActive = active;
+    try {
+      await gate.future;
+      return bytes;
+    } finally {
+      active--;
+    }
+  }
+}
+
+/// 首次下载失败（返回 `null`）、此后成功的下载器（失败非粘滞测试）。
+class _FlakyFetcher implements ModuleFetcher {
+  _FlakyFetcher(this.bytes);
+
+  final Uint8List bytes;
+  int calls = 0;
+
+  @override
+  Future<Uint8List?> fetch(String url, {int? maxBytes}) async {
+    calls++;
+    return calls == 1 ? null : bytes;
+  }
+}
+
 /// 反复泵事件队列直到 [condition] 成立（或超时失败），用于等待真实异步
 /// 文件 IO 推进到下载阶段。
 Future<void> _waitFor(bool Function() condition) async {
@@ -719,5 +760,97 @@ void main() {
       expect(fetcher.calls, 1, reason: '重试必须真实触发一次下载');
       expect(loader.debugEnsureInFlightCount, 0);
     });
+
+    test(
+      'concurrent ensureModule and downloadAndInstall for the same module serialize installs',
+      () async {
+        final supportDir = makeSupportDir();
+        final payload = Uint8List.fromList(utf8.encode('SO_CROSS_ENTRY'));
+        final sha = sha256.convert(payload).toString();
+
+        final fetcher = _ConcurrencyFetcher(payload);
+        final mounted = <String>[];
+        loader.remoteBaseUrl = 'https://example.com/release';
+        loader.debugConfigure(
+          supportDir: supportDir.path,
+          manifestOverride: _manifest(
+            module: 'x',
+            version: '1.0.0',
+            asset: 'libgstore_mod_x_1.0.0-x86_64.so',
+            sha256Hex: sha,
+            size: payload.length,
+          ),
+          downloader: fetcher,
+          isLoadedOverride: (_) async => false,
+          mountOverride: (soPath) async {
+            mounted.add(soPath);
+            return true;
+          },
+        );
+
+        // 入口 A（按需安装）先启动：持有该模块的安装锁，下载被闸门挂起。
+        final ensure = loader.ensureModule('x');
+        await _waitFor(() => fetcher.calls == 1);
+        expect(loader.debugInstallLockCount, 1,
+            reason: '按需安装进行中应持有该模块的安装锁');
+
+        // 入口 B（后台更新）随后启动。它必须**等待**该锁，而不是并发进入落盘。
+        final bg = loader.downloadAndInstall('x');
+        // 充分泵事件队列，让后台路径推进到锁前；此时第二次下载绝不应开始。
+        for (var i = 0; i < 100; i++) {
+          await pumpEventQueue(times: 1);
+        }
+        expect(fetcher.calls, 1,
+            reason: '按需安装持锁期间，后台更新不得开始第二次下载（必须等待）');
+        expect(fetcher.active, 1, reason: '同一模块任意时刻至多一个在途下载');
+        expect(loader.debugInstallLockCount, 1);
+
+        // 放行：按需安装完成并释放锁，后台更新随后**真正执行**自己的下载。
+        fetcher.gate.complete();
+        final results = await Future.wait<bool>(<Future<bool>>[ensure, bg]);
+
+        expect(results, everyElement(isTrue));
+        expect(fetcher.calls, 2,
+            reason: '后台更新等待后必须真正执行自己的下载（而非被跳过）');
+        expect(fetcher.maxActive, 1,
+            reason: '两个入口的下载在任意时刻至多一个在途：已串行化，绝不交错');
+        expect(mounted, hasLength(1), reason: '仅按需安装挂载，后台更新绝不挂载');
+        expect(loader.debugInstallLockCount, 0, reason: '全部完成后安装锁必须释放');
+      },
+    );
+
+    test(
+      'a failed downloadAndInstall releases the install lock for later retries',
+      () async {
+        final supportDir = makeSupportDir();
+        final payload = Uint8List.fromList(utf8.encode('SO_BG_RETRY'));
+        final sha = sha256.convert(payload).toString();
+
+        final fetcher = _FlakyFetcher(payload);
+        loader.remoteBaseUrl = 'https://example.com/release';
+        loader.debugConfigure(
+          supportDir: supportDir.path,
+          manifestOverride: _manifest(
+            module: 'x',
+            version: '1.0.0',
+            asset: 'libgstore_mod_x_1.0.0-x86_64.so',
+            sha256Hex: sha,
+            size: payload.length,
+          ),
+          downloader: fetcher,
+          isLoadedOverride: (_) async => false,
+          mountOverride: (soPath) async => true,
+        );
+
+        // 首次：下载失败 → 安装锁必须释放（非粘滞）。
+        expect(await loader.downloadAndInstall('x'), isFalse);
+        expect(loader.debugInstallLockCount, 0, reason: '失败后安装锁必须释放');
+
+        // 第二次：真实重试并成功（失败未粘滞）。
+        expect(await loader.downloadAndInstall('x'), isTrue);
+        expect(fetcher.calls, 2, reason: '失败后的重试必须真实重新下载');
+        expect(loader.debugInstallLockCount, 0);
+      },
+    );
   });
 }
