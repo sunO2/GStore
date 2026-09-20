@@ -8,12 +8,16 @@
 # 输出：
 #   <模块目录>/modules.json                    Flat 清单 v2（发布上传）
 #   assets/app/modules_builtin.json            内置模块版本清单（随 APK 打包）
+#   assets/app/modules.json                    上述 v2 清单的随包副本（离线兜底，
+#                                              与发布清单逐字节一致，随 APK 打包）
 #
 # 环境变量覆盖（便于测试在临时目录产出、绝不污染仓库 assets/）：
 #   MODULES_IN_DIR         模块输入目录（等价于位置参数 $1）
-#   MODULES_OUT_DIR        输出目录（同时作为下面两个默认值）
+#   MODULES_OUT_DIR        输出目录（同时作为下面三个默认值）
 #   MODULES_MANIFEST_OUT   modules.json 完整路径（优先于 MODULES_OUT_DIR）
 #   BUILTIN_MANIFEST_OUT   modules_builtin.json 完整路径（优先于 MODULES_OUT_DIR）
+#   BUNDLED_MANIFEST_OUT   随包 modules.json 副本完整路径（优先于 MODULES_OUT_DIR，
+#                          默认 $SCRIPT_DIR/assets/app/modules.json）
 #   BUILTIN_MODULE_DIR     内置 .so 目录，默认 android/app/src/main/jniLibs
 #   MIN_HOST_ABI           覆盖 min_host_abi（默认取 gstore_contract ABI 版本）
 #
@@ -58,6 +62,8 @@ MODULES_MANIFEST_OUT="${MODULES_MANIFEST_OUT:-${MODULES_OUT_DIR:+$MODULES_OUT_DI
 MODULES_MANIFEST_OUT="${MODULES_MANIFEST_OUT:-$MODULE_DIR/modules.json}"
 BUILTIN_MANIFEST_OUT="${BUILTIN_MANIFEST_OUT:-${MODULES_OUT_DIR:+$MODULES_OUT_DIR/modules_builtin.json}}"
 BUILTIN_MANIFEST_OUT="${BUILTIN_MANIFEST_OUT:-$SCRIPT_DIR/assets/app/modules_builtin.json}"
+BUNDLED_MANIFEST_OUT="${BUNDLED_MANIFEST_OUT:-${MODULES_OUT_DIR:+$MODULES_OUT_DIR/modules.json}}"
+BUNDLED_MANIFEST_OUT="${BUNDLED_MANIFEST_OUT:-$SCRIPT_DIR/assets/app/modules.json}"
 
 if [ ! -d "$MODULE_DIR" ]; then
     echo "ERROR: module dir not found: $MODULE_DIR" >&2
@@ -66,7 +72,8 @@ if [ ! -d "$MODULE_DIR" ]; then
 fi
 
 python3 - "$MODULE_DIR" "$MODULES_MANIFEST_OUT" "$BUILTIN_MODULE_DIR" \
-    "$BUILTIN_MANIFEST_OUT" "$SCRIPT_DIR" "${MIN_HOST_ABI:-}" << 'PYEOF'
+    "$BUILTIN_MANIFEST_OUT" "$SCRIPT_DIR" "${MIN_HOST_ABI:-}" \
+    "$BUNDLED_MANIFEST_OUT" << 'PYEOF'
 import hashlib
 import json
 import os
@@ -74,7 +81,7 @@ import re
 import sys
 
 (module_dir, manifest_path, builtin_dir, builtin_path, repo_root,
- min_abi_override) = sys.argv[1:7]
+ min_abi_override, bundled_path) = sys.argv[1:8]
 
 ABIS = ["arm64-v8a", "armeabi-v7a", "x86", "x86_64"]
 # GPU 变体后缀（Flat 清单不输出 variants）
@@ -163,6 +170,13 @@ def write_json(path, payload):
         f.write("\n")
 
 
+def write_text(path, text):
+    d = os.path.dirname(os.path.abspath(path))
+    os.makedirs(d, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+
+
 min_abi = host_abi_version()
 modules = {}
 for name, abis in sorted(scan_so(module_dir).items()):
@@ -178,7 +192,11 @@ for name, abis in sorted(scan_so(module_dir).items()):
     modules[name] = entry
 
 manifest = {"version": 2, "modules": modules}
-write_json(manifest_path, manifest)
+# 单一序列化结果同时落盘到发布清单与随包副本，保证二者逐字节一致。
+manifest_text = json.dumps(manifest, indent=2, ensure_ascii=False) + "\n"
+write_text(manifest_path, manifest_text)
+if os.path.realpath(bundled_path) != os.path.realpath(manifest_path):
+    write_text(bundled_path, manifest_text)
 
 # 内置清单：版本取自同一 module_version；abi 值为该模块版本。
 builtin = {}
@@ -193,6 +211,7 @@ for name, data in modules.items():
     for abi in sorted(data.get("abi", {})):
         e = data["abi"][abi]
         print(f"  - {name}/{abi}: {e['asset']} ({e['size']}B)")
+print(f"✓ 随包副本已生成: {bundled_path}")
 print(f"✓ 内置清单已生成: {builtin_path}")
 print(f"  内置模块: {', '.join(builtin.keys()) or '(无)'}")
 PYEOF

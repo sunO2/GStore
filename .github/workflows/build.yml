@@ -133,6 +133,28 @@ jobs:
           GSTORE_MODULE_DIR: ${{ github.workspace }}/rust/release-modules
         run: bash generate_modules_manifest.sh "$GSTORE_MODULE_DIR"
 
+      # 漂移断言：随 APK 打包的 assets/app/modules.json 必须与本次发布清单逐字节一致
+      # 且非空（cmp 保证不会因内容/换行差异而在发布包与内置兜底之间分叉）。
+      - name: Assert bundled module manifest freshness
+        env:
+          GSTORE_MODULE_DIR: ${{ github.workspace }}/rust/release-modules
+        run: |
+          set -euo pipefail
+          bundled="assets/app/modules.json"
+          released="$GSTORE_MODULE_DIR/modules.json"
+          if [ ! -s "$bundled" ]; then
+            echo "ERROR: bundled manifest missing or empty: $bundled" >&2
+            exit 1
+          fi
+          if ! cmp -s "$bundled" "$released"; then
+            echo "ERROR: bundled manifest drifted from release manifest" >&2
+            echo "  bundled: $bundled" >&2
+            echo "  release: $released" >&2
+            cmp "$bundled" "$released" || true
+            exit 1
+          fi
+          echo "OK: $bundled == $released"
+
       # 暂时禁用 flutter test（宿主/CI 环境缺失 libsqlite3.so 导致大量 DB 用例失败）；
       # 恢复时取消下面一行注释即可。
       # - run: flutter test

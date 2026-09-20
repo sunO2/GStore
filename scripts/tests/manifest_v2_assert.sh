@@ -45,6 +45,7 @@ fi
 
 MODULES_MANIFEST_OUT="$OUT_DIR/modules.json" \
 BUILTIN_MANIFEST_OUT="$OUT_DIR/modules_builtin.json" \
+BUNDLED_MANIFEST_OUT="$OUT_DIR/modules_bundled.json" \
 BUILTIN_MODULE_DIR="$MODULE_DIR" \
   bash "$GEN" "$MODULE_DIR"
 
@@ -144,15 +145,22 @@ if fail:
 print(f"[manifest_v2_assert] [ok] {len(spec)} 个模块、{len(assets)} 个资产、内置清单均通过")
 PY
 
+# 随包副本必须与发布清单逐字节一致（同一序列化结果落盘，禁止二次序列化）。
+cmp "$OUT_DIR/modules.json" "$OUT_DIR/modules_bundled.json"
+echo "[manifest_v2_assert] [ok] 随包 modules.json 副本与发布清单逐字节一致"
+
 # 确定性：同一输入重复生成必须字节一致。
 cp "$OUT_DIR/modules.json" "$TMP_DIR/modules.first.json"
 cp "$OUT_DIR/modules_builtin.json" "$TMP_DIR/builtin.first.json"
+cp "$OUT_DIR/modules_bundled.json" "$TMP_DIR/bundled.first.json"
 MODULES_MANIFEST_OUT="$OUT_DIR/modules.json" \
 BUILTIN_MANIFEST_OUT="$OUT_DIR/modules_builtin.json" \
+BUNDLED_MANIFEST_OUT="$OUT_DIR/modules_bundled.json" \
 BUILTIN_MODULE_DIR="$MODULE_DIR" \
   bash "$GEN" "$MODULE_DIR" >/dev/null 2>&1
 diff -q "$TMP_DIR/modules.first.json" "$OUT_DIR/modules.json" >/dev/null
 diff -q "$TMP_DIR/builtin.first.json" "$OUT_DIR/modules_builtin.json" >/dev/null
+diff -q "$TMP_DIR/bundled.first.json" "$OUT_DIR/modules_bundled.json" >/dev/null
 echo "[manifest_v2_assert] [ok] 重复生成字节一致（确定性）"
 
 echo "manifest_v2_assert: PASS"

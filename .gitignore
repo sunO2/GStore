@@ -64,3 +64,7 @@ rust/release-modules/
 
 # it-tools 离线包由 CI 用「上游 + 补丁」重建（见 scripts/it_tools/build_bundle.sh），不入库
 assets/it_tools/it-tools.zip
+
+# 随 APK 打包的 v2 模块清单副本（generate_modules_manifest.sh 生成，不入库；
+# assets/app/modules_builtin.json 为已提交的内置清单，保持不变）
+assets/app/modules.json
