@@ -25,6 +25,7 @@ import 'package:gstore/core/router/app_router.dart';
 import 'package:gstore/core/routers.dart';
 import 'package:gstore/core/rust/DioModuleFetcher.dart';
 import 'package:gstore/core/rust/ModuleBootstrap.dart';
+import 'package:gstore/core/rust/ModuleDownloader.dart';
 import 'package:gstore/core/rust/ModuleLoader.dart';
 import 'package:gstore/core/rust/ModuleManifestClient.dart';
 
@@ -41,9 +42,21 @@ registerService() async {
   AppEventBusBootstrap.initialize();
 
   // 接线原生模块远程下载源：slim 包未内置 libgstore_mod_*.so 时，
-  // 首次使用/管理页下载经此清单（未代理、校验证书）解析 Release 资产。
+  // 首次使用/管理页下载经此清单解析 Release 资产。Release 元数据
+  //（api.github.com）直连；仅清单正文（github.com 资产）经代理读取。
+  // 随包 v2 清单为签名 APK 内可信下限：其命名资产的哈希固定于 APK 内，
+  // 网络/缓存不可用时亦可兜底（本地未生成该资产则自动关闭兜底）。
   RustModuleLoader.instance.configureRemote(
-    manifestSource: ModuleManifestClient(),
+    manifestSource: ModuleManifestClient(
+      proxyProvider: ModuleDownloader.configuredProxy, // 与 .so 下载同一代理规则
+      bundledManifestLoader: (key) async {
+        try {
+          return await rootBundle.loadString(key);
+        } catch (_) {
+          return null; // 本地构建/未生成资产 → 关闭兜底
+        }
+      },
+    ),
     downloader: DioModuleFetcher.rhttp(),
   );
 

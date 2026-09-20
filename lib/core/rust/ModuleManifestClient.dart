@@ -15,6 +15,10 @@ import 'package:path_provider/path_provider.dart'
 
 import 'package:gstore/core/rust/ModuleLoader.dart';
 import 'package:gstore/core/rust/ModuleManifest.dart';
+import 'package:gstore/core/utils/unit.dart' show applyProxyIfNeeded;
+
+/// 读取随包 v2 清单（测试注入；null ⇒ 关闭兜底，既有测试行为不变）。
+typedef BundledManifestLoader = Future<String?> Function(String assetKey);
 
 /// `it_tools.json` 的强类型视图：`{contentHash, asset, size}`。
 ///
@@ -115,18 +119,24 @@ class ModuleAssetLocation {
 /// 安全约束（见 `.omo/plans/remote-plugin-download.md` Todo 8）：
 ///
 /// * **独立通道**：仅用 `dart:io HttpClient`，保持**默认证书校验**，
-///   既不设置任何禁用证书校验的回调，也不施加任何代理前缀。
+///   既不设置任何禁用证书校验的回调，也不改动客户端的代理设置
+///   （代理为显式注入的前缀，默认关闭）。
 /// * **不使用**项目内基于 Dio/rhttp 且关闭了证书校验的 GitHub 客户端
-///   （它们允许自签名证书并带代理逻辑，会污染信任锚）。
-/// * `modules.json` 与 `it_tools.json` 均来自 `sunO2/GStore` 的同一 Release，
-///   经同一未代理、校验证书的客户端获取。
+///   （它们允许自签名证书，会污染信任锚）。
+/// * **分级信任**：Release 元数据 `api.github.com` **直连**；仅 `modules.json` /
+///   `it_tools.json` 的**正文 GET**（`github.com` 资产域）可经注入代理读取字节。
+///   代理只改本次请求 URI，**绝不**写入返回的 [ModuleAssetLocation.url]——
+///   下载器白名单校验的是代理前的原始 host。
+/// * 随包 v2 清单（`assets/app/modules.json`，经 [BundledManifestLoader] 注入）是
+///   签名 APK 内的**可信下限**：它为同名资产固定 sha256/size，并在网络/缓存均
+///   不可用时兜底（绝不写入磁盘缓存，因为它不是网络结果）。
 /// * 仅稳定版：`releases/latest` 返回 `prerelease == true` 时视为无可用 Release。
 /// * ABI 资产 URL 取自 Release 的 `assets[].browser_download_url`（按清单资产名
 ///   精确匹配），**不假设** `$base/<abi>/<file>`。
 /// * 磁盘缓存 `…/gstore_modules/_cache/{modules.json,.etag,.fetchedAt}`，
-///   TTL 24h；`If-None-Match` 304 复用；403/离线/超时回退缓存；无缓存 → null。
-///   清单资产 404 → 失效缓存并**恰好重解析一次**。
-/// * 任何解析/网络失败一律返回 null/缓存，**绝不抛异常**。
+///   TTL 24h；`If-None-Match` 304 复用；403/离线/超时回退缓存；无缓存 → 随包
+///   清单；再无 → null。清单资产 404 → 失效缓存并**恰好重解析一次**。
+/// * 任何解析/网络失败一律返回 null/缓存/随包清单，**绝不抛异常**。
 class ModuleManifestClient implements ModuleManifestSource {
   /// 默认 Release 解析入口（稳定版 `releases/latest`）。
   static const String defaultReleasesUrl =
@@ -157,6 +167,9 @@ class ModuleManifestClient implements ModuleManifestSource {
   /// 缓存目录后缀：`<support>/gstore_modules/_cache`。
   static const String cacheDirRelativePath = 'gstore_modules/_cache';
 
+  /// 随包 v2 清单资产路径（由 `generate_modules_manifest.sh` 生成并打包）。
+  static const String bundledManifestAssetKey = 'assets/app/modules.json';
+
   final Uri _releasesUrl;
   final String _downloadsBaseUrl;
   final HttpClient Function() _clientFactory;
@@ -165,9 +178,14 @@ class ModuleManifestClient implements ModuleManifestSource {
   final DateTime Function() _clock;
   final Duration _ttl;
   final Duration _timeout;
+  final BundledManifestLoader? _bundledManifestLoader;
+  final String Function() _proxyProvider;
 
   /// 最近一次成功解析的 Release 资产表（name → 资产），会话内复用。
   _ReleaseInfo? _release;
+
+  /// 随包 v2 清单的解析结果（含 null），单实例只读一次。
+  Future<ModuleManifestV2?>? _bundledManifestFuture;
 
   ModuleManifestClient({
     Uri? releasesUrl,
@@ -178,6 +196,8 @@ class ModuleManifestClient implements ModuleManifestSource {
     DateTime Function()? clock,
     Duration ttl = defaultTtl,
     Duration timeout = defaultTimeout,
+    BundledManifestLoader? bundledManifestLoader,
+    String Function()? proxyProvider,
   })  : _releasesUrl = releasesUrl ?? Uri.parse(defaultReleasesUrl),
         _downloadsBaseUrl = downloadsBaseUrl ?? defaultDownloadsBaseUrl,
         _clientFactory = clientFactory ?? HttpClient.new,
@@ -186,7 +206,12 @@ class ModuleManifestClient implements ModuleManifestSource {
         _supportDirProvider = supportDirProvider ?? getApplicationSupportDirectory,
         _clock = clock ?? DateTime.now,
         _ttl = ttl,
-        _timeout = timeout;
+        _timeout = timeout,
+        _bundledManifestLoader = bundledManifestLoader,
+        _proxyProvider = proxyProvider ?? _disabledProxy;
+
+  /// 未注入代理时的默认值：空串 ⇒ 不施加任何代理前缀。
+  static String _disabledProxy() => '';
 
   // ---------------------------------------------------------------------------
   // ModuleManifestSource
@@ -219,7 +244,7 @@ class ModuleManifestClient implements ModuleManifestSource {
       );
 
       if (result.status == HttpStatus.notModified) {
-        if (cache == null) return null;
+        if (cache == null) return _fallbackManifest(null);
         // 304：复用缓存正文，仅刷新 fetchedAt（不再下载 body）。
         await _writeManifestCache(cache.raw, cache.etag, now);
         return cache.manifest;
@@ -230,21 +255,68 @@ class ModuleManifestClient implements ModuleManifestSource {
         final decoded = jsonDecode(text);
         if (decoded is! Map<String, dynamic>) {
           debugPrint('ModuleManifestClient: modules.json 不是对象');
-          return cache?.manifest;
+          return _fallbackManifest(cache?.manifest);
         }
         final manifest = ModuleManifestV2.fromJson(decoded);
         await _writeManifestCache(text, result.etag, now);
         return manifest;
       }
 
-      // 404/403/超时/离线 → 回退已校验缓存；无缓存 → null。
-      return cache?.manifest;
+      // 404/403/超时/离线 → 已校验缓存 → 随包 v2 清单 → null。
+      return _fallbackManifest(cache?.manifest);
     } on ModuleManifestFormatException catch (e) {
       debugPrint('ModuleManifestClient: modules.json 格式不支持 - ${e.message}');
-      return cache?.manifest;
+      return _fallbackManifest(cache?.manifest);
     } catch (e) {
       debugPrint('ModuleManifestClient: modules.json 获取失败 - $e');
-      return cache?.manifest;
+      return _fallbackManifest(cache?.manifest);
+    }
+  }
+
+  /// 网络/缓存均不可用时的兜底：已校验缓存优先，其后为随包 v2 清单。
+  ///
+  /// 随包清单是签名 APK 内的可信下限，**不写磁盘缓存**（它不是网络结果）；
+  /// 读取/解析失败（含 [ModuleManifestFormatException]）一律吞掉 → 返回 `null`。
+  Future<ModuleManifestV2?> _fallbackManifest(ModuleManifestV2? stale) async {
+    if (stale != null) return stale;
+    final bundled = await _loadBundledManifest();
+    if (bundled != null) {
+      debugPrint('ModuleManifestClient: 网络清单不可用，使用随包 v2 清单兜底'
+          '（模块 ${bundled.modules.keys.toList()}）');
+      return bundled;
+    }
+    return null;
+  }
+
+  /// 加载随包 v2 清单（`assets/app/modules.json`），结果（含 `null`）按实例缓存。
+  ///
+  /// 未注入 [BundledManifestLoader] ⇒ 关闭兜底，返回 `null`；任何异常 → `null`。
+  Future<ModuleManifestV2?> _loadBundledManifest() {
+    final existing = _bundledManifestFuture;
+    if (existing != null) return existing;
+    final future = _readBundledManifest();
+    _bundledManifestFuture = future;
+    return future;
+  }
+
+  Future<ModuleManifestV2?> _readBundledManifest() async {
+    final loader = _bundledManifestLoader;
+    if (loader == null) return null;
+    try {
+      final raw = await loader(bundledManifestAssetKey);
+      if (raw == null || raw.isEmpty) return null;
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map<String, dynamic>) {
+        debugPrint('ModuleManifestClient: 随包清单不是对象');
+        return null;
+      }
+      return ModuleManifestV2.fromJson(decoded);
+    } on ModuleManifestFormatException catch (e) {
+      debugPrint('ModuleManifestClient: 随包清单格式不支持 - ${e.message}');
+      return null;
+    } catch (e) {
+      debugPrint('ModuleManifestClient: 读取随包清单失败 - $e');
+      return null;
     }
   }
 
@@ -380,6 +452,32 @@ class ModuleManifestClient implements ModuleManifestSource {
         return null;
       }
 
+      // 随包 v2 清单是签名 APK 内的可信下限：提供宿主 ABI 契约与固定哈希。
+      final bundled = await _loadBundledManifest();
+
+      final hostAbiFloor = _hostAbiFloor(bundled, moduleName);
+      if (hostAbiFloor != null) {
+        final required = int.tryParse(entry.minHostAbi ?? '');
+        if (required != null && required > hostAbiFloor) {
+          debugPrint('ModuleManifestClient: 定位 $moduleName 失败：'
+              'min_host_abi=$required > 宿主契约 $hostAbiFloor');
+          return null;
+        }
+      }
+
+      // 资产名内嵌版本：随包条目与所选条目同名 ⇒ 视为同一份字节，
+      // 采用随包（签名 APK 内）哈希固定；否则沿用所选清单的值。
+      var sha256 = abiAsset.sha256;
+      var size = abiAsset.size;
+      final bundledAbi = bundled?.entry(moduleName)?.forAbi(abi);
+      if (bundledAbi != null && bundledAbi.asset == abiAsset.asset) {
+        sha256 = bundledAbi.sha256;
+        size = bundledAbi.size;
+        debugPrint('ModuleManifestClient: 定位 $moduleName@$abi 哈希来源=随包固定');
+      } else {
+        debugPrint('ModuleManifestClient: 定位 $moduleName@$abi 哈希来源=清单');
+      }
+
       var release = await _resolveRelease(force: false);
       var found = release?.assets[abiAsset.asset];
       if (found == null) {
@@ -397,8 +495,8 @@ class ModuleManifestClient implements ModuleManifestSource {
         return ModuleAssetLocation(
           url: fallback,
           asset: abiAsset.asset,
-          sha256: abiAsset.sha256,
-          size: abiAsset.size,
+          sha256: sha256,
+          size: size,
           version: entry.version,
           abi: abi,
         );
@@ -407,8 +505,8 @@ class ModuleManifestClient implements ModuleManifestSource {
       return ModuleAssetLocation(
         url: found.url,
         asset: abiAsset.asset,
-        sha256: abiAsset.sha256,
-        size: abiAsset.size,
+        sha256: sha256,
+        size: size,
         version: entry.version,
         abi: abi,
       );
@@ -416,6 +514,23 @@ class ModuleManifestClient implements ModuleManifestSource {
       debugPrint('ModuleManifestClient: 定位模块资产失败 - $e');
       return null;
     }
+  }
+
+  /// 从随包清单推导宿主 ABI 契约（`min_host_abi`）。
+  ///
+  /// 优先取同名模块条目；缺失/不可解析时回退到任一可解析条目的最大值
+  /// （生成器以 `rust/gstore_contract` 为源，各条目通常一致）。
+  /// 无随包清单或全部不可解析 → `null`（不设下限，交由宿主 dlopen 握手拒绝）。
+  int? _hostAbiFloor(ModuleManifestV2? bundled, String moduleName) {
+    if (bundled == null) return null;
+    final direct = int.tryParse(bundled.entry(moduleName)?.minHostAbi ?? '');
+    if (direct != null) return direct;
+    int? max;
+    for (final e in bundled.modules.values) {
+      final v = int.tryParse(e.minHostAbi ?? '');
+      if (v != null && (max == null || v > max)) max = v;
+    }
+    return max;
   }
 
   // ---------------------------------------------------------------------------
@@ -462,16 +577,20 @@ class ModuleManifestClient implements ModuleManifestSource {
   }
 
   /// 按资产名获取清单资产；404 → 失效 Release 缓存并**恰好重解析一次**。
+  ///
+  /// 仅**正文 GET** 可经注入代理：`_resolveRelease` 始终直连 `api.github.com`。
+  /// 代理只作用于本次请求 URI，`asset.url`（原始 `github.com` 资产域）保持不变。
   Future<_AssetFetchResult> _fetchManifestAsset(
     String assetName, {
     String? ifNoneMatch,
   }) async {
+    final proxy = _proxyProvider().trim();
     var release = await _resolveRelease(force: true);
     var asset = release?.assets[assetName];
     if (asset == null) return const _AssetFetchResult(status: 0);
 
     var result = await _httpGetAsset(
-      Uri.parse(asset.url),
+      _proxiedBodyUri(asset.url, proxy),
       ifNoneMatch: ifNoneMatch,
     );
 
@@ -481,11 +600,23 @@ class ModuleManifestClient implements ModuleManifestSource {
       asset = release?.assets[assetName];
       if (asset == null) return const _AssetFetchResult(status: 0);
       result = await _httpGetAsset(
-        Uri.parse(asset.url),
+        _proxiedBodyUri(asset.url, proxy),
         ifNoneMatch: ifNoneMatch,
       );
     }
     return result;
+  }
+
+  /// 仅对清单**正文**请求施加代理前缀（`applyProxyIfNeeded` 幂等）。
+  ///
+  /// 代理为空 / URL 非 GitHub 域 / 已带前缀 → 返回原始 URI。返回值只用于本次
+  /// GET，**绝不**回写 [ModuleAssetLocation.url]（下载器白名单校验原始 host）。
+  Uri _proxiedBodyUri(String url, String proxy) {
+    if (proxy.isEmpty) return Uri.parse(url);
+    final proxied = applyProxyIfNeeded(url, proxy);
+    if (proxied == url) return Uri.parse(url);
+    debugPrint('ModuleManifestClient: 清单正文经代理获取 "$proxy" <- $url');
+    return Uri.parse(proxied);
   }
 
   // ---------------------------------------------------------------------------

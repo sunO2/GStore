@@ -91,6 +91,7 @@ String _releaseJson({
   bool includeModules = true,
   bool includeItTools = true,
   String modulesPath = '/downloads/modules.json',
+  String? modulesUrl,
   String itToolsPath = '/downloads/it_tools.json',
   List<Map<String, Object?>> extraAssets = const [],
 }) {
@@ -98,7 +99,7 @@ String _releaseJson({
     if (includeModules)
       <String, Object?>{
         'name': 'modules.json',
-        'browser_download_url': '$origin$modulesPath',
+        'browser_download_url': modulesUrl ?? '$origin$modulesPath',
         'size': 128,
       },
     if (includeItTools)
@@ -159,6 +160,7 @@ void main() {
     DateTime Function()? clock,
     String abi = 'arm64-v8a',
     HttpClient Function()? clientFactory,
+    String Function()? proxyProvider,
   }) {
     return ModuleManifestClient(
       releasesUrl: releasesUrl,
@@ -166,6 +168,7 @@ void main() {
       abiProvider: () async => abi,
       clock: clock,
       clientFactory: clientFactory,
+      proxyProvider: proxyProvider,
       timeout: const Duration(seconds: 5),
     );
   }
@@ -572,21 +575,78 @@ void main() {
         isNull, reason: '缺 ABI → null');
   });
 
-  // 9. 结构性守卫：信任锚源码不得出现代理/关闭证书校验的入口。
-  test('trust anchor source has no proxy or cert-bypass references', () {
+  // 9. 结构性守卫：信任锚源码不得引用任何证书校验绕过入口。
+  test('trust anchor source forbids certificate-bypass references', () {
     final source =
         File('lib/core/rust/ModuleManifestClient.dart').readAsStringSync();
     const forbidden = [
-      'getProxy',
       'badCertificateCallback',
       'findProxy',
+      'allowBadCertificate',
       'GithubRestClient',
       'DioClient',
-      'allowBadCertificate',
     ];
     for (final token in forbidden) {
       expect(source.contains(token), isFalse,
           reason: '清单信任锚不得引用 $token');
     }
+  });
+
+  // 9b. 行为断言（取代旧的代理文本 grep）：代理只经注入的 `proxyProvider`
+  // 作用于清单正文 GET（`github.com` 资产域），`api.github.com` 直连，且
+  // `locateModuleAsset` 返回的是代理前的原始 github URL。
+  test('proxy applies only to the manifest body and never leaks into the result',
+      () async {
+    const soAsset = 'libgstore_mod_qr_1.2.3-arm64-v8a.so';
+    const githubModulesUrl =
+        'https://github.com/sunO2/GStore/releases/latest/download/modules.json';
+    const githubSoUrl =
+        'https://github.com/sunO2/GStore/releases/download/v1.0.0/$soAsset';
+    final proxyPrefix = '${origin()}/gh/';
+
+    server.handler = (request) async {
+      final target = request.uri.path;
+      if (target == '/releases/latest') {
+        request.response.statusCode = HttpStatus.ok;
+        request.response.write(_releaseJson(
+          origin: origin(),
+          modulesUrl: githubModulesUrl,
+          extraAssets: [
+            {'name': soAsset, 'browser_download_url': githubSoUrl, 'size': 2048},
+          ],
+        ));
+      } else if (target.contains('https://github.com/') &&
+          target.endsWith('modules.json')) {
+        request.response.statusCode = HttpStatus.ok;
+        request.response.write(_modulesJson(abiAssets: {'arm64-v8a': soAsset}));
+      } else {
+        request.response.statusCode = HttpStatus.notFound;
+      }
+      await request.response.close();
+    };
+
+    final client = buildClient(proxyProvider: () => proxyPrefix);
+    final loc = await client.locateModuleAsset('qr');
+
+    expect(
+      server.paths.any((path) =>
+          path.contains('https://github.com/') &&
+          path.endsWith('modules.json')),
+      isTrue,
+      reason: '清单正文必须以代理形态（前缀 + 原始 github URL）请求',
+    );
+    expect(server.countPath('/releases/latest'), 1,
+        reason: 'Release 元数据始终直连，绝不施加代理');
+    expect(
+      server.paths.any((path) => path.contains('/gh/releases/latest')),
+      isFalse,
+      reason: 'api.github.com 入口绝不经代理',
+    );
+
+    expect(loc, isNotNull);
+    expect(loc!.url, githubSoUrl,
+        reason: '返回 URL 必须是代理前的原始 github URL');
+    expect(loc.url.startsWith(proxyPrefix), isFalse);
+    expect(loc.url, isNot(contains(proxyPrefix)));
   });
 }
