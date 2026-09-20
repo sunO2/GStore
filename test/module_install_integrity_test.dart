@@ -111,6 +111,35 @@ class _HangingThenOkFetcher implements ModuleFetcher {
   }
 }
 
+/// 带闸门的「慢」下载器：第 1 次 fetch 由外部闸门控制何时返回 [firstBytes]，
+/// 第 2 次及以后立即返回 [secondBytes]。
+///
+/// 用于制造「旧安装已超时释放锁、新安装已成功落盘后，旧下载才姗姗完成」的窗口，
+/// 证明迟到的孤儿尝试绝不覆盖成功安装的产物。
+class _GatedThenOkFetcher implements ModuleFetcher {
+  _GatedThenOkFetcher(this.firstBytes, this.secondBytes);
+
+  final Uint8List firstBytes;
+  final Uint8List secondBytes;
+  int calls = 0;
+  bool firstSettled = false;
+  final Completer<Uint8List?> _first = Completer<Uint8List?>();
+
+  @override
+  Future<Uint8List?> fetch(String url, {int? maxBytes}) {
+    calls++;
+    if (calls == 1) {
+      return _first.future.whenComplete(() => firstSettled = true);
+    }
+    return Future<Uint8List?>.value(secondBytes);
+  }
+
+  /// 释放第 1 次 fetch（模拟迟到的下载完成）。
+  void releaseFirst() {
+    if (!_first.isCompleted) _first.complete(firstBytes);
+  }
+}
+
 /// 反复泵事件队列直到 [condition] 成立（或超时失败），用于等待真实异步
 /// 文件 IO 推进到下载阶段。
 Future<void> _waitFor(bool Function() condition) async {
@@ -989,6 +1018,126 @@ void main() {
         expect(await loader.downloadAndInstall('x'), isTrue);
         expect(fetcher.calls, 2, reason: '失败后的重试必须真实重新下载');
         expect(loader.debugInstallLockCount, 0);
+      },
+    );
+
+    test(
+      'a gated/slow fetcher: a timed-out attempt never overwrites a succeeding install artifact',
+      () async {
+        final supportDir = makeSupportDir();
+        final payloadA = Uint8List.fromList(utf8.encode('SO_ORPHAN_A'));
+        final shaA = sha256.convert(payloadA).toString();
+        final payloadB = Uint8List.fromList(utf8.encode('SO_SUCCESS_B'));
+        final shaB = sha256.convert(payloadB).toString();
+
+        // 可变清单：attempt1 = 1.0.0（A），attempt2 = 1.0.1（B）。
+        final abiA = <String, dynamic>{
+          'asset': 'libgstore_mod_x_1.0.0-x86_64.so',
+          'sha256': shaA,
+          'size': payloadA.length,
+        };
+        final abiB = <String, dynamic>{
+          'asset': 'libgstore_mod_x_1.0.1-x86_64.so',
+          'sha256': shaB,
+          'size': payloadB.length,
+        };
+        final abiMap = <String, dynamic>{'x86_64': abiA};
+        final entry = <String, dynamic>{'version': '1.0.0', 'abi': abiMap};
+        final manifest = <String, dynamic>{
+          'version': 2,
+          'modules': <String, dynamic>{'x': entry},
+        };
+
+        final fetcher = _GatedThenOkFetcher(payloadA, payloadB);
+        loader.remoteBaseUrl = 'https://example.com/release';
+        loader.debugConfigure(
+          supportDir: supportDir.path,
+          manifestOverride: manifest,
+          downloader: fetcher,
+          isLoadedOverride: (_) async => false,
+          mountOverride: (soPath) async => true,
+          installTimeout: const Duration(milliseconds: 50),
+        );
+
+        // attempt1：fetch 被闸门挂起 → 下载层有界超时失败并释放安装锁。
+        final first = loader.downloadAndInstall('x');
+        await _waitFor(() => fetcher.calls == 1);
+        expect(await first, isFalse, reason: '挂起的下载必须在有界超时内失败');
+        expect(loader.debugInstallLockCount, 0,
+            reason: '超时后安装锁必须释放（非粘滞）');
+
+        // attempt2：清单切到 1.0.1，安装成功落盘。
+        entry['version'] = '1.0.1';
+        abiMap['x86_64'] = abiB;
+        expect(await loader.downloadAndInstall('x'), isTrue,
+            reason: '后续安装必须真实成功');
+
+        final dir = moduleDir(supportDir, 'x');
+        final versionFile = File(p.join(dir.path, 'version'));
+        expect(
+            File(p.join(dir.path, 'libgstore_mod_x_1.0.1.so')).existsSync(), isTrue);
+        expect(await versionFile.readAsString(), '1.0.1',
+            reason: '成功的 attempt2 必须记录 1.0.1');
+
+        // 迟到的 attempt1 下载此刻才完成：其产物绝不能覆盖 attempt2。
+        fetcher.releaseFirst();
+        await _waitFor(() => fetcher.firstSettled);
+        await pumpEventQueue(times: 20);
+
+        expect(
+          File(p.join(dir.path, 'libgstore_mod_x_1.0.0.so.meta')).existsSync(),
+          isFalse,
+          reason: '被取代/超时的 attempt1 绝不写 .meta',
+        );
+        expect(
+          File(p.join(dir.path, 'libgstore_mod_x_1.0.0.so')).existsSync(),
+          isFalse,
+          reason: '被取代/超时的 attempt1 绝不写最终 .so',
+        );
+        expect(await versionFile.readAsString(), '1.0.1',
+            reason: '成功安装的版本记录绝不被迟到的孤儿覆盖');
+        expect(loader.debugInstallLockCount, 0);
+      },
+    );
+
+    test(
+      'a slow-drip HTTP fetch is cut off by the total deadline (bounded, no orphan buffering)',
+      () async {
+        final supportDir = makeSupportDir();
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        server.listen((req) async {
+          try {
+            req.response.statusCode = HttpStatus.ok;
+            req.response.bufferOutput = false;
+            // 慢滴：每 40ms 一个 chunk，永不主动结束（逐事件超时永不触发）。
+            for (var i = 0; i < 400; i++) {
+              req.response.add(const <int>[0x20]);
+              await req.response.flush();
+              await Future<void>.delayed(const Duration(milliseconds: 40));
+            }
+            await req.response.close();
+          } catch (_) {
+            // 客户端在总期限后强制断开 → 写入抛错，属预期（最佳努力中止）。
+          }
+        });
+        addTearDown(() async {
+          await server.close(force: true);
+        });
+
+        loader.debugConfigure(
+          supportDir: supportDir.path,
+          installTimeout: const Duration(milliseconds: 300),
+        );
+        loader.remoteBaseUrl = 'http://127.0.0.1:${server.port}/release';
+
+        final stopwatch = Stopwatch()..start();
+        final manifest = await loader.debugLoadManifest();
+        stopwatch.stop();
+
+        expect(manifest, isNull,
+            reason: '慢滴响应必须在总期限内以失败结束，而非永久挂起');
+        expect(stopwatch.elapsed, lessThan(const Duration(seconds: 3)),
+            reason: '总期限必须约束整个读取，而非随每个 chunk 重置');
       },
     );
   });
