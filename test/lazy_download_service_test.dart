@@ -244,6 +244,40 @@ void main() {
       );
     });
 
+    test('hung kernel probe times out and the service stays functional on Dart', () async {
+      final logs = _captureDebugPrint();
+      final dart = _FakeDownloadService('dart');
+      final rust = _FakeDownloadService('rust');
+      var probes = 0;
+      final never = Completer<bool>();
+      final lazy = LazyDownloadService(
+        dart,
+        rustProbe: () {
+          probes++;
+          return never.future; // 永不完成：模拟内核探测挂起
+        },
+        rustServiceFactory: () => rust,
+        resolutionTimeout: const Duration(milliseconds: 50),
+      );
+
+      final task = await lazy.download('a', 'n', '1', 'u', 'f.apk');
+      expect(task.appName, 'dart', reason: '超时后应永久提交到 Dart 实现');
+      expect(dart.downloadCalls, 1);
+      expect(rust.downloadCalls, 0);
+      expect(probes, 1);
+
+      // 服务仍可用：后续变更类调用走 Dart，不再探测、不再挂起。
+      await lazy.resume(1);
+      expect(dart.resumeCalls, 1);
+      expect(rust.resumeCalls, 0);
+      expect(probes, 1, reason: '解析结果应缓存，不得再次探测');
+      expect(
+        logs.where((l) => l.contains('LazyDownloadService')).length,
+        1,
+        reason: '超时回落只应打印一条告警',
+      );
+    });
+
     test('并发首个变更类调用只解析一次', () async {
       final gate = Completer<bool>();
       final dart = _FakeDownloadService('dart');

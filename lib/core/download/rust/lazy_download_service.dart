@@ -25,24 +25,41 @@ import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 /// Dart 实现，解析完成后原子切换到 Rust 流；**同一条订阅**在切换后继续投递
 /// Rust 事件，消费方无需（也不应）重新绑定。订阅事件流本身**不**触发解析。
 class LazyDownloadService implements IDownloadService {
+  /// 单次内核解析（探测 + 工厂构造）允许的最长耗时。
+  ///
+  /// 为什么需要上限：[_resolve] 只捕获**抛出**的异常，捕获不了**永不完成**的
+  /// 探测（例如原生层/线程池卡死）。此时所有变更类调用都会 `await` 同一个永不
+  /// 完成的 Future，[_active] 永远停在 Dart、且没有终态信号——整个下载能力被
+  /// 无限期挂起且无法恢复。加一个有界超时后，超时即**永久**判定为 Dart 实现，
+  /// 服务始终可用（失败粘滞于 Dart，绝不再挂起）。
+  ///
+  /// 取值 2 秒：探测是「内核是否已挂载」的本地握手，正常在毫秒级返回；2 秒足以
+  /// 覆盖冷路径上的首次通道往返，又能在用户可感知前从卡死中恢复。测试经构造
+  /// 参数 `resolutionTimeout` 注入更短值。
+  static const Duration defaultResolutionTimeout = Duration(seconds: 2);
+
   /// 构造惰性路由。
   ///
   /// [dartFallback] 是构造时即持有的 Dart 实现（只读入口与回落目标）。
   /// [rustProbe] / [rustServiceFactory] 仅用于测试注入：默认分别取
   /// `RustDownloadService.instance.isAvailable` 与 `RustDownloadService.instance`。
+  /// [resolutionTimeout] 为单次解析上限，默认 [defaultResolutionTimeout]。
   LazyDownloadService(
     IDownloadService dartFallback, {
     Future<bool> Function()? rustProbe,
     IDownloadService Function()? rustServiceFactory,
+    Duration resolutionTimeout = defaultResolutionTimeout,
   })  : _dart = dartFallback,
         _rustProbe =
             rustProbe ?? (() => RustDownloadService.instance.isAvailable),
         _rustServiceFactory =
-            rustServiceFactory ?? (() => RustDownloadService.instance);
+            rustServiceFactory ?? (() => RustDownloadService.instance),
+        _resolutionTimeout = resolutionTimeout;
 
   final IDownloadService _dart;
   final Future<bool> Function() _rustProbe;
   final IDownloadService Function() _rustServiceFactory;
+  final Duration _resolutionTimeout;
 
   /// 解析出的 Rust 实现；回退时为 null。
   IDownloadService? _rust;
@@ -68,12 +85,16 @@ class LazyDownloadService implements IDownloadService {
   /// 单飞解析：首个调用创建 `_resolve()`，其余调用直接复用其 Future。
   Future<void> _ensureResolved() => _resolution ??= _resolve();
 
-  /// 探测一次内核；失败/异常都记为不可用，并**只打一条**告警。
+  /// 探测一次内核（**有界**）；失败/异常/超时都记为不可用，并**只打一条**告警。
   Future<void> _resolve() async {
     var available = false;
     Object? cause;
     try {
-      available = await _rustProbe();
+      available = await _rustProbe().timeout(_resolutionTimeout);
+    } on TimeoutException catch (e) {
+      // 探测永不完成：超时即判定不可用，永久停在 Dart，绝不让下载能力被挂起。
+      cause = e;
+      available = false;
     } catch (e) {
       cause = e;
       available = false;
