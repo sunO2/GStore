@@ -332,16 +332,22 @@ class ModuleBootstrap {
   ///
   /// 获取失败时 [task] 不会被执行，原异常原样传播；
   /// 并发调用共享同一次获取（由 [acquire] 单飞保证）。
+  ///
+  /// [maxAttempts] 透传给 [acquire]：只读消费方（如 analyzer）可传 `1`，
+  /// 在「安装未进行且不可安装」时立即降级，**不等待退避重试**；安装已在途时
+  /// 仍会经单飞等待其完成（gate 语义不变）。
   Future<T> run<T>(
     String module,
     Future<T> Function(RustModuleInstance instance) task, {
     String instanceKey = '',
     ModuleInstallPolicy? policy,
+    int maxAttempts = 3,
   }) async {
     final instance = await acquire(
       module,
       instanceKey: instanceKey,
       policy: policy,
+      maxAttempts: maxAttempts,
     );
     return task(instance);
   }

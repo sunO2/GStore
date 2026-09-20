@@ -256,10 +256,14 @@ class AnalyzerRustDecoder {
 
   /// 统一模块路径：调用 → JSON 响应 → 解码回 Dart 类型
   ///
-  /// 经 [ModuleBootstrap.run] 走统一自举门：安装未完成时本调用会**等待**确保
-  /// 完成，再以解析出的实例执行**恰好一次**（安装期绝不返回 `null`）；
+  /// 经 [ModuleBootstrap.run] 走统一自举门：安装**已在途**时本调用会等待其完成，
+  /// 再以解析出的实例执行**恰好一次**（安装期绝不提前返回 `null`）。
+  ///
+  /// analyzer 是**只读消费方**：门取用只尝试一次（`maxAttempts: 1`），因此当模块
+  /// 根本不可安装（无内置产物、无法 dlopen、无远程源）时**立即降级为 `null`**，
+  /// 不进入多次退避重试、不阻塞调用方（如 SDK 分析页的首帧）。
   /// 获取失败（含 [ModuleInstallFailedException]）被捕获并返回 `null`，
-  /// 保持原有「模块不可用即 null」的契约。
+  /// 保持「模块不可用即 null」的契约。
   static Future<T?> _roundtripJson<T>(
     String method,
     Uint8List payload,
@@ -270,6 +274,7 @@ class AnalyzerRustDecoder {
       final resp = await ModuleBootstrap.instance.run<Uint8List?>(
         'analyzer',
         (inst) => inst.callModule(method, payload),
+        maxAttempts: 1,
       );
       if (resp == null || resp.isEmpty) return null;
       final json = jsonDecode(utf8.decode(resp, allowMalformed: true));
