@@ -92,6 +92,25 @@ class _FlakyFetcher implements ModuleFetcher {
   }
 }
 
+/// 首次 fetch **永不完成**（模拟挂起的传输），此后返回固定字节。
+///
+/// 用于证明「挂起的下载会被有界超时打断、释放安装锁，且后续调用可真正重试」。
+class _HangingThenOkFetcher implements ModuleFetcher {
+  _HangingThenOkFetcher(this.bytes);
+
+  final Uint8List bytes;
+  int calls = 0;
+
+  @override
+  Future<Uint8List?> fetch(String url, {int? maxBytes}) {
+    calls++;
+    if (calls == 1) {
+      return Completer<Uint8List?>().future; // 永不完成
+    }
+    return Future<Uint8List?>.value(bytes);
+  }
+}
+
 /// 反复泵事件队列直到 [condition] 成立（或超时失败），用于等待真实异步
 /// 文件 IO 推进到下载阶段。
 Future<void> _waitFor(bool Function() condition) async {
@@ -484,6 +503,9 @@ void main() {
       final dir = moduleDir(supportDir, 'x')..createSync(recursive: true);
       final tmp = File(p.join(dir.path, 'libgstore_mod_x_1.0.0.so.tmp'))
         ..writeAsBytesSync(utf8.encode('HALF_WRITTEN'));
+      // 模拟「上次中断遗留」：把 mtime 回拨到启动清理的年龄阈值之前，
+      // 否则新近的 .tmp 会被年龄过滤跳过（那是刻意的并发保护）。
+      tmp.setLastModifiedSync(DateTime.now().subtract(const Duration(hours: 1)));
 
       final mounted = <String>[];
       loader.debugConfigure(
@@ -498,6 +520,24 @@ void main() {
       expect(await loader.ensureModule('x'), isFalse);
       expect(tmp.existsSync(), isFalse, reason: '遗留 .tmp 必须被清理');
       expect(mounted, isEmpty);
+    });
+
+    test('启动清理不删除新近的 .tmp（并发安装正在写入，绝不误删）', () async {
+      final supportDir = makeSupportDir();
+      final dir = moduleDir(supportDir, 'x')..createSync(recursive: true);
+      final freshTmp = File(p.join(dir.path, 'libgstore_mod_x_1.0.0.so.tmp'))
+        ..writeAsBytesSync(utf8.encode('IN_PROGRESS'));
+
+      loader.debugConfigure(supportDir: supportDir.path);
+      // 年龄过滤下的启动清理：新近创建的 .tmp 必须保留。
+      await loader.cleanupLeftoverTemp(minAge: const Duration(minutes: 10));
+
+      expect(freshTmp.existsSync(), isTrue,
+          reason: '并发安装正在写入的新近 .tmp 绝不能被启动清理删除');
+
+      // 显式零年龄清理仍会删除它（默认路径行为不变）。
+      await loader.cleanupLeftoverTemp();
+      expect(freshTmp.existsSync(), isFalse);
     });
 
     test('启动清理删除 .tmp/.meta.tmp/.sig.tmp，保留 .so/.meta/.sig', () async {
@@ -788,34 +828,133 @@ void main() {
           },
         );
 
-        // 入口 A（按需安装）先启动：持有该模块的安装锁，下载被闸门挂起。
-        final ensure = loader.ensureModule('x');
+        // 入口 A（后台更新）先启动：持有该模块的安装锁，下载被闸门挂起。
+        final bg = loader.downloadAndInstall('x');
         await _waitFor(() => fetcher.calls == 1);
         expect(loader.debugInstallLockCount, 1,
-            reason: '按需安装进行中应持有该模块的安装锁');
+            reason: '后台更新进行中应持有该模块的安装锁');
 
-        // 入口 B（后台更新）随后启动。它必须**等待**该锁，而不是并发进入落盘。
-        final bg = loader.downloadAndInstall('x');
-        // 充分泵事件队列，让后台路径推进到锁前；此时第二次下载绝不应开始。
+        // 入口 B（按需安装）随后启动。它必须**等待**该锁，而不是并发进入落盘。
+        final ensure = loader.ensureModule('x');
+        // 充分泵事件队列，让按需路径推进到锁前；此时第二次下载绝不应开始。
         for (var i = 0; i < 100; i++) {
           await pumpEventQueue(times: 1);
         }
         expect(fetcher.calls, 1,
-            reason: '按需安装持锁期间，后台更新不得开始第二次下载（必须等待）');
+            reason: '后台更新持锁期间，按需安装不得开始第二次下载（必须等待）');
         expect(fetcher.active, 1, reason: '同一模块任意时刻至多一个在途下载');
         expect(loader.debugInstallLockCount, 1);
 
-        // 放行：按需安装完成并释放锁，后台更新随后**真正执行**自己的下载。
+        // 放行：后台更新完成并释放锁，按需安装随后**真正执行**自己的下载并挂载。
         fetcher.gate.complete();
         final results = await Future.wait<bool>(<Future<bool>>[ensure, bg]);
 
         expect(results, everyElement(isTrue));
         expect(fetcher.calls, 2,
-            reason: '后台更新等待后必须真正执行自己的下载（而非被跳过）');
+            reason: '按需安装等待后必须真正执行自己的下载（而非被跳过）');
         expect(fetcher.maxActive, 1,
             reason: '两个入口的下载在任意时刻至多一个在途：已串行化，绝不交错');
         expect(mounted, hasLength(1), reason: '仅按需安装挂载，后台更新绝不挂载');
         expect(loader.debugInstallLockCount, 0, reason: '全部完成后安装锁必须释放');
+      },
+    );
+
+    test(
+      'background downloadAndInstall during an ensure re-checks under the lock and skips a duplicate download',
+      () async {
+        final supportDir = makeSupportDir();
+        final payload = Uint8List.fromList(utf8.encode('SO_DEDUP'));
+        final sha = sha256.convert(payload).toString();
+
+        final fetcher = _ConcurrencyFetcher(payload);
+        final mounted = <String>[];
+        loader.remoteBaseUrl = 'https://example.com/release';
+        loader.debugConfigure(
+          supportDir: supportDir.path,
+          manifestOverride: _manifest(
+            module: 'x',
+            version: '1.0.0',
+            asset: 'libgstore_mod_x_1.0.0-x86_64.so',
+            sha256Hex: sha,
+            size: payload.length,
+          ),
+          downloader: fetcher,
+          isLoadedOverride: (_) async => false,
+          mountOverride: (soPath) async {
+            mounted.add(soPath);
+            return true;
+          },
+        );
+
+        // 按需安装先启动并持有安装锁（下载被闸门挂起）。
+        final ensure = loader.ensureModule('x');
+        await _waitFor(() => fetcher.calls == 1);
+        expect(loader.debugInstallLockCount, 1);
+
+        // 后台更新在按需安装进行中到达：必须等锁，然后在**锁内**复检「无需更新」。
+        final bg = loader.downloadAndInstall('x');
+        for (var i = 0; i < 100; i++) {
+          await pumpEventQueue(times: 1);
+        }
+        expect(fetcher.calls, 1, reason: '后台更新在获得锁之前不得开始下载');
+
+        fetcher.gate.complete();
+        expect(await ensure, isTrue, reason: '按需安装应完成并挂载');
+        expect(await bg, isFalse,
+            reason: '锁内复检发现同版本已落盘，必须跳过重复下载（返回 false）');
+        expect(fetcher.calls, 1, reason: '后台更新绝不重复下载同一版本');
+        expect(fetcher.maxActive, 1, reason: '同一模块任意时刻至多一个在途下载');
+        expect(mounted, hasLength(1), reason: '仅按需安装挂载，后台更新绝不挂载');
+        expect(loader.debugInstallLockCount, 0);
+      },
+    );
+
+    test(
+      'a hung download times out, releases the install lock, and a later call retries',
+      () async {
+        final supportDir = makeSupportDir();
+        final payload = Uint8List.fromList(utf8.encode('SO_TIMEOUT_RETRY'));
+        final sha = sha256.convert(payload).toString();
+
+        final fetcher = _HangingThenOkFetcher(payload);
+        final mounted = <String>[];
+        loader.remoteBaseUrl = 'https://example.com/release';
+        loader.debugConfigure(
+          supportDir: supportDir.path,
+          manifestOverride: _manifest(
+            module: 'x',
+            version: '1.0.0',
+            asset: 'libgstore_mod_x_1.0.0-x86_64.so',
+            sha256Hex: sha,
+            size: payload.length,
+          ),
+          downloader: fetcher,
+          isLoadedOverride: (_) async => false,
+          mountOverride: (soPath) async {
+            mounted.add(soPath);
+            return true;
+          },
+          installTimeout: const Duration(milliseconds: 50),
+        );
+        expect(loader.debugInstallTimeout, const Duration(milliseconds: 50));
+
+        final stopwatch = Stopwatch()..start();
+        expect(await loader.ensureModule('x'), isFalse,
+            reason: '挂起的下载必须在有界超时内失败（返回 false，而非永久挂起）');
+        stopwatch.stop();
+        expect(stopwatch.elapsed, lessThan(const Duration(seconds: 5)),
+            reason: '必须在短超时内终止，而非永久挂起');
+        expect(loader.debugInstallLockCount, 0,
+            reason: '下载超时后每模块安装锁必须释放（不得永久阻塞同模块安装）');
+        expect(loader.debugEnsureInFlightCount, 0,
+            reason: '超时后单飞条目必须释放（失败非粘滞）');
+
+        // 后续调用必须真实重试：同一配置/同一锁表下，第二次 fetch 立即成功。
+        expect(await loader.ensureModule('x'), isTrue,
+            reason: '超时非粘滞：后续调用必须真正重试并成功');
+        expect(fetcher.calls, 2, reason: '重试必须真实重新发起下载');
+        expect(mounted, hasLength(1));
+        expect(loader.debugInstallLockCount, 0);
       },
     );
 

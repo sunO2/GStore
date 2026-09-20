@@ -178,8 +178,30 @@ class RustModuleLoader {
   /// 粘滞锁，后续调用仍可重试。
   final Map<String, Future<void>> _installTail = {};
 
+  /// 单次模块安装（下载 + 落盘 + 挂载握手）的**整体上限**：超过即判失败并释放
+  /// 每模块安装锁，绝不永久占用 [_installTail]（失败**非粘滞**，后续调用可重试）。
+  ///
+  /// 默认 3 分钟：模块 `.so` 通常 < 20MB，3 分钟足以覆盖慢速移动网络；同时有界，
+  /// 保证一次会话内一定能从「挂起的传输」中恢复（而不是该模块永久无法安装）。
+  /// 测试经 [debugConfigure] 的 `installTimeout` 注入更短值。
+  static const Duration defaultInstallTimeout = Duration(minutes: 3);
+
+  /// 整体上限相对下载层自身超时（见 [_fetchBytes]）的余量：下载先于整体上限失败
+  /// （**最佳努力中止**），使孤儿安装在整体上限之前自行结束、不再继续写盘。
+  static const Duration _installTimeoutSlack = Duration(seconds: 5);
+
+  /// 当前生效的安装整体上限（[debugConfigure] 可注入；默认 [defaultInstallTimeout]）。
+  Duration _installTimeout = defaultInstallTimeout;
+
   /// 启动清理遗留 `.tmp` 是否已执行（每个进程/测试配置后恰好一次）。
   bool _tempCleanupDone = false;
+
+  /// 启动清理只删除**早于**此时长的遗留 `.tmp`。
+  ///
+  /// 并发安装正在写入的 `.tmp` 必定是新近创建，故年龄过滤可保证启动清理**绝不**
+  /// 误删在用的 `.tmp`（阈值大于 [defaultInstallTimeout]，即长于任何有界安装）。
+  /// 显式调用 [cleanupLeftoverTemp]（如测试）默认 `minAge = Duration.zero` 不受限。
+  static const Duration _staleTempMinAge = Duration(minutes: 10);
 
   /// Phase 2 无签名下载产物迁移是否已执行（每个进程/测试配置后恰好一次）。
   bool _signatureMigrationDone = false;
@@ -279,6 +301,7 @@ class RustModuleLoader {
         downloadProgressOverride,
     DateTime Function()? clock,
     void Function(String name, String soPath)? beforeMetaWrite,
+    Duration? installTimeout,
   }) {
     _manifestSource = manifestSource;
     _downloader = downloader;
@@ -294,6 +317,7 @@ class RustModuleLoader {
     _downloadProgressOverride = downloadProgressOverride;
     _clockOverride = clock;
     _beforeMetaWriteHook = beforeMetaWrite;
+    _installTimeout = installTimeout ?? defaultInstallTimeout;
     // 清单/内置清单可能变化，清缓存避免跨测试泄漏。
     _manifestCache = null;
     _builtinManifestCache = null;
@@ -322,6 +346,7 @@ class RustModuleLoader {
     _downloadProgressOverride = null;
     _clockOverride = null;
     _beforeMetaWriteHook = null;
+    _installTimeout = defaultInstallTimeout;
     _tempCleanupDone = false;
     _signatureMigrationDone = false;
     _manifestCache = null;
@@ -361,6 +386,10 @@ class RustModuleLoader {
   /// 单调用路径完成后必须归零；并发同模块安装期间恒为 1（无论持有者还是等待者）。
   @visibleForTesting
   int get debugInstallLockCount => _installTail.length;
+
+  /// 当前生效的安装整体上限（测试专用；经 [debugConfigure] 注入）。
+  @visibleForTesting
+  Duration get debugInstallTimeout => _installTimeout;
 
   /// 读取清单（测试专用；覆盖生效时不触发真实网络）。
   @visibleForTesting
@@ -731,34 +760,38 @@ class RustModuleLoader {
           !await _hasLocalOrBuiltin(name)) {
         return false;
       }
-      final target = await _remoteTarget(name, forceRefresh: true);
-      if (target == null) return false;
-
-      // 基线：本地 `.meta` 优先；内置**声明**版本仅在**真实内置产物存在**时
-      // 才可作比较基线——slim 包声明仍在但 `.so` 被排除，此时无可回退版本，
-      // 同版本远端产物也必须下载（否则永远判「无需更新」而拒绝安装）。
-      final localMeta = await _localMetaInfo(name);
-      final builtinArtifactExists = await _builtinArtifactExists(name);
-      final baselineVersion = localMeta?.version ??
-          (builtinArtifactExists ? await _builtinVersion(name) : null);
-      final needed = baselineVersion == null ||
-          _compareVersions(target.version, baselineVersion) > 0 ||
-          (localMeta != null &&
-              _compareVersions(target.version, localMeta.version) == 0 &&
-              target.sha256.toLowerCase() != localMeta.sha256.toLowerCase());
-      if (!needed) return false;
 
       // 经同一把每模块安装锁串行落盘：若并发的按需安装 `ensureModule`
       // 正持有该模块锁，本后台更新会**等待其完成后再执行**（而非跳过或交错）。
-      final ok = await _serializedInstall(
-        name,
-        () => _downloadAndInstall(
+      //
+      // **目标解析与「是否真的需要」复检都在锁内**：因为锁外的检查会在等锁的
+      // 窗口内过期——若某次按需安装刚在等锁期间落盘了同一版本，锁内复检会判定
+      // `needed == false` 并直接跳过，绝不重复下载同一版本。
+      final ok = await _serializedInstall(name, () async {
+        final target = await _remoteTarget(name, forceRefresh: true);
+        if (target == null) return false;
+
+        // 基线：本地 `.meta` 优先；内置**声明**版本仅在**真实内置产物存在**时
+        // 才可作比较基线——slim 包声明仍在但 `.so` 被排除，此时无可回退版本，
+        // 同版本远端产物也必须下载（否则永远判「无需更新」而拒绝安装）。
+        final localMeta = await _localMetaInfo(name);
+        final builtinArtifactExists = await _builtinArtifactExists(name);
+        final baselineVersion = localMeta?.version ??
+            (builtinArtifactExists ? await _builtinVersion(name) : null);
+        final needed = baselineVersion == null ||
+            _compareVersions(target.version, baselineVersion) > 0 ||
+            (localMeta != null &&
+                _compareVersions(target.version, localMeta.version) == 0 &&
+                target.sha256.toLowerCase() != localMeta.sha256.toLowerCase());
+        if (!needed) return false;
+
+        return _downloadAndInstall(
           name,
           mount: false,
           target: target,
           onProgress: onProgress,
-        ),
-      );
+        );
+      });
       // 后台刷新后失效清单缓存：下次解析/展示拿到最新清单。
       _manifestCache = null;
       return ok;
@@ -1067,7 +1100,14 @@ class RustModuleLoader {
     final gate = Completer<void>();
     _installTail[name] = gate.future;
     if (previous != null) {
-      await previous;
+      try {
+        await previous;
+      } catch (e) {
+        // 防御：`gate` 只以**正常完成**释放，正常情况下 `previous` 不会带错误；
+        // 但万一前序以错误完成（异常路径/第三方 Completer 误用），也绝不因此
+        // 永久阻塞整条同模块安装链——记录后继续，本次 `finally` 仍会放行 `gate`。
+        appLog.warning('RustModuleLoader: 前序安装锁以异常结束（已忽略并继续）- $e');
+      }
     }
     try {
       return await action();
@@ -1097,6 +1137,35 @@ class RustModuleLoader {
   ///
   /// 进度回调抛出的异常一律被 [_reportProgress] 捕获并记录，**绝不**中断安装。
   Future<bool> _downloadAndInstall(
+    String name, {
+    required bool mount,
+    _RemoteTarget? target,
+    ModuleProgressCallback? onProgress,
+  }) {
+    // 整体有界：任何卡住的下载/落盘/挂载都会在上限内以 `false` 结束，从而在
+    // [_serializedInstall] 的 `finally` 中释放每模块安装锁（**非粘滞**，后续可重试）。
+    //
+    // 下载层另有更短的自身超时（见 [_fetchBytes]）：通常先触发并**最佳努力中止**
+    // 传输，使孤儿安装在整体上限前自行结束、不再继续写盘。整体超时为兜底，针对
+    // 下载之外的挂起（如挂载握手）；故留有 [_installTimeoutSlack] 余量以让下载层
+    // 先失败。超时后底层 future 不取消（Dart 语义），但已尽力让其尽早结束。
+    final bound = _installTimeout + _installTimeoutSlack;
+    return _downloadAndInstallInner(
+      name,
+      mount: mount,
+      target: target,
+      onProgress: onProgress,
+    ).timeout(
+      bound,
+      onTimeout: () {
+        appLog.error(
+            'RustModuleLoader: $name 安装整体超时（${bound.inMilliseconds}ms），放弃本次安装并释放安装锁（可重试）');
+        return false;
+      },
+    );
+  }
+
+  Future<bool> _downloadAndInstallInner(
     String name, {
     required bool mount,
     _RemoteTarget? target,
@@ -1497,16 +1566,33 @@ class RustModuleLoader {
   /// 删除下载目录中上次中断遗留的 `.tmp`（启动清理，幂等）。
   ///
   /// 覆盖：下载 `.tmp`、`.meta.tmp`、`.sig.tmp`。**不**触碰 `.so`/`.meta`/`.sig`。
+  ///
+  /// [minAge] 大于零时只删除**修改时间早于此时长**的 `.tmp`：并发安装在锁下
+  /// 正在写入的 `.tmp` 一定是新近创建，从而**绝不**被误删（修复启动清理与并发
+  /// 安装争抢同一 `.tmp` 的竞态）。默认 [Duration.zero] 即全删（显式清理/测试）。
   @visibleForTesting
-  Future<void> cleanupLeftoverTemp() async {
+  Future<void> cleanupLeftoverTemp({Duration minAge = Duration.zero}) async {
     try {
       final root = Directory(p.join(await _supportDir(), 'gstore_modules'));
       if (!await root.exists()) return;
+      final now = DateTime.now();
       await for (final entity
           in root.list(recursive: true, followLinks: false)) {
-        if (entity is File && entity.path.endsWith('.tmp')) {
-          await _deleteQuietly(entity);
+        if (entity is! File || !entity.path.endsWith('.tmp')) continue;
+        if (minAge > Duration.zero) {
+          DateTime? modified;
+          try {
+            modified = (await entity.stat()).modified;
+          } catch (e) {
+            appLog.warning('RustModuleLoader: 读取 .tmp 时间戳失败（跳过）- $e');
+            continue;
+          }
+          if (now.difference(modified) < minAge) {
+            // 新近创建 → 可能正被并发安装写入，跳过，绝不误删在用的 .tmp。
+            continue;
+          }
         }
+        await _deleteQuietly(entity);
       }
     } catch (e) {
       appLog.warning('RustModuleLoader: 清理遗留 .tmp 失败 - $e');
@@ -1514,10 +1600,12 @@ class RustModuleLoader {
   }
 
   /// 启动清理只执行一次（每次 [debugConfigure]/[debugReset] 后重置）。
+  ///
+  /// 使用 [_staleTempMinAge] 年龄过滤：绝不删除并发安装此刻正在写入的 `.tmp`。
   Future<void> _cleanupTempOnce() async {
     if (_tempCleanupDone) return;
     _tempCleanupDone = true;
-    await cleanupLeftoverTemp();
+    await cleanupLeftoverTemp(minAge: _staleTempMinAge);
   }
 
   /// `.tmp` → 最终文件：同目录 rename 原子替换；目标已存在时先删再 rename。
@@ -1549,35 +1637,50 @@ class RustModuleLoader {
 
   /// 获取资产字节：优先注入的 [ModuleFetcher]（测试/Todo 3 下载器），
   /// 否则走生产 `HttpClient`。
+  ///
+  /// 自身受 [_installTimeout] 约束：挂起的传输在该上限内以 `null` 结束（失败），
+  /// 使 [_downloadAndInstall] 正常返回 `false` 并释放安装锁；HTTP 路径在超时时
+  /// 强制断开连接（**最佳努力中止**），不留下继续写入的孤儿请求。
   Future<Uint8List?> _fetchBytes(String url, {int? maxBytes}) async {
     final fetcher = _downloader;
+    final effective = _installTimeout;
     if (fetcher != null) {
       try {
-        return await fetcher.fetch(url, maxBytes: maxBytes);
+        return await fetcher.fetch(url, maxBytes: maxBytes).timeout(effective);
+      } on TimeoutException {
+        appLog.warning(
+            'RustModuleLoader: 注入下载器超时（${effective.inMilliseconds}ms），放弃本次下载 - $url');
+        return null;
       } catch (e) {
         appLog.warning('RustModuleLoader: 注入下载器失败 - $e');
         return null;
       }
     }
-    return _httpGetBytes(url);
+    return _httpGetBytes(url, timeout: effective);
   }
 
-  Future<Uint8List?> _httpGetBytes(String url) async {
-    final client = HttpClient();
+  Future<Uint8List?> _httpGetBytes(String url, {Duration? timeout}) async {
+    final effective = timeout ?? _installTimeout;
+    // `force: true` 在超时/异常时强制断开底层连接（最佳努力中止传输）。
+    final client = HttpClient()..connectionTimeout = effective;
     try {
-      final req = await client.getUrl(Uri.parse(url));
-      final resp = await req.close();
+      final req = await client.getUrl(Uri.parse(url)).timeout(effective);
+      final resp = await req.close().timeout(effective);
       if (resp.statusCode != 200) return null;
       final builder = BytesBuilder();
-      await for (final chunk in resp) {
+      await for (final chunk in resp.timeout(effective)) {
         builder.add(chunk);
       }
       return builder.takeBytes();
+    } on TimeoutException {
+      appLog.warning(
+          'RustModuleLoader: HTTP 下载超时（${effective.inMilliseconds}ms），中止请求 - $url');
+      return null;
     } catch (e) {
       appLog.warning('RustModuleLoader: HTTP 下载失败 - $e');
       return null;
     } finally {
-      client.close();
+      client.close(force: true);
     }
   }
 
