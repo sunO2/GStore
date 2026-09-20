@@ -43,13 +43,16 @@ class RustDownloadService implements IDownloadService {
   /// [isAvailable] 与所有 `_invoke` 共用此路径：首次真实使用即触发一次门的
   /// 安装确保（on-use install），并发调用由门的两级单飞去重；失败抛出
   /// [StateError]（download 模块不可用）。
+  ///
+  /// **不显式传 `factory`**：门在未显式指定工厂时，默认即用
+  /// `RustModuleInstance.createWithContext(module, handle)`（与 download 所需完全
+  /// 一致），因此这里再传一个等价闭包纯属冗余——反而会以更高优先级遮蔽
+  /// `ModuleBootstrap.debugConfigure(factoryOverride:)` 这一测试接缝，使 download
+  /// 成为唯一无法在无 FFI 下注入假实例的门消费方。交给门默认值即可：生产行为
+  /// 字节不变，测试接缝恢复可用。
   Future<RustModuleInstance> _ensureInstance() async {
     try {
-      return await ModuleBootstrap.instance.acquire(
-        moduleName,
-        factory: (handle) =>
-            RustModuleInstance.createWithContext(moduleName, handle),
-      );
+      return await ModuleBootstrap.instance.acquire(moduleName);
     } on ModuleInstallFailedException {
       throw StateError('RustDownloadService: download 模块不可用');
     }
