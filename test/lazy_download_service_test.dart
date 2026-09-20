@@ -261,21 +261,136 @@ void main() {
       );
 
       final task = await lazy.download('a', 'n', '1', 'u', 'f.apk');
-      expect(task.appName, 'dart', reason: '超时后应永久提交到 Dart 实现');
+      expect(task.appName, 'dart', reason: '超时后当前调用应回落到 Dart（不挂起）');
       expect(dart.downloadCalls, 1);
       expect(rust.downloadCalls, 0);
       expect(probes, 1);
 
-      // 服务仍可用：后续变更类调用走 Dart，不再探测、不再挂起。
+      // 冷却期内：服务仍可用，后续变更类调用走 Dart，不再探测、不再挂起。
       await lazy.resume(1);
       expect(dart.resumeCalls, 1);
       expect(rust.resumeCalls, 0);
-      expect(probes, 1, reason: '解析结果应缓存，不得再次探测');
+      expect(probes, 1, reason: '冷却期内不得重复探测');
       expect(
         logs.where((l) => l.contains('LazyDownloadService')).length,
         1,
-        reason: '超时回落只应打印一条告警',
+        reason: '每次解析尝试只应打印一条告警',
       );
+    });
+
+    test('超时后可恢复：冷却结束后的调用重新解析并成功切到 Rust', () async {
+      final dart = _FakeDownloadService('dart');
+      final rust = _FakeDownloadService('rust');
+      var probes = 0;
+      final never = Completer<bool>();
+      final lazy = LazyDownloadService(
+        dart,
+        rustProbe: () {
+          probes++;
+          // 首次挂起（超时），之后内核已就绪返回 true。
+          return probes == 1 ? never.future : Future<bool>.value(true);
+        },
+        rustServiceFactory: () => rust,
+        resolutionTimeout: const Duration(milliseconds: 20),
+        resolutionRetryCooldown: Duration.zero,
+      );
+
+      final first = await lazy.download('a', 'n', '1', 'u', 'f.apk');
+      expect(first.appName, 'dart', reason: '首次超时，当前调用回落 Dart');
+      expect(dart.downloadCalls, 1);
+      expect(probes, 1);
+
+      final second = await lazy.download('a', 'n', '1', 'u', 'f2.apk');
+      expect(second.appName, 'rust', reason: '冷却后重试成功，应切到 Rust');
+      expect(probes, 2);
+      expect(rust.downloadCalls, 1);
+      expect(dart.downloadCalls, 1, reason: '首次已走 Dart，之后不再走 Dart');
+
+      // 解析已终态：后续调用不再探测。
+      await lazy.resume(1);
+      expect(probes, 2);
+      expect(rust.resumeCalls, 1);
+    });
+
+    test('超时重试预算耗尽后永久回落 Dart，每次尝试各一条告警', () async {
+      final logs = _captureDebugPrint();
+      final dart = _FakeDownloadService('dart');
+      final rust = _FakeDownloadService('rust');
+      var probes = 0;
+      final never = Completer<bool>();
+      final lazy = LazyDownloadService(
+        dart,
+        rustProbe: () {
+          probes++;
+          return never.future; // 始终挂起
+        },
+        rustServiceFactory: () => rust,
+        resolutionTimeout: const Duration(milliseconds: 10),
+        maxResolutionAttempts: 3,
+        resolutionRetryCooldown: Duration.zero,
+      );
+
+      await lazy.pause(1); // 尝试 1 → 超时，可恢复
+      await lazy.pause(2); // 尝试 2 → 超时，可恢复
+      await lazy.pause(3); // 尝试 3 → 超时，预算耗尽，永久回落
+      expect(probes, 3);
+      expect(dart.pauseCalls, 3);
+
+      // 已终态：不再探测。
+      await lazy.pause(4);
+      expect(probes, 3, reason: '预算耗尽的超时不再重试');
+      expect(dart.pauseCalls, 4);
+      expect(rust.pauseCalls, 0);
+      expect(
+        logs.where((l) => l.contains('LazyDownloadService')).length,
+        3,
+        reason: '每次尝试一条告警，共 3 条',
+      );
+    });
+
+    test('超时可恢复期间合并流保持 Dart，重试成功后同一订阅切到 Rust', () async {
+      final dart = _FakeDownloadService('dart');
+      final rust = _FakeDownloadService('rust');
+      var probes = 0;
+      final never = Completer<bool>();
+      final lazy = LazyDownloadService(
+        dart,
+        rustProbe: () {
+          probes++;
+          return probes == 1 ? never.future : Future<bool>.value(true);
+        },
+        rustServiceFactory: () => rust,
+        resolutionTimeout: const Duration(milliseconds: 20),
+        resolutionRetryCooldown: Duration.zero,
+      );
+
+      final received = <DownloadTask>[];
+      final sub = lazy.watchAll().listen(received.add);
+      await pumpEventQueue();
+      expect(probes, 0, reason: '订阅事件流不触发解析');
+
+      // 首次变更类调用 → 超时可恢复，流仍绑定 Dart。
+      await lazy.download('a', 'n', '1', 'u', 'f.apk');
+      await pumpEventQueue();
+      expect(rust.watchAllCalls, 0, reason: '可恢复期间不得换到 Rust 流');
+
+      dart.allController.add(_task(5, source: 'dart'));
+      await pumpEventQueue();
+      expect(received.map((t) => t.appName), contains('dart'));
+
+      // 冷却后重试成功 → 同一条订阅换到 Rust。
+      await lazy.resume(1);
+      await pumpEventQueue();
+      expect(probes, 2);
+      expect(rust.watchAllCalls, 1, reason: '重试成功后应换到 Rust 流');
+
+      rust.allController.add(
+        _task(6, source: 'rust', status: DownloadStatusEnum.downloading),
+      );
+      await pumpEventQueue();
+      expect(received.last.appName, 'rust');
+
+      await sub.cancel();
     });
 
     test('并发首个变更类调用只解析一次', () async {
