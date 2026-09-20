@@ -1300,6 +1300,13 @@ class RustModuleLoader {
       await _atomicWrite(metaFile, meta);
 
       // 5. 签名侧车：true 写非空 `.sig`；false 删除同名遗留 `.sig`。
+      // 复核代号：`.meta` 落地后若已被取代，绝不写/删 `.sig` 侧车——否则孤儿可能
+      // 覆盖或删除新安装写入的签名。清理本次 `.sig.tmp` 残留后放弃。
+      if (_installationSuperseded(name, generation)) {
+        appLog.warning('RustModuleLoader: $name 安装已被取代，放弃 .sig 侧车（不写不删）');
+        await _deleteQuietly(File('${sigFile.path}.tmp'));
+        return false;
+      }
       if (requireSignature) {
         await _atomicWrite(sigFile, '${signature!}\n');
       } else {
@@ -1322,6 +1329,12 @@ class RustModuleLoader {
       if (!mount) {
         // 后台路径：只安装，绝不挂载（下次启动生效）。
         return true;
+      }
+      // 复核代号：挂载前若已被取代，绝不挂载本地产物（避免挂载陈旧 `.so` 或写入
+      // `quarantine.json` 污染新安装状态）。
+      if (_installationSuperseded(name, generation)) {
+        appLog.warning('RustModuleLoader: $name 安装已被取代，放弃挂载本地产物');
+        return false;
       }
       return _mountLocal(name, finalSo.path);
     } catch (e) {
@@ -1737,9 +1750,9 @@ class RustModuleLoader {
     // **逐事件**超时不同，它不随每个 chunk 重置——慢滴响应（chunk 间隔 < 上限但
     // 永不结束）也会在 `effective` 内终止，绝不无限缓冲。
     final deadline = Stopwatch()..start();
-    try {
-      final req = await client.getUrl(Uri.parse(url)).timeout(effective);
-      final resp = await req.close().timeout(effective);
+    Future<Uint8List?> readAll() async {
+      final req = await client.getUrl(Uri.parse(url));
+      final resp = await req.close();
       if (resp.statusCode != 200) return null;
       final builder = BytesBuilder();
       final limit = maxBytes;
@@ -1757,6 +1770,14 @@ class RustModuleLoader {
         }
       }
       return builder.takeBytes();
+    }
+
+    try {
+      // **硬上限**：整个请求（连接 + 响应头 + 体）由单一 `.timeout(effective)` 封顶，
+      // 与逐 chunk 的总期限检查叠加，使最坏墙钟时间 ≈ `effective`（而非连接/头/体
+      // 各得一份、最坏 ~3×`effective`）。逐 chunk 检查仍在响应永不结束但每块都在
+      // 上限内时兜底。
+      return await readAll().timeout(effective);
     } on TimeoutException {
       appLog.warning(
           'RustModuleLoader: HTTP 下载超时（${effective.inMilliseconds}ms），中止请求 - $url');

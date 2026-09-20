@@ -1035,11 +1035,13 @@ void main() {
           'asset': 'libgstore_mod_x_1.0.0-x86_64.so',
           'sha256': shaA,
           'size': payloadA.length,
+          'signature': 'deadbeef',
         };
         final abiB = <String, dynamic>{
           'asset': 'libgstore_mod_x_1.0.1-x86_64.so',
           'sha256': shaB,
           'size': payloadB.length,
+          'signature': 'cafebabe',
         };
         final abiMap = <String, dynamic>{'x86_64': abiA};
         final entry = <String, dynamic>{'version': '1.0.0', 'abi': abiMap};
@@ -1049,6 +1051,7 @@ void main() {
         };
 
         final fetcher = _GatedThenOkFetcher(payloadA, payloadB);
+        loader.requireSignature = true;
         loader.remoteBaseUrl = 'https://example.com/release';
         loader.debugConfigure(
           supportDir: supportDir.path,
@@ -1094,6 +1097,16 @@ void main() {
           isFalse,
           reason: '被取代/超时的 attempt1 绝不写最终 .so',
         );
+        expect(
+          File(p.join(dir.path, 'libgstore_mod_x_1.0.0.so.sig')).existsSync(),
+          isFalse,
+          reason: '被取代/超时的 attempt1 绝不写 .sig 侧车',
+        );
+        final winnerSig = File(p.join(dir.path, 'libgstore_mod_x_1.0.1.so.sig'));
+        expect(winnerSig.existsSync(), isTrue,
+            reason: '成功的 attempt2 必须写 .sig 侧车（requireSignature=true）');
+        expect(winnerSig.readAsStringSync().trim().isNotEmpty, isTrue,
+            reason: '不得写出空 .sig');
         expect(await versionFile.readAsString(), '1.0.1',
             reason: '成功安装的版本记录绝不被迟到的孤儿覆盖');
         expect(loader.debugInstallLockCount, 0);

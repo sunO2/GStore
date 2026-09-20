@@ -14,9 +14,11 @@ import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 /// 启动那一刻的状态上（模块当时不在，就整个进程回退 Dart）。这里改成：
 /// [getTask] / [listTasks] / [watch] / [watchAll] 这类入口先用构造时传入的
 /// Dart 实现顶着，真正的 [download] / [pause] / … 才去解析内核；解析单飞、
-/// 结果缓存。探测**超时**是可恢复的：本次调用先走 Dart，冷却后由后续调用在
-/// 有限预算内重试，预算耗尽才永久回落；探测 false / 抛异常 / 工厂构造失败则
-/// 一次即永久回落 Dart。
+/// 结果缓存。探测**超时**是可恢复的：发起解析的**首个**调用最多等待
+/// `resolutionTimeout` 才以 Dart 执行（有界，绝不无限挂起）；随后处于重试冷却
+/// 期内的调用**不等待**、直接以 Dart 执行，待冷却结束后由下一次调用在有限预算
+/// 内重试，预算耗尽才永久回落。探测 false / 抛异常 / 工厂构造失败则一次即永久
+/// 回落 Dart。
 ///
 /// **不存在"绕过清单直连 URL"的兜底**：模块若不在 manifest 里，
 /// [RustDownloadService] 的门无法解析到任何远端目标（`_remoteTarget`
