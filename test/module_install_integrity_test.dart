@@ -5,6 +5,7 @@
 // `file_names` 与 lib/core/rust 既有约定一致。
 // ignore_for_file: file_names
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -31,6 +32,32 @@ class _Fetcher implements ModuleFetcher {
     urls.add(url);
     return bytes;
   }
+}
+
+/// 带闸门的 [ModuleFetcher]：首次/每次下载都被 [gate] 挂起，用于制造
+/// 「同一模块安装仍在途」的并发窗口（单飞测试）。
+class _GatedFetcher implements ModuleFetcher {
+  _GatedFetcher(this.bytes);
+
+  final Uint8List? bytes;
+  int calls = 0;
+  final Completer<void> gate = Completer<void>();
+
+  @override
+  Future<Uint8List?> fetch(String url, {int? maxBytes}) async {
+    calls++;
+    await gate.future;
+    return bytes;
+  }
+}
+
+/// 反复泵事件队列直到 [condition] 成立（或超时失败），用于等待真实异步
+/// 文件 IO 推进到下载阶段。
+Future<void> _waitFor(bool Function() condition) async {
+  for (var i = 0; i < 300 && !condition(); i++) {
+    await pumpEventQueue(times: 1);
+  }
+  expect(condition(), isTrue, reason: '条件在超时前未满足');
 }
 
 /// 构造单模块单 ABI 的 v2 清单。
@@ -602,6 +629,95 @@ void main() {
             '/m/libgstore_mod_x_1.0.0-arm64-v8a.so'),
         isNull,
       );
+    });
+  });
+
+  group('ensureModule 单飞（并发去重 / 失败非粘滞）', () {
+    test('concurrent ensureModule calls for the same module share one install',
+        () async {
+      final supportDir = makeSupportDir();
+      final payload = Uint8List.fromList(utf8.encode('SO_SINGLEFLIGHT'));
+      final sha = sha256.convert(payload).toString();
+
+      final fetcher = _GatedFetcher(payload);
+      final mounted = <String>[];
+      loader.remoteBaseUrl = 'https://example.com/release';
+      loader.debugConfigure(
+        supportDir: supportDir.path,
+        manifestOverride: _manifest(
+          module: 'x',
+          version: '1.0.0',
+          asset: 'libgstore_mod_x_1.0.0-x86_64.so',
+          sha256Hex: sha,
+          size: payload.length,
+        ),
+        downloader: fetcher,
+        isLoadedOverride: (_) async => false,
+        mountOverride: (soPath) async {
+          mounted.add(soPath);
+          return true;
+        },
+      );
+
+      // 第一次调用：下载被闸门挂起 → 安装仍在途。
+      final first = loader.ensureModule('x');
+      await _waitFor(() => fetcher.calls == 1);
+      expect(loader.debugEnsureInFlightCount, 1, reason: '首次安装进行中应恰好有 1 个单飞条目');
+
+      // 第二次调用（同一模块，仍在途）：必须复用同一在途 Future。
+      final second = loader.ensureModule('x');
+      expect(identical(first, second), isTrue,
+          reason: '并发调用必须共享同一在途 Future，而非各自启动安装');
+      expect(fetcher.calls, 1, reason: '第二次调用不得发起第二次下载');
+      expect(loader.debugEnsureInFlightCount, 1, reason: '并发调用仍只计 1 个单飞条目');
+
+      // 放行下载：两个调用观察同一结果。
+      fetcher.gate.complete();
+      final results = await Future.wait<bool>(<Future<bool>>[first, second]);
+
+      expect(results, everyElement(isTrue));
+      expect(fetcher.calls, 1, reason: '底层下载恰好一次');
+      expect(mounted, hasLength(1), reason: '底层安装/挂载恰好一次');
+      expect(loader.debugEnsureInFlightCount, 0, reason: '完成后单飞条目必须释放');
+    });
+
+    test('a failed ensureModule does not poison later retries', () async {
+      final supportDir = makeSupportDir();
+      final payload = Uint8List.fromList(utf8.encode('SO_RETRY_BYTES'));
+      final sha = sha256.convert(payload).toString();
+
+      final fetcher = _Fetcher(payload);
+      var failFirstIsLoaded = true;
+      loader.remoteBaseUrl = 'https://example.com/release';
+      loader.debugConfigure(
+        supportDir: supportDir.path,
+        manifestOverride: _manifest(
+          module: 'x',
+          version: '1.0.0',
+          asset: 'libgstore_mod_x_1.0.0-x86_64.so',
+          sha256Hex: sha,
+          size: payload.length,
+        ),
+        downloader: fetcher,
+        isLoadedOverride: (_) async {
+          if (failFirstIsLoaded) {
+            failFirstIsLoaded = false;
+            throw StateError('isLoaded boom');
+          }
+          return false;
+        },
+        mountOverride: (soPath) async => true,
+      );
+
+      // 首次以异常失败：单飞条目必须即时释放（非粘滞）。
+      await expectLater(loader.ensureModule('x'), throwsA(isA<StateError>()));
+      expect(loader.debugEnsureInFlightCount, 0,
+          reason: '失败后单飞条目必须移除，不得永久污染模块');
+
+      // 后续调用必须真实重试并成功。
+      expect(await loader.ensureModule('x'), isTrue, reason: '失败后的重试必须重新尝试安装');
+      expect(fetcher.calls, 1, reason: '重试必须真实触发一次下载');
+      expect(loader.debugEnsureInFlightCount, 0);
     });
   });
 }

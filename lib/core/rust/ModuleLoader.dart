@@ -156,6 +156,12 @@ class RustModuleLoader {
   /// 后台安装并发去重（同一模块同一时刻只跑一个后台更新）。
   final Set<String> _bgInFlight = {};
 
+  /// `ensureModule` 每模块单飞：同一模块的并发调用共享同一在途安装 Future，
+  /// 避免并发重下与共享 `.tmp`/`.so`/`.meta` 写入竞态。条目在**首个 await
+  /// 之前**登记，完成（成功/失败）即移除——失败**非粘滞**，后续调用可重试；
+  /// 不同模块各自一条，仍可并行安装。
+  final Map<String, Future<bool>> _ensureInFlight = {};
+
   /// 启动清理遗留 `.tmp` 是否已执行（每个进程/测试配置后恰好一次）。
   bool _tempCleanupDone = false;
 
@@ -276,6 +282,7 @@ class RustModuleLoader {
     _manifestCache = null;
     _builtinManifestCache = null;
     _bgInFlight.clear();
+    _ensureInFlight.clear();
     // 新配置 ⇒ 允许重新执行一次启动 `.tmp` 清理与签名迁移。
     _tempCleanupDone = false;
     _signatureMigrationDone = false;
@@ -303,6 +310,7 @@ class RustModuleLoader {
     _manifestCache = null;
     _builtinManifestCache = null;
     _bgInFlight.clear();
+    _ensureInFlight.clear();
     _deviceAbiCache = null;
   }
 
@@ -323,6 +331,12 @@ class RustModuleLoader {
       _downloadProgressOverride != null ||
       _clockOverride != null ||
       _beforeMetaWriteHook != null;
+
+  /// 当前在途的 `ensureModule` 单飞条目数（测试专用）。
+  ///
+  /// 同一模块的并发 `ensureModule` 调用只计 1；成功/失败完成后归零（非粘滞）。
+  @visibleForTesting
+  int get debugEnsureInFlightCount => _ensureInFlight.length;
 
   /// 读取清单（测试专用；覆盖生效时不触发真实网络）。
   @visibleForTesting
@@ -445,9 +459,42 @@ class RustModuleLoader {
   /// [onProgress]（可选）：仅在**远程下载安装**分支透传给 [_downloadAndInstall]
   /// （`[0,1]`，不产生用户下载任务/系统通知）；已挂载/本地/内置短路**不回调**。
   /// 回调抛出的异常会被捕获并记录，绝不影响安装结果。
+  ///
+  /// **每模块单飞**：同一模块的并发调用复用同一在途安装并观察同一结果
+  /// （不同模块仍并行）；失败条目即时释放，后续调用可重试。
   Future<bool> ensureModule(
     String name, {
     bool allowDownload = true,
+    ModuleProgressCallback? onProgress,
+  }) {
+    // 每模块单飞：同一模块的并发调用共享同一在途安装，绝不并发重下，也不
+    // 竞态写入共享的 `.tmp`/`.so`/`.meta`。条目在**首个 await 之前**登记；
+    // `whenComplete` 于成功/失败后移除（失败**非粘滞**，后续调用可重试）。
+    final inFlight = _ensureInFlight[name];
+    if (inFlight != null) return inFlight;
+    final future = _ensureModuleImpl(
+      name,
+      allowDownload: allowDownload,
+      onProgress: onProgress,
+    );
+    late final Future<bool> tracked;
+    tracked = future.whenComplete(() {
+      // 仅当仍是本次条目时移除，避免误删被后续重试替换的新条目。
+      if (identical(_ensureInFlight[name], tracked)) {
+        _ensureInFlight.remove(name);
+      }
+    });
+    _ensureInFlight[name] = tracked;
+    return tracked;
+  }
+
+  /// [ensureModule] 的实际实现（每模块单飞包装见 [ensureModule]）。
+  ///
+  /// 行为与既有实现完全一致：短路顺序、进度回调、返回值与异常均不变；
+  /// 并发去重与条目清理由 [ensureModule] 承担。
+  Future<bool> _ensureModuleImpl(
+    String name, {
+    required bool allowDownload,
     ModuleProgressCallback? onProgress,
   }) async {
     // Phase 2 迁移（启动恰好一次，`requireSignature=false` 时零副作用）：
