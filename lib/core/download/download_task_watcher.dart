@@ -53,7 +53,8 @@ class DownloadTaskWatcher {
     }
     debugStartCount++;
     _service = service;
-    _sub?.cancel();
+    // 旧订阅取消是 fire-and-forget：显式 unawaited，表明"不阻塞重绑"的意图。
+    unawaited(_sub?.cancel());
     _started.clear();
     _sub = service.watchAll().listen(
       _onUpdate,
@@ -63,7 +64,7 @@ class DownloadTaskWatcher {
   }
 
   void dispose() {
-    _sub?.cancel();
+    unawaited(_sub?.cancel());
     _sub = null;
     _service = null;
   }
@@ -106,6 +107,16 @@ class DownloadTaskWatcher {
       return;
     }
     debugPrint('DownloadTaskWatcher: 下载完成，触发安装 $filePath');
-    unawaited(Future<void>(() => manager.installApk(filePath)));
+    // 安装失败（如安装器抛异常）不得成为未处理的异步错误：在独立任务里捕获并上报。
+    unawaited(_installQuietly(manager, filePath));
+  }
+
+  /// 执行自动安装并吞掉异常（含堆栈上报），避免 `unawaited` 产生未处理异步错误。
+  Future<void> _installQuietly(InstallManager manager, String filePath) async {
+    try {
+      await manager.installApk(filePath);
+    } catch (e, st) {
+      debugPrint('DownloadTaskWatcher: 自动安装失败 $filePath - $e\n$st');
+    }
   }
 }

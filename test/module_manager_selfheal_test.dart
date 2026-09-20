@@ -159,4 +159,38 @@ void main() {
     expect(loadCalls, 1, reason: '补装失败不得二次加载');
     expect(healLogCount(), 0, reason: '自愈失败不得记录成功日志');
   });
+
+  test('auto 策略：非 MODULE_NOT_FOUND 失败先记录原始错误再自愈', () async {
+    const module = 'download';
+    final payload = Uint8List.fromList(<int>[1, 2, 3]);
+    final handle = _FakeModuleHandle(_okEnvelopeBytes(payload));
+
+    var ensureCalls = 0;
+
+    manager.debugConfigure(
+      readyOverride: () async {},
+      // ABI 不匹配等非 MODULE_NOT_FOUND 失败（裸 String，按宿主契约）。
+      loadModuleOverride: (String name) async =>
+          throw 'native ABI mismatch: expected 2, got 1',
+      ensureOverride: (
+        String name, {
+        bool? allowDownload,
+        ModuleProgressCallback? onProgress,
+      }) async {
+        ensureCalls++;
+        manager.debugSeedHandle(name, handle);
+        return true;
+      },
+    );
+
+    final result = await manager.callModule(module, null, 'ping', Uint8List(0));
+    expect(result, payload, reason: 'auto 策略仍按既有行为补装后完成调用');
+    expect(ensureCalls, 1, reason: 'auto 策略自愈行为不变');
+    expect(
+      appLog.logs.any((l) => l.message.contains('native ABI mismatch')),
+      isTrue,
+      reason: '自愈前必须记录原始错误，避免根因被成功日志掩盖',
+    );
+    expect(healLogCount(), 1, reason: '成功自愈仍恰好一条日志');
+  });
 }

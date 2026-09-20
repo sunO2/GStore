@@ -213,7 +213,11 @@ class RustModuleManager {
     final loadOverride = _loadModuleOverride;
     try {
       return loadOverride != null ? await loadOverride(name) : await loadModule(name);
-    } catch (_) {
+    } catch (error) {
+      // 自愈前先记录原始错误。宿主 [ModuleHandle.load] 的失败值是裸 `String`
+      // （非 GStoreException）；且 auto 策略即使遇到 ABI 不匹配等非
+      // MODULE_NOT_FOUND 失败也会尝试补装，若不在此留痕，根因会被成功自愈日志掩盖。
+      appLog.warning('[CallModule] 模块 $name 加载失败，按策略处理 - $error');
       if (ModuleBootstrap.instance.policyFor(name) != ModuleInstallPolicy.auto) {
         // llm 等确认策略：绝不因一次调用失败而自动安装。
         rethrow;

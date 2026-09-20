@@ -1,12 +1,16 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/download/core/download_request.dart';
 import 'package:gstore/core/download/download_task_watcher.dart';
 import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/core/download/rust/lazy_download_service.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
+import 'package:gstore/core/module/module_manager.dart' show ModuleManager;
 import 'package:gstore/core/service/download_notification_service.dart';
+import 'package:gstore/core/service/install_manager.dart'
+    show InstallManager, InstallMethod;
 
 /// todo 25 接线验收（hermetic，seams/fakes，无 FFI / 无网络 / 无 Flutter 插件）。
 ///
@@ -26,6 +30,7 @@ DownloadTask _task(
   int id, {
   String source = 'x',
   DownloadStatusEnum status = DownloadStatusEnum.queued,
+  bool installAfterDownload = false,
 }) {
   return DownloadTask(
     id: id,
@@ -42,9 +47,25 @@ DownloadTask _task(
     etaSec: null,
     error: null,
     segments: null,
+    installAfterDownload: installAfterDownload,
     createdAt: DateTime.now(),
     updatedAt: DateTime.now(),
   );
+}
+
+/// 伪造的安装管理器：`installApk` 抛错，用于验证自动安装异常被捕获上报。
+class _ThrowingInstallManager implements InstallManager {
+  int installCalls = 0;
+
+  @override
+  Future<(bool, InstallMethod)> installApk(String filePath) async {
+    installCalls++;
+    throw StateError('installApk boom: $filePath');
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) =>
+      super.noSuchMethod(invocation);
 }
 
 /// 记录调用次数、可手动推事件的假下载服务（无 FFI / 无网络）。
@@ -264,6 +285,42 @@ void main() {
           reason: '同一 id 不得重复发开始通知（_started 未被清空）');
       expect(watcher.debugStartCount, 1, reason: '重入未触发二次绑定');
       expect(watcher.debugStartedIds, contains(7));
+    });
+  });
+
+  group('DownloadTaskWatcher 自动安装', () {
+    test('installApk 抛错被捕获上报，不产生未处理异步错误', () async {
+      final dart = _FakeDownloadService('dart');
+      final watcher = DownloadTaskWatcher.debug();
+      watcher.start(dart);
+
+      final fakeInstall = _ThrowingInstallManager();
+      ModuleManager.instance.bind<InstallManager>(fakeInstall);
+      addTearDown(() => ModuleManager.instance.unbind<InstallManager>());
+
+      final printed = <String>[];
+      final originalDebugPrint = debugPrint;
+      debugPrint = (String? message, {int? wrapWidth}) {
+        if (message != null) printed.add(message);
+      };
+      addTearDown(() => debugPrint = originalDebugPrint);
+
+      dart.allController.add(
+        _task(
+          9,
+          source: 'dart',
+          status: DownloadStatusEnum.completed,
+          installAfterDownload: true,
+        ),
+      );
+      await pumpEventQueue();
+
+      expect(fakeInstall.installCalls, 1, reason: '完成且标记自动安装 → 触发一次安装');
+      expect(
+        printed.any((m) => m.contains('自动安装失败') && m.contains('installApk boom')),
+        isTrue,
+        reason: '安装异常必须被捕获并上报（而非未处理异步错误）',
+      );
     });
   });
 }
