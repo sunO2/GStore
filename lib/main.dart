@@ -14,7 +14,6 @@ import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:gstore/compent/module_install_banner.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/config/config_initializer.dart';
-import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/event/app_event_bus_bootstrap.dart';
 import 'package:gstore/core/module/app_modules.dart';
 import 'package:gstore/core/module/infra_modules.dart';
