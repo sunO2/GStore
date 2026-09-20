@@ -194,6 +194,16 @@ class ModuleBootstrap {
       <String, Future<RustModuleInstance>>{};
 
   /// 已创建实例缓存（键为 `module#instanceKey`）。
+  ///
+  /// **所有权契约**：
+  /// * 默认键（`instanceKey == ''`）由本门**自有**，在单例生命周期内缓存不淘汰；
+  ///   同一模块的重复 [acquire] 会命中同一实例。
+  /// * 非默认键（如 repo 多源的身份键）由**调用方自有**：本门只保证同一键返回同一
+  ///   实例且按 key 单飞，**不会**自动淘汰。调用方在某个身份不再使用时必须调用
+  ///   [release] 显式释放，否则该实例会随单例存活，导致缓存按模块无界增长。
+  ///
+  /// 多个不同 `instanceKey` 的实例互不影响：不同键各自缓存、各自创建（repo 多源
+  /// 依赖此行为）。
   final Map<String, RustModuleInstance> _instances =
       <String, RustModuleInstance>{};
 
@@ -254,19 +264,52 @@ class ModuleBootstrap {
   Future<bool> Function(String module)? _confirmHandler;
 
   /// 全部模块最近一次非空闲状态（按模块名升序）。
-  Stream<List<ModuleBootstrapState>> get states async* {
-    yield _snapshot();
-    yield* _statesController.stream;
-  }
+  ///
+  /// 订阅时**同步发布当前快照**，并在同一同步块内订阅广播流；因此二者之间
+  /// 不可能插入一次 [_emit]，不会丢失快照与后续事件之间的状态。
+  Stream<List<ModuleBootstrapState>> get states =>
+      Stream<List<ModuleBootstrapState>>.multi((multi) {
+        // 同一同步块：读快照 + 订阅广播，单线程下两者之间无法发生 _emit。
+        multi.add(_snapshot());
+        final subscription = _statesController.stream.listen(
+          multi.add,
+          onError: multi.addError,
+          onDone: multi.close,
+        );
+        multi.onCancel = subscription.cancel;
+      });
 
   /// 订阅某模块的状态流（广播；仅该模块的状态）。
   ///
-  /// 订阅时**先发布该模块的当前缓存状态**（若存在），因此监听一个已 `ready`
-  /// 的模块会立即收到 `ready`；随后再转发后续的广播状态事件。
-  Stream<ModuleBootstrapState> watch(String module) async* {
-    final cached = _lastStates[module];
-    if (cached != null) yield cached;
-    yield* _stateController.stream.where((state) => state.module == module);
+  /// 订阅时**同步发布该模块的当前缓存状态**（若存在），并在同一同步块内订阅
+  /// 广播流，因此监听一个已 `ready` 的模块会立即收到 `ready`，且缓存状态与随后
+  /// 事件之间不存在「读取缓存 → 订阅」的时间窗——该窗口内的 [_emit] 不会被丢弃。
+  ///
+  /// 相较 `async*` 实现的关键差异：这里在 `onListen` 的**同一同步块**内完成
+  /// 读缓存与订阅，二者之间无法插入一次 [_emit]（`async*` 的 `yield cached`
+  /// 会让出事件循环，导致订阅前的状态事件永久丢失）。转发用 `sync: true`
+  /// 控制器，使广播事件对监听方**同步可见**（与旧 `async*` 的即时性一致，
+  /// 不引入额外的微任务延迟）。
+  Stream<ModuleBootstrapState> watch(String module) {
+    final controller = StreamController<ModuleBootstrapState>(sync: true);
+    StreamSubscription<ModuleBootstrapState>? subscription;
+    controller.onListen = () {
+      // 同一同步块：读缓存 + 订阅广播，单线程下两者之间无法发生 _emit。
+      final cached = _lastStates[module];
+      if (cached != null) controller.add(cached);
+      subscription = _stateController.stream
+          .where((state) => state.module == module)
+          .listen(
+            controller.add,
+            onError: controller.addError,
+            onDone: controller.close,
+          );
+    };
+    controller.onCancel = () {
+      subscription?.cancel();
+      subscription = null;
+    };
+    return controller.stream;
   }
 
   /// 获取（必要时安装并创建）模块实例。
@@ -302,6 +345,16 @@ class ModuleBootstrap {
     _instanceInFlight[key] = future;
     return future;
   }
+
+  /// 显式释放一个已缓存实例（按 `module#instanceKey`）。
+  ///
+  /// 只从 [_instances] 缓存移除，**不**销毁底层实例/句柄——其生命周期由调用方
+  /// 负责。用于非默认实例键（如 repo 多源的身份键）在对应源不再使用时清理，
+  /// 避免缓存随单例无界增长。默认键（`instanceKey == ''`）同样可被释放。
+  ///
+  /// 返回是否确有缓存被移除。在途实例不会被移除（等待其完成后再释放即可）。
+  bool release(String module, {String instanceKey = ''}) =>
+      _instances.remove('$module#$instanceKey') != null;
 
   /// 仅确保模块可安装/可挂载（不创建实例）。
   ///
@@ -419,6 +472,10 @@ class ModuleBootstrap {
   @visibleForTesting
   int get debugInstanceInFlightCount => _instanceInFlight.length;
 
+  /// 当前已缓存的实例数（测试专用；用于验证 [release] 显式淘汰）。
+  @visibleForTesting
+  int get debugInstanceCacheCount => _instances.length;
+
   /// 当前生效的步骤超时（测试专用）。
   @visibleForTesting
   Duration get debugStepTimeout => _stepTimeout;
@@ -484,6 +541,9 @@ class ModuleBootstrap {
         );
       }
       var accepted = false;
+      // 处理器异常（非超时）视为拒绝，但**保留原始错误**作为拒绝的 cause，使
+      // 「确认处理器坏了」与「用户主动拒绝」在诊断上可区分，而非不可分辨的静默拒绝。
+      Object? handlerError;
       try {
         accepted = await handler(module).timeout(_stepTimeout);
       } on TimeoutException catch (error, stackTrace) {
@@ -500,13 +560,19 @@ class ModuleBootstrap {
           error: error,
         ));
         return _EnsureOutcome.failure(error, stackTrace);
-      } catch (_) {
-        // 处理器异常一律视为拒绝（不安装、不崩溃）。
+      } catch (error) {
+        // 处理器异常一律视为拒绝（不安装、不崩溃），但绝不静默：记录原始错误并
+        // 作为拒绝 cause 透出，保留真实失败原因。
+        debugPrint(
+          'ModuleBootstrap: 模块 "$module" 的确认处理器抛错，按拒绝处理: $error',
+        );
+        handlerError = error;
         accepted = false;
       }
       if (!accepted) {
-        // 拒绝/未同意立即向上抛出（零退避、不进入 ensure）；后续调用可重新询问。
-        throw ModuleInstallDeclinedException(module);
+        // 拒绝/未同意（含处理器异常）立即向上抛出（零退避、不进入 ensure）；
+        // 后续调用可重新询问。处理器异常时 cause 携带原始错误。
+        throw ModuleInstallDeclinedException(module, handlerError);
       }
     }
 

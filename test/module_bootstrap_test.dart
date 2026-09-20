@@ -141,6 +141,33 @@ void main() {
       expect(factoryCalls, 1, reason: '已缓存实例不应再次创建');
       expect(identical(first, second), isTrue);
     });
+
+    test('(e) release 显式淘汰非默认键缓存，且不影响其他多源实例', () async {
+      configure(
+        ensure: (m, {required allowDownload, onProgress}) async => true,
+      );
+
+      final a = await bootstrap.acquire('x', instanceKey: 'k1');
+      final b = await bootstrap.acquire('x', instanceKey: 'k2');
+      expect(bootstrap.debugInstanceCacheCount, 2);
+      expect(identical(await bootstrap.acquire('x', instanceKey: 'k1'), a), isTrue,
+          reason: '同键命中缓存');
+
+      expect(bootstrap.release('x', instanceKey: 'k1'), isTrue,
+          reason: '释放已缓存键应返回 true');
+      expect(bootstrap.debugInstanceCacheCount, 1, reason: '仅移除 k1');
+      expect(bootstrap.release('x', instanceKey: 'k1'), isFalse,
+          reason: '重复释放无缓存应返回 false');
+
+      // 释放后重新 acquire 会创建新实例；k2 不受影响且仍命中缓存。
+      final a2 = await bootstrap.acquire('x', instanceKey: 'k1');
+      expect(identical(a2, a), isFalse, reason: '释放后重新创建实例');
+      expect(identical(await bootstrap.acquire('x', instanceKey: 'k2'), b), isTrue,
+          reason: '释放 k1 不得影响 k2 的多源实例');
+      expect(ensureCalls, 3,
+          reason: '每次顺序 acquire 各自 ensure 一次（仅并发时按模块去重）');
+      expect(factoryCalls, 3, reason: 'k1/k2 各一次 + 释放后 k1 重建一次');
+    });
   });
 
   group('retry', () {
@@ -391,6 +418,74 @@ void main() {
       expect(yStates.every((s) => s.module == 'y'), isTrue,
           reason: 'watch(y) 只会发出 y 的状态');
     });
+
+    test('(f) 订阅后立即发布的状态不被丢弃（缓存交付即触发发布）', () async {
+      // 先制造一个缓存状态：让 x 安装失败（failed 写入 _lastStates）。
+      configure(
+        ensure: (m, {required bool allowDownload, onProgress}) async => false,
+      );
+      await expectLater(
+        bootstrap.acquire('x',
+            maxAttempts: 1, baseDelay: const Duration(milliseconds: 1)),
+        throwsA(isA<ModuleInstallFailedException>()),
+      );
+      await pumpEventQueue();
+
+      final received = <ModuleBootstrapState>[];
+      var triggered = false;
+      final sub = bootstrap.watch('x').listen((state) {
+        received.add(state);
+        if (!triggered && state.phase == ModuleBootstrapPhase.failed) {
+          // 在**缓存状态刚交付**的同一刻发布一次新状态（downloading）。
+          // 旧的 `async*` 实现在交付缓存后、订阅广播流前会让出事件循环，
+          // 此刻发布的状态会被永久丢弃。
+          triggered = true;
+          bootstrap.ensureStarted('x');
+        }
+      });
+      await pumpEventQueue();
+      await sub.cancel();
+
+      expect(
+        received.any((s) => s.phase == ModuleBootstrapPhase.downloading),
+        isTrue,
+        reason: 'watch 订阅后立即发布的状态绝不能被丢弃',
+      );
+    });
+
+    test('(g) states 订阅后立即发布的快照不丢失（快照交付即触发发布）', () async {
+      configure(
+        ensure: (m, {required bool allowDownload, onProgress}) async => false,
+      );
+      await expectLater(
+        bootstrap.acquire('x',
+            maxAttempts: 1, baseDelay: const Duration(milliseconds: 1)),
+        throwsA(isA<ModuleInstallFailedException>()),
+      );
+      await pumpEventQueue();
+
+      final snapshots = <List<ModuleBootstrapState>>[];
+      var triggered = false;
+      final sub = bootstrap.states.listen((list) {
+        snapshots.add(list);
+        final hasFailed = list.any(
+            (s) => s.module == 'x' && s.phase == ModuleBootstrapPhase.failed);
+        if (!triggered && hasFailed) {
+          // 在首个快照刚交付的同一刻发布一次新状态（downloading）。
+          triggered = true;
+          bootstrap.ensureStarted('x');
+        }
+      });
+      await pumpEventQueue();
+      await sub.cancel();
+
+      expect(
+        snapshots.any((list) => list.any((s) =>
+            s.module == 'x' && s.phase == ModuleBootstrapPhase.downloading)),
+        isTrue,
+        reason: 'states 订阅后立即发布的快照必须可见，不得被竞态丢弃',
+      );
+    });
   });
 
   group('helpers', () {
@@ -569,6 +664,48 @@ void main() {
         throwsA(isA<ModuleInstallDeclinedException>()),
       );
       expect(ensureCalls, 0);
+    });
+
+    test('(e2) 处理器抛错：原始错误作为拒绝 cause 保留（不与用户拒绝混淆）', () async {
+      final boom = StateError('boom: confirm handler exploded');
+      configure(
+        ensure: (m, {required allowDownload, onProgress}) async => true,
+        confirm: (m) async => throw boom,
+      );
+
+      ModuleInstallDeclinedException? failure;
+      try {
+        await bootstrap.acquire('llm', policy: ModuleInstallPolicy.confirm);
+        fail('确认处理器抛错时应抛出 ModuleInstallDeclinedException');
+      } on ModuleInstallDeclinedException catch (error) {
+        failure = error;
+      }
+
+      expect(failure, isNotNull);
+      expect(failure!.cause, same(boom),
+          reason: '处理器异常的原始错误必须作为拒绝 cause 保留，便于诊断');
+      expect(ensureCalls, 0, reason: '处理器异常按拒绝处理，不触发 ensure');
+      expect(delays, isEmpty, reason: '处理器异常按拒绝处理，零退避');
+    });
+
+    test('(e3) 用户主动拒绝：cause 为空（与处理器异常可区分）', () async {
+      configure(
+        ensure: (m, {required allowDownload, onProgress}) async => true,
+        confirm: (m) async => false,
+      );
+
+      ModuleInstallDeclinedException? failure;
+      try {
+        await bootstrap.acquire('llm', policy: ModuleInstallPolicy.confirm);
+        fail('用户拒绝时应抛出 ModuleInstallDeclinedException');
+      } on ModuleInstallDeclinedException catch (error) {
+        failure = error;
+      }
+
+      expect(failure, isNotNull);
+      expect(failure!.cause, isNull, reason: '纯用户拒绝不应携带 cause');
+      expect(ensureCalls, 0);
+      expect(delays, isEmpty);
     });
 
     test('(f) policyFor：llm=confirm，其余=auto', () {
