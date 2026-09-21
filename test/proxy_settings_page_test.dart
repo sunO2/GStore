@@ -14,6 +14,7 @@
 //   「排除应用」过滤本应用（Todo 4：绝不 `addDisallowedApplication(self)`）。
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
@@ -56,6 +57,9 @@ class _FakeSettingsFacade implements ProxySettingsFacade {
   ProxyLocalPorts? lastPorts;
   ProxyLogLevel? lastLevel;
   int resetCalls = 0;
+  ProxyLanConfig lanConfig = const ProxyLanConfig();
+  ProxyLanStatus lanStatus = const ProxyLanStatus();
+  ProxyLanConfig? lastLanSaved;
 
   @override
   Future<ProxySettingsConfig> loadSettings() async => config;
@@ -65,6 +69,27 @@ class _FakeSettingsFacade implements ProxySettingsFacade {
 
   @override
   Future<ProxyEngineInfo> loadEngineInfo() async => engine;
+
+  @override
+  Future<ProxyLanConfig> loadLanConfig() async => lanConfig;
+
+  @override
+  Future<ProxyLanStatus> loadLanStatus() async => lanStatus;
+
+  @override
+  Future<ProxyLanStatus> saveLanConfig(ProxyLanConfig next) async {
+    lastLanSaved = next;
+    lanConfig = next;
+    lanStatus = ProxyLanStatus(
+      bound: next.enabled,
+      addresses: next.enabled
+          ? <String>['${next.bindAddress}:${next.port}']
+          : const <String>[],
+      warning: next.needsWarning ? '未配置认证' : null,
+      config: next,
+    );
+    return lanStatus;
+  }
 
   @override
   Future<void> saveSplitTunnel({
@@ -127,6 +152,7 @@ void main() {
       expect(find.text('应用分流'), findsOneWidget);
       expect(find.text('始终开启'), findsOneWidget);
       expect(find.text('本地端口 / 混合入站'), findsOneWidget);
+      expect(find.text('局域网监听 (LAN)'), findsOneWidget);
       expect(find.text('日志级别'), findsOneWidget);
       expect(find.text('域名统计'), findsOneWidget);
       expect(find.text('引擎调试信息'), findsOneWidget);
@@ -190,6 +216,82 @@ void main() {
       await tester.pump();
       expect(facade.lastAlwaysOn, isFalse);
       expect(facade.config.alwaysOnIntent, isFalse);
+    });
+
+    testWidgets('LAN 默认关闭；开启后下发 lan.set 并展示未认证警告', (tester) async {
+      _useTallSurface(tester);
+      final facade = _FakeSettingsFacade();
+      await tester.pumpWidget(_host(ProxySettingsPage(facade: facade)));
+      await _settleLoad(tester);
+
+      final toggle = tester.widget<SwitchListTile>(
+        find.byKey(const Key('lan_enabled_switch')),
+      );
+      expect(toggle.value, isFalse, reason: 'LAN 默认必须关闭');
+
+      await tester.tap(find.byKey(const Key('lan_enabled_switch')));
+      await tester.pumpAndSettle();
+
+      expect(facade.lastLanSaved?.enabled, isTrue);
+      expect(facade.lastLanSaved?.port, 1087);
+      expect(facade.lastLanSaved?.hasAuth, isFalse);
+      expect(find.byKey(const Key('lan_warning_text')), findsOneWidget);
+    });
+
+    testWidgets('LAN 配置用户名/密码后不再展示警告', (tester) async {
+      _useTallSurface(tester);
+      final facade = _FakeSettingsFacade();
+      await tester.pumpWidget(_host(ProxySettingsPage(facade: facade)));
+      await _settleLoad(tester);
+
+      await tester.tap(find.byKey(const Key('lan_enabled_switch')));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const Key('lan_auth_user_field')), 'alice');
+      await tester.enterText(find.byKey(const Key('lan_auth_pass_field')), 'secret');
+      await tester.tap(find.byKey(const Key('lan_save_button')));
+      await tester.pumpAndSettle();
+
+      expect(facade.lastLanSaved?.hasAuth, isTrue);
+      expect(facade.lastLanSaved?.authUser, 'alice');
+      expect(find.byKey(const Key('lan_warning_text')), findsNothing);
+    });
+
+    testWidgets('LAN 监听中可复制监听地址', (tester) async {
+      _useTallSurface(tester);
+      final facade = _FakeSettingsFacade()
+        ..lanConfig = const ProxyLanConfig(
+          enabled: true,
+          port: 1087,
+          bindAddress: '127.0.0.1',
+        )
+        ..lanStatus = const ProxyLanStatus(
+          bound: true,
+          addresses: <String>['127.0.0.1:1087'],
+          config: ProxyLanConfig(
+            enabled: true,
+            port: 1087,
+            bindAddress: '127.0.0.1',
+          ),
+        );
+      String? copied;
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (call) async {
+          if (call.method == 'Clipboard.setData') {
+            copied = (call.arguments as Map)['text'] as String?;
+          }
+          return null;
+        },
+      );
+      addTearDown(() => tester.binding.defaultBinaryMessenger
+          .setMockMethodCallHandler(SystemChannels.platform, null));
+
+      await tester.pumpWidget(_host(ProxySettingsPage(facade: facade)));
+      await _settleLoad(tester);
+
+      await tester.tap(find.byKey(const Key('lan_copy_address')));
+      await tester.pump();
+      expect(copied, contains('127.0.0.1'));
     });
 
     testWidgets('无已安装应用 → 选择器显示空态且不崩溃', (tester) async {

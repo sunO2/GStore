@@ -38,6 +38,7 @@ mod conn;
 mod controller;
 mod dispatch;
 mod dns;
+mod lan;
 mod limits;
 mod logging;
 mod nodes;
@@ -407,6 +408,9 @@ pub(crate) const DISPATCH_METHODS: &[&str] = &[
     "stats.traffic.get",
     "stats.get",
     "stats.reset",
+    "lan.get",
+    "lan.set",
+    "lan.status",
     "diagnostics.clash_api.start",
     "diagnostics.clash_api.stop",
     "diagnostics.clash_api.status",
@@ -717,7 +721,9 @@ fn start_engine(
     let req = config::parse_request(payload)?;
     let generated = config::try_generate(&inst.data_dir, &inst.cache_dir, &req)?;
     let Some(generated) = generated else {
-        return Ok((tun::start_with_proxies(inst.id, None)?, None));
+        let spawned = tun::start_with_proxies(inst.id, None)?;
+        lan::reconcile();
+        return Ok((spawned, None));
     };
 
     apply_dns_overlay(req.dns.as_ref())?;
@@ -729,6 +735,7 @@ fn start_engine(
     let (map, mut warnings) = config::build_registry(&generated.raw, selector_store(inst).as_ref());
     warnings.extend(generated.warnings.iter().cloned());
     let spawned = tun::start_with_proxies(inst.id, Some(map))?;
+    lan::reconcile();
     log_message(
         1,
         &format!(
@@ -1530,6 +1537,57 @@ fn clash_api_start_arm(
     ok_data(to_value(&status)?)
 }
 
+/// `lan.get` (Todo 28): effective LAN config + security warning.
+fn lan_get_arm(
+    instance_id: u64,
+    instance: Option<Arc<ProxyInstance>>,
+) -> Result<Vec<u8>, ModuleError> {
+    let _inst = require_instance(instance_id, instance)?;
+    ok_data(lan::get_json())
+}
+
+/// `lan.status` (Todo 28): bound/listening/addresses/activeConns + warning.
+fn lan_status_arm(
+    instance_id: u64,
+    instance: Option<Arc<ProxyInstance>>,
+) -> Result<Vec<u8>, ModuleError> {
+    let _inst = require_instance(instance_id, instance)?;
+    ok_data(lan::status_json())
+}
+
+/// `lan.set` (Todo 28): merge/validate/persist + start/restart/stop listener.
+///
+/// Enabling without `auth` also emits a `proxy.state` no-auth warning.
+fn lan_set_arm(
+    instance_id: u64,
+    instance: Option<Arc<ProxyInstance>>,
+    payload: &[u8],
+) -> Result<Vec<u8>, ModuleError> {
+    let inst = require_instance(instance_id, instance)?;
+    let config = lan::set(&inst.data_dir, &inst.cache_dir, payload)?;
+    let warning = lan::warning_for(&config);
+    if config.enabled {
+        if let Some(warning) = &warning {
+            emit_lan_warning(&inst, warning);
+        }
+    }
+    ok_data(serde_json::json!({
+        "config": config,
+        "status": lan::status_json(),
+        "warning": warning,
+    }))
+}
+
+fn emit_lan_warning(inst: &ProxyInstance, warning: &serde_json::Value) {
+    let event = serde_json::json!({
+        "state": current_state(inst).as_str(),
+        "mode": current_mode(inst).as_str(),
+        "reason": "lan.no_auth",
+        "warning": warning,
+    });
+    emit_json(inst.id, EVT_STATE, &event);
+}
+
 fn create_impl(config: *const u8, config_len: usize) -> Result<u64, c_int> {
     let ctx = ModuleContext::parse(payload_bytes(config, config_len));
     log_message(
@@ -1550,6 +1608,7 @@ fn create_impl(config: *const u8, config_len: usize) -> Result<u64, c_int> {
     if !ctx.data_dir.is_empty() {
         let _ = nodes::ensure_selector_store(&ctx.data_dir);
     }
+    lan::configure(&ctx.data_dir, &ctx.cache_dir);
     let inst = Arc::new(ProxyInstance {
         id,
         created_at_ms: now_ms(),
@@ -1675,6 +1734,9 @@ fn call_impl(
         "stats.traffic.get" => stats::traffic_get_arm(_payload),
         "stats.get" => stats::domain_get_arm(_payload),
         "stats.reset" => stats::reset_arm(),
+        "lan.get" => lan_get_arm(instance_id, instance.clone()),
+        "lan.set" => lan_set_arm(instance_id, instance.clone(), _payload),
+        "lan.status" => lan_status_arm(instance_id, instance.clone()),
         "diagnostics.clash_api.start" => {
             clash_api_start_arm(instance_id, instance.clone(), _payload)
         }
@@ -1710,6 +1772,7 @@ fn destroy_impl(instance_id: u64) -> Result<(), c_int> {
     if remaining == 0 {
         // Last instance: also drop any still-pending (unstarted) fd.
         tun::shutdown();
+        lan::shutdown();
     }
     log_message(1, &format!("proxy: instance {instance_id} destroyed"));
     Ok(())
@@ -1718,6 +1781,7 @@ fn destroy_impl(instance_id: u64) -> Result<(), c_int> {
 fn shutdown_impl() -> Result<(), c_int> {
     controller::stop();
     tun::shutdown();
+    lan::shutdown();
     instances().lock().unwrap_or_else(|e| e.into_inner()).clear();
     log_message(1, "proxy: shutdown");
     Ok(())

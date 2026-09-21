@@ -761,28 +761,69 @@ hash is loaded as `unverified`). A download is refused with `checksum_required`
 unless a sha256 is supplied — the module never installs unverified geo data.
 
 
-### 2.12 `lan.*` — optional LAN listening (RESERVED, not dispatchable)
+### 2.12 `lan.*` — optional LAN listening (Todo 28)
 
-> **NOT IMPLEMENTED (Todo 18 reconciliation).** `lan.get` / `lan.set` /
-> `lan.status` are **not** in the shipped dispatch: calling them returns
-> `METHOD_NOT_FOUND` (405). `core.start` / `core.set_mode` with
-> `mode:"lanProxy"` return `PROXY_NO_INBOUND` (409). This table is the reserved
-> shape for Todo 28; it is deliberately excluded from the frozen
-> `DISPATCH_METHODS` set and from the Dart method registry until then.
+The module can expose one optional, **default-OFF** LAN inbound on
+`bindAddress:port` (default `0.0.0.0:1087`). It serves **HTTP**, **SOCKS5** and
+**SOCKS4/4a** on the same port.
 
-| method | request | data | status |
-|---|---|---|---|
-| `lan.get` | *(none)* | `LanConfig` | reserved |
-| `lan.set` | `LanConfig` (partial) | `LanConfig` | reserved |
-| `lan.status` | *(none)* | `{ "enabled": false, "bound": false, "addresses": [], "activeConns": 0 }` | reserved |
+> **Protocol ownership.** HTTP and SOCKS5 are meow's native handlers
+> (`meow_listener::http_proxy::handle_http` / `meow_listener::socks5::handle_socks5`
+> — exactly what `MixedListener` dispatches to, driven directly because
+> `MixedListener` has no SOCKS4/IP-ACL seam). SOCKS4/4a is a minimal front-end in
+> **this adapter**. The IP allow-list is ours too: meow has **no**
+> `lan-allowed-ips`. Auth is meow's global `AuthConfig`; loopback is always
+> exempt. The module never binds the TUN interface and never claims SOCKS4 via
+> meow config.
+
+| method | request | data |
+|---|---|---|
+| `lan.get` | *(none)* | `{ "config": LanConfig, "warning": Warning\|null }` |
+| `lan.set` | `LanConfig` (partial) | `{ "config": LanConfig, "status": LanStatus, "warning": Warning\|null }` |
+| `lan.status` | *(none)* | `LanStatus` |
 
 `LanConfig`:
 ```json
 { "enabled": false, "port": 1087, "bindAddress": "0.0.0.0",
-  "auth": { "user": "u", "pass": "p" },
-  "allowedIps": ["192.168.1.0/24"] }
+  "auth": { "user": "u", "pass": "p" }, "allowedIps": ["192.168.1.0/24"] }
 ```
-`auth` is `null` when disabled. Enabling without `auth` must emit a `proxy.state` warning (Todo 28).
+`auth` is `null` when disabled (an explicit JSON `null` clears it);
+`allowedIps` is a CIDR allow-list (`[]` = allow any source). Invalid
+`bindAddress`/`allowedIps`/`port` or an empty `auth.user`/`auth.pass` returns
+`PROXY_LAN_CONFIG_INVALID` (422).
+
+`LanStatus`:
+```json
+{ "enabled": false, "bound": false, "listening": false,
+  "addresses": [], "activeConns": 0, "port": 1087,
+  "bindAddress": "0.0.0.0", "engineOnly": false,
+  "warning": Warning | null, "config": LanConfig }
+```
+`addresses` holds the bound endpoint(s) (`["0.0.0.0:1087"]`), `activeConns` is
+the live accepted-connection count, and `engineOnly` is `true` when the listener
+built its own tunnel (no TUN/VPN engine was live).
+
+`Warning`: `{ "code": "PROXY_LAN_NO_AUTH", "message": string }`.
+
+**Lifecycle & safety.**
+* `lan.set {enabled:true}` starts (or restarts) the listener; `{enabled:false}`
+  stops it. It is idempotent and serialized on one mutation lane.
+* When a TUN/VPN engine is live the listener shares that tunnel; otherwise it
+  builds an **engine-only** tunnel (no `VpnService`, no protect hook), so LAN
+  sharing works with **or without** the VPN. `core.start` re-reconciles the
+  listener onto the new tunnel.
+* Enabling without `auth` emits a `proxy.state` warning
+  (`reason:"lan.no_auth"`, `warning.code:"PROXY_LAN_NO_AUTH"`); every response
+  carries the same `warning`.
+* A peer outside `allowedIps` is dropped **before dispatch**. A SOCKS4 peer that
+  requires auth but is not exempt (loopback is always exempt) is rejected with
+  `0x5B`, because SOCKS4 has no password field.
+* The listener runs on a dedicated thread with a bounded runtime
+  (`worker_threads(4)`); stop joins it deterministically.
+
+`core.start` / `core.set_mode` with `mode:"lanProxy"` still return
+`PROXY_NO_INBOUND` (409); the run-mode state machine is Todo 29.
+
 
 ### 2.13 `diagnostics.clash_api.*` — optional loopback Clash controller (Todo 18)
 
@@ -896,6 +937,7 @@ registered in `rust/ERROR_CODES.md`.
 | `PROXY_SUB_SCHEME_UNSUPPORTED` | 422 | share-link scheme is not in the supported set (Todo 11) |
 | `PROXY_SUB_NO_NODES` | 422 | the subscription parsed but contained no importable nodes (Todo 11) |
 | `PROXY_ENGINE_START_FAILED` | 500 | meow engine failed to start |
+| `PROXY_LAN_CONFIG_INVALID` | 422 | `lan.set` payload invalid: bad `bindAddress`/`allowedIps` CIDR/`port`, or empty `auth` user/pass; also a listener bind failure (Todo 28) |
 | `PROXY_LAN_DISABLED` | 409 | LAN requested while disabled (Todo 28) |
 | `PROXY_NO_INBOUND` | 409 | `lanProxy` with no LAN listener (Todo 29) |
 | `PROXY_PROTECT_FAILED` | 500 | host `protect_fd(fd)` returned non-zero; the dial is aborted so an unprotected socket never reaches the network (Todo 7) |

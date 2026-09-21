@@ -1,4 +1,7 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'package:gstore/core/design/app_components.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
@@ -10,12 +13,14 @@ import 'package:gstore/core/rust/proxy/ProxyModule.dart';
 
 import 'proxy_settings_facade.dart';
 
-/// 代理设置页（Todos 23，纯展示 / 触发层）。
+/// 代理设置页（Todos 23 / 28，纯展示 / 触发层）。
 ///
 /// 覆盖：
 /// * **应用分流**：全局 / 仅选中 / 排除选中 + 已安装应用选择器（统一底部弹层）；
 /// * **始终开启**：应用侧意图开关 + 系统设置引导（应用无法直接切换系统开关）；
-/// * **本地端口 / 混合入站**：本地持久化，`lan.*` 由 Todo 28 接入（**不发起**）；
+/// * **本地端口 / 混合入站**：本地持久化；
+/// * **局域网监听 (LAN)**：`lan.get` / `lan.set` / `lan.status`（默认关闭，
+///   未配置认证时展示安全警告）；
 /// * **日志级别**：`log.set_level`；
 /// * **重置统计**：危险确认弹层 → `stats.domain.reset`；
 /// * **引擎调试信息**：`version` / `ping` / `core.get_mode`。
@@ -38,6 +43,11 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
   final TextEditingController _mixedPort = TextEditingController();
   final TextEditingController _socksPort = TextEditingController();
   final TextEditingController _httpPort = TextEditingController();
+  final TextEditingController _lanPort = TextEditingController();
+  final TextEditingController _lanBind = TextEditingController();
+  final TextEditingController _lanUser = TextEditingController();
+  final TextEditingController _lanPass = TextEditingController();
+  final TextEditingController _lanAllowed = TextEditingController();
 
   bool _loading = true;
   String? _error;
@@ -45,12 +55,15 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
   ProxySettingsConfig _config = const ProxySettingsConfig();
   List<InstalledAppOption> _apps = const <InstalledAppOption>[];
   ProxyEngineInfo _engine = const ProxyEngineInfo();
+  ProxyLanConfig _lan = const ProxyLanConfig();
+  ProxyLanStatus _lanStatus = const ProxyLanStatus();
 
   @override
   void initState() {
     super.initState();
     _facade = widget.facade ?? ProxyModuleSettingsFacade();
     _syncPortControllers(_config.localPorts);
+    _syncLanControllers(_lan);
     _load();
   }
 
@@ -59,6 +72,11 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
     _mixedPort.dispose();
     _socksPort.dispose();
     _httpPort.dispose();
+    _lanPort.dispose();
+    _lanBind.dispose();
+    _lanUser.dispose();
+    _lanPass.dispose();
+    _lanAllowed.dispose();
     super.dispose();
   }
 
@@ -66,6 +84,14 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
     _mixedPort.text = '${ports.mixedPort}';
     _socksPort.text = '${ports.socksPort}';
     _httpPort.text = '${ports.httpPort}';
+  }
+
+  void _syncLanControllers(ProxyLanConfig config) {
+    _lanPort.text = '${config.port}';
+    _lanBind.text = config.bindAddress;
+    _lanUser.text = config.authUser;
+    _lanPass.text = config.authPass;
+    _lanAllowed.text = config.allowedIps.join(', ');
   }
 
   Future<void> _load() async {
@@ -77,14 +103,29 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
       final config = await _facade.loadSettings();
       final apps = await _facade.loadInstalledApps();
       final engine = await _facade.loadEngineInfo();
+      ProxyLanConfig? lan;
+      ProxyLanStatus? lanStatus;
+      try {
+        lan = await _facade.loadLanConfig();
+      } catch (_) {
+        // 模块不可用 → 保留默认（LAN 关闭）
+      }
+      try {
+        lanStatus = await _facade.loadLanStatus();
+      } catch (_) {
+        // 模块不可用 → 保留默认（未监听）
+      }
       if (!mounted) return;
       setState(() {
         _config = config;
         _apps = apps;
         _engine = engine;
+        if (lan != null) _lan = lan;
+        if (lanStatus != null) _lanStatus = lanStatus;
         _loading = false;
       });
       _syncPortControllers(config.localPorts);
+      _syncLanControllers(_lan);
     } catch (error) {
       if (!mounted) return;
       setState(() {
@@ -207,6 +248,89 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
     }
   }
 
+  // ==================== 局域网监听（LAN） ====================
+
+  ProxyLanConfig _lanFromFields() {
+    final port = int.tryParse(_lanPort.text.trim()) ?? _lan.port;
+    final allowed = _lanAllowed.text
+        .split(RegExp(r'[,\s]+'))
+        .map((entry) => entry.trim())
+        .where((entry) => entry.isNotEmpty)
+        .toList(growable: false);
+    final bind = _lanBind.text.trim();
+    return _lan.copyWith(
+      port: port,
+      bindAddress: bind.isEmpty ? '0.0.0.0' : bind,
+      authUser: _lanUser.text.trim(),
+      authPass: _lanPass.text,
+      allowedIps: allowed,
+    );
+  }
+
+  Future<void> _toggleLan(bool value) async {
+    setState(() => _lan = _lan.copyWith(enabled: value));
+    await _applyLanConfig();
+  }
+
+  Future<void> _applyLanConfig() async {
+    if (_busy) return;
+    final next = _lanFromFields();
+    setState(() {
+      _busy = true;
+      _lan = next;
+    });
+    try {
+      final status = await _facade.saveLanConfig(next);
+      if (!mounted) return;
+      setState(() {
+        _lanStatus = status;
+        if (status.config != null) _lan = status.config!;
+        _busy = false;
+      });
+      _syncLanControllers(_lan);
+      if (_lan.needsWarning || status.hasWarning) {
+        AppDialogs.showWarning('LAN 已启用但未配置认证，同一网络下的任何设备都可使用此代理');
+      } else {
+        AppDialogs.showSuccess('LAN 设置已保存');
+      }
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _busy = false);
+      AppDialogs.showError('LAN 设置失败：$error');
+    }
+  }
+
+  Future<String> _copyableLanAddress() async {
+    if (_lanStatus.addresses.isEmpty) return '';
+    final raw = _lanStatus.addresses.first;
+    final separator = raw.lastIndexOf(':');
+    final host = separator > 0 ? raw.substring(0, separator) : raw;
+    if (host == '0.0.0.0' || host == '::' || host.isEmpty) {
+      try {
+        final interfaces = await NetworkInterface.list(
+          type: InternetAddressType.IPv4,
+          includeLoopback: false,
+        );
+        for (final interface in interfaces) {
+          for (final address in interface.addresses) {
+            if (!address.isLoopback) return '${address.address}:${_lan.port}';
+          }
+        }
+      } catch (_) {
+        // 受限环境（无网卡枚举）→ 回退到绑定地址
+      }
+    }
+    return raw;
+  }
+
+  Future<void> _copyLanAddress() async {
+    final text = await _copyableLanAddress();
+    if (text.isEmpty || !mounted) return;
+    await Clipboard.setData(ClipboardData(text: text));
+    if (!mounted) return;
+    AppDialogs.showSuccess('已复制到剪贴板');
+  }
+
   // ==================== 日志级别 / 统计 ====================
 
   Future<void> _setLogLevel(ProxyLogLevel level) async {
@@ -286,6 +410,8 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
           _buildAlwaysOnCard(context),
           const SizedBox(height: AppSpacing.lg),
           _buildLocalPortsCard(context),
+          const SizedBox(height: AppSpacing.lg),
+          _buildLanCard(context),
           const SizedBox(height: AppSpacing.lg),
           _buildLogLevelCard(context),
           const SizedBox(height: AppSpacing.lg),
@@ -448,10 +574,133 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
         ),
         const SizedBox(height: AppSpacing.sm),
         Text(
-          '说明：本地端口目前仅本地保存；`lan.*` 内核接入由后续工作（Todo 28）完成，'
-          '当前不会下发到引擎。',
+          '说明：本地端口为应用侧配置；共享给其它设备请使用下方「局域网监听 (LAN)」。',
           style: theme.textTheme.bodySmall?.copyWith(
             color: scheme.onSurfaceVariant,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildLanCard(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final showWarning = _lan.needsWarning || _lanStatus.hasWarning;
+    return _SectionCard(
+      icon: Icons.lan_outlined,
+      title: '局域网监听 (LAN)',
+      children: [
+        SwitchListTile(
+          key: const Key('lan_enabled_switch'),
+          contentPadding: EdgeInsets.zero,
+          title: const Text('允许局域网设备使用本机代理'),
+          subtitle: Text(
+            _lanStatus.bound
+                ? '监听中：${_lanStatus.addresses.join(', ')}'
+                : '未监听（默认关闭）',
+          ),
+          value: _lan.enabled,
+          onChanged: _busy ? null : _toggleLan,
+        ),
+        const SizedBox(height: AppSpacing.md),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: TextField(
+                key: const Key('lan_port_field'),
+                controller: _lanPort,
+                enabled: !_busy,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: 'LAN 端口',
+                  hintText: '1087',
+                ),
+              ),
+            ),
+            const SizedBox(width: AppSpacing.md),
+            Expanded(
+              child: TextField(
+                key: const Key('lan_bind_field'),
+                controller: _lanBind,
+                enabled: !_busy,
+                decoration: const InputDecoration(
+                  labelText: '监听地址',
+                  hintText: '0.0.0.0',
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: AppSpacing.md),
+        TextField(
+          key: const Key('lan_auth_user_field'),
+          controller: _lanUser,
+          enabled: !_busy,
+          decoration: const InputDecoration(
+            labelText: '认证用户名（可选）',
+            hintText: 'user',
+          ),
+        ),
+        const SizedBox(height: AppSpacing.md),
+        TextField(
+          key: const Key('lan_auth_pass_field'),
+          controller: _lanPass,
+          enabled: !_busy,
+          obscureText: true,
+          decoration: const InputDecoration(
+            labelText: '认证密码（可选）',
+            hintText: 'password',
+          ),
+        ),
+        const SizedBox(height: AppSpacing.md),
+        TextField(
+          key: const Key('lan_allowed_ips_field'),
+          controller: _lanAllowed,
+          enabled: !_busy,
+          decoration: const InputDecoration(
+            labelText: '允许的 IP / CIDR（逗号分隔，留空=不限）',
+            hintText: '192.168.1.0/24',
+          ),
+        ),
+        if (showWarning) ...[
+          const SizedBox(height: AppSpacing.md),
+          Text(
+            _lanStatus.warning ?? '已启用但未配置认证：同一网络下的任何设备都可使用此代理。',
+            key: const Key('lan_warning_text'),
+            style: theme.textTheme.bodySmall?.copyWith(color: scheme.error),
+          ),
+        ],
+        const SizedBox(height: AppSpacing.md),
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                _lanStatus.addresses.isEmpty
+                    ? '监听地址：未监听'
+                    : '监听地址：${_lanStatus.addresses.first}',
+                key: const Key('lan_address_text'),
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: scheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+            IconButton(
+              key: const Key('lan_copy_address'),
+              onPressed: _lanStatus.bound ? _copyLanAddress : null,
+              icon: const Icon(Icons.copy_outlined, size: AppTypography.iconSM),
+              tooltip: '复制地址',
+            ),
+          ],
+        ),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: FilledButton.tonalIcon(
+            key: const Key('lan_save_button'),
+            onPressed: _busy ? null : _applyLanConfig,
+            icon: const Icon(Icons.save_outlined, size: AppTypography.iconSM),
+            label: const Text('保存 LAN 设置'),
           ),
         ),
       ],

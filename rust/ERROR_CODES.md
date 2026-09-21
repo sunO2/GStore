@@ -44,7 +44,10 @@
 | code | 模块 | 通常 status | 含义 |
 |---|---|---|---|
 | `PROXY_TUN_FD_INVALID` | proxy | 422 | TUN fd 非法（<0 / 已关闭 / `dup` 失败）或 `core.start` 时无可用 fd（Todo 6） |
-| `PROXY_NO_INBOUND` | proxy | 422 | 请求了尚未实现的入站（`lanProxy`，Todo 28） |
+| `PROXY_NO_INBOUND` | proxy | 409 | 请求了尚未实现的入站（`lanProxy` 运行模式，Todo 29） |
+| `PROXY_LAN_CONFIG_INVALID` | proxy | 422 | `lan.set` 载荷非法（`bindAddress`/`allowedIps` CIDR/`port` 非法，或 `auth.user`/`auth.pass` 为空），或 LAN 监听绑定失败（Todo 28） |
+| `PROXY_LAN_DISABLED` | proxy | 409 | 在 LAN 未启用时请求 LAN 能力（Todo 28） |
+| `PROXY_LAN_NO_AUTH` | proxy | —（行内 warning） | LAN 监听已启用但未配置 `auth`：`proxy.state` 事件与 `lan.*` 响应的 `warning` 字段回传（Todo 28） |
 | `PROXY_PROTECT_FAILED` | proxy | 500 | 宿主 `protect_fd(fd)` 返回非 0：拒绝使用未受保护的出站 socket（Todo 7） |
 | `PROXY_DNS_CONFIG_INVALID` | proxy | 422 | DNS 配置非法（nameserver/DoH/DoT URL 解析失败、fake-ip range 非法、空 nameserver 列表）（Todo 8） |
 | `PROXY_DNS_BOOTSTRAP_FAILED` | proxy | 500 | DNS bootstrap/加密上游构建失败；`default-nameserver` 非明文时为 422（Todo 8） |

@@ -625,14 +625,20 @@ Set<String> _documentedEvents(String apiMd) {
   return <String>{for (final m in row.allMatches(section)) m.group(1)!};
 }
 
-/// `API.md` §2.12 明确标注「RESERVED，未实现」；这是文档↔代码唯一允许的差集。
-const _reservedUnimplemented = <String>{'lan.get', 'lan.set', 'lan.status'};
+/// `lan.*` 已在 Rust 侧实现并派发（Todo 28），但**冻结的** `ProxyContract.dart`
+/// 不注册它们（设置页经 `ProxyModule.invoke` 直连 `lan.*`）。这是文档↔代码
+/// 唯一允许的差集。
+const _documentedButNotInDartRegistry = <String>{
+  'lan.get',
+  'lan.set',
+  'lan.status',
+};
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   group('文档 ↔ 代码完整性（machine-checkable）', () {
-    test('API.md 方法与 Dart 注册表一致（仅允许预留的 lan.*）', () {
+    test('API.md 方法与 Dart 注册表一致（仅允许冻结契约外的 lan.*）', () {
       final apiMd = File('rust/gstore_mod_proxy/API.md').readAsStringSync();
       final documented = _documentedMethods(apiMd);
       final dartMethods = ProxyMethods.all.toSet();
@@ -644,8 +650,8 @@ void main() {
       );
       expect(
         documented.difference(dartMethods),
-        _reservedUnimplemented,
-        reason: 'API.md 有未实现的非预留方法',
+        _documentedButNotInDartRegistry,
+        reason: 'API.md 有既非 Dart 注册、又非 lan.* 的方法',
       );
     });
 

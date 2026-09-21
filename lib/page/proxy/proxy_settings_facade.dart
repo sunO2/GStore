@@ -15,8 +15,9 @@
 /// * **始终开启**：应用**无法**直接切换系统「始终开启的 VPN」。此处只持久化
 ///   「应用侧意图」，并在服务运行中把它并入推送的配置；系统重启（null Intent）
 ///   由 Kotlin 侧持久化配置恢复。系统开关须用户在系统设置手动开启。
-/// * **本地端口 / 混合入站**：仅渲染 + 本地持久化。`lan.*` 是**保留**方法
-///   （Todo 28 接入），此处**绝不**发起任何 `lan.*` 调用。
+/// * **本地端口 / 混合入站**：`mixedPort`/`socksPort`/`httpPort` 仅渲染 +
+///   本地持久化；独立的 **LAN 入站**（[ProxyLanConfig]）经 `lan.get` /
+///   `lan.set` / `lan.status` 下发内核（Todo 28），默认关闭。
 /// * **日志级别 / 重置统计**：`log.set_level` / `stats.domain.reset`。
 /// * **引擎调试信息**：`version` / `ping` / `core.get_mode`（模块不可用时降级）。
 ///
@@ -71,7 +72,7 @@ enum ProxySplitTunnelMode {
 
 // ==================== 本地端口 / 混合入站 ====================
 
-/// 本地端口与混合入站设置（**仅本地持久化**，`lan.*` 由 Todo 28 接入）。
+/// 本地端口与混合入站设置（**仅本地持久化**；LAN 入站另见 [ProxyLanConfig]）。
 @immutable
 class ProxyLocalPorts {
   const ProxyLocalPorts({
@@ -143,7 +144,7 @@ class ProxySettingsConfig {
   /// 应用侧「始终开启」意图（不直接控制系统开关）。
   final bool alwaysOnIntent;
 
-  /// 本地端口 / 混合入站（Todo 28 预留）。
+  /// 本地端口 / 混合入站（应用侧持久化；LAN 入站另见 [ProxyLanConfig]）。
   final ProxyLocalPorts localPorts;
 
   /// 日志保留级别（`log.set_level`）。
@@ -374,6 +375,116 @@ class ProxyEngineInfo {
   bool get isEmpty => version == null && ping == null && mode == null;
 }
 
+// ==================== LAN 监听（Todo 28） ====================
+
+/// `lan.*` 的 LAN 入站配置（`API.md` §2.12 `LanConfig`）。
+@immutable
+class ProxyLanConfig {
+  const ProxyLanConfig({
+    this.enabled = false,
+    this.port = 1087,
+    this.bindAddress = '0.0.0.0',
+    this.authUser = '',
+    this.authPass = '',
+    this.allowedIps = const <String>[],
+  });
+
+  final bool enabled;
+  final int port;
+  final String bindAddress;
+  final String authUser;
+  final String authPass;
+  final List<String> allowedIps;
+
+  /// 是否同时配置了用户名与密码。
+  bool get hasAuth => authUser.trim().isNotEmpty && authPass.isNotEmpty;
+
+  /// 已启用但未配置认证 → 必须展示安全警告。
+  bool get needsWarning => enabled && !hasAuth;
+
+  Map<String, dynamic> toRequestJson() => <String, dynamic>{
+        'enabled': enabled,
+        'port': port,
+        'bindAddress': bindAddress,
+        'auth': hasAuth
+            ? <String, dynamic>{'user': authUser, 'pass': authPass}
+            : null,
+        'allowedIps': allowedIps,
+      };
+
+  factory ProxyLanConfig.fromJson(Map<String, dynamic> json) {
+    final auth = json['auth'];
+    return ProxyLanConfig(
+      enabled: json['enabled'] == true,
+      port: _asInt(json['port'], 1087),
+      bindAddress: json['bindAddress']?.toString() ?? '0.0.0.0',
+      authUser: auth is Map ? (auth['user']?.toString() ?? '') : '',
+      authPass: auth is Map ? (auth['pass']?.toString() ?? '') : '',
+      allowedIps: (json['allowedIps'] as List?)
+              ?.map((entry) => entry.toString())
+              .toList(growable: false) ??
+          const <String>[],
+    );
+  }
+
+  ProxyLanConfig copyWith({
+    bool? enabled,
+    int? port,
+    String? bindAddress,
+    String? authUser,
+    String? authPass,
+    List<String>? allowedIps,
+  }) =>
+      ProxyLanConfig(
+        enabled: enabled ?? this.enabled,
+        port: port ?? this.port,
+        bindAddress: bindAddress ?? this.bindAddress,
+        authUser: authUser ?? this.authUser,
+        authPass: authPass ?? this.authPass,
+        allowedIps: allowedIps ?? this.allowedIps,
+      );
+}
+
+/// `lan.status` 的监听状态（`API.md` §2.12 `LanStatus`）。
+@immutable
+class ProxyLanStatus {
+  const ProxyLanStatus({
+    this.bound = false,
+    this.addresses = const <String>[],
+    this.activeConns = 0,
+    this.engineOnly = false,
+    this.warning,
+    this.config,
+  });
+
+  final bool bound;
+  final List<String> addresses;
+  final int activeConns;
+  final bool engineOnly;
+  final String? warning;
+  final ProxyLanConfig? config;
+
+  bool get hasWarning => warning != null && warning!.isNotEmpty;
+
+  factory ProxyLanStatus.fromJson(Map<String, dynamic> json) {
+    final warning = json['warning'];
+    final config = json['config'];
+    return ProxyLanStatus(
+      bound: json['bound'] == true,
+      addresses: (json['addresses'] as List?)
+              ?.map((entry) => entry.toString())
+              .toList(growable: false) ??
+          const <String>[],
+      activeConns: _asInt(json['activeConns'], 0),
+      engineOnly: json['engineOnly'] == true,
+      warning: warning is Map ? warning['message']?.toString() : null,
+      config: config is Map
+          ? ProxyLanConfig.fromJson(Map<String, dynamic>.from(config))
+          : null,
+    );
+  }
+}
+
 // ==================== 门面 ====================
 
 /// 设置页所需的模块能力 + 本地持久化 + 平台接缝。
@@ -390,8 +501,17 @@ abstract class ProxySettingsFacade {
   /// 持久化「始终开启」应用侧意图。
   Future<void> setAlwaysOnIntent(bool value);
 
-  /// 保存本地端口 / 混合入站（本地持久化；`lan.*` 由 Todo 28 接入）。
+  /// 保存本地端口 / 混合入站（本地持久化；LAN 入站见 [saveLanConfig]）。
   Future<void> saveLocalPorts(ProxyLocalPorts ports);
+
+  /// `lan.get`：读取 LAN 入站配置。
+  Future<ProxyLanConfig> loadLanConfig();
+
+  /// `lan.status`：读取 LAN 监听状态。
+  Future<ProxyLanStatus> loadLanStatus();
+
+  /// `lan.set`：下发 LAN 配置并返回最新状态。
+  Future<ProxyLanStatus> saveLanConfig(ProxyLanConfig config);
 
   /// `log.set_level` + 本地持久化。
   Future<LogSetLevelResult> setLogLevel(ProxyLogLevel level);
@@ -453,8 +573,29 @@ class ProxyModuleSettingsFacade implements ProxySettingsFacade {
   Future<void> saveLocalPorts(ProxyLocalPorts ports) async {
     final current = await _store.read();
     await _store.write(current.copyWith(localPorts: ports));
-    // Todo 28：接入 `lan.*` 后在此下发端口 / allow-lan（当前仅本地持久化）。
   }
+
+  @override
+  Future<ProxyLanConfig> loadLanConfig() => _module.invoke(
+        'lan.get',
+        (json) => ProxyLanConfig.fromJson(
+          Map<String, dynamic>.from(
+            json['config'] as Map? ?? const <String, dynamic>{},
+          ),
+        ),
+      );
+
+  @override
+  Future<ProxyLanStatus> loadLanStatus() =>
+      _module.invoke('lan.status', ProxyLanStatus.fromJson);
+
+  @override
+  Future<ProxyLanStatus> saveLanConfig(ProxyLanConfig config) =>
+      _module.invoke(
+        'lan.set',
+        ProxyLanStatus.fromJson,
+        payload: config.toRequestJson(),
+      );
 
   @override
   Future<LogSetLevelResult> setLogLevel(ProxyLogLevel level) async {

@@ -286,6 +286,21 @@ pub(crate) fn detach_tunnel() {
     *tunnel_cell().lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
+/// Detach `tunnel` only if it is still the active one. Returns whether it was
+/// (used by the LAN engine-only teardown, which must not clear a tunnel a TUN
+/// engine has since replaced).
+pub(crate) fn detach_tunnel_if(tunnel: &Arc<meow_tunnel::Tunnel>) -> bool {
+    let mut cell = tunnel_cell().lock().unwrap_or_else(|e| e.into_inner());
+    let is_current = cell
+        .as_ref()
+        .map(|current| Arc::ptr_eq(current, tunnel))
+        .unwrap_or(false);
+    if is_current {
+        *cell = None;
+    }
+    is_current
+}
+
 /// The raw rule lines currently configured (Todo 9's state). Todo 13 renders
 /// them into the generated config's `rules:` block when no per-call overlay is
 /// supplied.
