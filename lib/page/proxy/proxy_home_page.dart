@@ -5,6 +5,7 @@ import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
 
 import 'proxy_home_facade.dart';
+import 'proxy_profiles_page.dart';
 import 'proxy_settings_facade.dart';
 import 'proxy_settings_page.dart';
 
@@ -470,6 +471,13 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
     );
   }
 
+  /// 「订阅」入口：打开订阅 / 配置管理页。
+  void _openProfiles() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => const ProxyProfilesPage()),
+    );
+  }
+
   // ==================== 展示辅助 ====================
 
   bool get _isRunning => _connState == ProxyConnState.running;
@@ -595,7 +603,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
     );
   }
 
-  // ==================== 运行模式卡 ====================
+  // ==================== 运行模式 / 入口卡 ====================
 
   String get _modeOptionLabel => _targetMode == ProxyMode.lanProxy
       ? '局域网代理（仅共享给其它设备）'
@@ -604,17 +612,55 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
   Widget _buildModeCard(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
+    // 「代理设置」只在当前 / 目标模式为局域网代理时出现；VPN 模式不渲染。
+    final showSettings =
+        _mode == ProxyMode.lanProxy || _targetMode == ProxyMode.lanProxy;
     return Card(
       margin: EdgeInsets.zero,
       child: Column(
         children: [
+          // Row A：订阅（订阅 / 配置管理入口，整行）。
           ListTile(
-            key: const Key('proxy-mode-tile'),
-            leading: Icon(Icons.tune, color: scheme.primary),
-            title: const Text('运行模式'),
-            subtitle: Text(_modeOptionLabel),
+            key: const Key('proxy-subscribe-tile'),
+            leading: Icon(Icons.rss_feed_outlined, color: scheme.primary),
+            title: const Text('订阅'),
+            subtitle: const Text('导入/更新节点订阅'),
             trailing: const Icon(Icons.chevron_right),
-            onTap: _busy ? null : _openModePicker,
+            onTap: _openProfiles,
+          ),
+          // Row B：代理模式 + 代理设置（并排；设置仅 lanProxy 模式渲染）。
+          Padding(
+            padding: AppSpacing.onlyHorizontalMD,
+            child: IntrinsicHeight(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Expanded(
+                    child: _buildModeEntryTile(
+                      context,
+                      key: const Key('proxy-mode-tile'),
+                      icon: Icons.tune,
+                      title: '代理模式',
+                      subtitle: _modeOptionLabel,
+                      onTap: _busy ? null : _openModePicker,
+                    ),
+                  ),
+                  if (showSettings) ...[
+                    const SizedBox(width: AppSpacing.sm),
+                    Expanded(
+                      child: _buildModeEntryTile(
+                        context,
+                        key: const Key('proxy-settings-tile'),
+                        icon: Icons.lan_outlined,
+                        title: '代理设置',
+                        subtitle: '局域网监听与入站端口',
+                        onTap: _openLanSettings,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
           ),
           if (_lanProxyNeedsWarning)
             Padding(
@@ -674,6 +720,53 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
             ),
           const SizedBox(height: AppSpacing.sm),
         ],
+      ),
+    );
+  }
+
+  /// Row B 的紧凑入口：图标 + 标题 + 说明，沿用卡内 [InkWell] 水波纹与
+  /// 主题令牌（圆角 / 间距 / 字号全部走设计系统）。
+  Widget _buildModeEntryTile(
+    BuildContext context, {
+    required Key key,
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required VoidCallback? onTap,
+  }) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return InkWell(
+      key: key,
+      onTap: onTap,
+      borderRadius: AppRadius.allMD,
+      child: Padding(
+        padding: AppSpacing.allMD,
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(icon, size: AppTypography.iconMD, color: scheme.primary),
+            const SizedBox(width: AppSpacing.sm),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(title, style: theme.textTheme.bodyLarge),
+                  const SizedBox(height: AppSpacing.xs),
+                  Text(
+                    subtitle,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

@@ -6,6 +6,7 @@ import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
 import 'package:gstore/page/proxy/proxy_home_facade.dart';
 import 'package:gstore/page/proxy/proxy_home_page.dart';
+import 'package:gstore/page/proxy/proxy_profiles_page.dart';
 import 'package:gstore/page/proxy/proxy_settings_facade.dart';
 
 /// 假门面：无需原生模块，可受控发出类型化事件、控制连接动作的完成时机。
@@ -513,6 +514,76 @@ void main() {
     expect(facade.coreSetModeCalls, 1);
     expect(find.byKey(const Key('proxy-error-banner')), findsOneWidget);
     expect(find.text('PROXY_NO_INBOUND'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('入口卡：订阅入口渲染，VPN 模式下无代理设置', (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade();
+    await tester.pumpWidget(_wrap(ProxyHomePage(facade: facade)));
+    await _flush(tester);
+
+    // Row A：订阅入口。
+    expect(find.byKey(const Key('proxy-subscribe-tile')), findsOneWidget);
+    expect(find.text('订阅'), findsOneWidget);
+    expect(find.text('导入/更新节点订阅'), findsOneWidget);
+
+    // Row B：代理模式始终在；VPN 目标模式下代理设置不渲染。
+    expect(find.byKey(const Key('proxy-mode-tile')), findsOneWidget);
+    expect(find.text('代理模式'), findsOneWidget);
+    expect(find.byKey(const Key('proxy-settings-tile')), findsNothing);
+    expect(find.text('代理设置'), findsNothing);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('入口卡：点击订阅进入订阅与配置页', (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade();
+    await tester.pumpWidget(_wrap(ProxyHomePage(facade: facade)));
+    await _flush(tester);
+
+    await tester.tap(find.byKey(const Key('proxy-subscribe-tile')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.byType(ProxyProfilesPage), findsOneWidget);
+    expect(find.text('订阅与配置'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('入口卡：lanProxy 模式下代理设置出现且可跳转设置', (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade();
+    var openedSettings = 0;
+    await tester.pumpWidget(
+      _wrap(ProxyHomePage(
+        facade: facade,
+        onOpenLanSettings: () => openedSettings++,
+      )),
+    );
+    await _flush(tester);
+    expect(find.byKey(const Key('proxy-settings-tile')), findsNothing);
+
+    // 未运行：选 lanProxy 只更新目标模式 -> 代理设置出现（复用模式弹层）。
+    await tester.tap(find.byKey(const Key('proxy-mode-tile')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(find.byKey(const Key('proxy-mode-option-lanProxy')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.byKey(const Key('proxy-settings-tile')), findsOneWidget);
+    expect(find.text('代理设置'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('proxy-settings-tile')));
+    await tester.pump();
+    expect(openedSettings, 1);
     expect(tester.takeException(), isNull);
 
     await facade.controller.close();
