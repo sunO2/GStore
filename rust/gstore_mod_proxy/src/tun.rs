@@ -229,7 +229,7 @@ pub(crate) fn start_with_proxies(
     let join = match std::thread::Builder::new()
         .name(LOOP_THREAD_NAME.to_string())
         .spawn(move || {
-            run_thread(owned, stop_rx, proxies);
+            run_thread(owned, stop_rx, proxies, instance_id);
             RUNNING.fetch_sub(1, Ordering::SeqCst);
         }) {
         Ok(join) => join,
@@ -351,6 +351,7 @@ fn run_thread(
     owned: OwnedFd,
     stop_rx: watch::Receiver<bool>,
     proxies: Option<crate::config::ProxyMap>,
+    instance_id: u64,
 ) {
     let rt = match crate::bounded_runtime() {
         Ok(rt) => rt,
@@ -359,7 +360,7 @@ fn run_thread(
             return;
         }
     };
-    rt.block_on(tun_loop(owned, stop_rx, proxies));
+    rt.block_on(tun_loop(owned, stop_rx, proxies, instance_id));
     drop(rt); // joins the 4 bounded worker threads deterministically
     crate::log_message(1, "proxy: TUN loop thread exited");
 }
@@ -372,6 +373,7 @@ async fn tun_loop(
     owned: OwnedFd,
     mut stop_rx: watch::Receiver<bool>,
     proxies: Option<crate::config::ProxyMap>,
+    instance_id: u64,
 ) {
     let built = meow_lwip::NetStack::with_buffer_size(STACK_BUFFER_SIZE, UDP_BUFFER_SIZE);
     let (stack, tcp_listener, udp) = match built {
@@ -480,7 +482,7 @@ async fn tun_loop(
             crate::log_message(1, &format!("proxy: installed {count} proxies/groups"));
         }
     }
-    let dispatcher = crate::dispatch::spawn(engine, tcp_listener, udp, Some(Arc::clone(&dns_engine)));
+    let dispatcher = crate::dispatch::spawn(engine, tcp_listener, udp, Some(Arc::clone(&dns_engine)), instance_id);
     crate::log_message(
         1,
         &format!("proxy: flow dispatch active protectInstalled={protect_installed}"),

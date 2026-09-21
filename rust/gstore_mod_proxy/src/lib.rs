@@ -42,6 +42,7 @@ mod nodes;
 mod profile;
 mod protect;
 mod rules;
+mod stats;
 mod subscription;
 mod tun;
 
@@ -653,6 +654,7 @@ fn start_engine(
     inst: &Arc<ProxyInstance>,
     payload: &[u8],
 ) -> Result<(bool, Option<serde_json::Value>), ModuleError> {
+    stats::configure(&inst.data_dir);
     let req = config::parse_request(payload)?;
     let generated = config::try_generate(&inst.data_dir, &inst.cache_dir, &req)?;
     let Some(generated) = generated else {
@@ -1556,6 +1558,11 @@ fn call_impl(
         "conn.close_all" => {
             require_instance(instance_id, instance.clone()).and_then(|_| conn::close_all_arm())
         }
+        "stats.domain.get" => stats::domain_get_arm(_payload),
+        "stats.domain.reset" => stats::reset_arm(),
+        "stats.traffic.get" => stats::traffic_get_arm(),
+        "stats.get" => stats::domain_get_arm(_payload),
+        "stats.reset" => stats::reset_arm(),
         other => Err(ModuleError::method_not_found(other)),
     };
 
@@ -2868,5 +2875,60 @@ rules:
         assert!(cleared["data"]["cursor"].as_u64().unwrap() > c1);
 
         crate::logging::reset_for_tests();
+    }
+
+    /// Todo 16 ABI round-trip: `stats.domain.get`, `stats.traffic.get` and
+    /// `stats.domain.reset` plus the structured sort error.
+    #[test]
+    fn abi_stats_domain_traffic_and_reset() {
+        let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let api = register_api();
+        let call = api.call.unwrap();
+        crate::stats::reset_for_tests();
+
+        let rec = crate::conn::ConnRecord {
+            id: "s1".into(),
+            src: "10.10.0.2:40000".into(),
+            dst: "1.2.3.4:443".into(),
+            domain: "abi.example".into(),
+            network: "tcp".into(),
+            rule: "DOMAIN-SUFFIX".into(),
+            rule_payload: "abi.example".into(),
+            outbound: "proxy-a".into(),
+            started_at_ms: 1_700_000_000_000,
+            upload_bytes: 40,
+            download_bytes: 60,
+        };
+        crate::stats::observe_for_tests(&[rec], &[], crate::now_ms());
+
+        let (code, out) = call_json(call, 0, "stats.domain.get");
+        assert_eq!(code, ABI_OK);
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["domains"][0]["domain"], "abi.example");
+        assert_eq!(v["data"]["domains"][0]["uploadBytes"], 40);
+
+        let (code, out) = call_json(call, 0, "stats.traffic.get");
+        assert_eq!(code, ABI_OK);
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["uploadBytes"], 40);
+        assert_eq!(v["data"]["downloadBytes"], 60);
+
+        let (code, out) = call_with_payload(call, 0, "stats.domain.get", br#"{"sort":"nope"}"#);
+        assert_eq!(code, ABI_ERR_DETAIL);
+        let err: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(err["code"], "PROXY_STATS_SORT_INVALID");
+        assert_eq!(err["status"], 422);
+
+        let (code, out) = call_json(call, 0, "stats.domain.reset");
+        assert_eq!(code, ABI_OK);
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["cleared"], 1);
+
+        let (code, out) = call_json(call, 0, "stats.traffic.get");
+        assert_eq!(code, ABI_OK);
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["domainCount"], 0);
+
+        crate::stats::reset_for_tests();
     }
 }

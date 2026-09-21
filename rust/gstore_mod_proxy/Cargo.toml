@@ -93,6 +93,11 @@ libc = "0.2"
 # `log::set_max_level`. Already transitive via gstore_contract; pinned directly.
 log = { version = "0.4", features = ["std"] }
 
+# Todo 16: durable per-domain aggregates. WAL + batched upserts on a ticker
+# (never per-packet). Same `bundled` sqlite as gstore_mod_download so the NDK
+# cross-compile path is already proven.
+rusqlite = { version = "0.32", features = ["bundled"] }
+
 # Bounded async runtime. NEVER Runtime::new() / CPU-default workers on Android
 # (SIGSEGV, see rust/gstore_mod_repo/src/lib.rs:117-120).
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "sync", "macros"] }

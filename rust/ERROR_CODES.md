@@ -77,6 +77,7 @@
 | `PROXY_CONFIG_INVALID` | proxy | 422 | 配置 overlay 非法（如 `mtu` 低于 1280）或生成的文档解析失败（Todo 13） |
 | `PROXY_CONFIG_NODE_UNSUPPORTED` | proxy | —（行内 warning） | 规范模型中的节点类型无法由当前启用的协议集重建/构建；该节点仍写入 YAML，但在 registry 构建时被跳过，不中断启动（Todo 13） |
 | `PROXY_LOG_LEVEL_INVALID` | proxy | 422 | `log.set_level` / `log.get` 指定了未知日志级别（应为 `debug`\|`info`\|`warn`\|`error`）（Todo 15） |
+| `PROXY_STATS_SORT_INVALID` | proxy | 422 | `stats.domain.get` 指定了未知排序键（应为 `bytes`\|`connections`\|`lastSeen`\|`domain`）（Todo 16） |
 
 ## 跨 ABI 错误透传
 

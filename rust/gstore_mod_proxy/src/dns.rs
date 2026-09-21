@@ -597,6 +597,32 @@ impl DnsEngine {
         let ring = self.mappings.lock().unwrap_or_else(|e| e.into_inner());
         ring.iter().rev().take(limit).cloned().collect()
     }
+
+    /// Reverse lookup for the Todo 16 domain-statistics fallback: map a flow's
+    /// destination IP back to the domain we recorded for it. Checks the bounded
+    /// mapping ring (newest first, so the freshest attribution wins) and then
+    /// the resolver's own fake-IP reverse mapping. `None` means the domain is
+    /// unavailable (plain-IP / ECH / ESNI / QUIC-without-SNI) and the caller
+    /// must fall back to the IP with `domainKnown:false`.
+    pub(crate) fn domain_for_ip(&self, ip: IpAddr) -> Option<DnsMapping> {
+        {
+            let ring = self.mappings.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(hit) = ring
+                .iter()
+                .rev()
+                .find(|m| m.ip.parse::<IpAddr>().ok() == Some(ip))
+            {
+                return Some(hit.clone());
+            }
+        }
+        self.resolver.reverse_lookup(ip).map(|domain| DnsMapping {
+            domain: domain.to_string(),
+            ip: ip.to_string(),
+            fake: true,
+            ts_ms: now_ms(),
+            domain_known: true,
+        })
+    }
 }
 
 fn push_bounded<T>(ring: &Mutex<VecDeque<T>>, item: T, capacity: usize) {

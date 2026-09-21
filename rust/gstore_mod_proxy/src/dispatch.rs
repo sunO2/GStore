@@ -18,6 +18,8 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
+#[cfg(not(test))]
+use std::time::Duration;
 
 use futures::StreamExt;
 use meow_common::{ConnType, Metadata, Network, ProxyConn};
@@ -56,6 +58,7 @@ pub(crate) fn build_engine(resolver: Arc<meow_dns::Resolver>) -> Arc<meow_tunnel
 pub(crate) struct Dispatcher {
     tcp: tokio::task::JoinHandle<()>,
     udp: tokio::task::JoinHandle<()>,
+    stats: tokio::task::JoinHandle<()>,
 }
 
 impl Dispatcher {
@@ -64,9 +67,40 @@ impl Dispatcher {
         let _ = self.tcp.await;
         self.udp.abort();
         let _ = self.udp.await;
+        self.stats.abort();
+        let _ = self.stats.await;
         crate::rules::detach_tunnel();
         meow_common::clear_host_resolver();
     }
+}
+
+/// Fold meow's live connection table into the per-domain aggregate and emit the
+/// throttled `proxy.stats` snapshot. Tests never spawn this: the aggregate is
+/// process-global in shipping builds, so a background writer would race the
+/// `TEST_SERIAL`-locked projection tests.
+#[cfg(not(test))]
+fn spawn_stats_monitor(
+    inner: Arc<meow_tunnel::tunnel::TunnelInner>,
+    instance_id: u64,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(Duration::from_millis(crate::stats::STATS_TICK_MS));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            ticker.tick().await;
+            let now = crate::now_ms();
+            crate::stats::tick(&inner.stats, instance_id, now);
+            crate::stats::maybe_persist(now);
+        }
+    })
+}
+
+#[cfg(test)]
+fn spawn_stats_monitor(
+    _inner: Arc<meow_tunnel::tunnel::TunnelInner>,
+    _instance_id: u64,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async {})
 }
 
 /// Consume the netstack flow handles and dispatch every accepted flow.
@@ -79,6 +113,7 @@ pub(crate) fn spawn(
     tcp_listener: meow_lwip::TcpListener,
     udp: Box<meow_lwip::UdpSocket>,
     dns: Option<Arc<DnsEngine>>,
+    instance_id: u64,
 ) -> Dispatcher {
     let tcp_inner = Arc::clone(&inner);
     let tcp = tokio::spawn(async move {
@@ -122,7 +157,9 @@ pub(crate) fn spawn(
         }
     });
 
-    Dispatcher { tcp, udp }
+    let stats = spawn_stats_monitor(Arc::clone(&inner), instance_id);
+
+    Dispatcher { tcp, udp, stats }
 }
 
 fn tcp_metadata(src: SocketAddr, dst: SocketAddr) -> Metadata {

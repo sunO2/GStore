@@ -523,18 +523,72 @@ only when a failure is known).
 `DnsQueryRecord` (`kind:"dns"`) is the Todo 8 schema documented in §2.7. The
 same record is emitted as the `proxy.dns` event.
 
-### 2.9 `stats.*` — traffic / domain statistics
+### 2.9 `stats.*` — domain statistics & aggregate traffic (Todo 16)
 
 | method | request | data |
 |---|---|---|
-| `stats.get` | `{ "rangeMs"?: 0 }` | `{ "uploadBytes":0, "downloadBytes":0, "activeConns":0, "domains": [DomainStat] }` |
-| `stats.reset` | *(none)* | `{ "ok": true }` |
+| `stats.domain.get` | `{ "rangeMs"?: 0, "sort"?: "bytes"\|"connections"\|"lastSeen"\|"domain", "limit"?: 100 }` | `DomainPage` |
+| `stats.domain.reset` | *(none)* | `{ "ok": true, "cleared": 0 }` |
+| `stats.traffic.get` | *(none)* | `TrafficSnapshot` |
+| `stats.get` (alias) | as `stats.domain.get` | `DomainPage` |
+| `stats.reset` (alias) | as `stats.domain.reset` | `{ "ok": true, "cleared": 0 }` |
+
+`DomainPage`:
+```json
+{
+  "domains": [DomainStat],
+  "count": 0, "returned": 0, "capacity": 2048, "domainCap": 2048,
+  "evicted": 0, "rangeMs": 0, "sort": "bytes"
+}
+```
 
 `DomainStat`:
 ```json
-{ "domain": "example.com", "connections": 3, "uploadBytes": 0,
-  "downloadBytes": 0, "lastSeenMs": 0, "outbound": "proxy-a", "rule": "DOMAIN-SUFFIX" }
+{ "domain": "example.com", "domainKnown": true, "connections": 3,
+  "uploadBytes": 0, "downloadBytes": 0, "lastSeenMs": 0,
+  "rule": "DOMAIN-SUFFIX", "rulePayload": "example.com", "outbound": "proxy-a" }
 ```
+
+`TrafficSnapshot`:
+```json
+{ "uploadBytes": 0, "downloadBytes": 0, "activeConns": 0, "upBps": 0,
+  "downBps": 0, "domainCount": 0, "capacity": 2048, "evicted": 0,
+  "topDomains": [DomainStat] }
+```
+
+**Feed.** The aggregate is folded from the same bounded projection diff
+`conn.list` uses (Todo 10): every dispatch-monitor tick calls
+`conn::sync_full(meow Statistics)`, then accumulates per-live-flow byte
+**deltas** into the domain totals (so long flows are counted while open, not
+only at close). `connections` increments once per flow. `rangeMs` filters
+records by `lastSeenMs >= now - rangeMs` (0 = all). Unknown `sort` is
+`PROXY_STATS_SORT_INVALID` (422); the default is `bytes` (up+down descending,
+ties by `connections` then domain). Sorts are fully deterministic.
+
+**Primary path.** `stats.domain.get` / `stats.traffic.get` are the primary,
+pull-based path. The host event ring is only `EVENT_BUFFER_CAP = 128`
+(`rust/gstore_host/src/task_bridge.rs`), so the module never streams
+per-connection events; see the `proxy.stats` snapshot in §3.
+
+**Memory bound & eviction.** At most `DOMAIN_CAP = 2048` distinct domains are
+retained. When the cap is exceeded the entry with the **oldest `lastSeenMs`** is
+evicted; ties are broken **lexicographically by domain (ascending)**, so
+eviction is deterministic. Every eviction is logged (warn) and counted in
+`evicted`. Byte accounting is O(live flows), never per packet.
+
+**Persistence (optional).** When the instance has a data dir, aggregates are
+persisted to `<dataDir>/proxy_stats.db` (SQLite, `journal_mode=WAL`,
+`synchronous=NORMAL`). Writes are **batched** — one transactional upsert every
+`PERSIST_INTERVAL_MS = 5000` ms, never per packet — and rows outside the
+rolling `RETENTION_MS = 24h` window are pruned in the same transaction. On
+startup the in-memory aggregate is seeded from rows still inside the window.
+`stats.domain.reset` also clears the persisted rows.
+
+**Domain availability.** A domain is **unavailable** for ECH/ESNI,
+QUIC-without-SNI and plain-IP flows. The module then records the flow under its
+destination IP and marks the record `domainKnown: false` (see §9.5). Before
+falling back it consults the DNS reverse mapping (fake-IP allocation or the
+mapping ring) so a sniffed or fake-IP domain is attributed when known.
 
 ### 2.10 `conn.*` — live connections (Todo 10; Todo 17 finalises)
 
@@ -673,7 +727,7 @@ side filters on the `proxy.` prefix. `instanceId` is always present.
 | `proxy.state` | `{ "state":"stopped"\|"starting"\|"running"\|"stopping", "mode":"off"\|"vpn"\|"lanProxy", "reason"?: string, "error"?: { "code": string, "message": string } }` |
 | `proxy.mode` | `{ "mode":"off"\|"vpn"\|"lanProxy", "previous": string }` |
 | `proxy.node.delay` | `{ "group": string, "node": string, "delayMs": 123, "error"?: string }` |
-| `proxy.stats` | `{ "uploadBytes":0, "downloadBytes":0, "activeConns":0, "upBps":0, "downBps":0 }` (throttled) |
+| `proxy.stats` | `{ "uploadBytes":0, "downloadBytes":0, "activeConns":0, "upBps":0, "downBps":0, "domainCount":0, "capacity":2048, "topDomains":[DomainStat] }` — **throttled to at most one event per second** (Todo 16); pull `stats.traffic.get` for on-demand reads |
 | `proxy.subscription.updated` | `{ "profileId": string, "nodeCount": 0, "traffic": { "uploadBytes":0, "downloadBytes":0, "totalBytes":0, "usedBytes":0 }, "expireAtMs": 0, "lastUpdatedAtMs"?: 0, "intervalMs"?: 0, "nextRefreshAtMs"?: 0 }` |
 | `proxy.subscription.progress` | `{ "profileId": string, "phase": "fetch"\|"persist", "state": "started"\|"succeeded"\|"failed", "attempts": 0 }` — one `started` per refresh attempt and one terminal `succeeded`/`failed` (Todo 14) |
 | `proxy.subscription.failed` | `{ "profileId": string, "attempts": 0, "consecutiveFailures": 0, "lastAttemptMs": 0, "nextRefreshAtMs": 0, "error": { "code": string, "message": string } }` — the previous profile is preserved and the next attempt is bounded by the backoff (Todo 14) |
@@ -736,6 +790,7 @@ registered in `rust/ERROR_CODES.md`.
 | `PROXY_DNS_BOOTSTRAP_FAILED` | 500 | DNS bootstrap / encrypted-upstream construction failed (422 when a `default-nameserver` is not plain) (Todo 8) |
 | `PROXY_DNS_TIMEOUT` | 504 | DNS query produced no answer (unreachable upstream, no fallback); a `proxy.dns.failure` record is logged first (Todo 8) |
 | `PROXY_LOG_LEVEL_INVALID` | 422 | `log.set_level` / `log.get` received an unknown level (expected `debug\|info\|warn\|error`) (Todo 15) |
+| `PROXY_STATS_SORT_INVALID` | 422 | `stats.domain.get` received an unknown sort key (expected `bytes\|connections\|lastSeen\|domain`) (Todo 16) |
 
 ## 6. Module distribution decision (state it now)
 
@@ -953,11 +1008,12 @@ handling is explicit and documented, not code:
   dialed from a cached/OS answer that we never saw must be recovered by
   **SNI / HTTP Host sniffing** (meow's sniffer, Todo 10/16), which fails for
   **ECH/ESNI** and for **plain-IP** connections. For those, the domain is
-  unavailable: Todo 16 must record the flow under the **IP** and mark the record
+  unavailable: Todo 16 records the flow under the **IP** and marks the record
   (`domainKnown: false`) rather than inventing a domain. `DnsMapping.domainKnown`
-  already carries that flag for the records we do produce.
-- Todo 16 should therefore prefer fake-IP mode for domain attribution; redir-host
-  plus sniffing is best-effort and must tolerate missing domains.
+  carries that flag for the records we do produce. This is implemented by the
+  reverse-lookup fallback in §2.9 / §15.
+- Todo 16 therefore prefers fake-IP mode for domain attribution; redir-host
+  plus sniffing is best-effort and tolerates missing domains.
 
 ### 9.6 Query logging
 
@@ -1367,4 +1423,45 @@ connection records are structured and secret-free; `log::` reaches the host via
 proves a module `log` line reaches the LogBridge buffer and that buffering
 survives with no StreamSink. **UNVERIFIED**: on-device LogManager rendering and
 sink reconnection across an isolate restart (no adb device).
+
+## 15. Domain statistics & aggregate traffic (Todo 16)
+
+One process-global aggregate fed from the dispatch path, plus a throttled
+`proxy.stats` snapshot.
+
+* **Feed.** The dispatch monitor (a bounded-runtime `tokio` task owned by the
+  `Dispatcher`) ticks every `STATS_TICK_MS = 500` ms, calls
+  `conn::sync_full(meow Statistics)` and folds the projection diff into the
+  per-domain map. Live-flow byte counters are tracked as **deltas** in
+  `FlowObs`, so a long-lived flow is counted while open. Connection count
+  increments once per flow; `lastSeenMs`, `rule` and `outbound` come from
+  meow's connection metadata.
+* **Pull is primary.** `stats.domain.get` / `stats.traffic.get` (§2.9) read the
+  aggregate directly. The only push is a single `proxy.stats` snapshot per
+  `MIN_EMIT_INTERVAL_MS = 1000` ms (`should_emit`), because the host event ring
+  is only `EVENT_BUFFER_CAP = 128`. No per-connection event is ever emitted.
+* **Eviction.** `DOMAIN_CAP = 2048`; the oldest `lastSeenMs` is evicted first,
+  ties broken lexicographically by domain (ascending). Evictions are logged
+  (warn) and counted in `evicted`.
+* **Persistence.** `<dataDir>/proxy_stats.db`, SQLite WAL +
+  `synchronous=NORMAL`, one transactional upsert per `PERSIST_INTERVAL_MS =
+  5000` ms and a rolling `RETENTION_MS = 24h` prune in the same transaction.
+  Seeds memory on startup; `stats.domain.reset` clears it. No per-packet write.
+* **Domain availability.** Unknown domains (ECH/ESNI, QUIC-without-SNI,
+  plain-IP) fall back to the destination IP with `domainKnown: false`; a DNS
+  reverse mapping is consulted first (see §9.5).
+
+### 15.1 Verification status
+
+`cargo test -p gstore_mod_proxy` proves: accumulation across flows (connection
+counts + periodic byte deltas + close does not double-count), eviction at the
+cap is deterministic (oldest last-seen, lexical tie-break) and bounded, reset
+clears aggregates/totals/active, the event throttle obeys the >= 1 s interval
+bound, an IP-shaped flow is marked `domainKnown: false`, `stats.domain.get`
+sorts deterministically and rejects unknown sorts (422), SQLite
+flush/prune/seed round-trips within the rolling window, a live meow
+`Statistics` table feeds `stats.traffic.get`, and the full C-ABI flow
+(`stats.domain.get` → `stats.traffic.get` → reset). **UNVERIFIED**: on-device
+aggregation/persistence across a real module reload and the real-time event
+cadence (no adb device).
 

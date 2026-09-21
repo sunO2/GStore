@@ -97,13 +97,21 @@ fn from_info(info: &meow_tunnel::statistics::ConnectionInfo, started_at_ms: u64)
     }
 }
 
+/// The projection diff produced by [`sync_full`]: the current bounded view plus
+/// the connections that disappeared since the last sync.
+pub(crate) struct SyncOutcome {
+    pub live: Vec<ConnRecord>,
+    pub closed: Vec<ConnRecord>,
+}
+
 /// Rebuild the bounded projection from meow's live connection table and return
-/// the records, newest first.
+/// the records together with the open/close transitions.
 ///
-/// Todo 15: the projection diff is also the connection-log source — a record
-/// that appears is an `open`, one that disappeared is a `close` (duration from
-/// its start time). Logging happens **after** the store lock is released.
-pub(crate) fn sync(stats: &meow_tunnel::Statistics) -> Vec<ConnRecord> {
+/// Todo 15: the transition diff is the connection-log source — a record that
+/// appears is an `open`, one that disappeared is a `close` (duration from its
+/// start time). Logging happens **after** the store lock is released. Todo 16
+/// folds the same diff into its per-domain aggregate.
+pub(crate) fn sync_full(stats: &meow_tunnel::Statistics) -> SyncOutcome {
     let (out, opened, closed) = {
         let mut store = store().lock().unwrap_or_else(|e| e.into_inner());
         let mut next: HashMap<String, ConnRecord> = HashMap::with_capacity(
@@ -153,7 +161,15 @@ pub(crate) fn sync(stats: &meow_tunnel::Statistics) -> Vec<ConnRecord> {
             "close",
         );
     }
-    out
+    SyncOutcome {
+        live: out,
+        closed: closed.into_iter().map(|(r, _)| r).collect(),
+    }
+}
+
+/// The live bounded view (Todo 10 `conn.list`). See [`sync_full`].
+pub(crate) fn sync(stats: &meow_tunnel::Statistics) -> Vec<ConnRecord> {
+    sync_full(stats).live
 }
 
 /// Build the stable, secret-free connection log payload from a projection row.
