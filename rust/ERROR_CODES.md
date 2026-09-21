@@ -44,9 +44,10 @@
 | code | 模块 | 通常 status | 含义 |
 |---|---|---|---|
 | `PROXY_TUN_FD_INVALID` | proxy | 422 | TUN fd 非法（<0 / 已关闭 / `dup` 失败）或 `core.start` 时无可用 fd（Todo 6） |
-| `PROXY_NO_INBOUND` | proxy | 409 | 请求了尚未实现的入站（`lanProxy` 运行模式，Todo 29） |
+| `PROXY_NO_INBOUND` | proxy | 422 | 选择 `lanProxy` 运行模式但 LAN 监听未启用（`lan.get().enabled==false`）。**在拆除当前模式之前**校验，返回结构化错误而非静默 no-op（Todo 29） |
+| `PROXY_MODE_INVALID` | proxy | 422 | `core.set_mode`/`core.start`/`core.restart` 收到未知 `mode` 字符串（仅接受 `off`/`vpn`/`lanProxy`；缺字段或非 JSON 载荷按历史兼容默认 `vpn`）（Todo 29） |
 | `PROXY_LAN_CONFIG_INVALID` | proxy | 422 | `lan.set` 载荷非法（`bindAddress`/`allowedIps` CIDR/`port` 非法，或 `auth.user`/`auth.pass` 为空），或 LAN 监听绑定失败（Todo 28） |
-| `PROXY_LAN_DISABLED` | proxy | 409 | 在 LAN 未启用时请求 LAN 能力（Todo 28） |
+| `PROXY_LAN_DISABLED` | proxy | 422 | 在 LAN 未启用时请求 LAN 能力（Todo 28）。`gstore_contract::StatusCode` 无 409 变体，沿用本模块 422 域错误约定 |
 | `PROXY_LAN_NO_AUTH` | proxy | —（行内 warning） | LAN 监听已启用但未配置 `auth`：`proxy.state` 事件与 `lan.*` 响应的 `warning` 字段回传（Todo 28） |
 | `PROXY_PROTECT_FAILED` | proxy | 500 | 宿主 `protect_fd(fd)` 返回非 0：拒绝使用未受保护的出站 socket（Todo 7） |
 | `PROXY_DNS_CONFIG_INVALID` | proxy | 422 | DNS 配置非法（nameserver/DoH/DoT URL 解析失败、fake-ip range 非法、空 nameserver 列表）（Todo 8） |

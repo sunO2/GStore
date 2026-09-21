@@ -106,11 +106,11 @@ failure burst, the verbatim last failure and the pending backoff (all process-gl
 
 | method | request | data |
 |---|---|---|
-| `core.start` | `{ "mode": "vpn"\|"lanProxy", "profileId"?: string, "stack"?: string, "mtu"?: number, "dns"?: object, "rules"?: [string] }` | `{ "state":"running", "mode":"vpn", "instanceId": number, "spawned": bool, "profileId"?: string, "proxies"?: number, "groups"?: number, "rules"?: number, "overlays"?: { "stack": string, "mtu": number }, "warnings"?: [Warning] }` |
-| `core.stop` | *(none)* | `{ "state": "stopped" }` |
-| `core.restart` | same as `core.start` | same as `core.start` |
-| `core.set_mode` | `{ "mode": "off"\|"vpn"\|"lanProxy" }` | `{ "ok": true, "mode": "vpn", "previous": "off" }` |
-| `core.get_mode` | *(none)* | `{ "mode": "off", "state": "stopped", "sinceMs": 0 }` |
+| `core.start` | `{ "mode": "off"\|"vpn"\|"lanProxy", "profileId"?: string, "stack"?: string, "mtu"?: number, "dns"?: object, "rules"?: [string] }` | `{ "state":"running"\|"stopped", "mode":"vpn", "instanceId": number, "spawned": bool, "idempotent": bool, "profileId"?: string, "proxies"?: number, "groups"?: number, "rules"?: number, "overlays"?: { "stack": string, "mtu": number }, "warnings"?: [Warning] }` |
+| `core.stop` | *(none)* | `{ "state": "stopped", "mode": "off", "previous": "vpn", "idempotent": false }` |
+| `core.restart` | same as `core.start` | `{ "state":"running", "mode":"vpn", "spawned": bool, "restarted": true, ... }` |
+| `core.set_mode` | `{ "mode": "off"\|"vpn"\|"lanProxy" }` | `{ "ok": true, "mode": "vpn", "previous": "off", "idempotent": bool, "state": "running" }` |
+| `core.get_mode` | *(none)* | `{ "mode": "off", "state": "stopped", "sinceMs": 0, "lastMode": "vpn", "inbound": "lan"\|"none" }` |
 
 `core.start` (Todo 13) builds the engine from the generated config before it
 reports `running`: profile → proxy registry → rules → DNS → TUN loop (which
@@ -119,7 +119,43 @@ consumes the already-installed fd last). With a stored profile and no explicit
 starts with meow's built-in DIRECT/REJECT fallback. `core.restart` re-runs the
 same generation/re-publish path on a fresh tunnel.
 
-`core.set_mode` is idempotent (same mode ⇒ no-op) and serialized on one mutation lane (Todo 29).
+### 2.3.2 Run-mode state machine (Todo 29)
+
+`mode ∈ {"off","vpn","lanProxy"}` is a first-class run mode owned entirely by
+Rust; Dart only renders and requests.
+
+* **`vpn`** — start `VpnService` (Kotlin) → `establish()` → fd → `tun.set_fd` →
+  the single TUN reader rings **and installs the `SocketProtector`** (every
+  outbound is protected). LAN listeners also start when the LAN config is
+  enabled. Requires a pending fd: with none, `core.start`/`core.set_mode` return
+  `PROXY_TUN_FD_INVALID` (422) **before** touching the current mode.
+* **`lanProxy`** — **no `VpnService`, no TUN reader, no protect hook**: the
+  engine + LAN inbounds only. The module explicitly clears the protector
+  (`meow_common::clear_socket_protector()`), because calling
+  `VpnService.protect` with no active VPN would fail and meow would error on
+  every dial. Requires an enabled LAN listener: otherwise
+  `PROXY_NO_INBOUND` (422) — never a silent no-op.
+* **`off`** — engine stopped, listeners closed, service stopped.
+
+**Switching** is serialized on one mutation lane (`mode.rs`): the current mode
+is fully stopped (Todo 24 ordering: stop reader → join → clear protect → stop
+service) **before** the next starts, so two modes can never run at once. It is
+idempotent — re-selecting the current, resource-consistent mode is a no-op (and
+emits no events). Profile/node/rule/DNS state is preserved: the engine is simply
+rebuilt from them. The tunnel + engine restart, never the process. The last-used
+mode is persisted to `<dataDir>/mode.json` and reported as `core.get_mode.lastMode`;
+a fresh instance always starts `off` (never auto-starts a mode).
+
+Event sequence for a real switch `A → B`:
+
+1. `proxy.state {state:"stopping", mode:A, reason:"mode.switch", target:B}` (only when `A != off`)
+2. `proxy.state {state:"starting", mode:B, reason:"mode.switch", target:B}`
+3. `proxy.mode {mode:B, previous:A, phase:"active"}`
+4. `proxy.state {state:"running", mode:B}`
+
+For `B == off` steps 3–4 are `proxy.mode {mode:"off", previous:A}` then
+`proxy.state {state:"stopped", mode:"off"}`. An unknown `mode` string is
+`PROXY_MODE_INVALID` (422).
 
 ### 2.3.1 `tun.set_fd` — inject the TUN fd (Todo 6)
 
@@ -821,8 +857,11 @@ built its own tunnel (no TUN/VPN engine was live).
 * The listener runs on a dedicated thread with a bounded runtime
   (`worker_threads(4)`); stop joins it deterministically.
 
-`core.start` / `core.set_mode` with `mode:"lanProxy"` still return
-`PROXY_NO_INBOUND` (409); the run-mode state machine is Todo 29.
+`core.start` / `core.set_mode` with `mode:"lanProxy"` are implemented by the
+run-mode state machine (§2.3.2): they require an enabled LAN listener and
+otherwise return `PROXY_NO_INBOUND` (422). An enabled LAN listener is bound
+standalone (engine-only) by `lan.set`; in `vpn` mode it shares the TUN tunnel,
+and in `off` mode a mode switch closes it.
 
 
 ### 2.13 `diagnostics.clash_api.*` — optional loopback Clash controller (Todo 18)
@@ -869,8 +908,8 @@ side filters on the `proxy.` prefix. `instanceId` is always present.
 
 | event | payload schema |
 |---|---|
-| `proxy.state` | `{ "state":"stopped"\|"starting"\|"running"\|"stopping", "mode":"off"\|"vpn"\|"lanProxy", "reason"?: string, "error"?: { "code": string, "message": string }, "health"?: { "alive": bool, "generation": number, "restarts": number, "consecutiveFailures": number, "lastError": string\|null, "backoffMs": number }, "source"?: string }` — `source:"kotlin"` marks a host-injected VpnService lifecycle event (Todo 24) |
-| `proxy.mode` | `{ "mode":"off"\|"vpn"\|"lanProxy", "previous": string }` |
+| `proxy.state` | `{ "state":"stopped"\|"starting"\|"running"\|"stopping", "mode":"off"\|"vpn"\|"lanProxy", "reason"?: string, "target"?: "off"\|"vpn"\|"lanProxy", "error"?: { "code": string, "message": string }, "health"?: { "alive": bool, "generation": number, "restarts": number, "consecutiveFailures": number, "lastError": string\|null, "backoffMs": number }, "source"?: string }` — `source:"kotlin"` marks a host-injected VpnService lifecycle event (Todo 24); a mode switch emits `stopping`/`starting` progress with `reason:"mode.switch"` and `target` (Todo 29) |
+| `proxy.mode` | `{ "mode":"off"\|"vpn"\|"lanProxy", "previous": string, "phase": "active" }` — emitted once the target mode is fully up (Todo 29) |
 | `proxy.node.delay` | `{ "group": string, "node": string, "delayMs": 123, "error"?: string }` |
 | `proxy.stats` | `{ "uploadBytes":0, "downloadBytes":0, "activeConns":0, "upBps":0, "downBps":0, "domainCount":0, "capacity":2048, "topDomains":[DomainStat] }` — **throttled to at most one event per second** (Todo 16); pull `stats.traffic.get` for on-demand reads |
 | `proxy.subscription.updated` | `{ "profileId": string, "nodeCount": 0, "traffic": { "uploadBytes":0, "downloadBytes":0, "totalBytes":0, "usedBytes":0 }, "expireAtMs": 0, "lastUpdatedAtMs"?: 0, "intervalMs"?: 0, "nextRefreshAtMs"?: 0 }` |
@@ -938,8 +977,9 @@ registered in `rust/ERROR_CODES.md`.
 | `PROXY_SUB_NO_NODES` | 422 | the subscription parsed but contained no importable nodes (Todo 11) |
 | `PROXY_ENGINE_START_FAILED` | 500 | meow engine failed to start |
 | `PROXY_LAN_CONFIG_INVALID` | 422 | `lan.set` payload invalid: bad `bindAddress`/`allowedIps` CIDR/`port`, or empty `auth` user/pass; also a listener bind failure (Todo 28) |
-| `PROXY_LAN_DISABLED` | 409 | LAN requested while disabled (Todo 28) |
-| `PROXY_NO_INBOUND` | 409 | `lanProxy` with no LAN listener (Todo 29) |
+| `PROXY_LAN_DISABLED` | 422 | LAN requested while disabled (Todo 28). `StatusCode` has no 409; 422 is the domain-error convention here |
+| `PROXY_NO_INBOUND` | 422 | `lanProxy` selected with no enabled LAN listener (Todo 29) |
+| `PROXY_MODE_INVALID` | 422 | `core.set_mode`/`core.start` got an unknown `mode` (Todo 29) |
 | `PROXY_PROTECT_FAILED` | 500 | host `protect_fd(fd)` returned non-zero; the dial is aborted so an unprotected socket never reaches the network (Todo 7) |
 | `PROXY_DNS_CONFIG_INVALID` | 422 | invalid DNS config: nameserver/DoH/DoT URL parse failure, bad fake-IP range, empty nameserver set (Todo 8) |
 | `PROXY_DNS_BOOTSTRAP_FAILED` | 500 | DNS bootstrap / encrypted-upstream construction failed (422 when a `default-nameserver` is not plain) (Todo 8) |

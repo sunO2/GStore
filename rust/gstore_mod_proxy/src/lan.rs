@@ -523,17 +523,34 @@ pub(crate) fn shutdown() {
 }
 
 /// Reconcile the listener after the engine (re)starts: when enabled, rebind so
-/// the listener shares the freshly built tunnel.
+/// the listener shares the freshly built tunnel. Errors are swallowed because
+/// the VPN engine must not fail just because an optional LAN bind failed.
 pub(crate) fn reconcile() {
-    let st = state().lock().unwrap_or_else(|e| e.into_inner());
-    if !st.config.enabled {
-        return;
-    }
-    let config = st.config.clone();
-    let data_dir = st.data_dir.clone();
-    let cache_dir = st.cache_dir.clone();
-    drop(st);
-    let _ = start_listener(&config, &data_dir, &cache_dir);
+    let _ = reconcile_result();
+}
+
+/// Error-returning reconcile used by the `lanProxy` mode transition (Todo 29):
+/// an enabled config that cannot bind must fail the switch structurally instead
+/// of silently leaving the mode without an inbound.
+pub(crate) fn reconcile_result() -> Result<bool, ModuleError> {
+    let (config, data_dir, cache_dir) = {
+        let st = state().lock().unwrap_or_else(|e| e.into_inner());
+        if !st.config.enabled {
+            return Ok(false);
+        }
+        (st.config.clone(), st.data_dir.clone(), st.cache_dir.clone())
+    };
+    start_listener(&config, &data_dir, &cache_dir)?;
+    Ok(true)
+}
+
+/// Whether a LAN listener is currently bound (Todo 29 consistency check).
+pub(crate) fn is_bound() -> bool {
+    state()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .running
+        .is_some()
 }
 
 #[cfg(test)]

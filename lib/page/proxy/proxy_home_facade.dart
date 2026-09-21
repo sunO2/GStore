@@ -26,6 +26,18 @@ abstract class ProxyHomeFacade implements ProxyFacade {
   /// `core.stop`：停止引擎并释放 TUN（断开动作）。
   Future<CoreStopResult> coreStop();
 
+  /// `core.get_mode`：当前模式 + 状态 + 持久化的上次使用模式。
+  Future<CoreModeResult> coreGetMode();
+
+  /// `core.set_mode`：实时切换运行模式（`off`/`vpn`/`lanProxy`）。
+  ///
+  /// 模式状态机完全在 Rust；本方法只是请求。`lanProxy` 在 LAN 未启用时由模块
+  /// 返回结构化 `PROXY_NO_INBOUND`，绝不静默 no-op。
+  Future<CoreSetModeResult> coreSetMode(String mode);
+
+  /// `lan.status`：只读 LAN 监听状态，供首页在切换到 `lanProxy` 前提示。
+  Future<ProxyLanStatus> lanStatus();
+
   /// `stats.traffic.get`：聚合流量快照（含 Rust 排序后的 topDomains）。
   Future<TrafficSnapshot> statsTrafficGet({int? topDomains});
 
@@ -61,6 +73,16 @@ class ProxyModuleHomeFacade implements ProxyHomeFacade {
 
   @override
   Future<CoreStopResult> coreStop() => _module.coreStop();
+
+  @override
+  Future<CoreModeResult> coreGetMode() => _module.coreGetMode();
+
+  @override
+  Future<CoreSetModeResult> coreSetMode(String mode) => _module.coreSetMode(mode);
+
+  @override
+  Future<ProxyLanStatus> lanStatus() =>
+      _module.invoke('lan.status', ProxyLanStatus.fromJson);
 
   @override
   Future<TrafficSnapshot> statsTrafficGet({int? topDomains}) =>

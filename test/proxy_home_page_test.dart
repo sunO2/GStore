@@ -6,6 +6,7 @@ import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
 import 'package:gstore/page/proxy/proxy_home_facade.dart';
 import 'package:gstore/page/proxy/proxy_home_page.dart';
+import 'package:gstore/page/proxy/proxy_settings_facade.dart';
 
 /// 假门面：无需原生模块，可受控发出类型化事件、控制连接动作的完成时机。
 class _FakeProxyFacade implements ProxyHomeFacade {
@@ -19,6 +20,14 @@ class _FakeProxyFacade implements ProxyHomeFacade {
 
   int coreStartCalls = 0;
   int coreStopCalls = 0;
+  int coreSetModeCalls = 0;
+  String? lastSetMode;
+
+  /// LAN listener state returned by [lanStatus]; drives the lanProxy warning.
+  bool lanEnabled = false;
+
+  /// 非空时 `coreSetMode` 以该错误失败（用于 lanProxy 未启用 LAN 的失败 QA）。
+  Object? coreSetModeError;
 
   /// 非空时 `coreStart` 返回该 future（用于断言「连接中」过渡态）。
   Completer<ProxyCoreStatus>? coreStartCompleter;
@@ -85,6 +94,34 @@ class _FakeProxyFacade implements ProxyHomeFacade {
   }
 
   @override
+  Future<CoreModeResult> coreGetMode() async => const CoreModeResult(
+        mode: ProxyMode.off,
+        state: ProxyConnState.stopped,
+        sinceMs: 0,
+      );
+
+  @override
+  Future<CoreSetModeResult> coreSetMode(String mode) {
+    coreSetModeCalls++;
+    lastSetMode = mode;
+    final error = coreSetModeError;
+    if (error != null) return Future<CoreSetModeResult>.error(error);
+    return Future<CoreSetModeResult>.value(
+      CoreSetModeResult(
+        ok: true,
+        mode: ProxyMode.fromWire(mode),
+        previous: ProxyMode.vpn,
+      ),
+    );
+  }
+
+  @override
+  Future<ProxyLanStatus> lanStatus() async => ProxyLanStatus(
+        bound: lanEnabled,
+        config: ProxyLanConfig(enabled: lanEnabled),
+      );
+
+  @override
   Future<TrafficSnapshot> statsTrafficGet({int? topDomains}) async =>
       trafficSnapshot;
 
@@ -123,6 +160,15 @@ class _FakeVpnConsent implements ProxyVpnConsent {
 
 Widget _wrap(Widget child) => MaterialApp(home: child);
 
+/// 放大测试视口：首页在状态/模式/流量三张卡之后还有快捷入口，默认 800x600
+/// 会因 `ListView` 懒构建而找不到屏外条目。测试改用高视口。
+void _useTallViewport(WidgetTester tester) {
+  tester.view.physicalSize = const Size(1000, 3200);
+  tester.view.devicePixelRatio = 1.0;
+  addTearDown(tester.view.resetPhysicalSize);
+  addTearDown(tester.view.resetDevicePixelRatio);
+}
+
 /// 刷新若干帧（**不用** pumpAndSettle：AppLoading 为无限循环动画）。
 Future<void> _flush(WidgetTester tester) async {
   await tester.pump();
@@ -131,6 +177,7 @@ Future<void> _flush(WidgetTester tester) async {
 
 void main() {
   testWidgets('disconnected：未连接态渲染状态/开关/当前配置/入口', (tester) async {
+    _useTallViewport(tester);
     final facade = _FakeProxyFacade();
     await tester.pumpWidget(_wrap(ProxyHomePage(facade: facade)));
     await _flush(tester);
@@ -319,6 +366,7 @@ void main() {
   });
 
   testWidgets('quick entry：回调优先，缺省时给出提示（不崩溃）', (tester) async {
+    _useTallViewport(tester);
     final facade = _FakeProxyFacade();
     var logs = 0;
     var stats = 0;
@@ -355,6 +403,116 @@ void main() {
     expect(find.text('代理模块不可用'), findsOneWidget);
     expect(find.text('代理模块未安装'), findsOneWidget);
     expect(find.text('重试'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('mode picker：选择局域网代理但 LAN 未启用 -> 警告 + 设置快捷入口', (tester) async {
+    final facade = _FakeProxyFacade(); // lanEnabled = false
+    var openedLanSettings = 0;
+    await tester.pumpWidget(
+      _wrap(ProxyHomePage(
+        facade: facade,
+        onOpenLanSettings: () => openedLanSettings++,
+      )),
+    );
+    await _flush(tester);
+
+    expect(find.byKey(const Key('proxy-mode-tile')), findsOneWidget);
+    expect(find.text('VPN 模式（全设备）'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('proxy-mode-tile')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.byKey(const Key('proxy-mode-option-lanProxy')), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('proxy-mode-option-lanProxy')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    // 未运行：仅记录目标，不触发 core.set_mode；显示结构化警告 + 快捷入口。
+    expect(facade.coreSetModeCalls, 0);
+    expect(find.byKey(const Key('proxy-lan-disabled-warning')), findsOneWidget);
+    expect(find.textContaining('PROXY_NO_INBOUND'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('proxy-open-lan-settings')));
+    await tester.pump();
+    expect(openedLanSettings, 1);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('live switch：运行中从 VPN 切到局域网代理 -> core.set_mode + 停服务', (tester) async {
+    final facade = _FakeProxyFacade()..lanEnabled = true;
+    final consent = _FakeVpnConsent();
+    await tester.pumpWidget(
+      _wrap(ProxyHomePage(facade: facade, vpnConsent: consent)),
+    );
+    await _flush(tester);
+    facade.emit(const ProxyStateEvent(
+      state: ProxyConnState.running,
+      mode: ProxyMode.vpn,
+    ));
+    await _flush(tester);
+    expect(find.text('已连接'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('proxy-mode-tile')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(find.byKey(const Key('proxy-mode-option-lanProxy')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(facade.coreSetModeCalls, 1);
+    expect(facade.lastSetMode, 'lanProxy');
+    expect(consent.stopCalls, 1, reason: 'lanProxy must stop the VpnService');
+    expect(find.text('局域网代理（仅共享给其它设备）'), findsOneWidget);
+    expect(find.byKey(const Key('proxy-lan-disabled-warning')), findsNothing);
+
+    // 切换到当前模式是 no-op（不再次请求）。
+    facade.coreSetModeCalls = 0;
+    await tester.tap(find.byKey(const Key('proxy-mode-tile')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(find.byKey(const Key('proxy-mode-option-lanProxy')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(facade.coreSetModeCalls, 0);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('failure QA：lanProxy 结构化 PROXY_NO_INBOUND -> 错误横幅', (tester) async {
+    final facade = _FakeProxyFacade()
+      ..coreSetModeError = const ProxyModuleException(
+        code: 'PROXY_NO_INBOUND',
+        message: 'lanProxy requires an enabled LAN listener',
+        status: 422,
+      );
+    final consent = _FakeVpnConsent();
+    await tester.pumpWidget(
+      _wrap(ProxyHomePage(facade: facade, vpnConsent: consent)),
+    );
+    await _flush(tester);
+    facade.emit(const ProxyStateEvent(
+      state: ProxyConnState.running,
+      mode: ProxyMode.vpn,
+    ));
+    await _flush(tester);
+
+    await tester.tap(find.byKey(const Key('proxy-mode-tile')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(find.byKey(const Key('proxy-mode-option-lanProxy')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(facade.coreSetModeCalls, 1);
+    expect(find.byKey(const Key('proxy-error-banner')), findsOneWidget);
+    expect(find.text('PROXY_NO_INBOUND'), findsOneWidget);
     expect(tester.takeException(), isNull);
 
     await facade.controller.close();

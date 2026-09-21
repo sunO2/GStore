@@ -41,6 +41,7 @@ mod dns;
 mod lan;
 mod limits;
 mod logging;
+mod mode;
 mod nodes;
 mod profile;
 mod protect;
@@ -340,7 +341,7 @@ const MEOW_REV: &str = "0e718f587442caaac00b221efc91c84907aeb0e0";
 #[allow(dead_code)]
 pub(crate) const EVT_STATE: &str = "proxy.state";
 #[allow(dead_code)]
-const EVT_MODE: &str = "proxy.mode";
+pub(crate) const EVT_MODE: &str = "proxy.mode";
 #[allow(dead_code)]
 const EVT_NODE_DELAY: &str = "proxy.node.delay";
 #[allow(dead_code)]
@@ -426,7 +427,7 @@ pub enum ProxyRunState {
 }
 
 impl ProxyRunState {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             ProxyRunState::Stopped => "stopped",
             ProxyRunState::Starting => "starting",
@@ -445,7 +446,7 @@ pub enum ProxyMode {
 }
 
 impl ProxyMode {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             ProxyMode::Off => "off",
             ProxyMode::Vpn => "vpn",
@@ -464,6 +465,8 @@ pub struct ProxyInstance {
     pub created_at_ms: u64,
     pub state: Mutex<ProxyRunState>,
     pub mode: Mutex<ProxyMode>,
+    /// Last-used mode persisted on disk (Todo 29); reported by `core.get_mode`.
+    pub last_mode: Mutex<ProxyMode>,
     /// `now_ms()` when `state` last changed (drives `core.get_mode.sinceMs`).
     pub state_since_ms: Mutex<u64>,
     pub data_dir: String,
@@ -607,24 +610,24 @@ fn require_instance(id: u64, instance: Option<Arc<ProxyInstance>>) -> Result<Arc
     instance.ok_or_else(|| ModuleError::instance_not_found(id))
 }
 
-fn set_state(inst: &ProxyInstance, state: ProxyRunState) {
+pub(crate) fn set_state(inst: &ProxyInstance, state: ProxyRunState) {
     *inst.state.lock().unwrap_or_else(|e| e.into_inner()) = state;
     *inst.state_since_ms.lock().unwrap_or_else(|e| e.into_inner()) = now_ms();
 }
 
-fn set_mode(inst: &ProxyInstance, mode: ProxyMode) {
+pub(crate) fn set_mode(inst: &ProxyInstance, mode: ProxyMode) {
     *inst.mode.lock().unwrap_or_else(|e| e.into_inner()) = mode;
 }
 
-fn current_state(inst: &ProxyInstance) -> ProxyRunState {
+pub(crate) fn current_state(inst: &ProxyInstance) -> ProxyRunState {
     *inst.state.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn current_mode(inst: &ProxyInstance) -> ProxyMode {
+pub(crate) fn current_mode(inst: &ProxyInstance) -> ProxyMode {
     *inst.mode.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn emit_state(instance_id: u64, state: ProxyRunState, mode: ProxyMode, reason: Option<&str>) {
+pub(crate) fn emit_state(instance_id: u64, state: ProxyRunState, mode: ProxyMode, reason: Option<&str>) {
     let mut v = serde_json::json!({ "state": state.as_str(), "mode": mode.as_str() });
     if let Some(r) = reason {
         v["reason"] = serde_json::json!(r);
@@ -634,7 +637,39 @@ fn emit_state(instance_id: u64, state: ProxyRunState, mode: ProxyMode, reason: O
     }
 }
 
-fn emit_tun_released(instance_id: u64, fd: c_int) {
+/// Progress event for a mode transition (Todo 29): `stopping`/`starting` carry
+/// the mode being left/entered plus the `target` so a client can render progress.
+pub(crate) fn emit_state_progress(
+    instance_id: u64,
+    state: ProxyRunState,
+    mode: ProxyMode,
+    reason: &str,
+    target: ProxyMode,
+) {
+    let v = serde_json::json!({
+        "state": state.as_str(),
+        "mode": mode.as_str(),
+        "reason": reason,
+        "target": target.as_str(),
+    });
+    if let Ok(bytes) = serde_json::to_vec(&v) {
+        emit_event(instance_id, EVT_STATE, &bytes);
+    }
+}
+
+/// The active run mode changed (emitted once the target mode is fully up).
+pub(crate) fn emit_mode(instance_id: u64, mode: ProxyMode, previous: ProxyMode) {
+    let v = serde_json::json!({
+        "mode": mode.as_str(),
+        "previous": previous.as_str(),
+        "phase": "active",
+    });
+    if let Ok(bytes) = serde_json::to_vec(&v) {
+        emit_event(instance_id, EVT_MODE, &bytes);
+    }
+}
+
+pub(crate) fn emit_tun_released(instance_id: u64, fd: c_int) {
     if let Ok(bytes) = serde_json::to_vec(&serde_json::json!({ "fd": fd })) {
         emit_event(instance_id, EVT_TUN_RELEASED, &bytes);
     }
@@ -649,13 +684,29 @@ fn parse_fd(payload: &[u8]) -> Result<c_int, ModuleError> {
         .ok_or_else(|| ModuleError::invalid_arg("tun.set_fd requires integer field `fd`"))
 }
 
-fn parse_mode(payload: &[u8]) -> ProxyMode {
-    let v: serde_json::Value =
-        serde_json::from_slice(payload).unwrap_or(serde_json::Value::Null);
-    match v.get("mode").and_then(|m| m.as_str()) {
-        Some("off") => ProxyMode::Off,
-        Some("lanProxy") => ProxyMode::LanProxy,
-        _ => ProxyMode::Vpn,
+/// Parse the run mode for `core.start`/`core.stop`/`core.restart`/`core.set_mode`.
+///
+/// A missing field (or a non-JSON payload, which several legacy callers send)
+/// defaults to `vpn`, preserving the pre-Todo-29 `core.start` contract. A
+/// present-but-unknown mode string is a structured 422 so a typo can never
+/// silently start the wrong mode.
+fn parse_mode_strict(payload: &[u8]) -> Result<ProxyMode, ModuleError> {
+    if payload.is_empty() {
+        return Ok(ProxyMode::Vpn);
+    }
+    let value: serde_json::Value = match serde_json::from_slice(payload) {
+        Ok(v) => v,
+        Err(_) => return Ok(ProxyMode::Vpn),
+    };
+    match value.get("mode") {
+        None => Ok(ProxyMode::Vpn),
+        Some(m) => mode::parse_wire(m.as_str().unwrap_or("")).ok_or_else(|| {
+            ModuleError::new(
+                StatusCode::InvalidArgument,
+                mode::ERR_MODE_INVALID,
+                format!("mode must be one of \"off\"|\"vpn\"|\"lanProxy\", got {m}"),
+            )
+        }),
     }
 }
 
@@ -684,36 +735,35 @@ fn core_start_arm(
     payload: &[u8],
 ) -> Result<Vec<u8>, ModuleError> {
     let inst = require_instance(instance_id, instance)?;
-    let mode = parse_mode(payload);
-    match mode {
-        ProxyMode::Vpn => {
-            let (spawned, summary) = start_engine(&inst, payload)?;
-            set_state(&inst, ProxyRunState::Running);
-            set_mode(&inst, ProxyMode::Vpn);
-            log_message(
-                1,
-                &format!("proxy: core.start vpn instance={} spawned={spawned}", inst.id),
-            );
-            emit_state(inst.id, ProxyRunState::Running, ProxyMode::Vpn, None);
-            let mut data = serde_json::json!({
-                "state": "running", "mode": "vpn", "instanceId": inst.id, "spawned": spawned,
-            });
-            merge_engine_summary(&mut data, &summary);
-            ok_data(data)
-        }
-        ProxyMode::Off => core_stop_arm(instance_id, Some(inst)),
-        ProxyMode::LanProxy => Err(ModuleError::new(
-            StatusCode::InvalidArgument,
-            "PROXY_NO_INBOUND",
-            "lanProxy inbound listener is not implemented yet (Todo 28)",
-        )),
-    }
+    let target = parse_mode_strict(payload)?;
+    // Single mutation lane: `core.start` is a mode transition (Todo 29).
+    let _lane = mode::lane();
+    let t = mode::apply(&inst, target, payload, false)?;
+    log_message(
+        1,
+        &format!(
+            "proxy: core.start mode={} instance={} spawned={} idempotent={}",
+            t.mode.as_str(),
+            inst.id,
+            t.spawned,
+            t.idempotent
+        ),
+    );
+    let mut data = serde_json::json!({
+        "state": current_state(&inst).as_str(),
+        "mode": t.mode.as_str(),
+        "instanceId": inst.id,
+        "spawned": t.spawned,
+        "idempotent": t.idempotent,
+    });
+    merge_engine_summary(&mut data, &t.summary);
+    ok_data(data)
 }
 
 /// Start-order (pinned, `core.start` vpn): generated profile config → proxy
 /// registry (leaves + groups, via Todo 10's `install_proxies`) → rules →
 /// DNS → ring the TUN loop, which consumes the already-installed fd last.
-fn start_engine(
+pub(crate) fn start_engine(
     inst: &Arc<ProxyInstance>,
     payload: &[u8],
 ) -> Result<(bool, Option<serde_json::Value>), ModuleError> {
@@ -796,22 +846,16 @@ fn core_stop_arm(
     instance: Option<Arc<ProxyInstance>>,
 ) -> Result<Vec<u8>, ModuleError> {
     let inst = require_instance(instance_id, instance)?;
-    // Diagnostics controller is bound to the live engine; stop it with the engine.
-    controller::stop();
-    let was_running = current_state(&inst) != ProxyRunState::Stopped;
-    let stopped = tun::stop();
-    set_state(&inst, ProxyRunState::Stopped);
-    set_mode(&inst, ProxyMode::Off);
-    if let Some(s) = &stopped {
-        // Tell the host it may clear (and Kotlin may close) the fd: the reader
-        // loop is stopped and its thread has been joined.
-        emit_tun_released(s.instance_id, s.host_fd);
-        log_message(1, &format!("proxy: core.stop instance={} fd released", inst.id));
-    }
-    if stopped.is_some() || was_running {
-        emit_state(inst.id, ProxyRunState::Stopped, ProxyMode::Off, None);
-    }
-    ok_data(serde_json::json!({ "state": "stopped" }))
+    // `core.stop` is the `off` mode transition (single mutation lane).
+    let _lane = mode::lane();
+    let t = mode::apply(&inst, ProxyMode::Off, &[], false)?;
+    log_message(1, &format!("proxy: core.stop instance={} switched to off", inst.id));
+    ok_data(serde_json::json!({
+        "state": "stopped",
+        "mode": "off",
+        "previous": t.previous.as_str(),
+        "idempotent": t.idempotent,
+    }))
 }
 
 fn core_restart_arm(
@@ -820,22 +864,25 @@ fn core_restart_arm(
     payload: &[u8],
 ) -> Result<Vec<u8>, ModuleError> {
     let inst = require_instance(instance_id, instance)?;
-    // A restart builds a fresh tunnel; the previous controller would hold the
-    // stale one, so drop it (a developer re-enables diagnostics explicitly).
-    controller::stop();
-    if let Some(s) = tun::stop() {
-        emit_tun_released(s.instance_id, s.host_fd);
-    }
-    // The previous loop consumed (and closed) our pending dup; re-duplicate the
-    // last known host fd if it is still open, so restart works without a new
-    // nativeSetTunFd (if Kotlin already closed it we surface PROXY_TUN_FD_INVALID).
-    tun::ensure_pending_from_last()?;
-    let (spawned, summary) = start_engine(&inst, payload)?;
-    set_state(&inst, ProxyRunState::Running);
-    set_mode(&inst, ProxyMode::Vpn);
-    emit_state(inst.id, ProxyRunState::Running, ProxyMode::Vpn, Some("restart"));
-    let mut data = serde_json::json!({ "state": "running", "mode": "vpn", "spawned": spawned });
-    merge_engine_summary(&mut data, &summary);
+    let requested = parse_mode_strict(payload)?;
+    // `off` is not a valid restart target: a restart rebuilds a running engine.
+    let target = if requested == ProxyMode::Off {
+        ProxyMode::Vpn
+    } else {
+        requested
+    };
+    let _lane = mode::lane();
+    // `force` rebuilds the tunnel even when the mode is unchanged. The previous
+    // loop consumed our dup; Todo 29 re-dups the retained host fd (or surfaces
+    // PROXY_TUN_FD_INVALID when Kotlin already closed it).
+    let t = mode::apply(&inst, target, payload, true)?;
+    let mut data = serde_json::json!({
+        "state": current_state(&inst).as_str(),
+        "mode": t.mode.as_str(),
+        "spawned": t.spawned,
+        "restarted": true,
+    });
+    merge_engine_summary(&mut data, &t.summary);
     ok_data(data)
 }
 
@@ -845,49 +892,44 @@ fn core_get_mode_arm(
 ) -> Result<Vec<u8>, ModuleError> {
     let inst = require_instance(instance_id, instance)?;
     let since = *inst.state_since_ms.lock().unwrap_or_else(|e| e.into_inner());
+    let last_mode = *inst.last_mode.lock().unwrap_or_else(|e| e.into_inner());
     ok_data(serde_json::json!({
         "mode": current_mode(&inst).as_str(),
         "state": current_state(&inst).as_str(),
         "sinceMs": since,
+        "lastMode": last_mode.as_str(),
+        "inbound": if crate::lan::get().enabled { "lan" } else { "none" },
     }))
 }
 
+/// `core.set_mode`: the first-class live mode switch (Todo 29). Serialized on the
+/// single mutation lane, idempotent, and `lanProxy`-without-inbound is a
+/// structured `PROXY_NO_INBOUND` (never a silent no-op).
 fn core_set_mode_arm(
     instance_id: u64,
     instance: Option<Arc<ProxyInstance>>,
     payload: &[u8],
 ) -> Result<Vec<u8>, ModuleError> {
     let inst = require_instance(instance_id, instance)?;
-    let mode = parse_mode(payload);
-    let previous = current_mode(&inst);
-    match mode {
-        ProxyMode::Off => {
-            let stopped = tun::stop();
-            set_state(&inst, ProxyRunState::Stopped);
-            if let Some(s) = &stopped {
-                emit_tun_released(s.instance_id, s.host_fd);
-            }
-        }
-        ProxyMode::Vpn => {
-            tun::start(inst.id)?;
-            set_state(&inst, ProxyRunState::Running);
-        }
-        ProxyMode::LanProxy => {
-            return Err(ModuleError::new(
-                StatusCode::InvalidArgument,
-                "PROXY_NO_INBOUND",
-                "lanProxy inbound listener is not implemented yet (Todo 28)",
-            ))
-        }
-    }
-    set_mode(&inst, mode);
-    let bytes = serde_json::to_vec(&serde_json::json!({
-        "mode": mode.as_str(), "previous": previous.as_str(),
-    }))
-    .unwrap_or_default();
-    emit_event(inst.id, EVT_MODE, &bytes);
+    let target = parse_mode_strict(payload)?;
+    let _lane = mode::lane();
+    let t = mode::apply(&inst, target, payload, false)?;
+    log_message(
+        1,
+        &format!(
+            "proxy: core.set_mode {} (previous={}) instance={} idempotent={}",
+            t.mode.as_str(),
+            t.previous.as_str(),
+            inst.id,
+            t.idempotent
+        ),
+    );
     ok_data(serde_json::json!({
-        "ok": true, "mode": mode.as_str(), "previous": previous.as_str(),
+        "ok": true,
+        "mode": t.mode.as_str(),
+        "previous": t.previous.as_str(),
+        "idempotent": t.idempotent,
+        "state": current_state(&inst).as_str(),
     }))
 }
 
@@ -1564,6 +1606,9 @@ fn lan_set_arm(
     payload: &[u8],
 ) -> Result<Vec<u8>, ModuleError> {
     let inst = require_instance(instance_id, instance)?;
+    // LAN config changes can bind/unbind an inbound, so they share the mode
+    // mutation lane with mode switches (Todo 29): the two can never race.
+    let _lane = mode::lane();
     let config = lan::set(&inst.data_dir, &inst.cache_dir, payload)?;
     let warning = lan::warning_for(&config);
     if config.enabled {
@@ -1609,11 +1654,13 @@ fn create_impl(config: *const u8, config_len: usize) -> Result<u64, c_int> {
         let _ = nodes::ensure_selector_store(&ctx.data_dir);
     }
     lan::configure(&ctx.data_dir, &ctx.cache_dir);
+    let last_mode = mode::load_last_mode(&ctx.data_dir);
     let inst = Arc::new(ProxyInstance {
         id,
         created_at_ms: now_ms(),
         state: Mutex::new(ProxyRunState::Stopped),
         mode: Mutex::new(ProxyMode::Off),
+        last_mode: Mutex::new(last_mode),
         state_since_ms: Mutex::new(now_ms()),
         data_dir: ctx.data_dir,
         cache_dir: ctx.cache_dir,
@@ -1770,9 +1817,10 @@ fn destroy_impl(instance_id: u64) -> Result<(), c_int> {
         map.len()
     };
     if remaining == 0 {
-        // Last instance: also drop any still-pending (unstarted) fd.
+        // Last instance: also drop any still-pending (unstarted) fd and hooks.
         tun::shutdown();
         lan::shutdown();
+        protect::clear();
     }
     log_message(1, &format!("proxy: instance {instance_id} destroyed"));
     Ok(())
@@ -1782,6 +1830,7 @@ fn shutdown_impl() -> Result<(), c_int> {
     controller::stop();
     tun::shutdown();
     lan::shutdown();
+    protect::clear();
     instances().lock().unwrap_or_else(|e| e.into_inner()).clear();
     log_message(1, "proxy: shutdown");
     Ok(())
@@ -2363,6 +2412,252 @@ mod abi_tests {
         );
 
         assert_eq!(destroy(inst), ABI_OK);
+    }
+
+    fn free_tcp_port() -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    }
+
+    /// Collapse captured events into the (kind, value) sequence a mode client
+    /// observes: `("state", <state>)` for `proxy.state`, `("mode", <mode>)` for
+    /// `proxy.mode`; every other event type is ignored.
+    fn mode_event_sequence(events: &[(String, Vec<u8>)]) -> Vec<(&'static str, String)> {
+        events
+            .iter()
+            .filter_map(|(event_type, payload)| {
+                let value: serde_json::Value = serde_json::from_slice(payload).ok()?;
+                match event_type.as_str() {
+                    "proxy.state" => Some(("state", value["state"].as_str()?.to_string())),
+                    "proxy.mode" => Some(("mode", value["mode"].as_str()?.to_string())),
+                    _ => None,
+                }
+            })
+            .collect()
+    }
+
+    fn abi_mode_test_dir(tag: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("gstore-mode-{tag}-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Todo 29 happy path over the real C ABI: the full mode matrix
+    /// `off -> vpn -> lanProxy -> off`, the resource invariants per mode
+    /// (protector only in `vpn`; no listener in `off`), the progress event
+    /// sequence, and idempotency. Also the failure QA: `lanProxy` with LAN
+    /// disabled is a structured 422 `PROXY_NO_INBOUND`, never a silent no-op.
+    #[test]
+    fn abi_mode_switch_matrix_events_and_resource_invariants() {
+        use std::os::fd::AsRawFd as _;
+
+        let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let api = register_api();
+        let create = api.create.unwrap();
+        let call = api.call.unwrap();
+        let destroy = api.destroy.unwrap();
+        crate::tun::shutdown();
+        crate::lan::reset_for_tests();
+        crate::rules::reset_for_tests();
+        crate::conn::reset_for_tests();
+        let _ = take_events();
+
+        let dir = abi_mode_test_dir("matrix");
+        let cfg = serde_json::to_vec(&serde_json::json!({
+            "data_dir": dir.display().to_string(),
+            "cache_dir": dir.display().to_string(),
+        }))
+        .unwrap();
+        let mut inst: u64 = 0;
+        assert_eq!(create(cfg.as_ptr(), cfg.len(), &mut inst), ABI_OK);
+
+        // lanProxy with LAN disabled -> structured no-inbound error, mode stays off.
+        let (code, out) = call_with_payload(call, inst, "core.set_mode", br#"{"mode":"lanProxy"}"#);
+        assert_eq!(code, ABI_ERR_DETAIL, "lanProxy without LAN must be an error");
+        let err: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(err["status"], 422);
+        assert_eq!(err["code"], "PROXY_NO_INBOUND");
+        let (_, out) = call_json(call, inst, "core.get_mode");
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["mode"], "off");
+        assert_eq!(v["data"]["state"], "stopped");
+
+        // An unknown mode string is a structured 422 (never a silent default).
+        let (code, out) = call_with_payload(call, inst, "core.set_mode", br#"{"mode":"bogus"}"#);
+        assert_eq!(code, ABI_ERR_DETAIL);
+        let err: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(err["code"], "PROXY_MODE_INVALID");
+        assert_eq!(err["status"], 422);
+
+        // vpn with no fd fails before any teardown with a structured error.
+        let (code, out) = call_with_payload(call, inst, "core.set_mode", br#"{"mode":"vpn"}"#);
+        assert_eq!(code, ABI_ERR_DETAIL);
+        let err: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(err["code"], "PROXY_TUN_FD_INVALID");
+
+        // Enable the LAN inbound (default OFF) so `lanProxy` is a valid target.
+        let port = free_tcp_port();
+        let lan_payload = format!(
+            r#"{{"enabled":true,"port":{port},"bindAddress":"127.0.0.1"}}"#
+        );
+        let (code, out) = call_with_payload(call, inst, "lan.set", lan_payload.as_bytes());
+        assert_eq!(code, ABI_OK, "lan.set: {}", String::from_utf8_lossy(&out));
+        assert!(crate::lan::is_bound(), "enabled LAN must be bound");
+
+        // ---- off -> vpn ----
+        let (loop_end, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let fd_payload = format!(r#"{{"fd":{}}}"#, loop_end.as_raw_fd());
+        let (code, _) = call_with_payload(call, inst, "tun.set_fd", fd_payload.as_bytes());
+        assert_eq!(code, ABI_OK);
+        let _ = take_events();
+        let (code, out) = call_with_payload(call, inst, "core.set_mode", br#"{"mode":"vpn"}"#);
+        assert_eq!(code, ABI_OK, "off->vpn: {}", String::from_utf8_lossy(&out));
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["mode"], "vpn");
+        assert_eq!(v["data"]["state"], "running");
+        assert!(crate::tun::is_running(), "vpn rings the TUN reader");
+        assert!(
+            crate::protect::is_installed(),
+            "vpn installs the SocketProtector"
+        );
+        assert!(
+            crate::lan::is_bound(),
+            "vpn also starts LAN listeners when enabled"
+        );
+        assert_eq!(
+            mode_event_sequence(&take_events()),
+            vec![
+                ("state", "starting".to_string()),
+                ("mode", "vpn".to_string()),
+                ("state", "running".to_string()),
+            ]
+        );
+
+        // ---- vpn -> lanProxy ----
+        let _ = take_events();
+        let (code, out) = call_with_payload(call, inst, "core.set_mode", br#"{"mode":"lanProxy"}"#);
+        assert_eq!(code, ABI_OK, "vpn->lanProxy: {}", String::from_utf8_lossy(&out));
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["mode"], "lanProxy");
+        assert_eq!(v["data"]["state"], "running");
+        assert!(!crate::tun::is_running(), "lanProxy has NO TUN reader");
+        assert!(
+            !crate::protect::is_installed(),
+            "lanProxy installs NO protector"
+        );
+        assert!(crate::lan::is_bound(), "lanProxy serves LAN inbounds");
+        assert_eq!(
+            mode_event_sequence(&take_events()),
+            vec![
+                ("state", "stopping".to_string()),
+                ("state", "starting".to_string()),
+                ("mode", "lanProxy".to_string()),
+                ("state", "running".to_string()),
+            ]
+        );
+
+        // ---- idempotent: re-selecting the current mode is a no-op ----
+        let _ = take_events();
+        let (code, out) = call_with_payload(call, inst, "core.set_mode", br#"{"mode":"lanProxy"}"#);
+        assert_eq!(code, ABI_OK);
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["idempotent"], true);
+        assert_eq!(v["data"]["previous"], "lanProxy");
+        assert!(
+            take_events()
+                .iter()
+                .all(|(t, _)| t != "proxy.mode" && t != "proxy.state"),
+            "a no-op switch emits no mode/state events"
+        );
+
+        // ---- lanProxy -> off ----
+        let _ = take_events();
+        let (code, out) = call_with_payload(call, inst, "core.set_mode", br#"{"mode":"off"}"#);
+        assert_eq!(code, ABI_OK, "lanProxy->off: {}", String::from_utf8_lossy(&out));
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["mode"], "off");
+        assert_eq!(v["data"]["state"], "stopped");
+        assert!(!crate::tun::is_running(), "off stops the TUN reader");
+        assert!(!crate::lan::is_bound(), "off leaves NO listener bound");
+        assert!(!crate::protect::is_installed(), "off leaves NO protector");
+        assert_eq!(
+            mode_event_sequence(&take_events()),
+            vec![
+                ("state", "stopping".to_string()),
+                ("mode", "off".to_string()),
+                ("state", "stopped".to_string()),
+            ]
+        );
+
+        let (_, out) = call_json(call, inst, "core.get_mode");
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["lastMode"], "off");
+
+        assert_eq!(destroy(inst), ABI_OK);
+        crate::tun::shutdown();
+        crate::lan::reset_for_tests();
+        crate::rules::reset_for_tests();
+        crate::conn::reset_for_tests();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Todo 29: the last-used mode is persisted and hydrated on the next create,
+    /// while a fresh instance still starts `off` (never auto-starts a mode).
+    #[test]
+    fn abi_mode_last_used_is_persisted_across_instances() {
+        let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let api = register_api();
+        let create = api.create.unwrap();
+        let call = api.call.unwrap();
+        let destroy = api.destroy.unwrap();
+        crate::tun::shutdown();
+        crate::lan::reset_for_tests();
+        crate::rules::reset_for_tests();
+        crate::conn::reset_for_tests();
+        let _ = take_events();
+
+        let dir = abi_mode_test_dir("persist");
+        let cfg = serde_json::to_vec(&serde_json::json!({
+            "data_dir": dir.display().to_string(),
+            "cache_dir": dir.display().to_string(),
+        }))
+        .unwrap();
+
+        let mut first: u64 = 0;
+        assert_eq!(create(cfg.as_ptr(), cfg.len(), &mut first), ABI_OK);
+        let port = free_tcp_port();
+        let lan_payload = format!(
+            r#"{{"enabled":true,"port":{port},"bindAddress":"127.0.0.1"}}"#
+        );
+        let (code, _) = call_with_payload(call, first, "lan.set", lan_payload.as_bytes());
+        assert_eq!(code, ABI_OK);
+        let (code, _) = call_with_payload(call, first, "core.set_mode", br#"{"mode":"lanProxy"}"#);
+        assert_eq!(code, ABI_OK);
+        let (_, out) = call_json(call, first, "core.get_mode");
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["lastMode"], "lanProxy");
+        assert_eq!(destroy(first), ABI_OK);
+
+        // A new instance with the same data_dir reports the persisted last mode
+        // but is not running it (mode/state stay off/stopped until requested).
+        let mut second: u64 = 0;
+        assert_eq!(create(cfg.as_ptr(), cfg.len(), &mut second), ABI_OK);
+        let (_, out) = call_json(call, second, "core.get_mode");
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["lastMode"], "lanProxy", "last-used mode persists");
+        assert_eq!(v["data"]["mode"], "off", "fresh instance never auto-starts");
+        assert_eq!(v["data"]["state"], "stopped");
+
+        assert_eq!(destroy(second), ABI_OK);
+        crate::tun::shutdown();
+        crate::lan::reset_for_tests();
+        crate::rules::reset_for_tests();
+        crate::conn::reset_for_tests();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// `dns.set` → `dns.get` round-trip over the real C ABI, plus

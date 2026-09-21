@@ -207,6 +207,7 @@ pub(crate) fn ensure_pending_from_last() -> Result<(), ModuleError> {
 
 /// `core.start` (vpn mode) without an explicit proxy registry. See
 /// [`start_with_proxies`].
+#[allow(dead_code)]
 pub(crate) fn start(instance_id: u64) -> Result<bool, ModuleError> {
     start_with_proxies(instance_id, None)
 }
@@ -347,13 +348,31 @@ pub(crate) fn shutdown() {
     crate::supervisor::reset_burst();
 }
 
-#[allow(dead_code)]
 pub(crate) fn is_running() -> bool {
     state()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .active
         .is_some()
+}
+
+/// Whether an unstarted TUN fd is staged for the next `core.start` (Todo 29's
+/// mode machine validates `vpn` readiness before tearing down the current mode).
+pub(crate) fn has_pending() -> bool {
+    state()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .pending
+        .is_some()
+}
+
+/// Whether a previous host fd is retained (lets a forced restart re-`dup` it).
+pub(crate) fn has_last() -> bool {
+    state()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .last_host_fd
+        >= 0
 }
 
 /// Live loop threads. After `stop` returns this must be `0` — the no-leak proof.

@@ -5,6 +5,8 @@ import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
 
 import 'proxy_home_facade.dart';
+import 'proxy_settings_facade.dart';
+import 'proxy_settings_page.dart';
 
 /// 代理首页（VPN 状态 / 连接开关 / 实时流量 / 当前配置 / 日志·统计入口）。
 ///
@@ -26,6 +28,7 @@ class ProxyHomePage extends StatefulWidget {
     this.vpnConsent,
     this.onOpenLogs,
     this.onOpenStats,
+    this.onOpenLanSettings,
     this.vpnConfigJson = '{}',
   });
 
@@ -40,6 +43,10 @@ class ProxyHomePage extends StatefulWidget {
 
   /// 「流量统计」快捷入口；为空时给出「后续版本开放」提示。
   final VoidCallback? onOpenStats;
+
+  /// 「局域网设置」快捷入口（模式选择为 `lanProxy` 但 LAN 未启用时的跳转）。
+  /// 为空时直接打开 [ProxySettingsPage]。
+  final VoidCallback? onOpenLanSettings;
 
   /// 传给 Kotlin `ProxyVpnService` 的配置 JSON（默认 `{}` = 全量路由）。
   /// Dart 侧**不生成**该配置，仅透传。
@@ -60,6 +67,9 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
   ProxyVersionInfo? _version;
   ProxyConnState _connState = ProxyConnState.stopped;
   ProxyMode _mode = ProxyMode.unknown;
+  /// 目标模式（未运行时用于「连接」动作；运行时即当前模式）。
+  ProxyMode _targetMode = ProxyMode.vpn;
+  ProxyLanStatus? _lanStatus;
   ProxyStateError? _actionError;
   String? _stateReason;
   ProxyStatsEvent? _stats;
@@ -98,10 +108,13 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
       // 只读展示数据，失败不影响主状态（best-effort）。
       final profiles = await _safe(() => _facade.profileList());
       final traffic = await _safe(() => _facade.statsTrafficGet(topDomains: 1));
+      final lan = await _safe(() => _facade.lanStatus());
       if (!mounted) return;
       setState(() {
         _connState = ping.state ?? ProxyConnState.stopped;
         _mode = ping.mode ?? ProxyMode.unknown;
+        _targetMode = _selectableMode(_mode);
+        _lanStatus = lan;
         _version = version;
         if (profiles != null && profiles.profiles.isNotEmpty) {
           final profile = profiles.profiles.first;
@@ -175,10 +188,14 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
         case ProxyStateEvent():
           _connState = event.state;
           _mode = event.mode;
+          if (event.state == ProxyConnState.running) {
+            _targetMode = _selectableMode(event.mode);
+          }
           _actionError = event.error;
           _stateReason = event.reason;
         case ProxyModeEvent():
           _mode = event.mode;
+          _targetMode = _selectableMode(event.mode);
         case ProxyStatsEvent():
           _stats = event;
           _applyTopDomains(event.topDomains);
@@ -223,25 +240,29 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
     });
     try {
       if (connecting) {
-        // 连接必须带上持久化的分流配置（Todo 23 → Todo 24 交接），仅在显式传入
-        // 非默认配置时才直接用 widget 参数。
-        var configJson = widget.vpnConfigJson;
-        if (configJson == '{}') {
-          configJson = await _safe(() => _facade.vpnConfigJson()) ?? configJson;
+        final target = _targetMode;
+        if (target == ProxyMode.vpn) {
+          // 连接必须带上持久化的分流配置（Todo 23 → Todo 24 交接），仅在显式传入
+          // 非默认配置时才直接用 widget 参数。
+          var configJson = widget.vpnConfigJson;
+          if (configJson == '{}') {
+            configJson = await _safe(() => _facade.vpnConfigJson()) ?? configJson;
+          }
+          final prepared =
+              await _vpnConsent.prepare(configJson: configJson);
+          if (!prepared) {
+            throw const ProxyModuleException(
+              code: 'PROXY_VPN_CONSENT_DENIED',
+              message: 'VPN 授权未通过，无法建立连接',
+            );
+          }
         }
-        final prepared =
-            await _vpnConsent.prepare(configJson: configJson);
-        if (!prepared) {
-          throw const ProxyModuleException(
-            code: 'PROXY_VPN_CONSENT_DENIED',
-            message: 'VPN 授权未通过，无法建立连接',
-          );
-        }
-        final status = await _facade.coreStart(const CoreStartRequest());
+        final status = await _facade.coreStart(CoreStartRequest(mode: target.wire));
         if (!mounted) return;
         setState(() {
           _connState = status.state;
           _mode = status.mode;
+          _targetMode = _selectableMode(status.mode);
           final name = status.profileName;
           if (name != null && name.isNotEmpty) _profileName = name;
           _configWarnings = status.warnings;
@@ -288,9 +309,179 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
     }
   }
 
+  // ==================== 运行模式（VPN / 局域网代理） ====================
+
+  Future<void> _openModePicker() async {
+    if (_busy) return;
+    final result = await AppSheet.show<ProxyMode>(
+      context: context,
+      title: '运行模式',
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _modeOption(
+            mode: ProxyMode.vpn,
+            key: const Key('proxy-mode-option-vpn'),
+            icon: Icons.shield_outlined,
+            title: 'VPN 模式（全设备）',
+            subtitle: '手机全部流量经由代理，并共享给其它设备（当 LAN 已启用）',
+          ),
+          _modeOption(
+            mode: ProxyMode.lanProxy,
+            key: const Key('proxy-mode-option-lanProxy'),
+            icon: Icons.lan_outlined,
+            title: '局域网代理（仅共享给其它设备）',
+            subtitle: '手机自身流量不经过代理，仅向局域网提供入站',
+          ),
+        ],
+      ),
+    );
+    if (result == null) return;
+    await _requestMode(result);
+  }
+
+  Widget _modeOption({
+    required ProxyMode mode,
+    required Key key,
+    required IconData icon,
+    required String title,
+    required String subtitle,
+  }) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final selected = _targetMode == mode;
+    return InkWell(
+      key: key,
+      onTap: () => Navigator.of(context).pop(mode),
+      child: Padding(
+        padding: AppSpacing.onlyVerticalSM,
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(
+              icon,
+              size: AppTypography.iconMD,
+              color: selected ? scheme.primary : scheme.onSurfaceVariant,
+            ),
+            const SizedBox(width: AppSpacing.md),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title, style: theme.textTheme.bodyLarge),
+                  const SizedBox(height: AppSpacing.xs),
+                  Text(
+                    subtitle,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            if (selected)
+              Icon(Icons.check, size: AppTypography.iconMD, color: scheme.primary),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 用户选择了一个模式：未运行时只记录目标（由「连接」启动）；运行中则实时切换。
+  Future<void> _requestMode(ProxyMode target) async {
+    if (target == _targetMode && (!_isRunning || target == _mode)) return;
+    if (!_isRunning) {
+      setState(() => _targetMode = target);
+      return;
+    }
+    if (target == _mode) {
+      setState(() => _targetMode = target);
+      return;
+    }
+    await _switchMode(target);
+  }
+
+  /// 实时切换模式。模式状态机在 Rust：这里只负责平台前置/后置动作
+  /// （VPN 需先 `establish`；离开 VPN 后停掉前台服务）与结构化错误展示。
+  Future<void> _switchMode(ProxyMode target) async {
+    setState(() {
+      _busy = true;
+      _actionError = null;
+      _stateReason = null;
+      _connState = ProxyConnState.starting;
+    });
+    try {
+      if (target == ProxyMode.vpn) {
+        var configJson = widget.vpnConfigJson;
+        if (configJson == '{}') {
+          configJson = await _safe(() => _facade.vpnConfigJson()) ?? configJson;
+        }
+        final prepared = await _vpnConsent.prepare(configJson: configJson);
+        if (!prepared) {
+          throw const ProxyModuleException(
+            code: 'PROXY_VPN_CONSENT_DENIED',
+            message: 'VPN 授权未通过，无法切换模式',
+          );
+        }
+      }
+      final result = await _facade.coreSetMode(target.wire);
+      if (target == ProxyMode.lanProxy) {
+        // lanProxy 不持有 VpnService：停掉前台服务，避免残留 VPN。
+        await _vpnConsent.stop();
+      }
+      if (!mounted) return;
+      setState(() {
+        _connState = ProxyConnState.running;
+        _mode = result.mode;
+        _targetMode = _selectableMode(result.mode);
+      });
+    } on ProxyModuleException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _actionError = ProxyStateError(code: error.code, message: error.message);
+        _connState = ProxyConnState.running;
+        _targetMode = _selectableMode(_mode);
+      });
+      AppDialogs.showError(error.message);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _actionError = ProxyStateError(
+          code: 'PROXY_ACTION_FAILED',
+          message: '$error',
+        );
+        _connState = ProxyConnState.running;
+        _targetMode = _selectableMode(_mode);
+      });
+      AppDialogs.showError('$error');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  void _openLanSettings() {
+    final callback = widget.onOpenLanSettings;
+    if (callback != null) {
+      callback();
+      return;
+    }
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => const ProxySettingsPage()),
+    );
+  }
+
   // ==================== 展示辅助 ====================
 
   bool get _isRunning => _connState == ProxyConnState.running;
+
+  /// 可选模式归一化：只有 vpn / lanProxy 是可选择的目标（`off` 由断开按钮表达）。
+  ProxyMode _selectableMode(ProxyMode mode) =>
+      mode == ProxyMode.lanProxy ? ProxyMode.lanProxy : ProxyMode.vpn;
+
+  bool get _lanEnabled => _lanStatus?.config?.enabled ?? false;
+
+  bool get _lanProxyNeedsWarning =>
+      _targetMode == ProxyMode.lanProxy && !_lanEnabled;
 
   bool get _isTransitioning =>
       _connState == ProxyConnState.starting ||
@@ -351,6 +542,8 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
       children: [
         _buildStatusCard(context),
         const SizedBox(height: AppSpacing.lg),
+        _buildModeCard(context),
+        const SizedBox(height: AppSpacing.lg),
         _buildTrafficCard(context),
         const SizedBox(height: AppSpacing.lg),
         _buildQuickEntries(context),
@@ -399,6 +592,89 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
           ),
         ),
       ],
+    );
+  }
+
+  // ==================== 运行模式卡 ====================
+
+  String get _modeOptionLabel => _targetMode == ProxyMode.lanProxy
+      ? '局域网代理（仅共享给其它设备）'
+      : 'VPN 模式（全设备）';
+
+  Widget _buildModeCard(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Column(
+        children: [
+          ListTile(
+            key: const Key('proxy-mode-tile'),
+            leading: Icon(Icons.tune, color: scheme.primary),
+            title: const Text('运行模式'),
+            subtitle: Text(_modeOptionLabel),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: _busy ? null : _openModePicker,
+          ),
+          if (_lanProxyNeedsWarning)
+            Padding(
+              padding: AppSpacing.onlyHorizontalLG,
+              child: Container(
+                key: const Key('proxy-lan-disabled-warning'),
+                width: double.infinity,
+                padding: AppSpacing.allMD,
+                decoration: BoxDecoration(
+                  color: scheme.tertiaryContainer,
+                  borderRadius: AppRadius.allMD,
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.warning_amber_outlined,
+                          size: AppTypography.iconMD,
+                          color: scheme.onTertiaryContainer,
+                        ),
+                        const SizedBox(width: AppSpacing.xs),
+                        Expanded(
+                          child: Text(
+                            '局域网代理需要先启用局域网监听',
+                            style: theme.textTheme.labelMedium?.copyWith(
+                              color: scheme.onTertiaryContainer,
+                              fontWeight: AppTypography.weightMedium,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: AppSpacing.xs),
+                    Text(
+                      '当前「局域网监听 (LAN)」处于关闭状态，切换到局域网代理会返回 '
+                      'PROXY_NO_INBOUND。请先在设置中开启它。',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: scheme.onTertiaryContainer,
+                      ),
+                    ),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: TextButton(
+                        key: const Key('proxy-open-lan-settings'),
+                        onPressed: _openLanSettings,
+                        style: TextButton.styleFrom(
+                          foregroundColor: scheme.onTertiaryContainer,
+                        ),
+                        child: const Text('去开启局域网监听'),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          const SizedBox(height: AppSpacing.sm),
+        ],
+      ),
     );
   }
 
