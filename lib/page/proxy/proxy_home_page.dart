@@ -1,42 +1,80 @@
 import 'package:flutter/material.dart';
 
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
 
-/// 代理状态页（最小骨架，纯展示）。
-///
-/// **只消费 [ProxyFacade]**：状态文字、模式与错误全部由门面（模块事件 / ping）
-/// 驱动；连接开关是**占位**，不含任何解析 / 网络 / 路由逻辑（全部在 Rust）。
-///
-/// 模块未安装 / 不可用时展示结构化错误态与「重试」，绝不崩溃。
-class ProxyHomePage extends StatefulWidget {
-  const ProxyHomePage({super.key, this.facade});
+import 'proxy_home_facade.dart';
 
-  /// 门面（测试可注入假实现；为空时用生产单例 [ProxyModule.instance]）。
-  final ProxyFacade? facade;
+/// 代理首页（VPN 状态 / 连接开关 / 实时流量 / 当前配置 / 日志·统计入口）。
+///
+/// **纯展示层**：状态、模式、流量、配置名全部来自 [ProxyHomeFacade] 的响应与
+/// 类型化事件；连接动作只做「调门面 + 调授权触发」[ProxyVpnConsent]，不含任何
+/// 解析 / 网络 / 路由 / 统计逻辑（全部在 Rust 的 `gstore_mod_proxy`）。
+///
+/// * 连接：`ProxyVpnConsent.prepare`（拉起系统 VPN 授权，已授权直接起服务）→
+///   门面 `core.start`；
+/// * 断开：门面 `core.stop` → `ProxyVpnConsent.stop`；
+/// * 流量：`proxy.stats` 事件（节流 >= 1s），初始值由 `stats.traffic.get` 播种；
+/// * 错误：结构化横幅 + 「重试」，模块不可用则整页错误态（绝不崩溃）。
+///
+/// 依赖全部可注入，组件测试无需原生模块。
+class ProxyHomePage extends StatefulWidget {
+  const ProxyHomePage({
+    super.key,
+    this.facade,
+    this.vpnConsent,
+    this.onOpenLogs,
+    this.onOpenStats,
+    this.vpnConfigJson = '{}',
+  });
+
+  /// 门面（测试可注入假实现；为空时用 [ProxyModuleHomeFacade] 生产单例）。
+  final ProxyHomeFacade? facade;
+
+  /// VPN 授权 / 前台服务触发（测试可注入假实现；为空时走平台通道）。
+  final ProxyVpnConsent? vpnConsent;
+
+  /// 「运行日志」快捷入口；为空时给出「后续版本开放」提示。
+  final VoidCallback? onOpenLogs;
+
+  /// 「流量统计」快捷入口；为空时给出「后续版本开放」提示。
+  final VoidCallback? onOpenStats;
+
+  /// 传给 Kotlin `ProxyVpnService` 的配置 JSON（默认 `{}` = 全量路由）。
+  /// Dart 侧**不生成**该配置，仅透传。
+  final String vpnConfigJson;
 
   @override
   State<ProxyHomePage> createState() => _ProxyHomePageState();
 }
 
 class _ProxyHomePageState extends State<ProxyHomePage> {
-  late final ProxyFacade _facade;
+  late final ProxyHomeFacade _facade;
+  late final ProxyVpnConsent _vpnConsent;
   StreamSubscription<ProxyEvent>? _eventSub;
 
   bool _loading = true;
   String? _loadError;
+  bool _busy = false;
   ProxyVersionInfo? _version;
-  ProxyConnState? _connState;
+  ProxyConnState _connState = ProxyConnState.stopped;
   ProxyMode _mode = ProxyMode.unknown;
-  ProxyStateError? _stateError;
+  ProxyStateError? _actionError;
   String? _stateReason;
   ProxyStatsEvent? _stats;
   ProxyNodeDelayEvent? _nodeDelay;
+  List<ProxyConfigWarning> _configWarnings = const <ProxyConfigWarning>[];
+
+  String? _profileName;
+  int? _profileNodeCount;
+  String? _currentOutbound;
 
   @override
   void initState() {
     super.initState();
-    _facade = widget.facade ?? ProxyModule.instance;
+    _facade = widget.facade ?? ProxyModuleHomeFacade();
+    _vpnConsent = widget.vpnConsent ?? const PlatformProxyVpnConsent();
     _eventSub = _facade.events.listen(_onEvent, onError: _onEventError);
     _load();
   }
@@ -47,6 +85,8 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
     super.dispose();
   }
 
+  // ==================== 加载 / 事件 ====================
+
   Future<void> _load() async {
     setState(() {
       _loading = true;
@@ -55,11 +95,20 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
     try {
       final ping = await _facade.ping();
       final version = await _facade.version();
+      // 只读展示数据，失败不影响主状态（best-effort）。
+      final profiles = await _safe(() => _facade.profileList());
+      final traffic = await _safe(() => _facade.statsTrafficGet(topDomains: 1));
       if (!mounted) return;
       setState(() {
         _connState = ping.state ?? ProxyConnState.stopped;
         _mode = ping.mode ?? ProxyMode.unknown;
         _version = version;
+        if (profiles != null && profiles.profiles.isNotEmpty) {
+          final profile = profiles.profiles.first;
+          _profileName = profile.name;
+          _profileNodeCount = profile.nodeCount;
+        }
+        if (traffic != null) _applyTopDomains(traffic.topDomains);
         _loading = false;
       });
     } on ProxyModuleException catch (error) {
@@ -77,6 +126,25 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
     }
   }
 
+  /// best-effort 只读调用：模块错误降级为 `null`，不影响主状态。
+  Future<T?> _safe<T>(Future<T> Function() run) async {
+    try {
+      return await run();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 从 Rust 已排序的 topDomains 取首个 outbound 作为「当前节点」展示。
+  ///
+  /// 只是渲染 Rust 给出的值（[TrafficSnapshot.topDomains] 由 Rust 排序），
+  /// Dart 不做任何聚合 / 排序。
+  void _applyTopDomains(List<DomainStat> topDomains) {
+    if (topDomains.isEmpty) return;
+    final outbound = topDomains.first.outbound;
+    if (outbound.isNotEmpty) _currentOutbound = outbound;
+  }
+
   void _onEvent(ProxyEvent event) {
     if (!mounted) return;
     setState(() {
@@ -84,23 +152,25 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
         case ProxyStateEvent():
           _connState = event.state;
           _mode = event.mode;
-          _stateError = event.error;
+          _actionError = event.error;
           _stateReason = event.reason;
         case ProxyModeEvent():
           _mode = event.mode;
         case ProxyStatsEvent():
           _stats = event;
+          _applyTopDomains(event.topDomains);
+        case ProxyConfigAppliedEvent():
+          break;
         case ProxyNodeDelayEvent():
           _nodeDelay = event;
         case ProxySubscriptionUpdatedEvent():
-        case ProxySubscriptionAddedEvent():
-        case ProxySubscriptionRemovedEvent():
         case ProxySubscriptionProgressEvent():
         case ProxySubscriptionFailedEvent():
+        case ProxySubscriptionAddedEvent():
+        case ProxySubscriptionRemovedEvent():
         case ProxyConnEvent():
         case ProxyDnsEvent():
         case ProxyTunReleasedEvent():
-        case ProxyConfigAppliedEvent():
           break;
       }
     });
@@ -108,14 +178,96 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
 
   void _onEventError(Object error) {
     if (!mounted) return;
-    setState(() => _loadError = '代理事件流错误：$error');
+    setState(
+      () => _actionError = ProxyStateError(
+        code: 'PROXY_EVENT_STREAM',
+        message: '$error',
+      ),
+    );
   }
 
-  ProxyConnState get _effectiveState => _connState ?? ProxyConnState.stopped;
+  // ==================== 连接 / 断开 ====================
 
-  bool get _isConnected => _effectiveState == ProxyConnState.running;
+  Future<void> _toggleConnection() async {
+    if (_busy) return;
+    final connecting = !_isRunning;
+    setState(() {
+      _busy = true;
+      _actionError = null;
+      _stateReason = null;
+      _connState =
+          connecting ? ProxyConnState.starting : ProxyConnState.stopping;
+    });
+    try {
+      if (connecting) {
+        final prepared =
+            await _vpnConsent.prepare(configJson: widget.vpnConfigJson);
+        if (!prepared) {
+          throw const ProxyModuleException(
+            code: 'PROXY_VPN_CONSENT_DENIED',
+            message: 'VPN 授权未通过，无法建立连接',
+          );
+        }
+        final status = await _facade.coreStart(const CoreStartRequest());
+        if (!mounted) return;
+        setState(() {
+          _connState = status.state;
+          _mode = status.mode;
+          final name = status.profileName;
+          if (name != null && name.isNotEmpty) _profileName = name;
+          _configWarnings = status.warnings;
+        });
+      } else {
+        final stopped = await _facade.coreStop();
+        await _vpnConsent.stop();
+        if (!mounted) return;
+        setState(() {
+          _connState = stopped.state;
+          _stats = null;
+          _currentOutbound = null;
+          _configWarnings = const <ProxyConfigWarning>[];
+        });
+      }
+    } on ProxyModuleException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _actionError = ProxyStateError(code: error.code, message: error.message);
+        if (connecting) _connState = ProxyConnState.stopped;
+      });
+      AppDialogs.showError(error.message);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _actionError = ProxyStateError(
+          code: 'PROXY_ACTION_FAILED',
+          message: '$error',
+        );
+        if (connecting) _connState = ProxyConnState.stopped;
+      });
+      AppDialogs.showError('$error');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
 
-  String get _statusText => switch (_effectiveState) {
+  /// 错误横幅的「重试」：连接失败重试连接，运行中错误重载快照。
+  Future<void> _retry() async {
+    if (_isRunning) {
+      await _load();
+    } else {
+      await _toggleConnection();
+    }
+  }
+
+  // ==================== 展示辅助 ====================
+
+  bool get _isRunning => _connState == ProxyConnState.running;
+
+  bool get _isTransitioning =>
+      _connState == ProxyConnState.starting ||
+      _connState == ProxyConnState.stopping;
+
+  String get _statusText => switch (_connState) {
         ProxyConnState.stopped => '未连接',
         ProxyConnState.starting => '正在连接…',
         ProxyConnState.running => '已连接',
@@ -123,12 +275,31 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
         ProxyConnState.unknown => '状态未知',
       };
 
+  String get _toggleLabel {
+    if (_connState == ProxyConnState.starting) return '连接中…';
+    if (_connState == ProxyConnState.stopping) return '断开中…';
+    if (_isRunning) return '断开';
+    return '连接';
+  }
+
   String get _modeText => switch (_mode) {
         ProxyMode.off => '关闭',
         ProxyMode.vpn => 'VPN',
         ProxyMode.lanProxy => '局域网代理',
         ProxyMode.unknown => '未知',
       };
+
+  String get _profileText {
+    final name = _profileName;
+    if (name == null || name.isEmpty) return '未选择';
+    final count = _profileNodeCount;
+    return count == null ? name : '$name（$count 节点）';
+  }
+
+  String get _nodeText {
+    final outbound = _currentOutbound;
+    return (outbound == null || outbound.isEmpty) ? '自动' : outbound;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -151,11 +322,9 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
       children: [
         _buildStatusCard(context),
         const SizedBox(height: AppSpacing.lg),
-        _buildToggleCard(context),
-        if (_stats != null) ...[
-          const SizedBox(height: AppSpacing.lg),
-          _buildStatsCard(context, _stats!),
-        ],
+        _buildTrafficCard(context),
+        const SizedBox(height: AppSpacing.lg),
+        _buildQuickEntries(context),
         if (_nodeDelay != null) ...[
           const SizedBox(height: AppSpacing.lg),
           _buildDelayCard(context, _nodeDelay!),
@@ -170,7 +339,8 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
 
   /// 模块未安装 / 不可用：结构化错误态（非崩溃）。
   Widget _buildUnavailable(BuildContext context, String message) {
-    final scheme = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
     return ListView(
       padding: AppSpacing.allLG,
       children: [
@@ -186,21 +356,15 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
                   color: scheme.onSurfaceVariant,
                 ),
                 const SizedBox(height: AppSpacing.md),
-                Text(
-                  '代理模块不可用',
-                  style: Theme.of(context).textTheme.titleMedium,
-                ),
+                Text('代理模块不可用', style: theme.textTheme.titleMedium),
                 const SizedBox(height: AppSpacing.sm),
                 Text(
                   message,
                   textAlign: TextAlign.center,
-                  style: Theme.of(context).textTheme.bodyMedium,
+                  style: theme.textTheme.bodyMedium,
                 ),
                 const SizedBox(height: AppSpacing.lg),
-                FilledButton(
-                  onPressed: _load,
-                  child: const Text('重试'),
-                ),
+                FilledButton(onPressed: _load, child: const Text('重试')),
               ],
             ),
           ),
@@ -209,14 +373,19 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
     );
   }
 
+  // ==================== 状态卡 ====================
+
   Widget _buildStatusCard(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
-    final statusColor = _stateError != null
+    final hasError = _actionError != null;
+    final statusColor = hasError
         ? scheme.error
-        : _isConnected
+        : _isRunning
             ? scheme.primary
-            : scheme.onSurfaceVariant;
+            : _isTransitioning
+                ? scheme.tertiary
+                : scheme.onSurfaceVariant;
 
     return Card(
       margin: EdgeInsets.zero,
@@ -228,7 +397,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
             Row(
               children: [
                 Icon(
-                  _isConnected
+                  _isRunning
                       ? Icons.shield_outlined
                       : Icons.shield_moon_outlined,
                   size: AppTypography.iconXL,
@@ -238,6 +407,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
                 Expanded(
                   child: Text(
                     _statusText,
+                    key: const Key('proxy-status-text'),
                     style: theme.textTheme.headlineSmall?.copyWith(
                       color: statusColor,
                     ),
@@ -245,73 +415,162 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
                 ),
               ],
             ),
-            const SizedBox(height: AppSpacing.sm),
-            Text(
-              '模式：$_modeText',
-              style: theme.textTheme.bodyMedium,
-            ),
+            const SizedBox(height: AppSpacing.md),
+            _infoRow(theme, '模式', _modeText),
+            _infoRow(theme, '当前配置', _profileText),
+            _infoRow(theme, '当前节点', _nodeText),
             if (_stateReason != null && _stateReason!.isNotEmpty) ...[
               const SizedBox(height: AppSpacing.xs),
-              Text(
-                _stateReason!,
-                style: theme.textTheme.bodySmall,
-              ),
+              Text(_stateReason!, style: theme.textTheme.bodySmall),
             ],
-            if (_stateError != null) ...[
+            if (hasError) ...[
               const SizedBox(height: AppSpacing.md),
-              Container(
-                width: double.infinity,
-                padding: AppSpacing.allMD,
-                decoration: BoxDecoration(
-                  color: scheme.errorContainer,
-                  borderRadius: AppRadius.allMD,
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      _stateError!.code.isEmpty
-                          ? '代理引擎错误'
-                          : _stateError!.code,
-                      style: theme.textTheme.labelMedium?.copyWith(
-                        color: scheme.onErrorContainer,
-                        fontWeight: AppTypography.weightMedium,
-                      ),
-                    ),
-                    if (_stateError!.message.isNotEmpty) ...[
-                      const SizedBox(height: AppSpacing.xs),
-                      Text(
-                        _stateError!.message,
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: scheme.onErrorContainer,
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
+              _buildErrorBanner(context, _actionError!),
             ],
+            if (_configWarnings.isNotEmpty) ...[
+              const SizedBox(height: AppSpacing.md),
+              _buildWarnings(context, _configWarnings),
+            ],
+            const SizedBox(height: AppSpacing.lg),
+            SizedBox(
+              width: double.infinity,
+              child: _isRunning
+                  ? OutlinedButton.icon(
+                      onPressed: _busy ? null : _toggleConnection,
+                      icon: _buttonIcon(),
+                      label: Text(_toggleLabel),
+                    )
+                  : FilledButton.icon(
+                      onPressed: _busy ? null : _toggleConnection,
+                      icon: _buttonIcon(),
+                      label: Text(_toggleLabel),
+                    ),
+            ),
           ],
         ),
       ),
     );
   }
 
-  /// 连接开关（占位）：仅反映门面状态，点击提示后续开放。
-  Widget _buildToggleCard(BuildContext context) {
-    return Card(
-      margin: EdgeInsets.zero,
-      child: SwitchListTile(
-        title: const Text('连接'),
-        subtitle: const Text('连接开关（占位，由 Rust 引擎驱动）'),
-        value: _isConnected,
-        onChanged: (_) => AppDialogs.showInfo('连接功能将在后续版本开放'),
+  Widget _buttonIcon() {
+    if (_busy) {
+      return const SizedBox(
+        width: AppTypography.iconMD,
+        height: AppTypography.iconMD,
+        child: AppLoading(size: AppLoadingSize.small),
+      );
+    }
+    return Icon(_isRunning ? Icons.power_settings_new : Icons.shield_outlined);
+  }
+
+  Widget _buildErrorBanner(BuildContext context, ProxyStateError error) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Container(
+      key: const Key('proxy-error-banner'),
+      width: double.infinity,
+      padding: AppSpacing.allMD,
+      decoration: BoxDecoration(
+        color: scheme.errorContainer,
+        borderRadius: AppRadius.allMD,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                Icons.error_outline,
+                size: AppTypography.iconMD,
+                color: scheme.onErrorContainer,
+              ),
+              const SizedBox(width: AppSpacing.xs),
+              Expanded(
+                child: Text(
+                  error.code.isEmpty ? '代理引擎错误' : error.code,
+                  style: theme.textTheme.labelMedium?.copyWith(
+                    color: scheme.onErrorContainer,
+                    fontWeight: AppTypography.weightMedium,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          if (error.message.isNotEmpty) ...[
+            const SizedBox(height: AppSpacing.xs),
+            Text(
+              error.message,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: scheme.onErrorContainer,
+              ),
+            ),
+          ],
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton(
+              onPressed: _busy ? null : _retry,
+              style: TextButton.styleFrom(
+                foregroundColor: scheme.onErrorContainer,
+              ),
+              child: const Text('重试'),
+            ),
+          ),
+        ],
       ),
     );
   }
 
-  Widget _buildStatsCard(BuildContext context, ProxyStatsEvent stats) {
+  Widget _buildWarnings(
+    BuildContext context,
+    List<ProxyConfigWarning> warnings,
+  ) {
     final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Container(
+      width: double.infinity,
+      padding: AppSpacing.allMD,
+      decoration: BoxDecoration(
+        color: scheme.tertiaryContainer,
+        borderRadius: AppRadius.allMD,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '配置警告（${warnings.length}）',
+            style: theme.textTheme.labelMedium?.copyWith(
+              color: scheme.onTertiaryContainer,
+              fontWeight: AppTypography.weightMedium,
+            ),
+          ),
+          for (final warning in warnings)
+            Padding(
+              padding: AppSpacing.onlyTopXS,
+              child: Text(
+                warning.message.isEmpty ? warning.code : warning.message,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: scheme.onTertiaryContainer,
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  // ==================== 流量卡 ====================
+
+  Widget _buildTrafficCard(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final stats = _stats;
+    final uploadBytes = stats?.uploadBytes ?? 0;
+    final downloadBytes = stats?.downloadBytes ?? 0;
+    final upBps = stats?.upBps ?? 0;
+    final downBps = stats?.downBps ?? 0;
+    final activeConns = stats?.activeConns ?? 0;
+    final maxBps = upBps > downBps ? upBps : downBps;
+
     return Card(
       margin: EdgeInsets.zero,
       child: Padding(
@@ -319,29 +578,104 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('流量', style: theme.textTheme.titleSmall),
+            Row(
+              children: [
+                Icon(
+                  Icons.swap_vert_outlined,
+                  size: AppTypography.iconMD,
+                  color: scheme.primary,
+                ),
+                const SizedBox(width: AppSpacing.xs),
+                Text('实时流量', style: theme.textTheme.titleSmall),
+              ],
+            ),
             const SizedBox(height: AppSpacing.sm),
-            _statsRow(theme, '上传', _formatBytes(stats.uploadBytes)),
-            _statsRow(theme, '下载', _formatBytes(stats.downloadBytes)),
-            _statsRow(theme, '活动连接', '${stats.activeConns}'),
+            _infoRow(
+              theme,
+              '上传',
+              '${byteSize(uploadBytes)} · ${byteSize(upBps)}/s',
+              valueKey: const Key('proxy-upload-total'),
+            ),
+            _infoRow(
+              theme,
+              '下载',
+              '${byteSize(downloadBytes)} · ${byteSize(downBps)}/s',
+              valueKey: const Key('proxy-download-total'),
+            ),
+            _infoRow(
+              theme,
+              '活动连接',
+              '$activeConns',
+              valueKey: const Key('proxy-active-conns'),
+            ),
+            if ((stats?.domainCount ?? 0) > 0)
+              _infoRow(theme, '已统计域名', '${stats!.domainCount}'),
+            const SizedBox(height: AppSpacing.sm),
+            _ThroughputBar(
+              icon: Icons.arrow_upward,
+              bps: upBps,
+              maxBps: maxBps,
+              color: scheme.tertiary,
+            ),
+            const SizedBox(height: AppSpacing.xs),
+            _ThroughputBar(
+              icon: Icons.arrow_downward,
+              bps: downBps,
+              maxBps: maxBps,
+              color: scheme.primary,
+            ),
           ],
         ),
       ),
     );
   }
 
-  Widget _statsRow(ThemeData theme, String label, String value) {
-    return Padding(
-      padding: AppSpacing.onlyVerticalXS,
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+  // ==================== 快捷入口 ====================
+
+  Widget _buildQuickEntries(BuildContext context) {
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Column(
         children: [
-          Text(label, style: theme.textTheme.bodyMedium),
-          Text(value, style: theme.textTheme.bodyMedium),
+          ListTile(
+            leading: const Icon(Icons.receipt_long_outlined),
+            title: const Text('运行日志'),
+            subtitle: const Text('连接、DNS 与模块日志'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: _openLogs,
+          ),
+          const Divider(height: 1),
+          ListTile(
+            leading: const Icon(Icons.bar_chart_outlined),
+            title: const Text('流量统计'),
+            subtitle: const Text('按域名的连接数与流量'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: _openStats,
+          ),
         ],
       ),
     );
   }
+
+  void _openLogs() {
+    final callback = widget.onOpenLogs;
+    if (callback != null) {
+      callback();
+      return;
+    }
+    AppDialogs.showInfo('日志查看器将在后续版本开放');
+  }
+
+  void _openStats() {
+    final callback = widget.onOpenStats;
+    if (callback != null) {
+      callback();
+      return;
+    }
+    AppDialogs.showInfo('流量统计将在后续版本开放');
+  }
+
+  // ==================== 延迟 / 版本 ====================
 
   Widget _buildDelayCard(BuildContext context, ProxyNodeDelayEvent delay) {
     final theme = Theme.of(context);
@@ -374,28 +708,103 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
           children: [
             Text('模块信息', style: theme.textTheme.titleSmall),
             const SizedBox(height: AppSpacing.sm),
-            _statsRow(theme, '版本', version.moduleVersion),
-            _statsRow(theme, 'API', '${version.apiVersion}'),
-            _statsRow(
+            _infoRow(theme, '版本', version.moduleVersion),
+            _infoRow(theme, 'API', '${version.apiVersion}'),
+            _infoRow(
               theme,
               'Host ABI',
               '${version.hostAbi}（最低 ${version.minHostAbi}）',
             ),
             if (version.targetArch.isNotEmpty)
-              _statsRow(theme, '架构', version.targetArch),
+              _infoRow(theme, '架构', version.targetArch),
           ],
         ),
       ),
     );
   }
 
-  /// 字节格式化（纯展示；不做任何网络 / 解析）。
-  String _formatBytes(int bytes) {
-    if (bytes < 1024) return '$bytes B';
-    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    if (bytes < 1024 * 1024 * 1024) {
-      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
-    }
-    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
+  // ==================== 通用行 ====================
+
+  Widget _infoRow(
+    ThemeData theme,
+    String label,
+    String value, {
+    Key? valueKey,
+  }) {
+    return Padding(
+      padding: AppSpacing.onlyVerticalXS,
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(
+            label,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(width: AppSpacing.sm),
+          Flexible(
+            child: Text(
+              value,
+              key: valueKey,
+              textAlign: TextAlign.right,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodyMedium?.copyWith(
+                fontWeight: AppTypography.weightMedium,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 单行吞吐量条：按当前方向速率的相对大小填充，仅用于展示。
+///
+/// 颜色全部取自 [ColorScheme]，不硬编码。
+class _ThroughputBar extends StatelessWidget {
+  const _ThroughputBar({
+    required this.icon,
+    required this.bps,
+    required this.maxBps,
+    required this.color,
+  });
+
+  final IconData icon;
+  final int bps;
+  final int maxBps;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final value = maxBps <= 0 ? 0.0 : (bps / maxBps).clamp(0.0, 1.0);
+
+    return Row(
+      children: [
+        Icon(icon, size: AppTypography.iconXS, color: color),
+        const SizedBox(width: AppSpacing.xs),
+        Expanded(
+          child: ClipRRect(
+            borderRadius: AppRadius.allXS,
+            child: LinearProgressIndicator(
+              value: value,
+              minHeight: 6,
+              color: color,
+              backgroundColor: scheme.surfaceContainerHighest,
+            ),
+          ),
+        ),
+        const SizedBox(width: AppSpacing.sm),
+        Text(
+          '${byteSize(bps)}/s',
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: scheme.onSurfaceVariant,
+          ),
+        ),
+      ],
+    );
   }
 }
