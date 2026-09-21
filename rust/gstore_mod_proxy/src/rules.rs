@@ -259,7 +259,9 @@ fn tunnel_cell() -> &'static Mutex<Option<Arc<meow_tunnel::Tunnel>>> {
     ACTIVE_TUNNEL.get_or_init(|| Mutex::new(None))
 }
 
-fn active_tunnel() -> Option<Arc<meow_tunnel::Tunnel>> {
+/// The live tunnel, if the engine is running. Todo 10 (`node.*` / `conn.*`)
+/// reads the proxy registry and statistics through this handle.
+pub(crate) fn active_tunnel() -> Option<Arc<meow_tunnel::Tunnel>> {
     tunnel_cell()
         .lock()
         .unwrap_or_else(|e| e.into_inner())

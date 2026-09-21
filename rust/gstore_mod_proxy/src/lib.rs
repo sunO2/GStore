@@ -33,8 +33,10 @@ use gstore_contract::abi::{
 use gstore_contract::context::ModuleContext;
 use gstore_contract::error::{ModuleError, StatusCode};
 
+mod conn;
 mod dispatch;
 mod dns;
+mod nodes;
 mod protect;
 mod rules;
 mod tun;
@@ -480,7 +482,7 @@ fn to_json<T: serde::Serialize>(v: &T) -> Result<Vec<u8>, ModuleError> {
 }
 
 /// 统一成功载荷：`{ok:true,data:{...}}`（本模块 call 的 JSON 契约，见 API.md）。
-fn ok_data(data: serde_json::Value) -> Result<Vec<u8>, ModuleError> {
+pub(crate) fn ok_data(data: serde_json::Value) -> Result<Vec<u8>, ModuleError> {
     to_json(&serde_json::json!({ "ok": true, "data": data }))
 }
 
@@ -806,6 +808,29 @@ fn rules_reload_arm(
     ok_data(snapshot)
 }
 
+/// `node.select`: apply a user choice to a selector/url-test/fallback group,
+/// then emit `proxy.state` carrying the effective outbound (Todo 10).
+fn node_select_arm(
+    instance_id: u64,
+    instance: Option<Arc<ProxyInstance>>,
+    payload: &[u8],
+) -> Result<Vec<u8>, ModuleError> {
+    let inst = require_instance(instance_id, instance)?;
+    let (data, sel) = nodes::select(payload)?;
+    let event = serde_json::json!({
+        "state": current_state(&inst).as_str(),
+        "mode": current_mode(&inst).as_str(),
+        "reason": "node.select",
+        "group": sel.group,
+        "node": sel.node,
+        "active": sel.active,
+    });
+    if let Ok(bytes) = serde_json::to_vec(&event) {
+        emit_event(inst.id, EVT_STATE, &bytes);
+    }
+    ok_data(data)
+}
+
 fn create_impl(config: *const u8, config_len: usize) -> Result<u64, c_int> {
     let ctx = ModuleContext::parse(payload_bytes(config, config_len));
     log_message(
@@ -821,6 +846,11 @@ fn create_impl(config: *const u8, config_len: usize) -> Result<u64, c_int> {
     );
 
     let id = NEXT_INSTANCE.fetch_add(1, Ordering::SeqCst);
+    // Open the persistent selection store before any config generator rebuilds
+    // groups, so meow-config's runtime rebuild can wire it into them (Todo 10/13).
+    if !ctx.data_dir.is_empty() {
+        let _ = nodes::ensure_selector_store(&ctx.data_dir);
+    }
     let inst = Arc::new(ProxyInstance {
         id,
         created_at_ms: now_ms(),
@@ -899,6 +929,17 @@ fn call_impl(
         }
         "rules.get" => rules_get_arm(instance_id, instance.clone()),
         "rules.reload" => rules_reload_arm(instance_id, instance.clone(), _payload),
+        "node.select" => node_select_arm(instance_id, instance.clone(), _payload),
+        "node.delay_test" => require_instance(instance_id, instance.clone())
+            .and_then(|_| nodes::delay_test_arm(instance_id, _payload)),
+        "conn.list" => {
+            require_instance(instance_id, instance.clone()).and_then(|_| conn::list_arm())
+        }
+        "conn.close" => require_instance(instance_id, instance.clone())
+            .and_then(|_| conn::close_arm(_payload)),
+        "conn.close_all" => {
+            require_instance(instance_id, instance.clone()).and_then(|_| conn::close_all_arm())
+        }
         other => Err(ModuleError::method_not_found(other)),
     };
 
@@ -1463,5 +1504,130 @@ mod abi_tests {
 
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(destroy(inst), ABI_OK);
+    }
+
+    /// Happy/failure QA over the real C ABI (Todo 10): `node.select` flips the
+    /// effective outbound and emits `proxy.state`; `node.delay_test` turns an
+    /// unreachable group into per-node `timeout` results and emits
+    /// `proxy.node.delay`; `conn.list` returns a tracked fixture connection and
+    /// `conn.close` signals it.
+    #[test]
+    fn abi_node_select_delay_and_conn_list() {
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        use meow_common::{ConnType, Metadata, Network, Proxy};
+        use smallvec::SmallVec;
+        use smol_str::SmolStr;
+
+        use crate::nodes::tests::StubProxy;
+
+        let _g = ABI_LOCK.lock().unwrap();
+        crate::rules::reset_for_tests();
+        crate::conn::reset_for_tests();
+        let api = register_api();
+        let create = api.create.unwrap();
+        let call = api.call.unwrap();
+        let destroy = api.destroy.unwrap();
+
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("gstore-nodes-abi-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = serde_json::to_vec(&serde_json::json!({
+            "data_dir": dir.display().to_string(),
+            "cache_dir": dir.display().to_string(),
+        }))
+        .unwrap();
+        let mut inst: u64 = 0;
+        assert_eq!(create(config.as_ptr(), config.len(), &mut inst), ABI_OK);
+        let _ = take_events();
+
+        let resolver = Arc::new(meow_dns::Resolver::new(
+            Vec::new(),
+            Vec::new(),
+            meow_common::DnsMode::Normal,
+            meow_trie::DomainTrie::new(),
+            false,
+            false,
+        ));
+        let _ = crate::dispatch::build_engine(resolver);
+        let tunnel = crate::rules::active_tunnel().unwrap();
+
+        let a = StubProxy::hanging("A");
+        let b = StubProxy::hanging("B");
+        let group: Arc<dyn Proxy> = Arc::new(meow_proxy::SelectorGroup::new(
+            "G",
+            vec![Arc::clone(&a) as Arc<dyn Proxy>, Arc::clone(&b) as Arc<dyn Proxy>],
+        ));
+        let mut map: HashMap<SmolStr, Arc<dyn Proxy>> = HashMap::new();
+        map.insert(SmolStr::from("G"), group);
+        tunnel.update_proxies(map);
+
+        let (code, out) = call_with_payload(call, inst, "node.select", br#"{"group":"G","node":"B"}"#);
+        assert_eq!(code, ABI_OK, "node.select: {}", String::from_utf8_lossy(&out));
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["active"], "B");
+        let events = take_events();
+        assert!(
+            events.iter().any(|(t, p)| t == "proxy.state"
+                && String::from_utf8_lossy(p).contains("node.select")),
+            "node.select must emit proxy.state; got {events:?}"
+        );
+
+        let (code, out) =
+            call_with_payload(call, inst, "node.delay_test", br#"{"group":"G","timeoutMs":100}"#);
+        assert_eq!(code, ABI_OK, "node.delay_test: {}", String::from_utf8_lossy(&out));
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        let results = v["data"]["results"].as_array().unwrap();
+        assert_eq!(results.len(), 2, "one timeout result per node");
+        assert!(results
+            .iter()
+            .all(|r| r["error"] == "timeout" && r["delayMs"] == 0));
+        let events = take_events();
+        assert_eq!(
+            events.iter().filter(|(t, _)| t == "proxy.node.delay").count(),
+            2,
+            "one proxy.node.delay per node"
+        );
+
+        let stats = tunnel.statistics();
+        let cid = stats.track_connection(
+            Metadata {
+                network: Network::Tcp,
+                conn_type: ConnType::Tun,
+                host: "fixture.example".into(),
+                dst_ip: Some("1.2.3.4".parse().unwrap()),
+                dst_port: 443,
+                src_ip: Some("10.10.0.2".parse().unwrap()),
+                src_port: 40000,
+                ..Default::default()
+            },
+            SmolStr::new("MATCH"),
+            SmolStr::new(""),
+            SmallVec::from_vec(vec![Arc::<str>::from("G")]),
+        );
+        let (code, out) = call_json(call, inst, "conn.list");
+        assert_eq!(code, ABI_OK, "conn.list: {}", String::from_utf8_lossy(&out));
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["count"], 1);
+        assert_eq!(v["data"]["connections"][0]["id"], cid.to_string());
+        assert_eq!(v["data"]["connections"][0]["domain"], "fixture.example");
+        assert_eq!(v["data"]["connections"][0]["dst"], "1.2.3.4:443");
+        assert_eq!(v["data"]["connections"][0]["outbound"], "G");
+
+        let close = format!(r#"{{"id":"{cid}"}}"#);
+        let (code, out) = call_with_payload(call, inst, "conn.close", close.as_bytes());
+        assert_eq!(code, ABI_OK, "conn.close: {}", String::from_utf8_lossy(&out));
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["closed"], true);
+        assert_eq!(stats.active_connection_count(), 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(destroy(inst), ABI_OK);
+        crate::conn::reset_for_tests();
+        crate::rules::reset_for_tests();
     }
 }

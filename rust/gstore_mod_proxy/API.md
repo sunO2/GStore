@@ -139,12 +139,40 @@ Request: `{ "profileId"?: string, "mode"?: "vpn"\|"lanProxy" }`
 { "ok": true, "data": { "config": { }, "hash": "sha256hex", "generatedAtMs": 0 } }
 ```
 
-### 2.6 `node.*` — selection & latency
+### 2.6 `node.*` — selection & latency (Todo 10)
 
 | method | request | data |
 |---|---|---|
-| `node.select` | `{ "group": string, "node": string }` | `{ "ok": true, "group": string, "node": string }` |
-| `node.delay_test` | `{ "node"?: string, "group"?: string, "timeoutMs"?: 5000 }` | `{ "results": [ { "node": string, "delayMs": 123, "error"?: string } ] }` |
+| `node.select` | `{ "group": string, "node": string }` | `{ "ok": true, "group": string, "node": string, "active": string }` |
+| `node.delay_test` | `{ "node"?: string, "group"?: string, "url"?: string, "expectedStatus"?: string, "timeoutMs"?: 5000 }` | `{ "results": [ DelayResult ], "url": string, "timeoutMs": number, "group"?: string }` |
+
+`node.select` applies a user pick to a **selector / url-test / fallback** group
+through meow's `ProxySelection::set` — the module never owns a second group
+engine. `active` is the group's effective member afterwards (`current()`).
+Success also emits a `proxy.state` event carrying
+`{state, mode, reason:"node.select", group, node, active}`. Errors:
+`PROXY_NODE_NOT_FOUND` (unknown group/node, or node not a member),
+`PROXY_GROUP_NOT_SELECTABLE` (target is a leaf or a non-selectable group such
+as load-balance/relay), `PROXY_NOT_CONFIGURED` (engine not running).
+
+The pick persists through meow's `SelectorStore` (`<data_dir>/selector.json`,
+opened at instance create; meow-config's runtime rebuild wires it into rebuilt
+groups), so it survives `rules.reload` and an engine restart **when groups are
+built through that store** — see §11.2 for what Todo 13 must call.
+
+`node.delay_test` performs an HTTP **HEAD** probe per node against `url` (or the
+group's own `test_url`, else `https://www.gstatic.com/generate_204`) with
+`expectedStatus` (default `200-299`) and `timeoutMs` clamped to `100..120000`.
+Probes run on a **dedicated bounded runtime, never the tunnel loop**. An
+unreachable node is a **per-node result**, not a call error:
+
+```json
+{ "node": "A", "delayMs": 0, "alive": false, "error": "timeout" }
+{ "node": "B", "delayMs": 123, "alive": true }
+```
+
+`error` is `"timeout"` for a dial/response timeout or the transport message for
+any other failure. Each result also emits a `proxy.node.delay` event.
 
 ### 2.7 `dns.*` — resolver settings & cache (Todo 8)
 
@@ -229,20 +257,38 @@ IP literals only) used to resolve the encrypted upstreams' own hostnames.
   "downloadBytes": 0, "lastSeenMs": 0, "outbound": "proxy-a", "rule": "DOMAIN-SUFFIX" }
 ```
 
-### 2.10 `conn.*` — live connections
+### 2.10 `conn.*` — live connections (Todo 10; Todo 17 finalises)
 
 | method | request | data |
 |---|---|---|
-| `conn.list` | *(none)* | `{ "connections": [ConnInfo] }` |
-| `conn.close` | `{ "id": string }` | `{ "ok": true }` |
+| `conn.list` | *(none)* | `{ "connections": [ConnInfo], "count": 0, "capacity": 1024 }` |
+| `conn.close` | `{ "id": string }` | `{ "ok": true, "id": string, "closed": bool }` |
 | `conn.close_all` | *(none)* | `{ "ok": true, "closed": 0 }` |
 
 `ConnInfo`:
 ```json
-{ "id": "c1", "domain": "example.com", "dst": "1.2.3.4:443", "network": "tcp",
-  "rule": "MATCH", "outbound": "proxy-a", "uploadBytes": 0, "downloadBytes": 0,
-  "startedAtMs": 0 }
+{ "id": "c1", "src": "10.10.0.2:40000", "dst": "1.2.3.4:443",
+  "domain": "example.com", "network": "tcp", "rule": "DOMAIN-SUFFIX",
+  "rulePayload": "example.com", "outbound": "proxy-a",
+  "uploadBytes": 0, "downloadBytes": 0, "startedAtMs": 0 }
 ```
+
+Byte accounting and the connection lifecycle are **meow's**: every TCP flow is
+inserted into `Statistics::connections` (a live `DashMap<Uuid, ConnectionInfo>`
+keyed by UUID) by `tcp::route_inbound_tcp`, counters are bumped by the relay, and
+the entry is removed when the flow ends. The module keeps a **bounded
+projection** rebuilt from that table on every `conn.list`, capped at
+`capacity = 1024`; if more than the cap are live the oldest-started entries are
+dropped from the view (meow still accounts their bytes). `startedAtMs` is parsed
+from meow's RFC3339 `ConnectionInfo.start`. `outbound` is the first proxy in
+meow's connection `chains` (else `DIRECT`). Only TCP flows are tracked; UDP
+sessions live in meow's NAT table and are not in `conn.list`.
+
+`conn.close` signals the flow (`Statistics::close_connection(Uuid)`), which
+removes it from the table and asks the owner to drop its relay; `closed` reports
+whether it was live. `conn.close_all` signals every tracked flow and returns the
+count. A non-UUID id is `INVALID_ARGUMENT` (422); no engine is
+`PROXY_NOT_CONFIGURED`.
 
 ### 2.11 `rules.*` — rule set (Todo 9)
 
@@ -726,3 +772,76 @@ local HTTP stub) and the non-blocking `missing`/`checksum_required` statuses; pl
 **UNVERIFIED**: real GeoIP/ASN MMDB and geosite `.dat`/`.mrs` matching (no DB
 fixtures are shipped in-tree; the indexes are meow's own, exercised by meow's
 tests), real geo CDN downloads, and all on-device routing (no adb device).
+
+## 11. Node/group selection, latency tests, connection tracking (Todo 10)
+
+### 11.1 meow owns the group and statistics machinery
+
+The module implements **no** group engine and **no** second statistics store.
+Selection goes through meow's `ProxySelection` on the live group handle
+(`Tunnel::proxy(name)` → `proxy.selection()`); url-test/fallback pickers,
+per-proxy delay state and provider handling stay in meow. Delay probes use
+`meow_proxy::health::{probe_many_bounded_detailed, url_test, probe_and_record}`.
+Live connections and byte counters are meow's
+`meow_tunnel::statistics::Statistics` (published as `Tunnel::statistics()` /
+`TunnelInner.stats`); the module only keeps a bounded projection of it.
+
+### 11.2 What Todo 13 must do to wire proxies/groups
+
+`node.*` and `conn.*` read the **live** registry/statistics, so Todo 13 must
+publish proxies/groups into the tunnel after generating the config:
+
+1. Open the persistent store once (the module already does this at `create`
+   when `data_dir` is non-empty, but a config generator that runs standalone
+   must ensure it): `meow_proxy::SelectorStore::open(<data_dir>/selector.json)`
+   — the first `open()` wins the process-global slot, and meow-config's
+   `rebuild_from_raw_runtime` reads `SelectorStore::global()` while building
+   groups.
+2. Build the `HashMap<SmolStr, Arc<dyn Proxy>>` for every leaf node **and**
+   group (meow-config's proxy parser does this), then call
+   `crate::nodes::install_proxies(&tunnel, map)` (a thin `Tunnel::update_proxies`
+   wrapper) or `Tunnel::update_proxies` directly. `rules.reload` only swaps the
+   rule set; `update_rules` preserves the current proxies map, so a
+   `rules.reload` never loses groups. An engine restart (`core.restart`) builds a
+   fresh tunnel, so Todo 13 must re-publish after it.
+3. Construct selector/url-test/fallback groups through the store
+   (`SelectorGroup::with_store` / `UrlTestGroup::with_store` /
+   `FallbackGroup::with_store`) so user picks persist across rebuilds. Groups
+   built without a store still select in memory; only persistence is lost.
+
+Until Todo 13 attaches proxies, `node.*`/`conn.list` return
+`PROXY_NOT_CONFIGURED` (no live tunnel) or `PROXY_NODE_NOT_FOUND` (empty
+registry).
+
+### 11.3 Off-tunnel-loop probes and bounded connection tracking
+
+* Delay probes run on a dedicated process-wide `bounded_runtime()`
+  (`worker_threads(4)`), built lazily by `nodes::ops_runtime` — **not** the
+  tunnel loop's runtime and never `Runtime::new()`/CPU-default workers. A slow
+  or hung probe therefore cannot stall frame I/O. The C ABI `call` thread blocks
+  on that runtime only for the duration of the call.
+* Probes dial through each adapter's `TcpDialer`, which reaches
+  `meow_common::connect_tcp_host`/`connect_tcp` and therefore the host
+  `SocketProtector`; they do not open a raw socket.
+* The connection projection is rebuilt from meow's live table on each
+  `conn.list`, reusing parsed start times, and is capped at 1024
+  (`conn.list.capacity`); the oldest live entries are dropped from the view when
+  the cap is exceeded. The projection never grows without bound.
+
+### 11.4 Verification status
+
+`cargo test -p gstore_mod_proxy` proves: a selector group's effective outbound
+flips on `node.select` and `Tunnel::resolve_proxy` keeps routing to the group; a
+selection persists across a group rebuild through the same `SelectorStore`; a
+hanging/unreachable node yields a per-node `timeout` result (no error, no panic)
+and the probe runtime stays usable across repeated calls; a group's members are
+probed once each; `conn.list` returns fixture connections with
+src/dst/domain/rule/rulePayload/outbound/startedAtMs/bytes, the projection is
+clamped to the cap, closed connections leave it, and `conn.close_all` clears it;
+plus the `node.select` → `proxy.state`, `node.delay_test` → `proxy.node.delay`
+events and `conn.list`/`conn.close` over the real C ABI.
+
+**UNVERIFIED**: real upstream latency (tests use hanging stubs and loopback, no
+network); on-device selection/routing (no adb device); UDP connections are not
+in `conn.list` (meow tracks UDP in a NAT table with no byte counters).
+

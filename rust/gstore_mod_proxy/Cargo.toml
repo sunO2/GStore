@@ -40,6 +40,14 @@ hex = "0.4"
 # directly keeps the module's own use of the same versions explicit.
 ipnet = "2"
 hickory-proto = "0.26"
+# Todo 10: meow's `ConnectionInfo.start` is an RFC3339 `SmolStr` (meow-tunnel uses
+# the `time` crate to format it). We parse it back to epoch ms for `conn.list`.
+# `uuid` is meow's connection key type (`Statistics::close_connection(Uuid)`).
+time = { version = "0.3", features = ["parsing"] }
+uuid = "1"
+# Proxy registry keys are `meow_common`'s `SmolStr`-keyed map; the module builds
+# that map when it attaches generated proxies/groups (`nodes::install_proxies`).
+smol_str = "0.3"
 meow-api = { git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587442caaac00b221efc91c84907aeb0e0" }
 meow-listener = { git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587442caaac00b221efc91c84907aeb0e0", default-features = false, features = ["listener-mixed"] }
 meow_lwip = { package = "meow-lwip", git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587442caaac00b221efc91c84907aeb0e0" }
@@ -65,7 +73,8 @@ libloading = "0.8"
 # Rule-engine tests implement a named stub outbound (`meow_common::Proxy`,
 # whose dial methods are `#[async_trait]`) and key the route table with SmolStr.
 async-trait = "0.1"
-smol_str = "0.3"
+# Connection fixtures build meow's `SmallVec<[Arc<str>; 1]>` chains directly.
+smallvec = "1"
 
 # Module crate convention (rust/ARCHITECTURE.md §3.5/§3.6): panic must unwind
 # so every extern "C" boundary can catch_unwind.

@@ -52,6 +52,9 @@
 | `PROXY_RULE_INVALID` | proxy | 422 | 规则行解析失败（未知类型/缺列/非法 CIDR）或整个 Clash 配置/`rules.reload` 载荷不可解析；报告会点名具体 `line`，其余规则仍加载。仅整配置不可解析时作为顶层 422，单行失败在 `rules.get.errors[]` 内回报（Todo 9） |
 | `PROXY_RULE_PROVIDER_FAILED` | proxy | —（行内） | `rule-providers` 加载失败；该 provider 对应的 `RULE-SET` 规则保持空集（不匹配），`rules.get` 的 `providers[].code` 回报（Todo 9） |
 | `PROXY_GEO_UNAVAILABLE` | proxy | —（行内） | `GEOIP`/`GEOSITE`/`IP-ASN` 规则所需地理库未就绪（缺失/下载中/校验失败）；该行记入 `rules.get` 的 `errors[]`，其余规则仍加载（Todo 9） |
+| `PROXY_NODE_NOT_FOUND` | proxy | 404 | `node.select`/`node.delay_test` 指定的 group 不存在，或 node 不在该 group 内（Todo 10） |
+| `PROXY_GROUP_NOT_SELECTABLE` | proxy | 422 | 目标不是可选择的 group（selector/url-test/fallback）：叶子节点、load-balance、relay 均无 `ProxySelection`（Todo 10） |
+| `PROXY_NOT_CONFIGURED` | proxy | 409 | engine/tunnel 未运行即调用 `node.*`/`conn.list`（Todo 10）；`core.start` 前需先由 Todo 13 注入 proxies 并启动 TUN |
 
 ## 跨 ABI 错误透传
 
