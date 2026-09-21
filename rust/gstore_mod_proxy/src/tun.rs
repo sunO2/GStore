@@ -434,8 +434,9 @@ async fn tun_loop(owned: OwnedFd, mut stop_rx: watch::Receiver<bool>) {
     // to the meow tunnel dispatcher; the protector is installed first so any
     // outbound socket a dial opens is protected from the very first packet.
     let protect_installed = crate::protect::install(crate::host_protect_fd());
-    let engine = crate::dispatch::build_engine();
-    let dispatcher = crate::dispatch::spawn(engine, tcp_listener, udp);
+    let dns_engine = crate::dns::ensure_engine().await;
+    let engine = crate::dispatch::build_engine(dns_engine.resolver());
+    let dispatcher = crate::dispatch::spawn(engine, tcp_listener, udp, Some(Arc::clone(&dns_engine)));
     crate::log_message(
         1,
         &format!("proxy: flow dispatch active protectInstalled={protect_installed}"),

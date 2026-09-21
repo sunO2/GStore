@@ -34,6 +34,7 @@ use gstore_contract::context::ModuleContext;
 use gstore_contract::error::{ModuleError, StatusCode};
 
 mod dispatch;
+mod dns;
 mod protect;
 mod tun;
 
@@ -715,6 +716,71 @@ fn core_set_mode_arm(
     }))
 }
 
+/// `dns.get`: effective DNS config plus query/cache stats and the recent
+/// domain→IP mappings the Todo 16 domain-statistics path consumes.
+fn dns_get_arm(
+    instance_id: u64,
+    instance: Option<Arc<ProxyInstance>>,
+) -> Result<Vec<u8>, ModuleError> {
+    let _inst = require_instance(instance_id, instance)?;
+    let engine = dns::engine();
+    let cfg = engine.as_ref().map(|e| e.config().clone()).unwrap_or_else(dns::config);
+    let stats = engine
+        .as_ref()
+        .map(|e| e.stats_json())
+        .unwrap_or_else(|| {
+            serde_json::json!({
+                "queries": 0, "failures": 0, "cacheEntries": 0,
+                "fakeIpActive": false, "fakeIpRange": serde_json::Value::Null,
+            })
+        });
+    let mappings = engine.as_ref().map(|e| e.mappings(64)).unwrap_or_default();
+    let recent = engine.as_ref().map(|e| e.recent_records(64)).unwrap_or_default();
+    ok_data(serde_json::json!({
+        "mode": cfg.mode.as_str(),
+        "config": cfg,
+        "stats": stats,
+        "mappings": mappings,
+        "recentQueries": recent,
+    }))
+}
+
+/// `dns.set`: merge a partial config, rebuild and install the resolver.
+fn dns_set_arm(
+    instance_id: u64,
+    instance: Option<Arc<ProxyInstance>>,
+    payload: &[u8],
+) -> Result<Vec<u8>, ModuleError> {
+    let _inst = require_instance(instance_id, instance)?;
+    let mut cfg = dns::config();
+    cfg.apply_patch(payload)?;
+    let engine = dns::set_config(cfg)?;
+    log_message(
+        1,
+        &format!(
+            "proxy: dns.set mode={} nameservers={} fallback={} doh={} dot={} hijack={}",
+            engine.config().mode.as_str(),
+            engine.config().nameservers.len(),
+            engine.config().fallback.len(),
+            engine.config().doh.len(),
+            engine.config().dot.len(),
+            engine.config().hijack,
+        ),
+    );
+    ok_data(serde_json::json!({ "ok": true, "config": engine.config() }))
+}
+
+/// `dns.clear_cache` / `dns.flush_cache`: drop the resolver cache and every
+/// fake-IP allocation. Returns the number of forward entries flushed.
+fn dns_clear_cache_arm(
+    instance_id: u64,
+    instance: Option<Arc<ProxyInstance>>,
+) -> Result<Vec<u8>, ModuleError> {
+    let _inst = require_instance(instance_id, instance)?;
+    let flushed = dns::engine().map(|e| e.clear_cache()).unwrap_or(0);
+    log_message(1, &format!("proxy: dns.clear_cache flushed={flushed}"));
+    ok_data(serde_json::json!({ "ok": true, "flushed": flushed }))
+}
 
 fn create_impl(config: *const u8, config_len: usize) -> Result<u64, c_int> {
     let ctx = ModuleContext::parse(payload_bytes(config, config_len));
@@ -802,6 +868,11 @@ fn call_impl(
         "core.restart" => core_restart_arm(instance_id, instance.clone(), _payload),
         "core.get_mode" => core_get_mode_arm(instance_id, instance.clone()),
         "core.set_mode" => core_set_mode_arm(instance_id, instance.clone(), _payload),
+        "dns.get" => dns_get_arm(instance_id, instance.clone()),
+        "dns.set" => dns_set_arm(instance_id, instance.clone(), _payload),
+        "dns.clear_cache" | "dns.flush_cache" => {
+            dns_clear_cache_arm(instance_id, instance.clone())
+        }
         other => Err(ModuleError::method_not_found(other)),
     };
 
@@ -1253,6 +1324,62 @@ mod abi_tests {
             events.iter().any(|(t, _)| t == "proxy.tun.released"),
             "proxy.tun.released must fire after join; got {events:?}"
         );
+
+        assert_eq!(destroy(inst), ABI_OK);
+    }
+
+    /// `dns.set` → `dns.get` round-trip over the real C ABI, plus
+    /// `dns.clear_cache`. Uses IP-literal nameservers so no network is touched.
+    #[test]
+    fn abi_dns_set_get_and_clear_cache() {
+        let _g = ABI_LOCK.lock().unwrap();
+        let api = register_api();
+        let create = api.create.unwrap();
+        let call = api.call.unwrap();
+        let destroy = api.destroy.unwrap();
+
+        let mut inst: u64 = 0;
+        assert_eq!(create(std::ptr::null(), 0, &mut inst), ABI_OK);
+
+        let (code, out) = call_json(call, inst, "dns.get");
+        assert_eq!(code, ABI_OK, "dns.get: {}", String::from_utf8_lossy(&out));
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["data"]["mode"], "fake-ip", "default mode is fake-ip");
+
+        let payload = br#"{"mode":"redir-host","nameservers":["127.0.0.1"],
+            "doh":["https://1.1.1.1/dns-query"],"fallback":["8.8.8.8"]}"#;
+        let (code, out) = call_with_payload(call, inst, "dns.set", payload);
+        assert_eq!(code, ABI_OK, "dns.set: {}", String::from_utf8_lossy(&out));
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["config"]["mode"], "redir-host");
+        assert_eq!(v["data"]["config"]["nameservers"][0], "127.0.0.1");
+        assert_eq!(v["data"]["config"]["doh"][0], "https://1.1.1.1/dns-query");
+
+        let (code, out) = call_json(call, inst, "dns.get");
+        assert_eq!(code, ABI_OK);
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["mode"], "redir-host", "dns.get must reflect dns.set");
+        assert_eq!(v["data"]["config"]["fallback"][0], "8.8.8.8");
+        assert!(v["data"]["stats"]["cacheEntries"].is_number());
+
+        let (code, out) = call_json(call, inst, "dns.clear_cache");
+        assert_eq!(code, ABI_OK, "dns.clear_cache: {}", String::from_utf8_lossy(&out));
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["ok"], true);
+        assert!(v["data"]["flushed"].is_number());
+
+        // Invalid nameserver is a structured 422, never a panic.
+        let (code, out) = call_with_payload(
+            call,
+            inst,
+            "dns.set",
+            br#"{"nameservers":["not a nameserver!!"]}"#,
+        );
+        assert_eq!(code, ABI_ERR_DETAIL);
+        let err: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(err["code"], "PROXY_DNS_CONFIG_INVALID");
+        assert_eq!(err["status"], 422);
 
         assert_eq!(destroy(inst), ABI_OK);
     }

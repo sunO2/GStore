@@ -146,20 +146,61 @@ Request: `{ "profileId"?: string, "mode"?: "vpn"\|"lanProxy" }`
 | `node.select` | `{ "group": string, "node": string }` | `{ "ok": true, "group": string, "node": string }` |
 | `node.delay_test` | `{ "node"?: string, "group"?: string, "timeoutMs"?: 5000 }` | `{ "results": [ { "node": string, "delayMs": 123, "error"?: string } ] }` |
 
-### 2.7 `dns.*` — resolver settings & cache
+### 2.7 `dns.*` — resolver settings & cache (Todo 8)
 
 | method | request | data |
 |---|---|---|
-| `dns.get` | *(none)* | `DnsConfig` |
-| `dns.set` | `DnsConfig` (partial) | `DnsConfig` |
-| `dns.flush_cache` | *(none)* | `{ "ok": true, "flushed": 0 }` |
+| `dns.get` | *(none)* | `{ "mode": string, "config": DnsConfig, "stats": DnsStats, "mappings": [DnsMapping], "recentQueries": [DnsQueryRecord] }` |
+| `dns.set` | `DnsConfig` (partial) | `{ "ok": true, "config": DnsConfig }` |
+| `dns.clear_cache` | *(none)* | `{ "ok": true, "flushed": number }` |
+| `dns.flush_cache` | *(none)* | alias of `dns.clear_cache` (legacy skeleton name) |
 
-`DnsConfig`:
+`dns.set` merges the JSON object over the current effective config, validates it,
+rebuilds the meow resolver, and installs it. Invalid nameserver/DoH/DoT URLs,
+a bad fake-IP range, or an empty nameserver list return
+`PROXY_DNS_CONFIG_INVALID` (422). `dns.clear_cache` also flushes every fake-IP
+allocation.
+
+`DnsConfig` (all fields optional on input; `dns.get` returns the effective set):
+
 ```json
-{ "mode": "fake-ip"|"redir-host", "nameservers": ["1.1.1.1"],
-  "fallback": ["8.8.8.8"], "doh": ["https://dns.example/dns-query"],
-  "dot": ["tls://8.8.8.8:853"], "fakeIpRange": "198.18.0.1/16" }
+{ "mode": "fake-ip"|"redir-host"|"normal",
+  "nameservers": ["1.1.1.1", "tcp://1.0.0.1:53"],
+  "fallback": ["8.8.8.8"],
+  "doh": ["https://dns.example/dns-query#dns.example"],
+  "dot": ["tls://8.8.8.8:853#dns.google"],
+  "defaultNameservers": ["223.5.5.5"],
+  "fakeIpRange": "198.18.0.0/16",
+  "fakeIpRangeV6": null,
+  "fakeIpTtlMs": null,
+  "fakeIpFilter": ["*.lan"],
+  "fakeIpFilterMode": "blacklist"|"whitelist",
+  "useHosts": true, "ipv6": true, "hijack": true,
+  "hosts": { "example.com": ["93.184.216.34"] } }
 ```
+
+`doh` / `dot` are merged into the primary nameserver set (`https://` / `tls://`
+meow transports). `defaultNameservers` is the **bootstrap** list (plain UDP/TCP
+IP literals only) used to resolve the encrypted upstreams' own hostnames.
+
+`DnsStats`: `{ "queries": 0, "failures": 0, "cacheEntries": 0, "fakeIpActive": false, "fakeIpRange": "198.18.0.0/16" }`
+
+`DnsQueryRecord` (also emitted as the `proxy.dns` event and the
+`proxy.dns.query` / `proxy.dns.failure` module log line):
+
+```json
+{ "tsMs": 0, "domain": "example.com", "qtype": "A", "rcode": "NoError",
+  "answers": ["198.18.0.4"], "resolver": "fake-ip", "latencyMs": 2,
+  "ok": true, "mode": "fake-ip", "note": "fake-ip" }
+```
+
+`DnsMapping` (the domain→IP feed for the Todo 16 domain-statistics path):
+
+```json
+{ "domain": "example.com", "ip": "198.18.0.4", "fake": true,
+  "tsMs": 0, "domainKnown": true }
+```
+
 
 ### 2.8 `log.*` — structured engine logs
 
@@ -244,6 +285,7 @@ side filters on the `proxy.` prefix. `instanceId` is always present.
 | `proxy.subscription.removed` | `{ "profileId": string }` |
 | `proxy.conn` | `{ "action":"open"\|"close", "id": string, "domain"?: string, "outbound"?: string, "uploadBytes"?:0, "downloadBytes"?:0 }` |
 | `proxy.log` | `LogRecord` (see §2.8) |
+| `proxy.dns` | `DnsQueryRecord` (see §2.7) — one record per DNS query answered by the TUN DNS hijack; carries the domain→IP mapping for the Todo 16 domain-statistics path (Todo 8; Todo 15/16 consume it). |
 | `proxy.tun.released` | `{ "fd": 123 }` — TUN read loop stopped and its thread joined; the host may clear its cached fd and Kotlin may close the PFD (Todo 6). Host-internal control event; Dart may ignore it. |
 
 ## 4. Host → module events (`on_event`)
@@ -274,6 +316,9 @@ registered in `rust/ERROR_CODES.md`.
 | `PROXY_LAN_DISABLED` | 409 | LAN requested while disabled (Todo 28) |
 | `PROXY_NO_INBOUND` | 409 | `lanProxy` with no LAN listener (Todo 29) |
 | `PROXY_PROTECT_FAILED` | 500 | host `protect_fd(fd)` returned non-zero; the dial is aborted so an unprotected socket never reaches the network (Todo 7) |
+| `PROXY_DNS_CONFIG_INVALID` | 422 | invalid DNS config: nameserver/DoH/DoT URL parse failure, bad fake-IP range, empty nameserver set (Todo 8) |
+| `PROXY_DNS_BOOTSTRAP_FAILED` | 500 | DNS bootstrap / encrypted-upstream construction failed (422 when a `default-nameserver` is not plain) (Todo 8) |
+| `PROXY_DNS_TIMEOUT` | 504 | DNS query produced no answer (unreachable upstream, no fallback); a `proxy.dns.failure` record is logged first (Todo 8) |
 
 ## 6. Module distribution decision (state it now)
 
@@ -415,3 +460,113 @@ The protect wrapper, its count instrumentation, and the failure path are proven
 on the host (`cargo test -p gstore_mod_proxy`, `protect::tests`). meow's
 `set_socket_protector` is compiled only on Android, so the **actual meow-hook
 integration on device is UNVERIFIED** (no adb device attached).
+
+## 9. DNS subsystem decisions (Todo 8)
+
+### 9.1 One resolver, shared by tunnel + hijack
+
+`core.start` builds the DNS engine (`crate::dns::ensure_engine`) and hands its
+`Arc<meow_dns::Resolver>` to both the meow tunnel (`Tunnel::new`) and the TUN
+UDP:53 hijack. `meow_dns::ResolverHostHook` is installed over the same resolver,
+so proxy-server hostnames and DoH/DoT upstream hostnames never hit libc
+`getaddrinfo`. `dns.set` rebuilds the engine; DNS queries use it immediately,
+while the already-built tunnel keeps the previous resolver until `core.restart`
+(the tunnel's resolver is only used for rule/host matching, not for the
+nameserver list).
+
+### 9.2 (a) Bootstrap resolver outside the tunnel + `protect()`
+
+`defaultNameservers` (Clash `default-nameserver`) is the bootstrap list for the
+encrypted upstreams' own hostnames. meow requires these to be **plain** entries
+(`udp://`/`tcp://`/bare IP); a DoH/DoT bootstrap entry is rejected with
+`PROXY_DNS_BOOTSTRAP_FAILED` (422) because it would recurse. Every DNS socket —
+bootstrap UDP/TCP, DoH, DoT — is created by the module's
+`dns::ProtectedSocketFactory` (installed via `meow_dns::set_socket_factory`),
+which dials through `crate::protect::{connect_tcp,bind_udp}`. On device that
+applies the host `protect_fd` before the first packet, so the bootstrap/DoH
+socket bypasses the VPN; on host tests the same constructor path is exercised
+(no protector installed ⇒ no-op). This is what breaks the full-tunnel fake-IP
+self-recursion: the proxy server's own hostname (and any DoH upstream hostname)
+is resolved by the bootstrap socket that is explicitly *outside* the tunnel.
+
+Loopback upstreams (`127.0.0.0/8`) are bound directly by meow (loopback is never
+routed into the TUN) and need no protect; that is the only unprotected DNS path
+and it is loopback-only.
+
+### 9.3 (b) Android Private DNS / DoT (port 853) — **UNVERIFIED on device**
+
+Android's Private DNS (DoT) is a **system** resolver setting. With a full-tunnel
+VpnService, the OS opens TCP/853 to the configured DoT server; that connection
+enters the TUN as an ordinary TCP flow and is handled by meow, **not** by our
+UDP:53 hijack. Consequence: fake-IP synthesis and the `proxy.dns` log record do
+**not** see Private-DNS queries — apps using a system-wide DoT resolver bypass
+them. We do **not** terminate TLS on 853 (that would require MITM), so the
+handling is explicit and documented, not code:
+
+- Private DNS `Off`/`Automatic` (or per-app DNS via the app's own UDP:53) ⇒
+  queries hit the TUN DNS hijack and get fake-IP + logging.
+- Private DNS `On <hostname>` ⇒ queries are routed as TCP/853 flows through the
+  tunnel; fake-IP does not apply. The product/UX must surface this (Todo 24/29).
+- All on-device Private-DNS behaviour is **UNVERIFIED — no adb device**.
+
+### 9.4 (c) IPv6-only / NAT64 / DNS64
+
+- The fake-IP v4 pool default is `198.18.0.0/16` (Clash default), which is
+  reserved benchmarking space and never overlaps a real/NAT64 prefix. Keep any
+  configured `fakeIpRange` out of the real network range and out of
+  `64:ff9b::/96` (NAT64) / `64:ff9b:1::/48`.
+- A fake IPv4 answer still works on an IPv6-only access network: the address is
+  inside the pool, the TUN route captures it, and meow dials the real host over
+  whatever the underlying network provides. fake-IP does **not** depend on the
+  access network having IPv4.
+- We do **not** synthesise fake AAAA by default (`fakeIpRangeV6` is `null`), so
+  on a DNS64/NAT64 network the client still receives the real AAAA (or the
+  DNS64-synthesised AAAA), which is routed through the tunnel normally. If a
+  v6 fake pool is configured, `meow`'s `ipv6hint` stripping keeps HTTP/3 from
+  reading a real origin IP out of HTTPS/SVCB answers (`DnsServer` handles it).
+- `ipv6: false` makes AAAA queries answer empty NOERROR (no upstream wait).
+
+### 9.5 (d) fake-IP vs redir-host → the domain-statistics feed
+
+- **fake-IP** knows the domain at query time: the answer is synthesised from the
+  pool, so the mapping is recorded immediately (`domain → fakeIp`, `fake:true`).
+  This is the reliable feed for Todo 16 and for meow's reverse lookup.
+- **redir-host** (`DnsMode::Mapping`) only learns the domain when the query is
+  seen by our DNS server; meow's DNS cache then holds `domain → realIp`. A flow
+  dialed from a cached/OS answer that we never saw must be recovered by
+  **SNI / HTTP Host sniffing** (meow's sniffer, Todo 10/16), which fails for
+  **ECH/ESNI** and for **plain-IP** connections. For those, the domain is
+  unavailable: Todo 16 must record the flow under the **IP** and mark the record
+  (`domainKnown: false`) rather than inventing a domain. `DnsMapping.domainKnown`
+  already carries that flag for the records we do produce.
+- Todo 16 should therefore prefer fake-IP mode for domain attribution; redir-host
+  plus sniffing is best-effort and must tolerate missing domains.
+
+### 9.6 Query logging
+
+Every query answered by the hijack flows through `DnsEngine::query`, which emits:
+a `proxy.dns.query` (success) or `proxy.dns.failure` (failure) JSON line via the
+module log path, and a `proxy.dns` event with the same payload (domain, qtype,
+rcode, answer IPs, resolver label, latency ms). A bounded ring (256 records) and
+a bounded mapping ring (1024) are exposed through `dns.get` so Todo 15/16 can
+consume them until Todo 15 owns the log ring buffer.
+
+### 9.7 Verification status
+
+`cargo test -p gstore_mod_proxy` proves: fake-IP allocation/reverse-lookup,
+fake-IP query logging + mapping, cache clear, a fixture query resolved via a stub
+upstream, an unreachable primary + fallback, a structured timeout without
+fallback, `dns.get`/`dns.set`/`dns.clear_cache` over the C ABI, and the DoH URL
+being routed to a stub endpoint (fails closed on the untrusted self-signed stub:
+see below). The real DoH/DoT TLS exchange and all on-device Private-DNS
+behaviour are **UNVERIFIED** (no adb device; meow's own DoH/DoT integration tests
+are network-gated `#[ignore]`).
+
+**Offline DoH-stub limitation (recorded).** meow's DoH client hardcodes
+certificate verification against the Mozilla roots and exposes no
+`additional_roots` / `skip_cert_verify` hook (`meow-dns/src/client.rs:1178`
+builds a fixed `TlsConfig`); a local self-signed DoH stub can therefore never be
+trusted without patching/forking meow, which this task forbids. The test proves
+the `https://` URL is parsed, routed through the DoH transport and our protected
+socket factory, and fails closed (structured `PROXY_DNS_TIMEOUT`, no hang);
+end-to-end DoH resolution is covered by meow's network-gated integration tests.

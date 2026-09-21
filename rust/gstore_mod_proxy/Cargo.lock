@@ -801,6 +801,8 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "gstore_contract",
+ "hickory-proto",
+ "ipnet",
  "libc",
  "libloading",
  "meow-api",

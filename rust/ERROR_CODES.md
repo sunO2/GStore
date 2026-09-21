@@ -46,6 +46,9 @@
 | `PROXY_TUN_FD_INVALID` | proxy | 422 | TUN fd 非法（<0 / 已关闭 / `dup` 失败）或 `core.start` 时无可用 fd（Todo 6） |
 | `PROXY_NO_INBOUND` | proxy | 422 | 请求了尚未实现的入站（`lanProxy`，Todo 28） |
 | `PROXY_PROTECT_FAILED` | proxy | 500 | 宿主 `protect_fd(fd)` 返回非 0：拒绝使用未受保护的出站 socket（Todo 7） |
+| `PROXY_DNS_CONFIG_INVALID` | proxy | 422 | DNS 配置非法（nameserver/DoH/DoT URL 解析失败、fake-ip range 非法、空 nameserver 列表）（Todo 8） |
+| `PROXY_DNS_BOOTSTRAP_FAILED` | proxy | 500 | DNS bootstrap/加密上游构建失败；`default-nameserver` 非明文时为 422（Todo 8） |
+| `PROXY_DNS_TIMEOUT` | proxy | 504 | DNS 查询无应答（上游不可达 / 无 fallback），已写入失败日志记录（Todo 8） |
 
 ## 跨 ABI 错误透传
 

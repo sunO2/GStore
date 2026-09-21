@@ -22,22 +22,26 @@ use futures::StreamExt;
 use meow_common::{ConnType, Metadata, Network, ProxyConn};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
-/// Build the routing engine and install the cross-platform hostname hook.
+use crate::dns::DnsEngine;
+
+/// Event type for one DNS query record (Todo 15/16 consume it).
+pub(crate) const EVT_DNS: &str = "proxy.dns";
+
+/// Emit a DNS query record as a `proxy.dns` event. The payload is the record
+/// JSON documented in `API.md` §3; the same record also goes to the module log
+/// path (`proxy.dns.query` / `proxy.dns.failure`).
+pub(crate) fn emit_dns_event(record_json: &str) {
+    crate::emit_event(0, EVT_DNS, record_json.as_bytes());
+}
+
+/// Build the routing engine over the configured resolver.
 ///
-/// The resolver is intentionally empty (no nameservers) — Todo 8 wires the DNS
-/// subsystem. The important part for Todo 7 is that hostname dials made by meow
-/// adapters consult the tunnel resolver through
-/// [`meow_common::set_host_resolver`] instead of libc `getaddrinfo`, which
-/// would otherwise open unprotected DNS sockets and loop through the VPN.
-pub(crate) fn build_engine() -> Arc<meow_tunnel::tunnel::TunnelInner> {
-    let resolver = Arc::new(meow_dns::Resolver::new(
-        Vec::new(),
-        Vec::new(),
-        meow_common::DnsMode::Normal,
-        meow_trie::DomainTrie::new(),
-        false,
-        false,
-    ));
+/// The resolver (nameservers, fake-IP pools, hostname hook) is owned by the
+/// DNS subsystem ([`crate::dns::ensure_engine`]); this just wires it into the
+/// tunnel so hostname dials made by meow adapters consult it through
+/// [`meow_common::set_host_resolver`] instead of libc `getaddrinfo` (whose own
+/// DNS sockets would be unprotected and loop through the VPN).
+pub(crate) fn build_engine(resolver: Arc<meow_dns::Resolver>) -> Arc<meow_tunnel::tunnel::TunnelInner> {
     meow_common::set_host_resolver(Arc::new(meow_dns::ResolverHostHook::new(Arc::clone(
         &resolver,
     ))));
@@ -63,10 +67,15 @@ impl Dispatcher {
 }
 
 /// Consume the netstack flow handles and dispatch every accepted flow.
+///
+/// UDP datagrams whose destination is the DNS port (`dns-hijack`) are answered
+/// locally by `dns` (fake-IP / redir-host) and their reply is written back to
+/// the TUN; every other datagram goes to meow's UDP dispatcher.
 pub(crate) fn spawn(
     inner: Arc<meow_tunnel::tunnel::TunnelInner>,
     tcp_listener: meow_lwip::TcpListener,
     udp: Box<meow_lwip::UdpSocket>,
+    dns: Option<Arc<DnsEngine>>,
 ) -> Dispatcher {
     let tcp_inner = Arc::clone(&inner);
     let tcp = tokio::spawn(async move {
@@ -83,8 +92,25 @@ pub(crate) fn spawn(
 
     let udp_inner = Arc::clone(&inner);
     let udp = tokio::spawn(async move {
-        let (_send, mut recv) = udp.split();
+        let (send, mut recv) = udp.split();
+        let send = Arc::new(send);
         while let Ok((data, src, dst)) = recv.recv_from().await {
+            if let Some(dns) = dns.as_ref() {
+                if dns.is_hijacked(&dst) {
+                    let dns = Arc::clone(dns);
+                    let send = Arc::clone(&send);
+                    tokio::spawn(async move {
+                        let (response, _record) = dns.query(&data).await;
+                        if let Err(e) = send.send_to(&response, &dst, &src) {
+                            crate::log_message(
+                                3,
+                                &format!("proxy.dns: TUN reply to {src} failed: {e}"),
+                            );
+                        }
+                    });
+                    continue;
+                }
+            }
             let inner = Arc::clone(&udp_inner);
             tokio::spawn(async move {
                 let metadata = udp_metadata(src, dst);
@@ -193,7 +219,15 @@ mod tests {
     #[test]
     fn engine_builds_with_direct_fallback() {
         let _g = SERIAL.lock().unwrap();
-        let inner = build_engine();
+        let resolver = Arc::new(meow_dns::Resolver::new(
+            Vec::new(),
+            Vec::new(),
+            meow_common::DnsMode::Normal,
+            meow_trie::DomainTrie::new(),
+            false,
+            false,
+        ));
+        let inner = build_engine(resolver);
         let metadata = tcp_metadata(
             "10.10.0.2:40000".parse().unwrap(),
             "1.1.1.1:443".parse().unwrap(),
