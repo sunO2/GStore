@@ -35,6 +35,10 @@ class MainActivity : FlutterActivity() {
         /// 管理空间入口通道：Dart 侧启动/恢复时查询是否有待处理的"管理空间"请求
         private const val MANAGE_SPACE_CHANNEL = "gstore/manage_space"
 
+        /// 代理 VPN 触发通道：只负责转发到 ProxyVpnService / VpnConsentActivity，
+        /// 不在本 Activity 内承载任何 VPN 逻辑。
+        private const val PROXY_VPN_CHANNEL = "gstore/proxy_vpn"
+
         /// ManageSpaceActivity 携带的 action：用于识别"系统管理空间入口"
         const val ACTION_MANAGE_SPACE = "com.suno2.gstore.action.MANAGE_SPACE"
 
@@ -98,6 +102,32 @@ class MainActivity : FlutterActivity() {
                         result.success(pendingManageSpace)
                         pendingManageSpace = false
                     }
+                    else -> result.notImplemented()
+                }
+            }
+
+        // 代理 VPN 触发通道：仅转发，VPN 逻辑在 ProxyVpnService / VpnConsentActivity。
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, PROXY_VPN_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "prepare" -> {
+                        val config = call.argument<String>("config") ?: "{}"
+                        startActivity(
+                            Intent(this, VpnConsentActivity::class.java)
+                                .putExtra(VpnConsentActivity.EXTRA_CONFIG, config)
+                        )
+                        result.success(true)
+                    }
+                    "start" -> {
+                        val config = call.argument<String>("config") ?: "{}"
+                        ProxyVpnService.start(this, config)
+                        result.success(true)
+                    }
+                    "stop" -> {
+                        ProxyVpnService.stop(this)
+                        result.success(true)
+                    }
+                    "isRunning" -> result.success(ProxyVpnService.isRunning)
                     else -> result.notImplemented()
                 }
             }

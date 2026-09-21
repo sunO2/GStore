@@ -11,6 +11,9 @@
     <!-- 前台服务：后台保持下载运行 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- 代理 VPN：绑定 VpnService 权限 + Android 14 VPN 前台类型权限 -->
+    <uses-permission android:name="android.permission.BIND_VPN_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SYSTEM_EXEMPTED" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application
@@ -67,6 +70,29 @@
             android:name="com.pravera.flutter_foreground_task.service.ForegroundService"
             android:foregroundServiceType="dataSync"
             android:exported="false" />
+
+        <!-- 代理 VPN 前台服务：与上面的 dataSync 服务共存（类型/权限不同）。
+             同进程（不声明 android:process）；详见 ProxyVpnService 类文档。 -->
+        <service
+            android:name=".ProxyVpnService"
+            android:permission="android.permission.BIND_VPN_SERVICE"
+            android:exported="false"
+            android:foregroundServiceType="systemExempted">
+            <intent-filter>
+                <action android:name="android.net.VpnService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.net.VpnService.SUPPORTS_ALWAYS_ON"
+                android:value="true" />
+        </service>
+
+        <!-- VPN 授权中转（无 UI）：Dart prepare() 的 Kotlin 入口 -->
+        <activity
+            android:name=".VpnConsentActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 
         <meta-data
             android:name="com.baidu.lbsapi.API_KEY"

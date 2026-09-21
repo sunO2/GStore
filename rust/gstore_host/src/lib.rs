@@ -3,6 +3,7 @@ mod models;
 mod bridge;
 mod manager;
 mod dl_adapter;
+mod jni_bridge;
 mod trust;
 pub mod log_bridge;
 mod event_bridge;

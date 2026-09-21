@@ -12,6 +12,10 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 gstore_contract = { path = "../gstore_contract" }
 # 动态加载模块 .so（dlopen/dlsym）
 libloading = "0.8"
+# JNI：Kotlin ProxyVpnService ↔ 宿主（service 引用缓存 + VpnService.protect）。
+# 只用于 Android 运行时；宿主的 Linux 测试构建同样可编译（默认 feature 不含
+# invocation，不链接 libjvm），JNI 函数在非 Android 上不会被调用。
+jni = { version = "0.21", default-features = false }
 # JSON 序列化
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
