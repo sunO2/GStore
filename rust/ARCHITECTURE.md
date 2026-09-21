@@ -145,6 +145,17 @@ pub struct GStoreModuleApi {
 }
 ```
 
+> **ABI v3 兼容性（校正，以代码为准）**：末尾追加字段只让**宿主侧握手**前向兼容（宿主唯一
+> gate 是 `min_host_abi > GSTORE_MODULE_ABI_VERSION`，无精确匹配）。**现有模块在 register 时
+> 仍做模块侧精确匹配** `e.abi_version != GSTORE_MODULE_ABI_VERSION`（`rust/gstore_mod_qr/src/lib.rs`:443、
+> `rust/gstore_mod_repo/src/lib.rs`:372、`rust/gstore_mod_llm/src/lib.rs`:236、
+> `rust/gstore_mod_download/src/lib.rs`:595、`rust/gstore_mod_analyzer/src/lib.rs`:405），
+> 所以**预编译/缓存的 ABI-2 `.so` 会在 v3 宿主上拒绝挂载**（`ABI_ERR_ABI_MISMATCH`）。
+> 升级策略为 **rebuild-on-update**：内置模块随 `build_android_rust.sh` 重编为 ABI 3（不删用户
+> 缓存）；仅远程分发的 `gstore_mod_llm` 需在升级后重新下载。新模块 `gstore_mod_proxy` 已使用
+> 放宽的 `e.abi_version < GSTORE_MODULE_ABI_VERSION`；若要让旧 `.so` 真正兼容 v3，可把其余模块
+> 一并放宽为 `<`（本次不做的独立决策）。详见 §10 决策 #7。
+
 ### 3.3 内存规则（谁分配谁释放，绝不交叉 free）
 
 - **请求内存**：宿主 `Vec<u8>` 直接传 ptr+len，模块**只读**，宿主自己释放
@@ -675,7 +686,7 @@ SHA-256 单独即可自洽的理由：GStore 走 GitHub Release 分发（不经 
 | 4 | 超时/取消 | **现在就设计 `EnvelopeCancel` 消息** | 协议含 EnvelopeCancel + api 表 cancel 槽位 + ABORTED(499) 状态 |
 | 5 | crate 改名 | **现在改**（改名牵动 .so 名/jniLibs/stem/构建脚本，见附录 C） | P1 前置任务 |
 | 6 | 错误码文档 | **生成**（协议层错误码 + 各域错误码登记表） | 交付物：`rust/ERROR_CODES.md`（协议层已在此文 6.2/6.4；域层随模块建立） |
-| 7 | ABI 增长方式（v3 `protect_fd`） | **只在 `GStoreModuleEntry` 末尾追加字段**；宿主握手唯一 gate 是 `min_host_abi > GSTORE_MODULE_ABI_VERSION`（**无精确匹配**）；模块侧读新槽前必须用 `entry.entry_size` 守卫（`protect_fd_if_present()`），旧宿主下不得越界读 | 镜像 `on_event` v2 先例：v2 模块（`min_host_abi <= 2`）继续挂载 v3 宿主；`protect_fd` 是代理域安装 meow `SocketProtector` 的唯一宿主钩子。**已落地（非 stub）**：宿主 JNI 接线见 `rust/gstore_host/src/jni_bridge.rs`，模块侧安装在 `rust/gstore_mod_proxy/src/protect.rs`，完整契约见 [`document/development/17-代理内核与VPN.md`](../document/development/17-代理内核与VPN.md) §3–§4 |
+| 7 | ABI 增长方式（v3 `protect_fd`） | **只在 `GStoreModuleEntry` 末尾追加字段**；宿主握手 gate 是 `min_host_abi > GSTORE_MODULE_ABI_VERSION`（**无精确匹配**），所以追加字段对**宿主侧握手**前向兼容；模块侧读新槽前必须用 `entry.entry_size` 守卫（`protect_fd_if_present()`），旧宿主下不得越界读。**但**既有模块在 register 时还做**模块侧精确匹配** `e.abi_version != GSTORE_MODULE_ABI_VERSION`（`rust/gstore_mod_qr/src/lib.rs`:443、`rust/gstore_mod_repo/src/lib.rs`:372、`rust/gstore_mod_llm/src/lib.rs`:236、`rust/gstore_mod_download/src/lib.rs`:595、`rust/gstore_mod_analyzer/src/lib.rs`:405），因此**预编译/缓存的 ABI-2 `.so` 会被 v3 宿主拒绝**（`ABI_ERR_ABI_MISMATCH`），只有按 ABI 3 重编的模块才挂得上；新模块 `gstore_mod_proxy` 已用放宽的 `e.abi_version < GSTORE_MODULE_ABI_VERSION`。**决策（rebuild-on-update）**：内置模块由 `build_android_rust.sh` 统一重编为 ABI 3，不删用户缓存；**仅远程分发的下载型模块（`gstore_mod_llm`）升级后必须重新下载**，旧 ABI-2 `.so` 不再挂载。**未来可选**：把模块侧 `!=` 放宽为 `e.abi_version < GSTORE_MODULE_ABI_VERSION`，即可让 v2 `.so` 真正兼容 v3 宿主（本次不动 ABI/模块侧检查）。校正：旧版把"宿主侧兼容"误写为预编译模块也兼容，已按代码更正 | `protect_fd` 是代理域安装 meow `SocketProtector` 的唯一宿主钩子。**已落地（非 stub）**：宿主 JNI 接线见 `rust/gstore_host/src/jni_bridge.rs`，模块侧安装在 `rust/gstore_mod_proxy/src/protect.rs`，完整契约见 [`document/development/17-代理内核与VPN.md`](../document/development/17-代理内核与VPN.md) §3–§4 |
 | 8 | 数据面 worker 崩溃模型（Todo 24） | **守护 + 有界退避重启**：TUN reader/ingress/egress 每个 worker 的退出（正常/错误/**panic**，`catch_unwind` 也包住 loop 主体）经死亡通道上报；以结构化 `proxy.state`（`error.code=PROXY_DATAPLANE_DEAD` + 原始原因）上报，再以 `250ms·2^(n-1)`（上限 8s）最多重启 `MAX_RESTARTS=5` 次；预算耗尽则置 `dataplane_failed` 停止。`vpn.stop`（Kotlin 主动拆除）走干净路径、绝不触发重启 | fd 拆除顺序钉死为「停循环 → join → 宿主清缓存 → Kotlin 关 fd」，见 [`rust/gstore_mod_proxy/API.md`](gstore_mod_proxy/API.md) §18；不再有"进程存活但数据面已死且无人知晓"的静默失败 |
 
 **实施现状（以代码为准）**：
@@ -773,7 +784,7 @@ P1 实施中通过 3 组实验确认的 flutter_rust_bridge 2.11.1 行为（`rus
 **推论**：P2 拆分模块 .so 时，模块自身是纯 Rust cdylib（不涉及 FRB），此约束不影响模块内部；但宿主侧新增桥面类型必须遵循上述规则。
 
 **P1 交付物清单**（2026-09-11）：
-- `rust/gstore_host/src/contract/`：abi.rs（C ABI 契约）+ envelope.rs（JSON 信封，proto 待切换）+ error.rs（ModuleError）+ logging.rs（HostLogger）——5 测试
+- `rust/gstore_contract/src/`：abi.rs（C ABI 契约）+ envelope.rs（JSON 信封，proto 待切换）+ error.rs（ModuleError）+ logging.rs（HostLogger）——5 测试（P1 时位于宿主的 `contract/` 子目录，P3 已抽为独立 crate `gstore_contract`）
 - `rust/gstore_host/src/manager.rs`：ModuleManager（注册表 + refcount + register_by_name + call_envelope）——4 测试（含全链路生命周期）
 - `rust/gstore_host/src/log_bridge.rs`：LogBridge 内部实现（环形缓冲 + subscribe + host_log + push_host_log）
 - `rust/gstore_host/src/bridge.rs`：ModuleHandle / InstanceHandle / LogBridge FRB opaque（直接定义）+ call_envelope impl 方法
@@ -806,7 +817,7 @@ P1 实施中通过 3 组实验确认的 flutter_rust_bridge 2.11.1 行为（`rus
   - 迁移期可保留薄壳兼容层（原方法签名不变、内部改走路由），调用方代码改动最小化
 - **死代码清理**（与架构无关，建议尽快做）：
   - 删 `lib/core/rust/` 下旧生成绑定（`bridge.dart`、`frb_generated*.dart`、`models.dart`，2026-08-05 批次，无引用）
-  - 删 `rust/fdroid_repo/rust/src/frb_generated.rs`（嵌套残留）
+  - ✅ 已清理：旧 `fdroid_repo` 嵌套残留的 `frb_generated.rs`（随决策 5 crate 改名一并移除）
   - 删/决策 `getAppDetail`（已实现未使用）、`RepoManager`（空 opaque）、`FlutterProgressCallback`（占位符）
   - 修 `setup_rust.sh`（指向不存在的 `frb_config.yaml`，实际配置在 pubspec.yaml）
 - **当前 Cargo.toml 冲突**：`[profile.release] panic = "abort"` 只适用于宿主；拆分模块时必须用 profile override 覆盖为 unwind

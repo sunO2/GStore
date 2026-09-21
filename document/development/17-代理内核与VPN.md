@@ -70,8 +70,20 @@ Kotlin（TUN 生命周期）                                                │
 
 - v2 追加 `Api::on_event`（宿主→模块事件）；**v3 追加 `Entry::protect_fd`**
   （宿主→模块 socket 保护），是严格**末尾追加、禁止重排**。
-- 握手 gate 唯一：`min_host_abi > GSTORE_MODULE_ABI_VERSION` 才拒绝挂载；**无精确匹配**。
-  因此 v2 模块仍可挂到 v3 宿主。
+- 宿主握手 gate：`min_host_abi > GSTORE_MODULE_ABI_VERSION` 才拒绝挂载，**无精确匹配**；
+  末尾追加字段因此对**宿主侧握手**前向兼容。
+- **但既有模块在 register 时还做模块侧精确匹配** `e.abi_version != GSTORE_MODULE_ABI_VERSION`
+  （`rust/gstore_mod_qr/src/lib.rs`:443、`rust/gstore_mod_repo/src/lib.rs`:372、
+  `rust/gstore_mod_llm/src/lib.rs`:236、`rust/gstore_mod_download/src/lib.rs`:595、
+  `rust/gstore_mod_analyzer/src/lib.rs`:405）。因此**预编译/缓存下来的 ABI-2 `.so` 会被
+  v3 宿主拒绝**（`ABI_ERR_ABI_MISMATCH`）；只有针对 ABI 3 重新编译的模块才能挂上。
+  本模块 `gstore_mod_proxy` 是新模块，已用放宽的 `e.abi_version < GSTORE_MODULE_ABI_VERSION`。
+- **决策（rebuild-on-update）**：升级到宿主 ABI v3 时，内置模块随 `build_android_rust.sh`
+  统一重编为 ABI 3（**不删除**用户缓存模块）；**仅远程分发的下载型模块（`gstore_mod_llm`）
+  升级后必须重新下载**，旧的 ABI-2 `.so` 不再挂载。
+  > 运维提示：升级到宿主 ABI v3 后，重新拉取下载型模块。
+- **未来可选**：把模块侧 `!=` 放宽为 `e.abi_version < GSTORE_MODULE_ABI_VERSION`，即可让
+  v2 `.so` 真正兼容 v3 宿主（本次决策不改 ABI / 模块侧检查）。
 - 模块读新槽前**必须**用 `entry.entry_size` 守卫（`protect_fd_if_present()`），
   旧宿主下不得越界读。
 - 决策记录见 `rust/ARCHITECTURE.md` §10 决策 #7；`proxy` 模块 `min_host_abi = 3`
@@ -239,6 +251,12 @@ Kotlin（TUN 生命周期）                                                │
 
 以下路径**无 adb 真机**，不得声称已通过；host 侧只用 Linux loopback / socketpair
 harness 证明机制：
+
+> **测试形态说明（计划偏差，设备前置条款）**：计划原定用**设备侧 `integration_test/`
+> harness**（Todos 4/6/7/24/27/28/29 要求连接 adb 真机）验证隧道行为；本次开发环境
+> **无可用 Android 设备**，故改由 **host Linux loopback / socketpair harness** 覆盖
+> **fd 交付、protect seam、stats、teardown** 四条机制路径的断言，设备侧 `VpnService`
+> 路径按下方清单标注为 **UNVERIFIED**。
 
 - `VpnService.establish()` 真实 fd 的 ioctl/`dup`/`O_NONBLOCK` 行为与真机 VpnService 生命周期。
 - 真机 `VpnService.protect()` 与 meow `set_socket_protector` 的集成（Android-only 编译路径）。
