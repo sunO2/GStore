@@ -666,7 +666,7 @@ SHA-256 单独即可自洽的理由：GStore 走 GitHub Release 分发（不经 
 | 4 | 超时/取消 | **现在就设计 `EnvelopeCancel` 消息** | 协议含 EnvelopeCancel + api 表 cancel 槽位 + ABORTED(499) 状态 |
 | 5 | crate 改名 | **现在改**（改名牵动 .so 名/jniLibs/stem/构建脚本，见附录 C） | P1 前置任务 |
 | 6 | 错误码文档 | **生成**（协议层错误码 + 各域错误码登记表） | 交付物：`rust/ERROR_CODES.md`（协议层已在此文 6.2/6.4；域层随模块建立） |
-| 7 | ABI 增长方式（v3 `protect_fd`） | **只在 `GStoreModuleEntry` 末尾追加字段**；宿主握手唯一 gate 是 `min_host_abi > GSTORE_MODULE_ABI_VERSION`（**无精确匹配**）；模块侧读新槽前必须用 `entry.entry_size` 守卫（`protect_fd_if_present()`），旧宿主下不得越界读 | 镜像 `on_event` v2 先例：v2 模块（`min_host_abi <= 2`）继续挂载 v3 宿主；`protect_fd` 是代理域安装 meow `SocketProtector` 的唯一宿主钩子（宿主侧先为 stub，JNI 接线见 VPN 计划 Todo 4） |
+| 7 | ABI 增长方式（v3 `protect_fd`） | **只在 `GStoreModuleEntry` 末尾追加字段**；宿主握手唯一 gate 是 `min_host_abi > GSTORE_MODULE_ABI_VERSION`（**无精确匹配**）；模块侧读新槽前必须用 `entry.entry_size` 守卫（`protect_fd_if_present()`），旧宿主下不得越界读 | 镜像 `on_event` v2 先例：v2 模块（`min_host_abi <= 2`）继续挂载 v3 宿主；`protect_fd` 是代理域安装 meow `SocketProtector` 的唯一宿主钩子。**已落地（非 stub）**：宿主 JNI 接线见 `rust/gstore_host/src/jni_bridge.rs`，模块侧安装在 `rust/gstore_mod_proxy/src/protect.rs`，完整契约见 [`document/development/17-代理内核与VPN.md`](../document/development/17-代理内核与VPN.md) §3–§4 |
 
 **实施现状（以代码为准）**：
 
