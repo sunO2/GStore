@@ -19,6 +19,7 @@ import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/core/rust/proxy/ProxyContract.dart';
+import 'package:gstore/core/rust/proxy/ProxyModule.dart';
 import 'package:gstore/page/proxy/proxy_dns_facade.dart';
 import 'package:gstore/page/proxy/proxy_dns_page.dart';
 import 'package:gstore/page/proxy/proxy_logs_facade.dart';
@@ -34,6 +35,15 @@ Widget _host(Widget child) => MaterialApp(
       scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
       home: child,
     );
+
+/// 放大测试视口：统计页新增总览后，Sliver 懒加载需要更大视口才能同屏
+/// 渲染总览 + 控件 + 多张域名卡片（不影响断言强度）。
+void _useLargeViewport(WidgetTester tester) {
+  tester.view.physicalSize = const Size(1400, 2600);
+  tester.view.devicePixelRatio = 1.0;
+  addTearDown(tester.view.resetPhysicalSize);
+  addTearDown(tester.view.resetDevicePixelRatio);
+}
 
 // ==================== 假门面 ====================
 
@@ -86,10 +96,12 @@ class _FakeLogsFacade implements ProxyLogsFacade {
   LogPage page = const LogPage();
   final List<String> setLevels = <String>[];
   LogGetRequest? lastRequest;
+  int logGetCalls = 0;
 
   @override
   Future<LogPage> logGet(LogGetRequest request) async {
     lastRequest = request;
+    logGetCalls++;
     return page;
   }
 
@@ -101,15 +113,33 @@ class _FakeLogsFacade implements ProxyLogsFacade {
 }
 
 class _FakeStatsFacade implements ProxyStatsFacade {
-  _FakeStatsFacade(this.domains);
+  _FakeStatsFacade(
+    this.domains, {
+    this.traffic = const TrafficSnapshot(),
+    this.failTraffic = false,
+    this.failDomains = false,
+  });
 
   List<DomainStat> domains;
+  TrafficSnapshot traffic;
+  bool failTraffic;
+  bool failDomains;
   int resetCalls = 0;
+  int domainCalls = 0;
+  int trafficCalls = 0;
   StatsDomainGetRequest? lastRequest;
+  StatsTrafficGetRequest? lastTrafficRequest;
 
   @override
   Future<DomainPage> statsDomainGet(StatsDomainGetRequest request) async {
+    domainCalls++;
     lastRequest = request;
+    if (failDomains) {
+      throw const ProxyModuleException(
+        code: 'TEST_DOMAIN_FAIL',
+        message: 'domain boom',
+      );
+    }
     return DomainPage(
       domains: domains,
       count: domains.length,
@@ -117,6 +147,19 @@ class _FakeStatsFacade implements ProxyStatsFacade {
       sort: request.sort ?? 'bytes',
       rangeMs: request.rangeMs ?? 0,
     );
+  }
+
+  @override
+  Future<TrafficSnapshot> statsTrafficGet(StatsTrafficGetRequest request) async {
+    trafficCalls++;
+    lastTrafficRequest = request;
+    if (failTraffic) {
+      throw const ProxyModuleException(
+        code: 'TEST_TRAFFIC_FAIL',
+        message: 'traffic boom',
+      );
+    }
+    return traffic;
   }
 
   @override
@@ -181,6 +224,24 @@ const List<DomainStat> _statsFixture = [
     outbound: 'DIRECT',
   ),
 ];
+
+/// `stats.traffic.get` 夹具：总量 / 速率 / 活动连接 / Top 域名。
+const TrafficSnapshot _trafficFixture = TrafficSnapshot(
+  uploadBytes: 1024,
+  downloadBytes: 2 * 1024 * 1024,
+  activeConns: 3,
+  upBps: 100,
+  downBps: 2048,
+  domainCount: 2,
+  topDomains: [
+    DomainStat(
+      domain: 'top.example',
+      connections: 5,
+      uploadBytes: 512,
+      downloadBytes: 1536,
+    ),
+  ],
+);
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -318,11 +379,276 @@ void main() {
 
       await source.close();
     });
+
+    testWidgets('happy：类别筛选（全部 / 连接 / DNS / 消息）切换内存列表', (tester) async {
+      final source = _FakeLogSource([
+        LogEntry(
+          level: LogLevel.info,
+          message: 'live-msg',
+          timestamp: DateTime(2026, 1, 1, 10, 0, 0),
+        ),
+      ]);
+      final facade = _FakeLogsFacade()
+        ..page = const LogPage(
+          records: [
+            LogRecord(
+              cursor: 1,
+              tsMs: 1700000000000,
+              level: ProxyLogLevel.info,
+              kind: ProxyLogKind.connection,
+              connection: ConnectionLog(id: 'c1', domain: 'conn.example'),
+            ),
+            LogRecord(
+              cursor: 2,
+              tsMs: 1700000001000,
+              level: ProxyLogLevel.info,
+              kind: ProxyLogKind.dns,
+              dns: DnsQueryRecord(
+                tsMs: 1700000001000,
+                domain: 'dns.example',
+                qtype: 'A',
+                rcode: 'NOERROR',
+              ),
+            ),
+            LogRecord(
+              cursor: 3,
+              tsMs: 1700000002000,
+              level: ProxyLogLevel.info,
+              kind: ProxyLogKind.message,
+              message: 'structured-msg',
+            ),
+          ],
+        );
+
+      await tester.pumpWidget(
+        _host(ProxyLogsPage(facade: facade, logSource: source)),
+      );
+      await tester.pumpAndSettle();
+
+      // 全部：模块消息 + 全部结构化记录
+      expect(find.text('live-msg'), findsOneWidget);
+      expect(find.text('conn.example'), findsOneWidget);
+      expect(find.text('dns.example'), findsOneWidget);
+      expect(find.text('structured-msg'), findsOneWidget);
+
+      Future<void> selectKind(String label) async {
+        await tester.tap(
+          find.descendant(
+            of: find.byKey(const Key('log_kind_selector')),
+            matching: find.text(label),
+          ),
+        );
+        await tester.pumpAndSettle();
+      }
+
+      await selectKind('连接');
+      expect(find.text('conn.example'), findsOneWidget);
+      expect(find.text('dns.example'), findsNothing);
+      expect(find.text('structured-msg'), findsNothing);
+      expect(find.text('live-msg'), findsNothing);
+      expect(find.text('连接记录'), findsOneWidget);
+
+      await selectKind('DNS');
+      expect(find.text('dns.example'), findsOneWidget);
+      expect(find.text('conn.example'), findsNothing);
+      expect(find.text('连接记录'), findsNothing);
+
+      await selectKind('消息');
+      expect(find.text('live-msg'), findsOneWidget);
+      expect(find.text('structured-msg'), findsOneWidget);
+      expect(find.text('conn.example'), findsNothing);
+      expect(find.text('dns.example'), findsNothing);
+
+      await source.close();
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('failure：类别筛选无匹配显示显式空态', (tester) async {
+      final source = _FakeLogSource(const <LogEntry>[]);
+      final facade = _FakeLogsFacade()
+        ..page = const LogPage(
+          records: [
+            LogRecord(
+              cursor: 1,
+              tsMs: 1700000000000,
+              level: ProxyLogLevel.info,
+              kind: ProxyLogKind.connection,
+              connection: ConnectionLog(id: 'c1', domain: 'conn.example'),
+            ),
+          ],
+        );
+
+      await tester.pumpWidget(
+        _host(ProxyLogsPage(facade: facade, logSource: source)),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('conn.example'), findsOneWidget);
+
+      await tester.tap(
+        find.descendant(
+          of: find.byKey(const Key('log_kind_selector')),
+          matching: find.text('DNS'),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('无匹配日志'), findsOneWidget);
+      await source.close();
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('happy：自动刷新开关周期性拉取并可暂停', (tester) async {
+      final source = _FakeLogSource([
+        LogEntry(
+          level: LogLevel.info,
+          message: 'live',
+          timestamp: DateTime(2026, 1, 1, 10, 0, 0),
+        ),
+      ]);
+      final facade = _FakeLogsFacade();
+      await tester.pumpWidget(
+        _host(ProxyLogsPage(facade: facade, logSource: source)),
+      );
+      await tester.pumpAndSettle();
+      expect(facade.logGetCalls, 1);
+
+      // 开启：立即静默刷新一次并启动 2s 定时器
+      await tester.tap(find.byKey(const Key('log_autorefresh_toggle')));
+      await tester.pump();
+      await tester.pump();
+      expect(find.byKey(const Key('log_autorefresh_indicator')), findsOneWidget);
+      final afterEnable = facade.logGetCalls;
+
+      await tester.pump(const Duration(seconds: 2));
+      await tester.pump();
+      expect(facade.logGetCalls, greaterThan(afterEnable));
+
+      // 暂停：定时器停止，继续推进时钟不再拉取
+      await tester.tap(find.byKey(const Key('log_autorefresh_toggle')));
+      await tester.pump();
+      expect(find.byKey(const Key('log_autorefresh_indicator')), findsNothing);
+      final afterPause = facade.logGetCalls;
+      await tester.pump(const Duration(seconds: 4));
+      await tester.pump();
+      expect(facade.logGetCalls, afterPause);
+
+      await source.close();
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('happy：复制当前筛选列表到剪贴板', (tester) async {
+      String? clipboardText;
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (call) async {
+          if (call.method == 'Clipboard.setData') {
+            clipboardText = (call.arguments as Map)['text'] as String?;
+          }
+          return null;
+        },
+      );
+
+      final source = _FakeLogSource([
+        LogEntry(
+          level: LogLevel.info,
+          message: 'live-copy-line',
+          timestamp: DateTime(2026, 1, 1, 10, 0, 0),
+        ),
+      ]);
+      final facade = _FakeLogsFacade()
+        ..page = const LogPage(
+          records: [
+            LogRecord(
+              cursor: 1,
+              tsMs: 1700000000000,
+              level: ProxyLogLevel.info,
+              kind: ProxyLogKind.connection,
+              connection: ConnectionLog(id: 'c1', domain: 'conn.example'),
+            ),
+          ],
+        );
+
+      await tester.pumpWidget(
+        _host(ProxyLogsPage(facade: facade, logSource: source)),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('log_copy_all')));
+      await tester.pumpAndSettle();
+
+      expect(clipboardText, isNotNull);
+      expect(clipboardText, contains('live-copy-line'));
+      expect(clipboardText, contains('conn.example'));
+
+      await source.close();
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('happy：点击记录打开详情弹层并可复制', (tester) async {
+      String? clipboardText;
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (call) async {
+          if (call.method == 'Clipboard.setData') {
+            clipboardText = (call.arguments as Map)['text'] as String?;
+          }
+          return null;
+        },
+      );
+
+      final source = _FakeLogSource(const <LogEntry>[]);
+      final facade = _FakeLogsFacade()
+        ..page = const LogPage(
+          records: [
+            LogRecord(
+              cursor: 1,
+              tsMs: 1700000000000,
+              level: ProxyLogLevel.info,
+              kind: ProxyLogKind.connection,
+              connection: ConnectionLog(
+                id: 'conn-42',
+                domain: 'detail.example',
+                outbound: 'proxy',
+                rule: 'DOMAIN-SUFFIX',
+                rulePayload: 'detail.example',
+                uploadBytes: 1024,
+                downloadBytes: 2048,
+              ),
+            ),
+          ],
+        );
+
+      await tester.pumpWidget(
+        _host(ProxyLogsPage(facade: facade, logSource: source)),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('detail.example'));
+      await tester.pumpAndSettle();
+
+      // 详情弹层展示完整结构化字段
+      expect(find.text('连接 ID'), findsOneWidget);
+      expect(find.text('conn-42'), findsOneWidget);
+      expect(find.text('DOMAIN-SUFFIX detail.example'), findsOneWidget);
+
+      await tester.tap(find.text('复制'));
+      await tester.pumpAndSettle();
+      expect(clipboardText, contains('detail.example'));
+      // 弹层已关闭
+      expect(find.text('连接 ID'), findsNothing);
+
+      await source.close();
+      expect(tester.takeException(), isNull);
+    });
   });
 
   group('ProxyStatsPage（Todo 22c）', () {
     testWidgets('happy：渲染 fixture、按字节排序、切连接数并危险确认重置', (tester) async {
-      final facade = _FakeStatsFacade(List<DomainStat>.of(_statsFixture));
+      _useLargeViewport(tester);
+      final facade = _FakeStatsFacade(
+        List<DomainStat>.of(_statsFixture),
+        traffic: _trafficFixture,
+      );
       await tester.pumpWidget(_host(ProxyStatsPage(facade: facade)));
       await tester.pumpAndSettle();
 
@@ -362,7 +688,88 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
+    testWidgets('happy：流量总览渲染后端聚合值（总量 / 速率 / 活动连接 / Top）', (tester) async {
+      _useLargeViewport(tester);
+      final facade = _FakeStatsFacade(
+        const <DomainStat>[],
+        traffic: _trafficFixture,
+      );
+      await tester.pumpWidget(_host(ProxyStatsPage(facade: facade)));
+      await tester.pumpAndSettle();
+
+      expect(find.text('流量总览'), findsOneWidget);
+      // 请求了 Top 域名条数，后端字段用于展示（Dart 不聚合）。
+      expect(facade.lastTrafficRequest?.topDomains, 5);
+      expect(find.text('1.00 KB'), findsOneWidget); // 上传总量
+      expect(find.text('100 B/s'), findsOneWidget); // 上行速率
+      expect(find.text('2.00 MB'), findsOneWidget); // 下载总量
+      expect(find.text('2.00 KB/s'), findsOneWidget); // 下行速率
+      expect(find.text('3'), findsOneWidget); // 活动连接
+      expect(find.text('Top 域名'), findsOneWidget);
+      expect(find.text('top.example'), findsOneWidget);
+      expect(find.text('512 B'), findsOneWidget); // Top 域名上行
+      expect(find.text('1.50 KB'), findsOneWidget); // Top 域名下行
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('happy：实时开关每 2s 重拉总览与域名，关闭后停止', (tester) async {
+      _useLargeViewport(tester);
+      final facade = _FakeStatsFacade(
+        List<DomainStat>.of(_statsFixture),
+        traffic: _trafficFixture,
+      );
+      await tester.pumpWidget(_host(ProxyStatsPage(facade: facade)));
+      await tester.pumpAndSettle();
+
+      expect(facade.trafficCalls, 1);
+      expect(facade.domainCalls, 1);
+
+      // 打开实时刷新
+      await tester.tap(find.byKey(const Key('stats_live_toggle')));
+      await tester.pumpAndSettle();
+
+      // 2s 后触发一次重拉（总览 + 域名都被重拉）
+      await tester.pump(const Duration(seconds: 2));
+      await tester.pump();
+      expect(facade.trafficCalls, 2);
+      expect(facade.domainCalls, 2);
+
+      // 关闭实时 → 定时器取消，不再重拉
+      await tester.tap(find.byKey(const Key('stats_live_toggle')));
+      await tester.pumpAndSettle();
+      await tester.pump(const Duration(seconds: 4));
+      await tester.pump();
+      expect(facade.trafficCalls, 2);
+      expect(facade.domainCalls, 2);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('failure：总览与表格分别渲染错误态并可重试', (tester) async {
+      _useLargeViewport(tester);
+      final facade = _FakeStatsFacade(
+        const <DomainStat>[],
+        traffic: _trafficFixture,
+        failTraffic: true,
+        failDomains: true,
+      );
+      await tester.pumpWidget(_host(ProxyStatsPage(facade: facade)));
+      await tester.pumpAndSettle();
+
+      expect(find.text('traffic boom'), findsOneWidget);
+      expect(find.text('domain boom'), findsOneWidget);
+      expect(find.text('统计不可用'), findsOneWidget);
+      expect(find.text('重试'), findsWidgets);
+
+      // 恢复后点总览内联重试 → 总览渲染成功数据
+      facade.failTraffic = false;
+      await tester.tap(find.text('重试').first);
+      await tester.pumpAndSettle();
+      expect(find.text('top.example'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
     testWidgets('failure：空统计渲染显式空态而非空白', (tester) async {
+      _useLargeViewport(tester);
       final facade = _FakeStatsFacade(const <DomainStat>[]);
       await tester.pumpWidget(_host(ProxyStatsPage(facade: facade)));
       await tester.pumpAndSettle();

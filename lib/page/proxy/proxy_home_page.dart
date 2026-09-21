@@ -5,9 +5,12 @@ import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
 
 import 'proxy_home_facade.dart';
+import 'proxy_logs_page.dart';
+import 'proxy_nodes_page.dart';
 import 'proxy_profiles_page.dart';
 import 'proxy_settings_facade.dart';
 import 'proxy_settings_page.dart';
+import 'proxy_stats_page.dart';
 
 /// 代理首页（VPN 状态 / 连接开关 / 实时流量 / 当前配置 / 日志·统计入口）。
 ///
@@ -39,10 +42,10 @@ class ProxyHomePage extends StatefulWidget {
   /// VPN 授权 / 前台服务触发（测试可注入假实现；为空时走平台通道）。
   final ProxyVpnConsent? vpnConsent;
 
-  /// 「运行日志」快捷入口；为空时给出「后续版本开放」提示。
+  /// 「运行日志」快捷入口；为空时打开 [ProxyLogsPage]。
   final VoidCallback? onOpenLogs;
 
-  /// 「流量统计」快捷入口；为空时给出「后续版本开放」提示。
+  /// 「流量统计」快捷入口；为空时打开 [ProxyStatsPage]。
   final VoidCallback? onOpenStats;
 
   /// 「局域网设置」快捷入口（模式选择为 `lanProxy` 但 LAN 未启用时的跳转）。
@@ -478,6 +481,18 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
     );
   }
 
+  /// 「节点选择」入口：打开节点 / 代理组页。
+  ///
+  /// 首页不持有节点清单（节点数据由节点页自身经 Rust 事件 / 门面获取），
+  /// 这里只做导航；节点页在无节点时渲染其设计好的「暂无节点」空态。
+  void _openNodes() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => const ProxyNodesPage(nodes: <ProxyNode>[]),
+      ),
+    );
+  }
+
   // ==================== 展示辅助 ====================
 
   bool get _isRunning => _connState == ProxyConnState.running;
@@ -627,6 +642,15 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
             subtitle: const Text('导入/更新节点订阅'),
             trailing: const Icon(Icons.chevron_right),
             onTap: _openProfiles,
+          ),
+          // Row A2：节点选择（节点 / 代理组入口，整行）。
+          ListTile(
+            key: const Key('proxy-nodes-tile'),
+            leading: Icon(Icons.account_tree_outlined, color: scheme.primary),
+            title: const Text('节点选择'),
+            subtitle: const Text('选择节点 / 测速'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: _openNodes,
           ),
           // Row B：代理模式 + 代理设置（并排；设置仅 lanProxy 模式渲染）。
           Padding(
@@ -1061,7 +1085,9 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
       callback();
       return;
     }
-    AppDialogs.showInfo('日志查看器将在后续版本开放');
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => const ProxyLogsPage()),
+    );
   }
 
   void _openStats() {
@@ -1070,7 +1096,9 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
       callback();
       return;
     }
-    AppDialogs.showInfo('流量统计将在后续版本开放');
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => const ProxyStatsPage()),
+    );
   }
 
   // ==================== 延迟 / 版本 ====================

@@ -6,8 +6,11 @@ import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
 import 'package:gstore/page/proxy/proxy_home_facade.dart';
 import 'package:gstore/page/proxy/proxy_home_page.dart';
+import 'package:gstore/page/proxy/proxy_logs_page.dart';
+import 'package:gstore/page/proxy/proxy_nodes_page.dart';
 import 'package:gstore/page/proxy/proxy_profiles_page.dart';
 import 'package:gstore/page/proxy/proxy_settings_facade.dart';
+import 'package:gstore/page/proxy/proxy_stats_page.dart';
 
 /// 假门面：无需原生模块，可受控发出类型化事件、控制连接动作的完成时机。
 class _FakeProxyFacade implements ProxyHomeFacade {
@@ -410,6 +413,9 @@ void main() {
   });
 
   testWidgets('mode picker：选择局域网代理但 LAN 未启用 -> 警告 + 设置快捷入口', (tester) async {
+    // 入口卡现有三行（订阅 / 节点选择 / 代理模式），LAN 警告按钮会落到默认
+    // 800x600 视口之外；用高视口保证警告区的快捷入口可点击。
+    _useTallViewport(tester);
     final facade = _FakeProxyFacade(); // lanEnabled = false
     var openedLanSettings = 0;
     await tester.pumpWidget(
@@ -530,6 +536,19 @@ void main() {
     expect(find.text('订阅'), findsOneWidget);
     expect(find.text('导入/更新节点订阅'), findsOneWidget);
 
+    // Row A2：节点选择入口（整行，位于订阅与代理模式之间）。
+    expect(find.byKey(const Key('proxy-nodes-tile')), findsOneWidget);
+    expect(find.text('节点选择'), findsOneWidget);
+    expect(find.text('选择节点 / 测速'), findsOneWidget);
+    expect(
+      tester.getTopLeft(find.byKey(const Key('proxy-subscribe-tile'))).dy,
+      lessThan(tester.getTopLeft(find.byKey(const Key('proxy-nodes-tile'))).dy),
+    );
+    expect(
+      tester.getTopLeft(find.byKey(const Key('proxy-nodes-tile'))).dy,
+      lessThan(tester.getTopLeft(find.byKey(const Key('proxy-mode-tile'))).dy),
+    );
+
     // Row B：代理模式始终在；VPN 目标模式下代理设置不渲染。
     expect(find.byKey(const Key('proxy-mode-tile')), findsOneWidget);
     expect(find.text('代理模式'), findsOneWidget);
@@ -584,6 +603,62 @@ void main() {
     await tester.tap(find.byKey(const Key('proxy-settings-tile')));
     await tester.pump();
     expect(openedSettings, 1);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('入口卡：点击节点选择进入节点页', (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade();
+    await tester.pumpWidget(_wrap(ProxyHomePage(facade: facade)));
+    await _flush(tester);
+
+    await tester.tap(find.byKey(const Key('proxy-nodes-tile')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.byType(ProxyNodesPage), findsOneWidget);
+    // 首页未持有节点清单：节点页渲染其设计好的空态，而不是崩溃。
+    expect(find.text('暂无节点'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('快捷入口：无回调时运行日志进入日志页（不再提示后续版本）', (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade();
+    await tester.pumpWidget(_wrap(ProxyHomePage(facade: facade)));
+    await _flush(tester);
+
+    await tester.ensureVisible(find.text('运行日志'));
+    await tester.pump();
+    await tester.tap(find.text('运行日志'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.byType(ProxyLogsPage), findsOneWidget);
+    expect(find.text('日志查看器将在后续版本开放'), findsNothing);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('快捷入口：无回调时流量统计进入统计页（不再提示后续版本）', (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade();
+    await tester.pumpWidget(_wrap(ProxyHomePage(facade: facade)));
+    await _flush(tester);
+
+    await tester.ensureVisible(find.text('流量统计'));
+    await tester.pump();
+    await tester.tap(find.text('流量统计'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.byType(ProxyStatsPage), findsOneWidget);
+    expect(find.text('流量统计将在后续版本开放'), findsNothing);
     expect(tester.takeException(), isNull);
 
     await facade.controller.close();
