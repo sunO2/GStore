@@ -685,7 +685,32 @@ pub(crate) fn domain_get_arm(payload: &[u8]) -> Result<Vec<u8>, ModuleError> {
     }))
 }
 
-pub(crate) fn traffic_get_arm() -> Result<Vec<u8>, ModuleError> {
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TrafficGetRequest {
+    #[serde(default)]
+    pub top_domains: Option<usize>,
+}
+
+impl TrafficGetRequest {
+    fn parse(payload: &[u8]) -> Result<Self, ModuleError> {
+        if payload.is_empty() {
+            return Ok(Self::default());
+        }
+        serde_json::from_slice(payload).map_err(|e| {
+            ModuleError::invalid_arg(format!(
+                "stats.traffic.get payload must be a JSON object: {e}"
+            ))
+        })
+    }
+
+    fn top_limit(&self) -> usize {
+        self.top_domains.unwrap_or(TOP_DOMAINS).min(DOMAIN_CAP)
+    }
+}
+
+pub(crate) fn traffic_get_arm(payload: &[u8]) -> Result<Vec<u8>, ModuleError> {
+    let req = TrafficGetRequest::parse(payload)?;
     let (mut top, up, down, active, up_bps, down_bps, count, cap, evicted) = with_store(|st| {
         (
             st.domains.values().cloned().collect::<Vec<_>>(),
@@ -700,7 +725,7 @@ pub(crate) fn traffic_get_arm() -> Result<Vec<u8>, ModuleError> {
         )
     });
     sort_domains(&mut top, SortKind::Bytes);
-    top.truncate(TOP_DOMAINS);
+    top.truncate(req.top_limit());
     crate::ok_data(serde_json::json!({
         "uploadBytes": up,
         "downloadBytes": down,
@@ -820,7 +845,7 @@ mod tests {
         assert_eq!(b.connections, 1);
         assert_eq!((b.upload_bytes, b.download_bytes), (5, 0));
 
-        let data = traffic_get_arm().unwrap();
+        let data = traffic_get_arm(b"").unwrap();
         let json: serde_json::Value = serde_json::from_slice(&data).unwrap();
         assert_eq!(json["data"]["domainCount"], 2);
         assert_eq!(
@@ -980,7 +1005,7 @@ mod tests {
         stats.record_upload(&counters, 64);
         stats.record_download(&counters, 128);
         tick(&stats, 3, 2_000);
-        let data = traffic_get_arm().unwrap();
+        let data = traffic_get_arm(b"").unwrap();
         let json: serde_json::Value = serde_json::from_slice(&data).unwrap();
         assert_eq!(json["data"]["uploadBytes"], 64);
         assert_eq!(json["data"]["downloadBytes"], 128);

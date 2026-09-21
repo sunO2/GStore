@@ -529,7 +529,7 @@ same record is emitted as the `proxy.dns` event.
 |---|---|---|
 | `stats.domain.get` | `{ "rangeMs"?: 0, "sort"?: "bytes"\|"connections"\|"lastSeen"\|"domain", "limit"?: 100 }` | `DomainPage` |
 | `stats.domain.reset` | *(none)* | `{ "ok": true, "cleared": 0 }` |
-| `stats.traffic.get` | *(none)* | `TrafficSnapshot` |
+| `stats.traffic.get` | `{ "topDomains"?: 5 }` | `TrafficSnapshot` |
 | `stats.get` (alias) | as `stats.domain.get` | `DomainPage` |
 | `stats.reset` (alias) | as `stats.domain.reset` | `{ "ok": true, "cleared": 0 }` |
 
@@ -565,6 +565,11 @@ records by `lastSeenMs >= now - rangeMs` (0 = all). Unknown `sort` is
 `PROXY_STATS_SORT_INVALID` (422); the default is `bytes` (up+down descending,
 ties by `connections` then domain). Sorts are fully deterministic.
 
+`stats.traffic.get` accepts an optional `topDomains` count (default `5`, capped
+at `DOMAIN_CAP = 2048`; `0` returns an empty `topDomains`) that bounds the
+returned `topDomains` array (still sorted by total bytes). The push mirror is
+the throttled `proxy.stats` event (§3).
+
 **Primary path.** `stats.domain.get` / `stats.traffic.get` are the primary,
 pull-based path. The host event ring is only `EVENT_BUFFER_CAP = 128`
 (`rust/gstore_host/src/task_bridge.rs`), so the module never streams
@@ -594,8 +599,8 @@ mapping ring) so a sniffed or fake-IP domain is attributed when known.
 
 | method | request | data |
 |---|---|---|
-| `conn.list` | *(none)* | `{ "connections": [ConnInfo], "count": 0, "capacity": 1024 }` |
-| `conn.close` | `{ "id": string }` | `{ "ok": true, "id": string, "closed": bool }` |
+| `conn.list` | `{ "offset"?: 0, "limit"?: 256, "domain"?: string, "outbound"?: string }` | `ConnPage` |
+| `conn.close` | `{ "id": string }` | `{ "ok": true, "id": string, "closed": bool, "alreadyClosed": bool }` |
 | `conn.close_all` | *(none)* | `{ "ok": true, "closed": 0 }` |
 
 `ConnInfo`:
@@ -604,6 +609,12 @@ mapping ring) so a sniffed or fake-IP domain is attributed when known.
   "domain": "example.com", "network": "tcp", "rule": "DOMAIN-SUFFIX",
   "rulePayload": "example.com", "outbound": "proxy-a",
   "uploadBytes": 0, "downloadBytes": 0, "startedAtMs": 0 }
+```
+
+`ConnPage`:
+```json
+{ "connections": [ConnInfo], "count": 0, "returned": 0, "total": 0,
+  "offset": 0, "limit": 256, "hasMore": false, "capacity": 1024 }
 ```
 
 Byte accounting and the connection lifecycle are **meow's**: every TCP flow is
@@ -617,11 +628,44 @@ from meow's RFC3339 `ConnectionInfo.start`. `outbound` is the first proxy in
 meow's connection `chains` (else `DIRECT`). Only TCP flows are tracked; UDP
 sessions live in meow's NAT table and are not in `conn.list`.
 
-`conn.close` signals the flow (`Statistics::close_connection(Uuid)`), which
-removes it from the table and asks the owner to drop its relay; `closed` reports
-whether it was live. `conn.close_all` signals every tracked flow and returns the
-count. A non-UUID id is `INVALID_ARGUMENT` (422); no engine is
-`PROXY_NOT_CONFIGURED`.
+**Ids.** `ConnInfo.id` is meow's `ConnectionInfo.id` rendered as an opaque
+canonical **UUID string** (v4). It is stable for the life of the flow and is the
+only handle a client passes back to `conn.close`; the module never exposes a raw
+pointer, `Uuid`, or `ConnectionInfo` reference across the ABI.
+
+**`conn.list` (Todo 17).** Paginated and filterable:
+
+* `offset` (default `0`) is applied after filtering; an offset past the end
+  returns an empty page (never an error).
+* `limit` defaults to `256` and is clamped to `1..=capacity`; a client pages by
+  increasing `offset` until `hasMore` is `false`.
+* `domain` filters by **case-insensitive substring** of `ConnInfo.domain`; an
+  empty/blank value means "no filter".
+* `outbound` filters by **case-insensitive exact** match of
+  `ConnInfo.outbound` (so `DIRECT` never matches `DIRECT-2`); empty means "no
+  filter".
+* `count` is the number of rows matching the filters **before** pagination;
+  `returned` is the page size, `total` the number of live rows overall.
+* Order is stable across calls — newest `startedAtMs` first, ties broken by
+  `id` ascending — so a paged read never skips or duplicates a row.
+
+**`conn.close`.** Signals one flow via meow's
+`Statistics::close_connection(Uuid)`, which removes the entry and drops its
+counter guard (this is what asks the owning relay task to stop); it does not and
+cannot crash the tunnel loop. Semantics:
+
+* **Live** id → `closed: true, alreadyClosed: false`; one `proxy.conn` event
+  (`action:"close"`) is emitted and a close record is logged.
+* **Already-closed** id (one this module saw closed, tracked in a bounded
+  1024-entry tombstone) → idempotent success: `closed: false,
+  alreadyClosed: true`, no event, no error.
+* **Unknown** id (never tracked) → `PROXY_CONN_NOT_FOUND` (404).
+* Non-UUID id → `INVALID_ARGUMENT` (422); no running engine →
+  `PROXY_NOT_CONFIGURED`.
+
+`conn.close_all` signals every tracked flow, marks them all closed, returns the
+count, and emits a single `proxy.conn` event with `action:"close_all"` when it
+closed at least one.
 
 ### 2.11 `rules.*` — rule set (Todo 9)
 
@@ -733,7 +777,7 @@ side filters on the `proxy.` prefix. `instanceId` is always present.
 | `proxy.subscription.failed` | `{ "profileId": string, "attempts": 0, "consecutiveFailures": 0, "lastAttemptMs": 0, "nextRefreshAtMs": 0, "error": { "code": string, "message": string } }` — the previous profile is preserved and the next attempt is bounded by the backoff (Todo 14) |
 | `proxy.subscription.added` | `{ "profileId": string, "name": string }` |
 | `proxy.subscription.removed` | `{ "profileId": string }` |
-| `proxy.conn` | `{ "action":"open"\|"close", "id": string, "domain"?: string, "outbound"?: string, "uploadBytes"?:0, "downloadBytes"?:0 }` |
+| `proxy.conn` | `{ "action":"close"\|"close_all", "id"?: string, "domain"?: string, "outbound"?: string, "uploadBytes"?:0, "downloadBytes"?:0, "closed"?: number }` — emitted once per explicit `conn.close` (action `close`) / `conn.close_all` (action `close_all`, carries `closed`); the steady open/close stream is **not** streamed per connection (host ring cap 128) — read the throttled `proxy.stats` snapshot and `log.get` instead (Todo 17) |
 | `proxy.log` | `LogRecord` (see §2.8) — the push mirror of the log ring; `proxy.conn {json}` / `proxy.dns.query\|failure {json}` lines are the structured variants |
 | `proxy.dns` | `DnsQueryRecord` (see §2.7) — one record per DNS query answered by the TUN DNS hijack; carries the domain→IP mapping for the Todo 16 domain-statistics path (Todo 8; Todo 15/16 consume it). |
 | `proxy.tun.released` | `{ "fd": 123 }` — TUN read loop stopped and its thread joined; the host may clear its cached fd and Kotlin may close the PFD (Todo 6). Host-internal control event; Dart may ignore it. |
@@ -791,6 +835,7 @@ registered in `rust/ERROR_CODES.md`.
 | `PROXY_DNS_TIMEOUT` | 504 | DNS query produced no answer (unreachable upstream, no fallback); a `proxy.dns.failure` record is logged first (Todo 8) |
 | `PROXY_LOG_LEVEL_INVALID` | 422 | `log.set_level` / `log.get` received an unknown level (expected `debug\|info\|warn\|error`) (Todo 15) |
 | `PROXY_STATS_SORT_INVALID` | 422 | `stats.domain.get` received an unknown sort key (expected `bytes\|connections\|lastSeen\|domain`) (Todo 16) |
+| `PROXY_CONN_NOT_FOUND` | 404 | `conn.close` was given a UUID this module has never tracked (not live and not in the recently-closed tombstone) (Todo 17) |
 
 ## 6. Module distribution decision (state it now)
 
@@ -1199,6 +1244,13 @@ clamped to the cap, closed connections leave it, and `conn.close_all` clears it;
 plus the `node.select` → `proxy.state`, `node.delay_test` → `proxy.node.delay`
 events and `conn.list`/`conn.close` over the real C ABI.
 
+Todo 17 adds: `conn.list` filtering/pagination (`page_records_filters_and_paginates`),
+deterministic order across calls (`sync_order_is_stable_across_calls_for_pagination`),
+`conn.close` of a live id then an idempotent re-close then a structured
+`PROXY_CONN_NOT_FOUND` for an unknown id (`close_is_idempotent_and_unknown_is_not_found`),
+and the same flow over the real C ABI including the `proxy.conn {action:"close"}`
+event (`abi_conn_list_filter_pagination_and_close`).
+
 **UNVERIFIED**: real upstream latency (tests use hanging stubs and loopback, no
 network); on-device selection/routing (no adb device); UDP connections are not
 in `conn.list` (meow tracks UDP in a NAT table with no byte counters).
@@ -1465,3 +1517,37 @@ flush/prune/seed round-trips within the rolling window, a live meow
 aggregation/persistence across a real module reload and the real-time event
 cadence (no adb device).
 
+
+## 16. Traffic stream & connection control (Todo 17)
+
+`conn.list` / `conn.close` (finalised in §2.10) and `stats.traffic.get` (§2.9)
+are the control/read surface for the live traffic stream.
+
+* **Paginated, filterable list.** `conn.list { offset, limit, domain, outbound }`
+  returns `ConnPage`; order is newest-first with an `id` ascending tie-break, so
+  paging is stable. Filters are applied before pagination; `count` is the
+  filtered total and `returned` the page size.
+* **Opaque, stable ids.** A connection id is meow's v4 UUID rendered as a
+  canonical string. No pointer, `Uuid`, or `ConnectionInfo` reference crosses
+  the ABI. The same string is the `proxy.conn` event id and the `conn.close`
+  handle.
+* **Idempotent, non-crashing close.** `conn.close` is meow's
+  `Statistics::close_connection` (remove entry + drop the counter guard, which
+  signals the owning relay). A live id closes and reports `closed:true`; a
+  re-close reports `alreadyClosed:true`; a never-tracked id is
+  `PROXY_CONN_NOT_FOUND` (404). The tombstone of recently-closed ids is bounded
+  at `CONN_TOMBSTONE_CAP = 1024`.
+* **Events.** Explicit `conn.close` emits one `proxy.conn {action:"close"}` and
+  `conn.close_all` one `proxy.conn {action:"close_all", closed}`. Per-connection
+  open/close is **not** streamed as events (host ring is only 128); it appears in
+  the throttled `proxy.stats` snapshot and in `log.get`.
+
+### 16.1 Verification status
+
+`cargo test -p gstore_mod_proxy` proves the four Todo-17 cases named in §11.4:
+list filtering (domain substring / outbound exact), pagination (offset/limit,
+`hasMore`, offset past the end), a live close (removed from the projection, no
+counter, `proxy.conn` event), an idempotent re-close, and an unknown id →
+`PROXY_CONN_NOT_FOUND` (404, no panic). **UNVERIFIED**: on-device list/close over
+a real TUN flow (no adb device) — the flow is exercised against a fixture meow
+`Statistics` tunnel on the host.

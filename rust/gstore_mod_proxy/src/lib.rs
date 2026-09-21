@@ -352,6 +352,8 @@ const EVT_SUBSCRIPTION_FAILED: &str = "proxy.subscription.failed";
 const EVT_TUN_RELEASED: &str = "proxy.tun.released";
 /// 模块 → 宿主：`config.apply` 已在运行的引擎上热应用新配置（无需进程重启）。
 const EVT_CONFIG_APPLIED: &str = "proxy.config.applied";
+/// 模块 → 宿主：一次显式连接控制事件（`conn.close` / `conn.close_all`）。
+const EVT_CONN: &str = "proxy.conn";
 
 /// 运行状态机（Todo 2 占位；Todo 6/29 驱动真实 start/stop）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1551,16 +1553,15 @@ fn call_impl(
         "node.delay_test" => require_instance(instance_id, instance.clone())
             .and_then(|_| nodes::delay_test_arm(instance_id, _payload)),
         "conn.list" => {
-            require_instance(instance_id, instance.clone()).and_then(|_| conn::list_arm())
+            require_instance(instance_id, instance.clone()).and_then(|_| conn::list_arm(_payload))
         }
         "conn.close" => require_instance(instance_id, instance.clone())
-            .and_then(|_| conn::close_arm(_payload)),
-        "conn.close_all" => {
-            require_instance(instance_id, instance.clone()).and_then(|_| conn::close_all_arm())
-        }
+            .and_then(|_| conn::close_arm(instance_id, _payload)),
+        "conn.close_all" => require_instance(instance_id, instance.clone())
+            .and_then(|_| conn::close_all_arm(instance_id)),
         "stats.domain.get" => stats::domain_get_arm(_payload),
         "stats.domain.reset" => stats::reset_arm(),
-        "stats.traffic.get" => stats::traffic_get_arm(),
+        "stats.traffic.get" => stats::traffic_get_arm(_payload),
         "stats.get" => stats::domain_get_arm(_payload),
         "stats.reset" => stats::reset_arm(),
         other => Err(ModuleError::method_not_found(other)),
@@ -2256,6 +2257,162 @@ mod abi_tests {
         assert_eq!(stats.active_connection_count(), 0);
 
         let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(destroy(inst), ABI_OK);
+        crate::conn::reset_for_tests();
+        crate::rules::reset_for_tests();
+    }
+
+    /// Todo 17 happy/failure QA over the real C ABI: `conn.list` filtering +
+    /// pagination, `conn.close` of a live connection (disappears + `proxy.conn`
+    /// event), the idempotent re-close, and a structured `PROXY_CONN_NOT_FOUND`
+    /// for an unknown id.
+    #[test]
+    fn abi_conn_list_filter_pagination_and_close() {
+        use std::sync::Arc;
+
+        use meow_common::{ConnType, Metadata, Network};
+        use smallvec::SmallVec;
+        use smol_str::SmolStr;
+
+        let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::rules::reset_for_tests();
+        crate::conn::reset_for_tests();
+        let api = register_api();
+        let create = api.create.unwrap();
+        let call = api.call.unwrap();
+        let destroy = api.destroy.unwrap();
+
+        let mut inst: u64 = 0;
+        assert_eq!(create(std::ptr::null(), 0, &mut inst), ABI_OK);
+        let _ = take_events();
+
+        let resolver = Arc::new(meow_dns::Resolver::new(
+            Vec::new(),
+            Vec::new(),
+            meow_common::DnsMode::Normal,
+            meow_trie::DomainTrie::new(),
+            false,
+            false,
+        ));
+        let _ = crate::dispatch::build_engine(resolver);
+        let tunnel = crate::rules::active_tunnel().unwrap();
+        let stats = tunnel.statistics();
+
+        let track = |host: &str, outbound: &str| {
+            stats.track_connection(
+                Metadata {
+                    network: Network::Tcp,
+                    conn_type: ConnType::Tun,
+                    host: host.into(),
+                    dst_ip: Some("1.2.3.4".parse().unwrap()),
+                    dst_port: 443,
+                    src_ip: Some("10.10.0.2".parse().unwrap()),
+                    src_port: 40000,
+                    ..Default::default()
+                },
+                SmolStr::new("DOMAIN-SUFFIX"),
+                SmolStr::new(host),
+                SmallVec::from_vec(vec![Arc::<str>::from(outbound)]),
+            )
+        };
+        let a = track("a.example", "proxy-a");
+        let b = track("b.example", "DIRECT");
+        let _c = track("a.example", "proxy-b");
+
+        let (code, out) = call_with_payload(call, inst, "conn.list", b"{}");
+        assert_eq!(code, ABI_OK, "conn.list: {}", String::from_utf8_lossy(&out));
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["count"], 3);
+        assert_eq!(v["data"]["returned"], 3);
+        let ids_first: Vec<String> = v["data"]["connections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["id"].as_str().unwrap().to_string())
+            .collect();
+
+        let (code, out) =
+            call_with_payload(call, inst, "conn.list", br#"{"domain":"A.EXAMPLE"}"#);
+        assert_eq!(code, ABI_OK);
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["count"], 2, "domain filter is case-insensitive substring");
+        assert!(v["data"]["connections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c["domain"] == "a.example"));
+
+        let (code, out) =
+            call_with_payload(call, inst, "conn.list", br#"{"outbound":"DIRECT"}"#);
+        assert_eq!(code, ABI_OK);
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["count"], 1);
+        assert_eq!(v["data"]["connections"][0]["id"], b.to_string());
+
+        let (code, out) =
+            call_with_payload(call, inst, "conn.list", br#"{"limit":2,"offset":0}"#);
+        assert_eq!(code, ABI_OK);
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!((v["data"]["count"].as_u64(), v["data"]["returned"].as_u64()), (Some(3), Some(2)));
+        assert_eq!(v["data"]["hasMore"], true);
+        assert_eq!(v["data"]["offset"], 0);
+        assert_eq!(v["data"]["limit"], 2);
+
+        let (code, out) =
+            call_with_payload(call, inst, "conn.list", br#"{"limit":2,"offset":2}"#);
+        assert_eq!(code, ABI_OK);
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["returned"], 1, "second page holds the remainder");
+        assert_eq!(v["data"]["hasMore"], false);
+
+        let (code, out) = call_with_payload(call, inst, "conn.list", b"{}");
+        assert_eq!(code, ABI_OK);
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        let ids_second: Vec<String> = v["data"]["connections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["id"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(ids_first, ids_second, "paged order is stable across calls");
+
+        let close = format!(r#"{{"id":"{a}"}}"#);
+        let (code, out) = call_with_payload(call, inst, "conn.close", close.as_bytes());
+        assert_eq!(code, ABI_OK, "conn.close: {}", String::from_utf8_lossy(&out));
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["closed"], true);
+        assert_eq!(v["data"]["alreadyClosed"], false);
+        assert!(stats.connection_counters(a).is_none());
+
+        let events = take_events();
+        assert!(
+            events.iter().any(|(t, p)| t == "proxy.conn"
+                && String::from_utf8_lossy(p).contains("\"action\":\"close\"")
+                && String::from_utf8_lossy(p).contains(&a.to_string())),
+            "conn.close must emit proxy.conn; got {events:?}"
+        );
+
+        let (code, out) =
+            call_with_payload(call, inst, "conn.list", br#"{"limit":2,"offset":2}"#);
+        assert_eq!(code, ABI_OK);
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["count"], 2, "the closed connection is gone");
+
+        let close = format!(r#"{{"id":"{a}"}}"#);
+        let (code, out) = call_with_payload(call, inst, "conn.close", close.as_bytes());
+        assert_eq!(code, ABI_OK, "already-closed close is idempotent");
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["closed"], false);
+        assert_eq!(v["data"]["alreadyClosed"], true);
+
+        let unknown = uuid::Uuid::new_v4();
+        let close = format!(r#"{{"id":"{unknown}"}}"#);
+        let (code, out) = call_with_payload(call, inst, "conn.close", close.as_bytes());
+        assert_eq!(code, ABI_ERR_DETAIL, "unknown id must be a structured error");
+        let err: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(err["code"], "PROXY_CONN_NOT_FOUND");
+        assert_eq!(err["status"], 404);
+
         assert_eq!(destroy(inst), ABI_OK);
         crate::conn::reset_for_tests();
         crate::rules::reset_for_tests();

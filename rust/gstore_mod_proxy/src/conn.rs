@@ -14,8 +14,28 @@
 //! [`CONN_TRACK_CAP`]. If more than the cap are live, the **oldest-started**
 //! entries are dropped from the projection (meow still accounts their bytes);
 //! `conn.list` is therefore a bounded view, never unbounded memory.
+//!
+//! ## Todo 17 — list/close control contract
+//!
+//! * `conn.list` is **paginated** (`offset`/`limit`) and **filterable** by
+//!   `domain` (case-insensitive substring) and `outbound` (case-insensitive
+//!   exact). Order is stable: newest `startedAtMs` first, ties broken by `id`
+//!   ascending, so a paged read never skips or duplicates a row.
+//! * `conn.close(id)` is **idempotent**: a live id is signalled and reports
+//!   `closed: true`; an id this module has already seen closed reports
+//!   `closed: false, alreadyClosed: true` with no error; an id this module has
+//!   never tracked is `PROXY_CONN_NOT_FOUND` (404). It never panics — the
+//!   mechanism is meow's `Statistics::close_connection`, which only removes the
+//!   entry and drops its counter guard (it cannot crash the relay loop).
+//! * Connection ids are meow's opaque v4 **UUID strings** (`ConnectionInfo.id`).
+//!   No raw pointers and no `&ConnectionInfo` are ever exposed across the ABI.
+//! * Explicit `conn.close` / `conn.close_all` emit one `proxy.conn` event each
+//!   (control-plane, user-triggered). The steady open/close stream is **not**
+//!   streamed per connection: the host ring is only 128 entries; it is folded
+//!   into the throttled `proxy.stats` snapshot ([`crate::stats`]) and the
+//!   `log.get` ring instead.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Mutex, OnceLock};
 
 use gstore_contract::error::{ModuleError, StatusCode};
@@ -28,6 +48,13 @@ use crate::nodes::ERR_NOT_CONFIGURED;
 /// Hard cap on the projected connection list. Mirrors the host's 100-entry
 /// event ring philosophy scaled for a live connection table.
 pub(crate) const CONN_TRACK_CAP: usize = 1024;
+/// Default page size for `conn.list` when no `limit` is supplied.
+pub(crate) const DEFAULT_LIST_LIMIT: usize = 256;
+/// Bound on the recently-closed id tombstone: enough to answer an idempotent
+/// `conn.close` retry without growing memory with connection churn.
+pub(crate) const CONN_TOMBSTONE_CAP: usize = 1024;
+/// Domain error code for `conn.close` on an id this module has never tracked.
+pub(crate) const ERR_CONN_NOT_FOUND: &str = "PROXY_CONN_NOT_FOUND";
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -47,21 +74,55 @@ pub(crate) struct ConnRecord {
 
 struct ConnStore {
     map: HashMap<String, ConnRecord>,
+    closed: VecDeque<String>,
+    closed_set: HashSet<String>,
+}
+
+impl ConnStore {
+    fn fresh() -> Self {
+        Self {
+            map: HashMap::new(),
+            closed: VecDeque::new(),
+            closed_set: HashSet::new(),
+        }
+    }
+
+    #[cfg(test)]
+    fn clear(&mut self) {
+        self.map.clear();
+        self.closed.clear();
+        self.closed_set.clear();
+    }
+
+    fn mark_closed(&mut self, id: &str) {
+        if !self.closed_set.insert(id.to_string()) {
+            return;
+        }
+        self.closed.push_back(id.to_string());
+        while self.closed.len() > CONN_TOMBSTONE_CAP {
+            if let Some(old) = self.closed.pop_front() {
+                self.closed_set.remove(&old);
+            }
+        }
+    }
+
+    fn is_recently_closed(&self, id: &str) -> bool {
+        self.closed_set.contains(id)
+    }
 }
 
 static CONN_STORE: OnceLock<Mutex<ConnStore>> = OnceLock::new();
 
 fn store() -> &'static Mutex<ConnStore> {
-    CONN_STORE.get_or_init(|| {
-        Mutex::new(ConnStore {
-            map: HashMap::new(),
-        })
-    })
+    CONN_STORE.get_or_init(|| Mutex::new(ConnStore::fresh()))
 }
 
 #[cfg(test)]
 pub(crate) fn reset_for_tests() {
-    store().lock().unwrap_or_else(|e| e.into_inner()).map.clear();
+    store()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
 }
 
 fn parse_rfc3339_ms(start: &str) -> u64 {
@@ -147,8 +208,15 @@ pub(crate) fn sync_full(stats: &meow_tunnel::Statistics) -> SyncOutcome {
             .map(|r| (r.clone(), now.saturating_sub(r.started_at_ms)))
             .collect();
         store.map = next;
+        for (record, _) in &closed {
+            store.mark_closed(&record.id);
+        }
         let mut out: Vec<ConnRecord> = store.map.values().cloned().collect();
-        out.sort_by(|a, b| b.started_at_ms.cmp(&a.started_at_ms));
+        out.sort_by(|a, b| {
+            b.started_at_ms
+                .cmp(&a.started_at_ms)
+                .then_with(|| a.id.cmp(&b.id))
+        });
         (out, opened, closed)
     };
     for record in &opened {
@@ -207,13 +275,89 @@ fn active_tunnel() -> Result<std::sync::Arc<meow_tunnel::Tunnel>, ModuleError> {
     })
 }
 
-pub(crate) fn list_arm() -> Result<Vec<u8>, ModuleError> {
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ListRequest {
+    #[serde(default)]
+    offset: Option<usize>,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    domain: Option<String>,
+    #[serde(default)]
+    outbound: Option<String>,
+}
+
+impl ListRequest {
+    fn parse(payload: &[u8]) -> Result<Self, ModuleError> {
+        if payload.is_empty() {
+            return Ok(Self::default());
+        }
+        serde_json::from_slice(payload).map_err(|e| {
+            ModuleError::invalid_arg(format!("conn.list payload must be a JSON object: {e}"))
+        })
+    }
+
+    fn limit(&self) -> usize {
+        self.limit.unwrap_or(DEFAULT_LIST_LIMIT).clamp(1, CONN_TRACK_CAP)
+    }
+
+    fn offset(&self) -> usize {
+        self.offset.unwrap_or(0)
+    }
+
+    fn matches(&self, r: &ConnRecord) -> bool {
+        let domain_matches = self
+            .domain
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|needle| r.domain.to_lowercase().contains(&needle.to_lowercase()))
+            .unwrap_or(true);
+        let outbound_matches = self
+            .outbound
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|want| r.outbound.eq_ignore_ascii_case(want))
+            .unwrap_or(true);
+        domain_matches && outbound_matches
+    }
+}
+
+/// Filter then page a pre-sorted projection. `count` is the number of rows that
+/// matched the filters (before pagination).
+fn page_records(records: &[ConnRecord], req: &ListRequest) -> (Vec<ConnRecord>, usize) {
+    let matching: Vec<ConnRecord> = records
+        .iter()
+        .filter(|r| req.matches(r))
+        .cloned()
+        .collect();
+    let count = matching.len();
+    let page: Vec<ConnRecord> = matching
+        .into_iter()
+        .skip(req.offset().min(count))
+        .take(req.limit())
+        .collect();
+    (page, count)
+}
+
+pub(crate) fn list_arm(payload: &[u8]) -> Result<Vec<u8>, ModuleError> {
+    let req = ListRequest::parse(payload)?;
     let tunnel = active_tunnel()?;
     let records = sync(tunnel.statistics().as_ref());
-    let count = records.len();
+    let total = records.len();
+    let (page, count) = page_records(&records, &req);
+    let offset = req.offset().min(count);
+    let returned = page.len();
     crate::ok_data(json!({
-        "connections": records,
+        "connections": page,
         "count": count,
+        "returned": returned,
+        "total": total,
+        "offset": offset,
+        "limit": req.limit(),
+        "hasMore": offset + returned < count,
         "capacity": CONN_TRACK_CAP,
     }))
 }
@@ -224,7 +368,18 @@ struct CloseRequest {
     id: String,
 }
 
-pub(crate) fn close_arm(payload: &[u8]) -> Result<Vec<u8>, ModuleError> {
+fn emit_conn_event(instance_id: u64, action: &str, id: &str, record: Option<&ConnRecord>) {
+    let mut payload = json!({ "action": action, "id": id });
+    if let Some(r) = record {
+        payload["domain"] = json!(r.domain);
+        payload["outbound"] = json!(r.outbound);
+        payload["uploadBytes"] = json!(r.upload_bytes);
+        payload["downloadBytes"] = json!(r.download_bytes);
+    }
+    crate::emit_json(instance_id, crate::EVT_CONN, &payload);
+}
+
+pub(crate) fn close_arm(instance_id: u64, payload: &[u8]) -> Result<Vec<u8>, ModuleError> {
     let req: CloseRequest = if payload.is_empty() {
         return Err(ModuleError::invalid_arg("conn.close requires {id}"));
     } else {
@@ -237,42 +392,79 @@ pub(crate) fn close_arm(payload: &[u8]) -> Result<Vec<u8>, ModuleError> {
     })?;
     let tunnel = active_tunnel()?;
     let stats = tunnel.statistics();
-    let existed = stats.connection_counters(id).is_some();
-    let record = store()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .map
-        .get(&req.id)
-        .cloned();
-    stats.close_connection(id);
-    store()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .map
-        .remove(&req.id);
-    if let Some(r) = record {
-        let duration = crate::now_ms().saturating_sub(r.started_at_ms);
-        logging::record_connection(
-            LogLevel::Info,
-            connection_log(&r, "in", duration, None),
-            "close",
-        );
+
+    let live_record = stats
+        .connections
+        .get(&id)
+        .map(|entry| from_info(entry.value(), parse_rfc3339_ms(&entry.value().start)));
+    let (projected, known) = {
+        let store = store().lock().unwrap_or_else(|e| e.into_inner());
+        (
+            store.map.get(&req.id).cloned(),
+            store.map.contains_key(&req.id) || store.is_recently_closed(&req.id),
+        )
+    };
+    let was_live = live_record.is_some();
+
+    if !was_live && !known {
+        return Err(ModuleError::new(
+            StatusCode::ModuleNotFound,
+            ERR_CONN_NOT_FOUND,
+            format!("connection '{}' is not tracked", req.id),
+        ));
     }
-    crate::log_message(1, &format!("proxy: conn.close id={} existed={existed}", req.id));
-    crate::ok_data(json!({ "ok": true, "id": req.id, "closed": existed }))
+
+    if was_live {
+        stats.close_connection(id);
+    }
+    let record = projected.or(live_record);
+    {
+        let mut store = store().lock().unwrap_or_else(|e| e.into_inner());
+        store.map.remove(&req.id);
+        store.mark_closed(&req.id);
+    }
+
+    if was_live {
+        if let Some(r) = &record {
+            let duration = crate::now_ms().saturating_sub(r.started_at_ms);
+            logging::record_connection(
+                LogLevel::Info,
+                connection_log(r, "in", duration, None),
+                "close",
+            );
+        }
+        emit_conn_event(instance_id, "close", &req.id, record.as_ref());
+    }
+    crate::log_message(
+        1,
+        &format!(
+            "proxy: conn.close id={} live={was_live} alreadyClosed={}",
+            req.id,
+            !was_live
+        ),
+    );
+    crate::ok_data(json!({
+        "ok": true,
+        "id": req.id,
+        "closed": was_live,
+        "alreadyClosed": !was_live,
+    }))
 }
 
-pub(crate) fn close_all_arm() -> Result<Vec<u8>, ModuleError> {
+pub(crate) fn close_all_arm(instance_id: u64) -> Result<Vec<u8>, ModuleError> {
     let tunnel = active_tunnel()?;
-    let records: Vec<ConnRecord> = store()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .map
-        .values()
-        .cloned()
-        .collect();
+    let records: Vec<ConnRecord> = {
+        let store = store().lock().unwrap_or_else(|e| e.into_inner());
+        store.map.values().cloned().collect()
+    };
     let closed = tunnel.statistics().close_all_connections_counted();
-    store().lock().unwrap_or_else(|e| e.into_inner()).map.clear();
+    {
+        let mut store = store().lock().unwrap_or_else(|e| e.into_inner());
+        for r in &records {
+            store.mark_closed(&r.id);
+        }
+        store.map.clear();
+    }
     let now = crate::now_ms();
     for r in &records {
         let duration = now.saturating_sub(r.started_at_ms);
@@ -280,6 +472,13 @@ pub(crate) fn close_all_arm() -> Result<Vec<u8>, ModuleError> {
             LogLevel::Info,
             connection_log(r, "in", duration, None),
             "close",
+        );
+    }
+    if closed > 0 {
+        crate::emit_json(
+            instance_id,
+            crate::EVT_CONN,
+            &json!({ "action": "close_all", "closed": closed }),
         );
     }
     crate::log_message(1, &format!("proxy: conn.close_all closed={closed}"));
@@ -310,12 +509,144 @@ mod tests {
     }
 
     fn track(stats: &meow_tunnel::Statistics, host: &str) -> uuid::Uuid {
+        track_out(stats, host, "proxy-a")
+    }
+
+    fn track_out(stats: &meow_tunnel::Statistics, host: &str, outbound: &str) -> uuid::Uuid {
         stats.track_connection(
             fixture_metadata(host, "1.2.3.4", "10.10.0.2"),
             SmolStr::new("DOMAIN-SUFFIX"),
             SmolStr::new(host),
-            SmallVec::from_vec(vec![Arc::<str>::from("proxy-a")]),
+            SmallVec::from_vec(vec![Arc::<str>::from(outbound)]),
         )
+    }
+
+    fn fixture_tunnel() -> Arc<meow_tunnel::Tunnel> {
+        crate::rules::reset_for_tests();
+        let resolver = Arc::new(meow_dns::Resolver::new(
+            Vec::new(),
+            Vec::new(),
+            meow_common::DnsMode::Normal,
+            meow_trie::DomainTrie::new(),
+            false,
+            false,
+        ));
+        let _ = crate::dispatch::build_engine(resolver);
+        crate::rules::active_tunnel().expect("engine attached")
+    }
+
+    fn rec(id: &str, domain: &str, outbound: &str, started_at_ms: u64) -> ConnRecord {
+        ConnRecord {
+            id: id.into(),
+            src: "10.10.0.2:40000".into(),
+            dst: "1.2.3.4:443".into(),
+            domain: domain.into(),
+            network: "tcp".into(),
+            rule: "DOMAIN-SUFFIX".into(),
+            rule_payload: domain.into(),
+            outbound: outbound.into(),
+            started_at_ms,
+            upload_bytes: 0,
+            download_bytes: 0,
+        }
+    }
+
+    #[test]
+    fn page_records_filters_and_paginates() {
+        let records = vec![
+            rec("id-1", "a.example", "proxy-a", 300),
+            rec("id-2", "b.example", "proxy-b", 200),
+            rec("id-3", "a.example", "DIRECT", 100),
+        ];
+
+        let req = ListRequest::parse(b"").unwrap();
+        let (page, count) = page_records(&records, &req);
+        assert_eq!((count, page.len()), (3, 3), "no filter returns everything");
+
+        let req = ListRequest::parse(br#"{"domain":"A.EXAMPLE"}"#).unwrap();
+        let (page, count) = page_records(&records, &req);
+        assert_eq!(count, 2, "domain filter is a case-insensitive substring");
+        assert!(page.iter().all(|r| r.domain == "a.example"));
+
+        let req = ListRequest::parse(br#"{"outbound":"proxy-b"}"#).unwrap();
+        let (page, count) = page_records(&records, &req);
+        assert_eq!((count, page.len()), (1, 1));
+        assert_eq!(page[0].outbound, "proxy-b");
+
+        let req = ListRequest::parse(br#"{"outbound":"proxy"}"#).unwrap();
+        let (_, count) = page_records(&records, &req);
+        assert_eq!(count, 0, "outbound filter is exact, not a substring");
+
+        let (page, count) = {
+            let req = ListRequest::parse(br#"{"limit":2,"offset":0}"#).unwrap();
+            page_records(&records, &req)
+        };
+        assert_eq!((count, page.len()), (3, 2));
+        assert_eq!(page[0].id, "id-1");
+
+        let (page, _) = {
+            let req = ListRequest::parse(br#"{"limit":2,"offset":2}"#).unwrap();
+            page_records(&records, &req)
+        };
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0].id, "id-3");
+
+        let (page, _) = {
+            let req = ListRequest::parse(br#"{"limit":2,"offset":99}"#).unwrap();
+            page_records(&records, &req)
+        };
+        assert!(page.is_empty(), "offset past the end is an empty page, no panic");
+    }
+
+    #[test]
+    fn sync_order_is_stable_across_calls_for_pagination() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        let stats = meow_tunnel::Statistics::new();
+        for i in 0..8 {
+            track_out(&stats, &format!("h{i}.example"), &format!("proxy-{i}"));
+        }
+        let first: Vec<String> = sync(&stats).into_iter().map(|r| r.id).collect();
+        let second: Vec<String> = sync(&stats).into_iter().map(|r| r.id).collect();
+        assert_eq!(first, second, "projection order must be deterministic");
+        assert_eq!(first.len(), 8);
+        reset_for_tests();
+    }
+
+    #[test]
+    fn close_is_idempotent_and_unknown_is_not_found() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        let tunnel = fixture_tunnel();
+        let stats = tunnel.statistics();
+        let id = track_out(stats.as_ref(), "close.example", "proxy-a");
+        assert_eq!(sync(stats.as_ref()).len(), 1);
+
+        let payload = format!(r#"{{"id":"{id}"}}"#);
+        let data = close_arm(7, payload.as_bytes()).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&data).unwrap();
+        assert_eq!(v["data"]["closed"], true);
+        assert_eq!(v["data"]["alreadyClosed"], false);
+        assert!(stats.connection_counters(id).is_none(), "live connection signalled");
+        assert!(sync(stats.as_ref()).is_empty(), "closed connection leaves the projection");
+
+        let data = close_arm(7, payload.as_bytes()).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&data).unwrap();
+        assert_eq!(v["data"]["closed"], false, "second close is a no-op");
+        assert_eq!(v["data"]["alreadyClosed"], true);
+
+        let unknown = uuid::Uuid::new_v4();
+        let payload = format!(r#"{{"id":"{unknown}"}}"#);
+        let err = close_arm(7, payload.as_bytes()).unwrap_err();
+        assert_eq!(err.code, ERR_CONN_NOT_FOUND);
+        assert_eq!(err.status, StatusCode::ModuleNotFound);
+        assert_eq!(err.status as i32, 404);
+
+        let malformed = close_arm(7, br#"{"id":"not-a-uuid"}"#).unwrap_err();
+        assert_eq!(malformed.status, StatusCode::InvalidArgument);
+
+        crate::rules::reset_for_tests();
+        reset_for_tests();
     }
 
     #[test]
