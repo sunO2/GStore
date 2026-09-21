@@ -234,6 +234,86 @@ void main() {
     await gateway.controller.close();
   });
 
+  test('proxy.subscription.progress/updated/failed 解码为类型化事件', () async {
+    final gateway = _FakeGateway(const <String, Uint8List>{});
+    final facade = ProxyModule(gateway: gateway);
+    final events = facade.events;
+
+    final progressPending =
+        events.firstWhere((e) => e is ProxySubscriptionProgressEvent);
+    gateway.controller.add(ProxyRawEvent(
+      eventType: 'proxy.subscription.progress',
+      data: _eventJson(<String, dynamic>{
+        'profileId': 'p1',
+        'phase': 'fetch',
+        'state': 'started',
+        'attempts': 2,
+      }),
+    ));
+    final progress = await progressPending as ProxySubscriptionProgressEvent;
+    expect(progress.profileId, 'p1');
+    expect(progress.phase, ProxySubscriptionPhase.fetch);
+    expect(progress.state, ProxySubscriptionProgressState.started);
+    expect(progress.attempts, 2);
+    expect(progress.eventType, 'proxy.subscription.progress');
+
+    final updatedPending =
+        events.firstWhere((e) => e is ProxySubscriptionUpdatedEvent);
+    gateway.controller.add(ProxyRawEvent(
+      eventType: 'proxy.subscription.updated',
+      data: _eventJson(<String, dynamic>{
+        'profileId': 'p1',
+        'nodeCount': 12,
+        'traffic': <String, dynamic>{
+          'uploadBytes': 10,
+          'downloadBytes': 20,
+          'totalBytes': 100,
+          'usedBytes': 30,
+        },
+        'expireAtMs': 1700000000000,
+        'lastUpdatedAtMs': 1690000000000,
+        'intervalMs': 3600000,
+        'nextRefreshAtMs': 1693600000000,
+      }),
+    ));
+    final updated = await updatedPending as ProxySubscriptionUpdatedEvent;
+    expect(updated.nodeCount, 12);
+    expect(updated.traffic.uploadBytes, 10);
+    expect(updated.traffic.downloadBytes, 20);
+    expect(updated.traffic.totalBytes, 100);
+    expect(updated.traffic.usedBytes, 30);
+    expect(updated.expireAtMs, 1700000000000);
+    expect(updated.lastUpdatedAtMs, 1690000000000);
+    expect(updated.intervalMs, 3600000);
+    expect(updated.nextRefreshAtMs, 1693600000000);
+
+    final failedPending =
+        events.firstWhere((e) => e is ProxySubscriptionFailedEvent);
+    gateway.controller.add(ProxyRawEvent(
+      eventType: 'proxy.subscription.failed',
+      data: _eventJson(<String, dynamic>{
+        'profileId': 'p1',
+        'attempts': 3,
+        'consecutiveFailures': 2,
+        'lastAttemptMs': 1690000001000,
+        'nextRefreshAtMs': 1690000061000,
+        'error': <String, dynamic>{
+          'code': 'PROXY_SUB_FETCH_FAILED',
+          'message': 'connect refused',
+        },
+      }),
+    ));
+    final failed = await failedPending as ProxySubscriptionFailedEvent;
+    expect(failed.profileId, 'p1');
+    expect(failed.attempts, 3);
+    expect(failed.consecutiveFailures, 2);
+    expect(failed.nextRefreshAtMs, 1690000061000);
+    expect(failed.error!.code, 'PROXY_SUB_FETCH_FAILED');
+    expect(failed.error!.message, 'connect refused');
+
+    await gateway.controller.close();
+  });
+
   test('未知事件名被静默忽略（不入流、不抛错）', () async {
     final gateway = _FakeGateway(const <String, Uint8List>{});
     final facade = ProxyModule(gateway: gateway);

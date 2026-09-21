@@ -67,6 +67,7 @@
 | `PROXY_PROFILE_NOT_FOUND` | proxy | 404 | `profile.get/update/delete/refresh` 指定的 profile id 不存在（Todo 12） |
 | `PROXY_PROFILE_INVALID` | proxy | 422 | profile 存储请求非法：缺 `profile`、profile 名为空/无节点、id 非 `[A-Za-z0-9_-]{1,64}`、显式 id 重复、`refresh.state` 非 `requested\|done\|failed`（Todo 12） |
 | `PROXY_PROFILE_NOT_REFRESHABLE` | proxy | 422 | 对非 URL 来源（text/link）的 profile 调用 `profile.refresh`（Todo 12） |
+| `PROXY_PROFILE_REFRESH_BACKOFF` | proxy | 507 | 非 force 的 `profile.refresh` 落在失败退避窗口内（30s→6h 指数退避，封顶 6h）；`force:true` 可绕过（Todo 14） |
 | `PROXY_PROFILE_SCHEMA_UNSUPPORTED` | proxy | 422 | 磁盘上的 profile schema 版本高于当前模块支持版本（拒读，避免旧模块截断新数据）（Todo 12） |
 | `PROXY_PROFILE_TOO_LARGE` | proxy | 507 | profile/index 载荷超硬上限、profile 数超 4096、单 profile 节点数超 4096（Todo 12） |
 | `PROXY_PROFILE_STORE_FAILED` | proxy | 500 | profile 存储 I/O / 原子写（temp+fsync+rename）失败（Todo 12） |

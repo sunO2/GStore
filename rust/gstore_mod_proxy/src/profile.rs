@@ -85,6 +85,7 @@ pub(crate) const ERR_PROFILE_MISSING: &str = "PROXY_PROFILE_MISSING";
 pub(crate) const ERR_PROFILE_TOO_LARGE: &str = "PROXY_PROFILE_TOO_LARGE";
 pub(crate) const ERR_PROFILE_SCHEMA_UNSUPPORTED: &str = "PROXY_PROFILE_SCHEMA_UNSUPPORTED";
 pub(crate) const ERR_PROFILE_NOT_REFRESHABLE: &str = "PROXY_PROFILE_NOT_REFRESHABLE";
+pub(crate) const ERR_PROFILE_REFRESH_BACKOFF: &str = "PROXY_PROFILE_REFRESH_BACKOFF";
 
 static STORE_LOCK: Mutex<()> = Mutex::new(());
 static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -185,6 +186,11 @@ impl ProfileSummary {
 }
 
 /// Persisted refresh bookkeeping.
+///
+/// `state` is one of `idle|requested|done|failed`. The scheduling fields
+/// (`last_updated_at_ms`, `interval_ms`, `next_refresh_at_ms`) are Todo 14's
+/// per-profile auto-update metadata; `consecutive_failures` drives the bounded
+/// backoff so a failing subscription is never retried in a tight loop.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RefreshState {
@@ -197,6 +203,47 @@ pub struct RefreshState {
     pub attempts: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Structured error code of the last failure (e.g. `PROXY_SUB_FETCH_FAILED`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    /// Last successful refresh (drives `nextRefreshAtMs` with `intervalMs`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_updated_at_ms: Option<u64>,
+    /// User-configured auto-update interval in ms; `null` = manual only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_ms: Option<u64>,
+    /// Failures since the last success (reset to 0 on success).
+    #[serde(default)]
+    pub consecutive_failures: u32,
+    /// Earliest time a non-forced refresh may run (backoff or interval).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_refresh_at_ms: Option<u64>,
+}
+
+impl Default for RefreshState {
+    fn default() -> Self {
+        Self {
+            state: "idle".to_string(),
+            requested_at_ms: 0,
+            last_attempt_ms: None,
+            attempts: 0,
+            error: None,
+            error_code: None,
+            last_updated_at_ms: None,
+            interval_ms: None,
+            consecutive_failures: 0,
+            next_refresh_at_ms: None,
+        }
+    }
+}
+
+/// Bounded exponential backoff between failed refreshes: 30s, 60s, 2m, 4m, …
+/// capped at 6h. Never returns 0, so a failed refresh is always rate-limited.
+pub(crate) fn refresh_backoff_ms(consecutive_failures: u32) -> u64 {
+    const BASE_MS: u64 = 30_000;
+    const CAP_MS: u64 = 6 * 60 * 60 * 1000;
+    let shift = consecutive_failures.saturating_sub(1).min(20);
+    BASE_MS.saturating_mul(1u64 << shift).min(CAP_MS)
 }
 
 /// What `profile.refresh` hands to Todo 14: the canonical source plus the
@@ -222,6 +269,40 @@ pub struct RefreshPlan {
     pub attempts: u32,
     pub source: ImportSource,
     pub fetch: Option<FetchSpec>,
+    pub profile: StoredProfile,
+}
+
+/// Structured refresh failure carried by [`RefreshResult`] and the
+/// `proxy.subscription.failed` event.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RefreshError {
+    pub code: String,
+    pub message: String,
+}
+
+/// Outcome of a performed refresh (Todo 14). On failure the previous profile is
+/// preserved and `error` carries the structured cause; `retryAfterMs` is the
+/// remaining bounded-backoff window.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RefreshResult {
+    pub profile_id: String,
+    pub state: String,
+    pub attempts: u32,
+    pub node_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub userinfo: Option<SubscriptionUserinfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_updated_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_refresh_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<RefreshError>,
     pub profile: StoredProfile,
 }
 
@@ -291,6 +372,31 @@ fn current_schema_version() -> u32 {
 #[serde(rename_all = "camelCase")]
 struct IdRequest {
     id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RefreshRequest {
+    id: String,
+    #[serde(default)]
+    force: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ScheduleRequest {
+    id: String,
+    #[serde(default)]
+    interval_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RefreshAllRequest {
+    #[serde(default)]
+    pub force: bool,
+    #[serde(default)]
+    pub limit: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -990,10 +1096,12 @@ impl ProfileStore {
         })
     }
 
-    /// `profile.refresh`: record a refresh intent and return everything Todo 14
-    /// needs to perform the fetch. This method performs **no network I/O**.
+    /// `profile.refresh` begin step: record a refresh intent and return the
+    /// fetch spec the caller feeds to `profile.import_url`. Performs **no
+    /// network I/O**. A non-forced call is refused while the bounded failure
+    /// backoff window is still open (`PROXY_PROFILE_REFRESH_BACKOFF`, 507).
     pub(crate) fn refresh(&self, payload: &[u8]) -> Result<RefreshPlan, ModuleError> {
-        let req: IdRequest = parse_json(payload, "profile.refresh")?;
+        let req: RefreshRequest = parse_json(payload, "profile.refresh")?;
         validate_id(&req.id)?;
 
         let _g = lock_store();
@@ -1022,14 +1130,38 @@ impl ProfileStore {
         }
 
         let now = crate::now_ms();
+        if !req.force {
+            if let Some(state) = &record.refresh {
+                if state.consecutive_failures > 0 {
+                    let last = state.last_attempt_ms.unwrap_or(now);
+                    let next = state
+                        .next_refresh_at_ms
+                        .unwrap_or_else(|| last.saturating_add(refresh_backoff_ms(state.consecutive_failures)));
+                    if now < next {
+                        return Err(ModuleError::new(
+                            StatusCode::ResourceExhausted,
+                            ERR_PROFILE_REFRESH_BACKOFF,
+                            format!(
+                                "profile '{}' refresh is backing off after {} failure(s); retry in {} ms",
+                                req.id,
+                                state.consecutive_failures,
+                                next.saturating_sub(now)
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+
         let attempts = record.refresh.as_ref().map(|r| r.attempts).unwrap_or(0) + 1;
-        record.refresh = Some(RefreshState {
-            state: "requested".to_string(),
-            requested_at_ms: now,
-            last_attempt_ms: None,
-            attempts,
-            error: None,
-        });
+        let mut state = record.refresh.clone().unwrap_or_default();
+        state.state = "requested".to_string();
+        state.requested_at_ms = now;
+        state.last_attempt_ms = None;
+        state.attempts = attempts;
+        state.error = None;
+        state.error_code = None;
+        record.refresh = Some(state);
         record.updated_at_ms = now;
 
         self.write_payload(&record)?;
@@ -1043,8 +1175,8 @@ impl ProfileStore {
             user_agent: record.profile.source.user_agent.clone(),
         };
         log_message(format!(
-            "profile.refresh id={} attempts={attempts} url={}",
-            record.id, fetch.url
+            "profile.refresh id={} attempts={attempts} force={} url={}",
+            record.id, req.force, fetch.url
         ));
         Ok(RefreshPlan {
             profile_id: record.id.clone(),
@@ -1056,6 +1188,141 @@ impl ProfileStore {
             fetch: Some(fetch),
             profile: record,
         })
+    }
+
+    /// Record a successful refresh: replace the profile content with the newly
+    /// fetched/parsed canonical profile, clear the failure state, and schedule
+    /// the next interval-based refresh. Bumps `revision`.
+    pub(crate) fn apply_refresh_success(
+        &self,
+        id: &str,
+        mut profile: ImportedProfile,
+    ) -> Result<StoredProfile, ModuleError> {
+        validate_id(id)?;
+        validate_profile(&mut profile)?;
+
+        let _g = lock_store();
+        let (mut index, _w) = self.read_index_best_effort();
+        if !index.profiles.iter().any(|s| s.id == id) {
+            return Err(not_found(id));
+        }
+        let created = self.created_hint(&index, id);
+        let mut record = self.read_payload(id, created)?;
+
+        record.profile = profile;
+        record.revision += 1;
+        let now = crate::now_ms();
+        record.updated_at_ms = now;
+
+        let mut state = record.refresh.clone().unwrap_or_default();
+        state.state = "done".to_string();
+        state.last_attempt_ms = Some(now);
+        state.last_updated_at_ms = Some(now);
+        state.error = None;
+        state.error_code = None;
+        state.consecutive_failures = 0;
+        state.next_refresh_at_ms = state.interval_ms.map(|i| now.saturating_add(i));
+        record.refresh = Some(state);
+        record.schema_version = SCHEMA_VERSION;
+
+        self.write_payload(&record)?;
+        Self::upsert_summary(&mut index, &record);
+        index.revision += 1;
+        self.write_index(&index)?;
+        log_message(format!(
+            "profile.refresh success id={} nodes={} revision={}",
+            record.id, record.profile.node_count, record.revision
+        ));
+        Ok(record)
+    }
+
+    /// Record a failed refresh: the **previous profile is preserved** (only the
+    /// refresh bookkeeping changes), `consecutiveFailures` increments, and the
+    /// next allowed attempt is pushed out by the bounded backoff. No revision
+    /// bump (content did not change).
+    pub(crate) fn apply_refresh_failure(
+        &self,
+        id: &str,
+        code: &str,
+        message: &str,
+    ) -> Result<StoredProfile, ModuleError> {
+        validate_id(id)?;
+
+        let _g = lock_store();
+        let (mut index, _w) = self.read_index_best_effort();
+        if !index.profiles.iter().any(|s| s.id == id) {
+            return Err(not_found(id));
+        }
+        let created = self.created_hint(&index, id);
+        let mut record = self.read_payload(id, created)?;
+
+        let now = crate::now_ms();
+        let mut state = record.refresh.clone().unwrap_or_default();
+        state.state = "failed".to_string();
+        state.last_attempt_ms = Some(now);
+        state.error = Some(message.to_string());
+        state.error_code = Some(code.to_string());
+        state.consecutive_failures = state.consecutive_failures.saturating_add(1);
+        state.next_refresh_at_ms =
+            Some(now.saturating_add(refresh_backoff_ms(state.consecutive_failures)));
+        record.refresh = Some(state);
+        record.updated_at_ms = now;
+        record.schema_version = SCHEMA_VERSION;
+
+        self.write_payload(&record)?;
+        Self::upsert_summary(&mut index, &record);
+        index.revision += 1;
+        self.write_index(&index)?;
+        log_message(format!(
+            "profile.refresh failed id={} code={code} failures={}",
+            record.id,
+            record.refresh.as_ref().map(|r| r.consecutive_failures).unwrap_or(0)
+        ));
+        Ok(record)
+    }
+
+    /// `profile.set_schedule`: set (or clear with `intervalMs: 0`) the
+    /// per-profile auto-update interval and recompute the next due time. No
+    /// content change, so `revision` is untouched.
+    pub(crate) fn set_schedule(&self, payload: &[u8]) -> Result<StoredProfile, ModuleError> {
+        let req: ScheduleRequest = parse_json(payload, "profile.set_schedule")?;
+        validate_id(&req.id)?;
+
+        let _g = lock_store();
+        let (mut index, _w) = self.read_index_best_effort();
+        if !index.profiles.iter().any(|s| s.id == req.id) {
+            return Err(not_found(&req.id));
+        }
+        let created = self.created_hint(&index, &req.id);
+        let mut record = self.read_payload(&req.id, created)?;
+
+        let now = crate::now_ms();
+        let mut state = record.refresh.clone().unwrap_or_default();
+        state.interval_ms = req.interval_ms.filter(|value| *value > 0);
+        state.next_refresh_at_ms = match (state.interval_ms, state.last_updated_at_ms) {
+            (Some(interval), Some(last)) if state.consecutive_failures == 0 => {
+                Some(last.saturating_add(interval))
+            }
+            _ => state.next_refresh_at_ms,
+        };
+        record.refresh = Some(state);
+        record.updated_at_ms = now;
+        record.schema_version = SCHEMA_VERSION;
+
+        self.write_payload(&record)?;
+        Self::upsert_summary(&mut index, &record);
+        index.revision += 1;
+        self.write_index(&index)?;
+        log_message(format!(
+            "profile.set_schedule id={} intervalMs={}",
+            record.id,
+            record
+                .refresh
+                .as_ref()
+                .and_then(|r| r.interval_ms)
+                .unwrap_or(0)
+        ));
+        Ok(record)
     }
 }
 
@@ -1078,13 +1345,13 @@ fn apply_refresh_patch(record: &mut StoredProfile, patch: RefreshPatch) -> Resul
     } else {
         attempts
     };
-    record.refresh = Some(RefreshState {
-        state: state.to_string(),
-        requested_at_ms,
-        last_attempt_ms: if state == "requested" { None } else { Some(now) },
-        attempts,
-        error: patch.error,
-    });
+    let mut current = record.refresh.clone().unwrap_or_default();
+    current.state = state.to_string();
+    current.requested_at_ms = requested_at_ms;
+    current.last_attempt_ms = if state == "requested" { None } else { Some(now) };
+    current.attempts = attempts;
+    current.error = patch.error;
+    record.refresh = Some(current);
     Ok(())
 }
 

@@ -342,6 +342,10 @@ const EVT_STATS: &str = "proxy.stats";
 const EVT_SUBSCRIPTION: &str = "proxy.subscription.added";
 const EVT_SUBSCRIPTION_UPDATED: &str = "proxy.subscription.updated";
 const EVT_SUBSCRIPTION_REMOVED: &str = "proxy.subscription.removed";
+/// Module → host: a subscription refresh is in flight (started/succeeded/failed).
+const EVT_SUBSCRIPTION_PROGRESS: &str = "proxy.subscription.progress";
+/// Module → host: a subscription refresh failed; the previous profile is kept.
+const EVT_SUBSCRIPTION_FAILED: &str = "proxy.subscription.failed";
 /// 模块 → 宿主：TUN 读取循环已停止且线程已 join，宿主可清缓存 fd（Kotlin 可关闭）。
 const EVT_TUN_RELEASED: &str = "proxy.tun.released";
 /// 模块 → 宿主：`config.apply` 已在运行的引擎上热应用新配置（无需进程重启）。
@@ -1060,6 +1064,37 @@ fn profile_create_arm(
     ok_data(to_value(&record)?)
 }
 
+/// Traffic projection shared by `proxy.subscription.updated` and refresh
+/// results: upload/download plus a derived `usedBytes` and the total cap.
+fn userinfo_traffic(userinfo: &subscription::SubscriptionUserinfo) -> serde_json::Value {
+    let upload = userinfo.upload.unwrap_or(0);
+    let download = userinfo.download.unwrap_or(0);
+    let total = userinfo.total.unwrap_or(0);
+    let used = upload.saturating_add(download);
+    serde_json::json!({
+        "uploadBytes": upload,
+        "downloadBytes": download,
+        "totalBytes": total,
+        "usedBytes": if total == 0 { used } else { used.min(total) },
+    })
+}
+
+/// Build the `proxy.subscription.updated` payload for a stored record,
+/// including the per-profile scheduling metadata (Todo 14).
+fn subscription_updated_event(record: &profile::StoredProfile) -> serde_json::Value {
+    let userinfo = record.profile.userinfo.clone().unwrap_or_default();
+    let refresh = record.refresh.clone().unwrap_or_default();
+    serde_json::json!({
+        "profileId": record.id,
+        "nodeCount": record.profile.node_count,
+        "traffic": userinfo_traffic(&userinfo),
+        "expireAtMs": userinfo.expire.unwrap_or(0).saturating_mul(1000),
+        "lastUpdatedAtMs": refresh.last_updated_at_ms,
+        "intervalMs": refresh.interval_ms,
+        "nextRefreshAtMs": refresh.next_refresh_at_ms,
+    })
+}
+
 /// `profile.update` (Todo 12): replace profile content/metadata; emits
 /// `proxy.subscription.updated` carrying the userinfo traffic/expiry.
 fn profile_update_arm(
@@ -1070,20 +1105,7 @@ fn profile_update_arm(
     let inst = require_instance(instance_id, instance)?;
     let store = profile::ProfileStore::open(&inst.data_dir)?;
     let record = store.update(payload)?;
-    let userinfo = record.profile.userinfo.clone().unwrap_or_default();
-    emit_json(
-        inst.id,
-        EVT_SUBSCRIPTION_UPDATED,
-        &serde_json::json!({
-            "profileId": record.id,
-            "nodeCount": record.profile.node_count,
-            "traffic": {
-                "uploadBytes": userinfo.upload.unwrap_or(0),
-                "downloadBytes": userinfo.download.unwrap_or(0),
-            },
-            "expireAtMs": userinfo.expire.unwrap_or(0).saturating_mul(1000),
-        }),
-    );
+    emit_json(inst.id, EVT_SUBSCRIPTION_UPDATED, &subscription_updated_event(&record));
     ok_data(to_value(&record)?)
 }
 
@@ -1105,8 +1127,133 @@ fn profile_delete_arm(
     ok_data(to_value(&outcome)?)
 }
 
-/// `profile.refresh` (Todo 12 store side): persist the refresh intent and
-/// return the `fetch` spec Todo 14 feeds to `profile.import_url`. No network.
+/// Fetch one subscription URL through Todo 11's protect-aware importer.
+fn fetch_import_via_url(fetch: &profile::FetchSpec) -> Result<subscription::ImportedProfile, ModuleError> {
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "url": fetch.url,
+        "name": fetch.name,
+        "userAgent": fetch.user_agent,
+    }))
+    .map_err(|e| ModuleError::internal(format!("refresh fetch payload: {e}")))?;
+    subscription::import_url(&payload)
+}
+
+/// The refresh state machine shared by `profile.refresh` and
+/// `profile.refresh_all`: begin (with backoff) → fetch via `import` →
+/// persist success/failure + emit the event sequence. Returns the outcome even
+/// on refresh failure (the attempt was recorded and surfaced); only
+/// begin-step errors (not found / not refreshable / backoff) propagate as
+/// `Err`.
+fn perform_refresh<F>(
+    inst: &Arc<ProxyInstance>,
+    store: &profile::ProfileStore,
+    id: &str,
+    force: bool,
+    import: F,
+) -> Result<profile::RefreshResult, ModuleError>
+where
+    F: FnOnce(&profile::FetchSpec) -> Result<subscription::ImportedProfile, ModuleError>,
+{
+    let begin = serde_json::to_vec(&serde_json::json!({ "id": id, "force": force }))
+        .map_err(|e| ModuleError::internal(format!("refresh begin payload: {e}")))?;
+    let plan = store.refresh(&begin)?;
+    emit_json(
+        inst.id,
+        EVT_SUBSCRIPTION_PROGRESS,
+        &serde_json::json!({
+            "profileId": plan.profile_id,
+            "phase": "fetch",
+            "state": "started",
+            "attempts": plan.attempts,
+        }),
+    );
+    let fetch = plan.fetch.clone().ok_or_else(|| {
+        ModuleError::new(
+            StatusCode::InvalidArgument,
+            profile::ERR_PROFILE_NOT_REFRESHABLE,
+            format!("profile '{}' has no fetch spec", plan.profile_id),
+        )
+    })?;
+
+    match import(&fetch) {
+        Ok(parsed) => {
+            let record = store.apply_refresh_success(&plan.profile_id, parsed)?;
+            emit_json(
+                inst.id,
+                EVT_SUBSCRIPTION_PROGRESS,
+                &serde_json::json!({
+                    "profileId": plan.profile_id,
+                    "phase": "persist",
+                    "state": "succeeded",
+                    "attempts": plan.attempts,
+                }),
+            );
+            emit_json(inst.id, EVT_SUBSCRIPTION_UPDATED, &subscription_updated_event(&record));
+            let refresh = record.refresh.clone().unwrap_or_default();
+            Ok(profile::RefreshResult {
+                profile_id: record.id.clone(),
+                state: "done".to_string(),
+                attempts: refresh.attempts,
+                node_count: record.profile.node_count,
+                userinfo: record.profile.userinfo.clone(),
+                last_updated_at_ms: refresh.last_updated_at_ms,
+                interval_ms: refresh.interval_ms,
+                next_refresh_at_ms: refresh.next_refresh_at_ms,
+                retry_after_ms: None,
+                error: None,
+                profile: record,
+            })
+        }
+        Err(err) => {
+            let record = store.apply_refresh_failure(&plan.profile_id, &err.code, &err.message)?;
+            let refresh = record.refresh.clone().unwrap_or_default();
+            emit_json(
+                inst.id,
+                EVT_SUBSCRIPTION_PROGRESS,
+                &serde_json::json!({
+                    "profileId": plan.profile_id,
+                    "phase": "fetch",
+                    "state": "failed",
+                    "attempts": plan.attempts,
+                }),
+            );
+            emit_json(
+                inst.id,
+                EVT_SUBSCRIPTION_FAILED,
+                &serde_json::json!({
+                    "profileId": record.id,
+                    "attempts": refresh.attempts,
+                    "consecutiveFailures": refresh.consecutive_failures,
+                    "lastAttemptMs": refresh.last_attempt_ms,
+                    "nextRefreshAtMs": refresh.next_refresh_at_ms,
+                    "error": { "code": err.code, "message": err.message },
+                }),
+            );
+            Ok(profile::RefreshResult {
+                profile_id: record.id.clone(),
+                state: "failed".to_string(),
+                attempts: refresh.attempts,
+                node_count: record.profile.node_count,
+                userinfo: record.profile.userinfo.clone(),
+                last_updated_at_ms: refresh.last_updated_at_ms,
+                interval_ms: refresh.interval_ms,
+                next_refresh_at_ms: refresh.next_refresh_at_ms,
+                retry_after_ms: refresh
+                    .next_refresh_at_ms
+                    .map(|next| next.saturating_sub(now_ms())),
+                error: Some(profile::RefreshError {
+                    code: err.code.to_string(),
+                    message: err.message.clone(),
+                }),
+                profile: record,
+            })
+        }
+    }
+}
+
+/// `profile.refresh` (Todo 14): performs the fetch via Todo 11's protect-aware
+/// importer, emits the progress/updated/failed sequence, and keeps the previous
+/// profile when the fetch fails. Returns the outcome (`state: done|failed`).
 fn profile_refresh_arm(
     instance_id: u64,
     instance: Option<Arc<ProxyInstance>>,
@@ -1114,7 +1261,134 @@ fn profile_refresh_arm(
 ) -> Result<Vec<u8>, ModuleError> {
     let inst = require_instance(instance_id, instance)?;
     let store = profile::ProfileStore::open(&inst.data_dir)?;
-    ok_data(to_value(&store.refresh(payload)?)?)
+    let req: serde_json::Value = if payload.is_empty() {
+        return Err(ModuleError::invalid_arg("profile.refresh requires a JSON object payload"));
+    } else {
+        serde_json::from_slice(payload)
+            .map_err(|e| ModuleError::invalid_arg(format!("profile.refresh payload JSON: {e}")))?
+    };
+    let id = req
+        .get("id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ModuleError::invalid_arg("profile.refresh requires `id`"))?;
+    let force = req.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let result = perform_refresh(&inst, &store, id, force, fetch_import_via_url)?;
+    ok_data(to_value(&result)?)
+}
+
+const REFRESH_ALL_DEFAULT_LIMIT: usize = 8;
+const REFRESH_ALL_MAX_LIMIT: usize = 32;
+
+/// `profile.refresh_all` (Todo 14): user-triggered batch update. Skips
+/// profiles that are not due (interval not elapsed / failure backoff) unless
+/// `force`, and never attempts more than `limit` (default 8, max 32) respites
+/// per call — no retry storms, no silent background loop.
+fn profile_refresh_all_arm(
+    instance_id: u64,
+    instance: Option<Arc<ProxyInstance>>,
+    payload: &[u8],
+) -> Result<Vec<u8>, ModuleError> {
+    let inst = require_instance(instance_id, instance)?;
+    let store = profile::ProfileStore::open(&inst.data_dir)?;
+    let req: profile::RefreshAllRequest = if payload.is_empty() {
+        profile::RefreshAllRequest { force: false, limit: None }
+    } else {
+        serde_json::from_slice(payload)
+            .map_err(|e| ModuleError::invalid_arg(format!("profile.refresh_all payload JSON: {e}")))?
+    };
+    let limit = req
+        .limit
+        .map(|l| (l as usize).clamp(1, REFRESH_ALL_MAX_LIMIT))
+        .unwrap_or(REFRESH_ALL_DEFAULT_LIMIT);
+    let now = now_ms();
+
+    let list = store.list()?;
+    let mut refreshed: Vec<profile::RefreshResult> = Vec::new();
+    let mut skipped: Vec<serde_json::Value> = Vec::new();
+    let mut attempted = 0usize;
+
+    for summary in &list.profiles {
+        if attempted >= limit {
+            skipped.push(serde_json::json!({
+                "profileId": summary.id,
+                "reason": "limit",
+            }));
+            continue;
+        }
+        let refreshable = summary.source_origin.as_deref() == Some("url")
+            && summary.source_url.as_deref().map(|u| !u.trim().is_empty()).unwrap_or(false);
+        if !refreshable {
+            skipped.push(serde_json::json!({
+                "profileId": summary.id,
+                "reason": "not_refreshable",
+            }));
+            continue;
+        }
+        if !req.force {
+            if let Some(refresh) = &summary.refresh {
+                if refresh.consecutive_failures > 0 {
+                    let next = refresh.next_refresh_at_ms.unwrap_or(0);
+                    if next > now {
+                        skipped.push(serde_json::json!({
+                            "profileId": summary.id,
+                            "reason": "backoff",
+                            "nextRefreshAtMs": next,
+                        }));
+                        continue;
+                    }
+                }
+                if refresh.consecutive_failures == 0 {
+                    if let (Some(interval), Some(last)) = (refresh.interval_ms, refresh.last_updated_at_ms) {
+                        let next = refresh
+                            .next_refresh_at_ms
+                            .unwrap_or_else(|| last.saturating_add(interval));
+                        if next > now {
+                            skipped.push(serde_json::json!({
+                                "profileId": summary.id,
+                                "reason": "interval",
+                                "nextRefreshAtMs": next,
+                            }));
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+        attempted += 1;
+        match perform_refresh(&inst, &store, &summary.id, req.force, fetch_import_via_url) {
+            Ok(result) => refreshed.push(result),
+            Err(err) => skipped.push(serde_json::json!({
+                "profileId": summary.id,
+                "reason": "error",
+                "code": err.code,
+                "message": err.message,
+            })),
+        }
+    }
+
+    let failed: Vec<&profile::RefreshResult> =
+        refreshed.iter().filter(|r| r.state == "failed").collect();
+    ok_data(serde_json::json!({
+        "force": req.force,
+        "limit": limit,
+        "attempted": attempted,
+        "count": refreshed.len(),
+        "failedCount": failed.len(),
+        "refreshed": refreshed,
+        "skipped": skipped,
+    }))
+}
+
+/// `profile.set_schedule` (Todo 14): set (0 clears) a profile's auto-update
+/// interval and recompute its next due time.
+fn profile_set_schedule_arm(
+    instance_id: u64,
+    instance: Option<Arc<ProxyInstance>>,
+    payload: &[u8],
+) -> Result<Vec<u8>, ModuleError> {
+    let inst = require_instance(instance_id, instance)?;
+    let store = profile::ProfileStore::open(&inst.data_dir)?;
+    ok_data(to_value(&store.set_schedule(payload)?)?)
 }
 
 fn node_select_arm(
@@ -1256,6 +1530,10 @@ fn call_impl(
         "profile.update" => profile_update_arm(instance_id, instance.clone(), _payload),
         "profile.delete" => profile_delete_arm(instance_id, instance.clone(), _payload),
         "profile.refresh" => profile_refresh_arm(instance_id, instance.clone(), _payload),
+        "profile.refresh_all" => profile_refresh_all_arm(instance_id, instance.clone(), _payload),
+        "profile.set_schedule" => {
+            profile_set_schedule_arm(instance_id, instance.clone(), _payload)
+        }
         "node.select" => node_select_arm(instance_id, instance.clone(), _payload),
         "node.delay_test" => require_instance(instance_id, instance.clone())
             .and_then(|_| nodes::delay_test_arm(instance_id, _payload)),
@@ -2269,6 +2547,247 @@ rules:
         let (code, out) = call_json(call, inst, "core.stop");
         assert_eq!(code, ABI_OK, "core.stop: {}", String::from_utf8_lossy(&out));
         assert_eq!(tun::running_count(), 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(destroy(inst), ABI_OK);
+    }
+
+    /// Build a canonical 2-node import result without touching the network.
+    fn fixture_import_text(call: CallFn, inst: u64) -> serde_json::Value {
+        let yaml = "proxies:\n  - {name: n1, type: ss, server: 1.1.1.1, port: 8388, cipher: aes-256-gcm, password: pw}\n  - {name: n2, type: ss, server: 1.1.1.2, port: 8388, cipher: aes-256-gcm, password: pw}\nproxy-groups:\n  - {name: PROXY, type: select, proxies: [n1, n2]}\n";
+        let payload = serde_json::json!({ "text": yaml, "name": "Fixture" }).to_string();
+        let (code, out) = call_with_payload(call, inst, "profile.import_text", payload.as_bytes());
+        assert_eq!(code, ABI_OK, "import_text: {}", String::from_utf8_lossy(&out));
+        let value: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        value["data"].clone()
+    }
+
+    /// Todo 14 happy + failure QA over the real refresh state machine:
+    /// success emits progress(started)→progress(succeeded)→updated with the new
+    /// node count + userinfo; a failure emits progress + a structured
+    /// `proxy.subscription.failed` and **preserves the previous profile**; the
+    /// next non-forced refresh is refused by the bounded backoff.
+    #[test]
+    fn abi_profile_refresh_success_failure_and_backoff() {
+        use subscription::{ImportedProfile, SubscriptionUserinfo};
+        let _g = ABI_LOCK.lock().unwrap();
+        let api = register_api();
+        let create = api.create.unwrap();
+        let call = api.call.unwrap();
+        let destroy = api.destroy.unwrap();
+
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("gstore-refresh-abi-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = serde_json::to_vec(&serde_json::json!({
+            "data_dir": dir.display().to_string(),
+            "cache_dir": dir.display().to_string(),
+        }))
+        .unwrap();
+        let mut inst: u64 = 0;
+        assert_eq!(create(config.as_ptr(), config.len(), &mut inst), ABI_OK);
+        let _ = take_events();
+
+        let imported = fixture_import_text(call, inst);
+        assert_eq!(imported["nodeCount"], 2);
+        let mut stored = imported.clone();
+        stored["source"]["origin"] = serde_json::json!("url");
+        stored["source"]["url"] = serde_json::json!("http://127.0.0.1:9/sub");
+        stored["userinfo"] = serde_json::json!({
+            "upload": 100, "download": 200, "total": 1000, "expire": 1_700_000_000,
+        });
+        let create_payload = serde_json::json!({ "profile": stored }).to_string();
+        let (code, out) = call_with_payload(call, inst, "profile.create", create_payload.as_bytes());
+        assert_eq!(code, ABI_OK, "profile.create: {}", String::from_utf8_lossy(&out));
+
+        let inst_arc = instance_of(inst).expect("instance registered");
+        let store = profile::ProfileStore::open(&inst_arc.data_dir).unwrap();
+        let _ = take_events();
+
+        // Success via an injected import (no network in this test). The injected
+        // profile carries the URL source so the stored record stays refreshable.
+        let mut fetched: ImportedProfile = serde_json::from_value(imported).unwrap();
+        fetched.source.origin = "url".to_string();
+        fetched.source.url = Some("http://127.0.0.1:9/sub".to_string());
+        fetched.source.user_agent = Some("clash.meta/1.19.0".to_string());
+        fetched.userinfo = Some(SubscriptionUserinfo {
+            upload: Some(10),
+            download: Some(20),
+            total: Some(100),
+            expire: Some(1_800_000_000),
+        });
+        let result = perform_refresh(&inst_arc, &store, "p1", true, |_| Ok(fetched.clone())).unwrap();
+        assert_eq!(result.state, "done");
+        assert_eq!(result.node_count, 2);
+        assert_eq!(result.userinfo.as_ref().unwrap().total, Some(100));
+
+        let events = take_events();
+        let started = events
+            .iter()
+            .position(|(t, p)| {
+                t == EVT_SUBSCRIPTION_PROGRESS
+                    && String::from_utf8_lossy(p).contains("\"started\"")
+            })
+            .expect("progress(started) must fire");
+        let updated = events
+            .iter()
+            .position(|(t, _)| t == EVT_SUBSCRIPTION_UPDATED)
+            .expect("updated must fire");
+        assert!(started < updated, "progress(started) precedes updated: {events:?}");
+        let updated_payload: serde_json::Value =
+            serde_json::from_slice(&events[updated].1).unwrap();
+        assert_eq!(updated_payload["profileId"], "p1");
+        assert_eq!(updated_payload["nodeCount"], 2);
+        assert_eq!(updated_payload["traffic"]["uploadBytes"], 10);
+        assert_eq!(updated_payload["traffic"]["downloadBytes"], 20);
+        assert_eq!(updated_payload["traffic"]["totalBytes"], 100);
+        assert_eq!(updated_payload["traffic"]["usedBytes"], 30);
+        assert_eq!(updated_payload["expireAtMs"], 1_800_000_000_000u64);
+
+        // Failure: the previous profile stays, the failure is surfaced.
+        let before = store.get(br#"{"id":"p1"}"#).unwrap();
+        let err = ModuleError::new(
+            StatusCode::InternalError,
+            subscription::ERR_FETCH_FAILED,
+            "connect refused",
+        );
+        let result = perform_refresh(&inst_arc, &store, "p1", true, |_| Err(err)).unwrap();
+        assert_eq!(result.state, "failed");
+        assert_eq!(result.error.as_ref().unwrap().code, subscription::ERR_FETCH_FAILED);
+        assert_eq!(result.node_count, 2, "previous profile must be preserved");
+        assert!(result.retry_after_ms.unwrap() > 0, "backoff must be scheduled");
+
+        let after = store.get(br#"{"id":"p1"}"#).unwrap();
+        assert_eq!(after.profile.node_count, before.profile.node_count);
+        assert_eq!(after.profile.nodes[0].name, before.profile.nodes[0].name);
+        assert!(after.profile.userinfo.is_some(), "old userinfo preserved");
+        let refresh = after.refresh.clone().unwrap();
+        assert_eq!(refresh.state, "failed");
+        assert_eq!(refresh.consecutive_failures, 1);
+        assert_eq!(refresh.error_code.as_deref(), Some(subscription::ERR_FETCH_FAILED));
+        assert!(refresh.next_refresh_at_ms.unwrap() > now_ms());
+
+        let events = take_events();
+        assert!(
+            events.iter().any(|(t, p)| t == EVT_SUBSCRIPTION_FAILED
+                && String::from_utf8_lossy(p).contains(subscription::ERR_FETCH_FAILED)),
+            "structured failed event must fire; got {events:?}"
+        );
+        assert!(
+            events.iter().any(|(t, p)| t == EVT_SUBSCRIPTION_PROGRESS
+                && String::from_utf8_lossy(p).contains("\"failed\"")),
+            "progress(failed) must fire; got {events:?}"
+        );
+
+        // Bounded backoff: a non-forced refresh is refused, force bypasses it.
+        let backoff = store.refresh(br#"{"id":"p1"}"#).unwrap_err();
+        assert_eq!(backoff.code, profile::ERR_PROFILE_REFRESH_BACKOFF);
+        assert_eq!(backoff.status as i32, 507);
+        assert!(store.refresh(br#"{"id":"p1","force":true}"#).is_ok());
+
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(destroy(inst), ABI_OK);
+    }
+
+    /// Todo 14 update-all QA: `profile.refresh_all` attempts each due profile
+    /// once, skips backed-off profiles (no retry storm), and honours the
+    /// per-profile interval schedule set through `profile.set_schedule`.
+    #[test]
+    fn abi_profile_refresh_all_bounded_backoff_and_scheduling() {
+        let _g = ABI_LOCK.lock().unwrap();
+        let api = register_api();
+        let create = api.create.unwrap();
+        let call = api.call.unwrap();
+        let destroy = api.destroy.unwrap();
+
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("gstore-refresh-all-abi-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = serde_json::to_vec(&serde_json::json!({
+            "data_dir": dir.display().to_string(),
+            "cache_dir": dir.display().to_string(),
+        }))
+        .unwrap();
+        let mut inst: u64 = 0;
+        assert_eq!(create(config.as_ptr(), config.len(), &mut inst), ABI_OK);
+
+        let imported = fixture_import_text(call, inst);
+        for (id, url) in [("p1", "http://127.0.0.1:9/sub"), ("p2", "http://127.0.0.1:9/other")] {
+            let mut stored = imported.clone();
+            stored["source"]["origin"] = serde_json::json!("url");
+            stored["source"]["url"] = serde_json::json!(url);
+            let payload = serde_json::json!({ "id": id, "profile": stored }).to_string();
+            let (code, out) = call_with_payload(call, inst, "profile.create", payload.as_bytes());
+            assert_eq!(code, ABI_OK, "create {id}: {}", String::from_utf8_lossy(&out));
+        }
+        let _ = take_events();
+
+        // Batch 1: both are due and fail (SSRF-blocked loopback URL), no panic.
+        let (code, out) = call_json(call, inst, "profile.refresh_all");
+        assert_eq!(code, ABI_OK, "refresh_all: {}", String::from_utf8_lossy(&out));
+        let first: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(first["data"]["attempted"], 2);
+        assert_eq!(first["data"]["failedCount"], 2);
+        assert_eq!(first["data"]["refreshed"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            first["data"]["refreshed"][0]["error"]["code"],
+            subscription::ERR_SSRF_BLOCKED
+        );
+
+        // Batch 2: both are inside the failure backoff window -> skipped.
+        let (code, out) = call_json(call, inst, "profile.refresh_all");
+        assert_eq!(code, ABI_OK);
+        let second: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(second["data"]["attempted"], 0, "backoff must stop retry storms");
+        let skipped = second["data"]["skipped"].as_array().unwrap();
+        assert_eq!(skipped.len(), 2);
+        assert!(skipped.iter().all(|s| s["reason"] == "backoff"), "{skipped:?}");
+
+        // p1: schedule a 1h interval and run an injected success; p2 stays failed.
+        let (code, out) = call_with_payload(
+            call,
+            inst,
+            "profile.set_schedule",
+            br#"{"id":"p1","intervalMs":3600000}"#,
+        );
+        assert_eq!(code, ABI_OK, "set_schedule: {}", String::from_utf8_lossy(&out));
+        let scheduled: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(scheduled["data"]["refresh"]["intervalMs"], 3_600_000i64);
+
+        let inst_arc = instance_of(inst).expect("instance registered");
+        let store = profile::ProfileStore::open(&inst_arc.data_dir).unwrap();
+        let mut fetched: subscription::ImportedProfile = serde_json::from_value(imported).unwrap();
+        fetched.source.origin = "url".to_string();
+        fetched.source.url = Some("http://127.0.0.1:9/sub".to_string());
+        let result = perform_refresh(&inst_arc, &store, "p1", true, |_| Ok(fetched.clone())).unwrap();
+        assert_eq!(result.state, "done");
+        assert_eq!(result.interval_ms, Some(3_600_000));
+
+        // Batch 3: p1 is not due (interval), p2 is backing off -> zero attempts.
+        let (code, out) = call_json(call, inst, "profile.refresh_all");
+        assert_eq!(code, ABI_OK);
+        let third: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(third["data"]["attempted"], 0);
+        let reasons: Vec<&str> = third["data"]["skipped"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["reason"].as_str().unwrap())
+            .collect();
+        assert!(reasons.contains(&"interval"), "{reasons:?}");
+        assert!(reasons.contains(&"backoff"), "{reasons:?}");
+
+        // force=true ignores the schedule and attempts both again.
+        let (code, out) = call_with_payload(call, inst, "profile.refresh_all", br#"{"force":true}"#);
+        assert_eq!(code, ABI_OK);
+        let forced: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(forced["data"]["attempted"], 2);
 
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(destroy(inst), ABI_OK);

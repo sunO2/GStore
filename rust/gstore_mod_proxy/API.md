@@ -138,7 +138,9 @@ app backup/restore hook.
 | `profile.create` | `{ "profile": ImportedProfile, "id"?: string, "name"?: string, "appBackup"?: object }` | `StoredProfile` |
 | `profile.update` | `{ "id": string, "profile"?: ImportedProfile, "name"?: string, "appBackup"?: object\|null, "refresh"?: { "state": "requested"\|"done"\|"failed", "error"?: string } }` | `StoredProfile` |
 | `profile.delete` | `{ "id": string }` | `{ "ok": true, "id": string, "deleted": true }` |
-| `profile.refresh` | `{ "id": string }` | `RefreshPlan` |
+| `profile.refresh` | `{ "id": string, "force"?: bool }` | `RefreshResult` (state `done`\|`failed`) |
+| `profile.refresh_all` | `{ "force"?: bool, "limit"?: number }` | `{ force, limit, attempted, count, failedCount, refreshed: [RefreshResult], skipped: [{ profileId, reason, ... }] }` |
+| `profile.set_schedule` | `{ "id": string, "intervalMs"?: number }` (0 clears) | `StoredProfile` |
 | `profile.export_clash` | `{ "id": string, "stack"?: string, "mtu"?: number, "dns"?: object, "rules"?: [string] }` | `GeneratedConfig` (see §2.5) |
 
 `profile.import_url` fetches over **meow's protect-aware transport** — the same
@@ -251,8 +253,11 @@ missing sibling files; a corrupt payload is skipped, never fatal.
   "id": "p1",
   "revision": 1,
   "createdAtMs": 0, "updatedAtMs": 0,
-  "refresh": null | { "state": "requested"|"done"|"failed", "requestedAtMs": 0,
-                      "lastAttemptMs"?: 0, "attempts": 0, "error"?: "..." },
+  "refresh": null | { "state": "idle"|"requested"|"done"|"failed", "requestedAtMs": 0,
+                      "lastAttemptMs"?: 0, "attempts": 0, "error"?: "...",
+                      "errorCode"?: "PROXY_SUB_FETCH_FAILED",
+                      "lastUpdatedAtMs"?: 0, "intervalMs"?: 0,
+                      "consecutiveFailures": 0, "nextRefreshAtMs"?: 0 },
   "appBackup": null | { /* opaque, preserved verbatim */ },
   "profile": ImportedProfile
 }
@@ -269,29 +274,44 @@ and `name` overrides the profile name. `profile.update` replaces content
 a content/name change bumps `revision`. `profile.delete` removes the payload and
 its index entry and emits `proxy.subscription.removed`.
 
-`profile.refresh` is the **store side only** — it performs no network I/O. It
-records a refresh intent and returns everything Todo 14 needs to call
-`profile.import_url`:
+`profile.refresh` (Todo 14) performs the fetch **in the module** through Todo
+11's protect-aware importer, emits the progress/updated/failed event sequence
+(§3), and preserves the previous profile when the fetch fails:
 
 ```json
 {
-  "profileId": "p1", "refreshable": true, "state": "requested",
-  "requestedAtMs": 0, "attempts": 1,
-  "source": ImportSource,
-  "fetch": { "url": "https://...", "name": "My Sub", "userAgent"?: "clash.meta/1.19.0" },
+  "profileId": "p1", "state": "done" | "failed", "attempts": 2,
+  "nodeCount": 42, "userinfo": SubscriptionUserinfo | null,
+  "lastUpdatedAtMs"?: 0, "intervalMs"?: 0, "nextRefreshAtMs"?: 0,
+  "retryAfterMs"?: 0, "error"?: { "code": "PROXY_SUB_FETCH_FAILED", "message": "..." },
   "profile": StoredProfile
 }
 ```
 
-A `text`/`link`-origin profile has no URL to re-fetch and returns
-`PROXY_PROFILE_NOT_REFRESHABLE` (422). Todo 14 should call `profile.import_url`
-with `fetch`, then persist the result via `profile.update` (and clear the flag
-with `{"refresh":{"state":"done"}}`).
+A `text`/`link`-origin profile has no URL to re-fetch → `PROXY_PROFILE_NOT_REFRESHABLE`
+(422). A non-forced refresh inside the bounded failure-backoff window →
+`PROXY_PROFILE_REFRESH_BACKOFF` (507); `force: true` bypasses it. A refresh
+failure is **not** a module error: the call returns `state: "failed"` with the
+structured `error`, and the previous profile is left untouched (only the
+`refresh` bookkeeping changes).
+
+`profile.refresh_all` (Todo 14) is a user-triggered batch update. It skips
+profiles that are not due (failure backoff, or the `intervalMs` schedule has not
+elapsed) unless `force: true`, and attempts at most `limit` profiles per call
+(default 8, max 32) — there is **no background/auto refresh loop and no retry
+storm**. `skipped[].reason` is one of `not_refreshable | backoff | interval |
+limit | error`.
+
+`profile.set_schedule` sets (or clears with `intervalMs: 0`) a profile's
+auto-update interval; the next due time is `lastUpdatedAtMs + intervalMs` once a
+success has occurred. Scheduling metadata lives in `RefreshState` (§2.4.3) and is
+already surfaced to the UI through `profile.list` summaries.
 
 Events: `profile.create` → `proxy.subscription.added`,
 `profile.update` → `proxy.subscription.updated`,
-`profile.delete` → `proxy.subscription.removed` (§3). `profile.refresh` emits
-no event — Todo 14 owns the refresh-with-events flow.
+`profile.delete` → `proxy.subscription.removed`, and `profile.refresh` /
+`profile.refresh_all` → `proxy.subscription.progress` + (`proxy.subscription.updated`
+on success | `proxy.subscription.failed` on failure) (§3).
 
 ### 2.5 `config.generate` / `config.apply` — render & hot-apply the engine config (Todo 13)
 
@@ -601,7 +621,9 @@ side filters on the `proxy.` prefix. `instanceId` is always present.
 | `proxy.mode` | `{ "mode":"off"\|"vpn"\|"lanProxy", "previous": string }` |
 | `proxy.node.delay` | `{ "group": string, "node": string, "delayMs": 123, "error"?: string }` |
 | `proxy.stats` | `{ "uploadBytes":0, "downloadBytes":0, "activeConns":0, "upBps":0, "downBps":0 }` (throttled) |
-| `proxy.subscription.updated` | `{ "profileId": string, "nodeCount": 0, "traffic": { "uploadBytes":0, "downloadBytes":0 }, "expireAtMs": 0 }` |
+| `proxy.subscription.updated` | `{ "profileId": string, "nodeCount": 0, "traffic": { "uploadBytes":0, "downloadBytes":0, "totalBytes":0, "usedBytes":0 }, "expireAtMs": 0, "lastUpdatedAtMs"?: 0, "intervalMs"?: 0, "nextRefreshAtMs"?: 0 }` |
+| `proxy.subscription.progress` | `{ "profileId": string, "phase": "fetch"\|"persist", "state": "started"\|"succeeded"\|"failed", "attempts": 0 }` — one `started` per refresh attempt and one terminal `succeeded`/`failed` (Todo 14) |
+| `proxy.subscription.failed` | `{ "profileId": string, "attempts": 0, "consecutiveFailures": 0, "lastAttemptMs": 0, "nextRefreshAtMs": 0, "error": { "code": string, "message": string } }` — the previous profile is preserved and the next attempt is bounded by the backoff (Todo 14) |
 | `proxy.subscription.added` | `{ "profileId": string, "name": string }` |
 | `proxy.subscription.removed` | `{ "profileId": string }` |
 | `proxy.conn` | `{ "action":"open"\|"close", "id": string, "domain"?: string, "outbound"?: string, "uploadBytes"?:0, "downloadBytes"?:0 }` |
@@ -637,6 +659,7 @@ registered in `rust/ERROR_CODES.md`.
 | `PROXY_PROFILE_NOT_FOUND` | 404 | unknown profile id |
 | `PROXY_PROFILE_INVALID` | 422 | invalid store request: missing/empty profile, malformed id, duplicate id, bad refresh state (Todo 12) |
 | `PROXY_PROFILE_NOT_REFRESHABLE` | 422 | `profile.refresh` on a profile whose source is not a URL (text/link origin) (Todo 12) |
+| `PROXY_PROFILE_REFRESH_BACKOFF` | 507 | a non-forced `profile.refresh` inside the bounded failure-backoff window (30s→6h exponential); `force: true` bypasses it (Todo 14) |
 | `PROXY_PROFILE_SCHEMA_UNSUPPORTED` | 422 | on-disk profile schema is newer than this module supports (Todo 12) |
 | `PROXY_PROFILE_TOO_LARGE` | 507 | profile/index payload exceeds the hard cap, too many profiles, or too many nodes (Todo 12) |
 | `PROXY_PROFILE_STORE_FAILED` | 500 | profile store I/O/atomic-write failure (Todo 12) |
@@ -1134,9 +1157,12 @@ see `profile::APP_BACKUP_HOOK`.
 ### 12.6 Outcome surface for other todos
 
 - **Todo 13** reads `profile.get(id).profile` to generate the Clash config.
-- **Todo 14** calls `profile.refresh`, performs `fetch` via
-  `profile.import_url`, then persists with `profile.update`.
-- **Todo 20** consumes `profile.list` summaries (name/userinfo/refresh state).
+- **Todo 14** wires `profile.refresh`/`profile.refresh_all` to the protect-aware
+  importer, emits `proxy.subscription.progress`/`.updated`/`.failed`, and stores
+  the per-profile `intervalMs`/`lastUpdatedAtMs`/backoff metadata.
+- **Todo 20** consumes `profile.list` summaries (name/userinfo/refresh state +
+  scheduling metadata) and calls `profile.refresh`/`profile.refresh_all`/
+  `profile.set_schedule`; Dart only decodes/displays.
 
 ### 12.7 Verification status
 
@@ -1148,8 +1174,15 @@ a failed create not corrupting the index; v1 → v2 index+payload migration with
 structured warning while valid profiles list; a corrupt index rebuilt from the
 payload directory; `profile.refresh` persisting the flag and returning the fetch
 spec; and structured errors for unknown/traversal/duplicate ids and a newer
-schema. **UNVERIFIED**: on-device storage/`adb` reload (no device) — the store
-is exercised against host temp directories only.
+schema. Todo 14 adds: the refresh event sequence
+(`progress(started)→progress(succeeded)→updated` on success, `progress(started)→
+progress(failed)→failed` on failure) with the previous profile preserved on
+failure; bounded backoff refusing a non-forced retry and `force` bypassing it;
+and `profile.refresh_all` skipping non-due profiles (`interval`/`backoff`) while
+never exceeding the per-call limit. **UNVERIFIED**: on-device storage/`adb`
+reload and a real on-device subscription fetch (no device) — the store is
+exercised against host temp directories, the refresh success path uses an
+injected import, and the failure path uses an SSRF-blocked loopback URL.
 
 ## 13. Generated engine config & lifecycle (Todo 13)
 

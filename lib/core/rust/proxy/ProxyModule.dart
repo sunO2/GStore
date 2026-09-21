@@ -68,6 +68,45 @@ enum ProxyMode {
   }
 }
 
+/// 订阅刷新进度阶段（`proxy.subscription.progress.phase`）。
+enum ProxySubscriptionPhase {
+  fetch('fetch'),
+  persist('persist'),
+  unknown('unknown');
+
+  const ProxySubscriptionPhase(this.wire);
+
+  final String wire;
+
+  static ProxySubscriptionPhase fromWire(Object? value) {
+    final s = value?.toString();
+    for (final phase in values) {
+      if (phase.wire == s) return phase;
+    }
+    return ProxySubscriptionPhase.unknown;
+  }
+}
+
+/// 订阅刷新进度状态（`proxy.subscription.progress.state`）。
+enum ProxySubscriptionProgressState {
+  started('started'),
+  succeeded('succeeded'),
+  failed('failed'),
+  unknown('unknown');
+
+  const ProxySubscriptionProgressState(this.wire);
+
+  final String wire;
+
+  static ProxySubscriptionProgressState fromWire(Object? value) {
+    final s = value?.toString();
+    for (final state in values) {
+      if (state.wire == s) return state;
+    }
+    return ProxySubscriptionProgressState.unknown;
+  }
+}
+
 // ==================== 异常 ====================
 
 /// 代理模块调用失败（信封错误或响应非法）。
@@ -475,6 +514,25 @@ sealed class ProxyEvent {
           nodeCount: _asInt(data['nodeCount']),
           traffic: ProxyTraffic.fromJson(data['traffic']),
           expireAtMs: _asInt(data['expireAtMs']),
+          lastUpdatedAtMs: _asInt(data['lastUpdatedAtMs']),
+          intervalMs: _asInt(data['intervalMs']),
+          nextRefreshAtMs: _asInt(data['nextRefreshAtMs']),
+        );
+      case 'proxy.subscription.progress':
+        return ProxySubscriptionProgressEvent(
+          profileId: data['profileId']?.toString() ?? '',
+          phase: ProxySubscriptionPhase.fromWire(data['phase']),
+          state: ProxySubscriptionProgressState.fromWire(data['state']),
+          attempts: _asInt(data['attempts']),
+        );
+      case 'proxy.subscription.failed':
+        return ProxySubscriptionFailedEvent(
+          profileId: data['profileId']?.toString() ?? '',
+          attempts: _asInt(data['attempts']),
+          consecutiveFailures: _asInt(data['consecutiveFailures']),
+          lastAttemptMs: _asInt(data['lastAttemptMs']),
+          nextRefreshAtMs: _asInt(data['nextRefreshAtMs']),
+          error: ProxyStateError.fromJson(data['error']),
         );
       case 'proxy.subscription.added':
         return ProxySubscriptionAddedEvent(
@@ -573,13 +631,16 @@ final class ProxyStatsEvent extends ProxyEvent {
   String get eventType => 'proxy.stats';
 }
 
-/// `proxy.subscription.updated`：订阅信息更新。
+/// `proxy.subscription.updated`：订阅信息更新（含 userinfo 与调度元数据）。
 final class ProxySubscriptionUpdatedEvent extends ProxyEvent {
   const ProxySubscriptionUpdatedEvent({
     required this.profileId,
     required this.nodeCount,
     required this.traffic,
     required this.expireAtMs,
+    this.lastUpdatedAtMs = 0,
+    this.intervalMs = 0,
+    this.nextRefreshAtMs = 0,
   });
 
   final String profileId;
@@ -587,8 +648,57 @@ final class ProxySubscriptionUpdatedEvent extends ProxyEvent {
   final ProxyTraffic traffic;
   final int expireAtMs;
 
+  /// 最近一次成功刷新时间（Unix ms；0 = 未知）。
+  final int lastUpdatedAtMs;
+
+  /// 自动更新间隔（ms；0 = 仅手动）。
+  final int intervalMs;
+
+  /// 下次可刷新的最早时间（Unix ms；0 = 未知）。
+  final int nextRefreshAtMs;
+
   @override
   String get eventType => 'proxy.subscription.updated';
+}
+
+/// `proxy.subscription.progress`：刷新进度（started/succeeded/failed）。
+final class ProxySubscriptionProgressEvent extends ProxyEvent {
+  const ProxySubscriptionProgressEvent({
+    required this.profileId,
+    required this.phase,
+    required this.state,
+    required this.attempts,
+  });
+
+  final String profileId;
+  final ProxySubscriptionPhase phase;
+  final ProxySubscriptionProgressState state;
+  final int attempts;
+
+  @override
+  String get eventType => 'proxy.subscription.progress';
+}
+
+/// `proxy.subscription.failed`：刷新失败（旧 profile 保留，进入有界退避）。
+final class ProxySubscriptionFailedEvent extends ProxyEvent {
+  const ProxySubscriptionFailedEvent({
+    required this.profileId,
+    required this.attempts,
+    required this.consecutiveFailures,
+    required this.lastAttemptMs,
+    required this.nextRefreshAtMs,
+    this.error,
+  });
+
+  final String profileId;
+  final int attempts;
+  final int consecutiveFailures;
+  final int lastAttemptMs;
+  final int nextRefreshAtMs;
+  final ProxyStateError? error;
+
+  @override
+  String get eventType => 'proxy.subscription.failed';
 }
 
 /// `proxy.subscription.added`：订阅新增。

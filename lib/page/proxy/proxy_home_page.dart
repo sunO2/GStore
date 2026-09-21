@@ -95,6 +95,8 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
         case ProxySubscriptionUpdatedEvent():
         case ProxySubscriptionAddedEvent():
         case ProxySubscriptionRemovedEvent():
+        case ProxySubscriptionProgressEvent():
+        case ProxySubscriptionFailedEvent():
         case ProxyConnEvent():
           break;
       }
