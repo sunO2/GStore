@@ -486,6 +486,52 @@ void main() {
         reason: 'states 订阅后立即发布的快照必须可见，不得被竞态丢弃',
       );
     });
+
+    test('(h) 已缓存实例后 ensureStarted：保持 ready 且零新增 ensure/实例', () async {
+      configure(
+        ensure: (m, {required allowDownload, onProgress}) async => true,
+      );
+      await bootstrap.acquire('x');
+      expect(ensureCalls, 1);
+      expect(factoryCalls, 1);
+
+      final states = <ModuleBootstrapState>[];
+      final sub = bootstrap.watch('x').listen(states.add);
+      await pumpEventQueue();
+
+      bootstrap.ensureStarted('x');
+      await pumpEventQueue();
+      await sub.cancel();
+
+      expect(states.last.phase, ModuleBootstrapPhase.ready,
+          reason: '已缓存实例的 ensureStarted 必须保持 ready，不得停在 downloading');
+      expect(
+        states.any((s) => s.phase == ModuleBootstrapPhase.downloading),
+        isFalse,
+        reason: '已缓存实例不得再发布 downloading',
+      );
+      expect(ensureCalls, 1, reason: '已缓存实例不得再次 ensure');
+      expect(factoryCalls, 1, reason: '已缓存实例不得再次创建实例');
+    });
+
+    test('(i) 有缓存实例时 ensureOnly 成功绝不残留 downloading（不变量）', () async {
+      configure(
+        ensure: (m, {required allowDownload, onProgress}) async => true,
+      );
+      await bootstrap.acquire('x');
+      expect(ensureCalls, 1);
+
+      final ok = await bootstrap.ensureOnly('x');
+      await pumpEventQueue();
+
+      expect(ok, isTrue);
+      final snapshot = await bootstrap.states.first;
+      final entry = snapshot.firstWhere((s) => s.module == 'x');
+      expect(entry.phase, ModuleBootstrapPhase.ready,
+          reason: '有缓存实例时 ensureOnly 成功必须收敛到 ready，绝不残留 downloading');
+      expect(ensureCalls, 1, reason: '有缓存实例时 ensureOnly 不得新增 ensure');
+      expect(factoryCalls, 1, reason: 'ensureOnly 不创建实例');
+    });
   });
 
   group('helpers', () {

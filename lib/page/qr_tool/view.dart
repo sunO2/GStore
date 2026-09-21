@@ -8,8 +8,10 @@ import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform, listEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData, HapticFeedback;
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gal/gal.dart';
 import 'package:gstore/core/core.dart';
+import 'package:gstore/core/rust/ModuleBootstrap.dart';
 import 'package:gstore/core/rust/QrRustDecoder.dart';
 import 'package:gstore/page/qr_tool/zoom_controller.dart';
 import 'package:path_provider/path_provider.dart';
@@ -19,12 +21,26 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// 二维码工具模式：生成二维码 / 识别二维码
 enum QrToolMode { generate, scan }
 
+/// `qr` 原生模块自举阶段流 Provider（仅 `qr` 一个模块）。
+///
+/// 桥接 [ModuleBootstrap.watch]('qr')，供识别模式的「准备中 / 已就绪」指示 chip
+/// 订阅。页面内指示（非顶部横幅——顶部横幅就绪即隐藏）。测试可经 `overrideWith`
+/// 注入受控阶段流，无需 FFI / 网络即可验证 chip 各状态。
+final qrModulePhaseProvider = StreamProvider<ModuleBootstrapPhase>((ref) =>
+    ModuleBootstrap.instance.watch('qr').map((state) => state.phase));
+
 /// 二维码工具页：输入文本/链接 → 实时生成二维码；支持长按保存图片（应用目录 + 系统相册）；
 /// 历史生成记录防抖持久化（shared_preferences），点击历史可回填输入。
 /// 「识别二维码」模式复用同一预览区显示相机实时预览，识别结果自动回填输入框，
 /// 识别历史独立持久化（qr_tool_scan_history）。
 class QrToolPage extends StatefulWidget {
-  const QrToolPage({super.key});
+  const QrToolPage({super.key, this.initialMode = QrToolMode.generate});
+
+  /// 页面打开时的初始模式（默认「生成」）。
+  ///
+  /// 供「扫码」直达入口以识别模式打开页面；初始为识别时会在 [initState] 提前预热
+  /// `qr` 模块（与相机初始化并行），而页面以默认生成模式打开时**绝不**预热。
+  final QrToolMode initialMode;
 
   /// 测试注入：系统相册写入结果（null = 走真实 gal；true/false = 模拟结果，不触发真实相册）。
   @visibleForTesting
@@ -254,8 +270,22 @@ class _QrToolPageState extends State<QrToolPage> {
   @override
   void initState() {
     super.initState();
+    _mode = widget.initialMode;
     _loadHistory();
     _loadScanHistory();
+    // 「按需」= 扫码意图，而非页面打开：仅当页面以识别模式进入时预热；以默认
+    // 生成模式打开（只生成二维码）绝不预热，避免让这类用户被动下载模块。
+    if (_mode == QrToolMode.scan) {
+      _prewarmQrModule();
+      // 直达扫码入口：相机初始化与模块预热**并行**（不等待模块就绪）。
+      // post-frame 启动，避免在 initState 同步 setState；回调内复查模式，
+      // 防止首帧前用户已切回生成时误启相机。
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _mode == QrToolMode.scan) {
+          unawaited(_initCamera());
+        }
+      });
+    }
   }
 
   @override
@@ -713,7 +743,23 @@ class _QrToolPageState extends State<QrToolPage> {
       ),
       clipBehavior: Clip.antiAlias,
       child: _mode == QrToolMode.scan
-          ? _buildScanArea(context)
+          ? Stack(
+              fit: StackFit.expand,
+              children: [
+                _buildScanArea(context),
+                // `qr` 模块自举指示：页面内（非顶部横幅，顶部横幅就绪即隐藏），
+                // 贴在预览区底部中央；不拦截相机预览的点击对焦。
+                const Positioned.fill(
+                  child: Align(
+                    alignment: Alignment.bottomCenter,
+                    child: Padding(
+                      padding: AppSpacing.onlyBottomSM,
+                      child: IgnorePointer(child: _QrModulePhaseChip()),
+                    ),
+                  ),
+                ),
+              ],
+            )
           : Center(
               child: FittedBox(
                 fit: BoxFit.contain,
@@ -1048,11 +1094,21 @@ class _QrToolPageState extends State<QrToolPage> {
     return file.path;
   }
 
-  /// 模式切换：切到识别 → 初始化并启动相机；切回生成 → 释放相机（切回识别再重新初始化）
+  /// 提前点火 `qr` 原生模块的下载与挂载，使其与相机初始化**并行**（而非等首帧
+  /// 解码才触发）。「按需」按的是**扫码意图**（进页面即识别 / 切到识别），不是
+  /// 页面打开：仅生成二维码的用户不调用本方法，避免被动下载。
+  void _prewarmQrModule() {
+    QrRustDecoder.prewarm();
+  }
+
+  /// 模式切换：切到识别 → 预热 qr 模块 + 初始化并启动相机；切回生成 → 释放相机
+  /// （切回识别再重新初始化）。
   void _onModeChanged(QrToolMode mode) {
     if (mode == _mode) return;
     setState(() => _mode = mode);
     if (mode == QrToolMode.scan) {
+      // 扫码意图：先预热模块再启动相机（二者并行，下载延迟藏进相机预热窗口）。
+      _prewarmQrModule();
       unawaited(_initCamera());
     } else {
       unawaited(_releaseCamera(_cameraController));
@@ -1966,6 +2022,132 @@ class _QrToolPageState extends State<QrToolPage> {
       _capturedFrame?.dispose();
       _capturedFrame = null;
     });
+  }
+}
+
+/// 识别模式的 `qr` 模块自举指示 chip（页面内，非顶部横幅——顶部横幅就绪即隐藏）。
+///
+/// * `absent`/`downloading`/`initializing` → 「准备中」（进行中状态带 [AppLoading]）；
+/// * `ready` → 短暂显示「已就绪」后自动隐藏（自消失，不长期占用预览）；
+/// * `failed` → 弱化的「模块加载失败」，不崩溃、不遮挡/不阻塞相机预览。
+///
+/// 订阅 [qrModulePhaseProvider]；测试可 `overrideWith` 注入受控阶段流。
+class _QrModulePhaseChip extends ConsumerStatefulWidget {
+  const _QrModulePhaseChip();
+
+  @override
+  ConsumerState<_QrModulePhaseChip> createState() => _QrModulePhaseChipState();
+}
+
+class _QrModulePhaseChipState extends ConsumerState<_QrModulePhaseChip> {
+  /// 「已就绪」保留时长：短暂反馈后自动消失，避免长期遮挡预览。
+  static const Duration _readyVisibleDuration = Duration(milliseconds: 1500);
+
+  Timer? _readyTimer;
+  bool _readyVisible = false;
+  ModuleBootstrapPhase? _observedPhase;
+
+  @override
+  void dispose() {
+    _readyTimer?.cancel();
+    super.dispose();
+  }
+
+  /// 阶段跃迁副作用：`ready` 时启动「短暂显示后隐藏」计时；其它阶段取消隐藏。
+  /// 由 [build] 在订阅值变化时驱动（[_observedPhase] 去重，计时器只建一次）。
+  void _onPhaseChanged(ModuleBootstrapPhase phase) {
+    if (phase == _observedPhase) return;
+    _observedPhase = phase;
+    _readyTimer?.cancel();
+    if (phase == ModuleBootstrapPhase.ready) {
+      _readyVisible = true;
+      _readyTimer = Timer(_readyVisibleDuration, () {
+        if (mounted) setState(() => _readyVisible = false);
+      });
+    } else {
+      _readyVisible = false;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final phase = ref.watch(qrModulePhaseProvider).valueOrNull ??
+        ModuleBootstrapPhase.absent;
+    _onPhaseChanged(phase);
+
+    // 就绪提示是「一次性」反馈：短暂显示后自行消失，不长期占用预览。
+    if (phase == ModuleBootstrapPhase.ready && !_readyVisible) {
+      return const SizedBox.shrink();
+    }
+
+    final scheme = Theme.of(context).colorScheme;
+    switch (phase) {
+      case ModuleBootstrapPhase.ready:
+        return _buildChip(
+          context,
+          background: scheme.secondaryContainer,
+          foreground: scheme.onSecondaryContainer,
+          leading: Icon(
+            Icons.check_circle_outline,
+            size: AppTypography.iconSM,
+            color: scheme.onSecondaryContainer,
+          ),
+          label: '已就绪',
+        );
+      case ModuleBootstrapPhase.failed:
+        return _buildChip(
+          context,
+          background: scheme.surfaceContainerHighest,
+          foreground: scheme.outline,
+          leading: Icon(
+            Icons.error_outline,
+            size: AppTypography.iconSM,
+            color: scheme.outline,
+          ),
+          label: '模块加载失败',
+        );
+      case ModuleBootstrapPhase.absent:
+      case ModuleBootstrapPhase.downloading:
+      case ModuleBootstrapPhase.initializing:
+        return _buildChip(
+          context,
+          background: scheme.surfaceContainerHighest,
+          foreground: scheme.onSurfaceVariant,
+          leading: const AppLoading(size: AppLoadingSize.small),
+          label: '准备中',
+        );
+    }
+  }
+
+  /// 统一 chip 外观：圆角胶囊 + [leading]（图标/Loading）+ 文案（颜色取自主题）。
+  Widget _buildChip(
+    BuildContext context, {
+    required Color background,
+    required Color foreground,
+    required Widget leading,
+    required String label,
+  }) {
+    return Container(
+      padding: AppSpacing.chipPadding,
+      decoration: BoxDecoration(
+        color: background,
+        borderRadius: AppRadius.allCircle,
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          leading,
+          const SizedBox(width: AppSpacing.sm),
+          Text(
+            label,
+            style: Theme.of(context)
+                .textTheme
+                .labelMedium
+                ?.copyWith(color: foreground),
+          ),
+        ],
+      ),
+    );
   }
 }
 

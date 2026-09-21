@@ -1,7 +1,9 @@
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/module/module_toggle_config.dart';
+import 'package:gstore/core/rust/ModuleBootstrap.dart';
 import 'package:gstore/core/rust/ModuleLoader.dart';
 
 import 'state.dart';
@@ -231,20 +233,69 @@ final moduleManageProvider =
   ModuleManageNotifier.new,
 );
 
-/// 原生插件（Rust）只读清单：名称 + 中文说明
-const rustPlugins = <({String name, String title, String description})>[
-  (name: 'qr', title: '二维码解码', description: 'zxing-cpp 图像解码'),
-  (name: 'analyzer', title: 'APK 分析', description: 'Manifest / DEX / ELF 解析'),
-  (name: 'repo', title: 'F-Droid 仓库', description: '仓库索引下载与解析'),
-  (name: 'download', title: '下载内核', description: 'Rust 分段/多线程下载内核'),
-  (name: 'llm', title: '本地大模型', description: 'llama.cpp / GGUF 本地推理（仅 arm64）'),
-];
+/// 原生插件（Rust）展示元数据：模块名 → 标题 + 中文说明。
+///
+/// **成员判定与元数据解耦**：本表只决定「名字如何展示」，**不决定插件是否出现**。
+/// 成员来自清单（`RustModuleLoader.loadModuleManifest()` → 生产为
+/// `ModuleManifestClient`）与本地已安装目录（`RustModuleLoader.installedModuleNames()`）
+/// 的并集；未收录的名字回退为「原始模块名 + 中性占位描述」，绝不臆造也绝不崩溃。
+/// 保留 `llm` 等条目：当它确实出现在清单/本地时仍可正确展示与回退。
+const rustPluginMetadata = <String, ({String title, String description})>{
+  'qr': (title: '二维码解码', description: 'zxing-cpp 图像解码'),
+  'analyzer': (title: 'APK 分析', description: 'Manifest / DEX / ELF 解析'),
+  'repo': (title: 'F-Droid 仓库', description: '仓库索引下载与解析'),
+  'download': (title: '下载内核', description: 'Rust 分段/多线程下载内核'),
+  'llm': (title: '本地大模型', description: 'llama.cpp / GGUF 本地推理（仅 arm64）'),
+};
+
+/// 元数据表中未收录模块的中性占位描述（绝不臆造功能）。
+const String rustPluginUnknownDescription = '原生插件模块';
+
+/// 合并「清单成员」与「本地已安装模块」生成展示用插件列表。
+///
+/// 顺序：清单顺序优先（清单中先出现者在前），其后为「仅本地已安装」按字典序
+/// 升序；按名称去重（同时命中清单与本地只出现一次）。标题/描述查
+/// [rustPluginMetadata]，未收录 → 标题回退为原始模块名、描述回退
+/// [rustPluginUnknownDescription]。
+///
+/// 该函数为纯函数：不读文件、不发网络、不抛异常。
+List<RustPluginInfo> resolveRustPlugins({
+  required Iterable<String> manifestNames,
+  required Iterable<String> installedNames,
+}) {
+  final seen = <String>{};
+  final out = <RustPluginInfo>[];
+  void add(String name) {
+    if (name.isEmpty || !seen.add(name)) return;
+    final meta = rustPluginMetadata[name];
+    out.add((
+      name: name,
+      title: meta?.title ?? name,
+      description: meta?.description ?? rustPluginUnknownDescription,
+    ));
+  }
+
+  for (final name in manifestNames) {
+    add(name);
+  }
+  final installedOnly = installedNames
+      .where((name) => name.isNotEmpty && !seen.contains(name))
+      .toSet()
+      .toList()
+    ..sort();
+  for (final name in installedOnly) {
+    add(name);
+  }
+  return out;
+}
 
 /// 原生插件状态 + 下载/更新/回退控制器。
 ///
 /// 状态经 [RustModuleLoader.probe]（隔离感知、与解析顺序语义一致）刷新；
 /// 下载/更新走 `downloadAndInstall`（后台安装，不挂载），回退走
-/// `rollbackToBuiltin`（删除已下载产物并挂载内置）。UI 绝不直接 dlopen。
+/// `rollbackToBuiltin`（**仅在内置产物真实存在时**才删除已下载产物并挂载内置；
+/// slim 无内置时为非破坏性失败），清除走 `clearDownloadedModule`。UI 绝不直接
+/// dlopen。
 class RustPluginsController extends Notifier<RustPluginsState> {
   /// Notifier 销毁标记：异步刷新回来时不再写已废弃 state。
   bool _disposed = false;
@@ -259,21 +310,52 @@ class RustPluginsController extends Notifier<RustPluginsState> {
 
   RustModuleLoader get _loader => RustModuleLoader.instance;
 
-  /// 经加载器刷新全部插件真实状态（远端版本可解析时一并展示）。
+  /// 解析展示用插件列表：清单成员优先，其后为「仅本地已安装」按字典序。
+  ///
+  /// 清单经 [RustModuleLoader.loadModuleManifest]（生产即 `ModuleManifestClient`，
+  /// 完整保留缓存/网络/随包兜底链路）；不可用或抛异常 → 降级为「仅本地已安装」，
+  /// 绝不阻断页面加载。本地枚举经 [RustModuleLoader.installedModuleNames]（绝不抛）。
+  Future<List<RustPluginInfo>> _resolvePluginList() async {
+    final manifestNames = <String>[];
+    try {
+      final manifest = await _loader.loadModuleManifest();
+      if (manifest != null) manifestNames.addAll(manifest.modules.keys);
+    } catch (e) {
+      debugPrint('RustPluginsController: 清单不可用，降级为本地已安装 - $e');
+    }
+    final installed = await _loader.installedModuleNames();
+    return resolveRustPlugins(
+      manifestNames: manifestNames,
+      installedNames: installed,
+    );
+  }
+
+  /// 经加载器刷新插件成员与全部插件真实状态（远端版本可解析时一并展示）。
+  ///
+  /// 成员每次刷新时重算（清单可能已更新/本地安装可能变化）；列表为空时
+  /// `loading` 仍归 false，页面展示空状态而非卡死。
   Future<void> refresh() async {
+    final plugins = await _resolvePluginList();
+    if (_disposed) return;
     final out = <RustModuleStatus>[];
     String? error;
-    for (final p in rustPlugins) {
+    for (final p in plugins) {
       try {
         out.add(await _loader.probe(p.name, withRemote: true));
       } catch (e) {
         error = '$e';
-        out.add(RustModuleStatus(name: p.name, exists: false, source: 'none'));
+        out.add(RustModuleStatus(
+          name: p.name,
+          exists: false,
+          source: 'none',
+          hasBuiltin: false,
+        ));
       }
     }
     if (_disposed) return;
     state = state.copyWith(
       loading: false,
+      plugins: plugins,
       statuses: out,
       error: error,
       clearError: error == null,
@@ -297,7 +379,7 @@ class RustPluginsController extends Notifier<RustPluginsState> {
       ok = await _loader.downloadAndInstall(
         name,
         allowBootstrap: name == RustModuleLoader.downloadModuleName,
-        onProgress: (fraction) => _setProgress(name, fraction),
+        onProgress: (fraction, {sizeBytes}) => _setProgress(name, fraction),
       );
     } catch (e) {
       failure = '$e';
@@ -318,7 +400,18 @@ class RustPluginsController extends Notifier<RustPluginsState> {
     return ok;
   }
 
-  /// 回退到内置 / 清除已下载：删除下载产物并尝试挂载内置模块。
+  /// 回退到内置：删除下载产物并尝试挂载内置模块。
+  ///
+  /// 加载器在**无内置真实产物**（精简包 slim）时按非破坏性语义返回 `false`
+  /// 且**不删除**任何文件。此处的失败**绝不静默吞掉**——经统一 [AppDialogs]
+  /// 错误 Snackbar 明确告知用户，并写入页面可见错误行。
+  ///
+  /// **仅在回退成功时**作废自举门的缓存：回退删除了下载产物并挂载内置，回退前
+  /// 缓存的实例/状态已属于旧世界，必须由 [ModuleBootstrap.invalidate] 淘汰，
+  /// 否则后续 `acquire` 会命中陈旧实例、掩盖回退直到重启。加载器侧同时经
+  /// [RustModuleLoader.invalidateModule] 打「代号墓碑」，让回退时仍在途的孤儿
+  /// 安装于下一个写盘检查点自行中止（不强杀在途 future）。返回 `false` 时**绝不**
+  /// 作废：非破坏性失败必须保持模块原样可用。
   Future<bool> rollback(String name) async {
     if (state.isBusy(name)) return false;
     _setBusy(name, true);
@@ -326,11 +419,49 @@ class RustPluginsController extends Notifier<RustPluginsState> {
     var ok = false;
     try {
       ok = await _loader.rollbackToBuiltin(name);
-    } catch (_) {
+      if (ok) {
+        _loader.invalidateModule(name);
+        ModuleBootstrap.instance.invalidate(name);
+      }
+    } catch (e) {
+      debugPrint('RustPluginsController: 模块 $name 回退失败 - $e');
       ok = false;
     } finally {
       await refresh();
       _setBusy(name, false);
+    }
+    if (!ok) {
+      const message = '无法回退到内置版本（精简包无内置版本或内置挂载失败）';
+      _setError(name, message);
+      AppDialogs.showError(message);
+    }
+    return ok;
+  }
+
+  /// 清除已下载产物（仅 slim：无内置可回退时的显式破坏性恢复路径）。
+  ///
+  /// **绝不**由普通点击触发：UI 必须先经统一危险确认弹层
+  /// （[AppDialogs.showConfirmSheet] `isDangerous: true`）后才调用本方法。
+  /// 结果经统一 [AppDialogs] Snackbar 反馈，并刷新状态。
+  Future<bool> clearDownloaded(String name) async {
+    if (state.isBusy(name)) return false;
+    _setBusy(name, true);
+    _clearError(name);
+    var ok = false;
+    try {
+      await _loader.clearDownloadedModule(name);
+      ok = true;
+    } catch (e) {
+      debugPrint('RustPluginsController: 清除模块 $name 已下载产物失败 - $e');
+      ok = false;
+    } finally {
+      await refresh();
+      _setBusy(name, false);
+    }
+    if (ok) {
+      AppDialogs.showSuccess('已清除模块 $name 的已下载文件');
+    } else {
+      AppDialogs.showError('清除模块 $name 的已下载文件失败');
     }
     return ok;
   }

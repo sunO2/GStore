@@ -20,6 +20,25 @@ import 'package:gstore/core/rust/ModuleLoader.dart';
 import 'package:gstore/core/service/download_notification_service.dart';
 import 'package:gstore/page/module_manage/view.dart';
 
+/// 单模块单 ABI 的 v2 清单（测试注入，零网络）：仅声明 qr。
+///
+/// 插件成员由清单/本地并集决定（不再硬编码），故需显式注入才能看到 qr 行。
+Map<String, dynamic> _manifestQr() => {
+      'version': 2,
+      'modules': {
+        'qr': {
+          'version': '1.0.0',
+          'abi': {
+            'x86_64': {
+              'asset': 'libgstore_mod_qr_1.0.0-x86_64.so',
+              'sha256': '0'.padRight(64, '0'),
+              'size': 1,
+            },
+          },
+        },
+      },
+    };
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -83,6 +102,8 @@ void main() {
     final gateDone = Completer<void>();
 
     loader.debugConfigure(
+      installedNamesOverride: () async => const [],
+      manifestOverride: _manifestQr(),
       probeOverride: (name) async =>
           name == 'qr' ? remoteQr() : none(name),
       downloadProgressOverride: (name, onProgress) async {
@@ -155,6 +176,8 @@ void main() {
     useTallViewport(tester);
 
     loader.debugConfigure(
+      installedNamesOverride: () async => const [],
+      manifestOverride: _manifestQr(),
       probeOverride: (name) async =>
           name == 'qr' ? remoteQr() : none(name),
       downloadProgressOverride: (name, onProgress) async {
@@ -192,6 +215,8 @@ void main() {
     useTallViewport(tester);
 
     loader.debugConfigure(
+      installedNamesOverride: () async => const [],
+      manifestOverride: _manifestQr(),
       probeOverride: (name) async =>
           name == 'qr' ? remoteQr() : none(name),
       downloadProgressOverride: (name, onProgress) async {
@@ -225,21 +250,23 @@ void main() {
 
     final hold = Completer<bool>();
     loader.debugConfigure(
+      installedNamesOverride: () async => const [],
+      manifestOverride: _manifestQr(),
       probeOverride: (name) async =>
           name == 'qr' ? remoteQr() : none(name),
       downloadProgressOverride: (name, onProgress) => hold.future,
     );
     await pumpPage(tester);
 
-    // 初始 5 个「下载」按钮（qr 可用 + 其余 4 禁用）。
-    expect(find.widgetWithText(FilledButton, '下载'), findsNWidgets(5));
+    // 清单仅声明 qr → 初始 1 个「下载」按钮（qr 可用）。
+    expect(find.widgetWithText(FilledButton, '下载'), findsNWidgets(1));
 
     await tester.tap(qrDownload());
     await tester.pump();
 
     // busy：AppLoading 呈现；qr 行下载按钮被取代（防连击）；回退按钮禁用。
     expect(find.byType(AppLoading), findsOneWidget);
-    expect(find.widgetWithText(FilledButton, '下载'), findsNWidgets(4),
+    expect(find.widgetWithText(FilledButton, '下载'), findsNWidgets(0),
         reason: 'busy 的 qr 行不再渲染下载按钮');
     final rollback = find.widgetWithText(OutlinedButton, '回退到内置').first;
     expect(tester.widget<OutlinedButton>(rollback).onPressed, isNull);

@@ -49,6 +49,13 @@ class RustModuleStatus {
   /// 下载目录内是否存在任一模块 `.so` 产物（含无效/被隔离者）。
   final bool hasDownloaded;
 
+  /// 是否存在可回退的**内置真实产物**（随包 `.so`，非清单声明）。
+  ///
+  /// 与 [hasDownloaded] 相互独立：一个已下载模块仍可能同时具备内置回退；
+  /// **精简包（slim）**排除了 `libgstore_mod_*.so`，此处恒为 `false`，UI 据此
+  /// 不提供「回退到内置」（无内置可挂载，回退只会破坏已下载模块）。
+  final bool hasBuiltin;
+
   const RustModuleStatus({
     required this.name,
     required this.exists,
@@ -61,6 +68,7 @@ class RustModuleStatus {
     this.updateAvailable = false,
     this.quarantined = false,
     this.hasDownloaded = false,
+    this.hasBuiltin = false,
   });
 
   /// 来源中文标签
@@ -74,9 +82,25 @@ class RustModuleStatus {
 
 /// 内部下载进度回调：`fraction` 为 `[0,1]` 的完成比例。
 ///
-/// 仅用于**模块管理页**展示内部下载进度；**绝不**进入用户下载管线
+/// [sizeBytes] 为清单声明的权威资产字节数（未知时 `null`）；供顶部横幅显示
+/// 「约 X MB · 仅需一次」。
+///
+/// 仅用于**模块管理页/顶部横幅**展示内部下载进度；**绝不**进入用户下载管线
 /// （不产生下载任务/系统通知），见 `.omo/plans/remote-plugin-download.md` Todo 16。
-typedef ModuleProgressCallback = void Function(double fraction);
+typedef ModuleProgressCallback = void Function(double fraction, {int? sizeBytes});
+
+/// 字节进度 → 下载阶段比例 `[0.05, 0.70)` 的纯映射。
+///
+/// * `denom` 优先取下载层总长 [total]（`null` 时回退清单声明体积 [expectedSize]）；
+/// * `denom > 0` → `0.05 + 0.65 * (received / denom)`，并夹取到 `[0.05, 0.70]`
+///   （`received` 可能因压缩/回退而超过 `denom`，夹取保证不越界）；
+/// * `denom` 未知或非正 → 固定 `0.05`（无进度可用，只报告起点）。
+double mapByteProgress(int received, int? total, int? expectedSize) {
+  final denom = total ?? expectedSize;
+  if (denom == null || denom <= 0) return 0.05;
+  final mapped = 0.05 + 0.65 * (received / denom);
+  return mapped.clamp(0.05, 0.70).toDouble();
+}
 
 /// 模块加载器：负责模块 .so 的按需下载 → 哈希校验 → 宿主 dlopen 挂载。
 ///
@@ -134,6 +158,9 @@ class RustModuleLoader {
 
   /// 内置 `.so` 路径覆盖（测试专用；桌面测试模拟 Kotlin `extractModule`）。
   Future<String?> Function(String name)? _builtinSoPathOverride;
+
+  /// 已安装模块名枚举覆盖（测试专用；避免真实目录 IO 在 fake-async 下挂起）。
+  Future<List<String>> Function()? _installedNamesOverride;
 
   /// `probe` 整体覆盖（测试专用；返回注入状态，绕过真实探测）。
   Future<RustModuleStatus> Function(String name)? _probeOverride;
@@ -315,6 +342,7 @@ class RustModuleLoader {
     Future<bool> Function(String name)? downloadOverride,
     Future<bool> Function(String name, ModuleProgressCallback? onProgress)?
         downloadProgressOverride,
+    Future<List<String>> Function()? installedNamesOverride,
     DateTime Function()? clock,
     void Function(String name, String soPath)? beforeMetaWrite,
     Duration? installTimeout,
@@ -327,6 +355,7 @@ class RustModuleLoader {
     _isLoadedOverride = isLoadedOverride;
     _mountOverride = mountOverride;
     _builtinSoPathOverride = builtinSoPathOverride;
+    _installedNamesOverride = installedNamesOverride;
     _probeOverride = probeOverride;
     _rollbackOverride = rollbackOverride;
     _downloadOverride = downloadOverride;
@@ -357,6 +386,7 @@ class RustModuleLoader {
     _isLoadedOverride = null;
     _mountOverride = null;
     _builtinSoPathOverride = null;
+    _installedNamesOverride = null;
     _probeOverride = null;
     _rollbackOverride = null;
     _downloadOverride = null;
@@ -386,6 +416,7 @@ class RustModuleLoader {
       _isLoadedOverride != null ||
       _mountOverride != null ||
       _builtinSoPathOverride != null ||
+      _installedNamesOverride != null ||
       _probeOverride != null ||
       _rollbackOverride != null ||
       _downloadOverride != null ||
@@ -409,9 +440,53 @@ class RustModuleLoader {
   @visibleForTesting
   Duration get debugInstallTimeout => _installTimeout;
 
+  /// 读取模块清单（模块管理页「原生插件」成员判定用）。
+  ///
+  /// 生产经注入的 [ModuleManifestSource] 读取——即 `main.dart` 接线的
+  /// `ModuleManifestClient`，完整保留其「磁盘缓存 → 网络 → 陈旧缓存 → 随包 v2
+  /// 清单」解析链路（不改变任何缓存/兜底语义，也不强制刷新）。
+  /// 测试可经 [debugConfigure] 的 `manifestOverride` / `manifestSource` 注入。
+  /// 未配置来源、解析失败或网络失败 → 返回 `null`，**绝不抛异常**。
+  Future<ModuleManifestV2?> loadModuleManifest({bool forceRefresh = false}) =>
+      _remoteManifest(forceRefresh: forceRefresh);
+
   /// 读取清单（测试专用；覆盖生效时不触发真实网络）。
   @visibleForTesting
   Future<ModuleManifestV2?> debugLoadManifest() => _remoteManifest();
+
+  /// 已安装（含已下载）模块名列表：枚举 `<support>/gstore_modules/*` 目录名。
+  ///
+  /// 供模块管理页把「清单未声明但本地已安装」的模块也展示出来（可回退/清除），
+  /// 避免升级/摘要变更后旧模块在 UI 中消失。跳过以下划线开头的保留目录
+  /// （如 `_cache`）。返回按字典序升序；目录不存在、不可读或任何异常 →
+  /// 返回 `const []`，**绝不抛异常**。
+  Future<List<String>> installedModuleNames() async {
+    final override = _installedNamesOverride;
+    if (override != null) {
+      try {
+        return await override();
+      } catch (e) {
+        appLog.warning('RustModuleLoader: 注入的已安装模块枚举失败 - $e');
+        return const [];
+      }
+    }
+    try {
+      final root = Directory(p.join(await _supportDir(), 'gstore_modules'));
+      if (!await root.exists()) return const [];
+      final names = <String>[];
+      await for (final entity in root.list(followLinks: false)) {
+        if (entity is! Directory) continue;
+        final name = p.basename(entity.path);
+        if (name.isEmpty || name.startsWith('_')) continue;
+        names.add(name);
+      }
+      names.sort();
+      return names;
+    } catch (e) {
+      appLog.warning('RustModuleLoader: 枚举已安装模块失败 - $e');
+      return const [];
+    }
+  }
 
   /// 注入的时钟（测试专用；未配置 → null）。
   @visibleForTesting
@@ -679,11 +754,15 @@ class RustModuleLoader {
     String? soPath;
     String? version;
     var hasDownloaded = false;
+    var hasBuiltin = false;
     var quarantined = false;
     String? remoteVersion;
     try {
       final local = await _resolveLocalSo(name);
       hasDownloaded = await _hasDownloadedArtifact(name);
+      // 内置**真实产物**判定在**所有**分支进行：已下载模块也必须能报告是否存在
+      // 可回退的内置版本（slim 下为 false），UI 据此决定是否提供「回退到内置」。
+      final builtinExists = await _builtinArtifactExists(name);
 
       if (local != null) {
         source = 'downloaded';
@@ -698,7 +777,7 @@ class RustModuleLoader {
         // 声明仍在但 `.so` 被排除）。可用性必须以真实产物（`hasModule`/
         // 已解压只读路径）为准。
         version = await _builtinVersion(name);
-        if (await _builtinArtifactExists(name)) {
+        if (builtinExists) {
           source = 'builtin';
           soPath = await _builtinSoPathReadOnly(name);
         }
@@ -728,8 +807,11 @@ class RustModuleLoader {
           remoteVersion = remote;
         }
       }
+
+      // 全部探测步骤成功完成后再落定内置可用性；防御/异常路径保持 false。
+      hasBuiltin = builtinExists;
     } catch (_) {
-      // 平台不可用 → 保持 none
+      // 平台不可用 → 保持 none（hasBuiltin 亦保持 false）
     }
 
     // 有更新：远端版本高于当前可用基线（本地有效版本或内置版本）。
@@ -751,6 +833,7 @@ class RustModuleLoader {
       updateAvailable: updateAvailable,
       quarantined: quarantined,
       hasDownloaded: hasDownloaded,
+      hasBuiltin: hasBuiltin,
     );
   }
 
@@ -827,18 +910,29 @@ class RustModuleLoader {
     }
   }
 
-  /// 回退内置：删除全部已下载产物（含隔离标记）后尝试挂载内置模块。
+  /// 回退内置：**仅当内置产物真实存在时**才删除全部已下载产物（含隔离标记）
+  /// 并挂载内置模块。
+  ///
+  /// **顺序关键（slim 变体回归修复）**：必须**先解析内置产物**，不存在则**立即
+  /// 返回 `false`，绝不删除任何已下载文件**。旧实现先 [clearDownloadedModule]
+  /// 再查内置，在精简包（随包**不含** `libgstore_mod_*.so`，模块仅可下载）下会
+  /// 先把下载产物删掉、随后因无内置可挂载而返回 `false`，导致该模块被**不可逆
+  /// 地清除**（bricked）。故此处内置解析优先：无内置 = 非破坏性失败。
+  ///
+  /// 测试接缝：注入 [_rollbackOverride] 时整体短路（保持既有接缝语义不变）。
   Future<bool> rollbackToBuiltin(String name) async {
-    // 测试接缝：注入回退结果（无 FFI）。生产路径未配置时行为不变。
     final override = _rollbackOverride;
     if (override != null) return override(name);
 
-    await clearDownloadedModule(name);
+    // 先确认内置真实产物存在；不存在则直接失败，绝不触碰下载产物。
     final builtinSo = await _builtinSoPath(name);
-    if (builtinSo != null && File(builtinSo).existsSync()) {
-      return _mountLocal(name, builtinSo);
+    if (builtinSo == null || !File(builtinSo).existsSync()) {
+      appLog.info('RustModuleLoader: $name 无内置产物，回退非破坏性失败（保留已下载文件）');
+      return false;
     }
-    return false;
+    // 存在可挂载的内置版本 → 此时才允许删除已下载产物并回退。
+    await clearDownloadedModule(name);
+    return _mountLocal(name, builtinSo);
   }
 
   /// 清除某模块的全部已下载产物（`.so`/`.meta`/`.sig`/`quarantine.json`）。
@@ -889,6 +983,7 @@ class RustModuleLoader {
           sha256: loc.sha256,
           version: loc.version,
           signature: null,
+          size: loc.size,
         );
       }
     }
@@ -904,6 +999,7 @@ class RustModuleLoader {
       sha256: abiAsset.sha256,
       version: entry.version,
       signature: abiAsset.signature,
+      size: abiAsset.size,
     );
   }
 
@@ -1097,10 +1193,14 @@ class RustModuleLoader {
   }
 
   /// 上报一次内部下载进度；回调抛出的异常被捕获并记录，**绝不**中断安装。
-  void _reportProgress(ModuleProgressCallback? onProgress, double fraction) {
+  void _reportProgress(
+    ModuleProgressCallback? onProgress,
+    double fraction, {
+    int? sizeBytes,
+  }) {
     if (onProgress == null) return;
     try {
-      onProgress(fraction);
+      onProgress(fraction, sizeBytes: sizeBytes);
     } catch (e) {
       appLog.warning('RustModuleLoader: 进度回调异常（已忽略）- $e');
     }
@@ -1160,8 +1260,9 @@ class RustModuleLoader {
   /// 任一步失败只留下可被启动清理的 `.tmp`，绝不产生「有 `.so` 无 `.meta`」以外的
   /// 半写提交（后者由挂载期 fail-closed 拦截）。
   ///
-  /// [onProgress]（可选）：分步进度（下载 0.05 → 落盘 0.7 → 校验 0.85 →
-  /// 安装完成 1.0）。内部下载为一次性字节获取，故按步骤而非字节上报。
+  /// [onProgress]（可选）：下载阶段按字节上报（`0.05` 起点 → 字节进度映射到
+  /// `[0.05, 0.70]`；仅当注入下载器实现 [ProgressAwareModuleFetcher] 或走 HTTP
+  /// 兜底路径时有细粒度），随后落盘 0.7 → 校验 0.85 → 安装完成 1.0。
   ///
   /// 进度回调抛出的异常一律被 [_reportProgress] 捕获并记录，**绝不**中断安装。
   Future<bool> _downloadAndInstall(
@@ -1201,12 +1302,41 @@ class RustModuleLoader {
   bool _installationSuperseded(String name, int generation) =>
       _installGeneration[name] != generation;
 
+  /// 无条件递增 [name] 的安装代号（返回新值），使所有既有代号失效。
+  ///
+  /// 供两条路径复用：整体超时 [_invalidateInstall]（仅当代号仍匹配时作废）与
+  /// 回退成功后的 [invalidateModule]（无需匹配，直接作废任何在途安装）。
+  int _bumpInstallGeneration(String name) {
+    final next = (_installGeneration[name] ?? 0) + 1;
+    _installGeneration[name] = next;
+    return next;
+  }
+
   /// 作废代号为 [generation] 的安装：只有它仍是当前安装时才递增，避免误伤已开始
   /// 的更新安装。用于整体超时路径，使孤儿安装无法再写共享路径。
   void _invalidateInstall(String name, int generation) {
     if (_installGeneration[name] == generation) {
-      _installGeneration[name] = generation + 1;
+      _bumpInstallGeneration(name);
     }
+  }
+
+  /// 回退到内置成功后作废模块 [name] 当前在途的安装（若有时）。
+  ///
+  /// 递增该模块的安装代号，使任何在途的孤儿安装在**下一个写入检查点**自行中止
+  /// （[_downloadAndInstallInner] 在写 `.tmp`/提交 `.so`/写 `.meta`/写 `.sig`/写
+  /// `version`/挂载前均复核代号）。**绝不**取消或强制完成底层 future，**也绝不**
+  /// 移除其每模块单飞/安装锁条目：`ensureModule` 的 future 不可取消，loader 的
+  /// 每模块安装锁仍持有它；强行移除只会让后续调用发起第二次并发安装、交错写共享
+  /// 的 `.tmp`/`.so`/`.meta`。因此这里复用整体超时所用的同一个「代号作废」机制。
+  ///
+  /// 返回调用前是否存在任何在途安装（确保单飞/安装锁/后台更新）；无在途时为无害
+  /// no-op（仍递增代号，对后续全新安装无影响）。
+  bool invalidateModule(String name) {
+    final inFlight = _ensureInFlight.containsKey(name) ||
+        _installTail.containsKey(name) ||
+        _bgInFlight.contains(name);
+    _bumpInstallGeneration(name);
+    return inFlight;
   }
 
   Future<bool> _downloadAndInstallInner(
@@ -1248,8 +1378,16 @@ class RustModuleLoader {
 
       // 1. 下载到 `<finalSo>.tmp`（注入下载器优先；测试无网络）。
       appLog.info('RustModuleLoader: 下载模块 $name <- ${resolved.url}');
-      _reportProgress(onProgress, 0.05);
-      final resp = await _fetchBytes(resolved.url, maxBytes: _maxModuleBytes);
+      _reportProgress(onProgress, 0.05, sizeBytes: resolved.size);
+      final resp = await _fetchBytes(
+        resolved.url,
+        maxBytes: _maxModuleBytes,
+        onBytes: (received, total) => _reportProgress(
+          onProgress,
+          mapByteProgress(received, total, resolved.size),
+          sizeBytes: resolved.size,
+        ),
+      );
       if (resp == null) {
         appLog.warning('RustModuleLoader: $name 下载失败');
         await _deleteQuietly(tmpFile);
@@ -1261,7 +1399,7 @@ class RustModuleLoader {
         return false;
       }
       await tmpFile.writeAsBytes(resp, flush: true);
-      _reportProgress(onProgress, 0.7);
+      _reportProgress(onProgress, 0.7, sizeBytes: resolved.size);
 
       // 2. 校验清单 SHA-256：不符 → 删除 `.tmp`，无最终 `.so`/`.meta`。
       final actual = _sha256Hex(resp);
@@ -1270,7 +1408,7 @@ class RustModuleLoader {
         await _deleteQuietly(tmpFile);
         return false;
       }
-      _reportProgress(onProgress, 0.85);
+      _reportProgress(onProgress, 0.85, sizeBytes: resolved.size);
 
       // 3. **先**提交 `.so`：`.tmp` → 三段式最终文件名。
       //    提交前复核代号：绝不用被取代/超时的孤儿产物覆盖新安装的最终产物。
@@ -1320,7 +1458,7 @@ class RustModuleLoader {
         return false;
       }
       await _writeLocalVersion(name, resolved.version);
-      _reportProgress(onProgress, 1.0);
+      _reportProgress(onProgress, 1.0, sizeBytes: resolved.size);
 
       // 清理本次可能产生的 `.meta.tmp`/`.sig.tmp` 残留。
       await _deleteQuietly(File('${metaFile.path}.tmp'));
@@ -1717,14 +1855,27 @@ class RustModuleLoader {
   /// 获取资产字节：优先注入的 [ModuleFetcher]（测试/Todo 3 下载器），
   /// 否则走生产 `HttpClient`。
   ///
+  /// [onBytes]（可选）：字节级进度回调。当注入下载器 `is ProgressAwareModuleFetcher`
+  /// 时经 [ProgressAwareModuleFetcher.fetchWithProgress] 原样透传；否则（含 HTTP
+  /// 兜底路径）不产生字节进度，退化为无进度下载。
+  ///
   /// 自身受 [_installTimeout] 约束：挂起的传输在该上限内以 `null` 结束（失败），
   /// 使 [_downloadAndInstall] 正常返回 `false` 并释放安装锁；HTTP 路径在超时时
   /// 强制断开连接（**最佳努力中止**），不留下继续写入的孤儿请求。
-  Future<Uint8List?> _fetchBytes(String url, {int? maxBytes}) async {
+  Future<Uint8List?> _fetchBytes(
+    String url, {
+    int? maxBytes,
+    void Function(int received, int? total)? onBytes,
+  }) async {
     final fetcher = _downloader;
     final effective = _installTimeout;
     if (fetcher != null) {
       try {
+        if (fetcher is ProgressAwareModuleFetcher) {
+          return await fetcher
+              .fetchWithProgress(url, maxBytes: maxBytes, onProgress: onBytes)
+              .timeout(effective);
+        }
         return await fetcher.fetch(url, maxBytes: maxBytes).timeout(effective);
       } on TimeoutException {
         appLog.warning(
@@ -1735,13 +1886,19 @@ class RustModuleLoader {
         return null;
       }
     }
-    return _httpGetBytes(url, timeout: effective, maxBytes: maxBytes);
+    return _httpGetBytes(
+      url,
+      timeout: effective,
+      maxBytes: maxBytes,
+      onProgress: onBytes,
+    );
   }
 
   Future<Uint8List?> _httpGetBytes(
     String url, {
     Duration? timeout,
     int? maxBytes,
+    void Function(int received, int? total)? onProgress,
   }) async {
     final effective = timeout ?? _installTimeout;
     // `force: true` 在超时/异常时强制断开底层连接（最佳努力中止传输）。
@@ -1758,6 +1915,10 @@ class RustModuleLoader {
       final limit = maxBytes;
       await for (final chunk in resp.timeout(effective)) {
         builder.add(chunk);
+        onProgress?.call(
+          builder.length,
+          resp.contentLength > 0 ? resp.contentLength : null,
+        );
         if (limit != null && limit > 0 && builder.length > limit) {
           appLog.warning(
               'RustModuleLoader: HTTP 下载超过 maxBytes（$limit），中止请求 - $url');
@@ -1802,10 +1963,14 @@ class _RemoteTarget {
   final String version;
   final String? signature;
 
+  /// 清单声明的权威资产字节数（未知 → null）；供进度映射与横幅体积显示。
+  final int? size;
+
   const _RemoteTarget({
     required this.url,
     required this.sha256,
     required this.version,
     this.signature,
+    this.size,
   });
 }

@@ -225,6 +225,8 @@ void main() {
     testWidgets('插件行渲染「下载」与「回退到内置」按钮', (tester) async {
       useTallViewport(tester);
       loader.debugConfigure(
+        installedNamesOverride: () async => const [],
+        manifestOverride: _manifest(module: 'qr', version: '1.0.0'),
         probeOverride: (name) async => name == 'qr'
             ? const RustModuleStatus(
                 name: 'qr',
@@ -250,6 +252,8 @@ void main() {
     testWidgets('已下载有效产物 + 远端更高版本 → 显示「更新」且可用', (tester) async {
       useTallViewport(tester);
       loader.debugConfigure(
+        installedNamesOverride: () async => const [],
+        manifestOverride: _manifest(module: 'qr', version: '2.0.0'),
         probeOverride: (name) async => name == 'qr'
             ? const RustModuleStatus(
                 name: 'qr',
@@ -277,12 +281,16 @@ void main() {
     testWidgets('隔离模块渲染为不可用：按钮禁用 + 隔离说明', (tester) async {
       useTallViewport(tester);
       loader.debugConfigure(
+        installedNamesOverride: () async => const [],
+        manifestOverride: _manifest(module: 'qr', version: '1.0.0'),
         probeOverride: (name) async => name == 'qr'
             ? const RustModuleStatus(
                 name: 'qr',
                 exists: false,
                 source: 'none',
                 hasDownloaded: true,
+                // 存在内置真实产物 → 回退可用于恢复。
+                hasBuiltin: true,
                 quarantined: true,
               )
             : none(name),
@@ -317,6 +325,7 @@ void main() {
             exists: true,
             source: 'builtin',
             version: '1.0.0',
+            hasBuiltin: true,
           );
         }
         return const RustModuleStatus(
@@ -324,11 +333,14 @@ void main() {
           exists: false,
           source: 'none',
           hasDownloaded: true,
+          hasBuiltin: true,
           quarantined: true,
         );
       }
 
       loader.debugConfigure(
+        installedNamesOverride: () async => const [],
+        manifestOverride: _manifest(module: 'qr', version: '1.0.0'),
         probeOverride: (name) async => statusOf(name),
         rollbackOverride: (name) async {
           rollbackCalls++;
@@ -365,12 +377,15 @@ void main() {
       var rollbackCalls = 0;
 
       loader.debugConfigure(
+        installedNamesOverride: () async => const [],
+        manifestOverride: _manifest(module: 'qr', version: '1.0.0'),
         probeOverride: (name) async => name == 'qr'
             ? const RustModuleStatus(
                 name: 'qr',
                 exists: false,
                 source: 'none',
                 hasDownloaded: true,
+                hasBuiltin: true,
                 quarantined: true,
               )
             : none(name),
@@ -389,6 +404,136 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(rollbackCalls, 0, reason: '取消后不得调用回退');
+      expect(tester.takeException(), isNull);
+    });
+  });
+
+  group('slim 门控：无内置不提供回退', () {
+    testWidgets('hasDownloaded 且 !hasBuiltin → 回退禁用 + slim 提示 + 绝不调用回退',
+        (tester) async {
+      useTallViewport(tester);
+      var rollbackCalls = 0;
+
+      loader.debugConfigure(
+        installedNamesOverride: () async => const [],
+        manifestOverride: _manifest(module: 'qr', version: '1.0.0'),
+        probeOverride: (name) async => name == 'qr'
+            ? const RustModuleStatus(
+                name: 'qr',
+                exists: false,
+                source: 'none',
+                hasDownloaded: true,
+                // 精简包：随包无 libgstore_mod_qr.so。
+                hasBuiltin: false,
+                quarantined: true,
+              )
+            : none(name),
+        rollbackOverride: (_) async {
+          rollbackCalls++;
+          return true;
+        },
+      );
+
+      await pumpPage(tester);
+
+      // 回退存在但禁用（有下载产物、无内置可回退）。
+      final rollback = find.widgetWithText(OutlinedButton, '回退到内置').first;
+      expect(tester.widget<OutlinedButton>(rollback).onPressed, isNull,
+          reason: 'slim 无内置时回退必须禁用');
+
+      // slim 提示（theme 令牌）+ 明确标注的破坏性「清除已下载」入口。
+      expect(find.textContaining('精简包无内置版本'), findsOneWidget);
+      expect(find.widgetWithText(OutlinedButton, '清除已下载'), findsOneWidget);
+
+      // 尝试点击禁用的回退：绝不触发加载器回退。
+      await tester.tap(rollback, warnIfMissed: false);
+      await tester.pumpAndSettle();
+      expect(rollbackCalls, 0,
+          reason: 'slim 无内置时绝不调用 rollbackToBuiltin');
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('清除已下载经危险确认弹层 → 确认后删除下载目录并刷新', (tester) async {
+      useTallViewport(tester);
+      final supportDir = makeSupportDir();
+      final dir = moduleDir(supportDir, 'qr');
+      writeVerified(dir, 'qr', '1.0.0', 'SLIM_BROKEN_DL');
+      var rollbackCalls = 0;
+
+      loader.debugConfigure(
+        supportDir: supportDir.path,
+        installedNamesOverride: () async => const [],
+        manifestOverride: _manifest(module: 'qr', version: '1.0.0'),
+        builtinSoPathOverride: (_) async => null,
+        probeOverride: (name) async => name == 'qr'
+            ? RustModuleStatus(
+                name: 'qr',
+                exists: false,
+                source: 'none',
+                hasDownloaded: dir.existsSync(),
+                hasBuiltin: false,
+                quarantined: dir.existsSync(),
+              )
+            : none(name),
+        rollbackOverride: (_) async {
+          rollbackCalls++;
+          return true;
+        },
+      );
+
+      await pumpPage(tester);
+      expect(find.widgetWithText(OutlinedButton, '清除已下载'), findsOneWidget);
+
+      // 破坏性操作仅由统一危险确认弹层触发。
+      await tester.tap(find.widgetWithText(OutlinedButton, '清除已下载'));
+      await tester.pumpAndSettle();
+      expect(find.byType(AppSheetScaffold), findsOneWidget);
+      expect(find.byType(AlertDialog), findsNothing);
+
+      await tester.tap(find.text('清除'));
+      await tester.pump();
+      // 真实目录删除是真实 IO：经 runAsync 让其在真实事件循环中完成。
+      await tester.runAsync(() async {
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      // busy 期 AppLoading 动画不停，故用显式 pump 推进弹层关闭/状态刷新。
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump();
+
+      expect(dir.existsSync(), isFalse, reason: '确认后必须真正清除下载目录');
+      expect(rollbackCalls, 0, reason: '清除绝不触发回退');
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('rollback 返回 false → 统一错误 Snackbar（绝不静默吞掉）',
+        (tester) async {
+      useTallViewport(tester);
+      loader.debugConfigure(
+        installedNamesOverride: () async => const [],
+        manifestOverride: _manifest(module: 'qr', version: '1.0.0'),
+        probeOverride: (name) async => name == 'qr'
+            ? const RustModuleStatus(
+                name: 'qr',
+                exists: false,
+                source: 'none',
+                hasDownloaded: true,
+                hasBuiltin: true,
+                quarantined: true,
+              )
+            : none(name),
+        // 非破坏性失败：加载器拒绝回退（如无内置/挂载失败）。
+        rollbackOverride: (_) async => false,
+      );
+
+      await pumpPage(tester);
+      await tester.tap(find.widgetWithText(OutlinedButton, '回退到内置').first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('回退'));
+      await tester.pumpAndSettle();
+
+      // 错误必须被 surface：统一 Snackbar（页面错误行同文案）。
+      expect(find.byType(SnackBar), findsOneWidget);
+      expect(find.textContaining('无法回退到内置版本'), findsWidgets);
       expect(tester.takeException(), isNull);
     });
   });

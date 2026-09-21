@@ -36,6 +36,11 @@ class ModuleBootstrapState {
   /// 触发本次状态的尝试序号（从 1 开始；无重试语义时为 0）。
   final int attempt;
 
+  /// 清单声明的权威资产字节数（未知时为 `null`）。
+  ///
+  /// 由下载器链路透传，供顶部横幅显示「约 X MB · 仅需一次」。
+  final int? sizeBytes;
+
   /// 构造一个状态快照。
   const ModuleBootstrapState({
     required this.module,
@@ -43,6 +48,7 @@ class ModuleBootstrapState {
     this.progress,
     this.error,
     this.attempt = 0,
+    this.sizeBytes,
   });
 }
 
@@ -122,6 +128,15 @@ class _EnsureOutcome {
   const _EnsureOutcome.failure(this.error, [this.stackTrace]) : ok = false;
 }
 
+/// 内部哨兵：实例创建期间模块被 [ModuleBootstrap.invalidate] 作废。
+///
+/// 必须与真正的加载/实例化失败区分开——它不是可退避重试的错误，而是「该结果属于
+/// 回退前的世界」；[ModuleBootstrap._acquireWithRetry] 捕获它后直接以
+/// [ModuleInstallFailedException] 终结本次获取，绝不重试出陈旧实例。
+class _AttemptInvalidated implements Exception {
+  const _AttemptInvalidated();
+}
+
 /// 一次**底层**安装 ensure 尝试（未被 `Future.timeout` 取消的原始 future）。
 ///
 /// `Future.timeout` 只让等待方超时，**不会取消**底层 `ensureModule`：超时后底层
@@ -131,10 +146,17 @@ class _EnsureOutcome {
 /// * 让同一次尝试的**晚到进度**在其终结后被丢弃，绝不复活终态。
 class _PendingEnsure {
   /// 构造一次底层尝试（[future] 随后由 `_startEnsureAttempt` 赋值）。
-  _PendingEnsure(this.generation, this.deadline);
+  _PendingEnsure(this.generation, this.moduleGeneration, this.deadline);
 
   /// 单调递增的代次序号（每个底层尝试一个）。
   final int generation;
+
+  /// 创建该尝试时其**模块**的代次（[ModuleBootstrap.invalidate] 递增对应模块）。
+  ///
+  /// 与 [generation]（全局尝试序号）不同，这是**每模块**的「墓碑」：一旦回退
+  /// 成功递增了模块代次，所有携带旧代次的尝试都成为过期尝试，既不可被复用、也不
+  /// 可被对账为 `ready`（见 [_attemptIsStale] 在各复用/终结检查点的使用）。
+  final int moduleGeneration;
 
   /// 该次底层安装的整体截止时间（自启动起算，重试复用时不重置）。
   final DateTime deadline;
@@ -188,6 +210,13 @@ class ModuleBootstrap {
 
   /// 底层安装尝试的代次序号（单调递增，供孤儿/晚到回调诊断）。
   int _ensureGenerationSeq = 0;
+
+  /// 每模块代次（「墓碑」）：[invalidate] 时递增。
+  ///
+  /// 用于作废回退前已启动的底层尝试：[_PendingEnsure.moduleGeneration] 在创建时
+  /// 取当前值；任何复用/终结点只要发现其与当前值不符，即判定该尝试过期，绝不
+  /// 复用、也绝不对账为 `ready`。缺失键默认 0。
+  final Map<String, int> _moduleGeneration = <String, int>{};
 
   /// 按 `module#instanceKey` 去重的实例在途表。
   final Map<String, Future<RustModuleInstance>> _instanceInFlight =
@@ -329,7 +358,19 @@ class ModuleBootstrap {
   }) {
     final key = '$module#$instanceKey';
     final cached = _instances[key];
-    if (cached != null) return Future<RustModuleInstance>.value(cached);
+    if (cached != null) {
+      // 缓存命中：实例必然可用。若门的可观测阶段因任何路径掉出 ready（例如
+      // loader 的 `_isLoaded` 短路使一次 ensureOnly 成功却无终态），这里补发一次
+      // ready，保证「有缓存实例 ⇒ 可观测终态 ready」，绝不把 downloading 冻结。
+      if (_lastStates[module]?.phase != ModuleBootstrapPhase.ready) {
+        _emit(ModuleBootstrapState(
+          module: module,
+          phase: ModuleBootstrapPhase.ready,
+          progress: 1.0,
+        ));
+      }
+      return Future<RustModuleInstance>.value(cached);
+    }
 
     final inFlight = _instanceInFlight[key];
     if (inFlight != null) return inFlight;
@@ -343,6 +384,14 @@ class ModuleBootstrap {
       baseDelay: baseDelay,
     );
     _instanceInFlight[key] = future;
+    // 身份感知清理：只有当前条目仍是本次 future 时才移除。这样 [invalidate] 已
+    // 移除旧条目、且后续 acquire 已登记新 future 时，旧 future 的完成绝不误删
+    // 新条目的单飞条目（否则会破坏同一键的并发去重）。
+    future.whenComplete(() {
+      if (identical(_instanceInFlight[key], future)) {
+        _instanceInFlight.remove(key);
+      }
+    }).ignore();
     return future;
   }
 
@@ -355,6 +404,52 @@ class ModuleBootstrap {
   /// 返回是否确有缓存被移除。在途实例不会被移除（等待其完成后再释放即可）。
   bool release(String module, {String instanceKey = ''}) =>
       _instances.remove('$module#$instanceKey') != null;
+
+  /// 模块是否已有可用的缓存实例（默认实例键 `''`）。
+  ///
+  /// 判据是 [_instances] 中 `module#` 条目存在——实例存在即代表产物已就绪、
+  /// [acquire] 可立即复用。相较读取 [_lastStates] 的 `ready`，此判据不会因
+  /// [release] 淘汰实例后仍残留 `ready` 缓存而误报「可用」。
+  ///
+  /// 供热路径（如 `QrRustDecoder.prewarm`）判断是否可跳过重复 `ensureStarted`，
+  /// 避免对已安装模块发布一次会被 loader `_isLoaded` 短路吞掉的 `downloading`。
+  bool hasInstance(String module, {String instanceKey = ''}) =>
+      _instances['$module#$instanceKey'] != null;
+
+  /// 作废模块 [module] 的缓存实例与可观测状态（**回退到内置成功后**调用）。
+  ///
+  /// 语义与 [release] **不同且不可互相替代**：
+  /// * [release] 只从缓存移除实例，供调用方管理自有实例键（如 repo 多源身份键），
+  ///   **不**触碰状态机、**不**作废在途安装。
+  /// * [invalidate] 是回退后的状态清理：淘汰目标 `module#instanceKey` 缓存实例
+  ///   （best-effort [RustModuleInstance.dispose]）、移除其（若有）在途实例单飞
+  ///   条目、清空 [_lastStates]（发布 [ModuleBootstrapPhase.absent]），并**递增该
+  ///   模块代次**，使回退前启动的任何确保尝试（孤儿复用/晚到完成/实例创建）全部
+  ///   过期：既不会被复用，也不会被对账/写回为 `ready`，[acquire] 因而真正重新安装。
+  ///
+  /// **绝不**强制移除或完成在途的**安装确保**（[_ensureInFlight] / [_pendingEnsure]）：
+  /// `ensureModule` 的 future 不可取消，且 loader 的每模块安装锁仍持有它；强行移除
+  /// 会让后续调用发起第二次并发安装。此处只打「代次墓碑」，让真正在途的尝试自然
+  /// 结束后由 [_attemptIsStale] 丢弃其晚到结果（见三处检查点：孤儿复用、晚到对账、
+  /// 实例写回）。
+  void invalidate(String module, {String instanceKey = ''}) {
+    final key = '$module#$instanceKey';
+    // 1) 淘汰缓存实例：best-effort dispose（实例类型暴露 dispose），绝不阻塞调用方。
+    final cached = _instances.remove(key);
+    if (cached != null) {
+      _disposeQuietly(cached).ignore();
+    }
+    // 2) 移除在途实例单飞条目：后续 acquire 不得复用一个必然陈旧的创建 future；
+    //    其晚到完成由 _acquireWithRetry 的代次守卫阻止写回缓存。
+    _instanceInFlight.remove(key);
+    // 3) 递增模块代次：回退前启动的确保尝试全部作废（不可复用、不可对账 ready）。
+    _moduleGeneration[module] = _currentModuleGeneration(module) + 1;
+    // 4) 清空可观测状态（_lastStates 移除该模块），发布 absent。
+    _emit(ModuleBootstrapState(
+      module: module,
+      phase: ModuleBootstrapPhase.absent,
+    ));
+  }
 
   /// 仅确保模块可安装/可挂载（不创建实例）。
   ///
@@ -453,6 +548,7 @@ class ModuleBootstrap {
     _confirmHandler = null;
     _stepTimeout = defaultStepTimeout;
     _ensureGenerationSeq = 0;
+    _moduleGeneration.clear();
     _ensureInFlight.clear();
     _pendingEnsure.clear();
     _instanceInFlight.clear();
@@ -481,6 +577,23 @@ class ModuleBootstrap {
   Duration get debugStepTimeout => _stepTimeout;
 
   // ---- 内部实现 ----
+
+  /// 模块 [module] 的当前代次（无记录时默认 0）。
+  int _currentModuleGeneration(String module) => _moduleGeneration[module] ?? 0;
+
+  /// 尝试 [attempt] 是否已过期（其模块代次已因 [invalidate] 改变）。
+  bool _attemptIsStale(String module, _PendingEnsure attempt) =>
+      attempt.moduleGeneration != _currentModuleGeneration(module);
+
+  /// best-effort 释放实例：实例类型暴露 [RustModuleInstance.dispose]；任何异常
+  /// （含同步抛出的伪造实现）都被吞掉并记录，绝不阻断回退/作废流程。
+  Future<void> _disposeQuietly(RustModuleInstance instance) async {
+    try {
+      await instance.dispose();
+    } catch (error) {
+      debugPrint('ModuleBootstrap: 释放模块实例失败（已忽略）- $error');
+    }
+  }
 
   /// 按模块去重的 ensure 单飞。
   ///
@@ -576,6 +689,22 @@ class ModuleBootstrap {
       }
     }
 
+    // 已缓存默认实例 → 模块产物必然已就绪（实例只会在一次成功 ensure 之后创建）。
+    // 直接发布终态 ready 并短路，**绝不**再发 downloading、也不再调用 loader：
+    // 这正是「已安装模块被再次 ensureOnly（如 QrRustDecoder.prewarm 重入）」的
+    // 场景——生产 loader 的 `_isLoaded` 短路会让 ensureModule 立即返回 true，一次
+    // 「成功却无终态」的 ensure 会把已 ready 的可观测阶段翻回 downloading 并永久
+    // 冻结（扫码页卡在「下载中」）。仅**有缓存实例**这一种情况发 ready，未创建
+    // 实例的 ensureOnly 仍保持既有「成功不发布终态」契约。
+    if (_instances['$module#'] != null) {
+      _emit(ModuleBootstrapState(
+        module: module,
+        phase: ModuleBootstrapPhase.ready,
+        progress: 1.0,
+      ));
+      return const _EnsureOutcome.success();
+    }
+
     // 已过整体期限却仍未完成的底层尝试：其 `ensureModule` future **不可取消**，
     // 且（生产下）loader 的每模块单飞仍持有它——此刻再调 `ensureModule` 只会拿到
     // **同一个**陈旧 future，绝不可能开启一次真正的新安装。因此这里不再谎称
@@ -584,7 +713,15 @@ class ModuleBootstrap {
     // 成功，完成监听仍能对账为 `ready`。真正的恢复条件是**底层 loader future 结束**
     // （届时其每模块单飞条目释放，后续调用才会开启一次全新安装）；在此之前重复调用
     // 快速返回失败，绝不重复安装，也就绝不会与在途落盘并发。
-    final orphan = _pendingEnsure[module];
+    // 仅复用**未被回退作废**的在途尝试：若其模块代次已过期（[invalidate] 递增
+    // 后），立即忽略它——过期尝试既不得被复用，也不得在其晚到成功时对账 ready。
+    // 忽略（而非移除）使底层不可取消的 future 仍能自然结束；真正的全新尝试由
+    // 下方 _startEnsureAttempt 登记（生产下 loader 每模块单飞仍会返回同一底层
+    // future，故绝不并发安装）。
+    final pendingOrphan = _pendingEnsure[module];
+    final orphan = (pendingOrphan != null && !_attemptIsStale(module, pendingOrphan))
+        ? pendingOrphan
+        : null;
     if (orphan != null &&
         !orphan.completed &&
         orphan.deadline.difference(DateTime.now()) <= Duration.zero) {
@@ -680,6 +817,18 @@ class ModuleBootstrap {
     }
     // 成功同样标记终结：本次尝试后的晚到进度不得把终态翻回 downloading。
     attempt.settled = true;
+    // 回退守卫：若本尝试在 await 期间被 [invalidate] 作废（模块代次已变），其「成功」
+    // 属于回退前的世界，绝不能返回 success（否则 acquire 会继续 initializing→ready
+    // 并写回陈旧实例）。改为 failure：调用方（acquire）随后经代次检查放弃本次获取。
+    if (_attemptIsStale(module, attempt)) {
+      debugPrint(
+        'ModuleBootstrap: 模块 "$module" 的第 ${attempt.generation} 次底层尝试'
+        '已在回退后作废，丢弃其成功结果',
+      );
+      return _EnsureOutcome.failure(
+        StateError('模块 $module 安装尝试已在回退后作废'),
+      );
+    }
     return const _EnsureOutcome.success();
   }
 
@@ -702,11 +851,15 @@ class ModuleBootstrap {
   _PendingEnsure _startEnsureAttempt(String module) {
     final attempt = _PendingEnsure(
       ++_ensureGenerationSeq,
+      _currentModuleGeneration(module),
       DateTime.now().add(_stepTimeout),
     );
     // 下载进度单调不减：忽略任何小于上一次已发布值的 fraction；已终结则丢弃。
+    // 记住最近一次非空 sizeBytes（权威资产体积），使每个状态都携带体积。
     double? lastProgress;
-    void reportProgress(double fraction) {
+    int? lastSizeBytes;
+    void reportProgress(double fraction, {int? sizeBytes}) {
+      if (sizeBytes != null) lastSizeBytes = sizeBytes;
       if (attempt.settled) return;
       final previous = lastProgress;
       if (previous != null && fraction < previous) return;
@@ -715,6 +868,7 @@ class ModuleBootstrap {
         module: module,
         phase: ModuleBootstrapPhase.downloading,
         progress: fraction,
+        sizeBytes: lastSizeBytes,
       ));
     }
 
@@ -731,8 +885,10 @@ class ModuleBootstrap {
         attempt.completed = true;
         final tracked = identical(_pendingEnsure[module], attempt);
         if (tracked) _pendingEnsure.remove(module);
-        if (ok && attempt.settled && !attempt.claimed && tracked) {
+        if (ok && attempt.settled && !attempt.claimed && tracked &&
+            !_attemptIsStale(module, attempt)) {
           // 孤儿在被放弃后成功：显式对账为 ready（产物确实就绪）。
+          // 但若该尝试已被 [invalidate] 作废（模块代次已变），绝不复活回退前状态。
           debugPrint(
             'ModuleBootstrap: 模块 "$module" 的孤儿安装（第 ${attempt.generation} '
             '次底层尝试）稍后成功，对账为 ready',
@@ -769,47 +925,64 @@ class ModuleBootstrap {
     required int maxAttempts,
     required Duration baseDelay,
   }) async {
-    try {
-      var attempt = 0;
-      while (true) {
-        attempt++;
-        final outcome = await _ensureSingleFlight(module, policy);
-        if (outcome.ok) {
+    // 本次获取所属的模块代次：与 [invalidate] 的墓碑比较。一旦回退递增了代次，
+    // 本获取的任何结果（ensure 成功/实例创建成功）都属于回退前的世界，直接放弃，
+    // 绝不写回缓存/发布 ready（后续 acquire 会以新代次真正重新安装）。
+    final generation = _currentModuleGeneration(module);
+    var attempt = 0;
+    while (true) {
+      // 退避期间也可能被作废：下一轮开始前先复核，避免为已作废的获取再发起安装。
+      if (generation != _currentModuleGeneration(module)) {
+        throw ModuleInstallFailedException(
+          module,
+          StateError('模块 $module 安装尝试已在回退后作废'),
+        );
+      }
+      attempt++;
+      final outcome = await _ensureSingleFlight(module, policy);
+      // ensure 在途期间被作废：其 outcome 不可信（_ensureOnlyInternal 已把过期尝试
+      // 的成功转为 failure），此处直接放弃本获取，不进入 initializing/ready。
+      if (generation != _currentModuleGeneration(module)) {
+        throw ModuleInstallFailedException(
+          module,
+          StateError('模块 $module 安装尝试已在回退后作废'),
+        );
+      }
+      if (outcome.ok) {
+        _emit(ModuleBootstrapState(
+          module: module,
+          phase: ModuleBootstrapPhase.initializing,
+          attempt: attempt,
+        ));
+        try {
+          final handle = await _loadHandle(module).timeout(_stepTimeout);
+          final effectiveFactory = factory ??
+              _factoryOverride ??
+              (ModuleHandle h) =>
+                  RustModuleInstance.createWithContext(module, h);
+          final instance =
+              await effectiveFactory(handle).timeout(_stepTimeout);
+          // 实例创建期间被作废：丢弃实例，绝不写回缓存。
+          if (generation != _currentModuleGeneration(module)) {
+            await _disposeQuietly(instance);
+            throw const _AttemptInvalidated();
+          }
+          _instances[key] = instance;
           _emit(ModuleBootstrapState(
             module: module,
-            phase: ModuleBootstrapPhase.initializing,
+            phase: ModuleBootstrapPhase.ready,
+            progress: 1.0,
             attempt: attempt,
           ));
-          try {
-            final handle = await _loadHandle(module).timeout(_stepTimeout);
-            final effectiveFactory = factory ??
-                _factoryOverride ??
-                (ModuleHandle h) =>
-                    RustModuleInstance.createWithContext(module, h);
-            final instance =
-                await effectiveFactory(handle).timeout(_stepTimeout);
-            _instances[key] = instance;
-            _emit(ModuleBootstrapState(
-              module: module,
-              phase: ModuleBootstrapPhase.ready,
-              progress: 1.0,
-              attempt: attempt,
-            ));
-            return instance;
-          } catch (error) {
-            if (attempt >= maxAttempts) {
-              _emit(ModuleBootstrapState(
-                module: module,
-                phase: ModuleBootstrapPhase.failed,
-                error: error,
-                attempt: attempt,
-              ));
-              throw ModuleInstallFailedException(module, error);
-            }
-            await _backoff(attempt, baseDelay);
-          }
-        } else {
-          final error = outcome.error ?? StateError('模块 $module 安装/确保失败');
+          return instance;
+        } on _AttemptInvalidated {
+          // 专用哨兵：该失败不可退避重试，直接以 [ModuleInstallFailedException]
+          // 终结本次获取（否则通用 catch 会把它当作可重试的实例化失败）。
+          throw ModuleInstallFailedException(
+            module,
+            StateError('模块 $module 实例创建已在回退后作废'),
+          );
+        } catch (error) {
           if (attempt >= maxAttempts) {
             _emit(ModuleBootstrapState(
               module: module,
@@ -821,9 +994,19 @@ class ModuleBootstrap {
           }
           await _backoff(attempt, baseDelay);
         }
+      } else {
+        final error = outcome.error ?? StateError('模块 $module 安装/确保失败');
+        if (attempt >= maxAttempts) {
+          _emit(ModuleBootstrapState(
+            module: module,
+            phase: ModuleBootstrapPhase.failed,
+            error: error,
+            attempt: attempt,
+          ));
+          throw ModuleInstallFailedException(module, error);
+        }
+        await _backoff(attempt, baseDelay);
       }
-    } finally {
-      _instanceInFlight.remove(key);
     }
   }
 

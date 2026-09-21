@@ -290,7 +290,8 @@ void main() {
     );
     loader.configureRemote(manifestSource: source, downloader: fetcher);
 
-    final ok = await loader.ensureModule('qr', onProgress: fractions.add);
+    final ok = await loader.ensureModule('qr',
+        onProgress: (fraction, {sizeBytes}) => fractions.add(fraction));
 
     expect(ok, isTrue);
     expect(fetcher.urls, <String>[url]);
@@ -304,7 +305,8 @@ void main() {
       mountOverride: (_) async => true,
     );
 
-    final ok = await loader.ensureModule('qr', onProgress: (_) => called = true);
+    final ok = await loader.ensureModule('qr',
+        onProgress: (_, {sizeBytes}) => called = true);
 
     expect(ok, isTrue);
     expect(called, isFalse, reason: '已挂载短路不得回调进度');
@@ -338,7 +340,7 @@ void main() {
 
     final ok = await loader.ensureModule(
       'qr',
-      onProgress: (_) => throw StateError('boom-progress'),
+      onProgress: (_, {sizeBytes}) => throw StateError('boom-progress'),
     );
 
     expect(ok, isTrue, reason: '回调抛异常不得中断安装');

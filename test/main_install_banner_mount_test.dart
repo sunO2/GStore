@@ -77,7 +77,9 @@ void main() {
 
     expect(find.byType(ModuleInstallBanner), findsOneWidget);
     expect(find.text('本地大模型'), findsOneWidget);
-    expect(find.text('下载中 30%'), findsOneWidget);
+    expect(find.text('正在下载模块 30%'), findsOneWidget);
+    expect(find.text('首次使用需下载，用于本地模型推理'), findsOneWidget,
+        reason: '卡片详情行解释「为什么下载」，而不是只给用途名词');
     expect(find.byType(LinearProgressIndicator), findsOneWidget);
 
     final activeSize = tester.getSize(find.byKey(contentKey));

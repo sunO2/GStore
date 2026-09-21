@@ -98,6 +98,46 @@ void main() {
     expect(ensureCalls, 1, reason: 'N 帧复用门缓存实例：ensure 不得新增');
   });
 
+  test('prewarm 幂等：预热 + N 帧 → ensure/实例仅一次（单飞合流）', () async {
+    var ensureCalls = 0;
+    var factoryCalls = 0;
+    final handle = _FakeHandle();
+    final instance = _FakeInstance(_okDecodeResponse('hello'));
+
+    bootstrap.debugConfigure(
+      ensureOverride: (
+        String module, {
+        required bool allowDownload,
+        ModuleProgressCallback? onProgress,
+      }) async {
+        ensureCalls++;
+        return true;
+      },
+      loadOverride: (String module) async => handle,
+      factoryOverride: (ModuleHandle h) async {
+        factoryCalls++;
+        return instance;
+      },
+    );
+
+    // 预热：提前点火 ensure + acquire（真机上与相机初始化并行）。
+    QrRustDecoder.prewarm();
+    await pumpEventQueue();
+    expect(ensureCalls, 1, reason: '预热恰好一次 ensure');
+    expect(factoryCalls, 1, reason: '预热恰好建一次实例');
+
+    // 预热后再跑 N 帧：阶段订阅同步到 ready → 复用门缓存实例，ensure 不新增。
+    final luma = Uint8List.fromList(<int>[7]);
+    for (var i = 0; i < 5; i++) {
+      final result = await QrRustDecoder.decodeLuma(luma, 1, 1);
+      expect(result, isNotNull, reason: '第 ${i + 1} 帧应返回解码结果');
+      expect(result!.text, 'hello');
+      await pumpEventQueue();
+    }
+    expect(ensureCalls, 1, reason: '预热与帧循环 ensure 合流：不得重复下载');
+    expect(factoryCalls, 1, reason: 'acquire 单飞：实例只建一次');
+  });
+
   test('未安装/安装中：首帧即发即忘触发一次 ensure 并返回 null，安装期帧合并去重，就绪后解码', () async {
     var ensureCalls = 0;
     final ensureGate = Completer<bool>();

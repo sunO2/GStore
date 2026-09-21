@@ -86,16 +86,24 @@ class ModuleDownloadProgress {
   int get percent => (fraction.clamp(0.0, 1.0) * 100).round();
 }
 
+/// 展示用的原生插件条目：模块名 + 标题 + 描述。
+///
+/// 成员来自「清单并集本地已安装」（见 `logic.dart` 的 `resolveRustPlugins`），
+/// 标题/描述仅为展示元数据，**不决定成员**。
+typedef RustPluginInfo = ({String name, String title, String description});
+
 /// 原生插件（Rust）区域 UI 状态。
 ///
 /// - [loading]：首次/刷新读取中（页面显示静态占位，避免测试 pumpAndSettle 卡死）
-/// - [statuses]：各插件 `probe` 结果（隔离感知、与解析顺序一致）
+/// - [plugins]：本次刷新解析出的插件列表（清单顺序优先 + 仅本地已安装按字典序）
+/// - [statuses]：各插件 `probe` 结果（隔离感知、与解析顺序一致；与 [plugins] 同序）
 /// - [busy]：正在执行下载/更新/回退的模块名（按钮置灰防连击）
 /// - [progress]：内部下载/更新进度（按模块名；下载结束即清除，不进入用户管线）
 /// - [errors]：内部下载/更新的最近一次错误（按模块名；页面可见，绝不进系统通知）
 /// - [error]：最近一次整体读取的错误（单个插件失败已降级为 none）
 class RustPluginsState {
   final bool loading;
+  final List<RustPluginInfo> plugins;
   final List<RustModuleStatus> statuses;
   final Set<String> busy;
   final Map<String, ModuleDownloadProgress> progress;
@@ -104,6 +112,7 @@ class RustPluginsState {
 
   const RustPluginsState({
     this.loading = true,
+    this.plugins = const [],
     this.statuses = const [],
     this.busy = const {},
     this.progress = const {},
@@ -130,6 +139,7 @@ class RustPluginsState {
 
   RustPluginsState copyWith({
     bool? loading,
+    List<RustPluginInfo>? plugins,
     List<RustModuleStatus>? statuses,
     Set<String>? busy,
     Map<String, ModuleDownloadProgress>? progress,
@@ -139,6 +149,7 @@ class RustPluginsState {
   }) {
     return RustPluginsState(
       loading: loading ?? this.loading,
+      plugins: plugins ?? this.plugins,
       statuses: statuses ?? this.statuses,
       busy: busy ?? this.busy,
       progress: progress ?? this.progress,

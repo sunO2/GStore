@@ -21,7 +21,7 @@ import 'package:gstore/core/rust/ModuleManifest.dart';
 /// * 代理**仅**在原 URL host 通过资产域白名单后作为固定前缀施加；
 /// * 代理返回的字节一律不可信，由调用方按清单 sha256 复核；
 /// * 大小上限、失败返回 null、绝不抛异常。
-class DioModuleFetcher implements ModuleFetcher {
+class DioModuleFetcher implements ProgressAwareModuleFetcher {
   DioModuleFetcher({
     Dio? dio,
     Set<String>? allowedHosts,
@@ -63,7 +63,15 @@ class DioModuleFetcher implements ModuleFetcher {
   final int _maxAttempts;
 
   @override
-  Future<Uint8List?> fetch(String url, {int? maxBytes}) async {
+  Future<Uint8List?> fetch(String url, {int? maxBytes}) =>
+      fetchWithProgress(url, maxBytes: maxBytes);
+
+  @override
+  Future<Uint8List?> fetchWithProgress(
+    String url, {
+    int? maxBytes,
+    void Function(int received, int? total)? onProgress,
+  }) async {
     final target = _buildTarget(url);
     if (target == null) return null;
 
@@ -85,6 +93,10 @@ class DioModuleFetcher implements ModuleFetcher {
             headers: const {'User-Agent': 'GStore-App/1.0'},
             validateStatus: (code) => code != null && code >= 200 && code < 300,
           ),
+          onReceiveProgress: onProgress == null
+              ? null
+              : (received, total) =>
+                  onProgress(received, total < 0 ? null : total),
         );
         final data = resp.data;
         if (data == null) {

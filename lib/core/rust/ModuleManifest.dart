@@ -186,3 +186,17 @@ abstract class ModuleManifestSource {
 abstract class ModuleFetcher {
   Future<Uint8List?> fetch(String url, {int? maxBytes});
 }
+
+/// 支持上报字节进度的下载器（可选实现；不实现则退化为无进度下载）。
+///
+/// [fetchWithProgress] 与 [ModuleFetcher.fetch] 语义一致（同样的大小上限、
+/// 失败返回 null、绝不抛异常），额外在传输过程中按收到的字节数回调
+/// `onProgress(received, total)`：`total` 为下载层已知总长（未知时为 `null`，
+/// 例如分块传输/压缩后长度不可用），`received` 单调不减。
+abstract class ProgressAwareModuleFetcher implements ModuleFetcher {
+  Future<Uint8List?> fetchWithProgress(
+    String url, {
+    int? maxBytes,
+    void Function(int received, int? total)? onProgress,
+  });
+}

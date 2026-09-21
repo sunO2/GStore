@@ -73,6 +73,28 @@ class QrRustDecoder {
     }
   }
 
+  /// 预热 `qr` 模块：进页面/切到识别时提前点火下载与挂载，与相机初始化并行。
+  ///
+  /// **为什么要预热**：模块的下载与挂载有真实网络/IO 延迟。若只等相机首帧解码时
+  /// 才触发，用户会在相机已就绪后继续盯着「准备中」等待下载；把这段本可重叠的
+  /// 延迟**藏进相机预热窗口**，扫码几乎无感。
+  ///
+  /// **幂等**：重复调用与帧循环里的 `ensureStarted`/`acquire` 合流（两级单飞），
+  /// 不会重复下载；故可安全地「进页面 + 切模式」多次调用。
+  ///
+  /// **已安装短路**：若门已缓存 `qr` 实例，产物必然就绪，本方法直接返回、**不**
+  /// 触发 `ensureStarted`。否则对已安装模块，loader 的 `_isLoaded` 会让一次
+  /// ensure 成功却没有终态，把已 ready 的可观测阶段翻回 downloading 并冻结
+  /// （重入扫码页卡在「下载中」）。
+  static void prewarm() {
+    if (kIsWeb) return; // 桌面/Web 无模块 .so
+    _ensurePhaseSubscription();
+    final gate = ModuleBootstrap.instance;
+    if (gate.hasInstance('qr')) return;
+    gate.ensureStarted('qr');
+    gate.acquire('qr').ignore();
+  }
+
   /// 模块就绪：经门取缓存实例并调用 `decode_luma`。
   static Future<QrDecodeResult?> _decodeReady(
     ModuleBootstrap gate,

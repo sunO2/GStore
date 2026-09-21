@@ -5,10 +5,14 @@ import 'dart:ui' as ui;
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/design/app_components.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
+import 'package:gstore/core/rust/ModuleBootstrap.dart';
+import 'package:gstore/core/rust/ModuleLoader.dart' show ModuleProgressCallback;
+import 'package:gstore/core/rust/QrRustDecoder.dart';
 import 'package:gstore/page/qr_tool/view.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:qr_flutter/qr_flutter.dart';
@@ -32,6 +36,8 @@ class _FakePathProvider extends PathProviderPlatform {
 void main() {
   late Directory tempDir;
   late PathProviderPlatform originalPathProvider;
+  final bootstrap = ModuleBootstrap.instance;
+  var ensureCalls = 0;
 
   setUp(() {
     // shared_preferences 注入空初始值，避免真实平台通道 MissingPluginException
@@ -43,9 +49,28 @@ void main() {
     QrToolPage.debugGallerySucceeds = null;
     // 相机 seam 默认走真实 availableCameras（测试内切换到识别模式时注入失败路径）
     QrToolPage.debugAvailableCameras = null;
+    // 模块自举门接缝：prewarm 绝不触发真实下载/加载/FFI。ensure 仅计数并立即失败
+    // （不建实例；退避走 delayOverride 空实现，不留真实定时器），
+    // 使「进页面 / 切识别是否预热」可用 ensureCalls 确定性断言。
+    ensureCalls = 0;
+    bootstrap.debugReset();
+    QrRustDecoder.debugReset();
+    bootstrap.debugConfigure(
+      ensureOverride: (
+        String module, {
+        required bool allowDownload,
+        ModuleProgressCallback? onProgress,
+      }) async {
+        ensureCalls++;
+        return false;
+      },
+      delayOverride: (Duration duration) async {},
+    );
   });
 
   tearDown(() {
+    bootstrap.debugReset();
+    QrRustDecoder.debugReset();
     QrToolPage.debugGallerySucceeds = null;
     QrToolPage.debugAvailableCameras = null;
     PathProviderPlatform.instance = originalPathProvider;
@@ -53,12 +78,27 @@ void main() {
   });
 
   /// 挂载页面并注册 AppDialogs 所需的全局 navigator / scaffoldMessenger key。
-  Future<void> pumpPage(WidgetTester tester) async {
+  ///
+  /// [qrModulePhaseProvider] 默认注入终结态 `failed`（静态「模块加载失败」），
+  /// 避免「准备中」的 [AppLoading] 动画阻塞 pre-existing 用例里的 `pumpAndSettle`；
+  /// chip 状态用例可传具体 [phase]，初始模式用例可传 [initialMode]。
+  Future<void> pumpPage(
+    WidgetTester tester, {
+    ModuleBootstrapPhase phase = ModuleBootstrapPhase.failed,
+    QrToolMode initialMode = QrToolMode.generate,
+  }) async {
     await tester.pumpWidget(
-      MaterialApp(
-        navigatorKey: appNavigatorKey,
-        scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
-        home: const QrToolPage(),
+      ProviderScope(
+        overrides: <Override>[
+          qrModulePhaseProvider.overrideWith(
+            (ref) => Stream<ModuleBootstrapPhase>.value(phase),
+          ),
+        ],
+        child: MaterialApp(
+          navigatorKey: appNavigatorKey,
+          scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
+          home: QrToolPage(initialMode: initialMode),
+        ),
       ),
     );
     // 等 initState 异步加载历史完成
@@ -387,5 +427,73 @@ void main() {
     await tester.tap(find.text('复制'));
     await tester.pump();
     expect(clipboardLog, contains('扫码结果-ABC'));
+  });
+
+  // ==== qr 原生模块预热 + 页面内「准备中 / 已就绪」指示 ====
+
+  testWidgets('仅生成：页面打开不预热 qr 模块（按需=扫码意图，非页面打开）', (tester) async {
+    await pumpPage(tester);
+    // 生成模式页面打开：不触发任何 ensure（只生成二维码的用户不被被动下载）
+    expect(ensureCalls, 0, reason: '生成模式打开不得预热模块');
+    expect(find.text('输入内容后生成二维码'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('入口即识别：页面打开即预热 qr 模块（ensure 触发，与相机并行）', (tester) async {
+    QrToolPage.debugAvailableCameras =
+        () async => throw CameraException('noCamera', 'test');
+    await pumpPage(tester, initialMode: QrToolMode.scan);
+    expect(ensureCalls, greaterThan(0), reason: '初始识别模式：进页面即预热');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('切到识别：预热 qr 模块（ensure 触发）', (tester) async {
+    QrToolPage.debugAvailableCameras =
+        () async => throw CameraException('noCamera', 'test');
+    await pumpPage(tester);
+    expect(ensureCalls, 0, reason: '切换前（生成）不预热');
+
+    await tester.tap(find.text('识别'));
+    await tester.pump();
+    expect(ensureCalls, greaterThan(0), reason: '切到识别：扫码意图触发预热');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('识别模式：qr 模块 downloading → 「准备中」chip', (tester) async {
+    QrToolPage.debugAvailableCameras =
+        () async => throw CameraException('noCamera', 'test');
+    await pumpPage(tester, phase: ModuleBootstrapPhase.downloading);
+    await tester.tap(find.text('识别'));
+    await tester.pump(); // 切模式重建
+    await tester.pump(); // provider 阶段事件 + 相机失败
+    expect(find.text('准备中'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('识别模式：qr 模块 ready → 「已就绪」chip 短暂显示后自动隐藏', (tester) async {
+    QrToolPage.debugAvailableCameras =
+        () async => throw CameraException('noCamera', 'test');
+    await pumpPage(tester, phase: ModuleBootstrapPhase.ready);
+    await tester.tap(find.text('识别'));
+    await tester.pump(); // 切模式重建
+    await tester.pump(); // provider 阶段事件
+    expect(find.text('已就绪'), findsOneWidget);
+
+    // 短暂显示后自动隐藏（确定性：推进自消失计时器）
+    await tester.pump(const Duration(milliseconds: 1600));
+    expect(find.text('已就绪'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('识别模式：qr 模块 failed → 弱化「模块加载失败」chip，不崩溃', (tester) async {
+    QrToolPage.debugAvailableCameras =
+        () async => throw CameraException('noCamera', 'test');
+    await pumpPage(tester, phase: ModuleBootstrapPhase.failed);
+    await tester.tap(find.text('识别'));
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('模块加载失败'), findsOneWidget);
+    expect(find.text('相机不可用'), findsOneWidget, reason: '模块失败不得影响相机预览占位');
+    expect(tester.takeException(), isNull);
   });
 }
