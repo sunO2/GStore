@@ -141,7 +141,10 @@ class ProxyVpnService : VpnService() {
 
         fun stop(context: Context) {
             val intent = Intent(context, ProxyVpnService::class.java).setAction(ACTION_STOP)
-            context.startService(intent)
+            // Android 8+ 后台启动限制：应用不在前台时 startService 可能抛
+            // IllegalStateException。拆除是尽力而为，绝不能因此崩溃调用方。
+            runCatching { context.startService(intent) }
+                .onFailure { Log.w(TAG, "stop 服务启动失败: ${it.message}") }
         }
     }
 
@@ -238,8 +241,17 @@ class ProxyVpnService : VpnService() {
         val builder = Builder()
             .setSession(cfg.session)
             .setMtu(cfg.mtu)
-        for ((ip, prefix) in cfg.addresses) builder.addAddress(ip, prefix)
-        for ((ip, prefix) in cfg.routes) builder.addRoute(ip, prefix)
+        if (cfg.addresses.isEmpty()) {
+            throw IllegalStateException("VpnService 配置未提供任何有效地址（addresses 为空或全部非法）")
+        }
+        for ((ip, prefix) in cfg.addresses) {
+            runCatching { builder.addAddress(ip, prefix) }
+                .onFailure { Log.w(TAG, "addAddress 失败，跳过 $ip/$prefix: ${it.message}") }
+        }
+        for ((ip, prefix) in cfg.routes) {
+            runCatching { builder.addRoute(ip, prefix) }
+                .onFailure { Log.w(TAG, "addRoute 失败，跳过 $ip/$prefix: ${it.message}") }
+        }
         for (dns in cfg.dns) builder.addDnsServer(dns)
 
         when (cfg.mode) {
@@ -414,9 +426,9 @@ class ProxyVpnService : VpnService() {
     private fun parseConfig(json: String): VpnConfig {
         val obj = JSONObject(json)
         val addresses = parseCidrs(obj.optJSONArray("addresses"))
-            .ifEmpty { listOf("10.10.0.2" to 32, "fd00:1:fd00:1:fd00:1:fd00:1:fd00:1" to 128) }
+            .ifEmpty { DEFAULT_ADDRESSES }
         val routes = parseCidrs(obj.optJSONArray("routes"))
-            .ifEmpty { listOf("0.0.0.0" to 0, "::" to 0) }
+            .ifEmpty { DEFAULT_ROUTES }
         val dns = parseStrings(obj.optJSONArray("dns"))
         val mode = obj.optString("mode", "full")
         return VpnConfig(
@@ -437,13 +449,73 @@ class ProxyVpnService : VpnService() {
         val out = ArrayList<Pair<String, Int>>(array.length())
         for (i in 0 until array.length()) {
             val entry = array.optString(i, "")
-            val slash = entry.indexOf('/')
-            if (slash <= 0) continue
-            val ip = entry.substring(0, slash)
-            val prefix = entry.substring(slash + 1).toIntOrNull() ?: continue
-            out.add(ip to prefix)
+            val cidr = parseCidr(entry)
+            if (cidr == null) {
+                // 非法 CIDR 会令 Builder.addAddress/addRoute 抛
+                // IllegalArgumentException；此处过滤掉，绝不让坏配置崩溃服务。
+                Log.w(TAG, "忽略非法 CIDR: $entry")
+                continue
+            }
+            out.add(cidr)
         }
         return out
+    }
+
+    /** 严格解析 `ip/prefix`；非法（含前缀越界）返回 null，绝不抛出。 */
+    private fun parseCidr(entry: String): Pair<String, Int>? {
+        val slash = entry.indexOf('/')
+        if (slash <= 0 || slash == entry.length - 1) return null
+        val ip = entry.substring(0, slash)
+        val prefix = entry.substring(slash + 1).toIntOrNull() ?: return null
+        val maxBits = when {
+            isValidIpv4(ip) -> 32
+            isValidIpv6(ip) -> 128
+            else -> return null
+        }
+        if (prefix < 0 || prefix > maxBits) return null
+        return ip to prefix
+    }
+
+    /** 点分十进制 IPv4 严格校验（4 段，每段 0..255，禁止前导零）。 */
+    private fun isValidIpv4(ip: String): Boolean {
+        val parts = ip.split('.')
+        if (parts.size != 4) return false
+        for (part in parts) {
+            if (part.isEmpty() || part.length > 3) return false
+            if (part.length > 1 && part[0] == '0') return false
+            val octet = part.toIntOrNull() ?: return false
+            if (octet !in 0..255) return false
+        }
+        return true
+    }
+
+    /**
+     * IPv6 字面量严格校验：至多一个 `::` 压缩段，每组 1..4 个十六进制位，
+     * 不含 zone id / 内嵌 IPv4。压缩时总组数 ≤ 7，否则必须恰好 8 组。
+     */
+    private fun isValidIpv6(ip: String): Boolean {
+        if (ip.isEmpty() || !ip.contains(':')) return false
+        if (ip.contains('%')) return false
+        val compressAt = ip.indexOf("::")
+        if (compressAt >= 0 && ip.indexOf("::", compressAt + 2) >= 0) return false
+
+        fun isHexGroup(group: String): Boolean =
+            group.isNotEmpty() && group.length <= 4 &&
+                group.all { it.isDigit() || it in 'a'..'f' || it in 'A'..'F' }
+
+        fun parseSide(side: String): List<String>? {
+            if (side.isEmpty()) return emptyList()
+            val groups = side.split(':')
+            if (groups.any { !isHexGroup(it) }) return null
+            return groups
+        }
+
+        if (compressAt < 0) {
+            return parseSide(ip)?.size == 8
+        }
+        val left = parseSide(ip.substring(0, compressAt)) ?: return false
+        val right = parseSide(ip.substring(compressAt + 2)) ?: return false
+        return left.size + right.size <= 7
     }
 
     private fun parseStrings(array: JSONArray?): List<String> {
@@ -457,4 +529,6 @@ class ProxyVpnService : VpnService() {
     }
 
     private val DEFAULT_MTU = 1500
+    private val DEFAULT_ADDRESSES = listOf("10.10.0.2" to 32, "fd00::1" to 128)
+    private val DEFAULT_ROUTES = listOf("0.0.0.0" to 0, "::" to 0)
 }

@@ -40,6 +40,15 @@ import 'package:installed_apps/installed_apps.dart' as installed;
 /// `addDisallowedApplication(self)`（环路修复走宿主 `protect_fd`）。
 const String kGStorePackageName = 'com.suno2.gstore';
 
+/// `ProxyVpnService` 的 TUN 接口地址（IPv4 + RFC 4193 ULA IPv6）。
+///
+/// **必须始终是合法 CIDR**：Kotlin 侧会逐条校验，非法地址被过滤，若地址集为空
+/// 则启动以 `start_failed` 终止（F2 缺陷：曾依赖非法默认 IPv6 导致永不连通）。
+const List<String> kProxyVpnAddresses = <String>['10.10.0.2/32', 'fd00::1/128'];
+
+/// 全量默认路由（IPv4 + IPv6），保证 `full` 隧道语义。
+const List<String> kProxyVpnRoutes = <String>['0.0.0.0/0', '::/0'];
+
 // ==================== 分流模式 ====================
 
 /// `ProxyVpnService` 的三个隧道模式（Kotlin `parseConfig` 的 `mode`）。
@@ -189,15 +198,25 @@ class ProxySettingsConfig {
     );
   }
 
-  /// 生成 `ProxyVpnService` 的配置 JSON（仅分流相关字段）。
+  /// 生成 `ProxyVpnService` 的配置 JSON。
+  ///
+  /// 始终携带显式的 [kProxyVpnAddresses] / [kProxyVpnRoutes]（合法 CIDR），
+  /// 使 Kotlin `parseConfig` 不再依赖其内置默认值（F2 修复：旧默认 IPv6 非法，
+  /// 导致 `addAddress` 抛异常、VPN 永不连通）。
   ///
   /// * `full` → 不写应用清单（Kotlin 默认全局）。
   /// * `allow` → `allowedApps` = 选中清单。
   /// * `disallow` → `disallowedApps` = 选中清单**去掉本应用**
   ///   （Todo 4：绝不 `addDisallowedApplication(self)`）。
+  /// * `dns` 保持不设置：DNS 由 Rust 模块在隧道内处理（`redir-host`），
+  ///   VpnService 不注入系统 DNS，语义与修复前一致。
   String toVpnConfigJson() {
     final apps = selectedApps.toList()..sort();
-    final payload = <String, dynamic>{'mode': splitMode.wire};
+    final payload = <String, dynamic>{
+      'mode': splitMode.wire,
+      'addresses': kProxyVpnAddresses,
+      'routes': kProxyVpnRoutes,
+    };
     switch (splitMode) {
       case ProxySplitTunnelMode.full:
         break;

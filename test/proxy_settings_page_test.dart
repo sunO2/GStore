@@ -417,7 +417,11 @@ void main() {
         splitMode: ProxySplitTunnelMode.full,
         selectedApps: {'com.apple'},
       );
-      expect(config.toVpnConfigJson(), '{"mode":"full"}');
+      expect(
+        config.toVpnConfigJson(),
+        '{"mode":"full","addresses":["10.10.0.2/32","fd00::1/128"],'
+        '"routes":["0.0.0.0/0","::/0"]}',
+      );
     });
 
     test('allow 模式写入 allowedApps', () {
@@ -427,7 +431,9 @@ void main() {
       );
       expect(
         config.toVpnConfigJson(),
-        '{"mode":"allow","allowedApps":["com.apple","com.banana"]}',
+        '{"mode":"allow","addresses":["10.10.0.2/32","fd00::1/128"],'
+        '"routes":["0.0.0.0/0","::/0"],'
+        '"allowedApps":["com.apple","com.banana"]}',
       );
     });
 
@@ -438,7 +444,9 @@ void main() {
       );
       expect(
         config.toVpnConfigJson(),
-        '{"mode":"disallow","disallowedApps":["com.apple"]}',
+        '{"mode":"disallow","addresses":["10.10.0.2/32","fd00::1/128"],'
+        '"routes":["0.0.0.0/0","::/0"],'
+        '"disallowedApps":["com.apple"]}',
       );
     });
 
