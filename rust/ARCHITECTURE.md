@@ -106,9 +106,10 @@
 // gstore_contract/src/abi.rs —— 只有 #[repr(C)] 结构体 + 函数指针类型
 
 /// 模块 ABI 版本：任何一端的结构体布局变更都必须 +1
-pub const GSTORE_MODULE_ABI_VERSION: u32 = 1;
+/// 当前 v3：v2 追加 `Api::on_event`（宿主→模块事件），v3 追加 `Entry::protect_fd`（宿主→模块 socket 保护）
+pub const GSTORE_MODULE_ABI_VERSION: u32 = 3;
 
-/// 宿主 → 模块：宿主服务的注入表
+/// 宿主 → 模块：宿主服务的注入表（只允许末尾追加字段；模块按 `entry_size` 守卫新槽）
 #[repr(C)]
 pub struct GStoreModuleEntry {
     pub abi_version: u32,
@@ -119,6 +120,7 @@ pub struct GStoreModuleEntry {
     pub emit_event: Option<extern "C" fn(module_id: u64, instance_id: u64,
                                          data: *const u8, len: usize)>,  // 事件通道（与日志共用宿主→Dart 管道，见 6.8）
     pub context: *mut c_void,                // 宿主上下文（回调时原样传回）
+    pub protect_fd: Option<extern "C" fn(fd: i32) -> i32>, // ABI v3：宿主 socket 保护服务（末尾追加，禁止重排）
 }
 
 /// 模块 → 宿主：模块导出的能力表
@@ -138,6 +140,8 @@ pub struct GStoreModuleApi {
     pub shutdown: Option<extern "C" fn() -> i32>,
     pub alloc: Option<extern "C" fn(size: usize) -> *mut c_void>,   // 模块分配器（响应内存用）
     pub free: Option<extern "C" fn(ptr: *mut c_void)>,
+    pub on_event: Option<extern "C" fn(module_id: u64, kind: *const c_char,
+                                       data: *const u8, data_len: usize) -> i32>, // ABI v2 追加
 }
 ```
 
@@ -662,6 +666,7 @@ SHA-256 单独即可自洽的理由：GStore 走 GitHub Release 分发（不经 
 | 4 | 超时/取消 | **现在就设计 `EnvelopeCancel` 消息** | 协议含 EnvelopeCancel + api 表 cancel 槽位 + ABORTED(499) 状态 |
 | 5 | crate 改名 | **现在改**（改名牵动 .so 名/jniLibs/stem/构建脚本，见附录 C） | P1 前置任务 |
 | 6 | 错误码文档 | **生成**（协议层错误码 + 各域错误码登记表） | 交付物：`rust/ERROR_CODES.md`（协议层已在此文 6.2/6.4；域层随模块建立） |
+| 7 | ABI 增长方式（v3 `protect_fd`） | **只在 `GStoreModuleEntry` 末尾追加字段**；宿主握手唯一 gate 是 `min_host_abi > GSTORE_MODULE_ABI_VERSION`（**无精确匹配**）；模块侧读新槽前必须用 `entry.entry_size` 守卫（`protect_fd_if_present()`），旧宿主下不得越界读 | 镜像 `on_event` v2 先例：v2 模块（`min_host_abi <= 2`）继续挂载 v3 宿主；`protect_fd` 是代理域安装 meow `SocketProtector` 的唯一宿主钩子（宿主侧先为 stub，JNI 接线见 VPN 计划 Todo 4） |
 
 **实施现状（以代码为准）**：
 

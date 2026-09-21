@@ -8,9 +8,15 @@ use std::os::raw::{c_char, c_int, c_void};
 /// 模块 ABI 版本：任何一端结构体布局变更都必须 +1
 ///
 /// v2：`GStoreModuleApi` 追加 `on_event`（宿主→模块事件下发）。
-pub const GSTORE_MODULE_ABI_VERSION: u32 = 2;
+/// v3：`GStoreModuleEntry` 追加 `protect_fd`（宿主→模块 socket 保护服务）。
+pub const GSTORE_MODULE_ABI_VERSION: u32 = 3;
 
 /// 宿主 → 模块：宿主服务的注入表（按值注入，模块只读保存，不 dlsym 宿主符号）
+///
+/// **ABI 演进规则（与 v2 `on_event` 一致）：只允许在结构体末尾追加字段**，
+/// 绝不重排/重命名/删除既有字段。模块侧读取新增槽前，必须先用
+/// [`GStoreModuleEntry::protect_fd_if_present`] 按 `entry_size` 守卫，
+/// 旧宿主（更小的 `entry_size`）下不得越界读取。
 #[repr(C)]
 pub struct GStoreModuleEntry {
     pub abi_version: u32,
@@ -25,6 +31,42 @@ pub struct GStoreModuleEntry {
         len: usize,
     )>,
     pub context: *mut c_void, // 宿主上下文（回调时原样传回）
+    /// 宿主 → 模块 socket 保护服务（ABI v3 追加，**必须保持在结构体末尾**）。
+    ///
+    /// 代理域模块把此函数指针包装成 meow `SocketProtector` 并 `set_socket_protector()`
+    /// 安装，使每条出站 socket（TCP/UDP/DNS/libc 解析）经**一个钩子**完成保护；
+    /// 宿主侧委托到 JNI `VpnService.protect(fd)`（Todo 4 接线，当前为返回 0 的 stub）。
+    /// 返回语义：0 = 成功/已处理，非 0 = 保护失败（模块应关闭/拒绝该 socket）。
+    ///
+    /// 旧宿主（ABI < 3）不设置此槽且 `entry_size` 更小：
+    /// 模块必须先 `protect_fd_if_present()` 守卫，绝不对小 entry 越界读取。
+    pub protect_fd: Option<extern "C" fn(fd: c_int) -> c_int>,
+}
+
+impl GStoreModuleEntry {
+    /// `protect_fd` 槽在结构体中的起始偏移（= v2 布局的 `entry_size`）。
+    pub const PROTECT_FD_OFFSET: usize = std::mem::offset_of!(GStoreModuleEntry, protect_fd);
+
+    /// 宿主 `entry_size` 是否已覆盖 `protect_fd` 槽（ABI v3+）。
+    ///
+    /// 模块侧读取 `protect_fd` 前必须调用此守卫：旧宿主的 `entry_size`
+    /// 小于 v3 布局时返回 false，模块走降级路径，绝不越界读取。
+    pub fn has_protect_fd(&self) -> bool {
+        self.entry_size as usize
+            >= Self::PROTECT_FD_OFFSET
+                + std::mem::size_of::<Option<extern "C" fn(fd: c_int) -> c_int>>()
+    }
+
+    /// 安全读取 `protect_fd`：宿主 `entry_size` 不足（旧 ABI）返回 `None`。
+    ///
+    /// 这是模块侧的标准读取姿势——先守卫再取值，避免对更小的 entry 越界解引用。
+    pub fn protect_fd_if_present(&self) -> Option<extern "C" fn(fd: c_int) -> c_int> {
+        if self.has_protect_fd() {
+            self.protect_fd
+        } else {
+            None
+        }
+    }
 }
 
 /// 模块 → 宿主：模块导出的能力表
@@ -81,4 +123,61 @@ pub const ABI_ERR_DETAIL: c_int = -8;
 /// 返回 true = 兼容。
 pub fn host_abi_satisfies(min_host_abi: u32, host_abi: u32) -> bool {
     min_host_abi <= host_abi
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    extern "C" fn dummy_protect(_fd: c_int) -> c_int {
+        0
+    }
+
+    fn entry_with_size(entry_size: u32, protect_fd: Option<extern "C" fn(c_int) -> c_int>) -> GStoreModuleEntry {
+        GStoreModuleEntry {
+            abi_version: GSTORE_MODULE_ABI_VERSION,
+            entry_size,
+            log: None,
+            alloc: None,
+            free: None,
+            emit_event: None,
+            context: std::ptr::null_mut(),
+            protect_fd,
+        }
+    }
+
+    /// 可 grep 的断言：ABI 已升到 v3（protect_fd 槽）。
+    #[test]
+    fn abi_version_is_3() {
+        assert_eq!(GSTORE_MODULE_ABI_VERSION, 3);
+    }
+
+    /// protect_fd 是末尾追加字段：v2 布局的 entry_size 恰好等于它的偏移，
+    /// 旧 entry 必须被守卫拦住、不得读取该槽。
+    #[test]
+    fn smaller_entry_size_skips_protect_fd_without_reading() {
+        let v2_size = GStoreModuleEntry::PROTECT_FD_OFFSET as u32;
+        assert!(v2_size >= (std::mem::size_of::<u32>() * 2) as u32);
+        let old = entry_with_size(v2_size, None);
+        assert!(!old.has_protect_fd());
+        assert!(old.protect_fd_if_present().is_none());
+    }
+
+    /// v3 entry：守卫放行，读到函数指针且调用语义正确。
+    #[test]
+    fn v3_entry_exposes_protect_fd() {
+        let full = std::mem::size_of::<GStoreModuleEntry>() as u32;
+        let entry = entry_with_size(full, Some(dummy_protect));
+        assert!(entry.has_protect_fd());
+        let f = entry.protect_fd_if_present().expect("v3 entry must expose protect_fd");
+        assert_eq!(f(42), 0);
+    }
+
+    /// 唯一 ABI gate：`min_host_abi > host_abi` 拒绝；v2 模块装 v3 宿主放行。
+    #[test]
+    fn host_abi_gate_is_forward_compatible() {
+        assert!(host_abi_satisfies(2, 3), "v2 模块必须能装在 v3 宿主");
+        assert!(host_abi_satisfies(3, 3));
+        assert!(!host_abi_satisfies(3, 2), "min_host_abi=3 的模块必须被 v2 宿主拒绝");
+    }
 }

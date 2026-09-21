@@ -8,7 +8,8 @@ use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::sync::Arc;
 
 use gstore_contract::abi::{
-    ABI_ERR_DETAIL, ABI_OK, GStoreModuleApi, GStoreModuleEntry, GSTORE_MODULE_ABI_VERSION,
+    host_abi_satisfies, ABI_ERR_DETAIL, ABI_OK, GStoreModuleApi, GStoreModuleEntry,
+    GSTORE_MODULE_ABI_VERSION,
 };
 use gstore_contract::error::ModuleError;
 
@@ -31,6 +32,100 @@ type DestroyFn = extern "C" fn(u64) -> c_int;
 type ShutdownFn = extern "C" fn() -> c_int;
 type AllocFn = extern "C" fn(usize) -> *mut c_void;
 type FreeFn = extern "C" fn(*mut c_void);
+
+/// socket 保护实现签名（与 ABI v3 `GStoreModuleEntry::protect_fd` 一致）。
+pub type SocketProtectFn = extern "C" fn(fd: c_int) -> c_int;
+
+/// 默认 stub：Todo 4 接入 JNI `VpnService.protect` 之前的占位实现。
+/// 返回 0 = 无需保护（宿主未运行 VPN 隧道），模块据此放行出站 socket。
+extern "C" fn socket_protect_stub(_fd: c_int) -> c_int {
+    0
+}
+
+/// 可替换的 socket 保护实现（ABI v3 的宿主侧 seam）。
+///
+/// 只在此处读写：Todo 4 在 Kotlin `ProxyVpnService` 持有 JNI 全局引用后，
+/// 经 [`set_socket_protector`] 换成真实 `VpnService.protect(fd)`；在此之前
+/// 保持 [`socket_protect_stub`]。每次 socket 创建读取一次，换实现仅在初始化期。
+static SOCKET_PROTECT: std::sync::RwLock<SocketProtectFn> =
+    std::sync::RwLock::new(socket_protect_stub);
+
+/// 安装/替换 socket 保护实现（Todo 4 JNI 接线点；测试亦用于注入假实现）。
+pub(crate) fn set_socket_protector(f: SocketProtectFn) {
+    *SOCKET_PROTECT.write().unwrap_or_else(|e| e.into_inner()) = f;
+}
+
+/// 当前 socket 保护实现（测试断言替换是否生效）。
+#[cfg(test)]
+fn current_socket_protector() -> SocketProtectFn {
+    *SOCKET_PROTECT.read().unwrap_or_else(|e| e.into_inner())
+}
+
+/// ABI v3 `protect_fd` 导出：委托给当前可替换实现。
+extern "C" fn host_protect_fd(fd: c_int) -> c_int {
+    SOCKET_PROTECT.read().unwrap_or_else(|e| e.into_inner())(fd)
+}
+
+/// 构造宿主注入表（`load` 与测试共用）。
+///
+/// 只允许在 `GStoreModuleEntry` 末尾追加字段；`entry_size` 由宿主如实填写，
+/// 模块据此判断能安全读取到哪一版（v3 = 含 `protect_fd`）。
+fn host_entry() -> GStoreModuleEntry {
+    GStoreModuleEntry {
+        abi_version: GSTORE_MODULE_ABI_VERSION,
+        entry_size: std::mem::size_of::<GStoreModuleEntry>() as u32,
+        log: Some(crate::log_bridge::host_log),
+        alloc: None,
+        free: None,
+        emit_event: Some(crate::event_bridge::host_emit_event),
+        context: std::ptr::null_mut(),
+        // ABI v3：代理域模块经此槽安装一个 SocketProtector 覆盖全部出站 socket。
+        protect_fd: Some(host_protect_fd),
+    }
+}
+
+fn api_name(api: &GStoreModuleApi) -> Result<String, String> {
+    if api.name.is_null() {
+        return Err("module api.name is null".to_string());
+    }
+    Ok(unsafe { CStr::from_ptr(api.name) }.to_string_lossy().into_owned())
+}
+
+/// 握手校验（构造 Entry → 调用模块 register → 校验返回码/name/ABI/必填函数）。
+/// 抽成独立函数以便测试在不 dlopen 的情况下注入合成 register。
+///
+/// ABI 协商只允许一个 gate：`min_host_abi > GSTORE_MODULE_ABI_VERSION` 拒绝。
+/// 这是追加式 ABI 演进的关键——不做任何精确匹配，旧模块（min_host_abi <= 2）
+/// 因此仍能挂载到 v3 宿主。
+fn handshake_with(
+    register: RegisterFn,
+    module_name: &str,
+) -> Result<(String, GStoreModuleApi), String> {
+    let entry = host_entry();
+    let mut api = std::mem::MaybeUninit::<GStoreModuleApi>::zeroed();
+    let code = unsafe { register(&entry, api.as_mut_ptr()) };
+    let api = unsafe { api.assume_init() };
+    if code != 0 {
+        return Err(format!("module rejected handshake: code={code}"));
+    }
+    let name = api_name(&api)?;
+    if name != module_name {
+        return Err(format!(
+            "module name mismatch: file says {module_name}, api says {name}"
+        ));
+    }
+    if !host_abi_satisfies(api.min_host_abi, GSTORE_MODULE_ABI_VERSION) {
+        return Err(format!(
+            "module {name} requires host ABI >= {} but host is {}",
+            api.min_host_abi, GSTORE_MODULE_ABI_VERSION
+        ));
+    }
+    api.create.ok_or("module missing create")?;
+    api.call.ok_or("module missing call")?;
+    api.destroy.ok_or("module missing destroy")?;
+    api.free.ok_or("module missing free")?;
+    Ok((name, api))
+}
 
 pub struct DlModuleAdapter {
     #[cfg(unix)]
@@ -175,43 +270,10 @@ fn preload_opencl() {
         }
         .map_err(|e| format!("no register symbol {} in {}: {e}", register_sym.trim_end_matches('\0'), path.display()))?;
 
-        // 3b. 握手：传 Entry（宿主服务）收 Api（模块能力）
-        let mut entry = GStoreModuleEntry {
-            abi_version: GSTORE_MODULE_ABI_VERSION,
-            entry_size: std::mem::size_of::<GStoreModuleEntry>() as u32,
-            log: Some(crate::log_bridge::host_log),
-            alloc: None,
-            free: None,
-            emit_event: Some(crate::event_bridge::host_emit_event),
-            context: std::ptr::null_mut(),
-        };
-        let mut api = std::mem::MaybeUninit::<GStoreModuleApi>::zeroed();
-        let code = unsafe { register(&mut entry, api.as_mut_ptr()) };
-        let api = unsafe { api.assume_init() };
-        if code != 0 {
-            return Err(format!("module rejected handshake: code={code}"));
-        }
+        // 3b. 握手：传 Entry（宿主服务）收 Api（模块能力）+ ABI/名字校验
+        let (name, api) = handshake_with(*register, &module_name)?;
 
-        // 4. 校验 + 包装
-        let name = if api.name.is_null() {
-            return Err("module api.name is null".to_string());
-        } else {
-            unsafe { CStr::from_ptr(api.name) }.to_string_lossy().into_owned()
-        };
-        // 文件名推导的模块名须与握手回报的 api.name 一致
-        if name != module_name {
-            return Err(format!(
-                "module name mismatch: file says {module_name}, api says {name}"
-            ));
-        }
-        // ABI 版本协商：模块声明的最低宿主 ABI 不得高于本宿主 ABI，
-        // 否则结构体布局可能不一致（跨边界 UB），必须拒绝加载而非放行。
-        if api.min_host_abi > GSTORE_MODULE_ABI_VERSION {
-            return Err(format!(
-                "module {name} requires host ABI >= {} but host is {}",
-                api.min_host_abi, GSTORE_MODULE_ABI_VERSION
-            ));
-        }
+        // 4. 包装
         let create = api.create.ok_or("module missing create")?;
         let call = api.call.ok_or("module missing call")?;
         let destroy = api.destroy.ok_or("module missing destroy")?;
@@ -417,6 +479,130 @@ mod tests {
         assert!(mgr.is_loaded(id));
         mgr.unref(id2);
         assert!(!mgr.is_loaded(id));
+    }
+}
+
+/// ABI v3（`protect_fd`）兼容性测试：合成 register 不依赖 dlopen，
+/// 直接走宿主的握手/gate 代码路径。
+#[cfg(test)]
+mod abi_v3_compat_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    static CAPTURED: Mutex<Vec<(u8, u32, Option<SocketProtectFn>)>> = Mutex::new(Vec::new());
+    static PROTECT_LOCK: Mutex<()> = Mutex::new(());
+
+    extern "C" fn dummy_create(_c: *const u8, _l: usize, out: *mut u64) -> c_int {
+        unsafe { *out = 1 };
+        ABI_OK
+    }
+    extern "C" fn dummy_call(
+        _i: u64,
+        _m: *const c_char,
+        _p: *const u8,
+        _pl: usize,
+        _o: *mut *mut u8,
+        _ol: *mut usize,
+    ) -> c_int {
+        ABI_OK
+    }
+    extern "C" fn dummy_destroy(_i: u64) -> c_int {
+        ABI_OK
+    }
+    extern "C" fn dummy_free(_p: *mut c_void) {}
+
+    fn fill_api(out: *mut GStoreModuleApi, name: &'static std::ffi::CStr, min_host_abi: u32) {
+        let api = unsafe { &mut *out };
+        api.name = name.as_ptr();
+        api.version = 1;
+        api.min_host_abi = min_host_abi;
+        api.init = None;
+        api.create = Some(dummy_create);
+        api.call = Some(dummy_call);
+        api.cancel = None;
+        api.destroy = Some(dummy_destroy);
+        api.shutdown = None;
+        api.alloc = None;
+        api.free = Some(dummy_free);
+        api.on_event = None;
+    }
+
+    extern "C" fn v2_register(entry: *const GStoreModuleEntry, out: *mut GStoreModuleApi) -> c_int {
+        let e = unsafe { &*entry };
+        CAPTURED.lock().unwrap().push((2, e.entry_size, e.protect_fd));
+        fill_api(out, c"v2mod", 2);
+        ABI_OK
+    }
+
+    extern "C" fn v3_register(entry: *const GStoreModuleEntry, out: *mut GStoreModuleApi) -> c_int {
+        let e = unsafe { &*entry };
+        CAPTURED.lock().unwrap().push((3, e.entry_size, e.protect_fd));
+        fill_api(out, c"v3mod", 3);
+        ABI_OK
+    }
+
+    /// (a) v2 模块（min_host_abi = 2）仍挂载 v3 宿主，且宿主注入 protect_fd。
+    #[test]
+    fn v2_module_still_mounts_on_v3_host_and_gets_protect_fd() {
+        let _guard = PROTECT_LOCK.lock().unwrap();
+        assert_eq!(GSTORE_MODULE_ABI_VERSION, 3, "宿主 ABI 已升 v3");
+
+        let (name, api) = handshake_with(v2_register, "v2mod").expect("v2 模块必须仍能挂载 v3 宿主");
+        assert_eq!(name, "v2mod");
+        assert_eq!(api.min_host_abi, 2);
+
+        let (_, entry_size, protect) = *CAPTURED.lock().unwrap().last().unwrap();
+        assert_eq!(entry_size as usize, std::mem::size_of::<GStoreModuleEntry>());
+        let protect = protect.expect("v3 宿主必须填充 protect_fd");
+        assert_eq!(protect(7), 0, "Todo 4 接线前 stub 返回 0");
+    }
+
+    /// (b) v3 模块收到非空 protect_fd。
+    #[test]
+    fn v3_module_receives_non_null_protect_fd() {
+        let _guard = PROTECT_LOCK.lock().unwrap();
+        let (_name, api) = handshake_with(v3_register, "v3mod").expect("v3 模块挂载");
+        assert_eq!(api.min_host_abi, 3);
+        let (_, _size, protect) = *CAPTURED.lock().unwrap().last().unwrap();
+        assert!(protect.is_some(), "v3 模块必须收到非空 protect_fd");
+    }
+
+    /// (c) min_host_abi = 3 的模块被 v2 宿主拒绝（唯一 gate：min_host_abi > host_abi）。
+    #[test]
+    fn v2_host_rejects_min_host_abi_3_module() {
+        assert!(!host_abi_satisfies(3, 2), "min_host_abi=3 模块必须被 v2 宿主拒绝");
+        assert!(host_abi_satisfies(2, 2), "同版模块放行");
+        assert!(host_abi_satisfies(2, 3), "v2 模块装 v3 宿主放行");
+    }
+
+    /// (d) entry_size 更小的旧 Entry：守卫跳读 protect_fd，不越界、不崩溃。
+    #[test]
+    fn smaller_entry_does_not_read_protect_fd() {
+        let mut entry = host_entry();
+        entry.entry_size = GStoreModuleEntry::PROTECT_FD_OFFSET as u32;
+        assert!(!entry.has_protect_fd());
+        assert!(
+            entry.protect_fd_if_present().is_none(),
+            "旧 entry 必须跳过 protect_fd，不得越界读取"
+        );
+
+        let full = host_entry();
+        assert!(full.has_protect_fd());
+        assert!(full.protect_fd_if_present().is_some());
+    }
+
+    /// 可替换全局：宿主 stub 可换成真实实现（Todo 4 JNI）并可复位。
+    #[test]
+    fn socket_protector_global_is_swappable() {
+        extern "C" fn deny(_fd: c_int) -> c_int {
+            -1
+        }
+        let _guard = PROTECT_LOCK.lock().unwrap();
+        assert_eq!(current_socket_protector()(3), 0, "默认 stub 返回 0");
+        set_socket_protector(deny);
+        assert_eq!(current_socket_protector()(3), -1, "替换后生效");
+        set_socket_protector(socket_protect_stub);
+        assert_eq!(current_socket_protector()(3), 0, "恢复 stub");
     }
 }
 
