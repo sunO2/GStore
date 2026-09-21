@@ -79,6 +79,7 @@
 | `PROXY_LOG_LEVEL_INVALID` | proxy | 422 | `log.set_level` / `log.get` 指定了未知日志级别（应为 `debug`\|`info`\|`warn`\|`error`）（Todo 15） |
 | `PROXY_STATS_SORT_INVALID` | proxy | 422 | `stats.domain.get` 指定了未知排序键（应为 `bytes`\|`connections`\|`lastSeen`\|`domain`）（Todo 16） |
 | `PROXY_CONN_NOT_FOUND` | proxy | 404 | `conn.close` 收到本模块从未跟踪过的连接 id（既不在活动表，也不在「最近关闭」墓碑内）（Todo 17） |
+| `PROXY_CLASH_API_FAILED` | proxy | 500 | `diagnostics.clash_api.start` 无法绑定 `127.0.0.1:<port>` 或无法启动其 runtime/线程（Todo 18） |
 
 ## 跨 ABI 错误透传
 

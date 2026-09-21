@@ -20,6 +20,7 @@ import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/rust/ModuleBootstrap.dart';
 import 'package:gstore/core/rust/ModuleManager.dart';
 import 'package:gstore/core/rust/contract/GStoreException.dart';
+import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 
 // ==================== 枚举 ====================
 
@@ -253,6 +254,330 @@ class ProxyModule implements ProxyFacade {
     return controller.stream;
   }
 
+  /// 通用类型化调用：信封 → `data` → [decode]。
+  ///
+  /// 展示层所有方法都经此入口，方法名与响应模型见 [ProxyMethods] /
+  /// [proxyResponseDecoders]（`API.md` 的 Dart 镜像）。
+  Future<T> invoke<T>(
+    String method,
+    T Function(Map<String, dynamic> json) decode, {
+    Map<String, dynamic>? payload,
+  }) async {
+    final data = await _call(
+      method,
+      payload == null ? null : encodeProxyPayload(payload),
+    );
+    return decode(data);
+  }
+
+  // ---- core.* ----
+
+  /// `tun.set_fd`：把宿主 TUN fd 交给模块。
+  Future<TunSetFdResult> tunSetFd(int fd) => invoke(
+        ProxyMethods.tunSetFd,
+        TunSetFdResult.fromJson,
+        payload: TunSetFdRequest(fd).toJson(),
+      );
+
+  /// `core.start`：按生成配置启动引擎。
+  Future<ProxyCoreStatus> coreStart(CoreStartRequest request) => invoke(
+        ProxyMethods.coreStart,
+        ProxyCoreStatus.fromJson,
+        payload: request.toJson(),
+      );
+
+  /// `core.stop`：停止引擎并释放 TUN。
+  Future<CoreStopResult> coreStop() =>
+      invoke(ProxyMethods.coreStop, CoreStopResult.fromJson);
+
+  /// `core.restart`：重建 tunnel 并重新发布配置。
+  Future<ProxyCoreStatus> coreRestart(CoreStartRequest request) => invoke(
+        ProxyMethods.coreRestart,
+        ProxyCoreStatus.fromJson,
+        payload: request.toJson(),
+      );
+
+  /// `core.get_mode`：当前模式/状态快照。
+  Future<CoreModeResult> coreGetMode() =>
+      invoke(ProxyMethods.coreGetMode, CoreModeResult.fromJson);
+
+  /// `core.set_mode`：切换运行模式。
+  Future<CoreSetModeResult> coreSetMode(String mode) => invoke(
+        ProxyMethods.coreSetMode,
+        CoreSetModeResult.fromJson,
+        payload: CoreSetModeRequest(mode).toJson(),
+      );
+
+  // ---- dns.* ----
+
+  /// `dns.get`：有效 DNS 配置 + 统计 + 近期映射/查询。
+  Future<DnsSnapshot> dnsGet() =>
+      invoke(ProxyMethods.dnsGet, DnsSnapshot.fromJson);
+
+  /// `dns.set`：合并并安装部分 DNS 配置。
+  Future<DnsSetResult> dnsSet(DnsConfig config) => invoke(
+        ProxyMethods.dnsSet,
+        DnsSetResult.fromJson,
+        payload: config.toJson(),
+      );
+
+  /// `dns.clear_cache`：清空缓存与 fake-IP 分配。
+  Future<DnsClearResult> dnsClearCache() =>
+      invoke(ProxyMethods.dnsClearCache, DnsClearResult.fromJson);
+
+  /// `dns.flush_cache`：`dns.clear_cache` 的别名。
+  Future<DnsClearResult> dnsFlushCache() =>
+      invoke(ProxyMethods.dnsFlushCache, DnsClearResult.fromJson);
+
+  // ---- log.* ----
+
+  /// `log.get`：按游标分页读取日志环。
+  Future<LogPage> logGet([LogGetRequest request = const LogGetRequest()]) =>
+      invoke(
+        ProxyMethods.logGet,
+        LogPage.fromJson,
+        payload: request.toJson(),
+      );
+
+  /// `log.set_level`：设置日志保留级别。
+  Future<LogSetLevelResult> logSetLevel(String level) => invoke(
+        ProxyMethods.logSetLevel,
+        LogSetLevelResult.fromJson,
+        payload: LogSetLevelRequest(level).toJson(),
+      );
+
+  /// `log.clear`：清空日志环（游标继续前进）。
+  Future<OkResult> logClear() =>
+      invoke(ProxyMethods.logClear, OkResult.fromJson);
+
+  // ---- rules.* ----
+
+  /// `rules.get`：只读规则快照。
+  Future<RulesSnapshot> rulesGet() =>
+      invoke(ProxyMethods.rulesGet, RulesSnapshot.fromJson);
+
+  /// `rules.reload`：解析并发布规则集。
+  Future<RulesSnapshot> rulesReload(RulesReloadRequest request) => invoke(
+        ProxyMethods.rulesReload,
+        RulesSnapshot.fromJson,
+        payload: request.toJson(),
+      );
+
+  // ---- config.* ----
+
+  /// `config.generate`：渲染受控 Clash 模板（不触碰运行中引擎）。
+  Future<GeneratedConfig> configGenerate(GenerateRequest request) => invoke(
+        ProxyMethods.configGenerate,
+        GeneratedConfig.fromJson,
+        payload: request.toJson(),
+      );
+
+  /// `config.apply`：热应用配置到运行中引擎。
+  Future<GeneratedConfig> configApply(GenerateRequest request) => invoke(
+        ProxyMethods.configApply,
+        GeneratedConfig.fromJson,
+        payload: request.toJson(),
+      );
+
+  // ---- profile.* ----
+
+  /// `profile.export_clash`：导出单个存储 profile 的生成配置。
+  Future<GeneratedConfig> profileExportClash(ProfileExportRequest request) =>
+      invoke(
+        ProxyMethods.profileExportClash,
+        GeneratedConfig.fromJson,
+        payload: request.toJson(),
+      );
+
+  /// `profile.import_url`：经 protect 感知传输抓取并解析订阅。
+  Future<ImportedProfile> profileImportUrl({
+    required String url,
+    String? name,
+    String? userAgent,
+  }) =>
+      invoke(
+        ProxyMethods.profileImportUrl,
+        ImportedProfile.fromJson,
+        payload: <String, dynamic>{
+          'url': url,
+          if (name != null) 'name': name,
+          if (userAgent != null) 'userAgent': userAgent,
+        },
+      );
+
+  /// `profile.import_text`：解析已抓取的订阅正文。
+  Future<ImportedProfile> profileImportText({
+    required String text,
+    String? name,
+    String? contentType,
+  }) =>
+      invoke(
+        ProxyMethods.profileImportText,
+        ImportedProfile.fromJson,
+        payload: <String, dynamic>{
+          'text': text,
+          if (name != null) 'name': name,
+          if (contentType != null) 'contentType': contentType,
+        },
+      );
+
+  /// `profile.import_link`：解析单条分享链接。
+  Future<ImportedProfile> profileImportLink({
+    required String link,
+    String? name,
+  }) =>
+      invoke(
+        ProxyMethods.profileImportLink,
+        ImportedProfile.fromJson,
+        payload: <String, dynamic>{
+          'link': link,
+          if (name != null) 'name': name,
+        },
+      );
+
+  /// `profile.list`：稳定排序的存储摘要。
+  Future<ProfileList> profileList() =>
+      invoke(ProxyMethods.profileList, ProfileList.fromJson);
+
+  /// `profile.get`：按 id 读取一个存储 profile。
+  Future<StoredProfile> profileGet(String id) => invoke(
+        ProxyMethods.profileGet,
+        StoredProfile.fromJson,
+        payload: ProfileIdRequest(id).toJson(),
+      );
+
+  /// `profile.create`：持久化一个规范 profile。
+  Future<StoredProfile> profileCreate(ProfileCreateRequest request) => invoke(
+        ProxyMethods.profileCreate,
+        StoredProfile.fromJson,
+        payload: request.toJson(),
+      );
+
+  /// `profile.update`：更新内容/元数据/刷新标记。
+  Future<StoredProfile> profileUpdate(Map<String, dynamic> payload) => invoke(
+        ProxyMethods.profileUpdate,
+        StoredProfile.fromJson,
+        payload: payload,
+      );
+
+  /// `profile.delete`：删除 profile 并发出 removed 事件。
+  Future<ProfileDeleteResult> profileDelete(String id) => invoke(
+        ProxyMethods.profileDelete,
+        ProfileDeleteResult.fromJson,
+        payload: ProfileIdRequest(id).toJson(),
+      );
+
+  /// `profile.refresh`：单 profile 刷新（失败保留旧内容）。
+  Future<RefreshResult> profileRefresh(String id, {bool force = false}) =>
+      invoke(
+        ProxyMethods.profileRefresh,
+        RefreshResult.fromJson,
+        payload: ProfileIdRequest(id, force: force).toJson(),
+      );
+
+  /// `profile.refresh_all`：有界批量刷新。
+  Future<RefreshAllResult> profileRefreshAll({
+    bool force = false,
+    int? limit,
+  }) =>
+      invoke(
+        ProxyMethods.profileRefreshAll,
+        RefreshAllResult.fromJson,
+        payload: ProfileRefreshAllRequest(force: force, limit: limit).toJson(),
+      );
+
+  /// `profile.set_schedule`：设置/清除自动刷新间隔（0 = 清除）。
+  Future<StoredProfile> profileSetSchedule(String id, int intervalMs) => invoke(
+        ProxyMethods.profileSetSchedule,
+        StoredProfile.fromJson,
+        payload:
+            ProfileSetScheduleRequest(id: id, intervalMs: intervalMs).toJson(),
+      );
+
+  // ---- node.* ----
+
+  /// `node.select`：把用户选择应用到 selector/url-test/fallback 组。
+  Future<NodeSelectResult> nodeSelect(String group, String node) => invoke(
+        ProxyMethods.nodeSelect,
+        NodeSelectResult.fromJson,
+        payload: NodeSelectRequest(group: group, node: node).toJson(),
+      );
+
+  /// `node.delay_test`：逐节点 HTTP 探测（不可达是逐项结果，不是调用错误）。
+  Future<DelayTestResult> nodeDelayTest(NodeDelayTestRequest request) => invoke(
+        ProxyMethods.nodeDelayTest,
+        DelayTestResult.fromJson,
+        payload: request.toJson(),
+      );
+
+  // ---- conn.* ----
+
+  /// `conn.list`：分页/可过滤的活动连接。
+  Future<ConnPage> connList(ConnListRequest request) => invoke(
+        ProxyMethods.connList,
+        ConnPage.fromJson,
+        payload: request.toJson(),
+      );
+
+  /// `conn.close`：幂等关闭一个连接。
+  Future<ConnCloseResult> connClose(String id) => invoke(
+        ProxyMethods.connClose,
+        ConnCloseResult.fromJson,
+        payload: ConnCloseRequest(id).toJson(),
+      );
+
+  /// `conn.close_all`：关闭全部连接。
+  Future<ConnCloseAllResult> connCloseAll() =>
+      invoke(ProxyMethods.connCloseAll, ConnCloseAllResult.fromJson);
+
+  // ---- stats.* ----
+
+  /// `stats.domain.get`：按域名聚合统计（主路径，拉取式）。
+  Future<DomainPage> statsDomainGet(StatsDomainGetRequest request) => invoke(
+        ProxyMethods.statsDomainGet,
+        DomainPage.fromJson,
+        payload: request.toJson(),
+      );
+
+  /// `stats.domain.reset`：清空聚合与持久化行。
+  Future<StatsResetResult> statsDomainReset() =>
+      invoke(ProxyMethods.statsDomainReset, StatsResetResult.fromJson);
+
+  /// `stats.traffic.get`：聚合流量快照。
+  Future<TrafficSnapshot> statsTrafficGet({int? topDomains}) => invoke(
+        ProxyMethods.statsTrafficGet,
+        TrafficSnapshot.fromJson,
+        payload: StatsTrafficGetRequest(topDomains: topDomains).toJson(),
+      );
+
+  /// `stats.get`：`stats.domain.get` 的别名。
+  Future<DomainPage> statsGet(StatsDomainGetRequest request) => invoke(
+        ProxyMethods.statsGet,
+        DomainPage.fromJson,
+        payload: request.toJson(),
+      );
+
+  /// `stats.reset`：`stats.domain.reset` 的别名。
+  Future<StatsResetResult> statsReset() =>
+      invoke(ProxyMethods.statsReset, StatsResetResult.fromJson);
+
+  // ---- diagnostics.* ----
+
+  /// `diagnostics.clash_api.start`：启用 meow 回环控制器（默认 OFF，仅诊断）。
+  Future<ClashApiStatus> clashApiStart({int port = 0}) => invoke(
+        ProxyMethods.clashApiStart,
+        ClashApiStatus.fromJson,
+        payload: ClashApiStartRequest(port: port).toJson(),
+      );
+
+  /// `diagnostics.clash_api.stop`：停止回环控制器。
+  Future<ClashApiStopResult> clashApiStop() =>
+      invoke(ProxyMethods.clashApiStop, ClashApiStopResult.fromJson);
+
+  /// `diagnostics.clash_api.status`：控制器状态（**不含 secret**）。
+  Future<ClashApiStatus> clashApiStatus() =>
+      invoke(ProxyMethods.clashApiStatus, ClashApiStatus.fromJson);
+
   /// 调用信封 → 校验 `{ok:true,data:{...}}` → 返回 `data`。
   ///
   /// 错误分层：模块不可用 → [ProxyModuleUnavailableException]；
@@ -263,18 +588,28 @@ class ProxyModule implements ProxyFacade {
   ]) async {
     try {
       final bytes = await _gateway.call(method, payload);
-      final decoded = jsonDecode(utf8.decode(bytes, allowMalformed: true));
+      final Object? decoded;
+      try {
+        decoded = jsonDecode(utf8.decode(bytes, allowMalformed: true));
+      } catch (error) {
+        throw const ProxyModuleException(
+          code: 'PAYLOAD_DECODE_FAILED',
+          message: '代理模块响应不是合法 JSON',
+          status: 400,
+        );
+      }
       if (decoded is! Map<String, dynamic>) {
         throw const ProxyModuleException(
-          code: 'PROXY_BAD_RESPONSE',
-          message: '代理模块返回了非对象 JSON',
+          code: 'PAYLOAD_DECODE_FAILED',
+          message: '代理模块响应不是 JSON 对象',
+          status: 400,
         );
       }
       if (decoded['ok'] != true) {
         throw ProxyModuleException(
-          code: decoded['code']?.toString() ?? 'PROXY_ERROR',
+          code: decoded['code']?.toString() ?? 'BAD_REQUEST',
           message: decoded['message']?.toString() ?? '代理模块返回错误',
-          status: _asIntOrNull(decoded['status']),
+          status: _asIntOrNull(decoded['status']) ?? 400,
         );
       }
       final data = decoded['data'];
@@ -507,6 +842,14 @@ sealed class ProxyEvent {
           activeConns: _asInt(data['activeConns']),
           upBps: _asInt(data['upBps']),
           downBps: _asInt(data['downBps']),
+          domainCount: _asInt(data['domainCount']),
+          capacity: _asInt(data['capacity']),
+          topDomains: (data['topDomains'] is List)
+              ? (data['topDomains'] as List)
+                  .whereType<Map>()
+                  .map((e) => DomainStat.fromJson(e.cast<String, dynamic>()))
+                  .toList()
+              : const <DomainStat>[],
         );
       case 'proxy.subscription.updated':
         return ProxySubscriptionUpdatedEvent(
@@ -551,6 +894,17 @@ sealed class ProxyEvent {
           outbound: data['outbound']?.toString(),
           uploadBytes: _asIntOrNull(data['uploadBytes']),
           downloadBytes: _asIntOrNull(data['downloadBytes']),
+          closed: _asIntOrNull(data['closed']),
+        );
+      case 'proxy.dns':
+        return ProxyDnsEvent(record: DnsQueryRecord.fromJson(data));
+      case 'proxy.tun.released':
+        return ProxyTunReleasedEvent(fd: _asInt(data['fd']));
+      case 'proxy.config.applied':
+        return ProxyConfigAppliedEvent(
+          profileId: data['profileId']?.toString() ?? '',
+          hash: data['hash']?.toString() ?? '',
+          template: data['template']?.toString() ?? '',
         );
       default:
         return null;
@@ -611,7 +965,7 @@ final class ProxyNodeDelayEvent extends ProxyEvent {
   String get eventType => 'proxy.node.delay';
 }
 
-/// `proxy.stats`：流量统计（节流推送）。
+/// `proxy.stats`：流量统计（节流推送，>= 1s 一次）。
 final class ProxyStatsEvent extends ProxyEvent {
   const ProxyStatsEvent({
     required this.uploadBytes,
@@ -619,6 +973,9 @@ final class ProxyStatsEvent extends ProxyEvent {
     required this.activeConns,
     required this.upBps,
     required this.downBps,
+    this.domainCount = 0,
+    this.capacity = 0,
+    this.topDomains = const <DomainStat>[],
   });
 
   final int uploadBytes;
@@ -626,6 +983,15 @@ final class ProxyStatsEvent extends ProxyEvent {
   final int activeConns;
   final int upBps;
   final int downBps;
+
+  /// 已聚合的不同域名数量。
+  final int domainCount;
+
+  /// 域名聚合容量上限。
+  final int capacity;
+
+  /// 按总字节降序的 top 域名（推送时截断）。
+  final List<DomainStat> topDomains;
 
   @override
   String get eventType => 'proxy.stats';
@@ -734,9 +1100,10 @@ final class ProxyConnEvent extends ProxyEvent {
     this.outbound,
     this.uploadBytes,
     this.downloadBytes,
+    this.closed,
   });
 
-  /// `open` 或 `close`。
+  /// `close` 或 `close_all`。
   final String action;
   final String id;
   final String? domain;
@@ -744,8 +1111,56 @@ final class ProxyConnEvent extends ProxyEvent {
   final int? uploadBytes;
   final int? downloadBytes;
 
+  /// 仅 `action:"close_all"` 携带：本次关闭的连接数。
+  final int? closed;
+
   @override
   String get eventType => 'proxy.conn';
+}
+
+/// `proxy.dns`：TUN DNS 劫持应答的一条查询记录。
+final class ProxyDnsEvent extends ProxyEvent {
+  const ProxyDnsEvent({required this.record});
+
+  final DnsQueryRecord record;
+
+  @override
+  String get eventType => 'proxy.dns';
+
+  /// 是否成功应答。
+  bool get ok => record.ok;
+
+  /// 查询域名。
+  String get domain => record.domain;
+}
+
+/// `proxy.tun.released`：TUN 读取循环已停止并 join，宿主可清缓存 fd。
+///
+/// 宿主内部事件；Dart 可忽略，但仍在此类型化以保证契约完整。
+final class ProxyTunReleasedEvent extends ProxyEvent {
+  const ProxyTunReleasedEvent({required this.fd});
+
+  /// 已释放的宿主 TUN fd。
+  final int fd;
+
+  @override
+  String get eventType => 'proxy.tun.released';
+}
+
+/// `proxy.config.applied`：`config.apply` 已在运行中引擎热应用新配置。
+final class ProxyConfigAppliedEvent extends ProxyEvent {
+  const ProxyConfigAppliedEvent({
+    required this.profileId,
+    required this.hash,
+    required this.template,
+  });
+
+  final String profileId;
+  final String hash;
+  final String template;
+
+  @override
+  String get eventType => 'proxy.config.applied';
 }
 
 // ==================== JSON 工具 ====================

@@ -35,6 +35,7 @@ use gstore_contract::error::{ModuleError, StatusCode};
 
 mod config;
 mod conn;
+mod controller;
 mod dispatch;
 mod dns;
 mod logging;
@@ -354,6 +355,60 @@ const EVT_TUN_RELEASED: &str = "proxy.tun.released";
 const EVT_CONFIG_APPLIED: &str = "proxy.config.applied";
 /// 模块 → 宿主：一次显式连接控制事件（`conn.close` / `conn.close_all`）。
 const EVT_CONN: &str = "proxy.conn";
+
+/// Every method the `call` dispatch accepts, in the order `API.md` §2 lists it.
+///
+/// This is the **machine-checkable** frozen contract (Todo 18): the accompanying
+/// tests assert (a) each name is actually dispatchable (never
+/// `METHOD_NOT_FOUND`) and (b) each name appears verbatim in `API.md`. Keep it in
+/// lockstep with the `match method.as_str()` arms and the documentation.
+#[allow(dead_code)]
+pub(crate) const DISPATCH_METHODS: &[&str] = &[
+    "ping",
+    "version",
+    "tun.set_fd",
+    "core.start",
+    "core.stop",
+    "core.restart",
+    "core.get_mode",
+    "core.set_mode",
+    "dns.get",
+    "dns.set",
+    "dns.clear_cache",
+    "dns.flush_cache",
+    "log.get",
+    "log.set_level",
+    "log.clear",
+    "rules.get",
+    "rules.reload",
+    "config.generate",
+    "config.apply",
+    "profile.export_clash",
+    "profile.import_url",
+    "profile.import_text",
+    "profile.import_link",
+    "profile.list",
+    "profile.get",
+    "profile.create",
+    "profile.update",
+    "profile.delete",
+    "profile.refresh",
+    "profile.refresh_all",
+    "profile.set_schedule",
+    "node.select",
+    "node.delay_test",
+    "conn.list",
+    "conn.close",
+    "conn.close_all",
+    "stats.domain.get",
+    "stats.domain.reset",
+    "stats.traffic.get",
+    "stats.get",
+    "stats.reset",
+    "diagnostics.clash_api.start",
+    "diagnostics.clash_api.stop",
+    "diagnostics.clash_api.status",
+];
 
 /// 运行状态机（Todo 2 占位；Todo 6/29 驱动真实 start/stop）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -732,6 +787,8 @@ fn core_stop_arm(
     instance: Option<Arc<ProxyInstance>>,
 ) -> Result<Vec<u8>, ModuleError> {
     let inst = require_instance(instance_id, instance)?;
+    // Diagnostics controller is bound to the live engine; stop it with the engine.
+    controller::stop();
     let was_running = current_state(&inst) != ProxyRunState::Stopped;
     let stopped = tun::stop();
     set_state(&inst, ProxyRunState::Stopped);
@@ -754,6 +811,9 @@ fn core_restart_arm(
     payload: &[u8],
 ) -> Result<Vec<u8>, ModuleError> {
     let inst = require_instance(instance_id, instance)?;
+    // A restart builds a fresh tunnel; the previous controller would hold the
+    // stale one, so drop it (a developer re-enables diagnostics explicitly).
+    controller::stop();
     if let Some(s) = tun::stop() {
         emit_tun_released(s.instance_id, s.host_fd);
     }
@@ -1424,6 +1484,50 @@ fn node_select_arm(
     ok_data(data)
 }
 
+fn parse_clash_api_port(payload: &[u8]) -> Result<u16, ModuleError> {
+    if payload.is_empty() {
+        return Ok(0);
+    }
+    let v: serde_json::Value = serde_json::from_slice(payload).map_err(|e| {
+        ModuleError::invalid_arg(format!(
+            "diagnostics.clash_api.start payload must be a JSON object: {e}"
+        ))
+    })?;
+    match v.get("port") {
+        None | Some(serde_json::Value::Null) => Ok(0),
+        Some(p) => p
+            .as_u64()
+            .filter(|n| *n <= u16::MAX as u64)
+            .map(|n| n as u16)
+            .ok_or_else(|| {
+                ModuleError::invalid_arg(
+                    "diagnostics.clash_api.start `port` must be an integer 0..=65535",
+                )
+            }),
+    }
+}
+
+/// `diagnostics.clash_api.start` (Todo 18): embed meow's mihomo-compatible
+/// controller bound to `127.0.0.1` with a random per-run secret. Requires a
+/// running engine (it serves the live tunnel); the secret is never returned.
+fn clash_api_start_arm(
+    instance_id: u64,
+    instance: Option<Arc<ProxyInstance>>,
+    payload: &[u8],
+) -> Result<Vec<u8>, ModuleError> {
+    let inst = require_instance(instance_id, instance)?;
+    let port = parse_clash_api_port(payload)?;
+    let tunnel = rules::active_tunnel().ok_or_else(|| {
+        ModuleError::new(
+            StatusCode::InvalidArgument,
+            nodes::ERR_NOT_CONFIGURED,
+            "engine is not running; call core.start before diagnostics.clash_api.start",
+        )
+    })?;
+    let status = controller::start(port, &inst.data_dir, (*tunnel).clone())?;
+    ok_data(to_value(&status)?)
+}
+
 fn create_impl(config: *const u8, config_len: usize) -> Result<u64, c_int> {
     let ctx = ModuleContext::parse(payload_bytes(config, config_len));
     log_message(
@@ -1564,6 +1668,14 @@ fn call_impl(
         "stats.traffic.get" => stats::traffic_get_arm(_payload),
         "stats.get" => stats::domain_get_arm(_payload),
         "stats.reset" => stats::reset_arm(),
+        "diagnostics.clash_api.start" => {
+            clash_api_start_arm(instance_id, instance.clone(), _payload)
+        }
+        "diagnostics.clash_api.stop" => {
+            let was_running = controller::stop();
+            ok_data(serde_json::json!({ "enabled": false, "wasRunning": was_running }))
+        }
+        "diagnostics.clash_api.status" => to_value(&controller::status()).and_then(ok_data),
         other => Err(ModuleError::method_not_found(other)),
     };
 
@@ -1579,6 +1691,7 @@ fn cancel_impl(instance_id: u64, _request_id: *const c_char) -> Result<(), c_int
 }
 
 fn destroy_impl(instance_id: u64) -> Result<(), c_int> {
+    controller::stop();
     if let Some(s) = tun::stop_for_instance(instance_id) {
         emit_tun_released(s.instance_id, s.host_fd);
     }
@@ -1596,6 +1709,7 @@ fn destroy_impl(instance_id: u64) -> Result<(), c_int> {
 }
 
 fn shutdown_impl() -> Result<(), c_int> {
+    controller::stop();
     tun::shutdown();
     instances().lock().unwrap_or_else(|e| e.into_inner()).clear();
     log_message(1, "proxy: shutdown");
@@ -1938,6 +2052,92 @@ mod abi_tests {
         assert_eq!(v["status"], 405);
         assert_eq!(v["code"], "METHOD_NOT_FOUND");
 
+        assert_eq!(destroy(inst), ABI_OK);
+    }
+
+    /// Machine-checkable frozen contract (Todo 18): every name the module claims
+    /// to dispatch must actually dispatch — i.e. it must never answer a 405
+    /// `METHOD_NOT_FOUND`. A dead instance yields a 410/422 domain error (which
+    /// proves the arm exists), and the static-safe arms answer `ABI_OK`.
+    #[test]
+    fn every_dispatch_method_is_actually_dispatchable() {
+        let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let api = register_api();
+        let call = api.call.unwrap();
+
+        for method in super::DISPATCH_METHODS {
+            let (code, out) = call_json(call, 0, method);
+            let is_method_not_found = code == ABI_ERR_DETAIL
+                && serde_json::from_slice::<serde_json::Value>(&out)
+                    .ok()
+                    .and_then(|v| v["code"].as_str().map(|c| c == "METHOD_NOT_FOUND"))
+                    .unwrap_or(false);
+            assert!(
+                !is_method_not_found,
+                "documented method `{method}` is not dispatchable"
+            );
+            assert!(
+                code == ABI_OK || code == ABI_ERR_DETAIL,
+                "method `{method}` returned unexpected ABI code {code}"
+            );
+        }
+    }
+
+    /// Reverse direction: every dispatchable method name is documented verbatim
+    /// in `API.md`. Combined with the Dart doc-vs-code test this makes the
+    /// documentation↔code contract fail closed on either side.
+    #[test]
+    fn api_md_documents_every_dispatch_method() {
+        let api = include_str!("../API.md");
+        for method in super::DISPATCH_METHODS {
+            assert!(
+                api.contains(&format!("`{method}`")),
+                "API.md is missing a row/heading for `{method}`"
+            );
+        }
+    }
+
+    /// Failure QA: a truncated JSON request payload is a structured 422 domain
+    /// error, never a panic and never a 500.
+    #[test]
+    fn malformed_payload_is_structured_422() {
+        let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let api = register_api();
+        let create = api.create.unwrap();
+        let call = api.call.unwrap();
+        let destroy = api.destroy.unwrap();
+
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("gstore-malformed-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = serde_json::to_vec(&serde_json::json!({
+            "data_dir": dir.display().to_string(),
+            "cache_dir": dir.display().to_string(),
+        }))
+        .unwrap();
+        let mut inst: u64 = 0;
+        assert_eq!(create(cfg.as_ptr(), cfg.len(), &mut inst), ABI_OK);
+
+        for (method, payload) in [
+            ("dns.set", &br#"{"nameservers":["#[..]),
+            ("conn.close", &br#"{"id":"#[..]),
+            ("profile.refresh", &br#"{"id":"#[..]),
+            ("node.select", &br#"{"group":"#[..]),
+        ] {
+            let (code, out) = call_with_payload(call, inst, method, payload);
+            assert_eq!(code, ABI_ERR_DETAIL, "{method}: malformed payload must be a domain error");
+            let err: serde_json::Value = serde_json::from_slice(&out).unwrap();
+            assert_eq!(err["status"], 422, "{method}: expected 422, got {err}");
+            assert!(
+                err["code"].as_str().map(|c| !c.is_empty()).unwrap_or(false),
+                "{method}: expected a non-empty error code, got {err}"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(destroy(inst), ABI_OK);
     }
 

@@ -1,11 +1,21 @@
 # gstore_mod_proxy — Module API (v0.1.0, ABI v3)
 
-> **Status: SKELETON (Todo 2), frozen for Waves 2–3.** Todo 18 verifies/expands this
-> file against the shipped implementation; until then treat the signatures below as
-> the contract every later todo codes against.
+> **Status: FROZEN (Todo 18).** Every method and event below is verified against
+> the shipped dispatch (`src/lib.rs`) and the emit sites; the Dart bindings
+> (`lib/core/rust/proxy/`) and their decode tests mirror this file 1:1. The
+> contract is machine-checked in both directions: a Rust test asserts every name
+> in `DISPATCH_METHODS` is dispatchable and documented here; a Dart test parses
+> this file and asserts its method/event set equals the Dart registry. Adding,
+> renaming, or removing a method/event without updating all three (dispatch,
+> this file, Dart registry) fails those tests.
 >
 > Module name `proxy` · `min_host_abi = 3` · `api.version = 1` · crate `rust/gstore_mod_proxy`
 > (cdylib + rlib, `panic = "unwind"`, every `extern "C"` entry wrapped in `catch_unwind`).
+>
+> **FRB/envelope is the only contract the Flutter UI uses.** Dart never speaks
+> meow's HTTP Clash API for normal operation — all UI data comes from `call`
+> responses and module events (the loopback controller in §2.13 is OFF by
+> default and diagnostics-only). Business logic stays in Rust.
 
 ## 1. Transport contract
 
@@ -745,13 +755,20 @@ hash is loaded as `unverified`). A download is refused with `checksum_required`
 unless a sha256 is supplied — the module never installs unverified geo data.
 
 
-### 2.12 `lan.*` — optional LAN listening (default OFF)
+### 2.12 `lan.*` — optional LAN listening (RESERVED, not dispatchable)
 
-| method | request | data |
-|---|---|---|
-| `lan.get` | *(none)* | `LanConfig` |
-| `lan.set` | `LanConfig` (partial) | `LanConfig` |
-| `lan.status` | *(none)* | `{ "enabled": false, "bound": false, "addresses": [], "activeConns": 0 }` |
+> **NOT IMPLEMENTED (Todo 18 reconciliation).** `lan.get` / `lan.set` /
+> `lan.status` are **not** in the shipped dispatch: calling them returns
+> `METHOD_NOT_FOUND` (405). `core.start` / `core.set_mode` with
+> `mode:"lanProxy"` return `PROXY_NO_INBOUND` (409). This table is the reserved
+> shape for Todo 28; it is deliberately excluded from the frozen
+> `DISPATCH_METHODS` set and from the Dart method registry until then.
+
+| method | request | data | status |
+|---|---|---|---|
+| `lan.get` | *(none)* | `LanConfig` | reserved |
+| `lan.set` | `LanConfig` (partial) | `LanConfig` | reserved |
+| `lan.status` | *(none)* | `{ "enabled": false, "bound": false, "addresses": [], "activeConns": 0 }` | reserved |
 
 `LanConfig`:
 ```json
@@ -760,6 +777,43 @@ unless a sha256 is supplied — the module never installs unverified geo data.
   "allowedIps": ["192.168.1.0/24"] }
 ```
 `auth` is `null` when disabled. Enabling without `auth` must emit a `proxy.state` warning (Todo 28).
+
+### 2.13 `diagnostics.clash_api.*` — optional loopback Clash controller (Todo 18)
+
+| method | request | data |
+|---|---|---|
+| `diagnostics.clash_api.start` | `{ "port"?: number }` (0/default = ephemeral) | `ClashApiStatus` |
+| `diagnostics.clash_api.stop` | *(none)* | `{ "enabled": false, "wasRunning": bool }` |
+| `diagnostics.clash_api.status` | *(none)* | `ClashApiStatus` |
+
+`ClashApiStatus`:
+```json
+{ "enabled": true, "bound": true, "address": "127.0.0.1:9090",
+  "loopbackOnly": true, "port": 9090 }
+```
+
+**We do not implement a controller.** meow already ships a mihomo-compatible
+REST/WebSocket controller (`meow-api`, coverage table in meow's
+`docs/mihomo-api-compatibility.md`); this module only *embeds* it. It is:
+
+* **OFF by default** — nothing starts at `create`/`core.start`; a developer must
+  call `diagnostics.clash_api.start`.
+* **Loopback only** — the bind host is a hard-coded `127.0.0.1` literal, never
+  `0.0.0.0` and never caller-supplied. `address` always begins `127.0.0.1:`.
+* **Secret-authenticated** — a fresh 128-bit UUIDv4 secret is generated per run
+  and enforced by meow's `require_auth` (`Authorization: Bearer <secret>`). The
+  secret is **never** returned by any method, never emitted as an event, and
+  never written to a log line. For on-device diagnostics it is written, mode
+  `0600`, to the app-private file `<data_dir>/.clash_api_secret`; there is no
+  envelope method that reads it back.
+* **Bound to the live engine** — `start` requires a running tunnel
+  (`core.start`) or returns `PROXY_NOT_CONFIGURED` (409); `core.stop`,
+  `core.restart`, `destroy`, and `shutdown` stop it. A failure to bind/spawn is
+  `PROXY_CLASH_API_FAILED` (500).
+
+This exists purely for diagnostics and third-party panels. **Dart/Flutter never
+calls this HTTP API for normal operation**; the UI reads state through the
+envelope (`core.*`, `stats.*`, `conn.*`) and module events.
 
 ## 3. Events (module → host)
 
@@ -778,10 +832,17 @@ side filters on the `proxy.` prefix. `instanceId` is always present.
 | `proxy.subscription.added` | `{ "profileId": string, "name": string }` |
 | `proxy.subscription.removed` | `{ "profileId": string }` |
 | `proxy.conn` | `{ "action":"close"\|"close_all", "id"?: string, "domain"?: string, "outbound"?: string, "uploadBytes"?:0, "downloadBytes"?:0, "closed"?: number }` — emitted once per explicit `conn.close` (action `close`) / `conn.close_all` (action `close_all`, carries `closed`); the steady open/close stream is **not** streamed per connection (host ring cap 128) — read the throttled `proxy.stats` snapshot and `log.get` instead (Todo 17) |
-| `proxy.log` | `LogRecord` (see §2.8) — the push mirror of the log ring; `proxy.conn {json}` / `proxy.dns.query\|failure {json}` lines are the structured variants |
 | `proxy.dns` | `DnsQueryRecord` (see §2.7) — one record per DNS query answered by the TUN DNS hijack; carries the domain→IP mapping for the Todo 16 domain-statistics path (Todo 8; Todo 15/16 consume it). |
 | `proxy.tun.released` | `{ "fd": 123 }` — TUN read loop stopped and its thread joined; the host may clear its cached fd and Kotlin may close the PFD (Todo 6). Host-internal control event; Dart may ignore it. |
 | `proxy.config.applied` | `{ "profileId": string, "hash": string, "template": string }` — `config.apply` hot-applied a new config on the running engine without a process restart (Todo 13). |
+
+> **Not an `emit_event` type: `proxy.log`.** The push log lane is the ABI `log`
+> callback captured at register (LogBridge → `LogManager`), **not** the event
+> channel; there is no `proxy.log` `emit_event` payload. Structured variants are
+> delivered on that same callback as `proxy.conn {json}` and
+> `proxy.dns.query|failure {json}` lines. Pull with `log.get` (§2.8) instead.
+> The Dart event registry therefore excludes `proxy.log` even though the log
+> records themselves are typed (`LogRecord`).
 
 ## 4. Host → module events (`on_event`)
 
@@ -836,6 +897,7 @@ registered in `rust/ERROR_CODES.md`.
 | `PROXY_LOG_LEVEL_INVALID` | 422 | `log.set_level` / `log.get` received an unknown level (expected `debug\|info\|warn\|error`) (Todo 15) |
 | `PROXY_STATS_SORT_INVALID` | 422 | `stats.domain.get` received an unknown sort key (expected `bytes\|connections\|lastSeen\|domain`) (Todo 16) |
 | `PROXY_CONN_NOT_FOUND` | 404 | `conn.close` was given a UUID this module has never tracked (not live and not in the recently-closed tombstone) (Todo 17) |
+| `PROXY_CLASH_API_FAILED` | 500 | `diagnostics.clash_api.start` could not bind `127.0.0.1:<port>` or spawn its runtime/thread (Todo 18) |
 
 ## 6. Module distribution decision (state it now)
 
@@ -1551,3 +1613,41 @@ counter, `proxy.conn` event), an idempotent re-close, and an unknown id →
 `PROXY_CONN_NOT_FOUND` (404, no panic). **UNVERIFIED**: on-device list/close over
 a real TUN flow (no adb device) — the flow is exercised against a fixture meow
 `Statistics` tunnel on the host.
+
+## 17. Frozen contract & typed Dart bindings (Todo 18)
+
+The control/event contract above is frozen here. It is enforced mechanically:
+
+* **Rust → doc:** `every_dispatch_method_is_actually_dispatchable` calls every
+  name in `crate::DISPATCH_METHODS` (the single source of truth next to the
+  dispatch) and asserts it never answers `METHOD_NOT_FOUND`;
+  `api_md_documents_every_dispatch_method` asserts each name appears verbatim
+  (`` `name` ``) in this file.
+* **Doc → Dart:** a pure-Dart test parses this file's method tables and event
+  table and asserts the sets equal the Dart registries in
+  `lib/core/rust/proxy/ProxyContract.dart`.
+* **Dart decode:** every response/event model has a hand-written `fromJson`
+  decode test (`test/proxy_contract_test.dart`), so a schema drift breaks the
+  build instead of surfacing at runtime.
+
+**Hand-written, no code-gen.** The models follow the repo convention
+(`lib/core/rust/contract/ModuleTypes.dart`): plain Dart classes with
+`fromJson`/`toJson`, tolerant of unknown/`null` fields (a missing key decodes to
+a documented default, never a throw). Secrets (`ProxyNode.password`/`uuid`,
+REALITY/obfs keys) are decoded only transiently when the UI must show a profile;
+they are never logged.
+
+**Envelope errors.** A non-`ok` response decodes to a structured
+`ProxyModuleException` carrying `status`/`code`/`message`; an undecodable
+(truncated / non-UTF-8 / non-JSON) response payload surfaces as
+`PAYLOAD_DECODE_FAILED` (status 400) — never a crash and never a bare `FormatException`.
+
+### 17.1 Verification status
+
+`cargo test -p gstore_mod_proxy` proves: every dispatch method is dispatchable
+and documented; unknown methods are a structured 405; a truncated JSON payload is
+a structured 422 (no panic); the loopback controller defaults OFF, binds a
+`127.0.0.1` literal on an ephemeral port, writes a `0600` secret file, never
+serializes a secret, and stops deterministically. **UNVERIFIED**: the loopback
+controller against a real device/panel (no adb device); meow's controller routes
+are exercised only through bind/start/stop on the host.

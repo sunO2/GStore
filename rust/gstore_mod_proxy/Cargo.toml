@@ -76,6 +76,12 @@ uuid = "1"
 # that map when it attaches generated proxies/groups (`nodes::install_proxies`).
 smol_str = "0.3"
 meow-api = { git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587442caaac00b221efc91c84907aeb0e0" }
+# Todo 18: embed meow's mihomo-compatible controller for loopback diagnostics.
+# We call `meow_api::routes::create_router` directly (rather than `ApiServer::run`)
+# so the server can report its real ephemeral port and shut down gracefully; that
+# needs `axum::serve` as a direct symbol. `axum` is already in the graph via
+# `meow-api` at this exact version.
+axum = "0.8"
 meow-listener = { git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587442caaac00b221efc91c84907aeb0e0", default-features = false, features = ["listener-mixed"] }
 meow_lwip = { package = "meow-lwip", git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587442caaac00b221efc91c84907aeb0e0" }
 
