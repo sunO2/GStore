@@ -66,6 +66,12 @@ class DbManager {
     throw StateError('DbManager 尚未初始化（DbModule 未上线或测试未 bind）');
   }
 
+  /// 仅供测试：清除全局单例缓存，使 [instance] 重新从 ModuleManager 解析。
+  @visibleForTesting
+  static void resetInstanceForTest() {
+    _instance = null;
+  }
+
   GithubRestClient? _githubApi;
   GithubRestClient get githubApi =>
       _githubApi ??= ModuleManager.instance.require<GithubRestClient>();
@@ -221,7 +227,7 @@ class DbManager {
     final info = await _getLatestReleaseInfo(target);
     if (info == null) {
       debugPrint('DbManager: 无更新，跳过下载');
-      return -2; // 无更新
+      return DbUpdateResult.noUpdate;
     }
 
     final release = info['release'] as Map<String, dynamic>;
@@ -258,9 +264,11 @@ class DbManager {
               assets["name"],
               downloadSize: assets["size"],
               saveFileName: dbDownloadPath,
-              forceDownload: true); // 强制重新下载，确保数据库更新
+              forceDownload: true,
+              // 数据库文件不是 APK：禁止下载完成后走 onApkReady 安装流程
+              installAfterDownload: false);
           appLog.info('DbManager: 下载任务已创建，状态: ${task.status}, 保存路径: ${task.filePath}');
-          task = await _awaitDownloadTerminal(service, task);
+          task = await awaitDownloadTerminal(service, task);
           appLog.info('DbManager: 下载结束，最终状态: ${task.status}');
           return task;
       })();
@@ -282,11 +290,11 @@ class DbManager {
             debugPrint('DbManager: 文件头校验=${isSqlite ? "有效SQLite" : "无效文件!"}');
             if (!isSqlite) {
               appLog.error('DbManager: 下载文件无效，保留原数据库');
-              return DbUpdateResult.success;
+              return DbUpdateResult.error;
             }
           } else {
             appLog.error('DbManager: 下载临时文件不存在，保留原数据库');
-            return DbUpdateResult.success;
+            return DbUpdateResult.error;
           }
 
           // 关键步骤（用户提示的正确顺序）：
@@ -317,7 +325,7 @@ class DbManager {
             appLog.info('DbManager: 新数据库文件已就位');
           } catch (e) {
             appLog.error('DbManager: 覆盖新数据库失败 - $e');
-            return DbUpdateResult.success;
+            return DbUpdateResult.error;
           }
 
           // 4. 重新打开新的数据库连接
@@ -372,16 +380,21 @@ class DbManager {
   /// 带超时护栏：任务若长时间不推进（如并发占满/引擎异常卡死），
   /// 超时后返回当前非终态任务，由调用方按失败处理（保留原数据库），
   /// 避免加载遮罩永久卡住用户。
-  Future<DownloadTask> _awaitDownloadTerminal(
+  ///
+  /// 提取为静态 [@visibleForTesting] 函数并注入 [timeout]，纯 Dart 测试可
+  /// 用短超时驱动终态事件完成，无需真的等待 5 分钟。
+  @visibleForTesting
+  static Future<DownloadTask> awaitDownloadTerminal(
     IDownloadService service,
-    DownloadTask task,
-  ) async {
+    DownloadTask task, {
+    Duration timeout = const Duration(minutes: 5),
+  }) async {
     final id = task.id;
     if (id == null) return task;
     final completer = Completer<DownloadTask>();
     StreamSubscription<DownloadTask>? sub;
     sub = service.watch(id).listen((da) {
-      if (_isTerminal(da.status) && !completer.isCompleted) {
+      if (_isDownloadTerminal(da.status) && !completer.isCompleted) {
         completer.complete(da);
       }
     });
@@ -389,18 +402,17 @@ class DbManager {
     // watch 不再推送，直接读取当前状态终结等待
     final current = await service.getTask(id);
     if (current != null &&
-        _isTerminal(current.status) &&
+        _isDownloadTerminal(current.status) &&
         !completer.isCompleted) {
       completer.complete(current);
     }
-    final done = await completer.future
-        .timeout(const Duration(minutes: 5), onTimeout: () => task);
+    final done = await completer.future.timeout(timeout, onTimeout: () => task);
     await sub.cancel();
     return done;
   }
 
   /// 是否为下载终止态
-  bool _isTerminal(DownloadStatusEnum status) =>
+  static bool _isDownloadTerminal(DownloadStatusEnum status) =>
       status == DownloadStatusEnum.completed ||
       status == DownloadStatusEnum.failed ||
       status == DownloadStatusEnum.cancelled ||

@@ -799,7 +799,9 @@ class LocalDbChannel extends IChannel with AppUpdateCheckMixin {
       }
       // 通过 DbManager 检查更新
       var updateStatus = await "gstore".checkUpdate();
-      bool hasUpdate = updateStatus == 0 || updateStatus == 1;
+      // DbUpdateResult 数值契约：success=3 / noUpdate=-2 / error=-1。
+      // 旧比较（== 0 || == 1）对不上任何取值，恒为 false，必须用命名常量。
+      bool hasUpdate = updateStatus == DbUpdateResult.success;
 
       return ChannelResult.success(
         data: hasUpdate,
@@ -824,7 +826,7 @@ class LocalDbChannel extends IChannel with AppUpdateCheckMixin {
   }) async {
     try {
       var updateStatus = await "gstore".checkUpdate();
-      bool success = updateStatus == 1; // DOWNLOAD_SUCCESS
+      bool success = updateStatus == DbUpdateResult.success;
 
       return ChannelResult.success(
         data: success,

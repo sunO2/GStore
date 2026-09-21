@@ -616,4 +616,141 @@ void main() {
       await sub.cancel();
     });
   });
+
+  // 回归：任务在 Dart 上创建后，惰性路由被 promotion 到 Rust 时，**不得**把该任务
+  // 的 watch 订阅换源到 Rust——否则 Dart 任务的终态事件永远丢失，调用方挂到超时。
+  // 修正为按创建任务 id「固定归属」：id → 创建它的实现。
+  group('LazyDownloadService 按任务固定归属', () {
+    test('固定归属：promotion 后 Dart 任务的终态仍经同一条 watch 订阅送达', () async {
+      final dart = _FakeDownloadService('dart');
+      final rust = _FakeDownloadService('rust');
+      var probes = 0;
+      final never = Completer<bool>();
+      final lazy = LazyDownloadService(
+        dart,
+        rustProbe: () {
+          probes++;
+          // 首次挂起（超时）→ download 落在 Dart；之后内核已就绪。
+          return probes == 1 ? never.future : Future<bool>.value(true);
+        },
+        rustServiceFactory: () => rust,
+        resolutionTimeout: const Duration(milliseconds: 20),
+        resolutionRetryCooldown: Duration.zero,
+      );
+
+      // 探测 #1 超时 ⇒ 首个 download 在 Dart 上创建任务 id=1，并固定归属 Dart。
+      final task = await lazy.download('a', 'n', '1', 'u', 'f.apk');
+      expect(task.appName, 'dart');
+      final dartId = task.id!;
+
+      final received = <DownloadTask>[];
+      final sub = lazy.watch(dartId).listen(received.add);
+      await pumpEventQueue();
+      expect(dart.watchCalls, 1, reason: '固定 Dart 任务应直接绑定 Dart 流');
+      expect(rust.watchCalls, 0);
+
+      // 冷却后由一次「未固定 id」的变更调用触发成功解析，全局切到 Rust。
+      await lazy.pause(999);
+      await pumpEventQueue();
+      expect(probes, 2, reason: '未固定调用仍会解析内核');
+      expect(rust.pauseCalls, 1);
+
+      // 关键意图：固定 Dart 任务的 watch 不得在 promotion 时重绑到 Rust。
+      expect(rust.watchCalls, 0,
+          reason: 'fixed task must not rebind its watch to Rust on promotion');
+
+      // 推动 Dart 侧终态事件——必须经**同一条**订阅送达。
+      dart.watcherFor(dartId).add(
+            _task(dartId, source: 'dart', status: DownloadStatusEnum.completed),
+          );
+      await pumpEventQueue();
+      expect(received.length, 1, reason: 'Dart 任务终态必须经原订阅送达（重绑会丢事件）');
+      expect(received.single.appName, 'dart');
+      expect(received.single.status, DownloadStatusEnum.completed);
+
+      // 固定归属：getTask 仍解析到 Dart，而非 promotion 后的全局活跃实现。
+      final fetched = await lazy.getTask(dartId);
+      expect(fetched?.appName, 'dart', reason: '固定 id 的 getTask 仍走 Dart');
+
+      await sub.cancel();
+    });
+
+    test('promotion 后固定 id 走原实现，未固定 id 走当前活跃实现', () async {
+      final dart = _FakeDownloadService('dart');
+      final rust = _FakeDownloadService('rust');
+      var probes = 0;
+      final never = Completer<bool>();
+      final lazy = LazyDownloadService(
+        dart,
+        rustProbe: () {
+          probes++;
+          return probes == 1 ? never.future : Future<bool>.value(true);
+        },
+        rustServiceFactory: () => rust,
+        resolutionTimeout: const Duration(milliseconds: 20),
+        resolutionRetryCooldown: Duration.zero,
+      );
+
+      final task = await lazy.download('a', 'n', '1', 'u', 'f.apk');
+      final dartId = task.id!;
+      await lazy.pause(999); // 触发 promotion，全局切到 Rust
+
+      expect((await lazy.getTask(dartId))?.appName, 'dart',
+          reason: '固定 id 仍是创建它的 Dart 实现');
+      expect((await lazy.getTask(999))?.appName, 'rust',
+          reason: '未固定 id 走当前活跃实现 Rust');
+    });
+
+    test('固定 Dart 任务上的变更调用仍触发解析，但派发到 Dart', () async {
+      final dart = _FakeDownloadService('dart');
+      final rust = _FakeDownloadService('rust');
+      var probes = 0;
+      final never = Completer<bool>();
+      final lazy = LazyDownloadService(
+        dart,
+        rustProbe: () {
+          probes++;
+          return probes == 1 ? never.future : Future<bool>.value(true);
+        },
+        rustServiceFactory: () => rust,
+        resolutionTimeout: const Duration(milliseconds: 20),
+        resolutionRetryCooldown: Duration.zero,
+      );
+
+      final task = await lazy.download('a', 'n', '1', 'u', 'f.apk');
+      expect(probes, 1);
+
+      await lazy.pause(task.id!);
+      expect(probes, 2, reason: '固定归属不阻止解析内核（promotion 仍会发生）');
+      expect(dart.pauseCalls, 1, reason: '变更派发到创建任务的 Dart 实现');
+      expect(rust.pauseCalls, 0);
+    });
+
+    test('remove 后清除固定归属，后续 getTask 回到活跃实现', () async {
+      final dart = _FakeDownloadService('dart');
+      final rust = _FakeDownloadService('rust');
+      var probes = 0;
+      final never = Completer<bool>();
+      final lazy = LazyDownloadService(
+        dart,
+        rustProbe: () {
+          probes++;
+          return probes == 1 ? never.future : Future<bool>.value(true);
+        },
+        rustServiceFactory: () => rust,
+        resolutionTimeout: const Duration(milliseconds: 20),
+        resolutionRetryCooldown: Duration.zero,
+      );
+
+      final task = await lazy.download('a', 'n', '1', 'u', 'f.apk');
+      final dartId = task.id!;
+      await lazy.pause(999); // promotion → Rust
+
+      expect((await lazy.getTask(dartId))?.appName, 'dart');
+      await lazy.remove(dartId); // 固定 → 派发 Dart.remove，并清除固定
+      expect(dart.removeCalls, 1, reason: 'remove 派发到创建任务的原实现');
+      expect((await lazy.getTask(dartId))?.appName, 'rust',
+          reason: 'remove 后固定归属被清除，getTask 回到活跃实现');
+    });
+  });
 }

@@ -875,7 +875,7 @@ class _SettingsPageState extends State<SettingsPage> {
           const _AboutVersionTile(),
           const Divider(height: 1),
           // 数据库更新（放在版本下面）
-          const _DataUpdateTile(),
+          const DataUpdateTile(),
           const Divider(height: 1),
           ListTile(
             leading: const Icon(Icons.description_outlined),
@@ -1080,14 +1080,31 @@ class _AboutVersionTileState extends State<_AboutVersionTile> {
 
 /// 数据更新检测 Tile
 /// 状态：可检查（箭头）/ 检查中（loading）/ 有更新（"更新"按钮）
-class _DataUpdateTile extends StatefulWidget {
-  const _DataUpdateTile();
+///
+/// 公开（非下划线）以便 widget 测试直接挂载，验证 dbRebuiltStream 刷新
+/// 与单飞（single-flight）行为。
+class DataUpdateTile extends StatefulWidget {
+  const DataUpdateTile({super.key});
 
   @override
-  State<_DataUpdateTile> createState() => _DataUpdateTileState();
+  State<DataUpdateTile> createState() => _DataUpdateTileState();
 }
 
-class _DataUpdateTileState extends State<_DataUpdateTile> {
+/// 数据库更新结果的页面语义分类。
+///
+/// [DbUpdateResult] 的数值契约（success=3 / noUpdate=-2 / error=-1）是 core 层
+/// 约定；页面据此决定提示文案——"无更新"必须提示已是最新，不能误报失败。
+enum DbUpdateOutcome { success, noUpdate, failure }
+
+/// 将 [DbUpdateResult] 数值映射为页面语义分类。
+@visibleForTesting
+DbUpdateOutcome classifyDbUpdateResult(int result) {
+  if (result == DbUpdateResult.success) return DbUpdateOutcome.success;
+  if (result == DbUpdateResult.noUpdate) return DbUpdateOutcome.noUpdate;
+  return DbUpdateOutcome.failure;
+}
+
+class _DataUpdateTileState extends State<DataUpdateTile> {
   /// 是否正在检查
   bool _checking = false;
 
@@ -1096,6 +1113,11 @@ class _DataUpdateTileState extends State<_DataUpdateTile> {
 
   /// 是否正在下载更新
   bool _downloading = false;
+
+  /// 更新单飞守卫：`_performUpdate` 同步置位、finally 复位，
+  /// 防止两次重叠调用触发并发更新（并发会让 showLoading 叠加、
+  /// dismissLoading 只 pop 最顶层，导致一条流程的完成误关另一条的遮罩）。
+  bool _updateInFlight = false;
 
   /// 当前数据库版本
   String _currentVersion = '0.0.0.0';
@@ -1109,6 +1131,10 @@ class _DataUpdateTileState extends State<_DataUpdateTile> {
   /// 红点变更订阅（dispose 取消）
   StreamSubscription<Map<String, int>>? _badgeSub;
 
+  /// 数据库重建订阅（dispose 取消）。DbManager 重建并 notifyDbRebuilt 后，
+  /// 即使本次更新的 awaiting 续体已丢失，tile 也能刷新版本/leading 状态。
+  StreamSubscription<void>? _dbRebuiltSub;
+
   @override
   void initState() {
     super.initState();
@@ -1120,11 +1146,27 @@ class _DataUpdateTileState extends State<_DataUpdateTile> {
       if (!mounted) return;
       setState(() => _hasDbBadge = badges[BadgeKey.dbUpdate.code] != null);
     });
+    // 数据库重建事件是 broadcast：订阅后重建完成即刷新当前版本，
+    // 与 _performUpdate 的续体解耦（续体丢失时状态仍收敛）。
+    // DbManager 未初始化（部分测试直接挂载 SettingsPage）时安全降级。
+    try {
+      _dbRebuiltSub = DbManager.instance.dbRebuiltStream.listen((_) {
+        if (!mounted) return;
+        setState(() {
+          _hasUpdate = false;
+          _latestVersion = null;
+        });
+        _loadCurrentVersion();
+      });
+    } catch (e) {
+      appLog.error('DataUpdateTile: 订阅数据库重建事件失败（降级不刷新）- $e');
+    }
   }
 
   @override
   void dispose() {
     _badgeSub?.cancel();
+    _dbRebuiltSub?.cancel();
     super.dispose();
   }
 
@@ -1224,28 +1266,44 @@ class _DataUpdateTileState extends State<_DataUpdateTile> {
 
   /// 执行更新下载
   Future<void> _performUpdate() async {
-    if (_downloading) return;
-    setState(() => _downloading = true);
+    // 单飞守卫：同步置位，重叠调用直接返回，绝不启动第二次更新。
+    if (_updateInFlight) return;
+    _updateInFlight = true;
+    if (mounted) {
+      setState(() => _downloading = true);
+    }
 
     try {
       final result = await "gstore".checkUpdate();
       if (!mounted) return;
-      setState(() {
-        _downloading = false;
-        _hasUpdate = false;
-      });
-      if (result == DbUpdateResult.success) {
-        await _loadCurrentVersion();
-        setState(() => _latestVersion = null);
-        AppDialogs.showSuccess('本地数据库已更新', title: '更新成功');
-      } else {
-        AppDialogs.showError('数据库更新失败，请检查网络或代理设置',
-            title: '更新失败');
+      switch (classifyDbUpdateResult(result)) {
+        case DbUpdateOutcome.success:
+          await _loadCurrentVersion();
+          if (!mounted) return;
+          setState(() {
+            _hasUpdate = false;
+            _latestVersion = null;
+          });
+          AppDialogs.showSuccess('本地数据库已更新', title: '更新成功');
+        case DbUpdateOutcome.noUpdate:
+          // 无更新不是失败：给"已是最新"信息提示（与 _checkForUpdate 同款）
+          setState(() {
+            _hasUpdate = false;
+            _latestVersion = null;
+          });
+          AppDialogs.showInfo('本地数据库已是最新版本', title: '已是最新');
+        case DbUpdateOutcome.failure:
+          setState(() => _hasUpdate = false);
+          AppDialogs.showError('数据库更新失败，请检查网络或代理设置',
+              title: '更新失败');
       }
     } catch (e) {
+      if (!mounted) return;
+      AppDialogs.showError('更新出错: $e', title: '更新失败');
+    } finally {
+      _updateInFlight = false;
       if (mounted) {
         setState(() => _downloading = false);
-        AppDialogs.showError('更新出错: $e', title: '更新失败');
       }
     }
   }

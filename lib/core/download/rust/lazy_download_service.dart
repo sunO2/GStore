@@ -117,6 +117,27 @@ class LazyDownloadService implements IDownloadService {
     return (_resolved && _useRust && rust != null) ? rust : _dart;
   }
 
+  /// 任务 id → **创建该任务的实现**（按任务固定归属）。
+  ///
+  /// 为什么需要：一个任务可能在解析尚未完成（或超时冷却期内）由 Dart 创建，随后
+  /// 一次外部变更调用把路由 promotion 到 Rust。若事后仍按全局 [_active] 查找/监听该
+  /// 任务，它就会"消失"在 Rust 侧（Rust 的 store 里没有它）——[getTask] 取不到，
+  /// [watch] 的合并流还会被换源，其终态事件永远无法送达（调用方一直等到超时）。
+  /// 固定归属保证：由谁创建，就始终由谁承载读取、监听与变更派发。
+  ///
+  /// **id 不是全局唯一**：Dart 实现（Floor 自增主键）与 Rust 内核（模块自有 store）
+  /// 各自维护独立序列，通常都从 1 开始，同一个 int 可能指向两个不同的任务。因此本
+  /// 表只在「本路由亲自创建过该 id」时有意义；若多实现产生相同 id，则后创建者覆盖
+  /// （last-write-wins）。跨实现去重不在本层职责内。
+  ///
+  /// **已知残留（本修复不处理）**：应用重启后，从 Floor 恢复的未完成任务未经过
+  /// [download]，因此未登记在此表中；一旦 Rust 被 promotion，这些遗留 Dart 任务
+  /// 将无法经 [getTask] / [watch] 触达（回退读取为后续可选项，不在此处修）。
+  final Map<int, IDownloadService> _taskOwner = <int, IDownloadService>{};
+
+  /// 某任务应使用的实现：优先创建它的实现（固定归属），否则按当前活跃实现。
+  IDownloadService _implForTask(int id) => _taskOwner[id] ?? _active;
+
   /// 单飞解析：首个调用创建 `_resolve()`，其余调用复用其 Future。
   ///
   /// 已终态直接返回；超时冷却期内返回已完成的 Future（本次调用走 Dart，不挂起、
@@ -215,7 +236,10 @@ class LazyDownloadService implements IDownloadService {
     bool installAfterDownload = true,
   }) async {
     await _ensureResolved();
-    return _active.download(
+    // 先捕获本次调用实际使用的实现，再在其上创建任务；任务 id 一旦返回即固定归属，
+    // 之后无论路由是否 promotion 到 Rust，该任务都留在创建它的实现上。
+    final impl = _active;
+    final task = await impl.download(
       appid,
       appName,
       version,
@@ -227,6 +251,9 @@ class LazyDownloadService implements IDownloadService {
       forceDownload: forceDownload,
       installAfterDownload: installAfterDownload,
     );
+    final id = task.id;
+    if (id != null) _taskOwner[id] = impl;
+    return task;
   }
 
   @override
@@ -241,7 +268,8 @@ class LazyDownloadService implements IDownloadService {
     bool installAfterDownload = true,
   }) async {
     await _ensureResolved();
-    return _active.downloadWithContext(
+    final impl = _active;
+    final task = await impl.downloadWithContext(
       request,
       appid,
       appName,
@@ -251,50 +279,64 @@ class LazyDownloadService implements IDownloadService {
       saveFileName: saveFileName,
       installAfterDownload: installAfterDownload,
     );
+    final id = task.id;
+    if (id != null) _taskOwner[id] = impl;
+    return task;
   }
+
+  // 变更类方法保留 [_ensureResolved]（promotion 仍会发生），但派发到任务的**固定
+  // 归属**实现：由 Dart 创建的任务即使内核已就绪，也继续在 Dart 上暂停/取消等，
+  // 否则该 id 在 Rust store 里不存在，变更会被误派发或静默丢弃。
 
   @override
   Future<void> pause(int id) async {
     await _ensureResolved();
-    return _active.pause(id);
+    return _implForTask(id).pause(id);
   }
 
   @override
   Future<void> resume(int id) async {
     await _ensureResolved();
-    return _active.resume(id);
+    return _implForTask(id).resume(id);
   }
 
   @override
   Future<void> cancel(int id) async {
     await _ensureResolved();
-    return _active.cancel(id);
+    return _implForTask(id).cancel(id);
   }
 
   @override
   Future<void> retry(int id) async {
     await _ensureResolved();
-    return _active.retry(id);
+    return _implForTask(id).retry(id);
   }
 
   @override
   Future<void> restart(int id) async {
     await _ensureResolved();
-    return _active.restart(id);
+    return _implForTask(id).restart(id);
   }
 
   @override
   Future<void> remove(int id) async {
     await _ensureResolved();
-    return _active.remove(id);
+    final impl = _implForTask(id);
+    // 任务被移除后固定归属也随之失效：后续同 id 查询回到活跃实现
+    // （该 id 可能对应另一实现上的任务）。
+    _taskOwner.remove(id);
+    return impl.remove(id);
   }
 
   // ---------------------------------------------------------------------------
   // 只读方法：不触发解析，按当前活跃实现代理
   // ---------------------------------------------------------------------------
 
+  // 只读入口按任务的固定归属路由（不触发解析）：由 Dart 创建的任务即使路由已
+  // promotion 到 Rust，仍可从 Dart 取回，不会"消失"。
+
   @override
-  Future<DownloadTask?> getTask(int id) => _active.getTask(id);
+  Future<DownloadTask?> getTask(int id) => _implForTask(id).getTask(id);
 
   @override
   Future<List<DownloadTask>> listTasks() => _active.listTasks();
@@ -304,8 +346,16 @@ class LazyDownloadService implements IDownloadService {
   // ---------------------------------------------------------------------------
 
   @override
-  Stream<DownloadTask> watch(int id) =>
-      _mergedStream(() => _dart.watch(id), () => _rust!.watch(id));
+  Stream<DownloadTask> watch(int id) {
+    // 固定归属的任务：直接绑定创建它的实现，**不订阅** [_resolutionEvents]，
+    // 因此 promotion 时不会换源、不会取消该订阅——终态事件必达。
+    final owner = _taskOwner[id];
+    if (owner != null) {
+      return owner.watch(id);
+    }
+    // 未固定 id：保持原有"先 Dart、解析终态后原地换源 Rust"的语义。
+    return _mergedStream(() => _dart.watch(id), () => _rust!.watch(id));
+  }
 
   @override
   Stream<DownloadTask> watchAll() =>
