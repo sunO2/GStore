@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -18,6 +19,32 @@ Uint8List _buildAssetZip(Map<String, String> files) {
     archive.addFile(ArchiveFile(entry.key, data.length, data));
   }
   return Uint8List.fromList(ZipEncoder().encode(archive)!);
+}
+
+/// 可控扫描时序的服务：让第一次 [scanDownloads] 在拿到「目录快照」后挂起，
+/// 用于确定性地复现「旧扫描（文件写入前）晚落盘覆盖新结果」的竞态。
+class _HoldFirstScanService extends CacheManageService {
+  /// 第一次扫描已捕获目录快照（并即将挂起）。
+  final Completer<void> firstScanCaptured = Completer<void>();
+
+  Completer<void>? _releaseFirstScan;
+  bool _first = true;
+
+  void holdFirstScan() => _releaseFirstScan = Completer<void>();
+
+  void releaseFirstScan() => _releaseFirstScan?.complete();
+
+  @override
+  Future<(List<DownloadedFileItem>, int)> scanDownloads() async {
+    final snapshot = await super.scanDownloads();
+    if (_first) {
+      _first = false;
+      if (!firstScanCaptured.isCompleted) firstScanCaptured.complete();
+      final release = _releaseFirstScan;
+      if (release != null) await release.future;
+    }
+    return snapshot;
+  }
 }
 
 void main() {
@@ -242,7 +269,9 @@ void main() {
     });
 
     test('loadDownloads 更新下载列表状态', () async {
-      await pumpEventQueue(); // 等 build 的自动加载完成
+      // 真实屏障是下面 loadDownloads() 返回的 future：刷新已串行化，
+      // await 返回即代表本次扫描结果已写入状态（pumpEventQueue 仅让首帧加载先跑）。
+      await pumpEventQueue();
       File('${downloadsDir.path}/a.apk').writeAsBytesSync(List.filled(200, 1));
       final notifier = container.read(cacheManageProvider.notifier);
       await notifier.loadDownloads();
@@ -251,6 +280,37 @@ void main() {
       expect(state.downloads.length, 1);
       expect(state.downloadTotalSize, 200);
       expect(state.downloadsLoading, isFalse);
+    });
+
+    test('竞态：先发起的旧扫描晚落盘不得覆盖新结果', () async {
+      // 旧扫描 = provider build 的自动加载：先让它拿到「空目录」快照并挂起。
+      final raceService = _HoldFirstScanService()
+        ..debugCacheDir = cacheDir
+        ..debugDownloadsDir = downloadsDir;
+      final raceNotifier = CacheManageNotifier()..debugService = raceService;
+      final raceContainer = ProviderContainer(overrides: [
+        cacheManageProvider.overrideWith(() => raceNotifier),
+      ]);
+      addTearDown(raceContainer.dispose);
+
+      raceService.holdFirstScan();
+      raceContainer.read(cacheManageProvider); // 触发 build 的自动加载
+      // 等旧扫描完成目录快照（此刻目录为空）并挂起
+      await raceService.firstScanCaptured.future;
+
+      // 新文件写入后再发起一次刷新（新扫描）
+      File('${downloadsDir.path}/a.apk').writeAsBytesSync(List.filled(200, 1));
+      final refresh = raceNotifier.loadDownloads();
+
+      // 释放旧扫描：其空结果此刻才落盘，绝不能覆盖随后完成的新扫描
+      raceService.releaseFirstScan();
+      await refresh;
+
+      expect(
+        raceContainer.read(cacheManageProvider).downloads.length,
+        1,
+        reason: '新扫描必须获胜，旧扫描不得用过期空快照覆盖',
+      );
     });
 
     test('deleteDownloads 删除并刷新列表', () async {

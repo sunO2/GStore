@@ -89,9 +89,27 @@ class CacheManageNotifier extends Notifier<CacheManageState> {
 
   // ---------- 已下载文件 ----------
 
+  /// 下载列表刷新的串行链尾（每次刷新串接到上一次之后）。
+  ///
+  /// 为什么要串行：`scanDownloads` 是「读取目录快照」的异步活，若允许并发，
+  /// 先发起但更晚完成的旧扫描会用过期快照覆盖新扫描的结果（例如旧扫描发生在
+  /// 文件写入前，晚落盘时把列表清空）。串行化保证「后发起者最后写入」，
+  /// 旧结果无法覆盖新结果；同时让 `await loadDownloads()` 返回时其结果必然已生效。
+  Future<void> _downloadsLoadChain = Future<void>.value();
+
   /// 刷新"已下载文件"列表。
-  Future<void> loadDownloads() async {
-    if (state.downloadsLoading) return;
+  ///
+  /// 严格串行化：新请求排在上一次请求之后执行，旧扫描的过期结果不会覆盖新结果
+  /// （修复并发刷新时旧快照晚落盘清空新数据的竞态）。
+  Future<void> loadDownloads() {
+    final next = _downloadsLoadChain.then((_) => _loadDownloadsOnce());
+    // 扫描异常已在 _loadDownloadsOnce 内消化，链不会被污染。
+    _downloadsLoadChain = next;
+    return next;
+  }
+
+  /// 执行一次下载列表扫描并写入状态（仅经 [loadDownloads] 串行调用）。
+  Future<void> _loadDownloadsOnce() async {
     state = state.copyWith(downloadsLoading: true);
     try {
       final (items, total) = await _service.scanDownloads();
