@@ -95,6 +95,21 @@ Request: *(none)*
 
 `core.set_mode` is idempotent (same mode ⇒ no-op) and serialized on one mutation lane (Todo 29).
 
+### 2.3.1 `tun.set_fd` — inject the TUN fd (Todo 6)
+
+| method | request | data |
+|---|---|---|
+| `tun.set_fd` | `{ "fd": 123 }` | `{ "fd": 123, "nonblocking": true, "replacedRunning": false }` |
+
+**Instance-less.** The host calls this directly when `nativeSetTunFd` fires (and
+again on proxy mount if the fd arrived first); no module instance is required
+because a proxy process has exactly one tunnel and lwIP's pcb lists are process
+globals. The module `dup()`s the fd, sets `O_NONBLOCK` on the duplicate, and
+stores it as *pending*; `core.start` owns the single read loop. Invalid
+(`fd < 0`, closed, or un-`dup`-able) input returns the structured domain error
+`PROXY_TUN_FD_INVALID` (422) — never a panic. The host fd is never closed by the
+module (Kotlin owns the `ParcelFileDescriptor`).
+
 ### 2.4 `profile.*` — subscription/profile store
 
 | method | request | data |
@@ -226,6 +241,7 @@ side filters on the `proxy.` prefix. `instanceId` is always present.
 | `proxy.subscription.removed` | `{ "profileId": string }` |
 | `proxy.conn` | `{ "action":"open"\|"close", "id": string, "domain"?: string, "outbound"?: string, "uploadBytes"?:0, "downloadBytes"?:0 }` |
 | `proxy.log` | `LogRecord` (see §2.8) |
+| `proxy.tun.released` | `{ "fd": 123 }` — TUN read loop stopped and its thread joined; the host may clear its cached fd and Kotlin may close the PFD (Todo 6). Host-internal control event; Dart may ignore it. |
 
 ## 4. Host → module events (`on_event`)
 
@@ -290,3 +306,52 @@ Notes:
 - This decision is re-validated in Todo 25 (packaging/manifest/slim exclusion); any
   flip to "bundled by default" must update this section and the APK payload assertions
   in the same change.
+
+## 7. TUN datapath decisions (Todo 6)
+
+### 7.1 fd ownership & teardown (pinned)
+
+- Kotlin owns the `ParcelFileDescriptor`; it passes only `pfd.fd` (`nativeSetTunFd`).
+- The module `dup()`s it, sets `O_NONBLOCK` on the duplicate, and never closes the
+  host fd. `O_NONBLOCK` is a *file status* flag shared by the description, so it is
+  also visible through the host fd (same as `madeye/meow`'s `tun2socks.rs`).
+- Exactly **one** reader exists: module state holds at most one `ActiveLoop`;
+  `core.start` is idempotent while running and `tun.set_fd` fully joins an existing
+  loop before replacing its fd.
+- Teardown order: `core.stop` signals the loop → aborts reader/ingress/egress tasks →
+  joins the dedicated thread → waits for lwIP `core_done` → emits `proxy.tun.released`
+  (host clears its cache) → Kotlin `nativeClear()` + `ParcelFileDescriptor.close()`.
+- Runtime: one bounded `new_multi_thread().worker_threads(4)` per loop, created inside
+  the dedicated thread; the `NetStack` is built there so meow's `tokio::spawn` uses
+  `Handle::current()`. Never `Runtime::new()` / CPU-default workers (Android SIGSEGV).
+
+### 7.2 Host → module fd delivery (recorded design)
+
+`nativeSetTunFd` stores the fd and calls the loaded `proxy` module's `tun.set_fd`
+(plain `call`, no new ABI slot). If `proxy` is not mounted yet the fd stays in the
+host and is flushed by `ModuleManager::register_inner` when `proxy` registers. This
+is order-independent and needs no `gstore_contract` change.
+
+### 7.3 Addressing / routes / MTU / UDP
+
+- **IPv4 + IPv6 dual stack**: the loop is version-agnostic (shuttles raw IP frames);
+  `meow_lwip::NetStack` is dual-stack. Kotlin defaults (unchanged by this todo):
+  addresses `10.10.0.2/32` + `fd00:1:...:1/128`, routes `0.0.0.0/0` + `::/0`.
+- **MTU**: Kotlin defaults to 1500 (`DEFAULT_MTU`); the reader buffer is 65535 to
+  cover any MTU/headroom.
+- **UDP forwarding (DNS + QUIC)**: UDP frames enter the netstack and arrive on the
+  `UdpSocket`; DNS hijack/fake-IP (Todo 8) and QUIC/TCP flow dispatch (Todo 7) consume
+  them. Todo 6 keeps the `TcpListener`/`UdpSocket` handles alive; it does not route.
+
+### 7.4 `VpnService.Builder` decisions (Kotlin; changes deferred to Todos 24/29)
+
+| Builder call | Decision | Current Kotlin | Action |
+|---|---|---|---|
+| `setBlocking` | **Leave default (blocking)**. The Rust side sets `O_NONBLOCK` on its dup; Android has no `setBlocking` builder method anyway (blocking mode is the default; `VpnService` fds are read non-blocking by consumers). | not called | none |
+| `allowFamily(AF_INET/AF_INET6)` | **Add both** explicitly on a future pass so the tunnel is provably dual-stack even if `addAddress` list changes to a single family. Not required for correctness today because both families are configured. | not called | Todo 24/29 |
+| `setMetered(metered)` | **Respect the config flag** (default `false` = unmetered). Already implemented. | `setMetered(cfg.metered)` (API 29+) | none |
+| `setUnderlyingNetworks` | **Leave default** (system default network) for Todo 6. A later pass may pass the active network after `ConnectivityManager` tracking so the tunnel follows Wi-Fi/cellular handover. | not called | Todo 24/29 |
+| `addAllowedApplication` / `addDisallowedApplication` | allow-list vs disallow-list (mutually exclusive); full-tunnel uses neither and relies on `protect_fd` to avoid the app loop. | implemented | none |
+
+All on-device VpnService paths remain **UNVERIFIED** (no adb device); the Linux
+loopback harness proves the fd/thread/teardown mechanics.

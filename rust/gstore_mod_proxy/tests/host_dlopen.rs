@@ -98,7 +98,7 @@ fn dlopen_proxy_module_ping_returns_ok_and_unknown_method_is_405() {
     assert_eq!(v["data"]["pong"], true);
     assert_eq!(v["data"]["module"], "proxy");
 
-    let (code, out) = call_json(call, free, inst, "core.start");
+    let (code, out) = call_json(call, free, inst, "definitely.unknown");
     assert_eq!(code, ABI_ERR_DETAIL, "unknown method must carry a detail payload");
     let err: serde_json::Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(err["status"], 405);

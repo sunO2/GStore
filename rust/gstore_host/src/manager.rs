@@ -138,27 +138,35 @@ impl ModuleManager {
     /// 唯一插入路径：同名复用（+refcount，必要时升级 persistent）/ 否则新建
     fn register_inner(&self, module: Arc<dyn GStoreModule>, persistent: bool) -> u64 {
         let name = module.name().to_string();
-        let mut reg = self.write();
-        if let Some(&id) = reg.by_name.get(&name) {
-            if let Some(entry) = reg.modules.get_mut(&id) {
-                if persistent {
-                    entry.persistent = true;
+        let id = {
+            let mut reg = self.write();
+            if let Some(&id) = reg.by_name.get(&name) {
+                if let Some(entry) = reg.modules.get_mut(&id) {
+                    if persistent {
+                        entry.persistent = true;
+                    }
+                    entry.refcount.fetch_add(1, Ordering::SeqCst);
+                    return id;
                 }
-                entry.refcount.fetch_add(1, Ordering::SeqCst);
-                return id;
             }
+            let id = self.next_module_id.fetch_add(1, Ordering::SeqCst);
+            reg.modules.insert(
+                id,
+                ModuleEntry {
+                    name: name.clone(),
+                    module,
+                    refcount: AtomicU64::new(1),
+                    persistent,
+                },
+            );
+            reg.by_name.insert(name.clone(), id);
+            id
+        };
+        if name == crate::tun_bridge::PROXY_MODULE {
+            // A TUN fd may have arrived via nativeSetTunFd before the proxy module
+            // was mounted; flush it now that tun.set_fd is reachable.
+            crate::tun_bridge::deliver_pending_tun_fd();
         }
-        let id = self.next_module_id.fetch_add(1, Ordering::SeqCst);
-        reg.modules.insert(
-            id,
-            ModuleEntry {
-                name: name.clone(),
-                module,
-                refcount: AtomicU64::new(1),
-                persistent,
-            },
-        );
-        reg.by_name.insert(name, id);
         id
     }
 

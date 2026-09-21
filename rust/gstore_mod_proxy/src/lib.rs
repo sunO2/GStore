@@ -31,7 +31,9 @@ use gstore_contract::abi::{
     ABI_ERR_PANIC, ABI_OK, GStoreModuleApi, GStoreModuleEntry, GSTORE_MODULE_ABI_VERSION,
 };
 use gstore_contract::context::ModuleContext;
-use gstore_contract::error::ModuleError;
+use gstore_contract::error::{ModuleError, StatusCode};
+
+mod tun;
 
 /// Required spike export: proves the crate loads as `libgstore_mod_proxy.so`.
 /// Address-taking the meow API surface inside makes the Android link step a
@@ -283,6 +285,7 @@ mod tests {
 
     #[test]
     fn hard_gate_datapath_shuttles_packets_over_real_fd() {
+        let _g = TEST_SERIAL.lock().unwrap();
         let report = datapath_selftest().expect("datapath selftest failed");
         eprintln!("datapath report: {report:?}");
         assert!(report.stack_built);
@@ -329,6 +332,8 @@ const EVT_NODE_DELAY: &str = "proxy.node.delay";
 const EVT_STATS: &str = "proxy.stats";
 #[allow(dead_code)]
 const EVT_SUBSCRIPTION: &str = "proxy.subscription";
+/// 模块 → 宿主：TUN 读取循环已停止且线程已 join，宿主可清缓存 fd（Kotlin 可关闭）。
+const EVT_TUN_RELEASED: &str = "proxy.tun.released";
 
 /// 运行状态机（Todo 2 占位；Todo 6/29 驱动真实 start/stop）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -378,6 +383,8 @@ pub struct ProxyInstance {
     pub created_at_ms: u64,
     pub state: Mutex<ProxyRunState>,
     pub mode: Mutex<ProxyMode>,
+    /// `now_ms()` when `state` last changed (drives `core.get_mode.sinceMs`).
+    pub state_since_ms: Mutex<u64>,
     pub data_dir: String,
     pub cache_dir: String,
     pub abi: String,
@@ -388,6 +395,11 @@ pub struct ProxyInstance {
 }
 
 static INSTANCES: OnceLock<Mutex<HashMap<u64, Arc<ProxyInstance>>>> = OnceLock::new();
+
+/// 单进程单元测试共享 `INSTANCES` 与 TUN 全局态，必须串行执行。
+#[cfg(test)]
+pub(crate) static TEST_SERIAL: Mutex<()> = Mutex::new(());
+
 static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
 static HOST_LOG: OnceLock<extern "C" fn(c_int, *const c_char)> = OnceLock::new();
 static HOST_EMIT: OnceLock<extern "C" fn(u64, u64, *const u8, usize)> = OnceLock::new();
@@ -405,7 +417,7 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn log_message(level: c_int, msg: &str) {
+pub(crate) fn log_message(level: c_int, msg: &str) {
     if let Some(f) = HOST_LOG.get() {
         if let Ok(cmsg) = CString::new(msg) {
             f(level, cmsg.as_ptr());
@@ -414,8 +426,7 @@ fn log_message(level: c_int, msg: &str) {
 }
 
 /// 上报模块事件（宿主负载约定：前 4 字节为事件类型长度，小端）。
-#[allow(dead_code)]
-fn emit_event(instance_id: u64, event_type: &str, payload: &[u8]) {
+pub(crate) fn emit_event(instance_id: u64, event_type: &str, payload: &[u8]) {
     let Some(f) = HOST_EMIT.get() else { return };
     let type_bytes = event_type.as_bytes();
     let mut buf = Vec::with_capacity(4 + type_bytes.len() + payload.len());
@@ -497,6 +508,205 @@ fn instance_of(id: u64) -> Result<Arc<ProxyInstance>, c_int> {
         .ok_or(ABI_ERR_NO_INSTANCE)
 }
 
+fn require_instance(id: u64, instance: Option<Arc<ProxyInstance>>) -> Result<Arc<ProxyInstance>, ModuleError> {
+    instance.ok_or_else(|| ModuleError::instance_not_found(id))
+}
+
+fn set_state(inst: &ProxyInstance, state: ProxyRunState) {
+    *inst.state.lock().unwrap_or_else(|e| e.into_inner()) = state;
+    *inst.state_since_ms.lock().unwrap_or_else(|e| e.into_inner()) = now_ms();
+}
+
+fn set_mode(inst: &ProxyInstance, mode: ProxyMode) {
+    *inst.mode.lock().unwrap_or_else(|e| e.into_inner()) = mode;
+}
+
+fn current_state(inst: &ProxyInstance) -> ProxyRunState {
+    *inst.state.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn current_mode(inst: &ProxyInstance) -> ProxyMode {
+    *inst.mode.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn emit_state(instance_id: u64, state: ProxyRunState, mode: ProxyMode, reason: Option<&str>) {
+    let mut v = serde_json::json!({ "state": state.as_str(), "mode": mode.as_str() });
+    if let Some(r) = reason {
+        v["reason"] = serde_json::json!(r);
+    }
+    if let Ok(bytes) = serde_json::to_vec(&v) {
+        emit_event(instance_id, EVT_STATE, &bytes);
+    }
+}
+
+fn emit_tun_released(instance_id: u64, fd: c_int) {
+    if let Ok(bytes) = serde_json::to_vec(&serde_json::json!({ "fd": fd })) {
+        emit_event(instance_id, EVT_TUN_RELEASED, &bytes);
+    }
+}
+
+fn parse_fd(payload: &[u8]) -> Result<c_int, ModuleError> {
+    let v: serde_json::Value = serde_json::from_slice(payload)
+        .map_err(|e| ModuleError::invalid_arg(format!("tun.set_fd payload must be JSON: {e}")))?;
+    v.get("fd")
+        .and_then(|f| f.as_i64())
+        .map(|f| f as c_int)
+        .ok_or_else(|| ModuleError::invalid_arg("tun.set_fd requires integer field `fd`"))
+}
+
+fn parse_mode(payload: &[u8]) -> ProxyMode {
+    let v: serde_json::Value =
+        serde_json::from_slice(payload).unwrap_or(serde_json::Value::Null);
+    match v.get("mode").and_then(|m| m.as_str()) {
+        Some("off") => ProxyMode::Off,
+        Some("lanProxy") => ProxyMode::LanProxy,
+        _ => ProxyMode::Vpn,
+    }
+}
+
+/// `tun.set_fd`：宿主把 TUN fd 交给模块；校验 + dup + O_NONBLOCK 后暂存，
+/// 真正的单读者循环由 `core.start` 启动。
+fn tun_set_fd_arm(payload: &[u8]) -> Result<Vec<u8>, ModuleError> {
+    let fd = parse_fd(payload)?;
+    let info = tun::install_fd(fd)?;
+    log_message(
+        1,
+        &format!(
+            "proxy: tun.set_fd host_fd={} nonblocking=true replacedRunning={}",
+            info.host_fd, info.replaced_running
+        ),
+    );
+    ok_data(serde_json::json!({
+        "fd": info.host_fd,
+        "nonblocking": true,
+        "replacedRunning": info.replaced_running,
+    }))
+}
+
+fn core_start_arm(
+    instance_id: u64,
+    instance: Option<Arc<ProxyInstance>>,
+    payload: &[u8],
+) -> Result<Vec<u8>, ModuleError> {
+    let inst = require_instance(instance_id, instance)?;
+    let mode = parse_mode(payload);
+    match mode {
+        ProxyMode::Vpn => {
+            let spawned = tun::start(inst.id)?;
+            set_state(&inst, ProxyRunState::Running);
+            set_mode(&inst, ProxyMode::Vpn);
+            log_message(
+                1,
+                &format!("proxy: core.start vpn instance={} spawned={spawned}", inst.id),
+            );
+            emit_state(inst.id, ProxyRunState::Running, ProxyMode::Vpn, None);
+            ok_data(serde_json::json!({
+                "state": "running", "mode": "vpn", "instanceId": inst.id,
+            }))
+        }
+        ProxyMode::Off => core_stop_arm(instance_id, Some(inst)),
+        ProxyMode::LanProxy => Err(ModuleError::new(
+            StatusCode::InvalidArgument,
+            "PROXY_NO_INBOUND",
+            "lanProxy inbound listener is not implemented yet (Todo 28)",
+        )),
+    }
+}
+
+fn core_stop_arm(
+    instance_id: u64,
+    instance: Option<Arc<ProxyInstance>>,
+) -> Result<Vec<u8>, ModuleError> {
+    let inst = require_instance(instance_id, instance)?;
+    let was_running = current_state(&inst) != ProxyRunState::Stopped;
+    let stopped = tun::stop();
+    set_state(&inst, ProxyRunState::Stopped);
+    set_mode(&inst, ProxyMode::Off);
+    if let Some(s) = &stopped {
+        // Tell the host it may clear (and Kotlin may close) the fd: the reader
+        // loop is stopped and its thread has been joined.
+        emit_tun_released(s.instance_id, s.host_fd);
+        log_message(1, &format!("proxy: core.stop instance={} fd released", inst.id));
+    }
+    if stopped.is_some() || was_running {
+        emit_state(inst.id, ProxyRunState::Stopped, ProxyMode::Off, None);
+    }
+    ok_data(serde_json::json!({ "state": "stopped" }))
+}
+
+fn core_restart_arm(
+    instance_id: u64,
+    instance: Option<Arc<ProxyInstance>>,
+    _payload: &[u8],
+) -> Result<Vec<u8>, ModuleError> {
+    let inst = require_instance(instance_id, instance)?;
+    if let Some(s) = tun::stop() {
+        emit_tun_released(s.instance_id, s.host_fd);
+    }
+    // The previous loop consumed (and closed) our pending dup; re-duplicate the
+    // last known host fd if it is still open, so restart works without a new
+    // nativeSetTunFd (if Kotlin already closed it we surface PROXY_TUN_FD_INVALID).
+    tun::ensure_pending_from_last()?;
+    tun::start(inst.id)?;
+    set_state(&inst, ProxyRunState::Running);
+    set_mode(&inst, ProxyMode::Vpn);
+    emit_state(inst.id, ProxyRunState::Running, ProxyMode::Vpn, Some("restart"));
+    ok_data(serde_json::json!({ "state": "running", "mode": "vpn" }))
+}
+
+fn core_get_mode_arm(
+    instance_id: u64,
+    instance: Option<Arc<ProxyInstance>>,
+) -> Result<Vec<u8>, ModuleError> {
+    let inst = require_instance(instance_id, instance)?;
+    let since = *inst.state_since_ms.lock().unwrap_or_else(|e| e.into_inner());
+    ok_data(serde_json::json!({
+        "mode": current_mode(&inst).as_str(),
+        "state": current_state(&inst).as_str(),
+        "sinceMs": since,
+    }))
+}
+
+fn core_set_mode_arm(
+    instance_id: u64,
+    instance: Option<Arc<ProxyInstance>>,
+    payload: &[u8],
+) -> Result<Vec<u8>, ModuleError> {
+    let inst = require_instance(instance_id, instance)?;
+    let mode = parse_mode(payload);
+    let previous = current_mode(&inst);
+    match mode {
+        ProxyMode::Off => {
+            let stopped = tun::stop();
+            set_state(&inst, ProxyRunState::Stopped);
+            if let Some(s) = &stopped {
+                emit_tun_released(s.instance_id, s.host_fd);
+            }
+        }
+        ProxyMode::Vpn => {
+            tun::start(inst.id)?;
+            set_state(&inst, ProxyRunState::Running);
+        }
+        ProxyMode::LanProxy => {
+            return Err(ModuleError::new(
+                StatusCode::InvalidArgument,
+                "PROXY_NO_INBOUND",
+                "lanProxy inbound listener is not implemented yet (Todo 28)",
+            ))
+        }
+    }
+    set_mode(&inst, mode);
+    let bytes = serde_json::to_vec(&serde_json::json!({
+        "mode": mode.as_str(), "previous": previous.as_str(),
+    }))
+    .unwrap_or_default();
+    emit_event(inst.id, EVT_MODE, &bytes);
+    ok_data(serde_json::json!({
+        "ok": true, "mode": mode.as_str(), "previous": previous.as_str(),
+    }))
+}
+
+
 fn create_impl(config: *const u8, config_len: usize) -> Result<u64, c_int> {
     let ctx = ModuleContext::parse(payload_bytes(config, config_len));
     log_message(
@@ -517,6 +727,7 @@ fn create_impl(config: *const u8, config_len: usize) -> Result<u64, c_int> {
         created_at_ms: now_ms(),
         state: Mutex::new(ProxyRunState::Stopped),
         mode: Mutex::new(ProxyMode::Off),
+        state_since_ms: Mutex::new(now_ms()),
         data_dir: ctx.data_dir,
         cache_dir: ctx.cache_dir,
         abi: ctx.abi,
@@ -575,6 +786,12 @@ fn call_impl(
             "meowRev": MEOW_REV,
             "targetArch": std::env::consts::ARCH,
         })),
+        "tun.set_fd" => tun_set_fd_arm(_payload),
+        "core.start" => core_start_arm(instance_id, instance.clone(), _payload),
+        "core.stop" => core_stop_arm(instance_id, instance.clone()),
+        "core.restart" => core_restart_arm(instance_id, instance.clone(), _payload),
+        "core.get_mode" => core_get_mode_arm(instance_id, instance.clone()),
+        "core.set_mode" => core_set_mode_arm(instance_id, instance.clone(), _payload),
         other => Err(ModuleError::method_not_found(other)),
     };
 
@@ -590,12 +807,24 @@ fn cancel_impl(instance_id: u64, _request_id: *const c_char) -> Result<(), c_int
 }
 
 fn destroy_impl(instance_id: u64) -> Result<(), c_int> {
-    instances().lock().unwrap().remove(&instance_id);
+    if let Some(s) = tun::stop_for_instance(instance_id) {
+        emit_tun_released(s.instance_id, s.host_fd);
+    }
+    let remaining = {
+        let mut map = instances().lock().unwrap();
+        map.remove(&instance_id);
+        map.len()
+    };
+    if remaining == 0 {
+        // Last instance: also drop any still-pending (unstarted) fd.
+        tun::shutdown();
+    }
     log_message(1, &format!("proxy: instance {instance_id} destroyed"));
     Ok(())
 }
 
 fn shutdown_impl() -> Result<(), c_int> {
+    tun::shutdown();
     instances().lock().unwrap().clear();
     log_message(1, "proxy: shutdown");
     Ok(())
@@ -785,13 +1014,36 @@ mod abi_tests {
     use gstore_contract::abi::host_abi_satisfies;
 
     /// ping/version 是静态方法，可无实例调用；实例状态由 create 建立。
-    /// 同进程内多个测试共享 INSTANCES/NEXT_INSTANCE，故用例串行执行。
-    static ABI_LOCK: Mutex<()> = Mutex::new(());
+    /// 同进程内多个测试共享 INSTANCES/NEXT_INSTANCE/TUN 全局态，故用例串行执行。
+    use super::TEST_SERIAL as ABI_LOCK;
 
     type CallFn = extern "C" fn(u64, *const c_char, *const u8, usize, *mut *mut u8, *mut usize) -> c_int;
 
     extern "C" fn dummy_protect(_fd: c_int) -> c_int {
         0
+    }
+
+    /// 捕获模块经 `emit_event` 上报的事件（隔离 `HOST_EMIT` 全局单次设置）。
+    static EMITTED: Mutex<Vec<(String, Vec<u8>)>> = Mutex::new(Vec::new());
+
+    extern "C" fn record_event(_module_id: u64, _instance_id: u64, data: *const u8, len: usize) {
+        if data.is_null() || len < 4 {
+            return;
+        }
+        let raw = unsafe { std::slice::from_raw_parts(data, len) };
+        let tlen = u32::from_le_bytes(raw[0..4].try_into().unwrap()) as usize;
+        if raw.len() < 4 + tlen {
+            return;
+        }
+        let event_type = String::from_utf8_lossy(&raw[4..4 + tlen]).into_owned();
+        let payload = raw[4 + tlen..].to_vec();
+        if let Ok(mut v) = EMITTED.lock() {
+            v.push((event_type, payload));
+        }
+    }
+
+    fn take_events() -> Vec<(String, Vec<u8>)> {
+        std::mem::take(&mut *EMITTED.lock().unwrap())
     }
 
     fn register_api() -> GStoreModuleApi {
@@ -801,7 +1053,7 @@ mod abi_tests {
             log: None,
             alloc: None,
             free: None,
-            emit_event: None,
+            emit_event: Some(record_event),
             context: std::ptr::null_mut(),
             protect_fd: Some(dummy_protect),
         };
@@ -813,10 +1065,21 @@ mod abi_tests {
 
     /// 用模块的 free 释放 out 缓冲（谁分配谁释放），避免测试内二次释放。
     fn call_json(call: CallFn, inst: u64, method: &str) -> (c_int, Vec<u8>) {
+        call_with_payload(call, inst, method, &[])
+    }
+
+    fn call_with_payload(call: CallFn, inst: u64, method: &str, payload: &[u8]) -> (c_int, Vec<u8>) {
         let m = CString::new(method).unwrap();
         let mut ptr: *mut u8 = std::ptr::null_mut();
         let mut len: usize = 0;
-        let code = call(inst, m.as_ptr(), std::ptr::null(), 0, &mut ptr, &mut len);
+        let code = call(
+            inst,
+            m.as_ptr(),
+            payload.as_ptr(),
+            payload.len(),
+            &mut ptr,
+            &mut len,
+        );
         let bytes = if ptr.is_null() {
             Vec::new()
         } else {
@@ -890,7 +1153,7 @@ mod abi_tests {
         let mut inst: u64 = 0;
         assert_eq!(create(std::ptr::null(), 0, &mut inst), ABI_OK);
 
-        let (code, out) = call_json(call, inst, "core.start");
+        let (code, out) = call_json(call, inst, "core.no_such_method");
         assert_eq!(code, ABI_ERR_DETAIL, "域错误应经 ABI_ERR_DETAIL 透传");
         let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
         assert_eq!(v["status"], 405);
@@ -913,5 +1176,74 @@ mod abi_tests {
             (api.on_event.unwrap())(1, kind.as_ptr(), payload.as_ptr(), payload.len()),
             ABI_OK
         );
+    }
+
+    /// Happy/failure QA over the real C ABI: invalid fd → structured error;
+    /// valid fd → loop reads once → `proxy.state=running`; stop → joined +
+    /// `proxy.tun.released`.
+    #[test]
+    fn abi_tun_fd_start_stop_and_release_event() {
+        use std::io::Write as _;
+        let _g = ABI_LOCK.lock().unwrap();
+        let api = register_api();
+        let create = api.create.unwrap();
+        let call = api.call.unwrap();
+        let destroy = api.destroy.unwrap();
+        let _ = take_events();
+
+        let mut inst: u64 = 0;
+        assert_eq!(create(std::ptr::null(), 0, &mut inst), ABI_OK);
+
+        // Failure QA: fd = -1 → structured PROXY_TUN_FD_INVALID, never a panic.
+        let (code, out) = call_with_payload(call, inst, "tun.set_fd", br#"{"fd":-1}"#);
+        assert_eq!(code, ABI_ERR_DETAIL);
+        let err: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(err["code"], "PROXY_TUN_FD_INVALID");
+        assert_eq!(err["status"], 422);
+
+        // Happy QA: a real socketpair stands in for the VpnService TUN fd.
+        let (loop_end, mut peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let payload = format!(r#"{{"fd":{}}}"#, std::os::fd::AsRawFd::as_raw_fd(&loop_end));
+        let (code, out) = call_with_payload(call, inst, "tun.set_fd", payload.as_bytes());
+        assert_eq!(code, ABI_OK, "tun.set_fd: {}", String::from_utf8_lossy(&out));
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["nonblocking"], true);
+
+        let (code, out) = call_with_payload(call, inst, "core.start", br#"{"mode":"vpn"}"#);
+        assert_eq!(code, ABI_OK, "core.start: {}", String::from_utf8_lossy(&out));
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["state"], "running");
+        assert_eq!(tun::running_count(), 1, "exactly one loop thread");
+
+        let events = take_events();
+        assert!(
+            events
+                .iter()
+                .any(|(t, p)| t == "proxy.state"
+                    && String::from_utf8_lossy(p).contains("\"running\"")),
+            "proxy.state=running must be emitted; got {events:?}"
+        );
+
+        tun::reset_read_count();
+        peer.write_all(&[0x45u8; 40]).unwrap();
+        peer.flush().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while tun::read_count() < 1 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(tun::read_count(), 1, "frame must be read exactly once");
+
+        let (code, out) = call_json(call, inst, "core.stop");
+        assert_eq!(code, ABI_OK, "core.stop: {}", String::from_utf8_lossy(&out));
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["state"], "stopped");
+        assert_eq!(tun::running_count(), 0, "loop thread joined on stop");
+        let events = take_events();
+        assert!(
+            events.iter().any(|(t, _)| t == "proxy.tun.released"),
+            "proxy.tun.released must fire after join; got {events:?}"
+        );
+
+        assert_eq!(destroy(inst), ABI_OK);
     }
 }

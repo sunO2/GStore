@@ -117,6 +117,8 @@ pub(crate) fn install_service(env: &JNIEnv, service: &JObject) -> Result<(), Str
 }
 
 /// 记录 TUN fd（`nativeSetTunFd` 的实体）。fd < 0 视为非法。
+/// 记录后立即尝试转发给已加载的 `proxy` 模块（`tun.set_fd`）；模块尚未挂载时
+/// fd 保留在宿主，待模块注册时由 `manager` 侧补发（见 `tun_bridge`）。
 pub(crate) fn set_tun_fd_impl(fd: i32) -> Result<(), String> {
     if fd < 0 {
         return Err(format!("invalid TUN fd: {fd}"));
@@ -124,14 +126,34 @@ pub(crate) fn set_tun_fd_impl(fd: i32) -> Result<(), String> {
     TUN_FD.store(fd, Ordering::SeqCst);
     crate::log_bridge::push_host_log(
         1,
-        format!("ProxyVpnService: 宿主收到 TUN fd={fd}（Todo 6 消费）"),
+        format!("ProxyVpnService: 宿主收到 TUN fd={fd}（转发给 proxy 模块）"),
     );
+    if !crate::tun_bridge::deliver_tun_fd_to(crate::manager::ModuleManager::global(), fd) {
+        crate::log_bridge::push_host_log(
+            2,
+            format!("ProxyVpnService: TUN fd={fd} 暂存，待 proxy 模块挂载后补发"),
+        );
+    }
     Ok(())
 }
 
 /// 当前 TUN fd（-1 = 无）。Todo 6 启动读取循环时取用。
 pub(crate) fn current_tun_fd() -> i32 {
     TUN_FD.load(Ordering::SeqCst)
+}
+
+/// 模块侧 `proxy.tun.released`：读取循环已停止且线程已 join，宿主可清缓存。
+/// 仅当缓存的 fd 与释放的 fd 一致（或事件未携带有效 fd）时清除，避免陈旧事件
+/// 误清新会话的 fd。
+pub(crate) fn note_tun_released(fd: i32) {
+    let current = TUN_FD.load(Ordering::SeqCst);
+    if fd < 0 || current == fd {
+        TUN_FD.store(-1, Ordering::SeqCst);
+        crate::log_bridge::push_host_log(
+            1,
+            format!("ProxyVpnService: 模块已释放 TUN fd={fd}，宿主清缓存"),
+        );
+    }
 }
 
 /// 清空 service 引用 + TUN fd，并把 protect seam 还原为空实现
@@ -191,6 +213,7 @@ mod tests {
     /// TUN fd 状态机：非法值拒绝、往返、clear 复位。
     #[test]
     fn tun_fd_roundtrip_and_clear() {
+        let _g = crate::TEST_SERIAL.lock().unwrap();
         clear_impl();
         assert_eq!(current_tun_fd(), -1);
         assert!(set_tun_fd_impl(-1).is_err(), "负 fd 必须拒绝");
@@ -203,6 +226,7 @@ mod tests {
     /// 无 VM / 无服务时 protect 直接放行（0），不 attempt JNI、不 panic。
     #[test]
     fn protect_without_service_is_noop_success() {
+        let _g = crate::TEST_SERIAL.lock().unwrap();
         clear_impl();
         assert_eq!(vpn_protect_fd(7), PROTECT_OK);
         assert_eq!(vpn_protect_fd(-1), PROTECT_ERR, "负 fd 视为失败");
@@ -211,6 +235,7 @@ mod tests {
     /// clear 幂等（可重复调用，无副作用/无 panic）。
     #[test]
     fn clear_is_idempotent() {
+        let _g = crate::TEST_SERIAL.lock().unwrap();
         clear_impl();
         clear_impl();
         assert_eq!(current_tun_fd(), -1);

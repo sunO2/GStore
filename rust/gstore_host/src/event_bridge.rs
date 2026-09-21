@@ -98,6 +98,8 @@ pub extern "C" fn host_emit_event(
         return;
     };
     let event_type = String::from_utf8_lossy(type_bytes).into_owned();
+    // Host-side control events (e.g. proxy.tun.released) act before delivery to Dart.
+    crate::tun_bridge::on_module_event(&event_type, payload);
     // 优先归属到「当前线程正在执行的长任务」；未命中才走全局事件总线。
     // 这样模块无需感知 Task（C ABI 零变更），而任务内的进度/token 会进该任务流。
     if crate::task_bridge::emit_current_thread(&event_type, payload.to_vec()) {

@@ -41,6 +41,11 @@
 
 域层（模块自填，建议 `模块名_` 前缀，避免与协议层冲突）。
 
+| code | 模块 | 通常 status | 含义 |
+|---|---|---|---|
+| `PROXY_TUN_FD_INVALID` | proxy | 422 | TUN fd 非法（<0 / 已关闭 / `dup` 失败）或 `core.start` 时无可用 fd（Todo 6） |
+| `PROXY_NO_INBOUND` | proxy | 422 | 请求了尚未实现的入站（`lanProxy`，Todo 28） |
+
 ## 跨 ABI 错误透传
 
 C ABI `call` 返回 `ABI_ERR_DETAIL (-8)` 时，模块在 out 缓冲写入
