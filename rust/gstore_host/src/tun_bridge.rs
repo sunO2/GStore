@@ -203,4 +203,56 @@ mod tests {
         assert!(mgr.module_id_by_name("proxy").is_none(), "cleanup");
         crate::jni_bridge::clear_impl();
     }
+
+    /// Engine / Dart-isolate restart (Activity recreation): the host bridges are
+    /// reset, but the Rust kernel (module + tunnel fd) keeps running and events
+    /// resume on the new subscription. Todo 24 requirement (a).
+    #[test]
+    fn engine_restart_keeps_tunnel_and_resumes_events() {
+        let _g = TEST_LOCK.lock().unwrap();
+        crate::jni_bridge::clear_impl();
+        crate::event_bridge::clear_buffer_for_tests();
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mgr = ModuleManager::global();
+        assert!(mgr.module_id_by_name("proxy").is_none(), "test must start clean");
+        let id = mgr.register(Arc::new(ProxyRecorder { seen: seen.clone() }));
+
+        // Kotlin established the tunnel, then a live module event arrived.
+        crate::jni_bridge::set_tun_fd_impl(5150).unwrap();
+        crate::event_bridge::push_event(1, 1, "proxy.state", br#"{"state":"running"}"#.to_vec());
+        assert!(crate::event_bridge::last_event_for_tests().is_some());
+
+        crate::bridge::HostInspector::new().reset_bridges();
+
+        // (a) the tunnel fd survives and the kernel stays mounted.
+        assert_eq!(
+            crate::jni_bridge::current_tun_fd(),
+            5150,
+            "tunnel must survive an engine restart"
+        );
+        assert!(
+            mgr.module_id_by_name("proxy").is_some(),
+            "the Rust kernel must stay mounted"
+        );
+
+        // (b) events resume on the restarted isolate's subscription.
+        crate::event_bridge::push_event(
+            1,
+            1,
+            "proxy.state",
+            br#"{"state":"running","reason":"after_restart"}"#.to_vec(),
+        );
+        let (event_type, data) = crate::event_bridge::last_event_for_tests().unwrap();
+        assert_eq!(event_type, "proxy.state");
+        assert!(String::from_utf8_lossy(&data).contains("after_restart"));
+
+        // (c) the fd was delivered exactly once (no re-mount / re-delivery) and
+        // no task was leaked by the bridge reset.
+        assert_eq!(seen.lock().unwrap().len(), 1, "tun.set_fd delivered exactly once");
+        assert_eq!(crate::task_bridge::running_task_count(), 0);
+
+        mgr.unref(id);
+        crate::jni_bridge::clear_impl();
+    }
 }

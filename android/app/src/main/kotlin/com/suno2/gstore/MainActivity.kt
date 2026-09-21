@@ -127,6 +127,11 @@ class MainActivity : FlutterActivity() {
                         ProxyVpnService.stop(this)
                         result.success(true)
                     }
+                    // 引导用户到系统「VPN」设置开启「始终开启的 VPN」（App 无法直接改系统设置）。
+                    "alwaysOnSettings" -> {
+                        ProxyVpnService.openAlwaysOnSettings(this)
+                        result.success(true)
+                    }
                     "isRunning" -> result.success(ProxyVpnService.isRunning)
                     else -> result.notImplemented()
                 }

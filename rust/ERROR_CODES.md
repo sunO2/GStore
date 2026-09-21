@@ -80,6 +80,7 @@
 | `PROXY_STATS_SORT_INVALID` | proxy | 422 | `stats.domain.get` 指定了未知排序键（应为 `bytes`\|`connections`\|`lastSeen`\|`domain`）（Todo 16） |
 | `PROXY_CONN_NOT_FOUND` | proxy | 404 | `conn.close` 收到本模块从未跟踪过的连接 id（既不在活动表，也不在「最近关闭」墓碑内）（Todo 17） |
 | `PROXY_CLASH_API_FAILED` | proxy | 500 | `diagnostics.clash_api.start` 无法绑定 `127.0.0.1:<port>` 或无法启动其 runtime/线程（Todo 18） |
+| `PROXY_DATAPLANE_DEAD` | proxy | —（supervisor 事件） | TUN 数据面 worker（reader/egress/ingress）在隧道存活时意外结束或 panic：以结构化 `proxy.state` 的 `error.code` 上报**原始**原因并触发有界退避重启；预算耗尽后置为 `dataplane_failed`（Todo 24） |
 
 ## 跨 ABI 错误透传
 

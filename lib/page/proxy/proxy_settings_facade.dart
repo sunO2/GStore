@@ -325,8 +325,20 @@ class ConfigStoreProxySettingsStore implements ProxySettingsStore {
   }
 }
 
-// ==================== VPN 配置应用接缝 ====================
+/// 连接路径专用：读取持久化设置并生成 Kotlin `ProxyVpnService` 配置 JSON。
+///
+/// 供 VPN 首页在 `prepare()` 前调用（Todo 23 → Todo 24 交接：连接必须带上
+/// 分流模式 / 应用清单，而不是硬编码 `{}`）。读取失败时返回 `{}`（全量路由默认）。
+Future<String> loadProxyVpnConfigJson({ProxySettingsStore? store}) async {
+  try {
+    final config = await (store ?? const ConfigStoreProxySettingsStore()).read();
+    return config.toVpnConfigJson();
+  } catch (_) {
+    return '{}';
+  }
+}
 
+// ==================== VPN 配置应用接缝 ====================
 /// 把分流配置**推送给运行中的** `ProxyVpnService`。
 ///
 /// 应用**不**在设置页主动拉起 VPN 授权（避免误触系统同意弹窗）：

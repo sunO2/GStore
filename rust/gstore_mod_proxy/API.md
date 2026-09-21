@@ -77,13 +77,19 @@ Request: *(none)*
   "pong": true, "module": "proxy", "moduleVersion": "0.1.0",
   "apiVersion": 1, "minHostAbi": 3, "hostAbi": 3,
   "instanceId": 7, "state": "stopped", "mode": "off", "protectFdPresent": true,
-  "protectInstalled": false
+  "protectInstalled": false,
+  "dataplaneAlive": false,
+  "health": { "alive": false, "generation": 0, "restarts": 0,
+              "consecutiveFailures": 0, "lastError": null, "backoffMs": 0 }
 } }
 ```
 
 `instanceId`/`state`/`mode`/`protectFdPresent` appear only when a live instance was passed.
 `protectInstalled` reflects the process-global meow `SocketProtector` install state
 (the `vpn` engine installs it at init and removes it on teardown; Todo 7).
+`dataplaneAlive`/`health` reflect the Todo 24 data-plane supervisor: whether the TUN
+loop is expected to be reading, how often it has auto-restarted, the consecutive
+failure burst, the verbatim last failure and the pending backoff (all process-global).
 
 ### 2.2 `version` — build & capability info
 
@@ -822,7 +828,7 @@ side filters on the `proxy.` prefix. `instanceId` is always present.
 
 | event | payload schema |
 |---|---|
-| `proxy.state` | `{ "state":"stopped"\|"starting"\|"running"\|"stopping", "mode":"off"\|"vpn"\|"lanProxy", "reason"?: string, "error"?: { "code": string, "message": string } }` |
+| `proxy.state` | `{ "state":"stopped"\|"starting"\|"running"\|"stopping", "mode":"off"\|"vpn"\|"lanProxy", "reason"?: string, "error"?: { "code": string, "message": string }, "health"?: { "alive": bool, "generation": number, "restarts": number, "consecutiveFailures": number, "lastError": string\|null, "backoffMs": number }, "source"?: string }` — `source:"kotlin"` marks a host-injected VpnService lifecycle event (Todo 24) |
 | `proxy.mode` | `{ "mode":"off"\|"vpn"\|"lanProxy", "previous": string }` |
 | `proxy.node.delay` | `{ "group": string, "node": string, "delayMs": 123, "error"?: string }` |
 | `proxy.stats` | `{ "uploadBytes":0, "downloadBytes":0, "activeConns":0, "upBps":0, "downBps":0, "domainCount":0, "capacity":2048, "topDomains":[DomainStat] }` — **throttled to at most one event per second** (Todo 16); pull `stats.traffic.get` for on-demand reads |
@@ -851,6 +857,8 @@ side filters on the `proxy.` prefix. `instanceId` is always present.
 | `config.changed` | `{ "key": string, "value": any }` | config hot-reload (e.g. `proxy.mode`) |
 | `db.changed` | `{ "type": string, "data": any }` | data-store change |
 | `module.lifecycle` | `{ "module": string, "lifecycle": string }` | module up/down |
+| `vpn.stop` | `{}` | host/Kotlin-initiated teardown: stop the TUN reader loop **without** a supervisor restart (Todo 24). The host broadcasts it from `nativeStopTunnel` and waits (bounded) for `proxy.tun.released` before Kotlin closes the PFD. |
+| `vpn.network_changed` | `{}` | underlying network handover (Wi-Fi↔cellular / airplane mode); Kotlin already rebuilt the default interface via `setUnderlyingNetworks(null)` — the datapath keeps running (Todo 24). |
 
 ## 5. Domain error codes
 
@@ -898,6 +906,7 @@ registered in `rust/ERROR_CODES.md`.
 | `PROXY_STATS_SORT_INVALID` | 422 | `stats.domain.get` received an unknown sort key (expected `bytes\|connections\|lastSeen\|domain`) (Todo 16) |
 | `PROXY_CONN_NOT_FOUND` | 404 | `conn.close` was given a UUID this module has never tracked (not live and not in the recently-closed tombstone) (Todo 17) |
 | `PROXY_CLASH_API_FAILED` | 500 | `diagnostics.clash_api.start` could not bind `127.0.0.1:<port>` or spawn its runtime/thread (Todo 18) |
+| `PROXY_DATAPLANE_DEAD` | — (supervisor event) | a TUN worker (reader/egress/ingress) ended or panicked while the tunnel was up; reported as a structured `proxy.state` `error.code` with the verbatim reason, then the loop restarts with bounded backoff (Todo 24) |
 
 ## 6. Module distribution decision (state it now)
 
@@ -1651,3 +1660,50 @@ a structured 422 (no panic); the loopback controller defaults OFF, binds a
 serializes a secret, and stops deterministically. **UNVERIFIED**: the loopback
 controller against a real device/panel (no adb device); meow's controller routes
 are exercised only through bind/start/stop on the host.
+
+## 18. Lifecycle, failure modes & data-plane supervisor (Todo 24)
+
+### 18.1 Data-plane supervisor
+
+The TUN datapath (`src/tun.rs`) runs one dedicated std thread owning a bounded
+runtime and three guarded tasks: the single fd **reader**, the ingress and egress
+pumps. Each task reports every exit — clean end, error, or **panic** (the module is
+`panic=unwind`; `catch_unwind` only guards the C ABI boundary) — on an internal death
+channel. The loop also wraps its own body in `catch_unwind`.
+
+On an abnormal exit the supervisor:
+
+1. records the **verbatim** reason (never masked) and emits structured `proxy.state`
+   `{ reason:"dataplane_dead", error:{code:"PROXY_DATAPLANE_DEAD", message:<reason>}, health:{...} }`;
+2. restarts the loop with **bounded exponential backoff** `250ms·2^(n-1)` capped at
+   `8s`, at most `MAX_RESTARTS = 5` consecutive failures (re-arm the last host fd via
+   `dup`; if Kotlin already closed it → structured `PROXY_TUN_FD_INVALID` and stop);
+3. after the budget is exhausted, emits `{ reason:"dataplane_failed" }` and leaves the
+   plane stopped (the operator must re-issue `core.start`).
+
+An explicit `core.start`/`core.restart` (or process shutdown) resets the failure burst.
+A `vpn.stop` (Kotlin-initiated) stops the loop through the clean path and never restarts.
+
+### 18.2 fd teardown ordering (pinned)
+
+`stop loop → join → host clears → Kotlin closes`.
+`nativeStopTunnel` (host JNI) broadcasts `vpn.stop`, waits **bounded** (800 ms) for
+`proxy.tun.released` (emitted after the reader thread is joined), which clears the host
+cache, then Kotlin closes the `ParcelFileDescriptor`. The module only ever holds a
+`dup`; if the bounded wait times out the host still clears and Kotlin's close is safe.
+
+### 18.3 Engine / Dart-isolate restart
+
+Resetting host bridges (`HostInspector.reset_bridges`) drops only the stale log / event /
+task sinks. The Rust kernel (loaded modules + tunnel fd) is **not** torn down; module
+events keep buffering, and a new isolate re-subscribes and receives the replay. Proven by
+`tun_bridge::tests::engine_restart_keeps_tunnel_and_resumes_events`.
+
+### 18.4 Kotlin lifecycle (UNVERIFIED on device — no adb)
+
+`onRevoke` → structured `proxy.state` (`reason:"vpn_revoked"`) + clean stop. Network
+handover → `ConnectivityManager.registerDefaultNetworkCallback` →
+`setUnderlyingNetworks(null)` rebuilds the default interface; `network_changed` event.
+Null-Intent (always-on / process-death) restart → persisted config + `always_on_restart`
+event. Start failure → `start_failed` event. `SUPPORTS_ALWAYS_ON` is declared; the app
+does not toggle the system setting (guidance + `alwaysOnSettings` channel).

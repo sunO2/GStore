@@ -266,11 +266,17 @@ impl HostInspector {
         crate::manager::ModuleManager::global().list_modules()
     }
 
-    /// 清空日志/事件桥的订阅 sink。引擎在同进程内被销毁重建时，宿主仍持有指向
-    /// 上一个 Dart isolate 的失效端口；新 isolate 应在订阅前调用本函数。
+    /// 清空日志/事件/任务桥的订阅 sink。引擎在同进程内被销毁重建、或 Flutter
+    /// engine/Dart isolate 重启（Activity 重建）时，宿主仍持有指向上一个
+    /// isolate 的失效端口；新 isolate 应在订阅前调用本函数。
+    ///
+    /// 只丢弃订阅端点：Rust 引擎、已加载模块与 TUN 隧道**不受影响**（隧道由
+    /// `nativeSetTunFd` 持有，模块事件/日志继续入有界环形缓冲，新 isolate
+    /// 重新订阅时补发）。任务（[`crate::task_bridge`]）继续运行，仅其 sink 被丢弃。
     pub fn reset_bridges(&self) {
         crate::log_bridge::clear_sink();
         crate::event_bridge::clear_sink();
+        crate::task_bridge::reset_sinks();
     }
 }
 

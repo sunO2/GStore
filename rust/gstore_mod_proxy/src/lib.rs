@@ -45,6 +45,7 @@ mod protect;
 mod rules;
 mod stats;
 mod subscription;
+mod supervisor;
 mod tun;
 
 /// Required spike export: proves the crate loads as `libgstore_mod_proxy.so`.
@@ -335,7 +336,7 @@ const MEOW_REV: &str = "0e718f587442caaac00b221efc91c84907aeb0e0";
 
 // 事件类型（宿主/Dart 侧按 `proxy.` 前缀过滤；完整清单见 API.md）
 #[allow(dead_code)]
-const EVT_STATE: &str = "proxy.state";
+pub(crate) const EVT_STATE: &str = "proxy.state";
 #[allow(dead_code)]
 const EVT_MODE: &str = "proxy.mode";
 #[allow(dead_code)]
@@ -1602,6 +1603,11 @@ fn call_impl(
                 data["protectFdPresent"] = serde_json::json!(inst.host_protect_fd.is_some());
             }
             data["protectInstalled"] = serde_json::json!(protect::is_installed());
+            // Data-plane supervisor health (Todo 24): alive flag + bounded-restart
+            // counters. Extra fields are tolerated by the Dart decoder.
+            data["dataplaneAlive"] = serde_json::json!(supervisor::is_alive());
+            data["health"] = serde_json::to_value(supervisor::snapshot())
+                .unwrap_or(serde_json::Value::Null);
             ok_data(data)
         }
         "version" => ok_data(serde_json::json!({
@@ -1736,6 +1742,24 @@ fn on_event_impl(
             payload.len()
         ),
     );
+    // §4 host → module events. `vpn.stop` is the host/Kotlin-initiated teardown
+    // lane (Todo 24): it stops the active loop **without** a bounded restart, so
+    // Kotlin can wait for `proxy.tun.released` before closing the PFD.
+    match kind_s.as_str() {
+        "vpn.stop" => {
+            let signalled = tun::request_stop();
+            log_message(
+                1,
+                &format!("proxy: on_event vpn.stop -> request_stop signalled={signalled}"),
+            );
+        }
+        "vpn.network_changed" => {
+            // Kotlin already rebuilt the default interface; the datapath keeps
+            // running. Log for observability (no engine restart here).
+            log_message(1, "proxy: on_event vpn.network_changed");
+        }
+        _ => {}
+    }
     Ok(())
 }
 
@@ -2155,6 +2179,56 @@ mod abi_tests {
             (api.on_event.unwrap())(1, kind.as_ptr(), payload.as_ptr(), payload.len()),
             ABI_OK
         );
+    }
+
+    /// Todo 24: host `vpn.stop` stops the loop without a restart, and the
+    /// supervisor reports a *structured* dead-data-plane error (never masking the
+    /// verbatim root cause).
+    #[test]
+    fn abi_vpn_stop_event_and_supervisor_structured_error() {
+        let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let api = register_api();
+        let create = api.create.unwrap();
+        let call = api.call.unwrap();
+        let on_event = api.on_event.unwrap();
+        let _ = take_events();
+
+        let mut inst: u64 = 0;
+        assert_eq!(create(std::ptr::null(), 0, &mut inst), ABI_OK);
+        let (loop_end, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let payload = format!(r#"{{"fd":{}}}"#, std::os::fd::AsRawFd::as_raw_fd(&loop_end));
+        let _ = call_with_payload(call, inst, "tun.set_fd", payload.as_bytes());
+        let (code, _) = call_with_payload(call, inst, "core.start", br#"{"mode":"vpn"}"#);
+        assert_eq!(code, ABI_OK);
+        assert_eq!(tun::running_count(), 1);
+        let _ = take_events();
+
+        supervisor::on_death(inst, "reader task panicked: boom");
+        let events = take_events();
+        let state = events
+            .iter()
+            .find(|(t, p)| {
+                t == "proxy.state" && String::from_utf8_lossy(p).contains("dataplane_dead")
+            })
+            .map(|(_, p)| p.clone())
+            .expect("supervisor must emit a structured proxy.state on death");
+        let v: serde_json::Value = serde_json::from_slice(&state).unwrap();
+        assert_eq!(v["error"]["code"], "PROXY_DATAPLANE_DEAD");
+        assert!(
+            v["error"]["message"].as_str().unwrap_or("").contains("boom"),
+            "root panic must not be masked: {v}"
+        );
+        assert_eq!(v["health"]["lastError"], "reader task panicked: boom");
+
+        let kind = CString::new("vpn.stop").unwrap();
+        assert_eq!(on_event(0, kind.as_ptr(), std::ptr::null(), 0), ABI_OK);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while tun::running_count() > 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(tun::running_count(), 0, "vpn.stop must stop the reader");
+        let _ = call_json(call, inst, "core.stop");
+        supervisor::reset_for_tests();
     }
 
     /// Happy/failure QA over the real C ABI: invalid fd → structured error;

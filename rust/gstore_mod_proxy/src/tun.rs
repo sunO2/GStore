@@ -46,7 +46,7 @@ use std::sync::{Mutex, OnceLock};
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::{SinkExt, StreamExt};
+use futures::{FutureExt, SinkExt, StreamExt};
 use gstore_contract::error::{ModuleError, StatusCode};
 use tokio::io::unix::AsyncFd;
 use tokio::sync::{mpsc, watch};
@@ -225,6 +225,9 @@ pub(crate) fn start_with_proxies(
     let host_fd = st.pending_host_fd;
     let (stop_tx, stop_rx) = watch::channel(false);
 
+    // An explicit start begins a fresh failure burst: the supervisor restart
+    // budget (Todo 24) only counts consecutive automatic restarts.
+    crate::supervisor::reset_burst();
     RUNNING.fetch_add(1, Ordering::SeqCst);
     let join = match std::thread::Builder::new()
         .name(LOOP_THREAD_NAME.to_string())
@@ -305,6 +308,22 @@ fn stop_and_join(active: ActiveLoop) {
     }
 }
 
+/// Ask the active loop to stop without joining (host/Kotlin-initiated teardown).
+/// The loop thread performs its own teardown and emits `proxy.tun.released`, so
+/// the host can wait for `current_tun_fd() == -1` before Kotlin closes the PFD.
+/// Returns `false` when no loop is running. Never triggers a supervisor restart
+/// (the stop flag makes the loop exit through the clean `Stopped` path).
+pub(crate) fn request_stop() -> bool {
+    let st = state().lock().unwrap_or_else(|e| e.into_inner());
+    match st.active.as_ref() {
+        Some(active) if !active.stop_tx.is_closed() => {
+            let _ = active.stop_tx.send(true);
+            true
+        }
+        _ => false,
+    }
+}
+
 /// `destroy`/`shutdown`: tear down everything and drop our pending dup.
 pub(crate) fn shutdown() {
     let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
@@ -314,6 +333,8 @@ pub(crate) fn shutdown() {
     st.pending = None;
     st.pending_host_fd = -1;
     st.last_host_fd = -1;
+    crate::supervisor::mark_stopped();
+    crate::supervisor::reset_burst();
 }
 
 #[allow(dead_code)]
@@ -347,22 +368,178 @@ pub(crate) fn reset_read_count() {
 // Dedicated thread + async loop
 // ---------------------------------------------------------------------------
 
+/// How the datapath loop ended. `Failed` carries the **verbatim** reason (a
+/// panicking worker's message, or the error that ended a critical task) so the
+/// supervisor can report the root cause instead of masking it.
+enum LoopExit {
+    Stopped,
+    Failed(String),
+}
+
+/// Extract a human-readable message from a caught panic payload.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic".to_string()
+    }
+}
+
+/// Guard one critical datapath task. Every exit — clean return, error, or panic
+/// — is reported on `death_tx`. Panics are caught here so a panicking worker
+/// kills neither the guard nor the loop thread, and its verbatim message is
+/// preserved. The returned handle is only awaited once during teardown; the
+/// select waits on the channel, never on the handle, so a completion can't be
+/// observed twice.
+fn spawn_guarded<F>(
+    name: &'static str,
+    fut: F,
+    death_tx: mpsc::Sender<String>,
+) -> tokio::task::JoinHandle<()>
+where
+    F: std::future::Future<Output = Result<(), String>> + Send + 'static,
+{
+    tokio::spawn(async move {
+        let outcome = std::panic::AssertUnwindSafe(fut).catch_unwind().await;
+        let reason = match outcome {
+            Ok(Ok(())) => format!("{name} task ended unexpectedly"),
+            Ok(Err(e)) => format!("{name} task failed: {e}"),
+            Err(payload) => format!("{name} task panicked: {}", panic_message(payload.as_ref())),
+        };
+        let _ = death_tx.send(reason).await;
+    })
+}
+
+/// Wait until `core.stop` signals, or until any guarded datapath task reports
+/// its exit. Factoried out so a unit test can drive it with synthetic tasks.
+async fn wait_for_stop_or_task_death(
+    stop_rx: &mut watch::Receiver<bool>,
+    death_rx: &mut mpsc::Receiver<String>,
+) -> LoopExit {
+    let mut stop = stop_rx.clone();
+    tokio::select! {
+        _ = async {
+            while !*stop.borrow() {
+                if stop.changed().await.is_err() {
+                    break;
+                }
+            }
+        } => LoopExit::Stopped,
+        reason = death_rx.recv() => match reason {
+            Some(reason) => LoopExit::Failed(reason),
+            None => LoopExit::Failed("all datapath task reporters dropped".to_string()),
+        },
+    }
+}
+
+/// Bounded, stop-aware backoff wait (plain std thread, not inside the runtime).
+/// Returns `false` when a stop was requested during the wait.
+fn wait_backoff_or_stop(stop_rx: &mut watch::Receiver<bool>, ms: u64) -> bool {
+    let deadline = std::time::Instant::now() + Duration::from_millis(ms);
+    loop {
+        if *stop_rx.borrow() {
+            return false;
+        }
+        if std::time::Instant::now() >= deadline {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Re-duplicate the last host fd so a supervisor restart can ring a new loop
+/// without a fresh `nativeSetTunFd` (Kotlin still owns the PFD).
+fn rearm_pending_fd() -> Result<OwnedFd, String> {
+    ensure_pending_from_last().map_err(|e| e.to_string())?;
+    state()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .pending
+        .take()
+        .ok_or_else(|| "no pending fd after re-arm".to_string())
+}
+
+/// The dedicated loop thread body. Runs `tun_loop`; on an abnormal exit it
+/// reports the root cause and restarts with **bounded** exponential backoff,
+/// unless a stop was requested (clean stop / host-initiated teardown) or the
+/// restart budget is exhausted.
 fn run_thread(
-    owned: OwnedFd,
-    stop_rx: watch::Receiver<bool>,
+    mut owned: OwnedFd,
+    mut stop_rx: watch::Receiver<bool>,
     proxies: Option<crate::config::ProxyMap>,
     instance_id: u64,
 ) {
-    let rt = match crate::bounded_runtime() {
-        Ok(rt) => rt,
-        Err(e) => {
-            crate::log_message(3, &format!("proxy: TUN loop runtime build failed: {e}"));
-            return;
+    crate::supervisor::mark_alive();
+    loop {
+        let rt = match crate::bounded_runtime() {
+            Ok(rt) => rt,
+            Err(e) => {
+                crate::log_message(3, &format!("proxy: TUN loop runtime build failed: {e}"));
+                crate::supervisor::on_failed(instance_id, &format!("bounded_runtime: {e}"));
+                return;
+            }
+        };
+        // A panic in the loop body is caught here (the module is `panic=unwind`)
+        // so the plane is reported + restarted; a panic in a spawned task is
+        // caught by tokio and surfaced through `wait_for_stop_or_task_death`.
+        let outcome = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            rt.block_on(tun_loop(owned, stop_rx.clone(), proxies.clone(), instance_id))
+        })) {
+            Ok(outcome) => outcome,
+            Err(payload) => LoopExit::Failed(format!(
+                "TUN loop thread panicked: {}",
+                panic_message(payload.as_ref())
+            )),
+        };
+        drop(rt); // joins the 4 bounded worker threads deterministically
+
+        match outcome {
+            LoopExit::Stopped => {
+                crate::supervisor::mark_stopped();
+                crate::log_message(1, "proxy: TUN loop thread exited");
+                return;
+            }
+            LoopExit::Failed(reason) => {
+                crate::supervisor::mark_stopped();
+                if *stop_rx.borrow() {
+                    // The stop raced the failure: clean stop, do not restart.
+                    crate::log_message(2, "proxy: TUN loop stopped during failure handling");
+                    return;
+                }
+                let attempt = crate::supervisor::on_death(instance_id, &reason);
+                if !crate::supervisor::should_restart(attempt) {
+                    crate::supervisor::on_failed(
+                        instance_id,
+                        &format!("restart budget exhausted after {attempt} attempts: {reason}"),
+                    );
+                    return;
+                }
+                let backoff = crate::supervisor::backoff_ms(attempt);
+                crate::supervisor::on_restart(instance_id, &reason, backoff);
+                if !wait_backoff_or_stop(&mut stop_rx, backoff) {
+                    crate::supervisor::on_failed(instance_id, "stopped during restart backoff");
+                    return;
+                }
+                match rearm_pending_fd() {
+                    Ok(fd) => owned = fd,
+                    Err(e) => {
+                        crate::supervisor::on_failed(
+                            instance_id,
+                            &format!("cannot re-arm TUN fd for restart: {e}"),
+                        );
+                        return;
+                    }
+                }
+                crate::supervisor::mark_alive();
+                crate::log_message(
+                    1,
+                    &format!("proxy: TUN loop restarted attempt={attempt} backoffMs={backoff}"),
+                );
+            }
         }
-    };
-    rt.block_on(tun_loop(owned, stop_rx, proxies, instance_id));
-    drop(rt); // joins the 4 bounded worker threads deterministically
-    crate::log_message(1, "proxy: TUN loop thread exited");
+    }
 }
 
 /// The real datapath. Builds the netstack on this runtime (so meow's
@@ -374,13 +551,13 @@ async fn tun_loop(
     mut stop_rx: watch::Receiver<bool>,
     proxies: Option<crate::config::ProxyMap>,
     instance_id: u64,
-) {
+) -> LoopExit {
     let built = meow_lwip::NetStack::with_buffer_size(STACK_BUFFER_SIZE, UDP_BUFFER_SIZE);
     let (stack, tcp_listener, udp) = match built {
         Ok(v) => v,
         Err(e) => {
             crate::log_message(3, &format!("proxy: NetStack build failed: {e}"));
-            return;
+            return LoopExit::Failed(format!("NetStack build failed: {e}"));
         }
     };
     let mut core_done = stack.core_done();
@@ -392,82 +569,113 @@ async fn tun_loop(
         Ok(a) => Arc::new(a),
         Err(e) => {
             crate::log_message(3, &format!("proxy: AsyncFd wrap failed: {e}"));
-            return;
+            return LoopExit::Failed(format!("AsyncFd wrap failed: {e}"));
         }
     };
     let (ingress_tx, mut ingress_rx) = mpsc::channel::<Vec<u8>>(INGRESS_CHANNEL);
+
+    let (death_tx, mut death_rx) = mpsc::channel::<String>(4);
 
     // --- the ONE reader -----------------------------------------------------
     let reader = {
         let afd = afd.clone();
         let mut stop = stop_rx.clone();
-        tokio::spawn(async move {
-            let mut buf = vec![0u8; READ_BUFFER_SIZE];
-            loop {
-                tokio::select! {
-                    _ = stop.changed() => break,
-                    ready = afd.readable() => {
-                        let mut guard = match ready {
-                            Ok(g) => g,
-                            Err(_) => break,
-                        };
-                        let read = guard.try_io(|inner| {
-                            let n = unsafe {
-                                libc::read(
-                                    inner.as_raw_fd(),
-                                    buf.as_mut_ptr() as *mut c_void,
-                                    buf.len(),
-                                )
+        let tx = death_tx.clone();
+        spawn_guarded(
+            "reader",
+            async move {
+                let mut buf = vec![0u8; READ_BUFFER_SIZE];
+                loop {
+                    tokio::select! {
+                        _ = stop.changed() => return Ok(()),
+                        ready = afd.readable() => {
+                            let mut guard = match ready {
+                                Ok(g) => g,
+                                Err(e) => return Err(format!("TUN fd readiness error: {e}")),
                             };
-                            if n < 0 {
-                                Err(io::Error::last_os_error())
-                            } else {
-                                Ok(n as usize)
-                            }
-                        });
-                        match read {
-                            Ok(Ok(0)) => {}
-                            Ok(Ok(n)) => {
-                                READ_COUNT.fetch_add(1, Ordering::SeqCst);
-                                if ingress_tx.send(buf[..n].to_vec()).await.is_err() {
-                                    break;
+                            let read = guard.try_io(|inner| {
+                                let n = unsafe {
+                                    libc::read(
+                                        inner.as_raw_fd(),
+                                        buf.as_mut_ptr() as *mut c_void,
+                                        buf.len(),
+                                    )
+                                };
+                                if n < 0 {
+                                    Err(io::Error::last_os_error())
+                                } else {
+                                    Ok(n as usize)
+                                }
+                            });
+                            match read {
+                                Ok(Ok(0)) => {}
+                                Ok(Ok(n)) => {
+                                    READ_COUNT.fetch_add(1, Ordering::SeqCst);
+                                    if ingress_tx.send(buf[..n].to_vec()).await.is_err() {
+                                        return Err("reader -> ingress channel closed".to_string());
+                                    }
+                                }
+                                Ok(Err(e)) if e.kind() == io::ErrorKind::WouldBlock => {}
+                                Ok(Err(e)) => {
+                                    return Err(format!("TUN read failed: {e}"));
+                                }
+                                Err(_) => {
+                                    return Err("TUN read readiness cancelled".to_string());
                                 }
                             }
-                            Ok(Err(e)) if e.kind() == io::ErrorKind::WouldBlock => {}
-                            Ok(Err(_)) | Err(_) => {}
                         }
                     }
                 }
-            }
-        })
+            },
+            tx,
+        )
     };
 
     // --- egress pump: stack → fd -------------------------------------------
     let egress = {
         let afd = afd.clone();
-        tokio::spawn(async move {
-            let mut stream = stream;
-            while let Some(item) = stream.next().await {
-                match item {
-                    Ok(frame) if !frame.is_empty() => {
-                        let _ = write_frame(&afd, &frame).await;
+        let tx = death_tx.clone();
+        spawn_guarded(
+            "egress",
+            async move {
+                let mut stream = stream;
+                while let Some(item) = stream.next().await {
+                    match item {
+                        Ok(frame) if !frame.is_empty() => {
+                            if let Err(e) = write_frame(&afd, &frame).await {
+                                crate::log_message(
+                                    3,
+                                    &format!("proxy: TUN egress write failed: {e}"),
+                                );
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(_) => return Err("netstack egress stream errored".to_string()),
                     }
-                    Ok(_) => {}
-                    Err(_) => break,
                 }
-            }
-        })
+                Err("netstack egress stream ended unexpectedly".to_string())
+            },
+            tx,
+        )
     };
 
     // --- ingress pump: fd → stack ------------------------------------------
-    let ingress = tokio::spawn(async move {
-        let mut sink = sink;
-        while let Some(frame) = ingress_rx.recv().await {
-            if sink.send(frame).await.is_err() {
-                break;
-            }
-        }
-    });
+    let ingress = {
+        let tx = death_tx.clone();
+        spawn_guarded(
+            "ingress",
+            async move {
+                let mut sink = sink;
+                while let Some(frame) = ingress_rx.recv().await {
+                    if sink.send(frame).await.is_err() {
+                        return Err("netstack ingress sink erred".to_string());
+                    }
+                }
+                Err("ingress channel closed unexpectedly".to_string())
+            },
+            tx,
+        )
+    };
 
     // Flow-dispatch handles (TcpListener accept stream + UDP socket) are handed
     // to the meow tunnel dispatcher; the protector is installed first so any
@@ -488,12 +696,13 @@ async fn tun_loop(
         &format!("proxy: flow dispatch active protectInstalled={protect_installed}"),
     );
 
-    // Wait for the stop signal from `core.stop`.
-    while !*stop_rx.borrow() {
-        if stop_rx.changed().await.is_err() {
-            break;
-        }
-    }
+    let outcome = wait_for_stop_or_task_death(&mut stop_rx, &mut death_rx).await;
+    // A stop that raced a task exit is a clean stop, not a data-plane death.
+    let outcome = if *stop_rx.borrow() {
+        LoopExit::Stopped
+    } else {
+        outcome
+    };
 
     // Teardown: stop the reader first (no more fd reads), then drop the pumps so
     // the NetStack is released, then wait for lwIP's deterministic core teardown
@@ -511,6 +720,8 @@ async fn tun_loop(
         let _ = core_done.wait_for(|done| *done).await;
     })
     .await;
+
+    outcome
 }
 
 async fn write_frame(afd: &AsyncFd<OwnedFd>, frame: &[u8]) -> io::Result<()> {
@@ -674,6 +885,112 @@ mod tests {
         assert!(wait_until(|| read_count() == 1, Duration::from_secs(2)));
         stop();
         assert_eq!(running_count(), 0);
+    }
+
+    /// `request_stop` (host/Kotlin-initiated teardown) must stop the reader and
+    /// release the thread without going through `core.stop`.
+    #[test]
+    fn request_stop_stops_the_loop_without_core_stop() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        shallow_reset();
+        let (loop_end, _peer) = UnixStream::pair().unwrap();
+        install_fd(loop_end.as_raw_fd()).expect("install mock fd");
+        assert!(start(21).expect("start loop"));
+        assert_eq!(running_count(), 1);
+
+        assert!(request_stop(), "request_stop signals the live loop");
+        assert!(
+            wait_until(|| running_count() == 0, Duration::from_secs(2)),
+            "loop must exit after request_stop"
+        );
+        assert!(!request_stop(), "no live loop remains after it exited");
+        // Reap the finished ActiveLoop handle.
+        assert!(stop().is_some(), "the finished loop handle is reaped by stop()");
+        assert_eq!(running_count(), 0, "no reader left running");
+    }
+
+    async fn panic_reader() -> Result<(), String> {
+        panic!("reader boom")
+    }
+
+    async fn pending_ok() -> Result<(), String> {
+        std::future::pending::<()>().await;
+        Ok(())
+    }
+
+    /// A panicking worker task must be surfaced as a failure (with the verbatim
+    /// panic message), never silently swallowed.
+    #[tokio::test]
+    async fn dead_worker_task_is_detected_with_structured_reason() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let (stop_tx, mut stop_rx) = watch::channel(false);
+        let (death_tx, mut death_rx) = mpsc::channel::<String>(4);
+        let reader = spawn_guarded("reader", panic_reader(), death_tx.clone());
+        let egress = spawn_guarded("egress", pending_ok(), death_tx.clone());
+        let ingress = spawn_guarded("ingress", pending_ok(), death_tx.clone());
+
+        let outcome = wait_for_stop_or_task_death(&mut stop_rx, &mut death_rx).await;
+        drop(stop_tx);
+        egress.abort();
+        ingress.abort();
+        reader.abort();
+
+        match outcome {
+            LoopExit::Failed(reason) => {
+                assert!(reason.contains("reader"), "reason must name the task: {reason}");
+                assert!(
+                    reason.contains("boom"),
+                    "reason must carry the verbatim panic: {reason}"
+                );
+            }
+            LoopExit::Stopped => panic!("a panicking worker must be detected as failure"),
+        }
+    }
+
+    /// A critical task that returns cleanly while the tunnel is up is also a dead
+    /// data plane (e.g. a reader that exits on a transient error).
+    #[tokio::test]
+    async fn completed_worker_task_is_detected_as_dead() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let (stop_tx, mut stop_rx) = watch::channel(false);
+        let (death_tx, mut death_rx) = mpsc::channel::<String>(4);
+        let reader = spawn_guarded("reader", async { Ok::<(), String>(()) }, death_tx.clone());
+        let egress = spawn_guarded("egress", pending_ok(), death_tx.clone());
+        let ingress = spawn_guarded("ingress", pending_ok(), death_tx.clone());
+
+        let outcome = wait_for_stop_or_task_death(&mut stop_rx, &mut death_rx).await;
+        drop(stop_tx);
+        egress.abort();
+        ingress.abort();
+        reader.abort();
+
+        match outcome {
+            LoopExit::Failed(reason) => {
+                assert!(
+                    reason.contains("reader task ended unexpectedly"),
+                    "unexpected reason: {reason}"
+                );
+            }
+            LoopExit::Stopped => panic!("a completed worker must be detected as failure"),
+        }
+    }
+
+    /// The bounded backoff wait aborts immediately when a stop is requested and
+    /// otherwise returns after the (small, bounded) delay.
+    #[test]
+    fn backoff_wait_is_stop_aware_and_bounded() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let (tx, mut rx) = watch::channel(false);
+        tx.send(true).unwrap();
+        let start = std::time::Instant::now();
+        assert!(!wait_backoff_or_stop(&mut rx, 5_000));
+        assert!(
+            start.elapsed() < Duration::from_millis(100),
+            "must not wait out the backoff once stopped"
+        );
+
+        let (_tx2, mut rx2) = watch::channel(false);
+        assert!(wait_backoff_or_stop(&mut rx2, 30));
     }
 
     /// Drop any loop/pending fd left by an earlier test.

@@ -91,6 +91,9 @@ class _FakeProxyFacade implements ProxyHomeFacade {
   @override
   Future<ProfileList> profileList() async => profileListResult;
 
+  @override
+  Future<String> vpnConfigJson() async => '{}';
+
   void emit(ProxyEvent event) => controller.add(event);
 }
 
@@ -113,6 +116,9 @@ class _FakeVpnConsent implements ProxyVpnConsent {
     stopCalls++;
     return true;
   }
+
+  @override
+  Future<bool> isRunning() async => false;
 }
 
 Widget _wrap(Widget child) => MaterialApp(home: child);

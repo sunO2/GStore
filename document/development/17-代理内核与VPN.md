@@ -193,6 +193,11 @@ Kotlin（TUN 生命周期）                                                │
 | Android 上 SIGSEGV | 模块用了 `Runtime::new()` / CPU 默认 worker | §4.4，检查 `bounded_runtime` |
 | 两个读取者 / fd 竞争 | `tun.set_fd` 未先 join 旧循环；或重复 `core.start` | §4.2 单一读取者 |
 | 停止后 fd 泄漏/崩溃 | 拆除顺序错（先 close 后 `nativeClear`） | §4.1 顺序；`proxy.tun.released` 未发出 |
+| 进程存活但网络不通（数据面静默死亡） | reader/ingress/egress 线程 panic 或提前结束，无人感知 | Todo 24 守护：结构化 `proxy.state`（`error.code=PROXY_DATAPLANE_DEAD` + 原始原因）+ 有界退避重启；`API.md` §18 |
+| VPN 权限被别的 VPN 抢占 | 系统回调 `onRevoke` | Kotlin 发结构化 `proxy.state`（`reason:"vpn_revoked"`）+ 干净停止；`API.md` §18.4 |
+| 切 Wi-Fi/蜂窝/飞行模式后断流 | 底层默认网络变化 | Kotlin `setUnderlyingNetworks(null)` 重建默认接口（事件驱动，无重试循环）；`network_changed` 事件 |
+| 进程被系统杀死后隧道不在 | always-on null-Intent 重启 | 读持久化配置重建隧道 + `always_on_restart` 事件；Flutter 首帧检测「服务在跑但引擎已停」→ `core.start` 恢复；`API.md` §18.4 |
+| Flutter engine / isolate 重启后收不到事件 | 宿主仍持有上一个 isolate 的失效端口 | `HostInspector.reset_bridges` 只丢 log/event/task 订阅端口，**不拆隧道**；新 isolate 重订阅补发；`API.md` §18.3 |
 | 订阅抓取失败/被 SSRF 拦截 | URL 非 http(s)、指向私网、超时、体积超限 | `PROXY_SUB_*`，`API.md` §5 与 `ERROR_CODES.md` |
 | 节点未生效 | 协议 feature 未编译进去（`hysteria2` 等）| `PROXY_CONFIG_NODE_UNSUPPORTED` 警告，`API.md` §13.2 |
 | DNS 无应答/超时 | 上游不可达、bootstrap 非明文、加密上游构建失败 | `PROXY_DNS_*`，`API.md` §9、§5 |
@@ -242,5 +247,7 @@ harness 证明机制：
 - 真机订阅抓取/protect 下的 fetch、geo 下载、真实延迟探测。
 - 真机模块 reload/卸载后的持久化状态（profile store、统计库）读回。
 - 真机 Clash 面板绑定与第三方面板对接。
+- 真机 VpnService 生命周期：`onRevoke` 撤销、飞行模式/网络切换重连、`am force-stop` 后
+  always-on 重启、start→stop→start 线程基线（Todo 24；host 侧只能证明 fd/守护/桥重置机制）。
 
 相关验证记录分散在各功能章节末尾（`API.md` §7–§16）与 `.omo/evidence/`。

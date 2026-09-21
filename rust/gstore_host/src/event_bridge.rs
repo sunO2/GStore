@@ -157,6 +157,28 @@ pub extern "C" fn host_emit_event_simple(
 ) {
     host_emit_event(module_id, instance_id, data, len);
 }
+
+/// 测试专用：读取环形缓冲最后一条事件（验证宿主注入的 `proxy.state` 生命周期事件）。
+#[cfg(test)]
+pub(crate) fn last_event_for_tests() -> Option<(String, Vec<u8>)> {
+    global()
+        .buffer
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .last()
+        .map(|e| (e.event_type.clone(), e.data.clone()))
+}
+
+/// 测试专用：清空环形缓冲。
+#[cfg(test)]
+pub(crate) fn clear_buffer_for_tests() {
+    global()
+        .buffer
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -111,6 +111,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
         if (traffic != null) _applyTopDomains(traffic.topDomains);
         _loading = false;
       });
+      await _recoverEngineIfServiceRunning();
     } on ProxyModuleException catch (error) {
       if (!mounted) return;
       setState(() {
@@ -132,6 +133,28 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
       return await run();
     } catch (_) {
       return null;
+    }
+  }
+
+  /// always-on / 进程死亡恢复：前台服务在跑但 Rust 引擎已停（进程被系统重启后
+  /// 引擎状态丢失）时，重新 `core.start` 把数据面拉起来。失败走错误横幅，不崩溃。
+  Future<void> _recoverEngineIfServiceRunning() async {
+    try {
+      if (!await _vpnConsent.isRunning()) return;
+      final status = await _facade.coreStart(const CoreStartRequest());
+      if (!mounted) return;
+      setState(() {
+        _connState = status.state;
+        _mode = status.mode;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _actionError = ProxyStateError(
+          code: 'PROXY_ENGINE_RECOVER_FAILED',
+          message: '$error',
+        );
+      });
     }
   }
 
@@ -200,8 +223,14 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
     });
     try {
       if (connecting) {
+        // 连接必须带上持久化的分流配置（Todo 23 → Todo 24 交接），仅在显式传入
+        // 非默认配置时才直接用 widget 参数。
+        var configJson = widget.vpnConfigJson;
+        if (configJson == '{}') {
+          configJson = await _safe(() => _facade.vpnConfigJson()) ?? configJson;
+        }
         final prepared =
-            await _vpnConsent.prepare(configJson: widget.vpnConfigJson);
+            await _vpnConsent.prepare(configJson: configJson);
         if (!prepared) {
           throw const ProxyModuleException(
             code: 'PROXY_VPN_CONSENT_DENIED',

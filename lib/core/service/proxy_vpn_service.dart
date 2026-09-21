@@ -32,4 +32,13 @@ class ProxyVpnTrigger {
   static Future<bool> isRunning() async {
     return await _channel.invokeMethod<bool>('isRunning') ?? false;
   }
+
+  /// 打开系统「VPN」设置页，引导用户开启「始终开启的 VPN」。
+  ///
+  /// App 无法直接切换系统设置；Kotlin 侧 `Settings.ACTION_VPN_SETTINGS` 兜底失败
+  /// 时静默返回。仅用于 always-on 引导（Todo 23/24）。
+  static Future<bool> openAlwaysOnSettings() async {
+    final result = await _channel.invokeMethod<bool>('alwaysOnSettings');
+    return result ?? false;
+  }
 }

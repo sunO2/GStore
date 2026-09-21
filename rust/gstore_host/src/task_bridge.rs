@@ -284,6 +284,26 @@ pub fn running_task_count() -> usize {
     tasks().lock().map(|g| g.len()).unwrap_or(0)
 }
 
+/// Drop every task subscription sink without stopping the tasks (engine /
+/// Dart-isolate restart). A restarted isolate re-subscribes via [`watch_task`]
+/// and receives the buffered tail; the host never writes to a stale port.
+/// Returns the number of sinks dropped.
+pub fn reset_sinks() -> usize {
+    let Ok(guard) = tasks().lock() else {
+        return 0;
+    };
+    let mut dropped = 0;
+    for slot in guard.values() {
+        if let Ok(mut sink) = slot.sink.lock() {
+            if sink.is_some() {
+                *sink = None;
+                dropped += 1;
+            }
+        }
+    }
+    dropped
+}
+
 /// 复用宿主同一套信封路由（与 Dart `callModule` 完全同语义）
 fn dispatch_envelope(
     module: &str,

@@ -339,6 +339,15 @@ qr.dispose() / GC → refcount-- → 归零：从注册表移除 + shutdown 清�
 - 模块实例状态用 `RwLock`/`Mutex` 保证 `Send + Sync`（trait 约束已强制）
 - **取消**：Dart 发 `EnvelopeCancel(request_id, module, instance, method, reason)` → 宿主查 in-flight 表 → 调模块 api 表 `cancel(instance, request_id)` → 模块内部中止对应任务，其响应以 `ABORTED` 状态返回（`status=499, error_code=CANCELLED`）；超时由宿主 tokio timeout 兜底，同样触发 cancel 流程
 
+#### 5.6.1 模块内守护线程与有界重启（Todo 24）
+
+`gstore_mod_proxy` 的 TUN 数据面在单一 std 线程 + `bounded_runtime` 内运行，**不占用 FRB worker**。
+该线程内的 reader/ingress/egress 三个关键 task 各自经死亡通道上报任何退出（正常/错误/panic）；
+loop 主体另用 `catch_unwind` 兜底（模块为 `panic=unwind`，C ABI 边界的 `catch_unwind` 覆盖不到
+模块内部 spawn 的线程）。异常退出 → 结构化 `proxy.state`（原始原因不掩盖）→ 有界指数退避重启
+（上限次数/上限延迟均封顶，绝不无限重试）。Kotlin 主动拆除走 `vpn.stop` 下行事件，停循环后
+**不**重启。见 [`rust/gstore_mod_proxy/API.md`](gstore_mod_proxy/API.md) §18。
+
 ---
 
 ## 6. 统一数据模型（信封 + 状态码 + 错误码）
@@ -667,6 +676,7 @@ SHA-256 单独即可自洽的理由：GStore 走 GitHub Release 分发（不经 
 | 5 | crate 改名 | **现在改**（改名牵动 .so 名/jniLibs/stem/构建脚本，见附录 C） | P1 前置任务 |
 | 6 | 错误码文档 | **生成**（协议层错误码 + 各域错误码登记表） | 交付物：`rust/ERROR_CODES.md`（协议层已在此文 6.2/6.4；域层随模块建立） |
 | 7 | ABI 增长方式（v3 `protect_fd`） | **只在 `GStoreModuleEntry` 末尾追加字段**；宿主握手唯一 gate 是 `min_host_abi > GSTORE_MODULE_ABI_VERSION`（**无精确匹配**）；模块侧读新槽前必须用 `entry.entry_size` 守卫（`protect_fd_if_present()`），旧宿主下不得越界读 | 镜像 `on_event` v2 先例：v2 模块（`min_host_abi <= 2`）继续挂载 v3 宿主；`protect_fd` 是代理域安装 meow `SocketProtector` 的唯一宿主钩子。**已落地（非 stub）**：宿主 JNI 接线见 `rust/gstore_host/src/jni_bridge.rs`，模块侧安装在 `rust/gstore_mod_proxy/src/protect.rs`，完整契约见 [`document/development/17-代理内核与VPN.md`](../document/development/17-代理内核与VPN.md) §3–§4 |
+| 8 | 数据面 worker 崩溃模型（Todo 24） | **守护 + 有界退避重启**：TUN reader/ingress/egress 每个 worker 的退出（正常/错误/**panic**，`catch_unwind` 也包住 loop 主体）经死亡通道上报；以结构化 `proxy.state`（`error.code=PROXY_DATAPLANE_DEAD` + 原始原因）上报，再以 `250ms·2^(n-1)`（上限 8s）最多重启 `MAX_RESTARTS=5` 次；预算耗尽则置 `dataplane_failed` 停止。`vpn.stop`（Kotlin 主动拆除）走干净路径、绝不触发重启 | fd 拆除顺序钉死为「停循环 → join → 宿主清缓存 → Kotlin 关 fd」，见 [`rust/gstore_mod_proxy/API.md`](gstore_mod_proxy/API.md) §18；不再有"进程存活但数据面已死且无人知晓"的静默失败 |
 
 **实施现状（以代码为准）**：
 
@@ -678,6 +688,11 @@ SHA-256 单独即可自洽的理由：GStore 走 GitHub Release 分发（不经 
 - 决策 #4：`EnvelopeCancel` + api `cancel` 槽 + 499 **已接入**：宿主在途表 + `call_envelope_with_timeout`；
   repo 下载实现 `cancel`（检查点生效，非立即中断）。
 - 决策 #5/#6：已落地（crate 改名完成；`rust/ERROR_CODES.md` 已生成）。
+- 决策 #8：已落地——`rust/gstore_mod_proxy/src/supervisor.rs`（健康态 + 有界退避策略）+
+  `src/tun.rs`（每 worker 的死亡通道守护、loop 主体 `catch_unwind`、`run_thread` 重启循环）+
+  `gstore_host/src/jni_bridge.rs`（`nativeVpnEvent`/`nativeStopTunnel`）。宿主桥重置
+  （`HostInspector.reset_bridges`）只丢 log/event/task 订阅端口，**不拆隧道**，跨 Dart isolate
+  重启可恢复。
 
 **统一事件系统（双向，已落地）**：
 

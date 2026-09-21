@@ -7,9 +7,12 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
+import android.net.Network
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.provider.Settings
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
@@ -76,6 +79,16 @@ class ProxyVpnService : VpnService() {
         var isRunning: Boolean = false
             private set
 
+        /** 最近一次启动来源：`user` / `always_on`（进程死亡后系统重启）。 */
+        @Volatile
+        var lastStartReason: String = "user"
+            private set
+
+        /** always-on / 系统重启累计次数（诊断用）。 */
+        @Volatile
+        var restartCount: Int = 0
+            private set
+
         init {
             System.loadLibrary("gstore_host")
         }
@@ -91,6 +104,24 @@ class ProxyVpnService : VpnService() {
         /** 清空宿主缓存的服务引用与 fd（不关闭 fd；Kotlin 随后自行关闭）。 */
         @JvmStatic
         external fun nativeClear()
+
+        /** 上报生命周期事件（revoked / network_changed / start_failed / always_on_restart）。 */
+        @JvmStatic
+        external fun nativeVpnEvent(kind: String, detail: String)
+
+        /**
+         * Kotlin 主动拆除：广播 `vpn.stop` → 有界等待模块 `proxy.tun.released`
+         * （停循环 → join → 宿主清缓存）→ 之后 Kotlin 才能安全关闭 fd。
+         */
+        @JvmStatic
+        external fun nativeStopTunnel()
+
+        /** 打开系统「VPN」设置，引导用户开启「始终开启的 VPN」。 */
+        fun openAlwaysOnSettings(context: Context) {
+            val intent = Intent(Settings.ACTION_VPN_SETTINGS)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            runCatching { context.startActivity(intent) }
+        }
 
         /** 启动流程：持久化配置并以前台服务拉起（调用前须已获得 VPN 同意）。 */
         fun start(context: Context, configJson: String) {
@@ -113,35 +144,56 @@ class ProxyVpnService : VpnService() {
     }
 
     private var conn: ParcelFileDescriptor? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val action = intent?.action
         if (action == ACTION_STOP) {
-            stopVpn()
+            stopVpn("user_stop")
             return START_NOT_STICKY
         }
 
         // always-on / 系统重启会传 null Intent：回退到持久化配置。
-        val configJson = intent?.getStringExtra(EXTRA_CONFIG)
+        val explicitConfig = intent?.getStringExtra(EXTRA_CONFIG)
+        val configJson = explicitConfig
             ?: getSharedPreferences(PREFS, MODE_PRIVATE).getString(KEY_CONFIG, null)
         if (configJson.isNullOrEmpty()) {
             Log.w(TAG, "无配置，停止服务")
             // 仍须先进入前台：本服务可能经 startForegroundService 拉起，5s 内
             // 未调用 startForeground 会触发系统崩溃。
             startForegroundCompat()
-            stopVpn()
+            runCatching { nativeVpnEvent("start_failed", "no persisted config available") }
+            stopVpn("no_config")
             return START_NOT_STICKY
+        }
+
+        // 已在运行：仅确保前台存活，绝不重复 establish（否则旧 PFD 泄漏）。
+        if (isRunning && conn != null) {
+            startForegroundCompat()
+            Log.i(TAG, "已在运行，忽略重复启动")
+            return START_STICKY
         }
 
         // 必须在 5s 内进入前台；先于 establish 调用。
         startForegroundCompat()
+
+        if (explicitConfig == null) {
+            lastStartReason = "always_on"
+            restartCount += 1
+            runCatching {
+                nativeVpnEvent("always_on_restart", "null-intent restart #$restartCount")
+            }
+        } else {
+            lastStartReason = "user"
+        }
 
         try {
             startVpn(configJson)
             isRunning = true
         } catch (t: Throwable) {
             Log.e(TAG, "启动 VPN 失败: ${t.message}", t)
-            stopVpn()
+            runCatching { nativeVpnEvent("start_failed", t.message ?: t.toString()) }
+            stopVpn("start_failed")
             return START_NOT_STICKY
         }
         return START_STICKY
@@ -150,12 +202,13 @@ class ProxyVpnService : VpnService() {
     /** 另一个 VPN 抢占了 VPN 权限时系统回调（API 28-）。 */
     override fun onRevoke() {
         Log.i(TAG, "onRevoke: VPN 权限被撤销")
-        stopVpn()
+        runCatching { nativeVpnEvent("revoked", "VPN permission revoked") }
+        stopVpn("revoked")
         super.onRevoke()
     }
 
     override fun onDestroy() {
-        stopVpn()
+        stopVpn("on_destroy")
         super.onDestroy()
     }
 
@@ -195,18 +248,53 @@ class ProxyVpnService : VpnService() {
         conn = pfd
         // 2. 只传原始 fd；Kotlin 继续持有 ParcelFileDescriptor。
         nativeSetTunFd(pfd.fd)
+        registerNetworkCallback()
         Log.i(TAG, "VPN 已建立: session=${cfg.session} mtu=${cfg.mtu} fd=${pfd.fd}")
     }
 
-    private fun stopVpn() {
-        // 拆除顺序：宿主 nativeClear（通知模块可安全停止）→ Kotlin 关闭 fd。
-        // Todo 6 的读取循环必须在此前已停止；此刻本类不 close 正在被 Rust 读取的 fd。
-        runCatching { nativeClear() }
+    /**
+     * 底层网络变化（Wi-Fi↔蜂窝、飞行模式切换）：`setUnderlyingNetworks(null)`
+     * 让接口重新跟随系统默认网络（重建默认接口），无需重建隧道或重读 fd。
+     * 事件驱动，无轮询、无重试循环。
+     */
+    private fun registerNetworkCallback() {
+        if (networkCallback != null) return
+        val cm = getSystemService(ConnectivityManager::class.java) ?: return
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) = onNetworkChanged("available")
+            override fun onLost(network: Network) = onNetworkChanged("lost")
+        }
+        runCatching { cm.registerDefaultNetworkCallback(callback) }
+            .onSuccess { networkCallback = callback }
+    }
+
+    private fun unregisterNetworkCallback() {
+        val callback = networkCallback ?: return
+        networkCallback = null
+        runCatching {
+            getSystemService(ConnectivityManager::class.java)
+                ?.unregisterNetworkCallback(callback)
+        }
+    }
+
+    private fun onNetworkChanged(event: String) {
+        runCatching { setUnderlyingNetworks(null) }
+        runCatching { nativeVpnEvent("network_changed", event) }
+        Log.i(TAG, "底层网络变化($event)：已重建默认接口")
+    }
+
+    private fun stopVpn(reason: String) {
+        unregisterNetworkCallback()
+        // 拆除顺序：广播 vpn.stop → 模块停循环并 join → 宿主清缓存（有界等待
+        // proxy.tun.released）→ Kotlin 关闭 fd。nativeStopTunnel 自身有界，
+        // 超时也会清缓存（Rust 侧持有 dup，Kotlin close 不会 use-after-free）。
+        runCatching { nativeStopTunnel() }
         runCatching { conn?.close() }
         conn = null
         isRunning = false
         runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
         stopSelf()
+        Log.i(TAG, "VPN 已停止：$reason")
     }
 
     // ---------------------------------------------------------------------

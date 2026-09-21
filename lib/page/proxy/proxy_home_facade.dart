@@ -13,6 +13,7 @@ library;
 import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
 import 'package:gstore/core/service/proxy_vpn_service.dart';
+import 'package:gstore/page/proxy/proxy_settings_facade.dart';
 
 /// 首页所需的门面能力 = 冻结的只读 [ProxyFacade] + 连接控制 + 只读展示数据。
 ///
@@ -30,6 +31,10 @@ abstract class ProxyHomeFacade implements ProxyFacade {
 
   /// `profile.list`：稳定的订阅摘要（只读展示当前配置）。
   Future<ProfileList> profileList();
+
+  /// 读取持久化设置生成的 Kotlin `ProxyVpnService` 配置 JSON（含分流模式/应用
+  /// 清单）。连接前注入，不得硬编码 `{}`（Todo 23 → Todo 24 交接）。
+  Future<String> vpnConfigJson();
 }
 
 /// 生产适配器：把 [ProxyHomeFacade] 转发到冻结的 [ProxyModule] 单例。
@@ -63,6 +68,9 @@ class ProxyModuleHomeFacade implements ProxyHomeFacade {
 
   @override
   Future<ProfileList> profileList() => _module.profileList();
+
+  @override
+  Future<String> vpnConfigJson() => loadProxyVpnConfigJson();
 }
 
 /// Android VPN 授权 / 前台服务触发接缝（[ProxyVpnTrigger] 的可注入包装）。
@@ -74,6 +82,9 @@ abstract class ProxyVpnConsent {
 
   /// 停止前台服务。
   Future<bool> stop();
+
+  /// 前台服务当前是否在运行（always-on 重启后用于恢复 Rust 引擎状态）。
+  Future<bool> isRunning();
 }
 
 /// 生产实现：经 [ProxyVpnTrigger] 的平台通道。
@@ -86,4 +97,7 @@ class PlatformProxyVpnConsent implements ProxyVpnConsent {
 
   @override
   Future<bool> stop() => ProxyVpnTrigger.stop();
+
+  @override
+  Future<bool> isRunning() => ProxyVpnTrigger.isRunning();
 }
