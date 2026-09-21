@@ -456,19 +456,72 @@ IP literals only) used to resolve the encrypted upstreams' own hostnames.
 ```
 
 
-### 2.8 `log.*` — structured engine logs
+### 2.8 `log.*` — structured engine logs (Todo 15)
+
+Module logs flow to `LogManager` through the host `log` callback + LogBridge
+(push channel, architecture §6.8). `log.*` is the **pull** side: a bounded
+in-process ring (last **N = 1000** records) with a **monotonic cursor**. It is a
+side channel only — the datapath never waits on it.
 
 | method | request | data |
 |---|---|---|
-| `log.get` | `{ "level"?: "debug"\|"info"\|"warn"\|"error", "limit"?: 200, "sinceMs"?: 0 }` | `{ "records": [LogRecord] }` |
-| `log.set_level` | `{ "level": "info" }` | `{ "ok": true, "level": "info" }` |
+| `log.get` | `{ "sinceCursor"?: 0, "limit"?: 200, "level"?: "debug"\|"info"\|"warn"\|"error" }` | `LogPage` |
+| `log.set_level` | `{ "level": "debug"\|"info"\|"warn"\|"error" }` | `{ "ok": true, "level": "info" }` |
 | `log.clear` | *(none)* | `{ "ok": true }` |
 
-`LogRecord`:
+`log.get` returns retained records with a cursor **strictly greater** than
+`sinceCursor`, oldest first, capped at `limit` (clamped to N). Pass the returned
+`nextCursor` back as `sinceCursor` to poll. The cursor never rewinds; `log.clear`
+drops the records but keeps advancing. An optional `level` filters the page to
+records at or above that level.
+
+`LogPage`:
+
 ```json
-{ "tsMs": 0, "level": "info", "source": "tunnel", "message": "connected",
-  "connId"?: "c1", "domain"?: "example.com", "outbound"?: "proxy-a" }
+{ "records": [LogRecord], "cursor": 42, "nextCursor": 41, "firstCursor": 1,
+  "retained": 41, "capacity": 1000, "dropped": 0, "sinkDropped": 0,
+  "level": "info" }
 ```
+
+* `cursor` — next cursor the module will assign (diagnostic).
+* `nextCursor` — pass as `sinceCursor` for the next page; equals the last
+  returned cursor, or `sinceCursor` when the page is empty.
+* `firstCursor` — oldest retained cursor (`0` when empty). A `sinceCursor`
+  below it means records were lost to eviction.
+* `dropped` — records discarded because they were below the retention level.
+* `sinkDropped` — records retained but not delivered to the host sink
+  (disconnected). The module keeps running in both cases.
+
+`LogRecord` (stable envelope; the `kind` selects the payload):
+
+```json
+{ "cursor": 1, "tsMs": 0, "level": "info", "kind": "message",
+  "message": "proxy: core.start mode=vpn",
+  "connection"?: ConnectionLog, "dns"?: DnsQueryRecord }
+```
+
+`kind` is `message` (plain module line), `connection`, or `dns`. Exactly one of
+`connection`/`dns` is present for the structured kinds. Records never contain
+node credentials, UUIDs, passwords, subscription URLs, or other secrets.
+
+`ConnectionLog` (`kind:"connection"`, Todo 15) — emitted from the connection
+projection diff (`open`/`close`) and from `conn.close*`:
+
+```json
+{ "id": "uuid", "direction": "in", "domain": "example.com",
+  "outbound": "proxy-a", "rule": "DOMAIN-SUFFIX", "rulePayload": "example.com",
+  "network": "tcp", "src": "10.10.0.2:40000", "dst": "93.184.216.34:443",
+  "uploadBytes": 0, "downloadBytes": 0, "bytes": 0, "durationMs": 0,
+  "error"?: "..." }
+```
+
+`direction` is `in` for a flow entering from the TUN (the side Todo 15
+records); `out` is reserved for the upstream leg. `bytes` is
+`uploadBytes + downloadBytes`. `error` is absent on a clean close (populated
+only when a failure is known).
+
+`DnsQueryRecord` (`kind:"dns"`) is the Todo 8 schema documented in §2.7. The
+same record is emitted as the `proxy.dns` event.
 
 ### 2.9 `stats.*` — traffic / domain statistics
 
@@ -627,7 +680,7 @@ side filters on the `proxy.` prefix. `instanceId` is always present.
 | `proxy.subscription.added` | `{ "profileId": string, "name": string }` |
 | `proxy.subscription.removed` | `{ "profileId": string }` |
 | `proxy.conn` | `{ "action":"open"\|"close", "id": string, "domain"?: string, "outbound"?: string, "uploadBytes"?:0, "downloadBytes"?:0 }` |
-| `proxy.log` | `LogRecord` (see §2.8) |
+| `proxy.log` | `LogRecord` (see §2.8) — the push mirror of the log ring; `proxy.conn {json}` / `proxy.dns.query\|failure {json}` lines are the structured variants |
 | `proxy.dns` | `DnsQueryRecord` (see §2.7) — one record per DNS query answered by the TUN DNS hijack; carries the domain→IP mapping for the Todo 16 domain-statistics path (Todo 8; Todo 15/16 consume it). |
 | `proxy.tun.released` | `{ "fd": 123 }` — TUN read loop stopped and its thread joined; the host may clear its cached fd and Kotlin may close the PFD (Todo 6). Host-internal control event; Dart may ignore it. |
 | `proxy.config.applied` | `{ "profileId": string, "hash": string, "template": string }` — `config.apply` hot-applied a new config on the running engine without a process restart (Todo 13). |
@@ -682,6 +735,7 @@ registered in `rust/ERROR_CODES.md`.
 | `PROXY_DNS_CONFIG_INVALID` | 422 | invalid DNS config: nameserver/DoH/DoT URL parse failure, bad fake-IP range, empty nameserver set (Todo 8) |
 | `PROXY_DNS_BOOTSTRAP_FAILED` | 500 | DNS bootstrap / encrypted-upstream construction failed (422 when a `default-nameserver` is not plain) (Todo 8) |
 | `PROXY_DNS_TIMEOUT` | 504 | DNS query produced no answer (unreachable upstream, no fallback); a `proxy.dns.failure` record is logged first (Todo 8) |
+| `PROXY_LOG_LEVEL_INVALID` | 422 | `log.set_level` / `log.get` received an unknown level (expected `debug\|info\|warn\|error`) (Todo 15) |
 
 ## 6. Module distribution decision (state it now)
 
@@ -1261,4 +1315,56 @@ start → `node.select` → unreachable-node `node.delay_test` → `config.apply
 without a restart → stop) reaches `running`. **UNVERIFIED**: on-device
 engine/TUN start (no adb device) — proven against the host socketpair harness
 only.
+
+## 14. Logging pipeline (Todo 15)
+
+Two lanes over one bounded, non-blocking sink:
+
+* **Push (host → Dart).** Every record is forwarded through the ABI `log`
+  callback captured at register (`gstore_contract::logging` /
+  `gstore_host::log_bridge::host_log`) and reaches `LogManager` via the existing
+  LogBridge. The module also calls
+  `gstore_contract::logging::attach_host_logger` so its own `log::` macros (and
+  any dependency log lines) use the same contract path. No second transport is
+  introduced.
+* **Pull (`log.get`).** The module keeps the last **N = 1000** records in an
+  in-memory ring with a **monotonic cursor**; `log.get(sinceCursor, limit,
+  level?)` pages through it. The ring is a bounded projection for diagnostics
+  and does not duplicate the host's own buffer.
+
+### 14.1 Non-blocking / bounded guarantees
+
+* A push is one `Mutex` + `VecDeque::push_back` (O(1)); no I/O, no `.await`, no
+  unbounded growth. It never blocks the TUN read loop or the relay.
+* On overflow the **oldest** record is evicted; cursors are never reused.
+* A disconnected host sink drops records (counted in `sinkDropped`) and the ring
+  keeps serving; a poisoned lock is recovered via `into_inner`. The data plane
+  never panics on logging.
+
+### 14.2 Levels
+
+`log.set_level` sets the retention threshold: records below it are dropped at
+the source (counted in `dropped`) and never reach the ring or the host. It also
+mirrors the level into `log::set_max_level` for the macro path. Levels align
+with the host encoding (`0=debug,1=info,2=warn,3=error`). Default is `info`.
+
+### 14.3 Secrets
+
+Records carry only the fields documented in §2.8. There is deliberately no
+request/response payload, URL, password, UUID, or PSK field; connection records
+are built from meow's public connection metadata only. This is asserted by a
+test that serialises a `ConnectionLog` and rejects secret-shaped keys.
+
+### 14.4 Verification status
+
+`cargo test -p gstore_mod_proxy` proves: ring overflow keeps the last N with
+monotonic cursors; `log.get` paginates by cursor and a drained page does not
+rewind; `log.set_level` filters retention and `log.get(level=…)`; a forced sink
+disconnect drops logs (counted) with no panic and the ring keeps serving;
+connection records are structured and secret-free; `log::` reaches the host via
+`attach_host_logger`; and the full C-ABI flow (`set_level` → filter → paginate →
+`clear` keeps the cursor → unknown level 422). `cargo test -p gstore_host`
+proves a module `log` line reaches the LogBridge buffer and that buffering
+survives with no StreamSink. **UNVERIFIED**: on-device LogManager rendering and
+sink reconnection across an isolate restart (no adb device).
 

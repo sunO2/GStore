@@ -210,7 +210,7 @@ mod tests {
     /// before `connect()`.
     #[tokio::test]
     async fn every_outbound_socket_is_protected_exactly_once() {
-        let _g = SERIAL.lock().unwrap();
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         reset_stub_state();
         assert!(install(Some(ordering_protect)));
         assert!(is_installed());
@@ -246,7 +246,7 @@ mod tests {
     /// when a prior test left a protector set.
     #[tokio::test]
     async fn protect_count_equals_outbound_connection_count() {
-        let _g = SERIAL.lock().unwrap();
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         reset_stub_state();
         assert!(install(Some(counting_protect)));
 
@@ -270,7 +270,7 @@ mod tests {
     /// `PROXY_PROTECT_FAILED` and never hangs; nothing reaches the listener.
     #[tokio::test]
     async fn failed_protect_aborts_dial_with_structured_error() {
-        let _g = SERIAL.lock().unwrap();
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         reset_stub_state();
         assert!(install(Some(failing_protect)));
 
@@ -299,7 +299,7 @@ mod tests {
     /// failing protector they return before any connect/bind traffic.
     #[tokio::test]
     async fn outbound_helpers_cannot_skip_protection() {
-        let _g = SERIAL.lock().unwrap();
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         reset_stub_state();
         assert!(install(Some(failing_protect)));
 
@@ -321,7 +321,7 @@ mod tests {
     /// decides. Here a real socketpair fd proves the count path.
     #[test]
     fn protect_fd_counts_and_propagates_failures() {
-        let _g = SERIAL.lock().unwrap();
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         reset_stub_state();
         let (a, _b) = UnixStream::pair().unwrap();
         let fd = a.as_raw_fd();

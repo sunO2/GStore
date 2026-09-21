@@ -584,7 +584,7 @@ mod tests {
 
     #[test]
     fn invalid_fd_is_structured_error_not_panic() {
-        let _g = SERIAL.lock().unwrap();
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         shallow_reset();
         let err = install_fd(-1).unwrap_err();
         assert_eq!(err.status, StatusCode::InvalidArgument);
@@ -599,7 +599,7 @@ mod tests {
 
     #[test]
     fn packet_written_to_mock_fd_is_read_exactly_once() {
-        let _g = SERIAL.lock().unwrap();
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         shallow_reset();
         let (loop_end, mut peer) = UnixStream::pair().unwrap();
         install_fd(loop_end.as_raw_fd()).expect("install mock fd");
@@ -625,7 +625,7 @@ mod tests {
 
     #[test]
     fn start_stop_restart_is_idempotent_and_leaks_no_threads() {
-        let _g = SERIAL.lock().unwrap();
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         shallow_reset();
         let (loop_end, _peer) = UnixStream::pair().unwrap();
         install_fd(loop_end.as_raw_fd()).expect("install mock fd");
@@ -654,7 +654,7 @@ mod tests {
 
     #[test]
     fn install_fd_replaces_a_running_loop_without_a_second_reader() {
-        let _g = SERIAL.lock().unwrap();
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         shallow_reset();
         let (first, _p1) = UnixStream::pair().unwrap();
         install_fd(first.as_raw_fd()).expect("install first");

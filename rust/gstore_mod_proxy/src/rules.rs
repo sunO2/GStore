@@ -1133,7 +1133,7 @@ rules:
     }
 
     fn compiled() -> Vec<Box<dyn Rule>> {
-        let st = state().lock().unwrap();
+        let st = state().lock().unwrap_or_else(|e| e.into_inner());
         compile(&st).rules
     }
 
@@ -1148,7 +1148,7 @@ rules:
     }
 
     fn index_of(rule_type: &str, value: &str) -> usize {
-        let st = state().lock().unwrap();
+        let st = state().lock().unwrap_or_else(|e| e.into_inner());
         let compiled = compile(&st);
         compiled
             .entries
@@ -1159,7 +1159,7 @@ rules:
 
     #[test]
     fn parses_fixture_in_order_and_returns_it_from_rules_get() {
-        let _g = SERIAL.lock().unwrap();
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         reset_for_tests();
         let dir = tmp_dir("order");
         let snap = reload_fixture(&dir, FIXTURE, None);
@@ -1200,7 +1200,7 @@ rules:
 
     #[test]
     fn matches_each_supported_rule_type() {
-        let _g = SERIAL.lock().unwrap();
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         reset_for_tests();
         let dir = tmp_dir("match");
         reload_fixture(&dir, FIXTURE, None);
@@ -1242,7 +1242,7 @@ rules:
         assert!(rules[cidr].match_metadata(&cidr_meta, &helper));
 
         let matcher = {
-            let st = state().lock().unwrap();
+            let st = state().lock().unwrap_or_else(|e| e.into_inner());
             let compiled = compile(&st);
             compiled
                 .entries
@@ -1255,7 +1255,7 @@ rules:
 
     #[test]
     fn domain_suffix_fixture_routes_to_expected_outbound() {
-        let _g = SERIAL.lock().unwrap();
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         reset_for_tests();
         let dir = tmp_dir("route");
         reload_fixture(&dir, FIXTURE, None);
@@ -1288,7 +1288,7 @@ rules:
 
     #[test]
     fn malformed_rule_is_rejected_but_the_rest_loads() {
-        let _g = SERIAL.lock().unwrap();
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         reset_for_tests();
         let dir = tmp_dir("malformed");
         let yaml = "rules:\n  - DOMAIN-SUFFIX,ok.example,DIRECT\n  - \
@@ -1306,13 +1306,13 @@ rules:
             .unwrap()
             .contains("BOGUS-TYPE"));
 
-        let st = state().lock().unwrap();
+        let st = state().lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(compile(&st).rules.len(), 2);
     }
 
     #[test]
     fn file_classical_provider_resolves_rule_set() {
-        let _g = SERIAL.lock().unwrap();
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         reset_for_tests();
         let dir = tmp_dir("classical");
         let provider = dir.join("classical.yaml");
@@ -1355,7 +1355,7 @@ rules:
 
     #[test]
     fn missing_geo_rule_is_reported_and_rest_loads_without_blocking() {
-        let _g = SERIAL.lock().unwrap();
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         reset_for_tests();
         let dir = tmp_dir("geo-missing");
         let yaml = "rules:\n  - GEOIP,CN,DIRECT\n  - DOMAIN,ok.example,DIRECT\n";
@@ -1376,7 +1376,7 @@ rules:
 
     #[test]
     fn geo_checksum_missing_is_refused_without_download() {
-        let _g = SERIAL.lock().unwrap();
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         reset_for_tests();
         let dir = tmp_dir("geo-checksum-required");
         let yaml = "rules:\n  - GEOIP,CN,DIRECT\n  - DOMAIN,ok.example,DIRECT\n";
@@ -1388,7 +1388,7 @@ rules:
 
     #[test]
     fn geo_checksum_mismatch_rejects_asset_but_rest_loads() {
-        let _g = SERIAL.lock().unwrap();
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         reset_for_tests();
         let dir = tmp_dir("geo-checksum-mismatch");
         let geo_dir = dir.join("geo");
@@ -1418,7 +1418,7 @@ rules:
 
     #[test]
     fn geo_download_verifies_checksum_and_installs_asset() {
-        let _g = SERIAL.lock().unwrap();
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         reset_for_tests();
         let dir = tmp_dir("geo-download");
 
@@ -1472,7 +1472,7 @@ rules:
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
-            let status = state().lock().unwrap().assets[0].status.clone();
+            let status = state().lock().unwrap_or_else(|e| e.into_inner()).assets[0].status.clone();
             if status == "ready" {
                 break;
             }
@@ -1482,14 +1482,14 @@ rules:
             );
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
-        let st = state().lock().unwrap();
+        let st = state().lock().unwrap_or_else(|e| e.into_inner());
         assert!(st.assets[0].verified);
         assert_eq!(st.assets[0].status, "ready");
     }
 
     #[test]
     fn snapshot_without_reload_is_empty_and_non_panicking() {
-        let _g = SERIAL.lock().unwrap();
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         reset_for_tests();
         let snap = snapshot();
         assert_eq!(snap["count"], 0);

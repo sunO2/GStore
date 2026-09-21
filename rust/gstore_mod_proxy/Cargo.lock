@@ -1039,6 +1039,7 @@ dependencies = [
  "ipnet",
  "libc",
  "libloading",
+ "log",
  "maxminddb",
  "meow-api",
  "meow-common",

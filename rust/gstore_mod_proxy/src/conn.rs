@@ -22,6 +22,7 @@ use gstore_contract::error::{ModuleError, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::logging::{self, ConnectionLog, LogLevel};
 use crate::nodes::ERR_NOT_CONFIGURED;
 
 /// Hard cap on the projected connection list. Mirrors the host's 100-entry
@@ -98,32 +99,86 @@ fn from_info(info: &meow_tunnel::statistics::ConnectionInfo, started_at_ms: u64)
 
 /// Rebuild the bounded projection from meow's live connection table and return
 /// the records, newest first.
+///
+/// Todo 15: the projection diff is also the connection-log source — a record
+/// that appears is an `open`, one that disappeared is a `close` (duration from
+/// its start time). Logging happens **after** the store lock is released.
 pub(crate) fn sync(stats: &meow_tunnel::Statistics) -> Vec<ConnRecord> {
-    let mut store = store().lock().unwrap_or_else(|e| e.into_inner());
-    let mut next: HashMap<String, ConnRecord> = HashMap::with_capacity(
-        stats.connections.len().min(CONN_TRACK_CAP),
-    );
-    for entry in stats.connections.iter() {
-        let info = entry.value();
-        let id = info.id.to_string();
-        let started_at_ms = store
-            .map
-            .get(&id)
-            .map(|r| r.started_at_ms)
-            .unwrap_or_else(|| parse_rfc3339_ms(&info.start));
-        next.insert(id, from_info(info, started_at_ms));
-    }
-    if next.len() > CONN_TRACK_CAP {
-        let mut ids: Vec<String> = next.keys().cloned().collect();
-        ids.sort_by_key(|id| next[id].started_at_ms);
-        for id in ids.iter().take(next.len() - CONN_TRACK_CAP) {
-            next.remove(id);
+    let (out, opened, closed) = {
+        let mut store = store().lock().unwrap_or_else(|e| e.into_inner());
+        let mut next: HashMap<String, ConnRecord> = HashMap::with_capacity(
+            stats.connections.len().min(CONN_TRACK_CAP),
+        );
+        for entry in stats.connections.iter() {
+            let info = entry.value();
+            let id = info.id.to_string();
+            let started_at_ms = store
+                .map
+                .get(&id)
+                .map(|r| r.started_at_ms)
+                .unwrap_or_else(|| parse_rfc3339_ms(&info.start));
+            next.insert(id, from_info(info, started_at_ms));
         }
+        if next.len() > CONN_TRACK_CAP {
+            let mut ids: Vec<String> = next.keys().cloned().collect();
+            ids.sort_by_key(|id| next[id].started_at_ms);
+            for id in ids.iter().take(next.len() - CONN_TRACK_CAP) {
+                next.remove(id);
+            }
+        }
+        let opened: Vec<ConnRecord> = next
+            .values()
+            .filter(|r| !store.map.contains_key(&r.id))
+            .cloned()
+            .collect();
+        let now = crate::now_ms();
+        let closed: Vec<(ConnRecord, u64)> = store
+            .map
+            .values()
+            .filter(|r| !next.contains_key(&r.id))
+            .map(|r| (r.clone(), now.saturating_sub(r.started_at_ms)))
+            .collect();
+        store.map = next;
+        let mut out: Vec<ConnRecord> = store.map.values().cloned().collect();
+        out.sort_by(|a, b| b.started_at_ms.cmp(&a.started_at_ms));
+        (out, opened, closed)
+    };
+    for record in &opened {
+        logging::record_connection(LogLevel::Info, connection_log(record, "in", 0, None), "open");
     }
-    store.map = next;
-    let mut out: Vec<ConnRecord> = store.map.values().cloned().collect();
-    out.sort_by(|a, b| b.started_at_ms.cmp(&a.started_at_ms));
+    for (record, duration) in &closed {
+        logging::record_connection(
+            LogLevel::Info,
+            connection_log(record, "in", *duration, None),
+            "close",
+        );
+    }
     out
+}
+
+/// Build the stable, secret-free connection log payload from a projection row.
+fn connection_log(
+    r: &ConnRecord,
+    direction: &str,
+    duration_ms: u64,
+    error: Option<String>,
+) -> ConnectionLog {
+    ConnectionLog {
+        id: r.id.clone(),
+        direction: direction.to_string(),
+        domain: r.domain.clone(),
+        outbound: r.outbound.clone(),
+        rule: r.rule.clone(),
+        rule_payload: r.rule_payload.clone(),
+        network: r.network.clone(),
+        src: r.src.clone(),
+        dst: r.dst.clone(),
+        upload_bytes: r.upload_bytes,
+        download_bytes: r.download_bytes,
+        bytes: r.upload_bytes + r.download_bytes,
+        duration_ms,
+        error,
+    }
 }
 
 fn active_tunnel() -> Result<std::sync::Arc<meow_tunnel::Tunnel>, ModuleError> {
@@ -167,20 +222,50 @@ pub(crate) fn close_arm(payload: &[u8]) -> Result<Vec<u8>, ModuleError> {
     let tunnel = active_tunnel()?;
     let stats = tunnel.statistics();
     let existed = stats.connection_counters(id).is_some();
+    let record = store()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .map
+        .get(&req.id)
+        .cloned();
     stats.close_connection(id);
     store()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .map
         .remove(&req.id);
+    if let Some(r) = record {
+        let duration = crate::now_ms().saturating_sub(r.started_at_ms);
+        logging::record_connection(
+            LogLevel::Info,
+            connection_log(&r, "in", duration, None),
+            "close",
+        );
+    }
     crate::log_message(1, &format!("proxy: conn.close id={} existed={existed}", req.id));
     crate::ok_data(json!({ "ok": true, "id": req.id, "closed": existed }))
 }
 
 pub(crate) fn close_all_arm() -> Result<Vec<u8>, ModuleError> {
     let tunnel = active_tunnel()?;
+    let records: Vec<ConnRecord> = store()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .map
+        .values()
+        .cloned()
+        .collect();
     let closed = tunnel.statistics().close_all_connections_counted();
     store().lock().unwrap_or_else(|e| e.into_inner()).map.clear();
+    let now = crate::now_ms();
+    for r in &records {
+        let duration = now.saturating_sub(r.started_at_ms);
+        logging::record_connection(
+            LogLevel::Info,
+            connection_log(r, "in", duration, None),
+            "close",
+        );
+    }
     crate::log_message(1, &format!("proxy: conn.close_all closed={closed}"));
     crate::ok_data(json!({ "ok": true, "closed": closed }))
 }
@@ -219,7 +304,7 @@ mod tests {
 
     #[test]
     fn sync_returns_fixture_connections_with_all_fields() {
-        let _g = SERIAL.lock().unwrap();
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         reset_for_tests();
         let stats = meow_tunnel::Statistics::new();
         let id = track(&stats, "example.com");
@@ -244,7 +329,7 @@ mod tests {
 
     #[test]
     fn closed_connections_leave_the_projection() {
-        let _g = SERIAL.lock().unwrap();
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         reset_for_tests();
         let stats = meow_tunnel::Statistics::new();
         let id = track(&stats, "a.example");
@@ -256,7 +341,7 @@ mod tests {
 
     #[test]
     fn projection_is_bounded_by_cap() {
-        let _g = SERIAL.lock().unwrap();
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         reset_for_tests();
         let stats = meow_tunnel::Statistics::new();
         // The DashMap itself is unbounded for this synthetic fixture, so the
@@ -272,7 +357,7 @@ mod tests {
 
     #[test]
     fn close_all_clears_stats_and_projection() {
-        let _g = SERIAL.lock().unwrap();
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         reset_for_tests();
         let stats = meow_tunnel::Statistics::new();
         track(&stats, "a.example");
@@ -281,8 +366,42 @@ mod tests {
 
         let closed = stats.close_all_connections_counted();
         assert_eq!(closed, 2);
-        store().lock().unwrap().map.clear();
+        store().lock().unwrap_or_else(|e| e.into_inner()).map.clear();
         assert!(sync(&stats).is_empty());
+        reset_for_tests();
+    }
+
+    /// Todo 15: projection transitions become structured connection log records.
+    #[test]
+    fn sync_emits_connection_open_and_close_logs() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        crate::logging::reset_for_tests();
+        crate::logging::set_level(crate::logging::LogLevel::Debug);
+        reset_for_tests();
+        let stats = meow_tunnel::Statistics::new();
+        let id = track(&stats, "logged.example");
+
+        let _ = sync(&stats);
+        stats.close_connection(id);
+        let _ = sync(&stats);
+
+        let snap = crate::logging::snapshot(0, 100, None);
+        let conns: Vec<_> = snap
+            .records
+            .iter()
+            .filter(|r| r.kind == "connection")
+            .collect();
+        assert_eq!(conns.len(), 2, "open + close recorded: {snap:?}");
+        assert!(conns.iter().any(|r| {
+            r.message.contains("open")
+                && r.connection
+                    .as_ref()
+                    .map(|c| c.domain == "logged.example" && c.direction == "in")
+                    .unwrap_or(false)
+        }));
+        assert!(conns.iter().any(|r| r.message.contains("close")));
+
+        crate::logging::reset_for_tests();
         reset_for_tests();
     }
 }

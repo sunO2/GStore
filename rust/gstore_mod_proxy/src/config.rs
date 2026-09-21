@@ -859,7 +859,7 @@ mod tests {
 
     #[test]
     fn generated_config_has_required_keys_and_no_controller() {
-        let _g = SERIAL.lock().unwrap();
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         crate::rules::reset_for_tests();
         let record = stored(
             vec![
@@ -908,7 +908,7 @@ mod tests {
 
     #[test]
     fn dns_overlay_is_rendered_but_tun_overlay_has_no_fd() {
-        let _g = SERIAL.lock().unwrap();
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         crate::rules::reset_for_tests();
         let record = stored(vec![trojan("t1", "192.0.2.10", 443, 0)], Vec::new());
         let req = GenerateRequest {
@@ -928,7 +928,7 @@ mod tests {
 
     #[test]
     fn mtu_below_minimum_is_rejected() {
-        let _g = SERIAL.lock().unwrap();
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         crate::rules::reset_for_tests();
         let record = stored(vec![trojan("t1", "192.0.2.10", 443, 0)], Vec::new());
         let err = generate_record(
@@ -945,7 +945,7 @@ mod tests {
 
     #[test]
     fn build_registry_wires_leaves_groups_and_builtins() {
-        let _g = SERIAL.lock().unwrap();
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         crate::rules::reset_for_tests();
         let record = stored(
             vec![
@@ -983,7 +983,7 @@ mod tests {
 
     #[test]
     fn unsupported_node_is_warned_and_skipped_without_aborting() {
-        let _g = SERIAL.lock().unwrap();
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         crate::rules::reset_for_tests();
         let record = stored(
             vec![
@@ -1012,7 +1012,7 @@ mod tests {
 
     #[test]
     fn group_with_reference_to_skipped_node_still_builds() {
-        let _g = SERIAL.lock().unwrap();
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         crate::rules::reset_for_tests();
         let record = stored(
             vec![

@@ -21,7 +21,7 @@
 //! Rust cdylibs — `rust/ARCHITECTURE.md` §3.6).
 
 use std::collections::HashMap;
-use std::ffi::{c_char, c_int, c_void, CStr, CString};
+use std::ffi::{c_char, c_int, c_void, CStr};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -37,6 +37,7 @@ mod config;
 mod conn;
 mod dispatch;
 mod dns;
+mod logging;
 mod nodes;
 mod profile;
 mod protect;
@@ -294,7 +295,7 @@ mod tests {
 
     #[test]
     fn hard_gate_datapath_shuttles_packets_over_real_fd() {
-        let _g = TEST_SERIAL.lock().unwrap();
+        let _g = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let report = datapath_selftest().expect("datapath selftest failed");
         eprintln!("datapath report: {report:?}");
         assert!(report.stack_built);
@@ -440,12 +441,11 @@ pub(crate) fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// Single module log entry point. Every line is retained in the bounded ring
+/// ([`logging`]) and forwarded to the host `log` callback (LogBridge → Dart
+/// `LogManager`); the ring level set by `log.set_level` filters at the source.
 pub(crate) fn log_message(level: c_int, msg: &str) {
-    if let Some(f) = HOST_LOG.get() {
-        if let Ok(cmsg) = CString::new(msg) {
-            f(level, cmsg.as_ptr());
-        }
-    }
+    logging::record_message_int(level, msg);
 }
 
 /// 上报模块事件（宿主负载约定：前 4 字节为事件类型长度，小端）。
@@ -461,6 +461,11 @@ pub(crate) fn emit_event(instance_id: u64, event_type: &str, payload: &[u8]) {
 
 /// 静默 panic hook（与 download/repo 模块同策略：避免 Android 上 backtrace
 /// 符号化器把 panic 放大成 SIGSEGV）。每个 C ABI 入口都重装。
+///
+/// Tests DO NOT install it: the silent hook hides the first failure's message
+/// and location, which makes a poisoned shared test lock undebuggable. The
+/// shipping module keeps the silent hook.
+#[cfg(not(test))]
 fn install_panic_hook() {
     let _ = std::env::set_var("RUST_BACKTRACE", "0");
     std::panic::set_hook(Box::new(|info| {
@@ -478,6 +483,9 @@ fn install_panic_hook() {
         log_message(3, &format!("proxy module panic at {loc}: {msg}"));
     }));
 }
+
+#[cfg(test)]
+fn install_panic_hook() {}
 
 fn payload_bytes<'a>(payload: *const u8, len: usize) -> &'a [u8] {
     if payload.is_null() || len == 0 {
@@ -1444,7 +1452,7 @@ fn create_impl(config: *const u8, config_len: usize) -> Result<u64, c_int> {
         app_version: ctx.app_version,
         host_protect_fd: HOST_PROTECT_FD.get().copied().flatten(),
     });
-    instances().lock().unwrap().insert(id, inst);
+    instances().lock().unwrap_or_else(|e| e.into_inner()).insert(id, inst);
     Ok(id)
 }
 
@@ -1481,8 +1489,8 @@ fn call_impl(
             });
             if let Some(inst) = &instance {
                 data["instanceId"] = serde_json::json!(inst.id);
-                data["state"] = serde_json::json!(inst.state.lock().unwrap().as_str());
-                data["mode"] = serde_json::json!(inst.mode.lock().unwrap().as_str());
+                data["state"] = serde_json::json!(inst.state.lock().unwrap_or_else(|e| e.into_inner()).as_str());
+                data["mode"] = serde_json::json!(inst.mode.lock().unwrap_or_else(|e| e.into_inner()).as_str());
                 data["protectFdPresent"] = serde_json::json!(inst.host_protect_fd.is_some());
             }
             data["protectInstalled"] = serde_json::json!(protect::is_installed());
@@ -1508,6 +1516,9 @@ fn call_impl(
         "dns.clear_cache" | "dns.flush_cache" => {
             dns_clear_cache_arm(instance_id, instance.clone())
         }
+        "log.get" => logging::get_arm(_payload),
+        "log.set_level" => logging::set_level_arm(_payload),
+        "log.clear" => logging::clear_arm(),
         "rules.get" => rules_get_arm(instance_id, instance.clone()),
         "rules.reload" => rules_reload_arm(instance_id, instance.clone(), _payload),
         "config.generate" => config_generate_arm(instance_id, instance.clone(), _payload),
@@ -1564,7 +1575,7 @@ fn destroy_impl(instance_id: u64) -> Result<(), c_int> {
         emit_tun_released(s.instance_id, s.host_fd);
     }
     let remaining = {
-        let mut map = instances().lock().unwrap();
+        let mut map = instances().lock().unwrap_or_else(|e| e.into_inner());
         map.remove(&instance_id);
         map.len()
     };
@@ -1578,7 +1589,7 @@ fn destroy_impl(instance_id: u64) -> Result<(), c_int> {
 
 fn shutdown_impl() -> Result<(), c_int> {
     tun::shutdown();
-    instances().lock().unwrap().clear();
+    instances().lock().unwrap_or_else(|e| e.into_inner()).clear();
     log_message(1, "proxy: shutdown");
     Ok(())
 }
@@ -1626,7 +1637,13 @@ pub extern "C" fn gstore_mod_proxy_register(
         let _ = HOST_ABI.set(e.abi_version);
         if let Some(f) = e.log {
             let _ = HOST_LOG.set(f);
+            logging::set_sink_attached(true);
         }
+        // Route this module's own `log::` macros through the contract's
+        // HostLogger so third-party log lines in the dependency graph also land
+        // in the host LogBridge. Best-effort: logger install succeeds only once
+        // per .so, so a repeated register is a no-op.
+        let _ = gstore_contract::logging::attach_host_logger(e, log::LevelFilter::Info);
         if let Some(f) = e.emit_event {
             let _ = HOST_EMIT.set(f);
         }
@@ -1765,6 +1782,7 @@ pub extern "C" fn proxy_on_event_export(
 mod abi_tests {
     use super::*;
     use gstore_contract::abi::host_abi_satisfies;
+    use std::ffi::CString;
 
     /// ping/version 是静态方法，可无实例调用；实例状态由 create 建立。
     /// 同进程内多个测试共享 INSTANCES/NEXT_INSTANCE/TUN 全局态，故用例串行执行。
@@ -1796,7 +1814,7 @@ mod abi_tests {
     }
 
     fn take_events() -> Vec<(String, Vec<u8>)> {
-        std::mem::take(&mut *EMITTED.lock().unwrap())
+        std::mem::take(&mut *EMITTED.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
     fn register_api() -> GStoreModuleApi {
@@ -1846,7 +1864,7 @@ mod abi_tests {
 
     #[test]
     fn register_reports_proxy_name_and_min_host_abi_3() {
-        let _g = ABI_LOCK.lock().unwrap();
+        let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let api = register_api();
         let name = unsafe { CStr::from_ptr(api.name) }.to_str().unwrap();
         assert_eq!(name, "proxy");
@@ -1866,7 +1884,7 @@ mod abi_tests {
 
     #[test]
     fn register_create_call_ping_and_version_destroy() {
-        let _g = ABI_LOCK.lock().unwrap();
+        let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let api = register_api();
         let create = api.create.unwrap();
         let call = api.call.unwrap();
@@ -1897,7 +1915,7 @@ mod abi_tests {
     /// 失败 QA：未知方法必须是结构化 405，而不是 panic 或 500。
     #[test]
     fn unknown_method_returns_405_method_not_found() {
-        let _g = ABI_LOCK.lock().unwrap();
+        let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let api = register_api();
         let create = api.create.unwrap();
         let call = api.call.unwrap();
@@ -1917,7 +1935,7 @@ mod abi_tests {
 
     #[test]
     fn alloc_free_and_on_event_are_panic_safe() {
-        let _g = ABI_LOCK.lock().unwrap();
+        let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let api = register_api();
         let p = proxy_alloc_export(16);
         assert!(!p.is_null());
@@ -1937,7 +1955,7 @@ mod abi_tests {
     #[test]
     fn abi_tun_fd_start_stop_and_release_event() {
         use std::io::Write as _;
-        let _g = ABI_LOCK.lock().unwrap();
+        let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let api = register_api();
         let create = api.create.unwrap();
         let call = api.call.unwrap();
@@ -2004,7 +2022,7 @@ mod abi_tests {
     /// `dns.clear_cache`. Uses IP-literal nameservers so no network is touched.
     #[test]
     fn abi_dns_set_get_and_clear_cache() {
-        let _g = ABI_LOCK.lock().unwrap();
+        let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let api = register_api();
         let create = api.create.unwrap();
         let call = api.call.unwrap();
@@ -2061,7 +2079,7 @@ mod abi_tests {
     /// must come back as a structured `PROXY_RULE_INVALID`.
     #[test]
     fn abi_rules_reload_and_get() {
-        let _g = ABI_LOCK.lock().unwrap();
+        let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let api = register_api();
         let create = api.create.unwrap();
         let call = api.call.unwrap();
@@ -2127,7 +2145,7 @@ mod abi_tests {
 
         use crate::nodes::tests::StubProxy;
 
-        let _g = ABI_LOCK.lock().unwrap();
+        let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::rules::reset_for_tests();
         crate::conn::reset_for_tests();
         let api = register_api();
@@ -2243,7 +2261,7 @@ mod abi_tests {
     fn abi_profile_import_text_and_link() {
         use base64::engine::general_purpose::STANDARD;
         use base64::Engine as _;
-        let _g = ABI_LOCK.lock().unwrap();
+        let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let api = register_api();
         let create = api.create.unwrap();
         let call = api.call.unwrap();
@@ -2307,7 +2325,7 @@ mod abi_tests {
     fn abi_profile_store_crud() {
         use base64::engine::general_purpose::STANDARD;
         use base64::Engine as _;
-        let _g = ABI_LOCK.lock().unwrap();
+        let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let api = register_api();
         let create = api.create.unwrap();
         let call = api.call.unwrap();
@@ -2405,7 +2423,7 @@ mod abi_tests {
     #[test]
     fn abi_config_generate_start_reload_and_failure_qa() {
         use std::os::unix::net::UnixStream;
-        let _g = ABI_LOCK.lock().unwrap();
+        let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let api = register_api();
         let create = api.create.unwrap();
         let call = api.call.unwrap();
@@ -2570,7 +2588,7 @@ rules:
     #[test]
     fn abi_profile_refresh_success_failure_and_backoff() {
         use subscription::{ImportedProfile, SubscriptionUserinfo};
-        let _g = ABI_LOCK.lock().unwrap();
+        let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let api = register_api();
         let create = api.create.unwrap();
         let call = api.call.unwrap();
@@ -2697,7 +2715,7 @@ rules:
     /// per-profile interval schedule set through `profile.set_schedule`.
     #[test]
     fn abi_profile_refresh_all_bounded_backoff_and_scheduling() {
-        let _g = ABI_LOCK.lock().unwrap();
+        let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let api = register_api();
         let create = api.create.unwrap();
         let call = api.call.unwrap();
@@ -2791,5 +2809,64 @@ rules:
 
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(destroy(inst), ABI_OK);
+    }
+
+    /// Todo 15: `log.set_level` filters at the source and `log.get` paginates by
+    /// monotonic cursor over the real C ABI; an unknown level is a structured
+    /// 422, never a panic.
+    #[test]
+    fn abi_log_set_level_get_and_clear() {
+        let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let api = register_api();
+        crate::logging::reset_for_tests();
+        let call = api.call.unwrap();
+
+        let (code, out) = call_with_payload(call, 0, "log.set_level", br#"{"level":"warn"}"#);
+        assert_eq!(code, ABI_OK, "set_level: {}", String::from_utf8_lossy(&out));
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["level"], "warn");
+
+        crate::log_message(1, "info-filtered");
+        crate::log_message(2, "warn-retained");
+        crate::log_message(3, "error-retained");
+
+        let (code, out) =
+            call_with_payload(call, 0, "log.get", br#"{"sinceCursor":0,"limit":10}"#);
+        assert_eq!(code, ABI_OK);
+        let page: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        let records = page["data"]["records"].as_array().unwrap();
+        assert!(records.iter().all(|r| r["level"] != "info"), "{records:?}");
+        assert!(records.iter().any(|r| r["message"] == "warn-retained"));
+        assert!(page["data"]["dropped"].as_u64().unwrap() >= 1);
+        let next = page["data"]["nextCursor"].as_u64().unwrap();
+        assert_eq!(next, records.last().unwrap()["cursor"].as_u64().unwrap());
+
+        let (code, out) =
+            call_with_payload(call, 0, "log.get", br#"{"sinceCursor":0,"limit":1}"#);
+        assert_eq!(code, ABI_OK);
+        let first: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        let c1 = first["data"]["records"][0]["cursor"].as_u64().unwrap();
+        let body = format!(r#"{{"sinceCursor":{c1},"limit":10}}"#);
+        let (code, out) = call_with_payload(call, 0, "log.get", body.as_bytes());
+        assert_eq!(code, ABI_OK);
+        let rest: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert!(rest["data"]["records"][0]["cursor"].as_u64().unwrap() > c1);
+
+        let (code, out) = call_with_payload(call, 0, "log.set_level", br#"{"level":"loud"}"#);
+        assert_eq!(code, ABI_ERR_DETAIL);
+        let err: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(err["code"], "PROXY_LOG_LEVEL_INVALID");
+        assert_eq!(err["status"], 422);
+
+        // clear drops the records but never rewinds the cursor.
+        let (code, _out) = call_json(call, 0, "log.clear");
+        assert_eq!(code, ABI_OK);
+        let (code, out) = call_with_payload(call, 0, "log.get", br#"{"sinceCursor":0}"#);
+        assert_eq!(code, ABI_OK);
+        let cleared: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert!(cleared["data"]["records"].as_array().unwrap().is_empty());
+        assert!(cleared["data"]["cursor"].as_u64().unwrap() > c1);
+
+        crate::logging::reset_for_tests();
     }
 }

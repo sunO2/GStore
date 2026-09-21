@@ -124,3 +124,59 @@ pub fn push_host_log(level: c_int, message: String) {
         timestamp_ms: now_ms(),
     });
 }
+
+/// 测试专用：读取宿主日志环形缓冲（验证模块 log 行确实到达 LogBridge）。
+#[cfg(test)]
+pub(crate) fn buffered_for_tests() -> Vec<LogMessage> {
+    global()
+        .buffer
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+/// 测试专用：清空宿主日志环形缓冲。
+#[cfg(test)]
+pub(crate) fn clear_for_tests() {
+    global()
+        .buffer
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::CString;
+
+    /// 模块经 GStoreModuleEntry.log 注入的回调就是 `host_log`；一条模块日志行
+    /// 必须进入 LogBridge 的流缓冲（Dart 未订阅时暂存，订阅后补发）。
+    #[test]
+    fn module_log_line_reaches_the_log_bridge_buffer() {
+        clear_for_tests();
+        let module_log = host_log;
+        let line = CString::new(r#"proxy.dns.query {"domain":"example.com"}"#).unwrap();
+        module_log(1, line.as_ptr());
+        assert!(
+            buffered_for_tests()
+                .iter()
+                .any(|m| m.level == 1 && m.message.contains("proxy.dns.query")),
+            "module log line must reach the LogBridge buffer"
+        );
+    }
+
+    /// 失败 QA：Dart 未订阅 / sink 已断开时，模块日志仍可安全入缓冲，不 panic。
+    #[test]
+    fn host_log_survives_without_a_subscriber() {
+        clear_for_tests();
+        let line = CString::new("proxy: no subscriber").unwrap();
+        host_log(2, line.as_ptr());
+        assert!(
+            buffered_for_tests()
+                .iter()
+                .any(|m| m.level == 2 && m.message.contains("no subscriber")),
+            "logs must be buffered even with no StreamSink"
+        );
+    }
+}

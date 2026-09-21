@@ -221,7 +221,7 @@ mod tests {
     /// meow's DIRECT fallback without panicking.
     #[test]
     fn engine_builds_with_direct_fallback() {
-        let _g = SERIAL.lock().unwrap();
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         crate::rules::reset_for_tests();
         let resolver = Arc::new(meow_dns::Resolver::new(
             Vec::new(),

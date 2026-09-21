@@ -564,15 +564,17 @@ impl DnsEngine {
     }
 
     fn emit(&self, record: &DnsQueryRecord) {
-        let Ok(json) = serde_json::to_string(record) else {
-            return;
-        };
-        if record.ok {
-            crate::log_message(1, &format!("proxy.dns.query {json}"));
+        let level = if record.ok {
+            crate::logging::LogLevel::Info
         } else {
-            crate::log_message(3, &format!("proxy.dns.failure {json}"));
+            crate::logging::LogLevel::Error
+        };
+        // Todo 15: the DNS record enters the bounded module log ring (kind=dns)
+        // and is forwarded to the host LogBridge as `proxy.dns.query|failure`.
+        crate::logging::record_dns(level, record);
+        if let Ok(json) = serde_json::to_string(record) {
+            crate::dispatch::emit_dns_event(&json);
         }
-        crate::dispatch::emit_dns_event(&json);
     }
 
     pub(crate) fn stats_json(&self) -> serde_json::Value {
@@ -782,7 +784,7 @@ mod tests {
     /// fake-IP allocation + reverse lookup through the real resolver.
     #[tokio::test]
     async fn fake_ip_allocates_and_reverse_looks_up() {
-        let _g = SERIAL.lock().unwrap();
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let mut cfg = DnsConfig::default();
         cfg.mode = DnsModeKind::FakeIp;
         cfg.nameservers = vec!["127.0.0.1".to_string()];
@@ -815,7 +817,7 @@ mod tests {
     /// fake-IP answers carry a query-log record + a domain→IP mapping.
     #[tokio::test]
     async fn fake_ip_query_logs_and_records_mapping() {
-        let _g = SERIAL.lock().unwrap();
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let mut cfg = DnsConfig::default();
         cfg.mode = DnsModeKind::FakeIp;
         cfg.nameservers = vec!["127.0.0.1".to_string()];
@@ -846,7 +848,7 @@ mod tests {
     /// Cache clear drops forward entries (and fake-IP allocations).
     #[tokio::test]
     async fn clear_cache_empties_the_resolver_cache() {
-        let _g = SERIAL.lock().unwrap();
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let mut cfg = DnsConfig::default();
         cfg.mode = DnsModeKind::Normal;
         cfg.nameservers = vec!["127.0.0.1".to_string()];
@@ -864,7 +866,7 @@ mod tests {
     /// the resolver label in the record names the stub upstream.
     #[tokio::test]
     async fn fixture_query_resolves_via_stub_upstream() {
-        let _g = SERIAL.lock().unwrap();
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let stub = crate::dns::tests::StubDns::start().await;
         let mut cfg = DnsConfig::default();
         cfg.mode = DnsModeKind::Normal;
@@ -890,7 +892,7 @@ mod tests {
     /// timeout + a logged failure record.
     #[tokio::test]
     async fn unreachable_primary_uses_fallback_then_times_out_without_one() {
-        let _g = SERIAL.lock().unwrap();
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let stub = StubDns::start().await;
         let dead = dead_udp_addr().await;
 
@@ -932,7 +934,7 @@ mod tests {
     /// hook, so a local self-signed stub can never be trusted (see API.md §9.3).
     #[tokio::test]
     async fn doh_url_reaches_stub_endpoint_and_fails_closed() {
-        let _g = SERIAL.lock().unwrap();
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         tokio::spawn(async move {

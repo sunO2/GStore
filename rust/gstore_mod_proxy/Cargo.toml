@@ -87,6 +87,11 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 # libc malloc/free for the C ABI output buffer (who allocates frees).
 libc = "0.2"
+# Todo 15: `log` is the module logging facade. `gstore_contract`'s
+# `attach_host_logger` installs a `log::Log` that forwards to the host `log`
+# callback (architecture §6.8), and `log.set_level` mirrors its threshold into
+# `log::set_max_level`. Already transitive via gstore_contract; pinned directly.
+log = { version = "0.4", features = ["std"] }
 
 # Bounded async runtime. NEVER Runtime::new() / CPU-default workers on Android
 # (SIGSEGV, see rust/gstore_mod_repo/src/lib.rs:117-120).

@@ -77,7 +77,7 @@ fn serve_by_user_agent(matchers: Vec<(&'static str, Vec<u8>)>) -> (String, Arc<M
                 .find(|line| line.to_ascii_lowercase().starts_with("user-agent:"))
                 .map(|line| line["user-agent:".len()..].trim().to_string())
                 .unwrap_or_default();
-            seen_writer.lock().unwrap().push(user_agent.clone());
+            seen_writer.lock().unwrap_or_else(|e| e.into_inner()).push(user_agent.clone());
             let response = matchers
                 .iter()
                 .find(|(needle, _)| user_agent.contains(needle))
@@ -174,7 +174,7 @@ fn multi_user_agent_retry_uses_the_next_agent() {
     handle.join().unwrap();
 
     assert_eq!(profile.node_count, 2);
-    let seen = seen.lock().unwrap();
+    let seen = seen.lock().unwrap_or_else(|e| e.into_inner());
     assert_eq!(seen.len(), 2, "exactly two attempts: {seen:?}");
     assert!(seen[0].contains("clash.meta"));
     assert!(seen[1].contains("mihomo"));

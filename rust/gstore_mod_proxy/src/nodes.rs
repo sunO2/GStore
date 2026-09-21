@@ -414,7 +414,7 @@ pub(crate) mod tests {
             false
         }
         async fn dial_tcp(&self, metadata: &Metadata) -> MeowResult<Box<dyn ProxyConn>> {
-            self.dials.lock().unwrap().push(metadata.rule_host().to_string());
+            self.dials.lock().unwrap_or_else(|e| e.into_inner()).push(metadata.rule_host().to_string());
             if self.hangs {
                 std::future::pending::<()>().await;
             }
@@ -495,7 +495,7 @@ pub(crate) mod tests {
     /// group whose selected member is the new one).
     #[test]
     fn select_changes_active_outbound_in_selector_group() {
-        let _g = SERIAL.lock().unwrap();
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         crate::rules::reset_for_tests();
         let _ = crate::dispatch::build_engine(empty_resolver());
         let tunnel = active_tunnel().unwrap();
@@ -537,7 +537,7 @@ pub(crate) mod tests {
     /// (meow's persistence side-channel) restores the prior pick.
     #[test]
     fn selection_persists_across_reload() {
-        let _g = SERIAL.lock().unwrap();
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         crate::rules::reset_for_tests();
         let store = SelectorStore::open(tmp_dir("persist").join("selector.json"));
 
@@ -572,7 +572,7 @@ pub(crate) mod tests {
     /// call never errors or blocks the tunnel.
     #[test]
     fn delay_test_returns_timeout_result_per_node() {
-        let _g = SERIAL.lock().unwrap();
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         crate::rules::reset_for_tests();
         let targets: Vec<(String, Arc<dyn Proxy>)> = vec![
             ("A".to_string(), StubProxy::hanging("A") as Arc<dyn Proxy>),
@@ -600,7 +600,7 @@ pub(crate) mod tests {
     /// usable for the next call (no poisoned runtime/thread leak).
     #[test]
     fn delay_test_is_repeatable_after_timeout() {
-        let _g = SERIAL.lock().unwrap();
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         for _ in 0..3 {
             let targets: Vec<(String, Arc<dyn Proxy>)> =
                 vec![("A".to_string(), StubProxy::hanging("A") as Arc<dyn Proxy>)];
@@ -619,7 +619,7 @@ pub(crate) mod tests {
     /// lost), and a non-selectable/leaf target is a structured error.
     #[test]
     fn select_errors_are_structured() {
-        let _g = SERIAL.lock().unwrap();
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         crate::rules::reset_for_tests();
         let _ = crate::dispatch::build_engine(empty_resolver());
         let tunnel = active_tunnel().unwrap();
