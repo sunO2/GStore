@@ -346,21 +346,18 @@ void main() {
       expect(world.totalDownloads, 2, reason: '两个空源各触发一次下载');
     });
 
-    test('全部零数据但下载未抛错 ⇒ 抛兜底文案「F-Droid 仓库不可用」', () async {
+    test('全部零数据但下载未抛错 ⇒ 合法空仓库，返回空列表、不抛', () async {
       final manager = FdroidRepoManager();
       final world = _World(manager);
       await world.addTracked('s1', 'https://s1.example/repo', priority: 0);
       await world.addTracked('s2', 'https://s2.example/repo', priority: 1);
       await world.prepare();
 
-      await expectLater(
-        manager.searchApps('any'),
-        throwsA(isA<StateError>().having(
-          (StateError e) => e.message,
-          'message',
-          'F-Droid 仓库不可用',
-        )),
-      );
+      // Part B 修正：加载**成功**但索引为空 ⇒ 合法空仓库，返回空列表而非抛
+      // 「F-Droid 仓库不可用」（旧实现把 0 同时当作"空"与"失败"）。
+      final results = await manager.searchApps('any');
+
+      expect(results, isEmpty, reason: '合法空仓库不得被误报为故障');
       expect(world.totalDownloads, 2);
     });
   });

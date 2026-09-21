@@ -226,6 +226,11 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
         await _saveSources();
       }
 
+      // 历史槽位（fp:/url:）库文件清理：源配置已就绪，且此时**尚未创建任何
+      // repo 实例/打开任何库句柄**（initialize 仅 _loadSources + 默认源设置），
+      // 删除旧文件不会与在用的 SQLite 连接竞争。best-effort，绝不影响启动。
+      await _cleanupLegacyDbFiles();
+
       // 设置当前源
       final enabledSource = _firstWhereOrNull(_sources, (s) => s.enabled);
       debugPrint('FdroidRepoManager: 找到启用源: $enabledSource');
@@ -284,6 +289,125 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
       }
     }
     if (changed) await _saveSources();
+  }
+
+  /// 启动时清理**历史（未被当前槽位使用）**的 F-Droid 库文件。
+  ///
+  /// 挂钩点：`initialize()` 中 `_loadSources()` 之后、`setActiveSource` 之前——
+  /// 此时源配置已就绪，且尚未创建任何 repo 实例/打开任何库句柄，删除旧文件
+  /// 不会与在用的 SQLite 连接竞争。仅清理**已配置源**的两个历史逻辑槽位，
+  /// 不做全盘扫描（孤儿清理是未来的独立事项）。
+  ///
+  /// best-effort：任何异常都被吞掉并记日志，绝不抛出、绝不阻断启动。
+  Future<void> _cleanupLegacyDbFiles() async {
+    try {
+      final docs = await _getApplicationDocumentsDirectory();
+      final result =
+          await cleanLegacyDbSlots(sources: _sources, docsPath: docs.path);
+      if (result.files > 0) {
+        appLog.info('FdroidRepoManager: 已清理 ${result.files} 个历史库文件，'
+            '回收 ${result.bytes} 字节（当前槽位未受影响）');
+      }
+      // 无文件可清（含二次冷启动）时保持静默。
+    } catch (e) {
+      // best-effort：绝不影响启动。
+      appLog.warning('FdroidRepoManager: 历史库文件清理失败（忽略） - $e');
+    }
+  }
+
+  /// 历史库文件名形态：`fdroid_<16 位小写 hex>.db` 及其 `-wal`/`-shm` 边车。
+  static final RegExp _legacyDbNameRe =
+      RegExp(r'^fdroid_[0-9a-f]{16}\.db(-wal|-shm)?$');
+
+  /// 去掉 `-wal`/`-shm` 边车后缀，得到对应的主库文件路径。
+  static String _baseDbPath(String dbPath) {
+    if (dbPath.endsWith('-wal') || dbPath.endsWith('-shm')) {
+      return dbPath.substring(0, dbPath.length - 4);
+    }
+    return dbPath;
+  }
+
+  /// 候选路径是否允许删除（三重护栏，缺一不可）：
+  /// 1. **绝不删当前槽位**：[currentSlotPaths] 是全部已配置源的
+  ///    `storageIdentity` 对应库文件；候选（含其 `-wal`/`-shm`）命中任一当前
+  ///    槽位即拒删。`url:`/`fp:` 候选理论上不可能等于 `id:` 槽位，这里仍然
+  ///    显式强制，作为整个清理的安全总闸。
+  /// 2. **文件名白名单**：`fdroid_` + 16 位小写 hex 十六进制 + `.db`（可带
+  ///    `-wal`/`-shm`），杜绝误伤 `fdroid_rust.db` 等其它文件。
+  /// 3. **目录护栏**：必须直接位于 docs 目录之下，不下钻子目录、不 glob。
+  @visibleForTesting
+  static bool isDeletableLegacySlotPath({
+    required String candidatePath,
+    required String docsPath,
+    required Set<String> currentSlotPaths,
+  }) {
+    if (currentSlotPaths.contains(candidatePath)) return false;
+    if (currentSlotPaths.contains(_baseDbPath(candidatePath))) return false;
+    if (!path.equals(path.dirname(candidatePath), docsPath)) return false;
+    return _legacyDbNameRe.hasMatch(path.basename(candidatePath));
+  }
+
+  /// 清理**已配置源**的两个历史逻辑槽位（`fp:<HEX>` 与 `url:<归一化地址>`）
+  /// 对应的库文件及其 `-wal`/`-shm` 边车。
+  ///
+  /// 返回 `(files: 删除文件数, bytes: 回收字节数, skipped: 被护栏跳过的候选数)`。
+  /// 纯 best-effort：所有异常都被吞掉并记日志，绝不抛出。
+  @visibleForTesting
+  static Future<({int files, int bytes, int skipped})> cleanLegacyDbSlots({
+    required Iterable<FdroidSource> sources,
+    required String docsPath,
+  }) async {
+    var files = 0;
+    var bytes = 0;
+    var skipped = 0;
+    try {
+      // 当前槽位：任何候选命中它都绝不删除（安全总闸）。
+      final currentSlots = <String>{
+        for (final s in sources)
+          rust.FdroidRustRepoManager.legacyDbPathFor(
+              identity: s.id, docsPath: docsPath),
+      };
+      // 每个源的两个历史身份（`fp:<HEX>` / `url:<归一化地址>`）→ 各自的主库 + 边车候选。
+      final candidates = <String>{};
+      for (final s in sources) {
+        for (final base in {
+          rust.FdroidRustRepoManager.legacyDbPathFor(
+              fingerprint: s.fingerprint,
+              repoUrl: s.repoUrl,
+              docsPath: docsPath),
+          rust.FdroidRustRepoManager.legacyDbPathFor(
+              repoUrl: s.repoUrl, docsPath: docsPath),
+        }) {
+          for (final suffix in const ['', '-wal', '-shm']) {
+            candidates.add('$base$suffix');
+          }
+        }
+      }
+
+      for (final candidate in candidates) {
+        try {
+          if (!isDeletableLegacySlotPath(
+            candidatePath: candidate,
+            docsPath: docsPath,
+            currentSlotPaths: currentSlots,
+          )) {
+            skipped++;
+            continue;
+          }
+          final f = File(candidate);
+          if (!f.existsSync()) continue;
+          final size = f.lengthSync();
+          f.deleteSync();
+          files++;
+          bytes += size;
+        } catch (e) {
+          appLog.warning('FdroidRepoManager: 清理旧库文件「$candidate」失败 - $e');
+        }
+      }
+    } catch (e) {
+      appLog.warning('FdroidRepoManager: 旧库文件清理跳过 - $e');
+    }
+    return (files: files, bytes: bytes, skipped: skipped);
   }
 
   Future<void> _loadSources() async {
@@ -421,14 +545,17 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
   /// key 用 [identityKeyFor]（存储身份 = 源 id，**与指纹发现无关**），与
   /// [rust.FdroidRustRepoManager.searchAppsIn]/[rust.FdroidRustRepoManager.appCountIn]
   /// 读取时的身份键**完全一致**，避免"下载写 A 库、搜索读 B 库"。
-  final Map<String, Future<int>> _loadInFlight = {};
+  ///
+  /// 值携带 `(count, ok)`：`ok` 区分"加载成功（即便索引为 0）"与"加载失败"，
+  /// 避免把合法空仓库误判为故障。
+  final Map<String, Future<({int count, bool ok})>> _loadInFlight = {};
 
   /// 单飞加载一个源：同一身份键的并发请求**等待同一个 Future**（不是早退丢弃）。
   ///
   /// WHY：旧实现在 `_isLoading` 时直接 `return`，第二个调用者拿到"空成功"，
   /// 而写入的库又是幽灵键 `url:default` → 搜索永远空。这里等待完成、
   /// 完成的 Future 从 map 移除以便下次重新触发（如清库后）。
-  Future<int> _ensureSourceLoaded(FdroidSource s) {
+  Future<({int count, bool ok})> _ensureSourceLoaded(FdroidSource s) {
     final k = identityKeyFor(s);
     return _loadInFlight.putIfAbsent(
         k, () => _loadOneSource(s).whenComplete(() {
@@ -438,12 +565,19 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
             }));
   }
 
-  /// 下载/解析**一个源**到它自己的库，返回该源当前应用数（失败返回 0）。
+  /// 下载/解析**一个源**到它自己的库。
   ///
-  /// WHY：所有读路径（搜索/详情/全量）需要的"空库→下载"都走这里，
-  /// 且必须用 `downloadRepositoryTaskFor(source)`（带源身份）——只有这样
+  /// 返回 `(count, ok)`：
+  /// - `ok: true` → 下载/解析成功（`count` 是**真实**应用数，**允许为 0**，
+  ///   即"合法空仓库"）；
+  /// - `ok: false` → 任一下载失败/取消/超时/异常分支（`count` 恒为 0）。
+  ///
+  /// WHY：旧实现用 `0` 同时表示"成功但 0 应用"与"失败"，读路径据此把合法空
+  /// 仓库误报成「F-Droid 仓库不可用」。用 `ok` 把两者分开。
+  ///
+  /// WHY 必须用 `downloadRepositoryTaskFor(source)`（带源身份）：只有这样
   /// 写入的库才与后续 `searchAppsIn(source)` 读取的库是同一个。
-  Future<int> _loadOneSource(FdroidSource source) async {
+  Future<({int count, bool ok})> _loadOneSource(FdroidSource source) async {
     try {
       appLog.info('FdroidRepoManager: 加载源 - ${source.name}');
       final task = await rust.FdroidRustRepoManager.downloadRepositoryTaskFor(source);
@@ -505,13 +639,13 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
         appLog.error('FdroidRepoManager: 「${source.name}」加载失败 - ${result.error}');
         _failSyncTask(StateError(_errorMessage!));
         notifyListeners();
-        return 0;
+        return (count: 0, ok: false);
       }
       if (result.outcome == RustTaskOutcome.cancelled) {
         _errorMessage = '「${source.name}」加载已取消';
         _failSyncTask(StateError(_errorMessage!));
         notifyListeners();
-        return 0;
+        return (count: 0, ok: false);
       }
       // 用签名里提取的真实指纹做事后校验：自动回填 + 同源判定（保留原语义）
       await _syncSignerFingerprint(source, result.payload);
@@ -519,19 +653,19 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
       // 解析/入库完成 → 就绪；终态 ready 由 _finishLoading 统一发布。
       _syncTicket?.update(stage: '已就绪', progress: 1.0);
       appLog.info('FdroidRepoManager: 「${source.name}」加载完成，共 $count 个应用');
-      return count;
+      return (count: count, ok: true);
     } on TimeoutException catch (e) {
       _errorMessage = '「${source.name}」加载超时: $e';
       appLog.error('FdroidRepoManager: 「${source.name}」加载超时 - $e');
       _failSyncTask(e);
       notifyListeners();
-      return 0;
+      return (count: 0, ok: false);
     } catch (e) {
       _errorMessage = '「${source.name}」加载失败: $e';
       appLog.error('FdroidRepoManager: 「${source.name}」加载失败 - $e');
       _failSyncTask(e);
       notifyListeners();
-      return 0;
+      return (count: 0, ok: false);
     }
   }
 
@@ -551,17 +685,25 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
     notifyListeners();
     var hasData = false;
     var failures = 0;
+    var empties = 0;
     try {
       for (final source in list) {
         try {
           var count = await rust.FdroidRustRepoManager.appCountIn(source);
           if (count == 0) {
-            count = await _ensureSourceLoaded(source);
+            final result = await _ensureSourceLoaded(source);
+            count = result.count;
+            if (!result.ok) {
+              // 加载失败：`_loadOneSource` 已设置 `_errorMessage` 并发布失败卡片。
+              failures++;
+              continue;
+            }
           }
           if (count > 0) {
             hasData = true;
           } else {
-            failures++;
+            // 加载成功但索引为 0：合法空仓库，**不是**故障。
+            empties++;
           }
         } catch (e) {
           failures++;
@@ -571,7 +713,11 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
           notifyListeners();
         }
       }
-      return _RepoReadiness(hasData: hasData, failures: failures);
+      return _RepoReadiness(
+        hasData: hasData,
+        failures: failures,
+        empties: empties,
+      );
     } finally {
       _finishLoading();
     }
@@ -603,7 +749,8 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
       // 正是"下载成功但搜索永远空、重启依旧"的根因。
       // 注：forceRefresh 不参与判定——搜索路径每次击键都会传 true，
       // 读路径统一以"空库才下载"为准，避免把重下挂在 forceRefresh 上。
-      final count = await _ensureSourceLoaded(source);
+      final result = await _ensureSourceLoaded(source);
+      final count = result.count;
       if (count == 0 && (_errorMessage?.isNotEmpty ?? false)) {
         throw Exception(_errorMessage);
       }
@@ -934,9 +1081,10 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
     notifyListeners();
 
     try {
-      // 单源失败在 `_loadOneSource` 内部隔离（返回 0），不会中断其它源
-      final counts = await Future.wait(targets.map(_ensureSourceLoaded));
-      final total = counts.fold<int>(0, (sum, c) => sum + c);
+      // 单源失败在 `_loadOneSource` 内部隔离（ok=false、count=0），不会中断其它源。
+      // 求和只取 count：与旧实现（失败返回 0）逐字节等价。
+      final results = await Future.wait(targets.map(_ensureSourceLoaded));
+      final total = results.fold<int>(0, (sum, r) => sum + r.count);
       _loadingProgress = 1.0;
       appLog.info('FdroidRepoManager: 多源加载完成，共 $total 个应用（${targets.length} 个源）');
       return total;
@@ -956,6 +1104,11 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
     final readiness = await _ensureDataFor(sorted);
     if (!readiness.hasData && readiness.failures > 0) {
       throw StateError(_errorMessage?.isNotEmpty == true ? _errorMessage! : 'F-Droid 仓库不可用');
+    }
+    if (!readiness.hasData && readiness.empties > 0) {
+      // 所有源都**加载成功**但索引为空：合法空仓库 → 返回空列表而非报错。
+      appLog.warning('FdroidRepoManager: 所有源加载成功但没有任何应用'
+          '（${readiness.empties} 个源索引为空）');
     }
     final merged = <String, Map<String, dynamic>>{};
     for (final source in sorted) {
@@ -1090,12 +1243,18 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
 /// 一次读路径的"源就绪"结果。
 ///
 /// - [hasData]：至少有一个源在补齐后拥有 > 0 个应用（可直接读）。
-/// - [failures]：补齐后仍为 0（或就绪检查抛错）的源数量。
+/// - [failures]：**加载失败**（ok=false，含异常/取消/超时）的源数量。
+/// - [empties]：加载**成功**但索引为 0 个应用的源数量（诊断用；不参与报错判定）。
 ///
 /// 调用方据此判定"全空且确有失败"才报错，避免把"合法空结果"误报为故障。
 class _RepoReadiness {
-  const _RepoReadiness({required this.hasData, required this.failures});
+  const _RepoReadiness({
+    required this.hasData,
+    required this.failures,
+    this.empties = 0,
+  });
 
   final bool hasData;
   final int failures;
+  final int empties;
 }

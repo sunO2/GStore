@@ -149,6 +149,25 @@ class FdroidRustRepoManager {
     return path.join(docsPath, 'fdroid_$hash.db');
   }
 
+  /// 旧库文件清理专用的库路径派生 —— 身份规则/库名派生的**唯一**公开出口。
+  ///
+  /// - 传 [identity]（当前 `id:` 槽，即 [storageIdentity]）：直接按身份派生；
+  /// - 否则由 [fingerprint]/[repoUrl] 经 [sourceIdentity] 派生（历史 `url:`/`fp:` 槽）。
+  ///
+  /// 内部**委托** [sourceIdentity] / [dbPathForIdentity]（同库调用，不触发
+  /// `invalid_use_of_visible_for_testing_member`）。历史清理的候选路径**严禁**
+  /// 在 `FdroidRepoManager` 等外部文件重复实现，否则身份规则一旦变化会静默漂移。
+  static String legacyDbPathFor({
+    String? identity,
+    String? fingerprint,
+    String? repoUrl,
+    required String docsPath,
+  }) =>
+      dbPathForIdentity(
+        identity ?? sourceIdentity(fingerprint: fingerprint, repoUrl: repoUrl ?? ''),
+        docsPath,
+      );
+
   /// 切换活动源（由 FdroidRepoManager 在选中源变化时调用）
   static void setActiveSource(FdroidSource? source) {
     // 即便身份键未变也刷新引用：`updateSource` 会换入新的源配置，
