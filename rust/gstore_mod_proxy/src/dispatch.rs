@@ -9,8 +9,9 @@
 //! into the VPN.
 //!
 //! Engine configuration (DNS nameservers, proxy list, rule set) arrives in
-//! Todos 8/9; until then the tunnel runs with an empty route table, which meow
-//! resolves to its built-in DIRECT adapter.
+//! Todos 8/9: DNS supplies the resolver, and [`crate::rules`] publishes the
+//! compiled Clash ruleset into the tunnel (an empty ruleset resolves to meow's
+//! built-in DIRECT adapter).
 
 use std::io;
 use std::net::SocketAddr;
@@ -46,6 +47,7 @@ pub(crate) fn build_engine(resolver: Arc<meow_dns::Resolver>) -> Arc<meow_tunnel
         &resolver,
     ))));
     let tunnel = meow_tunnel::Tunnel::new(resolver);
+    let tunnel = crate::rules::attach_tunnel(tunnel);
     tunnel.inner().clone()
 }
 
@@ -62,6 +64,7 @@ impl Dispatcher {
         let _ = self.tcp.await;
         self.udp.abort();
         let _ = self.udp.await;
+        crate::rules::detach_tunnel();
         meow_common::clear_host_resolver();
     }
 }
@@ -219,6 +222,7 @@ mod tests {
     #[test]
     fn engine_builds_with_direct_fallback() {
         let _g = SERIAL.lock().unwrap();
+        crate::rules::reset_for_tests();
         let resolver = Arc::new(meow_dns::Resolver::new(
             Vec::new(),
             Vec::new(),

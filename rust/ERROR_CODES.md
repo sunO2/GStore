@@ -49,6 +49,9 @@
 | `PROXY_DNS_CONFIG_INVALID` | proxy | 422 | DNS 配置非法（nameserver/DoH/DoT URL 解析失败、fake-ip range 非法、空 nameserver 列表）（Todo 8） |
 | `PROXY_DNS_BOOTSTRAP_FAILED` | proxy | 500 | DNS bootstrap/加密上游构建失败；`default-nameserver` 非明文时为 422（Todo 8） |
 | `PROXY_DNS_TIMEOUT` | proxy | 504 | DNS 查询无应答（上游不可达 / 无 fallback），已写入失败日志记录（Todo 8） |
+| `PROXY_RULE_INVALID` | proxy | 422 | 规则行解析失败（未知类型/缺列/非法 CIDR）或整个 Clash 配置/`rules.reload` 载荷不可解析；报告会点名具体 `line`，其余规则仍加载。仅整配置不可解析时作为顶层 422，单行失败在 `rules.get.errors[]` 内回报（Todo 9） |
+| `PROXY_RULE_PROVIDER_FAILED` | proxy | —（行内） | `rule-providers` 加载失败；该 provider 对应的 `RULE-SET` 规则保持空集（不匹配），`rules.get` 的 `providers[].code` 回报（Todo 9） |
+| `PROXY_GEO_UNAVAILABLE` | proxy | —（行内） | `GEOIP`/`GEOSITE`/`IP-ASN` 规则所需地理库未就绪（缺失/下载中/校验失败）；该行记入 `rules.get` 的 `errors[]`，其余规则仍加载（Todo 9） |
 
 ## 跨 ABI 错误透传
 

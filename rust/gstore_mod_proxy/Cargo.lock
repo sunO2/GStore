@@ -799,12 +799,15 @@ dependencies = [
 name = "gstore_mod_proxy"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "futures",
  "gstore_contract",
+ "hex",
  "hickory-proto",
  "ipnet",
  "libc",
  "libloading",
+ "maxminddb",
  "meow-api",
  "meow-common",
  "meow-config",
@@ -812,10 +815,14 @@ dependencies = [
  "meow-listener",
  "meow-lwip",
  "meow-proxy",
+ "meow-rules",
  "meow-trie",
  "meow-tunnel",
  "serde",
  "serde_json",
+ "serde_yaml",
+ "sha2 0.10.9",
+ "smol_str",
  "tokio",
 ]
 

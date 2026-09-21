@@ -24,6 +24,16 @@ meow-proxy = { git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f5874
 meow-dns = { git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587442caaac00b221efc91c84907aeb0e0", default-features = false }
 # DomainTrie is required to construct `meow_dns::Resolver` (its `hosts` arg).
 meow-trie = { git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587442caaac00b221efc91c84907aeb0e0" }
+# Todo 9: the Clash rule engine is meow's — we only parse + orchestrate. The
+# `meow-rules` crate supplies `parse_rule`/`RuleSet`/geo indexes; `serde_yaml`
+# deserialises the Clash config into meow-config's own `raw::RawConfig` schema;
+# `maxminddb` powers the GeoIP/ASN country index; `sha2`+`hex` verify geo
+# downloads against a sha256 manifest (the app's checksum convention).
+meow-rules = { git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587442caaac00b221efc91c84907aeb0e0" }
+serde_yaml = "0.9"
+maxminddb = { version = "0.27", features = ["mmap"] }
+sha2 = "0.10"
+hex = "0.4"
 # Todo 8: fake-IP pool prefixes (`Pool::new` takes an `ipnet::IpNet`) and
 # DNS wire-format decode for the query-log record (rcode/answers). Both are
 # already in the transitive graph (meow-dns depends on them); pinning them
@@ -52,6 +62,10 @@ futures = "0.3"
 # Host-side dlopen integration test (mirrors gstore_host's Linux dlopen tests):
 # loads target/<profile>/libgstore_mod_proxy.so as the host would.
 libloading = "0.8"
+# Rule-engine tests implement a named stub outbound (`meow_common::Proxy`,
+# whose dial methods are `#[async_trait]`) and key the route table with SmolStr.
+async-trait = "0.1"
+smol_str = "0.3"
 
 # Module crate convention (rust/ARCHITECTURE.md §3.5/§3.6): panic must unwind
 # so every extern "C" boundary can catch_unwind.

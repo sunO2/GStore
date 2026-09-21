@@ -36,6 +36,7 @@ use gstore_contract::error::{ModuleError, StatusCode};
 mod dispatch;
 mod dns;
 mod protect;
+mod rules;
 mod tun;
 
 /// Required spike export: proves the crate loads as `libgstore_mod_proxy.so`.
@@ -782,6 +783,29 @@ fn dns_clear_cache_arm(
     ok_data(serde_json::json!({ "ok": true, "flushed": flushed }))
 }
 
+/// `rules.get`: read-only ordered snapshot of the parsed rules, provider status
+/// and geo-asset status (Todo 9).
+fn rules_get_arm(
+    instance_id: u64,
+    instance: Option<Arc<ProxyInstance>>,
+) -> Result<Vec<u8>, ModuleError> {
+    let _inst = require_instance(instance_id, instance)?;
+    ok_data(rules::snapshot())
+}
+
+/// `rules.reload`: parse a Clash config (`{config}` YAML string or
+/// `{configPath}`), (re)load rule-providers and publish the compiled ruleset
+/// into the tunnel. Never blocks on geo/provider downloads (Todo 9).
+fn rules_reload_arm(
+    instance_id: u64,
+    instance: Option<Arc<ProxyInstance>>,
+    payload: &[u8],
+) -> Result<Vec<u8>, ModuleError> {
+    let inst = require_instance(instance_id, instance)?;
+    let snapshot = rules::reload(&inst.data_dir, &inst.cache_dir, payload)?;
+    ok_data(snapshot)
+}
+
 fn create_impl(config: *const u8, config_len: usize) -> Result<u64, c_int> {
     let ctx = ModuleContext::parse(payload_bytes(config, config_len));
     log_message(
@@ -873,6 +897,8 @@ fn call_impl(
         "dns.clear_cache" | "dns.flush_cache" => {
             dns_clear_cache_arm(instance_id, instance.clone())
         }
+        "rules.get" => rules_get_arm(instance_id, instance.clone()),
+        "rules.reload" => rules_reload_arm(instance_id, instance.clone(), _payload),
         other => Err(ModuleError::method_not_found(other)),
     };
 
@@ -1381,6 +1407,61 @@ mod abi_tests {
         assert_eq!(err["code"], "PROXY_DNS_CONFIG_INVALID");
         assert_eq!(err["status"], 422);
 
+        assert_eq!(destroy(inst), ABI_OK);
+    }
+
+    /// `rules.reload` → `rules.get` over the real C ABI with an inline fixture
+    /// config (no providers on disk, no network), plus a malformed line that
+    /// must come back as a structured `PROXY_RULE_INVALID`.
+    #[test]
+    fn abi_rules_reload_and_get() {
+        let _g = ABI_LOCK.lock().unwrap();
+        let api = register_api();
+        let create = api.create.unwrap();
+        let call = api.call.unwrap();
+        let destroy = api.destroy.unwrap();
+
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("gstore-rules-abi-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = serde_json::json!({
+            "data_dir": dir.display().to_string(),
+            "cache_dir": dir.display().to_string(),
+        });
+        let config = serde_json::to_vec(&config).unwrap();
+
+        let mut inst: u64 = 0;
+        assert_eq!(
+            create(config.as_ptr(), config.len(), &mut inst),
+            ABI_OK,
+            "create with a data dir"
+        );
+
+        let yaml = "proxy-groups:\n  - name: G1\n    type: select\n    proxies: [DIRECT]\n\
+                    rules:\n  - DOMAIN-SUFFIX,abi.example,G1\n  - BROKEN,x,DIRECT\n\
+                    \x20 - MATCH,DIRECT\n";
+        let payload = serde_json::to_vec(&serde_json::json!({ "config": yaml })).unwrap();
+        let (code, out) = call_with_payload(call, inst, "rules.reload", &payload);
+        assert_eq!(code, ABI_OK, "rules.reload: {}", String::from_utf8_lossy(&out));
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["data"]["rules"].as_array().unwrap().len(), 2);
+        assert_eq!(v["data"]["rules"][0]["type"], "DOMAIN-SUFFIX");
+        assert_eq!(v["data"]["rules"][0]["target"], "G1");
+        assert_eq!(v["data"]["errors"][0]["code"], "PROXY_RULE_INVALID");
+        assert_eq!(v["data"]["errors"][0]["line"], "BROKEN,x,DIRECT");
+
+        let (code, out) = call_json(call, inst, "rules.get");
+        assert_eq!(code, ABI_OK, "rules.get: {}", String::from_utf8_lossy(&out));
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["count"], 2);
+        assert_eq!(v["data"]["final"], "DIRECT");
+        assert_eq!(v["data"]["groups"][0], "G1");
+
+        let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(destroy(inst), ABI_OK);
     }
 }

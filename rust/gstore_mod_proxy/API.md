@@ -244,14 +244,83 @@ IP literals only) used to resolve the encrypted upstreams' own hostnames.
   "startedAtMs": 0 }
 ```
 
-### 2.11 `rules.*` — rule set
+### 2.11 `rules.*` — rule set (Todo 9)
 
 | method | request | data |
 |---|---|---|
-| `rules.get` | *(none)* | `{ "rules": [Rule], "final": "PROXY" }` |
-| `rules.set` | `{ "rules": [Rule], "final"?: string }` | `{ "ok": true, "count": 0 }` |
+| `rules.get` | *(none)* | `RulesSnapshot` |
+| `rules.reload` | `{ "config"?: string, "configPath"?: string, "geo"?: GeoRequest }` | `RulesSnapshot` |
 
-`Rule`: `{ "type": "DOMAIN-SUFFIX"|"DOMAIN"|"IP-CIDR"|"GEOIP"|"MATCH", "value": "x", "target": "DIRECT"|"REJECT"|<group> }`
+`rules.reload` parses a Clash config (inline `config` YAML string, or
+`configPath` read from disk), loads `rule-providers`, resolves geo assets and
+publishes the compiled rule set into the running tunnel. It **never blocks on a
+geo download or an `http` rule-provider**: those resolve on a background thread
+and the snapshot reports their status. Exactly one of `config`/`configPath` is
+required; neither ⇒ `PROXY_RULE_INVALID` (422). `rules.get` is read-only.
+
+`RulesSnapshot`:
+```json
+{
+  "rules": [
+    { "index": 0, "lineNumber": 1, "line": "DOMAIN-SUFFIX,example.com,PROXY",
+      "type": "DOMAIN-SUFFIX", "value": "example.com", "target": "PROXY",
+      "source": "config" }
+  ],
+  "final": "DIRECT", "count": 1, "revision": 1,
+  "groups": ["PROXY"],
+  "providers": [
+    { "name": "cn-domains", "type": "inline", "behavior": "domain",
+      "url": "", "status": "loaded", "count": 120, "updatedAtMs": 0 }
+  ],
+  "geo": {
+    "status": "ready",
+    "assets": [
+      { "kind": "geoip", "file": "country.mmdb", "path": "/.../geo/country.mmdb",
+        "status": "ready", "verified": true, "sha256": "abc…" }
+    ]
+  },
+  "errors": [
+    { "lineNumber": 4, "line": "BOGUS-TYPE,x,DIRECT",
+      "code": "PROXY_RULE_INVALID", "message": "unknown rule type: BOGUS-TYPE" }
+  ],
+  "warnings": []
+}
+```
+
+* `rules[]` is the successfully parsed rules **in declaration order**;
+  `index` is the position in this list and `lineNumber` the 1-based position in
+  the source `rules:` block. `type` is meow's `RuleType` (`DOMAIN`,
+  `DOMAIN-SUFFIX`, `DOMAIN-KEYWORD`, `IP-CIDR`, `GEOIP`, `GEOSITE`,
+  `PROCESS-NAME`, `DST-PORT`, `RULE-SET`, `MATCH`, …); `value` is the rule
+  payload; `target` is the outbound/group name.
+* `final` is the target of the last `MATCH` rule (else `"DIRECT"`).
+* `providers[].status` ∈ `pending|loading|loaded|failed`; `count` is the loaded
+  entry count. `http` providers start `loading` and settle to `loaded`/`failed`
+  in the background (a `RULE-SET` rule referencing one exists immediately and
+  starts matching as soon as its set lands).
+* `geo.status` ∈ `idle|missing|downloading|ready|failed`; each asset's
+  `status` ∈ `missing|downloading|ready|unverified|failed|checksum_mismatch|checksum_required`.
+* `errors[].code` is `PROXY_RULE_INVALID` (malformed/unknown rule line) or
+  `PROXY_GEO_UNAVAILABLE` (a `GEOIP`/`GEOSITE`/`IP-ASN` line whose database is
+  not loaded). A malformed line is reported here **and the rest of the config
+  still loads** — it never fails the whole call.
+
+`GeoRequest`:
+```json
+{
+  "download": true,
+  "bundleDir": "/path/to/bundled/geo",
+  "urls": { "country.mmdb": "https://…/country.mmdb" },
+  "assets": {
+    "country.mmdb": { "url": "https://…/country.mmdb", "sha256": "<hex>" }
+  }
+}
+```
+Assets live under `<data_dir>/geo/`. A `bundleDir` is checked first; an existing
+file is used only after its sha256 matches the manifest (a file with no manifest
+hash is loaded as `unverified`). A download is refused with `checksum_required`
+unless a sha256 is supplied — the module never installs unverified geo data.
+
 
 ### 2.12 `lan.*` — optional LAN listening (default OFF)
 
@@ -570,3 +639,90 @@ trusted without patching/forking meow, which this task forbids. The test proves
 the `https://` URL is parsed, routed through the DoH transport and our protected
 socket factory, and fails closed (structured `PROXY_DNS_TIMEOUT`, no hang);
 end-to-end DoH resolution is covered by meow's network-gated integration tests.
+
+## 10. Rule engine and routing (Todo 9)
+
+### 10.1 meow owns matching; we own the Clash policy
+
+The module does **not** implement a rule engine. Every non-`RULE-SET` line is
+compiled by `meow_config::rule_parser::parse_one_rule_or_subrule` (which
+delegates to `meow_rules::parse_rule`), `RULE-SET` entries are
+`meow_rules::RuleSetRule` values over a `meow_rules::RuleSet`, and the compiled
+`Vec<Box<dyn Rule>>` is published with `meow_tunnel::Tunnel::update_rules`.
+Rule matching, the domain trie/IR (`meow-trie`, `rule_ir`) and `MATCH`
+fall-through are entirely meow's.
+
+Supported rule types are therefore meow's full set: `DOMAIN`,
+`DOMAIN-SUFFIX`, `DOMAIN-KEYWORD`, `IP-CIDR`/`IP-CIDR6`, `GEOIP`/`SRC-GEOIP`,
+`GEOSITE`, `PROCESS-NAME`/`PROCESS-PATH`, `DST-PORT`/`SRC-PORT`, `IN-*`,
+`NETWORK`, `RULE-SET`, logic (`AND`/`OR`/`NOT`) and `MATCH`.
+
+### 10.2 Where rules enter the tunnel
+
+`dispatch::build_engine` calls `rules::attach_tunnel` after `Tunnel::new`, so the
+engine is built with whatever rule set is current (empty until the first
+`rules.reload`, which resolves to DIRECT exactly as before). `rules.reload`
+recompiles and `update_rules`s the live tunnel; `Dispatcher::shutdown` calls
+`rules::detach_tunnel`. `proxy-groups:` are parsed and exposed as
+`RulesSnapshot.groups`; a rule whose target is not yet a built route-table entry
+is skipped by meow's `target_usable` (mihomo `continue` semantics), so groups and
+nodes can be populated later (Todos 10/13) without reimporting the rules.
+
+### 10.3 Lazy rule-providers
+
+`inline` and `file` providers load synchronously on `rules.reload` (fast, local);
+`http` providers are loaded on a background thread. Every provider is a
+`ProviderSlot` — a live `RuleSet` whose inner set is swapped when the provider
+finishes, so a `RULE-SET` rule created at reload time starts matching the moment
+its payload lands, with no re-parse. `RulesSnapshot.providers` reports
+`pending|loading|loaded|failed` plus entry count/error. Behaviors `domain`,
+`ipcidr` and `classical` are delegated to meow's `build_rule_set`.
+
+### 10.4 Geo assets: lazy, checksum-verified, never blocking
+
+Required assets are derived by scanning the config for `GEOIP`/`SRC-GEOIP`
+(→ `country.mmdb`), `IP-ASN`/`SRC-IP-ASN` (→ `GeoLite2-ASN.mmdb`) and `GEOSITE`
+(→ `geosite.dat`). Files live under `<data_dir>/geo/`.
+
+* An existing/bundled file is used only after its sha256 matches the manifest
+  (`geo.assets[file].sha256`); a mismatch yields `checksum_mismatch` and the
+  asset is not loaded.
+* A missing asset with a sha256 is downloaded on a background thread via
+  **meow's protect-aware transport** (`meow_config::internal_http::fetch`, which
+  dials through `connect_tcp_host` and therefore the host `SocketProtector`),
+  verified against the sha256, and atomically renamed into place. A download
+  without a manifest sha256 is refused (`checksum_required`) — unverified geo
+  data is never installed. This mirrors the app's sha256 manifest convention
+  (`lib/core/rust/ModuleDownloader.dart`, `generate_modules_manifest.sh`).
+* `rules.reload` returns immediately with `geo.status = downloading|missing`; the
+  compiled rule set is re-published once an asset lands, at which point
+  `GEOIP`/`GEOSITE` rules become active. A `GEOIP`/`GEOSITE` line whose DB is not
+  yet available is reported as `PROXY_GEO_UNAVAILABLE` while the rest loads.
+
+`CountryIndex`/`AsnIndex`/`GeositeDB` are meow's; the module only builds them from
+the verified file.
+
+### 10.5 Malformed rule lines
+
+A line that fails to parse is recorded in `RulesSnapshot.errors` with
+`code = PROXY_RULE_INVALID`, its 1-based `lineNumber` and the raw `line` text;
+every other line still compiles and is published. An unreadable/unparseable
+whole config (bad JSON payload, unreadable `configPath`, invalid YAML) returns a
+top-level `PROXY_RULE_INVALID` (422).
+
+### 10.6 Verification status
+
+`cargo test -p gstore_mod_proxy` proves: the fixture rules parse in declaration
+order and `rules.get` returns them; each of domain / domain-suffix /
+domain-keyword / ip-cidr / dst-port / process-name / rule-set / match matches the
+expected metadata; a `DOMAIN-SUFFIX` fixture rule routes the fixture domain to
+the named outbound through `Tunnel::resolve_proxy`; inline (domain, ipcidr) and
+file (classical) providers load and match; malformed lines are rejected with
+`PROXY_RULE_INVALID` naming the line while the rest loads; geo checksum
+verification (known sha256 vector, mismatch rejection, download+install under a
+local HTTP stub) and the non-blocking `missing`/`checksum_required` statuses; plus
+`rules.reload`/`rules.get` over the C ABI.
+
+**UNVERIFIED**: real GeoIP/ASN MMDB and geosite `.dat`/`.mrs` matching (no DB
+fixtures are shipped in-tree; the indexes are meow's own, exercised by meow's
+tests), real geo CDN downloads, and all on-device routing (no adb device).
