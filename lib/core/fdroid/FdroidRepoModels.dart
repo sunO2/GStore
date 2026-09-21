@@ -149,6 +149,7 @@ class FdroidSource {
 
   /// 复制并覆盖部分字段（镜像配置保存等场景）
   FdroidSource copyWith({
+    String? id,
     String? name,
     String? repoUrl,
     bool? enabled,
@@ -158,7 +159,7 @@ class FdroidSource {
     bool? useMirrors,
   }) {
     return FdroidSource(
-      id: id,
+      id: id ?? this.id,
       name: name ?? this.name,
       repoUrl: repoUrl ?? this.repoUrl,
       enabled: enabled ?? this.enabled,

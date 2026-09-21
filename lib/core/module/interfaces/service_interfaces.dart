@@ -207,7 +207,10 @@ abstract class IFdroidRepoService {
   /// 当前选中源（**仅用于显示/默认**，不得用于数据定位）
   FdroidSource? get currentSource;
 
-  /// 仓库身份键（指纹优先，其次归一化地址）——渠道把源标识写入自有记录时使用
+  /// 源**存储身份键**（= 源 id，稳定不变）——渠道把源标识写入自有记录时使用。
+  ///
+  /// 不再指纹优先：指纹下载后才学到，作槽位键会导致首次加载中途翻槽。读取侧兼容
+  /// 历史 `fp:`/`url:` 标识（见 `FdroidRustRepoManager.identityMatches`）。
   String identityKeyFor(FdroidSource source);
 
   /// 某源**实际生效**的资源基址（模块 `resolved_url`：镜像回退后真正下载成功的地址）。

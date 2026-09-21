@@ -651,16 +651,12 @@ class FdroidRepoNotifier extends Notifier<FdroidRepoState> {
     state = state.copyWith(searchResults: filtered);
   }
 
-  /// 应用所属的源（记录里的标识可能是 id / 指纹 / 仓库身份键，三者都认）
+  /// 应用所属的源（记录里的标识可能是 id / 指纹 / 旧逻辑身份键，三者都认）
   FdroidSource? _sourceOf(FdroidApp app) {
     final id = app.sourceId;
     if (id != null && id.isNotEmpty) {
       for (final s in state.sources) {
-        if (s.id == id ||
-            s.fingerprint == id ||
-            FdroidRustRepoManager.sourceIdentity(
-                    fingerprint: s.fingerprint, repoUrl: s.repoUrl) ==
-                id) {
+        if (FdroidRustRepoManager.identityMatches(s, id)) {
           return s;
         }
       }
@@ -694,11 +690,7 @@ class FdroidRepoNotifier extends Notifier<FdroidRepoState> {
     if (service == null) return;
     for (final id in sourceIds.whereType<String>().where((e) => e.isNotEmpty).toSet()) {
       for (final s in state.sources) {
-        if (s.id == id ||
-            s.fingerprint == id ||
-            FdroidRustRepoManager.sourceIdentity(
-                    fingerprint: s.fingerprint, repoUrl: s.repoUrl) ==
-                id) {
+        if (FdroidRustRepoManager.identityMatches(s, id)) {
           await service.ensureBaseFor(s);
           break;
         }

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
@@ -6,6 +7,7 @@ import 'package:gstore/core/config/config_service.dart';
 import 'package:gstore/core/fdroid/FdroidRepoModels.dart';
 import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
+import 'package:gstore/core/progress/task_progress.dart';
 import 'package:gstore/core/rust/FdroidRustRepoManager.dart' as rust;
 import 'package:gstore/core/rust/RustTask.dart';
 import 'package:path/path.dart' as path;
@@ -36,12 +38,13 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
 
   /// 已配置的源列表
   /// 仓库身份键（委托 Rust 管理器的唯一实现，避免规则漂移）
+  ///
+  /// **存储身份 = 源 id**（[rust.FdroidRustRepoManager.storageIdentity]）：指纹是
+  /// 下载后才学到的，不能参与库槽位/单飞键的判定，否则首次加载会中途翻槽
+  /// （首跑两遍下载、列表空到下拉刷新）。
   @override
   String identityKeyFor(FdroidSource source) =>
-      rust.FdroidRustRepoManager.sourceIdentity(
-        fingerprint: source.fingerprint,
-        repoUrl: source.repoUrl,
-      );
+      rust.FdroidRustRepoManager.storageIdentity(source);
 
   List<FdroidSource> get sources => _sources;
 
@@ -59,6 +62,82 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
 
   /// 最后的错误信息
   String? get errorMessage => _errorMessage;
+
+  /// 进行中的加载次数（可并发：搜索补齐 + 页面手动同步可能同时发生）。
+  int _loadingCount = 0;
+
+  /// 全局同步进度卡片的稳定标识。
+  ///
+  /// 整个同步只发**一张**卡片：本类的 [_loadingProgress] 是**全局**值，并不存在
+  /// 逐源进度状态，因此逐源卡片在本类内无法实现（需要更大的改造）。用固定的
+  /// `id` + `groupKey`，多源并发时 Hub 按 `id` 覆盖为同一张卡片，不会卡片风暴。
+  static const String _syncTaskId = 'fdroid-sync';
+  static const String _syncCardKey = 'module:repo';
+  static const String _syncLabel = 'F-Droid 仓库';
+
+  /// 当前同步周期对应的全局进度票据（无进行中周期时为 null）。
+  ///
+  /// 这是给顶部横幅的**附加通道**：不替代 [_loadingProgress]（F-Droid 页面仍照旧
+  /// 消费它）。票据可能因「解析入库」阶段的不确定进度而经一次同 id `begin` 取代，
+  /// 故始终保存**最新**票据，结算时以它为准。
+  TaskTicket? _syncTicket;
+
+  /// 本周期首个加载失败（成功则保持 null）——由 [_finishLoading] 决定终态是
+  /// `failed` 还是 `ready`，避免失败后仍被标记为就绪。
+  Object? _syncFailure;
+
+  /// 进入一次加载：驱动 UI 的 loading 状态。
+  ///
+  /// 计数 0 → 1 时开启全局同步进度卡片；后续并发进入（1 → 2…）复用同一票据，
+  /// 保证多源并发只有**一张**卡片。
+  void _beginLoading() {
+    _loadingCount++;
+    _isLoading = true;
+    if (_loadingCount == 1) {
+      _syncFailure = null;
+      _syncTicket = TaskProgressHub.instance.begin(
+        id: _syncTaskId,
+        groupKey: _syncCardKey,
+        label: _syncLabel,
+        stage: '正在连接',
+      );
+    }
+    notifyListeners();
+  }
+
+  /// 结束一次加载；**最后一个**结束者才把 loading 置回并令进度到 1。
+  ///
+  /// WHY：用计数而非布尔值，避免"搜索触发的补齐"与"页面手动同步"互相覆盖，
+  /// 导致进度条/按钮状态提前熄灭或永久卡住。
+  ///
+  /// 计数归零即结算全局同步卡片：本周期有失败 → `failed`；否则 → `ready`。
+  void _finishLoading() {
+    if (_loadingCount > 0) _loadingCount--;
+    if (_loadingCount == 0) {
+      _isLoading = false;
+      _loadingProgress = 1.0;
+      final ticket = _syncTicket;
+      final failure = _syncFailure;
+      _syncTicket = null;
+      _syncFailure = null;
+      if (ticket != null) {
+        if (failure != null) {
+          ticket.fail(failure);
+        } else {
+          ticket.ready();
+        }
+      }
+      notifyListeners();
+    }
+  }
+
+  /// 记录一次同步失败，并立即把聚合卡片置为 `failed`（终态停留期由 Hub 管理）。
+  ///
+  /// 保留原有失败记账（`_errorMessage` 等）不变，这里只是**追加**进度通道。
+  void _failSyncTask(Object error) {
+    _syncFailure = error;
+    _syncTicket?.fail(error);
+  }
 
   /// 源身份键 → 该源**最近一次同步**的真实结果。
   ///
@@ -158,19 +237,21 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
         final lastSource = _firstWhereOrNull(_sources, (s) => s.id == lastSourceId);
         if (lastSource != null) {
           _currentSource = lastSource;
-          rust.FdroidRustRepoManager.setActiveSource(lastSource);
           notifyListeners();
           appLog.info('FdroidRepoManager: 恢复上次选中的源: $lastSource');
         } else {
           _currentSource = enabledSource;
-        rust.FdroidRustRepoManager.setActiveSource(enabledSource);
-          rust.FdroidRustRepoManager.setActiveSource(enabledSource);
           notifyListeners();
         }
       } else {
         _currentSource = enabledSource;
         notifyListeners();
       }
+      // **始终**把当前源同步给 Rust 侧。旧实现在"无 lastSourceId"分支漏调，
+      // 导致 `_activeSource` 为空、后续 `_ensureInstance` 落到幽灵键 `url:default`
+      // ——下载写 A 库、搜索读 B 库，正是"加载成功却搜不到且重启依旧"的根因。
+      // 此处只切身份，**不触发任何下载**（启动路径禁止下载）。
+      rust.FdroidRustRepoManager.setActiveSource(_currentSource);
 
       appLog.info('FdroidRepoManager: 初始化完成，当前源: $currentSource');
     } catch (e) {
@@ -219,6 +300,9 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
         _sources
           ..clear()
           ..addAll(loadedSources);
+        // id 唯一是「id 作为存储槽位键」的前置不变量：历史配置可能有两个
+        // `official`，必须改派重复项，否则两个源会共用一个库。
+        if (_dedupeSourceIds()) await _saveSources();
         notifyListeners();
         appLog.info('FdroidRepoManager: 已加载 ${sources.length} 个保存的源');
       } else {
@@ -267,6 +351,32 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
     }
   }
 
+  /// 保证 `id` 唯一：重复的 id 改派为 `custom_<ts>_<n>`（返回是否有改动）。
+  ///
+  /// 这是「id 作为存储槽位键」的前置不变量守卫：默认官方源的 id 固定为
+  /// `official`，历史配置里可能出现重复（例如误导入两次），若不改派两个源会
+  /// 共用同一个库文件。
+  bool _dedupeSourceIds() {
+    final seen = <String>{};
+    var changed = false;
+    final ts = DateTime.now().millisecondsSinceEpoch;
+    for (var i = 0; i < _sources.length; i++) {
+      final id = _sources[i].id;
+      if (seen.add(id)) continue;
+      var n = 1;
+      var candidate = 'custom_${ts}_$n';
+      while (seen.contains(candidate)) {
+        n++;
+        candidate = 'custom_${ts}_$n';
+      }
+      _sources[i] = _sources[i].copyWith(id: candidate);
+      seen.add(candidate);
+      changed = true;
+      appLog.warning('FdroidRepoManager: 源 id 重复「$id」→ 已改派为「$candidate」');
+    }
+    return changed;
+  }
+
   /// 切换源
   Future<void> switchSource(String sourceId) async {
     final source = _firstWhereOrNull(_sources, (s) => s.id == sourceId);
@@ -306,15 +416,170 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
     return _currentSource;
   }
 
+  /// 身份键 → 进行中的"加载该源"Future（单飞：并发/重复触发共享同一个下载）。
+  ///
+  /// key 用 [identityKeyFor]（存储身份 = 源 id，**与指纹发现无关**），与
+  /// [rust.FdroidRustRepoManager.searchAppsIn]/[rust.FdroidRustRepoManager.appCountIn]
+  /// 读取时的身份键**完全一致**，避免"下载写 A 库、搜索读 B 库"。
+  final Map<String, Future<int>> _loadInFlight = {};
+
+  /// 单飞加载一个源：同一身份键的并发请求**等待同一个 Future**（不是早退丢弃）。
+  ///
+  /// WHY：旧实现在 `_isLoading` 时直接 `return`，第二个调用者拿到"空成功"，
+  /// 而写入的库又是幽灵键 `url:default` → 搜索永远空。这里等待完成、
+  /// 完成的 Future 从 map 移除以便下次重新触发（如清库后）。
+  Future<int> _ensureSourceLoaded(FdroidSource s) {
+    final k = identityKeyFor(s);
+    return _loadInFlight.putIfAbsent(
+        k, () => _loadOneSource(s).whenComplete(() {
+              // 必须丢弃 `Map.remove` 的返回值：它正是本 whenComplete 的 future，
+              // 返回它会让 whenComplete 等待自身 → 永久挂起（所有空库读路径卡死）。
+              _loadInFlight.remove(k);
+            }));
+  }
+
+  /// 下载/解析**一个源**到它自己的库，返回该源当前应用数（失败返回 0）。
+  ///
+  /// WHY：所有读路径（搜索/详情/全量）需要的"空库→下载"都走这里，
+  /// 且必须用 `downloadRepositoryTaskFor(source)`（带源身份）——只有这样
+  /// 写入的库才与后续 `searchAppsIn(source)` 读取的库是同一个。
+  Future<int> _loadOneSource(FdroidSource source) async {
+    try {
+      appLog.info('FdroidRepoManager: 加载源 - ${source.name}');
+      final task = await rust.FdroidRustRepoManager.downloadRepositoryTaskFor(source);
+      final sub = task.progress.listen((p) {
+        final json = p.json;
+        final phase = json?['phase'] as String?;
+        final pct = (json?['percent'] as num?)?.toInt() ?? 0;
+        final double next;
+        if (phase == 'index') {
+          // 索引下载是耗时主体：用真实字节百分比在 0.3→0.9 之间推进
+          next = (0.3 + 0.6 * pct / 100).clamp(0.0, 1.0);
+        } else {
+          next = switch (phase) {
+            'downloading' => 0.3,
+            'stored' => 0.9,
+            _ => _loadingProgress,
+          };
+        }
+        if (next != _loadingProgress) {
+          _loadingProgress = next;
+          notifyListeners();
+        }
+        // 附加通道：把真实事件阶段映射到全局进度卡片（不替代上面的页面进度）。
+        switch (phase) {
+          case 'downloading':
+            // 事件载荷只有 phase、无字节信息 → 只能给不确定进度。
+            _syncTicket?.update(stage: '同步中');
+          case 'index':
+            _syncTicket?.update(stage: '下载索引 $pct%', progress: next);
+          case 'stored':
+            _syncTicket?.update(stage: '索引已下载', progress: next);
+            // Rust 侧**不**为随后的解析/入库工作发任何事件（`stored` 已由模块在
+            // call 返回前发出），且 Hub 的 update 是「非空覆盖」语义（无法把
+            // progress 显式清回 null）。因此这里用一次**同 id / 同 groupKey** 的
+            // begin 取代为不确定进度：既是同一张卡片，又能让用户在「解析入库」
+            // 阶段看到活动条，而不是停在 90% 的假死进度。
+            _syncTicket = TaskProgressHub.instance.begin(
+              id: _syncTaskId,
+              groupKey: _syncCardKey,
+              label: _syncLabel,
+              stage: '解析入库…',
+            );
+          default:
+            break; // 未知阶段：页面进度已在上面按 `_ => _loadingProgress` 保持不变。
+        }
+      });
+      RustTaskResult result;
+      try {
+        // 3 分钟兜底：completion 正常在流关闭时解析，这里只防"流悬挂"
+        result = await task.completion.timeout(const Duration(minutes: 3));
+      } on TimeoutException {
+        await task.cancel();
+        rethrow;
+      } finally {
+        await sub.cancel();
+      }
+      if (result.outcome == RustTaskOutcome.error) {
+        _errorMessage = '「${source.name}」加载失败: ${result.error}';
+        appLog.error('FdroidRepoManager: 「${source.name}」加载失败 - ${result.error}');
+        _failSyncTask(StateError(_errorMessage!));
+        notifyListeners();
+        return 0;
+      }
+      if (result.outcome == RustTaskOutcome.cancelled) {
+        _errorMessage = '「${source.name}」加载已取消';
+        _failSyncTask(StateError(_errorMessage!));
+        notifyListeners();
+        return 0;
+      }
+      // 用签名里提取的真实指纹做事后校验：自动回填 + 同源判定（保留原语义）
+      await _syncSignerFingerprint(source, result.payload);
+      final count = await rust.FdroidRustRepoManager.appCountIn(source);
+      // 解析/入库完成 → 就绪；终态 ready 由 _finishLoading 统一发布。
+      _syncTicket?.update(stage: '已就绪', progress: 1.0);
+      appLog.info('FdroidRepoManager: 「${source.name}」加载完成，共 $count 个应用');
+      return count;
+    } on TimeoutException catch (e) {
+      _errorMessage = '「${source.name}」加载超时: $e';
+      appLog.error('FdroidRepoManager: 「${source.name}」加载超时 - $e');
+      _failSyncTask(e);
+      notifyListeners();
+      return 0;
+    } catch (e) {
+      _errorMessage = '「${source.name}」加载失败: $e';
+      appLog.error('FdroidRepoManager: 「${source.name}」加载失败 - $e');
+      _failSyncTask(e);
+      notifyListeners();
+      return 0;
+    }
+  }
+
+  /// 读路径前置：**逐源**判断是否需要下载（仅空库才下载），返回就绪概况。
+  ///
+  /// WHY：旧读路径没有这一步（或走错身份键），干净安装后库永远为空 → 搜索恒空。
+  /// 以每个源各自的 `appCountIn` 为准：已就绪的源不重复下载，空源也不会
+  /// 掩盖另一个已就绪的源（多源并存）。
+  Future<_RepoReadiness> _ensureDataFor(Iterable<FdroidSource> targets) async {
+    final list = targets.toList(growable: false);
+    if (list.isEmpty) {
+      return const _RepoReadiness(hasData: false, failures: 0);
+    }
+    _errorMessage = '';
+    _beginLoading();
+    _loadingProgress = 0.0;
+    notifyListeners();
+    var hasData = false;
+    var failures = 0;
+    try {
+      for (final source in list) {
+        try {
+          var count = await rust.FdroidRustRepoManager.appCountIn(source);
+          if (count == 0) {
+            count = await _ensureSourceLoaded(source);
+          }
+          if (count > 0) {
+            hasData = true;
+          } else {
+            failures++;
+          }
+        } catch (e) {
+          failures++;
+          appLog.error('FdroidRepoManager: 源「${source.name}」就绪失败 - $e');
+          _errorMessage = '源「${source.name}」不可用: $e';
+          _failSyncTask(e);
+          notifyListeners();
+        }
+      }
+      return _RepoReadiness(hasData: hasData, failures: failures);
+    } finally {
+      _finishLoading();
+    }
+  }
+
   /// 加载仓库数据
   Future<void> loadRepository({bool forceRefresh = false}) async {
     debugPrint('FdroidRepoManager: loadRepository 被调用');
-
-    // 防止重复加载
-    if (_isLoading) {
-      debugPrint('FdroidRepoManager: 已在加载中，跳过重复请求');
-      return;
-    }
 
     final source = _currentSource;
     if (source == null) {
@@ -326,129 +591,38 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
 
     appLog.info('FdroidRepoManager: 开始加载源: ${source.name} (${source.repoUrl})');
 
-    _isLoading = true;
-    notifyListeners();
     _errorMessage = '';
+    _beginLoading();
     _loadingProgress = 0.0;
     notifyListeners();
 
     try {
-      debugPrint('FdroidRepoManager: 使用 Rust 后端下载（Task 模式）...');
-      // Task 模式：宿主自有线程执行，阶段进度真实上报（不再硬编码 0.5）
-      // 该源**已启用**的镜像：useMirrors 关闭时不传（等价于不用镜像）；
-      // 开启时优先走镜像（国内网络避免先卡在官方站超时）
-      final enabledMirrors = [
-        for (final m in source.mirrors)
-          if (m.enabled) m.url,
-      ];
-      final task = await rust.FdroidRustRepoManager.downloadRepositoryTask(
-        repoUrl: source.repoUrl,
-        mirrors: source.useMirrors ? enabledMirrors : const [],
-        mirrorFirst: source.useMirrors && enabledMirrors.isNotEmpty,
-      );
-      final sub = task.progress.listen((p) {
-        final phase = p.json?['phase'] as String?;
-        final next = switch (phase) {
-          'downloading' => 0.3,
-          'stored' => 0.9,
-          _ => _loadingProgress,
-        };
-        if (next != _loadingProgress) {
-          _loadingProgress = next;
-          notifyListeners();
-        }
-      });
-      final result = await task.completion;
-      await sub.cancel();
-      if (result.outcome == RustTaskOutcome.error) {
-        throw Exception('仓库下载失败: ${result.error}');
+      debugPrint('FdroidRepoManager: 使用 Rust 后端下载（身份键单飞）...');
+      // 并发控制交给身份键单飞（_loadInFlight）：重复请求**等待同一个 Future**
+      // 而不是 `_isLoading → return`。旧早退还写幽灵键 `url:default`，
+      // 正是"下载成功但搜索永远空、重启依旧"的根因。
+      // 注：forceRefresh 不参与判定——搜索路径每次击键都会传 true，
+      // 读路径统一以"空库才下载"为准，避免把重下挂在 forceRefresh 上。
+      final count = await _ensureSourceLoaded(source);
+      if (count == 0 && (_errorMessage?.isNotEmpty ?? false)) {
+        throw Exception(_errorMessage);
       }
-      if (result.outcome == RustTaskOutcome.cancelled) {
-        throw Exception('仓库下载已取消');
-      }
-
       _loadingProgress = 1.0;
       notifyListeners();
-      appLog.info('FdroidRepoManager: Rust 后端下载完成');
-      // 记录本次同步摘要（增量/全量、实际地址、应用数）——供界面如实展示
-      _logDownloadSummary(source, result.payload);
-      appLog.info('FdroidRepoManager: 仓库加载完成');
+      appLog.info('FdroidRepoManager: 仓库加载完成（$count 个应用）');
     } catch (e) {
       appLog.error('FdroidRepoManager: 加载仓库失败 - $e');
       _errorMessage = '加载失败: $e';
       notifyListeners();
       rethrow;
     } finally {
-      _isLoading = false;
-      notifyListeners();
+      _finishLoading();
     }
   }
 
   /// 搜索应用
   Future<List<Map<String, dynamic>>> searchApps(String keyword, {int limit = 50}) =>
       searchAppsAcross(keyword, limit: limit);
-
-  Future<List<Map<String, dynamic>>> searchAppsLegacy(String keyword, {int limit = 50}) async {
-    final source = _currentSource;
-    if (source == null) {
-      throw Exception('请先选择一个源');
-    }
-
-    try {
-      appLog.info('开始搜索 F-Droid 应用', data: {
-        'keyword': keyword,
-        'limit': limit,
-        'source': source.name,
-      });
-
-      // 确保数据已加载
-      final appCount = await rust.FdroidRustRepoManager.getAppCount();
-      if (appCount == 0) {
-        appLog.warning('数据库中没有应用，开始加载仓库');
-        await loadRepository();
-      }
-
-      final results = await rust.FdroidRustRepoManager.searchApps(keyword, limit: limit);
-
-      // 输出每个应用的详细信息到日志
-      for (var i = 0; i < results.length; i++) {
-        final app = results[i];
-        final appMap = rust.FdroidRustRepoManager.appInfoToMap(app);
-
-        appLog.info('应用 #${i + 1}/${results.length}', data: {
-          'packageName': appMap['packageName'],
-          'name': appMap['name'],
-          'summary': appMap['summary'],
-          'icon': appMap['icon'],
-          'license': appMap['license'],
-          'authorName': appMap['authorName'],
-          'sourceCode': appMap['sourceCode'],
-          'webSite': appMap['webSite'],
-          'categories': appMap['categories'],
-          'added': appMap['added'],
-          'lastUpdated': appMap['lastUpdated'],
-          'hasMetadata': appMap['metadata'] != null,
-          'hasVersions': appMap['versions'] != null,
-          'metadataLength': appMap['metadata']?.toString().length ?? 0,
-          'versionsLength': appMap['versions']?.toString().length ?? 0,
-        });
-      }
-
-      appLog.info('搜索完成', data: {
-        'keyword': keyword,
-        'resultCount': results.length,
-      });
-
-      return results.map((app) => rust.FdroidRustRepoManager.appInfoToMap(app)).toList();
-    } catch (e) {
-      appLog.error('搜索失败', data: {
-        'keyword': keyword,
-        'error': e.toString(),
-      });
-      appLog.error('FdroidRepoManager: 搜索失败 - $e');
-      rethrow;
-    }
-  }
 
   /// 精确查询应用（通过 packageName）
   ///
@@ -462,12 +636,8 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
     final candidates = <FdroidSource>[];
     if (sourceId != null && sourceId.isNotEmpty) {
       for (final s in _sources) {
-        // 接受三种标识：记录 id / 指纹 / **仓库身份键**（渠道记录里存的是身份键）
-        if (s.id == sourceId ||
-            s.fingerprint == sourceId ||
-            rust.FdroidRustRepoManager.sourceIdentity(
-                    fingerprint: s.fingerprint, repoUrl: s.repoUrl) ==
-                sourceId) {
+        // 接受三种标识：记录 id / 指纹 / 旧逻辑身份键（`fp:` / `url:`，历史记录）
+        if (rust.FdroidRustRepoManager.identityMatches(s, sourceId)) {
           candidates.add(s);
         }
       }
@@ -480,15 +650,9 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
     final scopedCount = (sourceId != null && sourceId.isNotEmpty) ? candidates.length : 0;
     if (scopedCount > 0) {
       for (final s in enabledSources) {
-        // ★ 按**仓库身份键**判重：多个来源的 `id` 可能相同（默认源 id 是固定的 'official'），
-        //   按 id 判重会把第三方源当成重复跳过（真机：candidates 只剩 1 个 → 查不到）
-        final k = rust.FdroidRustRepoManager.sourceIdentity(
-            fingerprint: s.fingerprint, repoUrl: s.repoUrl);
-        final dup = candidates.any((c) =>
-            c.id == s.id ||
-            rust.FdroidRustRepoManager.sourceIdentity(
-                    fingerprint: c.fingerprint, repoUrl: c.repoUrl) ==
-                k);
+        // 按**存储身份（源 id，唯一）**判重；identityMatches 兼容历史标识。
+        final dup = candidates.any(
+            (c) => rust.FdroidRustRepoManager.identityMatches(c, s.id));
         if (!dup) candidates.add(s);
       }
     }
@@ -500,17 +664,11 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
         'candidates': candidates.length,
       });
 
-      // 候选源都为空 → 先加载一次（每源各自独立的库）
-      var hasData = false;
-      for (final s in candidates) {
-        if (await rust.FdroidRustRepoManager.appCountIn(s) > 0) {
-          hasData = true;
-          break;
-        }
-      }
-      if (!hasData) {
-        appLog.warning('候选源均无数据，开始加载已启用源');
-        await loadAllEnabled();
+      // 候选源各自独立库：**逐源**检查空库并按需加载（某个空源不会掩盖另一个
+      // 已就绪的源，也不会让已就绪的源被重复下载）。
+      final readiness = await _ensureDataFor(candidates);
+      if (!readiness.hasData && readiness.failures > 0) {
+        appLog.warning('候选源均无数据且加载失败', data: {'packageName': packageName});
       }
 
       for (var ci = 0; ci < candidates.length; ci++) {
@@ -547,7 +705,10 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
     }
   }
 
-  /// 获取所有应用
+  /// 获取所有应用（当前源）
+  ///
+  /// WHY：与搜索共用**身份键**路径——先按当前源身份补齐数据（仅空库才下载），
+  /// 再从该源自己的库全量读取；不再经幽灵键 `url:default` 写/读。
   Future<List<Map<String, dynamic>>> getAllApps() async {
     final source = _currentSource;
     if (source == null) {
@@ -559,19 +720,14 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
         'source': source.name,
       });
 
-      // 确保数据已加载
-      final appCount = await rust.FdroidRustRepoManager.getAppCount();
-      appLog.info('数据库应用数量', data: {
-        'count': appCount,
-      });
-
-      if (appCount == 0) {
-        appLog.warning('数据库中没有应用，开始加载仓库');
-        await loadRepository();
+      // 确保数据已加载（按当前源身份；空库才下载）
+      final readiness = await _ensureDataFor([source]);
+      if (!readiness.hasData && readiness.failures > 0) {
+        throw StateError(_errorMessage ?? 'F-Droid 仓库不可用');
       }
 
-      // 搜索空字符串获取所有应用
-      final results = await rust.FdroidRustRepoManager.searchApps('', limit: 100000);
+      // 从该源自己的库全量读取（空字符串 = 全部）
+      final results = await rust.FdroidRustRepoManager.searchAppsIn(source, '', limit: 100000);
 
       appLog.info('获取应用完成', data: {
         'totalApps': results.length,
@@ -654,7 +810,15 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
 
   /// 添加自定义源
   Future<void> addSource(FdroidSource source) async {
-    _sources.add(source);
+    var toAdd = source;
+    if (_sources.any((s) => s.id == toAdd.id)) {
+      toAdd = toAdd.copyWith(
+        id: 'custom_${DateTime.now().millisecondsSinceEpoch}_${_sources.length}',
+      );
+      appLog.warning(
+          'FdroidRepoManager: 源 id「${source.id}」已存在 → 已改派为「${toAdd.id}」');
+    }
+    _sources.add(toAdd);
     notifyListeners();
     await _saveSources();
   }
@@ -671,7 +835,8 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
   }
 
   /// 用真实指纹做事后处理：
-  /// 1) 源没记指纹 → **自动回填**（身份从此由密钥决定，换域名/换镜像都不影响）
+  /// 1) 源没记指纹 → **自动回填**（供同源判定/TOFU 使用；**不改变存储槽位**，
+  ///    槽位恒为 `storageIdentity(source)` = 源 id，避免首次加载中途翻槽）
   /// 2) 与已有源指纹相同 → 判定**同源重复**并提示
   /// 3) 与已记指纹不一致 → 可疑（可能换了签名密钥），明确告警
   /// 下载结果摘要：**增量是否生效一眼可见**（日志导出即可核对省了多少）
@@ -724,6 +889,12 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
     if (recorded.isEmpty) {
       _sources[i] = _sources[i].copyWith(fingerprint: fp);
       await _saveSources();
+      // 回填后 `_sources[i]` 已带上指纹：若它就是当前源，同步刷新引用并重挂 Rust
+      // 活动源（`_currentSource` 陈旧会让读路径继续拿旧对象）。
+      if (_currentSource?.id == _sources[i].id) {
+        _currentSource = _sources[i];
+        rust.FdroidRustRepoManager.setActiveSource(_currentSource!);
+      }
       appLog.info('FdroidRepoManager: 已从签名回填「${source.name}」指纹 $fp');
     } else if (recorded != actual) {
       appLog.warning('FdroidRepoManager: 「${source.name}」指纹与记录不一致'
@@ -747,6 +918,9 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
 
   /// 逐个加载全部已启用源：每个源用自己的镜像配置下载到自己的库；
   /// 单个源失败只记错误，不影响其它源（多源的可用性靠这一条保证）。
+  ///
+  /// 每个源走**身份键单飞**（[Future.wait] 并发）：与搜索读取同槽，
+  /// 不再有"已加载中直接跳过"导致某源永远空库。
   Future<int> loadAllEnabled() async {
     final targets = enabledSources;
     if (targets.isEmpty) {
@@ -754,57 +928,20 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
       notifyListeners();
       return 0;
     }
-    _isLoading = true;
     _errorMessage = '';
+    _beginLoading();
     _loadingProgress = 0.0;
     notifyListeners();
 
-    var total = 0;
-    final failures = <String>[];
     try {
-      for (var i = 0; i < targets.length; i++) {
-        final source = targets[i];
-        try {
-          appLog.info(
-              'FdroidRepoManager: 加载源 ${i + 1}/${targets.length} - ${source.name}');
-          final task = await rust.FdroidRustRepoManager.downloadRepositoryTaskFor(source);
-          final sub = task.progress.listen((p) {
-            final phase = p.json?['phase'] as String?;
-            final base = i / targets.length;
-            final span = 1 / targets.length;
-            if (phase == 'index') {
-              // 索引下载是耗时主体：用**真实字节百分比**在 0.3→0.9 之间推进
-              final pct = (p.json?['percent'] as num?)?.toInt() ?? 0;
-              _loadingProgress =
-                  (base + span * (0.3 + 0.6 * pct / 100)).clamp(0.0, 1.0);
-            } else {
-              final inner = switch (phase) { 'downloading' => 0.3, 'stored' => 0.9, _ => 0.0 };
-              _loadingProgress = (base + span * inner).clamp(0.0, 1.0);
-            }
-            notifyListeners();
-          });
-          final result = await task.completion;
-          await sub.cancel();
-          if (result.outcome == RustTaskOutcome.error) {
-            failures.add('${source.name}: ${result.error}');
-            continue;
-          }
-          // 用**签名里提取的真实指纹**做事后校验：自动回填 + 同源判定
-          await _syncSignerFingerprint(source, result.payload);
-          total += await rust.FdroidRustRepoManager.appCountIn(source);
-        } catch (e) {
-          failures.add('${source.name}: $e');
-        }
-      }
+      // 单源失败在 `_loadOneSource` 内部隔离（返回 0），不会中断其它源
+      final counts = await Future.wait(targets.map(_ensureSourceLoaded));
+      final total = counts.fold<int>(0, (sum, c) => sum + c);
       _loadingProgress = 1.0;
-      if (failures.isNotEmpty) {
-        _errorMessage = '部分源加载失败: ${failures.join("; ")}';
-      }
-      appLog.info('FdroidRepoManager: 多源加载完成，共 $total 个应用（失败 ${failures.length} 个源）');
+      appLog.info('FdroidRepoManager: 多源加载完成，共 $total 个应用（${targets.length} 个源）');
       return total;
     } finally {
-      _isLoading = false;
-      notifyListeners();
+      _finishLoading();
     }
   }
 
@@ -812,6 +949,14 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
   Future<List<Map<String, dynamic>>> searchAppsAcross(String keyword, {int limit = 50}) async {
     final targets = enabledSources.isEmpty ? [_currentSource].whereType<FdroidSource>().toList() : enabledSources;
     final sorted = [...targets]..sort((a, b) => a.priority.compareTo(b.priority));
+    // 读路径先确保各源就绪（仅空库才下载；已就绪不重复下载）——这是修复
+    // "插件加载成功但搜索恒空"的关键一步。
+    // 故意**不**处理 forceRefresh：发现页每次击键都传 true（discovery/logic.dart
+    // 的搜索调用），若据此重下会打爆网络；是否需要下载一律以"空库"为准。
+    final readiness = await _ensureDataFor(sorted);
+    if (!readiness.hasData && readiness.failures > 0) {
+      throw StateError(_errorMessage?.isNotEmpty == true ? _errorMessage! : 'F-Droid 仓库不可用');
+    }
     final merged = <String, Map<String, dynamic>>{};
     for (final source in sorted) {
       try {
@@ -850,11 +995,32 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
   Future<void> updateSource(FdroidSource source) async {
     final i = _sources.indexWhere((s) => s.id == source.id);
     if (i < 0) return;
+    final old = _sources[i];
     _sources[i] = source;
     if (_currentSource?.id == source.id) {
       _currentSource = source;
       rust.FdroidRustRepoManager.setActiveSource(source);
     }
+
+    // **逻辑身份**（指纹优先 / 归一化地址）变了 → 旧库数据已不再属于这个源，
+    // 清空该库槽，避免编辑后长期展示陈旧索引。存储槽位本身由 `storageIdentity`
+    // （稳定 id）决定，因此"同一身份内的改动"（如镜像/启用镜像回退）不会误清。
+    final logicalChanged = !rust.FdroidRustRepoManager.sameLogicalIdentity(
+      oldFingerprint: old.fingerprint,
+      oldRepoUrl: old.repoUrl,
+      newFingerprint: source.fingerprint,
+      newRepoUrl: source.repoUrl,
+    );
+    if (logicalChanged) {
+      try {
+        final inst = await rust.FdroidRustRepoManager.instanceForSource(source);
+        await inst.callModule('clear_apps');
+        appLog.info('FdroidRepoManager: 源「${source.name}」逻辑身份已变，已清空其库槽');
+      } catch (e) {
+        appLog.error('FdroidRepoManager: 清空源「${source.name}」库槽失败 - $e');
+      }
+    }
+
     notifyListeners();
     await _saveSources();
   }
@@ -919,4 +1085,17 @@ class FdroidRepoManager extends ChangeNotifier implements IFdroidRepoService {
     }
     return Directory.current;
   }
+}
+
+/// 一次读路径的"源就绪"结果。
+///
+/// - [hasData]：至少有一个源在补齐后拥有 > 0 个应用（可直接读）。
+/// - [failures]：补齐后仍为 0（或就绪检查抛错）的源数量。
+///
+/// 调用方据此判定"全空且确有失败"才报错，避免把"合法空结果"误报为故障。
+class _RepoReadiness {
+  const _RepoReadiness({required this.hasData, required this.failures});
+
+  final bool hasData;
+  final int failures;
 }

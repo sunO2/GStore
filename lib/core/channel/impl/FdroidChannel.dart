@@ -14,6 +14,7 @@ import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/fdroid/FdroidRepoManager.dart';
 import 'package:gstore/core/agent/platform_arch.dart';
 import 'package:gstore/core/fdroid/FdroidRepoModels.dart';
+import 'package:gstore/core/rust/FdroidRustRepoManager.dart';
 import 'package:gstore/core/logger/LogManager.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
 import 'package:gstore/core/module/module_manager.dart';
@@ -537,8 +538,8 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
     final svc = _repoService;
     if (svc != null && sourceId != null && sourceId.isNotEmpty) {
       for (final s in svc.sources) {
-        final k = svc.identityKeyFor(s);
-        if (s.id == sourceId || s.fingerprint == sourceId || k == sourceId) {
+        // 接受：现用存储身份（源 id）/ 原始指纹 / 旧逻辑身份（fp:/url:，历史记录）
+        if (FdroidRustRepoManager.identityMatches(s, sourceId)) {
           final resolved = svc.cachedBaseFor(s);
           if (resolved != null && resolved.isNotEmpty) return resolved;
           return _mirrorFirstUrlOf(s);
@@ -560,7 +561,7 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
     if (svc == null) return;
     for (final id in sourceIds.whereType<String>().where((e) => e.isNotEmpty).toSet()) {
       for (final s in svc.sources) {
-        if (s.id == id || s.fingerprint == id || svc.identityKeyFor(s) == id) {
+        if (FdroidRustRepoManager.identityMatches(s, id)) {
           await svc.ensureBaseFor(s);
           break;
         }
@@ -588,7 +589,10 @@ class FdroidChannel extends IChannel with AppUpdateCheckMixin {
     }
   }
 
-  /// 当前源的**仓库身份键**（指纹优先，其次归一化地址）——与模块的库/实例选择同一套键
+  /// 当前源的**存储身份键**（源 id）——与模块的库/实例选择同一套键。
+  ///
+  /// 注意：不再是"指纹优先"（指纹下载后才学到，不能作槽位键）；读取侧由
+  /// [FdroidRustRepoManager.identityMatches] 兼容历史 `fp:`/`url:` 标识。
   String? _currentSourceKey() {
     final src = _repoService?.currentSource;
     if (src == null) return null;

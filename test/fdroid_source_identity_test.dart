@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:gstore/core/fdroid/FdroidRepoModels.dart';
 import 'package:gstore/core/rust/FdroidRustRepoManager.dart';
 
 void main() {
@@ -32,6 +33,38 @@ void main() {
       expect(p1, isNot(p2), reason: '不同源不能共用数据槽');
       expect(p1, startsWith('/docs/fdroid_'));
       expect(p1, endsWith('.db'));
+    });
+
+    test('sourceIdentity 是**逻辑**身份，不作存储槽位：槽位恒为 storageIdentity（源 id）', () {
+      final fresh = FdroidSource(
+        id: 'official',
+        name: 'F-Droid Official',
+        repoUrl: 'https://f-droid.org/repo',
+      );
+      final backfilled = fresh.copyWith(fingerprint: 'AB:CD');
+
+      // 逻辑身份（用于同源判定）：指纹优先 → 指纹回填前后会变化
+      expect(
+        FdroidRustRepoManager.sourceIdentity(
+            fingerprint: fresh.fingerprint, repoUrl: fresh.repoUrl),
+        'url:https://f-droid.org/repo',
+      );
+      expect(
+        FdroidRustRepoManager.sourceIdentity(
+            fingerprint: backfilled.fingerprint, repoUrl: backfilled.repoUrl),
+        'fp:ABCD',
+      );
+
+      // 存储槽位（用于实例键 / 库文件）：指纹回填前后**恒定**
+      expect(FdroidRustRepoManager.storageIdentity(fresh), 'official');
+      expect(FdroidRustRepoManager.storageIdentity(backfilled), 'official');
+      expect(
+        FdroidRustRepoManager.dbPathForIdentity(
+            FdroidRustRepoManager.storageIdentity(fresh), '/docs'),
+        FdroidRustRepoManager.dbPathForIdentity(
+            FdroidRustRepoManager.storageIdentity(backfilled), '/docs'),
+        reason: '指纹发现不得改变库槽位（否则首次加载中途翻槽）',
+      );
     });
   });
 }
