@@ -16,6 +16,8 @@ import android.provider.Settings
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * GStore 内置代理的 TUN 承载服务（greenfield）。
@@ -146,6 +148,18 @@ class ProxyVpnService : VpnService() {
     private var conn: ParcelFileDescriptor? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
+    /**
+     * 拆除工作线程：`nativeStopTunnel()` 在宿主侧有界等待 ≤800ms（停循环→join），
+     * 直接在主线程调用会造成明显卡顿/潜在 ANR。所有 native 拆除与 fd close 都
+     * 放到单线程执行器串行执行，绝不阻塞 main。
+     */
+    private val teardownExecutor = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "gstore-vpn-teardown")
+    }
+
+    /** 生命周期代数：每次 start 递增，用于丢弃被新一轮 start 取代的过期拆除。 */
+    private val lifecycleGen = AtomicInteger(0)
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val action = intent?.action
         if (action == ACTION_STOP) {
@@ -214,6 +228,8 @@ class ProxyVpnService : VpnService() {
 
     private fun startVpn(configJson: String) {
         val cfg = parseConfig(configJson)
+        // 新一轮启动：使任何仍在执行的旧拆除失效。
+        lifecycleGen.incrementAndGet()
 
         // 1. 先缓存服务引用并安装 protect：保证 establish() 之后 Rust 打开的每个
         //    出站 socket 都已在 protect seam 之上。
@@ -285,16 +301,23 @@ class ProxyVpnService : VpnService() {
 
     private fun stopVpn(reason: String) {
         unregisterNetworkCallback()
-        // 拆除顺序：广播 vpn.stop → 模块停循环并 join → 宿主清缓存（有界等待
-        // proxy.tun.released）→ Kotlin 关闭 fd。nativeStopTunnel 自身有界，
-        // 超时也会清缓存（Rust 侧持有 dup，Kotlin close 不会 use-after-free）。
-        runCatching { nativeStopTunnel() }
-        runCatching { conn?.close() }
-        conn = null
         isRunning = false
+        val gen = lifecycleGen.get()
+        val pfd = conn
+        conn = null
+        // 拆除顺序：广播 vpn.stop → 模块停循环并 join → 宿主清缓存（有界等待
+        // proxy.tun.released）→ Kotlin 关闭 fd。全部放到工作线程，main 线程
+        // 立即返回（避免 ≤800ms 阻塞造成卡顿/ANR）。gen 守卫确保：若期间已发生
+        // 新一轮 start，则不再对新的宿主状态调用 nativeStopTunnel。
+        teardownExecutor.execute {
+            if (gen == lifecycleGen.get()) {
+                runCatching { nativeStopTunnel() }
+            }
+            runCatching { pfd?.close() }
+            Log.i(TAG, "VPN 已停止：$reason")
+        }
         runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
         stopSelf()
-        Log.i(TAG, "VPN 已停止：$reason")
     }
 
     // ---------------------------------------------------------------------
@@ -325,6 +348,8 @@ class ProxyVpnService : VpnService() {
             NotificationManager.IMPORTANCE_LOW
         )
         channel.description = getString(R.string.proxy_vpn_channel_desc)
+        channel.setShowBadge(false)
+        channel.lockscreenVisibility = Notification.VISIBILITY_PRIVATE
         manager.createNotificationChannel(channel)
     }
 
@@ -336,18 +361,38 @@ class ProxyVpnService : VpnService() {
             Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
+        // 通知栏「停止」快捷键：复用 ACTION_STOP，落回 onStartCommand 的拆除路径。
+        val stopIntent = PendingIntent.getService(
+            this,
+            1,
+            Intent(this, ProxyVpnService::class.java).setAction(ACTION_STOP),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val stopAction = Notification.Action.Builder(
+            0,
+            getString(R.string.proxy_vpn_notification_action_stop),
+            stopIntent
+        ).build()
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Notification.Builder(this, CHANNEL_ID)
         } else {
             Notification.Builder(this)
         }
-        return builder
+        builder
             .setContentTitle(getString(R.string.proxy_vpn_notification_title))
             .setContentText(getString(R.string.proxy_vpn_notification_text))
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSubText(getString(R.string.proxy_vpn_notification_subtext))
+            .setSmallIcon(R.drawable.ic_stat_proxy_vpn)
             .setContentIntent(contentIntent)
             .setOngoing(true)
-            .build()
+            .setOnlyAlertOnce(true)
+            .setShowWhen(false)
+            .setCategory(Notification.CATEGORY_SERVICE)
+            .addAction(stopAction)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            builder.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE)
+        }
+        return builder.build()
     }
 
     // ---------------------------------------------------------------------

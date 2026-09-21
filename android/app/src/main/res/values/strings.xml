@@ -3,5 +3,7 @@
     <string name="proxy_vpn_channel_name">代理连接</string>
     <string name="proxy_vpn_channel_desc">GStore 代理运行时的常驻通知</string>
     <string name="proxy_vpn_notification_title">GStore 代理运行中</string>
-    <string name="proxy_vpn_notification_text">点击返回应用管理连接</string>
+    <string name="proxy_vpn_notification_text">代理已开启 · 点按管理连接</string>
+    <string name="proxy_vpn_notification_subtext">GStore</string>
+    <string name="proxy_vpn_notification_action_stop">停止</string>
 </resources>

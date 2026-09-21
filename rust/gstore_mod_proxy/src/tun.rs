@@ -55,10 +55,20 @@ use tokio::sync::{mpsc, watch};
 pub(crate) const ERR_TUN_FD_INVALID: &str = "PROXY_TUN_FD_INVALID";
 
 const LOOP_THREAD_NAME: &str = "gstore-proxy-tun";
-const READ_BUFFER_SIZE: usize = 65_535; // covers IPv4/IPv6 MTU with headroom
-const STACK_BUFFER_SIZE: usize = 1024;
-const UDP_BUFFER_SIZE: usize = 256;
-const INGRESS_CHANNEL: usize = 256;
+/// Per-read buffer. Covers any TUN MTU (Kotlin default 1500) with headroom;
+/// the TUN read truncates at this bound, so it is also the max frame size.
+pub(crate) const READ_BUFFER_SIZE: usize = 65_535;
+/// lwIP core ingress/egress channel depth (`NetStack::with_buffer_size` first
+/// arg). meow's `NetStack::new()` uses 512; the module deliberately doubles it
+/// to absorb bursty TUN reads (Todo 27 budget in [`crate::limits`]).
+pub(crate) const STACK_BUFFER_SIZE: usize = 1024;
+/// lwIP UDP channel depth (`with_buffer_size` second arg). meow's default is
+/// 64; the module uses 4x for DNS/QUIC bursts.
+pub(crate) const UDP_BUFFER_SIZE: usize = 256;
+/// Bounded reader → ingress-pump queue depth. Each queued item is one IP frame
+/// (MTU-sized in practice), so worst-case retained bytes are bounded by
+/// `INGRESS_CHANNEL * MTU` (see [`crate::limits::worst_case_bytes`]).
+pub(crate) const INGRESS_CHANNEL: usize = 256;
 const CORE_DONE_TIMEOUT: Duration = Duration::from_secs(3);
 const ENGINE_READY_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -619,9 +629,12 @@ async fn tun_loop(
                                 Ok(Err(e)) => {
                                     return Err(format!("TUN read failed: {e}"));
                                 }
-                                Err(_) => {
-                                    return Err("TUN read readiness cancelled".to_string());
-                                }
+                                // `guard.try_io` returns the outer `Err` when the
+                                // closure hit `WouldBlock` (readiness consumed but
+                                // no data). Under sustained load this spurious
+                                // wakeup is routine; retry rather than kill the one
+                                // reader (which would restart the whole data plane).
+                                Err(_) => continue,
                             }
                         }
                     }
@@ -991,6 +1004,152 @@ mod tests {
 
         let (_tx2, mut rx2) = watch::channel(false);
         assert!(wait_backoff_or_stop(&mut rx2, 30));
+    }
+
+    /// A valid-length IPv4 frame with protocol 253 (experimental): it reaches the
+    /// netstack but is neither DNS/UDP-53 nor TCP, so the benchmark never dials
+    /// the network (unlike [`ipv4_udp_frame`], which would trigger DNS hijack).
+    fn non_dns_frame() -> Vec<u8> {
+        let mut p = vec![0u8; 20];
+        // IHL 15 claims a 60-byte header in a 40-byte frame: lwIP drops it
+        // silently (no ICMP egress), so the benchmark measures pure ingest.
+        p[0] = 0x4F;
+        p[2..4].copy_from_slice(&40u16.to_be_bytes());
+        p[8] = 64;
+        p[9] = 253;
+        p[12..16].copy_from_slice(&[10, 10, 0, 2]);
+        p[16..20].copy_from_slice(&[10, 10, 0, 9]);
+        p.extend_from_slice(&[0u8; 20]);
+        p
+    }
+
+    /// Regression (Todo 27): the single reader must survive the spurious
+    /// `WouldBlock` it sees whenever it drains a burst and the fd goes idle.
+    /// Before the fix that was treated as fatal ("readiness cancelled"), so the
+    /// loop died (and the supervisor restarted the whole data plane) on a gap.
+    #[test]
+    fn reader_survives_idle_gaps_between_bursts() {
+        use std::os::unix::net::UnixDatagram;
+
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        shallow_reset();
+        const BURSTS: usize = 5;
+        const PER_BURST: usize = 50;
+
+        let (loop_end, peer) = UnixDatagram::pair().unwrap();
+        install_fd(loop_end.as_raw_fd()).expect("install mock fd");
+        drop(loop_end);
+        assert!(start(55).expect("start loop"), "loop must start");
+        reset_read_count();
+
+        let frame = non_dns_frame();
+        let mut w = peer.try_clone().unwrap();
+        for b in 0..BURSTS {
+            for _ in 0..PER_BURST {
+                w.send(&frame).expect("send frame");
+            }
+            assert!(
+                wait_until(|| read_count() >= (b + 1) * PER_BURST, Duration::from_secs(2)),
+                "burst {b}: only read {}",
+                read_count()
+            );
+            std::thread::sleep(Duration::from_millis(80));
+            assert_eq!(
+                running_count(),
+                1,
+                "loop must survive the idle gap after burst {b}"
+            );
+        }
+        assert_eq!(read_count(), BURSTS * PER_BURST);
+        stop();
+        assert_eq!(running_count(), 0);
+    }
+
+    /// Manual local benchmark (Todo 27). Not run by default; `bench/run.sh`
+    /// drives it. A `SOCK_DGRAM` pair gives one frame per `read` (a stream pair
+    /// would coalesce frames, unlike a real TUN fd). Measures sustained reader
+    /// throughput plus process RSS/CPU deltas against a recorded baseline.
+    /// `GSTORE_BENCH_FRAMES` overrides the frame count.
+    #[test]
+    #[ignore = "manual local benchmark: cargo test -p gstore_mod_proxy bench_dataplane -- --ignored --nocapture --test-threads=1"]
+    fn bench_dataplane_reader_throughput() {
+        use std::os::unix::net::UnixDatagram;
+        use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        shallow_reset();
+        let frames: usize = std::env::var("GSTORE_BENCH_FRAMES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(20_000);
+
+        let (loop_end, peer) = UnixDatagram::pair().unwrap();
+        install_fd(loop_end.as_raw_fd()).expect("install mock fd");
+        drop(loop_end);
+        assert!(start(42).expect("start loop"), "loop must start");
+        reset_read_count();
+
+        let drain_stop = Arc::new(AtomicBool::new(false));
+        let mut peer_read = peer.try_clone().unwrap();
+        peer_read
+            .set_read_timeout(Some(Duration::from_millis(50)))
+            .unwrap();
+        let ds = Arc::clone(&drain_stop);
+        let drain = std::thread::spawn(move || {
+            let mut buf = [0u8; 65_535];
+            while !ds.load(AtomicOrdering::Relaxed) {
+                match peer_read.recv(&mut buf) {
+                    Ok(0) => break,
+                    Ok(_) => {}
+                    Err(e)
+                        if e.kind() == io::ErrorKind::WouldBlock
+                            || e.kind() == io::ErrorKind::TimedOut => {}
+                    Err(_) => break,
+                }
+            }
+        });
+
+        let frame = non_dns_frame();
+        let mut peer_write = peer.try_clone().unwrap();
+        let rss0 = crate::limits::rss_kb();
+        let cpu0 = crate::limits::cpu_ms();
+        let t0 = std::time::Instant::now();
+        let writer = std::thread::spawn(move || {
+            for _ in 0..frames {
+                if peer_write.send(&frame).is_err() {
+                    return;
+                }
+            }
+        });
+
+        assert!(
+            wait_until(|| read_count() >= frames, Duration::from_secs(120)),
+            "reader did not consume {frames} frames in time (read={})",
+            read_count()
+        );
+        let elapsed = t0.elapsed();
+        let cpu = crate::limits::cpu_ms().saturating_sub(cpu0);
+        let rss = crate::limits::rss_kb();
+        let fps = frames as u128 * 1000 / elapsed.as_millis().max(1);
+        crate::limits::bench_line(
+            "dataplane_read",
+            &[
+                ("frames", frames as u128),
+                ("elapsed_ms", elapsed.as_millis()),
+                ("frames_per_sec", fps),
+                ("rss_kb", rss as u128),
+                ("rss_delta_kb", rss.saturating_sub(rss0) as u128),
+                ("cpu_ms", cpu as u128),
+                ("ingress_channel", INGRESS_CHANNEL as u128),
+            ],
+        );
+
+        drain_stop.store(true, AtomicOrdering::Relaxed);
+        let _ = writer.join();
+        stop();
+        drop(peer);
+        let _ = drain.join();
+        shallow_reset();
     }
 
     /// Drop any loop/pending fd left by an earlier test.

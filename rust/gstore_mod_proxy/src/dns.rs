@@ -48,9 +48,9 @@ pub(crate) const ERR_DNS_BOOTSTRAP_FAILED: &str = "PROXY_DNS_BOOTSTRAP_FAILED";
 pub(crate) const ERR_DNS_TIMEOUT: &str = "PROXY_DNS_TIMEOUT";
 
 const DEFAULT_V4_RANGE: &str = "198.18.0.0/16";
-const FAKEIP_STORE_SIZE: usize = 4096;
-const QUERY_RING_CAPACITY: usize = 256;
-const MAPPING_RING_CAPACITY: usize = 1024;
+pub(crate) const FAKEIP_STORE_SIZE: usize = 4096;
+pub(crate) const QUERY_RING_CAPACITY: usize = 256;
+pub(crate) const MAPPING_RING_CAPACITY: usize = 1024;
 const DNS_PORT: u16 = 53;
 
 /// Resolver mode. Serializes as `fake-ip` / `redir-host` / `normal`.

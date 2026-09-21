@@ -48,6 +48,12 @@ use crate::conn::ConnRecord;
 
 /// Hard cap on distinct domains kept in memory. Eviction is documented above.
 pub(crate) const DOMAIN_CAP: usize = 2048;
+/// Hard cap on per-flow byte-delta trackers. One entry exists per live flow;
+/// without this cap the map grew with meow's (unbounded) live table. Over the
+/// cap the flow with the oldest `lastSeenMs` is evicted (ties by id ascending),
+/// which only loses that flow's exact delta accounting — the aggregate keeps
+/// working (graceful degradation under connection pressure).
+pub(crate) const FLOW_CAP: usize = 2048;
 /// Minimum spacing between `proxy.stats` events (the host ring is only 128).
 pub(crate) const MIN_EMIT_INTERVAL_MS: u64 = 1000;
 /// Dispatch monitor tick. Aggregation runs every tick; emission is throttled.
@@ -87,13 +93,16 @@ struct FlowObs {
     key: String,
     upload: i64,
     download: i64,
+    last_seen_ms: u64,
 }
 
 struct StatsStore {
     domains: HashMap<String, DomainStat>,
     flows: HashMap<String, FlowObs>,
     cap: usize,
+    flow_cap: usize,
     evicted: u64,
+    evicted_flows: u64,
     active: usize,
     total_up: i64,
     total_down: i64,
@@ -113,7 +122,9 @@ impl StatsStore {
             domains: HashMap::new(),
             flows: HashMap::new(),
             cap: DOMAIN_CAP,
+            flow_cap: FLOW_CAP,
             evicted: 0,
+            evicted_flows: 0,
             active: 0,
             total_up: 0,
             total_down: 0,
@@ -372,7 +383,7 @@ fn observe_into(
     live: &[ConnRecord],
     closed: &[ConnRecord],
     now: u64,
-) -> Vec<String> {
+) -> (Vec<String>, u64) {
     let mut evicted = Vec::new();
     for r in live {
         let (key, known) = resolve_domain(r);
@@ -388,6 +399,7 @@ fn observe_into(
                     obs.upload = r.upload_bytes;
                     obs.download = r.download_bytes;
                     obs.key = key;
+                    obs.last_seen_ms = now;
                 }
             }
             None => {
@@ -412,6 +424,7 @@ fn observe_into(
                         key,
                         upload: r.upload_bytes,
                         download: r.download_bytes,
+                        last_seen_ms: now,
                     },
                 );
             }
@@ -446,15 +459,42 @@ fn observe_into(
             None => break,
         }
     }
-    evicted
+    let flow_cap = st.flow_cap;
+    let mut flow_evicted = 0u64;
+    if st.flows.len() > flow_cap {
+        // Evict down to half the cap so a sustained excess does not re-sort the
+        // whole map on every tick (amortized O(1) per insert). Oldest
+        // `lastSeenMs` first, ties by id ascending: deterministic.
+        let target = flow_cap / 2;
+        let mut victims: Vec<(u64, String)> = st
+            .flows
+            .iter()
+            .map(|(id, obs)| (obs.last_seen_ms, id.clone()))
+            .collect();
+        victims.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        let excess = st.flows.len() - target;
+        for (_, id) in victims.into_iter().take(excess) {
+            if st.flows.remove(&id).is_some() {
+                st.evicted_flows += 1;
+                flow_evicted += 1;
+            }
+        }
+    }
+    (evicted, flow_evicted)
 }
 
 fn observe(live: &[ConnRecord], closed: &[ConnRecord], now: u64) {
-    let evicted = with_store(|st| observe_into(st, live, closed, now));
+    let (evicted, flow_evicted) = with_store(|st| observe_into(st, live, closed, now));
     for victim in &evicted {
         crate::log_message(
             2,
             &format!("proxy.stats: evicted domain '{victim}' (capacity {DOMAIN_CAP})"),
+        );
+    }
+    if flow_evicted > 0 {
+        crate::log_message(
+            2,
+            &format!("proxy.stats: evicted {flow_evicted} flow tracker(s) (capacity {FLOW_CAP})"),
         );
     }
 }
@@ -489,6 +529,9 @@ fn maybe_emit(instance_id: u64, now: u64) {
             "downBps": st.down_bps,
             "domainCount": st.domains.len(),
             "capacity": st.cap,
+            "flowCount": st.flows.len(),
+            "flowCapacity": st.flow_cap,
+            "evictedFlows": st.evicted_flows,
             "topDomains": top,
         }))
     });
@@ -682,6 +725,7 @@ pub(crate) fn domain_get_arm(payload: &[u8]) -> Result<Vec<u8>, ModuleError> {
         "rangeMs": range,
         "sort": sort.as_str(),
         "domainCap": DOMAIN_CAP,
+        "flowCap": FLOW_CAP,
     }))
 }
 
@@ -711,19 +755,23 @@ impl TrafficGetRequest {
 
 pub(crate) fn traffic_get_arm(payload: &[u8]) -> Result<Vec<u8>, ModuleError> {
     let req = TrafficGetRequest::parse(payload)?;
-    let (mut top, up, down, active, up_bps, down_bps, count, cap, evicted) = with_store(|st| {
-        (
-            st.domains.values().cloned().collect::<Vec<_>>(),
-            st.total_up,
-            st.total_down,
-            st.active,
-            st.up_bps,
-            st.down_bps,
-            st.domains.len(),
-            st.cap,
-            st.evicted,
-        )
-    });
+    let (mut top, up, down, active, up_bps, down_bps, count, cap, evicted, flow_count, flow_cap, evicted_flows) =
+        with_store(|st| {
+            (
+                st.domains.values().cloned().collect::<Vec<_>>(),
+                st.total_up,
+                st.total_down,
+                st.active,
+                st.up_bps,
+                st.down_bps,
+                st.domains.len(),
+                st.cap,
+                st.evicted,
+                st.flows.len(),
+                st.flow_cap,
+                st.evicted_flows,
+            )
+        });
     sort_domains(&mut top, SortKind::Bytes);
     top.truncate(req.top_limit());
     crate::ok_data(serde_json::json!({
@@ -735,6 +783,9 @@ pub(crate) fn traffic_get_arm(payload: &[u8]) -> Result<Vec<u8>, ModuleError> {
         "domainCount": count,
         "capacity": cap,
         "evicted": evicted,
+        "flowCount": flow_count,
+        "flowCapacity": flow_cap,
+        "evictedFlows": evicted_flows,
         "topDomains": top,
     }))
 }
@@ -750,6 +801,7 @@ pub(crate) fn reset_arm() -> Result<Vec<u8>, ModuleError> {
         st.up_bps = 0;
         st.down_bps = 0;
         st.evicted = 0;
+        st.evicted_flows = 0;
         st.last_emit_up = 0;
         st.last_emit_down = 0;
         st.dirty = false;
@@ -772,6 +824,16 @@ pub(crate) fn reset_for_tests() {
 #[cfg(test)]
 pub(crate) fn set_cap_for_tests(cap: usize) {
     with_store(|st| st.cap = cap);
+}
+
+#[cfg(test)]
+pub(crate) fn set_flow_cap_for_tests(cap: usize) {
+    with_store(|st| st.flow_cap = cap);
+}
+
+#[cfg(test)]
+pub(crate) fn flow_stats_for_tests() -> (usize, usize, u64) {
+    with_store(|st| (st.flows.len(), st.flow_cap, st.evicted_flows))
 }
 
 #[cfg(test)]
@@ -1070,6 +1132,86 @@ mod tests {
         db.clear().unwrap();
         let (empty, zero) = db.seed(now).unwrap();
         assert!(empty.is_empty() && zero == (0, 0));
+    }
+
+    /// Failure QA (Todo 27): more live flows than `FLOW_CAP` must stay bounded
+    /// and the aggregate must keep answering (graceful degradation) instead of
+    /// growing with meow's live connection table.
+    #[test]
+    fn flow_trackers_are_bounded_under_connection_pressure() {
+        reset_for_tests();
+        set_flow_cap_for_tests(64);
+        set_cap_for_tests(DOMAIN_CAP);
+        const FLOWS: usize = 5000;
+        for i in 0..FLOWS {
+            let r = rec(&format!("id{i}"), &format!("d{}.example", i % 512), 1, 1);
+            observe_for_tests(std::slice::from_ref(&r), &[], 100 + i as u64);
+        }
+        let (flows, cap, evicted) = flow_stats_for_tests();
+        assert_eq!(cap, 64);
+        assert!(flows <= 64, "flow trackers must stay bounded to the cap");
+        assert!(
+            flows >= 32,
+            "batch eviction must not empty the tracker map ({flows})"
+        );
+        assert_eq!(
+            evicted,
+            (FLOWS - flows) as u64,
+            "evicted = inserted - retained"
+        );
+
+        let data = traffic_get_arm(b"").unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&data).unwrap();
+        assert_eq!(json["data"]["flowCapacity"], 64);
+        assert!(
+            json["data"]["domainCount"].as_u64().unwrap() > 0,
+            "aggregate still reports after flow pressure"
+        );
+        reset_for_tests();
+    }
+
+    /// Manual local benchmark (Todo 27). Drives many live flows across more
+    /// domains than `DOMAIN_CAP` and reports ingest throughput + RSS/CPU deltas.
+    /// Not run by default; `bench/run.sh` drives it.
+    #[test]
+    #[ignore = "manual local benchmark: cargo test -p gstore_mod_proxy bench_stats -- --ignored --nocapture --test-threads=1"]
+    fn bench_stats_ingest_throughput() {
+        const OPS: usize = 100_000;
+        const DOMAINS: usize = 4096;
+        reset_for_tests();
+        set_cap_for_tests(DOMAIN_CAP);
+        let rss0 = crate::limits::rss_kb();
+        let cpu0 = crate::limits::cpu_ms();
+        let t0 = std::time::Instant::now();
+        for i in 0..OPS {
+            let domain = format!("d{}.example", i % DOMAINS);
+            let rec = rec(&format!("id{i}"), &domain, 64, 128);
+            observe_for_tests(std::slice::from_ref(&rec), &[], (i as u64) * 10 + 1);
+        }
+        let elapsed = t0.elapsed();
+        let cpu = crate::limits::cpu_ms().saturating_sub(cpu0);
+        let rss = crate::limits::rss_kb();
+        let (domains, evicted, flows) =
+            with_store(|st| (st.domains.len(), st.evicted, st.flows.len()));
+        crate::limits::bench_line(
+            "stats_ingest",
+            &[
+                ("ops", OPS as u128),
+                ("elapsed_ms", elapsed.as_millis()),
+                (
+                    "ops_per_sec",
+                    OPS as u128 * 1000 / elapsed.as_millis().max(1),
+                ),
+                ("rss_kb", rss as u128),
+                ("rss_delta_kb", rss.saturating_sub(rss0) as u128),
+                ("cpu_ms", cpu as u128),
+                ("domains", domains as u128),
+                ("domain_cap", DOMAIN_CAP as u128),
+                ("evicted", evicted as u128),
+                ("flows", flows as u128),
+            ],
+        );
+        reset_for_tests();
     }
 
     /// `maybe_persist` no-ops without a configured db and never panics.

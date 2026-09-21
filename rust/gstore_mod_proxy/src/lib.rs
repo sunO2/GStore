@@ -38,6 +38,7 @@ mod conn;
 mod controller;
 mod dispatch;
 mod dns;
+mod limits;
 mod logging;
 mod nodes;
 mod profile;
