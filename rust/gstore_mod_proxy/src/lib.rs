@@ -600,7 +600,7 @@ fn write_error_out(
 fn instance_of(id: u64) -> Result<Arc<ProxyInstance>, c_int> {
     instances()
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .get(&id)
         .cloned()
         .ok_or(ABI_ERR_NO_INSTANCE)
@@ -2120,6 +2120,20 @@ mod abi_tests {
             proxy_free_export(ptr as *mut c_void);
         }
         (code, bytes)
+    }
+
+    /// Regression (F2): a poisoned `INSTANCES` mutex must not turn every `call`
+    /// into `ABI_ERR_PANIC`; `instance_of` recovers the guard via `into_inner`.
+    #[test]
+    fn instance_of_recovers_from_poisoned_registry() {
+        let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let poisoned = std::panic::catch_unwind(|| {
+            let _guard = instances().lock().unwrap();
+            panic!("intentional poison for regression test");
+        });
+        assert!(poisoned.is_err(), "the poisoning panic must have unwound");
+        assert!(instances().is_poisoned(), "INSTANCES must now be poisoned");
+        assert_eq!(instance_of(u64::MAX).err(), Some(ABI_ERR_NO_INSTANCE));
     }
 
     #[test]

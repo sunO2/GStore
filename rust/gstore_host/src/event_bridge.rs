@@ -27,13 +27,18 @@ pub(crate) struct EventBridgeInner {
 
 impl EventBridgeInner {
     fn push(&self, event: ModuleEvent) {
-        let mut buf = self.buffer.lock().unwrap();
+        let mut buf = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
         buf.push(event.clone());
         if buf.len() > EVENT_BUFFER_CAP {
             buf.remove(0);
         }
         drop(buf);
-        if let Some(sink) = self.sink.lock().unwrap().as_ref() {
+        if let Some(sink) = self
+            .sink
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
             let _ = sink.add(event);
         }
     }
@@ -119,11 +124,15 @@ pub extern "C" fn host_emit_event(
 pub fn subscribe(sink: StreamSink<ModuleEvent>) {
     let bridge = global();
     {
-        let mut guard = bridge.sink.lock().unwrap();
+        let mut guard = bridge.sink.lock().unwrap_or_else(|e| e.into_inner());
         *guard = Some(sink);
     }
-    let history = bridge.buffer.lock().unwrap().clone();
-    let sink_guard = bridge.sink.lock().unwrap();
+    let history = bridge
+        .buffer
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let sink_guard = bridge.sink.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(sink) = sink_guard.as_ref() {
         for event in history {
             let _ = sink.add(event);
@@ -134,7 +143,7 @@ pub fn subscribe(sink: StreamSink<ModuleEvent>) {
 /// 清空订阅 sink（与 log_bridge::clear_sink 同理：丢弃指向上一个 isolate 的端口）
 pub fn clear_sink() {
     let bridge = global();
-    let _ = bridge.sink.lock().unwrap().take();
+    let _ = bridge.sink.lock().unwrap_or_else(|e| e.into_inner()).take();
 }
 
 /// 便捷：宿主内部推送一条模块事件（供 Rust 侧测试/内嵌模块使用）

@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use std::os::raw::c_int;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::time::{Duration, Instant};
 
 use jni::objects::{GlobalRef, JObject, JString, JValue};
@@ -258,6 +259,18 @@ fn jstring_to_string(env: &mut JNIEnv, value: &JString) -> String {
 // JNI 导出（Kotlin `ProxyVpnService.companion` 的 @JvmStatic external fun）
 // ---------------------------------------------------------------------------
 
+/// 把 JNI 导出体包进 `catch_unwind`：panic 绝不越过 `extern "system"` 边界
+/// （未捕获的 unwind 跨 FFI 是 UB）。与模块 ABI 同策略，panic 时记一条日志并返回
+/// 安全默认值；release 构建仍以 `panic = "abort"` 兜底。
+fn guard_jni<F: FnOnce()>(export: &str, body: F) {
+    if catch_unwind(AssertUnwindSafe(body)).is_err() {
+        crate::log_bridge::push_host_log(
+            3,
+            format!("{export}: JNI 边界捕获 panic（已返回安全默认值）"),
+        );
+    }
+}
+
 /// Kotlin: `nativeSetService(service: VpnService)`（静态方法）。
 #[no_mangle]
 pub extern "system" fn Java_com_suno2_gstore_ProxyVpnService_nativeSetService(
@@ -265,9 +278,11 @@ pub extern "system" fn Java_com_suno2_gstore_ProxyVpnService_nativeSetService(
     _class: JObject,
     service: JObject,
 ) {
-    if let Err(e) = install_service(&env, &service) {
-        crate::log_bridge::push_host_log(3, format!("nativeSetService 失败: {e}"));
-    }
+    guard_jni("nativeSetService", || {
+        if let Err(e) = install_service(&env, &service) {
+            crate::log_bridge::push_host_log(3, format!("nativeSetService 失败: {e}"));
+        }
+    });
 }
 
 /// Kotlin: `nativeSetTunFd(fd: Int)`（静态方法）。
@@ -277,9 +292,11 @@ pub extern "system" fn Java_com_suno2_gstore_ProxyVpnService_nativeSetTunFd(
     _class: JObject,
     fd: jni::sys::jint,
 ) {
-    if let Err(e) = set_tun_fd_impl(fd) {
-        crate::log_bridge::push_host_log(3, format!("nativeSetTunFd 失败: {e}"));
-    }
+    guard_jni("nativeSetTunFd", || {
+        if let Err(e) = set_tun_fd_impl(fd) {
+            crate::log_bridge::push_host_log(3, format!("nativeSetTunFd 失败: {e}"));
+        }
+    });
 }
 
 /// Kotlin: `nativeClear()`（静态方法）。拆除时由 Kotlin 调用；调用方随后自行
@@ -289,7 +306,7 @@ pub extern "system" fn Java_com_suno2_gstore_ProxyVpnService_nativeClear(
     _env: JNIEnv,
     _class: JObject,
 ) {
-    clear_impl();
+    guard_jni("nativeClear", clear_impl);
 }
 
 /// Kotlin: `nativeVpnEvent(kind: String, detail: String)`（静态方法）。上报
@@ -301,9 +318,11 @@ pub extern "system" fn Java_com_suno2_gstore_ProxyVpnService_nativeVpnEvent(
     kind: JString,
     detail: JString,
 ) {
-    let kind = jstring_to_string(&mut env, &kind);
-    let detail = jstring_to_string(&mut env, &detail);
-    vpn_event_impl(&kind, &detail);
+    guard_jni("nativeVpnEvent", || {
+        let kind = jstring_to_string(&mut env, &kind);
+        let detail = jstring_to_string(&mut env, &detail);
+        vpn_event_impl(&kind, &detail);
+    });
 }
 
 /// Kotlin: `nativeStopTunnel()`（静态方法）。Kotlin 主动拆除（用户停止 /
@@ -314,7 +333,7 @@ pub extern "system" fn Java_com_suno2_gstore_ProxyVpnService_nativeStopTunnel(
     _env: JNIEnv,
     _class: JObject,
 ) {
-    stop_tunnel_impl();
+    guard_jni("nativeStopTunnel", stop_tunnel_impl);
 }
 
 #[cfg(test)]
@@ -351,6 +370,21 @@ mod tests {
         clear_impl();
         clear_impl();
         assert_eq!(current_tun_fd(), -1);
+    }
+
+    /// Regression (F2): a panic inside a JNI export body is caught at the
+    /// boundary and logged, never unwinding into Kotlin.
+    #[test]
+    fn jni_guard_catches_panic_and_logs() {
+        let _g = crate::TEST_SERIAL.lock().unwrap();
+        crate::log_bridge::clear_for_tests();
+        guard_jni("nativeRegression", || panic!("boom from JNI body"));
+        assert!(
+            crate::log_bridge::buffered_for_tests()
+                .iter()
+                .any(|m| m.level == 3 && m.message.contains("nativeRegression")),
+            "a panic at the JNI boundary must be logged"
+        );
     }
 
     /// Fake `proxy` module: records down-events and simulates releasing the TUN

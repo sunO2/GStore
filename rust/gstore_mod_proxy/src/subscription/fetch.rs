@@ -10,7 +10,7 @@
 //! any `Content-Encoding` other than `identity` (so a gzip bomb is never
 //! decompressed).
 
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
 
 use meow_transport::tls::{TlsConfig, TlsLayer};
@@ -411,22 +411,33 @@ fn is_blocked_hostname(host: &str) -> bool {
         || host == "metadata.google.internal"
 }
 
-fn is_blocked_ip(ip: IpAddr) -> bool {
+/// IPv4 non-public predicate. Shared by the literal `V4` arm and the
+/// IPv4-mapped IPv6 arm (`::ffff:a.b.c.d`) so a mapped literal cannot smuggle
+/// loopback / RFC1918 / link-local / cloud-metadata through the SSRF guard.
+fn is_blocked_ipv4(v4: Ipv4Addr) -> bool {
+    let o = v4.octets();
+    v4.is_loopback()
+        || v4.is_private()
+        || v4.is_link_local()
+        || v4.is_unspecified()
+        || v4.is_broadcast()
+        || v4.is_multicast()
+        || v4.is_documentation()
+        || o[0] == 0
+        || (o[0] == 100 && (64..=127).contains(&o[1]))
+        || (o[0] == 198 && (o[1] == 18 || o[1] == 19))
+}
+
+pub(super) fn is_blocked_ip(ip: IpAddr) -> bool {
     match ip {
-        IpAddr::V4(v4) => {
-            let o = v4.octets();
-            v4.is_loopback()
-                || v4.is_private()
-                || v4.is_link_local()
-                || v4.is_unspecified()
-                || v4.is_broadcast()
-                || v4.is_multicast()
-                || v4.is_documentation()
-                || o[0] == 0
-                || (o[0] == 100 && (64..=127).contains(&o[1]))
-                || (o[0] == 198 && (o[1] == 18 || o[1] == 19))
-        }
+        IpAddr::V4(v4) => is_blocked_ipv4(v4),
         IpAddr::V6(v6) => {
+            // `::ffff:127.0.0.1` / `::ffff:10.0.0.5` / `::ffff:169.254.169.254`
+            // are none of the V6-native categories below; unwrap the embedded
+            // IPv4 and run the exact V4 predicate first.
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_blocked_ipv4(v4);
+            }
             v6.is_loopback()
                 || v6.is_unspecified()
                 || v6.is_multicast()

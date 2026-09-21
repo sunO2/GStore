@@ -28,14 +28,19 @@ pub(crate) struct LogBridgeInner {
 impl LogBridgeInner {
     fn push(&self, msg: LogMessage) {
         // 无条件入环形缓冲（供订阅补发）
-        let mut buf = self.buffer.lock().unwrap();
+        let mut buf = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
         buf.push(msg.clone());
         if buf.len() > RING_BUFFER_CAP {
             buf.remove(0);
         }
         drop(buf);
         // 已订阅则实时推送
-        if let Some(sink) = self.sink.lock().unwrap().as_ref() {
+        if let Some(sink) = self
+            .sink
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
             let _ = sink.add(msg);
         }
     }
@@ -94,12 +99,16 @@ pub extern "C" fn host_log(level: c_int, msg: *const c_char) {
 pub fn subscribe(sink: StreamSink<LogMessage>) {
     let bridge = global();
     {
-        let mut guard = bridge.sink.lock().unwrap();
+        let mut guard = bridge.sink.lock().unwrap_or_else(|e| e.into_inner());
         *guard = Some(sink);
     }
     // 补发缓冲历史
-    let history = bridge.buffer.lock().unwrap().clone();
-    let sink_guard = bridge.sink.lock().unwrap();
+    let history = bridge
+        .buffer
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let sink_guard = bridge.sink.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(sink) = sink_guard.as_ref() {
         for msg in history {
             let _ = sink.add(msg);
@@ -112,7 +121,7 @@ pub fn subscribe(sink: StreamSink<LogMessage>) {
 /// 避免向已销毁端口推送（二次启动崩溃的次因之一）。
 pub fn clear_sink() {
     let bridge = global();
-    let _ = bridge.sink.lock().unwrap().take();
+    let _ = bridge.sink.lock().unwrap_or_else(|e| e.into_inner()).take();
 }
 
 /// 写入一条宿主日志（内部辅助：bridge 层方法调用，供宿主自身代码记录日志）

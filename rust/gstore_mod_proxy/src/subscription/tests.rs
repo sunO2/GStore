@@ -5,7 +5,7 @@
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 
-use super::fetch::{parse_content_disposition, parse_subscription_userinfo};
+use super::fetch::{is_blocked_ip, parse_content_disposition, parse_subscription_userinfo};
 use super::*;
 
 fn b64(value: &str) -> String {
@@ -314,4 +314,35 @@ fn ssrf_guard_allows_loopback_only_when_explicitly_disabled() {
     let payload = serde_json::json!({"url": "http://127.0.0.1:1/x"}).to_string();
     let err = import_url_policy(payload.as_bytes(), false).unwrap_err();
     assert_eq!(err.code, ERR_SSRF_BLOCKED);
+}
+
+#[test]
+fn ssrf_guard_blocks_ipv4_mapped_ipv6_literals() {
+    for url in [
+        "http://[::ffff:127.0.0.1]:9/x",
+        "http://[::ffff:10.0.0.1]:9/x",
+        "http://[::ffff:169.254.169.254]/latest/meta-data",
+        "http://[::ffff:192.168.1.1]:9/x",
+        "http://[::ffff:100.64.0.1]:9/x",
+    ] {
+        let payload = serde_json::json!({"url": url}).to_string();
+        let err = import_url_policy(payload.as_bytes(), false).unwrap_err();
+        assert_eq!(err.code, ERR_SSRF_BLOCKED, "expected SSRF block for {url}");
+    }
+
+    use std::net::IpAddr;
+    for ip in [
+        "::ffff:127.0.0.1",
+        "::ffff:10.0.0.5",
+        "::ffff:169.254.169.254",
+        "::ffff:0.0.0.0",
+    ] {
+        let ip: IpAddr = ip.parse().unwrap();
+        assert!(is_blocked_ip(ip), "mapped {ip} must be blocked");
+    }
+    let public: IpAddr = "::ffff:1.1.1.1".parse().unwrap();
+    assert!(
+        !is_blocked_ip(public),
+        "public IPv4-mapped IPv6 must be allowed"
+    );
 }
