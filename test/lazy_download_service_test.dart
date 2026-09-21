@@ -407,9 +407,12 @@ void main() {
         rustServiceFactory: () => rust,
       );
 
-      final f1 = lazy.pause(1);
-      final f2 = lazy.cancel(2);
-      final f3 = lazy.resume(3);
+      // 使用非 1 的 id：假 Dart 实现的 listTasks 常驻 id=1（模拟恢复任务），
+      // promotion 会把 id=1 固定归属 Dart；本测试验证的是「未固定 id」的并发
+      // 单飞与派发，故避开该 id。
+      final f1 = lazy.pause(101);
+      final f2 = lazy.cancel(102);
+      final f3 = lazy.resume(103);
       await pumpEventQueue();
       expect(probes, 1, reason: '并发调用共享同一次解析');
       expect(rust.pauseCalls, 0, reason: '解析未完成前不得下发');
@@ -460,16 +463,21 @@ void main() {
         rustServiceFactory: () => rust,
       );
 
-      // 变更类调用触发解析
+      // 变更类调用触发解析（promotion）。假 Dart 实现的 listTasks 常驻 id=1
+      // （模拟 Floor 恢复任务），promotion 会把它固定归属 Dart——这正是本修复
+      // 的核心：恢复任务在 promotion 后仍派发到 Dart。
       await lazy.remove(1);
-      expect(rust.removeCalls, 1);
+      expect(dart.removeCalls, 1, reason: '恢复任务 id=1 固定归属 Dart，变异派发到 Dart');
+      expect(rust.removeCalls, 0);
 
+      // remove 已清除该 id 的固定归属；未固定 id 仍委派活跃实现 Rust。
       final task = await lazy.getTask(5);
       expect(task?.appName, 'rust');
       final list = await lazy.listTasks();
       expect(list.single.appName, 'rust');
       expect(dart.getTaskCalls, 0);
-      expect(dart.listTasksCalls, 0);
+      expect(dart.listTasksCalls, 1,
+          reason: 'promotion 时列举一次 Dart 任务以登记恢复任务归属');
     });
 
     test('解析后全部变更类方法委派 Rust', () async {

@@ -130,13 +130,42 @@ class LazyDownloadService implements IDownloadService {
   /// 表只在「本路由亲自创建过该 id」时有意义；若多实现产生相同 id，则后创建者覆盖
   /// （last-write-wins）。跨实现去重不在本层职责内。
   ///
-  /// **已知残留（本修复不处理）**：应用重启后，从 Floor 恢复的未完成任务未经过
-  /// [download]，因此未登记在此表中；一旦 Rust 被 promotion，这些遗留 Dart 任务
-  /// 将无法经 [getTask] / [watch] 触达（回退读取为后续可选项，不在此处修）。
+  /// **恢复任务（post-restart residual）**：应用重启后从 Floor 恢复的未完成任务未经
+  /// 过 [download]，因此由 [_resolve] 在 promotion 那一刻通过 [_pinDartTasks] 统一
+  /// 登记归属，使其与新建任务享受同一套固定归属语义；即便列举失败，[getTask] 的
+  /// 回退读取与 [listTasks] / [watchAll] 的并集仍能兜底。
   final Map<int, IDownloadService> _taskOwner = <int, IDownloadService>{};
 
   /// 某任务应使用的实现：优先创建它的实现（固定归属），否则按当前活跃实现。
   IDownloadService _implForTask(int id) => _taskOwner[id] ?? _active;
+
+  /// promotion 时列举 Dart 实现当前任务并登记固定归属。
+  ///
+  /// 覆盖 [download] / [downloadWithContext] 覆盖不到的场景：应用启动时从 Floor
+  /// 恢复的未完成任务从未经过本路由，若不在此登记，promotion 后它们会"消失"。
+  ///
+  /// 失败**不得**中止 promotion：捕获并记录后继续（禁止空 catch）。列举失败只
+  /// 意味着这些任务暂未固定归属——[getTask] 的回退读取仍能取到，[listTasks] /
+  /// [watchAll] 的并集仍会把它们带回，服务不会因此不可用。
+  Future<void> _pinDartTasks() async {
+    try {
+      // 必须**有界**：`_resolve()` 位于变更类调用的关键路径上，若 `listTasks`
+      // 永不完成（Floor 卡死等），promotion 会被无限期拖住、连带所有变更调用一起
+      // 挂起——这正是本类用 [_resolutionTimeout] 约束探测的同一个理由。超时按
+      // 「本次列举未登记」处理：promotion 照常进行，可达性由 [getTask] 的回退读取
+      // 兜底，绝不因一次枚举失败而丢失整个下载能力。
+      final dartTasks = await _dart.listTasks().timeout(_resolutionTimeout);
+      for (final task in dartTasks) {
+        final id = task.id;
+        if (id != null) _taskOwner[id] = _dart;
+      }
+    } catch (e) {
+      debugPrint(
+        'LazyDownloadService: promotion 时列举 Dart 任务失败（$e），'
+        '已恢复任务暂不固定归属（getTask 有回退兜底）',
+      );
+    }
+  }
 
   /// 单飞解析：首个调用创建 `_resolve()`，其余调用复用其 Future。
   ///
@@ -187,6 +216,10 @@ class LazyDownloadService implements IDownloadService {
     _useRust = _rust != null;
 
     if (_useRust) {
+      // promotion 前必须先登记 Dart 侧现有任务（含应用启动时从 Floor 恢复、
+      // 未经 download() 的任务）的固定归属：否则切到 Rust 后它们会从
+      // getTask / watch / listTasks / 变更派发中"消失"。
+      await _pinDartTasks();
       _resolved = true;
       _resolution = null;
       if (!_resolutionEvents.isClosed) _resolutionEvents.add(null);
@@ -335,11 +368,79 @@ class LazyDownloadService implements IDownloadService {
   // 只读入口按任务的固定归属路由（不触发解析）：由 Dart 创建的任务即使路由已
   // promotion 到 Rust，仍可从 Dart 取回，不会"消失"。
 
+  /// 读取任务，按固定归属路由（不触发解析）。
+  ///
+  /// **回退读取**：若未固定归属、当前活跃实现不是 Dart，且活跃实现取不到该 id，
+  /// 则再向 Dart 读一次。promotion 后仍可能只有 Dart 侧存在该任务（启动时恢复
+  /// 但 [listTasks] 列举失败/竞态而未被固定归属）。回退**只读**——不解析、不安装、
+  /// 不修改归属，仅一次额外查询；固定归属的 id 不会进入回退分支。
   @override
-  Future<DownloadTask?> getTask(int id) => _implForTask(id).getTask(id);
+  Future<DownloadTask?> getTask(int id) async {
+    final impl = _implForTask(id);
+    final task = await impl.getTask(id);
+    if (task != null || identical(impl, _dart)) return task;
+    return _dart.getTask(id);
+  }
 
+  /// 列出全部任务。
+  ///
+  /// 无固定归属任务时（[_taskOwner] 为空）**与旧实现逐字节同语义**：直接代理
+  /// 当前活跃实现。一旦存在固定归属任务，则返回 Dart 与活跃实现的**并集**（按
+  /// id 去重，归属条目获胜，见 [_mergeByOwnership]），避免 promotion 后 Dart 侧
+  /// 遗留任务从下载面板消失。
   @override
-  Future<List<DownloadTask>> listTasks() => _active.listTasks();
+  Future<List<DownloadTask>> listTasks() async {
+    if (_taskOwner.isEmpty) return _active.listTasks();
+    final active = _active;
+    final dartTasks = await _dart.listTasks();
+    final rustTasks = identical(active, _dart)
+        ? const <DownloadTask>[]
+        : await active.listTasks();
+    return _mergeByOwnership(dartTasks, rustTasks);
+  }
+
+  /// 按 id 合并 Dart 与 Rust 任务列表。
+  ///
+  /// 优先级规则（确定性）：
+  /// - 某 id 在 [_taskOwner] 中有归属：由该归属实现的条目获胜
+  ///   （归属 Dart → Dart 条目；归属 Rust → Rust 条目）；
+  /// - 无归属的 id：优先 Dart（Dart 有则用 Dart，否则用 Rust）；
+  /// - 无 id 的任务（理论不应出现）按出现顺序追加，不做去重。
+  ///
+  /// 输出顺序：先 Dart 侧顺序，再补 Rust 独有的 id。
+  List<DownloadTask> _mergeByOwnership(
+    List<DownloadTask> dartTasks,
+    List<DownloadTask> rustTasks,
+  ) {
+    final merged = <int, DownloadTask>{};
+    final unkeyed = <DownloadTask>[];
+
+    // Dart 条目先入（无归属 id 的默认胜者）。
+    for (final task in dartTasks) {
+      final id = task.id;
+      if (id == null) {
+        unkeyed.add(task);
+      } else {
+        merged[id] = task;
+      }
+    }
+    // Rust 条目仅在「无归属」或「归属为 Rust」时覆盖/补齐。
+    for (final task in rustTasks) {
+      final id = task.id;
+      if (id == null) {
+        unkeyed.add(task);
+        continue;
+      }
+      final owner = _taskOwner[id];
+      if (owner == null) {
+        merged.putIfAbsent(id, () => task); // 无归属：Dart 优先
+      } else if (!identical(owner, _dart)) {
+        merged[id] = task; // 归属非 Dart（即 Rust）：Rust 条目获胜
+      }
+      // 归属为 Dart：保留已放入的 Dart 条目。
+    }
+    return <DownloadTask>[...merged.values, ...unkeyed];
+  }
 
   // ---------------------------------------------------------------------------
   // 事件流：单条长期订阅，解析后原地换源
@@ -353,28 +454,45 @@ class LazyDownloadService implements IDownloadService {
     if (owner != null) {
       return owner.watch(id);
     }
-    // 未固定 id：保持原有"先 Dart、解析终态后原地换源 Rust"的语义。
-    return _mergedStream(() => _dart.watch(id), () => _rust!.watch(id));
+    // 未固定 id：先绑定 Dart；若 promotion 把该 id 固定归属 Dart（恢复任务），
+    // 则**不换源**，同一条订阅继续投递 Dart 事件。
+    return _mergedStream(
+      () => _dart.watch(id),
+      () => _rust!.watch(id),
+      taskId: id,
+    );
   }
 
+  /// 全局任务流。
+  ///
+  /// 复用同一条「先 Dart、解析终态后按固定归属决定去向」的长期流：无固定归属
+  /// 任务时与旧实现逐字节同语义（只换源）；一旦存在固定归属任务（promotion 时
+  /// 登记，含 Floor 恢复任务），则在换源/初始绑定时**并集** Dart 与 Rust，避免
+  /// Dart 侧遗留任务的更新被冻结。
   @override
   Stream<DownloadTask> watchAll() =>
       _mergedStream(() => _dart.watchAll(), () => _rust!.watchAll());
 
-  /// 构造一条"先 Dart、解析后切 Rust"的长期流。
+  /// 构造一条"先 Dart、解析后原地换源 Rust"的长期流。
   ///
   /// 关键点：
   /// - 立即订阅 Dart（回退事件不断流）；
-  /// - 解析**终态**后取消 Dart 内层订阅，改订阅 Rust；同一条外层订阅继续投递；
+  /// - 解析**终态**后按**固定归属**决定去向：若 [taskId] 被固定到 Dart，保持
+  ///   Dart 订阅不换源；[taskId] 为 null（[watchAll]）且已存在固定归属任务时，
+  ///   保留 Dart 订阅并**叠加** Rust（并集）；其余情况取消 Dart、改订阅 Rust；
+  ///   同一条外层订阅继续投递；
   /// - 超时可恢复期间持续保留 Dart 订阅，待后续重试成功后仍能换源；
   /// - [onListen] 绝不调用 [_ensureResolved]，所以订阅 `watchAll` 不触发安装；
-  /// - 已解析后再订阅，直接绑定当前活跃实现。
+  /// - 已解析后再订阅，直接绑定当前活跃实现（[watchAll] 在存在固定归属任务时
+  ///   同时绑定 Dart 与活跃实现）。
   Stream<DownloadTask> _mergedStream(
     Stream<DownloadTask> Function() dartStream,
-    Stream<DownloadTask> Function() rustStream,
-  ) {
+    Stream<DownloadTask> Function() rustStream, {
+    int? taskId,
+  }) {
     late StreamController<DownloadTask> controller;
-    StreamSubscription<DownloadTask>? sub;
+    StreamSubscription<DownloadTask>? dartSub;
+    StreamSubscription<DownloadTask>? rustSub;
     StreamSubscription<void>? resolutionSub;
     var closed = false;
     var dartDone = false;
@@ -391,14 +509,29 @@ class LazyDownloadService implements IDownloadService {
       if (!controller.isClosed) controller.close();
     }
 
+    bool noSubs() => dartSub == null && rustSub == null;
+
     void bindDart() {
-      sub = dartStream().listen(
+      dartSub = dartStream().listen(
         add,
         onError: addError,
         onDone: () {
+          dartSub = null;
           dartDone = true;
-          // 解析终态时照实结束；未终态（例如超时重试冷却中）保持外层存活。
-          if (_resolved) close();
+          // 解析终态且已无其它源时照实结束；未终态（超时重试冷却中）或仍有
+          // Rust 订阅（并集）时保持外层存活。
+          if (_resolved && noSubs()) close();
+        },
+      );
+    }
+
+    void bindRust() {
+      rustSub = rustStream().listen(
+        add,
+        onError: addError,
+        onDone: () {
+          rustSub = null;
+          if (noSubs()) close();
         },
       );
     }
@@ -407,53 +540,73 @@ class LazyDownloadService implements IDownloadService {
       if (closed) return;
       final rust = _rust;
       if (_resolved && _useRust && rust != null) {
-        final old = sub;
-        sub = null;
-        if (old != null) {
-          await old.cancel();
+        // 本流关心的 id 已固定归属 Dart：保持 Dart 订阅，绝不换源。
+        if (taskId != null && identical(_taskOwner[taskId], _dart)) return;
+        // watchAll 且已有固定归属任务：保留 Dart 并叠加 Rust（并集）。
+        if (taskId == null && _taskOwner.isNotEmpty) {
+          if (rustSub == null) bindRust();
+          return;
         }
+        // 其余：取消 Dart，换源 Rust。
+        final old = dartSub;
+        dartSub = null;
+        if (old != null) await old.cancel();
         if (closed) return;
-        sub = rustStream().listen(add, onError: addError, onDone: close);
+        if (rustSub == null) bindRust();
         return;
       }
-      // 解析已永久回退 Dart：Dart 流若已结束，同步结束外层流。
+      // 解析已永久回退 Dart：Dart 流若已结束且无其它源，同步结束外层流。
       // 未终态（超时重试冷却中）则什么都不做，保持 Dart 订阅等待后续结果。
-      if (_resolved && dartDone) close();
+      if (_resolved && dartDone && noSubs()) close();
+    }
+
+    void bindInitial() {
+      if (_resolved) {
+        if (_useRust && _rust != null) {
+          // 单任务若已固定归属 Dart 必绑 Dart；watchAll 有固定归属任务时并集
+          // （Dart + Rust）；否则绑 Rust。
+          if (taskId != null && identical(_taskOwner[taskId], _dart)) {
+            bindDart();
+          } else if (taskId == null && _taskOwner.isNotEmpty) {
+            bindDart();
+            bindRust();
+          } else {
+            bindRust();
+          }
+        } else {
+          bindDart();
+        }
+        return;
+      }
+      bindDart();
+      // 超时可能只产生「可恢复」结果，故持续监听直到解析真正终态。
+      resolutionSub = _resolutionEvents.stream.listen(
+        (_) {
+          switchToResolved();
+          if (_resolved) {
+            resolutionSub?.cancel();
+            resolutionSub = null;
+          }
+        },
+        onError: (Object error, StackTrace stack) {
+          debugPrint('LazyDownloadService: 解析事件流异常（$error）');
+        },
+      );
     }
 
     controller = StreamController<DownloadTask>(
-      onListen: () {
-        if (_resolved) {
-          if (_useRust && _rust != null) {
-            sub = rustStream().listen(add, onError: addError, onDone: close);
-          } else {
-            bindDart();
-          }
-          return;
-        }
-        bindDart();
-        // 超时可能只产生「可恢复」结果，故持续监听直到解析真正终态。
-        resolutionSub = _resolutionEvents.stream.listen(
-          (_) {
-            switchToResolved();
-            if (_resolved) {
-              resolutionSub?.cancel();
-              resolutionSub = null;
-            }
-          },
-          onError: (Object error, StackTrace stack) {
-            debugPrint('LazyDownloadService: 解析事件流异常（$error）');
-          },
-        );
-      },
+      onListen: bindInitial,
       onCancel: () async {
         closed = true;
         final resSub = resolutionSub;
         resolutionSub = null;
         await resSub?.cancel();
-        final old = sub;
-        sub = null;
-        await old?.cancel();
+        final oldDart = dartSub;
+        dartSub = null;
+        await oldDart?.cancel();
+        final oldRust = rustSub;
+        rustSub = null;
+        await oldRust?.cancel();
       },
     );
 
