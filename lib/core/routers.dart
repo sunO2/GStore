@@ -12,6 +12,7 @@ class AppRoute {
   static String fdroidRepo = "/GStore/fdroidRepo";
   static String logViewer = "/GStore/logViewer";
   static String qrTool = "/GStore/qrTool";
+  static String proxy = "/GStore/proxy";
   static String appSnapshotList = "/GStore/appSnapshotList";
   static String itTools = "/GStore/itTools";
   static String settings = "/GStore/settings";

@@ -89,6 +89,10 @@ final GoRouter appRouter = GoRouter(
       builder: (context, state) => const QrToolPage(),
     ),
     GoRoute(
+      path: AppRoute.proxy,
+      builder: (context, state) => const ProxyHomePage(),
+    ),
+    GoRoute(
       path: AppRoute.appSnapshotList,
       builder: (context, state) => const AppSnapshotAppsPage(),
     ),
