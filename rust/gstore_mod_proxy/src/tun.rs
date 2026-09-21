@@ -60,6 +60,7 @@ const STACK_BUFFER_SIZE: usize = 1024;
 const UDP_BUFFER_SIZE: usize = 256;
 const INGRESS_CHANNEL: usize = 256;
 const CORE_DONE_TIMEOUT: Duration = Duration::from_secs(3);
+const ENGINE_READY_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// A live loop: the dedicated thread plus its stop signal.
 struct ActiveLoop {
@@ -194,9 +195,24 @@ pub(crate) fn ensure_pending_from_last() -> Result<(), ModuleError> {
     Ok(())
 }
 
+/// `core.start` (vpn mode) without an explicit proxy registry. See
+/// [`start_with_proxies`].
+pub(crate) fn start(instance_id: u64) -> Result<bool, ModuleError> {
+    start_with_proxies(instance_id, None)
+}
+
 /// `core.start` (vpn mode): spawn the single reader loop if not already running.
 /// Returns `false` when a loop was already live (idempotent no-op).
-pub(crate) fn start(instance_id: u64) -> Result<bool, ModuleError> {
+///
+/// `proxies` (Todo 13) is the generated `name -> Arc<dyn Proxy>` registry
+/// (leaf nodes **and** groups). It is published into the tunnel right after the
+/// engine is built and **before** any flow is admitted, so no packet can be
+/// matched against an empty registry. When `None` only meow's built-in
+/// DIRECT/REJECT adapters exist.
+pub(crate) fn start_with_proxies(
+    instance_id: u64,
+    proxies: Option<crate::config::ProxyMap>,
+) -> Result<bool, ModuleError> {
     let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
     if st.active.is_some() {
         return Ok(false);
@@ -213,7 +229,7 @@ pub(crate) fn start(instance_id: u64) -> Result<bool, ModuleError> {
     let join = match std::thread::Builder::new()
         .name(LOOP_THREAD_NAME.to_string())
         .spawn(move || {
-            run_thread(owned, stop_rx);
+            run_thread(owned, stop_rx, proxies);
             RUNNING.fetch_sub(1, Ordering::SeqCst);
         }) {
         Ok(join) => join,
@@ -232,6 +248,19 @@ pub(crate) fn start(instance_id: u64) -> Result<bool, ModuleError> {
         host_fd,
         instance_id,
     });
+    drop(st);
+
+    // `core.start` reports a live engine: the routing engine (and the generated
+    // proxy registry) is built inside the loop thread, so wait for the tunnel
+    // handle to appear before returning. A bounded wait keeps a failed build
+    // from hanging the caller.
+    let deadline = std::time::Instant::now() + ENGINE_READY_TIMEOUT;
+    while crate::rules::active_tunnel().is_none() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    if crate::rules::active_tunnel().is_none() {
+        crate::log_message(3, "proxy: TUN loop did not publish the engine before start returned");
+    }
     Ok(true)
 }
 
@@ -318,7 +347,11 @@ pub(crate) fn reset_read_count() {
 // Dedicated thread + async loop
 // ---------------------------------------------------------------------------
 
-fn run_thread(owned: OwnedFd, stop_rx: watch::Receiver<bool>) {
+fn run_thread(
+    owned: OwnedFd,
+    stop_rx: watch::Receiver<bool>,
+    proxies: Option<crate::config::ProxyMap>,
+) {
     let rt = match crate::bounded_runtime() {
         Ok(rt) => rt,
         Err(e) => {
@@ -326,7 +359,7 @@ fn run_thread(owned: OwnedFd, stop_rx: watch::Receiver<bool>) {
             return;
         }
     };
-    rt.block_on(tun_loop(owned, stop_rx));
+    rt.block_on(tun_loop(owned, stop_rx, proxies));
     drop(rt); // joins the 4 bounded worker threads deterministically
     crate::log_message(1, "proxy: TUN loop thread exited");
 }
@@ -335,7 +368,11 @@ fn run_thread(owned: OwnedFd, stop_rx: watch::Receiver<bool>) {
 /// `tokio::spawn` uses `Handle::current()` = our 4 workers), then runs three
 /// tasks: the single fd reader, the ingress pump (fd → stack), and the egress
 /// pump (stack → fd). Only the reader ever calls `read()`.
-async fn tun_loop(owned: OwnedFd, mut stop_rx: watch::Receiver<bool>) {
+async fn tun_loop(
+    owned: OwnedFd,
+    mut stop_rx: watch::Receiver<bool>,
+    proxies: Option<crate::config::ProxyMap>,
+) {
     let built = meow_lwip::NetStack::with_buffer_size(STACK_BUFFER_SIZE, UDP_BUFFER_SIZE);
     let (stack, tcp_listener, udp) = match built {
         Ok(v) => v,
@@ -436,6 +473,13 @@ async fn tun_loop(owned: OwnedFd, mut stop_rx: watch::Receiver<bool>) {
     let protect_installed = crate::protect::install(crate::host_protect_fd());
     let dns_engine = crate::dns::ensure_engine().await;
     let engine = crate::dispatch::build_engine(dns_engine.resolver());
+    if let Some(map) = proxies {
+        let count = map.len();
+        if let Some(tunnel) = crate::rules::active_tunnel() {
+            crate::nodes::install_proxies(&tunnel, map);
+            crate::log_message(1, &format!("proxy: installed {count} proxies/groups"));
+        }
+    }
     let dispatcher = crate::dispatch::spawn(engine, tcp_listener, udp, Some(Arc::clone(&dns_engine)));
     crate::log_message(
         1,

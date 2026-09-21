@@ -286,6 +286,17 @@ pub(crate) fn detach_tunnel() {
     *tunnel_cell().lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
+/// The raw rule lines currently configured (Todo 9's state). Todo 13 renders
+/// them into the generated config's `rules:` block when no per-call overlay is
+/// supplied.
+pub(crate) fn current_lines() -> Vec<String> {
+    state()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .raw_rules
+        .clone()
+}
+
 #[cfg(test)]
 pub(crate) fn reset_for_tests() {
     *state().lock().unwrap_or_else(|e| e.into_inner()) = RulesState::default();

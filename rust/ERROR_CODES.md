@@ -72,6 +72,9 @@
 | `PROXY_PROFILE_STORE_FAILED` | proxy | 500 | profile 存储 I/O / 原子写（temp+fsync+rename）失败（Todo 12） |
 | `PROXY_PROFILE_CORRUPT` | proxy | —（`list` 行内 warning）/ 500（`get`） | 单个 payload/index 文件不可解析；`profile.list` 跳过该文件并回报结构化 warning，`profile.get` 返回 500（Todo 12） |
 | `PROXY_PROFILE_MISSING` | proxy | —（`list` 行内 warning） | index 引用的 payload 文件已不存在；`profile.list` 回报结构化 warning（Todo 12） |
+| `PROXY_CONFIG_PROFILE_REQUIRED` | proxy | 422 | `config.generate`/`profile.export_clash` 时既无 `profileId` 也无已存储 profile（或实例 `data_dir` 为空）（Todo 13） |
+| `PROXY_CONFIG_INVALID` | proxy | 422 | 配置 overlay 非法（如 `mtu` 低于 1280）或生成的文档解析失败（Todo 13） |
+| `PROXY_CONFIG_NODE_UNSUPPORTED` | proxy | —（行内 warning） | 规范模型中的节点类型无法由当前启用的协议集重建/构建；该节点仍写入 YAML，但在 registry 构建时被跳过，不中断启动（Todo 13） |
 
 ## 跨 ABI 错误透传
 

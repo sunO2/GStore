@@ -90,11 +90,18 @@ Request: *(none)*
 
 | method | request | data |
 |---|---|---|
-| `core.start` | `{ "mode": "vpn"\|"lanProxy", "config"?: object }` | `{ "state":"starting"\|"running", "mode":"vpn", "profileId"?: string }` |
+| `core.start` | `{ "mode": "vpn"\|"lanProxy", "profileId"?: string, "stack"?: string, "mtu"?: number, "dns"?: object, "rules"?: [string] }` | `{ "state":"running", "mode":"vpn", "instanceId": number, "spawned": bool, "profileId"?: string, "proxies"?: number, "groups"?: number, "rules"?: number, "overlays"?: { "stack": string, "mtu": number }, "warnings"?: [Warning] }` |
 | `core.stop` | *(none)* | `{ "state": "stopped" }` |
-| `core.restart` | `{ "mode"?: string }` | `{ "state": "running", "mode": string }` |
+| `core.restart` | same as `core.start` | same as `core.start` |
 | `core.set_mode` | `{ "mode": "off"\|"vpn"\|"lanProxy" }` | `{ "ok": true, "mode": "vpn", "previous": "off" }` |
 | `core.get_mode` | *(none)* | `{ "mode": "off", "state": "stopped", "sinceMs": 0 }` |
+
+`core.start` (Todo 13) builds the engine from the generated config before it
+reports `running`: profile → proxy registry → rules → DNS → TUN loop (which
+consumes the already-installed fd last). With a stored profile and no explicit
+`profileId` it generates from the first profile; with no profile at all it still
+starts with meow's built-in DIRECT/REJECT fallback. `core.restart` re-runs the
+same generation/re-publish path on a fresh tunnel.
 
 `core.set_mode` is idempotent (same mode ⇒ no-op) and serialized on one mutation lane (Todo 29).
 
@@ -132,6 +139,7 @@ app backup/restore hook.
 | `profile.update` | `{ "id": string, "profile"?: ImportedProfile, "name"?: string, "appBackup"?: object\|null, "refresh"?: { "state": "requested"\|"done"\|"failed", "error"?: string } }` | `StoredProfile` |
 | `profile.delete` | `{ "id": string }` | `{ "ok": true, "id": string, "deleted": true }` |
 | `profile.refresh` | `{ "id": string }` | `RefreshPlan` |
+| `profile.export_clash` | `{ "id": string, "stack"?: string, "mtu"?: number, "dns"?: object, "rules"?: [string] }` | `GeneratedConfig` (see §2.5) |
 
 `profile.import_url` fetches over **meow's protect-aware transport** — the same
 path as every outbound socket, so `VpnService.protect` applies even in VPN mode;
@@ -285,13 +293,57 @@ Events: `profile.create` → `proxy.subscription.added`,
 `profile.delete` → `proxy.subscription.removed` (§3). `profile.refresh` emits
 no event — Todo 14 owns the refresh-with-events flow.
 
-### 2.5 `config.generate` — render the engine config
+### 2.5 `config.generate` / `config.apply` — render & hot-apply the engine config (Todo 13)
 
-Request: `{ "profileId"?: string, "mode"?: "vpn"\|"lanProxy" }`
+| method | request | data |
+|---|---|---|
+| `config.generate` | `GenerateRequest` | `GeneratedConfig` |
+| `config.apply` | `GenerateRequest` | `GeneratedConfig` + `{ "applied": true, "rules": number }` |
+| `profile.export_clash` | `{ "id": string, ...GenerateRequest }` | `GeneratedConfig` |
 
+`GenerateRequest`:
 ```json
-{ "ok": true, "data": { "config": { }, "hash": "sha256hex", "generatedAtMs": 0 } }
+{
+  "profileId"?: "p1",
+  "stack"?: "system" | "gvisor" | "mixed",
+  "mtu"?: 1500,
+  "dns"?: { "mode": "fake-ip", "nameservers": ["1.1.1.1"], ... },
+  "rules"?: ["DOMAIN-SUFFIX,example.com,PROXY", "MATCH,DIRECT"]
+}
 ```
+
+`GeneratedConfig`:
+```json
+{
+  "config": "mode: rule\n…\n",          // the generated Clash YAML document
+  "format": "clash",
+  "template": "gstore-controlled-v1",
+  "profileId": "p1",
+  "profileName": "Fixture",
+  "hash": "<sha256-hex-of-config>",
+  "generatedAtMs": 0,
+  "counts": { "proxies": 2, "groups": 1, "rules": 1 },
+  "overlays": { "stack": "gvisor", "mtu": 1500 },
+  "warnings": [
+    { "code": "PROXY_CONFIG_NODE_UNSUPPORTED", "node": "h1",
+      "message": "node 'h1' was not built: …" }
+  ]
+}
+```
+
+`config.generate` is pure: it reads the stored profile, the module's DNS config
+(Todo 8) and the configured rule lines (Todo 9) and renders the template. When
+`profileId` is omitted the first profile in stable store order is used; with no
+stored profile it returns `PROXY_CONFIG_PROFILE_REQUIRED` (422).
+`profile.export_clash` is the same document addressed by a required `id`.
+
+`config.apply` regenerates and **hot-applies** in one step: it requires a
+running tunnel, publishes the new ruleset (preserving proxies), then installs
+the fresh proxy registry (preserving rules), and emits `proxy.config.applied`.
+The engine is not restarted and the TUN loop is not re-created. Without a
+running engine it returns `PROXY_NOT_CONFIGURED` (409).
+
+Template guarantees are in §13.
 
 ### 2.6 `node.*` — selection & latency (Todo 10)
 
@@ -556,6 +608,7 @@ side filters on the `proxy.` prefix. `instanceId` is always present.
 | `proxy.log` | `LogRecord` (see §2.8) |
 | `proxy.dns` | `DnsQueryRecord` (see §2.7) — one record per DNS query answered by the TUN DNS hijack; carries the domain→IP mapping for the Todo 16 domain-statistics path (Todo 8; Todo 15/16 consume it). |
 | `proxy.tun.released` | `{ "fd": 123 }` — TUN read loop stopped and its thread joined; the host may clear its cached fd and Kotlin may close the PFD (Todo 6). Host-internal control event; Dart may ignore it. |
+| `proxy.config.applied` | `{ "profileId": string, "hash": string, "template": string }` — `config.apply` hot-applied a new config on the running engine without a process restart (Todo 13). |
 
 ## 4. Host → module events (`on_event`)
 
@@ -575,8 +628,11 @@ registered in `rust/ERROR_CODES.md`.
 | `METHOD_NOT_FOUND` | 405 | unknown method (protocol) |
 | `INVALID_ARGUMENT` | 422 | bad payload (protocol) |
 | `INSTANCE_NOT_FOUND` | 410 | dead instance (protocol) |
-| `PROXY_NOT_CONFIGURED` | 409 | start without a selected profile |
+| `PROXY_NOT_CONFIGURED` | 409 | engine/tunnel not running when `node.*`/`conn.list`/`config.apply` is called |
 | `PROXY_TUN_FD_INVALID` | 422 | invalid/closed TUN fd (Todo 6) |
+| `PROXY_CONFIG_PROFILE_REQUIRED` | 422 | `config.generate`/`profile.export_clash` with no stored profile and no `profileId`, or an instance with an empty data dir (Todo 13) |
+| `PROXY_CONFIG_INVALID` | 422 | config overlay invalid (e.g. `mtu` below 1280) or the generated document failed to parse (Todo 13) |
+| `PROXY_CONFIG_NODE_UNSUPPORTED` | — (in-line warning) | a canonical node type the enabled protocol set cannot reconstruct/build; the node is emitted in the YAML but skipped at registry build, without aborting startup (Todo 13) |
 | `PROXY_PERMISSION_DENIED` | 403 | VPN consent missing/revoked (Todo 4/24) |
 | `PROXY_PROFILE_NOT_FOUND` | 404 | unknown profile id |
 | `PROXY_PROFILE_INVALID` | 422 | invalid store request: missing/empty profile, malformed id, duplicate id, bad refresh state (Todo 12) |
@@ -1094,4 +1150,82 @@ payload directory; `profile.refresh` persisting the flag and returning the fetch
 spec; and structured errors for unknown/traversal/duplicate ids and a newer
 schema. **UNVERIFIED**: on-device storage/`adb` reload (no device) — the store
 is exercised against host temp directories only.
+
+## 13. Generated engine config & lifecycle (Todo 13)
+
+### 13.1 We author the template
+
+`config.generate` / `profile.export_clash` always render **our own** controlled
+Clash template from the whitelisted canonical model (Todo 11/12) plus
+module-owned overlays. Raw provider YAML is never handed to the engine — the
+community pitfall is that injected rules/groups in a provider document are
+ignored (or worse, a hostile document smuggles configuration in).
+
+The document contains exactly:
+
+| block | source |
+|---|---|
+| `proxies` | stored `ImportedProfile.nodes`, reconstructed field-by-field |
+| `proxy-groups` | stored `ImportedProfile.groups` (+ a synthesized `PROXY` select group when absent) |
+| `rules` | the `rules` overlay, else Todo 9's current rule lines, else `MATCH,DIRECT` |
+| `dns` | Todo 8's effective `DnsConfig` (with the request's partial overlay merged) |
+| `tun` | `enable: true` + `stack` + `mtu` only |
+| `hosts` | Todo 8's static host map (when non-empty) |
+| `mode` / `log-level` | fixed (`rule` / `warning`) |
+
+**Pinned guarantees:**
+
+- `external-controller` and `secret` are **never** emitted. The module runs no
+  control server, and a subscription cannot configure a control port/secret.
+- `proxy-providers`, `rule-providers`, `script` nodes, and any
+  `dns`/`tun`/`external-controller` field from imported content are **not**
+  merged: the DNS/tun blocks are module-owned.
+- `tun.file-descriptor` is **not** emitted. meow's `RawTun` has no such field;
+  generating it would be silently ignored. The fd is injected out-of-band into
+  our netstack pump (Todo 6/tun.rs).
+- `stack` defaults to `gvisor`; `mtu` defaults to 1500 and must be ≥ 1280
+  (matching meow's hard minimum) or `PROXY_CONFIG_INVALID` (422).
+
+### 13.2 Registry build & selector persistence
+
+`build_registry` reconstructs meow's `name -> Arc<dyn Proxy>` map: the built-in
+`DIRECT`/`REJECT`/`REJECT-DROP` adapters, every leaf node via
+`meow_config::proxy_parser::parse_proxy_provider_node` (external SIP003 plugins
+rejected), then every group via `parse_proxy_group_lenient_with_store` with a
+multi-pass dependency resolver, and finally an auto-created `GLOBAL` selector.
+Groups are wired to the process-wide `SelectorStore` opened by
+`nodes::ensure_selector_store(<data_dir>/selector.json)` (first `open()` wins),
+so user picks persist across rebuilds. A node or group that cannot be built is
+reported as a warning and skipped — never fatal.
+
+Protocol features enabled on `meow-config`: `ss`, `trojan`, `vless`,
+`vless-vision`, `vmess` (plus `http`/`socks5`, which need no feature). Nodes of
+other canonical types (`hysteria2`, `snell`, `anytls`, `tuic`, `ssr`,
+`wireguard`) are still emitted in the YAML but skipped with
+`PROXY_CONFIG_NODE_UNSUPPORTED` until their features/dependencies are enabled.
+
+### 13.3 `core.start` step order (pinned)
+
+```
+profile.load -> config.generate -> proxy registry -> rules.reload -> dns
+             -> tun loop (consumes the already-installed TUN fd last)
+```
+
+`core.start` waits (bounded) for the loop to publish the routing engine before
+returning `running`, so a subsequent `node.select` sees the live registry.
+`core.restart` re-runs the same path on a fresh tunnel (re-publishing proxies);
+`config.apply` swaps rules then proxies on the **existing** tunnel.
+
+### 13.4 Verification status
+
+`cargo test -p gstore_mod_proxy` proves: the generated YAML has
+`proxies`/`proxy-groups`/`rules`/`dns`/`tun.enable` and none of
+`external-controller`/`secret`/`proxy-providers`/`file-descriptor`; the tun
+block carries only `stack`/`mtu`; `mtu < 1280` is a structured 422; the registry
+builds leaves+groups+built-ins and uses the store; an unsupported node is
+warned and skipped without aborting; and the full C-ABI flow (generate →
+start → `node.select` → unreachable-node `node.delay_test` → `config.apply`
+without a restart → stop) reaches `running`. **UNVERIFIED**: on-device
+engine/TUN start (no adb device) — proven against the host socketpair harness
+only.
 

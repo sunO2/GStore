@@ -19,7 +19,17 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 meow-common = { git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587442caaac00b221efc91c84907aeb0e0" }
 meow-tunnel = { git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587442caaac00b221efc91c84907aeb0e0" }
-meow-config = { git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587442caaac00b221efc91c84907aeb0e0", default-features = false }
+# Todo 13: the config generator builds real `Arc<dyn Proxy>` adapters through
+# `meow_config::proxy_parser::parse_proxy`, whose protocol arms are gated behind
+# this crate's features. `default-features = false` (Todo 2) left every protocol
+# arm compiled out, so the engine could only ever build DIRECT/REJECT. Enable
+# exactly the protocol set the module's canonical model can faithfully
+# reconstruct from its whitelisted fields. `hysteria2` (quiche), `snell`
+# (psk), `anytls`, `mux`, `ech-tls-tunnel` and `vless-encryption` stay OFF to
+# bound the Android binary/dependency surface; nodes of those types are still
+# emitted in the generated YAML but reported as `PROXY_CONFIG_NODE_UNSUPPORTED`
+# and skipped without aborting startup (see API.md §13).
+meow-config = { git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587442caaac00b221efc91c84907aeb0e0", default-features = false, features = ["ss", "trojan", "vless", "vless-vision", "vmess"] }
 meow-proxy = { git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587442caaac00b221efc91c84907aeb0e0", default-features = false }
 meow-dns = { git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587442caaac00b221efc91c84907aeb0e0", default-features = false }
 # DomainTrie is required to construct `meow_dns::Resolver` (its `hosts` arg).

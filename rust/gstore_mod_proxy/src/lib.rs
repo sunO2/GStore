@@ -33,6 +33,7 @@ use gstore_contract::abi::{
 use gstore_contract::context::ModuleContext;
 use gstore_contract::error::{ModuleError, StatusCode};
 
+mod config;
 mod conn;
 mod dispatch;
 mod dns;
@@ -343,6 +344,8 @@ const EVT_SUBSCRIPTION_UPDATED: &str = "proxy.subscription.updated";
 const EVT_SUBSCRIPTION_REMOVED: &str = "proxy.subscription.removed";
 /// 模块 → 宿主：TUN 读取循环已停止且线程已 join，宿主可清缓存 fd（Kotlin 可关闭）。
 const EVT_TUN_RELEASED: &str = "proxy.tun.released";
+/// 模块 → 宿主：`config.apply` 已在运行的引擎上热应用新配置（无需进程重启）。
+const EVT_CONFIG_APPLIED: &str = "proxy.config.applied";
 
 /// 运行状态机（Todo 2 占位；Todo 6/29 驱动真实 start/stop）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -608,7 +611,7 @@ fn core_start_arm(
     let mode = parse_mode(payload);
     match mode {
         ProxyMode::Vpn => {
-            let spawned = tun::start(inst.id)?;
+            let (spawned, summary) = start_engine(&inst, payload)?;
             set_state(&inst, ProxyRunState::Running);
             set_mode(&inst, ProxyMode::Vpn);
             log_message(
@@ -616,9 +619,11 @@ fn core_start_arm(
                 &format!("proxy: core.start vpn instance={} spawned={spawned}", inst.id),
             );
             emit_state(inst.id, ProxyRunState::Running, ProxyMode::Vpn, None);
-            ok_data(serde_json::json!({
-                "state": "running", "mode": "vpn", "instanceId": inst.id,
-            }))
+            let mut data = serde_json::json!({
+                "state": "running", "mode": "vpn", "instanceId": inst.id, "spawned": spawned,
+            });
+            merge_engine_summary(&mut data, &summary);
+            ok_data(data)
         }
         ProxyMode::Off => core_stop_arm(instance_id, Some(inst)),
         ProxyMode::LanProxy => Err(ModuleError::new(
@@ -626,6 +631,83 @@ fn core_start_arm(
             "PROXY_NO_INBOUND",
             "lanProxy inbound listener is not implemented yet (Todo 28)",
         )),
+    }
+}
+
+/// Start-order (pinned, `core.start` vpn): generated profile config → proxy
+/// registry (leaves + groups, via Todo 10's `install_proxies`) → rules →
+/// DNS → ring the TUN loop, which consumes the already-installed fd last.
+fn start_engine(
+    inst: &Arc<ProxyInstance>,
+    payload: &[u8],
+) -> Result<(bool, Option<serde_json::Value>), ModuleError> {
+    let req = config::parse_request(payload)?;
+    let generated = config::try_generate(&inst.data_dir, &inst.cache_dir, &req)?;
+    let Some(generated) = generated else {
+        return Ok((tun::start_with_proxies(inst.id, None)?, None));
+    };
+
+    apply_dns_overlay(req.dns.as_ref())?;
+    rules::reload(
+        &inst.data_dir,
+        &inst.cache_dir,
+        &config::reload_payload(&generated.yaml),
+    )?;
+    let (map, mut warnings) = config::build_registry(&generated.raw, selector_store(inst).as_ref());
+    warnings.extend(generated.warnings.iter().cloned());
+    let spawned = tun::start_with_proxies(inst.id, Some(map))?;
+    log_message(
+        1,
+        &format!(
+            "proxy: core.start generated profile={:?} nodes={} groups={} rules={} warnings={}",
+            generated.profile_id,
+            generated.node_count,
+            generated.group_count,
+            generated.rule_count,
+            warnings.len()
+        ),
+    );
+    Ok((spawned, Some(engine_summary(&generated, &warnings))))
+}
+
+fn selector_store(inst: &Arc<ProxyInstance>) -> Option<Arc<meow_proxy::SelectorStore>> {
+    if inst.data_dir.trim().is_empty() {
+        return None;
+    }
+    Some(nodes::ensure_selector_store(&inst.data_dir))
+}
+
+fn apply_dns_overlay(overlay: Option<&serde_json::Value>) -> Result<(), ModuleError> {
+    let Some(value) = overlay else {
+        return Ok(());
+    };
+    let mut cfg = dns::config();
+    let bytes = serde_json::to_vec(value)
+        .map_err(|e| ModuleError::invalid_arg(format!("dns overlay encode: {e}")))?;
+    cfg.apply_patch(&bytes)?;
+    dns::set_config(cfg)?;
+    Ok(())
+}
+
+fn engine_summary(generated: &config::GeneratedConfig, warnings: &[config::ConfigWarning]) -> serde_json::Value {
+    serde_json::json!({
+        "profileId": generated.profile_id,
+        "profileName": generated.profile_name,
+        "hash": generated.hash,
+        "template": config::TEMPLATE_ID,
+        "proxies": generated.node_count,
+        "groups": generated.group_count,
+        "rules": generated.rule_count,
+        "overlays": { "stack": generated.stack, "mtu": generated.mtu },
+        "warnings": warnings,
+    })
+}
+
+fn merge_engine_summary(data: &mut serde_json::Value, summary: &Option<serde_json::Value>) {
+    let Some(summary) = summary else { return };
+    let Some(object) = summary.as_object() else { return };
+    for (key, value) in object {
+        data[key] = value.clone();
     }
 }
 
@@ -653,7 +735,7 @@ fn core_stop_arm(
 fn core_restart_arm(
     instance_id: u64,
     instance: Option<Arc<ProxyInstance>>,
-    _payload: &[u8],
+    payload: &[u8],
 ) -> Result<Vec<u8>, ModuleError> {
     let inst = require_instance(instance_id, instance)?;
     if let Some(s) = tun::stop() {
@@ -663,11 +745,13 @@ fn core_restart_arm(
     // last known host fd if it is still open, so restart works without a new
     // nativeSetTunFd (if Kotlin already closed it we surface PROXY_TUN_FD_INVALID).
     tun::ensure_pending_from_last()?;
-    tun::start(inst.id)?;
+    let (spawned, summary) = start_engine(&inst, payload)?;
     set_state(&inst, ProxyRunState::Running);
     set_mode(&inst, ProxyMode::Vpn);
     emit_state(inst.id, ProxyRunState::Running, ProxyMode::Vpn, Some("restart"));
-    ok_data(serde_json::json!({ "state": "running", "mode": "vpn" }))
+    let mut data = serde_json::json!({ "state": "running", "mode": "vpn", "spawned": spawned });
+    merge_engine_summary(&mut data, &summary);
+    ok_data(data)
 }
 
 fn core_get_mode_arm(
@@ -811,8 +895,92 @@ fn rules_reload_arm(
     ok_data(snapshot)
 }
 
-/// `node.select`: apply a user choice to a selector/url-test/fallback group,
-/// then emit `proxy.state` carrying the effective outbound (Todo 10).
+/// `config.generate` (Todo 13): render the controlled Clash template for a
+/// stored profile without touching the running engine.
+fn config_generate_arm(
+    instance_id: u64,
+    instance: Option<Arc<ProxyInstance>>,
+    payload: &[u8],
+) -> Result<Vec<u8>, ModuleError> {
+    let inst = require_instance(instance_id, instance)?;
+    let generated = config::generate_for(
+        &inst.data_dir,
+        &inst.cache_dir,
+        &config::parse_request(payload)?,
+    )?;
+    ok_data(generated.to_data())
+}
+
+/// `config.apply` (Todo 13): regenerate the config from a profile and hot-apply
+/// it to the running engine — rules, then the proxy registry — without a
+/// process restart.
+fn config_apply_arm(
+    instance_id: u64,
+    instance: Option<Arc<ProxyInstance>>,
+    payload: &[u8],
+) -> Result<Vec<u8>, ModuleError> {
+    let inst = require_instance(instance_id, instance)?;
+    let tunnel = rules::active_tunnel().ok_or_else(|| {
+        ModuleError::new(
+            StatusCode::InvalidArgument,
+            nodes::ERR_NOT_CONFIGURED,
+            "engine is not running; call core.start before config.apply",
+        )
+    })?;
+    let req = config::parse_request(payload)?;
+    let generated = config::generate_for(&inst.data_dir, &inst.cache_dir, &req)?;
+    apply_dns_overlay(req.dns.as_ref())?;
+    let snapshot = rules::reload(
+        &inst.data_dir,
+        &inst.cache_dir,
+        &config::reload_payload(&generated.yaml),
+    )?;
+    let (map, mut warnings) = config::build_registry(&generated.raw, selector_store(&inst).as_ref());
+    warnings.extend(generated.warnings.iter().cloned());
+    nodes::install_proxies(&tunnel, map);
+    emit_json(
+        inst.id,
+        EVT_CONFIG_APPLIED,
+        &serde_json::json!({
+            "profileId": generated.profile_id,
+            "hash": generated.hash,
+            "template": config::TEMPLATE_ID,
+        }),
+    );
+    log_message(
+        1,
+        &format!(
+            "proxy: config.apply profile={:?} nodes={} groups={} warnings={}",
+            generated.profile_id,
+            generated.node_count,
+            generated.group_count,
+            warnings.len()
+        ),
+    );
+    let mut data = engine_summary(&generated, &warnings);
+    data["applied"] = serde_json::json!(true);
+    data["rules"] = snapshot
+        .get("count")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!(0));
+    ok_data(data)
+}
+
+/// `profile.export_clash` (Todo 13): the generated config for one stored
+/// profile, addressed by `{ "id": ... }`.
+fn profile_export_clash_arm(
+    instance_id: u64,
+    instance: Option<Arc<ProxyInstance>>,
+    payload: &[u8],
+) -> Result<Vec<u8>, ModuleError> {
+    let inst = require_instance(instance_id, instance)?;
+    let req = config::parse_export_request(payload)?;
+    let store = profile::ProfileStore::open(&inst.data_dir)?;
+    let id_payload = serde_json::to_vec(&serde_json::json!({ "id": req.id })).unwrap_or_default();
+    let record = store.get(&id_payload)?;
+    ok_data(config::export(&record, &req)?.to_data())
+}
+
 /// `profile.import_*`: run the import, emit `proxy.subscription.added`, and
 /// return the canonical [`subscription::ImportedProfile`] as `data`.
 fn profile_import_arm<F>(
@@ -1068,6 +1236,11 @@ fn call_impl(
         }
         "rules.get" => rules_get_arm(instance_id, instance.clone()),
         "rules.reload" => rules_reload_arm(instance_id, instance.clone(), _payload),
+        "config.generate" => config_generate_arm(instance_id, instance.clone(), _payload),
+        "config.apply" => config_apply_arm(instance_id, instance.clone(), _payload),
+        "profile.export_clash" => {
+            profile_export_clash_arm(instance_id, instance.clone(), _payload)
+        }
         "profile.import_url" => profile_import_arm(instance_id, instance.clone(), || {
             subscription::import_url(_payload)
         }),
@@ -1942,6 +2115,160 @@ mod abi_tests {
         assert_eq!(code, ABI_OK);
         let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
         assert_eq!(v["data"]["count"], 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(destroy(inst), ABI_OK);
+    }
+
+    /// Todo 13 happy + failure QA over the real C ABI: generate a template from
+    /// a stored profile, start the engine with a socketpair fd, select the
+    /// active node, prove an unreachable node is reported (not fatal), hot-apply
+    /// a config change without a process restart, then stop.
+    #[test]
+    fn abi_config_generate_start_reload_and_failure_qa() {
+        use std::os::unix::net::UnixStream;
+        let _g = ABI_LOCK.lock().unwrap();
+        let api = register_api();
+        let create = api.create.unwrap();
+        let call = api.call.unwrap();
+        let destroy = api.destroy.unwrap();
+
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("gstore-config-abi-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = serde_json::to_vec(&serde_json::json!({
+            "data_dir": dir.display().to_string(),
+            "cache_dir": dir.display().to_string(),
+        }))
+        .unwrap();
+        let mut inst: u64 = 0;
+        assert_eq!(create(config.as_ptr(), config.len(), &mut inst), ABI_OK);
+        let _ = take_events();
+
+        let yaml = r#"
+proxies:
+  - {name: t1, type: trojan, server: 127.0.0.1, port: 1, password: pw, sni: example.com, skip-cert-verify: true}
+  - {name: v1, type: vless, server: 127.0.0.1, port: 1, uuid: 11111111-2222-3333-4444-555555555555, tls: true, servername: example.com, network: ws, ws-opts: {path: /ws, headers: {Host: example.com}}}
+proxy-groups:
+  - {name: PROXY, type: select, proxies: [t1, v1]}
+rules:
+  - MATCH,PROXY
+"#;
+        let import = serde_json::json!({"text": yaml, "name": "Fixture"}).to_string();
+        let (code, out) = call_with_payload(call, inst, "profile.import_text", import.as_bytes());
+        assert_eq!(code, ABI_OK, "import_text: {}", String::from_utf8_lossy(&out));
+        let imported: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(imported["data"]["nodeCount"], 2);
+        let profile = imported["data"].clone();
+
+        let create_payload = serde_json::json!({"profile": profile}).to_string();
+        let (code, out) = call_with_payload(call, inst, "profile.create", create_payload.as_bytes());
+        assert_eq!(code, ABI_OK, "profile.create: {}", String::from_utf8_lossy(&out));
+
+        let (code, out) = call_with_payload(call, inst, "config.generate", br#"{"profileId":"p1"}"#);
+        assert_eq!(code, ABI_OK, "config.generate: {}", String::from_utf8_lossy(&out));
+        let generated: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        let doc = generated["data"]["config"].as_str().unwrap();
+        assert!(doc.contains("type: trojan"), "{doc}");
+        assert!(doc.contains("type: vless"), "{doc}");
+        assert!(doc.contains("proxy-groups"), "{doc}");
+        assert!(doc.contains("dns:"), "{doc}");
+        assert!(doc.contains("enable: true"), "{doc}");
+        assert!(!doc.contains("external-controller"), "{doc}");
+        assert!(!doc.contains("secret:"), "{doc}");
+        assert!(!doc.contains("file-descriptor"), "{doc}");
+        assert_eq!(generated["data"]["counts"]["proxies"], 2);
+
+        let (code, out) =
+            call_with_payload(call, inst, "profile.export_clash", br#"{"id":"p1"}"#);
+        assert_eq!(code, ABI_OK, "export_clash: {}", String::from_utf8_lossy(&out));
+        let exported: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(exported["data"]["profileId"], "p1");
+        assert!(exported["data"]["config"].as_str().unwrap().contains("proxies"));
+
+        let (code, out) = call_with_payload(
+            call,
+            inst,
+            "core.start",
+            br#"{"mode":"vpn","profileId":"p1"}"#,
+        );
+        assert_eq!(code, ABI_ERR_DETAIL, "start without an fd is a structured error");
+        let err: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(err["code"], "PROXY_TUN_FD_INVALID");
+
+        let (loop_end, _peer) = UnixStream::pair().unwrap();
+        let payload = format!(r#"{{"fd":{}}}"#, std::os::fd::AsRawFd::as_raw_fd(&loop_end));
+        let (code, out) = call_with_payload(call, inst, "tun.set_fd", payload.as_bytes());
+        assert_eq!(code, ABI_OK, "tun.set_fd: {}", String::from_utf8_lossy(&out));
+
+        let (code, out) = call_with_payload(
+            call,
+            inst,
+            "core.start",
+            br#"{"mode":"vpn","profileId":"p1"}"#,
+        );
+        assert_eq!(code, ABI_OK, "core.start: {}", String::from_utf8_lossy(&out));
+        let started: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(started["data"]["state"], "running");
+        assert_eq!(started["data"]["profileId"], "p1");
+        assert_eq!(started["data"]["proxies"], 2);
+        assert_eq!(tun::running_count(), 1);
+
+        let (code, out) = call_with_payload(
+            call,
+            inst,
+            "node.select",
+            br#"{"group":"PROXY","node":"v1"}"#,
+        );
+        assert_eq!(code, ABI_OK, "node.select: {}", String::from_utf8_lossy(&out));
+        let selected: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(selected["data"]["active"], "v1");
+
+        let (code, out) = call_with_payload(
+            call,
+            inst,
+            "node.delay_test",
+            br#"{"group":"PROXY","timeoutMs":400}"#,
+        );
+        assert_eq!(
+            code,
+            ABI_OK,
+            "unreachable nodes must not fail the call: {}",
+            String::from_utf8_lossy(&out)
+        );
+        let probe: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        let results = probe["data"]["results"].as_array().unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(
+            results.iter().all(|r| r["alive"] == false),
+            "unreachable nodes must be reported as failed: {probe}"
+        );
+
+        let _ = take_events();
+        let (code, out) = call_with_payload(
+            call,
+            inst,
+            "config.apply",
+            br#"{"profileId":"p1","rules":["DOMAIN,example.com,PROXY","MATCH,DIRECT"]}"#,
+        );
+        assert_eq!(code, ABI_OK, "config.apply: {}", String::from_utf8_lossy(&out));
+        let applied: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(applied["data"]["applied"], true);
+        assert_eq!(applied["data"]["rules"], 2);
+        assert_eq!(applied["data"]["proxies"], 2);
+        assert_eq!(tun::running_count(), 1, "hot reload keeps the same loop");
+        let events = take_events();
+        assert!(
+            events.iter().any(|(t, _)| t == "proxy.config.applied"),
+            "proxy.config.applied must fire; got {events:?}"
+        );
+
+        let (code, out) = call_json(call, inst, "core.stop");
+        assert_eq!(code, ABI_OK, "core.stop: {}", String::from_utf8_lossy(&out));
+        assert_eq!(tun::running_count(), 0);
 
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(destroy(inst), ABI_OK);

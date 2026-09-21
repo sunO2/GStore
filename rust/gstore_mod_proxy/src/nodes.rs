@@ -67,12 +67,11 @@ pub(crate) fn ensure_selector_store(data_dir: &str) -> Arc<SelectorStore> {
     SelectorStore::open(PathBuf::from(data_dir).join("selector.json"))
 }
 
-/// Attach the generated proxies/groups to the live tunnel. **Todo 13 calls
-/// this** (or `tunnel.update_proxies` directly) right after generating the
-/// config; build the map with `name -> Arc<dyn Proxy>` for both leaf nodes and
-/// groups, and build groups through the store returned by
-/// [`ensure_selector_store`] so selection persists across reloads.
-#[allow(dead_code)]
+/// Attach the generated proxies/groups to the live tunnel. Todo 13 calls this
+/// (through `tun::start_with_proxies`) right after the engine is built; build
+/// the map with `name -> Arc<dyn Proxy>` for both leaf nodes and groups, and
+/// build groups through the store returned by [`ensure_selector_store`] so
+/// selection persists across reloads.
 pub(crate) fn install_proxies(
     tunnel: &meow_tunnel::Tunnel,
     proxies: HashMap<smol_str::SmolStr, Arc<dyn Proxy>>,
