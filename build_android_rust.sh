@@ -51,6 +51,75 @@ declare -A ARCHS=(
 TOOLCHAIN_DIR="$PROJECT_DIR/target/cmake-toolchain"
 mkdir -p "$TOOLCHAIN_DIR"
 
+# ── libc++_shared.so 随包分发 ────────────────────────────────────────────────
+# BoringSSL 是 C++，令可下载模块（gstore_mod_proxy）产生 DT_NEEDED libc++_shared.so。
+# 它不是 Android 系统库，必须由 APK 自带，否则运行时 dlopen 下载后的模块会报
+# `library "libc++_shared.so" not found`。这里在复制宿主时一并把 NDK 里的对应副本
+# 放进 jniLibs（module 走 release 下载，不进 APK，故 libc++ 必须随宿主一起常驻）。
+#
+# 关键：64-bit 副本必须 16 KB 对齐（p_align = 0x4000），否则 Android 15+ 的
+# 16 KB 页设备拒绝加载。NDK r26（$NDK_PATH 默认 26.3.11579264）的 64-bit 副本
+# 仍是 4 KB（0x1000），因此优先选用同一 SDK 下 64-bit 副本满足 16 KB 对齐的最新
+# NDK（r27+，与 flutter.ndkVersion 一致）。GSTORE_LIBCXX_NDK_PATH 可显式覆盖。
+libcxx_triple() {
+    case "$1" in
+        aarch64-linux-android)   echo "aarch64-linux-android" ;;
+        armv7-linux-androideabi) echo "arm-linux-androideabi" ;;
+        i686-linux-android)      echo "i686-linux-android" ;;
+        x86_64-linux-android)    echo "x86_64-linux-android" ;;
+        *) return 1 ;;
+    esac
+}
+
+# 给定 NDK 的 64-bit（aarch64）libc++_shared.so 是否 16 KB 对齐。
+libcxx_ndk_is_16kb() {
+    local ndk="$1"
+    local so="$ndk/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so"
+    [ -f "$so" ] || return 1
+    local re
+    if command -v llvm-readelf >/dev/null 2>&1; then
+        re=llvm-readelf
+    elif command -v readelf >/dev/null 2>&1; then
+        re=readelf
+    else
+        re="$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+    fi
+    local align
+    while IFS= read -r align; do
+        [ -n "$align" ] || continue
+        [ "$((align))" -ge 16384 ] && return 0
+    done < <("$re" -lW "$so" 2>/dev/null | awk '$1 == "LOAD" { print $NF }')
+    return 1
+}
+
+resolve_libcxx_ndk_path() {
+    if [ -n "${GSTORE_LIBCXX_NDK_PATH:-}" ] && [ -d "$GSTORE_LIBCXX_NDK_PATH" ]; then
+        echo "$GSTORE_LIBCXX_NDK_PATH"
+        return 0
+    fi
+    if libcxx_ndk_is_16kb "$NDK_PATH"; then
+        echo "$NDK_PATH"
+        return 0
+    fi
+    local ndk_root candidate
+    ndk_root="$(dirname "$NDK_PATH")"
+    for candidate in $(ls -d "$ndk_root"/*/ 2>/dev/null | sort -Vr); do
+        candidate="${candidate%/}"
+        if libcxx_ndk_is_16kb "$candidate"; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+    echo "$NDK_PATH"
+}
+
+LIBCXX_NDK_PATH="$(resolve_libcxx_ndk_path)"
+if libcxx_ndk_is_16kb "$LIBCXX_NDK_PATH"; then
+    echo_info "libc++_shared.so source NDK: $LIBCXX_NDK_PATH (64-bit 16 KB aligned)"
+else
+    echo_warn "未找到 64-bit 16 KB 对齐的 libc++_shared.so NDK；回退 $LIBCXX_NDK_PATH（可能不支持 Android 15+ 16 KB 页设备）"
+fi
+
 # 构建函数
 build_arch() {
     local target=$1
@@ -137,6 +206,22 @@ EOF
         mkdir -p "$ANDROID_LIB_DIR/$arch_name"
         cp "target/$target/release/libgstore_host.so" "$ANDROID_LIB_DIR/$arch_name/"
         echo_info "✓ Copied to $ANDROID_LIB_DIR/$arch_name/"
+
+        # libc++_shared.so 随包分发（原因见脚本顶部）：取 16 KB 对齐 NDK 的对应 ABI 副本，
+        # strip 后与 host 并排放进 jniLibs，保证运行时能 dlopen 下载模块依赖的 C++ 运行时。
+        local cxxtriple libcxx_src libcxx_strip
+        cxxtriple="$(libcxx_triple "$target")"
+        libcxx_src="$LIBCXX_NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/$cxxtriple/libc++_shared.so"
+        if [ -f "$libcxx_src" ]; then
+            cp "$libcxx_src" "$ANDROID_LIB_DIR/$arch_name/libc++_shared.so"
+            libcxx_strip="$LIBCXX_NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+            if [ -x "$libcxx_strip" ]; then
+                "$libcxx_strip" --strip-unneeded "$ANDROID_LIB_DIR/$arch_name/libc++_shared.so"
+            fi
+            echo_info "✓ Copied libc++_shared.so ($cxxtriple) to $ANDROID_LIB_DIR/$arch_name/"
+        else
+            echo_warn "libc++_shared.so not found: $libcxx_src"
+        fi
     else
         echo_error "✗ Build failed for $arch_name"
         return 1

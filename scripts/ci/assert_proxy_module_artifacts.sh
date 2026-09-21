@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Deep deterministic assertion for the download-only `gstore_mod_proxy` module.
+# Deep deterministic assertion for `gstore_mod_proxy`.
 #
-# The proxy module is distributed as a GitHub Release asset (consumed by
-# ModuleBootstrap), NOT bundled in the full/slim APK (see
+# The proxy module is released as a GitHub Release asset (consumed by
+# ModuleBootstrap) and downloaded on first use in the slim package (see
 # rust/gstore_mod_proxy/API.md §6). scripts/ci/assert_module_artifacts.sh only
 # proves "present and non-zero"; this script adds the packaging-safety checks
 # that matter for a native module:
@@ -18,7 +18,14 @@
 #      the standard form libgstore_mod_proxy_<x.y.z>-<abi>.so and sha256/size
 #      matching the on-disk artifacts (the release-upload step relies on this)
 #   6. assets/app/modules.json (bundled fallback copy) is byte-identical to the
-#      release manifest; modules_builtin.json must NOT list proxy (download-only)
+#      release manifest
+#   7. TEMPORARILY BUNDLED (调试期临时反转): proxy is now staged into
+#      android/app/src/main/jniLibs/<abi>/ for all four ABIs and must be listed
+#      in assets/app/modules_builtin.json, because the full APK ships it for
+#      debug/verification. To revert to download-only, flip this section back to
+#      "must NOT list proxy" / drop the jniLibs check and restore proxy's
+#      download-only negative assertion in scripts/ci/assert_apk_module_payload.sh
+#      (plus API.md §6).
 #
 # Usage:
 #   scripts/ci/assert_proxy_module_artifacts.sh [fixture-dir]
@@ -176,6 +183,7 @@ done
 MANIFEST="$FIXTURE_DIR/modules.json"
 BUNDLED="$REPO_ROOT/assets/app/modules.json"
 BUILTIN="$REPO_ROOT/assets/app/modules_builtin.json"
+JNILIBS_DIR="$REPO_ROOT/android/app/src/main/jniLibs"
 
 if [ ! -s "$MANIFEST" ]; then
   fail "缺少发布清单: $MANIFEST（先运行 ./generate_modules_manifest.sh）"
@@ -233,13 +241,29 @@ elif [ ! -e "$BUNDLED" ]; then
 fi
 
 if [ -s "$BUILTIN" ]; then
-  if python3 -c "import json,sys; sys.exit(0 if 'proxy' in json.load(open(sys.argv[1])).get('modules', {}) else 1)" "$BUILTIN" 2>/dev/null; then
-    fail "download-only 模块不得进入 modules_builtin.json: $BUILTIN"
+  if python3 -c "import json,sys; d=json.load(open(sys.argv[1])); m=d.get('modules', d) if isinstance(d, dict) else {}; sys.exit(0 if 'proxy' in m else 1)" "$BUILTIN" 2>/dev/null; then
+    echo "OK    : modules_builtin.json 含 proxy（临时内置）"
+  else
+    fail "临时内置的 proxy 必须在 modules_builtin.json 中列出: $BUILTIN"
+    failures=$((failures + 1))
+  fi
+else
+  fail "modules_builtin.json 缺失或为空: $BUILTIN"
+  failures=$((failures + 1))
+fi
+
+# ── jniLibs staging (temporarily bundled) ───────────────────────────────────
+# proxy is temporarily bundled, so its .so must be staged into the Android
+# jniLibs for every shipped ABI (Gradle packages this directory into the APK).
+for abi in "${ABIS[@]}"; do
+  jnilib="$JNILIBS_DIR/$abi/lib${MODULE}.so"
+  if [ ! -s "$jnilib" ]; then
+    fail "[proxy/jniLibs/$abi] 缺少或零字节内置产物: $jnilib"
     failures=$((failures + 1))
   else
-    echo "OK    : modules_builtin.json 不含 proxy（download-only）"
+    echo "OK    : [proxy/jniLibs/$abi] $(stat -c%s "$jnilib") bytes"
   fi
-fi
+done
 
 if [ "$failures" -gt 0 ]; then
   {

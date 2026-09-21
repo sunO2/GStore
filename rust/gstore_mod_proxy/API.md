@@ -998,6 +998,25 @@ todo.** `scripts/ci/assert_apk_module_payload.sh` enforces this with a negative
 assertion for `libgstore_mod_proxy.so`; Todo 25 owns any later flip to bundled
 distribution (and must update this section plus the APK payload assertion).
 
+> **⚠ TEMPORARY REVERSAL (debug/verification builds only).** The decision above is
+> **temporarily overridden**: `proxy` is now bundled into the **full** APK by
+> default — its `.so` is staged in `android/app/src/main/jniLibs/<abi>/` for all
+> four ABIs (alongside `libc++_shared.so`), it is listed in
+> `assets/app/modules_builtin.json`, and `scripts/ci/assert_apk_module_payload.sh`
+> positively requires `libgstore_mod_proxy.so` in the full package (the
+> download-only negative assertion is removed). The **slim** package still
+> excludes all `libgstore_mod_*.so`; `libc++_shared.so` ships in both packages
+> because proxy's `DT_NEEDED` names it.
+>
+> **To revert to the download-only decision:** remove `proxy` from `MODULES` in
+> `scripts/ci/assert_apk_module_payload.sh` and restore the
+> `DOWNLOAD_ONLY_MODULES=(proxy)` negative assertion; in
+> `scripts/ci/assert_proxy_module_artifacts.sh` flip the `modules_builtin.json`
+> and `jniLibs` checks back to "must NOT contain"; drop
+> `libgstore_mod_proxy.so` from `android/app/src/main/jniLibs/<abi>/`; and
+> regenerate `modules.json` / `modules_builtin.json`. Both CI scripts carry a
+> `TEMPORARY` header note marking these exact reversals.
+
 Rationale and budgets versus the current `~45 MB` arm64 baseline (per
 `rust/ARCHITECTURE.md` P0). Sizes below are the **ABI-complete** release builds
 (`./build_android_rust.sh --module gstore_mod_proxy`, measured in Todo 2):

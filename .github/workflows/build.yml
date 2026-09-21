@@ -163,7 +163,7 @@ jobs:
       # proxy 深断言：4 ABI 产物存在、DT_NEEDED 仅 Android 系统库（无 libgstore_*）、
       # 16 KB 页对齐、strip 后保留 dynsym/unwind、无 .debug_*；modules.json 含 proxy
       # 全部 4 ABI 且资产名/sha256/size 与产物一致；随包清单一致；modules_builtin.json
-      # 不含 proxy（download-only，见 rust/gstore_mod_proxy/API.md §6）。
+      # 含 proxy 且 jniLibs 4 ABI 均已暂存 proxy（⚠ 临时内置以便调试，见 API.md §6）。
       - name: Assert proxy module deep artifacts (DT_NEEDED + 16KB + manifest)
         env:
           GSTORE_MODULE_DIR: ${{ github.workspace }}/rust/release-modules
@@ -217,8 +217,9 @@ jobs:
             cp "$src" "$DEST/GStore-slim-${abi}-release.apk"
           done
 
-      # 载荷断言：完整包须含 qr/analyzer/repo/download 4 个模块 .so + host，且不得含
-      # download-only 的 proxy；精简包须不含任何模块 .so 但含 host。
+      # 载荷断言：完整包须含 qr/analyzer/repo/download/proxy 5 个模块 .so + host +
+      # libc++_shared.so；精简包须不含任何模块 .so 但含 host + libc++_shared.so。
+      # ⚠ proxy 临时内置以便调试（见 API.md §6），回退 download-only 时同步本注释。
       - name: Assert APK module payload (full vs slim)
         run: bash scripts/ci/assert_apk_module_payload.sh build/apk-release
       

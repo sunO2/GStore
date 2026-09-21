@@ -3,20 +3,29 @@
 #
 # 背景：CI 同一次运行产出两类 APK——
 #   完整包 GStore-<abi>-release.apk      内置全部可下载模块 .so（离线可用）
-#   精简包 GStore-slim-<abi>-release.apk 排除 libgstore_mod_*.so（仅保留 libgstore_host.so），
-#                                        运行时经远程下载→校验→安装→挂载。
+#   精简包 GStore-slim-<abi>-release.apk 排除 libgstore_mod_*.so（保留 libgstore_host.so
+#                                        与 libc++_shared.so），运行时经远程下载→校验→安装→挂载。
 # 本脚本用 `unzip -l` 直接检查 APK 载荷，杜绝「Gradle exclude 未生效 / 误删 host」
 # 之类的静默回归。
 #
 # 断言（顺序固定，保证输出确定）：
 #   完整包：同一 <abi> 下必须列出 lib/<abi>/libgstore_host.so
-#           且列出 4 个 lib/<abi>/libgstore_mod_<name>.so
-#           （name ∈ qr analyzer repo download）
-#           且**不得**列出 download-only 模块（name ∈ proxy，见
-#           rust/gstore_mod_proxy/API.md §6：proxy 走 ModuleBootstrap 下载，
-#           不进完整包；Todo 25 若改为内置须同步移除本负向断言）
+#           且列出 5 个 lib/<abi>/libgstore_mod_<name>.so
+#           （name ∈ qr analyzer repo download proxy）
+#           且必须列出 lib/<abi>/libc++_shared.so —— proxy 是 C++（BoringSSL），
+#           其 DT_NEEDED 含 libc++_shared.so（非 Android 系统库）；proxy 内置或
+#           下载后均由宿主 dlopen，必须由 APK 常驻提供该 C++ 运行时，否则挂载失败。
 #   精简包：同一 <abi> 下必须列出 lib/<abi>/libgstore_host.so
+#           且必须列出 lib/<abi>/libc++_shared.so（同上；精简包排除的是
+#           libgstore_mod_*.so，libc++_shared.so 不匹配该模式，故仍随包）
 #           且**不得**列出任何 lib/<abi>/libgstore_mod_*.so
+#
+# ⚠ TEMPORARY（调试期临时反转，非最终设计）：proxy 原为 download-only（见
+#   rust/gstore_mod_proxy/API.md §6），现**临时内置进完整包**以便调试/验证。
+#   完整包因此必须列出 libgstore_mod_proxy.so（MODULES 含 proxy），且已移除
+#   download-only 负向断言。回退到 download-only 时需要：把 proxy 移出 MODULES、
+#   恢复 DOWNLOAD_ONLY_MODULES=(proxy) 负向断言，并同步 API.md §6 与
+#   scripts/ci/assert_proxy_module_artifacts.sh 的 modules_builtin/jniLibs 断言。
 #
 # 用法：
 #   scripts/ci/assert_apk_module_payload.sh <apk-dir>
@@ -52,10 +61,9 @@ fi
 
 # 顺序固定，保证输出/判定确定。
 ABIS=(arm64-v8a armeabi-v7a x86_64)
-# 完整包内置的模块（qr/analyzer/repo/download）。
-MODULES=(qr analyzer repo download)
-# 仅经 ModuleBootstrap 下载、不进完整包的模块（proxy）。见 API.md §6 分发决策。
-DOWNLOAD_ONLY_MODULES=(proxy)
+# 完整包内置的模块（qr/analyzer/repo/download/proxy）。
+# ⚠ TEMPORARY：proxy 本为 download-only，现临时内置以便调试（见文件头说明）。
+MODULES=(qr analyzer repo download proxy)
 
 failures=0
 checked=0
@@ -108,19 +116,20 @@ check_apk() {
     ok=0
   fi
 
+  # C++ 运行时随包常驻：gstore_mod_proxy DT_NEEDED libc++_shared.so；精简包中该模块
+  # 仍走运行时下载后 dlopen，故完整包与精简包都必须提供它（见文件头断言说明）。
+  local cxx_entry="lib/${abi}/libc++_shared.so"
+  if ! grep -qF "$cxx_entry" <<<"$listing"; then
+    fail "[$label] 缺少 C++ 运行时: $cxx_entry（gstore_mod_proxy 依赖，必须随包）"
+    ok=0
+  fi
+
   if [ "$kind" = "full" ]; then
     local module
     for module in "${MODULES[@]}"; do
       local entry="lib/${abi}/libgstore_mod_${module}.so"
       if ! grep -qF "$entry" <<<"$listing"; then
         fail "[$label] 缺少内置模块: $entry"
-        ok=0
-      fi
-    done
-    for module in "${DOWNLOAD_ONLY_MODULES[@]}"; do
-      local entry="lib/${abi}/libgstore_mod_${module}.so"
-      if grep -qF "$entry" <<<"$listing"; then
-        fail "[$label] download-only 模块不得内置: $entry（见 rust/gstore_mod_proxy/API.md §6）"
         ok=0
       fi
     done
@@ -166,4 +175,4 @@ if [ "$failures" -gt 0 ]; then
   exit 1
 fi
 
-echo "PASS: $checked 个 APK 载荷断言全部通过（完整包含模块 .so，精简仅 host；目录: $APK_DIR）"
+echo "PASS: $checked 个 APK 载荷断言全部通过（完整包含模块 .so，精简仅 host + libc++；目录: $APK_DIR）"
