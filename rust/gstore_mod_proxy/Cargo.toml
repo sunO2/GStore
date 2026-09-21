@@ -24,6 +24,23 @@ meow-proxy = { git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f5874
 meow-dns = { git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587442caaac00b221efc91c84907aeb0e0", default-features = false }
 # DomainTrie is required to construct `meow_dns::Resolver` (its `hosts` arg).
 meow-trie = { git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587442caaac00b221efc91c84907aeb0e0" }
+# Todo 11: protect-aware subscription fetch. meow's `internal_http::fetch` is
+# body-only (it discards response headers, so `Subscription-Userinfo` /
+# `Content-Disposition` cannot be read) and its cap is fixed at 256 MiB
+# (`fetch_capped` is private). We therefore reuse meow's protect-aware transport
+# primitives directly instead of a raw reqwest client:
+#   * `meow_common::connect_tcp_host` applies the host `SocketProtector` /
+#     resolver hook (VpnService.protect) on every dial;
+#   * `meow_transport::tls::TlsLayer` is the same BoringSSL TLS stack meow uses
+#     (certificate verification always on; no `skip_cert_verify`).
+# YAML parsing is still delegated to `meow_config::subscription` (no second
+# YAML parser).
+meow-transport = { git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587442caaac00b221efc91c84907aeb0e0", default-features = false, features = ["tls"] }
+# base64 decode of subscription payloads / SIP002 userinfo (already transitive;
+# pinned explicitly at the version in Cargo.lock).
+base64 = "0.22"
+# URL parsing + percent/IDNA handling for subscription URLs and share links.
+url = "2"
 # Todo 9: the Clash rule engine is meow's — we only parse + orchestrate. The
 # `meow-rules` crate supplies `parse_rule`/`RuleSet`/geo indexes; `serde_yaml`
 # deserialises the Clash config into meow-config's own `raw::RawConfig` schema;

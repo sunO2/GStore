@@ -55,6 +55,15 @@
 | `PROXY_NODE_NOT_FOUND` | proxy | 404 | `node.select`/`node.delay_test` 指定的 group 不存在，或 node 不在该 group 内（Todo 10） |
 | `PROXY_GROUP_NOT_SELECTABLE` | proxy | 422 | 目标不是可选择的 group（selector/url-test/fallback）：叶子节点、load-balance、relay 均无 `ProxySelection`（Todo 10） |
 | `PROXY_NOT_CONFIGURED` | proxy | 409 | engine/tunnel 未运行即调用 `node.*`/`conn.list`（Todo 10）；`core.start` 前需先由 Todo 13 注入 proxies 并启动 TUN |
+| `PROXY_SUB_URL_INVALID` | proxy | 422 | 订阅 URL 非法：非 `http(s)` scheme（`file://`/`ftp://` 等）、URL 不可解析或无 host（Todo 11） |
+| `PROXY_SUB_SSRF_BLOCKED` | proxy | 422 | 用户提供的订阅 URL 指向 loopback/private/link-local/CGNAT 地址（SSRF 守卫；每一跳重定向都会复检）（Todo 11） |
+| `PROXY_SUB_FETCH_FAILED` | proxy | 500 | 订阅抓取失败：连接/读取/TLS 错误、非 2xx、重定向缺 `Location`、重定向超限，或 `Content-Encoding` 非 `identity`（Todo 11） |
+| `PROXY_SUB_TOO_LARGE` | proxy | 507 | 订阅 body/text/link 超过硬上限，或声明 `Content-Length` 超上限，或节点数超限（Todo 11） |
+| `PROXY_SUB_FORMAT_UNKNOWN` | proxy | 422 | 内容既非 Clash YAML、也非 base64 URI 列表或明文 URI 列表（Todo 11） |
+| `PROXY_SUB_PARSE_FAILED` | proxy | 422 | 已识别格式解析失败（YAML 畸形、body 非 UTF-8）（Todo 11） |
+| `PROXY_SUB_NODE_INVALID` | proxy | 422 | 分享链接畸形或缺必填字段（server/port/密钥，外部 SIP003 `plugin`）（Todo 11） |
+| `PROXY_SUB_SCHEME_UNSUPPORTED` | proxy | 422 | 分享链接 scheme 不在支持集合（`ss`/`ss2022`/`vmess`/`vless`/`trojan`/`hysteria2`）（Todo 11） |
+| `PROXY_SUB_NO_NODES` | proxy | 422 | 解析成功但无可导入节点（Todo 11） |
 
 ## 跨 ABI 错误透传
 

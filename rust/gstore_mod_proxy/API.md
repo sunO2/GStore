@@ -113,23 +113,104 @@ stores it as *pending*; `core.start` owns the single read loop. Invalid
 `PROXY_TUN_FD_INVALID` (422) — never a panic. The host fd is never closed by the
 module (Kotlin owns the `ParcelFileDescriptor`).
 
-### 2.4 `profile.*` — subscription/profile store
+### 2.4 `profile.*` — subscriptions & the canonical node model
+
+Todo 11 implements the three import methods below. Todo 12 owns the persistent
+store (`list`/`get`/`update`/`delete`/`refresh`), which operates on the same
+canonical model and is **not implemented yet**.
 
 | method | request | data |
 |---|---|---|
-| `profile.list` | *(none)* | `{ "profiles": [Profile] }` |
-| `profile.get` | `{ "id": string }` | `Profile` |
-| `profile.import` | `{ "source":"url"\|"text"\|"link", "value": string, "name"?: string }` | `Profile` |
-| `profile.update` | `{ "id": string, "url"?: string }` | `Profile` |
-| `profile.delete` | `{ "id": string }` | `{ "ok": true }` |
+| `profile.import_url` | `{ "url": string, "name"?: string, "userAgent"?: string }` | `ImportedProfile` |
+| `profile.import_text` | `{ "text": string, "name"?: string, "contentType"?: string }` | `ImportedProfile` |
+| `profile.import_link` | `{ "link": string, "name"?: string }` | `ImportedProfile` |
+| `profile.list` / `profile.get` / `profile.update` / `profile.delete` | — | *(Todo 12)* |
 
-`Profile`:
+`profile.import_url` fetches over **meow's protect-aware transport** — the same
+path as every outbound socket, so `VpnService.protect` applies even in VPN mode;
+it is never a raw `reqwest` fetch. It parses `Subscription-Userinfo` and
+`Content-Disposition`, auto-detects the body format, and returns the canonical
+profile. Each successful import emits `proxy.subscription.added`.
+
+`profile.import_text` parses an already-fetched body; `profile.import_link`
+parses one share link (`ss`/`ss2022`/`vmess`/`vless`/`trojan`/`hysteria2`).
+
+#### 2.4.1 `ImportedProfile`
+
 ```json
-{ "id": "uuid", "name": "My Sub", "source": "url", "url": "https://...",
-  "updatedAtMs": 0, "nodeCount": 42,
-  "traffic": { "uploadBytes": 0, "downloadBytes": 0, "totalBytes": 0, "usedBytes": 0 },
-  "expireAtMs": 0 }
+{
+  "name": "My Sub",
+  "format": "clash" | "base64" | "uriList" | "shareLink",
+  "nodeCount": 42,
+  "nodes": [ ProxyNode, ... ],
+  "groups": [ ProxyGroup, ... ],
+  "userinfo": SubscriptionUserinfo | null,
+  "source": {
+    "origin": "url" | "text" | "link",
+    "url": "https://...", "finalUrl": "https://...",
+    "filename": "sub.yaml", "userAgent": "clash.meta/1.19.0",
+    "fetchedAtMs": 0, "bytes": 0, "contentType": "text/yaml"
+  },
+  "warnings": ["proxies[3]: dropped node: type 'made-up' is not in the import whitelist"]
+}
 ```
+
+`ProxyNode` (all optional keys are omitted when absent):
+
+```json
+{
+  "name": "node-1",
+  "type": "ss" | "vmess" | "vless" | "trojan" | "hysteria2" | ...,
+  "server": "1.2.3.4",
+  "port": 443,
+  "cipher": "aes-256-gcm",
+  "password": "…",
+  "uuid": "…",
+  "alterId": 0,
+  "security": "auto",
+  "flow": "xtls-rprx-vision",
+  "network": "ws" | "grpc" | "tcp",
+  "tls": true,
+  "sni": "example.com",
+  "skipCertVerify": false,
+  "alpn": ["h2"],
+  "fingerprint": "chrome",
+  "reality": { "publicKey": "…", "shortId": "…", "spiderX": "/" },
+  "ws": { "path": "/ws", "host": "example.com" },
+  "grpc": { "serviceName": "…" },
+  "obfs": "salamander",
+  "obfsPassword": "…",
+  "groups": ["PROXY"],
+  "source": { "format": "clash", "origin": "url", "index": 0 }
+}
+```
+
+`ProxyGroup`: `{ "name": "PROXY", "type": "select", "members": ["node-1"] }`.
+
+`SubscriptionUserinfo` (from the `Subscription-Userinfo` header; `expire` is Unix
+seconds, normalized if the provider sent milliseconds):
+
+```json
+{ "upload": 0, "download": 0, "total": 0, "expire": 0 }
+```
+
+#### 2.4.2 Import hardening (untrusted input)
+
+- Only `http`/`https` URLs; `file://`/`ftp://`/`data:` are rejected.
+- SSRF guard blocks loopback/private/link-local/CGNAT targets and re-checks
+  every redirect hop (user-supplied URLs only).
+- Connect (15 s) and read (60 s) timeouts; redirect cap 5; cross-origin
+  credentials stripped.
+- Hard body cap (16 MiB) enforced **while streaming**; a declared
+  `Content-Length` above the cap is rejected before reading.
+- Any `Content-Encoding` other than `identity` is rejected (nothing is
+  decompressed client-side, so a gzip bomb has no path).
+- Multi-`User-Agent` retry (`clash.meta`, `mihomo`, a browser UA) because
+  providers vary their output by UA.
+- Clash YAML parsing is delegated to `meow_config::subscription::parse_subscription_yaml`
+  (no second YAML parser); a `script`-type node, an external SIP003 `plugin`, an
+  unknown proxy type, and any `dns`/`tun`/`external-controller`/`proxy-providers`
+  override are dropped — the canonical model carries only a whitelisted subset.
 
 ### 2.5 `config.generate` — render the engine config
 
@@ -426,7 +507,15 @@ registered in `rust/ERROR_CODES.md`.
 | `PROXY_PERMISSION_DENIED` | 403 | VPN consent missing/revoked (Todo 4/24) |
 | `PROXY_PROFILE_NOT_FOUND` | 404 | unknown profile id |
 | `PROXY_NODE_NOT_FOUND` | 404 | unknown node/group |
-| `PROXY_SUBSCRIPTION_PARSE_FAILED` | 422 | subscription YAML/link parse failure |
+| `PROXY_SUB_URL_INVALID` | 422 | subscription URL failed validation: non-`http(s)` scheme (`file://`/`ftp://`/…), unparseable URL, or no host (Todo 11) |
+| `PROXY_SUB_SSRF_BLOCKED` | 422 | user-supplied subscription URL targets a loopback/private/link-local/CGNAT address (SSRF guard) (Todo 11) |
+| `PROXY_SUB_FETCH_FAILED` | 500 | subscription fetch failed: connect/read/TLS error, non-2xx status, redirect without `Location`, too many redirects, or unsupported `Content-Encoding` (Todo 11) |
+| `PROXY_SUB_TOO_LARGE` | 507 | subscription body/text/link exceeds the hard cap, or declares a `Content-Length` above it, or exceeds the node-count limit (Todo 11) |
+| `PROXY_SUB_FORMAT_UNKNOWN` | 422 | body is not Clash YAML, base64 URI list, or a plain URI list (Todo 11) |
+| `PROXY_SUB_PARSE_FAILED` | 422 | detected format failed to parse (malformed YAML, non-UTF-8 body) (Todo 11) |
+| `PROXY_SUB_NODE_INVALID` | 422 | a share link is malformed or lacks a required field (server/port/secret, external SIP003 plugin) (Todo 11) |
+| `PROXY_SUB_SCHEME_UNSUPPORTED` | 422 | share-link scheme is not in the supported set (Todo 11) |
+| `PROXY_SUB_NO_NODES` | 422 | the subscription parsed but contained no importable nodes (Todo 11) |
 | `PROXY_ENGINE_START_FAILED` | 500 | meow engine failed to start |
 | `PROXY_LAN_DISABLED` | 409 | LAN requested while disabled (Todo 28) |
 | `PROXY_NO_INBOUND` | 409 | `lanProxy` with no LAN listener (Todo 29) |

@@ -39,6 +39,7 @@ mod dns;
 mod nodes;
 mod protect;
 mod rules;
+mod subscription;
 mod tun;
 
 /// Required spike export: proves the crate loads as `libgstore_mod_proxy.so`.
@@ -336,8 +337,7 @@ const EVT_MODE: &str = "proxy.mode";
 const EVT_NODE_DELAY: &str = "proxy.node.delay";
 #[allow(dead_code)]
 const EVT_STATS: &str = "proxy.stats";
-#[allow(dead_code)]
-const EVT_SUBSCRIPTION: &str = "proxy.subscription";
+const EVT_SUBSCRIPTION: &str = "proxy.subscription.added";
 /// 模块 → 宿主：TUN 读取循环已停止且线程已 join，宿主可清缓存 fd（Kotlin 可关闭）。
 const EVT_TUN_RELEASED: &str = "proxy.tun.released";
 
@@ -810,6 +810,33 @@ fn rules_reload_arm(
 
 /// `node.select`: apply a user choice to a selector/url-test/fallback group,
 /// then emit `proxy.state` carrying the effective outbound (Todo 10).
+/// `profile.import_*`: run the import, emit `proxy.subscription.added`, and
+/// return the canonical [`subscription::ImportedProfile`] as `data`.
+fn profile_import_arm<F>(
+    instance_id: u64,
+    instance: Option<Arc<ProxyInstance>>,
+    import: F,
+) -> Result<Vec<u8>, ModuleError>
+where
+    F: FnOnce() -> Result<subscription::ImportedProfile, ModuleError>,
+{
+    let inst = require_instance(instance_id, instance)?;
+    let profile = import()?;
+    let event = serde_json::json!({
+        "action": "imported",
+        "format": profile.format,
+        "name": profile.name,
+        "nodeCount": profile.node_count,
+        "url": profile.source.url,
+    });
+    if let Ok(bytes) = serde_json::to_vec(&event) {
+        emit_event(inst.id, EVT_SUBSCRIPTION, &bytes);
+    }
+    let data = serde_json::to_value(&profile)
+        .map_err(|e| ModuleError::internal(format!("profile serialize: {e}")))?;
+    ok_data(data)
+}
+
 fn node_select_arm(
     instance_id: u64,
     instance: Option<Arc<ProxyInstance>>,
@@ -929,6 +956,15 @@ fn call_impl(
         }
         "rules.get" => rules_get_arm(instance_id, instance.clone()),
         "rules.reload" => rules_reload_arm(instance_id, instance.clone(), _payload),
+        "profile.import_url" => profile_import_arm(instance_id, instance.clone(), || {
+            subscription::import_url(_payload)
+        }),
+        "profile.import_text" => profile_import_arm(instance_id, instance.clone(), || {
+            subscription::import_text(_payload)
+        }),
+        "profile.import_link" => profile_import_arm(instance_id, instance.clone(), || {
+            subscription::import_link(_payload)
+        }),
         "node.select" => node_select_arm(instance_id, instance.clone(), _payload),
         "node.delay_test" => require_instance(instance_id, instance.clone())
             .and_then(|_| nodes::delay_test_arm(instance_id, _payload)),
@@ -1629,5 +1665,68 @@ mod abi_tests {
         assert_eq!(destroy(inst), ABI_OK);
         crate::conn::reset_for_tests();
         crate::rules::reset_for_tests();
+    }
+
+    /// Happy/failure QA over the real C ABI for `profile.import_text` /
+    /// `profile.import_link`, including the `proxy.subscription.added` event
+    /// and the structured unknown-scheme rejection.
+    #[test]
+    fn abi_profile_import_text_and_link() {
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine as _;
+        let _g = ABI_LOCK.lock().unwrap();
+        let api = register_api();
+        let create = api.create.unwrap();
+        let call = api.call.unwrap();
+        let destroy = api.destroy.unwrap();
+        let _ = take_events();
+
+        let mut inst: u64 = 0;
+        assert_eq!(create(std::ptr::null(), 0, &mut inst), ABI_OK);
+
+        let ss = format!(
+            "ss://{}@1.2.3.4:8388#A",
+            STANDARD.encode("aes-256-gcm:pw")
+        );
+        let encoded = STANDARD.encode(ss.as_bytes());
+        let payload = serde_json::json!({"text": encoded, "name": "From Text"}).to_string();
+        let (code, out) = call_with_payload(call, inst, "profile.import_text", payload.as_bytes());
+        assert_eq!(code, ABI_OK, "import_text: {}", String::from_utf8_lossy(&out));
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["data"]["nodeCount"], 1);
+        assert_eq!(v["data"]["format"], "base64");
+        assert_eq!(v["data"]["name"], "From Text");
+
+        let link = format!(
+            "ss://{}@1.2.3.4:8388#B",
+            STANDARD.encode("aes-256-gcm:pw")
+        );
+        let payload = serde_json::json!({"link": link}).to_string();
+        let (code, out) = call_with_payload(call, inst, "profile.import_link", payload.as_bytes());
+        assert_eq!(code, ABI_OK, "import_link: {}", String::from_utf8_lossy(&out));
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["format"], "shareLink");
+        assert_eq!(v["data"]["nodes"][0]["type"], "ss");
+
+        let (code, out) = call_with_payload(
+            call,
+            inst,
+            "profile.import_link",
+            br#"{"link":"xyz://a@b:1#c"}"#,
+        );
+        assert_eq!(code, ABI_ERR_DETAIL);
+        let err: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(err["code"], "PROXY_SUB_SCHEME_UNSUPPORTED");
+
+        let events = take_events();
+        assert!(
+            events
+                .iter()
+                .any(|(event_type, _)| event_type == "proxy.subscription.added"),
+            "proxy.subscription.added must be emitted; got {events:?}"
+        );
+
+        assert_eq!(destroy(inst), ABI_OK);
     }
 }

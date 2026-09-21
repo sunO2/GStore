@@ -800,6 +800,7 @@ name = "gstore_mod_proxy"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64",
  "futures",
  "gstore_contract",
  "hex",
@@ -816,6 +817,7 @@ dependencies = [
  "meow-lwip",
  "meow-proxy",
  "meow-rules",
+ "meow-transport",
  "meow-trie",
  "meow-tunnel",
  "serde",
@@ -826,6 +828,7 @@ dependencies = [
  "smol_str",
  "time",
  "tokio",
+ "url",
  "uuid",
 ]
 
