@@ -8,6 +8,13 @@ import 'package:gstore/core/rust/proxy/ProxyModule.dart';
 
 import 'proxy_nodes_facade.dart';
 
+/// 延迟徽章淡色背景的透明度。
+///
+/// 无对应语义令牌，沿用仓库既有 `withValues(alpha: 0.12)` 约定（见
+/// `lib/page/app_snapshot/widgets.dart`）；一律使用主题 / alpha 令牌，
+/// 不引入硬编码颜色或字号。
+const double _kBadgeTintAlpha = 0.12;
+
 /// 节点 / 代理组页面（纯展示 + 触发）。
 ///
 /// **只做展示与转发**：分组/节点模型来自冻结契约 [ProxyGroup] / [ProxyNode]；
@@ -17,7 +24,7 @@ import 'proxy_nodes_facade.dart';
 ///
 /// 视觉规范：颜色一律取自 `Theme.of(context).colorScheme`，字号取自
 /// `Theme.of(context).textTheme`；弹层（选组 / 选节点 / 排序）统一走
-/// [AppSheet]；加载态用 [AppLoading]（不直接用 `CircularProgressIndicator`）。
+/// [AppSheet]；加载态一律用 [AppLoading]（不使用原生进度圈）。
 class ProxyNodesPage extends StatefulWidget {
   const ProxyNodesPage({
     super.key,
@@ -610,7 +617,7 @@ class _LatencyBadge extends StatelessWidget {
         vertical: AppSpacing.xs,
       ),
       decoration: BoxDecoration(
-        color: color.withAlpha(AppColors.alphaLowest),
+        color: color.withValues(alpha: _kBadgeTintAlpha),
         borderRadius: AppRadius.allSM,
       ),
       child: Row(
