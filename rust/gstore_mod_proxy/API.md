@@ -66,11 +66,14 @@ Request: *(none)*
 { "ok": true, "data": {
   "pong": true, "module": "proxy", "moduleVersion": "0.1.0",
   "apiVersion": 1, "minHostAbi": 3, "hostAbi": 3,
-  "instanceId": 7, "state": "stopped", "mode": "off", "protectFdPresent": true
+  "instanceId": 7, "state": "stopped", "mode": "off", "protectFdPresent": true,
+  "protectInstalled": false
 } }
 ```
 
 `instanceId`/`state`/`mode`/`protectFdPresent` appear only when a live instance was passed.
+`protectInstalled` reflects the process-global meow `SocketProtector` install state
+(the `vpn` engine installs it at init and removes it on teardown; Todo 7).
 
 ### 2.2 `version` — build & capability info
 
@@ -270,6 +273,7 @@ registered in `rust/ERROR_CODES.md`.
 | `PROXY_ENGINE_START_FAILED` | 500 | meow engine failed to start |
 | `PROXY_LAN_DISABLED` | 409 | LAN requested while disabled (Todo 28) |
 | `PROXY_NO_INBOUND` | 409 | `lanProxy` with no LAN listener (Todo 29) |
+| `PROXY_PROTECT_FAILED` | 500 | host `protect_fd(fd)` returned non-zero; the dial is aborted so an unprotected socket never reaches the network (Todo 7) |
 
 ## 6. Module distribution decision (state it now)
 
@@ -285,12 +289,12 @@ Rationale and budgets versus the current `~45 MB` arm64 baseline (per
 
 | item | value |
 |---|---|
-| arm64-v8a release `.so` | **1,309,712 B (~1.25 MiB)** |
+| arm64-v8a release `.so` | **1,309,712 B (~1.25 MiB)** at Todo 2; **4,080,584 B (~3.89 MiB)** after Todo 7 wired the real tunnel routing engine |
 | x86_64 | 1,286,584 B |
 | armeabi-v7a | 535,176 B |
 | x86 | 1,284,452 B |
-| **Δ full APK, arm64-v8a if bundled** | **+~1.25 MiB (~2.8 % over 45 MB)** — under budget |
-| **Δ full APK, all four ABIs if bundled** | **+~4.21 MiB** |
+| **Δ full APK, arm64-v8a if bundled** | **+~1.25 MiB (~2.8 % over 45 MB)** at Todo 2 — under budget; Todo 7 raises the real figure to **+~3.89 MiB (~8.6 %)**, still under budget but Todo 25 must re-measure |
+| **Δ full APK, all four ABIs if bundled** | **+~4.21 MiB** (Todo 2) |
 | slim APK | 0 (downloaded on first use, verified by sha256 against `modules.json`) |
 | shipped ABIs (built + manifest) | **arm64-v8a, armeabi-v7a, x86, x86_64** (all four build; manifest carries all four) |
 
@@ -355,3 +359,59 @@ is order-independent and needs no `gstore_contract` change.
 
 All on-device VpnService paths remain **UNVERIFIED** (no adb device); the Linux
 loopback harness proves the fd/thread/teardown mechanics.
+
+## 8. Outbound-socket protection & flow dispatch (Todo 7)
+
+### 8.1 One protector for every outbound socket
+
+At engine init (`core.start` → TUN loop startup) the module installs the
+host-injected `entry.protect_fd` as meow's global `SocketProtector`
+(`meow_common::set_socket_protector`, Android-only API). meow then calls it
+before **every** outbound `connect()`/`bind()` on the paths
+`meow_common::connect_tcp` / `connect_tcp_host` / `bind_udp`, which every proxy
+adapter, the DIRECT adapter, and the DNS subsystem use. Teardown calls
+`clear_socket_protector()` so no stale hook survives a stop/restart.
+
+Hostname resolution is covered separately by the cross-platform
+`HostResolver` hook: the module installs `meow_dns::ResolverHostHook` over the
+tunnel resolver, so `connect_tcp_host` never falls back to libc `getaddrinfo`
+(whose own DNS sockets would be unprotected and loop through the VPN). Both
+hooks are installed together at init and cleared together at teardown.
+
+`protect_fd` returning non-zero aborts the dial with `PROXY_PROTECT_FAILED`
+(500); the socket is dropped before any traffic, so a socket cannot silently
+skip protection.
+
+### 8.2 Flow dispatch (Todo 7)
+
+| netstack handle | dispatch |
+|---|---|
+| `meow_lwip::TcpListener` accept stream | each `(TcpStream, src, dst)` is wrapped in a `ProxyConn` (`Mutex<meow_lwip::TcpStream>`, `ConnType::Tun`) and handed to `meow_tunnel::tcp::handle_tcp`. |
+| `meow_lwip::UdpSocket` receive stream | each `(data, src, dst)` becomes `Metadata { network: Udp, conn_type: Tun }` and is handed to `meow_tunnel::udp::handle_udp`. |
+
+The engine currently runs with an empty route table (meow falls back to its
+built-in DIRECT adapter); Todos 8/9 install the DNS subsystem, proxy list and
+rule set. UDP upstream→tun reply pumping and the DNS hijack/snoop path are
+owned by Todo 8 (the `UdpSocket` send half is retained alive for it).
+
+### 8.3 Raw-socket audit (required)
+
+The module adds **no** raw outbound client: it has no `reqwest`/`hyper`/`ureq`
+dependency and no direct `TcpStream::connect` / `UdpSocket::bind` call. Its own
+outbound constructors — `protect::connect_tcp` / `protect::bind_udp` — apply the
+protector before traffic and are the only sanctioned way for this crate to open
+a socket (subscription/geo fetchers in later todos must use meow's
+protect-aware transport or these helpers, never a raw HTTP client).
+
+Note on the wider app: the host/Flutter process is the VPN app, so its normal
+network traffic is *intentionally* tunneled; only the proxy's own upstream
+sockets must bypass the tunnel, and those go through meow's protected path.
+`addDisallowedApplication(self)` is deliberately **not** used for loop
+avoidance (see §7.4) — `protect_fd` is the sole mechanism.
+
+### 8.4 Verification status
+
+The protect wrapper, its count instrumentation, and the failure path are proven
+on the host (`cargo test -p gstore_mod_proxy`, `protect::tests`). meow's
+`set_socket_protector` is compiled only on Android, so the **actual meow-hook
+integration on device is UNVERIFIED** (no adb device attached).

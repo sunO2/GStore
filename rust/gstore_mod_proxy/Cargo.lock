@@ -810,6 +810,7 @@ dependencies = [
  "meow-listener",
  "meow-lwip",
  "meow-proxy",
+ "meow-trie",
  "meow-tunnel",
  "serde",
  "serde_json",

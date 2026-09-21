@@ -45,6 +45,7 @@
 |---|---|---|---|
 | `PROXY_TUN_FD_INVALID` | proxy | 422 | TUN fd 非法（<0 / 已关闭 / `dup` 失败）或 `core.start` 时无可用 fd（Todo 6） |
 | `PROXY_NO_INBOUND` | proxy | 422 | 请求了尚未实现的入站（`lanProxy`，Todo 28） |
+| `PROXY_PROTECT_FAILED` | proxy | 500 | 宿主 `protect_fd(fd)` 返回非 0：拒绝使用未受保护的出站 socket（Todo 7） |
 
 ## 跨 ABI 错误透传
 

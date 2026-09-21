@@ -33,6 +33,8 @@ use gstore_contract::abi::{
 use gstore_contract::context::ModuleContext;
 use gstore_contract::error::{ModuleError, StatusCode};
 
+mod dispatch;
+mod protect;
 mod tun;
 
 /// Required spike export: proves the crate loads as `libgstore_mod_proxy.so`.
@@ -406,6 +408,13 @@ static HOST_EMIT: OnceLock<extern "C" fn(u64, u64, *const u8, usize)> = OnceLock
 static HOST_ABI: OnceLock<u32> = OnceLock::new();
 static HOST_PROTECT_FD: OnceLock<Option<extern "C" fn(c_int) -> c_int>> = OnceLock::new();
 
+/// The host-injected `protect_fd` (ABI v3) captured at register time, or `None`
+/// on an older host / non-VPN run. The engine installs it as meow's global
+/// `SocketProtector` at init ([`protect::install`]).
+pub(crate) fn host_protect_fd() -> Option<extern "C" fn(c_int) -> c_int> {
+    HOST_PROTECT_FD.get().copied().flatten()
+}
+
 fn instances() -> &'static Mutex<HashMap<u64, Arc<ProxyInstance>>> {
     INSTANCES.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -775,6 +784,7 @@ fn call_impl(
                 data["mode"] = serde_json::json!(inst.mode.lock().unwrap().as_str());
                 data["protectFdPresent"] = serde_json::json!(inst.host_protect_fd.is_some());
             }
+            data["protectInstalled"] = serde_json::json!(protect::is_installed());
             ok_data(data)
         }
         "version" => ok_data(serde_json::json!({

@@ -430,9 +430,16 @@ async fn tun_loop(owned: OwnedFd, mut stop_rx: watch::Receiver<bool>) {
         }
     });
 
-    // Flow-dispatch handles (TcpListener accept stream + UDP socket) must stay
-    // alive for the whole loop; Todo 7 takes over their polling.
-    let _flow_handles = (tcp_listener, udp);
+    // Flow-dispatch handles (TcpListener accept stream + UDP socket) are handed
+    // to the meow tunnel dispatcher; the protector is installed first so any
+    // outbound socket a dial opens is protected from the very first packet.
+    let protect_installed = crate::protect::install(crate::host_protect_fd());
+    let engine = crate::dispatch::build_engine();
+    let dispatcher = crate::dispatch::spawn(engine, tcp_listener, udp);
+    crate::log_message(
+        1,
+        &format!("proxy: flow dispatch active protectInstalled={protect_installed}"),
+    );
 
     // Wait for the stop signal from `core.stop`.
     while !*stop_rx.borrow() {
@@ -450,7 +457,8 @@ async fn tun_loop(owned: OwnedFd, mut stop_rx: watch::Receiver<bool>) {
     let _ = egress.await;
     ingress.abort();
     let _ = ingress.await;
-    drop(_flow_handles);
+    dispatcher.shutdown().await;
+    crate::protect::clear();
 
     let _ = tokio::time::timeout(CORE_DONE_TIMEOUT, async {
         let _ = core_done.wait_for(|done| *done).await;

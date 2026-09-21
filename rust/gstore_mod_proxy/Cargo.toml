@@ -22,6 +22,8 @@ meow-tunnel = { git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587
 meow-config = { git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587442caaac00b221efc91c84907aeb0e0", default-features = false }
 meow-proxy = { git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587442caaac00b221efc91c84907aeb0e0", default-features = false }
 meow-dns = { git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587442caaac00b221efc91c84907aeb0e0", default-features = false }
+# DomainTrie is required to construct `meow_dns::Resolver` (its `hosts` arg).
+meow-trie = { git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587442caaac00b221efc91c84907aeb0e0" }
 meow-api = { git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587442caaac00b221efc91c84907aeb0e0" }
 meow-listener = { git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587442caaac00b221efc91c84907aeb0e0", default-features = false, features = ["listener-mixed"] }
 meow_lwip = { package = "meow-lwip", git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587442caaac00b221efc91c84907aeb0e0" }
