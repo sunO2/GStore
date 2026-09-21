@@ -493,11 +493,21 @@ void main() {
       await tester.tap(find.text('清除'));
       await tester.pump();
       // 真实目录删除是真实 IO：经 runAsync 让其在真实事件循环中完成。
+      // 必须**条件驱动且有界**：等到真实目录真的消失，而不是赌一个固定时长——
+      // 并发负载下 200ms 未必够删除落盘（全量 flutter test 时曾偶发失败）。
+      // 到点仍未消失则下面的 expect 照旧失败，断言强度不变。
       await tester.runAsync(() async {
-        await Future<void>.delayed(const Duration(milliseconds: 200));
+        for (var i = 0; i < 200 && dir.existsSync(); i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 25));
+        }
       });
-      // busy 期 AppLoading 动画不停，故用显式 pump 推进弹层关闭/状态刷新。
-      await tester.pump(const Duration(milliseconds: 400));
+      // busy 期 AppLoading 动画不停，故用显式 pump 推进弹层关闭/状态刷新；
+      // 同样有界等条件（直到弹层真正消失），而非固定 400ms。
+      for (var i = 0;
+          i < 100 && find.byType(AppSheetScaffold).evaluate().isNotEmpty;
+          i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
       await tester.pump();
 
       expect(dir.existsSync(), isFalse, reason: '确认后必须真正清除下载目录');

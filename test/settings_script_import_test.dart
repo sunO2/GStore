@@ -242,11 +242,26 @@ void main() {
 
     await tester.tap(find.text('导入'));
     await tester.pump();
+    // 导入链（渠道加载 + 逐项 setEnv 持久化）既需要推进测试时钟（内部 await/
+    // 定时器），也需要真实事件循环（真实 IO）：因此**交替** pump 与 runAsync，
+    // 并以「环境变量真正落盘」为退出条件、有界——而不是赌 settleAsync 的固定
+    // ~900ms（并发负载下曾在写入完成前就断言）。断言强度不变：到点仍未持久化
+    // 则下面的 expect 照旧失败。
+    JsChannel? channel;
+    for (var i = 0; i < 200; i++) {
+      await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 25)));
+      await tester.pump(const Duration(milliseconds: 25));
+      final c = ChannelManager.instance.getChannelByKey('js_envch');
+      if (c is JsChannel && (await c.getAllEnv())['PINGAN_USER'] == 'alice') {
+        channel = c;
+        break;
+      }
+    }
     await settleAsync(tester);
 
-    final channel =
-        ChannelManager.instance.getChannelByKey('js_envch') as JsChannel;
-    expect(await channel.getAllEnv(), {'PINGAN_USER': 'alice'});
+    expect(channel, isNotNull, reason: '导入后必须能取到渠道 js_envch');
+    expect(await channel!.getAllEnv(), {'PINGAN_USER': 'alice'});
     // 提示包含 host.env.get 说明
     expect(find.textContaining('host.env.get'), findsOneWidget);
   });
