@@ -1,0 +1,41 @@
+[package]
+name = "gstore_mod_proxy"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+description = "GStore proxy kernel module (meow-rs based) — Android cross-compile spike"
+publish = false
+
+[lib]
+name = "gstore_mod_proxy"
+crate-type = ["cdylib", "rlib"]
+
+# meow-rs is pinned by EXACT git rev (no git tags are published at this rev).
+# DO NOT switch to a floating branch.  See rust/gstore_mod_proxy/SPIKE.md for
+# the full dependency/feature rationale, incl. why BoringSSL is unavoidable.
+#
+# NOTE: the lib name of the `meow-lwip` package is `lwip`; the dependency is
+# renamed here to `meow_lwip` so the spike can name the netstack crate explicitly.
+[dependencies]
+meow-common = { git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587442caaac00b221efc91c84907aeb0e0" }
+meow-tunnel = { git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587442caaac00b221efc91c84907aeb0e0" }
+meow-config = { git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587442caaac00b221efc91c84907aeb0e0", default-features = false }
+meow-proxy = { git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587442caaac00b221efc91c84907aeb0e0", default-features = false }
+meow-dns = { git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587442caaac00b221efc91c84907aeb0e0", default-features = false }
+meow-api = { git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587442caaac00b221efc91c84907aeb0e0" }
+meow-listener = { git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587442caaac00b221efc91c84907aeb0e0", default-features = false, features = ["listener-mixed"] }
+meow_lwip = { package = "meow-lwip", git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587442caaac00b221efc91c84907aeb0e0" }
+
+# Bounded async runtime. NEVER Runtime::new() / CPU-default workers on Android
+# (SIGSEGV, see rust/gstore_mod_repo/src/lib.rs:117-120).
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "sync", "macros"] }
+futures = "0.3"
+
+# Module crate convention (rust/ARCHITECTURE.md §3.5/§3.6): panic must unwind
+# so every extern "C" boundary can catch_unwind.
+[profile.release]
+panic = "unwind"
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true

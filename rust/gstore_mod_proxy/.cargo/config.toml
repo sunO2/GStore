@@ -1,0 +1,74 @@
+# Rust Android 构建配置（由 rust/gstore_mod_repo/.cargo/config.toml 适配）
+#
+# 该 crate 依赖 meow-rs（lwIP + BoringSSL 等 C/C++ 依赖），交叉编译除 linker/ar
+# 外还需要 cc/cmake/bindgen 的环境变量。这里用 Cargo 的 [env] 段集中声明，使
+# 验收命令 `cargo build --release --target <abi>` 无需额外 env 即可复现。
+#
+# NDK 路径: /home/hezhihu89/develop/android/sdk/ndk/26.3.11579264
+#
+# 16KB 页对齐：-Wl,-z,max-page-size=16384 使链接器将 ELF 段 p_align 对齐到 16384，
+# 满足 Android 16KB page size 设备要求（否则 Rust 库在 16KB 设备上无法加载）。
+
+[env]
+# BoringSSL (boring-sys) 的 Android 交叉编译需要它来定位 NDK 的 android.toolchain.cmake。
+ANDROID_NDK_HOME = "/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264"
+ANDROID_NDK_ROOT = "/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264"
+# BoringSSL (boring-sys) android 交叉编译：用包装 toolchain 关闭其内置 benchmark
+# 的交叉探测（BoringSSL 只对 Apple 处理 CMAKE_CROSSCOMPILING，Android 会 configure 失败）。
+CMAKE_TOOLCHAIN_FILE = "/home/hezhihu89/develop/flutter/project/GStore/rust/gstore_mod_proxy/cmake/android-toolchain-wrapper.cmake"
+# bindgen（boring-sys / meow-lwip）需要 libclang；NDK 自带的 libclang 计算不出
+# 自己的 clang resource-dir，故显式补上（否则报 'stddef.h' file not found）。
+LIBCLANG_PATH = "/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/lib"
+BINDGEN_EXTRA_CLANG_ARGS = "-isystem /home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/lib/clang/17/include"
+# bindgen 会依据 TARGET 自动切到 Android 的 clang target；必须补 NDK sysroot，
+# 否则 clang 会去解析宿主机 glibc 头（bits/wordsize.h not found）。按 ABI 分开
+# 设置（underscore 形式，bindgen/cc 均识别）。
+BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android = "--sysroot=/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/sysroot -isystem /home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/lib/clang/17/include"
+BINDGEN_EXTRA_CLANG_ARGS_x86_64_linux_android = "--sysroot=/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/sysroot -isystem /home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/lib/clang/17/include"
+BINDGEN_EXTRA_CLANG_ARGS_armv7_linux_androideabi = "--sysroot=/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/sysroot -isystem /home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/lib/clang/17/include"
+BINDGEN_EXTRA_CLANG_ARGS_i686_linux_android = "--sysroot=/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/sysroot -isystem /home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/lib/clang/17/include"
+# cc crate（meow-lwip 编译 lwIP C 源码）按 target 选择编译器（下划线形式）。
+CC_aarch64_linux_android = "/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android33-clang"
+CXX_aarch64_linux_android = "/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android33-clang++"
+AR_aarch64_linux_android = "/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+CC_x86_64_linux_android = "/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android33-clang"
+CXX_x86_64_linux_android = "/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android33-clang++"
+AR_x86_64_linux_android = "/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+CC_armv7_linux_androideabi = "/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi33-clang"
+CXX_armv7_linux_androideabi = "/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi33-clang++"
+AR_armv7_linux_androideabi = "/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+CC_i686_linux_android = "/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android33-clang"
+CXX_i686_linux_android = "/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android33-clang++"
+AR_i686_linux_android = "/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+
+[target.aarch64-linux-android]
+ar = "/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+linker = "/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android33-clang"
+rustflags = [
+    "-C", "link-arg=-fuse-ld=lld",
+    "-C", "link-arg=-Wl,-z,max-page-size=16384",
+]
+
+[target.armv7-linux-androideabi]
+ar = "/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+linker = "/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi33-clang"
+rustflags = [
+    "-C", "link-arg=-fuse-ld=lld",
+    "-C", "link-arg=-Wl,-z,max-page-size=16384",
+]
+
+[target.i686-linux-android]
+ar = "/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+linker = "/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android33-clang"
+rustflags = [
+    "-C", "link-arg=-fuse-ld=lld",
+    "-C", "link-arg=-Wl,-z,max-page-size=16384",
+]
+
+[target.x86_64-linux-android]
+ar = "/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+linker = "/home/hezhihu89/develop/android/sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android33-clang"
+rustflags = [
+    "-C", "link-arg=-fuse-ld=lld",
+    "-C", "link-arg=-Wl,-z,max-page-size=16384",
+]
