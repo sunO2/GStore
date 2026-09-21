@@ -12,6 +12,9 @@
 #   完整包：同一 <abi> 下必须列出 lib/<abi>/libgstore_host.so
 #           且列出 4 个 lib/<abi>/libgstore_mod_<name>.so
 #           （name ∈ qr analyzer repo download）
+#           且**不得**列出 download-only 模块（name ∈ proxy，见
+#           rust/gstore_mod_proxy/API.md §6：proxy 走 ModuleBootstrap 下载，
+#           不进完整包；Todo 25 若改为内置须同步移除本负向断言）
 #   精简包：同一 <abi> 下必须列出 lib/<abi>/libgstore_host.so
 #           且**不得**列出任何 lib/<abi>/libgstore_mod_*.so
 #
@@ -49,7 +52,10 @@ fi
 
 # 顺序固定，保证输出/判定确定。
 ABIS=(arm64-v8a armeabi-v7a x86_64)
+# 完整包内置的模块（qr/analyzer/repo/download）。
 MODULES=(qr analyzer repo download)
+# 仅经 ModuleBootstrap 下载、不进完整包的模块（proxy）。见 API.md §6 分发决策。
+DOWNLOAD_ONLY_MODULES=(proxy)
 
 failures=0
 checked=0
@@ -108,6 +114,13 @@ check_apk() {
       local entry="lib/${abi}/libgstore_mod_${module}.so"
       if ! grep -qF "$entry" <<<"$listing"; then
         fail "[$label] 缺少内置模块: $entry"
+        ok=0
+      fi
+    done
+    for module in "${DOWNLOAD_ONLY_MODULES[@]}"; do
+      local entry="lib/${abi}/libgstore_mod_${module}.so"
+      if grep -qF "$entry" <<<"$listing"; then
+        fail "[$label] download-only 模块不得内置: $entry（见 rust/gstore_mod_proxy/API.md §6）"
         ok=0
       fi
     done

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# 确定性断言：Rust 可下载模块（qr / analyzer / repo / download）的每个 ABI 产物
-# 均存在且**非零字节**。
+# 确定性断言：Rust 可下载模块（qr / analyzer / repo / download / proxy）的每个 ABI
+# 产物均存在且**非零字节**。
 #
 # 用途：CI 在 `build_android_rust.sh` 之后调用本脚本，任何缺失或零字节产物都会
 # 让作业失败（不得静默通过）。LLM 模块（gstore_mod_llm）为可选、仅 arm64，**不在**
@@ -16,10 +16,10 @@
 #   1  任一产物缺失 / 非普通文件 / 零字节
 #   2  用法错误或 fixture 目录不存在
 #
-# 预期产物（4 模块 × 4 ABI = 16 个）：
+# 预期产物（5 模块 × 4 ABI = 20 个）：
 #   <dir>/<abi>/libgstore_mod_<name>.so
 #   abi   ∈ arm64-v8a armeabi-v7a x86 x86_64
-#   name  ∈ qr analyzer repo download
+#   name  ∈ qr analyzer repo download proxy
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -43,7 +43,7 @@ fi
 FIXTURE_DIR="${1:-${GSTORE_MODULE_DIR:-$REPO_ROOT/rust/release-modules}}"
 
 # 顺序固定，保证输出/判定确定。
-MODULES=(gstore_mod_qr gstore_mod_analyzer gstore_mod_repo gstore_mod_download)
+MODULES=(gstore_mod_qr gstore_mod_analyzer gstore_mod_repo gstore_mod_download gstore_mod_proxy)
 ABIS=(arm64-v8a armeabi-v7a x86 x86_64)
 
 if [ ! -d "$FIXTURE_DIR" ]; then

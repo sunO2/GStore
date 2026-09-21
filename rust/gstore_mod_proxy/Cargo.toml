@@ -26,10 +26,24 @@ meow-api = { git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587442
 meow-listener = { git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587442caaac00b221efc91c84907aeb0e0", default-features = false, features = ["listener-mixed"] }
 meow_lwip = { package = "meow-lwip", git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587442caaac00b221efc91c84907aeb0e0" }
 
+# Module ABI contract (C ABI v3: GStoreModuleEntry / Api / ModuleError / ModuleContext).
+# Same shape every other downloaded module crate uses (mirrors gstore_mod_download).
+gstore_contract = { path = "../gstore_contract" }
+# JSON envelope (method in/out, events) — the module wire contract is JSON.
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# libc malloc/free for the C ABI output buffer (who allocates frees).
+libc = "0.2"
+
 # Bounded async runtime. NEVER Runtime::new() / CPU-default workers on Android
 # (SIGSEGV, see rust/gstore_mod_repo/src/lib.rs:117-120).
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "sync", "macros"] }
 futures = "0.3"
+
+[dev-dependencies]
+# Host-side dlopen integration test (mirrors gstore_host's Linux dlopen tests):
+# loads target/<profile>/libgstore_mod_proxy.so as the host would.
+libloading = "0.8"
 
 # Module crate convention (rust/ARCHITECTURE.md §3.5/§3.6): panic must unwind
 # so every extern "C" boundary can catch_unwind.

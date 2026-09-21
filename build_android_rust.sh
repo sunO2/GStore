@@ -11,7 +11,7 @@ ANDROID_LIB_DIR="${GSTORE_LIB_DIR:-/home/hezhihu89/develop/flutter/project/GStor
 # 可下载模块的输出目录（不进 APK，发布时作为 GitHub Release 附件分发）
 MODULE_DIR="${GSTORE_MODULE_DIR:-/home/hezhihu89/develop/flutter/project/GStore/rust/release-modules}"
 # 需要构建的可下载模块（crate 名 -> 目录）
-MODULES=("gstore_mod_qr" "gstore_mod_analyzer" "gstore_mod_repo" "gstore_mod_download")
+MODULES=("gstore_mod_qr" "gstore_mod_analyzer" "gstore_mod_repo" "gstore_mod_download" "gstore_mod_proxy")
 # 模块构建失败数（汇总时与宿主 FAILED 一并判定，避免"部分模块失败却报全成功"）
 MODULE_FAILED=0
 
