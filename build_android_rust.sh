@@ -197,6 +197,24 @@ EOF
         chmod +x "$symlink_dir/"*-clang* 2>/dev/null
         export PATH="$symlink_dir:$PATH"
 
+        # gstore_mod_proxy（meow-rs：lwIP C + BoringSSL/aws-lc cmake + bindgen）需要
+        # 显式注入 NDK 的 C/C++ 工具链与 libclang：其 .cargo/config.toml 的 [env] 段
+        # 写的是开发机绝对 NDK 路径，CI runner 上不存在（cargo [env] 不覆盖已存在的
+        # 进程环境，故此处 export 即可让 CI 复用）。仅对 proxy 生效，避免影响依赖
+        # zxing-cpp 的模块（qr/download）——它们必须依赖 CMAKE_TOOLCHAIN_FILE 自动选
+        # 编译器，手动指定 CC/CXX 会触发 va_list 头冲突。
+        if [ "$module" = "gstore_mod_proxy" ]; then
+            local ndk_llvm="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64"
+            local clang_resource
+            clang_resource="$(ls -d "$ndk_llvm"/lib/clang/*/include 2>/dev/null | head -n1)"
+            export "CC_${target_underscore}=$toolchain_bin/$clang_name"
+            export "CXX_${target_underscore}=$toolchain_bin/${clang_name%clang}clang++"
+            export "AR_${target_underscore}=$toolchain_bin/llvm-ar"
+            export LIBCLANG_PATH="$ndk_llvm/lib"
+            export BINDGEN_EXTRA_CLANG_ARGS="--sysroot=$ndk_llvm/sysroot ${clang_resource:+-isystem $clang_resource}"
+            export "BINDGEN_EXTRA_CLANG_ARGS_${target_underscore}=$BINDGEN_EXTRA_CLANG_ARGS"
+        fi
+
         local cargo_log
         cargo_log="$(mktemp)"
         if cargo build --release --target "$target" \
@@ -219,6 +237,15 @@ EOF
             MODULE_FAILED=$((MODULE_FAILED + 1))
         fi
     done
+
+    # 清理为 proxy 注入的进程级环境变量，避免泄漏到后续模块的 cargo 调用
+    if [ "$module" = "gstore_mod_proxy" ]; then
+        for target in "${!ARCHS[@]}"; do
+            local tu="${target//-/_}"
+            unset "CC_$tu" "CXX_$tu" "AR_$tu" "BINDGEN_EXTRA_CLANG_ARGS_$tu"
+        done
+        unset LIBCLANG_PATH BINDGEN_EXTRA_CLANG_ARGS
+    fi
 
     # 回到宿主目录
     cd "$PROJECT_DIR"

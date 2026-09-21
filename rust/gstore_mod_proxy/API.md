@@ -922,12 +922,12 @@ Rationale and budgets versus the current `~45 MB` arm64 baseline (per
 
 | item | value |
 |---|---|
-| arm64-v8a release `.so` | **1,309,712 B (~1.25 MiB)** at Todo 2; **4,080,584 B (~3.89 MiB)** after Todo 7 wired the real tunnel routing engine |
-| x86_64 | 1,286,584 B |
-| armeabi-v7a | 535,176 B |
-| x86 | 1,284,452 B |
-| **Δ full APK, arm64-v8a if bundled** | **+~1.25 MiB (~2.8 % over 45 MB)** at Todo 2 — under budget; Todo 7 raises the real figure to **+~3.89 MiB (~8.6 %)**, still under budget but Todo 25 must re-measure |
-| **Δ full APK, all four ABIs if bundled** | **+~4.21 MiB** (Todo 2) |
+| arm64-v8a release `.so` | **12,847,984 B (~12.25 MiB)** — Todo 25 final (`strip=true`, `panic=unwind`, `lto`, `opt-level="z"`) |
+| armeabi-v7a | **8,386,276 B (~8.00 MiB)** |
+| x86_64 | **14,722,056 B (~14.04 MiB)** |
+| x86 | **14,778,412 B (~14.09 MiB)** |
+| **Δ full APK, arm64-v8a if bundled** | **+~12.25 MiB (~+27 % over the 45 MB P0 baseline)** — the Todo 2 `+~1.25 MiB` estimate is stale; the module now carries the full meow tunnel/rule/DNS/geo/runtime/`rusqlite` graph. A bundled arm64 APK would grow materially, which is why the download-only decision stands |
+| **Δ full APK, all four ABIs if bundled** | **+~50.7 MiB** across all ABIs (sum of the four `.so`) |
 | slim APK | 0 (downloaded on first use, verified by sha256 against `modules.json`) |
 | shipped ABIs (built + manifest) | **arm64-v8a, armeabi-v7a, x86, x86_64** (all four build; manifest carries all four) |
 
@@ -938,8 +938,11 @@ figures are far under the budget, so the decision is unchanged.
 Notes:
 - `libc++_shared.so` (BoringSSL runtime) already ships in the APK, so the module adds
   no extra runtime dependency beyond its own `.so`.
-- `DT_NEEDED` is Android-system-only (`libc.so`, `libdl.so`, `libc++_shared.so`); no
-  host-only libraries.
+- `DT_NEEDED` is Android-system-only (`libc.so`, `libdl.so`, `libm.so`,
+  `libc++_shared.so`) on all four ABIs; no host-only libraries and no
+  `libgstore_*.so` coupling. Enforced by
+  `scripts/ci/assert_proxy_module_artifacts.sh` (allow-list + 16 KB `PT_LOAD`
+  alignment + stripped/unwind + manifest naming/sha256).
 - This decision is re-validated in Todo 25 (packaging/manifest/slim exclusion); any
   flip to "bundled by default" must update this section and the APK payload assertions
   in the same change.
@@ -1707,3 +1710,73 @@ handover → `ConnectivityManager.registerDefaultNetworkCallback` →
 Null-Intent (always-on / process-death) restart → persisted config + `always_on_restart`
 event. Start failure → `start_failed` event. `SUPPORTS_ALWAYS_ON` is declared; the app
 does not toggle the system setting (guidance + `alwaysOnSettings` channel).
+
+## 19. Performance, memory budget & foreground notification (Todo 27)
+
+### 19.1 Bounded memory (single source of truth)
+
+Every accumulator that can grow with traffic is capped at its source. `src/limits.rs`
+re-exports the caps and computes a numeric worst-case budget; the test
+`limits::tests::every_accumulator_cap_is_within_its_ceiling` fails if a cap is raised
+past its reviewed ceiling.
+
+| Accumulator | Cap | Notes |
+|---|---|---|
+| log ring (`logging::RING_CAPACITY`) | 1000 | oldest-first; cursors monotonic |
+| per-domain stats (`stats::DOMAIN_CAP`) | 2048 | oldest `lastSeenMs` evicted (ties: domain asc) |
+| per-flow delta trackers (`stats::FLOW_CAP`) | 2048 | **Todo 27**: previously unbounded — it grew with meow's live table |
+| connection projection (`conn::CONN_TRACK_CAP`) | 1024 | |
+| recently-closed tombstones (`conn::CONN_TOMBSTONE_CAP`) | 1024 | |
+| DNS query / mapping rings | 256 / 1024 | |
+| fake-IP store | 4096 | |
+| lwIP ingress+egress channel depth (`STACK_BUFFER_SIZE`) | 1024 | `NetStack::with_buffer_size`; meow default 512 |
+| lwIP UDP channel depth (`UDP_BUFFER_SIZE`) | 256 | meow default 64 |
+| reader→ingress queue (`INGRESS_CHANNEL`) | 256 | reader's `Vec<u8>` bounded by `READ_BUFFER_SIZE` (65535) |
+| per-read buffer (`READ_BUFFER_SIZE`) | 65535 | ≥ any TUN MTU (Kotlin default 1500) |
+
+Worst-case retained bytes (MTU-sized frames) is asserted ≤ 32 MiB by
+`limits::tests::worst_case_memory_budget_is_bounded`.
+
+Flow eviction is **amortized O(1)**: when the map exceeds `FLOW_CAP` it is trimmed to
+half the cap in one deterministic pass, so a sustained excess does not re-sort on every
+tick. Under connection pressure the aggregate degrades gracefully (a lost flow only loses
+its exact byte delta; `stats.traffic.get` keeps reporting `flowCount`/`flowCapacity`/
+`evictedFlows`). Proven by `stats::tests::flow_trackers_are_bounded_under_connection_pressure`.
+
+### 19.2 Reader readiness handling (data-plane robustness)
+
+`AsyncFd` is edge-triggered; `guard.try_io` returns the outer `Err(TryIoError)` whenever
+the closure observes `WouldBlock` (readiness consumed, no data). This is routine under
+load and whenever a burst drains into an idle fd. The reader now **retries** it instead of
+treating it as fatal; previously it returned `"TUN read readiness cancelled"`, which killed
+the single reader and forced a full supervisor restart of the data plane. Regression test:
+`tun::tests::reader_survives_idle_gaps_between_bursts`.
+
+### 19.3 Data plane never blocks the FRB worker
+
+The reader/ingress/egress tasks run on the TUN loop's own std thread and bounded
+`bounded_runtime` (4 workers) — see §18.1. Only the synchronous C-ABI calls reach the
+host; host long-calls use `gstore_host::task_bridge` (dedicated thread per task), and
+short calls run on FRB's task pool. No data-plane work is scheduled on an FRB worker.
+
+### 19.4 Foreground notification
+
+`ProxyVpnService` uses a dedicated `IMPORTANCE_LOW`, badge-less, `VISIBILITY_PRIVATE`
+channel, a monochrome status-bar icon (`drawable/ic_stat_proxy_vpn`), `CATEGORY_SERVICE`,
+`setShowWhen(false)`, `setOnlyAlertOnce(true)`, subtext, and a **Stop** action
+(`ACTION_STOP` → the normal teardown path). `setForegroundServiceBehavior(IMMEDIATE)` on
+API 31+.
+
+### 19.5 Main-thread ANR avoidance
+
+`nativeStopTunnel()` blocks ≤800 ms host-side (stop loop → join). It (and the PFD close)
+now run on a single-thread `gstore-vpn-teardown` executor, so `onRevoke`/`onDestroy`/
+`ACTION_STOP` never block the main thread. A lifecycle-generation guard skips a stale
+teardown if a new `start` superseded it.
+
+### 19.6 Local benchmark harness
+
+`rust/gstore_mod_proxy/bench/run.sh [frames]` runs the two `#[ignore]` host benchmarks and
+greps `GSTORE_BENCH` lines: `dataplane_read` (reader throughput + RSS/CPU) and
+`stats_ingest` (aggregation throughput + RSS/CPU under domain/flow pressure). Host/debug,
+relative comparison only — an on-device soak remains **UNVERIFIED** (no adb).

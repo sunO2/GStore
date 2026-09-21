@@ -31,7 +31,7 @@ jobs:
       - name: Set up Rust toolchain (Android targets)
         uses: dtolnay/rust-toolchain@stable
         with:
-          # build_android_rust.sh 会为这 4 个 target 构建宿主 + qr/analyzer/repo/download 模块
+          # build_android_rust.sh 会为这 4 个 target 构建宿主 + qr/analyzer/repo/download/proxy 模块
           targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
 
       - name: Set up Android SDK
@@ -45,10 +45,13 @@ jobs:
         with:
           ndk-version: r26c
 
-      - name: Set up CMake and Ninja (zxing-cpp cmake cross-build)
+      # proxy 模块的 C/C++ 依赖（BoringSSL / aws-lc / lwIP）走 cmake+ninja，
+      # bindgen 需要 libclang，BoringSSL 构建脚本可能调用 perl；x86_64 宿主上
+      # build_android_rust.sh 会显式注入 NDK 的 libclang/CC/CXX（见脚本内注释）。
+      - name: Set up C/C++ toolchain (cmake/ninja/libclang/perl)
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends cmake ninja-build
+          sudo apt-get install -y --no-install-recommends cmake ninja-build libclang-dev perl
 
       - name: Download Latest apps.db Asset from sunO2/GStore-repositorys Release
         run: |
@@ -110,9 +113,11 @@ jobs:
       - name: Rebuild it-tools offline bundle (upstream + patch)
         run: bash scripts/it_tools/build_bundle.sh
 
-      # 构建可下载 Rust 模块。llm 为可选、仅 arm64，由脚本既有逻辑决定是否构建，
-      # 不纳入下方断言范围。
-      - name: Build Rust Android modules (qr/analyzer/repo/download)
+      # 构建可下载 Rust 模块（qr/analyzer/repo/download/proxy）。llm 为可选、仅 arm64，
+      # 由脚本既有逻辑决定是否构建，不纳入下方断言范围。
+      # proxy 的 C/C++ 工具链（CC/CXX/AR + LIBCLANG_PATH/BINDGEN_EXTRA_CLANG_ARGS）
+      # 由 build_android_rust.sh 依据 GSTORE_NDK_PATH 注入，不依赖 dev 机绝对路径。
+      - name: Build Rust Android modules (qr/analyzer/repo/download/proxy)
         env:
           GSTORE_NDK_PATH: ${{ steps.setup-ndk.outputs.ndk-path }}
           GSTORE_PROJECT_DIR: ${{ github.workspace }}/rust/gstore_host
@@ -154,6 +159,15 @@ jobs:
             exit 1
           fi
           echo "OK: $bundled == $released"
+
+      # proxy 深断言：4 ABI 产物存在、DT_NEEDED 仅 Android 系统库（无 libgstore_*）、
+      # 16 KB 页对齐、strip 后保留 dynsym/unwind、无 .debug_*；modules.json 含 proxy
+      # 全部 4 ABI 且资产名/sha256/size 与产物一致；随包清单一致；modules_builtin.json
+      # 不含 proxy（download-only，见 rust/gstore_mod_proxy/API.md §6）。
+      - name: Assert proxy module deep artifacts (DT_NEEDED + 16KB + manifest)
+        env:
+          GSTORE_MODULE_DIR: ${{ github.workspace }}/rust/release-modules
+        run: bash scripts/ci/assert_proxy_module_artifacts.sh "$GSTORE_MODULE_DIR"
 
       # 暂时禁用 flutter test（宿主/CI 环境缺失 libsqlite3.so 导致大量 DB 用例失败）；
       # 恢复时取消下面一行注释即可。
@@ -203,7 +217,8 @@ jobs:
             cp "$src" "$DEST/GStore-slim-${abi}-release.apk"
           done
 
-      # 载荷断言：完整包须含 4 个模块 .so + host；精简包须不含模块 .so 但含 host。
+      # 载荷断言：完整包须含 qr/analyzer/repo/download 4 个模块 .so + host，且不得含
+      # download-only 的 proxy；精简包须不含任何模块 .so 但含 host。
       - name: Assert APK module payload (full vs slim)
         run: bash scripts/ci/assert_apk_module_payload.sh build/apk-release
       
