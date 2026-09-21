@@ -64,6 +64,14 @@
 | `PROXY_SUB_NODE_INVALID` | proxy | 422 | 分享链接畸形或缺必填字段（server/port/密钥，外部 SIP003 `plugin`）（Todo 11） |
 | `PROXY_SUB_SCHEME_UNSUPPORTED` | proxy | 422 | 分享链接 scheme 不在支持集合（`ss`/`ss2022`/`vmess`/`vless`/`trojan`/`hysteria2`）（Todo 11） |
 | `PROXY_SUB_NO_NODES` | proxy | 422 | 解析成功但无可导入节点（Todo 11） |
+| `PROXY_PROFILE_NOT_FOUND` | proxy | 404 | `profile.get/update/delete/refresh` 指定的 profile id 不存在（Todo 12） |
+| `PROXY_PROFILE_INVALID` | proxy | 422 | profile 存储请求非法：缺 `profile`、profile 名为空/无节点、id 非 `[A-Za-z0-9_-]{1,64}`、显式 id 重复、`refresh.state` 非 `requested\|done\|failed`（Todo 12） |
+| `PROXY_PROFILE_NOT_REFRESHABLE` | proxy | 422 | 对非 URL 来源（text/link）的 profile 调用 `profile.refresh`（Todo 12） |
+| `PROXY_PROFILE_SCHEMA_UNSUPPORTED` | proxy | 422 | 磁盘上的 profile schema 版本高于当前模块支持版本（拒读，避免旧模块截断新数据）（Todo 12） |
+| `PROXY_PROFILE_TOO_LARGE` | proxy | 507 | profile/index 载荷超硬上限、profile 数超 4096、单 profile 节点数超 4096（Todo 12） |
+| `PROXY_PROFILE_STORE_FAILED` | proxy | 500 | profile 存储 I/O / 原子写（temp+fsync+rename）失败（Todo 12） |
+| `PROXY_PROFILE_CORRUPT` | proxy | —（`list` 行内 warning）/ 500（`get`） | 单个 payload/index 文件不可解析；`profile.list` 跳过该文件并回报结构化 warning，`profile.get` 返回 500（Todo 12） |
+| `PROXY_PROFILE_MISSING` | proxy | —（`list` 行内 warning） | index 引用的 payload 文件已不存在；`profile.list` 回报结构化 warning（Todo 12） |
 
 ## 跨 ABI 错误透传
 

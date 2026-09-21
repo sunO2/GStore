@@ -113,18 +113,25 @@ stores it as *pending*; `core.start` owns the single read loop. Invalid
 `PROXY_TUN_FD_INVALID` (422) — never a panic. The host fd is never closed by the
 module (Kotlin owns the `ParcelFileDescriptor`).
 
-### 2.4 `profile.*` — subscriptions & the canonical node model
+### 2.4 `profile.*` — subscriptions, the canonical node model & the persistent store
 
-Todo 11 implements the three import methods below. Todo 12 owns the persistent
-store (`list`/`get`/`update`/`delete`/`refresh`), which operates on the same
-canonical model and is **not implemented yet**.
+Todo 11 implements the import methods below; Todo 12 **persists and enumerates
+the same canonical model** (it never re-parses subscription content). The store
+lives under `<data_dir>/profiles/`; see §12 for the on-disk layout, schema
+version, the stable ordering key, atomicity, the credential location and the
+app backup/restore hook.
 
 | method | request | data |
 |---|---|---|
 | `profile.import_url` | `{ "url": string, "name"?: string, "userAgent"?: string }` | `ImportedProfile` |
 | `profile.import_text` | `{ "text": string, "name"?: string, "contentType"?: string }` | `ImportedProfile` |
 | `profile.import_link` | `{ "link": string, "name"?: string }` | `ImportedProfile` |
-| `profile.list` / `profile.get` / `profile.update` / `profile.delete` | — | *(Todo 12)* |
+| `profile.list` | *(none)* | `ProfileList` |
+| `profile.get` | `{ "id": string }` | `StoredProfile` |
+| `profile.create` | `{ "profile": ImportedProfile, "id"?: string, "name"?: string, "appBackup"?: object }` | `StoredProfile` |
+| `profile.update` | `{ "id": string, "profile"?: ImportedProfile, "name"?: string, "appBackup"?: object\|null, "refresh"?: { "state": "requested"\|"done"\|"failed", "error"?: string } }` | `StoredProfile` |
+| `profile.delete` | `{ "id": string }` | `{ "ok": true, "id": string, "deleted": true }` |
+| `profile.refresh` | `{ "id": string }` | `RefreshPlan` |
 
 `profile.import_url` fetches over **meow's protect-aware transport** — the same
 path as every outbound socket, so `VpnService.protect` applies even in VPN mode;
@@ -211,6 +218,72 @@ seconds, normalized if the provider sent milliseconds):
   (no second YAML parser); a `script`-type node, an external SIP003 `plugin`, an
   unknown proxy type, and any `dns`/`tun`/`external-controller`/`proxy-providers`
   override are dropped — the canonical model carries only a whitelisted subset.
+
+#### 2.4.3 The persistent store (Todo 12)
+
+`profile.list` returns compact summaries (no node credentials) in a **stable**
+order — `(createdAtMs asc, id asc)` — plus structured warnings for corrupt or
+missing sibling files; a corrupt payload is skipped, never fatal.
+
+```json
+{
+  "schemaVersion": 2,
+  "revision": 3,
+  "count": 2,
+  "profiles": [ ProfileSummary, ... ],
+  "warnings": [ { "code": "PROXY_PROFILE_CORRUPT", "id": "p2", "file": "p2.json", "message": "payload JSON: ..." } ]
+}
+```
+
+`StoredProfile` (returned by `get`/`create`/`update`; the per-profile file):
+
+```json
+{
+  "schemaVersion": 2,
+  "id": "p1",
+  "revision": 1,
+  "createdAtMs": 0, "updatedAtMs": 0,
+  "refresh": null | { "state": "requested"|"done"|"failed", "requestedAtMs": 0,
+                      "lastAttemptMs"?: 0, "attempts": 0, "error"?: "..." },
+  "appBackup": null | { /* opaque, preserved verbatim */ },
+  "profile": ImportedProfile
+}
+```
+
+`ProfileSummary`: `{ "id", "name", "format", "nodeCount", "groupCount",
+"createdAtMs", "updatedAtMs", "revision", "sourceOrigin"?, "sourceUrl"?,
+"userinfo"?, "refresh"? }`.
+
+`profile.create` stores an `ImportedProfile` that Dart already obtained from
+`profile.import_*`; `id` is optional (default `p<nextId>`, `[A-Za-z0-9_-]{1,64}`)
+and `name` overrides the profile name. `profile.update` replaces content
+(`profile`), the display name, the opaque `appBackup`, and/or the refresh flag;
+a content/name change bumps `revision`. `profile.delete` removes the payload and
+its index entry and emits `proxy.subscription.removed`.
+
+`profile.refresh` is the **store side only** — it performs no network I/O. It
+records a refresh intent and returns everything Todo 14 needs to call
+`profile.import_url`:
+
+```json
+{
+  "profileId": "p1", "refreshable": true, "state": "requested",
+  "requestedAtMs": 0, "attempts": 1,
+  "source": ImportSource,
+  "fetch": { "url": "https://...", "name": "My Sub", "userAgent"?: "clash.meta/1.19.0" },
+  "profile": StoredProfile
+}
+```
+
+A `text`/`link`-origin profile has no URL to re-fetch and returns
+`PROXY_PROFILE_NOT_REFRESHABLE` (422). Todo 14 should call `profile.import_url`
+with `fetch`, then persist the result via `profile.update` (and clear the flag
+with `{"refresh":{"state":"done"}}`).
+
+Events: `profile.create` → `proxy.subscription.added`,
+`profile.update` → `proxy.subscription.updated`,
+`profile.delete` → `proxy.subscription.removed` (§3). `profile.refresh` emits
+no event — Todo 14 owns the refresh-with-events flow.
 
 ### 2.5 `config.generate` — render the engine config
 
@@ -506,6 +579,13 @@ registered in `rust/ERROR_CODES.md`.
 | `PROXY_TUN_FD_INVALID` | 422 | invalid/closed TUN fd (Todo 6) |
 | `PROXY_PERMISSION_DENIED` | 403 | VPN consent missing/revoked (Todo 4/24) |
 | `PROXY_PROFILE_NOT_FOUND` | 404 | unknown profile id |
+| `PROXY_PROFILE_INVALID` | 422 | invalid store request: missing/empty profile, malformed id, duplicate id, bad refresh state (Todo 12) |
+| `PROXY_PROFILE_NOT_REFRESHABLE` | 422 | `profile.refresh` on a profile whose source is not a URL (text/link origin) (Todo 12) |
+| `PROXY_PROFILE_SCHEMA_UNSUPPORTED` | 422 | on-disk profile schema is newer than this module supports (Todo 12) |
+| `PROXY_PROFILE_TOO_LARGE` | 507 | profile/index payload exceeds the hard cap, too many profiles, or too many nodes (Todo 12) |
+| `PROXY_PROFILE_STORE_FAILED` | 500 | profile store I/O/atomic-write failure (Todo 12) |
+| `PROXY_PROFILE_CORRUPT` | —（warning）/ 500 on `get` | a payload/index file is unparseable; `profile.list` skips it and reports a warning, `profile.get` returns 500 (Todo 12) |
+| `PROXY_PROFILE_MISSING` | —（warning） | the index references a payload file that no longer exists; `profile.list` warns (Todo 12) |
 | `PROXY_NODE_NOT_FOUND` | 404 | unknown node/group |
 | `PROXY_SUB_URL_INVALID` | 422 | subscription URL failed validation: non-`http(s)` scheme (`file://`/`ftp://`/…), unparseable URL, or no host (Todo 11) |
 | `PROXY_SUB_SSRF_BLOCKED` | 422 | user-supplied subscription URL targets a loopback/private/link-local/CGNAT address (SSRF guard) (Todo 11) |
@@ -933,4 +1013,85 @@ events and `conn.list`/`conn.close` over the real C ABI.
 **UNVERIFIED**: real upstream latency (tests use hanging stubs and loopback, no
 network); on-device selection/routing (no adb device); UDP connections are not
 in `conn.list` (meow tracks UDP in a NAT table with no byte counters).
+
+## 12. Persistent profile store (Todo 12)
+
+### 12.1 Layout and atomicity
+
+`profile.*` persists under the module data directory (`ModuleContext.data_dir`,
+i.e. `<app documents>/gstore_mods/proxy/` on Android — see
+`lib/core/rust/ModuleContext.dart:53-77`):
+
+```text
+<data_dir>/profiles/
+  index.json     ProfileIndex: { schemaVersion, revision, nextId, profiles[] }
+  <id>.json      StoredProfile: store metadata + the canonical ImportedProfile
+```
+
+- The **payload is the source of truth**; `index.json` is an
+  enumeration/cache used to allocate ids and list without scanning the
+  directory.
+- Every write is **atomic**: a sibling temp file (`.name.tmp-<pid>-<seq>`) is
+  written, `fsync`ed, then `rename`d over the destination in the same
+  directory, then the directory is `fsync`ed best-effort. A concurrent reader
+  therefore sees the complete old or complete new file — never a partial one.
+  On failure the temp file is removed and the old file is left untouched.
+- Writes are serialized by a process-wide store mutex.
+- Hard bounds: 4096 profiles, 4096 nodes/profile, 4 MiB index, 32 MiB payload;
+  oversized input is `PROXY_PROFILE_TOO_LARGE` (507).
+
+### 12.2 Schema versioning and migration
+
+Current schema is **v2**. A v1 fixture (index with a top-level `version` and a
+payload that was the bare `ImportedProfile`) is migrated on read; the next
+mutation rewrites it in the v2 wrapper. Migrated fields: `schemaVersion: 2`,
+`revision: 1`, `updatedAtMs = createdAtMs`, `refresh: null`, `appBackup: null`,
+and `nextId = max(numeric id) + 1`. A `schemaVersion` **newer** than supported
+is refused with `PROXY_PROFILE_SCHEMA_UNSUPPORTED` so an old module never
+silently truncates newer data.
+
+### 12.3 Stable ordering
+
+`profile.list.profiles` is sorted by the total key
+**`(createdAtMs ascending, id ascending)`**, computed from the payload (not
+from hash/filesystem iteration order), so the order is identical across
+reloads and process restarts.
+
+### 12.4 Credentials / secrets location
+
+`ProxyNode.password` / `ProxyNode.uuid` (and REALITY/obfs secrets) are
+credentials. They are written **only** to
+`<data_dir>/profiles/<id>.json`, which is inside the app sandbox (app-private
+documents directory). The module never copies them to shared storage, to
+`cache_dir`, to logs, or to `profile.list` summaries. If the app adds a
+backup/restore transport it must treat this directory as sensitive.
+
+### 12.5 App backup/restore hook (explicit, uncoupled)
+
+The store is plain JSON under one directory, and each `StoredProfile` carries an
+opaque `appBackup` field preserved verbatim. The app
+(`lib/core/service/backup_service.dart` / `lib/core/config/AppConfig.dart`) can
+embed the records (or copy the directory) under a key of its choosing. The
+module does **not** read, write, version, or depend on the app backup format —
+see `profile::APP_BACKUP_HOOK`.
+
+### 12.6 Outcome surface for other todos
+
+- **Todo 13** reads `profile.get(id).profile` to generate the Clash config.
+- **Todo 14** calls `profile.refresh`, performs `fetch` via
+  `profile.import_url`, then persists with `profile.update`.
+- **Todo 20** consumes `profile.list` summaries (name/userinfo/refresh state).
+
+### 12.7 Verification status
+
+`cargo test -p gstore_mod_proxy` proves: CRUD round-trip surviving a store
+reload; stable `(createdAtMs, id)` ordering across reloads; atomic-write
+failure (temp/rename) leaving the previous file intact with no temp residue;
+a failed create not corrupting the index; v1 → v2 index+payload migration with
+`nextId` derivation and on-disk upgrade; a corrupt payload skipped with a
+structured warning while valid profiles list; a corrupt index rebuilt from the
+payload directory; `profile.refresh` persisting the flag and returning the fetch
+spec; and structured errors for unknown/traversal/duplicate ids and a newer
+schema. **UNVERIFIED**: on-device storage/`adb` reload (no device) — the store
+is exercised against host temp directories only.
 

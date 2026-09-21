@@ -37,6 +37,7 @@ mod conn;
 mod dispatch;
 mod dns;
 mod nodes;
+mod profile;
 mod protect;
 mod rules;
 mod subscription;
@@ -338,6 +339,8 @@ const EVT_NODE_DELAY: &str = "proxy.node.delay";
 #[allow(dead_code)]
 const EVT_STATS: &str = "proxy.stats";
 const EVT_SUBSCRIPTION: &str = "proxy.subscription.added";
+const EVT_SUBSCRIPTION_UPDATED: &str = "proxy.subscription.updated";
+const EVT_SUBSCRIPTION_REMOVED: &str = "proxy.subscription.removed";
 /// 模块 → 宿主：TUN 读取循环已停止且线程已 join，宿主可清缓存 fd（Kotlin 可关闭）。
 const EVT_TUN_RELEASED: &str = "proxy.tun.released";
 
@@ -423,7 +426,7 @@ fn instances() -> &'static Mutex<HashMap<u64, Arc<ProxyInstance>>> {
     INSTANCES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -837,6 +840,115 @@ where
     ok_data(data)
 }
 
+/// Serialize a value into the module `ok` envelope's `data`.
+fn to_value<T: serde::Serialize>(value: &T) -> Result<serde_json::Value, ModuleError> {
+    serde_json::to_value(value).map_err(|e| ModuleError::internal(format!("serialize: {e}")))
+}
+
+/// Emit a JSON event, ignoring serialization failures (events are best-effort).
+fn emit_json(instance_id: u64, event_type: &str, value: &serde_json::Value) {
+    if let Ok(bytes) = serde_json::to_vec(value) {
+        emit_event(instance_id, event_type, &bytes);
+    }
+}
+
+/// `profile.list` (Todo 12): the stored profiles in stable `(createdAtMs, id)`
+/// order plus non-fatal warnings for corrupt/missing siblings.
+fn profile_list_arm(
+    instance_id: u64,
+    instance: Option<Arc<ProxyInstance>>,
+) -> Result<Vec<u8>, ModuleError> {
+    let inst = require_instance(instance_id, instance)?;
+    let store = profile::ProfileStore::open(&inst.data_dir)?;
+    ok_data(to_value(&store.list()?)?)
+}
+
+/// `profile.get` (Todo 12): one stored profile by id.
+fn profile_get_arm(
+    instance_id: u64,
+    instance: Option<Arc<ProxyInstance>>,
+    payload: &[u8],
+) -> Result<Vec<u8>, ModuleError> {
+    let inst = require_instance(instance_id, instance)?;
+    let store = profile::ProfileStore::open(&inst.data_dir)?;
+    ok_data(to_value(&store.get(payload)?)?)
+}
+
+/// `profile.create` (Todo 12): persist an already-parsed canonical profile and
+/// emit `proxy.subscription.added`.
+fn profile_create_arm(
+    instance_id: u64,
+    instance: Option<Arc<ProxyInstance>>,
+    payload: &[u8],
+) -> Result<Vec<u8>, ModuleError> {
+    let inst = require_instance(instance_id, instance)?;
+    let store = profile::ProfileStore::open(&inst.data_dir)?;
+    let record = store.create(payload)?;
+    emit_json(
+        inst.id,
+        EVT_SUBSCRIPTION,
+        &serde_json::json!({ "profileId": record.id, "name": record.profile.name }),
+    );
+    ok_data(to_value(&record)?)
+}
+
+/// `profile.update` (Todo 12): replace profile content/metadata; emits
+/// `proxy.subscription.updated` carrying the userinfo traffic/expiry.
+fn profile_update_arm(
+    instance_id: u64,
+    instance: Option<Arc<ProxyInstance>>,
+    payload: &[u8],
+) -> Result<Vec<u8>, ModuleError> {
+    let inst = require_instance(instance_id, instance)?;
+    let store = profile::ProfileStore::open(&inst.data_dir)?;
+    let record = store.update(payload)?;
+    let userinfo = record.profile.userinfo.clone().unwrap_or_default();
+    emit_json(
+        inst.id,
+        EVT_SUBSCRIPTION_UPDATED,
+        &serde_json::json!({
+            "profileId": record.id,
+            "nodeCount": record.profile.node_count,
+            "traffic": {
+                "uploadBytes": userinfo.upload.unwrap_or(0),
+                "downloadBytes": userinfo.download.unwrap_or(0),
+            },
+            "expireAtMs": userinfo.expire.unwrap_or(0).saturating_mul(1000),
+        }),
+    );
+    ok_data(to_value(&record)?)
+}
+
+/// `profile.delete` (Todo 12): remove the payload and index entry; emits
+/// `proxy.subscription.removed`.
+fn profile_delete_arm(
+    instance_id: u64,
+    instance: Option<Arc<ProxyInstance>>,
+    payload: &[u8],
+) -> Result<Vec<u8>, ModuleError> {
+    let inst = require_instance(instance_id, instance)?;
+    let store = profile::ProfileStore::open(&inst.data_dir)?;
+    let outcome = store.delete(payload)?;
+    emit_json(
+        inst.id,
+        EVT_SUBSCRIPTION_REMOVED,
+        &serde_json::json!({ "profileId": outcome.id }),
+    );
+    ok_data(to_value(&outcome)?)
+}
+
+/// `profile.refresh` (Todo 12 store side): persist the refresh intent and
+/// return the `fetch` spec Todo 14 feeds to `profile.import_url`. No network.
+fn profile_refresh_arm(
+    instance_id: u64,
+    instance: Option<Arc<ProxyInstance>>,
+    payload: &[u8],
+) -> Result<Vec<u8>, ModuleError> {
+    let inst = require_instance(instance_id, instance)?;
+    let store = profile::ProfileStore::open(&inst.data_dir)?;
+    ok_data(to_value(&store.refresh(payload)?)?)
+}
+
 fn node_select_arm(
     instance_id: u64,
     instance: Option<Arc<ProxyInstance>>,
@@ -965,6 +1077,12 @@ fn call_impl(
         "profile.import_link" => profile_import_arm(instance_id, instance.clone(), || {
             subscription::import_link(_payload)
         }),
+        "profile.list" => profile_list_arm(instance_id, instance.clone()),
+        "profile.get" => profile_get_arm(instance_id, instance.clone(), _payload),
+        "profile.create" => profile_create_arm(instance_id, instance.clone(), _payload),
+        "profile.update" => profile_update_arm(instance_id, instance.clone(), _payload),
+        "profile.delete" => profile_delete_arm(instance_id, instance.clone(), _payload),
+        "profile.refresh" => profile_refresh_arm(instance_id, instance.clone(), _payload),
         "node.select" => node_select_arm(instance_id, instance.clone(), _payload),
         "node.delay_test" => require_instance(instance_id, instance.clone())
             .and_then(|_| nodes::delay_test_arm(instance_id, _payload)),
@@ -1727,6 +1845,105 @@ mod abi_tests {
             "proxy.subscription.added must be emitted; got {events:?}"
         );
 
+        assert_eq!(destroy(inst), ABI_OK);
+    }
+
+    /// Happy/failure QA over the real C ABI for the persistent profile store
+    /// (Todo 12): import → create → list → get → update → delete, with the
+    /// subscription events and a structured not-found. The files live under the
+    /// instance data dir and survive a second store read.
+    #[test]
+    fn abi_profile_store_crud() {
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine as _;
+        let _g = ABI_LOCK.lock().unwrap();
+        let api = register_api();
+        let create = api.create.unwrap();
+        let call = api.call.unwrap();
+        let destroy = api.destroy.unwrap();
+
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("gstore-profiles-abi-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = serde_json::to_vec(&serde_json::json!({
+            "data_dir": dir.display().to_string(),
+            "cache_dir": dir.display().to_string(),
+        }))
+        .unwrap();
+        let mut inst: u64 = 0;
+        assert_eq!(create(config.as_ptr(), config.len(), &mut inst), ABI_OK);
+        let _ = take_events();
+
+        // Empty store lists nothing.
+        let (code, out) = call_json(call, inst, "profile.list");
+        assert_eq!(code, ABI_OK, "profile.list: {}", String::from_utf8_lossy(&out));
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["count"], 0);
+        assert_eq!(v["data"]["schemaVersion"], 2);
+
+        // Import (Todo 11) then persist the canonical profile (Todo 12).
+        let ss = format!("ss://{}@1.2.3.4:8388#A", STANDARD.encode("aes-256-gcm:pw"));
+        let import = serde_json::json!({"link": ss}).to_string();
+        let (code, out) = call_with_payload(call, inst, "profile.import_link", import.as_bytes());
+        assert_eq!(code, ABI_OK, "import_link: {}", String::from_utf8_lossy(&out));
+        let imported: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        let profile = imported["data"].clone();
+
+        let create_payload = serde_json::json!({"profile": profile}).to_string();
+        let (code, out) = call_with_payload(call, inst, "profile.create", create_payload.as_bytes());
+        assert_eq!(code, ABI_OK, "profile.create: {}", String::from_utf8_lossy(&out));
+        let created: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(created["data"]["id"], "p1");
+        assert_eq!(created["data"]["profile"]["nodeCount"], 1);
+
+        let (code, out) = call_json(call, inst, "profile.list");
+        assert_eq!(code, ABI_OK);
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["count"], 1);
+        assert_eq!(v["data"]["profiles"][0]["id"], "p1");
+
+        let (code, out) = call_with_payload(call, inst, "profile.get", br#"{"id":"p1"}"#);
+        assert_eq!(code, ABI_OK, "profile.get: {}", String::from_utf8_lossy(&out));
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["profile"]["nodes"][0]["type"], "ss");
+
+        let (code, out) = call_with_payload(call, inst, "profile.update", br#"{"id":"p1","name":"Renamed"}"#);
+        assert_eq!(code, ABI_OK, "profile.update: {}", String::from_utf8_lossy(&out));
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["profile"]["name"], "Renamed");
+        assert_eq!(v["data"]["revision"], 2);
+
+        // Failure QA: unknown id is structured 404, never a panic.
+        let (code, out) = call_with_payload(call, inst, "profile.get", br#"{"id":"nope"}"#);
+        assert_eq!(code, ABI_ERR_DETAIL);
+        let err: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(err["code"], "PROXY_PROFILE_NOT_FOUND");
+        assert_eq!(err["status"], 404);
+
+        let events = take_events();
+        assert!(
+            events.iter().any(|(t, p)| t == "proxy.subscription.added"
+                && String::from_utf8_lossy(p).contains("p1")),
+            "proxy.subscription.added must fire; got {events:?}"
+        );
+        assert!(
+            events.iter().any(|(t, _)| t == "proxy.subscription.updated"),
+            "proxy.subscription.updated must fire; got {events:?}"
+        );
+
+        let (code, out) = call_with_payload(call, inst, "profile.delete", br#"{"id":"p1"}"#);
+        assert_eq!(code, ABI_OK, "profile.delete: {}", String::from_utf8_lossy(&out));
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["deleted"], true);
+        let (code, out) = call_json(call, inst, "profile.list");
+        assert_eq!(code, ABI_OK);
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["count"], 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(destroy(inst), ABI_OK);
     }
 }
