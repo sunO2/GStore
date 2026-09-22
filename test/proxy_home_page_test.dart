@@ -91,9 +91,14 @@ class _FakeProxyFacade implements ProxyHomeFacade {
     return Future<ProxyCoreStatus>.value(runningStatus);
   }
 
+  /// 非空时 `coreStop` 以该错误失败（用于断开失败回归）。
+  Object? coreStopError;
+
   @override
   Future<CoreStopResult> coreStop() async {
     coreStopCalls++;
+    final error = coreStopError;
+    if (error != null) throw error;
     return const CoreStopResult(state: ProxyConnState.stopped);
   }
 
@@ -146,6 +151,9 @@ class _FakeVpnConsent implements ProxyVpnConsent {
   int prepareCalls = 0;
   int stopCalls = 0;
 
+  /// 非空时 `stop` 以该错误失败（用于停服务失败不崩溃回归）。
+  Object? stopError;
+
   @override
   Future<bool> prepare({String configJson = '{}'}) async {
     prepareCalls++;
@@ -155,6 +163,8 @@ class _FakeVpnConsent implements ProxyVpnConsent {
   @override
   Future<bool> stop() async {
     stopCalls++;
+    final error = stopError;
+    if (error != null) throw error;
     return true;
   }
 
@@ -287,6 +297,72 @@ void main() {
     expect(facade.coreStopCalls, 1);
     expect(consent.stopCalls, 1);
     expect(find.text('未连接'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets(
+      'disconnect 失败：core.stop 抛错时仍触发停服务（try/finally 回归锁）',
+      (tester) async {
+    final facade = _FakeProxyFacade()
+      ..coreStopError = const ProxyModuleException(
+        code: 'PROXY_ENGINE_STOP_FAILED',
+        message: '停止引擎失败',
+      );
+    final consent = _FakeVpnConsent();
+    await tester.pumpWidget(
+      _wrap(ProxyHomePage(facade: facade, vpnConsent: consent)),
+    );
+    await _flush(tester);
+
+    facade.emit(const ProxyStateEvent(
+      state: ProxyConnState.running,
+      mode: ProxyMode.vpn,
+    ));
+    await _flush(tester);
+    expect(find.text('断开'), findsOneWidget);
+
+    await tester.tap(find.text('断开'));
+    await _flush(tester);
+
+    // 核心回归：core.stop 抛错绝不能阻止停服务调用，否则系统 VpnService 残留。
+    expect(facade.coreStopCalls, 1);
+    expect(
+      consent.stopCalls,
+      1,
+      reason: 'core.stop 抛错时仍必须触发停服务（try/finally）',
+    );
+    expect(find.byKey(const Key('proxy-error-banner')), findsOneWidget);
+    expect(find.text('PROXY_ENGINE_STOP_FAILED'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('disconnect 失败：停服务自身抛错不崩溃、不产生未捕获异常', (tester) async {
+    final facade = _FakeProxyFacade();
+    final consent = _FakeVpnConsent()..stopError = StateError('stopService 失败');
+    await tester.pumpWidget(
+      _wrap(ProxyHomePage(facade: facade, vpnConsent: consent)),
+    );
+    await _flush(tester);
+
+    facade.emit(const ProxyStateEvent(
+      state: ProxyConnState.running,
+      mode: ProxyMode.vpn,
+    ));
+    await _flush(tester);
+    expect(find.text('断开'), findsOneWidget);
+
+    await tester.tap(find.text('断开'));
+    await _flush(tester);
+
+    // core.stop 成功、停服务失败：错误被 _safe 吞掉，UI 正常回到未连接，绝不崩溃。
+    expect(facade.coreStopCalls, 1);
+    expect(consent.stopCalls, 1);
+    expect(find.text('未连接'), findsOneWidget);
+    expect(find.byKey(const Key('proxy-error-banner')), findsNothing);
     expect(tester.takeException(), isNull);
 
     await facade.controller.close();

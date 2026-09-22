@@ -142,14 +142,36 @@ class ProxyVpnService : VpnService() {
         fun stop(context: Context) {
             val intent = Intent(context, ProxyVpnService::class.java).setAction(ACTION_STOP)
             // Android 8+ 后台启动限制：应用不在前台时 startService 可能抛
-            // IllegalStateException。拆除是尽力而为，绝不能因此崩溃调用方。
-            runCatching { context.startService(intent) }
-                .onFailure { Log.w(TAG, "stop 服务启动失败: ${it.message}") }
+            // IllegalStateException（API 31+ 为 BackgroundServiceStartNotAllowedException），
+            // 旧版本也可能静默返回 null。ACTION_STOP 拆除是尽力而为，绝不能因此崩溃调用方。
+            //
+            // 首选经 onStartCommand 投递 ACTION_STOP（保留 user_stop 语义）；不可用时
+            // 回退 stopService()——停止服务不受后台启动限制，会直接触发 onDestroy()
+            // → stopVpn()，同样完成 TUN 释放。已停止时 stopService 返回 false，无副作用。
+            val started = runCatching { context.startService(intent) }
+                .onFailure {
+                    Log.w(TAG, "ACTION_STOP startService 失败，回退 stopService: ${it.message}")
+                }
+                .getOrNull()
+            if (started == null) {
+                val stopped = runCatching { context.stopService(intent) }
+                    .onFailure { Log.w(TAG, "stopService 回退失败（忽略）: ${it.message}") }
+                    .getOrDefault(false)
+                Log.i(TAG, "stop 经 stopService 回退，stopped=$stopped")
+            }
         }
     }
 
     private var conn: ParcelFileDescriptor? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+
+    /**
+     * 拆除幂等守卫：同一生命周期内只真正拆除一次。用户连点断开、ACTION_STOP 之后
+     * 系统紧跟的 onDestroy() 都不会重复调用 nativeStopTunnel()/stopForeground()。
+     * [startVpn] 每次启动重置为 `false`。
+     */
+    @Volatile
+    private var tornDown = false
 
     /**
      * 拆除工作线程：`nativeStopTunnel()` 在宿主侧有界等待 ≤800ms（停循环→join），
@@ -233,6 +255,8 @@ class ProxyVpnService : VpnService() {
         val cfg = parseConfig(configJson)
         // 新一轮启动：使任何仍在执行的旧拆除失效。
         lifecycleGen.incrementAndGet()
+        // 新一轮启动：解除拆除幂等守卫，允许后续 stop。
+        tornDown = false
 
         // 1. 先缓存服务引用并安装 protect：保证 establish() 之后 Rust 打开的每个
         //    出站 socket 都已在 protect seam 之上。
@@ -312,6 +336,13 @@ class ProxyVpnService : VpnService() {
     }
 
     private fun stopVpn(reason: String) {
+        // 幂等：ACTION_STOP → onDestroy 常成对到达；已拆除时后续 stop 为 no-op，
+        // 避免重复 nativeStopTunnel()/stopForeground()。startVpn 会重置该标志。
+        if (tornDown) {
+            Log.i(TAG, "已拆除，忽略重复 stop：$reason")
+            return
+        }
+        tornDown = true
         unregisterNetworkCallback()
         isRunning = false
         val gen = lifecycleGen.get()

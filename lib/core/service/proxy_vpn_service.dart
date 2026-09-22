@@ -24,9 +24,20 @@ class ProxyVpnTrigger {
     return result ?? false;
   }
 
+  /// 停止前台服务。
+  ///
+  /// 拆除是尽力而为：平台通道不可用（`MissingPluginException`）或原生侧报错
+  /// （`PlatformException`）时返回 `false` 而非抛出，确保断开流程的 finally 里
+  /// 调用它绝不会中断后续清理 / 覆盖 core.stop 的原始错误。
   static Future<bool> stop() async {
-    final result = await _channel.invokeMethod<bool>('stop');
-    return result ?? false;
+    try {
+      final result = await _channel.invokeMethod<bool>('stop');
+      return result ?? false;
+    } on PlatformException {
+      return false;
+    } on MissingPluginException {
+      return false;
+    }
   }
 
   static Future<bool> isRunning() async {

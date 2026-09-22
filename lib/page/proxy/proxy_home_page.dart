@@ -272,11 +272,19 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
           _configWarnings = status.warnings;
         });
       } else {
-        final stopped = await _facade.coreStop();
-        await _vpnConsent.stop();
+        // 断开必须「先停引擎、再停系统服务」，且停服务用 try/finally 兜底：
+        // core.stop 抛错（引擎异常 / 模块不可用 / 超时）时，若直接走 catch，
+        // 系统 VpnService 会残留持有 TUN、VPN 图标不消失。停服务是尽力而为，
+        // 其自身异常不得覆盖 core.stop 的原始错误（_safe 吞掉并返回 null）。
+        CoreStopResult? stopped;
+        try {
+          stopped = await _facade.coreStop();
+        } finally {
+          await _safe(() => _vpnConsent.stop());
+        }
         if (!mounted) return;
         setState(() {
-          _connState = stopped.state;
+          _connState = stopped?.state ?? ProxyConnState.stopped;
           _stats = null;
           _currentOutbound = null;
           _configWarnings = const <ProxyConfigWarning>[];
