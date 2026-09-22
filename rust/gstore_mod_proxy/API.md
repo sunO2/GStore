@@ -1569,9 +1569,13 @@ so user picks persist across rebuilds. A node or group that cannot be built is
 reported as a warning and skipped — never fatal.
 
 Protocol features enabled on `meow-config`: `ss`, `trojan`, `vless`,
-`vless-vision`, `vmess` (plus `http`/`socks5`, which need no feature). Nodes of
-other canonical types (`hysteria2`, `snell`, `anytls`, `tuic`, `ssr`,
-`wireguard`) are still emitted in the YAML but skipped with
+`vless-vision`, `vmess`, `hysteria2` (plus `http`/`socks5`, which need no
+feature). `hysteria2` is implemented in-tree on quiche (QUIC + HTTP/3) built on
+the same vendored BoringSSL that `meow-transport` already links
+(`boringssl-boring-crate`; no rustls, no second crypto), so a mihomo/Clash
+subscription — commonly ~1/3 hysteria2 nodes — now builds all of them. Nodes of
+the remaining canonical types (`snell`, `anytls`, `tuic`, `ssr`, `wireguard`)
+are still emitted in the YAML but skipped with
 `PROXY_CONFIG_NODE_UNSUPPORTED` until their features/dependencies are enabled.
 
 ### 13.3 `core.start` step order (pinned)
@@ -1592,8 +1596,9 @@ returning `running`, so a subsequent `node.select` sees the live registry.
 `proxies`/`proxy-groups`/`rules`/`dns`/`tun.enable` and none of
 `external-controller`/`secret`/`proxy-providers`/`file-descriptor`; the tun
 block carries only `stack`/`mtu`; `mtu < 1280` is a structured 422; the registry
-builds leaves+groups+built-ins and uses the store; an unsupported node is
-warned and skipped without aborting; and the full C-ABI flow (generate →
+builds leaves+groups+built-ins and uses the store; an unsupported node (e.g.
+`snell`) is warned and skipped without aborting; an `hysteria2` node is built
+into the registry with no `PROXY_CONFIG_NODE_UNSUPPORTED` warning; and the full C-ABI flow (generate →
 start → `node.select` → unreachable-node `node.delay_test` → `config.apply`
 without a restart → stop) reaches `running`. **UNVERIFIED**: on-device
 engine/TUN start (no adb device) — proven against the host socketpair harness

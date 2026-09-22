@@ -457,7 +457,8 @@ fn tun_value(stack: &str, mtu: u16) -> Yaml {
     Yaml::Mapping(m)
 }
 
-const REPRESENTABLE: [&str; 6] = ["ss", "vmess", "vless", "trojan", "http", "socks5"];
+const REPRESENTABLE: [&str; 7] =
+    ["ss", "vmess", "vless", "trojan", "hysteria2", "http", "socks5"];
 
 fn representable(node_type: &str) -> bool {
     REPRESENTABLE
@@ -517,6 +518,14 @@ fn proxy_value(node: &ProxyNode) -> Yaml {
             put_opt(&mut m, "sni", node.sni.as_deref());
             put_skip_cert_verify(&mut m, node);
             m.insert(ys("tls"), Yaml::Bool(true));
+        }
+        "hysteria2" => {
+            put_opt(&mut m, "password", node.password.as_deref());
+            put_opt(&mut m, "sni", node.sni.as_deref());
+            put_skip_cert_verify(&mut m, node);
+            put_opt(&mut m, "obfs", node.obfs.as_deref());
+            put_opt(&mut m, "obfs-password", node.obfs_password.as_deref());
+            m.insert(ys("udp"), Yaml::Bool(true));
         }
         "http" => {
             put_tls(&mut m, node);
@@ -821,6 +830,16 @@ mod tests {
         }
     }
 
+    fn hysteria2(name: &str, server: &str, port: u16, index: usize) -> ProxyNode {
+        ProxyNode {
+            password: Some("secret".to_string()),
+            tls: true,
+            sni: Some("example.com".to_string()),
+            skip_cert_verify: Some(true),
+            ..node(name, "hysteria2", server, port, index)
+        }
+    }
+
     fn stored(nodes: Vec<ProxyNode>, groups: Vec<ProxyGroup>) -> StoredProfile {
         let names: Vec<String> = nodes.iter().map(|n| n.name.clone()).collect();
         let groups = if groups.is_empty() {
@@ -988,7 +1007,7 @@ mod tests {
         let record = stored(
             vec![
                 trojan("t1", "192.0.2.10", 443, 0),
-                node("h1", "hysteria2", "192.0.2.12", 443, 1),
+                node("s1", "snell", "192.0.2.12", 443, 1),
             ],
             Vec::new(),
         );
@@ -997,15 +1016,15 @@ mod tests {
             generated
                 .warnings
                 .iter()
-                .any(|w| w.node.as_deref() == Some("h1")),
-            "hysteria2 must be warned about: {:?}",
+                .any(|w| w.node.as_deref() == Some("s1")),
+            "snell must be warned about: {:?}",
             generated.warnings
         );
         let (map, warnings) = build_registry(&generated.raw, None);
         assert!(map.contains_key("t1"), "valid node still builds");
         assert!(map.contains_key("DIRECT"), "fallback survives");
         assert!(
-            warnings.iter().any(|w| w.node.as_deref() == Some("h1")),
+            warnings.iter().any(|w| w.node.as_deref() == Some("s1")),
             "registry must report the skipped node: {warnings:?}"
         );
     }
@@ -1017,7 +1036,7 @@ mod tests {
         let record = stored(
             vec![
                 trojan("t1", "192.0.2.10", 443, 0),
-                node("h1", "hysteria2", "192.0.2.12", 443, 1),
+                node("s1", "snell", "192.0.2.12", 443, 1),
             ],
             Vec::new(),
         );
@@ -1025,5 +1044,31 @@ mod tests {
         let (map, _warnings) = build_registry(&generated.raw, None);
         let proxy = map.get("PROXY").expect("PROXY group must still build");
         assert!(proxy.current().is_some());
+    }
+
+    #[test]
+    fn hysteria2_node_is_built_into_the_registry() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        crate::rules::reset_for_tests();
+        let record = stored(vec![hysteria2("h1", "192.0.2.12", 443, 0)], Vec::new());
+        let generated = render(&record, &GenerateRequest::default());
+        assert!(
+            !generated
+                .warnings
+                .iter()
+                .any(|w| w.node.as_deref() == Some("h1")),
+            "hysteria2 must no longer be reported unsupported: {:?}",
+            generated.warnings
+        );
+        let (map, warnings) = build_registry(&generated.raw, None);
+        assert!(
+            map.contains_key("h1"),
+            "hysteria2 node must build: {warnings:?}"
+        );
+        assert!(
+            !warnings.iter().any(|w| w.node.as_deref() == Some("h1")),
+            "hysteria2 node must not warn during registry build: {warnings:?}"
+        );
+        assert!(map.contains_key("PROXY"), "group over the hy2 node builds");
     }
 }

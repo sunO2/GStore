@@ -24,12 +24,18 @@ meow-tunnel = { git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587
 # this crate's features. `default-features = false` (Todo 2) left every protocol
 # arm compiled out, so the engine could only ever build DIRECT/REJECT. Enable
 # exactly the protocol set the module's canonical model can faithfully
-# reconstruct from its whitelisted fields. `hysteria2` (quiche), `snell`
-# (psk), `anytls`, `mux`, `ech-tls-tunnel` and `vless-encryption` stay OFF to
-# bound the Android binary/dependency surface; nodes of those types are still
-# emitted in the generated YAML but reported as `PROXY_CONFIG_NODE_UNSUPPORTED`
-# and skipped without aborting startup (see API.md §13).
-meow-config = { git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587442caaac00b221efc91c84907aeb0e0", default-features = false, features = ["ss", "trojan", "vless", "vless-vision", "vmess"] }
+# reconstruct from its whitelisted fields. `hysteria2` is now ENABLED: real
+# mihomo/Clash subscriptions are roughly one third hysteria2 nodes, so leaving
+# it off systematically dropped a large fraction of every imported profile.
+# hysteria2 is implemented in-tree on quiche (QUIC + HTTP/3) which is built on
+# BoringSSL and shares the SAME vendored copy the `boring` crate already links
+# via meow-transport (`boringssl-boring-crate`; no rustls, no second crypto).
+# `snell` (psk), `anytls`, `mux`, `ech-tls-tunnel` and `vless-encryption` stay
+# OFF to bound the Android binary/dependency surface; nodes of those types are
+# still emitted in the generated YAML but reported as
+# `PROXY_CONFIG_NODE_UNSUPPORTED` and skipped without aborting startup
+# (see API.md §13).
+meow-config = { git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587442caaac00b221efc91c84907aeb0e0", default-features = false, features = ["ss", "trojan", "vless", "vless-vision", "vmess", "hysteria2"] }
 meow-proxy = { git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587442caaac00b221efc91c84907aeb0e0", default-features = false }
 meow-dns = { git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587442caaac00b221efc91c84907aeb0e0", default-features = false }
 # DomainTrie is required to construct `meow_dns::Resolver` (its `hosts` arg).
