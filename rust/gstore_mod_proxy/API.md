@@ -425,6 +425,32 @@ Template guarantees are in §13.
 |---|---|---|
 | `node.select` | `{ "group": string, "node": string }` | `{ "ok": true, "group": string, "node": string, "active": string }` |
 | `node.delay_test` | `{ "node"?: string, "group"?: string, "url"?: string, "expectedStatus"?: string, "timeoutMs"?: 5000 }` | `{ "results": [ DelayResult ], "url": string, "timeoutMs": number, "group"?: string }` |
+| `node.list` | *(none)* | `{ "engineRunning": bool, "groups": [NodeGroupInfo], "current": NodeCurrent\|null }` |
+
+`node.list` is the **read-only live selection view** used by the home status
+card's 「当前节点」 row. It never errors when the engine is stopped: with no live
+tunnel it returns `{ "engineRunning": false, "groups": [], "current": null }`,
+so the UI degrades to its persisted-label fallback instead of a 422. With a
+running engine it enumerates the stored profile's groups (falling back to any
+other group the live registry exposes) and reports each group's **live**
+`now` (the selected member for a selector; the auto-picked member for
+url-test/fallback) — this is distinct from a rule's matched target.
+
+```json
+{
+  "engineRunning": true,
+  "groups": [
+    { "name": "PROXY", "type": "select", "now": "香港 01",
+      "members": ["香港 01", "日本 02"], "selectable": true }
+  ],
+  "current": { "group": "PROXY", "now": "香港 01", "node": null }
+}
+```
+
+`current` is the live rule set's terminal `MATCH`/`FINAL` target **when it names
+a group** (else `null`); `node` resolves one level deeper and is non-null only
+when that group's `now` is itself a nested group, so the UI can show a leaf.
+
 
 `node.select` applies a user pick to a **selector / url-test / fallback** group
 through meow's `ProxySelection::set` — the module never owns a second group

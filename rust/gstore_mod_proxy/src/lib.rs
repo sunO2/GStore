@@ -402,6 +402,7 @@ pub(crate) const DISPATCH_METHODS: &[&str] = &[
     "profile.set_schedule",
     "node.select",
     "node.delay_test",
+    "node.list",
     "conn.list",
     "conn.close",
     "conn.close_all",
@@ -1536,6 +1537,14 @@ fn node_select_arm(
     ok_data(data)
 }
 
+fn node_list_arm(
+    instance_id: u64,
+    instance: Option<Arc<ProxyInstance>>,
+) -> Result<Vec<u8>, ModuleError> {
+    let inst = require_instance(instance_id, instance)?;
+    ok_data(nodes::list(&inst.data_dir, &inst.cache_dir)?)
+}
+
 fn parse_clash_api_port(payload: &[u8]) -> Result<u16, ModuleError> {
     if payload.is_empty() {
         return Ok(0);
@@ -1770,6 +1779,7 @@ fn call_impl(
         "node.select" => node_select_arm(instance_id, instance.clone(), _payload),
         "node.delay_test" => require_instance(instance_id, instance.clone())
             .and_then(|_| nodes::delay_test_arm(instance_id, _payload)),
+        "node.list" => node_list_arm(instance_id, instance.clone()),
         "conn.list" => {
             require_instance(instance_id, instance.clone()).and_then(|_| conn::list_arm(_payload))
         }

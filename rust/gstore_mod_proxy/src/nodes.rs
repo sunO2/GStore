@@ -397,6 +397,124 @@ pub(crate) fn delay_test_arm(instance_id: u64, payload: &[u8]) -> Result<Vec<u8>
     }))
 }
 
+/// `node.list`: read-only live view of every proxy group's current selection
+/// (`now`) plus the routing group. Never errors when the engine is stopped — the
+/// UI degrades on `engineRunning:false` instead of a 422.
+pub(crate) fn list(data_dir: &str, cache_dir: &str) -> Result<Value, ModuleError> {
+    let Some(tunnel) = crate::rules::active_tunnel() else {
+        return Ok(json!({
+            "engineRunning": false,
+            "groups": [],
+            "current": Value::Null,
+        }));
+    };
+
+    // Group names/types come from the stored profile's generated groups (the
+    // same source `select_offline` rebuilds from); anything else the live
+    // registry exposes as a group is appended as a fallback.
+    let raw_groups = crate::config::try_generate(
+        data_dir,
+        cache_dir,
+        &crate::config::GenerateRequest::default(),
+    )?
+    .and_then(|generated| generated.raw.proxy_groups);
+
+    let mut groups = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for raw in raw_groups.unwrap_or_default() {
+        let Some(proxy) = tunnel.proxy(&raw.name) else {
+            continue;
+        };
+        if proxy.member_proxies().is_none() {
+            continue;
+        }
+        let members = raw
+            .proxies
+            .clone()
+            .unwrap_or_else(|| proxy.members().unwrap_or_default());
+        groups.push(json!({
+            "name": raw.name,
+            "type": raw.group_type,
+            "now": proxy.current(),
+            "members": members,
+            "selectable": proxy.selection().is_some(),
+        }));
+        seen.insert(raw.name);
+    }
+
+    {
+        let snapshot = tunnel.route_snapshot();
+        let mut names: Vec<String> = snapshot.proxies.keys().map(ToString::to_string).collect();
+        names.sort();
+        for name in names {
+            if seen.contains(&name) {
+                continue;
+            }
+            let Some(proxy) = snapshot.proxies.get(name.as_str()) else {
+                continue;
+            };
+            let Some(members) = proxy.members() else {
+                continue; // leaf adapter, not a group
+            };
+            groups.push(json!({
+                "name": name,
+                "type": proxy.adapter_type().to_string().to_lowercase(),
+                "now": proxy.current(),
+                "members": members,
+                "selectable": proxy.selection().is_some(),
+            }));
+        }
+    }
+
+    Ok(json!({
+        "engineRunning": true,
+        "groups": groups,
+        "current": current_routing_group(&tunnel),
+    }))
+}
+
+/// The `current` field: the live rules' terminal `MATCH`/`FINAL` target, when it
+/// names a group. `node` resolves one level deeper so the UI can show a leaf
+/// when the target's `now` is itself a nested group.
+fn current_routing_group(tunnel: &meow_tunnel::Tunnel) -> Value {
+    let Some(target) = terminal_match_target() else {
+        return Value::Null;
+    };
+    let Some(proxy) = tunnel.proxy(&target) else {
+        return Value::Null;
+    };
+    if proxy.member_proxies().is_none() {
+        return Value::Null;
+    }
+    let now = proxy.current();
+    let node = now.as_ref().and_then(|name| {
+        tunnel
+            .proxy(name)
+            .filter(|inner| inner.member_proxies().is_some())
+            .and_then(|inner| inner.current())
+    });
+    json!({ "group": target, "now": now, "node": node })
+}
+
+/// Last rule line whose head is `MATCH`/`FINAL`; returns the target after the
+/// comma (the routing group), or `None` when there is no terminal rule.
+fn terminal_match_target() -> Option<String> {
+    crate::rules::current_lines()
+        .into_iter()
+        .rev()
+        .find_map(|line| {
+            let mut parts = line.splitn(2, ',');
+            let head = parts.next()?.trim();
+            if !(head.eq_ignore_ascii_case("MATCH") || head.eq_ignore_ascii_case("FINAL")) {
+                return None;
+            }
+            parts
+                .next()
+                .map(|target| target.trim().to_string())
+                .filter(|target| !target.is_empty())
+        })
+}
+
 fn log_message(msg: String) {
     crate::log_message(1, &msg);
 }
@@ -818,6 +936,71 @@ pub(crate) mod tests {
         );
 
         crate::rules::reset_for_tests();
+    }
+
+    #[test]
+    fn list_reports_group_now_and_reflects_select() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        crate::rules::reset_for_tests();
+        let _ = crate::dispatch::build_engine(empty_resolver());
+        let tunnel = active_tunnel().unwrap();
+
+        let a = StubProxy::new("A");
+        let b = StubProxy::new("B");
+        let store = SelectorStore::open(tmp_dir("list").join("selector.json"));
+        let group = selector_group("G", &[&a, &b], &store);
+        let mut map: HashMap<smol_str::SmolStr, Arc<dyn Proxy>> = HashMap::new();
+        map.insert(smol_str::SmolStr::from("G"), Arc::clone(&group));
+        map.insert(smol_str::SmolStr::from("A"), Arc::clone(&a) as Arc<dyn Proxy>);
+        map.insert(smol_str::SmolStr::from("B"), Arc::clone(&b) as Arc<dyn Proxy>);
+        tunnel.update_proxies(map);
+        crate::rules::reload(
+            "",
+            "",
+            br#"{"config":"rules:\n  - MATCH,G\n"}"#,
+        )
+        .expect("rules.reload with a terminal MATCH");
+
+        let payload = list("", "").expect("node.list must not error when running");
+        assert_eq!(payload["engineRunning"], true);
+        let groups = payload["groups"].as_array().unwrap();
+        let g = groups
+            .iter()
+            .find(|entry| entry["name"] == "G")
+            .expect("group G is listed");
+        assert_eq!(g["type"], "selector");
+        assert_eq!(g["now"], "A");
+        assert_eq!(g["selectable"], true);
+        assert_eq!(g["members"], json!(["A", "B"]));
+        assert_eq!(payload["current"]["group"], "G");
+        assert_eq!(payload["current"]["now"], "A");
+        assert_eq!(payload["current"]["node"], Value::Null);
+
+        let req = serde_json::to_vec(&json!({ "group": "G", "node": "B" })).unwrap();
+        select(&req, "", "").expect("select B");
+        let payload = list("", "").unwrap();
+        let g = payload["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["name"] == "G")
+            .unwrap();
+        assert_eq!(g["now"], "B");
+        assert_eq!(payload["current"]["now"], "B");
+
+        crate::rules::reset_for_tests();
+    }
+
+    #[test]
+    fn list_without_engine_is_a_non_error_empty_payload() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        crate::rules::reset_for_tests();
+        assert!(crate::rules::active_tunnel().is_none());
+
+        let payload = list("", "").expect("stopped engine must not error");
+        assert_eq!(payload["engineRunning"], false);
+        assert_eq!(payload["groups"], json!([]));
+        assert_eq!(payload["current"], Value::Null);
     }
 
     /// Offline failure QA: an unknown group and a non-selectable group still
