@@ -22,30 +22,39 @@ const double _kBadgeTintAlpha = 0.12;
 /// [ProxyNodesFacade.nodeDelayTest]，逐节点延迟来自 `proxy.node.delay` 事件。
 /// 本页**不含**任何延迟探测 / 解析逻辑（全部在 Rust 侧）。
 ///
+/// 数据来源（二选一）：
+/// * 传入 [profileId] → 本页经 [ProxyNodesFacade.profileGet] 加载该订阅的
+///   `nodes` / `groups`（加载态 / 错误态 / 空态均显式呈现，绝不崩溃）；
+/// * 未传 [profileId] → 直接展示调用方传入的 [nodes] / [groups]（测试 / 嵌入）。
+///
+/// 展示形态：按 `proxy-groups` **分节**（每个组一节：组名 + 类型 + 成员数，
+/// 下面列出该组成员）；成员是节点则可点选，成员是组名则渲染为不可选的组引用
+/// 行；`groups` 为空时合成一个「全部节点」伪分组兜底。
+///
 /// 视觉规范：颜色一律取自 `Theme.of(context).colorScheme`，字号取自
-/// `Theme.of(context).textTheme`；弹层（选组 / 选节点 / 排序）统一走
-/// [AppSheet]；加载态一律用 [AppLoading]（不使用原生进度圈）。
+/// `Theme.of(context).textTheme`；弹层（排序）统一走 [AppSheet]；加载态一律用
+/// [AppLoading]（不使用原生进度圈）。
 class ProxyNodesPage extends StatefulWidget {
   const ProxyNodesPage({
     super.key,
-    required this.nodes,
+    this.nodes = const <ProxyNode>[],
     this.groups = const <ProxyGroup>[],
+    this.profileId,
     this.facade,
-    this.initialGroup,
     this.initialActiveByGroup = const <String, String>{},
   });
 
-  /// 可用于延迟展示 / 选择的节点集合。
+  /// 可直接展示的节点集合（未传 [profileId] 时生效）。
   final List<ProxyNode> nodes;
 
-  /// 代理组；为空时自动合成一个「全部节点」伪分组。
+  /// 可直接展示的代理组（未传 [profileId] 时生效）；为空时合成「全部节点」伪分组。
   final List<ProxyGroup> groups;
+
+  /// 要加载的订阅 id；非空时经门面 `profile.get` 拉取该订阅的 nodes/groups。
+  final String? profileId;
 
   /// 门面（测试注入假实现；为空时用生产单例适配器）。
   final ProxyNodesFacade? facade;
-
-  /// 默认选中的分组名；非法则回退到第一个分组。
-  final String? initialGroup;
 
   /// 初始「分组 → 活动节点」映射（无选择事件时用于回显）。
   final Map<String, String> initialActiveByGroup;
@@ -92,11 +101,12 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
   late final ProxyNodesFacade _facade;
   StreamSubscription<ProxyEvent>? _eventSub;
 
-  late final Map<String, ProxyNode> _nodesByName;
-  late final List<ProxyGroup> _groups;
-  late final Set<String> _realGroupNames;
+  bool _loading = false;
+  String? _loadError;
 
-  String? _selectedGroup;
+  Map<String, ProxyNode> _nodesByName = <String, ProxyNode>{};
+  List<ProxyGroup> _groups = const <ProxyGroup>[];
+
   final Map<String, String> _activeByGroup = <String, String>{};
   final Map<String, _DelayState> _delays = <String, _DelayState>{};
   final Set<String> _pending = <String>{};
@@ -110,25 +120,15 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
   void initState() {
     super.initState();
     _facade = widget.facade ?? ProxyModuleNodesFacade();
-    _nodesByName = <String, ProxyNode>{
-      for (final ProxyNode node in widget.nodes) node.name: node,
-    };
-    _realGroupNames = <String>{for (final ProxyGroup g in widget.groups) g.name};
-    _groups = widget.groups.isEmpty
-        ? <ProxyGroup>[
-            ProxyGroup(
-              name: '全部节点',
-              type: 'select',
-              members: _nodesByName.keys.toList(),
-            ),
-          ]
-        : widget.groups;
     _activeByGroup.addAll(widget.initialActiveByGroup);
-    final String? requested = widget.initialGroup;
-    _selectedGroup = (requested != null && _groupByName(requested) != null)
-        ? requested
-        : _groups.first.name;
     _eventSub = _facade.events.listen(_onEvent, onError: (_) {});
+
+    final String? profileId = widget.profileId;
+    if (profileId == null || profileId.isEmpty) {
+      _applyData(widget.nodes, widget.groups);
+    } else {
+      _load(profileId);
+    }
   }
 
   @override
@@ -137,17 +137,60 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
     super.dispose();
   }
 
-  ProxyGroup? _groupByName(String name) {
-    for (final ProxyGroup group in _groups) {
-      if (group.name == name) return group;
-    }
-    return null;
+  // ==================== 数据加载 ====================
+
+  /// 把节点 / 分组写入状态（清空旧选择映射，避免跨订阅串台）。
+  void _applyData(List<ProxyNode> nodes, List<ProxyGroup> groups) {
+    _nodesByName = <String, ProxyNode>{
+      for (final ProxyNode node in nodes) node.name: node,
+    };
+    _groups = groups.isEmpty
+        ? <ProxyGroup>[
+            ProxyGroup(
+              name: '全部节点',
+              type: 'select',
+              members: _nodesByName.keys.toList(),
+            ),
+          ]
+        : groups;
   }
 
-  ProxyGroup get _currentGroup =>
-      _groupByName(_selectedGroup ?? '') ?? _groups.first;
+  /// `profile.get`：加载订阅节点；失败降级为显式错误态（绝不崩溃）。
+  Future<void> _load(String profileId) async {
+    setState(() {
+      _loading = true;
+      _loadError = null;
+    });
+    try {
+      final StoredProfile stored = await _facade.profileGet(profileId);
+      if (!mounted) return;
+      setState(() {
+        _applyData(stored.profile.nodes, stored.profile.groups);
+        _loading = false;
+      });
+    } on ProxyModuleException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _loadError = error.message;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _loadError = '节点加载失败：$error';
+      });
+    }
+  }
 
-  bool get _isPseudoGroup => !_realGroupNames.contains(_currentGroup.name);
+  Future<void> _retry() async {
+    final String? profileId = widget.profileId;
+    if (profileId != null && profileId.isNotEmpty) {
+      await _load(profileId);
+    }
+  }
+
+  // ==================== 事件 ====================
 
   /// `proxy.node.delay`：逐节点回填延迟（唯一延迟来源）。
   void _onEvent(ProxyEvent event) {
@@ -162,49 +205,50 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
     });
   }
 
+  // ==================== 排序 ====================
+
   int? _positiveDelay(String node) {
     final _DelayState? state = _delays[node];
     if (state == null || state.isTimeout) return null;
     return state.delayMs;
   }
 
-  /// 当前分组内按 [_sort] 排序后的成员名。
-  List<String> get _sortedMembers {
-    final List<String> members = _currentGroup.members.toList();
+  int _compareByLatency(String a, String b, {required bool ascending}) {
+    final int? da = _positiveDelay(a);
+    final int? db = _positiveDelay(b);
+    if (da == null && db == null) return a.compareTo(b);
+    if (da == null) return 1;
+    if (db == null) return -1;
+    final int c = ascending ? da.compareTo(db) : db.compareTo(da);
+    return c == 0 ? a.compareTo(b) : c;
+  }
+
+  /// 某个分组内按 [_sort] 排序后的成员名。
+  List<String> _sortedMembers(ProxyGroup group) {
+    final List<String> members = group.members.toList();
     switch (_sort) {
       case _NodeSort.name:
         members.sort((String a, String b) => a.compareTo(b));
       case _NodeSort.latencyAsc:
-        members.sort((String a, String b) {
-          final int? da = _positiveDelay(a);
-          final int? db = _positiveDelay(b);
-          if (da == null && db == null) return a.compareTo(b);
-          if (da == null) return 1;
-          if (db == null) return -1;
-          final int c = da.compareTo(db);
-          return c == 0 ? a.compareTo(b) : c;
-        });
+        members.sort(
+          (String a, String b) => _compareByLatency(a, b, ascending: true),
+        );
       case _NodeSort.latencyDesc:
-        members.sort((String a, String b) {
-          final int? da = _positiveDelay(a);
-          final int? db = _positiveDelay(b);
-          if (da == null && db == null) return a.compareTo(b);
-          if (da == null) return 1;
-          if (db == null) return -1;
-          final int c = db.compareTo(da);
-          return c == 0 ? a.compareTo(b) : c;
-        });
+        members.sort(
+          (String a, String b) => _compareByLatency(a, b, ascending: false),
+        );
     }
     return members;
   }
+
+  // ==================== 选择 / 测试 ====================
 
   Future<void> _selectNode(String group, String node) async {
     try {
       final NodeSelectResult result = await _facade.nodeSelect(group, node);
       if (!mounted) return;
       setState(() {
-        _activeByGroup[group] =
-            result.active.isNotEmpty ? result.active : node;
+        _activeByGroup[group] = result.active.isNotEmpty ? result.active : node;
       });
     } on ProxyModuleException catch (error) {
       if (mounted) AppDialogs.showError('切换节点失败：${error.message}');
@@ -213,14 +257,23 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
     }
   }
 
+  /// 当前所有分组里可测试的节点名（去重；组引用不算）。
+  List<String> get _testTargets {
+    final Set<String> names = <String>{};
+    for (final ProxyGroup group in _groups) {
+      for (final String member in group.members) {
+        if (_nodesByName.containsKey(member)) names.add(member);
+      }
+    }
+    return names.toList();
+  }
+
   /// `测试全部`：触发 Rust 逐节点探测；响应 + 事件双通道回填，剩余未回的
   /// 节点显式标记为超时（绝不无限 spinner）。
   Future<void> _testAll() async {
-    final ProxyGroup group = _currentGroup;
-    final List<String> targets =
-        group.members.where(_nodesByName.containsKey).toList();
+    final List<String> targets = _testTargets;
     if (targets.isEmpty) {
-      AppDialogs.showInfo('当前分组没有可测试的节点');
+      AppDialogs.showInfo('当前没有可测试的节点');
       return;
     }
     setState(() {
@@ -235,9 +288,8 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
       }
     });
     try {
-      final DelayTestResult result = await _facade.nodeDelayTest(
-        NodeDelayTestRequest(group: _isPseudoGroup ? null : group.name),
-      );
+      final DelayTestResult result =
+          await _facade.nodeDelayTest(const NodeDelayTestRequest());
       if (!mounted) return;
       setState(() {
         for (final DelayResult item in result.results) {
@@ -272,56 +324,6 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
     AppDialogs.showError(message);
   }
 
-  Future<void> _pickGroup() async {
-    final String? selected = await AppSheet.show<String>(
-      context: context,
-      title: '选择代理组',
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: <Widget>[
-          for (final ProxyGroup group in _groups)
-            _SheetOption(
-              key: Key('proxy_nodes_group_option_${group.name}'),
-              label: group.name,
-              subtitle: '${group.type} · ${group.members.length} 个成员',
-              selected: group.name == _selectedGroup,
-              onTap: () => Navigator.of(context).pop(group.name),
-            ),
-        ],
-      ),
-    );
-    if (!mounted || selected == null) return;
-    setState(() => _selectedGroup = selected);
-  }
-
-  Future<void> _pickNode() async {
-    final ProxyGroup group = _currentGroup;
-    final String? selected = await AppSheet.show<String>(
-      context: context,
-      title: '选择节点',
-      subtitle: group.name,
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: <Widget>[
-          for (final String name in group.members)
-            _SheetOption(
-              key: Key('proxy_nodes_node_option_$name'),
-              label: name,
-              subtitle: _nodesByName[name] == null ? '代理组' : null,
-              selected: _activeByGroup[group.name] == name,
-              onTap: () => Navigator.of(context).pop(name),
-            ),
-        ],
-      ),
-    );
-    if (!mounted || selected == null) return;
-    if (!_nodesByName.containsKey(selected)) {
-      AppDialogs.showInfo('「$selected」是代理组，暂不支持在本地切换');
-      return;
-    }
-    await _selectNode(group.name, selected);
-  }
-
   Future<void> _pickSort() async {
     final _NodeSort? selected = await AppSheet.show<_NodeSort>(
       context: context,
@@ -343,18 +345,14 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
     setState(() => _sort = selected);
   }
 
+  // ==================== UI ====================
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text('节点'),
         actions: <Widget>[
-          IconButton(
-            key: const Key('proxy_nodes_pick_node'),
-            icon: const Icon(Icons.check_circle_outline),
-            tooltip: '选择节点',
-            onPressed: _pickNode,
-          ),
           IconButton(
             key: const Key('proxy_nodes_sort'),
             icon: const Icon(Icons.sort),
@@ -374,26 +372,25 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
   }
 
   Widget _buildBody(BuildContext context) {
-    if (widget.nodes.isEmpty) {
+    if (_loading) {
+      return const Center(child: AppLoading(size: AppLoadingSize.medium));
+    }
+    final String? error = _loadError;
+    if (error != null) {
+      return _buildError(context, error);
+    }
+    if (_nodesByName.isEmpty) {
       return _buildEmpty(context);
     }
     return ListView(
       padding: AppSpacing.allLG,
       children: <Widget>[
-        _buildGroupCard(context),
         if (_testing) ...<Widget>[
-          const SizedBox(height: AppSpacing.md),
           _buildProgressCard(context),
+          const SizedBox(height: AppSpacing.md),
         ],
-        const SizedBox(height: AppSpacing.md),
-        Text(
-          '节点（${_sortedMembers.length}）',
-          style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
-        ),
-        const SizedBox(height: AppSpacing.sm),
-        ..._buildMemberTiles(context),
+        for (final ProxyGroup group in _groups)
+          _buildGroupSection(context, group),
       ],
     );
   }
@@ -425,26 +422,38 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
     );
   }
 
-  Widget _buildGroupCard(BuildContext context) {
+  Widget _buildError(BuildContext context, String message) {
     final ThemeData theme = Theme.of(context);
-    final ProxyGroup group = _currentGroup;
-    final String active =
-        _activeByGroup[group.name] ?? '（未选择）';
-    return Card(
-      margin: EdgeInsets.zero,
-      child: ListTile(
-        key: const Key('proxy_nodes_group_picker'),
-        onTap: _pickGroup,
-        leading: Icon(
-          Icons.account_tree_outlined,
-          color: theme.colorScheme.primary,
+    final ColorScheme scheme = theme.colorScheme;
+    return Center(
+      child: SingleChildScrollView(
+        padding: AppSpacing.allXXL,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            Icon(
+              Icons.error_outline,
+              size: AppTypography.iconXXXL,
+              color: scheme.error,
+            ),
+            const SizedBox(height: AppSpacing.md),
+            Text('节点加载失败', style: theme.textTheme.titleMedium),
+            const SizedBox(height: AppSpacing.sm),
+            Text(
+              message.isEmpty ? '未知错误' : message,
+              textAlign: TextAlign.center,
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: AppSpacing.lg),
+            FilledButton(
+              key: const Key('proxy_nodes_retry'),
+              onPressed: _retry,
+              child: const Text('重试'),
+            ),
+          ],
         ),
-        title: Text(group.name, style: theme.textTheme.titleMedium),
-        subtitle: Text(
-          '${group.type} · ${group.members.length} 个成员 · 当前：$active',
-          style: theme.textTheme.bodySmall,
-        ),
-        trailing: const Icon(Icons.expand_more),
       ),
     );
   }
@@ -471,33 +480,83 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
     );
   }
 
-  List<Widget> _buildMemberTiles(BuildContext context) {
-    final String groupName = _currentGroup.name;
-    return <Widget>[
-      for (final String name in _sortedMembers)
-        if (_nodesByName[name] == null)
-          _buildGroupRefTile(context, name)
-        else
-          _buildNodeTile(
-            context,
-            node: _nodesByName[name]!,
-            groupName: groupName,
+  /// 单个代理组一节：组名 + 类型 + 成员数 + 成员列表（节点 / 组引用）。
+  Widget _buildGroupSection(BuildContext context, ProxyGroup group) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme scheme = theme.colorScheme;
+    final List<String> members = _sortedMembers(group);
+    final String active = _activeByGroup[group.name] ?? '';
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: AppSpacing.md),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Padding(
+            key: Key('proxy_nodes_group_${group.name}'),
+            padding: AppSpacing.allMD,
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Icon(
+                  Icons.account_tree_outlined,
+                  size: AppTypography.iconMD,
+                  color: scheme.primary,
+                ),
+                const SizedBox(width: AppSpacing.sm),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Text(group.name, style: theme.textTheme.titleSmall),
+                      const SizedBox(height: AppSpacing.xs),
+                      Text(
+                        active.isEmpty
+                            ? '${group.type} · ${group.members.length} 个成员'
+                            : '${group.type} · ${group.members.length} 个成员'
+                                ' · 当前：$active',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
           ),
-    ];
+          const Divider(height: 1),
+          if (members.isEmpty)
+            Padding(
+              padding: AppSpacing.allMD,
+              child: Text('该分组暂无成员', style: theme.textTheme.bodySmall),
+            ),
+          for (final String name in members)
+            if (_nodesByName[name] == null)
+              _buildGroupRefTile(context, name)
+            else
+              _buildNodeTile(
+                context,
+                node: _nodesByName[name]!,
+                groupName: group.name,
+              ),
+        ],
+      ),
+    );
   }
 
   Widget _buildGroupRefTile(BuildContext context, String name) {
     final ThemeData theme = Theme.of(context);
-    return Card(
-      margin: const EdgeInsets.only(bottom: AppSpacing.sm),
-      child: ListTile(
-        leading: Icon(
-          Icons.folder_outlined,
-          color: theme.colorScheme.onSurfaceVariant,
-        ),
-        title: Text(name, style: theme.textTheme.titleSmall),
-        subtitle: Text('代理组', style: theme.textTheme.bodySmall),
+    return ListTile(
+      key: Key('proxy_nodes_groupref_$name'),
+      dense: true,
+      leading: Icon(
+        Icons.folder_outlined,
+        size: AppTypography.iconMD,
+        color: theme.colorScheme.onSurfaceVariant,
       ),
+      title: Text(name, style: theme.textTheme.bodyLarge),
+      subtitle: Text('代理组', style: theme.textTheme.bodySmall),
     );
   }
 
@@ -512,46 +571,43 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
     final bool isPending = _pending.contains(node.name);
     final _DelayState? delay = _delays[node.name];
 
-    return Card(
-      margin: const EdgeInsets.only(bottom: AppSpacing.sm),
-      child: ListTile(
-        key: Key('proxy_nodes_node_${node.name}'),
-        onTap: () => _selectNode(groupName, node.name),
-        selected: isActive,
-        leading: Icon(
-          Icons.dns_outlined,
-          color: isActive ? scheme.primary : scheme.onSurfaceVariant,
-        ),
-        title: Row(
-          children: <Widget>[
-            Flexible(
-              child: Text(
-                node.name,
-                overflow: TextOverflow.ellipsis,
-                style: theme.textTheme.titleSmall,
-              ),
+    return ListTile(
+      key: Key('proxy_nodes_node_${node.name}'),
+      onTap: () => _selectNode(groupName, node.name),
+      selected: isActive,
+      leading: Icon(
+        Icons.dns_outlined,
+        color: isActive ? scheme.primary : scheme.onSurfaceVariant,
+      ),
+      title: Row(
+        children: <Widget>[
+          Flexible(
+            child: Text(
+              node.name,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.titleSmall,
             ),
-            if (isActive) ...<Widget>[
-              const SizedBox(width: AppSpacing.xs),
-              Icon(
-                Icons.check_circle,
-                key: Key('proxy_nodes_active_${node.name}'),
-                size: AppTypography.iconMD,
-                color: scheme.primary,
-              ),
-            ],
+          ),
+          if (isActive) ...<Widget>[
+            const SizedBox(width: AppSpacing.xs),
+            Icon(
+              Icons.check_circle,
+              key: Key('proxy_nodes_active_${node.name}'),
+              size: AppTypography.iconMD,
+              color: scheme.primary,
+            ),
           ],
-        ),
-        subtitle: Text(
-          _nodeSubtitle(node),
-          style: theme.textTheme.bodySmall,
-          overflow: TextOverflow.ellipsis,
-        ),
-        trailing: _LatencyBadge(
-          key: Key('proxy_nodes_delay_${node.name}'),
-          state: delay,
-          pending: isPending,
-        ),
+        ],
+      ),
+      subtitle: Text(
+        _nodeSubtitle(node),
+        style: theme.textTheme.bodySmall,
+        overflow: TextOverflow.ellipsis,
+      ),
+      trailing: _LatencyBadge(
+        key: Key('proxy_nodes_delay_${node.name}'),
+        state: delay,
+        pending: isPending,
       ),
     );
   }
@@ -647,11 +703,9 @@ class _SheetOption extends StatelessWidget {
     required this.label,
     required this.selected,
     required this.onTap,
-    this.subtitle,
   });
 
   final String label;
-  final String? subtitle;
   final bool selected;
   final VoidCallback onTap;
 
@@ -669,30 +723,19 @@ class _SheetOption extends StatelessWidget {
         child: Row(
           children: <Widget>[
             Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: <Widget>[
-                  Text(
-                    label,
-                    style: theme.textTheme.bodyLarge?.copyWith(
-                      color: selected ? scheme.primary : scheme.onSurface,
-                      fontWeight: selected
-                          ? AppTypography.weightMedium
-                          : AppTypography.weightRegular,
-                    ),
-                  ),
-                  if (subtitle != null)
-                    Text(
-                      subtitle!,
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: scheme.onSurfaceVariant,
-                      ),
-                    ),
-                ],
+              child: Text(
+                label,
+                style: theme.textTheme.bodyLarge?.copyWith(
+                  color: selected ? scheme.primary : scheme.onSurface,
+                  fontWeight: selected
+                      ? AppTypography.weightMedium
+                      : AppTypography.weightRegular,
+                ),
               ),
             ),
             if (selected)
-              Icon(Icons.check, size: AppTypography.iconLG, color: scheme.primary),
+              Icon(Icons.check,
+                  size: AppTypography.iconLG, color: scheme.primary),
           ],
         ),
       ),

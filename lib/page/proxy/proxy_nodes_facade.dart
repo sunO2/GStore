@@ -12,10 +12,16 @@ library;
 import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
 
-/// 节点页所需的模块能力（在冻结 [ProxyFacade] 之外的 `node.*` 动作）。
+/// 节点页所需的模块能力（在冻结 [ProxyFacade] 之外的 `profile.get` / `node.*`）。
 abstract class ProxyNodesFacade {
   /// 类型化代理事件流（[ProxyNodeDelayEvent] 用于逐节点延迟回填）。
   Stream<ProxyEvent> get events;
+
+  /// `profile.get`：按 id 读取存储的订阅（含 `nodes` / `groups`）。
+  ///
+  /// 节点页的数据源：首页只持有「选中的 profile id」，节点/分组清单由本页
+  /// 经此方法自行加载（Rust 侧已完成解析与分组）。
+  Future<StoredProfile> profileGet(String id);
 
   /// `node.select`：把用户选择应用到 selector/url-test/fallback 组。
   Future<NodeSelectResult> nodeSelect(String group, String node);
@@ -33,6 +39,9 @@ class ProxyModuleNodesFacade implements ProxyNodesFacade {
 
   @override
   Stream<ProxyEvent> get events => _module.events;
+
+  @override
+  Future<StoredProfile> profileGet(String id) => _module.profileGet(id);
 
   @override
   Future<NodeSelectResult> nodeSelect(String group, String node) =>

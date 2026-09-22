@@ -8,7 +8,7 @@ import 'package:gstore/core/rust/proxy/ProxyModule.dart';
 import 'package:gstore/page/proxy/proxy_nodes_facade.dart';
 import 'package:gstore/page/proxy/proxy_nodes_page.dart';
 
-/// 假门面：无需原生模块，可受控返回选择/延迟结果并推送类型化事件。
+/// 假门面：无需原生模块，可受控返回选择/延迟/订阅结果并推送类型化事件。
 class _FakeNodesFacade implements ProxyNodesFacade {
   // 与生产门面一致：同步广播，事件在 add 时立即投递。
   final StreamController<ProxyEvent> controller =
@@ -18,11 +18,33 @@ class _FakeNodesFacade implements ProxyNodesFacade {
   NodeDelayTestRequest? lastDelayRequest;
   bool delayThrows = false;
 
+  /// `profile.get` 调用计数 + 最近一次 id。
+  int profileGetCalls = 0;
+  String? lastProfileId;
+
+  /// 非空时 `profile.get` 以该错误失败。
+  Object? profileGetError;
+
+  /// `profile.get` 成功时返回的订阅（默认空）。
+  StoredProfile storedResult = const StoredProfile(
+    id: 'p1',
+    profile: ImportedProfile(name: '订阅', format: 'clash'),
+  );
+
   /// 测试通过它手动控制 `node.delay_test` 的完成时机（以便断言进行中态）。
   Completer<DelayTestResult>? delayCompleter;
 
   @override
   Stream<ProxyEvent> get events => controller.stream;
+
+  @override
+  Future<StoredProfile> profileGet(String id) async {
+    profileGetCalls++;
+    lastProfileId = id;
+    final error = profileGetError;
+    if (error != null) throw error;
+    return storedResult;
+  }
 
   @override
   Future<NodeSelectResult> nodeSelect(String group, String node) async {
@@ -71,6 +93,16 @@ const List<ProxyGroup> _groups = <ProxyGroup>[
   ProxyGroup(name: 'AUTO', type: 'url-test', members: <String>['美国 03']),
 ];
 
+/// 分组分节用：PROXY 里含一个「组引用」成员（AUTO）。
+const List<ProxyGroup> _sectionedGroups = <ProxyGroup>[
+  ProxyGroup(
+    name: 'PROXY',
+    type: 'select',
+    members: <String>['香港 01', '日本 02', 'AUTO'],
+  ),
+  ProxyGroup(name: 'AUTO', type: 'url-test', members: <String>['美国 03']),
+];
+
 Widget _wrap(Widget child) => MaterialApp(home: child);
 
 void main() {
@@ -108,6 +140,136 @@ void main() {
     await facade.controller.close();
   });
 
+  testWidgets('分组分节：每组一节，节点与组引用分别渲染，节点可点选',
+      (WidgetTester tester) async {
+    final facade = _FakeNodesFacade();
+    await tester.pumpWidget(_wrap(ProxyNodesPage(
+      nodes: const <ProxyNode>[_hk, _jp, _us],
+      groups: _sectionedGroups,
+      facade: facade,
+    )));
+
+    // 两个分组各一节（组名 + 类型 + 成员数）。
+    expect(find.byKey(const Key('proxy_nodes_group_PROXY')), findsOneWidget);
+    expect(find.byKey(const Key('proxy_nodes_group_AUTO')), findsOneWidget);
+    expect(find.text('select · 3 个成员'), findsOneWidget);
+    expect(find.text('url-test · 1 个成员'), findsOneWidget);
+
+    // 两组各自的节点都渲染。
+    expect(find.byKey(const Key('proxy_nodes_node_香港 01')), findsOneWidget);
+    expect(find.byKey(const Key('proxy_nodes_node_美国 03')), findsOneWidget);
+
+    // 组引用成员渲染为不可选的引用行（无 onTap）。
+    final groupRef =
+        tester.widget<ListTile>(find.byKey(const Key('proxy_nodes_groupref_AUTO')));
+    expect(groupRef.onTap, isNull);
+    expect(find.text('代理组'), findsOneWidget);
+
+    // 点选节点触发 node.select（分组名正确）。
+    await tester.tap(find.byKey(const Key('proxy_nodes_node_美国 03')));
+    await tester.pumpAndSettle();
+    expect(facade.selects, <List<String>>[
+      <String>['AUTO', '美国 03'],
+    ]);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('profileId：经门面 profile.get 加载订阅节点并展示',
+      (WidgetTester tester) async {
+    final facade = _FakeNodesFacade()
+      ..storedResult = const StoredProfile(
+        id: 'sub-1',
+        profile: ImportedProfile(
+          name: '订阅一',
+          format: 'clash',
+          nodeCount: 2,
+          nodes: <ProxyNode>[_hk, _jp],
+          groups: _groups,
+        ),
+      );
+
+    await tester.pumpWidget(_wrap(ProxyNodesPage(
+      profileId: 'sub-1',
+      facade: facade,
+    )));
+    // 初始加载态（AppLoading 无限动画，固定帧推进）
+    expect(find.byType(AppLoading), findsOneWidget);
+    await tester.pump();
+    await tester.pump();
+
+    expect(facade.profileGetCalls, 1);
+    expect(facade.lastProfileId, 'sub-1');
+    expect(find.byKey(const Key('proxy_nodes_node_香港 01')), findsOneWidget);
+    expect(find.byKey(const Key('proxy_nodes_node_日本 02')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('profileId 失败：显式错误态 + 重试后恢复', (WidgetTester tester) async {
+    final facade = _FakeNodesFacade()
+      ..profileGetError = const ProxyModuleException(
+        code: 'PROXY_PROFILE_NOT_FOUND',
+        message: '订阅不存在',
+      );
+
+    await tester.pumpWidget(_wrap(ProxyNodesPage(
+      profileId: 'missing',
+      facade: facade,
+    )));
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.text('节点加载失败'), findsOneWidget);
+    expect(find.text('订阅不存在'), findsOneWidget);
+    expect(find.byKey(const Key('proxy_nodes_retry')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    // 重试：清除错误后加载成功。
+    facade.profileGetError = null;
+    facade.storedResult = const StoredProfile(
+      id: 'missing',
+      profile: ImportedProfile(
+        name: '订阅',
+        format: 'clash',
+        nodeCount: 1,
+        nodes: <ProxyNode>[_hk],
+        groups: _groups,
+      ),
+    );
+    await tester.tap(find.byKey(const Key('proxy_nodes_retry')));
+    await tester.pump();
+    await tester.pump();
+
+    expect(facade.profileGetCalls, 2);
+    expect(find.byKey(const Key('proxy_nodes_node_香港 01')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('profileId 为空订阅：显式「暂无节点」空态', (WidgetTester tester) async {
+    final facade = _FakeNodesFacade()
+      ..storedResult = const StoredProfile(
+        id: 'empty',
+        profile: ImportedProfile(name: '空', format: 'clash'),
+      );
+
+    await tester.pumpWidget(_wrap(ProxyNodesPage(
+      profileId: 'empty',
+      facade: facade,
+    )));
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.text('暂无节点'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
   testWidgets('happy：测试全部展示进度，响应后逐节点回填延迟', (WidgetTester tester) async {
     final facade = _FakeNodesFacade();
     await tester.pumpWidget(_wrap(ProxyNodesPage(
@@ -131,7 +293,8 @@ void main() {
     expect(find.text('120 ms'), findsOneWidget);
     expect(find.text('450 ms'), findsOneWidget);
     expect(find.byType(AppLoading), findsNothing);
-    expect(facade.lastDelayRequest?.group, 'PROXY');
+    // 测试全部覆盖所有分组的节点 → 不带 group 参数。
+    expect(facade.lastDelayRequest?.group, isNull);
     expect(tester.takeException(), isNull);
 
     await facade.controller.close();
@@ -156,7 +319,7 @@ void main() {
     ));
     await tester.pump();
 
-    expect(find.text('超时'), findsOneWidget);
+    expect(find.text('超时'), findsNWidgets(2)); // 香港 01 失败 + 美国 03 未回填
     expect(find.text('90 ms'), findsOneWidget);
     // 测试结束后不再有加载指示（不是无限 spinner）
     expect(find.byType(AppLoading), findsNothing);
@@ -177,35 +340,8 @@ void main() {
     await tester.pump();
     await tester.pump();
 
-    expect(find.text('超时'), findsNWidgets(2));
+    expect(find.text('超时'), findsNWidgets(3));
     expect(find.byType(AppLoading), findsNothing);
-    expect(tester.takeException(), isNull);
-
-    await facade.controller.close();
-  });
-
-  testWidgets('分组选择：AppSheet picker 切换分组并刷新节点列表', (WidgetTester tester) async {
-    final facade = _FakeNodesFacade();
-    await tester.pumpWidget(_wrap(ProxyNodesPage(
-      nodes: const <ProxyNode>[_hk, _jp, _us],
-      groups: _groups,
-      facade: facade,
-    )));
-
-    expect(find.byKey(const Key('proxy_nodes_node_美国 03')), findsNothing);
-
-    await tester.tap(find.byKey(const Key('proxy_nodes_group_picker')));
-    await tester.pumpAndSettle();
-    expect(
-      find.byKey(const Key('proxy_nodes_group_option_AUTO')),
-      findsOneWidget,
-    );
-
-    await tester.tap(find.byKey(const Key('proxy_nodes_group_option_AUTO')));
-    await tester.pumpAndSettle();
-
-    expect(find.byKey(const Key('proxy_nodes_node_美国 03')), findsOneWidget);
-    expect(find.byKey(const Key('proxy_nodes_node_香港 01')), findsNothing);
     expect(tester.takeException(), isNull);
 
     await facade.controller.close();

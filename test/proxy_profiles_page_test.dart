@@ -7,6 +7,7 @@ import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
+import 'package:gstore/page/proxy/proxy_active_profile_store.dart';
 import 'package:gstore/page/proxy/proxy_profiles_facade.dart';
 import 'package:gstore/page/proxy/proxy_profiles_page.dart';
 
@@ -113,13 +114,36 @@ class _FakeProfilesFacade implements ProxyProfilesFacade {
     int? limit,
   }) async {
     refreshAllCount++;
-    return RefreshAllResult(count: _profiles.length, attempted: _profiles.length);
+    return RefreshAllResult(
+        count: _profiles.length, attempted: _profiles.length);
   }
 
   @override
   Stream<ProxyEvent> get events => _events.stream;
 
   Future<void> dispose() => _events.close();
+}
+
+/// 假「当前订阅」持久化存储：内存实现，无需原生存储。
+class _FakeProfileStore implements ProxyActiveProfileStore {
+  String? value;
+  int writes = 0;
+  int clears = 0;
+
+  @override
+  Future<String?> read() async => value;
+
+  @override
+  Future<void> write(String id) async {
+    value = id;
+    writes++;
+  }
+
+  @override
+  Future<void> clear() async {
+    value = null;
+    clears++;
+  }
 }
 
 ProfileSummary _summary({
@@ -183,9 +207,10 @@ void main() {
             upload: 1024,
             download: 2048,
             total: 1024 * 1024,
-            expire:
-                DateTime.now().add(const Duration(days: 30)).millisecondsSinceEpoch ~/
-                    1000,
+            expire: DateTime.now()
+                    .add(const Duration(days: 30))
+                    .millisecondsSinceEpoch ~/
+                1000,
           ),
           refresh: const ProfileRefreshState(
             state: ProxyRefreshState.done,
@@ -346,7 +371,8 @@ void main() {
       _host(
         ProxyProfilesPage(
           facade: facade,
-          clipboardReader: () async => 'ss://YWVzLTI1Ni1nY206cGFzc0AxaDIuMy40Ojg4ODg',
+          clipboardReader: () async =>
+              'ss://YWVzLTI1Ni1nY206cGFzc0AxaDIuMy40Ojg4ODg',
         ),
       ),
     );
@@ -362,6 +388,89 @@ void main() {
 
     expect(facade.createCount, 1);
     expect(find.text('链接订阅'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('选择：点击订阅卡片设为当前并持久化 + 视觉「当前」标识', (tester) async {
+    final store = _FakeProfileStore();
+    final facade = _FakeProfilesFacade(profiles: [
+      _summary(id: 'p1', name: '订阅A'),
+      _summary(id: 'p2', name: '订阅B'),
+    ]);
+    addTearDown(facade.dispose);
+
+    await tester.pumpWidget(
+      _host(ProxyProfilesPage(facade: facade, profileStore: store)),
+    );
+    await tester.pumpAndSettle();
+
+    // 多订阅且无持久化值时不自动选中。
+    expect(find.byKey(const Key('proxy_profile_current_p1')), findsNothing);
+    expect(find.byKey(const Key('proxy_profile_current_p2')), findsNothing);
+
+    await tester.tap(find.text('订阅B'));
+    await _tick(tester);
+
+    expect(store.value, 'p2');
+    expect(store.writes, 1);
+    expect(find.byKey(const Key('proxy_profile_current_p2')), findsOneWidget);
+    expect(find.byKey(const Key('proxy_profile_current_p1')), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('选择：只有一个订阅时自动选中并持久化', (tester) async {
+    final store = _FakeProfileStore();
+    final facade = _FakeProfilesFacade(
+      profiles: [_summary(id: 'only', name: '唯一订阅')],
+    );
+    addTearDown(facade.dispose);
+
+    await tester.pumpWidget(
+      _host(ProxyProfilesPage(facade: facade, profileStore: store)),
+    );
+    await tester.pumpAndSettle();
+
+    expect(store.value, 'only');
+    expect(store.writes, greaterThanOrEqualTo(1));
+    expect(find.byKey(const Key('proxy_profile_current_only')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('选择：持久化的选中 id 在列表中生效', (tester) async {
+    final store = _FakeProfileStore()..value = 'p2';
+    final facade = _FakeProfilesFacade(profiles: [
+      _summary(id: 'p1', name: '订阅A'),
+      _summary(id: 'p2', name: '订阅B'),
+    ]);
+    addTearDown(facade.dispose);
+
+    await tester.pumpWidget(
+      _host(ProxyProfilesPage(facade: facade, profileStore: store)),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('proxy_profile_current_p2')), findsOneWidget);
+    expect(find.byKey(const Key('proxy_profile_current_p1')), findsNothing);
+    // 未发生新写入（沿用既有持久化值）。
+    expect(store.writes, 0);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('选择：持久化 id 失效且仅剩 1 个订阅时自动改选并持久化', (tester) async {
+    final store = _FakeProfileStore()..value = 'gone';
+    final facade = _FakeProfilesFacade(
+      profiles: [_summary(id: 'fresh', name: '新订阅')],
+    );
+    addTearDown(facade.dispose);
+
+    await tester.pumpWidget(
+      _host(ProxyProfilesPage(facade: facade, profileStore: store)),
+    );
+    await tester.pumpAndSettle();
+
+    expect(store.value, 'fresh');
+    expect(
+        find.byKey(const Key('proxy_profile_current_fresh')), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }

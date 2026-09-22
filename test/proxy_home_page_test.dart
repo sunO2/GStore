@@ -4,9 +4,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
+import 'package:gstore/page/proxy/proxy_active_profile_store.dart';
 import 'package:gstore/page/proxy/proxy_home_facade.dart';
 import 'package:gstore/page/proxy/proxy_home_page.dart';
 import 'package:gstore/page/proxy/proxy_logs_page.dart';
+import 'package:gstore/page/proxy/proxy_nodes_facade.dart';
 import 'package:gstore/page/proxy/proxy_nodes_page.dart';
 import 'package:gstore/page/proxy/proxy_profiles_page.dart';
 import 'package:gstore/page/proxy/proxy_settings_facade.dart';
@@ -26,6 +28,9 @@ class _FakeProxyFacade implements ProxyHomeFacade {
   int coreStopCalls = 0;
   int coreSetModeCalls = 0;
   String? lastSetMode;
+
+  /// 最近一次 `core.start` 请求（用于断言 `profileId` 透传）。
+  CoreStartRequest? lastCoreStart;
 
   /// LAN listener state returned by [lanStatus]; drives the lanProxy warning.
   bool lanEnabled = false;
@@ -84,6 +89,7 @@ class _FakeProxyFacade implements ProxyHomeFacade {
   @override
   Future<ProxyCoreStatus> coreStart(CoreStartRequest request) {
     coreStartCalls++;
+    lastCoreStart = request;
     final error = coreStartError;
     if (error != null) return Future<ProxyCoreStatus>.error(error);
     final completer = coreStartCompleter;
@@ -170,6 +176,50 @@ class _FakeVpnConsent implements ProxyVpnConsent {
 
   @override
   Future<bool> isRunning() async => false;
+}
+
+/// 假节点门面：首页仅用于把 profileId 透传给节点页，节点页自身数据在此为空。
+class _FakeNodesFacade implements ProxyNodesFacade {
+  final StreamController<ProxyEvent> controller =
+      StreamController<ProxyEvent>.broadcast(sync: true);
+
+  String? lastProfileId;
+
+  @override
+  Stream<ProxyEvent> get events => controller.stream;
+
+  @override
+  Future<StoredProfile> profileGet(String id) async {
+    lastProfileId = id;
+    return StoredProfile(
+      id: id,
+      profile: const ImportedProfile(name: '订阅', format: 'clash'),
+    );
+  }
+
+  @override
+  Future<NodeSelectResult> nodeSelect(String group, String node) async =>
+      NodeSelectResult(ok: true, group: group, node: node, active: node);
+
+  @override
+  Future<DelayTestResult> nodeDelayTest(NodeDelayTestRequest request) async =>
+      const DelayTestResult();
+}
+
+/// 假「当前订阅」持久化存储：内存实现。
+class _FakeProfileStore implements ProxyActiveProfileStore {
+  _FakeProfileStore([this.value]);
+
+  String? value;
+
+  @override
+  Future<String?> read() async => value;
+
+  @override
+  Future<void> write(String id) async => value = id;
+
+  @override
+  Future<void> clear() async => value = null;
 }
 
 Widget _wrap(Widget child) => MaterialApp(home: child);
@@ -302,8 +352,7 @@ void main() {
     await facade.controller.close();
   });
 
-  testWidgets(
-      'disconnect 失败：core.stop 抛错时仍触发停服务（try/finally 回归锁）',
+  testWidgets('disconnect 失败：core.stop 抛错时仍触发停服务（try/finally 回归锁）',
       (tester) async {
     final facade = _FakeProxyFacade()
       ..coreStopError = const ProxyModuleException(
@@ -527,7 +576,8 @@ void main() {
     await facade.controller.close();
   });
 
-  testWidgets('live switch：运行中从 VPN 切到局域网代理 -> core.set_mode + 停服务', (tester) async {
+  testWidgets('live switch：运行中从 VPN 切到局域网代理 -> core.set_mode + 停服务',
+      (tester) async {
     final facade = _FakeProxyFacade()..lanEnabled = true;
     final consent = _FakeVpnConsent();
     await tester.pumpWidget(
@@ -568,7 +618,8 @@ void main() {
     await facade.controller.close();
   });
 
-  testWidgets('failure QA：lanProxy 结构化 PROXY_NO_INBOUND -> 错误横幅', (tester) async {
+  testWidgets('failure QA：lanProxy 结构化 PROXY_NO_INBOUND -> 错误横幅',
+      (tester) async {
     final facade = _FakeProxyFacade()
       ..coreSetModeError = const ProxyModuleException(
         code: 'PROXY_NO_INBOUND',
@@ -601,35 +652,36 @@ void main() {
     await facade.controller.close();
   });
 
-  testWidgets('入口卡：订阅入口渲染，VPN 模式下无代理设置', (tester) async {
+  testWidgets('入口卡：两行 × 每行两张独立卡片，代理设置常显', (tester) async {
     _useTallViewport(tester);
     final facade = _FakeProxyFacade();
     await tester.pumpWidget(_wrap(ProxyHomePage(facade: facade)));
     await _flush(tester);
 
-    // Row A：订阅入口。
+    // 四张卡片均在。
     expect(find.byKey(const Key('proxy-subscribe-tile')), findsOneWidget);
-    expect(find.text('订阅'), findsOneWidget);
-    expect(find.text('导入/更新节点订阅'), findsOneWidget);
-
-    // Row A2：节点选择入口（整行，位于订阅与代理模式之间）。
     expect(find.byKey(const Key('proxy-nodes-tile')), findsOneWidget);
-    expect(find.text('节点选择'), findsOneWidget);
-    expect(find.text('选择节点 / 测速'), findsOneWidget);
-    expect(
-      tester.getTopLeft(find.byKey(const Key('proxy-subscribe-tile'))).dy,
-      lessThan(tester.getTopLeft(find.byKey(const Key('proxy-nodes-tile'))).dy),
-    );
-    expect(
-      tester.getTopLeft(find.byKey(const Key('proxy-nodes-tile'))).dy,
-      lessThan(tester.getTopLeft(find.byKey(const Key('proxy-mode-tile'))).dy),
-    );
-
-    // Row B：代理模式始终在；VPN 目标模式下代理设置不渲染。
     expect(find.byKey(const Key('proxy-mode-tile')), findsOneWidget);
+    expect(find.byKey(const Key('proxy-settings-tile')), findsOneWidget);
+    expect(find.text('订阅'), findsOneWidget);
+    expect(find.text('节点选择'), findsOneWidget);
     expect(find.text('代理模式'), findsOneWidget);
-    expect(find.byKey(const Key('proxy-settings-tile')), findsNothing);
-    expect(find.text('代理设置'), findsNothing);
+    expect(find.text('代理设置'), findsOneWidget);
+
+    final double subscribeY =
+        tester.getTopLeft(find.byKey(const Key('proxy-subscribe-tile'))).dy;
+    final double nodesY =
+        tester.getTopLeft(find.byKey(const Key('proxy-nodes-tile'))).dy;
+    final double modeY =
+        tester.getTopLeft(find.byKey(const Key('proxy-mode-tile'))).dy;
+    final double settingsY =
+        tester.getTopLeft(find.byKey(const Key('proxy-settings-tile'))).dy;
+
+    // 第 1 行：订阅 / 节点选择同排；第 2 行：代理模式 / 代理设置同排。
+    expect(subscribeY, closeTo(nodesY, 1.0));
+    expect(modeY, closeTo(settingsY, 1.0));
+    // 第 1 行在第 2 行之上。
+    expect(subscribeY, lessThan(modeY));
     expect(tester.takeException(), isNull);
 
     await facade.controller.close();
@@ -652,7 +704,7 @@ void main() {
     await facade.controller.close();
   });
 
-  testWidgets('入口卡：lanProxy 模式下代理设置出现且可跳转设置', (tester) async {
+  testWidgets('入口卡：代理设置始终渲染（VPN 模式也显示）且可跳转设置', (tester) async {
     _useTallViewport(tester);
     final facade = _FakeProxyFacade();
     var openedSettings = 0;
@@ -663,16 +715,8 @@ void main() {
       )),
     );
     await _flush(tester);
-    expect(find.byKey(const Key('proxy-settings-tile')), findsNothing);
 
-    // 未运行：选 lanProxy 只更新目标模式 -> 代理设置出现（复用模式弹层）。
-    await tester.tap(find.byKey(const Key('proxy-mode-tile')));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 300));
-    await tester.tap(find.byKey(const Key('proxy-mode-option-lanProxy')));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 300));
-
+    // VPN 模式（默认目标）下代理设置也必须出现。
     expect(find.byKey(const Key('proxy-settings-tile')), findsOneWidget);
     expect(find.text('代理设置'), findsOneWidget);
 
@@ -695,8 +739,95 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
 
     expect(find.byType(ProxyNodesPage), findsOneWidget);
-    // 首页未持有节点清单：节点页渲染其设计好的空态，而不是崩溃。
+    // 无选中订阅：节点页渲染其设计好的空态，而不是崩溃。
     expect(find.text('暂无节点'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('入口卡：节点入口把选中订阅 profileId 传给节点页', (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade()
+      ..profileListResult = const ProfileList(
+        count: 1,
+        profiles: <ProfileSummary>[
+          ProfileSummary(id: 'p1', name: '订阅一', nodeCount: 5),
+        ],
+      );
+    final store = _FakeProfileStore('p1');
+    final nodesFacade = _FakeNodesFacade();
+    await tester.pumpWidget(
+      _wrap(ProxyHomePage(
+        facade: facade,
+        profileStore: store,
+        nodesFacade: nodesFacade,
+      )),
+    );
+    await _flush(tester);
+
+    await tester.tap(find.byKey(const Key('proxy-nodes-tile')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    final page = tester.widget<ProxyNodesPage>(find.byType(ProxyNodesPage));
+    expect(page.profileId, 'p1');
+    expect(nodesFacade.lastProfileId, 'p1');
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+    await nodesFacade.controller.close();
+  });
+
+  testWidgets('当前配置：选中订阅显示 名称（N 节点），无选中显示 未选择', (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade()
+      ..profileListResult = const ProfileList(
+        count: 1,
+        profiles: <ProfileSummary>[
+          ProfileSummary(id: 'p1', name: '订阅一', nodeCount: 5),
+        ],
+      );
+    final store = _FakeProfileStore();
+    await tester.pumpWidget(
+      _wrap(ProxyHomePage(facade: facade, profileStore: store)),
+    );
+    await _flush(tester);
+
+    // 只有 1 个订阅：自动选中并持久化。
+    expect(store.value, 'p1');
+    expect(find.text('订阅一（5 节点）'), findsOneWidget);
+    expect(find.text('未选择'), findsNothing);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('连接：core.start 透传选中订阅 profileId', (tester) async {
+    final facade = _FakeProxyFacade()
+      ..profileListResult = const ProfileList(
+        count: 1,
+        profiles: <ProfileSummary>[
+          ProfileSummary(id: 'p1', name: '订阅一', nodeCount: 5),
+        ],
+      );
+    final store = _FakeProfileStore('p1');
+    final consent = _FakeVpnConsent();
+    await tester.pumpWidget(
+      _wrap(ProxyHomePage(
+        facade: facade,
+        vpnConsent: consent,
+        profileStore: store,
+      )),
+    );
+    await _flush(tester);
+
+    await tester.tap(find.text('连接'));
+    await _flush(tester);
+
+    expect(facade.coreStartCalls, 1);
+    expect(facade.lastCoreStart?.profileId, 'p1');
+    expect(find.text('已连接'), findsOneWidget);
     expect(tester.takeException(), isNull);
 
     await facade.controller.close();

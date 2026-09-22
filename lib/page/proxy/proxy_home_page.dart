@@ -4,8 +4,10 @@ import 'package:gstore/core/core.dart';
 import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
 
+import 'proxy_active_profile_store.dart';
 import 'proxy_home_facade.dart';
 import 'proxy_logs_page.dart';
+import 'proxy_nodes_facade.dart';
 import 'proxy_nodes_page.dart';
 import 'proxy_profiles_page.dart';
 import 'proxy_settings_facade.dart';
@@ -30,6 +32,8 @@ class ProxyHomePage extends StatefulWidget {
     super.key,
     this.facade,
     this.vpnConsent,
+    this.profileStore,
+    this.nodesFacade,
     this.onOpenLogs,
     this.onOpenStats,
     this.onOpenLanSettings,
@@ -41,6 +45,12 @@ class ProxyHomePage extends StatefulWidget {
 
   /// VPN 授权 / 前台服务触发（测试可注入假实现；为空时走平台通道）。
   final ProxyVpnConsent? vpnConsent;
+
+  /// 选中订阅 id 的持久化接缝（测试注入内存实现；为空时用 [ConfigStore]）。
+  final ProxyActiveProfileStore? profileStore;
+
+  /// 节点页门面（测试注入假实现；为空时节点页用生产单例适配器）。
+  final ProxyNodesFacade? nodesFacade;
 
   /// 「运行日志」快捷入口；为空时打开 [ProxyLogsPage]。
   final VoidCallback? onOpenLogs;
@@ -63,6 +73,7 @@ class ProxyHomePage extends StatefulWidget {
 class _ProxyHomePageState extends State<ProxyHomePage> {
   late final ProxyHomeFacade _facade;
   late final ProxyVpnConsent _vpnConsent;
+  late final ProxyActiveProfileStore _profileStore;
   StreamSubscription<ProxyEvent>? _eventSub;
 
   bool _loading = true;
@@ -71,6 +82,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
   ProxyVersionInfo? _version;
   ProxyConnState _connState = ProxyConnState.stopped;
   ProxyMode _mode = ProxyMode.unknown;
+
   /// 目标模式（未运行时用于「连接」动作；运行时即当前模式）。
   ProxyMode _targetMode = ProxyMode.vpn;
   ProxyLanStatus? _lanStatus;
@@ -82,6 +94,9 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
 
   String? _profileName;
   int? _profileNodeCount;
+
+  /// 当前选中的订阅 id（持久化；连接时经 `CoreStartRequest.profileId` 传入）。
+  String? _selectedProfileId;
   String? _currentOutbound;
 
   @override
@@ -89,6 +104,8 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
     super.initState();
     _facade = widget.facade ?? ProxyModuleHomeFacade();
     _vpnConsent = widget.vpnConsent ?? const PlatformProxyVpnConsent();
+    _profileStore =
+        widget.profileStore ?? const ConfigStoreProxyActiveProfileStore();
     _eventSub = _facade.events.listen(_onEvent, onError: _onEventError);
     _load();
   }
@@ -113,6 +130,13 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
       final profiles = await _safe(() => _facade.profileList());
       final traffic = await _safe(() => _facade.statsTrafficGet(topDomains: 1));
       final lan = await _safe(() => _facade.lanStatus());
+
+      // 解析「当前订阅」：优先沿用持久化 id；失效时若只剩 1 个订阅则自动选中并
+      // 持久化，否则清除。选中 id 连接时经 `core.start.profileId` 生效。
+      final ProfileSummary? selected = await _resolveSelectedProfile(
+        profiles?.profiles ?? const <ProfileSummary>[],
+      );
+
       if (!mounted) return;
       setState(() {
         _connState = ping.state ?? ProxyConnState.stopped;
@@ -120,11 +144,9 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
         _targetMode = _selectableMode(_mode);
         _lanStatus = lan;
         _version = version;
-        if (profiles != null && profiles.profiles.isNotEmpty) {
-          final profile = profiles.profiles.first;
-          _profileName = profile.name;
-          _profileNodeCount = profile.nodeCount;
-        }
+        _selectedProfileId = selected?.id;
+        _profileName = selected?.name;
+        _profileNodeCount = selected?.nodeCount;
         if (traffic != null) _applyTopDomains(traffic.topDomains);
         _loading = false;
       });
@@ -153,12 +175,50 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
     }
   }
 
+  /// 解析「当前订阅」：优先沿用持久化 id；失效时若只剩 1 个订阅则自动选中并
+  /// 持久化，否则清除。返回 null 表示「未选择」。
+  Future<ProfileSummary?> _resolveSelectedProfile(
+    List<ProfileSummary> profiles,
+  ) async {
+    final String? persistedId =
+        await _safe<String?>(() => _profileStore.read());
+    final Set<String> ids = <String>{for (final p in profiles) p.id};
+    if (persistedId != null && ids.contains(persistedId)) {
+      for (final profile in profiles) {
+        if (profile.id == persistedId) return profile;
+      }
+    } else if (profiles.length == 1) {
+      final ProfileSummary only = profiles.first;
+      await _safe(() => _profileStore.write(only.id));
+      return only;
+    } else if (persistedId != null) {
+      await _safe(() => _profileStore.clear());
+    }
+    return null;
+  }
+
+  /// 从订阅页返回后重新解析选中订阅（用户可能改选 / 增删）。
+  Future<void> _reloadSelectedProfile() async {
+    final profiles = await _safe(() => _facade.profileList());
+    final ProfileSummary? selected = await _resolveSelectedProfile(
+      profiles?.profiles ?? const <ProfileSummary>[],
+    );
+    if (!mounted) return;
+    setState(() {
+      _selectedProfileId = selected?.id;
+      _profileName = selected?.name;
+      _profileNodeCount = selected?.nodeCount;
+    });
+  }
+
   /// always-on / 进程死亡恢复：前台服务在跑但 Rust 引擎已停（进程被系统重启后
   /// 引擎状态丢失）时，重新 `core.start` 把数据面拉起来。失败走错误横幅，不崩溃。
   Future<void> _recoverEngineIfServiceRunning() async {
     try {
       if (!await _vpnConsent.isRunning()) return;
-      final status = await _facade.coreStart(const CoreStartRequest());
+      final status = await _facade.coreStart(
+        CoreStartRequest(profileId: _selectedProfileId),
+      );
       if (!mounted) return;
       setState(() {
         _connState = status.state;
@@ -250,10 +310,10 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
           // 非默认配置时才直接用 widget 参数。
           var configJson = widget.vpnConfigJson;
           if (configJson == '{}') {
-            configJson = await _safe(() => _facade.vpnConfigJson()) ?? configJson;
+            configJson =
+                await _safe(() => _facade.vpnConfigJson()) ?? configJson;
           }
-          final prepared =
-              await _vpnConsent.prepare(configJson: configJson);
+          final prepared = await _vpnConsent.prepare(configJson: configJson);
           if (!prepared) {
             throw const ProxyModuleException(
               code: 'PROXY_VPN_CONSENT_DENIED',
@@ -261,7 +321,9 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
             );
           }
         }
-        final status = await _facade.coreStart(CoreStartRequest(mode: target.wire));
+        final status = await _facade.coreStart(
+          CoreStartRequest(mode: target.wire, profileId: _selectedProfileId),
+        );
         if (!mounted) return;
         setState(() {
           _connState = status.state;
@@ -293,7 +355,8 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
     } on ProxyModuleException catch (error) {
       if (!mounted) return;
       setState(() {
-        _actionError = ProxyStateError(code: error.code, message: error.message);
+        _actionError =
+            ProxyStateError(code: error.code, message: error.message);
         if (connecting) _connState = ProxyConnState.stopped;
       });
       AppDialogs.showError(error.message);
@@ -392,7 +455,8 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
               ),
             ),
             if (selected)
-              Icon(Icons.check, size: AppTypography.iconMD, color: scheme.primary),
+              Icon(Icons.check,
+                  size: AppTypography.iconMD, color: scheme.primary),
           ],
         ),
       ),
@@ -450,7 +514,8 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
     } on ProxyModuleException catch (error) {
       if (!mounted) return;
       setState(() {
-        _actionError = ProxyStateError(code: error.code, message: error.message);
+        _actionError =
+            ProxyStateError(code: error.code, message: error.message);
         _connState = ProxyConnState.running;
         _targetMode = _selectableMode(_mode);
       });
@@ -483,20 +548,30 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
   }
 
   /// 「订阅」入口：打开订阅 / 配置管理页。
-  void _openProfiles() {
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(builder: (_) => const ProxyProfilesPage()),
+  ///
+  /// 返回后重新解析选中订阅——用户可能改选 / 增删；首页据此刷新「当前配置」。
+  Future<void> _openProfiles() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => ProxyProfilesPage(profileStore: _profileStore),
+      ),
     );
+    if (!mounted) return;
+    await _reloadSelectedProfile();
   }
 
   /// 「节点选择」入口：打开节点 / 代理组页。
   ///
-  /// 首页不持有节点清单（节点数据由节点页自身经 Rust 事件 / 门面获取），
-  /// 这里只做导航；节点页在无节点时渲染其设计好的「暂无节点」空态。
+  /// 首页只持有**选中的 profile id**；节点与分组清单由节点页经门面
+  /// `profile.get` 自行加载（本页不做任何解析）。无选中订阅时节点页渲染其
+  /// 设计好的空态。
   void _openNodes() {
     Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => const ProxyNodesPage(nodes: <ProxyNode>[]),
+        builder: (_) => ProxyNodesPage(
+          profileId: _selectedProfileId,
+          facade: widget.nodesFacade,
+        ),
       ),
     );
   }
@@ -573,7 +648,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
       children: [
         _buildStatusCard(context),
         const SizedBox(height: AppSpacing.lg),
-        _buildModeCard(context),
+        _buildEntryCards(context),
         const SizedBox(height: AppSpacing.lg),
         _buildTrafficCard(context),
         const SizedBox(height: AppSpacing.lg),
@@ -628,137 +703,143 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
 
   // ==================== 运行模式 / 入口卡 ====================
 
-  String get _modeOptionLabel => _targetMode == ProxyMode.lanProxy
-      ? '局域网代理（仅共享给其它设备）'
-      : 'VPN 模式（全设备）';
+  String get _modeOptionLabel =>
+      _targetMode == ProxyMode.lanProxy ? '局域网代理（仅共享给其它设备）' : 'VPN 模式（全设备）';
 
-  Widget _buildModeCard(BuildContext context) {
+  /// 入口区：**两行 × 每行两张独立 [Card]**。
+  ///
+  /// 第 1 行 订阅 / 节点选择；第 2 行 代理模式 / 代理设置。代理设置**始终**
+  /// 渲染（不依赖运行模式）；LAN 未启用警告渲染在两行之下。
+  Widget _buildEntryCards(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        IntrinsicHeight(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Expanded(
+                child: _buildEntryCard(
+                  context,
+                  key: const Key('proxy-subscribe-tile'),
+                  icon: Icons.rss_feed_outlined,
+                  title: '订阅',
+                  subtitle: '导入/更新节点订阅',
+                  onTap: _openProfiles,
+                ),
+              ),
+              const SizedBox(width: AppSpacing.sm),
+              Expanded(
+                child: _buildEntryCard(
+                  context,
+                  key: const Key('proxy-nodes-tile'),
+                  icon: Icons.account_tree_outlined,
+                  title: '节点选择',
+                  subtitle: '选择节点 / 测速',
+                  onTap: _openNodes,
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: AppSpacing.sm),
+        IntrinsicHeight(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Expanded(
+                child: _buildEntryCard(
+                  context,
+                  key: const Key('proxy-mode-tile'),
+                  icon: Icons.tune,
+                  title: '代理模式',
+                  subtitle: _modeOptionLabel,
+                  onTap: _busy ? null : _openModePicker,
+                ),
+              ),
+              const SizedBox(width: AppSpacing.sm),
+              Expanded(
+                child: _buildEntryCard(
+                  context,
+                  key: const Key('proxy-settings-tile'),
+                  icon: Icons.lan_outlined,
+                  title: '代理设置',
+                  subtitle: '局域网监听与入站端口',
+                  onTap: _openLanSettings,
+                ),
+              ),
+            ],
+          ),
+        ),
+        if (_lanProxyNeedsWarning) ...[
+          const SizedBox(height: AppSpacing.sm),
+          _buildLanWarning(context),
+        ],
+      ],
+    );
+  }
+
+  /// LAN 未启用但目标模式为局域网代理时的结构化警告 + 快捷入口。
+  Widget _buildLanWarning(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
-    // 「代理设置」只在当前 / 目标模式为局域网代理时出现；VPN 模式不渲染。
-    final showSettings =
-        _mode == ProxyMode.lanProxy || _targetMode == ProxyMode.lanProxy;
-    return Card(
-      margin: EdgeInsets.zero,
+    return Container(
+      key: const Key('proxy-lan-disabled-warning'),
+      width: double.infinity,
+      padding: AppSpacing.allMD,
+      decoration: BoxDecoration(
+        color: scheme.tertiaryContainer,
+        borderRadius: AppRadius.allMD,
+      ),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Row A：订阅（订阅 / 配置管理入口，整行）。
-          ListTile(
-            key: const Key('proxy-subscribe-tile'),
-            leading: Icon(Icons.rss_feed_outlined, color: scheme.primary),
-            title: const Text('订阅'),
-            subtitle: const Text('导入/更新节点订阅'),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: _openProfiles,
-          ),
-          // Row A2：节点选择（节点 / 代理组入口，整行）。
-          ListTile(
-            key: const Key('proxy-nodes-tile'),
-            leading: Icon(Icons.account_tree_outlined, color: scheme.primary),
-            title: const Text('节点选择'),
-            subtitle: const Text('选择节点 / 测速'),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: _openNodes,
-          ),
-          // Row B：代理模式 + 代理设置（并排；设置仅 lanProxy 模式渲染）。
-          Padding(
-            padding: AppSpacing.onlyHorizontalMD,
-            child: IntrinsicHeight(
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Expanded(
-                    child: _buildModeEntryTile(
-                      context,
-                      key: const Key('proxy-mode-tile'),
-                      icon: Icons.tune,
-                      title: '代理模式',
-                      subtitle: _modeOptionLabel,
-                      onTap: _busy ? null : _openModePicker,
-                    ),
+          Row(
+            children: [
+              Icon(
+                Icons.warning_amber_outlined,
+                size: AppTypography.iconMD,
+                color: scheme.onTertiaryContainer,
+              ),
+              const SizedBox(width: AppSpacing.xs),
+              Expanded(
+                child: Text(
+                  '局域网代理需要先启用局域网监听',
+                  style: theme.textTheme.labelMedium?.copyWith(
+                    color: scheme.onTertiaryContainer,
+                    fontWeight: AppTypography.weightMedium,
                   ),
-                  if (showSettings) ...[
-                    const SizedBox(width: AppSpacing.sm),
-                    Expanded(
-                      child: _buildModeEntryTile(
-                        context,
-                        key: const Key('proxy-settings-tile'),
-                        icon: Icons.lan_outlined,
-                        title: '代理设置',
-                        subtitle: '局域网监听与入站端口',
-                        onTap: _openLanSettings,
-                      ),
-                    ),
-                  ],
-                ],
+                ),
               ),
+            ],
+          ),
+          const SizedBox(height: AppSpacing.xs),
+          Text(
+            '当前「局域网监听 (LAN)」处于关闭状态，切换到局域网代理会返回 '
+            'PROXY_NO_INBOUND。请先在设置中开启它。',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: scheme.onTertiaryContainer,
             ),
           ),
-          if (_lanProxyNeedsWarning)
-            Padding(
-              padding: AppSpacing.onlyHorizontalLG,
-              child: Container(
-                key: const Key('proxy-lan-disabled-warning'),
-                width: double.infinity,
-                padding: AppSpacing.allMD,
-                decoration: BoxDecoration(
-                  color: scheme.tertiaryContainer,
-                  borderRadius: AppRadius.allMD,
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Icon(
-                          Icons.warning_amber_outlined,
-                          size: AppTypography.iconMD,
-                          color: scheme.onTertiaryContainer,
-                        ),
-                        const SizedBox(width: AppSpacing.xs),
-                        Expanded(
-                          child: Text(
-                            '局域网代理需要先启用局域网监听',
-                            style: theme.textTheme.labelMedium?.copyWith(
-                              color: scheme.onTertiaryContainer,
-                              fontWeight: AppTypography.weightMedium,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: AppSpacing.xs),
-                    Text(
-                      '当前「局域网监听 (LAN)」处于关闭状态，切换到局域网代理会返回 '
-                      'PROXY_NO_INBOUND。请先在设置中开启它。',
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: scheme.onTertiaryContainer,
-                      ),
-                    ),
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: TextButton(
-                        key: const Key('proxy-open-lan-settings'),
-                        onPressed: _openLanSettings,
-                        style: TextButton.styleFrom(
-                          foregroundColor: scheme.onTertiaryContainer,
-                        ),
-                        child: const Text('去开启局域网监听'),
-                      ),
-                    ),
-                  ],
-                ),
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton(
+              key: const Key('proxy-open-lan-settings'),
+              onPressed: _openLanSettings,
+              style: TextButton.styleFrom(
+                foregroundColor: scheme.onTertiaryContainer,
               ),
+              child: const Text('去开启局域网监听'),
             ),
-          const SizedBox(height: AppSpacing.sm),
+          ),
         ],
       ),
     );
   }
 
-  /// Row B 的紧凑入口：图标 + 标题 + 说明，沿用卡内 [InkWell] 水波纹与
-  /// 主题令牌（圆角 / 间距 / 字号全部走设计系统）。
-  Widget _buildModeEntryTile(
+  /// 单张入口 [Card]：图标 + 标题 + 说明，卡内 [InkWell] 水波纹与主题令牌
+  /// （圆角 / 间距 / 字号全部走设计系统）。每张卡彼此独立（2×2 布局）。
+  Widget _buildEntryCard(
     BuildContext context, {
     required Key key,
     required IconData icon,
@@ -768,36 +849,32 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
   }) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
-    return InkWell(
-      key: key,
-      onTap: onTap,
-      borderRadius: AppRadius.allMD,
-      child: Padding(
-        padding: AppSpacing.allMD,
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Icon(icon, size: AppTypography.iconMD, color: scheme.primary),
-            const SizedBox(width: AppSpacing.sm),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(title, style: theme.textTheme.bodyLarge),
-                  const SizedBox(height: AppSpacing.xs),
-                  Text(
-                    subtitle,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: scheme.onSurfaceVariant,
-                    ),
-                  ),
-                ],
+    return Card(
+      margin: EdgeInsets.zero,
+      child: InkWell(
+        key: key,
+        onTap: onTap,
+        borderRadius: AppRadius.allLG,
+        child: Padding(
+          padding: AppSpacing.allMD,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: AppTypography.iconMD, color: scheme.primary),
+              const SizedBox(height: AppSpacing.sm),
+              Text(title, style: theme.textTheme.bodyLarge),
+              const SizedBox(height: AppSpacing.xs),
+              Text(
+                subtitle,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: scheme.onSurfaceVariant,
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );

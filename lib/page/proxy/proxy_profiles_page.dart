@@ -10,6 +10,7 @@ import 'package:gstore/core/icons/Icons.dart';
 import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
 import 'package:gstore/core/utils/unit.dart';
+import 'package:gstore/page/proxy/proxy_active_profile_store.dart';
 import 'package:gstore/page/proxy/proxy_profiles_facade.dart';
 
 /// 选择本地订阅文件并返回（文件名 + 文本内容；null = 取消 / 失败）。
@@ -26,19 +27,25 @@ typedef ProfileClipboardRead = Future<String?> Function();
 ///   本页**绝不解析订阅**，也不做任何网络请求；
 /// * 只对模块返回的 `ImportedProfile` / `ProfileSummary` 做展示格式化。
 ///
+/// 选择语义：点击订阅卡片即「设为当前订阅」——持久化 profile id
+/// （[ProxyActiveProfileStore]，key `proxy_active_profile_id`），首页据此作为
+/// 默认 `profileId` 连接；只有 1 个订阅时自动选中并持久化。模块没有
+/// `profile.select`，选中仅是**应用侧**状态。
+///
 /// 交互入口：
 /// * 导入：URL / 粘贴文本 / 分享链接（剪贴板）/ 本地文件；
 /// * 刷新：单个（卡片按钮）与全部（AppBar，`profile.refresh_all`）；
 /// * 删除：统一危险确认弹层 `showConfirmSheet(isDangerous: true)`。
 ///
-/// 依赖注入：[facade]、[filePicker]、[clipboardReader] 均可注入假实现，
-/// 组件测试无需原生模块 / 平台通道。
+/// 依赖注入：[facade]、[filePicker]、[clipboardReader]、[profileStore] 均可注入
+/// 假实现，组件测试无需原生模块 / 平台通道。
 class ProxyProfilesPage extends StatefulWidget {
   const ProxyProfilesPage({
     super.key,
     this.facade,
     this.filePicker,
     this.clipboardReader,
+    this.profileStore,
   });
 
   /// 门面（测试注入假实现；为空时用生产适配器 [ProxyModuleProfilesFacade]）。
@@ -50,6 +57,9 @@ class ProxyProfilesPage extends StatefulWidget {
   /// 剪贴板读取（测试注入；为空时走 `Clipboard.getData`）。
   final ProfileClipboardRead? clipboardReader;
 
+  /// 选中订阅的持久化接缝（测试注入内存实现；为空时用 [ConfigStore]）。
+  final ProxyActiveProfileStore? profileStore;
+
   @override
   State<ProxyProfilesPage> createState() => _ProxyProfilesPageState();
 }
@@ -58,6 +68,7 @@ class _ProxyProfilesPageState extends State<ProxyProfilesPage> {
   late final ProxyProfilesFacade _facade;
   late final ProfileFilePick _filePicker;
   late final ProfileClipboardRead _clipboardReader;
+  late final ProxyActiveProfileStore _profileStore;
 
   StreamSubscription<ProxyEvent>? _eventSub;
 
@@ -67,6 +78,9 @@ class _ProxyProfilesPageState extends State<ProxyProfilesPage> {
   String? _loadError;
   List<ProfileSummary> _profiles = const <ProfileSummary>[];
   List<ProfileWarning> _warnings = const <ProfileWarning>[];
+
+  /// 当前选中的订阅 id（持久化于 [ProxyActiveProfileStore]）。
+  String? _selectedId;
 
   /// 正在刷新的 profile id 集合（含事件驱动的 started 状态）。
   final Set<String> _refreshingIds = <String>{};
@@ -80,6 +94,8 @@ class _ProxyProfilesPageState extends State<ProxyProfilesPage> {
     _facade = widget.facade ?? ProxyModuleProfilesFacade();
     _filePicker = widget.filePicker ?? _defaultPickFile;
     _clipboardReader = widget.clipboardReader ?? _defaultReadClipboard;
+    _profileStore =
+        widget.profileStore ?? const ConfigStoreProxyActiveProfileStore();
     _eventSub = _facade.events.listen(_onEvent, onError: (_) {});
     _load();
   }
@@ -102,10 +118,12 @@ class _ProxyProfilesPageState extends State<ProxyProfilesPage> {
     }
     try {
       final list = await _facade.profileList();
+      final String? selected = await _resolveSelection(list.profiles);
       if (!mounted || token != _loadToken) return;
       setState(() {
         _profiles = list.profiles;
         _warnings = list.warnings;
+        _selectedId = selected;
         _loading = false;
         _loadError = null;
       });
@@ -122,6 +140,33 @@ class _ProxyProfilesPageState extends State<ProxyProfilesPage> {
         _loadError = '订阅列表加载失败：$error';
       });
     }
+  }
+
+  /// 解析「当前订阅」：优先沿用持久化 id；失效时若只剩 1 个订阅则自动选中并
+  /// 持久化，否则清除。
+  Future<String?> _resolveSelection(List<ProfileSummary> profiles) async {
+    final String? persisted = await _profileStore.read();
+    final Set<String> ids = <String>{for (final p in profiles) p.id};
+    if (persisted != null && ids.contains(persisted)) {
+      return persisted;
+    }
+    if (profiles.length == 1) {
+      final String only = profiles.first.id;
+      await _profileStore.write(only);
+      return only;
+    }
+    if (persisted != null) {
+      await _profileStore.clear();
+    }
+    return null;
+  }
+
+  /// 点击订阅卡片：设为当前订阅（持久化 + 视觉标识）。
+  Future<void> _selectProfile(ProfileSummary profile) async {
+    setState(() => _selectedId = profile.id);
+    await _profileStore.write(profile.id);
+    if (!mounted) return;
+    AppDialogs.showSuccess('已设为当前订阅「${profile.name}」');
   }
 
   // ==================== 事件 ====================
@@ -367,7 +412,9 @@ class _ProxyProfilesPageState extends State<ProxyProfilesPage> {
           padding: AppSpacing.onlyBottomMD,
           child: _ProfileCard(
             profile: profile,
+            selected: profile.id == _selectedId,
             refreshing: _refreshingIds.contains(profile.id),
+            onSelect: () => _selectProfile(profile),
             onRefresh: () => _refreshProfile(profile),
             onDelete: () => _deleteProfile(profile),
           ),
@@ -507,13 +554,19 @@ class _ProxyProfilesPageState extends State<ProxyProfilesPage> {
 class _ProfileCard extends StatelessWidget {
   const _ProfileCard({
     required this.profile,
+    required this.selected,
     required this.refreshing,
+    required this.onSelect,
     required this.onRefresh,
     required this.onDelete,
   });
 
   final ProfileSummary profile;
+
+  /// 是否为「当前订阅」（连接时生效）。
+  final bool selected;
   final bool refreshing;
+  final VoidCallback onSelect;
   final VoidCallback onRefresh;
   final VoidCallback onDelete;
 
@@ -527,107 +580,128 @@ class _ProfileCard extends StatelessWidget {
 
     return Card(
       margin: EdgeInsets.zero,
-      child: Padding(
-        padding: AppSpacing.allLG,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                ColoredAliIcon(
-                  icon: Icons.link,
-                  size: AppTypography.iconXL,
-                  color: scheme.primary,
-                ),
-                const SizedBox(width: AppSpacing.md),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        profile.name.isEmpty ? '未命名订阅' : profile.name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.titleMedium,
-                      ),
-                      const SizedBox(height: AppSpacing.xs),
-                      Text(
-                        _sourceText(profile),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: scheme.onSurfaceVariant,
+      child: InkWell(
+        onTap: onSelect,
+        borderRadius: AppRadius.allLG,
+        child: Padding(
+          padding: AppSpacing.allLG,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  ColoredAliIcon(
+                    icon: Icons.link,
+                    size: AppTypography.iconXL,
+                    color: scheme.primary,
+                  ),
+                  const SizedBox(width: AppSpacing.md),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          profile.name.isEmpty ? '未命名订阅' : profile.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.titleMedium,
                         ),
+                        const SizedBox(height: AppSpacing.xs),
+                        Text(
+                          _sourceText(profile),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: scheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (selected) ...<Widget>[
+                    const SizedBox(width: AppSpacing.xs),
+                    Icon(
+                      Icons.check_circle,
+                      key: Key('proxy_profile_current_${profile.id}'),
+                      size: AppTypography.iconMD,
+                      color: scheme.primary,
+                    ),
+                    const SizedBox(width: AppSpacing.xs),
+                    Text(
+                      '当前',
+                      style: theme.textTheme.labelMedium?.copyWith(
+                        color: scheme.primary,
+                        fontWeight: AppTypography.weightMedium,
                       ),
-                    ],
-                  ),
-                ),
-                if (refreshing)
-                  const Padding(
-                    padding: AppSpacing.onlyHorizontalSM,
-                    child: AppLoading(size: AppLoadingSize.small),
-                  )
-                else
+                    ),
+                  ],
+                  if (refreshing)
+                    const Padding(
+                      padding: AppSpacing.onlyHorizontalSM,
+                      child: AppLoading(size: AppLoadingSize.small),
+                    )
+                  else
+                    IconButton(
+                      tooltip: '更新',
+                      icon: const Icon(Icons.refresh),
+                      onPressed: onRefresh,
+                    ),
                   IconButton(
-                    tooltip: '更新',
-                    icon: const Icon(Icons.refresh),
-                    onPressed: onRefresh,
+                    tooltip: '删除',
+                    icon: const Icon(Icons.delete_outline),
+                    onPressed: onDelete,
                   ),
-                IconButton(
-                  tooltip: '删除',
-                  icon: const Icon(Icons.delete_outline),
-                  onPressed: onDelete,
-                ),
-              ],
-            ),
-            const SizedBox(height: AppSpacing.md),
-            Wrap(
-              spacing: AppSpacing.sm,
-              runSpacing: AppSpacing.xs,
-              children: [
-                _Tag(text: '节点 ${profile.nodeCount}'),
-                if (profile.groupCount > 0)
-                  _Tag(text: '分组 ${profile.groupCount}'),
-                _Tag(
-                  text: profile.format.isEmpty ? '未知格式' : profile.format,
-                ),
-              ],
-            ),
-            const SizedBox(height: AppSpacing.sm),
-            _InfoRow(
-              icon: Icons.data_usage_outlined,
-              text: _trafficText(profile.userinfo),
-            ),
-            const SizedBox(height: AppSpacing.xs),
-            _InfoRow(
-              icon: Icons.event_outlined,
-              text: _expiryText(profile.userinfo),
-              color: _isExpired(profile.userinfo) ? scheme.error : null,
-            ),
-            const SizedBox(height: AppSpacing.xs),
-            _InfoRow(
-              icon: Icons.update_outlined,
-              text: _updatedText(profile),
-            ),
-            if (failed && refreshError.isNotEmpty) ...[
-              const SizedBox(height: AppSpacing.sm),
-              Container(
-                width: double.infinity,
-                padding: AppSpacing.allMD,
-                decoration: BoxDecoration(
-                  color: scheme.errorContainer,
-                  borderRadius: AppRadius.allMD,
-                ),
-                child: Text(
-                  refreshError,
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: scheme.onErrorContainer,
-                  ),
-                ),
+                ],
               ),
+              const SizedBox(height: AppSpacing.md),
+              Wrap(
+                spacing: AppSpacing.sm,
+                runSpacing: AppSpacing.xs,
+                children: [
+                  _Tag(text: '节点 ${profile.nodeCount}'),
+                  if (profile.groupCount > 0)
+                    _Tag(text: '分组 ${profile.groupCount}'),
+                  _Tag(
+                    text: profile.format.isEmpty ? '未知格式' : profile.format,
+                  ),
+                ],
+              ),
+              const SizedBox(height: AppSpacing.sm),
+              _InfoRow(
+                icon: Icons.data_usage_outlined,
+                text: _trafficText(profile.userinfo),
+              ),
+              const SizedBox(height: AppSpacing.xs),
+              _InfoRow(
+                icon: Icons.event_outlined,
+                text: _expiryText(profile.userinfo),
+                color: _isExpired(profile.userinfo) ? scheme.error : null,
+              ),
+              const SizedBox(height: AppSpacing.xs),
+              _InfoRow(
+                icon: Icons.update_outlined,
+                text: _updatedText(profile),
+              ),
+              if (failed && refreshError.isNotEmpty) ...[
+                const SizedBox(height: AppSpacing.sm),
+                Container(
+                  width: double.infinity,
+                  padding: AppSpacing.allMD,
+                  decoration: BoxDecoration(
+                    color: scheme.errorContainer,
+                    borderRadius: AppRadius.allMD,
+                  ),
+                  child: Text(
+                    refreshError,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: scheme.onErrorContainer,
+                    ),
+                  ),
+                ),
+              ],
             ],
-          ],
+          ),
         ),
       ),
     );
