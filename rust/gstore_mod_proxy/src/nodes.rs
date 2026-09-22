@@ -37,9 +37,16 @@ pub(crate) const EVT_NODE_DELAY: &str = "proxy.node.delay";
 
 /// Clash's standard connectivity-check URL.
 pub(crate) const DEFAULT_TEST_URL: &str = "https://www.gstatic.com/generate_204";
-const DEFAULT_TIMEOUT_MS: u64 = 5_000;
+/// One probe is a full node handshake (REALITY is heavy) plus a client-side
+/// end-to-end TLS handshake to the test URL and a GET; 5s is routinely exceeded
+/// on mobile, so the default is 10s.
+const DEFAULT_TIMEOUT_MS: u64 = 10_000;
 const MIN_TIMEOUT_MS: u64 = 100;
 const MAX_TIMEOUT_MS: u64 = 120_000;
+/// Meow's group default is 16; a phone firing 16 concurrent TLS handshakes
+/// starves its own uplink/CPU and manufactures false timeouts on a large
+/// subscription, so probe at 8.
+const DELAY_PROBE_CONCURRENCY: usize = 8;
 
 /// Off-tunnel-loop runtime for delay probes and async selection. Built once with
 /// the crate's bounded shape; never the tunnel loop's runtime, so a slow probe
@@ -79,16 +86,6 @@ pub(crate) fn install_proxies(
     tunnel.update_proxies(proxies);
 }
 
-fn active_tunnel() -> Result<Arc<meow_tunnel::Tunnel>, ModuleError> {
-    crate::rules::active_tunnel().ok_or_else(|| {
-        ModuleError::new(
-            StatusCode::InvalidArgument,
-            ERR_NOT_CONFIGURED,
-            "engine is not running; start the tunnel before selecting nodes",
-        )
-    })
-}
-
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SelectRequest {
@@ -103,6 +100,8 @@ pub(crate) struct DelayRequest {
     pub node: Option<String>,
     #[serde(default)]
     pub group: Option<String>,
+    #[serde(default)]
+    pub targets: Option<Vec<String>>,
     #[serde(default)]
     pub url: Option<String>,
     #[serde(default)]
@@ -229,13 +228,33 @@ where
     Ok((data, Selection { group, node, active }))
 }
 
+/// A resolved probe target: either a live proxy to probe, or a name that did
+/// not resolve. Missing names travel as their own per-node `not found` result
+/// so one stale name in a batch never aborts the whole call.
+pub(crate) enum ProbeTarget {
+    Proxy(Arc<dyn Proxy>),
+    Missing,
+}
+
+struct ResolvedTargets {
+    targets: Vec<(String, ProbeTarget)>,
+    group: Option<String>,
+    url: String,
+    expected: Option<String>,
+}
+
 /// Resolve the probe targets for a `node.delay_test` request.
-fn resolve_targets(
-    tunnel: &meow_tunnel::Tunnel,
-    req: &DelayRequest,
-) -> Result<(Vec<(String, Arc<dyn Proxy>)>, Option<String>, String, Option<String>), ModuleError> {
+///
+/// Selector precedence: `group` (optionally narrowed by `node`) -> `node` ->
+/// `targets` (an explicit name list) -> error. The resolver closure abstracts
+/// the online (`Tunnel::proxy`) and offline (`build_registry`) registry so both
+/// paths share this logic.
+fn resolve_targets<F>(resolve: F, req: &DelayRequest) -> Result<ResolvedTargets, ModuleError>
+where
+    F: Fn(&str) -> Option<Arc<dyn Proxy>>,
+{
     let (targets, group_label, test_url, expected) = if let Some(group) = &req.group {
-        let proxy = tunnel.proxy(group).ok_or_else(|| {
+        let proxy = resolve(group).ok_or_else(|| {
             ModuleError::new(
                 StatusCode::ModuleNotFound,
                 ERR_NODE_NOT_FOUND,
@@ -249,15 +268,15 @@ fn resolve_targets(
                 format!("'{group}' is not a group with latency-testable members"),
             )
         })?;
-        let targets: Vec<(String, Arc<dyn Proxy>)> = match &req.node {
+        let targets: Vec<(String, ProbeTarget)> = match &req.node {
             Some(node) => members
                 .into_iter()
                 .filter(|p| p.name() == node)
-                .map(|p| (p.name().to_string(), p))
+                .map(|p| (p.name().to_string(), ProbeTarget::Proxy(p)))
                 .collect(),
             None => members
                 .into_iter()
-                .map(|p| (p.name().to_string(), p))
+                .map(|p| (p.name().to_string(), ProbeTarget::Proxy(p)))
                 .collect(),
         };
         if targets.is_empty() {
@@ -277,17 +296,46 @@ fn resolve_targets(
             proxy.expected_status().map(str::to_string),
         )
     } else if let Some(node) = &req.node {
-        let proxy = tunnel.proxy(node).ok_or_else(|| {
+        let proxy = resolve(node).ok_or_else(|| {
             ModuleError::new(
                 StatusCode::ModuleNotFound,
                 ERR_NODE_NOT_FOUND,
                 format!("node not found: {node}"),
             )
         })?;
-        (vec![(node.clone(), proxy)], None, None, None)
+        (
+            vec![(node.clone(), ProbeTarget::Proxy(proxy))],
+            None,
+            None,
+            None,
+        )
+    } else if let Some(names) = &req.targets {
+        if names.is_empty() {
+            return Err(ModuleError::invalid_arg(
+                "node.delay_test requires `node`, `group`, and/or `targets`",
+            ));
+        }
+        let targets: Vec<(String, ProbeTarget)> = names
+            .iter()
+            .map(|name| match resolve(name) {
+                Some(proxy) => (name.clone(), ProbeTarget::Proxy(proxy)),
+                None => (name.clone(), ProbeTarget::Missing),
+            })
+            .collect();
+        if !targets
+            .iter()
+            .any(|(_, target)| matches!(target, ProbeTarget::Proxy(_)))
+        {
+            return Err(ModuleError::new(
+                StatusCode::ModuleNotFound,
+                ERR_NODE_NOT_FOUND,
+                format!("none of the requested targets were found: {}", names.join(", ")),
+            ));
+        }
+        (targets, None, None, None)
     } else {
         return Err(ModuleError::invalid_arg(
-            "node.delay_test requires `node` and/or `group`",
+            "node.delay_test requires `node`, `group`, and/or `targets`",
         ));
     };
 
@@ -297,7 +345,12 @@ fn resolve_targets(
         .or(test_url)
         .unwrap_or_else(|| DEFAULT_TEST_URL.to_string());
     let expected = req.expected_status.clone().or(expected);
-    Ok((targets, group_label, url, expected))
+    Ok(ResolvedTargets {
+        targets,
+        group: group_label,
+        url,
+        expected,
+    })
 }
 
 /// Run the probes on the off-loop runtime. Pure: no events, no tunnel mutation.
@@ -326,7 +379,7 @@ pub(crate) fn run_delay(
         url,
         expected,
         timeout,
-        meow_proxy::health::GROUP_DELAY_CONCURRENCY,
+        DELAY_PROBE_CONCURRENCY,
     ))
 }
 
@@ -341,53 +394,121 @@ fn error_label(error: Option<&UrlTestError>) -> Option<String> {
 /// `node.delay_test` arm: probe every resolved target, emit one
 /// `proxy.node.delay` event per node, and return a per-node result list. An
 /// unreachable node is a `timeout` result, not a failed call.
-pub(crate) fn delay_test_arm(instance_id: u64, payload: &[u8]) -> Result<Vec<u8>, ModuleError> {
+pub(crate) fn delay_test_arm(
+    instance_id: u64,
+    payload: &[u8],
+    data_dir: &str,
+    cache_dir: &str,
+) -> Result<Vec<u8>, ModuleError> {
     let req: DelayRequest = if payload.is_empty() {
         return Err(ModuleError::invalid_arg(
-            "node.delay_test requires {node} and/or {group}",
+            "node.delay_test requires `node`, `group`, and/or `targets`",
         ));
     } else {
         serde_json::from_slice(payload).map_err(|e| {
             ModuleError::invalid_arg(format!("node.delay_test payload must be JSON: {e}"))
         })?
     };
+    if req.node.is_none() && req.group.is_none() && req.targets.is_none() {
+        return Err(ModuleError::invalid_arg(
+            "node.delay_test requires `node`, `group`, and/or `targets`",
+        ));
+    }
     let timeout_ms = req
         .timeout_ms
         .unwrap_or(DEFAULT_TIMEOUT_MS)
         .clamp(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS);
 
-    let tunnel = active_tunnel()?;
-    let (targets, group_label, url, expected) = resolve_targets(&tunnel, &req)?;
-
-    let results = run_delay(
+    // Probing only needs an outbound dial through the node, never a TUN, so fall
+    // back to the offline registry when the engine is stopped (mirrors
+    // `select_offline`).
+    let (resolved, offline) = match crate::rules::active_tunnel() {
+        Some(tunnel) => (resolve_targets(|name| tunnel.proxy(name), &req)?, false),
+        None => {
+            let store = if data_dir.trim().is_empty() {
+                None
+            } else {
+                Some(ensure_selector_store(data_dir))
+            };
+            let generated = crate::config::try_generate(
+                data_dir,
+                cache_dir,
+                &crate::config::GenerateRequest::default(),
+            )?
+            .ok_or_else(|| {
+                ModuleError::new(
+                    StatusCode::InvalidArgument,
+                    ERR_NOT_CONFIGURED,
+                    "no profile is stored; import a profile before selecting nodes",
+                )
+            })?;
+            let (proxies, _warnings) =
+                crate::config::build_registry(&generated.raw, store.as_ref());
+            (
+                resolve_targets(|name| proxies.get(name).cloned(), &req)?,
+                true,
+            )
+        }
+    };
+    let ResolvedTargets {
         targets,
+        group: group_label,
+        url,
+        expected,
+    } = resolved;
+
+    let probes: Vec<(String, Arc<dyn Proxy>)> = targets
+        .iter()
+        .filter_map(|(name, target)| match target {
+            ProbeTarget::Proxy(proxy) => Some((name.clone(), Arc::clone(proxy))),
+            ProbeTarget::Missing => None,
+        })
+        .collect();
+    let mut probed: HashMap<String, NamedProbeResult> = run_delay(
+        probes,
         &url,
         expected.as_deref(),
         Duration::from_millis(timeout_ms),
-    );
+    )
+    .into_iter()
+    .map(|r| (r.name.clone(), r))
+    .collect();
 
-    let mut out = Vec::with_capacity(results.len());
-    for r in &results {
-        let error = error_label(r.error.as_ref());
+    let mut out = Vec::with_capacity(targets.len());
+    for (name, target) in &targets {
+        let result = match target {
+            ProbeTarget::Proxy(_) => probed.remove(name).unwrap_or(NamedProbeResult {
+                name: name.clone(),
+                delay: 0,
+                error: Some(UrlTestError::Transport("probe did not complete".to_string())),
+            }),
+            ProbeTarget::Missing => NamedProbeResult {
+                name: name.clone(),
+                delay: 0,
+                error: Some(UrlTestError::Transport("not found".to_string())),
+            },
+        };
+        let error = error_label(result.error.as_ref());
         let event = json!({
             "group": group_label.clone().unwrap_or_default(),
-            "node": r.name,
-            "delayMs": if error.is_none() { r.delay as u64 } else { 0 },
+            "node": result.name,
+            "delayMs": if error.is_none() { result.delay as u64 } else { 0 },
             "error": error,
         });
         if let Ok(bytes) = serde_json::to_vec(&event) {
             crate::emit_event(instance_id, EVT_NODE_DELAY, &bytes);
         }
         out.push(json!({
-            "node": r.name,
-            "delayMs": if error.is_none() { r.delay as u64 } else { 0 },
+            "node": result.name,
+            "delayMs": if error.is_none() { result.delay as u64 } else { 0 },
             "alive": error.is_none(),
             "error": error,
         }));
     }
     log_message(format!(
-        "proxy: node.delay_test url={url} timeoutMs={timeout_ms} nodes={}",
-        out.len()
+        "proxy: node.delay_test url={url} timeoutMs={timeout_ms} nodes={} path={}",
+        out.len(),
+        if offline { "offline" } else { "online" }
     ));
     crate::ok_data(json!({
         "results": out,
@@ -661,7 +782,7 @@ pub(crate) mod tests {
         let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         crate::rules::reset_for_tests();
         let _ = crate::dispatch::build_engine(empty_resolver());
-        let tunnel = active_tunnel().unwrap();
+        let tunnel = crate::rules::active_tunnel().unwrap();
 
         let a = StubProxy::new("A");
         let b = StubProxy::new("B");
@@ -778,14 +899,132 @@ pub(crate) mod tests {
         }
     }
 
+    /// Build a live engine and install a `name -> proxy` map, the online path.
+    fn live_tunnel_with(entries: Vec<(&str, Arc<dyn Proxy>)>) -> Arc<meow_tunnel::Tunnel> {
+        let _ = crate::dispatch::build_engine(empty_resolver());
+        let tunnel = crate::rules::active_tunnel().unwrap();
+        let mut map: HashMap<smol_str::SmolStr, Arc<dyn Proxy>> = HashMap::new();
+        for (name, proxy) in entries {
+            map.insert(smol_str::SmolStr::from(name), proxy);
+        }
+        tunnel.update_proxies(map);
+        tunnel
+    }
+
+    /// `targets` probes exactly the named nodes and returns one result per name.
+    #[test]
+    fn delay_test_targets_list_probes_each_named_node() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        crate::rules::reset_for_tests();
+        live_tunnel_with(vec![
+            ("A", StubProxy::hanging("A") as Arc<dyn Proxy>),
+            ("B", StubProxy::hanging("B") as Arc<dyn Proxy>),
+        ]);
+
+        let payload = br#"{"targets":["A","B"],"timeoutMs":100,"url":"http://127.0.0.1:1/"}"#;
+        let out = delay_test_arm(0, payload, "", "").expect("targets batch must not fail");
+        let v: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["data"]["timeoutMs"], 100);
+        let results = v["data"]["results"].as_array().unwrap();
+        assert_eq!(results.len(), 2, "one result per named target");
+        assert_eq!(results[0]["node"], "A");
+        assert_eq!(results[1]["node"], "B");
+        assert!(
+            results
+                .iter()
+                .all(|r| r["error"] == "timeout" && r["alive"] == false),
+            "hanging targets are per-node timeouts: {v}"
+        );
+
+        crate::rules::reset_for_tests();
+    }
+
+    /// One stale name in `targets` becomes its own `not found` result while the
+    /// known names still probe; the batch is never aborted.
+    #[test]
+    fn delay_test_targets_unknown_name_is_per_node_not_found() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        crate::rules::reset_for_tests();
+        live_tunnel_with(vec![("A", StubProxy::hanging("A") as Arc<dyn Proxy>)]);
+
+        let payload = br#"{"targets":["A","GHOST"],"timeoutMs":100,"url":"http://127.0.0.1:1/"}"#;
+        let out = delay_test_arm(0, payload, "", "")
+            .expect("one stale name must not abort the batch");
+        let v: Value = serde_json::from_slice(&out).unwrap();
+        let results = v["data"]["results"].as_array().unwrap();
+        assert_eq!(results.len(), 2);
+        let known = results.iter().find(|r| r["node"] == "A").unwrap();
+        let ghost = results.iter().find(|r| r["node"] == "GHOST").unwrap();
+        assert_eq!(known["error"], "timeout", "known node still probes: {v}");
+        assert_eq!(ghost["error"], "not found");
+        assert_eq!(ghost["alive"], false);
+
+        crate::rules::reset_for_tests();
+    }
+
+    /// An empty selector is a structured 422 naming every accepted selector.
+    #[test]
+    fn delay_test_empty_selector_is_a_clear_422() {
+        let err = delay_test_arm(0, b"{}", "", "").unwrap_err();
+        assert_eq!(err.status, StatusCode::InvalidArgument);
+        for option in ["node", "group", "targets"] {
+            assert!(
+                err.message.contains(option),
+                "message must mention `{option}`: {}",
+                err.message
+            );
+        }
+    }
+
+    /// With no engine but a stored profile, `delay_test` resolves targets from
+    /// the offline registry instead of 422ing with `PROXY_NOT_CONFIGURED`.
+    #[test]
+    fn delay_test_offline_uses_stored_profile_without_engine() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        crate::rules::reset_for_tests();
+        assert!(
+            crate::rules::active_tunnel().is_none(),
+            "precondition: engine must be stopped"
+        );
+
+        let data_dir = profile_dir("offline-delay", Vec::new());
+        let payload = br#"{"node":"node-a","timeoutMs":100,"url":"http://127.0.0.1:1/"}"#;
+        let out = delay_test_arm(0, payload, &data_dir, &data_dir)
+            .expect("offline delay_test must resolve from the stored profile");
+        let v: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["ok"], true);
+        let results = v["data"]["results"].as_array().unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["node"], "node-a");
+        assert_eq!(results[0]["alive"], false);
+
+        crate::rules::reset_for_tests();
+    }
+
+    /// An omitted `timeoutMs` resolves to the 10s default.
+    #[test]
+    fn delay_test_default_timeout_is_ten_seconds() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        crate::rules::reset_for_tests();
+        // The stub fails its dial immediately, so this does not wait 10s.
+        live_tunnel_with(vec![("A", StubProxy::new("A") as Arc<dyn Proxy>)]);
+
+        let payload = br#"{"node":"A","url":"http://127.0.0.1:1/"}"#;
+        let out = delay_test_arm(0, payload, "", "").expect("fast-failing node is a per-node result");
+        let v: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["timeoutMs"], 10_000);
+
+        crate::rules::reset_for_tests();
+    }
+
     /// A selector without a store still selects in-memory (only persistence is
     /// lost), and a non-selectable/leaf target is a structured error.
     #[test]
-    fn select_errors_are_structured() {
-        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    fn select_errors_are_structured() {        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         crate::rules::reset_for_tests();
         let _ = crate::dispatch::build_engine(empty_resolver());
-        let tunnel = active_tunnel().unwrap();
+        let tunnel = crate::rules::active_tunnel().unwrap();
         let leaf = StubProxy::new("LEAF");
         let mut map: HashMap<smol_str::SmolStr, Arc<dyn Proxy>> = HashMap::new();
         map.insert(smol_str::SmolStr::from("LEAF"), Arc::clone(&leaf) as Arc<dyn Proxy>);
@@ -944,7 +1183,7 @@ pub(crate) mod tests {
         let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         crate::rules::reset_for_tests();
         let _ = crate::dispatch::build_engine(empty_resolver());
-        let tunnel = active_tunnel().unwrap();
+        let tunnel = crate::rules::active_tunnel().unwrap();
 
         let a = StubProxy::new("A");
         let b = StubProxy::new("B");

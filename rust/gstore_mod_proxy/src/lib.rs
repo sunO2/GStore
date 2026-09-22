@@ -1558,6 +1558,15 @@ fn node_select_arm(
     ok_data(data)
 }
 
+fn node_delay_test_arm(
+    instance_id: u64,
+    instance: Option<Arc<ProxyInstance>>,
+    payload: &[u8],
+) -> Result<Vec<u8>, ModuleError> {
+    let inst = require_instance(instance_id, instance)?;
+    nodes::delay_test_arm(instance_id, payload, &inst.data_dir, &inst.cache_dir)
+}
+
 fn node_list_arm(
     instance_id: u64,
     instance: Option<Arc<ProxyInstance>>,
@@ -1886,8 +1895,7 @@ fn call_impl(
             profile_set_schedule_arm(instance_id, instance.clone(), _payload)
         }
         "node.select" => node_select_arm(instance_id, instance.clone(), _payload),
-        "node.delay_test" => require_instance(instance_id, instance.clone())
-            .and_then(|_| nodes::delay_test_arm(instance_id, _payload)),
+        "node.delay_test" => node_delay_test_arm(instance_id, instance.clone(), _payload),
         "node.list" => node_list_arm(instance_id, instance.clone()),
         "conn.list" => {
             require_instance(instance_id, instance.clone()).and_then(|_| conn::list_arm(_payload))
