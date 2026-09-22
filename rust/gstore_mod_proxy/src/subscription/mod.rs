@@ -35,6 +35,8 @@ mod parse;
 mod tests;
 #[cfg(test)]
 mod tests_fetch;
+#[cfg(test)]
+mod tests_pipeline;
 
 pub(crate) use link::parse_share_link;
 pub(crate) use model::*;
