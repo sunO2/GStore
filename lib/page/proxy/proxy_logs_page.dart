@@ -515,7 +515,7 @@ class _ProxyLogsPageState extends State<ProxyLogsPage>
         if (records.isNotEmpty) ...[
           const SizedBox(height: AppSpacing.sm),
           _SectionHeader(
-            icon: AliIcon.database,
+            icon: Icons.storage,
             title: _recordsSectionTitle,
             trailing: '${records.length}',
           ),

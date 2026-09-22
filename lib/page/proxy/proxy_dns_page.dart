@@ -180,7 +180,7 @@ class _ProxyDnsPageState extends State<ProxyDnsPage> {
             Row(
               children: [
                 ColoredAliIcon(
-                  icon: AliIcon.link,
+                  icon: Icons.link,
                   size: AppTypography.iconXL,
                   color: theme.colorScheme.primary,
                 ),
@@ -545,7 +545,7 @@ class _DnsFormSheetState extends State<_DnsFormSheet> {
     return AppSheetScaffold(
       title: 'DNS 配置',
       subtitle: '修改解析模式、上游与 DoH/DoT 地址',
-      icon: const ColoredAliIcon(icon: AliIcon.link),
+      icon: const ColoredAliIcon(icon: Icons.link),
       actions: [
         TextButton(
           onPressed: _saving ? null : () => Navigator.of(context).pop(false),

@@ -428,7 +428,7 @@ class _ProxyProfilesPageState extends State<ProxyProfilesPage> {
           mainAxisSize: MainAxisSize.min,
           children: [
             ColoredAliIcon(
-              icon: AliIcon.link,
+              icon: Icons.link,
               size: AppTypography.iconXXXL,
               color: scheme.onSurfaceVariant,
             ),
@@ -536,7 +536,7 @@ class _ProfileCard extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 ColoredAliIcon(
-                  icon: AliIcon.link,
+                  icon: Icons.link,
                   size: AppTypography.iconXL,
                   color: scheme.primary,
                 ),

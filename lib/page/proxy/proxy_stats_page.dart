@@ -306,7 +306,7 @@ class _ProxyStatsPageState extends State<ProxyStatsPage> {
               Row(
                 children: [
                   ColoredAliIcon(
-                    icon: AliIcon.database,
+                    icon: Icons.storage,
                     size: AppTypography.iconMD,
                     color: scheme.primary,
                   ),
@@ -378,7 +378,7 @@ class _ProxyStatsPageState extends State<ProxyStatsPage> {
               ),
               const Spacer(),
               ColoredAliIcon(
-                icon: AliIcon.database,
+                icon: Icons.storage,
                 size: AppTypography.iconSM,
                 color: theme.colorScheme.onSurfaceVariant,
               ),
@@ -761,7 +761,7 @@ class _EmptyState extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             ColoredAliIcon(
-              icon: AliIcon.database,
+              icon: Icons.storage,
               size: AppTypography.iconXXXL,
               color: scheme.onSurfaceVariant,
             ),
