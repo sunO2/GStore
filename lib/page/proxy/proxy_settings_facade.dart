@@ -49,6 +49,15 @@ const List<String> kProxyVpnAddresses = <String>['10.10.0.2/32', 'fd00::1/128'];
 /// 全量默认路由（IPv4 + IPv6），保证 `full` 隧道语义。
 const List<String> kProxyVpnRoutes = <String>['0.0.0.0/0', '::/0'];
 
+/// 隧道内 DNS 服务器（由 Rust 模块的 UDP:53 劫持作答）。
+///
+/// 必须满足：① 不是 TUN 自身地址（`kProxyVpnAddresses` = 10.10.0.2 / fd00::1，
+/// 发往自身地址的包不会进 TUN）；② 不落在 fake-IP 池 `198.18.0.0/16` 内；
+/// ③ 被 `0.0.0.0/0` 路由捕获。10.10.0.1 同时满足三点。
+/// 说明：这只让「明文 UDP:53」确定性进入劫持；Android「私人 DNS」(DoT/853)
+/// 仍绕过它（见 rust/gstore_mod_proxy/API.md §9.3）。
+const List<String> kProxyVpnDnsServers = <String>['10.10.0.1'];
+
 // ==================== 分流模式 ====================
 
 /// `ProxyVpnService` 的三个隧道模式（Kotlin `parseConfig` 的 `mode`）。
@@ -208,14 +217,17 @@ class ProxySettingsConfig {
   /// * `allow` → `allowedApps` = 选中清单。
   /// * `disallow` → `disallowedApps` = 选中清单**去掉本应用**
   ///   （Todo 4：绝不 `addDisallowedApplication(self)`）。
-  /// * `dns` 保持不设置：DNS 由 Rust 模块在隧道内处理（`redir-host`），
-  ///   VpnService 不注入系统 DNS，语义与修复前一致。
+  /// * `dns` 显式设为 [kProxyVpnDnsServers]（隧道内 DNS），使系统明文 UDP:53
+  ///   查询确定性进入 TUN，由 Rust 模块（fake-IP 劫持）作答；不再依赖底层
+  ///   网络提供的 DNS。注意：Android「私人 DNS」(DoT/853) 不经 UDP:53，
+  ///   仍绕过该劫持。
   String toVpnConfigJson() {
     final apps = selectedApps.toList()..sort();
     final payload = <String, dynamic>{
       'mode': splitMode.wire,
       'addresses': kProxyVpnAddresses,
       'routes': kProxyVpnRoutes,
+      'dns': kProxyVpnDnsServers,
     };
     switch (splitMode) {
       case ProxySplitTunnelMode.full:

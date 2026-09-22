@@ -26,6 +26,7 @@ use meow_common::{ConnType, Metadata, Network, ProxyConn};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::dns::DnsEngine;
+use crate::sniff;
 
 /// Event type for one DNS query record (Todo 15/16 consume it).
 pub(crate) const EVT_DNS: &str = "proxy.dns";
@@ -116,14 +117,27 @@ pub(crate) fn spawn(
     instance_id: u64,
 ) -> Dispatcher {
     let tcp_inner = Arc::clone(&inner);
+    // Best-effort SNI / HTTP-Host sniffing (see `crate::sniff`): recovers a
+    // domain for flows the UDP:53 fake-IP hijack never saw (DoH, Android
+    // Private DNS/DoT, cached or plain-IP dials). Built once, shared per flow;
+    // it only fills `metadata.sniff_host` and never changes routing.
+    let sniffer = Arc::new(sniff::Sniffer::default_enabled());
     let tcp = tokio::spawn(async move {
         let mut listener = tcp_listener;
         while let Some((stream, src, dst)) = listener.next().await {
             let inner = Arc::clone(&tcp_inner);
+            let sniffer = Arc::clone(&sniffer);
             tokio::spawn(async move {
-                let metadata = tcp_metadata(src, dst);
-                meow_tunnel::tcp::handle_tcp(&inner, Box::new(LwipProxyConn::new(stream)), metadata)
-                    .await;
+                let mut metadata = tcp_metadata(src, dst);
+                let mut stream = stream;
+                // Prefetch the first flight, then replay it before the live
+                // stream so the tunnel sees every byte in order.
+                let (prefix, host) = sniffer.sniff_prefix(&mut stream, dst.port()).await;
+                if let Some(h) = host {
+                    metadata.sniff_host = h.into();
+                }
+                let conn = LwipProxyConn::new(sniff::PrefixedStream::new(prefix, stream));
+                meow_tunnel::tcp::handle_tcp(&inner, Box::new(conn), metadata).await;
             });
         }
     });

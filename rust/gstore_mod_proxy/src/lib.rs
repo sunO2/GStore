@@ -46,6 +46,7 @@ mod nodes;
 mod profile;
 mod protect;
 mod rules;
+mod sniff;
 mod stats;
 mod subscription;
 mod supervisor;

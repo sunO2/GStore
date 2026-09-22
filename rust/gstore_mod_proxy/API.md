@@ -641,11 +641,13 @@ rolling `RETENTION_MS = 24h` window are pruned in the same transaction. On
 startup the in-memory aggregate is seeded from rows still inside the window.
 `stats.domain.reset` also clears the persisted rows.
 
-**Domain availability.** A domain is **unavailable** for ECH/ESNI,
-QUIC-without-SNI and plain-IP flows. The module then records the flow under its
-destination IP and marks the record `domainKnown: false` (see §9.5). Before
-falling back it consults the DNS reverse mapping (fake-IP allocation or the
-mapping ring) so a sniffed or fake-IP domain is attributed when known.
+**Domain availability.** Attribution has two sources: the UDP:53 fake-IP
+mapping, and, for TCP, the SNI / HTTP-Host sniffer armed in the dispatch path
+(§9.8). A domain is still **unavailable** for ECH/ESNI, QUIC-without-SNI and
+plain-IP flows. The module then records the flow under its destination IP and
+marks the record `domainKnown: false` (see §9.5). Before falling back it consults
+the DNS reverse mapping (fake-IP allocation or the mapping ring) so any
+fake-IP or sniffed domain is attributed when known.
 
 ### 2.10 `conn.*` — live connections (Todo 10; Todo 17 finalises)
 
@@ -1225,13 +1227,15 @@ handling is explicit and documented, not code:
   This is the reliable feed for Todo 16 and for meow's reverse lookup.
 - **redir-host** (`DnsMode::Mapping`) only learns the domain when the query is
   seen by our DNS server; meow's DNS cache then holds `domain → realIp`. A flow
-  dialed from a cached/OS answer that we never saw must be recovered by
-  **SNI / HTTP Host sniffing** (meow's sniffer, Todo 10/16), which fails for
-  **ECH/ESNI** and for **plain-IP** connections. For those, the domain is
-  unavailable: Todo 16 records the flow under the **IP** and marks the record
-  (`domainKnown: false`) rather than inventing a domain. `DnsMapping.domainKnown`
-  carries that flag for the records we do produce. This is implemented by the
-  reverse-lookup fallback in §2.9 / §15.
+  dialed from a cached/OS answer that we never saw is recovered on TCP by
+  **SNI / HTTP Host sniffing**, now enabled in the TUN dispatch path before every
+  connection (§9.8). Sniffing is best-effort: it still fails for **ECH/ESNI**,
+  for **QUIC/HTTP3 (UDP)**, and for ports outside the sniff list. For those, the
+  domain is unavailable: Todo 16 records the flow under the **IP** and marks the
+  record (`domainKnown: false`) rather than inventing a domain.
+  `DnsMapping.domainKnown` carries that flag for the records we do produce. The
+  reverse-lookup fallback in §2.9 / §15 then consults the DNS mapping ring first
+  and only falls back to the IP when both sources miss.
 - Todo 16 therefore prefers fake-IP mode for domain attribution; redir-host
   plus sniffing is best-effort and tolerates missing domains.
 
@@ -1263,6 +1267,48 @@ trusted without patching/forking meow, which this task forbids. The test proves
 the `https://` URL is parsed, routed through the DoH transport and our protected
 socket factory, and fails closed (structured `PROXY_DNS_TIMEOUT`, no hang);
 end-to-end DoH resolution is covered by meow's network-gated integration tests.
+
+### 9.8 (f) TCP SNI / HTTP Host sniffing — best-effort second domain source
+
+`fake-IP` (§9.5) attributes a domain only when our UDP:53 hijack saw the query.
+DoH, Android Private DNS (`DoT`, TCP/853 — §9.3), cached answers and plain-IP
+dials never reach the hijack, so their TCP flows used to be recorded under the
+destination IP with `domainKnown:false`. `crate::sniff` closes that gap for TCP:
+
+- The TCP accept loop in `dispatch::spawn` builds **one** `sniff::Sniffer`
+  (`SnifferConfig::default()` with `enable:true`) and shares it across flows. For
+  every accepted connection it prefetches the client's first flight and tries
+  `meow_common::sniffer::{sniff_tls,sniff_http}` before handing the flow to the
+  tunnel.
+- **Prefetch-and-replay.** meow's own `SnifferRuntime` uses
+  `tokio::net::TcpStream::peek`, which our channel-based `meow_lwip::TcpStream`
+  does not offer. Instead the module reads the first flight into a `Vec<u8>` and
+  replays it verbatim through `sniff::PrefixedStream` before the live stream, so
+  the tunnel observes an unmodified byte sequence (no drop, no reorder).
+- **Bounds.** A single overall deadline of `100 ms` (`SnifferConfig::timeout`),
+  at most `8192` bytes buffered, and early stop once a full TLS record is
+  buffered (`buf.len() >= 5 + record_len`) or an HTTP header terminator
+  (`\r\n\r\n`) is seen.
+- **Ports.** `443/8443` are parsed as TLS, `80/8080/8880` as HTTP
+  (`SnifferConfig::default()`). A disabled sniffer or an off-list port reads
+  **nothing** and adds no latency or data consumption (e.g. port 22).
+- **Routing is unchanged.** The result is written to `metadata.sniff_host` only.
+  `metadata.host` and `override_destination` are **not** touched, so rule
+  matching/dialing still targets the original destination; `sniff_host` is a
+  display/attribution source (`Metadata::rule_host` prefers it over `host`, and
+  `conn.rs` records it as the connection domain). Sniffing is strictly a
+  **best-effort second source** that complements fake-IP, not a replacement.
+- **Not covered (falls back to the IP with `domainKnown:false`):** ECH/ESNI
+  handshakes (no SNI in cleartext), QUIC/HTTP3, which is UDP and deliberately
+  **out of scope** here (`handle_udp` is untouched), protocols on ports outside
+  the lists above, and non-TLS/non-HTTP payloads.
+
+**Verification.** `cargo test -p gstore_mod_proxy` proves: `PrefixedStream`
+replays `prefix + inner` in order; `sniff_prefix` extracts a synthetic TLS SNI
+and returns the prefix byte-identical; it extracts an HTTP `Host`; an off-list
+port (22) and a disabled sniffer read **nothing**; and a silent client returns
+within `timeout + slack` with no host and no panic. All sniffing here is
+host-side; on-device dispatch stays **UNVERIFIED** (no adb device).
 
 ## 10. Rule engine and routing (Todo 9)
 
@@ -1681,7 +1727,8 @@ One process-global aggregate fed from the dispatch path, plus a throttled
   Seeds memory on startup; `stats.domain.reset` clears it. No per-packet write.
 * **Domain availability.** Unknown domains (ECH/ESNI, QUIC-without-SNI,
   plain-IP) fall back to the destination IP with `domainKnown: false`; a DNS
-  reverse mapping is consulted first (see §9.5).
+  reverse mapping is consulted first, and TCP SNI/HTTP-Host sniffing (§9.8)
+  feeds `metadata.sniff_host` before dispatch (see §9.5).
 
 ### 15.1 Verification status
 

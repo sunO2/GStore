@@ -31,6 +31,9 @@ void _expectValidCidr(String cidr) {
 }
 
 /// 断言生成的 VpnService 配置 JSON 含非空且逐条合法的 addresses / routes。
+///
+/// 同时断言隧道内 DNS：`dns == kProxyVpnDnsServers`（非空、逐条合法 IP），
+/// 使系统明文 UDP:53 确定性进入 Rust 模块的 fake-IP 劫持。
 Map<String, dynamic> _expectValidVpnConfig(String json) {
   final payload = jsonDecode(json) as Map<String, dynamic>;
   final addresses = (payload['addresses'] as List).cast<String>();
@@ -42,6 +45,12 @@ Map<String, dynamic> _expectValidVpnConfig(String json) {
   }
   for (final cidr in routes) {
     _expectValidCidr(cidr);
+  }
+  final dns = (payload['dns'] as List).cast<String>();
+  expect(dns, isNotEmpty, reason: 'dns 不得为空');
+  expect(jsonDecode(json)['dns'], kProxyVpnDnsServers);
+  for (final entry in dns) {
+    expect(InternetAddress.tryParse(entry), isNotNull, reason: '非法 DNS: $entry');
   }
   return payload;
 }
@@ -63,6 +72,8 @@ void main() {
       expect(payload['addresses'], kProxyVpnAddresses);
       expect(payload['routes'], kProxyVpnRoutes);
       expect(payload['mode'], ProxySplitTunnelMode.full.wire);
+      expect(jsonDecode(const ProxySettingsConfig().toVpnConfigJson())['dns'],
+          <String>['10.10.0.1']);
       expect(payload.containsKey('allowedApps'), isFalse);
       expect(payload.containsKey('disallowedApps'), isFalse);
     });
@@ -75,6 +86,10 @@ void main() {
         ).toVpnConfigJson(),
       );
       expect(payload['allowedApps'], <String>['com.apple', 'com.banana']);
+      expect(jsonDecode(const ProxySettingsConfig(
+        splitMode: ProxySplitTunnelMode.allow,
+        selectedApps: {'com.banana', 'com.apple'},
+      ).toVpnConfigJson())['dns'], <String>['10.10.0.1']);
     });
 
     test('disallow 模式（已配置应用）仍携带合法 addresses/routes', () {
@@ -110,6 +125,22 @@ void main() {
       expect(InternetAddress.tryParse('fd00::1'), isNotNull);
       expect(kProxyVpnAddresses, contains('fd00::1/128'));
       expect(kProxyVpnAddresses, isNot(contains(_invalidIpv6Literal)));
+    });
+
+    test('dns 隧道内地址不落在 fake-IP 池 / 不等于 TUN 自身地址', () {
+      expect(kProxyVpnDnsServers, <String>['10.10.0.1']);
+      for (final dns in kProxyVpnDnsServers) {
+        final ip = InternetAddress.tryParse(dns);
+        expect(ip, isNotNull, reason: '非法 DNS: $dns');
+        // 不得等于 TUN 自身地址（发往自身地址的包不进 TUN）。
+        expect(kProxyVpnAddresses.map((c) => c.split('/').first),
+            isNot(contains(dns)));
+        // 不得落在 fake-IP 池 198.18.0.0/16。
+        final octets = dns.split('.').map(int.parse).toList();
+        final inFakeIp =
+            octets[0] == 198 && octets[1] == 18;
+        expect(inFakeIp, isFalse, reason: 'DNS 不得在 fake-IP 池: $dns');
+      }
     });
 
     test('读配置失败回退 {}（Kotlin 默认已合法，不再触发 F2）', () async {
