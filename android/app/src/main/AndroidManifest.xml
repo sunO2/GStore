@@ -86,12 +86,15 @@
                 android:value="true" />
         </service>
 
-        <!-- VPN 授权中转（无 UI）：Dart prepare() 的 Kotlin 入口 -->
+        <!-- VPN 授权中转（无 UI）：Dart prepare() 的 Kotlin 入口。
+             注意：切勿加 android:noHistory="true"——系统同意对话框会在本 Activity
+             之上弹出，noHistory 会在本 Activity 失去前台时立即 finish，导致
+             onActivityResult 永不回调、MainActivity 挂起的 Result 永不完成、
+             Dart prepare() 永久挂起。本 Activity 所有分支均已自行 finish()。 -->
         <activity
             android:name=".VpnConsentActivity"
             android:exported="false"
             android:excludeFromRecents="true"
-            android:noHistory="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 
         <meta-data

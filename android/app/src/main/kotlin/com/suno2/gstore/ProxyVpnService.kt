@@ -81,6 +81,19 @@ class ProxyVpnService : VpnService() {
         var isRunning: Boolean = false
             private set
 
+        /**
+         * TUN fd 是否已真正交给 Rust 宿主（`nativeSetTunFd` 之后）。
+         *
+         * [isRunning] 在 `startVpn` **之前**就置 true（enter foreground 后立即），
+         * 而 fd 要等 `establish()` + `nativeSetTunFd()` 才安装，因此**不能**用
+         * `isRunning` 判断 fd 是否就绪。`core.start(mode=vpn)` 要求宿主已有
+         * pending fd（否则 422 PROXY_TUN_FD_INVALID），Dart 侧 `prepare` 必须等本
+         * 标志为 true 才能放行到 `coreStart`。@Volatile 保证跨线程可见。
+         */
+        @Volatile
+        var tunFdInstalled: Boolean = false
+            private set
+
         /** 最近一次启动来源：`user` / `always_on`（进程死亡后系统重启）。 */
         @Volatile
         var lastStartReason: String = "user"
@@ -257,6 +270,8 @@ class ProxyVpnService : VpnService() {
         lifecycleGen.incrementAndGet()
         // 新一轮启动：解除拆除幂等守卫，允许后续 stop。
         tornDown = false
+        // 新一轮启动：fd 尚未安装，等待方必须看到 false 直到 nativeSetTunFd 返回。
+        tunFdInstalled = false
 
         // 1. 先缓存服务引用并安装 protect：保证 establish() 之后 Rust 打开的每个
         //    出站 socket 都已在 protect seam 之上。
@@ -300,6 +315,8 @@ class ProxyVpnService : VpnService() {
         conn = pfd
         // 2. 只传原始 fd；Kotlin 继续持有 ParcelFileDescriptor。
         nativeSetTunFd(pfd.fd)
+        // nativeSetTunFd 返回后宿主已持有 pending fd，core.start(vpn) 才可成功。
+        tunFdInstalled = true
         registerNetworkCallback()
         Log.i(TAG, "VPN 已建立: session=${cfg.session} mtu=${cfg.mtu} fd=${pfd.fd}")
     }
@@ -345,6 +362,8 @@ class ProxyVpnService : VpnService() {
         tornDown = true
         unregisterNetworkCallback()
         isRunning = false
+        // fd 随拆除失效：等待方不得再认为 fd 可用。
+        tunFdInstalled = false
         val gen = lifecycleGen.get()
         val pfd = conn
         conn = null

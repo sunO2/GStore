@@ -42,6 +42,9 @@ class MainActivity : FlutterActivity() {
         /// ManageSpaceActivity 携带的 action：用于识别"系统管理空间入口"
         const val ACTION_MANAGE_SPACE = "com.suno2.gstore.action.MANAGE_SPACE"
 
+        /// `prepare` 启动 VpnConsentActivity 的请求码，结果经 onActivityResult 回填。
+        private const val REQUEST_PREPARE_VPN = 0x5652
+
         private const val TAG = "MainActivity"
     }
 
@@ -49,6 +52,21 @@ class MainActivity : FlutterActivity() {
     /// Dart 侧查询消费后清除）。@Volatile 保证跨线程可见。
     @Volatile
     private var pendingManageSpace = false
+
+    /// 正在等待 VpnConsentActivity 返回的 `prepare` Result（主线程访问）。
+    /// 非 null 时拒绝并发的 prepare，避免覆盖挂起 Result 造成 Dart 侧永久挂起。
+    private var pendingPrepareResult: MethodChannel.Result? = null
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQUEST_PREPARE_VPN) return
+        val pending = pendingPrepareResult ?: return
+        pendingPrepareResult = null
+        // RESULT_OK = 用户已同意**且** TUN fd 已安装（VpnConsentActivity 保证）；
+        // 拒绝 / 超时均为 RESULT_CANCELED → false（Dart 映射 PROXY_VPN_CONSENT_DENIED）。
+        pending.success(resultCode == RESULT_OK)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -112,11 +130,18 @@ class MainActivity : FlutterActivity() {
                 when (call.method) {
                     "prepare" -> {
                         val config = call.argument<String>("config") ?: "{}"
-                        startActivity(
+                        // 并发 prepare：直接失败，绝不覆盖仍在等待的 Result。
+                        if (pendingPrepareResult != null) {
+                            result.error("PREPARE_IN_PROGRESS", "已有 prepare 正在等待 VPN 授权", null)
+                            return@setMethodCallHandler
+                        }
+                        pendingPrepareResult = result
+                        @Suppress("DEPRECATION")
+                        startActivityForResult(
                             Intent(this, VpnConsentActivity::class.java)
-                                .putExtra(VpnConsentActivity.EXTRA_CONFIG, config)
+                                .putExtra(VpnConsentActivity.EXTRA_CONFIG, config),
+                            REQUEST_PREPARE_VPN
                         )
-                        result.success(true)
                     }
                     "start" -> {
                         val config = call.argument<String>("config") ?: "{}"
@@ -133,6 +158,9 @@ class MainActivity : FlutterActivity() {
                         result.success(true)
                     }
                     "isRunning" -> result.success(ProxyVpnService.isRunning)
+                    // TUN fd 是否已交给 Rust 宿主：isRunning 不足以判断（它在 fd 安装
+                    // 之前就为 true）。
+                    "hasTunFd" -> result.success(ProxyVpnService.tunFdInstalled)
                     else -> result.notImplemented()
                 }
             }
