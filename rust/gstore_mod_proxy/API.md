@@ -839,6 +839,36 @@ hash is loaded as `unverified`). A download is refused with `checksum_required`
 unless a sha256 is supplied — the module never installs unverified geo data.
 
 
+### 2.11.1 Routing mode (direct / rule / global)
+
+The **runtime tunnel routing mode** — how meow resolves each flow — is a
+separate axis from the **run mode** (`core.get_mode` / `core.set_mode`, §2.3.2:
+`off`/`vpn`/`lanProxy`). `routing.*` never touches the run mode, and there is
+**no name overlap**: the run mode keeps `core.*`.
+
+- `direct` — every flow uses meow's `DIRECT` adapter (no proxying).
+- `rule` — the compiled Clash rule set decides (meow's default).
+- `global` — every flow uses the `GLOBAL` select group (built by the config
+  generator with all proxies as members), so the user picks one outbound for all
+  traffic.
+
+| method | request | data |
+|---|---|---|
+| `routing.get_mode` | *(none)* | `{ "mode": "direct"\|"rule"\|"global", "engineRunning": bool }` |
+| `routing.set_mode` | `{ "mode": "direct"\|"rule"\|"global" }` | `{ "mode": "direct"\|"rule"\|"global", "applied": bool, "engineRunning": bool }` |
+
+`routing.get_mode` reads the live tunnel (`tunnel.mode()`). With the engine
+stopped it degrades **non-fatally** like `node.list`: `{ "mode": "rule",
+"engineRunning": false }` (never a 422).
+
+`routing.set_mode` applies the mode to the running tunnel via meow's
+`Tunnel::set_mode`; `applied:true` and `mode` echo the effective mode. With the
+engine stopped it is also **non-error**: `{ "mode": <requested>, "applied":
+false, "engineRunning": false }`, so a caller can persist the intent and
+re-apply after `core.start`. An unknown/missing `mode` is
+`INVALID_ARGUMENT` (422) with a clear message, in both states. Only the three
+exact lowercase strings are accepted.
+
 ### 2.12 `lan.*` — optional LAN listening (Todo 28)
 
 The module can expose one optional, **default-OFF** LAN inbound on

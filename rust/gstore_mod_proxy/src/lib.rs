@@ -386,6 +386,8 @@ pub(crate) const DISPATCH_METHODS: &[&str] = &[
     "log.clear",
     "rules.get",
     "rules.reload",
+    "routing.get_mode",
+    "routing.set_mode",
     "config.generate",
     "config.apply",
     "profile.export_clash",
@@ -1545,6 +1547,90 @@ fn node_list_arm(
     ok_data(nodes::list(&inst.data_dir, &inst.cache_dir)?)
 }
 
+/// Map meow's tunnel routing mode to its `routing.*` wire string.
+fn mode_str(mode: meow_common::TunnelMode) -> &'static str {
+    match mode {
+        meow_common::TunnelMode::Direct => "direct",
+        meow_common::TunnelMode::Rule => "rule",
+        meow_common::TunnelMode::Global => "global",
+    }
+}
+
+/// Accept exactly `direct` | `rule` | `global`.
+fn parse_mode(s: &str) -> Result<meow_common::TunnelMode, ModuleError> {
+    match s {
+        "direct" => Ok(meow_common::TunnelMode::Direct),
+        "rule" => Ok(meow_common::TunnelMode::Rule),
+        "global" => Ok(meow_common::TunnelMode::Global),
+        other => Err(ModuleError::invalid_arg(format!(
+            "mode must be one of \"direct\"|\"rule\"|\"global\", got \"{other}\""
+        ))),
+    }
+}
+
+fn parse_mode_payload(payload: &[u8]) -> Result<meow_common::TunnelMode, ModuleError> {
+    if payload.is_empty() {
+        return Err(ModuleError::invalid_arg(
+            "routing.set_mode requires {\"mode\": \"direct\"|\"rule\"|\"global\"}",
+        ));
+    }
+    let value: serde_json::Value = serde_json::from_slice(payload).map_err(|e| {
+        ModuleError::invalid_arg(format!("routing.set_mode payload must be JSON: {e}"))
+    })?;
+    let mode = value
+        .get("mode")
+        .and_then(|m| m.as_str())
+        .ok_or_else(|| ModuleError::invalid_arg("routing.set_mode requires string field `mode`"))?;
+    parse_mode(mode)
+}
+
+/// `routing.get_mode`: runtime tunnel routing mode; distinct from `core.get_mode`.
+/// Engine stopped degrades to `mode:"rule", engineRunning:false` (non-error).
+fn routing_get_mode_arm(
+    instance_id: u64,
+    instance: Option<Arc<ProxyInstance>>,
+) -> Result<Vec<u8>, ModuleError> {
+    let _inst = require_instance(instance_id, instance)?;
+    match rules::active_tunnel() {
+        Some(tunnel) => ok_data(serde_json::json!({
+            "mode": mode_str(tunnel.mode()),
+            "engineRunning": true,
+        })),
+        None => ok_data(serde_json::json!({
+            "mode": "rule",
+            "engineRunning": false,
+        })),
+    }
+}
+
+/// `routing.set_mode`: switch meow's live tunnel routing mode. Engine stopped
+/// returns `applied:false` (non-error) so the caller re-applies after `core.start`.
+fn routing_set_mode_arm(
+    instance_id: u64,
+    instance: Option<Arc<ProxyInstance>>,
+    payload: &[u8],
+) -> Result<Vec<u8>, ModuleError> {
+    let _inst = require_instance(instance_id, instance)?;
+    let requested = parse_mode_payload(payload)?;
+    match rules::active_tunnel() {
+        Some(tunnel) => {
+            tunnel.set_mode(requested);
+            let applied = tunnel.mode();
+            log_message(1, &format!("proxy: routing.set_mode {}", mode_str(applied)));
+            ok_data(serde_json::json!({
+                "mode": mode_str(applied),
+                "applied": true,
+                "engineRunning": true,
+            }))
+        }
+        None => ok_data(serde_json::json!({
+            "mode": mode_str(requested),
+            "applied": false,
+            "engineRunning": false,
+        })),
+    }
+}
+
 fn parse_clash_api_port(payload: &[u8]) -> Result<u16, ModuleError> {
     if payload.is_empty() {
         return Ok(0);
@@ -1752,6 +1838,10 @@ fn call_impl(
         "log.clear" => logging::clear_arm(),
         "rules.get" => rules_get_arm(instance_id, instance.clone()),
         "rules.reload" => rules_reload_arm(instance_id, instance.clone(), _payload),
+        "routing.get_mode" => routing_get_mode_arm(instance_id, instance.clone()),
+        "routing.set_mode" => {
+            routing_set_mode_arm(instance_id, instance.clone(), _payload)
+        }
         "config.generate" => config_generate_arm(instance_id, instance.clone(), _payload),
         "config.apply" => config_apply_arm(instance_id, instance.clone(), _payload),
         "profile.export_clash" => {
@@ -2794,6 +2884,126 @@ mod abi_tests {
 
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(destroy(inst), ABI_OK);
+    }
+
+    /// `routing.get_mode` / `routing.set_mode` over the real C ABI: Global mode
+    /// routes through the live GLOBAL group, direct/rule round-trip, invalid
+    /// strings are 422, and a stopped engine degrades non-fatally.
+    #[test]
+    fn abi_routing_mode_switch_and_global_routing() {
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        use meow_common::{ConnType, Metadata, Network, Proxy, TunnelMode};
+        use smol_str::SmolStr;
+
+        use crate::nodes::tests::StubProxy;
+
+        let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::rules::reset_for_tests();
+        let api = register_api();
+        let create = api.create.unwrap();
+        let call = api.call.unwrap();
+        let destroy = api.destroy.unwrap();
+
+        let mut inst: u64 = 0;
+        assert_eq!(create(std::ptr::null(), 0, &mut inst), ABI_OK);
+
+        // Engine stopped: both methods are non-error with engineRunning:false;
+        // set reports the requested mode and does not panic.
+        let (code, out) = call_json(call, inst, "routing.get_mode");
+        assert_eq!(code, ABI_OK);
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["engineRunning"], false);
+        assert_eq!(v["data"]["mode"], "rule");
+
+        let (code, out) =
+            call_with_payload(call, inst, "routing.set_mode", br#"{"mode":"global"}"#);
+        assert_eq!(code, ABI_OK);
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["engineRunning"], false);
+        assert_eq!(v["data"]["applied"], false);
+        assert_eq!(v["data"]["mode"], "global");
+
+        // Invalid / missing mode is a structured 422 even when stopped.
+        let bad_payloads: [&[u8]; 4] = [
+            br#"{"mode":"bogus"}"#,
+            br#"{}"#,
+            br#"{"mode":7}"#,
+            b"",
+        ];
+        for payload in bad_payloads {
+            let (code, out) = call_with_payload(call, inst, "routing.set_mode", payload);
+            assert_eq!(code, ABI_ERR_DETAIL, "bad mode must be a domain error");
+            let err: serde_json::Value = serde_json::from_slice(&out).unwrap();
+            assert_eq!(err["status"], 422);
+        }
+
+        // Ring the engine, then exercise the live switch.
+        let resolver = Arc::new(meow_dns::Resolver::new(
+            Vec::new(),
+            Vec::new(),
+            meow_common::DnsMode::Normal,
+            meow_trie::DomainTrie::new(),
+            false,
+            false,
+        ));
+        let _ = crate::dispatch::build_engine(resolver);
+        let tunnel = crate::rules::active_tunnel().unwrap();
+
+        // A GLOBAL group stands in for the generated one; Global routes to it.
+        let global = StubProxy::new("GLOBAL-MEMBER");
+        let global_group: Arc<dyn Proxy> = Arc::new(meow_proxy::SelectorGroup::new(
+            "GLOBAL",
+            vec![Arc::clone(&global) as Arc<dyn Proxy>],
+        ));
+        let mut map: HashMap<SmolStr, Arc<dyn Proxy>> = HashMap::new();
+        map.insert(SmolStr::from("GLOBAL"), global_group);
+        map.insert(SmolStr::from("GLOBAL-MEMBER"), Arc::clone(&global) as Arc<dyn Proxy>);
+        tunnel.update_proxies(map);
+
+        let metadata = Metadata {
+            network: Network::Tcp,
+            conn_type: ConnType::Tun,
+            host: "example.com".into(),
+            dst_port: 443,
+            ..Default::default()
+        };
+
+        let (code, out) =
+            call_with_payload(call, inst, "routing.set_mode", br#"{"mode":"global"}"#);
+        assert_eq!(code, ABI_OK, "{}", String::from_utf8_lossy(&out));
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["applied"], true);
+        assert_eq!(v["data"]["engineRunning"], true);
+        assert_eq!(v["data"]["mode"], "global");
+        assert_eq!(tunnel.mode(), TunnelMode::Global);
+
+        let (code, out) = call_json(call, inst, "routing.get_mode");
+        assert_eq!(code, ABI_OK);
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["engineRunning"], true);
+        assert_eq!(v["data"]["mode"], "global");
+
+        let (resolved, rule, _) = tunnel.inner().resolve_proxy(&metadata).unwrap();
+        assert_eq!(resolved.name(), "GLOBAL");
+        assert_eq!(&*rule, "Global");
+
+        for (wire, expected) in [("direct", TunnelMode::Direct), ("rule", TunnelMode::Rule)] {
+            let payload = format!(r#"{{"mode":"{wire}"}}"#);
+            let (code, out) = call_with_payload(call, inst, "routing.set_mode", payload.as_bytes());
+            assert_eq!(code, ABI_OK, "{wire}: {}", String::from_utf8_lossy(&out));
+            let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+            assert_eq!(v["data"]["mode"], wire);
+            assert_eq!(v["data"]["applied"], true);
+            assert_eq!(tunnel.mode(), expected);
+            let (_, out) = call_json(call, inst, "routing.get_mode");
+            let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+            assert_eq!(v["data"]["mode"], wire);
+        }
+
+        assert_eq!(destroy(inst), ABI_OK);
+        crate::rules::reset_for_tests();
     }
 
     /// Happy/failure QA over the real C ABI (Todo 10): `node.select` flips the
