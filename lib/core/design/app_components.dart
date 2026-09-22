@@ -722,7 +722,7 @@ class AppSegmentedButton<T> extends StatelessWidget {
           .map(
             (segment) => ButtonSegment<T>(
               value: segment.value,
-              label: Text(segment.label),
+              label: Text(segment.label, key: segment.key),
               icon: segment.icon != null
                   ? Icon(segment.icon, size: AppTypography.iconSM)
                   : null,
@@ -788,6 +788,7 @@ class AppSegment<T> {
     required this.value,
     required this.label,
     this.icon,
+    this.key,
   });
 
   /// 选项的值
@@ -798,6 +799,9 @@ class AppSegment<T> {
 
   /// 选项的图标（可选）
   final IconData? icon;
+
+  /// 选项标签的挂载 key（可选，用于测试 / 语义定位，不参与分段逻辑）。
+  final Key? key;
 }
 
 // ========== AppLoading ==========

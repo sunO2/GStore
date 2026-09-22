@@ -35,6 +35,12 @@ abstract class ProxyHomeFacade implements ProxyFacade {
   /// 返回结构化 `PROXY_NO_INBOUND`，绝不静默 no-op。
   Future<CoreSetModeResult> coreSetMode(String mode);
 
+  /// `routing.get_mode`：当前路由模式（直连/规则/全局）+ 引擎是否运行。
+  Future<RoutingModeResult> routingGetMode();
+
+  /// `routing.set_mode`：切换路由模式。引擎未运行时返回 `applied:false`。
+  Future<RoutingModeSetResult> routingSetMode(String mode);
+
   /// `lan.status`：只读 LAN 监听状态，供首页在切换到 `lanProxy` 前提示。
   Future<ProxyLanStatus> lanStatus();
 
@@ -82,6 +88,13 @@ class ProxyModuleHomeFacade implements ProxyHomeFacade {
 
   @override
   Future<CoreSetModeResult> coreSetMode(String mode) => _module.coreSetMode(mode);
+
+  @override
+  Future<RoutingModeResult> routingGetMode() => _module.routingGetMode();
+
+  @override
+  Future<RoutingModeSetResult> routingSetMode(String mode) =>
+      _module.routingSetMode(mode);
 
   @override
   Future<ProxyLanStatus> lanStatus() =>

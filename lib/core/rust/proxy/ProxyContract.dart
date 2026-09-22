@@ -28,6 +28,8 @@ class ProxyMethods {
   static const String coreRestart = 'core.restart';
   static const String coreGetMode = 'core.get_mode';
   static const String coreSetMode = 'core.set_mode';
+  static const String routingGetMode = 'routing.get_mode';
+  static const String routingSetMode = 'routing.set_mode';
   static const String dnsGet = 'dns.get';
   static const String dnsSet = 'dns.set';
   static const String dnsClearCache = 'dns.clear_cache';
@@ -76,6 +78,8 @@ class ProxyMethods {
     coreRestart,
     coreGetMode,
     coreSetMode,
+    routingGetMode,
+    routingSetMode,
     dnsGet,
     dnsSet,
     dnsClearCache,
@@ -302,6 +306,42 @@ class CoreSetModeResult {
   final bool ok;
   final ProxyMode mode;
   final ProxyMode previous;
+}
+
+// ==================== routing.* ====================
+
+/// `routing.get_mode` 响应。
+class RoutingModeResult {
+  const RoutingModeResult({required this.mode, required this.engineRunning});
+
+  factory RoutingModeResult.fromJson(Map<String, dynamic> json) =>
+      RoutingModeResult(
+        mode: ProxyRoutingMode.fromWire(json['mode']),
+        engineRunning: _bool(json['engineRunning']),
+      );
+
+  final ProxyRoutingMode mode;
+  final bool engineRunning;
+}
+
+/// `routing.set_mode` 响应（`applied:false` = 引擎未运行，仅记录意图）。
+class RoutingModeSetResult {
+  const RoutingModeSetResult({
+    required this.mode,
+    required this.applied,
+    required this.engineRunning,
+  });
+
+  factory RoutingModeSetResult.fromJson(Map<String, dynamic> json) =>
+      RoutingModeSetResult(
+        mode: ProxyRoutingMode.fromWire(json['mode']),
+        applied: _bool(json['applied']),
+        engineRunning: _bool(json['engineRunning']),
+      );
+
+  final ProxyRoutingMode mode;
+  final bool applied;
+  final bool engineRunning;
 }
 
 // ==================== dns.* ====================
@@ -2118,6 +2158,8 @@ final Map<String, ProxyJsonDecoder<Object>> proxyResponseDecoders =
   ProxyMethods.coreRestart: ProxyCoreStatus.fromJson,
   ProxyMethods.coreGetMode: CoreModeResult.fromJson,
   ProxyMethods.coreSetMode: CoreSetModeResult.fromJson,
+  ProxyMethods.routingGetMode: RoutingModeResult.fromJson,
+  ProxyMethods.routingSetMode: RoutingModeSetResult.fromJson,
   ProxyMethods.dnsGet: DnsSnapshot.fromJson,
   ProxyMethods.dnsSet: DnsSetResult.fromJson,
   ProxyMethods.dnsClearCache: DnsClearResult.fromJson,
@@ -2199,6 +2241,15 @@ class CoreStartRequest {
 /// `core.set_mode` 请求。
 class CoreSetModeRequest {
   const CoreSetModeRequest(this.mode);
+
+  final String mode;
+
+  Map<String, dynamic> toJson() => <String, dynamic>{'mode': mode};
+}
+
+/// `routing.set_mode` 请求。
+class RoutingSetModeRequest {
+  const RoutingSetModeRequest(this.mode);
 
   final String mode;
 
@@ -2458,6 +2509,8 @@ final Map<String, Map<String, dynamic> Function()> proxyRequestEncoders =
   ProxyMethods.coreStart: () => const CoreStartRequest().toJson(),
   ProxyMethods.coreRestart: () => const CoreStartRequest().toJson(),
   ProxyMethods.coreSetMode: () => const CoreSetModeRequest('vpn').toJson(),
+  ProxyMethods.routingSetMode: () =>
+      const RoutingSetModeRequest('rule').toJson(),
   ProxyMethods.dnsSet: () => const DnsConfig().toJson(),
   ProxyMethods.logGet: () => const LogGetRequest().toJson(),
   ProxyMethods.logSetLevel: () => const LogSetLevelRequest('info').toJson(),

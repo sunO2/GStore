@@ -69,6 +69,30 @@ enum ProxyMode {
   }
 }
 
+/// 路由模式（`routing.get_mode.mode` / `routing.set_mode.mode`）。
+///
+/// 与 [ProxyMode]（运行模式 VPN/局域网/关闭）**区分**：这里表达流量如何分流。
+enum ProxyRoutingMode {
+  direct('direct'),
+  rule('rule'),
+  global('global'),
+  unknown('unknown');
+
+  const ProxyRoutingMode(this.wire);
+
+  /// 模块 JSON 中的字面值。
+  final String wire;
+
+  /// 宽容解码：未知值归为 [unknown]（绝不抛错）。
+  static ProxyRoutingMode fromWire(Object? value) {
+    final s = value?.toString();
+    for (final mode in values) {
+      if (mode.wire == s) return mode;
+    }
+    return ProxyRoutingMode.unknown;
+  }
+}
+
 /// 订阅刷新进度阶段（`proxy.subscription.progress.phase`）。
 enum ProxySubscriptionPhase {
   fetch('fetch'),
@@ -306,6 +330,17 @@ class ProxyModule implements ProxyFacade {
         ProxyMethods.coreSetMode,
         CoreSetModeResult.fromJson,
         payload: CoreSetModeRequest(mode).toJson(),
+      );
+
+  /// `routing.get_mode`：当前路由模式（直连/规则/全局）+ 引擎是否运行。
+  Future<RoutingModeResult> routingGetMode() =>
+      invoke(ProxyMethods.routingGetMode, RoutingModeResult.fromJson);
+
+  /// `routing.set_mode`：切换路由模式。引擎未运行时返回 `applied:false`。
+  Future<RoutingModeSetResult> routingSetMode(String mode) => invoke(
+        ProxyMethods.routingSetMode,
+        RoutingModeSetResult.fromJson,
+        payload: RoutingSetModeRequest(mode).toJson(),
       );
 
   // ---- dns.* ----

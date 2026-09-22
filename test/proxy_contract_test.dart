@@ -237,6 +237,15 @@ final Map<String, Map<String, dynamic>> _methodFixtures =
     'mode': 'vpn',
     'previous': 'off',
   },
+  ProxyMethods.routingGetMode: <String, dynamic>{
+    'mode': 'rule',
+    'engineRunning': true,
+  },
+  ProxyMethods.routingSetMode: <String, dynamic>{
+    'mode': 'global',
+    'applied': true,
+    'engineRunning': true,
+  },
   ProxyMethods.dnsGet: <String, dynamic>{
     'mode': 'fake-ip',
     'config': _dnsConfigFixture,

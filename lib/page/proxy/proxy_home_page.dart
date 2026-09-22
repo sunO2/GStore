@@ -11,6 +11,7 @@ import 'proxy_logs_page.dart';
 import 'proxy_nodes_facade.dart';
 import 'proxy_nodes_page.dart';
 import 'proxy_profiles_page.dart';
+import 'proxy_routing_mode_store.dart';
 import 'proxy_run_mode_store.dart';
 import 'proxy_settings_facade.dart';
 import 'proxy_settings_page.dart';
@@ -37,6 +38,7 @@ class ProxyHomePage extends StatefulWidget {
     this.profileStore,
     this.nodeStore,
     this.runModeStore,
+    this.routingModeStore,
     this.nodesFacade,
     this.onOpenLogs,
     this.onOpenStats,
@@ -60,6 +62,10 @@ class ProxyHomePage extends StatefulWidget {
   /// 用户选择的运行模式的持久化接缝（测试注入内存实现；为空时用 [ConfigStore]）。
   /// 与引擎上报的「当前运行模式」分离：断开/重连/重入页面后恢复用户选择。
   final ProxyRunModeStore? runModeStore;
+
+  /// 用户选择的路由模式（直连/规则/全局）的持久化接缝（测试注入内存实现；
+  /// 为空时用 [ConfigStore]）。与运行模式分离：新隧道默认 `rule`，连接后重放。
+  final ProxyRoutingModeStore? routingModeStore;
 
   /// 节点页门面（测试注入假实现；为空时节点页用生产单例适配器）。
   final ProxyNodesFacade? nodesFacade;
@@ -88,6 +94,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
   late final ProxyActiveProfileStore _profileStore;
   late final ProxyActiveNodeStore _nodeStore;
   late final ProxyRunModeStore _runModeStore;
+  late final ProxyRoutingModeStore _routingStore;
   StreamSubscription<ProxyEvent>? _eventSub;
 
   bool _loading = true;
@@ -100,6 +107,9 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
   /// 用户选择的运行模式（持久化；未运行时用于「连接」动作）。引擎上报的当前模式
   /// 存于 [_mode]，两者分离，引擎事件不覆盖本字段。
   ProxyMode _targetMode = ProxyMode.vpn;
+
+  /// 用户选择的路由模式（持久化）；连接成功后重放到引擎，未运行时隐藏开关。
+  ProxyRoutingMode _routingMode = ProxyRoutingMode.rule;
   ProxyLanStatus? _lanStatus;
   ProxyStateError? _actionError;
   String? _stateReason;
@@ -130,6 +140,8 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
     _nodeStore = widget.nodeStore ?? const ConfigStoreProxyActiveNodeStore();
     _runModeStore =
         widget.runModeStore ?? const ConfigStoreProxyRunModeStore();
+    _routingStore =
+        widget.routingModeStore ?? const ConfigStoreProxyRoutingModeStore();
     _eventSub = _facade.events.listen(_onEvent, onError: _onEventError);
     _load();
   }
@@ -166,12 +178,19 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
       // 用户选择的运行模式（与引擎上报的当前模式分离）。
       final ProxyMode? storedRunMode =
           await _safe<ProxyMode?>(() => _runModeStore.read());
+      // 用户选择的路由模式（新隧道默认 rule，连接后重放）。
+      final ProxyRoutingMode? storedRouting =
+          await _safe<ProxyRoutingMode?>(() => _routingStore.read());
 
       if (!mounted) return;
       setState(() {
         _connState = ping.state ?? ProxyConnState.stopped;
         _mode = ping.mode ?? ProxyMode.unknown;
         _targetMode = _persistedTarget(storedRunMode) ?? _selectableMode(_mode);
+        if (storedRouting != null &&
+            storedRouting != ProxyRoutingMode.unknown) {
+          _routingMode = storedRouting;
+        }
         _lanStatus = lan;
         _version = version;
         _selectedProfileId = selected?.id;
@@ -182,6 +201,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
         if (nodeList != null) _nodeList = nodeList;
         _loading = false;
       });
+      if (_isRunning) await _syncRoutingMode();
       await _recoverEngineIfServiceRunning();
     } on ProxyModuleException catch (error) {
       if (!mounted) return;
@@ -265,6 +285,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
         _connState = status.state;
         _mode = status.mode;
       });
+      await _applyPersistedRoutingMode();
     } catch (error) {
       if (!mounted) return;
       setState(() {
@@ -274,6 +295,104 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
         );
       });
     }
+  }
+
+  // ==================== 路由模式（直连 / 规则 / 全局） ====================
+
+  /// 运行中时以引擎实际路由模式为准（best-effort，失败保持持久化值）。
+  Future<void> _syncRoutingMode() async {
+    if (!_isRunning) return;
+    final result = await _safe(() => _facade.routingGetMode());
+    if (!mounted || result == null) return;
+    if (result.mode == ProxyRoutingMode.unknown) return;
+    setState(() => _routingMode = result.mode);
+  }
+
+  /// 新隧道默认 `rule`：连接成功后把持久化的路由模式重放给引擎，并反映结果。
+  Future<void> _applyPersistedRoutingMode() async {
+    final stored = await _safe<ProxyRoutingMode?>(() => _routingStore.read());
+    final target = stored ?? _routingMode;
+    if (target == ProxyRoutingMode.unknown) return;
+    final result = await _safe(() => _facade.routingSetMode(target.wire));
+    if (!mounted || result == null) return;
+    if (result.mode == ProxyRoutingMode.unknown) return;
+    setState(() => _routingMode = result.mode);
+  }
+
+  /// 用户点选分段：请求切换、用响应的 `mode` 反映状态并持久化意图
+  /// （引擎未运行时 `applied:false` 也持久化）。失败展示错误并保留旧值。
+  Future<void> _selectRoutingMode(ProxyRoutingMode mode) async {
+    if (_busy || mode == ProxyRoutingMode.unknown) return;
+    setState(() => _busy = true);
+    try {
+      final result = await _facade.routingSetMode(mode.wire);
+      await _safe(() => _routingStore.write(mode));
+      if (!mounted) return;
+      setState(() {
+        if (result.mode != ProxyRoutingMode.unknown) _routingMode = result.mode;
+      });
+    } on ProxyModuleException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _actionError =
+            ProxyStateError(code: error.code, message: error.message);
+      });
+      AppDialogs.showError(error.message);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _actionError = ProxyStateError(
+          code: 'PROXY_ACTION_FAILED',
+          message: '$error',
+        );
+      });
+      AppDialogs.showError('$error');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// 路由模式药丸分段控件（仅在已连接时渲染；引擎运行时才可切换）。
+  ///
+  /// 复用设计系统 [AppSegmentedButton]/[AppSegment]，不手写胶囊；颜色/字号全部
+  /// 取自主题令牌与组件自身。
+  Widget _buildRoutingModeSwitch(BuildContext context) {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '路由模式',
+          style: theme.textTheme.bodyMedium?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+        ),
+        const SizedBox(height: AppSpacing.sm),
+        AppSegmentedButton<ProxyRoutingMode>(
+          key: const Key('proxy-routing-mode-switch'),
+          value: _routingMode,
+          enabled: !_busy,
+          segments: const <AppSegment<ProxyRoutingMode>>[
+            AppSegment(
+              value: ProxyRoutingMode.direct,
+              label: '直连',
+              key: Key('proxy-routing-mode-direct'),
+            ),
+            AppSegment(
+              value: ProxyRoutingMode.rule,
+              label: '规则',
+              key: Key('proxy-routing-mode-rule'),
+            ),
+            AppSegment(
+              value: ProxyRoutingMode.global,
+              label: '全局',
+              key: Key('proxy-routing-mode-global'),
+            ),
+          ],
+          onChanged: _selectRoutingMode,
+        ),
+      ],
+    );
   }
 
   /// 从 Rust 已排序的 topDomains 取首个 outbound 作为「当前节点」展示。
@@ -386,6 +505,8 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
           if (name != null && name.isNotEmpty) _profileName = name;
           _configWarnings = status.warnings;
         });
+        // 新隧道默认 rule：连接成功后重放持久化的路由模式。
+        await _applyPersistedRoutingMode();
       } else {
         // 断开必须「先停引擎、再停系统服务」，且停服务用 try/finally 兜底：
         // core.stop 抛错（引擎异常 / 模块不可用 / 超时）时，若直接走 catch，
@@ -1048,6 +1169,10 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
             _infoRow(theme, '模式', _modeText),
             _infoRow(theme, '当前配置', _profileText),
             _infoRow(theme, '当前节点', _nodeText),
+            if (_isRunning) ...[
+              const SizedBox(height: AppSpacing.md),
+              _buildRoutingModeSwitch(context),
+            ],
             if (_stateReason != null && _stateReason!.isNotEmpty) ...[
               const SizedBox(height: AppSpacing.xs),
               Text(_stateReason!, style: theme.textTheme.bodySmall),

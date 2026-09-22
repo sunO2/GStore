@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:gstore/core/design/app_components.dart';
 import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
 import 'package:gstore/page/proxy/proxy_active_node_store.dart';
@@ -12,6 +13,7 @@ import 'package:gstore/page/proxy/proxy_logs_page.dart';
 import 'package:gstore/page/proxy/proxy_nodes_facade.dart';
 import 'package:gstore/page/proxy/proxy_nodes_page.dart';
 import 'package:gstore/page/proxy/proxy_profiles_page.dart';
+import 'package:gstore/page/proxy/proxy_routing_mode_store.dart';
 import 'package:gstore/page/proxy/proxy_run_mode_store.dart';
 import 'package:gstore/page/proxy/proxy_settings_facade.dart';
 import 'package:gstore/page/proxy/proxy_stats_page.dart';
@@ -30,6 +32,19 @@ class _FakeProxyFacade implements ProxyHomeFacade {
   int coreStopCalls = 0;
   int coreSetModeCalls = 0;
   String? lastSetMode;
+
+  int routingGetModeCalls = 0;
+  int routingSetModeCalls = 0;
+  String? lastSetRoutingMode;
+
+  /// 非空时 `routingSetMode` 以该错误失败（用于路由切换失败 QA）。
+  Object? routingSetModeError;
+
+  /// `routingGetMode` 返回值；默认规则模式 + 引擎运行。
+  RoutingModeResult routingGetModeResult = const RoutingModeResult(
+    mode: ProxyRoutingMode.rule,
+    engineRunning: true,
+  );
 
   /// 最近一次 `core.start` 请求（用于断言 `profileId` 透传）。
   CoreStartRequest? lastCoreStart;
@@ -128,6 +143,27 @@ class _FakeProxyFacade implements ProxyHomeFacade {
         ok: true,
         mode: ProxyMode.fromWire(mode),
         previous: ProxyMode.vpn,
+      ),
+    );
+  }
+
+  @override
+  Future<RoutingModeResult> routingGetMode() async {
+    routingGetModeCalls++;
+    return routingGetModeResult;
+  }
+
+  @override
+  Future<RoutingModeSetResult> routingSetMode(String mode) {
+    routingSetModeCalls++;
+    lastSetRoutingMode = mode;
+    final error = routingSetModeError;
+    if (error != null) return Future<RoutingModeSetResult>.error(error);
+    return Future<RoutingModeSetResult>.value(
+      RoutingModeSetResult(
+        mode: ProxyRoutingMode.fromWire(mode),
+        applied: true,
+        engineRunning: true,
       ),
     );
   }
@@ -262,6 +298,22 @@ class _FakeRunModeStore implements ProxyRunModeStore {
   Future<void> clear() async => value = null;
 }
 
+/// 假「用户选择的路由模式」持久化存储：内存实现。
+class _FakeRoutingModeStore implements ProxyRoutingModeStore {
+  _FakeRoutingModeStore([this.value]);
+
+  ProxyRoutingMode? value;
+
+  @override
+  Future<ProxyRoutingMode?> read() async => value;
+
+  @override
+  Future<void> write(ProxyRoutingMode mode) async => value = mode;
+
+  @override
+  Future<void> clear() async => value = null;
+}
+
 Widget _wrap(Widget child) => MaterialApp(home: child);
 
 /// 放大测试视口：首页在状态/模式/流量三张卡之后还有快捷入口，默认 800x600
@@ -278,6 +330,14 @@ Future<void> _flush(WidgetTester tester) async {
   await tester.pump();
   await tester.pump();
 }
+
+/// 读取路由模式药丸当前选中值。
+ProxyRoutingMode _routingSwitchValue(WidgetTester tester) =>
+    tester
+        .widget<AppSegmentedButton<ProxyRoutingMode>>(
+          find.byKey(const Key('proxy-routing-mode-switch')),
+        )
+        .value;
 
 void main() {
   testWidgets('disconnected：未连接态渲染状态/开关/当前配置/入口', (tester) async {
@@ -331,6 +391,7 @@ void main() {
   });
 
   testWidgets('connected：proxy.stats 事件驱动流量/活动连接渲染', (tester) async {
+    _useTallViewport(tester);
     final facade = _FakeProxyFacade();
     await tester.pumpWidget(_wrap(ProxyHomePage(facade: facade)));
     await _flush(tester);
@@ -1255,6 +1316,149 @@ void main() {
 
     expect(find.text('VPN 模式（全设备）'), findsOneWidget);
     expect(store.value, isNull);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('路由模式：未连接隐藏药丸，连接后显示 直连/规则/全局', (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade();
+    await tester.pumpWidget(_wrap(ProxyHomePage(facade: facade)));
+    await _flush(tester);
+
+    expect(find.byKey(const Key('proxy-routing-mode-switch')), findsNothing);
+    expect(find.text('直连'), findsNothing);
+
+    facade.emit(const ProxyStateEvent(
+      state: ProxyConnState.running,
+      mode: ProxyMode.vpn,
+    ));
+    await _flush(tester);
+
+    expect(find.byKey(const Key('proxy-routing-mode-switch')), findsOneWidget);
+    expect(find.byKey(const Key('proxy-routing-mode-direct')), findsOneWidget);
+    expect(find.byKey(const Key('proxy-routing-mode-rule')), findsOneWidget);
+    expect(find.byKey(const Key('proxy-routing-mode-global')), findsOneWidget);
+    expect(find.text('直连'), findsOneWidget);
+    expect(find.text('规则'), findsOneWidget);
+    expect(find.text('全局'), findsOneWidget);
+    expect(_routingSwitchValue(tester), ProxyRoutingMode.rule);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('路由模式：点击全局 -> routing.set_mode(global) 且持久化', (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade();
+    final store = _FakeRoutingModeStore();
+    await tester.pumpWidget(
+      _wrap(ProxyHomePage(facade: facade, routingModeStore: store)),
+    );
+    await _flush(tester);
+    facade.emit(const ProxyStateEvent(
+      state: ProxyConnState.running,
+      mode: ProxyMode.vpn,
+    ));
+    await _flush(tester);
+
+    await tester.tap(find.byKey(const Key('proxy-routing-mode-global')));
+    await _flush(tester);
+
+    expect(facade.routingSetModeCalls, 1);
+    expect(facade.lastSetRoutingMode, 'global');
+    expect(store.value, ProxyRoutingMode.global);
+    expect(_routingSwitchValue(tester), ProxyRoutingMode.global);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('路由模式：连接成功后重放持久化选择', (tester) async {
+    final facade = _FakeProxyFacade();
+    final consent = _FakeVpnConsent();
+    final store = _FakeRoutingModeStore(ProxyRoutingMode.global);
+    await tester.pumpWidget(
+      _wrap(ProxyHomePage(
+        facade: facade,
+        vpnConsent: consent,
+        routingModeStore: store,
+      )),
+    );
+    await _flush(tester);
+
+    await tester.tap(find.text('连接'));
+    await _flush(tester);
+    await tester.pump();
+
+    expect(facade.coreStartCalls, 1);
+    expect(facade.routingSetModeCalls, 1);
+    expect(facade.lastSetRoutingMode, 'global');
+    expect(store.value, ProxyRoutingMode.global);
+    expect(find.text('已连接'), findsOneWidget);
+    expect(_routingSwitchValue(tester), ProxyRoutingMode.global);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('路由模式：切换失败 -> 错误提示 + 保留旧值', (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade()
+      ..routingSetModeError = const ProxyModuleException(
+        code: 'PROXY_ROUTING_FAILED',
+        message: '路由切换失败',
+      );
+    final store = _FakeRoutingModeStore();
+    await tester.pumpWidget(
+      _wrap(ProxyHomePage(facade: facade, routingModeStore: store)),
+    );
+    await _flush(tester);
+    facade.emit(const ProxyStateEvent(
+      state: ProxyConnState.running,
+      mode: ProxyMode.vpn,
+    ));
+    await _flush(tester);
+    expect(_routingSwitchValue(tester), ProxyRoutingMode.rule);
+
+    await tester.tap(find.byKey(const Key('proxy-routing-mode-global')));
+    await _flush(tester);
+    await tester.pump();
+
+    expect(facade.routingSetModeCalls, 1);
+    expect(find.byKey(const Key('proxy-error-banner')), findsOneWidget);
+    expect(find.text('PROXY_ROUTING_FAILED'), findsOneWidget);
+    expect(_routingSwitchValue(tester), ProxyRoutingMode.rule);
+    expect(store.value, isNull);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('路由模式：加载时反映 routing.get_mode 结果', (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade()
+      ..pingResult = const ProxyPingResult(
+        pong: true,
+        module: 'proxy',
+        moduleVersion: '0.1.0',
+        apiVersion: 1,
+        minHostAbi: 3,
+        hostAbi: 3,
+        state: ProxyConnState.running,
+        mode: ProxyMode.vpn,
+      )
+      ..routingGetModeResult = const RoutingModeResult(
+        mode: ProxyRoutingMode.direct,
+        engineRunning: true,
+      );
+    await tester.pumpWidget(_wrap(ProxyHomePage(facade: facade)));
+    await _flush(tester);
+
+    expect(facade.routingGetModeCalls, 1);
+    expect(find.byKey(const Key('proxy-routing-mode-switch')), findsOneWidget);
+    expect(_routingSwitchValue(tester), ProxyRoutingMode.direct);
     expect(tester.takeException(), isNull);
 
     await facade.controller.close();
