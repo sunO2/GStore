@@ -29,10 +29,12 @@ const double _kBadgeTintAlpha = 0.12;
 ///   `nodes` / `groups`（加载态 / 错误态 / 空态均显式呈现，绝不崩溃）；
 /// * 未传 [profileId] → 直接展示调用方传入的 [nodes] / [groups]（测试 / 嵌入）。
 ///
-/// 展示形态：**2 列宫格**（先分组磁贴、后节点磁贴），无展开 / 收起；
-/// 点击任一磁贴弹出统一底部弹层（[AppSheet]）做选择，弹层顶部带测速动作。
-/// 分组磁贴副标题为 `类型 · N 个成员 · 当前：<活动成员>`；节点磁贴副标题为
-/// `端点 · 类型`，测速后追加延迟徽章。当前生效项以主题 primary 高亮。
+/// 展示形态：**按分组分节**（每组一个标题 + 该组一个 2 列宫格），无展开 / 收起；
+/// 组内成员子分组在前、节点在后（节点按 [_NodeSort]）。点击分组标题 / 子分组条目
+/// 弹出该组统一底部弹层（[AppSheet]），点击节点条目弹出其**父分组**内的节点弹层；
+/// 弹层顶部带测速动作。分组标题副标题为 `类型 · N 个成员 [· 当前：<活动成员>]`；
+/// 节点磁贴副标题为 `端点 · 类型`，测速后追加延迟徽章。当前生效项以主题 primary
+/// 高亮，且**按父分组作用域**判定（同名节点在其它组不会被误高亮）。
 ///
 /// 视觉规范：颜色一律取自 `Theme.of(context).colorScheme`，字号取自
 /// `Theme.of(context).textTheme`；弹层统一走 [AppSheet]；加载态一律用
@@ -306,14 +308,6 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
     }
   }
 
-  /// 节点所属的首个分组（用于节点磁贴选择时的落组；无匹配时用首组）。
-  String _groupForNode(String nodeName) {
-    for (final ProxyGroup group in _groups) {
-      if (group.members.contains(nodeName)) return group.name;
-    }
-    return _groups.isNotEmpty ? _groups.first.name : nodeName;
-  }
-
   /// 当前所有分组里可测试的节点名（去重；组引用不算）。
   List<String> get _testTargets {
     final Set<String> names = <String>{};
@@ -451,8 +445,9 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
   }
 
   /// 打开节点弹层：展示节点信息 + 单节点测速 + 底部「选择」动作。
-  Future<void> _openNodeSheet(ProxyNode node) async {
-    final String group = _groupForNode(node.name);
+  ///
+  /// [parentGroup] 是该节点所在分节的分组名（同名节点可属多组，必须显式传入）。
+  Future<void> _openNodeSheet(ProxyNode node, String parentGroup) async {
     await AppSheet.showCustom<void>(
       context: context,
       builder: (BuildContext sheetContext) => _NodePickerSheet(
@@ -467,12 +462,12 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
             isGroupRef: false,
           ),
         ],
-        activeName: _activeByGroup[group],
+        activeName: _activeByGroup[parentGroup],
         revision: _latencyTick,
         delayOf: (String n) => _delays[n],
         isPending: _pending.contains,
         onTest: () => _runDelayTest(node: node.name, targets: <String>[node.name]),
-        onSelect: (String n) => _selectNode(group, n),
+        onSelect: (String n) => _selectNode(parentGroup, n),
       ),
     );
   }
@@ -516,8 +511,7 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
     }
 
     final List<ProxyGroup> groups = _visibleGroups;
-    final List<String> nodeNames = _visibleNodeNames;
-    if (groups.isEmpty && nodeNames.isEmpty) {
+    if (groups.isEmpty) {
       return _buildNoMatches(context);
     }
 
@@ -542,31 +536,43 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
             ),
             sliver: SliverToBoxAdapter(child: _buildProgressCard(context)),
           ),
-        SliverPadding(
-          padding: AppSpacing.allLG,
-          sliver: SliverGrid(
-            // 手机固定 2 列宫格（分组磁贴在前、节点磁贴在后）。
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 2,
-              mainAxisSpacing: AppSpacing.md,
-              crossAxisSpacing: AppSpacing.md,
-              mainAxisExtent: 120,
-            ),
-            delegate: SliverChildBuilderDelegate(
-              (BuildContext context, int index) {
-                if (index < groups.length) {
-                  return _buildGroupTile(context, groups[index]);
-                }
-                final ProxyNode node =
-                    _nodesByName[nodeNames[index - groups.length]]!;
-                return _buildNodeTile(context, node);
-              },
-              childCount: groups.length + nodeNames.length,
-            ),
-          ),
-        ),
+        // 每个分组一节：标题 + 该组 2 列宫格（空节已在 _visibleGroups 过滤掉）。
+        for (final ProxyGroup group in groups) ..._buildSectionSlivers(group),
       ],
     );
+  }
+
+  /// 单节的两个 sliver：分组标题 + 该组可见成员的 2 列宫格。
+  List<Widget> _buildSectionSlivers(ProxyGroup group) {
+    final List<String> members = _visibleMembers(group);
+    return <Widget>[
+      SliverPadding(
+        padding: const EdgeInsets.fromLTRB(
+          AppSpacing.lg,
+          AppSpacing.lg,
+          AppSpacing.lg,
+          AppSpacing.sm,
+        ),
+        sliver: SliverToBoxAdapter(child: _buildGroupHeader(group)),
+      ),
+      SliverPadding(
+        padding: AppSpacing.pageHorizontalPadding,
+        sliver: SliverGrid(
+          // 手机固定 2 列宫格（组内子分组在前、节点在后）。
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: 2,
+            mainAxisSpacing: AppSpacing.md,
+            crossAxisSpacing: AppSpacing.md,
+            mainAxisExtent: 120,
+          ),
+          delegate: SliverChildBuilderDelegate(
+            (BuildContext context, int index) =>
+                _buildMemberTile(group.name, members[index]),
+            childCount: members.length,
+          ),
+        ),
+      ),
+    ];
   }
 
   /// 顶部搜索 / 过滤输入框（按节点名与分组名过滤）。
@@ -621,35 +627,48 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
     );
   }
 
-  /// 过滤后的可见分组：无查询时全部分组；有查询时保留「分组名匹配」或
-  /// 「存在成员名匹配」的分组（保留完整成员，弹层仍展示全部）。
-  List<ProxyGroup> get _visibleGroups {
+  /// 有可见成员的分组（无查询时全部分组；有查询时保留「分组名匹配」或
+  /// 「存在成员匹配」的分组；空节隐藏）。
+  List<ProxyGroup> get _visibleGroups => _groups
+      .where((ProxyGroup group) => _visibleMembers(group).isNotEmpty)
+      .toList();
+
+  /// 某分组内可见成员：分组名匹配时保留全部成员，否则仅保留匹配成员；
+  /// 子分组（组引用）排在节点之前，节点按 [_sort] 排序。
+  List<String> _visibleMembers(ProxyGroup group) {
     final String query = _searchQuery.trim().toLowerCase();
-    if (query.isEmpty) return _groups;
-    return _groups
-        .where(
-          (ProxyGroup group) =>
-              group.name.toLowerCase().contains(query) ||
-              group.members.any(
-                (String member) => member.toLowerCase().contains(query),
-              ),
-        )
-        .toList();
+    final bool nameMatches =
+        query.isEmpty || group.name.toLowerCase().contains(query);
+    final Iterable<String> source = nameMatches
+        ? group.members
+        : group.members.where((String member) => _memberMatches(member, query));
+    final List<String> subGroups = <String>[];
+    final List<String> nodes = <String>[];
+    for (final String member in source) {
+      if (_nodesByName.containsKey(member)) {
+        nodes.add(member);
+      } else {
+        subGroups.add(member);
+      }
+    }
+    return <String>[..._sortedNames(subGroups), ..._sortedNames(nodes)];
   }
 
-  /// 过滤 + 排序后的可见节点名。
-  List<String> get _visibleNodeNames {
-    final String query = _searchQuery.trim().toLowerCase();
-    final Iterable<String> filtered = _nodesByName.values
-        .where(
-          (ProxyNode node) =>
-              query.isEmpty ||
-              node.name.toLowerCase().contains(query) ||
-              node.server.toLowerCase().contains(query) ||
-              node.type.toLowerCase().contains(query),
-        )
-        .map((ProxyNode node) => node.name);
-    return _sortedNames(filtered);
+  /// 成员是否匹配查询：成员名，或（节点）端点 / 类型。
+  bool _memberMatches(String member, String query) {
+    if (member.toLowerCase().contains(query)) return true;
+    final ProxyNode? node = _nodesByName[member];
+    if (node == null) return false;
+    return node.server.toLowerCase().contains(query) ||
+        node.type.toLowerCase().contains(query);
+  }
+
+  /// 按名字查找分组（子分组条目跳转用）。
+  ProxyGroup? _groupByName(String name) {
+    for (final ProxyGroup group in _groups) {
+      if (group.name == name) return group;
+    }
+    return null;
   }
 
   Widget _buildEmpty(BuildContext context) {
@@ -737,8 +756,8 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
     );
   }
 
-  /// 分组磁贴：标题组名，副标题 `类型 · N 个成员 [· 当前：<活动成员>]`。
-  Widget _buildGroupTile(BuildContext context, ProxyGroup group) {
+  /// 分组标题：组名 + `类型 · N 个成员 [· 当前：<活动成员>]`，整行可点开弹层。
+  Widget _buildGroupHeader(ProxyGroup group) {
     final String active = _activeByGroup[group.name] ?? '';
     final String base = '${group.type} · ${group.members.length} 个成员';
     return _GridTile(
@@ -752,22 +771,49 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
     );
   }
 
+  /// 组内成员磁贴：按父分组分派到节点 / 子分组磁贴。
+  Widget _buildMemberTile(String parentGroup, String member) {
+    final ProxyNode? node = _nodesByName[member];
+    if (node != null) return _buildNodeTile(node, parentGroup);
+    return _buildSubGroupTile(parentGroup, member);
+  }
+
   /// 节点磁贴：标题节点名，副标题端点 / 类型，测速后附延迟徽章。
-  Widget _buildNodeTile(BuildContext context, ProxyNode node) {
-    final bool isActive = _activeByGroup.values.contains(node.name);
+  ///
+  /// 高亮严格限定在 [parentGroup] 内（同名节点在其它组不会误高亮）。
+  Widget _buildNodeTile(ProxyNode node, String parentGroup) {
+    final bool isActive = _activeByGroup[parentGroup] == node.name;
     return _GridTile(
-      key: Key('proxy_nodes_node_${node.name}'),
+      key: Key('proxy_nodes_member_${parentGroup}_${node.name}'),
       icon: Icons.dns_outlined,
       active: isActive,
-      activeKey: Key('proxy_nodes_active_${node.name}'),
+      activeKey: Key('proxy_nodes_active_${parentGroup}_${node.name}'),
       title: node.name,
       subtitle: _nodeSubtitle(node),
       badge: _LatencyBadge(
-        key: Key('proxy_nodes_delay_${node.name}'),
+        key: Key('proxy_nodes_delay_${parentGroup}_${node.name}'),
         state: _delays[node.name],
         pending: _pending.contains(node.name),
       ),
-      onTap: () => _openNodeSheet(node),
+      onTap: () => _openNodeSheet(node, parentGroup),
+    );
+  }
+
+  /// 子分组成员磁贴：点击下钻到该子分组自己的弹层。
+  ///
+  /// 高亮同样限定在 [parentGroup] 内（组当前成员恰为该子分组时）。
+  Widget _buildSubGroupTile(String parentGroup, String member) {
+    final bool isActive = _activeByGroup[parentGroup] == member;
+    final ProxyGroup? target = _groupByName(member);
+    return _GridTile(
+      key: Key('proxy_nodes_member_${parentGroup}_$member'),
+      icon: Icons.folder_outlined,
+      active: isActive,
+      activeKey: Key('proxy_nodes_active_${parentGroup}_$member'),
+      title: member,
+      subtitle: '代理组',
+      // 悬空组引用（无同名分组）无可下钻目标：保持可渲染但无动作。
+      onTap: target == null ? () {} : () => _openGroupSheet(target),
     );
   }
 

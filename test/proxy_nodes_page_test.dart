@@ -114,7 +114,7 @@ const List<ProxyGroup> _groups = <ProxyGroup>[
   ProxyGroup(name: 'AUTO', type: 'url-test', members: <String>['美国 03']),
 ];
 
-/// 分组分节用：PROXY 里含一个「组引用」成员（AUTO）。
+/// 分节用：PROXY 里含一个「组引用」成员（AUTO）。
 const List<ProxyGroup> _sectionedGroups = <ProxyGroup>[
   ProxyGroup(
     name: 'PROXY',
@@ -124,7 +124,22 @@ const List<ProxyGroup> _sectionedGroups = <ProxyGroup>[
   ProxyGroup(name: 'AUTO', type: 'url-test', members: <String>['美国 03']),
 ];
 
+/// 回归用：两个分组各含一个**同名**成员（香港 01）。
+const List<ProxyGroup> _duplicateNameGroups = <ProxyGroup>[
+  ProxyGroup(name: 'PROXY', type: 'select', members: <String>['香港 01', '日本 02']),
+  ProxyGroup(name: 'AUTO', type: 'url-test', members: <String>['香港 01']),
+];
+
 Widget _wrap(Widget child) => MaterialApp(home: child);
+
+/// 放大测试视口：分节后多组纵向堆叠，避免下方分组的 SliverGrid 懒加载
+/// 把待断言的磁贴挤出可视 / 缓存区（放大视口而非削弱断言）。
+void _useTallViewport(WidgetTester tester) {
+  tester.view.physicalSize = const Size(1000, 2600);
+  tester.view.devicePixelRatio = 1.0;
+  addTearDown(tester.view.resetPhysicalSize);
+  addTearDown(tester.view.resetDevicePixelRatio);
+}
 
 /// 宫格阅读顺序：先按 y（行），同一行再按 x（列）。
 bool _comesBefore(WidgetTester tester, Key a, Key b) {
@@ -134,9 +149,13 @@ bool _comesBefore(WidgetTester tester, Key a, Key b) {
   return oa.dx < ob.dx;
 }
 
-/// 打开某个节点磁贴的弹层并点「选择」。
-Future<void> _selectNodeViaSheet(WidgetTester tester, String nodeName) async {
-  await tester.tap(find.byKey(Key('proxy_nodes_node_$nodeName')));
+/// 打开某分组内某个节点磁贴的弹层并点「选择」。
+Future<void> _selectNodeViaSheet(
+  WidgetTester tester,
+  String group,
+  String nodeName,
+) async {
+  await tester.tap(find.byKey(Key('proxy_nodes_member_${group}_$nodeName')));
   await tester.pumpAndSettle();
   expect(find.byKey(const Key('proxy_nodes_sheet_test')), findsOneWidget);
   await tester.tap(find.byKey(const Key('proxy_nodes_node_select')));
@@ -146,6 +165,7 @@ Future<void> _selectNodeViaSheet(WidgetTester tester, String nodeName) async {
 void main() {
   testWidgets('happy：点击节点磁贴 -> 弹层选择 -> active + 持久化 + 事件延迟更新',
       (WidgetTester tester) async {
+    _useTallViewport(tester);
     final facade = _FakeNodesFacade();
     final store = _FakeActiveNodeStore();
     await tester.pumpWidget(_wrap(ProxyNodesPage(
@@ -156,12 +176,15 @@ void main() {
     )));
 
     // 初始无 active 标记
-    expect(find.byKey(const Key('proxy_nodes_active_香港 01')), findsNothing);
+    expect(find.byKey(const Key('proxy_nodes_active_PROXY_香港 01')), findsNothing);
 
     // 点击节点磁贴 -> 弹层 -> 选择 -> node.select -> active 标记
-    await _selectNodeViaSheet(tester, '香港 01');
+    await _selectNodeViaSheet(tester, 'PROXY', '香港 01');
 
-    expect(find.byKey(const Key('proxy_nodes_active_香港 01')), findsOneWidget);
+    expect(
+      find.byKey(const Key('proxy_nodes_active_PROXY_香港 01')),
+      findsOneWidget,
+    );
     expect(facade.selects, <List<String>>[
       <String>['PROXY', '香港 01'],
     ]);
@@ -183,35 +206,9 @@ void main() {
     await facade.controller.close();
   });
 
-  testWidgets('宫格：固定 2 列渲染（分组磁贴同排、节点磁贴另起行）',
+  testWidgets('分节宫格：每组一个 2 列宫格，子分组在前、节点在后，组间纵向排列',
       (WidgetTester tester) async {
-    final facade = _FakeNodesFacade();
-    await tester.pumpWidget(_wrap(ProxyNodesPage(
-      nodes: const <ProxyNode>[_hk, _jp, _us],
-      groups: _groups,
-      facade: facade,
-    )));
-
-    final Offset proxy =
-        tester.getTopLeft(find.byKey(const Key('proxy_nodes_group_PROXY')));
-    final Offset auto =
-        tester.getTopLeft(find.byKey(const Key('proxy_nodes_group_AUTO')));
-
-    // 两个分组磁贴同排（同 y）、分属两列（左列在前）→ 2 列宫格。
-    expect(proxy.dy, closeTo(auto.dy, 1.0));
-    expect(proxy.dx, lessThan(auto.dx));
-
-    // 节点磁贴位于分组磁贴之后（另起行）。
-    final Offset firstNode =
-        tester.getTopLeft(find.byKey(const Key('proxy_nodes_node_日本 02')));
-    expect(firstNode.dy, greaterThan(proxy.dy));
-    expect(tester.takeException(), isNull);
-
-    await facade.controller.close();
-  });
-
-  testWidgets('磁贴：点击任一磁贴弹出统一底部弹层（不直接切换）',
-      (WidgetTester tester) async {
+    _useTallViewport(tester);
     final facade = _FakeNodesFacade();
     await tester.pumpWidget(_wrap(ProxyNodesPage(
       nodes: const <ProxyNode>[_hk, _jp, _us],
@@ -219,7 +216,56 @@ void main() {
       facade: facade,
     )));
 
-    // 点分组磁贴 -> 弹层（含 header 测速，不触发选择）。
+    final Offset proxyHeader =
+        tester.getTopLeft(find.byKey(const Key('proxy_nodes_group_PROXY')));
+    final Offset subGroup =
+        tester.getTopLeft(find.byKey(const Key('proxy_nodes_member_PROXY_AUTO')));
+    final Offset firstNode =
+        tester.getTopLeft(find.byKey(const Key('proxy_nodes_member_PROXY_日本 02')));
+    final Offset secondNode =
+        tester.getTopLeft(find.byKey(const Key('proxy_nodes_member_PROXY_香港 01')));
+
+    // 分组标题位于该组全部成员之上。
+    expect(proxyHeader.dy, lessThan(subGroup.dy));
+
+    // 子分组（AUTO）排在节点之前。
+    expect(
+      _comesBefore(
+        tester,
+        const Key('proxy_nodes_member_PROXY_AUTO'),
+        const Key('proxy_nodes_member_PROXY_日本 02'),
+      ),
+      isTrue,
+    );
+
+    // 同组内 2 列：子分组与首个节点同排、分属左右列。
+    expect(subGroup.dy, closeTo(firstNode.dy, 1.0));
+    expect(subGroup.dx, lessThan(firstNode.dx));
+
+    // 第 3 个成员另起一行。
+    expect(secondNode.dy, greaterThan(firstNode.dy));
+
+    // 下一个分组标题排在上一组成员之后（组间纵向分节）。
+    final Offset autoHeader =
+        tester.getTopLeft(find.byKey(const Key('proxy_nodes_group_AUTO')));
+    expect(autoHeader.dy, greaterThan(secondNode.dy));
+
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('磁贴：点击分组标题 / 节点磁贴弹出统一底部弹层（不直接切换）',
+      (WidgetTester tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeNodesFacade();
+    await tester.pumpWidget(_wrap(ProxyNodesPage(
+      nodes: const <ProxyNode>[_hk, _jp, _us],
+      groups: _sectionedGroups,
+      facade: facade,
+    )));
+
+    // 点分组标题 -> 弹层（含 header 测速，不触发选择）。
     await tester.tap(find.byKey(const Key('proxy_nodes_group_PROXY')));
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('proxy_nodes_sheet_test')), findsOneWidget);
@@ -230,7 +276,7 @@ void main() {
     await tester.pumpAndSettle();
 
     // 点节点磁贴 -> 弹层（同样不直接切换）。
-    await tester.tap(find.byKey(const Key('proxy_nodes_node_香港 01')));
+    await tester.tap(find.byKey(const Key('proxy_nodes_member_PROXY_香港 01')));
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('proxy_nodes_sheet_test')), findsOneWidget);
     expect(facade.selects, isEmpty);
@@ -241,6 +287,7 @@ void main() {
 
   testWidgets('分组弹层：组引用成员可点选（选择子分组 = nodeSelect）',
       (WidgetTester tester) async {
+    _useTallViewport(tester);
     final facade = _FakeNodesFacade();
     await tester.pumpWidget(_wrap(ProxyNodesPage(
       nodes: const <ProxyNode>[_hk, _jp, _us],
@@ -253,7 +300,13 @@ void main() {
 
     // 组引用成员以「代理组」副标题 + 文件夹图标区分，且可选。
     expect(find.byKey(const Key('proxy_nodes_sheet_member_AUTO')), findsOneWidget);
-    expect(find.text('代理组'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('proxy_nodes_sheet_member_AUTO')),
+        matching: find.text('代理组'),
+      ),
+      findsOneWidget,
+    );
 
     await tester.tap(find.byKey(const Key('proxy_nodes_sheet_member_AUTO')));
     await tester.pumpAndSettle();
@@ -261,7 +314,7 @@ void main() {
     expect(facade.selects, <List<String>>[
       <String>['PROXY', 'AUTO'],
     ]);
-    // 选择子分组后组磁贴高亮显示当前生效项。
+    // 选择子分组后分组标题高亮显示当前生效项。
     expect(find.textContaining('当前：AUTO'), findsOneWidget);
     expect(find.byKey(const Key('proxy_nodes_group_active_PROXY')), findsOneWidget);
     expect(tester.takeException(), isNull);
@@ -271,6 +324,7 @@ void main() {
 
   testWidgets('弹层 header 测速（分组）：触发该组 node.delay_test 并回填延迟',
       (WidgetTester tester) async {
+    _useTallViewport(tester);
     final facade = _FakeNodesFacade();
     await tester.pumpWidget(_wrap(ProxyNodesPage(
       nodes: const <ProxyNode>[_hk, _jp, _us],
@@ -320,6 +374,7 @@ void main() {
 
   testWidgets('弹层 header 测速（单节点）：触发该节点 node.delay_test',
       (WidgetTester tester) async {
+    _useTallViewport(tester);
     final facade = _FakeNodesFacade();
     await tester.pumpWidget(_wrap(ProxyNodesPage(
       nodes: const <ProxyNode>[_hk, _jp, _us],
@@ -327,7 +382,7 @@ void main() {
       facade: facade,
     )));
 
-    await tester.tap(find.byKey(const Key('proxy_nodes_node_日本 02')));
+    await tester.tap(find.byKey(const Key('proxy_nodes_member_PROXY_日本 02')));
     await tester.pumpAndSettle();
 
     await tester.tap(find.byKey(const Key('proxy_nodes_sheet_test')));
@@ -362,6 +417,7 @@ void main() {
 
   testWidgets('profileId：经门面 profile.get 加载订阅节点并展示',
       (WidgetTester tester) async {
+    _useTallViewport(tester);
     final facade = _FakeNodesFacade()
       ..storedResult = const StoredProfile(
         id: 'sub-1',
@@ -385,14 +441,21 @@ void main() {
 
     expect(facade.profileGetCalls, 1);
     expect(facade.lastProfileId, 'sub-1');
-    expect(find.byKey(const Key('proxy_nodes_node_香港 01')), findsOneWidget);
-    expect(find.byKey(const Key('proxy_nodes_node_日本 02')), findsOneWidget);
+    expect(
+      find.byKey(const Key('proxy_nodes_member_PROXY_香港 01')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('proxy_nodes_member_PROXY_日本 02')),
+      findsOneWidget,
+    );
     expect(tester.takeException(), isNull);
 
     await facade.controller.close();
   });
 
   testWidgets('profileId 失败：显式错误态 + 重试后恢复', (WidgetTester tester) async {
+    _useTallViewport(tester);
     final facade = _FakeNodesFacade()
       ..profileGetError = const ProxyModuleException(
         code: 'PROXY_PROFILE_NOT_FOUND',
@@ -428,7 +491,10 @@ void main() {
     await tester.pump();
 
     expect(facade.profileGetCalls, 2);
-    expect(find.byKey(const Key('proxy_nodes_node_香港 01')), findsOneWidget);
+    expect(
+      find.byKey(const Key('proxy_nodes_member_PROXY_香港 01')),
+      findsOneWidget,
+    );
     expect(tester.takeException(), isNull);
 
     await facade.controller.close();
@@ -455,6 +521,7 @@ void main() {
   });
 
   testWidgets('happy：测试全部展示进度，响应后逐节点回填延迟', (WidgetTester tester) async {
+    _useTallViewport(tester);
     final facade = _FakeNodesFacade();
     await tester.pumpWidget(_wrap(ProxyNodesPage(
       nodes: const <ProxyNode>[_hk, _jp, _us],
@@ -485,6 +552,7 @@ void main() {
   });
 
   testWidgets('failure：不可达节点显示「超时」而非崩溃或无限 spinner', (WidgetTester tester) async {
+    _useTallViewport(tester);
     final facade = _FakeNodesFacade();
     await tester.pumpWidget(_wrap(ProxyNodesPage(
       nodes: const <ProxyNode>[_hk, _jp, _us],
@@ -513,6 +581,7 @@ void main() {
   });
 
   testWidgets('failure：延迟测试抛模块异常时全部标记超时且不崩溃', (WidgetTester tester) async {
+    _useTallViewport(tester);
     final facade = _FakeNodesFacade()..delayThrows = true;
     await tester.pumpWidget(_wrap(ProxyNodesPage(
       nodes: const <ProxyNode>[_hk, _jp, _us],
@@ -532,6 +601,7 @@ void main() {
   });
 
   testWidgets('排序：AppSheet picker 按延迟从低到高重排节点磁贴', (WidgetTester tester) async {
+    _useTallViewport(tester);
     final facade = _FakeNodesFacade();
     await tester.pumpWidget(_wrap(ProxyNodesPage(
       nodes: const <ProxyNode>[
@@ -548,8 +618,8 @@ void main() {
     expect(
       _comesBefore(
         tester,
-        const Key('proxy_nodes_node_alpha'),
-        const Key('proxy_nodes_node_beta'),
+        const Key('proxy_nodes_member_PROXY_alpha'),
+        const Key('proxy_nodes_member_PROXY_beta'),
       ),
       isTrue,
     );
@@ -578,8 +648,8 @@ void main() {
     expect(
       _comesBefore(
         tester,
-        const Key('proxy_nodes_node_beta'),
-        const Key('proxy_nodes_node_alpha'),
+        const Key('proxy_nodes_member_PROXY_beta'),
+        const Key('proxy_nodes_member_PROXY_alpha'),
       ),
       isTrue,
     );
@@ -588,8 +658,9 @@ void main() {
     await facade.controller.close();
   });
 
-  testWidgets('搜索过滤：按名称仅保留匹配节点与分组（无展开收起）',
+  testWidgets('搜索过滤：按名称仅保留匹配成员 / 分组；分组名匹配保留全部成员',
       (WidgetTester tester) async {
+    _useTallViewport(tester);
     final facade = _FakeNodesFacade();
     await tester.pumpWidget(_wrap(ProxyNodesPage(
       nodes: const <ProxyNode>[_hk, _jp, _us],
@@ -597,23 +668,52 @@ void main() {
       facade: facade,
     )));
 
+    // 成员匹配：PROXY 只留「香港 01」；AUTO 无匹配成员 → 整节隐藏。
     await tester.enterText(
         find.byKey(const Key('proxy_nodes_search')), '香港');
     await tester.pump();
 
-    // 只剩香港 01；日本 02 / 美国 03 不匹配；AUTO 无匹配成员 → 隐藏。
-    expect(find.byKey(const Key('proxy_nodes_node_香港 01')), findsOneWidget);
-    expect(find.byKey(const Key('proxy_nodes_node_日本 02')), findsNothing);
-    expect(find.byKey(const Key('proxy_nodes_node_美国 03')), findsNothing);
+    expect(
+      find.byKey(const Key('proxy_nodes_member_PROXY_香港 01')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('proxy_nodes_member_PROXY_日本 02')),
+      findsNothing,
+    );
+    expect(find.byKey(const Key('proxy_nodes_member_PROXY_AUTO')), findsNothing);
     expect(find.byKey(const Key('proxy_nodes_group_AUTO')), findsNothing);
+    expect(
+      find.byKey(const Key('proxy_nodes_member_AUTO_美国 03')),
+      findsNothing,
+    );
     // PROXY 因成员「香港 01」匹配而保留。
     expect(find.byKey(const Key('proxy_nodes_group_PROXY')), findsOneWidget);
+
+    // 分组名匹配：AUTO 整节保留全部成员（成员名未必匹配）。
+    await tester.enterText(
+        find.byKey(const Key('proxy_nodes_search')), 'AUTO');
+    await tester.pump();
+
+    expect(find.byKey(const Key('proxy_nodes_group_AUTO')), findsOneWidget);
+    expect(
+      find.byKey(const Key('proxy_nodes_member_AUTO_美国 03')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('proxy_nodes_member_PROXY_AUTO')), findsOneWidget);
 
     // 清除搜索 → 恢复全部。
     await tester.tap(find.byKey(const Key('proxy_nodes_search_clear')));
     await tester.pump();
-    expect(find.byKey(const Key('proxy_nodes_node_日本 02')), findsOneWidget);
-    expect(find.byKey(const Key('proxy_nodes_node_美国 03')), findsOneWidget);
+    expect(
+      find.byKey(const Key('proxy_nodes_member_PROXY_日本 02')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('proxy_nodes_member_PROXY_AUTO')), findsOneWidget);
+    expect(
+      find.byKey(const Key('proxy_nodes_member_AUTO_美国 03')),
+      findsOneWidget,
+    );
     expect(find.byKey(const Key('proxy_nodes_group_AUTO')), findsOneWidget);
     expect(tester.takeException(), isNull);
 
@@ -621,6 +721,7 @@ void main() {
   });
 
   testWidgets('重入高亮：持久化选择在初始化时回显', (WidgetTester tester) async {
+    _useTallViewport(tester);
     final facade = _FakeNodesFacade();
     final store = _FakeActiveNodeStore(
       const ProxyActiveNode(group: 'PROXY', node: '香港 01'),
@@ -634,7 +735,10 @@ void main() {
     await tester.pump();
     await tester.pump();
 
-    expect(find.byKey(const Key('proxy_nodes_active_香港 01')), findsOneWidget);
+    expect(
+      find.byKey(const Key('proxy_nodes_active_PROXY_香港 01')),
+      findsOneWidget,
+    );
     expect(
       find.byKey(const Key('proxy_nodes_group_active_PROXY')),
       findsOneWidget,
@@ -645,8 +749,59 @@ void main() {
     await facade.controller.close();
   });
 
+  testWidgets('回归：同名节点分属两组时，选择只高亮所属分组（不跨组泄漏）',
+      (WidgetTester tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeNodesFacade();
+    final store = _FakeActiveNodeStore();
+    await tester.pumpWidget(_wrap(ProxyNodesPage(
+      nodes: const <ProxyNode>[_hk, _jp],
+      groups: _duplicateNameGroups,
+      facade: facade,
+      nodeStore: store,
+    )));
+
+    // 两个分组都含同名成员「香港 01」。
+    expect(
+      find.byKey(const Key('proxy_nodes_member_PROXY_香港 01')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('proxy_nodes_member_AUTO_香港 01')),
+      findsOneWidget,
+    );
+
+    // 在 PROXY 分组的节点弹层里选择「香港 01」。
+    await _selectNodeViaSheet(tester, 'PROXY', '香港 01');
+    expect(facade.selects, <List<String>>[
+      <String>['PROXY', '香港 01'],
+    ]);
+
+    // 仅 PROXY 的磁贴高亮；AUTO 中的同名节点**不得**高亮。
+    expect(
+      find.byKey(const Key('proxy_nodes_active_PROXY_香港 01')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('proxy_nodes_active_AUTO_香港 01')),
+      findsNothing,
+    );
+    expect(
+      find.byKey(const Key('proxy_nodes_group_active_PROXY')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('proxy_nodes_group_active_AUTO')),
+      findsNothing,
+    );
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
   testWidgets('选择持久化：在弹层内选择后写入 ProxyActiveNodeStore',
       (WidgetTester tester) async {
+    _useTallViewport(tester);
     final facade = _FakeNodesFacade();
     final store = _FakeActiveNodeStore();
     await tester.pumpWidget(_wrap(ProxyNodesPage(
@@ -656,11 +811,39 @@ void main() {
       nodeStore: store,
     )));
 
-    await _selectNodeViaSheet(tester, '美国 03');
+    await _selectNodeViaSheet(tester, 'AUTO', '美国 03');
 
     expect(store.writes, 1);
     expect(store.value?.group, 'AUTO');
     expect(store.value?.node, '美国 03');
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('子分组条目：点击下钻到该子分组自己的弹层（不再误落父组）',
+      (WidgetTester tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeNodesFacade();
+    await tester.pumpWidget(_wrap(ProxyNodesPage(
+      nodes: const <ProxyNode>[_hk, _jp, _us],
+      groups: _sectionedGroups,
+      facade: facade,
+    )));
+
+    await tester.tap(find.byKey(const Key('proxy_nodes_member_PROXY_AUTO')));
+    await tester.pumpAndSettle();
+
+    // 弹层标题为子分组 AUTO，成员为 美国 03（不再列出 PROXY 的成员）。
+    expect(find.text('AUTO'), findsWidgets);
+    expect(
+      find.byKey(const Key('proxy_nodes_sheet_member_美国 03')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('proxy_nodes_sheet_member_香港 01')),
+      findsNothing,
+    );
     expect(tester.takeException(), isNull);
 
     await facade.controller.close();
