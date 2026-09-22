@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 
 import 'package:gstore/core/design/design_tokens.dart';
@@ -19,7 +20,7 @@ const double _kBadgeTintAlpha = 0.12;
 /// 节点 / 代理组页面（纯展示 + 触发）。
 ///
 /// **只做展示与转发**：分组/节点模型来自冻结契约 [ProxyGroup] / [ProxyNode]；
-/// 切换节点调用 [ProxyNodesFacade.nodeSelect]，`测试全部` 调用
+/// 切换节点调用 [ProxyNodesFacade.nodeSelect]，测速调用
 /// [ProxyNodesFacade.nodeDelayTest]，逐节点延迟来自 `proxy.node.delay` 事件。
 /// 本页**不含**任何延迟探测 / 解析逻辑（全部在 Rust 侧）。
 ///
@@ -28,12 +29,13 @@ const double _kBadgeTintAlpha = 0.12;
 ///   `nodes` / `groups`（加载态 / 错误态 / 空态均显式呈现，绝不崩溃）；
 /// * 未传 [profileId] → 直接展示调用方传入的 [nodes] / [groups]（测试 / 嵌入）。
 ///
-/// 展示形态：按 `proxy-groups` **分节**（每个组一节：组名 + 类型 + 成员数，
-/// 下面列出该组成员）；成员是节点则可点选，成员是组名则渲染为不可选的组引用
-/// 行；`groups` 为空时合成一个「全部节点」伪分组兜底。
+/// 展示形态：**2 列宫格**（先分组磁贴、后节点磁贴），无展开 / 收起；
+/// 点击任一磁贴弹出统一底部弹层（[AppSheet]）做选择，弹层顶部带测速动作。
+/// 分组磁贴副标题为 `类型 · N 个成员 · 当前：<活动成员>`；节点磁贴副标题为
+/// `端点 · 类型`，测速后追加延迟徽章。当前生效项以主题 primary 高亮。
 ///
 /// 视觉规范：颜色一律取自 `Theme.of(context).colorScheme`，字号取自
-/// `Theme.of(context).textTheme`；弹层（排序）统一走 [AppSheet]；加载态一律用
+/// `Theme.of(context).textTheme`；弹层统一走 [AppSheet]；加载态一律用
 /// [AppLoading]（不使用原生进度圈）。
 class ProxyNodesPage extends StatefulWidget {
   const ProxyNodesPage({
@@ -118,8 +120,8 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
   final Map<String, _DelayState> _delays = <String, _DelayState>{};
   final Set<String> _pending = <String>{};
 
-  /// 折叠的分组名集合；默认全部展开（空集 = 全展开）。
-  final Set<String> _collapsed = <String>{};
+  /// 延迟状态版本号：弹层（独立 route）据此在事件 / 测试回填时刷新。
+  final ValueNotifier<int> _latencyTick = ValueNotifier<int>(0);
 
   /// 搜索 / 过滤关键词（节点名与分组名）。
   final TextEditingController _searchController = TextEditingController();
@@ -151,6 +153,7 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
   void dispose() {
     _eventSub?.cancel();
     _searchController.dispose();
+    _latencyTick.dispose();
     super.dispose();
   }
 
@@ -240,6 +243,7 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
       );
       if (_pending.remove(event.node)) _testedCount++;
     });
+    _latencyTick.value++;
   }
 
   // ==================== 排序 ====================
@@ -260,23 +264,26 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
     return c == 0 ? a.compareTo(b) : c;
   }
 
-  /// 某个分组内按 [_sort] 排序后的成员名。
-  List<String> _sortedMembers(ProxyGroup group) {
-    final List<String> members = group.members.toList();
+  /// 按 [_sort] 排序后的名字副本。
+  List<String> _sortedNames(Iterable<String> names) {
+    final List<String> list = names.toList();
     switch (_sort) {
       case _NodeSort.name:
-        members.sort((String a, String b) => a.compareTo(b));
+        list.sort((String a, String b) => a.compareTo(b));
       case _NodeSort.latencyAsc:
-        members.sort(
+        list.sort(
           (String a, String b) => _compareByLatency(a, b, ascending: true),
         );
       case _NodeSort.latencyDesc:
-        members.sort(
+        list.sort(
           (String a, String b) => _compareByLatency(a, b, ascending: false),
         );
     }
-    return members;
+    return list;
   }
+
+  /// 某个分组内按 [_sort] 排序后的成员名。
+  List<String> _sortedMembers(ProxyGroup group) => _sortedNames(group.members);
 
   // ==================== 选择 / 测试 ====================
 
@@ -299,6 +306,14 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
     }
   }
 
+  /// 节点所属的首个分组（用于节点磁贴选择时的落组；无匹配时用首组）。
+  String _groupForNode(String nodeName) {
+    for (final ProxyGroup group in _groups) {
+      if (group.members.contains(nodeName)) return group.name;
+    }
+    return _groups.isNotEmpty ? _groups.first.name : nodeName;
+  }
+
   /// 当前所有分组里可测试的节点名（去重；组引用不算）。
   List<String> get _testTargets {
     final Set<String> names = <String>{};
@@ -310,16 +325,22 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
     return names.toList();
   }
 
-  /// `测试全部`：触发 Rust 逐节点探测；响应 + 事件双通道回填，剩余未回的
-  /// 节点显式标记为超时（绝不无限 spinner）。
-  Future<void> _testAll() async {
-    final List<String> targets = _testTargets;
+  /// 统一的延迟测试入口（appbar「测试全部」/ 弹层测速共用）。
+  ///
+  /// [group] / [node] 限定探测范围（都不传 = 全部节点，见 `_testAll`）。
+  /// 响应 + 事件双通道回填，剩余未回的节点显式标记为超时（绝不无限 spinner）。
+  Future<void> _runDelayTest({
+    String? group,
+    String? node,
+    required List<String> targets,
+    bool showProgress = false,
+  }) async {
     if (targets.isEmpty) {
       AppDialogs.showInfo('当前没有可测试的节点');
       return;
     }
     setState(() {
-      _testing = true;
+      if (showProgress) _testing = true;
       _testTotal = targets.length;
       _testedCount = 0;
       _pending
@@ -329,9 +350,11 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
         _delays.remove(name);
       }
     });
+    _latencyTick.value++;
     try {
-      final DelayTestResult result =
-          await _facade.nodeDelayTest(const NodeDelayTestRequest());
+      final DelayTestResult result = await _facade.nodeDelayTest(
+        NodeDelayTestRequest(group: group, node: node),
+      );
       if (!mounted) return;
       setState(() {
         for (final DelayResult item in result.results) {
@@ -346,12 +369,17 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
         _testedCount = _testTotal;
         _testing = false;
       });
+      _latencyTick.value++;
     } on ProxyModuleException catch (error) {
       _finishTestWithError('延迟测试失败：${error.message}');
     } catch (error) {
       _finishTestWithError('延迟测试失败：$error');
     }
   }
+
+  /// `测试全部`：不带 group / node 参数，覆盖所有分组里的节点。
+  Future<void> _testAll() =>
+      _runDelayTest(targets: _testTargets, showProgress: true);
 
   void _finishTestWithError(String message) {
     if (!mounted) return;
@@ -363,6 +391,7 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
       _testedCount = _testTotal;
       _testing = false;
     });
+    _latencyTick.value++;
     AppDialogs.showError(message);
   }
 
@@ -385,6 +414,67 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
     );
     if (!mounted || selected == null) return;
     setState(() => _sort = selected);
+  }
+
+  // ==================== 弹层 ====================
+
+  /// 打开分组弹层：列出该组全部成员（叶子节点与组引用均可选），顶部带测速。
+  Future<void> _openGroupSheet(ProxyGroup group) async {
+    final List<String> members = _sortedMembers(group);
+    final List<String> targets =
+        members.where(_nodesByName.containsKey).toList();
+    final List<_PickerEntry> entries = <_PickerEntry>[
+      for (final String name in members)
+        _PickerEntry(
+          name: name,
+          subtitle: _nodesByName[name] == null
+              ? '代理组'
+              : _nodeSubtitle(_nodesByName[name]!),
+          isGroupRef: _nodesByName[name] == null,
+        ),
+    ];
+    await AppSheet.showCustom<void>(
+      context: context,
+      builder: (BuildContext sheetContext) => _NodePickerSheet(
+        title: group.name,
+        subtitle: '${group.type} · ${group.members.length} 个成员',
+        icon: Icons.account_tree_outlined,
+        entries: entries,
+        activeName: _activeByGroup[group.name],
+        revision: _latencyTick,
+        delayOf: (String n) => _delays[n],
+        isPending: _pending.contains,
+        onTest: () => _runDelayTest(group: group.name, targets: targets),
+        onSelect: (String n) => _selectNode(group.name, n),
+      ),
+    );
+  }
+
+  /// 打开节点弹层：展示节点信息 + 单节点测速 + 底部「选择」动作。
+  Future<void> _openNodeSheet(ProxyNode node) async {
+    final String group = _groupForNode(node.name);
+    await AppSheet.showCustom<void>(
+      context: context,
+      builder: (BuildContext sheetContext) => _NodePickerSheet(
+        title: node.name,
+        subtitle: _nodeSubtitle(node),
+        icon: Icons.dns_outlined,
+        nodeMode: true,
+        entries: <_PickerEntry>[
+          _PickerEntry(
+            name: node.name,
+            subtitle: _nodeSubtitle(node),
+            isGroupRef: false,
+          ),
+        ],
+        activeName: _activeByGroup[group],
+        revision: _latencyTick,
+        delayOf: (String n) => _delays[n],
+        isPending: _pending.contains,
+        onTest: () => _runDelayTest(node: node.name, targets: <String>[node.name]),
+        onSelect: (String n) => _selectNode(group, n),
+      ),
+    );
   }
 
   // ==================== UI ====================
@@ -424,21 +514,57 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
     if (_nodesByName.isEmpty) {
       return _buildEmpty(context);
     }
+
     final List<ProxyGroup> groups = _visibleGroups;
-    return ListView(
-      padding: AppSpacing.allLG,
-      children: <Widget>[
-        _buildSearchField(context),
-        const SizedBox(height: AppSpacing.md),
-        if (_testing) ...<Widget>[
-          _buildProgressCard(context),
-          const SizedBox(height: AppSpacing.md),
-        ],
-        if (groups.isEmpty)
-          _buildNoMatches(context)
-        else
-          for (final ProxyGroup group in groups)
-            _buildGroupSection(context, group),
+    final List<String> nodeNames = _visibleNodeNames;
+    if (groups.isEmpty && nodeNames.isEmpty) {
+      return _buildNoMatches(context);
+    }
+
+    return CustomScrollView(
+      slivers: <Widget>[
+        SliverPadding(
+          padding: const EdgeInsets.fromLTRB(
+            AppSpacing.lg,
+            AppSpacing.lg,
+            AppSpacing.lg,
+            0,
+          ),
+          sliver: SliverToBoxAdapter(child: _buildSearchField(context)),
+        ),
+        if (_testing)
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(
+              AppSpacing.lg,
+              AppSpacing.md,
+              AppSpacing.lg,
+              0,
+            ),
+            sliver: SliverToBoxAdapter(child: _buildProgressCard(context)),
+          ),
+        SliverPadding(
+          padding: AppSpacing.allLG,
+          sliver: SliverGrid(
+            // 手机固定 2 列宫格（分组磁贴在前、节点磁贴在后）。
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 2,
+              mainAxisSpacing: AppSpacing.md,
+              crossAxisSpacing: AppSpacing.md,
+              mainAxisExtent: 120,
+            ),
+            delegate: SliverChildBuilderDelegate(
+              (BuildContext context, int index) {
+                if (index < groups.length) {
+                  return _buildGroupTile(context, groups[index]);
+                }
+                final ProxyNode node =
+                    _nodesByName[nodeNames[index - groups.length]]!;
+                return _buildNodeTile(context, node);
+              },
+              childCount: groups.length + nodeNames.length,
+            ),
+          ),
+        ),
       ],
     );
   }
@@ -495,38 +621,35 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
     );
   }
 
-  /// 过滤后的可见分组：无查询时原样返回；有查询时保留「分组名匹配」或
-  /// 「存在成员名匹配」的分组，且组内只保留匹配成员（分组名匹配则保留全部）。
+  /// 过滤后的可见分组：无查询时全部分组；有查询时保留「分组名匹配」或
+  /// 「存在成员名匹配」的分组（保留完整成员，弹层仍展示全部）。
   List<ProxyGroup> get _visibleGroups {
     final String query = _searchQuery.trim().toLowerCase();
     if (query.isEmpty) return _groups;
-    final List<ProxyGroup> result = <ProxyGroup>[];
-    for (final ProxyGroup group in _groups) {
-      final bool groupMatches = group.name.toLowerCase().contains(query);
-      final List<String> members = groupMatches
-          ? group.members.toList()
-          : group.members
-              .where((String m) => m.toLowerCase().contains(query))
-              .toList();
-      if (groupMatches || members.isNotEmpty) {
-        result.add(ProxyGroup(
-          name: group.name,
-          type: group.type,
-          members: members,
-        ));
-      }
-    }
-    return result;
+    return _groups
+        .where(
+          (ProxyGroup group) =>
+              group.name.toLowerCase().contains(query) ||
+              group.members.any(
+                (String member) => member.toLowerCase().contains(query),
+              ),
+        )
+        .toList();
   }
 
-  /// 分组是否展开：搜索时强制展开；否则默认展开，仅折叠集合内的分组收起。
-  bool _isGroupExpanded(String name) =>
-      _searchQuery.isNotEmpty || !_collapsed.contains(name);
-
-  void _toggleGroup(String name) {
-    setState(() {
-      if (!_collapsed.remove(name)) _collapsed.add(name);
-    });
+  /// 过滤 + 排序后的可见节点名。
+  List<String> get _visibleNodeNames {
+    final String query = _searchQuery.trim().toLowerCase();
+    final Iterable<String> filtered = _nodesByName.values
+        .where(
+          (ProxyNode node) =>
+              query.isEmpty ||
+              node.name.toLowerCase().contains(query) ||
+              node.server.toLowerCase().contains(query) ||
+              node.type.toLowerCase().contains(query),
+        )
+        .map((ProxyNode node) => node.name);
+    return _sortedNames(filtered);
   }
 
   Widget _buildEmpty(BuildContext context) {
@@ -614,161 +737,37 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
     );
   }
 
-  /// 单个代理组一节：可折叠的组头（组名 + 类型 + 成员数 + 当前选中）+ 成员列表
-  /// （节点 / 组引用）。组头点击展开 / 收起，默认展开；搜索时强制展开。
-  Widget _buildGroupSection(BuildContext context, ProxyGroup group) {
-    final ThemeData theme = Theme.of(context);
-    final ColorScheme scheme = theme.colorScheme;
-    final List<String> members = _sortedMembers(group);
+  /// 分组磁贴：标题组名，副标题 `类型 · N 个成员 [· 当前：<活动成员>]`。
+  Widget _buildGroupTile(BuildContext context, ProxyGroup group) {
     final String active = _activeByGroup[group.name] ?? '';
-    final bool expanded = _isGroupExpanded(group.name);
-
-    return Card(
-      margin: const EdgeInsets.only(bottom: AppSpacing.md),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: <Widget>[
-          InkWell(
-            key: Key('proxy_nodes_group_${group.name}'),
-            onTap: () => _toggleGroup(group.name),
-            child: Padding(
-              padding: AppSpacing.allMD,
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: <Widget>[
-                  Icon(
-                    Icons.account_tree_outlined,
-                    size: AppTypography.iconMD,
-                    color: scheme.primary,
-                  ),
-                  const SizedBox(width: AppSpacing.sm),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: <Widget>[
-                        Text(group.name, style: theme.textTheme.titleSmall),
-                        const SizedBox(height: AppSpacing.xs),
-                        Text(
-                          active.isEmpty
-                              ? '${group.type} · ${group.members.length} 个成员'
-                              : '${group.type} · ${group.members.length} 个成员'
-                                  ' · 当前：$active',
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            color: scheme.onSurfaceVariant,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(width: AppSpacing.sm),
-                  Icon(
-                    expanded ? Icons.expand_more : Icons.chevron_right,
-                    size: AppTypography.iconMD,
-                    color: scheme.onSurfaceVariant,
-                  ),
-                ],
-              ),
-            ),
-          ),
-          AnimatedSize(
-            duration: AppAnimations.fast,
-            curve: AppAnimations.curveDefault,
-            alignment: Alignment.topCenter,
-            child: expanded
-                ? Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: <Widget>[
-                      const Divider(height: 1),
-                      if (members.isEmpty)
-                        Padding(
-                          padding: AppSpacing.allMD,
-                          child: Text(
-                            '该分组暂无成员',
-                            style: theme.textTheme.bodySmall,
-                          ),
-                        ),
-                      for (final String name in members)
-                        if (_nodesByName[name] == null)
-                          _buildGroupRefTile(context, name)
-                        else
-                          _buildNodeTile(
-                            context,
-                            node: _nodesByName[name]!,
-                            groupName: group.name,
-                          ),
-                    ],
-                  )
-                : const SizedBox.shrink(),
-          ),
-        ],
-      ),
+    final String base = '${group.type} · ${group.members.length} 个成员';
+    return _GridTile(
+      key: Key('proxy_nodes_group_${group.name}'),
+      icon: Icons.account_tree_outlined,
+      active: active.isNotEmpty,
+      activeKey: Key('proxy_nodes_group_active_${group.name}'),
+      title: group.name,
+      subtitle: active.isEmpty ? base : '$base · 当前：$active',
+      onTap: () => _openGroupSheet(group),
     );
   }
 
-  Widget _buildGroupRefTile(BuildContext context, String name) {
-    final ThemeData theme = Theme.of(context);
-    return ListTile(
-      key: Key('proxy_nodes_groupref_$name'),
-      dense: true,
-      leading: Icon(
-        Icons.folder_outlined,
-        size: AppTypography.iconMD,
-        color: theme.colorScheme.onSurfaceVariant,
-      ),
-      title: Text(name, style: theme.textTheme.bodyLarge),
-      subtitle: Text('代理组', style: theme.textTheme.bodySmall),
-    );
-  }
-
-  Widget _buildNodeTile(
-    BuildContext context, {
-    required ProxyNode node,
-    required String groupName,
-  }) {
-    final ThemeData theme = Theme.of(context);
-    final ColorScheme scheme = theme.colorScheme;
-    final bool isActive = _activeByGroup[groupName] == node.name;
-    final bool isPending = _pending.contains(node.name);
-    final _DelayState? delay = _delays[node.name];
-
-    return ListTile(
+  /// 节点磁贴：标题节点名，副标题端点 / 类型，测速后附延迟徽章。
+  Widget _buildNodeTile(BuildContext context, ProxyNode node) {
+    final bool isActive = _activeByGroup.values.contains(node.name);
+    return _GridTile(
       key: Key('proxy_nodes_node_${node.name}'),
-      onTap: () => _selectNode(groupName, node.name),
-      selected: isActive,
-      leading: Icon(
-        Icons.dns_outlined,
-        color: isActive ? scheme.primary : scheme.onSurfaceVariant,
-      ),
-      title: Row(
-        children: <Widget>[
-          Flexible(
-            child: Text(
-              node.name,
-              overflow: TextOverflow.ellipsis,
-              style: theme.textTheme.titleSmall,
-            ),
-          ),
-          if (isActive) ...<Widget>[
-            const SizedBox(width: AppSpacing.xs),
-            Icon(
-              Icons.check_circle,
-              key: Key('proxy_nodes_active_${node.name}'),
-              size: AppTypography.iconMD,
-              color: scheme.primary,
-            ),
-          ],
-        ],
-      ),
-      subtitle: Text(
-        _nodeSubtitle(node),
-        style: theme.textTheme.bodySmall,
-        overflow: TextOverflow.ellipsis,
-      ),
-      trailing: _LatencyBadge(
+      icon: Icons.dns_outlined,
+      active: isActive,
+      activeKey: Key('proxy_nodes_active_${node.name}'),
+      title: node.name,
+      subtitle: _nodeSubtitle(node),
+      badge: _LatencyBadge(
         key: Key('proxy_nodes_delay_${node.name}'),
-        state: delay,
-        pending: isPending,
+        state: _delays[node.name],
+        pending: _pending.contains(node.name),
       ),
+      onTap: () => _openNodeSheet(node),
     );
   }
 
@@ -778,6 +777,290 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
         : '${node.server}${node.port > 0 ? ':${node.port}' : ''}';
     if (endpoint.isEmpty) return node.type;
     return '$endpoint · ${node.type}';
+  }
+}
+
+/// 宫格磁贴（分组 / 节点共用）：图标 + 标题 + 副标题 +（可选）延迟徽章，
+/// 当前生效项用主题 primary / primaryContainer 高亮。
+class _GridTile extends StatelessWidget {
+  const _GridTile({
+    super.key,
+    required this.icon,
+    required this.active,
+    required this.activeKey,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+    this.badge,
+  });
+
+  final IconData icon;
+  final bool active;
+  final Key activeKey;
+  final String title;
+  final String subtitle;
+  final Widget? badge;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme scheme = theme.colorScheme;
+    final Color fg = active ? scheme.onPrimaryContainer : scheme.onSurface;
+
+    return Card(
+      margin: EdgeInsets.zero,
+      color: active ? scheme.primaryContainer : null,
+      shape: RoundedRectangleBorder(
+        borderRadius: AppRadius.allLG,
+        side: BorderSide(
+          color: active ? scheme.primary : scheme.outlineVariant,
+        ),
+      ),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: AppRadius.allLG,
+        child: Padding(
+          padding: AppSpacing.allMD,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              Row(
+                children: <Widget>[
+                  Icon(
+                    icon,
+                    size: AppTypography.iconMD,
+                    color: active ? scheme.primary : scheme.onSurfaceVariant,
+                  ),
+                  const Spacer(),
+                  if (active)
+                    Icon(
+                      Icons.check_circle,
+                      key: activeKey,
+                      size: AppTypography.iconMD,
+                      color: scheme.primary,
+                    ),
+                ],
+              ),
+              const SizedBox(height: AppSpacing.xs),
+              Text(
+                title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.titleSmall?.copyWith(color: fg),
+              ),
+              const SizedBox(height: AppSpacing.xs),
+              Text(
+                subtitle,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: active
+                      ? scheme.onPrimaryContainer
+                      : scheme.onSurfaceVariant,
+                ),
+              ),
+              if (badge != null) ...<Widget>[
+                const SizedBox(height: AppSpacing.xs),
+                Align(alignment: Alignment.centerLeft, child: badge!),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 统一弹层内的选择项（分组弹层的成员行 / 节点弹层的单节点行）。
+class _PickerEntry {
+  const _PickerEntry({
+    required this.name,
+    required this.subtitle,
+    required this.isGroupRef,
+  });
+
+  final String name;
+  final String subtitle;
+
+  /// 组引用（成员是另一个代理组）→ 以文件夹图标 / 「代理组」副标题区分。
+  final bool isGroupRef;
+}
+
+/// 宫格磁贴点击后的统一底部弹层。
+///
+/// 顶部紧贴标题的 header 动作区带**测速**（调用方经 [onTest] 触发；
+/// [AppSheetScaffold] 头部无 action 槽，故置于内容区首行）。
+/// 列表项点击即选择并关闭；节点模式另在底部提供显式「选择」动作。
+/// 延迟状态来自页面（[revision] 变更时重建），不在此重复探测逻辑。
+class _NodePickerSheet extends StatelessWidget {
+  const _NodePickerSheet({
+    required this.title,
+    required this.subtitle,
+    required this.icon,
+    required this.entries,
+    required this.activeName,
+    required this.revision,
+    required this.delayOf,
+    required this.isPending,
+    required this.onTest,
+    required this.onSelect,
+    this.nodeMode = false,
+  });
+
+  final String title;
+  final String? subtitle;
+  final IconData icon;
+  final List<_PickerEntry> entries;
+  final String? activeName;
+  final ValueListenable<int> revision;
+  final _DelayState? Function(String node) delayOf;
+  final bool Function(String node) isPending;
+  final Future<void> Function() onTest;
+  final Future<void> Function(String name) onSelect;
+  final bool nodeMode;
+
+  Future<void> _select(BuildContext context, String name) async {
+    await onSelect(name);
+    if (context.mounted) Navigator.of(context).pop();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AppSheetScaffold(
+      title: title,
+      subtitle: subtitle,
+      icon: Icon(icon),
+      contentPadding: AppSpacing.onlyHorizontalXL,
+      actions: nodeMode
+          ? <Widget>[
+              FilledButton(
+                key: const Key('proxy_nodes_node_select'),
+                onPressed: () => _select(context, entries.first.name),
+                child: const Text('选择'),
+              ),
+            ]
+          : const <Widget>[],
+      content: ValueListenableBuilder<int>(
+        valueListenable: revision,
+        builder: (BuildContext context, int _, __) => Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            _buildTestHeader(context),
+            const SizedBox(height: AppSpacing.sm),
+            for (final _PickerEntry entry in entries)
+              _buildEntry(context, entry),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// header 动作区：测速（成员测试进行中时禁用并显示进度文案）。
+  Widget _buildTestHeader(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme scheme = theme.colorScheme;
+    final bool testing = entries.any((_PickerEntry e) => isPending(e.name));
+    return Row(
+      children: <Widget>[
+        Icon(
+          Icons.speed_outlined,
+          size: AppTypography.iconMD,
+          color: scheme.onSurfaceVariant,
+        ),
+        const SizedBox(width: AppSpacing.sm),
+        Expanded(
+          child: Text(
+            testing ? '正在测速…' : '延迟测试',
+            style: theme.textTheme.labelLarge?.copyWith(
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+        ),
+        FilledButton.tonalIcon(
+          key: const Key('proxy_nodes_sheet_test'),
+          onPressed: testing ? null : () => onTest(),
+          icon: const Icon(Icons.speed_outlined, size: AppTypography.iconMD),
+          label: const Text('测速'),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildEntry(BuildContext context, _PickerEntry entry) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme scheme = theme.colorScheme;
+    final bool selected = entry.name == activeName;
+    return InkWell(
+      key: Key(
+        nodeMode
+            ? 'proxy_nodes_sheet_node'
+            : 'proxy_nodes_sheet_member_${entry.name}',
+      ),
+      onTap: () => _select(context, entry.name),
+      borderRadius: AppRadius.allSM,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.sm,
+          vertical: AppSpacing.md,
+        ),
+        child: Row(
+          children: <Widget>[
+            Icon(
+              entry.isGroupRef ? Icons.folder_outlined : Icons.dns_outlined,
+              size: AppTypography.iconMD,
+              color: selected ? scheme.primary : scheme.onSurfaceVariant,
+            ),
+            const SizedBox(width: AppSpacing.sm),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Text(
+                    entry.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodyLarge?.copyWith(
+                      color: selected ? scheme.primary : scheme.onSurface,
+                      fontWeight: selected
+                          ? AppTypography.weightMedium
+                          : AppTypography.weightRegular,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    entry.subtitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: AppSpacing.sm),
+            if (!entry.isGroupRef)
+              _LatencyBadge(
+                key: Key('proxy_nodes_sheet_delay_${entry.name}'),
+                state: delayOf(entry.name),
+                pending: isPending(entry.name),
+              ),
+            if (selected)
+              Padding(
+                padding: AppSpacing.onlyLeftSM,
+                child: Icon(
+                  Icons.check_circle,
+                  size: AppTypography.iconMD,
+                  color: scheme.primary,
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
   }
 }
 
