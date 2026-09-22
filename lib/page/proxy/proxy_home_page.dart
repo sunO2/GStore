@@ -11,6 +11,7 @@ import 'proxy_logs_page.dart';
 import 'proxy_nodes_facade.dart';
 import 'proxy_nodes_page.dart';
 import 'proxy_profiles_page.dart';
+import 'proxy_run_mode_store.dart';
 import 'proxy_settings_facade.dart';
 import 'proxy_settings_page.dart';
 import 'proxy_stats_page.dart';
@@ -35,6 +36,7 @@ class ProxyHomePage extends StatefulWidget {
     this.vpnConsent,
     this.profileStore,
     this.nodeStore,
+    this.runModeStore,
     this.nodesFacade,
     this.onOpenLogs,
     this.onOpenStats,
@@ -54,6 +56,10 @@ class ProxyHomePage extends StatefulWidget {
   /// 选中节点的持久化接缝（测试注入内存实现；为空时用 [ConfigStore]）。
   /// 节点页写入、首页读取，用于入口卡显示与节点页高亮回显。
   final ProxyActiveNodeStore? nodeStore;
+
+  /// 用户选择的运行模式的持久化接缝（测试注入内存实现；为空时用 [ConfigStore]）。
+  /// 与引擎上报的「当前运行模式」分离：断开/重连/重入页面后恢复用户选择。
+  final ProxyRunModeStore? runModeStore;
 
   /// 节点页门面（测试注入假实现；为空时节点页用生产单例适配器）。
   final ProxyNodesFacade? nodesFacade;
@@ -81,6 +87,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
   late final ProxyVpnConsent _vpnConsent;
   late final ProxyActiveProfileStore _profileStore;
   late final ProxyActiveNodeStore _nodeStore;
+  late final ProxyRunModeStore _runModeStore;
   StreamSubscription<ProxyEvent>? _eventSub;
 
   bool _loading = true;
@@ -90,7 +97,8 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
   ProxyConnState _connState = ProxyConnState.stopped;
   ProxyMode _mode = ProxyMode.unknown;
 
-  /// 目标模式（未运行时用于「连接」动作；运行时即当前模式）。
+  /// 用户选择的运行模式（持久化；未运行时用于「连接」动作）。引擎上报的当前模式
+  /// 存于 [_mode]，两者分离，引擎事件不覆盖本字段。
   ProxyMode _targetMode = ProxyMode.vpn;
   ProxyLanStatus? _lanStatus;
   ProxyStateError? _actionError;
@@ -120,6 +128,8 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
     _profileStore =
         widget.profileStore ?? const ConfigStoreProxyActiveProfileStore();
     _nodeStore = widget.nodeStore ?? const ConfigStoreProxyActiveNodeStore();
+    _runModeStore =
+        widget.runModeStore ?? const ConfigStoreProxyRunModeStore();
     _eventSub = _facade.events.listen(_onEvent, onError: _onEventError);
     _load();
   }
@@ -153,12 +163,15 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
       );
       final ProxyActiveNode? activeNode =
           await _safe<ProxyActiveNode?>(() => _nodeStore.read());
+      // 用户选择的运行模式（与引擎上报的当前模式分离）。
+      final ProxyMode? storedRunMode =
+          await _safe<ProxyMode?>(() => _runModeStore.read());
 
       if (!mounted) return;
       setState(() {
         _connState = ping.state ?? ProxyConnState.stopped;
         _mode = ping.mode ?? ProxyMode.unknown;
-        _targetMode = _selectableMode(_mode);
+        _targetMode = _persistedTarget(storedRunMode) ?? _selectableMode(_mode);
         _lanStatus = lan;
         _version = version;
         _selectedProfileId = selected?.id;
@@ -282,7 +295,6 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
           _connState = event.state;
           _mode = event.mode;
           if (event.state == ProxyConnState.running) {
-            _targetMode = _selectableMode(event.mode);
             refreshNodes = true;
           } else if (event.state == ProxyConnState.stopped) {
             _nodeList = null;
@@ -290,8 +302,8 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
           _actionError = event.error;
           _stateReason = event.reason;
         case ProxyModeEvent():
+          // 引擎上报的当前模式不覆盖用户的持久化选择（_targetMode 不变）。
           _mode = event.mode;
-          _targetMode = _selectableMode(event.mode);
         case ProxyStatsEvent():
           _stats = event;
           _applyTopDomains(event.topDomains);
@@ -454,6 +466,8 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
       ),
     );
     if (result == null) return;
+    // 用户的模式选择立即持久化：断开 / 重连 / 重入页面后恢复该选择。
+    await _safe(() => _runModeStore.write(result));
     await _requestMode(result);
   }
 
@@ -640,6 +654,14 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
   /// 可选模式归一化：只有 vpn / lanProxy 是可选择的目标（`off` 由断开按钮表达）。
   ProxyMode _selectableMode(ProxyMode mode) =>
       mode == ProxyMode.lanProxy ? ProxyMode.lanProxy : ProxyMode.vpn;
+
+  /// 持久化模式归一化：`null` / `unknown` / `off` 视为「未存储」，返回 `null`。
+  ProxyMode? _persistedTarget(ProxyMode? mode) {
+    if (mode == null || mode == ProxyMode.unknown || mode == ProxyMode.off) {
+      return null;
+    }
+    return _selectableMode(mode);
+  }
 
   bool get _lanEnabled => _lanStatus?.config?.enabled ?? false;
 

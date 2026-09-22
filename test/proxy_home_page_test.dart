@@ -12,6 +12,7 @@ import 'package:gstore/page/proxy/proxy_logs_page.dart';
 import 'package:gstore/page/proxy/proxy_nodes_facade.dart';
 import 'package:gstore/page/proxy/proxy_nodes_page.dart';
 import 'package:gstore/page/proxy/proxy_profiles_page.dart';
+import 'package:gstore/page/proxy/proxy_run_mode_store.dart';
 import 'package:gstore/page/proxy/proxy_settings_facade.dart';
 import 'package:gstore/page/proxy/proxy_stats_page.dart';
 
@@ -240,6 +241,22 @@ class _FakeActiveNodeStore implements ProxyActiveNodeStore {
 
   @override
   Future<void> write(ProxyActiveNode selection) async => value = selection;
+
+  @override
+  Future<void> clear() async => value = null;
+}
+
+/// 假「用户选择的运行模式」持久化存储：内存实现。
+class _FakeRunModeStore implements ProxyRunModeStore {
+  _FakeRunModeStore([this.value]);
+
+  ProxyMode? value;
+
+  @override
+  Future<ProxyMode?> read() async => value;
+
+  @override
+  Future<void> write(ProxyMode mode) async => value = mode;
 
   @override
   Future<void> clear() async => value = null;
@@ -1112,6 +1129,132 @@ void main() {
     await _flush(tester);
 
     expect(find.text('持久化节点'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('运行模式：选择局域网代理后持久化，重建页面恢复', (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade();
+    final store = _FakeRunModeStore();
+    await tester.pumpWidget(
+      _wrap(ProxyHomePage(facade: facade, runModeStore: store)),
+    );
+    await _flush(tester);
+    expect(find.text('VPN 模式（全设备）'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('proxy-mode-tile')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(find.byKey(const Key('proxy-mode-option-lanProxy')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(store.value, ProxyMode.lanProxy);
+    expect(find.text('局域网代理（仅共享给其它设备）'), findsOneWidget);
+
+    // 离开再进入代理页（重建 State）：从持久化恢复用户选择。
+    await tester.pumpWidget(_wrap(const SizedBox()));
+    await tester.pump();
+    await tester.pumpWidget(
+      _wrap(ProxyHomePage(facade: facade, runModeStore: store)),
+    );
+    await _flush(tester);
+
+    expect(find.text('局域网代理（仅共享给其它设备）'), findsOneWidget);
+    expect(find.text('VPN 模式（全设备）'), findsNothing);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('运行模式：断开不清空已持久化的模式选择', (tester) async {
+    final facade = _FakeProxyFacade();
+    final consent = _FakeVpnConsent();
+    final store = _FakeRunModeStore(ProxyMode.lanProxy);
+    await tester.pumpWidget(
+      _wrap(ProxyHomePage(
+        facade: facade,
+        vpnConsent: consent,
+        runModeStore: store,
+      )),
+    );
+    await _flush(tester);
+    expect(find.text('局域网代理（仅共享给其它设备）'), findsOneWidget);
+
+    facade.emit(const ProxyStateEvent(
+      state: ProxyConnState.running,
+      mode: ProxyMode.lanProxy,
+    ));
+    await _flush(tester);
+    expect(find.text('断开'), findsOneWidget);
+
+    await tester.tap(find.text('断开'));
+    await _flush(tester);
+
+    expect(find.text('未连接'), findsOneWidget);
+    expect(store.value, ProxyMode.lanProxy);
+    expect(find.text('局域网代理（仅共享给其它设备）'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('运行模式：引擎上报的运行模式不覆盖用户持久化选择', (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade();
+    final store = _FakeRunModeStore(ProxyMode.lanProxy);
+    await tester.pumpWidget(
+      _wrap(ProxyHomePage(facade: facade, runModeStore: store)),
+    );
+    await _flush(tester);
+    expect(find.text('局域网代理（仅共享给其它设备）'), findsOneWidget);
+
+    // 引擎事件上报 vpn：用户的 lanProxy 选择不被覆盖。
+    facade.emit(const ProxyStateEvent(
+      state: ProxyConnState.running,
+      mode: ProxyMode.vpn,
+    ));
+    facade.emit(const ProxyModeEvent(
+      mode: ProxyMode.vpn,
+      previous: ProxyMode.off,
+    ));
+    await _flush(tester);
+
+    expect(find.text('局域网代理（仅共享给其它设备）'), findsOneWidget);
+    expect(store.value, ProxyMode.lanProxy);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('运行模式：存储值无效时安全回退 VPN', (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade();
+    final store = _FakeRunModeStore(ProxyMode.unknown);
+    await tester.pumpWidget(
+      _wrap(ProxyHomePage(facade: facade, runModeStore: store)),
+    );
+    await _flush(tester);
+
+    expect(find.text('VPN 模式（全设备）'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('运行模式：未存储时默认 VPN', (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade();
+    final store = _FakeRunModeStore();
+    await tester.pumpWidget(
+      _wrap(ProxyHomePage(facade: facade, runModeStore: store)),
+    );
+    await _flush(tester);
+
+    expect(find.text('VPN 模式（全设备）'), findsOneWidget);
+    expect(store.value, isNull);
     expect(tester.takeException(), isNull);
 
     await facade.controller.close();
