@@ -269,3 +269,38 @@ harness 证明机制：
   always-on 重启、start→stop→start 线程基线（Todo 24；host 侧只能证明 fd/守护/桥重置机制）。
 
 相关验证记录分散在各功能章节末尾（`API.md` §7–§16）与 `.omo/evidence/`。
+
+## 11. 设备侧隧道冒烟 harness（`integration_test/`）
+
+§10 记录的「设备侧 `integration_test/` harness 缺失」已补齐：仓库现提交
+`integration_test/proxy_tunnel_test.dart` 与包装脚本
+`scripts/ci/run_proxy_tunnel_device_test.sh`，供**连接 adb 真机**时把「流量是否真的
+经代理内核转发」变成无需人工判断的断言。**本仓库 CI 无设备，故此 harness 在 CI 中
+不执行**；它只在有人接了真机时手动/由 agent 驱动运行。
+
+**怎么做（无真实网络依赖）**
+
+1. 在回环起一个极简 **HTTP 代理 fixture**（`HttpServer`），对任何明文请求返回已知
+   marker `GSTORE_TUNNEL_FIXTURE_MARKER`（既是 mock server，也是内核可拨号的 fixture）。
+2. 程序化生成**本地合成** Clash 订阅（单个 `http` 节点指向该 fixture + `MATCH,PROXY`，
+   风格同 `rust/gstore_mod_proxy/tests/fixtures/synthetic_provider.yaml`），经
+   `profile.import_text` → `profile.create` 持久化。**绝不使用/打印真实订阅 URL 或 token。**
+3. `lan.set {enabled:true, bindAddress:"127.0.0.1"}` 开仅回环 LAN 入站，`core.start`
+   以 `lanProxy` 模式连接（**不需要 VpnService 授权**，故可在真机/模拟器确定性运行）。
+4. 用 `HttpClient.findProxy` 经该入站请求 `http://tunnel-fixture.example.test/marker`，
+   断言响应体含 marker（证明流量确实被代理）。
+5. `stats.domain.get` 断言该域名被记录且 `connections >= 1`。
+
+**怎么运行**
+
+```bash
+adb devices
+flutter test integration_test/proxy_tunnel_test.dart -d <deviceId>
+# 或（无设备时以 "NO DEVICE ATTACHED" 非零退出）：
+scripts/ci/run_proxy_tunnel_device_test.sh [deviceId]
+```
+
+**覆盖边界（诚实声明）**：本 harness 只覆盖**无需系统 VPN 授权**的引擎/数据面/统计
+路径。真机 `VpnService` 授权、TUN、`protect`、always-on 生命周期**仍为 §10 所列
+UNVERIFIED**，本文件不声称其通过。依赖：`pubspec.yaml` 新增 `integration_test`
+（Flutter SDK）dev 依赖，未改动应用版本与既有依赖。
