@@ -404,7 +404,9 @@ on success | `proxy.subscription.failed` on failure) (§3).
 ```
 
 `config.generate` is pure: it reads the stored profile, the module's DNS config
-(Todo 8) and the configured rule lines (Todo 9) and renders the template. When
+(Todo 8) and the effective rule lines (request `rules` overlay → the profile's
+captured `rules:` → Todo 9's current lines, plus an appended terminal `MATCH`)
+and renders the template. When
 `profileId` is omitted the first profile in stable store order is used; with no
 stored profile it returns `PROXY_CONFIG_PROFILE_REQUIRED` (422).
 `profile.export_clash` is the same document addressed by a required `id`.
@@ -1575,7 +1577,11 @@ injected import, and the failure path uses an SSRF-blocked loopback URL.
 Clash template from the whitelisted canonical model (Todo 11/12) plus
 module-owned overlays. Raw provider YAML is never handed to the engine — the
 community pitfall is that injected rules/groups in a provider document are
-ignored (or worse, a hostile document smuggles configuration in).
+ignored (or worse, a hostile document smuggles configuration in). The provider
+document's nodes, `proxy-groups` and `rules:` **are** captured into the
+canonical model at import (Todo 11) and re-emitted through this template; every
+other key (`dns`, `tun`, `external-controller`, providers, `script`, …) is
+dropped.
 
 The document contains exactly:
 
@@ -1583,11 +1589,20 @@ The document contains exactly:
 |---|---|
 | `proxies` | stored `ImportedProfile.nodes`, reconstructed field-by-field |
 | `proxy-groups` | stored `ImportedProfile.groups` (+ a synthesized `PROXY` select group when absent) |
-| `rules` | the `rules` overlay, else Todo 9's current rule lines, else `MATCH,DIRECT` |
+| `rules` | the `rules` overlay → the profile's captured Clash `rules:` → Todo 9's current rule lines, then a terminal `MATCH` is appended when absent (`MATCH,PROXY` when the profile has nodes, else `MATCH,DIRECT`) |
 | `dns` | Todo 8's effective `DnsConfig` (with the request's partial overlay merged) |
 | `tun` | `enable: true` + `stack` + `mtu` only |
 | `hosts` | Todo 8's static host map (when non-empty) |
 | `mode` / `log-level` | fixed (`rule` / `warning`) |
+
+The first non-empty source wins: an explicit `rules` overlay is honoured
+verbatim (except for the appended terminal when it is missing), otherwise the
+subscription's `rules:` captured at import are used, otherwise the last
+`rules.reload` lines. A profile with nodes can therefore never silently fall
+back to `MATCH,DIRECT` — the proxy stays selected by default. Profiles stored
+before this field existed lack `rules`; `ImportedProfile.rules` is
+`#[serde(default)]`, so they still load and fall back to the appended
+`MATCH,PROXY` until re-imported.
 
 **Pinned guarantees:**
 
@@ -1644,7 +1659,11 @@ returning `running`, so a subsequent `node.select` sees the live registry.
 block carries only `stack`/`mtu`; `mtu < 1280` is a structured 422; the registry
 builds leaves+groups+built-ins and uses the store; an unsupported node (e.g.
 `snell`) is warned and skipped without aborting; an `hysteria2` node is built
-into the registry with no `PROXY_CONFIG_NODE_UNSUPPORTED` warning; and the full C-ABI flow (generate →
+into the registry with no `PROXY_CONFIG_NODE_UNSUPPORTED` warning; the rules
+pipeline emits the profile's captured `rules:` verbatim, appends `MATCH,PROXY`
+for a profile with nodes that has no terminal match, keeps `MATCH,DIRECT` only
+for a nodeless profile, lets an explicit overlay win, and round-trips `rules`
+through serde and the `ProfileStore`; and the full C-ABI flow (generate →
 start → `node.select` → unreachable-node `node.delay_test` → `config.apply`
 without a restart → stop) reaches `running`. **UNVERIFIED**: on-device
 engine/TUN start (no adb device) — proven against the host socketpair harness

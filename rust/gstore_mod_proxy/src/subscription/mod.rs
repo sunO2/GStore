@@ -175,6 +175,7 @@ pub(crate) fn import_link(payload: &[u8]) -> Result<ImportedProfile, ModuleError
         format: "shareLink".to_string(),
         nodes: vec![node],
         groups: Vec::new(),
+        rules: Vec::new(),
         warnings: Vec::new(),
     };
     let source = ImportSource {
@@ -251,6 +252,7 @@ fn finalize(
         node_count: parsed.nodes.len(),
         nodes: parsed.nodes,
         groups: parsed.groups,
+        rules: parsed.rules,
         userinfo,
         source,
         warnings: parsed.warnings,

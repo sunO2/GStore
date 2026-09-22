@@ -729,6 +729,7 @@ pub(crate) mod tests {
             node_count: 2,
             nodes: vec![offline_node("node-a", 0), offline_node("node-b", 1)],
             groups,
+            rules: Vec::new(),
             userinfo: None,
             source: crate::subscription::ImportSource::default(),
             warnings: Vec::new(),

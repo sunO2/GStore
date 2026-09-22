@@ -94,6 +94,16 @@ fn synthetic_fixture_imports_24_nodes_and_three_groups() {
     assert!(select.members.contains(&"vless-01".to_string()));
     assert!(select.members.contains(&"hy2-hop-port".to_string()));
 
+    assert_eq!(
+        profile.rules,
+        vec![
+            "DOMAIN-SUFFIX,example.com,PROXY",
+            "GEOIP,LAN,DIRECT",
+            "MATCH,PROXY",
+        ],
+        "the fixture's rules: must be captured at import"
+    );
+
     // VLESS transport shape.
     for node in &vless {
         assert_eq!(

@@ -152,6 +152,9 @@ pub struct ImportedProfile {
     pub nodes: Vec<ProxyNode>,
     #[serde(default)]
     pub groups: Vec<ProxyGroup>,
+    /// Subscription's Clash `rules:` captured at import; `serde(default)` keeps already-stored profiles loadable.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub userinfo: Option<SubscriptionUserinfo>,
     pub source: ImportSource,

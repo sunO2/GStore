@@ -34,6 +34,7 @@ pub(crate) struct ParsedContent {
     pub(crate) format: String,
     pub(crate) nodes: Vec<ProxyNode>,
     pub(crate) groups: Vec<ProxyGroup>,
+    pub(crate) rules: Vec<String>,
     pub(crate) warnings: Vec<String>,
 }
 
@@ -110,6 +111,7 @@ fn parse_clash(
         format: "clash".to_string(),
         nodes,
         groups,
+        rules: data.rules,
         warnings,
     })
 }
@@ -316,6 +318,7 @@ fn parse_uri_list(
         format: format.to_string(),
         nodes,
         groups: Vec::new(),
+        rules: Vec::new(),
         warnings,
     })
 }

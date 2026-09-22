@@ -17,6 +17,7 @@
 #     `port` — the canonical model requires a non-zero `port`, so it is dropped
 #     at import (asserted in tests).
 #   * 3 proxy-groups: select (`PROXY`), url-test (`AUTO`), fallback (`FALLBACK`).
+#   * 3 fabricated `rules:` lines, terminated by `MATCH,PROXY`.
 
 port: 7890
 socks-port: 7891
@@ -107,3 +108,8 @@ proxy-groups:
       - hy2-03
       - hy2-04
       - hy2-hop-port
+
+rules:
+  - DOMAIN-SUFFIX,example.com,PROXY
+  - GEOIP,LAN,DIRECT
+  - MATCH,PROXY

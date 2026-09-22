@@ -1427,6 +1427,7 @@ pub(crate) mod tests {
                 group_type: "select".to_string(),
                 members: vec!["node-a".to_string(), "node-b".to_string()],
             }],
+            rules: Vec::new(),
             userinfo: Some(SubscriptionUserinfo {
                 upload: Some(10),
                 download: Some(20),
@@ -1453,6 +1454,45 @@ pub(crate) mod tests {
         store
             .create(serde_json::to_vec(&payload).unwrap().as_slice())
             .unwrap()
+    }
+
+    #[test]
+    fn profile_rules_survive_serde_and_store_round_trip() {
+        let dir = tmp_dir("rules");
+        let store = open(&dir);
+        let mut profile = sample_profile("Rules", "url", Some("https://example.com/sub"));
+        profile.rules = vec![
+            "DOMAIN-SUFFIX,example.com,PROXY".to_string(),
+            "MATCH,PROXY".to_string(),
+        ];
+        let expected = profile.rules.clone();
+
+        let json = serde_json::to_string(&profile).unwrap();
+        let back: ImportedProfile = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.rules, expected, "ImportedProfile serde round-trip");
+
+        let payload = serde_json::to_vec(&serde_json::json!({ "profile": profile })).unwrap();
+        store.create(&payload).unwrap();
+        let got = store.get(br#"{"id":"p1"}"#).unwrap();
+        assert_eq!(got.profile.rules, expected, "ProfileStore create/get");
+
+        let reopened = open(&dir);
+        assert_eq!(
+            reopened.get(br#"{"id":"p1"}"#).unwrap().profile.rules,
+            expected,
+            "rules survive a store reopen"
+        );
+
+        let legacy_json = serde_json::json!({
+            "name": "Legacy",
+            "format": "clash",
+            "nodeCount": 1,
+            "nodes": [serde_json::to_value(node("node-a", 8388)).unwrap()],
+            "groups": [],
+            "source": {"origin": "text"},
+        });
+        let legacy: ImportedProfile = serde_json::from_value(legacy_json).unwrap();
+        assert!(legacy.rules.is_empty(), "a payload without `rules` defaults to empty");
     }
 
     /// Happy QA: create → list → get → update → delete round-trip; the files on

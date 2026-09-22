@@ -12,8 +12,10 @@
 //! * `external-controller` and `secret` are **never** emitted (the module runs
 //!   no control server). A subscription cannot configure a control port/secret.
 //! * `proxy-providers`, `rule-providers`, `script` nodes and any `dns`/`tun`
-//!   override carried by imported content are not merged — the DNS/rules/tun
-//!   blocks come from module-owned config, never from the profile.
+//!   override carried by imported content are not merged — the DNS/tun blocks
+//!   come from module-owned config, never from the profile. The profile's
+//!   captured `rules:` are re-emitted through this template (see
+//!   [`resolve_rules`]); nothing else from the provider document is.
 //! * `tun.file-descriptor` is **not** emitted: meow's `RawTun` has no such
 //!   field (the TUN fd is injected out-of-band into our netstack pump, Todo 6).
 //! * `tun` carries only `enable`, `stack` and `mtu`.
@@ -279,10 +281,10 @@ fn generate_record(
     let stack = resolve_stack(req.stack.as_deref());
     let mtu = resolve_mtu(req.mtu)?;
     let dns = merged_dns(req.dns.as_ref())?;
-    let rules = resolve_rules(req.rules.as_ref());
 
     let mut warnings = Vec::new();
     let profile = &record.profile;
+    let rules = resolve_rules(req.rules.as_ref(), &profile.rules, !profile.nodes.is_empty());
 
     let proxies: Vec<Yaml> = profile
         .nodes
@@ -367,21 +369,38 @@ fn resolve_mtu(raw: Option<u16>) -> Result<u16, ModuleError> {
     Ok(mtu)
 }
 
-fn resolve_rules(overlay: Option<&Vec<String>>) -> Vec<String> {
+/// Terminal target; `group_values` always emits this select group when nodes exist.
+const DEFAULT_MATCH_GROUP: &str = "PROXY";
+
+/// Source priority: overlay → captured profile rules → current lines, plus an appended terminal MATCH when absent.
+fn resolve_rules(
+    overlay: Option<&Vec<String>>,
+    profile_rules: &[String],
+    has_nodes: bool,
+) -> Vec<String> {
     let lines = match overlay {
         Some(lines) => lines.clone(),
+        None if !profile_rules.is_empty() => profile_rules.to_vec(),
         None => crate::rules::current_lines(),
     };
-    let cleaned: Vec<String> = lines
+    let mut cleaned: Vec<String> = lines
         .into_iter()
         .map(|line| line.trim().to_string())
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
         .collect();
-    if cleaned.is_empty() {
-        vec!["MATCH,DIRECT".to_string()]
-    } else {
-        cleaned
+    if !cleaned.iter().any(|line| is_terminal_match(line)) {
+        cleaned.push(if has_nodes {
+            format!("MATCH,{DEFAULT_MATCH_GROUP}")
+        } else {
+            "MATCH,DIRECT".to_string()
+        });
     }
+    cleaned
+}
+
+fn is_terminal_match(line: &str) -> bool {
+    let head = line.split(',').next().unwrap_or("").trim();
+    head.eq_ignore_ascii_case("MATCH") || head.eq_ignore_ascii_case("FINAL")
 }
 
 fn merged_dns(overlay: Option<&Value>) -> Result<DnsConfig, ModuleError> {
@@ -841,6 +860,14 @@ mod tests {
     }
 
     fn stored(nodes: Vec<ProxyNode>, groups: Vec<ProxyGroup>) -> StoredProfile {
+        stored_with_rules(nodes, groups, Vec::new())
+    }
+
+    fn stored_with_rules(
+        nodes: Vec<ProxyNode>,
+        groups: Vec<ProxyGroup>,
+        rules: Vec<String>,
+    ) -> StoredProfile {
         let names: Vec<String> = nodes.iter().map(|n| n.name.clone()).collect();
         let groups = if groups.is_empty() {
             vec![ProxyGroup {
@@ -865,6 +892,7 @@ mod tests {
                 node_count: nodes.len(),
                 nodes,
                 groups,
+                rules,
                 userinfo: None,
                 source: ImportSource::default(),
                 warnings: Vec::new(),
@@ -942,7 +970,92 @@ mod tests {
         assert_eq!(value["dns"]["enhanced-mode"], Yaml::String("redir-host".to_string()));
         assert_eq!(value["tun"]["stack"], Yaml::String("mixed".to_string()));
         assert_eq!(value["tun"]["mtu"].as_u64(), Some(1400));
-        assert_eq!(value["rules"].as_sequence().unwrap().len(), 1);
+        assert_eq!(
+            value["rules"].as_sequence().unwrap().len(),
+            2,
+            "explicit overlay has no terminal, so MATCH,PROXY is appended"
+        );
+        assert_eq!(value["rules"][0], Yaml::String("DOMAIN,example.com,PROXY".to_string()));
+        assert_eq!(value["rules"][1], Yaml::String("MATCH,PROXY".to_string()));
+    }
+
+    fn rule_lines(value: &Yaml) -> Vec<String> {
+        value["rules"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .map(|r| r.as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn profile_rules_are_emitted_verbatim_with_their_terminal() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        crate::rules::reset_for_tests();
+        let record = stored_with_rules(
+            vec![trojan("t1", "192.0.2.10", 443, 0)],
+            Vec::new(),
+            vec![
+                "DOMAIN-SUFFIX,example.com,PROXY".to_string(),
+                "GEOIP,LAN,DIRECT".to_string(),
+                "MATCH,PROXY".to_string(),
+            ],
+        );
+        let generated = render(&record, &GenerateRequest::default());
+        let value: Yaml = serde_yaml::from_str(&generated.yaml).unwrap();
+        assert_eq!(
+            rule_lines(&value),
+            vec!["DOMAIN-SUFFIX,example.com,PROXY", "GEOIP,LAN,DIRECT", "MATCH,PROXY"]
+        );
+    }
+
+    #[test]
+    fn profile_without_rules_but_nodes_terminates_in_proxy_not_direct() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        crate::rules::reset_for_tests();
+        let record = stored(vec![trojan("t1", "192.0.2.10", 443, 0)], Vec::new());
+        let generated = render(&record, &GenerateRequest::default());
+        let value: Yaml = serde_yaml::from_str(&generated.yaml).unwrap();
+        assert_eq!(rule_lines(&value), vec!["MATCH,PROXY"]);
+        assert!(
+            !generated.yaml.contains("MATCH,DIRECT"),
+            "a profile with nodes must never silently go direct:\n{}",
+            generated.yaml
+        );
+    }
+
+    #[test]
+    fn profile_without_nodes_or_rules_terminates_in_direct() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        crate::rules::reset_for_tests();
+        let record = stored(Vec::new(), Vec::new());
+        let generated = render(&record, &GenerateRequest::default());
+        let value: Yaml = serde_yaml::from_str(&generated.yaml).unwrap();
+        assert_eq!(rule_lines(&value), vec!["MATCH,DIRECT"]);
+    }
+
+    #[test]
+    fn explicit_overlay_wins_over_profile_rules_and_gains_a_terminal() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        crate::rules::reset_for_tests();
+        let record = stored_with_rules(
+            vec![trojan("t1", "192.0.2.10", 443, 0)],
+            Vec::new(),
+            vec![
+                "DOMAIN-SUFFIX,profile.example,PROXY".to_string(),
+                "MATCH,PROXY".to_string(),
+            ],
+        );
+        let req = GenerateRequest {
+            rules: Some(vec!["DOMAIN,overlay.example,PROXY".to_string()]),
+            ..GenerateRequest::default()
+        };
+        let generated = render(&record, &req);
+        let value: Yaml = serde_yaml::from_str(&generated.yaml).unwrap();
+        assert_eq!(
+            rule_lines(&value),
+            vec!["DOMAIN,overlay.example,PROXY", "MATCH,PROXY"]
+        );
     }
 
     #[test]
