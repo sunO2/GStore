@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
+import 'package:gstore/page/proxy/proxy_active_node_store.dart';
 import 'package:gstore/page/proxy/proxy_active_profile_store.dart';
 import 'package:gstore/page/proxy/proxy_home_facade.dart';
 import 'package:gstore/page/proxy/proxy_home_page.dart';
@@ -217,6 +218,22 @@ class _FakeProfileStore implements ProxyActiveProfileStore {
 
   @override
   Future<void> write(String id) async => value = id;
+
+  @override
+  Future<void> clear() async => value = null;
+}
+
+/// 假「当前选中节点」持久化存储：内存实现。
+class _FakeActiveNodeStore implements ProxyActiveNodeStore {
+  _FakeActiveNodeStore([this.value]);
+
+  ProxyActiveNode? value;
+
+  @override
+  Future<ProxyActiveNode?> read() async => value;
+
+  @override
+  Future<void> write(ProxyActiveNode selection) async => value = selection;
 
   @override
   Future<void> clear() async => value = null;
@@ -869,5 +886,150 @@ void main() {
     expect(tester.takeException(), isNull);
 
     await facade.controller.close();
+  });
+
+  testWidgets('入口卡副标题：显示选中订阅名与选中节点，未选择时中性文案',
+      (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade()
+      ..profileListResult = const ProfileList(
+        count: 1,
+        profiles: <ProfileSummary>[
+          ProfileSummary(id: 'p1', name: '订阅一', nodeCount: 5),
+        ],
+      );
+    final profileStore = _FakeProfileStore();
+    final nodeStore = _FakeActiveNodeStore(
+      const ProxyActiveNode(group: 'PROXY', node: '香港 01'),
+    );
+    await tester.pumpWidget(
+      _wrap(ProxyHomePage(
+        facade: facade,
+        profileStore: profileStore,
+        nodeStore: nodeStore,
+      )),
+    );
+    await _flush(tester);
+
+    // 订阅卡副标题 = 选中订阅名（非「导入/更新节点订阅」）。
+    expect(find.text('订阅一'), findsOneWidget);
+    // 节点卡副标题 = 分组 · 选中节点。
+    expect(find.text('PROXY · 香港 01'), findsOneWidget);
+    expect(find.text('导入/更新节点订阅'), findsNothing);
+    expect(find.text('选择节点 / 测速'), findsNothing);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('入口卡副标题：无选中时显示中性文案', (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade();
+    await tester.pumpWidget(
+      _wrap(ProxyHomePage(facade: facade, nodeStore: _FakeActiveNodeStore())),
+    );
+    await _flush(tester);
+
+    expect(find.text('未选择订阅'), findsOneWidget);
+    expect(find.text('未选择节点'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('status：运行中收到引擎错误时状态色不转 error，错误仍走横幅',
+      (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade();
+    await tester.pumpWidget(_wrap(ProxyHomePage(facade: facade)));
+    await _flush(tester);
+
+    facade.emit(const ProxyStateEvent(
+      state: ProxyConnState.running,
+      mode: ProxyMode.vpn,
+    ));
+    await _flush(tester);
+
+    // 连接成功后再来一条带 error 的 state 事件：状态色必须仍为 primary。
+    facade.emit(const ProxyStateEvent(
+      state: ProxyConnState.running,
+      mode: ProxyMode.vpn,
+      error: ProxyStateError(code: 'PROXY_X', message: '引擎报错'),
+    ));
+    await _flush(tester);
+
+    final BuildContext ctx =
+        tester.element(find.byKey(const Key('proxy-status-text')));
+    final ColorScheme scheme = Theme.of(ctx).colorScheme;
+    final Text status =
+        tester.widget<Text>(find.byKey(const Key('proxy-status-text')));
+    expect(status.data, '已连接');
+    expect(status.style?.color, scheme.primary);
+    expect(status.style?.color, isNot(scheme.error));
+
+    // 错误反馈仍在横幅（errorContainer）+ 重试按钮。
+    expect(find.byKey(const Key('proxy-error-banner')), findsOneWidget);
+    expect(find.text('PROXY_X'), findsOneWidget);
+    expect(find.text('引擎报错'), findsOneWidget);
+    expect(find.text('重试'), findsOneWidget);
+
+    // 断开按钮保持主题默认（未引入 error 配色）。
+    final List<OutlinedButton> outlined = tester
+        .widgetList<OutlinedButton>(
+          find.byWidgetPredicate((Widget w) => w is OutlinedButton),
+        )
+        .toList();
+    expect(outlined, isNotEmpty);
+    for (final OutlinedButton button in outlined) {
+      expect(button.style?.foregroundColor, isNull);
+    }
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('节点入口：透传 store + 初始高亮，返回后刷新副标题', (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade()
+      ..profileListResult = const ProfileList(
+        count: 1,
+        profiles: <ProfileSummary>[
+          ProfileSummary(id: 'p1', name: '订阅一', nodeCount: 5),
+        ],
+      );
+    final profileStore = _FakeProfileStore('p1');
+    final nodeStore = _FakeActiveNodeStore(
+      const ProxyActiveNode(group: 'PROXY', node: '香港 01'),
+    );
+    final nodesFacade = _FakeNodesFacade();
+    await tester.pumpWidget(
+      _wrap(ProxyHomePage(
+        facade: facade,
+        profileStore: profileStore,
+        nodeStore: nodeStore,
+        nodesFacade: nodesFacade,
+      )),
+    );
+    await _flush(tester);
+    expect(find.text('PROXY · 香港 01'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('proxy-nodes-tile')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    final page = tester.widget<ProxyNodesPage>(find.byType(ProxyNodesPage));
+    expect(page.nodeStore, same(nodeStore));
+    expect(page.initialActiveByGroup, <String, String>{'PROXY': '香港 01'});
+
+    // 在「节点页」期间选择发生变化：返回首页应刷新入口卡副标题。
+    nodeStore.value = const ProxyActiveNode(group: 'AUTO', node: '美国 03');
+    await tester.pageBack();
+    await _flush(tester);
+
+    expect(find.text('AUTO · 美国 03'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+    await nodesFacade.controller.close();
   });
 }

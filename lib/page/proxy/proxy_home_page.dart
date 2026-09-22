@@ -4,6 +4,7 @@ import 'package:gstore/core/core.dart';
 import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
 
+import 'proxy_active_node_store.dart';
 import 'proxy_active_profile_store.dart';
 import 'proxy_home_facade.dart';
 import 'proxy_logs_page.dart';
@@ -33,6 +34,7 @@ class ProxyHomePage extends StatefulWidget {
     this.facade,
     this.vpnConsent,
     this.profileStore,
+    this.nodeStore,
     this.nodesFacade,
     this.onOpenLogs,
     this.onOpenStats,
@@ -48,6 +50,10 @@ class ProxyHomePage extends StatefulWidget {
 
   /// 选中订阅 id 的持久化接缝（测试注入内存实现；为空时用 [ConfigStore]）。
   final ProxyActiveProfileStore? profileStore;
+
+  /// 选中节点的持久化接缝（测试注入内存实现；为空时用 [ConfigStore]）。
+  /// 节点页写入、首页读取，用于入口卡显示与节点页高亮回显。
+  final ProxyActiveNodeStore? nodeStore;
 
   /// 节点页门面（测试注入假实现；为空时节点页用生产单例适配器）。
   final ProxyNodesFacade? nodesFacade;
@@ -74,6 +80,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
   late final ProxyHomeFacade _facade;
   late final ProxyVpnConsent _vpnConsent;
   late final ProxyActiveProfileStore _profileStore;
+  late final ProxyActiveNodeStore _nodeStore;
   StreamSubscription<ProxyEvent>? _eventSub;
 
   bool _loading = true;
@@ -99,6 +106,9 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
   String? _selectedProfileId;
   String? _currentOutbound;
 
+  /// 当前选中的节点（持久化；节点页写入，首页展示 + 节点页高亮回显）。
+  ProxyActiveNode? _activeNode;
+
   @override
   void initState() {
     super.initState();
@@ -106,6 +116,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
     _vpnConsent = widget.vpnConsent ?? const PlatformProxyVpnConsent();
     _profileStore =
         widget.profileStore ?? const ConfigStoreProxyActiveProfileStore();
+    _nodeStore = widget.nodeStore ?? const ConfigStoreProxyActiveNodeStore();
     _eventSub = _facade.events.listen(_onEvent, onError: _onEventError);
     _load();
   }
@@ -136,6 +147,8 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
       final ProfileSummary? selected = await _resolveSelectedProfile(
         profiles?.profiles ?? const <ProfileSummary>[],
       );
+      final ProxyActiveNode? activeNode =
+          await _safe<ProxyActiveNode?>(() => _nodeStore.read());
 
       if (!mounted) return;
       setState(() {
@@ -147,6 +160,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
         _selectedProfileId = selected?.id;
         _profileName = selected?.name;
         _profileNodeCount = selected?.nodeCount;
+        _activeNode = activeNode;
         if (traffic != null) _applyTopDomains(traffic.topDomains);
         _loading = false;
       });
@@ -209,6 +223,15 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
       _profileName = selected?.name;
       _profileNodeCount = selected?.nodeCount;
     });
+  }
+
+  /// 从节点页返回后重新读取选中节点（用户可能改选）；best-effort，失败降级为
+  /// 保持旧值（绝不崩溃）。
+  Future<void> _reloadActiveNode() async {
+    final ProxyActiveNode? activeNode =
+        await _safe<ProxyActiveNode?>(() => _nodeStore.read());
+    if (!mounted) return;
+    setState(() => _activeNode = activeNode);
   }
 
   /// always-on / 进程死亡恢复：前台服务在跑但 Rust 引擎已停（进程被系统重启后
@@ -564,16 +587,31 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
   ///
   /// 首页只持有**选中的 profile id**；节点与分组清单由节点页经门面
   /// `profile.get` 自行加载（本页不做任何解析）。无选中订阅时节点页渲染其
-  /// 设计好的空态。
-  void _openNodes() {
-    Navigator.of(context).push(
+  /// 设计好的空态。返回后重新读取选中节点——用户可能改选，首页入口卡据此刷新。
+  Future<void> _openNodes() async {
+    await Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => ProxyNodesPage(
           profileId: _selectedProfileId,
           facade: widget.nodesFacade,
+          nodeStore: _nodeStore,
+          initialActiveByGroup: _activeNodeMap(),
         ),
       ),
     );
+    if (!mounted) return;
+    await _reloadActiveNode();
+  }
+
+  /// 节点页高亮回显的初始映射：`{group: node}`（无持久化选择时为空）。
+  Map<String, String> _activeNodeMap() {
+    final selection = _activeNode;
+    if (selection == null ||
+        selection.group.isEmpty ||
+        selection.node.isEmpty) {
+      return const <String, String>{};
+    }
+    return <String, String>{selection.group: selection.node};
   }
 
   // ==================== 展示辅助 ====================
@@ -627,6 +665,24 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
     return (outbound == null || outbound.isEmpty) ? '自动' : outbound;
   }
 
+  /// 入口卡「订阅」副标题：当前选中订阅名（无选中降级为中性文案）。
+  String get _subscriptionCardSubtitle {
+    final name = _profileName;
+    return (name == null || name.isEmpty) ? '未选择订阅' : name;
+  }
+
+  /// 入口卡「节点选择」副标题：优先持久化的选中节点（`ProxyActiveNodeStore`），
+  /// 否则中性文案。（运行时 outbound 仍由状态卡的「当前节点」行表达，避免重复。）
+  String get _nodesCardSubtitle {
+    final active = _activeNode;
+    if (active != null && active.node.isNotEmpty) {
+      return active.group.isEmpty
+          ? active.node
+          : '${active.group} · ${active.node}';
+    }
+    return '未选择节点';
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -648,7 +704,11 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
       children: [
         _buildStatusCard(context),
         const SizedBox(height: AppSpacing.lg),
-        _buildEntryCards(context),
+        _buildEntryCards(
+          context,
+          subscriptionSubtitle: _subscriptionCardSubtitle,
+          nodesSubtitle: _nodesCardSubtitle,
+        ),
         const SizedBox(height: AppSpacing.lg),
         _buildTrafficCard(context),
         const SizedBox(height: AppSpacing.lg),
@@ -710,7 +770,14 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
   ///
   /// 第 1 行 订阅 / 节点选择；第 2 行 代理模式 / 代理设置。代理设置**始终**
   /// 渲染（不依赖运行模式）；LAN 未启用警告渲染在两行之下。
-  Widget _buildEntryCards(BuildContext context) {
+  ///
+  /// [subscriptionSubtitle] / [nodesSubtitle] 由调用方传入（当前选中订阅名 /
+  /// 当前选中节点），避免入口卡再自行解析状态。
+  Widget _buildEntryCards(
+    BuildContext context, {
+    required String subscriptionSubtitle,
+    required String nodesSubtitle,
+  }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -724,7 +791,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
                   key: const Key('proxy-subscribe-tile'),
                   icon: Icons.rss_feed_outlined,
                   title: '订阅',
-                  subtitle: '导入/更新节点订阅',
+                  subtitle: subscriptionSubtitle,
                   onTap: _openProfiles,
                 ),
               ),
@@ -735,7 +802,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
                   key: const Key('proxy-nodes-tile'),
                   icon: Icons.account_tree_outlined,
                   title: '节点选择',
-                  subtitle: '选择节点 / 测速',
+                  subtitle: nodesSubtitle,
                   onTap: _openNodes,
                 ),
               ),
@@ -886,13 +953,15 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final hasError = _actionError != null;
-    final statusColor = hasError
-        ? scheme.error
-        : _isRunning
-            ? scheme.primary
-            : _isTransitioning
-                ? scheme.tertiary
-                : scheme.onSurfaceVariant;
+    // 连接状态色**只反映连接状态**（运行 → primary / 过渡 → tertiary /
+    // 停止 → onSurfaceVariant）。错误仅由下方错误横幅（errorContainer）表达，
+    // 绝不把状态图标 / 文案染成 error 红（否则「连接成功但引擎报错」会被误读为
+    // 「断开按钮变红」）。
+    final statusColor = _isRunning
+        ? scheme.primary
+        : _isTransitioning
+            ? scheme.tertiary
+            : scheme.onSurfaceVariant;
 
     return Card(
       margin: EdgeInsets.zero,

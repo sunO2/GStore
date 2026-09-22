@@ -6,6 +6,7 @@ import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
 
+import 'proxy_active_node_store.dart';
 import 'proxy_nodes_facade.dart';
 
 /// 延迟徽章淡色背景的透明度。
@@ -42,6 +43,7 @@ class ProxyNodesPage extends StatefulWidget {
     this.profileId,
     this.facade,
     this.initialActiveByGroup = const <String, String>{},
+    this.nodeStore,
   });
 
   /// 可直接展示的节点集合（未传 [profileId] 时生效）。
@@ -58,6 +60,10 @@ class ProxyNodesPage extends StatefulWidget {
 
   /// 初始「分组 → 活动节点」映射（无选择事件时用于回显）。
   final Map<String, String> initialActiveByGroup;
+
+  /// 选中节点的持久化接缝（测试注入内存实现；为空时用 [ConfigStore]）。
+  /// `_selectNode` 成功后写入，重入时用于高亮回显。
+  final ProxyActiveNodeStore? nodeStore;
 
   @override
   State<ProxyNodesPage> createState() => _ProxyNodesPageState();
@@ -99,6 +105,7 @@ class _DelayState {
 
 class _ProxyNodesPageState extends State<ProxyNodesPage> {
   late final ProxyNodesFacade _facade;
+  late final ProxyActiveNodeStore _nodeStore;
   StreamSubscription<ProxyEvent>? _eventSub;
 
   bool _loading = false;
@@ -111,6 +118,13 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
   final Map<String, _DelayState> _delays = <String, _DelayState>{};
   final Set<String> _pending = <String>{};
 
+  /// 折叠的分组名集合；默认全部展开（空集 = 全展开）。
+  final Set<String> _collapsed = <String>{};
+
+  /// 搜索 / 过滤关键词（节点名与分组名）。
+  final TextEditingController _searchController = TextEditingController();
+  String _searchQuery = '';
+
   bool _testing = false;
   int _testedCount = 0;
   int _testTotal = 0;
@@ -120,8 +134,10 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
   void initState() {
     super.initState();
     _facade = widget.facade ?? ProxyModuleNodesFacade();
+    _nodeStore = widget.nodeStore ?? const ConfigStoreProxyActiveNodeStore();
     _activeByGroup.addAll(widget.initialActiveByGroup);
     _eventSub = _facade.events.listen(_onEvent, onError: (_) {});
+    _restoreActiveSelection();
 
     final String? profileId = widget.profileId;
     if (profileId == null || profileId.isEmpty) {
@@ -134,7 +150,28 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
   @override
   void dispose() {
     _eventSub?.cancel();
+    _searchController.dispose();
     super.dispose();
+  }
+
+  /// 重入回显：调用方未显式传初始映射时，从持久化接缝读取上次选择
+  /// （best-effort，失败静默保持为空）。
+  Future<void> _restoreActiveSelection() async {
+    if (_activeByGroup.isNotEmpty) return;
+    final ProxyActiveNode? selection =
+        await _safe<ProxyActiveNode?>(() => _nodeStore.read());
+    if (!mounted || selection == null) return;
+    if (selection.group.isEmpty || selection.node.isEmpty) return;
+    setState(() => _activeByGroup[selection.group] = selection.node);
+  }
+
+  /// best-effort：持久化接缝异常不应影响页面。
+  Future<T?> _safe<T>(Future<T> Function() run) async {
+    try {
+      return await run();
+    } catch (_) {
+      return null;
+    }
   }
 
   // ==================== 数据加载 ====================
@@ -247,9 +284,14 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
     try {
       final NodeSelectResult result = await _facade.nodeSelect(group, node);
       if (!mounted) return;
+      final String active = result.active.isNotEmpty ? result.active : node;
       setState(() {
-        _activeByGroup[group] = result.active.isNotEmpty ? result.active : node;
+        _activeByGroup[group] = active;
       });
+      // 持久化选择（best-effort）：首页入口卡据此展示，重入时据此高亮。
+      await _safe(
+        () => _nodeStore.write(ProxyActiveNode(group: group, node: active)),
+      );
     } on ProxyModuleException catch (error) {
       if (mounted) AppDialogs.showError('切换节点失败：${error.message}');
     } catch (error) {
@@ -382,17 +424,109 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
     if (_nodesByName.isEmpty) {
       return _buildEmpty(context);
     }
+    final List<ProxyGroup> groups = _visibleGroups;
     return ListView(
       padding: AppSpacing.allLG,
       children: <Widget>[
+        _buildSearchField(context),
+        const SizedBox(height: AppSpacing.md),
         if (_testing) ...<Widget>[
           _buildProgressCard(context),
           const SizedBox(height: AppSpacing.md),
         ],
-        for (final ProxyGroup group in _groups)
-          _buildGroupSection(context, group),
+        if (groups.isEmpty)
+          _buildNoMatches(context)
+        else
+          for (final ProxyGroup group in groups)
+            _buildGroupSection(context, group),
       ],
     );
+  }
+
+  /// 顶部搜索 / 过滤输入框（按节点名与分组名过滤）。
+  Widget _buildSearchField(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    return TextField(
+      key: const Key('proxy_nodes_search'),
+      controller: _searchController,
+      textInputAction: TextInputAction.search,
+      onChanged: (String value) {
+        setState(() => _searchQuery = value);
+      },
+      decoration: InputDecoration(
+        isDense: true,
+        hintText: '搜索节点或分组',
+        prefixIcon: const Icon(Icons.search),
+        suffixIcon: _searchQuery.isEmpty
+            ? null
+            : IconButton(
+                key: const Key('proxy_nodes_search_clear'),
+                icon: const Icon(Icons.close),
+                tooltip: '清除搜索',
+                onPressed: () {
+                  _searchController.clear();
+                  setState(() => _searchQuery = '');
+                },
+              ),
+        border: const OutlineInputBorder(borderRadius: AppRadius.allMD),
+        contentPadding: AppSpacing.inputFieldPadding,
+        hintStyle: theme.textTheme.bodyMedium?.copyWith(
+          color: theme.colorScheme.onSurfaceVariant,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildNoMatches(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    return Padding(
+      padding: AppSpacing.allXXL,
+      child: Column(
+        children: <Widget>[
+          Icon(
+            Icons.search_off_outlined,
+            size: AppTypography.iconXXL,
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+          const SizedBox(height: AppSpacing.sm),
+          Text('未找到匹配的节点', style: theme.textTheme.bodyMedium),
+        ],
+      ),
+    );
+  }
+
+  /// 过滤后的可见分组：无查询时原样返回；有查询时保留「分组名匹配」或
+  /// 「存在成员名匹配」的分组，且组内只保留匹配成员（分组名匹配则保留全部）。
+  List<ProxyGroup> get _visibleGroups {
+    final String query = _searchQuery.trim().toLowerCase();
+    if (query.isEmpty) return _groups;
+    final List<ProxyGroup> result = <ProxyGroup>[];
+    for (final ProxyGroup group in _groups) {
+      final bool groupMatches = group.name.toLowerCase().contains(query);
+      final List<String> members = groupMatches
+          ? group.members.toList()
+          : group.members
+              .where((String m) => m.toLowerCase().contains(query))
+              .toList();
+      if (groupMatches || members.isNotEmpty) {
+        result.add(ProxyGroup(
+          name: group.name,
+          type: group.type,
+          members: members,
+        ));
+      }
+    }
+    return result;
+  }
+
+  /// 分组是否展开：搜索时强制展开；否则默认展开，仅折叠集合内的分组收起。
+  bool _isGroupExpanded(String name) =>
+      _searchQuery.isNotEmpty || !_collapsed.contains(name);
+
+  void _toggleGroup(String name) {
+    setState(() {
+      if (!_collapsed.remove(name)) _collapsed.add(name);
+    });
   }
 
   Widget _buildEmpty(BuildContext context) {
@@ -480,66 +614,92 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
     );
   }
 
-  /// 单个代理组一节：组名 + 类型 + 成员数 + 成员列表（节点 / 组引用）。
+  /// 单个代理组一节：可折叠的组头（组名 + 类型 + 成员数 + 当前选中）+ 成员列表
+  /// （节点 / 组引用）。组头点击展开 / 收起，默认展开；搜索时强制展开。
   Widget _buildGroupSection(BuildContext context, ProxyGroup group) {
     final ThemeData theme = Theme.of(context);
     final ColorScheme scheme = theme.colorScheme;
     final List<String> members = _sortedMembers(group);
     final String active = _activeByGroup[group.name] ?? '';
+    final bool expanded = _isGroupExpanded(group.name);
 
     return Card(
       margin: const EdgeInsets.only(bottom: AppSpacing.md),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
-          Padding(
+          InkWell(
             key: Key('proxy_nodes_group_${group.name}'),
-            padding: AppSpacing.allMD,
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                Icon(
-                  Icons.account_tree_outlined,
-                  size: AppTypography.iconMD,
-                  color: scheme.primary,
-                ),
-                const SizedBox(width: AppSpacing.sm),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: <Widget>[
-                      Text(group.name, style: theme.textTheme.titleSmall),
-                      const SizedBox(height: AppSpacing.xs),
-                      Text(
-                        active.isEmpty
-                            ? '${group.type} · ${group.members.length} 个成员'
-                            : '${group.type} · ${group.members.length} 个成员'
-                                ' · 当前：$active',
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: scheme.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
+            onTap: () => _toggleGroup(group.name),
+            child: Padding(
+              padding: AppSpacing.allMD,
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Icon(
+                    Icons.account_tree_outlined,
+                    size: AppTypography.iconMD,
+                    color: scheme.primary,
                   ),
-                ),
-              ],
+                  const SizedBox(width: AppSpacing.sm),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        Text(group.name, style: theme.textTheme.titleSmall),
+                        const SizedBox(height: AppSpacing.xs),
+                        Text(
+                          active.isEmpty
+                              ? '${group.type} · ${group.members.length} 个成员'
+                              : '${group.type} · ${group.members.length} 个成员'
+                                  ' · 当前：$active',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: scheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: AppSpacing.sm),
+                  Icon(
+                    expanded ? Icons.expand_more : Icons.chevron_right,
+                    size: AppTypography.iconMD,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ],
+              ),
             ),
           ),
-          const Divider(height: 1),
-          if (members.isEmpty)
-            Padding(
-              padding: AppSpacing.allMD,
-              child: Text('该分组暂无成员', style: theme.textTheme.bodySmall),
-            ),
-          for (final String name in members)
-            if (_nodesByName[name] == null)
-              _buildGroupRefTile(context, name)
-            else
-              _buildNodeTile(
-                context,
-                node: _nodesByName[name]!,
-                groupName: group.name,
-              ),
+          AnimatedSize(
+            duration: AppAnimations.fast,
+            curve: AppAnimations.curveDefault,
+            alignment: Alignment.topCenter,
+            child: expanded
+                ? Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      const Divider(height: 1),
+                      if (members.isEmpty)
+                        Padding(
+                          padding: AppSpacing.allMD,
+                          child: Text(
+                            '该分组暂无成员',
+                            style: theme.textTheme.bodySmall,
+                          ),
+                        ),
+                      for (final String name in members)
+                        if (_nodesByName[name] == null)
+                          _buildGroupRefTile(context, name)
+                        else
+                          _buildNodeTile(
+                            context,
+                            node: _nodesByName[name]!,
+                            groupName: group.name,
+                          ),
+                    ],
+                  )
+                : const SizedBox.shrink(),
+          ),
         ],
       ),
     );

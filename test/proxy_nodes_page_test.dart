@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/design/app_components.dart' show AppLoading;
 import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
+import 'package:gstore/page/proxy/proxy_active_node_store.dart';
 import 'package:gstore/page/proxy/proxy_nodes_facade.dart';
 import 'package:gstore/page/proxy/proxy_nodes_page.dart';
 
@@ -65,6 +66,26 @@ class _FakeNodesFacade implements ProxyNodesFacade {
     delayCompleter = completer;
     return completer.future;
   }
+}
+
+/// 假「当前选中节点」持久化存储：内存实现。
+class _FakeActiveNodeStore implements ProxyActiveNodeStore {
+  _FakeActiveNodeStore([this.value]);
+
+  ProxyActiveNode? value;
+  int writes = 0;
+
+  @override
+  Future<ProxyActiveNode?> read() async => value;
+
+  @override
+  Future<void> write(ProxyActiveNode selection) async {
+    writes++;
+    value = selection;
+  }
+
+  @override
+  Future<void> clear() async => value = null;
 }
 
 const ProxyNode _hk = ProxyNode(
@@ -391,6 +412,114 @@ void main() {
       tester.getTopLeft(find.byKey(const Key('proxy_nodes_node_beta'))).dy,
       lessThan(tester.getTopLeft(find.byKey(const Key('proxy_nodes_node_alpha'))).dy),
     );
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('分组折叠：点击组头收起成员，再次点击展开', (WidgetTester tester) async {
+    final facade = _FakeNodesFacade();
+    await tester.pumpWidget(_wrap(ProxyNodesPage(
+      nodes: const <ProxyNode>[_hk, _jp, _us],
+      groups: _sectionedGroups,
+      facade: facade,
+    )));
+
+    // 默认展开：成员节点可见。
+    expect(find.byKey(const Key('proxy_nodes_node_香港 01')), findsOneWidget);
+
+    // 点击 PROXY 组头 → 收起：该组成员从树中移除，其他组不受影响。
+    await tester.tap(find.byKey(const Key('proxy_nodes_group_PROXY')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(find.byKey(const Key('proxy_nodes_node_香港 01')), findsNothing);
+    expect(find.byKey(const Key('proxy_nodes_node_美国 03')), findsOneWidget);
+
+    // 再次点击 → 展开恢复。
+    await tester.tap(find.byKey(const Key('proxy_nodes_group_PROXY')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(find.byKey(const Key('proxy_nodes_node_香港 01')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('搜索过滤：按名称仅保留匹配节点并自动展开', (WidgetTester tester) async {
+    final facade = _FakeNodesFacade();
+    await tester.pumpWidget(_wrap(ProxyNodesPage(
+      nodes: const <ProxyNode>[_hk, _jp, _us],
+      groups: _sectionedGroups,
+      facade: facade,
+    )));
+
+    // 先折叠 PROXY，验证搜索会强制展开。
+    await tester.tap(find.byKey(const Key('proxy_nodes_group_PROXY')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(find.byKey(const Key('proxy_nodes_node_香港 01')), findsNothing);
+
+    await tester.enterText(
+        find.byKey(const Key('proxy_nodes_search')), '香港');
+    await tester.pump();
+
+    // 只剩香港 01；日本 02 / 美国 03 / AUTO 分组均不匹配。
+    expect(find.byKey(const Key('proxy_nodes_node_香港 01')), findsOneWidget);
+    expect(find.byKey(const Key('proxy_nodes_node_日本 02')), findsNothing);
+    expect(find.byKey(const Key('proxy_nodes_node_美国 03')), findsNothing);
+    expect(find.byKey(const Key('proxy_nodes_group_AUTO')), findsNothing);
+    expect(find.byKey(const Key('proxy_nodes_group_PROXY')), findsOneWidget);
+
+    // 清除搜索 → 恢复全部（PROXY 之前被手动折叠，需再次展开）。
+    await tester.tap(find.byKey(const Key('proxy_nodes_search_clear')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('proxy_nodes_group_PROXY')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(find.byKey(const Key('proxy_nodes_node_日本 02')), findsOneWidget);
+    expect(find.byKey(const Key('proxy_nodes_node_美国 03')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('重入高亮：持久化选择在初始化时回显', (WidgetTester tester) async {
+    final facade = _FakeNodesFacade();
+    final store = _FakeActiveNodeStore(
+      const ProxyActiveNode(group: 'PROXY', node: '香港 01'),
+    );
+    await tester.pumpWidget(_wrap(ProxyNodesPage(
+      nodes: const <ProxyNode>[_hk, _jp, _us],
+      groups: _sectionedGroups,
+      facade: facade,
+      nodeStore: store,
+    )));
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.byKey(const Key('proxy_nodes_active_香港 01')), findsOneWidget);
+    expect(find.textContaining('当前：香港 01'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('选择持久化：点击节点写入 ProxyActiveNodeStore', (WidgetTester tester) async {
+    final facade = _FakeNodesFacade();
+    final store = _FakeActiveNodeStore();
+    await tester.pumpWidget(_wrap(ProxyNodesPage(
+      nodes: const <ProxyNode>[_hk, _jp, _us],
+      groups: _sectionedGroups,
+      facade: facade,
+      nodeStore: store,
+    )));
+
+    await tester.tap(find.byKey(const Key('proxy_nodes_node_美国 03')));
+    await tester.pumpAndSettle();
+
+    expect(store.writes, 1);
+    expect(store.value?.group, 'AUTO');
+    expect(store.value?.node, '美国 03');
     expect(tester.takeException(), isNull);
 
     await facade.controller.close();
