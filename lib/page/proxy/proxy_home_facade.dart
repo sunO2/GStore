@@ -44,6 +44,9 @@ abstract class ProxyHomeFacade implements ProxyFacade {
   /// `profile.list`：稳定的订阅摘要（只读展示当前配置）。
   Future<ProfileList> profileList();
 
+  /// `node.list`：各代理组的实时选中（`now`）与当前路由分组（只读）。
+  Future<NodeListResult> nodeList();
+
   /// 读取持久化设置生成的 Kotlin `ProxyVpnService` 配置 JSON（含分流模式/应用
   /// 清单）。连接前注入，不得硬编码 `{}`（Todo 23 → Todo 24 交接）。
   Future<String> vpnConfigJson();
@@ -90,6 +93,9 @@ class ProxyModuleHomeFacade implements ProxyHomeFacade {
 
   @override
   Future<ProfileList> profileList() => _module.profileList();
+
+  @override
+  Future<NodeListResult> nodeList() => _module.nodeList();
 
   @override
   Future<String> vpnConfigJson() => loadProxyVpnConfigJson();

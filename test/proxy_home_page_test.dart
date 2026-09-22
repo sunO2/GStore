@@ -144,6 +144,12 @@ class _FakeProxyFacade implements ProxyHomeFacade {
   @override
   Future<ProfileList> profileList() async => profileListResult;
 
+  /// `node.list` 返回值；默认引擎未运行（无 current），用于回退路径。
+  NodeListResult nodeListResult = const NodeListResult();
+
+  @override
+  Future<NodeListResult> nodeList() async => nodeListResult;
+
   @override
   Future<String> vpnConfigJson() async => '{}';
 
@@ -1031,5 +1037,83 @@ void main() {
 
     await facade.controller.close();
     await nodesFacade.controller.close();
+  });
+
+  testWidgets('当前节点：运行中展示 node.list 的实时 current.now（覆盖持久化标签）',
+      (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade()
+      ..nodeListResult = const NodeListResult(
+        engineRunning: true,
+        current: NodeCurrent(group: 'PROXY', now: '香港 01'),
+      );
+    final nodeStore = _FakeActiveNodeStore(
+      const ProxyActiveNode(group: 'PROXY', node: '持久化旧节点'),
+    );
+    await tester.pumpWidget(
+      _wrap(ProxyHomePage(facade: facade, nodeStore: nodeStore)),
+    );
+    await _flush(tester);
+
+    // 引擎未运行：不采用实时值，回退持久化标签。
+    expect(find.text('持久化旧节点'), findsOneWidget);
+
+    facade.emit(const ProxyStateEvent(
+      state: ProxyConnState.running,
+      mode: ProxyMode.vpn,
+    ));
+    await _flush(tester);
+
+    // 运行中：实时 current.now 覆盖持久化标签。
+    expect(find.text('香港 01'), findsWidgets);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('当前节点：current.now 为嵌套分组时展示 current.node 叶子',
+      (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade()
+      ..pingResult = const ProxyPingResult(
+        pong: true,
+        module: 'proxy',
+        moduleVersion: '0.1.0',
+        apiVersion: 1,
+        minHostAbi: 3,
+        hostAbi: 3,
+        state: ProxyConnState.running,
+        mode: ProxyMode.vpn,
+      )
+      ..nodeListResult = const NodeListResult(
+        engineRunning: true,
+        current: NodeCurrent(group: 'PROXY', now: 'AUTO', node: '日本 02'),
+      );
+    await tester.pumpWidget(_wrap(ProxyHomePage(facade: facade)));
+    await _flush(tester);
+
+    expect(find.text('日本 02'), findsOneWidget);
+    expect(find.text('自动'), findsNothing);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('当前节点：引擎停止时回退到持久化节点标签', (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade()
+      ..nodeListResult = const NodeListResult(engineRunning: false);
+    final nodeStore = _FakeActiveNodeStore(
+      const ProxyActiveNode(group: 'PROXY', node: '持久化节点'),
+    );
+    await tester.pumpWidget(
+      _wrap(ProxyHomePage(facade: facade, nodeStore: nodeStore)),
+    );
+    await _flush(tester);
+
+    expect(find.text('持久化节点'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
   });
 }

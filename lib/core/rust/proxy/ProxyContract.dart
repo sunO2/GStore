@@ -53,6 +53,7 @@ class ProxyMethods {
   static const String profileSetSchedule = 'profile.set_schedule';
   static const String nodeSelect = 'node.select';
   static const String nodeDelayTest = 'node.delay_test';
+  static const String nodeList = 'node.list';
   static const String connList = 'conn.list';
   static const String connClose = 'conn.close';
   static const String connCloseAll = 'conn.close_all';
@@ -100,6 +101,7 @@ class ProxyMethods {
     profileSetSchedule,
     nodeSelect,
     nodeDelayTest,
+    nodeList,
     connList,
     connClose,
     connCloseAll,
@@ -1749,6 +1751,73 @@ class DelayTestResult {
   final String? group;
 }
 
+/// `node.list` 单个代理组：类型、实时选中（`now`）与成员。
+class NodeGroupInfo {
+  const NodeGroupInfo({
+    required this.name,
+    required this.type,
+    this.now,
+    this.members = const <String>[],
+    this.selectable = false,
+  });
+
+  factory NodeGroupInfo.fromJson(Map<String, dynamic> json) => NodeGroupInfo(
+        name: _str(json['name']),
+        type: _str(json['type']),
+        now: json['now']?.toString(),
+        members: _strList(json['members']),
+        selectable: _bool(json['selectable']),
+      );
+
+  final String name;
+  final String type;
+
+  /// 该组当前的实时出站（selector = 用户选中；url-test/fallback = 自动选中）。
+  final String? now;
+  final List<String> members;
+  final bool selectable;
+}
+
+/// `node.list` 当前路由分组（实时规则集最后一个 `MATCH`/`FINAL` 的目标）。
+class NodeCurrent {
+  const NodeCurrent({required this.group, this.now, this.node});
+
+  factory NodeCurrent.fromJson(Map<String, dynamic> json) => NodeCurrent(
+        group: _str(json['group']),
+        now: json['now']?.toString(),
+        node: json['node']?.toString(),
+      );
+
+  final String group;
+
+  /// 该组的实时出站。
+  final String? now;
+
+  /// `now` 本身是嵌套分组时解析出的叶子节点，否则为 null。
+  final String? node;
+}
+
+/// `node.list` 响应：引擎是否运行 + 各代理组 + 当前路由分组。
+class NodeListResult {
+  const NodeListResult({
+    this.engineRunning = false,
+    this.groups = const <NodeGroupInfo>[],
+    this.current,
+  });
+
+  factory NodeListResult.fromJson(Map<String, dynamic> json) => NodeListResult(
+        engineRunning: _bool(json['engineRunning']),
+        groups: _mapList(json['groups']).map(NodeGroupInfo.fromJson).toList(),
+        current: json['current'] is Map
+            ? NodeCurrent.fromJson(_map(json['current']))
+            : null,
+      );
+
+  final bool engineRunning;
+  final List<NodeGroupInfo> groups;
+  final NodeCurrent? current;
+}
+
 // ==================== conn.* ====================
 
 /// 单条连接。
@@ -2074,6 +2143,7 @@ final Map<String, ProxyJsonDecoder<Object>> proxyResponseDecoders =
   ProxyMethods.profileSetSchedule: StoredProfile.fromJson,
   ProxyMethods.nodeSelect: NodeSelectResult.fromJson,
   ProxyMethods.nodeDelayTest: DelayTestResult.fromJson,
+  ProxyMethods.nodeList: NodeListResult.fromJson,
   ProxyMethods.connList: ConnPage.fromJson,
   ProxyMethods.connClose: ConnCloseResult.fromJson,
   ProxyMethods.connCloseAll: ConnCloseAllResult.fromJson,

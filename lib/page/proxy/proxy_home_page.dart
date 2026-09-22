@@ -106,6 +106,9 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
   String? _selectedProfileId;
   String? _currentOutbound;
 
+  /// 各代理组的实时选中（`node.list`）；引擎运行时优先用于「当前节点」展示。
+  NodeListResult? _nodeList;
+
   /// 当前选中的节点（持久化；节点页写入，首页展示 + 节点页高亮回显）。
   ProxyActiveNode? _activeNode;
 
@@ -141,6 +144,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
       final profiles = await _safe(() => _facade.profileList());
       final traffic = await _safe(() => _facade.statsTrafficGet(topDomains: 1));
       final lan = await _safe(() => _facade.lanStatus());
+      final nodeList = await _safe(() => _facade.nodeList());
 
       // 解析「当前订阅」：优先沿用持久化 id；失效时若只剩 1 个订阅则自动选中并
       // 持久化，否则清除。选中 id 连接时经 `core.start.profileId` 生效。
@@ -162,6 +166,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
         _profileNodeCount = selected?.nodeCount;
         _activeNode = activeNode;
         if (traffic != null) _applyTopDomains(traffic.topDomains);
+        if (nodeList != null) _nodeList = nodeList;
         _loading = false;
       });
       await _recoverEngineIfServiceRunning();
@@ -270,6 +275,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
 
   void _onEvent(ProxyEvent event) {
     if (!mounted) return;
+    var refreshNodes = false;
     setState(() {
       switch (event) {
         case ProxyStateEvent():
@@ -277,6 +283,9 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
           _mode = event.mode;
           if (event.state == ProxyConnState.running) {
             _targetMode = _selectableMode(event.mode);
+            refreshNodes = true;
+          } else if (event.state == ProxyConnState.stopped) {
+            _nodeList = null;
           }
           _actionError = event.error;
           _stateReason = event.reason;
@@ -286,6 +295,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
         case ProxyStatsEvent():
           _stats = event;
           _applyTopDomains(event.topDomains);
+          if (_isRunning) refreshNodes = true;
         case ProxyConfigAppliedEvent():
           break;
         case ProxyNodeDelayEvent():
@@ -301,6 +311,14 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
           break;
       }
     });
+    if (refreshNodes) _refreshNodeList();
+  }
+
+  /// 与 stats 同节奏刷新实时选中节点：best-effort，失败保持旧值（不崩溃）。
+  Future<void> _refreshNodeList() async {
+    final live = await _safe(() => _facade.nodeList());
+    if (!mounted || live == null) return;
+    setState(() => _nodeList = live);
   }
 
   void _onEventError(Object error) {
@@ -372,6 +390,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
           _connState = stopped?.state ?? ProxyConnState.stopped;
           _stats = null;
           _currentOutbound = null;
+          _nodeList = null;
           _configWarnings = const <ProxyConfigWarning>[];
         });
       }
@@ -661,6 +680,18 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
   }
 
   String get _nodeText {
+    final live = _nodeList;
+    if (_isRunning && live != null && live.engineRunning) {
+      final current = live.current;
+      if (current != null) {
+        final leaf = current.node;
+        if (leaf != null && leaf.isNotEmpty) return leaf;
+        final now = current.now;
+        if (now != null && now.isNotEmpty) return now;
+      }
+    }
+    final active = _activeNode;
+    if (active != null && active.node.isNotEmpty) return active.node;
     final outbound = _currentOutbound;
     return (outbound == null || outbound.isEmpty) ? '自动' : outbound;
   }

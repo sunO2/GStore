@@ -425,6 +425,19 @@ final Map<String, Map<String, dynamic>> _methodFixtures =
     'timeoutMs': 5000,
     'group': 'G',
   },
+  ProxyMethods.nodeList: <String, dynamic>{
+    'engineRunning': true,
+    'groups': <Map<String, dynamic>>[
+      <String, dynamic>{
+        'name': 'G',
+        'type': 'select',
+        'now': 'A',
+        'members': <String>['A', 'B'],
+        'selectable': true,
+      },
+    ],
+    'current': <String, dynamic>{'group': 'G', 'now': 'A', 'node': null},
+  },
   ProxyMethods.connList: <String, dynamic>{
     'connections': <Map<String, dynamic>>[
       <String, dynamic>{

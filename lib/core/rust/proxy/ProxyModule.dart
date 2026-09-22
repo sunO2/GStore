@@ -510,6 +510,11 @@ class ProxyModule implements ProxyFacade {
         payload: request.toJson(),
       );
 
+  /// `node.list`：只读列出各代理组的实时选中（`now`）与当前路由分组。
+  /// 引擎未运行时返回 `engineRunning:false`，绝不抛错。
+  Future<NodeListResult> nodeList() =>
+      invoke(ProxyMethods.nodeList, NodeListResult.fromJson);
+
   // ---- conn.* ----
 
   /// `conn.list`：分页/可过滤的活动连接。
