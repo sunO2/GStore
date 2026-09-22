@@ -1521,7 +1521,7 @@ fn node_select_arm(
     payload: &[u8],
 ) -> Result<Vec<u8>, ModuleError> {
     let inst = require_instance(instance_id, instance)?;
-    let (data, sel) = nodes::select(payload)?;
+    let (data, sel) = nodes::select(payload, &inst.data_dir, &inst.cache_dir)?;
     let event = serde_json::json!({
         "state": current_state(&inst).as_str(),
         "mode": current_mode(&inst).as_str(),

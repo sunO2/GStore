@@ -335,7 +335,7 @@ fn synthetic_fixture_node_select_reports_active() {
     let chosen = select.members[1].clone();
     let payload =
         serde_json::to_vec(&serde_json::json!({ "group": select.name, "node": chosen })).unwrap();
-    let (data, selection) = crate::nodes::select(&payload).expect("node.select");
+    let (data, selection) = crate::nodes::select(&payload, "", "").expect("node.select");
 
     assert_eq!(data["active"], serde_json::json!(chosen));
     assert_eq!(selection.group, select.name);
