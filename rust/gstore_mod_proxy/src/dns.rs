@@ -54,18 +54,13 @@ pub(crate) const MAPPING_RING_CAPACITY: usize = 1024;
 const DNS_PORT: u16 = 53;
 
 /// Resolver mode. Serializes as `fake-ip` / `redir-host` / `normal`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DnsModeKind {
     Normal,
     RedirHost,
+    #[default]
     FakeIp,
-}
-
-impl Default for DnsModeKind {
-    fn default() -> Self {
-        Self::FakeIp
-    }
 }
 
 impl DnsModeKind {
@@ -87,17 +82,12 @@ impl DnsModeKind {
 }
 
 /// `fake-ip-filter-mode` selector.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FakeIpFilterMode {
+    #[default]
     Blacklist,
     Whitelist,
-}
-
-impl Default for FakeIpFilterMode {
-    fn default() -> Self {
-        Self::Blacklist
-    }
 }
 
 impl FakeIpFilterMode {

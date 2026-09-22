@@ -57,13 +57,11 @@ mod tun;
 /// genuine proof that every entry point the real module will use resolves.
 #[no_mangle]
 pub extern "C" fn gstore_mod_proxy_probe() -> i32 {
-    match catch_unwind(AssertUnwindSafe(|| {
+    catch_unwind(AssertUnwindSafe(|| {
         meow_api_surface();
         1
-    })) {
-        Ok(v) => v,
-        Err(_) => 0,
-    }
+    }))
+    .unwrap_or_default()
 }
 
 /// The **only** permitted async runtime shape for GStore modules on Android.
@@ -89,6 +87,13 @@ pub fn bounded_runtime() -> std::io::Result<tokio::runtime::Runtime> {
 /// the Android configuration. Either way, a loss of public visibility, a
 /// feature-flag regression, or a C-link failure breaks the cross-compile
 /// instead of surfacing at integration time.
+/// `NetStack::new` / `with_buffer_size` return shape (kept readable for the
+/// address-taken fn-pointer signatures below).
+type NetStackParts = Result<
+    (meow_lwip::NetStack, meow_lwip::TcpListener, Box<meow_lwip::UdpSocket>),
+    meow_lwip::Error,
+>;
+
 #[inline(never)]
 fn meow_api_surface() {
     let tunnel_new: fn(std::sync::Arc<meow_dns::Resolver>) -> meow_tunnel::Tunnel =
@@ -117,15 +122,9 @@ fn meow_api_surface() {
         meow_lwip::Error,
     >::Ok;
     let _ = netstack_parts;
-    let netstack_new: fn() -> Result<
-        (meow_lwip::NetStack, meow_lwip::TcpListener, Box<meow_lwip::UdpSocket>),
-        meow_lwip::Error,
-    > = meow_lwip::NetStack::new;
+    let netstack_new: fn() -> NetStackParts = meow_lwip::NetStack::new;
     std::hint::black_box(netstack_new);
-    let netstack_buf: fn(usize, usize) -> Result<
-        (meow_lwip::NetStack, meow_lwip::TcpListener, Box<meow_lwip::UdpSocket>),
-        meow_lwip::Error,
-    > = meow_lwip::NetStack::with_buffer_size;
+    let netstack_buf: fn(usize, usize) -> NetStackParts = meow_lwip::NetStack::with_buffer_size;
     std::hint::black_box(netstack_buf);
     std::hint::black_box(meow_lwip::NetStack::core_done);
 
@@ -771,6 +770,10 @@ pub(crate) fn start_engine(
     inst: &Arc<ProxyInstance>,
     payload: &[u8],
 ) -> Result<(bool, Option<serde_json::Value>), ModuleError> {
+    // N1: install the protector BEFORE the TUN loop / LAN reconcile, so a LAN
+    // client accepted in that window can never dial unprotected. Idempotent
+    // with the TUN loop's own install.
+    protect::install(host_protect_fd());
     stats::configure(&inst.data_dir);
     let req = config::parse_request(payload)?;
     let generated = config::try_generate(&inst.data_dir, &inst.cache_dir, &req)?;
@@ -895,11 +898,16 @@ fn core_get_mode_arm(
     instance: Option<Arc<ProxyInstance>>,
 ) -> Result<Vec<u8>, ModuleError> {
     let inst = require_instance(instance_id, instance)?;
+    // Hold the single mode-transition lane so the four independently-locked
+    // fields below cannot be observed mid-transition (torn snapshot).
+    let _lane = mode::lane();
     let since = *inst.state_since_ms.lock().unwrap_or_else(|e| e.into_inner());
     let last_mode = *inst.last_mode.lock().unwrap_or_else(|e| e.into_inner());
+    let mode = current_mode(&inst);
+    let state = current_state(&inst);
     ok_data(serde_json::json!({
-        "mode": current_mode(&inst).as_str(),
-        "state": current_state(&inst).as_str(),
+        "mode": mode.as_str(),
+        "state": state.as_str(),
         "sinceMs": since,
         "lastMode": last_mode.as_str(),
         "inbound": if crate::lan::get().enabled { "lan" } else { "none" },
@@ -1124,19 +1132,30 @@ where
 {
     let inst = require_instance(instance_id, instance)?;
     let profile = import()?;
-    let event = serde_json::json!({
-        "action": "imported",
-        "format": profile.format,
-        "name": profile.name,
-        "nodeCount": profile.node_count,
-        "url": profile.source.url,
-    });
+    let event = subscription_added_event(&profile);
     if let Ok(bytes) = serde_json::to_vec(&event) {
         emit_event(inst.id, EVT_SUBSCRIPTION, &bytes);
     }
     let data = serde_json::to_value(&profile)
         .map_err(|e| ModuleError::internal(format!("profile serialize: {e}")))?;
     ok_data(data)
+}
+
+/// `proxy.subscription.added` payload. The full `source.url` (token included) is
+/// persisted for refresh, but the event must carry only `scheme://host[:port]`.
+fn subscription_added_event(profile: &subscription::ImportedProfile) -> serde_json::Value {
+    let url = profile.source.url.as_deref().map(|raw| {
+        url::Url::parse(raw)
+            .map(|u| subscription::redact_url(&u))
+            .unwrap_or_else(|_| "<invalid-url>".to_string())
+    });
+    serde_json::json!({
+        "action": "imported",
+        "format": profile.format,
+        "name": profile.name,
+        "nodeCount": profile.node_count,
+        "url": url,
+    })
 }
 
 /// Serialize a value into the module `ok` envelope's `data`.
@@ -1981,6 +2000,8 @@ fn on_event_impl(
 // ==================== C ABI 导出 ====================
 
 #[no_mangle]
+// Correct for a C ABI export: the host guarantees these pointers are non-null.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn gstore_mod_proxy_register(
     entry: *const GStoreModuleEntry,
     out: *mut GStoreModuleApi,
@@ -2044,6 +2065,8 @@ pub extern "C" fn proxy_init_export() -> c_int {
 }
 
 #[no_mangle]
+// Correct for a C ABI export: the host guarantees the out pointer is non-null.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn proxy_create_export(config: *const u8, config_len: usize, out: *mut u64) -> c_int {
     install_panic_hook();
     match catch_unwind(AssertUnwindSafe(|| create_impl(config, config_len))) {
@@ -2114,6 +2137,8 @@ pub extern "C" fn proxy_alloc_export(size: usize) -> *mut c_void {
 }
 
 #[no_mangle]
+// Correct for a C ABI export: frees the pointer the host allocated, as documented.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn proxy_free_export(ptr: *mut c_void) {
     let _ = catch_unwind(AssertUnwindSafe(|| {
         if !ptr.is_null() {
@@ -2255,6 +2280,32 @@ mod abi_tests {
         assert!(api.alloc.is_some(), "alloc slot required");
         assert!(api.free.is_some(), "free slot required");
         assert!(api.on_event.is_some(), "on_event slot required");
+    }
+
+    /// Security: the `proxy.subscription.added` event must not leak the
+    /// token-bearing subscription URL, only `scheme://host[:port]`.
+    #[test]
+    fn subscription_added_event_redacts_url_token() {
+        let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let full = "https://user:pass@example.com:8443/sub?token=SECRET123&flag=meta";
+        let profile = subscription::ImportedProfile {
+            name: "sub".into(),
+            format: "clash".into(),
+            node_count: 1,
+            source: subscription::ImportSource {
+                origin: "url".into(),
+                url: Some(full.to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let event = subscription_added_event(&profile);
+        assert_eq!(event["url"], "https://example.com:8443");
+        let text = serde_json::to_string(&event).unwrap();
+        assert!(!text.contains("SECRET123"), "token leaked into event: {text}");
+        assert!(!text.contains("token="), "query leaked into event: {text}");
+        // Persistence keeps the full URL: refresh needs it.
+        assert_eq!(profile.source.url.as_deref(), Some(full));
     }
 
     #[test]

@@ -153,8 +153,8 @@ fn from_info(info: &meow_tunnel::statistics::ConnectionInfo, started_at_ms: u64)
             .map(ToString::to_string)
             .unwrap_or_else(|| "DIRECT".to_string()),
         started_at_ms,
-        upload_bytes: info.counters.upload_bytes() as i64,
-        download_bytes: info.counters.download_bytes() as i64,
+        upload_bytes: info.counters.upload_bytes(),
+        download_bytes: info.counters.download_bytes(),
     }
 }
 

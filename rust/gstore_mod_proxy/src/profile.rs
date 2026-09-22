@@ -1174,9 +1174,13 @@ impl ProfileStore {
             name: record.profile.name.clone(),
             user_agent: record.profile.source.user_agent.clone(),
         };
+        // The fetch URL carries the auth token; only scheme://host[:port] is logged.
+        let redacted_url = url::Url::parse(&fetch.url)
+            .map(|u| crate::subscription::redact_url(&u))
+            .unwrap_or_else(|_| "<invalid-url>".to_string());
         log_message(format!(
-            "profile.refresh id={} attempts={attempts} force={} url={}",
-            record.id, req.force, fetch.url
+            "profile.refresh id={} attempts={attempts} force={} url={redacted_url}",
+            record.id, req.force
         ));
         Ok(RefreshPlan {
             profile_id: record.id.clone(),

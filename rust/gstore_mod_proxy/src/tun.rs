@@ -1062,7 +1062,7 @@ mod tests {
         reset_read_count();
 
         let frame = non_dns_frame();
-        let mut w = peer.try_clone().unwrap();
+        let w = peer.try_clone().unwrap();
         for b in 0..BURSTS {
             for _ in 0..PER_BURST {
                 w.send(&frame).expect("send frame");
@@ -1109,7 +1109,7 @@ mod tests {
         reset_read_count();
 
         let drain_stop = Arc::new(AtomicBool::new(false));
-        let mut peer_read = peer.try_clone().unwrap();
+        let peer_read = peer.try_clone().unwrap();
         peer_read
             .set_read_timeout(Some(Duration::from_millis(50)))
             .unwrap();
@@ -1129,7 +1129,7 @@ mod tests {
         });
 
         let frame = non_dns_frame();
-        let mut peer_write = peer.try_clone().unwrap();
+        let peer_write = peer.try_clone().unwrap();
         let rss0 = crate::limits::rss_kb();
         let cpu0 = crate::limits::cpu_ms();
         let t0 = std::time::Instant::now();

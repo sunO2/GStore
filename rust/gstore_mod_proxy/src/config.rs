@@ -314,7 +314,7 @@ fn generate_record(
     root.insert(ys("proxy-groups"), Yaml::Sequence(groups));
     root.insert(
         ys("rules"),
-        Yaml::Sequence(rules.iter().map(|line| ys(line)).collect()),
+        Yaml::Sequence(rules.iter().map(ys).collect()),
     );
     root.insert(ys("dns"), dns_value(&dns));
     root.insert(ys("tun"), tun_value(&stack, mtu));

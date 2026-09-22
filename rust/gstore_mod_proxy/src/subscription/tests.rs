@@ -5,7 +5,9 @@
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 
-use super::fetch::{is_blocked_ip, parse_content_disposition, parse_subscription_userinfo};
+use super::fetch::{
+    is_blocked_ip, parse_content_disposition, parse_subscription_userinfo, redact_url,
+};
 use super::*;
 
 fn b64(value: &str) -> String {
@@ -321,6 +323,24 @@ fn url_scheme_allowlist_rejects_file_and_ftp() {
     assert!(super::fetch::parse_http_url("file:///etc/passwd").is_err());
     assert!(super::fetch::parse_http_url("ftp://example.com/x").is_err());
     assert!(super::fetch::parse_http_url("https://example.com/sub").is_ok());
+}
+
+#[test]
+fn redact_url_strips_userinfo_path_and_query() {
+    let u = url::Url::parse("https://user:pass@h/p?q=1").unwrap();
+    assert_eq!(redact_url(&u), "https://h");
+}
+
+#[test]
+fn redact_url_keeps_scheme_host_port_only() {
+    let u = url::Url::parse("https://example.com:8443/sub?token=SECRET123&flag=meta").unwrap();
+    let redacted = redact_url(&u);
+    assert_eq!(redacted, "https://example.com:8443");
+    assert!(!redacted.contains("SECRET123"));
+    assert!(!redacted.contains("token="));
+
+    let v6 = url::Url::parse("http://[::1]:1080/x").unwrap();
+    assert_eq!(redact_url(&v6), "http://[::1]:1080");
 }
 
 #[test]

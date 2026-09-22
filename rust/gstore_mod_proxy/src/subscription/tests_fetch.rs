@@ -226,3 +226,30 @@ fn chunked_clash_body_is_decoded() {
     handle.join().unwrap();
     assert_eq!(profile.node_count, 2);
 }
+
+/// Security: a subscription URL carries its auth token in the query; an error
+/// surfaced to callers (and persisted/emitted downstream) must not leak it.
+#[test]
+fn fetch_error_message_redacts_subscription_token() {
+    let response = http_bytes(404, &[], b"nope");
+    let (base, handle) = serve_n(response, 1);
+    let url = format!("{base}?token=SECRET123&flag=meta");
+    let err = run(&url, vec!["clash.meta/1.19.0".into()]).unwrap_err();
+    handle.join().unwrap();
+    assert_eq!(err.code, ERR_FETCH_FAILED);
+    assert!(
+        !err.message.contains("SECRET123"),
+        "token leaked into error: {}",
+        err.message
+    );
+    assert!(
+        !err.message.contains("token="),
+        "query leaked into error: {}",
+        err.message
+    );
+    assert!(
+        err.message.contains("http://127.0.0.1"),
+        "scheme://host must remain: {}",
+        err.message
+    );
+}

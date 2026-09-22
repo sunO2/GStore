@@ -38,6 +38,7 @@ mod tests_fetch;
 #[cfg(test)]
 mod tests_pipeline;
 
+pub(crate) use fetch::redact_url;
 pub(crate) use link::parse_share_link;
 pub(crate) use model::*;
 pub(crate) use parse::parse_subscription_text;

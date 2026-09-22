@@ -130,9 +130,10 @@ async fn fetch_with_headers(
                     resp.status
                 ))
             })?;
+            // The Location header can itself carry a token: never echo it.
             let next = current
                 .join(location)
-                .map_err(|e| url_invalid(format!("bad redirect Location '{location}': {e}")))?;
+                .map_err(|e| url_invalid(format!("bad redirect Location (unparseable): {e}")))?;
             if next.scheme() != "http" && next.scheme() != "https" {
                 return Err(url_invalid(format!(
                     "redirect to unsupported scheme '{}'",
@@ -143,7 +144,11 @@ async fn fetch_with_headers(
             continue;
         }
         if !(200..300).contains(&resp.status) {
-            return Err(fetch_failed(format!("HTTP {} from {current}", resp.status)));
+            return Err(fetch_failed(format!(
+                "HTTP {} from {}",
+                resp.status,
+                redact_url(&current)
+            )));
         }
         return Ok(HttpResponse {
             headers: resp.headers,
@@ -163,11 +168,11 @@ async fn fetch_one(
     let is_https = url.scheme() == "https";
     let host = url
         .host_str()
-        .ok_or_else(|| url_invalid(format!("URL has no host: {url}")))?
+        .ok_or_else(|| url_invalid(format!("URL has no host: {}", redact_url(url))))?
         .to_string();
     let port = url
         .port_or_known_default()
-        .ok_or_else(|| url_invalid(format!("URL has no port: {url}")))?;
+        .ok_or_else(|| url_invalid(format!("URL has no port: {}", redact_url(url))))?;
     let path_and_query = match url.query() {
         Some(query) => format!("{}?{query}", url.path()),
         None => url.path().to_string(),
@@ -255,7 +260,7 @@ fn parse_http_response(
     let mut lines = head.split("\r\n");
     let status_line = lines.next().unwrap_or_default();
     let status = status_line
-        .splitn(3, ' ')
+        .split(' ')
         .nth(1)
         .and_then(|code| code.parse::<u16>().ok())
         .ok_or_else(|| fetch_failed("missing HTTP status code"))?;
@@ -348,8 +353,32 @@ fn decode_chunked(
     }
 }
 
+/// `scheme://host[:port]` only — credentials, path and query are stripped.
+/// Subscription URLs carry auth tokens in the query, so they must never appear
+/// in logs, errors, events or persisted state.
+pub(crate) fn redact_url(u: &Url) -> String {
+    let Some(scheme) = Some(u.scheme()).filter(|s| !s.is_empty()) else {
+        return "<invalid-url>".to_string();
+    };
+    let Some(host) = u.host_str() else {
+        return "<invalid-url>".to_string();
+    };
+    // `host_str()` may or may not keep IPv6 brackets; normalize then re-add.
+    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    let host = if bare.contains(':') {
+        format!("[{bare}]")
+    } else {
+        bare.to_string()
+    };
+    match u.port() {
+        Some(port) => format!("{scheme}://{host}:{port}"),
+        None => format!("{scheme}://{host}"),
+    }
+}
+
 pub(crate) fn parse_http_url(raw: &str) -> Result<Url, gstore_contract::error::ModuleError> {
-    let url = Url::parse(raw).map_err(|e| url_invalid(format!("invalid URL '{raw}': {e}")))?;
+    // Never echo `raw`: `url::ParseError`'s Display does not include the input.
+    let url = Url::parse(raw).map_err(|e| url_invalid(format!("invalid URL: {e}")))?;
     match url.scheme() {
         "http" | "https" => {}
         other => {
@@ -359,7 +388,7 @@ pub(crate) fn parse_http_url(raw: &str) -> Result<Url, gstore_contract::error::M
         }
     }
     if url.host_str().is_none() {
-        return Err(url_invalid(format!("URL has no host: {url}")));
+        return Err(url_invalid(format!("URL has no host: {}", redact_url(&url))));
     }
     Ok(url)
 }
@@ -373,7 +402,7 @@ async fn ensure_target_allowed(
     }
     let host = url
         .host_str()
-        .ok_or_else(|| url_invalid(format!("URL has no host: {url}")))?
+        .ok_or_else(|| url_invalid(format!("URL has no host: {}", redact_url(url))))?
         .to_string();
     let bare_host = host.trim_start_matches('[').trim_end_matches(']').to_string();
     if is_blocked_hostname(&bare_host) {
