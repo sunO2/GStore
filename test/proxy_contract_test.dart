@@ -781,6 +781,20 @@ void main() {
         expect(() => jsonEncode(json), returnsNormally);
       }
     });
+
+    test('node.delay_test：targets 非空时编码、空时省略键', () {
+      final encoded =
+          const NodeDelayTestRequest(targets: <String>['A', 'B']).toJson();
+      expect(encoded['targets'], <String>['A', 'B']);
+      // 空 targets 不产生键（保持旧请求形状 / 不触发后端 422）。
+      expect(const NodeDelayTestRequest().toJson().containsKey('targets'),
+          isFalse);
+      // 显式 targets 与 group/node 互斥语义不冲突（均由后端处理）。
+      expect(
+        const NodeDelayTestRequest(targets: <String>['A']).toJson()['group'],
+        isNull,
+      );
+    });
   });
 
   group('failure QA：结构化错误、无崩溃', () {

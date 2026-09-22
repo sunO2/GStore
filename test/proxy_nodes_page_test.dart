@@ -544,8 +544,13 @@ void main() {
     expect(find.text('120 ms'), findsOneWidget);
     expect(find.text('450 ms'), findsOneWidget);
     expect(find.byType(AppLoading), findsNothing);
-    // 测试全部覆盖所有分组的节点 → 不带 group 参数。
+    // 测试全部覆盖所有分组的节点 → 发送显式 targets，且不带 group / node。
     expect(facade.lastDelayRequest?.group, isNull);
+    expect(facade.lastDelayRequest?.node, isNull);
+    expect(
+      facade.lastDelayRequest?.targets,
+      unorderedEquals(<String>['香港 01', '日本 02', '美国 03']),
+    );
     expect(tester.takeException(), isNull);
 
     await facade.controller.close();
@@ -574,6 +579,50 @@ void main() {
     expect(find.text('超时'), findsNWidgets(2)); // 香港 01 失败 + 美国 03 未回填
     expect(find.text('90 ms'), findsOneWidget);
     // 测试结束后不再有加载指示（不是无限 spinner）
+    expect(find.byType(AppLoading), findsNothing);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('failure：非 timeout 的传输错误显示「失败」并保留原因（非超时）',
+      (WidgetTester tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeNodesFacade();
+    await tester.pumpWidget(_wrap(ProxyNodesPage(
+      nodes: const <ProxyNode>[_hk, _jp, _us],
+      groups: _groups,
+      facade: facade,
+    )));
+
+    await tester.tap(find.byKey(const Key('proxy_nodes_test_all')));
+    await tester.pump();
+    facade.delayCompleter!.complete(const DelayTestResult(
+      group: 'PROXY',
+      results: <DelayResult>[
+        DelayResult(
+          node: '香港 01',
+          alive: false,
+          error: 'dial: connection refused',
+        ),
+        DelayResult(node: '日本 02', alive: false, error: 'timeout'),
+        DelayResult(node: '美国 03', delayMs: 88, alive: true),
+      ],
+    ));
+    await tester.pump();
+
+    // 非 timeout 的 error → 失败；error == 'timeout' → 超时；不混淆。
+    expect(find.text('失败'), findsOneWidget);
+    expect(find.text('超时'), findsOneWidget);
+    expect(find.text('88 ms'), findsOneWidget);
+    // 失败原因可经 Tooltip 访问。
+    final Tooltip tooltip = tester.widget<Tooltip>(
+      find.ancestor(
+        of: find.text('失败'),
+        matching: find.byType(Tooltip),
+      ),
+    );
+    expect(tooltip.message, 'dial: connection refused');
     expect(find.byType(AppLoading), findsNothing);
     expect(tester.takeException(), isNull);
 

@@ -2422,6 +2422,7 @@ class NodeDelayTestRequest {
   const NodeDelayTestRequest({
     this.node,
     this.group,
+    this.targets = const <String>[],
     this.url,
     this.expectedStatus,
     this.timeoutMs,
@@ -2429,6 +2430,9 @@ class NodeDelayTestRequest {
 
   final String? node;
   final String? group;
+
+  /// 显式探测的节点名集合（「测试全部」使用）；空则省略该键。
+  final List<String> targets;
   final String? url;
   final String? expectedStatus;
   final int? timeoutMs;
@@ -2436,6 +2440,7 @@ class NodeDelayTestRequest {
   Map<String, dynamic> toJson() => <String, dynamic>{
         if (node != null) 'node': node,
         if (group != null) 'group': group,
+        if (targets.isNotEmpty) 'targets': targets,
         if (url != null) 'url': url,
         if (expectedStatus != null) 'expectedStatus': expectedStatus,
         if (timeoutMs != null) 'timeoutMs': timeoutMs,

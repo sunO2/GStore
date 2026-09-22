@@ -103,8 +103,18 @@ class _DelayState {
   final bool alive;
   final String? error;
 
-  /// 不可达 / 未完成（0ms）→ 明确按超时呈现。
-  bool get isTimeout => !alive || delayMs <= 0 || error != null;
+  /// 非超时失败的具体原因（如 `dial: ...`）；超时 / 无错误时为 null。
+  String? get failureReason {
+    final String? e = error;
+    if (e == null || e.isEmpty || e == 'timeout') return null;
+    return e;
+  }
+
+  /// 后端明确区分的传输 / 拨号失败（非超时）。
+  bool get isFailure => failureReason != null;
+
+  /// 不可达 / 未完成（0ms）→ 明确按超时呈现（失败态除外）。
+  bool get isTimeout => !isFailure && (!alive || delayMs <= 0 || error != null);
 }
 
 class _ProxyNodesPageState extends State<ProxyNodesPage> {
@@ -252,7 +262,8 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
 
   int? _positiveDelay(String node) {
     final _DelayState? state = _delays[node];
-    if (state == null || state.isTimeout) return null;
+    // 仅存活的成功延迟参与排序；超时与失败一律视为无延迟。
+    if (state == null || !state.alive || state.delayMs <= 0) return null;
     return state.delayMs;
   }
 
@@ -321,33 +332,37 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
 
   /// 统一的延迟测试入口（appbar「测试全部」/ 弹层测速共用）。
   ///
-  /// [group] / [node] 限定探测范围（都不传 = 全部节点，见 `_testAll`）。
-  /// 响应 + 事件双通道回填，剩余未回的节点显式标记为超时（绝不无限 spinner）。
+  /// [group] / [node] 限定探测范围（见 `_testAll` / 弹层）；[targets] 是显式
+  /// 请求选择器（「测试全部」发送节点名集合，后端据此探测）。[pending] 是本地
+  /// 待回填集合，缺省与 [targets] 相同；响应 + 事件双通道回填，剩余未回的节点
+  /// 显式标记为超时（绝不无限 spinner）。
   Future<void> _runDelayTest({
     String? group,
     String? node,
-    required List<String> targets,
+    List<String> targets = const <String>[],
+    List<String>? pending,
     bool showProgress = false,
   }) async {
-    if (targets.isEmpty) {
+    final List<String> pendingList = pending ?? targets;
+    if (pendingList.isEmpty) {
       AppDialogs.showInfo('当前没有可测试的节点');
       return;
     }
     setState(() {
       if (showProgress) _testing = true;
-      _testTotal = targets.length;
+      _testTotal = pendingList.length;
       _testedCount = 0;
       _pending
         ..clear()
-        ..addAll(targets);
-      for (final String name in targets) {
+        ..addAll(pendingList);
+      for (final String name in pendingList) {
         _delays.remove(name);
       }
     });
     _latencyTick.value++;
     try {
       final DelayTestResult result = await _facade.nodeDelayTest(
-        NodeDelayTestRequest(group: group, node: node),
+        NodeDelayTestRequest(group: group, node: node, targets: targets),
       );
       if (!mounted) return;
       setState(() {
@@ -371,7 +386,7 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
     }
   }
 
-  /// `测试全部`：不带 group / node 参数，覆盖所有分组里的节点。
+  /// `测试全部`：不带 group / node，改为显式发送所有分组里的节点名集合。
   Future<void> _testAll() =>
       _runDelayTest(targets: _testTargets, showProgress: true);
 
@@ -438,7 +453,7 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
         revision: _latencyTick,
         delayOf: (String n) => _delays[n],
         isPending: _pending.contains,
-        onTest: () => _runDelayTest(group: group.name, targets: targets),
+        onTest: () => _runDelayTest(group: group.name, pending: targets),
         onSelect: (String n) => _selectNode(group.name, n),
       ),
     );
@@ -466,7 +481,8 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
         revision: _latencyTick,
         delayOf: (String n) => _delays[n],
         isPending: _pending.contains,
-        onTest: () => _runDelayTest(node: node.name, targets: <String>[node.name]),
+        onTest: () =>
+            _runDelayTest(node: node.name, pending: <String>[node.name]),
         onSelect: (String n) => _selectNode(parentGroup, n),
       ),
     );
@@ -1129,6 +1145,18 @@ class _LatencyBadge extends StatelessWidget {
         text,
         style: theme.textTheme.labelMedium?.copyWith(
           color: scheme.onSurfaceVariant,
+        ),
+      );
+    }
+    if (current.isFailure) {
+      // 非超时失败：紧凑徽标 + 原因挂在 tooltip，与超时区分。
+      return Tooltip(
+        message: current.failureReason!,
+        child: _badge(
+          context,
+          color: scheme.error,
+          icon: Icons.warning_amber_outlined,
+          text: '失败',
         ),
       );
     }
