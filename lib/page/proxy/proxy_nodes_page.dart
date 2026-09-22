@@ -181,7 +181,7 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
 
   // ==================== 数据加载 ====================
 
-  /// 把节点 / 分组写入状态（清空旧选择映射，避免跨订阅串台）。
+  /// 把节点 / 分组写入状态；不清空 [_activeByGroup]（单订阅路由，重载保留已选节点）。
   void _applyData(List<ProxyNode> nodes, List<ProxyGroup> groups) {
     _nodesByName = <String, ProxyNode>{
       for (final ProxyNode node in nodes) node.name: node,

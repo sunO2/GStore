@@ -13,6 +13,8 @@
 // * 纯函数：`ProxySettingsConfig.toVpnConfigJson()` 的三种模式映射 +
 //   「排除应用」过滤本应用（Todo 4：绝不 `addDisallowedApplication(self)`）。
 
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -412,16 +414,19 @@ void main() {
   });
 
   group('ProxySettingsConfig 映射', () {
+    // 逐字段断言（而非整段字符串），新增可选字段不会误伤这些用例。
     test('full 模式不写应用清单', () {
       const config = ProxySettingsConfig(
         splitMode: ProxySplitTunnelMode.full,
         selectedApps: {'com.apple'},
       );
-      expect(
-        config.toVpnConfigJson(),
-        '{"mode":"full","addresses":["10.10.0.2/32","fd00::1/128"],'
-        '"routes":["0.0.0.0/0","::/0"]}',
-      );
+      final map = jsonDecode(config.toVpnConfigJson()) as Map<String, dynamic>;
+      expect(map['mode'], 'full');
+      expect(map['addresses'], kProxyVpnAddresses);
+      expect(map['routes'], kProxyVpnRoutes);
+      expect(map['dns'], kProxyVpnDnsServers);
+      expect(map.containsKey('allowedApps'), isFalse);
+      expect(map.containsKey('disallowedApps'), isFalse);
     });
 
     test('allow 模式写入 allowedApps', () {
@@ -429,12 +434,12 @@ void main() {
         splitMode: ProxySplitTunnelMode.allow,
         selectedApps: {'com.banana', 'com.apple'},
       );
-      expect(
-        config.toVpnConfigJson(),
-        '{"mode":"allow","addresses":["10.10.0.2/32","fd00::1/128"],'
-        '"routes":["0.0.0.0/0","::/0"],'
-        '"allowedApps":["com.apple","com.banana"]}',
-      );
+      final map = jsonDecode(config.toVpnConfigJson()) as Map<String, dynamic>;
+      expect(map['mode'], 'allow');
+      expect(map['addresses'], kProxyVpnAddresses);
+      expect(map['routes'], kProxyVpnRoutes);
+      expect(map['dns'], kProxyVpnDnsServers);
+      expect(map['allowedApps'], <String>['com.apple', 'com.banana']);
     });
 
     test('disallow 模式过滤本应用（绝不 addDisallowedApplication(self)）', () {
@@ -442,12 +447,12 @@ void main() {
         splitMode: ProxySplitTunnelMode.disallow,
         selectedApps: {kGStorePackageName, 'com.apple'},
       );
-      expect(
-        config.toVpnConfigJson(),
-        '{"mode":"disallow","addresses":["10.10.0.2/32","fd00::1/128"],'
-        '"routes":["0.0.0.0/0","::/0"],'
-        '"disallowedApps":["com.apple"]}',
-      );
+      final map = jsonDecode(config.toVpnConfigJson()) as Map<String, dynamic>;
+      expect(map['mode'], 'disallow');
+      expect(map['addresses'], kProxyVpnAddresses);
+      expect(map['routes'], kProxyVpnRoutes);
+      expect(map['dns'], kProxyVpnDnsServers);
+      expect(map['disallowedApps'], <String>['com.apple']);
     });
 
     test('toMap/fromMap 往返保持', () {
