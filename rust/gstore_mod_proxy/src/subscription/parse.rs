@@ -201,6 +201,7 @@ fn node_from_clash_map(
         grpc,
         obfs: map.get("obfs").and_then(yaml_str),
         obfs_password: map.get("obfs-password").and_then(yaml_str),
+        udp: map.get("udp").and_then(yaml_bool),
         groups: Vec::new(),
         source: NodeSource {
             format: "clash".to_string(),

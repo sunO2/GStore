@@ -106,6 +106,9 @@ pub struct ProxyNode {
     pub obfs: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub obfs_password: Option<String>,
+    /// Clash `udp:` flag; `None` = not specified (engine default applies).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub udp: Option<bool>,
     #[serde(default)]
     pub groups: Vec<String>,
     pub source: NodeSource,
@@ -194,9 +197,8 @@ pub(crate) struct ImportLinkRequest {
 mod tests {
     use super::*;
 
-    #[test]
-    fn node_serializes_canonical_type_field() {
-        let node = ProxyNode {
+    fn base_node() -> ProxyNode {
+        ProxyNode {
             name: "n1".into(),
             node_type: "ss".into(),
             server: "1.2.3.4".into(),
@@ -218,17 +220,36 @@ mod tests {
             grpc: None,
             obfs: None,
             obfs_password: None,
+            udp: None,
             groups: Vec::new(),
             source: NodeSource {
                 format: "clash".into(),
                 origin: "text".into(),
                 index: 0,
             },
-        };
+        }
+    }
+
+    #[test]
+    fn node_serializes_canonical_type_field() {
+        let node = base_node();
         let value = serde_json::to_value(&node).unwrap();
         assert_eq!(value["type"], "ss");
         assert_eq!(value["name"], "n1");
         assert!(value.get("alterId").is_none());
+        assert!(value.get("udp").is_none(), "absent udp must be omitted");
         assert_eq!(value["groups"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn udp_flag_round_trips_through_serde() {
+        let mut node = base_node();
+        for flag in [true, false] {
+            node.udp = Some(flag);
+            let json = serde_json::to_string(&node).unwrap();
+            assert!(json.contains(&format!("\"udp\":{flag}")), "{json}");
+            let back: ProxyNode = serde_json::from_str(&json).unwrap();
+            assert_eq!(back.udp, Some(flag));
+        }
     }
 }

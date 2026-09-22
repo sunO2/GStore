@@ -249,10 +249,17 @@ parses one share link (`ss`/`ss2022`/`vmess`/`vless`/`trojan`/`hysteria2`).
   "grpc": { "serviceName": "…" },
   "obfs": "salamander",
   "obfsPassword": "…",
+  "udp": true,
   "groups": ["PROXY"],
   "source": { "format": "clash", "origin": "url", "index": 0 }
 }
 ```
+
+`udp` is the Clash `udp:` flag carried from import through the canonical model and
+re-emitted into the generated config. It is emitted for the TCP-carried protocols
+(`ss`/`vmess`/`vless`/`trojan`/`socks5`/`http`) as `udp: true` when absent (our model
+historically dropped the field and real subscriptions overwhelmingly enable it), and
+an explicit `udp: false` is respected; `hysteria2` always emits `udp: true` (UDP-native).
 
 `ProxyGroup`: `{ "name": "PROXY", "type": "select", "members": ["node-1"] }`.
 
@@ -516,6 +523,11 @@ allocation.
 `doh` / `dot` are merged into the primary nameserver set (`https://` / `tls://`
 meow transports). `defaultNameservers` is the **bootstrap** list (plain UDP/TCP
 IP literals only) used to resolve the encrypted upstreams' own hostnames.
+
+The built-in default is CN-reachable primaries `223.5.5.5` / `119.29.29.29`
+with `1.1.1.1` / `8.8.8.8` as `fallback` (all plain IPs, so no bootstrap list
+is needed); `dns.get` reflects them and an explicit `dns.set` replaces either
+list.
 
 `DnsStats`: `{ "queries": 0, "failures": 0, "cacheEntries": 0, "fakeIpActive": false, "fakeIpRange": "198.18.0.0/16" }`
 
@@ -1642,6 +1654,11 @@ before this field existed lack `rules`; `ImportedProfile.rules` is
   our netstack pump (Todo 6/tun.rs).
 - `stack` defaults to `gvisor`; `mtu` defaults to 1500 and must be ≥ 1280
   (matching meow's hard minimum) or `PROXY_CONFIG_INVALID` (422).
+- A REALITY VLESS node is always emitted with `tls: true` and a
+  `client-fingerprint` (the explicit value wins, else `chrome`). meow
+  **hard-errors** on a REALITY node missing either, while mihomo infers both —
+  without this default a subscription that omitted the fingerprint would drop
+  every REALITY node at registry build.
 
 ### 13.2 Registry build & selector persistence
 
@@ -1685,7 +1702,10 @@ returning `running`, so a subsequent `node.select` sees the live registry.
 block carries only `stack`/`mtu`; `mtu < 1280` is a structured 422; the registry
 builds leaves+groups+built-ins and uses the store; an unsupported node (e.g.
 `snell`) is warned and skipped without aborting; an `hysteria2` node is built
-into the registry with no `PROXY_CONFIG_NODE_UNSUPPORTED` warning; the rules
+into the registry with no `PROXY_CONFIG_NODE_UNSUPPORTED` warning; a REALITY
+VLESS node without an explicit fingerprint emits `tls: true` +
+`client-fingerprint: chrome` (an explicit fingerprint wins, a non-REALITY node
+is unaffected); the rules
 pipeline emits the profile's captured `rules:` verbatim, appends `MATCH,PROXY`
 for a profile with nodes that has no terminal match, keeps `MATCH,DIRECT` only
 for a nodeless profile, lets an explicit overlay win, and round-trips `rules`

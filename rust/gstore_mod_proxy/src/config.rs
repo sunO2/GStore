@@ -500,7 +500,7 @@ fn proxy_value(node: &ProxyNode) -> Yaml {
         "ss" => {
             put_opt(&mut m, "cipher", node.cipher.as_deref());
             put_opt(&mut m, "password", node.password.as_deref());
-            m.insert(ys("udp"), Yaml::Bool(true));
+            put_udp(&mut m, node);
         }
         "vmess" => {
             put_opt(&mut m, "uuid", node.uuid.as_deref());
@@ -514,6 +514,7 @@ fn proxy_value(node: &ProxyNode) -> Yaml {
             );
             put_tls(&mut m, node);
             put_transport(&mut m, node);
+            put_udp(&mut m, node);
         }
         "vless" => {
             put_opt(&mut m, "uuid", node.uuid.as_deref());
@@ -523,6 +524,7 @@ fn proxy_value(node: &ProxyNode) -> Yaml {
                 ys(node.security.clone().unwrap_or_else(|| "none".to_string())),
             );
             put_tls(&mut m, node);
+            put_reality_tls(&mut m, node);
             if let Some(reality) = &node.reality {
                 let mut r = Mapping::new();
                 put_opt(&mut r, "public-key", reality.public_key.as_deref());
@@ -531,12 +533,14 @@ fn proxy_value(node: &ProxyNode) -> Yaml {
                 m.insert(ys("reality-opts"), Yaml::Mapping(r));
             }
             put_transport(&mut m, node);
+            put_udp(&mut m, node);
         }
         "trojan" => {
             put_opt(&mut m, "password", node.password.as_deref());
             put_opt(&mut m, "sni", node.sni.as_deref());
             put_skip_cert_verify(&mut m, node);
             m.insert(ys("tls"), Yaml::Bool(true));
+            put_udp(&mut m, node);
         }
         "hysteria2" => {
             put_opt(&mut m, "password", node.password.as_deref());
@@ -548,14 +552,20 @@ fn proxy_value(node: &ProxyNode) -> Yaml {
         }
         "http" => {
             put_tls(&mut m, node);
+            put_udp(&mut m, node);
         }
         "socks5" => {
             put_tls(&mut m, node);
-            m.insert(ys("udp"), Yaml::Bool(true));
+            put_udp(&mut m, node);
         }
         _ => {}
     }
     Yaml::Mapping(m)
+}
+
+/// Emit the Clash `udp:` flag for TCP-carried protocols; absent means enabled because our model historically dropped the field and real subscriptions overwhelmingly set `udp: true`, while an explicit `false` is respected.
+fn put_udp(m: &mut Mapping, node: &ProxyNode) {
+    m.insert(ys("udp"), Yaml::Bool(node.udp.unwrap_or(true)));
 }
 
 fn put_tls(m: &mut Mapping, node: &ProxyNode) {
@@ -570,6 +580,19 @@ fn put_tls(m: &mut Mapping, node: &ProxyNode) {
             ys("alpn"),
             Yaml::Sequence(node.alpn.iter().map(|a| ys(a.clone())).collect()),
         );
+    }
+}
+
+/// meow hard-errors on a REALITY node without `tls: true` and a `client-fingerprint`; mihomo infers both, so default them here.
+fn put_reality_tls(m: &mut Mapping, node: &ProxyNode) {
+    if node.reality.is_some() {
+        m.insert(ys("tls"), Yaml::Bool(true));
+        let fingerprint = node
+            .fingerprint
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .unwrap_or("chrome");
+        m.insert(ys("client-fingerprint"), ys(fingerprint));
     }
 }
 
@@ -815,6 +838,7 @@ mod tests {
             grpc: None,
             obfs: None,
             obfs_password: None,
+            udp: None,
             groups: Vec::new(),
             source: NodeSource {
                 format: "clash".to_string(),
@@ -1183,5 +1207,128 @@ mod tests {
             "hysteria2 node must not warn during registry build: {warnings:?}"
         );
         assert!(map.contains_key("PROXY"), "group over the hy2 node builds");
+    }
+
+    #[test]
+    fn reality_vless_without_fingerprint_defaults_tls_and_chrome() {
+        let mut n = vless("r1", "192.0.2.30", 443, 0);
+        n.tls = false;
+        n.fingerprint = None;
+        n.reality = Some(crate::subscription::RealityParams {
+            public_key: Some("PUBKEY".to_string()),
+            short_id: Some("ab".to_string()),
+            spider_x: None,
+        });
+        let value = proxy_value(&n);
+        assert_eq!(value["tls"], Yaml::Bool(true), "REALITY forces tls:true");
+        assert_eq!(
+            value["client-fingerprint"],
+            Yaml::String("chrome".to_string()),
+            "REALITY defaults client-fingerprint to chrome"
+        );
+        assert!(value.get("reality-opts").is_some());
+    }
+
+    #[test]
+    fn reality_vless_keeps_an_explicit_fingerprint() {
+        let mut n = vless("r2", "192.0.2.31", 443, 0);
+        n.fingerprint = Some("firefox".to_string());
+        n.reality = Some(crate::subscription::RealityParams {
+            public_key: Some("PUBKEY".to_string()),
+            short_id: None,
+            spider_x: None,
+        });
+        let value = proxy_value(&n);
+        assert_eq!(value["tls"], Yaml::Bool(true));
+        assert_eq!(
+            value["client-fingerprint"],
+            Yaml::String("firefox".to_string()),
+            "an explicit fingerprint wins over the default"
+        );
+    }
+
+    #[test]
+    fn non_reality_vless_without_tls_is_unchanged() {
+        let mut n = vless("p1", "192.0.2.32", 443, 0);
+        n.tls = false;
+        n.fingerprint = None;
+        n.reality = None;
+        let value = proxy_value(&n);
+        assert!(value.get("tls").is_none(), "plain vless with tls:false still omits tls");
+        assert!(
+            value.get("client-fingerprint").is_none(),
+            "no fingerprint is invented for a non-REALITY node"
+        );
+        assert!(value.get("reality-opts").is_none());
+    }
+
+    #[test]
+    fn dns_value_emits_cn_reachable_primary_and_international_fallback() {
+        let value = dns_value(&DnsConfig::default());
+        let nameserver: Vec<&str> = value["nameserver"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(nameserver, vec!["223.5.5.5", "119.29.29.29"]);
+        let fallback: Vec<&str> = value["fallback"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(fallback, vec!["1.1.1.1", "8.8.8.8"]);
+    }
+
+    #[test]
+    fn tcp_protocols_emit_udp_true_by_default_and_respect_explicit_false() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        crate::rules::reset_for_tests();
+        let record = stored(
+            vec![
+                trojan("t1", "192.0.2.10", 443, 0),
+                vless("v1", "192.0.2.11", 8443, 1),
+                node("vm1", "vmess", "192.0.2.12", 443, 2),
+                node("ss1", "ss", "192.0.2.13", 8388, 3),
+                node("sk1", "socks5", "192.0.2.14", 1080, 4),
+                node("ht1", "http", "192.0.2.15", 8080, 5),
+                hysteria2("h1", "192.0.2.16", 443, 6),
+            ],
+            Vec::new(),
+        );
+        let generated = render(&record, &GenerateRequest::default());
+        let value: Yaml = serde_yaml::from_str(&generated.yaml).unwrap();
+        let proxies = value["proxies"].as_sequence().unwrap();
+        let udp_of = |name: &str| {
+            proxies
+                .iter()
+                .find(|p| p["name"] == Yaml::String(name.to_string()))
+                .map(|p| p["udp"].clone())
+                .unwrap()
+        };
+        for name in ["t1", "v1", "vm1", "ss1", "sk1", "ht1", "h1"] {
+            assert_eq!(udp_of(name), Yaml::Bool(true), "{name} must emit udp:true");
+        }
+
+        let mut disabled_trojan = trojan("t2", "192.0.2.20", 443, 0);
+        disabled_trojan.udp = Some(false);
+        let mut disabled_vless = vless("v2", "192.0.2.21", 8443, 1);
+        disabled_vless.udp = Some(false);
+        let record = stored(vec![disabled_trojan, disabled_vless], Vec::new());
+        let generated = render(&record, &GenerateRequest::default());
+        let value: Yaml = serde_yaml::from_str(&generated.yaml).unwrap();
+        let proxies = value["proxies"].as_sequence().unwrap();
+        for name in ["t2", "v2"] {
+            let proxy = proxies
+                .iter()
+                .find(|p| p["name"] == Yaml::String(name.to_string()))
+                .unwrap();
+            assert_eq!(
+                proxy["udp"],
+                Yaml::Bool(false),
+                "{name} explicit udp:false must be respected"
+            );
+        }
     }
 }

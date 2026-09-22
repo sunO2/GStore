@@ -1405,6 +1405,7 @@ pub(crate) mod tests {
             grpc: None,
             obfs: None,
             obfs_password: None,
+            udp: None,
             groups: vec!["PROXY".to_string()],
             source: NodeSource {
                 format: "clash".to_string(),

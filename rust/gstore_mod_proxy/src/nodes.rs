@@ -827,6 +827,7 @@ pub(crate) mod tests {
             grpc: None,
             obfs: None,
             obfs_password: None,
+            udp: None,
             groups: Vec::new(),
             source: crate::subscription::NodeSource {
                 format: "clash".to_string(),

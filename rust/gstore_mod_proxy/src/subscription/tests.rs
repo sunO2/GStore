@@ -211,6 +211,36 @@ fn share_link_hysteria2() {
 }
 
 #[test]
+fn share_links_leave_udp_unspecified() {
+    let ss = parse_share_link(&ss_link("aes-256-gcm", "p", "1.2.3.4", 8388, "A"), 0, "uriList", "url")
+        .unwrap();
+    assert_eq!(ss.udp, None);
+    let vless = parse_share_link(
+        "vless://44444444-4444-4444-4444-444444444444@1.2.3.4:443#V",
+        0,
+        "uriList",
+        "url",
+    )
+    .unwrap();
+    assert_eq!(vless.udp, None);
+}
+
+#[test]
+fn clash_udp_flag_is_carried_and_absent_stays_none() {
+    let yaml = r#"
+proxies:
+  - {name: "u-on", type: ss, server: 1.2.3.4, port: 8388, cipher: aes-256-gcm, password: pw, udp: true}
+  - {name: "u-off", type: vless, server: 1.2.3.5, port: 443, uuid: "11111111-1111-1111-1111-111111111111", udp: false}
+  - {name: "u-none", type: trojan, server: 1.2.3.6, port: 443, password: pw}
+"#;
+    let parsed = parse_subscription_text(yaml, None, "text").unwrap();
+    let find = |name: &str| parsed.nodes.iter().find(|n| n.name == name).unwrap();
+    assert_eq!(find("u-on").udp, Some(true));
+    assert_eq!(find("u-off").udp, Some(false));
+    assert_eq!(find("u-none").udp, None);
+}
+
+#[test]
 fn unknown_scheme_and_missing_separator_are_structured_errors() {
     let err = parse_share_link("xyz://a@b:1#c", 0, "uriList", "url").unwrap_err();
     assert_eq!(err.code, ERR_SCHEME_UNSUPPORTED);

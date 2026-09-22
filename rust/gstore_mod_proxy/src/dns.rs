@@ -143,8 +143,10 @@ impl Default for DnsConfig {
     fn default() -> Self {
         Self {
             mode: DnsModeKind::FakeIp,
-            nameservers: vec!["1.1.1.1".to_string(), "8.8.8.8".to_string()],
-            fallback: Vec::new(),
+            // CN-reachable plain-UDP primaries; 1.1.1.1/8.8.8.8 are often blocked on CN networks, so they are fallback only (plain IPs keep the bootstrap list unnecessary).
+            nameservers: vec!["223.5.5.5".to_string(), "119.29.29.29".to_string()],
+            // International fallback, used when every primary upstream fails.
+            fallback: vec!["1.1.1.1".to_string(), "8.8.8.8".to_string()],
             doh: Vec::new(),
             dot: Vec::new(),
             default_nameservers: Vec::new(),
@@ -783,6 +785,36 @@ mod tests {
             .apply_patch(br#"{"nameservers":["not a nameserver!!"]}"#)
             .unwrap_err();
         assert_eq!(err.code, ERR_DNS_CONFIG_INVALID);
+    }
+
+    #[test]
+    fn default_config_exposes_cn_primary_and_international_fallback() {
+        let cfg = DnsConfig::default();
+        assert_eq!(
+            cfg.nameservers,
+            vec!["223.5.5.5".to_string(), "119.29.29.29".to_string()]
+        );
+        assert_eq!(
+            cfg.fallback,
+            vec!["1.1.1.1".to_string(), "8.8.8.8".to_string()]
+        );
+        assert!(
+            cfg.default_nameservers.is_empty(),
+            "plain-IP defaults need no bootstrap list"
+        );
+        for entry in cfg.nameservers.iter().chain(&cfg.fallback) {
+            parse_nameserver(entry).expect("default upstreams are parseable plain IPs");
+        }
+    }
+
+    #[test]
+    fn apply_patch_round_trips_the_default_upstreams() {
+        let cfg = DnsConfig::default();
+        let patch = serde_json::to_vec(&cfg).unwrap();
+        let mut merged = DnsConfig::default();
+        merged.apply_patch(&patch).unwrap();
+        assert_eq!(merged.nameservers, cfg.nameservers);
+        assert_eq!(merged.fallback, cfg.fallback);
     }
 
     #[test]

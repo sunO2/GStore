@@ -123,6 +123,7 @@ fn parse_ss(
         grpc: None,
         obfs: None,
         obfs_password: None,
+        udp: None,
         groups: Vec::new(),
         source: source(format, origin, index),
     })
@@ -179,6 +180,7 @@ fn parse_vmess(
         grpc,
         obfs: None,
         obfs_password: None,
+        udp: None,
         groups: Vec::new(),
         source: source(format, origin, index),
     })
@@ -235,6 +237,7 @@ fn parse_vless(
         grpc,
         obfs: None,
         obfs_password: None,
+        udp: None,
         groups: Vec::new(),
         source: source(format, origin, index),
     })
@@ -276,6 +279,7 @@ fn parse_trojan(
         grpc: None,
         obfs: None,
         obfs_password: None,
+        udp: None,
         groups: Vec::new(),
         source: source(format, origin, index),
     })
@@ -320,6 +324,7 @@ fn parse_hysteria2(
         grpc: None,
         obfs: query_get(&query, &["obfs"]).map(str::to_string),
         obfs_password: query_get(&query, &["obfs-password", "obfsPassword"]).map(str::to_string),
+        udp: None,
         groups: Vec::new(),
         source: source(format, origin, index),
     })
