@@ -1295,3 +1295,572 @@ mod scheduler_tests {
         assert!(release.saturating_duration_since(now) < Duration::from_secs(1));
     }
 }
+
+// ---------------------------------------------------------------------------
+// Damage core (Todo 5): D5 dual-stack exemption + loss / duplicate decisions.
+//
+// D6 split: reorder selection and the reorder hold live in `ReleaseScheduler`
+// (Todo 4). This module owns loss and duplicate only, plus the shared D5
+// exemption predicate that the scheduler's `reorder_exempt` flag and the pump
+// both consume. Per D5, loss / duplication / reordering share ONE predicate, so
+// there is no second selector or RNG draw for reordering here.
+// ---------------------------------------------------------------------------
+
+/// IP protocol classification for the D5 exemption predicate. `Icmp6` is 58;
+/// `Other` carries any protocol the predicate treats as non-exempt (including
+/// ESP 50 / AH 51, whose transport cannot be parsed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IpProto {
+    Tcp,
+    Udp,
+    Icmp,
+    Icmp6,
+    Other(u8),
+}
+
+/// The slice of a raw IP packet the D5 exemption cares about. A TUN frame
+/// carries no Ethernet header, so `frame[0]` is the IP version/IHL nibble.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FrameInfo {
+    pub version: u8,
+    pub is_fragment: bool,
+    pub proto: IpProto,
+    pub src_port: u16,
+    pub dst_port: u16,
+    pub is_tcp_control: bool,
+    pub is_pure_ack: bool,
+}
+
+/// TCP control bits (FIN 0x01 | SYN 0x02 | RST 0x04) in the flags byte.
+const TCP_CONTROL_MASK: u8 = 0x07;
+/// The TCP ACK flag.
+const TCP_ACK_MASK: u8 = 0x10;
+
+/// Map an IP protocol number to its [`IpProto`] classification.
+fn proto_from_u8(value: u8) -> IpProto {
+    match value {
+        1 => IpProto::Icmp,
+        6 => IpProto::Tcp,
+        17 => IpProto::Udp,
+        58 => IpProto::Icmp6,
+        other => IpProto::Other(other),
+    }
+}
+
+/// Parse a TCP header at `off`, returning `(src_port, dst_port, is_control,
+/// is_pure_ack)`. `total_len` is the full IP packet length (header included) so
+/// the TCP payload is `total_len - (off + data_offset)`. `None` when the frame
+/// is too short for the 20-byte minimum header; never panics.
+fn parse_tcp(frame: &[u8], off: usize, total_len: usize) -> Option<(u16, u16, bool, bool)> {
+    if frame.len() < off + 20 {
+        return None;
+    }
+    let src_port = u16::from_be_bytes([frame[off], frame[off + 1]]);
+    let dst_port = u16::from_be_bytes([frame[off + 2], frame[off + 3]]);
+    let flags = frame[off + 13];
+    let data_offset = ((frame[off + 12] >> 4) as usize) * 4;
+    let payload_len = total_len.saturating_sub(off + data_offset);
+    let is_tcp_control = flags & TCP_CONTROL_MASK != 0;
+    let is_pure_ack = (flags & TCP_ACK_MASK != 0) && (flags & TCP_CONTROL_MASK == 0) && payload_len == 0;
+    Some((src_port, dst_port, is_tcp_control, is_pure_ack))
+}
+
+/// Parse a UDP header at `off`, returning `(src_port, dst_port, false, false)`.
+/// `None` when the frame is shorter than the 4 bytes needed for the ports.
+fn parse_udp(frame: &[u8], off: usize) -> Option<(u16, u16, bool, bool)> {
+    if frame.len() < off + 4 {
+        return None;
+    }
+    let src_port = u16::from_be_bytes([frame[off], frame[off + 1]]);
+    let dst_port = u16::from_be_bytes([frame[off + 2], frame[off + 3]]);
+    Some((src_port, dst_port, false, false))
+}
+
+/// Inspect an IPv4 packet (first nibble `4`). Rejects a header shorter than 20
+/// bytes or one that runs past the frame. Fragments return early with zeroed
+/// transport fields: D5 exempts every fragment entirely, so its transport (which
+/// may be absent on a non-first fragment) is never parsed.
+fn inspect_ipv4(frame: &[u8]) -> Option<FrameInfo> {
+    if frame.len() < 20 {
+        return None;
+    }
+    let ihl = ((frame[0] & 0x0f) as usize) * 4;
+    if ihl < 20 || ihl > frame.len() {
+        return None;
+    }
+    let total_len = u16::from_be_bytes([frame[2], frame[3]]) as usize;
+    let flags_frag = u16::from_be_bytes([frame[6], frame[7]]);
+    // MF set OR a non-zero fragment offset (`0x1FFF` mask).
+    let is_fragment = (flags_frag & 0x2000 != 0) || (flags_frag & 0x1FFF != 0);
+    let proto = proto_from_u8(frame[9]);
+    if is_fragment {
+        return Some(FrameInfo {
+            version: 4,
+            is_fragment: true,
+            proto,
+            src_port: 0,
+            dst_port: 0,
+            is_tcp_control: false,
+            is_pure_ack: false,
+        });
+    }
+    let (src_port, dst_port, is_tcp_control, is_pure_ack) = match proto {
+        IpProto::Tcp => parse_tcp(frame, ihl, total_len)?,
+        IpProto::Udp => parse_udp(frame, ihl)?,
+        _ => (0, 0, false, false),
+    };
+    Some(FrameInfo { version: 4, is_fragment, proto, src_port, dst_port, is_tcp_control, is_pure_ack })
+}
+
+/// Inspect an IPv6 packet (first nibble `6`). Walks the extension chain
+/// (Hop-by-Hop 0, Routing 43, Dest-Options 60, Fragment 44); encountering a
+/// Fragment header sets `is_fragment` and the packet is exempt regardless of
+/// transport. Stops at ESP (50) / AH (51), which become `IpProto::Other`
+/// (non-exempt — cannot parse).
+fn inspect_ipv6(frame: &[u8]) -> Option<FrameInfo> {
+    if frame.len() < 40 {
+        return None;
+    }
+    let payload_len = u16::from_be_bytes([frame[4], frame[5]]) as usize;
+    let mut next_header = frame[6];
+    let mut offset = 40usize;
+    let mut is_fragment = false;
+    while matches!(next_header, 0 | 43 | 60 | 44) {
+        // Need the full 8-byte extension header to read its next-header/length.
+        if frame.len() < offset + 8 {
+            return None;
+        }
+        if next_header == 44 {
+            is_fragment = true;
+        }
+        let hdr = &frame[offset..];
+        next_header = hdr[0];
+        let hdr_len = (hdr[1] as usize + 1) * 8;
+        offset += hdr_len;
+        if offset > frame.len() {
+            return None;
+        }
+    }
+    let proto = proto_from_u8(next_header);
+    if is_fragment {
+        return Some(FrameInfo {
+            version: 6,
+            is_fragment: true,
+            proto,
+            src_port: 0,
+            dst_port: 0,
+            is_tcp_control: false,
+            is_pure_ack: false,
+        });
+    }
+    let total_len = 40 + payload_len;
+    let (src_port, dst_port, is_tcp_control, is_pure_ack) = match proto {
+        IpProto::Tcp => parse_tcp(frame, offset, total_len)?,
+        IpProto::Udp => parse_udp(frame, offset)?,
+        _ => (0, 0, false, false),
+    };
+    Some(FrameInfo { version: 6, is_fragment, proto, src_port, dst_port, is_tcp_control, is_pure_ack })
+}
+
+/// Classify a raw IP frame for the D5 exemption predicate. `None` for anything
+/// unparseable or truncated (a malformed frame is NOT exempt). Never panics.
+pub(crate) fn inspect(frame: &[u8]) -> Option<FrameInfo> {
+    match frame.first().map(|b| b >> 4) {
+        Some(4) => inspect_ipv4(frame),
+        Some(6) => inspect_ipv6(frame),
+        _ => None,
+    }
+}
+
+/// D5 exemption predicate, shared by loss, duplication and reordering.
+///
+/// A frame is exempt (never dropped, duplicated or reordered) when it is any IP
+/// fragment (IPv4 or IPv6), ICMPv4/ICMPv6 (incl. NDP/RA), DNS over UDP or TCP
+/// (port 53), or a TCP control/pure-ACK segment. A malformed or truncated frame
+/// is **not** exempt.
+pub(crate) fn is_damage_exempt(frame: &[u8]) -> bool {
+    let Some(info) = inspect(frame) else {
+        return false;
+    };
+    if info.is_fragment {
+        return true;
+    }
+    match info.proto {
+        IpProto::Icmp | IpProto::Icmp6 => true,
+        IpProto::Tcp | IpProto::Udp => {
+            if info.src_port == 53 || info.dst_port == 53 {
+                return true;
+            }
+            matches!(info.proto, IpProto::Tcp) && (info.is_tcp_control || info.is_pure_ack)
+        }
+        IpProto::Other(_) => false,
+    }
+}
+
+/// The per-frame loss/duplication decision. Reordering is owned by
+/// [`ReleaseScheduler`] (D6), so it does not appear here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DamageAction {
+    Forward,
+    Drop,
+    Duplicate,
+}
+
+/// Loss + duplication core for one direction. Loss is either a flat random
+/// probability or a Gilbert-Elliot two-state burst process; duplication is a
+/// flat random probability. All randomness comes from a single [`SplitMix64`]
+/// stream so a pinned seed replays exactly.
+///
+/// # Gilbert-Elliot semantics (tc-netem(8) `gemodel`-shaped)
+/// The channel is in a Good or Bad state. Every non-exempt frame first performs
+/// the state transition: Good → Bad with probability `lossGoodToBadPct`, Bad →
+/// Good with probability `lossBadToGoodPct`. Then **every** frame in the Bad
+/// state is dropped, so the two transition percentages drive the burst process
+/// and `lossPct` is only used by [`LossModel::Random`]. (`ge_bad` is kept across
+/// [`DamageCore::reconfigure`] so a hot config change does not reset the burst.)
+///
+/// # Decision order
+/// Exempt frames short-circuit to [`DamageAction::Forward`] **without drawing
+/// from the RNG**, so exempt traffic never perturbs the deterministic stream.
+/// Loss is evaluated before duplication: a frame that would both be lost and
+/// duplicated is dropped (loss wins).
+pub(crate) struct DamageCore {
+    rng: SplitMix64,
+    ge_bad: bool,
+    loss_pct: f64,
+    loss_model: LossModel,
+    good_to_bad: f64,
+    bad_to_good: f64,
+    duplicate_pct: f64,
+}
+
+impl DamageCore {
+    /// Build a core for one direction, seeding the shared decision stream and
+    /// starting the Gilbert-Elliot channel in the Good state.
+    pub(crate) fn new(seed: u64, cfg: &DirectionConfig) -> Self {
+        Self {
+            rng: SplitMix64::new(seed),
+            ge_bad: false,
+            loss_pct: cfg.loss_pct,
+            loss_model: cfg.loss_model,
+            good_to_bad: cfg.loss_good_to_bad_pct,
+            bad_to_good: cfg.loss_bad_to_good_pct,
+            duplicate_pct: cfg.duplicate_pct,
+        }
+    }
+
+    /// Apply a hot config change (D4): snapshot the loss/duplication parameters
+    /// and keep the PRNG stream and the Gilbert-Elliot `ge_bad` state intact.
+    pub(crate) fn reconfigure(&mut self, cfg: &DirectionConfig) {
+        self.loss_pct = cfg.loss_pct;
+        self.loss_model = cfg.loss_model;
+        self.good_to_bad = cfg.loss_good_to_bad_pct;
+        self.bad_to_good = cfg.loss_bad_to_good_pct;
+        self.duplicate_pct = cfg.duplicate_pct;
+    }
+
+    /// Decide the fate of one frame: `Forward`, `Drop` or `Duplicate`.
+    pub(crate) fn shape(&mut self, frame: &[u8]) -> DamageAction {
+        // D5 exempt traffic never perturbs the RNG stream.
+        if is_damage_exempt(frame) {
+            return DamageAction::Forward;
+        }
+        match self.loss_model {
+            LossModel::None => {}
+            LossModel::Random => {
+                if self.rng.chance(self.loss_pct) {
+                    return DamageAction::Drop;
+                }
+            }
+            LossModel::GilbertElliot => {
+                // Transition first, then drop every frame in the Bad state.
+                if self.ge_bad {
+                    if self.rng.chance(self.bad_to_good) {
+                        self.ge_bad = false;
+                    }
+                } else if self.rng.chance(self.good_to_bad) {
+                    self.ge_bad = true;
+                }
+                if self.ge_bad {
+                    return DamageAction::Drop;
+                }
+            }
+        }
+        // Loss wins over duplication when both would fire.
+        if self.rng.chance(self.duplicate_pct) {
+            return DamageAction::Duplicate;
+        }
+        DamageAction::Forward
+    }
+}
+
+#[cfg(test)]
+mod damage_tests {
+    use super::*;
+
+    /// A direction config carrying only what the damage tests vary.
+    fn cfg(loss_pct: f64, loss_model: LossModel, g2b: f64, b2g: f64, dup: f64) -> DirectionConfig {
+        DirectionConfig {
+            rate_bps: 0,
+            burst_bytes: 32_768,
+            delay_ms: 0,
+            jitter_ms: 0,
+            jitter_distribution: JitterDistribution::Uniform,
+            loss_pct,
+            loss_model,
+            loss_good_to_bad_pct: g2b,
+            loss_bad_to_good_pct: b2g,
+            duplicate_pct: dup,
+            reorder_pct: 0.0,
+            reorder_gap: 0,
+            order: PacketOrder::Preserve,
+        }
+    }
+
+    fn decisions(core: &mut DamageCore, frame: &[u8], n: usize) -> Vec<DamageAction> {
+        (0..n).map(|_| core.shape(frame)).collect()
+    }
+
+    // --- IPv4 fixtures -----------------------------------------------------
+
+    fn ipv4_tcp_frame(flags: u8, payload_len: usize, src_port: u16, dst_port: u16) -> Vec<u8> {
+        let mut p = vec![0u8; 20];
+        p[0] = 0x45; // IPv4, IHL 5
+        let total = 20 + 20 + payload_len;
+        p[2..4].copy_from_slice(&(total as u16).to_be_bytes());
+        p[8] = 64; // TTL
+        p[9] = 6; // TCP
+        p[12..16].copy_from_slice(&[10, 0, 0, 1]);
+        p[16..20].copy_from_slice(&[10, 0, 0, 2]);
+        // TCP header (20 bytes)
+        p.extend_from_slice(&src_port.to_be_bytes());
+        p.extend_from_slice(&dst_port.to_be_bytes());
+        p.extend_from_slice(&0u32.to_be_bytes()); // seq
+        p.extend_from_slice(&0u32.to_be_bytes()); // ack
+        p.push(0x50); // data offset 5
+        p.push(flags);
+        p.extend_from_slice(&0u16.to_be_bytes()); // window
+        p.extend_from_slice(&0u16.to_be_bytes()); // checksum
+        p.extend_from_slice(&0u16.to_be_bytes()); // urgent
+        p.resize(p.len() + payload_len, 0);
+        p
+    }
+
+    fn ipv4_udp_frame(src_port: u16, dst_port: u16) -> Vec<u8> {
+        let mut p = vec![0u8; 20];
+        p[0] = 0x45;
+        p[2..4].copy_from_slice(&(20u16 + 8).to_be_bytes());
+        p[8] = 64;
+        p[9] = 17; // UDP
+        p[12..16].copy_from_slice(&[10, 0, 0, 1]);
+        p[16..20].copy_from_slice(&[10, 0, 0, 2]);
+        p.extend_from_slice(&src_port.to_be_bytes());
+        p.extend_from_slice(&dst_port.to_be_bytes());
+        p.extend_from_slice(&8u16.to_be_bytes()); // UDP length
+        p.extend_from_slice(&[0, 0]); // checksum
+        p
+    }
+
+    fn ipv4_icmp_frame() -> Vec<u8> {
+        let mut p = vec![0u8; 20];
+        p[0] = 0x45;
+        p[2..4].copy_from_slice(&(20u16 + 8).to_be_bytes());
+        p[8] = 64;
+        p[9] = 1; // ICMP
+        p[12..16].copy_from_slice(&[10, 0, 0, 1]);
+        p[16..20].copy_from_slice(&[10, 0, 0, 2]);
+        p.extend_from_slice(&[8, 0, 0, 0]); // echo request, code 0, checksum
+        p.extend_from_slice(&[0, 1, 0, 1]); // id, seq
+        p
+    }
+
+    /// An IPv4 UDP fragment with the More-Fragments bit set (offset 0).
+    fn ipv4_fragment_frame() -> Vec<u8> {
+        let mut p = vec![0u8; 20];
+        p[0] = 0x45;
+        p[2..4].copy_from_slice(&(20u16 + 8).to_be_bytes());
+        p[6..8].copy_from_slice(&0x2000u16.to_be_bytes()); // MF set
+        p[8] = 64;
+        p[9] = 17;
+        p[12..16].copy_from_slice(&[10, 0, 0, 1]);
+        p[16..20].copy_from_slice(&[10, 0, 0, 2]);
+        p.extend_from_slice(&1234u16.to_be_bytes());
+        p.extend_from_slice(&5678u16.to_be_bytes());
+        p.extend_from_slice(&8u16.to_be_bytes());
+        p.extend_from_slice(&[0, 0]);
+        p
+    }
+
+    // --- IPv6 fixtures -----------------------------------------------------
+
+    /// A 40-byte IPv6 header with `next_header` and the given payload length.
+    fn ipv6_header(next_header: u8, payload_len: u16) -> Vec<u8> {
+        let mut p = vec![0u8; 40];
+        p[0] = 0x60; // IPv6
+        p[4..6].copy_from_slice(&payload_len.to_be_bytes());
+        p[6] = next_header;
+        p[7] = 64; // hop limit
+        p[8..24].copy_from_slice(&[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        p[24..40].copy_from_slice(&[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+        p
+    }
+
+    fn ipv6_tcp_frame(flags: u8, payload_len: usize, src_port: u16, dst_port: u16) -> Vec<u8> {
+        let tcp_len = 20 + payload_len;
+        let mut p = ipv6_header(6, tcp_len as u16);
+        p.extend_from_slice(&src_port.to_be_bytes());
+        p.extend_from_slice(&dst_port.to_be_bytes());
+        p.extend_from_slice(&0u32.to_be_bytes());
+        p.extend_from_slice(&0u32.to_be_bytes());
+        p.push(0x50);
+        p.push(flags);
+        p.extend_from_slice(&0u16.to_be_bytes());
+        p.extend_from_slice(&0u16.to_be_bytes());
+        p.extend_from_slice(&0u16.to_be_bytes());
+        p.resize(p.len() + payload_len, 0);
+        p
+    }
+
+    fn ipv6_udp_frame(src_port: u16, dst_port: u16) -> Vec<u8> {
+        let mut p = ipv6_header(17, 8);
+        p.extend_from_slice(&src_port.to_be_bytes());
+        p.extend_from_slice(&dst_port.to_be_bytes());
+        p.extend_from_slice(&8u16.to_be_bytes());
+        p.extend_from_slice(&[0, 0]);
+        p
+    }
+
+    /// An ICMPv6 frame carrying `icmpv6_type` (135 = Neighbor Solicitation,
+    /// 134 = Router Advertisement). The body length is irrelevant to D5.
+    fn ipv6_icmpv6_frame(icmpv6_type: u8) -> Vec<u8> {
+        let mut p = ipv6_header(58, 8);
+        p.push(icmpv6_type);
+        p.push(0); // code
+        p.extend_from_slice(&[0, 0]); // checksum
+        p.extend_from_slice(&[0, 0, 0, 0]); // body
+        p
+    }
+
+    /// An IPv6 packet with a Fragment extension header (44) followed by UDP.
+    fn ipv6_fragment_frame(src_port: u16, dst_port: u16) -> Vec<u8> {
+        let mut p = ipv6_header(44, 8 + 8);
+        // Fragment header (8 bytes): next header UDP, reserved, offset/flags, id.
+        p.push(17);
+        p.push(0);
+        p.extend_from_slice(&0u16.to_be_bytes());
+        p.extend_from_slice(&0xABCD_1234u32.to_be_bytes());
+        // UDP header.
+        p.extend_from_slice(&src_port.to_be_bytes());
+        p.extend_from_slice(&dst_port.to_be_bytes());
+        p.extend_from_slice(&8u16.to_be_bytes());
+        p.extend_from_slice(&[0, 0]);
+        p
+    }
+
+    // --- Tests -------------------------------------------------------------
+
+    #[test]
+    fn gilbert_elliot_bursts() {
+        let cfg = cfg(0.0, LossModel::GilbertElliot, 50.0, 5.0, 0.0);
+        let frame = ipv4_udp_frame(1234, 5678);
+        assert!(!is_damage_exempt(&frame), "fixture must be non-exempt");
+
+        let mut core = DamageCore::new(0xC0FFEE, &cfg);
+        let seq = decisions(&mut core, &frame, 2000);
+        let drops = seq.iter().filter(|d| **d == DamageAction::Drop).count();
+        let forwards = seq.iter().filter(|d| **d == DamageAction::Forward).count();
+        assert!(drops > 0, "GE must drop some frames");
+        assert!(forwards > 0, "GE must forward some frames");
+
+        let mut run = 0usize;
+        let mut max_run = 0usize;
+        for d in &seq {
+            if *d == DamageAction::Drop {
+                run += 1;
+                max_run = max_run.max(run);
+            } else {
+                run = 0;
+            }
+        }
+        assert!(max_run >= 2, "GE must produce a burst of >= 2 consecutive drops (got {max_run})");
+
+        let mut replay = DamageCore::new(0xC0FFEE, &cfg);
+        assert_eq!(seq, decisions(&mut replay, &frame, 2000), "same seed must replay identically");
+    }
+
+    #[test]
+    fn damage_decisions_are_deterministic() {
+        let cfg = cfg(50.0, LossModel::Random, 0.0, 0.0, 0.0);
+        let frame = ipv4_udp_frame(1234, 5678);
+        let mut a = DamageCore::new(0x1111, &cfg);
+        let mut b = DamageCore::new(0x1111, &cfg);
+        let mut c = DamageCore::new(0x2222, &cfg);
+        let sa = decisions(&mut a, &frame, 1000);
+        let sb = decisions(&mut b, &frame, 1000);
+        let sc = decisions(&mut c, &frame, 1000);
+        assert_eq!(sa, sb, "same seed must be bit-identical");
+        assert_ne!(sa, sc, "a different seed must differ");
+    }
+
+    #[test]
+    fn ipv6_ack_is_exempt_from_loss() {
+        let cfg = cfg(100.0, LossModel::Random, 0.0, 0.0, 0.0);
+        let frame = ipv6_tcp_frame(0x10, 0, 33333, 443); // pure ACK
+        assert!(is_damage_exempt(&frame));
+        let mut core = DamageCore::new(7, &cfg);
+        for _ in 0..200 {
+            assert_eq!(core.shape(&frame), DamageAction::Forward);
+        }
+    }
+
+    #[test]
+    fn icmpv6_ndp_is_exempt() {
+        let cfg = cfg(100.0, LossModel::Random, 0.0, 0.0, 0.0);
+        for ty in [135u8, 134u8] {
+            let frame = ipv6_icmpv6_frame(ty);
+            assert!(is_damage_exempt(&frame), "ICMPv6 type {ty} must be exempt");
+            let mut core = DamageCore::new(11, &cfg);
+            for _ in 0..50 {
+                assert_eq!(core.shape(&frame), DamageAction::Forward);
+            }
+        }
+    }
+
+    #[test]
+    fn ipv4_ack_and_dns_tcp_and_icmp_exempt() {
+        let cfg = cfg(100.0, LossModel::Random, 0.0, 0.0, 0.0);
+        let exempt = [
+            ipv4_tcp_frame(0x10, 0, 40000, 443), // pure ACK
+            ipv4_tcp_frame(0x18, 20, 40000, 53), // TCP:53 data
+            ipv4_udp_frame(40000, 53),           // UDP:53
+            ipv4_icmp_frame(),                   // ICMP(1)
+            ipv4_tcp_frame(0x02, 0, 40000, 443), // SYN control
+        ];
+        let mut core = DamageCore::new(3, &cfg);
+        for frame in &exempt {
+            assert!(is_damage_exempt(frame), "frame must be exempt: {frame:?}");
+            for _ in 0..20 {
+                assert_eq!(core.shape(frame), DamageAction::Forward);
+            }
+        }
+
+        // Selectivity: a plain UDP data frame is NOT exempt and is dropped.
+        let data = ipv4_udp_frame(1234, 1234);
+        assert!(!is_damage_exempt(&data));
+        assert_eq!(core.shape(&data), DamageAction::Drop, "plain data must be dropped at lossPct=100");
+    }
+
+    #[test]
+    fn ip_fragments_are_exempt() {
+        let cfg = cfg(100.0, LossModel::Random, 0.0, 0.0, 100.0);
+        let v4 = ipv4_fragment_frame();
+        let v6 = ipv6_fragment_frame(1234, 5678);
+        assert!(is_damage_exempt(&v4), "IPv4 fragment must be exempt");
+        assert!(is_damage_exempt(&v6), "IPv6 fragment must be exempt");
+        let mut core = DamageCore::new(5, &cfg);
+        for _ in 0..100 {
+            assert_eq!(core.shape(&v4), DamageAction::Forward);
+            assert_eq!(core.shape(&v6), DamageAction::Forward);
+        }
+    }
+}
