@@ -40,6 +40,23 @@ use crate::conn::ConnRecord;
 /// evicted first (deterministic: the deque is in insertion / `recordId` order).
 pub(crate) const REQUEST_RING_CAP: usize = 4096;
 
+/// Hard cap on the durable request timeline (`proxy_requests.db`). Prune is
+/// **cap-first**: rows beyond this many are deleted oldest-`openTsMs`-first,
+/// THEN rows older than [`REQUEST_RETENTION_MS`] are deleted.
+pub(crate) const REQUEST_MAX_ROWS: usize = 50_000;
+/// Rolling persistence window for the durable timeline (7 days).
+pub(crate) const REQUEST_RETENTION_MS: u64 = 7 * 24 * 60 * 60 * 1000;
+/// Durable flush spacing. Writes are batched in one transaction at most this
+/// often — never per-close / per-packet.
+pub(crate) const REQUEST_PERSIST_INTERVAL_MS: u64 = 5000;
+/// Bound on the pending-flush queue. When a burst fills it the next flush
+/// persists the whole (bounded) ring instead of only the queued records, so a
+/// burst can never lose data *and* memory stays bounded.
+pub(crate) const REQUEST_FLUSH_QUEUE_CAP: usize = 1024;
+/// Explicit SQLite busy timeout: a concurrent writer waits instead of failing
+/// immediately with `SQLITE_BUSY`.
+const REQUEST_BUSY_TIMEOUT_MS: u64 = 5000;
+
 /// `uidState` values (see `API.md`: three explicit states, never a bare `null`).
 pub(crate) const UID_STATE_KNOWN: &str = "known";
 pub(crate) const UID_STATE_PENDING: &str = "pending";
@@ -201,6 +218,20 @@ pub(crate) struct RequestStore {
     pub(crate) last_emit_ms: u64,
     /// Monotonic sequence number of the dirty signal (`seq`).
     pub(crate) emit_seq: u64,
+    /// Durable timeline, when a data dir was configured. `None` is memory-only.
+    pub(crate) db: Option<Persist>,
+    /// Bounded queue of records created/changed since the last flush.
+    pub(crate) pending: VecDeque<RequestRecord>,
+    /// Set when `pending` overflowed its cap: the next flush persists the whole
+    /// (bounded) ring so the burst cannot lose data.
+    pub(crate) pending_overflow: bool,
+    /// `now_ms` of the last durable flush (0 = never), for the 5s gate.
+    pub(crate) last_persist_ms: u64,
+    /// Count of records removed by a durable prune (cap-first or 7-day window).
+    pub(crate) lost_records: u64,
+    /// Effective read floor (`now - REQUEST_RETENTION_MS`) once the durable sink
+    /// is configured; `windowStartMs` reports this boundary.
+    pub(crate) retention_floor_ms: Option<u64>,
 }
 
 impl RequestStore {
@@ -222,6 +253,12 @@ impl RequestStore {
             dirty_overflow: 0,
             last_emit_ms: 0,
             emit_seq: 0,
+            db: None,
+            pending: VecDeque::new(),
+            pending_overflow: false,
+            last_persist_ms: 0,
+            lost_records: 0,
+            retention_floor_ms: None,
         }
     }
 
@@ -260,6 +297,8 @@ impl RequestStore {
         self.dirty.clear();
         self.dirty_overflow = 0;
         self.window_start_ms = 0;
+        self.pending.clear();
+        self.pending_overflow = false;
     }
 
     /// Open (or revive) the record for `rec` at the capture chokepoint. A
@@ -410,6 +449,94 @@ impl RequestStore {
         } else if !self.dirty.contains(&id) {
             self.dirty_overflow += 1;
         }
+        self.enqueue_pending(id);
+    }
+
+    /// Queue `id`'s current state for the next durable flush. No-op without a
+    /// configured sink; over the queue cap the overflow flag makes the next
+    /// flush persist the whole ring instead.
+    fn enqueue_pending(&mut self, id: u64) {
+        if self.db.is_none() {
+            return;
+        }
+        let Some(idx) = self.by_record_id.get(&id).copied() else {
+            return;
+        };
+        let Some(record) = self.records.get(idx).cloned() else {
+            return;
+        };
+        if self.pending.len() >= REQUEST_FLUSH_QUEUE_CAP {
+            self.pending_overflow = true;
+        } else {
+            self.pending.push_back(record);
+        }
+    }
+
+    /// The actual durable write: one transaction that upserts the batch then
+    /// prunes cap-first, then by the 7-day window. Returns rows pruned.
+    fn do_flush(&mut self, now: u64) -> usize {
+        if self.db.is_none() || (self.pending.is_empty() && !self.pending_overflow) {
+            return 0;
+        }
+        let batch: Vec<RequestRecord> = if self.pending_overflow {
+            self.records.iter().cloned().collect()
+        } else {
+            self.pending.drain(..).collect()
+        };
+        self.pending.clear();
+        self.pending_overflow = false;
+        let result = match self.db.as_mut() {
+            Some(db) => db.upsert_batch(&batch, now),
+            None => Ok(0),
+        };
+        match result {
+            Ok(pruned) => {
+                self.lost_records += pruned as u64;
+                self.retention_floor_ms = Some(now.saturating_sub(REQUEST_RETENTION_MS));
+                pruned
+            }
+            Err(e) => {
+                crate::log_message(2, &format!("proxy.requests: flush failed: {e}"));
+                self.pending_overflow = true;
+                0
+            }
+        }
+    }
+
+    /// [`do_flush`](Self::do_flush) behind the 5s interval gate.
+    fn maybe_flush(&mut self, now: u64) -> usize {
+        if self.db.is_none() || (self.pending.is_empty() && !self.pending_overflow) {
+            return 0;
+        }
+        if self.last_persist_ms != 0
+            && now.saturating_sub(self.last_persist_ms) < REQUEST_PERSIST_INTERVAL_MS
+        {
+            return 0;
+        }
+        self.last_persist_ms = now;
+        self.do_flush(now)
+    }
+
+    /// Replace the ring with the seeded window rows and restore cursor
+    /// continuity: `nextRecordId = max(record_id)+1` over the whole table (1
+    /// when empty), `nextCursor` = the DB high-water mark. Never restarts
+    /// numbering from 0 after a restart.
+    fn adopt_seed(&mut self, rows: Vec<RequestRecord>, db: &Persist) {
+        self.records.clear();
+        self.by_record_id.clear();
+        self.active_by_conn.clear();
+        self.stale_live.clear();
+        self.dirty.clear();
+        self.dirty_overflow = 0;
+        for r in rows {
+            let id = r.record_id;
+            self.by_record_id.insert(id, self.records.len());
+            self.records.push_back(r);
+        }
+        let max = db.max_record_id().unwrap_or(0);
+        self.next_record_id = max + 1;
+        self.next_cursor = max;
+        self.window_start_ms = self.records.front().map(|r| r.open_ts_ms).unwrap_or(0);
     }
 
     /// Build the `proxy.request` dirty-signal payload if (a) there is
@@ -434,8 +561,53 @@ impl RequestStore {
 
     /// Build a page of records newer than `since_record_id` that match `filters`.
     /// Ordered by `openTsMs` descending, ties by `recordId` ascending, then
-    /// truncated to `limit`.
+    /// truncated to `limit`. **DB-authoritative**: when a durable sink is
+    /// configured the page comes from SQLite (the window of ≤`REQUEST_MAX_ROWS`
+    /// rows); the in-memory ring is only the fallback near-term view.
     pub(crate) fn snapshot(
+        &self,
+        since_record_id: u64,
+        limit: usize,
+        filters: &RequestFilter,
+    ) -> RequestSnapshot {
+        match &self.db {
+            Some(db) => self.snapshot_from_db(db, since_record_id, limit, filters),
+            None => self.snapshot_from_ring(since_record_id, limit, filters),
+        }
+    }
+
+    fn snapshot_from_db(
+        &self,
+        db: &Persist,
+        since_record_id: u64,
+        limit: usize,
+        filters: &RequestFilter,
+    ) -> RequestSnapshot {
+        let floor = self.retention_floor_ms.unwrap_or(0);
+        let records = match db.load_page(floor, since_record_id, limit, filters) {
+            Ok(rows) => rows,
+            Err(e) => {
+                crate::log_message(2, &format!("proxy.requests: read failed: {e}"));
+                return self.snapshot_from_ring(since_record_id, limit, filters);
+            }
+        };
+        let retained = db.count(floor).unwrap_or(0);
+        let first_cursor = db.min_record_id(floor).unwrap_or(0);
+        RequestSnapshot {
+            records,
+            next_cursor: self.next_cursor,
+            first_cursor,
+            retained,
+            capacity: self.cap,
+            dropped: self.dropped,
+            evicted: self.evicted,
+            window_start_ms: self
+                .retention_floor_ms
+                .unwrap_or_else(|| self.records.front().map(|r| r.open_ts_ms).unwrap_or(0)),
+        }
+    }
+
+    fn snapshot_from_ring(
         &self,
         since_record_id: u64,
         limit: usize,
@@ -466,6 +638,289 @@ impl RequestStore {
             window_start_ms: self.window_start_ms,
         }
     }
+}
+
+/// Durable request timeline: WAL + batched single-transaction upserts + a
+/// rolling cap-first / time-window prune.
+pub(crate) struct Persist {
+    conn: rusqlite::Connection,
+    max_rows: usize,
+}
+
+impl Persist {
+    fn open(path: &str) -> rusqlite::Result<Self> {
+        Self::wrap(rusqlite::Connection::open(path)?)
+    }
+
+    #[cfg(test)]
+    fn open_in_memory() -> rusqlite::Result<Self> {
+        Self::wrap(rusqlite::Connection::open_in_memory()?)
+    }
+
+    fn wrap(conn: rusqlite::Connection) -> rusqlite::Result<Self> {
+        conn.busy_timeout(std::time::Duration::from_millis(REQUEST_BUSY_TIMEOUT_MS))?;
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             PRAGMA synchronous=NORMAL;
+             PRAGMA busy_timeout=5000;
+             CREATE TABLE IF NOT EXISTS request_records (
+               record_id INTEGER PRIMARY KEY,
+               conn_id TEXT NOT NULL,
+               open_ts_ms INTEGER NOT NULL,
+               close_ts_ms INTEGER,
+               duration_ms INTEGER,
+               domain TEXT NOT NULL,
+               domain_known INTEGER NOT NULL,
+               dst_ip TEXT NOT NULL,
+               dst_port INTEGER NOT NULL,
+               src TEXT NOT NULL,
+               network TEXT NOT NULL,
+               uid INTEGER,
+               packages TEXT NOT NULL,
+               uid_state TEXT NOT NULL,
+               rule TEXT NOT NULL,
+               rule_payload TEXT NOT NULL,
+               outbound TEXT NOT NULL,
+               upload_bytes INTEGER NOT NULL,
+               download_bytes INTEGER NOT NULL,
+               close_reason TEXT NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_request_open_ts
+               ON request_records(open_ts_ms, record_id);",
+        )?;
+        Ok(Self {
+            conn,
+            max_rows: REQUEST_MAX_ROWS,
+        })
+    }
+
+    #[cfg(test)]
+    fn set_max_rows(&mut self, n: usize) {
+        self.max_rows = n;
+    }
+
+    /// Upsert `records` and prune in one transaction: **cap-first** (keep the
+    /// newest `max_rows` by `open_ts_ms`), then delete rows older than the
+    /// 7-day window. Returns rows pruned.
+    fn upsert_batch(&mut self, records: &[RequestRecord], now: u64) -> rusqlite::Result<usize> {
+        let tx = self.conn.transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO request_records
+                   (record_id, conn_id, open_ts_ms, close_ts_ms, duration_ms, domain,
+                    domain_known, dst_ip, dst_port, src, network, uid, packages,
+                    uid_state, rule, rule_payload, outbound, upload_bytes,
+                    download_bytes, close_reason)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+                         ?14, ?15, ?16, ?17, ?18, ?19, ?20)
+                 ON CONFLICT(record_id) DO UPDATE SET
+                   conn_id=excluded.conn_id,
+                   open_ts_ms=excluded.open_ts_ms,
+                   close_ts_ms=excluded.close_ts_ms,
+                   duration_ms=excluded.duration_ms,
+                   domain=excluded.domain,
+                   domain_known=excluded.domain_known,
+                   dst_ip=excluded.dst_ip,
+                   dst_port=excluded.dst_port,
+                   src=excluded.src,
+                   network=excluded.network,
+                   uid=excluded.uid,
+                   packages=excluded.packages,
+                   uid_state=excluded.uid_state,
+                   rule=excluded.rule,
+                   rule_payload=excluded.rule_payload,
+                   outbound=excluded.outbound,
+                   upload_bytes=excluded.upload_bytes,
+                   download_bytes=excluded.download_bytes,
+                   close_reason=excluded.close_reason",
+            )?;
+            for r in records {
+                let packages = serde_json::to_string(&r.packages).unwrap_or_else(|_| "[]".into());
+                stmt.execute(rusqlite::params![
+                    r.record_id as i64,
+                    r.conn_id,
+                    r.open_ts_ms as i64,
+                    r.close_ts_ms.map(|v| v as i64),
+                    r.duration_ms.map(|v| v as i64),
+                    r.domain,
+                    r.domain_known,
+                    r.dst_ip,
+                    r.dst_port as i64,
+                    r.src,
+                    r.network,
+                    r.uid.map(|v| v as i64),
+                    packages,
+                    r.uid_state,
+                    r.rule,
+                    r.rule_payload,
+                    r.outbound,
+                    r.upload_bytes as i64,
+                    r.download_bytes as i64,
+                    r.close_reason,
+                ])?;
+            }
+        }
+        let mut pruned = 0usize;
+        let total: i64 = tx.query_row("SELECT COUNT(*) FROM request_records", [], |r| r.get(0))?;
+        let max_rows = self.max_rows as i64;
+        if total > max_rows {
+            let excess = total - max_rows;
+            pruned += tx.execute(
+                "DELETE FROM request_records WHERE record_id IN (
+                   SELECT record_id FROM request_records
+                   ORDER BY open_ts_ms ASC, record_id ASC LIMIT ?1
+                 )",
+                rusqlite::params![excess],
+            )?;
+        }
+        let cutoff = now.saturating_sub(REQUEST_RETENTION_MS) as i64;
+        pruned += tx.execute(
+            "DELETE FROM request_records WHERE open_ts_ms < ?1",
+            rusqlite::params![cutoff],
+        )?;
+        tx.commit()?;
+        Ok(pruned)
+    }
+
+    /// Load the window rows (newest `cap`, oldest-first for the ring deque).
+    fn seed(&self, now: u64, cap: usize) -> rusqlite::Result<Vec<RequestRecord>> {
+        let cutoff = now.saturating_sub(REQUEST_RETENTION_MS) as i64;
+        let sql = format!(
+            "SELECT {SELECT_COLUMNS} FROM request_records
+             WHERE open_ts_ms >= ?1 ORDER BY open_ts_ms DESC, record_id DESC LIMIT ?2"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut rows = stmt
+            .query_map(rusqlite::params![cutoff, cap as i64], row_to_record)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.reverse();
+        Ok(rows)
+    }
+
+    /// One page ordered `open_ts_ms DESC, record_id ASC`, filtered in SQL so a
+    /// DB page never needs the (bounded) ring.
+    fn load_page(
+        &self,
+        floor: u64,
+        since: u64,
+        limit: usize,
+        f: &RequestFilter,
+    ) -> rusqlite::Result<Vec<RequestRecord>> {
+        let mut sql = format!(
+            "SELECT {SELECT_COLUMNS} FROM request_records WHERE record_id > ? AND open_ts_ms >= ?"
+        );
+        let mut vals: Vec<rusqlite::types::Value> =
+            vec![(since as i64).into(), (floor as i64).into()];
+        if let Some(d) = non_blank(&f.domain) {
+            sql.push_str(" AND instr(domain, ?) > 0");
+            vals.push(d.to_string().into());
+        }
+        if let Some(uid) = f.uid {
+            sql.push_str(" AND uid = ?");
+            vals.push((uid as i64).into());
+        }
+        if let Some(n) = non_blank(&f.network) {
+            sql.push_str(" AND network = ?");
+            vals.push(n.to_string().into());
+        }
+        if let Some(o) = non_blank(&f.outbound) {
+            sql.push_str(" AND outbound = ?");
+            vals.push(o.to_string().into());
+        }
+        if let Some(s) = f.since_ms {
+            sql.push_str(" AND open_ts_ms >= ?");
+            vals.push((s as i64).into());
+        }
+        if let Some(u) = f.until_ms {
+            sql.push_str(" AND open_ts_ms <= ?");
+            vals.push((u as i64).into());
+        }
+        sql.push_str(" ORDER BY open_ts_ms DESC, record_id ASC LIMIT ?");
+        vals.push((limit.min(REQUEST_MAX_ROWS) as i64).into());
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(vals.iter()), row_to_record)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    fn count(&self, floor: u64) -> rusqlite::Result<usize> {
+        self.conn
+            .query_row(
+                "SELECT COUNT(*) FROM request_records WHERE open_ts_ms >= ?1",
+                rusqlite::params![floor as i64],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|n| n.max(0) as usize)
+    }
+
+    fn min_record_id(&self, floor: u64) -> rusqlite::Result<u64> {
+        self.conn
+            .query_row(
+                "SELECT COALESCE(MIN(record_id),0) FROM request_records WHERE open_ts_ms >= ?1",
+                rusqlite::params![floor as i64],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|n| n.max(0) as u64)
+    }
+
+    fn max_record_id(&self) -> rusqlite::Result<u64> {
+        self.conn
+            .query_row(
+                "SELECT COALESCE(MAX(record_id),0) FROM request_records",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|n| n.max(0) as u64)
+    }
+
+    #[cfg(test)]
+    fn all_record_ids(&self) -> rusqlite::Result<Vec<u64>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT record_id FROM request_records ORDER BY record_id ASC")?;
+        let rows = stmt
+            .query_map([], |r| r.get::<_, i64>(0))?
+            .map(|n| n.map(|v| v.max(0) as u64))
+            .collect();
+        rows
+    }
+
+    fn clear(&self) -> rusqlite::Result<()> {
+        self.conn.execute_batch("DELETE FROM request_records;")
+    }
+}
+
+const SELECT_COLUMNS: &str = "record_id, conn_id, open_ts_ms, close_ts_ms, duration_ms, \
+     domain, domain_known, dst_ip, dst_port, src, network, uid, packages, uid_state, \
+     rule, rule_payload, outbound, upload_bytes, download_bytes, close_reason";
+
+fn row_to_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<RequestRecord> {
+    let packages: String = row.get(12)?;
+    Ok(RequestRecord {
+        record_id: row.get::<_, i64>(0)?.max(0) as u64,
+        conn_id: row.get(1)?,
+        open_ts_ms: row.get::<_, i64>(2)?.max(0) as u64,
+        close_ts_ms: row.get::<_, Option<i64>>(3)?.map(|v| v.max(0) as u64),
+        duration_ms: row.get::<_, Option<i64>>(4)?.map(|v| v.max(0) as u64),
+        domain: row.get(5)?,
+        domain_known: row.get::<_, i64>(6)? != 0,
+        dst_ip: row.get(7)?,
+        dst_port: row.get::<_, i64>(8)?.clamp(0, u16::MAX as i64) as u16,
+        src: row.get(9)?,
+        network: row.get(10)?,
+        uid: row
+            .get::<_, Option<i64>>(11)?
+            .map(|v| v.clamp(0, u32::MAX as i64) as u32),
+        packages: serde_json::from_str(&packages).unwrap_or_default(),
+        uid_state: row.get(13)?,
+        rule: row.get(14)?,
+        rule_payload: row.get(15)?,
+        outbound: row.get(16)?,
+        upload_bytes: row.get::<_, i64>(17)?.max(0) as u64,
+        download_bytes: row.get::<_, i64>(18)?.max(0) as u64,
+        close_reason: row.get(19)?,
+    })
 }
 
 #[cfg(not(test))]
@@ -512,15 +967,19 @@ pub(crate) fn clear() {
 /// observes the same config, independent of the per-thread store in tests.
 static CONFIGURED_DIR: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
-/// Configure the durable request sink.
+/// Configure the durable request sink (`<dir>/proxy_requests.db`).
 ///
-/// **T7 shim**: the real SQLite layer (`proxy_requests.db`, WAL, the 7-day /
-/// ≤50k cap-first retention and the seed) lands in T8, which replaces this body.
-/// For now this only records the target data directory so the VPN and LAN engine
-/// paths can wire persistence in atomically; an empty directory is an explicit
-/// **in-memory-only** degrade (documented at the call sites), never a silent
-/// drop of DB configuration. Mirrors [`crate::stats::configure`]'s early return.
+/// Opens (creating if needed) the rolling SQLite timeline, seeds the ring with
+/// the window rows and restores cursor continuity from the DB. An empty/absent
+/// `data_dir` is an explicit **in-memory-only** degrade (documented at the call
+/// sites), never a silent drop of DB configuration and never a panic.
 pub(crate) fn configure(data_dir: &str) {
+    configure_at(data_dir, crate::now_ms());
+}
+
+/// [`configure`] with an explicit clock, so restart/retention tests are
+/// deterministic.
+pub(crate) fn configure_at(data_dir: &str, now: u64) {
     let dir = data_dir.trim();
     if dir.is_empty() {
         crate::log_message(
@@ -529,11 +988,82 @@ pub(crate) fn configure(data_dir: &str) {
         );
         return;
     }
+    let path = format!("{}/proxy_requests.db", dir.trim_end_matches('/'));
+    with_store(|st| {
+        st.do_flush(now);
+        match Persist::open(&path) {
+            Ok(persist) => {
+                match persist.seed(now, st.cap) {
+                    Ok(rows) => st.adopt_seed(rows, &persist),
+                    Err(e) => crate::log_message(
+                        2,
+                        &format!("proxy.requests: seed {path} failed: {e}"),
+                    ),
+                }
+                st.pending.clear();
+                st.pending_overflow = false;
+                st.last_persist_ms = 0;
+                st.lost_records = 0;
+                st.retention_floor_ms = Some(now.saturating_sub(REQUEST_RETENTION_MS));
+                st.db = Some(persist);
+                crate::log_message(1, &format!("proxy.requests: persistence enabled at {path}"));
+            }
+            Err(e) => crate::log_message(2, &format!("proxy.requests: open {path} failed: {e}")),
+        }
+    });
     *CONFIGURED_DIR.lock().unwrap_or_else(|e| e.into_inner()) = Some(dir.to_string());
-    crate::log_message(
-        1,
-        &format!("proxy.requests: persistence configured at {dir} (T8 opens SQLite here)"),
-    );
+}
+
+/// Flush the bounded pending queue when the 5s interval has elapsed. Returns
+/// rows pruned. A no-op without a configured sink or with nothing pending.
+pub(crate) fn maybe_persist(now: u64) -> usize {
+    with_store(|st| st.maybe_flush(now))
+}
+
+/// Flush the pending queue immediately (no interval gate). Test/diagnostic seam.
+#[cfg(test)]
+pub(crate) fn flush_for_tests(now: u64) -> usize {
+    with_store(|st| st.do_flush(now))
+}
+
+/// Flush pending writes and drop the connection — simulates a process close in
+/// the restart round-trip test.
+#[cfg(test)]
+pub(crate) fn close_for_tests(now: u64) {
+    with_store(|st| {
+        st.do_flush(now);
+        st.db = None;
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn db_configured_for_tests() -> bool {
+    with_store(|st| st.db.is_some())
+}
+
+#[cfg(test)]
+pub(crate) fn db_row_count_for_tests() -> Option<usize> {
+    with_store(|st| st.db.as_ref().and_then(|db| db.count(0).ok()))
+}
+
+#[cfg(test)]
+pub(crate) fn pending_len_for_tests() -> usize {
+    with_store(|st| st.pending.len())
+}
+
+#[cfg(test)]
+pub(crate) fn next_record_id_for_tests() -> u64 {
+    with_store(|st| st.next_record_id)
+}
+
+#[cfg(test)]
+pub(crate) fn next_cursor_for_tests() -> u64 {
+    with_store(|st| st.next_cursor)
+}
+
+#[cfg(test)]
+pub(crate) fn lost_records_for_tests() -> u64 {
+    with_store(|st| st.lost_records)
 }
 
 /// The directory the request sink is configured against (test proof that the
@@ -555,7 +1085,10 @@ pub(crate) fn configured_dir_for_tests() -> Option<String> {
 /// can distinguish VPN from LAN without consulting `active_tunnel()` (which is
 /// also true after a LAN engine attach). It is unused until T11.
 pub(crate) fn tick(instance_id: u64, _mode: crate::ProxyMode, now_ms: u64) -> bool {
-    let payload = with_store(|st| st.emit_pending(now_ms));
+    let payload = with_store(|st| {
+        st.maybe_flush(now_ms);
+        st.emit_pending(now_ms)
+    });
     let Some(value) = payload else { return false };
     let Ok(bytes) = serde_json::to_vec(&value) else {
         return false;
@@ -726,10 +1259,21 @@ pub(crate) fn get_arm(payload: &[u8]) -> Result<Vec<u8>, ModuleError> {
 /// cursor stays monotonic) and reports how many were cleared.
 pub(crate) fn reset_arm() -> Result<Vec<u8>, ModuleError> {
     let cleared = with_store(|st| {
-        let n = st.records.len();
+        let count = match &st.db {
+            Some(db) => db.count(0).unwrap_or(st.records.len()),
+            None => st.records.len(),
+        };
         st.clear();
-        n
+        st.lost_records = 0;
+        st.last_persist_ms = 0;
+        if let Some(db) = &st.db {
+            if let Err(e) = db.clear() {
+                crate::log_message(2, &format!("proxy.requests: reset persistence failed: {e}"));
+            }
+        }
+        count
     });
+    crate::log_message(1, &format!("proxy: requests.reset cleared={cleared}"));
     crate::ok_data(serde_json::json!({ "ok": true, "cleared": cleared }))
 }
 
@@ -1731,5 +2275,380 @@ mod tests {
         for pair in all.windows(2) {
             assert!(pair[0] < pair[1], "seq strictly monotonic under concurrency");
         }
+    }
+
+    // --- Todo 8: SQLite rolling persistence + DB-authoritative reads ---
+
+    use std::sync::atomic::{AtomicU64 as SeqCounter, Ordering as SeqOrder};
+
+    static TEMP_SEQ: SeqCounter = SeqCounter::new(0);
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let n = TEMP_SEQ.fetch_add(1, SeqOrder::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "gstore-req-{}-{}-{}",
+            std::process::id(),
+            tag,
+            n
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn fixture_now() -> u64 {
+        1_700_000_000_000
+    }
+
+    fn db_page(since: u64, limit: usize) -> RequestSnapshot {
+        snapshot(since, limit, &RequestFilter::default())
+    }
+
+    fn ids_of(page: &RequestSnapshot) -> Vec<u64> {
+        page.records.iter().map(|r| r.record_id).collect()
+    }
+
+    fn page_row(open_ts: u64, id: u64) -> RequestRecord {
+        let mut r = rec(&format!("c{id}"), open_ts);
+        r.record_id = id;
+        r
+    }
+
+    #[test]
+    fn persist_file_has_wal_and_busy_timeout() {
+        let dir = temp_dir("wal");
+        let path = dir.join("proxy_requests.db");
+        let db = Persist::open(path.to_str().unwrap()).unwrap();
+        let mode: String = db
+            .conn
+            .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(mode.to_lowercase(), "wal", "WAL must be enabled");
+        let timeout: i64 = db
+            .conn
+            .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
+            .unwrap();
+        assert!(timeout > 0, "explicit busy_timeout must be configured");
+        assert_eq!(db.max_rows, REQUEST_MAX_ROWS);
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Cap-first: with `max_rows=3`, a 5-row batch keeps the 3 newest and the
+    /// final set is provably cap-first (a time-first prune would keep id 4 too).
+    #[test]
+    fn prune_is_cap_first_not_time_first() {
+        let now = fixture_now();
+        let mut db = Persist::open_in_memory().unwrap();
+        db.set_max_rows(3);
+        let fresh: Vec<RequestRecord> = (1..=3).map(|i| page_row(now + i, i)).collect();
+        db.upsert_batch(&fresh, now).unwrap();
+
+        let edge = page_row(now - REQUEST_RETENTION_MS, 4);
+        let stale = page_row(now - REQUEST_RETENTION_MS - 1, 5);
+        let pruned = db.upsert_batch(&[edge, stale], now).unwrap();
+        assert_eq!(pruned, 2, "cap-first evicts the 2 oldest, not the 2 stale");
+        assert_eq!(
+            db.all_record_ids().unwrap(),
+            vec![1, 2, 3],
+            "cap-first keeps the newest 3; time-first would have kept id 4"
+        );
+    }
+
+    /// Time prune fires only when the cap is not exceeded; the 7-day boundary
+    /// keeps a row exactly at the edge and drops one millisecond older.
+    #[test]
+    fn time_prune_boundary_at_exactly_seven_days() {
+        let now = fixture_now();
+        let mut db = Persist::open_in_memory().unwrap();
+        db.set_max_rows(100);
+        let edge = page_row(now - REQUEST_RETENTION_MS, 1);
+        let stale = page_row(now - REQUEST_RETENTION_MS - 1, 2);
+        let fresh = page_row(now, 3);
+        let pruned = db.upsert_batch(&[edge, stale, fresh], now).unwrap();
+        assert_eq!(pruned, 1, "only the sub-window row is time-pruned");
+        assert_eq!(db.all_record_ids().unwrap(), vec![1, 3]);
+    }
+
+    #[test]
+    fn cap_prunes_at_exactly_fifty_thousand() {
+        assert_eq!(REQUEST_MAX_ROWS, 50_000);
+        let now = fixture_now();
+        let mut db = Persist::open_in_memory().unwrap();
+        let rows: Vec<RequestRecord> = (0..REQUEST_MAX_ROWS as u64)
+            .map(|i| page_row(now + i, i + 1))
+            .collect();
+        assert_eq!(
+            db.upsert_batch(&rows, now).unwrap(),
+            0,
+            "exactly 50k rows: no prune"
+        );
+        assert_eq!(db.count(0).unwrap(), REQUEST_MAX_ROWS);
+
+        let extra = page_row(now + REQUEST_MAX_ROWS as u64, REQUEST_MAX_ROWS as u64 + 1);
+        assert_eq!(db.upsert_batch(&[extra], now).unwrap(), 1, "one over 50k prunes the oldest");
+        assert_eq!(db.count(0).unwrap(), REQUEST_MAX_ROWS);
+        let ids = db.all_record_ids().unwrap();
+        assert_eq!(*ids.first().unwrap(), 2, "oldest (id 1) pruned");
+        assert_eq!(*ids.last().unwrap(), REQUEST_MAX_ROWS as u64 + 1);
+    }
+
+    /// DB-authoritative read: the ring is capped at 3 yet all 10 rows are served.
+    #[test]
+    fn db_read_is_authoritative_beyond_the_ring_cap() {
+        reset_for_tests();
+        let dir = temp_dir("dbauth");
+        let now = fixture_now();
+        configure_at(dir.to_str().unwrap(), now);
+        assert!(db_configured_for_tests());
+        with_store(|st| st.cap = 3);
+
+        for i in 0..10u64 {
+            record_open(&conn_rec(&format!("c{i}"), now + i), now + i);
+        }
+        assert_eq!(with_store(|st| st.records.len()), 3, "ring stays bounded");
+        assert_eq!(flush_for_tests(now), 0, "flush prunes nothing here");
+        assert_eq!(db_row_count_for_tests(), Some(10), "all 10 rows are on disk");
+
+        let page = db_page(0, 1000);
+        assert_eq!(ids_of(&page), vec![10, 9, 8, 7, 6, 5, 4, 3, 2, 1]);
+        assert_eq!(page.retained, 10, "retained is the DB count, not the ring");
+        assert_eq!(page.first_cursor, 1);
+        assert_eq!(page.next_cursor, 10);
+        assert_eq!(page.capacity, 3, "capacity still reports the ring cap");
+        assert_eq!(
+            page.window_start_ms,
+            now - REQUEST_RETENTION_MS,
+            "windowStartMs reflects the 7-day boundary when persistent"
+        );
+
+        close_for_tests(now);
+        reset_for_tests();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// DB prune advances `firstCursor` and counts `lost_records`; ring eviction
+    /// never moves the DB cursor, and paging across both has no dup/loss.
+    #[test]
+    fn db_prune_advances_cursor_and_ring_eviction_does_not() {
+        reset_for_tests();
+        let dir = temp_dir("dbprune");
+        let now = fixture_now();
+        configure_at(dir.to_str().unwrap(), now);
+        with_store(|st| st.db.as_mut().unwrap().max_rows = 3);
+
+        for i in 0..6u64 {
+            record_open(&conn_rec(&format!("c{i}"), now + i), now + i);
+        }
+        assert_eq!(flush_for_tests(now), 3, "cap-first pruned the 3 oldest");
+        assert_eq!(db_row_count_for_tests(), Some(3));
+        assert_eq!(lost_records_for_tests(), 3);
+
+        let page = db_page(0, 100);
+        assert_eq!(ids_of(&page), vec![6, 5, 4]);
+        assert_eq!(page.first_cursor, 4, "firstCursor advanced past the pruned rows");
+
+        let next = db_page(4, 100);
+        assert_eq!(ids_of(&next), vec![6, 5], "cursor at the boundary: no dup");
+        let mut union = ids_of(&page);
+        union.extend(ids_of(&next));
+        union.sort_unstable();
+        union.dedup();
+        assert_eq!(union, vec![4, 5, 6], "union is exactly the retained window");
+
+        with_store(|st| st.cap = 1);
+        record_open(&conn_rec("evict", now + 100), now + 100);
+        assert_eq!(
+            db_page(0, 100).records.len(),
+            3,
+            "ring eviction must not hide DB rows"
+        );
+
+        close_for_tests(now);
+        reset_for_tests();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reset_clears_ring_and_db_rows() {
+        reset_for_tests();
+        let dir = temp_dir("reset");
+        let now = fixture_now();
+        configure_at(dir.to_str().unwrap(), now);
+        record_open(&conn_rec("c1", now + 1), now + 1);
+        record_open(&conn_rec("c2", now + 2), now + 2);
+        flush_for_tests(now);
+        assert_eq!(db_row_count_for_tests(), Some(2));
+
+        let data = arm_data(&reset_arm().unwrap());
+        assert_eq!(data["cleared"], 2);
+        assert_eq!(db_row_count_for_tests(), Some(0), "DB rows cleared");
+        assert_eq!(pending_len_for_tests(), 0, "pending queue cleared");
+        let page = db_page(0, 100);
+        assert!(page.records.is_empty());
+        assert_eq!(page.retained, 0);
+        assert_eq!(page.next_cursor, 2, "reset must not reclaim the cursor");
+
+        close_for_tests(now);
+        reset_for_tests();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Write N → close (flush) → re-configure → a new record gets `recordId > N`,
+    /// and pulling with a pre-restart cursor yields no dup/loss.
+    #[test]
+    fn restart_round_trip_continues_record_ids_and_cursor() {
+        reset_for_tests();
+        let dir = temp_dir("restart");
+        let d = dir.to_str().unwrap();
+        let now = fixture_now();
+        configure_at(d, now);
+        assert_eq!(next_record_id_for_tests(), 1, "empty db starts at 1");
+        assert_eq!(next_cursor_for_tests(), 0);
+
+        for i in 1..=5u64 {
+            record_open(&conn_rec(&format!("c{i}"), now + i), now + i);
+        }
+        flush_for_tests(now);
+        assert_eq!(db_row_count_for_tests(), Some(5));
+        close_for_tests(now);
+
+        configure_at(d, now);
+        assert_eq!(db_row_count_for_tests(), Some(5), "seed reads the window");
+        assert_eq!(next_record_id_for_tests(), 6, "numbering continues after N");
+        assert_eq!(next_cursor_for_tests(), 5);
+
+        let id = record_open(&conn_rec("c6", now + 6), now + 6);
+        assert_eq!(id, 6, "a new record after restart must have recordId > N");
+        flush_for_tests(now + 6);
+
+        let page = db_page(3, 100);
+        let mut got = ids_of(&page);
+        got.sort_unstable();
+        assert_eq!(got, vec![4, 5, 6], "no dup, no loss across restart");
+        assert_eq!(page.first_cursor, 1);
+        assert_eq!(page.next_cursor, 6);
+
+        close_for_tests(now + 6);
+        reset_for_tests();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn empty_table_restart_starts_at_one() {
+        reset_for_tests();
+        let dir = temp_dir("empty-restart");
+        let d = dir.to_str().unwrap();
+        let now = fixture_now();
+        configure_at(d, now);
+        assert_eq!(next_record_id_for_tests(), 1);
+        close_for_tests(now);
+        configure_at(d, now);
+        assert_eq!(next_record_id_for_tests(), 1, "empty table restart -> 1");
+        assert_eq!(next_cursor_for_tests(), 0);
+        reset_for_tests();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn five_second_gate_flushes_once() {
+        reset_for_tests();
+        let dir = temp_dir("gate");
+        let d = dir.to_str().unwrap();
+        configure_at(d, 10_000);
+        record_open(&conn_rec("c1", 10_000), 10_000);
+        assert_eq!(maybe_persist(10_000), 0, "first flush prunes nothing");
+        assert_eq!(db_row_count_for_tests(), Some(1));
+
+        record_open(&conn_rec("c2", 10_100), 10_100);
+        assert_eq!(maybe_persist(10_499), 0, "within 5s: suppressed");
+        assert_eq!(db_row_count_for_tests(), Some(1), "not flushed yet");
+        assert_eq!(pending_len_for_tests(), 1, "change stays queued");
+
+        assert_eq!(maybe_persist(15_000), 0, "flush runs at the interval");
+        assert_eq!(db_row_count_for_tests(), Some(2), "flushed after 5s");
+        assert_eq!(pending_len_for_tests(), 0);
+
+        close_for_tests(15_000);
+        reset_for_tests();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn seed_loads_only_window_rows_and_numbering_spans_the_table() {
+        reset_for_tests();
+        let dir = temp_dir("seed-window");
+        let path = dir.join("proxy_requests.db");
+        let base = fixture_now();
+        {
+            let mut db = Persist::open(path.to_str().unwrap()).unwrap();
+            let rows = vec![
+                page_row(base - REQUEST_RETENTION_MS, 1),
+                page_row(base - 10, 2),
+                page_row(base, 3),
+            ];
+            db.upsert_batch(&rows, base).unwrap();
+            assert_eq!(db.count(0).unwrap(), 3);
+        }
+        let later = base + REQUEST_RETENTION_MS / 2;
+        configure_at(dir.to_str().unwrap(), later);
+        assert_eq!(
+            db_row_count_for_tests(),
+            Some(3),
+            "the stale row is still on disk"
+        );
+        let page = db_page(0, 100);
+        assert_eq!(ids_of(&page), vec![3, 2], "reads serve only the window");
+        assert_eq!(page.retained, 2);
+        assert_eq!(page.first_cursor, 2);
+        assert_eq!(next_record_id_for_tests(), 4, "numbering spans the whole table");
+
+        close_for_tests(later);
+        reset_for_tests();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn configure_bad_path_and_corrupt_db_degrade_to_memory() {
+        reset_for_tests();
+        let dir = temp_dir("badpath");
+        let file = dir.join("a_file");
+        std::fs::write(&file, b"x").unwrap();
+        configure_at(file.to_str().unwrap(), fixture_now());
+        assert!(!db_configured_for_tests(), "a file path cannot open a db");
+
+        let dir2 = temp_dir("corrupt");
+        let db_path = dir2.join("proxy_requests.db");
+        std::fs::write(&db_path, b"definitely not a sqlite database").unwrap();
+        configure_at(dir2.to_str().unwrap(), fixture_now());
+        assert!(!db_configured_for_tests(), "corrupt db degrades, never panics");
+        assert_eq!(maybe_persist(fixture_now()), 0);
+
+        record_open(&conn_rec("c1", fixture_now()), fixture_now());
+        assert_eq!(db_page(0, 100).records.len(), 1, "memory view still works");
+
+        reset_for_tests();
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir2);
+    }
+
+    #[test]
+    fn configure_empty_dir_is_memory_only() {
+        reset_for_tests();
+        configure("");
+        configure("   ");
+        assert!(!db_configured_for_tests());
+        record_open(&conn_rec("c1", fixture_now()), fixture_now());
+        assert_eq!(db_page(0, 100).records.len(), 1);
+        reset_for_tests();
+    }
+
+    #[test]
+    fn large_volume_insert_stays_bounded_and_completes() {
+        let now = fixture_now();
+        let mut db = Persist::open_in_memory().unwrap();
+        const N: u64 = 5_000;
+        let rows: Vec<RequestRecord> = (0..N).map(|i| page_row(now + i, i + 1)).collect();
+        assert_eq!(db.upsert_batch(&rows, now).unwrap(), 0);
+        assert_eq!(db.count(0).unwrap(), N as usize);
     }
 }
