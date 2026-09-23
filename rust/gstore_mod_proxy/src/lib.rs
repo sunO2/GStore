@@ -797,6 +797,7 @@ pub(crate) fn start_engine(
     // with the TUN loop's own install.
     protect::install(host_protect_fd());
     stats::configure(&inst.data_dir);
+    requests::configure(&inst.data_dir);
     let req = config::parse_request(payload)?;
     let generated = config::try_generate(&inst.data_dir, &inst.cache_dir, &req)?;
     let Some(generated) = generated else {
@@ -2067,6 +2068,12 @@ fn cancel_impl(instance_id: u64, _request_id: *const c_char) -> Result<(), c_int
 
 fn destroy_impl(instance_id: u64) -> Result<(), c_int> {
     controller::stop();
+    stats_monitor::stop();
+    debug_assert_eq!(
+        stats_monitor::running_count(),
+        0,
+        "the engine ticker must be joined before destroy returns"
+    );
     if let Some(s) = tun::stop_for_instance(instance_id) {
         emit_tun_released(s.instance_id, s.host_fd);
     }
@@ -2087,6 +2094,12 @@ fn destroy_impl(instance_id: u64) -> Result<(), c_int> {
 
 fn shutdown_impl() -> Result<(), c_int> {
     controller::stop();
+    stats_monitor::stop();
+    debug_assert_eq!(
+        stats_monitor::running_count(),
+        0,
+        "the engine ticker must be joined before shutdown returns"
+    );
     tun::shutdown();
     lan::shutdown();
     protect::clear();
@@ -2907,6 +2920,236 @@ mod abi_tests {
         crate::lan::reset_for_tests();
         crate::rules::reset_for_tests();
         crate::conn::reset_for_tests();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Todo 7: the engine ticker is the SINGLE stats/requests driver. It starts
+    /// with a successful VPN/LAN start and stops on Off / destroy / shutdown;
+    /// the idempotent fast path must never lose a stopped ticker; and the VPN
+    /// path must wire the requests DB config in (F2/F5).
+    #[test]
+    fn abi_mode_ticker_single_driver_and_lifecycle() {
+        use std::os::fd::AsRawFd as _;
+
+        let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let api = register_api();
+        let create = api.create.unwrap();
+        let call = api.call.unwrap();
+        let destroy = api.destroy.unwrap();
+        let shutdown = api.shutdown.unwrap();
+
+        crate::stats_monitor::stop();
+        crate::tun::shutdown();
+        crate::lan::reset_for_tests();
+        crate::rules::reset_for_tests();
+        crate::conn::reset_for_tests();
+        crate::requests::reset_for_tests();
+        assert_eq!(crate::stats_monitor::running_count(), 0, "clean slate");
+        assert_eq!(crate::stats_monitor::held_instance_for_tests(), None);
+        let _ = take_events();
+
+        let dir = abi_mode_test_dir("ticker");
+        let cfg = serde_json::to_vec(&serde_json::json!({
+            "data_dir": dir.display().to_string(),
+            "cache_dir": dir.display().to_string(),
+        }))
+        .unwrap();
+        let mut inst: u64 = 0;
+        assert_eq!(create(cfg.as_ptr(), cfg.len(), &mut inst), ABI_OK);
+
+        let port = free_tcp_port();
+        let lan_payload = format!(r#"{{"enabled":true,"port":{port},"bindAddress":"127.0.0.1"}}"#);
+        let (code, out) = call_with_payload(call, inst, "lan.set", lan_payload.as_bytes());
+        assert_eq!(code, ABI_OK, "lan.set: {}", String::from_utf8_lossy(&out));
+
+        let (loop_end, _peer) = std::os::unix::net::UnixStream::pair().unwrap();        let fd_payload = format!(r#"{{"fd":{}}}"#, loop_end.as_raw_fd());
+        assert_eq!(
+            call_with_payload(call, inst, "tun.set_fd", fd_payload.as_bytes()).0,
+            ABI_OK
+        );
+        let (code, out) = call_with_payload(call, inst, "core.start", br#"{"mode":"vpn"}"#);
+        assert_eq!(code, ABI_OK, "core.start vpn: {}", String::from_utf8_lossy(&out));
+        assert_eq!(crate::stats_monitor::running_count(), 1, "VPN start = one ticker");
+        assert_eq!(crate::stats_monitor::held_instance_for_tests(), Some(inst));
+        assert_eq!(
+            crate::requests::configured_dir_for_tests().as_deref(),
+            dir.to_str(),
+            "start_engine must call requests::configure (F2/F5)"
+        );
+
+        // idempotent fast path must re-arm a stopped ticker (item 7).
+        assert!(crate::stats_monitor::stop());
+        assert_eq!(crate::stats_monitor::running_count(), 0);
+        let (code, out) = call_with_payload(call, inst, "core.start", br#"{"mode":"vpn"}"#);
+        assert_eq!(code, ABI_OK, "idempotent core.start: {}", String::from_utf8_lossy(&out));
+        assert_eq!(
+            crate::stats_monitor::running_count(),
+            1,
+            "fast path must not lose a stopped ticker"
+        );
+
+        let (code, out) = call_with_payload(call, inst, "core.set_mode", br#"{"mode":"lanProxy"}"#);
+        assert_eq!(code, ABI_OK, "vpn->lanProxy: {}", String::from_utf8_lossy(&out));
+        assert_eq!(crate::stats_monitor::running_count(), 1, "LAN start = one ticker");
+
+        assert_eq!(
+            call_with_payload(call, inst, "core.set_mode", br#"{"mode":"off"}"#).0,
+            ABI_OK
+        );
+        assert_eq!(crate::stats_monitor::running_count(), 0, "off stops the ticker");
+
+        // A fresh start followed by destroy must release the ticker (no leak).
+        let (loop_end2, _peer2) = std::os::unix::net::UnixStream::pair().unwrap();
+        let fd_payload = format!(r#"{{"fd":{}}}"#, loop_end2.as_raw_fd());
+        assert_eq!(
+            call_with_payload(call, inst, "tun.set_fd", fd_payload.as_bytes()).0,
+            ABI_OK
+        );
+        assert_eq!(
+            call_with_payload(call, inst, "core.start", br#"{"mode":"vpn"}"#).0,
+            ABI_OK
+        );
+        assert_eq!(crate::stats_monitor::running_count(), 1);
+        assert_eq!(destroy(inst), ABI_OK);
+        assert_eq!(crate::stats_monitor::running_count(), 0, "destroy stops the ticker");
+
+        // shutdown must also release a live ticker, on the new instance id.
+        let mut inst2: u64 = 0;
+        assert_eq!(create(cfg.as_ptr(), cfg.len(), &mut inst2), ABI_OK);
+        let port2 = free_tcp_port();
+        let lan_payload = format!(r#"{{"enabled":true,"port":{port2},"bindAddress":"127.0.0.1"}}"#);
+        assert_eq!(
+            call_with_payload(call, inst2, "lan.set", lan_payload.as_bytes()).0,
+            ABI_OK
+        );
+        let (loop_end3, _peer3) = std::os::unix::net::UnixStream::pair().unwrap();
+        let fd_payload = format!(r#"{{"fd":{}}}"#, loop_end3.as_raw_fd());
+        assert_eq!(
+            call_with_payload(call, inst2, "tun.set_fd", fd_payload.as_bytes()).0,
+            ABI_OK
+        );
+        assert_eq!(
+            call_with_payload(call, inst2, "core.start", br#"{"mode":"vpn"}"#).0,
+            ABI_OK
+        );
+        assert_eq!(crate::stats_monitor::running_count(), 1);
+        assert_eq!(
+            crate::stats_monitor::held_instance_for_tests(),
+            Some(inst2),
+            "the restarted ticker must hold the new instance id"
+        );
+        assert_eq!(shutdown(), ABI_OK);
+        assert_eq!(crate::stats_monitor::running_count(), 0, "shutdown stops the ticker");
+
+        crate::tun::shutdown();
+        crate::lan::reset_for_tests();
+        crate::rules::reset_for_tests();
+        crate::conn::reset_for_tests();
+        crate::requests::reset_for_tests();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Todo 7 item 6: the LAN engine-only path has NO TUN, yet one
+    /// `stats_monitor::drive` tick folds a live meow connection into the
+    /// requests timeline (`requests.get` grows) — the old TUN-owned ticker
+    /// never covered this mode.
+    #[test]
+    fn abi_lan_engine_only_drive_grows_requests_without_a_tun() {
+        let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let api = register_api();
+        let create = api.create.unwrap();
+        let call = api.call.unwrap();
+        let destroy = api.destroy.unwrap();
+
+        crate::stats_monitor::stop();
+        crate::tun::shutdown();
+        crate::lan::reset_for_tests();
+        crate::rules::reset_for_tests();
+        crate::conn::reset_for_tests();
+        crate::requests::reset_for_tests();
+        crate::stats::reset_for_tests();
+        let _ = take_events();
+
+        // Race probe: a tick before any engine attaches must skip cleanly (no
+        // panic, no stats/request event) — the LAN async-attach window.
+        crate::stats_monitor::drive(u64::MAX, crate::now_ms());
+        assert!(
+            take_events()
+                .iter()
+                .all(|(t, _)| t != "proxy.stats" && t != "proxy.request"),
+            "a tick with no active tunnel must be a clean no-op"
+        );
+
+        let dir = abi_mode_test_dir("lan-grow");
+        let cfg = serde_json::to_vec(&serde_json::json!({
+            "data_dir": dir.display().to_string(),
+            "cache_dir": dir.display().to_string(),
+        }))
+        .unwrap();
+        let mut inst: u64 = 0;
+        assert_eq!(create(cfg.as_ptr(), cfg.len(), &mut inst), ABI_OK);
+        let port = free_tcp_port();
+        let lan_payload = format!(r#"{{"enabled":true,"port":{port},"bindAddress":"127.0.0.1"}}"#);
+        assert_eq!(
+            call_with_payload(call, inst, "lan.set", lan_payload.as_bytes()).0,
+            ABI_OK
+        );
+        let (code, out) = call_with_payload(call, inst, "core.set_mode", br#"{"mode":"lanProxy"}"#);
+        assert_eq!(code, ABI_OK, "lanProxy: {}", String::from_utf8_lossy(&out));
+        assert!(!crate::tun::is_running(), "LAN engine-only runs no TUN");
+
+        // Stop the real background ticker so the direct `drive` below is the only
+        // consumer of the process-global connection projection (deterministic).
+        crate::stats_monitor::stop();
+        assert_eq!(crate::stats_monitor::running_count(), 0);
+
+        let tunnel = crate::rules::active_tunnel().expect("LAN engine is attached");
+        let stats = tunnel.statistics();
+        let id = stats.track_connection(
+            meow_common::Metadata {
+                network: meow_common::Network::Tcp,
+                conn_type: meow_common::ConnType::Tun,
+                host: "lan-grow.example".into(),
+                dst_ip: Some("1.2.3.4".parse().unwrap()),
+                dst_port: 443,
+                src_ip: Some("192.168.1.9".parse().unwrap()),
+                src_port: 51000,
+                ..Default::default()
+            },
+            smol_str::SmolStr::new("MATCH"),
+            smol_str::SmolStr::new(""),
+            smallvec::SmallVec::from_vec(vec![Arc::<str>::from("DIRECT")]),
+        );
+        let counters = stats.connection_counters(id).expect("counters");
+        stats.record_upload(&counters, 100);
+        stats.record_download(&counters, 200);
+
+        assert!(
+            crate::requests::snapshot(0, 100, &Default::default())
+                .records
+                .is_empty(),
+            "precondition: no request records before the tick"
+        );
+        crate::stats_monitor::drive(inst, crate::now_ms());
+        let page = crate::requests::snapshot(0, 100, &Default::default());
+        assert_eq!(page.records.len(), 1, "one tick must capture the LAN flow");
+        assert_eq!(page.records[0].domain, "lan-grow.example");
+        assert_eq!(page.records[0].dst_ip, "1.2.3.4");
+
+        let events = take_events();
+        assert!(
+            events.iter().any(|(t, _)| t == "proxy.request"),
+            "one drive tick must also emit the throttled proxy.request dirty signal; got {events:?}"
+        );
+
+        assert_eq!(destroy(inst), ABI_OK);
+        crate::stats_monitor::stop();
+        crate::tun::shutdown();
+        crate::lan::reset_for_tests();
+        crate::rules::reset_for_tests();
+        crate::conn::reset_for_tests();
+        crate::requests::reset_for_tests();
+        crate::stats::reset_for_tests();
         let _ = std::fs::remove_dir_all(&dir);
     }
 

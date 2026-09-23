@@ -22,10 +22,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-/// A live ticker: its stop signal plus the joined-at-stop thread.
+/// A live ticker: its stop signal, the joined-at-stop thread, and the instance
+/// id its `drive` resolves the mode from.
 struct Running {
     stop: tokio::sync::oneshot::Sender<()>,
     thread: std::thread::JoinHandle<()>,
+    #[cfg_attr(not(test), allow(dead_code))]
+    instance_id: u64,
 }
 
 static RUNNING: OnceLock<Mutex<Option<Running>>> = OnceLock::new();
@@ -37,7 +40,9 @@ fn cell() -> &'static Mutex<Option<Running>> {
 }
 
 /// One engine tick: fold the live engine's connection table into the per-domain
-/// aggregate, then emit the throttled `proxy.stats` snapshot and flush SQLite.
+/// aggregate, emit the throttled `proxy.stats` snapshot, flush SQLite, and emit
+/// the throttled `proxy.request` dirty signal. Missing tunnel (LAN async-attach
+/// window) is tolerated: the stats fold is skipped and the rest still runs.
 ///
 /// Factored out of the thread body so it is directly testable. Resolving the
 /// tunnel here (rather than holding an `Arc<TunnelInner>`) keeps the driver
@@ -47,6 +52,14 @@ pub(crate) fn drive(instance_id: u64, now: u64) {
         crate::stats::tick(&tunnel.inner().stats, instance_id, now);
     }
     crate::stats::maybe_persist(now);
+    // Resolve the mode from the ticker's held instance (same fact source as
+    // `mode::apply`); a destroyed/unknown instance degrades to `Off`. Never
+    // `active_tunnel().is_some()`, which is true after a LAN engine attach and
+    // would mis-gate the T11 UID query.
+    let mode = crate::instance_of(instance_id)
+        .map(|inst| crate::current_mode(&inst))
+        .unwrap_or(crate::ProxyMode::Off);
+    crate::requests::tick(instance_id, mode, now);
 }
 
 /// Start the engine ticker if one is not already live. Idempotent: a second
@@ -70,7 +83,11 @@ pub(crate) fn start(instance_id: u64) {
     {
         Ok(thread) => {
             COUNT.fetch_add(1, Ordering::SeqCst);
-            *guard = Some(Running { stop: stop_tx, thread });
+            *guard = Some(Running {
+                stop: stop_tx,
+                thread,
+                instance_id,
+            });
         }
         Err(e) => crate::log_message(3, &format!("proxy.stats: ticker spawn failed: {e}")),
     }
@@ -93,7 +110,9 @@ pub(crate) fn stop() -> bool {
     }
 }
 
-/// Whether the engine ticker is currently live.
+/// Whether the engine ticker is currently live. Test proof for the single-driver
+/// invariant.
+#[allow(dead_code)]
 pub(crate) fn is_running() -> bool {
     cell()
         .lock()
@@ -108,6 +127,18 @@ pub(crate) fn is_running() -> bool {
 #[allow(dead_code)]
 pub(crate) fn running_count() -> usize {
     COUNT.load(Ordering::SeqCst)
+}
+
+/// The instance id the live ticker currently holds; `None` when stopped. Test
+/// proof that a `core.stop` → `core.start` cycle re-arms the driver on the
+/// current (possibly new) instance instead of a stale id.
+#[cfg(test)]
+pub(crate) fn held_instance_for_tests() -> Option<u64> {
+    cell()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .map(|r| r.instance_id)
 }
 
 /// The dedicated thread body: a bounded-runtime interval loop, stopped by

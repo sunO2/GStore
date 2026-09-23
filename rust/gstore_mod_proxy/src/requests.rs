@@ -507,11 +507,54 @@ pub(crate) fn clear() {
     with_store(|st| st.clear());
 }
 
+/// The configured durable-sink directory (or `None` while memory-only). A plain
+/// process-global so every engine path (VPN `start_engine`, LAN reconcile)
+/// observes the same config, independent of the per-thread store in tests.
+static CONFIGURED_DIR: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Configure the durable request sink.
+///
+/// **T7 shim**: the real SQLite layer (`proxy_requests.db`, WAL, the 7-day /
+/// ≤50k cap-first retention and the seed) lands in T8, which replaces this body.
+/// For now this only records the target data directory so the VPN and LAN engine
+/// paths can wire persistence in atomically; an empty directory is an explicit
+/// **in-memory-only** degrade (documented at the call sites), never a silent
+/// drop of DB configuration. Mirrors [`crate::stats::configure`]'s early return.
+pub(crate) fn configure(data_dir: &str) {
+    let dir = data_dir.trim();
+    if dir.is_empty() {
+        crate::log_message(
+            1,
+            "proxy.requests: no data dir, memory-only (persistence disabled)",
+        );
+        return;
+    }
+    *CONFIGURED_DIR.lock().unwrap_or_else(|e| e.into_inner()) = Some(dir.to_string());
+    crate::log_message(
+        1,
+        &format!("proxy.requests: persistence configured at {dir} (T8 opens SQLite here)"),
+    );
+}
+
+/// The directory the request sink is configured against (test proof that the
+/// VPN/LAN paths wired [`configure`] in).
+#[cfg(test)]
+pub(crate) fn configured_dir_for_tests() -> Option<String> {
+    CONFIGURED_DIR
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
 /// The ONLY emitter of the `proxy.request` dirty signal. Emits a payload-free
 /// `{seq,count,tsMs}` at most once per [`MIN_EMIT_INTERVAL_MS`] and only when
 /// records were created/changed since the previous emit. Returns whether an
 /// event was emitted.
-pub(crate) fn tick(instance_id: u64, now_ms: u64) -> bool {
+///
+/// `mode` is threaded from the engine ticker so the UID-attribution gate (T11)
+/// can distinguish VPN from LAN without consulting `active_tunnel()` (which is
+/// also true after a LAN engine attach). It is unused until T11.
+pub(crate) fn tick(instance_id: u64, _mode: crate::ProxyMode, now_ms: u64) -> bool {
     let payload = with_store(|st| st.emit_pending(now_ms));
     let Some(value) = payload else { return false };
     let Ok(bytes) = serde_json::to_vec(&value) else {
@@ -1550,7 +1593,7 @@ mod tests {
         let _ = take_request_events();
 
         record_open(&conn_rec("c1", 1_000), 1_000);
-        assert!(tick(7, 1_000), "a change at/after the window must emit");
+        assert!(tick(7, crate::ProxyMode::Vpn, 1_000), "a change at/after the window must emit");
 
         let events = take_request_events();
         assert_eq!(events.len(), 1, "exactly one proxy.request event");
@@ -1585,7 +1628,7 @@ mod tests {
             "record_open/record_close must never emit a per-record event"
         );
 
-        assert!(tick(7, 1_500), "one tick flushes the accumulated changes");
+        assert!(tick(7, crate::ProxyMode::Vpn, 1_500), "one tick flushes the accumulated changes");
         assert_eq!(take_request_events().len(), 1);
     }
 
@@ -1598,15 +1641,15 @@ mod tests {
         let _ = take_request_events();
 
         record_open(&conn_rec("c1", 1_000), 1_000);
-        assert!(tick(7, 1_000));
+        assert!(tick(7, crate::ProxyMode::Vpn, 1_000));
         assert_eq!(take_request_events().len(), 1);
 
         record_open(&conn_rec("c2", 1_100), 1_100);
-        assert!(!tick(7, 1_100), "second change within 1s must be suppressed");
+        assert!(!tick(7, crate::ProxyMode::Vpn, 1_100), "second change within 1s must be suppressed");
         assert!(take_request_events().is_empty(), "no event while throttled");
 
         record_open(&conn_rec("c3", 1_900), 1_900);
-        assert!(tick(7, 2_000), "after 1s the pending changes emit");
+        assert!(tick(7, crate::ProxyMode::Vpn, 2_000), "after 1s the pending changes emit");
         let events = take_request_events();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0]["seq"], 2, "seq increments per emitted signal");
@@ -1624,22 +1667,22 @@ mod tests {
         reset_for_tests();
         let _ = take_request_events();
 
-        assert!(!tick(7, 5_000), "no change at all -> no signal");
+        assert!(!tick(7, crate::ProxyMode::Vpn, 5_000), "no change at all -> no signal");
         assert!(take_request_events().is_empty());
 
         record_open(&conn_rec("c1", 5_000), 5_000);
-        assert!(tick(7, 5_000));
+        assert!(tick(7, crate::ProxyMode::Vpn, 5_000));
         let first_seq = take_request_events()[0]["seq"].as_u64().unwrap();
 
-        assert!(!tick(7, 9_000), "unchanged -> still no signal");
+        assert!(!tick(7, crate::ProxyMode::Vpn, 9_000), "unchanged -> still no signal");
         assert!(take_request_events().is_empty());
 
         clear();
-        assert!(!tick(7, 9_500), "reset itself must not emit");
+        assert!(!tick(7, crate::ProxyMode::Vpn, 9_500), "reset itself must not emit");
         assert!(take_request_events().is_empty());
 
         record_open(&conn_rec("c2", 10_000), 10_000);
-        assert!(tick(7, 10_000));
+        assert!(tick(7, crate::ProxyMode::Vpn, 10_000));
         let events = take_request_events();
         assert_eq!(events.len(), 1);
         assert!(

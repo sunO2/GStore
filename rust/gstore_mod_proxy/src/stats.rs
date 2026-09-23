@@ -16,7 +16,7 @@
 //!  * `stats.domain.get` / `stats.traffic.get` are the **primary, pull-based**
 //!    paths, and
 //!  * a single `proxy.stats` snapshot is emitted at most once per
-//!    [`MIN_EMIT_INTERVAL_MS`], driven by the dispatch monitor ([`crate::dispatch`]).
+//!    [`MIN_EMIT_INTERVAL_MS`], driven by [`crate::stats_monitor`].
 //!
 //! ## Bounds & determinism
 //!
@@ -60,7 +60,7 @@ pub(crate) const FLOW_CAP: usize = 2048;
 /// (host task-stream ring 128 — `task_bridge.rs:65`; module event ring 100 —
 /// `event_bridge.rs:21`), so the event lane is throttled.
 pub(crate) const MIN_EMIT_INTERVAL_MS: u64 = 1000;
-/// Dispatch monitor tick. Aggregation runs every tick; emission is throttled.
+/// Engine-ticker tick. Aggregation runs every tick; emission is throttled.
 #[cfg_attr(test, allow(dead_code))]
 pub(crate) const STATS_TICK_MS: u64 = 500;
 /// SQLite flush spacing. Reads happen every tick, writes at most this often.
@@ -506,7 +506,7 @@ fn observe(live: &[ConnRecord], closed: &[ConnRecord], now: u64) {
     }
 }
 
-/// One dispatch-monitor tick: project meow's live table, fold it into the
+/// One engine-ticker tick: project meow's live table, fold it into the
 /// per-domain aggregate, then emit a throttled `proxy.stats` snapshot.
 pub(crate) fn tick(stats: &meow_tunnel::Statistics, instance_id: u64, now: u64) {
     let outcome = crate::conn::sync_full(stats);

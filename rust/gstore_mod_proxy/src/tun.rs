@@ -579,7 +579,7 @@ async fn tun_loop(
     owned: OwnedFd,
     mut stop_rx: watch::Receiver<bool>,
     proxies: Option<crate::config::ProxyMap>,
-    instance_id: u64,
+    _instance_id: u64,
 ) -> LoopExit {
     let built = meow_lwip::NetStack::with_buffer_size(STACK_BUFFER_SIZE, UDP_BUFFER_SIZE);
     let (stack, tcp_listener, udp) = match built {
@@ -722,7 +722,7 @@ async fn tun_loop(
             crate::log_message(1, &format!("proxy: installed {count} proxies/groups"));
         }
     }
-    let dispatcher = crate::dispatch::spawn(engine, tcp_listener, udp, Some(Arc::clone(&dns_engine)), instance_id);
+    let dispatcher = crate::dispatch::spawn(engine, tcp_listener, udp, Some(Arc::clone(&dns_engine)));
     crate::log_message(
         1,
         &format!("proxy: flow dispatch active protectInstalled={protect_installed}"),

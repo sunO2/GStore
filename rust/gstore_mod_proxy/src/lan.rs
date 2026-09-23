@@ -540,8 +540,26 @@ pub(crate) fn reconcile_result() -> Result<bool, ModuleError> {
         }
         (st.config.clone(), st.data_dir.clone(), st.cache_dir.clone())
     };
+    configure_db(&data_dir);
     start_listener(&config, &data_dir, &cache_dir)?;
     Ok(true)
+}
+
+/// Wire the stats/requests durable sinks for the LAN path.
+///
+/// A LAN configured without a data dir has no directory to persist into, so the
+/// timeline degrades to the in-memory ring; that is an explicit, logged
+/// in-memory-only degrade — never a silent drop of a *configured* directory.
+fn configure_db(data_dir: &str) {
+    if data_dir.trim().is_empty() {
+        crate::log_message(
+            1,
+            "proxy.lan: no dataDir, stats/requests persistence disabled (in-memory only)",
+        );
+        return;
+    }
+    crate::stats::configure(data_dir);
+    crate::requests::configure(data_dir);
 }
 
 /// Whether a LAN listener is currently bound (Todo 29 consistency check).
@@ -563,6 +581,7 @@ pub(crate) fn reset_for_tests() {
 /// Build an engine-only tunnel (no TUN reader, no protect hook) with the
 /// configured proxies/rules, so the LAN listener works without `VpnService`.
 async fn build_engine_only(data_dir: &str, cache_dir: &str) -> Result<Arc<Tunnel>, String> {
+    configure_db(data_dir);
     let dns = crate::dns::ensure_engine().await;
     let _inner = crate::dispatch::build_engine(dns.resolver());
     let tunnel = crate::rules::active_tunnel().ok_or_else(|| "engine build produced no tunnel".to_string())?;

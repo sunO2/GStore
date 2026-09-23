@@ -156,6 +156,14 @@ pub(crate) fn apply(
     let prev_state = crate::current_state(inst);
 
     if !force && target == previous && is_consistent(inst, target) {
+        // Never lose the single driver to the early return: `stats_monitor::start`
+        // is idempotent, so re-arming a stopped ticker is a no-op when it is live.
+        match target {
+            ProxyMode::Off => {
+                crate::stats_monitor::stop();
+            }
+            ProxyMode::Vpn | ProxyMode::LanProxy => crate::stats_monitor::start(inst.id),
+        }
         return Ok(Transition {
             previous,
             mode: target,
@@ -208,6 +216,7 @@ pub(crate) fn apply(
     crate::lan::stop();
 
     if target == ProxyMode::Off {
+        crate::stats_monitor::stop();
         crate::set_state(inst, ProxyRunState::Stopped);
         crate::set_mode(inst, ProxyMode::Off);
         record(inst, ProxyMode::Off);
@@ -235,6 +244,7 @@ pub(crate) fn apply(
         Err(e) => {
             // A failed start must never leave a half-applied mode: fall back to
             // a fully stopped, protector-free `off`.
+            crate::stats_monitor::stop();
             crate::protect::clear();
             crate::lan::stop();
             crate::set_state(inst, ProxyRunState::Stopped);
@@ -250,6 +260,9 @@ pub(crate) fn apply(
         }
     };
 
+    // The engine is now attached (VPN `start_engine` / LAN `reconcile_result`),
+    // so the single engine ticker can start for this instance.
+    crate::stats_monitor::start(inst.id);
     record(inst, target);
     crate::emit_mode(inst.id, target, previous);
     crate::emit_state(inst.id, ProxyRunState::Running, target, None);
