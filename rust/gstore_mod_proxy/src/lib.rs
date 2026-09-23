@@ -2728,6 +2728,101 @@ mod abi_tests {
         }
     }
 
+    /// `net.shaper.set` while the engine is STOPPED persists only *intent*
+    /// (`applied==false`, `engineRunning==false`, `effective==config`) and must
+    /// take effect on the next `core.start`: once the same config is live,
+    /// `applied` flips to `true` and `effective` mirrors `config` exactly. Drives
+    /// the real loop via a mock TUN fd (mirrors `abi_tun_fd_start_stop_and_release_event`).
+    #[test]
+    fn shaper_intent_applies_on_next_start() {
+        let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        shaper::reset_for_test();
+        shaper::reset_counters();
+        let api = register_api();
+        let call = api.call.unwrap();
+        let destroy = api.destroy.unwrap();
+        let (inst, dir) = create_temp_instance(&api, "intent-start");
+
+        let payload =
+            br#"{"enabled":true,"seed":11,"uplink":{"rateBps":200000,"delayMs":10}}"#;
+        let (code, out) = call_with_payload(call, inst, "net.shaper.set", payload);
+        assert_eq!(code, ABI_OK, "set while stopped must succeed");
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        let set_config = v["data"]["config"].clone();
+        assert_eq!(v["data"]["applied"], false, "stopped set is intent only");
+        assert_eq!(v["data"]["engineRunning"], false);
+
+        // Still stopped on the follow-up get: intent persisted but not applied.
+        let (code, out) = call_json(call, inst, "net.shaper.get");
+        assert_eq!(code, ABI_OK);
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["applied"], false);
+        assert_eq!(v["data"]["engineRunning"], false);
+        assert_eq!(v["data"]["effective"], set_config, "effective mirrors intent when stopped");
+
+        let (loop_end, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let fd_payload = format!(r#"{{"fd":{}}}"#, std::os::fd::AsRawFd::as_raw_fd(&loop_end));
+        let (code, out) = call_with_payload(call, inst, "tun.set_fd", fd_payload.as_bytes());
+        assert_eq!(code, ABI_OK, "tun.set_fd: {}", String::from_utf8_lossy(&out));
+        let (code, out) = call_with_payload(call, inst, "core.start", br#"{"mode":"vpn"}"#);
+        assert_eq!(code, ABI_OK, "core.start: {}", String::from_utf8_lossy(&out));
+
+        let (code, out) = call_json(call, inst, "net.shaper.get");
+        assert_eq!(code, ABI_OK);
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["engineRunning"], true);
+        assert_eq!(v["data"]["applied"], true, "enabled intent applies once the engine runs");
+        assert_eq!(v["data"]["config"], set_config, "intent preserved across start");
+        assert_eq!(v["data"]["effective"], set_config);
+
+        assert_eq!(call_json(call, inst, "core.stop").0, ABI_OK);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = destroy(inst);
+        shaper::reset_for_test();
+    }
+
+    /// `config.apply` is profile/engine-only and must never touch the shaper
+    /// intent. Whether it succeeds or 422s without a profile, the persisted
+    /// shaper config and the whole `net.shaper.*` snapshot stay byte-for-byte
+    /// intact, and `net.shaper.set` keeps working afterwards.
+    #[test]
+    fn config_apply_preserves_shaper() {
+        let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        shaper::reset_for_test();
+        shaper::reset_counters();
+        let api = register_api();
+        let call = api.call.unwrap();
+        let destroy = api.destroy.unwrap();
+        let (inst, dir) = create_temp_instance(&api, "config-apply");
+
+        let payload =
+            br#"{"enabled":true,"seed":5,"uplink":{"rateBps":80000,"delayMs":30}}"#;
+        let (code, _) = call_with_payload(call, inst, "net.shaper.set", payload);
+        assert_eq!(code, ABI_OK);
+
+        let (_, before) = call_json(call, inst, "net.shaper.get");
+        let before: serde_json::Value = serde_json::from_slice(&before).unwrap();
+
+        // Ignore Ok/Err: without a stored profile this may 422. Either way it
+        // must not reset the shaper.
+        let _ = call_with_payload(call, inst, "config.apply", br#"{"profileId":"missing"}"#);
+
+        let (code, after) = call_json(call, inst, "net.shaper.get");
+        assert_eq!(code, ABI_OK);
+        let after: serde_json::Value = serde_json::from_slice(&after).unwrap();
+        assert_eq!(after, before, "config.apply must not touch the shaper snapshot");
+
+        let (code, out) =
+            call_with_payload(call, inst, "net.shaper.set", br#"{"uplink":{"rateBps":90000}}"#);
+        assert_eq!(code, ABI_OK, "set after config.apply: {}", String::from_utf8_lossy(&out));
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["config"]["uplink"]["rateBps"], 90000);
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = destroy(inst);
+        shaper::reset_for_test();
+    }
+
     /// Machine-checkable frozen contract (Todo 18): every name the module claims
     /// to dispatch must actually dispatch — i.e. it must never answer a 405
     /// `METHOD_NOT_FOUND`. A dead instance yields a 410/422 domain error (which

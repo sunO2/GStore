@@ -912,6 +912,45 @@ mod pacer_tests {
             (credit + interval).as_secs_f64()
         );
     }
+
+    /// Todo 12 (D14): a rate increase drains the accumulated debt
+    /// (`tat = min(tat, now)`) so the very next frame is paced by the NEW rate,
+    /// not the stale backlog. A saturated pacer's next release is therefore
+    /// exactly `now + len/rate_new`; had the debt survived it would still be
+    /// `>= old_tat + len/rate_new` (tens of seconds later).
+    #[test]
+    fn pacer_debt_drained_on_rate_increase() {
+        let old_rate = 1_000u64;
+        let new_rate = 1_000_000u64;
+        let len = 1500usize;
+        let t0 = Instant::now();
+
+        let mut pacer = Pacer::new(old_rate, 32_768, t0);
+        // Back-to-back arrivals at the SAME instant accrue ~1.5 s of debt each.
+        let mut last = t0;
+        for _ in 0..50 {
+            last = pacer.schedule(t0, len);
+        }
+        let debt = last.saturating_duration_since(t0);
+        assert!(debt >= Duration::from_secs(60), "expected deep debt, got {debt:?}");
+
+        // Raise the rate at `now`; the old-rate debt is reconciled forward.
+        let now = t0 + Duration::from_secs(1);
+        pacer.apply_rate_change(new_rate, 32_768, now);
+        assert_eq!(pacer.rate_bps(), new_rate, "apply_rate_change must store the new rate");
+
+        let release = pacer.schedule(now, len);
+        assert_eq!(
+            release,
+            now + bytes_interval(new_rate, len),
+            "next release must be paced by the new rate after the debt drain"
+        );
+        // The stale old-rate debt would have released far later.
+        assert!(
+            release < now + bytes_interval(old_rate, len),
+            "old-rate debt was not drained"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1308,6 +1347,42 @@ mod scheduler_tests {
             "rate increase must drain the old-rate debt"
         );
         assert!(release.saturating_duration_since(now) < Duration::from_secs(1));
+    }
+
+    /// Todo 12: `reconfigure` must take a rate increase into effect
+    /// *immediately* — both the next frame and the sustained cadence after it are
+    /// paced at the new rate, never the pre-change debt. Complements
+    /// `reconfigure_rate_increase_drains_debt` (single absolute deadline) by also
+    /// pinning the sustained cadence; `order=reorder` keeps `prev_release` from
+    /// masking the pacer deadline.
+    #[test]
+    fn rate_increase_takes_effect_immediately() {
+        let old_rate = 2_000u64;
+        let new_rate = 2_000_000u64;
+        let len = 1000usize;
+        let t0 = Instant::now();
+        let old = dir(old_rate, 0, 0, JitterDistribution::Uniform, PacketOrder::Reorder, 0.0, 0);
+        let mut sched = ReleaseScheduler::new(&old, SplitMix64::new(0x11), t0);
+
+        // Saturate: back-to-back frames at 2000 bps accrue ~0.5 s of debt each.
+        for _ in 0..40 {
+            let _ = sched.schedule(t0, len, false);
+        }
+
+        let now = t0 + Duration::from_secs(1);
+        let raised =
+            dir(new_rate, 0, 0, JitterDistribution::Uniform, PacketOrder::Reorder, 0.0, 0);
+        sched.reconfigure(&raised, now);
+
+        let interval_new = bytes_interval(new_rate, len);
+        let first = sched.schedule(now, len, false);
+        let second = sched.schedule(now, len, false);
+        assert_eq!(first, now + interval_new, "first post-change frame uses the new rate");
+        assert_eq!(second, now + interval_new * 2, "sustained cadence uses the new rate");
+        assert!(
+            second < now + bytes_interval(old_rate, len),
+            "the old-rate debt must not survive the rate increase"
+        );
     }
 }
 
