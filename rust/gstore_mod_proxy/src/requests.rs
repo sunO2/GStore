@@ -122,10 +122,10 @@ pub(crate) struct RequestRecord {
 }
 
 /// Projection of a [`ConnRecord`] into a [`RequestRecord`] at the capture
-/// chokepoint. Only fields available at this stage are populated: domain
-/// resolution lands in T4, structured `dstIp`/`dstPort` in T3 and UID
-/// attribution in T11. `openTsMs` is the flow's meow start time so
-/// `durationMs` approximates the real lifetime (sampled on the tick).
+/// chokepoint. `dstIp`/`dstPort`/`network` come straight from the captured
+/// record (T3); domain resolution lands in T4 and UID attribution in T11.
+/// `openTsMs` is the flow's meow start time so `durationMs` approximates the
+/// real lifetime (sampled on the tick).
 fn project(rec: &ConnRecord, now_ms: u64) -> RequestRecord {
     let open_ts_ms = if rec.started_at_ms == 0 {
         now_ms
@@ -141,8 +141,8 @@ fn project(rec: &ConnRecord, now_ms: u64) -> RequestRecord {
         duration_ms: None,
         domain_known: !domain.trim().is_empty(),
         domain,
-        dst_ip: String::new(),
-        dst_port: 0,
+        dst_ip: rec.dst_ip.clone(),
+        dst_port: rec.dst_port,
         src: rec.src.clone(),
         network: rec.network.clone(),
         uid: None,
@@ -907,6 +907,8 @@ mod tests {
             id: id.to_string(),
             src: "10.0.0.2:5555".to_string(),
             dst: "1.2.3.4:443".to_string(),
+            dst_ip: "1.2.3.4".to_string(),
+            dst_port: 443,
             domain: "req.example".to_string(),
             network: "tcp".to_string(),
             rule: "MATCH".to_string(),
@@ -1053,5 +1055,63 @@ mod tests {
         assert!(s.active_by_conn.is_empty());
         assert!(s.stale_live.is_empty());
         assert_eq!(s.close_all_records(3_000), 0, "second close_all is a no-op");
+    }
+
+    /// T3: the structured destination and network captured by `from_info` are
+    /// projected verbatim into the request record (no re-parse of `dst`).
+    #[test]
+    fn open_record_projects_structured_dst_and_network() {
+        let mut s = RequestStore::fresh();
+        let mut c = conn_rec("c1", 1_000);
+        c.dst = "2001:db8::1:8443".to_string();
+        c.dst_ip = "2001:db8::1".to_string();
+        c.dst_port = 8443;
+        c.network = "tcp".to_string();
+        s.open_record(&c, 1_000);
+
+        let r = &s.records[0];
+        assert_eq!(r.dst_ip, "2001:db8::1", "bare IPv6, no brackets");
+        assert_eq!(r.dst_port, 8443);
+        assert_eq!(r.network, "tcp");
+        // `dst` is never parsed or rewritten by the projection.
+        assert_eq!(c.dst, "2001:db8::1:8443");
+    }
+
+    /// Malformed/blank structured inputs must not panic and must not be
+    /// fabricated into fake values.
+    #[test]
+    fn open_record_with_blank_dst_ip_and_zero_port_does_not_panic() {
+        let mut s = RequestStore::fresh();
+        let mut c = conn_rec("c1", 1_000);
+        c.dst = String::new();
+        c.dst_ip = String::new();
+        c.dst_port = 0;
+        let id = s.open_record(&c, 1_000);
+        assert_eq!(id, 1);
+        let r = &s.records[0];
+        assert_eq!(r.dst_ip, "");
+        assert_eq!(r.dst_port, 0);
+    }
+
+    /// Stale-state probe: a flow re-entering the projection reuses its record and
+    /// must not overwrite the structured dst captured at first open.
+    #[test]
+    fn reentry_reuses_structured_dst_without_overwrite() {
+        let mut s = RequestStore::fresh();
+        let mut first = conn_rec("c1", 1_000);
+        first.dst_ip = "1.2.3.4".to_string();
+        first.dst_port = 443;
+        let id = s.open_record(&first, 1_000);
+        s.mark_stale("c1");
+
+        let mut second = conn_rec("c1", 1_200);
+        second.dst_ip = "9.9.9.9".to_string();
+        second.dst_port = 8443;
+        let again = s.open_record(&second, 1_200);
+
+        assert_eq!(again, id, "re-entry reuses the record");
+        assert_eq!(s.records.len(), 1);
+        assert_eq!(s.records[0].dst_ip, "1.2.3.4", "original dstIp preserved");
+        assert_eq!(s.records[0].dst_port, 443, "original dstPort preserved");
     }
 }

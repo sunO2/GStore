@@ -61,8 +61,27 @@ pub(crate) const ERR_CONN_NOT_FOUND: &str = "PROXY_CONN_NOT_FOUND";
 pub(crate) struct ConnRecord {
     pub id: String,
     pub src: String,
+    /// Legacy `host:port` string. Kept **byte-identical** to the pre-T3 shape
+    /// (`format!("{ip}:{port}")` when `dst_ip` is known, else
+    /// `Metadata::remote_address()`): `API.md §2.10` and every existing fixture
+    /// depend on it, so no IPv6 brackets are ever added here.
     pub dst: String,
+    /// Bare destination IP taken **directly** from `metadata.dst_ip` (empty when
+    /// the metadata has none). IPv6 is bare — never bracketed — because this is
+    /// the structured companion to `dst`, not a re-parse of it. Internal-only:
+    /// not serialized into `conn.list`, so the `API.md §2.10` `ConnInfo` shape
+    /// stays byte-identical (the request projection reads the Rust field).
+    #[serde(skip_serializing)]
+    pub dst_ip: String,
+    /// Destination port taken directly from `metadata.dst_port`. Internal-only,
+    /// like `dst_ip`.
+    #[serde(skip_serializing)]
+    pub dst_port: u16,
     pub domain: String,
+    /// `"tcp"` | `"udp"`, taken directly from `metadata.network`. Production
+    /// capture is TCP ONLY (meow `Statistics::connections` is filled only by the
+    /// TCP path, `API.md §2.10` says "Only TCP flows are tracked"); the field
+    /// stays generic so the `from_info` mapping is spec-complete for UDP too.
     pub network: String,
     pub rule: String,
     pub rule_payload: String,
@@ -143,8 +162,13 @@ fn from_info(info: &meow_tunnel::statistics::ConnectionInfo, started_at_ms: u64)
         id: info.id.to_string(),
         src: metadata.source_address().to_string(),
         dst,
+        dst_ip: metadata
+            .dst_ip
+            .map(|ip| ip.to_string())
+            .unwrap_or_default(),
+        dst_port: metadata.dst_port,
         domain: metadata.rule_host().to_string(),
-        network: "tcp".to_string(),
+        network: metadata.network.to_string(),
         rule: info.rule.to_string(),
         rule_payload: info.rule_payload.to_string(),
         outbound: info
@@ -572,6 +596,8 @@ mod tests {
             id: id.into(),
             src: "10.10.0.2:40000".into(),
             dst: "1.2.3.4:443".into(),
+            dst_ip: "1.2.3.4".into(),
+            dst_port: 443,
             domain: domain.into(),
             network: "tcp".into(),
             rule: "DOMAIN-SUFFIX".into(),
@@ -1010,5 +1036,181 @@ mod tests {
         crate::rules::reset_for_tests();
         reset_for_tests();
         crate::requests::reset_for_tests();
+    }
+
+    // --- Todo 3: structured destination addressing (dstIp/dstPort/network) ---
+
+    fn info_with_metadata(metadata: Metadata) -> meow_tunnel::statistics::ConnectionInfo {
+        let stats = meow_tunnel::Statistics::new();
+        let id = stats.track_connection(
+            metadata,
+            SmolStr::new("MATCH"),
+            SmolStr::new(""),
+            SmallVec::new(),
+        );
+        stats
+            .connections
+            .get(&id)
+            .map(|e| e.value().clone())
+            .expect("tracked connection is present")
+    }
+
+    fn metadata_tcp(host: &str, dst: Option<&str>, port: u16) -> Metadata {
+        Metadata {
+            network: Network::Tcp,
+            conn_type: ConnType::Tun,
+            host: host.into(),
+            dst_ip: dst.map(|ip| ip.parse().unwrap()),
+            dst_port: port,
+            src_ip: Some("10.10.0.2".parse().unwrap()),
+            src_port: 40000,
+            ..Default::default()
+        }
+    }
+
+    /// Fixture class 1 — IPv4 `dst_ip`: structured fields taken directly from the
+    /// metadata, legacy `dst` string unchanged.
+    #[test]
+    fn from_info_maps_ipv4_dst_to_structured_fields() {
+        let r = from_info(&info_with_metadata(metadata_tcp("example.com", Some("1.2.3.4"), 443)), 0);
+        assert_eq!(r.dst_ip, "1.2.3.4");
+        assert_eq!(r.dst_port, 443);
+        assert_eq!(r.network, "tcp");
+        assert_eq!(r.dst, "1.2.3.4:443", "legacy dst shape must not change");
+    }
+
+    /// Fixture class 2 — IPv6 `dst_ip`: `dstIp` is BARE (no brackets), `dst`
+    /// keeps the legacy ambiguous `ip:port` shape (that is deliberate: adding
+    /// brackets would break `API.md §2.10` and existing fixtures).
+    #[test]
+    fn from_info_maps_ipv6_dst_bare_and_keeps_legacy_dst_string() {
+        let r = from_info(
+            &info_with_metadata(metadata_tcp("example.com", Some("2001:db8::1"), 8443)),
+            0,
+        );
+        assert_eq!(r.dst_ip, "2001:db8::1", "bare IPv6, no brackets");
+        assert_eq!(r.dst_port, 8443);
+        assert_eq!(r.network, "tcp");
+        assert_eq!(r.dst, "2001:db8::1:8443", "legacy shape preserved");
+    }
+
+    /// Fixture class 3 — a bracketed `[v6]:port` host with no `dst_ip`: the `dst`
+    /// string falls back to `remote_address()` and the structured IP is empty
+    /// (there is no metadata `dst_ip` to take it from).
+    #[test]
+    fn from_info_bracketed_v6_host_falls_back_to_remote_address() {
+        let r = from_info(
+            &info_with_metadata(metadata_tcp("[2001:db8::1]", None, 443)),
+            0,
+        );
+        assert_eq!(r.dst, "[2001:db8::1]:443", "remote_address shape preserved");
+        assert_eq!(r.dst_ip, "", "no metadata dst_ip -> empty structured ip");
+        assert_eq!(r.dst_port, 443, "port still taken from metadata");
+        assert_eq!(r.network, "tcp");
+    }
+
+    /// Fixture class 4 — missing `dst_ip`: falls back to `remote_address()`
+    /// without panicking; the port is still preserved.
+    #[test]
+    fn from_info_missing_dst_ip_falls_back_to_remote_address_without_panic() {
+        let r = from_info(&info_with_metadata(metadata_tcp("example.com", None, 443)), 0);
+        assert_eq!(r.dst, "example.com:443");
+        assert_eq!(r.dst_ip, "");
+        assert_eq!(r.dst_port, 443, "dstPort preserved when dstIp is absent");
+        assert_eq!(r.network, "tcp");
+    }
+
+    /// Spec-level UDP mapping. NOT a production-coverage pass condition: meow's
+    /// `Statistics::connections` is only filled by the TCP path, so the capture
+    /// scope is TCP only (`API.md §2.10`). This proves `from_info` maps the
+    /// generic `network` field faithfully.
+    #[test]
+    fn from_info_maps_udp_network_field_spec_only() {
+        let mut md = metadata_tcp("example.com", Some("1.2.3.4"), 53);
+        md.network = Network::Udp;
+        let r = from_info(&info_with_metadata(md), 0);
+        assert_eq!(r.network, "udp");
+        assert_eq!(r.dst_ip, "1.2.3.4");
+        assert_eq!(r.dst_port, 53);
+    }
+
+    /// Boundary: the longest IPv6 literal and `u16::MAX` port survive verbatim.
+    #[test]
+    fn from_info_handles_ipv6_max_length_and_max_port() {
+        let max_v6 = "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff";
+        let r = from_info(
+            &info_with_metadata(metadata_tcp("example.com", Some(max_v6), u16::MAX)),
+            0,
+        );
+        assert_eq!(r.dst_ip, max_v6);
+        assert_eq!(r.dst_ip.len(), 39, "longest textual IPv6 form");
+        assert_eq!(r.dst_port, u16::MAX);
+        assert_eq!(r.dst, format!("{max_v6}:{}", u16::MAX));
+    }
+
+    /// Regression through the `conn.list` projection path: the `dst` string is
+    /// byte-identical to the pre-T3 shape while the structured fields are new.
+    #[test]
+    fn sync_preserves_dst_string_shape_and_adds_structured_dst() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        crate::requests::reset_for_tests();
+        let stats = meow_tunnel::Statistics::new();
+        let id = stats.track_connection(
+            metadata_tcp("v6.example", Some("2001:db8::1"), 8443),
+            SmolStr::new("DOMAIN-SUFFIX"),
+            SmolStr::new("v6.example"),
+            SmallVec::new(),
+        );
+        let records = sync(&stats);
+        assert_eq!(records.len(), 1);
+        let r = &records[0];
+        assert_eq!(r.id, id.to_string());
+        assert_eq!(r.dst, "2001:db8::1:8443", "dst byte-identical to legacy");
+        assert_eq!(r.dst_ip, "2001:db8::1");
+        assert_eq!(r.dst_port, 8443);
+        assert_eq!(r.network, "tcp");
+
+        let recs = request_records();
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].dst_ip, "2001:db8::1", "propagated to the projection");
+        assert_eq!(recs[0].dst_port, 8443);
+        assert_eq!(recs[0].network, "tcp");
+
+        crate::rules::reset_for_tests();
+        reset_for_tests();
+        crate::requests::reset_for_tests();
+    }
+
+    /// No regression: the `conn.list` `ConnInfo` JSON object is exactly the
+    /// pre-T3 documented shape — the new structured fields are internal and do
+    /// not leak into `API.md §2.10`.
+    #[test]
+    fn conn_record_json_keeps_the_pre_t3_conninfo_shape() {
+        let v = serde_json::to_value(rec("id-1", "example.com", "proxy-a", 300)).unwrap();
+        let keys: std::collections::BTreeSet<&str> = v
+            .as_object()
+            .expect("ConnRecord serializes as a JSON object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        let expected: std::collections::BTreeSet<&str> = [
+            "id",
+            "src",
+            "dst",
+            "domain",
+            "network",
+            "rule",
+            "rulePayload",
+            "outbound",
+            "startedAtMs",
+            "uploadBytes",
+            "downloadBytes",
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(keys, expected, "ConnInfo shape changed");
+        assert!(v.get("dstIp").is_none(), "dstIp must not leak into conn.list");
+        assert!(v.get("dstPort").is_none(), "dstPort must not leak into conn.list");
     }
 }

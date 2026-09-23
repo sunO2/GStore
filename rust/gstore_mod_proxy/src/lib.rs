@@ -4323,6 +4323,8 @@ rules:
             id: "s1".into(),
             src: "10.10.0.2:40000".into(),
             dst: "1.2.3.4:443".into(),
+            dst_ip: "1.2.3.4".into(),
+            dst_port: 443,
             domain: "abi.example".into(),
             network: "tcp".into(),
             rule: "DOMAIN-SUFFIX".into(),
