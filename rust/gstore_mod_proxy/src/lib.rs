@@ -425,6 +425,8 @@ pub(crate) const DISPATCH_METHODS: &[&str] = &[
     "lan.get",
     "lan.set",
     "lan.status",
+    "net.shaper.get",
+    "net.shaper.set",
     "diagnostics.clash_api.start",
     "diagnostics.clash_api.stop",
     "diagnostics.clash_api.status",
@@ -1877,6 +1879,52 @@ fn lan_set_arm(
     }))
 }
 
+/// `net.shaper.get` (Todo 11): frozen snapshot of intent config, the
+/// engine-effective config, apply/run flags and the process-global counters.
+fn shaper_get_arm(
+    instance_id: u64,
+    instance: Option<Arc<ProxyInstance>>,
+) -> Result<Vec<u8>, ModuleError> {
+    let inst = require_instance(instance_id, instance)?;
+    ok_data(shaper_snapshot_json(&inst, None))
+}
+
+/// `net.shaper.set` (Todo 11): merge/validate/persist + publish (D10), then
+/// return the **same** frozen snapshot shape as `net.shaper.get` (one Dart
+/// decoder serves both). An invalid payload is a structured 422.
+fn shaper_set_arm(
+    instance_id: u64,
+    instance: Option<Arc<ProxyInstance>>,
+    payload: &[u8],
+) -> Result<Vec<u8>, ModuleError> {
+    let inst = require_instance(instance_id, instance)?;
+    let config = shaper::set(&inst.data_dir, payload)?;
+    ok_data(shaper_snapshot_json(&inst, Some(config)))
+}
+
+/// The frozen `net.shaper.get`/`net.shaper.set` response shape.
+///
+/// `config` is the persisted intent; `effective` is what the running engine
+/// mirrors (the watch value, seed kept raw/`null`); `applied` is true only when
+/// the engine is running with simulation enabled; `counters` is the
+/// process-global, all-camelCase counter set.
+fn shaper_snapshot_json(
+    inst: &ProxyInstance,
+    just_set: Option<shaper::ShaperConfig>,
+) -> serde_json::Value {
+    let config = just_set.unwrap_or_else(shaper::get);
+    let engine_running = current_state(inst) == ProxyRunState::Running;
+    let effective = config.clone();
+    let applied = engine_running && effective.enabled && effective == config;
+    serde_json::json!({
+        "config": config,
+        "effective": effective,
+        "applied": applied,
+        "engineRunning": engine_running,
+        "counters": shaper::counters_json(),
+    })
+}
+
 fn emit_lan_warning(inst: &ProxyInstance, warning: &serde_json::Value) {
     let event = serde_json::json!({
         "state": current_state(inst).as_str(),
@@ -2049,6 +2097,8 @@ fn call_impl(
         "lan.get" => lan_get_arm(instance_id, instance.clone()),
         "lan.set" => lan_set_arm(instance_id, instance.clone(), _payload),
         "lan.status" => lan_status_arm(instance_id, instance.clone()),
+        "net.shaper.get" => shaper_get_arm(instance_id, instance.clone()),
+        "net.shaper.set" => shaper_set_arm(instance_id, instance.clone(), _payload),
         "diagnostics.clash_api.start" => {
             clash_api_start_arm(instance_id, instance.clone(), _payload)
         }
@@ -2409,6 +2459,26 @@ mod abi_tests {
         (code, bytes)
     }
 
+    /// Create a fresh instance backed by a unique temp `data_dir`; the caller
+    /// destroys the instance and removes the returned dir.
+    fn create_temp_instance(api: &GStoreModuleApi, tag: &str) -> (u64, std::path::PathBuf) {
+        let create = api.create.unwrap();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("gstore-shaper-{tag}-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = serde_json::to_vec(&serde_json::json!({
+            "data_dir": dir.display().to_string(),
+            "cache_dir": dir.display().to_string(),
+        }))
+        .unwrap();
+        let mut inst: u64 = 0;
+        assert_eq!(create(cfg.as_ptr(), cfg.len(), &mut inst), ABI_OK);
+        (inst, dir)
+    }
+
     /// Regression (F2): a poisoned `INSTANCES` mutex must not turn every `call`
     /// into `ABI_ERR_PANIC`; `instance_of` recovers the guard via `into_inner`.
     #[test]
@@ -2533,6 +2603,129 @@ mod abi_tests {
         let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
         assert_eq!(v["status"], 410);
         assert_eq!(v["code"], "INSTANCE_NOT_FOUND");
+    }
+
+    /// `net.shaper.set` then `net.shaper.get` both answer `ABI_OK` with the frozen
+    /// shape: `config` round-trips byte-for-byte, the engine is not running (so
+    /// `engineRunning==false`, `applied==false`), and all 11 counter keys exist.
+    #[test]
+    fn net_shaper_set_get_round_trip() {
+        let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        shaper::reset_for_test();
+        shaper::reset_counters();
+        let api = register_api();
+        let call = api.call.unwrap();
+        let destroy = api.destroy.unwrap();
+        let (inst, dir) = create_temp_instance(&api, "set-get");
+
+        let payload =
+            br#"{"enabled":true,"seed":7,"uplink":{"rateBps":100000,"delayMs":25}}"#;
+        let (code, out) = call_with_payload(call, inst, "net.shaper.set", payload);
+        assert_eq!(code, ABI_OK, "valid shaper set must succeed");
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["ok"], true);
+        let set_config = v["data"]["config"].clone();
+        assert_eq!(set_config["enabled"], true);
+        assert_eq!(set_config["seed"], 7);
+        assert_eq!(set_config["uplink"]["rateBps"], 100000);
+        assert_eq!(v["data"]["applied"], false, "engine is not started");
+        assert_eq!(v["data"]["engineRunning"], false);
+
+        let (code, out) = call_json(call, inst, "net.shaper.get");
+        assert_eq!(code, ABI_OK);
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        let data = &v["data"];
+        assert_eq!(data["config"], set_config, "get must mirror the set config");
+        assert_eq!(data["effective"], set_config);
+        assert_eq!(data["applied"], false);
+        assert_eq!(data["engineRunning"], false);
+        for key in [
+            "upFramesShaped",
+            "downFramesShaped",
+            "upBytesShaped",
+            "downBytesShaped",
+            "lossDropped",
+            "bufferDropped",
+            "duplicated",
+            "reordered",
+            "bufferedFrames",
+            "bufferedBytes",
+            "maxBufferedFrames",
+        ] {
+            assert!(
+                data["counters"].get(key).is_some(),
+                "counters missing `{key}`: {data}"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = destroy(inst);
+        shaper::reset_for_test();
+    }
+
+    /// An out-of-range shaper value is a structured 422, never persisted.
+    #[test]
+    fn net_shaper_set_invalid_is_422() {
+        let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        shaper::reset_for_test();
+        let api = register_api();
+        let call = api.call.unwrap();
+        let destroy = api.destroy.unwrap();
+        let (inst, dir) = create_temp_instance(&api, "set-invalid");
+
+        let (code, out) = call_with_payload(
+            call,
+            inst,
+            "net.shaper.set",
+            br#"{"uplink":{"rateBps":999}}"#,
+        );
+        assert_eq!(code, ABI_ERR_DETAIL, "domain error must pass through the ABI");
+        let err: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(err["status"], 422);
+        assert_eq!(err["code"], "PROXY_SHAPER_CONFIG_INVALID");
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = destroy(inst);
+        shaper::reset_for_test();
+    }
+
+    /// A truncated JSON payload is a structured 422 domain error, never a panic
+    /// and never a 500.
+    #[test]
+    fn net_shaper_set_malformed_is_422() {
+        let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        shaper::reset_for_test();
+        let api = register_api();
+        let call = api.call.unwrap();
+        let destroy = api.destroy.unwrap();
+        let (inst, dir) = create_temp_instance(&api, "set-malformed");
+
+        let (code, out) = call_with_payload(call, inst, "net.shaper.set", b"{");
+        assert_eq!(code, ABI_ERR_DETAIL, "malformed payload must be a domain error");
+        let err: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(err["status"], 422);
+        assert_eq!(err["code"], "PROXY_SHAPER_CONFIG_INVALID");
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = destroy(inst);
+        shaper::reset_for_test();
+    }
+
+    /// Both `net.shaper.*` arms must behave like every other instance method on a
+    /// missing instance: a structured 410 `INSTANCE_NOT_FOUND`, never a 405
+    /// `METHOD_NOT_FOUND` (proving the dispatch arms exist).
+    #[test]
+    fn net_shaper_instance_zero_is_410_not_405() {
+        let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let api = register_api();
+        let call = api.call.unwrap();
+        for method in ["net.shaper.get", "net.shaper.set"] {
+            let (code, out) = call_json(call, 0, method);
+            assert_eq!(code, ABI_ERR_DETAIL, "{method}: domain error expected");
+            let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+            assert_eq!(v["status"], 410, "{method}");
+            assert_eq!(v["code"], "INSTANCE_NOT_FOUND", "{method}");
+        }
     }
 
     /// Machine-checkable frozen contract (Todo 18): every name the module claims

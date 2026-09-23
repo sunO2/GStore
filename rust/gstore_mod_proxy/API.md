@@ -1092,6 +1092,63 @@ rejected export never leaves a partial file. An invalid export `filter` is
 `PROXY_REQUEST_EXPORT_FILTER_INVALID` (422); a `requests.get` cursor that is
 present but not a non-negative integer is `PROXY_REQUEST_CURSOR_INVALID` (422).
 
+### 2.15 `net.shaper.*` — 弱网模拟（weak-network simulation）
+
+可选的自研弱网模拟（默认 `enabled:false` = 恒等，不做任何整形）。配置持久化在
+`<dataDir>/shaper.json`，「意图（intent）」与「生效（effective）」分离：`net.shaper.set`
+即使引擎未运行也会记录并持久化，`applied` 只描述**当前**是否真正生效。
+
+| method | request | data |
+|---|---|---|
+| `net.shaper.get` | *(none)* | `{ "config": ShaperConfig, "effective": ShaperConfig, "applied": bool, "engineRunning": bool, "counters": ShaperCounters }` |
+| `net.shaper.set` | `ShaperConfig` (partial) | 与 `net.shaper.get` **完全相同**的冻结形状（两方法共用同一 Dart 解码器） |
+
+`net.shaper.set` 为部分更新（缺省字段保持当前值；显式 `"seed":null` 清空种子），校验
+失败为 `PROXY_SHAPER_CONFIG_INVALID`（422），且**不改动**内存/磁盘上的既有配置。两个
+方法都要求存活实例：缺失实例为结构化 `INSTANCE_NOT_FOUND`（410），绝不是 405。
+
+冻结响应字段：
+
+| field | type | notes |
+|---|---|---|
+| `config` | `ShaperConfig` | 已持久化的**意图**配置 |
+| `effective` | `ShaperConfig` | 运行引擎镜像的配置（`config`；`seed` 保留原值/`null`） |
+| `applied` | bool | 引擎运行中**且** `enabled:true` 时为 `true`，否则 `false` |
+| `engineRunning` | bool | 引擎是否正在运行（`core.start` 之后） |
+| `counters` | `ShaperCounters` | 进程级整形计数器（见下） |
+
+`ShaperConfig`：
+
+| field | type | notes |
+|---|---|---|
+| `enabled` | bool | 主开关；`false` = 恒等（无整形） |
+| `seed` | u64? | 显式 PRNG 种子；`null` 表示生产环境派生 |
+| `uplink` / `downlink` | `DirectionConfig` | 上行（设备→代理）/ 下行（代理→设备） |
+
+`DirectionConfig`（camelCase，带默认值；未知字段 422）：
+
+| field | type | 取值 / 默认 |
+|---|---|---|
+| `rateBps` | u64 | `0` = 不限速；否则 `[1000, 1000000000]`（默认 `0`） |
+| `burstBytes` | u32 | `[1500, 65535]`（默认 `32768`） |
+| `delayMs` | u32 | `[0, 60000]`（默认 `0`） |
+| `jitterMs` | u32 | `[0, 30000]`（默认 `0`） |
+| `jitterDistribution` | string | `uniform` / `normal` / `pareto`（默认 `uniform`） |
+| `lossPct` | double | `[0, 100]`（默认 `0`） |
+| `lossModel` | string | `none` / `random` / `gilbertElliot`（默认 `none`） |
+| `lossGoodToBadPct` | double | Gilbert-Elliot good→bad，`[0, 100]`（默认 `0`） |
+| `lossBadToGoodPct` | double | Gilbert-Elliot bad→good，`[0, 100]`（默认 `0`） |
+| `duplicatePct` | double | `[0, 100]`（默认 `0`） |
+| `reorderPct` | double | `[0, 100]`（默认 `0`） |
+| `reorderGap` | u32 | 重排保持帧数，`[0, 255]`（默认 `0`） |
+| `order` | string | `preserve` / `reorder`（默认 `preserve`） |
+
+`ShaperCounters`（全 camelCase，**始终全部出现**）：`upFramesShaped`、
+`downFramesShaped`、`upBytesShaped`、`downBytesShaped`、`lossDropped`、
+`bufferDropped`、`duplicated`、`reordered`、`bufferedFrames`、`bufferedBytes`、
+`maxBufferedFrames`。注意 `lossDropped`（随机/GE 丢包）与 `bufferDropped`（有界队列
+drop-newest）是**分离**的两个原因，绝不合并。
+
 ## 3. Events (module → host)
 
 Emitted through the ABI `emit_event` channel. Payload is the JSON below; the Dart

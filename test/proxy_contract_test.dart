@@ -204,6 +204,52 @@ const _lanConfigFixture = <String, dynamic>{
   'allowedIps': <String>[],
 };
 
+/// `net.shaper.*` 单方向 fixture（`API.md` §2.15 `DirectionConfig`）。
+const _shaperDirectionFixture = <String, dynamic>{
+  'rateBps': 100000,
+  'burstBytes': 32768,
+  'delayMs': 25,
+  'jitterMs': 5,
+  'jitterDistribution': 'normal',
+  'lossPct': 0.5,
+  'lossModel': 'random',
+  'lossGoodToBadPct': 0,
+  'lossBadToGoodPct': 0,
+  'duplicatePct': 0,
+  'reorderPct': 0,
+  'reorderGap': 0,
+  'order': 'preserve',
+};
+
+/// `net.shaper.*` 配置 fixture（`API.md` §2.15 `ShaperConfig`）。
+const _shaperConfigFixture = <String, dynamic>{
+  'enabled': true,
+  'seed': 7,
+  'uplink': _shaperDirectionFixture,
+  'downlink': _shaperDirectionFixture,
+};
+
+/// `net.shaper.get` / `net.shaper.set` **共用**的冻结响应 fixture。
+const _shaperSnapshotFixture = <String, dynamic>{
+  'config': _shaperConfigFixture,
+  'effective': _shaperConfigFixture,
+  'applied': true,
+  'engineRunning': true,
+  'counters': <String, dynamic>{
+    'upFramesShaped': 1,
+    'downFramesShaped': 2,
+    'upBytesShaped': 3,
+    'downBytesShaped': 4,
+    'lossDropped': 5,
+    'bufferDropped': 6,
+    'duplicated': 7,
+    'reordered': 8,
+    'bufferedFrames': 9,
+    'bufferedBytes': 10,
+    'maxBufferedFrames': 11,
+  },
+};
+
 final Map<String, Map<String, dynamic>> _methodFixtures =
     <String, Map<String, dynamic>>{
   ProxyMethods.ping: <String, dynamic>{
@@ -624,6 +670,9 @@ final Map<String, Map<String, dynamic>> _methodFixtures =
     },
     'warning': null,
   },
+  // `net.shaper.get` 与 `net.shaper.set` 共用同一冻结形状 fixture。
+  ProxyMethods.netShaperGet: _shaperSnapshotFixture,
+  ProxyMethods.netShaperSet: _shaperSnapshotFixture,
 };
 
 final Map<String, Map<String, dynamic>> _eventFixtures =

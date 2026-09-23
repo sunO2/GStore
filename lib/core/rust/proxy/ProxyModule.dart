@@ -678,6 +678,19 @@ class ProxyModule implements ProxyFacade {
         payload: config.toRequestJson(),
       );
 
+  // ---- net.shaper.* ----
+
+  /// `net.shaper.get`：当前弱网配置（意图 + 引擎生效）+ 运行态 + 计数器快照。
+  Future<ProxyShaperSnapshot> netShaperGet() =>
+      invoke(ProxyMethods.netShaperGet, ProxyShaperSnapshot.fromJson);
+
+  /// `net.shaper.set`：下发（部分）弱网配置，返回与 `net.shaper.get` 相同的快照。
+  Future<ProxyShaperSnapshot> netShaperSet(ProxyShaperConfig config) => invoke(
+        ProxyMethods.netShaperSet,
+        ProxyShaperSnapshot.fromJson,
+        payload: config.toRequestJson(),
+      );
+
   /// 调用信封 → 校验 `{ok:true,data:{...}}` → 返回 `data`。
   ///
   /// 错误分层：模块不可用 → [ProxyModuleUnavailableException]；

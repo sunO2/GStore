@@ -79,6 +79,10 @@ class ProxyMethods {
   static const String lanSet = 'lan.set';
   static const String lanStatus = 'lan.status';
 
+  // `net.shaper.*`：可选弱网模拟（API.md §2.15，默认关闭）。
+  static const String netShaperGet = 'net.shaper.get';
+  static const String netShaperSet = 'net.shaper.set';
+
   /// 全部方法名（顺序与 `API.md` §2 一致）。
   static const List<String> all = <String>[
     ping,
@@ -134,6 +138,8 @@ class ProxyMethods {
     lanGet,
     lanSet,
     lanStatus,
+    netShaperGet,
+    netShaperSet,
   ];
 }
 
@@ -196,6 +202,13 @@ int? _intOrNull(Object? value) {
   if (value is num) return value.toInt();
   if (value == null) return null;
   return int.tryParse(value.toString());
+}
+
+double? _doubleOrNull(Object? value) {
+  if (value is double) return value;
+  if (value is num) return value.toDouble();
+  if (value == null) return null;
+  return double.tryParse(value.toString());
 }
 
 bool _bool(Object? value) {
@@ -2449,6 +2462,333 @@ class ProxyLanStatus {
   }
 }
 
+// ==================== net.shaper.* ====================
+
+/// 弱网模拟单方向参数（`API.md` §2.15 `DirectionConfig`）。
+class ProxyShaperDirection {
+  const ProxyShaperDirection({
+    this.rateBps = 0,
+    this.burstBytes = 32768,
+    this.delayMs = 0,
+    this.jitterMs = 0,
+    this.jitterDistribution = 'uniform',
+    this.lossPct = 0,
+    this.lossModel = 'none',
+    this.lossGoodToBadPct = 0,
+    this.lossBadToGoodPct = 0,
+    this.duplicatePct = 0,
+    this.reorderPct = 0,
+    this.reorderGap = 0,
+    this.order = 'preserve',
+  });
+
+  final int rateBps;
+  final int burstBytes;
+  final int delayMs;
+  final int jitterMs;
+  final String jitterDistribution;
+  final double lossPct;
+  final String lossModel;
+  final double lossGoodToBadPct;
+  final double lossBadToGoodPct;
+  final double duplicatePct;
+  final double reorderPct;
+  final int reorderGap;
+  final String order;
+
+  factory ProxyShaperDirection.fromJson(Map<String, dynamic> json) =>
+      ProxyShaperDirection(
+        rateBps: _intOrNull(json['rateBps']) ?? 0,
+        burstBytes: _intOrNull(json['burstBytes']) ?? 32768,
+        delayMs: _intOrNull(json['delayMs']) ?? 0,
+        jitterMs: _intOrNull(json['jitterMs']) ?? 0,
+        jitterDistribution:
+            json['jitterDistribution']?.toString() ?? 'uniform',
+        lossPct: _doubleOrNull(json['lossPct']) ?? 0,
+        lossModel: json['lossModel']?.toString() ?? 'none',
+        lossGoodToBadPct: _doubleOrNull(json['lossGoodToBadPct']) ?? 0,
+        lossBadToGoodPct: _doubleOrNull(json['lossBadToGoodPct']) ?? 0,
+        duplicatePct: _doubleOrNull(json['duplicatePct']) ?? 0,
+        reorderPct: _doubleOrNull(json['reorderPct']) ?? 0,
+        reorderGap: _intOrNull(json['reorderGap']) ?? 0,
+        order: json['order']?.toString() ?? 'preserve',
+      );
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'rateBps': rateBps,
+        'burstBytes': burstBytes,
+        'delayMs': delayMs,
+        'jitterMs': jitterMs,
+        'jitterDistribution': jitterDistribution,
+        'lossPct': lossPct,
+        'lossModel': lossModel,
+        'lossGoodToBadPct': lossGoodToBadPct,
+        'lossBadToGoodPct': lossBadToGoodPct,
+        'duplicatePct': duplicatePct,
+        'reorderPct': reorderPct,
+        'reorderGap': reorderGap,
+        'order': order,
+      };
+
+  ProxyShaperDirection copyWith({
+    int? rateBps,
+    int? burstBytes,
+    int? delayMs,
+    int? jitterMs,
+    String? jitterDistribution,
+    double? lossPct,
+    String? lossModel,
+    double? lossGoodToBadPct,
+    double? lossBadToGoodPct,
+    double? duplicatePct,
+    double? reorderPct,
+    int? reorderGap,
+    String? order,
+  }) =>
+      ProxyShaperDirection(
+        rateBps: rateBps ?? this.rateBps,
+        burstBytes: burstBytes ?? this.burstBytes,
+        delayMs: delayMs ?? this.delayMs,
+        jitterMs: jitterMs ?? this.jitterMs,
+        jitterDistribution: jitterDistribution ?? this.jitterDistribution,
+        lossPct: lossPct ?? this.lossPct,
+        lossModel: lossModel ?? this.lossModel,
+        lossGoodToBadPct: lossGoodToBadPct ?? this.lossGoodToBadPct,
+        lossBadToGoodPct: lossBadToGoodPct ?? this.lossBadToGoodPct,
+        duplicatePct: duplicatePct ?? this.duplicatePct,
+        reorderPct: reorderPct ?? this.reorderPct,
+        reorderGap: reorderGap ?? this.reorderGap,
+        order: order ?? this.order,
+      );
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ProxyShaperDirection &&
+          other.rateBps == rateBps &&
+          other.burstBytes == burstBytes &&
+          other.delayMs == delayMs &&
+          other.jitterMs == jitterMs &&
+          other.jitterDistribution == jitterDistribution &&
+          other.lossPct == lossPct &&
+          other.lossModel == lossModel &&
+          other.lossGoodToBadPct == lossGoodToBadPct &&
+          other.lossBadToGoodPct == lossBadToGoodPct &&
+          other.duplicatePct == duplicatePct &&
+          other.reorderPct == reorderPct &&
+          other.reorderGap == reorderGap &&
+          other.order == order;
+
+  @override
+  int get hashCode => Object.hash(
+        rateBps,
+        burstBytes,
+        delayMs,
+        jitterMs,
+        jitterDistribution,
+        lossPct,
+        lossModel,
+        lossGoodToBadPct,
+        lossBadToGoodPct,
+        duplicatePct,
+        reorderPct,
+        reorderGap,
+        order,
+      );
+}
+
+/// 弱网模拟完整配置（`API.md` §2.15 `ShaperConfig`）。
+///
+/// 既是响应里的 `config`/`effective`，也是 `net.shaper.set` 的请求体。
+class ProxyShaperConfig {
+  const ProxyShaperConfig({
+    this.enabled = false,
+    this.seed,
+    ProxyShaperDirection? uplink,
+    ProxyShaperDirection? downlink,
+  })  : uplink = uplink ?? const ProxyShaperDirection(),
+        downlink = downlink ?? const ProxyShaperDirection();
+
+  final bool enabled;
+  final int? seed;
+  final ProxyShaperDirection uplink;
+  final ProxyShaperDirection downlink;
+
+  factory ProxyShaperConfig.fromJson(Map<String, dynamic> json) =>
+      ProxyShaperConfig(
+        enabled: json['enabled'] == true,
+        seed: _intOrNull(json['seed']),
+        uplink: ProxyShaperDirection.fromJson(_map(json['uplink'])),
+        downlink: ProxyShaperDirection.fromJson(_map(json['downlink'])),
+      );
+
+  /// `net.shaper.set` 请求体；完整 camelCase 配置，`seed: null` 显式清空种子。
+  Map<String, dynamic> toRequestJson() => <String, dynamic>{
+        'enabled': enabled,
+        'seed': seed,
+        'uplink': uplink.toJson(),
+        'downlink': downlink.toJson(),
+      };
+
+  ProxyShaperConfig copyWith({
+    bool? enabled,
+    int? seed,
+    ProxyShaperDirection? uplink,
+    ProxyShaperDirection? downlink,
+  }) =>
+      ProxyShaperConfig(
+        enabled: enabled ?? this.enabled,
+        seed: seed ?? this.seed,
+        uplink: uplink ?? this.uplink,
+        downlink: downlink ?? this.downlink,
+      );
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ProxyShaperConfig &&
+          other.enabled == enabled &&
+          other.seed == seed &&
+          other.uplink == uplink &&
+          other.downlink == downlink;
+
+  @override
+  int get hashCode => Object.hash(enabled, seed, uplink, downlink);
+}
+
+/// 进程级弱网整形计数器（`API.md` §2.15 `ShaperCounters`，全 camelCase）。
+///
+/// `lossDropped`（随机/GE 丢包）与 `bufferDropped`（有界队列 drop-newest）分离。
+class ProxyShaperCounters {
+  const ProxyShaperCounters({
+    this.upFramesShaped = 0,
+    this.downFramesShaped = 0,
+    this.upBytesShaped = 0,
+    this.downBytesShaped = 0,
+    this.lossDropped = 0,
+    this.bufferDropped = 0,
+    this.duplicated = 0,
+    this.reordered = 0,
+    this.bufferedFrames = 0,
+    this.bufferedBytes = 0,
+    this.maxBufferedFrames = 0,
+  });
+
+  final int upFramesShaped;
+  final int downFramesShaped;
+  final int upBytesShaped;
+  final int downBytesShaped;
+  final int lossDropped;
+  final int bufferDropped;
+  final int duplicated;
+  final int reordered;
+  final int bufferedFrames;
+  final int bufferedBytes;
+  final int maxBufferedFrames;
+
+  factory ProxyShaperCounters.fromJson(Map<String, dynamic> json) =>
+      ProxyShaperCounters(
+        upFramesShaped: _intOrNull(json['upFramesShaped']) ?? 0,
+        downFramesShaped: _intOrNull(json['downFramesShaped']) ?? 0,
+        upBytesShaped: _intOrNull(json['upBytesShaped']) ?? 0,
+        downBytesShaped: _intOrNull(json['downBytesShaped']) ?? 0,
+        lossDropped: _intOrNull(json['lossDropped']) ?? 0,
+        bufferDropped: _intOrNull(json['bufferDropped']) ?? 0,
+        duplicated: _intOrNull(json['duplicated']) ?? 0,
+        reordered: _intOrNull(json['reordered']) ?? 0,
+        bufferedFrames: _intOrNull(json['bufferedFrames']) ?? 0,
+        bufferedBytes: _intOrNull(json['bufferedBytes']) ?? 0,
+        maxBufferedFrames: _intOrNull(json['maxBufferedFrames']) ?? 0,
+      );
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'upFramesShaped': upFramesShaped,
+        'downFramesShaped': downFramesShaped,
+        'upBytesShaped': upBytesShaped,
+        'downBytesShaped': downBytesShaped,
+        'lossDropped': lossDropped,
+        'bufferDropped': bufferDropped,
+        'duplicated': duplicated,
+        'reordered': reordered,
+        'bufferedFrames': bufferedFrames,
+        'bufferedBytes': bufferedBytes,
+        'maxBufferedFrames': maxBufferedFrames,
+      };
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ProxyShaperCounters &&
+          other.upFramesShaped == upFramesShaped &&
+          other.downFramesShaped == downFramesShaped &&
+          other.upBytesShaped == upBytesShaped &&
+          other.downBytesShaped == downBytesShaped &&
+          other.lossDropped == lossDropped &&
+          other.bufferDropped == bufferDropped &&
+          other.duplicated == duplicated &&
+          other.reordered == reordered &&
+          other.bufferedFrames == bufferedFrames &&
+          other.bufferedBytes == bufferedBytes &&
+          other.maxBufferedFrames == maxBufferedFrames;
+
+  @override
+  int get hashCode => Object.hash(
+        upFramesShaped,
+        downFramesShaped,
+        upBytesShaped,
+        downBytesShaped,
+        lossDropped,
+        bufferDropped,
+        duplicated,
+        reordered,
+        bufferedFrames,
+        bufferedBytes,
+        maxBufferedFrames,
+      );
+}
+
+/// `net.shaper.get` / `net.shaper.set` 的冻结响应（`API.md` §2.15）。
+class ProxyShaperSnapshot {
+  const ProxyShaperSnapshot({
+    ProxyShaperConfig? config,
+    ProxyShaperConfig? effective,
+    this.applied = false,
+    this.engineRunning = false,
+    ProxyShaperCounters? counters,
+  })  : config = config ?? const ProxyShaperConfig(),
+        effective = effective ?? const ProxyShaperConfig(),
+        counters = counters ?? const ProxyShaperCounters();
+
+  final ProxyShaperConfig config;
+  final ProxyShaperConfig effective;
+  final bool applied;
+  final bool engineRunning;
+  final ProxyShaperCounters counters;
+
+  factory ProxyShaperSnapshot.fromJson(Map<String, dynamic> json) =>
+      ProxyShaperSnapshot(
+        config: ProxyShaperConfig.fromJson(_map(json['config'])),
+        effective: ProxyShaperConfig.fromJson(_map(json['effective'])),
+        applied: _bool(json['applied']),
+        engineRunning: _bool(json['engineRunning']),
+        counters: ProxyShaperCounters.fromJson(_map(json['counters'])),
+      );
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ProxyShaperSnapshot &&
+          other.config == config &&
+          other.effective == effective &&
+          other.applied == applied &&
+          other.engineRunning == engineRunning &&
+          other.counters == counters;
+
+  @override
+  int get hashCode =>
+      Object.hash(config, effective, applied, engineRunning, counters);
+}
+
 // ==================== 方法 → 解码器注册表 ====================
 
 /// 方法名 → 响应解码器（**每个** [ProxyMethods.all] 一项）。
@@ -2519,6 +2859,8 @@ final Map<String, ProxyJsonDecoder<Object>> proxyResponseDecoders =
         ),
       ),
   ProxyMethods.lanStatus: ProxyLanStatus.fromJson,
+  ProxyMethods.netShaperGet: ProxyShaperSnapshot.fromJson,
+  ProxyMethods.netShaperSet: ProxyShaperSnapshot.fromJson,
 };
 
 // ==================== 请求模型（toJson） ====================
@@ -2924,6 +3266,7 @@ final Map<String, Map<String, dynamic> Function()> proxyRequestEncoders =
   ProxyMethods.requestsExport: () => const RequestExportRequest().toJson(),
   ProxyMethods.clashApiStart: () => const ClashApiStartRequest().toJson(),
   ProxyMethods.lanSet: () => const ProxyLanConfig().toRequestJson(),
+  ProxyMethods.netShaperSet: () => const ProxyShaperConfig().toRequestJson(),
 };
 
 /// 便捷：JSON 文本 → UTF-8 字节（请求体编码）。
