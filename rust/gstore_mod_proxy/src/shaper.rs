@@ -983,6 +983,9 @@ pub(crate) struct ReleaseScheduler {
     order: PacketOrder,
     /// Deterministic decision stream (reorder selection + jitter sampling).
     rng: SplitMix64,
+    /// Set by the most recent [`ReleaseScheduler::schedule`]: `true` iff the
+    /// reorder hold actually fired (read via [`ReleaseScheduler::was_reordered`]).
+    last_reordered: bool,
 }
 
 impl ReleaseScheduler {
@@ -999,6 +1002,7 @@ impl ReleaseScheduler {
             reorder_gap: cfg.reorder_gap,
             order: cfg.order,
             rng,
+            last_reordered: false,
         }
     }
 
@@ -1010,6 +1014,8 @@ impl ReleaseScheduler {
     /// jitter. Bandwidth debt is delegated to the [`Pacer`] and the jitter draw
     /// to [`SplitMix64::jitter_offset`], so neither is reimplemented here.
     pub(crate) fn schedule(&mut self, now: Instant, len: usize, reorder_exempt: bool) -> Instant {
+        // Cleared per call so `was_reordered` reflects only THIS frame.
+        self.last_reordered = false;
         let pacer_deadline = self.pacer.schedule(now, len);
         // Both increments are bounded (`base` ≤ 60 s, `jitter` ≤ 30 s), so a bare
         // `+` cannot overflow; F2 only forbids bare `Instant - Duration`.
@@ -1033,6 +1039,7 @@ impl ReleaseScheduler {
                     && self.pacer.rate_bps() > 0
                     && self.rng.chance(self.reorder_pct);
                 if selected {
+                    self.last_reordered = true;
                     natural + self.hold(len)
                 } else {
                     natural
@@ -1067,6 +1074,14 @@ impl ReleaseScheduler {
         self.order = cfg.order;
         self.pacer
             .apply_rate_change(cfg.rate_bps, cfg.burst_bytes, now);
+    }
+
+    /// Whether the most recent [`ReleaseScheduler::schedule`] actually applied
+    /// the reorder hold. The pump bumps the global `reordered` counter once when
+    /// this is `true`; a `reconfigure` recompute ignores it so a hot config
+    /// change never double-counts an already-counted reorder.
+    pub(crate) fn was_reordered(&self) -> bool {
+        self.last_reordered
     }
 }
 

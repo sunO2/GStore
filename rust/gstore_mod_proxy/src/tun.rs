@@ -44,8 +44,9 @@ use std::os::raw::c_void;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use crate::shaper;
 use futures::{FutureExt, SinkExt, StreamExt};
 use gstore_contract::error::{ModuleError, StatusCode};
 use tokio::io::unix::AsyncFd;
@@ -581,6 +582,11 @@ async fn tun_loop(
     proxies: Option<crate::config::ProxyMap>,
     _instance_id: u64,
 ) -> LoopExit {
+    // Todo 8: a fresh loop is a fresh shaper measurement window, and every pump
+    // observes hot config changes through this watch receiver.
+    shaper::reset_counters();
+    let cfg_rx = shaper::subscribe();
+
     let built = meow_lwip::NetStack::with_buffer_size(STACK_BUFFER_SIZE, UDP_BUFFER_SIZE);
     let (stack, tcp_listener, udp) = match built {
         Ok(v) => v,
@@ -606,17 +612,66 @@ async fn tun_loop(
     let (death_tx, mut death_rx) = mpsc::channel::<String>(4);
 
     // --- the ONE reader -----------------------------------------------------
+    // Uplink shaping lives here: the reader is still the ONLY fd reader, and it
+    // never sleeps inline. `sleep_until(next_deadline)` is the only timer, and
+    // `pending()` when the heap is empty prevents a busy loop.
     let reader = {
         let afd = afd.clone();
         let mut stop = stop_rx.clone();
+        let mut cfg_rx = cfg_rx.clone();
         let tx = death_tx.clone();
         spawn_guarded(
             "reader",
             async move {
                 let mut buf = vec![0u8; READ_BUFFER_SIZE];
+                let now = Instant::now();
+                let initial = cfg_rx.borrow_and_update().clone();
+                let mut current = initial;
+                let mut enabled = current.enabled;
+                let mut pump = ShapePump::new(
+                    shaper::ShaperDirection::Uplink,
+                    &current.uplink,
+                    pump_seed(&current),
+                    now,
+                );
+                // `false` after the watch sender drops: the branch is then
+                // disabled entirely, so the select cannot busy-loop on `Err`.
+                let mut cfg_live = true;
                 loop {
+                    let deadline = pump.next_deadline();
                     tokio::select! {
                         _ = stop.changed() => return Ok(()),
+                        changed = cfg_rx.changed(), if cfg_live => {
+                            match changed {
+                                Ok(()) => {
+                                    // Clone the Arc and drop the `Ref` before any
+                                    // `.await`; never hold a watch `Ref` across await.
+                                    let next = cfg_rx.borrow_and_update().clone();
+                                    enabled = next.enabled;
+                                    let now = Instant::now();
+                                    let ready = pump.reconfigure(&next.uplink, enabled, now);
+                                    current = next;
+                                    for frame in ready {
+                                        if ingress_tx.send(frame).await.is_err() {
+                                            return Err("reader -> ingress channel closed".to_string());
+                                        }
+                                    }
+                                }
+                                Err(_) => {
+                                    // Sender gone: degrade to the identity path
+                                    // and stop polling this branch (no busy loop).
+                                    cfg_live = false;
+                                    enabled = false;
+                                    let now = Instant::now();
+                                    let ready = pump.reconfigure(&current.uplink, false, now);
+                                    for frame in ready {
+                                        if ingress_tx.send(frame).await.is_err() {
+                                            return Err("reader -> ingress channel closed".to_string());
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         ready = afd.readable() => {
                             let mut guard = match ready {
                                 Ok(g) => g,
@@ -640,7 +695,16 @@ async fn tun_loop(
                                 Ok(Ok(0)) => {}
                                 Ok(Ok(n)) => {
                                     READ_COUNT.fetch_add(1, Ordering::SeqCst);
-                                    if ingress_tx.send(buf[..n].to_vec()).await.is_err() {
+                                    let frame = buf[..n].to_vec();
+                                    if enabled {
+                                        let now = Instant::now();
+                                        let ready = pump.on_frame(&current, true, now, frame);
+                                        for f in ready {
+                                            if ingress_tx.send(f).await.is_err() {
+                                                return Err("reader -> ingress channel closed".to_string());
+                                            }
+                                        }
+                                    } else if ingress_tx.send(frame).await.is_err() {
                                         return Err("reader -> ingress channel closed".to_string());
                                     }
                                 }
@@ -656,6 +720,14 @@ async fn tun_loop(
                                 Err(_) => continue,
                             }
                         }
+                        _ = sleep_until_deadline(deadline) => {
+                            let now = Instant::now();
+                            for frame in pump.take_ready(now) {
+                                if ingress_tx.send(frame).await.is_err() {
+                                    return Err("reader -> ingress channel closed".to_string());
+                                }
+                            }
+                        }
                     }
                 }
             },
@@ -664,29 +736,16 @@ async fn tun_loop(
     };
 
     // --- egress pump: stack → fd -------------------------------------------
+    // Downlink shaping lives here. The body is an `async fn` generic over the
+    // egress stream so a test can drive it with a mock `futures::Stream`.
     let egress = {
         let afd = afd.clone();
         let tx = death_tx.clone();
+        let stop = stop_rx.clone();
+        let cfg = cfg_rx.clone();
         spawn_guarded(
             "egress",
-            async move {
-                let mut stream = stream;
-                while let Some(item) = stream.next().await {
-                    match item {
-                        Ok(frame) if !frame.is_empty() => {
-                            if let Err(e) = write_frame(&afd, &frame).await {
-                                crate::log_message(
-                                    3,
-                                    &format!("proxy: TUN egress write failed: {e}"),
-                                );
-                            }
-                        }
-                        Ok(_) => {}
-                        Err(_) => return Err("netstack egress stream errored".to_string()),
-                    }
-                }
-                Err("netstack egress stream ended unexpectedly".to_string())
-            },
+            async move { run_egress(stream, afd, stop, cfg).await },
             tx,
         )
     };
@@ -790,10 +849,272 @@ async fn write_frame(afd: &AsyncFd<OwnedFd>, frame: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Per-direction shaping pump (Todo 8 / D13)
+// ---------------------------------------------------------------------------
+
+/// Seed-stream domain tags. XORed into the single config seed so the uplink and
+/// downlink pumps, and each pump's damage vs. scheduling stream, never share a
+/// SplitMix64 sequence.
+const SEED_TAG_UPLINK: u64 = 0x9E37_79B9_0000_0001;
+const SEED_TAG_DOWNLINK: u64 = 0x9E37_79B9_0000_0002;
+const SEED_TAG_DAMAGE: u64 = 0xD1CE_5EED_0000_0001;
+const SEED_TAG_SCHEDULE: u64 = 0xD1CE_5EED_0000_0002;
+
+/// Derive a pump's base seed from the config. A pinned `seed` (tests) wins
+/// verbatim; production mixes in time-derived entropy, exactly as
+/// [`shaper::derive_seed`] specifies.
+fn pump_seed(cfg: &shaper::ShaperConfig) -> u64 {
+    let entropy = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    shaper::derive_seed(cfg.seed, entropy)
+}
+
+/// The ONLY timer in a pump. `Some(d)` awaits the absolute deadline; `None`
+/// awaits forever (`pending()`), so an empty heap never spins.
+async fn sleep_until_deadline(deadline: Option<Instant>) {
+    match deadline {
+        Some(at) => tokio::time::sleep_until(tokio::time::Instant::from_std(at)).await,
+        None => std::future::pending::<()>().await,
+    }
+}
+
+/// One direction's shaping pipeline: damage (loss/duplicate) + the unified
+/// release scheduler + the bounded release heap. Task-local, never shared.
+///
+/// Callers drive it per frame with [`ShapePump::on_frame`], drain due frames
+/// with [`ShapePump::take_ready`], arm the single timer with
+/// [`ShapePump::next_deadline`], and hot-apply config with
+/// [`ShapePump::reconfigure`]. No method sleeps or reads the clock: every
+/// `now` is injected, so the pump is a deterministic, unit-testable core.
+struct ShapePump {
+    dir: shaper::ShaperDirection,
+    heap: shaper::ReleaseHeap,
+    scheduler: shaper::ReleaseScheduler,
+    damage: shaper::DamageCore,
+    seq: u64,
+}
+
+impl ShapePump {
+    fn new(
+        dir: shaper::ShaperDirection,
+        cfg: &shaper::DirectionConfig,
+        seed: u64,
+        now: Instant,
+    ) -> Self {
+        let dir_tag = match dir {
+            shaper::ShaperDirection::Uplink => SEED_TAG_UPLINK,
+            shaper::ShaperDirection::Downlink => SEED_TAG_DOWNLINK,
+        };
+        Self {
+            dir,
+            heap: shaper::ReleaseHeap::new(),
+            scheduler: shaper::ReleaseScheduler::new(
+                cfg,
+                shaper::SplitMix64::new(seed ^ dir_tag ^ SEED_TAG_SCHEDULE),
+                now,
+            ),
+            damage: shaper::DamageCore::new(seed ^ dir_tag ^ SEED_TAG_DAMAGE, cfg),
+            seq: 0,
+        }
+    }
+
+    fn sync_occupancy(&self) {
+        let stats = self.heap.stats();
+        shaper::counters().set_occupancy(self.dir, stats.frames as u64, stats.bytes as u64);
+    }
+
+    /// Schedule one release copy. `count_reorder` is `false` for a D14 recompute
+    /// so an already-counted hold is not billed twice.
+    fn push_release(&mut self, now: Instant, frame: Vec<u8>, count_reorder: bool) {
+        let exempt = shaper::is_damage_exempt(&frame);
+        let release = self.scheduler.schedule(now, frame.len(), exempt);
+        if count_reorder && self.scheduler.was_reordered() {
+            shaper::counters().record_reorder();
+        }
+        self.heap.push(shaper::PendingFrame {
+            release,
+            seq: self.seq,
+            payload: frame,
+        });
+        self.seq = self.seq.wrapping_add(1);
+        self.sync_occupancy();
+    }
+
+    /// Shape one arriving frame.
+    ///
+    /// `enabled=false` is the identity path: no damage, no heap, the frame is
+    /// returned for immediate forwarding. When enabled the frame is exempted or
+    /// damaged (`Drop` => lost, `Duplicate` => two copies), each released copy
+    /// is pushed, and any frame already due is returned.
+    fn on_frame(
+        &mut self,
+        cfg: &shaper::ShaperConfig,
+        enabled: bool,
+        now: Instant,
+        frame: Vec<u8>,
+    ) -> Vec<Vec<u8>> {
+        if !enabled || !cfg.enabled {
+            return vec![frame];
+        }
+        let len = frame.len();
+        match self.damage.shape(&frame) {
+            shaper::DamageAction::Forward => {
+                shaper::counters().record_shaped(self.dir, len);
+                self.push_release(now, frame, true);
+            }
+            shaper::DamageAction::Duplicate => {
+                shaper::counters().record_duplicate();
+                shaper::counters().record_shaped(self.dir, len);
+                let extra = frame.clone();
+                self.push_release(now, frame, true);
+                self.push_release(now, extra, true);
+            }
+            shaper::DamageAction::Drop => {
+                shaper::counters().record_loss();
+            }
+        }
+        self.take_ready(now)
+    }
+
+    /// Pop and return every frame whose release is due by `now`.
+    fn take_ready(&mut self, now: Instant) -> Vec<Vec<u8>> {
+        let ready = self.heap.pop_ready(now);
+        self.sync_occupancy();
+        ready.into_iter().map(|f| f.payload).collect()
+    }
+
+    /// Release instant of the earliest buffered frame, or `None` when empty.
+    fn next_deadline(&self) -> Option<Instant> {
+        self.heap.next_deadline()
+    }
+
+    /// D14 hot switch. `enabled=false` releases everything immediately. When
+    /// enabled, the scheduler/damage are re-snapshotted and every in-flight
+    /// frame is re-released under the new config treating `now` as its arrival
+    /// -- a bounded approximation (the original arrival spacing is not kept).
+    fn reconfigure(
+        &mut self,
+        cfg: &shaper::DirectionConfig,
+        enabled: bool,
+        now: Instant,
+    ) -> Vec<Vec<u8>> {
+        self.scheduler.reconfigure(cfg, now);
+        self.damage.reconfigure(cfg);
+        if !enabled {
+            return self.drain_all();
+        }
+        let mut in_flight = self.heap.drain_all();
+        self.sync_occupancy();
+        in_flight.sort_by_key(|f| f.seq);
+        self.seq = 0;
+        for f in in_flight {
+            self.push_release(now, f.payload, false);
+        }
+        self.take_ready(now)
+    }
+
+    /// Release every buffered frame (teardown / hot-disable).
+    fn drain_all(&mut self) -> Vec<Vec<u8>> {
+        let drained = self.heap.drain_all();
+        self.sync_occupancy();
+        drained.into_iter().map(|f| f.payload).collect()
+    }
+}
+
+/// The downlink egress loop (stack -> fd), factored out as an `async fn` over a
+/// generic stream so a test can drive it. Source is `stream.next()` (cancel
+/// safe), sink is [`write_frame`], and the only timer is the
+/// `sleep_until(next_deadline)` branch.
+async fn run_egress<S>(
+    mut stream: S,
+    afd: Arc<AsyncFd<OwnedFd>>,
+    mut stop: watch::Receiver<bool>,
+    mut cfg_rx: watch::Receiver<Arc<shaper::ShaperConfig>>,
+) -> Result<(), String>
+where
+    S: futures::Stream<Item = io::Result<Vec<u8>>> + Unpin,
+{
+    let now = Instant::now();
+    let initial = cfg_rx.borrow_and_update().clone();
+    let mut current = initial;
+    let mut enabled = current.enabled;
+    let mut pump = ShapePump::new(
+        shaper::ShaperDirection::Downlink,
+        &current.downlink,
+        pump_seed(&current),
+        now,
+    );
+    let mut cfg_live = true;
+    loop {
+        let deadline = pump.next_deadline();
+        tokio::select! {
+            _ = stop.changed() => return Ok(()),
+            changed = cfg_rx.changed(), if cfg_live => {
+                match changed {
+                    Ok(()) => {
+                        let next = cfg_rx.borrow_and_update().clone();
+                        enabled = next.enabled;
+                        let now = Instant::now();
+                        let ready = pump.reconfigure(&next.downlink, enabled, now);
+                        current = next;
+                        for frame in ready {
+                            write_egress(&afd, &frame).await;
+                        }
+                    }
+                    Err(_) => {
+                        cfg_live = false;
+                        enabled = false;
+                        let now = Instant::now();
+                        let ready = pump.reconfigure(&current.downlink, false, now);
+                        for frame in ready {
+                            write_egress(&afd, &frame).await;
+                        }
+                    }
+                }
+            }
+            item = stream.next() => {
+                match item {
+                    Some(Ok(frame)) if !frame.is_empty() => {
+                        if enabled {
+                            let now = Instant::now();
+                            let ready = pump.on_frame(&current, true, now, frame);
+                            for f in ready {
+                                write_egress(&afd, &f).await;
+                            }
+                        } else {
+                            write_egress(&afd, &frame).await;
+                        }
+                    }
+                    Some(Ok(_)) => {}
+                    Some(Err(_)) => return Err("netstack egress stream errored".to_string()),
+                    None => return Err("netstack egress stream ended unexpectedly".to_string()),
+                }
+            }
+            _ = sleep_until_deadline(deadline) => {
+                let now = Instant::now();
+                for frame in pump.take_ready(now) {
+                    write_egress(&afd, &frame).await;
+                }
+            }
+        }
+    }
+}
+
+/// Write one egress frame, logging (never failing the data plane) on error.
+async fn write_egress(afd: &AsyncFd<OwnedFd>, frame: &[u8]) {
+    if let Err(e) = write_frame(afd, frame).await {
+        crate::log_message(3, &format!("proxy: TUN egress write failed: {e}"));
+    }
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::io::Write as _;
+    use std::io::Read as _;
     use std::os::unix::net::UnixStream;
 
     /// A minimal but valid 40-byte IPv4/UDP frame (mirrors the Todo 1 spike).
@@ -1169,6 +1490,162 @@ mod tests {
         drop(peer);
         let _ = drain.join();
         shallow_reset();
+    }
+
+    /// `enabled=false` must be the identity: the frame is returned unchanged and
+    /// nothing is buffered or counted.
+    #[test]
+    fn shaper_disabled_is_identity() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        shaper::reset_counters();
+        let cfg = shaper::ShaperConfig::default();
+        let now = Instant::now();
+        let mut pump = ShapePump::new(
+            shaper::ShaperDirection::Uplink,
+            &cfg.uplink,
+            0x1234_5678,
+            now,
+        );
+
+        let frame = ipv4_udp_frame();
+        let out = pump.on_frame(&cfg, false, now, frame.clone());
+        assert_eq!(out, vec![frame], "disabled must forward the frame verbatim");
+        assert_eq!(pump.next_deadline(), None, "disabled must buffer nothing");
+
+        let snap = shaper::counters().snapshot();
+        assert_eq!(snap.up_frames_shaped, 0);
+        assert_eq!(snap.buffered_frames, 0);
+        let stats = shaper::buffer_stats();
+        assert_eq!(stats.uplink.frames, 0);
+        assert_eq!(stats.uplink.bytes, 0);
+    }
+
+    /// D14: a hot-disable must release a frame stuck behind a multi-second
+    /// delay immediately (well inside the 250 ms bound).
+    #[test]
+    fn hot_reload_disables_during_pending_delay() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        shaper::reset_counters();
+        let mut cfg = shaper::ShaperConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        cfg.uplink.delay_ms = 5_000;
+
+        let now = Instant::now();
+        let mut pump = ShapePump::new(
+            shaper::ShaperDirection::Uplink,
+            &cfg.uplink,
+            0xABCD,
+            now,
+        );
+        let frame = ipv4_udp_frame();
+        let out = pump.on_frame(&cfg, true, now, frame.clone());
+        assert!(out.is_empty(), "a 5s delay must not release immediately");
+
+        let deadline = pump.next_deadline().expect("a pending frame sets a deadline");
+        let ahead = deadline.saturating_duration_since(now);
+        assert!(
+            ahead >= Duration::from_millis(4_500),
+            "deadline must be ~5s ahead, got {ahead:?}"
+        );
+
+        let started = Instant::now();
+        let released = pump.reconfigure(&cfg.uplink, false, Instant::now());
+        assert_eq!(released, vec![frame], "hot-disable must release the pending frame");
+        assert!(
+            started.elapsed() < Duration::from_millis(250),
+            "release must be immediate, took {:?}",
+            started.elapsed()
+        );
+        assert_eq!(pump.next_deadline(), None);
+    }
+
+    /// The downlink pump must not lose a frame when the `sleep_until` branch
+    /// wins: every frame sharing a release instant is drained together.
+    #[test]
+    fn egress_frame_not_lost_when_timer_wins() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        shaper::reset_counters();
+        let mut cfg = shaper::ShaperConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        cfg.downlink.delay_ms = 30;
+
+        let now = Instant::now();
+        let mut pump = ShapePump::new(
+            shaper::ShaperDirection::Downlink,
+            &cfg.downlink,
+            0x55AA,
+            now,
+        );
+        let frame = ipv4_udp_frame();
+        let total = 32usize;
+        let mut released = Vec::new();
+        for _ in 0..total {
+            released.extend(pump.on_frame(&cfg, true, now, frame.clone()));
+        }
+        assert!(released.is_empty(), "nothing is due before the delay elapses");
+        assert_eq!(pump.next_deadline(), Some(now + Duration::from_millis(30)));
+
+        let due = pump.take_ready(now + Duration::from_millis(31));
+        assert_eq!(due.len(), total, "no downlink frame may be lost when the timer wins");
+        assert!(due.iter().all(|f| f == &frame));
+        assert_eq!(pump.next_deadline(), None);
+    }
+
+    /// Integration variant: drive the extracted egress loop over a mock
+    /// `futures::Stream` while the timer branch wins, and prove every frame
+    /// reaches the mock fd (none lost).
+    #[tokio::test]
+    async fn egress_loop_releases_frames_when_timer_wins() {
+        use std::os::fd::IntoRawFd;
+
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        shaper::reset_counters();
+
+        let (fd_end, mut peer) = UnixStream::pair().unwrap();
+        set_nonblocking(fd_end.as_raw_fd()).unwrap();
+        peer.set_nonblocking(true).unwrap();
+        let owned = unsafe { OwnedFd::from_raw_fd(fd_end.into_raw_fd()) };
+        let afd = Arc::new(AsyncFd::new(owned).unwrap());
+
+        let mut cfg = shaper::ShaperConfig {
+            enabled: true,
+            seed: Some(0x5151),
+            ..Default::default()
+        };
+        cfg.downlink.delay_ms = 20;
+        let (_cfg_tx, cfg_rx) = watch::channel(Arc::new(cfg.clone()));
+        let (stop_tx, stop_rx) = watch::channel(false);
+
+        let frame = ipv4_udp_frame();
+        let total = 16usize;
+        let frames: Vec<io::Result<Vec<u8>>> = (0..total).map(|_| Ok(frame.clone())).collect();
+        let stream =
+            futures::stream::iter(frames).chain(futures::stream::pending::<io::Result<Vec<u8>>>());
+
+        let task = tokio::spawn(run_egress(stream, afd, stop_rx, cfg_rx));
+
+        let expected = total * frame.len();
+        let mut got = 0usize;
+        let mut buf = vec![0u8; 65_535];
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while got < expected && Instant::now() < deadline {
+            match peer.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => got += n,
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                Err(e) => panic!("peer read failed: {e}"),
+            }
+        }
+        assert_eq!(got, expected, "the timer branch must not lose downlink frames");
+
+        let _ = stop_tx.send(true);
+        let _ = tokio::time::timeout(Duration::from_secs(1), task).await;
     }
 
     /// Drop any loop/pending fd left by an earlier test.
