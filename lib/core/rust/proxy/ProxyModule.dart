@@ -617,6 +617,18 @@ class ProxyModule implements ProxyFacade {
   Future<RequestsResetResult> requestsReset() =>
       invoke(ProxyMethods.requestsReset, RequestsResetResult.fromJson);
 
+  /// `requests.export`：把请求时间线导出为 CSV 和/或 JSON 文件。
+  ///
+  /// 记录**只写入文件**，响应仅回传路径/行数/字节数（不再嵌入信封）。
+  Future<RequestExportResult> requestsExport([
+    RequestExportRequest request = const RequestExportRequest(),
+  ]) =>
+      invoke(
+        ProxyMethods.requestsExport,
+        RequestExportResult.fromJson,
+        payload: request.toJson(),
+      );
+
   // ---- diagnostics.* ----
 
   /// `diagnostics.clash_api.start`：启用 meow 回环控制器（默认 OFF，仅诊断）。

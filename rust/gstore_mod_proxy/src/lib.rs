@@ -420,6 +420,7 @@ pub(crate) const DISPATCH_METHODS: &[&str] = &[
     "stats.reset",
     "requests.get",
     "requests.reset",
+    "requests.export",
     "lan.get",
     "lan.set",
     "lan.status",
@@ -2041,6 +2042,8 @@ fn call_impl(
             .and_then(|_| requests::get_arm(_payload)),
         "requests.reset" => require_instance(instance_id, instance.clone())
             .and_then(|_| requests::reset_arm()),
+        "requests.export" => require_instance(instance_id, instance.clone())
+            .and_then(|_| requests::export_arm(_payload)),
         "lan.get" => lan_get_arm(instance_id, instance.clone()),
         "lan.set" => lan_set_arm(instance_id, instance.clone(), _payload),
         "lan.status" => lan_status_arm(instance_id, instance.clone()),
@@ -2509,6 +2512,21 @@ mod abi_tests {
         assert_eq!(v["code"], "METHOD_NOT_FOUND");
 
         assert_eq!(destroy(inst), ABI_OK);
+    }
+
+    /// `requests.export` must behave like the other `requests.*`/`stats.*` arms
+    /// on a missing instance: a structured 410 `INSTANCE_NOT_FOUND`, never a
+    /// 405 `METHOD_NOT_FOUND` (proving the dispatch arm exists).
+    #[test]
+    fn requests_export_instance_zero_is_410_not_405() {
+        let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let api = register_api();
+        let call = api.call.unwrap();
+        let (code, out) = call_json(call, 0, "requests.export");
+        assert_eq!(code, ABI_ERR_DETAIL, "domain error must pass through the ABI");
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["status"], 410);
+        assert_eq!(v["code"], "INSTANCE_NOT_FOUND");
     }
 
     /// Machine-checkable frozen contract (Todo 18): every name the module claims

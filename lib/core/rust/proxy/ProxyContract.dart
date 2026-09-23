@@ -66,6 +66,7 @@ class ProxyMethods {
   static const String statsReset = 'stats.reset';
   static const String requestsGet = 'requests.get';
   static const String requestsReset = 'requests.reset';
+  static const String requestsExport = 'requests.export';
   static const String clashApiStart = 'diagnostics.clash_api.start';
   static const String clashApiStop = 'diagnostics.clash_api.stop';
   static const String clashApiStatus = 'diagnostics.clash_api.status';
@@ -123,6 +124,7 @@ class ProxyMethods {
     statsReset,
     requestsGet,
     requestsReset,
+    requestsExport,
     clashApiStart,
     clashApiStop,
     clashApiStatus,
@@ -2260,6 +2262,35 @@ class RequestsResetResult {
   final int cleared;
 }
 
+/// `requests.export` 响应（`API.md` §2.14 `RequestExportResult`）。
+///
+/// 记录**只写入文件**，本响应仅回传路径/计数/字节数；未请求的产物其路径键
+/// 缺省（解码为 `null`）。
+class RequestExportResult {
+  const RequestExportResult({
+    this.csvPath,
+    this.jsonPath,
+    this.rows = 0,
+    this.bytes = 0,
+    this.generatedAtMs = 0,
+  });
+
+  factory RequestExportResult.fromJson(Map<String, dynamic> json) =>
+      RequestExportResult(
+        csvPath: json['csvPath']?.toString(),
+        jsonPath: json['jsonPath']?.toString(),
+        rows: _int(json['rows']),
+        bytes: _int(json['bytes']),
+        generatedAtMs: _int(json['generatedAtMs']),
+      );
+
+  final String? csvPath;
+  final String? jsonPath;
+  final int rows;
+  final int bytes;
+  final int generatedAtMs;
+}
+
 // ==================== diagnostics.* ====================
 
 /// `diagnostics.clash_api.start` / `.status` 响应（**无 secret 字段**）。
@@ -2468,6 +2499,7 @@ final Map<String, ProxyJsonDecoder<Object>> proxyResponseDecoders =
   ProxyMethods.statsReset: StatsResetResult.fromJson,
   ProxyMethods.requestsGet: RequestPage.fromJson,
   ProxyMethods.requestsReset: RequestsResetResult.fromJson,
+  ProxyMethods.requestsExport: RequestExportResult.fromJson,
   ProxyMethods.clashApiStart: ClashApiStatus.fromJson,
   ProxyMethods.clashApiStop: ClashApiStopResult.fromJson,
   ProxyMethods.clashApiStatus: ClashApiStatus.fromJson,
@@ -2837,6 +2869,20 @@ class ClashApiStartRequest {
   Map<String, dynamic> toJson() => <String, dynamic>{'port': port};
 }
 
+/// `requests.export` 请求（`API.md` §2.14）；`filter` 与 `requests.get` 同形，
+/// 未提供的键不编码（后端 `format` 缺省为 `both`）。
+class RequestExportRequest {
+  const RequestExportRequest({this.format, this.filter});
+
+  final String? format;
+  final RequestsFilter? filter;
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        if (format != null) 'format': format,
+        if (filter != null) 'filter': filter!.toJson(),
+      };
+}
+
 /// 名称 → 请求模型 `toJson`（契约自检：每个无参方法不在此列）。
 final Map<String, Map<String, dynamic> Function()> proxyRequestEncoders =
     <String, Map<String, dynamic> Function()>{
@@ -2872,6 +2918,7 @@ final Map<String, Map<String, dynamic> Function()> proxyRequestEncoders =
   ProxyMethods.statsDomainGet: () => const StatsDomainGetRequest().toJson(),
   ProxyMethods.statsTrafficGet: () => const StatsTrafficGetRequest().toJson(),
   ProxyMethods.requestsGet: () => const RequestGetRequest().toJson(),
+  ProxyMethods.requestsExport: () => const RequestExportRequest().toJson(),
   ProxyMethods.clashApiStart: () => const ClashApiStartRequest().toJson(),
   ProxyMethods.lanSet: () => const ProxyLanConfig().toRequestJson(),
 };

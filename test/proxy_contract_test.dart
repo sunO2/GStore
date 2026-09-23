@@ -568,6 +568,13 @@ final Map<String, Map<String, dynamic>> _methodFixtures =
     'windowStartMs': 100,
   },
   ProxyMethods.requestsReset: <String, dynamic>{'ok': true, 'cleared': 1},
+  ProxyMethods.requestsExport: <String, dynamic>{
+    'csvPath': '/data/proxy_requests_export_1.csv',
+    'jsonPath': '/data/proxy_requests_export_1.json',
+    'rows': 1,
+    'bytes': 123,
+    'generatedAtMs': 1000,
+  },
   ProxyMethods.clashApiStart: <String, dynamic>{
     'enabled': true,
     'bound': true,

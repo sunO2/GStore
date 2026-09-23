@@ -1000,6 +1000,7 @@ envelope (`core.*`, `stats.*`, `conn.*`) and module events.
 |---|---|---|
 | `requests.get` | `{ "cursor"?: recordId, "limit"?: 256, "filter"?: { "domain"?: string, "uid"?: number, "network"?: string, "outbound"?: string, "sinceMs"?: number, "untilMs"?: number } }` | `RequestPage` |
 | `requests.reset` | *(none)* | `{ "ok": true, "cleared": 0 }` |
+| `requests.export` | `{ "format"?: "csv"\|"json"\|"both", "filter"?: { "domain"?: string, "uid"?: number, "network"?: string, "outbound"?: string, "sinceMs"?: number, "untilMs"?: number } }` | `RequestExportResult` |
 
 `RequestRecord`:
 ```json
@@ -1050,6 +1051,46 @@ high-water mark and is never reclaimed by eviction or `requests.reset`.
 inclusively. `requests.reset` clears the in-memory ring (the cursor stays
 monotonic). Both require a live instance (structured `INSTANCE_NOT_FOUND`
 otherwise), never `METHOD_NOT_FOUND`.
+
+**Export (`requests.export`).** Generates CSV and/or JSON artifacts from a
+**consistent snapshot** (taken under the store lock, so it cannot interleave
+with concurrent capture or a DB flush) and writes them to
+`<dataDir>/proxy_requests_export_<generatedAtMs>.csv|.json`. The generated
+records are written **only to the files** — the response envelope carries paths
+and counts, never the records themselves. `format` defaults to `both`; a value
+outside `csv`/`json`/`both` is `INVALID_ARGUMENT` (422). `filter` uses the same
+shape as `requests.get` and selects which records are exported. Requires a live
+instance exactly like `requests.get`/`requests.reset` (structured 410, never
+405).
+
+`RequestExportResult`:
+```json
+{ "csvPath": "/data/.../proxy_requests_export_1700000000000.csv",
+  "jsonPath": "/data/.../proxy_requests_export_1700000000000.json",
+  "rows": 2, "bytes": 1234, "generatedAtMs": 1700000000000 }
+```
+
+| field | type | notes |
+|---|---|---|
+| `csvPath` | string? | present only when CSV was requested |
+| `jsonPath` | string? | present only when JSON was requested |
+| `rows` | number | records included in the export |
+| `bytes` | number | total bytes written across both artifacts |
+| `generatedAtMs` | u64 | export timestamp; also the file-name stem |
+
+**CSV contract.** Fixed column order (header row always present):
+`recordId,connId,openTsMs,closeTsMs,durationMs,domain,domainKnown,dstIp,dstPort,src,network,uid,packages,uidState,rule,rulePayload,outbound,uploadBytes,downloadBytes,closeReason`.
+Fields are RFC4180-escaped (a comma, quote, CR or LF forces double-quoting with
+`"` doubled); `packages` is `|`-joined; absent `uid`/`closeTsMs`/`durationMs`
+are the empty string. IPv6 values in `dstIp` are bare (no brackets). The row
+count is exactly `rows + 1`. **JSON** is a bare `[RequestRecord, ...]` array.
+
+**Byte cap.** A single export over
+`REQUEST_EXPORT_MAX_BYTES` (64 MiB, CSV + JSON combined) is rejected with
+`PROXY_REQUEST_EXPORT_TOO_LARGE` (507) **before any file is written**, so a
+rejected export never leaves a partial file. An invalid export `filter` is
+`PROXY_REQUEST_EXPORT_FILTER_INVALID` (422); a `requests.get` cursor that is
+present but not a non-negative integer is `PROXY_REQUEST_CURSOR_INVALID` (422).
 
 ## 3. Events (module → host)
 

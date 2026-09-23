@@ -82,6 +82,9 @@
 | `PROXY_CONFIG_NODE_UNSUPPORTED` | proxy | —（行内 warning） | 规范模型中的节点类型无法由当前启用的协议集重建/构建；该节点仍写入 YAML，但在 registry 构建时被跳过，不中断启动（Todo 13） |
 | `PROXY_LOG_LEVEL_INVALID` | proxy | 422 | `log.set_level` / `log.get` 指定了未知日志级别（应为 `debug`\|`info`\|`warn`\|`error`）（Todo 15） |
 | `PROXY_STATS_SORT_INVALID` | proxy | 422 | `stats.domain.get` 指定了未知排序键（应为 `bytes`\|`connections`\|`lastSeen`\|`domain`）（Todo 16） |
+| `PROXY_REQUEST_EXPORT_TOO_LARGE` | proxy | 507 | `requests.export` 单个导出的总字节数（CSV + JSON）超过硬上限 `REQUEST_EXPORT_MAX_BYTES`（64 MiB）；**在写任何文件之前**拒绝，绝不留下半写文件（Todo 10） |
+| `PROXY_REQUEST_EXPORT_FILTER_INVALID` | proxy | 422 | `requests.export` 的 `filter` 不是合法的 `RequestFilter` 对象（非对象或字段类型错误，如 `uid` 非数字）（Todo 10） |
+| `PROXY_REQUEST_CURSOR_INVALID` | proxy | 422 | `requests.get` 的 `cursor` 存在但非非负整数（Todo 10） |
 | `PROXY_CONN_NOT_FOUND` | proxy | 404 | `conn.close` 收到本模块从未跟踪过的连接 id（既不在活动表，也不在「最近关闭」墓碑内）（Todo 17） |
 | `PROXY_CLASH_API_FAILED` | proxy | 500 | `diagnostics.clash_api.start` 无法绑定 `127.0.0.1:<port>` 或无法启动其 runtime/线程（Todo 18） |
 | `PROXY_DATAPLANE_DEAD` | proxy | —（supervisor 事件） | TUN 数据面 worker（reader/egress/ingress）在隧道存活时意外结束或 panic：以结构化 `proxy.state` 的 `error.code` 上报**原始**原因并触发有界退避重启；预算耗尽后置为 `dataplane_failed`（Todo 24） |

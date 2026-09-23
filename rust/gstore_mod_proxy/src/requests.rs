@@ -31,7 +31,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 #[cfg(not(test))]
 use std::sync::{Mutex, OnceLock};
 
-use gstore_contract::error::ModuleError;
+use gstore_contract::error::{ModuleError, StatusCode};
 use serde::{Deserialize, Serialize};
 
 use crate::conn::ConnRecord;
@@ -1244,7 +1244,21 @@ pub(crate) fn get_arm(payload: &[u8]) -> Result<Vec<u8>, ModuleError> {
     let req: RequestGetRequest = if payload.is_empty() {
         RequestGetRequest::default()
     } else {
-        serde_json::from_slice(payload).map_err(|e| {
+        let value: serde_json::Value = serde_json::from_slice(payload).map_err(|e| {
+            ModuleError::invalid_arg(format!("requests.get payload must be a JSON object: {e}"))
+        })?;
+        // A present-but-non-numeric cursor is its own structured code
+        // (`PROXY_REQUEST_CURSOR_INVALID`), not the generic payload error.
+        if let Some(cursor) = value.get("cursor") {
+            if cursor.as_u64().is_none() {
+                return Err(ModuleError::new(
+                    StatusCode::InvalidArgument,
+                    ERR_REQUEST_CURSOR_INVALID,
+                    format!("requests.get cursor must be a non-negative integer, got {cursor}"),
+                ));
+            }
+        }
+        serde_json::from_value(value).map_err(|e| {
             ModuleError::invalid_arg(format!("requests.get payload must be a JSON object: {e}"))
         })?
     };
@@ -1275,6 +1289,283 @@ pub(crate) fn reset_arm() -> Result<Vec<u8>, ModuleError> {
     });
     crate::log_message(1, &format!("proxy: requests.reset cleared={cleared}"));
     crate::ok_data(serde_json::json!({ "ok": true, "cleared": cleared }))
+}
+
+// --- Todo 10: `requests.export` (CSV + JSON) ---
+
+/// Error code: a single export would exceed [`REQUEST_EXPORT_MAX_BYTES`].
+pub(crate) const ERR_REQUEST_EXPORT_TOO_LARGE: &str = "PROXY_REQUEST_EXPORT_TOO_LARGE";
+/// Error code: the export `filter` is not a valid [`RequestFilter`] object.
+pub(crate) const ERR_REQUEST_EXPORT_FILTER_INVALID: &str = "PROXY_REQUEST_EXPORT_FILTER_INVALID";
+/// Error code: a `requests.get` cursor is present but not a non-negative integer.
+pub(crate) const ERR_REQUEST_CURSOR_INVALID: &str = "PROXY_REQUEST_CURSOR_INVALID";
+
+/// Hard cap on the total bytes a single export may generate (CSV + JSON). A
+/// larger export is rejected **before** any file is written, so no half file can
+/// survive an over-cap attempt.
+pub(crate) const REQUEST_EXPORT_MAX_BYTES: usize = 64 * 1024 * 1024;
+
+/// Fixed CSV column order. Stable contract: the header row is exactly these
+/// columns, in this order, so a consumer can depend on positions.
+pub(crate) const EXPORT_CSV_COLUMNS: &[&str] = &[
+    "recordId",
+    "connId",
+    "openTsMs",
+    "closeTsMs",
+    "durationMs",
+    "domain",
+    "domainKnown",
+    "dstIp",
+    "dstPort",
+    "src",
+    "network",
+    "uid",
+    "packages",
+    "uidState",
+    "rule",
+    "rulePayload",
+    "outbound",
+    "uploadBytes",
+    "downloadBytes",
+    "closeReason",
+];
+
+/// Which artifact(s) an export should produce.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ExportFormat {
+    Csv,
+    Json,
+    Both,
+}
+
+impl ExportFormat {
+    fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "csv" => Some(Self::Csv),
+            "json" => Some(Self::Json),
+            "both" => Some(Self::Both),
+            _ => None,
+        }
+    }
+
+    fn wants_csv(self) -> bool {
+        matches!(self, Self::Csv | Self::Both)
+    }
+
+    fn wants_json(self) -> bool {
+        matches!(self, Self::Json | Self::Both)
+    }
+}
+
+/// `requests.export` response. Paths are omitted when that artifact was not
+/// requested (never `null`); the records themselves are **never** put in this
+/// envelope — they live only in the written files.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RequestExportResult {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub csv_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub json_path: Option<String>,
+    pub rows: usize,
+    pub bytes: u64,
+    pub generated_at_ms: u64,
+}
+
+/// The directory the request sink was configured against, or `None` while
+/// memory-only. Export prefers it and degrades to the process temp dir.
+pub(crate) fn export_dir() -> Option<String> {
+    CONFIGURED_DIR
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+/// RFC4180: quote when the field contains a comma, quote, CR or LF; embedded
+/// quotes are doubled. Everything else is emitted verbatim.
+fn csv_escape(field: &str) -> String {
+    if field.contains(',')
+        || field.contains('"')
+        || field.contains('\n')
+        || field.contains('\r')
+    {
+        format!("\"{}\"", field.replace('"', "\"\""))
+    } else {
+        field.to_string()
+    }
+}
+
+fn csv_field(r: &RequestRecord) -> Vec<String> {
+    vec![
+        r.record_id.to_string(),
+        r.conn_id.clone(),
+        r.open_ts_ms.to_string(),
+        r.close_ts_ms.map(|v| v.to_string()).unwrap_or_default(),
+        r.duration_ms.map(|v| v.to_string()).unwrap_or_default(),
+        r.domain.clone(),
+        r.domain_known.to_string(),
+        r.dst_ip.clone(),
+        r.dst_port.to_string(),
+        r.src.clone(),
+        r.network.clone(),
+        r.uid.map(|v| v.to_string()).unwrap_or_default(),
+        r.packages.join("|"),
+        r.uid_state.clone(),
+        r.rule.clone(),
+        r.rule_payload.clone(),
+        r.outbound.clone(),
+        r.upload_bytes.to_string(),
+        r.download_bytes.to_string(),
+        r.close_reason.clone(),
+    ]
+}
+
+/// Render the fixed-column, CRLF-terminated RFC4180 CSV. Always emits a header
+/// row, so the row count is exactly `records.len() + 1` (for newline-free
+/// fields). Columns are emitted positionally in [`EXPORT_CSV_COLUMNS`] order.
+fn render_csv(records: &[RequestRecord]) -> String {
+    let mut out = String::new();
+    out.push_str(&EXPORT_CSV_COLUMNS.join(","));
+    out.push_str("\r\n");
+    for r in records {
+        let line: Vec<String> = csv_field(r).iter().map(|f| csv_escape(f)).collect();
+        out.push_str(&line.join(","));
+        out.push_str("\r\n");
+    }
+    out
+}
+
+fn render_json(records: &[RequestRecord]) -> Vec<u8> {
+    serde_json::to_vec(records).unwrap_or_else(|_| b"[]".to_vec())
+}
+
+struct ExportArtifacts {
+    csv: Option<Vec<u8>>,
+    json: Option<Vec<u8>>,
+}
+
+impl ExportArtifacts {
+    fn build(records: &[RequestRecord], format: ExportFormat) -> Self {
+        Self {
+            csv: format.wants_csv().then(|| render_csv(records).into_bytes()),
+            json: format.wants_json().then(|| render_json(records)),
+        }
+    }
+
+    fn total_bytes(&self) -> usize {
+        self.csv.as_ref().map_or(0, Vec::len) + self.json.as_ref().map_or(0, Vec::len)
+    }
+}
+
+fn write_atomic(path: &str, bytes: &[u8]) -> Result<(), ModuleError> {
+    let tmp = format!("{path}.tmp");
+    std::fs::write(&tmp, bytes)
+        .map_err(|e| ModuleError::internal(format!("requests.export write {tmp}: {e}")))?;
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        ModuleError::internal(format!("requests.export rename {tmp} -> {path}: {e}"))
+    })
+}
+
+/// Parse + snapshot + render + write. Split out so tests can inject a directory
+/// and a tiny byte cap without racing the process-global configured dir.
+fn export_impl(
+    payload: &[u8],
+    dir: Option<String>,
+    max_bytes: usize,
+) -> Result<Vec<u8>, ModuleError> {
+    let value: serde_json::Value = if payload.is_empty() {
+        serde_json::Value::Object(serde_json::Map::new())
+    } else {
+        serde_json::from_slice(payload).map_err(|e| {
+            ModuleError::invalid_arg(format!("requests.export payload must be a JSON object: {e}"))
+        })?
+    };
+    let obj = value.as_object().ok_or_else(|| {
+        ModuleError::invalid_arg("requests.export payload must be a JSON object")
+    })?;
+
+    let format = match obj.get("format") {
+        None | Some(serde_json::Value::Null) => ExportFormat::Both,
+        Some(serde_json::Value::String(raw)) => ExportFormat::parse(raw).ok_or_else(|| {
+            ModuleError::invalid_arg(format!(
+                "requests.export format must be one of csv|json|both, got {raw:?}"
+            ))
+        })?,
+        Some(other) => {
+            return Err(ModuleError::invalid_arg(format!(
+                "requests.export format must be a string, got {other}"
+            )))
+        }
+    };
+
+    let filter: RequestFilter = match obj.get("filter") {
+        None | Some(serde_json::Value::Null) => RequestFilter::default(),
+        Some(raw) => serde_json::from_value(raw.clone()).map_err(|e| {
+            ModuleError::new(
+                StatusCode::InvalidArgument,
+                ERR_REQUEST_EXPORT_FILTER_INVALID,
+                format!("requests.export filter is invalid: {e}"),
+            )
+        })?,
+    };
+
+    // Snapshot under the store lock (consistent against concurrent record
+    // writes / DB flushes), then render and write outside it so a large export
+    // never blocks the ticker.
+    let records = with_store(|st| st.snapshot(0, usize::MAX, &filter).records);
+    let artifacts = ExportArtifacts::build(&records, format);
+    let total = artifacts.total_bytes();
+    if total > max_bytes {
+        return Err(ModuleError::new(
+            StatusCode::ResourceExhausted,
+            ERR_REQUEST_EXPORT_TOO_LARGE,
+            format!("requests.export would produce {total} bytes, over the {max_bytes} byte cap"),
+        ));
+    }
+
+    let now = crate::now_ms();
+    let dir = dir.unwrap_or_else(|| std::env::temp_dir().to_string_lossy().into_owned());
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| ModuleError::internal(format!("requests.export mkdir {dir}: {e}")))?;
+    let base = format!("proxy_requests_export_{now}");
+    let mut csv_path = None;
+    let mut json_path = None;
+    if let Some(bytes) = &artifacts.csv {
+        let path = format!("{}/{base}.csv", dir.trim_end_matches('/'));
+        write_atomic(&path, bytes)?;
+        csv_path = Some(path);
+    }
+    if let Some(bytes) = &artifacts.json {
+        let path = format!("{}/{base}.json", dir.trim_end_matches('/'));
+        if let Err(e) = write_atomic(&path, bytes) {
+            if let Some(written) = &csv_path {
+                let _ = std::fs::remove_file(written);
+            }
+            return Err(e);
+        }
+        json_path = Some(path);
+    }
+
+    let result = RequestExportResult {
+        csv_path,
+        json_path,
+        rows: records.len(),
+        bytes: total as u64,
+        generated_at_ms: now,
+    };
+    crate::ok_data(serde_json::to_value(&result).map_err(|e| ModuleError::internal(e.to_string()))?)
+}
+
+/// `requests.export` dispatch arm. Generates CSV and/or JSON artifacts from a
+/// consistent snapshot and returns their paths (the payload is never embedded).
+pub(crate) fn export_arm(payload: &[u8]) -> Result<Vec<u8>, ModuleError> {
+    export_impl(payload, export_dir(), REQUEST_EXPORT_MAX_BYTES)
+}
+
+#[cfg(test)]
+fn export_arm_to(payload: &[u8], dir: &str, max_bytes: usize) -> Result<Vec<u8>, ModuleError> {
+    export_impl(payload, Some(dir.to_string()), max_bytes)
 }
 
 #[cfg(test)]
@@ -2650,5 +2941,209 @@ mod tests {
         let rows: Vec<RequestRecord> = (0..N).map(|i| page_row(now + i, i + 1)).collect();
         assert_eq!(db.upsert_batch(&rows, now).unwrap(), 0);
         assert_eq!(db.count(0).unwrap(), N as usize);
+    }
+
+    // --- Todo 10: `requests.export` (CSV + JSON) ---
+
+    fn cleanup(dir: &std::path::Path) {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn export_data(dir: &std::path::Path, payload: &[u8]) -> serde_json::Value {
+        arm_data(&export_arm_to(payload, dir.to_str().unwrap(), REQUEST_EXPORT_MAX_BYTES).unwrap())
+    }
+
+    /// The CSV's first column (`recordId`), in file order — the export's own
+    /// record identity list, used to prove it matches a `requests.get` snapshot.
+    fn csv_record_ids(csv: &str) -> Vec<u64> {
+        csv.lines()
+            .skip(1)
+            .filter(|l| !l.is_empty())
+            .filter_map(|l| l.split(',').next()?.parse::<u64>().ok())
+            .collect()
+    }
+
+    /// Happy QA: `rows` equals the concurrent `requests.get` snapshot, the CSV
+    /// holds header + one row per record, columns are in the fixed order and the
+    /// rendering is byte-identical on repeat.
+    #[test]
+    fn export_rows_match_snapshot_with_fixed_columns() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        let dir = temp_dir("export-rows");
+        for i in 0..4u64 {
+            let mut c = conn_rec(&format!("c{i}"), 1_000 + i);
+            c.domain = format!("h{i}.example.com");
+            record_open(&c, 1_000 + i);
+        }
+
+        let snap_ids = ids_of(&snapshot(0, usize::MAX, &RequestFilter::default()));
+        let data = export_data(&dir, br#"{"format":"csv"}"#);
+        assert_eq!(data["rows"], snap_ids.len());
+        assert_eq!(data["rows"], 4);
+        assert!(data["jsonPath"].is_null(), "csv-only export omits jsonPath");
+
+        let csv_path = data["csvPath"].as_str().unwrap();
+        let csv = std::fs::read_to_string(csv_path).unwrap();
+        let header = EXPORT_CSV_COLUMNS.join(",");
+        assert!(csv.starts_with(&format!("{header}\r\n")), "fixed column order");
+        let lines: Vec<&str> = csv.trim_end_matches("\r\n").split("\r\n").collect();
+        assert_eq!(lines.len(), snap_ids.len() + 1, "CSV row count == records + 1");
+        assert_eq!(
+            csv_record_ids(&csv),
+            snap_ids,
+            "export record identities and order must equal the snapshot"
+        );
+
+        let direct = render_csv(&snapshot(0, usize::MAX, &RequestFilter::default()).records);
+        let again = render_csv(&snapshot(0, usize::MAX, &RequestFilter::default()).records);
+        assert_eq!(direct, again, "CSV rendering must be deterministic");
+
+        cleanup(&dir);
+    }
+
+    /// Failure/edge QA: a domain with a comma, a quote and a newline is escaped
+    /// per RFC4180; a bare IPv6 `dstIp` is never bracketed.
+    #[test]
+    fn export_csv_escapes_rfc4180_and_uses_bare_ipv6() {
+        let mut tricky = rec("c-tricky", 100);
+        tricky.domain = "a,\"b\"\nc".to_string();
+        let csv = render_csv(&[tricky]);
+        assert!(
+            csv.contains("\"a,\"\"b\"\"\nc\""),
+            "comma/quote/newline must be quoted+escaped: {csv}"
+        );
+        let row = csv.trim_end_matches("\r\n").split("\r\n").nth(1).unwrap();
+        assert!(row.contains("\n"), "the embedded newline stays inside the quoted field");
+
+        let mut v6 = rec("c-v6", 200);
+        v6.dst_ip = "2001:db8::1".to_string();
+        let csv = render_csv(&[v6]);
+        assert!(csv.contains("2001:db8::1"), "bare IPv6 in the file");
+        assert!(!csv.contains("[2001:db8::1]"), "no brackets around IPv6");
+    }
+
+    /// Failure QA: an export over the byte cap returns the structured 507 and
+    /// leaves **no** half-written file; a within-cap export succeeds and reports
+    /// a byte total no larger than the cap.
+    #[test]
+    fn export_over_byte_cap_is_structured_and_leaves_no_file() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        let dir = temp_dir("export-cap");
+        record_open(&conn_rec("c1", 100), 100);
+        record_open(&conn_rec("c2", 200), 200);
+
+        let err = export_arm_to(br#"{"format":"both"}"#, dir.to_str().unwrap(), 1).unwrap_err();
+        assert_eq!(err.status as i32, 507);
+        assert_eq!(err.code, ERR_REQUEST_EXPORT_TOO_LARGE);
+        let mut entries = std::fs::read_dir(&dir).unwrap();
+        assert!(
+            entries.next().is_none(),
+            "an over-cap export must leave no csv/json (or tmp) file behind"
+        );
+
+        let data = export_data(&dir, br#"{"format":"both"}"#);
+        assert!(data["bytes"].as_u64().unwrap() <= REQUEST_EXPORT_MAX_BYTES as u64);
+        assert!(data["csvPath"].is_string() && data["jsonPath"].is_string());
+        cleanup(&dir);
+    }
+
+    /// Failure QA: malformed payloads are structured, never a panic — a bad
+    /// format or a non-object / wrongly-typed filter is a 422 (the filter has
+    /// its own domain code), and a bad `requests.get` cursor is its own 422.
+    #[test]
+    fn export_and_cursor_malformed_inputs_are_structured() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        let dir = temp_dir("export-malformed");
+        let d = dir.to_str().unwrap();
+        let cap = REQUEST_EXPORT_MAX_BYTES;
+
+        assert_eq!(
+            export_arm_to(br#"{"format":"xml"}"#, d, cap).unwrap_err().status as i32,
+            422
+        );
+        let err = export_arm_to(br#"{"filter":42}"#, d, cap).unwrap_err();
+        assert_eq!(err.status as i32, 422);
+        assert_eq!(err.code, ERR_REQUEST_EXPORT_FILTER_INVALID);
+        assert_eq!(
+            export_arm_to(br#"{"filter":{"uid":"x"}}"#, d, cap).unwrap_err().code,
+            ERR_REQUEST_EXPORT_FILTER_INVALID
+        );
+        assert_eq!(
+            export_arm_to(br#"{"format":"#, d, cap).unwrap_err().status as i32,
+            422
+        );
+        assert_eq!(
+            export_arm_to(br#"{"format":7}"#, d, cap).unwrap_err().status as i32,
+            422
+        );
+
+        let err = get_arm(br#"{"cursor":"nope"}"#).unwrap_err();
+        assert_eq!(err.status as i32, 422);
+        assert_eq!(err.code, ERR_REQUEST_CURSOR_INVALID);
+        // A valid numeric cursor still works.
+        assert!(get_arm(br#"{"cursor":3}"#).is_ok());
+
+        cleanup(&dir);
+    }
+
+    /// The export applies the `filter` and honours `json`-only format; the JSON
+    /// file is a bare record array (never the response envelope).
+    #[test]
+    fn export_applies_filter_and_writes_bare_json_array() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        let dir = temp_dir("export-filter");
+        for (name, domain) in [
+            ("c1", "alpha.example.com"),
+            ("c2", "alpha.test"),
+            ("c3", "beta.example.com"),
+        ] {
+            let mut c = conn_rec(name, 1_000);
+            c.domain = domain.to_string();
+            record_open(&c, 1_000);
+        }
+
+        let data = export_data(
+            &dir,
+            br#"{"format":"json","filter":{"domain":"alpha"}}"#,
+        );
+        assert_eq!(data["rows"], 2);
+        assert!(data["csvPath"].is_null(), "json-only export omits csvPath");
+        let json_path = data["jsonPath"].as_str().unwrap();
+        let bytes = std::fs::read(json_path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let arr = parsed.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert!(arr.iter().all(|r| r["domain"].as_str().unwrap().contains("alpha")));
+        assert!(
+            parsed.get("ok").is_none() && parsed.get("data").is_none(),
+            "the JSON file must be a bare array, never the response envelope"
+        );
+
+        cleanup(&dir);
+    }
+
+    /// Adversarial hung/long: a large-but-within-cap export completes, keeps
+    /// `rows` correct and does not exceed the byte cap.
+    #[test]
+    fn export_large_within_cap_completes() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        let dir = temp_dir("export-large");
+        const N: u64 = 2_000;
+        for i in 0..N {
+            let mut c = conn_rec(&format!("c{i}"), 1_000 + i);
+            c.domain = format!("host-{i}.example.com");
+            record_open(&c, 1_000 + i);
+        }
+        let data = export_data(&dir, br#"{"format":"both"}"#);
+        assert_eq!(data["rows"], N as usize);
+        assert!(data["bytes"].as_u64().unwrap() <= REQUEST_EXPORT_MAX_BYTES as u64);
+        let csv = std::fs::read_to_string(data["csvPath"].as_str().unwrap()).unwrap();
+        assert_eq!(csv_record_ids(&csv).len(), N as usize);
+        cleanup(&dir);
     }
 }
