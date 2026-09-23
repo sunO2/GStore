@@ -103,8 +103,11 @@ pub extern "C" fn host_emit_event(
         return;
     };
     let event_type = String::from_utf8_lossy(type_bytes).into_owned();
-    // Host-side control events (e.g. proxy.tun.released) act before delivery to Dart.
-    crate::tun_bridge::on_module_event(&event_type, payload);
+    // Host-side control events (e.g. proxy.tun.released) act before delivery to
+    // Dart; a consumed event (e.g. proxy.uid.query) is never pushed to the ring.
+    if crate::tun_bridge::on_module_event(&event_type, payload) {
+        return;
+    }
     // 优先归属到「当前线程正在执行的长任务」；未命中才走全局事件总线。
     // 这样模块无需感知 Task（C ABI 零变更），而任务内的进度/token 会进该任务流。
     if crate::task_bridge::emit_current_thread(&event_type, payload.to_vec()) {
@@ -194,6 +197,8 @@ mod tests {
 
     #[test]
     fn event_roundtrip_via_buffer() {
+        let _g = crate::TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        clear_buffer_for_tests();
         // 模拟模块推送事件（未订阅时入环形缓冲）
         let payload = b"progress payload".to_vec();
         let event_type = "progress".to_string();
@@ -217,5 +222,38 @@ mod tests {
         v.extend_from_slice(event_type.as_bytes());
         v.extend_from_slice(data);
         v
+    }
+
+    /// A burst of internal `proxy.uid.query` events is consumed host-side (never
+    /// enters the 100-slot Dart ring); a later `proxy.state` still arrives, so
+    /// the internal lane cannot starve the UI event channel.
+    #[test]
+    fn uid_query_burst_is_consumed_and_does_not_starve_dart_ring() {
+        let _g = crate::TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        clear_buffer_for_tests();
+        crate::tun_bridge::reset_uid_worker_for_tests();
+
+        for i in 0..300u64 {
+            let query = format!(
+                r#"{{"queries":[{{"recordId":{i},"protocol":"tcp","srcIp":"10.10.0.2","srcPort":40000,"dstIp":"93.184.216.34","dstPort":443}}]}}"#
+            );
+            let data = event_bridge_data("proxy.uid.query", query.as_bytes());
+            host_emit_event(1, 1, data.as_ptr(), data.len());
+        }
+        {
+            let bridge = global();
+            let buf = bridge.buffer.lock().unwrap_or_else(|e| e.into_inner());
+            assert!(
+                buf.is_empty(),
+                "consumed uid queries must never enter the Dart ring"
+            );
+        }
+
+        let payload = br#"{"state":"running"}"#.to_vec();
+        let data = event_bridge_data("proxy.state", &payload);
+        host_emit_event(1, 1, data.as_ptr(), data.len());
+        let (event_type, data) = last_event_for_tests().expect("proxy.state reaches Dart");
+        assert_eq!(event_type, "proxy.state");
+        assert_eq!(data, payload);
     }
 }
