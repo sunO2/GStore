@@ -644,6 +644,11 @@ final Map<String, Map<String, dynamic>> _eventFixtures =
       <String, dynamic>{'domain': 'a.com', 'domainKnown': true},
     ],
   },
+  ProxyEvents.request: <String, dynamic>{
+    'seq': 1,
+    'count': 2,
+    'tsMs': 1000,
+  },
   ProxyEvents.subscriptionUpdated: <String, dynamic>{
     'profileId': 'p1',
     'nodeCount': 1,
@@ -846,6 +851,25 @@ void main() {
       ));
       expect(applied, isA<ProxyConfigAppliedEvent>());
       expect((applied! as ProxyConfigAppliedEvent).template, 'gstore-controlled-v1');
+    });
+
+    test('proxy.request 解码为 ProxyRequestEvent（无载荷脏信号）', () {
+      final event = ProxyEvent.decode(ProxyRawEvent(
+        eventType: 'proxy.request',
+        data: _raw(jsonEncode(_eventFixtures['proxy.request'])),
+      ));
+      expect(event, isA<ProxyRequestEvent>());
+      final request = event! as ProxyRequestEvent;
+      expect(request.seq, 1);
+      expect(request.count, 2);
+      expect(request.tsMs, 1000);
+
+      // 截断/畸形载荷静默忽略（不抛错），与其它事件一致。
+      final truncated = ProxyEvent.decode(ProxyRawEvent(
+        eventType: 'proxy.request',
+        data: _raw('{"seq":'),
+      ));
+      expect(truncated, isNull);
     });
 
     test('proxy.stats / proxy.conn 新字段解码', () {

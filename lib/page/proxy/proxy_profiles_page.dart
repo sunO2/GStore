@@ -214,6 +214,7 @@ class _ProxyProfilesPageState extends State<ProxyProfilesPage> {
       case ProxyDnsEvent():
       case ProxyTunReleasedEvent():
       case ProxyConfigAppliedEvent():
+      case ProxyRequestEvent():
         break;
     }
   }

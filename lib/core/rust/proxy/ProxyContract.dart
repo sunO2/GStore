@@ -140,6 +140,7 @@ class ProxyEvents {
   static const String mode = 'proxy.mode';
   static const String nodeDelay = 'proxy.node.delay';
   static const String stats = 'proxy.stats';
+  static const String request = 'proxy.request';
   static const String subscriptionUpdated = 'proxy.subscription.updated';
   static const String subscriptionProgress = 'proxy.subscription.progress';
   static const String subscriptionFailed = 'proxy.subscription.failed';
@@ -155,6 +156,7 @@ class ProxyEvents {
     mode,
     nodeDelay,
     stats,
+    request,
     subscriptionUpdated,
     subscriptionProgress,
     subscriptionFailed,

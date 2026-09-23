@@ -27,7 +27,7 @@
 //! close between two ticks are invisible (an accepted, documented limitation).
 #![allow(dead_code)] // T1 foundation: consumed by later todos (capture, dispatch, persist).
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 #[cfg(not(test))]
 use std::sync::{Mutex, OnceLock};
 
@@ -54,6 +54,11 @@ pub(crate) const CLOSE_REASON_STALE: &str = "stale";
 /// the oldest `openTsMs` is evicted and `dropped` increments, so a long churn of
 /// cap-evicted-yet-live flows can never grow memory without bound.
 pub(crate) const STALE_LIVE_CAP: usize = 4096;
+
+/// Minimum spacing between `proxy.request` dirty signals (≥1s throttle, same
+/// paradigm as `proxy.stats`). The signal is payload-free: a client pulls
+/// `requests.get` on receipt.
+pub(crate) const MIN_EMIT_INTERVAL_MS: u64 = 1000;
 
 /// Why a request record is being taken out of its live window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -187,6 +192,15 @@ pub(crate) struct RequestStore {
     pub(crate) stale_live_cap: usize,
     /// Ids that re-entered the projection while still live (no new record).
     pub(crate) reentered: u64,
+    /// `recordId`s created or changed since the last dirty-signal emit. Bounded
+    /// by `cap`; beyond it `dirty_overflow` keeps counting so the signal still
+    /// fires, without growing memory with connection churn.
+    pub(crate) dirty: HashSet<u64>,
+    pub(crate) dirty_overflow: u64,
+    /// `now_ms` of the last emitted `proxy.request` dirty signal.
+    pub(crate) last_emit_ms: u64,
+    /// Monotonic sequence number of the dirty signal (`seq`).
+    pub(crate) emit_seq: u64,
 }
 
 impl RequestStore {
@@ -204,6 +218,10 @@ impl RequestStore {
             stale_live: HashMap::new(),
             stale_live_cap: STALE_LIVE_CAP,
             reentered: 0,
+            dirty: HashSet::new(),
+            dirty_overflow: 0,
+            last_emit_ms: 0,
+            emit_seq: 0,
         }
     }
 
@@ -228,6 +246,7 @@ impl RequestStore {
             self.reindex();
         }
         self.window_start_ms = self.records.front().map(|r| r.open_ts_ms).unwrap_or(0);
+        self.mark_dirty(id);
         id
     }
 
@@ -238,6 +257,8 @@ impl RequestStore {
         self.by_record_id.clear();
         self.active_by_conn.clear();
         self.stale_live.clear();
+        self.dirty.clear();
+        self.dirty_overflow = 0;
         self.window_start_ms = 0;
     }
 
@@ -248,11 +269,11 @@ impl RequestStore {
     pub(crate) fn open_record(&mut self, rec: &ConnRecord, now_ms: u64) -> u64 {
         if let Some(&rid) = self.active_by_conn.get(&rec.id) {
             if let Some(idx) = self.by_record_id.get(&rid).copied() {
-                let r = &mut self.records[idx];
-                if r.close_ts_ms.is_none() {
-                    if r.close_reason == CLOSE_REASON_STALE {
-                        r.close_reason = CLOSE_REASON_OPEN.to_string();
+                if self.records[idx].close_ts_ms.is_none() {
+                    if self.records[idx].close_reason == CLOSE_REASON_STALE {
+                        self.records[idx].close_reason = CLOSE_REASON_OPEN.to_string();
                         self.reentered += 1;
+                        self.mark_dirty(rid);
                     }
                     return rid;
                 }
@@ -280,11 +301,15 @@ impl RequestStore {
         if r.close_ts_ms.is_some() {
             return;
         }
-        if r.close_reason != CLOSE_REASON_STALE {
+        let changed = r.close_reason != CLOSE_REASON_STALE;
+        if changed {
             r.close_reason = CLOSE_REASON_STALE.to_string();
         }
         let open_ts_ms = r.open_ts_ms;
         self.insert_stale(conn_id, rid, open_ts_ms);
+        if changed {
+            self.mark_dirty(rid);
+        }
     }
 
     fn insert_stale(&mut self, conn_id: &str, record_id: u64, open_ts_ms: u64) {
@@ -330,6 +355,7 @@ impl RequestStore {
         r.close_reason = CLOSE_REASON_CLOSED.to_string();
         self.active_by_conn.remove(conn_id);
         self.stale_live.remove(conn_id);
+        self.mark_dirty(rid);
         true
     }
 
@@ -374,6 +400,36 @@ impl RequestStore {
         for (i, r) in self.records.iter().enumerate() {
             self.by_record_id.insert(r.record_id, i);
         }
+    }
+
+    /// Record `id` as created-or-changed for the next dirty-signal emit. Bounded
+    /// by `cap`; beyond it `dirty_overflow` still makes the signal fire.
+    fn mark_dirty(&mut self, id: u64) {
+        if self.dirty.len() < self.cap {
+            self.dirty.insert(id);
+        } else if !self.dirty.contains(&id) {
+            self.dirty_overflow += 1;
+        }
+    }
+
+    /// Build the `proxy.request` dirty-signal payload if (a) there is
+    /// new/changed data and (b) the ≥1s throttle window has elapsed. Draining is
+    /// atomic with the check, so a suppressed tick leaves the dirty set intact
+    /// for the next one.
+    fn emit_pending(&mut self, now_ms: u64) -> Option<serde_json::Value> {
+        let count = self.dirty.len() as u64 + self.dirty_overflow;
+        if count == 0 || now_ms.saturating_sub(self.last_emit_ms) < MIN_EMIT_INTERVAL_MS {
+            return None;
+        }
+        self.dirty.clear();
+        self.dirty_overflow = 0;
+        self.last_emit_ms = now_ms;
+        self.emit_seq += 1;
+        Some(serde_json::json!({
+            "seq": self.emit_seq,
+            "count": count,
+            "tsMs": now_ms,
+        }))
     }
 
     /// Build a page of records newer than `since_record_id` that match `filters`.
@@ -449,6 +505,20 @@ pub(crate) fn snapshot(
 /// Drop every retained record (memory only). The cursor stays monotonic.
 pub(crate) fn clear() {
     with_store(|st| st.clear());
+}
+
+/// The ONLY emitter of the `proxy.request` dirty signal. Emits a payload-free
+/// `{seq,count,tsMs}` at most once per [`MIN_EMIT_INTERVAL_MS`] and only when
+/// records were created/changed since the previous emit. Returns whether an
+/// event was emitted.
+pub(crate) fn tick(instance_id: u64, now_ms: u64) -> bool {
+    let payload = with_store(|st| st.emit_pending(now_ms));
+    let Some(value) = payload else { return false };
+    let Ok(bytes) = serde_json::to_vec(&value) else {
+        return false;
+    };
+    crate::emit_event(instance_id, crate::EVT_REQUEST, &bytes);
+    true
 }
 
 /// Capture a request open at the single chokepoint. Returns the `recordId`; a
@@ -1451,5 +1521,172 @@ mod tests {
         let data = arm_data(&get_arm(b"").unwrap());
         assert!(data["records"].as_array().unwrap().is_empty());
         assert_eq!(data["retained"], 0);
+    }
+
+    // --- Todo 6: `proxy.request` dirty signal (throttled, only via tick) ---
+
+    fn take_request_events() -> Vec<serde_json::Value> {
+        let drained = std::mem::take(
+            &mut *crate::TEST_EMITTED
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+        );
+        drained
+            .into_iter()
+            .filter(|(kind, _)| kind == crate::EVT_REQUEST)
+            .map(|(_, payload)| {
+                serde_json::from_slice(&payload).expect("proxy.request payload must be JSON")
+            })
+            .collect()
+    }
+
+    /// Happy QA: one `tick` emits a payload-free `proxy.request` through the
+    /// module event lane (`emit_event`), carrying only `{seq,count,tsMs}` — no
+    /// per-record data ever leaks.
+    #[test]
+    fn tick_emits_payload_free_dirty_signal_on_the_module_event_bus() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        let _ = take_request_events();
+
+        record_open(&conn_rec("c1", 1_000), 1_000);
+        assert!(tick(7, 1_000), "a change at/after the window must emit");
+
+        let events = take_request_events();
+        assert_eq!(events.len(), 1, "exactly one proxy.request event");
+        let obj = events[0].as_object().unwrap();
+        let mut keys: Vec<&String> = obj.keys().collect();
+        keys.sort();
+        assert_eq!(keys, vec!["count", "seq", "tsMs"]);
+        assert_eq!(events[0]["count"], 1);
+        assert_eq!(events[0]["seq"], 1);
+        assert_eq!(events[0]["tsMs"], 1_000);
+        for leaked in ["records", "recordId", "connId", "domain", "dstIp", "src"] {
+            assert!(
+                obj.get(leaked).is_none(),
+                "payload must not leak per-record key {leaked}"
+            );
+        }
+    }
+
+    /// The capture chokepoint marks data dirty but NEVER emits by itself; the
+    /// dirty signal is only ever produced by `requests::tick`.
+    #[test]
+    fn capture_never_emits_per_record_only_tick_does() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        let _ = take_request_events();
+
+        record_open(&conn_rec("c1", 1_000), 1_000);
+        record_open(&conn_rec("c2", 1_100), 1_100);
+        record_close(&conn_rec("c1", 1_200), 1_200, CloseReason::Closed);
+        assert!(
+            take_request_events().is_empty(),
+            "record_open/record_close must never emit a per-record event"
+        );
+
+        assert!(tick(7, 1_500), "one tick flushes the accumulated changes");
+        assert_eq!(take_request_events().len(), 1);
+    }
+
+    /// Failure QA: a second change within the 1s window is suppressed; the
+    /// pending changes are carried into the next allowed emit.
+    #[test]
+    fn tick_suppresses_second_change_within_one_second() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        let _ = take_request_events();
+
+        record_open(&conn_rec("c1", 1_000), 1_000);
+        assert!(tick(7, 1_000));
+        assert_eq!(take_request_events().len(), 1);
+
+        record_open(&conn_rec("c2", 1_100), 1_100);
+        assert!(!tick(7, 1_100), "second change within 1s must be suppressed");
+        assert!(take_request_events().is_empty(), "no event while throttled");
+
+        record_open(&conn_rec("c3", 1_900), 1_900);
+        assert!(tick(7, 2_000), "after 1s the pending changes emit");
+        let events = take_request_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["seq"], 2, "seq increments per emitted signal");
+        assert!(
+            events[0]["count"].as_u64().unwrap() >= 2,
+            "count carries the changes suppressed by the throttle"
+        );
+    }
+
+    /// Adversarial stale_state: `requests.reset` never emits, and `seq` stays
+    /// monotonic across a reset.
+    #[test]
+    fn tick_emits_nothing_when_unchanged_and_seq_survives_reset() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        let _ = take_request_events();
+
+        assert!(!tick(7, 5_000), "no change at all -> no signal");
+        assert!(take_request_events().is_empty());
+
+        record_open(&conn_rec("c1", 5_000), 5_000);
+        assert!(tick(7, 5_000));
+        let first_seq = take_request_events()[0]["seq"].as_u64().unwrap();
+
+        assert!(!tick(7, 9_000), "unchanged -> still no signal");
+        assert!(take_request_events().is_empty());
+
+        clear();
+        assert!(!tick(7, 9_500), "reset itself must not emit");
+        assert!(take_request_events().is_empty());
+
+        record_open(&conn_rec("c2", 10_000), 10_000);
+        assert!(tick(7, 10_000));
+        let events = take_request_events();
+        assert_eq!(events.len(), 1);
+        assert!(
+            events[0]["seq"].as_u64().unwrap() > first_seq,
+            "seq is monotonic across reset"
+        );
+    }
+
+    /// Adversarial race: concurrent ticks sharing one store never panic and
+    /// never mint a duplicate `seq`.
+    #[test]
+    fn concurrent_ticks_have_no_panic_and_no_duplicate_seq() {
+        use std::sync::{Arc, Mutex};
+        let store = Arc::new(Mutex::new(RequestStore::fresh()));
+        {
+            let mut s = store.lock().unwrap();
+            s.open_record(&conn_rec("seed", 1_000), 1_000);
+        }
+
+        let mut handles = Vec::new();
+        for t in 0..8u64 {
+            let store = Arc::clone(&store);
+            handles.push(std::thread::spawn(move || {
+                let mut seqs = Vec::new();
+                for i in 0..50u64 {
+                    let mut s = store.lock().unwrap_or_else(|e| e.into_inner());
+                    if i % 2 == 0 {
+                        s.push(rec("c", 1_000 + i));
+                    }
+                    if let Some(v) = s.emit_pending(1_000 + t * 1_000 + i * 1_000) {
+                        seqs.push(v["seq"].as_u64().unwrap());
+                    }
+                }
+                seqs
+            }));
+        }
+
+        let mut all: Vec<u64> = handles
+            .into_iter()
+            .flat_map(|h| h.join().expect("no thread may panic"))
+            .collect();
+        all.sort_unstable();
+        let unique: std::collections::HashSet<u64> = all.iter().copied().collect();
+        assert!(!all.is_empty(), "at least one concurrent emit happened");
+        assert_eq!(all.len(), unique.len(), "no duplicate seq under concurrency");
+        for pair in all.windows(2) {
+            assert!(pair[0] < pair[1], "seq strictly monotonic under concurrency");
+        }
     }
 }

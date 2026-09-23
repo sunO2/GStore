@@ -682,8 +682,10 @@ returned `topDomains` array (still sorted by total bytes). The push mirror is
 the throttled `proxy.stats` event (§3).
 
 **Primary path.** `stats.domain.get` / `stats.traffic.get` are the primary,
-pull-based path. The host event ring is only `EVENT_BUFFER_CAP = 128`
-(`rust/gstore_host/src/task_bridge.rs`), so the module never streams
+pull-based path. There are **two independent channels**: the host task-stream
+ring holds `EVENT_BUFFER_CAP = 128` (`rust/gstore_host/src/task_bridge.rs:65`)
+while the module event ring holds `EVENT_BUFFER_CAP = 100`
+(`rust/gstore_host/src/event_bridge.rs:21`), so the module never streams
 per-connection events; see the `proxy.stats` snapshot in §3.
 
 **Memory bound & eviction.** At most `DOMAIN_CAP = 2048` distinct domains are
@@ -1060,12 +1062,13 @@ side filters on the `proxy.` prefix. `instanceId` is always present.
 | `proxy.mode` | `{ "mode":"off"\|"vpn"\|"lanProxy", "previous": string, "phase": "active" }` — emitted once the target mode is fully up (Todo 29) |
 | `proxy.node.delay` | `{ "group": string, "node": string, "delayMs": 123, "error"?: string }` |
 | `proxy.stats` | `{ "uploadBytes":0, "downloadBytes":0, "activeConns":0, "upBps":0, "downBps":0, "domainCount":0, "capacity":2048, "topDomains":[DomainStat] }` — **throttled to at most one event per second** (Todo 16); pull `stats.traffic.get` for on-demand reads |
+| `proxy.request` | `{ "seq": 0, "count": 0, "tsMs": 0 }` — **payload-free dirty signal** for the per-request timeline (Todo 6). Emitted **only by `requests::tick`**, throttled to at most one event per second and only when records were created/changed since the previous emit; `seq` is monotonic, `count` is the number of new/changed records since the previous emit. A client reacts by pulling `requests.get` (§2.14); no per-record data is ever streamed (module event ring holds only 100 entries, `event_bridge.rs:21`). |
 | `proxy.subscription.updated` | `{ "profileId": string, "nodeCount": 0, "traffic": { "uploadBytes":0, "downloadBytes":0, "totalBytes":0, "usedBytes":0 }, "expireAtMs": 0, "lastUpdatedAtMs"?: 0, "intervalMs"?: 0, "nextRefreshAtMs"?: 0 }` |
 | `proxy.subscription.progress` | `{ "profileId": string, "phase": "fetch"\|"persist", "state": "started"\|"succeeded"\|"failed", "attempts": 0 }` — one `started` per refresh attempt and one terminal `succeeded`/`failed` (Todo 14) |
 | `proxy.subscription.failed` | `{ "profileId": string, "attempts": 0, "consecutiveFailures": 0, "lastAttemptMs": 0, "nextRefreshAtMs": 0, "error": { "code": string, "message": string } }` — the previous profile is preserved and the next attempt is bounded by the backoff (Todo 14) |
 | `proxy.subscription.added` | `{ "profileId": string, "name": string }` |
 | `proxy.subscription.removed` | `{ "profileId": string }` |
-| `proxy.conn` | `{ "action":"close"\|"close_all", "id"?: string, "domain"?: string, "outbound"?: string, "uploadBytes"?:0, "downloadBytes"?:0, "closed"?: number }` — emitted once per explicit `conn.close` (action `close`) / `conn.close_all` (action `close_all`, carries `closed`); the steady open/close stream is **not** streamed per connection (host ring cap 128) — read the throttled `proxy.stats` snapshot and `log.get` instead (Todo 17) |
+| `proxy.conn` | `{ "action":"close"\|"close_all", "id"?: string, "domain"?: string, "outbound"?: string, "uploadBytes"?:0, "downloadBytes"?:0, "closed"?: number }` — emitted once per explicit `conn.close` (action `close`) / `conn.close_all` (action `close_all`, carries `closed`); the steady open/close stream is **not** streamed per connection (the module event ring holds only 100 — `event_bridge.rs:21`; the host task-stream ring's 128 is a separate channel — `task_bridge.rs:65`) — read the throttled `proxy.stats` snapshot and `log.get` instead (Todo 17) |
 | `proxy.dns` | `DnsQueryRecord` (see §2.7) — one record per DNS query answered by the TUN DNS hijack; carries the domain→IP mapping for the Todo 16 domain-statistics path (Todo 8; Todo 15/16 consume it). |
 | `proxy.tun.released` | `{ "fd": 123 }` — TUN read loop stopped and its thread joined; the host may clear its cached fd and Kotlin may close the PFD (Todo 6). Host-internal control event; Dart may ignore it. |
 | `proxy.config.applied` | `{ "profileId": string, "hash": string, "template": string }` — `config.apply` hot-applied a new config on the running engine without a process restart (Todo 13). |
@@ -1087,6 +1090,8 @@ side filters on the `proxy.` prefix. `instanceId` is always present.
 | `module.lifecycle` | `{ "module": string, "lifecycle": string }` | module up/down |
 | `vpn.stop` | `{}` | host/Kotlin-initiated teardown: stop the TUN reader loop **without** a supervisor restart (Todo 24). The host broadcasts it from `nativeStopTunnel` and waits (bounded) for `proxy.tun.released` before Kotlin closes the PFD. |
 | `vpn.network_changed` | `{}` | underlying network handover (Wi-Fi↔cellular / airplane mode); Kotlin already rebuilt the default interface via `setUnderlyingNetworks(null)` — the datapath keeps running (Todo 24). |
+| `proxy.uid.query` | `{ "queries": [ { "recordId": 0, "protocol": "tcp", "srcIp": string, "srcPort": 0, "dstIp": string, "dstPort": 0 } ] }` | **module → host** (this table's only reverse lane): the module asks the host to resolve the Android owner UID for a TCP flow. The host **consumes and drops** it — it is **never** forwarded into the Dart event ring (Todo 11/13). |
+| `uid.result` | `{ "results": [ { "recordId": 0, "uid": 0, "packages": [] } ] }` | host → module reply to `proxy.uid.query`, delivered on the module's `on_event` (Todo 11/13). |
 
 ## 5. Domain error codes
 
@@ -1899,8 +1904,12 @@ One process-global aggregate fed from the dispatch path, plus a throttled
   meow's connection metadata.
 * **Pull is primary.** `stats.domain.get` / `stats.traffic.get` (§2.9) read the
   aggregate directly. The only push is a single `proxy.stats` snapshot per
-  `MIN_EMIT_INTERVAL_MS = 1000` ms (`should_emit`), because the host event ring
-  is only `EVENT_BUFFER_CAP = 128`. No per-connection event is ever emitted.
+  `MIN_EMIT_INTERVAL_MS = 1000` ms (`should_emit`), because there are **two
+  independent channels**: the host task-stream ring holds
+  `EVENT_BUFFER_CAP = 128` (`rust/gstore_host/src/task_bridge.rs:65`) and the
+  module event ring holds `EVENT_BUFFER_CAP = 100`
+  (`rust/gstore_host/src/event_bridge.rs:21`). No per-connection event is ever
+  emitted.
 * **Eviction.** `DOMAIN_CAP = 2048`; the oldest `lastSeenMs` is evicted first,
   ties broken lexicographically by domain (ascending). Evictions are logged
   (warn) and counted in `evicted`.
@@ -1949,8 +1958,10 @@ are the control/read surface for the live traffic stream.
   at `CONN_TOMBSTONE_CAP = 1024`.
 * **Events.** Explicit `conn.close` emits one `proxy.conn {action:"close"}` and
   `conn.close_all` one `proxy.conn {action:"close_all", closed}`. Per-connection
-  open/close is **not** streamed as events (host ring is only 128); it appears in
-  the throttled `proxy.stats` snapshot and in `log.get`.
+  open/close is **not** streamed as events (the module event ring holds only
+  100 — `event_bridge.rs:21`; the host task-stream ring's 128 is a separate
+  channel — `task_bridge.rs:65`); it appears in the throttled `proxy.stats`
+  snapshot and in `log.get`.
 
 ### 16.1 Verification status
 

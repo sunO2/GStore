@@ -8,9 +8,11 @@
 //!
 //! ## Why pull + throttled snapshots
 //!
-//! The host event ring is only `EVENT_BUFFER_CAP = 128`
-//! (`rust/gstore_host/src/task_bridge.rs`), so per-connection events would
-//! overflow it instantly. Instead:
+//! There are **two independent channels**: the host task-stream ring holds
+//! `EVENT_BUFFER_CAP = 128` (`rust/gstore_host/src/task_bridge.rs:65`) while the
+//! module event ring holds `EVENT_BUFFER_CAP = 100`
+//! (`rust/gstore_host/src/event_bridge.rs:21`), so per-connection events would
+//! overflow the event lane instantly. Instead:
 //!  * `stats.domain.get` / `stats.traffic.get` are the **primary, pull-based**
 //!    paths, and
 //!  * a single `proxy.stats` snapshot is emitted at most once per
@@ -54,7 +56,9 @@ pub(crate) const DOMAIN_CAP: usize = 2048;
 /// which only loses that flow's exact delta accounting — the aggregate keeps
 /// working (graceful degradation under connection pressure).
 pub(crate) const FLOW_CAP: usize = 2048;
-/// Minimum spacing between `proxy.stats` events (the host ring is only 128).
+/// Minimum spacing between `proxy.stats` events: two independent channels exist
+/// (host task-stream ring 128 — `task_bridge.rs:65`; module event ring 100 —
+/// `event_bridge.rs:21`), so the event lane is throttled.
 pub(crate) const MIN_EMIT_INTERVAL_MS: u64 = 1000;
 /// Dispatch monitor tick. Aggregation runs every tick; emission is throttled.
 #[cfg_attr(test, allow(dead_code))]

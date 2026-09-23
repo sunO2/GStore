@@ -940,6 +940,12 @@ sealed class ProxyEvent {
                   .toList()
               : const <DomainStat>[],
         );
+      case 'proxy.request':
+        return ProxyRequestEvent(
+          seq: _asInt(data['seq']),
+          count: _asInt(data['count']),
+          tsMs: _asInt(data['tsMs']),
+        );
       case 'proxy.subscription.updated':
         return ProxySubscriptionUpdatedEvent(
           profileId: data['profileId']?.toString() ?? '',
@@ -1088,6 +1094,29 @@ final class ProxyStatsEvent extends ProxyEvent {
 
   @override
   String get eventType => 'proxy.stats';
+}
+
+/// `proxy.request`：请求采集的无载荷脏信号（节流 >= 1s）。
+///
+/// 收到后拉取 `requests.get`；载荷不含任何逐条记录。
+final class ProxyRequestEvent extends ProxyEvent {
+  const ProxyRequestEvent({
+    required this.seq,
+    required this.count,
+    required this.tsMs,
+  });
+
+  /// 单调递增的信号序号。
+  final int seq;
+
+  /// 自上次信号以来新增/变更的记录数。
+  final int count;
+
+  /// 信号产生时间（Unix ms）。
+  final int tsMs;
+
+  @override
+  String get eventType => 'proxy.request';
 }
 
 /// `proxy.subscription.updated`：订阅信息更新（含 userinfo 与调度元数据）。

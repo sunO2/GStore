@@ -361,6 +361,10 @@ const EVT_TUN_RELEASED: &str = "proxy.tun.released";
 const EVT_CONFIG_APPLIED: &str = "proxy.config.applied";
 /// 模块 → 宿主：一次显式连接控制事件（`conn.close` / `conn.close_all`）。
 const EVT_CONN: &str = "proxy.conn";
+/// 模块 → 宿主：请求采集的**无载荷脏信号**（`{seq,count,tsMs}`）。**只能由
+/// [`requests::tick`] 发出**（节流 ≥1s，仅在确有新增/变更时），绝不从
+/// `sync_full`/`record_open`/`record_close` 逐条发出，以免冲爆宿主事件环。
+const EVT_REQUEST: &str = "proxy.request";
 
 /// Every method the `call` dispatch accepts, in the order `API.md` §2 lists it.
 ///
@@ -491,6 +495,12 @@ static INSTANCES: OnceLock<Mutex<HashMap<u64, Arc<ProxyInstance>>>> = OnceLock::
 #[cfg(test)]
 pub(crate) static TEST_SERIAL: Mutex<()> = Mutex::new(());
 
+/// Test-only mirror of every `emit_event` call (event type + payload), so tests
+/// can assert a specific event reached the module→host event lane without
+/// installing a host callback.
+#[cfg(test)]
+pub(crate) static TEST_EMITTED: Mutex<Vec<(String, Vec<u8>)>> = Mutex::new(Vec::new());
+
 static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
 static HOST_LOG: OnceLock<extern "C" fn(c_int, *const c_char)> = OnceLock::new();
 static HOST_EMIT: OnceLock<extern "C" fn(u64, u64, *const u8, usize)> = OnceLock::new();
@@ -524,6 +534,11 @@ pub(crate) fn log_message(level: c_int, msg: &str) {
 
 /// 上报模块事件（宿主负载约定：前 4 字节为事件类型长度，小端）。
 pub(crate) fn emit_event(instance_id: u64, event_type: &str, payload: &[u8]) {
+    #[cfg(test)]
+    TEST_EMITTED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push((event_type.to_string(), payload.to_vec()));
     let Some(f) = HOST_EMIT.get() else { return };
     let type_bytes = event_type.as_bytes();
     let mut buf = Vec::with_capacity(4 + type_bytes.len() + payload.len());

@@ -31,7 +31,9 @@
 //!   No raw pointers and no `&ConnectionInfo` are ever exposed across the ABI.
 //! * Explicit `conn.close` / `conn.close_all` emit one `proxy.conn` event each
 //!   (control-plane, user-triggered). The steady open/close stream is **not**
-//!   streamed per connection: the host ring is only 128 entries; it is folded
+//!   streamed per connection: the module event ring holds only 100 entries
+//!   (`event_bridge.rs:21`; the host task-stream ring's 128 is a separate
+//!   channel, `task_bridge.rs:65`); it is folded
 //!   into the throttled `proxy.stats` snapshot ([`crate::stats`]) and the
 //!   `log.get` ring instead.
 
