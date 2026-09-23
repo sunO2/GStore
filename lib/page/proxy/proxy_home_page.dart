@@ -10,7 +10,7 @@ import 'proxy_active_profile_store.dart';
 import 'proxy_engine_settings_store.dart';
 import 'proxy_geo_provisioner.dart';
 import 'proxy_home_facade.dart';
-import 'proxy_logs_page.dart';
+import 'proxy_requests_page.dart';
 import 'proxy_nodes_facade.dart';
 import 'proxy_nodes_page.dart';
 import 'proxy_profiles_page.dart';
@@ -22,7 +22,7 @@ import 'proxy_site_probe_card.dart';
 import 'proxy_stats_page.dart';
 import 'proxy_traffic_chart.dart';
 
-/// 代理首页（VPN 状态 / 连接开关 / 实时流量 / 当前配置 / 日志·统计入口）。
+/// 代理首页（VPN 状态 / 连接开关 / 实时流量 / 当前配置 / 域名·IP·统计入口）。
 ///
 /// **纯展示层**：状态、模式、流量、配置名全部来自 [ProxyHomeFacade] 的响应与
 /// 类型化事件；连接动作只做「调门面 + 调授权触发」[ProxyVpnConsent]，不含任何
@@ -48,7 +48,7 @@ class ProxyHomePage extends StatefulWidget {
     this.nodesFacade,
     this.geoProvisionerFactory,
     this.siteProbe,
-    this.onOpenLogs,
+    this.onOpenRequests,
     this.onOpenStats,
     this.onOpenLanSettings,
     this.vpnConfigJson = '{}',
@@ -91,8 +91,8 @@ class ProxyHomePage extends StatefulWidget {
   /// 探测遵循当前代理与规则；仅用户手动触发，不在页面加载时自动执行。
   final SiteProbe? siteProbe;
 
-  /// 「运行日志」快捷入口；为空时打开 [ProxyLogsPage]。
-  final VoidCallback? onOpenLogs;
+  /// 「请求域名 / IP」快捷入口；为空时打开 [ProxyRequestsPage]。
+  final VoidCallback? onOpenRequests;
 
   /// 「流量统计」快捷入口；为空时打开 [ProxyStatsPage]。
   final VoidCallback? onOpenStats;
@@ -1737,11 +1737,11 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
       child: Column(
         children: [
           ListTile(
-            leading: const Icon(Icons.receipt_long_outlined),
-            title: const Text('运行日志'),
-            subtitle: const Text('连接、DNS 与模块日志'),
+            leading: const Icon(Icons.travel_explore_outlined),
+            title: const Text('请求域名 / IP'),
+            subtitle: const Text('实时收集请求的域名与目标 IP'),
             trailing: const Icon(Icons.chevron_right),
-            onTap: _openLogs,
+            onTap: _openRequests,
           ),
           const Divider(height: 1),
           ListTile(
@@ -1756,14 +1756,14 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
     );
   }
 
-  void _openLogs() {
-    final callback = widget.onOpenLogs;
+  void _openRequests() {
+    final callback = widget.onOpenRequests;
     if (callback != null) {
       callback();
       return;
     }
     Navigator.of(context).push(
-      MaterialPageRoute<void>(builder: (_) => const ProxyLogsPage()),
+      MaterialPageRoute<void>(builder: (_) => const ProxyRequestsPage()),
     );
   }
 

@@ -12,7 +12,7 @@ import 'package:gstore/page/proxy/proxy_geo_manifest.dart';
 import 'package:gstore/page/proxy/proxy_geo_provisioner.dart';
 import 'package:gstore/page/proxy/proxy_home_facade.dart';
 import 'package:gstore/page/proxy/proxy_home_page.dart';
-import 'package:gstore/page/proxy/proxy_logs_page.dart';
+import 'package:gstore/page/proxy/proxy_requests_page.dart';
 import 'package:gstore/page/proxy/proxy_nodes_facade.dart';
 import 'package:gstore/page/proxy/proxy_nodes_page.dart';
 import 'package:gstore/page/proxy/proxy_profiles_page.dart';
@@ -443,7 +443,8 @@ void main() {
     expect(find.text('未选择'), findsOneWidget);
     expect(find.text('当前节点'), findsOneWidget);
     expect(find.text('自动'), findsOneWidget);
-    expect(find.text('运行日志'), findsOneWidget);
+    expect(find.text('运行日志'), findsNothing);
+    expect(find.text('请求域名 / IP'), findsOneWidget);
     expect(find.text('流量统计'), findsOneWidget);
     expect(tester.takeException(), isNull);
 
@@ -752,27 +753,27 @@ void main() {
   testWidgets('quick entry：回调优先，缺省时给出提示（不崩溃）', (tester) async {
     _useTallViewport(tester);
     final facade = _FakeProxyFacade();
-    var logs = 0;
+    var requests = 0;
     var stats = 0;
     await tester.pumpWidget(
       _wrap(ProxyHomePage(
         facade: facade,
-        onOpenLogs: () => logs++,
+        onOpenRequests: () => requests++,
         onOpenStats: () => stats++,
       )),
     );
     await _flush(tester);
 
-    await tester.ensureVisible(find.text('运行日志'));
+    await tester.ensureVisible(find.text('请求域名 / IP'));
     await tester.pump();
-    await tester.tap(find.text('运行日志'));
+    await tester.tap(find.text('请求域名 / IP'));
     await tester.pump();
     await tester.ensureVisible(find.text('流量统计'));
     await tester.pump();
     await tester.tap(find.text('流量统计'));
     await tester.pump();
 
-    expect(logs, 1);
+    expect(requests, 1);
     expect(stats, 1);
     expect(tester.takeException(), isNull);
 
@@ -1137,21 +1138,25 @@ void main() {
     await facade.controller.close();
   });
 
-  testWidgets('快捷入口：无回调时运行日志进入日志页（不再提示后续版本）', (tester) async {
+  testWidgets('快捷入口：无回调时请求域名 / IP 进入请求收集页（不再提示后续版本）', (tester) async {
     _useTallViewport(tester);
     final facade = _FakeProxyFacade();
     await tester.pumpWidget(_wrap(ProxyHomePage(facade: facade)));
     await _flush(tester);
 
-    await tester.ensureVisible(find.text('运行日志'));
+    await tester.ensureVisible(find.text('请求域名 / IP'));
     await tester.pump();
-    await tester.tap(find.text('运行日志'));
+    await tester.tap(find.text('请求域名 / IP'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
 
-    expect(find.byType(ProxyLogsPage), findsOneWidget);
+    expect(find.byType(ProxyRequestsPage), findsOneWidget);
     expect(find.text('日志查看器将在后续版本开放'), findsNothing);
     expect(tester.takeException(), isNull);
+
+    // 卸载页面以释放请求收集页的 2s 兜底 Timer。
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
 
     await facade.controller.close();
   });
