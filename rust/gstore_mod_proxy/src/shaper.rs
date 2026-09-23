@@ -2407,6 +2407,71 @@ mod buffer_tests {
         assert_eq!(counters_json()["bufferDropped"], serde_json::json!(1));
     }
 
+    /// Deterministic upper-bound pressure test (Todo 10): hammer `ReleaseHeap`
+    /// far past BOTH caps and prove the retained occupancy never grows beyond
+    /// them — overflow is documented drop-newest, never growth, and the heap
+    /// has **no** loss concept (`lossDropped` stays 0, distinct from
+    /// `bufferDropped`).
+    #[test]
+    fn release_heap_occupancy_bounded_under_stress() {
+        let _guard = serial();
+        reset_counters();
+        let t0 = Instant::now();
+
+        // Scenario A: the two caps divide exactly, so a run of
+        // `BUFFER_BYTES_PER_DIRECTION / MAX_FRAMES`-byte frames saturates the
+        // byte cap at the very frame the frame cap binds (`600 > MAX_FRAMES`).
+        let per_frame = BUFFER_BYTES_PER_DIRECTION / MAX_FRAMES;
+        assert_eq!(
+            per_frame * MAX_FRAMES,
+            BUFFER_BYTES_PER_DIRECTION,
+            "the two caps must divide exactly for this fixture"
+        );
+        let pushed = 600usize;
+        let mut heap = ReleaseHeap::new();
+        for seq in 0..pushed as u64 {
+            heap.push(frame(t0, seq, per_frame));
+        }
+        let stats = heap.stats();
+        assert!(
+            stats.bytes <= BUFFER_BYTES_PER_DIRECTION,
+            "bytes {} > byte cap {}",
+            stats.bytes,
+            BUFFER_BYTES_PER_DIRECTION
+        );
+        assert!(stats.frames <= MAX_FRAMES, "frames {} > frame cap", stats.frames);
+        assert_eq!(stats.frames, MAX_FRAMES, "the frame cap must saturate");
+        assert_eq!(
+            stats.bytes, BUFFER_BYTES_PER_DIRECTION,
+            "the byte cap must saturate exactly"
+        );
+        assert_eq!(
+            heap.buffer_dropped(),
+            (pushed - MAX_FRAMES) as u64,
+            "every frame past the cap is drop-newest, not silently buffered"
+        );
+
+        // Scenario B: the BYTE cap binds alone, well before MAX_FRAMES: only one
+        // `> half-cap` frame fits, the remaining three are dropped.
+        let big = BUFFER_BYTES_PER_DIRECTION / 2 + 1;
+        let mut byte_heap = ReleaseHeap::new();
+        for seq in 0..4u64 {
+            byte_heap.push(frame(t0, seq, big));
+        }
+        let byte_stats = byte_heap.stats();
+        assert_eq!(byte_stats.frames, 1, "only one >half-cap frame fits");
+        assert!(byte_stats.bytes <= BUFFER_BYTES_PER_DIRECTION);
+        assert_eq!(byte_heap.buffer_dropped(), 3, "the other three are drop-newest");
+
+        // The heap owns no loss concept: only `bufferDropped` advances.
+        let snapshot = counters().snapshot();
+        let json = counters_json();
+        assert_eq!(snapshot.loss_dropped, 0, "a buffer drop must never be billed as loss");
+        assert_eq!(json["lossDropped"], serde_json::json!(0));
+        assert_eq!(snapshot.buffer_dropped, (pushed - MAX_FRAMES + 3) as u64);
+        assert_eq!(json["bufferDropped"], serde_json::json!((pushed - MAX_FRAMES + 3) as u64));
+    }
+
     #[test]
     fn buffer_stats_exposes_live_occupancy() {
         let _guard = serial();

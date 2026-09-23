@@ -1808,6 +1808,169 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A distinct, valid `len`-byte IPv4/UDP frame keyed by `seq`. The dest port
+    /// is 443 (never 53) and it is unfragmented, so it is a non-exempt data frame
+    /// exactly like a real downlink TCP/UDP payload — the case the shaper must
+    /// keep bounded under many concurrent flows.
+    fn flow_frame(len: usize, seq: u64) -> Vec<u8> {
+        let mut f = vec![0u8; len];
+        f[0] = 0x45; // IPv4, IHL 5
+        f[2..4].copy_from_slice(&(len as u16).to_be_bytes());
+        f[8] = 64; // TTL
+        f[9] = 17; // UDP
+        f[12..16].copy_from_slice(&[10, 10, 0, 2]); // src
+        f[16..20].copy_from_slice(&[10, 10, 0, 9]); // dst
+        f[20..22].copy_from_slice(&(40_000u16 + (seq % 1000) as u16).to_be_bytes()); // src port
+        f[22..24].copy_from_slice(&443u16.to_be_bytes()); // dst port
+        f[24..26].copy_from_slice(&((len - 20) as u16).to_be_bytes());
+        f[28..36].copy_from_slice(&seq.to_be_bytes()); // per-flow marker
+        f
+    }
+
+    /// Deterministic memory-bound pressure test (Todo 10, D7): many concurrent
+    /// downlink flows behind a sustained rate limit. Every frame parks in the
+    /// release heap (low rate + multi-second delay), so the deterministic
+    /// `buffer_stats` probe must never report occupancy past the byte cap or
+    /// `MAX_FRAMES`; overflow is the documented drop-newest count, and
+    /// released + dropped always accounts for every pushed frame.
+    #[test]
+    fn many_flows_downlink_shaping_occupancy_bounded() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        shaper::reset_counters();
+
+        let mut cfg = shaper::ShaperConfig {
+            enabled: true,
+            seed: Some(0xD0FF),
+            ..Default::default()
+        };
+        cfg.downlink.rate_bps = 1_000_000;
+        cfg.downlink.delay_ms = 5_000;
+
+        let now = Instant::now();
+        let mut pump = ShapePump::new(
+            shaper::ShaperDirection::Downlink,
+            &cfg.downlink,
+            pump_seed(&cfg),
+            now,
+        );
+
+        const FRAMES: usize = 20_000;
+        const FRAME_LEN: usize = 1_500;
+        const CAP: usize = shaper::BUFFER_BYTES_PER_DIRECTION;
+        const MAX_FRAMES: usize = shaper::MAX_FRAMES;
+
+        let mut worst_bytes = 0usize;
+        let mut worst_frames = 0usize;
+        let mut trace: Vec<(usize, usize, usize)> = Vec::new();
+        for seq in 0..FRAMES as u64 {
+            let ready = pump.on_frame(&cfg, true, now, flow_frame(FRAME_LEN, seq));
+            assert!(ready.is_empty(), "a 5s delay must never release inline at now");
+            let stats = shaper::buffer_stats().downlink;
+            worst_bytes = worst_bytes.max(stats.bytes);
+            worst_frames = worst_frames.max(stats.frames);
+            assert!(
+                stats.bytes <= CAP,
+                "seq {seq}: buffered bytes {} exceed cap {CAP}",
+                stats.bytes
+            );
+            assert!(
+                stats.frames <= MAX_FRAMES,
+                "seq {seq}: buffered frames {} exceed {MAX_FRAMES}",
+                stats.frames
+            );
+            if seq % 2_000 == 0 {
+                trace.push((seq as usize, stats.frames, stats.bytes));
+            }
+        }
+
+        let after_push = shaper::buffer_stats().downlink;
+        let json = shaper::counters_json();
+        let dropped = json["bufferDropped"].as_u64().unwrap();
+        assert!(dropped > 0, "drop-newest must kick in once a cap is reached");
+        assert_eq!(
+            json["lossDropped"],
+            serde_json::json!(0),
+            "no random loss is configured, so every drop is a buffer drop"
+        );
+        assert_eq!(after_push.frames, MAX_FRAMES, "the frame cap must be saturated");
+        assert!(after_push.bytes <= CAP);
+        trace.push((FRAMES, after_push.frames, after_push.bytes));
+
+        let released = pump.take_ready(now + Duration::from_secs(60));
+        assert_eq!(
+            released.len() as u64 + dropped,
+            FRAMES as u64,
+            "every pushed frame is either released or a documented drop-newest"
+        );
+        assert_eq!(released.len(), MAX_FRAMES, "exactly the buffered frames come back");
+        assert_eq!(pump.next_deadline(), None, "the heap must be fully drained");
+        let end = shaper::buffer_stats().downlink;
+        assert_eq!(end.frames, 0);
+        assert_eq!(end.bytes, 0);
+
+        println!(
+            "many_flows_downlink_shaping_occupancy_bounded: pushed={FRAMES} \
+             released={} dropped={dropped} worst_bytes={worst_bytes} worst_frames={worst_frames} \
+             cap={CAP} max_frames={MAX_FRAMES} trace(seq,frames,bytes)={trace:?} json={json}",
+            released.len(),
+        );
+    }
+
+    /// Manual RSS observation (Todo 10 / Oracle6): RSS is App-dependent, so it is
+    /// a coarse `#[ignore]` signal and NEVER a gate. Run with
+    /// `cargo test -p gstore_mod_proxy shaper_rss_under_stress_manual -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "manual RSS observation: run with --ignored --nocapture"]
+    fn shaper_rss_under_stress_manual() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        shaper::reset_counters();
+
+        let mut cfg = shaper::ShaperConfig {
+            enabled: true,
+            seed: Some(0x5255),
+            ..Default::default()
+        };
+        cfg.downlink.rate_bps = 1_000_000;
+        cfg.downlink.delay_ms = 5_000;
+
+        let now = Instant::now();
+        let mut pump = ShapePump::new(
+            shaper::ShaperDirection::Downlink,
+            &cfg.downlink,
+            pump_seed(&cfg),
+            now,
+        );
+
+        const FRAMES: usize = 50_000;
+        let rss0 = crate::limits::rss_kb();
+        for seq in 0..FRAMES as u64 {
+            let _ = pump.on_frame(&cfg, true, now, flow_frame(1_500, seq));
+        }
+        let rss = crate::limits::rss_kb();
+        let stats = shaper::buffer_stats().downlink;
+        let json = shaper::counters_json();
+        crate::limits::bench_line(
+            "shaper_rss_stress",
+            &[
+                ("frames", FRAMES as u128),
+                ("buffered_frames", stats.frames as u128),
+                ("buffered_bytes", stats.bytes as u128),
+                (
+                    "buffer_dropped",
+                    json["bufferDropped"].as_u64().unwrap_or(0) as u128,
+                ),
+                ("rss_kb", rss as u128),
+                ("rss_delta_kb", rss.saturating_sub(rss0) as u128),
+            ],
+        );
+
+        // The deterministic caps remain the only gate; RSS is evidence only.
+        assert!(stats.bytes <= shaper::BUFFER_BYTES_PER_DIRECTION);
+        assert!(stats.frames <= shaper::MAX_FRAMES);
+        let _ = pump.take_ready(now + Duration::from_secs(60));
+        shaper::reset_counters();
+    }
+
     /// Drop any loop/pending fd left by an earlier test.
     fn shallow_reset() {
         if let Some(_) = stop() {
