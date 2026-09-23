@@ -12,6 +12,7 @@ import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
 import 'package:gstore/page/proxy/proxy_dns_page.dart';
 import 'package:gstore/page/proxy/proxy_engine_settings_store.dart';
+import 'package:gstore/page/proxy/proxy_shaper_presets.dart';
 
 import 'proxy_settings_facade.dart';
 
@@ -22,6 +23,10 @@ const String _kEngineStackSystem = 'system';
 /// Rust 侧拒绝低于此值的 MTU（见 `core.start` 校验）。
 const int _kEngineMinMtu = 1280;
 
+/// 弱网自定义编辑方向（上下行独立参数）。
+const String _kShaperDirUplink = 'uplink';
+const String _kShaperDirDownlink = 'downlink';
+
 /// 代理设置页（Todos 23 / 28，纯展示 / 触发层）。
 ///
 /// 覆盖（按功能区自上而下）：
@@ -30,6 +35,8 @@ const int _kEngineMinMtu = 1280;
 /// * **分流与入站**：应用分流 + 局域网监听 (LAN)（`lan.get` / `lan.set` /
 ///   `lan.status`，默认关闭，未配置认证时展示安全警告）；
 /// * **域名解析**：DNS 设置入口（跳转 [ProxyDnsPage]）；
+/// * **弱网模拟**：`net.shaper.get` / `net.shaper.set`（总开关 + 档位预设 +
+///   自定义 rate / delay / jitter / loss，上下行独立）；
 /// * **维护与诊断**：重置统计（`stats.domain.reset`）+ 引擎调试信息
 ///   （`version` / `ping` / `core.get_mode`）。
 ///
@@ -57,6 +64,10 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
   final TextEditingController _lanPass = TextEditingController();
   final TextEditingController _lanAllowed = TextEditingController();
   final TextEditingController _engineMtu = TextEditingController();
+  final TextEditingController _shaperRate = TextEditingController();
+  final TextEditingController _shaperDelay = TextEditingController();
+  final TextEditingController _shaperJitter = TextEditingController();
+  final TextEditingController _shaperLoss = TextEditingController();
 
   bool _loading = true;
   String? _error;
@@ -69,12 +80,29 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
   ProxyEngineSettings _engineSettings = const ProxyEngineSettings();
   String _engineStack = _kEngineStackGvisor;
 
+  /// 最近一次 `net.shaper.get` / `net.shaper.set` 的冻结快照。
+  ProxyShaperSnapshot _shaper = const ProxyShaperSnapshot();
+
+  /// 弱网总开关（与应用侧意图一致，乐观更新 + 失败回滚）。
+  bool _shaperEnabled = false;
+
+  /// 当前档位 id（[ProxyShaperPresetIds]；未知回落到 `custom`）。
+  String _shaperPresetId = ProxyShaperPresetIds.custom;
+
+  /// 自定义编辑的上下行参数（预设档位也会写入这里，便于切回自定义时回填）。
+  ProxyShaperDirection _shaperUplink = const ProxyShaperDirection();
+  ProxyShaperDirection _shaperDownlink = const ProxyShaperDirection();
+
+  /// 自定义输入框当前编辑的方向。
+  String _shaperCustomDirection = _kShaperDirUplink;
+
   @override
   void initState() {
     super.initState();
     _facade = widget.facade ?? ProxyModuleSettingsFacade();
     _syncLanControllers(_lan);
     _syncEngineControllers(_engineSettings);
+    _syncShaperControllers();
     _load();
   }
 
@@ -86,6 +114,10 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
     _lanPass.dispose();
     _lanAllowed.dispose();
     _engineMtu.dispose();
+    _shaperRate.dispose();
+    _shaperDelay.dispose();
+    _shaperJitter.dispose();
+    _shaperLoss.dispose();
     super.dispose();
   }
 
@@ -106,6 +138,35 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
   /// 归一化 stack：只接受 `gvisor` / `system`，其余回落 `gvisor`。
   String _normalizeStack(String stack) =>
       stack == _kEngineStackSystem ? _kEngineStackSystem : _kEngineStackGvisor;
+
+  // ==================== 弱网模拟 ====================
+
+  /// 当前自定义输入框正在编辑的方向参数。
+  ProxyShaperDirection get _activeShaperDirection =>
+      _shaperCustomDirection == _kShaperDirDownlink
+          ? _shaperDownlink
+          : _shaperUplink;
+
+  /// 把当前方向的自定义参数同步到输入框。
+  void _syncShaperControllers() {
+    final direction = _activeShaperDirection;
+    _shaperRate.text = '${direction.rateBps}';
+    _shaperDelay.text = '${direction.delayMs}';
+    _shaperJitter.text = '${direction.jitterMs}';
+    _shaperLoss.text = _formatPct(direction.lossPct);
+  }
+
+  /// 百分比回填：整数省略小数位（`2.0` → `2`，`2.5` → `2.5`）。
+  String _formatPct(double value) =>
+      value == value.roundToDouble() ? value.toStringAsFixed(0) : '$value';
+
+  /// 由当前 UI 状态构造完整配置（方向参数 + 总开关 + 沿用 seed）。
+  ProxyShaperConfig _currentShaperConfig() => ProxyShaperConfig(
+        enabled: _shaperEnabled,
+        seed: _shaper.config.seed,
+        uplink: _shaperUplink,
+        downlink: _shaperDownlink,
+      );
 
   Future<void> _load() async {
     setState(() {
@@ -136,6 +197,13 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
         debugPrint('代理设置：读取引擎参数失败，回落默认值：$error');
         engineSettings = const ProxyEngineSettings();
       }
+      ProxyShaperSnapshot? shaper;
+      try {
+        shaper = await _facade.loadShaperConfig();
+      } catch (error) {
+        // 模块不可用 / 读取失败 → 保留默认（关闭），不阻断页面。
+        debugPrint('代理设置：读取弱网配置失败，回落默认值：$error');
+      }
       if (!mounted) return;
       setState(() {
         _config = config;
@@ -145,10 +213,18 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
         if (lanStatus != null) _lanStatus = lanStatus;
         _engineSettings = engineSettings;
         _engineStack = _normalizeStack(engineSettings.stack);
+        if (shaper != null) {
+          _shaper = shaper;
+          _shaperEnabled = shaper.config.enabled;
+          _shaperUplink = shaper.config.uplink;
+          _shaperDownlink = shaper.config.downlink;
+          _shaperPresetId = presetForConfig(shaper.config).id;
+        }
         _loading = false;
       });
       _syncLanControllers(_lan);
       _engineMtu.text = '${engineSettings.mtu}';
+      _syncShaperControllers();
     } catch (error) {
       if (!mounted) return;
       setState(() {
@@ -352,6 +428,185 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
     AppDialogs.showSuccess('已复制到剪贴板');
   }
 
+  // ==================== 弱网模拟（交互） ====================
+
+  /// 总开关：乐观更新 → `net.shaper.set` → 成功提示 / 失败回滚。
+  Future<void> _toggleShaper(bool value) async {
+    if (_busy) return;
+    await _saveShaperConfig(_currentShaperConfig().copyWith(enabled: value));
+  }
+
+  /// 下发弱网配置（乐观更新 + 失败回滚，与 [ _saveEngineSettings] 同模式）。
+  Future<void> _saveShaperConfig(ProxyShaperConfig next) async {
+    if (_busy) return;
+    final previousSnapshot = _shaper;
+    final previousEnabled = _shaperEnabled;
+    final previousPresetId = _shaperPresetId;
+    final previousUplink = _shaperUplink;
+    final previousDownlink = _shaperDownlink;
+    setState(() {
+      _busy = true;
+      _shaperEnabled = next.enabled;
+      _shaper = ProxyShaperSnapshot(
+        config: next,
+        effective: previousSnapshot.effective,
+        applied: previousSnapshot.applied,
+        engineRunning: previousSnapshot.engineRunning,
+        counters: previousSnapshot.counters,
+      );
+    });
+    try {
+      final snapshot = await _facade.saveShaperConfig(next);
+      if (!mounted) return;
+      setState(() {
+        _shaper = snapshot;
+        _shaperEnabled = snapshot.config.enabled;
+        _shaperUplink = snapshot.config.uplink;
+        _shaperDownlink = snapshot.config.downlink;
+        _shaperPresetId = presetForConfig(snapshot.config).id;
+        _busy = false;
+      });
+      _syncShaperControllers();
+      AppDialogs.showSuccess('弱网配置已应用');
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _shaper = previousSnapshot;
+        _shaperEnabled = previousEnabled;
+        _shaperPresetId = previousPresetId;
+        _shaperUplink = previousUplink;
+        _shaperDownlink = previousDownlink;
+        _busy = false;
+      });
+      _syncShaperControllers();
+      AppDialogs.showError('弱网配置保存失败：$error');
+    }
+  }
+
+  /// 选择档位：已知档位立即下发（并启用）；`custom` 仅切换编辑态，不发 RPC。
+  Future<void> _selectShaperPreset(String id) async {
+    if (_busy) return;
+    if (id == ProxyShaperPresetIds.custom) {
+      setState(() => _shaperPresetId = id);
+      _syncShaperControllers();
+      return;
+    }
+    final preset = presetOrCustomById(id);
+    final next = preset.config.copyWith(
+      enabled: true,
+      seed: _shaper.config.seed,
+    );
+    setState(() {
+      _shaperPresetId = id;
+      _shaperUplink = preset.config.uplink;
+      _shaperDownlink = preset.config.downlink;
+    });
+    await _saveShaperConfig(next);
+  }
+
+  /// 切换自定义编辑方向（先把当前输入提交到当前方向，再回填另一方向）。
+  void _selectShaperDirection(String direction) {
+    if (_busy || direction == _shaperCustomDirection) return;
+    _commitShaperFields();
+    setState(() => _shaperCustomDirection = direction);
+    _syncShaperControllers();
+  }
+
+  /// 把当前输入框内容提交到当前编辑方向（合法才写入；非法静默忽略）。
+  void _commitShaperFields() {
+    final built = _buildShaperDirectionFromFields(_activeShaperDirection);
+    if (built == null) return;
+    setState(() {
+      if (_shaperCustomDirection == _kShaperDirDownlink) {
+        _shaperDownlink = built;
+      } else {
+        _shaperUplink = built;
+      }
+    });
+  }
+
+  /// 用输入框内容 + [base] 的非编辑字段构造已校验的单方向参数。
+  ///
+  /// 空值 / 非数字 / 越界（[buildCustomShaperDirection] 返回 `null`）→ `null`，
+  /// 调用方**不得**下发 `net.shaper.set`。
+  ProxyShaperDirection? _buildShaperDirectionFromFields(
+    ProxyShaperDirection base,
+  ) {
+    final rate = int.tryParse(_shaperRate.text.trim());
+    final delay = int.tryParse(_shaperDelay.text.trim());
+    final jitter = int.tryParse(_shaperJitter.text.trim());
+    final loss = double.tryParse(_shaperLoss.text.trim());
+    if (rate == null || delay == null || jitter == null || loss == null) {
+      return null;
+    }
+    return buildCustomShaperDirection(
+      rateBps: rate,
+      burstBytes: base.burstBytes,
+      delayMs: delay,
+      jitterMs: jitter,
+      jitterDistribution: base.jitterDistribution,
+      lossPct: loss,
+      lossModel: loss > 0 ? 'random' : 'none',
+      lossGoodToBadPct: base.lossGoodToBadPct,
+      lossBadToGoodPct: base.lossBadToGoodPct,
+      duplicatePct: base.duplicatePct,
+      reorderPct: base.reorderPct,
+      reorderGap: base.reorderGap,
+      order: base.order,
+    );
+  }
+
+  Future<void> _openShaperPresetPicker() async {
+    final result = await AppSheet.showCustom<String>(
+      context: context,
+      builder: (sheetContext) =>
+          _ShaperPresetPickerSheet(selectedId: _shaperPresetId),
+    );
+    if (!mounted || result == null) return;
+    await _selectShaperPreset(result);
+  }
+
+  /// 应用按钮：自定义档位校验后下发；已知档位按当前开关重下发。
+  Future<void> _applyShaper() async {
+    if (_busy) return;
+    if (_shaperPresetId != ProxyShaperPresetIds.custom) {
+      final preset = presetOrCustomById(_shaperPresetId);
+      await _saveShaperConfig(preset.config.copyWith(
+        enabled: _shaperEnabled,
+        seed: _shaper.config.seed,
+      ));
+      return;
+    }
+    final built = _buildShaperDirectionFromFields(_activeShaperDirection);
+    if (built == null) {
+      AppDialogs.showError(
+        '请填写有效数值：限速 0 或 1000–1000000000 bps，延迟 ≤ 60000 ms，'
+        '抖动 ≤ 30000 ms，丢包 0–100%',
+      );
+      return;
+    }
+    final uplink =
+        _shaperCustomDirection == _kShaperDirUplink ? built : _shaperUplink;
+    final downlink =
+        _shaperCustomDirection == _kShaperDirDownlink ? built : _shaperDownlink;
+    final config = buildCustomShaperConfig(
+      enabled: _shaperEnabled,
+      seed: _shaper.config.seed,
+      uplink: uplink,
+      downlink: downlink,
+    );
+    if (config == null) {
+      AppDialogs.showError('弱网参数超出允许范围，请检查限速 / 延迟 / 抖动 / 丢包');
+      return;
+    }
+    setState(() {
+      _shaperUplink = uplink;
+      _shaperDownlink = downlink;
+      _shaperPresetId = ProxyShaperPresetIds.custom;
+    });
+    await _saveShaperConfig(config);
+  }
+
   // ==================== 日志级别 / 统计 ====================
 
   Future<void> _setLogLevel(ProxyLogLevel level) async {
@@ -437,6 +692,9 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
           _buildSplitTunnelCard(context),
           const SizedBox(height: AppSpacing.lg),
           _buildLanCard(context),
+          const SizedBox(height: AppSpacing.xxl),
+          const _RegionHeader(title: '弱网模拟'),
+          _buildShaperCard(context),
           const SizedBox(height: AppSpacing.xxl),
           const _RegionHeader(title: '域名解析'),
           _buildDnsTile(context),
@@ -737,6 +995,172 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
         ),
       ],
     );
+  }
+
+  Widget _buildShaperCard(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final preset = presetOrCustomById(_shaperPresetId);
+    return _SectionCard(
+      icon: Icons.speed_outlined,
+      title: '弱网模拟',
+      children: [
+        SwitchListTile(
+          key: const Key('shaper_enabled_switch'),
+          contentPadding: EdgeInsets.zero,
+          title: const Text('启用弱网模拟'),
+          subtitle: Text(_shaperEnabled ? '已启用：对进出流量做整形' : '已关闭（默认）'),
+          value: _shaperEnabled,
+          onChanged: _busy ? null : _toggleShaper,
+        ),
+        const SizedBox(height: AppSpacing.md),
+        Text(
+          '网络档位',
+          style: theme.textTheme.labelLarge?.copyWith(
+            color: scheme.onSurfaceVariant,
+          ),
+        ),
+        const SizedBox(height: AppSpacing.sm),
+        Card(
+          margin: EdgeInsets.zero,
+          child: ListTile(
+            key: const Key('shaper_preset_selector'),
+            contentPadding: AppSpacing.onlyHorizontalMD,
+            title: Text('当前档位：${preset.label}'),
+            subtitle: Text(_shaperPresetSubtitle(preset)),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: _busy ? null : _openShaperPresetPicker,
+          ),
+        ),
+        if (preset.isCustom) ...[
+          const SizedBox(height: AppSpacing.md),
+          Text(
+            '自定义参数（按方向独立生效）',
+            style: theme.textTheme.labelLarge?.copyWith(
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: AppSpacing.sm),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: AppSegmentedButton<String>(
+              key: const Key('shaper_direction_selector'),
+              value: _shaperCustomDirection,
+              enabled: !_busy,
+              density: AppSegmentedButton.mediumDensity,
+              segments: const <AppSegment<String>>[
+                AppSegment(value: _kShaperDirUplink, label: '上行'),
+                AppSegment(value: _kShaperDirDownlink, label: '下行'),
+              ],
+              onChanged: _selectShaperDirection,
+            ),
+          ),
+          const SizedBox(height: AppSpacing.md),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: TextField(
+                  key: const Key('shaper_rate_field'),
+                  controller: _shaperRate,
+                  enabled: !_busy,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: '限速 (bps)',
+                    hintText: '0 = 不限速',
+                  ),
+                ),
+              ),
+              const SizedBox(width: AppSpacing.md),
+              Expanded(
+                child: TextField(
+                  key: const Key('shaper_delay_field'),
+                  controller: _shaperDelay,
+                  enabled: !_busy,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: '延迟 (ms)',
+                    hintText: '0',
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: AppSpacing.md),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: TextField(
+                  key: const Key('shaper_jitter_field'),
+                  controller: _shaperJitter,
+                  enabled: !_busy,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: '抖动 (ms)',
+                    hintText: '0',
+                  ),
+                ),
+              ),
+              const SizedBox(width: AppSpacing.md),
+              Expanded(
+                child: TextField(
+                  key: const Key('shaper_loss_field'),
+                  controller: _shaperLoss,
+                  enabled: !_busy,
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                  decoration: const InputDecoration(
+                    labelText: '丢包 (%)',
+                    hintText: '0',
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+        const SizedBox(height: AppSpacing.md),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: FilledButton.tonalIcon(
+            key: const Key('shaper_apply_button'),
+            onPressed: _busy ? null : _applyShaper,
+            icon: const Icon(Icons.save_outlined, size: AppTypography.iconSM),
+            label: const Text('应用弱网参数'),
+          ),
+        ),
+        const SizedBox(height: AppSpacing.sm),
+        Text(
+          _shaperStatusText(),
+          key: const Key('shaper_status_text'),
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: scheme.onSurfaceVariant,
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// 档位副标题：预设展示关键参数摘要；自定义展示说明。
+  String _shaperPresetSubtitle(ProxyShaperPreset preset) {
+    if (preset.isCustom) return '手动设置限速 / 延迟 / 抖动 / 丢包';
+    final direction = preset.config.uplink;
+    final buffer = StringBuffer('${direction.rateBps ~/ 1000} kbps');
+    buffer.write(' · 延迟 ${direction.delayMs} ms');
+    buffer.write(' · 抖动 ${direction.jitterMs} ms');
+    if (direction.lossPct > 0) {
+      buffer.write(' · 丢包 ${_formatPct(direction.lossPct)}%');
+    }
+    return buffer.toString();
+  }
+
+  /// 运行态说明：区分「未启用 / 已生效 / 待应用 / 引擎未运行」。
+  String _shaperStatusText() {
+    if (!_shaperEnabled) return '未启用：不会对流量做整形。';
+    if (_shaper.applied) return '引擎运行中，弱网参数已生效。';
+    if (_shaper.engineRunning) return '引擎运行中，弱网参数待应用。';
+    return '引擎未运行：参数将在下次连接后生效。';
   }
 
   Widget _buildLogLevelCard(BuildContext context) {
@@ -1108,6 +1532,85 @@ class _AppPickerRow extends StatelessWidget {
                 ],
               ),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ==================== 弱网档位选择弹层 ====================
+
+/// 弱网档位选择弹层（统一 [AppSheetScaffold] 骨架），返回选中档位 id。
+class _ShaperPresetPickerSheet extends StatelessWidget {
+  const _ShaperPresetPickerSheet({required this.selectedId});
+
+  final String selectedId;
+
+  @override
+  Widget build(BuildContext context) {
+    return AppSheetScaffold(
+      title: '选择网络档位',
+      icon: const Icon(Icons.speed_outlined),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+      ],
+      scrollable: false,
+      content: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          for (final preset in proxyShaperPresets)
+            _ShaperPresetRow(
+              key: Key('shaper_preset_${preset.id}'),
+              label: preset.label,
+              selected: preset.id == selectedId,
+              onTap: () => Navigator.of(context).pop(preset.id),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ShaperPresetRow extends StatelessWidget {
+  const _ShaperPresetRow({
+    super.key,
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: AppSpacing.onlyVerticalSM,
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                label,
+                style: theme.textTheme.bodyLarge?.copyWith(
+                  color: selected ? scheme.primary : scheme.onSurface,
+                ),
+              ),
+            ),
+            if (selected)
+              Icon(
+                Icons.check,
+                color: scheme.primary,
+                size: AppTypography.iconMD,
+              ),
           ],
         ),
       ),

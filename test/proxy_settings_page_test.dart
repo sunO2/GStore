@@ -68,6 +68,9 @@ class _FakeSettingsFacade implements ProxySettingsFacade {
   ProxyLanConfig? lastLanSaved;
   ProxyShaperSnapshot shaperSnapshot = const ProxyShaperSnapshot();
   ProxyShaperConfig? lastShaperSaved;
+  int shaperLoadCalls = 0;
+  int shaperSaveCalls = 0;
+  bool failShaperSave = false;
 
   @override
   Future<ProxySettingsConfig> loadSettings() async => config;
@@ -100,12 +103,19 @@ class _FakeSettingsFacade implements ProxySettingsFacade {
   }
 
   @override
-  Future<ProxyShaperSnapshot> loadShaperConfig() async => shaperSnapshot;
+  Future<ProxyShaperSnapshot> loadShaperConfig() async {
+    shaperLoadCalls++;
+    return shaperSnapshot;
+  }
 
   @override
   Future<ProxyShaperSnapshot> saveShaperConfig(
     ProxyShaperConfig next,
   ) async {
+    shaperSaveCalls++;
+    if (failShaperSave) {
+      throw StateError('保存失败（测试注入）');
+    }
     lastShaperSaved = next;
     shaperSnapshot = ProxyShaperSnapshot(
       config: next,
@@ -548,6 +558,144 @@ void main() {
       expect(find.text('应用分流'), findsOneWidget);
       expect(find.text('引擎调试信息'), findsOneWidget);
       expect(tester.takeException(), isNull);
+    });
+
+    // ==================== 弱网模拟 ====================
+
+    testWidgets('弱网模拟：渲染区块 + 初始化读取 net.shaper.get', (tester) async {
+      _useTallSurface(tester);
+      final facade = _FakeSettingsFacade();
+      await tester.pumpWidget(_host(ProxySettingsPage(facade: facade)));
+      await _settleLoad(tester);
+
+      // 区域表头 + 卡片标题各一处。
+      expect(find.text('弱网模拟'), findsNWidgets(2));
+      expect(find.byKey(const Key('shaper_enabled_switch')), findsOneWidget);
+      expect(find.byKey(const Key('shaper_preset_selector')), findsOneWidget);
+      // 默认档位为「自定义」，四个输入框可见。
+      expect(find.byKey(const Key('shaper_rate_field')), findsOneWidget);
+      expect(find.byKey(const Key('shaper_delay_field')), findsOneWidget);
+      expect(find.byKey(const Key('shaper_jitter_field')), findsOneWidget);
+      expect(find.byKey(const Key('shaper_loss_field')), findsOneWidget);
+      expect(find.byKey(const Key('shaper_apply_button')), findsOneWidget);
+      expect(facade.shaperLoadCalls, 1, reason: '初始化必须读取一次 net.shaper.get');
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('弱网模拟：开关调用 saveShaperConfig', (tester) async {
+      _useTallSurface(tester);
+      final facade = _FakeSettingsFacade();
+      await tester.pumpWidget(_host(ProxySettingsPage(facade: facade)));
+      await _settleLoad(tester);
+
+      await tester.tap(find.byKey(const Key('shaper_enabled_switch')));
+      await tester.pump();
+
+      expect(facade.shaperSaveCalls, 1);
+      expect(facade.lastShaperSaved?.enabled, isTrue);
+      final toggle = tester.widget<SwitchListTile>(
+        find.byKey(const Key('shaper_enabled_switch')),
+      );
+      expect(toggle.value, isTrue);
+    });
+
+    testWidgets('弱网模拟：保存失败时开关回滚', (tester) async {
+      _useTallSurface(tester);
+      final facade = _FakeSettingsFacade()..failShaperSave = true;
+      await tester.pumpWidget(_host(ProxySettingsPage(facade: facade)));
+      await _settleLoad(tester);
+
+      await tester.tap(find.byKey(const Key('shaper_enabled_switch')));
+      await tester.pumpAndSettle();
+
+      expect(facade.shaperSaveCalls, 1);
+      final toggle = tester.widget<SwitchListTile>(
+        find.byKey(const Key('shaper_enabled_switch')),
+      );
+      expect(toggle.value, isFalse, reason: '保存失败必须回滚开关状态');
+    });
+
+    testWidgets('弱网模拟：选择预设下发并更新档位', (tester) async {
+      _useTallSurface(tester);
+      final facade = _FakeSettingsFacade();
+      await tester.pumpWidget(_host(ProxySettingsPage(facade: facade)));
+      await _settleLoad(tester);
+
+      await tester.tap(find.byKey(const Key('shaper_preset_selector')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('shaper_preset_3G')));
+      await tester.pumpAndSettle();
+
+      expect(facade.shaperSaveCalls, 1);
+      expect(facade.lastShaperSaved?.enabled, isTrue);
+      expect(facade.lastShaperSaved?.uplink.rateBps, 400000);
+      expect(find.text('当前档位：3G'), findsOneWidget);
+      // 已知档位不再展示自定义输入框。
+      expect(find.byKey(const Key('shaper_rate_field')), findsNothing);
+    });
+
+    testWidgets('弱网模拟：合法自定义值下发并展示快照', (tester) async {
+      _useTallSurface(tester);
+      final facade = _FakeSettingsFacade();
+      await tester.pumpWidget(_host(ProxySettingsPage(facade: facade)));
+      await _settleLoad(tester);
+
+      await tester.enterText(find.byKey(const Key('shaper_rate_field')), '200000');
+      await tester.enterText(find.byKey(const Key('shaper_delay_field')), '300');
+      await tester.enterText(find.byKey(const Key('shaper_jitter_field')), '40');
+      await tester.enterText(find.byKey(const Key('shaper_loss_field')), '5');
+      await tester.tap(find.byKey(const Key('shaper_apply_button')));
+      await tester.pumpAndSettle();
+
+      expect(facade.shaperSaveCalls, 1);
+      expect(facade.lastShaperSaved?.uplink.rateBps, 200000);
+      expect(facade.lastShaperSaved?.uplink.delayMs, 300);
+      expect(facade.lastShaperSaved?.uplink.jitterMs, 40);
+      expect(facade.lastShaperSaved?.uplink.lossPct, 5);
+      expect(facade.lastShaperSaved?.uplink.lossModel, 'random');
+    });
+
+    testWidgets('弱网模拟：越界自定义值报错且不下发', (tester) async {
+      _useTallSurface(tester);
+      final facade = _FakeSettingsFacade();
+      await tester.pumpWidget(_host(ProxySettingsPage(facade: facade)));
+      await _settleLoad(tester);
+
+      Future<void> fill({
+        String rate = '1000',
+        String delay = '100',
+        String jitter = '50',
+        String loss = '1',
+      }) async {
+        await tester.enterText(find.byKey(const Key('shaper_rate_field')), rate);
+        await tester.enterText(find.byKey(const Key('shaper_delay_field')), delay);
+        await tester
+            .enterText(find.byKey(const Key('shaper_jitter_field')), jitter);
+        await tester.enterText(find.byKey(const Key('shaper_loss_field')), loss);
+      }
+
+      const List<Map<String, String>> cases = <Map<String, String>>[
+        <String, String>{'rate': ''},
+        <String, String>{'rate': '999'},
+        <String, String>{'delay': '60001'},
+        <String, String>{'loss': '101'},
+      ];
+      for (final override in cases) {
+        await fill(
+          rate: override['rate'] ?? '1000',
+          delay: override['delay'] ?? '100',
+          jitter: override['jitter'] ?? '50',
+          loss: override['loss'] ?? '1',
+        );
+        await tester.tap(find.byKey(const Key('shaper_apply_button')));
+        await tester.pumpAndSettle();
+        expect(
+          facade.shaperSaveCalls,
+          0,
+          reason: '非法自定义值（$override）不得调用 saveShaperConfig',
+        );
+        expect(find.textContaining('请填写有效数值'), findsOneWidget);
+      }
     });
   });
 
