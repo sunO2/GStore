@@ -10,7 +10,7 @@
 //! (`bench/run.sh`, `tun::tests::bench_dataplane_reader_throughput`).
 #![allow(dead_code)]
 
-use crate::{conn, dns, logging, stats, tun};
+use crate::{conn, dns, logging, requests, stats, tun};
 
 pub(crate) const LOG_RING_CAP: usize = logging::RING_CAPACITY;
 pub(crate) const DOMAIN_CAP: usize = stats::DOMAIN_CAP;
@@ -24,6 +24,18 @@ pub(crate) const LWIP_STACK_BUFFER_SIZE: usize = tun::STACK_BUFFER_SIZE;
 pub(crate) const LWIP_UDP_BUFFER_SIZE: usize = tun::UDP_BUFFER_SIZE;
 pub(crate) const TUN_READ_BUFFER_SIZE: usize = tun::READ_BUFFER_SIZE;
 pub(crate) const TUN_INGRESS_CHANNEL: usize = tun::INGRESS_CHANNEL;
+
+// Request-collector caps (Todo 9). The **cap counts** are re-exported from their
+// owning module so there is exactly one source of truth (`requests.rs`); the
+// per-record byte caps and the UID caps are owned here because this module is
+// the single place that states the aggregate memory budget.
+pub(crate) const REQUEST_RING_CAP: usize = requests::REQUEST_RING_CAP;
+pub(crate) const REQUEST_FLUSH_QUEUE_CAP: usize = requests::REQUEST_FLUSH_QUEUE_CAP;
+pub(crate) const STALE_LIVE_CAP: usize = requests::STALE_LIVE_CAP;
+/// Bound on the in-flight UID-resolution map (`recordId → query`, ~30 s TTL).
+pub(crate) const UID_PENDING_CAP: usize = 2048;
+/// Bound on UID results that arrive before their record is inserted.
+pub(crate) const UID_EARLY_RESULTS_CAP: usize = 2048;
 
 /// Ceilings: a cap raised above one of these must be re-justified here, because
 /// the memory test fails otherwise. This makes "bounded" a reviewed decision.
@@ -47,6 +59,17 @@ const CONN_RECORD_MAX_BYTES: usize = 1024;
 const TOMBSTONE_MAX_BYTES: usize = 64;
 const DNS_RECORD_MAX_BYTES: usize = 1024;
 const FAKEIP_ENTRY_MAX_BYTES: usize = 64;
+/// Per-entry ceilings for the request collector (Todo 9). `REQUEST_RECORD_MAX_BYTES`
+/// must dominate the true worst-case serialized record: every field is bounded
+/// (domain ≤253, 8 packages ×128, bare dst IP ≤45, src ≤49, UUID connId 36,
+/// rule ≤64, rulePayload ≤128, outbound ≤64) and the numeric/camelCase-JSON
+/// overhead is covered by the practical value ranges asserted in
+/// `worst_case_request_record_fits_its_cap`.
+pub(crate) const REQUEST_RECORD_MAX_BYTES: usize = 2048;
+pub(crate) const REQUEST_FLUSH_RECORD_MAX_BYTES: usize = 2048;
+pub(crate) const STALE_LIVE_RECORD_MAX_BYTES: usize = 512;
+pub(crate) const UID_QUERY_MAX_BYTES: usize = 256;
+pub(crate) const UID_ANSWER_MAX_BYTES: usize = 256;
 /// Assumed frame size for the bounded packet queues (TUN MTU is 1500).
 const FRAME_BYTES: usize = 1500;
 
@@ -70,6 +93,14 @@ pub(crate) fn worst_case_bytes() -> usize {
         + TUN_INGRESS_CHANNEL * FRAME_BYTES
         + LWIP_STACK_BUFFER_SIZE * FRAME_BYTES
         + LWIP_UDP_BUFFER_SIZE * FRAME_BYTES
+        // Request collector (Todo 9). SQLite rows are deliberately EXCLUDED:
+        // `proxy_requests.db` is disk-resident and does not count against RSS.
+        // Only the in-memory ring, the bounded flush queue, the `stale_live`
+        // suppression set and the bounded UID `pending`/`earlyResults` maps.
+        + (REQUEST_RING_CAP + REQUEST_FLUSH_QUEUE_CAP) * REQUEST_RECORD_MAX_BYTES
+        + STALE_LIVE_CAP * STALE_LIVE_RECORD_MAX_BYTES
+        + UID_PENDING_CAP * UID_QUERY_MAX_BYTES
+        + UID_EARLY_RESULTS_CAP * UID_ANSWER_MAX_BYTES
 }
 
 #[cfg(target_os = "linux")]
@@ -164,7 +195,40 @@ mod tests {
 
     #[test]
     fn worst_case_memory_budget_is_bounded() {
+        // Baseline before the request collector (Todo 9): must not drift.
+        let baseline = LOG_RING_CAP * LOG_RECORD_MAX_BYTES
+            + DOMAIN_CAP * DOMAIN_RECORD_MAX_BYTES
+            + FLOW_CAP * FLOW_RECORD_MAX_BYTES
+            + CONN_TRACK_CAP * CONN_RECORD_MAX_BYTES
+            + CONN_TOMBSTONE_CAP * TOMBSTONE_MAX_BYTES
+            + DNS_QUERY_RING_CAP * DNS_RECORD_MAX_BYTES
+            + DNS_MAPPING_RING_CAP * DNS_RECORD_MAX_BYTES
+            + FAKEIP_STORE_CAP * FAKEIP_ENTRY_MAX_BYTES
+            + TUN_READ_BUFFER_SIZE
+            + TUN_INGRESS_CHANNEL * FRAME_BYTES
+            + LWIP_STACK_BUFFER_SIZE * FRAME_BYTES
+            + LWIP_UDP_BUFFER_SIZE * FRAME_BYTES;
+        assert_eq!(baseline, 11_773_951, "baseline accounting drifted");
+
+        // Request-collector additions: in-memory ring + bounded flush queue +
+        // `stale_live` suppression set + UID `pending`/`earlyResults`. Computed
+        // from the ACTUAL caps, never the `MAX_*` ceilings (which would grossly
+        // overstate the budget). SQLite rows are excluded — disk-resident, not
+        // RSS.
+        let request_additions = (REQUEST_RING_CAP + REQUEST_FLUSH_QUEUE_CAP)
+            * REQUEST_RECORD_MAX_BYTES
+            + STALE_LIVE_CAP * STALE_LIVE_RECORD_MAX_BYTES
+            + UID_PENDING_CAP * UID_QUERY_MAX_BYTES
+            + UID_EARLY_RESULTS_CAP * UID_ANSWER_MAX_BYTES;
+        assert_eq!(request_additions, 13_631_488, "request accounting drifted");
+
         let worst = worst_case_bytes();
+        assert_eq!(
+            worst,
+            baseline + request_additions,
+            "worst_case_bytes must equal baseline + the four request accumulators"
+        );
+        assert_eq!(worst, 25_405_439, "worst-case budget drifted");
         assert!(
             worst <= WORST_CASE_BUDGET_BYTES,
             "worst-case {worst} B exceeds budget {WORST_CASE_BUDGET_BYTES} B"
@@ -175,6 +239,55 @@ mod tests {
             + LWIP_STACK_BUFFER_SIZE * FRAME_BYTES
             + LWIP_UDP_BUFFER_SIZE * FRAME_BYTES;
         assert!(queues <= worst);
+    }
+
+    /// `REQUEST_RECORD_MAX_BYTES` must dominate the true worst-case serialized
+    /// request: every content field at its cap plus serde's camelCase framing
+    /// and the collector's practical numeric ranges. A cap below a real record
+    /// would silently under-count the budget, so this is asserted, not assumed.
+    #[test]
+    fn worst_case_request_record_fits_its_cap() {
+        use crate::requests::{RequestRecord, CLOSE_REASON_CLOSED, UID_STATE_KNOWN};
+
+        let domain = "d".repeat(253);
+        let packages: Vec<String> = (0..8).map(|_| "p".repeat(128)).collect();
+        let record = RequestRecord {
+            record_id: 4_294_967_295,
+            conn_id: "c".repeat(36),
+            open_ts_ms: 4_102_444_800_000,
+            close_ts_ms: Some(4_102_444_800_000),
+            duration_ms: Some(86_400_000),
+            domain,
+            domain_known: true,
+            dst_ip: "f".repeat(45),
+            dst_port: u16::MAX,
+            src: "s".repeat(49),
+            network: "tcp".to_string(),
+            uid: Some(u32::MAX),
+            packages,
+            uid_state: UID_STATE_KNOWN.to_string(),
+            rule: "r".repeat(64),
+            rule_payload: "y".repeat(128),
+            outbound: "o".repeat(64),
+            upload_bytes: 9_999_999_999,
+            download_bytes: 9_999_999_999,
+            close_reason: CLOSE_REASON_CLOSED.to_string(),
+        };
+        let serialized = serde_json::to_string(&record).expect("serialize worst-case record");
+        assert!(
+            serialized.len() <= REQUEST_RECORD_MAX_BYTES,
+            "worst-case request record is {} B > cap {} B",
+            serialized.len(),
+            REQUEST_RECORD_MAX_BYTES
+        );
+        // Prove the record really is a worst case, not a trivially small one.
+        let content_bounds = 253 + 8 * 128 + 45 + 49 + 36 + 64 + 128 + 64;
+        assert!(
+            serialized.len() >= content_bounds,
+            "worst-case framing lost: {} B < content bounds {} B",
+            serialized.len(),
+            content_bounds
+        );
     }
 
     #[test]
