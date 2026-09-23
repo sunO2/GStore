@@ -66,6 +66,8 @@ class _FakeSettingsFacade implements ProxySettingsFacade {
   ProxyLanConfig lanConfig = const ProxyLanConfig();
   ProxyLanStatus lanStatus = const ProxyLanStatus();
   ProxyLanConfig? lastLanSaved;
+  ProxyShaperSnapshot shaperSnapshot = const ProxyShaperSnapshot();
+  ProxyShaperConfig? lastShaperSaved;
 
   @override
   Future<ProxySettingsConfig> loadSettings() async => config;
@@ -95,6 +97,24 @@ class _FakeSettingsFacade implements ProxySettingsFacade {
       config: next,
     );
     return lanStatus;
+  }
+
+  @override
+  Future<ProxyShaperSnapshot> loadShaperConfig() async => shaperSnapshot;
+
+  @override
+  Future<ProxyShaperSnapshot> saveShaperConfig(
+    ProxyShaperConfig next,
+  ) async {
+    lastShaperSaved = next;
+    shaperSnapshot = ProxyShaperSnapshot(
+      config: next,
+      effective: next,
+      applied: next.enabled,
+      engineRunning: true,
+      counters: shaperSnapshot.counters,
+    );
+    return shaperSnapshot;
   }
 
   @override

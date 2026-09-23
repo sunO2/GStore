@@ -38,8 +38,15 @@ import 'package:installed_apps/installed_apps.dart' as installed;
 
 // `ProxyLanConfig` / `ProxyLanStatus` 已迁至冻结契约 `ProxyContract.dart`；此处
 // 再导出，使既有 `import 'proxy_settings_facade.dart'` 的调用方无需改动。
+// 弱网模拟（`net.shaper.*`）模型同样再导出，供设置页（Todo 14）与预设表直接使用。
 export 'package:gstore/core/rust/proxy/ProxyContract.dart'
-    show ProxyLanConfig, ProxyLanStatus;
+    show
+        ProxyLanConfig,
+        ProxyLanStatus,
+        ProxyShaperConfig,
+        ProxyShaperDirection,
+        ProxyShaperCounters,
+        ProxyShaperSnapshot;
 
 /// 本应用包名。
 ///
@@ -364,6 +371,12 @@ abstract class ProxySettingsFacade {
   /// `lan.set`：下发 LAN 配置并返回最新状态。
   Future<ProxyLanStatus> saveLanConfig(ProxyLanConfig config);
 
+  /// `net.shaper.get`：读取弱网配置（意图 + 引擎生效）+ 运行态 + 计数器。
+  Future<ProxyShaperSnapshot> loadShaperConfig();
+
+  /// `net.shaper.set`：下发弱网配置并返回最新快照。
+  Future<ProxyShaperSnapshot> saveShaperConfig(ProxyShaperConfig config);
+
   /// `log.set_level` + 本地持久化。
   Future<LogSetLevelResult> setLogLevel(ProxyLogLevel level);
 
@@ -440,6 +453,13 @@ class ProxyModuleSettingsFacade implements ProxySettingsFacade {
   @override
   Future<ProxyLanStatus> saveLanConfig(ProxyLanConfig config) =>
       _module.lanSet(config);
+
+  @override
+  Future<ProxyShaperSnapshot> loadShaperConfig() => _module.netShaperGet();
+
+  @override
+  Future<ProxyShaperSnapshot> saveShaperConfig(ProxyShaperConfig config) =>
+      _module.netShaperSet(config);
 
   @override
   Future<LogSetLevelResult> setLogLevel(ProxyLogLevel level) async {
