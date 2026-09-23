@@ -123,7 +123,8 @@ pub(crate) struct RequestRecord {
 
 /// Projection of a [`ConnRecord`] into a [`RequestRecord`] at the capture
 /// chokepoint. `dstIp`/`dstPort`/`network` come straight from the captured
-/// record (T3); domain resolution lands in T4 and UID attribution in T11.
+/// record (T3); domain attribution reuses [`crate::stats::resolve_domain`] so it
+/// matches the stats aggregate exactly, and UID attribution lands in T11.
 /// `openTsMs` is the flow's meow start time so `durationMs` approximates the
 /// real lifetime (sampled on the tick).
 fn project(rec: &ConnRecord, now_ms: u64) -> RequestRecord {
@@ -132,14 +133,14 @@ fn project(rec: &ConnRecord, now_ms: u64) -> RequestRecord {
     } else {
         rec.started_at_ms
     };
-    let domain = rec.domain.clone();
+    let (domain, domain_known) = crate::stats::resolve_domain(rec);
     RequestRecord {
         record_id: 0,
         conn_id: rec.id.clone(),
         open_ts_ms,
         close_ts_ms: None,
         duration_ms: None,
-        domain_known: !domain.trim().is_empty(),
+        domain_known,
         domain,
         dst_ip: rec.dst_ip.clone(),
         dst_port: rec.dst_port,
@@ -1113,5 +1114,194 @@ mod tests {
         assert_eq!(s.records.len(), 1);
         assert_eq!(s.records[0].dst_ip, "1.2.3.4", "original dstIp preserved");
         assert_eq!(s.records[0].dst_port, 443, "original dstPort preserved");
+    }
+
+    // --- Todo 4: shared domain resolution with `stats::resolve_domain` ---
+
+    use crate::dns::{DnsConfig, DnsModeKind};
+    use crate::TEST_SERIAL as SERIAL;
+
+    fn stats_domain(domain_key: &str) -> (String, bool) {
+        let data = crate::stats::domain_get_arm(b"{}").unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&data).unwrap();
+        let arr = json["data"]["domains"].as_array().unwrap();
+        let d = arr
+            .iter()
+            .find(|d| d["domain"] == domain_key)
+            .unwrap_or_else(|| panic!("stats domain '{domain_key}' missing: {arr:?}"));
+        (
+            d["domain"].as_str().unwrap().to_string(),
+            d["domainKnown"].as_bool().unwrap(),
+        )
+    }
+
+    fn install_fake_ip_engine() -> std::sync::Arc<crate::dns::DnsEngine> {
+        let cfg = DnsConfig {
+            mode: DnsModeKind::FakeIp,
+            nameservers: vec!["127.0.0.1".to_string()],
+            ..Default::default()
+        };
+        crate::dns::set_config(cfg).expect("fake-ip engine installs")
+    }
+
+    /// Happy QA: a plain-IP flow is `domainKnown=false` and the requests record
+    /// carries the structured `dstIp` verbatim — and the stats aggregate agrees.
+    #[test]
+    fn plain_ip_flow_domain_matches_stats_and_target_ip() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        crate::stats::reset_for_tests();
+
+        let mut c = conn_rec("c-plain", 1_000);
+        c.domain = "203.0.113.7".to_string();
+        c.dst = "203.0.113.7:443".to_string();
+        c.dst_ip = "203.0.113.7".to_string();
+        c.dst_port = 443;
+
+        record_open(&c, 1_000);
+        let page = snapshot(0, 100, &RequestFilter::default());
+        let r = &page.records[0];
+        assert_eq!(r.domain, "203.0.113.7", "exact string, not presence");
+        assert!(!r.domain_known, "plain IP must be domainKnown=false");
+        assert_eq!(r.domain, r.dst_ip, "unknown domain holds the target IP");
+
+        crate::stats::observe_for_tests(std::slice::from_ref(&c), &[], 1_000);
+        let (stat_domain, stat_known) = stats_domain("203.0.113.7");
+        assert_eq!(stat_domain, "203.0.113.7");
+        assert!(!stat_known);
+        assert_eq!(r.domain, stat_domain, "requests and stats must agree");
+    }
+
+    /// Failure QA (adversarial): an empty domain falls back to the structured
+    /// `dstIp`; no domain is ever fabricated.
+    #[test]
+    fn empty_domain_falls_back_to_dst_ip_not_fabricated() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        let mut c = conn_rec("c-empty-domain", 1_000);
+        c.domain = String::new();
+        c.dst = "198.51.100.9:8443".to_string();
+        c.dst_ip = "198.51.100.9".to_string();
+        c.dst_port = 8443;
+
+        record_open(&c, 1_000);
+        let page = snapshot(0, 100, &RequestFilter::default());
+        let r = &page.records[0];
+        assert_eq!(r.domain, "198.51.100.9", "no fabricated domain; the IP is used");
+        assert!(!r.domain_known);
+        assert_eq!(r.domain, r.dst_ip);
+    }
+
+    /// Happy QA: a fake-IP mapping hit yields `domainKnown=true` and the SAME
+    /// domain on the requests and stats paths.
+    #[test]
+    fn fake_ip_mapping_hit_marks_domain_known_and_agrees_with_stats() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        crate::stats::reset_for_tests();
+        let engine = install_fake_ip_engine();
+        let fake = engine
+            .resolver()
+            .fakeip_pool_over("198.18.0.0/16".parse().unwrap())
+            .expect("v4 fake-ip pool installed")
+            .lookup("fixture.example");
+        assert!(engine.resolver().is_fake_ip(fake));
+        assert!(engine.domain_for_ip(fake).is_some());
+
+        let mut c = conn_rec("c-fake", 2_000);
+        c.domain = fake.to_string();
+        c.dst = format!("{fake}:443");
+        c.dst_ip = fake.to_string();
+        c.dst_port = 443;
+
+        record_open(&c, 2_000);
+        let page = snapshot(0, 100, &RequestFilter::default());
+        let r = &page.records[0];
+        assert_eq!(r.domain, "fixture.example");
+        assert!(r.domain_known);
+
+        crate::stats::observe_for_tests(std::slice::from_ref(&c), &[], 2_000);
+        let (stat_domain, stat_known) = stats_domain("fixture.example");
+        assert!(stat_known);
+        assert_eq!(r.domain, stat_domain, "requests and stats must agree");
+    }
+
+    /// Adversarial stale_state: once the fake-IP mapping is flushed, the same
+    /// target IP resolves to the IP — the earlier domain is never reused/cached.
+    #[test]
+    fn flushed_fake_ip_mapping_makes_domain_unknown_not_cached() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        let engine = install_fake_ip_engine();
+        let fake = engine
+            .resolver()
+            .fakeip_pool_over("198.18.0.0/16".parse().unwrap())
+            .expect("v4 fake-ip pool installed")
+            .lookup("stale.example");
+
+        let mut c = conn_rec("c-stale", 3_000);
+        c.domain = fake.to_string();
+        c.dst = format!("{fake}:443");
+        c.dst_ip = fake.to_string();
+        c.dst_port = 443;
+
+        record_open(&c, 3_000);
+        let page = snapshot(0, 100, &RequestFilter::default());
+        assert_eq!(page.records[0].domain, "stale.example");
+        assert!(page.records[0].domain_known);
+
+        engine.clear_cache();
+        assert!(
+            engine.domain_for_ip(fake).is_none(),
+            "fake-IP mapping flushed before the second flow"
+        );
+
+        reset_for_tests();
+        record_open(&c, 4_000);
+        let page = snapshot(0, 100, &RequestFilter::default());
+        let r = &page.records[0];
+        assert_eq!(r.domain, fake.to_string(), "no stale/fabricated domain");
+        assert!(!r.domain_known);
+        assert_eq!(r.domain, r.dst_ip);
+    }
+
+    /// Boundary: a bare IPv6 target resolves to the IPv6 IP, never a fabricated
+    /// domain, and equals the structured `dstIp`.
+    #[test]
+    fn ipv6_target_is_ip_not_fabricated_domain() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        let mut c = conn_rec("c-v6", 5_000);
+        c.domain = "2001:db8::1".to_string();
+        c.dst = "2001:db8::1:443".to_string();
+        c.dst_ip = "2001:db8::1".to_string();
+        c.dst_port = 443;
+
+        record_open(&c, 5_000);
+        let page = snapshot(0, 100, &RequestFilter::default());
+        let r = &page.records[0];
+        assert_eq!(r.domain, "2001:db8::1");
+        assert_eq!(r.domain, r.dst_ip);
+        assert!(!r.domain_known);
+    }
+
+    /// Boundary: blank domain AND blank destination must not panic and must not
+    /// invent a domain.
+    #[test]
+    fn blank_domain_and_blank_dst_do_not_fabricate_a_domain() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        let mut c = conn_rec("c-blank", 6_000);
+        c.domain = String::new();
+        c.dst = String::new();
+        c.dst_ip = String::new();
+        c.dst_port = 0;
+
+        record_open(&c, 6_000);
+        let page = snapshot(0, 100, &RequestFilter::default());
+        let r = &page.records[0];
+        assert_eq!(r.domain, "", "nothing to resolve: never fabricated");
+        assert!(!r.domain_known);
+        assert_eq!(r.domain, r.dst_ip);
     }
 }

@@ -310,7 +310,10 @@ pub(crate) fn should_emit(now_ms: u64, last_emit_ms: u64) -> bool {
 /// Prefers the sniffed/rule host; treats an IP-shaped host as unknown and tries
 /// a DNS reverse mapping; finally falls back to the destination IP with
 /// `domainKnown=false`.
-fn resolve_domain(r: &ConnRecord) -> (String, bool) {
+///
+/// Shared with [`crate::requests`] so a flow's `stats` aggregate and its
+/// `RequestRecord` are attributed identically (Todo 4).
+pub(crate) fn resolve_domain(r: &ConnRecord) -> (String, bool) {
     let raw = r.domain.trim();
     if let Ok(ip) = raw.parse::<IpAddr>() {
         return reverse_or_ip(ip);
