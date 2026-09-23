@@ -1,5 +1,8 @@
 import 'dart:async';
+import 'dart:io';
+import 'dart:typed_data';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import 'package:gstore/core/design/app_components.dart';
@@ -47,6 +50,90 @@ const List<_RangeOption> _rangeOptions = <_RangeOption>[
 /// 网络类型筛选项（`null` = 全部）。
 const List<String?> _networkOptions = <String?>[null, 'tcp', 'udp'];
 
+/// 导出另存的测试接缝：调用系统保存对话框并返回落地路径（取消 → `null`）。
+///
+/// 生产默认走 [FilePicker.platform.saveFile]，测试注入假实现断言「保存被调用」。
+typedef ProxyRequestsSaveFile = Future<String?> Function({
+  required String fileName,
+  required Uint8List bytes,
+  required List<String> allowedExtensions,
+});
+
+/// 读取 Rust 侧已生成导出文件字节的测试接缝。
+typedef ProxyRequestsReadFile = Future<Uint8List> Function(String path);
+
+/// 一次导出的落地目标（Rust 产物路径 → 另存文件名 / 扩展名）。
+class _ExportTarget {
+  const _ExportTarget({
+    required this.path,
+    required this.fileName,
+    required this.allowedExtensions,
+  });
+
+  final String path;
+  final String fileName;
+  final List<String> allowedExtensions;
+}
+
+/// 导出格式选项行（统一弹层内容；避免 [ListTile] 对 Material 祖先的依赖）。
+class _ExportOption extends StatelessWidget {
+  const _ExportOption({
+    super.key,
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: AppRadius.allMD,
+      child: Padding(
+        padding: AppSpacing.allMD,
+        child: Row(
+          children: [
+            ColoredAliIcon(
+              icon: icon,
+              size: AppTypography.iconMD,
+              color: scheme.primary,
+            ),
+            const SizedBox(width: AppSpacing.md),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title, style: theme.textTheme.bodyLarge),
+                  const SizedBox(height: AppSpacing.xs),
+                  Text(
+                    subtitle,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Icon(
+              Icons.chevron_right,
+              size: AppTypography.iconMD,
+              color: scheme.onSurfaceVariant,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 /// 实时「请求域名 / IP 收集」页（纯展示 / 触发层，Todo 15）。
 ///
 /// * **概览卡**：总量、请求数、活跃数、`domainKnown:false` 占比（由当前拉取
@@ -68,6 +155,8 @@ class ProxyRequestsPage extends StatefulWidget {
     this.facade,
     this.events,
     this.initialLive = true,
+    this.saveFile,
+    this.readFile,
   });
 
   /// 收集页门面（测试可注入假实现；为空时用生产适配器）。
@@ -79,6 +168,12 @@ class ProxyRequestsPage extends StatefulWidget {
   /// 初始是否开启实时（脏信号 + 2s 兜底）。
   final bool initialLive;
 
+  /// 导出另存接缝（测试注入；为空时走 [FilePicker.platform.saveFile]）。
+  final ProxyRequestsSaveFile? saveFile;
+
+  /// 导出文件读取接缝（测试注入；为空时读本地文件）。
+  final ProxyRequestsReadFile? readFile;
+
   @override
   State<ProxyRequestsPage> createState() => _ProxyRequestsPageState();
 }
@@ -87,6 +182,8 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
     with WidgetsBindingObserver {
   late final ProxyRequestsFacade _facade;
   late final Stream<ProxyEvent> _events;
+  late final ProxyRequestsSaveFile _saveFile;
+  late final ProxyRequestsReadFile _readFile;
 
   StreamSubscription<ProxyEvent>? _eventSub;
   Timer? _fallbackTimer;
@@ -100,6 +197,7 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
   bool _visible = true;
   bool _loading = true;
   bool _pullInFlight = false;
+  bool _exporting = false;
 
   RequestPage? _page;
   String? _error;
@@ -117,6 +215,8 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
     WidgetsBinding.instance.addObserver(this);
     _facade = widget.facade ?? ProxyModuleRequestsFacade();
     _events = widget.events ?? ProxyModule.instance.events;
+    _saveFile = widget.saveFile ?? _defaultSaveFile;
+    _readFile = widget.readFile ?? _defaultReadFile;
     _live = widget.initialLive;
     _eventSub = _events.listen(_onEvent);
     if (_live) _startFallback();
@@ -277,6 +377,156 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
     }
   }
 
+  // ==================== 导出 ====================
+
+  /// 「导出」入口：统一 [AppSheet] 选择 CSV / JSON / 两者。
+  ///
+  /// 选择后调用 `requests.export` 拿到 Rust 侧生成的文件路径与字节，再经
+  /// [ProxyRequestsSaveFile] 另存。用户取消（弹层返回 `null` 或 `saveFile`
+  /// 返回 `null`）**不报错、不提示失败**；成功提示包含行数；失败走
+  /// [AppDialogs.showError] 且不崩溃。
+  Future<void> _export() async {
+    if (_exporting) return;
+    final format = await AppDialogs.showContentSheet<String>(
+      title: '导出请求记录',
+      icon: const Icon(Icons.file_download_outlined),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _ExportOption(
+            key: const Key('requests_export_csv'),
+            icon: Icons.description_outlined,
+            title: 'CSV',
+            subtitle: '适合电子表格 / 数据分析',
+            onTap: () => AppDialogs.popSheet<String>('csv'),
+          ),
+          _ExportOption(
+            key: const Key('requests_export_json'),
+            icon: Icons.data_object_outlined,
+            title: 'JSON',
+            subtitle: '适合程序化处理',
+            onTap: () => AppDialogs.popSheet<String>('json'),
+          ),
+          _ExportOption(
+            key: const Key('requests_export_both'),
+            icon: Icons.file_copy_outlined,
+            title: 'CSV + JSON',
+            subtitle: '同时导出两种格式',
+            onTap: () => AppDialogs.popSheet<String>('both'),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => AppDialogs.popSheet<String>(null),
+          child: const Text('取消'),
+        ),
+      ],
+    );
+    if (format == null || !mounted) return;
+    await _runExport(format);
+  }
+
+  /// 执行导出：`requestsExport` → 读字节 → 另存。
+  Future<void> _runExport(String format) async {
+    setState(() => _exporting = true);
+    RequestExportResult result;
+    try {
+      result = await _facade.requestsExport(
+        RequestExportRequest(format: format, filter: _buildFilter()),
+      );
+    } on ProxyModuleException catch (error) {
+      if (!mounted) return;
+      setState(() => _exporting = false);
+      AppDialogs.showError(error.message, title: '导出失败');
+      return;
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _exporting = false);
+      AppDialogs.showError('导出失败：$error', title: '导出失败');
+      return;
+    }
+    if (!mounted) return;
+
+    final timestamp = _exportTimestamp();
+    final targets = <_ExportTarget>[
+      if (result.csvPath != null && result.csvPath!.isNotEmpty)
+        _ExportTarget(
+          path: result.csvPath!,
+          fileName: 'gstore_requests_$timestamp.csv',
+          allowedExtensions: const <String>['csv'],
+        ),
+      if (result.jsonPath != null && result.jsonPath!.isNotEmpty)
+        _ExportTarget(
+          path: result.jsonPath!,
+          fileName: 'gstore_requests_$timestamp.json',
+          allowedExtensions: const <String>['json'],
+        ),
+    ];
+    if (targets.isEmpty) {
+      setState(() => _exporting = false);
+      AppDialogs.showError('未生成可导出的文件', title: '导出失败');
+      return;
+    }
+
+    try {
+      var saved = 0;
+      for (final target in targets) {
+        final bytes = await _readFile(target.path);
+        final outputPath = await _saveFile(
+          fileName: target.fileName,
+          bytes: bytes,
+          allowedExtensions: target.allowedExtensions,
+        );
+        // 取消（返回 null / 空路径）：静默停止，不报错、不提示失败。
+        if (outputPath == null || outputPath.isEmpty) {
+          if (mounted) setState(() => _exporting = false);
+          return;
+        }
+        saved++;
+      }
+      if (!mounted) return;
+      setState(() => _exporting = false);
+      final suffix = saved > 1 ? '（CSV + JSON）' : '';
+      AppDialogs.showSuccess(
+        '已导出 ${result.rows} 条请求记录$suffix',
+        title: '导出成功',
+      );
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _exporting = false);
+      AppDialogs.showError('导出失败：$error', title: '导出失败');
+    }
+  }
+
+  /// 生产默认另存：系统保存对话框（与日志 / 备份导出同机制）。
+  static Future<String?> _defaultSaveFile({
+    required String fileName,
+    required Uint8List bytes,
+    required List<String> allowedExtensions,
+  }) {
+    return FilePicker.platform.saveFile(
+      dialogTitle: '保存请求记录',
+      fileName: fileName,
+      lockParentWindow: true,
+      type: FileType.custom,
+      allowedExtensions: allowedExtensions,
+      bytes: bytes,
+    );
+  }
+
+  /// 生产默认读取：读 Rust 侧生成的导出文件字节。
+  static Future<Uint8List> _defaultReadFile(String path) =>
+      File(path).readAsBytes();
+
+  /// 导出文件名时间戳（`yyyyMMdd_HHmmss`）。
+  String _exportTimestamp() {
+    final now = DateTime.now();
+    return '${now.year}${_two(now.month)}${_two(now.day)}_'
+        '${_two(now.hour)}${_two(now.minute)}${_two(now.second)}';
+  }
+
   // ==================== 过滤（展示层，本地为准） ====================
 
   void _applyLocalFilter() => setState(() {});
@@ -336,6 +586,12 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
       appBar: AppBar(
         title: const Text('请求域名 / IP'),
         actions: [
+          IconButton(
+            key: const Key('requests_export'),
+            tooltip: '导出',
+            icon: const Icon(Icons.file_download_outlined),
+            onPressed: _exporting ? null : _export,
+          ),
           IconButton(
             key: const Key('requests_refresh'),
             tooltip: '刷新',

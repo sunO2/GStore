@@ -15,6 +15,7 @@
 // * 对抗：门面抛错 → 显式错误态且不崩溃；卸载后事件 / 定时器不再 setState。
 
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -45,13 +46,22 @@ void _useLargeViewport(WidgetTester tester) {
 // ==================== 假门面 ====================
 
 class _FakeRequestsFacade implements ProxyRequestsFacade {
-  _FakeRequestsFacade({this.page = const RequestPage(), this.fail = false});
+  _FakeRequestsFacade({
+    this.page = const RequestPage(),
+    this.fail = false,
+    this.exportResult = const RequestExportResult(),
+    this.exportFail = false,
+  });
 
   RequestPage page;
   bool fail;
+  RequestExportResult exportResult;
+  bool exportFail;
   int getCalls = 0;
   int resetCalls = 0;
+  int exportCalls = 0;
   RequestGetRequest? lastGet;
+  RequestExportRequest? lastExport;
 
   @override
   Future<RequestPage> requestsGet(RequestGetRequest request) async {
@@ -72,7 +82,33 @@ class _FakeRequestsFacade implements ProxyRequestsFacade {
   Future<RequestExportResult> requestsExport(
     RequestExportRequest request,
   ) async {
-    return const RequestExportResult();
+    exportCalls++;
+    lastExport = request;
+    if (exportFail) {
+      throw const ProxyModuleException(code: 'EXPORT_FAIL', message: '导出后端失败');
+    }
+    return exportResult;
+  }
+}
+
+/// 假另存接缝：记录调用参数并返回预设路径（`null` = 用户取消）。
+class _FakeSaveFile {
+  _FakeSaveFile({this.result = '/tmp/out.csv'});
+
+  String? result;
+  final List<String> fileNames = <String>[];
+  final List<List<String>> extensions = <List<String>>[];
+  final List<int> byteLengths = <int>[];
+
+  Future<String?> call({
+    required String fileName,
+    required Uint8List bytes,
+    required List<String> allowedExtensions,
+  }) async {
+    fileNames.add(fileName);
+    extensions.add(allowedExtensions);
+    byteLengths.add(bytes.length);
+    return result;
   }
 }
 
@@ -403,6 +439,237 @@ void main() {
     await tester.pump(const Duration(seconds: 3));
 
     expect(fake.getCalls, before, reason: '卸载后不应再拉取');
+    expect(tester.takeException(), isNull);
+  });
+
+  // ==================== 导出 UI（Todo 16） ====================
+
+  testWidgets('导出 CSV：调用 saveFile 且成功提示含真实行数', (tester) async {
+    _useLargeViewport(tester);
+    final fake = _FakeRequestsFacade(
+      page: _samplePage(),
+      exportResult: const RequestExportResult(
+        csvPath: '/data/proxy_requests_1.csv',
+        rows: 3,
+        bytes: 42,
+      ),
+    );
+    final save = _FakeSaveFile(result: '/tmp/gstore_requests.csv');
+
+    await tester.pumpWidget(
+      _host(
+        ProxyRequestsPage(
+          facade: fake,
+          initialLive: false,
+          saveFile: save.call,
+          readFile: (path) async => Uint8List.fromList(<int>[1, 2, 3]),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    await tester.tap(find.byKey(const Key('requests_export')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('requests_export_csv')));
+    await tester.pumpAndSettle();
+
+    expect(fake.exportCalls, 1);
+    expect(fake.lastExport?.format, 'csv');
+    expect(save.fileNames, hasLength(1));
+    expect(save.fileNames.single, endsWith('.csv'));
+    expect(save.fileNames.single, startsWith('gstore_requests_'));
+    expect(save.extensions.single, <String>['csv']);
+    expect(save.byteLengths.single, 3);
+    // 成功提示必须包含真实行数（非仅存在性）。
+    expect(find.textContaining('已导出 3 条请求记录'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('导出取消（saveFile 返回 null）：无错误、无失败提示', (tester) async {
+    _useLargeViewport(tester);
+    final fake = _FakeRequestsFacade(
+      page: _samplePage(),
+      exportResult: const RequestExportResult(
+        csvPath: '/data/proxy_requests_1.csv',
+        rows: 3,
+      ),
+    );
+    final save = _FakeSaveFile(result: null);
+
+    await tester.pumpWidget(
+      _host(
+        ProxyRequestsPage(
+          facade: fake,
+          initialLive: false,
+          saveFile: save.call,
+          readFile: (path) async => Uint8List.fromList(<int>[1]),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    await tester.tap(find.byKey(const Key('requests_export')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('requests_export_csv')));
+    await tester.pumpAndSettle();
+
+    expect(fake.exportCalls, 1);
+    expect(save.fileNames, hasLength(1), reason: 'saveFile 仍应被调用一次');
+    expect(find.byType(SnackBar), findsNothing, reason: '取消不应提示成功或失败');
+    expect(find.text('导出失败'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('导出失败：showError 且不崩溃', (tester) async {
+    _useLargeViewport(tester);
+    final fake = _FakeRequestsFacade(page: _samplePage(), exportFail: true);
+    final save = _FakeSaveFile();
+
+    await tester.pumpWidget(
+      _host(
+        ProxyRequestsPage(
+          facade: fake,
+          initialLive: false,
+          saveFile: save.call,
+          readFile: (path) async => Uint8List.fromList(<int>[1]),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    await tester.tap(find.byKey(const Key('requests_export')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('requests_export_csv')));
+    await tester.pumpAndSettle();
+
+    expect(fake.exportCalls, 1);
+    expect(save.fileNames, isEmpty, reason: '导出失败不应调用 saveFile');
+    expect(find.text('导出失败'), findsOneWidget);
+    expect(find.textContaining('导出后端失败'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('边界：同时选择 CSV + JSON -> saveFile 调用两次', (tester) async {
+    _useLargeViewport(tester);
+    final fake = _FakeRequestsFacade(
+      page: _samplePage(),
+      exportResult: const RequestExportResult(
+        csvPath: '/data/proxy_requests_1.csv',
+        jsonPath: '/data/proxy_requests_1.json',
+        rows: 7,
+      ),
+    );
+    final save = _FakeSaveFile(result: '/tmp/out');
+
+    await tester.pumpWidget(
+      _host(
+        ProxyRequestsPage(
+          facade: fake,
+          initialLive: false,
+          saveFile: save.call,
+          readFile: (path) async => Uint8List.fromList(<int>[9]),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    await tester.tap(find.byKey(const Key('requests_export')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('requests_export_both')));
+    await tester.pumpAndSettle();
+
+    expect(fake.lastExport?.format, 'both');
+    expect(save.extensions, <List<String>>[
+      <String>['csv'],
+      <String>['json'],
+    ]);
+    expect(find.textContaining('已导出 7 条请求记录'), findsOneWidget);
+    expect(find.textContaining('CSV + JSON'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('对抗：facade 返回空路径（malformed）-> showError 不崩溃', (tester) async {
+    _useLargeViewport(tester);
+    // 无 csvPath / jsonPath（两键均 null）。
+    final fake = _FakeRequestsFacade(
+      page: _samplePage(),
+      exportResult: const RequestExportResult(rows: 0),
+    );
+    final save = _FakeSaveFile();
+
+    await tester.pumpWidget(
+      _host(
+        ProxyRequestsPage(
+          facade: fake,
+          initialLive: false,
+          saveFile: save.call,
+          readFile: (path) async => Uint8List.fromList(<int>[1]),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    await tester.tap(find.byKey(const Key('requests_export')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('requests_export_json')));
+    await tester.pumpAndSettle();
+
+    expect(save.fileNames, isEmpty);
+    expect(find.text('导出失败'), findsOneWidget);
+    expect(find.textContaining('未生成可导出的文件'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('对抗：导出中卸载 -> 无 dispose 后 setState', (tester) async {
+    _useLargeViewport(tester);
+    final fake = _FakeRequestsFacade(
+      page: _samplePage(),
+      exportResult: const RequestExportResult(
+        csvPath: '/data/proxy_requests_1.csv',
+        rows: 1,
+      ),
+    );
+    final gate = Completer<void>();
+    String? saveResult;
+
+    Future<String?> pendingSave({
+      required String fileName,
+      required Uint8List bytes,
+      required List<String> allowedExtensions,
+    }) async {
+      await gate.future;
+      return saveResult;
+    }
+
+    await tester.pumpWidget(
+      _host(
+        ProxyRequestsPage(
+          facade: fake,
+          initialLive: false,
+          saveFile: pendingSave,
+          readFile: (path) async => Uint8List.fromList(<int>[1]),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    await tester.tap(find.byKey(const Key('requests_export')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('requests_export_csv')));
+    await tester.pump();
+
+    // 另存仍挂起时卸载页面。
+    await tester.pumpWidget(const SizedBox());
+    saveResult = '/tmp/out.csv';
+    gate.complete();
+    await tester.pump();
+
     expect(tester.takeException(), isNull);
   });
 }
