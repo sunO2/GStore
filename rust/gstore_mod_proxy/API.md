@@ -992,6 +992,63 @@ This exists purely for diagnostics and third-party panels. **Dart/Flutter never
 calls this HTTP API for normal operation**; the UI reads state through the
 envelope (`core.*`, `stats.*`, `conn.*`) and module events.
 
+### 2.14 `requests.*` — per-request timeline (Todo 5)
+
+| method | request | data |
+|---|---|---|
+| `requests.get` | `{ "cursor"?: recordId, "limit"?: 256, "filter"?: { "domain"?: string, "uid"?: number, "network"?: string, "outbound"?: string, "sinceMs"?: number, "untilMs"?: number } }` | `RequestPage` |
+| `requests.reset` | *(none)* | `{ "ok": true, "cleared": 0 }` |
+
+`RequestRecord`:
+```json
+{ "recordId": 1, "connId": "uuid", "openTsMs": 0, "closeTsMs": null,
+  "durationMs": null, "domain": "example.com", "domainKnown": true,
+  "dstIp": "1.2.3.4", "dstPort": 443, "src": "10.0.0.2:40000",
+  "network": "tcp", "uid": null, "packages": [], "uidState": "unknown",
+  "rule": "MATCH", "rulePayload": "", "outbound": "DIRECT",
+  "uploadBytes": 0, "downloadBytes": 0, "closeReason": "open" }
+```
+
+| field | type | notes |
+|---|---|---|
+| `recordId` | u64 | monotonic, never reused; the cursor key |
+| `connId` | string | meow connection id; **not unique** over time |
+| `openTsMs` | u64 | flow start (meow) |
+| `closeTsMs` | u64? | **approximate** (sampling tick); `null` while open |
+| `durationMs` | u64? | **approximate** `closeTsMs - openTsMs`; `null` while open |
+| `domain` | string | attributed domain, or the target IP when unknown |
+| `domainKnown` | bool | `false` → `domain` holds the target IP |
+| `dstIp` | string | bare IP (IPv6 without brackets) |
+| `dstPort` | number | destination port |
+| `src` | string | `ip:port` |
+| `network` | string | `"tcp"` / `"udp"` (production capture is TCP-only, §2.10) |
+| `uid` | number? | owning Android UID; `null` when unknown |
+| `packages` | string[] | packages for `uid` |
+| `uidState` | string | `"known"` / `"pending"` / `"unknown"` |
+| `rule` / `rulePayload` / `outbound` | string | matched rule and outbound |
+| `uploadBytes` / `downloadBytes` | u64 | flow byte counters |
+| `closeReason` | string | `"open"` / `"closed"` / `"stale"` |
+
+`RequestPage`:
+```json
+{ "records": [RequestRecord], "nextCursor": 0, "firstCursor": 0,
+  "retained": 0, "capacity": 4096, "dropped": 0, "evicted": 0,
+  "windowStartMs": 0 }
+```
+
+**Pull-based.** `requests.get` is the primary, pull-based path over the bounded
+in-memory ring (`REQUEST_RING_CAP = 4096`); the host event ring is never fed
+per-request. `cursor` is a `recordId`: only records with `recordId > cursor` are
+returned, ordered by `openTsMs` descending, ties broken by `recordId` ascending.
+A `cursor` below `firstCursor` means records were evicted; `nextCursor` is the
+high-water mark and is never reclaimed by eviction or `requests.reset`.
+`closeTsMs`/`durationMs` are derived from the sampling tick and are therefore
+**approximate**. Filters: `domain` is a case-sensitive substring,
+`network`/`outbound` are exact, and `sinceMs`/`untilMs` bound `openTsMs`
+inclusively. `requests.reset` clears the in-memory ring (the cursor stays
+monotonic). Both require a live instance (structured `INSTANCE_NOT_FOUND`
+otherwise), never `METHOD_NOT_FOUND`.
+
 ## 3. Events (module → host)
 
 Emitted through the ABI `emit_event` channel. Payload is the JSON below; the Dart

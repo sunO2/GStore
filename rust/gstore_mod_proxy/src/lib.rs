@@ -414,6 +414,8 @@ pub(crate) const DISPATCH_METHODS: &[&str] = &[
     "stats.traffic.get",
     "stats.get",
     "stats.reset",
+    "requests.get",
+    "requests.reset",
     "lan.get",
     "lan.set",
     "lan.status",
@@ -2019,6 +2021,10 @@ fn call_impl(
         "stats.traffic.get" => stats::traffic_get_arm(_payload),
         "stats.get" => stats::domain_get_arm(_payload),
         "stats.reset" => stats::reset_arm(),
+        "requests.get" => require_instance(instance_id, instance.clone())
+            .and_then(|_| requests::get_arm(_payload)),
+        "requests.reset" => require_instance(instance_id, instance.clone())
+            .and_then(|_| requests::reset_arm()),
         "lan.get" => lan_get_arm(instance_id, instance.clone()),
         "lan.set" => lan_set_arm(instance_id, instance.clone(), _payload),
         "lan.status" => lan_status_arm(instance_id, instance.clone()),

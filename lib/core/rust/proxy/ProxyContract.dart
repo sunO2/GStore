@@ -64,6 +64,8 @@ class ProxyMethods {
   static const String statsTrafficGet = 'stats.traffic.get';
   static const String statsGet = 'stats.get';
   static const String statsReset = 'stats.reset';
+  static const String requestsGet = 'requests.get';
+  static const String requestsReset = 'requests.reset';
   static const String clashApiStart = 'diagnostics.clash_api.start';
   static const String clashApiStop = 'diagnostics.clash_api.stop';
   static const String clashApiStatus = 'diagnostics.clash_api.status';
@@ -119,6 +121,8 @@ class ProxyMethods {
     statsTrafficGet,
     statsGet,
     statsReset,
+    requestsGet,
+    requestsReset,
     clashApiStart,
     clashApiStop,
     clashApiStatus,
@@ -2115,6 +2119,145 @@ class StatsResetResult {
   final int cleared;
 }
 
+// ==================== requests.* ====================
+
+/// `uidState` 三态（`API.md` §2.14）；未知字符串回落 [unknown]。
+enum ProxyUidState {
+  known('known'),
+  pending('pending'),
+  unknown('unknown');
+
+  const ProxyUidState(this.wire);
+
+  final String wire;
+
+  static ProxyUidState fromWire(Object? value) {
+    final s = value?.toString();
+    for (final state in values) {
+      if (state.wire == s) return state;
+    }
+    return ProxyUidState.unknown;
+  }
+}
+
+/// 一条请求（流）记录（`API.md` §2.14 `RequestRecord`）。
+class RequestRecord {
+  const RequestRecord({
+    required this.recordId,
+    required this.connId,
+    required this.openTsMs,
+    this.closeTsMs,
+    this.durationMs,
+    required this.domain,
+    this.domainKnown = false,
+    required this.dstIp,
+    this.dstPort = 0,
+    required this.src,
+    this.network = '',
+    this.uid,
+    this.packages = const <String>[],
+    this.uidState = ProxyUidState.unknown,
+    this.rule = '',
+    this.rulePayload = '',
+    this.outbound = '',
+    this.uploadBytes = 0,
+    this.downloadBytes = 0,
+    this.closeReason = 'open',
+  });
+
+  factory RequestRecord.fromJson(Map<String, dynamic> json) => RequestRecord(
+        recordId: _int(json['recordId']),
+        connId: _str(json['connId']),
+        openTsMs: _int(json['openTsMs']),
+        closeTsMs: _intOrNull(json['closeTsMs']),
+        durationMs: _intOrNull(json['durationMs']),
+        domain: _str(json['domain']),
+        domainKnown: _bool(json['domainKnown']),
+        dstIp: _str(json['dstIp']),
+        dstPort: _int(json['dstPort']),
+        src: _str(json['src']),
+        network: _str(json['network']),
+        uid: _intOrNull(json['uid']),
+        packages: _strList(json['packages']),
+        uidState: ProxyUidState.fromWire(json['uidState']),
+        rule: _str(json['rule']),
+        rulePayload: _str(json['rulePayload']),
+        outbound: _str(json['outbound']),
+        uploadBytes: _int(json['uploadBytes']),
+        downloadBytes: _int(json['downloadBytes']),
+        closeReason: _str(json['closeReason']),
+      );
+
+  final int recordId;
+  final String connId;
+  final int openTsMs;
+  final int? closeTsMs;
+  final int? durationMs;
+  final String domain;
+  final bool domainKnown;
+  final String dstIp;
+  final int dstPort;
+  final String src;
+  final String network;
+  final int? uid;
+  final List<String> packages;
+  final ProxyUidState uidState;
+  final String rule;
+  final String rulePayload;
+  final String outbound;
+  final int uploadBytes;
+  final int downloadBytes;
+  final String closeReason;
+}
+
+/// `requests.get` 响应（`API.md` §2.14 `RequestPage`）。
+class RequestPage {
+  const RequestPage({
+    this.records = const <RequestRecord>[],
+    this.nextCursor = 0,
+    this.firstCursor = 0,
+    this.retained = 0,
+    this.capacity = 4096,
+    this.dropped = 0,
+    this.evicted = 0,
+    this.windowStartMs = 0,
+  });
+
+  factory RequestPage.fromJson(Map<String, dynamic> json) => RequestPage(
+        records: _mapList(json['records']).map(RequestRecord.fromJson).toList(),
+        nextCursor: _int(json['nextCursor']),
+        firstCursor: _int(json['firstCursor']),
+        retained: _int(json['retained']),
+        capacity: _int(json['capacity']),
+        dropped: _int(json['dropped']),
+        evicted: _int(json['evicted']),
+        windowStartMs: _int(json['windowStartMs']),
+      );
+
+  final List<RequestRecord> records;
+  final int nextCursor;
+  final int firstCursor;
+  final int retained;
+  final int capacity;
+  final int dropped;
+  final int evicted;
+  final int windowStartMs;
+}
+
+/// `requests.reset` 响应（镜像 [StatsResetResult]）。
+class RequestsResetResult {
+  const RequestsResetResult({required this.ok, required this.cleared});
+
+  factory RequestsResetResult.fromJson(Map<String, dynamic> json) =>
+      RequestsResetResult(
+        ok: _bool(json['ok']),
+        cleared: _int(json['cleared']),
+      );
+
+  final bool ok;
+  final int cleared;
+}
+
 // ==================== diagnostics.* ====================
 
 /// `diagnostics.clash_api.start` / `.status` 响应（**无 secret 字段**）。
@@ -2321,6 +2464,8 @@ final Map<String, ProxyJsonDecoder<Object>> proxyResponseDecoders =
   ProxyMethods.statsTrafficGet: TrafficSnapshot.fromJson,
   ProxyMethods.statsGet: DomainPage.fromJson,
   ProxyMethods.statsReset: StatsResetResult.fromJson,
+  ProxyMethods.requestsGet: RequestPage.fromJson,
+  ProxyMethods.requestsReset: RequestsResetResult.fromJson,
   ProxyMethods.clashApiStart: ClashApiStatus.fromJson,
   ProxyMethods.clashApiStop: ClashApiStopResult.fromJson,
   ProxyMethods.clashApiStatus: ClashApiStatus.fromJson,
@@ -2638,6 +2783,49 @@ class StatsTrafficGetRequest {
       <String, dynamic>{if (topDomains != null) 'topDomains': topDomains};
 }
 
+/// `requests.get` 过滤器（`API.md` §2.14）；未提供的字段不编码。
+class RequestsFilter {
+  const RequestsFilter({
+    this.domain,
+    this.uid,
+    this.network,
+    this.outbound,
+    this.sinceMs,
+    this.untilMs,
+  });
+
+  final String? domain;
+  final int? uid;
+  final String? network;
+  final String? outbound;
+  final int? sinceMs;
+  final int? untilMs;
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        if (domain != null) 'domain': domain,
+        if (uid != null) 'uid': uid,
+        if (network != null) 'network': network,
+        if (outbound != null) 'outbound': outbound,
+        if (sinceMs != null) 'sinceMs': sinceMs,
+        if (untilMs != null) 'untilMs': untilMs,
+      };
+}
+
+/// `requests.get` 请求（`API.md` §2.14）。
+class RequestGetRequest {
+  const RequestGetRequest({this.cursor, this.limit, this.filter});
+
+  final int? cursor;
+  final int? limit;
+  final RequestsFilter? filter;
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        if (cursor != null) 'cursor': cursor,
+        if (limit != null) 'limit': limit,
+        if (filter != null) 'filter': filter!.toJson(),
+      };
+}
+
 /// `diagnostics.clash_api.start` 请求。
 class ClashApiStartRequest {
   const ClashApiStartRequest({this.port = 0});
@@ -2681,6 +2869,7 @@ final Map<String, Map<String, dynamic> Function()> proxyRequestEncoders =
   ProxyMethods.connClose: () => const ConnCloseRequest('c1').toJson(),
   ProxyMethods.statsDomainGet: () => const StatsDomainGetRequest().toJson(),
   ProxyMethods.statsTrafficGet: () => const StatsTrafficGetRequest().toJson(),
+  ProxyMethods.requestsGet: () => const RequestGetRequest().toJson(),
   ProxyMethods.clashApiStart: () => const ClashApiStartRequest().toJson(),
   ProxyMethods.lanSet: () => const ProxyLanConfig().toRequestJson(),
 };

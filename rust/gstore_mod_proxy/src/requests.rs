@@ -31,6 +31,7 @@ use std::collections::{HashMap, VecDeque};
 #[cfg(not(test))]
 use std::sync::{Mutex, OnceLock};
 
+use gstore_contract::error::ModuleError;
 use serde::{Deserialize, Serialize};
 
 use crate::conn::ConnRecord;
@@ -571,6 +572,52 @@ impl RequestFilter {
 
 fn non_blank(v: &Option<String>) -> Option<&str> {
     v.as_deref().map(str::trim).filter(|s| !s.is_empty())
+}
+
+/// Default `requests.get` page size when `limit` is omitted (clamped to the ring
+/// cap by [`RequestStore::snapshot`]).
+pub(crate) const DEFAULT_REQUEST_LIMIT: usize = 256;
+
+/// `requests.get` request body:
+/// `{ "cursor"?: recordId, "limit"?: number, "filter"?: { ... } }`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RequestGetRequest {
+    #[serde(default)]
+    pub cursor: Option<u64>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+    #[serde(default)]
+    pub filter: RequestFilter,
+}
+
+/// `requests.get` dispatch arm. Parses the cursor/limit/filter body and returns
+/// the serialized [`RequestSnapshot`] (`RequestPage`) inside the ok envelope. A
+/// malformed body is a structured `INVALID_ARGUMENT` (422), never a panic.
+pub(crate) fn get_arm(payload: &[u8]) -> Result<Vec<u8>, ModuleError> {
+    let req: RequestGetRequest = if payload.is_empty() {
+        RequestGetRequest::default()
+    } else {
+        serde_json::from_slice(payload).map_err(|e| {
+            ModuleError::invalid_arg(format!("requests.get payload must be a JSON object: {e}"))
+        })?
+    };
+    let cursor = req.cursor.unwrap_or(0);
+    let limit = req.limit.unwrap_or(DEFAULT_REQUEST_LIMIT);
+    let page = snapshot(cursor, limit, &req.filter);
+    let data = serde_json::to_value(&page).map_err(|e| ModuleError::internal(e.to_string()))?;
+    crate::ok_data(data)
+}
+
+/// `requests.reset` dispatch arm. Drops every retained in-memory record (the
+/// cursor stays monotonic) and reports how many were cleared.
+pub(crate) fn reset_arm() -> Result<Vec<u8>, ModuleError> {
+    let cleared = with_store(|st| {
+        let n = st.records.len();
+        st.clear();
+        n
+    });
+    crate::ok_data(serde_json::json!({ "ok": true, "cleared": cleared }))
 }
 
 #[cfg(test)]
@@ -1303,5 +1350,106 @@ mod tests {
         assert_eq!(r.domain, "", "nothing to resolve: never fabricated");
         assert!(!r.domain_known);
         assert_eq!(r.domain, r.dst_ip);
+    }
+
+    // --- Todo 5: `requests.get` / `requests.reset` dispatch arms ---
+
+    fn arm_data(bytes: &[u8]) -> serde_json::Value {
+        let v: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+        assert_eq!(v["ok"], true, "arm must return an ok envelope: {v}");
+        v["data"].clone()
+    }
+
+    /// Happy: an empty payload yields the default `RequestPage` (ok envelope).
+    #[test]
+    fn requests_get_arm_empty_payload_returns_ok_page() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        let data = arm_data(&get_arm(b"").unwrap());
+        assert!(data["records"].as_array().unwrap().is_empty());
+        assert_eq!(data["nextCursor"], 0);
+        assert_eq!(data["firstCursor"], 0);
+        assert_eq!(data["retained"], 0);
+        assert_eq!(data["capacity"], REQUEST_RING_CAP);
+    }
+
+    /// Happy: cursor/limit/filter are applied over the shared store.
+    #[test]
+    fn requests_get_arm_applies_cursor_limit_and_filter() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        let mut a = conn_rec("c1", 100);
+        a.domain = "alpha.example.com".to_string();
+        let mut b = conn_rec("c2", 200);
+        b.domain = "beta.example.com".to_string();
+        record_open(&a, 100);
+        record_open(&b, 200);
+
+        let payload = br#"{"cursor":0,"limit":1,"filter":{"domain":"example.com"}}"#;
+        let data = arm_data(&get_arm(payload).unwrap());
+        let arr = data["records"].as_array().unwrap();
+        assert_eq!(arr.len(), 1, "limit must bound the page");
+        assert_eq!(arr[0]["domain"], "beta.example.com", "openTsMs desc");
+        assert_eq!(data["nextCursor"], 2);
+        assert_eq!(data["retained"], 2);
+
+        // cursor past the high-water mark -> empty page, cursor preserved.
+        let data = arm_data(&get_arm(br#"{"cursor":2}"#).unwrap());
+        assert!(data["records"].as_array().unwrap().is_empty());
+        assert_eq!(data["nextCursor"], 2);
+    }
+
+    /// Malformed request bodies are a structured 422, never a panic.
+    #[test]
+    fn requests_get_arm_malformed_payload_is_invalid_arg() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        for bad in [
+            &br#"{"cursor":"nope"}"#[..],
+            &br#"{"cursor":"#[..],
+            &br#"{"limit":true}"#[..],
+            &br#"{"filter":42}"#[..],
+        ] {
+            let err = get_arm(bad).unwrap_err();
+            assert_eq!(err.status as i32, 422, "payload {bad:?}");
+        }
+    }
+
+    /// Boundary: cursor at `u64::MAX` and `limit:0` must not panic.
+    #[test]
+    fn requests_get_arm_boundary_cursor_max_and_limit_zero() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        let c = conn_rec("c1", 1);
+        record_open(&c, 1);
+        let data = arm_data(
+            &get_arm(format!(r#"{{"cursor":{}}}"#, u64::MAX).as_bytes()).unwrap(),
+        );
+        assert!(data["records"].as_array().unwrap().is_empty());
+        let data = arm_data(&get_arm(br#"{"limit":0}"#).unwrap());
+        assert!(data["records"].as_array().unwrap().is_empty());
+        assert_eq!(data["retained"], 1);
+    }
+
+    /// `requests.reset` clears the ring, reports the count, and never reclaims
+    /// the cursor (stale_state: a snapshot after reset is empty).
+    #[test]
+    fn requests_reset_arm_clears_ring_and_reports_count() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        record_open(&conn_rec("c1", 1), 1);
+        record_open(&conn_rec("c2", 2), 2);
+
+        let data = arm_data(&reset_arm().unwrap());
+        assert_eq!(data["ok"], true);
+        assert_eq!(data["cleared"], 2);
+        let page = snapshot(0, 100, &RequestFilter::default());
+        assert!(page.records.is_empty());
+        assert_eq!(page.retained, 0);
+        assert_eq!(page.next_cursor, 2, "reset must not reclaim the cursor");
+
+        let data = arm_data(&get_arm(b"").unwrap());
+        assert!(data["records"].as_array().unwrap().is_empty());
+        assert_eq!(data["retained"], 0);
     }
 }

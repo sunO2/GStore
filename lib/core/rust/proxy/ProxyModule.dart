@@ -601,6 +601,22 @@ class ProxyModule implements ProxyFacade {
   Future<StatsResetResult> statsReset() =>
       invoke(ProxyMethods.statsReset, StatsResetResult.fromJson);
 
+  // ---- requests.* ----
+
+  /// `requests.get`：按游标分页拉取请求时间线（主路径，拉取式）。
+  Future<RequestPage> requestsGet([
+    RequestGetRequest request = const RequestGetRequest(),
+  ]) =>
+      invoke(
+        ProxyMethods.requestsGet,
+        RequestPage.fromJson,
+        payload: request.toJson(),
+      );
+
+  /// `requests.reset`：清空内存请求环（游标保持单调）。
+  Future<RequestsResetResult> requestsReset() =>
+      invoke(ProxyMethods.requestsReset, RequestsResetResult.fromJson);
+
   // ---- diagnostics.* ----
 
   /// `diagnostics.clash_api.start`：启用 meow 回环控制器（默认 OFF，仅诊断）。
