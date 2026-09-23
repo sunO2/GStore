@@ -47,6 +47,7 @@ mod profile;
 mod protect;
 mod requests;
 mod rules;
+mod shaper;
 mod sniff;
 mod stats;
 mod stats_monitor;
