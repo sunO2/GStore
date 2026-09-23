@@ -149,12 +149,20 @@ Kotlin（TUN 生命周期）                                                │
 | 路由/选择 | `node.*`、`rules.*` | §2.6、§2.11 |
 | DNS | `dns.get/set/clear_cache/flush_cache` | §2.7 |
 | 诊断/可观测 | `log.*`、`stats.*`、`conn.*`、`diagnostics.clash_api.*` | §2.8–§2.10、§2.13 |
-| 事件 | `proxy.state`、`proxy.mode`、`proxy.stats`、`proxy.conn`、`proxy.dns`、`proxy.subscription.*`、`proxy.tun.released`、`proxy.config.applied` 等 | §3 |
+| 请求采集/导出 | `requests.get`、`requests.reset`、`requests.export`（每请求时间线：游标分页、筛选、CSV/JSON 导出） | §2.14 |
+| 事件（模块→宿主） | `proxy.state`、`proxy.mode`、`proxy.stats`、`proxy.conn`、`proxy.dns`、`proxy.request`、`proxy.subscription.*`、`proxy.tun.released`、`proxy.config.applied` 等 | §3 |
+| 宿主内部事件（方向见 §4） | **模块→宿主、宿主消费、不进 Dart 事件环**：`proxy.uid.query`（`requests::tick` 在 VPN 模式下为 TCP 流发起的归属查询，宿主消费并丢弃，Dart 永远收不到）；**宿主→模块回填**（`on_event` kind）：`uid.result`（宿主回填 `uid`/`packages`，模块据此把 `uidState` 从 `pending` 收敛为 `known`/`unknown`） | §4 |
 
 契约已冻结并被机械校验：Rust 测试保证 `DISPATCH_METHODS` 每个名字都可调度且在
 `API.md` 中出现；Dart 测试解析 `API.md` 并断言其方法/事件集等于
 `lib/core/rust/proxy/ProxyContract.dart` 的注册表。**改契约必须三处同步**
 （dispatch、`API.md`、Dart registry），否则测试失败。
+
+本次请求采集新增的契约共**三个原子单元**，均已同步落下：**Todo 5** 方法层
+（`requests.get`/`requests.reset`）、**Todo 10** 导出（`requests.export`，挂在 `API.md §2.14`）、
+**Todo 6** 事件层（`proxy.request` 脏信号 + §4 的 `proxy.uid.query`/`uid.result` 文档）。
+其中 `proxy.request` 进 Dart 事件注册表，而 `proxy.uid.query`/`uid.result` 是宿主↔模块内部
+lane，**不进** Dart 事件环。
 
 ## 6. 运行模式（off / vpn / lanProxy）
 
@@ -267,6 +275,26 @@ harness 证明机制：
 - 真机 Clash 面板绑定与第三方面板对接。
 - 真机 VpnService 生命周期：`onRevoke` 撤销、飞行模式/网络切换重连、`am force-stop` 后
   always-on 重启、start→stop→start 线程基线（Todo 24；host 侧只能证明 fd/守护/桥重置机制）。
+- **App 归属 / `UidResolver` 真机路径（Todo 11–13，UNVERIFIED）**：Android 上
+  `ProxyVpnService.queryOwnerUid` 调用 `ConnectivityManager.getConnectionOwnerUid`
+  （API 29，且仅活跃 `VpnService` 可调）+ `PackageManager.getPackagesForUid` 的完整链路
+  **无设备可验**。host 侧只用可注入的 `UidResolver` 假实现（快/慢/超时/全未知/已关闭流/早到结果）
+  证明批量、降级与回填；JNI 无 VM / 无 service 时批量返回 `unknown` 也已断言。Kotlin 的
+  `SecurityException`/`IllegalArgumentException` 捕获与 SDK<29 分支仅有代码审查。
+- **late-query 覆盖缺口（UNVERIFIED）**：归属查询发生在流建立之后，短命流可能在查询返回时
+  已经关闭；这是 best-effort 路径，不做「每条流必有 UID」的保证。
+- **LAN 内存降级（UNVERIFIED）**：LAN 独立路径若实例 `dataDir` 为空，`requests` 显式降级为
+  纯内存环（不做 SQLite 持久化）。该降级后的 7 天/≤5 万行持久化语义未在设备侧验证。
+
+**已知限制（设计范围，非缺陷，须显式声明）**
+
+- **跨 tick 短命流不可见**：请求采集是**采样差量法**（每 `STATS_TICK_MS = 500ms` 一次
+  meow `Statistics::connections` 对账）。若某流在**两次 tick 之间开启又关闭**，它不会出现在
+  任何一次投影中，因此不产生 `RequestRecord`。这是已接受并测试固化的限制，不是缺陷。
+- **UDP 流不在本次生产采集范围**：meow `Statistics::connections` **仅投影 TCP**
+  （见 `API.md` §2.10；`udp.rs` 从不调用 `track_connection`）。故请求采集、`UidQuery` 与
+  导出**只承诺 TCP**；`RequestRecord.network` 字段虽保留 `"tcp"|"udp"` 通用语义，但生产路径
+  **不产生 `udp` 值**。不得据此声称 UDP 覆盖。
 
 相关验证记录分散在各功能章节末尾（`API.md` §7–§16）与 `.omo/evidence/`。
 
