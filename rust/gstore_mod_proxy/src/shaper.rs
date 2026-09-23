@@ -2433,3 +2433,268 @@ mod buffer_tests {
         assert_eq!(json["maxBufferedFrames"], serde_json::json!(5));
     }
 }
+
+// ---------------------------------------------------------------------------
+// Config persistence + process-global watch (Todo 7)
+//
+// `configure(data_dir)` is mounted from `lib.rs::create_impl` next to
+// `lan::configure`, so every module create re-reads `shaper.json` rather than
+// trusting a stale in-memory value. The watch carries the *config* to the
+// datapath pumps (Todo 8). The `OnceLock` owns only the SENDER, never a frozen
+// value, so `send_replace` unconditionally updates the in-memory value even
+// with zero receivers — the "engine stopped, then core.start" case must still
+// observe the latest `net.shaper.set`. `watch::Sender::send` can silently drop
+// the value with no receivers, so it is never used here.
+// ---------------------------------------------------------------------------
+
+use std::sync::{Arc, Mutex};
+use tokio::sync::watch;
+
+/// Persisted shaper config filename, beside the other module JSON stores.
+const SHAPER_CONFIG_FILE: &str = "shaper.json";
+
+/// Process-global shaper config + the module data dir it persists to.
+struct ShaperState {
+    config: ShaperConfig,
+    data_dir: String,
+}
+
+impl Default for ShaperState {
+    fn default() -> Self {
+        Self {
+            config: ShaperConfig::default(),
+            data_dir: String::new(),
+        }
+    }
+}
+
+static STATE: OnceLock<Mutex<ShaperState>> = OnceLock::new();
+
+fn state() -> &'static Mutex<ShaperState> {
+    STATE.get_or_init(|| Mutex::new(ShaperState::default()))
+}
+
+/// The process-global config watch. Only the SENDER lives in the `OnceLock`;
+/// the carried value is replaced by [`configure`]/[`set`], never frozen at init.
+static WATCH: OnceLock<watch::Sender<Arc<ShaperConfig>>> = OnceLock::new();
+
+fn watch_sender() -> &'static watch::Sender<Arc<ShaperConfig>> {
+    WATCH.get_or_init(|| {
+        // The initial receiver is dropped on purpose: `send_replace` keeps the
+        // value alive with zero receivers, so a later `subscribe()` sees it.
+        let (tx, _rx) = watch::channel(Arc::new(ShaperConfig::default()));
+        tx
+    })
+}
+
+/// Read and validate `shaper.json`, falling back to the default config on ANY
+/// failure (missing/unreadable file, invalid JSON, failed validation). Never
+/// panics and never errors: a corrupt store must not brick module creation.
+fn load_config(data_dir: &str) -> ShaperConfig {
+    let dir = data_dir.trim();
+    if dir.is_empty() {
+        return ShaperConfig::default();
+    }
+    let path = std::path::Path::new(dir).join(SHAPER_CONFIG_FILE);
+    let Ok(bytes) = std::fs::read(&path) else {
+        return ShaperConfig::default();
+    };
+    let Ok(config) = serde_json::from_slice::<ShaperConfig>(&bytes) else {
+        return ShaperConfig::default();
+    };
+    if config.validate().is_err() {
+        return ShaperConfig::default();
+    }
+    config
+}
+
+/// Persist `config` as `shaper.json`; an empty data dir is a no-op.
+fn persist(data_dir: &str, config: &ShaperConfig) {
+    let dir = data_dir.trim();
+    if dir.is_empty() {
+        return;
+    }
+    let path = std::path::Path::new(dir).join(SHAPER_CONFIG_FILE);
+    if let Ok(bytes) = serde_json::to_vec(config) {
+        let _ = std::fs::write(path, bytes);
+    }
+}
+
+/// Install the module data dir and (re)load the persisted shaper config.
+///
+/// Mounted from `lib.rs::create_impl` next to `lan::configure`, so it re-reads
+/// `shaper.json` on every module create.
+pub(crate) fn configure(data_dir: &str) {
+    let config = load_config(data_dir);
+    {
+        let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
+        st.data_dir = data_dir.to_string();
+        st.config = config.clone();
+    }
+    // Unconditional: even with zero subscribers the new value must be visible to
+    // a later `subscribe()` (`send` would drop it).
+    let _ = watch_sender().send_replace(Arc::new(config));
+}
+
+/// A receiver the datapath pumps (Todo 8) subscribe to on start.
+pub(crate) fn subscribe() -> watch::Receiver<Arc<ShaperConfig>> {
+    watch_sender().subscribe()
+}
+
+/// The current effective config (clone from the process-global state).
+pub(crate) fn get() -> ShaperConfig {
+    state().lock().unwrap_or_else(|e| e.into_inner()).config.clone()
+}
+
+/// `net.shaper.set`: merge `payload`, validate, persist and publish.
+///
+/// The current config is cloned BEFORE `apply_patch`, because `apply_patch`
+/// mutates its receiver field-by-field ahead of `validate()`; cloning first
+/// means a rejected (422) patch never persists a half-applied config (mirrors
+/// `lan::set`). The new `Arc` is `send_replace`d unconditionally, so the intent
+/// survives even when no pump is currently subscribed.
+pub(crate) fn set(data_dir: &str, payload: &[u8]) -> Result<ShaperConfig, ModuleError> {
+    let next = {
+        let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
+        if !data_dir.trim().is_empty() {
+            st.data_dir = data_dir.to_string();
+        }
+        let mut next = st.config.clone();
+        next.apply_patch(payload)?;
+        st.config = next.clone();
+        persist(&st.data_dir, &next);
+        next
+    };
+    let _ = watch_sender().send_replace(Arc::new(next.clone()));
+    Ok(next)
+}
+
+/// Reset the process-global config state + watch for tests (globals are
+/// process-wide). Tests only; never part of the module build.
+#[cfg(test)]
+pub(crate) fn reset_for_test() {
+    {
+        let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
+        st.config = ShaperConfig::default();
+        st.data_dir = String::new();
+    }
+    let _ = watch_sender().send_replace(Arc::new(ShaperConfig::default()));
+}
+
+#[cfg(test)]
+mod config_io_tests {
+    use super::*;
+    use std::sync::atomic::AtomicU32;
+
+    /// Take the process-wide serialization lock (config globals are shared).
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        crate::TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// A unique, created temp dir per test; caller removes it at the end.
+    fn tmp_dir(tag: &str) -> std::path::PathBuf {
+        static SEQ: AtomicU32 = AtomicU32::new(0);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("gstore-shaper-{tag}-{nanos}-{seq}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn shaper_persistence_round_trip() {
+        let _guard = serial();
+        reset_for_test();
+        let dir = tmp_dir("round-trip");
+        let dir_str = dir.to_str().unwrap();
+
+        let next = set(dir_str, br#"{"enabled":true,"seed":7,"uplink":{"rateBps":1000000,"delayMs":10}}"#)
+            .unwrap();
+        assert!(next.enabled);
+
+        // The config is on disk and parses back to exactly what `set` returned.
+        let path = dir.join(SHAPER_CONFIG_FILE);
+        assert!(path.exists(), "shaper.json must be written");
+        let on_disk: ShaperConfig = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(on_disk, next);
+
+        // A fresh configure() re-reads the file: clear the in-memory state, then
+        // configure again (what every module create does) and it must reload.
+        reset_for_test();
+        configure(dir_str);
+        assert_eq!(get(), next);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn shaper_set_when_stopped_then_start_uses_new_config() {
+        let _guard = serial();
+        reset_for_test();
+        let dir = tmp_dir("stopped");
+        let dir_str = dir.to_str().unwrap();
+
+        // No subscriber exists yet (the engine is stopped); configure seeds the
+        // default, then `set` publishes the new intent.
+        configure(dir_str);
+        let next = set(dir_str, br#"{"enabled":true,"uplink":{"rateBps":2000000}}"#).unwrap();
+        assert!(next.enabled);
+
+        // The pump starts AFTER the set. Its fresh receiver must already see the
+        // latest config — `send_replace` kept the intent with zero receivers.
+        let rx = subscribe();
+        assert_eq!(rx.borrow().as_ref(), &next);
+        assert_eq!(rx.borrow().as_ref(), &get());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn corrupt_shaper_json_falls_back_to_default() {
+        let _guard = serial();
+        reset_for_test();
+
+        // Invalid JSON must not panic and must fall back to the default config.
+        let dir = tmp_dir("corrupt");
+        std::fs::write(dir.join(SHAPER_CONFIG_FILE), b"{").unwrap();
+        configure(dir.to_str().unwrap());
+        assert_eq!(get(), ShaperConfig::default());
+        assert!(!get().enabled);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // Structurally valid JSON that fails validation falls back too.
+        let dir = tmp_dir("invalid-json");
+        std::fs::write(dir.join(SHAPER_CONFIG_FILE), br#"{"uplink":{"rateBps":999}}"#).unwrap();
+        configure(dir.to_str().unwrap());
+        assert_eq!(get(), ShaperConfig::default());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn shaper_set_invalid_does_not_persist() {
+        let _guard = serial();
+        reset_for_test();
+        let dir = tmp_dir("invalid-set");
+        let dir_str = dir.to_str().unwrap();
+        configure(dir_str);
+
+        let good =
+            set(dir_str, br#"{"enabled":true,"uplink":{"rateBps":1000000}}"#).unwrap();
+        let path = dir.join(SHAPER_CONFIG_FILE);
+        let before = std::fs::read(&path).unwrap();
+
+        // An out-of-range patch is a 422 and leaves both the in-memory config and
+        // the on-disk file untouched (clone-before-apply_patch).
+        let err = set(dir_str, br#"{"uplink":{"rateBps":999}}"#).unwrap_err();
+        assert_eq!(err.status, StatusCode::InvalidArgument);
+        assert_eq!(err.code, ERR_SHAPER_CONFIG_INVALID);
+
+        assert_eq!(get(), good);
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

@@ -1908,6 +1908,7 @@ fn create_impl(config: *const u8, config_len: usize) -> Result<u64, c_int> {
         let _ = nodes::ensure_selector_store(&ctx.data_dir);
     }
     lan::configure(&ctx.data_dir, &ctx.cache_dir);
+    shaper::configure(&ctx.data_dir);
     let last_mode = mode::load_last_mode(&ctx.data_dir);
     let inst = Arc::new(ProxyInstance {
         id,
