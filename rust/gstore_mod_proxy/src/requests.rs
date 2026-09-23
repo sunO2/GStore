@@ -33,6 +33,8 @@ use std::sync::{Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 
+use crate::conn::ConnRecord;
+
 /// Hard cap on retained in-memory request records. Over capacity the oldest is
 /// evicted first (deterministic: the deque is in insertion / `recordId` order).
 pub(crate) const REQUEST_RING_CAP: usize = 4096;
@@ -46,6 +48,38 @@ pub(crate) const UID_STATE_UNKNOWN: &str = "unknown";
 pub(crate) const CLOSE_REASON_OPEN: &str = "open";
 pub(crate) const CLOSE_REASON_CLOSED: &str = "closed";
 pub(crate) const CLOSE_REASON_STALE: &str = "stale";
+
+/// Hard cap on the `stale_live` suppression set. Over capacity the entry with
+/// the oldest `openTsMs` is evicted and `dropped` increments, so a long churn of
+/// cap-evicted-yet-live flows can never grow memory without bound.
+pub(crate) const STALE_LIVE_CAP: usize = 4096;
+
+/// Why a request record is being taken out of its live window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CloseReason {
+    /// The flow truly left meow's live table: the single terminal transition.
+    Closed,
+    /// The flow left the bounded projection while still live in meow: NOT a
+    /// close (no `closeTsMs`/`durationMs`), only a suppression marker.
+    Stale,
+}
+
+impl CloseReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            CloseReason::Closed => CLOSE_REASON_CLOSED,
+            CloseReason::Stale => CLOSE_REASON_STALE,
+        }
+    }
+}
+
+/// One bounded `stale_live` entry: the record left the projection but is still
+/// live in meow. `open_ts_ms` orders eviction; `record_id` keeps the pairing.
+#[derive(Clone, Debug)]
+pub(crate) struct StaleEntry {
+    pub(crate) record_id: u64,
+    pub(crate) open_ts_ms: u64,
+}
 
 /// One request (flow) on the timeline.
 ///
@@ -87,6 +121,42 @@ pub(crate) struct RequestRecord {
     pub close_reason: String,
 }
 
+/// Projection of a [`ConnRecord`] into a [`RequestRecord`] at the capture
+/// chokepoint. Only fields available at this stage are populated: domain
+/// resolution lands in T4, structured `dstIp`/`dstPort` in T3 and UID
+/// attribution in T11. `openTsMs` is the flow's meow start time so
+/// `durationMs` approximates the real lifetime (sampled on the tick).
+fn project(rec: &ConnRecord, now_ms: u64) -> RequestRecord {
+    let open_ts_ms = if rec.started_at_ms == 0 {
+        now_ms
+    } else {
+        rec.started_at_ms
+    };
+    let domain = rec.domain.clone();
+    RequestRecord {
+        record_id: 0,
+        conn_id: rec.id.clone(),
+        open_ts_ms,
+        close_ts_ms: None,
+        duration_ms: None,
+        domain_known: !domain.trim().is_empty(),
+        domain,
+        dst_ip: String::new(),
+        dst_port: 0,
+        src: rec.src.clone(),
+        network: rec.network.clone(),
+        uid: None,
+        packages: Vec::new(),
+        uid_state: UID_STATE_UNKNOWN.to_string(),
+        rule: rec.rule.clone(),
+        rule_payload: rec.rule_payload.clone(),
+        outbound: rec.outbound.clone(),
+        upload_bytes: rec.upload_bytes.max(0) as u64,
+        download_bytes: rec.download_bytes.max(0) as u64,
+        close_reason: CLOSE_REASON_OPEN.to_string(),
+    }
+}
+
 /// Bounded in-memory ring of [`RequestRecord`]s plus its cursor bookkeeping.
 pub(crate) struct RequestStore {
     pub(crate) records: VecDeque<RequestRecord>,
@@ -105,6 +175,16 @@ pub(crate) struct RequestStore {
     pub(crate) evicted: u64,
     /// `openTsMs` of the oldest retained record, or 0 when the ring is empty.
     pub(crate) window_start_ms: u64,
+    /// `connId → recordId` of the record that currently represents this
+    /// connection (open, or stale-but-still-live). Removed on the terminal
+    /// transition so a reused `connId` mints a fresh record.
+    pub(crate) active_by_conn: HashMap<String, u64>,
+    /// Suppression set: `connId`s that left the bounded projection while still
+    /// live in meow. Bounded by `stale_live_cap`.
+    pub(crate) stale_live: HashMap<String, StaleEntry>,
+    pub(crate) stale_live_cap: usize,
+    /// Ids that re-entered the projection while still live (no new record).
+    pub(crate) reentered: u64,
 }
 
 impl RequestStore {
@@ -118,6 +198,10 @@ impl RequestStore {
             dropped: 0,
             evicted: 0,
             window_start_ms: 0,
+            active_by_conn: HashMap::new(),
+            stale_live: HashMap::new(),
+            stale_live_cap: STALE_LIVE_CAP,
+            reentered: 0,
         }
     }
 
@@ -150,7 +234,136 @@ impl RequestStore {
     pub(crate) fn clear(&mut self) {
         self.records.clear();
         self.by_record_id.clear();
+        self.active_by_conn.clear();
+        self.stale_live.clear();
         self.window_start_ms = 0;
+    }
+
+    /// Open (or revive) the record for `rec` at the capture chokepoint. A
+    /// `connId` that already has a non-terminal record re-uses it — a stale flow
+    /// re-entering the projection must not mint a duplicate open — and the
+    /// re-entry is counted. Returns the record's `recordId`.
+    pub(crate) fn open_record(&mut self, rec: &ConnRecord, now_ms: u64) -> u64 {
+        if let Some(&rid) = self.active_by_conn.get(&rec.id) {
+            if let Some(idx) = self.by_record_id.get(&rid).copied() {
+                let r = &mut self.records[idx];
+                if r.close_ts_ms.is_none() {
+                    if r.close_reason == CLOSE_REASON_STALE {
+                        r.close_reason = CLOSE_REASON_OPEN.to_string();
+                        self.reentered += 1;
+                    }
+                    return rid;
+                }
+            }
+            self.active_by_conn.remove(&rec.id);
+            self.stale_live.remove(&rec.id);
+        }
+        let record = project(rec, now_ms);
+        let id = self.push(record);
+        self.active_by_conn.insert(rec.id.clone(), id);
+        id
+    }
+
+    /// Mark `conn_id`'s record stale: it left the projection but is still live in
+    /// meow. NOT terminal — `closeTsMs`/`durationMs` stay `None`. Idempotent.
+    pub(crate) fn mark_stale(&mut self, conn_id: &str) {
+        let Some(&rid) = self.active_by_conn.get(conn_id) else {
+            return;
+        };
+        let Some(idx) = self.by_record_id.get(&rid).copied() else {
+            self.active_by_conn.remove(conn_id);
+            return;
+        };
+        let r = &mut self.records[idx];
+        if r.close_ts_ms.is_some() {
+            return;
+        }
+        if r.close_reason != CLOSE_REASON_STALE {
+            r.close_reason = CLOSE_REASON_STALE.to_string();
+        }
+        let open_ts_ms = r.open_ts_ms;
+        self.insert_stale(conn_id, rid, open_ts_ms);
+    }
+
+    fn insert_stale(&mut self, conn_id: &str, record_id: u64, open_ts_ms: u64) {
+        if self.stale_live.contains_key(conn_id) {
+            return;
+        }
+        self.stale_live
+            .insert(conn_id.to_string(), StaleEntry { record_id, open_ts_ms });
+        while self.stale_live.len() > self.stale_live_cap {
+            let Some(oldest) = self
+                .stale_live
+                .iter()
+                .min_by_key(|(_, e)| e.open_ts_ms)
+                .map(|(k, _)| k.clone())
+            else {
+                break;
+            };
+            self.stale_live.remove(&oldest);
+            self.dropped += 1;
+        }
+    }
+
+    /// Write the single terminal transition for `conn_id`'s record. A record that
+    /// is already terminal (or no longer retained) is a no-op, so a repeated
+    /// close can never overwrite time/duration.
+    pub(crate) fn finalize(&mut self, conn_id: &str, now_ms: u64) -> bool {
+        let Some(&rid) = self.active_by_conn.get(conn_id) else {
+            return false;
+        };
+        let Some(idx) = self.by_record_id.get(&rid).copied() else {
+            self.active_by_conn.remove(conn_id);
+            self.stale_live.remove(conn_id);
+            return false;
+        };
+        let r = &mut self.records[idx];
+        if r.close_ts_ms.is_some() {
+            self.active_by_conn.remove(conn_id);
+            self.stale_live.remove(conn_id);
+            return false;
+        }
+        r.close_ts_ms = Some(now_ms);
+        r.duration_ms = Some(now_ms.saturating_sub(r.open_ts_ms));
+        r.close_reason = CLOSE_REASON_CLOSED.to_string();
+        self.active_by_conn.remove(conn_id);
+        self.stale_live.remove(conn_id);
+        true
+    }
+
+    /// Finalize every stale id that `is_live` reports as gone from meow's live
+    /// table. Returns how many terminals were written.
+    pub(crate) fn finalize_departed(
+        &mut self,
+        now_ms: u64,
+        is_live: impl Fn(&str) -> bool,
+    ) -> u64 {
+        let departed: Vec<String> = self
+            .stale_live
+            .keys()
+            .filter(|id| !is_live(id))
+            .cloned()
+            .collect();
+        let mut closed = 0;
+        for id in departed {
+            if self.finalize(&id, now_ms) {
+                closed += 1;
+            }
+        }
+        closed
+    }
+
+    /// Finalize every active record (open and stale). `close_all` semantics.
+    pub(crate) fn close_all_records(&mut self, now_ms: u64) -> u64 {
+        let active: Vec<String> = self.active_by_conn.keys().cloned().collect();
+        let mut closed = 0;
+        for id in active {
+            if self.finalize(&id, now_ms) {
+                closed += 1;
+            }
+        }
+        self.stale_live.clear();
+        closed
     }
 
     /// Rebuild the `recordId → index` map from the current deque.
@@ -234,6 +447,49 @@ pub(crate) fn snapshot(
 /// Drop every retained record (memory only). The cursor stays monotonic.
 pub(crate) fn clear() {
     with_store(|st| st.clear());
+}
+
+/// Capture a request open at the single chokepoint. Returns the `recordId`; a
+/// stale-but-live flow re-entering the projection reuses its existing record.
+pub(crate) fn record_open(rec: &ConnRecord, now_ms: u64) -> u64 {
+    with_store(|st| st.open_record(rec, now_ms))
+}
+
+/// Capture a close (or stale) transition at the single chokepoint. A terminal
+/// record is left untouched by a second call (idempotent).
+pub(crate) fn record_close(rec: &ConnRecord, now_ms: u64, reason: CloseReason) {
+    with_store(|st| match reason {
+        CloseReason::Closed => {
+            st.finalize(&rec.id, now_ms);
+        }
+        CloseReason::Stale => st.mark_stale(&rec.id),
+    });
+}
+
+/// Finalize every stale id that `is_live` reports as gone from meow's live table
+/// — the only path that turns a stale record into a terminal `closed`.
+pub(crate) fn finalize_departed_stale(now_ms: u64, is_live: impl Fn(&str) -> bool) -> u64 {
+    with_store(|st| st.finalize_departed(now_ms, is_live))
+}
+
+/// Finalize every active record (`close_all` semantics).
+pub(crate) fn finalize_all_active(now_ms: u64) -> u64 {
+    with_store(|st| st.close_all_records(now_ms))
+}
+
+#[cfg(test)]
+pub(crate) fn reset_for_tests() {
+    with_store(|st| *st = RequestStore::fresh());
+}
+
+#[cfg(test)]
+pub(crate) fn stale_live_len() -> usize {
+    with_store(|st| st.stale_live.len())
+}
+
+#[cfg(test)]
+pub(crate) fn reentered_count() -> u64 {
+    with_store(|st| st.reentered)
 }
 
 /// One `requests.get` page plus the ring's cursor/retention diagnostics.
@@ -640,5 +896,162 @@ mod tests {
         assert_eq!(s.records.len(), REQUEST_RING_CAP);
         assert_eq!(s.evicted, 1);
         assert_eq!(s.snapshot(0, usize::MAX, &RequestFilter::default()).retained, REQUEST_RING_CAP);
+    }
+
+    // --- Todo 2: single-chokepoint capture + stale_live reconciliation ---
+
+    use crate::conn::ConnRecord;
+
+    fn conn_rec(id: &str, started_at_ms: u64) -> ConnRecord {
+        ConnRecord {
+            id: id.to_string(),
+            src: "10.0.0.2:5555".to_string(),
+            dst: "1.2.3.4:443".to_string(),
+            domain: "req.example".to_string(),
+            network: "tcp".to_string(),
+            rule: "MATCH".to_string(),
+            rule_payload: String::new(),
+            outbound: "DIRECT".to_string(),
+            started_at_ms,
+            upload_bytes: 0,
+            download_bytes: 0,
+        }
+    }
+
+    /// A terminal record is closed exactly once: a second close is a no-op and
+    /// must never overwrite `closeTsMs`/`durationMs`.
+    #[test]
+    fn record_close_is_terminal_and_idempotent_per_record_id() {
+        let mut s = RequestStore::fresh();
+        let c = conn_rec("c1", 1_000);
+        let id = s.open_record(&c, 1_000);
+        assert_eq!(id, 1);
+        assert_eq!(s.records[0].close_reason, CLOSE_REASON_OPEN);
+
+        assert!(s.finalize("c1", 1_500));
+        assert_eq!(s.records[0].close_ts_ms, Some(1_500));
+        assert_eq!(s.records[0].duration_ms, Some(500));
+        assert_eq!(s.records[0].close_reason, CLOSE_REASON_CLOSED);
+
+        assert!(!s.finalize("c1", 2_000), "second close is a no-op");
+        assert_eq!(s.records[0].close_ts_ms, Some(1_500), "closeTs untouched");
+        assert_eq!(s.records[0].duration_ms, Some(500), "duration untouched");
+        assert!(s.active_by_conn.is_empty());
+    }
+
+    /// A stale record is NOT terminal: no `closeTsMs`, no `durationMs`. Only the
+    /// real departure writes the single terminal `closed`.
+    #[test]
+    fn stale_is_non_terminal_and_finalize_writes_one_terminal() {
+        let mut s = RequestStore::fresh();
+        let c = conn_rec("c1", 1_000);
+        let id = s.open_record(&c, 1_000);
+        s.mark_stale("c1");
+        assert_eq!(s.records[0].close_reason, CLOSE_REASON_STALE);
+        assert_eq!(s.records[0].close_ts_ms, None, "stale is not terminal");
+        assert_eq!(s.records[0].duration_ms, None, "stale carries no duration");
+        assert_eq!(s.stale_live.len(), 1);
+
+        assert!(s.finalize("c1", 1_800));
+        assert_eq!(s.records[0].record_id, id);
+        assert_eq!(s.records[0].close_reason, CLOSE_REASON_CLOSED);
+        assert_eq!(s.records[0].close_ts_ms, Some(1_800));
+        assert_eq!(s.records[0].duration_ms, Some(800));
+        assert!(s.stale_live.is_empty(), "terminal removes the suppression");
+
+        assert!(!s.finalize("c1", 2_500), "close after stale is a no-op");
+        assert_eq!(s.records[0].close_ts_ms, Some(1_800));
+        assert_eq!(s.records[0].duration_ms, Some(800));
+    }
+
+    /// A stale id that re-enters the projection must NOT mint a new record.
+    #[test]
+    fn reentering_stale_id_keeps_one_record_and_counts_reentered() {
+        let mut s = RequestStore::fresh();
+        let c = conn_rec("c1", 1_000);
+        let first = s.open_record(&c, 1_000);
+        s.mark_stale("c1");
+        let again = s.open_record(&c, 1_200);
+        assert_eq!(again, first, "re-entry must not mint a new recordId");
+        assert_eq!(s.records.len(), 1);
+        assert_eq!(s.reentered, 1);
+        assert_eq!(s.records[0].close_reason, CLOSE_REASON_OPEN);
+        assert_eq!(s.stale_live.len(), 1, "suppression persists until departure");
+    }
+
+    /// Id reuse after a terminal is a NEW record (never an overwrite).
+    #[test]
+    fn open_after_terminal_mints_a_new_record_id() {
+        let mut s = RequestStore::fresh();
+        let c = conn_rec("c1", 1_000);
+        let first = s.open_record(&c, 1_000);
+        s.finalize("c1", 1_100);
+        let second = s.open_record(&c, 2_000);
+        assert_ne!(first, second, "terminal reuse mints a fresh recordId");
+        assert_eq!(s.records.len(), 2);
+    }
+
+    /// `stale_live` is bounded: over cap the oldest `openTsMs` is evicted and
+    /// `dropped` increments (never unbounded growth).
+    #[test]
+    fn stale_live_over_cap_evicts_oldest_and_counts_dropped() {
+        let mut s = RequestStore::fresh();
+        s.stale_live_cap = 4;
+        for i in 0..6u64 {
+            let c = conn_rec(&format!("c{i}"), 1_000 + i);
+            s.open_record(&c, 1_000 + i);
+            s.mark_stale(&c.id);
+        }
+        assert_eq!(s.stale_live.len(), 4);
+        assert_eq!(s.dropped, 2);
+        for evicted in ["c0", "c1"] {
+            assert!(!s.stale_live.contains_key(evicted), "{evicted} evicted");
+        }
+        for kept in ["c2", "c3", "c4", "c5"] {
+            assert!(s.stale_live.contains_key(kept), "{kept} retained");
+        }
+        assert_eq!(STALE_LIVE_CAP, 4096);
+    }
+
+    /// Only ids absent from the meow live table are finalized as `closed`; ids
+    /// still live stay stale.
+    #[test]
+    fn finalize_departed_only_closes_ids_absent_from_live_table() {
+        let mut s = RequestStore::fresh();
+        let a = conn_rec("c-a", 100);
+        let b = conn_rec("c-b", 200);
+        s.open_record(&a, 100);
+        s.open_record(&b, 200);
+        s.mark_stale("c-a");
+        s.mark_stale("c-b");
+
+        let closed = s.finalize_departed(300, |id| id == "c-b");
+        assert_eq!(closed, 1);
+        let rec_a = s.records.iter().find(|r| r.conn_id == "c-a").unwrap();
+        assert_eq!(rec_a.close_reason, CLOSE_REASON_CLOSED);
+        assert_eq!(rec_a.close_ts_ms, Some(300));
+        let rec_b = s.records.iter().find(|r| r.conn_id == "c-b").unwrap();
+        assert_eq!(rec_b.close_reason, CLOSE_REASON_STALE);
+        assert_eq!(rec_b.close_ts_ms, None);
+        assert_eq!(s.stale_live.len(), 1);
+    }
+
+    /// `close_all` terminalizes every active record exactly once.
+    #[test]
+    fn close_all_records_finalizes_every_active_once() {
+        let mut s = RequestStore::fresh();
+        for i in 0..3u64 {
+            let c = conn_rec(&format!("c{i}"), 1_000 + i);
+            s.open_record(&c, 1_000 + i);
+        }
+        s.mark_stale("c1");
+        assert_eq!(s.close_all_records(2_000), 3);
+        for r in &s.records {
+            assert_eq!(r.close_reason, CLOSE_REASON_CLOSED);
+            assert_eq!(r.close_ts_ms, Some(2_000));
+        }
+        assert!(s.active_by_conn.is_empty());
+        assert!(s.stale_live.is_empty());
+        assert_eq!(s.close_all_records(3_000), 0, "second close_all is a no-op");
     }
 }

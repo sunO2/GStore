@@ -165,6 +165,15 @@ pub(crate) struct SyncOutcome {
     pub closed: Vec<ConnRecord>,
 }
 
+/// True when `conn_id` is still present in meow's live connection table. A
+/// missing/odd id (not a UUID) is treated as gone — never a panic.
+fn is_live_in_meow(stats: &meow_tunnel::Statistics, conn_id: &str) -> bool {
+    uuid::Uuid::parse_str(conn_id)
+        .ok()
+        .map(|id| stats.connections.contains_key(&id))
+        .unwrap_or(false)
+}
+
 /// Rebuild the bounded projection from meow's live connection table and return
 /// the records together with the open/close transitions.
 ///
@@ -172,8 +181,14 @@ pub(crate) struct SyncOutcome {
 /// appears is an `open`, one that disappeared is a `close` (duration from its
 /// start time). Logging happens **after** the store lock is released. Todo 16
 /// folds the same diff into its per-domain aggregate.
+///
+/// Todo 2: a record that leaves the **bounded projection** while still live in
+/// meow (evicted by [`CONN_TRACK_CAP`]) is NOT a close — it is marked `stale`
+/// and remembered in the request store's `stale_live` set, so a later re-entry
+/// does not fabricate a duplicate open and only a true departure writes the
+/// single terminal close.
 pub(crate) fn sync_full(stats: &meow_tunnel::Statistics) -> SyncOutcome {
-    let (out, opened, closed) = {
+    let (out, opened, closed, stale) = {
         let mut store = store().lock().unwrap_or_else(|e| e.into_inner());
         let mut next: HashMap<String, ConnRecord> = HashMap::with_capacity(
             stats.connections.len().min(CONN_TRACK_CAP),
@@ -201,12 +216,15 @@ pub(crate) fn sync_full(stats: &meow_tunnel::Statistics) -> SyncOutcome {
             .cloned()
             .collect();
         let now = crate::now_ms();
-        let closed: Vec<(ConnRecord, u64)> = store
-            .map
-            .values()
-            .filter(|r| !next.contains_key(&r.id))
-            .map(|r| (r.clone(), now.saturating_sub(r.started_at_ms)))
-            .collect();
+        let mut closed: Vec<(ConnRecord, u64)> = Vec::new();
+        let mut stale: Vec<ConnRecord> = Vec::new();
+        for r in store.map.values().filter(|r| !next.contains_key(&r.id)) {
+            if is_live_in_meow(stats, &r.id) {
+                stale.push(r.clone());
+            } else {
+                closed.push((r.clone(), now.saturating_sub(r.started_at_ms)));
+            }
+        }
         store.map = next;
         for (record, _) in &closed {
             store.mark_closed(&record.id);
@@ -217,10 +235,12 @@ pub(crate) fn sync_full(stats: &meow_tunnel::Statistics) -> SyncOutcome {
                 .cmp(&a.started_at_ms)
                 .then_with(|| a.id.cmp(&b.id))
         });
-        (out, opened, closed)
+        (out, opened, closed, stale)
     };
+    let now = crate::now_ms();
     for record in &opened {
         logging::record_connection(LogLevel::Info, connection_log(record, "in", 0, None), "open");
+        crate::requests::record_open(record, now);
     }
     for (record, duration) in &closed {
         logging::record_connection(
@@ -228,7 +248,12 @@ pub(crate) fn sync_full(stats: &meow_tunnel::Statistics) -> SyncOutcome {
             connection_log(record, "in", *duration, None),
             "close",
         );
+        crate::requests::record_close(record, now, crate::requests::CloseReason::Closed);
     }
+    for record in &stale {
+        crate::requests::record_close(record, now, crate::requests::CloseReason::Stale);
+    }
+    crate::requests::finalize_departed_stale(now, |conn_id| is_live_in_meow(stats, conn_id));
     SyncOutcome {
         live: out,
         closed: closed.into_iter().map(|(r, _)| r).collect(),
@@ -432,6 +457,11 @@ pub(crate) fn close_arm(instance_id: u64, payload: &[u8]) -> Result<Vec<u8>, Mod
                 connection_log(r, "in", duration, None),
                 "close",
             );
+            crate::requests::record_close(
+                r,
+                crate::now_ms(),
+                crate::requests::CloseReason::Closed,
+            );
         }
         emit_conn_event(instance_id, "close", &req.id, record.as_ref());
     }
@@ -473,7 +503,9 @@ pub(crate) fn close_all_arm(instance_id: u64) -> Result<Vec<u8>, ModuleError> {
             connection_log(r, "in", duration, None),
             "close",
         );
+        crate::requests::record_close(r, now, crate::requests::CloseReason::Closed);
     }
+    crate::requests::finalize_all_active(now);
     if closed > 0 {
         crate::emit_json(
             instance_id,
@@ -750,5 +782,233 @@ mod tests {
 
         crate::logging::reset_for_tests();
         reset_for_tests();
+    }
+
+    // --- Todo 2: request capture at the single chokepoint ---
+
+    fn request_records() -> Vec<crate::requests::RequestRecord> {
+        crate::requests::snapshot(0, usize::MAX, &crate::requests::RequestFilter::default()).records
+    }
+
+    fn stale_pairs() -> Vec<(String, u64)> {
+        request_records()
+            .into_iter()
+            .filter(|r| r.close_reason == crate::requests::CLOSE_REASON_STALE)
+            .map(|r| (r.conn_id, r.record_id))
+            .collect()
+    }
+
+    /// Malformed input: an absent / non-UUID id is treated as gone, never a
+    /// panic.
+    #[test]
+    fn is_live_in_meow_tolerates_absent_or_malformed_ids() {
+        let stats = meow_tunnel::Statistics::new();
+        assert!(!is_live_in_meow(&stats, "not-a-uuid"));
+        assert!(!is_live_in_meow(&stats, ""));
+        assert!(!is_live_in_meow(&stats, &uuid::Uuid::new_v4().to_string()));
+    }
+
+    /// open -> `conn.close` yields one `closed`; a second close is a no-op that
+    /// leaves `closeTsMs`/`durationMs` untouched; `conn.list` neither duplicates
+    /// nor loses the record.
+    #[test]
+    fn requests_capture_open_close_is_terminal_and_idempotent() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        crate::requests::reset_for_tests();
+        let tunnel = fixture_tunnel();
+        let stats = tunnel.statistics();
+        let id = track_out(stats.as_ref(), "req.example", "proxy-a");
+
+        let _ = sync(stats.as_ref());
+        let mut recs = request_records();
+        assert_eq!(recs.len(), 1, "one open record: {recs:?}");
+        assert_eq!(recs[0].conn_id, id.to_string());
+        assert_eq!(recs[0].close_reason, crate::requests::CLOSE_REASON_OPEN);
+        assert!(recs[0].close_ts_ms.is_none());
+        let rid = recs[0].record_id;
+
+        let payload = format!(r#"{{"id":"{id}"}}"#);
+        let _ = close_arm(7, payload.as_bytes()).unwrap();
+        recs = request_records();
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].record_id, rid);
+        assert_eq!(recs[0].close_reason, crate::requests::CLOSE_REASON_CLOSED);
+        let close_ts = recs[0].close_ts_ms.expect("terminal closeTs");
+        let duration = recs[0].duration_ms.expect("terminal duration");
+
+        let _ = close_arm(7, payload.as_bytes()).unwrap();
+        recs = request_records();
+        assert_eq!(recs[0].record_id, rid, "second close mints no new record");
+        assert_eq!(recs[0].close_ts_ms, Some(close_ts), "close is a no-op");
+        assert_eq!(recs[0].duration_ms, Some(duration), "duration unchanged");
+
+        assert!(sync(stats.as_ref()).is_empty());
+        recs = request_records();
+        assert_eq!(recs.len(), 1, "conn.list neither duplicates nor loses");
+        assert_eq!(recs[0].record_id, rid);
+
+        crate::rules::reset_for_tests();
+        reset_for_tests();
+        crate::requests::reset_for_tests();
+    }
+
+    /// Over `CONN_TRACK_CAP` the projection evicts the oldest-started live flows.
+    /// They are still live in meow, so they must become `stale` — never a fake
+    /// `closed` — and be tracked in the bounded suppression set.
+    #[test]
+    fn over_cap_marks_evicted_live_flows_stale_not_closed() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        crate::requests::reset_for_tests();
+        let stats = meow_tunnel::Statistics::new();
+        for i in 0..CONN_TRACK_CAP {
+            track(&stats, &format!("cap{i}.example"));
+        }
+        assert_eq!(sync(&stats).len(), CONN_TRACK_CAP);
+        assert_eq!(request_records().len(), CONN_TRACK_CAP);
+        assert_eq!(crate::requests::stale_live_len(), 0);
+
+        // meow stamps `ConnectionInfo.start` at SECONDS precision
+        // (meow-tunnel/src/statistics.rs `chrono_now`), so same-second flows
+        // cannot be ordered. Cross a real second boundary so the 8 new flows
+        // are strictly newer than every projected flow and can never be chosen
+        // as cap-eviction victims.
+        std::thread::sleep(std::time::Duration::from_millis(1_100));
+        for i in 0..8 {
+            track(&stats, &format!("extra{i}.example"));
+        }
+        assert_eq!(sync(&stats).len(), CONN_TRACK_CAP);
+        let recs = request_records();
+        let stale = recs
+            .iter()
+            .filter(|r| r.close_reason == crate::requests::CLOSE_REASON_STALE)
+            .count();
+        assert_eq!(stale, 8, "the 8 evicted-yet-live flows are stale");
+        assert_eq!(
+            recs.iter()
+                .filter(|r| r.close_reason == crate::requests::CLOSE_REASON_CLOSED)
+                .count(),
+            0,
+            "cap eviction must not fabricate a close"
+        );
+        assert_eq!(crate::requests::stale_live_len(), 8);
+        for r in recs.iter().filter(|r| r.close_reason == crate::requests::CLOSE_REASON_STALE) {
+            assert!(r.close_ts_ms.is_none(), "stale is not terminal");
+            assert!(r.duration_ms.is_none(), "stale carries no duration");
+        }
+
+        reset_for_tests();
+        crate::requests::reset_for_tests();
+    }
+
+    /// When capacity frees and an evicted-yet-live id re-enters the projection it
+    /// must NOT open a second record; the `recordId` stays uniquely paired from
+    /// open to its single terminal close.
+    #[test]
+    fn cap_evicted_live_flow_reentering_has_no_duplicate_open() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        crate::requests::reset_for_tests();
+        let stats = meow_tunnel::Statistics::new();
+        for i in 0..CONN_TRACK_CAP {
+            track(&stats, &format!("cap{i}.example"));
+        }
+        let _ = sync(&stats);
+
+        let mut extra_ids = Vec::new();
+        // meow stamps `ConnectionInfo.start` at SECONDS precision
+        // (meow-tunnel/src/statistics.rs `chrono_now`), so same-second flows
+        // cannot be ordered. Cross a real second boundary so the 8 new flows
+        // are strictly newer than every projected flow and can never be chosen
+        // as cap-eviction victims.
+        std::thread::sleep(std::time::Duration::from_millis(1_100));
+        for i in 0..8 {
+            extra_ids.push(track(&stats, &format!("extra{i}.example")));
+        }
+        let _ = sync(&stats);
+        let stale = stale_pairs();
+        assert_eq!(stale.len(), 8);
+
+        for id in &extra_ids {
+            stats.close_connection(*id);
+        }
+        let _ = sync(&stats);
+
+        let recs = request_records();
+        for (conn_id, rid) in &stale {
+            let matching: Vec<&_> = recs.iter().filter(|r| &r.conn_id == conn_id).collect();
+            assert_eq!(matching.len(), 1, "no duplicate open for {conn_id}");
+            assert_eq!(matching[0].record_id, *rid, "recordId changed on re-entry");
+            assert_eq!(
+                matching[0].close_reason,
+                crate::requests::CLOSE_REASON_OPEN,
+                "re-entry revives the existing record"
+            );
+        }
+        assert_eq!(crate::requests::reentered_count(), 8);
+        assert_eq!(
+            recs.iter()
+                .filter(|r| r.close_reason == crate::requests::CLOSE_REASON_CLOSED)
+                .count(),
+            8,
+            "only the 8 explicitly closed extras are terminal"
+        );
+
+        let (conn_id, rid) = stale[0].clone();
+        stats.close_connection(uuid::Uuid::parse_str(&conn_id).unwrap());
+        let _ = sync(&stats);
+        let recs = request_records();
+        let matching: Vec<&_> = recs.iter().filter(|r| r.conn_id == conn_id).collect();
+        assert_eq!(matching.len(), 1, "uniquely paired end-to-end");
+        assert_eq!(matching[0].record_id, rid);
+        assert_eq!(matching[0].close_reason, crate::requests::CLOSE_REASON_CLOSED);
+        assert!(matching[0].close_ts_ms.is_some());
+        assert!(matching[0].duration_ms.is_some());
+
+        crate::rules::reset_for_tests();
+        reset_for_tests();
+        crate::requests::reset_for_tests();
+    }
+
+    /// `close_all` writes exactly one terminal per tracked request and is
+    /// idempotent on a second call.
+    #[test]
+    fn close_all_finalizes_each_request_record_exactly_once() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        crate::requests::reset_for_tests();
+        let tunnel = fixture_tunnel();
+        let stats = tunnel.statistics();
+        for i in 0..5 {
+            track_out(stats.as_ref(), &format!("ca{i}.example"), "proxy-a");
+        }
+        let _ = sync(stats.as_ref());
+        let before: Vec<(String, u64)> = request_records()
+            .iter()
+            .map(|r| (r.conn_id.clone(), r.record_id))
+            .collect();
+        assert_eq!(before.len(), 5);
+
+        let _ = close_all_arm(9).unwrap();
+        let recs = request_records();
+        assert_eq!(recs.len(), 5);
+        for (conn_id, rid) in &before {
+            let matching: Vec<&_> = recs.iter().filter(|r| &r.conn_id == conn_id).collect();
+            assert_eq!(matching.len(), 1, "exactly one record for {conn_id}");
+            assert_eq!(matching[0].record_id, *rid);
+            assert_eq!(matching[0].close_reason, crate::requests::CLOSE_REASON_CLOSED);
+            assert!(matching[0].close_ts_ms.is_some());
+        }
+
+        let closed_at: Vec<Option<u64>> = recs.iter().map(|r| r.close_ts_ms).collect();
+        let _ = close_all_arm(9).unwrap();
+        let recs2 = request_records();
+        let closed_at2: Vec<Option<u64>> = recs2.iter().map(|r| r.close_ts_ms).collect();
+        assert_eq!(closed_at, closed_at2, "second close_all is a no-op");
+
+        crate::rules::reset_for_tests();
+        reset_for_tests();
+        crate::requests::reset_for_tests();
     }
 }
