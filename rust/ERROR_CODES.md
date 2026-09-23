@@ -49,6 +49,7 @@
 | `PROXY_LAN_CONFIG_INVALID` | proxy | 422 | `lan.set` 载荷非法（`bindAddress`/`allowedIps` CIDR/`port` 非法，或 `auth.user`/`auth.pass` 为空），或 LAN 监听绑定失败（Todo 28） |
 | `PROXY_LAN_DISABLED` | proxy | 422 | 在 LAN 未启用时请求 LAN 能力（Todo 28）。`gstore_contract::StatusCode` 无 409 变体，沿用本模块 422 域错误约定 |
 | `PROXY_LAN_NO_AUTH` | proxy | —（行内 warning） | LAN 监听已启用但未配置 `auth`：`proxy.state` 事件与 `lan.*` 响应的 `warning` 字段回传（Todo 28） |
+| `PROXY_SHAPER_CONFIG_INVALID` | proxy | 422 | `net.shaper.set` 载荷非法：非 JSON 对象、未知字段、字段越界（如 `rateBps` 非 `0` 且不在 `[1000, 1000000000]`、`reorderGap>255`）或跨字段冲突（`order=reorder` 且 `reorderPct>0` 且 `rateBps==0`）；校验失败时**不改动**内存/磁盘上的既有配置（Todo 15） |
 | `PROXY_PROTECT_FAILED` | proxy | 500 | 宿主 `protect_fd(fd)` 返回非 0：拒绝使用未受保护的出站 socket（Todo 7） |
 | `PROXY_DNS_CONFIG_INVALID` | proxy | 422 | DNS 配置非法（nameserver/DoH/DoT URL 解析失败、fake-ip range 非法、空 nameserver 列表）（Todo 8） |
 | `PROXY_DNS_BOOTSTRAP_FAILED` | proxy | 500 | DNS bootstrap/加密上游构建失败；`default-nameserver` 非明文时为 422（Todo 8） |

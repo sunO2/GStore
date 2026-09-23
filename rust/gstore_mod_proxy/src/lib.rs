@@ -16,6 +16,10 @@
 //!  * [`datapath_selftest`] — the HARD GATE: builds `meow_lwip::NetStack` on our
 //!    bounded runtime and shuttles real IP frames between the stack and a real
 //!    fd (a `socketpair`), both directions.
+//!  * the `shaper` module — the self-built **weak-network simulation** (D13
+//!    loss/duplicate/reorder, GCRA pacing, bounded release heap) wired into
+//!    both TUN datapath directions. Its `net.shaper.*` contract, schema and the
+//!    D5/D6/D14 semantics are frozen in `rust/gstore_mod_proxy/API.md` §2.15.
 //!
 //! No Dart/Flutter/FRB symbols are referenced here (module crates are pure
 //! Rust cdylibs — `rust/ARCHITECTURE.md` §3.6).

@@ -1098,56 +1098,119 @@ present but not a non-negative integer is `PROXY_REQUEST_CURSOR_INVALID` (422).
 `<dataDir>/shaper.json`，「意图（intent）」与「生效（effective）」分离：`net.shaper.set`
 即使引擎未运行也会记录并持久化，`applied` 只描述**当前**是否真正生效。
 
+整形器是 TUN 数据面里的两条**独立**流水线（`tun.rs` 的 `ShapePump`）：上行在 reader
+循环（设备 → 代理），下行在 egress 循环（代理 → 设备）。每帧依次经过 D5 豁免判定 →
+D13 loss/duplicate → D6 释放调度 → 有界释放堆；到点帧由**唯一**的 `sleep_until` 定时器
+放行。`enabled:false` 时是恒等路径，帧原地直通、不经过堆。
+
 | method | request | data |
 |---|---|---|
 | `net.shaper.get` | *(none)* | `{ "config": ShaperConfig, "effective": ShaperConfig, "applied": bool, "engineRunning": bool, "counters": ShaperCounters }` |
 | `net.shaper.set` | `ShaperConfig` (partial) | 与 `net.shaper.get` **完全相同**的冻结形状（两方法共用同一 Dart 解码器） |
 
 `net.shaper.set` 为部分更新（缺省字段保持当前值；显式 `"seed":null` 清空种子），校验
-失败为 `PROXY_SHAPER_CONFIG_INVALID`（422），且**不改动**内存/磁盘上的既有配置。两个
-方法都要求存活实例：缺失实例为结构化 `INSTANCE_NOT_FOUND`（410），绝不是 405。
+失败为 `PROXY_SHAPER_CONFIG_INVALID`（422），且**不改动**内存/磁盘上的既有配置（先克隆
+当前配置再逐字段合并，`validate()` 通过后才持久化并发布 watch）。两个方法都要求存活
+实例：缺失实例为结构化 `INSTANCE_NOT_FOUND`（410），绝不是 405。
 
 冻结响应字段：
 
 | field | type | notes |
 |---|---|---|
 | `config` | `ShaperConfig` | 已持久化的**意图**配置 |
-| `effective` | `ShaperConfig` | 运行引擎镜像的配置（`config`；`seed` 保留原值/`null`） |
-| `applied` | bool | 引擎运行中**且** `enabled:true` 时为 `true`，否则 `false` |
+| `effective` | `ShaperConfig` | 运行引擎观察到的配置（当前即 `config` 的克隆；`seed` 保留原值/`null`，**绝不**回填派生种子） |
+| `applied` | bool | 仅当 `engineRunning && effective.enabled && effective == config` 时为 `true`；引擎停止或弱网关闭时为 `false`（意图 ≠ 生效） |
 | `engineRunning` | bool | 引擎是否正在运行（`core.start` 之后） |
 | `counters` | `ShaperCounters` | 进程级整形计数器（见下） |
 
+`seed:null` 是默认值：`null` 表示生产环境按时间熵**派生** PRNG 种子（每次启动不同），
+显式 `u64` 则复现同一随机序列；`config`/`effective` 始终回显原值，从不回填派生结果。
+
 `ShaperConfig`：
 
-| field | type | notes |
-|---|---|---|
-| `enabled` | bool | 主开关；`false` = 恒等（无整形） |
-| `seed` | u64? | 显式 PRNG 种子；`null` 表示生产环境派生 |
-| `uplink` / `downlink` | `DirectionConfig` | 上行（设备→代理）/ 下行（代理→设备） |
+| field | type | default | notes |
+|---|---|---|---|
+| `enabled` | bool | `false` | 主开关；`false` = 恒等（无整形） |
+| `seed` | u64? | `null` | 显式 PRNG 种子；`null` 表示生产环境派生 |
+| `uplink` | `DirectionConfig` | all-default | 上行（设备→代理） |
+| `downlink` | `DirectionConfig` | all-default | 下行（代理→设备） |
 
-`DirectionConfig`（camelCase，带默认值；未知字段 422）：
+`DirectionConfig`（camelCase，未知字段 422；字段名与 serde 逐字一致）：
 
-| field | type | 取值 / 默认 |
-|---|---|---|
-| `rateBps` | u64 | `0` = 不限速；否则 `[1000, 1000000000]`（默认 `0`） |
-| `burstBytes` | u32 | `[1500, 65535]`（默认 `32768`） |
-| `delayMs` | u32 | `[0, 60000]`（默认 `0`） |
-| `jitterMs` | u32 | `[0, 30000]`（默认 `0`） |
-| `jitterDistribution` | string | `uniform` / `normal` / `pareto`（默认 `uniform`） |
-| `lossPct` | double | `[0, 100]`（默认 `0`） |
-| `lossModel` | string | `none` / `random` / `gilbertElliot`（默认 `none`） |
-| `lossGoodToBadPct` | double | Gilbert-Elliot good→bad，`[0, 100]`（默认 `0`） |
-| `lossBadToGoodPct` | double | Gilbert-Elliot bad→good，`[0, 100]`（默认 `0`） |
-| `duplicatePct` | double | `[0, 100]`（默认 `0`） |
-| `reorderPct` | double | `[0, 100]`（默认 `0`） |
-| `reorderGap` | u32 | 重排保持帧数，`[0, 255]`（默认 `0`） |
-| `order` | string | `preserve` / `reorder`（默认 `preserve`） |
+| field | type | default | 范围 / 取值 |
+|---|---|---|---|
+| `rateBps` | u64 | `0` | `0` = 不限速；否则 `[1000, 1000000000]` |
+| `burstBytes` | u32 | `32768` | `[1500, 65535]` |
+| `delayMs` | u32 | `0` | `[0, 60000]` |
+| `jitterMs` | u32 | `0` | `[0, 30000]` |
+| `jitterDistribution` | string | `"uniform"` | `uniform` / `normal` / `pareto` |
+| `lossPct` | double | `0` | `[0, 100]`（仅 `lossModel:"random"` 时使用） |
+| `lossModel` | string | `"none"` | `none` / `random` / `gilbertElliot` |
+| `lossGoodToBadPct` | double | `0` | Gilbert-Elliot good→bad，`[0, 100]` |
+| `lossBadToGoodPct` | double | `0` | Gilbert-Elliot bad→good，`[0, 100]` |
+| `duplicatePct` | double | `0` | `[0, 100]` |
+| `reorderPct` | double | `0` | `[0, 100]` |
+| `reorderGap` | u32 | `0` | 重排保持帧数，`[0, 255]` |
+| `order` | string | `"preserve"` | `preserve` / `reorder` |
 
-`ShaperCounters`（全 camelCase，**始终全部出现**）：`upFramesShaped`、
-`downFramesShaped`、`upBytesShaped`、`downBytesShaped`、`lossDropped`、
-`bufferDropped`、`duplicated`、`reordered`、`bufferedFrames`、`bufferedBytes`、
-`maxBufferedFrames`。注意 `lossDropped`（随机/GE 丢包）与 `bufferDropped`（有界队列
-drop-newest）是**分离**的两个原因，绝不合并。
+跨字段规则：`order:"reorder" && reorderPct>0 && rateBps==0` 一律 422（无速率则无法计算
+保持时长，避免除零）。`jitterDistribution:"normal"`/`"pareto"` 在 `jitterMs==0` 时退化为
+`uniform`（不采样）。`lossModel:"gilbertElliot"` 为双状态突发丢包：每帧先做状态迁移
+（Good→Bad 概率 `lossGoodToBadPct`，Bad→Good 概率 `lossBadToGoodPct`），Bad 态帧**全部**
+丢弃；`lossPct` 仅 `"random"` 使用。命中顺序为「豁免 → loss → duplicate」，loss 先于
+duplicate，故两者同时命中时以丢包为准。
+
+`ShaperCounters`（全 camelCase，**始终全部出现**）：
+
+| counter | 含义 |
+|---|---|
+| `upFramesShaped` / `downFramesShaped` | 上行/下行**通过损伤判定**的帧数（`Forward` 或 `Duplicate` 各记一次；被丢帧不计） |
+| `upBytesShaped` / `downBytesShaped` | 上述帧的字节数 |
+| `lossDropped` | 随机/GE 丢包数（`lossPct` / Gilbert-Elliot） |
+| `bufferDropped` | 有界释放堆的 drop-newest 丢弃数（**与 `lossDropped` 分离**，绝不合并） |
+| `duplicated` | 复制出的**额外**副本数（每 `Duplicate` 记一次，原始帧不计） |
+| `reordered` | 实际应用了 D6 重排保持的帧数 |
+| `bufferedFrames` / `bufferedBytes` | 当前堆内占用（上行 + 下行合计） |
+| `maxBufferedFrames` | 已观测到的堆内帧数水位（上行 + 下行合计） |
+
+**D5 豁免（damage-exempt）。** 以下帧**绝不**被丢包/复制/重排（但仍受带宽与延迟约束）：
+纯 ACK（payload 为空的 ACK）、TCP 控制段（SYN/FIN/RST）、UDP:53 与 TCP:53（无论方向）、
+ICMP（IPv4 proto `1`）、ICMPv6（proto `58`，含 NDP/RA），以及**所有 IP 分片**（IPv4 非首片
+与 IPv6 Fragment 整体豁免）。IPv4 与 IPv6 都会被解析；无法解析的畸形/截断帧**不**豁免，
+ESP/AH（proto 50/51）等未知传输也**不**豁免。豁免帧在损伤判定处短路、**不消耗** PRNG
+（不扰动确定性序列）。注意：整形发生在上行帧到达 netstack **之前**，`stats.traffic` 只
+统计真正到达引擎的帧，因此它是**丢包后（post-drop）**口径，与 `*FramesShaped` 等 shaper
+计数器不是同一基准。
+
+**D6 释放顺序与有效延迟。** 每帧的自然释放时刻为
+`max(pacer 截止, now + delayMs + jitter)`。
+* `order:"preserve"`：释放时刻单调不减（`max(prev_release, natural)`），保证同向不乱序。
+* `order:"reorder"`：命中的帧（以 `reorderPct` 的概率、且非豁免、且 `rateBps>0`）额外
+  保持 `reorderGap × len/rateBps`（即 `reorderGap` 帧在该速率下所占时间），允许后续帧
+  超车；保持**不推进** pacer，且只记住 pacer 截止（不 `max` 上一次释放）。
+* 有效延迟上界为 `base + maxJitter`，即 `delayMs + jitterMs`。抖动是**单侧**最大值
+  （样本落在 `[0, jitterMs]`），因此这是一个**保真度限制**（fidelity limitation），而非
+  对称的 ±jitter：文档如实标注上界，不声称下界。
+
+**重排窗口保真度注记。** 「乱序窗口 ≤ `reorderGap` 帧」是在**同帧长**下的界。混合帧长
+时，保持时长按 `len_selected/len_other`（被保持帧长度 / 本帧长度）缩放：线路上的实际在途
+窗口仍 ≤ `reorderGap` 帧，但其**墙钟时长**正比于被保持帧的长度，短帧可能被长帧的超车跨过。
+该缩放是有意为之的保真度注记（真实链路按字节计），不是 bug。
+
+**D14 可中断热切换。** `net.shaper.set` 在引擎运行时**热应用**，无需重启进程或数据面：
+* 切换是**可中断**的：堆内等待由唯一的 `sleep_until(deadline)` 定时器实现，配置变更或
+  停止会在该 `select!` 分支被抢占，绝不阻塞在 sleep 上。
+* **关闭（`enabled:false`）立即释放**所有在途帧（清空并直通），不等原定释放时刻。
+* **提高 `rateBps` 会清债**：pacer 以 `tat = min(tat, now)` 收敛（旧速率欠账被勾销），
+  新速率**立即**生效，不会带着旧欠账继续。
+* 提高时，在途帧按 D14 以 `now` 作到达时间重排（**有界近似**：原始到达间隔不保留，但
+  帧不丢）。
+
+**内存与 BDP。** 每个方向的有界释放堆上限为 **2 MiB / 512 帧**，采用 **drop-newest**
+（拒绝新到达的帧，保留最早释放者），先触顶者生效。计费只按载荷长度，不含 `Vec` 冗余
+容量。对 MTU 帧（1500 B × 512 ≈ 768 KiB）帧上限先绑定，否则 2 MiB 字节上限绑定。因而在
+高带宽高延迟（大 BDP）链路上，若队列被 delay/带宽排空的速度赶不上填充速度，会以
+`bufferDropped` 丢弃新帧，而**不是无界增长**。
 
 ## 3. Events (module → host)
 
