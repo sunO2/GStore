@@ -158,6 +158,7 @@ class AppSheetScaffold extends StatelessWidget {
     this.subtitle,
     this.icon,
     this.iconColor,
+    this.headerTrailing,
     this.content,
     this.actions = const <Widget>[],
     this.scrollable = true,
@@ -177,6 +178,12 @@ class AppSheetScaffold extends StatelessWidget {
 
   /// 图标颜色（默认主题 primary）
   final Color? iconColor;
+
+  /// 标题行尾部槽位（固定区，不随内容滚动）。
+  ///
+  /// 与标题/副标题同排、右对齐，并相对整个标题块垂直居中，
+  /// 适合放置「测速」等固定在头部的行内动作按钮。
+  final Widget? headerTrailing;
 
   /// 内容区；超限时内部滚动
   final Widget? content;
@@ -204,7 +211,8 @@ class AppSheetScaffold extends StatelessWidget {
     // 限高：内容再长也不顶出屏幕，超出部分由内容区内部滚动消化
     final maxHeight = media.size.height * maxHeightFactor;
 
-    final hasHeader = title != null || subtitle != null || icon != null;
+    final hasHeader =
+        title != null || subtitle != null || icon != null || headerTrailing != null;
 
     Widget? contentWidget;
     if (content != null) {
@@ -253,7 +261,10 @@ class AppSheetScaffold extends StatelessWidget {
                 AppSpacing.md,
               ),
               child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
+                // 有尾部动作（如「测速」）时与标题块垂直居中，否则维持标题顶对齐。
+                crossAxisAlignment: headerTrailing != null
+                    ? CrossAxisAlignment.center
+                    : CrossAxisAlignment.start,
                 children: [
                   if (icon != null) ...[
                     IconTheme(
@@ -292,6 +303,10 @@ class AppSheetScaffold extends StatelessWidget {
                         ],
                       ),
                     ),
+                  if (headerTrailing != null) ...[
+                    const SizedBox(width: AppSpacing.sm),
+                    headerTrailing!,
+                  ],
                 ],
               ),
             ),

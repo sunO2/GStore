@@ -3,9 +3,12 @@ import 'package:flutter/material.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
+import 'package:gstore/core/service/proxy_connect_controller.dart';
 
 import 'proxy_active_node_store.dart';
 import 'proxy_active_profile_store.dart';
+import 'proxy_engine_settings_store.dart';
+import 'proxy_geo_provisioner.dart';
 import 'proxy_home_facade.dart';
 import 'proxy_logs_page.dart';
 import 'proxy_nodes_facade.dart';
@@ -13,9 +16,11 @@ import 'proxy_nodes_page.dart';
 import 'proxy_profiles_page.dart';
 import 'proxy_routing_mode_store.dart';
 import 'proxy_run_mode_store.dart';
-import 'proxy_settings_facade.dart';
 import 'proxy_settings_page.dart';
+import 'proxy_site_probe.dart';
+import 'proxy_site_probe_card.dart';
 import 'proxy_stats_page.dart';
+import 'proxy_traffic_chart.dart';
 
 /// 代理首页（VPN 状态 / 连接开关 / 实时流量 / 当前配置 / 日志·统计入口）。
 ///
@@ -39,7 +44,10 @@ class ProxyHomePage extends StatefulWidget {
     this.nodeStore,
     this.runModeStore,
     this.routingModeStore,
+    this.engineSettingsStore,
     this.nodesFacade,
+    this.geoProvisionerFactory,
+    this.siteProbe,
     this.onOpenLogs,
     this.onOpenStats,
     this.onOpenLanSettings,
@@ -63,12 +71,25 @@ class ProxyHomePage extends StatefulWidget {
   /// 与引擎上报的「当前运行模式」分离：断开/重连/重入页面后恢复用户选择。
   final ProxyRunModeStore? runModeStore;
 
+  /// 引擎侧设置（stack / MTU）的持久化接缝（测试注入内存实现；为空时用
+  /// [ConfigStore]）。连接 / 引擎恢复时读取并随 `core.start` 的请求下发。
+  final ProxyEngineSettingsStore? engineSettingsStore;
+
   /// 用户选择的路由模式（直连/规则/全局）的持久化接缝（测试注入内存实现；
   /// 为空时用 [ConfigStore]）。与运行模式分离：新隧道默认 `rule`，连接后重放。
   final ProxyRoutingModeStore? routingModeStore;
 
   /// 节点页门面（测试注入假实现；为空时节点页用生产单例适配器）。
   final ProxyNodesFacade? nodesFacade;
+
+  /// geo provisioning 组装工厂（测试注入假工厂；为空时用生产单例
+  /// [ProxyGeoProvisionerFactory.instance]）。规则模式下页面据此 kickoff +
+  /// 后台 `waitReady` 反映状态。
+  final ProxyGeoProvisionerFactory? geoProvisionerFactory;
+
+  /// 网站连通性探测接缝（测试注入假实现；为空时卡片用生产 [SiteProbe]）。
+  /// 探测遵循当前代理与规则；仅用户手动触发，不在页面加载时自动执行。
+  final SiteProbe? siteProbe;
 
   /// 「运行日志」快捷入口；为空时打开 [ProxyLogsPage]。
   final VoidCallback? onOpenLogs;
@@ -95,6 +116,18 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
   late final ProxyActiveNodeStore _nodeStore;
   late final ProxyRunModeStore _runModeStore;
   late final ProxyRoutingModeStore _routingStore;
+  late final ProxyEngineSettingsStore _engineStore;
+  late final ProxyGeoProvisionerFactory _geoFactory;
+
+  /// 懒创建并缓存的生产 provisioner（清单异步加载，创建完成后回填给协调器）。
+  ProxyGeoProvisioner? _geoProvisioner;
+  Future<ProxyGeoProvisioner?>? _geoFuture;
+
+  /// 规则模式 CN 直连 geo 数据的准备状态（驱动非阻塞提示 / 重试）。
+  _GeoStatus _geoStatus = _GeoStatus.idle;
+
+  /// 连接 / 断开编排器（UI 无关，注入首页各接缝；供快捷磁贴复用同一流程）。
+  late final ProxyConnectController _controller;
   StreamSubscription<ProxyEvent>? _eventSub;
 
   bool _loading = true;
@@ -114,6 +147,14 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
   ProxyStateError? _actionError;
   String? _stateReason;
   ProxyStatsEvent? _stats;
+
+  /// 实时流量折线图的 60 秒环形缓冲（上行 / 下行），每收到一条 `proxy.stats`
+  /// 事件追加一个样本；断开 / 清空时重置。
+  final ProxyTrafficBuffer _traffic = ProxyTrafficBuffer();
+
+  /// 域名聚合的已淘汰计数（仅 `stats.traffic.get` 快照携带，事件不携带）。
+  int _statsEvicted = 0;
+
   ProxyNodeDelayEvent? _nodeDelay;
   List<ProxyConfigWarning> _configWarnings = const <ProxyConfigWarning>[];
 
@@ -142,6 +183,16 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
         widget.runModeStore ?? const ConfigStoreProxyRunModeStore();
     _routingStore =
         widget.routingModeStore ?? const ConfigStoreProxyRoutingModeStore();
+    _engineStore =
+        widget.engineSettingsStore ?? const ConfigStoreProxyEngineSettingsStore();
+    _geoFactory =
+        widget.geoProvisionerFactory ?? ProxyGeoProvisionerFactory.instance;
+    _controller = ProxyConnectController(
+      facade: _facade,
+      vpnConsent: _vpnConsent,
+      engineSettingsStore: _engineStore,
+      routingModeStore: _routingStore,
+    );
     _eventSub = _facade.events.listen(_onEvent, onError: _onEventError);
     _load();
   }
@@ -164,7 +215,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
       final version = await _facade.version();
       // 只读展示数据，失败不影响主状态（best-effort）。
       final profiles = await _safe(() => _facade.profileList());
-      final traffic = await _safe(() => _facade.statsTrafficGet(topDomains: 1));
+      final traffic = await _safe(() => _facade.statsTrafficGet(topDomains: 3));
       final lan = await _safe(() => _facade.lanStatus());
       final nodeList = await _safe(() => _facade.nodeList());
 
@@ -197,12 +248,32 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
         _profileName = selected?.name;
         _profileNodeCount = selected?.nodeCount;
         _activeNode = activeNode;
-        if (traffic != null) _applyTopDomains(traffic.topDomains);
+        if (traffic != null) {
+          // 用快照播种实时流量：既填充 `_stats`（首条事件到达前不空白），
+          // 也把最新一点补进折线缓冲，避免从零突变。
+          _stats = ProxyStatsEvent(
+            uploadBytes: traffic.uploadBytes,
+            downloadBytes: traffic.downloadBytes,
+            activeConns: traffic.activeConns,
+            upBps: traffic.upBps,
+            downBps: traffic.downBps,
+            domainCount: traffic.domainCount,
+            flowCount: traffic.flowCount,
+            capacity: traffic.capacity,
+            topDomains: traffic.topDomains,
+          );
+          _statsEvicted = traffic.evicted;
+          _traffic.clear();
+          _traffic.add(upBps: traffic.upBps, downBps: traffic.downBps);
+          _applyTopDomains(traffic.topDomains);
+        }
         if (nodeList != null) _nodeList = nodeList;
         _loading = false;
       });
       if (_isRunning) await _syncRoutingMode();
       await _recoverEngineIfServiceRunning();
+      // 规则模式：页面初始化即 best-effort 触发 geo provisioning（后台下载）。
+      unawaited(_prepareGeoIfRule());
     } on ProxyModuleException catch (error) {
       if (!mounted) return;
       setState(() {
@@ -224,6 +295,18 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
       return await run();
     } catch (_) {
       return null;
+    }
+  }
+
+  /// 读取持久化的引擎侧设置（stack / MTU）；存储异常时回落默认值。
+  ///
+  /// best-effort：绝不抛错，避免持久化失败阻断连接 / 引擎恢复。
+  Future<ProxyEngineSettings> _readEngineSettings() async {
+    try {
+      return await _engineStore.read();
+    } catch (_) {
+      // 存储异常 → 默认引擎参数（gvisor / 1500）。
+      return const ProxyEngineSettings();
     }
   }
 
@@ -277,8 +360,13 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
   Future<void> _recoverEngineIfServiceRunning() async {
     try {
       if (!await _vpnConsent.isRunning()) return;
+      final settings = await _readEngineSettings();
       final status = await _facade.coreStart(
-        CoreStartRequest(profileId: _selectedProfileId),
+        CoreStartRequest(
+          profileId: _selectedProfileId,
+          stack: settings.stack,
+          mtu: settings.mtu,
+        ),
       );
       if (!mounted) return;
       setState(() {
@@ -309,14 +397,68 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
   }
 
   /// 新隧道默认 `rule`：连接成功后把持久化的路由模式重放给引擎，并反映结果。
+  ///
+  /// 编排（读取存储 / `routing.set_mode` / 失败吞掉）在 [ProxyConnectController]，
+  /// 本页只把回报的模式反映到界面状态。
   Future<void> _applyPersistedRoutingMode() async {
-    final stored = await _safe<ProxyRoutingMode?>(() => _routingStore.read());
-    final target = stored ?? _routingMode;
-    if (target == ProxyRoutingMode.unknown) return;
-    final result = await _safe(() => _facade.routingSetMode(target.wire));
-    if (!mounted || result == null) return;
-    if (result.mode == ProxyRoutingMode.unknown) return;
-    setState(() => _routingMode = result.mode);
+    final applied = await _controller.replayPersistedRoutingMode(
+      fallbackRoutingMode: _routingMode,
+    );
+    if (!mounted || applied == null) return;
+    setState(() => _routingMode = applied);
+  }
+
+  // ==================== geo provisioning（规则模式 CN 直连） ====================
+
+  /// 懒创建并缓存 provisioner；创建完成后回填给 [ProxyConnectController]。
+  ///
+  /// 并发调用复用同一 Future；清单加载失败返回 `null`（页面 best-effort 跳过）。
+  Future<ProxyGeoProvisioner?> _ensureGeoProvisioner() {
+    final existing = _geoProvisioner;
+    if (existing != null) return Future<ProxyGeoProvisioner?>.value(existing);
+    final pending = _geoFuture;
+    if (pending != null) return pending;
+    final created = _geoFactory.create().then((provisioner) {
+      if (provisioner != null) {
+        _geoProvisioner = provisioner;
+        _controller.geoProvisioner = provisioner;
+      }
+      return provisioner;
+    });
+    _geoFuture = created;
+    return created;
+  }
+
+  /// 目标路由模式为 `rule` 时触发 geo provisioning，并后台等待就绪反映状态。
+  ///
+  /// best-effort：非 `rule` / provisioner 不可用不处理；kickoff 失败 → 失败态
+  /// （展示重试）；`waitReady` 在后台进行，不阻塞页面。成功保持静默（仅清除提示）。
+  Future<void> _prepareGeoIfRule({bool force = false}) async {
+    if (_routingMode != ProxyRoutingMode.rule) return;
+    final provisioner = await _ensureGeoProvisioner();
+    if (!mounted || provisioner == null) return;
+    if (_geoStatus == _GeoStatus.preparing) return;
+    setState(() => _geoStatus = _GeoStatus.preparing);
+    final kickedOff = await provisioner.kickoff(
+      profileId: _selectedProfileId,
+      force: force,
+    );
+    if (!mounted) return;
+    if (!kickedOff) {
+      setState(() => _geoStatus = _GeoStatus.failed);
+      return;
+    }
+    // 后台等待下载完成（引擎会自动重编译规则，无需二次 reload）。
+    final ready = await provisioner.waitReady();
+    if (!mounted) return;
+    setState(() => _geoStatus = ready ? _GeoStatus.ready : _GeoStatus.failed);
+  }
+
+  /// 失败后的重试：`force` 绕过 provisioner 的 60s 失败节流后重新 kickoff。
+  Future<void> _retryGeo() async {
+    if (_geoStatus == _GeoStatus.preparing) return;
+    setState(() => _geoStatus = _GeoStatus.idle);
+    await _prepareGeoIfRule(force: true);
   }
 
   /// 用户点选分段：请求切换、用响应的 `mode` 反映状态并持久化意图
@@ -331,6 +473,10 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
       setState(() {
         if (result.mode != ProxyRoutingMode.unknown) _routingMode = result.mode;
       });
+      // 切到规则模式：best-effort 触发 CN 直连 geo provisioning。
+      if (mode == ProxyRoutingMode.rule) {
+        unawaited(_prepareGeoIfRule());
+      }
     } on ProxyModuleException catch (error) {
       if (!mounted) return;
       setState(() {
@@ -358,6 +504,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
   /// 取自主题令牌与组件自身。
   Widget _buildRoutingModeSwitch(BuildContext context) {
     final theme = Theme.of(context);
+    // 标签与药丸各占一行：标题在上，药丸换行左对齐到下一行。
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -372,6 +519,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
           key: const Key('proxy-routing-mode-switch'),
           value: _routingMode,
           enabled: !_busy,
+          density: AppSegmentedButton.mediumDensity,
           segments: const <AppSegment<ProxyRoutingMode>>[
             AppSegment(
               value: ProxyRoutingMode.direct,
@@ -417,6 +565,8 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
             refreshNodes = true;
           } else if (event.state == ProxyConnState.stopped) {
             _nodeList = null;
+            _traffic.clear();
+            _statsEvicted = 0;
           }
           _actionError = event.error;
           _stateReason = event.reason;
@@ -425,6 +575,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
           _mode = event.mode;
         case ProxyStatsEvent():
           _stats = event;
+          _traffic.add(upBps: event.upBps, downBps: event.downBps);
           _applyTopDomains(event.topDomains);
           if (_isRunning) refreshNodes = true;
         case ProxyConfigAppliedEvent():
@@ -476,52 +627,42 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
     });
     try {
       if (connecting) {
-        final target = _targetMode;
-        if (target == ProxyMode.vpn) {
-          // 连接必须带上持久化的分流配置（Todo 23 → Todo 24 交接），仅在显式传入
-          // 非默认配置时才直接用 widget 参数。
-          var configJson = widget.vpnConfigJson;
-          if (configJson == '{}') {
-            configJson =
-                await _safe(() => _facade.vpnConfigJson()) ?? configJson;
-          }
-          final prepared = await _vpnConsent.prepare(configJson: configJson);
-          if (!prepared) {
-            throw const ProxyModuleException(
-              code: 'PROXY_VPN_CONSENT_DENIED',
-              message: 'VPN 授权未通过，无法建立连接',
-            );
-          }
+        // 规则模式连接前确保 provisioner 已回填给协调器（kickoff 在 core.start
+        // 之前 best-effort 执行；清单已缓存时此处零开销）。
+        if (_routingMode == ProxyRoutingMode.rule) {
+          await _ensureGeoProvisioner();
         }
-        final status = await _facade.coreStart(
-          CoreStartRequest(mode: target.wire, profileId: _selectedProfileId),
+        // 连接编排（可选授权 prepare → core.start → 重放路由模式）全部由
+        // [ProxyConnectController] 负责；本页只消费回报的契约模型更新界面状态，
+        // 错误原样冒泡到下方统一错误处理（行为与重构前一致）。
+        final outcome = await _controller.connect(
+          targetMode: _targetMode,
+          profileId: _selectedProfileId,
+          vpnConfigJson: widget.vpnConfigJson,
+          fallbackRoutingMode: _routingMode,
         );
         if (!mounted) return;
         setState(() {
+          final status = outcome.status;
           _connState = status.state;
           _mode = status.mode;
           _targetMode = _selectableMode(status.mode);
           final name = status.profileName;
           if (name != null && name.isNotEmpty) _profileName = name;
           _configWarnings = status.warnings;
+          final routing = outcome.routingMode;
+          if (routing != null) _routingMode = routing;
         });
-        // 新隧道默认 rule：连接成功后重放持久化的路由模式。
-        await _applyPersistedRoutingMode();
       } else {
-        // 断开必须「先停引擎、再停系统服务」，且停服务用 try/finally 兜底：
-        // core.stop 抛错（引擎异常 / 模块不可用 / 超时）时，若直接走 catch，
-        // 系统 VpnService 会残留持有 TUN、VPN 图标不消失。停服务是尽力而为，
-        // 其自身异常不得覆盖 core.stop 的原始错误（_safe 吞掉并返回 null）。
-        CoreStopResult? stopped;
-        try {
-          stopped = await _facade.coreStop();
-        } finally {
-          await _safe(() => _vpnConsent.stop());
-        }
+        // 断开的「先停引擎、再停系统服务（try/finally 兜底）」编排在
+        // [ProxyConnectController.disconnect]；本页只反映停止后的状态。
+        final stopped = await _controller.disconnect();
         if (!mounted) return;
         setState(() {
           _connState = stopped?.state ?? ProxyConnState.stopped;
           _stats = null;
+          _statsEvicted = 0;
+          _traffic.clear();
           _currentOutbound = null;
           _nodeList = null;
           _configWarnings = const <ProxyConfigWarning>[];
@@ -886,7 +1027,14 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
         const SizedBox(height: AppSpacing.lg),
         _buildTrafficCard(context),
         const SizedBox(height: AppSpacing.lg),
+        ProxySiteProbeCard(probe: widget.siteProbe),
+        const SizedBox(height: AppSpacing.lg),
         _buildQuickEntries(context),
+        if (_geoStatus == _GeoStatus.preparing ||
+            _geoStatus == _GeoStatus.failed) ...[
+          const SizedBox(height: AppSpacing.lg),
+          _buildGeoStatusBanner(context),
+        ],
         if (_nodeDelay != null) ...[
           const SizedBox(height: AppSpacing.lg),
           _buildDelayCard(context, _nodeDelay!),
@@ -1188,11 +1336,18 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
             const SizedBox(height: AppSpacing.lg),
             SizedBox(
               width: double.infinity,
+              // 断开是破坏性动作：主题 error 底 + onError 前景；连接保持默认 primary/filled。
+              // （状态图标 / 文案不得染 error，见卡片顶部注释；本处只改动作按钮。）
               child: _isRunning
-                  ? OutlinedButton.icon(
+                  ? FilledButton.icon(
+                      key: const Key('proxy-disconnect-button'),
                       onPressed: _busy ? null : _toggleConnection,
                       icon: _buttonIcon(),
                       label: Text(_toggleLabel),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: scheme.error,
+                        foregroundColor: scheme.onError,
+                      ),
                     )
                   : FilledButton.icon(
                       onPressed: _busy ? null : _toggleConnection,
@@ -1215,6 +1370,77 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
       );
     }
     return Icon(_isRunning ? Icons.power_settings_new : Icons.shield_outlined);
+  }
+
+  /// 规则模式 geo 数据的非阻塞状态条：准备中（spinner + 文案）/ 失败（重试）。
+  ///
+  /// 颜色全部取自主题令牌（`tertiaryContainer` 准备中 / `errorContainer` 失败），
+  /// 不阻塞连接、不用弹框。
+  Widget _buildGeoStatusBanner(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final failed = _geoStatus == _GeoStatus.failed;
+    final containerColor =
+        failed ? scheme.errorContainer : scheme.tertiaryContainer;
+    final contentColor =
+        failed ? scheme.onErrorContainer : scheme.onTertiaryContainer;
+    return Container(
+      key: const Key('proxy-geo-status-banner'),
+      width: double.infinity,
+      padding: AppSpacing.allMD,
+      decoration: BoxDecoration(
+        color: containerColor,
+        borderRadius: AppRadius.allMD,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              if (failed)
+                Icon(
+                  Icons.error_outline,
+                  size: AppTypography.iconMD,
+                  color: contentColor,
+                )
+              else
+                const SizedBox(
+                  width: AppTypography.iconMD,
+                  height: AppTypography.iconMD,
+                  child: AppLoading(size: AppLoadingSize.small),
+                ),
+              const SizedBox(width: AppSpacing.xs),
+              Expanded(
+                child: Text(
+                  failed ? 'CN 直连规则数据准备失败' : '正在准备 CN 直连规则数据…',
+                  style: theme.textTheme.labelMedium?.copyWith(
+                    color: contentColor,
+                    fontWeight: AppTypography.weightMedium,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: AppSpacing.xs),
+          Text(
+            failed
+                ? '规则模式依赖的 geo 数据下载失败，可重试。'
+                : '后台下载中，不影响当前连接；完成后 CN 直连规则自动生效。',
+            style: theme.textTheme.bodySmall?.copyWith(color: contentColor),
+          ),
+          if (failed)
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton(
+                key: const Key('proxy-geo-retry'),
+                onPressed: _busy ? null : _retryGeo,
+                style: TextButton.styleFrom(foregroundColor: contentColor),
+                child: const Text('重新准备'),
+              ),
+            ),
+        ],
+      ),
+    );
   }
 
   Widget _buildErrorBanner(BuildContext context, ProxyStateError error) {
@@ -1323,7 +1549,11 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
     final upBps = stats?.upBps ?? 0;
     final downBps = stats?.downBps ?? 0;
     final activeConns = stats?.activeConns ?? 0;
-    final maxBps = upBps > downBps ? upBps : downBps;
+    final capacity = stats?.capacity ?? 0;
+    final evicted = _statsEvicted;
+    final domainCount = stats?.domainCount ?? 0;
+    final flowCount = stats?.flowCount ?? 0;
+    final topDomains = stats?.topDomains ?? const <DomainStat>[];
 
     return Card(
       margin: EdgeInsets.zero,
@@ -1341,20 +1571,50 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
                 ),
                 const SizedBox(width: AppSpacing.xs),
                 Text('实时流量', style: theme.textTheme.titleSmall),
+                const Spacer(),
+                Text(
+                  '最近 60 秒',
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
               ],
             ),
             const SizedBox(height: AppSpacing.sm),
-            _infoRow(
+            // 60 秒双序列平滑折线（下 = primary，上 = tertiary）。
+            ProxyTrafficChart(buffer: _traffic),
+            const SizedBox(height: AppSpacing.sm),
+            _trafficMetricRow(
               theme,
-              '上传',
-              '${byteSize(uploadBytes)} · ${byteSize(upBps)}/s',
-              valueKey: const Key('proxy-upload-total'),
+              '实时速率',
+              <Widget>[
+                _speedValue(
+                  '↑ ${byteSize(upBps)}/s',
+                  color: scheme.tertiary,
+                  key: const Key('proxy-upload-speed'),
+                ),
+                _speedValue(
+                  '↓ ${byteSize(downBps)}/s',
+                  color: scheme.primary,
+                  key: const Key('proxy-download-speed'),
+                ),
+              ],
             ),
-            _infoRow(
+            _trafficMetricRow(
               theme,
-              '下载',
-              '${byteSize(downloadBytes)} · ${byteSize(downBps)}/s',
-              valueKey: const Key('proxy-download-total'),
+              '累计',
+              <Widget>[
+                _totalValue(
+                  theme,
+                  '↑ ${byteSize(uploadBytes)}',
+                  key: const Key('proxy-upload-total'),
+                ),
+                _totalValue(
+                  theme,
+                  '↓ ${byteSize(downloadBytes)}',
+                  key: const Key('proxy-download-total'),
+                ),
+              ],
             ),
             _infoRow(
               theme,
@@ -1362,27 +1622,111 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
               '$activeConns',
               valueKey: const Key('proxy-active-conns'),
             ),
-            if ((stats?.domainCount ?? 0) > 0)
-              _infoRow(theme, '已统计域名', '${stats!.domainCount}'),
-            const SizedBox(height: AppSpacing.sm),
-            _ThroughputBar(
-              icon: Icons.arrow_upward,
-              bps: upBps,
-              maxBps: maxBps,
-              color: scheme.tertiary,
-            ),
-            const SizedBox(height: AppSpacing.xs),
-            _ThroughputBar(
-              icon: Icons.arrow_downward,
-              bps: downBps,
-              maxBps: maxBps,
-              color: scheme.primary,
-            ),
+            // 已淘汰计数仅由 `stats.traffic.get` 快照携带（事件不含），有值才显示。
+            if (evicted > 0)
+              _infoRow(
+                theme,
+                '容量/淘汰',
+                '$capacity / $evicted',
+                valueKey: const Key('proxy-capacity-evicted'),
+                subtle: true,
+              ),
+            if (domainCount > 0) _infoRow(theme, '已统计域名', '$domainCount'),
+            if (flowCount > 0)
+              _infoRow(
+                theme,
+                '跟踪连接',
+                '$flowCount',
+                valueKey: const Key('proxy-flow-count'),
+              ),
+            if (topDomains.isNotEmpty) ...[
+              const SizedBox(height: AppSpacing.xs),
+              Text(
+                'Top 3 域名',
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: scheme.onSurfaceVariant,
+                ),
+              ),
+              for (var i = 0; i < topDomains.length && i < 3; i++)
+                _infoRow(
+                  theme,
+                  '${i + 1}',
+                  '${topDomains[i].domain} · '
+                      '${byteSize(topDomains[i].uploadBytes + topDomains[i].downloadBytes)}',
+                  valueKey: i == 0 ? const Key('proxy-top-domain') : null,
+                ),
+            ],
           ],
         ),
       ),
     );
   }
+
+  /// 流量指标行：左侧标签 + 右侧右对齐的一组数值（窄屏由各数值自身省略）。
+  Widget _trafficMetricRow(
+    ThemeData theme,
+    String label,
+    List<Widget> values,
+  ) {
+    return Padding(
+      padding: AppSpacing.onlyVerticalXS,
+      child: Row(
+        children: [
+          Text(
+            label,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(width: AppSpacing.sm),
+          Expanded(
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                for (var i = 0; i < values.length; i++) ...[
+                  if (i > 0) const SizedBox(width: AppSpacing.md),
+                  Flexible(child: values[i]),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 实时速率数值：`AppTypography.number` 强调，颜色取主题令牌。
+  Widget _speedValue(
+    String text, {
+    required Color color,
+    required Key key,
+  }) {
+    return Text(
+      text,
+      key: key,
+      textAlign: TextAlign.right,
+      overflow: TextOverflow.ellipsis,
+      style: AppTypography.number.copyWith(color: color),
+    );
+  }
+
+  /// 累计流量数值：常规 body 强调（**无** `/s`）。
+  Widget _totalValue(
+    ThemeData theme,
+    String text, {
+    required Key key,
+  }) {
+    return Text(
+      text,
+      key: key,
+      textAlign: TextAlign.right,
+      overflow: TextOverflow.ellipsis,
+      style: theme.textTheme.bodyMedium?.copyWith(
+        fontWeight: AppTypography.weightMedium,
+      ),
+    );
+  }
+
 
   // ==================== 快捷入口 ====================
 
@@ -1488,18 +1832,23 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
     String label,
     String value, {
     Key? valueKey,
+    bool subtle = false,
   }) {
+    final Color variantColor = theme.colorScheme.onSurfaceVariant;
+    final TextStyle? labelStyle = subtle
+        ? theme.textTheme.bodySmall?.copyWith(color: variantColor)
+        : theme.textTheme.bodyMedium?.copyWith(color: variantColor);
+    final TextStyle? valueStyle = subtle
+        ? theme.textTheme.bodySmall?.copyWith(color: variantColor)
+        : theme.textTheme.bodyMedium?.copyWith(
+            fontWeight: AppTypography.weightMedium,
+          );
     return Padding(
       padding: AppSpacing.onlyVerticalXS,
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(
-            label,
-            style: theme.textTheme.bodyMedium?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
-          ),
+          Text(label, style: labelStyle),
           const SizedBox(width: AppSpacing.sm),
           Flexible(
             child: Text(
@@ -1507,9 +1856,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
               key: valueKey,
               textAlign: TextAlign.right,
               overflow: TextOverflow.ellipsis,
-              style: theme.textTheme.bodyMedium?.copyWith(
-                fontWeight: AppTypography.weightMedium,
-              ),
+              style: valueStyle,
             ),
           ),
         ],
@@ -1518,51 +1865,17 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
   }
 }
 
-/// 单行吞吐量条：按当前方向速率的相对大小填充，仅用于展示。
-///
-/// 颜色全部取自 [ColorScheme]，不硬编码。
-class _ThroughputBar extends StatelessWidget {
-  const _ThroughputBar({
-    required this.icon,
-    required this.bps,
-    required this.maxBps,
-    required this.color,
-  });
+/// 规则模式 CN 直连 geo 数据的准备状态。
+enum _GeoStatus {
+  /// 未开始 / 不适用（非规则模式）。
+  idle,
 
-  final IconData icon;
-  final int bps;
-  final int maxBps;
-  final Color color;
+  /// 正在探测 / 触发下载（页面显示非阻塞提示）。
+  preparing,
 
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
-    final value = maxBps <= 0 ? 0.0 : (bps / maxBps).clamp(0.0, 1.0);
+  /// 已就绪（静默）。
+  ready,
 
-    return Row(
-      children: [
-        Icon(icon, size: AppTypography.iconXS, color: color),
-        const SizedBox(width: AppSpacing.xs),
-        Expanded(
-          child: ClipRRect(
-            borderRadius: AppRadius.allXS,
-            child: LinearProgressIndicator(
-              value: value,
-              minHeight: 6,
-              color: color,
-              backgroundColor: scheme.surfaceContainerHighest,
-            ),
-          ),
-        ),
-        const SizedBox(width: AppSpacing.sm),
-        Text(
-          '${byteSize(bps)}/s',
-          style: theme.textTheme.bodySmall?.copyWith(
-            color: scheme.onSurfaceVariant,
-          ),
-        ),
-      ],
-    );
-  }
+  /// 触发或下载失败（页面显示重试）。
+  failed,
 }

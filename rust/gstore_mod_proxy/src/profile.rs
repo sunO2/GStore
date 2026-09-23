@@ -61,6 +61,11 @@ pub(crate) const SCHEMA_VERSION: u32 = 2;
 pub(crate) const PROFILES_DIR: &str = "profiles";
 const INDEX_FILE: &str = "index.json";
 
+/// Module-local pointer to the last explicitly-selected profile. Deliberately a
+/// **sibling** of `profiles/` (not inside it): [`ProfileStore::rebuild_index`]
+/// scans `profiles/*.json` and would flag this file as a corrupt payload.
+const ACTIVE_PROFILE_FILE: &str = "active_profile.json";
+
 /// Hard bounds so the store cannot grow without limit.
 const MAX_PROFILES: usize = 4096;
 const MAX_NODES: usize = 4096;
@@ -662,8 +667,15 @@ fn parse_payload(
 pub(crate) struct ProfileStore {
     root: PathBuf,
     index_path: PathBuf,
+    active_path: PathBuf,
     #[cfg(test)]
     fault: WriteFault,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ActiveProfile {
+    profile_id: String,
 }
 
 impl ProfileStore {
@@ -681,6 +693,7 @@ impl ProfileStore {
         Ok(Self {
             index_path: root.join(INDEX_FILE),
             root,
+            active_path: Path::new(dir).join(ACTIVE_PROFILE_FILE),
             #[cfg(test)]
             fault: WriteFault::None,
         })
@@ -695,6 +708,42 @@ impl ProfileStore {
 
     fn payload_path(&self, id: &str) -> PathBuf {
         self.root.join(format!("{id}.json"))
+    }
+
+    /// The persisted active profile id, or `None` when the pointer is missing,
+    /// corrupt, empty, or non-UTF8. Read-only and lock-free so it is safe on the
+    /// offline resolution path.
+    pub(crate) fn read_active_profile_id(&self) -> Option<String> {
+        let bytes = fs::read(&self.active_path).ok()?;
+        let parsed: ActiveProfile = serde_json::from_slice(&bytes).ok()?;
+        let id = parsed.profile_id.trim();
+        if id.is_empty() {
+            None
+        } else {
+            Some(id.to_string())
+        }
+    }
+
+    /// Best-effort persist of the active profile id (atomic temp+rename). A
+    /// write failure is logged and swallowed: the pointer is only an
+    /// optimization for offline resolution and must never fail generation.
+    pub(crate) fn write_active_profile_id(&self, id: &str) {
+        let id = id.trim();
+        if id.is_empty() || validate_id(id).is_err() {
+            return;
+        }
+        let payload = ActiveProfile {
+            profile_id: id.to_string(),
+        };
+        let Ok(bytes) = serde_json::to_vec(&payload) else {
+            return;
+        };
+        if let Err(e) = self.atomic_write(&self.active_path, &bytes) {
+            crate::log_message(
+                2,
+                &format!("proxy: active profile persist id={id} failed: {}", e.message),
+            );
+        }
     }
 
     /// Atomic write: temp + fsync + rename (+ best-effort directory fsync).
@@ -1432,6 +1481,7 @@ pub(crate) mod tests {
                 group_type: "select".to_string(),
                 members: vec!["node-a".to_string(), "node-b".to_string()],
             }],
+            has_proxy_groups: true,
             rules: Vec::new(),
             userinfo: Some(SubscriptionUserinfo {
                 upload: Some(10),
@@ -1872,6 +1922,36 @@ pub(crate) mod tests {
         fs::write(&payload, br#"{"schemaVersion":99,"id":"future"}"#).unwrap();
         let err = store.get(br#"{"id":"future"}"#).unwrap_err();
         assert_eq!(err.code, ERR_PROFILE_SCHEMA_UNSUPPORTED);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn active_profile_pointer_is_lenient_and_survives_reload() {
+        let dir = tmp_dir("active-pointer");
+        let store = open(&dir);
+        assert_eq!(store.read_active_profile_id(), None, "missing file -> None");
+
+        store.write_active_profile_id("p2");
+        assert_eq!(store.read_active_profile_id().as_deref(), Some("p2"));
+        assert!(
+            dir.join(ACTIVE_PROFILE_FILE).exists(),
+            "pointer lives beside profiles/, not inside it"
+        );
+        assert!(
+            !dir.join(PROFILES_DIR).join(ACTIVE_PROFILE_FILE).exists(),
+            "pointer must not land where rebuild_index scans payloads"
+        );
+        assert_eq!(
+            open(&dir).read_active_profile_id().as_deref(),
+            Some("p2"),
+            "pointer survives a store reopen"
+        );
+
+        fs::write(dir.join(ACTIVE_PROFILE_FILE), b"not json").unwrap();
+        assert_eq!(store.read_active_profile_id(), None, "corrupt -> None");
+        fs::write(dir.join(ACTIVE_PROFILE_FILE), br#"{"profileId":""}"#).unwrap();
+        assert_eq!(store.read_active_profile_id(), None, "empty -> None");
 
         let _ = fs::remove_dir_all(&dir);
     }

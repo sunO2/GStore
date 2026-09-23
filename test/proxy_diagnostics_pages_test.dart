@@ -62,10 +62,7 @@ class _FakeDnsFacade implements ProxyDnsFacade {
     lastSetPayload = payload;
     return DnsSetResult(
       ok: true,
-      config: DnsConfig(
-        mode: payload['mode']?.toString() ?? 'fake-ip',
-        nameservers: (payload['nameservers'] as List?)?.cast<String>() ?? const [],
-      ),
+      config: DnsConfig.fromJson(payload),
     );
   }
 
@@ -203,6 +200,29 @@ const DnsSnapshot _dnsFixture = DnsSnapshot(
   ],
 );
 
+/// 高级字段全量夹具：用于验证回填与「清空」语义。
+const DnsSnapshot _dnsAdvancedFixture = DnsSnapshot(
+  mode: 'fake-ip',
+  config: DnsConfig(
+    mode: 'fake-ip',
+    nameservers: ['1.1.1.1'],
+    fallback: ['8.8.8.8'],
+    doh: ['https://dns.example/dns-query'],
+    dot: ['tls://1.1.1.1:853'],
+    defaultNameservers: ['223.5.5.5'],
+    fakeIpRange: '198.18.0.0/16',
+    fakeIpRangeV6: 'fdfe:dcba:9876::/48',
+    fakeIpTtlMs: 300,
+    fakeIpFilter: ['filter.example'],
+    fakeIpFilterMode: 'whitelist',
+    useHosts: false,
+    ipv6: false,
+    hijack: false,
+    hosts: {'example.com': ['1.2.3.4', '5.6.7.8']},
+  ),
+  stats: DnsStats(queries: 1, failures: 0, cacheEntries: 0),
+);
+
 const List<DomainStat> _statsFixture = [
   DomainStat(
     domain: 'b.example',
@@ -248,6 +268,7 @@ void main() {
 
   group('ProxyDnsPage（Todo 22a）', () {
     testWidgets('happy：渲染 fixture 并经受控弹层保存 dns.set', (tester) async {
+      _useLargeViewport(tester);
       final facade = _FakeDnsFacade(_dnsFixture);
       await tester.pumpWidget(_host(ProxyDnsPage(facade: facade)));
       await tester.pumpAndSettle();
@@ -277,8 +298,122 @@ void main() {
         (facade.lastSetPayload!['nameservers'] as List).cast<String>(),
         ['9.9.9.9'],
       );
+      // 新增字段在未编辑时也显式提交（空集合 / null），保证「清空」语义确定。
+      expect(facade.lastSetPayload!['defaultNameservers'], isEmpty);
+      expect(facade.lastSetPayload!['fakeIpRange'], isNull);
+      expect(facade.lastSetPayload!['fakeIpRangeV6'], isNull);
+      expect(facade.lastSetPayload!['fakeIpTtlMs'], isNull);
+      expect(facade.lastSetPayload!['fakeIpFilter'], isEmpty);
+      expect(facade.lastSetPayload!['fakeIpFilterMode'], 'blacklist');
+      expect(facade.lastSetPayload!['hosts'], isEmpty);
+      expect(facade.lastSetPayload!['useHosts'], true);
+      expect(facade.lastSetPayload!['ipv6'], true);
+      expect(facade.lastSetPayload!['hijack'], true);
       // 弹层已关闭
       expect(find.text('DNS 配置'), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('happy：高级字段回填、显式清空并可解析 hosts / 开关 / 过滤模式',
+        (tester) async {
+      _useLargeViewport(tester);
+      final facade = _FakeDnsFacade(_dnsAdvancedFixture);
+      await tester.pumpWidget(_host(ProxyDnsPage(facade: facade)));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byTooltip('编辑'));
+      await tester.pumpAndSettle();
+
+      // 初始值回填到表单控件
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('dns_bootstrap_field')),
+          matching: find.text('223.5.5.5'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('dns_fake_ip_range_field')),
+          matching: find.text('198.18.0.0/16'),
+        ),
+        findsOneWidget,
+      );
+
+      // 清空可选标量：空文本 → null
+      await tester.enterText(find.byKey(const Key('dns_fake_ip_range_field')), '');
+      await tester.enterText(
+        find.byKey(const Key('dns_fake_ip_range_v6_field')),
+        '',
+      );
+      await tester.enterText(find.byKey(const Key('dns_fake_ip_ttl_field')), '');
+      // 清空列表：空文本 → []
+      await tester.enterText(find.byKey(const Key('dns_bootstrap_field')), '');
+      await tester.enterText(find.byKey(const Key('dns_fake_ip_filter_field')), '');
+      // hosts：合法行解析、坏行忽略
+      await tester.enterText(
+        find.byKey(const Key('dns_hosts_field')),
+        'a.example 1.1.1.1\nbadline\nb.example 2.2.2.2,3.3.3.3\n',
+      );
+
+      // 过滤模式切到 blacklist
+      await tester.tap(
+        find.byKey(const Key('dns_fake_ip_filter_mode_blacklist')),
+      );
+      await tester.pumpAndSettle();
+
+      // 开关初始 false → 切到 true
+      for (final key in const [
+        'dns_use_hosts_switch',
+        'dns_ipv6_switch',
+        'dns_hijack_switch',
+      ]) {
+        final finder = find.byKey(Key(key));
+        await tester.ensureVisible(finder);
+        await tester.tap(finder);
+        await tester.pumpAndSettle();
+      }
+
+      await tester.tap(find.text('保存'));
+      await tester.pumpAndSettle();
+
+      final payload = facade.lastSetPayload!;
+      expect(payload['defaultNameservers'], isEmpty);
+      expect(payload['fakeIpRange'], isNull);
+      expect(payload['fakeIpRangeV6'], isNull);
+      expect(payload['fakeIpTtlMs'], isNull);
+      expect(payload['fakeIpFilter'], isEmpty);
+      expect(payload['fakeIpFilterMode'], 'blacklist');
+      expect(payload['useHosts'], true);
+      expect(payload['ipv6'], true);
+      expect(payload['hijack'], true);
+      expect(payload['hosts'], {
+        'a.example': ['1.1.1.1'],
+        'b.example': ['2.2.2.2', '3.3.3.3'],
+      });
+      expect(find.text('DNS 配置'), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('failure：非数字 fake-IP TTL 显示错误且不提交 dns.set', (tester) async {
+      _useLargeViewport(tester);
+      final facade = _FakeDnsFacade(_dnsFixture);
+      await tester.pumpWidget(_host(ProxyDnsPage(facade: facade)));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byTooltip('编辑'));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(
+        find.byKey(const Key('dns_fake_ip_ttl_field')),
+        'abc',
+      );
+      await tester.tap(find.text('保存'));
+      await tester.pumpAndSettle();
+
+      expect(facade.lastSetPayload, isNull);
+      expect(find.text('fake-IP TTL 需为整数（毫秒）'), findsOneWidget);
+      expect(find.text('DNS 配置'), findsOneWidget);
       expect(tester.takeException(), isNull);
     });
 

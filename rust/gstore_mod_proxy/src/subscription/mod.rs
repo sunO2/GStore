@@ -210,6 +210,7 @@ fn finalize(
     if parsed.nodes.is_empty() {
         return Err(no_nodes("subscription contained no importable nodes"));
     }
+    let has_proxy_groups = !parsed.groups.is_empty();
     if parsed.groups.is_empty() {
         parsed.groups.push(ProxyGroup {
             name: "PROXY".to_string(),
@@ -253,6 +254,7 @@ fn finalize(
         node_count: parsed.nodes.len(),
         nodes: parsed.nodes,
         groups: parsed.groups,
+        has_proxy_groups,
         rules: parsed.rules,
         userinfo,
         source,

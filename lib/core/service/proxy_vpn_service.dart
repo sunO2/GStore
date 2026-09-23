@@ -44,6 +44,30 @@ class ProxyVpnTrigger {
     return await _channel.invokeMethod<bool>('isRunning') ?? false;
   }
 
+  /// 消费 QS 磁贴的「连接」请求（由 MainActivity 的 pending 标志置位）。
+  ///
+  /// 与 [stop] 同样防御：平台通道不可用或原生报错时返回 `false` 而非抛出。
+  static Future<bool> consumeProxyConnect() async {
+    try {
+      return await _channel.invokeMethod<bool>('consumeProxyConnect') ?? false;
+    } on PlatformException {
+      return false;
+    } on MissingPluginException {
+      return false;
+    }
+  }
+
+  /// 消费 QS 磁贴「长按」打开代理页的请求。
+  static Future<bool> consumeProxyOpen() async {
+    try {
+      return await _channel.invokeMethod<bool>('consumeProxyOpen') ?? false;
+    } on PlatformException {
+      return false;
+    } on MissingPluginException {
+      return false;
+    }
+  }
+
   /// 打开系统「VPN」设置页，引导用户开启「始终开启的 VPN」。
   ///
   /// App 无法直接切换系统设置；Kotlin 侧 `Settings.ACTION_VPN_SETTINGS` 兜底失败

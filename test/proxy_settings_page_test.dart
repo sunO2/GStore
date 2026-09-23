@@ -1,4 +1,4 @@
-// Todo 23 widget tests：代理设置页（应用分流 / 始终开启 / 端口 / 日志级别 /
+// Todo 23 widget tests：代理设置页（应用分流 / 始终开启 / LAN / 日志级别 /
 // 重置统计 / 引擎调试信息）。
 //
 // 全部密闭式：只注入假门面（[ProxySettingsFacade]），不触碰 FFI / 原生模块 /
@@ -18,10 +18,13 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:gstore/core/design/app_components.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
+import 'package:gstore/page/proxy/proxy_dns_page.dart';
+import 'package:gstore/page/proxy/proxy_engine_settings_store.dart';
 import 'package:gstore/page/proxy/proxy_settings_facade.dart';
 import 'package:gstore/page/proxy/proxy_settings_page.dart';
 
@@ -56,9 +59,10 @@ class _FakeSettingsFacade implements ProxySettingsFacade {
   ProxySplitTunnelMode? lastMode;
   Set<String>? lastApps;
   bool? lastAlwaysOn;
-  ProxyLocalPorts? lastPorts;
   ProxyLogLevel? lastLevel;
   int resetCalls = 0;
+  ProxyEngineSettings engineSettings = const ProxyEngineSettings();
+  ProxyEngineSettings? lastEngineSaved;
   ProxyLanConfig lanConfig = const ProxyLanConfig();
   ProxyLanStatus lanStatus = const ProxyLanStatus();
   ProxyLanConfig? lastLanSaved;
@@ -110,9 +114,12 @@ class _FakeSettingsFacade implements ProxySettingsFacade {
   }
 
   @override
-  Future<void> saveLocalPorts(ProxyLocalPorts ports) async {
-    lastPorts = ports;
-    config = config.copyWith(localPorts: ports);
+  Future<ProxyEngineSettings> loadEngineSettings() async => engineSettings;
+
+  @override
+  Future<void> saveEngineSettings(ProxyEngineSettings settings) async {
+    lastEngineSaved = settings;
+    engineSettings = settings;
   }
 
   @override
@@ -153,12 +160,76 @@ void main() {
 
       expect(find.text('应用分流'), findsOneWidget);
       expect(find.text('始终开启'), findsOneWidget);
-      expect(find.text('本地端口 / 混合入站'), findsOneWidget);
       expect(find.text('局域网监听 (LAN)'), findsOneWidget);
       expect(find.text('日志级别'), findsOneWidget);
       expect(find.text('域名统计'), findsOneWidget);
       expect(find.text('引擎调试信息'), findsOneWidget);
       expect(find.byKey(const Key('split_mode_selector')), findsOneWidget);
+      // 新区块：引擎参数 + DNS 入口。
+      expect(find.text('引擎参数'), findsOneWidget);
+      expect(find.byKey(const Key('engine_stack_selector')), findsOneWidget);
+      expect(find.byKey(const Key('engine_mtu_field')), findsOneWidget);
+      expect(find.byKey(const Key('engine_settings_save')), findsOneWidget);
+      expect(find.byKey(const Key('dns_settings_tile')), findsOneWidget);
+    });
+
+    testWidgets('渲染四个功能区表头', (tester) async {
+      _useTallSurface(tester);
+      await tester
+          .pumpWidget(_host(ProxySettingsPage(facade: _FakeSettingsFacade())));
+      await _settleLoad(tester);
+
+      expect(find.text('连接与引擎'), findsOneWidget);
+      expect(find.text('分流与入站'), findsOneWidget);
+      expect(find.text('域名解析'), findsOneWidget);
+      expect(find.text('维护与诊断'), findsOneWidget);
+    });
+
+    testWidgets('应用分流：药丸走 AppSegmentedButton 且独立成行', (tester) async {
+      _useTallSurface(tester);
+      await tester
+          .pumpWidget(_host(ProxySettingsPage(facade: _FakeSettingsFacade())));
+      await _settleLoad(tester);
+
+      // 统一组件（非裸 SegmentedButton）+ 统一最小密度。
+      expect(
+        find.byType(AppSegmentedButton<ProxySplitTunnelMode>),
+        findsOneWidget,
+      );
+      final Rect label = tester.getRect(find.text('应用分流'));
+      final Rect pill = tester.getRect(find.byKey(const Key('split_mode_selector')));
+      // 药丸独立成行：其顶部必须位于标题底部之下（不再同行居中对齐）。
+      expect(pill.top, greaterThanOrEqualTo(label.bottom),
+          reason: '药丸必须位于标题下方，独立成行');
+      // 左对齐：药丸左边缘与该卡片正文（首个 children 文本）左边缘对齐。
+      final Rect body = tester.getRect(find.text('全局模式：所有应用都通过代理。'));
+      expect(pill.left, closeTo(body.left, 1.0),
+          reason: '药丸应左对齐卡片正文');
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('窄屏 320：应用分流标题不换行、药丸不溢出', (tester) async {
+      tester.view.physicalSize = const Size(320, 1600);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(() {
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+      await tester
+          .pumpWidget(_host(ProxySettingsPage(facade: _FakeSettingsFacade())));
+      await _settleLoad(tester);
+
+      expect(find.text('应用分流'), findsOneWidget);
+      expect(find.byKey(const Key('split_mode_selector')), findsOneWidget);
+      // 标题独立成行且保持单行：单行高度 ≈ 21px，换行会到 ~42px。
+      expect(tester.getSize(find.text('应用分流')).height, lessThan(30));
+      // 药丸独立成行后在窄屏内不横向溢出（右边缘不超出屏幕）。
+      final Rect pill =
+          tester.getRect(find.byKey(const Key('split_mode_selector')));
+      expect(pill.right, lessThanOrEqualTo(320.0),
+          reason: '药丸不得横向溢出 320 宽屏幕');
+      // takeException 捕获 RenderFlex overflow（若有会在此抛出）。
+      expect(tester.takeException(), isNull);
     });
 
     testWidgets('切换分流模式并选择应用 → 门面收到更新', (tester) async {
@@ -380,19 +451,66 @@ void main() {
       expect(find.text('vpn'), findsWidgets);
     });
 
-    testWidgets('保存本地端口 → 门面收到更新', (tester) async {
+    testWidgets('引擎参数：加载值回填分段控件与 MTU 输入框', (tester) async {
+      _useTallSurface(tester);
+      final facade = _FakeSettingsFacade()
+        ..engineSettings = const ProxyEngineSettings(stack: 'system', mtu: 1400);
+      await tester.pumpWidget(_host(ProxySettingsPage(facade: facade)));
+      await _settleLoad(tester);
+
+      final selector =
+          tester.widget<AppSegmentedButton<String>>(
+        find.byKey(const Key('engine_stack_selector')),
+      );
+      expect(selector.value, 'system');
+      final mtuField = tester.widget<TextField>(
+        find.byKey(const Key('engine_mtu_field')),
+      );
+      expect(mtuField.controller?.text, '1400');
+    });
+
+    testWidgets('引擎参数：切换 stack 并保存合法 MTU → 门面收到', (tester) async {
       _useTallSurface(tester);
       final facade = _FakeSettingsFacade();
       await tester.pumpWidget(_host(ProxySettingsPage(facade: facade)));
       await _settleLoad(tester);
 
-      await tester.enterText(find.byKey(const Key('local_mixed_port_field')), '1080');
-      await tester.tap(find.byKey(const Key('local_ports_save')));
+      await tester.tap(find.text('system'));
       await tester.pump();
-      await tester.pump(const Duration(milliseconds: 50));
+      await tester.enterText(find.byKey(const Key('engine_mtu_field')), '1400');
+      await tester.tap(find.byKey(const Key('engine_settings_save')));
+      await tester.pumpAndSettle();
 
-      expect(facade.lastPorts?.mixedPort, 1080);
-      expect(facade.lastPorts?.socksPort, 7891);
+      expect(facade.lastEngineSaved?.stack, 'system');
+      expect(facade.lastEngineSaved?.mtu, 1400);
+      expect(facade.engineSettings, const ProxyEngineSettings(stack: 'system', mtu: 1400));
+    });
+
+    testWidgets('引擎参数：MTU < 1280 → 提示错误且不保存', (tester) async {
+      _useTallSurface(tester);
+      final facade = _FakeSettingsFacade();
+      await tester.pumpWidget(_host(ProxySettingsPage(facade: facade)));
+      await _settleLoad(tester);
+
+      await tester.enterText(find.byKey(const Key('engine_mtu_field')), '1024');
+      await tester.tap(find.byKey(const Key('engine_settings_save')));
+      await tester.pumpAndSettle();
+
+      expect(facade.lastEngineSaved, isNull);
+      expect(find.text('MTU 必须是不小于 1280 的整数'), findsOneWidget);
+    });
+
+    testWidgets('DNS 设置入口跳转 ProxyDnsPage', (tester) async {
+      _useTallSurface(tester);
+      await tester
+          .pumpWidget(_host(ProxySettingsPage(facade: _FakeSettingsFacade())));
+      await _settleLoad(tester);
+
+      await tester.tap(find.byKey(const Key('dns_settings_tile')));
+      // 只推进路由过渡，不 pumpAndSettle（DNS 页可能持续加载动画）。
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 350));
+      expect(find.byType(ProxyDnsPage), findsOneWidget);
     });
 
     testWidgets('暗色模式下正常渲染（主题令牌，无硬编码颜色）', (tester) async {
@@ -460,15 +578,12 @@ void main() {
         splitMode: ProxySplitTunnelMode.disallow,
         selectedApps: {'com.apple'},
         alwaysOnIntent: true,
-        localPorts: ProxyLocalPorts(mixedPort: 1080, allowLan: true),
         logLevel: ProxyLogLevel.warn,
       );
       final restored = ProxySettingsConfig.fromMap(config.toMap());
       expect(restored.splitMode, ProxySplitTunnelMode.disallow);
       expect(restored.selectedApps, {'com.apple'});
       expect(restored.alwaysOnIntent, isTrue);
-      expect(restored.localPorts.mixedPort, 1080);
-      expect(restored.localPorts.allowLan, isTrue);
       expect(restored.logLevel, ProxyLogLevel.warn);
     });
   });

@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "assets": {
+    "country.mmdb": {
+      "url": "https://github.com/MetaCubeX/meta-rules-dat/releases/latest/download/country.mmdb"
+    },
+    "geosite.dat": {
+      "url": "https://github.com/MetaCubeX/meta-rules-dat/releases/latest/download/geosite.dat"
+    }
+  }
+}

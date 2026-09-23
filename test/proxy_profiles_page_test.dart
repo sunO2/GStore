@@ -37,6 +37,12 @@ class _FakeProfilesFacade implements ProxyProfilesFacade {
   int refreshAllCount = 0;
   String? lastDeletedId;
 
+  /// `config.apply` 收到的 profile id 序列。
+  final List<String> appliedIds = <String>[];
+
+  /// 设置后 `applyProfile` 抛出该异常（模拟引擎未运行等）。
+  Object? applyError;
+
   @override
   Future<ProfileList> profileList() async {
     listCount++;
@@ -116,6 +122,13 @@ class _FakeProfilesFacade implements ProxyProfilesFacade {
     refreshAllCount++;
     return RefreshAllResult(
         count: _profiles.length, attempted: _profiles.length);
+  }
+
+  @override
+  Future<void> applyProfile(String profileId) async {
+    final error = applyError;
+    if (error != null) throw error;
+    appliedIds.add(profileId);
   }
 
   @override
@@ -405,16 +418,51 @@ void main() {
     await tester.pumpAndSettle();
 
     // 多订阅且无持久化值时不自动选中。
-    expect(find.byKey(const Key('proxy_profile_current_p1')), findsNothing);
-    expect(find.byKey(const Key('proxy_profile_current_p2')), findsNothing);
+    expect(find.byKey(const Key('proxy_profile_active_p1')), findsNothing);
+    expect(find.byKey(const Key('proxy_profile_active_p2')), findsNothing);
 
     await tester.tap(find.text('订阅B'));
     await _tick(tester);
 
     expect(store.value, 'p2');
     expect(store.writes, 1);
-    expect(find.byKey(const Key('proxy_profile_current_p2')), findsOneWidget);
-    expect(find.byKey(const Key('proxy_profile_current_p1')), findsNothing);
+    expect(facade.appliedIds, <String>['p2']);
+    final activeFinder = find.byKey(const Key('proxy_profile_active_p2'));
+    expect(activeFinder, findsOneWidget);
+    expect(find.byKey(const Key('proxy_profile_active_p1')), findsNothing);
+    // 当前订阅仅由主题高亮表达：卡片底色为 primaryContainer。
+    final activeCard = tester.widget<Card>(activeFinder);
+    final activeContext = tester.element(activeFinder);
+    expect(
+      activeCard.color,
+      Theme.of(activeContext).colorScheme.primaryContainer,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('选择：engine 同步失败不阻断「设为当前订阅」（best-effort）', (tester) async {
+    final store = _FakeProfileStore();
+    final facade = _FakeProfilesFacade(profiles: [
+      _summary(id: 'p1', name: '订阅A'),
+      _summary(id: 'p2', name: '订阅B'),
+    ]);
+    facade.applyError = const ProxyModuleException(
+      code: 'PROXY_NOT_CONFIGURED',
+      message: 'engine is not running',
+      status: 409,
+    );
+    addTearDown(facade.dispose);
+
+    await tester.pumpWidget(
+      _host(ProxyProfilesPage(facade: facade, profileStore: store)),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('订阅B'));
+    await _tick(tester);
+
+    expect(store.value, 'p2');
+    expect(find.byKey(const Key('proxy_profile_active_p2')), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -432,7 +480,7 @@ void main() {
 
     expect(store.value, 'only');
     expect(store.writes, greaterThanOrEqualTo(1));
-    expect(find.byKey(const Key('proxy_profile_current_only')), findsOneWidget);
+    expect(find.byKey(const Key('proxy_profile_active_only')), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -449,8 +497,8 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.byKey(const Key('proxy_profile_current_p2')), findsOneWidget);
-    expect(find.byKey(const Key('proxy_profile_current_p1')), findsNothing);
+    expect(find.byKey(const Key('proxy_profile_active_p2')), findsOneWidget);
+    expect(find.byKey(const Key('proxy_profile_active_p1')), findsNothing);
     // 未发生新写入（沿用既有持久化值）。
     expect(store.writes, 0);
     expect(tester.takeException(), isNull);
@@ -470,7 +518,7 @@ void main() {
 
     expect(store.value, 'fresh');
     expect(
-        find.byKey(const Key('proxy_profile_current_fresh')), findsOneWidget);
+        find.byKey(const Key('proxy_profile_active_fresh')), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }

@@ -28,6 +28,16 @@ abstract class ProxyNodesFacade {
 
   /// `node.delay_test`：逐节点 HTTP 探测（不可达是逐项结果，不是调用错误）。
   Future<DelayTestResult> nodeDelayTest(NodeDelayTestRequest request);
+
+  /// `node.list`：引擎运行时各代理组的实时选中（`now`）与可选性（`selectable`）。
+  Future<NodeListResult> nodeList();
+
+  /// `config.apply`：以 [profileId] 重新生成并应用配置（引擎热生效）。
+  ///
+  /// 节点页在「引擎运行中但某分组未在当前生效配置里」时，best-effort 调用它让
+  /// 新分组落进引擎，再重取 [nodeList] 后选择。失败语义由调用方决定（页面按
+  /// best-effort 吞掉异常，仅 `debugPrint`）。
+  Future<void> reconcileEngine(String profileId);
 }
 
 /// 生产适配器：把 [ProxyNodesFacade] 转发到 [ProxyModule] 单例。
@@ -50,4 +60,11 @@ class ProxyModuleNodesFacade implements ProxyNodesFacade {
   @override
   Future<DelayTestResult> nodeDelayTest(NodeDelayTestRequest request) =>
       _module.nodeDelayTest(request);
+
+  @override
+  Future<NodeListResult> nodeList() => _module.nodeList();
+
+  @override
+  Future<void> reconcileEngine(String profileId) =>
+      _module.configApply(GenerateRequest(profileId: profileId));
 }

@@ -618,6 +618,38 @@ class ProxyModule implements ProxyFacade {
   Future<ClashApiStatus> clashApiStatus() =>
       invoke(ProxyMethods.clashApiStatus, ClashApiStatus.fromJson);
 
+  // ---- lan.* ----
+
+  /// `lan.get`：有效 LAN 配置 + 安全警告（默认关闭）。
+  ///
+  /// 响应把配置放在顶层 `config` 字段下，此处解包。
+  Future<ProxyLanConfig> lanGet() => invoke(
+        ProxyMethods.lanGet,
+        (json) => ProxyLanConfig.fromJson(
+          Map<String, dynamic>.from(
+            json['config'] as Map? ?? const <String, dynamic>{},
+          ),
+        ),
+      );
+
+  /// `lan.status`：LAN 监听状态（**扁平**对象）。
+  Future<ProxyLanStatus> lanStatus() =>
+      invoke(ProxyMethods.lanStatus, ProxyLanStatus.fromJson);
+
+  /// `lan.set`：下发（部分）LAN 配置并返回最新**监听状态**。
+  ///
+  /// 响应把状态**嵌套**在 `status` 之下（`lib.rs` `lan_set_arm`），此处解包
+  /// `status`——直接对顶层解码会得到 `bound=false` / `addresses=[]`（历史缺陷）。
+  Future<ProxyLanStatus> lanSet(ProxyLanConfig config) => invoke(
+        ProxyMethods.lanSet,
+        (json) => ProxyLanStatus.fromJson(
+          Map<String, dynamic>.from(
+            json['status'] as Map? ?? const <String, dynamic>{},
+          ),
+        ),
+        payload: config.toRequestJson(),
+      );
+
   /// 调用信封 → 校验 `{ok:true,data:{...}}` → 返回 `data`。
   ///
   /// 错误分层：模块不可用 → [ProxyModuleUnavailableException]；
@@ -883,6 +915,7 @@ sealed class ProxyEvent {
           upBps: _asInt(data['upBps']),
           downBps: _asInt(data['downBps']),
           domainCount: _asInt(data['domainCount']),
+          flowCount: _asInt(data['flowCount']),
           capacity: _asInt(data['capacity']),
           topDomains: (data['topDomains'] is List)
               ? (data['topDomains'] as List)
@@ -1014,6 +1047,7 @@ final class ProxyStatsEvent extends ProxyEvent {
     required this.upBps,
     required this.downBps,
     this.domainCount = 0,
+    this.flowCount = 0,
     this.capacity = 0,
     this.topDomains = const <DomainStat>[],
   });
@@ -1026,6 +1060,9 @@ final class ProxyStatsEvent extends ProxyEvent {
 
   /// 已聚合的不同域名数量。
   final int domainCount;
+
+  /// 当前跟踪的活跃流数量（Rust `flowCount`）。
+  final int flowCount;
 
   /// 域名聚合容量上限。
   final int capacity;

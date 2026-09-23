@@ -50,6 +50,15 @@ abstract class ProxyProfilesFacade {
   /// `profile.refresh_all`：有界批量刷新。
   Future<RefreshAllResult> profileRefreshAll({bool force = false, int? limit});
 
+  /// `config.apply`：把 [profileId] 热应用到正在运行的引擎。
+  ///
+  /// 订阅切换后调用，避免「已换订阅但运行中引擎仍用旧订阅」。引擎未运行时
+  /// Rust 只记录 active profile 并返回 `applied:false`（不报错），离线
+  /// node.select/delay_test 会解析到新订阅；调用方的 try/catch 仅作防御性兜底。
+  /// `config.apply` 同时会把该 id 落盘为 Rust 侧 active profile
+  /// （见 `rust/gstore_mod_proxy/src/lib.rs`）。
+  Future<void> applyProfile(String profileId);
+
   /// 类型化代理事件流（订阅增删改 / 刷新进度）。
   Stream<ProxyEvent> get events;
 }
@@ -111,6 +120,11 @@ class ProxyModuleProfilesFacade implements ProxyProfilesFacade {
     int? limit,
   }) =>
       _module.profileRefreshAll(force: force, limit: limit);
+
+  @override
+  Future<void> applyProfile(String profileId) async {
+    await _module.configApply(GenerateRequest(profileId: profileId));
+  }
 
   @override
   Stream<ProxyEvent> get events => _module.events;

@@ -10,20 +10,31 @@ import 'package:gstore/core/design/app_spacing.dart';
 import 'package:gstore/core/design/app_typography.dart';
 import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
+import 'package:gstore/page/proxy/proxy_dns_page.dart';
+import 'package:gstore/page/proxy/proxy_engine_settings_store.dart';
 
 import 'proxy_settings_facade.dart';
 
+/// 引擎 stack 可选值（与 Rust `core.start` 请求一致）。
+const String _kEngineStackGvisor = 'gvisor';
+const String _kEngineStackSystem = 'system';
+
+/// Rust 侧拒绝低于此值的 MTU（见 `core.start` 校验）。
+const int _kEngineMinMtu = 1280;
+
 /// 代理设置页（Todos 23 / 28，纯展示 / 触发层）。
 ///
-/// 覆盖：
-/// * **应用分流**：全局 / 仅选中 / 排除选中 + 已安装应用选择器（统一底部弹层）；
-/// * **始终开启**：应用侧意图开关 + 系统设置引导（应用无法直接切换系统开关）；
-/// * **本地端口 / 混合入站**：本地持久化；
-/// * **局域网监听 (LAN)**：`lan.get` / `lan.set` / `lan.status`（默认关闭，
-///   未配置认证时展示安全警告）；
-/// * **日志级别**：`log.set_level`；
-/// * **重置统计**：危险确认弹层 → `stats.domain.reset`；
-/// * **引擎调试信息**：`version` / `ping` / `core.get_mode`。
+/// 覆盖（按功能区自上而下）：
+/// * **连接与引擎**：引擎参数（stack / MTU，应用侧持久化）+ 始终开启 +
+///   日志级别；
+/// * **分流与入站**：应用分流 + 局域网监听 (LAN)（`lan.get` / `lan.set` /
+///   `lan.status`，默认关闭，未配置认证时展示安全警告）；
+/// * **域名解析**：DNS 设置入口（跳转 [ProxyDnsPage]）；
+/// * **维护与诊断**：重置统计（`stats.domain.reset`）+ 引擎调试信息
+///   （`version` / `ping` / `core.get_mode`）。
+///
+/// **应用分流**：全局 / 仅选中 / 排除选中 + 已安装应用选择器（统一底部弹层）；
+/// **始终开启**：应用侧意图开关 + 系统设置引导（应用无法直接切换系统开关）。
 ///
 /// 所有解析 / 网络 / 路由 / 统计逻辑都在 Rust 侧（`gstore_mod_proxy`），本页只
 /// 翻译并持久化。门面经构造函数注入，测试无需原生模块 / 平台通道。
@@ -40,14 +51,12 @@ class ProxySettingsPage extends StatefulWidget {
 class _ProxySettingsPageState extends State<ProxySettingsPage> {
   late final ProxySettingsFacade _facade;
 
-  final TextEditingController _mixedPort = TextEditingController();
-  final TextEditingController _socksPort = TextEditingController();
-  final TextEditingController _httpPort = TextEditingController();
   final TextEditingController _lanPort = TextEditingController();
   final TextEditingController _lanBind = TextEditingController();
   final TextEditingController _lanUser = TextEditingController();
   final TextEditingController _lanPass = TextEditingController();
   final TextEditingController _lanAllowed = TextEditingController();
+  final TextEditingController _engineMtu = TextEditingController();
 
   bool _loading = true;
   String? _error;
@@ -57,33 +66,27 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
   ProxyEngineInfo _engine = const ProxyEngineInfo();
   ProxyLanConfig _lan = const ProxyLanConfig();
   ProxyLanStatus _lanStatus = const ProxyLanStatus();
+  ProxyEngineSettings _engineSettings = const ProxyEngineSettings();
+  String _engineStack = _kEngineStackGvisor;
 
   @override
   void initState() {
     super.initState();
     _facade = widget.facade ?? ProxyModuleSettingsFacade();
-    _syncPortControllers(_config.localPorts);
     _syncLanControllers(_lan);
+    _syncEngineControllers(_engineSettings);
     _load();
   }
 
   @override
   void dispose() {
-    _mixedPort.dispose();
-    _socksPort.dispose();
-    _httpPort.dispose();
     _lanPort.dispose();
     _lanBind.dispose();
     _lanUser.dispose();
     _lanPass.dispose();
     _lanAllowed.dispose();
+    _engineMtu.dispose();
     super.dispose();
-  }
-
-  void _syncPortControllers(ProxyLocalPorts ports) {
-    _mixedPort.text = '${ports.mixedPort}';
-    _socksPort.text = '${ports.socksPort}';
-    _httpPort.text = '${ports.httpPort}';
   }
 
   void _syncLanControllers(ProxyLanConfig config) {
@@ -93,6 +96,16 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
     _lanPass.text = config.authPass;
     _lanAllowed.text = config.allowedIps.join(', ');
   }
+
+  /// 把引擎设置同步到分段控件 + MTU 输入框（未知 stack 回落 `gvisor`）。
+  void _syncEngineControllers(ProxyEngineSettings settings) {
+    _engineStack = _normalizeStack(settings.stack);
+    _engineMtu.text = '${settings.mtu}';
+  }
+
+  /// 归一化 stack：只接受 `gvisor` / `system`，其余回落 `gvisor`。
+  String _normalizeStack(String stack) =>
+      stack == _kEngineStackSystem ? _kEngineStackSystem : _kEngineStackGvisor;
 
   Future<void> _load() async {
     setState(() {
@@ -115,6 +128,14 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
       } catch (_) {
         // 模块不可用 → 保留默认（未监听）
       }
+      ProxyEngineSettings engineSettings;
+      try {
+        engineSettings = await _facade.loadEngineSettings();
+      } catch (error) {
+        // 持久化异常 → 回落默认（gvisor / 1500），不阻断页面。
+        debugPrint('代理设置：读取引擎参数失败，回落默认值：$error');
+        engineSettings = const ProxyEngineSettings();
+      }
       if (!mounted) return;
       setState(() {
         _config = config;
@@ -122,10 +143,12 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
         _engine = engine;
         if (lan != null) _lan = lan;
         if (lanStatus != null) _lanStatus = lanStatus;
+        _engineSettings = engineSettings;
+        _engineStack = _normalizeStack(engineSettings.stack);
         _loading = false;
       });
-      _syncPortControllers(config.localPorts);
       _syncLanControllers(_lan);
+      _engineMtu.text = '${engineSettings.mtu}';
     } catch (error) {
       if (!mounted) return;
       setState(() {
@@ -139,6 +162,47 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
     final engine = await _facade.loadEngineInfo();
     if (!mounted) return;
     setState(() => _engine = engine);
+  }
+
+  // ==================== 引擎参数 ====================
+
+  /// 校验并持久化引擎参数（stack / MTU）。
+  ///
+  /// 客户端校验与 Rust 一致：MTU 必须能解析为整数且 `>= 1280`；非法时提示并
+  /// **不保存**。保存成功后提示「下次连接 / 引擎重启生效」。
+  Future<void> _saveEngineSettings() async {
+    final raw = _engineMtu.text.trim();
+    final mtu = int.tryParse(raw);
+    if (mtu == null || mtu < _kEngineMinMtu) {
+      AppDialogs.showError('MTU 必须是不小于 1280 的整数');
+      return;
+    }
+    final next = _engineSettings.copyWith(stack: _engineStack, mtu: mtu);
+    final previous = _engineSettings;
+    setState(() {
+      _busy = true;
+      _engineSettings = next;
+    });
+    try {
+      await _facade.saveEngineSettings(next);
+      if (!mounted) return;
+      AppDialogs.showSuccess('引擎参数已保存，将在下次连接 / 引擎重启后生效');
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _engineSettings = previous);
+      AppDialogs.showError('引擎参数保存失败：$error');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  // ==================== 域名解析 ====================
+
+  /// 打开 DNS 设置页（Todo 22a）。
+  void _openDnsPage() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => const ProxyDnsPage()),
+    );
   }
 
   // ==================== 应用分流 ====================
@@ -203,49 +267,6 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
           '「始终开启的 VPN」。开启后系统会在开机 / 网络切换时以已保存的配置'
           '自动拉起隧道；此处开关仅记录应用侧意图。',
     );
-  }
-
-  // ==================== 本地端口 ====================
-
-  Future<void> _saveLocalPorts() async {
-    final mixed = int.tryParse(_mixedPort.text.trim());
-    final socks = int.tryParse(_socksPort.text.trim());
-    final http = int.tryParse(_httpPort.text.trim());
-    if (mixed == null || socks == null || http == null) {
-      AppDialogs.showError('端口必须是数字');
-      return;
-    }
-    final ports = ProxyLocalPorts(
-      mixedPort: mixed,
-      socksPort: socks,
-      httpPort: http,
-      allowLan: _config.localPorts.allowLan,
-    );
-    setState(() => _busy = true);
-    try {
-      await _facade.saveLocalPorts(ports);
-      if (!mounted) return;
-      setState(() => _config = _config.copyWith(localPorts: ports));
-      AppDialogs.showSuccess('端口设置已保存');
-    } catch (error) {
-      if (!mounted) return;
-      AppDialogs.showError('端口保存失败：$error');
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
-  Future<void> _toggleAllowLan(bool value) async {
-    final ports = _config.localPorts.copyWith(allowLan: value);
-    final previous = _config;
-    setState(() => _config = _config.copyWith(localPorts: ports));
-    try {
-      await _facade.saveLocalPorts(ports);
-    } catch (error) {
-      if (!mounted) return;
-      setState(() => _config = previous);
-      AppDialogs.showError('保存失败：$error');
-    }
   }
 
   // ==================== 局域网监听（LAN） ====================
@@ -405,20 +426,103 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
       child: ListView(
         padding: AppSpacing.allLG,
         children: [
-          _buildSplitTunnelCard(context),
+          const _RegionHeader(title: '连接与引擎'),
+          _buildEngineSettingsCard(context),
           const SizedBox(height: AppSpacing.lg),
           _buildAlwaysOnCard(context),
           const SizedBox(height: AppSpacing.lg),
-          _buildLocalPortsCard(context),
+          _buildLogLevelCard(context),
+          const SizedBox(height: AppSpacing.xxl),
+          const _RegionHeader(title: '分流与入站'),
+          _buildSplitTunnelCard(context),
           const SizedBox(height: AppSpacing.lg),
           _buildLanCard(context),
-          const SizedBox(height: AppSpacing.lg),
-          _buildLogLevelCard(context),
-          const SizedBox(height: AppSpacing.lg),
+          const SizedBox(height: AppSpacing.xxl),
+          const _RegionHeader(title: '域名解析'),
+          _buildDnsTile(context),
+          const SizedBox(height: AppSpacing.xxl),
+          const _RegionHeader(title: '维护与诊断'),
           _buildStatsCard(context),
           const SizedBox(height: AppSpacing.lg),
           _buildEngineCard(context),
         ],
+      ),
+    );
+  }
+
+  Widget _buildEngineSettingsCard(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return _SectionCard(
+      icon: Icons.tune_outlined,
+      title: '引擎参数',
+      children: [
+        Text(
+          '隧道协议栈',
+          style: theme.textTheme.labelLarge?.copyWith(
+            color: scheme.onSurfaceVariant,
+          ),
+        ),
+        const SizedBox(height: AppSpacing.sm),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: AppSegmentedButton<String>(
+            key: const Key('engine_stack_selector'),
+            value: _engineStack,
+            enabled: !_busy,
+            density: AppSegmentedButton.mediumDensity,
+            segments: const <AppSegment<String>>[
+              AppSegment(value: _kEngineStackGvisor, label: 'gvisor'),
+              AppSegment(value: _kEngineStackSystem, label: 'system'),
+            ],
+            onChanged: (stack) => setState(() => _engineStack = stack),
+          ),
+        ),
+        const SizedBox(height: AppSpacing.md),
+        TextField(
+          key: const Key('engine_mtu_field'),
+          controller: _engineMtu,
+          enabled: !_busy,
+          keyboardType: TextInputType.number,
+          inputFormatters: <TextInputFormatter>[
+            FilteringTextInputFormatter.digitsOnly,
+          ],
+          decoration: const InputDecoration(
+            labelText: 'MTU',
+            hintText: '1500',
+          ),
+        ),
+        const SizedBox(height: AppSpacing.sm),
+        Text(
+          'MTU 不得小于 1280。修改在下次连接 / 引擎重启后生效，运行中的隧道不会热更新。',
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: scheme.onSurfaceVariant,
+          ),
+        ),
+        const SizedBox(height: AppSpacing.md),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: FilledButton.tonalIcon(
+            key: const Key('engine_settings_save'),
+            onPressed: _busy ? null : _saveEngineSettings,
+            icon: const Icon(Icons.save_outlined, size: AppTypography.iconSM),
+            label: const Text('保存引擎参数'),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildDnsTile(BuildContext context) {
+    return Card(
+      margin: EdgeInsets.zero,
+      child: ListTile(
+        key: const Key('dns_settings_tile'),
+        leading: const Icon(Icons.dns_outlined),
+        title: const Text('DNS 设置'),
+        subtitle: const Text('解析模式、上游、DoH / DoT'),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: _openDnsPage,
       ),
     );
   }
@@ -431,30 +535,24 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
       icon: Icons.apps_outlined,
       title: '应用分流',
       children: [
-        SegmentedButton<ProxySplitTunnelMode>(
-          key: const Key('split_mode_selector'),
-          segments: const [
-            ButtonSegment(
-              value: ProxySplitTunnelMode.full,
-              label: Text('全局'),
-            ),
-            ButtonSegment(
-              value: ProxySplitTunnelMode.allow,
-              label: Text('仅选中'),
-            ),
-            ButtonSegment(
-              value: ProxySplitTunnelMode.disallow,
-              label: Text('排除选中'),
-            ),
-          ],
-          selected: {_config.splitMode},
-          showSelectedIcon: false,
-          onSelectionChanged: _busy
-              ? null
-              : (selection) =>
-                  _saveSplitTunnel(mode: selection.first),
+        // 药丸走统一中等尺寸的 [AppSegmentedButton]，与首页「路由模式」同尺寸同组件。
+        // 独立成行（左对齐），不再与标题挤在同一行。
+        Align(
+          alignment: Alignment.centerLeft,
+          child: AppSegmentedButton<ProxySplitTunnelMode>(
+            key: const Key('split_mode_selector'),
+            value: _config.splitMode,
+            enabled: !_busy,
+            density: AppSegmentedButton.mediumDensity,
+            segments: const <AppSegment<ProxySplitTunnelMode>>[
+              AppSegment(value: ProxySplitTunnelMode.full, label: '全局'),
+              AppSegment(value: ProxySplitTunnelMode.allow, label: '仅选中'),
+              AppSegment(value: ProxySplitTunnelMode.disallow, label: '排除选中'),
+            ],
+            onChanged: (mode) => _saveSplitTunnel(mode: mode),
+          ),
         ),
-        const SizedBox(height: AppSpacing.md),
+        const SizedBox(height: AppSpacing.sm),
         if (_config.splitMode == ProxySplitTunnelMode.full)
           Text(
             '全局模式：所有应用都通过代理。',
@@ -509,72 +607,6 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
         Text(
           '关闭应用后，系统可能停止隧道。开启系统「始终开启」后，系统会在开机 / '
           '网络切换时按已保存配置自动恢复。',
-          style: theme.textTheme.bodySmall?.copyWith(
-            color: scheme.onSurfaceVariant,
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildLocalPortsCard(BuildContext context) {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
-    return _SectionCard(
-      icon: Icons.settings_ethernet_outlined,
-      title: '本地端口 / 混合入站',
-      children: [
-        TextField(
-          key: const Key('local_mixed_port_field'),
-          controller: _mixedPort,
-          enabled: !_busy,
-          keyboardType: TextInputType.number,
-          decoration: const InputDecoration(
-            labelText: '混合端口 (mixed)',
-            hintText: '7890',
-          ),
-        ),
-        const SizedBox(height: AppSpacing.md),
-        TextField(
-          key: const Key('local_socks_port_field'),
-          controller: _socksPort,
-          enabled: !_busy,
-          keyboardType: TextInputType.number,
-          decoration: const InputDecoration(
-            labelText: 'SOCKS 端口',
-            hintText: '7891',
-          ),
-        ),
-        const SizedBox(height: AppSpacing.md),
-        TextField(
-          key: const Key('local_http_port_field'),
-          controller: _httpPort,
-          enabled: !_busy,
-          keyboardType: TextInputType.number,
-          decoration: const InputDecoration(
-            labelText: 'HTTP 端口',
-            hintText: '7892',
-          ),
-        ),
-        SwitchListTile(
-          key: const Key('local_allow_lan_switch'),
-          contentPadding: EdgeInsets.zero,
-          title: const Text('允许局域网访问 (allow-lan)'),
-          value: _config.localPorts.allowLan,
-          onChanged: _busy ? null : _toggleAllowLan,
-        ),
-        Align(
-          alignment: Alignment.centerLeft,
-          child: FilledButton.tonalIcon(
-            key: const Key('local_ports_save'),
-            onPressed: _busy ? null : _saveLocalPorts,
-            icon: const Icon(Icons.save_outlined, size: AppTypography.iconSM),
-            label: const Text('保存端口设置'),
-          ),
-        ),
-        const SizedBox(height: AppSpacing.sm),
-        Text(
-          '说明：本地端口为应用侧配置；共享给其它设备请使用下方「局域网监听 (LAN)」。',
           style: theme.textTheme.bodySmall?.copyWith(
             color: scheme.onSurfaceVariant,
           ),
@@ -831,6 +863,27 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
 
 // ==================== 通用小节卡片 ====================
 
+/// 功能区标题（区域表头），用于在视觉上把设置页分为若干功能区块。
+class _RegionHeader extends StatelessWidget {
+  const _RegionHeader({required this.title});
+
+  final String title;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: AppSpacing.sm),
+      child: Text(
+        title,
+        style: theme.textTheme.titleMedium?.copyWith(
+          color: theme.colorScheme.primary,
+        ),
+      ),
+    );
+  }
+}
+
 class _SectionCard extends StatelessWidget {
   const _SectionCard({
     required this.icon,
@@ -862,7 +915,21 @@ class _SectionCard extends StatelessWidget {
                 Expanded(
                   child: Text(title, style: theme.textTheme.titleSmall),
                 ),
-                if (trailing != null) trailing!,
+                if (trailing != null)
+                  // 尾部药丸限制在行宽 70%（其余留给标题），超宽时整体等比缩小，
+                  // 既避免 RenderFlex 溢出，也不会把标题挤成多行。
+                  LayoutBuilder(
+                    builder: (context, constraints) => ConstrainedBox(
+                      constraints: BoxConstraints(
+                        maxWidth: constraints.maxWidth * 0.7,
+                      ),
+                      child: FittedBox(
+                        fit: BoxFit.scaleDown,
+                        alignment: Alignment.centerRight,
+                        child: trailing!,
+                      ),
+                    ),
+                  ),
               ],
             ),
             const SizedBox(height: AppSpacing.md),

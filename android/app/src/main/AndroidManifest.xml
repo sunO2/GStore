@@ -43,6 +43,13 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+            <!-- 代理 QS 磁贴「长按」入口：系统据此 action 解析到本 Activity 打开
+                 磁贴偏好（本 App 无独立设置页，改为打开应用内代理页）。
+                 切勿在此 Activity 上声明 BIND_QUICK_SETTINGS_TILE 权限——
+                 MainActivity 是启动入口，必须保持普通可启动。 -->
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE_PREFERENCES" />
+            </intent-filter>
         </activity>
         <!-- 系统"管理空间"入口（设置 → 应用 → GStore → 存储 → 管理空间）：
              由 android:manageSpaceActivity 指定，系统 Settings 直接 startActivity 启动，
@@ -83,6 +90,23 @@
             </intent-filter>
             <meta-data
                 android:name="android.net.VpnService.SUPPORTS_ALWAYS_ON"
+                android:value="true" />
+        </service>
+
+        <!-- 代理 QS 磁贴：快捷设置开关，仅发信号给 App（连接由 Dart 编排）。
+             BIND_QUICK_SETTINGS_TILE 是系统绑定所需权限（service 上声明，
+             不是 uses-permission）。 -->
+        <service
+            android:name=".ProxyTileService"
+            android:label="@string/proxy_tile_label"
+            android:icon="@mipmap/ic_launcher_foreground"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.service.quicksettings.TOGGLEABLE_TILE"
                 android:value="true" />
         </service>
 

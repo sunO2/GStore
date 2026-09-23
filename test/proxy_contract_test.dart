@@ -195,6 +195,15 @@ const _coreStatusFixture = <String, dynamic>{
   'warnings': <Map<String, dynamic>>[],
 };
 
+/// `LAN` config fixture（`API.md` §2.12 `LanConfig`）。
+const _lanConfigFixture = <String, dynamic>{
+  'enabled': false,
+  'port': 1087,
+  'bindAddress': '0.0.0.0',
+  'auth': null,
+  'allowedIps': <String>[],
+};
+
 final Map<String, Map<String, dynamic>> _methodFixtures =
     <String, Map<String, dynamic>>{
   ProxyMethods.ping: <String, dynamic>{
@@ -541,6 +550,39 @@ final Map<String, Map<String, dynamic>> _methodFixtures =
     'bound': false,
     'loopbackOnly': true,
   },
+  ProxyMethods.lanGet: <String, dynamic>{
+    'config': _lanConfigFixture,
+    'warning': null,
+  },
+  ProxyMethods.lanStatus: <String, dynamic>{
+    'enabled': false,
+    'bound': false,
+    'listening': false,
+    'addresses': <String>[],
+    'activeConns': 0,
+    'port': 1087,
+    'bindAddress': '0.0.0.0',
+    'engineOnly': false,
+    'warning': null,
+    'config': _lanConfigFixture,
+  },
+  // `lan.set` 的 status **嵌套**在 `status` 之下（lib.rs `lan_set_arm`）。
+  ProxyMethods.lanSet: <String, dynamic>{
+    'config': <String, dynamic>{..._lanConfigFixture, 'enabled': true},
+    'status': <String, dynamic>{
+      'enabled': true,
+      'bound': true,
+      'listening': true,
+      'addresses': <String>['192.168.1.5:1087'],
+      'activeConns': 0,
+      'port': 1087,
+      'bindAddress': '0.0.0.0',
+      'engineOnly': false,
+      'warning': null,
+      'config': <String, dynamic>{..._lanConfigFixture, 'enabled': true},
+    },
+    'warning': null,
+  },
 };
 
 final Map<String, Map<String, dynamic>> _eventFixtures =
@@ -647,14 +689,9 @@ Set<String> _documentedEvents(String apiMd) {
   return <String>{for (final m in row.allMatches(section)) m.group(1)!};
 }
 
-/// `lan.*` 已在 Rust 侧实现并派发（Todo 28），但**冻结的** `ProxyContract.dart`
-/// 不注册它们（设置页经 `ProxyModule.invoke` 直连 `lan.*`）。这是文档↔代码
-/// 唯一允许的差集。
-const _documentedButNotInDartRegistry = <String>{
-  'lan.get',
-  'lan.set',
-  'lan.status',
-};
+/// `lan.*` 现已注册进冻结契约 [ProxyMethods]/[proxyResponseDecoders]
+/// （`API.md` §2.12），文档↔代码差集为空。
+const _documentedButNotInDartRegistry = <String>{};
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -721,6 +758,26 @@ void main() {
           reason: '$method 必须容忍缺失字段',
         );
       }
+    });
+
+    test('lan.set 解码嵌套 status（bound/addresses），锁定旧 bug 修复', () async {
+      final fixture = _methodFixtures[ProxyMethods.lanSet]!;
+      final gateway = _FakeGateway(<String, Uint8List>{
+        ProxyMethods.lanSet: _okEnvelope(fixture),
+      });
+      final facade = ProxyModule(gateway: gateway);
+
+      final status = await facade.invoke(
+        ProxyMethods.lanSet,
+        proxyResponseDecoders[ProxyMethods.lanSet]!,
+      ) as ProxyLanStatus;
+      expect(status.bound, isTrue);
+      expect(status.addresses, isNotEmpty);
+
+      // 类型化门面同样解包 `status`（而非顶层，否则 bound=false）。
+      final typed = await facade.lanSet(const ProxyLanConfig());
+      expect(typed.bound, isTrue);
+      expect(typed.addresses, isNotEmpty);
     });
 
     test('每个事件 fixture 解码为对应类型化事件', () {

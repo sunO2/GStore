@@ -29,6 +29,35 @@ fn import_fixture() -> ImportedProfile {
     import_text(&fixture_payload()).expect("synthetic fixture must import")
 }
 
+#[test]
+fn no_proxy_groups_synthesizes_proxy_and_flags_false() {
+    let yaml = "\
+proxies:
+  - name: solo-ss
+    type: ss
+    server: 1.2.3.4
+    port: 8388
+    cipher: aes-256-gcm
+    password: pw
+";
+    let payload = serde_json::json!({ "text": yaml, "name": "No Groups" })
+        .to_string()
+        .into_bytes();
+    let profile = import_text(&payload).expect("minimal no-group config must import");
+
+    assert!(!profile.has_proxy_groups, "no declared proxy-groups");
+    assert_eq!(profile.groups.len(), 1, "exactly one synthesized group");
+    assert_eq!(profile.groups[0].name, "PROXY");
+    assert_eq!(profile.groups[0].group_type, "select");
+    assert_eq!(profile.groups[0].members, vec!["solo-ss".to_string()]);
+    assert!(profile.warnings.iter().any(|w| w.contains("synthesized")));
+
+    assert!(
+        import_fixture().has_proxy_groups,
+        "the fixture declares proxy-groups"
+    );
+}
+
 fn tmp_dir(tag: &str) -> std::path::PathBuf {
     use std::sync::atomic::{AtomicU32, Ordering};
     static SEQ: AtomicU32 = AtomicU32::new(0);

@@ -7,6 +7,9 @@ import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
 import 'package:gstore/page/proxy/proxy_active_node_store.dart';
 import 'package:gstore/page/proxy/proxy_active_profile_store.dart';
+import 'package:gstore/page/proxy/proxy_engine_settings_store.dart';
+import 'package:gstore/page/proxy/proxy_geo_manifest.dart';
+import 'package:gstore/page/proxy/proxy_geo_provisioner.dart';
 import 'package:gstore/page/proxy/proxy_home_facade.dart';
 import 'package:gstore/page/proxy/proxy_home_page.dart';
 import 'package:gstore/page/proxy/proxy_logs_page.dart';
@@ -17,6 +20,7 @@ import 'package:gstore/page/proxy/proxy_routing_mode_store.dart';
 import 'package:gstore/page/proxy/proxy_run_mode_store.dart';
 import 'package:gstore/page/proxy/proxy_settings_facade.dart';
 import 'package:gstore/page/proxy/proxy_stats_page.dart';
+import 'package:gstore/page/proxy/proxy_traffic_chart.dart';
 
 /// 假门面：无需原生模块，可受控发出类型化事件、控制连接动作的完成时机。
 class _FakeProxyFacade implements ProxyHomeFacade {
@@ -195,9 +199,12 @@ class _FakeProxyFacade implements ProxyHomeFacade {
 
 /// 假 VPN 授权触发：默认「同意」。
 class _FakeVpnConsent implements ProxyVpnConsent {
-  _FakeVpnConsent({this.granted = true});
+  _FakeVpnConsent({this.granted = true, this.running = false});
 
   final bool granted;
+
+  /// [isRunning] 返回值；为 `true` 时首页加载会走引擎恢复路径。
+  final bool running;
   int prepareCalls = 0;
   int stopCalls = 0;
 
@@ -219,7 +226,7 @@ class _FakeVpnConsent implements ProxyVpnConsent {
   }
 
   @override
-  Future<bool> isRunning() async => false;
+  Future<bool> isRunning() async => running;
 }
 
 /// 假节点门面：首页仅用于把 profileId 透传给节点页，节点页自身数据在此为空。
@@ -248,6 +255,15 @@ class _FakeNodesFacade implements ProxyNodesFacade {
   @override
   Future<DelayTestResult> nodeDelayTest(NodeDelayTestRequest request) async =>
       const DelayTestResult();
+
+  /// `node.list` 返回值（默认空：页面回退到类型推断 + 持久化选择）。
+  NodeListResult nodeListResult = const NodeListResult();
+
+  @override
+  Future<NodeListResult> nodeList() async => nodeListResult;
+
+  @override
+  Future<void> reconcileEngine(String profileId) async {}
 }
 
 /// 假「当前订阅」持久化存储：内存实现。
@@ -312,6 +328,81 @@ class _FakeRoutingModeStore implements ProxyRoutingModeStore {
 
   @override
   Future<void> clear() async => value = null;
+}
+
+/// 假「引擎侧设置（stack / MTU）」持久化存储：内存实现。
+class _FakeEngineSettingsStore implements ProxyEngineSettingsStore {
+  _FakeEngineSettingsStore([this.value = const ProxyEngineSettings()]);
+
+  ProxyEngineSettings value;
+
+  @override
+  Future<ProxyEngineSettings> read() async => value;
+
+  @override
+  Future<void> write(ProxyEngineSettings settings) async => value = settings;
+}
+
+/// 空操作 geo 门面（仅满足 [ProxyGeoProvisioner] 构造，不会真正被调用）。
+class _NoopGeoFacade implements ProxyGeoFacade {
+  @override
+  Future<RulesSnapshot> rulesGet() async => const RulesSnapshot();
+
+  @override
+  Future<GeneratedConfig> configGenerate(GenerateRequest request) async =>
+      const GeneratedConfig(config: '');
+
+  @override
+  Future<RulesSnapshot> rulesReload(RulesReloadRequest request) async =>
+      const RulesSnapshot();
+}
+
+class _NoopChecksumClient implements ProxyGeoChecksumClient {
+  @override
+  Future<String?> fetchSha256(String assetUrl) async => null;
+}
+
+/// 假 provisioner：覆写 kickoff / waitReady，可受控门控等待时机。
+class _FakeGeoProvisioner extends ProxyGeoProvisioner {
+  _FakeGeoProvisioner()
+      : super(
+          facade: _NoopGeoFacade(),
+          manifest: const ProxyGeoManifest(assets: <ProxyGeoAsset>[]),
+          checksumClient: _NoopChecksumClient(),
+        );
+
+  int kickoffCalls = 0;
+  bool kickoffResult = true;
+  Object? kickoffError;
+  int waitReadyCalls = 0;
+  Completer<bool>? waitReadyGate;
+  bool waitReadyResult = true;
+
+  @override
+  Future<bool> kickoff({String? profileId, bool force = false}) async {
+    kickoffCalls++;
+    final error = kickoffError;
+    if (error != null) throw error;
+    return kickoffResult;
+  }
+
+  @override
+  Future<bool> waitReady({Duration? timeout}) async {
+    waitReadyCalls++;
+    final gate = waitReadyGate;
+    if (gate != null) return gate.future;
+    return waitReadyResult;
+  }
+}
+
+/// 假 geo 工厂：始终返回注入的 provisioner。
+class _FakeGeoProvisionerFactory extends ProxyGeoProvisionerFactory {
+  _FakeGeoProvisionerFactory(this.provisioner);
+
+  final ProxyGeoProvisioner provisioner;
+
+  @override
+  Future<ProxyGeoProvisioner?> create() async => provisioner;
 }
 
 Widget _wrap(Widget child) => MaterialApp(home: child);
@@ -407,8 +498,14 @@ void main() {
       upBps: 2048,
       downBps: 4096,
       domainCount: 12,
+      flowCount: 3,
       topDomains: <DomainStat>[
-        DomainStat(domain: 'example.com', outbound: 'HK-01'),
+        DomainStat(
+          domain: 'example.com',
+          outbound: 'HK-01',
+          uploadBytes: 1024,
+          downloadBytes: 1024,
+        ),
       ],
     ));
     await _flush(tester);
@@ -422,6 +519,63 @@ void main() {
     expect(find.textContaining('2.00 MB'), findsWidgets);
     expect(find.text('HK-01'), findsOneWidget);
     expect(find.text('12'), findsOneWidget);
+    // 新增流量明细：跟踪连接数 + 最活跃域名（域名 · 总字节）。
+    expect(
+      (tester.widget<Text>(find.byKey(const Key('proxy-flow-count')))).data,
+      '3',
+    );
+    expect(
+      (tester.widget<Text>(find.byKey(const Key('proxy-top-domain')))).data,
+      'example.com · 2.00 KB',
+    );
+    // 60 秒折线图取代了旧的相对进度条。
+    expect(find.byKey(const Key('proxy-traffic-chart')), findsOneWidget);
+    expect(find.byType(LinearProgressIndicator), findsNothing);
+    // 实时速率与累计分离：速率带 /s（number 强调），累计不带 /s。
+    expect(
+      (tester.widget<Text>(find.byKey(const Key('proxy-upload-speed')))).data,
+      '↑ 2.00 KB/s',
+    );
+    expect(
+      (tester.widget<Text>(find.byKey(const Key('proxy-download-speed')))).data,
+      '↓ 4.00 KB/s',
+    );
+    expect(
+      (tester.widget<Text>(find.byKey(const Key('proxy-upload-total')))).data,
+      '↑ 1.00 KB',
+    );
+    expect(
+      (tester.widget<Text>(find.byKey(const Key('proxy-download-total')))).data,
+      '↓ 2.00 MB',
+    );
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('traffic：field 缺省/为 0 时省略明细行', (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade();
+    await tester.pumpWidget(_wrap(ProxyHomePage(facade: facade)));
+    await _flush(tester);
+
+    // 无 stats（全 0）：跟踪连接 / 最活跃域名行不渲染。
+    expect(find.byKey(const Key('proxy-flow-count')), findsNothing);
+    expect(find.byKey(const Key('proxy-top-domain')), findsNothing);
+
+    // domainCount 为 0、flowCount 为 0、topDomains 为空：仍省略。
+    facade.emit(const ProxyStatsEvent(
+      uploadBytes: 0,
+      downloadBytes: 0,
+      activeConns: 0,
+      upBps: 0,
+      downBps: 0,
+      domainCount: 0,
+      flowCount: 0,
+    ));
+    await _flush(tester);
+    expect(find.byKey(const Key('proxy-flow-count')), findsNothing);
+    expect(find.byKey(const Key('proxy-top-domain')), findsNothing);
     expect(tester.takeException(), isNull);
 
     await facade.controller.close();
@@ -934,6 +1088,55 @@ void main() {
     await facade.controller.close();
   });
 
+  testWidgets('连接：core.start 透传持久化 stack/mtu', (tester) async {
+    final facade = _FakeProxyFacade();
+    final consent = _FakeVpnConsent();
+    final engineStore =
+        _FakeEngineSettingsStore(const ProxyEngineSettings(stack: 'system', mtu: 1400));
+    await tester.pumpWidget(
+      _wrap(ProxyHomePage(
+        facade: facade,
+        vpnConsent: consent,
+        engineSettingsStore: engineStore,
+      )),
+    );
+    await _flush(tester);
+
+    await tester.tap(find.text('连接'));
+    await _flush(tester);
+
+    expect(facade.coreStartCalls, 1);
+    expect(facade.lastCoreStart?.stack, 'system');
+    expect(facade.lastCoreStart?.mtu, 1400);
+    expect(find.text('已连接'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('引擎恢复：core.start 透传持久化 stack/mtu', (tester) async {
+    final facade = _FakeProxyFacade();
+    // 前台服务在跑（isRunning 为 true）→ 加载即走引擎恢复路径。
+    final consent = _FakeVpnConsent(running: true);
+    final engineStore =
+        _FakeEngineSettingsStore(const ProxyEngineSettings(stack: 'system', mtu: 1400));
+    await tester.pumpWidget(
+      _wrap(ProxyHomePage(
+        facade: facade,
+        vpnConsent: consent,
+        engineSettingsStore: engineStore,
+      )),
+    );
+    await _flush(tester);
+
+    expect(facade.coreStartCalls, 1);
+    expect(facade.lastCoreStart?.stack, 'system');
+    expect(facade.lastCoreStart?.mtu, 1400);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
   testWidgets('快捷入口：无回调时运行日志进入日志页（不再提示后续版本）', (tester) async {
     _useTallViewport(tester);
     final facade = _FakeProxyFacade();
@@ -1057,16 +1260,18 @@ void main() {
     expect(find.text('引擎报错'), findsOneWidget);
     expect(find.text('重试'), findsOneWidget);
 
-    // 断开按钮保持主题默认（未引入 error 配色）。
-    final List<OutlinedButton> outlined = tester
-        .widgetList<OutlinedButton>(
-          find.byWidgetPredicate((Widget w) => w is OutlinedButton),
-        )
-        .toList();
-    expect(outlined, isNotEmpty);
-    for (final OutlinedButton button in outlined) {
-      expect(button.style?.foregroundColor, isNull);
-    }
+    // 断开按钮为破坏性样式：主题 error 底 + onError 前景（状态图标/文案仍非 error）。
+    final FilledButton disconnect = tester.widget<FilledButton>(
+      find.byKey(const Key('proxy-disconnect-button')),
+    );
+    expect(
+      disconnect.style?.backgroundColor?.resolve(<WidgetState>{}),
+      scheme.error,
+    );
+    expect(
+      disconnect.style?.foregroundColor?.resolve(<WidgetState>{}),
+      scheme.onError,
+    );
     expect(tester.takeException(), isNull);
 
     await facade.controller.close();
@@ -1459,6 +1664,240 @@ void main() {
     expect(facade.routingGetModeCalls, 1);
     expect(find.byKey(const Key('proxy-routing-mode-switch')), findsOneWidget);
     expect(_routingSwitchValue(tester), ProxyRoutingMode.direct);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('路由模式：标签与药丸各占一行（药丸换行）', (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade();
+    await tester.pumpWidget(_wrap(ProxyHomePage(facade: facade)));
+    await _flush(tester);
+    facade.emit(const ProxyStateEvent(
+      state: ProxyConnState.running,
+      mode: ProxyMode.vpn,
+    ));
+    await _flush(tester);
+
+    final Finder label = find.text('路由模式');
+    final Finder pill = find.byKey(const Key('proxy-routing-mode-switch'));
+    // 药丸必须换行到标签下方：药丸顶部在标签底部之下。
+    expect(
+      tester.getTopLeft(pill).dy,
+      greaterThan(tester.getBottomLeft(label).dy),
+      reason: '标题与药丸必须各占一行，药丸换行到标签下方',
+    );
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('窄屏 320：路由模式行不溢出', (tester) async {
+    tester.view.physicalSize = const Size(320, 1600);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final facade = _FakeProxyFacade();
+    await tester.pumpWidget(_wrap(ProxyHomePage(facade: facade)));
+    await _flush(tester);
+    facade.emit(const ProxyStateEvent(
+      state: ProxyConnState.running,
+      mode: ProxyMode.vpn,
+    ));
+    await _flush(tester);
+
+    expect(find.text('路由模式'), findsOneWidget);
+    expect(find.byKey(const Key('proxy-routing-mode-switch')), findsOneWidget);
+    // takeException 捕获 RenderFlex overflow（若有会在此抛出）。
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('geo：规则模式初始化 kickoff，准备中提示，失败可重试', (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade();
+    final geo = _FakeGeoProvisioner();
+    final gate = Completer<bool>();
+    geo.waitReadyGate = gate;
+    await tester.pumpWidget(
+      _wrap(ProxyHomePage(
+        facade: facade,
+        vpnConsent: _FakeVpnConsent(),
+        geoProvisionerFactory: _FakeGeoProvisionerFactory(geo),
+      )),
+    );
+    await _flush(tester);
+    // geo 创建 / kickoff 是若干层微任务链，多泵几帧确保已触发。
+    for (var i = 0; i < 5; i++) {
+      await tester.pump();
+    }
+
+    // 默认（未存储）路由模式为 rule → 初始化即 kickoff；等待就绪期间显示非阻塞提示。
+    expect(geo.kickoffCalls, 1);
+    expect(find.byKey(const Key('proxy-geo-status-banner')), findsOneWidget);
+    expect(find.textContaining('正在准备 CN 直连规则数据'), findsOneWidget);
+
+    // waitReady 失败 → 失败态 + 重试入口。
+    gate.complete(false);
+    await _flush(tester);
+    await tester.pump();
+    expect(find.text('CN 直连规则数据准备失败'), findsOneWidget);
+    expect(find.byKey(const Key('proxy-geo-retry')), findsOneWidget);
+
+    // 重试：重新 kickoff（force），成功后提示消失。
+    final gate2 = Completer<bool>();
+    geo.waitReadyGate = gate2;
+    await tester.tap(find.byKey(const Key('proxy-geo-retry')));
+    await _flush(tester);
+    expect(geo.kickoffCalls, 2);
+
+    gate2.complete(true);
+    await _flush(tester);
+    await tester.pump();
+    expect(find.byKey(const Key('proxy-geo-status-banner')), findsNothing);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('geo：非规则模式（direct）不 kickoff', (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade();
+    final geo = _FakeGeoProvisioner();
+    await tester.pumpWidget(
+      _wrap(ProxyHomePage(
+        facade: facade,
+        vpnConsent: _FakeVpnConsent(),
+        routingModeStore: _FakeRoutingModeStore(ProxyRoutingMode.direct),
+        geoProvisionerFactory: _FakeGeoProvisionerFactory(geo),
+      )),
+    );
+    await _flush(tester);
+    await tester.pump();
+
+    expect(geo.kickoffCalls, 0);
+    expect(find.byKey(const Key('proxy-geo-status-banner')), findsNothing);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('geo：运行中切换到规则模式触发 kickoff', (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade();
+    final geo = _FakeGeoProvisioner();
+    final store = _FakeRoutingModeStore(ProxyRoutingMode.direct);
+    await tester.pumpWidget(
+      _wrap(ProxyHomePage(
+        facade: facade,
+        routingModeStore: store,
+        geoProvisionerFactory: _FakeGeoProvisionerFactory(geo),
+      )),
+    );
+    await _flush(tester);
+    facade.emit(const ProxyStateEvent(
+      state: ProxyConnState.running,
+      mode: ProxyMode.vpn,
+    ));
+    await _flush(tester);
+    expect(geo.kickoffCalls, 0);
+
+    await tester.tap(find.byKey(const Key('proxy-routing-mode-rule')));
+    await _flush(tester);
+
+    expect(geo.kickoffCalls, 1);
+    expect(store.value, ProxyRoutingMode.rule);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('traffic：快照播种淘汰计数 + Top-3 域名行（超出不渲染）',
+      (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade()
+      ..trafficSnapshot = const TrafficSnapshot(
+        uploadBytes: 2048,
+        downloadBytes: 4096,
+        activeConns: 2,
+        upBps: 1024,
+        downBps: 1024,
+        domainCount: 5,
+        flowCount: 2,
+        capacity: 2048,
+        evicted: 7,
+        topDomains: <DomainStat>[
+          DomainStat(domain: 'a.com', uploadBytes: 100, downloadBytes: 100),
+          DomainStat(domain: 'b.com', uploadBytes: 50, downloadBytes: 50),
+          DomainStat(domain: 'c.com', uploadBytes: 25, downloadBytes: 25),
+          DomainStat(domain: 'd.com', uploadBytes: 10, downloadBytes: 10),
+        ],
+      );
+    await tester.pumpWidget(_wrap(ProxyHomePage(facade: facade)));
+    await _flush(tester);
+
+    // 容量/淘汰仅由 `stats.traffic.get` 快照携带：有淘汰就显示。
+    expect(
+      (tester.widget<Text>(find.byKey(const Key('proxy-capacity-evicted'))))
+          .data,
+      '2048 / 7',
+    );
+    // Top-3：首行保留稳定 key，最多三行；第 4 个域名不渲染。
+    expect(
+      (tester.widget<Text>(find.byKey(const Key('proxy-top-domain')))).data,
+      'a.com · 200 B',
+    );
+    expect(find.text('b.com · 100 B'), findsOneWidget);
+    expect(find.text('c.com · 50 B'), findsOneWidget);
+    expect(find.text('d.com · 20 B'), findsNothing);
+    expect(find.byKey(const Key('proxy-traffic-chart')), findsOneWidget);
+    // 快照播种后 `_stats` 不再空白：活动连接显示快照值。
+    expect(
+      (tester.widget<Text>(find.byKey(const Key('proxy-active-conns')))).data,
+      '2',
+    );
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('traffic：断开（stopped）清空折线缓冲', (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade();
+    await tester.pumpWidget(_wrap(ProxyHomePage(facade: facade)));
+    await _flush(tester);
+
+    ProxyTrafficChartPainter painter() {
+      final chart = find.byKey(const Key('proxy-traffic-chart'));
+      return tester
+          .widget<CustomPaint>(
+            find.descendant(of: chart, matching: find.byType(CustomPaint)),
+          )
+          .painter! as ProxyTrafficChartPainter;
+    }
+
+    facade.emit(const ProxyStateEvent(
+      state: ProxyConnState.running,
+      mode: ProxyMode.vpn,
+    ));
+    facade.emit(const ProxyStatsEvent(
+      uploadBytes: 1024,
+      downloadBytes: 2048,
+      activeConns: 1,
+      upBps: 4096,
+      downBps: 8192,
+    ));
+    await _flush(tester);
+    expect(painter().up, isNotEmpty);
+
+    facade.emit(const ProxyStateEvent(
+      state: ProxyConnState.stopped,
+      mode: ProxyMode.off,
+    ));
+    await _flush(tester);
+    expect(painter().up, isEmpty);
     expect(tester.takeException(), isNull);
 
     await facade.controller.close();

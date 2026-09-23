@@ -155,6 +155,11 @@ pub struct ImportedProfile {
     pub nodes: Vec<ProxyNode>,
     #[serde(default)]
     pub groups: Vec<ProxyGroup>,
+    /// `true` when the source declared `proxy-groups`; `false` when the engine
+    /// synthesized the fallback `PROXY` group. `default = "default_true"` keeps
+    /// already-stored profiles behaving as if they had declared groups.
+    #[serde(default = "default_true")]
+    pub has_proxy_groups: bool,
     /// Subscription's Clash `rules:` captured at import; `serde(default)` keeps already-stored profiles loadable.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rules: Vec<String>,
@@ -163,6 +168,10 @@ pub struct ImportedProfile {
     pub source: ImportSource,
     #[serde(default)]
     pub warnings: Vec<String>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize)]

@@ -42,6 +42,16 @@ class MainActivity : FlutterActivity() {
         /// ManageSpaceActivity 携带的 action：用于识别"系统管理空间入口"
         const val ACTION_MANAGE_SPACE = "com.suno2.gstore.action.MANAGE_SPACE"
 
+        /// QS 磁贴「连接」请求 action：磁贴拉起 MainActivity 时携带，
+        /// Dart 侧经 `consumeProxyConnect` 查询消费后编排连接。
+        const val ACTION_PROXY_CONNECT = "com.suno2.gstore.action.PROXY_CONNECT"
+
+        /// QS 磁贴「长按」请求 action（系统标准值）：磁贴长按由系统解析到声明该
+        /// action 的 Activity（本 Manifest 中为 MainActivity）。Dart 侧经
+        /// `consumeProxyOpen` 查询消费后跳转应用内代理页。
+        const val ACTION_QS_TILE_PREFERENCES =
+            "android.service.quicksettings.action.QS_TILE_PREFERENCES"
+
         /// `prepare` 启动 VpnConsentActivity 的请求码，结果经 onActivityResult 回填。
         private const val REQUEST_PREPARE_VPN = 0x5652
 
@@ -52,6 +62,16 @@ class MainActivity : FlutterActivity() {
     /// Dart 侧查询消费后清除）。@Volatile 保证跨线程可见。
     @Volatile
     private var pendingManageSpace = false
+
+    /// 待处理的 QS 磁贴「连接」请求标记（冷启动/热启动置位，Dart 消费后清除）。
+    /// @Volatile 保证跨线程可见。
+    @Volatile
+    private var pendingProxyConnect = false
+
+    /// 待处理的 QS 磁贴「长按」请求标记（冷启动/热启动置位，Dart 消费后清除）。
+    /// 长按命中后 Dart 跳转应用内代理页。@Volatile 保证跨线程可见。
+    @Volatile
+    private var pendingProxyOpen = false
 
     /// 正在等待 VpnConsentActivity 返回的 `prepare` Result（主线程访问）。
     /// 非 null 时拒绝并发的 prepare，避免覆盖挂起 Result 造成 Dart 侧永久挂起。
@@ -74,6 +94,14 @@ class MainActivity : FlutterActivity() {
             pendingManageSpace = true
             Log.i(TAG, "onCreate: 收到管理空间入口请求")
         }
+        if (intent?.action == ACTION_PROXY_CONNECT) {
+            pendingProxyConnect = true
+            Log.i(TAG, "onCreate: 收到 QS 磁贴连接请求")
+        }
+        if (intent?.action == ACTION_QS_TILE_PREFERENCES) {
+            pendingProxyOpen = true
+            Log.i(TAG, "onCreate: 收到 QS 磁贴长按打开代理页请求")
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -81,6 +109,14 @@ class MainActivity : FlutterActivity() {
         if (intent.action == ACTION_MANAGE_SPACE) {
             pendingManageSpace = true
             Log.i(TAG, "onNewIntent: 收到管理空间入口请求")
+        }
+        if (intent.action == ACTION_PROXY_CONNECT) {
+            pendingProxyConnect = true
+            Log.i(TAG, "onNewIntent: 收到 QS 磁贴连接请求")
+        }
+        if (intent.action == ACTION_QS_TILE_PREFERENCES) {
+            pendingProxyOpen = true
+            Log.i(TAG, "onNewIntent: 收到 QS 磁贴长按打开代理页请求")
         }
     }
 
@@ -158,6 +194,18 @@ class MainActivity : FlutterActivity() {
                         result.success(true)
                     }
                     "isRunning" -> result.success(ProxyVpnService.isRunning)
+                    // QS 磁贴「连接」请求：查询并消费 pending 标志（与
+                    // consumeManageSpace 同构，poll 契约固定）。
+                    "consumeProxyConnect" -> {
+                        result.success(pendingProxyConnect)
+                        pendingProxyConnect = false
+                    }
+                    // QS 磁贴「长按」请求：查询并消费 pending 标志，Dart 侧据此
+                    // 跳转应用内代理页（与 consumeProxyConnect 同构，poll 契约固定）。
+                    "consumeProxyOpen" -> {
+                        result.success(pendingProxyOpen)
+                        pendingProxyOpen = false
+                    }
                     // TUN fd 是否已交给 Rust 宿主：isRunning 不足以判断（它在 fd 安装
                     // 之前就为 true）。
                     "hasTunFd" -> result.success(ProxyVpnService.tunFdInstalled)

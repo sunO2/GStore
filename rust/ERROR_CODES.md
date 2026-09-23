@@ -56,7 +56,7 @@
 | `PROXY_RULE_INVALID` | proxy | 422 | 规则行解析失败（未知类型/缺列/非法 CIDR）或整个 Clash 配置/`rules.reload` 载荷不可解析；报告会点名具体 `line`，其余规则仍加载。仅整配置不可解析时作为顶层 422，单行失败在 `rules.get.errors[]` 内回报（Todo 9） |
 | `PROXY_RULE_PROVIDER_FAILED` | proxy | —（行内） | `rule-providers` 加载失败；该 provider 对应的 `RULE-SET` 规则保持空集（不匹配），`rules.get` 的 `providers[].code` 回报（Todo 9） |
 | `PROXY_GEO_UNAVAILABLE` | proxy | —（行内） | `GEOIP`/`GEOSITE`/`IP-ASN` 规则所需地理库未就绪（缺失/下载中/校验失败）；该行记入 `rules.get` 的 `errors[]`，其余规则仍加载（Todo 9） |
-| `PROXY_NODE_NOT_FOUND` | proxy | 404 | `node.select`/`node.delay_test` 指定的 group 不存在，或 node 不在该 group 内（Todo 10） |
+| `PROXY_NODE_NOT_FOUND` | proxy | 404 | `node.select`/`node.delay_test` 指定的 group 不存在，或 node 不在该 group 内（Todo 10）；亦可能来自构建期级联丢弃（见下方注记） |
 | `PROXY_GROUP_NOT_SELECTABLE` | proxy | 422 | 目标不是可选择的 group（selector/url-test/fallback）：叶子节点、load-balance、relay 均无 `ProxySelection`（Todo 10） |
 | `PROXY_NOT_CONFIGURED` | proxy | 409 | engine/tunnel 未运行即调用 `node.*`/`conn.list`（Todo 10）；`core.start` 前需先由 Todo 13 注入 proxies 并启动 TUN |
 | `PROXY_SUB_URL_INVALID` | proxy | 422 | 订阅 URL 非法：非 `http(s)` scheme（`file://`/`ftp://` 等）、URL 不可解析或无 host（Todo 11） |
@@ -85,6 +85,16 @@
 | `PROXY_CONN_NOT_FOUND` | proxy | 404 | `conn.close` 收到本模块从未跟踪过的连接 id（既不在活动表，也不在「最近关闭」墓碑内）（Todo 17） |
 | `PROXY_CLASH_API_FAILED` | proxy | 500 | `diagnostics.clash_api.start` 无法绑定 `127.0.0.1:<port>` 或无法启动其 runtime/线程（Todo 18） |
 | `PROXY_DATAPLANE_DEAD` | proxy | —（supervisor 事件） | TUN 数据面 worker（reader/egress/ingress）在隧道存活时意外结束或 panic：以结构化 `proxy.state` 的 `error.code` 上报**原始**原因并触发有界退避重启；预算耗尽后置为 `dataplane_failed`（Todo 24） |
+
+> **`PROXY_NODE_NOT_FOUND` 的构建期级联与引擎对齐。** 除上表的直接原因外，该 404 还可能在
+> registry 构建阶段产生：当某声明的 proxy-group 依赖的兄弟 group 无法构建（例如节点类型
+> 不受支持）时，依赖它的 group 会一并被丢弃，`node.select` 因此报 `group not found` ——
+> 这是**构建期级联**，不是客户端请求错误。此外，运行中的引擎在 `profile.refresh` 或切换
+> 订阅后可能持有**过期 registry**；当 UI 展示的 profile 含某 group 而活动引擎没有时，节点
+> 选择会触发一次 `config.apply` 重放当前 profile 以对齐活动引擎，**无需手动重连**（引擎
+> 停止时的离线选择不受影响）。构建结果见诊断日志
+> `proxy: registry groups built=[...] missing=[...]`：`built` 列出成功进入 registry 的声明
+> group，`missing` 列出被丢弃者，即上述 404 的潜在来源。
 
 ## 跨 ABI 错误透传
 

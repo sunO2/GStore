@@ -29,7 +29,7 @@
 //! warnings for nodes/groups the enabled protocol set cannot build. A node that
 //! cannot be built is skipped, never fatal.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use gstore_contract::error::{ModuleError, StatusCode};
@@ -223,6 +223,9 @@ pub(crate) fn try_generate(
         }
     }
     let record = resolve_profile(&store, explicit)?;
+    if let Some(id) = explicit {
+        store.write_active_profile_id(id);
+    }
     Ok(Some(generate_record(&record, req)?))
 }
 
@@ -257,18 +260,23 @@ fn resolve_profile(
     let explicit = profile_id.map(str::trim).filter(|id| !id.is_empty());
     let id = match explicit {
         Some(id) => id.to_string(),
-        None => store
-            .list()?
-            .profiles
-            .first()
-            .map(|summary| summary.id.clone())
-            .ok_or_else(|| {
-                ModuleError::new(
-                    StatusCode::InvalidArgument,
-                    ERR_CONFIG_PROFILE_REQUIRED,
-                    "no profile is stored; import or create one before generating a config",
-                )
-            })?,
+        None => {
+            let summaries = store.list()?.profiles;
+            // Prefer the last explicitly-selected profile when it still exists;
+            // fall back to the earliest-imported profile otherwise.
+            let active = store
+                .read_active_profile_id()
+                .filter(|active| summaries.iter().any(|summary| &summary.id == active));
+            active
+                .or_else(|| summaries.first().map(|summary| summary.id.clone()))
+                .ok_or_else(|| {
+                    ModuleError::new(
+                        StatusCode::InvalidArgument,
+                        ERR_CONFIG_PROFILE_REQUIRED,
+                        "no profile is stored; import or create one before generating a config",
+                    )
+                })?
+        }
     };
     let payload = serde_json::to_vec(&json!({ "id": id })).unwrap_or_default();
     store.get(&payload)
@@ -372,7 +380,31 @@ fn resolve_mtu(raw: Option<u16>) -> Result<u16, ModuleError> {
 /// Terminal target; `group_values` always emits this select group when nodes exist.
 const DEFAULT_MATCH_GROUP: &str = "PROXY";
 
-/// Source priority: overlay → captured profile rules → current lines, plus an appended terminal MATCH when absent.
+/// Authored mainland-China DIRECT overlay merged into the resolved rule set when
+/// a profile has nodes and its rules carry no CN signal (see [`is_cn_signal`]).
+///
+/// The private/link-local ranges are explicit `IP-CIDR` entries because
+/// `GEOIP,LAN` is a no-op in the engine (LAN is not an ISO country code, so
+/// `CountryIndex::ranges_for` returns an empty set). `198.18.0.0/15` is
+/// deliberately absent — it is the fake-IP pool, not a real destination.
+const CN_DIRECT_RULES: [&str; 13] = [
+    "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve",
+    "IP-CIDR,127.0.0.0/8,DIRECT,no-resolve",
+    "IP-CIDR,169.254.0.0/16,DIRECT,no-resolve",
+    "IP-CIDR,172.16.0.0/12,DIRECT,no-resolve",
+    "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve",
+    "IP-CIDR,100.64.0.0/10,DIRECT,no-resolve",
+    "IP-CIDR,224.0.0.0/4,DIRECT,no-resolve",
+    "IP-CIDR,255.255.255.255/32,DIRECT,no-resolve",
+    "IP-CIDR6,::1/128,DIRECT,no-resolve",
+    "IP-CIDR6,fc00::/7,DIRECT,no-resolve",
+    "IP-CIDR6,fe80::/10,DIRECT,no-resolve",
+    "GEOSITE,cn,DIRECT",
+    "GEOIP,CN,DIRECT",
+];
+
+/// Source priority: overlay → captured profile rules → current lines, plus a
+/// merged CN-direct block and an appended terminal MATCH when absent.
 fn resolve_rules(
     overlay: Option<&Vec<String>>,
     profile_rules: &[String],
@@ -388,6 +420,7 @@ fn resolve_rules(
         .map(|line| line.trim().to_string())
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
         .collect();
+    inject_cn_direct(&mut cleaned, has_nodes);
     if !cleaned.iter().any(|line| is_terminal_match(line)) {
         cleaned.push(if has_nodes {
             format!("MATCH,{DEFAULT_MATCH_GROUP}")
@@ -396,6 +429,41 @@ fn resolve_rules(
         });
     }
     cleaned
+}
+
+/// Merge the authored CN-direct block into `cleaned` when the profile has nodes
+/// and the rules carry no CN signal. The block is inserted immediately before the
+/// first terminal rule (else appended), so the terminal stays terminal and no
+/// existing rule is overridden; the terminal `MATCH` is appended afterwards by
+/// the caller when absent.
+fn inject_cn_direct(cleaned: &mut Vec<String>, has_nodes: bool) {
+    if !has_nodes || cleaned.iter().any(|line| is_cn_signal(line)) {
+        return;
+    }
+    let insert_at = cleaned
+        .iter()
+        .position(|line| is_terminal_match(line))
+        .unwrap_or(cleaned.len());
+    for (offset, rule) in CN_DIRECT_RULES.iter().enumerate() {
+        cleaned.insert(insert_at + offset, (*rule).to_string());
+    }
+}
+
+/// Whether a cleaned rule line already routes CN geography direct, in which case
+/// the authored block must not be merged. Matches case-insensitive `GEOIP,CN` /
+/// `SRC-GEOIP,CN`, or `GEOSITE,<payload>` where the part before any `@`
+/// attribute suffix is exactly `cn`.
+fn is_cn_signal(line: &str) -> bool {
+    let mut parts = line.split(',');
+    let kind = parts.next().unwrap_or("").trim();
+    let payload = parts.next().unwrap_or("").trim();
+    if kind.eq_ignore_ascii_case("GEOIP") || kind.eq_ignore_ascii_case("SRC-GEOIP") {
+        return payload.eq_ignore_ascii_case("CN");
+    }
+    if kind.eq_ignore_ascii_case("GEOSITE") {
+        return payload.split('@').next().unwrap_or("").trim() == "cn";
+    }
+    false
 }
 
 fn is_terminal_match(line: &str) -> bool {
@@ -768,6 +836,48 @@ pub(crate) fn build_registry(
         remaining = still;
     }
 
+    // 恢复轮：上面按依赖短路 defer 的分组，若其依赖最终无法构建，会一直停留在
+    // remaining 里被静默丢弃。这里按「声明依赖」的拓扑序逐组 lenient 重试，使引用某个
+    // 可构建 defer 组的分组能把它纳入成员，一个坏组不再级联拖垮整条链；环依赖时没有拓扑
+    // 序，退化为有界重试。已构建的分组绝不重写。
+    let mut leftover: Vec<&RawProxyGroup> = remaining.clone();
+    let mut guard = remaining.len() + 1;
+    while !leftover.is_empty() && guard > 0 {
+        guard -= 1;
+        let ordered = dependency_order(&leftover, &declared);
+        let mut still: Vec<(&RawProxyGroup, String)> = Vec::new();
+        let mut progress = false;
+        for group in ordered {
+            if proxies.contains_key(group.name.as_str()) {
+                continue;
+            }
+            match parse_proxy_group_lenient_with_store(
+                group,
+                &proxies,
+                &include_all,
+                &empty_providers,
+                store,
+            ) {
+                Ok(value) => {
+                    let name = value.name().to_string();
+                    proxies.insert(SmolStr::from(name.as_str()), value);
+                    progress = true;
+                }
+                Err(e) => still.push((group, e.to_string())),
+            }
+        }
+        if !progress {
+            for (group, error) in &still {
+                warnings.push(ConfigWarning::group(
+                    &group.name,
+                    format!("group '{}' was not built: {error}", group.name),
+                ));
+            }
+            break;
+        }
+        leftover = still.into_iter().map(|(group, _)| group).collect();
+    }
+
     if !proxies.contains_key("GLOBAL") {
         let mut names: Vec<String> = proxies.keys().map(ToString::to_string).collect();
         names.sort();
@@ -802,6 +912,62 @@ fn has_unresolved_dependency(
         .unwrap_or(&[])
         .iter()
         .any(|member| declared.contains(member) && !built.contains(member))
+}
+
+/// Order `groups` so that a group referencing another declared group comes after it.
+/// Only dependencies among `groups` impose an order; a cycle leaves the blocked
+/// groups appended in their original order, which the bounded retry then resolves.
+fn dependency_order<'a>(
+    groups: &[&'a RawProxyGroup],
+    declared: &HashSet<String>,
+) -> Vec<&'a RawProxyGroup> {
+    let index: HashMap<&str, usize> = groups
+        .iter()
+        .enumerate()
+        .map(|(i, group)| (group.name.as_str(), i))
+        .collect();
+    let mut indegree: Vec<usize> = vec![0; groups.len()];
+    let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); groups.len()];
+    for (i, group) in groups.iter().enumerate() {
+        let mut seen: HashSet<usize> = HashSet::new();
+        for member in group.proxies.as_deref().unwrap_or(&[]) {
+            if !declared.contains(member) {
+                continue;
+            }
+            if let Some(&dep) = index.get(member.as_str()) {
+                if dep != i && seen.insert(dep) {
+                    indegree[i] += 1;
+                    dependents[dep].push(i);
+                }
+            }
+        }
+    }
+
+    let mut queue: VecDeque<usize> = indegree
+        .iter()
+        .enumerate()
+        .filter(|(_, degree)| **degree == 0)
+        .map(|(i, _)| i)
+        .collect();
+    let mut ordered: Vec<usize> = Vec::with_capacity(groups.len());
+    while let Some(i) = queue.pop_front() {
+        ordered.push(i);
+        for &next in &dependents[i] {
+            indegree[next] -= 1;
+            if indegree[next] == 0 {
+                queue.push_back(next);
+            }
+        }
+    }
+    if ordered.len() < groups.len() {
+        let placed: HashSet<usize> = ordered.iter().copied().collect();
+        for i in 0..groups.len() {
+            if !placed.contains(&i) {
+                ordered.push(i);
+            }
+        }
+    }
+    ordered.into_iter().map(|i| groups[i]).collect()
 }
 
 fn ys(value: impl Into<String>) -> Yaml {
@@ -916,6 +1082,7 @@ mod tests {
                 node_count: nodes.len(),
                 nodes,
                 groups,
+                has_proxy_groups: true,
                 rules,
                 userinfo: None,
                 source: ImportSource::default(),
@@ -995,12 +1162,10 @@ mod tests {
         assert_eq!(value["tun"]["stack"], Yaml::String("mixed".to_string()));
         assert_eq!(value["tun"]["mtu"].as_u64(), Some(1400));
         assert_eq!(
-            value["rules"].as_sequence().unwrap().len(),
-            2,
-            "explicit overlay has no terminal, so MATCH,PROXY is appended"
+            rule_lines(&value),
+            with_cn_block(&["DOMAIN,example.com,PROXY"], &["MATCH,PROXY"]),
+            "the CN block is appended before the terminal MATCH,PROXY"
         );
-        assert_eq!(value["rules"][0], Yaml::String("DOMAIN,example.com,PROXY".to_string()));
-        assert_eq!(value["rules"][1], Yaml::String("MATCH,PROXY".to_string()));
     }
 
     fn rule_lines(value: &Yaml) -> Vec<String> {
@@ -1010,6 +1175,17 @@ mod tests {
             .iter()
             .map(|r| r.as_str().unwrap().to_string())
             .collect()
+    }
+
+    fn cn_block() -> Vec<String> {
+        CN_DIRECT_RULES.iter().map(|rule| rule.to_string()).collect()
+    }
+
+    fn with_cn_block(prefix: &[&str], terminal: &[&str]) -> Vec<String> {
+        let mut expected: Vec<String> = prefix.iter().map(|s| s.to_string()).collect();
+        expected.extend(cn_block());
+        expected.extend(terminal.iter().map(|s| s.to_string()));
+        expected
     }
 
     #[test]
@@ -1022,6 +1198,7 @@ mod tests {
             vec![
                 "DOMAIN-SUFFIX,example.com,PROXY".to_string(),
                 "GEOIP,LAN,DIRECT".to_string(),
+                "GEOSITE,cn,DIRECT".to_string(),
                 "MATCH,PROXY".to_string(),
             ],
         );
@@ -1029,7 +1206,13 @@ mod tests {
         let value: Yaml = serde_yaml::from_str(&generated.yaml).unwrap();
         assert_eq!(
             rule_lines(&value),
-            vec!["DOMAIN-SUFFIX,example.com,PROXY", "GEOIP,LAN,DIRECT", "MATCH,PROXY"]
+            vec![
+                "DOMAIN-SUFFIX,example.com,PROXY",
+                "GEOIP,LAN,DIRECT",
+                "GEOSITE,cn,DIRECT",
+                "MATCH,PROXY",
+            ],
+            "a profile rule set already carrying a CN signal is left untouched"
         );
     }
 
@@ -1040,7 +1223,11 @@ mod tests {
         let record = stored(vec![trojan("t1", "192.0.2.10", 443, 0)], Vec::new());
         let generated = render(&record, &GenerateRequest::default());
         let value: Yaml = serde_yaml::from_str(&generated.yaml).unwrap();
-        assert_eq!(rule_lines(&value), vec!["MATCH,PROXY"]);
+        assert_eq!(
+            rule_lines(&value),
+            with_cn_block(&[], &["MATCH,PROXY"]),
+            "a rule-less profile with nodes gains the authored CN block, then MATCH,PROXY"
+        );
         assert!(
             !generated.yaml.contains("MATCH,DIRECT"),
             "a profile with nodes must never silently go direct:\n{}",
@@ -1078,7 +1265,79 @@ mod tests {
         let value: Yaml = serde_yaml::from_str(&generated.yaml).unwrap();
         assert_eq!(
             rule_lines(&value),
-            vec!["DOMAIN,overlay.example,PROXY", "MATCH,PROXY"]
+            with_cn_block(&["DOMAIN,overlay.example,PROXY"], &["MATCH,PROXY"]),
+            "the explicit overlay replaces the profile rules, then the CN block and terminal are added"
+        );
+    }
+
+    #[test]
+    fn cn_signal_in_rules_suppresses_the_authored_block() {
+        for rules in [
+            vec!["GEOIP,CN,DIRECT".to_string(), "MATCH,PROXY".to_string()],
+            vec!["SRC-GEOIP,CN,DIRECT".to_string(), "MATCH,PROXY".to_string()],
+            vec!["GEOSITE,cn,DIRECT".to_string(), "MATCH,PROXY".to_string()],
+            vec!["GEOSITE,cn@ads,DIRECT".to_string(), "MATCH,PROXY".to_string()],
+        ] {
+            assert_eq!(
+                resolve_rules(Some(&rules), &[], true),
+                rules,
+                "a rule set already routing CN direct must never gain the authored block"
+            );
+        }
+    }
+
+    #[test]
+    fn no_nodes_never_injects_the_authored_block() {
+        assert_eq!(
+            resolve_rules(Some(&Vec::new()), &[], false),
+            vec!["MATCH,DIRECT".to_string()],
+            "without nodes the resolved set is fully direct and untouched"
+        );
+        let rules = vec![
+            "DOMAIN-SUFFIX,example.com,PROXY".to_string(),
+            "MATCH,DIRECT".to_string(),
+        ];
+        assert_eq!(resolve_rules(Some(&rules), &[], false), rules);
+    }
+
+    #[test]
+    fn cn_block_is_inserted_immediately_before_an_existing_terminal() {
+        let rules = vec![
+            "DOMAIN-SUFFIX,example.com,PROXY".to_string(),
+            "FINAL,DIRECT".to_string(),
+        ];
+        assert_eq!(
+            resolve_rules(Some(&rules), &[], true),
+            with_cn_block(&["DOMAIN-SUFFIX,example.com,PROXY"], &["FINAL,DIRECT"]),
+            "the block lands before the terminal, which stays the last rule"
+        );
+    }
+
+    #[test]
+    fn authored_cn_block_is_exact_and_excludes_the_fake_ip_pool() {
+        assert_eq!(
+            CN_DIRECT_RULES,
+            [
+                "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve",
+                "IP-CIDR,127.0.0.0/8,DIRECT,no-resolve",
+                "IP-CIDR,169.254.0.0/16,DIRECT,no-resolve",
+                "IP-CIDR,172.16.0.0/12,DIRECT,no-resolve",
+                "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve",
+                "IP-CIDR,100.64.0.0/10,DIRECT,no-resolve",
+                "IP-CIDR,224.0.0.0/4,DIRECT,no-resolve",
+                "IP-CIDR,255.255.255.255/32,DIRECT,no-resolve",
+                "IP-CIDR6,::1/128,DIRECT,no-resolve",
+                "IP-CIDR6,fc00::/7,DIRECT,no-resolve",
+                "IP-CIDR6,fe80::/10,DIRECT,no-resolve",
+                "GEOSITE,cn,DIRECT",
+                "GEOIP,CN,DIRECT",
+            ]
+        );
+        assert!(
+            !CN_DIRECT_RULES
+                .iter()
+                .any(|rule| rule.contains("198.18.0.0")),
+            "198.18.0.0/15 is the fake-IP pool and must never be a destination rule"
         );
     }
 
@@ -1181,6 +1440,115 @@ mod tests {
         let (map, _warnings) = build_registry(&generated.raw, None);
         let proxy = map.get("PROXY").expect("PROXY group must still build");
         assert!(proxy.current().is_some());
+    }
+
+    #[test]
+    fn dependent_group_builds_despite_a_broken_dependency_group() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        crate::rules::reset_for_tests();
+        // `坏组` references only an unknown node, so it can never build. `节点选择`
+        // references both a valid node and `坏组`; its own node member is resolvable,
+        // so it must still build (previously it was silently cascade-dropped and only
+        // surfaced as `group not found` on node.select / node.delay_test).
+        let record = stored(
+            vec![
+                trojan("t1", "192.0.2.10", 443, 0),
+                trojan("t2", "192.0.2.11", 443, 1),
+            ],
+            vec![
+                ProxyGroup {
+                    name: "坏组".to_string(),
+                    group_type: "select".to_string(),
+                    members: vec!["ghost".to_string()],
+                },
+                ProxyGroup {
+                    name: "节点选择".to_string(),
+                    group_type: "select".to_string(),
+                    members: vec!["t1".to_string(), "坏组".to_string()],
+                },
+                ProxyGroup {
+                    name: "控制组".to_string(),
+                    group_type: "select".to_string(),
+                    members: vec!["t1".to_string(), "t2".to_string()],
+                },
+            ],
+        );
+        let generated = render(&record, &GenerateRequest::default());
+        let (map, warnings) = build_registry(&generated.raw, None);
+
+        assert!(
+            map.contains_key("节点选择"),
+            "group with a valid node member must build even if a referenced group failed: {warnings:?}"
+        );
+        assert_eq!(
+            map.get("节点选择").unwrap().members(),
+            Some(vec!["t1".to_string()]),
+            "the unbuildable group member is skipped; the node member survives"
+        );
+        assert!(map.contains_key("控制组"), "control group builds: {warnings:?}");
+        assert_eq!(
+            map.get("控制组").unwrap().members(),
+            Some(vec!["t1".to_string(), "t2".to_string()]),
+            "a group whose members are all valid nodes is untouched by recovery"
+        );
+        assert!(!map.contains_key("坏组"), "the empty group is dropped");
+        assert!(
+            warnings.iter().any(|w| w.node.as_deref() == Some("坏组")),
+            "the broken group is warned about: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn deferred_group_chain_builds_in_dependency_order() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        crate::rules::reset_for_tests();
+        // Chain C (unbuildable) <- B <- A, declared leaf-last so `A` is recovered
+        // before its dependency `B`. A single forward recovery pass emits `A` with
+        // `B` already dropped, and a fixpoint that never rewrites a built group can
+        // never repair it: the chain has to be resolved in dependency order.
+        let record = stored(
+            vec![
+                trojan("t1", "192.0.2.10", 443, 0),
+                trojan("t2", "192.0.2.11", 443, 1),
+            ],
+            vec![
+                ProxyGroup {
+                    name: "A".to_string(),
+                    group_type: "select".to_string(),
+                    members: vec!["t2".to_string(), "B".to_string()],
+                },
+                ProxyGroup {
+                    name: "B".to_string(),
+                    group_type: "select".to_string(),
+                    members: vec!["t1".to_string(), "C".to_string()],
+                },
+                ProxyGroup {
+                    name: "C".to_string(),
+                    group_type: "select".to_string(),
+                    members: vec!["ghost".to_string()],
+                },
+            ],
+        );
+        let generated = render(&record, &GenerateRequest::default());
+        let (map, warnings) = build_registry(&generated.raw, None);
+
+        assert!(map.contains_key("A"), "A must build: {warnings:?}");
+        assert!(map.contains_key("B"), "B must build: {warnings:?}");
+        assert!(!map.contains_key("C"), "the unbuildable leaf group is dropped");
+        assert_eq!(
+            map.get("B").unwrap().members(),
+            Some(vec!["t1".to_string()]),
+            "B keeps its node member and skips the unbuildable group"
+        );
+        assert_eq!(
+            map.get("A").unwrap().members(),
+            Some(vec!["t2".to_string(), "B".to_string()]),
+            "A must be built after B so it includes B as a member"
+        );
+        assert!(
+            warnings.iter().any(|w| w.node.as_deref() == Some("C")),
+            "the broken group is warned about: {warnings:?}"
+        );
     }
 
     #[test]
@@ -1330,5 +1698,100 @@ mod tests {
                 "{name} explicit udp:false must be respected"
             );
         }
+    }
+
+    fn tmp_dir(tag: &str) -> std::path::PathBuf {
+        static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("gstore-config-{tag}-{nanos}-{seq}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Persist a one-node profile and return its auto-assigned id.
+    fn persist_profile(store: &ProfileStore, node_name: &str) -> String {
+        let record = stored(vec![trojan(node_name, "192.0.2.10", 443, 0)], Vec::new());
+        let payload = serde_json::to_vec(&json!({ "profile": record.profile })).unwrap();
+        store.create(&payload).unwrap().id
+    }
+
+    fn proxy_names(generated: &GeneratedConfig) -> Vec<String> {
+        let value: Yaml = serde_yaml::from_str(&generated.yaml).unwrap();
+        value["proxies"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .filter_map(|p| p["name"].as_str().map(str::to_string))
+            .collect()
+    }
+
+    /// The offline resolution (no explicit `profileId`) must follow the persisted
+    /// active pointer, falling back to the first profile only when the pointer is
+    /// absent or names a profile that no longer exists.
+    #[test]
+    fn offline_resolution_prefers_persisted_active_profile() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        crate::rules::reset_for_tests();
+        let dir = tmp_dir("active");
+        let data_dir = dir.display().to_string();
+        let store = ProfileStore::open(&data_dir).unwrap();
+        let p1 = persist_profile(&store, "old");
+        let p2 = persist_profile(&store, "new");
+        assert_eq!(p1, "p1");
+        assert_eq!(p2, "p2");
+
+        let generated = try_generate(&data_dir, &data_dir, &GenerateRequest::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(generated.profile_id.as_deref(), Some("p1"));
+        assert_eq!(proxy_names(&generated), vec!["old"]);
+
+        store.write_active_profile_id("p2");
+        let generated = try_generate(&data_dir, &data_dir, &GenerateRequest::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(generated.profile_id.as_deref(), Some("p2"));
+        assert_eq!(proxy_names(&generated), vec!["new"]);
+
+        store.write_active_profile_id("p999");
+        let generated = try_generate(&data_dir, &data_dir, &GenerateRequest::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            generated.profile_id.as_deref(),
+            Some("p1"),
+            "a dangling pointer must fall back to the first profile"
+        );
+        assert_eq!(proxy_names(&generated), vec!["old"]);
+    }
+
+    /// An explicit `profileId` is recorded, so a later default generation (the
+    /// offline paths) resolves the same profile.
+    #[test]
+    fn explicit_generation_persists_active_profile_for_offline_resolution() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        crate::rules::reset_for_tests();
+        let dir = tmp_dir("explicit");
+        let data_dir = dir.display().to_string();
+        let store = ProfileStore::open(&data_dir).unwrap();
+        let _p1 = persist_profile(&store, "old");
+        let p2 = persist_profile(&store, "new");
+
+        let req = GenerateRequest {
+            profile_id: Some(p2.clone()),
+            ..GenerateRequest::default()
+        };
+        let generated = try_generate(&data_dir, &data_dir, &req).unwrap().unwrap();
+        assert_eq!(generated.profile_id.as_deref(), Some("p2"));
+
+        let generated = try_generate(&data_dir, &data_dir, &GenerateRequest::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(generated.profile_id.as_deref(), Some("p2"));
+        assert_eq!(proxy_names(&generated), vec!["new"]);
     }
 }

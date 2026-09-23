@@ -48,6 +48,7 @@ mod protect;
 mod rules;
 mod sniff;
 mod stats;
+mod stats_monitor;
 mod subscription;
 mod supervisor;
 mod tun;
@@ -742,6 +743,9 @@ fn core_start_arm(
     // Single mutation lane: `core.start` is a mode transition (Todo 29).
     let _lane = mode::lane();
     let t = mode::apply(&inst, target, payload, false)?;
+    if t.idempotent {
+        refresh_running_registry(&inst, payload);
+    }
     log_message(
         1,
         &format!(
@@ -791,6 +795,7 @@ pub(crate) fn start_engine(
     )?;
     let (map, mut warnings) = config::build_registry(&generated.raw, selector_store(inst).as_ref());
     warnings.extend(generated.warnings.iter().cloned());
+    log_registry_groups(&generated, &map, &warnings);
     let spawned = tun::start_with_proxies(inst.id, Some(map))?;
     lan::reconcile();
     log_message(
@@ -812,6 +817,70 @@ fn selector_store(inst: &Arc<ProxyInstance>) -> Option<Arc<meow_proxy::SelectorS
         return None;
     }
     Some(nodes::ensure_selector_store(&inst.data_dir))
+}
+
+/// Log which declared `proxy-groups` the registry actually built vs. dropped
+/// (plus every config warning). A dropped group otherwise surfaces only as
+/// `node.select` -> `group not found`, with nothing pointing at the cause.
+fn log_registry_groups(
+    generated: &config::GeneratedConfig,
+    map: &config::ProxyMap,
+    warnings: &[config::ConfigWarning],
+) {
+    let mut built: Vec<&str> = Vec::new();
+    let mut missing: Vec<&str> = Vec::new();
+    for group in generated.raw.proxy_groups.as_deref().unwrap_or(&[]) {
+        if map.contains_key(group.name.as_str()) {
+            built.push(group.name.as_str());
+        } else {
+            missing.push(group.name.as_str());
+        }
+    }
+    log_message(
+        1,
+        &format!(
+            "proxy: registry groups built=[{}] missing=[{}]",
+            built.join(","),
+            missing.join(",")
+        ),
+    );
+    for warning in warnings {
+        log_message(
+            2,
+            &format!(
+                "proxy: config warning {} node={} {}",
+                warning.code,
+                warning.node.as_deref().unwrap_or("-"),
+                warning.message
+            ),
+        );
+    }
+}
+
+/// An idempotent `core.start` (mode unchanged, engine already live) does not
+/// rebuild the tunnel registry. If the stored profile was imported/refreshed
+/// while the engine kept running, the tunnel then holds stale groups and
+/// `node.select` fails with `group not found` even though the profile has the
+/// group. Rebuild and hot-install the registry so the running engine matches
+/// the current profile, without tearing the dataplane down.
+fn refresh_running_registry(inst: &Arc<ProxyInstance>, payload: &[u8]) {
+    let Some(tunnel) = rules::active_tunnel() else {
+        return;
+    };
+    let Ok(req) = config::parse_request(payload) else {
+        return;
+    };
+    let generated = match config::try_generate(&inst.data_dir, &inst.cache_dir, &req) {
+        Ok(Some(generated)) => generated,
+        Ok(None) => return,
+        Err(e) => {
+            log_message(2, &format!("proxy: core.start registry refresh skipped: {e}"));
+            return;
+        }
+    };
+    let (map, warnings) = config::build_registry(&generated.raw, selector_store(inst).as_ref());
+    log_registry_groups(&generated, &map, &warnings);
+    nodes::install_proxies(&tunnel, map);
 }
 
 fn apply_dns_overlay(overlay: Option<&serde_json::Value>) -> Result<(), ModuleError> {
@@ -1052,22 +1121,61 @@ fn config_generate_arm(
 
 /// `config.apply` (Todo 13): regenerate the config from a profile and hot-apply
 /// it to the running engine — rules, then the proxy registry — without a
-/// process restart.
+/// process restart. With no running engine it still validates + renders the
+/// request and records the explicit active profile, returning the generated
+/// config with `applied: false` (mirrors `node.list`, which never errors when
+/// stopped), so a switch made while disconnected reaches the offline `node.*`
+/// paths.
 fn config_apply_arm(
     instance_id: u64,
     instance: Option<Arc<ProxyInstance>>,
     payload: &[u8],
 ) -> Result<Vec<u8>, ModuleError> {
     let inst = require_instance(instance_id, instance)?;
-    let tunnel = rules::active_tunnel().ok_or_else(|| {
-        ModuleError::new(
-            StatusCode::InvalidArgument,
-            nodes::ERR_NOT_CONFIGURED,
-            "engine is not running; call core.start before config.apply",
-        )
-    })?;
+    // Single mutation lane: `config.apply` reads the live tunnel and hot-installs
+    // the rebuilt registry, so it must serialize with the mode transitions
+    // (`core.start`/`core.stop`/`core.set_mode`). Without this, a concurrent stop
+    // could tear down the tunnel between `active_tunnel()` and `install_proxies`,
+    // installing into a dying (or already-dead) engine.
+    let _lane = mode::lane();
+    // Validate + render first: this works with or without a live tunnel, and must
+    // run before recording the active pointer so an unknown profile id can never
+    // be persisted.
     let req = config::parse_request(payload)?;
     let generated = config::generate_for(&inst.data_dir, &inst.cache_dir, &req)?;
+    // Record the explicit selection as the active profile regardless of engine
+    // state: `config.apply` resolves through `generate_for` (not `try_generate`),
+    // and the offline `node.select` / `node.delay_test` paths resolve through
+    // `read_active_profile_id`, so a subscription switch made while the engine is
+    // stopped must be persisted too. Best-effort.
+    if let Some(id) = req
+        .profile_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        if let Ok(store) = profile::ProfileStore::open(&inst.data_dir) {
+            store.write_active_profile_id(id);
+        }
+    }
+
+    // No running engine: recording the selection is the whole job. Mirror
+    // `node.list` (which never errors when stopped) by reporting `applied:false`
+    // instead of a 422, so a switch while disconnected still reaches the offline
+    // `node.*` paths.
+    let Some(tunnel) = rules::active_tunnel() else {
+        let mut data = engine_summary(&generated, &generated.warnings);
+        data["applied"] = serde_json::json!(false);
+        data["rules"] = serde_json::json!(0);
+        log_message(
+            1,
+            &format!(
+                "proxy: config.apply offline profile={:?} (active pointer recorded; engine not running)",
+                generated.profile_id
+            ),
+        );
+        return ok_data(data);
+    };
     apply_dns_overlay(req.dns.as_ref())?;
     let snapshot = rules::reload(
         &inst.data_dir,
@@ -1076,6 +1184,7 @@ fn config_apply_arm(
     )?;
     let (map, mut warnings) = config::build_registry(&generated.raw, selector_store(&inst).as_ref());
     warnings.extend(generated.warnings.iter().cloned());
+    log_registry_groups(&generated, &map, &warnings);
     nodes::install_proxies(&tunnel, map);
     emit_json(
         inst.id,
@@ -3645,7 +3754,10 @@ rules:
         assert_eq!(code, ABI_OK, "config.apply: {}", String::from_utf8_lossy(&out));
         let applied: serde_json::Value = serde_json::from_slice(&out).unwrap();
         assert_eq!(applied["data"]["applied"], true);
-        assert_eq!(applied["data"]["rules"], 2);
+        // The overlay is merged with the authored CN-direct block before the
+        // terminal. In the throwaway test dir there is no geosite asset, so every
+        // rendered line compiles except `GEOSITE,cn` (15 lines -> 14 entries).
+        assert_eq!(applied["data"]["rules"], 14);
         assert_eq!(applied["data"]["proxies"], 2);
         assert_eq!(tun::running_count(), 1, "hot reload keeps the same loop");
         let events = take_events();
@@ -3653,6 +3765,241 @@ rules:
             events.iter().any(|(t, _)| t == "proxy.config.applied"),
             "proxy.config.applied must fire; got {events:?}"
         );
+
+        let (code, out) = call_json(call, inst, "core.stop");
+        assert_eq!(code, ABI_OK, "core.stop: {}", String::from_utf8_lossy(&out));
+        assert_eq!(tun::running_count(), 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(destroy(inst), ABI_OK);
+    }
+
+    /// Offline `config.apply` regression: with the engine stopped, applying an
+    /// explicit profile must not 422 — it records the active pointer and returns
+    /// `applied:false`, so the offline `node.select` path resolves the newly
+    /// active profile instead of the previously-active one.
+    #[test]
+    fn abi_config_apply_offline_records_active_profile() {
+        let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::rules::reset_for_tests();
+        let api = register_api();
+        let create = api.create.unwrap();
+        let call = api.call.unwrap();
+        let destroy = api.destroy.unwrap();
+
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("gstore-offline-apply-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = serde_json::to_vec(&serde_json::json!({
+            "data_dir": dir.display().to_string(),
+            "cache_dir": dir.display().to_string(),
+        }))
+        .unwrap();
+        let mut inst: u64 = 0;
+        assert_eq!(create(config.as_ptr(), config.len(), &mut inst), ABI_OK);
+        let _ = take_events();
+
+        let yaml_p1 = r#"
+proxies:
+  - {name: a1, type: ss, server: 127.0.0.1, port: 1, cipher: aes-128-gcm, password: pw}
+proxy-groups:
+  - {name: OFFLINE_APPLY_GRP, type: select, proxies: [a1]}
+rules:
+  - MATCH,OFFLINE_APPLY_GRP
+"#;
+        let yaml_p2 = r#"
+proxies:
+  - {name: b2, type: ss, server: 127.0.0.1, port: 1, cipher: aes-128-gcm, password: pw}
+proxy-groups:
+  - {name: OFFLINE_APPLY_GRP, type: select, proxies: [b2]}
+rules:
+  - MATCH,OFFLINE_APPLY_GRP
+"#;
+        for (yaml, id) in [(yaml_p1, "p1"), (yaml_p2, "p2")] {
+            let import =
+                serde_json::json!({"text": yaml, "name": id}).to_string();
+            let (code, out) =
+                call_with_payload(call, inst, "profile.import_text", import.as_bytes());
+            assert_eq!(code, ABI_OK, "import_text: {}", String::from_utf8_lossy(&out));
+            let imported: serde_json::Value = serde_json::from_slice(&out).unwrap();
+            let create_payload =
+                serde_json::json!({"profile": imported["data"].clone()}).to_string();
+            let (code, out) =
+                call_with_payload(call, inst, "profile.create", create_payload.as_bytes());
+            assert_eq!(code, ABI_OK, "profile.create: {}", String::from_utf8_lossy(&out));
+            let created: serde_json::Value = serde_json::from_slice(&out).unwrap();
+            assert_eq!(created["data"]["id"], id);
+        }
+
+        // Negative control: no active pointer yet, so empty generate picks the
+        // first profile (p1).
+        let (code, out) = call_json(call, inst, "config.generate");
+        assert_eq!(code, ABI_OK, "config.generate: {}", String::from_utf8_lossy(&out));
+        let generated: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(generated["data"]["profileId"], "p1");
+
+        // Negative control: b2 belongs to p2, not p1 — offline select must 404.
+        let (code, out) = call_with_payload(
+            call,
+            inst,
+            "node.select",
+            br#"{"group":"OFFLINE_APPLY_GRP","node":"b2"}"#,
+        );
+        assert_eq!(code, ABI_ERR_DETAIL);
+        let err: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(err["code"], "PROXY_NODE_NOT_FOUND");
+
+        // Offline apply: no 422, records p2, reports applied:false.
+        let (code, out) =
+            call_with_payload(call, inst, "config.apply", br#"{"profileId":"p2"}"#);
+        assert_eq!(code, ABI_OK, "offline config.apply: {}", String::from_utf8_lossy(&out));
+        let applied: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(applied["data"]["applied"], false);
+        assert_eq!(applied["data"]["profileId"], "p2");
+
+        // The active pointer is now persisted for the offline resolver.
+        let (code, out) = call_json(call, inst, "config.generate");
+        assert_eq!(code, ABI_OK);
+        let generated: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(generated["data"]["profileId"], "p2");
+
+        // Positive proof: offline select now resolves the newly-active profile.
+        let (code, out) = call_with_payload(
+            call,
+            inst,
+            "node.select",
+            br#"{"group":"OFFLINE_APPLY_GRP","node":"b2"}"#,
+        );
+        assert_eq!(code, ABI_OK, "node.select: {}", String::from_utf8_lossy(&out));
+        let selected: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(selected["data"]["active"], "b2");
+
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(destroy(inst), ABI_OK);
+    }
+
+    /// Todo 29 (T5) online reconcile E2E: a stored profile gains a selectable
+    /// group while the engine keeps running with a stale registry. The
+    /// `config.apply` reconcile must hot-install the group without a restart,
+    /// and the negative control proves `node.select` reports
+    /// `PROXY_NODE_NOT_FOUND` (404) before the reconcile.
+    #[test]
+    fn abi_config_apply_reconciles_group_online_without_restart() {
+        use std::os::unix::net::UnixStream;
+        let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::rules::reset_for_tests();
+        let api = register_api();
+        let create = api.create.unwrap();
+        let call = api.call.unwrap();
+        let destroy = api.destroy.unwrap();
+
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("gstore-reconcile-abi-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let data_dir = dir.display().to_string();
+        let config = serde_json::to_vec(&serde_json::json!({
+            "data_dir": data_dir,
+            "cache_dir": data_dir,
+        }))
+        .unwrap();
+        let mut inst: u64 = 0;
+        assert_eq!(create(config.as_ptr(), config.len(), &mut inst), ABI_OK);
+        let _ = take_events();
+
+        let old_yaml = r#"
+proxies:
+  - {name: t1, type: ss, server: 1.1.1.1, port: 8388, cipher: aes-256-gcm, password: pw}
+proxy-groups:
+  - {name: PROXY, type: select, proxies: [t1]}
+rules:
+  - MATCH,PROXY
+"#;
+        let import = serde_json::json!({"text": old_yaml, "name": "Old"}).to_string();
+        let (code, out) = call_with_payload(call, inst, "profile.import_text", import.as_bytes());
+        assert_eq!(code, ABI_OK, "import_text: {}", String::from_utf8_lossy(&out));
+        let old_profile = serde_json::from_slice::<serde_json::Value>(&out).unwrap()["data"].clone();
+        let create_payload = serde_json::json!({"id": "p1", "profile": old_profile}).to_string();
+        let (code, out) = call_with_payload(call, inst, "profile.create", create_payload.as_bytes());
+        assert_eq!(code, ABI_OK, "profile.create: {}", String::from_utf8_lossy(&out));
+
+        let (loop_end, _peer) = UnixStream::pair().unwrap();
+        let fd_payload = format!(r#"{{"fd":{}}}"#, std::os::fd::AsRawFd::as_raw_fd(&loop_end));
+        let (code, out) = call_with_payload(call, inst, "tun.set_fd", fd_payload.as_bytes());
+        assert_eq!(code, ABI_OK, "tun.set_fd: {}", String::from_utf8_lossy(&out));
+        let (code, out) = call_with_payload(
+            call,
+            inst,
+            "core.start",
+            br#"{"mode":"vpn","profileId":"p1"}"#,
+        );
+        assert_eq!(code, ABI_OK, "core.start: {}", String::from_utf8_lossy(&out));
+        let started: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(started["data"]["state"], "running");
+        assert_eq!(started["data"]["proxies"], 1);
+
+        let listed = crate::nodes::list(&data_dir, &data_dir).unwrap();
+        assert!(
+            !listed["groups"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|g| g["name"] == "节点选择"),
+            "precondition: the running registry must lack 节点选择: {listed}"
+        );
+
+        let select_payload =
+            serde_json::json!({"group": "节点选择", "node": "t1"}).to_string();
+        let (code, out) =
+            call_with_payload(call, inst, "node.select", select_payload.as_bytes());
+        assert_eq!(code, ABI_ERR_DETAIL, "stale registry must reject the group");
+        let stale: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(stale["code"], "PROXY_NODE_NOT_FOUND");
+        assert_eq!(stale["status"], 404);
+
+        let new_yaml = r#"
+proxies:
+  - {name: t1, type: ss, server: 1.1.1.1, port: 8388, cipher: aes-256-gcm, password: pw}
+proxy-groups:
+  - {name: 坏组, type: select, proxies: [ghost]}
+  - {name: 节点选择, type: select, proxies: [t1, 坏组]}
+rules:
+  - MATCH,节点选择
+"#;
+        let import = serde_json::json!({"text": new_yaml, "name": "New"}).to_string();
+        let (code, out) = call_with_payload(call, inst, "profile.import_text", import.as_bytes());
+        assert_eq!(code, ABI_OK, "import_text: {}", String::from_utf8_lossy(&out));
+        let new_profile = serde_json::from_slice::<serde_json::Value>(&out).unwrap()["data"].clone();
+        let update_payload = serde_json::json!({"id": "p1", "profile": new_profile}).to_string();
+        let (code, out) = call_with_payload(call, inst, "profile.update", update_payload.as_bytes());
+        assert_eq!(code, ABI_OK, "profile.update: {}", String::from_utf8_lossy(&out));
+
+        let (code, out) = call_with_payload(call, inst, "config.apply", br#"{"profileId":"p1"}"#);
+        assert_eq!(code, ABI_OK, "config.apply: {}", String::from_utf8_lossy(&out));
+        assert_eq!(tun::running_count(), 1, "reconcile must keep the same loop");
+
+        let listed = crate::nodes::list(&data_dir, &data_dir).unwrap();
+        assert!(
+            listed["groups"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|g| g["name"] == "节点选择"),
+            "reconcile must hot-install 节点选择: {listed}"
+        );
+
+        let select_payload =
+            serde_json::json!({"group": "节点选择", "node": "t1"}).to_string();
+        let (data, selection) =
+            crate::nodes::select(select_payload.as_bytes(), &data_dir, &data_dir)
+                .expect("post-reconcile select must succeed");
+        assert_eq!(data["active"], "t1");
+        assert_eq!(selection.active, "t1");
 
         let (code, out) = call_json(call, inst, "core.stop");
         assert_eq!(code, ABI_OK, "core.stop: {}", String::from_utf8_lossy(&out));

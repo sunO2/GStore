@@ -711,6 +711,16 @@ class AppSegmentedButton<T> extends StatelessWidget {
   /// 紧凑度（如 AppBar 内使用 [VisualDensity.compact]；null = 保持默认外观）
   final VisualDensity? density;
 
+  /// 标题同行药丸的**统一中等尺寸**令牌（路由模式 / 应用分流共用）。
+  ///
+  /// 取 [VisualDensity] 的中等档（-2，介于紧凑下限 -4 与 Material 默认 0 之间），
+  /// 使药丸与标题同排的同时保持清晰可点的触控尺寸；
+  /// 两处调用点必须引用本常量，避免各自散落魔法密度值。
+  static const VisualDensity mediumDensity = VisualDensity(
+    horizontal: -2,
+    vertical: -2,
+  );
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);

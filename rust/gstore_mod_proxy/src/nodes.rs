@@ -24,8 +24,9 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use gstore_contract::error::{ModuleError, StatusCode};
+use futures::StreamExt;
 use meow_common::Proxy;
-use meow_proxy::health::{probe_many_bounded_detailed, NamedProbeResult, UrlTestError};
+use meow_proxy::health::{probe_and_record, NamedProbeResult, UrlTestError};
 use meow_proxy::SelectorStore;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -45,8 +46,8 @@ const MIN_TIMEOUT_MS: u64 = 100;
 const MAX_TIMEOUT_MS: u64 = 120_000;
 /// Meow's group default is 16; a phone firing 16 concurrent TLS handshakes
 /// starves its own uplink/CPU and manufactures false timeouts on a large
-/// subscription, so probe at 8.
-const DELAY_PROBE_CONCURRENCY: usize = 8;
+/// subscription, so probe a queue of exactly 5 at a time.
+const DELAY_PROBE_CONCURRENCY: usize = 5;
 
 /// Off-tunnel-loop runtime for delay probes and async selection. Built once with
 /// the crate's bounded shape; never the tunnel loop's runtime, so a slow probe
@@ -141,6 +142,14 @@ pub(crate) fn select(
             "node.select requires non-empty `group` and `node`",
         ));
     }
+
+    // Serialize resolve+set with the single mode/lifecycle lane: `core.*` /
+    // `config.apply` / `lan.set` hold it while they swap the whole proxy
+    // registry. Without it, select can resolve a group from the old registry and
+    // then `set` on that stale `Arc` after the swap (choice lost, or a group only
+    // present in the newer registry 404s). Re-entrancy safe: `select` is only
+    // reached from the `node.select` dispatch arm, which holds no lane.
+    let _lane = crate::mode::lane();
 
     match crate::rules::active_tunnel() {
         Some(tunnel) => apply_selection(|group| tunnel.proxy(group), req),
@@ -353,18 +362,30 @@ where
     })
 }
 
-/// Run the probes on the off-loop runtime. Pure: no events, no tunnel mutation.
-pub(crate) fn run_delay(
+/// Probe every target with a sliding window of [`DELAY_PROBE_CONCURRENCY`]
+/// in-flight probes, calling `on_probe` the moment each probe completes
+/// (completion order) and returning every result once the window drains.
+///
+/// This is a streaming counterpart to meow's collect-all probe helper: the
+/// callback lets `delay_test_arm` forward each node's `proxy.node.delay` event
+/// immediately instead of bursting them all at the end. The per-probe work
+/// (dial -> TLS -> GET, `ProxyHealth` recording, the global probe semaphore) is
+/// still meow's `probe_and_record`, so success/error semantics are unchanged.
+fn probe_delay_streaming<F>(
     targets: Vec<(String, Arc<dyn Proxy>)>,
     url: &str,
     expected: Option<&str>,
     timeout: Duration,
-) -> Vec<NamedProbeResult> {
+    mut on_probe: F,
+) -> Vec<NamedProbeResult>
+where
+    F: FnMut(&NamedProbeResult),
+{
     let rt = match ops_runtime() {
         Ok(rt) => rt,
         Err(e) => {
             log_message(format!("proxy: node.delay_test runtime unavailable: {e}"));
-            return targets
+            let results: Vec<NamedProbeResult> = targets
                 .into_iter()
                 .map(|(name, _)| NamedProbeResult {
                     name,
@@ -372,15 +393,44 @@ pub(crate) fn run_delay(
                     error: Some(UrlTestError::Transport("runtime unavailable".to_string())),
                 })
                 .collect();
+            for result in &results {
+                on_probe(result);
+            }
+            return results;
         }
     };
-    rt.block_on(probe_many_bounded_detailed(
-        targets,
-        url,
-        expected,
-        timeout,
-        DELAY_PROBE_CONCURRENCY,
-    ))
+    let url = Arc::<str>::from(url.to_owned());
+    let expected = expected.map(Arc::<str>::from);
+    let concurrency = DELAY_PROBE_CONCURRENCY.max(1);
+
+    rt.block_on(async move {
+        let mut pending = futures::stream::iter(targets.into_iter().map(|(name, proxy)| {
+            let url = Arc::clone(&url);
+            let expected = expected.clone();
+            async move {
+                match probe_and_record(&proxy, url.as_ref(), expected.as_deref(), timeout).await {
+                    Ok(delay) => NamedProbeResult {
+                        name,
+                        delay,
+                        error: None,
+                    },
+                    Err(error) => NamedProbeResult {
+                        name,
+                        delay: 0,
+                        error: Some(error),
+                    },
+                }
+            }
+        }))
+        .buffer_unordered(concurrency);
+
+        let mut results = Vec::new();
+        while let Some(result) = pending.next().await {
+            on_probe(&result);
+            results.push(result);
+        }
+        results
+    })
 }
 
 fn error_label(error: Option<&UrlTestError>) -> Option<String> {
@@ -388,6 +438,21 @@ fn error_label(error: Option<&UrlTestError>) -> Option<String> {
         None => None,
         Some(UrlTestError::Timeout) => Some("timeout".to_string()),
         Some(UrlTestError::Transport(m)) => Some(m.clone()),
+    }
+}
+
+/// Emit one `proxy.node.delay` event for a probe result. Field names are the
+/// frozen wire contract: `{group,node,delayMs,error?}`.
+fn emit_delay_event(instance_id: u64, group: Option<&str>, result: &NamedProbeResult) {
+    let error = error_label(result.error.as_ref());
+    let event = json!({
+        "group": group.unwrap_or_default(),
+        "node": result.name.as_str(),
+        "delayMs": if error.is_none() { result.delay as u64 } else { 0 },
+        "error": error,
+    });
+    if let Ok(bytes) = serde_json::to_vec(&event) {
+        crate::emit_event(instance_id, EVT_NODE_DELAY, &bytes);
     }
 }
 
@@ -422,8 +487,8 @@ pub(crate) fn delay_test_arm(
     // Probing only needs an outbound dial through the node, never a TUN, so fall
     // back to the offline registry when the engine is stopped (mirrors
     // `select_offline`).
-    let (resolved, offline) = match crate::rules::active_tunnel() {
-        Some(tunnel) => (resolve_targets(|name| tunnel.proxy(name), &req)?, false),
+    let (resolved, offline, profile_id) = match crate::rules::active_tunnel() {
+        Some(tunnel) => (resolve_targets(|name| tunnel.proxy(name), &req)?, false, None),
         None => {
             let store = if data_dir.trim().is_empty() {
                 None
@@ -442,11 +507,13 @@ pub(crate) fn delay_test_arm(
                     "no profile is stored; import a profile before selecting nodes",
                 )
             })?;
+            let profile_id = generated.profile_id.clone();
             let (proxies, _warnings) =
                 crate::config::build_registry(&generated.raw, store.as_ref());
             (
                 resolve_targets(|name| proxies.get(name).cloned(), &req)?,
                 true,
+                profile_id,
             )
         }
     };
@@ -464,11 +531,13 @@ pub(crate) fn delay_test_arm(
             ProbeTarget::Missing => None,
         })
         .collect();
-    let mut probed: HashMap<String, NamedProbeResult> = run_delay(
+    let group_for_event = group_label.as_deref();
+    let mut probed: HashMap<String, NamedProbeResult> = probe_delay_streaming(
         probes,
         &url,
         expected.as_deref(),
         Duration::from_millis(timeout_ms),
+        |result| emit_delay_event(instance_id, group_for_event, result),
     )
     .into_iter()
     .map(|r| (r.name.clone(), r))
@@ -482,22 +551,17 @@ pub(crate) fn delay_test_arm(
                 delay: 0,
                 error: Some(UrlTestError::Transport("probe did not complete".to_string())),
             }),
-            ProbeTarget::Missing => NamedProbeResult {
-                name: name.clone(),
-                delay: 0,
-                error: Some(UrlTestError::Transport("not found".to_string())),
-            },
+            ProbeTarget::Missing => {
+                let result = NamedProbeResult {
+                    name: name.clone(),
+                    delay: 0,
+                    error: Some(UrlTestError::Transport("not found".to_string())),
+                };
+                emit_delay_event(instance_id, group_for_event, &result);
+                result
+            }
         };
         let error = error_label(result.error.as_ref());
-        let event = json!({
-            "group": group_label.clone().unwrap_or_default(),
-            "node": result.name,
-            "delayMs": if error.is_none() { result.delay as u64 } else { 0 },
-            "error": error,
-        });
-        if let Ok(bytes) = serde_json::to_vec(&event) {
-            crate::emit_event(instance_id, EVT_NODE_DELAY, &bytes);
-        }
         out.push(json!({
             "node": result.name,
             "delayMs": if error.is_none() { result.delay as u64 } else { 0 },
@@ -506,9 +570,10 @@ pub(crate) fn delay_test_arm(
         }));
     }
     log_message(format!(
-        "proxy: node.delay_test url={url} timeoutMs={timeout_ms} nodes={} path={}",
+        "proxy: node.delay_test url={url} timeoutMs={timeout_ms} nodes={} path={} profile={}",
         out.len(),
-        if offline { "offline" } else { "online" }
+        if offline { "offline" } else { "online" },
+        profile_id.as_deref().unwrap_or("-")
     ));
     crate::ok_data(json!({
         "results": out,
@@ -654,30 +719,41 @@ pub(crate) mod tests {
 
     use crate::TEST_SERIAL as SERIAL;
 
+    /// In-flight probe counter shared by every `StubProxy`, plus its high-water
+    /// mark. Each proxy dials once, so only a global counter can observe the
+    /// pool's width. Reset by the pool-bound test before it measures.
+    static PROBE_INFLIGHT: AtomicU32 = AtomicU32::new(0);
+    static PROBE_MAX_INFLIGHT: AtomicU32 = AtomicU32::new(0);
+
     /// Stub outbound: optionally records dials, optionally hangs forever (to
     /// exercise the delay-test timeout path without touching the network).
     pub(crate) struct StubProxy {
         name: String,
         health: ProxyHealth,
         hangs: bool,
+        hold: Option<Duration>,
         dials: Mutex<Vec<String>>,
     }
 
     impl StubProxy {
         pub(crate) fn new(name: &str) -> Arc<StubProxy> {
-            Arc::new(Self {
-                name: name.to_string(),
-                health: ProxyHealth::new(),
-                hangs: false,
-                dials: Mutex::new(Vec::new()),
-            })
+            Self::build(name, false, None)
         }
 
         pub(crate) fn hanging(name: &str) -> Arc<StubProxy> {
+            Self::build(name, true, None)
+        }
+
+        pub(crate) fn with_delay(name: &str, hold: Duration) -> Arc<StubProxy> {
+            Self::build(name, false, Some(hold))
+        }
+
+        fn build(name: &str, hangs: bool, hold: Option<Duration>) -> Arc<StubProxy> {
             Arc::new(Self {
                 name: name.to_string(),
                 health: ProxyHealth::new(),
-                hangs: true,
+                hangs,
+                hold,
                 dials: Mutex::new(Vec::new()),
             })
         }
@@ -699,9 +775,15 @@ pub(crate) mod tests {
         }
         async fn dial_tcp(&self, metadata: &Metadata) -> MeowResult<Box<dyn ProxyConn>> {
             self.dials.lock().unwrap_or_else(|e| e.into_inner()).push(metadata.rule_host().to_string());
+            let inflight = PROBE_INFLIGHT.fetch_add(1, Ordering::SeqCst) + 1;
+            PROBE_MAX_INFLIGHT.fetch_max(inflight, Ordering::SeqCst);
+            if let Some(hold) = self.hold {
+                tokio::time::sleep(hold).await;
+            }
             if self.hangs {
                 std::future::pending::<()>().await;
             }
+            PROBE_INFLIGHT.fetch_sub(1, Ordering::SeqCst);
             Err(MeowError::NotSupported("stub".into()))
         }
         async fn dial_udp(&self, _metadata: &Metadata) -> MeowResult<Box<dyn ProxyPacketConn>> {
@@ -817,6 +899,100 @@ pub(crate) mod tests {
         crate::rules::reset_for_tests();
     }
 
+    /// Concurrency QA: `node.select` and a registry swap are serialized on the
+    /// single mode lane, so a select can never resolve against the pre-swap
+    /// registry and land its `set` on a stale group. The swapper thread takes the
+    /// lane and holds it while a select is started; the select must park on the
+    /// lane (proven by it not completing) instead of resolving the old group, and
+    /// once the swap is applied and the lane released, it must succeed against
+    /// the fresh registry. The old group stays untouched.
+    #[test]
+    fn select_serializes_with_registry_swap_on_lane() {
+        use std::sync::mpsc;
+
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        crate::rules::reset_for_tests();
+        let _ = crate::dispatch::build_engine(empty_resolver());
+        let tunnel = crate::rules::active_tunnel().unwrap();
+
+        // v1: the registry a racing select must NOT be allowed to resolve from.
+        let store = SelectorStore::open(tmp_dir("swap-lane").join("selector.json"));
+        let a1 = StubProxy::new("A");
+        let b1 = StubProxy::new("B");
+        let old_group = selector_group("G", &[&a1, &b1], &store);
+        let mut old_map: HashMap<smol_str::SmolStr, Arc<dyn Proxy>> = HashMap::new();
+        old_map.insert(smol_str::SmolStr::from("G"), Arc::clone(&old_group));
+        old_map.insert(smol_str::SmolStr::from("A"), Arc::clone(&a1) as Arc<dyn Proxy>);
+        old_map.insert(smol_str::SmolStr::from("B"), Arc::clone(&b1) as Arc<dyn Proxy>);
+        tunnel.update_proxies(old_map);
+        assert_eq!(old_group.current().as_deref(), Some("A"));
+
+        // v2: a fresh registry with brand-new group/leaf objects (default "A").
+        let a2 = StubProxy::new("A");
+        let b2 = StubProxy::new("B");
+        let new_group = selector_group("G", &[&a2, &b2], &store);
+        let mut new_map: HashMap<smol_str::SmolStr, Arc<dyn Proxy>> = HashMap::new();
+        new_map.insert(smol_str::SmolStr::from("G"), Arc::clone(&new_group));
+        new_map.insert(smol_str::SmolStr::from("A"), Arc::clone(&a2) as Arc<dyn Proxy>);
+        new_map.insert(smol_str::SmolStr::from("B"), Arc::clone(&b2) as Arc<dyn Proxy>);
+
+        let (lane_held_tx, lane_held_rx) = mpsc::channel();
+        let (swap_done_tx, swap_done_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+
+        // The `config.apply` side: take the lane, then swap the registry while it
+        // is still held (until main confirms the select is parked on the lane).
+        let swapper_tunnel = Arc::clone(&tunnel);
+        let swapper = std::thread::spawn(move || {
+            let _lane = crate::mode::lane();
+            lane_held_tx.send(()).unwrap();
+            let _ = release_rx.recv_timeout(Duration::from_secs(5));
+            swapper_tunnel.update_proxies(new_map);
+            swap_done_tx.send(()).unwrap();
+        });
+        lane_held_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("swapper grabbed the lane");
+
+        // The user side: `node.select` must park on the lane, not resolve v1.
+        let (sel_tx, sel_rx) = mpsc::channel();
+        let selector = std::thread::spawn(move || {
+            let req = serde_json::to_vec(&json!({ "group": "G", "node": "B" })).unwrap();
+            sel_tx.send(select(&req, "", "")).unwrap();
+        });
+        assert!(
+            sel_rx.recv_timeout(Duration::from_millis(300)).is_err(),
+            "select must wait for the lane, not resolve the pre-swap registry"
+        );
+
+        release_tx.send(()).expect("release the swapper");
+        swap_done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("registry swap completed");
+
+        let (data, selection) = sel_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("select completed after the swap")
+            .expect("select must succeed against the post-swap registry");
+        assert_eq!(data["ok"], true);
+        assert_eq!(data["active"], "B");
+        assert_eq!(selection.active, "B");
+        assert_eq!(
+            new_group.current().as_deref(),
+            Some("B"),
+            "post-swap registry group must carry the selection"
+        );
+        assert_eq!(
+            old_group.current().as_deref(),
+            Some("A"),
+            "the stale pre-swap group must be untouched"
+        );
+
+        selector.join().unwrap();
+        swapper.join().unwrap();
+        crate::rules::reset_for_tests();
+    }
+
     /// Selection persists across a reload: a group rebuilt from the same store
     /// (meow's persistence side-channel) restores the prior pick.
     #[test]
@@ -862,11 +1038,12 @@ pub(crate) mod tests {
             ("A".to_string(), StubProxy::hanging("A") as Arc<dyn Proxy>),
             ("B".to_string(), StubProxy::hanging("B") as Arc<dyn Proxy>),
         ];
-        let results = run_delay(
+        let results = probe_delay_streaming(
             targets,
             "http://127.0.0.1:1/",
             None,
             Duration::from_millis(100),
+            |_| {},
         );
         assert_eq!(results.len(), 2, "one result per node");
         for r in &results {
@@ -888,15 +1065,98 @@ pub(crate) mod tests {
         for _ in 0..3 {
             let targets: Vec<(String, Arc<dyn Proxy>)> =
                 vec![("A".to_string(), StubProxy::hanging("A") as Arc<dyn Proxy>)];
-            let results = run_delay(
+            let results = probe_delay_streaming(
                 targets,
                 "http://127.0.0.1:1/",
                 None,
                 Duration::from_millis(50),
+                |_| {},
             );
             assert_eq!(results.len(), 1);
             assert!(matches!(results[0].error, Some(UrlTestError::Timeout)));
         }
+    }
+
+    /// Incremental-emission QA: a slow probe must not hold back the events of
+    /// faster probes — every result is delivered to the callback as it
+    /// completes, long before the whole batch returns.
+    #[test]
+    fn delay_probe_emits_each_result_as_it_completes() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let start = std::time::Instant::now();
+        let targets: Vec<(String, Arc<dyn Proxy>)> = vec![
+            (
+                "slow".to_string(),
+                StubProxy::with_delay("slow", Duration::from_millis(300)) as Arc<dyn Proxy>,
+            ),
+            (
+                "fast-1".to_string(),
+                StubProxy::with_delay("fast-1", Duration::from_millis(0)) as Arc<dyn Proxy>,
+            ),
+            (
+                "fast-2".to_string(),
+                StubProxy::with_delay("fast-2", Duration::from_millis(0)) as Arc<dyn Proxy>,
+            ),
+            (
+                "fast-3".to_string(),
+                StubProxy::with_delay("fast-3", Duration::from_millis(0)) as Arc<dyn Proxy>,
+            ),
+            (
+                "fast-4".to_string(),
+                StubProxy::with_delay("fast-4", Duration::from_millis(0)) as Arc<dyn Proxy>,
+            ),
+        ];
+        let mut emitted: Vec<(String, Duration)> = Vec::new();
+        let results = probe_delay_streaming(
+            targets,
+            "http://127.0.0.1:1/",
+            None,
+            Duration::from_secs(5),
+            |r| emitted.push((r.name.clone(), start.elapsed())),
+        );
+        let batch_done = start.elapsed();
+
+        assert_eq!(results.len(), 5);
+        assert_eq!(emitted.len(), 5, "one event per completed probe");
+        let first_event = emitted.first().expect("at least one event").1;
+        assert!(
+            first_event + Duration::from_millis(100) < batch_done,
+            "first event must fire well before the batch returns: first={first_event:?} batch={batch_done:?}"
+        );
+        assert_eq!(
+            emitted.last().map(|(name, _)| name.as_str()),
+            Some("slow"),
+            "the slow probe must complete (and emit) last: {emitted:?}"
+        );
+    }
+
+    /// Pool-bound QA: at most [`DELAY_PROBE_CONCURRENCY`] probes are ever in
+    /// flight at once, no matter how many targets are queued.
+    #[test]
+    fn delay_probe_bounds_inflight_probes_to_five() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        PROBE_INFLIGHT.store(0, Ordering::SeqCst);
+        PROBE_MAX_INFLIGHT.store(0, Ordering::SeqCst);
+        let nodes: Vec<Arc<StubProxy>> = (0..12)
+            .map(|i| StubProxy::with_delay(&format!("n{i}"), Duration::from_millis(50)))
+            .collect();
+        let targets: Vec<(String, Arc<dyn Proxy>)> = nodes
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (format!("n{i}"), Arc::clone(p) as Arc<dyn Proxy>))
+            .collect();
+
+        let results = probe_delay_streaming(
+            targets,
+            "http://127.0.0.1:1/",
+            None,
+            Duration::from_secs(5),
+            |_| {},
+        );
+        assert_eq!(results.len(), 12);
+        assert_eq!(DELAY_PROBE_CONCURRENCY, 5, "the queue width is exactly 5");
+        let peak = PROBE_MAX_INFLIGHT.load(Ordering::SeqCst);
+        assert_eq!(peak, 5, "exactly 5 probes run concurrently at peak");
     }
 
     /// Build a live engine and install a `name -> proxy` map, the online path.
@@ -1002,6 +1262,35 @@ pub(crate) mod tests {
         crate::rules::reset_for_tests();
     }
 
+    /// Regression: the offline `node.delay_test` path must resolve against the
+    /// persisted active profile, not the earliest-imported one.
+    #[test]
+    fn offline_delay_test_uses_active_profile_not_first() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        crate::rules::reset_for_tests();
+        assert!(
+            crate::rules::active_tunnel().is_none(),
+            "precondition: engine must be stopped"
+        );
+
+        let data_dir = profile_dir_with_active("offline-active-delay");
+
+        let payload = br#"{"node":"new-node","timeoutMs":100,"url":"http://127.0.0.1:1/"}"#;
+        let out = delay_test_arm(0, payload, &data_dir, &data_dir)
+            .expect("the active profile's node must resolve offline");
+        let v: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["results"][0]["node"], "new-node");
+
+        let payload = br#"{"node":"old-node","timeoutMs":100,"url":"http://127.0.0.1:1/"}"#;
+        let err = delay_test_arm(0, payload, &data_dir, &data_dir).unwrap_err();
+        assert_eq!(
+            err.code, ERR_NODE_NOT_FOUND,
+            "the first profile's node must not resolve once a later profile is active"
+        );
+
+        crate::rules::reset_for_tests();
+    }
+
     /// An omitted `timeoutMs` resolves to the 10s default.
     #[test]
     fn delay_test_default_timeout_is_ten_seconds() {
@@ -1081,12 +1370,14 @@ pub(crate) mod tests {
     fn profile_dir(tag: &str, groups: Vec<crate::subscription::ProxyGroup>) -> String {
         let dir = tmp_dir(tag);
         let store = crate::profile::ProfileStore::open(&dir.display().to_string()).unwrap();
+        let has_proxy_groups = !groups.is_empty();
         let profile = crate::subscription::ImportedProfile {
             name: "Offline".to_string(),
             format: "clash".to_string(),
             node_count: 2,
             nodes: vec![offline_node("node-a", 0), offline_node("node-b", 1)],
             groups,
+            has_proxy_groups,
             rules: Vec::new(),
             userinfo: None,
             source: crate::subscription::ImportSource::default(),
@@ -1095,6 +1386,35 @@ pub(crate) mod tests {
         let payload = serde_json::to_vec(&json!({ "profile": &profile })).unwrap();
         store.create(&payload).unwrap();
         dir.display().to_string()
+    }
+
+    /// Persist two one-node profiles (`old-node` first, `new-node` later) and
+    /// mark the later one active, returning its data dir. The later profile is
+    /// deliberately NOT the first, so only the active pointer can select it.
+    fn profile_dir_with_active(tag: &str) -> String {
+        let dir = tmp_dir(tag);
+        let data_dir = dir.display().to_string();
+        let store = crate::profile::ProfileStore::open(&data_dir).unwrap();
+        let create = |node: &str| {
+            let profile = crate::subscription::ImportedProfile {
+                name: format!("Profile-{node}"),
+                format: "clash".to_string(),
+                node_count: 1,
+                nodes: vec![offline_node(node, 0)],
+                groups: Vec::new(),
+                has_proxy_groups: false,
+                rules: Vec::new(),
+                userinfo: None,
+                source: crate::subscription::ImportSource::default(),
+                warnings: Vec::new(),
+            };
+            let payload = serde_json::to_vec(&json!({ "profile": &profile })).unwrap();
+            store.create(&payload).unwrap().id
+        };
+        create("old-node");
+        let active = create("new-node");
+        store.write_active_profile_id(&active);
+        data_dir
     }
 
     /// Offline happy QA: with no active tunnel, `node.select` still succeeds,

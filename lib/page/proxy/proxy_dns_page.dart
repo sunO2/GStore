@@ -205,6 +205,16 @@ class _ProxyDnsPageState extends State<ProxyDnsPage> {
                   if (config.fakeIpRangeV6 != null) config.fakeIpRangeV6!,
                 ].join(' / '),
               ),
+            if (config.fakeIpTtlMs != null)
+              _kv(theme, 'fake-IP TTL', '${config.fakeIpTtlMs} ms'),
+            _ListSection(title: 'fake-IP 过滤', values: config.fakeIpFilter),
+            if (config.fakeIpFilterMode != null)
+              _kv(theme, '过滤模式', config.fakeIpFilterMode!),
+            _kv(theme, 'use-hosts', config.useHosts ? '开启' : '关闭'),
+            _kv(theme, 'ipv6', config.ipv6 ? '开启' : '关闭'),
+            _kv(theme, 'hijack', config.hijack ? '开启' : '关闭'),
+            if (config.hosts.isNotEmpty)
+              _kv(theme, 'hosts', '${config.hosts.length} 条'),
           ],
         ),
       ),
@@ -479,6 +489,16 @@ class _DnsFormSheetState extends State<_DnsFormSheet> {
   late final TextEditingController _fallback;
   late final TextEditingController _doh;
   late final TextEditingController _dot;
+  late final TextEditingController _bootstrap;
+  late final TextEditingController _fakeIpRange;
+  late final TextEditingController _fakeIpRangeV6;
+  late final TextEditingController _fakeIpTtl;
+  late final TextEditingController _fakeIpFilter;
+  late final TextEditingController _hosts;
+  late String _filterMode;
+  late bool _useHosts;
+  late bool _ipv6;
+  late bool _hijack;
   bool _saving = false;
 
   @override
@@ -490,6 +510,19 @@ class _DnsFormSheetState extends State<_DnsFormSheet> {
     _fallback = TextEditingController(text: _join(initial?.fallback));
     _doh = TextEditingController(text: _join(initial?.doh));
     _dot = TextEditingController(text: _join(initial?.dot));
+    _bootstrap = TextEditingController(text: _join(initial?.defaultNameservers));
+    _fakeIpRange = TextEditingController(text: initial?.fakeIpRange ?? '');
+    _fakeIpRangeV6 = TextEditingController(text: initial?.fakeIpRangeV6 ?? '');
+    _fakeIpTtl =
+        TextEditingController(text: initial?.fakeIpTtlMs?.toString() ?? '');
+    _fakeIpFilter = TextEditingController(text: _join(initial?.fakeIpFilter));
+    _hosts = TextEditingController(text: _joinHosts(initial?.hosts));
+    _filterMode = initial?.fakeIpFilterMode == 'whitelist'
+        ? 'whitelist'
+        : 'blacklist';
+    _useHosts = initial?.useHosts ?? true;
+    _ipv6 = initial?.ipv6 ?? true;
+    _hijack = initial?.hijack ?? true;
   }
 
   @override
@@ -498,6 +531,12 @@ class _DnsFormSheetState extends State<_DnsFormSheet> {
     _fallback.dispose();
     _doh.dispose();
     _dot.dispose();
+    _bootstrap.dispose();
+    _fakeIpRange.dispose();
+    _fakeIpRangeV6.dispose();
+    _fakeIpTtl.dispose();
+    _fakeIpFilter.dispose();
+    _hosts.dispose();
     super.dispose();
   }
 
@@ -510,16 +549,68 @@ class _DnsFormSheetState extends State<_DnsFormSheet> {
       .where((e) => e.isNotEmpty)
       .toList();
 
+  /// 空文本 → null（可选标量字段的「清空」语义）。
+  static String? _emptyToNull(String raw) {
+    final trimmed = raw.trim();
+    return trimmed.isEmpty ? null : trimmed;
+  }
+
+  /// `hosts` 展示：每行 `domain ip1,ip2`。
+  static String _joinHosts(Map<String, List<String>>? hosts) {
+    if (hosts == null || hosts.isEmpty) return '';
+    return hosts.entries
+        .map((entry) => '${entry.key} ${entry.value.join(',')}')
+        .join('\n');
+  }
+
+  /// `hosts` 解析：每行 `domain ip1,ip2`；空行 / 格式不完整行安全忽略。
+  static Map<String, List<String>> _parseHosts(String raw) {
+    final result = <String, List<String>>{};
+    for (final line in raw.split('\n')) {
+      final trimmed = line.trim();
+      if (trimmed.isEmpty) continue;
+      final parts = trimmed.split(RegExp(r'\s+'));
+      if (parts.length < 2) continue;
+      final domain = parts.first;
+      final ips = parts
+          .sublist(1)
+          .join(',')
+          .split(',')
+          .map((e) => e.trim())
+          .where((e) => e.isNotEmpty)
+          .toList();
+      if (domain.isEmpty || ips.isEmpty) continue;
+      result[domain] = ips;
+    }
+    return result;
+  }
+
   Future<void> _save() async {
+    final ttlRaw = _fakeIpTtl.text.trim();
+    final ttl = ttlRaw.isEmpty ? null : int.tryParse(ttlRaw);
+    if (ttlRaw.isNotEmpty && ttl == null) {
+      AppDialogs.showError('fake-IP TTL 需为整数（毫秒）', title: '保存失败');
+      return;
+    }
     setState(() => _saving = true);
     try {
-      // 显式提交各列表（含空列表）以保证「清空」语义正确。
+      // 显式提交全部编辑字段（含空列表 / 空 map / null）以保证「清空」语义正确。
       final result = await widget.facade.dnsSet(<String, dynamic>{
         'mode': _mode,
         'nameservers': _parse(_nameservers.text),
         'fallback': _parse(_fallback.text),
         'doh': _parse(_doh.text),
         'dot': _parse(_dot.text),
+        'defaultNameservers': _parse(_bootstrap.text),
+        'fakeIpRange': _emptyToNull(_fakeIpRange.text),
+        'fakeIpRangeV6': _emptyToNull(_fakeIpRangeV6.text),
+        'fakeIpTtlMs': ttl,
+        'fakeIpFilter': _parse(_fakeIpFilter.text),
+        'fakeIpFilterMode': _filterMode,
+        'useHosts': _useHosts,
+        'ipv6': _ipv6,
+        'hijack': _hijack,
+        'hosts': _parseHosts(_hosts.text),
       });
       if (!mounted) return;
       if (!result.ok) {
@@ -562,17 +653,15 @@ class _DnsFormSheetState extends State<_DnsFormSheet> {
         children: [
           Text('解析模式', style: Theme.of(context).textTheme.titleSmall),
           const SizedBox(height: AppSpacing.sm),
-          SegmentedButton<String>(
+          AppSegmentedButton<String>(
+            value: _mode,
+            enabled: !_saving,
             segments: const [
-              ButtonSegment(value: 'fake-ip', label: Text('fake-ip')),
-              ButtonSegment(value: 'redir-host', label: Text('redir-host')),
-              ButtonSegment(value: 'normal', label: Text('normal')),
+              AppSegment(value: 'fake-ip', label: 'fake-ip'),
+              AppSegment(value: 'redir-host', label: 'redir-host'),
+              AppSegment(value: 'normal', label: 'normal'),
             ],
-            selected: {_mode},
-            showSelectedIcon: false,
-            onSelectionChanged: _saving
-                ? null
-                : (selection) => setState(() => _mode = selection.first),
+            onChanged: (value) => setState(() => _mode = value),
           ),
           const SizedBox(height: AppSpacing.lg),
           _BuildField(
@@ -606,7 +695,133 @@ class _DnsFormSheetState extends State<_DnsFormSheet> {
             hint: 'tls://1.1.1.1:853',
             enabled: !_saving,
           ),
+          const SizedBox(height: AppSpacing.md),
+          _BuildField(
+            key: const Key('dns_bootstrap_field'),
+            controller: _bootstrap,
+            label: 'bootstrap',
+            hint: '每行一个，如 223.5.5.5',
+            enabled: !_saving,
+          ),
+          const SizedBox(height: AppSpacing.lg),
+          Text('fake-IP', style: Theme.of(context).textTheme.titleSmall),
+          const SizedBox(height: AppSpacing.sm),
+          _BuildField(
+            key: const Key('dns_fake_ip_range_field'),
+            controller: _fakeIpRange,
+            label: 'fake-IP 范围（IPv4）',
+            hint: '如 198.18.0.0/16（留空清除）',
+            enabled: !_saving,
+          ),
+          const SizedBox(height: AppSpacing.md),
+          _BuildField(
+            key: const Key('dns_fake_ip_range_v6_field'),
+            controller: _fakeIpRangeV6,
+            label: 'fake-IP 范围（IPv6）',
+            hint: '如 fdfe:dcba:9876::/48（留空清除）',
+            enabled: !_saving,
+          ),
+          const SizedBox(height: AppSpacing.md),
+          _BuildField(
+            key: const Key('dns_fake_ip_ttl_field'),
+            controller: _fakeIpTtl,
+            label: 'fake-IP TTL（毫秒）',
+            hint: '留空清除',
+            enabled: !_saving,
+            keyboardType: TextInputType.number,
+          ),
+          const SizedBox(height: AppSpacing.md),
+          _BuildField(
+            key: const Key('dns_fake_ip_filter_field'),
+            controller: _fakeIpFilter,
+            label: 'fake-IP 过滤',
+            hint: '每行一个域名 / 规则',
+            enabled: !_saving,
+          ),
+          const SizedBox(height: AppSpacing.md),
+          Text('过滤模式', style: Theme.of(context).textTheme.titleSmall),
+          const SizedBox(height: AppSpacing.sm),
+          AppSegmentedButton<String>(
+            key: const Key('dns_fake_ip_filter_mode'),
+            value: _filterMode,
+            enabled: !_saving,
+            segments: const [
+              AppSegment(
+                value: 'blacklist',
+                label: 'blacklist',
+                key: Key('dns_fake_ip_filter_mode_blacklist'),
+              ),
+              AppSegment(
+                value: 'whitelist',
+                label: 'whitelist',
+                key: Key('dns_fake_ip_filter_mode_whitelist'),
+              ),
+            ],
+            onChanged: (value) => setState(() => _filterMode = value),
+          ),
+          const SizedBox(height: AppSpacing.lg),
+          Text('开关', style: Theme.of(context).textTheme.titleSmall),
+          const SizedBox(height: AppSpacing.xs),
+          _SwitchField(
+            key: const Key('dns_use_hosts_switch'),
+            label: 'use-hosts',
+            value: _useHosts,
+            enabled: !_saving,
+            onChanged: (value) => setState(() => _useHosts = value),
+          ),
+          _SwitchField(
+            key: const Key('dns_ipv6_switch'),
+            label: 'ipv6',
+            value: _ipv6,
+            enabled: !_saving,
+            onChanged: (value) => setState(() => _ipv6 = value),
+          ),
+          _SwitchField(
+            key: const Key('dns_hijack_switch'),
+            label: 'hijack',
+            value: _hijack,
+            enabled: !_saving,
+            onChanged: (value) => setState(() => _hijack = value),
+          ),
+          const SizedBox(height: AppSpacing.md),
+          _BuildField(
+            key: const Key('dns_hosts_field'),
+            controller: _hosts,
+            label: 'hosts 映射',
+            hint: '每行「域名 ip1,ip2」，如 example.com 1.2.3.4,5.6.7.8',
+            enabled: !_saving,
+            maxLines: 4,
+          ),
         ],
+      ),
+    );
+  }
+}
+
+/// 开关行（统一令牌；测试按 [Key] 点击切换）。
+class _SwitchField extends StatelessWidget {
+  const _SwitchField({
+    super.key,
+    required this.label,
+    required this.value,
+    required this.enabled,
+    required this.onChanged,
+  });
+
+  final String label;
+  final bool value;
+  final bool enabled;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      type: MaterialType.transparency,
+      child: SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        title: Text(label),
+        value: value,
+        onChanged: enabled ? onChanged : null,
       ),
     );
   }
@@ -619,12 +834,16 @@ class _BuildField extends StatelessWidget {
     required this.label,
     required this.hint,
     required this.enabled,
+    this.keyboardType = TextInputType.multiline,
+    this.maxLines = 3,
   });
 
   final TextEditingController controller;
   final String label;
   final String hint;
   final bool enabled;
+  final TextInputType keyboardType;
+  final int maxLines;
 
   @override
   Widget build(BuildContext context) {
@@ -632,8 +851,8 @@ class _BuildField extends StatelessWidget {
       controller: controller,
       enabled: enabled,
       minLines: 1,
-      maxLines: 3,
-      keyboardType: TextInputType.multiline,
+      maxLines: maxLines,
+      keyboardType: keyboardType,
       decoration: InputDecoration(
         labelText: label,
         hintText: hint,

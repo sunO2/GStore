@@ -68,6 +68,11 @@ class ProxyMethods {
   static const String clashApiStop = 'diagnostics.clash_api.stop';
   static const String clashApiStatus = 'diagnostics.clash_api.status';
 
+  // `lan.*`：可选 LAN 入站（API.md §2.12，默认关闭）。
+  static const String lanGet = 'lan.get';
+  static const String lanSet = 'lan.set';
+  static const String lanStatus = 'lan.status';
+
   /// 全部方法名（顺序与 `API.md` §2 一致）。
   static const List<String> all = <String>[
     ping,
@@ -117,6 +122,9 @@ class ProxyMethods {
     clashApiStart,
     clashApiStop,
     clashApiStatus,
+    lanGet,
+    lanSet,
+    lanStatus,
   ];
 }
 
@@ -1338,6 +1346,7 @@ class ImportedProfile {
     this.nodeCount = 0,
     this.nodes = const <ProxyNode>[],
     this.groups = const <ProxyGroup>[],
+    this.hasProxyGroups = true,
     this.userinfo,
     this.source,
     this.warnings = const <String>[],
@@ -1349,6 +1358,9 @@ class ImportedProfile {
         nodeCount: _int(json['nodeCount']),
         nodes: _mapList(json['nodes']).map(ProxyNode.fromJson).toList(),
         groups: _mapList(json['groups']).map(ProxyGroup.fromJson).toList(),
+        hasProxyGroups: json['hasProxyGroups'] == null
+            ? true
+            : _bool(json['hasProxyGroups']),
         userinfo: json['userinfo'] == null
             ? null
             : SubscriptionUserinfo.fromJson(_map(json['userinfo'])),
@@ -1363,6 +1375,7 @@ class ImportedProfile {
   final int nodeCount;
   final List<ProxyNode> nodes;
   final List<ProxyGroup> groups;
+  final bool hasProxyGroups;
   final SubscriptionUserinfo? userinfo;
   final ProfileSource? source;
   final List<String> warnings;
@@ -1373,6 +1386,7 @@ class ImportedProfile {
         'nodeCount': nodeCount,
         'nodes': <Map<String, dynamic>>[for (final n in nodes) n.toJson()],
         'groups': <Map<String, dynamic>>[for (final g in groups) g.toJson()],
+        'hasProxyGroups': hasProxyGroups,
         if (userinfo != null) 'userinfo': userinfo!.toJson(),
         if (source != null) 'source': source!.toJson(),
         if (warnings.isNotEmpty) 'warnings': warnings,
@@ -2055,6 +2069,7 @@ class TrafficSnapshot {
     this.upBps = 0,
     this.downBps = 0,
     this.domainCount = 0,
+    this.flowCount = 0,
     this.capacity = 2048,
     this.evicted = 0,
     this.topDomains = const <DomainStat>[],
@@ -2068,6 +2083,7 @@ class TrafficSnapshot {
         upBps: _int(json['upBps']),
         downBps: _int(json['downBps']),
         domainCount: _int(json['domainCount']),
+        flowCount: _int(json['flowCount']),
         capacity: _int(json['capacity']),
         evicted: _int(json['evicted']),
         topDomains:
@@ -2080,6 +2096,9 @@ class TrafficSnapshot {
   final int upBps;
   final int downBps;
   final int domainCount;
+
+  /// 当前跟踪的活跃流数量（Rust `flowCount`）。
+  final int flowCount;
   final int capacity;
   final int evicted;
   final List<DomainStat> topDomains;
@@ -2143,6 +2162,114 @@ class ClashApiStopResult {
   final bool wasRunning;
 }
 
+// ==================== lan.* ====================
+
+/// LAN 入站配置（`API.md` §2.12 `LanConfig`）。
+///
+/// `lan.get` 响应中的 `config`；`lan.set` 的请求体（部分字段）。
+class ProxyLanConfig {
+  const ProxyLanConfig({
+    this.enabled = false,
+    this.port = 1087,
+    this.bindAddress = '0.0.0.0',
+    this.authUser = '',
+    this.authPass = '',
+    this.allowedIps = const <String>[],
+  });
+
+  final bool enabled;
+  final int port;
+  final String bindAddress;
+  final String authUser;
+  final String authPass;
+  final List<String> allowedIps;
+
+  /// 是否同时配置了用户名与密码。
+  bool get hasAuth => authUser.trim().isNotEmpty && authPass.isNotEmpty;
+
+  /// 已启用但未配置认证 → 必须展示安全警告。
+  bool get needsWarning => enabled && !hasAuth;
+
+  /// `lan.set` 请求体；`auth` 未配置时为显式 `null`（可清除已有认证）。
+  Map<String, dynamic> toRequestJson() => <String, dynamic>{
+        'enabled': enabled,
+        'port': port,
+        'bindAddress': bindAddress,
+        'auth': hasAuth
+            ? <String, dynamic>{'user': authUser, 'pass': authPass}
+            : null,
+        'allowedIps': allowedIps,
+      };
+
+  factory ProxyLanConfig.fromJson(Map<String, dynamic> json) {
+    final auth = json['auth'];
+    return ProxyLanConfig(
+      enabled: json['enabled'] == true,
+      port: _intOrNull(json['port']) ?? 1087,
+      bindAddress: json['bindAddress']?.toString() ?? '0.0.0.0',
+      authUser: auth is Map ? (auth['user']?.toString() ?? '') : '',
+      authPass: auth is Map ? (auth['pass']?.toString() ?? '') : '',
+      allowedIps: _strList(json['allowedIps']),
+    );
+  }
+
+  ProxyLanConfig copyWith({
+    bool? enabled,
+    int? port,
+    String? bindAddress,
+    String? authUser,
+    String? authPass,
+    List<String>? allowedIps,
+  }) =>
+      ProxyLanConfig(
+        enabled: enabled ?? this.enabled,
+        port: port ?? this.port,
+        bindAddress: bindAddress ?? this.bindAddress,
+        authUser: authUser ?? this.authUser,
+        authPass: authPass ?? this.authPass,
+        allowedIps: allowedIps ?? this.allowedIps,
+      );
+}
+
+/// LAN 监听状态（`API.md` §2.12 `LanStatus`）。
+///
+/// `lan.status` 的**扁平**响应，也是 `lan.set` 响应中嵌套的 `status`。
+class ProxyLanStatus {
+  const ProxyLanStatus({
+    this.bound = false,
+    this.addresses = const <String>[],
+    this.activeConns = 0,
+    this.engineOnly = false,
+    this.warning,
+    this.config,
+  });
+
+  final bool bound;
+  final List<String> addresses;
+  final int activeConns;
+  final bool engineOnly;
+  final String? warning;
+  final ProxyLanConfig? config;
+
+  /// 是否携带安全警告（`warning.message` 非空）。
+  bool get hasWarning => warning != null && warning!.isNotEmpty;
+
+  factory ProxyLanStatus.fromJson(Map<String, dynamic> json) {
+    final warning = json['warning'];
+    final config = json['config'];
+    return ProxyLanStatus(
+      bound: json['bound'] == true,
+      addresses: _strList(json['addresses']),
+      activeConns: _intOrNull(json['activeConns']) ?? 0,
+      engineOnly: json['engineOnly'] == true,
+      warning: warning is Map ? warning['message']?.toString() : null,
+      config: config is Map
+          ? ProxyLanConfig.fromJson(Map<String, dynamic>.from(config))
+          : null,
+    );
+  }
+}
+
 // ==================== 方法 → 解码器注册表 ====================
 
 /// 方法名 → 响应解码器（**每个** [ProxyMethods.all] 一项）。
@@ -2197,6 +2324,19 @@ final Map<String, ProxyJsonDecoder<Object>> proxyResponseDecoders =
   ProxyMethods.clashApiStart: ClashApiStatus.fromJson,
   ProxyMethods.clashApiStop: ClashApiStopResult.fromJson,
   ProxyMethods.clashApiStatus: ClashApiStatus.fromJson,
+  // `lan.get` 的 `config` 在顶层字段下；`lan.set` 的 status **嵌套**在 `status`
+  // 之下（`lib.rs` `lan_set_arm`）；`lan.status` 是扁平对象。
+  ProxyMethods.lanGet: (json) => ProxyLanConfig.fromJson(
+        Map<String, dynamic>.from(
+          json['config'] as Map? ?? const <String, dynamic>{},
+        ),
+      ),
+  ProxyMethods.lanSet: (json) => ProxyLanStatus.fromJson(
+        Map<String, dynamic>.from(
+          json['status'] as Map? ?? const <String, dynamic>{},
+        ),
+      ),
+  ProxyMethods.lanStatus: ProxyLanStatus.fromJson,
 };
 
 // ==================== 请求模型（toJson） ====================
@@ -2542,6 +2682,7 @@ final Map<String, Map<String, dynamic> Function()> proxyRequestEncoders =
   ProxyMethods.statsDomainGet: () => const StatsDomainGetRequest().toJson(),
   ProxyMethods.statsTrafficGet: () => const StatsTrafficGetRequest().toJson(),
   ProxyMethods.clashApiStart: () => const ClashApiStartRequest().toJson(),
+  ProxyMethods.lanSet: () => const ProxyLanConfig().toRequestJson(),
 };
 
 /// 便捷：JSON 文本 → UTF-8 字节（请求体编码）。

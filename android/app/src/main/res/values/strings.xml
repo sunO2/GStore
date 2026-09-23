@@ -6,4 +6,5 @@
     <string name="proxy_vpn_notification_text">代理已开启 · 点按管理连接</string>
     <string name="proxy_vpn_notification_subtext">GStore</string>
     <string name="proxy_vpn_notification_action_stop">停止</string>
+    <string name="proxy_tile_label">代理</string>
 </resources>

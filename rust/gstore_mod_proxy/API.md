@@ -213,6 +213,7 @@ parses one share link (`ss`/`ss2022`/`vmess`/`vless`/`trojan`/`hysteria2`).
   "nodeCount": 42,
   "nodes": [ ProxyNode, ... ],
   "groups": [ ProxyGroup, ... ],
+  "hasProxyGroups": true,
   "userinfo": SubscriptionUserinfo | null,
   "source": {
     "origin": "url" | "text" | "link",
@@ -223,6 +224,8 @@ parses one share link (`ss`/`ss2022`/`vmess`/`vless`/`trojan`/`hysteria2`).
   "warnings": ["proxies[3]: dropped node: type 'made-up' is not in the import whitelist"]
 }
 ```
+
+`hasProxyGroups` is `true` when the source declared `proxy-groups`; `false` when the engine synthesized the fallback `PROXY` group.
 
 `ProxyNode` (all optional keys are omitted when absent):
 
@@ -418,11 +421,14 @@ and renders the template. When
 stored profile it returns `PROXY_CONFIG_PROFILE_REQUIRED` (422).
 `profile.export_clash` is the same document addressed by a required `id`.
 
-`config.apply` regenerates and **hot-applies** in one step: it requires a
-running tunnel, publishes the new ruleset (preserving proxies), then installs
-the fresh proxy registry (preserving rules), and emits `proxy.config.applied`.
-The engine is not restarted and the TUN loop is not re-created. Without a
-running engine it returns `PROXY_NOT_CONFIGURED` (409).
+`config.apply` regenerates and **hot-applies** in one step: with a running
+tunnel it publishes the new ruleset (preserving proxies), then installs the
+fresh proxy registry (preserving rules), and emits `proxy.config.applied`.
+The engine is not restarted and the TUN loop is not re-created. With no running
+engine it records the named profile as the active selection and returns the
+generated config with `"applied": false` (mirrors `node.list`, which never
+errors when stopped), so a subscription switch made while disconnected still
+reaches the offline `node.select` / `node.delay_test` paths.
 
 Template guarantees are in §13.
 
@@ -467,6 +473,19 @@ Success also emits a `proxy.state` event carrying
 `PROXY_NODE_NOT_FOUND` (unknown group/node, or node not a member),
 `PROXY_GROUP_NOT_SELECTABLE` (target is a leaf or a non-selectable group such
 as load-balance/relay), `PROXY_NOT_CONFIGURED` (engine not running).
+
+`PROXY_NODE_NOT_FOUND` has a second, **build-time** origin: when a declared
+proxy-group depends on a sibling group that could not be built (for example an
+unsupported node type), the dependent group is cascade-dropped from the registry
+at construction, so `node.select` reports `group not found` even though the
+client sent a valid pick. A **running** engine can additionally hold a stale
+registry after `profile.refresh` or a subscription switch; when the selected
+group exists only in the displayed profile, the UI first re-applies that profile
+(`config.apply`) to reconcile the live engine rather than asking for a manual
+reconnect. Engine-stopped offline selection is unaffected. Each registry build
+records its outcome as `proxy: registry groups built=[...] missing=[...]`, where
+`missing` names the declared groups that never entered the registry (the
+potential 404 sources).
 
 The pick persists through meow's `SelectorStore` (`<data_dir>/selector.json`,
 opened at instance create; meow-config's runtime rebuild wires it into rebuilt
@@ -1022,7 +1041,7 @@ registered in `rust/ERROR_CODES.md`.
 | `METHOD_NOT_FOUND` | 405 | unknown method (protocol) |
 | `INVALID_ARGUMENT` | 422 | bad payload (protocol) |
 | `INSTANCE_NOT_FOUND` | 410 | dead instance (protocol) |
-| `PROXY_NOT_CONFIGURED` | 409 | engine/tunnel not running when `node.*`/`conn.list`/`config.apply` is called |
+| `PROXY_NOT_CONFIGURED` | 409 | engine/tunnel not running when `node.*`/`conn.list` is called (`config.apply` is tolerant offline: it records the profile and returns `applied: false`) |
 | `PROXY_TUN_FD_INVALID` | 422 | invalid/closed TUN fd (Todo 6) |
 | `PROXY_CONFIG_PROFILE_REQUIRED` | 422 | `config.generate`/`profile.export_clash` with no stored profile and no `profileId`, or an instance with an empty data dir (Todo 13) |
 | `PROXY_CONFIG_INVALID` | 422 | config overlay invalid (e.g. `mtu` below 1280) or the generated document failed to parse (Todo 13) |
@@ -1037,7 +1056,7 @@ registered in `rust/ERROR_CODES.md`.
 | `PROXY_PROFILE_STORE_FAILED` | 500 | profile store I/O/atomic-write failure (Todo 12) |
 | `PROXY_PROFILE_CORRUPT` | —（warning）/ 500 on `get` | a payload/index file is unparseable; `profile.list` skips it and reports a warning, `profile.get` returns 500 (Todo 12) |
 | `PROXY_PROFILE_MISSING` | —（warning） | the index references a payload file that no longer exists; `profile.list` warns (Todo 12) |
-| `PROXY_NODE_NOT_FOUND` | 404 | unknown node/group |
+| `PROXY_NODE_NOT_FOUND` | 404 | unknown node/group; also a declared group cascade-dropped at registry build when a sibling dependency is unbuildable (see §2.6, §11.2) |
 | `PROXY_SUB_URL_INVALID` | 422 | subscription URL failed validation: non-`http(s)` scheme (`file://`/`ftp://`/…), unparseable URL, or no host (Todo 11) |
 | `PROXY_SUB_SSRF_BLOCKED` | 422 | user-supplied subscription URL targets a loopback/private/link-local/CGNAT address (SSRF guard) (Todo 11) |
 | `PROXY_SUB_FETCH_FAILED` | 500 | subscription fetch failed: connect/read/TLS error, non-2xx status, redirect without `Location`, too many redirects, or unsupported `Content-Encoding` (Todo 11) |
@@ -1506,6 +1525,18 @@ publish proxies/groups into the tunnel after generating the config:
 Until Todo 13 attaches proxies, `node.*`/`conn.list` return
 `PROXY_NOT_CONFIGURED` (no live tunnel) or `PROXY_NODE_NOT_FOUND` (empty
 registry).
+
+A running engine can also hold a **stale** registry after `profile.refresh` or a
+subscription switch: the tunnel keeps the groups installed at the last build, so
+a group present in the displayed profile can be absent from the live engine.
+Instead of requiring a manual reconnect, the UI re-applies the displayed profile
+(`config.apply`) on a divergent node selection to reconcile the live engine;
+`refresh_running_registry` hot-installs the rebuilt map without tearing the
+dataplane down, while an engine-stopped offline selection is unaffected. Each
+build logs its outcome as `proxy: registry groups built=[...] missing=[...]`;
+`missing` names declared groups that did not enter the registry because a sibling
+group they depend on could not be built, which is the build-time cascade behind
+`PROXY_NODE_NOT_FOUND`.
 
 ### 11.3 Off-tunnel-loop probes and bounded connection tracking
 

@@ -30,7 +30,9 @@ typedef ProfileClipboardRead = Future<String?> Function();
 /// 选择语义：点击订阅卡片即「设为当前订阅」——持久化 profile id
 /// （[ProxyActiveProfileStore]，key `proxy_active_profile_id`），首页据此作为
 /// 默认 `profileId` 连接；只有 1 个订阅时自动选中并持久化。模块没有
-/// `profile.select`，选中仅是**应用侧**状态。
+/// `profile.select`，但切换时会 best-effort `config.apply` 把新订阅热应用到
+/// 运行中引擎；引擎未运行时 Rust 只记录 active profile 并返回 `applied:false`
+/// （不报错），离线路径下同一次切换即刻生效，避免「已换订阅但引擎仍用旧订阅」。
 ///
 /// 交互入口：
 /// * 导入：URL / 粘贴文本 / 分享链接（剪贴板）/ 本地文件；
@@ -161,10 +163,19 @@ class _ProxyProfilesPageState extends State<ProxyProfilesPage> {
     return null;
   }
 
-  /// 点击订阅卡片：设为当前订阅（持久化 + 视觉标识）。
+  /// 点击订阅卡片：设为当前订阅（持久化 + 视觉标识），并 best-effort 同步给
+  /// Rust（引擎运行中时热应用该订阅，避免「换了订阅但引擎仍用旧订阅」；
+  /// 引擎未运行时 Rust 只记录 active profile 并返回 `applied:false`，不报错，
+  /// 离线路径即刻生效；下方 try/catch 仅作防御性兜底）。
   Future<void> _selectProfile(ProfileSummary profile) async {
     setState(() => _selectedId = profile.id);
     await _profileStore.write(profile.id);
+    // best-effort：应用失败不影响「已设为当前订阅」的本地语义。
+    try {
+      await _facade.applyProfile(profile.id);
+    } catch (error) {
+      debugPrint('订阅切换同步引擎失败（profileId=${profile.id}）：$error');
+    }
     if (!mounted) return;
     AppDialogs.showSuccess('已设为当前订阅「${profile.name}」');
   }
@@ -579,7 +590,15 @@ class _ProfileCard extends StatelessWidget {
     final failed = refresh?.state == ProxyRefreshState.failed;
 
     return Card(
+      key: selected ? Key('proxy_profile_active_${profile.id}') : null,
       margin: EdgeInsets.zero,
+      color: selected ? scheme.primaryContainer : null,
+      shape: RoundedRectangleBorder(
+        borderRadius: AppRadius.allLG,
+        side: BorderSide(
+          color: selected ? scheme.primary : scheme.outlineVariant,
+        ),
+      ),
       child: InkWell(
         onTap: onSelect,
         borderRadius: AppRadius.allLG,
@@ -594,7 +613,7 @@ class _ProfileCard extends StatelessWidget {
                   ColoredAliIcon(
                     icon: Icons.link,
                     size: AppTypography.iconXL,
-                    color: scheme.primary,
+                    color: selected ? scheme.onPrimaryContainer : scheme.primary,
                   ),
                   const SizedBox(width: AppSpacing.md),
                   Expanded(
@@ -605,7 +624,9 @@ class _ProfileCard extends StatelessWidget {
                           profile.name.isEmpty ? '未命名订阅' : profile.name,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: theme.textTheme.titleMedium,
+                          style: theme.textTheme.titleMedium?.copyWith(
+                            color: selected ? scheme.onPrimaryContainer : null,
+                          ),
                         ),
                         const SizedBox(height: AppSpacing.xs),
                         Text(
@@ -613,29 +634,14 @@ class _ProfileCard extends StatelessWidget {
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: theme.textTheme.bodySmall?.copyWith(
-                            color: scheme.onSurfaceVariant,
+                            color: selected
+                                ? scheme.onPrimaryContainer
+                                : scheme.onSurfaceVariant,
                           ),
                         ),
                       ],
                     ),
                   ),
-                  if (selected) ...<Widget>[
-                    const SizedBox(width: AppSpacing.xs),
-                    Icon(
-                      Icons.check_circle,
-                      key: Key('proxy_profile_current_${profile.id}'),
-                      size: AppTypography.iconMD,
-                      color: scheme.primary,
-                    ),
-                    const SizedBox(width: AppSpacing.xs),
-                    Text(
-                      '当前',
-                      style: theme.textTheme.labelMedium?.copyWith(
-                        color: scheme.primary,
-                        fontWeight: AppTypography.weightMedium,
-                      ),
-                    ),
-                  ],
                   if (refreshing)
                     const Padding(
                       padding: AppSpacing.onlyHorizontalSM,

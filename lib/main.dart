@@ -23,6 +23,16 @@ import 'package:gstore/core/module/module_toggle_config.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/core/router/app_router.dart';
 import 'package:gstore/core/routers.dart';
+import 'package:gstore/core/service/proxy_connect_controller.dart';
+import 'package:gstore/core/service/proxy_connect_intent_bridge.dart';
+import 'package:gstore/core/service/proxy_status_notification.dart';
+import 'package:gstore/core/service/proxy_vpn_service.dart';
+import 'package:gstore/core/rust/proxy/ProxyModule.dart';
+import 'package:gstore/page/proxy/proxy_active_profile_store.dart';
+import 'package:gstore/page/proxy/proxy_engine_settings_store.dart';
+import 'package:gstore/page/proxy/proxy_home_facade.dart';
+import 'package:gstore/page/proxy/proxy_routing_mode_store.dart';
+import 'package:gstore/page/proxy/proxy_run_mode_store.dart';
 import 'package:gstore/core/rust/DioModuleFetcher.dart';
 import 'package:gstore/core/rust/ModuleBootstrap.dart';
 import 'package:gstore/core/rust/ModuleDownloader.dart';
@@ -40,6 +50,21 @@ registerService() async {
   // 统一事件总线：把 DB / 模块生命周期 / 配置事件源适配进 AppEventBus
   // （幂等；配置变化将经此下行到 Rust 模块）
   AppEventBusBootstrap.initialize();
+
+  // 代理状态通知（应用级）：订阅代理模块事件，动态展示上/下行速率、当前订阅、
+  // 当前节点与代理模式。best-effort，且不主动加载代理模块（按需安装门禁），
+  // 初始化失败绝不影响启动。
+  unawaited(ProxyStatusNotificationService.instance.start());
+
+  // 快捷设置磁贴「连接」意图桥（QS tile → MainActivity 的 ACTION_PROXY_CONNECT）：
+  // 冷启动 / 回前台消费一次性请求，命中则复用首页同款连接编排器（best-effort，
+  // 失败绝不影响启动）。
+  _startProxyConnectIntentBridge();
+
+  // 快捷设置磁贴「长按」意图桥：复用 ProxyConnectIntentBridge 作为通用 pending
+  // 意图桥（仅注入接缝不同），冷启动 / 回前台消费一次性请求，命中则跳转代理页
+  // （best-effort，失败绝不影响启动）。
+  _startProxyOpenIntentBridge();
 
   // 接线原生模块远程下载源：slim 包未内置 libgstore_mod_*.so 时，
   // 首次使用/管理页下载经此清单解析 Release 资产。Release 元数据
@@ -71,6 +96,69 @@ registerService() async {
   await _initModuleManager(sw);
 
   appLog.info('registerService: 全部初始化完成（总耗时 ${sw.elapsedMilliseconds}ms）');
+}
+
+/// 启动磁贴连接意图桥：冷启动 / 回前台消费 `consumeProxyConnect`，命中则连接。
+///
+/// [ProxyVpnTrigger.consumeProxyConnect] 已对平台通道缺失 / 原生报错防御；
+/// 命中触发 [_connectFromTileRequest]，复用 [ProxyConnectController] 与代理首页
+/// 完全一致的连接流程。桥对象由 `WidgetsBinding` 观察者列表持有，无需额外引用。
+void _startProxyConnectIntentBridge() {
+  ProxyConnectIntentBridge(
+    consumeRequest: ProxyVpnTrigger.consumeProxyConnect,
+    onConnectRequested: _connectFromTileRequest,
+  ).start();
+}
+
+/// 磁贴连接请求命中后的连接动作（镜像代理首页 `initState` 的编排器构造）。
+///
+/// 读取持久化的运行模式（默认 VPN）与选中订阅 id，经 [ProxyConnectController]
+/// 执行 `prepare → core.start → 重放路由模式`。best-effort：任何失败（模块不可用 /
+/// 未授权 / 存储异常）仅记录日志，绝不崩溃 App。
+Future<void> _connectFromTileRequest() async {
+  try {
+    final runMode =
+        await const ConfigStoreProxyRunModeStore().read() ?? ProxyMode.vpn;
+    final profileId = await const ConfigStoreProxyActiveProfileStore().read();
+    await ProxyConnectController(
+      facade: ProxyModuleHomeFacade(),
+      vpnConsent: const PlatformProxyVpnConsent(),
+      engineSettingsStore: const ConfigStoreProxyEngineSettingsStore(),
+      routingModeStore: const ConfigStoreProxyRoutingModeStore(),
+    ).connect(targetMode: runMode, profileId: profileId);
+    appLog.info('快捷磁贴：连接请求已交由 ProxyConnectController 处理');
+  } catch (e, st) {
+    appLog.error('快捷磁贴：连接失败（已忽略，不影响 App）', data: {
+      'error': e.toString(),
+      'stack': st.toString(),
+    });
+  }
+}
+
+/// 启动磁贴「长按 → 打开代理页」意图桥。
+///
+/// 复用 [ProxyConnectIntentBridge] 作为通用 pending 意图桥：长按由系统解析到
+/// 声明 `QS_TILE_PREFERENCES` 的 MainActivity，原生置位一次性标志，
+/// [ProxyVpnTrigger.consumeProxyOpen] 消费命中后跳转代理页。best-effort。
+void _startProxyOpenIntentBridge() {
+  ProxyConnectIntentBridge(
+    consumeRequest: ProxyVpnTrigger.consumeProxyOpen,
+    onConnectRequested: _openProxyPageFromTileRequest,
+  ).start();
+}
+
+/// 磁贴长按请求命中后的动作：首帧后 push 代理页。
+///
+/// 冷启动时路由器可能尚未就绪，故排到首帧之后；失败仅记录日志，绝不崩溃 App。
+Future<void> _openProxyPageFromTileRequest() async {
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    try {
+      appRouter.push(AppRoute.proxy);
+      appLog.info('快捷磁贴：长按请求已跳转代理页');
+    } catch (e) {
+      debugPrint('[ProxyTileOpen] 跳转代理页失败（已忽略）: $e');
+    }
+  });
 }
 
 /// llm 大体积 arm64 模块的安装确认处理（[ModuleInstallPolicy.confirm]）。
