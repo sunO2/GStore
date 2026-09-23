@@ -34,6 +34,9 @@ class ProxyMethods {
   static const String dnsSet = 'dns.set';
   static const String dnsClearCache = 'dns.clear_cache';
   static const String dnsFlushCache = 'dns.flush_cache';
+  // 运行日志查看器页面与展示门面已移除，
+  // 但 `log.*` 是**冻结契约能力**而非该 UI 专属：模块日志环经宿主 `log` 回调
+  // 桥接到 LogManager，诊断 / 故障排查仍依赖它。删除 UI ≠ 删除能力。
   static const String logGet = 'log.get';
   static const String logSetLevel = 'log.set_level';
   static const String logClear = 'log.clear';

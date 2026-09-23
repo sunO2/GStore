@@ -773,6 +773,32 @@ void main() {
         reason: '方法 → 解码器必须一一对应',
       );
     });
+
+    test('运行日志 UI 已移除，但 log.* 冻结契约能力必须保留', () {
+      // 运行日志查看器页与展示门面已删除；`log.*` 是模块级能力（日志环经宿主
+      // `log` 回调桥接到 LogManager），不随 UI 移除而删除。此断言按名锁定能力。
+      for (final method in const <String>[
+        ProxyMethods.logGet,
+        ProxyMethods.logSetLevel,
+        ProxyMethods.logClear,
+      ]) {
+        expect(
+          ProxyMethods.all,
+          contains(method),
+          reason: '$method 必须保留在冻结契约方法表中',
+        );
+        expect(
+          proxyResponseDecoders.containsKey(method),
+          isTrue,
+          reason: '$method 必须保留解码器（能力完整）',
+        );
+        expect(
+          _methodFixtures.containsKey(method),
+          isTrue,
+          reason: '$method 必须保留响应 fixture（round-trip 覆盖）',
+        );
+      }
+    });
   });
 
   group('happy QA：每个方法都有 fixture → 类型化 Dart 模型', () {

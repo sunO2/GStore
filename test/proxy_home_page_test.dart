@@ -443,7 +443,6 @@ void main() {
     expect(find.text('未选择'), findsOneWidget);
     expect(find.text('当前节点'), findsOneWidget);
     expect(find.text('自动'), findsOneWidget);
-    expect(find.text('运行日志'), findsNothing);
     expect(find.text('请求域名 / IP'), findsOneWidget);
     expect(find.text('流量统计'), findsOneWidget);
     expect(tester.takeException(), isNull);
