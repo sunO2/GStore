@@ -338,6 +338,116 @@ impl ShaperConfig {
 // `configure(data_dir)`. Append below this separator.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// PRNG (Todo 2)
+// ---------------------------------------------------------------------------
+
+/// Base seed mixed with injected entropy when no explicit seed is pinned.
+///
+/// Named (not an inline literal) so it is greppable and so tests can pin
+/// `derive_seed(None, e)` exactly.
+pub(crate) const FIXED_SEED_CONSTANT: u64 = 0x5DEE_CE66_D7A5_3F17;
+
+/// Pareto shape parameter used by [`SplitMix64::jitter_offset`].
+///
+/// Fixed at `1.5`: heavy enough that a few packets get a long delay, but its
+/// tail stays finite after the `[0, jitter_ms]` clamp. Deterministic across runs.
+const PARETO_ALPHA: f64 = 1.5;
+
+/// Deterministic SplitMix64 generator (Steele/Lea/Flood, 2014; public domain).
+///
+/// Hand-written rather than pulling `rand`/`fastrand`: the shaper only needs a
+/// tiny reproducible stream of `u64`/`f64` decisions, and a dependency-free
+/// generator keeps a given `ShaperConfig::seed` identical on every platform.
+pub(crate) struct SplitMix64 {
+    state: u64,
+}
+
+impl SplitMix64 {
+    /// Seed the generator; `seed` becomes the initial state verbatim.
+    pub(crate) fn new(seed: u64) -> Self {
+        Self { state: seed }
+    }
+
+    /// Advance the state and return the next 64-bit output (canonical mixing).
+    pub(crate) fn next_u64(&mut self) -> u64 {
+        self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// Uniform `f64` in `[0, 1)` (53-bit mantissa scaling).
+    pub(crate) fn next_f64(&mut self) -> f64 {
+        (self.next_u64() >> 11) as f64 * (1.0 / (1u64 << 53) as f64)
+    }
+
+    /// Bernoulli trial: `true` with probability `pct` percent.
+    ///
+    /// `pct <= 0.0` (including `-inf`) is always `false` and `pct >= 100.0`
+    /// (including `+inf`) is always `true`. `NaN` fails both comparisons, so it
+    /// takes the `false` branch — documented and panic-free.
+    pub(crate) fn chance(&mut self, pct: f64) -> bool {
+        if pct <= 0.0 {
+            return false;
+        }
+        if pct >= 100.0 {
+            return true;
+        }
+        self.next_f64() * 100.0 < pct
+    }
+
+    /// Sample a jitter offset in `[0, jitter_ms]` for `distribution`.
+    ///
+    /// The single place all jitter sampling lives; later todos call it. Every
+    /// branch is clamped into `[0, jitter_ms]`, so the result can never exceed
+    /// the configured amplitude and never panics. `jitter_ms == 0` short-circuits
+    /// to `0` before any draw.
+    pub(crate) fn jitter_offset(
+        &mut self,
+        distribution: JitterDistribution,
+        jitter_ms: u32,
+    ) -> u32 {
+        if jitter_ms == 0 {
+            return 0;
+        }
+        let span = jitter_ms as f64;
+        let raw = match distribution {
+            JitterDistribution::Uniform => self.next_f64() * span,
+            JitterDistribution::Normal => {
+                // Box-Muller, mean `span/2` and stddev `span/6`, so the ±3σ body
+                // spans roughly `[0, jitter_ms]`. `u1` is nudged off 0 so `ln`
+                // stays finite, then the drawn value is folded to non-negative.
+                let u1 = self.next_f64().max(f64::MIN_POSITIVE);
+                let u2 = self.next_f64();
+                let radius = (-2.0 * u1.ln()).sqrt();
+                let z = radius * (std::f64::consts::TAU * u2).cos();
+                (span / 2.0 + (span / 6.0) * z).abs()
+            }
+            JitterDistribution::Pareto => {
+                // Inverse-CDF of Pareto(α = 1.5, xm = 1), shifted so the support
+                // starts at 0 and scaled to the amplitude. `u` is nudged off 0
+                // (still finite: `u^(1/α)` stays well above underflow).
+                let u = self.next_f64().max(f64::MIN_POSITIVE);
+                let x = 1.0 / u.powf(1.0 / PARETO_ALPHA);
+                (x - 1.0) * span
+            }
+        };
+        raw.clamp(0.0, span).round() as u32
+    }
+}
+
+/// Derive a PRNG seed from the config seed and injected entropy.
+///
+/// `Some(seed)` (tests, and any pinned config seed) wins verbatim so runs are
+/// exact. `None` (production) yields `FIXED_SEED_CONSTANT ^ entropy`: the caller
+/// injects a time-derived `entropy` because this function is deliberately pure
+/// — it never reads the clock, so tests can pin `derive_seed(None, e)`.
+pub(crate) fn derive_seed(seed: Option<u64>, entropy: u64) -> u64 {
+    seed.unwrap_or(FIXED_SEED_CONSTANT ^ entropy)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -492,5 +602,81 @@ mod tests {
         // Full round trip is lossless.
         let back: ShaperConfig = serde_json::from_value(value).unwrap();
         assert_eq!(back, cfg);
+    }
+}
+
+#[cfg(test)]
+mod prng_tests {
+    use super::*;
+
+    const TEST_SEED: u64 = 0x1234_5678_9ABC_DEF0;
+    const ALL_DISTRIBUTIONS: [JitterDistribution; 3] = [
+        JitterDistribution::Uniform,
+        JitterDistribution::Normal,
+        JitterDistribution::Pareto,
+    ];
+
+    fn u64_seq(seed: u64, n: usize) -> Vec<u64> {
+        let mut rng = SplitMix64::new(seed);
+        (0..n).map(|_| rng.next_u64()).collect()
+    }
+
+    #[test]
+    fn shaper_prng_seed_is_deterministic() {
+        let a = u64_seq(TEST_SEED, 1000);
+        let b = u64_seq(TEST_SEED, 1000);
+        assert_eq!(a, b, "same seed must replay the same u64 stream");
+        assert_ne!(a, u64_seq(TEST_SEED ^ 1, 1000), "a different seed must differ");
+
+        // The decision helpers replay identically too, interleaved so any hidden
+        // state divergence is caught on the very next draw.
+        let mut r1 = SplitMix64::new(7);
+        let mut r2 = SplitMix64::new(7);
+        for i in 0..1000 {
+            let pct = (i % 101) as f64;
+            assert_eq!(r1.chance(pct), r2.chance(pct));
+            assert_eq!(r1.next_u64(), r2.next_u64());
+            let dist = ALL_DISTRIBUTIONS[i % ALL_DISTRIBUTIONS.len()];
+            let jitter_ms = (i % 30_001) as u32;
+            assert_eq!(r1.jitter_offset(dist, jitter_ms), r2.jitter_offset(dist, jitter_ms));
+            assert_eq!(r1.next_f64().to_bits(), r2.next_f64().to_bits());
+        }
+    }
+
+    #[test]
+    fn shaper_prng_boundaries() {
+        let mut rng = SplitMix64::new(TEST_SEED);
+
+        // Exact bounds and non-finite inputs never panic and obey the contract.
+        assert!(!rng.chance(0.0));
+        assert!(rng.chance(100.0));
+        assert!(!rng.chance(-1.0));
+        assert!(rng.chance(1e9));
+        assert!(!rng.chance(f64::NAN), "NaN pct is documented as false");
+        let _ = rng.chance(1e-9);
+        let _ = rng.chance(99.9999999);
+
+        for dist in ALL_DISTRIBUTIONS {
+            assert_eq!(rng.jitter_offset(dist, 0), 0, "zero amplitude is always zero");
+            for jitter_ms in [1u32, 7, 1500, 30_000] {
+                for _ in 0..2_000 {
+                    let v = rng.jitter_offset(dist, jitter_ms);
+                    assert!(v <= jitter_ms, "{dist:?}: {v} exceeds {jitter_ms}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn shaper_derive_seed() {
+        // An explicit seed is returned verbatim regardless of entropy.
+        assert_eq!(derive_seed(Some(7), 0), 7);
+        assert_eq!(derive_seed(Some(7), 0xDEAD_BEEF), 7);
+
+        // No seed = fixed constant ^ entropy, and pure/deterministic.
+        let e = 0x0123_4567_89AB_CDEF;
+        assert_eq!(derive_seed(None, e), derive_seed(None, e));
+        assert_eq!(derive_seed(None, e), FIXED_SEED_CONSTANT ^ e);
+        assert_ne!(derive_seed(None, e), derive_seed(None, e ^ 1));
     }
 }
