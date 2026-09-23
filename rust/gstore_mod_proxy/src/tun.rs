@@ -1148,6 +1148,21 @@ mod tests {
         cond()
     }
 
+    /// A unique, created temp dir per test; caller removes it at the end
+    /// (mirrors `shaper::config_io_tests::tmp_dir`).
+    fn tmp_dir(tag: &str) -> std::path::PathBuf {
+        use std::sync::atomic::AtomicU32;
+        static SEQ: AtomicU32 = AtomicU32::new(0);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("gstore-tun-{tag}-{nanos}-{seq}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
     #[test]
     fn invalid_fd_is_structured_error_not_panic() {
         let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
@@ -1646,6 +1661,151 @@ mod tests {
 
         let _ = stop_tx.send(true);
         let _ = tokio::time::timeout(Duration::from_secs(1), task).await;
+    }
+
+    /// Prompt stop under a multi-second pending shape delay: `stop()` must join
+    /// the loop in well under the delay (the reader is aborted, it never sleeps
+    /// inline), and the frame must genuinely have been sitting in the heap.
+    #[test]
+    fn stop_is_prompt_with_pending_shape_delay() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        shallow_reset();
+        shaper::reset_counters();
+        let dir = tmp_dir("stop-prompt");
+        let dir_str = dir.to_str().unwrap().to_string();
+        shaper::configure(&dir_str);
+        let next = shaper::set(&dir_str, br#"{"enabled":true,"uplink":{"delayMs":5000}}"#)
+            .expect("a 5s uplink delay is valid");
+        assert!(next.enabled);
+
+        let (loop_end, mut peer) = UnixStream::pair().unwrap();
+        install_fd(loop_end.as_raw_fd()).expect("install mock fd");
+        assert!(start(91).expect("start loop"), "loop must start");
+        assert_eq!(running_count(), 1);
+
+        peer.write_all(&ipv4_udp_frame()).unwrap();
+        peer.flush().unwrap();
+        assert!(
+            wait_until(|| read_count() >= 1, Duration::from_secs(2)),
+            "reader never consumed the frame"
+        );
+        assert!(
+            wait_until(|| shaper::buffer_stats().uplink.frames >= 1, Duration::from_secs(2)),
+            "frame must be pending in the uplink shape heap, got {:?}",
+            shaper::buffer_stats().uplink
+        );
+
+        let started = std::time::Instant::now();
+        stop();
+        let elapsed = started.elapsed();
+        assert_eq!(running_count(), 0, "loop thread joined");
+        assert!(
+            elapsed < Duration::from_millis(250),
+            "stop must not wait out the pending 5s shape delay, took {elapsed:?}"
+        );
+
+        shaper::reset_for_test();
+        shaper::reset_counters();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A rejected shaper config is a 422 and must never touch the supervisor:
+    /// no restart is bumped and the live single-reader loop keeps running.
+    #[test]
+    fn shaper_misconfig_does_not_restart_dataplane() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        shallow_reset();
+        crate::supervisor::reset_for_tests();
+        shaper::reset_for_test();
+        shaper::reset_counters();
+
+        let dir = tmp_dir("misconfig");
+        let dir_str = dir.to_str().unwrap().to_string();
+        shaper::configure(&dir_str);
+        shaper::set(&dir_str, br#"{"enabled":true}"#).expect("valid config");
+        let before = crate::supervisor::snapshot().restarts;
+
+        let (loop_end, _peer) = UnixStream::pair().unwrap();
+        install_fd(loop_end.as_raw_fd()).expect("install mock fd");
+        assert!(start(92).expect("start loop"), "loop must start");
+        assert_eq!(running_count(), 1);
+
+        let err = shaper::set(&dir_str, br#"{"uplink":{"rateBps":999}}"#).unwrap_err();
+        assert_eq!(err.status, StatusCode::InvalidArgument);
+        assert_eq!(err.code, shaper::ERR_SHAPER_CONFIG_INVALID);
+
+        // Give any (buggy) async restart a chance to fire before asserting.
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(
+            crate::supervisor::snapshot().restarts,
+            before,
+            "a rejected shaper config must never bump the restart counter"
+        );
+        assert_eq!(
+            running_count(),
+            1,
+            "the same single loop must still be running after a rejected config"
+        );
+
+        stop();
+        assert_eq!(running_count(), 0);
+        crate::supervisor::reset_for_tests();
+        shaper::reset_for_test();
+        shaper::reset_counters();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// With shaping enabled every frame is buffered in the heap, yet there must
+    /// still be exactly one fd reader: each datagram is read exactly once and
+    /// the loop count stays 1 until an explicit stop.
+    #[test]
+    fn single_reader_invariant_holds_with_shaping() {
+        use std::os::unix::net::UnixDatagram;
+
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        shallow_reset();
+        shaper::reset_counters();
+        let dir = tmp_dir("single-reader");
+        let dir_str = dir.to_str().unwrap().to_string();
+        shaper::configure(&dir_str);
+        shaper::set(
+            &dir_str,
+            br#"{"enabled":true,"seed":7,"uplink":{"delayMs":50}}"#,
+        )
+        .expect("valid config");
+
+        const N: usize = 64;
+        let (loop_end, peer) = UnixDatagram::pair().unwrap();
+        install_fd(loop_end.as_raw_fd()).expect("install mock fd");
+        drop(loop_end);
+        assert!(start(93).expect("start loop"), "loop must start");
+        reset_read_count();
+
+        let frame = ipv4_udp_frame();
+        let w = peer.try_clone().unwrap();
+        for _ in 0..N {
+            w.send(&frame).expect("send frame");
+        }
+        assert!(
+            wait_until(|| read_count() == N, Duration::from_secs(2)),
+            "reader consumed {} of {N} frames",
+            read_count()
+        );
+
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(
+            read_count(),
+            N,
+            "each frame read exactly once; a second reader would inflate this"
+        );
+        assert_eq!(running_count(), 1, "exactly one loop thread / reader");
+
+        stop();
+        assert_eq!(running_count(), 0);
+
+        shaper::reset_for_test();
+        shaper::reset_counters();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Drop any loop/pending fd left by an earlier test.
