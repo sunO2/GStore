@@ -720,7 +720,11 @@ pub(crate) struct Pacer {
 /// drifts the way floating-point seconds would. Only called with `rate_bps > 0`;
 /// `len` is a TUN frame bounded by `tun::READ_BUFFER_SIZE` (65535), so the
 /// `u128` product divided by the rate always fits back into `u64` nanoseconds.
-fn bytes_interval(rate_bps: u64, len: usize) -> Duration {
+///
+/// `pub(crate)` because the Todo 4 [`ReleaseScheduler`] reuses it verbatim to
+/// size the reorder hold (`reorderGap × len/rate`); the maths must stay here so
+/// the pacer and the hold agree on one definition of "one frame interval".
+pub(crate) fn bytes_interval(rate_bps: u64, len: usize) -> Duration {
     Duration::from_nanos((len as u128 * 1_000_000_000u128 / rate_bps as u128) as u64)
 }
 
@@ -775,6 +779,27 @@ impl Pacer {
     /// (a `tat` in the past) is left untouched.
     pub(crate) fn reconcile_on_rate_increase(&mut self, now: Instant) {
         self.tat = self.tat.min(now);
+    }
+
+    /// Apply a hot rate/burst change (D14), used by
+    /// [`ReleaseScheduler::reconfigure`].
+    ///
+    /// Raising the rate drains the old backlog first via
+    /// [`Pacer::reconcile_on_rate_increase`] so the next frame is paced by the
+    /// new rate, not the stale debt. Lowering the rate (or switching to
+    /// unlimited) leaves `tat` alone. `burst_bytes` is only a credit ceiling, so
+    /// it is stored unconditionally.
+    pub(crate) fn apply_rate_change(&mut self, rate_bps: u64, burst_bytes: u32, now: Instant) {
+        if rate_bps > self.rate_bps {
+            self.reconcile_on_rate_increase(now);
+        }
+        self.rate_bps = rate_bps;
+        self.burst_bytes = burst_bytes;
+    }
+
+    /// Configured byte rate in bits per second; `0` = unlimited.
+    pub(crate) fn rate_bps(&self) -> u64 {
+        self.rate_bps
     }
 }
 
@@ -886,5 +911,387 @@ mod pacer_tests {
             deadline.saturating_duration_since(now).as_secs_f64(),
             (credit + interval).as_secs_f64()
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Unified release scheduler (Todo 4)
+// ---------------------------------------------------------------------------
+
+/// Normalise a jitter distribution against the configured amplitude.
+///
+/// `tc-netem(8)` treats a zero-width jitter as "no jitter", and
+/// [`SplitMix64::jitter_offset`] short-circuits any distribution to `0` when
+/// `jitter_ms == 0`. Illegal/degenerate parameters therefore fall back to
+/// [`JitterDistribution::Uniform`], so a `normal`/`pareto` config carrying no
+/// amplitude still reports a well-defined distribution instead of a shape that
+/// can never be sampled. Any non-zero amplitude keeps `dist`.
+pub(crate) fn effective_distribution(
+    dist: JitterDistribution,
+    jitter_ms: u32,
+) -> JitterDistribution {
+    if jitter_ms == 0 {
+        JitterDistribution::Uniform
+    } else {
+        dist
+    }
+}
+
+/// Unified release scheduler implementing plan decision D6.
+///
+/// One instance lives per direction per pump (task-local, never shared) and owns
+/// the direction's [`Pacer`] plus the last release time. All timing is injected
+/// through `now: Instant`; nothing here reads the clock or sleeps, so the core
+/// is deterministic and unit-testable.
+///
+/// # D6 branch formulas
+/// With `pacer_deadline = pacer.schedule(now, len)` (where `now` is the
+/// **arrival** instant, not the previous release) and `jitter ∈ [0, jitter_ms]`:
+///
+/// ```text
+/// natural = max(pacer_deadline, now + base + jitter)
+/// order = preserve:  release = max(prev_release, natural); prev_release = release
+/// order = reorder:   release = natural + (selected ? hold : 0)
+///                    hold    = reorderGap × len/rate   (FRAMES; pacer untouched)
+///                    prev_release tracks ONLY pacer_deadline
+/// ```
+///
+/// `preserve` therefore never regresses a release. `reorder` may, bounded by the
+/// hold: the in-flight window is `≤ max(hold, jitter_ms)` and `≤ reorderGap`
+/// frames. A frame that D5 exempts from reordering (`reorder_exempt`) still
+/// receives bandwidth, delay and jitter but never the reorder hold. The
+/// effective latency upper bound is `base + maxJitter` (single-sided max, a D6
+/// fidelity limitation): pure delay is never below `now + base` nor above
+/// `now + base + jitter_ms`.
+pub(crate) struct ReleaseScheduler {
+    /// Byte-rate pacer for this direction; identity when `rate_bps == 0`.
+    pacer: Pacer,
+    /// Last release time. The `preserve` branch keeps it non-decreasing; the
+    /// `reorder` branch only ever stores the pacer deadline here.
+    prev_release: Instant,
+    /// Added delay (`delayMs`), always non-negative.
+    base: Duration,
+    /// Jitter amplitude (`jitterMs`); samples are in `[0, jitter_ms]`.
+    jitter_ms: u32,
+    /// Sampling shape, already normalised by [`effective_distribution`].
+    distribution: JitterDistribution,
+    /// Percentage of frames selected for the reorder hold; `[0, 100]`.
+    reorder_pct: f64,
+    /// Reorder hold in FRAMES; `[0, 255]`.
+    reorder_gap: u32,
+    /// Release order policy.
+    order: PacketOrder,
+    /// Deterministic decision stream (reorder selection + jitter sampling).
+    rng: SplitMix64,
+}
+
+impl ReleaseScheduler {
+    /// Build a scheduler for one direction. `now` is the scheduler's epoch:
+    /// `prev_release` starts there so no frame is pulled before its creation.
+    pub(crate) fn new(cfg: &DirectionConfig, rng: SplitMix64, now: Instant) -> Self {
+        Self {
+            pacer: Pacer::new(cfg.rate_bps, cfg.burst_bytes, now),
+            prev_release: now,
+            base: Duration::from_millis(cfg.delay_ms as u64),
+            jitter_ms: cfg.jitter_ms,
+            distribution: effective_distribution(cfg.jitter_distribution, cfg.jitter_ms),
+            reorder_pct: cfg.reorder_pct,
+            reorder_gap: cfg.reorder_gap,
+            order: cfg.order,
+            rng,
+        }
+    }
+
+    /// Schedule a `len`-byte frame that arrived at `now`, returning its absolute
+    /// release instant (D6).
+    ///
+    /// `reorder_exempt` is the D5 exemption flag: when `true` the frame never
+    /// receives the reorder hold, but still receives bandwidth, delay and
+    /// jitter. Bandwidth debt is delegated to the [`Pacer`] and the jitter draw
+    /// to [`SplitMix64::jitter_offset`], so neither is reimplemented here.
+    pub(crate) fn schedule(&mut self, now: Instant, len: usize, reorder_exempt: bool) -> Instant {
+        let pacer_deadline = self.pacer.schedule(now, len);
+        // Both increments are bounded (`base` ≤ 60 s, `jitter` ≤ 30 s), so a bare
+        // `+` cannot overflow; F2 only forbids bare `Instant - Duration`.
+        let jitter =
+            Duration::from_millis(self.rng.jitter_offset(self.distribution, self.jitter_ms) as u64);
+        let natural = pacer_deadline.max(now + self.base + jitter);
+
+        match self.order {
+            PacketOrder::Preserve => {
+                let release = self.prev_release.max(natural);
+                self.prev_release = release;
+                release
+            }
+            PacketOrder::Reorder => {
+                // Deliberately does NOT `max` against the previous release, so a
+                // later frame can overtake a held one. Only the pacer deadline is
+                // remembered (D6).
+                self.prev_release = pacer_deadline;
+                let selected = !reorder_exempt
+                    && self.reorder_pct > 0.0
+                    && self.pacer.rate_bps() > 0
+                    && self.rng.chance(self.reorder_pct);
+                if selected {
+                    natural + self.hold(len)
+                } else {
+                    natural
+                }
+            }
+        }
+    }
+
+    /// Reorder hold for `len`: `reorderGap × len/rate` (D6), i.e. the time
+    /// `reorderGap` frames occupy at the configured rate. `reorderGap` is in
+    /// FRAMES and the hold does not advance the pacer. Guarded by `rate_bps > 0`
+    /// (also guaranteed by `validate()` for `order=reorder && reorderPct>0`) so
+    /// the integer division can never trap.
+    fn hold(&self, len: usize) -> Duration {
+        let rate_bps = self.pacer.rate_bps();
+        if rate_bps == 0 || self.reorder_gap == 0 {
+            return Duration::ZERO;
+        }
+        bytes_interval(rate_bps, len) * self.reorder_gap
+    }
+
+    /// Apply a hot config change (D4/D14): snapshot delay/jitter/order params
+    /// and hand the rate change to the [`Pacer`], which drains debt on a rate
+    /// increase. `prev_release` is left intact (the pump re-evaluates in-flight
+    /// frames per D14).
+    pub(crate) fn reconfigure(&mut self, cfg: &DirectionConfig, now: Instant) {
+        self.base = Duration::from_millis(cfg.delay_ms as u64);
+        self.jitter_ms = cfg.jitter_ms;
+        self.distribution = effective_distribution(cfg.jitter_distribution, cfg.jitter_ms);
+        self.reorder_pct = cfg.reorder_pct;
+        self.reorder_gap = cfg.reorder_gap;
+        self.order = cfg.order;
+        self.pacer
+            .apply_rate_change(cfg.rate_bps, cfg.burst_bytes, now);
+    }
+}
+
+#[cfg(test)]
+mod scheduler_tests {
+    use super::*;
+
+    const ALL_DISTRIBUTIONS: [JitterDistribution; 3] = [
+        JitterDistribution::Uniform,
+        JitterDistribution::Normal,
+        JitterDistribution::Pareto,
+    ];
+
+    /// A direction config carrying only what these tests vary; loss/duplicate
+    /// stay disabled.
+    fn dir(
+        rate_bps: u64,
+        delay_ms: u32,
+        jitter_ms: u32,
+        dist: JitterDistribution,
+        order: PacketOrder,
+        reorder_pct: f64,
+        reorder_gap: u32,
+    ) -> DirectionConfig {
+        DirectionConfig {
+            rate_bps,
+            burst_bytes: 32_768,
+            delay_ms,
+            jitter_ms,
+            jitter_distribution: dist,
+            loss_pct: 0.0,
+            loss_model: LossModel::None,
+            loss_good_to_bad_pct: 0.0,
+            loss_bad_to_good_pct: 0.0,
+            duplicate_pct: 0.0,
+            reorder_pct,
+            reorder_gap,
+            order,
+        }
+    }
+
+    #[test]
+    fn release_is_monotonic_and_steady_state() {
+        // (a) preserve: with a positive delay and jitter, releases never regress.
+        let cfg = dir(
+            1_000_000,
+            15,
+            5,
+            JitterDistribution::Uniform,
+            PacketOrder::Preserve,
+            0.0,
+            0,
+        );
+        let t0 = Instant::now();
+        let mut sched = ReleaseScheduler::new(&cfg, SplitMix64::new(0xABCD), t0);
+        let mut prev = t0;
+        let mut now = t0;
+        for _ in 0..500 {
+            let release = sched.schedule(now, 1000, false);
+            assert!(release >= prev, "preserve release went backwards");
+            prev = release;
+            now += Duration::from_millis(1);
+        }
+
+        // (b) steady state: `base>0` must not compound into the release cadence.
+        // Arrivals every 5 ms with delayMs=20 ms. An implementation that slept
+        // `base` per frame would collapse to 5+20=25 ms/frame; absolute deadlines
+        // keep the cadence at the arrival rate, independent of `base`.
+        let cfg = dir(
+            1_000_000_000,
+            20,
+            0,
+            JitterDistribution::Uniform,
+            PacketOrder::Preserve,
+            0.0,
+            0,
+        );
+        let t0 = Instant::now();
+        let mut sched = ReleaseScheduler::new(&cfg, SplitMix64::new(1), t0);
+        let arrival = Duration::from_millis(5);
+        let frames = 200u32;
+        let first = sched.schedule(t0, 1000, false);
+        let mut last = first;
+        for i in 1..frames {
+            last = sched.schedule(t0 + arrival * i, 1000, false);
+        }
+        let elapsed = last.saturating_duration_since(first);
+        let expected = arrival * (frames - 1);
+        let diff = elapsed.abs_diff(expected);
+        assert!(
+            diff <= Duration::from_millis(1),
+            "steady-state elapsed {elapsed:?} vs expected {expected:?} (base must not compound)"
+        );
+    }
+
+    #[test]
+    fn jitter_within_bounds() {
+        let t0 = Instant::now();
+        for (idx, dist) in ALL_DISTRIBUTIONS.into_iter().enumerate() {
+            // jitterMs = 0: release is exactly the pacer deadline.
+            let cfg = dir(1_000_000, 0, 0, dist, PacketOrder::Preserve, 0.0, 0);
+            let mut sched = ReleaseScheduler::new(&cfg, SplitMix64::new(0x100 + idx as u64), t0);
+            let mut reference = Pacer::new(1_000_000, 32_768, t0);
+            let mut now = t0;
+            for _ in 0..200 {
+                let release = sched.schedule(now, 1000, false);
+                assert_eq!(
+                    release,
+                    reference.schedule(now, 1000),
+                    "{dist:?}: zero jitter must be identity vs the pacer deadline"
+                );
+                now += Duration::from_micros(50);
+            }
+
+            // jitterMs = max: the offset above the pacer deadline stays in
+            // [0, 30_000 ms]. rateBps=0 makes the pacer deadline exactly `now`,
+            // so `release - now` is the measured jitter.
+            let cfg = dir(0, 0, 30_000, dist, PacketOrder::Preserve, 0.0, 0);
+            let mut sched = ReleaseScheduler::new(&cfg, SplitMix64::new(0x200 + idx as u64), t0);
+            let mut now = t0;
+            for _ in 0..500 {
+                let release = sched.schedule(now, 1000, false);
+                let delta = release.saturating_duration_since(now);
+                assert!(
+                    delta <= Duration::from_millis(30_000),
+                    "{dist:?}: jitter {delta:?} exceeds 30_000 ms"
+                );
+                now += Duration::from_millis(1);
+            }
+        }
+    }
+
+    #[test]
+    fn delay_zero_jitter_zero_is_identity() {
+        let t0 = Instant::now();
+        for rate in [0u64, 1_000_000] {
+            let cfg = dir(rate, 0, 0, JitterDistribution::Uniform, PacketOrder::Preserve, 0.0, 0);
+            let mut sched = ReleaseScheduler::new(&cfg, SplitMix64::new(9), t0);
+            let mut reference = Pacer::new(rate, 32_768, t0);
+            let mut now = t0;
+            for _ in 0..100 {
+                assert_eq!(
+                    sched.schedule(now, 1000, false),
+                    reference.schedule(now, 1000),
+                    "rate {rate}: zero delay and jitter must add nothing"
+                );
+                now += Duration::from_millis(1);
+            }
+        }
+    }
+
+    #[test]
+    fn distribution_fallback_is_uniform() {
+        for dist in ALL_DISTRIBUTIONS {
+            assert_eq!(
+                effective_distribution(dist, 0),
+                JitterDistribution::Uniform,
+                "{dist:?} with zero amplitude must fall back to uniform"
+            );
+            assert_eq!(effective_distribution(dist, 1), dist);
+            assert_eq!(effective_distribution(dist, 30_000), dist);
+        }
+    }
+
+    #[test]
+    fn reorder_actually_reorders_within_gap() {
+        // order=reorder, jitterMs=0, delayMs=0, reorderPct=100 (every non-exempt
+        // frame selected), reorderGap=3. Two frames arrive back-to-back: the
+        // first is a normal data frame (held), the second is D5-exempt (never
+        // held), so its release overtakes the held frame.
+        let rate = 1_000_000u64;
+        let len = 1000usize;
+        let interval = bytes_interval(rate, len);
+        let cfg = dir(rate, 0, 0, JitterDistribution::Uniform, PacketOrder::Reorder, 100.0, 3);
+        let t0 = Instant::now();
+        let mut sched = ReleaseScheduler::new(&cfg, SplitMix64::new(42), t0);
+
+        let held = sched.schedule(t0, len, false);
+        let exempt = sched.schedule(t0, len, true);
+
+        let expected_hold = interval * 3;
+        assert_eq!(held, t0 + interval + expected_hold, "held = natural + hold");
+        assert_eq!(exempt, t0 + interval * 2, "exempt = pacer deadline, no hold");
+        assert!(exempt < held, "a later frame must be able to overtake a held one");
+
+        let window = held.saturating_duration_since(exempt);
+        assert!(window <= expected_hold, "window {window:?} exceeds reorderGap {expected_hold:?}");
+
+        // Every frame exempt: the hold is never applied, release == pacer deadline.
+        let mut plain = ReleaseScheduler::new(&cfg, SplitMix64::new(7), t0);
+        assert_eq!(plain.schedule(t0, len, true), t0 + interval);
+        assert_eq!(plain.schedule(t0, len, true), t0 + interval * 2);
+    }
+
+    #[test]
+    fn reconfigure_rate_increase_drains_debt() {
+        let old_rate = 1_000u64;
+        let new_rate = 1_000_000u64;
+        let len = 1500usize;
+        let t0 = Instant::now();
+        // Reorder order so `prev_release` cannot mask the pacer deadline.
+        let old = dir(old_rate, 0, 0, JitterDistribution::Uniform, PacketOrder::Reorder, 0.0, 0);
+        let mut sched = ReleaseScheduler::new(&old, SplitMix64::new(3), t0);
+
+        // Saturate: back-to-back frames at 1000 bps accrue ~1.5 s of debt each.
+        let mut last = t0;
+        for _ in 0..50 {
+            last = sched.schedule(t0, len, false);
+        }
+        let debt = last.saturating_duration_since(t0);
+        assert!(debt >= Duration::from_secs(60), "expected deep debt, got {debt:?}");
+
+        // Raise the rate; D14 drains the debt forward to `now`.
+        let now = t0 + Duration::from_secs(1);
+        let raised =
+            dir(new_rate, 0, 0, JitterDistribution::Uniform, PacketOrder::Reorder, 0.0, 0);
+        sched.reconfigure(&raised, now);
+
+        // The next frame is paced by the NEW rate only, not the old backlog.
+        let release = sched.schedule(now, len, false);
+        assert_eq!(
+            release,
+            now + bytes_interval(new_rate, len),
+            "rate increase must drain the old-rate debt"
+        );
+        assert!(release.saturating_duration_since(now) < Duration::from_secs(1));
     }
 }
