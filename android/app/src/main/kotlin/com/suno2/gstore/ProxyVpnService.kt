@@ -4,8 +4,10 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
 import android.net.Network
@@ -16,6 +18,7 @@ import android.provider.Settings
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
+import java.net.InetSocketAddress
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -69,6 +72,9 @@ class ProxyVpnService : VpnService() {
         private const val TAG = "ProxyVpnService"
         private const val CHANNEL_ID = "gstore_proxy_vpn"
         private const val NOTIFICATION_ID = 0x5650
+
+        /** `Process.INVALID_UID`：无法解析属主时的返回值。 */
+        private const val INVALID_UID = -1
 
         const val ACTION_START = "com.suno2.gstore.proxy.vpn.START"
         const val ACTION_STOP = "com.suno2.gstore.proxy.vpn.STOP"
@@ -131,6 +137,13 @@ class ProxyVpnService : VpnService() {
         @JvmStatic
         external fun nativeStopTunnel()
 
+        /**
+         * 包增删/替换广播到达时通知宿主，使 `uid → packages` 缓存失效
+         * （JNI 名见 Rust `jni_bridge.rs`）。
+         */
+        @JvmStatic
+        external fun nativePackageChanged()
+
         /** 打开系统「VPN」设置，引导用户开启「始终开启的 VPN」。 */
         fun openAlwaysOnSettings(context: Context) {
             val intent = Intent(Settings.ACTION_VPN_SETTINGS)
@@ -177,6 +190,7 @@ class ProxyVpnService : VpnService() {
 
     private var conn: ParcelFileDescriptor? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var packageChangeReceiver: BroadcastReceiver? = null
 
     /**
      * 拆除幂等守卫：同一生命周期内只真正拆除一次。用户连点断开、ACTION_STOP 之后
@@ -318,6 +332,7 @@ class ProxyVpnService : VpnService() {
         // nativeSetTunFd 返回后宿主已持有 pending fd，core.start(vpn) 才可成功。
         tunFdInstalled = true
         registerNetworkCallback()
+        registerPackageChangeReceiver()
         Log.i(TAG, "VPN 已建立: session=${cfg.session} mtu=${cfg.mtu} fd=${pfd.fd}")
     }
 
@@ -352,6 +367,97 @@ class ProxyVpnService : VpnService() {
         Log.i(TAG, "底层网络变化($event)：已重建默认接口")
     }
 
+    /**
+     * 注册系统包变更广播：包增删/替换后共享 uid 的包名列表可能变化，须让宿主的
+     * `uid → packages` 缓存整体失效。注册失败（权限/数量限制）仅记日志，不影响
+     * 隧道——包名退化为可能陈旧，而非崩溃。
+     */
+    private fun registerPackageChangeReceiver() {
+        if (packageChangeReceiver != null) return
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                runCatching { nativePackageChanged() }
+                    .onFailure { Log.w(TAG, "包变更通知失败（忽略）: ${it.message}") }
+            }
+        }
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_PACKAGE_ADDED)
+            addAction(Intent.ACTION_PACKAGE_REMOVED)
+            addAction(Intent.ACTION_PACKAGE_REPLACED)
+            addAction(Intent.ACTION_PACKAGE_CHANGED)
+            addDataScheme("package")
+        }
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                registerReceiverCompat(receiver, filter)
+            }
+        }.onSuccess {
+            packageChangeReceiver = receiver
+        }.onFailure {
+            Log.w(TAG, "注册包变更接收器失败（忽略）: ${it.message}")
+        }
+    }
+
+    @Suppress("UnspecifiedRegisterReceiverFlag", "DEPRECATION")
+    private fun registerReceiverCompat(receiver: BroadcastReceiver, filter: IntentFilter) {
+        registerReceiver(receiver, filter)
+    }
+
+    private fun unregisterPackageChangeReceiver() {
+        val receiver = packageChangeReceiver ?: return
+        packageChangeReceiver = null
+        runCatching { unregisterReceiver(receiver) }
+    }
+
+    // ---------------------------------------------------------------------
+    // 属主 uid / 包名解析（宿主经 JNI 调用；见 rust/gstore_host/src/jni_bridge.rs）
+    // ---------------------------------------------------------------------
+
+    /**
+     * 解析某条 TCP/UDP 流的属主 uid（`ConnectivityManager.getConnectionOwnerUid`）。
+     *
+     * 仅 API 29+ 且本服务为**当前活跃 VPN** 时系统才允许查询；因此
+     * `SecurityException`（权限不足）、`IllegalArgumentException`（参数非法）、
+     * SDK<29 或任何其它失败一律返回 [INVALID_UID]（-1 = 未知），绝不抛出。
+     * 查询发生在流建立之后，短命流此时可能已拆除——属主未知是预期内的降级。
+     */
+    fun queryOwnerUid(protocol: Int, srcIp: String, srcPort: Int, dstIp: String, dstPort: Int): Int {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return INVALID_UID
+        return try {
+            val cm = getSystemService(ConnectivityManager::class.java) ?: return INVALID_UID
+            cm.getConnectionOwnerUid(
+                protocol,
+                InetSocketAddress(srcIp, srcPort),
+                InetSocketAddress(dstIp, dstPort)
+            )
+        } catch (e: SecurityException) {
+            Log.w(TAG, "getConnectionOwnerUid 权限不足（需要活跃 VPN）: ${e.message}")
+            INVALID_UID
+        } catch (e: IllegalArgumentException) {
+            Log.w(TAG, "getConnectionOwnerUid 参数非法: ${e.message}")
+            INVALID_UID
+        } catch (e: Exception) {
+            Log.w(TAG, "getConnectionOwnerUid 失败（降级为未知）: ${e.message}")
+            INVALID_UID
+        }
+    }
+
+    /**
+     * 某 uid 对应的包名列表（`PackageManager.getPackagesForUid`）。共享 uid 可能
+     * 对应多个包。uid<0、查询返回 null 或任何异常一律返回空数组，绝不抛出。
+     */
+    fun packagesForUid(uid: Int): Array<String> {
+        if (uid < 0) return emptyArray()
+        return try {
+            packageManager.getPackagesForUid(uid) ?: emptyArray()
+        } catch (e: Exception) {
+            Log.w(TAG, "getPackagesForUid($uid) 失败（降级为空）: ${e.message}")
+            emptyArray()
+        }
+    }
+
     private fun stopVpn(reason: String) {
         // 幂等：ACTION_STOP → onDestroy 常成对到达；已拆除时后续 stop 为 no-op，
         // 避免重复 nativeStopTunnel()/stopForeground()。startVpn 会重置该标志。
@@ -361,6 +467,7 @@ class ProxyVpnService : VpnService() {
         }
         tornDown = true
         unregisterNetworkCallback()
+        unregisterPackageChangeReceiver()
         isRunning = false
         // fd 随拆除失效：等待方不得再认为 fd 可用。
         tunFdInstalled = false

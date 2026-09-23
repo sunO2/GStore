@@ -15,14 +15,15 @@
 // - 拆除顺序：模块停止读取循环 → 线程 join → 宿主 `nativeClear` → Kotlin 关闭
 //   `ParcelFileDescriptor`。宿主只在 `nativeClear` 里清缓存，不触碰 fd。
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock, RwLock};
 
 use std::os::raw::c_int;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::time::{Duration, Instant};
 
-use jni::objects::{GlobalRef, JObject, JString, JValue};
+use jni::objects::{GlobalRef, JObject, JObjectArray, JString, JValue};
 use jni::{JNIEnv, JavaVM};
 
 /// protect 回调返回值：0 = 已保护 / 无需保护（无 VPN 时放行），非 0 = 失败。
@@ -256,6 +257,317 @@ fn jstring_to_string(env: &mut JNIEnv, value: &JString) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// UID / package resolution（模块 `proxy.uid.query` → 宿主 → Kotlin VpnService）
+// ---------------------------------------------------------------------------
+//
+// 查询发生在**流建立之后**（模块在 `record_open` 后异步发起），因此短命流可能
+// 在宿主向 `ConnectivityManager.getConnectionOwnerUid` 查询时已被拆除——这是
+// 设计上接受的 late-query 覆盖缺口，本路径为 **best-effort**：查不到一律
+// `uid=None`（`unknown`），绝不因此报错、重试或 panic。
+//
+// 与 protect 桥同一降级策略：无 `JavaVM` / 无 service `GlobalRef` /
+// `queryOwnerUid` 方法缺失 / 任何 JNI 失败都只记日志并返回 unknown。
+
+/// 一次 UID 解析请求，镜像模块 `proxy.uid.query` 的线形状
+/// `{recordId, protocol, srcIp, srcPort, dstIp, dstPort}`。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UidQueryHost {
+    pub record_id: u64,
+    /// `"tcp"` | `"udp"`（当前采集仅产生 TCP）。
+    pub protocol: String,
+    pub src_ip: String,
+    pub src_port: u16,
+    pub dst_ip: String,
+    pub dst_port: u16,
+}
+
+/// 解析结果，镜像 `{recordId, uid, packages}`。`uid == None` 即 `unknown`
+/// （无 VM / 无服务 / 方法缺失 / SDK<29 / 异常 / 未命中）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UidAnswer {
+    pub record_id: u64,
+    pub uid: Option<u32>,
+    pub packages: Vec<String>,
+}
+
+/// `queryOwnerUid(Int, String, Int, String, Int): Int` 的 JVM 签名。
+const QUERY_OWNER_UID: &str = "queryOwnerUid";
+const UID_QUERY_SIG: &str = "(ILjava/lang/String;ILjava/lang/String;I)I";
+/// `packagesForUid(Int): Array<String>` 的 JVM 签名。
+const PACKAGES_FOR_UID: &str = "packagesForUid";
+const PACKAGES_SIG: &str = "(I)[Ljava/lang/String;";
+
+/// JNI UID 通道可用性。抽成纯值，使三种 no-op 降级路径在无 JVM 的测试主机上
+/// 仍可被完整覆盖。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UidChannelStatus {
+    /// 未缓存 `JavaVM`。
+    NoVm,
+    /// 有 VM 但服务对象已清空（`nativeClear` 之后）。
+    NoService,
+    /// 有服务对象但其类上没有 `queryOwnerUid`（旧 APK）。
+    MethodMissing,
+    /// 可调用。
+    Available,
+}
+
+type UidStatusFn = fn() -> UidChannelStatus;
+static UID_STATUS: RwLock<UidStatusFn> = RwLock::new(platform_uid_status);
+
+fn current_uid_status() -> UidChannelStatus {
+    UID_STATUS.read().unwrap_or_else(|e| e.into_inner())()
+}
+
+#[cfg(test)]
+fn set_uid_status_for_tests(f: UidStatusFn) {
+    *UID_STATUS.write().unwrap_or_else(|e| e.into_inner()) = f;
+}
+
+/// 探测真实 JNI 通道状态：无 VM → `NoVm`；无服务 → `NoService`；服务类上无
+/// `queryOwnerUid` → `MethodMissing`；否则 `Available`。绝不 panic。
+fn platform_uid_status() -> UidChannelStatus {
+    let Some(jvm) = JVM.get() else {
+        return UidChannelStatus::NoVm;
+    };
+    let slot = SERVICE.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(service) = slot.as_ref() else {
+        return UidChannelStatus::NoService;
+    };
+    let Ok(mut env) = jvm.attach_current_thread() else {
+        return UidChannelStatus::NoService;
+    };
+    let Ok(class) = env.get_object_class(service.as_obj()) else {
+        return UidChannelStatus::MethodMissing;
+    };
+    match env.get_method_id(&class, QUERY_OWNER_UID, UID_QUERY_SIG) {
+        Ok(_) => UidChannelStatus::Available,
+        Err(e) => {
+            crate::log_bridge::push_host_log(
+                2,
+                format!("ProxyVpnService.queryOwnerUid 不可用: {e}"),
+            );
+            UidChannelStatus::MethodMissing
+        }
+    }
+}
+
+/// 批量解析请求的属主 uid 与包名。
+///
+/// 无 VM / 无服务 / 方法缺失 / 非法请求 → `UidAnswer { uid: None, packages: [] }`
+/// （`unknown`），绝不 panic；返回顺序与入参一致。
+pub fn resolve_uids(reqs: &[UidQueryHost]) -> Vec<UidAnswer> {
+    let status = current_uid_status();
+    reqs.iter().map(|q| answer_for(status, q)).collect()
+}
+
+fn answer_for(status: UidChannelStatus, q: &UidQueryHost) -> UidAnswer {
+    let unknown = UidAnswer {
+        record_id: q.record_id,
+        uid: None,
+        packages: Vec::new(),
+    };
+    if status != UidChannelStatus::Available || !is_queryable(q) {
+        return unknown;
+    }
+    match owner_uid_fn()(q) {
+        Some(uid) => UidAnswer {
+            record_id: q.record_id,
+            uid: Some(uid),
+            packages: packages_cached(uid),
+        },
+        None => unknown,
+    }
+}
+
+/// 请求是否具备发起 `getConnectionOwnerUid` 的必要字段（纯函数，主机可测）。
+fn is_queryable(q: &UidQueryHost) -> bool {
+    !q.src_ip.is_empty() && !q.dst_ip.is_empty() && protocol_number(&q.protocol).is_some()
+}
+
+/// 线协议字符串 → Java `IPPROTO_*` 值。未知协议返回 `None`（`is_queryable`
+/// 据此降级为 `unknown`）。
+fn protocol_number(protocol: &str) -> Option<i32> {
+    match protocol {
+        "tcp" => Some(6),
+        "udp" => Some(17),
+        _ => None,
+    }
+}
+
+/// Kotlin 原始 uid → 可选 uid；`-1`（`Process.INVALID_UID`）及其它负值归 unknown。
+fn valid_uid(raw: i32) -> Option<u32> {
+    if raw < 0 {
+        None
+    } else {
+        Some(raw as u32)
+    }
+}
+
+/// 原始属主 uid 探针（生产实现 = JNI [`query_owner_uid_jni`]）。抽成可替换函数
+/// 指针，使「已知 uid」装配路径可在无 JVM 的测试主机上被验证。
+type OwnerUidFn = fn(&UidQueryHost) -> Option<u32>;
+static OWNER_UID_FN: RwLock<OwnerUidFn> = RwLock::new(query_owner_uid_jni);
+
+fn owner_uid_fn() -> OwnerUidFn {
+    *OWNER_UID_FN.read().unwrap_or_else(|e| e.into_inner())
+}
+
+#[cfg(test)]
+fn set_owner_uid_fn_for_tests(f: OwnerUidFn) {
+    *OWNER_UID_FN.write().unwrap_or_else(|e| e.into_inner()) = f;
+}
+
+/// 调用 Kotlin `queryOwnerUid`。无 VM / 无服务 / attach 失败 / 调用失败 / 非法
+/// 返回值一律 `None`（不 panic、不重试）。
+fn query_owner_uid_jni(q: &UidQueryHost) -> Option<u32> {
+    let protocol = protocol_number(&q.protocol)?;
+    let jvm = JVM.get()?;
+    let slot = SERVICE.lock().unwrap_or_else(|e| e.into_inner());
+    let service = slot.as_ref()?;
+    let mut env = jvm.attach_current_thread().ok()?;
+    let src = env.new_string(q.src_ip.as_str()).ok()?;
+    let dst = env.new_string(q.dst_ip.as_str()).ok()?;
+    let args = [
+        JValue::Int(protocol),
+        JValue::Object(&src),
+        JValue::Int(q.src_port as i32),
+        JValue::Object(&dst),
+        JValue::Int(q.dst_port as i32),
+    ];
+    match env.call_method(service.as_obj(), QUERY_OWNER_UID, UID_QUERY_SIG, &args) {
+        Ok(value) => valid_uid(value.i().ok()?),
+        Err(e) => {
+            crate::log_bridge::push_host_log(
+                2,
+                format!("ProxyVpnService.queryOwnerUid JNI 失败: {e}"),
+            );
+            None
+        }
+    }
+}
+
+/// `uid → packages` 长活缓存条目。
+struct CachedPackages {
+    packages: Vec<String>,
+    fetched_at: Instant,
+}
+
+/// 缓存上限（按最旧淘汰，防 uid 集合无界增长）。
+const PACKAGES_CACHE_CAP: usize = 512;
+/// 兜底 TTL：即使漏掉一次包变更广播，条目也会过期后重取。
+const PACKAGES_CACHE_TTL: Duration = Duration::from_secs(600);
+
+static PACKAGES_CACHE: OnceLock<Mutex<HashMap<u32, CachedPackages>>> = OnceLock::new();
+
+type PackagesFn = fn(u32) -> Vec<String>;
+static PACKAGES_FN: RwLock<PackagesFn> = RwLock::new(jni_packages_for_uid);
+
+fn packages_fn() -> PackagesFn {
+    *PACKAGES_FN.read().unwrap_or_else(|e| e.into_inner())
+}
+
+#[cfg(test)]
+fn set_packages_fn_for_tests(f: PackagesFn) {
+    *PACKAGES_FN.write().unwrap_or_else(|e| e.into_inner()) = f;
+}
+
+fn packages_cache() -> &'static Mutex<HashMap<u32, CachedPackages>> {
+    PACKAGES_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 取（并缓存）某 uid 的包名。命中且未过期直接返回；否则查询并写回。
+fn packages_cached(uid: u32) -> Vec<String> {
+    let now = Instant::now();
+    {
+        let mut cache = packages_cache().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(entry) = cache.get(&uid) {
+            if now.duration_since(entry.fetched_at) < PACKAGES_CACHE_TTL {
+                return entry.packages.clone();
+            }
+            cache.remove(&uid);
+        }
+    }
+    let packages = packages_fn()(uid);
+    let mut cache = packages_cache().lock().unwrap_or_else(|e| e.into_inner());
+    if cache.len() >= PACKAGES_CACHE_CAP {
+        if let Some(oldest) = cache
+            .iter()
+            .min_by_key(|(_, entry)| entry.fetched_at)
+            .map(|(key, _)| *key)
+        {
+            cache.remove(&oldest);
+        }
+    }
+    cache.insert(
+        uid,
+        CachedPackages {
+            packages: packages.clone(),
+            fetched_at: now,
+        },
+    );
+    packages
+}
+
+/// 包变更（Kotlin `nativePackageChanged`）时整体失效 `uid → packages` 缓存。
+pub(crate) fn invalidate_package_cache() {
+    packages_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+}
+
+/// 调用 Kotlin `packagesForUid`。任何失败（无 VM / 无服务 / 方法缺失 / 异常）
+/// → 空列表，绝不 panic。
+fn jni_packages_for_uid(uid: u32) -> Vec<String> {
+    let Some(jvm) = JVM.get() else {
+        return Vec::new();
+    };
+    let slot = SERVICE.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(service) = slot.as_ref() else {
+        return Vec::new();
+    };
+    let Ok(mut env) = jvm.attach_current_thread() else {
+        return Vec::new();
+    };
+    let value = match env.call_method(
+        service.as_obj(),
+        PACKAGES_FOR_UID,
+        PACKAGES_SIG,
+        &[JValue::Int(uid as i32)],
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            crate::log_bridge::push_host_log(
+                2,
+                format!("ProxyVpnService.packagesForUid JNI 失败: {e}"),
+            );
+            return Vec::new();
+        }
+    };
+    let Ok(obj) = value.l() else {
+        return Vec::new();
+    };
+    let array = JObjectArray::from(obj);
+    let Ok(len) = env.get_array_length(&array) else {
+        return Vec::new();
+    };
+    let mut out = Vec::with_capacity(len.max(0) as usize);
+    for i in 0..len {
+        let Ok(element) = env.get_object_array_element(&array, i) else {
+            continue;
+        };
+        let name: JString = element.into();
+        let parsed: Result<String, _> = env.get_string(&name).map(|s| s.into());
+        if let Ok(s) = parsed {
+            out.push(s);
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
 // JNI 导出（Kotlin `ProxyVpnService.companion` 的 @JvmStatic external fun）
 // ---------------------------------------------------------------------------
 
@@ -334,6 +646,16 @@ pub extern "system" fn Java_com_suno2_gstore_ProxyVpnService_nativeStopTunnel(
     _class: JObject,
 ) {
     guard_jni("nativeStopTunnel", stop_tunnel_impl);
+}
+
+/// Kotlin: `nativePackageChanged()`（静态方法）。系统包增删/替换广播到达时调用，
+/// 使宿主 `uid → packages` 缓存整体失效，避免共享 uid 的包名列表陈旧。
+#[no_mangle]
+pub extern "system" fn Java_com_suno2_gstore_ProxyVpnService_nativePackageChanged(
+    _env: JNIEnv,
+    _class: JObject,
+) {
+    guard_jni("nativePackageChanged", invalidate_package_cache);
 }
 
 #[cfg(test)]
@@ -503,5 +825,169 @@ mod tests {
 
         mgr.unref(id);
         clear_impl();
+    }
+}
+
+#[cfg(test)]
+mod uid_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn query(record_id: u64) -> UidQueryHost {
+        UidQueryHost {
+            record_id,
+            protocol: "tcp".to_string(),
+            src_ip: "10.10.0.2".to_string(),
+            src_port: 40_000,
+            dst_ip: "93.184.216.34".to_string(),
+            dst_port: 443,
+        }
+    }
+
+    /// Scenario 1 — no `JavaVM` cached. The Linux test host never installs one, so
+    /// this exercises the real production path. The whole batch must degrade to
+    /// all-unknown without panicking (release builds are `panic = "abort"`).
+    #[test]
+    fn no_vm_yields_all_unknown_without_panicking() {
+        let _g = crate::TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        clear_impl();
+        let reqs = vec![query(1), query(2)];
+        let answers = resolve_uids(&reqs);
+        assert_eq!(answers.len(), 2);
+        assert!(
+            answers.iter().all(|a| a.uid.is_none() && a.packages.is_empty()),
+            "no VM must answer unknown for every request"
+        );
+        assert_eq!(
+            answers.iter().map(|a| a.record_id).collect::<Vec<_>>(),
+            vec![1, 2],
+            "answers must preserve the request order and record ids"
+        );
+    }
+
+    /// Scenario 2 — VM cached but `nativeClear` ran (no service `GlobalRef`).
+    #[test]
+    fn no_service_global_ref_yields_all_unknown() {
+        let _g = crate::TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        set_uid_status_for_tests(|| UidChannelStatus::NoService);
+        let answers = resolve_uids(&[query(11), query(12)]);
+        set_uid_status_for_tests(platform_uid_status);
+        assert!(
+            answers.iter().all(|a| a.uid.is_none() && a.packages.is_empty()),
+            "missing service GlobalRef must answer unknown"
+        );
+    }
+
+    /// Scenario 3 — service cached but the installed APK predates
+    /// `queryOwnerUid` (method lookup fails). Must answer unknown, never panic.
+    #[test]
+    fn missing_query_owner_uid_method_yields_all_unknown() {
+        let _g = crate::TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        set_uid_status_for_tests(|| UidChannelStatus::MethodMissing);
+        let answers = resolve_uids(&[query(21)]);
+        set_uid_status_for_tests(platform_uid_status);
+        assert!(
+            answers.iter().all(|a| a.uid.is_none() && a.packages.is_empty()),
+            "missing queryOwnerUid method must answer unknown"
+        );
+    }
+
+    /// Malformed queries are rejected host-side before any JNI call.
+    #[test]
+    fn malformed_queries_are_not_queryable() {
+        let mut blank_dst = query(1);
+        blank_dst.dst_ip = String::new();
+        assert!(!is_queryable(&blank_dst), "blank destination IP");
+
+        let mut blank_src = query(2);
+        blank_src.src_ip = String::new();
+        assert!(!is_queryable(&blank_src), "blank source IP");
+
+        let mut bad_protocol = query(3);
+        bad_protocol.protocol = "icmp".to_string();
+        assert!(!is_queryable(&bad_protocol), "unsupported protocol");
+
+        let mut zero_ports = query(4);
+        zero_ports.src_port = 0;
+        zero_ports.dst_port = 0;
+        assert!(is_queryable(&zero_ports), "port 0 is legal and must pass");
+
+        assert!(is_queryable(&query(5)), "well-formed query");
+    }
+
+    /// `INVALID_UID` (-1) from Kotlin maps to `None`; real uids are preserved.
+    #[test]
+    fn invalid_uid_maps_to_unknown() {
+        assert_eq!(valid_uid(-1), None);
+        assert_eq!(valid_uid(0), Some(0));
+        assert_eq!(valid_uid(10_123), Some(10_123));
+    }
+
+    /// An empty batch is a no-op (no JNI, no panic, empty result).
+    #[test]
+    fn empty_batch_is_a_noop() {
+        let _g = crate::TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(resolve_uids(&[]).is_empty());
+    }
+
+    /// Success assembly: a resolved uid is returned with its packages, and the
+    /// record id is preserved. The real JNI probe is device-only; this stubs the
+    /// probe to lock the host-side assembly + cache integration.
+    #[test]
+    fn known_uid_is_assembled_with_packages() {
+        let _g = crate::TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        fn found_uid(_q: &UidQueryHost) -> Option<u32> {
+            Some(10_123)
+        }
+        fn found_packages(uid: u32) -> Vec<String> {
+            vec![format!("com.example.{uid}"), "com.shared.uid".to_string()]
+        }
+        set_uid_status_for_tests(|| UidChannelStatus::Available);
+        set_owner_uid_fn_for_tests(found_uid);
+        set_packages_fn_for_tests(found_packages);
+        invalidate_package_cache();
+
+        let answers = resolve_uids(&[query(99)]);
+        set_uid_status_for_tests(platform_uid_status);
+        set_owner_uid_fn_for_tests(query_owner_uid_jni);
+        set_packages_fn_for_tests(jni_packages_for_uid);
+        invalidate_package_cache();
+
+        assert_eq!(answers.len(), 1);
+        assert_eq!(answers[0].record_id, 99);
+        assert_eq!(answers[0].uid, Some(10_123));
+        assert_eq!(
+            answers[0].packages,
+            vec!["com.example.10123".to_string(), "com.shared.uid".to_string()]
+        );
+    }
+
+    /// A second lookup for the same uid is served from cache; a package-change
+    /// invalidation forces exactly one refetch.
+    #[test]
+    fn package_cache_hits_then_invalidates_on_package_change() {
+        let _g = crate::TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        static FETCHES: AtomicUsize = AtomicUsize::new(0);
+        fn fake_packages(uid: u32) -> Vec<String> {
+            FETCHES.fetch_add(1, Ordering::SeqCst);
+            vec![format!("com.example.{uid}")]
+        }
+
+        invalidate_package_cache();
+        set_packages_fn_for_tests(fake_packages);
+
+        let first = packages_cached(10_123);
+        let second = packages_cached(10_123);
+        assert_eq!(first, vec!["com.example.10123".to_string()]);
+        assert_eq!(second, first, "cache hit returns the same packages");
+        assert_eq!(FETCHES.load(Ordering::SeqCst), 1, "cache hit must not refetch");
+
+        invalidate_package_cache();
+        let third = packages_cached(10_123);
+        assert_eq!(third, first);
+        assert_eq!(FETCHES.load(Ordering::SeqCst), 2, "invalidation forces one refetch");
+
+        set_packages_fn_for_tests(jni_packages_for_uid);
+        invalidate_package_cache();
     }
 }
