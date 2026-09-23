@@ -10,7 +10,7 @@
 //! (`bench/run.sh`, `tun::tests::bench_dataplane_reader_throughput`).
 #![allow(dead_code)]
 
-use crate::{conn, dns, logging, requests, stats, tun};
+use crate::{conn, dns, logging, requests, shaper, stats, tun};
 
 pub(crate) const LOG_RING_CAP: usize = logging::RING_CAPACITY;
 pub(crate) const DOMAIN_CAP: usize = stats::DOMAIN_CAP;
@@ -24,6 +24,12 @@ pub(crate) const LWIP_STACK_BUFFER_SIZE: usize = tun::STACK_BUFFER_SIZE;
 pub(crate) const LWIP_UDP_BUFFER_SIZE: usize = tun::UDP_BUFFER_SIZE;
 pub(crate) const TUN_READ_BUFFER_SIZE: usize = tun::READ_BUFFER_SIZE;
 pub(crate) const TUN_INGRESS_CHANNEL: usize = tun::INGRESS_CHANNEL;
+
+// Weak-network shaper release-heap caps (Todo 6). Re-exported from `shaper.rs`
+// (single source of truth); the byte cap dominates the frame cap for MTU-sized
+// frames, so the budget charges the byte cap once per direction (two total).
+pub(crate) const SHAPER_BUFFER_BYTES_PER_DIRECTION: usize = shaper::BUFFER_BYTES_PER_DIRECTION;
+pub(crate) const SHAPER_MAX_FRAMES: usize = shaper::MAX_FRAMES;
 
 // Request-collector caps (Todo 9). The **cap counts** are re-exported from their
 // owning module so there is exactly one source of truth (`requests.rs`); the
@@ -49,6 +55,8 @@ pub(crate) const MAX_FAKEIP_STORE: usize = 65_536;
 pub(crate) const MAX_LWIP_QUEUE_DEPTH: usize = 4096;
 pub(crate) const MAX_TUN_READ_BUFFER: usize = 65_535;
 pub(crate) const MAX_INGRESS_CHANNEL: usize = 1024;
+pub(crate) const MAX_SHAPER_BUFFER_BYTES_PER_DIRECTION: usize = 2 * 1024 * 1024;
+pub(crate) const MAX_SHAPER_MAX_FRAMES: usize = 512;
 
 /// Per-entry ceilings for the worst-case accounting. These are generous upper
 /// bounds; real records are far smaller.
@@ -101,6 +109,9 @@ pub(crate) fn worst_case_bytes() -> usize {
         + STALE_LIVE_CAP * STALE_LIVE_RECORD_MAX_BYTES
         + UID_PENDING_CAP * UID_QUERY_MAX_BYTES
         + UID_EARLY_RESULTS_CAP * UID_ANSWER_MAX_BYTES
+        // Shaper release heaps (Todo 6): one bounded heap per direction, billed
+        // by actual frame length, so each holds at most this many bytes.
+        + 2 * SHAPER_BUFFER_BYTES_PER_DIRECTION
 }
 
 #[cfg(target_os = "linux")]
@@ -191,6 +202,14 @@ mod tests {
         assert!(LWIP_UDP_BUFFER_SIZE <= MAX_LWIP_QUEUE_DEPTH);
         assert!(TUN_INGRESS_CHANNEL <= MAX_INGRESS_CHANNEL);
         assert!(TUN_READ_BUFFER_SIZE <= MAX_TUN_READ_BUFFER);
+        assert!(
+            SHAPER_BUFFER_BYTES_PER_DIRECTION <= MAX_SHAPER_BUFFER_BYTES_PER_DIRECTION,
+            "shaper byte cap {SHAPER_BUFFER_BYTES_PER_DIRECTION}"
+        );
+        assert!(
+            SHAPER_MAX_FRAMES <= MAX_SHAPER_MAX_FRAMES,
+            "shaper frame cap {SHAPER_MAX_FRAMES}"
+        );
     }
 
     #[test]
@@ -222,13 +241,18 @@ mod tests {
             + UID_EARLY_RESULTS_CAP * UID_ANSWER_MAX_BYTES;
         assert_eq!(request_additions, 13_631_488, "request accounting drifted");
 
+        // Shaper release heaps (Todo 6): both directions' byte caps, computed
+        // from the ACTUAL caps, not the `MAX_*` ceilings.
+        let shaper_additions = 2 * SHAPER_BUFFER_BYTES_PER_DIRECTION;
+        assert_eq!(shaper_additions, 4_194_304, "shaper accounting drifted");
+
         let worst = worst_case_bytes();
         assert_eq!(
             worst,
-            baseline + request_additions,
-            "worst_case_bytes must equal baseline + the four request accumulators"
+            baseline + request_additions + shaper_additions,
+            "worst_case_bytes must equal baseline + request + shaper accumulators"
         );
-        assert_eq!(worst, 25_405_439, "worst-case budget drifted");
+        assert_eq!(worst, 29_599_743, "worst-case budget drifted");
         assert!(
             worst <= WORST_CASE_BUDGET_BYTES,
             "worst-case {worst} B exceeds budget {WORST_CASE_BUDGET_BYTES} B"
@@ -239,6 +263,22 @@ mod tests {
             + LWIP_STACK_BUFFER_SIZE * FRAME_BYTES
             + LWIP_UDP_BUFFER_SIZE * FRAME_BYTES;
         assert!(queues <= worst);
+    }
+
+    #[test]
+    fn worst_case_counts_the_shaper_buffer_exactly_twice() {
+        let shaper_term = 2 * SHAPER_BUFFER_BYTES_PER_DIRECTION;
+        assert_eq!(shaper_term, 4_194_304, "shaper memory term drifted");
+
+        // Removing the shaper term must leave exactly the pre-shaper worst case
+        // (frozen at 25_405_439) — i.e. `worst_case_bytes()` includes exactly
+        // `2 × SHAPER_BUFFER_BYTES_PER_DIRECTION` for the heaps, no more.
+        let without_shaper = worst_case_bytes() - shaper_term;
+        assert_eq!(without_shaper, 25_405_439, "shaper term is not exactly 2 × the per-direction cap");
+
+        // The cap must equal the module's own source of truth.
+        assert_eq!(SHAPER_BUFFER_BYTES_PER_DIRECTION, shaper::BUFFER_BYTES_PER_DIRECTION);
+        assert_eq!(SHAPER_MAX_FRAMES, shaper::MAX_FRAMES);
     }
 
     /// `REQUEST_RECORD_MAX_BYTES` must dominate the true worst-case serialized

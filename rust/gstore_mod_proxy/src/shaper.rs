@@ -1864,3 +1864,572 @@ mod damage_tests {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Bounded release heap + process-global counters (Todo 6)
+//
+// The heap is task-local (one per direction per pump) and bills frames by their
+// ACTUAL length, so a direction can never retain more than
+// `BUFFER_BYTES_PER_DIRECTION` bytes (and never more than `MAX_FRAMES` frames).
+// Overflow is drop-newest: the arriving frame is rejected, never an already
+// buffered one. The process-global `ShaperCounters` is the shared read surface
+// `net.shaper.get` (Todo 11) and `buffer_stats()` (Todo 10) consume.
+// ---------------------------------------------------------------------------
+
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
+
+/// Byte ceiling retained by ONE direction's release heap.
+///
+/// Billing is by the actual frame length (`payload.len()`), so the bytes
+/// retained are exactly bounded; `Vec` spare capacity is deliberately NOT
+/// counted (see [`ReleaseHeap::push`]).
+pub(crate) const BUFFER_BYTES_PER_DIRECTION: usize = 2 * 1024 * 1024;
+
+/// Frame-count ceiling retained by ONE direction's release heap. Bounds the
+/// per-frame bookkeeping even when every frame is tiny (so the byte cap never
+/// binds).
+pub(crate) const MAX_FRAMES: usize = 512;
+
+/// Which direction a counter/occupancy update belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ShaperDirection {
+    Uplink,
+    Downlink,
+}
+
+/// One frame waiting for its release instant.
+///
+/// Ordering is by `(release, seq)` ONLY; `payload` is excluded from `Eq`/`Ord`
+/// on purpose so the heap never compares (or hashes) frame bodies.
+///
+/// # Ord/Eq contract
+/// `PartialEq` and `Ord` are consistent: two frames are equal iff both `release`
+/// and `seq` are equal, which makes `BinaryHeap<Reverse<PendingFrame>>` a
+/// min-heap by earliest `release`, then lowest `seq`. Two frames with an
+/// identical `(release, seq)` but different payloads compare `Equal` — a legal,
+/// deliberate edge case (`seq` is unique per pump in practice, and `BinaryHeap`
+/// tolerates duplicates).
+#[derive(Debug, Clone)]
+pub(crate) struct PendingFrame {
+    pub release: Instant,
+    pub seq: u64,
+    pub payload: Vec<u8>,
+}
+
+impl PartialEq for PendingFrame {
+    fn eq(&self, other: &Self) -> bool {
+        self.release == other.release && self.seq == other.seq
+    }
+}
+
+impl Eq for PendingFrame {}
+
+impl PartialOrd for PendingFrame {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for PendingFrame {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // `payload` is deliberately not part of the key.
+        (self.release, self.seq).cmp(&(other.release, other.seq))
+    }
+}
+
+/// A point-in-time occupancy reading of one direction's release heap. Returned
+/// by [`ReleaseHeap::stats`] and embedded in [`BufferStatsSnapshot`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BufferStats {
+    pub bytes: usize,
+    pub frames: usize,
+    pub max_frames: usize,
+    pub buffer_dropped: u64,
+}
+
+/// Bounded, drop-newest release heap for ONE direction.
+///
+/// # Drop-newest
+/// On overflow (byte or frame cap) the **arriving** frame is rejected — never an
+/// already-buffered one — so the frames the pump is about to release are kept
+/// and the drop is deterministic. `push` also records the global `bufferDropped`
+/// counter, so the buffer-drop reason stays separable from random loss at
+/// `net.shaper.get`.
+pub(crate) struct ReleaseHeap {
+    heap: BinaryHeap<Reverse<PendingFrame>>,
+    bytes: usize,
+    frames: usize,
+    buffer_dropped: u64,
+}
+
+impl ReleaseHeap {
+    /// An empty heap for one direction.
+    pub(crate) fn new() -> Self {
+        Self {
+            heap: BinaryHeap::new(),
+            bytes: 0,
+            frames: 0,
+            buffer_dropped: 0,
+        }
+    }
+
+    /// Queue `frame`, charging its actual length (`payload.len()`).
+    ///
+    /// Returns `false` (drop-newest) without buffering when the frame would push
+    /// the direction past [`BUFFER_BYTES_PER_DIRECTION`] or
+    /// [`MAX_FRAMES`]; the heap's `buffer_dropped` and the global
+    /// `bufferDropped` counter both advance. Returns `true` when buffered.
+    pub(crate) fn push(&mut self, frame: PendingFrame) -> bool {
+        let len = frame.payload.len();
+        if self.frames >= MAX_FRAMES || self.bytes + len > BUFFER_BYTES_PER_DIRECTION {
+            self.buffer_dropped += 1;
+            counters().record_buffer_drop();
+            return false;
+        }
+        self.bytes += len;
+        self.frames += 1;
+        self.heap.push(Reverse(frame));
+        true
+    }
+
+    /// Pop and return every frame whose `release <= now`, in `(release, seq)`
+    /// order, decrementing the byte/frame occupancy per popped frame.
+    pub(crate) fn pop_ready(&mut self, now: Instant) -> Vec<PendingFrame> {
+        let mut ready = Vec::new();
+        while let Some(peeked) = self.heap.peek() {
+            if peeked.0.release > now {
+                break;
+            }
+            let Reverse(frame) = self.heap.pop().expect("peeked frame must pop");
+            self.bytes = self.bytes.saturating_sub(frame.payload.len());
+            self.frames = self.frames.saturating_sub(1);
+            ready.push(frame);
+        }
+        ready
+    }
+
+    /// Release instant of the earliest buffered frame, or `None` when empty.
+    pub(crate) fn next_deadline(&self) -> Option<Instant> {
+        self.heap.peek().map(|Reverse(frame)| frame.release)
+    }
+
+    /// Pop every buffered frame (teardown / hot-disable release) and reset the
+    /// byte/frame occupancy and the heap-local drop counter.
+    pub(crate) fn drain_all(&mut self) -> Vec<PendingFrame> {
+        let drained = std::mem::take(&mut self.heap);
+        let frames: Vec<PendingFrame> =
+            drained.into_vec().into_iter().map(|Reverse(f)| f).collect();
+        self.bytes = 0;
+        self.frames = 0;
+        self.buffer_dropped = 0;
+        frames
+    }
+
+    /// Live occupancy + heap-local drop count.
+    pub(crate) fn stats(&self) -> BufferStats {
+        BufferStats {
+            bytes: self.bytes,
+            frames: self.frames,
+            max_frames: MAX_FRAMES,
+            buffer_dropped: self.buffer_dropped,
+        }
+    }
+
+    /// Frames this heap has rejected (drop-newest) since creation/last drain.
+    pub(crate) fn buffer_dropped(&self) -> u64 {
+        self.buffer_dropped
+    }
+}
+
+/// Flat snapshot of every process-global shaper counter plus the aggregate
+/// occupancy gauges. Field names mirror the frozen `net.shaper.get` schema.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CounterSnapshot {
+    pub up_frames_shaped: u64,
+    pub up_bytes_shaped: u64,
+    pub down_frames_shaped: u64,
+    pub down_bytes_shaped: u64,
+    pub loss_dropped: u64,
+    pub buffer_dropped: u64,
+    pub duplicated: u64,
+    pub reordered: u64,
+    pub buffered_frames: u64,
+    pub buffered_bytes: u64,
+    pub max_buffered_frames: u64,
+}
+
+/// Process-global shaper counters + per-direction occupancy gauges.
+///
+/// This is the shared read surface (the heap itself is task-local). All accesses
+/// are `Relaxed`: these are monotonic telemetry, not synchronization, and a
+/// snapshot need not be a consistent cut.
+pub(crate) struct ShaperCounters {
+    up_frames_shaped: AtomicU64,
+    up_bytes_shaped: AtomicU64,
+    down_frames_shaped: AtomicU64,
+    down_bytes_shaped: AtomicU64,
+    loss_dropped: AtomicU64,
+    buffer_dropped: AtomicU64,
+    duplicated: AtomicU64,
+    reordered: AtomicU64,
+    up_buffered_frames: AtomicU64,
+    up_buffered_bytes: AtomicU64,
+    up_max_buffered_frames: AtomicU64,
+    down_buffered_frames: AtomicU64,
+    down_buffered_bytes: AtomicU64,
+    down_max_buffered_frames: AtomicU64,
+}
+
+impl ShaperCounters {
+    fn new() -> Self {
+        Self {
+            up_frames_shaped: AtomicU64::new(0),
+            up_bytes_shaped: AtomicU64::new(0),
+            down_frames_shaped: AtomicU64::new(0),
+            down_bytes_shaped: AtomicU64::new(0),
+            loss_dropped: AtomicU64::new(0),
+            buffer_dropped: AtomicU64::new(0),
+            duplicated: AtomicU64::new(0),
+            reordered: AtomicU64::new(0),
+            up_buffered_frames: AtomicU64::new(0),
+            up_buffered_bytes: AtomicU64::new(0),
+            up_max_buffered_frames: AtomicU64::new(0),
+            down_buffered_frames: AtomicU64::new(0),
+            down_buffered_bytes: AtomicU64::new(0),
+            down_max_buffered_frames: AtomicU64::new(0),
+        }
+    }
+
+    /// Current `(frames, bytes)` and the max-frame watermark for one direction.
+    fn occupancy(&self, dir: ShaperDirection) -> (u64, u64, u64) {
+        match dir {
+            ShaperDirection::Uplink => (
+                self.up_buffered_frames.load(Ordering::Relaxed),
+                self.up_buffered_bytes.load(Ordering::Relaxed),
+                self.up_max_buffered_frames.load(Ordering::Relaxed),
+            ),
+            ShaperDirection::Downlink => (
+                self.down_buffered_frames.load(Ordering::Relaxed),
+                self.down_buffered_bytes.load(Ordering::Relaxed),
+                self.down_max_buffered_frames.load(Ordering::Relaxed),
+            ),
+        }
+    }
+
+    /// Flat snapshot of every counter; the three `buffered*` fields aggregate
+    /// both directions.
+    pub(crate) fn snapshot(&self) -> CounterSnapshot {
+        let (up_frames, up_bytes, up_max) = self.occupancy(ShaperDirection::Uplink);
+        let (down_frames, down_bytes, down_max) = self.occupancy(ShaperDirection::Downlink);
+        CounterSnapshot {
+            up_frames_shaped: self.up_frames_shaped.load(Ordering::Relaxed),
+            up_bytes_shaped: self.up_bytes_shaped.load(Ordering::Relaxed),
+            down_frames_shaped: self.down_frames_shaped.load(Ordering::Relaxed),
+            down_bytes_shaped: self.down_bytes_shaped.load(Ordering::Relaxed),
+            loss_dropped: self.loss_dropped.load(Ordering::Relaxed),
+            buffer_dropped: self.buffer_dropped.load(Ordering::Relaxed),
+            duplicated: self.duplicated.load(Ordering::Relaxed),
+            reordered: self.reordered.load(Ordering::Relaxed),
+            buffered_frames: up_frames + down_frames,
+            buffered_bytes: up_bytes + down_bytes,
+            max_buffered_frames: up_max + down_max,
+        }
+    }
+
+    /// Record one shaped frame: `len` bytes, in `dir`.
+    pub(crate) fn record_shaped(&self, dir: ShaperDirection, len: usize) {
+        let (frames, bytes) = match dir {
+            ShaperDirection::Uplink => (&self.up_frames_shaped, &self.up_bytes_shaped),
+            ShaperDirection::Downlink => (&self.down_frames_shaped, &self.down_bytes_shaped),
+        };
+        frames.fetch_add(1, Ordering::Relaxed);
+        bytes.fetch_add(len as u64, Ordering::Relaxed);
+    }
+
+    /// Record one random-loss drop (`lossPct` / Gilbert-Elliot).
+    pub(crate) fn record_loss(&self) {
+        self.loss_dropped.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record one buffer-cap drop (drop-newest). Also called by
+    /// [`ReleaseHeap::push`].
+    pub(crate) fn record_buffer_drop(&self) {
+        self.buffer_dropped.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record one duplicated frame.
+    pub(crate) fn record_duplicate(&self) {
+        self.duplicated.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record one reordered frame.
+    pub(crate) fn record_reorder(&self) {
+        self.reordered.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Publish a direction's live occupancy and lift its max-frame watermark.
+    pub(crate) fn set_occupancy(&self, dir: ShaperDirection, frames: u64, bytes: u64) {
+        let (frames_gauge, bytes_gauge, max_gauge) = match dir {
+            ShaperDirection::Uplink => (
+                &self.up_buffered_frames,
+                &self.up_buffered_bytes,
+                &self.up_max_buffered_frames,
+            ),
+            ShaperDirection::Downlink => (
+                &self.down_buffered_frames,
+                &self.down_buffered_bytes,
+                &self.down_max_buffered_frames,
+            ),
+        };
+        frames_gauge.store(frames, Ordering::Relaxed);
+        bytes_gauge.store(bytes, Ordering::Relaxed);
+        max_gauge.fetch_max(frames, Ordering::Relaxed);
+    }
+
+    /// Zero every counter and gauge. Test/reset helper; the pumps call
+    /// [`reset_counters`] at start.
+    pub(crate) fn reset(&self) {
+        for gauge in [
+            &self.up_frames_shaped,
+            &self.up_bytes_shaped,
+            &self.down_frames_shaped,
+            &self.down_bytes_shaped,
+            &self.loss_dropped,
+            &self.buffer_dropped,
+            &self.duplicated,
+            &self.reordered,
+            &self.up_buffered_frames,
+            &self.up_buffered_bytes,
+            &self.up_max_buffered_frames,
+            &self.down_buffered_frames,
+            &self.down_buffered_bytes,
+            &self.down_max_buffered_frames,
+        ] {
+            gauge.store(0, Ordering::Relaxed);
+        }
+    }
+}
+
+static STATS: OnceLock<ShaperCounters> = OnceLock::new();
+
+/// The process-global shaper counters.
+pub(crate) fn counters() -> &'static ShaperCounters {
+    STATS.get_or_init(ShaperCounters::new)
+}
+
+/// Zero every global counter/gauge (pumps call this at start; tests use it to
+/// get a deterministic baseline).
+pub(crate) fn reset_counters() {
+    counters().reset();
+}
+
+/// The frozen `net.shaper.get` schema, all fields present and camelCase.
+pub(crate) fn counters_json() -> serde_json::Value {
+    let s = counters().snapshot();
+    serde_json::json!({
+        "upFramesShaped": s.up_frames_shaped,
+        "downFramesShaped": s.down_frames_shaped,
+        "upBytesShaped": s.up_bytes_shaped,
+        "downBytesShaped": s.down_bytes_shaped,
+        "lossDropped": s.loss_dropped,
+        "bufferDropped": s.buffer_dropped,
+        "duplicated": s.duplicated,
+        "reordered": s.reordered,
+        "bufferedFrames": s.buffered_frames,
+        "bufferedBytes": s.buffered_bytes,
+        "maxBufferedFrames": s.max_buffered_frames,
+    })
+}
+
+/// Per-direction occupancy probe: `{ uplink: BufferStats, downlink: BufferStats }`
+/// read live from the global gauges.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BufferStatsSnapshot {
+    pub uplink: BufferStats,
+    pub downlink: BufferStats,
+}
+
+/// Deterministic snapshot of both directions' live occupancy.
+///
+/// The embedded `buffer_dropped` is 0 for both directions: drops are only
+/// tracked in aggregate (`counters_json().bufferDropped`), not per direction.
+pub(crate) fn buffer_stats() -> BufferStatsSnapshot {
+    let c = counters();
+    let dir_stats = |dir: ShaperDirection| {
+        let (frames, bytes, _) = c.occupancy(dir);
+        BufferStats {
+            bytes: bytes as usize,
+            frames: frames as usize,
+            max_frames: MAX_FRAMES,
+            buffer_dropped: 0,
+        }
+    };
+    BufferStatsSnapshot {
+        uplink: dir_stats(ShaperDirection::Uplink),
+        downlink: dir_stats(ShaperDirection::Downlink),
+    }
+}
+
+#[cfg(test)]
+mod buffer_tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    fn frame(release: Instant, seq: u64, len: usize) -> PendingFrame {
+        PendingFrame {
+            release,
+            seq,
+            payload: vec![0u8; len],
+        }
+    }
+
+    /// Take the process-wide serialization lock (globals are shared).
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        crate::TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[test]
+    fn pending_frame_orders_by_release_then_seq() {
+        let t0 = Instant::now();
+        let mut heap: BinaryHeap<Reverse<PendingFrame>> = BinaryHeap::new();
+        // Insert scrambled; payload lengths are inverted against the key order
+        // to prove length does not participate.
+        heap.push(Reverse(frame(t0 + Duration::from_millis(10), 5, 1)));
+        heap.push(Reverse(frame(t0, 9, 1000)));
+        heap.push(Reverse(frame(t0, 2, 7)));
+        heap.push(Reverse(frame(t0 + Duration::from_millis(5), 1, 500)));
+
+        let popped: Vec<(u64, Instant)> =
+            std::iter::from_fn(|| heap.pop()).map(|Reverse(f)| (f.seq, f.release)).collect();
+        assert_eq!(
+            popped,
+            vec![
+                (2, t0),
+                (9, t0),
+                (1, t0 + Duration::from_millis(5)),
+                (5, t0 + Duration::from_millis(10)),
+            ],
+            "must be a min-heap by earliest release, then lowest seq"
+        );
+
+        // Equal (release, seq) but different payloads compare Equal: payload is
+        // not part of the key, so Eq and Ord stay consistent.
+        let a = frame(t0, 1, 10);
+        let b = frame(t0, 1, 9999);
+        assert_eq!(a, b);
+        assert_eq!(a.cmp(&b), std::cmp::Ordering::Equal);
+    }
+
+    #[test]
+    fn pop_ready_releases_all_due_and_none_early() {
+        let t0 = Instant::now();
+        let mut heap = ReleaseHeap::new();
+        assert!(heap.push(frame(t0, 0, 100)));
+        assert!(heap.push(frame(t0 + Duration::from_millis(1), 1, 200)));
+        assert!(heap.push(frame(t0 + Duration::from_millis(2), 2, 300)));
+
+        // Nothing is due before the first release.
+        let before = t0.checked_sub(Duration::from_millis(1)).unwrap_or(t0);
+        assert!(heap.pop_ready(before).is_empty());
+
+        // Everything due by t0+1ms is released, later frames are kept.
+        let due = heap.pop_ready(t0 + Duration::from_millis(1));
+        assert_eq!(due.iter().map(|f| f.seq).collect::<Vec<_>>(), vec![0, 1]);
+        assert_eq!(heap.stats().frames, 1);
+        assert_eq!(heap.stats().bytes, 300);
+        assert_eq!(heap.next_deadline(), Some(t0 + Duration::from_millis(2)));
+
+        // The rest releases on its own deadline and empties the heap.
+        let rest = heap.pop_ready(t0 + Duration::from_millis(2));
+        assert_eq!(rest.iter().map(|f| f.seq).collect::<Vec<_>>(), vec![2]);
+        assert_eq!(heap.stats().frames, 0);
+        assert_eq!(heap.stats().bytes, 0);
+        assert_eq!(heap.next_deadline(), None);
+    }
+
+    #[test]
+    fn shaper_buffer_drops_newest_at_byte_cap() {
+        let _guard = serial();
+        reset_counters();
+        let t0 = Instant::now();
+        let mut heap = ReleaseHeap::new();
+        let half = BUFFER_BYTES_PER_DIRECTION / 2 + 1;
+
+        assert!(heap.push(frame(t0, 0, half)), "first frame fits");
+        assert!(!heap.push(frame(t0, 1, half)), "second frame must be drop-newest");
+        assert!(heap.stats().bytes <= BUFFER_BYTES_PER_DIRECTION);
+        assert_eq!(heap.stats().frames, 1, "the rejected newest frame must not be buffered");
+        assert!(heap.buffer_dropped() > 0);
+
+        // The two drop reasons are separate counters: buffer drops here, no loss.
+        let snapshot = counters().snapshot();
+        let json = counters_json();
+        assert_eq!(snapshot.loss_dropped, 0);
+        assert_eq!(json["lossDropped"], serde_json::json!(0));
+        assert!(json["bufferDropped"].as_u64().unwrap() > 0);
+        assert_eq!(snapshot.buffer_dropped, json["bufferDropped"].as_u64().unwrap());
+    }
+
+    #[test]
+    fn shaper_buffer_drops_at_frame_cap() {
+        let _guard = serial();
+        reset_counters();
+        let t0 = Instant::now();
+        let mut heap = ReleaseHeap::new();
+
+        // MAX_FRAMES one-byte frames fit under both caps.
+        for seq in 0..MAX_FRAMES as u64 {
+            assert!(heap.push(frame(t0, seq, 1)), "frame {seq} must fit within the frame cap");
+        }
+        assert_eq!(heap.stats().frames, MAX_FRAMES);
+
+        assert!(!heap.push(frame(t0, MAX_FRAMES as u64, 1)), "one past the cap must drop");
+        assert_eq!(heap.buffer_dropped(), 1);
+        assert_eq!(heap.stats().frames, MAX_FRAMES);
+        assert_eq!(counters_json()["bufferDropped"], serde_json::json!(1));
+    }
+
+    #[test]
+    fn buffer_stats_exposes_live_occupancy() {
+        let _guard = serial();
+        reset_counters();
+        let c = counters();
+        c.set_occupancy(ShaperDirection::Uplink, 3, 4500);
+        c.set_occupancy(ShaperDirection::Downlink, 2, 1000);
+
+        let stats = buffer_stats();
+        assert_eq!(stats.uplink.frames, 3);
+        assert_eq!(stats.uplink.bytes, 4500);
+        assert_eq!(stats.uplink.max_frames, MAX_FRAMES);
+        assert_eq!(stats.downlink.frames, 2);
+        assert_eq!(stats.downlink.bytes, 1000);
+        assert_eq!(stats.downlink.max_frames, MAX_FRAMES);
+
+        let json = counters_json();
+        let keys: BTreeSet<&str> =
+            json.as_object().unwrap().keys().map(|k| k.as_str()).collect();
+        assert_eq!(
+            keys,
+            BTreeSet::from([
+                "upFramesShaped",
+                "downFramesShaped",
+                "upBytesShaped",
+                "downBytesShaped",
+                "lossDropped",
+                "bufferDropped",
+                "duplicated",
+                "reordered",
+                "bufferedFrames",
+                "bufferedBytes",
+                "maxBufferedFrames",
+            ])
+        );
+        // The three occupancy fields aggregate both directions.
+        assert_eq!(json["bufferedFrames"], serde_json::json!(5));
+        assert_eq!(json["bufferedBytes"], serde_json::json!(5500));
+        assert_eq!(json["maxBufferedFrames"], serde_json::json!(5));
+    }
+}
