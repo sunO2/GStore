@@ -680,3 +680,211 @@ mod prng_tests {
         assert_ne!(derive_seed(None, e), derive_seed(None, e ^ 1));
     }
 }
+
+// ---------------------------------------------------------------------------
+// GCRA pacer (Todo 3)
+// ---------------------------------------------------------------------------
+
+// Imported here rather than at the file head so the Todo 1/2 sections above stay
+// byte-for-byte untouched; the pacer is the first section that needs wall time.
+use std::time::{Duration, Instant};
+
+/// Byte-rate pacer: a token bucket expressed as a GCRA (Generic Cell Rate
+/// Algorithm). 3GPP RP-020108 notes a token bucket is equivalent to a GCRA, and
+/// `tc-netem(8)`'s TBF is the same shape — one theoretical-arrival-time (`tat`)
+/// register per direction is enough, so no per-byte counter is needed.
+///
+/// One [`Pacer`] lives per direction per pump (task-local, never shared). All
+/// timing is injected via `now: Instant`, so the core is a pure function that is
+/// unit-testable without sleeping or reading the clock internally.
+///
+/// # Debt model (D15)
+/// `tat` is the earliest instant the byte we just accepted may be released.
+/// Each accepted frame advances it by `len / rate`. When a frame is larger than
+/// the burst, `tat` is simply further in the future — the bucket goes into
+/// *debt* rather than dropping the frame, so a frame is **never black-holed**.
+/// `burst_bytes` only caps how much idle credit may accrue: an idle period lets
+/// `tat` fall no earlier than `now - burst_credit`.
+pub(crate) struct Pacer {
+    /// Configured byte rate in bits per second; `0` = unlimited.
+    rate_bps: u64,
+    /// Idle-credit ceiling in bytes; never a hard frame-size limit.
+    burst_bytes: u32,
+    /// Theoretical arrival time of the next conforming byte.
+    tat: Instant,
+}
+
+/// Time it takes `len` bytes to arrive at `rate_bps`, as a `Duration`.
+///
+/// Integer math (nanoseconds) throughout so repeated `+=` stays exact and never
+/// drifts the way floating-point seconds would. Only called with `rate_bps > 0`;
+/// `len` is a TUN frame bounded by `tun::READ_BUFFER_SIZE` (65535), so the
+/// `u128` product divided by the rate always fits back into `u64` nanoseconds.
+fn bytes_interval(rate_bps: u64, len: usize) -> Duration {
+    Duration::from_nanos((len as u128 * 1_000_000_000u128 / rate_bps as u128) as u64)
+}
+
+/// Idle credit a full empty bucket accrues, as a `Duration`: the time to send
+/// `burst_bytes` at `rate_bps`. Integer nanoseconds, same reasoning as
+/// [`bytes_interval`]; only called with `rate_bps > 0`.
+fn burst_credit(rate_bps: u64, burst_bytes: u32) -> Duration {
+    Duration::from_nanos((burst_bytes as u128 * 1_000_000_000u128 / rate_bps as u128) as u64)
+}
+
+/// `now - burst_credit`, saturating back to `now` when that would underflow the
+/// clock's representable range. Factored out (not inlined) so the `checked_sub`
+/// `None` branch is unit-testable. This is the **only** permitted subtraction of
+/// a `Duration` from an `Instant` in the pacer (F2).
+fn credit_floor(now: Instant, burst_credit: Duration) -> Instant {
+    now.checked_sub(burst_credit).unwrap_or(now)
+}
+
+impl Pacer {
+    /// Create a pacer for `rate_bps`/`burst_bytes` whose `tat` starts at `now`.
+    pub(crate) fn new(rate_bps: u64, burst_bytes: u32, now: Instant) -> Self {
+        Self { rate_bps, burst_bytes, tat: now }
+    }
+
+    /// `true` when shaping is disabled (`rateBps == 0`): [`Pacer::schedule`] is
+    /// then the identity and never divides by zero.
+    pub(crate) fn is_unlimited(&self) -> bool {
+        self.rate_bps == 0
+    }
+
+    /// Accept a `len`-byte frame arriving at `now` and return its release time.
+    ///
+    /// `now` is the **arrival** instant (not the previous release). The returned
+    /// `Instant` is the new `tat`: `now` when unlimited, otherwise the earlier of
+    /// the accumulated debt and the burst floor plus this frame's interval. The
+    /// interval added per frame is `len / rate`, a known-small addition
+    /// (`<= 65.535 s` for `len <= 65535`, `rate >= 1000`), so the bare `+` is
+    /// safe; every subtraction goes through [`credit_floor`].
+    pub(crate) fn schedule(&mut self, now: Instant, len: usize) -> Instant {
+        if self.rate_bps == 0 {
+            // Identity: never divide, never advance `tat`.
+            return now;
+        }
+        let floor = credit_floor(now, burst_credit(self.rate_bps, self.burst_bytes));
+        self.tat = self.tat.max(floor) + bytes_interval(self.rate_bps, len);
+        self.tat
+    }
+
+    /// D14: called when the configured rate is raised. Drains any *debt* forward
+    /// to `now` (`tat = min(tat, now)`) so the previously-owed backlog does not
+    /// keep throttling at the new, faster rate — while legitimate idle credit
+    /// (a `tat` in the past) is left untouched.
+    pub(crate) fn reconcile_on_rate_increase(&mut self, now: Instant) {
+        self.tat = self.tat.min(now);
+    }
+}
+
+#[cfg(test)]
+mod pacer_tests {
+    use super::*;
+
+    #[test]
+    fn pacer_enforces_byte_rate() {
+        // Feed `frames` back-to-back frames that all arrive at the SAME instant:
+        // the pacer alone must spread them out, one `len/rate` interval apart.
+        let base = Instant::now();
+        let rate_bps = 1_000_000u64;
+        let len = 1000usize;
+        let frames = 1000u32;
+        let mut pacer = Pacer::new(rate_bps, 1_500, base);
+
+        let mut release = base;
+        for _ in 0..frames {
+            release = pacer.schedule(base, len);
+        }
+
+        // Integer math is exact: expected final `tat` is `base + frames*len/rate`.
+        let interval = bytes_interval(rate_bps, len);
+        let expected = base + interval * frames;
+        let diff = release
+            .saturating_duration_since(expected)
+            .max(expected.saturating_duration_since(release));
+        // Tolerance is half a frame interval — smaller than one frame interval.
+        assert!(diff < interval / 2, "release {release:?} vs expected {expected:?}");
+
+        // No `delayMs` exists on the pacer at all, so 1000 frames x 1ms = ~1s of
+        // rate delay is never clamped by any delay value; it would hold for any
+        // run length. (`direction.delayMs` is applied later, in the scheduler.)
+        assert!(release.saturating_duration_since(base) >= Duration::from_millis(999));
+    }
+
+    #[test]
+    fn pacer_never_blackholes_large_frame() {
+        // burst_bytes=1500 but a 3000-byte frame: allowed, just goes into debt.
+        let base = Instant::now();
+        let mut pacer = Pacer::new(1_000, 1_500, base);
+        let deadline = pacer.schedule(base, 3_000);
+        assert_eq!(deadline, base + Duration::from_secs(3));
+        assert!(deadline > base, "a large frame still gets a finite release time");
+    }
+
+    #[test]
+    fn pacer_handles_uptime_below_burst_credit() {
+        let now = Instant::now();
+
+        // `1 << 40` seconds exceeds any real uptime. On Linux `Instant` is a
+        // signed timespec, so this subtraction yields a representable *negative*
+        // instant rather than `None`; the contract is only that it never panics
+        // and never moves forward.
+        let huge = Duration::from_secs(1 << 40);
+        let floored = credit_floor(now, huge);
+        assert!(floored <= now, "credit floor must never move forward");
+
+        // `Duration::MAX` genuinely overflows the subtraction, so this exercises
+        // the `checked_sub(..).unwrap_or(now)` `None` branch and returns `now`.
+        assert_eq!(credit_floor(now, Duration::MAX), now);
+
+        // A full schedule with a huge burst and a low rate must not panic.
+        let mut pacer = Pacer::new(1_000, u32::MAX, now);
+        let _ = pacer.schedule(now, 100);
+    }
+
+    #[test]
+    fn pacer_zero_rate_is_identity() {
+        let base = Instant::now();
+        let mut pacer = Pacer::new(0, 1_500, base);
+        assert!(pacer.is_unlimited());
+        // Identity: returns `now` verbatim and never divides by zero.
+        assert_eq!(pacer.schedule(base, 3_000), base);
+        for _ in 0..100 {
+            assert_eq!(pacer.schedule(base, 65_535), base);
+        }
+    }
+
+    #[test]
+    fn pacer_huge_frame_is_safe() {
+        // 65535 bytes at 1000 bps = 65535 s of debt, no overflow/panic.
+        let base = Instant::now();
+        let mut pacer = Pacer::new(1_000, 1_500, base);
+        let deadline = pacer.schedule(base, 65_535);
+        assert_eq!(deadline, base + Duration::from_millis(65_535));
+        assert_eq!(deadline.saturating_duration_since(base), Duration::from_millis(65_535));
+    }
+
+    #[test]
+    fn pacer_idle_credit_is_bounded() {
+        // Idle for an hour, then send one frame. Idle credit must be capped at
+        // `burst_bytes`, so the release can be at most `burst_credit + interval`
+        // ahead of `now` — never the full idle period.
+        let base = Instant::now();
+        let rate_bps = 1_000u64;
+        let burst_bytes = 1_500u32;
+        let mut pacer = Pacer::new(rate_bps, burst_bytes, base);
+        let now = base + Duration::from_secs(3_600);
+        let deadline = pacer.schedule(now, 2_000);
+
+        assert!(deadline >= now, "a frame is never released before it arrives");
+        let credit = burst_credit(rate_bps, burst_bytes);
+        let interval = bytes_interval(rate_bps, 2_000);
+        assert!(
+            deadline.saturating_duration_since(now) <= credit + interval,
+            "idle credit {} exceeded burst_credit + interval {}",
+            deadline.saturating_duration_since(now).as_secs_f64(),
+            (credit + interval).as_secs_f64()
+        );
+    }
+}
