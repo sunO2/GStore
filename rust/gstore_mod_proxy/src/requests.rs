@@ -77,6 +77,138 @@ pub(crate) const STALE_LIVE_CAP: usize = 4096;
 /// `requests.get` on receipt.
 pub(crate) const MIN_EMIT_INTERVAL_MS: u64 = 1000;
 
+/// How long a UID query may stay `pending` before TTL resolves it to `unknown`.
+pub(crate) const UID_QUERY_TTL_MS: u64 = 30_000;
+/// The only protocol the collector produces and the UID gate supports. UDP is
+/// out of scope: meow's projection tracks TCP only.
+pub(crate) const UID_PROTOCOL_TCP: &str = "tcp";
+/// Module → host UID query event. Consumed by the host, never forwarded into the
+/// Dart event ring (`API.md §4`).
+pub(crate) const EVT_UID_QUERY: &str = "proxy.uid.query";
+
+/// Three-state UID attribution; the value is always explicit (never a bare null).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum UidState {
+    Known,
+    Pending,
+    Unknown,
+}
+
+impl UidState {
+    fn as_str(self) -> &'static str {
+        match self {
+            UidState::Known => UID_STATE_KNOWN,
+            UidState::Pending => UID_STATE_PENDING,
+            UidState::Unknown => UID_STATE_UNKNOWN,
+        }
+    }
+}
+
+/// One module → host UID query, mirroring the host's `UidQueryHost` wire shape.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UidQuery {
+    pub record_id: u64,
+    pub protocol: String,
+    pub src_ip: String,
+    pub src_port: u16,
+    pub dst_ip: String,
+    pub dst_port: u16,
+}
+
+/// One host → module UID answer (`uid.result`). `uid == None` or a negative
+/// value is a definitive `unknown`; a non-negative value is the resolved owner.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UidAnswer {
+    pub record_id: u64,
+    #[serde(default)]
+    pub uid: Option<i64>,
+    #[serde(default)]
+    pub packages: Vec<String>,
+}
+
+impl UidAnswer {
+    fn resolved_uid(&self) -> Option<u32> {
+        match self.uid {
+            Some(v) if v >= 0 && v <= u32::MAX as i64 => Some(v as u32),
+            _ => None,
+        }
+    }
+}
+
+/// Pluggable in-process UID resolver (default: none). Production relies on the
+/// host (`proxy.uid.query` → `uid.result`); a registered resolver lets the
+/// module resolve synchronously through the same backfill path.
+pub(crate) trait UidResolver: Send + Sync {
+    fn resolve(&self, reqs: &[UidQuery]) -> Vec<UidAnswer>;
+}
+
+static UID_RESOLVER: std::sync::OnceLock<std::sync::Mutex<Option<Box<dyn UidResolver>>>> =
+    std::sync::OnceLock::new();
+
+/// Install (or clear) the process-wide UID resolver seam. Default is none.
+pub(crate) fn set_uid_resolver(resolver: Option<Box<dyn UidResolver>>) {
+    *resolver_cell().lock().unwrap_or_else(|e| e.into_inner()) = resolver;
+}
+
+fn resolver_cell() -> &'static std::sync::Mutex<Option<Box<dyn UidResolver>>> {
+    UID_RESOLVER.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+fn with_resolver<R>(f: impl FnOnce(&dyn UidResolver) -> R) -> Option<R> {
+    let guard = resolver_cell().lock().unwrap_or_else(|e| e.into_inner());
+    guard.as_ref().map(|r| f(r.as_ref()))
+}
+
+/// A pending UID query keyed by `recordId`, with its TTL deadline.
+#[derive(Clone, Debug)]
+pub(crate) struct UidPendingEntry {
+    query: UidQuery,
+    deadline_ms: u64,
+}
+
+/// An answer that arrived before its record existed, with its TTL deadline.
+#[derive(Clone, Debug)]
+pub(crate) struct UidEarlyEntry {
+    answer: UidAnswer,
+    expires_ms: u64,
+}
+
+/// Best-effort split of a captured `"host:port"` string. Handles the bracketed
+/// IPv6 form (`"[::1]:443"`), plain IPv4 (`"1.2.3.4:5555"`) and a bare IP
+/// (port 0); an unparseable string is returned whole. Never panics.
+fn split_host_port(raw: &str) -> (String, u16) {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return (String::new(), 0);
+    }
+    if let Ok(addr) = raw.parse::<std::net::SocketAddr>() {
+        return (addr.ip().to_string(), addr.port());
+    }
+    if let Ok(ip) = raw.parse::<std::net::IpAddr>() {
+        return (ip.to_string(), 0);
+    }
+    (raw.to_string(), 0)
+}
+
+/// Fill a record from a UID answer: a resolved uid flips it `known`; a
+/// null/negative uid is a definitive `unknown` (never a fabricated owner).
+fn apply_answer(r: &mut RequestRecord, a: &UidAnswer) {
+    match a.resolved_uid() {
+        Some(uid) => {
+            r.uid = Some(uid);
+            r.packages = a.packages.clone();
+            r.uid_state = UID_STATE_KNOWN.to_string();
+        }
+        None => {
+            r.uid = None;
+            r.packages.clear();
+            r.uid_state = UID_STATE_UNKNOWN.to_string();
+        }
+    }
+}
+
 /// Why a request record is being taken out of its live window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CloseReason {
@@ -232,6 +364,16 @@ pub(crate) struct RequestStore {
     /// Effective read floor (`now - REQUEST_RETENTION_MS`) once the durable sink
     /// is configured; `windowStartMs` reports this boundary.
     pub(crate) retention_floor_ms: Option<u64>,
+    /// `recordId → pending UID query` (bounded by `uid_pending_cap`, ~30s TTL).
+    pub(crate) uid_pending: HashMap<u64, UidPendingEntry>,
+    /// Newly opened record ids not yet gated by the mode/protocol rule.
+    pub(crate) uid_unprocessed: VecDeque<u64>,
+    /// UID answers that arrived before their record existed.
+    pub(crate) uid_early: HashMap<u64, UidEarlyEntry>,
+    /// FIFO order of `uid_early` keys, for bounded eviction.
+    pub(crate) uid_early_order: VecDeque<u64>,
+    pub(crate) uid_pending_cap: usize,
+    pub(crate) uid_early_cap: usize,
 }
 
 impl RequestStore {
@@ -259,6 +401,12 @@ impl RequestStore {
             last_persist_ms: 0,
             lost_records: 0,
             retention_floor_ms: None,
+            uid_pending: HashMap::new(),
+            uid_unprocessed: VecDeque::new(),
+            uid_early: HashMap::new(),
+            uid_early_order: VecDeque::new(),
+            uid_pending_cap: crate::limits::UID_PENDING_CAP,
+            uid_early_cap: crate::limits::UID_EARLY_RESULTS_CAP,
         }
     }
 
@@ -271,6 +419,9 @@ impl RequestStore {
         self.next_record_id += 1;
         self.next_cursor = id;
         record.record_id = id;
+        if let Some(early) = self.uid_early.remove(&id) {
+            apply_answer(&mut record, &early.answer);
+        }
         self.by_record_id.insert(id, self.records.len());
         self.records.push_back(record);
         while self.records.len() > self.cap {
@@ -283,6 +434,7 @@ impl RequestStore {
             self.reindex();
         }
         self.window_start_ms = self.records.front().map(|r| r.open_ts_ms).unwrap_or(0);
+        self.enqueue_uid_unprocessed(id);
         self.mark_dirty(id);
         id
     }
@@ -299,6 +451,10 @@ impl RequestStore {
         self.window_start_ms = 0;
         self.pending.clear();
         self.pending_overflow = false;
+        self.uid_pending.clear();
+        self.uid_unprocessed.clear();
+        self.uid_early.clear();
+        self.uid_early_order.clear();
     }
 
     /// Open (or revive) the record for `rec` at the capture chokepoint. A
@@ -433,6 +589,143 @@ impl RequestStore {
         closed
     }
 
+    fn set_uid_state(&mut self, id: u64, state: UidState) {
+        let Some(idx) = self.by_record_id.get(&id).copied() else {
+            return;
+        };
+        if self.records[idx].uid_state != state.as_str() {
+            self.records[idx].uid_state = state.as_str().to_string();
+            self.mark_dirty(id);
+        }
+    }
+
+    fn enqueue_uid_unprocessed(&mut self, id: u64) {
+        if self.uid_unprocessed.len() >= self.cap {
+            self.uid_unprocessed.pop_front();
+        }
+        self.uid_unprocessed.push_back(id);
+    }
+
+    fn evict_oldest_pending(&mut self) {
+        let Some(oldest) = self.uid_pending.keys().copied().min() else {
+            return;
+        };
+        self.uid_pending.remove(&oldest);
+        self.set_uid_state(oldest, UidState::Unknown);
+    }
+
+    /// Gate newly opened records by the mode/protocol rule and return every
+    /// currently-pending query. Only `Mode::Vpn` + TCP becomes `pending`; every
+    /// other mode or protocol stays `unknown` with no query. Expired pending
+    /// entries resolve to `unknown`.
+    pub(crate) fn gate_uid(&mut self, mode: crate::ProxyMode, now_ms: u64) -> Vec<UidQuery> {
+        let expired: Vec<u64> = self
+            .uid_pending
+            .iter()
+            .filter(|(_, e)| e.deadline_ms <= now_ms)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in expired {
+            self.uid_pending.remove(&id);
+            self.set_uid_state(id, UidState::Unknown);
+        }
+        self.prune_early(now_ms);
+
+        let to_gate: Vec<u64> = self.uid_unprocessed.drain(..).collect();
+        for id in to_gate {
+            let Some(idx) = self.by_record_id.get(&id).copied() else {
+                continue;
+            };
+            let (state, query) = {
+                let r = &self.records[idx];
+                let (src_ip, src_port) = split_host_port(&r.src);
+                (
+                    r.uid_state.clone(),
+                    UidQuery {
+                        record_id: r.record_id,
+                        protocol: r.network.clone(),
+                        src_ip,
+                        src_port,
+                        dst_ip: r.dst_ip.clone(),
+                        dst_port: r.dst_port,
+                    },
+                )
+            };
+            if state != UID_STATE_UNKNOWN {
+                continue;
+            }
+            if !matches!(mode, crate::ProxyMode::Vpn) || query.protocol != UID_PROTOCOL_TCP {
+                continue;
+            }
+            if self.uid_pending.len() >= self.uid_pending_cap {
+                self.evict_oldest_pending();
+            }
+            self.uid_pending.insert(
+                id,
+                UidPendingEntry {
+                    query,
+                    deadline_ms: now_ms.saturating_add(UID_QUERY_TTL_MS),
+                },
+            );
+            self.set_uid_state(id, UidState::Pending);
+        }
+
+        self.uid_pending.values().map(|e| e.query.clone()).collect()
+    }
+
+    /// Apply UID answers: a matching retained record is filled and flips to
+    /// `known`/`unknown`; an answer for a record that does not exist yet is
+    /// buffered as an early result. Returns how many records were filled.
+    pub(crate) fn apply_uid_answers(&mut self, answers: &[UidAnswer], now_ms: u64) -> usize {
+        let mut applied = 0;
+        for a in answers {
+            match self.by_record_id.get(&a.record_id).copied() {
+                Some(idx) => {
+                    apply_answer(&mut self.records[idx], a);
+                    self.uid_pending.remove(&a.record_id);
+                    self.mark_dirty(a.record_id);
+                    applied += 1;
+                }
+                None => self.buffer_early(a, now_ms),
+            }
+        }
+        applied
+    }
+
+    fn buffer_early(&mut self, a: &UidAnswer, now_ms: u64) {
+        let id = a.record_id;
+        if self.uid_early.remove(&id).is_none() {
+            self.uid_early_order.push_back(id);
+            while self.uid_early.len() >= self.uid_early_cap {
+                let Some(old) = self.uid_early_order.pop_front() else {
+                    break;
+                };
+                if self.uid_early.remove(&old).is_some() {
+                    break;
+                }
+            }
+        }
+        self.uid_early.insert(
+            id,
+            UidEarlyEntry {
+                answer: a.clone(),
+                expires_ms: now_ms.saturating_add(UID_QUERY_TTL_MS),
+            },
+        );
+    }
+
+    fn prune_early(&mut self, now_ms: u64) {
+        let expired: Vec<u64> = self
+            .uid_early
+            .iter()
+            .filter(|(_, e)| e.expires_ms <= now_ms)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in expired {
+            self.uid_early.remove(&id);
+        }
+    }
+
     /// Rebuild the `recordId → index` map from the current deque.
     fn reindex(&mut self) {
         self.by_record_id.clear();
@@ -528,6 +821,10 @@ impl RequestStore {
         self.stale_live.clear();
         self.dirty.clear();
         self.dirty_overflow = 0;
+        self.uid_pending.clear();
+        self.uid_unprocessed.clear();
+        self.uid_early.clear();
+        self.uid_early_order.clear();
         for r in rows {
             let id = r.record_id;
             self.by_record_id.insert(id, self.records.len());
@@ -1066,6 +1363,25 @@ pub(crate) fn lost_records_for_tests() -> u64 {
     with_store(|st| st.lost_records)
 }
 
+#[cfg(test)]
+pub(crate) fn uid_pending_len_for_tests() -> usize {
+    with_store(|st| st.uid_pending.len())
+}
+
+#[cfg(test)]
+pub(crate) fn uid_early_len_for_tests() -> usize {
+    with_store(|st| st.uid_early.len())
+}
+
+#[cfg(test)]
+pub(crate) fn uid_state_for_tests(record_id: u64) -> Option<String> {
+    with_store(|st| {
+        st.by_record_id
+            .get(&record_id)
+            .map(|idx| st.records[*idx].uid_state.clone())
+    })
+}
+
 /// The directory the request sink is configured against (test proof that the
 /// VPN/LAN paths wired [`configure`] in).
 #[cfg(test)]
@@ -1081,20 +1397,63 @@ pub(crate) fn configured_dir_for_tests() -> Option<String> {
 /// records were created/changed since the previous emit. Returns whether an
 /// event was emitted.
 ///
-/// `mode` is threaded from the engine ticker so the UID-attribution gate (T11)
-/// can distinguish VPN from LAN without consulting `active_tunnel()` (which is
-/// also true after a LAN engine attach). It is unused until T11.
-pub(crate) fn tick(instance_id: u64, _mode: crate::ProxyMode, now_ms: u64) -> bool {
-    let payload = with_store(|st| {
+/// `mode` gates UID attribution: only `Mode::Vpn` + TCP flows become `pending`
+/// and produce a `proxy.uid.query`; the LAN engine attach makes the tunnel live
+/// too, so `active_tunnel().is_some()` is deliberately never consulted here.
+pub(crate) fn tick(instance_id: u64, mode: crate::ProxyMode, now_ms: u64) -> bool {
+    // Gate/collect the pending UID queries and fold the record changes into the
+    // same dirty signal, all under one store lock; the lock is released before
+    // resolving/emitting (never emit while the store lock is held).
+    let (queries, payload) = with_store(|st| {
         st.maybe_flush(now_ms);
-        st.emit_pending(now_ms)
+        let queries = st.gate_uid(mode, now_ms);
+        let payload = st.emit_pending(now_ms);
+        (queries, payload)
     });
+
+    if !queries.is_empty() {
+        if let Some(answers) = with_resolver(|r| r.resolve(&queries)) {
+            if !answers.is_empty() {
+                with_store(|st| st.apply_uid_answers(&answers, now_ms));
+            }
+        }
+        emit_uid_query(instance_id, &queries);
+    }
+
     let Some(value) = payload else { return false };
     let Ok(bytes) = serde_json::to_vec(&value) else {
         return false;
     };
     crate::emit_event(instance_id, crate::EVT_REQUEST, &bytes);
     true
+}
+
+fn emit_uid_query(instance_id: u64, queries: &[UidQuery]) {
+    let value = serde_json::json!({ "queries": queries });
+    if let Ok(bytes) = serde_json::to_vec(&value) {
+        crate::emit_event(instance_id, EVT_UID_QUERY, &bytes);
+    }
+}
+
+/// `on_event` body for the host's `uid.result` reply.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UidResultBody {
+    #[serde(default)]
+    results: Vec<UidAnswer>,
+}
+
+/// Apply a host `uid.result` payload (`{"results":[{recordId,uid,packages}]}`).
+/// A malformed payload is a structured error, never a panic.
+pub(crate) fn handle_uid_result(payload: &[u8]) -> Result<usize, ModuleError> {
+    handle_uid_result_at(payload, crate::now_ms())
+}
+
+fn handle_uid_result_at(payload: &[u8], now_ms: u64) -> Result<usize, ModuleError> {
+    let body: UidResultBody = serde_json::from_slice(payload).map_err(|e| {
+        ModuleError::invalid_arg(format!("uid.result payload must be {{\"results\":[...]}}: {e}"))
+    })?;
+    Ok(with_store(|st| st.apply_uid_answers(&body.results, now_ms)))
 }
 
 /// Capture a request open at the single chokepoint. Returns the `recordId`; a
@@ -3145,5 +3504,415 @@ mod tests {
         let csv = std::fs::read_to_string(data["csvPath"].as_str().unwrap()).unwrap();
         assert_eq!(csv_record_ids(&csv).len(), N as usize);
         cleanup(&dir);
+    }
+
+    // --- Todo 11: pluggable UID resolution (pending/early-result backfill) ---
+
+    /// One fabricated `UidAnswer`. `uid == None` means the host definitively
+    /// could not resolve the owner (terminal `unknown`).
+    fn answer(record_id: u64, uid: Option<i64>) -> UidAnswer {
+        UidAnswer {
+            record_id,
+            uid,
+            packages: uid
+                .map(|_| vec![format!("pkg.{record_id}")])
+                .unwrap_or_default(),
+        }
+    }
+
+    /// A fake resolver that hands out prepared batches on successive `resolve`
+    /// calls. An empty batch means "not resolved yet" (the record stays
+    /// `pending`), which is exactly how a slow resolver behaves.
+    struct FakeUidResolver {
+        queue: std::sync::Mutex<VecDeque<Vec<UidAnswer>>>,
+    }
+
+    impl FakeUidResolver {
+        fn new(batches: Vec<Vec<UidAnswer>>) -> Self {
+            Self {
+                queue: std::sync::Mutex::new(batches.into()),
+            }
+        }
+    }
+
+    impl UidResolver for FakeUidResolver {
+        fn resolve(&self, _reqs: &[UidQuery]) -> Vec<UidAnswer> {
+            self.queue
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .pop_front()
+                .unwrap_or_default()
+        }
+    }
+
+    fn install_resolver(batches: Vec<Vec<UidAnswer>>) {
+        set_uid_resolver(Some(Box::new(FakeUidResolver::new(batches))));
+    }
+
+    fn clear_resolver() {
+        set_uid_resolver(None);
+    }
+
+    fn take_uid_query_events() -> Vec<serde_json::Value> {
+        let drained = std::mem::take(
+            &mut *crate::TEST_EMITTED
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+        );
+        drained
+            .into_iter()
+            .filter(|(kind, _)| kind == EVT_UID_QUERY)
+            .map(|(_, payload)| {
+                serde_json::from_slice(&payload).expect("proxy.uid.query payload must be JSON")
+            })
+            .collect()
+    }
+
+    fn record_of(id: u64) -> Option<RequestRecord> {
+        with_store(|st| st.records.iter().find(|r| r.record_id == id).cloned())
+    }
+
+    /// Prove (acceptance): a TCP flow in `Mode::Vpn` issues exactly one
+    /// `proxy.uid.query` batch with the structured src/dst shape and goes
+    /// `pending`; `Mode::LanProxy` and `Mode::Off` never query and stay
+    /// `unknown`. UDP is out of scope.
+    #[test]
+    fn tcp_in_vpn_issues_uid_query_but_lan_and_off_do_not() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        clear_resolver();
+        let _ = take_uid_query_events();
+
+        let mut vpn = conn_rec("c-vpn", 1_000);
+        vpn.src = "10.0.0.2:51000".to_string();
+        vpn.dst_ip = "1.2.3.4".to_string();
+        vpn.dst_port = 443;
+        let id = record_open(&vpn, 1_000);
+        tick(7, crate::ProxyMode::Vpn, 1_000);
+        assert_eq!(
+            uid_state_for_tests(id).as_deref(),
+            Some(UID_STATE_PENDING),
+            "a VPN TCP flow must be pending"
+        );
+        let events = take_uid_query_events();
+        assert_eq!(events.len(), 1, "exactly one query batch");
+        let q = &events[0]["queries"][0];
+        assert_eq!(q["recordId"], id);
+        assert_eq!(q["protocol"], "tcp");
+        assert_eq!(q["srcIp"], "10.0.0.2");
+        assert_eq!(q["srcPort"], 51000);
+        assert_eq!(q["dstIp"], "1.2.3.4");
+        assert_eq!(q["dstPort"], 443);
+
+        for mode in [crate::ProxyMode::LanProxy, crate::ProxyMode::Off] {
+            reset_for_tests();
+            let _ = take_uid_query_events();
+            let id = record_open(&conn_rec("c-x", 2_000), 2_000);
+            tick(7, mode, 2_000);
+            assert_eq!(
+                uid_state_for_tests(id).as_deref(),
+                Some(UID_STATE_UNKNOWN),
+                "{mode:?} must resolve unknown immediately"
+            );
+            assert_eq!(uid_pending_len_for_tests(), 0);
+            assert!(
+                take_uid_query_events().is_empty(),
+                "{mode:?} must never issue a uid query"
+            );
+        }
+
+        // A UDP flow is unsupported: never pending, never queried.
+        reset_for_tests();
+        let _ = take_uid_query_events();
+        let mut udp = conn_rec("c-udp", 3_000);
+        udp.network = "udp".to_string();
+        let id = record_open(&udp, 3_000);
+        tick(7, crate::ProxyMode::Vpn, 3_000);
+        assert_eq!(uid_state_for_tests(id).as_deref(), Some(UID_STATE_UNKNOWN));
+        assert_eq!(uid_pending_len_for_tests(), 0);
+        assert!(take_uid_query_events().is_empty(), "UDP is out of scope");
+    }
+
+    /// Scenario 1 (fast resolver): the answer lands in the same tick; the record
+    /// is `known` with uid and packages and leaves the pending set.
+    #[test]
+    fn fast_resolver_marks_known_with_uid_and_packages() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        clear_resolver();
+        let _ = take_uid_query_events();
+
+        let id = record_open(&conn_rec("c1", 1_000), 1_000);
+        install_resolver(vec![vec![answer(id, Some(10_042))]]);
+        tick(7, crate::ProxyMode::Vpn, 1_000);
+
+        let r = record_of(id).unwrap();
+        assert_eq!(r.uid_state, UID_STATE_KNOWN);
+        assert_eq!(r.uid, Some(10_042));
+        assert_eq!(r.packages, vec![format!("pkg.{id}")]);
+        assert_eq!(uid_pending_len_for_tests(), 0, "resolved leaves pending");
+        clear_resolver();
+    }
+
+    /// Scenario 2 (slow resolver): the record is first `pending`, and a later
+    /// tick with the answer flips it to `known`.
+    #[test]
+    fn slow_resolver_stays_pending_then_becomes_known() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        clear_resolver();
+
+        let id = record_open(&conn_rec("c1", 1_000), 1_000);
+        install_resolver(vec![Vec::new(), vec![answer(id, Some(7))]]);
+
+        tick(7, crate::ProxyMode::Vpn, 1_000);
+        assert_eq!(
+            uid_state_for_tests(id).as_deref(),
+            Some(UID_STATE_PENDING),
+            "first (empty) resolution leaves it pending"
+        );
+        assert_eq!(uid_pending_len_for_tests(), 1);
+
+        tick(7, crate::ProxyMode::Vpn, 1_100);
+        assert_eq!(uid_state_for_tests(id).as_deref(), Some(UID_STATE_KNOWN));
+        assert_eq!(record_of(id).unwrap().uid, Some(7));
+        assert_eq!(uid_pending_len_for_tests(), 0);
+        clear_resolver();
+    }
+
+    /// Scenario 3 (timeout): a resolver that never answers leaves the record
+    /// pending only until the ~30s TTL, then it is `unknown`.
+    #[test]
+    fn resolver_timeout_expires_pending_to_unknown() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        clear_resolver();
+
+        let id = record_open(&conn_rec("c1", 1_000), 1_000);
+        install_resolver(vec![Vec::new()]);
+        tick(7, crate::ProxyMode::Vpn, 1_000);
+        assert_eq!(uid_state_for_tests(id).as_deref(), Some(UID_STATE_PENDING));
+
+        tick(7, crate::ProxyMode::Vpn, 1_000 + UID_QUERY_TTL_MS + 1);
+        assert_eq!(
+            uid_state_for_tests(id).as_deref(),
+            Some(UID_STATE_UNKNOWN),
+            "TTL expiry must resolve unknown"
+        );
+        assert_eq!(uid_pending_len_for_tests(), 0);
+        clear_resolver();
+    }
+
+    /// Scenario 4 (all-unknown): a definitive `uid:null` answer is terminal
+    /// `unknown` and clears the pending entry.
+    #[test]
+    fn resolver_all_unknown_is_terminal_unknown() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        clear_resolver();
+
+        let id = record_open(&conn_rec("c1", 1_000), 1_000);
+        install_resolver(vec![vec![answer(id, None)]]);
+        tick(7, crate::ProxyMode::Vpn, 1_000);
+
+        let r = record_of(id).unwrap();
+        assert_eq!(r.uid_state, UID_STATE_UNKNOWN);
+        assert_eq!(r.uid, None);
+        assert!(r.packages.is_empty());
+        assert_eq!(uid_pending_len_for_tests(), 0);
+        clear_resolver();
+    }
+
+    /// Scenario 5 (early result): a `uid.result` that arrives **before** its
+    /// record is inserted is buffered, then applied the moment the record
+    /// appears (no query is ever issued for it).
+    #[test]
+    fn early_result_before_insert_is_applied_on_insert() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        clear_resolver();
+        let _ = take_uid_query_events();
+
+        // Fresh store: the next record id is 1.
+        let applied = handle_uid_result_at(
+            br#"{"results":[{"recordId":1,"uid":42,"packages":["com.early"]}]}"#,
+            1_000,
+        )
+        .unwrap();
+        assert_eq!(applied, 0, "no record to apply to yet");
+        assert_eq!(uid_early_len_for_tests(), 1, "buffered as an early result");
+
+        let id = record_open(&conn_rec("c1", 1_000), 1_000);
+        assert_eq!(id, 1);
+        let r = record_of(id).unwrap();
+        assert_eq!(r.uid_state, UID_STATE_KNOWN, "applied on insert");
+        assert_eq!(r.uid, Some(42));
+        assert_eq!(r.packages, vec!["com.early".to_string()]);
+        assert_eq!(uid_early_len_for_tests(), 0, "consumed exactly once");
+
+        tick(7, crate::ProxyMode::Vpn, 1_000);
+        assert_eq!(uid_pending_len_for_tests(), 0, "known records are not queried");
+        assert!(
+            take_uid_query_events().is_empty(),
+            "a resolved record must not emit a query"
+        );
+    }
+
+    /// Scenario 6 (already-closed record): a late result for a record that has
+    /// already been finalized is still applied to the retained record.
+    #[test]
+    fn late_result_for_closed_record_is_still_applied() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        clear_resolver();
+
+        let c = conn_rec("c1", 1_000);
+        let id = record_open(&c, 1_000);
+        record_close(&c, 1_100, CloseReason::Closed);
+        assert_eq!(record_of(id).unwrap().close_reason, CLOSE_REASON_CLOSED);
+
+        let applied = handle_uid_result_at(
+            format!(r#"{{"results":[{{"recordId":{id},"uid":7,"packages":[]}}]}}"#).as_bytes(),
+            1_200,
+        )
+        .unwrap();
+        assert_eq!(applied, 1);
+        let r = record_of(id).unwrap();
+        assert_eq!(r.uid_state, UID_STATE_KNOWN);
+        assert_eq!(r.uid, Some(7));
+        clear_resolver();
+    }
+
+    /// Adversarial stale_state: an early result for a record that never appears
+    /// is bounded and dropped on TTL expiry; a negative uid means `unknown`.
+    #[test]
+    fn early_result_expires_and_negative_uid_is_unknown() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        clear_resolver();
+
+        // A result for a record id this store will never mint is buffered...
+        assert_eq!(
+            handle_uid_result_at(
+                br#"{"results":[{"recordId":999,"uid":5,"packages":[]}]}"#,
+                1_000
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(uid_early_len_for_tests(), 1);
+
+        // ...and a negative uid (`-1`) is a definitive unknown, never a huge uid.
+        let id = record_open(&conn_rec("c1", 1_000), 1_000);
+        assert_eq!(
+            handle_uid_result_at(
+                format!(r#"{{"results":[{{"recordId":{id},"uid":-1,"packages":[]}}]}}"#).as_bytes(),
+                1_000
+            )
+            .unwrap(),
+            1
+        );
+        let r = record_of(id).unwrap();
+        assert_eq!(r.uid_state, UID_STATE_UNKNOWN);
+        assert_eq!(r.uid, None);
+
+        // TTL expiry drops the orphaned early result (bounded memory).
+        tick(7, crate::ProxyMode::Vpn, 1_000 + UID_QUERY_TTL_MS + 1);
+        assert_eq!(uid_early_len_for_tests(), 0, "early results expire");
+        clear_resolver();
+    }
+
+    /// Adversarial malformed_input: a bad `uid.result` payload is a structured
+    /// 422 (never a panic); an empty body is a well-formed no-op.
+    #[test]
+    fn malformed_uid_result_is_structured() {
+        reset_for_tests();
+        let err = handle_uid_result_at(b"not-json", 1_000).unwrap_err();
+        assert_eq!(err.status as i32, 422);
+        assert_eq!(
+            handle_uid_result_at(br#"{"results":[]}"#, 1_000).unwrap(),
+            0
+        );
+        assert_eq!(handle_uid_result_at(br#"{}"#, 1_000).unwrap(), 0);
+        assert_eq!(
+            handle_uid_result_at(br#"{"results":[{"uid":1}]}"#, 1_000)
+                .unwrap_err()
+                .status as i32,
+            422,
+            "a result without recordId is malformed"
+        );
+    }
+
+    /// HARD INVARIANT + race: `resolve` (and the query emit) must run with the
+    /// store lock **released**. The fake resolver deliberately re-enters the
+    /// store; if the lock were held it would panic. Concurrent ticks then prove
+    /// there is no deadlock.
+    #[test]
+    fn resolver_and_emit_run_outside_the_store_lock_without_deadlock() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+
+        struct ReentrantResolver;
+        impl UidResolver for ReentrantResolver {
+            fn resolve(&self, _reqs: &[UidQuery]) -> Vec<UidAnswer> {
+                // Must NOT be called while `with_store` holds the borrow.
+                let n = with_store(|st| st.records.len());
+                assert!(n >= 1, "resolver runs with no store lock held");
+                Vec::new()
+            }
+        }
+
+        record_open(&conn_rec("c1", 1_000), 1_000);
+        set_uid_resolver(Some(Box::new(ReentrantResolver)));
+        tick(7, crate::ProxyMode::Vpn, 1_000); // would panic/deadlock if unsafe
+        set_uid_resolver(None);
+
+        let mut handles = Vec::new();
+        for t in 0..4u64 {
+            handles.push(std::thread::spawn(move || {
+                for i in 0..25u64 {
+                    record_open(&conn_rec(&format!("t{t}-{i}"), 1_000 + i), 1_000 + i);
+                    tick(t, crate::ProxyMode::Vpn, 1_000 + i);
+                }
+            }));
+        }
+        for h in handles {
+            h.join().expect("no thread may panic or deadlock");
+        }
+    }
+
+    /// Race: concurrent gating and opening on a shared store never deadlock and
+    /// keep the pending map bounded (collect under the lock, emit after).
+    #[test]
+    fn concurrent_gate_uid_and_open_do_not_deadlock() {
+        use std::sync::Arc;
+        let store = Arc::new(std::sync::Mutex::new(RequestStore::fresh()));
+        {
+            let mut s = store.lock().unwrap_or_else(|e| e.into_inner());
+            for i in 0..64u64 {
+                s.open_record(&conn_rec(&format!("s{i}"), 1_000 + i), 1_000 + i);
+            }
+        }
+        let mut handles = Vec::new();
+        for t in 0..6u64 {
+            let store = Arc::clone(&store);
+            handles.push(std::thread::spawn(move || {
+                for i in 0..200u64 {
+                    let mut s = store.lock().unwrap_or_else(|e| e.into_inner());
+                    if i % 3 == 0 {
+                        s.open_record(&conn_rec(&format!("t{t}-{i}"), 2_000 + i), 2_000 + i);
+                    }
+                    // Collect under the lock, then emit AFTER dropping it.
+                    let queries = s.gate_uid(crate::ProxyMode::Vpn, 2_000 + i);
+                    drop(s);
+                    let _ = queries.len();
+                }
+            }));
+        }
+        for h in handles {
+            h.join().expect("no thread may deadlock");
+        }
+        let s = store.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(s.uid_pending.len() <= s.uid_pending_cap);
     }
 }

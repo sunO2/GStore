@@ -2147,6 +2147,10 @@ fn on_event_impl(
             // running. Log for observability (no engine restart here).
             log_message(1, "proxy: on_event vpn.network_changed");
         }
+        "uid.result" => match requests::handle_uid_result(payload) {
+            Ok(applied) => log_message(1, &format!("proxy: on_event uid.result applied={applied}")),
+            Err(e) => log_message(2, &format!("proxy: on_event uid.result rejected: {e}")),
+        },
         _ => {}
     }
     Ok(())
