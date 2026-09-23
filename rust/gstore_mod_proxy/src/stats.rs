@@ -36,6 +36,20 @@
 //! record is marked `domainKnown: false`. A DNS reverse mapping (fake-IP
 //! allocation or the mapping ring) is consulted first; only when it misses do we
 //! fall back to the raw IP.
+//!
+//! ## Byte accounting is **post-drop** (weak-network shaper)
+//!
+//! This aggregate is fed by meow's **connection accounting**
+//! (`Statistics::connections`, projected by [`crate::conn`]), which only ever
+//! sees frames that were **delivered to the netstack/engine**. The weak-network
+//! shaper (`crate::shaper`) drops frames on the reader/egress path *before* the
+//! netstack: `DamageCore` random/GE loss and `ReleaseHeap` drop-newest overflow
+//! both happen before a frame reaches the ingress sink. Therefore every byte
+//! here is **post-drop** — a dropped frame contributes zero upload/download
+//! bytes and is visible only through the shaper's own `lossDropped` /
+//! `bufferDropped` counters at `net.shaper.get`. A shaped-but-not-dropped frame
+//! is merely delayed, so it still arrives (and counts) once released; only
+//! accepted + delivered frames ever move these totals.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -760,6 +774,9 @@ impl TrafficGetRequest {
     }
 }
 
+/// Read the aggregate. `uploadBytes`/`downloadBytes` are **post-drop**: they
+/// only ever accumulate frames meow's connection accounting saw reach the
+/// netstack, so shaper-dropped frames are excluded (see the module docs).
 pub(crate) fn traffic_get_arm(payload: &[u8]) -> Result<Vec<u8>, ModuleError> {
     let req = TrafficGetRequest::parse(payload)?;
     let (mut top, up, down, active, up_bps, down_bps, count, cap, evicted, flow_count, flow_cap, evicted_flows) =

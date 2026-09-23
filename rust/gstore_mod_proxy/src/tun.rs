@@ -615,6 +615,12 @@ async fn tun_loop(
     // Uplink shaping lives here: the reader is still the ONLY fd reader, and it
     // never sleeps inline. `sleep_until(next_deadline)` is the only timer, and
     // `pending()` when the heap is empty prevents a busy loop.
+    //
+    // Accounting note (Todo 16): every drop on this path — `DamageCore` loss and
+    // `ReleaseHeap` drop-newest — happens *before* the frame reaches the ingress
+    // sink, so meow's connection accounting never sees it and `stats::traffic`
+    // is **post-drop**. The drop is counted only by the shaper's `lossDropped` /
+    // `bufferDropped` (see the `stats` module docs).
     let reader = {
         let afd = afd.clone();
         let mut stop = stop_rx.clone();
@@ -1378,6 +1384,23 @@ mod tests {
         p
     }
 
+    /// A `len`-byte IPv4 frame the shaper treats as non-exempt data but lwIP
+    /// drops silently: `total_length` is 40 while the IHL claims a 60-byte
+    /// header, so the netstack never dials the network (same trick as
+    /// [`non_dns_frame`], but large enough to observe per-frame pacing at a low
+    /// `rateBps`). Protocol 253 (experimental) is an `IpProto::Other`, so
+    /// [`shaper::is_damage_exempt`] is `false`.
+    fn paced_frame(len: usize) -> Vec<u8> {
+        let mut f = vec![0u8; len];
+        f[0] = 0x4F; // IPv4, IHL 15 (claims a 60-byte header)
+        f[2..4].copy_from_slice(&40u16.to_be_bytes()); // total length 40 < IHL -> lwIP drops
+        f[8] = 64; // TTL
+        f[9] = 253; // experimental protocol: non-exempt data
+        f[12..16].copy_from_slice(&[10, 10, 0, 2]); // src
+        f[16..20].copy_from_slice(&[10, 10, 0, 9]); // dst
+        f
+    }
+
     /// Regression (Todo 27): the single reader must survive the spurious
     /// `WouldBlock` it sees whenever it drains a burst and the fd goes idle.
     /// Before the fix that was treated as fatal ("readiness cancelled"), so the
@@ -1803,6 +1826,242 @@ mod tests {
         stop();
         assert_eq!(running_count(), 0);
 
+        shaper::reset_for_test();
+        shaper::reset_counters();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Todo 16: lock the `stats.traffic` accounting口径. With `lossPct=100` the
+    /// damage core drops every non-exempt frame **before** the ingress sink, so
+    /// nothing is shaped/forwarded into the netstack: `upFramesShaped` and the
+    /// heap occupancy stay 0 while `lossDropped` counts every frame. Because
+    /// meow's connection accounting only sees frames that reached the engine,
+    /// `stats.traffic` is therefore **post-drop** and these bytes never appear
+    /// there. Deterministic: no timing, no clock injection beyond `now`.
+    #[test]
+    fn stats_traffic_is_post_drop() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        shaper::reset_counters();
+        crate::stats::reset_for_tests();
+
+        let mut cfg = shaper::ShaperConfig {
+            enabled: true,
+            seed: Some(0x1055),
+            ..Default::default()
+        };
+        cfg.uplink.loss_model = shaper::LossModel::Random;
+        cfg.uplink.loss_pct = 100.0;
+
+        let now = Instant::now();
+        let mut pump = ShapePump::new(
+            shaper::ShaperDirection::Uplink,
+            &cfg.uplink,
+            pump_seed(&cfg),
+            now,
+        );
+
+        const N: usize = 16;
+        let frame = non_dns_frame();
+        assert!(
+            !shaper::is_damage_exempt(&frame),
+            "the fixture must be a droppable (non-exempt) frame"
+        );
+
+        let mut forwarded = 0usize;
+        for _ in 0..N {
+            let out = pump.on_frame(&cfg, true, now, frame.clone());
+            forwarded += out.len();
+            assert!(out.is_empty(), "100% loss must never forward inline");
+            assert_eq!(
+                pump.next_deadline(),
+                None,
+                "a dropped frame must not be buffered"
+            );
+        }
+
+        let json = shaper::counters_json();
+        assert_eq!(
+            json["lossDropped"],
+            serde_json::json!(N as u64),
+            "every non-exempt frame is billed to lossDropped"
+        );
+        assert_eq!(
+            json["upFramesShaped"],
+            serde_json::json!(0),
+            "a dropped frame is never shaped/delivered"
+        );
+        assert_eq!(json["upBytesShaped"], serde_json::json!(0));
+        assert_eq!(forwarded, 0, "not one frame may reach the ingress sink");
+        let occ = shaper::buffer_stats().uplink;
+        assert_eq!(occ.frames, 0, "post-drop: the shape heap stays empty");
+        assert_eq!(occ.bytes, 0);
+
+        // The `stats.traffic` read surface is fed only by meow's connection
+        // accounting, so bytes dropped-before-engine can never be counted here.
+        let data = crate::stats::traffic_get_arm(b"").unwrap();
+        let traffic: serde_json::Value = serde_json::from_slice(&data).unwrap();
+        assert_eq!(traffic["data"]["uploadBytes"], serde_json::json!(0));
+        assert_eq!(traffic["data"]["downloadBytes"], serde_json::json!(0));
+
+        println!(
+            "stats_traffic_is_post_drop: frames={N} lossDropped={} upFramesShaped={} \
+             occupancy={:?} traffic_upload={}",
+            json["lossDropped"], json["upFramesShaped"], occ, traffic["data"]["uploadBytes"]
+        );
+
+        shaper::reset_counters();
+        crate::stats::reset_for_tests();
+    }
+
+    /// Todo 16: real-time datapath observation. A low uplink `rateBps` with
+    /// `delayMs=0` makes the reader park the burst in the shape heap and release
+    /// it spaced by `len/rate`. Occupancy must be non-zero right after the burst,
+    /// must strictly decrease across a real interval, and the whole drain must
+    /// take clearly longer than the disabled baseline (loose tolerance — the
+    /// observed numbers are printed as evidence).
+    #[test]
+    fn mock_fd_bandwidth_limit_slows_delivery() {
+        use std::os::unix::net::UnixDatagram;
+
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        shallow_reset();
+        shaper::reset_counters();
+        let dir = tmp_dir("bw-limit");
+        let dir_str = dir.to_str().unwrap().to_string();
+        shaper::configure(&dir_str);
+        // The pacer spaces a frame by `len / rateBps` (its own convention), so
+        // 25_000 gives a 1500-byte frame a 60 ms interval: 32 frames need ~1.9 s
+        // of wall-clock vs. ~instant when disabled.
+        shaper::set(
+            &dir_str,
+            br#"{"enabled":true,"seed":9,"uplink":{"rateBps":25000,"delayMs":0}}"#,
+        )
+        .expect("a 25 kbps / no-delay uplink is valid");
+
+        const N: usize = 32;
+        const FRAME_LEN: usize = 1_500;
+        let (loop_end, peer) = UnixDatagram::pair().unwrap();
+        install_fd(loop_end.as_raw_fd()).expect("install mock fd");
+        drop(loop_end);
+        assert!(start(94).expect("start loop"), "loop must start");
+        reset_read_count();
+
+        let frame = paced_frame(FRAME_LEN);
+        assert!(
+            !shaper::is_damage_exempt(&frame),
+            "the fixture must be shapable data"
+        );
+        let w = peer.try_clone().unwrap();
+        let sent_at = std::time::Instant::now();
+        for _ in 0..N {
+            w.send(&frame).expect("send frame");
+        }
+        assert!(
+            wait_until(|| read_count() == N, Duration::from_secs(3)),
+            "reader consumed {} of {N} frames",
+            read_count()
+        );
+        assert!(
+            wait_until(|| shaper::buffer_stats().uplink.frames > 0, Duration::from_secs(1)),
+            "frames must accumulate in the shape heap"
+        );
+        let frames_before = shaper::buffer_stats().uplink.frames;
+        std::thread::sleep(Duration::from_millis(400));
+        let frames_after = shaper::buffer_stats().uplink.frames;
+        assert!(
+            frames_after < frames_before,
+            "occupancy must strictly decrease over a real interval ({frames_before} -> {frames_after})"
+        );
+        assert!(
+            wait_until(
+                || shaper::buffer_stats().uplink.frames == 0,
+                Duration::from_secs(10)
+            ),
+            "shaped frames must eventually drain (left {})",
+            shaper::buffer_stats().uplink.frames
+        );
+        let drain_ms = sent_at.elapsed().as_millis();
+        assert!(
+            drain_ms > 700,
+            "a 200 kbps uplink must slow delivery; drained in {drain_ms} ms"
+        );
+        assert_eq!(read_count(), N, "the single reader still reads each frame once");
+        assert_eq!(running_count(), 1);
+
+        let json = shaper::counters_json();
+        println!(
+            "mock_fd_bandwidth_limit_slows_delivery: N={N} frame_len={FRAME_LEN} \
+             frames_before={frames_before} frames_after={frames_after} drain_ms={drain_ms} \
+             upFramesShaped={} bufferDropped={} lossDropped={}",
+            json["upFramesShaped"], json["bufferDropped"], json["lossDropped"]
+        );
+
+        stop();
+        assert_eq!(running_count(), 0);
+        shaper::reset_for_test();
+        shaper::reset_counters();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Todo 16: with shaping disabled the datapath must add **no** loss and
+    /// **no** delay — every frame is read promptly, nothing is buffered, and
+    /// neither drop counter moves. The config is deliberately a slow+lossy one
+    /// (200 kbps, 100% random loss) to prove `enabled=false` ignores it.
+    #[test]
+    fn shaper_disabled_throughput_baseline() {
+        use std::os::unix::net::UnixDatagram;
+
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        shallow_reset();
+        shaper::reset_counters();
+        let dir = tmp_dir("bw-baseline");
+        let dir_str = dir.to_str().unwrap().to_string();
+        shaper::configure(&dir_str);
+        shaper::set(
+            &dir_str,
+            br#"{"enabled":false,"seed":9,"uplink":{"rateBps":25000,"delayMs":0,"lossPct":100,"lossModel":"random"}}"#,
+        )
+        .expect("a disabled config is still schema-valid");
+
+        const N: usize = 32;
+        let (loop_end, peer) = UnixDatagram::pair().unwrap();
+        install_fd(loop_end.as_raw_fd()).expect("install mock fd");
+        drop(loop_end);
+        assert!(start(95).expect("start loop"), "loop must start");
+        reset_read_count();
+
+        let frame = paced_frame(1_500);
+        let w = peer.try_clone().unwrap();
+        let sent_at = std::time::Instant::now();
+        for _ in 0..N {
+            w.send(&frame).expect("send frame");
+        }
+        assert!(
+            wait_until(|| read_count() == N, Duration::from_secs(3)),
+            "the disabled datapath must read all frames; got {} of {N}",
+            read_count()
+        );
+        let elapsed_ms = sent_at.elapsed().as_millis();
+
+        let occ = shaper::buffer_stats().uplink;
+        assert_eq!(occ.frames, 0, "disabled shaping must buffer nothing");
+        assert_eq!(occ.bytes, 0);
+        let json = shaper::counters_json();
+        assert_eq!(json["lossDropped"], serde_json::json!(0), "no added loss");
+        assert_eq!(json["bufferDropped"], serde_json::json!(0));
+        assert_eq!(json["upFramesShaped"], serde_json::json!(0));
+        assert!(
+            elapsed_ms < 2_000,
+            "the disabled baseline must not add a real-time delay; took {elapsed_ms} ms"
+        );
+        println!(
+            "shaper_disabled_throughput_baseline: N={N} elapsed_ms={elapsed_ms} \
+             uplink_frames={} lossDropped={} bufferDropped={}",
+            occ.frames, json["lossDropped"], json["bufferDropped"]
+        );
+
+        stop();
+        assert_eq!(running_count(), 0);
         shaper::reset_for_test();
         shaper::reset_counters();
         let _ = std::fs::remove_dir_all(&dir);
