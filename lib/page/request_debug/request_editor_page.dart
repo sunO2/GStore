@@ -22,6 +22,8 @@ import 'package:gstore/core/design/app_spacing.dart';
 import 'package:gstore/core/design/app_typography.dart';
 import 'package:gstore/core/request_debug/request_debug.dart';
 
+import 'response_viewer.dart';
+
 /// 编辑器分段。
 enum RequestEditorSegment {
   params,
@@ -892,35 +894,14 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
         ),
       );
     }
-    return ListView(
-      padding: AppSpacing.allLG,
-      children: [
-        Row(
-          children: [
-            Text(
-              '${response.statusCode}',
-              key: const Key('request-editor-response-status'),
-              style: theme.textTheme.headlineSmall,
-            ),
-            const SizedBox(width: AppSpacing.md),
-            Text('${response.durationMs} ms'),
-            const SizedBox(width: AppSpacing.md),
-            Text('${response.sizeBytes} B'),
-          ],
-        ),
-        if (response.error != null)
-          Padding(
-            padding: AppSpacing.onlyTopMD,
-            child: Text(
-              response.error!,
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: theme.colorScheme.error,
-              ),
-            ),
-          ),
-        const SizedBox(height: AppSpacing.md),
-        SelectableText(response.bodyText, style: AppTypography.code),
-      ],
+    final env = _facade.store.activeEnvironment;
+    final url =
+        env == null ? _url.text : _facade.resolveEnvIn(_url.text, env).text;
+    return ResponseViewer(
+      response: response,
+      method: _method,
+      url: url,
+      onSaveAsRewrite: _facade.setCaptureRule,
     );
   }
 
