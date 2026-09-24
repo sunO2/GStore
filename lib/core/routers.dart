@@ -14,6 +14,7 @@ class AppRoute {
   static String qrTool = "/GStore/qrTool";
   static String proxy = "/GStore/proxy";
   static String proxyCaptureSettings = "/GStore/proxy/captureSettings";
+  static String proxyCaptureCa = "/GStore/proxy/captureCa";
   static String requestDebug = "/GStore/requestDebug";
   static String appSnapshotList = "/GStore/appSnapshotList";
   static String itTools = "/GStore/itTools";

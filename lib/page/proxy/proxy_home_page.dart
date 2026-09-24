@@ -8,6 +8,7 @@ import 'package:gstore/core/service/proxy_connect_controller.dart';
 
 import 'proxy_active_node_store.dart';
 import 'proxy_active_profile_store.dart';
+import 'proxy_capture_settings_page.dart';
 import 'proxy_engine_settings_store.dart';
 import 'proxy_geo_provisioner.dart';
 import 'proxy_home_facade.dart';
@@ -104,10 +105,12 @@ class ProxyHomePage extends StatefulWidget {
   /// 为空时直接打开 [ProxySettingsPage]。
   final VoidCallback? onOpenLanSettings;
 
-  /// 「抓包设置 ›」入口（Todo 21 注册路由后由宿主注入）。为空时入口提示「尚未接入」。
+  /// 「抓包设置 ›」入口注入缝（测试可注入计数回调断言跳转）。
   ///
-  /// 首页不直接依赖抓包设置页 / 路由（todo 21 独占路由注册），只经此注入缝跳转，
-  /// 组件测试可注入计数回调断言跳转。
+  /// 为空时**生产兜底**打开 [ProxyCaptureSettingsPage]（与 [onOpenRequests] /
+  /// [onOpenStats] / [onOpenLanSettings] 同构）。宿主 `app_router.dart` 用
+  /// `const ProxyHomePage()` 从不注入本字段，因此生产路径必须自带 fallback，
+  /// 否则会错误落到「尚未接入」提示。
   final VoidCallback? onOpenCaptureSettings;
 
   /// 传给 Kotlin `ProxyVpnService` 的配置 JSON（默认 `{}` = 全量路由）。
@@ -1999,29 +2002,34 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
   }
 
   /// 无 CA 时开启被拦截：提示需先生成根证书，并引导到抓包设置入口。
+  ///
+  /// 生产兜底恒存在（见 [_openCaptureSettings]），因此引导始终提供「去设置」。
   Future<void> _promptCaptureNeedsCa() async {
-    final canOpen = widget.onOpenCaptureSettings != null;
     await AppDialogs.showConfirmSheet(
       title: '需要先生成根证书',
       message: '抓取 HTTPS 流量需要 MITM 根证书。请先在「抓包设置 › 证书管理」'
           '生成并信任证书，再开启抓包；仅 HTTP 明文流量无需证书。',
-      confirmText: canOpen ? '去设置' : '知道了',
-      cancelText: canOpen ? '取消' : null,
-      onConfirm: canOpen ? _openCaptureSettings : null,
+      confirmText: '去设置',
+      cancelText: '取消',
+      onConfirm: _openCaptureSettings,
     );
   }
 
-  /// 「抓包设置 ›」：经注入缝跳转；未接入时提示（不改路由，route 注册归 todo 21）。
+  /// 「抓包设置 ›」：优先经注入缝跳转（测试可注入计数回调）；否则生产兜底打开
+  /// [ProxyCaptureSettingsPage]（与 [_openRequests] / [_openStats] 同构）。
+  ///
+  /// 「尚未接入」提示已删除：宿主从不注入接缝，该提示在生产必然误报。
   void _openCaptureSettings() {
     final callback = widget.onOpenCaptureSettings;
     if (callback != null) {
       callback();
       return;
     }
-    unawaited(AppDialogs.showAlertSheet(
-      title: '抓包设置',
-      message: '抓包设置页尚未接入，请稍后再试。',
-    ));
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => const ProxyCaptureSettingsPage(),
+      ),
+    );
   }
 
   // ==================== 快捷入口 ====================

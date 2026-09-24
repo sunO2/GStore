@@ -18,6 +18,7 @@ import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/core/rust/proxy/ProxyContract.dart';
+import 'package:gstore/page/proxy/proxy_capture_ca_page.dart';
 import 'package:gstore/page/proxy/proxy_capture_settings_page.dart';
 import 'package:gstore/page/proxy/proxy_settings_facade.dart';
 
@@ -392,6 +393,26 @@ void main() {
       expect(find.text('抓包配置加载失败'), findsNothing);
       expect(find.text('MITM 总开关'), findsOneWidget);
       expect(facade.getCalls, 2);
+    });
+
+    testWidgets('证书管理入口：进入 ProxyCaptureCaPage（生产路由可达）', (tester) async {
+      _useTallSurface(tester);
+      final facade = _FakeCaptureFacade();
+      await tester.pumpWidget(_host(ProxyCaptureSettingsPage(
+        facade: facade,
+        installedApps: _FakeInstalledAppsProvider(),
+      )));
+      await _settleLoad(tester);
+
+      expect(find.byKey(const Key('capture_settings_ca_entry')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('capture_settings_ca_entry')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      // 真正进入全屏 CA 管理页（而非仅触发回调）。CA 页使用生产门面，在无原生
+      // 模块的测试环境走其错误态，不影响「页面已渲染」这一可达性断言。
+      expect(find.byType(ProxyCaptureCaPage), findsOneWidget);
+      expect(tester.takeException(), isNull);
     });
   });
 }

@@ -97,6 +97,10 @@ final GoRouter appRouter = GoRouter(
       builder: (context, state) => const ProxyCaptureSettingsPage(),
     ),
     GoRoute(
+      path: AppRoute.proxyCaptureCa,
+      builder: (context, state) => const ProxyCaptureCaPage(),
+    ),
+    GoRoute(
       path: AppRoute.requestDebug,
       builder: (context, state) => const RequestDebugPage(),
     ),

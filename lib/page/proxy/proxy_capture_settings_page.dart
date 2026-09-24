@@ -32,6 +32,7 @@ import 'package:gstore/core/design/app_spacing.dart';
 import 'package:gstore/core/design/app_typography.dart';
 import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
+import 'package:gstore/page/proxy/proxy_capture_ca_page.dart';
 import 'package:gstore/page/proxy/proxy_settings_facade.dart';
 
 /// 允许在白名单中保留的条目数上限（镜像 Rust `capture.rs::MAX_ALLOWLIST_ENTRIES`）。
@@ -182,8 +183,19 @@ class _ProxyCaptureSettingsPageState extends State<ProxyCaptureSettingsPage> {
     }
   }
 
-  // ==================== 编辑动作（本地，保存时一次性提交） ====================
+  // ==================== 证书管理入口 ====================
 
+  /// 「证书管理」：进入 [ProxyCaptureCaPage] 管理 MITM 根证书（生成 / 重置 /
+  /// 导出 / 安装）。生产入口由此可达，与 `_promptCaptureNeedsCa` 的文案一致。
+  void _openCaManagement() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => const ProxyCaptureCaPage(),
+      ),
+    );
+  }
+
+  // ==================== 编辑动作（本地，保存时一次性提交） ====================
   void _setEnabled(bool value) =>
       setState(() => _config = _config.copyWith(enabled: value));
 
@@ -314,6 +326,8 @@ class _ProxyCaptureSettingsPageState extends State<ProxyCaptureSettingsPage> {
       children: [
         _buildMitmCard(context),
         const SizedBox(height: AppSpacing.lg),
+        _buildCaCard(context),
+        const SizedBox(height: AppSpacing.lg),
         _buildDomainCard(context),
         const SizedBox(height: AppSpacing.lg),
         _buildAppCard(context),
@@ -391,6 +405,38 @@ class _ProxyCaptureSettingsPageState extends State<ProxyCaptureSettingsPage> {
           '与首页「抓包」区块共享同一份 capture.config；此处保存后首页状态即时同步。',
           style: theme.textTheme.bodySmall?.copyWith(
             color: theme.colorScheme.onSurfaceVariant,
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// 「证书管理」小节：说明 MITM 根证书用途并提供进入 [ProxyCaptureCaPage] 的入口。
+  ///
+  /// 根证书独立于 `capture.config`（不随保存下发），故本卡只做导航、不参与表单提交。
+  Widget _buildCaCard(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return _CaptureSectionCard(
+      icon: TablerIcons.certificate,
+      title: '证书管理',
+      children: [
+        Text(
+          'HTTPS 解密依赖本机 MITM 根证书：需先生成，再导出并安装到设备证书存储。'
+          '启用固定证书（pinning）的 App 不会信任本证书。',
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: scheme.onSurfaceVariant,
+          ),
+        ),
+        const SizedBox(height: AppSpacing.md),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: FilledButton.tonalIcon(
+            key: const Key('capture_settings_ca_entry'),
+            onPressed: _saving ? null : _openCaManagement,
+            icon: const Icon(TablerIcons.certificate,
+                size: AppTypography.iconSM),
+            label: const Text('证书管理'),
           ),
         ),
       ],

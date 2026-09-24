@@ -13,6 +13,7 @@ import 'package:gstore/page/proxy/proxy_active_profile_store.dart';
 import 'package:gstore/page/proxy/proxy_engine_settings_store.dart';
 import 'package:gstore/page/proxy/proxy_geo_manifest.dart';
 import 'package:gstore/page/proxy/proxy_geo_provisioner.dart';
+import 'package:gstore/page/proxy/proxy_capture_settings_page.dart';
 import 'package:gstore/page/proxy/proxy_home_facade.dart';
 import 'package:gstore/page/proxy/proxy_home_page.dart';
 import 'package:gstore/page/proxy/proxy_requests_page.dart';
@@ -2178,6 +2179,35 @@ void main() {
     await tester.pump();
     expect(openedSettings, 1);
     expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('抓包设置：生产路由下不经注入回调也进入真实设置页（回归：不再提示尚未接入）',
+      (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade();
+    // 关键：**不注入** onOpenCaptureSettings，模拟生产 app_router 的
+    // `const ProxyHomePage()`（宿主从不注入该接缝）。断言真实入口仍打开真实
+    // 设置页，且「尚未接入」提示永不再现。
+    await tester.pumpWidget(_wrap(ProxyHomePage(facade: facade)));
+    await _flush(tester);
+
+    await tester.ensureVisible(
+      find.byKey(const Key('proxy-capture-settings-entry')),
+    );
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('proxy-capture-settings-entry')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.byType(ProxyCaptureSettingsPage), findsOneWidget);
+    expect(find.text('抓包设置页尚未接入，请稍后再试。'), findsNothing);
+    expect(tester.takeException(), isNull);
+
+    // 卸载被推入的设置页，释放其异步加载。
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
 
     await facade.controller.close();
   });
