@@ -1194,6 +1194,1510 @@ impl ServerCertVerifier for SkipServerVerify {
     }
 }
 
+// ==================== Todo 8: HTTP/1.1 + HTTP/2 request/response capture ====================
+//
+// hyper sits between the decrypted client TLS stream (server role) and the
+// re-originated upstream TLS stream (client role). ALPN decides the protocol on
+// each side independently. The proxy is a streaming **tee**:
+//
+//  * every response byte is forwarded to the client **unchanged** — same
+//    `Content-Encoding`, same payload; hyper only performs HTTP framing;
+//  * a *second, separate* copy is retained for capture and, for `gzip`/`br`
+//    only, decoded in a **streamed, capped** fashion into the disk-bound copy;
+//  * the in-memory ring fields (≤256 B/side preview + `truncated`) are produced
+//    here, but the full (≤1 MiB/side) bodies are handed to a **sink seam** that
+//    Todo 13 persists to SQLite — no ring/DB is built in this todo.
+//
+// A malformed upstream response can no longer be raw-forwarded once hyper has
+// consumed it, so it degrades to a structured `502` and is recorded with
+// `mitm_failed = true`; forwarding never aborts and nothing panics.
+
+use std::convert::Infallible;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::atomic::AtomicBool;
+use std::task::{Context, Poll};
+
+use futures::executor::block_on;
+use http_body_util::Empty;
+use hyper::body::{Body, Bytes, Frame, Incoming, SizeHint};
+use hyper::client::conn::{http1 as client_http1, http2 as client_http2};
+use hyper::header::{
+    HeaderName, HeaderValue, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, HOST,
+};
+use hyper::server::conn::{http1 as server_http1, http2 as server_http2};
+use hyper::service::Service;
+use hyper::{HeaderMap, Request, Response, StatusCode, Uri};
+use hyper_util::rt::{TokioExecutor, TokioIo};
+use tokio::sync::{Mutex as AsyncMutex, OwnedSemaphorePermit, Semaphore};
+
+use crate::limits::CAPTURE_BODY_MAX_BYTES;
+
+/// In-memory capture preview per side (also the ring's per-side bound).
+pub(crate) const CAPTURE_PREVIEW_MAX_BYTES: usize = 256;
+/// In-memory request/response header text per side (ring field bound).
+pub(crate) const CAPTURE_HEADERS_MAX_BYTES: usize = 512;
+/// hyper h1 read+write buffer cap (per connection), matching the T9 budget.
+pub(crate) const H1_MAX_BUF_SIZE: usize = 8192;
+/// hyper h2 flow-control windows / buffers, explicitly lowered from the 1–5 MiB
+/// defaults so one session cannot blow `MITM_SESSION_BUFFER_MAX_BYTES` (T9).
+pub(crate) const H2_INITIAL_STREAM_WINDOW_SIZE: u32 = 16 * 1024;
+pub(crate) const H2_INITIAL_CONNECTION_WINDOW_SIZE: u32 = 16 * 1024;
+pub(crate) const H2_MAX_SEND_BUF_SIZE: usize = 4 * 1024;
+pub(crate) const H2_MAX_HEADER_LIST_SIZE: u32 = 4 * 1024;
+/// Per-connection h2 accounting asserted in tests to match the T9 budget term.
+pub(crate) const H2_PER_CONNECTION_BUDGET_BYTES: u32 = H2_INITIAL_STREAM_WINDOW_SIZE
+    + H2_INITIAL_CONNECTION_WINDOW_SIZE
+    + H2_MAX_SEND_BUF_SIZE as u32
+    + H2_MAX_HEADER_LIST_SIZE;
+
+/// Boxed error used across the MITM HTTP path (hyper error, IO error, …).
+pub(crate) type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+/// The wire protocol negotiated by ALPN on one side of the bridge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HttpProtocol {
+    H1,
+    H2,
+}
+
+impl HttpProtocol {
+    /// `h2` when the peer offered ALPN `h2`, otherwise HTTP/1.1. An absent or
+    /// unknown ALPN is **not** h2 (h2 requires explicit negotiation).
+    pub(crate) fn from_alpn(alpn: Option<&[u8]>) -> Self {
+        if alpn == Some(b"h2".as_slice()) {
+            HttpProtocol::H2
+        } else {
+            HttpProtocol::H1
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            HttpProtocol::H1 => "h1",
+            HttpProtocol::H2 => "h2",
+        }
+    }
+}
+
+/// One captured HTTP exchange, shaped for the capture store (Todo 12/13).
+///
+/// The ring will retain only the `*_preview`/`truncated` fields; the full
+/// `req_body`/`resp_body` (≤ [`CAPTURE_BODY_MAX_BYTES`] each) are disk-bound and
+/// handed to the [`CaptureSink`] so Todo 13 can persist them without the ring
+/// ever holding a bulk payload resident.
+#[derive(Clone, Debug)]
+pub(crate) struct CaptureRecord {
+    pub record_id: u64,
+    /// Foreign key into `requests.*`; `0` = no matching flow record.
+    pub request_record_id: u64,
+    pub conn_id: String,
+    pub host: String,
+    pub method: String,
+    pub scheme: String,
+    pub url: String,
+    pub status_code: u16,
+    pub protocol: String,
+    pub req_headers: String,
+    pub resp_headers: String,
+    pub req_body_preview: Vec<u8>,
+    pub resp_body_preview: Vec<u8>,
+    pub req_body: Vec<u8>,
+    pub resp_body: Vec<u8>,
+    pub req_bytes: u64,
+    pub resp_bytes: u64,
+    pub content_type: String,
+    pub started_at_ms: u64,
+    pub finished_at_ms: u64,
+    pub duration_ms: u64,
+    pub truncated: bool,
+    pub mitm_failed: bool,
+}
+
+/// Bounded sink seam: captures are pushed here, nothing is ever emitted
+/// per-packet and the sink never blocks the dataplane. Todo 13 installs the
+/// SQLite-backed implementor; the shipping default is a no-op.
+pub(crate) trait CaptureSink: Send + Sync {
+    fn on_capture(&self, _record: CaptureRecord) {}
+}
+
+struct NoopCaptureSink;
+
+impl CaptureSink for NoopCaptureSink {}
+
+static CAPTURE_SINK: OnceLock<Mutex<Arc<dyn CaptureSink>>> = OnceLock::new();
+
+fn capture_sink_cell() -> &'static Mutex<Arc<dyn CaptureSink>> {
+    CAPTURE_SINK.get_or_init(|| Mutex::new(Arc::new(NoopCaptureSink)))
+}
+
+/// Current capture sink (cloned `Arc`).
+pub(crate) fn capture_sink() -> Arc<dyn CaptureSink> {
+    capture_sink_cell()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+/// Install a capture sink (Todo 13 / tests).
+pub(crate) fn set_capture_sink(sink: Arc<dyn CaptureSink>) {
+    *capture_sink_cell().lock().unwrap_or_else(|e| e.into_inner()) = sink;
+}
+
+/// Restore the no-op sink (tests).
+#[cfg(test)]
+pub(crate) fn reset_capture_sink() {
+    set_capture_sink(Arc::new(NoopCaptureSink));
+}
+
+static CAPTURE_RECORD_SEQ: AtomicU64 = AtomicU64::new(0);
+
+fn next_capture_record_id() -> u64 {
+    CAPTURE_RECORD_SEQ.fetch_add(1, Ordering::Relaxed) + 1
+}
+
+/// Content codings the capture copy can decode. Forwarding never uses this.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum BodyEncoding {
+    Identity,
+    Gzip,
+    Brotli,
+}
+
+fn body_encoding(headers: &HeaderMap) -> BodyEncoding {
+    let Some(value) = headers.get(CONTENT_ENCODING) else {
+        return BodyEncoding::Identity;
+    };
+    let Ok(text) = value.to_str() else {
+        return BodyEncoding::Identity;
+    };
+    match text.trim().to_ascii_lowercase().as_str() {
+        "gzip" | "x-gzip" => BodyEncoding::Gzip,
+        "br" => BodyEncoding::Brotli,
+        _ => BodyEncoding::Identity,
+    }
+}
+
+/// Decoded capture copy of one body side.
+#[derive(Default)]
+struct CapturedBody {
+    full: Vec<u8>,
+    preview: Vec<u8>,
+    bytes: u64,
+    truncated: bool,
+}
+
+#[derive(Default)]
+struct BodyBuffer {
+    raw: Vec<u8>,
+    total: u64,
+}
+
+/// Tee-owned capture state for one body side: raw wire bytes are appended as
+/// they pass through, capped at [`CAPTURE_BODY_MAX_BYTES`]; `total` always
+/// counts the true on-the-wire length so `*_bytes` is exact even past the cap.
+struct BodyCapture {
+    enabled: bool,
+    encoding: BodyEncoding,
+    buffer: Mutex<BodyBuffer>,
+}
+
+impl BodyCapture {
+    fn new(enabled: bool, encoding: BodyEncoding) -> Arc<Self> {
+        Arc::new(Self {
+            enabled,
+            encoding,
+            buffer: Mutex::new(BodyBuffer::default()),
+        })
+    }
+
+    fn push(&self, data: &[u8]) {
+        if !self.enabled {
+            return;
+        }
+        let mut buffer = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
+        buffer.total += data.len() as u64;
+        if buffer.raw.len() < CAPTURE_BODY_MAX_BYTES {
+            let room = CAPTURE_BODY_MAX_BYTES - buffer.raw.len();
+            let take = room.min(data.len());
+            buffer.raw.extend_from_slice(&data[..take]);
+        }
+    }
+
+    /// Finalize this side: decode a *copy*, streaming and capped, never the
+    /// whole payload and never the forwarded bytes.
+    fn finish(&self) -> CapturedBody {
+        let (raw, total) = {
+            let buffer = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
+            (buffer.raw.clone(), buffer.total)
+        };
+        if !self.enabled {
+            return CapturedBody {
+                full: Vec::new(),
+                preview: Vec::new(),
+                bytes: total,
+                truncated: false,
+            };
+        }
+        let raw_truncated = total > raw.len() as u64;
+        let (full, decode_truncated) = decode_capture(self.encoding, &raw);
+        let preview = full[..full.len().min(CAPTURE_PREVIEW_MAX_BYTES)].to_vec();
+        CapturedBody {
+            full,
+            preview,
+            bytes: total,
+            truncated: raw_truncated || decode_truncated,
+        }
+    }
+}
+
+/// Decode a captured body copy with a hard output cap. This is the decompression
+/// bomb guard: the decoder is read in bounded chunks and stops at
+/// [`CAPTURE_BODY_MAX_BYTES`], setting the truncated flag. The input is an
+/// in-memory slice, and the inner reader is always ready, so the future never
+/// yields and can be driven to completion without a reactor.
+fn decode_capture(encoding: BodyEncoding, raw: &[u8]) -> (Vec<u8>, bool) {
+    use async_compression::tokio::bufread::{BrotliDecoder, GzipDecoder};
+    use tokio::io::{AsyncRead, AsyncReadExt, BufReader};
+
+    async fn read_capped<R: AsyncRead + Unpin>(reader: &mut R) -> (Vec<u8>, bool) {
+        let mut out = Vec::new();
+        let mut buf = [0u8; 8192];
+        let mut truncated = false;
+        loop {
+            match reader.read(&mut buf).await {
+                Ok(0) => break,
+                Ok(n) => {
+                    if out.len() + n > CAPTURE_BODY_MAX_BYTES {
+                        let take = CAPTURE_BODY_MAX_BYTES - out.len();
+                        out.extend_from_slice(&buf[..take]);
+                        truncated = true;
+                        break;
+                    }
+                    out.extend_from_slice(&buf[..n]);
+                }
+                // A malformed compressed stream is not fatal: keep what decoded.
+                Err(_) => {
+                    truncated = true;
+                    break;
+                }
+            }
+        }
+        (out, truncated)
+    }
+
+    match encoding {
+        BodyEncoding::Identity => (raw.to_vec(), false),
+        BodyEncoding::Gzip => {
+            let mut decoder = GzipDecoder::new(BufReader::new(raw));
+            block_on(read_capped(&mut decoder))
+        }
+        BodyEncoding::Brotli => {
+            let mut decoder = BrotliDecoder::new(BufReader::new(raw));
+            block_on(read_capped(&mut decoder))
+        }
+    }
+}
+
+fn headers_to_string(headers: &HeaderMap, cap: usize) -> String {
+    let mut out = String::new();
+    for (name, value) in headers.iter() {
+        let line = format!("{name}: {}\n", value.to_str().unwrap_or("<binary>"));
+        if out.len() + line.len() > cap {
+            out.push_str("...truncated");
+            break;
+        }
+        out.push_str(&line);
+    }
+    out
+}
+
+/// Headers that must not be forwarded across a version/connection boundary.
+fn is_hop_by_hop(name: &HeaderName) -> bool {
+    matches!(
+        name.as_str(),
+        "connection"
+            | "proxy-connection"
+            | "keep-alive"
+            | "transfer-encoding"
+            | "te"
+            | "trailer"
+            | "upgrade"
+    )
+}
+
+fn host_header(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(HOST)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+#[derive(Clone, Copy)]
+enum Side {
+    Request,
+    Response,
+}
+
+#[derive(Clone, Default)]
+struct RequestMeta {
+    method: String,
+    url: String,
+    headers: String,
+}
+
+#[derive(Clone, Default)]
+struct ResponseMeta {
+    status: u16,
+    headers: String,
+    content_type: String,
+}
+
+/// Per-exchange capture state shared by the request and response tees. When both
+/// body sides complete (or the exchange is marked failed) exactly one record is
+/// emitted through the sink.
+struct ExchangeCapture {
+    sink: Arc<dyn CaptureSink>,
+    protocol: &'static str,
+    host: String,
+    scheme: String,
+    conn_id: String,
+    request_record_id: u64,
+    started_at_ms: u64,
+    request_meta: Mutex<RequestMeta>,
+    response_meta: Mutex<Option<ResponseMeta>>,
+    req_body: Arc<BodyCapture>,
+    resp_body: Mutex<Option<Arc<BodyCapture>>>,
+    sides_done: AtomicUsize,
+    emitted: AtomicBool,
+    failed: AtomicBool,
+}
+
+impl ExchangeCapture {
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        sink: Arc<dyn CaptureSink>,
+        protocol: HttpProtocol,
+        host: &str,
+        conn_id: &str,
+        request_record_id: u64,
+        method: &str,
+        url: &str,
+        req_headers: &HeaderMap,
+        req_body: Arc<BodyCapture>,
+        started_at_ms: u64,
+    ) -> Self {
+        Self {
+            sink,
+            protocol: protocol.as_str(),
+            host: host.to_string(),
+            scheme: "https".to_string(),
+            conn_id: conn_id.to_string(),
+            request_record_id,
+            started_at_ms,
+            request_meta: Mutex::new(RequestMeta {
+                method: method.to_string(),
+                url: url.to_string(),
+                headers: headers_to_string(req_headers, CAPTURE_HEADERS_MAX_BYTES),
+            }),
+            response_meta: Mutex::new(None),
+            req_body,
+            resp_body: Mutex::new(None),
+            sides_done: AtomicUsize::new(0),
+            emitted: AtomicBool::new(false),
+            failed: AtomicBool::new(false),
+        }
+    }
+
+    fn set_response(
+        &self,
+        status: u16,
+        headers: &HeaderMap,
+        content_type: &str,
+        body: Arc<BodyCapture>,
+    ) {
+        *self
+            .response_meta
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(ResponseMeta {
+            status,
+            headers: headers_to_string(headers, CAPTURE_HEADERS_MAX_BYTES),
+            content_type: content_type.to_string(),
+        });
+        *self.resp_body.lock().unwrap_or_else(|e| e.into_inner()) = Some(body);
+    }
+
+    fn mark_failed(&self, reason: &str) {
+        self.failed.store(true, Ordering::Release);
+        crate::log_message(2, &format!("proxy.mitm: http capture failed: {reason}"));
+    }
+
+    fn side_done(&self, side: Side) {
+        let _ = side;
+        if self.sides_done.fetch_add(1, Ordering::AcqRel) + 1 >= 2 {
+            self.emit(false);
+        }
+    }
+
+    fn emit(&self, failed: bool) {
+        if self.emitted.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let request_meta = self
+            .request_meta
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let response_meta = self
+            .response_meta
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let request = self.req_body.finish();
+        let response = self
+            .resp_body
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .map(|b| b.finish())
+            .unwrap_or_default();
+        let failed = failed || self.failed.load(Ordering::Acquire);
+        let now = crate::now_ms();
+        let record = CaptureRecord {
+            record_id: next_capture_record_id(),
+            request_record_id: self.request_record_id,
+            conn_id: self.conn_id.clone(),
+            host: self.host.clone(),
+            method: request_meta.method,
+            scheme: self.scheme.clone(),
+            url: request_meta.url,
+            status_code: response_meta.as_ref().map(|m| m.status).unwrap_or(0),
+            protocol: self.protocol.to_string(),
+            req_headers: request_meta.headers,
+            resp_headers: response_meta
+                .as_ref()
+                .map(|m| m.headers.clone())
+                .unwrap_or_default(),
+            req_body_preview: request.preview,
+            resp_body_preview: response.preview,
+            req_body: request.full,
+            resp_body: response.full,
+            req_bytes: request.bytes,
+            resp_bytes: response.bytes,
+            content_type: response_meta
+                .as_ref()
+                .map(|m| m.content_type.clone())
+                .unwrap_or_default(),
+            started_at_ms: self.started_at_ms,
+            finished_at_ms: now,
+            duration_ms: now.saturating_sub(self.started_at_ms),
+            truncated: request.truncated || response.truncated,
+            mitm_failed: failed,
+        };
+        self.sink.on_capture(record);
+    }
+}
+
+/// Streaming body wrapper that forwards every frame **unchanged** while also
+/// feeding the capture copy. The forwarded frame is returned as-is, so the wire
+/// bytes and `Content-Encoding` are identical to upstream.
+struct TeeBody<B> {
+    inner: B,
+    capture: Arc<BodyCapture>,
+    exchange: Arc<ExchangeCapture>,
+    side: Side,
+    permit: Option<OwnedSemaphorePermit>,
+    finished: bool,
+}
+
+impl<B> TeeBody<B> {
+    fn new(
+        inner: B,
+        capture: Arc<BodyCapture>,
+        exchange: Arc<ExchangeCapture>,
+        side: Side,
+        permit: Option<OwnedSemaphorePermit>,
+    ) -> Self {
+        Self {
+            inner,
+            capture,
+            exchange,
+            side,
+            permit,
+            finished: false,
+        }
+    }
+
+    fn finish_side(&mut self) {
+        if self.finished {
+            return;
+        }
+        self.finished = true;
+        self.permit.take();
+        self.exchange.side_done(self.side);
+    }
+}
+
+impl<B> Body for TeeBody<B>
+where
+    B: Body<Data = Bytes> + Unpin,
+    B::Error: Into<BoxError>,
+{
+    type Data = Bytes;
+    type Error = BoxError;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, BoxError>>> {
+        let this = self.get_mut();
+        match Pin::new(&mut this.inner).poll_frame(cx) {
+            Poll::Ready(Some(Ok(frame))) => {
+                if let Some(data) = frame.data_ref() {
+                    this.capture.push(data);
+                }
+                Poll::Ready(Some(Ok(frame)))
+            }
+            Poll::Ready(Some(Err(error))) => {
+                this.finish_side();
+                Poll::Ready(Some(Err(error.into())))
+            }
+            Poll::Ready(None) => {
+                this.finish_side();
+                Poll::Ready(None)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.finished || self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        self.inner.size_hint()
+    }
+}
+
+impl<B> Drop for TeeBody<B> {
+    fn drop(&mut self) {
+        self.finish_side();
+    }
+}
+
+/// Response body returned to the downstream client: either a tee'd upstream
+/// stream or a locally generated empty body (the structured 502 degradation).
+enum BridgeBody {
+    Tee(TeeBody<Incoming>),
+    Empty(Empty<Bytes>),
+}
+
+impl Body for BridgeBody {
+    type Data = Bytes;
+    type Error = BoxError;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, BoxError>>> {
+        match self.get_mut() {
+            BridgeBody::Tee(body) => Pin::new(body).poll_frame(cx),
+            BridgeBody::Empty(body) => match Pin::new(body).poll_frame(cx) {
+                Poll::Ready(Some(Ok(frame))) => Poll::Ready(Some(Ok(frame))),
+                Poll::Ready(Some(Err(never))) => match never {},
+                Poll::Ready(None) => Poll::Ready(None),
+                Poll::Pending => Poll::Pending,
+            },
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        match self {
+            BridgeBody::Tee(body) => body.is_end_stream(),
+            BridgeBody::Empty(body) => body.is_end_stream(),
+        }
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        match self {
+            BridgeBody::Tee(body) => body.size_hint(),
+            BridgeBody::Empty(body) => body.size_hint(),
+        }
+    }
+}
+
+fn simple_response(status: StatusCode) -> Response<BridgeBody> {
+    let mut response = Response::new(BridgeBody::Empty(Empty::new()));
+    *response.status_mut() = status;
+    response
+}
+
+/// The established upstream HTTP client connection, one per bridge.
+enum UpstreamClient {
+    H1 {
+        sender: AsyncMutex<client_http1::SendRequest<TeeBody<Incoming>>>,
+        gate: Arc<Semaphore>,
+    },
+    H2(client_http2::SendRequest<TeeBody<Incoming>>),
+}
+
+impl UpstreamClient {
+    async fn establish<U>(io: ClientTlsStream<U>, protocol: HttpProtocol) -> Result<Self, String>
+    where
+        U: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        let io = TokioIo::new(io);
+        match protocol {
+            HttpProtocol::H1 => {
+                let mut builder = client_http1::Builder::new();
+                builder.max_buf_size(H1_MAX_BUF_SIZE);
+                let (sender, conn) = builder
+                    .handshake::<_, TeeBody<Incoming>>(io)
+                    .await
+                    .map_err(|e| format!("upstream h1 handshake: {e}"))?;
+                tokio::spawn(async move {
+                    let _ = conn.await;
+                });
+                Ok(UpstreamClient::H1 {
+                    sender: AsyncMutex::new(sender),
+                    gate: Arc::new(Semaphore::new(1)),
+                })
+            }
+            HttpProtocol::H2 => {
+                let mut builder = client_http2::Builder::new(TokioExecutor::new());
+                configure_h2_client(&mut builder);
+                let (sender, conn) = builder
+                    .handshake::<_, TeeBody<Incoming>>(io)
+                    .await
+                    .map_err(|e| format!("upstream h2 handshake: {e}"))?;
+                tokio::spawn(async move {
+                    let _ = conn.await;
+                });
+                Ok(UpstreamClient::H2(sender))
+            }
+        }
+    }
+
+    /// Send one request and return the response. The h1 gate is released only
+    /// when the response body completes (dropped with the tee), so a h1 upstream
+    /// connection is never asked to start a second request mid-body.
+    async fn send(
+        &self,
+        req: Request<TeeBody<Incoming>>,
+    ) -> Result<(Response<Incoming>, Option<OwnedSemaphorePermit>), BoxError> {
+        match self {
+            UpstreamClient::H1 { sender, gate } => {
+                let permit = Arc::clone(gate)
+                    .acquire_owned()
+                    .await
+                    .map_err(|e| Box::new(e) as BoxError)?;
+                let mut sender = sender.lock().await;
+                let response = sender.send_request(req).await?;
+                drop(sender);
+                Ok((response, Some(permit)))
+            }
+            UpstreamClient::H2(sender) => {
+                let mut sender = sender.clone();
+                let response = sender.send_request(req).await?;
+                Ok((response, None))
+            }
+        }
+    }
+}
+
+/// Everything the bridge needs beyond the two TLS streams.
+#[derive(Clone)]
+pub(crate) struct BridgeContext {
+    pub host: String,
+    pub conn_id: String,
+    pub request_record_id: u64,
+    pub capture_body: bool,
+    pub started_at_ms: u64,
+    pub sink: Option<Arc<dyn CaptureSink>>,
+}
+
+impl BridgeContext {
+    pub(crate) fn new(
+        host: impl Into<String>,
+        conn_id: impl Into<String>,
+        request_record_id: u64,
+    ) -> Self {
+        Self {
+            host: host.into(),
+            conn_id: conn_id.into(),
+            request_record_id,
+            capture_body: true,
+            started_at_ms: crate::now_ms(),
+            sink: None,
+        }
+    }
+
+    pub(crate) fn with_capture_body(mut self, on: bool) -> Self {
+        self.capture_body = on;
+        self
+    }
+
+    /// Route captures for this bridge to `sink`; when unset the process sink is
+    /// used. A per-bridge sink keeps tests/parallel flows isolated.
+    pub(crate) fn with_sink(mut self, sink: Arc<dyn CaptureSink>) -> Self {
+        self.sink = Some(sink);
+        self
+    }
+}
+
+struct BridgeState {
+    sink: Arc<dyn CaptureSink>,
+    host: String,
+    conn_id: String,
+    request_record_id: u64,
+    capture_body: bool,
+    started_at_ms: u64,
+    client_proto: HttpProtocol,
+    upstream_proto: HttpProtocol,
+    upstream: UpstreamClient,
+}
+
+impl BridgeState {
+    async fn handle(&self, req: Request<Incoming>) -> Response<BridgeBody> {
+        let method = req.method().clone();
+        let req_headers = req.headers().clone();
+        let path = req
+            .uri()
+            .path_and_query()
+            .map(|pq| pq.as_str().to_string())
+            .unwrap_or_else(|| "/".to_string());
+        let host = host_header(&req_headers).unwrap_or_else(|| self.host.clone());
+        let url = format!("https://{host}{path}");
+        let req_capture = BodyCapture::new(self.capture_body, body_encoding(&req_headers));
+        let exchange = Arc::new(ExchangeCapture::new(
+            Arc::clone(&self.sink),
+            self.client_proto,
+            &self.host,
+            &self.conn_id,
+            self.request_record_id,
+            method.as_str(),
+            &url,
+            &req_headers,
+            Arc::clone(&req_capture),
+            self.started_at_ms,
+        ));
+        let upstream_body = TeeBody::new(
+            req.into_body(),
+            Arc::clone(&req_capture),
+            Arc::clone(&exchange),
+            Side::Request,
+            None,
+        );
+        let origin: Uri = match path.parse() {
+            Ok(uri) => uri,
+            Err(_) => Uri::from_static("/"),
+        };
+        let upstream_uri = match self.upstream_proto {
+            HttpProtocol::H2 => format!("https://{host}{path}").parse().unwrap_or(origin),
+            HttpProtocol::H1 => origin,
+        };
+        let mut builder = Request::builder().method(method).uri(upstream_uri);
+        match builder.headers_mut() {
+            Some(dst) => {
+                for (name, value) in req_headers.iter() {
+                    if is_hop_by_hop(name) || name == CONTENT_LENGTH {
+                        continue;
+                    }
+                    dst.append(name, value.clone());
+                }
+                if !dst.contains_key(HOST) {
+                    if let Ok(value) = HeaderValue::from_str(&host) {
+                        dst.insert(HOST, value);
+                    }
+                }
+            }
+            None => {
+                exchange.mark_failed("request header build failed");
+                exchange.emit(true);
+                return simple_response(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
+        let upstream_request = match builder.body(upstream_body) {
+            Ok(request) => request,
+            Err(e) => {
+                exchange.mark_failed(&format!("request build: {e}"));
+                exchange.emit(true);
+                return simple_response(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        };
+        let (response, permit) = match self.upstream.send(upstream_request).await {
+            Ok(pair) => pair,
+            Err(e) => {
+                exchange.mark_failed(&e.to_string());
+                record_mitm_failed(&format!("http upstream: {e}"));
+                exchange.emit(true);
+                return simple_response(StatusCode::BAD_GATEWAY);
+            }
+        };
+        let status = response.status();
+        let resp_headers = response.headers().clone();
+        let content_type = resp_headers
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        let resp_capture = BodyCapture::new(self.capture_body, body_encoding(&resp_headers));
+        exchange.set_response(
+            status.as_u16(),
+            &resp_headers,
+            &content_type,
+            Arc::clone(&resp_capture),
+        );
+        let resp_body = TeeBody::new(
+            response.into_body(),
+            resp_capture,
+            Arc::clone(&exchange),
+            Side::Response,
+            permit,
+        );
+        let mut out = Response::new(BridgeBody::Tee(resp_body));
+        *out.status_mut() = status;
+        {
+            let dst = out.headers_mut();
+            for (name, value) in resp_headers.iter() {
+                if is_hop_by_hop(name) {
+                    continue;
+                }
+                dst.append(name, value.clone());
+            }
+        }
+        out
+    }
+}
+
+struct ProxyService {
+    state: Arc<BridgeState>,
+}
+
+impl Service<Request<Incoming>> for ProxyService {
+    type Response = Response<BridgeBody>;
+    type Error = Infallible;
+    type Future = Pin<Box<dyn Future<Output = Result<Response<BridgeBody>, Infallible>> + Send>>;
+
+    fn call(&self, req: Request<Incoming>) -> Self::Future {
+        let state = Arc::clone(&self.state);
+        Box::pin(async move { Ok(state.handle(req).await) })
+    }
+}
+
+fn configure_h2_server<Ex>(builder: &mut server_http2::Builder<Ex>) {
+    builder
+        .initial_stream_window_size(Some(H2_INITIAL_STREAM_WINDOW_SIZE))
+        .initial_connection_window_size(Some(H2_INITIAL_CONNECTION_WINDOW_SIZE))
+        .max_send_buf_size(H2_MAX_SEND_BUF_SIZE)
+        .max_header_list_size(H2_MAX_HEADER_LIST_SIZE);
+}
+
+fn configure_h2_client<Ex: Clone>(builder: &mut client_http2::Builder<Ex>) {
+    builder
+        .initial_stream_window_size(Some(H2_INITIAL_STREAM_WINDOW_SIZE))
+        .initial_connection_window_size(Some(H2_INITIAL_CONNECTION_WINDOW_SIZE))
+        .max_send_buf_size(H2_MAX_SEND_BUF_SIZE)
+        .max_header_list_size(H2_MAX_HEADER_LIST_SIZE);
+}
+
+/// Bridge one terminated client TLS connection to one already-dialed upstream
+/// TLS connection, capturing both directions. ALPN chooses h1/h2 per side.
+pub(crate) async fn bridge<S, U>(
+    client: TlsStream<S>,
+    upstream: ClientTlsStream<U>,
+    ctx: BridgeContext,
+) -> Result<(), String>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    U: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let client_proto = HttpProtocol::from_alpn(client.get_ref().1.alpn_protocol());
+    let upstream_proto = HttpProtocol::from_alpn(upstream.get_ref().1.alpn_protocol());
+    let upstream = UpstreamClient::establish(upstream, upstream_proto).await?;
+    let state = Arc::new(BridgeState {
+        sink: ctx.sink.clone().unwrap_or_else(capture_sink),
+        host: ctx.host,
+        conn_id: ctx.conn_id,
+        request_record_id: ctx.request_record_id,
+        capture_body: ctx.capture_body,
+        started_at_ms: ctx.started_at_ms,
+        client_proto,
+        upstream_proto,
+        upstream,
+    });
+    let service = ProxyService { state };
+    let io = TokioIo::new(client);
+    match client_proto {
+        HttpProtocol::H1 => {
+            let mut builder = server_http1::Builder::new();
+            builder.max_buf_size(H1_MAX_BUF_SIZE);
+            builder
+                .serve_connection(io, service)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        HttpProtocol::H2 => {
+            let mut builder = server_http2::Builder::new(TokioExecutor::new());
+            configure_h2_server(&mut builder);
+            builder
+                .serve_connection(io, service)
+                .await
+                .map_err(|e| e.to_string())
+        }
+    }
+}
+
+#[cfg(test)]
+mod mitm_http_tests {
+    use super::*;
+    use http_body_util::{BodyExt, Full};
+    use hyper::Version;
+    use rustls::pki_types::ServerName;
+    use rustls::RootCertStore;
+    use std::net::SocketAddr;
+    use std::sync::atomic::AtomicU64 as TestSeq;
+    use std::sync::Mutex as StdMutex;
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio_rustls::{TlsAcceptor, TlsConnector};
+
+    static TEST_SEQ: TestSeq = TestSeq::new(0);
+
+    fn temp_ca(tag: &str) -> Arc<CertificateAuthority> {
+        let n = TEST_SEQ.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "gstore-mitm-http-{}-{}-{}",
+            std::process::id(),
+            tag,
+            n
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        Arc::new(CertificateAuthority::generate(dir.to_str().unwrap()).expect("generate CA"))
+    }
+
+    fn roots(ca: &CertificateAuthority) -> RootCertStore {
+        let mut store = RootCertStore::empty();
+        store.add(ca.der().clone()).expect("trust CA");
+        store
+    }
+
+    fn client_tls(ca: &CertificateAuthority, alpn: &[u8]) -> Arc<rustls::ClientConfig> {
+        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+        let mut config = rustls::ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .expect("versions")
+            .with_root_certificates(roots(ca))
+            .with_no_client_auth();
+        config.alpn_protocols = vec![alpn.to_vec()];
+        Arc::new(config)
+    }
+
+    struct ChannelSink(tokio::sync::mpsc::UnboundedSender<CaptureRecord>);
+
+    impl CaptureSink for ChannelSink {
+        fn on_capture(&self, record: CaptureRecord) {
+            let _ = self.0.send(record);
+        }
+    }
+
+    fn recording_sink() -> (
+        tokio::sync::mpsc::UnboundedReceiver<CaptureRecord>,
+        Arc<dyn CaptureSink>,
+    ) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        (rx, Arc::new(ChannelSink(tx)))
+    }
+
+    async fn next_record(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<CaptureRecord>,
+    ) -> CaptureRecord {
+        tokio::time::timeout(Duration::from_secs(10), rx.recv())
+            .await
+            .expect("capture must be emitted")
+            .expect("capture channel open")
+    }
+
+    enum Fixture {
+        RawH1(Vec<u8>),
+        H2 {
+            status: u16,
+            body: Vec<u8>,
+            content_type: &'static str,
+            observed: Arc<StdMutex<Option<Version>>>,
+        },
+    }
+
+    fn header_end(buf: &[u8]) -> Option<usize> {
+        buf.windows(4).position(|w| w == b"\r\n\r\n")
+    }
+
+    fn parse_content_length(head: &str) -> Option<usize> {
+        head.lines().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            if name.trim().eq_ignore_ascii_case("content-length") {
+                value.trim().parse().ok()
+            } else {
+                None
+            }
+        })
+    }
+
+    async fn serve_raw_h1(mut tls: tokio_rustls::server::TlsStream<TcpStream>, response: Vec<u8>) {
+        let mut buf = Vec::new();
+        let mut tmp = [0u8; 4096];
+        loop {
+            match tls.read(&mut tmp).await {
+                Ok(0) => break,
+                Ok(n) => {
+                    buf.extend_from_slice(&tmp[..n]);
+                    if header_end(&buf).is_some() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        if let Some(end) = header_end(&buf) {
+            let head = String::from_utf8_lossy(&buf[..end]).to_ascii_lowercase();
+            if let Some(length) = parse_content_length(&head) {
+                let mut remaining = length.saturating_sub(buf.len().saturating_sub(end + 4));
+                while remaining > 0 {
+                    match tls.read(&mut tmp).await {
+                        Ok(0) => break,
+                        Ok(n) => remaining = remaining.saturating_sub(n),
+                        Err(_) => break,
+                    }
+                }
+            }
+        }
+        let _ = tls.write_all(&response).await;
+        let _ = tls.flush().await;
+        let _ = tls.shutdown().await;
+        let _ = tls.read(&mut tmp).await;
+    }
+
+    async fn serve_h2(
+        tls: tokio_rustls::server::TlsStream<TcpStream>,
+        status: u16,
+        body: Vec<u8>,
+        content_type: &'static str,
+        observed: Arc<StdMutex<Option<Version>>>,
+    ) {
+        let service = hyper::service::service_fn(move |req: Request<Incoming>| {
+            let body = body.clone();
+            let observed = Arc::clone(&observed);
+            async move {
+                *observed.lock().unwrap_or_else(|e| e.into_inner()) = Some(req.version());
+                let mut response = Response::new(Full::new(Bytes::from(body)));
+                *response.status_mut() = StatusCode::from_u16(status).unwrap();
+                response.headers_mut().insert(
+                    CONTENT_TYPE,
+                    HeaderValue::from_static(content_type),
+                );
+                Ok::<_, Infallible>(response)
+            }
+        });
+        let mut builder = server_http2::Builder::new(TokioExecutor::new());
+        configure_h2_server(&mut builder);
+        let _ = builder
+            .serve_connection(TokioIo::new(tls), service)
+            .await;
+    }
+
+    async fn start_fixture(
+        ca: Arc<CertificateAuthority>,
+        host: &str,
+        fixture: Fixture,
+    ) -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let host = host.to_string();
+        tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            match fixture {
+                Fixture::RawH1(bytes) => {
+                    let config = ca.server_config(&host).unwrap();
+                    let tls = TlsAcceptor::from(config).accept(tcp).await.unwrap();
+                    serve_raw_h1(tls, bytes).await;
+                }
+                Fixture::H2 {
+                    status,
+                    body,
+                    content_type,
+                    observed,
+                } => {
+                    let config = ca.mitm_server_config(Some(&host)).unwrap();
+                    let tls = TlsAcceptor::from(config).accept(tcp).await.unwrap();
+                    serve_h2(tls, status, body, content_type, observed).await;
+                }
+            }
+        });
+        addr
+    }
+
+    async fn run_bridge(
+        ca: Arc<CertificateAuthority>,
+        host: &str,
+        upstream_addr: SocketAddr,
+        upstream_alpn: &[u8],
+        ctx: BridgeContext,
+    ) -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let host = host.to_string();
+        let alpn = upstream_alpn.to_vec();
+        tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let client = match terminate(tcp, &ca, Some(&host)).await {
+                MitmTls::Terminated(tls) => tls,
+                MitmTls::Passthrough(_) => panic!("expected TLS termination"),
+                MitmTls::Failed(e) => panic!("terminate failed: {e}"),
+            };
+            let tcp_up = TcpStream::connect(upstream_addr).await.unwrap();
+            let connector = TlsConnector::from(client_tls(&ca, &alpn));
+            let sni = ServerName::try_from(host.clone()).unwrap();
+            let upstream = connector.connect(sni, tcp_up).await.unwrap();
+            let _ = bridge(client, upstream, ctx).await;
+        });
+        addr
+    }
+
+    struct ClientOutcome {
+        status: u16,
+        headers: HeaderMap,
+        body: Vec<u8>,
+    }
+
+    async fn client_send_h1(
+        ca: &CertificateAuthority,
+        addr: SocketAddr,
+        host: &str,
+        method: &str,
+        path: &str,
+        body: Option<Vec<u8>>,
+    ) -> ClientOutcome {
+        let tcp = TcpStream::connect(addr).await.unwrap();
+        let connector = TlsConnector::from(client_tls(ca, b"http/1.1"));
+        let tls = connector
+            .connect(ServerName::try_from(host.to_string()).unwrap(), tcp)
+            .await
+            .unwrap();
+        let mut builder = client_http1::Builder::new();
+        builder.max_buf_size(H1_MAX_BUF_SIZE);
+        let (mut sender, conn) = builder
+            .handshake::<_, Full<Bytes>>(TokioIo::new(tls))
+            .await
+            .unwrap();
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+        let payload = body.map(Bytes::from).unwrap_or_default();
+        let request = Request::builder()
+            .method(method)
+            .uri(path)
+            .header(HOST, host)
+            .body(Full::new(payload))
+            .unwrap();
+        let response = sender.send_request(request).await.unwrap();
+        let status = response.status().as_u16();
+        let headers = response.headers().clone();
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec();
+        ClientOutcome {
+            status,
+            headers,
+            body,
+        }
+    }
+
+    async fn client_send_h2(
+        ca: &CertificateAuthority,
+        addr: SocketAddr,
+        host: &str,
+        path: &str,
+    ) -> ClientOutcome {
+        let tcp = TcpStream::connect(addr).await.unwrap();
+        let connector = TlsConnector::from(client_tls(ca, b"h2"));
+        let tls = connector
+            .connect(ServerName::try_from(host.to_string()).unwrap(), tcp)
+            .await
+            .unwrap();
+        let (mut sender, conn) = client_http2::Builder::new(TokioExecutor::new())
+            .handshake::<_, Full<Bytes>>(TokioIo::new(tls))
+            .await
+            .unwrap();
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+        let request = Request::builder()
+            .method("GET")
+            .uri(format!("https://{host}{path}"))
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        let response = sender.send_request(request).await.unwrap();
+        let status = response.status().as_u16();
+        let headers = response.headers().clone();
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec();
+        ClientOutcome {
+            status,
+            headers,
+            body,
+        }
+    }
+
+    fn gzip(data: &[u8]) -> Vec<u8> {
+        use async_compression::tokio::write::GzipEncoder;
+        block_on(async {
+            let mut encoder = GzipEncoder::new(Vec::new());
+            encoder.write_all(data).await.unwrap();
+            encoder.shutdown().await.unwrap();
+            encoder.into_inner()
+        })
+    }
+
+    #[test]
+    fn mitm_http_h2_window_budget_is_bounded() {
+        assert_eq!(H1_MAX_BUF_SIZE, 8192);
+        assert_eq!(H2_PER_CONNECTION_BUDGET_BYTES, 40_960);
+        assert!(H2_PER_CONNECTION_BUDGET_BYTES <= 40_960);
+    }
+
+    #[test]
+    fn mitm_http_h1_get_captures_request_and_response() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let ca = temp_ca("h1get");
+            let host = "flow.test";
+            let raw = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\nX-Extra: yes\r\n\r\nhello".to_vec();
+            let upstream = start_fixture(Arc::clone(&ca), host, Fixture::RawH1(raw)).await;
+            let (mut rx, sink) = recording_sink();
+            let ctx = BridgeContext::new(host, "conn-h1", 7).with_sink(sink);
+            let bridge_addr = run_bridge(Arc::clone(&ca), host, upstream, b"http/1.1", ctx).await;
+            let out = client_send_h1(&ca, bridge_addr, host, "GET", "/path?q=1", None).await;
+            assert_eq!(out.status, 200);
+            assert_eq!(out.body, b"hello");
+            assert_eq!(out.headers.get("x-extra").unwrap().to_str().unwrap(), "yes");
+
+            let rec = next_record(&mut rx).await;
+            assert_eq!(rec.method, "GET");
+            assert_eq!(rec.url, "https://flow.test/path?q=1");
+            assert_eq!(rec.host, "flow.test");
+            assert_eq!(rec.scheme, "https");
+            assert_eq!(rec.status_code, 200);
+            assert_eq!(rec.protocol, "h1");
+            assert_eq!(rec.request_record_id, 7);
+            assert!(rec.req_headers.to_lowercase().contains("host: flow.test"));
+            assert!(rec.resp_headers.to_lowercase().contains("x-extra: yes"));
+            assert_eq!(rec.resp_body, b"hello");
+            assert!(!rec.truncated);
+            assert!(!rec.mitm_failed);
+            reset_capture_sink();
+        });
+    }
+
+    #[test]
+    fn mitm_http_h1_post_captures_request_body() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let ca = temp_ca("h1post");
+            let host = "flow.test";
+            let raw = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec();
+            let upstream = start_fixture(Arc::clone(&ca), host, Fixture::RawH1(raw)).await;
+            let (mut rx, sink) = recording_sink();
+            let ctx = BridgeContext::new(host, "conn-post", 0).with_sink(sink);
+            let bridge_addr = run_bridge(Arc::clone(&ca), host, upstream, b"http/1.1", ctx).await;
+            let out = client_send_h1(
+                &ca,
+                bridge_addr,
+                host,
+                "POST",
+                "/submit",
+                Some(b"data=1".to_vec()),
+            )
+            .await;
+            assert_eq!(out.status, 200);
+            assert_eq!(out.body, b"ok");
+
+            let rec = next_record(&mut rx).await;
+            assert_eq!(rec.method, "POST");
+            assert_eq!(rec.url, "https://flow.test/submit");
+            assert_eq!(rec.req_body, b"data=1");
+            assert_eq!(rec.req_body_preview, b"data=1");
+            assert_eq!(rec.req_bytes, 6);
+            reset_capture_sink();
+        });
+    }
+
+    #[test]
+    fn mitm_http_h2_get_uses_alpn_h2() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let ca = temp_ca("h2get");
+            let host = "flow.test";
+            let observed = Arc::new(StdMutex::new(None));
+            let upstream = start_fixture(
+                Arc::clone(&ca),
+                host,
+                Fixture::H2 {
+                    status: 201,
+                    body: b"hello-h2".to_vec(),
+                    content_type: "text/plain",
+                    observed: Arc::clone(&observed),
+                },
+            )
+            .await;
+            let (mut rx, sink) = recording_sink();
+            let ctx = BridgeContext::new(host, "conn-h2", 9).with_sink(sink);
+            let bridge_addr = run_bridge(Arc::clone(&ca), host, upstream, b"h2", ctx).await;
+            let out = client_send_h2(&ca, bridge_addr, host, "/h2path").await;
+            assert_eq!(out.status, 201);
+            assert_eq!(out.body, b"hello-h2");
+
+            let rec = next_record(&mut rx).await;
+            assert_eq!(rec.method, "GET");
+            assert_eq!(rec.url, "https://flow.test/h2path");
+            assert_eq!(rec.status_code, 201);
+            assert_eq!(rec.protocol, "h2");
+            assert_eq!(rec.resp_body, b"hello-h2");
+            assert!(!rec.mitm_failed);
+            assert_eq!(
+                *observed.lock().unwrap_or_else(|e| e.into_inner()),
+                Some(Version::HTTP_2),
+                "upstream must have been spoken to over HTTP/2"
+            );
+            reset_capture_sink();
+        });
+    }
+
+    #[test]
+    fn mitm_http_gzip_is_decoded_only_in_the_capture_copy() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let ca = temp_ca("gzip");
+            let host = "flow.test";
+            let plaintext = "hello-gzip-".repeat(200);
+            let plaintext = plaintext.as_bytes();
+            let compressed = gzip(plaintext);
+            let mut raw = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\n\r\n",
+                compressed.len()
+            )
+            .into_bytes();
+            raw.extend_from_slice(&compressed);
+            let upstream = start_fixture(Arc::clone(&ca), host, Fixture::RawH1(raw)).await;
+            let (mut rx, sink) = recording_sink();
+            let ctx = BridgeContext::new(host, "conn-gzip", 0).with_sink(sink);
+            let bridge_addr = run_bridge(Arc::clone(&ca), host, upstream, b"http/1.1", ctx).await;
+            let out = client_send_h1(&ca, bridge_addr, host, "GET", "/gz", None).await;
+            assert_eq!(out.status, 200);
+            assert_eq!(
+                out.body, compressed,
+                "forwarded bytes must be the untouched gzip body"
+            );
+            assert_eq!(
+                out.headers.get("content-encoding").unwrap().to_str().unwrap(),
+                "gzip",
+                "Content-Encoding must be preserved unchanged"
+            );
+
+            let rec = next_record(&mut rx).await;
+            assert_eq!(rec.resp_body, plaintext, "capture copy is decompressed");
+            assert_eq!(rec.resp_body_preview, &plaintext[..CAPTURE_PREVIEW_MAX_BYTES]);
+            assert_eq!(rec.resp_bytes, compressed.len() as u64);
+            assert!(!rec.truncated);
+            reset_capture_sink();
+        });
+    }
+
+    #[test]
+    fn mitm_http_chunked_body_is_captured() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let ca = temp_ca("chunked");
+            let host = "flow.test";
+            let raw = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n".to_vec();
+            let upstream = start_fixture(Arc::clone(&ca), host, Fixture::RawH1(raw)).await;
+            let (mut rx, sink) = recording_sink();
+            let ctx = BridgeContext::new(host, "conn-chunk", 0).with_sink(sink);
+            let bridge_addr = run_bridge(Arc::clone(&ca), host, upstream, b"http/1.1", ctx).await;
+            let out = client_send_h1(&ca, bridge_addr, host, "GET", "/chunked", None).await;
+            assert_eq!(out.status, 200);
+            assert_eq!(out.body, b"hello world");
+
+            let rec = next_record(&mut rx).await;
+            assert_eq!(rec.resp_body, b"hello world");
+            assert!(!rec.truncated);
+            reset_capture_sink();
+        });
+    }
+
+    #[test]
+    fn mitm_http_over_limit_body_is_truncated_and_flagged() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let ca = temp_ca("limit");
+            let host = "flow.test";
+            let total = CAPTURE_BODY_MAX_BYTES + 4096;
+            let payload = vec![b'x'; total];
+            let mut raw = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {total}\r\n\r\n"
+            )
+            .into_bytes();
+            raw.extend_from_slice(&payload);
+            let upstream = start_fixture(Arc::clone(&ca), host, Fixture::RawH1(raw)).await;
+            let (mut rx, sink) = recording_sink();
+            let ctx = BridgeContext::new(host, "conn-limit", 0).with_sink(sink);
+            let bridge_addr = run_bridge(Arc::clone(&ca), host, upstream, b"http/1.1", ctx).await;
+            let out = client_send_h1(&ca, bridge_addr, host, "GET", "/big", None).await;
+            assert_eq!(out.status, 200);
+            assert_eq!(out.body.len(), total, "forwarding is never truncated");
+
+            let rec = next_record(&mut rx).await;
+            assert_eq!(rec.resp_bytes, total as u64);
+            assert_eq!(rec.resp_body.len(), CAPTURE_BODY_MAX_BYTES);
+            assert!(rec.truncated, "over-limit capture must set the truncated flag");
+            reset_capture_sink();
+        });
+    }
+
+    #[test]
+    fn mitm_http_malformed_response_degrades_without_panic() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let ca = temp_ca("malformed");
+            let host = "flow.test";
+            let raw = b"THIS IS NOT HTTP\r\n\r\n".to_vec();
+            let upstream = start_fixture(Arc::clone(&ca), host, Fixture::RawH1(raw)).await;
+            let (mut rx, sink) = recording_sink();
+            let ctx = BridgeContext::new(host, "conn-bad", 0).with_sink(sink);
+            let bridge_addr = run_bridge(Arc::clone(&ca), host, upstream, b"http/1.1", ctx).await;
+            let out = client_send_h1(&ca, bridge_addr, host, "GET", "/bad", None).await;
+            assert_eq!(
+                out.status, 502,
+                "a malformed upstream response degrades to a structured 502"
+            );
+
+            let rec = next_record(&mut rx).await;
+            assert!(rec.mitm_failed, "the failed exchange is recorded as mitmFailed");
+            reset_capture_sink();
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

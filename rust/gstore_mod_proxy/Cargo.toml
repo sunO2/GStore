@@ -104,8 +104,11 @@ meow_lwip = { package = "meow-lwip", git = "https://github.com/meow-rs/meow-rs.g
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "aws_lc_rs"] }
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12", "logging"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs", "tls12", "logging"] }
-# hyper 1.x HTTP/1.1 server (in-TUN MITM side) + client (upstream re-origination).
-hyper = { version = "1", features = ["http1", "server", "client"] }
+# hyper 1.x HTTP/1.1 + HTTP/2 server (in-TUN MITM side) + client (upstream
+# re-origination). `http2` is required by the ALPN=h2 capture branch (Todo 8) and
+# by the bounded h2 window configuration (Todo 9); without it the h2 connection
+# builders do not exist.
+hyper = { version = "1", features = ["http1", "http2", "server", "client"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
 # Body decompression (Content-Encoding: gzip / br) over tokio streams.
