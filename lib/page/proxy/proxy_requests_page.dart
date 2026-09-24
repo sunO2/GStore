@@ -10,6 +10,7 @@ import 'package:gstore/core/design/app_animation.dart';
 import 'package:gstore/core/design/app_components.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/design/app_radius.dart';
+import 'package:gstore/core/design/app_sheet.dart';
 import 'package:gstore/core/design/app_spacing.dart';
 import 'package:gstore/core/design/app_typography.dart';
 import 'package:gstore/core/rust/proxy/ProxyContract.dart';
@@ -21,6 +22,10 @@ import 'proxy_requests_facade.dart';
 
 /// 单次 `requests.get` 拉取上限（拉取为准；本页不做无限分页）。
 const int _pageLimit = 200;
+
+/// 单次 `captures.get` 拉取上限；与 [ _pageLimit ] **独立**（两条流各自分页，
+/// join 只在展示层，不落盘）。
+const int _capturesLimit = 200;
 
 /// 分组视图（Top 应用 / 域名 / IP、出站 / 规则分布）展示条数。
 const int _groupLimit = 5;
@@ -50,8 +55,26 @@ const List<_RangeOption> _rangeOptions = <_RangeOption>[
   _RangeOption('24 小时', 24 * 60 * 60 * 1000),
 ];
 
-/// 网络类型筛选项（`null` = 全部）。
+/// 网络类型筛选项（`null` = 全部；保留既有能力）。
 const List<String?> _networkOptions = <String?>[null, 'tcp', 'udp'];
+
+/// 协议筛选项（`null` = 全部；对应 `CaptureRecord.protocol`）。
+const List<String?> _protocolOptions = <String?>[null, 'h1', 'h2', 'ws'];
+
+/// HTTP 状态段筛选项（`null` = 全部；对应 `statusCode ~/ 100`）。
+const List<int?> _statusOptions = <int?>[null, 1, 2, 3, 4, 5];
+
+/// 方法筛选项（`null` = 全部；大小写不敏感精确匹配）。
+const List<String?> _methodOptions = <String?>[
+  null,
+  'GET',
+  'POST',
+  'PUT',
+  'DELETE',
+  'PATCH',
+  'HEAD',
+  'OPTIONS',
+];
 
 /// 导出另存的测试接缝：调用系统保存对话框并返回落地路径（取消 → `null`）。
 ///
@@ -137,18 +160,22 @@ class _ExportOption extends StatelessWidget {
   }
 }
 
-/// 实时「请求域名 / IP 收集」页（纯展示 / 触发层，Todo 15）。
+/// 列表优先的「请求域名 / IP」页（Todo 22 重做）。
 ///
-/// * **概览卡**：总量、请求数、活跃数、`domainKnown:false` 占比（由当前拉取
-///   窗口内的记录聚合展示，不在 Dart 落盘）。
-/// * **实时请求列表**：域名、`dstIp:dstPort`、App（包名 / UID / 「未知应用」）、
-///   入站 / 出站、字节、耗时、时间；点击经统一 [AppSheet] 详情弹层。
-/// * **筛选**：应用 / 域名 / IP 子串、`network`、`outbound`、时间范围（本地过滤，
-///   同时把后端支持的字段转发进 `requests.get.filter`）。
-/// * **分组视图**：Top 应用 / Top 域名 / Top IP、时间线趋势、DNS 质量、
-///   出站 / 规则分布（均由当前窗口记录在展示层聚合，**不落盘**）。
-/// * **实时**：`proxy.request` 脏信号触发 `requestsGet`（**拉取为准**），
-///   另有 2s `Timer` 兜底；页面不可见时暂停；[dispose] 清理定时器与订阅。
+/// **数据叠加语义（硬性）**：
+/// * 行以 `requests.get` 的**流记录为骨架**，按
+///   `CaptureRecord.requestRecordId == RequestRecord.recordId` 叠加
+///   `captures.get` 的 HTTP 详情；
+/// * 一个流可叠加**多条** capture（keep-alive / h2 mux），行摘要取**最新一条**
+///   （`recordId` 最大）；
+/// * 无 capture 的流显示「未解密」（仅流级字段）；
+/// * 孤儿 capture（`requestRecordId == 0`）与未能匹配到当前骨架窗口的 capture
+///   **自成一行（capture 驱动），不得丢弃**；
+/// * `captures.get` 与 `requests.get` **各自独立分页**（各自取 `limit`），join
+///   只在展示层，**不在 Dart 落盘**。
+///
+/// 保留既有能力：搜索 / 筛选、分组分析（Top / 趋势 / DNS 质量 / 出站 / 规则）、
+/// 导出、清空、实时拉取、行点击详情。
 ///
 /// 门面与事件流均经构造函数注入，测试无需原生模块（[facade] 默认适配
 /// [ProxyModule]，[events] 默认取 [ProxyModule.instance] 的事件流）。
@@ -191,10 +218,10 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
   StreamSubscription<ProxyEvent>? _eventSub;
   Timer? _fallbackTimer;
 
-  final TextEditingController _domainController = TextEditingController();
-  final TextEditingController _ipController = TextEditingController();
-  final TextEditingController _appController = TextEditingController();
-  final TextEditingController _outboundController = TextEditingController();
+  final TextEditingController _searchController = TextEditingController();
+  final TextEditingController _filterAppController = TextEditingController();
+  final TextEditingController _filterOutboundController =
+      TextEditingController();
 
   bool _live = true;
   bool _visible = true;
@@ -202,18 +229,31 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
   bool _pullInFlight = false;
   bool _exporting = false;
 
-  RequestPage? _page;
+  RequestPage? _requestsPage;
+  CapturePage? _capturesPage;
   String? _error;
 
-  String _domainQuery = '';
-  String _ipQuery = '';
+  /// `captures.get` 拉取失败 → 列表降级为仅流级信息（不视为致命错误）。
+  bool _capturesDegraded = false;
+
+  /// 抓包总开关（`capture.config`）；`null` = 尚未读取到（best-effort）。
+  bool? _captureEnabled;
+  CaptureConfig? _captureConfig;
+  bool _captureBusy = false;
+
+  // ---- 本地筛选状态 ----
+  String _searchQuery = '';
   String _appQuery = '';
   String _outboundQuery = '';
   String? _network;
+  String? _protocol;
+  int? _statusClass;
+  String? _method;
+  bool _errorsOnly = false;
   int _rangeMs = 0;
 
-  /// 搜索磁贴是否展开（默认折叠，仅显示「域名」）。
-  bool _filtersExpanded = false;
+  /// 分析区是否展开（默认折叠）。
+  bool _analysisExpanded = false;
 
   @override
   void initState() {
@@ -236,10 +276,9 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
     _eventSub?.cancel();
     _eventSub = null;
     WidgetsBinding.instance.removeObserver(this);
-    _domainController.dispose();
-    _ipController.dispose();
-    _appController.dispose();
-    _outboundController.dispose();
+    _searchController.dispose();
+    _filterAppController.dispose();
+    _filterOutboundController.dispose();
     super.dispose();
   }
 
@@ -307,7 +346,7 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
     if (mounted) setState(() {});
   }
 
-  /// 拉取 `requests.get`。
+  /// 拉取 `requests.get`（骨架，致命）后叠加 `captures.get`（best-effort）。
   ///
   /// [silent] 为 true（实时刷新 / 兜底轮询）时不切整页 loading、失败保留现有数据。
   Future<void> _fetch({bool silent = false}) async {
@@ -323,10 +362,11 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
       final page = await _facade.requestsGet(_buildRequest());
       if (!mounted) return;
       setState(() {
-        _page = page;
+        _requestsPage = page;
         _loading = false;
         _error = null;
       });
+      await _fetchAux();
     } on ProxyModuleException catch (error) {
       if (!mounted || silent) return;
       setState(() {
@@ -344,29 +384,62 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
     }
   }
 
-  RequestGetRequest _buildRequest() {
-    final filter = _buildFilter();
-    return RequestGetRequest(
-      limit: _pageLimit,
-      filter: filter,
-    );
+  /// `captures.get` + `capture.config.get` 的 best-effort 叠加（失败静默降级）。
+  Future<void> _fetchAux() async {
+    // HTTP 详情：失败仅标记降级，不影响 requests 列表。
+    try {
+      final page = await _facade.capturesGet(_buildCapturesRequest());
+      if (!mounted) return;
+      setState(() {
+        _capturesPage = page;
+        _capturesDegraded = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _capturesDegraded = true);
+    }
+    // 抓包总开关：失败保持未知，不打断。
+    try {
+      final config = await _facade.captureConfigGet();
+      if (!mounted) return;
+      setState(() {
+        _captureConfig = config;
+        _captureEnabled = config.enabled;
+      });
+    } catch (_) {
+      // 忽略：开关展示为未知/关闭。
+    }
   }
 
-  RequestsFilter? _buildFilter() {
+  RequestGetRequest _buildRequest() {
+    final filter = _buildRequestsFilter();
+    return RequestGetRequest(limit: _pageLimit, filter: filter);
+  }
+
+  RequestsFilter? _buildRequestsFilter() {
     final sinceMs = _rangeMs > 0
         ? DateTime.now().millisecondsSinceEpoch - _rangeMs
         : null;
-    if (_domainQuery.isEmpty &&
-        _network == null &&
-        _outboundQuery.isEmpty &&
-        sinceMs == null) {
-      return null;
-    }
+    if (_outboundQuery.isEmpty && sinceMs == null) return null;
     return RequestsFilter(
-      domain: _domainQuery.isEmpty ? null : _domainQuery,
-      network: _network,
       outbound: _outboundQuery.isEmpty ? null : _outboundQuery,
       sinceMs: sinceMs,
+    );
+  }
+
+  CapturesGetRequest _buildCapturesRequest() {
+    final filter = _buildCapturesFilter();
+    return CapturesGetRequest(limit: _capturesLimit, filter: filter);
+  }
+
+  CapturesFilter? _buildCapturesFilter() {
+    if (_protocol == null && _method == null && _statusClass == null) {
+      return null;
+    }
+    return CapturesFilter(
+      protocol: _protocol,
+      method: _method,
+      statusClass: _statusClass,
     );
   }
 
@@ -390,6 +463,40 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
     } catch (error) {
       if (!mounted) return;
       AppDialogs.showError('清空失败：$error');
+    }
+  }
+
+  // ==================== 抓包开关（迷你） ====================
+
+  Future<void> _toggleCapture() async {
+    if (_captureBusy) return;
+    final current = _captureEnabled ?? false;
+    final next = !current;
+    setState(() {
+      _captureBusy = true;
+      _captureEnabled = next;
+    });
+    try {
+      final config = (_captureConfig ?? const CaptureConfig())
+          .copyWith(enabled: next);
+      final applied = await _facade.captureConfigSet(config);
+      if (!mounted) return;
+      setState(() {
+        _captureConfig = applied;
+        _captureEnabled = applied.enabled;
+        _captureBusy = false;
+      });
+      AppDialogs.showSuccess(next ? '已开启抓包' : '已关闭抓包');
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _captureEnabled = current;
+        _captureBusy = false;
+      });
+      AppDialogs.showError(
+        error is ProxyModuleException ? error.message : '抓包开关下发失败：$error',
+        title: '操作失败',
+      );
     }
   }
 
@@ -450,7 +557,7 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
     RequestExportResult result;
     try {
       result = await _facade.requestsExport(
-        RequestExportRequest(format: format, filter: _buildFilter()),
+        RequestExportRequest(format: format, filter: _buildRequestsFilter()),
       );
     } on ProxyModuleException catch (error) {
       if (!mounted) return;
@@ -543,60 +650,286 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
         '${_two(now.hour)}${_two(now.minute)}${_two(now.second)}';
   }
 
-  // ==================== 过滤（展示层，本地为准） ====================
+  // ==================== 数据叠加（展示层 join，不落盘） ====================
 
-  void _applyLocalFilter() => setState(() {});
+  /// 骨架行 + 孤儿 capture 行（未套用筛选、未截断）。
+  List<_UnifiedRow> _allRows() {
+    final requests = _requestsPage?.records ?? const <RequestRecord>[];
+    final captures = _capturesPage?.records ?? const <CaptureRecord>[];
 
-  void _setNetwork(String? network) {
-    if (_network == network) return;
-    setState(() => _network = network);
-  }
+    // `requestRecordId -> 最新 capture`（recordId 单调，取最大者作摘要）。
+    final byRequestId = <int, CaptureRecord>{};
+    for (final capture in captures) {
+      if (capture.requestRecordId == 0) continue;
+      final existing = byRequestId[capture.requestRecordId];
+      if (existing == null || capture.recordId > existing.recordId) {
+        byRequestId[capture.requestRecordId] = capture;
+      }
+    }
 
-  void _setRange(_RangeOption option) {
-    if (_rangeMs == option.rangeMs) return;
-    setState(() => _rangeMs = option.rangeMs);
+    final skeletonIds = requests.map((record) => record.recordId).toSet();
+    final rows = <_UnifiedRow>[
+      for (final record in requests)
+        _UnifiedRow(request: record, capture: byRequestId[record.recordId]),
+    ];
+    // 未被骨架匹配的 capture（含孤儿 `requestRecordId == 0`）自成一行，绝不丢弃。
+    for (final capture in captures) {
+      if (capture.requestRecordId != 0 &&
+          skeletonIds.contains(capture.requestRecordId)) {
+        continue;
+      }
+      rows.add(_UnifiedRow(capture: capture));
+    }
+    return rows;
   }
 
   int _nowMs() => DateTime.now().millisecondsSinceEpoch;
 
-  /// 当前窗口记录经本地筛选后的结果（同时转发后端支持的过滤字段）。
-  List<RequestRecord> get _filteredRecords {
-    final all = _page?.records ?? const <RequestRecord>[];
+  /// 当前窗口经本地筛选后的行（同时转发后端可支持的过滤字段）。
+  List<_UnifiedRow> get _visibleRows {
     final nowMs = _nowMs();
-    final matched = all.where((record) {
-      if (_network != null && record.network != _network) return false;
-      if (_domainQuery.isNotEmpty &&
-          !record.domain.toLowerCase().contains(_domainQuery)) {
-        return false;
-      }
-      if (_ipQuery.isNotEmpty &&
-          !record.dstIp.toLowerCase().contains(_ipQuery)) {
-        return false;
-      }
-      if (_appQuery.isNotEmpty) {
-        // 命中范围：包名 + 已解析的人类可读应用名 + UID（子串，大小写不敏感）。
-        final labels = record.packages
-            .map((pkg) => ProxyAppIdentityResolver.instance.lookup(pkg)?.label)
-            .whereType<String>();
-        final haystack =
-            '${record.packages.join(' ')} ${labels.join(' ')} ${record.uid ?? ''}'
-                .toLowerCase();
-        if (!haystack.contains(_appQuery)) return false;
-      }
-      if (_outboundQuery.isNotEmpty &&
-          !record.outbound.toLowerCase().contains(_outboundQuery)) {
-        return false;
-      }
-      if (_rangeMs > 0 &&
-          record.openTsMs > 0 &&
-          record.openTsMs < nowMs - _rangeMs) {
-        return false;
-      }
+    final matched = _allRows().where((row) {
+      if (!_matchesSearch(row)) return false;
+      if (!_matchesFilters(row, nowMs)) return false;
       return true;
     }).toList();
     return matched.length <= _maxRendered
         ? matched
         : matched.sublist(0, _maxRendered);
+  }
+
+  bool _matchesSearch(_UnifiedRow row) {
+    if (_searchQuery.isEmpty) return true;
+    final haystack = <String>[
+      row.host,
+      row.path,
+      row.method,
+      row.request?.domain ?? '',
+      row.request?.dstIp ?? '',
+    ].join(' ').toLowerCase();
+    return haystack.contains(_searchQuery);
+  }
+
+  bool _matchesFilters(_UnifiedRow row, int nowMs) {
+    final capture = row.capture;
+    final request = row.request;
+    if (_protocol != null) {
+      if (capture == null ||
+          capture.protocol.toLowerCase() != _protocol!.toLowerCase()) {
+        return false;
+      }
+    }
+    if (_statusClass != null) {
+      if (capture == null || capture.statusCode ~/ 100 != _statusClass) {
+        return false;
+      }
+    }
+    if (_method != null) {
+      if (capture == null ||
+          capture.method.toUpperCase() != _method!.toUpperCase()) {
+        return false;
+      }
+    }
+    if (_errorsOnly) {
+      final isError = capture != null &&
+          (capture.mitmFailed || capture.statusCode >= 400);
+      if (!isError) return false;
+    }
+    if (_network != null) {
+      if (request == null || request.network != _network) return false;
+    }
+    if (_appQuery.isNotEmpty) {
+      if (request == null) return false;
+      final labels = request.packages
+          .map((pkg) => ProxyAppIdentityResolver.instance.lookup(pkg)?.label)
+          .whereType<String>();
+      final haystack =
+          '${request.packages.join(' ')} ${labels.join(' ')} ${request.uid ?? ''}'
+              .toLowerCase();
+      if (!haystack.contains(_appQuery)) return false;
+    }
+    if (_outboundQuery.isNotEmpty) {
+      if (request == null ||
+          !request.outbound.toLowerCase().contains(_outboundQuery)) {
+        return false;
+      }
+    }
+    if (_rangeMs > 0) {
+      final ts = row.timeMs;
+      if (ts > 0 && ts < nowMs - _rangeMs) return false;
+    }
+    return true;
+  }
+
+  bool get _hasActiveFilters =>
+      _network != null ||
+      _protocol != null ||
+      _statusClass != null ||
+      _method != null ||
+      _errorsOnly ||
+      _appQuery.isNotEmpty ||
+      _outboundQuery.isNotEmpty ||
+      _rangeMs > 0;
+
+  /// 任一筛选变化：本地重算 + best-effort 后端重拉（转发可支持的字段）。
+  void _onFilterChanged() {
+    setState(() {});
+    unawaited(_fetch(silent: true));
+  }
+
+  void _applySearch() => setState(() {});
+
+  void _resetFilters() {
+    _filterAppController.clear();
+    _filterOutboundController.clear();
+    setState(() {
+      _network = null;
+      _protocol = null;
+      _statusClass = null;
+      _method = null;
+      _errorsOnly = false;
+      _appQuery = '';
+      _outboundQuery = '';
+      _rangeMs = 0;
+    });
+  }
+
+  // ==================== 筛选弹层 ====================
+
+  Future<void> _openFilters() async {
+    await AppSheet.show<void>(
+      context: context,
+      title: '筛选',
+      icon: const Icon(TablerIcons.filter),
+      content: StatefulBuilder(
+        builder: (sheetContext, setSheetState) {
+          void sync(VoidCallback change) {
+            setState(change);
+            setSheetState(() {});
+            unawaited(_fetch(silent: true));
+          }
+
+          void reset() {
+            _resetFilters();
+            setSheetState(() {});
+            unawaited(_fetch(silent: true));
+          }
+
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton(
+                  key: const Key('requests_filter_reset'),
+                  onPressed: reset,
+                  child: const Text('重置'),
+                ),
+              ),
+              _FilterSection(
+                title: '协议',
+                child: _FilterChips<String?>(
+                  keyPrefix: 'requests_filter_protocol',
+                  options: _protocolOptions,
+                  selected: _protocol,
+                  labelOf: (value) => value ?? '全部',
+                  onSelected: (value) => sync(() => _protocol = value),
+                ),
+              ),
+              _FilterSection(
+                title: '状态段',
+                child: _FilterChips<int?>(
+                  keyPrefix: 'requests_filter_status',
+                  options: _statusOptions,
+                  selected: _statusClass,
+                  labelOf: (value) => value == null ? '全部' : '${value}xx',
+                  onSelected: (value) => sync(() => _statusClass = value),
+                ),
+              ),
+              _FilterSection(
+                title: '方法',
+                child: _FilterChips<String?>(
+                  keyPrefix: 'requests_filter_method',
+                  options: _methodOptions,
+                  selected: _method,
+                  labelOf: (value) => value ?? '全部',
+                  onSelected: (value) => sync(() => _method = value),
+                ),
+              ),
+              _FilterSection(
+                title: '网络',
+                child: _FilterChips<String?>(
+                  keyPrefix: 'requests_filter_network',
+                  options: _networkOptions,
+                  selected: _network,
+                  labelOf: (value) => value ?? '全部',
+                  onSelected: (value) => sync(() => _network = value),
+                ),
+              ),
+              _FilterSection(
+                title: '应用',
+                child: TextField(
+                  key: const Key('requests_filter_app'),
+                  controller: _filterAppController,
+                  onChanged: (value) {
+                    setState(() {
+                      _appQuery = value.trim().toLowerCase();
+                    });
+                  },
+                  decoration: const InputDecoration(
+                    isDense: true,
+                    hintText: '包名 / 应用名 / UID 子串',
+                    prefixIcon: Icon(TablerIcons.apps),
+                  ),
+                ),
+              ),
+              _FilterSection(
+                title: '出站',
+                child: TextField(
+                  key: const Key('requests_filter_outbound'),
+                  controller: _filterOutboundController,
+                  onChanged: (value) {
+                    _outboundQuery = value.trim().toLowerCase();
+                    _onFilterChanged();
+                  },
+                  decoration: const InputDecoration(
+                    isDense: true,
+                    hintText: '出站子串',
+                    prefixIcon: Icon(TablerIcons.arrows_split),
+                  ),
+                ),
+              ),
+              _FilterSection(
+                title: '时间范围',
+                child: _FilterChips<int>(
+                  keyPrefix: 'requests_filter_range',
+                  options: _rangeOptions.map((option) => option.rangeMs).toList(),
+                  selected: _rangeMs,
+                  labelOf: (value) => _rangeOptions
+                      .firstWhere((option) => option.rangeMs == value)
+                      .label,
+                  onSelected: (value) => sync(() => _rangeMs = value),
+                ),
+              ),
+              FilterChip(
+                key: const Key('requests_filter_errors_only'),
+                label: const Text('仅错误'),
+                avatar: const Icon(TablerIcons.alert_triangle),
+                selected: _errorsOnly,
+                onSelected: (value) =>
+                    sync(() => _errorsOnly = value),
+              ),
+            ],
+          );
+        },
+      ),
+      actions: [
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('完成'),
+        ),
+      ],
+    );
   }
 
   // ==================== 渲染 ====================
@@ -623,7 +956,7 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
             key: const Key('requests_reset'),
             tooltip: '清空记录',
             icon: const Icon(TablerIcons.trash),
-            onPressed: _page == null ? null : _confirmReset,
+            onPressed: _requestsPage == null ? null : _confirmReset,
           ),
         ],
       ),
@@ -632,7 +965,7 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
   }
 
   Widget _buildBody(BuildContext context) {
-    if (_loading && _page == null) {
+    if (_loading && _requestsPage == null) {
       return const Center(child: AppLoading(size: AppLoadingSize.medium));
     }
     return RefreshIndicator(
@@ -640,11 +973,286 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
       child: CustomScrollView(
         physics: const AlwaysScrollableScrollPhysics(),
         slivers: [
-          SliverToBoxAdapter(child: _buildOverview(context)),
-          SliverToBoxAdapter(child: _buildFilters(context)),
+          SliverToBoxAdapter(child: _buildTopChips(context)),
+          SliverToBoxAdapter(child: _buildSearchBar(context)),
+          SliverToBoxAdapter(child: _buildAnalysis(context)),
           ..._buildContentSlivers(context),
         ],
       ),
+    );
+  }
+
+  /// 顶部一行 chips：抓包开关迷你 / 实时 / `共 N 条`。
+  Widget _buildTopChips(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final enabled = _captureEnabled;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.lg,
+        AppSpacing.lg,
+        AppSpacing.lg,
+        AppSpacing.xs,
+      ),
+      child: Wrap(
+        spacing: AppSpacing.sm,
+        runSpacing: AppSpacing.xs,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          FilterChip(
+            key: const Key('requests_capture_toggle'),
+            avatar: Icon(
+              TablerIcons.shield_lock,
+              size: AppTypography.iconSM,
+              color: enabled == true ? scheme.primary : scheme.onSurfaceVariant,
+            ),
+            label: Text(enabled == true ? '抓包中' : '抓包'),
+            selected: enabled == true,
+            onSelected: _captureBusy ? null : (_) => _toggleCapture(),
+          ),
+          FilterChip(
+            key: const Key('requests_live_toggle'),
+            avatar: Icon(
+              TablerIcons.bolt,
+              size: AppTypography.iconSM,
+              color: _live ? scheme.primary : scheme.onSurfaceVariant,
+            ),
+            label: const Text('实时'),
+            selected: _live,
+            onSelected: (_) => _toggleLive(),
+          ),
+          Container(
+            key: const Key('requests_count_chip'),
+            padding: AppSpacing.horizontalSM_verticalXS,
+            decoration: BoxDecoration(
+              color: scheme.surfaceContainerHighest,
+              borderRadius: AppRadius.allMD,
+            ),
+            child: Text(
+              '共 ${_visibleRows.length} 条',
+              style: theme.textTheme.labelMedium?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 搜索框（域名 / IP / 方法 / 路径）+ 筛选入口。
+  Widget _buildSearchBar(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: AppSpacing.onlyHorizontalLG,
+      child: Row(
+        children: [
+          Expanded(
+            child: TextField(
+              key: const Key('requests_search'),
+              controller: _searchController,
+              onChanged: (value) {
+                _searchQuery = value.trim().toLowerCase();
+                _applySearch();
+              },
+              decoration: const InputDecoration(
+                isDense: true,
+                hintText: '域名 / IP / 方法 / 路径',
+                prefixIcon: Icon(TablerIcons.search),
+              ),
+            ),
+          ),
+          const SizedBox(width: AppSpacing.sm),
+          IconButton(
+            key: const Key('requests_filter_open'),
+            tooltip: '筛选',
+            icon: const Icon(TablerIcons.filter),
+            color: _hasActiveFilters ? scheme.primary : scheme.onSurfaceVariant,
+            onPressed: _openFilters,
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 分析区：折叠到列表上方「分析」可展开区（Top / 趋势 / DNS 质量 + 概览）。
+  Widget _buildAnalysis(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final records = _requestsPage?.records ?? const <RequestRecord>[];
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.lg,
+        AppSpacing.sm,
+        AppSpacing.lg,
+        AppSpacing.xs,
+      ),
+      child: Card(
+        margin: EdgeInsets.zero,
+        clipBehavior: Clip.antiAlias,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            InkWell(
+              key: const Key('requests_analysis_toggle'),
+              onTap: () =>
+                  setState(() => _analysisExpanded = !_analysisExpanded),
+              child: Padding(
+                padding: AppSpacing.horizontalMD_verticalSM,
+                child: Row(
+                  children: [
+                    Icon(
+                      TablerIcons.chart_line,
+                      size: AppTypography.iconMD,
+                      color: scheme.primary,
+                    ),
+                    const SizedBox(width: AppSpacing.sm),
+                    Expanded(
+                      child: Text('分析', style: theme.textTheme.titleSmall),
+                    ),
+                    AnimatedRotation(
+                      turns: _analysisExpanded ? 0.5 : 0.0,
+                      duration: AppAnimation.fast,
+                      curve: AppAnimation.curve,
+                      child: Icon(
+                        _analysisExpanded
+                            ? TablerIcons.chevron_up
+                            : TablerIcons.chevron_down,
+                        size: AppTypography.iconLG,
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            AnimatedSize(
+              duration: AppAnimation.medium,
+              curve: AppAnimation.curve,
+              alignment: Alignment.topCenter,
+              child: _analysisExpanded
+                  ? Padding(
+                      padding: AppSpacing.allMD,
+                      child: _buildAnalysisCards(records),
+                    )
+                  : const SizedBox.shrink(),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAnalysisCards(List<RequestRecord> records) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final page = _requestsPage;
+    final totalBytes = records.fold<int>(
+      0,
+      (sum, record) => sum + record.uploadBytes + record.downloadBytes,
+    );
+    final active =
+        records.where((record) => record.closeReason == 'open').length;
+    final unknownDomains =
+        records.where((record) => !record.domainKnown).length;
+    final unknownRatio = records.isEmpty
+        ? 0
+        : ((unknownDomains / records.length) * 100).round();
+    final known = records.where((record) => record.domainKnown).length;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Wrap(
+          spacing: AppSpacing.xl,
+          runSpacing: AppSpacing.md,
+          children: [
+            _OverviewMetric(
+              icon: TablerIcons.arrow_up,
+              label: '总量',
+              value: byteSize(totalBytes),
+            ),
+            _OverviewMetric(
+              icon: TablerIcons.arrows_up_down,
+              label: '请求数',
+              value: '${records.length}',
+            ),
+            _OverviewMetric(
+              icon: TablerIcons.bolt,
+              label: '活跃',
+              value: '$active',
+            ),
+            _OverviewMetric(
+              icon: TablerIcons.server,
+              label: '未知域名',
+              value: '$unknownRatio%',
+              sub: '$unknownDomains / ${records.length}',
+            ),
+          ],
+        ),
+        if (page != null) ...[
+          const SizedBox(height: AppSpacing.sm),
+          Text(
+            '保留 ${page.retained}/${page.capacity} · '
+            '淘汰 ${page.evicted} · 丢弃 ${page.dropped}',
+            style: theme.textTheme.labelSmall?.copyWith(
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+        ],
+        const SizedBox(height: AppSpacing.sm),
+        _GroupCard(
+          key: const Key('requests_group_apps'),
+          title: 'Top 应用',
+          icon: TablerIcons.apps,
+          rows: _groupTop(records, _appLabel),
+        ),
+        _GroupCard(
+          key: const Key('requests_group_domains'),
+          title: 'Top 域名',
+          icon: TablerIcons.server,
+          rows: _groupTop(
+            records,
+            (record) => record.domain.isEmpty ? '(未知域名)' : record.domain,
+          ),
+        ),
+        _GroupCard(
+          key: const Key('requests_group_ips'),
+          title: 'Top IP',
+          icon: TablerIcons.network,
+          rows: _groupTop(
+            records,
+            (record) => record.dstIp.isEmpty ? '(未知 IP)' : record.dstIp,
+          ),
+        ),
+        _TrendCard(
+          key: const Key('requests_group_trend'),
+          counts: _trendBuckets(records),
+        ),
+        _DnsQualityCard(
+          key: const Key('requests_group_dns'),
+          known: known,
+          total: records.length,
+        ),
+        _GroupCard(
+          key: const Key('requests_group_outbound'),
+          title: '出站分布',
+          icon: TablerIcons.arrows_split,
+          rows: _groupTop(
+            records,
+            (record) => record.outbound.isEmpty ? '未匹配' : record.outbound,
+          ),
+        ),
+        _GroupCard(
+          key: const Key('requests_group_rules'),
+          title: '规则分布',
+          icon: TablerIcons.list_check,
+          rows: _groupTop(
+            records,
+            (record) => record.rule.isEmpty ? '未匹配规则' : record.rule,
+          ),
+        ),
+      ],
     );
   }
 
@@ -664,16 +1272,14 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
         ),
       ];
     }
-    final records = _filteredRecords;
-    if (records.isEmpty) {
-      final hasAny = (_page?.records ?? const <RequestRecord>[]).isNotEmpty;
+    final rows = _visibleRows;
+    if (rows.isEmpty) {
+      final hasAny = _allRows().isNotEmpty;
       return [
         SliverFillRemaining(
           hasScrollBody: false,
           child: _EmptyState(
-            icon: hasAny
-                ? TablerIcons.filter_off
-                : TablerIcons.history_off,
+            icon: hasAny ? TablerIcons.filter_off : TablerIcons.history_off,
             title: hasAny ? '无匹配请求' : '暂无请求记录',
             message: hasAny
                 ? '当前筛选条件没有匹配的请求。'
@@ -683,402 +1289,25 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
       ];
     }
     return [
-      SliverToBoxAdapter(child: _buildGrouped(context, records)),
-      SliverToBoxAdapter(child: _buildListHeader(context, records.length)),
+      if (_capturesDegraded)
+        const SliverToBoxAdapter(child: _DegradedNotice()),
+      SliverToBoxAdapter(child: _buildListHeader(context, rows.length)),
       SliverPadding(
         padding: AppSpacing.onlyHorizontalLG,
         sliver: SliverList.builder(
-          itemCount: records.length,
-          itemBuilder: (context, index) => _RequestRowCard(
-            key: ValueKey('request_row_${records[index].recordId}'),
-            record: records[index],
-            onTap: () => _showDetail(records[index]),
-          ),
+          itemCount: rows.length,
+          itemBuilder: (context, index) {
+            final row = rows[index];
+            return _UnifiedRowCard(
+              key: ValueKey(row.rowKey),
+              row: row,
+              onTap: () => _openRow(row),
+            );
+          },
         ),
       ),
       const SliverToBoxAdapter(child: SizedBox(height: AppSpacing.xxl)),
     ];
-  }
-
-  /// 概览卡：总量、请求数、活跃、`domainKnown:false` 占比。
-  Widget _buildOverview(BuildContext context) {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
-    final page = _page;
-    final records = page?.records ?? const <RequestRecord>[];
-    final totalBytes = records.fold<int>(
-      0,
-      (sum, record) => sum + record.uploadBytes + record.downloadBytes,
-    );
-    final active = records
-        .where((record) => record.closeReason == 'open')
-        .length;
-    final unknownDomains =
-        records.where((record) => !record.domainKnown).length;
-    final unknownRatio = records.isEmpty
-        ? 0
-        : ((unknownDomains / records.length) * 100).round();
-
-    return Padding(
-      padding: const EdgeInsets.only(
-        left: AppSpacing.lg,
-        right: AppSpacing.lg,
-        top: AppSpacing.lg,
-      ),
-      child: Card(
-        margin: EdgeInsets.zero,
-        child: Padding(
-          padding: AppSpacing.allMD,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  ColoredAliIcon(
-                    icon: TablerIcons.arrows_up_down,
-                    size: AppTypography.iconMD,
-                    color: scheme.primary,
-                  ),
-                  const SizedBox(width: AppSpacing.sm),
-                  Text('采集概览', style: theme.textTheme.titleSmall),
-                  const Spacer(),
-                  FilterChip(
-                    key: const Key('requests_live_toggle'),
-                    label: const Text('实时'),
-                    selected: _live,
-                    onSelected: (_) => _toggleLive(),
-                  ),
-                ],
-              ),
-              const SizedBox(height: AppSpacing.sm),
-              if (page == null)
-                const Padding(
-                  padding: AppSpacing.topBottomSM,
-                  child: Center(child: AppLoading(size: AppLoadingSize.small)),
-                )
-              else ...[
-                Wrap(
-                  spacing: AppSpacing.xl,
-                  runSpacing: AppSpacing.md,
-                  children: [
-                    _OverviewMetric(
-                      icon: TablerIcons.arrow_up,
-                      label: '总量',
-                      value: byteSize(totalBytes),
-                    ),
-                    _OverviewMetric(
-                      icon: TablerIcons.arrows_up_down,
-                      label: '请求数',
-                      value: '${records.length}',
-                    ),
-                    _OverviewMetric(
-                      icon: TablerIcons.bolt,
-                      label: '活跃',
-                      value: '$active',
-                    ),
-                    _OverviewMetric(
-                      icon: TablerIcons.server,
-                      label: '未知域名',
-                      value: '$unknownRatio%',
-                      sub: '$unknownDomains / ${records.length}',
-                    ),
-                  ],
-                ),
-                const SizedBox(height: AppSpacing.sm),
-                Text(
-                  '保留 ${page.retained}/${page.capacity} · '
-                  '淘汰 ${page.evicted} · 丢弃 ${page.dropped}',
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: scheme.onSurfaceVariant,
-                  ),
-                ),
-              ],
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  /// 筛选区：应用 / 域名 / IP 子串、network、outbound、时间范围。
-  Widget _buildFilters(BuildContext context) {
-    final theme = Theme.of(context);
-    return Padding(
-      padding: AppSpacing.allLG,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          _buildFilterTile(context),
-          const SizedBox(height: AppSpacing.sm),
-          Text(
-            '网络',
-            style: theme.textTheme.labelMedium?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
-          ),
-          const SizedBox(height: AppSpacing.xs),
-          Wrap(
-            spacing: AppSpacing.xs,
-            runSpacing: AppSpacing.xs,
-            children: [
-              for (final option in _networkOptions)
-                ChoiceChip(
-                  key: Key('requests_network_${option ?? 'all'}'),
-                  label: Text(option ?? '全部'),
-                  selected: _network == option,
-                  onSelected: (_) => _setNetwork(option),
-                ),
-            ],
-          ),
-          const SizedBox(height: AppSpacing.sm),
-          Text(
-            '时间范围',
-            style: theme.textTheme.labelMedium?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
-          ),
-          const SizedBox(height: AppSpacing.xs),
-          Wrap(
-            spacing: AppSpacing.xs,
-            runSpacing: AppSpacing.xs,
-            children: [
-              for (final option in _rangeOptions)
-                ChoiceChip(
-                  key: Key('requests_range_${option.rangeMs}'),
-                  label: Text(option.label),
-                  selected: _rangeMs == option.rangeMs,
-                  onSelected: (_) => _setRange(option),
-                ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// 4 个搜索框的可展开磁贴：默认仅显示「域名」，展开后按 应用 / 域名 / IP /
-  /// 出站 排列（折叠交互复用 update/view 与 app_snapshot 的既有模式）。
-  ///
-  /// 折叠时标题右侧提示已设置的非域名筛选数量；整个标题行都是点击热区
-  /// （[InkWell] 提供语义与波纹反馈），展开/收起用 [AnimatedSize] + 旋转箭头。
-  Widget _buildFilterTile(BuildContext context) {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
-    final activeCount = <bool>[
-      _appQuery.isNotEmpty,
-      _ipQuery.isNotEmpty,
-      _outboundQuery.isNotEmpty,
-    ].where((isSet) => isSet).length;
-    return AppCard(
-      margin: EdgeInsets.zero,
-      padding: EdgeInsets.zero,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          InkWell(
-            key: const Key('requests_filters_toggle'),
-            onTap: () => setState(() => _filtersExpanded = !_filtersExpanded),
-            borderRadius: AppRadius.allLG,
-            child: Padding(
-              padding: AppSpacing.horizontalMD_verticalSM,
-              child: Row(
-                children: [
-                  Icon(
-                    TablerIcons.filter,
-                    size: AppTypography.iconMD,
-                    color: scheme.primary,
-                  ),
-                  const SizedBox(width: AppSpacing.sm),
-                  Expanded(
-                    child: Text('筛选', style: theme.textTheme.titleSmall),
-                  ),
-                  if (!_filtersExpanded && activeCount > 0) ...[
-                    Text(
-                      '$activeCount 项已设',
-                      style: theme.textTheme.labelSmall?.copyWith(
-                        color: scheme.onSurfaceVariant,
-                      ),
-                    ),
-                    const SizedBox(width: AppSpacing.xs),
-                  ],
-                  AnimatedRotation(
-                    turns: _filtersExpanded ? 0.5 : 0.0,
-                    duration: AppAnimation.fast,
-                    curve: AppAnimation.curve,
-                    child: Icon(
-                      _filtersExpanded
-                          ? TablerIcons.chevron_up
-                          : TablerIcons.chevron_down,
-                      size: AppTypography.iconLG,
-                      color: scheme.onSurfaceVariant,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          AnimatedSize(
-            duration: AppAnimation.medium,
-            curve: AppAnimation.curve,
-            alignment: Alignment.topCenter,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(
-                AppSpacing.md,
-                AppSpacing.xs,
-                AppSpacing.md,
-                AppSpacing.md,
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  if (_filtersExpanded) ...[
-                    TextField(
-                      key: const Key('requests_app_filter'),
-                      controller: _appController,
-                      onChanged: (value) {
-                        _appQuery = value.trim().toLowerCase();
-                        _applyLocalFilter();
-                      },
-                      decoration: const InputDecoration(
-                        isDense: true,
-                        labelText: '应用',
-                        hintText: '包名 / 应用名 / UID 子串',
-                        prefixIcon: Icon(TablerIcons.apps),
-                      ),
-                    ),
-                    const SizedBox(height: AppSpacing.sm),
-                  ],
-                  TextField(
-                    key: const Key('requests_domain_filter'),
-                    controller: _domainController,
-                    onChanged: (value) {
-                      _domainQuery = value.trim().toLowerCase();
-                      _applyLocalFilter();
-                    },
-                    decoration: const InputDecoration(
-                      isDense: true,
-                      labelText: '域名',
-                      hintText: '域名子串',
-                      prefixIcon: Icon(TablerIcons.server),
-                    ),
-                  ),
-                  if (_filtersExpanded) ...[
-                    const SizedBox(height: AppSpacing.sm),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            key: const Key('requests_ip_filter'),
-                            controller: _ipController,
-                            onChanged: (value) {
-                              _ipQuery = value.trim().toLowerCase();
-                              _applyLocalFilter();
-                            },
-                            decoration: const InputDecoration(
-                              isDense: true,
-                              labelText: 'IP',
-                              hintText: '目标 IP 子串',
-                              prefixIcon: Icon(TablerIcons.network),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: AppSpacing.sm),
-                        Expanded(
-                          child: TextField(
-                            key: const Key('requests_outbound_filter'),
-                            controller: _outboundController,
-                            onChanged: (value) {
-                              _outboundQuery = value.trim().toLowerCase();
-                              _applyLocalFilter();
-                            },
-                            decoration: const InputDecoration(
-                              isDense: true,
-                              labelText: '出站',
-                              hintText: '出站子串',
-                              prefixIcon: Icon(TablerIcons.arrows_split),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// 分组视图：Top 应用 / 域名 / IP、时间线趋势、DNS 质量、出站 / 规则分布。
-  Widget _buildGrouped(BuildContext context, List<RequestRecord> records) {
-    final topApps = _groupTop(records, _appLabel);
-    final topDomains = _groupTop(
-      records,
-      (record) => record.domain.isEmpty ? '(未知域名)' : record.domain,
-    );
-    final topIps = _groupTop(
-      records,
-      (record) => record.dstIp.isEmpty ? '(未知 IP)' : record.dstIp,
-    );
-    final outbound = _groupTop(
-      records,
-      (record) => record.outbound.isEmpty ? '未匹配' : record.outbound,
-    );
-    final rules = _groupTop(
-      records,
-      (record) => record.rule.isEmpty ? '未匹配规则' : record.rule,
-    );
-    final known =
-        records.where((record) => record.domainKnown).length;
-    return Padding(
-      padding: AppSpacing.onlyHorizontalLG,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          _GroupCard(
-            key: const Key('requests_group_apps'),
-            title: 'Top 应用',
-            icon: TablerIcons.apps,
-            rows: topApps,
-          ),
-          _GroupCard(
-            key: const Key('requests_group_domains'),
-            title: 'Top 域名',
-            icon: TablerIcons.server,
-            rows: topDomains,
-          ),
-          _GroupCard(
-            key: const Key('requests_group_ips'),
-            title: 'Top IP',
-            icon: TablerIcons.network,
-            rows: topIps,
-          ),
-          _TrendCard(
-            key: const Key('requests_group_trend'),
-            counts: _trendBuckets(records),
-          ),
-          _DnsQualityCard(
-            key: const Key('requests_group_dns'),
-            known: known,
-            total: records.length,
-          ),
-          _GroupCard(
-            key: const Key('requests_group_outbound'),
-            title: '出站分布',
-            icon: TablerIcons.arrows_split,
-            rows: outbound,
-          ),
-          _GroupCard(
-            key: const Key('requests_group_rules'),
-            title: '规则分布',
-            icon: TablerIcons.list_check,
-            rows: rules,
-          ),
-        ],
-      ),
-    );
   }
 
   Widget _buildListHeader(BuildContext context, int count) {
@@ -1109,6 +1338,28 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
           ),
         ],
       ),
+    );
+  }
+
+  Future<void> _openRow(_UnifiedRow row) async {
+    final request = row.request;
+    if (request != null) {
+      await _showDetail(request);
+      return;
+    }
+    final capture = row.capture;
+    if (capture == null) return;
+    await AppDialogs.showContentSheet<void>(
+      title: capture.host.isEmpty ? '抓包详情' : capture.host,
+      subtitle: _formatDateTime(capture.startedAtMs),
+      icon: const Icon(TablerIcons.shield_lock),
+      content: _CaptureSummary(capture: capture),
+      actions: [
+        TextButton(
+          onPressed: () => AppDialogs.popSheet<void>(null),
+          child: const Text('关闭'),
+        ),
+      ],
     );
   }
 
@@ -1147,6 +1398,325 @@ String? _appIconPath(RequestRecord record) {
   return ProxyAppIdentityResolver.instance
       .lookup(record.packages.first)
       ?.iconPath;
+}
+
+/// 列表统一行：`requests` 骨架 + 可选的 `captures` HTTP 详情。
+///
+/// [request] 为 `null` 时是 capture 驱动行（孤儿 capture）。
+class _UnifiedRow {
+  const _UnifiedRow({this.request, this.capture});
+
+  final RequestRecord? request;
+  final CaptureRecord? capture;
+
+  bool get isOrphan => request == null;
+
+  /// 稳定 key：骨架行沿用 `request_row_<recordId>`，孤儿行用
+  /// `capture_row_<recordId>`（两者不会同 id 冲突）。
+  String get rowKey =>
+      isOrphan ? 'capture_row_${capture!.recordId}' : 'request_row_${request!.recordId}';
+
+  String get method => capture?.method ?? '';
+
+  String get host {
+    final captureHost = capture?.host ?? '';
+    if (captureHost.isNotEmpty) return captureHost;
+    final domain = request?.domain ?? '';
+    if (domain.isNotEmpty) return domain;
+    return request?.dstIp ?? '';
+  }
+
+  String get path => capture?.path ?? '';
+
+  int get statusCode => capture?.statusCode ?? 0;
+
+  bool get isError =>
+      capture != null && (capture!.mitmFailed || capture!.statusCode >= 400);
+
+  bool get decrypted => capture != null;
+
+  int get sizeBytes => capture != null
+      ? capture!.reqBytes + capture!.respBytes
+      : (request?.uploadBytes ?? 0) + (request?.downloadBytes ?? 0);
+
+  int? get durationMs => capture != null ? capture!.durationMs : request?.durationMs;
+
+  int get timeMs {
+    final started = capture?.startedAtMs ?? 0;
+    if (started > 0) return started;
+    return request?.openTsMs ?? 0;
+  }
+}
+
+/// 统一列表行：`方法徽标 · 域名/路径 · 状态 · 大小 · 耗时 · 时间`。
+class _UnifiedRowCard extends StatelessWidget {
+  const _UnifiedRowCard({
+    super.key,
+    required this.row,
+    required this.onTap,
+  });
+
+  final _UnifiedRow row;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final capture = row.capture;
+    final request = row.request;
+
+    final method = row.method.isEmpty ? '—' : row.method;
+    final host = row.host.isEmpty ? '(未知)' : row.host;
+    final path = row.path;
+    final statusText =
+        capture == null ? '未解密' : (capture.statusCode == 0 ? '—' : '${capture.statusCode}');
+    final durationText =
+        row.durationMs == null ? '进行中' : '${row.durationMs} ms';
+    final meta = capture == null
+        ? '流级信息'
+        : '${capture.protocol.isEmpty ? 'http' : capture.protocol} · ${capture.scheme}';
+    final appLine = request != null
+        ? '${_appLabel(request)} · ${request.outbound.isEmpty ? '未匹配' : request.outbound}'
+        : '孤儿记录（无流骨架）';
+    final appIconPath = request == null ? null : _appIconPath(request);
+
+    return Card(
+      margin: AppSpacing.onlyVerticalXS,
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: AppSpacing.allMD,
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (appIconPath != null) ...[
+                AppIcon(
+                  url: appIconPath,
+                  width: AppTypography.iconXXL,
+                  height: AppTypography.iconXXL,
+                  borderRadius: AppRadius.circle,
+                ),
+                const SizedBox(width: AppSpacing.sm),
+              ],
+              _MethodBadge(method: method, orphan: request == null),
+              const SizedBox(width: AppSpacing.sm),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            host,
+                            style: theme.textTheme.bodyMedium,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        if (path.isNotEmpty) ...[
+                          const SizedBox(width: AppSpacing.xs),
+                          Flexible(
+                            child: Text(
+                              path,
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: scheme.onSurfaceVariant,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                    const SizedBox(height: AppSpacing.xs),
+                    Row(
+                      children: [
+                        Text(
+                          statusText,
+                          style: theme.textTheme.labelMedium?.copyWith(
+                            color: row.isError ? scheme.error : scheme.onSurface,
+                          ),
+                        ),
+                        const SizedBox(width: AppSpacing.sm),
+                        Expanded(
+                          child: Text(
+                            '$meta · ${byteSize(row.sizeBytes)} · $durationText',
+                            style: theme.textTheme.labelSmall?.copyWith(
+                              color: scheme.onSurfaceVariant,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: AppSpacing.xs),
+                    Text(
+                      appLine,
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: AppSpacing.sm),
+              Text(
+                _formatTime(row.timeMs),
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: scheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 方法徽标（等宽、固定最小宽度；未解密流显示 `—`）。
+class _MethodBadge extends StatelessWidget {
+  const _MethodBadge({required this.method, required this.orphan});
+
+  final String method;
+  final bool orphan;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Container(
+      constraints: const BoxConstraints(minWidth: AppSpacing.huge),
+      padding: AppSpacing.horizontalSM_verticalXS,
+      decoration: BoxDecoration(
+        color: orphan
+            ? scheme.tertiaryContainer
+            : scheme.primaryContainer,
+        borderRadius: AppRadius.allSM,
+      ),
+      alignment: Alignment.center,
+      child: Text(
+        method,
+        style: theme.textTheme.labelMedium?.copyWith(
+          color: orphan ? scheme.onTertiaryContainer : scheme.onPrimaryContainer,
+          fontWeight: AppTypography.weightBold,
+          fontFamily: 'monospace',
+        ),
+      ),
+    );
+  }
+}
+
+/// `captures.get` 失败时的降级提示条（requests 列表仍然可用）。
+class _DegradedNotice extends StatelessWidget {
+  const _DegradedNotice();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Container(
+      key: const Key('requests_captures_degraded'),
+      margin: const EdgeInsets.fromLTRB(
+        AppSpacing.lg,
+        AppSpacing.sm,
+        AppSpacing.lg,
+        0,
+      ),
+      padding: AppSpacing.horizontalMD_verticalSM,
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest,
+        borderRadius: AppRadius.allMD,
+      ),
+      child: Row(
+        children: [
+          Icon(
+            TablerIcons.alert_triangle,
+            size: AppTypography.iconMD,
+            color: scheme.onSurfaceVariant,
+          ),
+          const SizedBox(width: AppSpacing.sm),
+          Expanded(
+            child: Text(
+              'HTTP 详情不可用，仅显示流级信息',
+              style: theme.textTheme.labelMedium?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 筛选弹层的一个小节（标题 + 内容）。
+class _FilterSection extends StatelessWidget {
+  const _FilterSection({required this.title, required this.child});
+
+  final String title;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: AppSpacing.onlyBottomMD,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: theme.textTheme.labelMedium?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: AppSpacing.xs),
+          child,
+        ],
+      ),
+    );
+  }
+}
+
+/// 一组可单选筛选项（`null` = 全部）。key 形如 `<prefix>_<value>`。
+class _FilterChips<T> extends StatelessWidget {
+  const _FilterChips({
+    required this.keyPrefix,
+    required this.options,
+    required this.selected,
+    required this.labelOf,
+    required this.onSelected,
+  });
+
+  final String keyPrefix;
+  final List<T> options;
+  final T selected;
+  final String Function(T value) labelOf;
+  final ValueChanged<T> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return Wrap(
+      spacing: AppSpacing.xs,
+      runSpacing: AppSpacing.xs,
+      children: [
+        for (final option in options)
+          ChoiceChip(
+            key: Key('${keyPrefix}_${option ?? 'all'}'),
+            label: Text(labelOf(option)),
+            selected: option == selected,
+            onSelected: (_) => onSelected(option),
+          ),
+      ],
+    );
+  }
 }
 
 /// 分组统计行（标签 + 计数 + 字节）。
@@ -1464,145 +2034,6 @@ class _DnsQualityCard extends StatelessWidget {
   }
 }
 
-/// 实时请求行卡片（长域名 / IP 一律省略号，不溢出）。
-class _RequestRowCard extends StatelessWidget {
-  const _RequestRowCard({
-    super.key,
-    required this.record,
-    required this.onTap,
-  });
-
-  final RequestRecord record;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
-    final title = record.domain.isEmpty ? record.dstIp : record.domain;
-    final appIconPath = _appIconPath(record);
-    final endpoint = '${record.dstIp}:${record.dstPort}';
-    final strategy = <String>[
-      record.network.isEmpty ? '未知' : record.network,
-      if (record.outbound.isNotEmpty) record.outbound,
-    ].join(' · ');
-    return Card(
-      margin: AppSpacing.onlyVerticalXS,
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: onTap,
-        child: Padding(
-          padding: AppSpacing.allMD,
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                if (appIconPath != null) ...[
-                  AppIcon(
-                    url: appIconPath,
-                    width: AppTypography.iconXXL,
-                    height: AppTypography.iconXXL,
-                    borderRadius: AppRadius.circle,
-                  ),
-                  const SizedBox(width: AppSpacing.sm),
-                ],
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Flexible(
-                          child: Text(
-                            title.isEmpty ? '(未知)' : title,
-                            style: theme.textTheme.bodyMedium,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                        if (!record.domainKnown) ...[
-                          const SizedBox(width: AppSpacing.xs),
-                          Container(
-                            padding: AppSpacing.horizontalSM_verticalXS,
-                            decoration: BoxDecoration(
-                              color: scheme.surfaceContainerHighest,
-                              borderRadius: AppRadius.allMD,
-                            ),
-                            child: Text(
-                              '未知',
-                              style: theme.textTheme.labelSmall?.copyWith(
-                                color: scheme.onSurfaceVariant,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ],
-                    ),
-                    const SizedBox(height: AppSpacing.xs),
-                    Text(
-                      endpoint,
-                      style: AppTypography.code.copyWith(
-                        color: scheme.onSurfaceVariant,
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    const SizedBox(height: AppSpacing.xs),
-                    Text(
-                      '${_appLabel(record)} · $strategy',
-                      style: theme.textTheme.labelSmall?.copyWith(
-                        color: scheme.onSurfaceVariant,
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    if (record.src.isNotEmpty) ...[
-                      const SizedBox(height: AppSpacing.xs),
-                      Text(
-                        '入站 ${record.src}',
-                        style: theme.textTheme.labelSmall?.copyWith(
-                          color: scheme.onSurfaceVariant,
-                        ),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-              const SizedBox(width: AppSpacing.sm),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  Text(
-                    byteSize(record.uploadBytes + record.downloadBytes),
-                    style: theme.textTheme.titleSmall,
-                  ),
-                  const SizedBox(height: AppSpacing.xs),
-                  Text(
-                    record.durationMs == null
-                        ? '进行中'
-                        : '${record.durationMs} ms',
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: scheme.onSurfaceVariant,
-                    ),
-                  ),
-                  const SizedBox(height: AppSpacing.xs),
-                  Text(
-                    _formatTime(record.openTsMs),
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: scheme.onSurfaceVariant,
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 /// 请求详情（统一弹层内容，完整字段）。
 class _RequestDetail extends StatelessWidget {
   const _RequestDetail({required this.record});
@@ -1661,6 +2092,33 @@ class _RequestDetail extends StatelessWidget {
         if (record.closeTsMs != null)
           _DetailField(label: '结束', value: _formatDateTime(record.closeTsMs!)),
         _DetailField(label: '结束原因', value: record.closeReason),
+      ],
+    );
+  }
+}
+
+/// 孤儿 capture 摘要（无流骨架时的行点击内容）。
+class _CaptureSummary extends StatelessWidget {
+  const _CaptureSummary({required this.capture});
+
+  final CaptureRecord capture;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _DetailField(label: '抓包 ID', value: '${capture.recordId}'),
+        const _DetailField(label: '请求记录 ID', value: '0（孤儿）'),
+        _DetailField(label: '方法', value: capture.method),
+        _DetailField(label: 'URL', value: capture.url),
+        _DetailField(
+          label: '状态',
+          value: capture.statusCode == 0 ? '—' : '${capture.statusCode}',
+        ),
+        _DetailField(label: '协议', value: capture.protocol),
+        _DetailField(label: '耗时', value: '${capture.durationMs} ms'),
+        _DetailField(label: '开始', value: _formatDateTime(capture.startedAtMs)),
       ],
     );
   }

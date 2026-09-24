@@ -16,8 +16,12 @@ library;
 import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
 
-/// 收集页所需的模块能力（`requests.get` / `requests.reset` /
-/// `requests.export`）。
+/// 收集页所需的模块能力（`requests.*` + `captures.get` + `capture.config.*`）。
+///
+/// 列表优先页（Todo 22）以 `requests.get` 的**流记录为骨架**，按
+/// `CaptureRecord.requestRecordId == RequestRecord.recordId` 叠加 `captures.get`
+/// 的 HTTP 详情；两条流**各自独立分页**（各自取 `limit` 条），join 只在展示层，
+/// 不在 Dart 落盘。`capture.config.get/set` 供顶部「抓包开关迷你」使用。
 abstract class ProxyRequestsFacade {
   /// `requests.get`：按游标分页拉取请求时间线（拉取式主路径）。
   Future<RequestPage> requestsGet(RequestGetRequest request);
@@ -29,6 +33,18 @@ abstract class ProxyRequestsFacade {
   ///
   /// 响应仅回传文件路径 / 行数 / 字节数（记录只写入文件，不进 JSON 信封）。
   Future<RequestExportResult> requestsExport(RequestExportRequest request);
+
+  /// `captures.get`：按游标分页拉取 HTTP 抓包时间线（叠加详情源）。
+  ///
+  /// 与 [requestsGet] **独立**（各自 `limit`）；失败时列表应降级为仅流级信息，
+  /// 不影响 [requestsGet] 的结果。
+  Future<CapturePage> capturesGet(CapturesGetRequest request);
+
+  /// `capture.config.get`：读取当前抓包 / MITM 门控配置（顶部开关展示）。
+  Future<CaptureConfig> captureConfigGet();
+
+  /// `capture.config.set`：下发（全量）抓包配置并返回冻结后的同一形状。
+  Future<CaptureConfig> captureConfigSet(CaptureConfig config);
 }
 
 /// 生产适配器：[ProxyModule] → [ProxyRequestsFacade] 的薄转发。
@@ -50,4 +66,22 @@ class ProxyModuleRequestsFacade implements ProxyRequestsFacade {
   @override
   Future<RequestExportResult> requestsExport(RequestExportRequest request) =>
       _module.requestsExport(request);
+
+  @override
+  Future<CapturePage> capturesGet(CapturesGetRequest request) => _module.invoke(
+        ProxyMethods.capturesGet,
+        CapturePage.fromJson,
+        payload: request.toJson(),
+      );
+
+  @override
+  Future<CaptureConfig> captureConfigGet() =>
+      _module.invoke(ProxyMethods.captureConfigGet, CaptureConfig.fromJson);
+
+  @override
+  Future<CaptureConfig> captureConfigSet(CaptureConfig config) => _module.invoke(
+        ProxyMethods.captureConfigSet,
+        CaptureConfig.fromJson,
+        payload: config.toJson(),
+      );
 }

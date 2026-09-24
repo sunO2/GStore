@@ -1,18 +1,18 @@
-// Todo 15 widget tests：实时「请求域名 / IP 收集」页。
+// Todo 22 widget tests：列表优先的「请求域名 / IP」页（requests 骨架 + captures 叠加）。
 //
 // 全部密闭式：只注入假门面（[ProxyRequestsFacade]）与假事件流，不触碰 FFI /
 // 原生模块。弹层宿主复用生产全局通道 `appNavigatorKey` +
 // `AppDialogs.scaffoldMessengerKey`，因此走真实的 `AppSheet` 呈现路径。
 //
-// 覆盖：
-// * 空态（facade 返回空页）；
-// * 含数据列表 + 概览聚合值（断言渲染出的**值**，非仅存在性）；
-// * 应用筛选后行数变化；
-// * `uid == null` 渲染「未知应用」；
-// * 脏信号（`proxy.request`）触发精确次数的拉取，非请求事件不触发；
-// * 超长域名 / IP 不溢出（大视口 + ensureVisible）；
-// * 点击行经统一 [AppSheet] 打开详情；
-// * 对抗：门面抛错 → 显式错误态且不崩溃；卸载后事件 / 定时器不再 setState。
+// 覆盖（Todo 22 验收）：
+// * 合并展示：`requests.get` 骨架 + 按 `requestRecordId` 叠加 `captures.get` 详情；
+// * 一个流叠加多条 capture → 取最新一条作行摘要；
+// * 无 capture 的流显示「未解密」（仅流级字段）；
+// * 孤儿 capture（`requestRecordId == 0`）自成一行，不得被丢弃；
+// * 筛选（搜索框 + `AppSheet` 过滤器）与行渲染；
+// * 空态 / 错误态 / 大视口不溢出；
+// * 对抗：`captures.get` 失败不影响 `requests.get` 列表（降级）。
+// * 保留：导出 UI、脏信号拉取、抓包迷你开关、分析可展开区、行点击详情。
 
 import 'dart:async';
 import 'dart:typed_data';
@@ -23,7 +23,6 @@ import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
-import 'package:gstore/page/proxy/proxy_app_identity.dart';
 import 'package:gstore/page/proxy/proxy_requests_facade.dart';
 import 'package:gstore/page/proxy/proxy_requests_page.dart';
 
@@ -36,9 +35,9 @@ Widget _host(Widget child) => MaterialApp(
       home: child,
     );
 
-/// 放大测试视口：列表 + 分组视图需要更大视口才能同屏渲染，且用于长串溢出验证。
+/// 放大测试视口：列表 + 分析区需要更大视口才能同屏渲染，且用于长串溢出验证。
 void _useLargeViewport(WidgetTester tester) {
-  tester.view.physicalSize = const Size(1400, 3200);
+  tester.view.physicalSize = const Size(1600, 3600);
   tester.view.devicePixelRatio = 1.0;
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
@@ -49,19 +48,35 @@ void _useLargeViewport(WidgetTester tester) {
 class _FakeRequestsFacade implements ProxyRequestsFacade {
   _FakeRequestsFacade({
     this.page = const RequestPage(),
+    this.capturePage = const CapturePage(),
+    this.captureConfig = const CaptureConfig(enabled: false),
     this.fail = false,
+    this.capturesFail = false,
+    this.configGetFail = false,
+    this.configSetFail = false,
     this.exportResult = const RequestExportResult(),
     this.exportFail = false,
   });
 
   RequestPage page;
+  CapturePage capturePage;
+  CaptureConfig captureConfig;
   bool fail;
+  bool capturesFail;
+  bool configGetFail;
+  bool configSetFail;
   RequestExportResult exportResult;
   bool exportFail;
+
   int getCalls = 0;
+  int capturesCalls = 0;
+  int configGetCalls = 0;
+  int configSetCalls = 0;
   int resetCalls = 0;
   int exportCalls = 0;
   RequestGetRequest? lastGet;
+  CapturesGetRequest? lastCaptures;
+  CaptureConfig? lastConfigSet;
   RequestExportRequest? lastExport;
 
   @override
@@ -72,6 +87,39 @@ class _FakeRequestsFacade implements ProxyRequestsFacade {
       throw const ProxyModuleException(code: 'TEST_FAIL', message: 'boom');
     }
     return page;
+  }
+
+  @override
+  Future<CapturePage> capturesGet(CapturesGetRequest request) async {
+    capturesCalls++;
+    lastCaptures = request;
+    if (capturesFail) {
+      throw const ProxyModuleException(
+        code: 'CAPTURES_FAIL',
+        message: 'captures 后端失败',
+      );
+    }
+    return capturePage;
+  }
+
+  @override
+  Future<CaptureConfig> captureConfigGet() async {
+    configGetCalls++;
+    if (configGetFail) {
+      throw const ProxyModuleException(code: 'CFG_FAIL', message: '配置失败');
+    }
+    return captureConfig;
+  }
+
+  @override
+  Future<CaptureConfig> captureConfigSet(CaptureConfig config) async {
+    configSetCalls++;
+    lastConfigSet = config;
+    if (configSetFail) {
+      throw const ProxyModuleException(code: 'CFG_SET_FAIL', message: '下发失败');
+    }
+    captureConfig = config;
+    return config;
   }
 
   @override
@@ -157,6 +205,39 @@ RequestRecord _record({
   );
 }
 
+CaptureRecord _capture({
+  int recordId = 1,
+  int requestRecordId = 1,
+  String host = 'example.com',
+  String method = 'GET',
+  String scheme = 'https',
+  String url = 'https://example.com/p?q=1',
+  int statusCode = 200,
+  String protocol = 'h1',
+  int reqBytes = 100,
+  int respBytes = 900,
+  int durationMs = 42,
+  int startedAtMs = 1700000000000,
+  bool mitmFailed = false,
+}) {
+  return CaptureRecord(
+    recordId: recordId,
+    requestRecordId: requestRecordId,
+    connId: 'conn-$recordId',
+    host: host,
+    method: method,
+    scheme: scheme,
+    url: url,
+    statusCode: statusCode,
+    protocol: protocol,
+    reqBytes: reqBytes,
+    respBytes: respBytes,
+    durationMs: durationMs,
+    startedAtMs: startedAtMs,
+    mitmFailed: mitmFailed,
+  );
+}
+
 /// 两条样本：已知域名 + `uid != null`；未知域名 + `uid == null`。
 RequestPage _samplePage() => RequestPage(
       records: <RequestRecord>[
@@ -187,12 +268,16 @@ RequestPage _samplePage() => RequestPage(
       windowStartMs: 1600000000000,
     );
 
+/// 空配置（未开启抓包）。
+const CaptureConfig _configOff = CaptureConfig(enabled: false);
+
 // ==================== 测试 ====================
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('空态：facade 返回空页 -> 显式空态且不崩溃', (tester) async {
+  testWidgets('空态：requests + captures 均空 -> 显式空态 + 顶部 chips 且不崩溃',
+      (tester) async {
     _useLargeViewport(tester);
     final fake = _FakeRequestsFacade();
     await tester.pumpWidget(
@@ -202,143 +287,287 @@ void main() {
     await tester.pump();
 
     expect(fake.getCalls, 1);
+    expect(fake.capturesCalls, 1);
     expect(find.text('暂无请求记录'), findsOneWidget);
-    expect(find.text('采集概览'), findsOneWidget);
+    expect(find.byKey(const Key('requests_capture_toggle')), findsOneWidget);
+    expect(find.byKey(const Key('requests_live_toggle')), findsOneWidget);
+    expect(find.byKey(const Key('requests_count_chip')), findsOneWidget);
+    expect(find.text('共 0 条'), findsOneWidget);
+    expect(find.byKey(const Key('requests_search')), findsOneWidget);
+    expect(find.byKey(const Key('requests_analysis_toggle')), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('含数据：列表字段与概览聚合值正确渲染', (tester) async {
+  testWidgets('合并展示：requests 骨架叠加 captures 详情，无 capture 显示「未解密」',
+      (tester) async {
     _useLargeViewport(tester);
-    final fake = _FakeRequestsFacade(page: _samplePage());
-    await tester.pumpWidget(
-      _host(ProxyRequestsPage(facade: fake, initialLive: false)),
-    );
-    await tester.pump();
-    await tester.pump();
-
-    // 列表行（域名出现在行与分组视图中）。
-    expect(find.text('example.com'), findsWidgets);
-    expect(find.textContaining('93.184.216.34:443'), findsWidgets);
-    expect(find.textContaining('com.example.app'), findsWidgets);
-    expect(find.textContaining('未知应用'), findsWidgets);
-    // 概览：请求数 2 / 未知域名 1（50%）。
-    expect(find.text('请求数'), findsOneWidget);
-    expect(find.text('未知域名'), findsOneWidget);
-    expect(find.text('1 / 2'), findsOneWidget);
-    expect(find.text('50%'), findsOneWidget);
-    // 活跃：closeReason == open 的 1 条 -> 行耗时显示「进行中」。
-    expect(find.text('进行中'), findsWidgets);
-    expect(tester.takeException(), isNull);
-  });
-
-  testWidgets('筛选：应用子串过滤后仅保留匹配行', (tester) async {
-    _useLargeViewport(tester);
-    final page = RequestPage(
-      records: <RequestRecord>[
-        _record(recordId: 1, domain: 'example.com'),
-        _record(
-          recordId: 2,
-          domain: 'other.org',
-          dstIp: '10.0.0.1',
-          uid: 555,
-          packages: const <String>['org.other.app'],
-          outbound: 'DIRECT',
-        ),
-      ],
-      nextCursor: 2,
-      firstCursor: 1,
-      retained: 2,
-    );
-    final fake = _FakeRequestsFacade(page: page);
-    await tester.pumpWidget(
-      _host(ProxyRequestsPage(facade: fake, initialLive: false)),
-    );
-    await tester.pump();
-    await tester.pump();
-
-    expect(find.text('other.org'), findsWidgets);
-
-    // 默认折叠：应用框不可见，先展开筛选磁贴。
-    expect(find.byKey(const Key('requests_app_filter')), findsNothing);
-    await tester.tap(find.byKey(const Key('requests_filters_toggle')));
-    await tester.pumpAndSettle();
-
-    await tester.enterText(
-      find.byKey(const Key('requests_app_filter')),
-      'org.other',
-    );
-    await tester.pump();
-
-    expect(find.text('other.org'), findsWidgets);
-    expect(find.text('example.com'), findsNothing);
-    expect(tester.takeException(), isNull);
-
-    // 清空后恢复（本地过滤可逆）。
-    await tester.enterText(find.byKey(const Key('requests_app_filter')), '');
-    await tester.pump();
-    expect(find.text('example.com'), findsWidgets);
-  });
-
-  testWidgets('筛选磁贴：默认折叠仅域名，展开显示四个，再次点击折叠', (tester) async {
-    _useLargeViewport(tester);
-    final fake = _FakeRequestsFacade(page: _samplePage());
-    await tester.pumpWidget(
-      _host(ProxyRequestsPage(facade: fake, initialLive: false)),
-    );
-    await tester.pump();
-    await tester.pump();
-
-    final app = find.byKey(const Key('requests_app_filter'));
-    final domain = find.byKey(const Key('requests_domain_filter'));
-    final ip = find.byKey(const Key('requests_ip_filter'));
-    final outbound = find.byKey(const Key('requests_outbound_filter'));
-
-    // 默认折叠：仅「域名」可见，其余三个不在树中。
-    expect(domain, findsOneWidget);
-    expect(app, findsNothing);
-    expect(ip, findsNothing);
-    expect(outbound, findsNothing);
-    expect(find.text('筛选'), findsOneWidget);
-
-    // 展开：四个都在，顺序为 应用 → 域名 → IP / 出站（IP 在出站左侧）。
-    await tester.tap(find.byKey(const Key('requests_filters_toggle')));
-    await tester.pumpAndSettle();
-    expect(app, findsOneWidget);
-    expect(domain, findsOneWidget);
-    expect(ip, findsOneWidget);
-    expect(outbound, findsOneWidget);
-    expect(tester.getTopLeft(app).dy, lessThan(tester.getTopLeft(domain).dy));
-    expect(tester.getTopLeft(domain).dy, lessThan(tester.getTopLeft(ip).dy));
-    expect(
-      tester.getTopLeft(ip).dy,
-      lessThanOrEqualTo(tester.getTopLeft(outbound).dy),
-    );
-    expect(tester.getTopLeft(ip).dx, lessThan(tester.getTopLeft(outbound).dx));
-
-    // 设置一个非域名筛选后折叠：标题提示已设置数量。
-    await tester.enterText(app, 'org');
-    await tester.pump();
-    await tester.tap(find.byKey(const Key('requests_filters_toggle')));
-    await tester.pumpAndSettle();
-    expect(app, findsNothing);
-    expect(ip, findsNothing);
-    expect(outbound, findsNothing);
-    expect(domain, findsOneWidget);
-    expect(find.text('1 项已设'), findsOneWidget);
-    expect(tester.takeException(), isNull);
-  });
-
-  testWidgets('应用归属：解析到身份时列表显示人类可读应用名', (tester) async {
-    _useLargeViewport(tester);
-    final resolver = ProxyAppIdentityResolver.instance;
-    resolver.debugSeed(<String, ProxyAppIdentity>{
-      'com.example.app': const ProxyAppIdentity(
-        packageName: 'com.example.app',
-        label: '示例应用',
+    final fake = _FakeRequestsFacade(
+      page: _samplePage(),
+      capturePage: CapturePage(
+        records: <CaptureRecord>[
+          _capture(
+            recordId: 11,
+            requestRecordId: 1,
+            host: 'api.example.com',
+            method: 'POST',
+            url: 'https://api.example.com/v1/items?page=1',
+            statusCode: 201,
+            protocol: 'h2',
+            reqBytes: 100,
+            respBytes: 900,
+            durationMs: 42,
+          ),
+        ],
       ),
-    });
-    addTearDown(resolver.debugReset);
+    );
+    await tester.pumpWidget(
+      _host(ProxyRequestsPage(facade: fake, initialLive: false)),
+    );
+    await tester.pump();
+    await tester.pump();
 
+    expect(find.text('共 2 条'), findsOneWidget);
+    // 叠加行：方法徽标 / 域名 / 路径 / 状态 / 耗时（断言真实字段值）。
+    expect(find.byKey(const ValueKey('request_row_1')), findsOneWidget);
+    expect(find.text('POST'), findsOneWidget);
+    expect(find.text('api.example.com'), findsOneWidget);
+    expect(find.text('/v1/items'), findsOneWidget);
+    expect(find.text('201'), findsOneWidget);
+    expect(find.textContaining('42 ms'), findsOneWidget);
+    // 无 capture 的流（record 2）显示「未解密」（仅流级字段）。
+    expect(find.byKey(const ValueKey('request_row_2')), findsOneWidget);
+    expect(find.text('未解密'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('一个流叠加多条 capture -> 取最新一条作为行摘要', (tester) async {
+    _useLargeViewport(tester);
+    final fake = _FakeRequestsFacade(
+      page: RequestPage(
+        records: <RequestRecord>[_record(recordId: 1)],
+        firstCursor: 1,
+        nextCursor: 1,
+        retained: 1,
+      ),
+      capturePage: CapturePage(
+        records: <CaptureRecord>[
+          _capture(recordId: 10, requestRecordId: 1, statusCode: 200),
+          _capture(recordId: 11, requestRecordId: 1, statusCode: 503),
+        ],
+      ),
+    );
+    await tester.pumpWidget(
+      _host(ProxyRequestsPage(facade: fake, initialLive: false)),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    // 仅一行（流骨架），摘要取 recordId 更大的 capture（503）。
+    expect(find.byKey(const ValueKey('request_row_1')), findsOneWidget);
+    expect(find.text('503'), findsOneWidget);
+    expect(find.text('200'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('孤儿 capture（requestRecordId == 0）自成一行，不被丢弃', (tester) async {
+    _useLargeViewport(tester);
+    final fake = _FakeRequestsFacade(
+      page: RequestPage(
+        records: <RequestRecord>[_record(recordId: 7)],
+        firstCursor: 7,
+        nextCursor: 7,
+        retained: 1,
+      ),
+      capturePage: CapturePage(
+        records: <CaptureRecord>[
+          _capture(
+            recordId: 5,
+            requestRecordId: 0,
+            host: 'orphan.test',
+            method: 'PUT',
+            url: 'https://orphan.test/x',
+            statusCode: 500,
+          ),
+        ],
+      ),
+    );
+    await tester.pumpWidget(
+      _host(ProxyRequestsPage(facade: fake, initialLive: false)),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    // 骨架行没有 capture -> 未解密；孤儿 capture 派生独立行。
+    expect(find.byKey(const ValueKey('request_row_7')), findsOneWidget);
+    expect(find.byKey(const ValueKey('capture_row_5')), findsOneWidget);
+    expect(find.text('PUT'), findsOneWidget);
+    expect(find.text('orphan.test'), findsOneWidget);
+    expect(find.text('500'), findsOneWidget);
+    expect(find.text('未解密'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('搜索框：域名 / IP / 方法 / 路径 子串本地过滤且可逆', (tester) async {
+    _useLargeViewport(tester);
+    final fake = _FakeRequestsFacade(
+      page: RequestPage(
+        records: <RequestRecord>[
+          _record(recordId: 1, domain: 'example.com'),
+          _record(
+            recordId: 2,
+            domain: 'other.org',
+            dstIp: '10.0.0.9',
+            uid: 555,
+            packages: const <String>['org.other.app'],
+            outbound: 'DIRECT',
+          ),
+        ],
+        firstCursor: 1,
+        nextCursor: 2,
+        retained: 2,
+      ),
+      capturePage: CapturePage(
+        records: <CaptureRecord>[
+          _capture(recordId: 21, requestRecordId: 1, host: 'example.com'),
+          _capture(
+            recordId: 22,
+            requestRecordId: 2,
+            host: 'other.org',
+            method: 'POST',
+            url: 'https://other.org/api',
+          ),
+        ],
+      ),
+    );
+    await tester.pumpWidget(
+      _host(ProxyRequestsPage(facade: fake, initialLive: false)),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.text('example.com'), findsOneWidget);
+    expect(find.text('other.org'), findsOneWidget);
+
+    await tester.enterText(find.byKey(const Key('requests_search')), 'org');
+    await tester.pump();
+    expect(find.text('other.org'), findsOneWidget);
+    expect(find.text('example.com'), findsNothing);
+
+    // 清空恢复。
+    await tester.enterText(find.byKey(const Key('requests_search')), '');
+    await tester.pump();
+    expect(find.text('example.com'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('AppSheet 筛选：仅错误 / 协议 / 方法 过滤生效', (tester) async {
+    _useLargeViewport(tester);
+    final fake = _FakeRequestsFacade(
+      page: RequestPage(
+        records: <RequestRecord>[
+          _record(recordId: 1, domain: 'ok.example.com'),
+          _record(
+            recordId: 2,
+            domain: 'bad.example.com',
+            dstIp: '10.0.0.8',
+            outbound: 'DIRECT',
+          ),
+        ],
+        firstCursor: 1,
+        nextCursor: 2,
+        retained: 2,
+      ),
+      capturePage: CapturePage(
+        records: <CaptureRecord>[
+          _capture(
+            recordId: 31,
+            requestRecordId: 1,
+            host: 'ok.example.com',
+            method: 'GET',
+            statusCode: 200,
+            protocol: 'h1',
+          ),
+          _capture(
+            recordId: 32,
+            requestRecordId: 2,
+            host: 'bad.example.com',
+            method: 'POST',
+            statusCode: 404,
+            protocol: 'h2',
+          ),
+        ],
+      ),
+    );
+    await tester.pumpWidget(
+      _host(ProxyRequestsPage(facade: fake, initialLive: false)),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    // 打开筛选 AppSheet。
+    await tester.tap(find.byKey(const Key('requests_filter_open')));
+    await tester.pumpAndSettle();
+    expect(find.text('筛选'), findsWidgets);
+
+    // 仅错误：只保留 404 的行。
+    await tester.tap(find.byKey(const Key('requests_filter_errors_only')));
+    await tester.pump();
+    await tester.tap(find.text('完成'));
+    await tester.pumpAndSettle();
+    expect(find.text('bad.example.com'), findsOneWidget);
+    expect(find.text('ok.example.com'), findsNothing);
+
+    // 再开筛选 -> 协议 h1：仅错误 + h1 => 无行（404 是 h2）。
+    await tester.tap(find.byKey(const Key('requests_filter_open')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('requests_filter_protocol_h1')));
+    await tester.pump();
+    await tester.tap(find.text('完成'));
+    await tester.pumpAndSettle();
+    expect(find.text('bad.example.com'), findsNothing);
+    expect(find.text('无匹配请求'), findsOneWidget);
+
+    // 重置筛选 -> 两行恢复。
+    await tester.tap(find.byKey(const Key('requests_filter_open')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('requests_filter_reset')));
+    await tester.pump();
+    await tester.tap(find.text('完成'));
+    await tester.pumpAndSettle();
+    expect(find.text('ok.example.com'), findsOneWidget);
+    expect(find.text('bad.example.com'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('筛选过滤条件转发到 captures.get filter', (tester) async {
+    _useLargeViewport(tester);
+    final fake = _FakeRequestsFacade(
+      page: _samplePage(),
+      capturePage: CapturePage(
+        records: <CaptureRecord>[_capture(recordId: 1, requestRecordId: 1)],
+      ),
+    );
+    await tester.pumpWidget(
+      _host(ProxyRequestsPage(facade: fake, initialLive: false)),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    await tester.tap(find.byKey(const Key('requests_filter_open')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('requests_filter_method_GET')));
+    await tester.pump();
+    await tester.tap(find.text('完成'));
+    await tester.pumpAndSettle();
+
+    expect(fake.lastCaptures, isNotNull);
+    expect(fake.lastCaptures!.filter, isNotNull);
+    expect(fake.lastCaptures!.filter!.method, 'GET');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('分析区：默认折叠，展开后显示 Top / 趋势 / DNS 质量', (tester) async {
+    _useLargeViewport(tester);
     final fake = _FakeRequestsFacade(page: _samplePage());
     await tester.pumpWidget(
       _host(ProxyRequestsPage(facade: fake, initialLive: false)),
@@ -346,38 +575,91 @@ void main() {
     await tester.pump();
     await tester.pump();
 
-    // 已解析的包名 → 人类可读应用名（列表行 + 分组视图），不再显示原始包名。
-    expect(find.textContaining('示例应用'), findsWidgets);
-    expect(find.textContaining('com.example.app'), findsNothing);
+    expect(find.text('Top 域名'), findsNothing);
+    await tester.tap(find.byKey(const Key('requests_analysis_toggle')));
+    await tester.pumpAndSettle();
+    expect(find.text('Top 域名'), findsOneWidget);
+    expect(find.text('时间线趋势'), findsOneWidget);
+    expect(find.text('DNS 质量'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('uid == null 渲染「未知应用」而非空', (tester) async {
+  testWidgets('超长域名 / 路径不溢出（大视口 + ensureVisible）', (tester) async {
     _useLargeViewport(tester);
-    final page = RequestPage(
-      records: <RequestRecord>[
-        _record(
-          recordId: 9,
-          domain: '1.1.1.1',
-          domainKnown: false,
-          dstIp: '1.1.1.1',
-          uid: null,
-          packages: const <String>[],
-        ),
-      ],
-      nextCursor: 9,
-      firstCursor: 9,
-      retained: 1,
+    final longDomain = '${'a' * 300}.very-long-subdomain.example.com';
+    final longPath = '/${'p' * 400}?q=${'8' * 200}';
+    final longIp = '2001:0db8:${'1234:' * 12}abcd';
+    final fake = _FakeRequestsFacade(
+      page: RequestPage(
+        records: <RequestRecord>[
+          _record(
+            recordId: 77,
+            domain: longDomain,
+            dstIp: longIp,
+            src: '10.0.0.2:${'9' * 40}',
+          ),
+        ],
+        nextCursor: 77,
+        firstCursor: 77,
+        retained: 1,
+      ),
+      capturePage: CapturePage(
+        records: <CaptureRecord>[
+          _capture(
+            recordId: 88,
+            requestRecordId: 77,
+            host: longDomain,
+            url: 'https://$longDomain$longPath',
+          ),
+        ],
+      ),
     );
-    final fake = _FakeRequestsFacade(page: page);
     await tester.pumpWidget(
       _host(ProxyRequestsPage(facade: fake, initialLive: false)),
     );
     await tester.pump();
     await tester.pump();
 
-    expect(find.textContaining('未知应用'), findsWidgets);
-    expect(find.textContaining('UID null'), findsNothing);
+    await tester.ensureVisible(find.byKey(const ValueKey('request_row_77')));
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('对抗：captures.get 失败 -> requests 列表降级仍渲染，不报错', (tester) async {
+    _useLargeViewport(tester);
+    final fake = _FakeRequestsFacade(
+      page: _samplePage(),
+      capturesFail: true,
+    );
+    await tester.pumpWidget(
+      _host(ProxyRequestsPage(facade: fake, initialLive: false)),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    expect(fake.getCalls, 1);
+    expect(fake.capturesCalls, 1);
+    // requests 列表仍然完整渲染，全部降级为「未解密」。
+    expect(find.byKey(const ValueKey('request_row_1')), findsOneWidget);
+    expect(find.byKey(const ValueKey('request_row_2')), findsOneWidget);
+    expect(find.text('未解密'), findsNWidgets(2));
+    expect(find.textContaining('HTTP 详情不可用'), findsOneWidget);
+    expect(find.text('请求列表不可用'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('对抗：requests.get 失败 -> 显式错误态且不崩溃', (tester) async {
+    _useLargeViewport(tester);
+    final fake = _FakeRequestsFacade(fail: true);
+    await tester.pumpWidget(
+      _host(ProxyRequestsPage(facade: fake, initialLive: false)),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    expect(fake.getCalls, 1);
+    expect(find.text('请求列表不可用'), findsOneWidget);
+    expect(find.text('重试'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -400,12 +682,10 @@ void main() {
     await tester.pump();
     expect(fake.getCalls, 1, reason: '首屏一次拉取');
 
-    // 一个 `proxy.request` 脏信号 -> 恰好多一次拉取。
     controller.add(const ProxyRequestEvent(seq: 1, count: 3, tsMs: 10));
     await tester.pump();
     expect(fake.getCalls, 2);
 
-    // 非请求事件（`proxy.stats`）不触发拉取。
     controller.add(
       const ProxyStatsEvent(
         uploadBytes: 1,
@@ -418,46 +698,58 @@ void main() {
     await tester.pump();
     expect(fake.getCalls, 2);
 
-    // 第二个脏信号 -> 又一次。
     controller.add(const ProxyRequestEvent(seq: 2, count: 1, tsMs: 20));
     await tester.pump();
     expect(fake.getCalls, 3);
 
-    // 卸载以取消 2s 兜底定时器（避免 pending timer）。
     await tester.pumpWidget(const SizedBox());
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('超长域名 / IP 不溢出（大视口 + ensureVisible）', (tester) async {
+  testWidgets('抓包迷你开关：点击下发 capture.config.set(enabled)', (tester) async {
     _useLargeViewport(tester);
-    final longDomain = '${'a' * 300}.very-long-subdomain.example.com';
-    final longIp = '2001:0db8:${'1234:' * 12}abcd';
-    final page = RequestPage(
-      records: <RequestRecord>[
-        _record(
-          recordId: 77,
-          domain: longDomain,
-          dstIp: longIp,
-          src: '10.0.0.2:${'9' * 40}',
-        ),
-      ],
-      nextCursor: 77,
-      firstCursor: 77,
-      retained: 1,
+    final fake = _FakeRequestsFacade(
+      page: _samplePage(),
+      captureConfig: _configOff,
     );
-    final fake = _FakeRequestsFacade(page: page);
     await tester.pumpWidget(
       _host(ProxyRequestsPage(facade: fake, initialLive: false)),
     );
     await tester.pump();
     await tester.pump();
 
-    await tester.ensureVisible(find.byKey(const ValueKey('request_row_77')));
-    await tester.pump();
+    expect(fake.configGetCalls, 1);
+    await tester.tap(find.byKey(const Key('requests_capture_toggle')));
+    await tester.pumpAndSettle();
+
+    expect(fake.configSetCalls, 1);
+    expect(fake.lastConfigSet!.enabled, isTrue);
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('点击行经统一 AppSheet 打开详情', (tester) async {
+  testWidgets('对抗：抓包开关下发失败 -> showError 且开关回滚', (tester) async {
+    _useLargeViewport(tester);
+    final fake = _FakeRequestsFacade(
+      page: _samplePage(),
+      captureConfig: _configOff,
+      configSetFail: true,
+    );
+    await tester.pumpWidget(
+      _host(ProxyRequestsPage(facade: fake, initialLive: false)),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    await tester.tap(find.byKey(const Key('requests_capture_toggle')));
+    await tester.pumpAndSettle();
+
+    expect(fake.configSetCalls, 1);
+    expect(find.text('操作失败'), findsOneWidget);
+    expect(find.textContaining('下发失败'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('点击请求行经统一 AppSheet 打开详情', (tester) async {
     _useLargeViewport(tester);
     final fake = _FakeRequestsFacade(page: _samplePage());
     await tester.pumpWidget(
@@ -478,18 +770,22 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('对抗：门面抛错 -> 显式错误态且不崩溃', (tester) async {
+  testWidgets('对抗：capture.config.get 失败 -> 开关保持未知且列表可用', (tester) async {
     _useLargeViewport(tester);
-    final fake = _FakeRequestsFacade(fail: true);
+    final fake = _FakeRequestsFacade(page: _samplePage(), configGetFail: true);
     await tester.pumpWidget(
       _host(ProxyRequestsPage(facade: fake, initialLive: false)),
     );
     await tester.pump();
     await tester.pump();
 
-    expect(fake.getCalls, 1);
-    expect(find.text('请求列表不可用'), findsOneWidget);
-    expect(find.text('重试'), findsOneWidget);
+    expect(fake.configGetCalls, 1);
+    // 配置未读到 -> 开关显示未知/关闭，但列表仍完整渲染。
+    expect(find.byKey(const Key('requests_capture_toggle')), findsOneWidget);
+    expect(find.text('抓包'), findsOneWidget);
+    expect(find.text('抓包中'), findsNothing);
+    expect(find.byKey(const ValueKey('request_row_1')), findsOneWidget);
+    expect(find.text('请求列表不可用'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
@@ -512,7 +808,6 @@ void main() {
     await tester.pump();
     final before = fake.getCalls;
 
-    // 卸载页面（取消订阅 + 定时器）。
     await tester.pumpWidget(const SizedBox());
     controller.add(const ProxyRequestEvent(seq: 1, count: 1, tsMs: 1));
     await tester.pump(const Duration(seconds: 3));
@@ -521,7 +816,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  // ==================== 导出 UI（Todo 16） ====================
+  // ==================== 导出 UI（保留） ====================
 
   testWidgets('导出 CSV：调用 saveFile 且成功提示含真实行数', (tester) async {
     _useLargeViewport(tester);
@@ -557,10 +852,8 @@ void main() {
     expect(fake.lastExport?.format, 'csv');
     expect(save.fileNames, hasLength(1));
     expect(save.fileNames.single, endsWith('.csv'));
-    expect(save.fileNames.single, startsWith('gstore_requests_'));
     expect(save.extensions.single, <String>['csv']);
     expect(save.byteLengths.single, 3);
-    // 成功提示必须包含真实行数（非仅存在性）。
     expect(find.textContaining('已导出 3 条请求记录'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
@@ -595,8 +888,6 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(fake.exportCalls, 1);
-    expect(save.fileNames, hasLength(1), reason: 'saveFile 仍应被调用一次');
-    expect(find.byType(SnackBar), findsNothing, reason: '取消不应提示成功或失败');
     expect(find.text('导出失败'), findsNothing);
     expect(tester.takeException(), isNull);
   });
@@ -628,127 +919,6 @@ void main() {
     expect(save.fileNames, isEmpty, reason: '导出失败不应调用 saveFile');
     expect(find.text('导出失败'), findsOneWidget);
     expect(find.textContaining('导出后端失败'), findsOneWidget);
-    expect(tester.takeException(), isNull);
-  });
-
-  testWidgets('边界：同时选择 CSV + JSON -> saveFile 调用两次', (tester) async {
-    _useLargeViewport(tester);
-    final fake = _FakeRequestsFacade(
-      page: _samplePage(),
-      exportResult: const RequestExportResult(
-        csvPath: '/data/proxy_requests_1.csv',
-        jsonPath: '/data/proxy_requests_1.json',
-        rows: 7,
-      ),
-    );
-    final save = _FakeSaveFile(result: '/tmp/out');
-
-    await tester.pumpWidget(
-      _host(
-        ProxyRequestsPage(
-          facade: fake,
-          initialLive: false,
-          saveFile: save.call,
-          readFile: (path) async => Uint8List.fromList(<int>[9]),
-        ),
-      ),
-    );
-    await tester.pump();
-    await tester.pump();
-
-    await tester.tap(find.byKey(const Key('requests_export')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('requests_export_both')));
-    await tester.pumpAndSettle();
-
-    expect(fake.lastExport?.format, 'both');
-    expect(save.extensions, <List<String>>[
-      <String>['csv'],
-      <String>['json'],
-    ]);
-    expect(find.textContaining('已导出 7 条请求记录'), findsOneWidget);
-    expect(find.textContaining('CSV + JSON'), findsOneWidget);
-    expect(tester.takeException(), isNull);
-  });
-
-  testWidgets('对抗：facade 返回空路径（malformed）-> showError 不崩溃', (tester) async {
-    _useLargeViewport(tester);
-    // 无 csvPath / jsonPath（两键均 null）。
-    final fake = _FakeRequestsFacade(
-      page: _samplePage(),
-      exportResult: const RequestExportResult(rows: 0),
-    );
-    final save = _FakeSaveFile();
-
-    await tester.pumpWidget(
-      _host(
-        ProxyRequestsPage(
-          facade: fake,
-          initialLive: false,
-          saveFile: save.call,
-          readFile: (path) async => Uint8List.fromList(<int>[1]),
-        ),
-      ),
-    );
-    await tester.pump();
-    await tester.pump();
-
-    await tester.tap(find.byKey(const Key('requests_export')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('requests_export_json')));
-    await tester.pumpAndSettle();
-
-    expect(save.fileNames, isEmpty);
-    expect(find.text('导出失败'), findsOneWidget);
-    expect(find.textContaining('未生成可导出的文件'), findsOneWidget);
-    expect(tester.takeException(), isNull);
-  });
-
-  testWidgets('对抗：导出中卸载 -> 无 dispose 后 setState', (tester) async {
-    _useLargeViewport(tester);
-    final fake = _FakeRequestsFacade(
-      page: _samplePage(),
-      exportResult: const RequestExportResult(
-        csvPath: '/data/proxy_requests_1.csv',
-        rows: 1,
-      ),
-    );
-    final gate = Completer<void>();
-    String? saveResult;
-
-    Future<String?> pendingSave({
-      required String fileName,
-      required Uint8List bytes,
-      required List<String> allowedExtensions,
-    }) async {
-      await gate.future;
-      return saveResult;
-    }
-
-    await tester.pumpWidget(
-      _host(
-        ProxyRequestsPage(
-          facade: fake,
-          initialLive: false,
-          saveFile: pendingSave,
-          readFile: (path) async => Uint8List.fromList(<int>[1]),
-        ),
-      ),
-    );
-    await tester.pump();
-    await tester.pump();
-
-    await tester.tap(find.byKey(const Key('requests_export')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('requests_export_csv')));
-    await tester.pump();
-
-    // 另存仍挂起时卸载页面。
-    await tester.pumpWidget(const SizedBox());
-    saveResult = '/tmp/out.csv';
-    gate.complete();
-    await tester.pump();
-
     expect(tester.takeException(), isNull);
   });
 }

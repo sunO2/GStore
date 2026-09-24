@@ -35,9 +35,13 @@ Uint8List _okEnvelope(Map<String, dynamic> data) => Uint8List.fromList(
 /// 假门面：证明 [ProxyRequestsFacade] 可由外部实现注入（T15 widget 测试缝）。
 class _FakeRequestsFacade implements ProxyRequestsFacade {
   int getCalls = 0;
+  int capturesCalls = 0;
+  int configGetCalls = 0;
+  int configSetCalls = 0;
   int resetCalls = 0;
   int exportCalls = 0;
   RequestGetRequest? lastGet;
+  CapturesGetRequest? lastCaptures;
   RequestExportRequest? lastExport;
 
   @override
@@ -80,6 +84,42 @@ class _FakeRequestsFacade implements ProxyRequestsFacade {
   }
 
   @override
+  Future<CapturePage> capturesGet(CapturesGetRequest request) async {
+    capturesCalls++;
+    lastCaptures = request;
+    return const CapturePage(
+      records: <CaptureRecord>[
+        CaptureRecord(
+          recordId: 7,
+          requestRecordId: 42,
+          connId: 'conn-7',
+          host: 'example.com',
+          method: 'GET',
+          scheme: 'https',
+          url: 'https://example.com/p',
+          statusCode: 200,
+          protocol: 'h1',
+        ),
+      ],
+      nextCursor: 7,
+      firstCursor: 7,
+      retained: 1,
+    );
+  }
+
+  @override
+  Future<CaptureConfig> captureConfigGet() async {
+    configGetCalls++;
+    return const CaptureConfig(enabled: true);
+  }
+
+  @override
+  Future<CaptureConfig> captureConfigSet(CaptureConfig config) async {
+    configSetCalls++;
+    return config;
+  }
+
+  @override
   Future<void> requestsReset() async {
     resetCalls++;
   }
@@ -113,6 +153,13 @@ void main() {
     final export = await facade.requestsExport(
       const RequestExportRequest(format: 'csv'),
     );
+    final captures = await facade.capturesGet(
+      const CapturesGetRequest(limit: 50),
+    );
+    final config = await facade.captureConfigGet();
+    final applied = await facade.captureConfigSet(
+      config.copyWith(enabled: false),
+    );
 
     // 断言类型化值（而非仅存在性）。
     expect(page.records, hasLength(1));
@@ -142,6 +189,17 @@ void main() {
     expect(fake.exportCalls, 1);
     expect(fake.lastGet!.cursor, 7);
     expect(fake.lastExport!.format, 'csv');
+
+    // captures.get + capture.config.*：类型化叠加源与迷你开关。
+    expect(captures.records, hasLength(1));
+    expect(captures.records.single.requestRecordId, 42);
+    expect(captures.records.single.method, 'GET');
+    expect(captures.records.single.statusCode, 200);
+    expect(config.enabled, isTrue);
+    expect(applied.enabled, isFalse);
+    expect(fake.capturesCalls, 1);
+    expect(fake.configGetCalls, 1);
+    expect(fake.configSetCalls, 1);
   });
 
   test('ProxyModuleRequestsFacade 转发并解码类型化响应', () async {
@@ -188,6 +246,33 @@ void main() {
         'rows': 9,
         'bytes': 1024,
       }),
+      ProxyMethods.capturesGet: _okEnvelope(<String, dynamic>{
+        'records': <Map<String, dynamic>>[
+          <String, dynamic>{
+            'recordId': 3,
+            'requestRecordId': 9,
+            'connId': 'conn-3',
+            'host': 'example.com',
+            'method': 'POST',
+            'scheme': 'https',
+            'url': 'https://example.com/submit',
+            'statusCode': 201,
+            'protocol': 'h2',
+          },
+        ],
+        'nextCursor': 3,
+        'firstCursor': 3,
+        'retained': 1,
+        'capacity': 256,
+        'dropped': 0,
+        'evicted': 0,
+      }),
+      ProxyMethods.captureConfigGet: _okEnvelope(<String, dynamic>{
+        'enabled': false,
+      }),
+      ProxyMethods.captureConfigSet: _okEnvelope(<String, dynamic>{
+        'enabled': true,
+      }),
     });
     final ProxyRequestsFacade facade =
         ProxyModuleRequestsFacade(ProxyModule(gateway: gateway));
@@ -197,11 +282,19 @@ void main() {
     final export = await facade.requestsExport(
       const RequestExportRequest(format: 'both'),
     );
+    final captures = await facade.capturesGet(
+      const CapturesGetRequest(limit: 10),
+    );
+    final config = await facade.captureConfigGet();
+    await facade.captureConfigSet(config.copyWith(enabled: true));
 
     expect(gateway.methods, <String>[
       ProxyMethods.requestsGet,
       ProxyMethods.requestsReset,
       ProxyMethods.requestsExport,
+      ProxyMethods.capturesGet,
+      ProxyMethods.captureConfigGet,
+      ProxyMethods.captureConfigSet,
     ]);
     final record = page.records.single;
     expect(record.recordId, 9);
@@ -216,6 +309,17 @@ void main() {
     expect(export.jsonPath, isNull);
     expect(export.rows, 9);
     expect(export.bytes, 1024);
+
+    // captures.get 解码为类型化模型；capture.config.get/set 回传配置。
+    expect(captures.records, hasLength(1));
+    final capture = captures.records.single;
+    expect(capture.recordId, 3);
+    expect(capture.requestRecordId, 9);
+    expect(capture.method, 'POST');
+    expect(capture.statusCode, 201);
+    expect(capture.protocol, 'h2');
+    expect(captures.capacity, 256);
+    expect(config.enabled, isFalse);
   });
 
   test('缺字段 / 空响应不崩溃（解码为默认值）', () async {
