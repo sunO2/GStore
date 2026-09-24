@@ -28,7 +28,7 @@
 #![allow(dead_code)] // T1 foundation: consumed by later todos (capture, dispatch, persist).
 
 use std::collections::{HashMap, HashSet, VecDeque};
-#[cfg(not(test))]
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use gstore_contract::error::{ModuleError, StatusCode};
@@ -86,6 +86,11 @@ pub(crate) const UID_PROTOCOL_TCP: &str = "tcp";
 /// Dart event ring (`API.md §4`).
 pub(crate) const EVT_UID_QUERY: &str = "proxy.uid.query";
 
+/// High-bit namespace reserved for capture-origin UID correlation ids. The host
+/// echoes `recordId` opaquely (Kotlin/JNI never see it), so an id in this range
+/// is partitioned to the capture registry instead of the request store.
+pub(crate) const CAPTURE_UID_ID_BASE: u64 = 1 << 63;
+
 /// Three-state UID attribution; the value is always explicit (never a bare null).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum UidState {
@@ -129,7 +134,7 @@ pub(crate) struct UidAnswer {
 }
 
 impl UidAnswer {
-    fn resolved_uid(&self) -> Option<u32> {
+    pub(crate) fn resolved_uid(&self) -> Option<u32> {
         match self.uid {
             Some(v) if v >= 0 && v <= u32::MAX as i64 => Some(v as u32),
             _ => None,
@@ -159,6 +164,51 @@ fn resolver_cell() -> &'static std::sync::Mutex<Option<Box<dyn UidResolver>>> {
 fn with_resolver<R>(f: impl FnOnce(&dyn UidResolver) -> R) -> Option<R> {
     let guard = resolver_cell().lock().unwrap_or_else(|e| e.into_inner());
     guard.as_ref().map(|r| f(r.as_ref()))
+}
+
+// ── Capture-origin UID correlation (C3) ──────────────────────────────────────
+
+/// Monotonic allocator for [`CAPTURE_UID_ID_BASE`]-rooted correlation ids. Ids
+/// are never reused, so a stale answer can never alias a later query.
+static NEXT_CAPTURE_UID_ID: AtomicU64 = AtomicU64::new(CAPTURE_UID_ID_BASE);
+
+/// Bounded registry of in-flight capture UID lookups (`recordId → reply`). Full
+/// means the lookup fails safe (`Unknown`) rather than growing or queueing.
+static CAPTURE_UID_PENDING: OnceLock<Mutex<HashMap<u64, tokio::sync::oneshot::Sender<UidAnswer>>>> =
+    OnceLock::new();
+
+fn capture_uid_pending() -> &'static Mutex<HashMap<u64, tokio::sync::oneshot::Sender<UidAnswer>>> {
+    CAPTURE_UID_PENDING.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Reserve a correlation id and its reply channel, or `None` when the bounded
+/// registry is full. The id travels with the query and the host returns it
+/// unchanged.
+pub(crate) fn register_capture_uid() -> Option<(u64, tokio::sync::oneshot::Receiver<UidAnswer>)> {
+    let mut guard = capture_uid_pending()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if guard.len() >= crate::limits::CAPTURE_UID_INFLIGHT_CAP {
+        return None;
+    }
+    let record_id = NEXT_CAPTURE_UID_ID.fetch_add(1, Ordering::SeqCst);
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    guard.insert(record_id, tx);
+    Some((record_id, rx))
+}
+
+/// Release a capture correlation slot (timeout / abandoned future). A later
+/// answer for the id then finds no sender and is dropped.
+pub(crate) fn deregister_capture_uid(record_id: u64) {
+    capture_uid_pending()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&record_id);
+}
+
+/// Emit one capture-origin query batch through the same host lane `tick` uses.
+pub(crate) fn emit_capture_uid_query(instance_id: u64, query: &UidQuery) {
+    emit_uid_query(instance_id, std::slice::from_ref(query));
 }
 
 /// A pending UID query keyed by `recordId`, with its TTL deadline.
@@ -1477,7 +1527,34 @@ fn handle_uid_result_at(payload: &[u8], now_ms: u64) -> Result<usize, ModuleErro
     let body: UidResultBody = serde_json::from_slice(payload).map_err(|e| {
         ModuleError::invalid_arg(format!("uid.result payload must be {{\"results\":[...]}}: {e}"))
     })?;
-    Ok(with_store(|st| st.apply_uid_answers(&body.results, now_ms)))
+    // Capture-origin replies carry a reserved id: route them to their awaiting
+    // resolver and NEVER to `apply_uid_answers`, so they cannot reach
+    // `uid_early`. Everything else keeps the existing store backfill.
+    let mut store_answers = Vec::with_capacity(body.results.len());
+    for answer in body.results {
+        if answer.record_id >= CAPTURE_UID_ID_BASE {
+            route_capture_uid_answer(answer);
+        } else {
+            store_answers.push(answer);
+        }
+    }
+    if store_answers.is_empty() {
+        return Ok(0);
+    }
+    Ok(with_store(|st| st.apply_uid_answers(&store_answers, now_ms)))
+}
+
+/// Deliver one reserved-id answer to its awaiting resolver. A missing sender
+/// (timed out / abandoned) and a dropped receiver (late answer) both discard
+/// the answer without touching the request store.
+fn route_capture_uid_answer(answer: UidAnswer) {
+    let sender = capture_uid_pending()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&answer.record_id);
+    if let Some(sender) = sender {
+        let _ = sender.send(answer);
+    }
 }
 
 /// Capture a request open at the single chokepoint. Returns the `recordId`; a
@@ -1511,6 +1588,19 @@ pub(crate) fn finalize_all_active(now_ms: u64) -> u64 {
 #[cfg(test)]
 pub(crate) fn reset_for_tests() {
     with_store(|st| *st = RequestStore::fresh());
+    capture_uid_pending()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+    NEXT_CAPTURE_UID_ID.store(CAPTURE_UID_ID_BASE, Ordering::SeqCst);
+}
+
+#[cfg(test)]
+pub(crate) fn capture_uid_registry_len_for_tests() -> usize {
+    capture_uid_pending()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .len()
 }
 
 #[cfg(test)]
@@ -3938,5 +4028,169 @@ mod tests {
         }
         let s = store.lock().unwrap_or_else(|e| e.into_inner());
         assert!(s.uid_pending.len() <= s.uid_pending_cap);
+    }
+
+    // --- C3: production host UID resolver (reuse the existing host UID lane) ---
+
+    use crate::capture::{AppAttribution, AppUidResolver, HostUidAppResolver};
+    use std::net::SocketAddr;
+    use std::sync::Arc;
+
+    fn capture_src_dst() -> (SocketAddr, SocketAddr) {
+        (
+            "10.0.0.2:51000".parse().unwrap(),
+            "1.2.3.4:443".parse().unwrap(),
+        )
+    }
+
+    /// The reserved capture id from the most recent query batch, or 0 when no
+    /// capture-origin query was emitted.
+    fn last_capture_query_id() -> u64 {
+        take_uid_query_events()
+            .iter()
+            .filter_map(|ev| ev["queries"].as_array())
+            .flatten()
+            .filter_map(|q| q["recordId"].as_u64())
+            .find(|id| *id >= CAPTURE_UID_ID_BASE)
+            .unwrap_or(0)
+    }
+
+    fn uid_result_payload(record_id: u64, uid: i64, packages: &[&str]) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "results": [{ "recordId": record_id, "uid": uid, "packages": packages }]
+        }))
+        .expect("serialize uid.result")
+    }
+
+    /// Scenario 1 (round trip): the resolver emits a reserved-id query and the
+    /// simulated host `uid.result` (routed by `handle_uid_result_at`) completes
+    /// the future as `Known` — without ever touching the request store.
+    #[tokio::test]
+    async fn capture_resolver_round_trips_a_simulated_uid_result_to_known() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        let _ = take_uid_query_events();
+
+        let resolver = Arc::new(HostUidAppResolver::new(7));
+        let (src, dst) = capture_src_dst();
+        let r2 = Arc::clone(&resolver);
+        let handle = tokio::spawn(async move { r2.resolve(src, dst).await });
+        tokio::task::yield_now().await;
+
+        let rid = last_capture_query_id();
+        assert!(
+            rid >= CAPTURE_UID_ID_BASE,
+            "the resolver must emit a query in the reserved capture id namespace"
+        );
+
+        let payload = uid_result_payload(rid, 10_123, &["com.allowed"]);
+        assert_eq!(
+            handle_uid_result_at(&payload, 1_000).unwrap(),
+            0,
+            "a reserved-id answer must never be applied to the request store"
+        );
+        let attr = handle.await.expect("resolver task must not panic");
+        assert_eq!(
+            attr,
+            AppAttribution::Known {
+                uid: 10_123,
+                packages: vec!["com.allowed".to_string()],
+            }
+        );
+        assert_eq!(uid_early_len_for_tests(), 0, "reserved ids never enter uid_early");
+        assert_eq!(capture_uid_registry_len_for_tests(), 0, "a reply consumes the slot");
+    }
+
+    /// Scenarios 2 + 4: an unanswered query times out to `Unknown` and releases
+    /// its slot; a late answer for the abandoned id is dropped (no panic, no
+    /// retro-authorization, no `uid_early` buffering).
+    #[tokio::test]
+    async fn capture_resolver_timeout_is_unknown_and_a_late_answer_is_dropped() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        let _ = take_uid_query_events();
+
+        let resolver = Arc::new(HostUidAppResolver::new(7));
+        let (src, dst) = capture_src_dst();
+        let r2 = Arc::clone(&resolver);
+        let handle = tokio::spawn(async move { r2.resolve(src, dst).await });
+        tokio::task::yield_now().await;
+
+        let rid = last_capture_query_id();
+        assert!(rid >= CAPTURE_UID_ID_BASE);
+
+        let attr = handle.await.expect("resolver task must not panic");
+        assert_eq!(attr, AppAttribution::Unknown, "timeout must fail safe");
+        assert_eq!(capture_uid_registry_len_for_tests(), 0, "timeout releases the slot");
+
+        // The host answers after the deadline: the slot is gone, so the answer
+        // is dropped and can never be applied to the store or buffered early.
+        let late = uid_result_payload(rid, 10_123, &["com.allowed"]);
+        assert_eq!(handle_uid_result_at(&late, 1_200).unwrap(), 0);
+        assert_eq!(uid_early_len_for_tests(), 0, "a reserved id can never be buffered");
+    }
+
+    /// Scenario 3: a saturated registry denies immediately and emits nothing, so
+    /// a capture lookup can never stall the dataplane or starve the lane.
+    #[tokio::test]
+    async fn capture_resolver_registry_full_is_immediate_unknown() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        let _ = take_uid_query_events();
+
+        let mut held = Vec::new();
+        for _ in 0..crate::limits::CAPTURE_UID_INFLIGHT_CAP {
+            held.push(register_capture_uid().expect("registry has room"));
+        }
+
+        let resolver = HostUidAppResolver::new(7);
+        let (src, dst) = capture_src_dst();
+        let attr = resolver.resolve(src, dst).await;
+        assert_eq!(attr, AppAttribution::Unknown, "a full registry denies");
+        assert!(
+            take_uid_query_events().is_empty(),
+            "no query may be emitted when no slot was reserved"
+        );
+
+        for (id, _rx) in held {
+            deregister_capture_uid(id);
+        }
+        assert_eq!(capture_uid_registry_len_for_tests(), 0);
+    }
+
+    /// Scenario 5 (partition): a reserved id is routed to the registry and NEVER
+    /// reaches `uid_early`, while an ordinary orphan id keeps the existing
+    /// early-buffer behavior byte for byte.
+    #[test]
+    fn reserved_capture_ids_are_partitioned_away_from_uid_early() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+
+        let reserved = CAPTURE_UID_ID_BASE + 5;
+        let payload = uid_result_payload(reserved, 9, &["com.x"]);
+        assert_eq!(handle_uid_result_at(&payload, 1_000).unwrap(), 0);
+        assert_eq!(uid_early_len_for_tests(), 0, "reserved ids never buffer");
+
+        let orphan = uid_result_payload(4096, 9, &["com.x"]);
+        assert_eq!(handle_uid_result_at(&orphan, 1_000).unwrap(), 0);
+        assert_eq!(uid_early_len_for_tests(), 1, "ordinary orphans still buffer");
+    }
+
+    /// The A path (`appScope=routing`) must pay zero UID cost: the dispatcher
+    /// consults `needs_app_resolution` before ever resolving.
+    #[test]
+    fn routing_scope_needs_no_app_resolution() {
+        let routing = crate::capture::CaptureConfig {
+            enabled: true,
+            app_allowlist: vec!["com.allowed".to_string()],
+            app_scope: crate::capture::AppScope::Routing,
+            ..Default::default()
+        };
+        assert!(!crate::capture::needs_app_resolution(&routing, 443));
+        let uid = crate::capture::CaptureConfig {
+            app_scope: crate::capture::AppScope::Uid,
+            ..routing
+        };
+        assert!(crate::capture::needs_app_resolution(&uid, 443));
     }
 }

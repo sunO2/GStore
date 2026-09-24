@@ -42,6 +42,10 @@ pub(crate) const STALE_LIVE_CAP: usize = requests::STALE_LIVE_CAP;
 pub(crate) const UID_PENDING_CAP: usize = 2048;
 /// Bound on UID results that arrive before their record is inserted.
 pub(crate) const UID_EARLY_RESULTS_CAP: usize = 2048;
+/// Bound on the in-flight capture-origin UID registry (`recordId → oneshot`).
+/// Equal to the host's `UID_BATCH_MAX` so capture lookups can never starve a
+/// request batch on the same lane.
+pub(crate) const CAPTURE_UID_INFLIGHT_CAP: usize = 64;
 
 // MITM termination, capture ring and rewrite-rule caps (Todo 4). `mitm.rs` and
 // `captures.rs` do not exist yet, so — unlike the `requests.rs`/`shaper.rs` caps
@@ -138,6 +142,9 @@ pub(crate) const REQUEST_FLUSH_RECORD_MAX_BYTES: usize = 2048;
 pub(crate) const STALE_LIVE_RECORD_MAX_BYTES: usize = 512;
 pub(crate) const UID_QUERY_MAX_BYTES: usize = 256;
 pub(crate) const UID_ANSWER_MAX_BYTES: usize = 256;
+/// Per-entry ceiling for the capture UID registry: one bounded query plus the
+/// bounded answer delivered through its oneshot.
+const CAPTURE_UID_ENTRY_MAX_BYTES: usize = UID_QUERY_MAX_BYTES + UID_ANSWER_MAX_BYTES;
 /// Assumed frame size for the bounded packet queues (TUN MTU is 1500).
 const FRAME_BYTES: usize = 1500;
 
@@ -169,6 +176,8 @@ pub(crate) fn worst_case_bytes() -> usize {
         + STALE_LIVE_CAP * STALE_LIVE_RECORD_MAX_BYTES
         + UID_PENDING_CAP * UID_QUERY_MAX_BYTES
         + UID_EARLY_RESULTS_CAP * UID_ANSWER_MAX_BYTES
+        // Capture-origin UID registry (C3): bounded in-flight lookups.
+        + CAPTURE_UID_INFLIGHT_CAP * CAPTURE_UID_ENTRY_MAX_BYTES
         // Shaper release heaps (Todo 6): one bounded heap per direction, billed
         // by actual frame length, so each holds at most this many bytes.
         + 2 * SHAPER_BUFFER_BYTES_PER_DIRECTION
@@ -375,13 +384,33 @@ mod tests {
             capture_additions + capture_queue_additions + ws_session_additions
         );
 
+        // Capture-origin UID registry (C3): bounded in-flight lookups, computed
+        // from the ACTUAL cap.
+        let capture_uid_additions = CAPTURE_UID_INFLIGHT_CAP * CAPTURE_UID_ENTRY_MAX_BYTES;
+        assert_eq!(
+            capture_uid_additions, 32_768,
+            "capture UID registry accounting drifted"
+        );
+        assert!(
+            capture_additions
+                + capture_queue_additions
+                + ws_session_additions
+                + capture_uid_additions
+                <= 3_954_689,
+            "capture total {} B exceeds the frozen pre-capture headroom 3_954_689 B",
+            capture_additions
+                + capture_queue_additions
+                + ws_session_additions
+                + capture_uid_additions
+        );
+
         let worst = worst_case_bytes();
         assert_eq!(
             worst,
-            baseline + request_additions + shaper_additions + capture_additions + capture_queue_additions + ws_session_additions,
-            "worst_case_bytes must equal baseline + request + shaper + capture + queue + WS-session accumulators"
+            baseline + request_additions + shaper_additions + capture_additions + capture_queue_additions + ws_session_additions + capture_uid_additions,
+            "worst_case_bytes must equal baseline + request + shaper + capture + queue + WS-session + capture-uid accumulators"
         );
-        assert_eq!(worst, 33_519_615, "worst-case budget drifted");
+        assert_eq!(worst, 33_552_383, "worst-case budget drifted");
         assert!(
             worst <= WORST_CASE_BUDGET_BYTES,
             "worst-case {worst} B exceeds budget {WORST_CASE_BUDGET_BYTES} B"
@@ -400,11 +429,10 @@ mod tests {
         assert_eq!(shaper_term, 4_194_304, "shaper memory term drifted");
 
         // Removing the shaper term must leave exactly the pre-shaper worst case
-        // (frozen at 29_140_991 = the 25_405_439 baseline-plus-capture value) —
-        // i.e. `worst_case_bytes()` includes exactly
+        // — i.e. `worst_case_bytes()` includes exactly
         // `2 × SHAPER_BUFFER_BYTES_PER_DIRECTION` for the heaps, no more.
         let without_shaper = worst_case_bytes() - shaper_term;
-        assert_eq!(without_shaper, 29_325_311, "shaper term is not exactly 2 × the per-direction cap");
+        assert_eq!(without_shaper, 29_358_079, "shaper term is not exactly 2 × the per-direction cap");
 
         // The cap must equal the module's own source of truth.
         assert_eq!(SHAPER_BUFFER_BYTES_PER_DIRECTION, shaper::BUFFER_BYTES_PER_DIRECTION);
@@ -493,8 +521,9 @@ mod tests {
             + MITM_PEM_BUFFER_MAX_BYTES
             + CAPTURE_FLUSH_QUEUE_BYTES
             + MITM_MAX_INFLIGHT * CAPTURE_DECODE_TRANSIENT_BYTES
-            + MITM_WS_SESSION_BYTES;
-        assert_eq!(memory, 3_919_872, "in-memory capture additions drifted");
+            + MITM_WS_SESSION_BYTES
+            + CAPTURE_UID_INFLIGHT_CAP * CAPTURE_UID_ENTRY_MAX_BYTES;
+        assert_eq!(memory, 3_952_640, "in-memory capture additions drifted");
 
         const PRIOR_BASELINE: usize = 29_599_743;
         assert_eq!(worst_case_bytes() - PRIOR_BASELINE, memory);

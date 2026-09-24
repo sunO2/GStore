@@ -62,6 +62,11 @@ const MAX_ALLOWLIST_ENTRY_BYTES: usize = 253;
 /// can never stall the TUN dataplane or force decryption.
 const APP_RESOLVE_TIMEOUT: Duration = Duration::from_millis(200);
 
+/// Internal deadline for one capture-origin host UID lookup. Strictly below
+/// [`APP_RESOLVE_TIMEOUT`] so the outer gate deadline can never be the one that
+/// fires, keeping the deny path deterministic and the dataplane bounded.
+const UID_GATE_TIMEOUT: Duration = Duration::from_millis(120);
+
 /// Discriminator for **how** the app allowlist is scoped. The Rust gate cannot
 /// see the VPN split-tunnel mode, so scope-by-routing (A) and scope-by-UID (B)
 /// need this explicit field to coexist. `app_allowlist` stays the single source
@@ -391,6 +396,68 @@ pub(crate) fn needs_app_resolution(config: &CaptureConfig, dst_port: u16) -> boo
         && config.domain_allowlist.is_empty()
         && !config.app_allowlist.is_empty()
         && config.app_scope == AppScope::Uid
+}
+
+/// Production [`AppUidResolver`] (design B): a thin adapter over the **existing**
+/// host UID lane. The module never calls JNI; it emits one correlated
+/// `proxy.uid.query` (reserved `recordId`) and awaits the host's opaque echo
+/// through the bounded registry in [`crate::requests`]. A full registry, a
+/// timeout, or an unresolved answer is [`AppAttribution::Unknown`] (deny).
+pub(crate) struct HostUidAppResolver {
+    instance_id: u64,
+}
+
+impl HostUidAppResolver {
+    pub(crate) fn new(instance_id: u64) -> Self {
+        Self { instance_id }
+    }
+}
+
+impl AppUidResolver for HostUidAppResolver {
+    fn resolve<'a>(
+        &'a self,
+        src: SocketAddr,
+        dst: SocketAddr,
+    ) -> Pin<Box<dyn Future<Output = AppAttribution> + Send + 'a>> {
+        let instance_id = self.instance_id;
+        Box::pin(async move {
+            let Some((record_id, reply)) = crate::requests::register_capture_uid() else {
+                return AppAttribution::Unknown;
+            };
+            let query = crate::requests::UidQuery {
+                record_id,
+                protocol: crate::requests::UID_PROTOCOL_TCP.to_string(),
+                src_ip: src.ip().to_string(),
+                src_port: src.port(),
+                dst_ip: dst.ip().to_string(),
+                dst_port: dst.port(),
+            };
+            crate::requests::emit_capture_uid_query(instance_id, &query);
+            match tokio::time::timeout(UID_GATE_TIMEOUT, reply).await {
+                Ok(Ok(answer)) => answer_into_attribution(answer),
+                Ok(Err(_)) | Err(_) => {
+                    crate::requests::deregister_capture_uid(record_id);
+                    AppAttribution::Unknown
+                }
+            }
+        })
+    }
+}
+
+fn answer_into_attribution(answer: crate::requests::UidAnswer) -> AppAttribution {
+    match answer.resolved_uid() {
+        Some(uid) => AppAttribution::Known {
+            uid,
+            packages: answer.packages,
+        },
+        None => AppAttribution::Unknown,
+    }
+}
+
+/// Install the production host-backed resolver for this module instance. Called
+/// once from `create_impl`; tests install their own resolver explicitly.
+pub(crate) fn install_host_uid_resolver(instance_id: u64) {
+    set_app_uid_resolver(Some(Arc::new(HostUidAppResolver::new(instance_id))));
 }
 
 // ── Matching ─────────────────────────────────────────────────────────────────

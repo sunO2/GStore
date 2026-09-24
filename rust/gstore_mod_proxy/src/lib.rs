@@ -2139,6 +2139,10 @@ fn create_impl(config: *const u8, config_len: usize) -> Result<u64, c_int> {
     lan::configure(&ctx.data_dir, &ctx.cache_dir);
     shaper::configure(&ctx.data_dir);
     capture::configure(&ctx.data_dir);
+    // Production app-scope resolver (B): reuse the host UID lane. Tests install
+    // their own resolver explicitly (mirrors `captures::configure_rules`).
+    #[cfg(not(test))]
+    capture::install_host_uid_resolver(id);
     // The rule store is process-global (T16); in-crate tests configure it
     // explicitly so a parallel instance create cannot clobber a rule test.
     #[cfg(not(test))]
