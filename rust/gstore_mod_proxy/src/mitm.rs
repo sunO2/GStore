@@ -2685,9 +2685,22 @@ async fn serve_replace_rule(
 /// Read and discard an overwritten upstream body to EOF in the background. The
 /// h1 gate permit is released only when the drain finishes, so hyper never starts
 /// the next request on a half-read connection; a failed drain still releases it.
-fn drain_discarded_upstream_body(body: Incoming, permit: Option<OwnedSemaphorePermit>) {
+///
+/// The drain is **frame-by-frame** by design: an overwriting `replace` rule may
+/// discard an arbitrarily large upstream body, so buffering it (`collect()` /
+/// `to_bytes()`) would OOM the proxy. Dropping each frame before polling the next
+/// keeps at most one frame resident.
+fn drain_discarded_upstream_body<B>(body: B, permit: Option<OwnedSemaphorePermit>)
+where
+    B: Body + Send + Unpin + 'static,
+    B::Data: Send,
+    B::Error: Send,
+{
     tokio::spawn(async move {
-        let _ = body.collect().await;
+        let mut body = body;
+        while let Some(frame) = body.frame().await {
+            drop(frame);
+        }
         drop(permit);
     });
 }
@@ -4708,6 +4721,157 @@ mod mitm_ws_tests {
                         && f.preview == b"hello-ws"
                 }),
                 "the MITM path must record the origin echo as server→client"
+            );
+        });
+    }
+}
+
+// R6 regression: the drain must consume a lazy many-frame body one frame at a
+// time. The body reports how many frames the consumer holds at once, so the
+// frame-by-frame drain (1 resident) and a buffering `collect()` (all resident)
+// produce different observables.
+#[cfg(test)]
+mod mitm_drain_tests {
+    use super::*;
+    use hyper::body::Buf;
+    use std::io::IoSlice;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    struct TrackedBuf {
+        inner: Bytes,
+        live_bytes: Arc<AtomicUsize>,
+        live_frames: Arc<AtomicUsize>,
+        size: usize,
+    }
+
+    impl Buf for TrackedBuf {
+        fn remaining(&self) -> usize {
+            self.inner.remaining()
+        }
+        fn chunk(&self) -> &[u8] {
+            self.inner.chunk()
+        }
+        fn advance(&mut self, cnt: usize) {
+            self.inner.advance(cnt)
+        }
+        fn copy_to_bytes(&mut self, len: usize) -> Bytes {
+            self.inner.copy_to_bytes(len)
+        }
+        fn chunks_vectored<'a>(&'a self, dst: &mut [IoSlice<'a>]) -> usize {
+            self.inner.chunks_vectored(dst)
+        }
+    }
+
+    impl Drop for TrackedBuf {
+        fn drop(&mut self) {
+            self.live_bytes.fetch_sub(self.size, Ordering::SeqCst);
+            self.live_frames.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    /// Lazily yields `remaining` data frames of `frame_bytes` each without ever
+    /// holding more than the frame currently being produced.
+    struct LazyTrackedBody {
+        remaining: usize,
+        frame_bytes: usize,
+        live_bytes: Arc<AtomicUsize>,
+        live_frames: Arc<AtomicUsize>,
+        max_live_bytes: Arc<AtomicUsize>,
+        max_live_frames: Arc<AtomicUsize>,
+        emitted: Arc<AtomicUsize>,
+    }
+
+    impl Body for LazyTrackedBody {
+        type Data = TrackedBuf;
+        type Error = Infallible;
+
+        fn poll_frame(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+            let this = self.get_mut();
+            if this.remaining == 0 {
+                return Poll::Ready(None);
+            }
+            this.remaining -= 1;
+            let buf = TrackedBuf {
+                inner: Bytes::from(vec![0u8; this.frame_bytes]),
+                live_bytes: Arc::clone(&this.live_bytes),
+                live_frames: Arc::clone(&this.live_frames),
+                size: this.frame_bytes,
+            };
+            let live_bytes =
+                this.live_bytes.fetch_add(this.frame_bytes, Ordering::SeqCst) + this.frame_bytes;
+            let live_frames = this.live_frames.fetch_add(1, Ordering::SeqCst) + 1;
+            this.max_live_bytes.fetch_max(live_bytes, Ordering::SeqCst);
+            this.max_live_frames.fetch_max(live_frames, Ordering::SeqCst);
+            this.emitted.fetch_add(1, Ordering::SeqCst);
+            Poll::Ready(Some(Ok(Frame::data(buf))))
+        }
+    }
+
+    #[test]
+    fn drain_discarded_upstream_body_never_buffers_the_discarded_body() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            const FRAMES: usize = 10_000;
+            const FRAME_BYTES: usize = 64 * 1024;
+
+            let live_bytes = Arc::new(AtomicUsize::new(0));
+            let live_frames = Arc::new(AtomicUsize::new(0));
+            let max_live_bytes = Arc::new(AtomicUsize::new(0));
+            let max_live_frames = Arc::new(AtomicUsize::new(0));
+            let emitted = Arc::new(AtomicUsize::new(0));
+            let body = LazyTrackedBody {
+                remaining: FRAMES,
+                frame_bytes: FRAME_BYTES,
+                live_bytes: Arc::clone(&live_bytes),
+                live_frames: Arc::clone(&live_frames),
+                max_live_bytes: Arc::clone(&max_live_bytes),
+                max_live_frames: Arc::clone(&max_live_frames),
+                emitted: Arc::clone(&emitted),
+            };
+
+            // The drain takes the gate permit and must not release it until the
+            // body is fully consumed: the test holds the semaphore's only slot
+            // and can only re-acquire it once the drain is done.
+            let sem = Arc::new(Semaphore::new(1));
+            let permit = Arc::clone(&sem).acquire_owned().await.expect("permit");
+            let start = Instant::now();
+            drain_discarded_upstream_body(body, Some(permit));
+
+            let _permit = tokio::time::timeout(Duration::from_secs(30), sem.acquire())
+                .await
+                .expect("drain must finish promptly")
+                .expect("drain releases the gate permit");
+            let elapsed = start.elapsed();
+
+            assert_eq!(
+                emitted.load(Ordering::SeqCst),
+                FRAMES,
+                "every frame of the discarded body must be consumed"
+            );
+            assert_eq!(
+                live_bytes.load(Ordering::SeqCst),
+                0,
+                "nothing may remain resident after the drain"
+            );
+            assert_eq!(
+                max_live_frames.load(Ordering::SeqCst),
+                1,
+                "the drain must hold exactly one frame at a time (a buffering \
+                 collect() would hold all {FRAMES})"
+            );
+            assert!(
+                max_live_bytes.load(Ordering::SeqCst) <= FRAME_BYTES,
+                "resident bytes {:?} exceeded one frame {FRAME_BYTES}",
+                max_live_bytes.load(Ordering::SeqCst)
+            );
+            assert!(
+                elapsed < Duration::from_secs(10),
+                "streaming drain took {elapsed:?}"
             );
         });
     }

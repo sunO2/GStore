@@ -50,7 +50,11 @@ pub(crate) const UID_EARLY_RESULTS_CAP: usize = 2048;
 // source of truth. The per-record byte caps are owned here regardless.
 /// Leaf-certificate cache: per-host `Arc<rustls::ServerConfig>`, oldest evicted.
 pub(crate) const MITM_CERT_CACHE_CAP: usize = 64;
-pub(crate) const MITM_CERT_ENTRY_MAX_BYTES: usize = 8 * 1024;
+/// Per-entry ceiling for the leaf cache. We only ever cache our own single
+/// self-signed ECDSA leaf (estimated entry ≈ host(≤253) + DER(~0.5 KiB) + 1 KiB
+/// fixed overhead ≈ 1.8 KiB), so 4 KiB stays >2× conservative while leaving the
+/// 32 MiB budget room to charge the WebSocket open-session accumulation below.
+pub(crate) const MITM_CERT_ENTRY_MAX_BYTES: usize = 4 * 1024;
 /// Capture-record ring. Holds summaries only; full payloads are disk-resident.
 pub(crate) const CAPTURE_RING_CAP: usize = 256;
 /// Must dominate the in-ring summary fields (url ≤1 KiB, host ≤253, connId 36,
@@ -76,6 +80,17 @@ pub(crate) const MITM_MAX_INFLIGHT: usize = 7;
 pub(crate) const MITM_SESSION_BUFFER_MAX_BYTES: usize = 256 * 1024;
 /// CA + leaf certificate PEM buffer ceiling.
 pub(crate) const MITM_PEM_BUFFER_MAX_BYTES: usize = 64 * 1024;
+/// One recorded WebSocket frame retained in an open session: the bounded payload
+/// preview plus the [`crate::mitm::WsFrameRecord`] header. Pinned to the real
+/// struct size so the charge can never under-count the per-frame record.
+pub(crate) const WS_FRAME_RECORD_MAX_BYTES: usize =
+    crate::mitm::WS_PREVIEW_MAX_BYTES + std::mem::size_of::<crate::mitm::WsFrameRecord>();
+/// Open WebSocket-session accumulation (`captures.rs::ws_sessions`): at most one
+/// session per in-flight MITM slot, each retaining `CAPTURE_WS_FRAMES_MAX` bounded
+/// frame records until close. This is the only structure besides the pending
+/// flush queue that holds WS payload bytes in RAM, so it is charged explicitly.
+pub(crate) const MITM_WS_SESSION_BYTES: usize =
+    MITM_MAX_INFLIGHT * crate::captures::CAPTURE_WS_FRAMES_MAX * WS_FRAME_RECORD_MAX_BYTES;
 
 /// In-ring URL truncation bound. The full URL is disk-resident; this is a field
 /// *inside* [`CAPTURE_RECORD_MAX_BYTES`], not an additional memory term.
@@ -171,6 +186,9 @@ pub(crate) fn worst_case_bytes() -> usize {
         // session. Previously omitted, which understated the real worst case.
         + CAPTURE_FLUSH_QUEUE_BYTES
         + MITM_MAX_INFLIGHT * CAPTURE_DECODE_TRANSIENT_BYTES
+        // Open WebSocket-session accumulation: at most one session per in-flight
+        // MITM slot, each holding `CAPTURE_WS_FRAMES_MAX` bounded frame records.
+        + MITM_WS_SESSION_BYTES
 }
 
 #[cfg(target_os = "linux")]
@@ -278,6 +296,8 @@ mod tests {
             "queue cap {CAPTURE_FLUSH_QUEUE_BYTES} exceeds the body cap"
         );
         assert!(CAPTURE_DECODE_TRANSIENT_BYTES > 0);
+        assert!(MITM_WS_SESSION_BYTES > 0);
+        assert!(WS_FRAME_RECORD_MAX_BYTES > crate::mitm::WS_PREVIEW_MAX_BYTES);
     }
 
     #[test]
@@ -322,7 +342,7 @@ mod tests {
             + CAPTURE_RULE_CAP * CAPTURE_RULE_ENTRY_MAX_BYTES
             + MITM_MAX_INFLIGHT * MITM_SESSION_BUFFER_MAX_BYTES
             + MITM_PEM_BUFFER_MAX_BYTES;
-        assert_eq!(capture_additions, 3_735_552, "capture accounting drifted");
+        assert_eq!(capture_additions, 3_473_408, "capture accounting drifted");
         assert!(
             capture_additions <= 3_954_689,
             "capture additions {capture_additions} B exceed pre-existing headroom 3_954_689 B"
@@ -336,19 +356,32 @@ mod tests {
             capture_queue_additions, 188_416,
             "capture queue/decode accounting drifted"
         );
+
+        // Open WebSocket-session accumulation (R6). Charged from the ACTUAL caps:
+        // one bounded frame record per frame, one session per in-flight slot.
+        let ws_session_additions = MITM_WS_SESSION_BYTES;
+        assert_eq!(
+            ws_session_additions, 258_048,
+            "WS-session accounting drifted"
+        );
+        assert_eq!(
+            WS_FRAME_RECORD_MAX_BYTES,
+            crate::mitm::WS_PREVIEW_MAX_BYTES + std::mem::size_of::<crate::mitm::WsFrameRecord>(),
+            "WS frame charge must dominate the real record"
+        );
         assert!(
-            capture_additions + capture_queue_additions <= 3_954_689,
+            capture_additions + capture_queue_additions + ws_session_additions <= 3_954_689,
             "capture total {} B exceeds the frozen pre-capture headroom 3_954_689 B",
-            capture_additions + capture_queue_additions
+            capture_additions + capture_queue_additions + ws_session_additions
         );
 
         let worst = worst_case_bytes();
         assert_eq!(
             worst,
-            baseline + request_additions + shaper_additions + capture_additions + capture_queue_additions,
-            "worst_case_bytes must equal baseline + request + shaper + capture + queue accumulators"
+            baseline + request_additions + shaper_additions + capture_additions + capture_queue_additions + ws_session_additions,
+            "worst_case_bytes must equal baseline + request + shaper + capture + queue + WS-session accumulators"
         );
-        assert_eq!(worst, 33_523_711, "worst-case budget drifted");
+        assert_eq!(worst, 33_519_615, "worst-case budget drifted");
         assert!(
             worst <= WORST_CASE_BUDGET_BYTES,
             "worst-case {worst} B exceeds budget {WORST_CASE_BUDGET_BYTES} B"
@@ -371,7 +404,7 @@ mod tests {
         // i.e. `worst_case_bytes()` includes exactly
         // `2 × SHAPER_BUFFER_BYTES_PER_DIRECTION` for the heaps, no more.
         let without_shaper = worst_case_bytes() - shaper_term;
-        assert_eq!(without_shaper, 29_329_407, "shaper term is not exactly 2 × the per-direction cap");
+        assert_eq!(without_shaper, 29_325_311, "shaper term is not exactly 2 × the per-direction cap");
 
         // The cap must equal the module's own source of truth.
         assert_eq!(SHAPER_BUFFER_BYTES_PER_DIRECTION, shaper::BUFFER_BYTES_PER_DIRECTION);
@@ -459,8 +492,9 @@ mod tests {
             + MITM_MAX_INFLIGHT * MITM_SESSION_BUFFER_MAX_BYTES
             + MITM_PEM_BUFFER_MAX_BYTES
             + CAPTURE_FLUSH_QUEUE_BYTES
-            + MITM_MAX_INFLIGHT * CAPTURE_DECODE_TRANSIENT_BYTES;
-        assert_eq!(memory, 3_923_968, "in-memory capture additions drifted");
+            + MITM_MAX_INFLIGHT * CAPTURE_DECODE_TRANSIENT_BYTES
+            + MITM_WS_SESSION_BYTES;
+        assert_eq!(memory, 3_919_872, "in-memory capture additions drifted");
 
         const PRIOR_BASELINE: usize = 29_599_743;
         assert_eq!(worst_case_bytes() - PRIOR_BASELINE, memory);
