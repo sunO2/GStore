@@ -310,3 +310,142 @@ cargo build --release --target aarch64-linux-android   # exit 0
 This proves `.cargo/config.toml`'s per-target NDK linker is actually consumed and
 load-bearing — removing it breaks the link rather than silently using a host
 toolchain.
+
+---
+
+## 11. HARD GATE: MITM viable (Todo 1 of `proxy-http-capture.md`)
+
+**Verdict: the in-TUN TLS MITM datapath IS viable.** A test-only chain—
+
+```
+synthetic IPv4/TCP + TLS ClientHello
+      │  (SyntheticTcpClient, injected through meow_lwip::NetStack ingress)
+      ▼
+meow_lwip::TcpListener ──► accepted in-TUN meow_lwip::TcpStream
+                                    │
+                     rustls acceptor │ (rcgen-issued leaf, example.com)
+                                    ▼
+                           hyper HTTP/1.1 GET /hello  (Host: example.com)
+                                    │
+      TunnelInner::resolve_proxy_lazy(&mut Metadata)  ← real rules engine
+      ProxyAdapter::dial_tcp(&Metadata)               ← real outbound
+                                    ▼
+                     rustls client │ to a local TLS fixture (upstream.test)
+                                    ▼
+            200 + body replayed byte-for-byte back through the in-TUN TLS client
+```
+
+—runs green on the host: a genuine TLS handshake, a parsed HTTP/1.1 request
+(method/path/host), and replayed upstream response bytes. This is Todo 1 of the
+`proxy-http-capture` plan; it is test-only and is **not** wired into production
+dispatch.
+
+### 11.1 Test and command
+
+- Test: `rust/gstore_mod_proxy/tests/mitm_spike.rs` (`#[test] fn mitm_spike`),
+  evidence: `.omo/evidence/proxy-http-capture/t1-spike.log`.
+- The plan's literal acceptance command `cd rust && cargo test -p
+  gstore_mod_proxy mitm_spike` **cannot run in this repo**: there is no Cargo
+  workspace root (deliberately — `rust/build_all.sh` explains that the host must
+  be `panic=abort` while modules are `panic=unwind`, which a shared workspace
+  profile forbids). The equivalent per-crate invocation used is
+  `cd rust/gstore_mod_proxy && cargo test mitm_spike -- --nocapture
+  --test-threads=1` — same test, same filter semantics.
+
+### 11.2 Empirically verified meow public API
+
+Both candidate symbols exist, are public at the pinned rev, compile, and
+**actually drive a dial**. The real signatures found in the checkout
+(`~/.cargo/git/checkouts/meow-rs-*/0e718f5`):
+
+```rust
+// crates/meow-tunnel/src/tunnel.rs
+pub async fn TunnelInner::resolve_proxy_lazy(
+    &self,
+    metadata: &mut Metadata,
+) -> Option<(Arc<dyn ProxyAdapter>, SmolStr /*rule*/, SmolStr /*payload*/)>;
+
+// crates/meow-common/src/adapter.rs
+#[async_trait]
+pub trait ProxyAdapter: Send + Sync {
+    async fn dial_tcp(&self, metadata: &Metadata)
+        -> meow_common::Result<Box<dyn ProxyConn>>;   // ProxyConn: AsyncRead + AsyncWrite + Unpin + Send + Sync
+}
+```
+
+How it was driven: a rule `DOMAIN-SUFFIX,upstream.test,DIRECT` is published with
+`Tunnel::update_rules`; after the request is decrypted, a `Metadata` with
+`host = "upstream.test"`, `dst_ip = 127.0.0.1`, `dst_port = <fixture>` is passed
+to `resolve_proxy_lazy`. Observed return: rule `"DOMAIN-SUFFIX"`, payload
+`"upstream.test"`, adapter name `"DIRECT"` — i.e. the match went **through the
+rules engine** and DIRECT is the rule *result*, not a self-built bare dial. The
+returned `Arc<dyn ProxyAdapter>` is then handed to `dial_tcp`, whose
+`Box<dyn ProxyConn>` is wrapped by a rustls client for the upstream hop.
+
+**Conclusion: the candidate API pair is usable — no fallback is needed.** A
+fallback is neither implemented nor required.
+
+### 11.3 Datapath facts pinned while proving this (must-know for Todos 5-9)
+
+1. **In-TUN TLS termination works over an accepted `meow_lwip::TcpStream`.** The
+   rustls server `accept` runs directly on the stream yielded by
+   `meow_lwip::TcpListener`; there is no adapter layer.
+2. **lwIP output to the netif's own address is internally looped back and never
+   reaches the module's egress hook.** `ip4_output_if` short-circuits
+   `dest == netif_ip4_addr(netif)` (the loopif is `127.0.0.1`) into
+   `netif_loop_output`. A synthetic client must therefore use a **non-loopback
+   source IP** (`10.0.0.2` here) so replies egress; a `127.0.0.1` client would
+   be swallowed by lwIP's own loopback.
+3. **meow's lwIP is built `TUN2SOCKS=1`**: the listener accepts a SYN on *any*
+   destination port, and the accepted pcb's local port is pinned to that SYN's
+   destination port. One SYN both opens the flow and determines the port; no
+   port discovery is needed.
+4. **Only one `NetStack` may be live per process** (lwIP pcb lists/netif are
+   process globals; meow's single-owner-core contract). The spike therefore runs
+   both scenarios plus the malformed-ClientHello probe over one stack, as
+   separate in-TUN flows.
+5. IPv4 checksum verification is disabled in this lwIP config
+   (`CHECKSUM_CHECK_{IP,TCP}=0`), so the synthetic frames need no valid
+   checksums — but the IP/TCP header layout must still be correct.
+
+### 11.4 Failure and adversarial probes (all green)
+
+| Probe | Result |
+|---|---|
+| Happy path (TLS + rules + upstream + replay) | `resolve`/`dial` OK; client got `200` + `UPSTREAM_OK:/hello` |
+| Upstream dial fails (closed port) | `dial_tcp` returns `Connection refused`; MITM returns a clean `502`; in-TUN TLS connection closes; driver loop unpanicked |
+| Malformed ClientHello (`0xff * 32`) | rustls rejects with `InvalidContentType`; flow closes cleanly; no panic |
+
+"Clean close / no panic" is asserted by `driver.await` returning `Ok(())` and by
+`serve` returning `Ok`/a handled error — a panicked task would surface as a
+`JoinError`.
+
+### 11.5 rustls crypto provider: **`aws-lc-rs` (chosen)**
+
+- **Chosen: `aws-lc-rs`.** It is already in `Cargo.lock` transitively
+  (`aws-lc-rs 1.18.1` / `aws-lc-sys 0.45.0`) and its host build is reused, so
+  the spike adds rustls/rcgen without introducing a *new* crypto backend. rustls
+  0.23's provider is selected explicitly and installed once
+  (`rustls::crypto::aws_lc_rs::default_provider().install_default()`); rcgen is
+  built with `default-features = false, features = ["crypto", "aws_lc_rs"]` so
+  the whole spike uses **one** backend. No `ring` feature is enabled anywhere,
+  so rustls' ring/aws-lc double-provider panic cannot occur.
+- **Rejected for this spike: `boring-rustls-provider`.** It publishes no crate in
+  this dependency graph, and adopting it would force a second, non-vendored
+  crypto build alongside the existing `boring`/BoringSSL. The module's existing
+  BoringSSL stays where it is (meow's transport); it is not bridged into rustls.
+  Todo 2 must re-validate the provider choice against the 4-ABI cross-compile
+  and `DT_NEEDED` gate (`aws-lc-sys` builds as a static lib, so no new
+  `DT_NEEDED` entry is expected, but that is Todo 2's assertion, not this
+  spike's).
+
+### 11.6 Scope / UNVERIFIED
+
+- Host-only. No adb device is attached, so on-device behaviour (a real
+  `VpnService.establish()` fd, `VpnService.protect`, the Android CA store) stays
+  **UNVERIFIED**, consistent with §7 and §10.
+- The production deps are not final. This todo added rcgen/rustls/tokio-rustls/
+  hyper/hyper-util/http-body-util as **`[dev-dependencies]`**; Todo 2 moves
+  and pins the real set and proves the 4-ABI cross-compile.
+- The code is a test-only spike: no production `dispatch.rs` / `tun.rs`
+  behaviour is touched.
