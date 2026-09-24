@@ -213,6 +213,74 @@ Body / 头 / WS 帧。
 - **UDP / QUIC 不抓**：只处理 TCP；HTTP/3（QUIC/UDP）流量不终止、不记录。
 - **WS 只抓帧、不支持改写**：WebSocket 帧可捕获展示，但 `capture.rules.*` **不改写** WS 帧。
 
+### 5.2 抓包 App 范围：`appScope` 的两条强制路径与 UID 归因限制
+
+**为什么需要 `appScope`。** 抓包/解密的前置问题是「哪些 App 的流量该解密」。Rust 门控看不到
+VPN 分流的模式，所以「按路由」（A）与「按 UID」（B）两条路径不能靠隐式状态共存，必须有一个
+显式判别器。`capture.config.appScope` 就是这个冻结字段，取值为 `"routing"` 或 `"uid"`，
+**默认 `uid`**；旧 `capture_config.json` 没有该字段时，`#[serde(default)]` 自动迁移为 `uid`，
+保持字段引入前的语义不变。引入顺序：C1 加字段与契约（`44ffdab`）、C2 门控分流
+（`f535c28`）、C3 生产 UID resolver（`51be5da`）、C4 Dart 耦合与对账（`1c8b128`）。
+
+**域名主白名单始终优先，与 `appScope` 无关。** `domainAllowlist` 命中即解密；它非空时就是
+**限制性**的，未命中直接拒绝，连 App 都不看；只有 `domainAllowlist` 为空且 `appAllowlist`
+非空时，`appScope` 才决定 `appAllowlist` 如何被强制（`capture::decide_mitm`）。
+
+**路径 A：`appScope=routing`（主路径，零 UID 成本）。**
+VPN 已经用 `VpnService.Builder.addAllowedApplication` 把 TUN 限定在选定 App 上，于是**能进入
+TUN 的流本就已经是选定 App**。门控因此**完全不做 UID 解析**，只要开关开、端口在 `tlsPorts`
+内、域名白名单为空且 `appAllowlist` 非空，就直接对 TLS 解密。这也是 Android <10 唯一可行的
+应用范围方案（该平台没有 UID 查询 API，见下）。`needs_app_resolution()` 在 `routing` 下返回
+`false`，即这条路径不付任何 UID 查询代价。
+
+**路径 B：`appScope=uid`（回退路径，按 UID 匹配）。**
+门控解析流属主 UID，并按 `appAllowlist`（条目可写包名，也可写十进制 UID 字符串）匹配；
+`Unknown` 一律拒绝解密。生产实现 `HostUidAppResolver` **复用宿主既有 UID 通道**，不直接调 JNI：
+模块 emit 一条带保留高位 `recordId`（`CAPTURE_UID_ID_BASE = 1 << 63`）的 `proxy.uid.query` →
+宿主 `on_uid_query_event` → uid_worker → `jni_bridge::resolve_uids` →
+`ProxyVpnService.queryOwnerUid`/`packagesForUid` → `uid.result` 回填 → 模块 `on_event` 命中保留
+区的 oneshot。上限与期限都刻意收紧：`CAPTURE_UID_INFLIGHT_CAP = 64`、内部
+`UID_GATE_TIMEOUT = 120ms`（严格小于门控 `APP_RESOLVE_TIMEOUT = 200ms`，保证拒绝路径确定性、
+不拖住数据面）。注册表满、超时、或答案迟到一律 `Unknown`（拒绝）。
+
+**单一数据源与派生镜像。** `appAllowlist` 是「哪些应用」的**唯一事实来源**。当
+`appScope=routing` 时，VPN 分流 `allow` 的 `allowedApps` 是它的**派生镜像**（Dart 派生，界面
+不单独编辑这份清单）。启用或保存时，设置页经统一确认弹层提议把分流切为 `allow` 且清单等于
+`appAllowlist`；用户拒绝或切换失败，则**应用范围抓包保持关闭**（域名抓包不受影响）。**漂移处理**
+同样是单向的：若分流被改成 `full`/`disallow`，或 `selectedApps` 与 `appAllowlist` 不一致，
+就**自动关闭抓包**（`enabled:false`）并提示，**绝不静默重写用户的分流路由**。启动与 always-on
+前后由 `ProxyConnectController.reconcileCaptureAppScope()` 读取两份 store 对账
+（`mirrorsAppAllowlist`），不一致即关闭并提示（`kCaptureScopeDriftNotice`）。
+
+**诚实限制（必须如实告知用户，UI 同步提示，不得夸大）。**
+
+1. **Android <10 上 `appScope=uid` 恒为 Unknown，什么都不解密。**
+   `ConnectivityManager.getConnectionOwnerUid` 是 API 29（Android 10）起才有的能力；
+   Kotlin `queryOwnerUid` 在 SDK<29 直接返回 `-1`（未知）。因此 Android <10 必须改用
+   `appScope=routing`，或退到域名白名单。
+2. **`/proc/net` 在 Android 10+ 被系统封锁，没有替代的 UID 归因路径。** 不要指望用
+   `/proc/net` 兜底；当前实现也不依赖它。
+3. **共享 UID 可能过度放行。** `PackageManager.getPackagesForUid(uid)` 对共享 UID 可能返回
+   多个包名，而 `app_allowed()` 对其中**任意一个**包名命中即放行。结果是：白名单里只写了
+   共享 UID 下的应用 A，同 UID 的应用 B、C 也会被解密。这是共享 UID 模型的结构性限制，
+   不是可修的 bug。
+4. **迟到查询 / 短命流 → Unknown，且迟到答案永不追溯授权。** 归属查询发生在流建立之后，
+   短命流可能在答案返回前已拆除；超过 120ms 即判 `Unknown`（拒绝）。已经超时或已经关闭的流
+   **不会**因为随后到达的 `uid.result` 被重新解密（保留区的迟到答案被直接丢弃）。
+5. **VPN 未启用或 LAN 模式下没有 TUN 流，就什么都不会被抓。** `lanProxy` 无 `VpnService`、
+   无 TUN reader，抓包配置本身仍然持久化并被保留，重新启用后即恢复行为。
+6. **被排除的 App、GStore 自身、非 TCP、`UDP:443`/QUIC 从不进入抓包。** TUN `allow` 模式下
+   只有 `addAllowedApplication` 的 App 进入隧道，GStore 自身默认不在清单内；`full` 模式下
+   GStore 自身的出站 socket 另经 `protect_fd` → `VpnService.protect` 放行以防路由环路。
+   MITM 只处理 TCP，HTTP/3（QUIC/UDP）不终止、不记录。
+7. **固定证书 / 不信任用户 CA 的 App 不会被解密。** TLS 终止会失败并**干净回落**（标记
+   `mitmFailed`），不抓也不崩溃；非 root 设备无法抓取任意 App，也**不绕过 pinning**。
+8. **`appScope=routing` 的漂移信任风险。** 路径 A 是「信任 TUN 已被按应用限定」，而门控读不到
+   VPN 分流。若用户在系统层改动路由，或手工编辑/恢复 `capture_config.json` 使路由与
+   `appAllowlist` 不一致，可能把解密范围放大到非预期 App。缓解是 Dart 启动/always-on 的
+   `reconcileCaptureAppScope()` 对账并自动关闭抓包；这是**尽力而为**的用户态缓解，不是内核
+   强制，不能当作安全边界。
+
 ## 6. 运行模式（off / vpn / lanProxy）
 
 - `core.set_mode` / `core.get_mode` 暴露模式；模式状态机与切换序列在**计划 Todo 29**
@@ -338,6 +406,12 @@ harness 证明机制：
   `SecurityException`/`IllegalArgumentException` 捕获与 SDK<29 分支仅有代码审查。
 - **late-query 覆盖缺口（UNVERIFIED）**：归属查询发生在流建立之后，短命流可能在查询返回时
   已经关闭；这是 best-effort 路径，不做「每条流必有 UID」的保证。
+- **`appScope` routing/uid 的设备侧行为（C1 至 C4，UNVERIFIED）**：真实
+  `getConnectionOwnerUid` 的返回值与时延、每条流 120ms 门控期限的实际影响、Android <10 的
+  `uid` 降级、共享 UID 下 `getPackagesForUid` 的实际结果，以及 `addAllowedApplication` 对
+  TUN 的真实按应用范围，**均无真机可验**。host 侧只覆盖门控判定、resolver 注册/超时/迟到丢弃
+  与 Dart 对账逻辑；`routing` 的「TUN 已限定」前提与 `uid` 的真机时延都只能标注未验证
+  （细节见 §5.2 与计划尾部 UNVERIFIED 条款）。
 - **LAN 内存降级（UNVERIFIED）**：LAN 独立路径若实例 `dataDir` 为空，`requests` 显式降级为
   纯内存环（不做 SQLite 持久化）。该降级后的 7 天/≤5 万行持久化语义未在设备侧验证。
 

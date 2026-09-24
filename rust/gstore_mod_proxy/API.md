@@ -1238,6 +1238,28 @@ ESP/AH（proto 50/51）等未知传输也**不**豁免。豁免帧在损伤判�
 | `captureH2` | bool | `true` | 捕获 HTTP/2 |
 | `maxBodyBytes` | number | `1048576` | 落盘 Body 上限（仅 SQLite；不驻留内存），∈ `[1, 1048576]` |
 
+**`appScope` 语义（C1 至 C3）。** `appScope` 决定 `appAllowlist` 如何被强制，是冻结字段；缺少它的
+旧配置按 `uid` 迁移。`domainAllowlist` 始终优先且与 `appScope` 无关：命中即允许，非空未命中即
+拒绝。只有 `domainAllowlist` 为空且 `appAllowlist` 非空时 `appScope` 才起作用：
+
+* `routing`：VPN 已通过 `VpnService.Builder.addAllowedApplication` 把 TUN 限定在该应用清单，
+  门控**不做 UID 查询**即允许 `tlsPorts` 上的 TLS（零 UID 成本，也是 Android <10 唯一可行的
+  应用范围方案）。`appAllowlist` 仍是「哪些应用」的唯一事实来源，VPN 分流的 `allowedApps` 是其
+  派生镜像。
+* `uid`：门控经宿主 `proxy.uid.query` → `uid.result` lane 解析流属主 UID，命中 `appAllowlist`
+  （包名或十进制 UID 字符串）才允许；`Unknown` 一律拒绝。上限 `CAPTURE_UID_INFLIGHT_CAP = 64`，
+  内部超时 `UID_GATE_TIMEOUT = 120ms`（严格小于门控 `APP_RESOLVE_TIMEOUT = 200ms`）；注册表满、
+  超时或答案迟到都判 `Unknown`，**绝不追溯授权**。
+
+**`appScope` 归因限制（诚实声明）。** Android <10 没有 `ConnectivityManager.getConnectionOwnerUid`
+（API 29+），`uid` 恒为 `Unknown`（须改用 `routing` 或域名白名单）；`/proc/net` 在 Android 10+
+被系统封锁，没有替代归因路径；共享 UID 下 `getPackagesForUid` 可能返回多个包，`app_allowed`
+对任一命中即放行，存在同 UID **过度放行**；VPN 未启用或 LAN 模式无 TUN 流即无抓包（配置仍保留）；
+非 TCP（含 `UDP:443`/QUIC）、被排除 App 与 GStore 自身不抓；固定证书或不信任用户 CA 的 App
+TLS 终止失败（`mitmFailed`）不抓，非 root 不绕过 pinning；`routing` 门控信任 VPN 逐应用路由，
+配置手改/恢复造成的漂移由 Dart 启动对账自动关闭抓包缓解。真机 `getConnectionOwnerUid`
+行为/时延与 `addAllowedApplication` 的实际范围**未经设备验证（UNVERIFIED）**。
+
 **Partial update.** `capture.config.set` 接受 `CaptureConfig` 的任意子集（缺省字段保留当前值）。
 未知字段、非对象载荷、`tlsPorts` 含 `0` 或为空、`maxBodyBytes` 越界、`appScope` 非
 `"routing"`/`"uid"` 均为 **422 `PROXY_CAPTURE_CONFIG_INVALID`**，且**不改动**内存或磁盘上的既有配置。校验通过后配置发布为
