@@ -47,7 +47,11 @@ use rcgen::{
     KeyUsagePurpose, SerialNumber,
 };
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use rustls::server::ServerConfig;
+use rustls::server::{ClientHello, ResolvesServerCert, ServerConfig};
+use rustls::sign::CertifiedKey;
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio_rustls::server::TlsStream;
+use tokio_rustls::TlsAcceptor;
 
 use crate::limits::{MITM_CERT_CACHE_CAP, MITM_CERT_ENTRY_MAX_BYTES, MITM_PEM_BUFFER_MAX_BYTES};
 
@@ -112,12 +116,22 @@ impl From<rustls::Error> for MitmError {
     }
 }
 
-/// One cached per-host leaf: its `ServerConfig`, the monotonic sequence used for
-/// oldest-first eviction, and the accounted byte size.
+/// One cached per-host leaf: its `ServerConfig`, the `CertifiedKey` the SNI
+/// resolver returns, the monotonic sequence used for oldest-first eviction, and
+/// the accounted byte size.
 struct CachedLeaf {
     config: Arc<ServerConfig>,
+    key: Arc<CertifiedKey>,
     seq: u64,
     size_bytes: usize,
+}
+
+/// A per-host leaf returned from the cache (or freshly issued): both the
+/// single-cert `ServerConfig` (todo 3's `server_config`) and the `CertifiedKey`
+/// the SNI resolver needs.
+struct LeafEntry {
+    config: Arc<ServerConfig>,
+    key: Arc<CertifiedKey>,
 }
 
 /// Bounded per-host leaf cache. Mirrors the cap+oldest-eviction discipline of
@@ -334,11 +348,25 @@ impl CertificateAuthority {
     /// Return the cached [`ServerConfig`] for `host`, signing a fresh leaf on a
     /// cache miss. A cached entry is returned without re-signing.
     pub(crate) fn server_config(&self, host: &str) -> Result<Arc<ServerConfig>, MitmError> {
+        Ok(self.entry_for(host)?.config)
+    }
+
+    /// Return the cached [`CertifiedKey`] for `host`, signing a fresh leaf on a
+    /// cache miss. Backs the SNI [`ResolvesServerCert`] implementation. Shares
+    /// the same bounded cache (and signing counter) as [`Self::server_config`],
+    /// so a host is signed at most once per CA epoch regardless of which API
+    /// asks first.
+    pub(crate) fn certified_key(&self, host: &str) -> Result<Arc<CertifiedKey>, MitmError> {
+        Ok(self.entry_for(host)?.key)
+    }
+
+    fn entry_for(&self, host: &str) -> Result<LeafEntry, MitmError> {
         let host = normalize_host(host)?;
         if let Some(hit) = self.cache_lookup(&host) {
             return Ok(hit);
         }
         let (leaf_der, leaf_key) = self.issue_leaf(&host)?;
+        let key = Arc::new(self.certified_from(leaf_der.clone(), leaf_key.clone_key())?);
         let config = Arc::new(self.build_config(leaf_der.clone(), leaf_key)?);
         let size_bytes = estimate_entry_bytes(&host, &leaf_der);
         if size_bytes > MITM_CERT_ENTRY_MAX_BYTES {
@@ -351,21 +379,32 @@ impl CertificateAuthority {
                     MITM_CERT_ENTRY_MAX_BYTES
                 ),
             );
-            return Ok(config);
+            return Ok(LeafEntry { config, key });
         }
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
         // Another thread may have signed the same host while we were unlocked.
         if let Some(existing) = cache.entries.get(&host) {
-            return Ok(Arc::clone(&existing.config));
+            return Ok(LeafEntry {
+                config: Arc::clone(&existing.config),
+                key: Arc::clone(&existing.key),
+            });
         }
-        let evicted = cache.insert(host, CachedLeaf { config: Arc::clone(&config), seq: 0, size_bytes });
+        let evicted = cache.insert(
+            host,
+            CachedLeaf {
+                config: Arc::clone(&config),
+                key: Arc::clone(&key),
+                seq: 0,
+                size_bytes,
+            },
+        );
         if evicted > 0 {
             crate::log_message(
                 2,
                 &format!("proxy.mitm: evicted {evicted} leaf cert(s) at capacity {MITM_CERT_CACHE_CAP}"),
             );
         }
-        Ok(config)
+        Ok(LeafEntry { config, key })
     }
 
     /// Number of cached leaves (diagnostics / tests).
@@ -384,9 +423,12 @@ impl CertificateAuthority {
         self.signings.load(Ordering::Relaxed)
     }
 
-    fn cache_lookup(&self, host: &str) -> Option<Arc<ServerConfig>> {
+    fn cache_lookup(&self, host: &str) -> Option<LeafEntry> {
         let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-        cache.entries.get(host).map(|e| Arc::clone(&e.config))
+        cache.entries.get(host).map(|e| LeafEntry {
+            config: Arc::clone(&e.config),
+            key: Arc::clone(&e.key),
+        })
     }
 
     fn issue_leaf(&self, host: &str) -> Result<(CertificateDer<'static>, PrivateKeyDer<'static>), MitmError> {
@@ -413,6 +455,149 @@ impl CertificateAuthority {
             .with_no_client_auth()
             .with_single_cert(vec![leaf], key)?;
         Ok(config)
+    }
+
+    fn certified_from(
+        &self,
+        leaf: CertificateDer<'static>,
+        key: PrivateKeyDer<'static>,
+    ) -> Result<CertifiedKey, MitmError> {
+        let provider = rustls::crypto::aws_lc_rs::default_provider();
+        Ok(CertifiedKey::from_der(vec![leaf], key, &provider)?)
+    }
+
+    /// Build the MITM server [`ServerConfig`] served to in-TUN clients: a
+    /// [`SniCertResolver`] over this CA's bounded leaf cache, advertising ALPN
+    /// `h2` then `http/1.1`. `fallback_host` is signed when the client omits SNI
+    /// (e.g. an IP literal) but the flow host is known from DNS/sniff.
+    pub(crate) fn mitm_server_config(
+        self: &Arc<Self>,
+        fallback_host: Option<&str>,
+    ) -> Result<Arc<ServerConfig>, MitmError> {
+        ensure_crypto_provider();
+        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+        let mut config = ServerConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()?
+            .with_no_client_auth()
+            .with_cert_resolver(Arc::new(SniCertResolver {
+                ca: Arc::clone(self),
+                fallback_host: fallback_host
+                    .map(str::trim)
+                    .filter(|h| !h.is_empty())
+                    .map(str::to_ascii_lowercase),
+            }));
+        config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+        Ok(Arc::new(config))
+    }
+}
+
+/// Per-SNI certificate selection for the MITM acceptor.
+///
+/// `resolve` consults the [`ClientHello`]'s SNI first and falls back to the
+/// flow's known host when the client omitted SNI. The leaf is fetched from (or
+/// issued into) the CA's bounded leaf cache via
+/// [`CertificateAuthority::certified_key`]. Returning `None` aborts the
+/// handshake — the caller records `mitmFailed`.
+pub(crate) struct SniCertResolver {
+    ca: Arc<CertificateAuthority>,
+    fallback_host: Option<String>,
+}
+
+impl std::fmt::Debug for SniCertResolver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SniCertResolver")
+            .field("fallback_host", &self.fallback_host)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ResolvesServerCert for SniCertResolver {
+    fn resolve(&self, client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+        let host = client_hello
+            .server_name()
+            .map(str::to_string)
+            .or_else(|| self.fallback_host.clone())?;
+        match self.ca.certified_key(&host) {
+            Ok(key) => Some(key),
+            Err(e) => {
+                crate::log_message(2, &format!("proxy.mitm: refusing SNI {host}: {e}"));
+                None
+            }
+        }
+    }
+}
+
+/// Signal the dispatch layer records when [`MitmTls::Failed`] is returned.
+pub(crate) const MITM_FAILED_SIGNAL: &str = "mitmFailed";
+
+/// Why the MITM acceptor could not terminate TLS.
+#[derive(Debug)]
+pub(crate) enum MitmTlsError {
+    /// The CA could not build the server config.
+    Config(String),
+    /// The TLS handshake failed (malformed ClientHello, no cert, IO error).
+    Handshake(String),
+}
+
+impl std::fmt::Display for MitmTlsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MitmTlsError::Config(e) => write!(f, "mitm tls config: {e}"),
+            MitmTlsError::Handshake(e) => write!(f, "mitm tls handshake: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for MitmTlsError {}
+
+/// Outcome of [`terminate`]. The caller owns the decision to pass through.
+pub(crate) enum MitmTls<S> {
+    /// No flow host was known (no DNS/sniff): the *unmodified* inbound stream,
+    /// to be passed through. No byte was read and no certificate was issued.
+    Passthrough(S),
+    /// TLS terminated: the decrypted client stream.
+    Terminated(TlsStream<S>),
+    /// Handshake/config failure: the stream has been closed. The caller records
+    /// [`MITM_FAILED_SIGNAL`] and falls back to pass-through upstream if it can.
+    Failed(MitmTlsError),
+}
+
+/// Install the `aws-lc-rs` crypto provider as the process default exactly once.
+/// Idempotent (and race-safe): a second install is a no-op.
+pub(crate) fn ensure_crypto_provider() {
+    static INSTALL: std::sync::Once = std::sync::Once::new();
+    INSTALL.call_once(|| {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    });
+}
+
+/// MITM entry point: run the server-side TLS handshake over an inbound client
+/// stream and hand back the decrypted stream.
+///
+/// The fixed no-SNI decision lives here: an unknown `flow_host` (no DNS/sniff)
+/// returns [`MitmTls::Passthrough`] with the stream untouched — this flow is
+/// **not** MITM'd. A known host builds the per-flow resolver (SNI preferred,
+/// host as fallback) and performs the handshake. A failed handshake returns
+/// [`MitmTls::Failed`] after the stream is dropped (clean close); it never
+/// panics.
+pub(crate) async fn terminate<S>(
+    stream: S,
+    ca: &Arc<CertificateAuthority>,
+    flow_host: Option<&str>,
+) -> MitmTls<S>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let Some(host) = flow_host.map(str::trim).filter(|h| !h.is_empty()) else {
+        return MitmTls::Passthrough(stream);
+    };
+    let config = match ca.mitm_server_config(Some(host)) {
+        Ok(config) => config,
+        Err(e) => return MitmTls::Failed(MitmTlsError::Config(e.to_string())),
+    };
+    match TlsAcceptor::from(config).accept(stream).await {
+        Ok(tls) => MitmTls::Terminated(tls),
+        Err(e) => MitmTls::Failed(MitmTlsError::Handshake(e.to_string())),
     }
 }
 
@@ -741,5 +926,338 @@ mod tests {
         let pem = pem_encode("CERTIFICATE", &der);
         assert_eq!(pem_decode(&pem).unwrap(), der);
         assert!(pem_decode("garbage").is_none());
+    }
+}
+
+/// Todo 5 acceptance: rustls TLS termination with a per-SNI certificate
+/// resolver, ALPN `h2`/`http/1.1`, the fixed no-host passthrough decision, and
+/// clean handshake-failure handling. A **real** rustls client drives the
+/// acceptor over a loopback socket (no lwIP), so the assertions are on the
+/// actually negotiated leaf/SAN and ALPN, not merely that a handshake finished.
+#[cfg(test)]
+mod mitm_tls_tests {
+    use super::*;
+    use rustls::client::danger::{
+        HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier,
+    };
+    use rustls::pki_types::{ServerName, UnixTime};
+    use rustls::{DigitallySignedStruct, RootCertStore, SignatureScheme};
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio_rustls::TlsConnector;
+
+    static TLS_SEQ: AtomicU64 = AtomicU64::new(0);
+
+    fn tls_temp_dir(tag: &str) -> PathBuf {
+        let n = TLS_SEQ.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "gstore-mitm-tls-{}-{}-{}",
+            std::process::id(),
+            tag,
+            n
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn ca_at(tag: &str) -> Arc<CertificateAuthority> {
+        let dir = tls_temp_dir(tag);
+        Arc::new(CertificateAuthority::generate(dir.to_str().unwrap()).expect("generate CA"))
+    }
+
+    fn provider() -> Arc<rustls::crypto::CryptoProvider> {
+        Arc::new(rustls::crypto::aws_lc_rs::default_provider())
+    }
+
+    /// What the *client* observed after a completed handshake.
+    struct Observed {
+        alpn: Option<Vec<u8>>,
+        leaf: Vec<u8>,
+    }
+
+    fn observe(tls: &tokio_rustls::client::TlsStream<TcpStream>) -> Observed {
+        let (_, conn) = tls.get_ref();
+        Observed {
+            alpn: conn.alpn_protocol().map(|p| p.to_vec()),
+            leaf: conn
+                .peer_certificates()
+                .and_then(|chain| chain.first())
+                .map(|cert| cert.as_ref().to_vec())
+                .unwrap_or_default(),
+        }
+    }
+
+    /// True when `der` (a certificate or chain) carries a SAN `dNSName` equal to
+    /// `name`. A dNSName is an ASN.1 `[2] IA5String` GeneralName, wire-encoded
+    /// `0x82 <len> <ascii>`; a raw byte search asserts the SAN text itself
+    /// without pulling in an X.509 parser.
+    fn san_contains_dns(der: &[u8], name: &str) -> bool {
+        assert!(name.len() < 128, "test host names are short single-byte lengths");
+        let mut needle = vec![0x82u8, name.len() as u8];
+        needle.extend_from_slice(name.as_bytes());
+        der.windows(needle.len()).any(|window| window == needle.as_slice())
+    }
+
+    fn client_config(ca: &CertificateAuthority, alpn: &[u8]) -> Arc<rustls::ClientConfig> {
+        let mut roots = RootCertStore::empty();
+        roots.add(ca.der().clone()).expect("trust the MITM CA");
+        let mut cfg = rustls::ClientConfig::builder_with_provider(provider())
+            .with_safe_default_protocol_versions()
+            .expect("protocol versions")
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        cfg.alpn_protocols = vec![alpn.to_vec()];
+        Arc::new(cfg)
+    }
+
+    /// Run one handshake: server terminates over a loopback socket using the
+    /// *known flow host* `flow_host`; client connects with SNI `sni`.
+    async fn handshake(
+        ca: &Arc<CertificateAuthority>,
+        flow_host: &str,
+        sni: &'static str,
+        alpn: &'static [u8],
+    ) -> Result<Observed, String> {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(|e| e.to_string())?;
+        let addr = listener.local_addr().map_err(|e| e.to_string())?;
+        let ca_server = Arc::clone(ca);
+        let flow = Some(flow_host.to_string());
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.map_err(|e| e.to_string())?;
+            match terminate(tcp, &ca_server, flow.as_deref()).await {
+                MitmTls::Terminated(_tls) => Ok::<(), String>(()),
+                MitmTls::Passthrough(_) => Err("server took the passthrough path".to_string()),
+                MitmTls::Failed(e) => Err(format!("server handshake failed: {e}")),
+            }
+        });
+
+        let connector = TlsConnector::from(client_config(ca, alpn));
+        let tcp = TcpStream::connect(addr).await.map_err(|e| e.to_string())?;
+        let tls = connector
+            .connect(
+                ServerName::try_from(sni).map_err(|e| e.to_string())?,
+                tcp,
+            )
+            .await
+            .map_err(|e| format!("client handshake: {e}"))?;
+        let observed = observe(&tls);
+        server.await.map_err(|e| format!("server join: {e}"))??;
+        Ok(observed)
+    }
+
+    /// Adversarial: each SNI must receive **its own** leaf (asserted via the SAN)
+    /// and must not be served a stale leaf issued for a different host.
+    #[test]
+    fn mitm_tls_sni_selects_matching_leaf() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let ca = ca_at("sni");
+            let a = handshake(&ca, "a.example", "a.example", b"h2")
+                .await
+                .expect("handshake for a.example");
+            assert!(
+                san_contains_dns(&a.leaf, "a.example"),
+                "a.example must get a leaf whose SAN is a.example"
+            );
+            assert!(
+                !san_contains_dns(&a.leaf, "b.example"),
+                "a.example must NOT get b.example's leaf"
+            );
+
+            let b = handshake(&ca, "b.example", "b.example", b"h2")
+                .await
+                .expect("handshake for b.example");
+            assert!(
+                san_contains_dns(&b.leaf, "b.example"),
+                "b.example must get a leaf whose SAN is b.example"
+            );
+            assert!(
+                !san_contains_dns(&b.leaf, "a.example"),
+                "stale-state guard: b.example must NOT be served a.example's cached leaf"
+            );
+            assert_ne!(a.leaf, b.leaf, "distinct hosts must yield distinct leaves");
+            assert_eq!(ca.signings(), 2, "one signing per distinct host");
+        });
+    }
+
+    /// ALPN must negotiate both advertised branches.
+    #[test]
+    fn mitm_tls_alpn_negotiates_h2_and_http11() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let ca = ca_at("alpn");
+            let h2 = handshake(&ca, "a.example", "a.example", b"h2")
+                .await
+                .expect("h2 handshake");
+            assert_eq!(
+                h2.alpn.as_deref(),
+                Some(b"h2".as_slice()),
+                "server must negotiate h2 when offered"
+            );
+            let h1 = handshake(&ca, "a.example", "a.example", b"http/1.1")
+                .await
+                .expect("http/1.1 handshake");
+            assert_eq!(
+                h1.alpn.as_deref(),
+                Some(b"http/1.1".as_slice()),
+                "server must negotiate http/1.1 when offered"
+            );
+            assert_eq!(ca.signings(), 1, "same host reuses the cached leaf");
+        });
+    }
+
+    /// Fixed no-SNI decision: an unknown flow host must take the passthrough
+    /// path without reading a byte and without issuing a certificate.
+    #[test]
+    fn mitm_tls_unknown_host_is_passthrough() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let ca = ca_at("no-host");
+            let (mut client, server) = tokio::io::duplex(64);
+            client.write_all(b"hello").await.expect("pre-write");
+            match terminate(server, &ca, None).await {
+                MitmTls::Passthrough(mut stream) => {
+                    let mut buf = [0u8; 5];
+                    stream.read_exact(&mut buf).await.expect("bytes preserved");
+                    assert_eq!(&buf, b"hello", "passthrough must not consume bytes");
+                }
+                _ => panic!("unknown host must pass through, never MITM"),
+            }
+            assert_eq!(ca.signings(), 0, "no leaf may be issued without a host");
+            assert_eq!(ca.cache_len(), 0);
+        });
+    }
+
+    /// A known flow host with a client that sends no SNI is still signed for
+    /// that host (the resolver's fallback), and the leaf's SAN is that host.
+    #[test]
+    fn mitm_tls_known_host_without_sni_uses_flow_host() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let ca = ca_at("fallback");
+            let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+            let addr = listener.local_addr().expect("addr");
+            let ca_server = Arc::clone(&ca);
+            let server = tokio::spawn(async move {
+                let (tcp, _) = listener.accept().await.map_err(|e| e.to_string())?;
+                match terminate(tcp, &ca_server, Some("fallback.example")).await {
+                    MitmTls::Terminated(_tls) => Ok::<(), String>(()),
+                    MitmTls::Passthrough(_) => Err("unexpected passthrough".to_string()),
+                    MitmTls::Failed(e) => Err(format!("server failed: {e}")),
+                }
+            });
+
+            let provider = provider();
+            let mut cfg = rustls::ClientConfig::builder_with_provider(Arc::clone(&provider))
+                .with_safe_default_protocol_versions()
+                .expect("versions")
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(AcceptAnyCert(provider)))
+                .with_no_client_auth();
+            cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
+            let connector = TlsConnector::from(Arc::new(cfg));
+            let tcp = TcpStream::connect(addr).await.expect("connect");
+            // An IP-literal ServerName is never sent as SNI.
+            let sni = ServerName::try_from("127.0.0.1").expect("ip server name");
+            let tls = connector
+                .connect(sni, tcp)
+                .await
+                .map_err(|e| format!("client handshake: {e}"))
+                .expect("no-SNI handshake");
+            let observed = observe(&tls);
+            server.await.expect("join").expect("server");
+            assert!(
+                san_contains_dns(&observed.leaf, "fallback.example"),
+                "no-SNI flow must be signed for the known flow host"
+            );
+            assert_eq!(ca.signings(), 1, "exactly one leaf for the fallback host");
+        });
+    }
+
+    /// Malformed ClientHello: garbage bytes must fail the handshake cleanly, the
+    /// connection must close, and nothing may panic.
+    #[test]
+    fn mitm_tls_garbage_client_bytes_fail_cleanly() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let ca = ca_at("garbage");
+            let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+            let addr = listener.local_addr().expect("addr");
+            let ca_server = Arc::clone(&ca);
+            let server = tokio::spawn(async move {
+                let (tcp, _) = listener.accept().await.expect("accept");
+                terminate(tcp, &ca_server, Some("g.example")).await
+            });
+
+            let mut client = TcpStream::connect(addr).await.expect("connect");
+            client.write_all(&[0xffu8; 32]).await.expect("garbage write");
+            client.flush().await.expect("flush");
+
+            let result = tokio::time::timeout(Duration::from_secs(10), server)
+                .await
+                .expect("server must not hang")
+                .expect("server must not panic");
+            assert!(
+                matches!(result, MitmTls::Failed(_)),
+                "garbage ClientHello must report a clean handshake failure"
+            );
+
+            let mut sink = [0u8; 64];
+            let closed = tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    match client.read(&mut sink).await {
+                        Ok(0) => break true,
+                        Ok(_) => continue,
+                        Err(_) => break false,
+                    }
+                }
+            })
+            .await
+            .expect("client must not hang");
+            assert!(closed, "server must close the connection after a failed handshake");
+        });
+    }
+
+    /// Test-only verifier that accepts any leaf, used solely to drive a client
+    /// that deliberately sends no SNI.
+    #[derive(Debug)]
+    struct AcceptAnyCert(Arc<rustls::crypto::CryptoProvider>);
+
+    impl ServerCertVerifier for AcceptAnyCert {
+        fn verify_server_cert(
+            &self,
+            _end_entity: &CertificateDer<'_>,
+            _intermediates: &[CertificateDer<'_>],
+            _server_name: &ServerName<'_>,
+            _ocsp_response: &[u8],
+            _now: UnixTime,
+        ) -> Result<ServerCertVerified, rustls::Error> {
+            Ok(ServerCertVerified::assertion())
+        }
+
+        fn verify_tls12_signature(
+            &self,
+            _message: &[u8],
+            _cert: &CertificateDer<'_>,
+            _dss: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, rustls::Error> {
+            Ok(HandshakeSignatureValid::assertion())
+        }
+
+        fn verify_tls13_signature(
+            &self,
+            _message: &[u8],
+            _cert: &CertificateDer<'_>,
+            _dss: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, rustls::Error> {
+            Ok(HandshakeSignatureValid::assertion())
+        }
+
+        fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+            self.0.signature_verification_algorithms.supported_schemes()
+        }
     }
 }
