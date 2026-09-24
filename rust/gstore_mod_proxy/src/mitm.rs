@@ -718,7 +718,13 @@ impl InflightGuard {
 
 impl Drop for InflightGuard {
     fn drop(&mut self) {
-        MITM_INFLIGHT.fetch_sub(1, Ordering::AcqRel);
+        // Saturating: a global counter must never wrap to `usize::MAX`, which
+        // would make the gate permanently believe the cap is reached and stop
+        // decrypting allowlisted traffic (tests reset the counter while a
+        // detached session may still be unwinding).
+        let _ = MITM_INFLIGHT.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+            Some(n.saturating_sub(1))
+        });
     }
 }
 

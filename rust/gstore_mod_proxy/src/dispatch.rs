@@ -1065,6 +1065,22 @@ mod mitm_e2e_tests {
         }
     }
 
+    /// Wait for every MITM session (including detached bridge/WS tasks) to
+    /// release its in-flight slot before the test resets global state, so a
+    /// lingering `InflightGuard` can never decrement a counter a peer test has
+    /// already reset.
+    async fn drain_inflight() {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while mitm::inflight_count() != 0 && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            mitm::inflight_count(),
+            0,
+            "every MITM session must drain before teardown"
+        );
+    }
+
     fn setup(capture_ws: bool, tls_ports: &[u16]) -> (Arc<CertificateAuthority>, Arc<meow_tunnel::tunnel::TunnelInner>) {
         mitm::reset_gate_counters_for_tests();
         mitm::clear_ca();
@@ -1129,11 +1145,7 @@ mod mitm_e2e_tests {
             assert_eq!(rec.protocol, "h1");
             assert_eq!(rec.scheme, "https");
             assert_eq!(rec.resp_body_preview, b"upstream");
-            let deadline = Instant::now() + Duration::from_secs(5);
-            while mitm::inflight_count() != 0 && Instant::now() < deadline {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-            assert_eq!(mitm::inflight_count(), 0, "session slot released");
+            drain_inflight().await;
             teardown();
         });
     }
@@ -1169,6 +1181,7 @@ mod mitm_e2e_tests {
                 page.records.iter().all(|r| r.host != "blocked.test"),
                 "an unmatched (non-allowlisted) flow must never be captured"
             );
+            drain_inflight().await;
             teardown();
         });
     }
@@ -1224,6 +1237,7 @@ mod mitm_e2e_tests {
             .await;
             assert!(records.iter().any(|r| r.url.ends_with("/replace")));
             assert!(records.iter().any(|r| r.url.ends_with("/local")));
+            drain_inflight().await;
             teardown();
         });
     }
@@ -1315,6 +1329,7 @@ mod mitm_e2e_tests {
                 after, before,
                 "captureWs=false must persist no WS frames/records"
             );
+            drain_inflight().await;
             teardown();
         });
     }
@@ -1356,16 +1371,15 @@ mod mitm_e2e_tests {
                     .header(hyper::header::HOST, "flow.test")
                     .body(Full::new(Bytes::new()))
                     .unwrap();
-                match sender.send_request(request).await {
-                    Ok(response) => {
-                        assert_eq!(
-                            response.status().as_u16(),
-                            502,
-                            "an unreachable upstream degrades to a structured 502"
-                        );
-                    }
-                    Err(_) => {}
-                }
+                let response = sender
+                    .send_request(request)
+                    .await
+                    .expect("an unreachable upstream must still yield a fail-safe response");
+                assert_eq!(
+                    response.status().as_u16(),
+                    502,
+                    "an unreachable upstream degrades to a structured 502, not a dropped connection"
+                );
             })
             .await;
 
@@ -1380,6 +1394,7 @@ mod mitm_e2e_tests {
             );
             let sibling = tokio::spawn(async { 7u32 });
             assert_eq!(sibling.await.unwrap(), 7, "dataplane runtime survives the failure");
+            drain_inflight().await;
             teardown();
         });
     }
