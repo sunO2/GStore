@@ -373,6 +373,25 @@ if [ "$1" = "--module" ] && [ -n "$2" ]; then
     exit $(( MODULE_FAILED > 0 ))
 fi
 
+# 仅构建宿主（Rust 改动只涉及 gstore_host 时，避免重建可下载模块）：
+# ./build_android_rust.sh --host-only
+if [ "$1" = "--host-only" ]; then
+    FAILED=0
+    for target in "${!ARCHS[@]}"; do
+        if ! build_arch "$target" "${ARCHS[$target]}"; then
+            echo_warn "Build failed for $target, continuing..."
+            FAILED=1
+        fi
+        echo ""
+    done
+    if [ "$FAILED" -eq 0 ]; then
+        echo_success "✓ Host built for all architectures (host-only)"
+        exit 0
+    fi
+    echo_error "✗ Host build failed"
+    exit 1
+fi
+
 # 记录开始时间
 start_time=$(date +%s)
 

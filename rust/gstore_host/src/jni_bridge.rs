@@ -16,7 +16,7 @@
 //   `ParcelFileDescriptor`。宿主只在 `nativeClear` 里清缓存，不触碰 fd。
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock, RwLock};
 
 use std::os::raw::c_int;
@@ -313,6 +313,18 @@ pub(crate) enum UidChannelStatus {
     Available,
 }
 
+impl UidChannelStatus {
+    /// 供运行时诊断直接打印的稳定标签（勿改字面值：日志判定依赖）。
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            UidChannelStatus::NoVm => "NoVm",
+            UidChannelStatus::NoService => "NoService",
+            UidChannelStatus::MethodMissing => "MethodMissing",
+            UidChannelStatus::Available => "Available",
+        }
+    }
+}
+
 type UidStatusFn = fn() -> UidChannelStatus;
 static UID_STATUS: RwLock<UidStatusFn> = RwLock::new(platform_uid_status);
 
@@ -359,8 +371,70 @@ fn platform_uid_status() -> UidChannelStatus {
 /// （`unknown`），绝不 panic；返回顺序与入参一致。
 pub fn resolve_uids(reqs: &[UidQueryHost]) -> Vec<UidAnswer> {
     let status = current_uid_status();
-    reqs.iter().map(|q| answer_for(status, q)).collect()
+    log_uid_channel_once(status);
+    let answers: Vec<UidAnswer> = reqs.iter().map(|q| answer_for(status, q)).collect();
+    log_uid_summary(status, &answers);
+    answers
 }
+
+/// uid 通道状态每个进程只记一次，供用户在「日志查看器」直接判读（无需调试器）。
+/// `MethodMissing` 通常意味着随包 `libgstore_host.so` 过旧 / 装有旧 APK；`NoService`
+/// 意味着 VPN 服务未连接；只有 `Available` 才可能真正解析出 uid。
+static UID_STATUS_LOGGED: AtomicBool = AtomicBool::new(false);
+
+fn log_uid_channel_once(status: UidChannelStatus) {
+    if UID_STATUS_LOGGED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let level = if status == UidChannelStatus::Available {
+        1
+    } else {
+        2
+    };
+    crate::log_bridge::push_host_log(
+        level,
+        format!(
+            "uid 通道状态={}（Available 才能解析；MethodMissing=宿主 .so 过旧/旧 APK；\
+             NoService=VPN 服务未连接；NoVm=JVM 未缓存）",
+            status.label()
+        ),
+    );
+}
+
+/// 解析批次计数节流窗口：至多每 30s 汇总一次，避免随流量刷屏。
+const UID_SUMMARY_WINDOW_MS: u64 = 30_000;
+static UID_LAST_SUMMARY_MS: AtomicU64 = AtomicU64::new(0);
+
+fn log_uid_summary(status: UidChannelStatus, answers: &[UidAnswer]) {
+    if answers.is_empty() {
+        return;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let last = UID_LAST_SUMMARY_MS.load(Ordering::SeqCst);
+    if last != 0 && now.saturating_sub(last) < UID_SUMMARY_WINDOW_MS {
+        return;
+    }
+    UID_LAST_SUMMARY_MS.store(now, Ordering::SeqCst);
+    let known = answers.iter().filter(|a| a.uid.is_some()).count();
+    let unknown = answers.len() - known;
+    crate::log_bridge::push_host_log(
+        1,
+        format!(
+            "uid 解析批次: known={known} unknown={unknown} 通道={}",
+            status.label()
+        ),
+    );
+}
+
+#[cfg(test)]
+fn reset_uid_diag_for_tests() {
+    UID_STATUS_LOGGED.store(false, Ordering::SeqCst);
+    UID_LAST_SUMMARY_MS.store(0, Ordering::SeqCst);
+}
+
 
 fn answer_for(status: UidChannelStatus, q: &UidQueryHost) -> UidAnswer {
     let unknown = UidAnswer {
@@ -989,5 +1063,32 @@ mod uid_tests {
 
         set_packages_fn_for_tests(jni_packages_for_uid);
         invalidate_package_cache();
+    }
+
+    /// Runtime-diagnostic regression: resolving a batch must log (a) the channel
+    /// status once and (b) a known/unknown count summary, so the user can read the
+    /// verdict in the log viewer without a debugger.
+    #[test]
+    fn uid_resolution_logs_channel_status_and_batch_counts() {
+        let _g = crate::TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_uid_diag_for_tests();
+        set_uid_status_for_tests(|| UidChannelStatus::MethodMissing);
+
+        let answers = resolve_uids(&[query(41), query(42)]);
+
+        set_uid_status_for_tests(platform_uid_status);
+        assert!(answers.iter().all(|a| a.uid.is_none()), "non-Available => unknown");
+
+        let logs = crate::log_bridge::buffered_for_tests();
+        assert!(
+            logs.iter()
+                .any(|m| m.message.contains("uid 通道状态=MethodMissing")),
+            "the once-per-session channel status must be logged, got: {:?}",
+            logs.iter().map(|m| &m.message).collect::<Vec<_>>()
+        );
+        assert!(
+            logs.iter().any(|m| m.message.contains("known=0 unknown=2")),
+            "the throttled batch summary must be logged"
+        );
     }
 }
