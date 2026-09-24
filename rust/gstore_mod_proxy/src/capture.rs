@@ -383,12 +383,14 @@ pub(crate) async fn resolve_app(src: SocketAddr, dst: SocketAddr) -> AppAttribut
 
 /// True when the app allowlist is the only possible decider for this flow, so
 /// the dispatcher should pay for an async UID resolution. Domain-primary hits
-/// never need it.
+/// never need it, and neither does `appScope=routing` (the TUN is already
+/// app-scoped by VPN routing, so the A path pays zero UID cost).
 pub(crate) fn needs_app_resolution(config: &CaptureConfig, dst_port: u16) -> bool {
     config.enabled
         && config.tls_ports.contains(&dst_port)
         && config.domain_allowlist.is_empty()
         && !config.app_allowlist.is_empty()
+        && config.app_scope == AppScope::Uid
 }
 
 // ── Matching ─────────────────────────────────────────────────────────────────
@@ -472,6 +474,13 @@ pub(crate) fn app_allowed(app: &AppAttribution, allowlist: &[String]) -> bool {
 
 /// The MITM gate. Returns `Some(host)` when the flow should be decrypted, or
 /// `None` to keep the existing tunnel pass-through.
+///
+/// Domain allowlist is primary: a hit allows. A **non-empty** domain allowlist
+/// is restrictive, so a miss denies regardless of the app allowlist. With an
+/// empty domain allowlist the app allowlist decides according to `app_scope`:
+/// `Routing` allows as soon as the app allowlist is non-empty (the TUN is
+/// already app-scoped by VPN routing; no UID), while `Uid` requires a resolved
+/// matching [`AppAttribution`].
 pub(crate) fn decide_mitm(
     config: &CaptureConfig,
     dst_port: u16,
@@ -490,10 +499,17 @@ pub(crate) fn decide_mitm(
     if domain_allowed(host, &config.domain_allowlist) {
         return Some(host.to_string());
     }
-    if config.domain_allowlist.is_empty() && app_allowed(app, &config.app_allowlist) {
-        return Some(host.to_string());
+    if !config.domain_allowlist.is_empty() {
+        return None;
     }
-    None
+    if config.app_allowlist.is_empty() {
+        return None;
+    }
+    match config.app_scope {
+        AppScope::Routing => Some(host.to_string()),
+        AppScope::Uid if app_allowed(app, &config.app_allowlist) => Some(host.to_string()),
+        AppScope::Uid => None,
+    }
 }
 
 #[cfg(test)]
@@ -513,6 +529,14 @@ mod mitm_gate_tests {
         AppAttribution::Known {
             uid,
             packages: packages.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    /// Like [`enabled`] but with an explicit [`AppScope`].
+    fn scoped(domains: &[&str], apps: &[&str], scope: AppScope) -> CaptureConfig {
+        CaptureConfig {
+            app_scope: scope,
+            ..enabled(domains, apps)
         }
     }
 
@@ -624,6 +648,70 @@ mod mitm_gate_tests {
     fn mitm_gate_enabled_without_allowlists_decrypts_nothing() {
         let cfg = enabled(&[], &[]);
         assert_eq!(decide_mitm(&cfg, 443, Some("a.example"), &known(1, &["com.a"])), None);
+    }
+
+    /// `appScope=routing` (A): the TUN is already app-scoped by VPN routing, so
+    /// a non-empty app allowlist decrypts even with no UID (`Unknown`).
+    #[test]
+    fn mitm_gate_routing_scope_allows_without_uid() {
+        let cfg = scoped(&[], &["com.allowed"], AppScope::Routing);
+        assert_eq!(
+            decide_mitm(&cfg, 443, Some("a.example"), &AppAttribution::Unknown).as_deref(),
+            Some("a.example")
+        );
+        assert_eq!(
+            decide_mitm(&cfg, 8443, Some("b.example"), &AppAttribution::Unknown).as_deref(),
+            Some("b.example")
+        );
+    }
+
+    /// `appScope=uid` (B): the app allowlist still requires a resolved matching
+    /// UID; `Unknown` denies.
+    #[test]
+    fn mitm_gate_uid_scope_unknown_denies() {
+        let cfg = scoped(&[], &["com.allowed"], AppScope::Uid);
+        assert_eq!(decide_mitm(&cfg, 443, Some("a.example"), &AppAttribution::Unknown), None);
+        assert_eq!(
+            decide_mitm(&cfg, 443, Some("a.example"), &known(10101, &["com.allowed"])).as_deref(),
+            Some("a.example")
+        );
+    }
+
+    /// `appScope=routing` with no app allowlist names no app, so it denies.
+    #[test]
+    fn mitm_gate_routing_scope_empty_app_allowlist_denies() {
+        let cfg = scoped(&[], &[], AppScope::Routing);
+        assert_eq!(decide_mitm(&cfg, 443, Some("a.example"), &AppAttribution::Unknown), None);
+    }
+
+    /// A domain-allowlist hit allows under both scopes; a non-empty domain list
+    /// with a miss denies under both (restrictive), unaffected by `appScope`.
+    #[test]
+    fn mitm_gate_domain_hit_unaffected_by_app_scope() {
+        for scope in [AppScope::Routing, AppScope::Uid] {
+            let cfg = scoped(&["a.example"], &["com.allowed"], scope);
+            assert_eq!(
+                decide_mitm(&cfg, 443, Some("a.example"), &AppAttribution::Unknown).as_deref(),
+                Some("a.example")
+            );
+            assert_eq!(
+                decide_mitm(&cfg, 443, Some("evil.example"), &AppAttribution::Unknown),
+                None
+            );
+        }
+    }
+
+    /// Only `appScope=uid` can ever need a UID: routing pays zero resolution
+    /// cost, and a non-empty domain list or empty app list never resolves.
+    #[test]
+    fn needs_app_resolution_only_for_uid_scope() {
+        assert!(!needs_app_resolution(&scoped(&[], &["com.allowed"], AppScope::Routing), 443));
+        assert!(needs_app_resolution(&scoped(&[], &["com.allowed"], AppScope::Uid), 443));
+        assert!(!needs_app_resolution(
+            &scoped(&["a.example"], &["com.allowed"], AppScope::Uid),
+            443
+        ));
+        assert!(!needs_app_resolution(&scoped(&[], &[], AppScope::Uid), 443));
     }
 
     #[test]
