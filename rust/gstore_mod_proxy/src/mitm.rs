@@ -1230,7 +1230,7 @@ use std::task::{Context, Poll};
 use futures::executor::block_on;
 use futures::{SinkExt, StreamExt};
 use http_body_util::combinators::UnsyncBoxBody;
-use http_body_util::{BodyExt, Empty};
+use http_body_util::{BodyExt, Empty, Full};
 use hyper::body::{Body, Bytes, Frame, Incoming, SizeHint};
 use hyper::client::conn::{http1 as client_http1, http2 as client_http2};
 use hyper::header::{
@@ -1246,6 +1246,9 @@ use hyper::{HeaderMap, Request, Response, StatusCode, Uri};
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use tokio::sync::{Mutex as AsyncMutex, OwnedSemaphorePermit, Semaphore};
 
+use crate::captures::{
+    CaptureRule, CaptureRuleSource, StoreRuleSource, RULE_KIND_LOCAL, RULE_KIND_REPLACE,
+};
 use crate::limits::CAPTURE_BODY_MAX_BYTES;
 
 /// In-memory capture preview per side (also the ring's per-side bound).
@@ -1955,9 +1958,10 @@ impl<B> Drop for TeeBody<B> {
 }
 
 /// Response body returned to the downstream client: either a tee'd upstream
-/// stream or a locally generated empty body (the structured 502 degradation).
+/// stream (or a rule-generated plaintext body, boxed the same way) or a locally
+/// generated empty body (the structured 502 degradation).
 enum BridgeBody {
-    Tee(TeeBody<Incoming>),
+    Tee(TeeBody<UpstreamBody>),
     Empty(Empty<Bytes>),
 }
 
@@ -2002,7 +2006,7 @@ fn simple_response(status: StatusCode) -> Response<BridgeBody> {
 }
 
 /// The established upstream HTTP client connection, one per bridge.
-enum UpstreamClient {
+pub(crate) enum UpstreamClient {
     H1 {
         sender: AsyncMutex<client_http1::SendRequest<UpstreamBody>>,
         gate: Arc<Semaphore>,
@@ -2074,6 +2078,22 @@ impl UpstreamClient {
     }
 }
 
+/// An established upstream HTTP client plus the wire protocol its TLS ALPN
+/// negotiated.
+pub(crate) struct EstablishedUpstream {
+    pub(crate) client: UpstreamClient,
+    pub(crate) proto: HttpProtocol,
+}
+
+/// Dials + TLS-handshakes the upstream connection on demand. Deferring the dial
+/// until a request actually needs upstream is what lets a `kind:"local"` rewrite
+/// short-circuit **before any upstream socket is opened** (todo 15).
+pub(crate) trait UpstreamDialer: Send + Sync {
+    fn dial(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<EstablishedUpstream, String>> + Send>>;
+}
+
 /// Everything the bridge needs beyond the two TLS streams.
 #[derive(Clone)]
 pub(crate) struct BridgeContext {
@@ -2084,6 +2104,7 @@ pub(crate) struct BridgeContext {
     pub started_at_ms: u64,
     pub sink: Option<Arc<dyn CaptureSink>>,
     pub ws_sink: Option<Arc<dyn WsFrameSink>>,
+    rule_source: Arc<dyn CaptureRuleSource>,
 }
 
 impl BridgeContext {
@@ -2100,7 +2121,15 @@ impl BridgeContext {
             started_at_ms: crate::now_ms(),
             sink: None,
             ws_sink: None,
+            rule_source: Arc::new(StoreRuleSource),
         }
+    }
+
+    /// Serve requests with a fixed rule snapshot instead of the live store. Used
+    /// by tests (the store is process-global, the bridge runs on worker threads).
+    pub(crate) fn with_rule_source(mut self, source: Arc<dyn CaptureRuleSource>) -> Self {
+        self.rule_source = source;
+        self
     }
 
     pub(crate) fn with_capture_body(mut self, on: bool) -> Self {
@@ -2132,11 +2161,25 @@ struct BridgeState {
     capture_body: bool,
     started_at_ms: u64,
     client_proto: HttpProtocol,
-    upstream_proto: HttpProtocol,
-    upstream: UpstreamClient,
+    rule_source: Arc<dyn CaptureRuleSource>,
+    upstream: tokio::sync::OnceCell<EstablishedUpstream>,
+    dialer: Option<Arc<dyn UpstreamDialer>>,
 }
 
 impl BridgeState {
+    /// Resolve the upstream client, dialing through the tunnel on first use. A
+    /// `kind:"local"` rewrite never reaches here, so it opens no socket.
+    async fn upstream_client(&self) -> Result<&EstablishedUpstream, String> {
+        self.upstream
+            .get_or_try_init(|| async {
+                match &self.dialer {
+                    Some(dialer) => dialer.dial().await,
+                    None => Err("bridge has no upstream".to_string()),
+                }
+            })
+            .await
+    }
+
     async fn handle(&self, req: Request<Incoming>) -> Response<BridgeBody> {
         if is_websocket_upgrade(&req) {
             return self.handle_websocket(req).await;
@@ -2150,6 +2193,10 @@ impl BridgeState {
             .unwrap_or_else(|| "/".to_string());
         let host = host_header(&req_headers).unwrap_or_else(|| self.host.clone());
         let url = format!("https://{host}{path}");
+        // Exact-URL (+ optional method) match against the stored *enabled* rules.
+        // The source hands back a snapshot and counts the hit; no lock is held
+        // across the dial below.
+        let rule = self.rule_source.match_rule(method.as_str(), &url);
         let req_capture = BodyCapture::new(self.capture_body, body_encoding(&req_headers));
         let exchange = Arc::new(ExchangeCapture::new(
             Arc::clone(&self.sink),
@@ -2163,6 +2210,23 @@ impl BridgeState {
             Arc::clone(&req_capture),
             self.started_at_ms,
         ));
+
+        if let Some(rule) = rule.as_ref().filter(|r| r.kind == RULE_KIND_LOCAL) {
+            return serve_local_rule(rule, self.capture_body, exchange, req.into_body());
+        }
+
+        // Only now resolve the upstream connection, dialing on first use.
+        let upstream = match self.upstream_client().await {
+            Ok(upstream) => upstream,
+            Err(e) => {
+                exchange.mark_failed(&e);
+                record_mitm_failed(&format!("http upstream: {e}"));
+                exchange.emit(true);
+                return simple_response(StatusCode::BAD_GATEWAY);
+            }
+        };
+        let upstream_proto = upstream.proto;
+
         let upstream_body = TeeBody::new(
             req.into_body(),
             Arc::clone(&req_capture),
@@ -2174,7 +2238,7 @@ impl BridgeState {
             Ok(uri) => uri,
             Err(_) => Uri::from_static("/"),
         };
-        let upstream_uri = match self.upstream_proto {
+        let upstream_uri = match upstream_proto {
             HttpProtocol::H2 => format!("https://{host}{path}").parse().unwrap_or(origin),
             HttpProtocol::H1 => origin,
         };
@@ -2207,7 +2271,7 @@ impl BridgeState {
                 return simple_response(StatusCode::INTERNAL_SERVER_ERROR);
             }
         };
-        let (response, permit) = match self.upstream.send(upstream_request).await {
+        let (response, permit) = match upstream.client.send(upstream_request).await {
             Ok(pair) => pair,
             Err(e) => {
                 exchange.mark_failed(&e.to_string());
@@ -2218,11 +2282,22 @@ impl BridgeState {
         };
         let status = response.status();
         let resp_headers = response.headers().clone();
-        let content_type = resp_headers
-            .get(CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or_default()
-            .to_string();
+
+        if let Some(rule) = rule.as_ref().filter(|r| r.kind == RULE_KIND_REPLACE) {
+            return serve_replace_rule(
+                rule,
+                self.capture_body,
+                exchange,
+                response,
+                permit,
+                status,
+                resp_headers,
+            );
+        }
+
+        // Unmatched (or an unknown kind): forward byte-for-byte, exactly as
+        // before — the body and `Content-Encoding` are untouched.
+        let content_type = content_type_of(&resp_headers);
         let resp_capture = BodyCapture::new(self.capture_body, body_encoding(&resp_headers));
         exchange.set_response(
             status.as_u16(),
@@ -2231,7 +2306,10 @@ impl BridgeState {
             Arc::clone(&resp_capture),
         );
         let resp_body = TeeBody::new(
-            response.into_body(),
+            response
+                .into_body()
+                .map_err(|e| Box::new(e) as BoxError)
+                .boxed_unsync(),
             resp_capture,
             Arc::clone(&exchange),
             Side::Response,
@@ -2257,18 +2335,19 @@ impl BridgeState {
     /// stripped), then spawns the frame bridge.
     async fn handle_websocket(&self, mut req: Request<Incoming>) -> Response<BridgeBody> {
         // WS-over-h2 (RFC 8441) is out of scope: hyper's h2 path cannot express
-        // the h1-style `101` upgrade, so degrade explicitly.
-        if self.client_proto == HttpProtocol::H2 || self.upstream_proto == HttpProtocol::H2 {
-            crate::log_message(
-                2,
-                "proxy.mitm: ws-over-h2 unsupported (RFC8441 not implemented); responding 501",
-            );
-            let mut response = simple_response(StatusCode::NOT_IMPLEMENTED);
-            response.headers_mut().insert(
-                HeaderName::from_static("x-gstore-ws-over-h2"),
-                HeaderValue::from_static("unsupported"),
-            );
-            return response;
+        // the h1-style `101` upgrade, so degrade explicitly without dialing.
+        if self.client_proto == HttpProtocol::H2 {
+            return ws_over_h2_response();
+        }
+        let upstream = match self.upstream_client().await {
+            Ok(upstream) => upstream,
+            Err(e) => {
+                record_mitm_failed(&format!("ws upstream: {e}"));
+                return simple_response(StatusCode::BAD_GATEWAY);
+            }
+        };
+        if upstream.proto == HttpProtocol::H2 {
+            return ws_over_h2_response();
         }
 
         let client_upgrade = hyper::upgrade::on(&mut req);
@@ -2313,7 +2392,7 @@ impl BridgeState {
                 return simple_response(StatusCode::INTERNAL_SERVER_ERROR);
             }
         };
-        let (mut response, permit) = match self.upstream.send(upstream_request).await {
+        let (mut response, permit) = match upstream.client.send(upstream_request).await {
             Ok(pair) => pair,
             Err(e) => {
                 record_mitm_failed(&format!("ws upstream: {e}"));
@@ -2356,6 +2435,185 @@ impl BridgeState {
         });
         out
     }
+}
+
+/// Serve a `kind:"local"` rule. No upstream dial happens; the rule's
+/// status/headers/body are returned directly. The rule body is decoded
+/// plaintext, so the content coding is forced to `identity` and
+/// `Content-Length` is recomputed.
+fn serve_local_rule(
+    rule: &CaptureRule,
+    capture_body: bool,
+    exchange: Arc<ExchangeCapture>,
+    request_body: Incoming,
+) -> Response<BridgeBody> {
+    drop(request_body);
+    exchange.side_done(Side::Request);
+
+    let status = rule_status(rule, StatusCode::OK);
+    let mut headers = HeaderMap::new();
+    if let Some(text) = rule.resp_headers.as_deref() {
+        overlay_rule_headers(&mut headers, text);
+    }
+    let bytes = Bytes::from(rule.resp_body.clone().unwrap_or_default().into_bytes());
+    force_plaintext_body_headers(&mut headers, bytes.len());
+    let content_type = content_type_of(&headers);
+    let resp_capture = BodyCapture::new(capture_body, BodyEncoding::Identity);
+    exchange.set_response(
+        status.as_u16(),
+        &headers,
+        &content_type,
+        Arc::clone(&resp_capture),
+    );
+    let body = TeeBody::new(full_body(bytes), resp_capture, exchange, Side::Response, None);
+    response_with(status, headers, BridgeBody::Tee(body))
+}
+
+/// Apply a `kind:"replace"` rule to the upstream response: overlay
+/// status/headers and, when the rule carries a body, replace the body outright.
+/// Non-overridden headers keep their upstream values.
+fn serve_replace_rule(
+    rule: &CaptureRule,
+    capture_body: bool,
+    exchange: Arc<ExchangeCapture>,
+    upstream: Response<Incoming>,
+    permit: Option<OwnedSemaphorePermit>,
+    upstream_status: StatusCode,
+    upstream_headers: HeaderMap,
+) -> Response<BridgeBody> {
+    let status = rule_status(rule, upstream_status);
+    let mut headers = end_to_end_headers(&upstream_headers);
+    if let Some(text) = rule.resp_headers.as_deref() {
+        overlay_rule_headers(&mut headers, text);
+    }
+
+    let Some(body) = rule.resp_body.as_deref() else {
+        // Status/headers only: the upstream body streams through unchanged, so
+        // its content coding is preserved.
+        let content_type = content_type_of(&headers);
+        let resp_capture = BodyCapture::new(capture_body, body_encoding(&upstream_headers));
+        exchange.set_response(
+            status.as_u16(),
+            &headers,
+            &content_type,
+            Arc::clone(&resp_capture),
+        );
+        let body = TeeBody::new(
+            upstream
+                .into_body()
+                .map_err(|e| Box::new(e) as BoxError)
+                .boxed_unsync(),
+            resp_capture,
+            exchange,
+            Side::Response,
+            permit,
+        );
+        return response_with(status, headers, BridgeBody::Tee(body));
+    };
+
+    // Body override: the rule body is decoded plaintext, so the response MUST
+    // NOT keep an upstream `Content-Encoding` (e.g. gzip) — force `identity`
+    // and recompute `Content-Length`.
+    let bytes = Bytes::from(body.as_bytes().to_vec());
+    force_plaintext_body_headers(&mut headers, bytes.len());
+    let content_type = content_type_of(&headers);
+    let resp_capture = BodyCapture::new(capture_body, BodyEncoding::Identity);
+    exchange.set_response(
+        status.as_u16(),
+        &headers,
+        &content_type,
+        Arc::clone(&resp_capture),
+    );
+    // The overridden upstream body is discarded along with the h1 gate permit.
+    drop(upstream);
+    drop(permit);
+    let body = TeeBody::new(full_body(bytes), resp_capture, exchange, Side::Response, None);
+    response_with(status, headers, BridgeBody::Tee(body))
+}
+
+fn rule_status(rule: &CaptureRule, fallback: StatusCode) -> StatusCode {
+    rule.status_code
+        .and_then(|code| StatusCode::from_u16(code).ok())
+        .unwrap_or(fallback)
+}
+
+fn full_body(bytes: Bytes) -> UpstreamBody {
+    Full::new(bytes)
+        .map_err(|never| -> BoxError { match never {} })
+        .boxed_unsync()
+}
+
+fn response_with(status: StatusCode, headers: HeaderMap, body: BridgeBody) -> Response<BridgeBody> {
+    let mut out = Response::new(body);
+    *out.status_mut() = status;
+    *out.headers_mut() = headers;
+    out
+}
+
+fn content_type_of(headers: &HeaderMap) -> String {
+    headers
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn end_to_end_headers(headers: &HeaderMap) -> HeaderMap {
+    let mut out = HeaderMap::new();
+    for (name, value) in headers.iter() {
+        if is_hop_by_hop(name) {
+            continue;
+        }
+        out.append(name, value.clone());
+    }
+    out
+}
+
+/// Parse the rule's `respHeaders` text (`name: value` lines) and overlay each on
+/// `headers`, replacing any upstream value of the same name.
+fn overlay_rule_headers(headers: &mut HeaderMap, text: &str) {
+    for line in text.split(|c| c == '\n' || c == '\r') {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        let Ok(name) = HeaderName::from_bytes(name.trim().as_bytes()) else {
+            continue;
+        };
+        if is_hop_by_hop(&name) {
+            continue;
+        }
+        let Ok(value) = HeaderValue::from_str(value.trim()) else {
+            continue;
+        };
+        headers.insert(name, value);
+    }
+}
+
+/// Force the response to describe a decoded-plaintext body: no content coding
+/// and a recomputed `Content-Length`. Keeping an upstream `Content-Encoding:
+/// gzip` while sending plaintext would corrupt the response.
+fn force_plaintext_body_headers(headers: &mut HeaderMap, body_len: usize) {
+    headers.insert(CONTENT_ENCODING, HeaderValue::from_static("identity"));
+    if let Ok(value) = HeaderValue::from_str(&body_len.to_string()) {
+        headers.insert(CONTENT_LENGTH, value);
+    }
+}
+
+fn ws_over_h2_response() -> Response<BridgeBody> {
+    crate::log_message(
+        2,
+        "proxy.mitm: ws-over-h2 unsupported (RFC8441 not implemented); responding 501",
+    );
+    let mut response = simple_response(StatusCode::NOT_IMPLEMENTED);
+    response.headers_mut().insert(
+        HeaderName::from_static("x-gstore-ws-over-h2"),
+        HeaderValue::from_static("unsupported"),
+    );
+    response
 }
 
 /// True when `req` is an HTTP/1.1 WebSocket upgrade handshake.
@@ -2541,7 +2799,39 @@ where
 {
     let client_proto = HttpProtocol::from_alpn(client.get_ref().1.alpn_protocol());
     let upstream_proto = HttpProtocol::from_alpn(upstream.get_ref().1.alpn_protocol());
-    let upstream = UpstreamClient::establish(upstream, upstream_proto).await?;
+    let upstream_client = UpstreamClient::establish(upstream, upstream_proto).await?;
+    let cell = tokio::sync::OnceCell::new();
+    let _ = cell.set(EstablishedUpstream {
+        client: upstream_client,
+        proto: upstream_proto,
+    });
+    serve_client(client, client_proto, ctx, Some(cell), None).await
+}
+
+/// Bridge a terminated client TLS connection whose upstream is dialed lazily on
+/// the first request a `kind:"local"` rule does not short-circuit.
+pub(crate) async fn bridge_deferred<S>(
+    client: TlsStream<S>,
+    dialer: Arc<dyn UpstreamDialer>,
+    ctx: BridgeContext,
+) -> Result<(), String>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let client_proto = HttpProtocol::from_alpn(client.get_ref().1.alpn_protocol());
+    serve_client(client, client_proto, ctx, None, Some(dialer)).await
+}
+
+async fn serve_client<S>(
+    client: TlsStream<S>,
+    client_proto: HttpProtocol,
+    ctx: BridgeContext,
+    upstream: Option<tokio::sync::OnceCell<EstablishedUpstream>>,
+    dialer: Option<Arc<dyn UpstreamDialer>>,
+) -> Result<(), String>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     let state = Arc::new(BridgeState {
         sink: ctx.sink.clone().unwrap_or_else(capture_sink),
         ws_sink: ctx.ws_sink.clone().unwrap_or_else(ws_frame_sink),
@@ -2551,8 +2841,9 @@ where
         capture_body: ctx.capture_body,
         started_at_ms: ctx.started_at_ms,
         client_proto,
-        upstream_proto,
-        upstream,
+        rule_source: ctx.rule_source,
+        upstream: upstream.unwrap_or_else(tokio::sync::OnceCell::new),
+        dialer,
     });
     let service = ProxyService { state };
     let io = TokioIo::new(client);
@@ -2579,6 +2870,7 @@ where
 
 #[cfg(test)]
 mod mitm_http_tests {
+    use super::mitm_upstream_tests::{trusted_roots, tunnel_with, RecordingProxy};
     use super::*;
     use http_body_util::{BodyExt, Full};
     use hyper::Version;
@@ -3123,6 +3415,389 @@ mod mitm_http_tests {
             assert!(rec.mitm_failed, "the failed exchange is recorded as mitmFailed");
             reset_capture_sink();
         });
+    }
+
+    // ==================== Todo 15: rewrite matching + execution ====================
+
+    struct TestRuleSource {
+        rules: StdMutex<Vec<CaptureRule>>,
+    }
+
+    impl TestRuleSource {
+        fn new(rules: Vec<CaptureRule>) -> Arc<Self> {
+            Arc::new(Self {
+                rules: StdMutex::new(rules),
+            })
+        }
+
+        fn hit_count(&self, id: &str) -> u64 {
+            self.rules
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .find(|r| r.id == id)
+                .map(|r| r.hit_count)
+                .unwrap_or(0)
+        }
+    }
+
+    impl CaptureRuleSource for TestRuleSource {
+        fn match_rule(&self, method: &str, url: &str) -> Option<CaptureRule> {
+            let mut rules = self.rules.lock().unwrap_or_else(|e| e.into_inner());
+            let idx = rules
+                .iter()
+                .position(|r| crate::captures::rule_matches(r, method, url))?;
+            rules[idx].hit_count += 1;
+            Some(rules[idx].clone())
+        }
+    }
+
+    struct TunnelDialer {
+        inner: Arc<meow_tunnel::tunnel::TunnelInner>,
+        target: UpstreamTarget,
+        tls: UpstreamTlsConfig,
+    }
+
+    impl UpstreamDialer for TunnelDialer {
+        fn dial(
+            &self,
+        ) -> Pin<Box<dyn Future<Output = Result<EstablishedUpstream, String>> + Send>> {
+            let inner = Arc::clone(&self.inner);
+            let target = self.target.clone();
+            let tls = self.tls.clone();
+            Box::pin(async move {
+                let stream = open_upstream(&inner, &target, &tls)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let proto = HttpProtocol::from_alpn(stream.get_ref().1.alpn_protocol());
+                let client = UpstreamClient::establish(stream, proto).await?;
+                Ok(EstablishedUpstream { client, proto })
+            })
+        }
+    }
+
+    fn rewrite_rule(
+        id: &str,
+        kind: &str,
+        url: &str,
+        status: Option<u16>,
+        headers: Option<&str>,
+        body: Option<&str>,
+    ) -> CaptureRule {
+        CaptureRule {
+            id: id.to_string(),
+            enabled: true,
+            method: None,
+            url: url.to_string(),
+            kind: kind.to_string(),
+            status_code: status,
+            resp_headers: headers.map(str::to_string),
+            resp_body: body.map(str::to_string),
+            delay_ms: 0,
+            created_at_ms: 1,
+            hit_count: 0,
+        }
+    }
+
+    fn recording_dialer(
+        ca: &Arc<CertificateAuthority>,
+        proxy: Arc<RecordingProxy>,
+        target_port: u16,
+    ) -> Arc<dyn UpstreamDialer> {
+        let inner = tunnel_with(
+            &["DOMAIN-SUFFIX,flow.test,PROXY"],
+            vec![("PROXY", Arc::clone(&proxy) as Arc<dyn meow_common::Proxy>)],
+        );
+        let target = UpstreamTarget::new("flow.test", target_port);
+        let tls = UpstreamTlsConfig::with_roots(trusted_roots(ca));
+        Arc::new(TunnelDialer { inner, target, tls })
+    }
+
+    async fn closed_forward() -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        format!("127.0.0.1:{}", listener.local_addr().unwrap().port())
+            .parse()
+            .unwrap()
+    }
+
+    async fn run_bridge_dialer(
+        ca: Arc<CertificateAuthority>,
+        host: &str,
+        dialer: Arc<dyn UpstreamDialer>,
+        ctx: BridgeContext,
+    ) -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let host = host.to_string();
+        tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let client = match terminate(tcp, &ca, Some(&host)).await {
+                MitmTls::Terminated(tls) => tls,
+                MitmTls::Passthrough(_) => panic!("expected TLS termination"),
+                MitmTls::Failed(e) => panic!("terminate failed: {e}"),
+            };
+            let _ = bridge_deferred(client, dialer, ctx).await;
+        });
+        addr
+    }
+
+    #[test]
+    fn mitm_rewrite_local_short_circuits_without_upstream_dial() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let ca = temp_ca("rewrite-local");
+            let host = "flow.test";
+            let source = TestRuleSource::new(vec![rewrite_rule(
+                "r1",
+                "local",
+                "https://flow.test/local",
+                Some(418),
+                Some("content-type: text/plain"),
+                Some("local-body"),
+            )]);
+            let (mut _rx, sink) = recording_sink();
+            let ctx = BridgeContext::new(host, "conn-rw-local", 0)
+                .with_sink(sink)
+                .with_rule_source(Arc::clone(&source) as Arc<dyn CaptureRuleSource>);
+            let forward = closed_forward().await;
+            let proxy = RecordingProxy::new("PROXY", forward);
+            let dialer = recording_dialer(&ca, Arc::clone(&proxy), 443);
+            let addr = run_bridge_dialer(Arc::clone(&ca), host, dialer, ctx).await;
+
+            let out = client_send_h1(&ca, addr, host, "GET", "/local", None).await;
+            assert_eq!(out.status, 418);
+            assert_eq!(out.body, b"local-body");
+            assert_eq!(
+                out.headers
+                    .get("content-encoding")
+                    .unwrap()
+                    .to_str()
+                    .unwrap(),
+                "identity"
+            );
+            assert_eq!(
+                out.headers
+                    .get("content-length")
+                    .unwrap()
+                    .to_str()
+                    .unwrap(),
+                "10"
+            );
+            assert_eq!(
+                out.headers
+                    .get("content-type")
+                    .unwrap()
+                    .to_str()
+                    .unwrap(),
+                "text/plain"
+            );
+            assert!(
+                proxy.recorded().is_empty(),
+                "a local rewrite must open ZERO upstream dials (saw {:?})",
+                proxy.recorded()
+            );
+            assert_eq!(source.hit_count("r1"), 1, "hitCount increments per hit");
+        });
+    }
+
+    #[test]
+    fn mitm_rewrite_replace_overrides_gzip_response_with_plaintext() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let ca = temp_ca("rewrite-replace");
+            let host = "flow.test";
+            let compressed = gzip(b"upstream-gzip-body");
+            let mut raw = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\nX-Upstream: keep\r\n\r\n",
+                compressed.len()
+            )
+            .into_bytes();
+            raw.extend_from_slice(&compressed);
+            let upstream = start_fixture(Arc::clone(&ca), host, Fixture::RawH1(raw)).await;
+            let upstream_port = upstream.port();
+            let source = TestRuleSource::new(vec![rewrite_rule(
+                "r1",
+                "replace",
+                "https://flow.test/replace",
+                Some(201),
+                Some("x-rule: yes"),
+                Some("replaced-plain"),
+            )]);
+            let (mut _rx, sink) = recording_sink();
+            let ctx = BridgeContext::new(host, "conn-rw-replace", 0)
+                .with_sink(sink)
+                .with_rule_source(Arc::clone(&source) as Arc<dyn CaptureRuleSource>);
+            let forward: SocketAddr = format!("127.0.0.1:{upstream_port}").parse().unwrap();
+            let proxy = RecordingProxy::new("PROXY", forward);
+            let dialer = recording_dialer(&ca, Arc::clone(&proxy), upstream_port);
+            let addr = run_bridge_dialer(Arc::clone(&ca), host, dialer, ctx).await;
+
+            let out = client_send_h1(&ca, addr, host, "GET", "/replace", None).await;
+            assert_eq!(out.status, 201, "rule status overrides upstream 200");
+            assert_eq!(out.body, b"replaced-plain");
+            assert_eq!(
+                out.headers
+                    .get("content-encoding")
+                    .unwrap()
+                    .to_str()
+                    .unwrap(),
+                "identity",
+                "plaintext override must not keep upstream gzip"
+            );
+            assert_eq!(
+                out.headers
+                    .get("content-length")
+                    .unwrap()
+                    .to_str()
+                    .unwrap(),
+                "14"
+            );
+            assert_eq!(out.headers.get("x-rule").unwrap().to_str().unwrap(), "yes");
+            assert_eq!(
+                out.headers.get("x-upstream").unwrap().to_str().unwrap(),
+                "keep",
+                "non-overridden upstream headers are preserved"
+            );
+            assert_eq!(
+                proxy.recorded(),
+                vec!["flow.test".to_string()],
+                "replace dials upstream"
+            );
+            assert_eq!(source.hit_count("r1"), 1);
+        });
+    }
+
+    #[test]
+    fn mitm_rewrite_unmatched_traffic_is_byte_for_byte_unchanged() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let ca = temp_ca("rewrite-unmatched");
+            let host = "flow.test";
+            let compressed = gzip(b"untouched-gzip");
+            let mut raw = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\nX-Extra: yes\r\n\r\n",
+                compressed.len()
+            )
+            .into_bytes();
+            raw.extend_from_slice(&compressed);
+            let upstream = start_fixture(Arc::clone(&ca), host, Fixture::RawH1(raw)).await;
+            let upstream_port = upstream.port();
+            let source = TestRuleSource::new(vec![rewrite_rule(
+                "r1",
+                "local",
+                "https://flow.test/other",
+                Some(500),
+                None,
+                Some("nope"),
+            )]);
+            let (mut _rx, sink) = recording_sink();
+            let ctx = BridgeContext::new(host, "conn-rw-unmatched", 0)
+                .with_sink(sink)
+                .with_rule_source(Arc::clone(&source) as Arc<dyn CaptureRuleSource>);
+            let forward: SocketAddr = format!("127.0.0.1:{upstream_port}").parse().unwrap();
+            let proxy = RecordingProxy::new("PROXY", forward);
+            let dialer = recording_dialer(&ca, Arc::clone(&proxy), upstream_port);
+            let addr = run_bridge_dialer(Arc::clone(&ca), host, dialer, ctx).await;
+
+            let out = client_send_h1(&ca, addr, host, "GET", "/untouched", None).await;
+            assert_eq!(out.status, 200);
+            assert_eq!(
+                out.body, compressed,
+                "an unmatched response must be byte-for-byte identical"
+            );
+            assert_eq!(
+                out.headers
+                    .get("content-encoding")
+                    .unwrap()
+                    .to_str()
+                    .unwrap(),
+                "gzip"
+            );
+            assert_eq!(out.headers.get("x-extra").unwrap().to_str().unwrap(), "yes");
+            assert_eq!(source.hit_count("r1"), 0, "an unmatched rule is never counted");
+        });
+    }
+
+    #[test]
+    fn mitm_rewrite_empty_and_non_json_bodies_returned_as_is() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let ca = temp_ca("rewrite-bodies");
+            let host = "flow.test";
+            for (path, body, expected_len) in
+                [("/empty", "", 0usize), ("/nonjson", "not json {", 10)]
+            {
+                let source = TestRuleSource::new(vec![rewrite_rule(
+                    "r1",
+                    "local",
+                    &format!("https://flow.test{path}"),
+                    Some(200),
+                    None,
+                    Some(body),
+                )]);
+                let (mut _rx, sink) = recording_sink();
+                let ctx = BridgeContext::new(host, "conn-rw-bodies", 0)
+                    .with_sink(sink)
+                    .with_rule_source(Arc::clone(&source) as Arc<dyn CaptureRuleSource>);
+                let forward = closed_forward().await;
+                let proxy = RecordingProxy::new("PROXY", forward);
+                let dialer = recording_dialer(&ca, Arc::clone(&proxy), 443);
+                let addr = run_bridge_dialer(Arc::clone(&ca), host, dialer, ctx).await;
+
+                let out = client_send_h1(&ca, addr, host, "GET", path, None).await;
+                assert_eq!(out.status, 200, "empty/non-JSON bodies must not crash");
+                assert_eq!(out.body, body.as_bytes(), "rule body is returned verbatim");
+                assert_eq!(
+                    out.headers
+                        .get("content-length")
+                        .unwrap()
+                        .to_str()
+                        .unwrap(),
+                    expected_len.to_string()
+                );
+                assert!(proxy.recorded().is_empty());
+            }
+        });
+    }
+
+    #[test]
+    fn mitm_rewrite_matches_store_and_bumps_hit_count() {
+        crate::captures::rules_reset_for_tests();
+        let rule = crate::captures::rules_set(
+            br#"{"enabled":true,"method":"get","url":"https://hit.test/a","kind":"replace"}"#,
+        )
+        .unwrap();
+        assert!(
+            crate::captures::match_enabled_rule("GET", "https://hit.test/a").is_some(),
+            "enabled + method + exact url matches"
+        );
+        assert!(
+            crate::captures::match_enabled_rule("POST", "https://hit.test/a").is_none(),
+            "the method filter excludes other methods"
+        );
+        assert!(
+            crate::captures::match_enabled_rule("GET", "https://hit.test/b").is_none(),
+            "the url must match exactly"
+        );
+        let hit = crate::captures::rules_get()
+            .into_iter()
+            .find(|r| r.id == rule.id)
+            .unwrap();
+        assert_eq!(hit.hit_count, 1, "each hit increments hitCount");
+
+        crate::captures::rules_set(
+            format!(
+                r#"{{"id":"{}","enabled":false,"url":"https://hit.test/a","kind":"replace"}}"#,
+                rule.id
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        assert!(
+            crate::captures::match_enabled_rule("GET", "https://hit.test/a").is_none(),
+            "a disabled rule never matches"
+        );
+        crate::captures::rules_reset_for_tests();
     }
 }
 
@@ -4104,13 +4779,13 @@ mod mitm_upstream_tests {
         Ok((port, handle))
     }
 
-    fn trusted_roots(ca: &CertificateAuthority) -> RootCertStore {
+    pub(super) fn trusted_roots(ca: &CertificateAuthority) -> RootCertStore {
         let mut roots = RootCertStore::empty();
         roots.add(ca.der().clone()).expect("trust the test CA");
         roots
     }
 
-    fn test_resolver() -> Arc<meow_dns::Resolver> {
+    pub(super) fn test_resolver() -> Arc<meow_dns::Resolver> {
         Arc::new(meow_dns::Resolver::new(
             Vec::new(),
             Vec::new(),
@@ -4123,7 +4798,7 @@ mod mitm_upstream_tests {
 
     /// Build a live tunnel with `lines` rules and `name -> proxy` entries, as
     /// `Tunnel::new` + `update_rules` + `update_proxies` (never a bare adapter).
-    fn tunnel_with(
+    pub(super) fn tunnel_with(
         lines: &[&str],
         proxies: Vec<(&str, Arc<dyn Proxy>)>,
     ) -> Arc<meow_tunnel::tunnel::TunnelInner> {
@@ -4161,7 +4836,7 @@ mod mitm_upstream_tests {
     /// Outbound test adapter that records the target it was asked to reach and
     /// forwards the connection to a fixed local fixture. Its presence in the
     /// dial path is the proof the tunnel selected *this* configured outbound.
-    struct RecordingProxy {
+    pub(super) struct RecordingProxy {
         name: String,
         health: ProxyHealth,
         dials: Mutex<Vec<String>>,
@@ -4169,7 +4844,7 @@ mod mitm_upstream_tests {
     }
 
     impl RecordingProxy {
-        fn new(name: &str, forward: SocketAddr) -> Arc<Self> {
+        pub(super) fn new(name: &str, forward: SocketAddr) -> Arc<Self> {
             Arc::new(Self {
                 name: name.to_string(),
                 health: ProxyHealth::new(),
@@ -4178,7 +4853,7 @@ mod mitm_upstream_tests {
             })
         }
 
-        fn recorded(&self) -> Vec<String> {
+        pub(super) fn recorded(&self) -> Vec<String> {
             self.dials.lock().unwrap_or_else(|e| e.into_inner()).clone()
         }
     }

@@ -150,6 +150,7 @@ Kotlin（TUN 生命周期）                                                │
 | DNS | `dns.get/set/clear_cache/flush_cache` | §2.7 |
 | 诊断/可观测 | `log.*`、`stats.*`、`conn.*`、`diagnostics.clash_api.*` | §2.8–§2.10、§2.13 |
 | 请求采集/导出 | `requests.get`、`requests.reset`、`requests.export`（每请求时间线：游标分页、筛选、CSV/JSON 导出） | §2.14 |
+| 抓包与改写 | `capture.config.*`、`capture.ca.*`、`captures.*`、`capture.rules.*`（MITM 抓包时间线、CA 生命周期、HTTP 改写规则） | §2.16–§2.19 |
 | 事件（模块→宿主） | `proxy.state`、`proxy.mode`、`proxy.stats`、`proxy.conn`、`proxy.dns`、`proxy.request`、`proxy.subscription.*`、`proxy.tun.released`、`proxy.config.applied` 等 | §3 |
 | 宿主内部事件（方向见 §4） | **模块→宿主、宿主消费、不进 Dart 事件环**：`proxy.uid.query`（`requests::tick` 在 VPN 模式下为 TCP 流发起的归属查询，宿主消费并丢弃，Dart 永远收不到）；**宿主→模块回填**（`on_event` kind）：`uid.result`（宿主回填 `uid`/`packages`，模块据此把 `uidState` 从 `pending` 收敛为 `known`/`unknown`） | §4 |
 
@@ -163,6 +164,13 @@ Kotlin（TUN 生命周期）                                                │
 **Todo 6** 事件层（`proxy.request` 脏信号 + §4 的 `proxy.uid.query`/`uid.result` 文档）。
 其中 `proxy.request` 进 Dart 事件注册表，而 `proxy.uid.query`/`uid.result` 是宿主↔模块内部
 lane，**不进** Dart 事件环。
+
+**HTTP 改写（`capture.rules.*`，Todo 15 落地执行）**：解密后的 h1/h2 请求按**精确 URL（+可选
+method）**匹配启用规则（规则默认 OFF）。`kind:"local"` 不请求上游、直接返回规则的
+状态/头/Body；`kind:"replace"` 正常请求上游后覆盖状态/头/Body，未覆盖的头保留上游值。规则
+`respBody` 视为**已解码明文**，任何 Body 覆写都会强制 `Content-Encoding: identity` 并重算
+`Content-Length`（绝不会保留上游 gzip 却发送明文，避免损坏响应）。命中 `hitCount++`。未命中
+流量**逐字节原样转发**。`delayMs` 仅存储、不注入延迟。**WS（WebSocket）仅抓帧、不支持改写**。
 
 ## 6. 运行模式（off / vpn / lanProxy）
 

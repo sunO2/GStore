@@ -1210,8 +1210,8 @@ pub(crate) fn reset_arm() -> Result<Vec<u8>, ModuleError> {
 // ==================== Todo 14: `capture.rules.*` store + arms ====================
 
 /// `capture.rules.set` `kind` values.
-const RULE_KIND_REPLACE: &str = "replace";
-const RULE_KIND_LOCAL: &str = "local";
+pub(crate) const RULE_KIND_REPLACE: &str = "replace";
+pub(crate) const RULE_KIND_LOCAL: &str = "local";
 
 /// Persisted rewrite-rule table filename, beside the other module JSON stores.
 const CAPTURE_RULES_FILE: &str = "capture_rules.json";
@@ -1550,6 +1550,45 @@ pub(crate) fn rules_set_arm(payload: &[u8]) -> Result<Vec<u8>, ModuleError> {
 pub(crate) fn rules_remove_arm(payload: &[u8]) -> Result<Vec<u8>, ModuleError> {
     let removed = rules_remove(payload)?;
     crate::ok_data(serde_json::json!({ "ok": true, "removed": removed }))
+}
+
+/// Todo 15 read seam: an on-demand snapshot source for the rewrite rules the
+/// MITM HTTP path applies. A matched rule is cloned out before the caller dials,
+/// so no store lock is ever held across the dataplane.
+pub(crate) trait CaptureRuleSource: Send + Sync {
+    fn match_rule(&self, method: &str, url: &str) -> Option<CaptureRule>;
+}
+
+/// Production rule source: todo 14's store.
+pub(crate) struct StoreRuleSource;
+
+impl CaptureRuleSource for StoreRuleSource {
+    fn match_rule(&self, method: &str, url: &str) -> Option<CaptureRule> {
+        match_enabled_rule(method, url)
+    }
+}
+
+/// An *enabled* rule matches on exact URL, plus the optional method filter
+/// (absent = any method; present = case-insensitive).
+pub(crate) fn rule_matches(rule: &CaptureRule, method: &str, url: &str) -> bool {
+    rule.enabled
+        && rule.url == url
+        && rule
+            .method
+            .as_deref()
+            .map(|m| m.eq_ignore_ascii_case(method))
+            .unwrap_or(true)
+}
+
+/// Match the first enabled rule, bump its `hitCount`, and return a snapshot.
+/// `hitCount` is bumped in memory only: the dataplane must not write
+/// `capture_rules.json` on every request (a later `set` persists it).
+pub(crate) fn match_enabled_rule(method: &str, url: &str) -> Option<CaptureRule> {
+    with_rules(|st| {
+        let idx = st.rules.iter().position(|r| rule_matches(r, method, url))?;
+        st.rules[idx].hit_count += 1;
+        Some(st.rules[idx].clone())
+    })
 }
 
 #[cfg(test)]

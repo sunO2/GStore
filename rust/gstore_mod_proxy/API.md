@@ -1402,8 +1402,16 @@ table persists to `<dataDir>/capture_rules.json` and is restored on module creat
 `capture.rules.remove` is idempotent (`removed:false` when the id is unknown). All three require a
 live instance (structured `INSTANCE_NOT_FOUND` 410, never `METHOD_NOT_FOUND`).
 
-**Rewrite matching/execution is the MITM path's job (todo 15): these methods only store and CRUD the
-table.** `delayMs` is accepted/stored but not injected. WS rewrites are not supported.
+**Rewrite matching/execution (todo 15):** after a decrypted h1/h2 request is parsed, the MITM path
+matches the stored table on **exact `url`** plus the optional `method` filter, and only an **enabled**
+rule takes effect (rules default OFF). `kind:"local"` returns the rule's `statusCode` (default `200`) /
+`respHeaders` / `respBody` **without dialing upstream**; `kind:"replace"` dials upstream normally then
+overlays status/headers/body (non-overridden headers keep their upstream values). A `respBody` is
+**decoded plaintext**, so any body override (either kind) forces `Content-Encoding: identity` and
+recomputed `Content-Length` — an upstream `gzip` coding is never kept over a plaintext body. Each hit
+increments the rule's `hitCount` in memory (persisted on the next `set`). Unmatched traffic is
+forwarded **byte-for-byte unchanged**. `delayMs` is accepted/stored but **not injected**. WS rewrites
+are not supported — WebSocket frames are capture-only.
 
 ## 3. Events (module → host)
 
