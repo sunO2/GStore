@@ -1,0 +1,790 @@
+/// 抓包设置页（`proxy-http-capture` Todo 21，纯展示 / 触发层）。
+///
+/// 公开冻结契约 `capture.config.get` / `capture.config.set`（Todo 10）只暴露给
+/// [ProxyModule]；本页为**不改动冻结契约**，在页面内声明窄接口
+/// [ProxyCaptureSettingsFacade]，生产用 [ProxyModuleCaptureSettingsFacade] 适配，
+/// 测试注入假实现即可（无需原生模块 / 平台通道）。
+///
+/// 覆盖（按功能区自上而下）：
+/// * **MITM 总开关**：`enabled`，与首页抓包区块共享同一 `capture.config`；
+/// * **域名白名单**：增删（主门控，命中 SNI/host 才解密）；
+/// * **App 白名单**：多选（复用 [ProxyInstalledAppsProvider]，仅域名白名单为空时
+///   兜底）；
+/// * **内容开关**：Body / WS / H2；
+/// * **TLS 端口集合**：只读展示（解密仅作用于这些目的端口）；
+/// * **存储统计**：保留 / 淘汰 / 丢弃（来自 `requests.get` 的执行环计数）。
+///
+/// 保存：全量 `capture.config.set`；失败 → `AppDialogs.showError`，绝不崩溃。
+///
+/// **纯展示 / 转发层**：不含解析 / 网络 / 路由逻辑（全部在 Rust 的
+/// `gstore_mod_proxy`，见 `rust/gstore_mod_proxy/API.md` §2.16）。
+library;
+
+import 'dart:async';
+
+import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
+
+import 'package:gstore/core/design/app_components.dart';
+import 'package:gstore/core/design/app_dialogs.dart';
+import 'package:gstore/core/design/app_sheet.dart';
+import 'package:gstore/core/design/app_spacing.dart';
+import 'package:gstore/core/design/app_typography.dart';
+import 'package:gstore/core/rust/proxy/ProxyContract.dart';
+import 'package:gstore/core/rust/proxy/ProxyModule.dart';
+import 'package:gstore/page/proxy/proxy_settings_facade.dart';
+
+/// 允许在白名单中保留的条目数上限（镜像 Rust `capture.rs::MAX_ALLOWLIST_ENTRIES`）。
+const int kCaptureMaxAllowlistEntries = 256;
+
+/// 单条白名单条目的字节上限（镜像 Rust
+/// `capture.rs::MAX_ALLOWLIST_ENTRY_BYTES`，即 DNS 名上限）。
+const int kCaptureMaxAllowlistEntryBytes = 253;
+
+/// 抓包存储统计（保留 / 容量 / 淘汰 / 丢弃）。
+///
+/// 这些计数来自执行环（`requests.get` 的 [RequestPage]）；页面只展示。
+@immutable
+class CaptureStorageStats {
+  const CaptureStorageStats({
+    this.retained = 0,
+    this.capacity = 0,
+    this.evicted = 0,
+    this.dropped = 0,
+  });
+
+  final int retained;
+  final int capacity;
+  final int evicted;
+  final int dropped;
+}
+
+/// 抓包设置页所需的模块能力（`capture.config.get` / `capture.config.set` +
+/// 执行环存储统计）。
+abstract class ProxyCaptureSettingsFacade {
+  /// `capture.config.get`：读取当前 MITM / 白名单 / 内容开关配置。
+  Future<CaptureConfig> configGet();
+
+  /// `capture.config.set`：提交**全量**配置，返回冻结后的同一形状。
+  Future<CaptureConfig> configSet(CaptureConfig next);
+
+  /// 执行环存储统计（保留 / 容量 / 淘汰 / 丢弃）。
+  Future<CaptureStorageStats> storageStats();
+}
+
+/// 生产适配器：[ProxyModule] → [ProxyCaptureSettingsFacade] 的薄转发。
+class ProxyModuleCaptureSettingsFacade implements ProxyCaptureSettingsFacade {
+  ProxyModuleCaptureSettingsFacade([ProxyModule? module])
+      : _module = module ?? ProxyModule.instance;
+
+  final ProxyModule _module;
+
+  @override
+  Future<CaptureConfig> configGet() =>
+      _module.invoke(ProxyMethods.captureConfigGet, CaptureConfig.fromJson);
+
+  @override
+  Future<CaptureConfig> configSet(CaptureConfig next) => _module.invoke(
+        ProxyMethods.captureConfigSet,
+        CaptureConfig.fromJson,
+        payload: next.toJson(),
+      );
+
+  @override
+  Future<CaptureStorageStats> storageStats() async {
+    // `limit: 1` 即可拿到环计数（records 无关，计数随页返回）。
+    final page = await _module.requestsGet(const RequestGetRequest(limit: 1));
+    return CaptureStorageStats(
+      retained: page.retained,
+      capacity: page.capacity,
+      evicted: page.evicted,
+      dropped: page.dropped,
+    );
+  }
+}
+
+/// 抓包设置页。
+class ProxyCaptureSettingsPage extends StatefulWidget {
+  const ProxyCaptureSettingsPage({super.key, this.facade, this.installedApps});
+
+  /// 抓包设置门面（测试可注入假实现；为空时用生产适配器）。
+  final ProxyCaptureSettingsFacade? facade;
+
+  /// 已安装应用来源（测试可注入假实现；为空时用平台通道）。
+  final ProxyInstalledAppsProvider? installedApps;
+
+  @override
+  State<ProxyCaptureSettingsPage> createState() =>
+      _ProxyCaptureSettingsPageState();
+}
+
+class _ProxyCaptureSettingsPageState extends State<ProxyCaptureSettingsPage> {
+  late final ProxyCaptureSettingsFacade _facade;
+  late final ProxyInstalledAppsProvider _installedApps;
+
+  final TextEditingController _domainInput = TextEditingController();
+
+  bool _loading = true;
+  bool _saving = false;
+  String? _error;
+  CaptureConfig _config = const CaptureConfig();
+  CaptureStorageStats? _stats;
+
+  /// 已安装应用缓存（`null` = 尚未加载；首次打开选择器时按需枚举）。
+  List<InstalledAppOption>? _appsCache;
+  Future<List<InstalledAppOption>>? _appsInFlight;
+
+  @override
+  void initState() {
+    super.initState();
+    _facade = widget.facade ?? ProxyModuleCaptureSettingsFacade();
+    _installedApps = widget.installedApps ?? const PlatformInstalledAppsProvider();
+    _load();
+  }
+
+  @override
+  void dispose() {
+    _domainInput.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final config = await _facade.configGet();
+      if (!mounted) return;
+      setState(() {
+        _config = config;
+        _loading = false;
+      });
+      unawaited(_loadStats());
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _error = '$error';
+        _loading = false;
+      });
+    }
+  }
+
+  /// 拉取存储统计（非致命：失败保持占位，不清空已加载配置）。
+  Future<void> _loadStats() async {
+    try {
+      final stats = await _facade.storageStats();
+      if (!mounted) return;
+      setState(() => _stats = stats);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _stats = null);
+    }
+  }
+
+  // ==================== 编辑动作（本地，保存时一次性提交） ====================
+
+  void _setEnabled(bool value) =>
+      setState(() => _config = _config.copyWith(enabled: value));
+
+  void _addDomain() {
+    final raw = _domainInput.text.trim();
+    if (raw.isEmpty) return;
+    if (raw.length > kCaptureMaxAllowlistEntryBytes) {
+      AppDialogs.showError(
+        '域名过长：单条上限 $kCaptureMaxAllowlistEntryBytes 字节',
+      );
+      return;
+    }
+    if (_config.domainAllowlist.contains(raw)) {
+      AppDialogs.showWarning('该域名已在白名单中');
+      return;
+    }
+    if (_config.domainAllowlist.length >= kCaptureMaxAllowlistEntries) {
+      AppDialogs.showError('域名白名单已达上限 $kCaptureMaxAllowlistEntries 条');
+      return;
+    }
+    setState(() {
+      _config = _config.copyWith(
+        domainAllowlist: <String>[..._config.domainAllowlist, raw],
+      );
+      _domainInput.clear();
+    });
+  }
+
+  void _removeDomain(String domain) => setState(() {
+        _config = _config.copyWith(
+          domainAllowlist: _config.domainAllowlist
+              .where((entry) => entry != domain)
+              .toList(growable: false),
+        );
+      });
+
+  void _setCaptureBody(bool value) =>
+      setState(() => _config = _config.copyWith(captureBody: value));
+
+  void _setCaptureWs(bool value) =>
+      setState(() => _config = _config.copyWith(captureWs: value));
+
+  void _setCaptureH2(bool value) =>
+      setState(() => _config = _config.copyWith(captureH2: value));
+
+  /// 按需加载已安装应用（页面生命周期内缓存，仅首次枚举；失败回落空列表）。
+  Future<List<InstalledAppOption>> _ensureApps() {
+    final cached = _appsCache;
+    if (cached != null) return Future<List<InstalledAppOption>>.value(cached);
+    final inFlight = _appsInFlight;
+    if (inFlight != null) return inFlight;
+    final future = _installedApps.list().then((apps) {
+      _appsCache = apps;
+      return apps;
+    }).whenComplete(() => _appsInFlight = null);
+    _appsInFlight = future;
+    return future;
+  }
+
+  Future<void> _openAppPicker() async {
+    List<InstalledAppOption> apps;
+    try {
+      apps = await _ensureApps();
+    } catch (error) {
+      debugPrint('抓包设置：读取已安装应用失败，回落空列表：$error');
+      apps = const <InstalledAppOption>[];
+    }
+    if (!mounted) return;
+    final result = await AppSheet.showCustom<Set<String>>(
+      context: context,
+      builder: (sheetContext) => _CaptureAppPickerSheet(
+        apps: apps,
+        initial: _config.appAllowlist.toSet(),
+      ),
+    );
+    if (!mounted || result == null) return;
+    setState(() {
+      final sorted = result.toList()..sort();
+      _config = _config.copyWith(appAllowlist: sorted);
+    });
+  }
+
+  Future<void> _save() async {
+    if (_saving) return;
+    setState(() => _saving = true);
+    try {
+      final saved = await _facade.configSet(_config);
+      if (!mounted) return;
+      setState(() {
+        _config = saved;
+        _saving = false;
+      });
+      AppDialogs.showSuccess('抓包设置已保存');
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _saving = false);
+      AppDialogs.showError('保存失败：$error');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('抓包设置'),
+        actions: [
+          IconButton(
+            tooltip: '刷新',
+            key: const Key('capture_settings_refresh'),
+            icon: const Icon(TablerIcons.refresh),
+            onPressed: _loading ? null : _load,
+          ),
+        ],
+      ),
+      body: _buildBody(context),
+    );
+  }
+
+  Widget _buildBody(BuildContext context) {
+    if (_loading) {
+      return const Center(child: AppLoading());
+    }
+    if (_error != null) {
+      return _buildError(context);
+    }
+    return ListView(
+      padding: AppSpacing.pagePadding,
+      children: [
+        _buildMitmCard(context),
+        const SizedBox(height: AppSpacing.lg),
+        _buildDomainCard(context),
+        const SizedBox(height: AppSpacing.lg),
+        _buildAppCard(context),
+        const SizedBox(height: AppSpacing.lg),
+        _buildContentCard(context),
+        const SizedBox(height: AppSpacing.lg),
+        _buildPortsCard(context),
+        const SizedBox(height: AppSpacing.lg),
+        _buildStorageCard(context),
+        const SizedBox(height: AppSpacing.xl),
+        FilledButton.icon(
+          key: const Key('capture_settings_save'),
+          onPressed: _saving ? null : _save,
+          icon: const Icon(TablerIcons.device_floppy,
+              size: AppTypography.iconSM),
+          label: Text(_saving ? '保存中…' : '保存设置'),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildError(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Center(
+      child: Padding(
+        padding: AppSpacing.allXXL,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(TablerIcons.alert_triangle,
+                size: AppTypography.iconXXXL, color: scheme.error),
+            const SizedBox(height: AppSpacing.md),
+            Text('抓包配置加载失败', style: theme.textTheme.titleMedium),
+            const SizedBox(height: AppSpacing.sm),
+            Text(
+              _error ?? '',
+              textAlign: TextAlign.center,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: AppSpacing.lg),
+            FilledButton.tonalIcon(
+              key: const Key('capture_settings_retry'),
+              onPressed: _load,
+              icon: const Icon(TablerIcons.refresh,
+                  size: AppTypography.iconSM),
+              label: const Text('重试'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMitmCard(BuildContext context) {
+    final theme = Theme.of(context);
+    return _CaptureSectionCard(
+      icon: TablerIcons.shield_lock,
+      title: 'MITM 总开关',
+      children: [
+        SwitchListTile(
+          key: const Key('capture_mitm_switch'),
+          contentPadding: EdgeInsets.zero,
+          title: const Text('启用 HTTPS 中间人解密'),
+          subtitle: const Text(
+            '开启后仅对「域名白名单」命中的主机解密；白名单为空时退化为 App 白名单。'
+            '两者皆空则不抓取任何 HTTPS。',
+          ),
+          value: _config.enabled,
+          onChanged: _saving ? null : _setEnabled,
+        ),
+        Text(
+          '与首页「抓包」区块共享同一份 capture.config；此处保存后首页状态即时同步。',
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildDomainCard(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final domains = _config.domainAllowlist;
+    return _CaptureSectionCard(
+      icon: TablerIcons.world,
+      title: '域名白名单',
+      children: [
+        Text(
+          '命中 SNI / host 的域名才会被解密；为空时改由 App 白名单兜底。',
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: scheme.onSurfaceVariant,
+          ),
+        ),
+        const SizedBox(height: AppSpacing.sm),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: TextField(
+                key: const Key('capture_domain_field'),
+                controller: _domainInput,
+                enabled: !_saving,
+                textInputAction: TextInputAction.done,
+                onSubmitted: (_) => _addDomain(),
+                decoration: const InputDecoration(
+                  labelText: '添加域名',
+                  hintText: 'example.com',
+                ),
+              ),
+            ),
+            const SizedBox(width: AppSpacing.sm),
+            Padding(
+              padding: AppSpacing.onlyTopSM,
+              child: FilledButton.tonalIcon(
+                key: const Key('capture_domain_add'),
+                onPressed: _saving ? null : _addDomain,
+                icon: const Icon(TablerIcons.plus, size: AppTypography.iconSM),
+                label: const Text('添加'),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: AppSpacing.md),
+        if (domains.isEmpty)
+          Text(
+            '尚未添加域名（白名单为空）。',
+            key: const Key('capture_domain_empty'),
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: scheme.onSurfaceVariant,
+            ),
+          )
+        else
+          Wrap(
+            spacing: AppSpacing.sm,
+            runSpacing: AppSpacing.sm,
+            children: [
+              for (final domain in domains)
+                InputChip(
+                  key: Key('capture_domain_chip_$domain'),
+                  label: Text(domain),
+                  onDeleted: _saving ? null : () => _removeDomain(domain),
+                  deleteIcon: const Icon(TablerIcons.x,
+                      size: AppTypography.iconSM),
+                ),
+            ],
+          ),
+      ],
+    );
+  }
+
+  Widget _buildAppCard(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final count = _config.appAllowlist.length;
+    return _CaptureSectionCard(
+      icon: TablerIcons.apps,
+      title: 'App 白名单',
+      children: [
+        Text(
+          '按包名匹配（best-effort）。仅在域名白名单为空时生效；未知 UID 只会拒绝解密。',
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: scheme.onSurfaceVariant,
+          ),
+        ),
+        const SizedBox(height: AppSpacing.sm),
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                '已选 $count 个应用',
+                key: const Key('capture_apps_count'),
+                style: theme.textTheme.bodyMedium,
+              ),
+            ),
+            FilledButton.tonalIcon(
+              key: const Key('capture_apps_button'),
+              onPressed: _saving ? null : _openAppPicker,
+              icon: const Icon(TablerIcons.list_check,
+                  size: AppTypography.iconSM),
+              label: const Text('选择应用'),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildContentCard(BuildContext context) {
+    return _CaptureSectionCard(
+      icon: TablerIcons.adjustments,
+      title: '内容开关',
+      children: [
+        SwitchListTile(
+          key: const Key('capture_toggle_body'),
+          contentPadding: EdgeInsets.zero,
+          title: const Text('抓取请求 / 响应体 (Body)'),
+          value: _config.captureBody,
+          onChanged: _saving ? null : _setCaptureBody,
+        ),
+        SwitchListTile(
+          key: const Key('capture_toggle_ws'),
+          contentPadding: EdgeInsets.zero,
+          title: const Text('抓取 WebSocket 帧 (WS)'),
+          value: _config.captureWs,
+          onChanged: _saving ? null : _setCaptureWs,
+        ),
+        SwitchListTile(
+          key: const Key('capture_toggle_h2'),
+          contentPadding: EdgeInsets.zero,
+          title: const Text('抓取 HTTP/2 (H2)'),
+          value: _config.captureH2,
+          onChanged: _saving ? null : _setCaptureH2,
+        ),
+      ],
+    );
+  }
+
+  Widget _buildPortsCard(BuildContext context) {
+    final theme = Theme.of(context);
+    return _CaptureSectionCard(
+      icon: TablerIcons.plug,
+      title: 'TLS 端口集合',
+      children: [
+        Text(
+          '端口集合：${_config.tlsPorts.join(' / ')}',
+          key: const Key('capture_tls_ports'),
+          style: theme.textTheme.bodyMedium,
+        ),
+        const SizedBox(height: AppSpacing.xs),
+        Text(
+          '仅这些目的端口会被 MITM 终止；集合由内核契约固定，本页只读。',
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildStorageCard(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final stats = _stats;
+    return _CaptureSectionCard(
+      icon: TablerIcons.database,
+      title: '存储统计',
+      children: [
+        if (stats == null)
+          Text(
+            '统计暂不可用',
+            key: const Key('capture_storage_unavailable'),
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: scheme.onSurfaceVariant,
+            ),
+          )
+        else
+          Text(
+            '保留 ${stats.retained}/${stats.capacity} · '
+            '淘汰 ${stats.evicted} · 丢弃 ${stats.dropped}',
+            key: const Key('capture_storage_stats'),
+            style: theme.textTheme.bodyMedium,
+          ),
+        const SizedBox(height: AppSpacing.xs),
+        Text(
+          '淘汰 = 超出容量被回收；丢弃 = 背压期间未能入环。',
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: scheme.onSurfaceVariant,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// 卡片小节骨架（与设置页一致的标题行 + 正文）。
+class _CaptureSectionCard extends StatelessWidget {
+  const _CaptureSectionCard({
+    required this.icon,
+    required this.title,
+    required this.children,
+  });
+
+  final IconData icon;
+  final String title;
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: AppSpacing.allLG,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(icon, size: AppTypography.iconMD,
+                    color: theme.colorScheme.primary),
+                const SizedBox(width: AppSpacing.sm),
+                Expanded(
+                  child: Text(title, style: theme.textTheme.titleSmall),
+                ),
+              ],
+            ),
+            const SizedBox(height: AppSpacing.md),
+            ...children,
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// App 白名单多选弹层（统一 [AppSheetScaffold] 骨架）。
+///
+/// 空列表渲染显式空态；结果经 `pop(Set)` 返回。
+class _CaptureAppPickerSheet extends StatefulWidget {
+  const _CaptureAppPickerSheet({required this.apps, required this.initial});
+
+  final List<InstalledAppOption> apps;
+  final Set<String> initial;
+
+  @override
+  State<_CaptureAppPickerSheet> createState() => _CaptureAppPickerSheetState();
+}
+
+class _CaptureAppPickerSheetState extends State<_CaptureAppPickerSheet> {
+  late final Set<String> _selected = <String>{...widget.initial};
+  String _query = '';
+
+  List<InstalledAppOption> get _filtered {
+    final query = _query.toLowerCase();
+    final List<InstalledAppOption> matches = query.isEmpty
+        ? <InstalledAppOption>[...widget.apps]
+        : widget.apps
+            .where((app) =>
+                app.name.toLowerCase().contains(query) ||
+                app.packageName.toLowerCase().contains(query))
+            .toList();
+    matches.sort((a, b) {
+      final aSelected = _selected.contains(a.packageName);
+      final bSelected = _selected.contains(b.packageName);
+      if (aSelected != bSelected) return aSelected ? -1 : 1;
+      final byName = a.name.toLowerCase().compareTo(b.name.toLowerCase());
+      if (byName != 0) return byName;
+      return a.packageName.compareTo(b.packageName);
+    });
+    return matches;
+  }
+
+  void _toggle(String packageName) {
+    setState(() {
+      if (!_selected.add(packageName)) _selected.remove(packageName);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final filtered = _filtered;
+    return AppSheetScaffold(
+      title: '选择应用',
+      subtitle: widget.apps.isEmpty ? '无可用应用' : '共 ${widget.apps.length} 个已安装应用',
+      icon: const Icon(TablerIcons.apps),
+      contentPadding: AppSpacing.onlyHorizontalXL,
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          key: const Key('capture_apps_confirm'),
+          onPressed: () => Navigator.of(context).pop(_selected),
+          child: const Text('确定'),
+        ),
+      ],
+      scrollable: false,
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          TextField(
+            key: const Key('capture_app_search'),
+            onChanged: (value) => setState(() => _query = value.trim()),
+            decoration: const InputDecoration(
+              labelText: '搜索',
+              hintText: '应用名 / 包名',
+              prefixIcon: Icon(TablerIcons.search),
+            ),
+          ),
+          const SizedBox(height: AppSpacing.md),
+          if (widget.apps.isEmpty)
+            Padding(
+              key: const Key('capture_apps_empty'),
+              padding: AppSpacing.onlyVerticalXXL,
+              child: Column(
+                children: [
+                  Icon(TablerIcons.apps,
+                      size: AppTypography.iconXXXL,
+                      color: scheme.onSurfaceVariant),
+                  const SizedBox(height: AppSpacing.md),
+                  Text('未获取到已安装应用', style: theme.textTheme.titleMedium),
+                ],
+              ),
+            )
+          else if (filtered.isEmpty)
+            Padding(
+              padding: AppSpacing.onlyVerticalXXL,
+              child: Text(
+                '没有匹配的应用',
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: scheme.onSurfaceVariant,
+                ),
+              ),
+            )
+          else
+            SizedBox(
+              height: 340,
+              child: ListView.builder(
+                itemCount: filtered.length,
+                itemBuilder: (context, index) {
+                  final app = filtered[index];
+                  final checked = _selected.contains(app.packageName);
+                  return InkWell(
+                    key: Key('capture_app_${app.packageName}'),
+                    onTap: () => _toggle(app.packageName),
+                    child: Padding(
+                      padding: AppSpacing.onlyVerticalXS,
+                      child: Row(
+                        children: [
+                          Checkbox(
+                            value: checked,
+                            onChanged: (_) => _toggle(app.packageName),
+                          ),
+                          const SizedBox(width: AppSpacing.sm),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  app.name,
+                                  style: theme.textTheme.bodyMedium,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                Text(
+                                  app.packageName,
+                                  style: theme.textTheme.bodySmall?.copyWith(
+                                    color: scheme.onSurfaceVariant,
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
