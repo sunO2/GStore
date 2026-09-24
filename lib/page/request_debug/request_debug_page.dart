@@ -8,6 +8,8 @@ import 'package:gstore/core/design/app_spacing.dart';
 import 'package:gstore/core/design/app_typography.dart';
 import 'package:gstore/core/request_debug/request_debug.dart';
 
+import 'collection_section.dart';
+
 /// 「请求调试」工作台分区（plan todo 30）。
 enum RequestDebugSection {
   /// 集合（收藏的请求 / 文件夹树）。todo 31 深化。
@@ -126,28 +128,7 @@ class _RequestDebugPageState extends State<RequestDebugPage> {
     final store = _facade.store;
     switch (_section) {
       case RequestDebugSection.collections:
-        if (store.collections.isEmpty) {
-          return _empty(
-            context,
-            icon: TablerIcons.folder,
-            title: '暂无集合',
-            message: '还没有请求集合，导入 cURL 或新建集合开始。',
-          );
-        }
-        return ListView.builder(
-          padding: AppSpacing.onlyVerticalSM,
-          itemCount: store.collections.length,
-          itemBuilder: (context, index) {
-            final c = store.collections[index];
-            return _sectionTile(
-              context,
-              icon: TablerIcons.folder,
-              title: c.name,
-              subtitle: '${c.requests.length} 个请求',
-              key: ValueKey<String>('request-debug-collection-${c.id}'),
-            );
-          },
-        );
+        return RequestDebugCollectionSection(facade: _facade);
 
       case RequestDebugSection.history:
         if (store.history.isEmpty) {
