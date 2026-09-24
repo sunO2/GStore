@@ -106,7 +106,12 @@ class ProxyModuleCaptureSettingsFacade implements ProxyCaptureSettingsFacade {
 
 /// 抓包设置页。
 class ProxyCaptureSettingsPage extends StatefulWidget {
-  const ProxyCaptureSettingsPage({super.key, this.facade, this.installedApps});
+  const ProxyCaptureSettingsPage({
+    super.key,
+    this.facade,
+    this.installedApps,
+    this.routing,
+  });
 
   /// 抓包设置门面（测试可注入假实现；为空时用生产适配器）。
   final ProxyCaptureSettingsFacade? facade;
@@ -114,14 +119,32 @@ class ProxyCaptureSettingsPage extends StatefulWidget {
   /// 已安装应用来源（测试可注入假实现；为空时用平台通道）。
   final ProxyInstalledAppsProvider? installedApps;
 
+  /// 分流门面（应用范围 `routing` 与 VPN 分流耦合 / 漂移检测用）。
+  ///
+  /// 为空时用生产 [ProxyModuleSettingsFacade]。注入窄接缝便于密闭式组件测试。
+  final ProxySplitTunnelFacade? routing;
+
   @override
   State<ProxyCaptureSettingsPage> createState() =>
       _ProxyCaptureSettingsPageState();
 }
 
+/// 「启用应用范围抓包」时对分流的处理结果。
+enum _MirrorOutcome {
+  /// 分流已是合法镜像，或用户确认后已成功镜像。
+  applied,
+
+  /// 用户拒绝切换分流 → 应用范围抓包保持关闭。
+  declined,
+
+  /// 读取 / 写入分流失败 → 应用范围抓包保持关闭（绝不静默改路由）。
+  failed,
+}
+
 class _ProxyCaptureSettingsPageState extends State<ProxyCaptureSettingsPage> {
   late final ProxyCaptureSettingsFacade _facade;
   late final ProxyInstalledAppsProvider _installedApps;
+  late final ProxySplitTunnelFacade _routing;
 
   final TextEditingController _domainInput = TextEditingController();
 
@@ -140,6 +163,7 @@ class _ProxyCaptureSettingsPageState extends State<ProxyCaptureSettingsPage> {
     super.initState();
     _facade = widget.facade ?? ProxyModuleCaptureSettingsFacade();
     _installedApps = widget.installedApps ?? const PlatformInstalledAppsProvider();
+    _routing = widget.routing ?? ProxyModuleSettingsFacade();
     _load();
   }
 
@@ -161,6 +185,7 @@ class _ProxyCaptureSettingsPageState extends State<ProxyCaptureSettingsPage> {
         _config = config;
         _loading = false;
       });
+      unawaited(_reconcileRoutingDrift(config));
       unawaited(_loadStats());
     } catch (error) {
       if (!mounted) return;
@@ -278,17 +303,98 @@ class _ProxyCaptureSettingsPageState extends State<ProxyCaptureSettingsPage> {
     });
   }
 
+  /// 启用应用范围抓包（routing）时，对 VPN 分流提出的**派生镜像**要求。
+  ///
+  /// 成立条件：总开关开启 + 范围=`routing` + 域名白名单为空（域名优先）+
+  /// App 白名单非空（否则无应用可分流）。
+  bool _needsRoutingMirror(CaptureConfig config) =>
+      config.enabled &&
+      config.appScope == ProxyCaptureAppScope.routing &&
+      config.domainAllowlist.isEmpty &&
+      config.appAllowlist.isNotEmpty;
+
+  /// 确保 VPN 分流是 [appAllowlist] 的合法镜像。
+  ///
+  /// 已是镜像 → 直接通过；否则经统一 [AppDialogs.showConfirmSheet] 征求用户同意
+  /// 后把分流切为 `allow` + 清单 = [appAllowlist]。**拒绝 / 失败绝不静默重定路由**，
+  /// 由调用方保持应用范围抓包关闭。
+  Future<_MirrorOutcome> _ensureRoutingMirror(List<String> appAllowlist) async {
+    final ProxySettingsConfig split;
+    try {
+      split = await _routing.loadSplitTunnel();
+    } catch (_) {
+      return _MirrorOutcome.failed;
+    }
+    if (split.mirrorsAppAllowlist(appAllowlist)) return _MirrorOutcome.applied;
+
+    final confirmed = await AppDialogs.showConfirmSheet(
+      title: '切换 VPN 分流',
+      message: '「VPN 分流」范围依赖按应用分流。将把分流模式切换为「仅选中应用」，'
+          '清单与抓包 App 白名单保持一致（共 ${appAllowlist.length} 个应用）。',
+      confirmText: '切换分流',
+      cancelText: '取消',
+    );
+    if (confirmed != true) return _MirrorOutcome.declined;
+    try {
+      await _routing.saveSplitTunnel(
+        mode: ProxySplitTunnelMode.allow,
+        apps: appAllowlist.toSet(),
+      );
+    } catch (_) {
+      return _MirrorOutcome.failed;
+    }
+    return _MirrorOutcome.applied;
+  }
+
+  /// 启动 / 加载对账：`routing` 应用范围抓包与现行分流不一致（漂移）时，
+  /// **自动关闭抓包**（`enabled:false`）并提示；绝不静默重写用户分流路由。
+  Future<void> _reconcileRoutingDrift(CaptureConfig config) async {
+    if (!_needsRoutingMirror(config)) return;
+    final ProxySettingsConfig split;
+    try {
+      split = await _routing.loadSplitTunnel();
+    } catch (_) {
+      // 读不到分流 → 无法判定，保持现状（下次加载重试）。
+      return;
+    }
+    if (split.mirrorsAppAllowlist(config.appAllowlist)) return;
+    try {
+      final saved = await _facade.configSet(config.copyWith(enabled: false));
+      if (!mounted) return;
+      setState(() => _config = saved);
+      AppDialogs.showWarning('VPN 分流已变更，应用范围抓包已自动关闭');
+    } catch (_) {
+      // best-effort：关闭失败不崩，下次加载重试。
+    }
+  }
+
   Future<void> _save() async {
     if (_saving) return;
     setState(() => _saving = true);
     try {
-      final saved = await _facade.configSet(_config);
+      var next = _config;
+      var outcome = _MirrorOutcome.applied;
+      if (_needsRoutingMirror(next)) {
+        outcome = await _ensureRoutingMirror(next.appAllowlist);
+        if (outcome != _MirrorOutcome.applied) {
+          // 拒绝 / 失败 → 应用范围抓包保持关闭（域名抓包不受影响）。
+          next = next.copyWith(enabled: false);
+        }
+      }
+      final saved = await _facade.configSet(next);
       if (!mounted) return;
       setState(() {
         _config = saved;
         _saving = false;
       });
-      AppDialogs.showSuccess('抓包设置已保存');
+      switch (outcome) {
+        case _MirrorOutcome.applied:
+          AppDialogs.showSuccess('抓包设置已保存');
+        case _MirrorOutcome.declined:
+          AppDialogs.showWarning('未切换分流，应用范围抓包保持关闭');
+        case _MirrorOutcome.failed:
+          AppDialogs.showError('切换分流失败，应用范围抓包保持关闭');
+      }
     } catch (error) {
       if (!mounted) return;
       setState(() => _saving = false);
@@ -518,6 +624,7 @@ class _ProxyCaptureSettingsPageState extends State<ProxyCaptureSettingsPage> {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final count = _config.appAllowlist.length;
+    final routing = _config.appScope == ProxyCaptureAppScope.routing;
     return _CaptureSectionCard(
       icon: TablerIcons.apps,
       title: 'App 白名单',
@@ -528,7 +635,39 @@ class _ProxyCaptureSettingsPageState extends State<ProxyCaptureSettingsPage> {
             color: scheme.onSurfaceVariant,
           ),
         ),
-        const SizedBox(height: AppSpacing.sm),
+        const SizedBox(height: AppSpacing.md),
+        Text('应用范围判定方式', style: theme.textTheme.labelLarge),
+        const SizedBox(height: AppSpacing.xs),
+        AppSegmentedButton<ProxyCaptureAppScope>(
+          key: const Key('capture_scope_selector'),
+          value: _config.appScope,
+          enabled: !_saving,
+          density: AppSegmentedButton.mediumDensity,
+          segments: const <AppSegment<ProxyCaptureAppScope>>[
+            AppSegment(
+              value: ProxyCaptureAppScope.routing,
+              label: 'VPN 分流',
+              key: Key('capture_scope_routing'),
+            ),
+            AppSegment(
+              value: ProxyCaptureAppScope.uid,
+              label: 'UID 归因',
+              key: Key('capture_scope_uid'),
+            ),
+          ],
+          onChanged: _setAppScope,
+        ),
+        const SizedBox(height: AppSpacing.xs),
+        Text(
+          routing
+              ? '生效模式：VPN 分流（依赖代理分流按应用限定，无需 UID）'
+              : '生效模式：UID 归因（Android 10+；未知 UID 拒绝解密）',
+          key: const Key('capture_scope_active_mode'),
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: scheme.onSurfaceVariant,
+          ),
+        ),
+        const SizedBox(height: AppSpacing.md),
         Row(
           children: [
             Expanded(
@@ -550,6 +689,10 @@ class _ProxyCaptureSettingsPageState extends State<ProxyCaptureSettingsPage> {
       ],
     );
   }
+
+  /// 切换应用范围判定方式（保存时按 `routing` 耦合分流）。
+  void _setAppScope(ProxyCaptureAppScope scope) =>
+      setState(() => _config = _config.copyWith(appScope: scope));
 
   Widget _buildContentCard(BuildContext context) {
     return _CaptureSectionCard(

@@ -23,6 +23,7 @@ import 'package:gstore/page/proxy/proxy_engine_settings_store.dart';
 import 'package:gstore/page/proxy/proxy_geo_provisioner.dart';
 import 'package:gstore/page/proxy/proxy_home_facade.dart';
 import 'package:gstore/page/proxy/proxy_routing_mode_store.dart';
+import 'package:gstore/page/proxy/proxy_settings_facade.dart';
 
 /// 一次成功连接的结果。
 class ProxyConnectOutcome {
@@ -36,6 +37,33 @@ class ProxyConnectOutcome {
   final ProxyRoutingMode? routingMode;
 }
 
+/// 启动 / always-on 对账所需的抓包配置最小接缝（读 + 下发）。
+///
+/// 生产由 [HomeFacadeCaptureScopeGate] 适配首页门面的 `capture.config.get/set`；
+/// 单元测试可注入只实现这两个方法的小假实现。
+abstract class ProxyCaptureScopeGate {
+  Future<CaptureConfig> read();
+
+  Future<CaptureConfig> set(CaptureConfig config);
+}
+
+/// 生产适配器：把 [ProxyHomeFacade] 的 `capture.config.get/set` 暴露为窄接缝。
+class HomeFacadeCaptureScopeGate implements ProxyCaptureScopeGate {
+  HomeFacadeCaptureScopeGate(this._facade);
+
+  final ProxyHomeFacade _facade;
+
+  @override
+  Future<CaptureConfig> read() => _facade.captureConfigGet();
+
+  @override
+  Future<CaptureConfig> set(CaptureConfig config) =>
+      _facade.captureConfigSet(config);
+}
+
+/// 启动对账：`routing` 应用范围抓包与 VPN 分流不一致时自动关闭抓包的提示文案。
+const String kCaptureScopeDriftNotice = 'VPN 分流已变更，应用范围抓包已自动关闭';
+
 /// 代理连接 / 断开编排器。
 class ProxyConnectController {
   ProxyConnectController({
@@ -44,6 +72,8 @@ class ProxyConnectController {
     required this.engineSettingsStore,
     required this.routingModeStore,
     this.geoProvisioner,
+    this.captureScopeGate,
+    this.splitTunnelFacade,
     this.defaultVpnConfigJson = '{}',
   });
 
@@ -58,6 +88,12 @@ class ProxyConnectController {
 
   /// 用户选择的路由模式读取接缝（连接成功后重放）。
   final ProxyRoutingModeStore routingModeStore;
+
+  /// 启动对账所需的抓包配置接缝；未注入则跳过对账。
+  final ProxyCaptureScopeGate? captureScopeGate;
+
+  /// 启动对账所需的分流读取接缝；未注入则跳过对账。
+  final ProxySplitTunnelFacade? splitTunnelFacade;
 
   /// 规则模式 geo provisioning 接缝（可选，默认 `null` = 不参与）。
   ///
@@ -134,6 +170,48 @@ class ProxyConnectController {
       await _safeStopVpnService();
     }
     return stopped;
+  }
+
+  /// 启动 / always-on 对账：`appScope=routing` 的应用范围抓包依赖 VPN
+  /// 按应用分流（`allow` + `allowedApps == appAllowlist`）。
+  ///
+  /// 读两份 store：若抓包已开启且范围=`routing`、域名白名单为空、App 白名单非空，
+  /// 而分流模式 / 清单与之不一致（漂移），则**自动关闭抓包**（`enabled:false`）并
+  /// 返回提示文案。**绝不**在 Dart 侧静默重写用户的分流路由。
+  ///
+  /// best-effort：接缝未注入 / 读取失败 / 关闭失败一律返回 `null`（不崩、不误报）。
+  Future<String?> reconcileCaptureAppScope() async {
+    final gate = captureScopeGate;
+    final split = splitTunnelFacade;
+    if (gate == null || split == null) return null;
+
+    final CaptureConfig config;
+    try {
+      config = await gate.read();
+    } catch (_) {
+      return null;
+    }
+    if (!config.enabled ||
+        config.appScope != ProxyCaptureAppScope.routing ||
+        config.domainAllowlist.isNotEmpty ||
+        config.appAllowlist.isEmpty) {
+      return null;
+    }
+
+    final ProxySettingsConfig routing;
+    try {
+      routing = await split.loadSplitTunnel();
+    } catch (_) {
+      return null;
+    }
+    if (routing.mirrorsAppAllowlist(config.appAllowlist)) return null;
+
+    try {
+      await gate.set(config.copyWith(enabled: false));
+    } catch (_) {
+      return null;
+    }
+    return kCaptureScopeDriftNotice;
   }
 
   /// 把持久化的路由模式重放给引擎，返回引擎回报的新模式。

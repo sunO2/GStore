@@ -18,6 +18,7 @@ import 'proxy_nodes_page.dart';
 import 'proxy_profiles_page.dart';
 import 'proxy_routing_mode_store.dart';
 import 'proxy_run_mode_store.dart';
+import 'proxy_settings_facade.dart';
 import 'proxy_settings_page.dart';
 import 'proxy_shaper_presets.dart';
 import 'proxy_site_probe.dart';
@@ -55,6 +56,7 @@ class ProxyHomePage extends StatefulWidget {
     this.onOpenStats,
     this.onOpenLanSettings,
     this.onOpenCaptureSettings,
+    this.splitTunnelFacade,
     this.vpnConfigJson = '{}',
   });
 
@@ -112,6 +114,11 @@ class ProxyHomePage extends StatefulWidget {
   /// `const ProxyHomePage()` 从不注入本字段，因此生产路径必须自带 fallback，
   /// 否则会错误落到「尚未接入」提示。
   final VoidCallback? onOpenCaptureSettings;
+
+  /// 分流门面（启动对账：`routing` 应用范围抓包依赖按应用分流）。
+  ///
+  /// 为空时用生产 [ProxyModuleSettingsFacade]；测试注入内存假实现即可密闭。
+  final ProxySplitTunnelFacade? splitTunnelFacade;
 
   /// 传给 Kotlin `ProxyVpnService` 的配置 JSON（默认 `{}` = 全量路由）。
   /// Dart 侧**不生成**该配置，仅透传。
@@ -225,6 +232,8 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
       vpnConsent: _vpnConsent,
       engineSettingsStore: _engineStore,
       routingModeStore: _routingStore,
+      captureScopeGate: HomeFacadeCaptureScopeGate(_facade),
+      splitTunnelFacade: widget.splitTunnelFacade ?? ProxyModuleSettingsFacade(),
     );
     _eventSub = _facade.events.listen(_onEvent, onError: _onEventError);
     _load();
@@ -254,6 +263,9 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
       final shaper = await _safe(() => _facade.loadShaperConfig());
       // 抓包门控配置（best-effort）：`null` = 模块未提供 `capture.*` → 区块禁用。
       final capture = await _safe(() => _facade.captureConfigGet());
+      // 启动对账：`routing` 应用范围抓包与 VPN 分流不一致（漂移）→ 自动关闭抓包。
+      // 非 null 即发生了自动关闭，需把展示配置同步为关闭并提示用户。
+      final captureDrift = await _controller.reconcileCaptureAppScope();
       final captureCa =
           capture == null ? null : await _safe(() => _facade.captureCaGet());
 
@@ -283,7 +295,9 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
         _lanStatus = lan;
         _version = version;
         _shaper = shaper;
-        _captureConfig = capture;
+        _captureConfig = captureDrift == null
+            ? capture
+            : capture?.copyWith(enabled: false);
         _captureCaGenerated = captureCa?.generated ?? false;
         _selectedProfileId = selected?.id;
         _profileName = selected?.name;
@@ -311,6 +325,9 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
         if (nodeList != null) _nodeList = nodeList;
         _loading = false;
       });
+      if (captureDrift != null) {
+        AppDialogs.showWarning(captureDrift);
+      }
       if (_isRunning) await _syncRoutingMode();
       await _recoverEngineIfServiceRunning();
       // 规则模式：页面初始化即 best-effort 触发 geo provisioning（后台下载）。
@@ -1940,6 +1957,33 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
                       '当前调试模块未提供抓包能力（capture.*），请更新模块后再试。',
                       style: theme.textTheme.bodySmall?.copyWith(
                         color: scheme.error,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          if (config != null && config.enabled)
+            Padding(
+              padding: AppSpacing.onlyHorizontalLG.copyWith(
+                bottom: AppSpacing.md,
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    TablerIcons.apps,
+                    size: AppTypography.iconSM,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                  const SizedBox(width: AppSpacing.sm),
+                  Expanded(
+                    child: Text(
+                      config.appScope == ProxyCaptureAppScope.routing
+                          ? '应用范围：VPN 分流'
+                          : '应用范围：UID 归因',
+                      key: const Key('proxy-capture-scope'),
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: scheme.onSurfaceVariant,
                       ),
                     ),
                   ),

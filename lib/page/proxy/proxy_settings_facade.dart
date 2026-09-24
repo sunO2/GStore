@@ -193,6 +193,39 @@ class ProxySettingsConfig {
     }
     return jsonEncode(payload);
   }
+
+  /// 本分流配置是否**恰为** [appAllowlist] 的合法镜像（`allow` + 集合相等）。
+  ///
+  /// 抓包应用范围（`capture.config.appScope == routing`）时，「哪些应用」的单一
+  /// 数据源是 `capture.config.appAllowlist`；VPN `allowedApps` 只是它的派生镜像。
+  /// 一旦不再相等（用户改了分流模式 / 清单）即视为**漂移**——调用方据此自动关闭
+  /// 抓包，绝不在 Dart 侧静默重写用户路由。
+  bool mirrorsAppAllowlist(List<String> appAllowlist) {
+    if (splitMode != ProxySplitTunnelMode.allow) return false;
+    final expected = appAllowlist.toSet();
+    if (selectedApps.length != expected.length) return false;
+    return selectedApps.containsAll(expected);
+  }
+}
+
+// ==================== 抓包应用范围 ↔ VPN 分流耦接 ====================
+
+/// 抓包应用范围（`appScope == routing`）与 VPN 分流耦合所需的最小接缝。
+///
+/// * [loadSplitTunnel]：读取持久化分流配置（镜像判定 / 漂移检测）。
+/// * [saveSplitTunnel]：把 `allow` + 镜像清单持久化，并推送给运行中的
+///   `ProxyVpnService`（`allowedApps` 即时生效）。
+///
+/// 「哪些应用」的单一数据源是 `capture.config.appAllowlist`；本接缝是
+/// `appScope=routing` 时把该清单**派生镜像**为 VPN `allowedApps` 的唯一写入点，
+/// 页面不得各自另建清单。
+abstract class ProxySplitTunnelFacade {
+  Future<ProxySettingsConfig> loadSplitTunnel();
+
+  Future<void> saveSplitTunnel({
+    required ProxySplitTunnelMode mode,
+    required Set<String> apps,
+  });
 }
 
 // ==================== 已安装应用 ====================
@@ -394,7 +427,8 @@ abstract class ProxySettingsFacade {
 /// [ProxyInstalledAppsProvider] + [ProxyVpnConfigApplier]。
 ///
 /// 构造不触碰 FFI / 平台通道；只有调用方法时才按需访问。
-class ProxyModuleSettingsFacade implements ProxySettingsFacade {
+class ProxyModuleSettingsFacade
+    implements ProxySettingsFacade, ProxySplitTunnelFacade {
   ProxyModuleSettingsFacade({
     ProxyModule? module,
     ProxySettingsStore? store,
@@ -416,6 +450,9 @@ class ProxyModuleSettingsFacade implements ProxySettingsFacade {
 
   @override
   Future<ProxySettingsConfig> loadSettings() => _store.read();
+
+  @override
+  Future<ProxySettingsConfig> loadSplitTunnel() => _store.read();
 
   @override
   Future<void> saveSplitTunnel({

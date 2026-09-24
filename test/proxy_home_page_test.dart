@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/design/app_components.dart';
+import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/design/app_sheet.dart';
 import 'package:gstore/core/design/app_spacing.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
@@ -390,6 +391,35 @@ class _FakeEngineSettingsStore implements ProxyEngineSettingsStore {
   Future<void> write(ProxyEngineSettings settings) async => value = settings;
 }
 
+/// 假「分流门面」：内存实现，记录落库的分流模式 / 清单（C4 启动对账用）。
+class _FakeSplitTunnelFacade implements ProxySplitTunnelFacade {
+  _FakeSplitTunnelFacade({ProxySettingsConfig? config})
+      : config = config ?? const ProxySettingsConfig();
+
+  ProxySettingsConfig config;
+  int loadCalls = 0;
+  int saveCalls = 0;
+  ProxySplitTunnelMode? lastMode;
+  Set<String>? lastApps;
+
+  @override
+  Future<ProxySettingsConfig> loadSplitTunnel() async {
+    loadCalls++;
+    return config;
+  }
+
+  @override
+  Future<void> saveSplitTunnel({
+    required ProxySplitTunnelMode mode,
+    required Set<String> apps,
+  }) async {
+    saveCalls++;
+    lastMode = mode;
+    lastApps = apps;
+    config = config.copyWith(splitMode: mode, selectedApps: apps);
+  }
+}
+
 /// 空操作 geo 门面（仅满足 [ProxyGeoProvisioner] 构造，不会真正被调用）。
 class _NoopGeoFacade implements ProxyGeoFacade {
   @override
@@ -468,8 +498,11 @@ Widget _wrap(Widget child) => MaterialApp(home: child);
 
 /// 注入全局导航 key：`AppDialogs.showConfirmSheet` 等统一弹层经
 /// [appNavigatorKey] 呈现，测试需挂载同一 key 才能渲染。
-Widget _wrapNav(Widget child) =>
-    MaterialApp(navigatorKey: appNavigatorKey, home: child);
+Widget _wrapNav(Widget child) => MaterialApp(
+      navigatorKey: appNavigatorKey,
+      scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
+      home: child,
+    );
 
 /// 放大测试视口：首页在状态/模式/流量三张卡之后还有快捷入口，默认 800x600
 /// 会因 `ListView` 懒构建而找不到屏外条目。测试改用高视口。
@@ -2335,6 +2368,39 @@ void main() {
       find.byKey(const Key('proxy-capture-toggle')),
     );
     expect(toggle.value, isFalse);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('启动对账：routing 应用范围抓包 + 分流漂移 → 自动关闭 + 提示',
+      (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade()
+      ..captureConfig = const CaptureConfig(
+        enabled: true,
+        appScope: ProxyCaptureAppScope.routing,
+        appAllowlist: <String>['com.apple'],
+      )
+      ..captureCa = const CaptureCaInfo(generated: true);
+    // 分流为 full：与 appAllowlist 不一致 → 漂移。
+    final split = _FakeSplitTunnelFacade(
+      config: const ProxySettingsConfig(splitMode: ProxySplitTunnelMode.full),
+    );
+    await tester.pumpWidget(_wrapNav(ProxyHomePage(
+      facade: facade,
+      splitTunnelFacade: split,
+    )));
+    await _flush(tester);
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    // 实际下发 `capture.config.set(enabled:false)`，绝不静默改路由。
+    expect(facade.captureConfigSetCalls, 1);
+    expect(facade.lastCaptureConfigSet?.enabled, isFalse);
+    expect(split.saveCalls, 0);
+    expect(find.textContaining('自动关闭'), findsOneWidget);
     expect(tester.takeException(), isNull);
 
     await facade.controller.close();

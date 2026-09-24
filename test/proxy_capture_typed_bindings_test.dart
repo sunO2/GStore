@@ -182,6 +182,7 @@ void main() {
       'tlsPorts': <int>[443],
       'domainAllowlist': <String>[],
       'appAllowlist': <String>[],
+      'appScope': 'uid',
       'captureBody': true,
       'captureWs': true,
       'captureH2': true,
