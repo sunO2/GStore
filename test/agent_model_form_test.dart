@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/agent/agent_model_store.dart';
 import 'package:gstore/core/agent/openai_model_catalog.dart';
@@ -103,8 +104,8 @@ void main() {
       greaterThan(fieldRect.center.dx),
       reason: '刷新按钮在输入框右侧',
     );
-    // 双箭头图标（不是单箭头的 Icons.refresh）
-    expect(find.byIcon(Icons.sync), findsOneWidget);
+    // 刷新图标（Tabler 的 refresh，非 Material Icons.refresh）
+    expect(find.byIcon(TablerIcons.refresh), findsOneWidget);
     expect(find.byIcon(Icons.refresh), findsNothing);
     expect(tester.takeException(), isNull);
   });

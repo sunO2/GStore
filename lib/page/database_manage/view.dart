@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 
 import 'package:gstore/core/core.dart';
 
@@ -70,7 +71,7 @@ class _DbCard extends ConsumerWidget {
       margin: AppSpacing.allLG,
       child: ListTile(
         leading: Icon(
-          db.managed ? Icons.lock_outline : Icons.storage_outlined,
+          db.managed ? TablerIcons.lock : TablerIcons.database,
           color: db.managed
               ? theme.colorScheme.tertiary
               : theme.colorScheme.primary,
@@ -95,7 +96,7 @@ class _DbCard extends ConsumerWidget {
           ],
         ),
         isThreeLine: true,
-        trailing: const Icon(Icons.chevron_right),
+        trailing: const Icon(TablerIcons.chevron_right),
         onTap: onTap,
       ),
     );
@@ -124,8 +125,8 @@ class _DbTablesPage extends ConsumerWidget {
                       ListTile(
                         leading: Icon(
                           table.readonly
-                              ? Icons.lock_outline
-                              : Icons.table_rows_outlined,
+                              ? TablerIcons.lock
+                              : TablerIcons.table,
                           color: table.readonly
                               ? Theme.of(context).colorScheme.tertiary
                               : Theme.of(context).colorScheme.primary,
@@ -136,7 +137,7 @@ class _DbTablesPage extends ConsumerWidget {
                         subtitle: Text(
                           '${table.count} 行${table.readonly ? ' · 受 App 管理，只读' : ' · 可删除记录'}',
                         ),
-                        trailing: const Icon(Icons.chevron_right),
+                        trailing: const Icon(TablerIcons.chevron_right),
                         onTap: () {
                           notifier.loadRows(table.name);
                           Navigator.of(context).push(MaterialPageRoute<void>(
@@ -181,7 +182,7 @@ class _DbRowsPage extends ConsumerWidget {
             Row(
               children: [
                 IconButton(
-                  icon: const Icon(Icons.chevron_left),
+                  icon: const Icon(TablerIcons.chevron_left),
                   onPressed: canPrev ? notifier.prevPage : null,
                 ),
                 Center(
@@ -191,7 +192,7 @@ class _DbRowsPage extends ConsumerWidget {
                   ),
                 ),
                 IconButton(
-                  icon: const Icon(Icons.chevron_right),
+                  icon: const Icon(TablerIcons.chevron_right),
                   onPressed: canNext ? notifier.nextPage : null,
                 ),
               ],
@@ -374,7 +375,7 @@ class _DbBottomBar extends ConsumerWidget {
             if (hasSelection) ...[
               TextButton.icon(
                 onPressed: () => _showRowDetail(context, ref, row!),
-                icon: const Icon(Icons.visibility_outlined, size: 18),
+                icon: const Icon(TablerIcons.eye, size: 18),
                 label: const Text('详情'),
               ),
               const SizedBox(width: AppSpacing.sm),
@@ -397,7 +398,7 @@ class _DbBottomBar extends ConsumerWidget {
                       }
                     }
                   : null,
-              icon: const Icon(Icons.delete_outline, size: 18),
+              icon: const Icon(TablerIcons.trash, size: 18),
               label: const Text('删除'),
             ),
           ],
@@ -449,7 +450,7 @@ class _DbBottomBar extends ConsumerWidget {
             style: TextButton.styleFrom(
               foregroundColor: theme.colorScheme.error,
             ),
-            icon: const Icon(Icons.delete_outline, size: 20),
+            icon: const Icon(TablerIcons.trash, size: 20),
             label: const Text('删除此记录'),
             onPressed: row['_rowid_'] == null
                 ? null

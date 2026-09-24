@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -293,7 +294,7 @@ void main() {
 
     await pumpReadmeLoaded(tester, info);
 
-    expect(find.byIcon(Icons.broken_image_outlined), findsNothing);
+    expect(find.byIcon(TablerIcons.photo_off), findsNothing);
     expect(find.byType(Image), findsNothing);
     expect(tester.takeException(), isNull);
   });

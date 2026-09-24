@@ -1,5 +1,6 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gstore/core/core.dart';
@@ -31,7 +32,7 @@ class _AuthPageState extends ConsumerState<AuthPage> {
         title: const Text("GitHub 登录",
             style: TextStyle(fontWeight: FontWeight.bold)),
         leading: IconButton(
-          icon: const Icon(Icons.close),
+          icon: const Icon(TablerIcons.x),
           onPressed: () async {
             final currentStatus = state.status;
 
@@ -155,7 +156,7 @@ class _AuthPageState extends ConsumerState<AuthPage> {
               width: 4,
             ),
             const Icon(
-              Icons.copy,
+              TablerIcons.copy,
               size: 10,
             ),
           ],

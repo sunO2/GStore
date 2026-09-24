@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:gstore/compent/banner_merge.dart';
@@ -44,16 +45,16 @@ final taskProgressStatesProvider =
 
 /// 模块名 → Material 图标（与 [moduleInstallLabels] 对应）。
 const Map<String, IconData> moduleInstallIcons = <String, IconData>{
-  'qr': Icons.qr_code_2,
-  'analyzer': Icons.analytics_outlined,
-  'repo': Icons.source_outlined,
-  'download': Icons.download_outlined,
-  'llm': Icons.memory_outlined,
+  'qr': TablerIcons.qrcode,
+  'analyzer': TablerIcons.chart_dots,
+  'repo': TablerIcons.source_code,
+  'download': TablerIcons.download,
+  'llm': TablerIcons.brain,
 };
 
 /// 返回模块的 Material 图标；未收录时回退为通用扩展图标。
 IconData moduleInstallIcon(String module) =>
-    moduleInstallIcons[module] ?? Icons.extension_outlined;
+    moduleInstallIcons[module] ?? TablerIcons.puzzle;
 
 /// 卡片图标：`module:<name>` 键（含同键的仓库任务）沿用模块图标，
 /// 使「模块安装 → 索引同步」视觉连续；其余任务使用通用同步图标。
@@ -62,7 +63,7 @@ IconData _iconForCard(BannerCard card) {
   if (card.cardKey.startsWith(modulePrefix)) {
     return moduleInstallIcon(card.cardKey.substring(modulePrefix.length));
   }
-  return Icons.sync_outlined;
+  return TablerIcons.refresh;
 }
 
 /// 卡片阴影高度：明显高于同页普通表面（0–2），与 `primaryContainer`

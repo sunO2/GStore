@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/design/app_sheet.dart';
 import 'package:gstore/core/design/app_spacing.dart';
@@ -166,7 +167,7 @@ class _MirrorConfigDialogState extends State<MirrorConfigDialog> {
                     ),
                     IconButton(
                       tooltip: '删除',
-                      icon: const Icon(Icons.delete_outline, size: 20),
+                      icon: const Icon(TablerIcons.trash, size: 20),
                       onPressed: () => _remove(i),
                     ),
                   ],
@@ -189,7 +190,7 @@ class _MirrorConfigDialogState extends State<MirrorConfigDialog> {
               const SizedBox(width: AppSpacing.xs),
               IconButton(
                 tooltip: '添加镜像',
-                icon: const Icon(Icons.add_circle_outline),
+                icon: const Icon(TablerIcons.circle_plus),
                 onPressed: _add,
               ),
             ],
@@ -200,7 +201,7 @@ class _MirrorConfigDialogState extends State<MirrorConfigDialog> {
               icon: _importing
                   ? const SizedBox(
                       width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
-                  : const Icon(Icons.cloud_download_outlined, size: 18),
+                  : const Icon(TablerIcons.cloud_download, size: 18),
               label: const Text('从索引导入'),
               onPressed: _importing ? null : _importFromIndex,
             ),

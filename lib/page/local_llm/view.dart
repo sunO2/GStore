@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:flutter/services.dart';
 
 import 'package:gstore/core/agent/agent_model_store.dart';
@@ -324,7 +325,7 @@ class _LocalLlmPageState extends State<LocalLlmPage> {
         children: [
           ListTile(
             leading: Icon(
-              available ? Icons.memory : Icons.error_outline,
+              available ? TablerIcons.cpu_2 : TablerIcons.alert_circle,
               color: available ? Theme.of(context).colorScheme.primary : null,
             ),
             title: const Text('推理引擎'),
@@ -360,7 +361,7 @@ class _LocalLlmPageState extends State<LocalLlmPage> {
   Widget _paramsCard(BuildContext context) {
     return _card(
       child: ExpansionTile(
-        leading: const Icon(Icons.tune),
+        leading: const Icon(TablerIcons.adjustments),
         title: const Text('推理参数'),
         subtitle: Text('ctx=$_nCtx  threads=$_nThreads  GPU层=$_nGpuLayers'),
         children: [
@@ -411,7 +412,7 @@ class _LocalLlmPageState extends State<LocalLlmPage> {
       child: Column(
         children: [
           ListTile(
-            leading: Icon(running ? Icons.cloud_done : Icons.cloud_off),
+            leading: Icon(running ? TablerIcons.cloud_check : TablerIcons.cloud_off),
             title: const Text('本地 OpenAI 兼容端点'),
             subtitle: Text(
               running
@@ -437,7 +438,7 @@ class _LocalLlmPageState extends State<LocalLlmPage> {
                       const SizedBox(width: AppSpacing.sm),
                       IconButton(
                         tooltip: '复制 baseUrl',
-                        icon: const Icon(Icons.copy),
+                        icon: const Icon(TablerIcons.copy),
                         onPressed: () {
                           Clipboard.setData(
                               ClipboardData(text: _serverUrl ?? ''));
@@ -453,7 +454,7 @@ class _LocalLlmPageState extends State<LocalLlmPage> {
                     width: double.infinity,
                     child: OutlinedButton.icon(
                       onPressed: _busy ? null : () => _applyToAgent(),
-                      icon: const Icon(Icons.smart_toy_outlined),
+                      icon: const Icon(TablerIcons.robot),
                       label: const Text('应用到 AI 助手（关闭工具调用）'),
                     ),
                   ),
@@ -471,7 +472,7 @@ class _LocalLlmPageState extends State<LocalLlmPage> {
       child: Column(
         children: [
           const ListTile(
-            leading: Icon(Icons.list_alt),
+            leading: Icon(TablerIcons.list),
             title: Text('已添加模型'),
           ),
           if (_models.isEmpty)
@@ -497,7 +498,7 @@ class _LocalLlmPageState extends State<LocalLlmPage> {
     return Column(
       children: [
         ListTile(
-          leading: Icon(entry.downloaded ? Icons.check_circle : Icons.download_for_offline_outlined),
+          leading: Icon(entry.downloaded ? TablerIcons.circle_check_filled : TablerIcons.download),
           title: Text(m.name),
           subtitle: Text([
             if (m.quant.isNotEmpty) m.quant,
@@ -509,16 +510,16 @@ class _LocalLlmPageState extends State<LocalLlmPage> {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     if (isLoaded)
-                      const Icon(Icons.play_circle, color: Colors.green)
+                      const Icon(TablerIcons.player_play_filled, color: Colors.green)
                     else
                       IconButton(
                         tooltip: '加载',
-                        icon: const Icon(Icons.play_arrow),
+                        icon: const Icon(TablerIcons.player_play),
                         onPressed: _busy ? null : () => _load(m),
                       ),
                     IconButton(
                       tooltip: '删除',
-                      icon: const Icon(Icons.delete_outline),
+                      icon: const Icon(TablerIcons.trash),
                       onPressed: _busy
                           ? null
                           : () async {
@@ -543,7 +544,7 @@ class _LocalLlmPageState extends State<LocalLlmPage> {
                     )
                   : IconButton(
                       tooltip: '下载',
-                      icon: const Icon(Icons.download),
+                      icon: const Icon(TablerIcons.download),
                       onPressed: _busy ? null : () => _download(m),
                     )),
         ),
@@ -557,7 +558,7 @@ class _LocalLlmPageState extends State<LocalLlmPage> {
       child: Column(
         children: [
           const ListTile(
-            leading: Icon(Icons.auto_awesome),
+            leading: Icon(TablerIcons.sparkles),
             title: Text('推荐模型'),
             subtitle: Text('一键预填（下载前请确认 URL 与文件名）'),
           ),
@@ -565,11 +566,11 @@ class _LocalLlmPageState extends State<LocalLlmPage> {
             ListTile(
               title: Text(p.name),
               subtitle: Text('${p.quant} · ${(p.sizeBytes / 1024 / 1024).round()} MB'),
-              trailing: const Icon(Icons.add),
+              trailing: const Icon(TablerIcons.plus),
               onTap: _busy ? null : () => _addModelDialog(preset: p),
             ),
           ListTile(
-            leading: const Icon(Icons.link),
+            leading: const Icon(TablerIcons.link),
             title: const Text('手动添加模型（URL）'),
             onTap: _busy ? null : () => _addModelDialog(),
           ),

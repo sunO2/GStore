@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 
 /// Reusable UI components that follow the app design system
 ///
@@ -443,7 +444,7 @@ class _AppTextFieldState extends State<AppTextField> {
   Widget? _buildSuffixIcon() {
     if (widget.obscureText) {
       return IconButton(
-        icon: Icon(_obscureText ? Icons.visibility_off : Icons.visibility),
+        icon: Icon(_obscureText ? TablerIcons.eye_off : TablerIcons.eye),
         onPressed: () {
           setState(() {
             _obscureText = !_obscureText;
@@ -540,7 +541,7 @@ class ErrorState extends StatelessWidget {
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Icon(
-              Icons.error_outline,
+              TablerIcons.alert_circle,
               size: AppTypography.iconXXXL,
               color: AppColors.error,
             ),
@@ -616,7 +617,7 @@ class InfoCard extends StatelessWidget {
     switch (type) {
       case InfoCardType.info:
         return _InfoCardConfig(
-          icon: Icons.info_outline,
+          icon: TablerIcons.info_circle,
           iconColor: AppColors.info,
           backgroundColor: AppColors.infoLight,
           borderColor: AppColors.info,
@@ -624,7 +625,7 @@ class InfoCard extends StatelessWidget {
         );
       case InfoCardType.success:
         return _InfoCardConfig(
-          icon: Icons.check_circle_outline,
+          icon: TablerIcons.circle_check,
           iconColor: AppColors.success,
           backgroundColor: AppColors.successLight,
           borderColor: AppColors.success,
@@ -632,7 +633,7 @@ class InfoCard extends StatelessWidget {
         );
       case InfoCardType.warning:
         return _InfoCardConfig(
-          icon: Icons.warning_amber_outlined,
+          icon: TablerIcons.alert_triangle,
           iconColor: AppColors.warning,
           backgroundColor: AppColors.warningLight,
           borderColor: AppColors.warning,
@@ -640,7 +641,7 @@ class InfoCard extends StatelessWidget {
         );
       case InfoCardType.error:
         return _InfoCardConfig(
-          icon: Icons.error_outline,
+          icon: TablerIcons.alert_circle,
           iconColor: AppColors.error,
           backgroundColor: AppColors.errorLight,
           borderColor: AppColors.error,
@@ -679,9 +680,9 @@ class _InfoCardConfig {
 /// AppSegmentedButton<AppThemeMode>(
 ///   value: themeMode,
 ///   segments: [
-///     AppSegment(value: AppThemeMode.system, label: '系统', icon: Icons.brightness_auto),
-///     AppSegment(value: AppThemeMode.light, label: '浅色', icon: Icons.light_mode),
-///     AppSegment(value: AppThemeMode.dark, label: '深色', icon: Icons.dark_mode),
+///     AppSegment(value: AppThemeMode.system, label: '系统', icon: TablerIcons.brightness_auto),
+///     AppSegment(value: AppThemeMode.light, label: '浅色', icon: TablerIcons.sun),
+///     AppSegment(value: AppThemeMode.dark, label: '深色', icon: TablerIcons.moon),
 ///   ],
 ///   onChanged: (AppThemeMode mode) => setThemeMode(mode),
 /// )
@@ -1359,7 +1360,7 @@ class AppIcon extends StatelessWidget {
         color: scheme.surfaceContainerHighest,
         borderRadius: BorderRadius.circular(borderRadius),
       ),
-      child: const Icon(Icons.android, color: Colors.grey),
+      child: const Icon(TablerIcons.brand_android, color: Colors.grey),
     );
   }
 }

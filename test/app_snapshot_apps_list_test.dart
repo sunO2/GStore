@@ -1,6 +1,7 @@
 import 'dart:ffi';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/snapshot/app_snapshot_store.dart';
 import 'package:gstore/core/snapshot/snapshot_models.dart';
@@ -116,7 +117,7 @@ void main() {
       // 列表行可点（点击条目 → 进对应应用的快照页由 Navigator 负责，这里锁住可点性）
       expect(find.byType(ListTile), findsNWidgets(2));
       // 测试环境取不到已安装图标 → 行内回落占位图标（真实图标在真机走 AppIconService）
-      expect(find.byIcon(Icons.history_outlined), findsWidgets);
+      expect(find.byIcon(TablerIcons.history), findsWidgets);
     });
 
     testWidgets('空态：给出从「应用分析」生成快照的引导', (tester) async {

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
@@ -98,7 +99,7 @@ void main() {
 
     // 标题 + 行标签（开发者出现 2 次：Section 标题 + 行 label）
     expect(find.text('开发者'), findsNWidgets(2));
-    expect(find.byIcon(Icons.person_outline), findsWidgets);
+    expect(find.byIcon(TablerIcons.user), findsWidgets);
     // 各行 value
     expect(find.text('OpenSource Team'), findsOneWidget);
     expect(find.text('https://github.com/sunO2/GStore'), findsOneWidget);

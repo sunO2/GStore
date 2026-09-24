@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/module/interfaces/service_interfaces.dart';
@@ -94,7 +95,7 @@ void main() {
     releases.add(releaseJson(version: '1.0.0', withAsset: false)); // 更新时：无更新
 
     await pumpTile(tester);
-    await tester.tap(find.byIcon(Icons.sync));
+    await tester.tap(find.byIcon(TablerIcons.refresh));
     await tester.pumpAndSettle();
     expect(find.text('更新'), findsOneWidget);
 
@@ -115,7 +116,7 @@ void main() {
     addTearDown(service.dispose);
 
     await pumpTile(tester);
-    await tester.tap(find.byIcon(Icons.sync));
+    await tester.tap(find.byIcon(TablerIcons.refresh));
     await tester.pumpAndSettle();
 
     final button =
@@ -143,7 +144,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(service.downloadCalls, 1);
-    expect(find.byIcon(Icons.sync), findsOneWidget,
+    expect(find.byIcon(TablerIcons.refresh), findsOneWidget,
         reason: 'loading 必须收敛为可检查状态，不能卡死');
   });
 }

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/core/channel/IChannel.dart';
 import 'package:gstore/core/channel/database/channel_added_app.dart';
 import 'package:gstore/core/channel/database/channel_database.dart';
@@ -1276,10 +1277,10 @@ class _FdroidSearchWidgetState extends State<_FdroidSearchWidget> {
             focusNode: _focusNode,
             decoration: InputDecoration(
               hintText: '搜索 F-Droid 应用...',
-              prefixIcon: const Icon(Icons.search),
+              prefixIcon: const Icon(TablerIcons.search),
               suffixIcon: _searchController.text.isNotEmpty
                   ? IconButton(
-                      icon: const Icon(Icons.clear),
+                      icon: const Icon(TablerIcons.x),
                       onPressed: () {
                         _searchController.clear();
                         setState(() {
@@ -1335,7 +1336,7 @@ class _FdroidSearchWidgetState extends State<_FdroidSearchWidget> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(Icons.error_outline, size: 64, color: Colors.red),
+            const Icon(TablerIcons.alert_circle, size: 64, color: Colors.red),
             const SizedBox(height: 16),
             Text(
               _errorMessage!,
@@ -1352,7 +1353,7 @@ class _FdroidSearchWidgetState extends State<_FdroidSearchWidget> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.search_off, size: 64, color: Colors.grey.shade400),
+            Icon(TablerIcons.search_off, size: 64, color: Colors.grey.shade400),
             const SizedBox(height: 16),
             Text(
               _searchController.text.isEmpty ? '输入关键词搜索应用' : '未找到相关应用',
@@ -1390,7 +1391,7 @@ class _FdroidSearchWidgetState extends State<_FdroidSearchWidget> {
           ),
           trailing: IconButton(
             icon: Icon(
-              isAdded ? Icons.check_circle : Icons.add_circle,
+              isAdded ? TablerIcons.circle_check_filled : TablerIcons.circle_plus_filled,
               color: isAdded ? Colors.green : Colors.grey,
             ),
             onPressed: isAdded ? null : () => _addApp(app),

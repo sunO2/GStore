@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/design/app_borders.dart';
 import 'package:gstore/compent/pressable_scale.dart';
@@ -360,7 +361,7 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
         actions: [
           IconButton(
             tooltip: '刷新',
-            icon: const Icon(Icons.refresh),
+            icon: const Icon(TablerIcons.refresh),
             onPressed: _moduleOnline ? _loadApps : null,
           ),
         ],
@@ -379,7 +380,7 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Icon(
-              Icons.android,
+              TablerIcons.brand_android,
               size: AppTypography.iconXXXL,
               color: Theme.of(context).colorScheme.onSurfaceVariant,
             ),
@@ -414,7 +415,7 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
                 color: Theme.of(context).colorScheme.secondaryContainer,
                 child: ListTile(
                   dense: true,
-                  leading: const Icon(Icons.shield_outlined, size: AppTypography.iconMD),
+                  leading: const Icon(TablerIcons.shield, size: AppTypography.iconMD),
                   title: const Text('Shizuku 未授权'),
                   subtitle: const Text('卸载/清理功能需要 Shizuku 授权'),
                   trailing: TextButton(
@@ -432,7 +433,7 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
                 color: Theme.of(context).colorScheme.primaryContainer,
                 child: ListTile(
                   dense: true,
-                  leading: const Icon(Icons.shield, size: AppTypography.iconMD, color: Colors.green),
+                  leading: const Icon(TablerIcons.shield_filled, size: AppTypography.iconMD, color: Colors.green),
                   title: const Text('Shizuku 已授权'),
                   subtitle: const Text('可卸载应用、清理数据/缓存'),
                 ),
@@ -447,7 +448,7 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
               onChanged: (v) => setState(() => _searchKeyword = v),
               decoration: InputDecoration(
                 hintText: '搜索已安装应用...',
-                prefixIcon: const Icon(Icons.search, size: 20),
+                prefixIcon: const Icon(TablerIcons.search, size: 20),
                 isDense: true,
                 filled: true,
                 fillColor: Theme.of(context).colorScheme.surfaceContainerHighest,
@@ -503,7 +504,7 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
               )
             : CircleAvatar(
                 radius: 20,
-                child: Icon(Icons.android, size: AppTypography.iconMD),
+                child: Icon(TablerIcons.brand_android, size: AppTypography.iconMD),
               ),
         title: Text(
           app.name,
@@ -523,7 +524,7 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
         ),
         isThreeLine: true,
         trailing: PopupMenuButton<String>(
-          icon: const Icon(Icons.more_vert, size: AppTypography.iconSM),
+          icon: const Icon(TablerIcons.dots_vertical, size: AppTypography.iconSM),
           onSelected: (value) {
             switch (value) {
               case 'uninstall':
@@ -548,7 +549,7 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
               value: 'uninstall',
               child: Row(
                 children: [
-                  Icon(Icons.delete_outline, color: AppColors.error, size: 18),
+                  Icon(TablerIcons.trash, color: AppColors.error, size: 18),
                   SizedBox(width: AppSpacing.sm),
                   Text('卸载应用'),
                 ],
@@ -558,7 +559,7 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
               value: 'clear_data',
               child: Row(
                 children: [
-                  Icon(Icons.restart_alt, color: Colors.orange, size: 18),
+                  Icon(TablerIcons.reload, color: Colors.orange, size: 18),
                   SizedBox(width: AppSpacing.sm),
                   Text('清理数据'),
                 ],
@@ -568,7 +569,7 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
               value: 'clear_cache',
               child: Row(
                 children: [
-                  Icon(Icons.cleaning_services, color: Colors.teal, size: 18),
+                  Icon(TablerIcons.clear_all, color: Colors.teal, size: 18),
                   SizedBox(width: AppSpacing.sm),
                   Text('清理缓存'),
                 ],
@@ -578,7 +579,7 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
               value: 'force_stop',
               child: Row(
                 children: [
-                  Icon(Icons.stop_circle_outlined, color: Colors.blueGrey, size: 18),
+                  Icon(TablerIcons.player_stop, color: Colors.blueGrey, size: 18),
                   SizedBox(width: AppSpacing.sm),
                   Text('强制停止'),
                 ],
@@ -588,7 +589,7 @@ class _InstalledAppsPageState extends State<InstalledAppsPage> {
               value: 'sdk_analysis',
               child: Row(
                 children: [
-                  Icon(Icons.memory_outlined, color: Colors.indigo, size: 18),
+                  Icon(TablerIcons.cpu, color: Colors.indigo, size: 18),
                   SizedBox(width: AppSpacing.sm),
                   Text('应用分析'),
                 ],

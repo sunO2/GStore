@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 
 /// 统计标签数据模型
 /// 用于统一不同渠道的统计数据展示
@@ -41,7 +42,7 @@ class StatTag {
 
     return StatTag(
       text: formattedCount,
-      icon: Icons.star_rounded,
+      icon: TablerIcons.star_filled,
       backgroundColor: const Color(0xFFFFF9C4).withAlpha(40), // 黄色
       borderColor: const Color(0xFFFFF9C4).withAlpha(80),
       textColor: const Color(0xFFF9A825), // yellow[700]
@@ -60,7 +61,7 @@ class StatTag {
 
     return StatTag(
       text: formattedCount,
-      icon: Icons.visibility,
+      icon: TablerIcons.eye,
       backgroundColor: const Color(0xFF2196F3).withAlpha(40), // 蓝色
       borderColor: const Color(0xFF2196F3).withAlpha(80),
       textColor: const Color(0xFF1976D2),
@@ -79,7 +80,7 @@ class StatTag {
 
     return StatTag(
       text: formattedCount,
-      icon: Icons.call_split,
+      icon: TablerIcons.arrows_split,
       backgroundColor: const Color(0xFF4CAF50).withAlpha(40), // 绿色
       borderColor: const Color(0xFF4CAF50).withAlpha(80),
       textColor: const Color(0xFF388E3C),
@@ -100,7 +101,7 @@ class StatTag {
 
     return StatTag(
       text: formattedCount,
-      icon: Icons.cloud_download_outlined,
+      icon: TablerIcons.cloud_download,
       backgroundColor: const Color(0xFFFF9800).withAlpha(40), // 橙色
       borderColor: const Color(0xFFFF9800).withAlpha(80),
       textColor: const Color(0xFFF57C00),
@@ -117,7 +118,7 @@ class StatTag {
 
     return StatTag(
       text: text,
-      icon: Icons.grade,
+      icon: TablerIcons.star_filled,
       backgroundColor: const Color(0xFFFFC107).withAlpha(40), // 琥珀色
       borderColor: const Color(0xFFFFC107).withAlpha(80),
       textColor: const Color(0xFFFF8F00),
@@ -136,7 +137,7 @@ class StatTag {
 
     return StatTag(
       text: formattedCount,
-      icon: Icons.favorite,
+      icon: TablerIcons.heart,
       backgroundColor: const Color(0xFFE91E63).withAlpha(40), // 粉色
       borderColor: const Color(0xFFE91E63).withAlpha(80),
       textColor: const Color(0xFFC2185B),

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:flutter/material.dart' as m show showDialog;
 
 import 'package:gstore/core/navigation/nav_key.dart';
@@ -287,19 +288,19 @@ class AppDialogs {
 
     switch (type) {
       case _SnackbarType.success:
-        icon = Icons.check_circle;
+        icon = TablerIcons.circle_check_filled;
         indicatorColor = _colorScheme.primary;
         break;
       case _SnackbarType.error:
-        icon = Icons.error;
+        icon = TablerIcons.alert_circle_filled;
         indicatorColor = _colorScheme.error;
         break;
       case _SnackbarType.warning:
-        icon = Icons.warning;
+        icon = TablerIcons.alert_triangle_filled;
         indicatorColor = AppColors.warning;
         break;
       case _SnackbarType.info:
-        icon = Icons.info;
+        icon = TablerIcons.info_circle_filled;
         indicatorColor = _colorScheme.primary;
         break;
       case _SnackbarType.normal:
@@ -453,7 +454,7 @@ class AppDialogs {
       title: title,
       message: message ?? '',
       confirmText: confirmText,
-      icon: const Icon(Icons.check_circle),
+      icon: const Icon(TablerIcons.circle_check_filled),
       iconColor: AppColors.success,
     );
   }
@@ -468,7 +469,7 @@ class AppDialogs {
       title: title,
       message: message ?? '',
       confirmText: confirmText,
-      icon: const Icon(Icons.error),
+      icon: const Icon(TablerIcons.alert_circle_filled),
       iconColor: AppColors.error,
     );
   }
@@ -485,7 +486,7 @@ class AppDialogs {
       message: message ?? '',
       confirmText: confirmText,
       cancelText: cancelText,
-      icon: const Icon(Icons.warning),
+      icon: const Icon(TablerIcons.alert_triangle_filled),
       iconColor: AppColors.warning,
     );
   }
@@ -503,7 +504,7 @@ class AppDialogs {
       confirmText: confirmText,
       cancelText: cancelText,
       isDangerous: true,
-      icon: const Icon(Icons.delete_outline),
+      icon: const Icon(TablerIcons.trash),
       iconColor: AppColors.error,
     );
   }
@@ -614,7 +615,7 @@ class _SelectionItem extends StatelessWidget {
             ),
             if (isSelected)
               Icon(
-                Icons.check,
+                TablerIcons.check,
                 color: theme.colorScheme.primary,
                 size: 20,
               ),

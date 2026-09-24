@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 
 import 'package:gstore/core/core.dart';
 
@@ -151,12 +152,12 @@ class _BackupRestoreSheetState extends State<BackupRestoreSheet> {
       case _RestoreState.preparing || _RestoreState.restoring:
         return const AppLoading(size: AppLoadingSize.small);
       case _RestoreState.restoreSuccess:
-        return const Icon(Icons.check_circle,
+        return const Icon(TablerIcons.circle_check_filled,
             color: AppColors.success, size: 24);
       case _RestoreState.prepareFailed ||
             _RestoreState.noBackup ||
             _RestoreState.restoreFailed:
-        return const Icon(Icons.error, color: AppColors.error, size: 24);
+        return const Icon(TablerIcons.alert_circle_filled, color: AppColors.error, size: 24);
       case _RestoreState.selecting:
         return const SizedBox.shrink();
     }
@@ -230,8 +231,8 @@ class _BackupRestoreSheetState extends State<BackupRestoreSheet> {
                   // radio 状态图标：未选中空心（灰）/ 选中实心（主题色）——始终可见
                   Icon(
                     selected
-                        ? Icons.radio_button_checked
-                        : Icons.radio_button_off,
+                        ? TablerIcons.circle_dot
+                        : TablerIcons.circle,
                     size: AppTypography.iconMD,
                     color: selected
                         ? theme.colorScheme.primary
@@ -400,7 +401,7 @@ class _BackupRestoreSheetState extends State<BackupRestoreSheet> {
             Row(
               children: [
                 Icon(
-                  Icons.cloud_outlined,
+                  TablerIcons.cloud,
                   color: theme.colorScheme.primary,
                   size: AppTypography.iconMD,
                 ),

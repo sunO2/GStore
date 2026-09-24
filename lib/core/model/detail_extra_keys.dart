@@ -77,38 +77,38 @@ abstract final class DownloadItemExtra {
   DownloadItemExtra._();
 
   /// 文件大小（格式化字符串，如 "12.5 MB"）
-  /// 建议 icon: `Icons.storage` 或 `Icons.sd_storage`
+  /// 建议 icon: `TablerIcons.database` 或 `TablerIcons.device_sd_card`
   static const String size = 'size';
 
   /// 平台标识（如 "Android"、"arm64-v8a"）
-  /// 建议 icon: `Icons.phone_android`
+  /// 建议 icon: `TablerIcons.device_mobile`
   static const String platform = 'platform';
 
   /// 版本号
-  /// 建议 icon: `Icons.tag`
+  /// 建议 icon: `TablerIcons.tag`
   static const String version = 'version';
 
   /// 下载次数
-  /// 建议 icon: `Icons.download`
+  /// 建议 icon: `TablerIcons.download`
   static const String downloadCount = 'downloadCount';
 
   /// 构建编号
-  /// 建议 icon: `Icons.build`
+  /// 建议 icon: `TablerIcons.tool`
   static const String build = 'build';
 
   /// 环境标识（如 "prd"、"sit"）
-  /// 建议 icon: `Icons.cloud`
+  /// 建议 icon: `TablerIcons.cloud_filled`
   static const String env = 'env';
 
   /// 安装次数
-  /// 建议 icon: `Icons.install_mobile`
+  /// 建议 icon: `TablerIcons.device_mobile_down`
   static const String installTimes = 'installTimes';
 
   /// 更新时间（格式化字符串，如 "2024-01-01"）
-  /// 建议 icon: `Icons.update`
+  /// 建议 icon: `TablerIcons.refresh_dot`
   static const String updateTime = 'updateTime';
 
   /// 下载次数（与 downloadCount 不同维度的统计）
-  /// 建议 icon: `Icons.downloading`
+  /// 建议 icon: `TablerIcons.download`
   static const String downloadTimes = 'downloadTimes';
 }

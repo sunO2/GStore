@@ -15,6 +15,7 @@ library;
 
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:flutter/services.dart';
 import 'package:gstore/core/agent/agent_service.dart';
 import 'package:gstore/core/core.dart';
@@ -369,7 +370,7 @@ class _WelcomeView extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.smart_toy_outlined,
+          Icon(TablerIcons.robot,
               size: 56, color: scheme.onSurfaceVariant),
           const SizedBox(height: 12),
           Text('GStore AI 助手',
@@ -524,8 +525,8 @@ class _TurnTimeline extends StatelessWidget {
             children: [
               Icon(
                 pending
-                    ? Icons.help_outline
-                    : (confirmed ? Icons.check_circle : Icons.cancel),
+                    ? TablerIcons.help_circle
+                    : (confirmed ? TablerIcons.circle_check_filled : TablerIcons.circle_x),
                 size: 16,
                 color: pending
                     ? scheme.primary
@@ -591,7 +592,7 @@ class _TurnTimeline extends StatelessWidget {
         width: double.infinity,
         child: OutlinedButton.icon(
           onPressed: () => _resolve(context, msg.id, option),
-          icon: const Icon(Icons.radio_button_unchecked, size: 16),
+          icon: const Icon(TablerIcons.circle, size: 16),
           label: Align(
             alignment: Alignment.centerLeft,
             child: Text(
@@ -641,7 +642,7 @@ class _TurnTimeline extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(
-              isError ? Icons.error_outline : _timelineToolIcon(tool.toolType),
+              isError ? TablerIcons.alert_circle : _timelineToolIcon(tool.toolType),
               size: 14,
               color: isError ? scheme.error : color,
             ),
@@ -686,7 +687,7 @@ class _TurnTimeline extends StatelessWidget {
             Clipboard.setData(ClipboardData(text: detailText));
             AppDialogs.showSuccess('工具调用详情已复制到剪贴板');
           },
-          icon: const Icon(Icons.copy, size: 16),
+          icon: const Icon(TablerIcons.copy, size: 16),
           label: const Text('复制'),
         ),
         TextButton(
@@ -734,8 +735,8 @@ class _ToolBubble extends StatelessWidget {
                       ? AppLoading(size: AppLoadingSize.small)
                       : Icon(
                           msg.toolStatus == AgentToolStatus.error
-                              ? Icons.error_outline
-                              : Icons.check_circle_outline,
+                              ? TablerIcons.alert_circle
+                              : TablerIcons.circle_check,
                           size: 16,
                           color: msg.toolStatus == AgentToolStatus.error
                               ? AppColors.error
@@ -847,36 +848,36 @@ Color _timelineToolColor(AgentToolType? type) {
 IconData _timelineToolIcon(AgentToolType? type) {
   switch (type) {
     case AgentToolType.search:
-      return Icons.search;
+      return TablerIcons.search;
     case AgentToolType.download:
-      return Icons.download;
+      return TablerIcons.download;
     case AgentToolType.install:
-      return Icons.install_mobile;
+      return TablerIcons.device_mobile_down;
     case AgentToolType.manageApp:
-      return Icons.apps;
+      return TablerIcons.apps_filled;
     case AgentToolType.appInfo:
-      return Icons.info_outline;
+      return TablerIcons.info_circle;
     case AgentToolType.update:
-      return Icons.system_update_alt;
+      return TablerIcons.refresh_dot;
     case AgentToolType.backup:
-      return Icons.backup_outlined;
+      return TablerIcons.cloud_upload;
     case AgentToolType.manageDownload:
-      return Icons.download_for_offline_outlined;
+      return TablerIcons.download;
     case AgentToolType.theme:
-      return Icons.palette_outlined;
+      return TablerIcons.palette;
     case AgentToolType.fdroid:
-      return Icons.science_outlined;
+      return TablerIcons.brand_android;
     case AgentToolType.webdav:
-      return Icons.cloud_outlined;
+      return TablerIcons.cloud;
     case AgentToolType.installed:
-      return Icons.check_circle_outline;
+      return TablerIcons.circle_check;
     case AgentToolType.config:
-      return Icons.settings_outlined;
+      return TablerIcons.settings;
     case AgentToolType.snapshot:
-      return Icons.camera_alt_outlined;
+      return TablerIcons.camera;
     case null:
     case AgentToolType.confirm:
-      return Icons.help_outline;
+      return TablerIcons.help_circle;
   }
 }
 

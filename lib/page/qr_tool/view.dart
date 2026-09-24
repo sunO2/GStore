@@ -7,6 +7,7 @@ import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform, listEquals;
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData, HapticFeedback;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gal/gal.dart';
@@ -503,7 +504,7 @@ class _QrToolPageState extends State<QrToolPage> {
             right: AppSpacing.sm,
             child: IconButton(
               tooltip: '手势操作说明',
-              icon: const Icon(Icons.info_outline, size: AppTypography.iconSM),
+              icon: const Icon(TablerIcons.info_circle, size: AppTypography.iconSM),
               onPressed: _showGestureHelp,
             ),
           ),
@@ -662,7 +663,7 @@ class _QrToolPageState extends State<QrToolPage> {
                       _clearHistory();
                       AppDialogs.popSheet<void>(null);
                     },
-                    icon: const Icon(Icons.delete_outline,
+                    icon: const Icon(TablerIcons.trash,
                         size: AppTypography.iconSM),
                     label: const Text('清空'),
                   ),
@@ -688,7 +689,7 @@ class _QrToolPageState extends State<QrToolPage> {
     _focusNode.unfocus();
     await AppDialogs.showDialog(
       title: '手势操作说明',
-      icon: const Icon(Icons.swipe),
+      icon: const Icon(TablerIcons.swipe),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -881,7 +882,7 @@ class _QrToolPageState extends State<QrToolPage> {
                         right: AppSpacing.sm,
                         child: IconButton.filledTonal(
                           tooltip: '重新扫描',
-                          icon: const Icon(Icons.refresh),
+                          icon: const Icon(TablerIcons.refresh),
                           onPressed: _restartScan,
                         ),
                       ),
@@ -920,7 +921,7 @@ class _QrToolPageState extends State<QrToolPage> {
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 Icon(
-                  Icons.qr_code_scanner,
+                  TablerIcons.scan,
                   size: AppTypography.iconMassive,
                   color: colorScheme.outline,
                 ),
@@ -950,7 +951,7 @@ class _QrToolPageState extends State<QrToolPage> {
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Icon(
-            Icons.qr_code_2,
+            TablerIcons.qrcode,
             size: AppTypography.iconMassive,
             color: colorScheme.outline,
           ),
@@ -2088,7 +2089,7 @@ class _QrModulePhaseChipState extends ConsumerState<_QrModulePhaseChip> {
           background: scheme.secondaryContainer,
           foreground: scheme.onSecondaryContainer,
           leading: Icon(
-            Icons.check_circle_outline,
+            TablerIcons.circle_check,
             size: AppTypography.iconSM,
             color: scheme.onSecondaryContainer,
           ),
@@ -2100,7 +2101,7 @@ class _QrModulePhaseChipState extends ConsumerState<_QrModulePhaseChip> {
           background: scheme.surfaceContainerHighest,
           foreground: scheme.outline,
           leading: Icon(
-            Icons.error_outline,
+            TablerIcons.alert_circle,
             size: AppTypography.iconSM,
             color: scheme.outline,
           ),

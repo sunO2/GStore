@@ -2,6 +2,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:go_router/go_router.dart';
 import 'package:gstore/core/icons/Icons.dart';
 import 'package:gstore/page/web/browser.dart';
@@ -84,7 +85,7 @@ class AppListState extends ConsumerState<ApplistPage>
                     .withValues(alpha: 0.5),
                 fontSize: 16,
               ),
-              prefixIcon: const Icon(Icons.search, size: 20),
+              prefixIcon: const Icon(TablerIcons.search, size: 20),
               suffixIcon: const _SearchClearSuffix(),
               border: OutlineInputBorder(
                 // 胶囊形搜索框（48 高 + 全圆）
@@ -159,7 +160,7 @@ class _SearchClearSuffix extends ConsumerWidget {
     );
     if (!hasKeyword) return const SizedBox.shrink();
     return IconButton(
-      icon: const Icon(Icons.clear, size: 18),
+      icon: const Icon(TablerIcons.x, size: 18),
       padding: EdgeInsets.zero,
       constraints: const BoxConstraints(),
       onPressed: () {
@@ -219,7 +220,7 @@ class _UserActionButton extends ConsumerWidget {
               placeholder: (context, url) =>
                   const AppLoading(size: AppLoadingSize.small),
               errorWidget: (context, url, error) => const Icon(
-                Icons.account_circle_outlined,
+                TablerIcons.user_circle,
               ),
               imageUrl: user.avatarUrl ?? "",
             ),
@@ -227,7 +228,7 @@ class _UserActionButton extends ConsumerWidget {
         );
       }
       return const Icon(
-        Icons.account_circle_outlined,
+        TablerIcons.user_circle,
       );
     }
 
@@ -298,7 +299,7 @@ class _ApplistBody extends ConsumerWidget {
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 const Icon(
-                  Icons.search_off,
+                  TablerIcons.search_off,
                   size: AppTypography.iconXXXL,
                   color: AppColors.grey400,
                 ),
@@ -535,7 +536,7 @@ class _CategoryFilterBar extends StatelessWidget {
           const SizedBox(width: AppSpacing.xs),
           // 排序菜单
           PopupMenuButton<AppSortMode>(
-            icon: const Icon(Icons.sort, size: 20),
+            icon: const Icon(TablerIcons.arrows_sort, size: 20),
             tooltip: '排序',
             onSelected: logic.setSortMode,
             itemBuilder: (context) => [

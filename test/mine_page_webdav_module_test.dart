@@ -4,6 +4,7 @@ import 'package:flutter_secure_storage/test/test_flutter_secure_storage_platform
 // ignore: depend_on_referenced_packages
 import 'package:flutter_secure_storage_platform_interface/flutter_secure_storage_platform_interface.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 
 import 'package:gstore/core/module/module.dart';
 import 'package:gstore/core/module/module_manager.dart';
@@ -77,7 +78,7 @@ void main() {
 
   /// 备份卡内的展开箭头（仅 webdav 入口可见时存在）
   Finder arrowIn(Finder card) =>
-      find.descendant(of: card, matching: find.byIcon(Icons.expand_more));
+      find.descendant(of: card, matching: find.byIcon(TablerIcons.chevron_down));
 
   /// 泵起我的页并等异步初始化（_checkWebDavConfig + BackupLogic）完成
   Future<void> pumpMinePage(WidgetTester tester) async {

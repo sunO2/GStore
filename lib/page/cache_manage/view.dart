@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 
 import 'package:gstore/core/core.dart';
 
@@ -13,14 +14,14 @@ class CacheManagePage extends ConsumerWidget {
 
   /// 扩展 icon 映射（下载文件等）。
   static const _iconMap = <String, IconData>{
-    'image': Icons.image_outlined,
-    'article': Icons.article_outlined,
-    'android': Icons.android,
-    'database': Icons.storage_outlined,
-    'memory': Icons.memory_outlined,
-    'cleaning': Icons.cleaning_services_outlined,
-    'download': Icons.download_done_outlined,
-    'widgets': Icons.widgets_outlined,
+    'image': TablerIcons.photo,
+    'article': TablerIcons.file_text,
+    'android': TablerIcons.brand_android,
+    'database': TablerIcons.database,
+    'memory': TablerIcons.cpu,
+    'cleaning': TablerIcons.clear_all,
+    'download': TablerIcons.download,
+    'widgets': TablerIcons.category,
   };
 
   @override
@@ -86,7 +87,7 @@ class CacheManagePage extends ConsumerWidget {
     return Card(
       margin: AppSpacing.allLG,
       child: ListTile(
-        leading: Icon(Icons.download_done_outlined,
+        leading: Icon(TablerIcons.download,
             color: theme.colorScheme.primary),
         title: const Text('已下载文件'),
         subtitle: Text(
@@ -96,7 +97,7 @@ class CacheManagePage extends ConsumerWidget {
                   ? '暂无已完成的下载文件'
                   : '$count 个文件 · ${notifier.formatSize(state.downloadTotalSize)}',
         ),
-        trailing: const Icon(Icons.chevron_right),
+        trailing: const Icon(TablerIcons.chevron_right),
         onTap: () {
           // 进入前确保数据最新
           notifier.loadDownloads();
@@ -124,7 +125,7 @@ class CacheManagePage extends ConsumerWidget {
         padding: AppSpacing.allLG,
         child: Row(
           children: [
-            Icon(Icons.cleaning_services_outlined,
+            Icon(TablerIcons.clear_all,
                 color: theme.colorScheme.primary),
             const SizedBox(width: AppSpacing.md),
             Expanded(
@@ -224,7 +225,7 @@ class CacheManagePage extends ConsumerWidget {
     final theme = Theme.of(context);
     final isClearingThis = clearing == item.id;
     return ListTile(
-      leading: Icon(_iconMap[item.icon] ?? Icons.folder_outlined,
+      leading: Icon(_iconMap[item.icon] ?? TablerIcons.folder,
           color: theme.colorScheme.primary),
       title: Text(item.name),
       subtitle: Text(

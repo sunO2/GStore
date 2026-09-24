@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 
 import 'package:gstore/core/core.dart';
 
@@ -99,9 +100,9 @@ class _BackupProgressSheetState extends State<BackupProgressSheet> {
   Widget _buildStatusIcon() {
     if (_running) return const AppLoading(size: AppLoadingSize.small);
     if (_success) {
-      return const Icon(Icons.check_circle, color: AppColors.success, size: 24);
+      return const Icon(TablerIcons.circle_check_filled, color: AppColors.success, size: 24);
     }
-    return const Icon(Icons.error, color: AppColors.error, size: 24);
+    return const Icon(TablerIcons.alert_circle_filled, color: AppColors.error, size: 24);
   }
 
   @override
@@ -119,7 +120,7 @@ class _BackupProgressSheetState extends State<BackupProgressSheet> {
             Row(
               children: [
                 Icon(
-                  Icons.cloud_outlined,
+                  TablerIcons.cloud,
                   color: theme.colorScheme.primary,
                   size: AppTypography.iconMD,
                 ),

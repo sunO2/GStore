@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/page/detail/widgets.dart';
@@ -79,12 +80,12 @@ void main() {
   });
 
   testWidgets('标题行：icon 为 primary 色 iconMD 尺寸，标题 titleSmall 加粗', (tester) async {
-    await pumpSectionCard(tester, icon: Icons.info_outline, children: const []);
+    await pumpSectionCard(tester, icon: TablerIcons.info_circle, children: const []);
 
     final colorScheme = Theme.of(tester.element(find.byType(SectionCard))).colorScheme;
 
     // 图标：primary 颜色 + iconMD 尺寸
-    final icon = tester.widget<Icon>(find.byIcon(Icons.info_outline));
+    final icon = tester.widget<Icon>(find.byIcon(TablerIcons.info_circle));
     expect(icon.size, AppTypography.iconMD);
     expect(icon.color, colorScheme.primary);
 
@@ -99,7 +100,7 @@ void main() {
   testWidgets('count 与 trailing：传入时渲染且顺序在标题之后', (tester) async {
     await pumpSectionCard(
       tester,
-      icon: Icons.info_outline,
+      icon: TablerIcons.info_circle,
       count: const Text('(3)'),
       trailing: const Text('更多'),
       children: const [Text('内容')],
@@ -122,7 +123,7 @@ void main() {
     await pumpSectionCard(tester, children: const [Text('内容')]);
 
     expect(find.text('测试标题'), findsOneWidget);
-    expect(find.byIcon(Icons.info_outline), findsNothing);
+    expect(find.byIcon(TablerIcons.info_circle), findsNothing);
     expect(find.text('(3)'), findsNothing);
     expect(find.text('更多'), findsNothing);
     expect(tester.takeException(), isNull);
@@ -142,7 +143,7 @@ void main() {
   testWidgets('布局：Column start 对齐，icon 在标题左侧(间距 sm)，标题行与内容间距 md', (tester) async {
     await pumpSectionCard(
       tester,
-      icon: Icons.info_outline,
+      icon: TablerIcons.info_circle,
       count: const Text('(3)'),
       trailing: const Text('更多'),
       children: const [Text('子内容一')],
@@ -163,7 +164,7 @@ void main() {
     );
 
     // icon 在标题左侧，间距 sm
-    final iconRight = tester.getTopRight(find.byIcon(Icons.info_outline)).dx;
+    final iconRight = tester.getTopRight(find.byIcon(TablerIcons.info_circle)).dx;
     final titleLeft = tester.getTopLeft(find.text('测试标题')).dx;
     expect(titleLeft - iconRight, AppSpacing.sm);
 

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/rust/ModuleLoader.dart';
@@ -79,7 +80,7 @@ class ModuleManagePage extends ConsumerWidget {
             ),
           ),
           IconButton(
-            icon: const Icon(Icons.refresh, size: AppTypography.iconSM),
+            icon: const Icon(TablerIcons.refresh, size: AppTypography.iconSM),
             tooltip: '刷新状态',
             onPressed: () => ref.read(rustPluginsProvider.notifier).refresh(),
           ),
@@ -159,7 +160,7 @@ class ModuleManagePage extends ConsumerWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Icon(
-                Icons.extension_outlined,
+                TablerIcons.puzzle,
                 size: AppTypography.iconMD,
                 color: loaded ? scheme.primary : scheme.outline,
               ),
@@ -282,7 +283,7 @@ class ModuleManagePage extends ConsumerWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Icon(
-          Icons.error_outline,
+          TablerIcons.alert_circle,
           size: AppTypography.iconSM,
           color: theme.colorScheme.error,
         ),
@@ -450,7 +451,7 @@ class ModuleManagePage extends ConsumerWidget {
   Widget _buildSystemTile(BuildContext context, ModuleEntry entry) {
     return SwitchListTile(
       secondary: Icon(
-        Icons.lock_outline,
+        TablerIcons.lock,
         size: AppTypography.iconMD,
         color: Theme.of(context).colorScheme.outline,
       ),
@@ -470,15 +471,15 @@ class ModuleManagePage extends ConsumerWidget {
 
   /// 模块名 → 图标
   IconData _iconOf(String name) => switch (name) {
-        'channel' => Icons.storage,
-        'download' => Icons.download,
-        'backup' => Icons.backup,
-        'webdav' => Icons.cloud,
-        'fdroid' => Icons.source,
-        'theme' => Icons.palette_outlined,
-        'install' => Icons.system_update_alt,
-        'aggregate' => Icons.apps,
-        'agent_tools' => Icons.smart_toy_outlined,
-        _ => Icons.extension,
+        'channel' => TablerIcons.database,
+        'download' => TablerIcons.download,
+        'backup' => TablerIcons.cloud_upload,
+        'webdav' => TablerIcons.cloud_filled,
+        'fdroid' => TablerIcons.source_code,
+        'theme' => TablerIcons.palette,
+        'install' => TablerIcons.device_mobile_down,
+        'aggregate' => TablerIcons.apps_filled,
+        'agent_tools' => TablerIcons.robot,
+        _ => TablerIcons.puzzle_filled,
       };
 }

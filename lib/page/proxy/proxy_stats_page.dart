@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 
 import 'package:gstore/core/design/app_components.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
@@ -232,7 +233,7 @@ class _ProxyStatsPageState extends State<ProxyStatsPage> {
       message: '将清空全部域名聚合数据，且无法撤销。确定继续吗？',
       confirmText: '重置',
       isDangerous: true,
-      icon: const Icon(Icons.delete_outline),
+      icon: const Icon(TablerIcons.trash),
     );
     if (ok != true || !mounted) return;
     try {
@@ -255,7 +256,7 @@ class _ProxyStatsPageState extends State<ProxyStatsPage> {
         actions: [
           IconButton(
             tooltip: '重置统计',
-            icon: const Icon(Icons.delete_outline),
+            icon: const Icon(TablerIcons.trash),
             onPressed: _page == null ? null : _confirmReset,
           ),
         ],
@@ -305,7 +306,7 @@ class _ProxyStatsPageState extends State<ProxyStatsPage> {
               Row(
                 children: [
                   ColoredAliIcon(
-                    icon: Icons.storage,
+                    icon: TablerIcons.database,
                     size: AppTypography.iconMD,
                     color: scheme.primary,
                   ),
@@ -364,7 +365,7 @@ class _ProxyStatsPageState extends State<ProxyStatsPage> {
               Text('排序', style: theme.textTheme.labelMedium),
               const SizedBox(width: AppSpacing.xs),
               Icon(
-                _ascending ? Icons.arrow_upward : Icons.arrow_downward,
+                _ascending ? TablerIcons.arrow_up : TablerIcons.arrow_down,
                 size: AppTypography.iconSM,
                 color: theme.colorScheme.primary,
               ),
@@ -377,7 +378,7 @@ class _ProxyStatsPageState extends State<ProxyStatsPage> {
               ),
               const Spacer(),
               ColoredAliIcon(
-                icon: Icons.storage,
+                icon: TablerIcons.database,
                 size: AppTypography.iconSM,
                 color: theme.colorScheme.onSurfaceVariant,
               ),
@@ -417,7 +418,7 @@ class _ProxyStatsPageState extends State<ProxyStatsPage> {
         SliverFillRemaining(
           hasScrollBody: false,
           child: _EmptyState(
-            icon: Icons.error_outline,
+            icon: TablerIcons.alert_circle,
             title: '统计不可用',
             message: error,
             actionLabel: '重试',
@@ -432,7 +433,7 @@ class _ProxyStatsPageState extends State<ProxyStatsPage> {
         SliverFillRemaining(
           hasScrollBody: false,
           child: _EmptyState(
-            icon: Icons.storage_outlined,
+            icon: TablerIcons.database,
             title: '暂无域名统计',
             message: '当前时间范围内没有可展示的域名记录。',
           ),
@@ -473,24 +474,24 @@ class _TrafficOverviewBody extends StatelessWidget {
           runSpacing: AppSpacing.md,
           children: [
             _OverviewMetric(
-              icon: Icons.arrow_upward,
+              icon: TablerIcons.arrow_up,
               label: '上传',
               value: byteSize(traffic.uploadBytes),
               sub: '${byteSize(traffic.upBps)}/s',
             ),
             _OverviewMetric(
-              icon: Icons.arrow_downward,
+              icon: TablerIcons.arrow_down,
               label: '下载',
               value: byteSize(traffic.downloadBytes),
               sub: '${byteSize(traffic.downBps)}/s',
             ),
             _OverviewMetric(
-              icon: Icons.swap_vert,
+              icon: TablerIcons.arrows_up_down,
               label: '活动连接',
               value: '${traffic.activeConns}',
             ),
             _OverviewMetric(
-              icon: Icons.dns_outlined,
+              icon: TablerIcons.server,
               label: '域名',
               value: '${traffic.domainCount}',
             ),
@@ -590,7 +591,7 @@ class _TopDomainRow extends StatelessWidget {
           ),
           const SizedBox(width: AppSpacing.sm),
           Icon(
-            Icons.arrow_upward,
+            TablerIcons.arrow_up,
             size: AppTypography.iconXXS,
             color: scheme.primary,
           ),
@@ -598,7 +599,7 @@ class _TopDomainRow extends StatelessWidget {
           Text(byteSize(stat.uploadBytes), style: theme.textTheme.labelSmall),
           const SizedBox(width: AppSpacing.sm),
           Icon(
-            Icons.arrow_downward,
+            TablerIcons.arrow_down,
             size: AppTypography.iconXXS,
             color: scheme.primary,
           ),
@@ -624,7 +625,7 @@ class _OverviewError extends StatelessWidget {
     return Row(
       children: [
         Icon(
-          Icons.error_outline,
+          TablerIcons.alert_circle,
           size: AppTypography.iconSM,
           color: scheme.error,
         ),
@@ -696,14 +697,14 @@ class _DomainStatCard extends StatelessWidget {
               spacing: AppSpacing.lg,
               runSpacing: AppSpacing.xs,
               children: [
-                _metric(context, Icons.swap_vert, '${stat.connections} 连接'),
-                _metric(context, Icons.arrow_upward, byteSize(stat.uploadBytes)),
+                _metric(context, TablerIcons.arrows_up_down, '${stat.connections} 连接'),
+                _metric(context, TablerIcons.arrow_up, byteSize(stat.uploadBytes)),
                 _metric(
                   context,
-                  Icons.arrow_downward,
+                  TablerIcons.arrow_down,
                   byteSize(stat.downloadBytes),
                 ),
-                _metric(context, Icons.schedule, _formatSeen(stat.lastSeenMs)),
+                _metric(context, TablerIcons.clock, _formatSeen(stat.lastSeenMs)),
               ],
             ),
           ],
@@ -760,7 +761,7 @@ class _EmptyState extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             ColoredAliIcon(
-              icon: Icons.storage,
+              icon: TablerIcons.database,
               size: AppTypography.iconXXXL,
               color: scheme.onSurfaceVariant,
             ),

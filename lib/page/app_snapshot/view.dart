@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/core/design/app_components.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/design/app_spacing.dart';
@@ -194,7 +195,7 @@ class _AppSnapshotPageState extends State<AppSnapshotPage> {
                     height: 18,
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
-                : const Icon(Icons.add_a_photo_outlined),
+                : const Icon(TablerIcons.photo_plus),
             onPressed: _capturing ? null : _capture,
           ),
         ],
@@ -205,7 +206,7 @@ class _AppSnapshotPageState extends State<AppSnapshotPage> {
               ? const SnapshotEmptyHint(
                   text: '还没有快照。\n创建快照可记录当前的应用信息，之后能对比出'
                       '版本更新带来的原生库、权限、组件、签名等变化。',
-                  icon: Icons.camera_alt_outlined,
+                  icon: TablerIcons.camera,
                 )
               : Column(
                   children: [
@@ -262,7 +263,7 @@ class _AppSnapshotPageState extends State<AppSnapshotPage> {
                     ),
                     FilledButton.icon(
                       onPressed: _selected.length == 2 ? _openCompare : null,
-                      icon: const Icon(Icons.compare_arrows),
+                      icon: const Icon(TablerIcons.arrows_exchange),
                       label: const Text('对比'),
                     ),
                   ],

@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_svg/flutter_svg.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 
 import 'package:gstore/core/design/app_components.dart';
 import 'package:gstore/core/design/app_spacing.dart';
@@ -17,21 +18,21 @@ import 'package:gstore/core/utils/unit.dart';
 ///
 /// 文字标签见 [apkEntryKindLabel]（放在 service 层，UI 与 Agent 共用同一份）。
 IconData apkEntryIcon(String kind, {bool isDir = false}) {
-  if (isDir) return Icons.folder_outlined;
+  if (isDir) return TablerIcons.folder;
   return switch (kind) {
-    'zip' || 'apk' || 'jar' || 'aar' => Icons.folder_zip_outlined,
-    'dex' => Icons.data_object,
-    'so' => Icons.memory,
-    'arsc' => Icons.grid_on,
-    'manifest' => Icons.description_outlined,
-    'image' => Icons.image_outlined,
-    'json' => Icons.data_array,
-    'text' => Icons.article_outlined,
-    'font' => Icons.font_download_outlined,
-    'cert' => Icons.verified_user_outlined,
-    'video' => Icons.movie_outlined,
-    'audio' => Icons.music_note_outlined,
-    _ => Icons.insert_drive_file_outlined,
+    'zip' || 'apk' || 'jar' || 'aar' => TablerIcons.file_zip,
+    'dex' => TablerIcons.braces,
+    'so' => TablerIcons.cpu_2,
+    'arsc' => TablerIcons.grid_4x4,
+    'manifest' => TablerIcons.file_description,
+    'image' => TablerIcons.photo,
+    'json' => TablerIcons.brackets,
+    'text' => TablerIcons.file_text,
+    'font' => TablerIcons.typography,
+    'cert' => TablerIcons.shield_check,
+    'video' => TablerIcons.movie,
+    'audio' => TablerIcons.music,
+    _ => TablerIcons.file,
   };
 }
 
@@ -364,7 +365,7 @@ class _ApkEntryPreviewPageState extends State<ApkEntryPreviewPage> {
           Row(
             children: [
               Icon(
-                _kind == 'video' ? Icons.movie_outlined : Icons.music_note_outlined,
+                _kind == 'video' ? TablerIcons.movie : TablerIcons.music,
                 color: theme.colorScheme.primary,
               ),
               const SizedBox(width: AppSpacing.sm),

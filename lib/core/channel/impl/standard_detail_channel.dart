@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/core/channel/IDetailChannel.dart';
 import 'package:gstore/core/channel/detail_callbacks.dart';
 import 'package:gstore/core/core.dart';
@@ -409,14 +410,14 @@ class StandardDetailChannel implements IDetailChannel {
       if (canSubmitAppMetadata)
         DetailAction(
           label: '完善应用信息',
-          icon: Icons.manage_search,
+          icon: TablerIcons.search,
           onTap: callbacks.submitAppMetadata,
         ),
       // 项目主页（打开项目的 GitHub 地址 / 项目详情地址）
       if (_state?.detailInfo?.projectUrl != null)
         DetailAction(
           label: '项目主页',
-          icon: Icons.language,
+          icon: TablerIcons.language,
           onTap: () async => callbacks.openProjectBrowser(),
         ),
     ];

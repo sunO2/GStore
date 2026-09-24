@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:gstore/page/backup/widgets/backup_progress_sheet.dart';
@@ -38,7 +39,7 @@ void main() {
 
     // 任务完成：✓ + 完成按钮 + 最后一条日志
     await tester.pump(const Duration(milliseconds: 100));
-    expect(find.byIcon(Icons.check_circle), findsOneWidget);
+    expect(find.byIcon(TablerIcons.circle_check_filled), findsOneWidget);
     expect(find.text('完成'), findsOneWidget);
     expect(find.text('上传成功: /GStore/gstore_backup.tar.gz'), findsOneWidget);
     expect(find.text('重试'), findsNothing);
@@ -59,7 +60,7 @@ void main() {
 
     expect(find.text('连接 WebDAV 服务器...'), findsOneWidget);
     expect(find.textContaining('连接超时'), findsOneWidget);
-    expect(find.byIcon(Icons.error), findsOneWidget);
+    expect(find.byIcon(TablerIcons.alert_circle_filled), findsOneWidget);
     expect(find.text('重试'), findsOneWidget);
     expect(find.text('关闭'), findsOneWidget);
     expect(find.text('完成'), findsNothing);
@@ -94,7 +95,7 @@ void main() {
     expect(find.text('第 1 次执行'), findsNothing);
     expect(find.textContaining('首次失败'), findsNothing);
     expect(find.text('完成'), findsOneWidget);
-    expect(find.byIcon(Icons.check_circle), findsOneWidget);
+    expect(find.byIcon(TablerIcons.circle_check_filled), findsOneWidget);
   });
 
   testWidgets('日志过多时自动滚动到底部', (tester) async {

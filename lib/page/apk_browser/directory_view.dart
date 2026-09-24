@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 
 import 'package:gstore/core/design/app_components.dart';
 import 'package:gstore/core/design/app_radius.dart';
@@ -174,7 +175,7 @@ class _ApkDirectoryViewState extends State<ApkDirectoryView> {
           if (widget.dir.isNotEmpty)
             IconButton(
               tooltip: '上一层目录',
-              icon: const Icon(Icons.arrow_upward, size: AppTypography.iconMD),
+              icon: const Icon(TablerIcons.arrow_up, size: AppTypography.iconMD),
               onPressed: widget.onUp,
             )
           else
@@ -184,7 +185,7 @@ class _ApkDirectoryViewState extends State<ApkDirectoryView> {
               scrollDirection: Axis.horizontal,
               itemCount: crumbs.length,
               separatorBuilder: (_, __) => Icon(
-                Icons.chevron_right,
+                TablerIcons.chevron_right,
                 size: AppTypography.iconSM,
                 color: theme.colorScheme.onSurfaceVariant,
               ),
@@ -219,7 +220,7 @@ class _ApkDirectoryViewState extends State<ApkDirectoryView> {
           ),
           IconButton(
             tooltip: '刷新',
-            icon: const Icon(Icons.refresh, size: AppTypography.iconMD),
+            icon: const Icon(TablerIcons.refresh, size: AppTypography.iconMD),
             onPressed: _loading ? null : _load,
           ),
         ],
@@ -261,11 +262,11 @@ class _ApkDirectoryViewState extends State<ApkDirectoryView> {
         decoration: InputDecoration(
           isDense: true,
           hintText: '搜索文件名 / 路径 / 类型（如 lib、png、json）',
-          prefixIcon: const Icon(Icons.search, size: AppTypography.iconSM),
+          prefixIcon: const Icon(TablerIcons.search, size: AppTypography.iconSM),
           suffixIcon: _query.isEmpty
               ? null
               : IconButton(
-                  icon: const Icon(Icons.close, size: AppTypography.iconSM),
+                  icon: const Icon(TablerIcons.x, size: AppTypography.iconSM),
                   onPressed: () {
                     _queryCtrl.clear();
                     setState(() => _query = '');
@@ -282,13 +283,13 @@ class _ApkDirectoryViewState extends State<ApkDirectoryView> {
       return const Center(child: CircularProgressIndicator());
     }
     if (_error != null) {
-      return _hint(_error!, Icons.error_outline);
+      return _hint(_error!, TablerIcons.alert_circle);
     }
     final entries = _visibleEntries;
     if (entries.isEmpty) {
       return _hint(
         _query.isEmpty ? '该目录下没有条目' : '没有匹配「$_query」的条目',
-        Icons.inbox_outlined,
+        TablerIcons.inbox,
       );
     }
     return ListView.builder(
@@ -366,7 +367,7 @@ class _ApkDirectoryViewState extends State<ApkDirectoryView> {
           ),
           if (actionable)
             Icon(
-              Icons.chevron_right,
+              TablerIcons.chevron_right,
               color: theme.colorScheme.onSurfaceVariant,
             ),
         ],

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/channel/impl/JsChannel.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
@@ -11,7 +12,7 @@ import 'package:gstore/page/detail/widgets.dart';
 /// AppInfoSection 测试（TDD RED：组件尚未实现）
 ///
 /// 验证可折叠"应用信息" Section：
-/// - SectionCard(title: '应用信息', icon: Icons.info_outline, trailing: 展开/收起按钮)
+/// - SectionCard(title: '应用信息', icon: TablerIcons.info_circle, trailing: 展开/收起按钮)
 /// - 默认收起：仅渲染基础行（包名/当前版本/开发者/渠道，_InfoRow，非空才显示）
 /// - 展开：+ 项目主页行 + 统计 StatTag chips（info.buildStatTags() fallback statistics）
 /// - 无可展开内容（无项目主页且无统计）时隐藏展开按钮
@@ -177,7 +178,7 @@ Future<void> _pumpAny(WidgetTester tester, IDetailInfo info) async {
 }
 
 void main() {
-  testWidgets('标题 "应用信息" + Icons.info_outline 渲染', (tester) async {
+  testWidgets('标题 "应用信息" + TablerIcons.info_circle 渲染', (tester) async {
     final info = _FakeDetailInfo(
       versionValue: '1.0.24',
       developerValue: 'OpenSource Team',
@@ -188,7 +189,7 @@ void main() {
     await _pumpAppInfo(tester, info);
 
     expect(find.text('应用信息'), findsOneWidget);
-    expect(find.byIcon(Icons.info_outline), findsOneWidget);
+    expect(find.byIcon(TablerIcons.info_circle), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -212,10 +213,10 @@ void main() {
     expect(find.text('渠道'), findsOneWidget);
     expect(find.text('github'), findsOneWidget);
     // 展开内容不可见：统计 chips 与项目主页
-    expect(find.byIcon(Icons.star_rounded), findsNothing);
+    expect(find.byIcon(TablerIcons.star_filled), findsNothing);
     expect(find.text('项目主页'), findsNothing);
     // 存在可展开内容 → 展开按钮可见
-    expect(find.byIcon(Icons.expand_more), findsOneWidget);
+    expect(find.byIcon(TablerIcons.chevron_down), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -231,28 +232,28 @@ void main() {
     await _pumpAppInfo(tester, info);
 
     // 展开
-    await tester.tap(find.byIcon(Icons.expand_more));
+    await tester.tap(find.byIcon(TablerIcons.chevron_down));
     await tester.pumpAndSettle();
 
     // 项目主页行
     expect(find.text('项目主页'), findsOneWidget);
     expect(find.text('https://github.com/sunO2/GStore'), findsOneWidget);
     // 统计 chips（stars/forks）
-    expect(find.byIcon(Icons.star_rounded), findsOneWidget);
+    expect(find.byIcon(TablerIcons.star_filled), findsOneWidget);
     expect(find.text('1.2k'), findsOneWidget);
-    expect(find.byIcon(Icons.call_split), findsOneWidget);
+    expect(find.byIcon(TablerIcons.arrows_split), findsOneWidget);
     expect(find.text('56'), findsOneWidget);
     // 图标切换为收起
-    expect(find.byIcon(Icons.expand_less), findsOneWidget);
-    expect(find.byIcon(Icons.expand_more), findsNothing);
+    expect(find.byIcon(TablerIcons.chevron_up), findsOneWidget);
+    expect(find.byIcon(TablerIcons.chevron_down), findsNothing);
 
     // 收起
-    await tester.tap(find.byIcon(Icons.expand_less));
+    await tester.tap(find.byIcon(TablerIcons.chevron_up));
     await tester.pumpAndSettle();
 
-    expect(find.byIcon(Icons.star_rounded), findsNothing);
+    expect(find.byIcon(TablerIcons.star_filled), findsNothing);
     expect(find.text('项目主页'), findsNothing);
-    expect(find.byIcon(Icons.expand_more), findsOneWidget);
+    expect(find.byIcon(TablerIcons.chevron_down), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -267,14 +268,14 @@ void main() {
     await _pumpAppInfo(tester, info);
 
     // buildStatTags() 为空但 statistics 非空 → 兜底生成 tags → 可展开
-    expect(find.byIcon(Icons.expand_more), findsOneWidget);
+    expect(find.byIcon(TablerIcons.chevron_down), findsOneWidget);
 
-    await tester.tap(find.byIcon(Icons.expand_more));
+    await tester.tap(find.byIcon(TablerIcons.chevron_down));
     await tester.pumpAndSettle();
 
     // 展开后可见下载量/评分 chips
-    expect(find.byIcon(Icons.cloud_download_outlined), findsOneWidget);
-    expect(find.byIcon(Icons.grade), findsOneWidget);
+    expect(find.byIcon(TablerIcons.cloud_download), findsOneWidget);
+    expect(find.byIcon(TablerIcons.star_filled), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -291,9 +292,9 @@ void main() {
     expect(find.text('应用信息'), findsOneWidget);
     expect(find.text('1.0.24'), findsOneWidget);
     // 无可展开内容 → 无展开/收起按钮
-    expect(find.byIcon(Icons.expand_more), findsNothing);
-    expect(find.byIcon(Icons.expand_less), findsNothing);
-    expect(find.byIcon(Icons.star_rounded), findsNothing);
+    expect(find.byIcon(TablerIcons.chevron_down), findsNothing);
+    expect(find.byIcon(TablerIcons.chevron_up), findsNothing);
+    expect(find.byIcon(TablerIcons.star_filled), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
@@ -346,7 +347,7 @@ void main() {
     expect(rotation.turns, 0.0);
 
     // 展开：固定 pump 推进动画（勿 pumpAndSettle）
-    await tester.tap(find.byIcon(Icons.expand_more));
+    await tester.tap(find.byIcon(TablerIcons.chevron_down));
     await tester.pump();
     await tester.pump(AppAnimation.medium);
     await tester.pump(AppAnimation.medium);
@@ -354,7 +355,7 @@ void main() {
     // 展开内容可见 + 箭头已旋转 0.5
     expect(find.text('项目主页'), findsOneWidget);
     expect(find.text('https://github.com/sunO2/GStore'), findsOneWidget);
-    expect(find.byIcon(Icons.expand_less), findsOneWidget);
+    expect(find.byIcon(TablerIcons.chevron_up), findsOneWidget);
     final rotated =
         tester.widget<AnimatedRotation>(find.byType(AnimatedRotation));
     expect(rotated.turns, 0.5);

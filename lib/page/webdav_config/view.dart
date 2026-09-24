@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/webdav/webdav_config.dart';
 
@@ -69,7 +70,7 @@ class _WebDavConfigPageState extends ConsumerState<WebDavConfigPage> {
         actions: [
           if (ui.hasConfig)
             IconButton(
-              icon: const Icon(Icons.delete_outline),
+              icon: const Icon(TablerIcons.trash),
               onPressed: () => _confirmDeleteConfig(context),
               tooltip: '删除配置',
             ),
@@ -105,7 +106,7 @@ class _WebDavConfigPageState extends ConsumerState<WebDavConfigPage> {
           Row(
             children: [
               Icon(
-                Icons.cloud_outlined,
+                TablerIcons.cloud,
                 color: Theme.of(context).colorScheme.primary,
               ),
               const SizedBox(width: AppSpacing.sm),
@@ -151,7 +152,7 @@ class _WebDavConfigPageState extends ConsumerState<WebDavConfigPage> {
             decoration: const InputDecoration(
               labelText: '服务器地址',
               hintText: 'example.com/dav',
-              prefixIcon: Icon(Icons.dns),
+              prefixIcon: Icon(TablerIcons.server),
               border: OutlineInputBorder(),
             ),
           ),
@@ -162,7 +163,7 @@ class _WebDavConfigPageState extends ConsumerState<WebDavConfigPage> {
             decoration: const InputDecoration(
               labelText: '用户名',
               hintText: '请输入用户名',
-              prefixIcon: Icon(Icons.person),
+              prefixIcon: Icon(TablerIcons.user_filled),
               border: OutlineInputBorder(),
             ),
           ),
@@ -174,11 +175,11 @@ class _WebDavConfigPageState extends ConsumerState<WebDavConfigPage> {
             decoration: InputDecoration(
               labelText: '密码',
               hintText: '请输入密码',
-              prefixIcon: const Icon(Icons.lock),
+              prefixIcon: const Icon(TablerIcons.lock),
               border: const OutlineInputBorder(),
               suffixIcon: IconButton(
                 icon: Icon(
-                  ui.obscurePassword ? Icons.visibility_off : Icons.visibility,
+                  ui.obscurePassword ? TablerIcons.eye_off : TablerIcons.eye,
                 ),
                 onPressed: () => ref
                     .read(webDavConfigProvider.notifier)
@@ -193,7 +194,7 @@ class _WebDavConfigPageState extends ConsumerState<WebDavConfigPage> {
             decoration: const InputDecoration(
               labelText: '备份路径',
               hintText: '/GStore',
-              prefixIcon: Icon(Icons.folder),
+              prefixIcon: Icon(TablerIcons.folder_filled),
               border: OutlineInputBorder(),
             ),
           ),
@@ -219,7 +220,7 @@ class _WebDavConfigPageState extends ConsumerState<WebDavConfigPage> {
             ui.isTesting ? null : () => _runTestConnection(),
         icon: ui.isTesting
             ? const AppLoading(size: AppLoadingSize.small)
-            : const Icon(Icons.wifi_find),
+            : const Icon(TablerIcons.wifi),
         label: Text(ui.isTesting ? '测试中...' : '测试连接'),
       ),
     );
@@ -232,7 +233,7 @@ class _WebDavConfigPageState extends ConsumerState<WebDavConfigPage> {
         onPressed: ui.isSaving ? null : () => _runSave(),
         icon: ui.isSaving
             ? const AppLoading(size: AppLoadingSize.small)
-            : const Icon(Icons.save),
+            : const Icon(TablerIcons.device_floppy),
         label: Text(ui.isSaving ? '保存中...' : '保存配置'),
       ),
     );

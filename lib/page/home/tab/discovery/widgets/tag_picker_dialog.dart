@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/core/design/design_tokens.dart';
 
 /// 展示分类标签选择弹层（统一底部 sheet 风格）
@@ -138,7 +139,7 @@ class _TagPickerDialogState extends State<_TagPickerDialog> {
                 color: colorScheme.onSurfaceVariant,
               ),
               suffixIcon: IconButton(
-                icon: const Icon(Icons.add),
+                icon: const Icon(TablerIcons.plus),
                 tooltip: '添加标签',
                 onPressed: _addCustomTag,
               ),

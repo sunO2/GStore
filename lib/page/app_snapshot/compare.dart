@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/core/design/app_radius.dart';
 import 'package:gstore/core/design/app_spacing.dart';
 import 'package:gstore/core/design/app_typography.dart';
@@ -77,7 +78,7 @@ class _AppSnapshotComparePageState extends State<AppSnapshotComparePage> {
         actions: [
           IconButton(
             tooltip: '互换对比方向（旧↔新）',
-            icon: const Icon(Icons.swap_horiz),
+            icon: const Icon(TablerIcons.arrows_left_right),
             onPressed: () => setState(() => _swapped = !_swapped),
           ),
         ],
@@ -98,7 +99,7 @@ class _AppSnapshotComparePageState extends State<AppSnapshotComparePage> {
           else if (changed.isEmpty)
             const SnapshotEmptyHint(
               text: '两份快照没有差异',
-              icon: Icons.check_circle_outline,
+              icon: TablerIcons.circle_check,
             )
           else
             for (final section in sections) _section(context, section),
@@ -140,11 +141,11 @@ class _AppSnapshotComparePageState extends State<AppSnapshotComparePage> {
         decoration: InputDecoration(
           isDense: true,
           hintText: '搜索资源名 / 库名 / 字段（如 app_name）',
-          prefixIcon: const Icon(Icons.search, size: AppTypography.iconSM),
+          prefixIcon: const Icon(TablerIcons.search, size: AppTypography.iconSM),
           suffixIcon: _query.isEmpty
               ? null
               : IconButton(
-                  icon: const Icon(Icons.close, size: AppTypography.iconSM),
+                  icon: const Icon(TablerIcons.x, size: AppTypography.iconSM),
                   onPressed: () {
                     _queryCtrl.clear();
                     setState(() => _query = '');
@@ -174,8 +175,8 @@ class _AppSnapshotComparePageState extends State<AppSnapshotComparePage> {
               children: [
                 Icon(
                   verdict.hasChange
-                      ? Icons.change_circle_outlined
-                      : Icons.check_circle_outline,
+                      ? TablerIcons.refresh
+                      : TablerIcons.circle_check,
                   size: AppTypography.iconSM,
                   color: verdict.hasChange
                       ? theme.colorScheme.tertiary

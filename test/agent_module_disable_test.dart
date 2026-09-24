@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/config/config_store.dart';
@@ -133,7 +134,7 @@ void main() {
 
       // 输入并点击发送 → 弹提示（snackbar），不发送
       await tester.enterText(find.byType(TextField), 'hello');
-      await tester.tap(find.byIcon(Icons.send));
+      await tester.tap(find.byIcon(TablerIcons.send));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
 

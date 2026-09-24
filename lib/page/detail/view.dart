@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:flutter_html/flutter_html.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
@@ -104,7 +105,7 @@ class _DetailPageState extends ConsumerState<DetailPage> {
         ] else ...[
           IconButton(
             onPressed: () => logic.showMoreActions(context),
-            icon: const Icon(Icons.more_vert),
+            icon: const Icon(TablerIcons.dots_vertical),
             tooltip: "更多",
           ),
         ],
@@ -308,7 +309,7 @@ class _DetailPageState extends ConsumerState<DetailPage> {
                 height: AppSpacing.xxxl * 2,
                 color: Theme.of(context).colorScheme.surfaceContainerHighest,
                 child: Icon(
-                  Icons.apps,
+                  TablerIcons.apps_filled,
                   color: Theme.of(context).colorScheme.onSurfaceVariant,
                 ),
               ),
@@ -376,7 +377,7 @@ class _DetailPageState extends ConsumerState<DetailPage> {
           onPressed: () => logic.installCurrentTask(data),
           backgroundColor: Theme.of(context).colorScheme.primaryContainer,
           foregroundColor: Theme.of(context).colorScheme.onPrimaryContainer,
-          icon: const Icon(Icons.system_update_alt),
+          icon: const Icon(TablerIcons.device_mobile_down),
           label: Text(
             '安装',
             style: Theme.of(context).textTheme.labelLarge,
@@ -389,7 +390,7 @@ class _DetailPageState extends ConsumerState<DetailPage> {
           onPressed: () => logic.retryCurrentTask(data),
           backgroundColor: Theme.of(context).colorScheme.tertiaryContainer,
           foregroundColor: Theme.of(context).colorScheme.onTertiaryContainer,
-          icon: const Icon(Icons.refresh),
+          icon: const Icon(TablerIcons.refresh),
           label: Text(
             '重试',
             style: Theme.of(context).textTheme.labelLarge,
@@ -402,7 +403,7 @@ class _DetailPageState extends ConsumerState<DetailPage> {
           onPressed: () => logic.resumeCurrentTask(data),
           backgroundColor: Theme.of(context).colorScheme.secondaryContainer,
           foregroundColor: Theme.of(context).colorScheme.onSecondaryContainer,
-          icon: const Icon(Icons.play_arrow),
+          icon: const Icon(TablerIcons.player_play),
           label: Text(
             '继续',
             style: Theme.of(context).textTheme.labelLarge,

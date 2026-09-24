@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 
 import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/model/AppDetailInfo.dart';
@@ -455,8 +456,8 @@ class _VersionRow extends StatelessWidget {
                 // 单选圆点
                 Icon(
                   isSelected
-                      ? Icons.radio_button_checked
-                      : Icons.radio_button_off,
+                      ? TablerIcons.circle_dot
+                      : TablerIcons.circle,
                   size: AppTypography.iconMD,
                   color: isSelected
                       ? colorScheme.primary

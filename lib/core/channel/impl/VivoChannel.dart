@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/core/channel/IChannel.dart';
 import 'package:gstore/core/channel/database/channel_added_app.dart';
 import 'package:gstore/core/channel/database/channel_database.dart';
@@ -973,10 +974,10 @@ class _VivoAddAppState extends State<_VivoAddAppWidget> {
             focusNode: _focusNode,
             decoration: InputDecoration(
               hintText: '搜索应用（如：微信、抖音等）',
-              prefixIcon: const Icon(Icons.search),
+              prefixIcon: const Icon(TablerIcons.search),
               suffixIcon: _searchController.text.isNotEmpty
                   ? IconButton(
-                      icon: const Icon(Icons.clear),
+                      icon: const Icon(TablerIcons.x),
                       onPressed: () {
                         _searchController.clear();
                         _performSearch('');
@@ -1026,7 +1027,7 @@ class _VivoAddAppState extends State<_VivoAddAppWidget> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.error_outline, color: Colors.red),
+              const Icon(TablerIcons.alert_circle, color: Colors.red),
               const SizedBox(height: 8),
               Text(
                 _errorMessage!,
@@ -1047,7 +1048,7 @@ class _VivoAddAppState extends State<_VivoAddAppWidget> {
             mainAxisSize: MainAxisSize.min,
             children: [
               Icon(
-                Icons.search,
+                TablerIcons.search,
                 size: 48,
                 color: Colors.grey[400],
               ),
@@ -1079,7 +1080,7 @@ class _VivoAddAppState extends State<_VivoAddAppWidget> {
             mainAxisSize: MainAxisSize.min,
             children: [
               Icon(
-                Icons.search_off,
+                TablerIcons.search_off,
                 size: 48,
                 color: Colors.grey[400],
               ),
@@ -1110,7 +1111,7 @@ class _VivoAddAppState extends State<_VivoAddAppWidget> {
                     backgroundImage: NetworkImage(app.icon),
                   )
                 : const CircleAvatar(
-                    child: Icon(Icons.apps, size: 20),
+                    child: Icon(TablerIcons.apps_filled, size: 20),
                   ),
             title: Text(app.name),
             subtitle: Column(

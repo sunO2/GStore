@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/logger/LogManager.dart';
@@ -181,8 +182,8 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
 
     // 原「导出日志」按钮已改为「更多」
-    expect(find.byIcon(Icons.file_download), findsNothing);
-    await tester.tap(find.byIcon(Icons.more_vert));
+    expect(find.byIcon(TablerIcons.file_download), findsNothing);
+    await tester.tap(find.byIcon(TablerIcons.dots_vertical));
     await tester.pumpAndSettle();
 
     expect(find.text('下载日志'), findsOneWidget);

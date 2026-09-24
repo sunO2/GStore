@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -689,7 +690,7 @@ void main() {
 
     expect(find.text('切换版本'), findsOneWidget);
     // 脚本声明动作（无图标 → 宫格默认 extension 图标）
-    expect(find.byIcon(Icons.extension), findsOneWidget);
+    expect(find.byIcon(TablerIcons.puzzle_filled), findsOneWidget);
   });
 
   testWidgets('①b 非脚本渠道 → 更多动作无"切换版本"', (tester) async {
@@ -700,7 +701,7 @@ void main() {
     await openMoreActions(tester);
 
     expect(find.text('切换版本'), findsNothing);
-    expect(find.byIcon(Icons.swap_vert), findsNothing);
+    expect(find.byIcon(TablerIcons.arrows_up_down), findsNothing);
   });
 
   testWidgets('② versionOptions 返回 null → 选择器空列表提示（不崩）', (tester) async {
@@ -898,8 +899,8 @@ void main() {
     expect(dc.detailMenuCalls, 1);
     expect(find.text('切换版本'), findsOneWidget);
     expect(find.text('清除缓存'), findsOneWidget);
-    expect(find.byIcon(Icons.extension), findsNWidgets(2));
-    expect(find.byIcon(Icons.swap_vert), findsNothing,
+    expect(find.byIcon(TablerIcons.puzzle_filled), findsNWidgets(2));
+    expect(find.byIcon(TablerIcons.arrows_up_down), findsNothing,
         reason: '写死"切换版本"被脚本声明替换');
   });
 
@@ -918,7 +919,7 @@ void main() {
     // detailMenu 被调但返回 null → 无脚本动作注入（旧写死"切换版本"已移除）
     expect(dc.detailMenuCalls, 1);
     expect(find.text('切换版本'), findsNothing);
-    expect(find.byIcon(Icons.extension), findsNothing);
+    expect(find.byIcon(TablerIcons.puzzle_filled), findsNothing);
     expect(find.text('操作'), findsNothing);
     expect(tester.takeException(), isNull);
   });
@@ -1105,7 +1106,7 @@ void main() {
     // 宫格渲染 detail.js 声明动作
     expect(find.text('切换版本'), findsOneWidget);
     expect(find.text('清除缓存'), findsOneWidget);
-    expect(find.byIcon(Icons.extension), findsNWidgets(2));
+    expect(find.byIcon(TablerIcons.puzzle_filled), findsNWidgets(2));
   });
 
   testWidgets(
@@ -1344,7 +1345,7 @@ void main() {
     expect(find.text('old.apk'), findsOneWidget);
 
     // 点"更多"触发 setNativeHost 注入（含 updateDownloadList 注册）
-    await tester.tap(find.byIcon(Icons.more_vert));
+    await tester.tap(find.byIcon(TablerIcons.dots_vertical));
     await tester.pumpAndSettle();
     expect(dc.capturedNativeHost!['ui.updateDownloadList'], isNotNull);
 

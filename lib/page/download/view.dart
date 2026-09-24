@@ -2,6 +2,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/design/app_borders.dart';
 import 'package:gstore/core/download/model/download_task.dart';
@@ -44,7 +45,7 @@ class _DownloadManagerState extends ConsumerState<DownloadManager> {
           // 批量操作（暂停全部/取消排队/重试失败）+ 清理：放入导航头部，
           // 避免 body 中条件显示整行导致布局跳动。
           PopupMenuButton<String>(
-            icon: const Icon(Icons.more_vert),
+            icon: const Icon(TablerIcons.dots_vertical),
             tooltip: '更多操作',
             onSelected: (value) {
               switch (value) {
@@ -147,7 +148,7 @@ class _DownloadManagerState extends ConsumerState<DownloadManager> {
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Icon(
-            Icons.download_outlined,
+            TablerIcons.download,
             size: AppTypography.iconHuge * 2,
             color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.3),
           ),
@@ -266,14 +267,14 @@ class _DownloadManagerState extends ConsumerState<DownloadManager> {
       DownloadGroupKind.failed when failedItems.isNotEmpty => _actionButton(
           context,
           label: '重试失败',
-          icon: Icons.refresh,
+          icon: TablerIcons.refresh,
           onPressed: () => _retryFailedInGroup(failedItems),
         ),
       DownloadGroupKind.completed when installables.length == 1 =>
         _actionButton(
           context,
           label: '安装',
-          icon: Icons.install_mobile,
+          icon: TablerIcons.device_mobile_down,
           onPressed: () => notifier.installApp(installables.first),
         ),
       _ => null,
@@ -284,44 +285,44 @@ class _DownloadManagerState extends ConsumerState<DownloadManager> {
     switch (summary.kind) {
       case DownloadGroupKind.downloading:
         if (summary.speedBps > 0) {
-          metas.add(('合计 ${formatSpeed(summary.speedBps)}', Icons.speed, null));
+          metas.add(('合计 ${formatSpeed(summary.speedBps)}', TablerIcons.gauge, null));
         }
         metas.add(('${summary.completed}/${summary.total} 已完成', null, null));
         if ((summary.etaSec ?? 0) > 0) {
-          metas.add((formatDuration(summary.etaSec!), Icons.schedule, null));
+          metas.add((formatDuration(summary.etaSec!), TablerIcons.clock, null));
         }
       case DownloadGroupKind.queued:
-        metas.add(('等待下载槽位', Icons.queue, null));
+        metas.add(('等待下载槽位', TablerIcons.playlist, null));
         metas.add(('${summary.completed}/${summary.total} 已完成', null, null));
       case DownloadGroupKind.waiting:
-        metas.add(('已暂停', Icons.pause_circle_outline, null));
+        metas.add(('已暂停', TablerIcons.player_pause, null));
         metas.add(('${summary.completed}/${summary.total} 已完成', null, null));
       case DownloadGroupKind.failed:
         if (summary.completed > 0) {
           metas.add((
             '${summary.completed} 个已完成',
-            Icons.check_circle_outline,
+            TablerIcons.circle_check,
             null,
           ));
         }
-        metas.add(('${summary.failed} 个失败', Icons.error, scheme.error));
+        metas.add(('${summary.failed} 个失败', TablerIcons.alert_circle_filled, scheme.error));
       case DownloadGroupKind.completed:
         if (summary.totalBytes > 0) {
           metas.add((
             _formatFileSize(summary.totalBytes),
-            Icons.folder_outlined,
+            TablerIcons.folder,
             null,
           ));
         }
         final channel = inferChannelLabel(items.first.url);
         if (channel != null) {
-          metas.add((channel, Icons.storefront_outlined, null));
+          metas.add((channel, TablerIcons.building_store, null));
         }
     }
     if (summary.deleted > 0) {
       metas.add((
         '${summary.deleted} 个文件已删除',
-        Icons.delete_outline,
+        TablerIcons.trash,
         scheme.error,
       ));
     }
@@ -493,7 +494,7 @@ class _DownloadManagerState extends ConsumerState<DownloadManager> {
               duration: AppAnimation.fast,
               curve: AppAnimation.curve,
               child: Icon(
-                Icons.keyboard_arrow_down,
+                TablerIcons.chevron_down,
                 size: AppTypography.iconMD,
                 color: scheme.onSurfaceVariant,
               ),
@@ -526,30 +527,30 @@ class _DownloadManagerState extends ConsumerState<DownloadManager> {
         context,
         label: '已删除',
         color: scheme.error,
-        icon: Icons.delete_outline,
+        icon: TablerIcons.trash,
       );
     }
     final (label, color, icon) = switch (summary.kind) {
       DownloadGroupKind.downloading => (
           '下载中',
           scheme.primary,
-          Icons.downloading,
+          TablerIcons.download,
         ),
       DownloadGroupKind.completed => (
           '已完成',
           scheme.tertiary,
-          Icons.check_circle,
+          TablerIcons.circle_check_filled,
         ),
-      DownloadGroupKind.failed => ('失败', scheme.error, Icons.error),
+      DownloadGroupKind.failed => ('失败', scheme.error, TablerIcons.alert_circle_filled),
       DownloadGroupKind.queued => (
           '排队中',
           scheme.secondary,
-          Icons.queue,
+          TablerIcons.playlist,
         ),
       DownloadGroupKind.waiting => (
           '等待中',
           scheme.onSurfaceVariant,
-          Icons.schedule,
+          TablerIcons.clock,
         ),
     };
     return _statusChip(context, label: label, color: color, icon: icon);
@@ -569,7 +570,7 @@ class _DownloadManagerState extends ConsumerState<DownloadManager> {
           errorWidget: (context, url, error) => Container(
             color: Theme.of(context).colorScheme.primaryContainer,
             child: const Icon(
-              Icons.document_scanner,
+              TablerIcons.brand_android,
               size: AppTypography.iconMD,
             ),
           ),
@@ -604,7 +605,7 @@ class _DownloadManagerState extends ConsumerState<DownloadManager> {
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(
-              Icons.delete,
+              TablerIcons.trash,
               size: AppTypography.iconSM,
               color: Theme.of(context).colorScheme.onError,
             ),
@@ -668,7 +669,7 @@ class _DownloadManagerState extends ConsumerState<DownloadManager> {
                 IconButton(
                   tooltip: '重新下载（清空已下分段，从 0 开始）',
                   icon: const Icon(
-                    Icons.refresh,
+                    TablerIcons.refresh,
                     size: AppTypography.iconSM,
                   ),
                   visualDensity: VisualDensity.compact,
@@ -677,7 +678,7 @@ class _DownloadManagerState extends ConsumerState<DownloadManager> {
                 IconButton(
                   tooltip: '删除',
                   icon: const Icon(
-                    Icons.delete_outline,
+                    TablerIcons.trash,
                     size: AppTypography.iconSM,
                   ),
                   visualDensity: VisualDensity.compact,
@@ -690,7 +691,7 @@ class _DownloadManagerState extends ConsumerState<DownloadManager> {
                 IconButton(
                   tooltip: '下载信息',
                   icon: const Icon(
-                    Icons.info_outline,
+                    TablerIcons.info_circle,
                     size: AppTypography.iconSM,
                   ),
                   visualDensity: VisualDensity.compact,
@@ -715,7 +716,7 @@ class _DownloadManagerState extends ConsumerState<DownloadManager> {
       return OutlinedButton.icon(
         onPressed: null,
         icon: Icon(
-          Icons.delete_outline,
+          TablerIcons.trash,
           size: AppTypography.iconSM,
           color: Theme.of(context).colorScheme.error,
         ),
@@ -741,11 +742,11 @@ class _DownloadManagerState extends ConsumerState<DownloadManager> {
     if (action == null) return const SizedBox.shrink();
 
     final (label, icon) = switch (action) {
-      DownloadAction.pause => ('暂停', Icons.pause),
-      DownloadAction.resume => ('继续', Icons.play_arrow),
-      DownloadAction.retry => ('重试', Icons.refresh),
-      DownloadAction.install => ('安装', Icons.install_mobile),
-      DownloadAction.cancel => ('取消', Icons.cancel),
+      DownloadAction.pause => ('暂停', TablerIcons.player_pause),
+      DownloadAction.resume => ('继续', TablerIcons.player_play),
+      DownloadAction.retry => ('重试', TablerIcons.refresh),
+      DownloadAction.install => ('安装', TablerIcons.device_mobile_down),
+      DownloadAction.cancel => ('取消', TablerIcons.circle_x),
     };
     final onPressed = switch (action) {
       DownloadAction.pause => () => notifier.pauseDownload(item),
@@ -918,7 +919,7 @@ class _DownloadManagerState extends ConsumerState<DownloadManager> {
                     IconButton(
                       tooltip: '复制链接',
                       icon: Icon(
-                        Icons.copy,
+                        TablerIcons.copy,
                         size: AppTypography.iconSM,
                         color: scheme.primary,
                       ),
@@ -1046,7 +1047,7 @@ class _DownloadManagerState extends ConsumerState<DownloadManager> {
       final (label, color, icon) = (
         '已删除',
         scheme.error,
-        Icons.delete_outline,
+        TablerIcons.trash,
       );
       return _statusChip(context, label: label, color: color, icon: icon);
     }
@@ -1054,23 +1055,23 @@ class _DownloadManagerState extends ConsumerState<DownloadManager> {
       DownloadStatusKind.downloading => (
           '下载中',
           scheme.primary,
-          Icons.downloading,
+          TablerIcons.download,
         ),
       DownloadStatusKind.completed => (
           '已完成',
           scheme.tertiary,
-          Icons.check_circle,
+          TablerIcons.circle_check_filled,
         ),
-      DownloadStatusKind.failed => ('失败', scheme.error, Icons.error),
+      DownloadStatusKind.failed => ('失败', scheme.error, TablerIcons.alert_circle_filled),
       DownloadStatusKind.queued => (
           '排队中',
           scheme.secondary,
-          Icons.queue,
+          TablerIcons.playlist,
         ),
       DownloadStatusKind.waiting => (
           '等待中',
           scheme.onSurfaceVariant,
-          Icons.schedule,
+          TablerIcons.clock,
         ),
     };
 
@@ -1222,7 +1223,7 @@ class _DownloadManagerState extends ConsumerState<DownloadManager> {
           value: 'pause_all',
           child: Row(
             children: [
-              Icon(Icons.pause_circle_outline, size: AppTypography.iconSM),
+              Icon(TablerIcons.player_pause, size: AppTypography.iconSM),
               const SizedBox(width: AppSpacing.md),
               const Text('暂停全部'),
             ],
@@ -1233,7 +1234,7 @@ class _DownloadManagerState extends ConsumerState<DownloadManager> {
           value: 'cancel_queued',
           child: Row(
             children: [
-              Icon(Icons.cancel_outlined,
+              Icon(TablerIcons.circle_x,
                   size: AppTypography.iconSM, color: scheme.error),
               const SizedBox(width: AppSpacing.md),
               const Text('取消排队'),
@@ -1245,7 +1246,7 @@ class _DownloadManagerState extends ConsumerState<DownloadManager> {
           value: 'retry_failed',
           child: Row(
             children: [
-              Icon(Icons.refresh, size: AppTypography.iconSM),
+              Icon(TablerIcons.refresh, size: AppTypography.iconSM),
               const SizedBox(width: AppSpacing.md),
               const Text('重试失败'),
             ],
@@ -1257,7 +1258,7 @@ class _DownloadManagerState extends ConsumerState<DownloadManager> {
         value: 'clear_completed',
         child: Row(
           children: [
-            Icon(Icons.cleaning_services),
+            Icon(TablerIcons.clear_all),
             SizedBox(width: AppSpacing.md),
             Text('清理已完成'),
           ],
@@ -1267,7 +1268,7 @@ class _DownloadManagerState extends ConsumerState<DownloadManager> {
         value: 'clear_all',
         child: Row(
           children: [
-            Icon(Icons.delete_sweep, color: scheme.error),
+            Icon(TablerIcons.trash_x, color: scheme.error),
             const SizedBox(width: AppSpacing.md),
             Text('清空全部', style: TextStyle(color: scheme.error)),
           ],

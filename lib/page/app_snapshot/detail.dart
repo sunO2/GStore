@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/core/design/app_spacing.dart';
 import 'package:gstore/core/snapshot/snapshot_diff_engine.dart';
 import 'package:gstore/core/snapshot/snapshot_models.dart';
@@ -29,7 +30,7 @@ class AppSnapshotDetailPage extends StatelessWidget {
           if (prev != null)
             IconButton(
               tooltip: '与上一快照对比',
-              icon: const Icon(Icons.compare_arrows),
+              icon: const Icon(TablerIcons.arrows_exchange),
               onPressed: () => Navigator.push(
                 context,
                 MaterialPageRoute(

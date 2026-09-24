@@ -7,6 +7,7 @@ import 'dart:io';
 
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gstore/core/design/design_tokens.dart';
@@ -447,7 +448,7 @@ class FdroidRepoNotifier extends Notifier<FdroidRepoState> {
     final rows = <Widget>[
       ListTile(
         dense: true,
-        leading: const Icon(Icons.history),
+        leading: const Icon(TablerIcons.history),
         title: Text('版本（${versions.length}）'),
         subtitle: Text(app.suggestedVersionCode == null
             ? '按版本号从新到旧'
@@ -468,7 +469,7 @@ class FdroidRepoNotifier extends Notifier<FdroidRepoState> {
       rows.add(ListTile(
         dense: true,
         leading: Icon(
-          compatible ? Icons.check_circle_outline : Icons.block,
+          compatible ? TablerIcons.circle_check : TablerIcons.ban,
           size: 18,
         ),
         title: Text('${v.versionName}（${v.versionCode}）'),
@@ -512,7 +513,7 @@ class FdroidRepoNotifier extends Notifier<FdroidRepoState> {
     if (meta.antiFeatures.isNotEmpty) {
       rows.add(ListTile(
         dense: true,
-        leading: const Icon(Icons.warning_amber_outlined),
+        leading: const Icon(TablerIcons.alert_triangle),
         title: const Text('抗特性'),
         subtitle: Text(meta.antiFeatures.join(' / ')),
       ));
@@ -770,23 +771,23 @@ class FdroidRepoNotifier extends Notifier<FdroidRepoState> {
       if (origin != null)
         ListTile(
           dense: true,
-          leading: const Icon(Icons.source_outlined),
+          leading: const Icon(TablerIcons.source_code),
           title: const Text('来源源'),
           subtitle: Text('${origin.name} · ${origin.repoUrl}'),
         ),
-      ListTile(dense: true, leading: const Icon(Icons.tag), title: const Text('包名'), subtitle: Text(app.packageName)),
+      ListTile(dense: true, leading: const Icon(TablerIcons.tag), title: const Text('包名'), subtitle: Text(app.packageName)),
       if ((app.summary).isNotEmpty)
-        ListTile(dense: true, leading: const Icon(Icons.notes), title: const Text('摘要'), subtitle: Text(app.summary)),
+        ListTile(dense: true, leading: const Icon(TablerIcons.notes), title: const Text('摘要'), subtitle: Text(app.summary)),
       if ((app.license ?? '').isNotEmpty)
-        ListTile(dense: true, leading: const Icon(Icons.gavel), title: const Text('许可证'), subtitle: Text(app.license!)),
+        ListTile(dense: true, leading: const Icon(TablerIcons.gavel), title: const Text('许可证'), subtitle: Text(app.license!)),
       if ((app.authorName ?? '').isNotEmpty)
-        ListTile(dense: true, leading: const Icon(Icons.person_outline), title: const Text('作者'), subtitle: Text(app.authorName!)),
+        ListTile(dense: true, leading: const Icon(TablerIcons.user), title: const Text('作者'), subtitle: Text(app.authorName!)),
       if ((app.sourceCode ?? '').isNotEmpty)
-        ListTile(dense: true, leading: const Icon(Icons.code), title: const Text('源码'), subtitle: Text(app.sourceCode!)),
+        ListTile(dense: true, leading: const Icon(TablerIcons.code), title: const Text('源码'), subtitle: Text(app.sourceCode!)),
       if ((app.webSite ?? '').isNotEmpty)
-        ListTile(dense: true, leading: const Icon(Icons.public), title: const Text('网站'), subtitle: Text(app.webSite!)),
+        ListTile(dense: true, leading: const Icon(TablerIcons.world), title: const Text('网站'), subtitle: Text(app.webSite!)),
       if ((app.categories ?? const []).isNotEmpty)
-        ListTile(dense: true, leading: const Icon(Icons.category_outlined), title: const Text('分类'), subtitle: Text(app.categories!.join(' / '))),
+        ListTile(dense: true, leading: const Icon(TablerIcons.category), title: const Text('分类'), subtitle: Text(app.categories!.join(' / '))),
       ..._versionRows(app),
       ..._extrasRows(app),
     ];

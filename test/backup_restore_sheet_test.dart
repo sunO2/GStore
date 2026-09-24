@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:gstore/core/core.dart';
@@ -133,7 +134,7 @@ void main() {
 
     await tester.pump(const Duration(milliseconds: 100));
     expect(find.text('恢复完成'), findsOneWidget);
-    expect(find.byIcon(Icons.check_circle), findsOneWidget);
+    expect(find.byIcon(TablerIcons.circle_check_filled), findsOneWidget);
     expect(find.text('完成'), findsOneWidget);
     expect(find.text('重试'), findsNothing);
 
@@ -159,7 +160,7 @@ void main() {
 
     final notice = tester.widget<Text>(find.text('未找到备份'));
     expect(notice.style?.color, AppColors.error);
-    expect(find.byIcon(Icons.error), findsOneWidget);
+    expect(find.byIcon(TablerIcons.alert_circle_filled), findsOneWidget);
     expect(find.text('关闭'), findsOneWidget);
     expect(find.text('重试'), findsNothing);
     expect(find.text('开始恢复'), findsNothing);
@@ -187,7 +188,7 @@ void main() {
     await tester.pump();
 
     // 阶段1 失败：✗ + 红色错误日志 + 重试/关闭
-    expect(find.byIcon(Icons.error), findsOneWidget);
+    expect(find.byIcon(TablerIcons.alert_circle_filled), findsOneWidget);
     final errorLog = tester.widget<Text>(find.textContaining('连接超时'));
     expect(errorLog.style?.color, AppColors.error);
     expect(find.text('重试'), findsOneWidget);

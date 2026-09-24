@@ -4,6 +4,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/config/config_registry.dart';
 import 'package:gstore/core/config/config_service.dart';
@@ -484,17 +485,17 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
   IconData _getChannelIcon(ChannelType type) {
     switch (type) {
       case ChannelType.localDb:
-        return Icons.storage;
+        return TablerIcons.database;
       case ChannelType.github:
-        return Icons.code;
+        return TablerIcons.code;
       case ChannelType.http:
-        return Icons.cloud;
+        return TablerIcons.cloud_filled;
       case ChannelType.vivo:
-        return Icons.phone_android;
+        return TablerIcons.device_mobile;
       case ChannelType.fdroid:
-        return Icons.android;
+        return TablerIcons.brand_android;
       case ChannelType.custom:
-        return Icons.apps;
+        return TablerIcons.apps_filled;
     }
   }
 
@@ -746,8 +747,8 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
           ListTile(
             leading: Icon(
               isAdded
-                  ? Icons.remove_circle_outline
-                  : Icons.add_circle_outline,
+                  ? TablerIcons.circle_minus
+                  : TablerIcons.circle_plus,
               color: theme.colorScheme.primary,
             ),
             title: Text(isAdded ? '从首页移除' : '添加到首页'),
@@ -758,7 +759,7 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
           ),
           // 从渠道删除（危险操作：统一走 AppDialogs 确认 sheet）
           ListTile(
-            leading: Icon(Icons.delete_outline, color: theme.colorScheme.error),
+            leading: Icon(TablerIcons.trash, color: theme.colorScheme.error),
             title: Text(
               '从渠道删除',
               style: TextStyle(color: theme.colorScheme.error),
@@ -778,7 +779,7 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
           // 批量管理
           ListTile(
             leading: Icon(
-              Icons.checklist,
+              TablerIcons.list_check,
               color: theme.colorScheme.secondary,
             ),
             title: const Text('批量管理'),
@@ -878,20 +879,20 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
   IconData getChannelIcon(String code) {
     switch (ChannelType.fromCode(code)) {
       case ChannelType.localDb:
-        return Icons.storage;
+        return TablerIcons.database;
       case ChannelType.github:
-        return Icons.code;
+        return TablerIcons.code;
       case ChannelType.http:
-        return Icons.cloud;
+        return TablerIcons.cloud_filled;
       case ChannelType.vivo:
-        return Icons.phone_android;
+        return TablerIcons.device_mobile;
       case ChannelType.fdroid:
-        return Icons.extension;
+        return TablerIcons.puzzle_filled;
       case ChannelType.custom:
-        return Icons.apps;
+        return TablerIcons.apps_filled;
       case null:
         // 脚本渠道
-        return Icons.apps;
+        return TablerIcons.apps_filled;
     }
   }
 
@@ -1075,7 +1076,7 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           ListTile(
-            leading: const Icon(Icons.select_all),
+            leading: const Icon(TablerIcons.checks),
             title: const Text('全选当前页面'),
             onTap: () {
               Navigator.of(context).pop();
@@ -1083,7 +1084,7 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
             },
           ),
           ListTile(
-            leading: const Icon(Icons.add_circle_outline),
+            leading: const Icon(TablerIcons.circle_plus),
             title: const Text('批量添加已选'),
             onTap: () {
               Navigator.of(context).pop();
@@ -1091,7 +1092,7 @@ class DiscoveryNotifier extends AutoDisposeNotifier<DiscoveryState> {
             },
           ),
           ListTile(
-            leading: const Icon(Icons.remove_circle_outline),
+            leading: const Icon(TablerIcons.circle_minus),
             title: const Text('批量移除已选'),
             onTap: () {
               Navigator.of(context).pop();
@@ -1359,7 +1360,7 @@ class _AddAppSearchSheetState extends State<_AddAppSearchSheet> {
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
               child: Row(
                 children: [
-                  const Icon(Icons.search, size: 20),
+                  const Icon(TablerIcons.search, size: 20),
                   const SizedBox(width: 8),
                   Text(
                     '搜索应用',
@@ -1367,7 +1368,7 @@ class _AddAppSearchSheetState extends State<_AddAppSearchSheet> {
                   ),
                   const Spacer(),
                   IconButton(
-                    icon: const Icon(Icons.close),
+                    icon: const Icon(TablerIcons.x),
                     onPressed: () => Navigator.of(context).pop(),
                   ),
                 ],
@@ -1418,7 +1419,7 @@ class _AddAppSearchSheetState extends State<_AddAppSearchSheet> {
                 },
                 decoration: InputDecoration(
                   hintText: '输入应用名称或包名搜索',
-                  prefixIcon: const Icon(Icons.search),
+                  prefixIcon: const Icon(TablerIcons.search),
                   filled: true,
                   fillColor: scheme.surfaceContainerHighest,
                   border: OutlineInputBorder(
@@ -1541,7 +1542,7 @@ class _AddAppSearchSheetState extends State<_AddAppSearchSheet> {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.check_circle, size: 16, color: Colors.green),
+            Icon(TablerIcons.circle_check_filled, size: 16, color: Colors.green),
             SizedBox(width: 4),
             Text('已添加', style: TextStyle(fontSize: 13)),
           ],
@@ -1596,7 +1597,7 @@ class _AddAppSearchSheetState extends State<_AddAppSearchSheet> {
         color: Theme.of(context).colorScheme.surfaceContainerHighest,
         borderRadius: BorderRadius.circular(8),
       ),
-      child: const Icon(Icons.android, color: Colors.grey),
+      child: const Icon(TablerIcons.brand_android, color: Colors.grey),
     );
   }
 
@@ -1625,20 +1626,20 @@ class _AddAppSearchSheetState extends State<_AddAppSearchSheet> {
   IconData _channelIcon(String code) {
     switch (ChannelType.fromCode(code)) {
       case ChannelType.localDb:
-        return Icons.storage;
+        return TablerIcons.database;
       case ChannelType.github:
-        return Icons.code;
+        return TablerIcons.code;
       case ChannelType.http:
-        return Icons.cloud;
+        return TablerIcons.cloud_filled;
       case ChannelType.vivo:
-        return Icons.phone_android;
+        return TablerIcons.device_mobile;
       case ChannelType.fdroid:
-        return Icons.android;
+        return TablerIcons.brand_android;
       case ChannelType.custom:
-        return Icons.apps;
+        return TablerIcons.apps_filled;
       case null:
         // 脚本渠道
-        return Icons.apps;
+        return TablerIcons.apps_filled;
     }
   }
 }

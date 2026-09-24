@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
@@ -22,12 +23,12 @@ void main() {
       currentTags: ['工具'],
       actions: [
         MoreActionItem(
-          icon: Icons.manage_search,
+          icon: TablerIcons.search,
           label: '完善应用信息',
           onTap: () => actionFired = true,
         ),
         MoreActionItem(
-          icon: Icons.language,
+          icon: TablerIcons.language,
           label: '项目主页',
           onTap: () {},
         ),
@@ -57,8 +58,8 @@ void main() {
 
     // 动作宫格渲染
     expect(find.text('操作'), findsOneWidget);
-    expect(find.byIcon(Icons.manage_search), findsOneWidget);
-    expect(find.byIcon(Icons.language), findsOneWidget);
+    expect(find.byIcon(TablerIcons.search), findsOneWidget);
+    expect(find.byIcon(TablerIcons.language), findsOneWidget);
     expect(find.text('完善应用信息'), findsOneWidget);
     expect(find.text('项目主页'), findsOneWidget);
 
@@ -105,13 +106,13 @@ void main() {
 
     // 自定义输入追加
     await tester.enterText(find.byType(TextField), '影音');
-    await tester.tap(find.byIcon(Icons.add));
+    await tester.tap(find.byIcon(TablerIcons.plus));
     await tester.pumpAndSettle();
     expect(find.widgetWithText(InputChip, '影音'), findsOneWidget);
 
     // 空白输入被忽略
     await tester.enterText(find.byType(TextField), '   ');
-    await tester.tap(find.byIcon(Icons.add));
+    await tester.tap(find.byIcon(TablerIcons.plus));
     await tester.pumpAndSettle();
     expect(find.byType(InputChip), findsOneWidget);
 
@@ -224,7 +225,7 @@ void main() {
       currentTags: const [],
       actions: [
         MoreActionItem(
-          icon: Icons.memory_outlined,
+          icon: TablerIcons.analyze,
           label: '应用分析',
           onTap: () => analysisFired = true,
         ),
@@ -236,7 +237,7 @@ void main() {
     expect(find.text('操作'), findsOneWidget);
     expect(find.byType(GridView), findsOneWidget);
     expect(find.text('应用分析'), findsOneWidget);
-    expect(find.byIcon(Icons.memory_outlined), findsOneWidget);
+    expect(find.byIcon(TablerIcons.analyze), findsOneWidget);
 
     // 点击：回调触发 + 面板关闭（future 返回 null，不保存标签）
     await tester.tap(find.text('应用分析'));

@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart' show TargetPlatform, defaultTargetPlatform;
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gstore/core/channel/IDetailChannel.dart';
 import 'package:gstore/core/channel/detail_callbacks.dart';
@@ -300,7 +301,7 @@ class DetailLogic
       if (state.isInstalled)
         DetailAction(
           label: '应用分析',
-          icon: Icons.memory_outlined,
+          icon: TablerIcons.analyze,
           onTap: _openAppAnalysis,
         ),
     ];

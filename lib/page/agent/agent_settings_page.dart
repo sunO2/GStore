@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:go_router/go_router.dart';
 import 'package:gstore/core/agent/agent_model_store.dart';
 import 'package:gstore/core/agent/agent_service.dart';
@@ -93,7 +94,7 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
               if (snap.data != true) return const SizedBox.shrink();
               return IconButton(
                 tooltip: '本地模型',
-                icon: const Icon(Icons.memory),
+                icon: const Icon(TablerIcons.cpu_2),
                 onPressed: () => context.push(AppRoute.localLlm),
               );
             },
@@ -104,7 +105,7 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
           ? null
           : FloatingActionButton.extended(
               onPressed: () => _openModelDialog(),
-              icon: const Icon(Icons.add),
+              icon: const Icon(TablerIcons.plus),
               label: const Text('添加模型'),
             ),
       body: _buildBody(context),
@@ -123,7 +124,7 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Icon(
-              Icons.smart_toy_outlined,
+              TablerIcons.robot,
               size: AppTypography.iconXXXL,
               color: Theme.of(context).colorScheme.onSurfaceVariant,
             ),
@@ -152,7 +153,7 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Icon(
-              Icons.model_training,
+              TablerIcons.brain,
               size: AppTypography.iconXXXL,
               color: AppColors.grey400,
             ),
@@ -199,7 +200,7 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
             await _reconfigureService();
             if (mounted) setState(() {});
           },
-          icon: const Icon(Icons.delete_sweep_outlined),
+          icon: const Icon(TablerIcons.trash_x),
           label: const Text('清除所有模型'),
           style: TextButton.styleFrom(foregroundColor: AppColors.error),
         ),
@@ -231,8 +232,8 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
           backgroundColor: Theme.of(context).colorScheme.primaryContainer,
           child: Icon(
             model.provider == AgentLlmProvider.google
-                ? Icons.auto_awesome
-                : Icons.cloud_outlined,
+                ? TablerIcons.sparkles
+                : TablerIcons.cloud,
             size: AppTypography.iconMD,
             color: Theme.of(context).colorScheme.primary,
           ),
@@ -291,12 +292,12 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
           mainAxisSize: MainAxisSize.min,
           children: [
             IconButton(
-              icon: const Icon(Icons.edit_outlined, size: AppTypography.iconSM),
+              icon: const Icon(TablerIcons.pencil, size: AppTypography.iconSM),
               tooltip: '编辑',
               onPressed: () => _openModelDialog(model),
             ),
             IconButton(
-              icon: const Icon(Icons.delete_outline, size: AppTypography.iconSM),
+              icon: const Icon(TablerIcons.trash, size: AppTypography.iconSM),
               tooltip: '删除',
               onPressed: () => _deleteModel(model),
             ),
@@ -449,12 +450,12 @@ class ModelEditSheetState extends State<ModelEditSheet> {
               ButtonSegment(
                 value: AgentLlmProvider.google,
                 label: Text('Google Gemini'),
-                icon: Icon(Icons.auto_awesome),
+                icon: Icon(TablerIcons.sparkles),
               ),
               ButtonSegment(
                 value: AgentLlmProvider.openai,
                 label: Text('OpenAI 兼容'),
-                icon: Icon(Icons.cloud_outlined),
+                icon: Icon(TablerIcons.cloud),
               ),
             ],
             selected: {_provider},
@@ -471,7 +472,7 @@ class ModelEditSheetState extends State<ModelEditSheet> {
               labelText: '显示名称（可选）',
               hintText: '例如：Gemini Flash / DeepSeek',
               border: OutlineInputBorder(),
-              prefixIcon: Icon(Icons.badge_outlined),
+              prefixIcon: Icon(TablerIcons.id_badge),
             ),
           ),
           const SizedBox(height: AppSpacing.md),
@@ -483,7 +484,7 @@ class ModelEditSheetState extends State<ModelEditSheet> {
             decoration: const InputDecoration(
               labelText: 'API Key',
               border: OutlineInputBorder(),
-              prefixIcon: Icon(Icons.key),
+              prefixIcon: Icon(TablerIcons.key),
             ),
           ),
           const SizedBox(height: AppSpacing.md),
@@ -498,7 +499,7 @@ class ModelEditSheetState extends State<ModelEditSheet> {
                   ? '填写 OpenAI 兼容服务的接口地址'
                   : null,
               border: const OutlineInputBorder(),
-              prefixIcon: const Icon(Icons.link),
+              prefixIcon: const Icon(TablerIcons.link),
             ),
           ),
           const SizedBox(height: AppSpacing.md),
@@ -510,14 +511,14 @@ class ModelEditSheetState extends State<ModelEditSheet> {
               labelText: '模型名称',
               hintText: _modelHint,
               border: const OutlineInputBorder(),
-              prefixIcon: const Icon(Icons.model_training),
+              prefixIcon: const Icon(TablerIcons.brain),
               suffixIcon: _provider == AgentLlmProvider.openai
                   ? IconButton(
                       tooltip: '拉取可用模型列表',
                       onPressed: _loadingModels ? null : _refreshModels,
                       icon: _loadingModels
                           ? const AppLoading(size: AppLoadingSize.small)
-                          : const Icon(Icons.sync),
+                          : const Icon(TablerIcons.refresh),
                     )
                   : null,
             ),

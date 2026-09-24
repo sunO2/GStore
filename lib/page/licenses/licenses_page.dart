@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 
 import 'package:gstore/core/core.dart';
 import 'package:gstore/oss_licenses.dart' as oss;
@@ -57,7 +58,7 @@ class LicensesPage extends StatelessWidget {
 
     return ListTile(
       leading: Icon(
-        Icons.description_outlined,
+        TablerIcons.file_description,
         color: hasLicense
             ? theme.colorScheme.primary
             : theme.colorScheme.outline,
@@ -77,7 +78,7 @@ class LicensesPage extends StatelessWidget {
         overflow: TextOverflow.ellipsis,
       ),
       trailing: hasLicense
-          ? const Icon(Icons.chevron_right, size: AppTypography.iconSM)
+          ? const Icon(TablerIcons.chevron_right, size: AppTypography.iconSM)
           : null,
       onTap: hasLicense
           ? () {

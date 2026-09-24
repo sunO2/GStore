@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:go_router/go_router.dart';
 
 import 'package:gstore/core/core.dart';
@@ -87,7 +88,7 @@ class _BackupPageState extends State<BackupPage> {
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Icon(
-              Icons.cloud_off,
+              TablerIcons.cloud_off,
               size: AppTypography.iconXXXL,
               color: Theme.of(context).colorScheme.onSurfaceVariant,
             ),
@@ -124,7 +125,7 @@ class _BackupPageState extends State<BackupPage> {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               const Icon(
-                Icons.error_outline,
+                TablerIcons.alert_circle,
                 size: AppTypography.iconXXXL,
                 color: AppColors.error,
               ),
@@ -200,7 +201,7 @@ class _BackupPageState extends State<BackupPage> {
               Row(
                 children: [
                   Icon(
-                    Icons.bar_chart,
+                    TablerIcons.chart_bar,
                     color: Theme.of(context).colorScheme.primary,
                   ),
                   const SizedBox(width: AppSpacing.sm),
@@ -215,19 +216,19 @@ class _BackupPageState extends State<BackupPage> {
                 context,
                 '总应用数',
                 '${stats.totalApps}',
-                Icons.apps,
+                TablerIcons.apps_filled,
               ),
               _buildStatItem(
                 context,
                 '已启用',
                 '${stats.enabledApps}',
-                Icons.check_circle,
+                TablerIcons.circle_check_filled,
               ),
               _buildStatItem(
                 context,
                 '已禁用',
                 '${stats.disabledApps}',
-                Icons.block,
+                TablerIcons.ban,
               ),
             ],
           ),
@@ -284,7 +285,7 @@ class _BackupPageState extends State<BackupPage> {
             Row(
               children: [
                 Icon(
-                  Icons.settings_backup_restore,
+                  TablerIcons.settings_cog,
                   color: Theme.of(context).colorScheme.primary,
                 ),
                 const SizedBox(width: AppSpacing.sm),
@@ -310,7 +311,7 @@ class _BackupPageState extends State<BackupPage> {
             ExpansionTile(
               title: const Text('导出内容选项'),
               subtitle: const Text('选择备份中包含哪些应用数据字段'),
-              leading: const Icon(Icons.tune, size: AppTypography.iconMD),
+              leading: const Icon(TablerIcons.adjustments, size: AppTypography.iconMD),
               tilePadding: EdgeInsets.zero,
               childrenPadding: EdgeInsets.zero,
               children: [
@@ -378,17 +379,17 @@ class _BackupPageState extends State<BackupPage> {
                       AppSegment(
                         value: RestoreMode.replace,
                         label: '覆盖',
-                        icon: Icons.refresh,
+                        icon: TablerIcons.refresh,
                       ),
                       AppSegment(
                         value: RestoreMode.merge,
                         label: '合并',
-                        icon: Icons.merge,
+                        icon: TablerIcons.git_merge,
                       ),
                       AppSegment(
                         value: RestoreMode.update,
                         label: '更新',
-                        icon: Icons.update,
+                        icon: TablerIcons.refresh_dot,
                       ),
                     ],
                     onChanged: (RestoreMode newMode) {
@@ -442,7 +443,7 @@ class _BackupPageState extends State<BackupPage> {
               // 标题栏
               ListTile(
                 leading: Icon(
-                  Icons.smartphone,
+                  TablerIcons.device_mobile,
                   color: Theme.of(context).colorScheme.primary,
                 ),
                 title: Text(
@@ -454,24 +455,24 @@ class _BackupPageState extends State<BackupPage> {
 
               // 导出到本地
               ListTile(
-                leading: const Icon(Icons.save_alt),
+                leading: const Icon(TablerIcons.device_floppy),
                 title: const Text('导出到本地'),
                 subtitle: const Text('将备份数据保存到本地文件'),
                 trailing: isExporting
                     ? const AppLoading(size: AppLoadingSize.small)
-                    : const Icon(Icons.chevron_right),
+                    : const Icon(TablerIcons.chevron_right),
                 onTap: isExporting ? null : () => logic.exportCompressed(context),
               ),
               const Divider(height: 1),
 
               // 从本地文件恢复
               ListTile(
-                leading: const Icon(Icons.folder_open),
+                leading: const Icon(TablerIcons.folder_open),
                 title: const Text('从本地文件恢复'),
                 subtitle: const Text('选择本地备份文件进行恢复'),
                 trailing: isImporting
                     ? const AppLoading(size: AppLoadingSize.small)
-                    : const Icon(Icons.chevron_right),
+                    : const Icon(TablerIcons.chevron_right),
                 onTap: isImporting ? null : () => logic.selectAndImportFile(context),
               ),
             ],
@@ -507,7 +508,7 @@ class _BackupPageState extends State<BackupPage> {
                 // 标题栏
                 ListTile(
                   leading: Icon(
-                    Icons.cloud_outlined,
+                    TablerIcons.cloud,
                     color: isEnabled
                         ? Theme.of(context).colorScheme.primary
                         : Theme.of(context).colorScheme.outlineVariant,
@@ -532,7 +533,7 @@ class _BackupPageState extends State<BackupPage> {
 
                 // 备份到网盘
                 ListTile(
-                  leading: const Icon(Icons.cloud_upload),
+                  leading: const Icon(TablerIcons.cloud_upload),
                   title: const Text('备份到网盘'),
                   subtitle: Text(
                     hasConfig
@@ -541,7 +542,7 @@ class _BackupPageState extends State<BackupPage> {
                   ),
                   trailing: isExporting
                       ? const AppLoading(size: AppLoadingSize.small)
-                      : const Icon(Icons.chevron_right),
+                      : const Icon(TablerIcons.chevron_right),
                   onTap: isEnabled && !isExporting
                       ? () => logic.uploadToWebDav(context, compressed: true)
                       : null,
@@ -550,7 +551,7 @@ class _BackupPageState extends State<BackupPage> {
 
                 // 从网盘恢复备份
                 ListTile(
-                  leading: const Icon(Icons.cloud_download),
+                  leading: const Icon(TablerIcons.cloud_download),
                   title: const Text('从网盘恢复备份'),
                   subtitle: Text(
                     hasConfig
@@ -559,7 +560,7 @@ class _BackupPageState extends State<BackupPage> {
                   ),
                   trailing: isImporting
                       ? const AppLoading(size: AppLoadingSize.small)
-                      : const Icon(Icons.chevron_right),
+                      : const Icon(TablerIcons.chevron_right),
                   onTap: isEnabled && !isImporting
                       ? () => logic.downloadFromWebDav(context)
                       : null,

@@ -5,6 +5,7 @@ import 'package:flutter_secure_storage/test/test_flutter_secure_storage_platform
 // ignore: depend_on_referenced_packages
 import 'package:flutter_secure_storage_platform_interface/flutter_secure_storage_platform_interface.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/core/config/config_manager.dart';
 import 'package:gstore/core/config/config_storage.dart';
 import 'package:gstore/core/config/providers/theme_config_provider.dart';
@@ -218,7 +219,7 @@ void main() {
       // 展开外观卡（SizeTransition 内的 Divider 才可见）
       await tester.tap(find.descendant(
         of: appearanceCard,
-        matching: find.byIcon(Icons.expand_more),
+        matching: find.byIcon(TablerIcons.chevron_down),
       ));
       await tester.pumpAndSettle();
 

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 
 import 'package:gstore/core/design/app_components.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
@@ -89,7 +90,7 @@ class _ProxyDnsPageState extends State<ProxyDnsPage> {
       message: '将清空 DNS 缓存与 fake-IP 分配，确定继续吗？',
       confirmText: '清空',
       isDangerous: true,
-      icon: const Icon(Icons.cleaning_services_outlined),
+      icon: const Icon(TablerIcons.clear_all),
     );
     if (ok != true || !mounted) return;
     try {
@@ -112,12 +113,12 @@ class _ProxyDnsPageState extends State<ProxyDnsPage> {
         actions: [
           IconButton(
             tooltip: '编辑',
-            icon: const Icon(Icons.edit_outlined),
+            icon: const Icon(TablerIcons.pencil),
             onPressed: _snapshot == null ? null : _openEditSheet,
           ),
           IconButton(
             tooltip: '清空缓存',
-            icon: const Icon(Icons.cleaning_services_outlined),
+            icon: const Icon(TablerIcons.clear_all),
             onPressed: _snapshot == null ? null : _confirmClearCache,
           ),
         ],
@@ -133,7 +134,7 @@ class _ProxyDnsPageState extends State<ProxyDnsPage> {
     final error = _error;
     if (error != null) {
       return _MessageState(
-        icon: Icons.error_outline,
+        icon: TablerIcons.alert_circle,
         title: 'DNS 不可用',
         message: error,
         actionLabel: '重试',
@@ -143,7 +144,7 @@ class _ProxyDnsPageState extends State<ProxyDnsPage> {
     final snapshot = _snapshot;
     if (snapshot == null) {
       return const _MessageState(
-        icon: Icons.dns_outlined,
+        icon: TablerIcons.server,
         title: '暂无 DNS 配置',
         message: 'DNS 配置读取为空。',
       );
@@ -179,7 +180,7 @@ class _ProxyDnsPageState extends State<ProxyDnsPage> {
             Row(
               children: [
                 ColoredAliIcon(
-                  icon: Icons.link,
+                  icon: TablerIcons.link,
                   size: AppTypography.iconXL,
                   color: theme.colorScheme.primary,
                 ),
@@ -431,7 +432,7 @@ class _DnsQueryTile extends StatelessWidget {
       child: Row(
         children: [
           Icon(
-            ok ? Icons.check_circle_outline : Icons.error_outline,
+            ok ? TablerIcons.circle_check : TablerIcons.alert_circle,
             size: AppTypography.iconSM,
             color: ok ? scheme.primary : scheme.error,
           ),
@@ -635,7 +636,7 @@ class _DnsFormSheetState extends State<_DnsFormSheet> {
     return AppSheetScaffold(
       title: 'DNS 配置',
       subtitle: '修改解析模式、上游与 DoH/DoT 地址',
-      icon: const ColoredAliIcon(icon: Icons.link),
+      icon: const ColoredAliIcon(icon: TablerIcons.link),
       actions: [
         TextButton(
           onPressed: _saving ? null : () => Navigator.of(context).pop(false),

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/design/app_borders.dart';
 import 'package:gstore/page/home/logic.dart';
@@ -21,7 +22,7 @@ class EmptyStateWidget extends ConsumerWidget {
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             const Icon(
-              Icons.apps_outlined,
+              TablerIcons.apps,
               size: AppTypography.iconXXXL,
               color: AppColors.grey400,
             ),
@@ -43,7 +44,7 @@ class EmptyStateWidget extends ConsumerWidget {
             const SizedBox(height: AppSpacing.lg),
             _buildQuickAddOption(
               context,
-              icon: Icons.search,
+              icon: TablerIcons.search,
               title: '快速搜索',
               description: '点击上方搜索栏直接搜索',
               onTap: () => _showQuickSearchGuide(context),
@@ -51,7 +52,7 @@ class EmptyStateWidget extends ConsumerWidget {
             const SizedBox(height: AppSpacing.sm),
             _buildQuickAddOption(
               context,
-              icon: Icons.explore,
+              icon: TablerIcons.compass_filled,
               title: '浏览发现页',
               description: '切换到"发现"标签浏览应用',
               onTap: () {
@@ -61,7 +62,7 @@ class EmptyStateWidget extends ConsumerWidget {
             const SizedBox(height: AppSpacing.sm),
             _buildQuickAddOption(
               context,
-              icon: Icons.science_outlined,
+              icon: TablerIcons.category,
               title: '我的频道',
               description: '管理已添加的应用频道',
               onTap: () {
@@ -71,7 +72,7 @@ class EmptyStateWidget extends ConsumerWidget {
             const SizedBox(height: AppSpacing.xl),
             FilledButton.icon(
               onPressed: onImportSample,
-              icon: const Icon(Icons.download_rounded, size: 18),
+              icon: const Icon(TablerIcons.download, size: 18),
               label: const Text('导入示例应用'),
               style: FilledButton.styleFrom(
                 padding: AppSpacing.horizontalXL_verticalMD,
@@ -139,7 +140,7 @@ class EmptyStateWidget extends ConsumerWidget {
               ),
             ),
             const Icon(
-              Icons.chevron_right,
+              TablerIcons.chevron_right,
               color: AppColors.grey400,
             ),
           ],
@@ -152,7 +153,7 @@ class EmptyStateWidget extends ConsumerWidget {
     AppSheet.show<void>(
       context: context,
       title: '快速搜索应用',
-      icon: const Icon(Icons.search),
+      icon: const Icon(TablerIcons.search),
       contentPadding: AppSpacing.onlyHorizontalXL,
       content: Column(
         mainAxisSize: MainAxisSize.min,

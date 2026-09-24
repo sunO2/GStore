@@ -1,5 +1,6 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:go_router/go_router.dart';
@@ -228,7 +229,7 @@ class AgentMarkdownMessage extends StatelessWidget {
           errorWidget: (context, url, error) => Container(
             height: 80,
             color: scheme.surfaceContainerHighest,
-            child: const Icon(Icons.broken_image_outlined),
+            child: const Icon(TablerIcons.photo_off),
           ),
         ),
       ),
@@ -262,7 +263,7 @@ class AgentMarkdownMessage extends StatelessWidget {
                   child: CircularProgressIndicator(),
                 ),
                 errorWidget: (context, url, error) => const Icon(
-                  Icons.broken_image_outlined,
+                  TablerIcons.photo_off,
                   color: Colors.white70,
                   size: 48,
                 ),
@@ -432,7 +433,7 @@ class _CodeBlockState extends State<_CodeBlock> {
                   )
                 else
                   const Icon(
-                    Icons.code,
+                    TablerIcons.code,
                     size: 14,
                     color: Colors.white54,
                   ),
@@ -449,7 +450,7 @@ class _CodeBlockState extends State<_CodeBlock> {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Icon(
-                          _copied ? Icons.check : Icons.copy,
+                          _copied ? TablerIcons.check : TablerIcons.copy,
                           size: 14,
                           color: _copied
                               ? const Color(0xFF7CF29C)

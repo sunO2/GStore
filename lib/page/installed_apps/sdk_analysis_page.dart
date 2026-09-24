@@ -2,6 +2,7 @@ import 'dart:convert' show base64Decode;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/page/apk_browser/view.dart';
 import 'package:gstore/page/app_snapshot/view.dart';
 import 'package:gstore/core/core.dart';
@@ -597,7 +598,7 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
         actions: [
           IconButton(
             tooltip: '文件浏览',
-            icon: const Icon(Icons.folder_open_outlined),
+            icon: const Icon(TablerIcons.folder_open),
             onPressed: () => Navigator.push(
               context,
               MaterialPageRoute(
@@ -611,7 +612,7 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
           ),
           IconButton(
             tooltip: '应用快照',
-            icon: const Icon(Icons.history_outlined),
+            icon: const Icon(TablerIcons.history),
             onPressed: () => Navigator.push(
               context,
               MaterialPageRoute(
@@ -709,24 +710,24 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
                 children: [
                   _buildHeaderChip(
                     context,
-                    icon: Icons.tag,
+                    icon: TablerIcons.tag,
                     label: _versionChipLabel,
                   ),
                   if (_apkSize > 0)
                     _buildHeaderChip(
                       context,
-                      icon: Icons.sd_storage,
+                      icon: TablerIcons.device_sd_card,
                       label: _formatBytes(_apkSize),
                     ),
                   _buildHeaderChip(
                     context,
-                    icon: Icons.settings_suggest,
+                    icon: TablerIcons.settings_automation,
                     label: 'SDK ${_sdkSummaryText()}',
                   ),
                   if (_abis.isNotEmpty)
                     _buildHeaderChip(
                       context,
-                      icon: Icons.memory,
+                      icon: TablerIcons.cpu_2,
                       label: _abis.join(' · '),
                     ),
                 ],
@@ -755,13 +756,13 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
             isScrollable: true,
             tabAlignment: TabAlignment.start,
             tabs: [
-              _buildTab(Icons.info_outline, '概览'),
-              _buildTab(Icons.memory, '原生库'),
-              _buildTab(Icons.code, 'DEX 类名'),
-              _buildTab(Icons.view_module, '组件'),
-              _buildTab(Icons.lock_outline, '权限'),
-              _buildTab(Icons.verified_user, '签名'),
-              _buildTab(Icons.tune, 'meta 数据'),
+              _buildTab(TablerIcons.info_circle, '概览'),
+              _buildTab(TablerIcons.cpu_2, '原生库'),
+              _buildTab(TablerIcons.code, 'DEX 类名'),
+              _buildTab(TablerIcons.layout_grid, '组件'),
+              _buildTab(TablerIcons.lock, '权限'),
+              _buildTab(TablerIcons.shield_check_filled, '签名'),
+              _buildTab(TablerIcons.adjustments, 'meta 数据'),
             ],
           ),
           Expanded(
@@ -877,7 +878,7 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 _buildGroupHeader(
-                  icon: Icons.local_offer_outlined,
+                  icon: TablerIcons.tag,
                   title: '特征',
                   count: _features!.labels.length,
                 ),
@@ -962,7 +963,7 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 _buildGroupHeader(
-                  icon: Icons.link,
+                  icon: TablerIcons.link,
                   title: '快捷启动',
                   count: _quickLaunch.length,
                 ),
@@ -975,7 +976,7 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
                   ),
                   for (final entry in group.items)
                     _buildPlainRow(
-                      icon: entry.isWeb ? Icons.public : Icons.link,
+                      icon: entry.isWeb ? TablerIcons.world : TablerIcons.link,
                       title: entry.uri,
                       wrapTitle: true,
                       // 两行：性质标签 / 来源组件。组件是全类名，必须换行完整展示
@@ -1025,7 +1026,7 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 _buildGroupHeader(
-                  icon: Icons.memory,
+                  icon: TablerIcons.cpu_2,
                   title: abiLibs.abi,
                   count: abiLibs.soFiles.length,
                 ),
@@ -1034,7 +1035,7 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
                   if (hitBySo[so.name] case final hit?)
                     _buildItem(
                       hit,
-                      icon: Icons.memory,
+                      icon: TablerIcons.cpu_2,
                       matchedName: so.name,
                       subtitle: _elfMetaText(abiLibs.abi, so.name),
                       trailing: _formatBytes(so.size),
@@ -1044,7 +1045,7 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
                     )
                   else
                     _buildPlainRow(
-                      icon: Icons.memory,
+                      icon: TablerIcons.cpu_2,
                       title: so.name,
                       subtitle: _elfMetaText(abiLibs.abi, so.name) ??
                           '未匹配规则',
@@ -1075,13 +1076,13 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 _buildGroupHeader(
-                  icon: Icons.code,
+                  icon: TablerIcons.code,
                   title: 'DEX 类名',
                   count: _dexHits.length,
                 ),
                 Divider(height: AppSpacing.md),
                 for (final hit in _dexHits)
-                  _buildItem(hit, icon: Icons.code, matchedName: hit.matchedClassName),
+                  _buildItem(hit, icon: TablerIcons.code, matchedName: hit.matchedClassName),
               ],
             ),
           ),
@@ -1091,14 +1092,14 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 _buildGroupHeader(
-                  icon: Icons.code,
+                  icon: TablerIcons.code,
                   title: 'DEX 文件',
                   count: _dexFiles.length,
                 ),
                 const Divider(height: AppSpacing.md),
                 for (final f in _dexFiles)
                   _buildPlainRow(
-                    icon: Icons.code,
+                    icon: TablerIcons.code,
                     title: f.name,
                     // 类数量来自模块读 dex 头（class_defs_size）；未知时不显示
                     trailing: f.classCount >= 0
@@ -1137,7 +1138,7 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
                 for (final (i, group) in matchGroups.indexed) ...[
                   if (i > 0) const Divider(height: 1),
                   _buildGroupHeader(
-                    icon: Icons.view_module,
+                    icon: TablerIcons.layout_grid,
                     title: group.label,
                     count: group.items.length,
                   ),
@@ -1161,7 +1162,7 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 _buildGroupHeader(
-                  icon: Icons.view_module,
+                  icon: TablerIcons.layout_grid,
                   title: '全部组件',
                   count: fullTotal,
                 ),
@@ -1193,14 +1194,14 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 _buildGroupHeader(
-                  icon: Icons.link,
+                  icon: TablerIcons.link,
                   title: '静态库',
                   count: _staticHits.length,
                 ),
                 const Divider(height: AppSpacing.md),
                 for (final hit in _staticHits)
                   _buildPlainRow(
-                    icon: Icons.link,
+                    icon: TablerIcons.link,
                     title: hit.label,
                     subtitle: hit.matched,
                     onLongPress: () =>
@@ -1216,14 +1217,14 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 _buildGroupHeader(
-                  icon: Icons.bolt,
+                  icon: TablerIcons.bolt,
                   title: 'action 命中',
                   count: _actionHits.length,
                 ),
                 const Divider(height: AppSpacing.md),
                 for (final hit in _actionHits)
                   _buildPlainRow(
-                    icon: Icons.bolt,
+                    icon: TablerIcons.bolt,
                     title: hit.label,
                     subtitle: hit.matched,
                     onLongPress: () =>
@@ -1335,7 +1336,7 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
                   Row(
                     children: [
                       Icon(
-                        Icons.shield_outlined,
+                        TablerIcons.shield,
                         size: AppTypography.iconSM,
                         color: colorScheme.primary,
                       ),
@@ -1387,8 +1388,8 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
                       padding: AppSpacing.onlyTopXS,
                       child: Icon(
                         sig.isHistory
-                            ? Icons.history
-                            : Icons.verified_user,
+                            ? TablerIcons.history
+                            : TablerIcons.shield_check_filled,
                         size: AppTypography.iconSM,
                         color: sig.isHistory
                             ? colorScheme.outline
@@ -1552,7 +1553,7 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               _buildGroupHeader(
-                icon: Icons.tune,
+                icon: TablerIcons.adjustments,
                 title: 'meta 数据',
                 count: entries.length,
               ),
@@ -1710,7 +1711,7 @@ class _SdkAnalysisPageState extends State<SdkAnalysisPage> {
       child: Row(
         children: [
           Icon(
-            Icons.view_module,
+            TablerIcons.layout_grid,
             size: AppTypography.iconSM,
             color: colorScheme.onSurfaceVariant,
           ),

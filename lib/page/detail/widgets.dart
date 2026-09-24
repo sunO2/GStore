@@ -4,6 +4,7 @@ library;
 import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:markdown/markdown.dart' as md;
@@ -186,7 +187,7 @@ class _CodeBlockWidget extends StatelessWidget {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Icon(
-                          Icons.copy_outlined,
+                          TablerIcons.copy,
                           size: AppTypography.iconSM,
                           color: AppColors.codeEditorText,
                         ),
@@ -325,7 +326,7 @@ class _ReadmeImage extends StatelessWidget {
                   child: CircularProgressIndicator(),
                 ),
                 errorWidget: const Icon(
-                  Icons.broken_image_outlined,
+                  TablerIcons.photo_off,
                   color: Colors.white70,
                   size: 48,
                 ),
@@ -362,7 +363,7 @@ class _ReadmeImage extends StatelessWidget {
           errorWidget: Container(
             height: 60,
             color: Theme.of(context).colorScheme.surfaceContainerHighest,
-            child: const Icon(Icons.broken_image_outlined),
+            child: const Icon(TablerIcons.photo_off),
           ),
         ),
       ),
@@ -461,7 +462,7 @@ class _AppInfoSectionState extends State<AppInfoSection> {
 
     return SectionCard(
       title: '应用信息',
-      icon: Icons.info_outline,
+      icon: TablerIcons.info_circle,
       trailing: hasExpandable
           ? IconButton(
               onPressed: () => setState(() => _expanded = !_expanded),
@@ -471,7 +472,7 @@ class _AppInfoSectionState extends State<AppInfoSection> {
                 duration: AppAnimation.fast,
                 curve: AppAnimation.curve,
                 child: Icon(
-                  _expanded ? Icons.expand_less : Icons.expand_more,
+                  _expanded ? TablerIcons.chevron_up : TablerIcons.chevron_down,
                   color: primary,
                 ),
               ),
@@ -480,25 +481,25 @@ class _AppInfoSectionState extends State<AppInfoSection> {
       children: [
         if (packageName.isNotEmpty)
           _InfoRow(
-            icon: Icons.smartphone,
+            icon: TablerIcons.package,
             label: '包名',
             value: packageName,
           ),
         if (version != null)
           _InfoRow(
-            icon: Icons.tag,
+            icon: TablerIcons.tag,
             label: '当前版本',
             value: version,
           ),
         if (developer != null)
           _InfoRow(
-            icon: Icons.person_outline,
+            icon: TablerIcons.user,
             label: '开发者',
             value: developer,
           ),
         if (channelId.isNotEmpty)
           _InfoRow(
-            icon: Icons.storefront,
+            icon: TablerIcons.building_store,
             label: '渠道',
             value: channelId,
           ),
@@ -515,7 +516,7 @@ class _AppInfoSectionState extends State<AppInfoSection> {
                   children: [
                     if (projectUrl != null)
                       _InfoRow(
-                        icon: Icons.link,
+                        icon: TablerIcons.link,
                         label: '项目主页',
                         value: projectUrl,
                         valueColor: primary,
@@ -575,7 +576,7 @@ class VersionBadge extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           Icon(
-            Icons.tag,
+            TablerIcons.tag,
             size: AppTypography.iconXS,
             color: colorScheme.primary,
           ),
@@ -669,7 +670,7 @@ class _ScreenshotGallery extends StatelessWidget {
                   errorWidget: (context, url, error) => Container(
                     color: scheme.surfaceContainerHighest,
                     child: Icon(
-                      Icons.broken_image,
+                      TablerIcons.photo_off,
                       color: scheme.onSurfaceVariant,
                     ),
                   ),
@@ -703,7 +704,7 @@ class _ScreenshotGallery extends StatelessWidget {
                     placeholder: (context, url) =>
                         const AppLoading(size: AppLoadingSize.medium),
                     errorWidget: (context, url, error) => Icon(
-                      Icons.broken_image,
+                      TablerIcons.photo_off,
                       size: AppTypography.iconHuge,
                       color: scheme.onSurface,
                     ),
@@ -716,7 +717,7 @@ class _ScreenshotGallery extends StatelessWidget {
               right: 8,
               child: IconButton(
                 tooltip: '关闭',
-                icon: Icon(Icons.close, color: scheme.onSurface),
+                icon: Icon(TablerIcons.x, color: scheme.onSurface),
                 onPressed: () => Navigator.of(context).pop(),
               ),
             ),
@@ -867,7 +868,7 @@ class _ReadmeSectionState extends State<ReadmeSection> {
       // 布局跳动），内容区固定高度 + 加载指示
       return const SectionCard(
         title: '详细介绍',
-        icon: Icons.description_outlined,
+        icon: TablerIcons.file_description,
         children: [
           SizedBox(
             height: 60,
@@ -905,7 +906,7 @@ class _ReadmeSectionState extends State<ReadmeSection> {
     if (hasReadme && (converted == null || converted.isEmpty)) {
       return const SectionCard(
         title: '详细介绍',
-        icon: Icons.description_outlined,
+        icon: TablerIcons.file_description,
         children: [
           SizedBox(
             height: 60,
@@ -928,7 +929,7 @@ class _ReadmeSectionState extends State<ReadmeSection> {
 
     return SectionCard(
       title: '详细介绍',
-      icon: Icons.description_outlined,
+      icon: TablerIcons.file_description,
       children: [
         // 截图横向滑动列表（点击全屏预览），统一收纳进详情区
         if (screenshots.isNotEmpty) ...[
@@ -1175,7 +1176,7 @@ class DownloadsSection extends StatelessWidget {
 
     return SectionCard(
       title: '下载文件',
-      icon: Icons.download_rounded,
+      icon: TablerIcons.download,
       children: [
         for (var i = 0; i < 3; i++)
           Padding(
@@ -1215,12 +1216,12 @@ class DownloadsSection extends StatelessWidget {
     if (filteredDownloads.isEmpty) {
       return SectionCard(
         title: '下载文件',
-        icon: Icons.download_rounded,
+        icon: TablerIcons.download,
         children: [
           Row(
             children: [
               Icon(
-                Icons.info_outline,
+                TablerIcons.info_circle,
                 size: AppTypography.iconMD,
                 color: colorScheme.onSurfaceVariant,
               ),
@@ -1242,7 +1243,7 @@ class DownloadsSection extends StatelessWidget {
 
     return SectionCard(
       title: '下载文件',
-      icon: Icons.download_rounded,
+      icon: TablerIcons.download,
       count: Container(
         padding:
             EdgeInsets.symmetric(horizontal: AppSpacing.sm * 1.5, vertical: 1),
@@ -1369,7 +1370,7 @@ class _DownloadItem extends StatelessWidget {
                           Row(
                             children: [
                               Icon(
-                                Icons.label,
+                                TablerIcons.tag,
                                 size: AppTypography.iconXS,
                                 color: Theme.of(context)
                                     .colorScheme
@@ -1400,7 +1401,7 @@ class _DownloadItem extends StatelessWidget {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Icon(
-                                Icons.info_outline,
+                                TablerIcons.info_circle,
                                 size: AppTypography.iconXS,
                                 color: Theme.of(context).colorScheme.error,
                               ),
@@ -1436,8 +1437,8 @@ class _DownloadItem extends StatelessWidget {
                         padding: AppSpacing.allSM,
                         child: Icon(
                           download.downloadable
-                              ? Icons.download_rounded
-                              : Icons.block,
+                              ? TablerIcons.download
+                              : TablerIcons.ban,
                           size: AppTypography.iconLG,
                           color: download.downloadable
                               ? Theme.of(context).colorScheme.primary
@@ -1457,7 +1458,7 @@ class _DownloadItem extends StatelessWidget {
                   if (download.extra != null)
                     ...download.extra!.entries.map((e) => _buildInfoChip(
                       context,
-                      _iconFromName(e.value.iconName) ?? Icons.info_outline,
+                      _iconFromName(e.value.iconName) ?? TablerIcons.info_circle,
                       e.value.text,
                       _colorForTag(e.key, Theme.of(context).colorScheme),
                     )),
@@ -1474,16 +1475,16 @@ class _DownloadItem extends StatelessWidget {
   /// Material 图标名 → IconData 映射（未知返回 null）
   IconData? _iconFromName(String? name) {
     switch (name) {
-      case 'sd_card': return Icons.sd_card;
-      case 'sd_storage': return Icons.sd_storage;
-      case 'phone_android': return Icons.phone_android;
-      case 'build': return Icons.build;
-      case 'cloud': return Icons.cloud;
-      case 'download': return Icons.download_rounded;
-      case 'cloud_download': return Icons.cloud_download;
-      case 'schedule': return Icons.schedule;
-      case 'label': return Icons.label;
-      case 'install': return Icons.download_done;
+      case 'sd_card': return TablerIcons.device_sd_card;
+      case 'sd_storage': return TablerIcons.device_sd_card;
+      case 'phone_android': return TablerIcons.device_mobile;
+      case 'build': return TablerIcons.tool;
+      case 'cloud': return TablerIcons.cloud_filled;
+      case 'download': return TablerIcons.download;
+      case 'cloud_download': return TablerIcons.cloud_download;
+      case 'schedule': return TablerIcons.clock;
+      case 'label': return TablerIcons.tag;
+      case 'install': return TablerIcons.download;
       default: return null;
     }
   }
@@ -1614,30 +1615,30 @@ class DeveloperSection extends StatelessWidget {
     final primary = Theme.of(context).colorScheme.primary;
     return SectionCard(
       title: '开发者',
-      icon: Icons.person_outline,
+      icon: TablerIcons.user,
       children: [
         if (developer != null)
           _InfoRow(
-            icon: Icons.person_outline,
+            icon: TablerIcons.user,
             label: '开发者',
             value: developer,
           ),
         if (projectUrl != null)
           _InfoRow(
-            icon: Icons.link,
+            icon: TablerIcons.link,
             label: '项目主页',
             value: projectUrl,
             valueColor: primary,
           ),
         if (version != null)
           _InfoRow(
-            icon: Icons.tag,
+            icon: TablerIcons.tag,
             label: '版本',
             value: version,
           ),
         if (channelId.isNotEmpty)
           _InfoRow(
-            icon: Icons.storefront,
+            icon: TablerIcons.building_store,
             label: '渠道',
             value: channelId,
           ),
@@ -1661,7 +1662,7 @@ class ChangelogSection extends StatelessWidget {
 
     return SectionCard(
       title: '更新日志',
-      icon: Icons.update,
+      icon: TablerIcons.refresh_dot,
       children: [
         Text(
           changelog,
@@ -1690,14 +1691,14 @@ class PermissionsSection extends StatelessWidget {
 
     return SectionCard(
       title: '权限说明',
-      icon: Icons.security,
+      icon: TablerIcons.shield_lock,
       children: [
         ...permissions.map((permission) => Padding(
               padding: AppSpacing.onlyBottomSM,
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Icon(Icons.security, size: AppTypography.sizeSM),
+                  const Icon(TablerIcons.shield_lock, size: AppTypography.sizeSM),
                   SizedBox(width: AppSpacing.sm),
                   Expanded(
                     child: Text(

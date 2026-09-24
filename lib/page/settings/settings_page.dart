@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/core/channel/impl/JsChannel.dart';
 import 'package:gstore/core/channel/impl/channel_loader.dart';
 import 'package:gstore/core/channel/impl/channel_package.dart';
@@ -141,7 +142,7 @@ class _SettingsPageState extends State<SettingsPage> {
         children: [
           ListTile(
             enabled: _themeModuleOnline,
-            leading: const Icon(Icons.palette_outlined),
+            leading: const Icon(TablerIcons.palette),
             title: const Text('主题'),
             // theme 模块下线 → 入口禁用并提示未启用（响应式 trailing 保留不动）
             subtitle: _themeModuleOnline
@@ -163,7 +164,7 @@ class _SettingsPageState extends State<SettingsPage> {
                     ),
                   );
                 }),
-                const Icon(Icons.chevron_right),
+                const Icon(TablerIcons.chevron_right),
               ],
             ),
             onTap: _themeModuleOnline ? () => context.push(AppRoute.themeSettings) : null,
@@ -180,16 +181,16 @@ class _SettingsPageState extends State<SettingsPage> {
       child: Column(
         children: [
           ListTile(
-            leading: const Icon(Icons.backup, size: AppTypography.iconMD),
+            leading: const Icon(TablerIcons.cloud_upload, size: AppTypography.iconMD),
             title: const Text('数据备份'),
             trailing:
-                const Icon(Icons.chevron_right, size: AppTypography.iconSM),
+                const Icon(TablerIcons.chevron_right, size: AppTypography.iconSM),
             onTap: () => context.push(AppRoute.backup),
           ),
           const Divider(height: 1),
           // GitHub 代理设置
           ListTile(
-            leading: const Icon(Icons.cloud, size: AppTypography.iconMD),
+            leading: const Icon(TablerIcons.cloud_filled, size: AppTypography.iconMD),
             title: const Text('GitHub 代理'),
             subtitle: Text(
               '当前: ${getProxy().isEmpty ? '未设置' : getProxy()}',
@@ -197,29 +198,29 @@ class _SettingsPageState extends State<SettingsPage> {
               overflow: TextOverflow.ellipsis,
             ),
             trailing:
-                const Icon(Icons.chevron_right, size: AppTypography.iconSM),
+                const Icon(TablerIcons.chevron_right, size: AppTypography.iconSM),
             onTap: () => _showProxySettingDialog(context),
           ),
           const Divider(height: 1),
           // 缓存管理（图片/README/图标等可再生缓存，单项或一键清理）
           ListTile(
-            leading: const Icon(Icons.cleaning_services_outlined,
+            leading: const Icon(TablerIcons.clear_all,
                 size: AppTypography.iconMD),
             title: const Text('缓存管理'),
             subtitle: const Text('清理图片 / README 等缓存与已下载文件'),
             trailing:
-                const Icon(Icons.chevron_right, size: AppTypography.iconSM),
+                const Icon(TablerIcons.chevron_right, size: AppTypography.iconSM),
             onTap: () => context.push(AppRoute.cacheManage),
           ),
           const Divider(height: 1),
           // 数据库管理（浏览各库表与记录，删除误添加/失效记录）
           ListTile(
-            leading: const Icon(Icons.storage_outlined,
+            leading: const Icon(TablerIcons.database,
                 size: AppTypography.iconMD),
             title: const Text('数据库管理'),
             subtitle: const Text('查看 / 管理本地数据库记录'),
             trailing:
-                const Icon(Icons.chevron_right, size: AppTypography.iconSM),
+                const Icon(TablerIcons.chevron_right, size: AppTypography.iconSM),
             onTap: () => context.push(AppRoute.databaseManage),
           ),
         ],
@@ -237,33 +238,33 @@ class _SettingsPageState extends State<SettingsPage> {
         children: [
           // 多源仓库：源 + 镜像配置
           ListTile(
-            leading: const Icon(Icons.source, size: AppTypography.iconMD),
+            leading: const Icon(TablerIcons.source_code, size: AppTypography.iconMD),
             title: const Text('F-Droid 源管理'),
             subtitle: const Text('配置多个源与其镜像'),
             trailing:
-                const Icon(Icons.chevron_right, size: AppTypography.iconSM),
+                const Icon(TablerIcons.chevron_right, size: AppTypography.iconSM),
             onTap: () => context.push(AppRoute.fdroidRepo),
           ),
           const Divider(height: 1),
           // 渠道包导入（Android 应用私有目录无法读取公共 Documents 文件，走应用内导入）
           ListTile(
-            leading: const Icon(Icons.extension, size: AppTypography.iconMD),
+            leading: const Icon(TablerIcons.puzzle_filled, size: AppTypography.iconMD),
             title: const Text('脚本渠道'),
             subtitle: const Text('从 .zip 渠道包文件导入自定义渠道'),
             trailing:
-                const Icon(Icons.chevron_right, size: AppTypography.iconSM),
+                const Icon(TablerIcons.chevron_right, size: AppTypography.iconSM),
             onTap: () => _showScriptImportDialog(context),
           ),
           const Divider(height: 1),
           // 已导入渠道包管理（列表 + 环境变量编辑 + 删除）
           ListTile(
             key: const Key('script_channel_manage_entry'),
-            leading: const Icon(Icons.code, size: AppTypography.iconMD),
+            leading: const Icon(TablerIcons.code, size: AppTypography.iconMD),
             title: const Text('已导入渠道'),
             subtitle: Text(
                 '${ChannelManager.instance.dynamicChannels.length} 个渠道包'),
             trailing:
-                const Icon(Icons.chevron_right, size: AppTypography.iconSM),
+                const Icon(TablerIcons.chevron_right, size: AppTypography.iconSM),
             onTap: () => _showScriptChannelManageDialog(context),
           ),
         ],
@@ -277,10 +278,10 @@ class _SettingsPageState extends State<SettingsPage> {
       child: Column(
         children: [
           ListTile(
-            leading: const Icon(Icons.tune, size: AppTypography.iconMD),
+            leading: const Icon(TablerIcons.adjustments, size: AppTypography.iconMD),
             title: const Text('模块管理'),
             trailing:
-                const Icon(Icons.chevron_right, size: AppTypography.iconSM),
+                const Icon(TablerIcons.chevron_right, size: AppTypography.iconSM),
             onTap: () => context.push(AppRoute.moduleManage),
           ),
         ],
@@ -576,7 +577,7 @@ class _SettingsPageState extends State<SettingsPage> {
                           );
                         });
                       },
-                      icon: const Icon(Icons.upload_file),
+                      icon: const Icon(TablerIcons.upload),
                       label: const Text('从文件选择渠道包 (.zip)'),
                     ),
                     if (selected != null) ...[
@@ -714,7 +715,7 @@ class _SettingsPageState extends State<SettingsPage> {
                         key: Key(
                             'script_channel_env_edit_${channel.channelKey}'),
                         tooltip: '编辑环境变量',
-                        icon: const Icon(Icons.settings_outlined),
+                        icon: const Icon(TablerIcons.settings),
                         onPressed: () async {
                           await _showScriptChannelEnvDialog(channel);
                           setDialogState(() {});
@@ -724,7 +725,7 @@ class _SettingsPageState extends State<SettingsPage> {
                         key: Key(
                             'script_channel_delete_${channel.channelKey}'),
                         tooltip: '删除渠道',
-                        icon: const Icon(Icons.delete_outline),
+                        icon: const Icon(TablerIcons.trash),
                         onPressed: () =>
                             _removeScriptChannel(channel, setDialogState),
                       ),
@@ -834,8 +835,8 @@ class _SettingsPageState extends State<SettingsPage> {
           const Divider(height: 1),
           // 安装方式提示
           ListTile(
-            leading:
-                const Icon(Icons.system_update_alt, size: AppTypography.iconMD),
+            leading: const Icon(TablerIcons.device_mobile_down,
+                size: AppTypography.iconMD),
             title: const Text('安装方式'),
             subtitle: const Text('开启 Shizuku 后可静默安装应用，无需逐次确认；未授权时使用系统安装'),
             isThreeLine: true,
@@ -878,10 +879,10 @@ class _SettingsPageState extends State<SettingsPage> {
           const DataUpdateTile(),
           const Divider(height: 1),
           ListTile(
-            leading: const Icon(Icons.description_outlined),
+            leading: const Icon(TablerIcons.file_description),
             title: const Text('开源协议'),
             subtitle: const Text('第三方依赖的许可证清单'),
-            trailing: const Icon(Icons.chevron_right),
+            trailing: const Icon(TablerIcons.chevron_right),
             onTap: () => context.push(AppRoute.licenses),
           ),
         ],
@@ -1010,7 +1011,7 @@ class _ScriptChannelEnvEditorState extends State<_ScriptChannelEnvEditor> {
               IconButton(
                 key: Key('script_channel_env_remove_$i'),
                 tooltip: '删除该环境变量',
-                icon: const Icon(Icons.delete_outline),
+                icon: const Icon(TablerIcons.trash),
                 onPressed: widget.readOnlyKeys.contains(_rows[i].key.text)
                     ? null
                     : () => _removeRow(i),
@@ -1022,7 +1023,7 @@ class _ScriptChannelEnvEditorState extends State<_ScriptChannelEnvEditor> {
         TextButton.icon(
           key: const Key('script_channel_env_add'),
           onPressed: _addRow,
-          icon: const Icon(Icons.add),
+          icon: const Icon(TablerIcons.plus),
           label: const Text('添加环境变量'),
         ),
       ],
@@ -1071,7 +1072,7 @@ class _AboutVersionTileState extends State<_AboutVersionTile> {
   Widget build(BuildContext context) {
     final subtitle = !_loaded ? '…' : (_version ?? 'unknown');
     return ListTile(
-      leading: const Icon(Icons.info_outline),
+      leading: const Icon(TablerIcons.info_circle),
       title: const Text('版本'),
       subtitle: Text(subtitle),
     );
@@ -1212,7 +1213,7 @@ class _DataUpdateTileState extends State<DataUpdateTile> {
         child: IconButton(
           padding: EdgeInsets.zero,
           constraints: const BoxConstraints(),
-          icon: const Icon(Icons.sync, size: AppTypography.iconMD),
+          icon: const Icon(TablerIcons.refresh, size: AppTypography.iconMD),
           tooltip: '检查更新',
           onPressed: _checkForUpdate,
         ),
@@ -1223,7 +1224,7 @@ class _DataUpdateTileState extends State<DataUpdateTile> {
       leading: AppBadge(
         count: _hasDbBadge ? 1 : 0,
         showCount: false,
-        child: const Icon(Icons.system_update_alt, size: AppTypography.iconMD),
+        child: const Icon(TablerIcons.database, size: AppTypography.iconMD),
       ),
       title: Text(_downloading ? '正在更新数据库...' : '数据库更新'),
       subtitle: Text(
@@ -1402,7 +1403,7 @@ class _ShizukuTileState extends State<_ShizukuTile> {
     if (!_moduleOnline) {
       return ListTile(
         enabled: false,
-        leading: const Icon(Icons.shield_outlined, size: AppTypography.iconMD),
+        leading: const Icon(TablerIcons.shield, size: AppTypography.iconMD),
         title: const Text('Shizuku 状态'),
         subtitle: const Text('安装模块未启用'),
       );
@@ -1410,7 +1411,7 @@ class _ShizukuTileState extends State<_ShizukuTile> {
 
     if (_checking) {
       return const ListTile(
-        leading: Icon(Icons.shield_outlined, size: AppTypography.iconMD),
+        leading: Icon(TablerIcons.shield, size: AppTypography.iconMD),
         title: Text('Shizuku 状态'),
         subtitle: Text('检测中...'),
       );
@@ -1418,7 +1419,7 @@ class _ShizukuTileState extends State<_ShizukuTile> {
 
     if (!_available) {
       return ListTile(
-        leading: const Icon(Icons.shield_outlined, size: AppTypography.iconMD),
+        leading: const Icon(TablerIcons.shield, size: AppTypography.iconMD),
         title: const Text('Shizuku 状态'),
         subtitle: const Text('未运行（需安装 Shizuku 并启动）'),
         trailing: TextButton(
@@ -1439,7 +1440,7 @@ class _ShizukuTileState extends State<_ShizukuTile> {
 
     if (!_granted) {
       return ListTile(
-        leading: const Icon(Icons.shield_outlined, size: AppTypography.iconMD),
+        leading: const Icon(TablerIcons.shield, size: AppTypography.iconMD),
         title: const Text('Shizuku 状态'),
         subtitle: const Text('已运行，未授权'),
         trailing: TextButton(
@@ -1451,7 +1452,7 @@ class _ShizukuTileState extends State<_ShizukuTile> {
 
     return const ListTile(
       leading:
-          Icon(Icons.shield, size: AppTypography.iconMD, color: Colors.green),
+          Icon(TablerIcons.shield_filled, size: AppTypography.iconMD, color: Colors.green),
       title: Text('Shizuku 状态'),
       subtitle: Text('已授权，可静默安装'),
     );
@@ -1521,7 +1522,7 @@ class _MultiSegmentDownloadTileState extends State<_MultiSegmentDownloadTile> {
   Widget build(BuildContext context) {
     return SwitchListTile(
       secondary: Icon(
-        Icons.multiple_stop,
+        TablerIcons.route,
         size: AppTypography.iconMD,
         color: Theme.of(context).colorScheme.primary,
       ),
@@ -1595,7 +1596,7 @@ class _MaxConcurrentDownloadTileState
   Widget build(BuildContext context) {
     return ListTile(
       leading: Icon(
-        Icons.download,
+        TablerIcons.download,
         size: AppTypography.iconMD,
         color: Theme.of(context).colorScheme.primary,
       ),
@@ -1683,7 +1684,7 @@ class _WifiOnlyDownloadTileState extends State<_WifiOnlyDownloadTile> {
   Widget build(BuildContext context) {
     return SwitchListTile(
       secondary: Icon(
-        Icons.wifi,
+        TablerIcons.wifi,
         size: AppTypography.iconMD,
         color: Theme.of(context).colorScheme.primary,
       ),
@@ -1755,7 +1756,7 @@ class _MaxRetryCountTileState extends State<_MaxRetryCountTile> {
   Widget build(BuildContext context) {
     return ListTile(
       leading: Icon(
-        Icons.replay,
+        TablerIcons.reload,
         size: AppTypography.iconMD,
         color: Theme.of(context).colorScheme.primary,
       ),

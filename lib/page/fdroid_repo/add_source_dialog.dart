@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/design/app_radius.dart';
 import 'package:gstore/core/design/app_sheet.dart';
@@ -207,7 +208,7 @@ class _AddSourceDialogState extends State<AddSourceDialog> {
                   children: [
                     Row(
                       children: [
-                        Icon(Icons.verified_user_outlined,
+                        Icon(TablerIcons.shield_check,
                             size: 16, color: theme.colorScheme.primary),
                         const SizedBox(width: AppSpacing.xs),
                         Text('仓库指纹（SHA-256）',

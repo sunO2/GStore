@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/page/home/tab/discovery/widgets/tag_picker_dialog.dart';
@@ -76,7 +77,7 @@ void main() {
 
     // 输入自定义标签并点添加按钮
     await tester.enterText(find.byType(TextField), '影音');
-    await tester.tap(find.byIcon(Icons.add));
+    await tester.tap(find.byIcon(TablerIcons.plus));
     await tester.pumpAndSettle();
     expect(find.widgetWithText(InputChip, '影音'), findsOneWidget);
 
@@ -88,7 +89,7 @@ void main() {
 
     // 空白输入被忽略
     await tester.enterText(find.byType(TextField), '   ');
-    await tester.tap(find.byIcon(Icons.add));
+    await tester.tap(find.byIcon(TablerIcons.plus));
     await tester.pumpAndSettle();
     expect(find.byType(InputChip), findsNWidgets(2));
 

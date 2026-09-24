@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/design/app_borders.dart';
 import 'package:gstore/core/theme/theme_provider.dart';
@@ -58,7 +59,7 @@ class _ThemeSettingsPageState extends ConsumerState<ThemeSettingsPage> {
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Icon(
-              Icons.palette_outlined,
+              TablerIcons.palette,
               size: AppTypography.iconXXXL,
               color: Theme.of(context).colorScheme.onSurfaceVariant,
             ),
@@ -99,7 +100,7 @@ class _ThemeSettingsPageState extends ConsumerState<ThemeSettingsPage> {
           child: Row(
             children: [
               Icon(
-                Icons.info_outline,
+                TablerIcons.info_circle,
                 color: Theme.of(context).colorScheme.primary,
                 size: AppTypography.iconLG,
               ),
@@ -178,7 +179,7 @@ class _ThemeSettingsPageState extends ConsumerState<ThemeSettingsPage> {
                 title: Text(mode.displayName),
                 trailing: isSelected
                     ? Icon(
-                        Icons.check,
+                        TablerIcons.check,
                         color: Theme.of(context).colorScheme.primary,
                       )
                     : null,
@@ -236,7 +237,7 @@ class _ThemeSettingsPageState extends ConsumerState<ThemeSettingsPage> {
           if (useCustom) ...[
             const Divider(height: 1),
             ListTile(
-              leading: const Icon(Icons.palette),
+              leading: const Icon(TablerIcons.palette),
               title: const Text('主色'),
               subtitle: Text(config.primaryColor != null
                   ? '#${config.primaryColor!.value.toRadixString(16).substring(2).toUpperCase()}'
@@ -268,7 +269,7 @@ class _ThemeSettingsPageState extends ConsumerState<ThemeSettingsPage> {
               ),
             ),
             ListTile(
-              leading: const Icon(Icons.palette_outlined),
+              leading: const Icon(TablerIcons.palette),
               title: const Text('次要色'),
               subtitle: Text(config.secondaryColor != null
                   ? '#${config.secondaryColor!.value.toRadixString(16).substring(2).toUpperCase()}'
@@ -300,7 +301,7 @@ class _ThemeSettingsPageState extends ConsumerState<ThemeSettingsPage> {
               ),
             ),
             ListTile(
-              leading: const Icon(Icons.brush),
+              leading: const Icon(TablerIcons.brush),
               title: const Text('第三色'),
               subtitle: Text(config.tertiaryColor != null
                   ? '#${config.tertiaryColor!.value.toRadixString(16).substring(2).toUpperCase()}'
@@ -337,7 +338,7 @@ class _ThemeSettingsPageState extends ConsumerState<ThemeSettingsPage> {
           if (useCustom) ...[
             const Divider(height: 1),
             ListTile(
-              leading: const Icon(Icons.restore),
+              leading: const Icon(TablerIcons.restore),
               title: const Text('恢复默认'),
               subtitle: const Text('恢复为壁纸动态色'),
               onTap: () async {
@@ -382,7 +383,7 @@ class _ThemeSettingsPageState extends ConsumerState<ThemeSettingsPage> {
                 subtitle: Text(_getFontStyleDescription(style)),
                 trailing: isSelected
                     ? Icon(
-                        Icons.check,
+                        TablerIcons.check,
                         color: Theme.of(context).colorScheme.primary,
                       )
                     : null,
@@ -441,7 +442,7 @@ class _ThemeSettingsPageState extends ConsumerState<ThemeSettingsPage> {
                 ),
                 trailing: isSelected
                     ? Icon(
-                        Icons.check,
+                        TablerIcons.check,
                         color: Theme.of(context).colorScheme.primary,
                       )
                     : null,
@@ -497,7 +498,7 @@ class _ThemeSettingsPageState extends ConsumerState<ThemeSettingsPage> {
                 ),
                 trailing: isSelected
                     ? Icon(
-                        Icons.check,
+                        TablerIcons.check,
                         color: Theme.of(context).colorScheme.primary,
                       )
                     : null,
@@ -550,11 +551,11 @@ class _ThemeSettingsPageState extends ConsumerState<ThemeSettingsPage> {
   IconData _getIconForMode(AppThemeMode mode) {
     switch (mode) {
       case AppThemeMode.system:
-        return Icons.brightness_auto;
+        return TablerIcons.brightness_auto;
       case AppThemeMode.light:
-        return Icons.light_mode;
+        return TablerIcons.sun;
       case AppThemeMode.dark:
-        return Icons.dark_mode;
+        return TablerIcons.moon;
     }
   }
 
@@ -749,19 +750,19 @@ class _ThemeSettingsPageState extends ConsumerState<ThemeSettingsPage> {
                 children: [
                   _buildNavItem(
                     context,
-                    icon: Icons.home,
+                    icon: TablerIcons.home_filled,
                     label: '首页',
                     isSelected: true,
                   ),
                   _buildNavItem(
                     context,
-                    icon: Icons.explore_outlined,
+                    icon: TablerIcons.compass,
                     label: '发现',
                     isSelected: false,
                   ),
                   _buildNavItem(
                     context,
-                    icon: Icons.person_outline,
+                    icon: TablerIcons.user,
                     label: '我的',
                     isSelected: false,
                   ),
@@ -880,7 +881,7 @@ class _ColorPickerState extends State<ColorPicker> {
                   ),
                 ),
                 child: isSelected
-                    ? const Icon(Icons.check, color: Colors.white)
+                    ? const Icon(TablerIcons.check, color: Colors.white)
                     : null,
               ),
             );

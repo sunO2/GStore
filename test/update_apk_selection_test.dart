@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
@@ -344,7 +345,7 @@ Future<void> _expandApkSelector(WidgetTester tester) async {
 /// 某候选行是否带勾选图标
 Finder _checkedIconOf(String name) => find.descendant(
       of: find.byKey(ValueKey('apk_option_$name')),
-      matching: find.byIcon(Icons.check_circle),
+      matching: find.byIcon(TablerIcons.circle_check_filled),
     );
 
 void main() {

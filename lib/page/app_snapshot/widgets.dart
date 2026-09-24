@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/core/design/app_animation.dart';
 import 'package:gstore/core/design/app_components.dart';
 import 'package:gstore/core/design/app_radius.dart';
@@ -127,8 +128,8 @@ class _SnapshotSectionCardState extends State<SnapshotSectionCard> {
                             curve: AppAnimation.curve,
                             child: Icon(
                               _expanded
-                                  ? Icons.expand_less
-                                  : Icons.expand_more,
+                                  ? TablerIcons.chevron_up
+                                  : TablerIcons.chevron_down,
                               size: AppTypography.iconLG,
                               color: muted,
                             ),
@@ -316,5 +317,5 @@ class SnapshotEmptyHint extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) =>
-      EmptyState(message: text, icon: icon ?? Icons.inbox_outlined);
+      EmptyState(message: text, icon: icon ?? TablerIcons.inbox);
 }

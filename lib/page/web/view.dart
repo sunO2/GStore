@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 
 class WebPage extends StatelessWidget {
   const WebPage({super.key});
@@ -9,7 +10,7 @@ class WebPage extends StatelessWidget {
       // body: WebViewWidget(controller: logic.controller),
       floatingActionButton: FloatingActionButton(
         onPressed: () => Navigator.of(context).pop(),
-        child: const Icon(Icons.close),
+        child: const Icon(TablerIcons.x),
       ),
     );
   }

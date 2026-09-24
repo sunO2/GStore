@@ -2,6 +2,7 @@
 library;
 
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/fdroid/FdroidRepoModels.dart';
@@ -37,11 +38,11 @@ class _FdroidRepoPageState extends ConsumerState<FdroidRepoPage> {
         title: const Text('F-Droid 仓库管理'),
         actions: [
           IconButton(
-            icon: const Icon(Icons.search),
+            icon: const Icon(TablerIcons.search),
             onPressed: () => _showSearchDialog(context),
           ),
           IconButton(
-            icon: const Icon(Icons.refresh),
+            icon: const Icon(TablerIcons.refresh),
             onPressed: state.isLoading ? null : notifier.checkAndUpdate,
           ),
         ],
@@ -217,13 +218,13 @@ class _FdroidRepoPageState extends ConsumerState<FdroidRepoPage> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             ElevatedButton.icon(
-              icon: const Icon(Icons.download),
+              icon: const Icon(TablerIcons.download),
               label: const Text('加载/重新加载数据'),
               onPressed: state.isLoading ? null : notifier.loadAllSources,
             ),
             SizedBox(height: AppSpacing.sm),
             OutlinedButton.icon(
-              icon: const Icon(Icons.delete_outline),
+              icon: const Icon(TablerIcons.trash),
               label: const Text('清空数据'),
               onPressed: state.isLoading ? null : notifier.clearData,
             ),
@@ -249,7 +250,7 @@ class _FdroidRepoPageState extends ConsumerState<FdroidRepoPage> {
                   style: TextStyle(fontSize: AppTypography.sizeLG, fontWeight: AppTypography.weightBold),
                 ),
                 IconButton(
-                  icon: const Icon(Icons.add),
+                  icon: const Icon(TablerIcons.plus),
                   onPressed: () => notifier.addSource(context),
                   tooltip: '添加自定义源',
                 ),
@@ -372,7 +373,7 @@ class _FdroidRepoPageState extends ConsumerState<FdroidRepoPage> {
         controller: notifier.searchController,
         decoration: const InputDecoration(
           hintText: '输入应用名称或包名',
-          prefixIcon: Icon(Icons.search),
+          prefixIcon: Icon(TablerIcons.search),
         ),
         autofocus: true,
       ),

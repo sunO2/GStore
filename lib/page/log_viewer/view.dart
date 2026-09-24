@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
@@ -72,8 +73,8 @@ class _LogViewerPageState extends ConsumerState<LogViewerPage> {
           IconButton(
             icon: Icon(
               autoScroll
-                  ? Icons.arrow_downward
-                  : Icons.vertical_align_center,
+                  ? TablerIcons.arrow_down
+                  : TablerIcons.arrows_vertical,
             ),
             tooltip: autoScroll ? '自动滚动' : '手动滚动',
             onPressed: () {
@@ -87,7 +88,7 @@ class _LogViewerPageState extends ConsumerState<LogViewerPage> {
 
           // 清空日志
           IconButton(
-            icon: const Icon(Icons.delete_outline),
+            icon: const Icon(TablerIcons.trash),
             tooltip: '清空日志',
             onPressed: () {
               AppDialogs.showDialog(
@@ -104,7 +105,7 @@ class _LogViewerPageState extends ConsumerState<LogViewerPage> {
           // 更多：下载日志 / target 过滤
           IconButton(
             icon: Icon(
-              Icons.more_vert,
+              TablerIcons.dots_vertical,
               // 过滤生效时高亮提示
               color: contentFilter.isEmpty
                   ? null
@@ -157,7 +158,7 @@ class _LogViewerPageState extends ConsumerState<LogViewerPage> {
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Icon(
-            Icons.bug_report_outlined,
+            TablerIcons.bug,
             size: 48,
             color: scheme.primary.withValues(alpha: 0.5),
           ),
@@ -182,7 +183,7 @@ class _LogViewerPageState extends ConsumerState<LogViewerPage> {
         Material(
           type: MaterialType.transparency,
           child: ListTile(
-            leading: const Icon(Icons.file_download_outlined),
+            leading: const Icon(TablerIcons.file_download),
             title: const Text('下载日志'),
             subtitle: Text('导出当前 ${LogManager.instance.logs.length} 条日志'),
             onTap: () => AppDialogs.popSheet<String?>('download'),
@@ -191,14 +192,14 @@ class _LogViewerPageState extends ConsumerState<LogViewerPage> {
         Material(
           type: MaterialType.transparency,
           child: ListTile(
-            leading: const Icon(Icons.filter_alt_outlined),
+            leading: const Icon(TablerIcons.filter),
             title: const Text('target 过滤'),
             subtitle: Text(
               keyword.isEmpty ? '按关键字过滤日志内容' : '已过滤：$keyword',
             ),
             trailing: keyword.isEmpty
                 ? null
-                : const Icon(Icons.check_circle_outline, size: 20),
+                : const Icon(TablerIcons.circle_check, size: 20),
             onTap: () => AppDialogs.popSheet<String?>('filter'),
           ),
         ),
@@ -289,7 +290,7 @@ class _LogViewerPageState extends ConsumerState<LogViewerPage> {
                 decoration: InputDecoration(
                   labelText: '过滤内容',
                   hintText: '如 RUST- / repo / error',
-                  prefixIcon: const Icon(Icons.search),
+                  prefixIcon: const Icon(TablerIcons.search),
                   filled: true,
                   fillColor: scheme.surfaceContainerHighest,
                   border: capsuleBorder,
@@ -355,7 +356,7 @@ class _LogViewerPageState extends ConsumerState<LogViewerPage> {
         color = Colors.green;
     }
 
-    return Icon(Icons.filter_list, color: color);
+    return Icon(TablerIcons.filter, color: color);
   }
 }
 
@@ -464,15 +465,15 @@ class _LogItemView extends StatelessWidget {
   static IconData _levelIcon(LogLevel level) {
     switch (level) {
       case LogLevel.debug:
-        return Icons.bug_report;
+        return TablerIcons.bug;
       case LogLevel.info:
-        return Icons.info;
+        return TablerIcons.info_circle_filled;
       case LogLevel.warning:
-        return Icons.warning;
+        return TablerIcons.alert_triangle_filled;
       case LogLevel.error:
-        return Icons.error;
+        return TablerIcons.alert_circle_filled;
       default:
-        return Icons.check_circle;
+        return TablerIcons.circle_check_filled;
     }
   }
 }
@@ -496,7 +497,7 @@ class _ActiveFilterBar extends StatelessWidget {
       ),
       child: Row(
         children: [
-          Icon(Icons.filter_alt, size: AppTypography.iconSM, color: scheme.primary),
+          Icon(TablerIcons.filter, size: AppTypography.iconSM, color: scheme.primary),
           const SizedBox(width: AppSpacing.sm),
           Expanded(
             child: Text(
@@ -506,7 +507,7 @@ class _ActiveFilterBar extends StatelessWidget {
             ),
           ),
           IconButton(
-            icon: const Icon(Icons.close, size: AppTypography.iconSM),
+            icon: const Icon(TablerIcons.x, size: AppTypography.iconSM),
             tooltip: '清除过滤',
             visualDensity: VisualDensity.compact,
             onPressed: onClear,

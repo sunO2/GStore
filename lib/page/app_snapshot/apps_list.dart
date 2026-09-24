@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:go_router/go_router.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/design/app_radius.dart';
@@ -110,7 +111,7 @@ class _AppSnapshotAppsPageState extends State<AppSnapshotAppsPage> {
           IconButton(
             tooltip: '刷新',
             onPressed: _loading ? null : _load,
-            icon: const Icon(Icons.refresh),
+            icon: const Icon(TablerIcons.refresh),
           ),
         ],
       ),
@@ -159,7 +160,7 @@ class _AppRow extends StatelessWidget {
       child: ListTile(
         // 应用真实图标；未安装/取不到时回落占位图标
         leading: (iconPath == null || iconPath!.isEmpty)
-            ? Icon(Icons.history_outlined, color: theme.colorScheme.primary)
+            ? Icon(TablerIcons.history, color: theme.colorScheme.primary)
             : AppIcon(url: iconPath, width: 40, height: 40),
         title: Text(
           entry.displayName,
@@ -185,7 +186,7 @@ class _AppRow extends StatelessWidget {
             ),
           ],
         ),
-        trailing: const Icon(Icons.chevron_right, size: AppTypography.iconMD),
+        trailing: const Icon(TablerIcons.chevron_right, size: AppTypography.iconMD),
         onTap: onTap,
       ),
     );
@@ -206,7 +207,7 @@ class _EmptyHint extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.history_outlined, size: 48, color: muted),
+            Icon(TablerIcons.history, size: 48, color: muted),
             const SizedBox(height: AppSpacing.md),
             Text('还没有生成过快照', style: theme.textTheme.titleMedium),
             const SizedBox(height: AppSpacing.sm),
@@ -218,7 +219,7 @@ class _EmptyHint extends StatelessWidget {
             const SizedBox(height: AppSpacing.xl),
             FilledButton.icon(
               onPressed: () => context.push(AppRoute.installedApps),
-              icon: const Icon(Icons.apps_outlined),
+              icon: const Icon(TablerIcons.apps),
               label: const Text('去应用列表'),
             ),
           ],

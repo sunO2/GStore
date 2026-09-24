@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 
 import 'package:gstore/core/design/app_sheet.dart';
 import 'package:gstore/core/design/app_spacing.dart';
@@ -168,11 +169,11 @@ class _ItToolListSheetState extends State<ItToolListSheet> {
                 isDense: true,
                 hintText: '搜索工具名',
                 prefixIcon:
-                    const Icon(Icons.search, size: AppTypography.iconSM),
+                    const Icon(TablerIcons.search, size: AppTypography.iconSM),
                 suffixIcon: _query.isEmpty
                     ? null
                     : IconButton(
-                        icon: const Icon(Icons.close,
+                        icon: const Icon(TablerIcons.x,
                             size: AppTypography.iconSM),
                         onPressed: () {
                           _queryCtrl.clear();
@@ -222,7 +223,7 @@ class _ItToolListSheetState extends State<ItToolListSheet> {
                         : Text(tool.description, maxLines: 2),
                     trailing: tool.path == widget.currentPath
                         ? Icon(
-                            Icons.check,
+                            TablerIcons.check,
                             size: AppTypography.iconSM,
                             color: theme.colorScheme.primary,
                           )

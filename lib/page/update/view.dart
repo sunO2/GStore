@@ -2,6 +2,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'dart:ui' show FontFeature;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/download/model/download_task.dart';
 import 'package:gstore/compent/entrance_list.dart';
@@ -52,12 +53,12 @@ class UpdateManager extends ConsumerWidget {
             IconButton(
               tooltip: state.showLog ? '查看更新列表' : '检测日志',
               icon: Icon(
-                  state.showLog ? Icons.list_alt : Icons.receipt_long),
+                  state.showLog ? TablerIcons.list : TablerIcons.receipt),
               onPressed: logic.toggleLogView,
             ),
           IconButton(
             tooltip: '检查更新',
-            icon: const Icon(Icons.refresh),
+            icon: const Icon(TablerIcons.refresh),
             onPressed: state.isLoading
                 ? null
                 : () => logic.checkUpdates(force: true),
@@ -109,7 +110,7 @@ class UpdateManager extends ConsumerWidget {
             children: [
               if (finished)
                 Icon(
-                  Icons.check_circle,
+                  TablerIcons.circle_check_filled,
                   size: AppTypography.sizeXL,
                   color: Theme.of(context).colorScheme.primary,
                 )
@@ -173,7 +174,7 @@ class UpdateManager extends ConsumerWidget {
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Icon(
-            hasError ? Icons.error_outline : Icons.check_circle_outline,
+            hasError ? TablerIcons.alert_circle : TablerIcons.circle_check,
             size: AppTypography.sizeXXL,
             color: hasError
                 ? Theme.of(context).colorScheme.error
@@ -223,7 +224,7 @@ class UpdateManager extends ConsumerWidget {
               const SizedBox(width: AppSpacing.xs),
               FilledButton.tonalIcon(
                 onPressed: state.updatingAppId != null ? null : logic.updateAll,
-                icon: const Icon(Icons.system_update_alt, size: 18),
+                icon: const Icon(TablerIcons.refresh_dot, size: 18),
                 label: const Text('全部更新'),
               ),
             ],
@@ -458,7 +459,7 @@ class _ApkSelectorState extends State<_ApkSelector> {
                   duration: AppAnimation.fast,
                   curve: AppAnimation.curve,
                   child: Icon(
-                    _expanded ? Icons.expand_less : Icons.expand_more,
+                    _expanded ? TablerIcons.chevron_up : TablerIcons.chevron_down,
                     size: AppTypography.iconSM,
                     color: scheme.onSurfaceVariant,
                   ),
@@ -600,7 +601,7 @@ class _ApkOption extends StatelessWidget {
         child: Row(
           children: [
             Icon(
-              selected ? Icons.check_circle : Icons.radio_button_unchecked,
+              selected ? TablerIcons.circle_check_filled : TablerIcons.circle,
               size: AppTypography.iconSM,
               color: selected ? scheme.primary : scheme.onSurfaceVariant,
             ),
@@ -643,7 +644,7 @@ class _AppIcon extends StatelessWidget {
           borderRadius: AppRadius.allMD,
         ),
         child: Icon(
-          Icons.android,
+          TablerIcons.brand_android,
           size: AppTypography.iconMD,
           color: AppColors.textSecondary,
         ),
@@ -660,7 +661,7 @@ class _AppIcon extends StatelessWidget {
           width: size,
           height: size,
           color: Theme.of(context).colorScheme.surfaceContainerHighest,
-          child: const Icon(Icons.android, color: AppColors.textSecondary),
+          child: const Icon(TablerIcons.brand_android, color: AppColors.textSecondary),
         ),
       ),
     );
@@ -737,7 +738,7 @@ class _CheckingAppIconLoading extends StatelessWidget {
       height: size,
       color: Theme.of(context).colorScheme.surfaceContainerHighest,
       child: Icon(
-        Icons.android,
+        TablerIcons.brand_android,
         size: 16,
         color: Theme.of(context).colorScheme.onSurfaceVariant,
       ),

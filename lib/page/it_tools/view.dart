@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:path/path.dart' as p;
 
@@ -192,7 +193,7 @@ class _ItToolsPageState extends State<ItToolsPage> {
                 title: Text(entry.value),
                 trailing: entry.key == _pageLocale
                     ? Icon(
-                        Icons.check,
+                        TablerIcons.check,
                         color: Theme.of(sheetContext).colorScheme.primary,
                       )
                     : null,
@@ -218,20 +219,20 @@ class _ItToolsPageState extends State<ItToolsPage> {
         actions: [
           IconButton(
             tooltip: '工具列表',
-            icon: const Icon(Icons.menu_open),
+            icon: const Icon(TablerIcons.menu_2),
             // 清单未就绪时不弹空列表
             onPressed: _toolGroups.isEmpty ? null : _showToolList,
           ),
           IconButton(
             tooltip: '搜索工具',
-            icon: const Icon(Icons.search),
+            icon: const Icon(TablerIcons.search),
             onPressed: _bridgeReady
                 ? () => _call('window.ItTools && window.ItTools.openSearch()')
                 : null,
           ),
           IconButton(
             tooltip: '语言',
-            icon: const Icon(Icons.translate),
+            icon: const Icon(TablerIcons.language),
             onPressed: _pickLocale,
           ),
         ],
@@ -330,7 +331,7 @@ class _ItToolsPageState extends State<ItToolsPage> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.error_outline, size: 40, color: scheme.error),
+            Icon(TablerIcons.alert_circle, size: 40, color: scheme.error),
             const SizedBox(height: AppSpacing.md),
             Text(
               '离线资源准备失败',

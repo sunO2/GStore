@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 
 import 'package:gstore/core/core.dart';
 
@@ -69,7 +70,7 @@ class _DownloadCleanPageState extends ConsumerState<DownloadCleanPage> {
         }
         if (state.downloads.isEmpty) {
           return const EmptyState(
-            icon: Icons.download_done_outlined,
+            icon: TablerIcons.download,
             message: '暂无已完成的下载文件',
           );
         }
@@ -137,7 +138,7 @@ class _DownloadCleanPageState extends ConsumerState<DownloadCleanPage> {
               trailing: isDeleting
                   ? const AppLoading(size: AppLoadingSize.small)
                   : IconButton(
-                      icon: Icon(Icons.delete_outline,
+                      icon: Icon(TablerIcons.trash,
                           color: theme.colorScheme.error),
                       tooltip: '删除该文件',
                       onPressed: () async {
@@ -207,7 +208,7 @@ class _DownloadCleanPageState extends ConsumerState<DownloadCleanPage> {
                         backgroundColor: theme.colorScheme.errorContainer,
                       ),
                       onPressed: _selected.isEmpty ? null : _deleteSelected,
-                      icon: const Icon(Icons.delete_outline, size: 18),
+                      icon: const Icon(TablerIcons.trash, size: 18),
                       label: const Text('删除'),
                     ),
                   ],
@@ -245,7 +246,7 @@ class _DownloadCleanPageState extends ConsumerState<DownloadCleanPage> {
         borderRadius: BorderRadius.circular(AppRadius.sm),
       ),
       child: Icon(
-        item.isApk ? Icons.android : Icons.insert_drive_file_outlined,
+        item.isApk ? TablerIcons.brand_android : TablerIcons.file,
         size: 22,
         color: scheme.primary,
       ),

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/core/channel/model/ChannelType.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/design/app_borders.dart';
@@ -95,7 +96,7 @@ class _DiscoveryPageState extends ConsumerState<DiscoveryPage>
         // 添加应用按钮
         IconButton(
           tooltip: '添加应用',
-          icon: const Icon(Icons.add),
+          icon: const Icon(TablerIcons.plus),
           onPressed: () => logic.showAddAppSheet(context),
         ),
 
@@ -115,7 +116,7 @@ class _DiscoveryPageState extends ConsumerState<DiscoveryPage>
                 value: DisplayMode.all,
                 child: Row(
                   children: [
-                    Icon(Icons.apps, size: AppTypography.iconMD),
+                    Icon(TablerIcons.apps_filled, size: AppTypography.iconMD),
                     SizedBox(width: AppSpacing.sm),
                     Text('全部'),
                   ],
@@ -125,7 +126,7 @@ class _DiscoveryPageState extends ConsumerState<DiscoveryPage>
                 value: DisplayMode.added,
                 child: Row(
                   children: [
-                    Icon(Icons.check_circle, size: AppTypography.iconMD),
+                    Icon(TablerIcons.circle_check_filled, size: AppTypography.iconMD),
                     SizedBox(width: AppSpacing.sm),
                     Text('已添加'),
                   ],
@@ -135,7 +136,7 @@ class _DiscoveryPageState extends ConsumerState<DiscoveryPage>
                 value: DisplayMode.notAdded,
                 child: Row(
                   children: [
-                    Icon(Icons.add_circle_outline,
+                    Icon(TablerIcons.circle_plus,
                         size: AppTypography.iconMD),
                     SizedBox(width: AppSpacing.sm),
                     Text('未添加'),
@@ -171,7 +172,7 @@ class _DiscoveryPageState extends ConsumerState<DiscoveryPage>
           // 全部 Tab
           _buildSidebarItem(
             context: context,
-            icon: Icons.apps,
+            icon: TablerIcons.apps_filled,
             label: '全部',
             count: logic.getTotalAppCount(),
             isSelected: state.selectedChannel == null,
@@ -309,10 +310,10 @@ class _DiscoveryPageState extends ConsumerState<DiscoveryPage>
         controller: logic.searchController,
         decoration: InputDecoration(
           hintText: '搜索应用...',
-          prefixIcon: const Icon(Icons.search),
+          prefixIcon: const Icon(TablerIcons.search),
           suffixIcon: state.searchKeyword.isNotEmpty
               ? IconButton(
-                  icon: const Icon(Icons.clear),
+                  icon: const Icon(TablerIcons.x),
                   onPressed: () {
                     logic.setSearchKeyword('');
                     logic.searchController.clear();
@@ -369,18 +370,18 @@ class _DiscoveryPageState extends ConsumerState<DiscoveryPage>
               children: [
                 TextButton.icon(
                   onPressed: logic.selectAllInView,
-                  icon: const Icon(Icons.select_all,
+                  icon: const Icon(TablerIcons.checks,
                       size: AppTypography.iconSM),
                   label: const Text('全选'),
                 ),
                 TextButton.icon(
                   onPressed: logic.deselectAll,
-                  icon: const Icon(Icons.clear, size: AppTypography.iconSM),
+                  icon: const Icon(TablerIcons.x, size: AppTypography.iconSM),
                   label: const Text('清空'),
                 ),
                 FilledButton.icon(
                   onPressed: logic.batchAddSelected,
-                  icon: const Icon(Icons.add_circle,
+                  icon: const Icon(TablerIcons.circle_plus_filled,
                       size: AppTypography.iconSM),
                   label: const Text('添加'),
                 ),
@@ -404,7 +405,7 @@ class _DiscoveryPageState extends ConsumerState<DiscoveryPage>
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(Icons.error_outline,
+            const Icon(TablerIcons.alert_circle,
                 size: AppTypography.iconHuge, color: Colors.red),
             const SizedBox(height: AppSpacing.lg),
             Text(state.errorMessage),
@@ -643,11 +644,11 @@ class _DiscoveryPageState extends ConsumerState<DiscoveryPage>
   IconData _getDisplayModeIcon(DisplayMode mode) {
     switch (mode) {
       case DisplayMode.all:
-        return Icons.apps;
+        return TablerIcons.apps_filled;
       case DisplayMode.added:
-        return Icons.check_circle;
+        return TablerIcons.circle_check_filled;
       case DisplayMode.notAdded:
-        return Icons.add_circle_outline;
+        return TablerIcons.circle_plus;
     }
   }
 

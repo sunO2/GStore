@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/core/design/design_tokens.dart';
 
 /// 更多操作项（宫格中的一个动作）
@@ -221,7 +222,7 @@ class _MoreActionsSheetState extends State<_MoreActionsSheet> {
                     color: colorScheme.onSurfaceVariant,
                   ),
                   suffixIcon: IconButton(
-                    icon: const Icon(Icons.add),
+                    icon: const Icon(TablerIcons.plus),
                     tooltip: '添加标签',
                     onPressed: _addCustomTag,
                   ),
@@ -356,7 +357,7 @@ class _ActionTile extends StatelessWidget {
                     height: AppTypography.iconMD,
                   )
                 : Icon(
-                    action.icon ?? Icons.extension,
+                    action.icon ?? TablerIcons.puzzle_filled,
                     size: AppTypography.iconMD,
                     color: colorScheme.onSecondaryContainer,
                   ),
