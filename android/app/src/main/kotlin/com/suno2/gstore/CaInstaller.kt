@@ -17,6 +17,7 @@ import java.security.MessageDigest
 import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
 import java.util.concurrent.TimeUnit
+import javax.security.auth.x500.X500Principal
 
 /**
  * 抓包 MITM CA 的 Android 侧安装/检测能力（todo 17）。
@@ -347,8 +348,8 @@ object CaInstaller {
      * 本实现不依赖其稳定 API。
      */
     fun installSystemCa(pem: String): Map<String, Any?> {
-        val der = try {
-            parseCert(pem.encodeToByteArray()).encoded
+        val cert = try {
+            parseCert(pem.encodeToByteArray())
         } catch (e: Exception) {
             Log.w(TAG, "系统 CA 解析失败: ${e.message}")
             return fail("BAD_CERT", "CA 证书解析失败：${e.message ?: "无法识别 PEM/DER"}")
@@ -356,8 +357,11 @@ object CaInstaller {
         if (!isRooted()) {
             return fail("NOT_ROOT", "未检测到 root；Shizuku(shell) 无法写系统存储，系统 CA 安装仅支持 root。")
         }
+        val der = cert.encoded
         val hashName = try {
-            "${opensslSubjectHashOld(der)}.0"
+            // 文件名必须是 subject Name 的 OpenSSL old hash（见 opensslSubjectHashOld 注释），
+            // 传整张证书 DER 会得到错误文件名 → 系统不信任却误报成功。
+            "${opensslSubjectHashOld(cert)}.0"
         } catch (e: Exception) {
             return fail("HASH_FAILED", "计算证书 subject hash 失败：${e.message}")
         }
@@ -415,7 +419,7 @@ object CaInstaller {
      */
     fun systemCaInstalled(pem: ByteArray? = null): Boolean {
         val hashName = try {
-            if (pem != null && pem.isNotEmpty()) "${opensslSubjectHashOld(parseCert(pem).encoded)}.0"
+            if (pem != null && pem.isNotEmpty()) "${opensslSubjectHashOld(parseCert(pem))}.0"
             else lastSystemCaFileName
         } catch (e: Exception) {
             lastSystemCaFileName
@@ -453,19 +457,30 @@ object CaInstaller {
     }
 
     /**
-     * OpenSSL `X509_NAME_hash_old`：对 subject 的（规范化）DER 计算 MD5，取前 4 字节按
-     * **小端** 组合为十六进制。Android cacerts 文件名即 `<hash>.0`。
+     * OpenSSL `X509_NAME_hash_old`：对 **subject Name 的 DER**（不是整张证书 DER）计算 MD5，
+     * 取前 4 字节按 **小端** 组合为十六进制。Android cacerts 文件名即 `<hash>.0`。
      *
      * 注意：对 `rcgen` 生成的简单主体（PrintableString/UTF8String 的 CN）与 OpenSSL
      * 规范化结果一致；极端主体可能有差异，属尽力而为（真机 UNVERIFIED）。
      */
-    private fun opensslSubjectHashOld(subjectDer: ByteArray): String {
-        val md5 = MessageDigest.getInstance("MD5").digest(subjectDer)
+    private fun opensslSubjectHashOld(cert: X509Certificate): String {
+        val md5 = MessageDigest.getInstance("MD5").digest(subjectNameDer(cert))
         val v = (md5[0].toInt() and 0xFF) or
             ((md5[1].toInt() and 0xFF) shl 8) or
             ((md5[2].toInt() and 0xFF) shl 16) or
             ((md5[3].toInt() and 0xFF) shl 24)
         return (v.toLong() and 0xFFFFFFFFL).toString(16).padStart(8, '0')
+    }
+
+    /** subject Name 的 ASN.1 DER（即 OpenSSL `i2d_X509_NAME` 的输入）。 */
+    private fun subjectNameDer(cert: X509Certificate): ByteArray {
+        runCatching { return cert.subjectX500Principal.encoded }
+            .onFailure { Log.w(TAG, "getSubjectX500Principal 失败，回退 subjectDN: ${it.message}") }
+        // 回退：Android/RI 的 getSubjectDN() 返回 X500Principal，其 encoded 与原始 Name DER 一致。
+        // 绝不在此用 `X500Principal(getSubjectDN().name)` 字符串重建——那会重排/重编码，得到错误 hash。
+        val subject = cert.subjectDN
+        if (subject is X500Principal) return subject.encoded
+        throw IllegalStateException("无法获取 subject Name 的 DER 编码")
     }
 
     private class RootResult(val exitCode: Int, val output: String, val completed: Boolean) {
