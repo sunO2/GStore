@@ -9,6 +9,7 @@ import 'package:gstore/core/design/app_typography.dart';
 import 'package:gstore/core/request_debug/request_debug.dart';
 
 import 'collection_section.dart';
+import 'history_section.dart';
 
 /// 「请求调试」工作台分区（plan todo 30）。
 enum RequestDebugSection {
@@ -131,29 +132,7 @@ class _RequestDebugPageState extends State<RequestDebugPage> {
         return RequestDebugCollectionSection(facade: _facade);
 
       case RequestDebugSection.history:
-        if (store.history.isEmpty) {
-          return _empty(
-            context,
-            icon: TablerIcons.history,
-            title: '暂无历史',
-            message: '发送请求后，历史记录会出现在这里。',
-          );
-        }
-        return ListView.builder(
-          padding: AppSpacing.onlyVerticalSM,
-          itemCount: store.history.length,
-          itemBuilder: (context, index) {
-            final h = store.history[index];
-            return _sectionTile(
-              context,
-              icon: TablerIcons.history,
-              title: '${h.request.method} ${h.request.url}',
-              subtitle: h.responseSummary.error ??
-                  (h.responseSummary.statusCode?.toString() ?? ''),
-              key: ValueKey<String>('request-debug-history-${h.id}'),
-            );
-          },
-        );
+        return RequestDebugHistorySection(facade: _facade);
 
       case RequestDebugSection.environments:
         if (store.environments.isEmpty) {
