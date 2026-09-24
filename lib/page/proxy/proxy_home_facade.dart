@@ -80,6 +80,17 @@ abstract class ProxyHomeFacade implements ProxyFacade, ProxyConnectFacade {
   /// `net.shaper.get`：弱网模拟当前用户配置快照（只读，供首页状态卡徽标展示）。
   Future<ProxyShaperSnapshot> loadShaperConfig();
 
+  /// `capture.config.get`：HTTP 捕获 / MITM 门控配置（供首页「抓包」区块展示）。
+  Future<CaptureConfig> captureConfigGet();
+
+  /// `capture.config.set`：下发（部分）捕获配置并返回最新配置（总开关即时下发）。
+  Future<CaptureConfig> captureConfigSet(CaptureConfig config);
+
+  /// `capture.ca.get`：MITM CA 状态（未生成时 `generated:false`，非错误）。
+  ///
+  /// 首页在「开启抓包」前据此判断是否已有根证书，缺失则拦截并引导。
+  Future<CaptureCaInfo> captureCaGet();
+
   /// 读取持久化设置生成的 Kotlin `ProxyVpnService` 配置 JSON（含分流模式/应用
   /// 清单）。连接前注入，不得硬编码 `{}`（Todo 23 → Todo 24 交接）。
   @override
@@ -140,6 +151,16 @@ class ProxyModuleHomeFacade implements ProxyHomeFacade {
 
   @override
   Future<ProxyShaperSnapshot> loadShaperConfig() => _module.netShaperGet();
+
+  @override
+  Future<CaptureConfig> captureConfigGet() => _module.captureConfigGet();
+
+  @override
+  Future<CaptureConfig> captureConfigSet(CaptureConfig config) =>
+      _module.captureConfigSet(config);
+
+  @override
+  Future<CaptureCaInfo> captureCaGet() => _module.captureCaGet();
 
   @override
   Future<String> vpnConfigJson() => loadProxyVpnConfigJson();

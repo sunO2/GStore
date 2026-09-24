@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/design/app_components.dart';
 import 'package:gstore/core/design/app_sheet.dart';
 import 'package:gstore/core/design/app_spacing.dart';
+import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
 import 'package:gstore/page/proxy/proxy_active_node_store.dart';
@@ -200,6 +201,41 @@ class _FakeProxyFacade implements ProxyHomeFacade {
 
   @override
   Future<ProxyShaperSnapshot> loadShaperConfig() async => shaperSnapshot;
+
+  // ---- capture.* ----
+
+  /// `capture.config.get` 返回值；默认关闭。为 `null` 时抛模块不可用
+  /// （用于「抓包能力不可用 → 区块禁用 + 提示」回归）。
+  CaptureConfig? captureConfig = const CaptureConfig();
+
+  /// `capture.ca.get` 返回值；默认「未生成」（无 CA）。
+  CaptureCaInfo captureCa = const CaptureCaInfo();
+
+  int captureConfigSetCalls = 0;
+  CaptureConfig? lastCaptureConfigSet;
+
+  /// 非空时 `captureConfigSet` 以该错误失败（用于下发失败回归）。
+  Object? captureConfigSetError;
+
+  @override
+  Future<CaptureConfig> captureConfigGet() async {
+    final config = captureConfig;
+    if (config == null) throw ProxyModuleUnavailableException();
+    return config;
+  }
+
+  @override
+  Future<CaptureConfig> captureConfigSet(CaptureConfig config) async {
+    captureConfigSetCalls++;
+    lastCaptureConfigSet = config;
+    final error = captureConfigSetError;
+    if (error != null) throw error;
+    captureConfig = config;
+    return config;
+  }
+
+  @override
+  Future<CaptureCaInfo> captureCaGet() async => captureCa;
 
   @override
   Future<String> vpnConfigJson() async => '{}';
@@ -428,6 +464,11 @@ class _FakeGeoProvisionerFactory extends ProxyGeoProvisionerFactory {
 }
 
 Widget _wrap(Widget child) => MaterialApp(home: child);
+
+/// 注入全局导航 key：`AppDialogs.showConfirmSheet` 等统一弹层经
+/// [appNavigatorKey] 呈现，测试需挂载同一 key 才能渲染。
+Widget _wrapNav(Widget child) =>
+    MaterialApp(navigatorKey: appNavigatorKey, home: child);
 
 /// 放大测试视口：首页在状态/模式/流量三张卡之后还有快捷入口，默认 800x600
 /// 会因 `ListView` 懒构建而找不到屏外条目。测试改用高视口。
@@ -2103,6 +2144,185 @@ void main() {
       probeY,
       lessThan(versionY),
       reason: '网站连通性应在模块信息卡片之上',
+    );
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  // ==================== 抓包区块（Todo 20） ====================
+
+  testWidgets('抓包区块：默认渲染「已关闭」+ 总开关关闭 + 设置入口', (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade(); // captureConfig 默认 enabled:false
+    var openedSettings = 0;
+    await tester.pumpWidget(_wrap(ProxyHomePage(
+      facade: facade,
+      onOpenCaptureSettings: () => openedSettings++,
+    )));
+    await _flush(tester);
+
+    expect(find.text('抓包'), findsOneWidget);
+    expect(find.text('已关闭'), findsOneWidget);
+    final toggle = tester.widget<SwitchListTile>(
+      find.byKey(const Key('proxy-capture-toggle')),
+    );
+    expect(toggle.value, isFalse);
+    expect(toggle.onChanged, isNotNull);
+    expect(
+      find.byKey(const Key('proxy-capture-settings-entry')),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.byKey(const Key('proxy-capture-settings-entry')));
+    await tester.pump();
+    expect(openedSettings, 1);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('抓包区块：已开启且 CA 已生成 → 摘要 HTTP+HTTPS', (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade()
+      ..captureConfig = const CaptureConfig(enabled: true)
+      ..captureCa = const CaptureCaInfo(generated: true);
+    await tester.pumpWidget(_wrap(ProxyHomePage(facade: facade)));
+    await _flush(tester);
+
+    expect(find.text('HTTP+HTTPS'), findsOneWidget);
+    final toggle = tester.widget<SwitchListTile>(
+      find.byKey(const Key('proxy-capture-toggle')),
+    );
+    expect(toggle.value, isTrue);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('抓包区块：已开启但 CA 未生成 → 摘要仅 HTTP', (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade()
+      ..captureConfig = const CaptureConfig(enabled: true)
+      ..captureCa = const CaptureCaInfo(); // generated:false
+    await tester.pumpWidget(_wrap(ProxyHomePage(facade: facade)));
+    await _flush(tester);
+
+    expect(find.text('仅 HTTP'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('抓包开关：有 CA 时开启 → 调用 capture.config.set(enabled:true)', (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade()
+      ..captureCa = const CaptureCaInfo(generated: true);
+    await tester.pumpWidget(_wrap(ProxyHomePage(facade: facade)));
+    await _flush(tester);
+
+    await tester.tap(find.byKey(const Key('proxy-capture-toggle')));
+    await _flush(tester);
+
+    expect(facade.captureConfigSetCalls, 1);
+    expect(facade.lastCaptureConfigSet?.enabled, isTrue);
+    // 既有字段必须保留（只改 enabled，不得清空白名单 / 端口）。
+    expect(facade.lastCaptureConfigSet?.tlsPorts, const <int>[443, 8443]);
+    expect(find.text('HTTP+HTTPS'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('抓包开关：关闭 → 调用 capture.config.set(enabled:false)', (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade()
+      ..captureConfig = const CaptureConfig(enabled: true)
+      ..captureCa = const CaptureCaInfo(generated: true);
+    await tester.pumpWidget(_wrap(ProxyHomePage(facade: facade)));
+    await _flush(tester);
+
+    await tester.tap(find.byKey(const Key('proxy-capture-toggle')));
+    await _flush(tester);
+
+    expect(facade.captureConfigSetCalls, 1);
+    expect(facade.lastCaptureConfigSet?.enabled, isFalse);
+    expect(find.text('已关闭'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('抓包开关：无 CA 开启被拦截并提示（绝不默默开启）', (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade(); // captureCa 默认未生成
+    var openedSettings = 0;
+    await tester.pumpWidget(_wrapNav(ProxyHomePage(
+      facade: facade,
+      onOpenCaptureSettings: () => openedSettings++,
+    )));
+    await _flush(tester);
+
+    await tester.tap(find.byKey(const Key('proxy-capture-toggle')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    // 拦截：未下发任何 set，开关保持关闭，弹出引导。
+    expect(facade.captureConfigSetCalls, 0);
+    expect(find.text('需要先生成根证书'), findsOneWidget);
+    final toggle = tester.widget<SwitchListTile>(
+      find.byKey(const Key('proxy-capture-toggle')),
+    );
+    expect(toggle.value, isFalse);
+
+    // 引导确认 → 打开抓包设置入口。
+    await tester.tap(find.text('去设置'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(openedSettings, 1);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('抓包开关：下发失败 → 开关不乐观翻转 + showError', (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade()
+      ..captureCa = const CaptureCaInfo(generated: true)
+      ..captureConfigSetError = const ProxyModuleException(
+        code: 'PROXY_CAPTURE_CONFIG_INVALID',
+        message: 'invalid',
+      );
+    await tester.pumpWidget(_wrap(ProxyHomePage(facade: facade)));
+    await _flush(tester);
+
+    await tester.tap(find.byKey(const Key('proxy-capture-toggle')));
+    await _flush(tester);
+
+    expect(facade.captureConfigSetCalls, 1);
+    expect(find.text('已关闭'), findsOneWidget);
+    final toggle = tester.widget<SwitchListTile>(
+      find.byKey(const Key('proxy-capture-toggle')),
+    );
+    expect(toggle.value, isFalse);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('抓包区块：模块不可用 → 区块禁用 + 提示', (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade()..captureConfig = null;
+    await tester.pumpWidget(_wrap(ProxyHomePage(facade: facade)));
+    await _flush(tester);
+
+    final toggle = tester.widget<SwitchListTile>(
+      find.byKey(const Key('proxy-capture-toggle')),
+    );
+    expect(toggle.onChanged, isNull);
+    expect(
+      find.byKey(const Key('proxy-capture-unavailable')),
+      findsOneWidget,
     );
     expect(tester.takeException(), isNull);
 

@@ -53,6 +53,7 @@ class ProxyHomePage extends StatefulWidget {
     this.onOpenRequests,
     this.onOpenStats,
     this.onOpenLanSettings,
+    this.onOpenCaptureSettings,
     this.vpnConfigJson = '{}',
   });
 
@@ -102,6 +103,12 @@ class ProxyHomePage extends StatefulWidget {
   /// 「局域网设置」快捷入口（模式选择为 `lanProxy` 但 LAN 未启用时的跳转）。
   /// 为空时直接打开 [ProxySettingsPage]。
   final VoidCallback? onOpenLanSettings;
+
+  /// 「抓包设置 ›」入口（Todo 21 注册路由后由宿主注入）。为空时入口提示「尚未接入」。
+  ///
+  /// 首页不直接依赖抓包设置页 / 路由（todo 21 独占路由注册），只经此注入缝跳转，
+  /// 组件测试可注入计数回调断言跳转。
+  final VoidCallback? onOpenCaptureSettings;
 
   /// 传给 Kotlin `ProxyVpnService` 的配置 JSON（默认 `{}` = 全量路由）。
   /// Dart 侧**不生成**该配置，仅透传。
@@ -178,6 +185,19 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
   /// 卡标题右侧展示「弱网模拟 · <档位>」徽标。
   ProxyShaperSnapshot? _shaper;
 
+  /// 抓包 / MITM 门控配置（`capture.config.get`，best-effort）。
+  ///
+  /// `null` = 模块未提供 `capture.*`（区块禁用并提示），与「已加载但 `enabled:false`」
+  /// 严格区分，避免把「不可用」误报成「已关闭」。
+  CaptureConfig? _captureConfig;
+
+  /// CA 是否已生成（`capture.ca.get`，best-effort）。仅用于状态摘要区分
+  /// `仅 HTTP` / `HTTP+HTTPS`；开启动作前仍会实时复核（绝不凭缓存放行）。
+  bool _captureCaGenerated = false;
+
+  /// 抓包总开关下发中（防抖；期间开关禁用）。
+  bool _captureBusy = false;
+
   /// 当前选中的节点（持久化；节点页写入，首页展示 + 节点页高亮回显）。
   ProxyActiveNode? _activeNode;
 
@@ -229,6 +249,10 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
       final lan = await _safe(() => _facade.lanStatus());
       final nodeList = await _safe(() => _facade.nodeList());
       final shaper = await _safe(() => _facade.loadShaperConfig());
+      // 抓包门控配置（best-effort）：`null` = 模块未提供 `capture.*` → 区块禁用。
+      final capture = await _safe(() => _facade.captureConfigGet());
+      final captureCa =
+          capture == null ? null : await _safe(() => _facade.captureCaGet());
 
       // 解析「当前订阅」：优先沿用持久化 id；失效时若只剩 1 个订阅则自动选中并
       // 持久化，否则清除。选中 id 连接时经 `core.start.profileId` 生效。
@@ -256,6 +280,8 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
         _lanStatus = lan;
         _version = version;
         _shaper = shaper;
+        _captureConfig = capture;
+        _captureCaGenerated = captureCa?.generated ?? false;
         _selectedProfileId = selected?.id;
         _profileName = selected?.name;
         _profileNodeCount = selected?.nodeCount;
@@ -1078,6 +1104,8 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
           nodesSubtitle: _nodesCardSubtitle,
         ),
         const SizedBox(height: AppSpacing.lg),
+        _buildCaptureCard(context),
+        const SizedBox(height: AppSpacing.lg),
         _buildTrafficCard(context),
         const SizedBox(height: AppSpacing.lg),
         _buildQuickEntries(context),
@@ -1853,6 +1881,148 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
     );
   }
 
+
+  // ==================== 抓包区块 ====================
+
+  /// 抓包状态摘要：模块不可用 / 已关闭 / 仅 HTTP / HTTP+HTTPS。
+  ///
+  /// 「仅 HTTP vs HTTP+HTTPS」由 **CA 是否已生成** 决定（`capture.config` 无
+  /// HTTPS 字段）：无 CA 时 HTTPS 无法 MITM 终止，如实显示「仅 HTTP」。
+  String get _captureStatusLabel {
+    final config = _captureConfig;
+    if (config == null) return '抓包能力不可用';
+    if (!config.enabled) return '已关闭';
+    return _captureCaGenerated ? 'HTTP+HTTPS' : '仅 HTTP';
+  }
+
+  Widget _buildCaptureCard(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final config = _captureConfig;
+    final unavailable = config == null;
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Column(
+        children: [
+          SwitchListTile(
+            key: const Key('proxy-capture-toggle'),
+            secondary: const Icon(TablerIcons.shield_lock),
+            title: const Text('抓包'),
+            subtitle: Text(
+              _captureStatusLabel,
+              key: const Key('proxy-capture-status'),
+            ),
+            value: config?.enabled ?? false,
+            onChanged: (unavailable || _captureBusy)
+                ? null
+                : _onToggleCapture,
+          ),
+          if (unavailable)
+            Padding(
+              padding: AppSpacing.onlyHorizontalLG.copyWith(
+                bottom: AppSpacing.md,
+              ),
+              child: Row(
+                key: const Key('proxy-capture-unavailable'),
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(
+                    TablerIcons.alert_triangle,
+                    size: AppTypography.iconSM,
+                    color: scheme.error,
+                  ),
+                  const SizedBox(width: AppSpacing.sm),
+                  Expanded(
+                    child: Text(
+                      '当前调试模块未提供抓包能力（capture.*），请更新模块后再试。',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: scheme.error,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          const Divider(height: 1),
+          ListTile(
+            key: const Key('proxy-capture-settings-entry'),
+            leading: const Icon(TablerIcons.adjustments),
+            title: const Text('抓包设置'),
+            subtitle: const Text('白名单 / 抓取内容 / 存储'),
+            trailing: const Icon(TablerIcons.chevron_right),
+            onTap: _openCaptureSettings,
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 总开关：关闭即时下发；开启前**先复核 CA**，无 CA 则拦截并引导（绝不默默开启）。
+  Future<void> _onToggleCapture(bool value) async {
+    final config = _captureConfig;
+    if (config == null || _captureBusy) return;
+    if (!value) {
+      await _applyCaptureEnabled(false);
+      return;
+    }
+    // 首次开启前实时复核（不信任加载期缓存，避免 CA 被重置后仍放行）。
+    final ca = await _safe(() => _facade.captureCaGet());
+    if (ca != null && ca.generated) {
+      _captureCaGenerated = true;
+      await _applyCaptureEnabled(true);
+      return;
+    }
+    if (!mounted) return;
+    await _promptCaptureNeedsCa();
+  }
+
+  /// 下发 `capture.config.set`（仅改 `enabled`，其余字段原样保留）。
+  ///
+  /// 失败**不乐观翻转**：状态只在成功响应后更新；异常走统一 `showError`。
+  Future<void> _applyCaptureEnabled(bool enabled) async {
+    final config = _captureConfig;
+    if (config == null) return;
+    setState(() => _captureBusy = true);
+    try {
+      final next =
+          await _facade.captureConfigSet(config.copyWith(enabled: enabled));
+      if (!mounted) return;
+      setState(() {
+        _captureConfig = next;
+        _captureBusy = false;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _captureBusy = false);
+      AppDialogs.showError('抓包开关下发失败：$error');
+    }
+  }
+
+  /// 无 CA 时开启被拦截：提示需先生成根证书，并引导到抓包设置入口。
+  Future<void> _promptCaptureNeedsCa() async {
+    final canOpen = widget.onOpenCaptureSettings != null;
+    await AppDialogs.showConfirmSheet(
+      title: '需要先生成根证书',
+      message: '抓取 HTTPS 流量需要 MITM 根证书。请先在「抓包设置 › 证书管理」'
+          '生成并信任证书，再开启抓包；仅 HTTP 明文流量无需证书。',
+      confirmText: canOpen ? '去设置' : '知道了',
+      cancelText: canOpen ? '取消' : null,
+      onConfirm: canOpen ? _openCaptureSettings : null,
+    );
+  }
+
+  /// 「抓包设置 ›」：经注入缝跳转；未接入时提示（不改路由，route 注册归 todo 21）。
+  void _openCaptureSettings() {
+    final callback = widget.onOpenCaptureSettings;
+    if (callback != null) {
+      callback();
+      return;
+    }
+    unawaited(AppDialogs.showAlertSheet(
+      title: '抓包设置',
+      message: '抓包设置页尚未接入，请稍后再试。',
+    ));
+  }
 
   // ==================== 快捷入口 ====================
 

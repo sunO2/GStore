@@ -740,6 +740,26 @@ class ProxyModule implements ProxyFacade {
         payload: config.toRequestJson(),
       );
 
+  // ---- capture.* ----
+
+  /// `capture.config.get`：HTTP 捕获 / MITM 门控配置（顶层对象即 [CaptureConfig]）。
+  Future<CaptureConfig> captureConfigGet() =>
+      invoke(ProxyMethods.captureConfigGet, CaptureConfig.fromJson);
+
+  /// `capture.config.set`：下发（部分）捕获配置，返回最新**完整**配置。
+  ///
+  /// 按契约发送完整 [CaptureConfig] 载荷（Rust 对缺省字段保留当前值，故完整
+  /// 载荷语义等价且更易审计）。
+  Future<CaptureConfig> captureConfigSet(CaptureConfig config) => invoke(
+        ProxyMethods.captureConfigSet,
+        CaptureConfig.fromJson,
+        payload: config.toJson(),
+      );
+
+  /// `capture.ca.get`：MITM CA 状态（未生成时 `generated:false`，**不是**错误）。
+  Future<CaptureCaInfo> captureCaGet() =>
+      invoke(ProxyMethods.captureCaGet, CaptureCaInfo.fromJson);
+
   /// 调用信封 → 校验 `{ok:true,data:{...}}` → 返回 `data`。
   ///
   /// 错误分层：模块不可用 → [ProxyModuleUnavailableException]；
