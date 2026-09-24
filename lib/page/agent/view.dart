@@ -1,12 +1,12 @@
 import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_gen_ai_chat_ui/flutter_gen_ai_chat_ui.dart'
     hide AgentState;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:gstore/core/icons/Icons.dart';
 import 'package:gstore/page/home/logic.dart';
 import 'package:gstore/core/agent/agent_service.dart';
 import 'package:gstore/core/core.dart';
@@ -189,17 +189,17 @@ class _AgentPageState extends ConsumerState<AgentPage>
         actions: [
           IconButton(
             tooltip: '新建会话',
-            icon: const Icon(Icons.add_comment_outlined),
+            icon: const Icon(TablerIcons.message_plus),
             onPressed: logic.newSession,
           ),
           IconButton(
             tooltip: '会话列表',
-            icon: const Icon(Icons.history),
+            icon: const Icon(TablerIcons.history),
             onPressed: () => _showSessionList(context, logic),
           ),
           IconButton(
             tooltip: '模型设置',
-            icon: const Icon(Icons.settings_outlined),
+            icon: const Icon(TablerIcons.settings),
             onPressed: logic.openSettings,
           ),
         ],
@@ -299,7 +299,7 @@ class _AgentPageState extends ConsumerState<AgentPage>
         child: Padding(
           padding: const EdgeInsets.all(10),
           child: Icon(
-            Icons.arrow_downward,
+            TablerIcons.arrow_down,
             size: AppTypography.iconMD,
             color: scheme.primary,
           ),
@@ -344,7 +344,7 @@ class _AgentPageState extends ConsumerState<AgentPage>
         ),
         child: Row(
           children: [
-            const Icon(Icons.info_outline, color: AppColors.warning),
+            const Icon(TablerIcons.info_circle, color: AppColors.warning),
             const SizedBox(width: AppSpacing.md),
             const Expanded(
               child: Text('Agent 模块未启用，对话不可用'),
@@ -368,7 +368,7 @@ class _AgentPageState extends ConsumerState<AgentPage>
       ),
       child: Row(
         children: [
-          const Icon(Icons.warning_amber_rounded, color: AppColors.warning),
+          const Icon(TablerIcons.alert_triangle, color: AppColors.warning),
           const SizedBox(width: AppSpacing.md),
           const Expanded(
             child: Text('请先配置 LLM 模型（API Key）'),
@@ -398,7 +398,7 @@ class _AgentPageState extends ConsumerState<AgentPage>
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(
-              Icons.smart_toy_outlined,
+              TablerIcons.robot,
               size: AppTypography.iconXXXL,
               color: Theme.of(context).colorScheme.onSurfaceVariant,
             ),
@@ -526,7 +526,7 @@ class _AgentPageState extends ConsumerState<AgentPage>
       onPressed: sending ? null : _submitInput,
       icon: sending
           ? const AppLoading(size: AppLoadingSize.small)
-          : const Icon(Icons.send),
+          : const Icon(TablerIcons.send),
       tooltip: '发送',
     );
   }
@@ -553,8 +553,8 @@ class _AgentPageState extends ConsumerState<AgentPage>
     final sourceIndex = homeState.sourceIndex;
     final (icon, tooltip) = switch (sourceIndex) {
       0 => (
-          ColoredAliIcon(
-            icon: AliIcon.appStore,
+          Icon(
+            TablerIcons.home,
             size: AppTypography.iconMD,
             color: scheme.onSecondaryContainer,
           ),
@@ -562,15 +562,23 @@ class _AgentPageState extends ConsumerState<AgentPage>
         ),
       1 => (
           Icon(
-            Icons.explore_outlined,
+            TablerIcons.compass,
             size: AppTypography.iconMD,
             color: scheme.onSecondaryContainer,
           ),
           '返回发现',
         ),
+      2 => (
+          Icon(
+            TablerIcons.message_chatbot,
+            size: AppTypography.iconMD,
+            color: scheme.onSecondaryContainer,
+          ),
+          '返回 AI 助手',
+        ),
       3 => (
           Icon(
-            Icons.person_outline,
+            TablerIcons.user,
             size: AppTypography.iconMD,
             color: scheme.onSecondaryContainer,
           ),
@@ -578,7 +586,7 @@ class _AgentPageState extends ConsumerState<AgentPage>
         ),
       _ => (
           Icon(
-            Icons.apps,
+            TablerIcons.message_chatbot,
             size: AppTypography.iconMD,
             color: scheme.onSecondaryContainer,
           ),
@@ -638,7 +646,7 @@ class _AgentPageState extends ConsumerState<AgentPage>
                           Navigator.pop(context);
                           logic.newSession();
                         },
-                        icon: const Icon(Icons.add, size: 18),
+                        icon: const Icon(TablerIcons.plus, size: 18),
                         label: const Text('新建'),
                       ),
                     ],
@@ -672,8 +680,8 @@ class _AgentPageState extends ConsumerState<AgentPage>
                             dense: true,
                             leading: Icon(
                               isCurrent
-                                  ? Icons.forum
-                                  : Icons.chat_bubble_outline,
+                                  ? TablerIcons.message_circle_filled
+                                  : TablerIcons.message_circle,
                               size: AppTypography.iconMD,
                               color: isCurrent
                                   ? Theme.of(context).colorScheme.primary
@@ -702,7 +710,7 @@ class _AgentPageState extends ConsumerState<AgentPage>
                                   ),
                             ),
                             trailing: IconButton(
-                              icon: const Icon(Icons.delete_outline,
+                              icon: const Icon(TablerIcons.trash,
                                   size: 18),
                               onPressed: () async {
                                 Navigator.pop(context);

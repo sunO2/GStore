@@ -8,7 +8,7 @@ import 'package:gstore/page/agent/view.dart';
 import 'package:gstore/page/home/tab/discovery/view.dart';
 
 import 'logic.dart';
-import 'package:gstore/core/icons/Icons.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/design/app_borders.dart';
 
@@ -287,11 +287,15 @@ class _HomePageState extends ConsumerState<HomePage>
                       child: BackdropFilter(
                         filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
                         child: Builder(builder: (context) {
-                          // 局部压缩胶囊高度（M3 默认 80 → 64，更紧凑；主题其他属性不变）
+                          // 局部压缩胶囊高度（M3 默认 80 → 64，更紧凑）。
+                          // 必须 copyWith 合并应用主题已定义的 navigationBarTheme，
+                          // 否则会整体替换掉 backgroundColor/elevation/indicatorColor/
+                          // iconTheme/labelTextStyle，选中态退回 M3 默认（secondaryContainer）。
                           return Theme(
                             data: Theme.of(context).copyWith(
-                              navigationBarTheme:
-                                  const NavigationBarThemeData(height: 64),
+                              navigationBarTheme: Theme.of(context)
+                                  .navigationBarTheme
+                                  .copyWith(height: 64),
                             ),
                             child: NavigationBar(
                               selectedIndex: _displayIndex(index),
@@ -310,25 +314,12 @@ class _HomePageState extends ConsumerState<HomePage>
                                     curve: AppAnimation.curve,
                                     child: AnimatedSwitcher(
                                       duration: AppAnimations.normal,
-                                      child: ColorFiltered(
-                                        // AliIcon 是 COLR 彩色字体，不响应 IconTheme 颜色，强制染色
-                                        colorFilter: ColorFilter.mode(
-                                          (index == 0)
-                                              ? Theme.of(context)
-                                                  .colorScheme
-                                                  .primary
-                                              : Theme.of(context)
-                                                  .colorScheme
-                                                  .onSurfaceVariant,
-                                          BlendMode.srcATop,
-                                        ),
-                                        child: Icon(
-                                          (index == 0)
-                                              ? AliIcon.appStoreActive
-                                              : AliIcon.appStore,
-                                          key: ValueKey(index == 0 ? 0 : 1),
-                                          size: AppTypography.iconLG,
-                                        ),
+                                      child: Icon(
+                                        (index == 0)
+                                            ? TablerIcons.home_filled
+                                            : TablerIcons.home,
+                                        key: ValueKey(index == 0 ? 0 : 1),
+                                        size: AppTypography.iconLG,
                                       ),
                                     ),
                                   ),
@@ -342,10 +333,9 @@ class _HomePageState extends ConsumerState<HomePage>
                                     child: AnimatedSwitcher(
                                       duration: AppAnimations.normal,
                                       child: (index == 1)
-                                          ? const Icon(Icons.explore,
+                                          ? const Icon(TablerIcons.compass_filled,
                                               key: ValueKey(2))
-                                          : const Icon(
-                                              Icons.explore_outlined,
+                                          : const Icon(TablerIcons.compass,
                                               key: ValueKey(3)),
                                     ),
                                   ),
@@ -361,10 +351,11 @@ class _HomePageState extends ConsumerState<HomePage>
                                       child: AnimatedSwitcher(
                                         duration: AppAnimations.normal,
                                         child: (index == 2)
-                                            ? const Icon(Icons.smart_toy,
+                                            ? const Icon(
+                                                TablerIcons.message_chatbot_filled,
                                                 key: ValueKey(6))
                                             : const Icon(
-                                                Icons.smart_toy_outlined,
+                                                TablerIcons.message_chatbot,
                                                 key: ValueKey(7)),
                                       ),
                                     ),
@@ -378,9 +369,9 @@ class _HomePageState extends ConsumerState<HomePage>
                                     child: AnimatedSwitcher(
                                       duration: AppAnimations.normal,
                                       child: (index == 3)
-                                          ? const Icon(Icons.person,
+                                          ? const Icon(TablerIcons.user_filled,
                                               key: ValueKey(4))
-                                          : const Icon(Icons.person_outline,
+                                          : const Icon(TablerIcons.user,
                                               key: ValueKey(5)),
                                     ),
                                   ),
