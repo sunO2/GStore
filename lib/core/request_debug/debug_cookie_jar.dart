@@ -6,7 +6,15 @@
 ///
 /// 采用 `DebugCookie{name,value,domain,path}`（todo 25 模型，不重定义）作为
 /// 对外视图；解析到的 `Expires` / `Max-Age` 仅用于**过期剔除**（过期或
-/// `Max-Age<=0` 即删除），不落库（模型无该字段）。
+/// `Max-Age<=0` 即删除），不落库（模型无该字段）。`Domain` / `Path` /
+/// `Secure` / `HttpOnly` 在内部按 RFC 6265 校验：
+///
+/// * **Domain**：无 `Domain` = host-only（仅回发到原 host）；有 `Domain` 时
+///   必须与请求 host domain-match，否则**拒绝**（防跨站注入），并拒绝
+///   单标签 / TLD 级 Domain。
+/// * **Path**：按 RFC 6265 默认路径与路径匹配，只回发到匹配路径。
+/// * **Secure**：仅经 https 回发；`HttpOnly` 服务端语义（不在 JS 暴露），
+///   对发送无影响（解析后忽略）。
 library;
 
 import 'dart:io' show HttpDate;
@@ -15,12 +23,23 @@ import 'debug_models.dart';
 
 /// 一个已解析且带内部过期时间的 cookie（私有存储形态）。
 class _StoredCookie {
-  _StoredCookie(this.cookie, this.expiresAt);
+  _StoredCookie(
+    this.cookie,
+    this.expiresAt, {
+    this.hostOnly = false,
+    this.secure = false,
+  });
 
   final DebugCookie cookie;
 
   /// `null` = 会话 cookie（不过期）。
   final DateTime? expiresAt;
+
+  /// 无 `Domain` 属性 → host-only（仅精确匹配原 host）。
+  final bool hostOnly;
+
+  /// 带 `Secure` 属性 → 仅经 https 回发。
+  final bool secure;
 
   bool get isExpired {
     final at = expiresAt;
@@ -41,13 +60,28 @@ class DebugCookieJar {
   ///
   /// [headers] 为响应头映射（键大小写不敏感）；`set-cookie` 值可为多元素
   /// （每条一个 cookie），也可为 `package:http` 合并后的单串（内部再切分）。
-  void store(String host, Map<String, List<String>> responseHeaders) {
+  /// [path] 为**发起请求的路径**，用于计算缺省 `Path`（RFC 6265 默认路径）。
+  ///
+  /// 安全：带 `Domain` 但与该请求 host 不 domain-match 的 cookie 一律丢弃
+  /// （阻止任意响应向无关 host 注入 cookie）；无 `Domain` 的 cookie 记为
+  /// host-only（不回发到子域）。
+  void store(
+    String host,
+    Map<String, List<String>> responseHeaders, {
+    String path = '/',
+  }) {
     final rawValues = _headerValues(responseHeaders, 'set-cookie');
     if (rawValues.isEmpty) return;
     final hostKey = host.toLowerCase();
+    final defaultPath = _defaultPath(path);
     final bucket = _byHost.putIfAbsent(hostKey, () => <String, _StoredCookie>{});
     for (final raw in rawValues) {
-      for (final stored in _parseStored(raw, defaultDomain: hostKey)) {
+      for (final stored in _parseStored(
+        raw,
+        defaultDomain: hostKey,
+        defaultPath: defaultPath,
+      )) {
+        if (!_isAllowedForHost(stored, hostKey)) continue;
         final key = _cookieKey(stored.cookie);
         if (stored.isExpired) {
           bucket.remove(key);
@@ -60,30 +94,30 @@ class DebugCookieJar {
     if (bucket.isEmpty) _byHost.remove(hostKey);
   }
 
-  /// 返回发往 [host] 的 `Cookie` 头值（`name=value; name2=value2`）。
+  /// 返回发往 [host] + [path] 的 `Cookie` 头值（`name=value; name2=value2`）。
   ///
+  /// [secure] 表示本次请求是否 https；非 https 时不回发 `Secure` cookie。
   /// 无匹配 / 全部过期时返回空串。
-  String cookieHeaderFor(String host) {
+  String cookieHeaderFor(String host, {String path = '/', bool secure = false}) {
     final pairs = <String>[];
-    for (final cookie in cookiesFor(host)) {
-      pairs.add('${cookie.name}=${cookie.value}');
+    for (final stored in _collect(host, includeSecure: secure)) {
+      if (!_pathMatches(path, _cookiePath(stored.cookie))) continue;
+      pairs.add('${stored.cookie.name}=${stored.cookie.value}');
     }
     return pairs.join('; ');
   }
 
   /// 匹配 [host] 的全部未过期 cookie（host 后缀 / domain 匹配）。
-  List<DebugCookie> cookiesFor(String host) {
-    final hostKey = host.toLowerCase();
+  ///
+  /// [path] 非空时额外做路径匹配。用于 UI 展示（含 `Secure` cookie 视图）。
+  List<DebugCookie> cookiesFor(String host, {String? path}) {
     final result = <DebugCookie>[];
-    _byHost.forEach((owner, bucket) {
-      bucket.removeWhere((_, value) => value.isExpired);
-      for (final stored in bucket.values) {
-        if (_domainMatches(stored.cookie.domain ?? owner, hostKey)) {
-          result.add(stored.cookie);
-        }
+    for (final stored in _collect(host, includeSecure: true)) {
+      if (path != null && !_pathMatches(path, _cookiePath(stored.cookie))) {
+        continue;
       }
-    });
-    _byHost.removeWhere((_, bucket) => bucket.isEmpty);
+      result.add(stored.cookie);
+    }
     return result;
   }
 
@@ -118,25 +152,96 @@ class DebugCookieJar {
   static String _cookieKey(DebugCookie cookie) =>
       '${cookie.domain ?? ''}|${cookie.path ?? '/'}|${cookie.name}';
 
+  /// 规范化 domain：小写、去除前导 `.`。
+  static String _normalizeDomain(String domain) =>
+      domain.toLowerCase().replaceFirst(RegExp(r'^\.'), '');
+
+  /// RFC 6265 domain-match：host 等于 domain 或以 `.domain` 结尾。
   static bool _domainMatches(String cookieDomain, String host) {
-    final d = cookieDomain.toLowerCase().replaceFirst(RegExp(r'^\.'), '');
+    final d = _normalizeDomain(cookieDomain);
     if (d.isEmpty) return false;
     return host == d || host.endsWith('.$d');
+  }
+
+  /// 是否允许把该 cookie 绑定到 [host]（即设置它的请求 host）。
+  ///
+  /// * host-only（无 `Domain`）：总是允许——它已限定在原 host。
+  /// * 有 `Domain`：必须与 [host] domain-match；且拒绝单标签 / TLD 级
+  ///   Domain（无内嵌点）以免形成 supercookie。
+  static bool _isAllowedForHost(_StoredCookie stored, String host) {
+    if (stored.hostOnly) return true;
+    final domain = _normalizeDomain(stored.cookie.domain ?? '');
+    if (domain.isEmpty || !domain.contains('.')) return false;
+    return _domainMatches(domain, host);
+  }
+
+  /// 判断已存 cookie 是否对请求 [host] 生效。
+  static bool _hostMatches(_StoredCookie stored, String host) {
+    if (stored.hostOnly) {
+      return _normalizeDomain(stored.cookie.domain ?? '') == host;
+    }
+    return _domainMatches(stored.cookie.domain ?? '', host);
+  }
+
+  /// 收集对 [host] 生效的未过期 cookie；[includeSecure] 为 false 时排除
+  /// `Secure` cookie（http 请求）。
+  List<_StoredCookie> _collect(String host, {required bool includeSecure}) {
+    final hostKey = host.toLowerCase();
+    final result = <_StoredCookie>[];
+    _byHost.forEach((_, bucket) {
+      bucket.removeWhere((_, value) => value.isExpired);
+      for (final stored in bucket.values) {
+        if (!_hostMatches(stored, hostKey)) continue;
+        if (stored.secure && !includeSecure) continue;
+        result.add(stored);
+      }
+    });
+    _byHost.removeWhere((_, bucket) => bucket.isEmpty);
+    return result;
+  }
+
+  static String _cookiePath(DebugCookie cookie) => cookie.path ?? '/';
+
+  /// RFC 6265 默认路径：取请求路径去除最后一段的目录；无 `/` 段时为 `/`。
+  static String _defaultPath(String requestPath) {
+    if (requestPath.isEmpty || !requestPath.startsWith('/')) return '/';
+    final lastSlash = requestPath.lastIndexOf('/');
+    if (lastSlash <= 0) return '/';
+    return requestPath.substring(0, lastSlash);
+  }
+
+  /// RFC 6265 path-match。
+  static bool _pathMatches(String requestPath, String cookiePath) {
+    final req = requestPath.isEmpty ? '/' : requestPath;
+    final cp = cookiePath.isEmpty ? '/' : cookiePath;
+    if (req == cp) return true;
+    if (!req.startsWith(cp)) return false;
+    if (cp.endsWith('/')) return true;
+    return req.codeUnitAt(cp.length) == _slash;
   }
 
   static List<_StoredCookie> _parseStored(
     String raw, {
     String? defaultDomain,
+    String? defaultPath,
   }) {
     final result = <_StoredCookie>[];
     for (final part in _splitJoined(raw)) {
-      final stored = _parseOne(part, defaultDomain: defaultDomain);
+      final stored = _parseOne(
+        part,
+        defaultDomain: defaultDomain,
+        defaultPath: defaultPath,
+      );
       if (stored != null) result.add(stored);
     }
     return result;
   }
 
-  static _StoredCookie? _parseOne(String part, {String? defaultDomain}) {
+  static _StoredCookie? _parseOne(
+    String part, {
+    String? defaultDomain,
+    String? defaultPath,
+  }) {
     final trimmed = part.trim();
     if (trimmed.isEmpty) return null;
 
@@ -151,6 +256,8 @@ class DebugCookieJar {
     String? domain;
     String? path;
     DateTime? expiresAt;
+    var domainSpecified = false;
+    var secure = false;
 
     for (var i = 1; i < segments.length; i++) {
       final segment = segments[i].trim();
@@ -162,10 +269,19 @@ class DebugCookieJar {
       final attrValue = sep < 0 ? '' : segment.substring(sep + 1).trim();
       switch (attr) {
         case 'domain':
-          if (attrValue.isNotEmpty) domain = attrValue.toLowerCase();
+          if (attrValue.isNotEmpty) {
+            domain = attrValue.toLowerCase();
+            domainSpecified = true;
+          }
           break;
         case 'path':
           if (attrValue.isNotEmpty) path = attrValue;
+          break;
+        case 'secure':
+          secure = true;
+          break;
+        case 'httponly':
+          // 服务端语义（不在 JS 暴露），对回发无影响：解析后忽略。
           break;
         case 'max-age':
           final seconds = int.tryParse(attrValue);
@@ -184,10 +300,16 @@ class DebugCookieJar {
       }
     }
 
+    // 无 Domain → host-only，domain 绑定到设置它的请求 host；有 Domain 时
+    // 保留原始声明（store 阶段再做 domain-match 校验）。
+    final hostOnly = !domainSpecified;
     domain ??= defaultDomain;
+    path ??= defaultPath;
     return _StoredCookie(
       DebugCookie(name: name, value: value, domain: domain, path: path),
       expiresAt,
+      hostOnly: hostOnly,
+      secure: secure,
     );
   }
 
@@ -250,6 +372,7 @@ class DebugCookieJar {
   }
 
   static const int _comma = 0x2C;
+  static const int _slash = 0x2F;
   static const int _equals = 0x3D;
   static const int _semicolon = 0x3B;
   static const int _space = 0x20;

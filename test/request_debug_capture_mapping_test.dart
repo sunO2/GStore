@@ -129,4 +129,52 @@ void main() {
     expect(request.name, '我的请求');
     expect(request.collectionId, 'col-1');
   });
+
+  // ==================== 保存重发编码（R5a，反向断言） ====================
+  //
+  // 抓包 `reqBody` 是**已解码明文**；若重发时继续带上游 `Content-Encoding`
+  // 并按压缩前长度填 `Content-Length`，请求无效。此处逐头断言最终形态。
+
+  test('保存重发：剥离 Content-Encoding，Content-Length 修正为明文实际字节数', () {
+    final request = debugRequestFromCapture(
+      _detail(
+        reqHeaders: 'Content-Type: application/json\r\n'
+            'Content-Encoding: gzip\r\n'
+            'Content-Length: 999\r\n'
+            'X-Keep: yes',
+        reqBody: utf8.encode('{"u":"1"}'),
+      ),
+    );
+
+    final headers = <String, String>{
+      for (final h in request.headers) h.name.toLowerCase(): h.value,
+    };
+
+    expect(headers.containsKey('content-encoding'), isFalse,
+        reason: '明文 body 绝不能保留上游 Content-Encoding（否则被二次解压）');
+    expect(headers['content-length'], '9',
+        reason: 'Content-Length 必须等于实际发送明文的 UTF-8 字节数（9）');
+    expect(headers['content-type'], 'application/json');
+    expect(headers['x-keep'], 'yes', reason: '无关头必须原样保留');
+
+    // 与 body 字段自洽：body 是明文，头部长度与之匹配。
+    expect(utf8.encode(request.body).length, 9);
+  });
+
+  test('保存重发：identity 编码同样剥离；未提供 Content-Length 时不新增', () {
+    final request = debugRequestFromCapture(
+      _detail(
+        reqHeaders: 'Content-Type: text/plain\r\nContent-Encoding: identity',
+        reqBody: utf8.encode('hello'),
+        contentType: 'text/plain',
+      ),
+    );
+
+    final names = request.headers.map((h) => h.name.toLowerCase()).toSet();
+    expect(names.contains('content-encoding'), isFalse,
+        reason: 'identity 声明也须剥离（重发方自行处理编码）');
+    expect(names.contains('content-length'), isFalse,
+        reason: '抓包未提供 Content-Length 时不得凭空新增（由发送器计算即可）');
+    expect(request.body, 'hello');
+  });
 }

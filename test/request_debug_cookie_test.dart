@@ -126,4 +126,76 @@ void main() {
       expect(jar.cookieHeaderFor('example.com'), isEmpty);
     });
   });
+
+  // ==================== domain / path / secure 作用域（R5b，反向断言） ====================
+  //
+  // 安全不变量：响应**只能**为其请求 host（或其父域）设置 cookie；否则任意
+  // 站点都能注入无关 host 的 cookie。以下逐条断言「拒绝」与「接受」。
+
+  group('DebugCookieJar scoping', () {
+    test('rejects a Domain attribute that does not match the request host', () {
+      final jar = DebugCookieJar();
+      jar.store('evil.test', <String, List<String>>{
+        'set-cookie': <String>['leak=1; Domain=example.com; Path=/'],
+      });
+      expect(jar.cookiesFor('example.com'), isEmpty,
+          reason: '无关 host 设置的 Domain cookie 必须被拒绝');
+      expect(jar.isEmpty, isTrue);
+    });
+
+    test('accepts a Domain attribute that domain-matches the request host', () {
+      final jar = DebugCookieJar();
+      jar.store('api.example.com', <String, List<String>>{
+        'set-cookie': <String>['sess=1; Domain=.example.com; Path=/'],
+      });
+      expect(jar.cookieHeaderFor('www.example.com'), contains('sess=1'),
+          reason: 'Domain 命中父域时必须接受');
+      expect(jar.cookieHeaderFor('api.example.com'), contains('sess=1'));
+    });
+
+    test('host-only cookie (no Domain) is not sent to subdomains', () {
+      final jar = DebugCookieJar();
+      jar.store('example.com', <String, List<String>>{
+        'set-cookie': <String>['h=1; Path=/'],
+      });
+      expect(jar.cookieHeaderFor('example.com'), contains('h=1'));
+      expect(jar.cookieHeaderFor('sub.example.com'), isEmpty,
+          reason: 'host-only cookie 只能回发到原 host');
+    });
+
+    test('rejects single-label / public-suffix-like Domain', () {
+      final jar = DebugCookieJar();
+      jar.store('api.example.com', <String, List<String>>{
+        'set-cookie': <String>['super=1; Domain=com; Path=/'],
+      });
+      expect(jar.isEmpty, isTrue, reason: 'TLD 级 Domain 不得作为 supercookie 接受');
+    });
+
+    test('path scoping: cookie only sent to a matching request path', () {
+      final jar = DebugCookieJar();
+      jar.store(
+        'example.com',
+        <String, List<String>>{
+          'set-cookie': <String>['a=1; Path=/admin'],
+        },
+        path: '/admin/dashboard',
+      );
+      expect(
+        jar.cookieHeaderFor('example.com', path: '/admin/users'),
+        contains('a=1'),
+      );
+      expect(jar.cookieHeaderFor('example.com', path: '/public'), isEmpty,
+          reason: '路径不匹配时不得回发 cookie');
+    });
+
+    test('Secure cookie only sent over https', () {
+      final jar = DebugCookieJar();
+      jar.store('example.com', <String, List<String>>{
+        'set-cookie': <String>['s=1; Path=/; Secure'],
+      });
+      expect(jar.cookieHeaderFor('example.com', secure: false), isEmpty,
+          reason: 'Secure cookie 不得经 http 回发');
+      expect(jar.cookieHeaderFor('example.com', secure: true), contains('s=1'));
+    });
+  });
 }

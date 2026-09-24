@@ -13,6 +13,10 @@
 ///   （[DebugSender] 只按 headers 发送，忽略 cookies 列表）。
 /// * Body 用 UTF-8 容错解码；`bodyKind` 依据请求 `Content-Type` 推断，缺省时
 ///   若正文可解析为 JSON 也归类为 [DebugBodyKind.json]。
+/// * **重发编码归一**：抓包 `reqBody` 是代理侧已解码的明文，重发时绝不能沿用
+///   上游 `Content-Encoding`（否则对明文再次解压 → 无效请求）。[normalizeReplayHeaders]
+///   负责剥离编码声明并修正 `Content-Length`，与 Rust `force_plaintext_body_headers`
+///   的「明文 ⇒ 无内容编码 + 长度按实际体计算」规则一致。
 library;
 
 import 'dart:convert';
@@ -44,12 +48,45 @@ DebugRequest debugRequestFromCapture(
     name: name ?? defaultCaptureRequestName(detail),
     method: _normalizeMethod(detail.method),
     url: captureRequestUrl(detail),
-    headers: headers,
+    headers: normalizeReplayHeaders(headers, body),
     body: body,
     bodyKind: inferDebugBodyKind(requestContentType, body),
     cookies: parseCookieHeader(_headerValue(headers, 'cookie') ?? ''),
     collectionId: collectionId,
   );
+}
+
+/// 重发头归一化：抓包 body 已在代理侧解码为明文，因此
+///
+/// * 剥离全部 `Content-Encoding` 头（明文不得再声明 gzip/br/…）；
+/// * 若原头含 `Content-Length`，改写为**实际发送**的明文字节数
+///   （`utf8.encode(body).length`），并去掉重复声明；
+/// * 其余头原样保留（含未提供的 `Content-Length`——缺省时由发送器按 body 计算）。
+///
+/// 与 Rust `force_plaintext_body_headers` 语义一致：明文 body ⇒
+/// 无内容编码 + 长度与实际体一致。
+List<DebugHeader> normalizeReplayHeaders(
+  List<DebugHeader> headers,
+  String body, {
+  int? bodyByteLength,
+}) {
+  final length = bodyByteLength ?? utf8.encode(body).length;
+  final result = <DebugHeader>[];
+  var lengthRewritten = false;
+  for (final header in headers) {
+    final name = header.name.trim().toLowerCase();
+    if (name == 'content-encoding') {
+      continue;
+    }
+    if (name == 'content-length') {
+      if (lengthRewritten) continue;
+      lengthRewritten = true;
+      result.add(header.copyWith(value: '$length'));
+      continue;
+    }
+    result.add(header);
+  }
+  return result;
 }
 
 /// 抓包请求的最终 URL：优先 [CaptureDetail.url]，缺省按 `scheme://host+path`。

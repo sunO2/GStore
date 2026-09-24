@@ -111,7 +111,11 @@ class DebugSender {
     }
 
     if (useCookies) {
-      final cookieHeader = cookieJar.cookieHeaderFor(uri.host);
+      final cookieHeader = cookieJar.cookieHeaderFor(
+        uri.host,
+        path: uri.path,
+        secure: uri.scheme == 'https',
+      );
       if (cookieHeader.isNotEmpty) {
         final existing = request.headers['Cookie'] ?? request.headers['cookie'];
         request.headers['Cookie'] = (existing == null || existing.isEmpty)
@@ -136,7 +140,7 @@ class DebugSender {
     );
 
     if (useCookies) {
-      cookieJar.store(uri.host, response.headers);
+      cookieJar.store(uri.host, response.headers, path: uri.path);
     }
     return response;
   }

@@ -275,5 +275,30 @@ void main() {
       await sender.send(method: 'GET', url: '${fixture.origin}/x');
       expect(fixture.recorded.single.cookie, contains('shared=yes'));
     });
+
+    test('rejects a response Set-Cookie whose Domain is an unrelated host',
+        () async {
+      final fixture = await _Fixture.start((request, recorded) async {
+        request.response.statusCode = HttpStatus.ok;
+        // 同一响应：一个合法 host-only，一个试图注入无关 host。
+        request.response.headers.add('Set-Cookie', 'ok=1; Path=/');
+        request.response.headers
+            .add('Set-Cookie', 'leak=1; Domain=example.com; Path=/');
+        request.response.write('ok');
+        await request.response.close();
+      });
+      addTearDown(fixture.close);
+
+      final sender = DebugSender();
+      addTearDown(sender.close);
+
+      await sender.send(method: 'GET', url: '${fixture.origin}/set');
+
+      final own = sender.cookieJar.cookieHeaderFor('127.0.0.1');
+      expect(own, contains('ok=1'), reason: '匹配 host 的 cookie 必须接受');
+      expect(own, isNot(contains('leak=1')));
+      expect(sender.cookieJar.cookieHeaderFor('example.com'), isEmpty,
+          reason: '无关 host 不得被响应注入 cookie');
+    });
   });
 }
