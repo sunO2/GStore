@@ -13,17 +13,21 @@
 //! compiled Clash ruleset into the tunnel (an empty ruleset resolves to meow's
 //! built-in DIRECT adapter).
 
+use std::future::Future;
 use std::io;
 use std::net::SocketAddr;
+use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
 use meow_common::{ConnType, Metadata, Network, ProxyConn};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
+use crate::capture::{self, AppAttribution};
 use crate::dns::DnsEngine;
+use crate::mitm::{self, CertificateAuthority, MitmGateObserver, MitmTls};
 use crate::sniff;
 
 /// Event type for one DNS query record (Todo 15/16 consume it).
@@ -92,18 +96,7 @@ pub(crate) fn spawn(
         while let Some((stream, src, dst)) = listener.next().await {
             let inner = Arc::clone(&tcp_inner);
             let sniffer = Arc::clone(&sniffer);
-            tokio::spawn(async move {
-                let mut metadata = tcp_metadata(src, dst);
-                let mut stream = stream;
-                // Prefetch the first flight, then replay it before the live
-                // stream so the tunnel sees every byte in order.
-                let (prefix, host) = sniffer.sniff_prefix(&mut stream, dst.port()).await;
-                if let Some(h) = host {
-                    metadata.sniff_host = h.into();
-                }
-                let conn = LwipProxyConn::new(sniff::PrefixedStream::new(prefix, stream));
-                meow_tunnel::tcp::handle_tcp(&inner, Box::new(conn), metadata).await;
-            });
+            tokio::spawn(handle_flow(inner, src, dst, stream, sniffer));
         }
     });
 
@@ -137,6 +130,180 @@ pub(crate) fn spawn(
     });
 
     Dispatcher { tcp, udp }
+}
+
+/// Handle one accepted TCP flow.
+///
+/// The sniffer runs first so the gate can consult the SNI host; its prefetched
+/// bytes are replayed verbatim. A gate hit hands the stream to an isolated MITM
+/// task; a miss (or any MITM init failure) falls back to the unchanged
+/// [`meow_tunnel::tcp::handle_tcp`] pass-through.
+async fn handle_flow<S>(
+    inner: Arc<meow_tunnel::tunnel::TunnelInner>,
+    src: SocketAddr,
+    dst: SocketAddr,
+    mut stream: S,
+    sniffer: Arc<sniff::Sniffer>,
+) where
+    S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+{
+    let mut metadata = tcp_metadata(src, dst);
+    // Prefetch the first flight, then replay it before the live stream so the
+    // tunnel sees every byte in order.
+    let (prefix, host) = sniffer.sniff_prefix(&mut stream, dst.port()).await;
+    if let Some(h) = host.as_deref() {
+        metadata.sniff_host = h.into();
+    }
+
+    let config = capture::config();
+    // App attribution is only resolved when it is the sole possible decider.
+    let app = if capture::needs_app_resolution(&config, dst.port()) {
+        capture::resolve_app(src, dst).await
+    } else {
+        AppAttribution::Unknown
+    };
+
+    let passthrough = match capture::decide_mitm(&config, dst.port(), host.as_deref(), &app) {
+        Some(mitm_host) => {
+            let prefixed = sniff::PrefixedStream::new(prefix, stream);
+            match begin_mitm(prefixed, Some(mitm_host.as_str())) {
+                // The isolated MITM task owns the stream now.
+                Ok(()) => None,
+                // Init failed before consuming a byte: pass the stream through.
+                Err((prefixed, _err)) => Some(prefixed),
+            }
+        }
+        None => Some(sniff::PrefixedStream::new(prefix, stream)),
+    };
+
+    if let Some(stream) = passthrough {
+        let conn = LwipProxyConn::new(stream);
+        meow_tunnel::tcp::handle_tcp(&inner, Box::new(conn), metadata).await;
+    }
+}
+
+/// Why the MITM path could not be started. Every variant means the same thing:
+/// leave the stream untouched and keep the existing tunnel pass-through.
+#[derive(Debug)]
+pub(crate) enum MitmInitError {
+    /// No sniffed host.
+    NoHost,
+    /// No CA is installed (todo 10 owns the lifecycle).
+    NoCa,
+    /// At the [`crate::limits::MITM_MAX_INFLIGHT`] cap.
+    InflightCap,
+    /// The CA could not build the server config.
+    Config(String),
+}
+
+impl std::fmt::Display for MitmInitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MitmInitError::NoHost => write!(f, "no host"),
+            MitmInitError::NoCa => write!(f, "no ca installed"),
+            MitmInitError::InflightCap => write!(f, "inflight cap reached"),
+            MitmInitError::Config(e) => write!(f, "mitm config: {e}"),
+        }
+    }
+}
+
+/// Hand a gate-hit flow to the MITM path.
+///
+/// `Ok(())` means an isolated task owns the stream and will run todo 5's TLS
+/// termination. `Err((stream, _))` returns the **untouched** stream (its
+/// prefetched prefix intact) so the caller can pass it through byte-for-byte.
+/// Every failure is recorded as `mitmFailed`.
+pub(crate) fn begin_mitm<S>(stream: S, host: Option<&str>) -> Result<(), (S, MitmInitError)>
+where
+    S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+{
+    let Some(host) = host.map(str::trim).filter(|h| !h.is_empty()) else {
+        return Err((stream, init_failed(MitmInitError::NoHost)));
+    };
+    let Some(ca) = mitm::ca() else {
+        return Err((stream, init_failed(MitmInitError::NoCa)));
+    };
+    let Some(guard) = mitm::InflightGuard::try_acquire() else {
+        return Err((stream, init_failed(MitmInitError::InflightCap)));
+    };
+    // Build the server config up front so a config failure is a clean,
+    // stream-preserving pass-through instead of a mid-handshake failure.
+    if let Err(e) = ca.mitm_server_config(Some(host)) {
+        return Err((stream, init_failed(MitmInitError::Config(e.to_string()))));
+    }
+
+    let observer = mitm::gate_observer();
+    let host = host.to_string();
+    spawn_isolated(async move {
+        // The guard releases the slot when the session ends, panic included.
+        let _guard = guard;
+        let _ = mitigate(stream, ca, host, observer).await;
+    });
+    Ok(())
+}
+
+fn init_failed(err: MitmInitError) -> MitmInitError {
+    mitm::record_mitm_failed(&err.to_string());
+    err
+}
+
+/// Spawn a detached task that catches an unwinding panic and records it, so a
+/// panicking MITM handler can never take down the TUN dataplane.
+pub(crate) fn spawn_isolated<F>(future: F) -> tokio::task::JoinHandle<()>
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    let isolated = AssertUnwindSafe(future).catch_unwind();
+    tokio::spawn(async move {
+        if isolated.await.is_err() {
+            mitm::record_mitm_failed("handler panic (isolated)");
+            crate::log_message(3, "proxy.mitm: handler panicked; dataplane continues");
+        }
+    })
+}
+
+/// Outcome of running one MITM-terminated client stream.
+#[allow(dead_code)]
+#[derive(Debug)]
+pub(crate) enum MitmStreamOutcome {
+    /// TLS termination succeeded (todo 5 ran); todos 7/8 take over.
+    Terminated,
+    /// Handshake/parse failed; the flow was closed.
+    Failed(String),
+}
+
+/// Run todo 5's TLS termination over `stream` for `host`.
+///
+/// This is the **post-gate seam**: todos 7 (upstream re-origination) and 8
+/// (HTTP/h2 capture) replace the drop below. For todo 6 termination is invoked
+/// and the resulting stream is dropped, cleanly closing the client session.
+pub(crate) async fn mitigate<S>(
+    stream: S,
+    ca: Arc<CertificateAuthority>,
+    host: String,
+    observer: Arc<dyn MitmGateObserver>,
+) -> MitmStreamOutcome
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    observer.on_mitm_entered(&host);
+    match mitm::terminate(stream, &ca, Some(host.as_str())).await {
+        MitmTls::Terminated(_tls) => {
+            // ---- SEAM: todos 7/8 hook in here. -----------------------------
+            observer.on_terminated(&host);
+            MitmStreamOutcome::Terminated
+        }
+        MitmTls::Passthrough(_stream) => {
+            let reason = "unexpected passthrough".to_string();
+            observer.on_failed(&host, &reason);
+            MitmStreamOutcome::Failed(reason)
+        }
+        MitmTls::Failed(e) => {
+            observer.on_failed(&host, &e.to_string());
+            mitm::record_mitm_failed(&e.to_string());
+            MitmStreamOutcome::Failed(e.to_string())
+        }
+    }
 }
 
 fn tcp_metadata(src: SocketAddr, dst: SocketAddr) -> Metadata {
@@ -280,5 +447,317 @@ mod tests {
         assert_eq!(&got[..n], b"pong");
 
         conn.shutdown().await.unwrap();
+    }
+}
+
+/// Todo 6 acceptance: the MITM gate, its fail-safe pass-through, the hard
+/// in-flight cap and panic isolation.
+#[cfg(all(test, unix))]
+mod mitm_gate_tests {
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+
+    use rustls::pki_types::ServerName;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio_rustls::TlsConnector;
+
+    use super::*;
+    use crate::capture::{self, CaptureConfig};
+    use crate::limits::MITM_MAX_INFLIGHT;
+    use crate::mitm::{self, CertificateAuthority, MitmGateObserver};
+    use crate::TEST_SERIAL as SERIAL;
+
+    static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let n = TMP_SEQ.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "gstore-mitm-gate-{}-{}-{}",
+            std::process::id(),
+            tag,
+            n
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn test_ca(tag: &str) -> Arc<CertificateAuthority> {
+        let dir = temp_dir(tag);
+        Arc::new(CertificateAuthority::generate(dir.to_str().unwrap()).expect("generate CA"))
+    }
+
+    #[derive(Default)]
+    struct RecordingObserver {
+        entered: AtomicUsize,
+        terminated: AtomicUsize,
+        failed: AtomicUsize,
+    }
+
+    impl MitmGateObserver for RecordingObserver {
+        fn on_mitm_entered(&self, _host: &str) {
+            self.entered.fetch_add(1, Ordering::SeqCst);
+        }
+        fn on_terminated(&self, _host: &str) {
+            self.terminated.fetch_add(1, Ordering::SeqCst);
+        }
+        fn on_failed(&self, _host: &str, _reason: &str) {
+            self.failed.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn enabled(domains: &[&str], apps: &[&str]) -> CaptureConfig {
+        CaptureConfig {
+            enabled: true,
+            domain_allowlist: domains.iter().map(|s| s.to_string()).collect(),
+            app_allowlist: apps.iter().map(|s| s.to_string()).collect(),
+            ..CaptureConfig::default()
+        }
+    }
+
+    async fn wait_for(what: &str, pred: impl Fn() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !pred() {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
+    /// Minimal TLS ClientHello carrying SNI `hostname` (same wire shape as the
+    /// `sniff` tests) so the sniffer recovers a host before the gate.
+    fn build_client_hello(hostname: &str) -> Vec<u8> {
+        let name_bytes = hostname.as_bytes();
+        let sni_entry_len = 3 + name_bytes.len();
+        let sni_list_len = sni_entry_len;
+        let sni_ext_data_len = 2 + sni_list_len;
+
+        let mut sni_ext = Vec::new();
+        sni_ext.extend_from_slice(&[0x00, 0x00]);
+        sni_ext.extend_from_slice(&(sni_ext_data_len as u16).to_be_bytes());
+        sni_ext.extend_from_slice(&(sni_list_len as u16).to_be_bytes());
+        sni_ext.push(0x00);
+        sni_ext.extend_from_slice(&(name_bytes.len() as u16).to_be_bytes());
+        sni_ext.extend_from_slice(name_bytes);
+
+        let extensions_len = sni_ext.len();
+        let mut hello = Vec::new();
+        hello.extend_from_slice(&[0x03, 0x03]);
+        hello.extend_from_slice(&[0u8; 32]);
+        hello.push(0x00);
+        hello.extend_from_slice(&[0x00, 0x02, 0x00, 0x2f]);
+        hello.extend_from_slice(&[0x01, 0x00]);
+        hello.extend_from_slice(&(extensions_len as u16).to_be_bytes());
+        hello.extend_from_slice(&sni_ext);
+
+        let handshake_len = hello.len();
+        let mut handshake = vec![
+            0x01,
+            ((handshake_len >> 16) & 0xff) as u8,
+            ((handshake_len >> 8) & 0xff) as u8,
+            (handshake_len & 0xff) as u8,
+        ];
+        handshake.extend_from_slice(&hello);
+
+        let record_len = handshake.len();
+        let mut record = Vec::new();
+        record.push(0x16);
+        record.extend_from_slice(&[0x03, 0x01]);
+        record.extend_from_slice(&(record_len as u16).to_be_bytes());
+        record.extend_from_slice(&handshake);
+        record
+    }
+
+    /// Allowlist hit => the MITM path is entered and todo 5's TLS termination
+    /// actually runs (a real rustls client completes the handshake).
+    #[test]
+    fn mitm_gate_allowlist_hit_enters_mitm_and_terminates() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+            mitm::reset_gate_counters_for_tests();
+            mitm::reset_gate_observer();
+            let ca = test_ca("gate-hit");
+            mitm::install_ca(Arc::clone(&ca));
+            let obs = Arc::new(RecordingObserver::default());
+            mitm::set_gate_observer(obs.clone());
+
+            let cfg = enabled(&["a.example"], &[]);
+            assert_eq!(
+                capture::decide_mitm(&cfg, 443, Some("a.example"), &AppAttribution::Unknown)
+                    .as_deref(),
+                Some("a.example"),
+                "allowlist hit must gate MITM"
+            );
+
+            let (client, server) = tokio::io::duplex(128 * 1024);
+            assert!(
+                begin_mitm(server, Some("a.example")).is_ok(),
+                "a gate hit must start the MITM path"
+            );
+
+            let mut roots = rustls::RootCertStore::empty();
+            roots.add(ca.der().clone()).expect("trust the MITM CA");
+            let mut ccfg = rustls::ClientConfig::builder_with_provider(Arc::new(
+                rustls::crypto::aws_lc_rs::default_provider(),
+            ))
+            .with_safe_default_protocol_versions()
+            .expect("versions")
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+            ccfg.alpn_protocols = vec![b"http/1.1".to_vec()];
+            let connector = TlsConnector::from(Arc::new(ccfg));
+            let sni = ServerName::try_from("a.example").expect("sni");
+            let tls = tokio::time::timeout(Duration::from_secs(10), connector.connect(sni, client))
+                .await
+                .expect("handshake must not hang")
+                .expect("client handshake");
+            wait_for("MITM termination", || obs.terminated.load(Ordering::SeqCst) == 1).await;
+            assert_eq!(obs.entered.load(Ordering::SeqCst), 1, "MITM path entered");
+            assert_eq!(
+                obs.terminated.load(Ordering::SeqCst),
+                1,
+                "todo 5 TLS termination invoked"
+            );
+            assert_eq!(ca.signings(), 1, "a leaf was signed during termination");
+            wait_for("in-flight release", || mitm::inflight_count() == 0).await;
+            drop(tls);
+
+            mitm::clear_ca();
+            mitm::reset_gate_observer();
+        });
+    }
+
+    /// A gate miss must reach the pass-through path with the exact client bytes.
+    #[test]
+    fn mitm_gate_miss_passes_through_bytes_identical() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+            mitm::reset_gate_counters_for_tests();
+            mitm::clear_ca();
+
+            let hello = build_client_hello("blocked.example");
+            let (mut client, server) = tokio::io::duplex(64 * 1024);
+            client.write_all(&hello).await.expect("pre-write");
+            client.flush().await.expect("flush");
+
+            // Exact dispatch order: sniff first, then gate.
+            let sniffer = sniff::Sniffer::default_enabled();
+            let mut server = server;
+            let (prefix, host) = sniffer.sniff_prefix(&mut server, 443).await;
+            assert_eq!(host.as_deref(), Some("blocked.example"));
+
+            let cfg = enabled(&["allowed.example"], &[]);
+            assert_eq!(
+                capture::decide_mitm(&cfg, 443, host.as_deref(), &AppAttribution::Unknown),
+                None,
+                "an allowlist miss must not gate MITM"
+            );
+
+            // The stream handed to `handle_tcp` replays the sniffed bytes verbatim.
+            let mut prefixed = sniff::PrefixedStream::new(prefix, server);
+            let mut got = vec![0u8; hello.len()];
+            prefixed.read_exact(&mut got).await.expect("read passthrough");
+            assert_eq!(got, hello, "pass-through must be byte-identical");
+            assert_eq!(mitm::inflight_count(), 0, "a miss must not start a session");
+        });
+    }
+
+    /// MITM init failure (no CA) => pass-through with the bytes untouched and a
+    /// recorded `mitmFailed` marker.
+    #[test]
+    fn mitm_gate_init_failure_passes_through_and_marks_failed() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+            mitm::reset_gate_counters_for_tests();
+            mitm::clear_ca();
+
+            let (mut client, server) = tokio::io::duplex(64);
+            client.write_all(b"hello").await.expect("pre-write");
+            client.flush().await.expect("flush");
+
+            let before = mitm::mitm_failed_count();
+            let result = begin_mitm(server, Some("a.example"));
+            let Err((mut stream, err)) = result else {
+                panic!("MITM init without a CA must fail");
+            };
+            assert!(matches!(err, MitmInitError::NoCa), "got {err}");
+            assert_eq!(
+                mitm::mitm_failed_count(),
+                before + 1,
+                "init failure must record mitmFailed"
+            );
+
+            let mut got = [0u8; 5];
+            stream.read_exact(&mut got).await.expect("read passthrough");
+            assert_eq!(&got, b"hello", "init failure must pass bytes through unchanged");
+            assert_eq!(mitm::inflight_count(), 0);
+        });
+    }
+
+    /// At the in-flight cap the next gate hit must pass through, never queue.
+    #[test]
+    fn mitm_gate_inflight_cap_overflow_passes_through() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+            mitm::reset_gate_counters_for_tests();
+            let ca = test_ca("cap");
+            mitm::install_ca(ca);
+
+            let mut held = Vec::new();
+            while let Some(slot) = mitm::InflightGuard::try_acquire() {
+                held.push(slot);
+            }
+            assert_eq!(held.len(), MITM_MAX_INFLIGHT, "cap must be MITM_MAX_INFLIGHT");
+            assert_eq!(mitm::inflight_count(), MITM_MAX_INFLIGHT);
+
+            let (mut client, server) = tokio::io::duplex(64);
+            client.write_all(b"hello").await.expect("pre-write");
+            client.flush().await.expect("flush");
+
+            let before = mitm::mitm_failed_count();
+            let result = begin_mitm(server, Some("a.example"));
+            let Err((mut stream, err)) = result else {
+                panic!("overflow must not start a MITM session");
+            };
+            assert!(matches!(err, MitmInitError::InflightCap), "got {err}");
+            assert_eq!(mitm::mitm_failed_count(), before + 1);
+            let mut got = [0u8; 5];
+            stream.read_exact(&mut got).await.expect("read passthrough");
+            assert_eq!(&got, b"hello", "overflow must pass through, never queue");
+            drop(held);
+
+            mitm::clear_ca();
+        });
+    }
+
+    /// A panic in a MITM task is caught (no JoinError), releases its in-flight
+    /// slot, is recorded as `mitmFailed`, and the runtime keeps working.
+    #[test]
+    fn mitm_gate_panic_is_isolated_and_releases_slot() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+            mitm::reset_gate_counters_for_tests();
+
+            let handle = spawn_isolated(async {
+                let _slot = mitm::InflightGuard::try_acquire().expect("slot");
+                panic!("forced MITM handler panic");
+            });
+            assert!(
+                handle.await.is_ok(),
+                "spawn_isolated must catch the panic instead of surfacing a JoinError"
+            );
+            assert_eq!(mitm::inflight_count(), 0, "panic must release the in-flight slot");
+            assert!(
+                mitm::mitm_failed_count() >= 1,
+                "a panicking handler must be recorded as mitmFailed"
+            );
+
+            let sibling = tokio::spawn(async { 7u32 });
+            assert_eq!(sibling.await.unwrap(), 7, "dataplane runtime survives the panic");
+        });
     }
 }

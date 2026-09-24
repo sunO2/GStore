@@ -39,6 +39,7 @@ use gstore_contract::error::{ModuleError, StatusCode};
 
 mod config;
 mod conn;
+mod capture;
 mod controller;
 mod dispatch;
 mod dns;

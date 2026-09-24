@@ -39,8 +39,8 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use rcgen::{
     BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
@@ -599,6 +599,146 @@ where
         Ok(tls) => MitmTls::Terminated(tls),
         Err(e) => MitmTls::Failed(MitmTlsError::Handshake(e.to_string())),
     }
+}
+
+// ==================== Todo 6: TUN MITM gate state ====================
+//
+// The gate in `crate::dispatch` reads these process-level primitives. They are
+// deliberately tiny and lock-light so the TUN dataplane never blocks on them.
+
+/// Process-level MITM CA handle. Until Todo 10 wires the CA lifecycle to
+/// `capture.ca.*`, the owner installs the generated/loaded handle here; the TUN
+/// gate reads it via [`ca`]. A missing CA is a **fail-safe pass-through**, never
+/// a decryption attempt.
+static MITM_CA: OnceLock<Mutex<Option<Arc<CertificateAuthority>>>> = OnceLock::new();
+
+fn ca_cell() -> &'static Mutex<Option<Arc<CertificateAuthority>>> {
+    MITM_CA.get_or_init(|| Mutex::new(None))
+}
+
+/// Install (or replace) the process-level CA used by the TUN MITM gate.
+pub(crate) fn install_ca(ca: Arc<CertificateAuthority>) {
+    *ca_cell().lock().unwrap_or_else(|e| e.into_inner()) = Some(ca);
+}
+
+/// The installed CA, if any. Cloned `Arc`; the lock is not held by the caller.
+pub(crate) fn ca() -> Option<Arc<CertificateAuthority>> {
+    ca_cell().lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// Drop the process-level CA (tests / teardown).
+pub(crate) fn clear_ca() {
+    *ca_cell().lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+/// Observer seam over the MITM gate. Used by tests to assert the MITM path was
+/// entered and TLS termination (todo 5) was actually invoked; production uses
+/// the no-op default.
+pub(crate) trait MitmGateObserver: Send + Sync {
+    /// The MITM handler task started for `host`.
+    fn on_mitm_entered(&self, _host: &str) {}
+    /// TLS termination (todo 5) completed; todo 7/8 take over.
+    fn on_terminated(&self, _host: &str) {}
+    /// Handshake/parse/dial failed; the flow was closed or passed through.
+    fn on_failed(&self, _host: &str, _reason: &str) {}
+}
+
+/// No-op observer (shipping default).
+struct NoopMitmObserver;
+
+impl MitmGateObserver for NoopMitmObserver {}
+
+static GATE_OBSERVER: OnceLock<Mutex<Arc<dyn MitmGateObserver>>> = OnceLock::new();
+
+fn observer_cell() -> &'static Mutex<Arc<dyn MitmGateObserver>> {
+    GATE_OBSERVER.get_or_init(|| Mutex::new(Arc::new(NoopMitmObserver)))
+}
+
+/// Current observer (cloned `Arc`).
+pub(crate) fn gate_observer() -> Arc<dyn MitmGateObserver> {
+    observer_cell()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+/// Install a gate observer (tests / diagnostics).
+pub(crate) fn set_gate_observer(observer: Arc<dyn MitmGateObserver>) {
+    *observer_cell().lock().unwrap_or_else(|e| e.into_inner()) = observer;
+}
+
+/// Restore the no-op observer (tests).
+#[cfg(test)]
+pub(crate) fn reset_gate_observer() {
+    set_gate_observer(Arc::new(NoopMitmObserver));
+}
+
+/// MITM sessions currently in flight. Bounded by
+/// [`crate::limits::MITM_MAX_INFLIGHT`]; an overflow is a direct pass-through,
+/// never a queue.
+static MITM_INFLIGHT: AtomicUsize = AtomicUsize::new(0);
+
+/// Total MITM init/handshake/panic failures recorded (the `mitmFailed` signal).
+static MITM_FAILED: AtomicU64 = AtomicU64::new(0);
+
+/// RAII in-flight slot. Acquired with [`InflightGuard::try_acquire`]; released
+/// on drop, which includes a panic unwinding the MITM task.
+pub(crate) struct InflightGuard;
+
+impl InflightGuard {
+    /// Claim an MITM slot, or `None` when the cap is reached (the caller must
+    /// then take the pass-through path — never queue).
+    pub(crate) fn try_acquire() -> Option<Self> {
+        let mut current = MITM_INFLIGHT.load(Ordering::Acquire);
+        loop {
+            if current >= crate::limits::MITM_MAX_INFLIGHT {
+                return None;
+            }
+            match MITM_INFLIGHT.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Some(InflightGuard),
+                Err(observed) => current = observed,
+            }
+        }
+    }
+}
+
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        MITM_INFLIGHT.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// MITM sessions currently in flight (diagnostics / tests).
+pub(crate) fn inflight_count() -> usize {
+    MITM_INFLIGHT.load(Ordering::Acquire)
+}
+
+/// Record a failed MITM attempt under the [`MITM_FAILED_SIGNAL`] marker. The
+/// line intentionally contains `mitmFailed` so the evidence/log grep can find
+/// it; the count backs the test assertions.
+pub(crate) fn record_mitm_failed(reason: &str) {
+    let total = MITM_FAILED.fetch_add(1, Ordering::Relaxed) + 1;
+    crate::log_message(
+        2,
+        &format!("proxy.mitm: {MITM_FAILED_SIGNAL} {reason} (total {total})"),
+    );
+}
+
+/// Number of recorded MITM failures (`mitmFailed`).
+pub(crate) fn mitm_failed_count() -> u64 {
+    MITM_FAILED.load(Ordering::Relaxed)
+}
+
+/// Reset the gate counters (tests).
+#[cfg(test)]
+pub(crate) fn reset_gate_counters_for_tests() {
+    MITM_INFLIGHT.store(0, Ordering::Release);
+    MITM_FAILED.store(0, Ordering::Release);
 }
 
 /// Deterministic, bounded CA generation parameters. Both `generate` and `load`
