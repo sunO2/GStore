@@ -87,6 +87,11 @@ class ProxyMethods {
   static const String captureConfigGet = 'capture.config.get';
   static const String captureConfigSet = 'capture.config.set';
 
+  // `capture.ca.*`：MITM CA 生命周期（API.md §2.17）。
+  static const String captureCaGet = 'capture.ca.get';
+  static const String captureCaGenerate = 'capture.ca.generate';
+  static const String captureCaReset = 'capture.ca.reset';
+
   /// 全部方法名（顺序与 `API.md` §2 一致）。
   static const List<String> all = <String>[
     ping,
@@ -146,6 +151,9 @@ class ProxyMethods {
     netShaperSet,
     captureConfigGet,
     captureConfigSet,
+    captureCaGet,
+    captureCaGenerate,
+    captureCaReset,
   ];
 }
 
@@ -2881,6 +2889,70 @@ class CaptureConfig {
       );
 }
 
+// ==================== capture.ca.* ====================
+
+/// MITM CA 状态（`API.md` §2.17 `CaptureCaInfo`）。
+///
+/// `capture.ca.get` / `capture.ca.generate` 的**共用**响应形状；未生成时
+/// `generated:false` 且其余字段为空串（**不是**错误）。
+class CaptureCaInfo {
+  const CaptureCaInfo({
+    this.generated = false,
+    this.pem = '',
+    this.derBase64 = '',
+    this.fingerprintSha256 = '',
+  });
+
+  final bool generated;
+  final String pem;
+  final String derBase64;
+  final String fingerprintSha256;
+
+  factory CaptureCaInfo.fromJson(Map<String, dynamic> json) => CaptureCaInfo(
+        generated: json['generated'] == true,
+        pem: _str(json['pem']),
+        derBase64: _str(json['derBase64']),
+        fingerprintSha256: _str(json['fingerprintSha256']),
+      );
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'generated': generated,
+        'pem': pem,
+        'derBase64': derBase64,
+        'fingerprintSha256': fingerprintSha256,
+      };
+}
+
+/// `capture.ca.reset` 响应（镜像 `API.md` §2.17 `{ok, cleared}`）。
+class CaptureCaResetResult {
+  const CaptureCaResetResult({this.ok = false, this.cleared = false});
+
+  final bool ok;
+  final bool cleared;
+
+  factory CaptureCaResetResult.fromJson(Map<String, dynamic> json) =>
+      CaptureCaResetResult(
+        ok: json['ok'] == true,
+        cleared: json['cleared'] == true,
+      );
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'ok': ok,
+        'cleared': cleared,
+      };
+}
+
+/// `capture.ca.generate` 请求（`regenerate` 缺省即幂等）。
+class CaptureCaGenerateRequest {
+  const CaptureCaGenerateRequest({this.regenerate});
+
+  final bool? regenerate;
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        if (regenerate != null) 'regenerate': regenerate,
+      };
+}
+
 // ==================== 方法 → 解码器注册表 ====================
 
 /// 方法名 → 响应解码器（**每个** [ProxyMethods.all] 一项）。
@@ -2955,6 +3027,9 @@ final Map<String, ProxyJsonDecoder<Object>> proxyResponseDecoders =
   ProxyMethods.netShaperSet: ProxyShaperSnapshot.fromJson,
   ProxyMethods.captureConfigGet: CaptureConfig.fromJson,
   ProxyMethods.captureConfigSet: CaptureConfig.fromJson,
+  ProxyMethods.captureCaGet: CaptureCaInfo.fromJson,
+  ProxyMethods.captureCaGenerate: CaptureCaInfo.fromJson,
+  ProxyMethods.captureCaReset: CaptureCaResetResult.fromJson,
 };
 
 // ==================== 请求模型（toJson） ====================
@@ -3362,6 +3437,9 @@ final Map<String, Map<String, dynamic> Function()> proxyRequestEncoders =
   ProxyMethods.lanSet: () => const ProxyLanConfig().toRequestJson(),
   ProxyMethods.netShaperSet: () => const ProxyShaperConfig().toRequestJson(),
   ProxyMethods.captureConfigSet: () => const CaptureConfig().toJson(),
+  ProxyMethods.captureCaGenerate: () =>
+      const CaptureCaGenerateRequest().toJson(),
+  ProxyMethods.captureCaReset: () => const <String, dynamic>{},
 };
 
 /// 便捷：JSON 文本 → UTF-8 字节（请求体编码）。

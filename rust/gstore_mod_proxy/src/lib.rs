@@ -438,6 +438,9 @@ pub(crate) const DISPATCH_METHODS: &[&str] = &[
     "diagnostics.clash_api.status",
     "capture.config.get",
     "capture.config.set",
+    "capture.ca.get",
+    "capture.ca.generate",
+    "capture.ca.reset",
 ];
 
 /// 运行状态机（Todo 2 占位；Todo 6/29 驱动真实 start/stop）。
@@ -1956,6 +1959,145 @@ fn capture_config_set_arm(
     ok_data(capture::config_json())
 }
 
+/// `capture.ca.*` field/parsing failure (422 for a bad request, 500 for a
+/// lifecycle failure; `rust/ERROR_CODES.md`).
+const ERR_CAPTURE_CA_FAILED: &str = "PROXY_CAPTURE_CA_FAILED";
+
+/// A malformed `capture.ca.generate` request (422). Never a panic.
+fn ca_bad_request(message: impl Into<String>) -> ModuleError {
+    ModuleError::new(StatusCode::InvalidArgument, ERR_CAPTURE_CA_FAILED, message)
+}
+
+/// A CA generate/load/reset failure (500). The root cause is preserved in the
+/// message; the code is the frozen `PROXY_CAPTURE_CA_FAILED`.
+fn ca_failed(e: mitm::MitmError) -> ModuleError {
+    ModuleError::new(StatusCode::InternalError, ERR_CAPTURE_CA_FAILED, e.to_string())
+}
+
+/// The frozen `capture.ca.get` / `capture.ca.generate` response shape. `pem`
+/// is the human/export form; `derBase64` is the same certificate DER for a
+/// programmatic trust store; `fingerprintSha256` is the lowercase hex digest.
+fn ca_info_json(ca: &mitm::CertificateAuthority) -> serde_json::Value {
+    use base64::Engine as _;
+    serde_json::json!({
+        "generated": true,
+        "pem": ca.pem(),
+        "derBase64": base64::engine::general_purpose::STANDARD.encode(ca.der().as_ref()),
+        "fingerprintSha256": ca.fingerprint_sha256(),
+    })
+}
+
+/// "Not generated" is never an error: `generated:false` with empty export
+/// fields (so one Dart decoder serves both states).
+fn ca_absent_json() -> serde_json::Value {
+    serde_json::json!({
+        "generated": false,
+        "pem": "",
+        "derBase64": "",
+        "fingerprintSha256": "",
+    })
+}
+
+/// The live process CA, or one loaded from `data_dir` (then installed) when the
+/// process has none yet. `Ok(None)` means genuinely not generated. Loading an
+/// existing on-disk CA keeps `capture.ca.get` honest across a module restart.
+fn installed_or_loaded_ca(
+    data_dir: &str,
+) -> Result<Option<Arc<mitm::CertificateAuthority>>, ModuleError> {
+    if let Some(ca) = mitm::ca() {
+        return Ok(Some(ca));
+    }
+    match mitm::CertificateAuthority::load(data_dir) {
+        Ok(Some(ca)) => {
+            let ca = Arc::new(ca);
+            mitm::install_ca(Arc::clone(&ca));
+            Ok(Some(ca))
+        }
+        Ok(None) => Ok(None),
+        Err(e) => Err(ca_failed(e)),
+    }
+}
+
+/// `capture.ca.get` (Todo 11): the CA lifecycle state. A ca that exists on disk
+/// but is not yet installed in-process is loaded + installed first; a missing
+/// ca is `generated:false` with empty fields.
+fn capture_ca_get_arm(
+    instance_id: u64,
+    instance: Option<Arc<ProxyInstance>>,
+) -> Result<Vec<u8>, ModuleError> {
+    let inst = require_instance(instance_id, instance)?;
+    let data = match installed_or_loaded_ca(&inst.data_dir)? {
+        Some(ca) => ca_info_json(&ca),
+        None => ca_absent_json(),
+    };
+    ok_data(data)
+}
+
+/// `capture.ca.generate` (Todo 11): ensure a CA exists and return its info.
+///
+/// Without `regenerate` this is idempotent — an existing CA (installed or on
+/// disk) is returned unchanged. With `regenerate:true` a brand-new CA is
+/// generated and installed, replacing the old handle and with it the whole
+/// per-host leaf cache, so the next same-host request re-issues a fresh leaf.
+fn capture_ca_generate_arm(
+    instance_id: u64,
+    instance: Option<Arc<ProxyInstance>>,
+    payload: &[u8],
+) -> Result<Vec<u8>, ModuleError> {
+    let inst = require_instance(instance_id, instance)?;
+    let regenerate = parse_capture_ca_generate(payload)?;
+    if !regenerate {
+        if let Some(ca) = installed_or_loaded_ca(&inst.data_dir)? {
+            return ok_data(ca_info_json(&ca));
+        }
+    }
+    let ca = mitm::CertificateAuthority::generate(&inst.data_dir).map_err(ca_failed)?;
+    let ca = Arc::new(ca);
+    mitm::install_ca(Arc::clone(&ca));
+    ok_data(ca_info_json(&ca))
+}
+
+/// `capture.ca.reset` (Todo 11): remove the persisted CA material and drop the
+/// live handle so a previously issued leaf is no longer served. `cleared`
+/// reports whether anything was actually removed (idempotent when absent).
+fn capture_ca_reset_arm(
+    instance_id: u64,
+    instance: Option<Arc<ProxyInstance>>,
+) -> Result<Vec<u8>, ModuleError> {
+    let inst = require_instance(instance_id, instance)?;
+    let cleared = match mitm::ca() {
+        Some(ca) => {
+            let cleared = ca.reset().map_err(ca_failed)?;
+            mitm::clear_ca();
+            cleared
+        }
+        None => mitm::CertificateAuthority::reset_at(&inst.data_dir).map_err(ca_failed)?,
+    };
+    ok_data(serde_json::json!({ "ok": true, "cleared": cleared }))
+}
+
+/// Parse the optional `{ "regenerate"?: bool }` request. An absent/empty
+/// payload and an absent field both mean `false`; anything else is a
+/// structured 422 (`PROXY_CAPTURE_CA_FAILED`), never a panic.
+fn parse_capture_ca_generate(payload: &[u8]) -> Result<bool, ModuleError> {
+    if payload.is_empty() {
+        return Ok(false);
+    }
+    let value: serde_json::Value = serde_json::from_slice(payload)
+        .map_err(|e| ca_bad_request(format!("payload must be a JSON object: {e}")))?;
+    if !value.is_object() {
+        return Err(ca_bad_request("payload must be a JSON object"));
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct CaptureCaGeneratePatch {
+        regenerate: Option<bool>,
+    }
+    let patch: CaptureCaGeneratePatch = serde_json::from_value(value)
+        .map_err(|e| ca_bad_request(format!("invalid capture.ca.generate request: {e}")))?;
+    Ok(patch.regenerate.unwrap_or(false))
+}
+
 fn emit_lan_warning(inst: &ProxyInstance, warning: &serde_json::Value) {
     let event = serde_json::json!({
         "state": current_state(inst).as_str(),
@@ -2141,6 +2283,9 @@ fn call_impl(
         "diagnostics.clash_api.status" => to_value(&controller::status()).and_then(ok_data),
         "capture.config.get" => capture_config_get_arm(instance_id, instance.clone()),
         "capture.config.set" => capture_config_set_arm(instance_id, instance.clone(), _payload),
+        "capture.ca.get" => capture_ca_get_arm(instance_id, instance.clone()),
+        "capture.ca.generate" => capture_ca_generate_arm(instance_id, instance.clone(), _payload),
+        "capture.ca.reset" => capture_ca_reset_arm(instance_id, instance.clone()),
         other => Err(ModuleError::method_not_found(other)),
     };
 
@@ -2855,6 +3000,134 @@ mod abi_tests {
         let _ = std::fs::remove_dir_all(&dir);
         let _ = destroy(inst);
         shaper::reset_for_test();
+    }
+
+    /// Todo 11: the `capture.ca.*` lifecycle through the real ABI — not-generated
+    /// `get` is not an error, `generate` installs a usable CA, `regenerate`
+    /// rotates it and drops the old leaf cache (same host re-issues a different
+    /// leaf), and `reset` removes the material and is idempotent.
+    #[test]
+    fn capture_ca_lifecycle_generate_regenerate_reset() {
+        let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        mitm::clear_ca();
+        let api = register_api();
+        let call = api.call.unwrap();
+        let destroy = api.destroy.unwrap();
+        let (inst, dir) = create_temp_instance(&api, "ca");
+
+        // Failure QA: not generated => get succeeds with generated:false + empties.
+        let (code, out) = call_json(call, inst, "capture.ca.get");
+        assert_eq!(code, ABI_OK, "{}", String::from_utf8_lossy(&out));
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["generated"], false);
+        assert_eq!(v["data"]["pem"], "");
+        assert_eq!(v["data"]["derBase64"], "");
+        assert_eq!(v["data"]["fingerprintSha256"], "");
+
+        // generate => generated:true, pem/der/fingerprint agree.
+        let (code, out) = call_json(call, inst, "capture.ca.generate");
+        assert_eq!(code, ABI_OK, "{}", String::from_utf8_lossy(&out));
+        let generated: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(generated["data"]["generated"], true);
+        let pem = generated["data"]["pem"].as_str().unwrap();
+        let der_b64 = generated["data"]["derBase64"].as_str().unwrap();
+        let fingerprint = generated["data"]["fingerprintSha256"].as_str().unwrap();
+        assert_eq!(fingerprint.len(), 64);
+        let der = pem_to_der(pem);
+        assert_eq!(der, base64_std(der_b64), "pem must encode the same DER as derBase64");
+        assert_eq!(sha256_hex(&der), fingerprint, "fingerprint must be sha256(DER)");
+
+        // A live CA signs a leaf for a host (rcgen path); cache is honored.
+        let ca = mitm::ca().expect("generate must install the CA");
+        assert!(ca.pem().starts_with("-----BEGIN CERTIFICATE-----"));
+        let leaf_a = leaf_fingerprint(&ca, "a.example");
+        let (code, out) = call_json(call, inst, "capture.ca.generate");
+        assert_eq!(code, ABI_OK);
+        let again: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(
+            again["data"]["fingerprintSha256"], generated["data"]["fingerprintSha256"],
+            "generate without regenerate must be idempotent"
+        );
+        assert_eq!(mitm::ca().unwrap().fingerprint_sha256(), fingerprint);
+
+        // regenerate => new CA and a cleared leaf cache: same host re-issues.
+        let (code, out) =
+            call_with_payload(call, inst, "capture.ca.generate", br#"{"regenerate":true}"#);
+        assert_eq!(code, ABI_OK, "{}", String::from_utf8_lossy(&out));
+        let rotated: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_ne!(
+            rotated["data"]["fingerprintSha256"], generated["data"]["fingerprintSha256"],
+            "regenerate must rotate the CA"
+        );
+        let ca2 = mitm::ca().expect("regenerate must install the new CA");
+        let leaf_b = leaf_fingerprint(&ca2, "a.example");
+        assert_ne!(leaf_a, leaf_b, "same host must re-issue a different leaf after regenerate");
+        assert_eq!(ca2.cache_len(), 1, "fresh cache holds exactly the re-issued leaf");
+        assert_eq!(ca2.signings(), 1, "cache was cleared, so the host signs once again");
+
+        // reset => ok/cleared:true, material gone, then get is not generated.
+        let (code, out) = call_json(call, inst, "capture.ca.reset");
+        assert_eq!(code, ABI_OK, "{}", String::from_utf8_lossy(&out));
+        let reset: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(reset["data"]["ok"], true);
+        assert_eq!(reset["data"]["cleared"], true);
+        assert!(!dir.join("mitm").join("ca.pem").exists(), "ca.pem removed");
+        assert!(mitm::ca().is_none(), "live CA handle dropped");
+
+        let (code, out) = call_json(call, inst, "capture.ca.get");
+        assert_eq!(code, ABI_OK);
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["generated"], false);
+
+        // reset again is idempotent (nothing to clear).
+        let (code, out) = call_json(call, inst, "capture.ca.reset");
+        assert_eq!(code, ABI_OK);
+        let reset: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(reset["data"]["cleared"], false);
+
+        // A bad `regenerate` type is a structured 422, never a panic.
+        let (code, out) =
+            call_with_payload(call, inst, "capture.ca.generate", br#"{"regenerate":"yes"}"#);
+        assert_eq!(code, ABI_ERR_DETAIL);
+        let err: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(err["status"], 422);
+        assert_eq!(err["code"], ERR_CAPTURE_CA_FAILED);
+
+        mitm::clear_ca();
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = destroy(inst);
+    }
+
+    /// PEM → DER for the local test (rcgen's `pem` feature is off; the module's
+    /// own `pem_encode` is the encoder under test here).
+    fn pem_to_der(pem: &str) -> Vec<u8> {
+        use base64::Engine as _;
+        let body: String = pem
+            .lines()
+            .filter(|line| !line.starts_with("-----"))
+            .collect();
+        base64::engine::general_purpose::STANDARD.decode(body).unwrap()
+    }
+
+    fn base64_std(s: &str) -> Vec<u8> {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.decode(s).unwrap()
+    }
+
+    fn sha256_hex(bytes: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(bytes);
+        let mut out = String::with_capacity(digest.len() * 2);
+        for byte in digest {
+            out.push_str(&format!("{byte:02x}"));
+        }
+        out
+    }
+
+    fn leaf_fingerprint(ca: &mitm::CertificateAuthority, host: &str) -> String {
+        let key = ca.certified_key(host).expect("issue leaf");
+        let der = key.cert.first().expect("leaf cert present");
+        sha256_hex(der.as_ref())
     }
 
     /// Machine-checkable frozen contract (Todo 18): every name the module claims

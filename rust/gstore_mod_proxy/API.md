@@ -1246,6 +1246,39 @@ ESP/AH（proto 50/51）等未知传输也**不**豁免。豁免帧在损伤判�
 **Bounds.** 白名单条目在写入时被裁剪为最多 `MAX_ALLOWLIST_ENTRIES = 256` 条、每条最长
 `MAX_ALLOWLIST_ENTRY_BYTES = 253` 字节（见 §9 预算）；`maxBodyBytes` 是落盘上限，不驻留内存。
 
+### 2.17 `capture.ca.*` — MITM CA lifecycle (Todo 11)
+
+| method | request | data |
+|---|---|---|
+| `capture.ca.get` | *(none)* | `CaptureCaInfo` |
+| `capture.ca.generate` | `{ "regenerate"?: bool }` | `CaptureCaInfo` |
+| `capture.ca.reset` | *(none)* | `{ "ok": true, "cleared": bool }` |
+
+`CaptureCaInfo`:
+```json
+{ "generated": false, "pem": "", "derBase64": "", "fingerprintSha256": "" }
+```
+
+| field | type | 含义 |
+|---|---|---|
+| `generated` | bool | CA 是否存在（进程内句柄或磁盘材料）；`false` 时其余字段为空串 |
+| `pem` | string | PEM 编码的 CA 证书（导出 / 客户端安装）；未生成时 `""` |
+| `derBase64` | string | 同一证书 DER 的 base64（程序化信任库比对）；未生成时 `""` |
+| `fingerprintSha256` | string | DER 证书的小写十六进制 SHA-256；未生成时 `""` |
+
+**Lifecycle.** CA 材料持久化在 `<dataDir>/mitm/ca.pem` + `<dataDir>/mitm/ca.key`（私钥
+`0600`，**绝不**进入日志或事件载荷），叶证书缓存有界。`capture.ca.get` 若进程内尚无 CA
+但磁盘存在材料，会先 `load` 并安装（跨模块重启后仍如实报告 `generated:true`）；**未生成不是
+错误**，返回 `generated:false` 与空字段。`capture.ca.generate` 不带 `regenerate` 时**幂等**：
+已存在（进程内或磁盘）则原样返回；`regenerate:true` 生成并安装全新 CA，替换旧句柄并连同其
+按 host 的叶证书缓存一并丢弃，因此同一 host 的下一次请求会重新签发新叶证书（指纹变化）。
+`capture.ca.reset` 删除磁盘材料并丢弃进程内句柄（旧叶证书不再被服务），返回
+`{ "ok": true, "cleared": bool }`；无 CA 时 `cleared:false`（幂等）。三个方法都要求存活实例
+（缺失为结构化 `INSTANCE_NOT_FOUND` 410，绝不是 `METHOD_NOT_FOUND`）。
+
+**Errors.** 载荷非法（`regenerate` 非 bool、非对象、未知字段）或 CA 生成/读取/重置失败均为
+`PROXY_CAPTURE_CA_FAILED`（非法载荷 422；生命周期 I/O / 签发失败 500）。
+
 ## 3. Events (module → host)
 
 Emitted through the ABI `emit_event` channel. Payload is the JSON below; the Dart

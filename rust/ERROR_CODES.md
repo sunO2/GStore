@@ -134,3 +134,4 @@ C ABI `call` 返回 `ABI_ERR_DETAIL (-8)` 时，模块在 out 缓冲写入
 | code | 模块 | 通常 status | 含义 |
 |---|---|---|---|
 | `PROXY_CAPTURE_CONFIG_INVALID` | proxy | 422 | `capture.config.set` 载荷非法：非 JSON 对象、未知字段、`tlsPorts` 含 `0` 或为空、`maxBodyBytes` 越界（不在 `[1, 1048576]`）；校验失败时**不改动**内存或磁盘上的既有配置（Todo 10） |
+| `PROXY_CAPTURE_CA_FAILED` | proxy | 422 / 500 | `capture.ca.generate` 载荷非法（`regenerate` 非 bool、非对象、未知字段 → 422），或 CA 生成/读取/重置失败（`rcgen` 签发 / I/O → 500）；`capture.ca.get` 未生成**不是**错误（`generated:false`），`reset` 无 CA 时 `cleared:false`（Todo 11） |

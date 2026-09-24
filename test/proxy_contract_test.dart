@@ -263,6 +263,21 @@ const _captureConfigFixture = <String, dynamic>{
   'maxBodyBytes': 524288,
 };
 
+/// `capture.ca.get` / `capture.ca.generate` 共用的冻结响应 fixture
+/// （`API.md` §2.17 `CaptureCaInfo`；字段值刻意非空以证 round-trip 保真）。
+const _captureCaInfoFixture = <String, dynamic>{
+  'generated': true,
+  'pem': '-----BEGIN CERTIFICATE-----\nMIIBKekq\n-----END CERTIFICATE-----\n',
+  'derBase64': 'MIIBKekq',
+  'fingerprintSha256': '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+};
+
+/// `capture.ca.reset` 冻结响应 fixture（`API.md` §2.17 `{ok, cleared}`）。
+const _captureCaResetFixture = <String, dynamic>{
+  'ok': true,
+  'cleared': true,
+};
+
 final Map<String, Map<String, dynamic>> _methodFixtures =
     <String, Map<String, dynamic>>{
   ProxyMethods.ping: <String, dynamic>{
@@ -689,6 +704,10 @@ final Map<String, Map<String, dynamic>> _methodFixtures =
   // `capture.config.get` 与 `capture.config.set` 共用同一冻结形状 fixture。
   ProxyMethods.captureConfigGet: _captureConfigFixture,
   ProxyMethods.captureConfigSet: _captureConfigFixture,
+  // `capture.ca.get` 与 `capture.ca.generate` 共用同一冻结形状 fixture。
+  ProxyMethods.captureCaGet: _captureCaInfoFixture,
+  ProxyMethods.captureCaGenerate: _captureCaInfoFixture,
+  ProxyMethods.captureCaReset: _captureCaResetFixture,
 };
 
 final Map<String, Map<String, dynamic>> _eventFixtures =
@@ -959,6 +978,45 @@ void main() {
       expect(decoded.captureBody, cfg.captureBody);
       expect(decoded.captureH2, cfg.captureH2);
       expect(decoded.maxBodyBytes, cfg.maxBodyBytes);
+    });
+
+    test('capture.ca fixture round-trip 保留真实字段值', () async {
+      // `get` 与 `generate` 共用同一 `CaptureCaInfo` 解码器。
+      final gateway = _FakeGateway(<String, Uint8List>{
+        ProxyMethods.captureCaGet: _okEnvelope(_captureCaInfoFixture),
+        ProxyMethods.captureCaGenerate: _okEnvelope(_captureCaInfoFixture),
+        ProxyMethods.captureCaReset: _okEnvelope(_captureCaResetFixture),
+      });
+      final facade = ProxyModule(gateway: gateway);
+
+      final info = await facade.invoke(
+        ProxyMethods.captureCaGet,
+        proxyResponseDecoders[ProxyMethods.captureCaGet]!,
+      ) as CaptureCaInfo;
+      expect(info.generated, isTrue);
+      expect(info.pem, contains('BEGIN CERTIFICATE'));
+      expect(info.derBase64, 'MIIBKekq');
+      expect(info.fingerprintSha256.length, 64);
+
+      final generated = await facade.invoke(
+        ProxyMethods.captureCaGenerate,
+        proxyResponseDecoders[ProxyMethods.captureCaGenerate]!,
+      ) as CaptureCaInfo;
+      expect(generated.fingerprintSha256, info.fingerprintSha256);
+
+      final reset = await facade.invoke(
+        ProxyMethods.captureCaReset,
+        proxyResponseDecoders[ProxyMethods.captureCaReset]!,
+      ) as CaptureCaResetResult;
+      expect(reset.ok, isTrue);
+      expect(reset.cleared, isTrue);
+
+      // 未生成形状（generated:false + 空字段）宽容解码，绝不抛错。
+      final absent = CaptureCaInfo.fromJson(const <String, dynamic>{});
+      expect(absent.generated, isFalse);
+      expect(absent.pem, isEmpty);
+      expect(absent.derBase64, isEmpty);
+      expect(absent.fingerprintSha256, isEmpty);
     });
 
     test('每个事件 fixture 解码为对应类型化事件', () {
