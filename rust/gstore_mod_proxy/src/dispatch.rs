@@ -856,7 +856,7 @@ mod mitm_e2e_tests {
     use tokio_tungstenite::{accept_async_with_config, client_async_with_config};
 
     use super::*;
-    use crate::capture::{self, CaptureConfig};
+    use crate::capture::{self, AppScope, CaptureConfig};
     use crate::captures::{self, CaptureFilter};
     use crate::limits::CAPTURE_BODY_MAX_BYTES;
     use crate::mitm::{self, CertificateAuthority, UpstreamTlsConfig};
@@ -936,6 +936,7 @@ mod mitm_e2e_tests {
             tls_ports: tls_ports.to_vec(),
             domain_allowlist: vec!["flow.test".to_string()],
             app_allowlist: Vec::new(),
+            app_scope: AppScope::Uid,
             capture_body: true,
             capture_ws,
             capture_h2: true,

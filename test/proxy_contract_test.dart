@@ -259,6 +259,7 @@ const _captureConfigFixture = <String, dynamic>{
   'tlsPorts': <int>[443, 8443],
   'domainAllowlist': <String>['a.example', '*.b.example'],
   'appAllowlist': <String>['com.a'],
+  'appScope': 'routing',
   'captureBody': false,
   'captureWs': false,
   'captureH2': false,
@@ -1150,6 +1151,7 @@ void main() {
       expect(cfg.tlsPorts, <int>[443, 8443]);
       expect(cfg.domainAllowlist, <String>['a.example', '*.b.example']);
       expect(cfg.appAllowlist, <String>['com.a']);
+      expect(cfg.appScope, ProxyCaptureAppScope.routing);
       expect(cfg.captureBody, isFalse);
       expect(cfg.captureWs, isFalse);
       expect(cfg.captureH2, isFalse);
@@ -1161,9 +1163,29 @@ void main() {
       expect(decoded.tlsPorts, cfg.tlsPorts);
       expect(decoded.domainAllowlist, cfg.domainAllowlist);
       expect(decoded.appAllowlist, cfg.appAllowlist);
+      expect(decoded.appScope, cfg.appScope);
       expect(decoded.captureBody, cfg.captureBody);
       expect(decoded.captureH2, cfg.captureH2);
       expect(decoded.maxBodyBytes, cfg.maxBodyBytes);
+    });
+
+    test('capture.config：缺省 appScope（旧 JSON）→ uid，两个方向都保真', () {
+      // 旧配置无 appScope → uid，与 Rust `#[serde(default)]` 迁移一致。
+      final legacy = Map<String, dynamic>.from(_captureConfigFixture)
+        ..remove('appScope');
+      expect(CaptureConfig.fromJson(legacy).appScope, ProxyCaptureAppScope.uid);
+      // 未知/非法值宽容回退 uid，绝不抛错。
+      expect(
+        CaptureConfig.fromJson(const <String, dynamic>{'appScope': 'bogus'})
+            .appScope,
+        ProxyCaptureAppScope.uid,
+      );
+      // routing 与 uid 往返（解码 ↔ 编码）都保真。
+      for (final scope in ProxyCaptureAppScope.values) {
+        final encoded = CaptureConfig(appScope: scope).toJson();
+        expect(encoded['appScope'], scope.wire);
+        expect(CaptureConfig.fromJson(encoded).appScope, scope);
+      }
     });
 
     test('capture.ca fixture round-trip 保留真实字段值', () async {

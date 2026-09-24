@@ -1222,8 +1222,8 @@ ESP/AH（proto 50/51）等未知传输也**不**豁免。豁免帧在损伤判�
 `CaptureConfig`:
 ```json
 { "enabled": false, "tlsPorts": [443, 8443], "domainAllowlist": [],
-  "appAllowlist": [], "captureBody": true, "captureWs": true,
-  "captureH2": true, "maxBodyBytes": 1048576 }
+  "appAllowlist": [], "appScope": "uid", "captureBody": true,
+  "captureWs": true, "captureH2": true, "maxBodyBytes": 1048576 }
 ```
 
 | field | type | default | 含义 |
@@ -1232,14 +1232,15 @@ ESP/AH（proto 50/51）等未知传输也**不**豁免。豁免帧在损伤判�
 | `tlsPorts` | number[] | `[443, 8443]` | 参与 MITM 终止的目标端口（每个 ∈ `[1, 65535]`，数组不得为空） |
 | `domainAllowlist` | string[] | `[]` | 主白名单：按嗅探 SNI/host 匹配；非空时仅命中才允许解密 |
 | `appAllowlist` | string[] | `[]` | 尽力而为白名单（包名 / UID 字符串）；仅当 `domainAllowlist` 为空时生效 |
+| `appScope` | `"routing"` \| `"uid"` | `"uid"` | 应用范围判定方式：`routing` 由 VPN 逐应用路由限定、门控无需 UID；`uid` 解析流 UID 并按 `appAllowlist` 匹配。`appAllowlist` 仍是「哪些应用」的唯一事实来源；缺少该字段的旧配置自动迁移为 `uid` |
 | `captureBody` | bool | `true` | 捕获请求/响应体 |
 | `captureWs` | bool | `true` | 捕获 WebSocket 帧 |
 | `captureH2` | bool | `true` | 捕获 HTTP/2 |
 | `maxBodyBytes` | number | `1048576` | 落盘 Body 上限（仅 SQLite；不驻留内存），∈ `[1, 1048576]` |
 
 **Partial update.** `capture.config.set` 接受 `CaptureConfig` 的任意子集（缺省字段保留当前值）。
-未知字段、非对象载荷、`tlsPorts` 含 `0` 或为空、`maxBodyBytes` 越界均为 **422
-`PROXY_CAPTURE_CONFIG_INVALID`**，且**不改动**内存或磁盘上的既有配置。校验通过后配置发布为
+未知字段、非对象载荷、`tlsPorts` 含 `0` 或为空、`maxBodyBytes` 越界、`appScope` 非
+`"routing"`/`"uid"` 均为 **422 `PROXY_CAPTURE_CONFIG_INVALID`**，且**不改动**内存或磁盘上的既有配置。校验通过后配置发布为
 进程级配置（`capture::config()`，后续流判定立即使用新值）并持久化到
 `<dataDir>/capture_config.json`；重启后由 `create_impl` 重新载入。
 
@@ -1505,7 +1506,7 @@ registered in `rust/ERROR_CODES.md`.
 | `PROXY_CLASH_API_FAILED` | 500 | `diagnostics.clash_api.start` could not bind `127.0.0.1:<port>` or spawn its runtime/thread (Todo 18) |
 | `PROXY_DATAPLANE_DEAD` | — (supervisor event) | a TUN worker (reader/egress/ingress) ended or panicked while the tunnel was up; reported as a structured `proxy.state` `error.code` with the verbatim reason, then the loop restarts with bounded backoff (Todo 24) |
 | `PROXY_CAPTURE_UPSTREAM_FAILED` | — (data-plane HTTP 502) | a decrypted MITM request failed to re-originate through the tunnel outbound (rules/protect-aware dial or upstream TLS handshake); the capture layer answers a 502-style response and never panics. `skipCertVerify` defaults to strict verification (Todo 7) |
-| `PROXY_CAPTURE_CONFIG_INVALID` | 422 | `capture.config.set` payload invalid: non-object, unknown field, `tlsPorts` empty or containing `0`, or `maxBodyBytes` out of `[1, 1048576]`. The in-memory/on-disk config is left untouched on rejection (Todo 10) |
+| `PROXY_CAPTURE_CONFIG_INVALID` | 422 | `capture.config.set` payload invalid: non-object, unknown field, `tlsPorts` empty or containing `0`, `appScope` not `"routing"`/`"uid"`, or `maxBodyBytes` out of `[1, 1048576]`. The in-memory/on-disk config is left untouched on rejection (Todo 10) |
 | `PROXY_CAPTURE_CA_FAILED` | 422 / 500 | `capture.ca.generate` payload invalid (`regenerate` non-bool, non-object, unknown field → 422) or CA generate/load/reset failure (`rcgen` issuance / I/O → 500). A never-generated CA is **not** an error (`generated:false`); `reset` with no CA is `cleared:false` (Todo 11) |
 | `PROXY_CAPTURE_NOT_FOUND` | 404 | `captures.detail` `recordId` is not in the retained window (ring / pending-flush queue / SQLite table) (Todo 12) |
 | `PROXY_CAPTURE_CURSOR_INVALID` | 422 | `captures.get` `cursor` is present but not a non-negative integer (Todo 12) |

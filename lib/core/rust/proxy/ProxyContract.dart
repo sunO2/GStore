@@ -2858,6 +2858,26 @@ class ProxyShaperSnapshot {
 
 // ==================== capture.* ====================
 
+/// 抓包应用范围判定方式（`API.md` §2.16 `CaptureConfig.appScope`）。
+///
+/// 缺省或未知值回退为 [uid]，与 Rust `#[serde(default)]` 的旧配置迁移一致。
+enum ProxyCaptureAppScope {
+  routing('routing'),
+  uid('uid');
+
+  const ProxyCaptureAppScope(this.wire);
+
+  final String wire;
+
+  static ProxyCaptureAppScope fromWire(Object? value) {
+    final s = value?.toString();
+    for (final scope in values) {
+      if (scope.wire == s) return scope;
+    }
+    return ProxyCaptureAppScope.uid;
+  }
+}
+
 /// HTTP 捕获 / MITM 门控配置（`API.md` §2.16 `CaptureConfig`）。
 ///
 /// `capture.config.get` / `capture.config.set` 的**共用**响应形状；同时作为
@@ -2868,6 +2888,7 @@ class CaptureConfig {
     this.tlsPorts = const <int>[443, 8443],
     this.domainAllowlist = const <String>[],
     this.appAllowlist = const <String>[],
+    this.appScope = ProxyCaptureAppScope.uid,
     this.captureBody = true,
     this.captureWs = true,
     this.captureH2 = true,
@@ -2878,6 +2899,7 @@ class CaptureConfig {
   final List<int> tlsPorts;
   final List<String> domainAllowlist;
   final List<String> appAllowlist;
+  final ProxyCaptureAppScope appScope;
   final bool captureBody;
   final bool captureWs;
   final bool captureH2;
@@ -2890,6 +2912,7 @@ class CaptureConfig {
             : const <int>[443, 8443],
         domainAllowlist: _strList(json['domainAllowlist']),
         appAllowlist: _strList(json['appAllowlist']),
+        appScope: ProxyCaptureAppScope.fromWire(json['appScope']),
         captureBody: json['captureBody'] != false,
         captureWs: json['captureWs'] != false,
         captureH2: json['captureH2'] != false,
@@ -2901,6 +2924,7 @@ class CaptureConfig {
         'tlsPorts': tlsPorts,
         'domainAllowlist': domainAllowlist,
         'appAllowlist': appAllowlist,
+        'appScope': appScope.wire,
         'captureBody': captureBody,
         'captureWs': captureWs,
         'captureH2': captureH2,
@@ -2912,6 +2936,7 @@ class CaptureConfig {
     List<int>? tlsPorts,
     List<String>? domainAllowlist,
     List<String>? appAllowlist,
+    ProxyCaptureAppScope? appScope,
     bool? captureBody,
     bool? captureWs,
     bool? captureH2,
@@ -2922,6 +2947,7 @@ class CaptureConfig {
         tlsPorts: tlsPorts ?? this.tlsPorts,
         domainAllowlist: domainAllowlist ?? this.domainAllowlist,
         appAllowlist: appAllowlist ?? this.appAllowlist,
+        appScope: appScope ?? this.appScope,
         captureBody: captureBody ?? this.captureBody,
         captureWs: captureWs ?? this.captureWs,
         captureH2: captureH2 ?? this.captureH2,

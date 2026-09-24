@@ -62,6 +62,25 @@ const MAX_ALLOWLIST_ENTRY_BYTES: usize = 253;
 /// can never stall the TUN dataplane or force decryption.
 const APP_RESOLVE_TIMEOUT: Duration = Duration::from_millis(200);
 
+/// Discriminator for **how** the app allowlist is scoped. The Rust gate cannot
+/// see the VPN split-tunnel mode, so scope-by-routing (A) and scope-by-UID (B)
+/// need this explicit field to coexist. `app_allowlist` stays the single source
+/// of truth for **which** apps.
+///
+/// `#[serde(default)]` on [`CaptureConfig::app_scope`] plus the `Uid` default
+/// here means an old `capture_config.json` without the field migrates to
+/// today's semantics automatically.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum AppScope {
+    /// The TUN is already limited to the allowed apps by VPN routing, so the
+    /// gate does not need a UID. Zero UID cost; the primary path (A).
+    Routing,
+    /// Resolve the flow's UID and match `app_allowlist`. The fallback path (B).
+    #[default]
+    Uid,
+}
+
 /// Process-level MITM capture configuration. Defaults are the shipping
 /// no-capture posture: `enabled:false` means every flow keeps the existing
 /// tunnel pass-through, byte for byte.
@@ -74,9 +93,13 @@ pub(crate) struct CaptureConfig {
     pub tls_ports: Vec<u16>,
     /// Primary allowlist: sniffed SNI/host. When non-empty, only a hit allows.
     pub domain_allowlist: Vec<String>,
-    /// Best-effort allowlist: package name / UID string. Only consulted when
-    /// `domain_allowlist` is empty.
+    /// Best-effort allowlist: package name / UID string. When
+    /// `domain_allowlist` is empty, this is consulted according to `app_scope`.
     pub app_allowlist: Vec<String>,
+    /// How `app_allowlist` is evaluated (routing vs UID). Missing field on load
+    /// defaults to [`AppScope::Uid`], preserving pre-`appScope` behavior.
+    #[serde(default)]
+    pub app_scope: AppScope,
     /// Capture request/response bodies (todo 8).
     pub capture_body: bool,
     /// Capture WebSocket frames (todo 9).
@@ -94,6 +117,7 @@ impl Default for CaptureConfig {
             tls_ports: vec![443, 8443],
             domain_allowlist: Vec::new(),
             app_allowlist: Vec::new(),
+            app_scope: AppScope::Uid,
             capture_body: true,
             capture_ws: true,
             capture_h2: true,
@@ -167,6 +191,7 @@ struct CaptureConfigPatch {
     tls_ports: Option<Vec<u16>>,
     domain_allowlist: Option<Vec<String>>,
     app_allowlist: Option<Vec<String>>,
+    app_scope: Option<AppScope>,
     capture_body: Option<bool>,
     capture_ws: Option<bool>,
     capture_h2: Option<bool>,
@@ -220,6 +245,9 @@ impl CaptureConfig {
         }
         if let Some(v) = patch.app_allowlist {
             self.app_allowlist = v;
+        }
+        if let Some(v) = patch.app_scope {
+            self.app_scope = v;
         }
         if let Some(v) = patch.capture_body {
             self.capture_body = v;
@@ -496,6 +524,7 @@ mod mitm_gate_tests {
         assert_eq!(cfg.tls_ports, vec![443, 8443]);
         assert!(cfg.domain_allowlist.is_empty());
         assert!(cfg.app_allowlist.is_empty());
+        assert_eq!(cfg.app_scope, AppScope::Uid);
         assert!(cfg.capture_body && cfg.capture_ws && cfg.capture_h2);
         assert_eq!(cfg.max_body_bytes, CAPTURE_BODY_MAX_BYTES);
     }
@@ -702,6 +731,7 @@ mod config_io_tests {
                 "tlsPorts",
                 "domainAllowlist",
                 "appAllowlist",
+                "appScope",
                 "captureBody",
                 "captureWs",
                 "captureH2",
@@ -710,6 +740,7 @@ mod config_io_tests {
         );
         assert_eq!(json["enabled"], serde_json::json!(false));
         assert_eq!(json["tlsPorts"], serde_json::json!([443, 8443]));
+        assert_eq!(json["appScope"], serde_json::json!("uid"));
         assert_eq!(
             json["maxBodyBytes"],
             serde_json::json!(CAPTURE_BODY_MAX_BYTES)
@@ -808,6 +839,93 @@ mod config_io_tests {
         assert!(!tmp.exists(), "the tmp file must be renamed away");
         let on_disk: CaptureConfig = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(on_disk, next, "the committed config is complete and parseable");
+
+        reset_for_tests();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An old `capture_config.json` written before `appScope` existed must load
+    /// as `app_scope = Uid` (today's semantics), never fail to load.
+    #[test]
+    fn capture_config_old_json_without_app_scope_migrates_to_uid() {
+        let _guard = serial();
+        reset_for_tests();
+        let dir = tmp_dir("migrate-app-scope");
+        let dir_str = dir.to_str().unwrap();
+        let old = br#"{"enabled":true,"tlsPorts":[443,8443],"domainAllowlist":[],
+                      "appAllowlist":["com.a"],"captureBody":true,"captureWs":true,
+                      "captureH2":true,"maxBodyBytes":1048576}"#;
+        std::fs::write(dir.join(CAPTURE_CONFIG_FILE), old).unwrap();
+
+        configure(dir_str);
+        let cfg = config();
+        assert!(cfg.enabled);
+        assert_eq!(cfg.app_scope, AppScope::Uid, "missing appScope must default to uid");
+        assert_eq!(cfg.app_allowlist, vec!["com.a".to_string()]);
+
+        // The same wire shape decodes directly (not only via `load_config`).
+        let decoded: CaptureConfig = serde_json::from_slice(old).unwrap();
+        assert_eq!(decoded.app_scope, AppScope::Uid);
+
+        reset_for_tests();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `appScope` must survive both directions (routing and uid) through the
+    /// publish path and the persisted `capture_config.json`.
+    #[test]
+    fn capture_config_app_scope_round_trips_routing_and_uid() {
+        let _guard = serial();
+        reset_for_tests();
+        let dir = tmp_dir("app-scope");
+        let dir_str = dir.to_str().unwrap();
+        configure(dir_str);
+        let path = dir.join(CAPTURE_CONFIG_FILE);
+
+        let routing = set(dir_str, br#"{"appScope":"routing"}"#).unwrap();
+        assert_eq!(routing.app_scope, AppScope::Routing);
+        assert_eq!(config().app_scope, AppScope::Routing);
+        assert_eq!(config_json()["appScope"], serde_json::json!("routing"));
+        let on_disk: CaptureConfig = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(on_disk.app_scope, AppScope::Routing);
+
+        let uid = set(dir_str, br#"{"appScope":"uid"}"#).unwrap();
+        assert_eq!(uid.app_scope, AppScope::Uid);
+        assert_eq!(config_json()["appScope"], serde_json::json!("uid"));
+        let on_disk: CaptureConfig = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(on_disk.app_scope, AppScope::Uid);
+
+        reset_for_tests();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A non-`routing`/`uid` value is a structured 422 that leaves the published
+    /// and on-disk config untouched (no partial write, no corruption).
+    #[test]
+    fn capture_config_invalid_app_scope_is_422_and_does_not_corrupt_persisted() {
+        let _guard = serial();
+        reset_for_tests();
+        let dir = tmp_dir("invalid-app-scope");
+        let dir_str = dir.to_str().unwrap();
+        configure(dir_str);
+        let good = set(dir_str, br#"{"appScope":"routing"}"#).unwrap();
+        let path = dir.join(CAPTURE_CONFIG_FILE);
+        let before = std::fs::read(&path).unwrap();
+
+        for payload in [
+            br#"{"appScope":"bogus"}"#.as_slice(),
+            br#"{"appScope":"Routing"}"#.as_slice(),
+            br#"{"appScope":42}"#.as_slice(),
+        ] {
+            let err = set(dir_str, payload).unwrap_err();
+            assert_eq!(err.status, StatusCode::InvalidArgument);
+            assert_eq!(err.code, ERR_CAPTURE_CONFIG_INVALID);
+            assert_eq!(*config(), good, "rejected appScope must not publish");
+            assert_eq!(std::fs::read(&path).unwrap(), before, "…nor persist");
+            let on_disk: CaptureConfig =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(on_disk.app_scope, AppScope::Routing, "file stays parseable and unchanged");
+        }
 
         reset_for_tests();
         let _ = std::fs::remove_dir_all(&dir);
