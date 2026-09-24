@@ -1,15 +1,15 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 
 import 'package:gstore/core/design/app_components.dart';
 import 'package:gstore/core/design/app_spacing.dart';
-import 'package:gstore/core/design/app_typography.dart';
 import 'package:gstore/core/request_debug/request_debug.dart';
 
 import 'collection_section.dart';
+import 'environment_section.dart';
 import 'history_section.dart';
+import 'rules_section.dart';
 
 /// 「请求调试」工作台分区（plan todo 30）。
 enum RequestDebugSection {
@@ -19,10 +19,10 @@ enum RequestDebugSection {
   /// 历史（发送记录）。todo 32 深化。
   history,
 
-  /// 环境（`{{var}}` 变量表）。todo 33 深化。
+  /// 环境（`{{var}}` 变量表）。todo 34 深化。
   environments,
 
-  /// 改写规则（Rust 引擎捕获改写）。todo 34 深化。
+  /// 改写规则（Rust 引擎全局捕获改写）。todo 34 深化。
   rules,
 }
 
@@ -126,7 +126,6 @@ class _RequestDebugPageState extends State<RequestDebugPage> {
     if (_loading) {
       return const Center(child: AppLoading(size: AppLoadingSize.medium));
     }
-    final store = _facade.store;
     switch (_section) {
       case RequestDebugSection.collections:
         return RequestDebugCollectionSection(facade: _facade);
@@ -135,109 +134,10 @@ class _RequestDebugPageState extends State<RequestDebugPage> {
         return RequestDebugHistorySection(facade: _facade);
 
       case RequestDebugSection.environments:
-        if (store.environments.isEmpty) {
-          return _empty(
-            context,
-            icon: TablerIcons.variable,
-            title: '暂无环境',
-            message: '创建环境后可集中管理 {{变量}}。',
-          );
-        }
-        return ListView.builder(
-          padding: AppSpacing.onlyVerticalSM,
-          itemCount: store.environments.length,
-          itemBuilder: (context, index) {
-            final e = store.environments[index];
-            return _sectionTile(
-              context,
-              icon: TablerIcons.variable,
-              title: e.name,
-              subtitle: '${e.vars.length} 个变量',
-              key: ValueKey<String>('request-debug-environment-${e.id}'),
-            );
-          },
-        );
+        return RequestDebugEnvironmentSection(facade: _facade);
 
       case RequestDebugSection.rules:
-        if (store.rules.isEmpty) {
-          return _empty(
-            context,
-            icon: TablerIcons.replace,
-            title: '暂无改写规则',
-            message: '添加改写规则以修改匹配请求的响应。',
-          );
-        }
-        return ListView.builder(
-          padding: AppSpacing.onlyVerticalSM,
-          itemCount: store.rules.length,
-          itemBuilder: (context, index) {
-            final r = store.rules[index];
-            return _sectionTile(
-              context,
-              icon: TablerIcons.replace,
-              title: r.url,
-              subtitle: r.remark ?? (r.enabled ? '已启用' : '未启用'),
-              key: ValueKey<String>('request-debug-rule-${r.id}'),
-            );
-          },
-        );
+        return RequestDebugRulesSection(facade: _facade);
     }
-  }
-
-  /// 分区内极简列表行（分割线由 ListView 默认绘制；图标染色适配夜间模式）。
-  Widget _sectionTile(
-    BuildContext context, {
-    required IconData icon,
-    required String title,
-    required String subtitle,
-    Key? key,
-  }) {
-    final scheme = Theme.of(context).colorScheme;
-    return ListTile(
-      key: key,
-      leading: ColoredAliIcon(
-        icon: icon,
-        size: AppTypography.iconMD,
-        color: scheme.primary,
-      ),
-      title: Text(title),
-      subtitle: subtitle.isEmpty ? null : Text(subtitle),
-    );
-  }
-
-  /// 空态（store 为空时各分区展示）。
-  Widget _empty(
-    BuildContext context, {
-    required IconData icon,
-    required String title,
-    required String message,
-  }) {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
-    return Center(
-      child: Padding(
-        padding: AppSpacing.allXL,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ColoredAliIcon(
-              icon: icon,
-              size: AppTypography.iconXXXL,
-              color: scheme.onSurfaceVariant,
-            ),
-            const SizedBox(height: AppSpacing.md),
-            Text(title, style: theme.textTheme.titleMedium),
-            const SizedBox(height: AppSpacing.sm),
-            Text(
-              message,
-              textAlign: TextAlign.center,
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: scheme.onSurfaceVariant,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
   }
 }

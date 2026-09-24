@@ -760,6 +760,31 @@ class ProxyModule implements ProxyFacade {
   Future<CaptureCaInfo> captureCaGet() =>
       invoke(ProxyMethods.captureCaGet, CaptureCaInfo.fromJson);
 
+  /// `capture.rules.get`：全部改写规则（响应 `{rules:[CaptureRule]}` 解包为
+  /// 列表；Rust 侧已按 `createdAtMs asc, id asc` 稳定排序）。
+  ///
+  /// 规则是**全局引擎能力**（非单请求私有），仅作用于 h1/h2 请求；WS 帧仅
+  /// 捕获不改写（见 `API.md` §2.19）。
+  Future<List<CaptureRule>> captureRulesGet() => invoke(
+        ProxyMethods.captureRulesGet,
+        (json) => CaptureRuleList.fromJson(json).rules,
+      );
+
+  /// `capture.rules.set`：upsert 一条规则（有 `id` 更新、无 `id` 由 Rust 铸造）
+  /// 并返回生效后的规则。
+  Future<CaptureRule> captureRulesSet(CaptureRuleSetRequest request) => invoke(
+        ProxyMethods.captureRulesSet,
+        CaptureRule.fromJson,
+        payload: request.toJson(),
+      );
+
+  /// `capture.rules.remove`：按 id 删除（幂等；未知 id 返回 `removed:false`）。
+  Future<CaptureRulesRemoveResult> captureRulesRemove(String id) => invoke(
+        ProxyMethods.captureRulesRemove,
+        CaptureRulesRemoveResult.fromJson,
+        payload: CaptureRuleRemoveRequest(id).toJson(),
+      );
+
   /// 调用信封 → 校验 `{ok:true,data:{...}}` → 返回 `data`。
   ///
   /// 错误分层：模块不可用 → [ProxyModuleUnavailableException]；

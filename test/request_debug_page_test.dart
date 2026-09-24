@@ -10,6 +10,7 @@ import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/module/module.dart';
 import 'package:gstore/core/module/module_manager.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
+import 'package:gstore/core/request_debug/debug_models.dart';
 import 'package:gstore/core/request_debug/debug_sender.dart';
 import 'package:gstore/core/request_debug/request_debug_facade.dart';
 import 'package:gstore/core/request_debug/request_debug_store.dart';
@@ -158,14 +159,35 @@ void main() {
   });
 }
 
+/// 空改写规则端口：`capture.rules.get` 返回空表（隐藏「规则加载失败」错误态，
+/// 使工作台在无规则时渲染「暂无改写规则」空态）。
+class _EmptyRulesPort implements CaptureRulesPort {
+  const _EmptyRulesPort();
+
+  @override
+  Future<List<DebugRewriteRule>> getRules() async =>
+      const <DebugRewriteRule>[];
+
+  @override
+  Future<DebugRewriteRule> setRule(DebugRewriteRule rule) async => rule;
+
+  @override
+  Future<bool> removeRule(String id) async => false;
+}
+
 /// 测试用门面：真实空 [RequestDebugStore]，但 `load()` 为空操作。
 ///
 /// widget 测试运行在 fake-async 时区，真实文件 IO 不会完成，会让
 /// `pumpAndSettle` 因 loading 动画持续调度帧而超时；故此处绕过磁盘读取。
 /// store 的其余 CRUD 语义保持可用（供 todos 31-34 深化时扩展）。
+/// 规则端口注入空表（生产默认端口为「未接线」，会显式失败）。
 class _NoIoFacade extends DefaultRequestDebugFacade {
   _NoIoFacade(RequestDebugStore store)
-      : super(store: store, sender: DebugSender());
+      : super(
+          store: store,
+          sender: DebugSender(),
+          captureRules: const _EmptyRulesPort(),
+        );
 
   @override
   Future<void> load() async {}
