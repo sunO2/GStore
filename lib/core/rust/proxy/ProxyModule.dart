@@ -760,6 +760,43 @@ class ProxyModule implements ProxyFacade {
   Future<CaptureCaInfo> captureCaGet() =>
       invoke(ProxyMethods.captureCaGet, CaptureCaInfo.fromJson);
 
+  /// `capture.ca.generate`：生成 / 重建 MITM CA（`regenerate` 缺省即幂等）。
+  Future<CaptureCaInfo> captureCaGenerate([
+    CaptureCaGenerateRequest request = const CaptureCaGenerateRequest(),
+  ]) =>
+      invoke(
+        ProxyMethods.captureCaGenerate,
+        CaptureCaInfo.fromJson,
+        payload: request.toJson(),
+      );
+
+  /// `capture.ca.reset`：删除 MITM CA 材料并清除信任。
+  Future<CaptureCaResetResult> captureCaReset() =>
+      invoke(ProxyMethods.captureCaReset, CaptureCaResetResult.fromJson);
+
+  // ---- captures.* ----
+
+  /// `captures.get`：按游标分页拉取 HTTP 抓包时间线（拉取式主路径）。
+  Future<CapturePage> capturesGet([
+    CapturesGetRequest request = const CapturesGetRequest(),
+  ]) =>
+      invoke(
+        ProxyMethods.capturesGet,
+        CapturePage.fromJson,
+        payload: request.toJson(),
+      );
+
+  /// `captures.detail`：按 `recordId` 拉取环内摘要 + SQLite 完整 body/头/url。
+  Future<CaptureDetail> capturesDetail(int recordId) => invoke(
+        ProxyMethods.capturesDetail,
+        CaptureDetail.fromJson,
+        payload: CaptureDetailRequest(recordId).toJson(),
+      );
+
+  /// `captures.reset`：清空抓包时间线（游标保持单调）。
+  Future<CapturesResetResult> capturesReset() =>
+      invoke(ProxyMethods.capturesReset, CapturesResetResult.fromJson);
+
   /// `capture.rules.get`：全部改写规则（响应 `{rules:[CaptureRule]}` 解包为
   /// 列表；Rust 侧已按 `createdAtMs asc, id asc` 稳定排序）。
   ///

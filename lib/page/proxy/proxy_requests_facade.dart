@@ -68,11 +68,8 @@ class ProxyModuleRequestsFacade implements ProxyRequestsFacade {
       _module.requestsExport(request);
 
   @override
-  Future<CapturePage> capturesGet(CapturesGetRequest request) => _module.invoke(
-        ProxyMethods.capturesGet,
-        CapturePage.fromJson,
-        payload: request.toJson(),
-      );
+  Future<CapturePage> capturesGet(CapturesGetRequest request) =>
+      _module.capturesGet(request);
 
   @override
   Future<CaptureConfig> captureConfigGet() =>

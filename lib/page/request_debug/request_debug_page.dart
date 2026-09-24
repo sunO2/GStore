@@ -9,6 +9,7 @@ import 'package:gstore/core/request_debug/request_debug.dart';
 import 'collection_section.dart';
 import 'environment_section.dart';
 import 'history_section.dart';
+import 'proxy_capture_rules_port.dart';
 import 'rules_section.dart';
 
 /// 「请求调试」工作台分区（plan todo 30）。
@@ -55,7 +56,10 @@ class _RequestDebugPageState extends State<RequestDebugPage> {
   @override
   void initState() {
     super.initState();
-    _facade = widget.facade ?? DefaultRequestDebugFacade.production();
+    _facade = widget.facade ??
+        DefaultRequestDebugFacade.production(
+          captureRules: ProxyModuleCaptureRulesPort(),
+        );
     unawaited(_load());
   }
 
