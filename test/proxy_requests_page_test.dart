@@ -23,6 +23,7 @@ import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
+import 'package:gstore/page/proxy/proxy_app_identity.dart';
 import 'package:gstore/page/proxy/proxy_requests_facade.dart';
 import 'package:gstore/page/proxy/proxy_requests_page.dart';
 
@@ -257,6 +258,11 @@ void main() {
 
     expect(find.text('other.org'), findsWidgets);
 
+    // 默认折叠：应用框不可见，先展开筛选磁贴。
+    expect(find.byKey(const Key('requests_app_filter')), findsNothing);
+    await tester.tap(find.byKey(const Key('requests_filters_toggle')));
+    await tester.pumpAndSettle();
+
     await tester.enterText(
       find.byKey(const Key('requests_app_filter')),
       'org.other',
@@ -271,6 +277,79 @@ void main() {
     await tester.enterText(find.byKey(const Key('requests_app_filter')), '');
     await tester.pump();
     expect(find.text('example.com'), findsWidgets);
+  });
+
+  testWidgets('筛选磁贴：默认折叠仅域名，展开显示四个，再次点击折叠', (tester) async {
+    _useLargeViewport(tester);
+    final fake = _FakeRequestsFacade(page: _samplePage());
+    await tester.pumpWidget(
+      _host(ProxyRequestsPage(facade: fake, initialLive: false)),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    final app = find.byKey(const Key('requests_app_filter'));
+    final domain = find.byKey(const Key('requests_domain_filter'));
+    final ip = find.byKey(const Key('requests_ip_filter'));
+    final outbound = find.byKey(const Key('requests_outbound_filter'));
+
+    // 默认折叠：仅「域名」可见，其余三个不在树中。
+    expect(domain, findsOneWidget);
+    expect(app, findsNothing);
+    expect(ip, findsNothing);
+    expect(outbound, findsNothing);
+    expect(find.text('筛选'), findsOneWidget);
+
+    // 展开：四个都在，顺序为 应用 → 域名 → IP / 出站（IP 在出站左侧）。
+    await tester.tap(find.byKey(const Key('requests_filters_toggle')));
+    await tester.pumpAndSettle();
+    expect(app, findsOneWidget);
+    expect(domain, findsOneWidget);
+    expect(ip, findsOneWidget);
+    expect(outbound, findsOneWidget);
+    expect(tester.getTopLeft(app).dy, lessThan(tester.getTopLeft(domain).dy));
+    expect(tester.getTopLeft(domain).dy, lessThan(tester.getTopLeft(ip).dy));
+    expect(
+      tester.getTopLeft(ip).dy,
+      lessThanOrEqualTo(tester.getTopLeft(outbound).dy),
+    );
+    expect(tester.getTopLeft(ip).dx, lessThan(tester.getTopLeft(outbound).dx));
+
+    // 设置一个非域名筛选后折叠：标题提示已设置数量。
+    await tester.enterText(app, 'org');
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('requests_filters_toggle')));
+    await tester.pumpAndSettle();
+    expect(app, findsNothing);
+    expect(ip, findsNothing);
+    expect(outbound, findsNothing);
+    expect(domain, findsOneWidget);
+    expect(find.text('1 项已设'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('应用归属：解析到身份时列表显示人类可读应用名', (tester) async {
+    _useLargeViewport(tester);
+    final resolver = ProxyAppIdentityResolver.instance;
+    resolver.debugSeed(<String, ProxyAppIdentity>{
+      'com.example.app': const ProxyAppIdentity(
+        packageName: 'com.example.app',
+        label: '示例应用',
+      ),
+    });
+    addTearDown(resolver.debugReset);
+
+    final fake = _FakeRequestsFacade(page: _samplePage());
+    await tester.pumpWidget(
+      _host(ProxyRequestsPage(facade: fake, initialLive: false)),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    // 已解析的包名 → 人类可读应用名（列表行 + 分组视图），不再显示原始包名。
+    expect(find.textContaining('示例应用'), findsWidgets);
+    expect(find.textContaining('com.example.app'), findsNothing);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('uid == null 渲染「未知应用」而非空', (tester) async {

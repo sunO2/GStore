@@ -4,7 +4,9 @@ import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 
+import 'package:gstore/core/design/app_animation.dart';
 import 'package:gstore/core/design/app_components.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/design/app_radius.dart';
@@ -14,6 +16,7 @@ import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
 import 'package:gstore/core/utils/unit.dart';
 
+import 'proxy_app_identity.dart';
 import 'proxy_requests_facade.dart';
 
 /// 单次 `requests.get` 拉取上限（拉取为准；本页不做无限分页）。
@@ -123,7 +126,7 @@ class _ExportOption extends StatelessWidget {
               ),
             ),
             Icon(
-              Icons.chevron_right,
+              TablerIcons.chevron_right,
               size: AppTypography.iconMD,
               color: scheme.onSurfaceVariant,
             ),
@@ -209,6 +212,9 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
   String? _network;
   int _rangeMs = 0;
 
+  /// 搜索磁贴是否展开（默认折叠，仅显示「域名」）。
+  bool _filtersExpanded = false;
+
   @override
   void initState() {
     super.initState();
@@ -221,6 +227,7 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
     _eventSub = _events.listen(_onEvent);
     if (_live) _startFallback();
     unawaited(_load());
+    unawaited(_ensureAppIdentities());
   }
 
   @override
@@ -289,6 +296,15 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
   /// 手动 / 首屏加载：整页 loading。
   Future<void> _load() async {
     await _fetch(silent: false);
+  }
+
+  /// 预加载已安装应用身份（惰性、缓存、失败静默）。
+  ///
+  /// 完成后刷新一次，使列表 / 详情用人类可读的应用名 + 图标替换包名；
+  /// 加载失败（非 Android / 插件缺失 / 测试环境）时不改变任何现有展示。
+  Future<void> _ensureAppIdentities() async {
+    await ProxyAppIdentityResolver.instance.ensureLoaded();
+    if (mounted) setState(() {});
   }
 
   /// 拉取 `requests.get`。
@@ -360,7 +376,7 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
       message: '将清空全部已采集的请求记录，且无法撤销。确定继续吗？',
       confirmText: '清空',
       isDangerous: true,
-      icon: const Icon(Icons.delete_outline),
+      icon: const Icon(TablerIcons.trash),
     );
     if (ok != true || !mounted) return;
     try {
@@ -389,28 +405,28 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
     if (_exporting) return;
     final format = await AppDialogs.showContentSheet<String>(
       title: '导出请求记录',
-      icon: const Icon(Icons.file_download_outlined),
+      icon: const Icon(TablerIcons.file_download),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           _ExportOption(
             key: const Key('requests_export_csv'),
-            icon: Icons.description_outlined,
+            icon: TablerIcons.file_description,
             title: 'CSV',
             subtitle: '适合电子表格 / 数据分析',
             onTap: () => AppDialogs.popSheet<String>('csv'),
           ),
           _ExportOption(
             key: const Key('requests_export_json'),
-            icon: Icons.data_object_outlined,
+            icon: TablerIcons.braces,
             title: 'JSON',
             subtitle: '适合程序化处理',
             onTap: () => AppDialogs.popSheet<String>('json'),
           ),
           _ExportOption(
             key: const Key('requests_export_both'),
-            icon: Icons.file_copy_outlined,
+            icon: TablerIcons.files,
             title: 'CSV + JSON',
             subtitle: '同时导出两种格式',
             onTap: () => AppDialogs.popSheet<String>('both'),
@@ -558,8 +574,13 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
         return false;
       }
       if (_appQuery.isNotEmpty) {
+        // 命中范围：包名 + 已解析的人类可读应用名 + UID（子串，大小写不敏感）。
+        final labels = record.packages
+            .map((pkg) => ProxyAppIdentityResolver.instance.lookup(pkg)?.label)
+            .whereType<String>();
         final haystack =
-            '${record.packages.join(' ')} ${record.uid ?? ''}'.toLowerCase();
+            '${record.packages.join(' ')} ${labels.join(' ')} ${record.uid ?? ''}'
+                .toLowerCase();
         if (!haystack.contains(_appQuery)) return false;
       }
       if (_outboundQuery.isNotEmpty &&
@@ -589,19 +610,19 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
           IconButton(
             key: const Key('requests_export'),
             tooltip: '导出',
-            icon: const Icon(Icons.file_download_outlined),
+            icon: const Icon(TablerIcons.file_download),
             onPressed: _exporting ? null : _export,
           ),
           IconButton(
             key: const Key('requests_refresh'),
             tooltip: '刷新',
-            icon: const Icon(Icons.refresh),
+            icon: const Icon(TablerIcons.refresh),
             onPressed: _loading ? null : () => _load(),
           ),
           IconButton(
             key: const Key('requests_reset'),
             tooltip: '清空记录',
-            icon: const Icon(Icons.delete_outline),
+            icon: const Icon(TablerIcons.trash),
             onPressed: _page == null ? null : _confirmReset,
           ),
         ],
@@ -634,7 +655,7 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
         SliverFillRemaining(
           hasScrollBody: false,
           child: _EmptyState(
-            icon: Icons.error_outline,
+            icon: TablerIcons.alert_circle,
             title: '请求列表不可用',
             message: error,
             actionLabel: '重试',
@@ -651,12 +672,12 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
           hasScrollBody: false,
           child: _EmptyState(
             icon: hasAny
-                ? Icons.filter_alt_off_outlined
-                : Icons.history_toggle_off_outlined,
+                ? TablerIcons.filter_off
+                : TablerIcons.history_off,
             title: hasAny ? '无匹配请求' : '暂无请求记录',
             message: hasAny
                 ? '当前筛选条件没有匹配的请求。'
-                : '代理引擎尚未采集到请求。',
+                : '调试引擎尚未采集到请求。',
           ),
         ),
       ];
@@ -714,7 +735,7 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
               Row(
                 children: [
                   ColoredAliIcon(
-                    icon: Icons.swap_vert,
+                    icon: TablerIcons.arrows_up_down,
                     size: AppTypography.iconMD,
                     color: scheme.primary,
                   ),
@@ -741,22 +762,22 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
                   runSpacing: AppSpacing.md,
                   children: [
                     _OverviewMetric(
-                      icon: Icons.arrow_upward,
+                      icon: TablerIcons.arrow_up,
                       label: '总量',
                       value: byteSize(totalBytes),
                     ),
                     _OverviewMetric(
-                      icon: Icons.swap_vert,
+                      icon: TablerIcons.arrows_up_down,
                       label: '请求数',
                       value: '${records.length}',
                     ),
                     _OverviewMetric(
-                      icon: Icons.bolt,
+                      icon: TablerIcons.bolt,
                       label: '活跃',
                       value: '$active',
                     ),
                     _OverviewMetric(
-                      icon: Icons.dns_outlined,
+                      icon: TablerIcons.server,
                       label: '未知域名',
                       value: '$unknownRatio%',
                       sub: '$unknownDomains / ${records.length}',
@@ -787,73 +808,7 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          TextField(
-            key: const Key('requests_app_filter'),
-            controller: _appController,
-            onChanged: (value) {
-              _appQuery = value.trim().toLowerCase();
-              _applyLocalFilter();
-            },
-            decoration: const InputDecoration(
-              isDense: true,
-              labelText: '应用',
-              hintText: '包名 / UID 子串',
-              prefixIcon: Icon(Icons.apps),
-            ),
-          ),
-          const SizedBox(height: AppSpacing.sm),
-          TextField(
-            key: const Key('requests_domain_filter'),
-            controller: _domainController,
-            onChanged: (value) {
-              _domainQuery = value.trim().toLowerCase();
-              _applyLocalFilter();
-            },
-            decoration: const InputDecoration(
-              isDense: true,
-              labelText: '域名',
-              hintText: '域名子串',
-              prefixIcon: Icon(Icons.dns_outlined),
-            ),
-          ),
-          const SizedBox(height: AppSpacing.sm),
-          Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  key: const Key('requests_ip_filter'),
-                  controller: _ipController,
-                  onChanged: (value) {
-                    _ipQuery = value.trim().toLowerCase();
-                    _applyLocalFilter();
-                  },
-                  decoration: const InputDecoration(
-                    isDense: true,
-                    labelText: 'IP',
-                    hintText: '目标 IP 子串',
-                    prefixIcon: Icon(Icons.lan_outlined),
-                  ),
-                ),
-              ),
-              const SizedBox(width: AppSpacing.sm),
-              Expanded(
-                child: TextField(
-                  key: const Key('requests_outbound_filter'),
-                  controller: _outboundController,
-                  onChanged: (value) {
-                    _outboundQuery = value.trim().toLowerCase();
-                    _applyLocalFilter();
-                  },
-                  decoration: const InputDecoration(
-                    isDense: true,
-                    labelText: '出站',
-                    hintText: '出站子串',
-                    prefixIcon: Icon(Icons.alt_route),
-                  ),
-                ),
-              ),
-            ],
-          ),
+          _buildFilterTile(context),
           const SizedBox(height: AppSpacing.sm),
           Text(
             '网络',
@@ -901,6 +856,161 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
     );
   }
 
+  /// 4 个搜索框的可展开磁贴：默认仅显示「域名」，展开后按 应用 / 域名 / IP /
+  /// 出站 排列（折叠交互复用 update/view 与 app_snapshot 的既有模式）。
+  ///
+  /// 折叠时标题右侧提示已设置的非域名筛选数量；整个标题行都是点击热区
+  /// （[InkWell] 提供语义与波纹反馈），展开/收起用 [AnimatedSize] + 旋转箭头。
+  Widget _buildFilterTile(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final activeCount = <bool>[
+      _appQuery.isNotEmpty,
+      _ipQuery.isNotEmpty,
+      _outboundQuery.isNotEmpty,
+    ].where((isSet) => isSet).length;
+    return AppCard(
+      margin: EdgeInsets.zero,
+      padding: EdgeInsets.zero,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          InkWell(
+            key: const Key('requests_filters_toggle'),
+            onTap: () => setState(() => _filtersExpanded = !_filtersExpanded),
+            borderRadius: AppRadius.allLG,
+            child: Padding(
+              padding: AppSpacing.horizontalMD_verticalSM,
+              child: Row(
+                children: [
+                  Icon(
+                    TablerIcons.filter,
+                    size: AppTypography.iconMD,
+                    color: scheme.primary,
+                  ),
+                  const SizedBox(width: AppSpacing.sm),
+                  Expanded(
+                    child: Text('筛选', style: theme.textTheme.titleSmall),
+                  ),
+                  if (!_filtersExpanded && activeCount > 0) ...[
+                    Text(
+                      '$activeCount 项已设',
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                    const SizedBox(width: AppSpacing.xs),
+                  ],
+                  AnimatedRotation(
+                    turns: _filtersExpanded ? 0.5 : 0.0,
+                    duration: AppAnimation.fast,
+                    curve: AppAnimation.curve,
+                    child: Icon(
+                      _filtersExpanded
+                          ? TablerIcons.chevron_up
+                          : TablerIcons.chevron_down,
+                      size: AppTypography.iconLG,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          AnimatedSize(
+            duration: AppAnimation.medium,
+            curve: AppAnimation.curve,
+            alignment: Alignment.topCenter,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(
+                AppSpacing.md,
+                AppSpacing.xs,
+                AppSpacing.md,
+                AppSpacing.md,
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  if (_filtersExpanded) ...[
+                    TextField(
+                      key: const Key('requests_app_filter'),
+                      controller: _appController,
+                      onChanged: (value) {
+                        _appQuery = value.trim().toLowerCase();
+                        _applyLocalFilter();
+                      },
+                      decoration: const InputDecoration(
+                        isDense: true,
+                        labelText: '应用',
+                        hintText: '包名 / 应用名 / UID 子串',
+                        prefixIcon: Icon(TablerIcons.apps),
+                      ),
+                    ),
+                    const SizedBox(height: AppSpacing.sm),
+                  ],
+                  TextField(
+                    key: const Key('requests_domain_filter'),
+                    controller: _domainController,
+                    onChanged: (value) {
+                      _domainQuery = value.trim().toLowerCase();
+                      _applyLocalFilter();
+                    },
+                    decoration: const InputDecoration(
+                      isDense: true,
+                      labelText: '域名',
+                      hintText: '域名子串',
+                      prefixIcon: Icon(TablerIcons.server),
+                    ),
+                  ),
+                  if (_filtersExpanded) ...[
+                    const SizedBox(height: AppSpacing.sm),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            key: const Key('requests_ip_filter'),
+                            controller: _ipController,
+                            onChanged: (value) {
+                              _ipQuery = value.trim().toLowerCase();
+                              _applyLocalFilter();
+                            },
+                            decoration: const InputDecoration(
+                              isDense: true,
+                              labelText: 'IP',
+                              hintText: '目标 IP 子串',
+                              prefixIcon: Icon(TablerIcons.network),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: AppSpacing.sm),
+                        Expanded(
+                          child: TextField(
+                            key: const Key('requests_outbound_filter'),
+                            controller: _outboundController,
+                            onChanged: (value) {
+                              _outboundQuery = value.trim().toLowerCase();
+                              _applyLocalFilter();
+                            },
+                            decoration: const InputDecoration(
+                              isDense: true,
+                              labelText: '出站',
+                              hintText: '出站子串',
+                              prefixIcon: Icon(TablerIcons.arrows_split),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   /// 分组视图：Top 应用 / 域名 / IP、时间线趋势、DNS 质量、出站 / 规则分布。
   Widget _buildGrouped(BuildContext context, List<RequestRecord> records) {
     final topApps = _groupTop(records, _appLabel);
@@ -930,19 +1040,19 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
           _GroupCard(
             key: const Key('requests_group_apps'),
             title: 'Top 应用',
-            icon: Icons.apps,
+            icon: TablerIcons.apps,
             rows: topApps,
           ),
           _GroupCard(
             key: const Key('requests_group_domains'),
             title: 'Top 域名',
-            icon: Icons.dns_outlined,
+            icon: TablerIcons.server,
             rows: topDomains,
           ),
           _GroupCard(
             key: const Key('requests_group_ips'),
             title: 'Top IP',
-            icon: Icons.lan_outlined,
+            icon: TablerIcons.network,
             rows: topIps,
           ),
           _TrendCard(
@@ -957,13 +1067,13 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
           _GroupCard(
             key: const Key('requests_group_outbound'),
             title: '出站分布',
-            icon: Icons.alt_route,
+            icon: TablerIcons.arrows_split,
             rows: outbound,
           ),
           _GroupCard(
             key: const Key('requests_group_rules'),
             title: '规则分布',
-            icon: Icons.rule,
+            icon: TablerIcons.list_check,
             rows: rules,
           ),
         ],
@@ -983,7 +1093,7 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
       child: Row(
         children: [
           ColoredAliIcon(
-            icon: Icons.history,
+            icon: TablerIcons.history,
             size: AppTypography.iconLG,
             color: theme.colorScheme.primary,
           ),
@@ -1006,7 +1116,7 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
     await AppDialogs.showContentSheet<void>(
       title: record.domain.isEmpty ? '请求详情' : record.domain,
       subtitle: _formatDateTime(record.openTsMs),
-      icon: const Icon(Icons.swap_vert),
+      icon: const Icon(TablerIcons.arrows_up_down),
       content: _RequestDetail(record: record),
       actions: [
         TextButton(
@@ -1018,11 +1128,25 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
   }
 }
 
-/// App 归属展示：包名优先，其次 UID，`uid == null` 显式「未知应用」。
+/// App 归属展示：可解析时优先人类可读应用名，其次包名，再次 `UID <n>`，
+/// 无包名且 `uid == null` 时显式「未知应用」。
 String _appLabel(RequestRecord record) {
-  if (record.uid == null) return '未知应用';
-  if (record.packages.isNotEmpty) return record.packages.first;
-  return 'UID ${record.uid}';
+  if (record.packages.isNotEmpty) {
+    final packageName = record.packages.first;
+    final identity = ProxyAppIdentityResolver.instance.lookup(packageName);
+    if (identity != null && identity.label.isNotEmpty) return identity.label;
+    return packageName;
+  }
+  if (record.uid != null) return 'UID ${record.uid}';
+  return '未知应用';
+}
+
+/// 记录归属应用的图标路径；无包名 / 未解析 / 无图标 → `null`（不渲染前导图标）。
+String? _appIconPath(RequestRecord record) {
+  if (record.packages.isEmpty) return null;
+  return ProxyAppIdentityResolver.instance
+      .lookup(record.packages.first)
+      ?.iconPath;
 }
 
 /// 分组统计行（标签 + 计数 + 字节）。
@@ -1239,7 +1363,7 @@ class _TrendCard extends StatelessWidget {
             Row(
               children: [
                 ColoredAliIcon(
-                  icon: Icons.show_chart,
+                  icon: TablerIcons.chart_line,
                   size: AppTypography.iconSM,
                   color: scheme.primary,
                 ),
@@ -1318,7 +1442,7 @@ class _DnsQualityCard extends StatelessWidget {
             Row(
               children: [
                 ColoredAliIcon(
-                  icon: Icons.verified_outlined,
+                  icon: TablerIcons.shield_check,
                   size: AppTypography.iconSM,
                   color: scheme.primary,
                 ),
@@ -1356,6 +1480,7 @@ class _RequestRowCard extends StatelessWidget {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final title = record.domain.isEmpty ? record.dstIp : record.domain;
+    final appIconPath = _appIconPath(record);
     final endpoint = '${record.dstIp}:${record.dstPort}';
     final strategy = <String>[
       record.network.isEmpty ? '未知' : record.network,
@@ -1368,16 +1493,25 @@ class _RequestRowCard extends StatelessWidget {
         onTap: onTap,
         child: Padding(
           padding: AppSpacing.allMD,
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Flexible(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (appIconPath != null) ...[
+                  AppIcon(
+                    url: appIconPath,
+                    width: AppTypography.iconXXL,
+                    height: AppTypography.iconXXL,
+                    borderRadius: AppRadius.circle,
+                  ),
+                  const SizedBox(width: AppSpacing.sm),
+                ],
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Flexible(
                           child: Text(
                             title.isEmpty ? '(未知)' : title,
                             style: theme.textTheme.bodyMedium,
@@ -1477,6 +1611,7 @@ class _RequestDetail extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final appIconPath = _appIconPath(record);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -1490,7 +1625,18 @@ class _RequestDetail extends StatelessWidget {
         _DetailField(label: '目标地址', value: '${record.dstIp}:${record.dstPort}'),
         _DetailField(label: '入站（源）', value: record.src),
         _DetailField(label: '网络', value: record.network),
-        _DetailField(label: '应用', value: _appLabel(record)),
+        _DetailField(
+          label: '应用',
+          value: _appLabel(record),
+          leading: appIconPath == null
+              ? null
+              : AppIcon(
+                  url: appIconPath,
+                  width: AppTypography.iconXL,
+                  height: AppTypography.iconXL,
+                  borderRadius: AppRadius.circle,
+                ),
+        ),
         _DetailField(label: 'UID', value: record.uid?.toString() ?? '—'),
         _DetailField(
           label: 'UID 状态',
@@ -1522,10 +1668,17 @@ class _RequestDetail extends StatelessWidget {
 
 /// 详情字段：标签 + 值（值用等宽字体）。
 class _DetailField extends StatelessWidget {
-  const _DetailField({required this.label, required this.value});
+  const _DetailField({
+    required this.label,
+    required this.value,
+    this.leading,
+  });
 
   final String label;
   final String value;
+
+  /// 可选的字段前置元素（如应用图标）；为 `null` 时布局与原来完全一致。
+  final Widget? leading;
 
   @override
   Widget build(BuildContext context) {
@@ -1543,12 +1696,28 @@ class _DetailField extends StatelessWidget {
             ),
           ),
           const SizedBox(height: AppSpacing.xs),
-          Text(
-            display,
-            style: AppTypography.code.copyWith(
-              color: theme.colorScheme.onSurface,
+          if (leading == null)
+            Text(
+              display,
+              style: AppTypography.code.copyWith(
+                color: theme.colorScheme.onSurface,
+              ),
+            )
+          else
+            Row(
+              children: [
+                leading!,
+                const SizedBox(width: AppSpacing.sm),
+                Expanded(
+                  child: Text(
+                    display,
+                    style: AppTypography.code.copyWith(
+                      color: theme.colorScheme.onSurface,
+                    ),
+                  ),
+                ),
+              ],
             ),
-          ),
         ],
       ),
     );
