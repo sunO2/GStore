@@ -91,6 +91,28 @@ axum = "0.8"
 meow-listener = { git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587442caaac00b221efc91c84907aeb0e0", default-features = false, features = ["listener-mixed"] }
 meow_lwip = { package = "meow-lwip", git = "https://github.com/meow-rs/meow-rs.git", rev = "0e718f587442caaac00b221efc91c84907aeb0e0" }
 
+# ── MITM data path (Todo 2 of proxy-http-capture.md) ──────────────────────────
+# In-TUN TLS termination (rcgen CA + per-host leaf, rustls/tokio-rustls acceptor
+# and upstream client), HTTP/1.1 parse + re-emit (hyper family) and WebSocket
+# frame handling (tokio-tungstenite); async-compression decodes gzip/brotli
+# bodies. The rustls crypto provider is selected EXPLICITLY as `aws_lc_rs`:
+# `boring-rustls-provider` publishes no crate in this graph (SPIKE.md §11) and
+# adopting it would force a second, non-vendored crypto build next to meow's
+# BoringSSL. No `ring` feature is enabled anywhere, so rustls' ring/aws-lc
+# double-install panic cannot occur. `aws-lc-sys` builds as a static archive and
+# therefore adds NO `DT_NEEDED` entry — asserted by the 4-ABI cross-compile gate.
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "aws_lc_rs"] }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12", "logging"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs", "tls12", "logging"] }
+# hyper 1.x HTTP/1.1 server (in-TUN MITM side) + client (upstream re-origination).
+hyper = { version = "1", features = ["http1", "server", "client"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+# Body decompression (Content-Encoding: gzip / br) over tokio streams.
+async-compression = { version = "0.4", features = ["gzip", "brotli", "tokio"] }
+# RFC 6455 WebSocket frames over the mitigated (re-originated) streams.
+tokio-tungstenite = "0.29"
+
 # Module ABI contract (C ABI v3: GStoreModuleEntry / Api / ModuleError / ModuleContext).
 # Same shape every other downloaded module crate uses (mirrors gstore_mod_download).
 gstore_contract = { path = "../gstore_contract" }
@@ -124,24 +146,6 @@ libloading = "0.8"
 async-trait = "0.1"
 # Connection fixtures build meow's `SmallVec<[Arc<str>; 1]>` chains directly.
 smallvec = "1"
-
-# Todo 1 (HARD GATE) spike only — in-TUN TLS MITM + HTTP/1.1 parse. Host-test
-# dependencies; Todo 2 finalizes/pins the real production set.
-# `rcgen` issues the CA + per-host leaf certs; it uses aws-lc-rs for key
-# generation/signing so the whole spike runs on ONE crypto backend.
-rcgen = { version = "0.14", default-features = false, features = ["crypto", "aws_lc_rs"] }
-# rustls crypto provider is selected EXPLICITLY as `aws_lc_rs` (the
-# boring-rustls-provider path was not usable here: it publishes no crate in
-# this dependency graph and would force a second, non-vendored crypto build;
-# aws-lc-rs is already in Cargo.lock transitively. See SPIKE.md §11). No
-# `ring` feature is enabled anywhere, so rustls' ring/aws-lc double-install
-# panic cannot occur.
-rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12", "logging"] }
-tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs", "tls12", "logging"] }
-# hyper 1.x HTTP/1.1 server (in-TUN MITM side) + client (upstream re-origination).
-hyper = { version = "1", features = ["http1", "server", "client"] }
-hyper-util = { version = "0.1", features = ["tokio"] }
-http-body-util = "0.1"
 
 # Module crate convention (rust/ARCHITECTURE.md §3.5/§3.6): panic must unwind
 # so every extern "C" boundary can catch_unwind.
