@@ -38,7 +38,7 @@ void main() {
   });
 
   Finder proxyTile() =>
-      find.ancestor(of: find.text('代理'), matching: find.byType(ListTile));
+      find.ancestor(of: find.text('网络调试'), matching: find.byType(ListTile));
 
   testWidgets('工具卡渲染「代理」入口', (tester) async {
     final router = GoRouter(
@@ -61,7 +61,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(proxyTile(), findsOneWidget);
-    expect(find.text('VPN / 局域网代理与流量'), findsOneWidget);
+    expect(find.text('VPN / 局域网与流量'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 

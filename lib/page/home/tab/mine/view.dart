@@ -2,6 +2,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/http/github/user_info/user_info.dart';
 import 'package:gstore/page/web/browser.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
@@ -351,7 +352,7 @@ class _MinePageState extends ConsumerState<MinePage>
             shape: BoxShape.circle,
           ),
           child: const Icon(
-            Icons.code,
+            TablerIcons.brand_github,
             color: AppColors.githubBrand,
             size: AppTypography.iconLG,
           ),
@@ -362,7 +363,7 @@ class _MinePageState extends ConsumerState<MinePage>
           onPressed: () {
             context.push(AppRoute.auth);
           },
-          icon: const Icon(Icons.login, size: AppTypography.iconSM),
+          icon: const Icon(TablerIcons.login, size: AppTypography.iconSM),
           label: const Text('登录'),
         ),
       ),
@@ -417,7 +418,7 @@ class _MinePageState extends ConsumerState<MinePage>
                     color: Theme.of(context).colorScheme.primaryContainer,
                     shape: BoxShape.circle,
                   ),
-                  child: const Icon(Icons.person, size: AppTypography.iconLG),
+                  child: const Icon(TablerIcons.user_filled, size: AppTypography.iconLG),
                 ),
                 imageUrl: user.avatarUrl ?? '',
               ),
@@ -437,7 +438,7 @@ class _MinePageState extends ConsumerState<MinePage>
           ),
         ),
         trailing: IconButton(
-          icon: const Icon(Icons.logout, size: AppTypography.iconSM),
+          icon: const Icon(TablerIcons.logout, size: AppTypography.iconSM),
           tooltip: '退出登录',
           onPressed: () {
             UserManager.instance.logout();
@@ -461,28 +462,28 @@ class _MinePageState extends ConsumerState<MinePage>
           // AI 助手入口随 agent_tools 模块上下线显隐（隐藏时其下方 Divider 一并隐藏）
           if (_agentModuleOnline) ...[
             ListTile(
-              leading: const Icon(Icons.auto_awesome,
+              leading: const Icon(TablerIcons.sparkles,
                   size: AppTypography.iconMD),
               title: const Text('AI 助手'),
               trailing:
-                  const Icon(Icons.chevron_right, size: AppTypography.iconSM),
+                  const Icon(TablerIcons.chevron_right, size: AppTypography.iconSM),
               onTap: () => context.push(AppRoute.agent),
             ),
             const Divider(height: 1),
           ],
           ListTile(
-            leading: const Icon(Icons.android, size: AppTypography.iconMD),
+            leading: const Icon(TablerIcons.brand_android, size: AppTypography.iconMD),
             title: const Text('已安装应用'),
             trailing:
-                const Icon(Icons.chevron_right, size: AppTypography.iconSM),
+                const Icon(TablerIcons.chevron_right, size: AppTypography.iconSM),
             onTap: () => context.push(AppRoute.installedApps),
           ),
           const Divider(height: 1),
           ListTile(
-            leading: const Icon(Icons.settings, size: AppTypography.iconMD),
+            leading: const Icon(TablerIcons.settings_filled, size: AppTypography.iconMD),
             title: const Text('设置'),
             trailing:
-                const Icon(Icons.chevron_right, size: AppTypography.iconSM),
+                const Icon(TablerIcons.chevron_right, size: AppTypography.iconSM),
             onTap: () => context.push(AppRoute.settings),
           ),
         ],
@@ -505,7 +506,7 @@ class _MinePageState extends ConsumerState<MinePage>
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
                 Icon(
-                  Icons.handyman_outlined,
+                  TablerIcons.tools,
                   size: AppTypography.iconMD,
                   color: Theme.of(context).colorScheme.primary,
                 ),
@@ -527,7 +528,7 @@ class _MinePageState extends ConsumerState<MinePage>
                       child: Padding(
                         padding: EdgeInsets.all(6),
                         child: Icon(
-                          Icons.expand_more,
+                          TablerIcons.chevron_down,
                           size: 18,
                           color: AppColors.textSecondary,
                         ),
@@ -549,55 +550,55 @@ class _MinePageState extends ConsumerState<MinePage>
                 children: [
                   ListTile(
                     contentPadding: EdgeInsets.zero,
-                    leading: const Icon(Icons.history_outlined,
+                    leading: const Icon(TablerIcons.history,
                         size: AppTypography.iconMD),
                     title: const Text('应用快照'),
                     subtitle: const Text('查看已生成快照的应用'),
-                    trailing: const Icon(Icons.chevron_right,
+                    trailing: const Icon(TablerIcons.chevron_right,
                         size: AppTypography.iconSM),
                     onTap: () => context.push(AppRoute.appSnapshotList),
                   ),
                   const Divider(height: 1),
                   ListTile(
                     contentPadding: EdgeInsets.zero,
-                    leading: const Icon(Icons.qr_code_2,
+                    leading: const Icon(TablerIcons.qrcode,
                         size: AppTypography.iconMD),
                     title: const Text('二维码'),
-                    trailing: const Icon(Icons.chevron_right,
+                    trailing: const Icon(TablerIcons.chevron_right,
                         size: AppTypography.iconSM),
                     onTap: () => context.push(AppRoute.qrTool),
                   ),
                   const Divider(height: 1),
                   ListTile(
                     contentPadding: EdgeInsets.zero,
-                    leading: const Icon(Icons.widgets_outlined,
+                    leading: const Icon(TablerIcons.category,
                         size: AppTypography.iconMD),
                     title: const Text('开发者工具箱'),
                     subtitle: const Text('离线可用的开发小工具集'),
-                    trailing: const Icon(Icons.chevron_right,
+                    trailing: const Icon(TablerIcons.chevron_right,
                         size: AppTypography.iconSM),
                     onTap: () => context.push(AppRoute.itTools),
                   ),
                   const Divider(height: 1),
                   ListTile(
                     contentPadding: EdgeInsets.zero,
-                    leading: const Icon(Icons.bug_report_outlined,
+                    leading: const Icon(TablerIcons.shield,
                         size: AppTypography.iconMD),
-                    title: const Text('查看日志'),
-                    trailing: const Icon(Icons.chevron_right,
+                    title: const Text('网络调试'),
+                    subtitle: const Text('VPN / 局域网与流量'),
+                    trailing: const Icon(TablerIcons.chevron_right,
                         size: AppTypography.iconSM),
-                    onTap: () => context.push(AppRoute.logViewer),
+                    onTap: () => context.push(AppRoute.proxy),
                   ),
                   const Divider(height: 1),
                   ListTile(
                     contentPadding: EdgeInsets.zero,
-                    leading: const Icon(Icons.shield_outlined,
+                    leading: const Icon(TablerIcons.bug,
                         size: AppTypography.iconMD),
-                    title: const Text('代理'),
-                    subtitle: const Text('VPN / 局域网代理与流量'),
-                    trailing: const Icon(Icons.chevron_right,
+                    title: const Text('查看日志'),
+                    trailing: const Icon(TablerIcons.chevron_right,
                         size: AppTypography.iconSM),
-                    onTap: () => context.push(AppRoute.proxy),
+                    onTap: () => context.push(AppRoute.logViewer),
                   ),
                 ],
               ),
@@ -628,7 +629,7 @@ class _MinePageState extends ConsumerState<MinePage>
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
                 Icon(
-                  Icons.palette_outlined,
+                  TablerIcons.palette,
                   size: AppTypography.iconMD,
                   color: Theme.of(context).colorScheme.primary,
                 ),
@@ -658,7 +659,7 @@ class _MinePageState extends ConsumerState<MinePage>
                       child: Padding(
                         padding: EdgeInsets.all(6),
                         child: Icon(
-                          Icons.expand_more,
+                          TablerIcons.chevron_down,
                           size: 18,
                           color: AppColors.textSecondary,
                         ),
@@ -687,17 +688,17 @@ class _MinePageState extends ConsumerState<MinePage>
                     AppSegment(
                       value: AppThemeMode.system,
                       label: '系统',
-                      icon: Icons.brightness_auto,
+                      icon: TablerIcons.brightness_auto,
                     ),
                     AppSegment(
                       value: AppThemeMode.light,
                       label: '浅色',
-                      icon: Icons.light_mode,
+                      icon: TablerIcons.sun,
                     ),
                     AppSegment(
                       value: AppThemeMode.dark,
                       label: '深色',
-                      icon: Icons.dark_mode,
+                      icon: TablerIcons.moon,
                     ),
                   ],
                   onChanged: (AppThemeMode newMode) {
@@ -1075,7 +1076,7 @@ class _MinePageState extends ConsumerState<MinePage>
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
                 Icon(
-                  Icons.backup_outlined,
+                  TablerIcons.cloud_upload,
                   size: AppTypography.iconMD,
                   color: Theme.of(context).colorScheme.primary,
                 ),
@@ -1109,7 +1110,7 @@ class _MinePageState extends ConsumerState<MinePage>
                             child: Padding(
                               padding: EdgeInsets.all(6),
                               child: Icon(
-                                Icons.expand_more,
+                                TablerIcons.chevron_down,
                                 size: 18,
                                 color: AppColors.textSecondary,
                               ),
@@ -1171,17 +1172,17 @@ class _MinePageState extends ConsumerState<MinePage>
                         AppSegment(
                           value: RestoreMode.replace,
                           label: '覆盖',
-                          icon: Icons.refresh,
+                          icon: TablerIcons.refresh,
                         ),
                         AppSegment(
                           value: RestoreMode.merge,
                           label: '合并',
-                          icon: Icons.merge,
+                          icon: TablerIcons.git_merge,
                         ),
                         AppSegment(
                           value: RestoreMode.update,
                           label: '更新',
-                          icon: Icons.update,
+                          icon: TablerIcons.refresh_dot,
                         ),
                       ],
                       onChanged: (RestoreMode newMode) {
@@ -1205,7 +1206,7 @@ class _MinePageState extends ConsumerState<MinePage>
                                   height: 16,
                                   child: AppLoading(size: AppLoadingSize.small),
                                 )
-                              : const Icon(Icons.save_alt),
+                              : const Icon(TablerIcons.device_floppy),
                           label: Text(
                               state.isExporting ? '导出中...' : '导出到本地'),
                         ),
@@ -1222,7 +1223,7 @@ class _MinePageState extends ConsumerState<MinePage>
                                   height: 16,
                                   child: AppLoading(size: AppLoadingSize.small),
                                 )
-                              : const Icon(Icons.folder_open),
+                              : const Icon(TablerIcons.folder_open),
                           label: Text(
                               state.isImporting ? '导入中...' : '从本地恢复'),
                         ),
@@ -1275,7 +1276,7 @@ class _MinePageState extends ConsumerState<MinePage>
                                               child: AppLoading(
                                                   size: AppLoadingSize.small),
                                             )
-                                          : const Icon(Icons.cloud_upload),
+                                          : const Icon(TablerIcons.cloud_upload),
                                   label: Text(
                                       (state.isUploadingWebDav || taskBusy)
                                           ? '上传中...'
@@ -1299,7 +1300,7 @@ class _MinePageState extends ConsumerState<MinePage>
                                           child: AppLoading(
                                               size: AppLoadingSize.small),
                                         )
-                                      : const Icon(Icons.cloud_download),
+                                      : const Icon(TablerIcons.cloud_download),
                                   label: Text(
                                       (state.isImporting || taskBusy)
                                           ? '下载中...'
@@ -1387,7 +1388,7 @@ class _ColorPresetButton extends StatelessWidget {
         ),
         child: isSelected
             ? Icon(
-                Icons.check,
+                TablerIcons.check,
                 color: color.computeLuminance() > 0.5
                     ? Colors.black
                     : Colors.white,
