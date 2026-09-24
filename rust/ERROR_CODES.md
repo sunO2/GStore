@@ -120,3 +120,10 @@ C ABI `call` 返回 `ABI_ERR_DETAIL (-8)` 时，模块在 out 缓冲写入
 | -6 | `ABI_ERR_PANIC` | 模块 panic 被捕获 |
 | -7 | `ABI_ERR_INTERNAL` | 内部错误 |
 | -8 | `ABI_ERR_DETAIL` | 错误明细在 out 缓冲（见上） |
+
+## MITM 上游重发起（Todo 7，`proxy-http-capture.md`）
+
+| code | 模块 | 通常 status | 含义 |
+|---|---|---|---|
+| `PROXY_CAPTURE_UPSTREAM_FAILED` | proxy | —（数据面 HTTP 502） | MITM 解密后的请求经 tunnel outbound 重发起失败：`resolve_proxy_lazy` → `dial_tcp`（经 rules/protect seam）拨号失败，或上游 TLS 握手失败；捕获层返回 502 风格响应，不 panic。`skipCertVerify` 默认严验（Todo 7） |
+

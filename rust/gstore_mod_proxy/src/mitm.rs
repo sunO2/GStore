@@ -38,20 +38,25 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use meow_common::{ConnType, Metadata, Network, ProxyConn};
 use rcgen::{
     BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
     KeyUsagePurpose, SerialNumber,
 };
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 use rustls::server::{ClientHello, ResolvesServerCert, ServerConfig};
 use rustls::sign::CertifiedKey;
+use rustls::{ClientConfig, DigitallySignedStruct, RootCertStore, SignatureScheme};
 use tokio::io::{AsyncRead, AsyncWrite};
+use tokio_rustls::client::TlsStream as ClientTlsStream;
 use tokio_rustls::server::TlsStream;
-use tokio_rustls::TlsAcceptor;
+use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 use crate::limits::{MITM_CERT_CACHE_CAP, MITM_CERT_ENTRY_MAX_BYTES, MITM_PEM_BUFFER_MAX_BYTES};
 
@@ -880,6 +885,315 @@ fn write_public(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::write(path, bytes)
 }
 
+// ==================== Todo 7: upstream re-origination through the tunnel ====================
+//
+// A decrypted MITM request is re-originated to its real upstream **through the
+// live tunnel**: the same rule engine + outbound registry + protect seam the
+// normal TUN path uses. DIRECT is a rule *result*; a raw dial that ignores the
+// rules is never performed, so MITM upstream traffic can never escape the VPN.
+
+/// `PROXY_CAPTURE_UPSTREAM_FAILED`: the upstream re-origination dial or TLS
+/// handshake failed. The HTTP layer (todo 8) renders it as a 502-style response;
+/// registered in `rust/ERROR_CODES.md`.
+pub(crate) const ERR_CAPTURE_UPSTREAM_FAILED: &str = "PROXY_CAPTURE_UPSTREAM_FAILED";
+
+/// Fixed HTTP status for every upstream failure. Carried on the error itself so
+/// an unreachable upstream can never be mistaken for a captured success.
+pub(crate) const UPSTREAM_FAILURE_STATUS: u16 = 502;
+
+/// The decrypted request target to re-originate to: the host the client asked
+/// for plus the original destination port. `dst_ip` is optional — when absent,
+/// `resolve_proxy_lazy` enriches it through the DNS/resolver hook exactly as the
+/// normal TUN path does.
+#[derive(Debug, Clone)]
+pub(crate) struct UpstreamTarget {
+    pub host: String,
+    pub port: u16,
+    pub dst_ip: Option<IpAddr>,
+    pub src_ip: Option<IpAddr>,
+    pub src_port: u16,
+}
+
+impl UpstreamTarget {
+    /// A target with no pre-resolved IP (the resolver hook fills it in).
+    pub(crate) fn new(host: impl Into<String>, port: u16) -> Self {
+        Self {
+            host: host.into(),
+            port,
+            dst_ip: None,
+            src_ip: None,
+            src_port: 0,
+        }
+    }
+
+    /// The destination IP the flow was originally addressed to, when known.
+    pub(crate) fn with_dst_ip(mut self, ip: IpAddr) -> Self {
+        self.dst_ip = Some(ip);
+        self
+    }
+
+    /// The original client source address, when known (rule `SRC-*` matching).
+    pub(crate) fn with_source(mut self, ip: IpAddr, port: u16) -> Self {
+        self.src_ip = Some(ip);
+        self.src_port = port;
+        self
+    }
+
+    /// The routing `Metadata` for this target. `conn_type: Tun` keeps outbound
+    /// selection identical to the in-TUN flow the request arrived on.
+    pub(crate) fn metadata(&self) -> Metadata {
+        Metadata {
+            network: Network::Tcp,
+            conn_type: ConnType::Tun,
+            src_ip: self.src_ip,
+            src_port: self.src_port,
+            dst_ip: self.dst_ip,
+            dst_port: self.port,
+            host: self.host.as_str().into(),
+            in_name: "tun".into(),
+            ..Default::default()
+        }
+    }
+
+    fn validate(&self) -> Result<(), UpstreamError> {
+        if self.host.trim().is_empty() {
+            return Err(UpstreamError::invalid("empty upstream host"));
+        }
+        if self.port == 0 {
+            return Err(UpstreamError::invalid("zero upstream port"));
+        }
+        Ok(())
+    }
+}
+
+/// Why an upstream re-origination attempt failed. `kind` is a stable label for
+/// logs/tests; `status`/`code` are the frozen failure contract.
+#[derive(Debug)]
+pub(crate) struct UpstreamError {
+    kind: &'static str,
+    message: String,
+}
+
+impl UpstreamError {
+    fn invalid(message: impl Into<String>) -> Self {
+        Self {
+            kind: "invalid_target",
+            message: message.into(),
+        }
+    }
+
+    fn no_route() -> Self {
+        Self {
+            kind: "no_route",
+            message: "no rule resolved an outbound for the upstream target".to_string(),
+        }
+    }
+
+    fn dial(error: impl std::fmt::Display) -> Self {
+        Self {
+            kind: "dial",
+            message: error.to_string(),
+        }
+    }
+
+    fn tls(error: impl std::fmt::Display) -> Self {
+        Self {
+            kind: "tls",
+            message: error.to_string(),
+        }
+    }
+
+    /// The HTTP status the capture layer returns (always 502).
+    pub(crate) fn status(&self) -> u16 {
+        UPSTREAM_FAILURE_STATUS
+    }
+
+    /// The registered error code.
+    pub(crate) fn code(&self) -> &'static str {
+        ERR_CAPTURE_UPSTREAM_FAILED
+    }
+
+    pub(crate) fn kind(&self) -> &'static str {
+        self.kind
+    }
+
+    pub(crate) fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+impl std::fmt::Display for UpstreamError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} [{}] {}", self.code(), self.kind, self.message)
+    }
+}
+
+impl std::error::Error for UpstreamError {}
+
+/// Re-originate a decrypted request to `target` **through the tunnel**:
+/// `resolve_proxy_lazy` selects the outbound by the live rules (DIRECT is a rule
+/// result, not a bypass), then that adapter's `dial_tcp` opens the connection
+/// through the protect seam. A raw direct dial that ignores the rules never
+/// happens.
+pub(crate) async fn dial_upstream(
+    inner: &meow_tunnel::tunnel::TunnelInner,
+    target: &UpstreamTarget,
+) -> Result<Box<dyn ProxyConn>, UpstreamError> {
+    target.validate()?;
+    let mut metadata = target.metadata();
+    let Some((adapter, rule, _payload)) = inner.resolve_proxy_lazy(&mut metadata).await else {
+        return Err(UpstreamError::no_route());
+    };
+    crate::log_message(
+        2,
+        &format!(
+            "proxy.mitm: upstream {}:{} via {} rule={}",
+            target.host,
+            target.port,
+            adapter.name(),
+            rule
+        ),
+    );
+    adapter
+        .dial_tcp(&metadata)
+        .await
+        .map_err(UpstreamError::dial)
+}
+
+/// Upstream-side TLS client settings.
+///
+/// `skip_cert_verify` defaults to `false` (**strict**): the upstream leaf chain
+/// is verified against `roots`. Turning it on is an explicit opt-in for a
+/// broken/self-signed upstream and is never the default.
+#[derive(Clone)]
+pub(crate) struct UpstreamTlsConfig {
+    roots: RootCertStore,
+    skip_cert_verify: bool,
+    alpn: Vec<Vec<u8>>,
+}
+
+impl Default for UpstreamTlsConfig {
+    fn default() -> Self {
+        Self {
+            roots: RootCertStore::empty(),
+            skip_cert_verify: false,
+            alpn: vec![b"h2".to_vec(), b"http/1.1".to_vec()],
+        }
+    }
+}
+
+impl UpstreamTlsConfig {
+    /// Strict config that trusts `roots`.
+    pub(crate) fn with_roots(roots: RootCertStore) -> Self {
+        Self {
+            roots,
+            ..Self::default()
+        }
+    }
+
+    /// Explicitly toggle certificate verification (opt-in, never default).
+    pub(crate) fn with_skip_cert_verify(mut self, skip: bool) -> Self {
+        self.skip_cert_verify = skip;
+        self
+    }
+
+    pub(crate) fn skip_cert_verify(&self) -> bool {
+        self.skip_cert_verify
+    }
+
+    /// Build the rustls client config with the SAME `aws_lc_rs` provider used by
+    /// the in-TUN terminator.
+    pub(crate) fn client_config(&self) -> Result<Arc<ClientConfig>, UpstreamError> {
+        ensure_crypto_provider();
+        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+        let builder = ClientConfig::builder_with_provider(provider.clone())
+            .with_safe_default_protocol_versions()
+            .map_err(UpstreamError::tls)?;
+        let mut config = if self.skip_cert_verify {
+            builder
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(SkipServerVerify(provider)))
+                .with_no_client_auth()
+        } else {
+            builder
+                .with_root_certificates(self.roots.clone())
+                .with_no_client_auth()
+        };
+        config.alpn_protocols = self.alpn.clone();
+        Ok(Arc::new(config))
+    }
+}
+
+/// Speak TLS to the upstream over an already-dialed tunnel connection.
+pub(crate) async fn connect_upstream_tls(
+    conn: Box<dyn ProxyConn>,
+    server_name: &str,
+    client_config: Arc<ClientConfig>,
+) -> Result<ClientTlsStream<Box<dyn ProxyConn>>, UpstreamError> {
+    let name = server_name.trim();
+    if name.is_empty() {
+        return Err(UpstreamError::invalid("empty upstream SNI"));
+    }
+    let sni = ServerName::try_from(name.to_string())
+        .map_err(|e| UpstreamError::invalid(format!("invalid upstream SNI '{name}': {e}")))?;
+    TlsConnector::from(client_config)
+        .connect(sni, conn)
+        .await
+        .map_err(UpstreamError::tls)
+}
+
+/// Dial `target` through the tunnel and speak TLS to it. On any failure the
+/// returned [`UpstreamError`] carries the fixed 502 status and
+/// [`ERR_CAPTURE_UPSTREAM_FAILED`] code.
+pub(crate) async fn open_upstream(
+    inner: &meow_tunnel::tunnel::TunnelInner,
+    target: &UpstreamTarget,
+    tls: &UpstreamTlsConfig,
+) -> Result<ClientTlsStream<Box<dyn ProxyConn>>, UpstreamError> {
+    let conn = dial_upstream(inner, target).await?;
+    connect_upstream_tls(conn, &target.host, tls.client_config()?).await
+}
+
+/// Test/opt-in verifier accepting any upstream leaf. Reachable only when
+/// [`UpstreamTlsConfig::skip_cert_verify`] is explicitly set.
+#[derive(Debug)]
+struct SkipServerVerify(Arc<rustls::crypto::CryptoProvider>);
+
+impl ServerCertVerifier for SkipServerVerify {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        Ok(HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        Ok(HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.0.signature_verification_algorithms.supported_schemes()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1399,5 +1713,336 @@ mod mitm_tls_tests {
         fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
             self.0.signature_verification_algorithms.supported_schemes()
         }
+    }
+}
+
+/// Todo 7 acceptance: upstream re-origination through the tunnel.
+///
+/// A [`RecordingProxy`] outbound proves the **configured route** was taken — the
+/// target it observed and the TCP connection it opened — rather than a bare dial
+/// around the rules engine; a `DIRECT` rule dials directly (a rule *result*); the
+/// TLS client handshakes over the tunneled connection with the same `aws_lc_rs`
+/// provider; and an unreachable upstream is a structured 502-style
+/// `PROXY_CAPTURE_UPSTREAM_FAILED` with no panic.
+#[cfg(test)]
+mod mitm_upstream_tests {
+    use super::*;
+    use meow_common::{
+        AdapterType, DelayHistory, Metadata, Proxy, ProxyAdapter, ProxyConn, ProxyHealth,
+        ProxyPacketConn, Rule,
+    };
+    use std::collections::HashMap;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio_rustls::TlsAcceptor;
+
+    /// A local TLS fixture that accepts one connection, completes the handshake
+    /// with the CA's leaf for `host`, and then drops. Returns the bound port and
+    /// the server task (awaited so a handshake panic would surface).
+    async fn tls_fixture(
+        ca: &Arc<CertificateAuthority>,
+        host: &str,
+    ) -> Result<(u16, tokio::task::JoinHandle<()>), String> {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(|e| format!("fixture bind: {e}"))?;
+        let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+        let cfg = ca.server_config(host).map_err(|e| e.to_string())?;
+        let handle = tokio::spawn(async move {
+            if let Ok((tcp, _)) = listener.accept().await {
+                let _ = TlsAcceptor::from(cfg).accept(tcp).await;
+            }
+        });
+        Ok((port, handle))
+    }
+
+    fn trusted_roots(ca: &CertificateAuthority) -> RootCertStore {
+        let mut roots = RootCertStore::empty();
+        roots.add(ca.der().clone()).expect("trust the test CA");
+        roots
+    }
+
+    fn test_resolver() -> Arc<meow_dns::Resolver> {
+        Arc::new(meow_dns::Resolver::new(
+            Vec::new(),
+            Vec::new(),
+            meow_common::DnsMode::Normal,
+            meow_trie::DomainTrie::new(),
+            false,
+            false,
+        ))
+    }
+
+    /// Build a live tunnel with `lines` rules and `name -> proxy` entries, as
+    /// `Tunnel::new` + `update_rules` + `update_proxies` (never a bare adapter).
+    fn tunnel_with(
+        lines: &[&str],
+        proxies: Vec<(&str, Arc<dyn Proxy>)>,
+    ) -> Arc<meow_tunnel::tunnel::TunnelInner> {
+        let tunnel = meow_tunnel::Tunnel::new(test_resolver());
+        let rules: Vec<Box<dyn Rule>> = lines
+            .iter()
+            .map(|line| {
+                meow_rules::parser::parse_rule(line, &meow_rules::ParserContext::empty())
+                    .expect("test rule parses")
+            })
+            .collect();
+        tunnel.update_rules(rules);
+        let mut map: HashMap<smol_str::SmolStr, Arc<dyn Proxy>> = HashMap::new();
+        for (name, proxy) in proxies {
+            map.insert(smol_str::SmolStr::from(name), proxy);
+        }
+        tunnel.update_proxies(map);
+        tunnel.inner().clone()
+    }
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let n = TLS_SEQ.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "gstore-mitm-upstream-{}-{}-{}",
+            std::process::id(),
+            tag,
+            n
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    static TLS_SEQ: AtomicU64 = AtomicU64::new(0);
+
+    /// Outbound test adapter that records the target it was asked to reach and
+    /// forwards the connection to a fixed local fixture. Its presence in the
+    /// dial path is the proof the tunnel selected *this* configured outbound.
+    struct RecordingProxy {
+        name: String,
+        health: ProxyHealth,
+        dials: Mutex<Vec<String>>,
+        forward: SocketAddr,
+    }
+
+    impl RecordingProxy {
+        fn new(name: &str, forward: SocketAddr) -> Arc<Self> {
+            Arc::new(Self {
+                name: name.to_string(),
+                health: ProxyHealth::new(),
+                dials: Mutex::new(Vec::new()),
+                forward,
+            })
+        }
+
+        fn recorded(&self) -> Vec<String> {
+            self.dials.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ProxyAdapter for RecordingProxy {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn adapter_type(&self) -> AdapterType {
+            AdapterType::Direct
+        }
+        fn addr(&self) -> &str {
+            ""
+        }
+        fn support_udp(&self) -> bool {
+            false
+        }
+        async fn dial_tcp(&self, metadata: &Metadata) -> meow_common::Result<Box<dyn ProxyConn>> {
+            self.dials
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(metadata.rule_host().to_string());
+            let stream = TcpStream::connect(self.forward).await?;
+            Ok(Box::new(stream))
+        }
+        async fn dial_udp(
+            &self,
+            _metadata: &Metadata,
+        ) -> meow_common::Result<Box<dyn ProxyPacketConn>> {
+            Err(meow_common::MeowError::NotSupported("recording".into()))
+        }
+        fn health(&self) -> &ProxyHealth {
+            &self.health
+        }
+    }
+
+    impl Proxy for RecordingProxy {
+        fn alive(&self) -> bool {
+            true
+        }
+        fn alive_for_url(&self, _url: &str) -> bool {
+            true
+        }
+        fn last_delay(&self) -> u16 {
+            0
+        }
+        fn last_delay_for_url(&self, _url: &str) -> u16 {
+            0
+        }
+        fn delay_history(&self) -> Vec<DelayHistory> {
+            Vec::new()
+        }
+    }
+
+    /// Happy path: the rule engine selects the configured `PROXY`, whose
+    /// `RecordingProxy::dial_tcp` records `upstream.test`, and the TLS client
+    /// then handshakes over that tunneled connection to the fixture. Asserting
+    /// the recorded target is what distinguishes a real outbound from a bare
+    /// dial that ignored the rules.
+    #[test]
+    fn mitm_upstream_dial_selects_configured_outbound_and_handshakes() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let dir = temp_dir("outbound");
+            let ca = Arc::new(CertificateAuthority::generate(dir.to_str().unwrap()).expect("ca"));
+            let (port, fixture) = tls_fixture(&ca, "upstream.test").await.expect("fixture");
+            let forward: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+            let proxy = RecordingProxy::new("PROXY", forward);
+            let inner = tunnel_with(
+                &["DOMAIN-SUFFIX,upstream.test,PROXY"],
+                vec![("PROXY", Arc::clone(&proxy) as Arc<dyn Proxy>)],
+            );
+
+            let target = UpstreamTarget::new("upstream.test", port)
+                .with_dst_ip(IpAddr::V4(Ipv4Addr::LOCALHOST));
+            let tls = UpstreamTlsConfig::with_roots(trusted_roots(&ca));
+
+            let stream = open_upstream(&inner, &target, &tls)
+                .await
+                .expect("upstream handshake through the configured outbound");
+            assert!(
+                stream
+                    .get_ref()
+                    .1
+                    .peer_certificates()
+                    .map(|c| !c.is_empty())
+                    .unwrap_or(false),
+                "a completed handshake must expose the fixture's leaf chain"
+            );
+            let _ = fixture.await;
+
+            assert_eq!(
+                proxy.recorded(),
+                vec!["upstream.test".to_string()],
+                "the configured outbound must have been dialed for the target (not a bare dial)"
+            );
+        });
+    }
+
+    /// A `DIRECT` rule is a rule *result*: the dial goes direct (no proxy in the
+    /// registry) and still reaches the fixture over TLS.
+    #[test]
+    fn mitm_upstream_direct_rule_dials_directly() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let dir = temp_dir("direct");
+            let ca = Arc::new(CertificateAuthority::generate(dir.to_str().unwrap()).expect("ca"));
+            let (port, fixture) = tls_fixture(&ca, "direct.test").await.expect("fixture");
+            let inner = tunnel_with(&["DOMAIN,direct.test,DIRECT"], Vec::new());
+
+            let target =
+                UpstreamTarget::new("direct.test", port).with_dst_ip(IpAddr::V4(Ipv4Addr::LOCALHOST));
+            let tls = UpstreamTlsConfig::with_roots(trusted_roots(&ca));
+
+            let stream = open_upstream(&inner, &target, &tls)
+                .await
+                .expect("DIRECT rule must dial and handshake");
+            assert!(
+                stream.get_ref().1.peer_certificates().is_some(),
+                "DIRECT TLS handshake must expose the fixture leaf"
+            );
+            let _ = fixture.await;
+        });
+    }
+
+    /// The default is strict: `skip_cert_verify == false`, and an untrusted leaf
+    /// (empty trust anchors) is rejected with the structured error.
+    #[test]
+    fn mitm_upstream_default_is_strict_and_rejects_untrusted() {
+        assert!(
+            !UpstreamTlsConfig::default().skip_cert_verify(),
+            "skipCertVerify must default to STRICT"
+        );
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let dir = temp_dir("strict");
+            let ca = Arc::new(CertificateAuthority::generate(dir.to_str().unwrap()).expect("ca"));
+            let (port, fixture) = tls_fixture(&ca, "untrusted.test").await.expect("fixture");
+            let inner = tunnel_with(&["DOMAIN,untrusted.test,DIRECT"], Vec::new());
+
+            let target = UpstreamTarget::new("untrusted.test", port)
+                .with_dst_ip(IpAddr::V4(Ipv4Addr::LOCALHOST));
+            let strict = UpstreamTlsConfig::default();
+
+            let err = open_upstream(&inner, &target, &strict)
+                .await
+                .err()
+                .expect("strict default must reject an untrusted upstream leaf");
+            assert_eq!(err.kind(), "tls", "rejection must be a TLS failure");
+            assert_eq!(err.status(), 502, "upstream failures are 502-style");
+            assert_eq!(err.code(), ERR_CAPTURE_UPSTREAM_FAILED);
+            let _ = fixture.await;
+        });
+    }
+
+    /// `skipCertVerify` is an explicit opt-in: with it set, an otherwise
+    /// untrusted leaf handshakes. This is never the default.
+    #[test]
+    fn mitm_upstream_skip_cert_verify_is_opt_in() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let dir = temp_dir("skip");
+            let ca = Arc::new(CertificateAuthority::generate(dir.to_str().unwrap()).expect("ca"));
+            let (port, fixture) = tls_fixture(&ca, "skip.test").await.expect("fixture");
+            let inner = tunnel_with(&["DOMAIN,skip.test,DIRECT"], Vec::new());
+
+            let target =
+                UpstreamTarget::new("skip.test", port).with_dst_ip(IpAddr::V4(Ipv4Addr::LOCALHOST));
+            let tls = UpstreamTlsConfig::default().with_skip_cert_verify(true);
+
+            let stream = open_upstream(&inner, &target, &tls)
+                .await
+                .expect("opt-in skipCertVerify must handshake");
+            assert!(stream.get_ref().1.peer_certificates().is_some());
+            let _ = fixture.await;
+        });
+    }
+
+    /// Failure path: an unreachable upstream returns a structured 502-style
+    /// `PROXY_CAPTURE_UPSTREAM_FAILED` without hanging or panicking.
+    #[test]
+    fn mitm_upstream_unreachable_is_502_upstream_failed() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            // A bound-then-dropped port is reliably refused on loopback.
+            let closed = {
+                let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+                listener.local_addr().expect("addr").port()
+            };
+            let inner = tunnel_with(&["DOMAIN,dead.test,DIRECT"], Vec::new());
+            let target =
+                UpstreamTarget::new("dead.test", closed).with_dst_ip(IpAddr::V4(Ipv4Addr::LOCALHOST));
+
+            let started = Instant::now();
+            let err = tokio::time::timeout(
+                Duration::from_secs(5),
+                open_upstream(&inner, &target, &UpstreamTlsConfig::default()),
+            )
+            .await
+            .expect("an unreachable upstream must fail fast, not hang")
+            .err()
+            .expect("a closed port must fail the dial");
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "dial timeout budget exceeded"
+            );
+            assert_eq!(err.status(), 502);
+            assert_eq!(err.code(), ERR_CAPTURE_UPSTREAM_FAILED);
+            assert_eq!(err.kind(), "dial");
+        });
     }
 }
