@@ -23,6 +23,8 @@ import 'package:gstore/core/design/app_dialogs.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
+import 'package:gstore/page/proxy/proxy_capture_bridge.dart';
+import 'package:gstore/page/proxy/proxy_capture_detail_page.dart';
 import 'package:gstore/page/proxy/proxy_requests_facade.dart';
 import 'package:gstore/page/proxy/proxy_requests_page.dart';
 
@@ -158,6 +160,38 @@ class _FakeSaveFile {
     extensions.add(allowedExtensions);
     byteLengths.add(bytes.length);
     return result;
+  }
+}
+
+/// 假详情门面：记录被请求的 `recordId` 并返回预设 [CaptureDetail]。
+class _FakeCaptureDetailFacade implements ProxyCaptureDetailFacade {
+  _FakeCaptureDetailFacade({this.value = const CaptureDetail()});
+
+  CaptureDetail value;
+  int calls = 0;
+  int? lastRecordId;
+
+  @override
+  Future<CaptureDetail> detail(int recordId) async {
+    calls++;
+    lastRecordId = recordId;
+    return value;
+  }
+}
+
+/// 假动作桥：仅记录调用（证明导航 seam 把详情页回调绑定到桥）。
+class _FakeCaptureBridge implements CaptureBridge {
+  int saveCalls = 0;
+  int ruleCalls = 0;
+
+  @override
+  Future<void> saveToCollection(CaptureDetail detail) async {
+    saveCalls++;
+  }
+
+  @override
+  Future<void> openRewriteRuleEditor(CaptureRulePrefill prefill) async {
+    ruleCalls++;
   }
 }
 
@@ -767,6 +801,140 @@ void main() {
 
     await tester.tap(find.text('关闭'));
     await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('点击抓包行 -> 进入全屏详情页且 recordId 正确（叠加行）', (tester) async {
+    _useLargeViewport(tester);
+    final fake = _FakeRequestsFacade(
+      page: RequestPage(
+        records: <RequestRecord>[_record(recordId: 1)],
+        firstCursor: 1,
+        nextCursor: 1,
+        retained: 1,
+      ),
+      capturePage: CapturePage(
+        records: <CaptureRecord>[
+          _capture(
+            recordId: 11,
+            requestRecordId: 1,
+            host: 'api.example.com',
+            method: 'POST',
+            url: 'https://api.example.com/v1/items',
+            statusCode: 201,
+          ),
+        ],
+      ),
+    );
+    final detailFacade = _FakeCaptureDetailFacade(
+      value: const CaptureDetail(
+        recordId: 11,
+        requestRecordId: 1,
+        host: 'api.example.com',
+        method: 'POST',
+        scheme: 'https',
+        url: 'https://api.example.com/v1/items',
+        statusCode: 201,
+        protocol: 'h2',
+      ),
+    );
+    final bridge = _FakeCaptureBridge();
+    await tester.pumpWidget(
+      _host(
+        ProxyRequestsPage(
+          facade: fake,
+          initialLive: false,
+          captureDetailFacade: detailFacade,
+          captureActionBinder: CaptureDetailActionBinder(bridge: bridge),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    await tester.tap(find.byKey(const ValueKey('request_row_1')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.pump();
+
+    // 必须真正进入全屏详情页（而非仅触发回调）。
+    expect(
+      find.byType(ProxyCaptureDetailPage),
+      findsOneWidget,
+      reason: '点击抓包行必须进入全屏详情页',
+    );
+    final page = tester.widget<ProxyCaptureDetailPage>(
+      find.byType(ProxyCaptureDetailPage),
+    );
+    expect(page.recordId, 11, reason: '详情页必须携带该行 capture 的 recordId');
+    expect(page.flow?.recordId, 1, reason: '骨架行的流记录应作为 flow 传入');
+    expect(detailFacade.lastRecordId, 11, reason: '详情页应以正确 recordId 拉取');
+    expect(find.text('https://api.example.com/v1/items'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('点击孤儿 capture 行 -> 全屏详情页 recordId 正确且 flow 为空',
+      (tester) async {
+    _useLargeViewport(tester);
+    final fake = _FakeRequestsFacade(
+      page: RequestPage(
+        records: <RequestRecord>[_record(recordId: 7)],
+        firstCursor: 7,
+        nextCursor: 7,
+        retained: 1,
+      ),
+      capturePage: CapturePage(
+        records: <CaptureRecord>[
+          _capture(
+            recordId: 5,
+            requestRecordId: 0,
+            host: 'orphan.test',
+            method: 'PUT',
+            url: 'https://orphan.test/x',
+            statusCode: 500,
+          ),
+        ],
+      ),
+    );
+    final detailFacade = _FakeCaptureDetailFacade(
+      value: const CaptureDetail(
+        recordId: 5,
+        requestRecordId: 0,
+        host: 'orphan.test',
+        method: 'PUT',
+        scheme: 'https',
+        url: 'https://orphan.test/x',
+        statusCode: 500,
+        protocol: 'h1',
+      ),
+    );
+    await tester.pumpWidget(
+      _host(
+        ProxyRequestsPage(
+          facade: fake,
+          initialLive: false,
+          captureDetailFacade: detailFacade,
+          captureActionBinder: CaptureDetailActionBinder(
+            bridge: _FakeCaptureBridge(),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    await tester.tap(find.byKey(const ValueKey('capture_row_5')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.pump();
+
+    expect(find.byType(ProxyCaptureDetailPage), findsOneWidget);
+    final page = tester.widget<ProxyCaptureDetailPage>(
+      find.byType(ProxyCaptureDetailPage),
+    );
+    expect(page.recordId, 5);
+    expect(page.flow, isNull, reason: '孤儿 capture 无流骨架，flow 应为空');
+    expect(detailFacade.lastRecordId, 5);
     expect(tester.takeException(), isNull);
   });
 

@@ -18,6 +18,9 @@ import 'package:gstore/core/rust/proxy/ProxyModule.dart';
 import 'package:gstore/core/utils/unit.dart';
 
 import 'proxy_app_identity.dart';
+import 'proxy_capture_bridge.dart';
+import 'proxy_capture_debug_bridge.dart';
+import 'proxy_capture_detail_page.dart';
 import 'proxy_requests_facade.dart';
 
 /// 单次 `requests.get` 拉取上限（拉取为准；本页不做无限分页）。
@@ -187,6 +190,8 @@ class ProxyRequestsPage extends StatefulWidget {
     this.initialLive = true,
     this.saveFile,
     this.readFile,
+    this.captureDetailFacade,
+    this.captureActionBinder,
   });
 
   /// 收集页门面（测试可注入假实现；为空时用生产适配器）。
@@ -204,6 +209,18 @@ class ProxyRequestsPage extends StatefulWidget {
   /// 导出文件读取接缝（测试注入；为空时读本地文件）。
   final ProxyRequestsReadFile? readFile;
 
+  /// 全屏抓包详情页（[ProxyCaptureDetailPage]）的拉取门面注入缝。
+  ///
+  /// `null` = 详情页使用生产适配器（[ProxyModuleCaptureDetailFacade]）。
+  /// 测试注入假实现即可断言「跳转携带正确 `recordId`」而无需原生模块。
+  final ProxyCaptureDetailFacade? captureDetailFacade;
+
+  /// 全屏详情页动作桥注入缝（复制 cURL / 保存到请求调试 / 创建改写规则）。
+  ///
+  /// `null` = 使用生产装配 [productionCaptureActionBinder]（仅在首次点击抓包行
+  /// 时惰性构建，避免页面初始化即触碰请求调试 store）。
+  final CaptureDetailActionBinder? captureActionBinder;
+
   @override
   State<ProxyRequestsPage> createState() => _ProxyRequestsPageState();
 }
@@ -214,6 +231,10 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
   late final Stream<ProxyEvent> _events;
   late final ProxyRequestsSaveFile _saveFile;
   late final ProxyRequestsReadFile _readFile;
+
+  /// 详情页动作绑定（首次点击抓包行时构建；优先注入缝，否则生产装配）。
+  late final CaptureDetailActionBinder _captureActionBinder =
+      widget.captureActionBinder ?? productionCaptureActionBinder();
 
   StreamSubscription<ProxyEvent>? _eventSub;
   Timer? _fallbackTimer;
@@ -1342,24 +1363,41 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
   }
 
   Future<void> _openRow(_UnifiedRow row) async {
-    final request = row.request;
-    if (request != null) {
-      await _showDetail(request);
+    // 有 HTTP 详情（capture）→ 进入独立全屏详情页（「逐条 HTTP 请求详情」）。
+    final capture = row.capture;
+    if (capture != null) {
+      await _openCaptureDetail(capture, row.request);
       return;
     }
-    final capture = row.capture;
-    if (capture == null) return;
-    await AppDialogs.showContentSheet<void>(
-      title: capture.host.isEmpty ? '抓包详情' : capture.host,
-      subtitle: _formatDateTime(capture.startedAtMs),
-      icon: const Icon(TablerIcons.shield_lock),
-      content: _CaptureSummary(capture: capture),
-      actions: [
-        TextButton(
-          onPressed: () => AppDialogs.popSheet<void>(null),
-          child: const Text('关闭'),
+    // 无 capture（未解密）→ 保留既有流级 AppSheet 详情。
+    final request = row.request;
+    if (request == null) return;
+    await _showDetail(request);
+  }
+
+  /// 打开全屏抓包详情页 [ProxyCaptureDetailPage]。
+  ///
+  /// `recordId` 取该行摘要 capture 的 `recordId`；骨架行把对应 [RequestRecord]
+  /// 作为 `flow` 传入（元数据段 / 未解密兜底）。动作回调经
+  /// [CaptureDetailActionBinder] 绑定；注入缝为空时惰性构建生产装配，避免页面
+  /// 初始化即触碰请求调试 store。
+  Future<void> _openCaptureDetail(
+    CaptureRecord capture,
+    RequestRecord? flow,
+  ) async {
+    final binder = _captureActionBinder;
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => ProxyCaptureDetailPage(
+          recordId: capture.recordId,
+          flow: flow,
+          facade: widget.captureDetailFacade,
+          onCopyCurl: binder.onCopyCurl,
+          onSaveToDebug: binder.onSaveToDebug,
+          onCreateRewriteRule: binder.onCreateRewriteRule,
+          onUseAsRewriteResponse: binder.onUseAsRewriteResponse,
         ),
-      ],
+      ),
     );
   }
 
@@ -2092,33 +2130,6 @@ class _RequestDetail extends StatelessWidget {
         if (record.closeTsMs != null)
           _DetailField(label: '结束', value: _formatDateTime(record.closeTsMs!)),
         _DetailField(label: '结束原因', value: record.closeReason),
-      ],
-    );
-  }
-}
-
-/// 孤儿 capture 摘要（无流骨架时的行点击内容）。
-class _CaptureSummary extends StatelessWidget {
-  const _CaptureSummary({required this.capture});
-
-  final CaptureRecord capture;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        _DetailField(label: '抓包 ID', value: '${capture.recordId}'),
-        const _DetailField(label: '请求记录 ID', value: '0（孤儿）'),
-        _DetailField(label: '方法', value: capture.method),
-        _DetailField(label: 'URL', value: capture.url),
-        _DetailField(
-          label: '状态',
-          value: capture.statusCode == 0 ? '—' : '${capture.statusCode}',
-        ),
-        _DetailField(label: '协议', value: capture.protocol),
-        _DetailField(label: '耗时', value: '${capture.durationMs} ms'),
-        _DetailField(label: '开始', value: _formatDateTime(capture.startedAtMs)),
       ],
     );
   }
