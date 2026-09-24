@@ -442,6 +442,9 @@ pub(crate) const DISPATCH_METHODS: &[&str] = &[
     "capture.ca.get",
     "capture.ca.generate",
     "capture.ca.reset",
+    "captures.get",
+    "captures.detail",
+    "captures.reset",
 ];
 
 /// 运行状态机（Todo 2 占位；Todo 6/29 驱动真实 start/stop）。
@@ -2288,6 +2291,12 @@ fn call_impl(
         "capture.ca.get" => capture_ca_get_arm(instance_id, instance.clone()),
         "capture.ca.generate" => capture_ca_generate_arm(instance_id, instance.clone(), _payload),
         "capture.ca.reset" => capture_ca_reset_arm(instance_id, instance.clone()),
+        "captures.get" => require_instance(instance_id, instance.clone())
+            .and_then(|_| captures::get_arm(_payload)),
+        "captures.detail" => require_instance(instance_id, instance.clone())
+            .and_then(|_| captures::detail_arm(_payload)),
+        "captures.reset" => require_instance(instance_id, instance.clone())
+            .and_then(|_| captures::reset_arm()),
         other => Err(ModuleError::method_not_found(other)),
     };
 
@@ -3097,6 +3106,103 @@ mod abi_tests {
 
         mitm::clear_ca();
         let _ = std::fs::remove_dir_all(&dir);
+        let _ = destroy(inst);
+    }
+
+    /// Todo 12: the `captures.*` timeline through the real ABI — paged read,
+    /// full detail, unknown detail 404, invalid cursor 422, and reset.
+    #[test]
+    fn captures_timeline_get_detail_reset_round_trip() {
+        let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        captures::reset_for_tests();
+        let api = register_api();
+        let call = api.call.unwrap();
+        let destroy = api.destroy.unwrap();
+        let (inst, dir) = create_temp_instance(&api, "captures");
+
+        let now = crate::now_ms();
+        captures::configure_at(&dir.display().to_string(), now);
+        let mk = |seq: u64, req: u64| mitm::CaptureRecord {
+            record_id: 0,
+            request_record_id: req,
+            conn_id: format!("conn-{seq}"),
+            host: "api.example.com".to_string(),
+            method: "GET".to_string(),
+            scheme: "https".to_string(),
+            url: format!("https://api.example.com/p/{seq}"),
+            status_code: 200,
+            protocol: "h1".to_string(),
+            req_headers: "host: api.example.com\r\n".to_string(),
+            resp_headers: "content-type: text/plain\r\n".to_string(),
+            req_body_preview: b"req".to_vec(),
+            resp_body_preview: b"resp".to_vec(),
+            req_body: b"full-req".to_vec(),
+            resp_body: b"full-resp".to_vec(),
+            req_bytes: 8,
+            resp_bytes: 9,
+            content_type: "text/plain".to_string(),
+            started_at_ms: now,
+            finished_at_ms: now + 5,
+            duration_ms: 5,
+            truncated: false,
+            mitm_failed: false,
+        };
+        captures::ingest(mk(0, 7));
+        captures::ingest(mk(1, 0));
+        captures::flush_for_tests(now);
+
+        let (code, out) = call_json(call, inst, "captures.get");
+        assert_eq!(code, ABI_OK, "{}", String::from_utf8_lossy(&out));
+        let page: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(page["data"]["records"].as_array().unwrap().len(), 2);
+        assert_eq!(page["data"]["records"][0]["requestRecordId"], 7);
+        assert_eq!(
+            page["data"]["records"][1]["requestRecordId"], 0,
+            "an orphan capture (requestRecordId 0) must be returned, not dropped"
+        );
+        let rid = page["data"]["records"][0]["recordId"].as_u64().unwrap();
+
+        let (code, out) = call_with_payload(
+            call,
+            inst,
+            "captures.detail",
+            format!(r#"{{"recordId":{rid}}}"#).as_bytes(),
+        );
+        assert_eq!(code, ABI_OK, "{}", String::from_utf8_lossy(&out));
+        let detail: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        use base64::Engine as _;
+        let req_body = base64::engine::general_purpose::STANDARD
+            .decode(detail["data"]["reqBody"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(req_body, b"full-req", "detail carries the full body");
+
+        let (code, out) = call_with_payload(call, inst, "captures.detail", br#"{"recordId":99999}"#);
+        assert_eq!(code, ABI_ERR_DETAIL);
+        let err: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(err["status"], 404);
+        assert_eq!(err["code"], captures::ERR_CAPTURE_NOT_FOUND);
+
+        let (code, out) = call_with_payload(call, inst, "captures.get", br#"{"cursor":"x"}"#);
+        assert_eq!(code, ABI_ERR_DETAIL);
+        let err: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(err["status"], 422);
+        assert_eq!(err["code"], captures::ERR_CAPTURE_CURSOR_INVALID);
+
+        let (code, out) = call_json(call, inst, "captures.reset");
+        assert_eq!(code, ABI_OK);
+        let reset: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(reset["data"]["cleared"], 2);
+        let (_, out) = call_json(call, inst, "captures.get");
+        let after: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert!(after["data"]["records"].as_array().unwrap().is_empty());
+        assert_eq!(
+            after["data"]["nextCursor"].as_u64().unwrap(),
+            2,
+            "reset never recycles the cursor"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        captures::reset_for_tests();
         let _ = destroy(inst);
     }
 

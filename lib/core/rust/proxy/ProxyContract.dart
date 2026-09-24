@@ -92,6 +92,11 @@ class ProxyMethods {
   static const String captureCaGenerate = 'capture.ca.generate';
   static const String captureCaReset = 'capture.ca.reset';
 
+  // `captures.*`：HTTP 抓包时间线（API.md §2.18）。
+  static const String capturesGet = 'captures.get';
+  static const String capturesDetail = 'captures.detail';
+  static const String capturesReset = 'captures.reset';
+
   /// 全部方法名（顺序与 `API.md` §2 一致）。
   static const List<String> all = <String>[
     ping,
@@ -154,6 +159,9 @@ class ProxyMethods {
     captureCaGet,
     captureCaGenerate,
     captureCaReset,
+    capturesGet,
+    capturesDetail,
+    capturesReset,
   ];
 }
 
@@ -235,6 +243,23 @@ bool _bool(Object? value) {
 }
 
 String _str(Object? value) => value?.toString() ?? '';
+
+/// 契约字节字段：线上是 base64 字符串（Rust `wire_bytes`），宽容解码为
+/// [Uint8List]；兼容旧式数字数组，非法 base64 退化为空字节串，绝不抛裸异常。
+Uint8List _bytes(Object? value) {
+  if (value is String) {
+    if (value.isEmpty) return Uint8List(0);
+    try {
+      return base64Decode(value);
+    } on FormatException {
+      return Uint8List(0);
+    }
+  }
+  if (value is List) {
+    return Uint8List.fromList(value.map(_int).toList());
+  }
+  return Uint8List(0);
+}
 
 // ==================== core.* ====================
 
@@ -2953,6 +2978,334 @@ class CaptureCaGenerateRequest {
       };
 }
 
+// ==================== captures.* ====================
+
+/// 一条 WebSocket 帧记录（`API.md` §2.18 `CaptureWsFrame`）。
+class CaptureWsFrame {
+  const CaptureWsFrame({
+    this.direction = '',
+    this.opcode = '',
+    this.payloadLen = 0,
+    this.preview = const <int>[],
+    this.truncated = false,
+    this.atMs = 0,
+  });
+
+  factory CaptureWsFrame.fromJson(Map<String, dynamic> json) => CaptureWsFrame(
+        direction: _str(json['direction']),
+        opcode: _str(json['opcode']),
+        payloadLen: _int(json['payloadLen']),
+        preview: _bytes(json['preview']),
+        truncated: _bool(json['truncated']),
+        atMs: _int(json['atMs']),
+      );
+
+  final String direction;
+  final String opcode;
+  final int payloadLen;
+  final List<int> preview;
+  final bool truncated;
+  final int atMs;
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'direction': direction,
+        'opcode': opcode,
+        'payloadLen': payloadLen,
+        'preview': base64Encode(preview),
+        'truncated': truncated,
+        'atMs': atMs,
+      };
+}
+
+
+/// 环内一条抓包记录（`API.md` §2.18 `CaptureRecord`）：仅摘要，完整 Body 在
+/// [CaptureDetail]。
+class CaptureRecord {
+  const CaptureRecord({
+    this.recordId = 0,
+    this.requestRecordId = 0,
+    this.connId = '',
+    this.host = '',
+    this.method = '',
+    this.scheme = '',
+    this.url = '',
+    this.statusCode = 0,
+    this.protocol = '',
+    this.reqHeaders = '',
+    this.respHeaders = '',
+    this.reqBodyPreview = const <int>[],
+    this.respBodyPreview = const <int>[],
+    this.reqBytes = 0,
+    this.respBytes = 0,
+    this.contentType = '',
+    this.startedAtMs = 0,
+    this.finishedAtMs = 0,
+    this.durationMs = 0,
+    this.truncated = false,
+    this.mitmFailed = false,
+    this.wsFrames = const <CaptureWsFrame>[],
+  });
+
+  factory CaptureRecord.fromJson(Map<String, dynamic> json) => CaptureRecord(
+        recordId: _int(json['recordId']),
+        requestRecordId: _int(json['requestRecordId']),
+        connId: _str(json['connId']),
+        host: _str(json['host']),
+        method: _str(json['method']),
+        scheme: _str(json['scheme']),
+        url: _str(json['url']),
+        statusCode: _int(json['statusCode']),
+        protocol: _str(json['protocol']),
+        reqHeaders: _str(json['reqHeaders']),
+        respHeaders: _str(json['respHeaders']),
+        reqBodyPreview: _bytes(json['reqBodyPreview']),
+        respBodyPreview: _bytes(json['respBodyPreview']),
+        reqBytes: _int(json['reqBytes']),
+        respBytes: _int(json['respBytes']),
+        contentType: _str(json['contentType']),
+        startedAtMs: _int(json['startedAtMs']),
+        finishedAtMs: _int(json['finishedAtMs']),
+        durationMs: _int(json['durationMs']),
+        truncated: _bool(json['truncated']),
+        mitmFailed: _bool(json['mitmFailed']),
+        wsFrames: _mapList(json['wsFrames'])
+            .map(CaptureWsFrame.fromJson)
+            .toList(),
+      );
+
+  final int recordId;
+  final int requestRecordId;
+  final String connId;
+  final String host;
+  final String method;
+  final String scheme;
+  final String url;
+  final int statusCode;
+  final String protocol;
+  final String reqHeaders;
+  final String respHeaders;
+  final List<int> reqBodyPreview;
+  final List<int> respBodyPreview;
+  final int reqBytes;
+  final int respBytes;
+  final String contentType;
+  final int startedAtMs;
+  final int finishedAtMs;
+  final int durationMs;
+  final bool truncated;
+  final bool mitmFailed;
+  final List<CaptureWsFrame> wsFrames;
+
+  /// 由 [url] 派生的路径（契约不单独存 `path`）。
+  String get path => Uri.tryParse(url)?.path ?? '';
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'recordId': recordId,
+        'requestRecordId': requestRecordId,
+        'connId': connId,
+        'host': host,
+        'method': method,
+        'scheme': scheme,
+        'url': url,
+        'statusCode': statusCode,
+        'protocol': protocol,
+        'reqHeaders': reqHeaders,
+        'respHeaders': respHeaders,
+        'reqBodyPreview': base64Encode(reqBodyPreview),
+        'respBodyPreview': base64Encode(respBodyPreview),
+        'reqBytes': reqBytes,
+        'respBytes': respBytes,
+        'contentType': contentType,
+        'startedAtMs': startedAtMs,
+        'finishedAtMs': finishedAtMs,
+        'durationMs': durationMs,
+        'truncated': truncated,
+        'mitmFailed': mitmFailed,
+        'wsFrames': wsFrames.map((f) => f.toJson()).toList(),
+      };
+}
+
+/// `captures.get` 响应（`API.md` §2.18 `CapturePage`）。
+class CapturePage {
+  const CapturePage({
+    this.records = const <CaptureRecord>[],
+    this.nextCursor = 0,
+    this.firstCursor = 0,
+    this.retained = 0,
+    this.capacity = 256,
+    this.dropped = 0,
+    this.evicted = 0,
+  });
+
+  factory CapturePage.fromJson(Map<String, dynamic> json) => CapturePage(
+        records: _mapList(json['records']).map(CaptureRecord.fromJson).toList(),
+        nextCursor: _int(json['nextCursor']),
+        firstCursor: _int(json['firstCursor']),
+        retained: _int(json['retained']),
+        capacity: _int(json['capacity']),
+        dropped: _int(json['dropped']),
+        evicted: _int(json['evicted']),
+      );
+
+  final List<CaptureRecord> records;
+  final int nextCursor;
+  final int firstCursor;
+  final int retained;
+  final int capacity;
+  final int dropped;
+  final int evicted;
+}
+
+/// `captures.detail` 响应（`API.md` §2.18 `CaptureDetail`）：环内摘要字段
+/// **加上**从 SQLite 读取的完整 `reqBody`/`respBody`、完整 url/头/`wsFrames`。
+class CaptureDetail {
+  const CaptureDetail({
+    this.recordId = 0,
+    this.requestRecordId = 0,
+    this.connId = '',
+    this.host = '',
+    this.method = '',
+    this.scheme = '',
+    this.url = '',
+    this.statusCode = 0,
+    this.protocol = '',
+    this.reqHeaders = '',
+    this.respHeaders = '',
+    this.reqBodyPreview = const <int>[],
+    this.respBodyPreview = const <int>[],
+    this.reqBody = const <int>[],
+    this.respBody = const <int>[],
+    this.reqBytes = 0,
+    this.respBytes = 0,
+    this.contentType = '',
+    this.startedAtMs = 0,
+    this.finishedAtMs = 0,
+    this.durationMs = 0,
+    this.truncated = false,
+    this.mitmFailed = false,
+    this.wsFrames = const <CaptureWsFrame>[],
+  });
+
+  factory CaptureDetail.fromJson(Map<String, dynamic> json) => CaptureDetail(
+        recordId: _int(json['recordId']),
+        requestRecordId: _int(json['requestRecordId']),
+        connId: _str(json['connId']),
+        host: _str(json['host']),
+        method: _str(json['method']),
+        scheme: _str(json['scheme']),
+        url: _str(json['url']),
+        statusCode: _int(json['statusCode']),
+        protocol: _str(json['protocol']),
+        reqHeaders: _str(json['reqHeaders']),
+        respHeaders: _str(json['respHeaders']),
+        reqBodyPreview: _bytes(json['reqBodyPreview']),
+        respBodyPreview: _bytes(json['respBodyPreview']),
+        reqBody: _bytes(json['reqBody']),
+        respBody: _bytes(json['respBody']),
+        reqBytes: _int(json['reqBytes']),
+        respBytes: _int(json['respBytes']),
+        contentType: _str(json['contentType']),
+        startedAtMs: _int(json['startedAtMs']),
+        finishedAtMs: _int(json['finishedAtMs']),
+        durationMs: _int(json['durationMs']),
+        truncated: _bool(json['truncated']),
+        mitmFailed: _bool(json['mitmFailed']),
+        wsFrames: _mapList(json['wsFrames'])
+            .map(CaptureWsFrame.fromJson)
+            .toList(),
+      );
+
+  final int recordId;
+  final int requestRecordId;
+  final String connId;
+  final String host;
+  final String method;
+  final String scheme;
+  final String url;
+  final int statusCode;
+  final String protocol;
+  final String reqHeaders;
+  final String respHeaders;
+  final List<int> reqBodyPreview;
+  final List<int> respBodyPreview;
+  final List<int> reqBody;
+  final List<int> respBody;
+  final int reqBytes;
+  final int respBytes;
+  final String contentType;
+  final int startedAtMs;
+  final int finishedAtMs;
+  final int durationMs;
+  final bool truncated;
+  final bool mitmFailed;
+  final List<CaptureWsFrame> wsFrames;
+
+  String get path => Uri.tryParse(url)?.path ?? '';
+}
+
+/// `captures.reset` 响应（镜像 `API.md` §2.18 `{ok, cleared}`）。
+class CapturesResetResult {
+  const CapturesResetResult({this.ok = false, this.cleared = 0});
+
+  factory CapturesResetResult.fromJson(Map<String, dynamic> json) =>
+      CapturesResetResult(
+        ok: _bool(json['ok']),
+        cleared: _int(json['cleared']),
+      );
+
+  final bool ok;
+  final int cleared;
+}
+
+/// `captures.get` 过滤器（`API.md` §2.18）；未提供的字段不编码。
+class CapturesFilter {
+  const CapturesFilter({
+    this.host,
+    this.method,
+    this.statusClass,
+    this.protocol,
+    this.requestRecordId,
+  });
+
+  final String? host;
+  final String? method;
+  final int? statusClass;
+  final String? protocol;
+  final int? requestRecordId;
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        if (host != null) 'host': host,
+        if (method != null) 'method': method,
+        if (statusClass != null) 'statusClass': statusClass,
+        if (protocol != null) 'protocol': protocol,
+        if (requestRecordId != null) 'requestRecordId': requestRecordId,
+      };
+}
+
+/// `captures.get` 请求（`API.md` §2.18）。
+class CapturesGetRequest {
+  const CapturesGetRequest({this.cursor, this.limit, this.filter});
+
+  final int? cursor;
+  final int? limit;
+  final CapturesFilter? filter;
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        if (cursor != null) 'cursor': cursor,
+        if (limit != null) 'limit': limit,
+        if (filter != null) 'filter': filter!.toJson(),
+      };
+}
+
+/// `captures.detail` 请求（`API.md` §2.18）。
+class CaptureDetailRequest {
+  const CaptureDetailRequest(this.recordId);
+
+  final int recordId;
+
+  Map<String, dynamic> toJson() => <String, dynamic>{'recordId': recordId};
+}
+
 // ==================== 方法 → 解码器注册表 ====================
 
 /// 方法名 → 响应解码器（**每个** [ProxyMethods.all] 一项）。
@@ -3030,6 +3383,9 @@ final Map<String, ProxyJsonDecoder<Object>> proxyResponseDecoders =
   ProxyMethods.captureCaGet: CaptureCaInfo.fromJson,
   ProxyMethods.captureCaGenerate: CaptureCaInfo.fromJson,
   ProxyMethods.captureCaReset: CaptureCaResetResult.fromJson,
+  ProxyMethods.capturesGet: CapturePage.fromJson,
+  ProxyMethods.capturesDetail: CaptureDetail.fromJson,
+  ProxyMethods.capturesReset: CapturesResetResult.fromJson,
 };
 
 // ==================== 请求模型（toJson） ====================
@@ -3440,6 +3796,9 @@ final Map<String, Map<String, dynamic> Function()> proxyRequestEncoders =
   ProxyMethods.captureCaGenerate: () =>
       const CaptureCaGenerateRequest().toJson(),
   ProxyMethods.captureCaReset: () => const <String, dynamic>{},
+  ProxyMethods.capturesGet: () => const CapturesGetRequest().toJson(),
+  ProxyMethods.capturesDetail: () => const CaptureDetailRequest(1).toJson(),
+  ProxyMethods.capturesReset: () => const <String, dynamic>{},
 };
 
 /// 便捷：JSON 文本 → UTF-8 字节（请求体编码）。

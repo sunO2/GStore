@@ -1279,6 +1279,90 @@ ESP/AH（proto 50/51）等未知传输也**不**豁免。豁免帧在损伤判�
 **Errors.** 载荷非法（`regenerate` 非 bool、非对象、未知字段）或 CA 生成/读取/重置失败均为
 `PROXY_CAPTURE_CA_FAILED`（非法载荷 422；生命周期 I/O / 签发失败 500）。
 
+### 2.18 `captures.*` — HTTP capture timeline (Todo 12)
+
+| method | request | data |
+|---|---|---|
+| `captures.get` | `{ "cursor"?: recordId, "limit"?: 256, "filter"?: { "host"?: string, "method"?: string, "statusClass"?: 1\|2\|3\|4\|5, "protocol"?: "h1"\|"h2"\|"ws", "requestRecordId"?: recordId } }` | `CapturePage` |
+| `captures.detail` | `{ "recordId": recordId }` | `CaptureDetail` |
+| `captures.reset` | *(none)* | `{ "ok": true, "cleared": 0 }` |
+
+`CaptureRecord` (one row of `CapturePage.records`; the full bodies are **not** here):
+```json
+{ "recordId": 1, "requestRecordId": 7, "connId": "uuid", "host": "example.com",
+  "method": "GET", "scheme": "https", "url": "https://example.com/p?q=1",
+  "statusCode": 200, "protocol": "h1", "reqHeaders": "host: example.com",
+  "respHeaders": "content-type: text/plain", "reqBodyPreview": "<base64>",
+  "respBodyPreview": "<base64>", "reqBytes": 8, "respBytes": 9,
+  "contentType": "text/plain", "startedAtMs": 0, "finishedAtMs": 0,
+  "durationMs": 0, "truncated": false, "mitmFailed": false, "wsFrames": [] }
+```
+
+| field | type | notes |
+|---|---|---|
+| `recordId` | u64 | **captures' own** monotonic sequence; ring + DB primary key; the `captures.detail` key and the `cursor` |
+| `requestRecordId` | u64 | foreign key to the owning flow's `requests.*` `recordId`; the **only** join key. `0` = no flow record (short-lived cross-tick flow) — the capture **stands alone** and is never dropped. One non-zero value may map to **multiple** captures (keep-alive / h2 mux) |
+| `connId` | string | meow connection id; may repeat; reference only (never a join key) |
+| `host` | string | authority as seen; IPv6 is bracketed (`[2001:db8::1]`) |
+| `method` / `scheme` | string | request method / scheme |
+| `url` | string | clipped to `CAPTURE_URL_MAX_BYTES`; Dart derives `path` from it (no separate `path` field) |
+| `statusCode` | number | response status; `0` when no response was produced |
+| `protocol` | string | `"h1"` / `"h2"` / `"ws"` |
+| `reqHeaders` / `respHeaders` | string | header text; the ring clips each side to ≤512 B |
+| `reqBodyPreview` / `respBodyPreview` | string | **base64** of the ≤256 B/side preview |
+| `reqBytes` / `respBytes` | u64 | full body byte counts (pre-truncation) |
+| `contentType` | string | response content type |
+| `startedAtMs` / `finishedAtMs` / `durationMs` | u64 | exchange timing |
+| `truncated` | bool | a preview/url was clipped |
+| `mitmFailed` | bool | capture degraded to pass-through |
+| `wsFrames` | CaptureWsFrame[] | frames attached to the exchange (empty until the WS capture path emits `"ws"` records) |
+
+`CaptureWsFrame`:
+
+| field | type | notes |
+|---|---|---|
+| `direction` | string | `"clientToServer"` / `"serverToClient"` |
+| `opcode` | string | `"text"` / `"binary"` / `"ping"` / `"pong"` / `"close"` / `"frame"` |
+| `payloadLen` | u64 | true payload length |
+| `preview` | string | **base64** of the bounded (≤512 B) payload preview |
+| `truncated` | bool | preview clipped |
+| `atMs` | u64 | record time |
+
+`CapturePage`:
+```json
+{ "records": [CaptureRecord], "nextCursor": 0, "firstCursor": 0,
+  "retained": 0, "capacity": 256, "dropped": 0, "evicted": 0 }
+```
+
+`CaptureDetail` — the ring fields **plus** the full `reqBody`/`respBody`, full `url`, full headers
+and full `wsFrames` read from `proxy_captures.db` (the same base64 byte encoding):
+```json
+{ "...CaptureRecord fields...": "...", "reqBody": "<base64>", "respBody": "<base64>" }
+```
+
+**Pull-based, cursor identical to `requests.get`.** `cursor` is a captures `recordId`: only records
+with `recordId > cursor` are returned, ordered `recordId` ascending, then truncated to `limit`
+(default 256, clamped to the ring). `nextCursor` is the high-water mark and is **never reclaimed** by
+eviction or `captures.reset`; `firstCursor` is the oldest retained `recordId` (0 when empty). A
+present-but-non-integer `cursor` is `PROXY_CAPTURE_CURSOR_INVALID` (422). With a durable sink the page
+is DB-authoritative (`retained`/`firstCursor` come from the windowed table); without a `dataDir` the
+bounded in-memory ring is the source. Filters: `host` is a case-insensitive substring,
+`method`/`protocol` are case-insensitive exact, `statusClass` is `statusCode / 100`, and
+`requestRecordId` is the exact link key (`0` selects the orphan captures). `captures.detail` reads the
+**full** record for one `recordId` (pending flush queue → SQLite → ring summary); an unknown id is
+`PROXY_CAPTURE_NOT_FOUND` (404). `captures.reset` drops every retained row (ring, pending queue and
+durable table) and keeps `recordId`/cursor numbering monotonic, so a cleared record is never
+detail-able again. All three require a live instance (structured `INSTANCE_NOT_FOUND` 410, never
+`METHOD_NOT_FOUND`).
+
+**Config-switch semantics.** `capture.config.set` applies to **new flows only**; an in-flight MITM
+session keeps the config snapshot it started with, so a mid-session change can never leave a session
+with inconsistent capture settings.
+
+**Errors.** `PROXY_CAPTURE_CURSOR_INVALID` (422), `PROXY_CAPTURE_NOT_FOUND` (404),
+`PROXY_CAPTURE_STORE_FAILED` (500, a durable read/write failed — the in-memory summary ring is left
+untouched), `PROXY_CAPTURE_BODY_TOO_LARGE` (507, a defensive `captures.detail` body-read cap).
+
 ## 3. Events (module → host)
 
 Emitted through the ABI `emit_event` channel. Payload is the JSON below; the Dart

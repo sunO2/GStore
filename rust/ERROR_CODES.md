@@ -135,3 +135,7 @@ C ABI `call` 返回 `ABI_ERR_DETAIL (-8)` 时，模块在 out 缓冲写入
 |---|---|---|---|
 | `PROXY_CAPTURE_CONFIG_INVALID` | proxy | 422 | `capture.config.set` 载荷非法：非 JSON 对象、未知字段、`tlsPorts` 含 `0` 或为空、`maxBodyBytes` 越界（不在 `[1, 1048576]`）；校验失败时**不改动**内存或磁盘上的既有配置（Todo 10） |
 | `PROXY_CAPTURE_CA_FAILED` | proxy | 422 / 500 | `capture.ca.generate` 载荷非法（`regenerate` 非 bool、非对象、未知字段 → 422），或 CA 生成/读取/重置失败（`rcgen` 签发 / I/O → 500）；`capture.ca.get` 未生成**不是**错误（`generated:false`），`reset` 无 CA 时 `cleared:false`（Todo 11） |
+| `PROXY_CAPTURE_NOT_FOUND` | proxy | 404 | `captures.detail` 请求的 `recordId` 不在保留窗口（环 / 待刷盘队列 / SQLite 表）中（Todo 12） |
+| `PROXY_CAPTURE_CURSOR_INVALID` | proxy | 422 | `captures.get` 的 `cursor` 存在但非非负整数（Todo 12） |
+| `PROXY_CAPTURE_STORE_FAILED` | proxy | 500 | captures 持久层读/写失败（SQLite）；内存摘要环保持不变、不回滚（Todo 12） |
+| `PROXY_CAPTURE_BODY_TOO_LARGE` | proxy | 507 | `captures.detail` 请求的 Body 超过读盘上限（`CAPTURE_BODY_MAX_BYTES`）的防御性守卫（Todo 12） |

@@ -36,12 +36,29 @@ use std::sync::Arc;
 #[cfg(test)]
 use std::cell::RefCell;
 
+use gstore_contract::error::{ModuleError, StatusCode};
 use serde::{Deserialize, Serialize};
 
 use crate::limits::{CAPTURE_BODY_MAX_BYTES, CAPTURE_RING_CAP, CAPTURE_URL_MAX_BYTES};
 use crate::mitm::{
     CaptureRecord, CaptureSink, CAPTURE_HEADERS_MAX_BYTES, CAPTURE_PREVIEW_MAX_BYTES,
 };
+
+// ==================== Todo 12: `captures.*` contract errors ====================
+
+/// `captures.detail` asked for a `recordId` that is not retained (ring, pending
+/// flush or disk). 404, `rust/ERROR_CODES.md`.
+pub(crate) const ERR_CAPTURE_NOT_FOUND: &str = "PROXY_CAPTURE_NOT_FOUND";
+/// `captures.get` was given a present-but-non-`u64` `cursor`. 422.
+pub(crate) const ERR_CAPTURE_CURSOR_INVALID: &str = "PROXY_CAPTURE_CURSOR_INVALID";
+/// A durable read/write failed. 500; the in-memory summary ring is untouched.
+pub(crate) const ERR_CAPTURE_STORE_FAILED: &str = "PROXY_CAPTURE_STORE_FAILED";
+/// Defensive guard: a `captures.detail` body exceeded the on-disk read cap.
+/// 507 (resource exhausted).
+pub(crate) const ERR_CAPTURE_BODY_TOO_LARGE: &str = "PROXY_CAPTURE_BODY_TOO_LARGE";
+
+/// Default `captures.get` page size when `limit` is omitted.
+pub(crate) const DEFAULT_CAPTURE_LIMIT: usize = 256;
 
 /// Hard cap on the durable capture timeline (`proxy_captures.db`). Prune is
 /// **cap-first**: rows beyond this many are deleted oldest-`finished_at_ms`-first,
@@ -70,6 +87,98 @@ const CAPTURE_CONTENT_TYPE_MAX_BYTES: usize = 128;
 /// In-ring `connId` bound (meow connection ids are short; defensive).
 const CAPTURE_CONN_ID_MAX_BYTES: usize = 64;
 
+/// Preview/base64 wire codec: the ring would blow `CAPTURE_RECORD_MAX_BYTES` if a
+/// `Vec<u8>` preview were serialized as a JSON number array (up to 4 B per byte),
+/// so every byte string crosses the contract as a base64 string.
+mod wire_bytes {
+    use base64::Engine as _;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub(crate) fn serialize<S: Serializer>(v: &[u8], s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&base64::engine::general_purpose::STANDARD.encode(v))
+    }
+
+    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
+        let encoded = String::deserialize(d)?;
+        base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+/// An absent/blank string filter matches everything (mirrors `requests.get`).
+fn non_blank(v: &Option<String>) -> Option<&str> {
+    v.as_deref().map(str::trim).filter(|s| !s.is_empty())
+}
+
+/// `captures.get` filters. Every field is optional; absent/blank string filters
+/// are ignored. `requestRecordId: 0` is meaningful — it selects the orphan
+/// captures whose flow never produced a `requests.*` record.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CaptureFilter {
+    #[serde(default)]
+    pub host: Option<String>,
+    #[serde(default)]
+    pub method: Option<String>,
+    #[serde(default)]
+    pub status_class: Option<u16>,
+    #[serde(default)]
+    pub protocol: Option<String>,
+    #[serde(default)]
+    pub request_record_id: Option<u64>,
+}
+
+impl CaptureFilter {
+    /// `host` is a case-insensitive substring; `method`/`protocol` are
+    /// case-insensitive exact; `statusClass` is `statusCode / 100`; and
+    /// `requestRecordId` is an exact link key.
+    pub(crate) fn matches(&self, r: &CaptureSummary) -> bool {
+        if let Some(h) = non_blank(&self.host) {
+            if !r.host.to_ascii_lowercase().contains(&h.to_ascii_lowercase()) {
+                return false;
+            }
+        }
+        if let Some(m) = non_blank(&self.method) {
+            if !r.method.eq_ignore_ascii_case(m) {
+                return false;
+            }
+        }
+        if let Some(sc) = self.status_class {
+            if sc == 0 || r.status_code / 100 != sc {
+                return false;
+            }
+        }
+        if let Some(p) = non_blank(&self.protocol) {
+            if !r.protocol.eq_ignore_ascii_case(p) {
+                return false;
+            }
+        }
+        if let Some(rid) = self.request_record_id {
+            if r.request_record_id != rid {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// One recorded WebSocket frame in the contract (ring summary or full detail).
+/// The payload preview crosses the wire base64-encoded and is bounded (≤
+/// `WS_PREVIEW_MAX_BYTES` in the detail, further clipped in the ring).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CaptureWsFrame {
+    /// `"clientToServer"` | `"serverToClient"`.
+    pub direction: String,
+    pub opcode: String,
+    pub payload_len: u64,
+    #[serde(with = "wire_bytes")]
+    pub preview: Vec<u8>,
+    pub truncated: bool,
+    pub at_ms: u64,
+}
+
 /// One captured exchange as retained in the bounded in-memory ring: the summary
 /// fields only. The full bodies/url/headers live in `proxy_captures.db` and are
 /// fetched by `captures.detail` on demand (Todo 12) — never resident here.
@@ -89,7 +198,9 @@ pub(crate) struct CaptureSummary {
     pub protocol: String,
     pub req_headers: String,
     pub resp_headers: String,
+    #[serde(with = "wire_bytes")]
     pub req_body_preview: Vec<u8>,
+    #[serde(with = "wire_bytes")]
     pub resp_body_preview: Vec<u8>,
     pub req_bytes: u64,
     pub resp_bytes: u64,
@@ -99,6 +210,111 @@ pub(crate) struct CaptureSummary {
     pub duration_ms: u64,
     pub truncated: bool,
     pub mitm_failed: bool,
+    /// WS frames attached to this exchange. Empty until the WS capture path
+    /// emits a `"ws"` record; carried in the ring shape so `records` and
+    /// `detail` share one contract.
+    #[serde(default)]
+    pub ws_frames: Vec<CaptureWsFrame>,
+}
+
+/// The full `captures.detail` record: the ring summary fields **plus** the full
+/// request/response bodies, full url and full headers, and the full WS frame
+/// list — read from `proxy_captures.db` (or the still-unflushed pending queue).
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CaptureDetail {
+    pub record_id: u64,
+    pub request_record_id: u64,
+    pub conn_id: String,
+    pub host: String,
+    pub method: String,
+    pub scheme: String,
+    pub url: String,
+    pub status_code: u16,
+    pub protocol: String,
+    pub req_headers: String,
+    pub resp_headers: String,
+    #[serde(with = "wire_bytes")]
+    pub req_body_preview: Vec<u8>,
+    #[serde(with = "wire_bytes")]
+    pub resp_body_preview: Vec<u8>,
+    #[serde(with = "wire_bytes")]
+    pub req_body: Vec<u8>,
+    #[serde(with = "wire_bytes")]
+    pub resp_body: Vec<u8>,
+    pub req_bytes: u64,
+    pub resp_bytes: u64,
+    pub content_type: String,
+    pub started_at_ms: u64,
+    pub finished_at_ms: u64,
+    pub duration_ms: u64,
+    pub truncated: bool,
+    pub mitm_failed: bool,
+    pub ws_frames: Vec<CaptureWsFrame>,
+}
+
+impl CaptureDetail {
+    /// Detail from a still-queued full record (before its 5s flush): the full
+    /// bodies are resident in the pending queue, so no disk read is needed.
+    fn from_full(r: &CaptureRecord) -> Self {
+        Self {
+            record_id: r.record_id,
+            request_record_id: r.request_record_id,
+            conn_id: r.conn_id.clone(),
+            host: r.host.clone(),
+            method: r.method.clone(),
+            scheme: r.scheme.clone(),
+            url: r.url.clone(),
+            status_code: r.status_code,
+            protocol: r.protocol.clone(),
+            req_headers: r.req_headers.clone(),
+            resp_headers: r.resp_headers.clone(),
+            req_body_preview: r.req_body_preview.clone(),
+            resp_body_preview: r.resp_body_preview.clone(),
+            req_body: r.req_body.clone(),
+            resp_body: r.resp_body.clone(),
+            req_bytes: r.req_bytes,
+            resp_bytes: r.resp_bytes,
+            content_type: r.content_type.clone(),
+            started_at_ms: r.started_at_ms,
+            finished_at_ms: r.finished_at_ms,
+            duration_ms: r.duration_ms,
+            truncated: r.truncated,
+            mitm_failed: r.mitm_failed,
+            ws_frames: Vec::new(),
+        }
+    }
+
+    /// Detail from a ring summary only (memory-only degrade): the full bodies
+    /// were never persisted, so the preview stands in for them.
+    fn from_summary(s: &CaptureSummary) -> Self {
+        Self {
+            record_id: s.record_id,
+            request_record_id: s.request_record_id,
+            conn_id: s.conn_id.clone(),
+            host: s.host.clone(),
+            method: s.method.clone(),
+            scheme: s.scheme.clone(),
+            url: s.url.clone(),
+            status_code: s.status_code,
+            protocol: s.protocol.clone(),
+            req_headers: s.req_headers.clone(),
+            resp_headers: s.resp_headers.clone(),
+            req_body_preview: s.req_body_preview.clone(),
+            resp_body_preview: s.resp_body_preview.clone(),
+            req_body: s.req_body_preview.clone(),
+            resp_body: s.resp_body_preview.clone(),
+            req_bytes: s.req_bytes,
+            resp_bytes: s.resp_bytes,
+            content_type: s.content_type.clone(),
+            started_at_ms: s.started_at_ms,
+            finished_at_ms: s.finished_at_ms,
+            duration_ms: s.duration_ms,
+            truncated: s.truncated,
+            mitm_failed: s.mitm_failed,
+            ws_frames: s.ws_frames.clone(),
+        }
+    }
 }
 
 /// A page of the capture timeline (`captures.get`, Todo 12). `records` are
@@ -292,20 +508,26 @@ impl CaptureStore {
 
     /// One page ordered `recordId` ascending, `recordId > since`. DB-authoritative
     /// when a durable sink is configured; the ring is the near-term fallback.
-    pub(crate) fn snapshot(&self, since: u64, limit: usize) -> CapturePage {
+    pub(crate) fn snapshot(&self, since: u64, limit: usize, filter: &CaptureFilter) -> CapturePage {
         match &self.db {
-            Some(db) => self.snapshot_from_db(db, since, limit),
-            None => self.snapshot_from_ring(since, limit),
+            Some(db) => self.snapshot_from_db(db, since, limit, filter),
+            None => self.snapshot_from_ring(since, limit, filter),
         }
     }
 
-    fn snapshot_from_db(&self, db: &Persist, since: u64, limit: usize) -> CapturePage {
+    fn snapshot_from_db(
+        &self,
+        db: &Persist,
+        since: u64,
+        limit: usize,
+        filter: &CaptureFilter,
+    ) -> CapturePage {
         let floor = self.retention_floor_ms.unwrap_or(0);
-        let records = match db.load_page(since, limit, floor) {
+        let records = match db.load_page(since, limit, floor, filter) {
             Ok(rows) => rows,
             Err(e) => {
                 crate::log_message(2, &format!("proxy.captures: read failed: {e}"));
-                return self.snapshot_from_ring(since, limit);
+                return self.snapshot_from_ring(since, limit, filter);
             }
         };
         CapturePage {
@@ -319,12 +541,13 @@ impl CaptureStore {
         }
     }
 
-    fn snapshot_from_ring(&self, since: u64, limit: usize) -> CapturePage {
+    fn snapshot_from_ring(&self, since: u64, limit: usize, filter: &CaptureFilter) -> CapturePage {
         let limit = limit.min(self.cap.max(1));
         let mut matched: Vec<CaptureSummary> = self
             .records
             .iter()
             .filter(|r| r.record_id > since)
+            .filter(|r| filter.matches(r))
             .cloned()
             .collect();
         matched.truncate(limit);
@@ -338,6 +561,68 @@ impl CaptureStore {
             evicted: self.evicted,
         }
     }
+
+    /// One record by its captures `recordId`, with full bodies. The pending
+    /// (unflushed) queue is checked first so a just-completed exchange is never
+    /// a false `PROXY_CAPTURE_NOT_FOUND`; then the durable row; then the ring
+    /// summary as the memory-only fallback.
+    pub(crate) fn detail(&self, record_id: u64) -> Result<Option<CaptureDetail>, ModuleError> {
+        if let Some(full) = self.pending.iter().find(|r| r.record_id == record_id) {
+            return self.guard_body_size(CaptureDetail::from_full(full));
+        }
+        if let Some(db) = &self.db {
+            let row = db.load_detail(record_id).map_err(store_failed)?;
+            if let Some(detail) = row {
+                return self.guard_body_size(detail);
+            }
+        }
+        if let Some(idx) = self.by_record_id.get(&record_id) {
+            return Ok(Some(CaptureDetail::from_summary(&self.records[*idx])));
+        }
+        Ok(None)
+    }
+
+    fn guard_body_size(&self, d: CaptureDetail) -> Result<Option<CaptureDetail>, ModuleError> {
+        if d.req_body.len() > CAPTURE_BODY_MAX_BYTES || d.resp_body.len() > CAPTURE_BODY_MAX_BYTES {
+            return Err(ModuleError::new(
+                StatusCode::ResourceExhausted,
+                ERR_CAPTURE_BODY_TOO_LARGE,
+                format!(
+                    "capture record {} body exceeds CAPTURE_BODY_MAX_BYTES",
+                    d.record_id
+                ),
+            ));
+        }
+        Ok(Some(d))
+    }
+
+    /// Drop every retained record (ring, pending flush and durable table) while
+    /// keeping `recordId`/cursor numbering monotonic. Returns the count cleared.
+    pub(crate) fn clear(&mut self) -> Result<u64, ModuleError> {
+        let count = match &self.db {
+            Some(db) => db.count(0).map_err(store_failed)? as u64,
+            None => self.records.len() as u64,
+        };
+        self.records.clear();
+        self.by_record_id.clear();
+        self.pending.clear();
+        self.pending_bytes = 0;
+        self.window_start_ms = 0;
+        if let Some(db) = &self.db {
+            db.clear().map_err(store_failed)?;
+        }
+        Ok(count)
+    }
+}
+
+/// A durable capture-store read/write failure (`PROXY_CAPTURE_STORE_FAILED`,
+/// 500). The in-memory summary ring is left untouched.
+fn store_failed(e: rusqlite::Error) -> ModuleError {
+    ModuleError::new(
+        StatusCode::InternalError,
+        ERR_CAPTURE_STORE_FAILED,
+        e.to_string(),
+    )
 }
 
 /// Approximate resident cost of a full record (the two bodies dominate).
@@ -385,6 +670,7 @@ fn summarize(r: &CaptureRecord) -> CaptureSummary {
         duration_ms: r.duration_ms,
         truncated,
         mitm_failed: r.mitm_failed,
+        ws_frames: Vec::new(),
     }
 }
 
@@ -586,20 +872,69 @@ impl Persist {
         since: u64,
         limit: usize,
         floor: u64,
+        f: &CaptureFilter,
     ) -> rusqlite::Result<Vec<CaptureSummary>> {
-        let sql = format!(
+        let mut sql = format!(
             "SELECT {SUMMARY_COLUMNS} FROM capture_records
-             WHERE record_id > ?1 AND finished_at_ms >= ?2
-             ORDER BY record_id ASC LIMIT ?3"
+             WHERE record_id > ? AND finished_at_ms >= ?"
         );
+        let mut vals: Vec<rusqlite::types::Value> =
+            vec![(since as i64).into(), (floor as i64).into()];
+        if let Some(h) = non_blank(&f.host) {
+            sql.push_str(" AND instr(lower(host), ?) > 0");
+            vals.push(h.to_ascii_lowercase().into());
+        }
+        if let Some(m) = non_blank(&f.method) {
+            sql.push_str(" AND lower(method) = ?");
+            vals.push(m.to_ascii_lowercase().into());
+        }
+        if let Some(sc) = f.status_class {
+            sql.push_str(" AND status_code / 100 = ?");
+            vals.push((sc as i64).into());
+        }
+        if let Some(p) = non_blank(&f.protocol) {
+            sql.push_str(" AND lower(protocol) = ?");
+            vals.push(p.to_ascii_lowercase().into());
+        }
+        if let Some(rid) = f.request_record_id {
+            sql.push_str(" AND request_record_id = ?");
+            vals.push((rid as i64).into());
+        }
+        sql.push_str(" ORDER BY record_id ASC LIMIT ?");
+        vals.push((limit.min(CAPTURE_MAX_ROWS) as i64).into());
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt
-            .query_map(
-                rusqlite::params![since as i64, floor as i64, limit.min(CAPTURE_MAX_ROWS) as i64],
-                row_to_summary,
-            )?
+            .query_map(rusqlite::params_from_iter(vals.iter()), row_to_summary)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    /// The full record (bodies + full url/headers) for one `recordId`, or `None`
+    /// when it is not retained.
+    fn load_detail(&self, record_id: u64) -> rusqlite::Result<Option<CaptureDetail>> {
+        let sql = format!(
+            "SELECT {SUMMARY_COLUMNS}, req_body, resp_body FROM capture_records
+             WHERE record_id = ?1"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut rows = stmt.query_map(rusqlite::params![record_id as i64], |row| {
+            let mut summary = row_to_summary(row)?;
+            summary.ws_frames = Vec::new();
+            let req_body: Vec<u8> = row.get(SUMMARY_COLUMN_COUNT)?;
+            let resp_body: Vec<u8> = row.get(SUMMARY_COLUMN_COUNT + 1)?;
+            let mut detail = CaptureDetail::from_summary(&summary);
+            detail.req_body = req_body;
+            detail.resp_body = resp_body;
+            Ok(detail)
+        })?;
+        match rows.next() {
+            Some(row) => Ok(Some(row?)),
+            None => Ok(None),
+        }
+    }
+
+    fn clear(&self) -> rusqlite::Result<()> {
+        self.conn.execute_batch("DELETE FROM capture_records;")
     }
 
     fn count(&self, floor: u64) -> rusqlite::Result<usize> {
@@ -638,6 +973,10 @@ const SUMMARY_COLUMNS: &str = "record_id, request_record_id, conn_id, host, meth
      req_bytes, resp_bytes, content_type, started_at_ms, finished_at_ms, duration_ms, \
      truncated, mitm_failed";
 
+/// Number of columns in [`SUMMARY_COLUMNS`]; `load_detail`'s extra body columns
+/// follow at this offset.
+const SUMMARY_COLUMN_COUNT: usize = 21;
+
 fn row_to_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<CaptureSummary> {
     Ok(CaptureSummary {
         record_id: row.get::<_, i64>(0)?.max(0) as u64,
@@ -661,6 +1000,7 @@ fn row_to_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<CaptureSummary> {
         duration_ms: row.get::<_, i64>(18)?.max(0) as u64,
         truncated: row.get::<_, i64>(19)? != 0,
         mitm_failed: row.get::<_, i64>(20)? != 0,
+        ws_frames: Vec::new(),
     })
 }
 
@@ -766,8 +1106,92 @@ pub(crate) fn maybe_persist(now: u64) -> usize {
 }
 
 /// One page of the capture timeline over the process-global store.
-pub(crate) fn snapshot(since: u64, limit: usize) -> CapturePage {
-    with_store(|st| st.snapshot(since, limit))
+pub(crate) fn snapshot(since: u64, limit: usize, filter: &CaptureFilter) -> CapturePage {
+    with_store(|st| st.snapshot(since, limit, filter))
+}
+
+/// One full record by `recordId` over the process-global store.
+pub(crate) fn detail(record_id: u64) -> Result<Option<CaptureDetail>, ModuleError> {
+    with_store(|st| st.detail(record_id))
+}
+
+// ==================== Todo 12: `captures.*` dispatch arms ====================
+
+/// `captures.get` request body:
+/// `{ "cursor"?: recordId, "limit"?: number, "filter"?: { ... } }`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CaptureGetRequest {
+    #[serde(default)]
+    pub cursor: Option<u64>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+    #[serde(default)]
+    pub filter: CaptureFilter,
+}
+
+/// `captures.detail` request body: `{ "recordId": recordId }`.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CaptureDetailRequest {
+    pub record_id: u64,
+}
+
+/// `captures.get` arm. A present-but-non-`u64` `cursor` is the structured
+/// `PROXY_CAPTURE_CURSOR_INVALID` (422); any other malformed body is a generic
+/// 422. Never a panic.
+pub(crate) fn get_arm(payload: &[u8]) -> Result<Vec<u8>, ModuleError> {
+    let req: CaptureGetRequest = if payload.is_empty() {
+        CaptureGetRequest::default()
+    } else {
+        let value: serde_json::Value = serde_json::from_slice(payload).map_err(|e| {
+            ModuleError::invalid_arg(format!("captures.get payload must be a JSON object: {e}"))
+        })?;
+        if let Some(cursor) = value.get("cursor") {
+            if cursor.as_u64().is_none() {
+                return Err(ModuleError::new(
+                    StatusCode::InvalidArgument,
+                    ERR_CAPTURE_CURSOR_INVALID,
+                    format!("captures.get cursor must be a non-negative integer, got {cursor}"),
+                ));
+            }
+        }
+        serde_json::from_value(value).map_err(|e| {
+            ModuleError::invalid_arg(format!("captures.get payload must be a JSON object: {e}"))
+        })?
+    };
+    let cursor = req.cursor.unwrap_or(0);
+    let limit = req.limit.unwrap_or(DEFAULT_CAPTURE_LIMIT);
+    let page = snapshot(cursor, limit, &req.filter);
+    let data = serde_json::to_value(&page).map_err(|e| ModuleError::internal(e.to_string()))?;
+    crate::ok_data(data)
+}
+
+/// `captures.detail` arm. An unknown `recordId` is `PROXY_CAPTURE_NOT_FOUND`
+/// (404); a durable read failure is `PROXY_CAPTURE_STORE_FAILED` (500).
+pub(crate) fn detail_arm(payload: &[u8]) -> Result<Vec<u8>, ModuleError> {
+    let req: CaptureDetailRequest = serde_json::from_slice(payload).map_err(|e| {
+        ModuleError::invalid_arg(format!("captures.detail payload must be a JSON object: {e}"))
+    })?;
+    match detail(req.record_id)? {
+        Some(d) => {
+            let data =
+                serde_json::to_value(&d).map_err(|e| ModuleError::internal(e.to_string()))?;
+            crate::ok_data(data)
+        }
+        None => Err(ModuleError::new(
+            StatusCode::ModuleNotFound,
+            ERR_CAPTURE_NOT_FOUND,
+            format!("capture record not found: {}", req.record_id),
+        )),
+    }
+}
+
+/// `captures.reset` arm. Drops every retained record (the cursor stays
+/// monotonic) and reports how many were cleared.
+pub(crate) fn reset_arm() -> Result<Vec<u8>, ModuleError> {
+    let cleared = with_store(|st| st.clear())?;
+    crate::ok_data(serde_json::json!({ "ok": true, "cleared": cleared }))
 }
 
 /// The directory the capture sink is configured against (test proof).
@@ -884,15 +1308,15 @@ mod tests {
             ids.push(st.push_full(fixture(i, 1_000 + i as u64), 1_000 + i as u64));
         }
 
-        let p1 = st.snapshot(0, 2);
+        let p1 = st.snapshot(0, 2, &CaptureFilter::default());
         assert_eq!(p1.records.len(), 2, "first page honors the limit");
         assert_eq!(p1.retained, 5);
         assert_eq!(p1.capacity, CAPTURE_RING_CAP);
         assert_eq!(p1.first_cursor, 1);
         assert_eq!(p1.next_cursor, 5, "high-water mark is the last issued id");
-        let p2 = st.snapshot(p1.records.last().unwrap().record_id, 2);
+        let p2 = st.snapshot(p1.records.last().unwrap().record_id, 2, &CaptureFilter::default());
         assert_eq!(p2.records.len(), 2);
-        let p3 = st.snapshot(p2.records.last().unwrap().record_id, 2);
+        let p3 = st.snapshot(p2.records.last().unwrap().record_id, 2, &CaptureFilter::default());
         assert_eq!(p3.records.len(), 1);
 
         let all: Vec<&CaptureSummary> = p1
@@ -944,7 +1368,7 @@ mod tests {
         );
         assert_eq!(st.by_record_id.len(), CAPTURE_RING_CAP);
 
-        let page = st.snapshot(0, CAPTURE_RING_CAP + 10);
+        let page = st.snapshot(0, CAPTURE_RING_CAP + 10, &CaptureFilter::default());
         assert_eq!(page.records.len(), CAPTURE_RING_CAP);
         assert_eq!(page.records.first().unwrap().record_id, 2, "oldest evicted");
         assert_eq!(
@@ -975,7 +1399,7 @@ mod tests {
         // Restart: same dir, fresh seed.
         configure_at(&dir_s, 3_000);
         assert_eq!(next_record_id_for_tests(), 4, "numbering continues past the DB");
-        let page = snapshot(0, 10);
+        let page = snapshot(0, 10, &CaptureFilter::default());
         assert_eq!(page.records.len(), 3, "seed restored the window rows");
         assert_eq!(page.next_cursor, 3);
 
@@ -983,7 +1407,7 @@ mod tests {
         assert_eq!(next, 4, "post-restart id continues incrementing");
         assert_eq!(next_record_id_for_tests(), 5);
         flush_for_tests(4_000);
-        assert_eq!(snapshot(0, 10).records.len(), 4, "the 4th row reached the DB");
+        assert_eq!(snapshot(0, 10, &CaptureFilter::default()).records.len(), 4, "the 4th row reached the DB");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1035,7 +1459,7 @@ mod tests {
         assert!(!db_configured_for_tests(), "blank dir means memory-only");
 
         ingest(fixture(0, 1_000));
-        let page = snapshot(0, 10);
+        let page = snapshot(0, 10, &CaptureFilter::default());
         assert_eq!(page.records.len(), 1);
         assert_eq!(page.next_cursor, 1);
         assert_eq!(page.evicted, 0);
@@ -1051,10 +1475,208 @@ mod tests {
         r.req_headers = "h".repeat(CAPTURE_HEADERS_MAX_BYTES * 2);
         r.content_type = "t".repeat(CAPTURE_CONTENT_TYPE_MAX_BYTES * 2);
         st.push_full(r, 1_000);
-        let s = st.snapshot(0, 1).records.pop().unwrap();
+        let s = st.snapshot(0, 1, &CaptureFilter::default()).records.pop().unwrap();
         assert!(s.truncated, "url clip is flagged");
         assert!(s.url.len() <= CAPTURE_URL_MAX_BYTES);
         assert!(s.req_headers.len() <= CAPTURE_HEADERS_MAX_BYTES);
         assert!(s.content_type.len() <= CAPTURE_CONTENT_TYPE_MAX_BYTES);
+    }
+
+    /// A worst-case ring summary (every bounded field at its maximum) must fit
+    /// `CAPTURE_RECORD_MAX_BYTES` once base64-encoded onto the wire.
+    #[test]
+    fn captures_worst_case_record_serializes_within_cap() {
+        let s = CaptureSummary {
+            record_id: u64::MAX,
+            request_record_id: u64::MAX,
+            conn_id: "c".repeat(CAPTURE_CONN_ID_MAX_BYTES),
+            host: "h".repeat(CAPTURE_HOST_MAX_BYTES),
+            method: "M".repeat(16),
+            scheme: "https".to_string(),
+            url: "u".repeat(CAPTURE_URL_MAX_BYTES),
+            status_code: u16::MAX,
+            protocol: "ws".to_string(),
+            req_headers: "r".repeat(CAPTURE_HEADERS_MAX_BYTES),
+            resp_headers: "s".repeat(CAPTURE_HEADERS_MAX_BYTES),
+            req_body_preview: vec![0xFF; CAPTURE_PREVIEW_MAX_BYTES],
+            resp_body_preview: vec![0xFF; CAPTURE_PREVIEW_MAX_BYTES],
+            req_bytes: u64::MAX,
+            resp_bytes: u64::MAX,
+            content_type: "t".repeat(CAPTURE_CONTENT_TYPE_MAX_BYTES),
+            started_at_ms: u64::MAX,
+            finished_at_ms: u64::MAX,
+            duration_ms: u64::MAX,
+            truncated: true,
+            mitm_failed: true,
+            ws_frames: Vec::new(),
+        };
+        let bytes = serde_json::to_vec(&s).expect("serialize worst-case capture record");
+        assert!(
+            bytes.len() <= crate::limits::CAPTURE_RECORD_MAX_BYTES,
+            "worst-case capture record {} B > cap {} B",
+            bytes.len(),
+            crate::limits::CAPTURE_RECORD_MAX_BYTES
+        );
+        assert!(
+            bytes.len() > 3000,
+            "not a real worst case: {} B",
+            bytes.len()
+        );
+    }
+
+    /// An IPv6 authority in `host`/`url` survives both the paged read and the
+    /// detail read (the Dart side derives `path` from the bracketed url).
+    #[test]
+    fn captures_ipv6_host_round_trips_through_page_and_detail() {
+        let mut st = CaptureStore::fresh();
+        let mut r = fixture(0, 1_000);
+        r.host = "[2001:db8::1]".to_string();
+        r.url = "https://[2001:db8::1]:8443/v6?a=1".to_string();
+        st.push_full(r, 1_000);
+
+        let page = st.snapshot(0, 10, &CaptureFilter::default());
+        assert_eq!(page.records[0].host, "[2001:db8::1]");
+        assert!(page.records[0].url.starts_with("https://[2001:db8::1]:8443/"));
+
+        let d = st.detail(page.records[0].record_id).unwrap().unwrap();
+        assert_eq!(d.host, "[2001:db8::1]");
+        assert_eq!(d.url, "https://[2001:db8::1]:8443/v6?a=1");
+    }
+
+    /// `requestRecordId == 0` (a short-lived cross-tick flow with no `requests.*`
+    /// record) is a first-class row: retained, returned, and filterable.
+    #[test]
+    fn captures_orphan_request_record_id_zero_is_retained_and_filterable() {
+        let mut st = CaptureStore::fresh();
+        let mut orphan = fixture(0, 1_000);
+        orphan.request_record_id = 0;
+        let id = st.push_full(orphan, 1_000);
+        st.push_full(fixture(1, 1_001), 1_001);
+
+        let all = st.snapshot(0, 10, &CaptureFilter::default());
+        assert_eq!(all.records.len(), 2, "orphan capture must not be dropped");
+        assert_eq!(all.records[0].record_id, id);
+        assert_eq!(all.records[0].request_record_id, 0);
+
+        let orphans = st.snapshot(
+            0,
+            10,
+            &CaptureFilter {
+                request_record_id: Some(0),
+                ..Default::default()
+            },
+        );
+        assert_eq!(orphans.records.len(), 1);
+        assert_eq!(orphans.records[0].record_id, id);
+    }
+
+    /// `captures.get` filters: case-insensitive host substring, exact method /
+    /// protocol, and `statusClass`.
+    #[test]
+    fn captures_page_filter_matches_host_method_status_protocol() {
+        let mut st = CaptureStore::fresh();
+        let mut a = fixture(0, 1_000);
+        a.host = "api.example.com".to_string();
+        a.method = "POST".to_string();
+        a.status_code = 404;
+        a.protocol = "h2".to_string();
+        st.push_full(a, 1_000);
+        let mut b = fixture(1, 1_001);
+        b.host = "cdn.example.com".to_string();
+        b.method = "GET".to_string();
+        b.status_code = 200;
+        b.protocol = "h1".to_string();
+        st.push_full(b, 1_001);
+
+        let f = CaptureFilter {
+            host: Some("API".into()),
+            ..Default::default()
+        };
+        assert_eq!(st.snapshot(0, 10, &f).records.len(), 1);
+        let f = CaptureFilter {
+            method: Some("get".into()),
+            ..Default::default()
+        };
+        assert_eq!(st.snapshot(0, 10, &f).records[0].host, "cdn.example.com");
+        let f = CaptureFilter {
+            status_class: Some(4),
+            ..Default::default()
+        };
+        assert_eq!(st.snapshot(0, 10, &f).records[0].status_code, 404);
+        let f = CaptureFilter {
+            protocol: Some("H2".into()),
+            ..Default::default()
+        };
+        assert_eq!(st.snapshot(0, 10, &f).records.len(), 1);
+    }
+
+    /// `captures.detail` returns the full body from the pending queue before the
+    /// flush and from SQLite after it; an unknown id is `None`.
+    #[test]
+    fn captures_detail_reads_full_body_from_pending_and_db() {
+        reset_for_tests();
+        let dir = unique_temp_dir("detail");
+        let dir_s = dir.to_str().unwrap().to_string();
+        configure_at(&dir_s, 1_000);
+        assert!(db_configured_for_tests());
+
+        let mut r = fixture(0, 1_000);
+        r.req_body = b"full-request-body".to_vec();
+        r.resp_body = b"full-response-body".to_vec();
+        let id = with_store(|st| st.push_full(r, 1_000));
+
+        let pending = detail(id).unwrap().unwrap();
+        assert_eq!(pending.req_body, b"full-request-body");
+        assert_eq!(pending.resp_body, b"full-response-body");
+
+        assert_eq!(flush_for_tests(2_000), 0);
+        let durable = detail(id).unwrap().unwrap();
+        assert_eq!(durable.req_body, b"full-request-body");
+        assert_eq!(durable.resp_body, b"full-response-body");
+        assert!(detail(999).unwrap().is_none(), "unknown record is None");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `captures.get` rejects a present-but-non-`u64` cursor with the frozen 422
+    /// `PROXY_CAPTURE_CURSOR_INVALID`.
+    #[test]
+    fn captures_get_arm_rejects_invalid_cursor() {
+        let err = get_arm(br#"{"cursor":"nope"}"#).unwrap_err();
+        assert_eq!(err.status, StatusCode::InvalidArgument);
+        assert_eq!(err.code, ERR_CAPTURE_CURSOR_INVALID);
+    }
+
+    /// `captures.detail` of an unknown id is `PROXY_CAPTURE_NOT_FOUND`.
+    #[test]
+    fn captures_detail_arm_unknown_is_not_found() {
+        reset_for_tests();
+        let err = detail_arm(br#"{"recordId":42}"#).unwrap_err();
+        assert_eq!(err.status, StatusCode::ModuleNotFound);
+        assert_eq!(err.code, ERR_CAPTURE_NOT_FOUND);
+    }
+
+    /// `captures.reset` clears every row but keeps the cursor monotonic, and a
+    /// cleared record is no longer detail-able (never stale).
+    #[test]
+    fn captures_reset_clears_records_but_keeps_cursor_monotonic() {
+        reset_for_tests();
+        with_store(|st| {
+            st.push_full(fixture(0, 1_000), 1_000);
+            st.push_full(fixture(1, 1_001), 1_001);
+        });
+        let before = snapshot(0, 10, &CaptureFilter::default());
+        assert_eq!(before.next_cursor, 2);
+        let id = before.records[0].record_id;
+
+        let out = reset_arm().unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["data"]["cleared"], 2);
+
+        let after = snapshot(0, 10, &CaptureFilter::default());
+        assert!(after.records.is_empty());
+        assert_eq!(after.next_cursor, 2, "cursor is never recycled");
+        assert!(detail(id).unwrap().is_none(), "detail must not be stale");
     }
 }

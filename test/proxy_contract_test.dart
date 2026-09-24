@@ -42,6 +42,8 @@ Uint8List _errorEnvelope(int status, String code, String message) =>
 
 Uint8List _raw(String text) => Uint8List.fromList(utf8.encode(text));
 
+String _rep(String unit, int count) => List<String>.filled(count, unit).join();
+
 // ==================== 每个方法的响应 fixture ====================
 
 const _importedProfileFixture = <String, dynamic>{
@@ -277,6 +279,67 @@ const _captureCaResetFixture = <String, dynamic>{
   'ok': true,
   'cleared': true,
 };
+
+/// 一条环内抓包记录 fixture（`API.md` §2.18 `CaptureRecord`）：含 base64 预览、
+/// 一个 WS 帧与 IPv6 host/url（字段值刻意偏离默认以证 round-trip 保真）。
+const _captureRecordFixture = <String, dynamic>{
+  'recordId': 1,
+  'requestRecordId': 0,
+  'connId': 'c1',
+  'host': '[2001:db8::1]',
+  'method': 'GET',
+  'scheme': 'https',
+  'url': 'https://[2001:db8::1]:8443/p/1?q=1',
+  'statusCode': 200,
+  'protocol': 'h1',
+  'reqHeaders': 'host: [2001:db8::1]\r\n',
+  'respHeaders': 'content-type: text/plain\r\n',
+  'reqBodyPreview': 'cmVx',
+  'respBodyPreview': 'cmVzcA==',
+  'reqBytes': 3,
+  'respBytes': 4,
+  'contentType': 'text/plain',
+  'startedAtMs': 100,
+  'finishedAtMs': 150,
+  'durationMs': 50,
+  'truncated': false,
+  'mitmFailed': false,
+  'wsFrames': <Map<String, dynamic>>[
+    <String, dynamic>{
+      'direction': 'clientToServer',
+      'opcode': 'text',
+      'payloadLen': 2,
+      'preview': 'aGk=',
+      'truncated': false,
+      'atMs': 120,
+    },
+  ],
+};
+
+/// `captures.get` 冻结响应 fixture（`API.md` §2.18 `CapturePage`）。
+const _capturePageFixture = <String, dynamic>{
+  'records': <Map<String, dynamic>>[_captureRecordFixture],
+  'nextCursor': 1,
+  'firstCursor': 1,
+  'retained': 1,
+  'capacity': 256,
+  'dropped': 0,
+  'evicted': 0,
+};
+
+/// `captures.detail` 冻结响应 fixture（`API.md` §2.18 `CaptureDetail`）：环比字段
+/// **加上**完整 body（base64）与完整 url/头。
+final _captureDetailFixture = <String, dynamic>{
+  ..._captureRecordFixture,
+  'requestRecordId': 7,
+  'url': 'https://[2001:db8::1]:8443/p/1?q=1&full=1',
+  'reqHeaders': 'host: [2001:db8::1]\r\nx-full: 1\r\n',
+  'reqBody': 'ZnVsbC1yZXE=',
+  'respBody': 'ZnVsbC1yZXNw',
+};
+
+/// `captures.reset` 冻结响应 fixture（`API.md` §2.18 `{ok, cleared}`）。
+const _capturesResetFixture = <String, dynamic>{'ok': true, 'cleared': 1};
 
 final Map<String, Map<String, dynamic>> _methodFixtures =
     <String, Map<String, dynamic>>{
@@ -708,6 +771,10 @@ final Map<String, Map<String, dynamic>> _methodFixtures =
   ProxyMethods.captureCaGet: _captureCaInfoFixture,
   ProxyMethods.captureCaGenerate: _captureCaInfoFixture,
   ProxyMethods.captureCaReset: _captureCaResetFixture,
+  // `captures.*` 抓包时间线（API.md §2.18）。
+  ProxyMethods.capturesGet: _capturePageFixture,
+  ProxyMethods.capturesDetail: _captureDetailFixture,
+  ProxyMethods.capturesReset: _capturesResetFixture,
 };
 
 final Map<String, Map<String, dynamic>> _eventFixtures =
@@ -1017,6 +1084,88 @@ void main() {
       expect(absent.pem, isEmpty);
       expect(absent.derBase64, isEmpty);
       expect(absent.fingerprintSha256, isEmpty);
+    });
+
+    test(
+        'captures fixture round-trip 保留真实字段值（含 IPv6 / base64 / wsFrames / path）',
+        () async {
+      final gateway = _FakeGateway(<String, Uint8List>{
+        ProxyMethods.capturesGet: _okEnvelope(_capturePageFixture),
+        ProxyMethods.capturesDetail: _okEnvelope(_captureDetailFixture),
+        ProxyMethods.capturesReset: _okEnvelope(_capturesResetFixture),
+      });
+      final facade = ProxyModule(gateway: gateway);
+
+      final page = await facade.invoke(
+        ProxyMethods.capturesGet,
+        proxyResponseDecoders[ProxyMethods.capturesGet]!,
+      ) as CapturePage;
+      expect(page.records, hasLength(1));
+      expect(page.nextCursor, 1);
+      expect(page.capacity, 256);
+      final rec = page.records.single;
+      expect(rec.recordId, 1);
+      expect(rec.requestRecordId, 0, reason: '孤儿 capture 的关联键为 0 且仍返回');
+      expect(rec.host, '[2001:db8::1]');
+      expect(rec.url, 'https://[2001:db8::1]:8443/p/1?q=1');
+      expect(rec.path, '/p/1', reason: 'path 由 url 派生，IPv6 host 不干扰');
+      expect(rec.reqBodyPreview, utf8.encode('req'));
+      expect(rec.respBodyPreview, utf8.encode('resp'));
+      expect(rec.wsFrames, hasLength(1));
+      expect(rec.wsFrames.single.direction, 'clientToServer');
+      expect(rec.wsFrames.single.preview, utf8.encode('hi'));
+
+      final detail = await facade.invoke(
+        ProxyMethods.capturesDetail,
+        proxyResponseDecoders[ProxyMethods.capturesDetail]!,
+      ) as CaptureDetail;
+      expect(detail.requestRecordId, 7);
+      expect(detail.reqBody, utf8.encode('full-req'));
+      expect(detail.respBody, utf8.encode('full-resp'));
+      expect(detail.url, contains('full=1'));
+      expect(detail.path, '/p/1');
+
+      final reset = await facade.invoke(
+        ProxyMethods.capturesReset,
+        proxyResponseDecoders[ProxyMethods.capturesReset]!,
+      ) as CapturesResetResult;
+      expect(reset.ok, isTrue);
+      expect(reset.cleared, 1);
+
+      final empty = CaptureRecord.fromJson(const <String, dynamic>{});
+      expect(empty.recordId, 0);
+      expect(empty.wsFrames, isEmpty);
+      expect(empty.reqBodyPreview, isEmpty);
+    });
+
+    test('CaptureRecord 最坏序列化 ≤ 4096（CAPTURE_RECORD_MAX_BYTES）', () {
+      final worst = CaptureRecord(
+        recordId: 0x7FFFFFFFFFFFFFFF,
+        requestRecordId: 0x7FFFFFFFFFFFFFFF,
+        connId: _rep('c', 64),
+        host: _rep('h', 253),
+        method: _rep('M', 16),
+        scheme: 'https',
+        url: _rep('u', 1024),
+        statusCode: 65535,
+        protocol: 'ws',
+        reqHeaders: _rep('r', 512),
+        respHeaders: _rep('s', 512),
+        reqBodyPreview: Uint8List.fromList(List<int>.filled(256, 0xFF)),
+        respBodyPreview: Uint8List.fromList(List<int>.filled(256, 0xFF)),
+        reqBytes: 0x7FFFFFFFFFFFFFFF,
+        respBytes: 0x7FFFFFFFFFFFFFFF,
+        contentType: _rep('t', 128),
+        startedAtMs: 0x7FFFFFFFFFFFFFFF,
+        finishedAtMs: 0x7FFFFFFFFFFFFFFF,
+        durationMs: 0x7FFFFFFFFFFFFFFF,
+        truncated: true,
+        mitmFailed: true,
+      );
+      final bytes = utf8.encode(jsonEncode(worst.toJson()));
+      expect(bytes.length, lessThanOrEqualTo(4096),
+          reason: 'CAPTURE_RECORD_MAX_BYTES = 4096');
+      expect(bytes.length, greaterThan(3000), reason: '确实是接近上限的最坏用例');
     });
 
     test('每个事件 fixture 解码为对应类型化事件', () {
