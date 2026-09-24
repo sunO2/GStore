@@ -214,9 +214,9 @@ void main() {
       expect(lines!.length, 4);
       expect(lines[0], '实时  ↑ 1.50 KB/s  ↓ 2.00 MB/s');
       expect(lines[1], '累计  ↑ 5.00 MB  ↓ 3.00 MB');
-      expect(lines[2], '订阅  订阅A');
-      expect(lines[3], '节点  node-A');
-      expect(notifier.lastSubText, '局域网代理');
+    expect(lines[2], '网络组  订阅A');
+    expect(lines[3], '端子  node-A');
+    expect(notifier.lastSubText, '局域网共享');
     });
 
     test('throttles stats-driven refreshes to the ~1s floor', () async {

@@ -110,7 +110,7 @@ class LocalProxyStatusNotifier implements ProxyStatusNotifier {
 
   /// 独立渠道 id。
   static const String channelId = 'gstore_proxy_status';
-  static const String channelName = '代理状态';
+  static const String channelName = '网络调试状态';
 
   final FlutterLocalNotificationsPlugin _local =
       FlutterLocalNotificationsPlugin();
@@ -133,7 +133,7 @@ class LocalProxyStatusNotifier implements ProxyStatusNotifier {
             const AndroidNotificationChannel(
               channelId,
               channelName,
-              description: '代理运行状态（速率 / 节点 / 订阅 / 模式）',
+              description: '网络调试运行状态（速率 / 端子 / 网络组 / 模式）',
               importance: Importance.low,
             ),
           );
@@ -226,7 +226,7 @@ class ProxyStatusNotificationService {
   static final ProxyStatusNotificationService instance =
       ProxyStatusNotificationService();
 
-  static const String _title = 'GStore 代理';
+  static const String _title = 'GStore 网络调试';
 
   final ProxyStatusNotifier _notifier;
   final ProxyStatusSource _source;
@@ -489,19 +489,19 @@ class ProxyStatusNotificationService {
   List<String> get _lines {
     final node = _nodeName.isEmpty ? '自动' : _nodeName;
     final subscription =
-        _subscriptionName.isEmpty ? '未选择订阅' : _subscriptionName;
+        _subscriptionName.isEmpty ? '未选择网络组' : _subscriptionName;
     return <String>[
       '实时  ↑ ${formatProxySpeed(_upBps)}  ↓ ${formatProxySpeed(_downBps)}',
       '累计  ↑ ${byteSize(_upTotal)}  ↓ ${byteSize(_downTotal)}',
-      '订阅  $subscription',
-      '节点  $node',
+      '网络组  $subscription',
+      '端子  $node',
     ];
   }
 
   String _modeLabel(ProxyMode mode) => switch (mode) {
         ProxyMode.off => '关闭',
         ProxyMode.vpn => 'VPN',
-        ProxyMode.lanProxy => '局域网代理',
+        ProxyMode.lanProxy => '局域网共享',
         ProxyMode.unknown => '未知',
       };
 }

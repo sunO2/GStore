@@ -154,7 +154,7 @@ Future<void> _openProxyPageFromTileRequest() async {
   WidgetsBinding.instance.addPostFrameCallback((_) {
     try {
       appRouter.push(AppRoute.proxy);
-      appLog.info('快捷磁贴：长按请求已跳转代理页');
+      appLog.info('快捷磁贴：长按请求已跳转网络调试页');
     } catch (e) {
       debugPrint('[ProxyTileOpen] 跳转代理页失败（已忽略）: $e');
     }
