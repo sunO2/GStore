@@ -34,7 +34,6 @@
 //! [`MAX_ALLOWLIST_ENTRY_BYTES`] bytes at `set_config` time so a hostile/buggy
 //! caller cannot retain unbounded config, and the whole config is stored behind
 //! an `Arc` so a per-flow read is a pointer clone, never a deep copy.
-#![allow(dead_code)]
 
 use std::future::Future;
 use std::net::SocketAddr;

@@ -27,7 +27,6 @@
 //! `proxy.request` signal is still produced by [`crate::requests::tick`], whose
 //! payload stays payload-free (`{seq,count,tsMs}`) — no record ever leaks onto
 //! the host event ring.
-#![allow(dead_code)] // T13 store: consumed by the dispatch contract (Todo 12).
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -43,7 +42,8 @@ use crate::limits::{
     CAPTURE_URL_MAX_BYTES,
 };
 use crate::mitm::{
-    CaptureRecord, CaptureSink, CAPTURE_HEADERS_MAX_BYTES, CAPTURE_PREVIEW_MAX_BYTES,
+    CaptureRecord, CaptureSink, WsDirection, WsFrameRecord, WsFrameSink, CAPTURE_HEADERS_MAX_BYTES,
+    CAPTURE_PREVIEW_MAX_BYTES,
 };
 
 // ==================== Todo 12: `captures.*` contract errors ====================
@@ -98,6 +98,15 @@ const CAPTURE_HOST_MAX_BYTES: usize = 253;
 const CAPTURE_CONTENT_TYPE_MAX_BYTES: usize = 128;
 /// In-ring `connId` bound (meow connection ids are short; defensive).
 const CAPTURE_CONN_ID_MAX_BYTES: usize = 64;
+
+/// Max WS frames retained per open session before further frames are dropped
+/// (memory bound). The full WS timeline is bounded by the session count too.
+pub(crate) const CAPTURE_WS_FRAMES_MAX: usize = 64;
+/// In-ring WS frame preview bound (the ring is the tightly budgeted copy; the
+/// full preview rides the disk-bound full record / SQLite).
+pub(crate) const CAPTURE_WS_RING_PREVIEW_BYTES: usize = 64;
+/// In-ring WS frame count bound (see [`CaptureSummary::ws_frames`]).
+pub(crate) const CAPTURE_WS_RING_FRAMES: usize = 1;
 
 /// Preview/base64 wire codec: the ring would blow `CAPTURE_RECORD_MAX_BYTES` if a
 /// `Vec<u8>` preview were serialized as a JSON number array (up to 4 B per byte),
@@ -293,7 +302,7 @@ impl CaptureDetail {
             duration_ms: r.duration_ms,
             truncated: r.truncated,
             mitm_failed: r.mitm_failed,
-            ws_frames: Vec::new(),
+            ws_frames: r.ws_frames.iter().map(ws_frame_to_summary).collect(),
         }
     }
 
@@ -344,6 +353,15 @@ pub(crate) struct CapturePage {
     pub evicted: u64,
 }
 
+/// One in-flight WebSocket session's accumulated frames, keyed by
+/// `(host, connId)` until `on_ws_close` emits the record.
+struct WsSession {
+    method: String,
+    url: String,
+    started_at_ms: u64,
+    frames: Vec<WsFrameRecord>,
+}
+
 /// Bounded in-memory ring of [`CaptureSummary`]s plus its cursor bookkeeping and
 /// the disk-bound pending queue.
 pub(crate) struct CaptureStore {
@@ -375,6 +393,8 @@ pub(crate) struct CaptureStore {
     /// Effective read floor (`now - CAPTURE_RETENTION_MS`) once the durable sink
     /// is configured.
     pub(crate) retention_floor_ms: Option<u64>,
+    /// Open WS sessions accumulating frames until close (bounded by session cap).
+    ws_sessions: HashMap<(String, String), WsSession>,
 }
 
 impl CaptureStore {
@@ -394,6 +414,7 @@ impl CaptureStore {
             last_persist_ms: 0,
             lost_records: 0,
             retention_floor_ms: None,
+            ws_sessions: HashMap::new(),
         }
     }
 
@@ -422,6 +443,71 @@ impl CaptureStore {
         }
         self.window_start_ms = self.records.front().map(|r| r.started_at_ms).unwrap_or(0);
         id
+    }
+
+    fn ws_open(&mut self, host: &str, conn_id: &str, method: &str, url: &str) {
+        if self.ws_sessions.len() >= crate::limits::MITM_MAX_INFLIGHT
+            && !self.ws_sessions.contains_key(&(host.to_string(), conn_id.to_string()))
+        {
+            return;
+        }
+        self.ws_sessions.insert(
+            (host.to_string(), conn_id.to_string()),
+            WsSession {
+                method: method.to_string(),
+                url: url.to_string(),
+                started_at_ms: crate::now_ms(),
+                frames: Vec::new(),
+            },
+        );
+    }
+
+    fn ws_push_frame(&mut self, host: &str, conn_id: &str, frame: &WsFrameRecord) {
+        let Some(session) = self.ws_sessions.get_mut(&(host.to_string(), conn_id.to_string())) else {
+            return;
+        };
+        if session.frames.len() >= CAPTURE_WS_FRAMES_MAX {
+            return;
+        }
+        session.frames.push(frame.clone());
+    }
+
+    fn ws_close(&mut self, host: &str, conn_id: &str) {
+        let Some(session) = self.ws_sessions.remove(&(host.to_string(), conn_id.to_string())) else {
+            return;
+        };
+        let now = crate::now_ms();
+        let record = CaptureRecord {
+            record_id: 0,
+            request_record_id: 0,
+            conn_id: conn_id.to_string(),
+            host: host.to_string(),
+            method: if session.method.is_empty() {
+                "GET".to_string()
+            } else {
+                session.method.clone()
+            },
+            scheme: "https".to_string(),
+            url: session.url.clone(),
+            status_code: 101,
+            protocol: "ws".to_string(),
+            req_headers: String::new(),
+            resp_headers: String::new(),
+            req_body_preview: Vec::new(),
+            resp_body_preview: Vec::new(),
+            req_body: Vec::new(),
+            resp_body: Vec::new(),
+            req_bytes: 0,
+            resp_bytes: 0,
+            content_type: String::new(),
+            started_at_ms: session.started_at_ms,
+            finished_at_ms: now,
+            duration_ms: now.saturating_sub(session.started_at_ms),
+            truncated: session.frames.iter().any(|f| f.truncated),
+            mitm_failed: false,
+            ws_frames: session.frames.clone(),
+        };
+        self.push_full(record, now);
     }
 
     /// Queue `record` for the next durable flush, enforcing both the record and
@@ -651,7 +737,30 @@ fn record_size(r: &CaptureRecord) -> usize {
         + r.resp_body_preview.len()
         + r.req_body.len()
         + r.resp_body.len()
+        + r.ws_frames
+            .iter()
+            .map(|f| f.preview.len() + 32)
+            .sum::<usize>()
         + 64
+}
+
+fn ws_direction_str(direction: WsDirection) -> &'static str {
+    match direction {
+        WsDirection::ClientToServer => "clientToServer",
+        WsDirection::ServerToClient => "serverToClient",
+    }
+}
+
+/// Convert one MITM-layer WS frame into the store's wire shape.
+fn ws_frame_to_summary(frame: &WsFrameRecord) -> CaptureWsFrame {
+    CaptureWsFrame {
+        direction: ws_direction_str(frame.direction).to_string(),
+        opcode: frame.opcode.to_string(),
+        payload_len: frame.payload_len,
+        preview: frame.preview.clone(),
+        truncated: frame.truncated,
+        at_ms: frame.at_ms,
+    }
 }
 
 /// Derive the bounded in-ring summary from a full record. Preview fields are
@@ -682,7 +791,19 @@ fn summarize(r: &CaptureRecord) -> CaptureSummary {
         duration_ms: r.duration_ms,
         truncated,
         mitm_failed: r.mitm_failed,
-        ws_frames: Vec::new(),
+        ws_frames: r
+            .ws_frames
+            .iter()
+            .take(CAPTURE_WS_RING_FRAMES)
+            .map(|f| {
+                let mut frame = ws_frame_to_summary(f);
+                frame.preview = clip_bytes(&frame.preview, CAPTURE_WS_RING_PREVIEW_BYTES);
+                if frame.preview.len() < f.preview.len() {
+                    frame.truncated = true;
+                }
+                frame
+            })
+            .collect(),
     }
 }
 
@@ -755,12 +876,23 @@ impl Persist {
                started_at_ms INTEGER NOT NULL,
                finished_at_ms INTEGER NOT NULL,
                duration_ms INTEGER NOT NULL,
-               truncated INTEGER NOT NULL,
-               mitm_failed INTEGER NOT NULL
+                truncated INTEGER NOT NULL,
+                mitm_failed INTEGER NOT NULL,
+                ws_frames TEXT NOT NULL DEFAULT '[]'
              );
              CREATE INDEX IF NOT EXISTS idx_capture_finished
                ON capture_records(finished_at_ms, record_id);",
         )?;
+        let has_ws_frames: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('capture_records') WHERE name='ws_frames'",
+            [],
+            |r| r.get::<_, i64>(0).map(|n| n > 0),
+        )?;
+        if !has_ws_frames {
+            conn.execute_batch(
+                "ALTER TABLE capture_records ADD COLUMN ws_frames TEXT NOT NULL DEFAULT '[]';",
+            )?;
+        }
         Ok(Self {
             conn,
             max_rows: CAPTURE_MAX_ROWS,
@@ -784,9 +916,9 @@ impl Persist {
                     status_code, protocol, req_headers, resp_headers, req_body_preview,
                     resp_body_preview, req_body, resp_body, req_bytes, resp_bytes,
                     content_type, started_at_ms, finished_at_ms, duration_ms, truncated,
-                    mitm_failed)
+                    mitm_failed, ws_frames)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-                         ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)
+                         ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)
                  ON CONFLICT(record_id) DO UPDATE SET
                    request_record_id=excluded.request_record_id,
                    conn_id=excluded.conn_id,
@@ -809,9 +941,17 @@ impl Persist {
                    finished_at_ms=excluded.finished_at_ms,
                    duration_ms=excluded.duration_ms,
                    truncated=excluded.truncated,
-                   mitm_failed=excluded.mitm_failed",
+                   mitm_failed=excluded.mitm_failed,
+                   ws_frames=excluded.ws_frames",
             )?;
             for r in records {
+                let ws_frames = serde_json::to_string(
+                    &r.ws_frames
+                        .iter()
+                        .map(ws_frame_to_summary)
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap_or_else(|_| "[]".to_string());
                 stmt.execute(rusqlite::params![
                     r.record_id as i64,
                     r.request_record_id as i64,
@@ -836,6 +976,7 @@ impl Persist {
                     r.duration_ms as i64,
                     r.truncated as i64,
                     r.mitm_failed as i64,
+                    ws_frames,
                 ])?;
             }
         }
@@ -930,8 +1071,7 @@ impl Persist {
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let mut rows = stmt.query_map(rusqlite::params![record_id as i64], |row| {
-            let mut summary = row_to_summary(row)?;
-            summary.ws_frames = Vec::new();
+            let summary = row_to_summary(row)?;
             let req_body: Vec<u8> = row.get(SUMMARY_COLUMN_COUNT)?;
             let resp_body: Vec<u8> = row.get(SUMMARY_COLUMN_COUNT + 1)?;
             let mut detail = CaptureDetail::from_summary(&summary);
@@ -983,11 +1123,11 @@ impl Persist {
 const SUMMARY_COLUMNS: &str = "record_id, request_record_id, conn_id, host, method, scheme, url, \
      status_code, protocol, req_headers, resp_headers, req_body_preview, resp_body_preview, \
      req_bytes, resp_bytes, content_type, started_at_ms, finished_at_ms, duration_ms, \
-     truncated, mitm_failed";
+     truncated, mitm_failed, ws_frames";
 
 /// Number of columns in [`SUMMARY_COLUMNS`]; `load_detail`'s extra body columns
 /// follow at this offset.
-const SUMMARY_COLUMN_COUNT: usize = 21;
+const SUMMARY_COLUMN_COUNT: usize = 22;
 
 fn row_to_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<CaptureSummary> {
     Ok(CaptureSummary {
@@ -1012,8 +1152,14 @@ fn row_to_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<CaptureSummary> {
         duration_ms: row.get::<_, i64>(18)?.max(0) as u64,
         truncated: row.get::<_, i64>(19)? != 0,
         mitm_failed: row.get::<_, i64>(20)? != 0,
-        ws_frames: Vec::new(),
+        ws_frames: parse_ws_frames(row.get::<_, String>(21)?),
     })
+}
+
+/// Decode the persisted `ws_frames` JSON column; a malformed value degrades to
+/// an empty list rather than failing the whole page/detail read.
+fn parse_ws_frames(raw: String) -> Vec<CaptureWsFrame> {
+    serde_json::from_str(&raw).unwrap_or_default()
 }
 
 /// The capture sink the MITM layer pushes completed exchanges into. It only
@@ -1035,6 +1181,32 @@ pub(crate) fn ingest(record: CaptureRecord) {
         st.push_full(record, now);
     });
     crate::requests::mark_external_dirty();
+}
+
+/// The shipping [`WsFrameSink`]: accumulates a WebSocket session's frames and
+/// turns them into one `protocol:"ws"` capture record on close, so WS frames
+/// reach the same bounded store/persistence path as HTTP exchanges.
+struct StoreWsSink;
+
+impl WsFrameSink for StoreWsSink {
+    fn on_ws_open(&self, host: &str, conn_id: &str, method: &str, url: &str) {
+        with_store(|st| st.ws_open(host, conn_id, method, url));
+    }
+
+    fn on_ws_frame(&self, host: &str, conn_id: &str, frame: &WsFrameRecord) {
+        with_store(|st| st.ws_push_frame(host, conn_id, frame));
+    }
+
+    fn on_ws_close(&self, host: &str, conn_id: &str) {
+        let changed = with_store(|st| {
+            let before = st.next_cursor;
+            st.ws_close(host, conn_id);
+            st.next_cursor != before
+        });
+        if changed {
+            crate::requests::mark_external_dirty();
+        }
+    }
 }
 
 #[cfg(not(test))]
@@ -1078,6 +1250,8 @@ pub(crate) fn configure_at(data_dir: &str, now: u64) {
     // the sink directly, never through a process-global side effect).
     #[cfg(not(test))]
     crate::mitm::set_capture_sink(Arc::new(StoreSink));
+    #[cfg(not(test))]
+    crate::mitm::set_ws_frame_sink(Arc::new(StoreWsSink));
     let dir = data_dir.trim();
     if dir.is_empty() {
         crate::log_message(
@@ -1750,6 +1924,15 @@ pub(crate) fn reset_for_tests() {
     with_store(|st| *st = CaptureStore::fresh());
 }
 
+/// Install the shipping store-backed capture/WS sinks, which the non-test
+/// module does at `configure` time. Tests drive the production dataplane and
+/// then read back through `snapshot`/`detail`, so the real sink must be live.
+#[cfg(test)]
+pub(crate) fn install_store_sinks_for_tests() {
+    crate::mitm::set_capture_sink(Arc::new(StoreSink));
+    crate::mitm::set_ws_frame_sink(Arc::new(StoreWsSink));
+}
+
 /// Flush the pending queue immediately (no interval gate). Test seam.
 #[cfg(test)]
 pub(crate) fn flush_for_tests(now: u64) -> usize {
@@ -1812,6 +1995,7 @@ mod tests {
             duration_ms: 5,
             truncated: false,
             mitm_failed: false,
+            ws_frames: Vec::new(),
         }
     }
 
@@ -2050,7 +2234,16 @@ mod tests {
             duration_ms: u64::MAX,
             truncated: true,
             mitm_failed: true,
-            ws_frames: Vec::new(),
+            ws_frames: (0..CAPTURE_WS_RING_FRAMES)
+                .map(|i| CaptureWsFrame {
+                    direction: "clientToServer".to_string(),
+                    opcode: "binary".to_string(),
+                    payload_len: u64::MAX,
+                    preview: vec![0xFF; CAPTURE_WS_RING_PREVIEW_BYTES],
+                    truncated: true,
+                    at_ms: u64::MAX - i as u64,
+                })
+                .collect(),
         };
         let bytes = serde_json::to_vec(&s).expect("serialize worst-case capture record");
         assert!(

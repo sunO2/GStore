@@ -3159,6 +3159,7 @@ mod abi_tests {
             duration_ms: 5,
             truncated: false,
             mitm_failed: false,
+            ws_frames: Vec::new(),
         };
         captures::ingest(mk(0, 7));
         captures::ingest(mk(1, 0));

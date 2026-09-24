@@ -35,7 +35,6 @@
 //! same deterministic [`ca_params`] used at generation time (identical subject
 //! DN, key usages and `KeyIdMethod::Sha256`), which keeps the leaf issuer name
 //! and Authority Key Identifier consistent with the persisted CA.
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -1163,6 +1162,75 @@ pub(crate) async fn open_upstream(
     connect_upstream_tls(conn, &target.host, tls.client_config()?).await
 }
 
+/// Production upstream re-origination: dials the decrypted request's target
+/// through the live meow tunnel (rules/outbound + protect), then speaks TLS.
+/// DIRECT is a rule *result* — this type never opens a bare socket that skips
+/// the rules engine.
+pub(crate) struct TunnelUpstreamDialer {
+    inner: Arc<meow_tunnel::tunnel::TunnelInner>,
+    target: UpstreamTarget,
+    tls: UpstreamTlsConfig,
+}
+
+impl TunnelUpstreamDialer {
+    pub(crate) fn new(
+        inner: Arc<meow_tunnel::tunnel::TunnelInner>,
+        target: UpstreamTarget,
+        tls: UpstreamTlsConfig,
+    ) -> Self {
+        Self { inner, target, tls }
+    }
+}
+
+impl UpstreamDialer for TunnelUpstreamDialer {
+    fn dial(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<EstablishedUpstream, String>> + Send>> {
+        let inner = Arc::clone(&self.inner);
+        let target = self.target.clone();
+        let tls = self.tls.clone();
+        Box::pin(async move {
+            let stream = open_upstream(&inner, &target, &tls)
+                .await
+                .map_err(|e| e.to_string())?;
+            let proto = HttpProtocol::from_alpn(stream.get_ref().1.alpn_protocol());
+            let client = UpstreamClient::establish(stream, proto).await?;
+            Ok(EstablishedUpstream { client, proto })
+        })
+    }
+}
+
+/// The production upstream trust anchors: Mozilla's root store.
+fn production_roots() -> RootCertStore {
+    let mut roots = RootCertStore::empty();
+    for cert in webpki_root_certs::TLS_SERVER_ROOT_CERTS {
+        let _ = roots.add(cert.clone());
+    }
+    roots
+}
+
+static UPSTREAM_TLS: OnceLock<Mutex<UpstreamTlsConfig>> = OnceLock::new();
+
+fn upstream_tls_cell() -> &'static Mutex<UpstreamTlsConfig> {
+    UPSTREAM_TLS.get_or_init(|| Mutex::new(UpstreamTlsConfig::with_roots(production_roots())))
+}
+
+/// The upstream TLS settings the production dialer uses (strict verification
+/// against [`production_roots`]).
+pub(crate) fn upstream_tls_config() -> UpstreamTlsConfig {
+    upstream_tls_cell()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+/// Override the upstream TLS settings. Tests point the dialer at a local
+/// fixture whose leaf is signed by the test CA; production never calls this.
+#[cfg(test)]
+pub(crate) fn set_upstream_tls_for_tests(config: UpstreamTlsConfig) {
+    *upstream_tls_cell().lock().unwrap_or_else(|e| e.into_inner()) = config;
+}
+
 /// Test/opt-in verifier accepting any upstream leaf. Reachable only when
 /// [`UpstreamTlsConfig::skip_cert_verify`] is explicitly set.
 #[derive(Debug)]
@@ -1368,12 +1436,20 @@ pub(crate) struct WsFrameRecord {
 /// installs the durable implementor; the shipping default is a no-op and the
 /// dataplane never blocks on it.
 pub(crate) trait WsFrameSink: Send + Sync {
+    fn on_ws_open(&self, _host: &str, _conn_id: &str, _method: &str, _url: &str) {}
+
     fn on_ws_frame(&self, _host: &str, _conn_id: &str, _frame: &WsFrameRecord) {}
+
+    fn on_ws_close(&self, _host: &str, _conn_id: &str) {}
 }
 
 struct NoopWsFrameSink;
 
 impl WsFrameSink for NoopWsFrameSink {}
+
+pub(crate) fn noop_ws_frame_sink() -> Arc<dyn WsFrameSink> {
+    Arc::new(NoopWsFrameSink)
+}
 
 static WS_FRAME_SINK: OnceLock<Mutex<Arc<dyn WsFrameSink>>> = OnceLock::new();
 
@@ -1483,6 +1559,7 @@ pub(crate) struct CaptureRecord {
     pub duration_ms: u64,
     pub truncated: bool,
     pub mitm_failed: bool,
+    pub ws_frames: Vec<WsFrameRecord>,
 }
 
 /// Bounded sink seam: captures are pushed here, nothing is ever emitted
@@ -1495,6 +1572,10 @@ pub(crate) trait CaptureSink: Send + Sync {
 struct NoopCaptureSink;
 
 impl CaptureSink for NoopCaptureSink {}
+
+pub(crate) fn noop_capture_sink() -> Arc<dyn CaptureSink> {
+    Arc::new(NoopCaptureSink)
+}
 
 static CAPTURE_SINK: OnceLock<Mutex<Arc<dyn CaptureSink>>> = OnceLock::new();
 
@@ -1570,14 +1651,16 @@ struct BodyBuffer {
 struct BodyCapture {
     enabled: bool,
     encoding: BodyEncoding,
+    cap: usize,
     buffer: Mutex<BodyBuffer>,
 }
 
 impl BodyCapture {
-    fn new(enabled: bool, encoding: BodyEncoding) -> Arc<Self> {
+    fn new(enabled: bool, encoding: BodyEncoding, cap: usize) -> Arc<Self> {
         Arc::new(Self {
             enabled,
             encoding,
+            cap,
             buffer: Mutex::new(BodyBuffer::default()),
         })
     }
@@ -1588,8 +1671,8 @@ impl BodyCapture {
         }
         let mut buffer = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
         buffer.total += data.len() as u64;
-        if buffer.raw.len() < CAPTURE_BODY_MAX_BYTES {
-            let room = CAPTURE_BODY_MAX_BYTES - buffer.raw.len();
+        if buffer.raw.len() < self.cap {
+            let room = self.cap - buffer.raw.len();
             let take = room.min(data.len());
             buffer.raw.extend_from_slice(&data[..take]);
         }
@@ -1611,7 +1694,7 @@ impl BodyCapture {
             };
         }
         let raw_truncated = total > raw.len() as u64;
-        let (full, decode_truncated) = decode_capture(self.encoding, &raw);
+        let (full, decode_truncated) = decode_capture(self.encoding, &raw, self.cap);
         let preview = full[..full.len().min(CAPTURE_PREVIEW_MAX_BYTES)].to_vec();
         CapturedBody {
             full,
@@ -1627,11 +1710,11 @@ impl BodyCapture {
 /// [`CAPTURE_BODY_MAX_BYTES`], setting the truncated flag. The input is an
 /// in-memory slice, and the inner reader is always ready, so the future never
 /// yields and can be driven to completion without a reactor.
-fn decode_capture(encoding: BodyEncoding, raw: &[u8]) -> (Vec<u8>, bool) {
+fn decode_capture(encoding: BodyEncoding, raw: &[u8], cap: usize) -> (Vec<u8>, bool) {
     use async_compression::tokio::bufread::{BrotliDecoder, GzipDecoder};
     use tokio::io::{AsyncRead, AsyncReadExt, BufReader};
 
-    async fn read_capped<R: AsyncRead + Unpin>(reader: &mut R) -> (Vec<u8>, bool) {
+    async fn read_capped<R: AsyncRead + Unpin>(reader: &mut R, cap: usize) -> (Vec<u8>, bool) {
         let mut out = Vec::new();
         let mut buf = [0u8; 8192];
         let mut truncated = false;
@@ -1639,8 +1722,8 @@ fn decode_capture(encoding: BodyEncoding, raw: &[u8]) -> (Vec<u8>, bool) {
             match reader.read(&mut buf).await {
                 Ok(0) => break,
                 Ok(n) => {
-                    if out.len() + n > CAPTURE_BODY_MAX_BYTES {
-                        let take = CAPTURE_BODY_MAX_BYTES - out.len();
+                    if out.len() + n > cap {
+                        let take = cap - out.len();
                         out.extend_from_slice(&buf[..take]);
                         truncated = true;
                         break;
@@ -1661,11 +1744,11 @@ fn decode_capture(encoding: BodyEncoding, raw: &[u8]) -> (Vec<u8>, bool) {
         BodyEncoding::Identity => (raw.to_vec(), false),
         BodyEncoding::Gzip => {
             let mut decoder = GzipDecoder::new(BufReader::new(raw));
-            block_on(read_capped(&mut decoder))
+            block_on(read_capped(&mut decoder, cap))
         }
         BodyEncoding::Brotli => {
             let mut decoder = BrotliDecoder::new(BufReader::new(raw));
-            block_on(read_capped(&mut decoder))
+            block_on(read_capped(&mut decoder, cap))
         }
     }
 }
@@ -1865,6 +1948,7 @@ impl ExchangeCapture {
             duration_ms: now.saturating_sub(self.started_at_ms),
             truncated: request.truncated || response.truncated,
             mitm_failed: failed,
+            ws_frames: Vec::new(),
         };
         self.sink.on_capture(record);
     }
@@ -2101,6 +2185,9 @@ pub(crate) struct BridgeContext {
     pub conn_id: String,
     pub request_record_id: u64,
     pub capture_body: bool,
+    pub capture_ws: bool,
+    pub capture_h2: bool,
+    pub max_body_bytes: usize,
     pub started_at_ms: u64,
     pub sink: Option<Arc<dyn CaptureSink>>,
     pub ws_sink: Option<Arc<dyn WsFrameSink>>,
@@ -2118,6 +2205,9 @@ impl BridgeContext {
             conn_id: conn_id.into(),
             request_record_id,
             capture_body: true,
+            capture_ws: true,
+            capture_h2: true,
+            max_body_bytes: CAPTURE_BODY_MAX_BYTES,
             started_at_ms: crate::now_ms(),
             sink: None,
             ws_sink: None,
@@ -2134,6 +2224,21 @@ impl BridgeContext {
 
     pub(crate) fn with_capture_body(mut self, on: bool) -> Self {
         self.capture_body = on;
+        self
+    }
+
+    pub(crate) fn with_capture_ws(mut self, on: bool) -> Self {
+        self.capture_ws = on;
+        self
+    }
+
+    pub(crate) fn with_capture_h2(mut self, on: bool) -> Self {
+        self.capture_h2 = on;
+        self
+    }
+
+    pub(crate) fn with_max_body_bytes(mut self, cap: usize) -> Self {
+        self.max_body_bytes = cap;
         self
     }
 
@@ -2159,6 +2264,9 @@ struct BridgeState {
     conn_id: String,
     request_record_id: u64,
     capture_body: bool,
+    capture_ws: bool,
+    capture_h2: bool,
+    body_cap: usize,
     started_at_ms: u64,
     client_proto: HttpProtocol,
     rule_source: Arc<dyn CaptureRuleSource>,
@@ -2167,6 +2275,16 @@ struct BridgeState {
 }
 
 impl BridgeState {
+    /// The sink an exchange on this connection records through: HTTP/2
+    /// exchanges are suppressed when `captureH2` is off (forwarding is
+    /// unaffected).
+    fn exchange_sink(&self) -> Arc<dyn CaptureSink> {
+        if self.client_proto == HttpProtocol::H2 && !self.capture_h2 {
+            noop_capture_sink()
+        } else {
+            Arc::clone(&self.sink)
+        }
+    }
     /// Resolve the upstream client, dialing through the tunnel on first use. A
     /// `kind:"local"` rewrite never reaches here, so it opens no socket.
     async fn upstream_client(&self) -> Result<&EstablishedUpstream, String> {
@@ -2197,9 +2315,9 @@ impl BridgeState {
         // The source hands back a snapshot and counts the hit; no lock is held
         // across the dial below.
         let rule = self.rule_source.match_rule(method.as_str(), &url);
-        let req_capture = BodyCapture::new(self.capture_body, body_encoding(&req_headers));
+        let req_capture = BodyCapture::new(self.capture_body, body_encoding(&req_headers), self.body_cap);
         let exchange = Arc::new(ExchangeCapture::new(
-            Arc::clone(&self.sink),
+            self.exchange_sink(),
             self.client_proto,
             &self.host,
             &self.conn_id,
@@ -2212,7 +2330,7 @@ impl BridgeState {
         ));
 
         if let Some(rule) = rule.as_ref().filter(|r| r.kind == RULE_KIND_LOCAL) {
-            return serve_local_rule(rule, self.capture_body, exchange, req.into_body());
+            return serve_local_rule(rule, self.capture_body, self.body_cap, exchange, req.into_body());
         }
 
         // Only now resolve the upstream connection, dialing on first use.
@@ -2287,6 +2405,7 @@ impl BridgeState {
             return serve_replace_rule(
                 rule,
                 self.capture_body,
+                self.body_cap,
                 exchange,
                 response,
                 permit,
@@ -2298,7 +2417,7 @@ impl BridgeState {
         // Unmatched (or an unknown kind): forward byte-for-byte, exactly as
         // before — the body and `Content-Encoding` are untouched.
         let content_type = content_type_of(&resp_headers);
-        let resp_capture = BodyCapture::new(self.capture_body, body_encoding(&resp_headers));
+        let resp_capture = BodyCapture::new(self.capture_body, body_encoding(&resp_headers), self.body_cap);
         exchange.set_response(
             status.as_u16(),
             &resp_headers,
@@ -2352,6 +2471,7 @@ impl BridgeState {
 
         let client_upgrade = hyper::upgrade::on(&mut req);
         let method = req.method().clone();
+        let method_text = method.as_str().to_string();
         let req_headers = req.headers().clone();
         let path = req
             .uri()
@@ -2359,6 +2479,7 @@ impl BridgeState {
             .map(|pq| pq.as_str().to_string())
             .unwrap_or_else(|| "/".to_string());
         let host = host_header(&req_headers).unwrap_or_else(|| self.host.clone());
+        let ws_url = format!("https://{host}{path}");
         let origin: Uri = match path.parse() {
             Ok(uri) => uri,
             Err(_) => Uri::from_static("/"),
@@ -2426,10 +2547,23 @@ impl BridgeState {
         }
         let host = self.host.clone();
         let conn_id = self.conn_id.clone();
-        let sink = Arc::clone(&self.ws_sink);
+        let capture_ws = self.capture_ws;
+        let sink = if capture_ws {
+            Arc::clone(&self.ws_sink)
+        } else {
+            noop_ws_frame_sink()
+        };
+        if capture_ws {
+            sink.on_ws_open(&host, &conn_id, &method_text, &ws_url);
+        }
         tokio::spawn(async move {
-            if let Err(e) = bridge_websocket(client_upgrade, upstream_upgrade, host, conn_id, sink).await
-            {
+            let outcome =
+                bridge_websocket(client_upgrade, upstream_upgrade, host.clone(), conn_id.clone(), sink.clone())
+                    .await;
+            if capture_ws {
+                sink.on_ws_close(&host, &conn_id);
+            }
+            if let Err(e) = outcome {
                 crate::log_message(2, &format!("proxy.mitm: ws bridge ended: {e}"));
             }
         });
@@ -2444,6 +2578,7 @@ impl BridgeState {
 fn serve_local_rule(
     rule: &CaptureRule,
     capture_body: bool,
+    body_cap: usize,
     exchange: Arc<ExchangeCapture>,
     request_body: Incoming,
 ) -> Response<BridgeBody> {
@@ -2458,7 +2593,7 @@ fn serve_local_rule(
     let bytes = Bytes::from(rule.resp_body.clone().unwrap_or_default().into_bytes());
     force_plaintext_body_headers(&mut headers, bytes.len());
     let content_type = content_type_of(&headers);
-    let resp_capture = BodyCapture::new(capture_body, BodyEncoding::Identity);
+    let resp_capture = BodyCapture::new(capture_body, BodyEncoding::Identity, body_cap);
     exchange.set_response(
         status.as_u16(),
         &headers,
@@ -2475,6 +2610,7 @@ fn serve_local_rule(
 fn serve_replace_rule(
     rule: &CaptureRule,
     capture_body: bool,
+    body_cap: usize,
     exchange: Arc<ExchangeCapture>,
     upstream: Response<Incoming>,
     permit: Option<OwnedSemaphorePermit>,
@@ -2491,7 +2627,7 @@ fn serve_replace_rule(
         // Status/headers only: the upstream body streams through unchanged, so
         // its content coding is preserved.
         let content_type = content_type_of(&headers);
-        let resp_capture = BodyCapture::new(capture_body, body_encoding(&upstream_headers));
+        let resp_capture = BodyCapture::new(capture_body, body_encoding(&upstream_headers), body_cap);
         exchange.set_response(
             status.as_u16(),
             &headers,
@@ -2517,7 +2653,7 @@ fn serve_replace_rule(
     let bytes = Bytes::from(body.as_bytes().to_vec());
     force_plaintext_body_headers(&mut headers, bytes.len());
     let content_type = content_type_of(&headers);
-    let resp_capture = BodyCapture::new(capture_body, BodyEncoding::Identity);
+    let resp_capture = BodyCapture::new(capture_body, BodyEncoding::Identity, body_cap);
     exchange.set_response(
         status.as_u16(),
         &headers,
@@ -2839,6 +2975,9 @@ where
         conn_id: ctx.conn_id,
         request_record_id: ctx.request_record_id,
         capture_body: ctx.capture_body,
+        capture_ws: ctx.capture_ws,
+        capture_h2: ctx.capture_h2,
+        body_cap: ctx.max_body_bytes,
         started_at_ms: ctx.started_at_ms,
         client_proto,
         rule_source: ctx.rule_source,

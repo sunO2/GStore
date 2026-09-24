@@ -27,7 +27,10 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::capture::{self, AppAttribution};
 use crate::dns::DnsEngine;
-use crate::mitm::{self, CertificateAuthority, MitmGateObserver, MitmTls};
+use crate::mitm::{
+    self, BridgeContext, CertificateAuthority, MitmGateObserver, MitmTls, TunnelUpstreamDialer,
+    UpstreamDialer, UpstreamTarget,
+};
 use crate::sniff;
 
 /// Event type for one DNS query record (Todo 15/16 consume it).
@@ -138,7 +141,7 @@ pub(crate) fn spawn(
 /// bytes are replayed verbatim. A gate hit hands the stream to an isolated MITM
 /// task; a miss (or any MITM init failure) falls back to the unchanged
 /// [`meow_tunnel::tcp::handle_tcp`] pass-through.
-async fn handle_flow<S>(
+pub(crate) async fn handle_flow<S>(
     inner: Arc<meow_tunnel::tunnel::TunnelInner>,
     src: SocketAddr,
     dst: SocketAddr,
@@ -166,7 +169,9 @@ async fn handle_flow<S>(
     let passthrough = match capture::decide_mitm(&config, dst.port(), host.as_deref(), &app) {
         Some(mitm_host) => {
             let prefixed = sniff::PrefixedStream::new(prefix, stream);
-            match begin_mitm(prefixed, Some(mitm_host.as_str())) {
+            let dialer = production_dialer(&inner, &mitm_host, src, dst);
+            let ctx = bridge_context(&config, &mitm_host, src, dst);
+            match begin_mitm(prefixed, Some(mitm_host.as_str()), dialer, ctx) {
                 // The isolated MITM task owns the stream now.
                 Ok(()) => None,
                 // Init failed before consuming a byte: pass the stream through.
@@ -207,13 +212,52 @@ impl std::fmt::Display for MitmInitError {
     }
 }
 
+/// Build the production upstream dialer for one gate-hit flow: a decrypted
+/// request is re-originated through the live tunnel (rules/outbound/protect).
+pub(crate) fn production_dialer(
+    inner: &Arc<meow_tunnel::tunnel::TunnelInner>,
+    host: &str,
+    src: SocketAddr,
+    dst: SocketAddr,
+) -> Arc<dyn UpstreamDialer> {
+    let target = UpstreamTarget::new(host, dst.port())
+        .with_dst_ip(dst.ip())
+        .with_source(src.ip(), src.port());
+    Arc::new(TunnelUpstreamDialer::new(
+        Arc::clone(inner),
+        target,
+        mitm::upstream_tls_config(),
+    ))
+}
+
+/// Build the bridge context for one gate-hit flow from the capture.config
+/// snapshot taken at session start, so in-flight sessions are internally
+/// consistent even if the live config changes mid-session.
+pub(crate) fn bridge_context(
+    config: &capture::CaptureConfig,
+    host: &str,
+    src: SocketAddr,
+    dst: SocketAddr,
+) -> BridgeContext {
+    BridgeContext::new(host, format!("tun-{src}->{dst}"), 0)
+        .with_capture_body(config.capture_body)
+        .with_capture_ws(config.capture_ws)
+        .with_capture_h2(config.capture_h2)
+        .with_max_body_bytes(config.max_body_bytes)
+}
+
 /// Hand a gate-hit flow to the MITM path.
 ///
-/// `Ok(())` means an isolated task owns the stream and will run todo 5's TLS
-/// termination. `Err((stream, _))` returns the **untouched** stream (its
-/// prefetched prefix intact) so the caller can pass it through byte-for-byte.
-/// Every failure is recorded as `mitmFailed`.
-pub(crate) fn begin_mitm<S>(stream: S, host: Option<&str>) -> Result<(), (S, MitmInitError)>
+/// `Ok(())` means an isolated task owns the stream and will terminate TLS then
+/// bridge it to the tunnel-re-originated upstream. `Err((stream, _))` returns
+/// the **untouched** stream (its prefetched prefix intact) so the caller can
+/// pass it through byte-for-byte. Every failure is recorded as `mitmFailed`.
+pub(crate) fn begin_mitm<S>(
+    stream: S,
+    host: Option<&str>,
+    dialer: Arc<dyn UpstreamDialer>,
+    ctx: BridgeContext,
+) -> Result<(), (S, MitmInitError)>
 where
     S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
@@ -237,7 +281,10 @@ where
     spawn_isolated(async move {
         // The guard releases the slot when the session ends, panic included.
         let _guard = guard;
-        let _ = mitigate(stream, ca, host, observer).await;
+        if let MitmStreamOutcome::Failed(e) = mitigate(stream, ca, host, observer, dialer, ctx).await
+        {
+            crate::log_message(2, &format!("proxy.mitm: session failed: {e}"));
+        }
     });
     Ok(())
 }
@@ -263,35 +310,44 @@ where
 }
 
 /// Outcome of running one MITM-terminated client stream.
-#[allow(dead_code)]
 #[derive(Debug)]
 pub(crate) enum MitmStreamOutcome {
-    /// TLS termination succeeded (todo 5 ran); todos 7/8 take over.
+    /// TLS termination succeeded and the bridge finished normally.
     Terminated,
-    /// Handshake/parse failed; the flow was closed.
+    /// Handshake/parse/upstream failed; the flow was closed.
     Failed(String),
 }
 
-/// Run todo 5's TLS termination over `stream` for `host`.
+/// Run TLS termination over `stream` for `host`, then bridge the decrypted
+/// session to the tunnel-re-originated upstream via [`mitm::bridge_deferred`].
 ///
-/// This is the **post-gate seam**: todos 7 (upstream re-origination) and 8
-/// (HTTP/h2 capture) replace the drop below. For todo 6 termination is invoked
-/// and the resulting stream is dropped, cleanly closing the client session.
+/// Any bridge failure is fail-safe: the TLS stream is dropped (clean close),
+/// the failure is recorded as `mitmFailed`, and the TUN dataplane is never
+/// disrupted. Allowlisted traffic is never silently dropped while capture is
+/// enabled — it is either captured or cleanly closed with a recorded failure.
 pub(crate) async fn mitigate<S>(
     stream: S,
     ca: Arc<CertificateAuthority>,
     host: String,
     observer: Arc<dyn MitmGateObserver>,
+    dialer: Arc<dyn UpstreamDialer>,
+    ctx: BridgeContext,
 ) -> MitmStreamOutcome
 where
-    S: AsyncRead + AsyncWrite + Unpin,
+    S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
     observer.on_mitm_entered(&host);
     match mitm::terminate(stream, &ca, Some(host.as_str())).await {
-        MitmTls::Terminated(_tls) => {
-            // ---- SEAM: todos 7/8 hook in here. -----------------------------
+        MitmTls::Terminated(tls) => {
             observer.on_terminated(&host);
-            MitmStreamOutcome::Terminated
+            match mitm::bridge_deferred(tls, dialer, ctx).await {
+                Ok(()) => MitmStreamOutcome::Terminated,
+                Err(e) => {
+                    observer.on_failed(&host, &e);
+                    mitm::record_mitm_failed(&format!("bridge: {e}"));
+                    MitmStreamOutcome::Failed(e)
+                }
+            }
         }
         MitmTls::Passthrough(_stream) => {
             let reason = "unexpected passthrough".to_string();
@@ -487,6 +543,25 @@ mod mitm_gate_tests {
         Arc::new(CertificateAuthority::generate(dir.to_str().unwrap()).expect("generate CA"))
     }
 
+    struct UnreachableDialer;
+
+    impl UpstreamDialer for UnreachableDialer {
+        fn dial(
+            &self,
+        ) -> Pin<Box<dyn Future<Output = Result<mitm::EstablishedUpstream, String>> + Send>>
+        {
+            Box::pin(async { Err("test dialer: no upstream".to_string()) })
+        }
+    }
+
+    fn begin_test_mitm<S>(stream: S, host: &str) -> Result<(), (S, MitmInitError)>
+    where
+        S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+    {
+        let ctx = BridgeContext::new(host, "test-conn", 0);
+        begin_mitm(stream, Some(host), Arc::new(UnreachableDialer), ctx)
+    }
+
     #[derive(Default)]
     struct RecordingObserver {
         entered: AtomicUsize,
@@ -591,7 +666,7 @@ mod mitm_gate_tests {
 
             let (client, server) = tokio::io::duplex(128 * 1024);
             assert!(
-                begin_mitm(server, Some("a.example")).is_ok(),
+                begin_test_mitm(server, "a.example").is_ok(),
                 "a gate hit must start the MITM path"
             );
 
@@ -619,8 +694,10 @@ mod mitm_gate_tests {
                 "todo 5 TLS termination invoked"
             );
             assert_eq!(ca.signings(), 1, "a leaf was signed during termination");
-            wait_for("in-flight release", || mitm::inflight_count() == 0).await;
+            // The session now stays live until the client closes: drop the
+            // client first, then the in-flight slot is released.
             drop(tls);
+            wait_for("in-flight release", || mitm::inflight_count() == 0).await;
 
             mitm::clear_ca();
             mitm::reset_gate_observer();
@@ -678,7 +755,7 @@ mod mitm_gate_tests {
             client.flush().await.expect("flush");
 
             let before = mitm::mitm_failed_count();
-            let result = begin_mitm(server, Some("a.example"));
+            let result = begin_test_mitm(server, "a.example");
             let Err((mut stream, err)) = result else {
                 panic!("MITM init without a CA must fail");
             };
@@ -718,7 +795,7 @@ mod mitm_gate_tests {
             client.flush().await.expect("flush");
 
             let before = mitm::mitm_failed_count();
-            let result = begin_mitm(server, Some("a.example"));
+            let result = begin_test_mitm(server, "a.example");
             let Err((mut stream, err)) = result else {
                 panic!("overflow must not start a MITM session");
             };
@@ -758,6 +835,552 @@ mod mitm_gate_tests {
 
             let sibling = tokio::spawn(async { 7u32 });
             assert_eq!(sibling.await.unwrap(), 7, "dataplane runtime survives the panic");
+        });
+    }
+}
+
+/// R1 acceptance: the MITM bridge is wired into the **production** flow entry
+/// (`handle_flow` -> `begin_mitm` -> `bridge_deferred`), not exercised through
+/// `bridge` directly. Every case drives `handle_flow` over a duplex that stands
+/// in for the accepted in-TUN stream, and asserts the shipped capture store /
+/// rule store / WS sink actually received the result.
+#[cfg(all(test, unix))]
+mod mitm_e2e_tests {
+    use std::net::SocketAddr;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{Duration, Instant};
+
+    use futures::{SinkExt, StreamExt};
+    use http_body_util::{BodyExt, Full};
+    use hyper::body::Bytes;
+    use hyper::Uri;
+    use rustls::pki_types::ServerName;
+    use rustls::RootCertStore;
+    use tokio::io::DuplexStream;
+    use tokio::net::TcpListener;
+    use tokio_rustls::{TlsAcceptor, TlsConnector};
+    use tokio_tungstenite::tungstenite::ClientRequestBuilder;
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+    use tokio_tungstenite::{accept_async_with_config, client_async_with_config};
+
+    use super::*;
+    use crate::capture::{self, CaptureConfig};
+    use crate::captures::{self, CaptureFilter};
+    use crate::limits::CAPTURE_BODY_MAX_BYTES;
+    use crate::mitm::{self, CertificateAuthority, UpstreamTlsConfig};
+    use crate::TEST_SERIAL as SERIAL;
+
+    static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+    fn current_thread() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("current-thread runtime")
+    }
+
+    fn temp_ca(tag: &str) -> Arc<CertificateAuthority> {
+        let n = TMP_SEQ.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "gstore-mitm-e2e-{}-{}-{}",
+            std::process::id(),
+            tag,
+            n
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        Arc::new(CertificateAuthority::generate(dir.to_str().unwrap()).expect("generate CA"))
+    }
+
+    fn roots(ca: &CertificateAuthority) -> RootCertStore {
+        let mut store = RootCertStore::empty();
+        store.add(ca.der().clone()).expect("trust CA");
+        store
+    }
+
+    fn client_tls(ca: &CertificateAuthority, alpn: &[u8]) -> Arc<rustls::ClientConfig> {
+        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+        let mut config = rustls::ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .expect("versions")
+            .with_root_certificates(roots(ca))
+            .with_no_client_auth();
+        config.alpn_protocols = vec![alpn.to_vec()];
+        Arc::new(config)
+    }
+
+    fn tunnel(rules: &[&str]) -> Arc<meow_tunnel::tunnel::TunnelInner> {
+        let resolver = Arc::new(meow_dns::Resolver::new(
+            Vec::new(),
+            Vec::new(),
+            meow_common::DnsMode::Normal,
+            meow_trie::DomainTrie::new(),
+            false,
+            false,
+        ));
+        let tunnel = meow_tunnel::Tunnel::new(resolver);
+        let parsed: Vec<Box<dyn meow_common::Rule>> = rules
+            .iter()
+            .map(|line| {
+                meow_rules::parser::parse_rule(line, &meow_rules::ParserContext::empty())
+                    .expect("test rule parses")
+            })
+            .collect();
+        tunnel.update_rules(parsed);
+        tunnel.inner().clone()
+    }
+
+    fn sniffer(tls_ports: &[u16]) -> Arc<sniff::Sniffer> {
+        let mut cfg = meow_common::sniffer::SnifferConfig::default();
+        cfg.enable = true;
+        cfg.tls_ports = tls_ports.to_vec();
+        cfg.http_ports = Vec::new();
+        cfg.timeout = Duration::from_millis(300);
+        Arc::new(sniff::Sniffer::new(cfg))
+    }
+
+    fn capture_config(tls_ports: &[u16], capture_ws: bool) -> CaptureConfig {
+        capture::set_config(CaptureConfig {
+            enabled: true,
+            tls_ports: tls_ports.to_vec(),
+            domain_allowlist: vec!["flow.test".to_string()],
+            app_allowlist: Vec::new(),
+            capture_body: true,
+            capture_ws,
+            capture_h2: true,
+            max_body_bytes: CAPTURE_BODY_MAX_BYTES,
+        });
+        capture::config().as_ref().clone()
+    }
+
+    async fn start_tls_fixture(ca: Arc<CertificateAuthority>, host: &str, body: Vec<u8>) -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let config = ca.server_config(host).unwrap();
+        tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let tls = TlsAcceptor::from(config).accept(tcp).await.unwrap();
+            let service = hyper::service::service_fn(move |_req| {
+                let body = body.clone();
+                async move {
+                    let mut response = hyper::Response::new(Full::new(Bytes::from(body)));
+                    response.headers_mut().insert(
+                        hyper::header::CONTENT_TYPE,
+                        hyper::header::HeaderValue::from_static("text/plain"),
+                    );
+                    Ok::<_, std::convert::Infallible>(response)
+                }
+            });
+            let _ = hyper::server::conn::http1::Builder::new()
+                .keep_alive(false)
+                .serve_connection(hyper_util::rt::TokioIo::new(tls), service)
+                .await;
+        });
+        port
+    }
+
+    async fn start_ws_fixture(ca: Arc<CertificateAuthority>, host: &str) -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let config = ca.server_config(host).unwrap();
+        tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let tls = TlsAcceptor::from(config).accept(tcp).await.unwrap();
+            let mut ws = accept_async_with_config(tls, Some(mitm::ws_config()))
+                .await
+                .expect("ws fixture accept");
+            while let Some(Ok(message)) = ws.next().await {
+                if message.is_close() {
+                    break;
+                }
+                if ws.send(message).await.is_err() {
+                    break;
+                }
+            }
+        });
+        port
+    }
+
+    async fn run_flow<F, Fut>(
+        inner: Arc<meow_tunnel::tunnel::TunnelInner>,
+        dst_port: u16,
+        sniffer: Arc<sniff::Sniffer>,
+        client: F,
+    ) where
+        F: FnOnce(DuplexStream) -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
+        let src: SocketAddr = "10.0.0.2:40000".parse().unwrap();
+        let dst: SocketAddr = format!("127.0.0.1:{dst_port}").parse().unwrap();
+        let (client_io, server_io) = tokio::io::duplex(1 << 16);
+        let flow = tokio::spawn(handle_flow(inner, src, dst, server_io, sniffer));
+        client(client_io).await;
+        let _ = tokio::time::timeout(Duration::from_secs(5), flow).await;
+    }
+
+    async fn client_h1_tls(
+        ca: &Arc<CertificateAuthority>,
+        host: &str,
+        io: DuplexStream,
+        path: &str,
+    ) -> (u16, Vec<u8>) {
+        let tls = TlsConnector::from(client_tls(ca, b"http/1.1"))
+            .connect(ServerName::try_from(host.to_string()).unwrap(), io)
+            .await
+            .expect("client TLS handshake");
+        let (mut sender, conn) = hyper::client::conn::http1::handshake::<_, Full<Bytes>>(
+            hyper_util::rt::TokioIo::new(tls),
+        )
+        .await
+        .expect("client h1 handshake");
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+        let request = hyper::Request::builder()
+            .method("GET")
+            .uri(path)
+            .header(hyper::header::HOST, host)
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        let response = sender.send_request(request).await.expect("send request");
+        let status = response.status().as_u16();
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("client body")
+            .to_bytes()
+            .to_vec();
+        (status, body)
+    }
+
+    async fn wait_for_capture(pred: impl Fn(&[crate::captures::CaptureSummary]) -> bool) -> Vec<crate::captures::CaptureSummary> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let page = captures::snapshot(0, 64, &CaptureFilter::default());
+            if pred(&page.records) {
+                return page.records;
+            }
+            assert!(Instant::now() < deadline, "timed out waiting for capture: {:?}", page.records);
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    fn setup(capture_ws: bool, tls_ports: &[u16]) -> (Arc<CertificateAuthority>, Arc<meow_tunnel::tunnel::TunnelInner>) {
+        mitm::reset_gate_counters_for_tests();
+        mitm::clear_ca();
+        mitm::reset_capture_sink();
+        mitm::reset_ws_frame_sink();
+        captures::reset_for_tests();
+        captures::rules_reset_for_tests();
+        let ca = temp_ca("wire");
+        mitm::install_ca(Arc::clone(&ca));
+        mitm::set_upstream_tls_for_tests(UpstreamTlsConfig::with_roots(roots(&ca)));
+        captures::install_store_sinks_for_tests();
+        capture_config(tls_ports, capture_ws);
+        let inner = tunnel(&["DOMAIN,flow.test,DIRECT", "DOMAIN,blocked.test,DIRECT"]);
+        (ca, inner)
+    }
+
+    fn teardown() {
+        mitm::clear_ca();
+        mitm::reset_capture_sink();
+        mitm::reset_ws_frame_sink();
+        captures::reset_for_tests();
+        captures::rules_reset_for_tests();
+        capture::reset_for_tests();
+    }
+
+    #[test]
+    fn mitm_e2e_allowlisted_is_decrypted_and_captured() {
+        let rt = current_thread();
+        rt.block_on(async {
+            let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+            let (_ca, inner) = setup(true, &[0]);
+            let port = start_tls_fixture(
+                mitm::ca().unwrap(),
+                "flow.test",
+                b"upstream".to_vec(),
+            )
+            .await;
+            capture_config(&[port], true);
+            let ca = mitm::ca().unwrap();
+
+            run_flow(Arc::clone(&inner), port, sniffer(&[port]), {
+                let ca = Arc::clone(&ca);
+                move |io| async move {
+                    let (status, body) = client_h1_tls(&ca, "flow.test", io, "/hello").await;
+                    assert_eq!(status, 200);
+                    assert_eq!(body, b"upstream");
+                }
+            })
+            .await;
+
+            let records = wait_for_capture(|rs| {
+                rs.iter().any(|r| {
+                    r.host == "flow.test" && r.method == "GET" && r.url.ends_with("/hello")
+                })
+            })
+            .await;
+            let rec = records
+                .iter()
+                .find(|r| r.host == "flow.test" && r.url.ends_with("/hello"))
+                .expect("captured exchange present");
+            assert_eq!(rec.status_code, 200);
+            assert_eq!(rec.protocol, "h1");
+            assert_eq!(rec.scheme, "https");
+            assert_eq!(rec.resp_body_preview, b"upstream");
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while mitm::inflight_count() != 0 && Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            assert_eq!(mitm::inflight_count(), 0, "session slot released");
+            teardown();
+        });
+    }
+
+    #[test]
+    fn mitm_e2e_unmatched_passes_through_unchanged() {
+        let rt = current_thread();
+        rt.block_on(async {
+            let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+            let (_ca, inner) = setup(true, &[0]);
+            let port = start_tls_fixture(
+                mitm::ca().unwrap(),
+                "blocked.test",
+                b"PASS".to_vec(),
+            )
+            .await;
+            capture_config(&[port], true);
+            let ca = mitm::ca().unwrap();
+
+            run_flow(Arc::clone(&inner), port, sniffer(&[port]), {
+                let ca = Arc::clone(&ca);
+                move |io| async move {
+                    let (status, body) = client_h1_tls(&ca, "blocked.test", io, "/x").await;
+                    assert_eq!(status, 200, "unmatched flow is forwarded, not decrypted");
+                    assert_eq!(body, b"PASS", "unmatched bytes are unchanged end to end");
+                }
+            })
+            .await;
+
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let page = captures::snapshot(0, 64, &CaptureFilter::default());
+            assert!(
+                page.records.iter().all(|r| r.host != "blocked.test"),
+                "an unmatched (non-allowlisted) flow must never be captured"
+            );
+            teardown();
+        });
+    }
+
+    #[test]
+    fn mitm_e2e_replace_and_local_rules_apply_live() {
+        let rt = current_thread();
+        rt.block_on(async {
+            let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+            let _rg = captures::rules_test_guard();
+            let (_ca, inner) = setup(true, &[0]);
+            let port = start_tls_fixture(
+                mitm::ca().unwrap(),
+                "flow.test",
+                b"upstream".to_vec(),
+            )
+            .await;
+            capture_config(&[port], true);
+            let ca = mitm::ca().unwrap();
+            captures::rules_set(
+                br#"{"enabled":true,"url":"https://flow.test/replace","kind":"replace","statusCode":201,"headers":"content-type: text/plain","body":"replaced-live"}"#,
+            )
+            .expect("replace rule");
+            captures::rules_set(
+                br#"{"enabled":true,"url":"https://flow.test/local","kind":"local","statusCode":418,"headers":"content-type: text/plain","body":"local-live"}"#,
+            )
+            .expect("local rule");
+
+            run_flow(Arc::clone(&inner), port, sniffer(&[port]), {
+                let ca = Arc::clone(&ca);
+                move |io| async move {
+                    let (status, body) = client_h1_tls(&ca, "flow.test", io, "/replace").await;
+                    assert_eq!(status, 201, "replace rule status applies live");
+                    assert_eq!(body, b"replaced-live", "replace rule body applies live");
+                }
+            })
+            .await;
+
+            run_flow(Arc::clone(&inner), port, sniffer(&[port]), {
+                let ca = Arc::clone(&ca);
+                move |io| async move {
+                    let (status, body) = client_h1_tls(&ca, "flow.test", io, "/local").await;
+                    assert_eq!(status, 418, "local rule status applies live");
+                    assert_eq!(body, b"local-live", "local rule body applies live");
+                }
+            })
+            .await;
+
+            let records = wait_for_capture(|rs| {
+                rs.iter().any(|r| r.url.ends_with("/replace") && r.status_code == 201)
+                    && rs.iter().any(|r| r.url.ends_with("/local") && r.status_code == 418)
+            })
+            .await;
+            assert!(records.iter().any(|r| r.url.ends_with("/replace")));
+            assert!(records.iter().any(|r| r.url.ends_with("/local")));
+            teardown();
+        });
+    }
+
+    #[test]
+    fn mitm_e2e_ws_frames_persisted_and_capture_ws_toggle() {
+        let rt = current_thread();
+        rt.block_on(async {
+            let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+            let (_ca, inner) = setup(true, &[0]);
+            let port = start_ws_fixture(mitm::ca().unwrap(), "flow.test").await;
+            capture_config(&[port], true);
+
+            run_flow(Arc::clone(&inner), port, sniffer(&[port]), move |io| async move {
+                let ca = mitm::ca().unwrap();
+                let tls = TlsConnector::from(client_tls(&ca, b"http/1.1"))
+                    .connect(ServerName::try_from("flow.test").unwrap(), io)
+                    .await
+                    .expect("ws client TLS");
+                let uri: Uri = "ws://flow.test/socket".parse().unwrap();
+                let (mut ws, response) =
+                    client_async_with_config(ClientRequestBuilder::new(uri), tls, Some(mitm::ws_config()))
+                        .await
+                        .expect("ws upgrade");
+                assert_eq!(response.status(), 101);
+                ws.send(WsMessage::text("hello-ws")).await.unwrap();
+                let mut echoed = false;
+                for _ in 0..5 {
+                    match tokio::time::timeout(Duration::from_secs(5), ws.next()).await {
+                        Ok(Some(Ok(m))) if m == WsMessage::text("hello-ws") => {
+                            echoed = true;
+                            break;
+                        }
+                        Ok(Some(Ok(_))) => continue,
+                        _ => break,
+                    }
+                }
+                assert!(echoed, "ws echo round-trips through the MITM");
+                let _ = ws.close(None).await;
+            })
+            .await;
+
+            let records = wait_for_capture(|rs| {
+                rs.iter().any(|r| r.protocol == "ws" && !r.ws_frames.is_empty())
+            })
+            .await;
+            let ws_rec = records
+                .iter()
+                .find(|r| r.protocol == "ws" && !r.ws_frames.is_empty())
+                .expect("ws capture record with frames");
+            let detail = captures::detail(ws_rec.record_id).unwrap().unwrap();
+            assert!(
+                detail.ws_frames.iter().any(|f| f.preview == b"hello-ws"),
+                "the persisted WS frame preview must round-trip: {:?}",
+                detail.ws_frames
+            );
+
+            let before = captures::snapshot(0, 64, &CaptureFilter::default())
+                .records
+                .iter()
+                .filter(|r| r.protocol == "ws")
+                .count();
+            capture_config(&[port], false);
+            let port2 = start_ws_fixture(mitm::ca().unwrap(), "flow.test").await;
+            capture_config(&[port2], false);
+            run_flow(Arc::clone(&inner), port2, sniffer(&[port2]), move |io| async move {
+                let ca = mitm::ca().unwrap();
+                let tls = TlsConnector::from(client_tls(&ca, b"http/1.1"))
+                    .connect(ServerName::try_from("flow.test").unwrap(), io)
+                    .await
+                    .expect("ws client TLS");
+                let uri: Uri = "ws://flow.test/socket2".parse().unwrap();
+                let (mut ws, _) =
+                    client_async_with_config(ClientRequestBuilder::new(uri), tls, Some(mitm::ws_config()))
+                        .await
+                        .expect("ws upgrade");
+                ws.send(WsMessage::text("not-recorded")).await.unwrap();
+                let _ = tokio::time::timeout(Duration::from_secs(5), ws.next()).await;
+                let _ = ws.close(None).await;
+            })
+            .await;
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            let after = captures::snapshot(0, 64, &CaptureFilter::default())
+                .records
+                .iter()
+                .filter(|r| r.protocol == "ws")
+                .count();
+            assert_eq!(
+                after, before,
+                "captureWs=false must persist no WS frames/records"
+            );
+            teardown();
+        });
+    }
+
+    #[test]
+    fn mitm_e2e_upstream_failure_is_failsafe_no_panic() {
+        let rt = current_thread();
+        rt.block_on(async {
+            let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+            let (_ca, inner) = setup(true, &[0]);
+            let fail_port = {
+                let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                listener.local_addr().unwrap().port()
+            };
+            capture_config(&[fail_port], true);
+            let before = mitm::mitm_failed_count();
+
+            run_flow(Arc::clone(&inner), fail_port, sniffer(&[fail_port]), move |io| async move {
+                let ca = mitm::ca().unwrap();
+                let tls = tokio::time::timeout(
+                    Duration::from_secs(5),
+                    TlsConnector::from(client_tls(&ca, b"http/1.1"))
+                        .connect(ServerName::try_from("flow.test").unwrap(), io),
+                )
+                .await
+                .expect("handshake must not hang")
+                .expect("MITM terminates the client");
+                let (mut sender, conn) = hyper::client::conn::http1::handshake::<_, Full<Bytes>>(
+                    hyper_util::rt::TokioIo::new(tls),
+                )
+                .await
+                .expect("client h1 handshake");
+                tokio::spawn(async move {
+                    let _ = conn.await;
+                });
+                let request = hyper::Request::builder()
+                    .method("GET")
+                    .uri("/dead")
+                    .header(hyper::header::HOST, "flow.test")
+                    .body(Full::new(Bytes::new()))
+                    .unwrap();
+                match sender.send_request(request).await {
+                    Ok(response) => {
+                        assert_eq!(
+                            response.status().as_u16(),
+                            502,
+                            "an unreachable upstream degrades to a structured 502"
+                        );
+                    }
+                    Err(_) => {}
+                }
+            })
+            .await;
+
+            assert!(
+                mitm::mitm_failed_count() > before,
+                "the upstream failure must be recorded as mitmFailed"
+            );
+            let records = wait_for_capture(|rs| rs.iter().any(|r| r.mitm_failed)).await;
+            assert!(
+                records.iter().any(|r| r.mitm_failed),
+                "a failed exchange must still be recorded, not silently dropped"
+            );
+            let sibling = tokio::spawn(async { 7u32 });
+            assert_eq!(sibling.await.unwrap(), 7, "dataplane runtime survives the failure");
+            teardown();
         });
     }
 }

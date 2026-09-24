@@ -115,6 +115,11 @@ http-body-util = "0.1"
 async-compression = { version = "0.4", features = ["gzip", "brotli", "tokio"] }
 # RFC 6455 WebSocket frames over the mitigated (re-originated) streams.
 tokio-tungstenite = "0.29"
+# R1: production upstream TLS trust anchors for the re-originated MITM dial
+# (`TunnelUpstreamDialer`). Static Mozilla root data (already in the graph
+# transitively via meow-transport), so declaring it directly adds no new
+# compiled dependency and no `DT_NEEDED` entry.
+webpki-root-certs = "1"
 
 # Module ABI contract (C ABI v3: GStoreModuleEntry / Api / ModuleError / ModuleContext).
 # Same shape every other downloaded module crate uses (mirrors gstore_mod_download).
