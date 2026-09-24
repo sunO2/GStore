@@ -866,16 +866,22 @@ class GeoAsset {
     this.status = 'missing',
     this.verified = false,
     this.sha256 = '',
+    this.error,
   });
 
-  factory GeoAsset.fromJson(Map<String, dynamic> json) => GeoAsset(
-        kind: _str(json['kind']),
-        file: _str(json['file']),
-        path: _str(json['path']),
-        status: _str(json['status']),
-        verified: _bool(json['verified']),
-        sha256: _str(json['sha256']),
-      );
+  factory GeoAsset.fromJson(Map<String, dynamic> json) {
+    final error = _str(json['error']);
+    return GeoAsset(
+      kind: _str(json['kind']),
+      file: _str(json['file']),
+      path: _str(json['path']),
+      status: _str(json['status']),
+      verified: _bool(json['verified']),
+      sha256: _str(json['sha256']),
+      // Rust 侧 `error: Option<String>`：空串视为「无错误」（null）。
+      error: error.isEmpty ? null : error,
+    );
+  }
 
   final String kind;
   final String file;
@@ -883,6 +889,10 @@ class GeoAsset {
   final String status;
   final bool verified;
   final String sha256;
+
+  /// 下载 / 校验失败原因（Rust `error: Option<String>`）；成功或未产生错误时为
+  /// `null`。用于把「为什么失败」透传到 UI（此前被静默丢弃）。
+  final String? error;
 }
 
 /// geo 汇总状态。

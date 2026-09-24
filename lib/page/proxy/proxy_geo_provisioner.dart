@@ -128,6 +128,23 @@ class ProxyGeoProvisioner {
     }
   }
 
+  /// 读取最近一次 geo 快照中首个非空失败原因（`geo.assets[].error`）。
+  ///
+  /// 用于把「为什么下载失败」透传给 UI。best-effort：`rulesGet` 异常 / 无失败
+  /// 资产一律返回 `null`，绝不抛出。
+  Future<String?> lastFailureReason() async {
+    try {
+      final snapshot = await _facade.rulesGet();
+      for (final asset in snapshot.geo.assets) {
+        final error = asset.error;
+        if (error != null && error.isNotEmpty) return error;
+      }
+    } catch (error) {
+      debugPrint('ProxyGeoProvisioner: 读取 geo 失败原因异常 - $error');
+    }
+    return null;
+  }
+
   Future<bool> _doKickoff({String? profileId, bool force = false}) async {
     try {
       final snapshot = await _facade.rulesGet();
@@ -141,8 +158,13 @@ class ProxyGeoProvisioner {
       );
 
       final proxy = _proxyPrefix().trim();
+      final proxyLabel = proxy.isEmpty ? '(空)' : proxy;
       final assets = <String, Map<String, String>>{};
       for (final asset in _manifest.assets) {
+        final resolvedUrl = applyProxyIfNeeded(asset.url, proxy);
+        debugPrint(
+          'ProxyGeoProvisioner: 代理前缀=\'$proxyLabel\' ${asset.file} -> $resolvedUrl',
+        );
         final sha = await _checksumClient.fetchSha256(asset.url);
         final normSha = sha?.trim();
         if (normSha == null || normSha.isEmpty) {
