@@ -917,6 +917,54 @@ Set<String> _documentedEvents(String apiMd) {
   return <String>{for (final m in row.allMatches(section)) m.group(1)!};
 }
 
+/// 从 Rust `src/lib.rs` 的 `DISPATCH_METHODS` 常量块解析出真正被 `call`
+/// dispatch 的方法集。反向断言以此为准：`API.md §2` 文档化的方法必须逐个落在
+/// 这里，否则「只改 API.md + Dart、漏 Rust arm」将不再全绿。
+Set<String> _rustDispatchMethods(String rustSrc) {
+  final start = rustSrc.indexOf('pub(crate) const DISPATCH_METHODS');
+  expect(start, isNonNegative, reason: 'lib.rs 必须定义 DISPATCH_METHODS');
+  final open = rustSrc.indexOf('&[', start);
+  final end = rustSrc.indexOf('];', open);
+  expect(open, isNonNegative);
+  expect(end, greaterThan(open));
+  final block = rustSrc.substring(open, end);
+  // `DISPATCH_METHODS` 只含方法名字符串；`ping`/`version` 无点，其余为点分。
+  final re = RegExp(r'"([a-z][a-z0-9_]*(?:\.[a-z0-9_]+)*)"');
+  return <String>{for (final m in re.allMatches(block)) m.group(1)!};
+}
+
+/// 从 `API.md §2` 的方法表解析「请求型」方法：请求列不是 `*(none)*` 的方法，
+/// 其中 `as \`x\`` 形式的别名解析到被引用方法的请求类型（如 `stats.get` →
+/// `stats.domain.get` 是请求型，`stats.reset` → `stats.domain.reset` 不是）。
+Set<String> _documentedRequestMethods(String apiMd) {
+  final section = _section(apiMd, '## 2. Methods', '## 3. Events');
+  final cells = <String, String>{};
+  final row = RegExp(
+    r'^\| `([a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+)`[^|]*\|([^|]*)\|',
+    multiLine: true,
+  );
+  for (final m in row.allMatches(section)) {
+    cells.putIfAbsent(m.group(1)!, () => m.group(2)!.trim());
+  }
+
+  bool isRequest(String method, Set<String> seen) {
+    final cell = cells[method];
+    if (cell == null || cell == '*(none)*') return false;
+    final alias = RegExp(r'^as `([^`]+)`$').firstMatch(cell);
+    if (alias != null) {
+      final target = alias.group(1)!;
+      if (!seen.add(target)) return false;
+      return isRequest(target, seen);
+    }
+    return true;
+  }
+
+  return <String>{
+    for (final method in cells.keys)
+      if (isRequest(method, <String>{method})) method,
+  };
+}
+
 /// `lan.*` 现已注册进冻结契约 [ProxyMethods]/[proxyResponseDecoders]
 /// （`API.md` §2.12），文档↔代码差集为空。
 const _documentedButNotInDartRegistry = <String>{};
@@ -967,6 +1015,46 @@ void main() {
         proxyRequestEncoders.keys.toSet(),
         isNot(methodSet),
         reason: '部分方法无请求体，编码器不应等于方法全集',
+      );
+    });
+
+    test('反向：API.md §2 每个方法都在 Rust DISPATCH_METHODS 中（漏 Rust arm 即红）',
+        () {
+      final apiMd = File('rust/gstore_mod_proxy/API.md').readAsStringSync();
+      final rustSrc =
+          File('rust/gstore_mod_proxy/src/lib.rs').readAsStringSync();
+      final documented = _documentedMethods(apiMd);
+      final dispatch = _rustDispatchMethods(rustSrc);
+
+      expect(dispatch, isNotEmpty, reason: 'DISPATCH_METHODS 必须可解析且非空');
+      expect(
+        documented.difference(dispatch),
+        isEmpty,
+        reason:
+            'API.md 文档化了但 Rust 未 dispatch 的方法（只改 API.md+Dart、漏 arm）: '
+            '${documented.difference(dispatch)}',
+      );
+      expect(
+        ProxyMethods.all.toSet().difference(dispatch),
+        isEmpty,
+        reason: 'Dart 注册了但 Rust 未 dispatch 的方法: '
+            '${ProxyMethods.all.toSet().difference(dispatch)}',
+      );
+    });
+
+    test('反向：每个请求型方法都有 encoder（漏编码器即红）', () {
+      final apiMd = File('rust/gstore_mod_proxy/API.md').readAsStringSync();
+      final requestTypes = _documentedRequestMethods(apiMd);
+      expect(requestTypes, isNotEmpty, reason: '必须能从 API.md 解析出请求型方法');
+      // 自检：别名解析正确（`stats.get` 请求型；`stats.reset` 非请求型）。
+      expect(requestTypes, contains(ProxyMethods.statsGet));
+      expect(requestTypes, isNot(contains(ProxyMethods.statsReset)));
+
+      final missing = requestTypes.difference(proxyRequestEncoders.keys.toSet());
+      expect(
+        missing,
+        isEmpty,
+        reason: 'API.md 请求型方法缺少请求编码器（漏 encoder）: $missing',
       );
     });
 
@@ -1440,6 +1528,38 @@ void main() {
         data: _raw('{"state":'),
       ));
       expect(event, isNull);
+    });
+
+    test('四个 capture 契约单元各自返回结构化域错误码（不复用泛化码）', () async {
+      final gateway = _FakeGateway(<String, Uint8List>{
+        ProxyMethods.captureConfigSet:
+            _errorEnvelope(422, 'PROXY_CAPTURE_CONFIG_INVALID', 'bad config'),
+        ProxyMethods.captureCaGenerate:
+            _errorEnvelope(422, 'PROXY_CAPTURE_CA_FAILED', 'bad ca'),
+        ProxyMethods.capturesDetail:
+            _errorEnvelope(404, 'PROXY_CAPTURE_NOT_FOUND', 'missing'),
+        ProxyMethods.captureRulesSet:
+            _errorEnvelope(422, 'PROXY_CAPTURE_RULE_INVALID', 'bad rule'),
+      });
+      final facade = ProxyModule(gateway: gateway);
+
+      final cases = <String, (String, int)>{
+        ProxyMethods.captureConfigSet: ('PROXY_CAPTURE_CONFIG_INVALID', 422),
+        ProxyMethods.captureCaGenerate: ('PROXY_CAPTURE_CA_FAILED', 422),
+        ProxyMethods.capturesDetail: ('PROXY_CAPTURE_NOT_FOUND', 404),
+        ProxyMethods.captureRulesSet: ('PROXY_CAPTURE_RULE_INVALID', 422),
+      };
+      for (final entry in cases.entries) {
+        await expectLater(
+          facade.invoke(entry.key, proxyResponseDecoders[entry.key]!),
+          throwsA(
+            isA<ProxyModuleException>()
+                .having((e) => e.code, 'code', entry.value.$1)
+                .having((e) => e.status, 'status', entry.value.$2),
+          ),
+          reason: entry.key,
+        );
+      }
     });
   });
 

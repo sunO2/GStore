@@ -3911,6 +3911,13 @@ final Map<String, Map<String, dynamic> Function()> proxyRequestEncoders =
   ProxyMethods.profileCreate: () => const ProfileCreateRequest(
         profile: ImportedProfile(name: 'p', format: 'clash'),
       ).toJson(),
+  ProxyMethods.profileImportUrl: () =>
+      const <String, dynamic>{'url': 'https://example.com/sub'},
+  ProxyMethods.profileImportText: () =>
+      const <String, dynamic>{'text': 'proxies: []'},
+  ProxyMethods.profileImportLink: () =>
+      const <String, dynamic>{'link': 'ss://example'},
+  ProxyMethods.profileUpdate: () => const <String, dynamic>{'id': 'p1'},
   ProxyMethods.profileDelete: () => const ProfileIdRequest('p1').toJson(),
   ProxyMethods.profileRefresh: () => const ProfileIdRequest('p1').toJson(),
   ProxyMethods.profileRefreshAll: () =>
@@ -3923,6 +3930,8 @@ final Map<String, Map<String, dynamic> Function()> proxyRequestEncoders =
   ProxyMethods.connList: () => const ConnListRequest().toJson(),
   ProxyMethods.connClose: () => const ConnCloseRequest('c1').toJson(),
   ProxyMethods.statsDomainGet: () => const StatsDomainGetRequest().toJson(),
+  // `stats.get` 是 `stats.domain.get` 的别名，共用同一请求形状（`API.md` §2.9）。
+  ProxyMethods.statsGet: () => const StatsDomainGetRequest().toJson(),
   ProxyMethods.statsTrafficGet: () => const StatsTrafficGetRequest().toJson(),
   ProxyMethods.requestsGet: () => const RequestGetRequest().toJson(),
   ProxyMethods.requestsExport: () => const RequestExportRequest().toJson(),

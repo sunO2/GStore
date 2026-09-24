@@ -3376,6 +3376,79 @@ mod abi_tests {
         }
     }
 
+    /// A table-row first cell is a dotted method name (`core.start`), never a
+    /// field name (`enabled`). Bare `### 2.N` headings contribute the
+    /// single-token methods (`ping`, `version`).
+    fn is_dotted_method(name: &str) -> bool {
+        !name.is_empty()
+            && name.contains('.')
+            && name.as_bytes()[0].is_ascii_lowercase()
+            && name.chars().all(|c| {
+                c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '.'
+            })
+    }
+
+    /// Parse the method names documented in `API.md` §2 (mirrors the Dart
+    /// parser in `test/proxy_contract_test.dart`).
+    fn documented_api_methods(api: &str) -> std::collections::BTreeSet<String> {
+        let start = api.find("## 2. Methods").expect("methods section");
+        let end = api.find("## 3. Events").expect("events section");
+        let section = &api[start..end];
+        let mut out = std::collections::BTreeSet::new();
+
+        for line in section.lines() {
+            let line = line.trim_start();
+            if let Some(rest) = line.strip_prefix("| `") {
+                if let Some(close) = rest.find('`') {
+                    let name = &rest[..close];
+                    if is_dotted_method(name) {
+                        out.insert(name.to_string());
+                    }
+                }
+            }
+            if let Some(rest) = line.strip_prefix("### 2.") {
+                if let Some(open) = rest.find('`') {
+                    if let Some(close) = rest[open + 1..].find('`') {
+                        let name = &rest[open + 1..open + 1 + close];
+                        let bare_method = !name.is_empty()
+                            && !name.contains('.')
+                            && !name.contains('*')
+                            && name.chars().all(|c| {
+                                c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'
+                            });
+                        if bare_method {
+                            out.insert(name.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Reverse direction (hole-closer): every method documented in `API.md` §2
+    /// is actually present in `DISPATCH_METHODS`. Adding a method to API.md
+    /// (and the Dart registry) without a Rust dispatch arm fails here rather
+    /// than staying green. Complements `api_md_documents_every_dispatch_method`
+    /// (the other direction) so the contract fails closed on either side.
+    #[test]
+    fn api_md_methods_are_all_in_dispatch_methods() {
+        let api = include_str!("../API.md");
+        let documented = documented_api_methods(api);
+        assert!(!documented.is_empty(), "failed to parse API.md §2 methods");
+
+        let dispatch: std::collections::BTreeSet<&str> =
+            super::DISPATCH_METHODS.iter().copied().collect();
+        let missing: Vec<&String> = documented
+            .iter()
+            .filter(|method| !dispatch.contains(method.as_str()))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "API.md documents methods absent from DISPATCH_METHODS: {missing:?}"
+        );
+    }
+
     /// Failure QA: a truncated JSON request payload is a structured 422 domain
     /// error, never a panic and never a 500.
     #[test]
