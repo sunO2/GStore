@@ -39,7 +39,10 @@ use std::cell::RefCell;
 use gstore_contract::error::{ModuleError, StatusCode};
 use serde::{Deserialize, Serialize};
 
-use crate::limits::{CAPTURE_BODY_MAX_BYTES, CAPTURE_RING_CAP, CAPTURE_URL_MAX_BYTES};
+use crate::limits::{
+    CAPTURE_BODY_MAX_BYTES, CAPTURE_RING_CAP, CAPTURE_RULE_CAP, CAPTURE_RULE_ENTRY_MAX_BYTES,
+    CAPTURE_URL_MAX_BYTES,
+};
 use crate::mitm::{
     CaptureRecord, CaptureSink, CAPTURE_HEADERS_MAX_BYTES, CAPTURE_PREVIEW_MAX_BYTES,
 };
@@ -56,6 +59,16 @@ pub(crate) const ERR_CAPTURE_STORE_FAILED: &str = "PROXY_CAPTURE_STORE_FAILED";
 /// Defensive guard: a `captures.detail` body exceeded the on-disk read cap.
 /// 507 (resource exhausted).
 pub(crate) const ERR_CAPTURE_BODY_TOO_LARGE: &str = "PROXY_CAPTURE_BODY_TOO_LARGE";
+
+// ==================== Todo 14: `capture.rules.*` rewrite rules ====================
+
+/// `capture.rules.set` payload invalid: a bad `url` (not an absolute `http(s)`
+/// URL), an unknown `kind` (not `replace`/`local`) or a malformed `id`. 422.
+pub(crate) const ERR_CAPTURE_RULE_INVALID: &str = "PROXY_CAPTURE_RULE_INVALID";
+/// `capture.rules.set` would grow the table past [`CAPTURE_RULE_CAP`] distinct
+/// rules, or a single rule serializes past [`CAPTURE_RULE_ENTRY_MAX_BYTES`]. 507
+/// (resource exhausted). A rejected `set` never mutates or persists the table.
+pub(crate) const ERR_CAPTURE_RULE_LIMIT: &str = "PROXY_CAPTURE_RULE_LIMIT";
 
 /// Default `captures.get` page size when `limit` is omitted.
 pub(crate) const DEFAULT_CAPTURE_LIMIT: usize = 256;
@@ -1194,6 +1207,361 @@ pub(crate) fn reset_arm() -> Result<Vec<u8>, ModuleError> {
     crate::ok_data(serde_json::json!({ "ok": true, "cleared": cleared }))
 }
 
+// ==================== Todo 14: `capture.rules.*` store + arms ====================
+
+/// `capture.rules.set` `kind` values.
+const RULE_KIND_REPLACE: &str = "replace";
+const RULE_KIND_LOCAL: &str = "local";
+
+/// Persisted rewrite-rule table filename, beside the other module JSON stores.
+const CAPTURE_RULES_FILE: &str = "capture_rules.json";
+/// On-disk schema version for `capture_rules.json`.
+const RULE_SCHEMA_VERSION: u32 = 1;
+/// Longest accepted rule id (mirrors the profile id bound).
+const RULE_ID_MAX_BYTES: usize = 64;
+
+/// One persisted HTTP rewrite rule (`capture.rules.*`, Todo 14). The rewrite
+/// **matching/execution** lives in the MITM path (todo 15); this is the stored
+/// table only.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CaptureRule {
+    pub id: String,
+    pub enabled: bool,
+    /// Optional request-method filter; `null` matches any method.
+    pub method: Option<String>,
+    /// Exact-match request URL.
+    pub url: String,
+    /// `"replace"` | `"local"`.
+    pub kind: String,
+    pub status_code: Option<u16>,
+    pub resp_headers: Option<String>,
+    pub resp_body: Option<String>,
+    /// Stored only; the MITM rewrite path (todo 15) does not inject it yet.
+    pub delay_ms: u64,
+    pub created_at_ms: u64,
+    pub hit_count: u64,
+}
+
+/// `capture.rules.set` request body:
+/// `{ "id"?, "enabled", "method"?, "url", "kind", "statusCode"?, "headers"?, "body"?, "delayMs"? }`.
+/// `headers`/`body` are the *request* spellings of [`CaptureRule::resp_headers`] /
+/// [`CaptureRule::resp_body`] (the rule describes the response to serve).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CaptureRuleSetRequest {
+    #[serde(default)]
+    id: Option<String>,
+    enabled: bool,
+    #[serde(default)]
+    method: Option<String>,
+    url: String,
+    kind: String,
+    #[serde(default)]
+    status_code: Option<u16>,
+    #[serde(default)]
+    headers: Option<String>,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    delay_ms: Option<u64>,
+}
+
+/// `capture.rules.remove` request body: `{ "id": string }`.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CaptureRuleRemoveRequest {
+    id: String,
+}
+
+/// On-disk `capture_rules.json` shape. `nextSeq` is persisted so a minted id
+/// never collides across restarts.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RuleFile {
+    #[serde(default)]
+    schema_version: u32,
+    #[serde(default)]
+    next_seq: u64,
+    #[serde(default)]
+    rules: Vec<CaptureRule>,
+}
+
+/// Bounded, persisted rewrite-rule table. Storage keeps insertion order; reads
+/// sort by `(createdAtMs asc, id asc)`.
+struct RuleStore {
+    rules: Vec<CaptureRule>,
+    /// Next minted id sequence, persisted across restarts.
+    next_seq: u64,
+    /// Configured data dir; empty = memory-only.
+    dir: String,
+}
+
+impl RuleStore {
+    fn fresh() -> Self {
+        Self { rules: Vec::new(), next_seq: 1, dir: String::new() }
+    }
+
+    fn get_rules(&self) -> Vec<CaptureRule> {
+        let mut out = self.rules.clone();
+        out.sort_by(|a, b| {
+            a.created_at_ms
+                .cmp(&b.created_at_ms)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        out
+    }
+
+    /// Upsert a rule. A present `id` updates in place, preserving `createdAtMs`
+    /// and `hitCount`; an absent `id` mints a new one. Rejects invalid input
+    /// (422) and the table/entry size caps (507) **before** mutating.
+    fn upsert(&mut self, payload: &[u8]) -> Result<CaptureRule, ModuleError> {
+        let req: CaptureRuleSetRequest = serde_json::from_slice(payload).map_err(|e| {
+            rule_invalid(format!("capture.rules.set payload must be a JSON object: {e}"))
+        })?;
+        let url = req.url.trim().to_string();
+        validate_rule_url(&url)?;
+        if req.kind != RULE_KIND_REPLACE && req.kind != RULE_KIND_LOCAL {
+            return Err(rule_invalid(format!(
+                "kind must be \"replace\" or \"local\", got {:?}",
+                req.kind
+            )));
+        }
+        if let Some(id) = &req.id {
+            validate_rule_id(id)?;
+        }
+        let method = req
+            .method
+            .as_deref()
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+            .map(str::to_string);
+
+        let existing = req
+            .id
+            .as_ref()
+            .and_then(|id| self.rules.iter().position(|r| &r.id == id));
+        let (id, created_at_ms, hit_count) = match existing {
+            Some(i) => (
+                self.rules[i].id.clone(),
+                self.rules[i].created_at_ms,
+                self.rules[i].hit_count,
+            ),
+            None => {
+                if self.rules.len() >= CAPTURE_RULE_CAP {
+                    return Err(rule_limit(format!(
+                        "capture rule table is full (cap {CAPTURE_RULE_CAP})"
+                    )));
+                }
+                let id = match req.id.clone() {
+                    Some(id) => id,
+                    None => self.mint_id(),
+                };
+                (id, crate::now_ms(), 0)
+            }
+        };
+        let rule = CaptureRule {
+            id,
+            enabled: req.enabled,
+            method,
+            url,
+            kind: req.kind,
+            status_code: req.status_code,
+            resp_headers: req.headers,
+            resp_body: req.body,
+            delay_ms: req.delay_ms.unwrap_or(0),
+            created_at_ms,
+            hit_count,
+        };
+        let size = serde_json::to_vec(&rule).map(|v| v.len()).unwrap_or(0);
+        if size > CAPTURE_RULE_ENTRY_MAX_BYTES {
+            return Err(rule_limit(format!(
+                "capture rule is {size} B > cap {CAPTURE_RULE_ENTRY_MAX_BYTES} B"
+            )));
+        }
+        match existing {
+            Some(i) => self.rules[i] = rule.clone(),
+            None => self.rules.push(rule.clone()),
+        }
+        self.persist();
+        Ok(rule)
+    }
+
+    /// Remove by id. Idempotent: `false` when the id is unknown. Persists only
+    /// when something was actually removed.
+    fn remove(&mut self, payload: &[u8]) -> Result<bool, ModuleError> {
+        let req: CaptureRuleRemoveRequest = serde_json::from_slice(payload).map_err(|e| {
+            rule_invalid(format!("capture.rules.remove payload must be a JSON object: {e}"))
+        })?;
+        let Some(i) = self.rules.iter().position(|r| r.id == req.id) else {
+            return Ok(false);
+        };
+        self.rules.remove(i);
+        self.persist();
+        Ok(true)
+    }
+
+    fn mint_id(&mut self) -> String {
+        loop {
+            let id = format!("r{}", self.next_seq);
+            self.next_seq += 1;
+            if !self.rules.iter().any(|r| r.id == id) {
+                return id;
+            }
+        }
+    }
+
+    /// Atomic JSON write (`tmp` + rename) so a reader never sees a partial file.
+    fn persist(&self) {
+        if self.dir.is_empty() {
+            return;
+        }
+        let path = std::path::Path::new(&self.dir).join(CAPTURE_RULES_FILE);
+        let file = RuleFile {
+            schema_version: RULE_SCHEMA_VERSION,
+            next_seq: self.next_seq,
+            rules: self.rules.clone(),
+        };
+        let Ok(bytes) = serde_json::to_vec(&file) else { return };
+        let tmp = path.with_extension("json.tmp");
+        if std::fs::write(&tmp, &bytes).is_ok() {
+            let _ = std::fs::rename(&tmp, &path);
+        }
+    }
+}
+
+/// Load `capture_rules.json` (bounded + id-sequence-safe), falling back to an
+/// empty table on ANY failure so a corrupt store never bricks module creation.
+fn load_rule_store(dir: &str) -> RuleStore {
+    let mut st = RuleStore::fresh();
+    let dir = dir.trim();
+    if dir.is_empty() {
+        return st;
+    }
+    st.dir = dir.to_string();
+    let path = std::path::Path::new(dir).join(CAPTURE_RULES_FILE);
+    let Ok(bytes) = std::fs::read(&path) else { return st };
+    let Ok(file) = serde_json::from_slice::<RuleFile>(&bytes) else { return st };
+    st.rules = file.rules.into_iter().take(CAPTURE_RULE_CAP).collect();
+    let max_seq = st
+        .rules
+        .iter()
+        .filter_map(|r| r.id.strip_prefix('r')?.parse::<u64>().ok())
+        .max()
+        .unwrap_or(0);
+    st.next_seq = file.next_seq.max(max_seq + 1).max(1);
+    st
+}
+
+fn rule_invalid(message: impl Into<String>) -> ModuleError {
+    ModuleError::new(StatusCode::InvalidArgument, ERR_CAPTURE_RULE_INVALID, message)
+}
+
+fn rule_limit(message: impl Into<String>) -> ModuleError {
+    ModuleError::new(StatusCode::ResourceExhausted, ERR_CAPTURE_RULE_LIMIT, message)
+}
+
+fn validate_rule_id(id: &str) -> Result<(), ModuleError> {
+    let ok = !id.is_empty()
+        && id.len() <= RULE_ID_MAX_BYTES
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if ok {
+        Ok(())
+    } else {
+        Err(rule_invalid(format!(
+            "rule id must match [A-Za-z0-9_-]{{1,{RULE_ID_MAX_BYTES}}}, got {id:?}"
+        )))
+    }
+}
+
+fn validate_rule_url(url: &str) -> Result<(), ModuleError> {
+    let parsed = url::Url::parse(url)
+        .map_err(|e| rule_invalid(format!("url must be an absolute http(s) URL: {e}")))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(rule_invalid(format!(
+            "url scheme must be http or https, got {:?}",
+            parsed.scheme()
+        )));
+    }
+    if parsed.host_str().map(str::is_empty).unwrap_or(true) {
+        return Err(rule_invalid("url must include a host"));
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+static RULE_STORE: OnceLock<Mutex<RuleStore>> = OnceLock::new();
+
+#[cfg(not(test))]
+fn with_rules<R>(f: impl FnOnce(&mut RuleStore) -> R) -> R {
+    let mut guard = RULE_STORE
+        .get_or_init(|| Mutex::new(RuleStore::fresh()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    f(&mut guard)
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_RULE_STORE: RefCell<RuleStore> = RefCell::new(RuleStore::fresh());
+}
+
+#[cfg(test)]
+fn with_rules<R>(f: impl FnOnce(&mut RuleStore) -> R) -> R {
+    TEST_RULE_STORE.with(|s| f(&mut s.borrow_mut()))
+}
+
+/// Install the persisted rule table on module create (`lib.rs::create_impl`).
+pub(crate) fn configure_rules(data_dir: &str) {
+    let loaded = load_rule_store(data_dir);
+    with_rules(|st| *st = loaded);
+}
+
+/// The whole rule table, ordered `(createdAtMs asc, id asc)`.
+pub(crate) fn rules_get() -> Vec<CaptureRule> {
+    with_rules(|st| st.get_rules())
+}
+
+/// `capture.rules.set`: validate + upsert + persist.
+pub(crate) fn rules_set(payload: &[u8]) -> Result<CaptureRule, ModuleError> {
+    with_rules(|st| st.upsert(payload))
+}
+
+/// `capture.rules.remove`: delete by id (idempotent) + persist.
+pub(crate) fn rules_remove(payload: &[u8]) -> Result<bool, ModuleError> {
+    with_rules(|st| st.remove(payload))
+}
+
+/// `capture.rules.get` arm.
+pub(crate) fn rules_get_arm() -> Result<Vec<u8>, ModuleError> {
+    crate::ok_data(serde_json::json!({ "rules": rules_get() }))
+}
+
+/// `capture.rules.set` arm.
+pub(crate) fn rules_set_arm(payload: &[u8]) -> Result<Vec<u8>, ModuleError> {
+    let rule = rules_set(payload)?;
+    let data = serde_json::to_value(&rule).map_err(|e| ModuleError::internal(e.to_string()))?;
+    crate::ok_data(data)
+}
+
+/// `capture.rules.remove` arm.
+pub(crate) fn rules_remove_arm(payload: &[u8]) -> Result<Vec<u8>, ModuleError> {
+    let removed = rules_remove(payload)?;
+    crate::ok_data(serde_json::json!({ "ok": true, "removed": removed }))
+}
+
+#[cfg(test)]
+pub(crate) fn rules_reset_for_tests() {
+    with_rules(|st| *st = RuleStore::fresh());
+}
+
+#[cfg(test)]
+pub(crate) fn rules_count_for_tests() -> usize {
+    with_rules(|st| st.rules.len())
+}
+
 /// The directory the capture sink is configured against (test proof).
 #[cfg(test)]
 pub(crate) fn configured_dir_for_tests() -> Option<String> {
@@ -1678,5 +2046,207 @@ mod tests {
         assert!(after.records.is_empty());
         assert_eq!(after.next_cursor, 2, "cursor is never recycled");
         assert!(detail(id).unwrap().is_none(), "detail must not be stale");
+    }
+
+    // ==================== Todo 14: `capture.rules.*` ====================
+
+    fn set_rule(payload: &str) -> Result<CaptureRule, ModuleError> {
+        rules_set(payload.as_bytes())
+    }
+
+    fn rule_fixture(id: &str, created_at_ms: u64) -> CaptureRule {
+        CaptureRule {
+            id: id.to_string(),
+            enabled: true,
+            method: None,
+            url: format!("https://order.example/{id}"),
+            kind: RULE_KIND_REPLACE.to_string(),
+            status_code: None,
+            resp_headers: None,
+            resp_body: None,
+            delay_ms: 0,
+            created_at_ms,
+            hit_count: 0,
+        }
+    }
+
+    /// Acceptance: set → get → upsert (id preserved, createdAt/hitCount kept) →
+    /// remove (idempotent) round trip, asserted field-by-field.
+    #[test]
+    fn capture_rules_upsert_remove_round_trip() {
+        rules_reset_for_tests();
+        let created = set_rule(
+            r#"{"enabled":true,"method":"get","url":"https://api.example.com/p/1","kind":"replace","statusCode":201,"headers":"content-type: application/json","body":"{\"ok\":true}"}"#,
+        )
+        .unwrap();
+        assert!(created.enabled);
+        assert_eq!(created.method.as_deref(), Some("get"));
+        assert_eq!(created.url, "https://api.example.com/p/1");
+        assert_eq!(created.kind, "replace");
+        assert_eq!(created.status_code, Some(201));
+        assert_eq!(
+            created.resp_headers.as_deref(),
+            Some("content-type: application/json")
+        );
+        assert_eq!(created.resp_body.as_deref(), Some("{\"ok\":true}"));
+        assert_eq!(created.hit_count, 0);
+        assert_eq!(created.delay_ms, 0);
+
+        let out = rules_get_arm().unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["data"]["rules"].as_array().unwrap().len(), 1);
+        assert_eq!(v["data"]["rules"][0]["id"], created.id);
+        assert_eq!(v["data"]["rules"][0]["respBody"], "{\"ok\":true}");
+
+        let updated = set_rule(&format!(
+            r#"{{"id":"{}","enabled":false,"url":"https://api.example.com/p/1","kind":"local","statusCode":200}}"#,
+            created.id
+        ))
+        .unwrap();
+        assert_eq!(updated.id, created.id);
+        assert!(!updated.enabled);
+        assert_eq!(updated.kind, "local");
+        assert_eq!(
+            updated.created_at_ms, created.created_at_ms,
+            "createdAtMs is preserved across an upsert"
+        );
+        assert_eq!(updated.hit_count, created.hit_count);
+        assert!(updated.method.is_none(), "an upsert replaces optional fields");
+        assert_eq!(rules_count_for_tests(), 1, "upsert must not duplicate");
+
+        let out = rules_remove_arm(format!(r#"{{"id":"{}"}}"#, created.id).as_bytes()).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["ok"], true);
+        assert_eq!(v["data"]["removed"], true);
+        let out = rules_remove_arm(format!(r#"{{"id":"{}"}}"#, created.id).as_bytes()).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["removed"], false, "remove is idempotent");
+        assert_eq!(rules_count_for_tests(), 0);
+    }
+
+    /// Failure QA: a bad url/kind/id is the frozen 422 and never stores a rule.
+    #[test]
+    fn capture_rules_invalid_url_kind_id_are_422() {
+        rules_reset_for_tests();
+        for payload in [
+            r#"{"enabled":true,"url":"not-a-url","kind":"replace"}"#,
+            r#"{"enabled":true,"url":"ftp://x.example/f","kind":"replace"}"#,
+            r#"{"enabled":true,"url":"https://x.example/f","kind":"bogus"}"#,
+            r#"{"enabled":true,"url":"https://x.example/f","kind":"replace","id":"bad id!"}"#,
+            r#"{"enabled":true,"url":"https://x.example/f","kind":"replace","bogus":1}"#,
+        ] {
+            let err = set_rule(payload).unwrap_err();
+            assert_eq!(err.status, StatusCode::InvalidArgument, "{payload}");
+            assert_eq!(err.code, ERR_CAPTURE_RULE_INVALID, "{payload}");
+        }
+        assert_eq!(rules_count_for_tests(), 0, "no invalid rule is stored");
+    }
+
+    /// Adversarial: the table is bounded to `CAPTURE_RULE_CAP`; the overflow set
+    /// is the frozen 507 and never mutates the table. An in-place update at the
+    /// cap is still allowed.
+    #[test]
+    fn capture_rules_cap_enforced_is_507() {
+        rules_reset_for_tests();
+        for i in 0..CAPTURE_RULE_CAP {
+            set_rule(&format!(
+                r#"{{"enabled":true,"url":"https://cap.example/{i}","kind":"replace"}}"#
+            ))
+            .unwrap();
+        }
+        assert_eq!(rules_count_for_tests(), CAPTURE_RULE_CAP);
+
+        let err = set_rule(
+            r#"{"enabled":true,"url":"https://cap.example/overflow","kind":"replace"}"#,
+        )
+        .unwrap_err();
+        assert_eq!(err.status, StatusCode::ResourceExhausted);
+        assert_eq!(err.code, ERR_CAPTURE_RULE_LIMIT);
+        assert_eq!(
+            rules_count_for_tests(),
+            CAPTURE_RULE_CAP,
+            "a rejected set must not mutate the table"
+        );
+
+        let existing = rules_get()[0].id.clone();
+        assert!(
+            set_rule(&format!(
+                r#"{{"id":"{existing}","enabled":false,"url":"https://cap.example/0","kind":"local"}}"#
+            ))
+            .is_ok(),
+            "updating an existing rule at the cap needs no new slot"
+        );
+        assert_eq!(rules_count_for_tests(), CAPTURE_RULE_CAP);
+    }
+
+    /// Adversarial: one oversized rule is the frozen 507, not an unbounded store.
+    #[test]
+    fn capture_rules_oversize_entry_is_507() {
+        rules_reset_for_tests();
+        let body = "x".repeat(CAPTURE_RULE_ENTRY_MAX_BYTES);
+        let err = set_rule(&format!(
+            r#"{{"enabled":true,"url":"https://big.example/","kind":"local","body":"{body}"}}"#
+        ))
+        .unwrap_err();
+        assert_eq!(err.status, StatusCode::ResourceExhausted);
+        assert_eq!(err.code, ERR_CAPTURE_RULE_LIMIT);
+        assert_eq!(rules_count_for_tests(), 0);
+    }
+
+    /// Adversarial: `capture.rules.get` is stable — `createdAtMs asc, id asc`,
+    /// independent of insertion order.
+    #[test]
+    fn capture_rules_get_orders_by_created_at_then_id() {
+        rules_reset_for_tests();
+        with_rules(|st| {
+            st.rules = vec![
+                rule_fixture("rB", 200),
+                rule_fixture("rC", 100),
+                rule_fixture("rA", 200),
+                rule_fixture("rD", 100),
+            ];
+        });
+        let ids: Vec<String> = rules_get().into_iter().map(|r| r.id).collect();
+        assert_eq!(ids, vec!["rC", "rD", "rA", "rB"]);
+    }
+
+    /// Adversarial: the table persists to `capture_rules.json` and is restored on
+    /// a restart; a post-restart minted id does not collide with restored ones.
+    #[test]
+    fn capture_rules_persist_across_restart() {
+        rules_reset_for_tests();
+        let dir = unique_temp_dir("rules-restart");
+        let dir_s = dir.to_str().unwrap().to_string();
+        configure_rules(&dir_s);
+
+        let r1 = set_rule(
+            r#"{"enabled":true,"url":"https://persist.example/a","kind":"replace","statusCode":204}"#,
+        )
+        .unwrap();
+        assert!(
+            std::path::Path::new(&dir_s).join(CAPTURE_RULES_FILE).exists(),
+            "capture_rules.json must be written"
+        );
+
+        // Simulate a process close + restart against the same data dir.
+        rules_reset_for_tests();
+        configure_rules(&dir_s);
+        let restored = rules_get();
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].id, r1.id);
+        assert_eq!(restored[0].url, "https://persist.example/a");
+        assert_eq!(restored[0].status_code, Some(204));
+        assert_eq!(restored[0].created_at_ms, r1.created_at_ms);
+
+        let r2 = set_rule(
+            r#"{"enabled":true,"url":"https://persist.example/b","kind":"local"}"#,
+        )
+        .unwrap();
+        assert_ne!(r1.id, r2.id, "minted ids never collide across restarts");
+        assert_eq!(rules_get().len(), 2);
+
+        rules_reset_for_tests();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

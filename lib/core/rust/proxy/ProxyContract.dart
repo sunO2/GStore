@@ -97,6 +97,11 @@ class ProxyMethods {
   static const String capturesDetail = 'captures.detail';
   static const String capturesReset = 'captures.reset';
 
+  // `capture.rules.*`：HTTP 实时改写规则（API.md §2.19，默认关）。
+  static const String captureRulesGet = 'capture.rules.get';
+  static const String captureRulesSet = 'capture.rules.set';
+  static const String captureRulesRemove = 'capture.rules.remove';
+
   /// 全部方法名（顺序与 `API.md` §2 一致）。
   static const List<String> all = <String>[
     ping,
@@ -162,6 +167,9 @@ class ProxyMethods {
     capturesGet,
     capturesDetail,
     capturesReset,
+    captureRulesGet,
+    captureRulesSet,
+    captureRulesRemove,
   ];
 }
 
@@ -243,6 +251,13 @@ bool _bool(Object? value) {
 }
 
 String _str(Object? value) => value?.toString() ?? '';
+
+/// 可空字符串：`null` 与空串都归一化为 `null`（契约可选字段）。
+String? _strOrNull(Object? value) {
+  if (value == null) return null;
+  final s = value.toString();
+  return s.isEmpty ? null : s;
+}
 
 /// 契约字节字段：线上是 base64 字符串（Rust `wire_bytes`），宽容解码为
 /// [Uint8List]；兼容旧式数字数组，非法 base64 退化为空字节串，绝不抛裸异常。
@@ -3306,6 +3321,125 @@ class CaptureDetailRequest {
   Map<String, dynamic> toJson() => <String, dynamic>{'recordId': recordId};
 }
 
+// ==================== capture.rules.* ====================
+
+/// 一条 HTTP 实时改写规则（`API.md` §2.19 `CaptureRule`）。规则**默认关**；
+/// 匹配/执行在 MITM 路径（todo 15），本模型只承载存储表。
+class CaptureRule {
+  const CaptureRule({
+    this.id = '',
+    this.enabled = false,
+    this.method,
+    this.url = '',
+    this.kind = 'replace',
+    this.statusCode,
+    this.respHeaders,
+    this.respBody,
+    this.delayMs = 0,
+    this.createdAtMs = 0,
+    this.hitCount = 0,
+  });
+
+  factory CaptureRule.fromJson(Map<String, dynamic> json) => CaptureRule(
+        id: _str(json['id']),
+        enabled: _bool(json['enabled']),
+        method: _strOrNull(json['method']),
+        url: _str(json['url']),
+        kind: json.containsKey('kind') ? _str(json['kind']) : 'replace',
+        statusCode: _intOrNull(json['statusCode']),
+        respHeaders: _strOrNull(json['respHeaders']),
+        respBody: _strOrNull(json['respBody']),
+        delayMs: _int(json['delayMs']),
+        createdAtMs: _int(json['createdAtMs']),
+        hitCount: _int(json['hitCount']),
+      );
+
+  final String id;
+  final bool enabled;
+  final String? method;
+  final String url;
+  final String kind;
+  final int? statusCode;
+  final String? respHeaders;
+  final String? respBody;
+  final int delayMs;
+  final int createdAtMs;
+  final int hitCount;
+}
+
+/// `capture.rules.get` 响应（`API.md` §2.19 `{rules:[CaptureRule]}`）；已按
+/// `createdAtMs asc, id asc` 稳定排序。
+class CaptureRuleList {
+  const CaptureRuleList({this.rules = const <CaptureRule>[]});
+
+  factory CaptureRuleList.fromJson(Map<String, dynamic> json) => CaptureRuleList(
+        rules: _mapList(json['rules']).map(CaptureRule.fromJson).toList(),
+      );
+
+  final List<CaptureRule> rules;
+}
+
+/// `capture.rules.remove` 响应（镜像 `API.md` §2.19 `{ok, removed}`）。
+class CaptureRulesRemoveResult {
+  const CaptureRulesRemoveResult({this.ok = false, this.removed = false});
+
+  factory CaptureRulesRemoveResult.fromJson(Map<String, dynamic> json) =>
+      CaptureRulesRemoveResult(
+        ok: _bool(json['ok']),
+        removed: _bool(json['removed']),
+      );
+
+  final bool ok;
+  final bool removed;
+}
+
+/// `capture.rules.set` 请求（`API.md` §2.19）；`headers`/`body` 是响应
+/// `respHeaders`/`respBody` 的**请求写法**，未提供的键不编码。
+class CaptureRuleSetRequest {
+  const CaptureRuleSetRequest({
+    this.id,
+    required this.enabled,
+    this.method,
+    required this.url,
+    this.kind = 'replace',
+    this.statusCode,
+    this.headers,
+    this.body,
+    this.delayMs,
+  });
+
+  final String? id;
+  final bool enabled;
+  final String? method;
+  final String url;
+  final String kind;
+  final int? statusCode;
+  final String? headers;
+  final String? body;
+  final int? delayMs;
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        if (id != null) 'id': id,
+        'enabled': enabled,
+        if (method != null) 'method': method,
+        'url': url,
+        'kind': kind,
+        if (statusCode != null) 'statusCode': statusCode,
+        if (headers != null) 'headers': headers,
+        if (body != null) 'body': body,
+        if (delayMs != null) 'delayMs': delayMs,
+      };
+}
+
+/// `capture.rules.remove` 请求（`API.md` §2.19）。
+class CaptureRuleRemoveRequest {
+  const CaptureRuleRemoveRequest(this.id);
+
+  final String id;
+
+  Map<String, dynamic> toJson() => <String, dynamic>{'id': id};
+}
+
 // ==================== 方法 → 解码器注册表 ====================
 
 /// 方法名 → 响应解码器（**每个** [ProxyMethods.all] 一项）。
@@ -3386,6 +3520,9 @@ final Map<String, ProxyJsonDecoder<Object>> proxyResponseDecoders =
   ProxyMethods.capturesGet: CapturePage.fromJson,
   ProxyMethods.capturesDetail: CaptureDetail.fromJson,
   ProxyMethods.capturesReset: CapturesResetResult.fromJson,
+  ProxyMethods.captureRulesGet: CaptureRuleList.fromJson,
+  ProxyMethods.captureRulesSet: CaptureRule.fromJson,
+  ProxyMethods.captureRulesRemove: CaptureRulesRemoveResult.fromJson,
 };
 
 // ==================== 请求模型（toJson） ====================
@@ -3799,6 +3936,12 @@ final Map<String, Map<String, dynamic> Function()> proxyRequestEncoders =
   ProxyMethods.capturesGet: () => const CapturesGetRequest().toJson(),
   ProxyMethods.capturesDetail: () => const CaptureDetailRequest(1).toJson(),
   ProxyMethods.capturesReset: () => const <String, dynamic>{},
+  ProxyMethods.captureRulesSet: () => const CaptureRuleSetRequest(
+        enabled: false,
+        url: 'https://example.com/',
+      ).toJson(),
+  ProxyMethods.captureRulesRemove: () =>
+      const CaptureRuleRemoveRequest('r1').toJson(),
 };
 
 /// 便捷：JSON 文本 → UTF-8 字节（请求体编码）。

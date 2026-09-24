@@ -139,3 +139,5 @@ C ABI `call` 返回 `ABI_ERR_DETAIL (-8)` 时，模块在 out 缓冲写入
 | `PROXY_CAPTURE_CURSOR_INVALID` | proxy | 422 | `captures.get` 的 `cursor` 存在但非非负整数（Todo 12） |
 | `PROXY_CAPTURE_STORE_FAILED` | proxy | 500 | captures 持久层读/写失败（SQLite）；内存摘要环保持不变、不回滚（Todo 12） |
 | `PROXY_CAPTURE_BODY_TOO_LARGE` | proxy | 507 | `captures.detail` 请求的 Body 超过读盘上限（`CAPTURE_BODY_MAX_BYTES`）的防御性守卫（Todo 12） |
+| `PROXY_CAPTURE_RULE_INVALID` | proxy | 422 | `capture.rules.set` 载荷非法：`url` 非绝对 `http(s)` URL、`kind` 非 `replace`/`local`、`id` 不符 `[A-Za-z0-9_-]{1,64}` 或未知字段；校验失败时**不改动**内存/磁盘上的规则表（Todo 14） |
+| `PROXY_CAPTURE_RULE_LIMIT` | proxy | 507 | `capture.rules.set` 新增规则会使规则表超过 `CAPTURE_RULE_CAP`（128），或单条规则序列化超过 `CAPTURE_RULE_ENTRY_MAX_BYTES`（2048）；被拒的 `set` 绝不落盘（Todo 14） |

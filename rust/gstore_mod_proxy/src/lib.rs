@@ -445,6 +445,9 @@ pub(crate) const DISPATCH_METHODS: &[&str] = &[
     "captures.get",
     "captures.detail",
     "captures.reset",
+    "capture.rules.get",
+    "capture.rules.set",
+    "capture.rules.remove",
 ];
 
 /// 运行状态机（Todo 2 占位；Todo 6/29 驱动真实 start/stop）。
@@ -2136,6 +2139,7 @@ fn create_impl(config: *const u8, config_len: usize) -> Result<u64, c_int> {
     lan::configure(&ctx.data_dir, &ctx.cache_dir);
     shaper::configure(&ctx.data_dir);
     capture::configure(&ctx.data_dir);
+    captures::configure_rules(&ctx.data_dir);
     let last_mode = mode::load_last_mode(&ctx.data_dir);
     let inst = Arc::new(ProxyInstance {
         id,
@@ -2297,6 +2301,12 @@ fn call_impl(
             .and_then(|_| captures::detail_arm(_payload)),
         "captures.reset" => require_instance(instance_id, instance.clone())
             .and_then(|_| captures::reset_arm()),
+        "capture.rules.get" => require_instance(instance_id, instance.clone())
+            .and_then(|_| captures::rules_get_arm()),
+        "capture.rules.set" => require_instance(instance_id, instance.clone())
+            .and_then(|_| captures::rules_set_arm(_payload)),
+        "capture.rules.remove" => require_instance(instance_id, instance.clone())
+            .and_then(|_| captures::rules_remove_arm(_payload)),
         other => Err(ModuleError::method_not_found(other)),
     };
 
@@ -3203,6 +3213,88 @@ mod abi_tests {
 
         let _ = std::fs::remove_dir_all(&dir);
         captures::reset_for_tests();
+        let _ = destroy(inst);
+    }
+
+    /// `capture.rules.*` end-to-end over the ABI: get/set/remove round trip
+    /// (upsert preserves `createdAtMs`), invalid url/kind → 422.
+    #[test]
+    fn capture_rules_contract_dispatch() {
+        let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let api = register_api();
+        let call = api.call.unwrap();
+        let destroy = api.destroy.unwrap();
+        let (inst, dir) = create_temp_instance(&api, "capture-rules");
+        captures::rules_reset_for_tests();
+        captures::configure_rules(&dir.display().to_string());
+
+        let (code, out) = call_json(call, inst, "capture.rules.get");
+        assert_eq!(code, ABI_OK, "{}", String::from_utf8_lossy(&out));
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert!(v["data"]["rules"].as_array().unwrap().is_empty());
+
+        let (code, out) = call_with_payload(
+            call,
+            inst,
+            "capture.rules.set",
+            br#"{"enabled":true,"method":"get","url":"https://api.example.com/p/1","kind":"replace","statusCode":201,"headers":"content-type: application/json","body":"{\"ok\":true}"}"#,
+        );
+        assert_eq!(code, ABI_OK, "{}", String::from_utf8_lossy(&out));
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["url"], "https://api.example.com/p/1");
+        assert_eq!(v["data"]["enabled"], true);
+        assert_eq!(v["data"]["kind"], "replace");
+        assert_eq!(v["data"]["statusCode"], 201);
+        assert_eq!(v["data"]["respHeaders"], "content-type: application/json");
+        assert_eq!(v["data"]["respBody"], "{\"ok\":true}");
+        assert_eq!(v["data"]["hitCount"], 0);
+        let id = v["data"]["id"].as_str().unwrap().to_string();
+        let created_at = v["data"]["createdAtMs"].as_u64().unwrap();
+
+        let (code, out) = call_with_payload(
+            call,
+            inst,
+            "capture.rules.set",
+            format!(
+                r#"{{"id":"{id}","enabled":false,"url":"https://api.example.com/p/1","kind":"local"}}"#
+            )
+            .as_bytes(),
+        );
+        assert_eq!(code, ABI_OK, "{}", String::from_utf8_lossy(&out));
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["id"], id, "upsert keeps the id");
+        assert_eq!(v["data"]["enabled"], false);
+        assert_eq!(v["data"]["kind"], "local");
+        assert_eq!(
+            v["data"]["createdAtMs"].as_u64().unwrap(),
+            created_at,
+            "upsert preserves createdAtMs"
+        );
+
+        let (code, out) = call_with_payload(
+            call,
+            inst,
+            "capture.rules.remove",
+            format!(r#"{{"id":"{id}"}}"#).as_bytes(),
+        );
+        assert_eq!(code, ABI_OK, "{}", String::from_utf8_lossy(&out));
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["data"]["ok"], true);
+        assert_eq!(v["data"]["removed"], true);
+
+        for payload in [
+            br#"{"enabled":true,"url":"not-a-url","kind":"replace"}"#.as_slice(),
+            br#"{"enabled":true,"url":"https://x.example/f","kind":"bogus"}"#.as_slice(),
+        ] {
+            let (code, out) = call_with_payload(call, inst, "capture.rules.set", payload);
+            assert_eq!(code, ABI_ERR_DETAIL);
+            let err: serde_json::Value = serde_json::from_slice(&out).unwrap();
+            assert_eq!(err["status"], 422, "{err}");
+            assert_eq!(err["code"], captures::ERR_CAPTURE_RULE_INVALID, "{err}");
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+        captures::rules_reset_for_tests();
         let _ = destroy(inst);
     }
 

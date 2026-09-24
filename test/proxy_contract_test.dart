@@ -341,6 +341,33 @@ final _captureDetailFixture = <String, dynamic>{
 /// `captures.reset` 冻结响应 fixture（`API.md` §2.18 `{ok, cleared}`）。
 const _capturesResetFixture = <String, dynamic>{'ok': true, 'cleared': 1};
 
+/// 一条改写规则 fixture（`API.md` §2.19 `CaptureRule`）：字段值刻意非默认以证
+/// round-trip 保真（可选字段非空、`hitCount`>0）。
+const _captureRuleFixture = <String, dynamic>{
+  'id': 'r1',
+  'enabled': true,
+  'method': 'GET',
+  'url': 'https://api.example.com/p/1',
+  'kind': 'replace',
+  'statusCode': 201,
+  'respHeaders': 'content-type: application/json',
+  'respBody': '{"ok":true}',
+  'delayMs': 25,
+  'createdAtMs': 1700000000000,
+  'hitCount': 3,
+};
+
+/// `capture.rules.get` 冻结响应 fixture（`API.md` §2.19 `{rules:[CaptureRule]}`）。
+const _captureRuleListFixture = <String, dynamic>{
+  'rules': <Map<String, dynamic>>[_captureRuleFixture],
+};
+
+/// `capture.rules.remove` 冻结响应 fixture（`API.md` §2.19 `{ok, removed}`）。
+const _captureRulesRemoveFixture = <String, dynamic>{
+  'ok': true,
+  'removed': true,
+};
+
 final Map<String, Map<String, dynamic>> _methodFixtures =
     <String, Map<String, dynamic>>{
   ProxyMethods.ping: <String, dynamic>{
@@ -775,6 +802,10 @@ final Map<String, Map<String, dynamic>> _methodFixtures =
   ProxyMethods.capturesGet: _capturePageFixture,
   ProxyMethods.capturesDetail: _captureDetailFixture,
   ProxyMethods.capturesReset: _capturesResetFixture,
+  // `capture.rules.*` 改写规则（API.md §2.19）。
+  ProxyMethods.captureRulesGet: _captureRuleListFixture,
+  ProxyMethods.captureRulesSet: _captureRuleFixture,
+  ProxyMethods.captureRulesRemove: _captureRulesRemoveFixture,
 };
 
 final Map<String, Map<String, dynamic>> _eventFixtures =
@@ -1136,6 +1167,81 @@ void main() {
       expect(empty.recordId, 0);
       expect(empty.wsFrames, isEmpty);
       expect(empty.reqBodyPreview, isEmpty);
+    });
+
+    test('capture.rules fixture round-trip 保留真实字段值 + 请求编码保真', () async {
+      final gateway = _FakeGateway(<String, Uint8List>{
+        ProxyMethods.captureRulesGet: _okEnvelope(_captureRuleListFixture),
+        ProxyMethods.captureRulesSet: _okEnvelope(_captureRuleFixture),
+        ProxyMethods.captureRulesRemove: _okEnvelope(_captureRulesRemoveFixture),
+      });
+      final facade = ProxyModule(gateway: gateway);
+
+      final list = await facade.invoke(
+        ProxyMethods.captureRulesGet,
+        proxyResponseDecoders[ProxyMethods.captureRulesGet]!,
+      ) as CaptureRuleList;
+      expect(list.rules, hasLength(1));
+      final rule = list.rules.single;
+      expect(rule.id, 'r1');
+      expect(rule.enabled, isTrue);
+      expect(rule.method, 'GET');
+      expect(rule.url, 'https://api.example.com/p/1');
+      expect(rule.kind, 'replace');
+      expect(rule.statusCode, 201);
+      expect(rule.respHeaders, 'content-type: application/json');
+      expect(rule.respBody, '{"ok":true}');
+      expect(rule.delayMs, 25);
+      expect(rule.createdAtMs, 1700000000000);
+      expect(rule.hitCount, 3);
+
+      final set = await facade.invoke(
+        ProxyMethods.captureRulesSet,
+        proxyResponseDecoders[ProxyMethods.captureRulesSet]!,
+      ) as CaptureRule;
+      expect(set.id, rule.id);
+      expect(set.respBody, rule.respBody);
+
+      final removed = await facade.invoke(
+        ProxyMethods.captureRulesRemove,
+        proxyResponseDecoders[ProxyMethods.captureRulesRemove]!,
+      ) as CaptureRulesRemoveResult;
+      expect(removed.ok, isTrue);
+      expect(removed.removed, isTrue);
+
+      // 编码器：`headers`/`body` 是响应的 `respHeaders`/`respBody` 写法。
+      final encoded = const CaptureRuleSetRequest(
+        id: 'r1',
+        enabled: true,
+        method: 'GET',
+        url: 'https://api.example.com/p/1',
+        kind: 'local',
+        statusCode: 200,
+        headers: 'x-a: 1',
+        body: 'hello',
+        delayMs: 5,
+      ).toJson();
+      expect(encoded['id'], 'r1');
+      expect(encoded['enabled'], isTrue);
+      expect(encoded['headers'], 'x-a: 1');
+      expect(encoded['body'], 'hello');
+      expect(encoded['delayMs'], 5);
+      expect(
+        const CaptureRuleSetRequest(
+          enabled: false,
+          url: 'https://example.com/',
+        ).toJson().containsKey('id'),
+        isFalse,
+        reason: '缺省 id 不编码（后端铸 id）',
+      );
+
+      // 宽容解码：空对象不抛错，kind 回退 replace。
+      final empty = CaptureRule.fromJson(const <String, dynamic>{});
+      expect(empty.id, isEmpty);
+      expect(empty.enabled, isFalse);
+      expect(empty.kind, 'replace');
+      expect(empty.delayMs, 0);
+      expect(CaptureRuleList.fromJson(const <String, dynamic>{}).rules, isEmpty);
     });
 
     test('CaptureRecord 最坏序列化 ≤ 4096（CAPTURE_RECORD_MAX_BYTES）', () {

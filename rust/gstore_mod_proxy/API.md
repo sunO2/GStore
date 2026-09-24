@@ -1363,6 +1363,48 @@ with inconsistent capture settings.
 `PROXY_CAPTURE_STORE_FAILED` (500, a durable read/write failed — the in-memory summary ring is left
 untouched), `PROXY_CAPTURE_BODY_TOO_LARGE` (507, a defensive `captures.detail` body-read cap).
 
+### 2.19 `capture.rules.*` — HTTP rewrite rules (Todo 14)
+
+| method | request | data |
+|---|---|---|
+| `capture.rules.get` | *(none)* | `{ "rules": [CaptureRule] }` |
+| `capture.rules.set` | `{ "id"?: string, "enabled": bool, "method"?: string, "url": string, "kind": "replace"\|"local", "statusCode"?: number, "headers"?: string, "body"?: string, "delayMs"?: number }` | `CaptureRule` |
+| `capture.rules.remove` | `{ "id": string }` | `{ "ok": true, "removed": true }` |
+
+`CaptureRule`:
+```json
+{ "id": "r1", "enabled": false, "method": null, "url": "https://example.com/p",
+  "kind": "replace", "statusCode": null, "respHeaders": null, "respBody": null,
+  "delayMs": 0, "createdAtMs": 0, "hitCount": 0 }
+```
+
+| field | type | notes |
+|---|---|---|
+| `id` | string | stable rule id (`[A-Za-z0-9_-]{1,64}`); absent in `set` → minted |
+| `enabled` | bool | rules are **OFF by default**; only a matched *enabled* rule rewrites |
+| `method` | string? | optional request-method filter; `null` = any method |
+| `url` | string | **exact** match URL (absolute `http`/`https`) |
+| `kind` | string | `"replace"` (overwrite the upstream response) / `"local"` (no upstream dial) |
+| `statusCode` | number? | response status to set; `null` = keep the upstream status |
+| `respHeaders` | string? | response header text to set (body rewrites force `Content-Encoding: identity` + recomputed `Content-Length`) |
+| `respBody` | string? | response body, as decoded plaintext |
+| `delayMs` | u64 | stored only; injection is not implemented in this wave |
+| `createdAtMs` | u64 | creation time (preserved across upserts) |
+| `hitCount` | u64 | matched count; `0` on create, preserved on update |
+
+`capture.rules.get` returns the table ordered **`createdAtMs` ascending, then `id` ascending** (stable,
+independent of insertion order). `capture.rules.set` is an **upsert**: a present `id` updates in place
+(preserving `createdAtMs` and `hitCount`), an absent `id` mints a new one. A bad `url` (not an absolute
+`http(s)` URL) or `kind` (not `replace`/`local`) is `PROXY_CAPTURE_RULE_INVALID` (422). The table is
+bounded to `CAPTURE_RULE_CAP` (128) rules and `CAPTURE_RULE_ENTRY_MAX_BYTES` (2048) per rule —
+exceeding either is `PROXY_CAPTURE_RULE_LIMIT` (507); a rejected `set` never mutates or persists. The
+table persists to `<dataDir>/capture_rules.json` and is restored on module create.
+`capture.rules.remove` is idempotent (`removed:false` when the id is unknown). All three require a
+live instance (structured `INSTANCE_NOT_FOUND` 410, never `METHOD_NOT_FOUND`).
+
+**Rewrite matching/execution is the MITM path's job (todo 15): these methods only store and CRUD the
+table.** `delayMs` is accepted/stored but not injected. WS rewrites are not supported.
+
 ## 3. Events (module → host)
 
 Emitted through the ABI `emit_event` channel. Payload is the JSON below; the Dart
