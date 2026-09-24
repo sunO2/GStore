@@ -601,7 +601,12 @@ where
         Err(e) => return MitmTls::Failed(MitmTlsError::Config(e.to_string())),
     };
     match TlsAcceptor::from(config).accept(stream).await {
-        Ok(tls) => MitmTls::Terminated(tls),
+        Ok(mut tls) => {
+            tls.get_mut()
+                .1
+                .set_buffer_limit(Some(RUSTLS_BUFFER_LIMIT_BYTES));
+            MitmTls::Terminated(tls)
+        }
         Err(e) => MitmTls::Failed(MitmTlsError::Handshake(e.to_string())),
     }
 }
@@ -1136,10 +1141,14 @@ pub(crate) async fn connect_upstream_tls(
     }
     let sni = ServerName::try_from(name.to_string())
         .map_err(|e| UpstreamError::invalid(format!("invalid upstream SNI '{name}': {e}")))?;
-    TlsConnector::from(client_config)
+    let mut tls = TlsConnector::from(client_config)
         .connect(sni, conn)
         .await
-        .map_err(UpstreamError::tls)
+        .map_err(UpstreamError::tls)?;
+    tls.get_mut()
+        .1
+        .set_buffer_limit(Some(RUSTLS_BUFFER_LIMIT_BYTES));
+    Ok(tls)
 }
 
 /// Dial `target` through the tunnel and speak TLS to it. On any failure the
@@ -1219,12 +1228,18 @@ use std::sync::atomic::AtomicBool;
 use std::task::{Context, Poll};
 
 use futures::executor::block_on;
-use http_body_util::Empty;
+use futures::{SinkExt, StreamExt};
+use http_body_util::combinators::UnsyncBoxBody;
+use http_body_util::{BodyExt, Empty};
 use hyper::body::{Body, Bytes, Frame, Incoming, SizeHint};
 use hyper::client::conn::{http1 as client_http1, http2 as client_http2};
 use hyper::header::{
-    HeaderName, HeaderValue, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, HOST,
+    HeaderName, HeaderValue, CONNECTION, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, HOST,
+    SEC_WEBSOCKET_EXTENSIONS, SEC_WEBSOCKET_KEY, UPGRADE,
 };
+use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig};
+use tokio_tungstenite::tungstenite::Message as WsMessage;
+use tokio_tungstenite::WebSocketStream;
 use hyper::server::conn::{http1 as server_http1, http2 as server_http2};
 use hyper::service::Service;
 use hyper::{HeaderMap, Request, Response, StatusCode, Uri};
@@ -1251,8 +1266,161 @@ pub(crate) const H2_PER_CONNECTION_BUDGET_BYTES: u32 = H2_INITIAL_STREAM_WINDOW_
     + H2_MAX_SEND_BUF_SIZE as u32
     + H2_MAX_HEADER_LIST_SIZE;
 
+// ==================== Todo 9: WebSocket frame capture ====================
+//
+// After an HTTP `Upgrade: websocket` (status `101`, `Sec-WebSocket-*`) the two
+// terminated TLS streams are bridged frame-for-frame by `tokio-tungstenite`, and
+// every text/binary/ping/pong/close frame is recorded with its direction and a
+// **bounded** (≤512 B) payload preview.
+//
+// ## Extension handling (decided: strip in BOTH directions)
+//
+// `tungstenite` 0.29 is compiled without the `deflate` feature (see
+// `Cargo.toml`), so it cannot speak permessage-deflate. The MITM therefore
+// **removes `Sec-WebSocket-Extensions` in both directions**: the client's offer
+// never reaches the origin and the origin's answer never reaches the client.
+// Both peers thus negotiate compression-less framing and the recorded frames are
+// directly parseable. Consequence: **WS does not preserve permessage-deflate**.
+//
+// ## Buffer bounds (hard, never defaults)
+//
+// Both tungstenite endpoints are built from an explicit [`WebSocketConfig`].
+// `tungstenite`'s defaults (read 128 KiB, write unbounded, message 64 MiB,
+// frame 16 MiB) would each blow the per-session budget, so all five knobs are
+// configured and summed into [`MITM_SESSION_BUDGET_BYTES`].
+
+/// tungstenite read buffer capacity, per endpoint. Hard cap.
+pub(crate) const WS_READ_BUFFER_SIZE: usize = 4096;
+/// tungstenite write-buffer flush target, per endpoint. Must stay **below**
+/// [`WS_MAX_WRITE_BUFFER_SIZE`] or tungstenite asserts/panics at construction.
+pub(crate) const WS_WRITE_BUFFER_SIZE: usize = 8192;
+/// tungstenite write-buffer hard cap (backpressure), per endpoint. The real
+/// retained ceiling charged to the session budget.
+pub(crate) const WS_MAX_WRITE_BUFFER_SIZE: usize = 16384;
+/// Largest incoming message accepted, per endpoint.
+pub(crate) const WS_MAX_MESSAGE_SIZE: usize = 16384;
+/// Largest incoming frame accepted, per endpoint.
+pub(crate) const WS_MAX_FRAME_SIZE: usize = 16384;
+/// In-memory frame payload preview cap. Over-limit payloads are truncated to
+/// this many bytes and flagged; the frame itself is still forwarded intact.
+pub(crate) const WS_PREVIEW_MAX_BYTES: usize = 512;
+
+/// One tungstenite endpoint's charged bytes: read + write hard cap + message
+/// accumulation + frame accumulation.
+pub(crate) const WS_PER_SIDE_BUDGET_BYTES: usize = WS_READ_BUFFER_SIZE
+    + WS_MAX_WRITE_BUFFER_SIZE
+    + WS_MAX_MESSAGE_SIZE
+    + WS_MAX_FRAME_SIZE;
+/// rustls `set_buffer_limit` caps **both** the plaintext and TLS buffers, per
+/// connection; two connections (client-side + upstream-side) are live per MITM
+/// session.
+pub(crate) const RUSTLS_BUFFER_LIMIT_BYTES: usize = 8192;
+
+/// T9 per-session budget terms (see `.omo/plans/proxy-http-capture.md` todo 9).
+pub(crate) const MITM_WS_TWO_SIDES_BYTES: usize = 2 * WS_PER_SIDE_BUDGET_BYTES; // 106_496
+pub(crate) const MITM_RUSTLS_TWO_CONNS_BYTES: usize = 2 * 2 * RUSTLS_BUFFER_LIMIT_BYTES; // 32_768
+pub(crate) const MITM_H1_TWO_CONNS_BYTES: usize = 2 * 2 * H1_MAX_BUF_SIZE; // 32_768
+pub(crate) const MITM_H2_TWO_CONNS_BYTES: usize = 2 * (H2_PER_CONNECTION_BUDGET_BYTES as usize); // 81_920
+/// Sum of every per-session buffer knob. A hard `const` assertion below proves it
+/// fits [`crate::limits::MITM_SESSION_BUFFER_MAX_BYTES`]; if any term regresses
+/// (or a knob silently goes back to a default) this stops compiling.
+pub(crate) const MITM_SESSION_BUDGET_BYTES: usize = MITM_WS_TWO_SIDES_BYTES
+    + MITM_RUSTLS_TWO_CONNS_BYTES
+    + MITM_H1_TWO_CONNS_BYTES
+    + MITM_H2_TWO_CONNS_BYTES;
+
+const _: () = assert!(
+    MITM_SESSION_BUDGET_BYTES <= crate::limits::MITM_SESSION_BUFFER_MAX_BYTES,
+    "MITM per-session buffer budget exceeds MITM_SESSION_BUFFER_MAX_BYTES"
+);
+const _: () = assert!(
+    WS_WRITE_BUFFER_SIZE < WS_MAX_WRITE_BUFFER_SIZE,
+    "tungstenite requires write_buffer_size < max_write_buffer_size"
+);
+
+/// Frame direction relative to the MITM: `ClientToServer` are frames read from
+/// the browser, `ServerToClient` are frames read from the origin.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WsDirection {
+    ClientToServer,
+    ServerToClient,
+}
+
+/// One recorded WebSocket frame (or complete message, since tungstenite
+/// reassembles fragments). Payload retention is bounded to
+/// [`WS_PREVIEW_MAX_BYTES`]; `payload_len` always carries the true length so an
+/// over-limit frame is both accounted for exactly and never buffered in full.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct WsFrameRecord {
+    pub direction: WsDirection,
+    /// `"text" | "binary" | "ping" | "pong" | "close" | "frame"`.
+    pub opcode: &'static str,
+    pub payload_len: u64,
+    pub preview: Vec<u8>,
+    pub truncated: bool,
+    pub at_ms: u64,
+}
+
+/// Bounded sink seam for recorded WS frames. The capture store (todo 12/13)
+/// installs the durable implementor; the shipping default is a no-op and the
+/// dataplane never blocks on it.
+pub(crate) trait WsFrameSink: Send + Sync {
+    fn on_ws_frame(&self, _host: &str, _conn_id: &str, _frame: &WsFrameRecord) {}
+}
+
+struct NoopWsFrameSink;
+
+impl WsFrameSink for NoopWsFrameSink {}
+
+static WS_FRAME_SINK: OnceLock<Mutex<Arc<dyn WsFrameSink>>> = OnceLock::new();
+
+fn ws_frame_sink_cell() -> &'static Mutex<Arc<dyn WsFrameSink>> {
+    WS_FRAME_SINK.get_or_init(|| Mutex::new(Arc::new(NoopWsFrameSink)))
+}
+
+/// Current WS frame sink (cloned `Arc`).
+pub(crate) fn ws_frame_sink() -> Arc<dyn WsFrameSink> {
+    ws_frame_sink_cell()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+/// Install the process-level WS frame sink (todo 12/13 / tests).
+pub(crate) fn set_ws_frame_sink(sink: Arc<dyn WsFrameSink>) {
+    *ws_frame_sink_cell().lock().unwrap_or_else(|e| e.into_inner()) = sink;
+}
+
+/// Restore the no-op sink (tests).
+#[cfg(test)]
+pub(crate) fn reset_ws_frame_sink() {
+    set_ws_frame_sink(Arc::new(NoopWsFrameSink));
+}
+
+/// The explicit, never-default tungstenite configuration used on **both**
+/// endpoints. Kept as a function (not a `const`) because the builder methods are
+/// not `const`, and both endpoints must observe the identical bounds.
+pub(crate) fn ws_config() -> WebSocketConfig {
+    let config = WebSocketConfig::default()
+        .read_buffer_size(WS_READ_BUFFER_SIZE)
+        .write_buffer_size(WS_WRITE_BUFFER_SIZE)
+        .max_write_buffer_size(WS_MAX_WRITE_BUFFER_SIZE)
+        .max_message_size(Some(WS_MAX_MESSAGE_SIZE))
+        .max_frame_size(Some(WS_MAX_FRAME_SIZE));
+    debug_assert!(
+        config.write_buffer_size < config.max_write_buffer_size,
+        "tungstenite would panic on this config"
+    );
+    config
+}
+
 /// Boxed error used across the MITM HTTP path (hyper error, IO error, …).
 pub(crate) type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+/// Boxed request body shared by the h1/h2 upstream clients. Boxing lets the
+/// normal tee'd body and the WebSocket upgrade's empty body flow through the
+/// **same** established connection type (the sender's body type is fixed).
+pub(crate) type UpstreamBody = UnsyncBoxBody<Bytes, BoxError>;
 
 /// The wire protocol negotiated by ALPN on one side of the bridge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1836,10 +2004,10 @@ fn simple_response(status: StatusCode) -> Response<BridgeBody> {
 /// The established upstream HTTP client connection, one per bridge.
 enum UpstreamClient {
     H1 {
-        sender: AsyncMutex<client_http1::SendRequest<TeeBody<Incoming>>>,
+        sender: AsyncMutex<client_http1::SendRequest<UpstreamBody>>,
         gate: Arc<Semaphore>,
     },
-    H2(client_http2::SendRequest<TeeBody<Incoming>>),
+    H2(client_http2::SendRequest<UpstreamBody>),
 }
 
 impl UpstreamClient {
@@ -1853,11 +2021,11 @@ impl UpstreamClient {
                 let mut builder = client_http1::Builder::new();
                 builder.max_buf_size(H1_MAX_BUF_SIZE);
                 let (sender, conn) = builder
-                    .handshake::<_, TeeBody<Incoming>>(io)
+                    .handshake::<_, UpstreamBody>(io)
                     .await
                     .map_err(|e| format!("upstream h1 handshake: {e}"))?;
                 tokio::spawn(async move {
-                    let _ = conn.await;
+                    let _ = conn.with_upgrades().await;
                 });
                 Ok(UpstreamClient::H1 {
                     sender: AsyncMutex::new(sender),
@@ -1868,7 +2036,7 @@ impl UpstreamClient {
                 let mut builder = client_http2::Builder::new(TokioExecutor::new());
                 configure_h2_client(&mut builder);
                 let (sender, conn) = builder
-                    .handshake::<_, TeeBody<Incoming>>(io)
+                    .handshake::<_, UpstreamBody>(io)
                     .await
                     .map_err(|e| format!("upstream h2 handshake: {e}"))?;
                 tokio::spawn(async move {
@@ -1884,7 +2052,7 @@ impl UpstreamClient {
     /// connection is never asked to start a second request mid-body.
     async fn send(
         &self,
-        req: Request<TeeBody<Incoming>>,
+        req: Request<UpstreamBody>,
     ) -> Result<(Response<Incoming>, Option<OwnedSemaphorePermit>), BoxError> {
         match self {
             UpstreamClient::H1 { sender, gate } => {
@@ -1915,6 +2083,7 @@ pub(crate) struct BridgeContext {
     pub capture_body: bool,
     pub started_at_ms: u64,
     pub sink: Option<Arc<dyn CaptureSink>>,
+    pub ws_sink: Option<Arc<dyn WsFrameSink>>,
 }
 
 impl BridgeContext {
@@ -1930,6 +2099,7 @@ impl BridgeContext {
             capture_body: true,
             started_at_ms: crate::now_ms(),
             sink: None,
+            ws_sink: None,
         }
     }
 
@@ -1944,10 +2114,18 @@ impl BridgeContext {
         self.sink = Some(sink);
         self
     }
+
+    /// Route WebSocket frame records for this bridge to `sink`; when unset the
+    /// process sink is used.
+    pub(crate) fn with_ws_sink(mut self, sink: Arc<dyn WsFrameSink>) -> Self {
+        self.ws_sink = Some(sink);
+        self
+    }
 }
 
 struct BridgeState {
     sink: Arc<dyn CaptureSink>,
+    ws_sink: Arc<dyn WsFrameSink>,
     host: String,
     conn_id: String,
     request_record_id: u64,
@@ -1960,6 +2138,9 @@ struct BridgeState {
 
 impl BridgeState {
     async fn handle(&self, req: Request<Incoming>) -> Response<BridgeBody> {
+        if is_websocket_upgrade(&req) {
+            return self.handle_websocket(req).await;
+        }
         let method = req.method().clone();
         let req_headers = req.headers().clone();
         let path = req
@@ -2018,7 +2199,7 @@ impl BridgeState {
                 return simple_response(StatusCode::INTERNAL_SERVER_ERROR);
             }
         }
-        let upstream_request = match builder.body(upstream_body) {
+        let upstream_request = match builder.body(upstream_body.boxed_unsync()) {
             Ok(request) => request,
             Err(e) => {
                 exchange.mark_failed(&format!("request build: {e}"));
@@ -2069,6 +2250,251 @@ impl BridgeState {
         }
         out
     }
+
+    /// After a WebSocket `Upgrade`, hyper hands back both raw IO objects. This
+    /// forwards the handshake through the established upstream connection,
+    /// returns the origin's `101` to the client (with `Sec-WebSocket-Extensions`
+    /// stripped), then spawns the frame bridge.
+    async fn handle_websocket(&self, mut req: Request<Incoming>) -> Response<BridgeBody> {
+        // WS-over-h2 (RFC 8441) is out of scope: hyper's h2 path cannot express
+        // the h1-style `101` upgrade, so degrade explicitly.
+        if self.client_proto == HttpProtocol::H2 || self.upstream_proto == HttpProtocol::H2 {
+            crate::log_message(
+                2,
+                "proxy.mitm: ws-over-h2 unsupported (RFC8441 not implemented); responding 501",
+            );
+            let mut response = simple_response(StatusCode::NOT_IMPLEMENTED);
+            response.headers_mut().insert(
+                HeaderName::from_static("x-gstore-ws-over-h2"),
+                HeaderValue::from_static("unsupported"),
+            );
+            return response;
+        }
+
+        let client_upgrade = hyper::upgrade::on(&mut req);
+        let method = req.method().clone();
+        let req_headers = req.headers().clone();
+        let path = req
+            .uri()
+            .path_and_query()
+            .map(|pq| pq.as_str().to_string())
+            .unwrap_or_else(|| "/".to_string());
+        let host = host_header(&req_headers).unwrap_or_else(|| self.host.clone());
+        let origin: Uri = match path.parse() {
+            Ok(uri) => uri,
+            Err(_) => Uri::from_static("/"),
+        };
+        let mut builder = Request::builder().method(method).uri(origin);
+        {
+            let Some(dst) = builder.headers_mut() else {
+                return simple_response(StatusCode::INTERNAL_SERVER_ERROR);
+            };
+            for (name, value) in req_headers.iter() {
+                if !ws_forward_request_header(name) {
+                    continue;
+                }
+                dst.append(name, value.clone());
+            }
+            if !dst.contains_key(HOST) {
+                if let Ok(value) = HeaderValue::from_str(&host) {
+                    dst.insert(HOST, value);
+                }
+            }
+            dst.insert(CONNECTION, HeaderValue::from_static("Upgrade"));
+            dst.insert(UPGRADE, HeaderValue::from_static("websocket"));
+        }
+        let empty = Empty::<Bytes>::new()
+            .map_err(|never| -> BoxError { match never {} })
+            .boxed_unsync();
+        let upstream_request = match builder.body(empty) {
+            Ok(request) => request,
+            Err(e) => {
+                crate::log_message(2, &format!("proxy.mitm: ws request build: {e}"));
+                return simple_response(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        };
+        let (mut response, permit) = match self.upstream.send(upstream_request).await {
+            Ok(pair) => pair,
+            Err(e) => {
+                record_mitm_failed(&format!("ws upstream: {e}"));
+                return simple_response(StatusCode::BAD_GATEWAY);
+            }
+        };
+        drop(permit);
+        if response.status() != StatusCode::SWITCHING_PROTOCOLS {
+            let mut out = simple_response(response.status());
+            for (name, value) in response.headers().iter() {
+                if is_hop_by_hop(name) {
+                    continue;
+                }
+                out.headers_mut().append(name, value.clone());
+            }
+            return out;
+        }
+        let upstream_upgrade = hyper::upgrade::on(&mut response);
+
+        let mut out = simple_response(StatusCode::SWITCHING_PROTOCOLS);
+        {
+            let dst = out.headers_mut();
+            for (name, value) in response.headers().iter() {
+                if name == SEC_WEBSOCKET_EXTENSIONS || is_hop_by_hop(name) {
+                    continue;
+                }
+                dst.append(name, value.clone());
+            }
+            dst.insert(CONNECTION, HeaderValue::from_static("Upgrade"));
+            dst.insert(UPGRADE, HeaderValue::from_static("websocket"));
+        }
+        let host = self.host.clone();
+        let conn_id = self.conn_id.clone();
+        let sink = Arc::clone(&self.ws_sink);
+        tokio::spawn(async move {
+            if let Err(e) = bridge_websocket(client_upgrade, upstream_upgrade, host, conn_id, sink).await
+            {
+                crate::log_message(2, &format!("proxy.mitm: ws bridge ended: {e}"));
+            }
+        });
+        out
+    }
+}
+
+/// True when `req` is an HTTP/1.1 WebSocket upgrade handshake.
+fn is_websocket_upgrade(req: &Request<Incoming>) -> bool {
+    let wants_websocket = req
+        .headers()
+        .get(UPGRADE)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| {
+            v.split(',')
+                .any(|token| token.trim().eq_ignore_ascii_case("websocket"))
+        })
+        .unwrap_or(false);
+    wants_websocket && req.headers().contains_key(SEC_WEBSOCKET_KEY)
+}
+
+/// Request headers preserved across the WebSocket upgrade. `Sec-WebSocket-
+/// Extensions` is stripped in the client→upstream direction (no compression).
+fn ws_forward_request_header(name: &HeaderName) -> bool {
+    if name == SEC_WEBSOCKET_EXTENSIONS {
+        return false;
+    }
+    !matches!(
+        name.as_str(),
+        "transfer-encoding" | "te" | "trailer" | "proxy-connection" | "keep-alive"
+    )
+}
+
+/// Await both hyper upgrades, wrap the raw IO as WebSocket streams, and pump
+/// frames until either side closes.
+async fn bridge_websocket(
+    client_upgrade: hyper::upgrade::OnUpgrade,
+    upstream_upgrade: hyper::upgrade::OnUpgrade,
+    host: String,
+    conn_id: String,
+    sink: Arc<dyn WsFrameSink>,
+) -> Result<(), String> {
+    let client_io = client_upgrade
+        .await
+        .map_err(|e| format!("client upgrade: {e}"))?;
+    let upstream_io = upstream_upgrade
+        .await
+        .map_err(|e| format!("upstream upgrade: {e}"))?;
+    let client = WebSocketStream::from_raw_socket(
+        TokioIo::new(client_io),
+        Role::Server,
+        Some(ws_config()),
+    )
+    .await;
+    let upstream = WebSocketStream::from_raw_socket(
+        TokioIo::new(upstream_io),
+        Role::Client,
+        Some(ws_config()),
+    )
+    .await;
+    run_ws_pump(client, upstream, &host, &conn_id, sink).await;
+    Ok(())
+}
+
+/// Bidirectionally pump WebSocket messages, recording each complete message
+/// before forwarding it verbatim. `client` is the server-role endpoint facing
+/// the browser; `upstream` is the client-role endpoint facing the origin.
+async fn run_ws_pump<CS, US>(
+    mut client: WebSocketStream<CS>,
+    mut upstream: WebSocketStream<US>,
+    host: &str,
+    conn_id: &str,
+    sink: Arc<dyn WsFrameSink>,
+) where
+    CS: AsyncRead + AsyncWrite + Unpin,
+    US: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut client_open = true;
+    let mut upstream_open = true;
+    while client_open && upstream_open {
+        tokio::select! {
+            biased;
+            message = client.next() => {
+                match message {
+                    Some(Ok(message)) => {
+                        record_ws_frame(sink.as_ref(), host, conn_id, WsDirection::ClientToServer, &message);
+                        let closing = message.is_close();
+                        if upstream.send(message).await.is_err() || closing {
+                            client_open = false;
+                        }
+                    }
+                    _ => client_open = false,
+                }
+            }
+            message = upstream.next() => {
+                match message {
+                    Some(Ok(message)) => {
+                        record_ws_frame(sink.as_ref(), host, conn_id, WsDirection::ServerToClient, &message);
+                        let closing = message.is_close();
+                        if client.send(message).await.is_err() || closing {
+                            upstream_open = false;
+                        }
+                    }
+                    _ => upstream_open = false,
+                }
+            }
+        }
+    }
+    let _ = client.close(None).await;
+    let _ = upstream.close(None).await;
+}
+
+/// Record one frame with a bounded preview (≤ [`WS_PREVIEW_MAX_BYTES`]).
+fn record_ws_frame(
+    sink: &dyn WsFrameSink,
+    host: &str,
+    conn_id: &str,
+    direction: WsDirection,
+    message: &WsMessage,
+) {
+    let (opcode, payload): (&'static str, &[u8]) = match message {
+        WsMessage::Text(text) => ("text", text.as_str().as_bytes()),
+        WsMessage::Binary(data) => ("binary", data.as_ref()),
+        WsMessage::Ping(data) => ("ping", data.as_ref()),
+        WsMessage::Pong(data) => ("pong", data.as_ref()),
+        WsMessage::Close(frame) => (
+            "close",
+            frame
+                .as_ref()
+                .map(|f| f.reason.as_str().as_bytes())
+                .unwrap_or_default(),
+        ),
+        WsMessage::Frame(_) => ("frame", &[]),
+    };
+    let take = payload.len().min(WS_PREVIEW_MAX_BYTES);
+    let record = WsFrameRecord {
+        direction,
+        opcode,
+        payload_len: message.len() as u64,
+        preview: payload[..take].to_vec(),
+        truncated: payload.len() > WS_PREVIEW_MAX_BYTES,
+        at_ms: crate::now_ms(),
+    };
+    sink.on_ws_frame(host, conn_id, &record);
 }
 
 struct ProxyService {
@@ -2118,6 +2544,7 @@ where
     let upstream = UpstreamClient::establish(upstream, upstream_proto).await?;
     let state = Arc::new(BridgeState {
         sink: ctx.sink.clone().unwrap_or_else(capture_sink),
+        ws_sink: ctx.ws_sink.clone().unwrap_or_else(ws_frame_sink),
         host: ctx.host,
         conn_id: ctx.conn_id,
         request_record_id: ctx.request_record_id,
@@ -2135,6 +2562,7 @@ where
             builder.max_buf_size(H1_MAX_BUF_SIZE);
             builder
                 .serve_connection(io, service)
+                .with_upgrades()
                 .await
                 .map_err(|e| e.to_string())
         }
@@ -2694,6 +3122,420 @@ mod mitm_http_tests {
             let rec = next_record(&mut rx).await;
             assert!(rec.mitm_failed, "the failed exchange is recorded as mitmFailed");
             reset_capture_sink();
+        });
+    }
+}
+
+#[cfg(test)]
+mod mitm_ws_tests {
+    use super::*;
+    use rustls::pki_types::ServerName;
+    use rustls::RootCertStore;
+    use std::net::SocketAddr;
+    use std::sync::atomic::AtomicU64 as WsSeq;
+    use std::sync::Mutex as StdMutex;
+    use std::time::Duration;
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio::sync::mpsc;
+    use tokio_rustls::{TlsAcceptor, TlsConnector};
+    use tokio_tungstenite::tungstenite::handshake::server as ws_server;
+    use tokio_tungstenite::tungstenite::ClientRequestBuilder;
+    use tokio_tungstenite::{accept_hdr_async_with_config, client_async_with_config};
+
+    static WS_SEQ: WsSeq = WsSeq::new(0);
+
+    fn ws_temp_ca(tag: &str) -> Arc<CertificateAuthority> {
+        let n = WS_SEQ.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "gstore-mitm-ws-{}-{}-{}",
+            std::process::id(),
+            tag,
+            n
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        Arc::new(CertificateAuthority::generate(dir.to_str().unwrap()).expect("generate CA"))
+    }
+
+    fn ws_roots(ca: &CertificateAuthority) -> RootCertStore {
+        let mut store = RootCertStore::empty();
+        store.add(ca.der().clone()).expect("trust CA");
+        store
+    }
+
+    fn ws_client_tls(ca: &CertificateAuthority, alpn: &[u8]) -> Arc<rustls::ClientConfig> {
+        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+        let mut config = rustls::ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .expect("versions")
+            .with_root_certificates(ws_roots(ca))
+            .with_no_client_auth();
+        config.alpn_protocols = vec![alpn.to_vec()];
+        Arc::new(config)
+    }
+
+    struct WsChannelSink(mpsc::UnboundedSender<WsFrameRecord>);
+
+    impl WsFrameSink for WsChannelSink {
+        fn on_ws_frame(&self, _host: &str, _conn_id: &str, frame: &WsFrameRecord) {
+            let _ = self.0.send(frame.clone());
+        }
+    }
+
+    fn ws_recording_sink() -> (mpsc::UnboundedReceiver<WsFrameRecord>, Arc<dyn WsFrameSink>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        (rx, Arc::new(WsChannelSink(tx)))
+    }
+
+    async fn ws_collect_until<F>(
+        rx: &mut mpsc::UnboundedReceiver<WsFrameRecord>,
+        done: F,
+    ) -> Vec<WsFrameRecord>
+    where
+        F: Fn(&[WsFrameRecord]) -> bool,
+    {
+        let mut out = Vec::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout_at(deadline, rx.recv()).await {
+                Ok(Some(frame)) => {
+                    out.push(frame);
+                    if done(&out) {
+                        break;
+                    }
+                }
+                _ => break,
+            }
+        }
+        out
+    }
+
+    async fn ws_next_msg<S>(ws: &mut WebSocketStream<S>) -> WsMessage
+    where
+        S: AsyncRead + AsyncWrite + Unpin,
+    {
+        tokio::time::timeout(Duration::from_secs(10), ws.next())
+            .await
+            .expect("ws next must not hang")
+            .expect("ws stream open")
+            .expect("ws frame parses")
+    }
+
+    fn has_frame(frames: &[WsFrameRecord], direction: WsDirection, opcode: &str) -> bool {
+        frames
+            .iter()
+            .any(|f| f.direction == direction && f.opcode == opcode)
+    }
+
+    #[test]
+    fn mitm_ws_session_buffer_budget_is_bounded() {
+        assert_eq!(WS_PER_SIDE_BUDGET_BYTES, 53_248);
+        assert_eq!(MITM_WS_TWO_SIDES_BYTES, 106_496);
+        assert_eq!(MITM_RUSTLS_TWO_CONNS_BYTES, 32_768);
+        assert_eq!(MITM_H1_TWO_CONNS_BYTES, 32_768);
+        assert_eq!(MITM_H2_TWO_CONNS_BYTES, 81_920);
+        assert_eq!(MITM_SESSION_BUDGET_BYTES, 253_952);
+        assert!(MITM_SESSION_BUDGET_BYTES <= crate::limits::MITM_SESSION_BUFFER_MAX_BYTES);
+
+        let config = ws_config();
+        assert_eq!(config.read_buffer_size, WS_READ_BUFFER_SIZE);
+        assert_eq!(config.write_buffer_size, WS_WRITE_BUFFER_SIZE);
+        assert_eq!(config.max_write_buffer_size, WS_MAX_WRITE_BUFFER_SIZE);
+        assert_eq!(config.max_message_size, Some(WS_MAX_MESSAGE_SIZE));
+        assert_eq!(config.max_frame_size, Some(WS_MAX_FRAME_SIZE));
+        assert!(
+            config.write_buffer_size < config.max_write_buffer_size,
+            "tungstenite would panic if this invariant were violated"
+        );
+    }
+
+    #[test]
+    fn mitm_ws_frames_recorded_with_direction_preview_and_boundaries() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let (client_side, client_peer) = tokio::io::duplex(1 << 16);
+            let (upstream_side, fixture_peer) = tokio::io::duplex(1 << 16);
+            let bridge_client =
+                WebSocketStream::from_raw_socket(client_side, Role::Server, Some(ws_config())).await;
+            let mut client =
+                WebSocketStream::from_raw_socket(client_peer, Role::Client, Some(ws_config())).await;
+            let bridge_upstream =
+                WebSocketStream::from_raw_socket(upstream_side, Role::Client, Some(ws_config())).await;
+            let mut fixture =
+                WebSocketStream::from_raw_socket(fixture_peer, Role::Server, Some(ws_config())).await;
+
+            let (mut rx, sink) = ws_recording_sink();
+            let pump = tokio::spawn(run_ws_pump(
+                bridge_client,
+                bridge_upstream,
+                "flow.test",
+                "conn-ws",
+                sink,
+            ));
+
+            client.send(WsMessage::text("hello")).await.unwrap();
+            client.send(WsMessage::binary(vec![1u8, 2, 3])).await.unwrap();
+            client.send(WsMessage::binary(vec![4u8, 5, 6])).await.unwrap();
+            client.send(WsMessage::Ping(vec![9u8].into())).await.unwrap();
+
+            // The fixture must receive the client's messages unmerged (frame
+            // boundaries preserved) and echo each back.
+            let expected = [
+                WsMessage::text("hello"),
+                WsMessage::binary(vec![1u8, 2, 3]),
+                WsMessage::binary(vec![4u8, 5, 6]),
+                WsMessage::Ping(vec![9u8].into()),
+            ];
+            let mut echoed = 0;
+            for want in expected.iter() {
+                let got = ws_next_msg(&mut fixture).await;
+                assert_eq!(&got, want, "frame boundary preserved on forward");
+                fixture.send(got).await.unwrap();
+                echoed += 1;
+            }
+            assert_eq!(echoed, 4);
+
+            fixture.send(WsMessage::text("from-server")).await.unwrap();
+            fixture.send(WsMessage::binary(vec![0u8; 1024])).await.unwrap();
+            fixture.send(WsMessage::Ping(vec![1u8].into())).await.unwrap();
+
+            let frames = ws_collect_until(&mut rx, |f| {
+                has_frame(f, WsDirection::ClientToServer, "text")
+                    && has_frame(f, WsDirection::ClientToServer, "binary")
+                    && has_frame(f, WsDirection::ClientToServer, "ping")
+                    && has_frame(f, WsDirection::ServerToClient, "text")
+                    && has_frame(f, WsDirection::ServerToClient, "binary")
+                    && has_frame(f, WsDirection::ServerToClient, "ping")
+                    && f.iter().any(|x| x.payload_len == 1024)
+            })
+            .await;
+
+            let c2s_texts: Vec<Vec<u8>> = frames
+                .iter()
+                .filter(|f| f.direction == WsDirection::ClientToServer && f.opcode == "text")
+                .map(|f| f.preview.clone())
+                .collect();
+            assert_eq!(c2s_texts, vec![b"hello".to_vec()]);
+
+            let s2c_texts: Vec<Vec<u8>> = frames
+                .iter()
+                .filter(|f| f.direction == WsDirection::ServerToClient && f.opcode == "text")
+                .map(|f| f.preview.clone())
+                .collect();
+            assert!(s2c_texts.contains(&b"hello".to_vec()), "echo recorded as S2C");
+            assert!(
+                s2c_texts.contains(&b"from-server".to_vec()),
+                "origin text recorded as S2C"
+            );
+            assert!(
+                !c2s_texts.contains(&b"from-server".to_vec()),
+                "origin frame must not be mislabelled client→server"
+            );
+
+            let c2s_bins: Vec<Vec<u8>> = frames
+                .iter()
+                .filter(|f| f.direction == WsDirection::ClientToServer && f.opcode == "binary")
+                .map(|f| f.preview.clone())
+                .collect();
+            assert_eq!(c2s_bins, vec![vec![1u8, 2, 3], vec![4u8, 5, 6]]);
+
+            let big = frames
+                .iter()
+                .find(|f| f.direction == WsDirection::ServerToClient && f.payload_len == 1024)
+                .expect("the over-limit frame is recorded");
+            assert_eq!(big.opcode, "binary");
+            assert_eq!(big.preview.len(), WS_PREVIEW_MAX_BYTES, "preview is bounded");
+            assert!(big.truncated, "over-limit payload flagged truncated");
+
+            pump.abort();
+        });
+    }
+
+    #[test]
+    fn mitm_ws_close_is_recorded_and_closes_cleanly() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let (client_side, client_peer) = tokio::io::duplex(1 << 16);
+            let (upstream_side, fixture_peer) = tokio::io::duplex(1 << 16);
+            let bridge_client =
+                WebSocketStream::from_raw_socket(client_side, Role::Server, Some(ws_config())).await;
+            let mut client =
+                WebSocketStream::from_raw_socket(client_peer, Role::Client, Some(ws_config())).await;
+            let bridge_upstream =
+                WebSocketStream::from_raw_socket(upstream_side, Role::Client, Some(ws_config())).await;
+            let _fixture =
+                WebSocketStream::from_raw_socket(fixture_peer, Role::Server, Some(ws_config())).await;
+
+            let (mut rx, sink) = ws_recording_sink();
+            let pump = tokio::spawn(run_ws_pump(
+                bridge_client,
+                bridge_upstream,
+                "flow.test",
+                "conn-close",
+                sink,
+            ));
+
+            client.send(WsMessage::Close(None)).await.unwrap();
+            let frames = ws_collect_until(&mut rx, |f| {
+                has_frame(f, WsDirection::ClientToServer, "close")
+            })
+            .await;
+            let close = frames
+                .iter()
+                .find(|f| f.direction == WsDirection::ClientToServer && f.opcode == "close")
+                .expect("client close frame recorded");
+            assert!(!close.truncated);
+
+            let outcome = tokio::time::timeout(Duration::from_secs(10), pump)
+                .await
+                .expect("the pump must finish after a close, not hang")
+                .expect("the pump must not panic");
+            assert_eq!(outcome, ());
+        });
+    }
+
+    async fn spawn_ws_fixture(
+        ca: Arc<CertificateAuthority>,
+        host: &str,
+        seen_extensions: Arc<StdMutex<Option<bool>>>,
+    ) -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let config = ca.server_config(host).unwrap();
+        tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let tls = TlsAcceptor::from(config).accept(tcp).await.unwrap();
+            let probe = Arc::clone(&seen_extensions);
+            let callback = move |
+                request: &ws_server::Request,
+                mut response: ws_server::Response,
+            | -> Result<ws_server::Response, ws_server::ErrorResponse> {
+                let has = request.headers().contains_key("sec-websocket-extensions");
+                *probe.lock().unwrap_or_else(|e| e.into_inner()) = Some(has);
+                response.headers_mut().insert(
+                    HeaderName::from_static("sec-websocket-extensions"),
+                    HeaderValue::from_static("permessage-deflate"),
+                );
+                Ok(response)
+            };
+            let mut ws = accept_hdr_async_with_config(tls, callback, Some(ws_config()))
+                .await
+                .expect("origin accepts the websocket handshake");
+            let _ = ws.send(WsMessage::text("srv-hello")).await;
+            while let Some(Ok(message)) = ws.next().await {
+                if message.is_close() {
+                    break;
+                }
+                if ws.send(message).await.is_err() {
+                    break;
+                }
+            }
+        });
+        addr
+    }
+
+    async fn spawn_mitm_ws_bridge(
+        ca: Arc<CertificateAuthority>,
+        host: &str,
+        upstream_addr: SocketAddr,
+        sink: Arc<dyn WsFrameSink>,
+    ) -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let host_owned = host.to_string();
+        tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let client = match terminate(tcp, &ca, Some(&host_owned)).await {
+                MitmTls::Terminated(tls) => tls,
+                MitmTls::Passthrough(_) => panic!("expected TLS termination"),
+                MitmTls::Failed(e) => panic!("terminate failed: {e}"),
+            };
+            let tcp_up = TcpStream::connect(upstream_addr).await.unwrap();
+            let connector = TlsConnector::from(ws_client_tls(&ca, b"http/1.1"));
+            let sni = ServerName::try_from(host_owned.clone()).unwrap();
+            let upstream = connector.connect(sni, tcp_up).await.unwrap();
+            let ctx = BridgeContext::new(host_owned, "conn-ws-int", 0).with_ws_sink(sink);
+            let _ = bridge(client, upstream, ctx).await;
+        });
+        addr
+    }
+
+    #[test]
+    fn mitm_ws_permessage_deflate_extensions_are_stripped_both_ways() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let ca = ws_temp_ca("deflate");
+            let host = "flow.test";
+            let seen_extensions = Arc::new(StdMutex::new(None));
+            let upstream = spawn_ws_fixture(
+                Arc::clone(&ca),
+                host,
+                Arc::clone(&seen_extensions),
+            )
+            .await;
+            let (mut rx, sink) = ws_recording_sink();
+            let bridge_addr = spawn_mitm_ws_bridge(Arc::clone(&ca), host, upstream, sink).await;
+
+            let tcp = TcpStream::connect(bridge_addr).await.unwrap();
+            let tls = TlsConnector::from(ws_client_tls(&ca, b"http/1.1"))
+                .connect(ServerName::try_from(host.to_string()).unwrap(), tcp)
+                .await
+                .unwrap();
+            let uri: Uri = format!("ws://{host}/socket").parse().unwrap();
+            let request = ClientRequestBuilder::new(uri)
+                .with_header("Sec-WebSocket-Extensions", "permessage-deflate");
+            let (mut ws, response) = client_async_with_config(request, tls, Some(ws_config()))
+                .await
+                .expect("a permessage-deflate client must still connect (extensions stripped)");
+            assert_eq!(response.status(), 101);
+            assert!(
+                response.headers().get("sec-websocket-extensions").is_none(),
+                "the origin's extension answer must be stripped before reaching the client"
+            );
+            assert_eq!(
+                *seen_extensions.lock().unwrap_or_else(|e| e.into_inner()),
+                Some(false),
+                "the client's extension offer must never reach the origin"
+            );
+
+            ws.send(WsMessage::text("hello-ws")).await.unwrap();
+            let mut got_echo = false;
+            for _ in 0..3 {
+                let message = ws_next_msg(&mut ws).await;
+                if message == WsMessage::text("hello-ws") {
+                    got_echo = true;
+                    break;
+                }
+            }
+            assert!(got_echo, "uncompressed frames must round-trip through the MITM");
+
+            let frames = ws_collect_until(&mut rx, |f| {
+                f.iter().any(|x| {
+                    x.direction == WsDirection::ClientToServer
+                        && x.opcode == "text"
+                        && x.preview == b"hello-ws"
+                }) && f.iter().any(|x| {
+                    x.direction == WsDirection::ServerToClient
+                        && x.opcode == "text"
+                        && x.preview == b"hello-ws"
+                })
+            })
+            .await;
+            assert!(
+                frames.iter().any(|f| {
+                    f.direction == WsDirection::ClientToServer
+                        && f.opcode == "text"
+                        && f.preview == b"hello-ws"
+                }),
+                "the MITM path must record the client text frame"
+            );
+            assert!(
+                frames.iter().any(|f| {
+                    f.direction == WsDirection::ServerToClient
+                        && f.opcode == "text"
+                        && f.preview == b"hello-ws"
+                }),
+                "the MITM path must record the origin echo as server→client"
+            );
         });
     }
 }
