@@ -43,6 +43,39 @@ pub(crate) const UID_PENDING_CAP: usize = 2048;
 /// Bound on UID results that arrive before their record is inserted.
 pub(crate) const UID_EARLY_RESULTS_CAP: usize = 2048;
 
+// MITM termination, capture ring and rewrite-rule caps (Todo 4). `mitm.rs` and
+// `captures.rs` do not exist yet, so — unlike the `requests.rs`/`shaper.rs` caps
+// this module re-exports — these are declared HERE, the one module that owns the
+// aggregate memory budget, until each owning module lands and becomes the single
+// source of truth. The per-record byte caps are owned here regardless.
+/// Leaf-certificate cache: per-host `Arc<rustls::ServerConfig>`, oldest evicted.
+pub(crate) const MITM_CERT_CACHE_CAP: usize = 64;
+pub(crate) const MITM_CERT_ENTRY_MAX_BYTES: usize = 8 * 1024;
+/// Capture-record ring. Holds summaries only; full payloads are disk-resident.
+pub(crate) const CAPTURE_RING_CAP: usize = 256;
+/// Must dominate the in-ring summary fields (url ≤1 KiB, host ≤253, connId 36,
+/// 2×256 previews, 2×512 truncated headers, 512 WS preview, scalars/keys) —
+/// asserted by `capture_record_cap_dominates_ring_fields`, not assumed.
+pub(crate) const CAPTURE_RECORD_MAX_BYTES: usize = 4096;
+/// Rewrite-rule table: bounded, oldest eviction by the owning captures module.
+pub(crate) const CAPTURE_RULE_CAP: usize = 128;
+pub(crate) const CAPTURE_RULE_ENTRY_MAX_BYTES: usize = 2048;
+/// At most this many MITM sessions in flight; the (N+1)th is a **direct
+/// pass-through** — never queued, never buffered.
+pub(crate) const MITM_MAX_INFLIGHT: usize = 7;
+/// Hard per-session instant buffer, enforced by every protocol knob (Todo 9):
+/// WS + rustls (plaintext/TLS) + hyper h1 read/write + hyper h2 windows.
+pub(crate) const MITM_SESSION_BUFFER_MAX_BYTES: usize = 256 * 1024;
+/// CA + leaf certificate PEM buffer ceiling.
+pub(crate) const MITM_PEM_BUFFER_MAX_BYTES: usize = 64 * 1024;
+
+/// In-ring URL truncation bound. The full URL is disk-resident; this is a field
+/// *inside* [`CAPTURE_RECORD_MAX_BYTES`], not an additional memory term.
+pub(crate) const CAPTURE_URL_MAX_BYTES: usize = 1024;
+/// Disk-only body ceiling (SQLite). Deliberately NOT charged to the memory
+/// budget — assert it stays out of [`worst_case_bytes`].
+pub(crate) const CAPTURE_BODY_MAX_BYTES: usize = 1024 * 1024;
+
 /// Ceilings: a cap raised above one of these must be re-justified here, because
 /// the memory test fails otherwise. This makes "bounded" a reviewed decision.
 pub(crate) const MAX_LOG_RING: usize = 4096;
@@ -57,6 +90,10 @@ pub(crate) const MAX_TUN_READ_BUFFER: usize = 65_535;
 pub(crate) const MAX_INGRESS_CHANNEL: usize = 1024;
 pub(crate) const MAX_SHAPER_BUFFER_BYTES_PER_DIRECTION: usize = 2 * 1024 * 1024;
 pub(crate) const MAX_SHAPER_MAX_FRAMES: usize = 512;
+pub(crate) const MAX_MITM_CERT_CACHE: usize = 64;
+pub(crate) const MAX_CAPTURE_RING: usize = 256;
+pub(crate) const MAX_CAPTURE_RULE: usize = 128;
+pub(crate) const MAX_MITM_MAX_INFLIGHT: usize = 7;
 
 /// Per-entry ceilings for the worst-case accounting. These are generous upper
 /// bounds; real records are far smaller.
@@ -112,6 +149,15 @@ pub(crate) fn worst_case_bytes() -> usize {
         // Shaper release heaps (Todo 6): one bounded heap per direction, billed
         // by actual frame length, so each holds at most this many bytes.
         + 2 * SHAPER_BUFFER_BYTES_PER_DIRECTION
+        // MITM/capture accumulators (Todo 4): the bounded caches and one in-flight
+        // session batch. `CAPTURE_URL_MAX_BYTES` is a field inside a capture
+        // record (already covered) and `CAPTURE_BODY_MAX_BYTES` is disk-only
+        // (SQLite), so neither is charged here.
+        + MITM_CERT_CACHE_CAP * MITM_CERT_ENTRY_MAX_BYTES
+        + CAPTURE_RING_CAP * CAPTURE_RECORD_MAX_BYTES
+        + CAPTURE_RULE_CAP * CAPTURE_RULE_ENTRY_MAX_BYTES
+        + MITM_MAX_INFLIGHT * MITM_SESSION_BUFFER_MAX_BYTES
+        + MITM_PEM_BUFFER_MAX_BYTES
 }
 
 #[cfg(target_os = "linux")]
@@ -210,6 +256,10 @@ mod tests {
             SHAPER_MAX_FRAMES <= MAX_SHAPER_MAX_FRAMES,
             "shaper frame cap {SHAPER_MAX_FRAMES}"
         );
+        assert!(MITM_CERT_CACHE_CAP <= MAX_MITM_CERT_CACHE);
+        assert!(CAPTURE_RING_CAP <= MAX_CAPTURE_RING);
+        assert!(CAPTURE_RULE_CAP <= MAX_CAPTURE_RULE);
+        assert!(MITM_MAX_INFLIGHT <= MAX_MITM_MAX_INFLIGHT);
     }
 
     #[test]
@@ -246,13 +296,27 @@ mod tests {
         let shaper_additions = 2 * SHAPER_BUFFER_BYTES_PER_DIRECTION;
         assert_eq!(shaper_additions, 4_194_304, "shaper accounting drifted");
 
+        // MITM/capture accumulators (Todo 4), computed from the ACTUAL caps. The
+        // in-ring URL bound is a field inside `CAPTURE_RECORD_MAX_BYTES`, and the
+        // body bound is disk-only, so neither appears as its own term.
+        let capture_additions = MITM_CERT_CACHE_CAP * MITM_CERT_ENTRY_MAX_BYTES
+            + CAPTURE_RING_CAP * CAPTURE_RECORD_MAX_BYTES
+            + CAPTURE_RULE_CAP * CAPTURE_RULE_ENTRY_MAX_BYTES
+            + MITM_MAX_INFLIGHT * MITM_SESSION_BUFFER_MAX_BYTES
+            + MITM_PEM_BUFFER_MAX_BYTES;
+        assert_eq!(capture_additions, 3_735_552, "capture accounting drifted");
+        assert!(
+            capture_additions <= 3_954_689,
+            "capture additions {capture_additions} B exceed pre-existing headroom 3_954_689 B"
+        );
+
         let worst = worst_case_bytes();
         assert_eq!(
             worst,
-            baseline + request_additions + shaper_additions,
-            "worst_case_bytes must equal baseline + request + shaper accumulators"
+            baseline + request_additions + shaper_additions + capture_additions,
+            "worst_case_bytes must equal baseline + request + shaper + capture accumulators"
         );
-        assert_eq!(worst, 29_599_743, "worst-case budget drifted");
+        assert_eq!(worst, 33_335_295, "worst-case budget drifted");
         assert!(
             worst <= WORST_CASE_BUDGET_BYTES,
             "worst-case {worst} B exceeds budget {WORST_CASE_BUDGET_BYTES} B"
@@ -271,10 +335,11 @@ mod tests {
         assert_eq!(shaper_term, 4_194_304, "shaper memory term drifted");
 
         // Removing the shaper term must leave exactly the pre-shaper worst case
-        // (frozen at 25_405_439) — i.e. `worst_case_bytes()` includes exactly
+        // (frozen at 29_140_991 = the 25_405_439 baseline-plus-capture value) —
+        // i.e. `worst_case_bytes()` includes exactly
         // `2 × SHAPER_BUFFER_BYTES_PER_DIRECTION` for the heaps, no more.
         let without_shaper = worst_case_bytes() - shaper_term;
-        assert_eq!(without_shaper, 25_405_439, "shaper term is not exactly 2 × the per-direction cap");
+        assert_eq!(without_shaper, 29_140_991, "shaper term is not exactly 2 × the per-direction cap");
 
         // The cap must equal the module's own source of truth.
         assert_eq!(SHAPER_BUFFER_BYTES_PER_DIRECTION, shaper::BUFFER_BYTES_PER_DIRECTION);
@@ -327,6 +392,69 @@ mod tests {
             "worst-case framing lost: {} B < content bounds {} B",
             serialized.len(),
             content_bounds
+        );
+    }
+
+    #[test]
+    fn capture_record_cap_dominates_ring_fields() {
+        // In-ring summary fields, each truncated at its own bound. The record cap
+        // must dominate their sum so the budget never under-counts a record.
+        let url = CAPTURE_URL_MAX_BYTES;
+        let host = 253;
+        let conn_id = 36;
+        let previews = 2 * 256;
+        let headers = 2 * 512;
+        let ws_preview = 512;
+        let scalars_keys = 300;
+        let fields = url + host + conn_id + previews + headers + ws_preview + scalars_keys;
+        assert_eq!(fields, 3661);
+        assert_eq!(CAPTURE_RECORD_MAX_BYTES, 4096);
+        assert!(
+            CAPTURE_RECORD_MAX_BYTES >= fields,
+            "capture record cap {CAPTURE_RECORD_MAX_BYTES} B < field bounds {fields} B"
+        );
+    }
+
+    #[test]
+    fn capture_memory_budget_excludes_bulk_payloads_and_disk_side() {
+        // The only terms the MITM/capture budget may charge are the four bounded
+        // caches plus the PEM buffer. Recomputing that sum must reproduce
+        // `worst_case_bytes()`'s additions exactly: a full-body, full-URL,
+        // full-header or WS-payload term would break this equality.
+        let memory = MITM_CERT_CACHE_CAP * MITM_CERT_ENTRY_MAX_BYTES
+            + CAPTURE_RING_CAP * CAPTURE_RECORD_MAX_BYTES
+            + CAPTURE_RULE_CAP * CAPTURE_RULE_ENTRY_MAX_BYTES
+            + MITM_MAX_INFLIGHT * MITM_SESSION_BUFFER_MAX_BYTES
+            + MITM_PEM_BUFFER_MAX_BYTES;
+        assert_eq!(memory, 3_735_552, "in-memory capture additions drifted");
+
+        const PRIOR_BASELINE: usize = 29_599_743;
+        assert_eq!(worst_case_bytes() - PRIOR_BASELINE, memory);
+
+        // The 1 MiB disk-only body must NOT fit the headroom: charging it would
+        // blow the 3_954_689 B allowance, so its absence is provable.
+        const HEADROOM: usize = 3_954_689;
+        assert_eq!(CAPTURE_BODY_MAX_BYTES, 1024 * 1024);
+        assert!(
+            memory + CAPTURE_BODY_MAX_BYTES > HEADROOM,
+            "a charged body would exceed the headroom; it must stay disk-only"
+        );
+        assert_eq!(CAPTURE_URL_MAX_BYTES, 1024);
+    }
+
+    #[test]
+    fn mitm_inflight_cap_is_a_pass_through_policy() {
+        // Policy assertion (the enforcement mechanism lives in the MITM
+        // dispatcher todo): the cap exists here so the gate can count in-flight
+        // sessions and let the (MITM_MAX_INFLIGHT + 1)th take the direct
+        // pass-through path instead of queueing or buffering. Pin the number.
+        assert_eq!(MITM_MAX_INFLIGHT, 7);
+        assert!(MITM_MAX_INFLIGHT > 0);
+        assert_eq!(MITM_SESSION_BUFFER_MAX_BYTES, 262_144);
+        assert_eq!(
+            MITM_MAX_INFLIGHT * MITM_SESSION_BUFFER_MAX_BYTES,
+            1_835_008,
+            "in-flight session batch accounting drifted"
         );
     }
 
