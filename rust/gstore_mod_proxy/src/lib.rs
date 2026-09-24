@@ -436,6 +436,8 @@ pub(crate) const DISPATCH_METHODS: &[&str] = &[
     "diagnostics.clash_api.start",
     "diagnostics.clash_api.stop",
     "diagnostics.clash_api.status",
+    "capture.config.get",
+    "capture.config.set",
 ];
 
 /// 运行状态机（Todo 2 占位；Todo 6/29 驱动真实 start/stop）。
@@ -1931,6 +1933,29 @@ fn shaper_snapshot_json(
     })
 }
 
+/// `capture.config.get` (Todo 10): the frozen process-level capture config.
+fn capture_config_get_arm(
+    instance_id: u64,
+    instance: Option<Arc<ProxyInstance>>,
+) -> Result<Vec<u8>, ModuleError> {
+    let _inst = require_instance(instance_id, instance)?;
+    ok_data(capture::config_json())
+}
+
+/// `capture.config.set` (Todo 10): merge/validate/publish/persist the partial
+/// update, then return the **same** frozen `CaptureConfig` shape as
+/// `capture.config.get` (one Dart decoder serves both). An invalid payload is a
+/// structured 422 `PROXY_CAPTURE_CONFIG_INVALID`.
+fn capture_config_set_arm(
+    instance_id: u64,
+    instance: Option<Arc<ProxyInstance>>,
+    payload: &[u8],
+) -> Result<Vec<u8>, ModuleError> {
+    let inst = require_instance(instance_id, instance)?;
+    capture::set(&inst.data_dir, payload)?;
+    ok_data(capture::config_json())
+}
+
 fn emit_lan_warning(inst: &ProxyInstance, warning: &serde_json::Value) {
     let event = serde_json::json!({
         "state": current_state(inst).as_str(),
@@ -1963,6 +1988,7 @@ fn create_impl(config: *const u8, config_len: usize) -> Result<u64, c_int> {
     }
     lan::configure(&ctx.data_dir, &ctx.cache_dir);
     shaper::configure(&ctx.data_dir);
+    capture::configure(&ctx.data_dir);
     let last_mode = mode::load_last_mode(&ctx.data_dir);
     let inst = Arc::new(ProxyInstance {
         id,
@@ -2113,6 +2139,8 @@ fn call_impl(
             ok_data(serde_json::json!({ "enabled": false, "wasRunning": was_running }))
         }
         "diagnostics.clash_api.status" => to_value(&controller::status()).and_then(ok_data),
+        "capture.config.get" => capture_config_get_arm(instance_id, instance.clone()),
+        "capture.config.set" => capture_config_set_arm(instance_id, instance.clone(), _payload),
         other => Err(ModuleError::method_not_found(other)),
     };
 

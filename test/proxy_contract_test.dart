@@ -250,6 +250,19 @@ const _shaperSnapshotFixture = <String, dynamic>{
   },
 };
 
+/// `capture.config.get` / `capture.config.set` 共用的冻结响应 fixture
+/// （`API.md` §2.16 `CaptureConfig`；字段值刻意偏离默认以证 round-trip 保真）。
+const _captureConfigFixture = <String, dynamic>{
+  'enabled': true,
+  'tlsPorts': <int>[443, 8443],
+  'domainAllowlist': <String>['a.example', '*.b.example'],
+  'appAllowlist': <String>['com.a'],
+  'captureBody': false,
+  'captureWs': false,
+  'captureH2': false,
+  'maxBodyBytes': 524288,
+};
+
 final Map<String, Map<String, dynamic>> _methodFixtures =
     <String, Map<String, dynamic>>{
   ProxyMethods.ping: <String, dynamic>{
@@ -673,6 +686,9 @@ final Map<String, Map<String, dynamic>> _methodFixtures =
   // `net.shaper.get` 与 `net.shaper.set` 共用同一冻结形状 fixture。
   ProxyMethods.netShaperGet: _shaperSnapshotFixture,
   ProxyMethods.netShaperSet: _shaperSnapshotFixture,
+  // `capture.config.get` 与 `capture.config.set` 共用同一冻结形状 fixture。
+  ProxyMethods.captureConfigGet: _captureConfigFixture,
+  ProxyMethods.captureConfigSet: _captureConfigFixture,
 };
 
 final Map<String, Map<String, dynamic>> _eventFixtures =
@@ -823,6 +839,20 @@ void main() {
       );
     });
 
+    test('请求编码器仅覆盖请求型方法（方法集合的子集）', () {
+      final methodSet = ProxyMethods.all.toSet();
+      expect(
+        methodSet.containsAll(proxyRequestEncoders.keys),
+        isTrue,
+        reason: '编码器键必须全部是已注册方法（encoders ⊆ methods）',
+      );
+      expect(
+        proxyRequestEncoders.keys.toSet(),
+        isNot(methodSet),
+        reason: '部分方法无请求体，编码器不应等于方法全集',
+      );
+    });
+
     test('运行日志 UI 已移除，但 log.* 冻结契约能力必须保留', () {
       // 运行日志查看器页与展示门面已删除；`log.*` 是模块级能力（日志环经宿主
       // `log` 回调桥接到 LogManager），不随 UI 移除而删除。此断言按名锁定能力。
@@ -899,6 +929,36 @@ void main() {
       final typed = await facade.lanSet(const ProxyLanConfig());
       expect(typed.bound, isTrue);
       expect(typed.addresses, isNotEmpty);
+    });
+
+    test('capture.config fixture round-trip 保留真实字段值', () async {
+      final gateway = _FakeGateway(<String, Uint8List>{
+        ProxyMethods.captureConfigGet: _okEnvelope(_captureConfigFixture),
+      });
+      final facade = ProxyModule(gateway: gateway);
+
+      final cfg = await facade.invoke(
+        ProxyMethods.captureConfigGet,
+        proxyResponseDecoders[ProxyMethods.captureConfigGet]!,
+      ) as CaptureConfig;
+      expect(cfg.enabled, isTrue);
+      expect(cfg.tlsPorts, <int>[443, 8443]);
+      expect(cfg.domainAllowlist, <String>['a.example', '*.b.example']);
+      expect(cfg.appAllowlist, <String>['com.a']);
+      expect(cfg.captureBody, isFalse);
+      expect(cfg.captureWs, isFalse);
+      expect(cfg.captureH2, isFalse);
+      expect(cfg.maxBodyBytes, 524288);
+
+      // get 形状 → toJson → fromJson 必须无损。
+      final decoded = CaptureConfig.fromJson(cfg.toJson());
+      expect(decoded.enabled, cfg.enabled);
+      expect(decoded.tlsPorts, cfg.tlsPorts);
+      expect(decoded.domainAllowlist, cfg.domainAllowlist);
+      expect(decoded.appAllowlist, cfg.appAllowlist);
+      expect(decoded.captureBody, cfg.captureBody);
+      expect(decoded.captureH2, cfg.captureH2);
+      expect(decoded.maxBodyBytes, cfg.maxBodyBytes);
     });
 
     test('每个事件 fixture 解码为对应类型化事件', () {

@@ -127,3 +127,10 @@ C ABI `call` 返回 `ABI_ERR_DETAIL (-8)` 时，模块在 out 缓冲写入
 |---|---|---|---|
 | `PROXY_CAPTURE_UPSTREAM_FAILED` | proxy | —（数据面 HTTP 502） | MITM 解密后的请求经 tunnel outbound 重发起失败：`resolve_proxy_lazy` → `dial_tcp`（经 rules/protect seam）拨号失败，或上游 TLS 握手失败；捕获层返回 502 风格响应，不 panic。`skipCertVerify` 默认严验（Todo 7） |
 
+
+> **域层并发追加区。** 后续各原子提交（Wave 3）在此追加各自新增的域层错误码行，
+> 均不重写上文的既有错误码表。
+
+| code | 模块 | 通常 status | 含义 |
+|---|---|---|---|
+| `PROXY_CAPTURE_CONFIG_INVALID` | proxy | 422 | `capture.config.set` 载荷非法：非 JSON 对象、未知字段、`tlsPorts` 含 `0` 或为空、`maxBodyBytes` 越界（不在 `[1, 1048576]`）；校验失败时**不改动**内存或磁盘上的既有配置（Todo 10） |

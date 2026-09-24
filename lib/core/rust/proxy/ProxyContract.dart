@@ -83,6 +83,10 @@ class ProxyMethods {
   static const String netShaperGet = 'net.shaper.get';
   static const String netShaperSet = 'net.shaper.set';
 
+  // `capture.*`：HTTP 捕获 / MITM 门控配置（API.md §2.16，默认无捕获）。
+  static const String captureConfigGet = 'capture.config.get';
+  static const String captureConfigSet = 'capture.config.set';
+
   /// 全部方法名（顺序与 `API.md` §2 一致）。
   static const List<String> all = <String>[
     ping,
@@ -140,6 +144,8 @@ class ProxyMethods {
     lanStatus,
     netShaperGet,
     netShaperSet,
+    captureConfigGet,
+    captureConfigSet,
   ];
 }
 
@@ -194,6 +200,9 @@ List<Map<String, dynamic>> _mapList(Object? value) => value is List
 
 List<String> _strList(Object? value) =>
     value is List ? value.map((e) => e.toString()).toList() : const <String>[];
+
+List<int> _intList(Object? value) =>
+    value is List ? value.map(_int).toList() : const <int>[];
 
 int _int(Object? value) => _intOrNull(value) ?? 0;
 
@@ -2799,6 +2808,79 @@ class ProxyShaperSnapshot {
       Object.hash(config, effective, applied, engineRunning, counters);
 }
 
+// ==================== capture.* ====================
+
+/// HTTP 捕获 / MITM 门控配置（`API.md` §2.16 `CaptureConfig`）。
+///
+/// `capture.config.get` / `capture.config.set` 的**共用**响应形状；同时作为
+/// `capture.config.set` 的（部分）请求体。
+class CaptureConfig {
+  const CaptureConfig({
+    this.enabled = false,
+    this.tlsPorts = const <int>[443, 8443],
+    this.domainAllowlist = const <String>[],
+    this.appAllowlist = const <String>[],
+    this.captureBody = true,
+    this.captureWs = true,
+    this.captureH2 = true,
+    this.maxBodyBytes = 1048576,
+  });
+
+  final bool enabled;
+  final List<int> tlsPorts;
+  final List<String> domainAllowlist;
+  final List<String> appAllowlist;
+  final bool captureBody;
+  final bool captureWs;
+  final bool captureH2;
+  final int maxBodyBytes;
+
+  factory CaptureConfig.fromJson(Map<String, dynamic> json) => CaptureConfig(
+        enabled: json['enabled'] == true,
+        tlsPorts: json.containsKey('tlsPorts')
+            ? _intList(json['tlsPorts'])
+            : const <int>[443, 8443],
+        domainAllowlist: _strList(json['domainAllowlist']),
+        appAllowlist: _strList(json['appAllowlist']),
+        captureBody: json['captureBody'] != false,
+        captureWs: json['captureWs'] != false,
+        captureH2: json['captureH2'] != false,
+        maxBodyBytes: _intOrNull(json['maxBodyBytes']) ?? 1048576,
+      );
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'enabled': enabled,
+        'tlsPorts': tlsPorts,
+        'domainAllowlist': domainAllowlist,
+        'appAllowlist': appAllowlist,
+        'captureBody': captureBody,
+        'captureWs': captureWs,
+        'captureH2': captureH2,
+        'maxBodyBytes': maxBodyBytes,
+      };
+
+  CaptureConfig copyWith({
+    bool? enabled,
+    List<int>? tlsPorts,
+    List<String>? domainAllowlist,
+    List<String>? appAllowlist,
+    bool? captureBody,
+    bool? captureWs,
+    bool? captureH2,
+    int? maxBodyBytes,
+  }) =>
+      CaptureConfig(
+        enabled: enabled ?? this.enabled,
+        tlsPorts: tlsPorts ?? this.tlsPorts,
+        domainAllowlist: domainAllowlist ?? this.domainAllowlist,
+        appAllowlist: appAllowlist ?? this.appAllowlist,
+        captureBody: captureBody ?? this.captureBody,
+        captureWs: captureWs ?? this.captureWs,
+        captureH2: captureH2 ?? this.captureH2,
+        maxBodyBytes: maxBodyBytes ?? this.maxBodyBytes,
+      );
+}
+
 // ==================== 方法 → 解码器注册表 ====================
 
 /// 方法名 → 响应解码器（**每个** [ProxyMethods.all] 一项）。
@@ -2871,6 +2953,8 @@ final Map<String, ProxyJsonDecoder<Object>> proxyResponseDecoders =
   ProxyMethods.lanStatus: ProxyLanStatus.fromJson,
   ProxyMethods.netShaperGet: ProxyShaperSnapshot.fromJson,
   ProxyMethods.netShaperSet: ProxyShaperSnapshot.fromJson,
+  ProxyMethods.captureConfigGet: CaptureConfig.fromJson,
+  ProxyMethods.captureConfigSet: CaptureConfig.fromJson,
 };
 
 // ==================== 请求模型（toJson） ====================
@@ -3277,6 +3361,7 @@ final Map<String, Map<String, dynamic> Function()> proxyRequestEncoders =
   ProxyMethods.clashApiStart: () => const ClashApiStartRequest().toJson(),
   ProxyMethods.lanSet: () => const ProxyLanConfig().toRequestJson(),
   ProxyMethods.netShaperSet: () => const ProxyShaperConfig().toRequestJson(),
+  ProxyMethods.captureConfigSet: () => const CaptureConfig().toJson(),
 };
 
 /// 便捷：JSON 文本 → UTF-8 字节（请求体编码）。

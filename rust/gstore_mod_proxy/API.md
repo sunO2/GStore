@@ -1212,6 +1212,40 @@ ESP/AH（proto 50/51）等未知传输也**不**豁免。豁免帧在损伤判�
 高带宽高延迟（大 BDP）链路上，若队列被 delay/带宽排空的速度赶不上填充速度，会以
 `bufferDropped` 丢弃新帧，而**不是无界增长**。
 
+### 2.16 `capture.*` — HTTP capture / MITM gating config (Todo 10)
+
+| method | request | data |
+|---|---|---|
+| `capture.config.get` | *(none)* | `CaptureConfig` |
+| `capture.config.set` | partial `CaptureConfig` | `CaptureConfig` |
+
+`CaptureConfig`:
+```json
+{ "enabled": false, "tlsPorts": [443, 8443], "domainAllowlist": [],
+  "appAllowlist": [], "captureBody": true, "captureWs": true,
+  "captureH2": true, "maxBodyBytes": 1048576 }
+```
+
+| field | type | default | 含义 |
+|---|---|---|---|
+| `enabled` | bool | `false` | 主开关；`false` 时每条流保持隧道直通（默认无捕获） |
+| `tlsPorts` | number[] | `[443, 8443]` | 参与 MITM 终止的目标端口（每个 ∈ `[1, 65535]`，数组不得为空） |
+| `domainAllowlist` | string[] | `[]` | 主白名单：按嗅探 SNI/host 匹配；非空时仅命中才允许解密 |
+| `appAllowlist` | string[] | `[]` | 尽力而为白名单（包名 / UID 字符串）；仅当 `domainAllowlist` 为空时生效 |
+| `captureBody` | bool | `true` | 捕获请求/响应体 |
+| `captureWs` | bool | `true` | 捕获 WebSocket 帧 |
+| `captureH2` | bool | `true` | 捕获 HTTP/2 |
+| `maxBodyBytes` | number | `1048576` | 落盘 Body 上限（仅 SQLite；不驻留内存），∈ `[1, 1048576]` |
+
+**Partial update.** `capture.config.set` 接受 `CaptureConfig` 的任意子集（缺省字段保留当前值）。
+未知字段、非对象载荷、`tlsPorts` 含 `0` 或为空、`maxBodyBytes` 越界均为 **422
+`PROXY_CAPTURE_CONFIG_INVALID`**，且**不改动**内存或磁盘上的既有配置。校验通过后配置发布为
+进程级配置（`capture::config()`，后续流判定立即使用新值）并持久化到
+`<dataDir>/capture_config.json`；重启后由 `create_impl` 重新载入。
+
+**Bounds.** 白名单条目在写入时被裁剪为最多 `MAX_ALLOWLIST_ENTRIES = 256` 条、每条最长
+`MAX_ALLOWLIST_ENTRY_BYTES = 253` 字节（见 §9 预算）；`maxBodyBytes` 是落盘上限，不驻留内存。
+
 ## 3. Events (module → host)
 
 Emitted through the ABI `emit_event` channel. Payload is the JSON below; the Dart

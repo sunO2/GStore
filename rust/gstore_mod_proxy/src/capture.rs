@@ -42,7 +42,16 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
+use gstore_contract::error::{ModuleError, StatusCode};
+use serde::{Deserialize, Serialize};
+
 use crate::limits::CAPTURE_BODY_MAX_BYTES;
+
+/// `capture.config.set` payload invalid (422, `rust/ERROR_CODES.md`).
+pub(crate) const ERR_CAPTURE_CONFIG_INVALID: &str = "PROXY_CAPTURE_CONFIG_INVALID";
+
+/// Persisted capture config filename, beside the other module JSON stores.
+const CAPTURE_CONFIG_FILE: &str = "capture_config.json";
 
 /// Upper bound on allowlist entries retained from a `set_config` call.
 const MAX_ALLOWLIST_ENTRIES: usize = 256;
@@ -57,7 +66,8 @@ const APP_RESOLVE_TIMEOUT: Duration = Duration::from_millis(200);
 /// Process-level MITM capture configuration. Defaults are the shipping
 /// no-capture posture: `enabled:false` means every flow keeps the existing
 /// tunnel pass-through, byte for byte.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct CaptureConfig {
     /// Master switch. `false` => never MITM (default).
     pub enabled: bool,
@@ -145,6 +155,144 @@ pub(crate) fn set_config(config: CaptureConfig) {
 pub(crate) fn reset_for_tests() {
     set_config(CaptureConfig::default());
     set_app_uid_resolver(None);
+}
+
+// ── Contract surface: `capture.config.*` (Todo 10) ───────────────────────────
+
+/// Partial update for [`CaptureConfig`]; absent fields keep the current value.
+/// Unknown fields are rejected so a typo is a structured 422, not a silent no-op.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CaptureConfigPatch {
+    enabled: Option<bool>,
+    tls_ports: Option<Vec<u16>>,
+    domain_allowlist: Option<Vec<String>>,
+    app_allowlist: Option<Vec<String>>,
+    capture_body: Option<bool>,
+    capture_ws: Option<bool>,
+    capture_h2: Option<bool>,
+    max_body_bytes: Option<usize>,
+}
+
+fn invalid(message: impl Into<String>) -> ModuleError {
+    ModuleError::new(StatusCode::InvalidArgument, ERR_CAPTURE_CONFIG_INVALID, message)
+}
+
+impl CaptureConfig {
+    /// Validate the wire shape. Never panics.
+    fn validate(&self) -> Result<(), ModuleError> {
+        if self.tls_ports.is_empty() {
+            return Err(invalid("tlsPorts must not be empty"));
+        }
+        if self.tls_ports.contains(&0) {
+            return Err(invalid("tlsPorts must be within [1, 65535]"));
+        }
+        if self.max_body_bytes == 0 || self.max_body_bytes > CAPTURE_BODY_MAX_BYTES {
+            return Err(invalid(format!(
+                "maxBodyBytes must be within [1, {CAPTURE_BODY_MAX_BYTES}] (got {})",
+                self.max_body_bytes
+            )));
+        }
+        Ok(())
+    }
+
+    /// Merge a partial JSON object over this config and validate the result.
+    /// An empty payload validates the current config; a non-object or an unknown
+    /// field is a structured 422 (`lan.rs`/`shaper.rs` convention).
+    pub(crate) fn apply_patch(&mut self, payload: &[u8]) -> Result<(), ModuleError> {
+        if payload.is_empty() {
+            return self.validate();
+        }
+        let value: serde_json::Value = serde_json::from_slice(payload)
+            .map_err(|e| invalid(format!("payload must be a JSON object: {e}")))?;
+        if !value.is_object() {
+            return Err(invalid("payload must be a JSON object"));
+        }
+        let patch: CaptureConfigPatch = serde_json::from_value(value)
+            .map_err(|e| invalid(format!("invalid capture config: {e}")))?;
+        if let Some(v) = patch.enabled {
+            self.enabled = v;
+        }
+        if let Some(v) = patch.tls_ports {
+            self.tls_ports = v;
+        }
+        if let Some(v) = patch.domain_allowlist {
+            self.domain_allowlist = v;
+        }
+        if let Some(v) = patch.app_allowlist {
+            self.app_allowlist = v;
+        }
+        if let Some(v) = patch.capture_body {
+            self.capture_body = v;
+        }
+        if let Some(v) = patch.capture_ws {
+            self.capture_ws = v;
+        }
+        if let Some(v) = patch.capture_h2 {
+            self.capture_h2 = v;
+        }
+        if let Some(v) = patch.max_body_bytes {
+            self.max_body_bytes = v;
+        }
+        self.validate()
+    }
+}
+
+/// The frozen `capture.config.get` / `capture.config.set` response shape (the
+/// serialized process-level config, all-camelCase).
+pub(crate) fn config_json() -> serde_json::Value {
+    serde_json::to_value(&*config()).unwrap_or(serde_json::Value::Null)
+}
+
+/// Read and validate `capture_config.json`, falling back to the default config
+/// on ANY failure, so a corrupt store can never brick module creation.
+fn load_config(data_dir: &str) -> CaptureConfig {
+    let dir = data_dir.trim();
+    if dir.is_empty() {
+        return CaptureConfig::default();
+    }
+    let path = std::path::Path::new(dir).join(CAPTURE_CONFIG_FILE);
+    let Ok(bytes) = std::fs::read(&path) else {
+        return CaptureConfig::default();
+    };
+    let Ok(config) = serde_json::from_slice::<CaptureConfig>(&bytes) else {
+        return CaptureConfig::default();
+    };
+    if config.validate().is_err() {
+        return CaptureConfig::default();
+    }
+    config
+}
+
+/// Persist `config` as `capture_config.json`; an empty data dir is a no-op.
+fn persist(data_dir: &str, config: &CaptureConfig) {
+    let dir = data_dir.trim();
+    if dir.is_empty() {
+        return;
+    }
+    let path = std::path::Path::new(dir).join(CAPTURE_CONFIG_FILE);
+    if let Ok(bytes) = serde_json::to_vec(config) {
+        let _ = std::fs::write(path, bytes);
+    }
+}
+
+/// Install the persisted capture config on module create (mounted from
+/// `lib.rs::create_impl` next to `shaper::configure`).
+pub(crate) fn configure(data_dir: &str) {
+    set_config(load_config(data_dir));
+}
+
+/// `capture.config.set`: merge `payload`, validate, publish and persist.
+///
+/// The current config is cloned BEFORE `apply_patch` mutates it, so a rejected
+/// (422) patch never publishes or persists a half-applied config.
+pub(crate) fn set(data_dir: &str, payload: &[u8]) -> Result<CaptureConfig, ModuleError> {
+    let mut next = (*config()).clone();
+    next.apply_patch(payload)?;
+    let next = next.sanitized();
+    set_config(next.clone());
+    persist(data_dir, &next);
+    Ok(next)
 }
 
 // ── App (UID) attribution ────────────────────────────────────────────────────
@@ -506,5 +654,134 @@ mod mitm_gate_tests {
         assert_eq!(cfg.domain_allowlist.len(), MAX_ALLOWLIST_ENTRIES);
         assert_eq!(cfg.app_allowlist.len(), 1, "blank entries dropped");
         assert_eq!(cfg.app_allowlist[0].len(), MAX_ALLOWLIST_ENTRY_BYTES);
+    }
+}
+
+#[cfg(test)]
+mod config_io_tests {
+    use super::*;
+    use std::collections::BTreeSet;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        crate::TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn tmp_dir(tag: &str) -> std::path::PathBuf {
+        static SEQ: AtomicU32 = AtomicU32::new(0);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("gstore-capture-{tag}-{nanos}-{seq}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn capture_config_get_shape_is_camel_case_contract() {
+        let _guard = serial();
+        reset_for_tests();
+        let json = config_json();
+        let keys: BTreeSet<&str> = json
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(|k| k.as_str())
+            .collect();
+        assert_eq!(
+            keys,
+            BTreeSet::from([
+                "enabled",
+                "tlsPorts",
+                "domainAllowlist",
+                "appAllowlist",
+                "captureBody",
+                "captureWs",
+                "captureH2",
+                "maxBodyBytes",
+            ])
+        );
+        assert_eq!(json["enabled"], serde_json::json!(false));
+        assert_eq!(json["tlsPorts"], serde_json::json!([443, 8443]));
+        assert_eq!(
+            json["maxBodyBytes"],
+            serde_json::json!(CAPTURE_BODY_MAX_BYTES)
+        );
+        reset_for_tests();
+    }
+
+    #[test]
+    fn capture_config_persistence_round_trip() {
+        let _guard = serial();
+        reset_for_tests();
+        let dir = tmp_dir("round-trip");
+        let dir_str = dir.to_str().unwrap();
+
+        let next = set(
+            dir_str,
+            br#"{"enabled":true,"tlsPorts":[443],"domainAllowlist":["a.example"],"captureH2":false}"#,
+        )
+        .unwrap();
+        assert!(next.enabled);
+        assert!(!next.capture_h2);
+        assert_eq!(next.tls_ports, vec![443]);
+        assert_eq!(next.domain_allowlist, vec!["a.example".to_string()]);
+        assert_eq!(*config(), next);
+
+        let path = dir.join(CAPTURE_CONFIG_FILE);
+        assert!(path.exists(), "capture_config.json must be written");
+        let on_disk: CaptureConfig = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(on_disk, next);
+
+        reset_for_tests();
+        configure(dir_str);
+        assert_eq!(*config(), next);
+
+        reset_for_tests();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn capture_config_invalid_is_422_and_does_not_persist() {
+        let _guard = serial();
+        reset_for_tests();
+        let dir = tmp_dir("invalid");
+        let dir_str = dir.to_str().unwrap();
+        configure(dir_str);
+
+        let good = set(dir_str, br#"{"enabled":true}"#).unwrap();
+        let path = dir.join(CAPTURE_CONFIG_FILE);
+        let before = std::fs::read(&path).unwrap();
+
+        for payload in [
+            br#"{"tlsPorts":[0]}"#.as_slice(),
+            br#"{"tlsPorts":[]}"#.as_slice(),
+            br#"{"maxBodyBytes":0}"#.as_slice(),
+            br#"{"maxBodyBytes":2097153}"#.as_slice(),
+            br#"{"bogus":true}"#.as_slice(),
+        ] {
+            let err = set(dir_str, payload).unwrap_err();
+            assert_eq!(err.status, StatusCode::InvalidArgument);
+            assert_eq!(err.code, ERR_CAPTURE_CONFIG_INVALID);
+            assert_eq!(*config(), good, "rejected payload must not publish");
+            assert_eq!(std::fs::read(&path).unwrap(), before, "…nor persist");
+        }
+
+        reset_for_tests();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn capture_config_corrupt_file_falls_back_to_default() {
+        let _guard = serial();
+        reset_for_tests();
+        let dir = tmp_dir("corrupt");
+        std::fs::write(dir.join(CAPTURE_CONFIG_FILE), b"{").unwrap();
+        configure(dir.to_str().unwrap());
+        assert_eq!(*config(), CaptureConfig::default());
+        reset_for_tests();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
