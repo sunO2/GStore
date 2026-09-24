@@ -264,14 +264,20 @@ fn load_config(data_dir: &str) -> CaptureConfig {
 }
 
 /// Persist `config` as `capture_config.json`; an empty data dir is a no-op.
+/// Atomic (`tmp` + rename), matching the rules store, so a crash mid-write can
+/// never leave a truncated config behind.
 fn persist(data_dir: &str, config: &CaptureConfig) {
     let dir = data_dir.trim();
     if dir.is_empty() {
         return;
     }
     let path = std::path::Path::new(dir).join(CAPTURE_CONFIG_FILE);
-    if let Ok(bytes) = serde_json::to_vec(config) {
-        let _ = std::fs::write(path, bytes);
+    let Ok(bytes) = serde_json::to_vec(config) else {
+        return;
+    };
+    let tmp = path.with_extension("json.tmp");
+    if std::fs::write(&tmp, &bytes).is_ok() {
+        let _ = std::fs::rename(&tmp, &path);
     }
 }
 
@@ -780,6 +786,29 @@ mod config_io_tests {
         std::fs::write(dir.join(CAPTURE_CONFIG_FILE), b"{").unwrap();
         configure(dir.to_str().unwrap());
         assert_eq!(*config(), CaptureConfig::default());
+        reset_for_tests();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn capture_config_persist_is_atomic_and_ignores_stale_tmp() {
+        let _guard = serial();
+        reset_for_tests();
+        let dir = tmp_dir("atomic");
+        let dir_str = dir.to_str().unwrap();
+        let path = dir.join(CAPTURE_CONFIG_FILE);
+        let tmp = path.with_extension("json.tmp");
+
+        // A stale tmp from an interrupted write must never be loaded as config.
+        std::fs::write(&tmp, br#"{"enabled":true}"#).unwrap();
+        configure(dir_str);
+        assert_eq!(*config(), CaptureConfig::default(), "tmp is not the config file");
+
+        let next = set(dir_str, br#"{"enabled":true,"tlsPorts":[443]}"#).unwrap();
+        assert!(!tmp.exists(), "the tmp file must be renamed away");
+        let on_disk: CaptureConfig = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(on_disk, next, "the committed config is complete and parseable");
+
         reset_for_tests();
         let _ = std::fs::remove_dir_all(&dir);
     }

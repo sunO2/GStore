@@ -86,8 +86,11 @@ pub(crate) const CAPTURE_PERSIST_INTERVAL_MS: u64 = 5000;
 /// without bound during a burst between two flushes.
 pub(crate) const CAPTURE_FLUSH_QUEUE_CAP: usize = CAPTURE_RING_CAP;
 /// Bound on the pending-flush queue (in bytes). A handful of 1 MiB/side bodies
-/// can otherwise dwarf the ring's RAM budget; the byte cap dominates it.
-pub(crate) const CAPTURE_FLUSH_QUEUE_BYTES: usize = 8 * 1024 * 1024;
+/// can otherwise dwarf the ring's RAM budget; the byte cap dominates it. The cap
+/// is part of the reviewed `worst_case_bytes()` budget (see `limits.rs`), so it
+/// stays small enough that the ≤32 MiB claim holds; a record larger than the cap
+/// is dropped (and counted) between two 5 s flushes, the ring summary remains.
+pub(crate) const CAPTURE_FLUSH_QUEUE_BYTES: usize = 128 * 1024;
 /// Explicit SQLite busy timeout: a concurrent writer waits instead of failing
 /// immediately with `SQLITE_BUSY`.
 const CAPTURE_BUSY_TIMEOUT_MS: u64 = 5000;

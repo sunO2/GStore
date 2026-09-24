@@ -60,6 +60,14 @@ pub(crate) const CAPTURE_RECORD_MAX_BYTES: usize = 4096;
 /// Rewrite-rule table: bounded, oldest eviction by the owning captures module.
 pub(crate) const CAPTURE_RULE_CAP: usize = 128;
 pub(crate) const CAPTURE_RULE_ENTRY_MAX_BYTES: usize = 2048;
+/// Capture pending-flush queue byte bound. Re-exported from `captures.rs` (the
+/// single source of truth); it is the only structure that holds not-yet-flushed
+/// bodies in RAM, so it is charged against the memory budget.
+pub(crate) const CAPTURE_FLUSH_QUEUE_BYTES: usize = crate::captures::CAPTURE_FLUSH_QUEUE_BYTES;
+/// Streaming-decode scratch per in-flight MITM session: the bounded 8 KiB read
+/// chunk plus decoder state. The decoded body itself is charged via the pending
+/// queue term; this covers the transient held beyond it while a body decodes.
+pub(crate) const CAPTURE_DECODE_TRANSIENT_BYTES: usize = 8 * 1024;
 /// At most this many MITM sessions in flight; the (N+1)th is a **direct
 /// pass-through** — never queued, never buffered.
 pub(crate) const MITM_MAX_INFLIGHT: usize = 7;
@@ -158,6 +166,11 @@ pub(crate) fn worst_case_bytes() -> usize {
         + CAPTURE_RULE_CAP * CAPTURE_RULE_ENTRY_MAX_BYTES
         + MITM_MAX_INFLIGHT * MITM_SESSION_BUFFER_MAX_BYTES
         + MITM_PEM_BUFFER_MAX_BYTES
+        // Capture pending-flush queue (the only structure holding not-yet-flushed
+        // bodies in RAM) plus the streaming-decode scratch of each in-flight
+        // session. Previously omitted, which understated the real worst case.
+        + CAPTURE_FLUSH_QUEUE_BYTES
+        + MITM_MAX_INFLIGHT * CAPTURE_DECODE_TRANSIENT_BYTES
 }
 
 #[cfg(target_os = "linux")]
@@ -260,6 +273,11 @@ mod tests {
         assert!(CAPTURE_RING_CAP <= MAX_CAPTURE_RING);
         assert!(CAPTURE_RULE_CAP <= MAX_CAPTURE_RULE);
         assert!(MITM_MAX_INFLIGHT <= MAX_MITM_MAX_INFLIGHT);
+        assert!(
+            CAPTURE_FLUSH_QUEUE_BYTES <= CAPTURE_BODY_MAX_BYTES,
+            "queue cap {CAPTURE_FLUSH_QUEUE_BYTES} exceeds the body cap"
+        );
+        assert!(CAPTURE_DECODE_TRANSIENT_BYTES > 0);
     }
 
     #[test]
@@ -310,13 +328,27 @@ mod tests {
             "capture additions {capture_additions} B exceed pre-existing headroom 3_954_689 B"
         );
 
+        // Capture pending-flush queue + streaming-decode transient. These were
+        // previously uncharged, which understated the real worst case.
+        let capture_queue_additions =
+            CAPTURE_FLUSH_QUEUE_BYTES + MITM_MAX_INFLIGHT * CAPTURE_DECODE_TRANSIENT_BYTES;
+        assert_eq!(
+            capture_queue_additions, 188_416,
+            "capture queue/decode accounting drifted"
+        );
+        assert!(
+            capture_additions + capture_queue_additions <= 3_954_689,
+            "capture total {} B exceeds the frozen pre-capture headroom 3_954_689 B",
+            capture_additions + capture_queue_additions
+        );
+
         let worst = worst_case_bytes();
         assert_eq!(
             worst,
-            baseline + request_additions + shaper_additions + capture_additions,
-            "worst_case_bytes must equal baseline + request + shaper + capture accumulators"
+            baseline + request_additions + shaper_additions + capture_additions + capture_queue_additions,
+            "worst_case_bytes must equal baseline + request + shaper + capture + queue accumulators"
         );
-        assert_eq!(worst, 33_335_295, "worst-case budget drifted");
+        assert_eq!(worst, 33_523_711, "worst-case budget drifted");
         assert!(
             worst <= WORST_CASE_BUDGET_BYTES,
             "worst-case {worst} B exceeds budget {WORST_CASE_BUDGET_BYTES} B"
@@ -339,7 +371,7 @@ mod tests {
         // i.e. `worst_case_bytes()` includes exactly
         // `2 × SHAPER_BUFFER_BYTES_PER_DIRECTION` for the heaps, no more.
         let without_shaper = worst_case_bytes() - shaper_term;
-        assert_eq!(without_shaper, 29_140_991, "shaper term is not exactly 2 × the per-direction cap");
+        assert_eq!(without_shaper, 29_329_407, "shaper term is not exactly 2 × the per-direction cap");
 
         // The cap must equal the module's own source of truth.
         assert_eq!(SHAPER_BUFFER_BYTES_PER_DIRECTION, shaper::BUFFER_BYTES_PER_DIRECTION);
@@ -425,8 +457,10 @@ mod tests {
             + CAPTURE_RING_CAP * CAPTURE_RECORD_MAX_BYTES
             + CAPTURE_RULE_CAP * CAPTURE_RULE_ENTRY_MAX_BYTES
             + MITM_MAX_INFLIGHT * MITM_SESSION_BUFFER_MAX_BYTES
-            + MITM_PEM_BUFFER_MAX_BYTES;
-        assert_eq!(memory, 3_735_552, "in-memory capture additions drifted");
+            + MITM_PEM_BUFFER_MAX_BYTES
+            + CAPTURE_FLUSH_QUEUE_BYTES
+            + MITM_MAX_INFLIGHT * CAPTURE_DECODE_TRANSIENT_BYTES;
+        assert_eq!(memory, 3_923_968, "in-memory capture additions drifted");
 
         const PRIOR_BASELINE: usize = 29_599_743;
         assert_eq!(worst_case_bytes() - PRIOR_BASELINE, memory);

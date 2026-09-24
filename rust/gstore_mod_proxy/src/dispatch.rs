@@ -197,8 +197,6 @@ pub(crate) enum MitmInitError {
     NoCa,
     /// At the [`crate::limits::MITM_MAX_INFLIGHT`] cap.
     InflightCap,
-    /// The CA could not build the server config.
-    Config(String),
 }
 
 impl std::fmt::Display for MitmInitError {
@@ -207,7 +205,6 @@ impl std::fmt::Display for MitmInitError {
             MitmInitError::NoHost => write!(f, "no host"),
             MitmInitError::NoCa => write!(f, "no ca installed"),
             MitmInitError::InflightCap => write!(f, "inflight cap reached"),
-            MitmInitError::Config(e) => write!(f, "mitm config: {e}"),
         }
     }
 }
@@ -270,11 +267,6 @@ where
     let Some(guard) = mitm::InflightGuard::try_acquire() else {
         return Err((stream, init_failed(MitmInitError::InflightCap)));
     };
-    // Build the server config up front so a config failure is a clean,
-    // stream-preserving pass-through instead of a mid-handshake failure.
-    if let Err(e) = ca.mitm_server_config(Some(host)) {
-        return Err((stream, init_failed(MitmInitError::Config(e.to_string()))));
-    }
 
     let observer = mitm::gate_observer();
     let host = host.to_string();

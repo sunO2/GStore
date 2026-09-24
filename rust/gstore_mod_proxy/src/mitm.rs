@@ -2095,6 +2095,13 @@ fn simple_response(status: StatusCode) -> Response<BridgeBody> {
     response
 }
 
+/// The 502-style response sent to the client when upstream re-origination fails.
+/// Reads [`UPSTREAM_FAILURE_STATUS`] so the documented failure contract has one
+/// source of truth instead of a duplicated status literal.
+fn upstream_failure_response() -> Response<BridgeBody> {
+    simple_response(StatusCode::from_u16(UPSTREAM_FAILURE_STATUS).unwrap_or(StatusCode::BAD_GATEWAY))
+}
+
 /// The established upstream HTTP client connection, one per bridge.
 pub(crate) enum UpstreamClient {
     H1 {
@@ -2346,7 +2353,7 @@ impl BridgeState {
                 exchange.mark_failed(&e);
                 record_mitm_failed(&format!("http upstream: {e}"));
                 exchange.emit(true);
-                return simple_response(StatusCode::BAD_GATEWAY);
+                return upstream_failure_response();
             }
         };
         let upstream_proto = upstream.proto;
@@ -2401,7 +2408,7 @@ impl BridgeState {
                 exchange.mark_failed(&e.to_string());
                 record_mitm_failed(&format!("http upstream: {e}"));
                 exchange.emit(true);
-                return simple_response(StatusCode::BAD_GATEWAY);
+                return upstream_failure_response();
             }
         };
         let status = response.status();
@@ -2417,7 +2424,8 @@ impl BridgeState {
                 permit,
                 status,
                 resp_headers,
-            );
+            )
+            .await;
         }
 
         // Unmatched (or an unknown kind): forward byte-for-byte, exactly as
@@ -2613,7 +2621,7 @@ fn serve_local_rule(
 /// Apply a `kind:"replace"` rule to the upstream response: overlay
 /// status/headers and, when the rule carries a body, replace the body outright.
 /// Non-overridden headers keep their upstream values.
-fn serve_replace_rule(
+async fn serve_replace_rule(
     rule: &CaptureRule,
     capture_body: bool,
     body_cap: usize,
@@ -2666,11 +2674,22 @@ fn serve_replace_rule(
         &content_type,
         Arc::clone(&resp_capture),
     );
-    // The overridden upstream body is discarded along with the h1 gate permit.
-    drop(upstream);
-    drop(permit);
+    // Drain the discarded upstream body before releasing the h1 gate permit, so
+    // the persistent upstream connection is reusable for the next keep-alive
+    // request instead of being poisoned.
+    drain_discarded_upstream_body(upstream.into_body(), permit);
     let body = TeeBody::new(full_body(bytes), resp_capture, exchange, Side::Response, None);
     response_with(status, headers, BridgeBody::Tee(body))
+}
+
+/// Read and discard an overwritten upstream body to EOF in the background. The
+/// h1 gate permit is released only when the drain finishes, so hyper never starts
+/// the next request on a half-read connection; a failed drain still releases it.
+fn drain_discarded_upstream_body(body: Incoming, permit: Option<OwnedSemaphorePermit>) {
+    tokio::spawn(async move {
+        let _ = body.collect().await;
+        drop(permit);
+    });
 }
 
 fn rule_status(rule: &CaptureRule, fallback: StatusCode) -> StatusCode {
@@ -2712,7 +2731,9 @@ fn end_to_end_headers(headers: &HeaderMap) -> HeaderMap {
 }
 
 /// Parse the rule's `respHeaders` text (`name: value` lines) and overlay each on
-/// `headers`, replacing any upstream value of the same name.
+/// `headers`, replacing any upstream value of the same name. `Content-Length` is
+/// framing the proxy owns: a body override recomputes it and a streamed body
+/// keeps the upstream value, so a user-supplied length can never desync the body.
 fn overlay_rule_headers(headers: &mut HeaderMap, text: &str) {
     for line in text.split(|c| c == '\n' || c == '\r') {
         let line = line.trim();
@@ -2725,7 +2746,7 @@ fn overlay_rule_headers(headers: &mut HeaderMap, text: &str) {
         let Ok(name) = HeaderName::from_bytes(name.trim().as_bytes()) else {
             continue;
         };
-        if is_hop_by_hop(&name) {
+        if is_hop_by_hop(&name) || name == CONTENT_LENGTH {
             continue;
         }
         let Ok(value) = HeaderValue::from_str(value.trim()) else {
@@ -3334,6 +3355,103 @@ mod mitm_http_tests {
         })
     }
 
+    /// Serve several raw HTTP/1.1 responses on ONE keep-alive TLS connection:
+    /// read a complete request (headers + `Content-Length` body) before writing
+    /// each response, exactly as an origin that reuses its connection would.
+    async fn serve_raw_h1_keepalive(
+        mut tls: tokio_rustls::server::TlsStream<TcpStream>,
+        responses: Vec<Vec<u8>>,
+    ) {
+        let mut buf: Vec<u8> = Vec::new();
+        let mut tmp = [0u8; 4096];
+        for response in responses {
+            loop {
+                if let Some(end) = header_end(&buf) {
+                    let head = String::from_utf8_lossy(&buf[..end]).to_ascii_lowercase();
+                    let body_len = parse_content_length(&head).unwrap_or(0);
+                    if buf.len() >= end + 4 + body_len {
+                        buf.drain(..end + 4 + body_len);
+                        break;
+                    }
+                }
+                match tls.read(&mut tmp).await {
+                    Ok(0) | Err(_) => return,
+                    Ok(n) => buf.extend_from_slice(&tmp[..n]),
+                }
+            }
+            let _ = tls.write_all(&response).await;
+            let _ = tls.flush().await;
+        }
+        // Hold the connection open so a poisoned reuse attempt is visible.
+        let _ = tls.read(&mut tmp).await;
+    }
+
+    async fn start_keepalive_fixture(
+        ca: Arc<CertificateAuthority>,
+        host: &str,
+        responses: Vec<Vec<u8>>,
+    ) -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let host = host.to_string();
+        tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let config = ca.server_config(&host).unwrap();
+            let tls = TlsAcceptor::from(config).accept(tcp).await.unwrap();
+            serve_raw_h1_keepalive(tls, responses).await;
+        });
+        addr
+    }
+
+    /// Send several requests sequentially over ONE client TLS connection and
+    /// return each response, so a keep-alive regression cannot be hidden by a
+    /// fresh connection per request.
+    async fn client_send_h1_keepalive(
+        ca: &CertificateAuthority,
+        addr: SocketAddr,
+        host: &str,
+        paths: &[&str],
+    ) -> Vec<ClientOutcome> {
+        let tcp = TcpStream::connect(addr).await.unwrap();
+        let connector = TlsConnector::from(client_tls(ca, b"http/1.1"));
+        let tls = connector
+            .connect(ServerName::try_from(host.to_string()).unwrap(), tcp)
+            .await
+            .unwrap();
+        let (mut sender, conn) = client_http1::Builder::new()
+            .handshake::<_, Full<Bytes>>(TokioIo::new(tls))
+            .await
+            .unwrap();
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+        let mut out = Vec::new();
+        for path in paths {
+            let request = Request::builder()
+                .method("GET")
+                .uri(*path)
+                .header(HOST, host)
+                .body(Full::new(Bytes::new()))
+                .unwrap();
+            let response = sender.send_request(request).await.unwrap();
+            let status = response.status().as_u16();
+            let headers = response.headers().clone();
+            let body = response
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .to_vec();
+            out.push(ClientOutcome {
+                status,
+                headers,
+                body,
+            });
+        }
+        out
+    }
+
     #[test]
     fn mitm_http_h2_window_budget_is_bounded() {
         assert_eq!(H1_MAX_BUF_SIZE, 8192);
@@ -3562,6 +3680,33 @@ mod mitm_http_tests {
         });
     }
 
+    #[test]
+    fn mitm_upstream_failure_returns_502_status_to_client() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let ca = temp_ca("upstream-502");
+            let host = "flow.test";
+            let (mut rx, sink) = recording_sink();
+            let ctx = BridgeContext::new(host, "conn-502", 0).with_sink(sink);
+            let dialer: Arc<dyn UpstreamDialer> = Arc::new(FailingDialer);
+            let addr = run_bridge_dialer(Arc::clone(&ca), host, dialer, ctx).await;
+
+            let out = client_send_h1(&ca, addr, host, "GET", "/dead", None).await;
+            assert_eq!(
+                out.status, UPSTREAM_FAILURE_STATUS,
+                "an unreachable upstream must surface the documented status to the client"
+            );
+            assert_eq!(out.status, 502, "the documented upstream-failure status is 502");
+
+            let rec = next_record(&mut rx).await;
+            assert!(
+                rec.mitm_failed,
+                "the failed exchange is recorded as mitmFailed"
+            );
+            reset_capture_sink();
+        });
+    }
+
     // ==================== Todo 15: rewrite matching + execution ====================
 
     struct TestRuleSource {
@@ -3618,6 +3763,16 @@ mod mitm_http_tests {
                 let client = UpstreamClient::establish(stream, proto).await?;
                 Ok(EstablishedUpstream { client, proto })
             })
+        }
+    }
+
+    struct FailingDialer;
+
+    impl UpstreamDialer for FailingDialer {
+        fn dial(
+            &self,
+        ) -> Pin<Box<dyn Future<Output = Result<EstablishedUpstream, String>> + Send>> {
+            Box::pin(async { Err("test: upstream unreachable".to_string()) })
         }
     }
 
@@ -3809,6 +3964,90 @@ mod mitm_http_tests {
                 "replace dials upstream"
             );
             assert_eq!(source.hit_count("r1"), 1);
+        });
+    }
+
+    #[test]
+    fn mitm_rewrite_replace_body_does_not_poison_h1_keepalive() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let ca = temp_ca("rewrite-keepalive");
+            let host = "flow.test";
+            let big = vec![b'x'; 64 * 1024];
+            let mut first = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n",
+                big.len()
+            )
+            .into_bytes();
+            first.extend_from_slice(&big);
+            let second =
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 9\r\n\r\nsecond-ok".to_vec();
+            let upstream =
+                start_keepalive_fixture(Arc::clone(&ca), host, vec![first, second]).await;
+            let upstream_port = upstream.port();
+            let source = TestRuleSource::new(vec![rewrite_rule(
+                "r1",
+                "replace",
+                "https://flow.test/first",
+                Some(200),
+                None,
+                Some("replaced-body"),
+            )]);
+            let (mut _rx, sink) = recording_sink();
+            let ctx = BridgeContext::new(host, "conn-rw-keepalive", 0)
+                .with_sink(sink)
+                .with_rule_source(Arc::clone(&source) as Arc<dyn CaptureRuleSource>);
+            let forward: SocketAddr = format!("127.0.0.1:{upstream_port}").parse().unwrap();
+            let proxy = RecordingProxy::new("PROXY", forward);
+            let dialer = recording_dialer(&ca, Arc::clone(&proxy), upstream_port);
+            let addr = run_bridge_dialer(Arc::clone(&ca), host, dialer, ctx).await;
+
+            let out = client_send_h1_keepalive(&ca, addr, host, &["/first", "/second"]).await;
+            assert_eq!(out.len(), 2, "two responses on ONE client connection");
+            assert_eq!(out[0].status, 200);
+            assert_eq!(out[0].body, b"replaced-body");
+            assert_eq!(
+                out[1].status, 200,
+                "the second keep-alive request must reuse the upstream h1 connection (not 502)"
+            );
+            assert_eq!(out[1].body, b"second-ok");
+        });
+    }
+
+    #[test]
+    fn mitm_rewrite_replace_without_body_keeps_content_length_consistent() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let ca = temp_ca("rewrite-clen");
+            let host = "flow.test";
+            let raw = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\nhello".to_vec();
+            let upstream = start_fixture(Arc::clone(&ca), host, Fixture::RawH1(raw)).await;
+            let upstream_port = upstream.port();
+            let source = TestRuleSource::new(vec![rewrite_rule(
+                "r1",
+                "replace",
+                "https://flow.test/clen",
+                None,
+                Some("content-length: 999"),
+                None,
+            )]);
+            let (mut _rx, sink) = recording_sink();
+            let ctx = BridgeContext::new(host, "conn-rw-clen", 0)
+                .with_sink(sink)
+                .with_rule_source(Arc::clone(&source) as Arc<dyn CaptureRuleSource>);
+            let forward: SocketAddr = format!("127.0.0.1:{upstream_port}").parse().unwrap();
+            let proxy = RecordingProxy::new("PROXY", forward);
+            let dialer = recording_dialer(&ca, Arc::clone(&proxy), upstream_port);
+            let addr = run_bridge_dialer(Arc::clone(&ca), host, dialer, ctx).await;
+
+            let out = client_send_h1(&ca, addr, host, "GET", "/clen", None).await;
+            assert_eq!(out.status, 200);
+            assert_eq!(out.body, b"hello", "the streamed upstream body is unchanged");
+            assert_eq!(
+                out.headers.get("content-length").unwrap().to_str().unwrap(),
+                "5",
+                "a user Content-Length must not desync the streamed body framing"
+            );
         });
     }
 
