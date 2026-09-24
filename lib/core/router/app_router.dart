@@ -93,6 +93,10 @@ final GoRouter appRouter = GoRouter(
       builder: (context, state) => const ProxyHomePage(),
     ),
     GoRoute(
+      path: AppRoute.requestDebug,
+      builder: (context, state) => const RequestDebugPage(),
+    ),
+    GoRoute(
       path: AppRoute.appSnapshotList,
       builder: (context, state) => const AppSnapshotAppsPage(),
     ),

@@ -593,6 +593,17 @@ class _MinePageState extends ConsumerState<MinePage>
                   const Divider(height: 1),
                   ListTile(
                     contentPadding: EdgeInsets.zero,
+                    leading: const Icon(TablerIcons.api,
+                        size: AppTypography.iconMD),
+                    title: const Text('请求调试'),
+                    subtitle: const Text('集合 / 历史 / 环境 / 改写规则'),
+                    trailing: const Icon(TablerIcons.chevron_right,
+                        size: AppTypography.iconSM),
+                    onTap: () => context.push(AppRoute.requestDebug),
+                  ),
+                  const Divider(height: 1),
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
                     leading: const Icon(TablerIcons.bug,
                         size: AppTypography.iconMD),
                     title: const Text('查看日志'),
