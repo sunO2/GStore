@@ -829,6 +829,34 @@ fn prepare_asset(
         match verify_file(&source, expected) {
             Ok(true) => asset.verified = true,
             Ok(false) => {
+                // A stale/corrupt local copy (e.g. an older `releases/latest`
+                // asset fetched under a previous manifest) must not permanently
+                // block provisioning: retries would otherwise re-verify the same
+                // bad bytes forever. When a fresh download is possible, drop the
+                // bad cache copy and re-download instead of hard-failing.
+                if download_enabled {
+                    if let Some(dest) = dest.as_ref() {
+                        if *dest == source {
+                            // The mismatching bytes ARE the writable local
+                            // cache; best-effort remove so the download can
+                            // install cleanly. The immutable `bundled` file is
+                            // never touched (that path means source != dest).
+                            let _ = std::fs::remove_file(&source);
+                        }
+                        asset.error = None;
+                        asset.status = "downloading".to_string();
+                        asset.verified = false;
+                        return (
+                            asset,
+                            Some(PendingDownload {
+                                file: file.to_string(),
+                                url,
+                                sha256: expected.clone(),
+                                dest: dest.clone(),
+                            }),
+                        );
+                    }
+                }
                 asset.status = "checksum_mismatch".to_string();
                 asset.error = Some(format!(
                     "sha256 mismatch for {} (expected {expected})",
@@ -958,14 +986,18 @@ fn download_verified(download: &PendingDownload) -> Result<(), String> {
         .build()
         .map_err(|e| format!("geo download runtime: {e}"))?;
     let bytes = runtime
-        .block_on(meow_config::internal_http::fetch(&download.url, None, &[]))
+        .block_on(meow_config::internal_http::fetch(
+            &download.url,
+            None,
+            &[("Cache-Control".to_string(), "no-cache".to_string())],
+        ))
         .map_err(|e| format!("fetch {}: {e}", download.url))?;
 
     let actual = sha256_hex(&bytes);
     if !actual.eq_ignore_ascii_case(download.sha256.trim()) {
         return Err(format!(
-            "sha256 mismatch for {}: expected {}, got {actual}",
-            download.file, download.sha256
+            "sha256 mismatch for {} from {}: expected {}, got {actual}",
+            download.file, download.url, download.sha256
         ));
     }
 
@@ -1421,6 +1453,82 @@ rules:
         assert_eq!(snap["geo"]["assets"][0]["verified"], false);
         assert_eq!(snap["rules"].as_array().unwrap().len(), 1);
         assert_eq!(snap["errors"][0]["code"], "PROXY_GEO_UNAVAILABLE");
+    }
+
+    #[test]
+    fn geo_mismatched_local_copy_is_replaced_by_fresh_download() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        let dir = tmp_dir("geo-stale-local");
+
+        let geo_dir = dir.join("geo");
+        std::fs::create_dir_all(&geo_dir).unwrap();
+        std::fs::write(geo_dir.join("country.mmdb"), b"stale-local-bytes").unwrap();
+
+        let body = b"fresh-geo-asset-bytes".to_vec();
+        let expected = sha256_hex(&body);
+        let served = body.clone();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    served.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.write_all(&served);
+                let _ = stream.flush();
+            }
+        });
+
+        let yaml = "rules:\n  - GEOIP,CN,DIRECT\n  - DOMAIN,ok.example,DIRECT\n";
+        let geo = serde_json::json!({
+            "download": true,
+            "assets": {
+                "country.mmdb": {
+                    "url": format!("http://{addr}/country.mmdb"),
+                    "sha256": expected,
+                }
+            }
+        });
+        let snap = reload_fixture(&dir, yaml, Some(geo));
+        let status = snap["geo"]["assets"][0]["status"].as_str().unwrap();
+        assert_eq!(status, "downloading");
+        assert_ne!(status, "checksum_mismatch");
+        assert_eq!(snap["rules"].as_array().unwrap().len(), 1);
+
+        let installed = dir.join("geo").join("country.mmdb");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if std::fs::read(&installed).map(|b| b == body).unwrap_or(false) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "stale geo asset was not replaced in time"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        server.join().unwrap();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let status = state().lock().unwrap_or_else(|e| e.into_inner()).assets[0].status.clone();
+            if status == "ready" {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "geo asset status stayed {status}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        let st = state().lock().unwrap_or_else(|e| e.into_inner());
+        assert!(st.assets[0].verified);
+        assert_eq!(st.assets[0].status, "ready");
     }
 
     #[test]
