@@ -165,12 +165,53 @@ Kotlin（TUN 生命周期）                                                │
 其中 `proxy.request` 进 Dart 事件注册表，而 `proxy.uid.query`/`uid.result` 是宿主↔模块内部
 lane，**不进** Dart 事件环。
 
-**HTTP 改写（`capture.rules.*`，Todo 15 落地执行）**：解密后的 h1/h2 请求按**精确 URL（+可选
-method）**匹配启用规则（规则默认 OFF）。`kind:"local"` 不请求上游、直接返回规则的
-状态/头/Body；`kind:"replace"` 正常请求上游后覆盖状态/头/Body，未覆盖的头保留上游值。规则
-`respBody` 视为**已解码明文**，任何 Body 覆写都会强制 `Content-Encoding: identity` 并重算
-`Content-Length`（绝不会保留上游 gzip 却发送明文，避免损坏响应）。命中 `hitCount++`。未命中
-流量**逐字节原样转发**。`delayMs` 仅存储、不注入延迟。**WS（WebSocket）仅抓帧、不支持改写**。
+### 5.1 MITM / 抓包 / 改写（`capture.config.*` / `capture.ca.*` / `captures.*` / `capture.rules.*`）
+
+**做什么。** 在 TUN 的 TCP 数据面内联 TLS 终止，按白名单**只解密选定流量**，其余
+逐字节直通（绝不越权拦截）。解密后的 HTTP/1.1、HTTP/2 与 WebSocket 记入 `captures.*`
+时间线；`capture.rules.*` 把命中的请求改写为「替换响应」或「本地响应（不请求上游）」。
+方法、字段与状态码 schema 一律以 `API.md` §2.16 至 §2.19 为准，本节只讲机制与边界。
+
+**抓包开关与范围（`capture.config.*`，默认全 OFF）。**
+
+- `enabled` 是总开关：`false` 时每条流都保持隧道直通，不做任何 TLS 终止。
+- `domainAllowlist` 是**主白名单**（按嗅探到的 SNI / host 匹配），非空时只有命中的 host
+  才解密；`appAllowlist` 是**尽力而为**白名单（包名 / UID 字符串），**仅在
+  `domainAllowlist` 为空时生效**。
+- `tlsPorts`（默认 `[443, 8443]`）决定参与 MITM 的目标端口；`captureBody` /
+  `captureWs` / `captureH2` 逐项开关内容；`maxBodyBytes` 是**落盘** Body 上限
+  （SQLite 专用，不驻留内存）。
+- 配置变更**只作用于新流**：进行中的 MITM 会话保留其启动时的配置快照，中途改设置
+  不会让一个会话处于自相矛盾的抓包状态。
+
+**CA 生命周期（`capture.ca.*`）。** CA 由 `rcgen` 生成；叶证书按 SNI 由 `rustls` 的
+自定义 `ResolvesServerCert` 动态签发并有界缓存。CA 私钥以 `0600` 存放在
+`<dataDir>/mitm/ca.key`，**绝不进入日志或事件载荷**。`capture.ca.get` 在尚未生成时
+**不是错误**（返回 `generated:false` 与空字段）；`capture.ca.generate` 幂等（带
+`regenerate:true` 才轮换，并连同按 host 的叶证书缓存一起丢弃）；`capture.ca.reset`
+删除材料并丢弃进程内句柄，旧叶证书立即不再被服务。
+
+**抓包时间线（`captures.*`）。** 有界内存环 + SQLite（`proxy_captures.db`）滚动持久化，
+**拉取式**读取：`captures.get` 游标分页，`proxy.request` 是唯一脏信号，绝不逐条推送。
+`CaptureRecord.requestRecordId` 关联同一条流的 `requests.*` 记录（唯一 join key；`0`
+表示跨 tick 的短命流，抓包记录独立存在）；`captures.detail` 按 `recordId` 读取完整
+Body / 头 / WS 帧。
+
+**实时改写（`capture.rules.*`，执行在 MITM 路径）。** 解密后的 h1/h2 请求按**精确 URL
+（+ 可选 method）**匹配**启用**规则（规则默认 OFF）。`kind:"local"` 不请求上游、直接返回
+规则的状态 / 头 / Body；`kind:"replace"` 正常请求上游后覆盖状态 / 头 / Body，未覆盖的头
+保留上游值。规则 `respBody` 视为**已解码明文**，任何 Body 覆写都会强制
+`Content-Encoding: identity` 并重算 `Content-Length`（绝不会保留上游 gzip 却发送明文，
+避免损坏响应）。命中 `hitCount++`。未命中流量**逐字节原样转发**。`delayMs` 仅存储、
+**不注入延迟**。
+
+**限制（务必如实告知用户，UI 也必须诚实提示）。**
+
+- **非 root 抓不到任意 App**：MITM 依赖设备信任我们的 CA。无 root 只能引导安装**用户
+  证书**；Android 7+ 默认不信任用户证书的应用（大量第三方 App）无法被解密。**不绕过
+  证书固定（pinning）**。
+- **UDP / QUIC 不抓**：只处理 TCP；HTTP/3（QUIC/UDP）流量不终止、不记录。
+- **WS 只抓帧、不支持改写**：WebSocket 帧可捕获展示，但 `capture.rules.*` **不改写** WS 帧。
 
 ## 6. 运行模式（off / vpn / lanProxy）
 
@@ -283,6 +324,12 @@ harness 证明机制：
 - 真机 Clash 面板绑定与第三方面板对接。
 - 真机 VpnService 生命周期：`onRevoke` 撤销、飞行模式/网络切换重连、`am force-stop` 后
   always-on 重启、start→stop→start 线程基线（Todo 24；host 侧只能证明 fd/守护/桥重置机制）。
+- **设备侧 CA 安装（Todo 17/19，UNVERIFIED）**：用户证书安装流
+  （`KeyChain.createInstallIntent`（≤API 30）+ `Settings` 安全设置引导）与 root / 系统证书
+  路径（Magisk / `nsenter` bind-mount；Android 14+ 按 NVISO 方案覆盖 APEX 的
+  `/apex/com.android.conscrypt`）**无设备可验**。host 侧只证明 IPC 契约与安装状态回传；
+  真机上目标 App 是否信任该证书、APEX 覆盖是否生效、非 root 下究竟哪些 App 抓不到，
+  均未验证（对应 §5.1 已声明的限制）。
 - **App 归属 / `UidResolver` 真机路径（Todo 11–13，UNVERIFIED）**：Android 上
   `ProxyVpnService.queryOwnerUid` 调用 `ConnectivityManager.getConnectionOwnerUid`
   （API 29，且仅活跃 `VpnService` 可调）+ `PackageManager.getPackagesForUid` 的完整链路

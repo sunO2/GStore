@@ -25,7 +25,7 @@ GStore 项目文档中心，分为两部分：
 | [14-渠道详情页-历史构建切换不触发下载](./development/14-渠道详情页-历史构建切换不触发下载.md) | 历史构建确认后只切数据不触发下载；根因链路、文案对齐与未动边界 |
 | [15-下载内核-Rust模块](./development/15-下载内核-Rust模块.md) | Rust 下载内核（分段/续传/校验/队列/判重）：id 与判重键分离、通用资源描述符、落盘路径正确性兜底；含工业级能力清单与验证记录 |
 | [16-模块远程下载与发布流程](./development/16-模块远程下载与发布流程.md) | 模块从同 repo Release 远程更新：资产命名、上传顺序与留存、清单信任锚（不走代理）、24h 缓存/ETag、代理信任规则、`requireSignature` 状态与 Phase 2 迁移、精简包（slim）构建变体与取舍、已知风险 |
-| [17-代理内核与VPN](./development/17-代理内核与VPN.md) | 代理内核（`gstore_mod_proxy` + Kotlin `ProxyVpnService`）：模块/meow/VpnService/fd-netstack pump 架构、ABI v3 `protect_fd` 与 fd/protect/单读取者/bounded-runtime 契约、方法事件指针（指向 `rust/gstore_mod_proxy/API.md`）、运行模式、构建与分发、失败模式、meow-rs→clash-rs 引擎替换、真机未验证项 |
+| [17-代理内核与VPN](./development/17-代理内核与VPN.md) | 代理内核（`gstore_mod_proxy` + Kotlin `ProxyVpnService`）：模块/meow/VpnService/fd-netstack pump 架构、ABI v3 `protect_fd` 与 fd/protect/单读取者/bounded-runtime 契约、方法事件指针（指向 `rust/gstore_mod_proxy/API.md`）、运行模式、构建与分发、失败模式、MITM 抓包与改写（含限制）、meow-rs→clash-rs 引擎替换、真机未验证项 |
 
 ## 使用 Wiki
 
@@ -39,3 +39,4 @@ GStore 项目文档中心，分为两部分：
 | [06-设置与个性化](./usage/06-设置与个性化.md) | 设置、主题、代理、日志 |
 | [07-F-Droid仓库使用](./usage/07-F-Droid仓库使用.md) | 仓库管理、索引加载、搜索 |
 | [08-常见问题](./usage/08-常见问题.md) | 问题排查与解答 |
+| [09-请求调试](./usage/09-请求调试.md) | Postman 式 HTTP 调试：集合 / 历史 / 环境 / 改写规则、cURL 导入导出，与抓包详情联动 |

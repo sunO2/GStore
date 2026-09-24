@@ -1504,6 +1504,15 @@ registered in `rust/ERROR_CODES.md`.
 | `PROXY_CONN_NOT_FOUND` | 404 | `conn.close` was given a UUID this module has never tracked (not live and not in the recently-closed tombstone) (Todo 17) |
 | `PROXY_CLASH_API_FAILED` | 500 | `diagnostics.clash_api.start` could not bind `127.0.0.1:<port>` or spawn its runtime/thread (Todo 18) |
 | `PROXY_DATAPLANE_DEAD` | — (supervisor event) | a TUN worker (reader/egress/ingress) ended or panicked while the tunnel was up; reported as a structured `proxy.state` `error.code` with the verbatim reason, then the loop restarts with bounded backoff (Todo 24) |
+| `PROXY_CAPTURE_UPSTREAM_FAILED` | — (data-plane HTTP 502) | a decrypted MITM request failed to re-originate through the tunnel outbound (rules/protect-aware dial or upstream TLS handshake); the capture layer answers a 502-style response and never panics. `skipCertVerify` defaults to strict verification (Todo 7) |
+| `PROXY_CAPTURE_CONFIG_INVALID` | 422 | `capture.config.set` payload invalid: non-object, unknown field, `tlsPorts` empty or containing `0`, or `maxBodyBytes` out of `[1, 1048576]`. The in-memory/on-disk config is left untouched on rejection (Todo 10) |
+| `PROXY_CAPTURE_CA_FAILED` | 422 / 500 | `capture.ca.generate` payload invalid (`regenerate` non-bool, non-object, unknown field → 422) or CA generate/load/reset failure (`rcgen` issuance / I/O → 500). A never-generated CA is **not** an error (`generated:false`); `reset` with no CA is `cleared:false` (Todo 11) |
+| `PROXY_CAPTURE_NOT_FOUND` | 404 | `captures.detail` `recordId` is not in the retained window (ring / pending-flush queue / SQLite table) (Todo 12) |
+| `PROXY_CAPTURE_CURSOR_INVALID` | 422 | `captures.get` `cursor` is present but not a non-negative integer (Todo 12) |
+| `PROXY_CAPTURE_STORE_FAILED` | 500 | captures durable-store read/write failure (SQLite); the in-memory summary ring is left untouched and not rolled back (Todo 12) |
+| `PROXY_CAPTURE_BODY_TOO_LARGE` | 507 | defensive `captures.detail` body-read cap (`CAPTURE_BODY_MAX_BYTES`) (Todo 12) |
+| `PROXY_CAPTURE_RULE_INVALID` | 422 | `capture.rules.set` payload invalid: `url` not an absolute `http(s)` URL, `kind` not `replace`/`local`, `id` outside `[A-Za-z0-9_-]{1,64}`, or an unknown field. The in-memory/on-disk rule table is left untouched on rejection (Todo 14) |
+| `PROXY_CAPTURE_RULE_LIMIT` | 507 | `capture.rules.set` would push the rule table past `CAPTURE_RULE_CAP` (128) or a single rule past `CAPTURE_RULE_ENTRY_MAX_BYTES` (2048); a rejected `set` never persists (Todo 14) |
 
 ## 6. Module distribution decision (state it now)
 
