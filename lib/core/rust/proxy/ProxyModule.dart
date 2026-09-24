@@ -163,7 +163,7 @@ class ProxyModuleUnavailableException extends ProxyModuleException {
   ProxyModuleUnavailableException({this.declined = false, this.cause})
       : super(
           code: declined ? 'PROXY_MODULE_DECLINED' : 'PROXY_MODULE_UNINSTALLED',
-          message: declined ? '代理模块安装被取消' : '代理模块未安装',
+          message: declined ? '调试模块安装被取消' : '调试模块未安装',
         );
 
   /// 用户是否在安装确认弹层中拒绝。
@@ -606,12 +606,61 @@ class ProxyModule implements ProxyFacade {
   /// `requests.get`：按游标分页拉取请求时间线（主路径，拉取式）。
   Future<RequestPage> requestsGet([
     RequestGetRequest request = const RequestGetRequest(),
-  ]) =>
-      invoke(
-        ProxyMethods.requestsGet,
-        RequestPage.fromJson,
-        payload: request.toJson(),
+  ]) async {
+    final page = await invoke(
+      ProxyMethods.requestsGet,
+      RequestPage.fromJson,
+      payload: request.toJson(),
+    );
+    _logUidDiagnostics(page);
+    return page;
+  }
+
+  /// uid 通道运行时诊断：首次调用必输出，其后至多每 30s 一次，避免刷屏。
+  ///
+  /// - `pending` 长期占多数 → 宿主从未回 `uid.result`（随包 libgstore_host.so 过旧、
+  ///   事件桥未接，或运行模式不是 VPN）。
+  /// - `unknown` 占多数 → 宿主回包但解析失败（API<29 / VPN 非活跃 / 方法缺失）。
+  static bool _uidDiagLoggedOnce = false;
+  static int _uidDiagLastMs = 0;
+  static const int _uidDiagWindowMs = 30000;
+
+  void _logUidDiagnostics(RequestPage page) {
+    var known = 0;
+    var pending = 0;
+    var unknown = 0;
+    for (final record in page.records) {
+      if (record.uidState == ProxyUidState.known) {
+        known++;
+      } else if (record.uidState == ProxyUidState.pending) {
+        pending++;
+      } else {
+        unknown++;
+      }
+    }
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (_uidDiagLoggedOnce && now - _uidDiagLastMs < _uidDiagWindowMs) {
+      return;
+    }
+    _uidDiagLoggedOnce = true;
+    _uidDiagLastMs = now;
+    appLog.info(
+      '[proxy-uid] uidState 统计: known=$known pending=$pending '
+      'unknown=$unknown (page=${page.records.length})',
+    );
+    if (known == 0 && pending > 0) {
+      appLog.warning(
+        '[proxy-uid] 记录仍为 pending：宿主从未回 uid.result。'
+        '优先怀疑随包 libgstore_host.so 过旧（未含 uid lane）、事件桥未接或模式非 VPN。',
       );
+    } else if (known == 0 && unknown > 0) {
+      appLog.warning(
+        '[proxy-uid] 回包但全部 unknown：查看宿主日志「uid 通道状态」，'
+        '核对 API<29 / VPN 是否活跃 / queryOwnerUid 方法缺失。',
+      );
+    }
+  }
+
 
   /// `requests.reset`：清空内存请求环（游标保持单调）。
   Future<RequestsResetResult> requestsReset() =>
@@ -707,21 +756,21 @@ class ProxyModule implements ProxyFacade {
       } catch (error) {
         throw const ProxyModuleException(
           code: 'PAYLOAD_DECODE_FAILED',
-          message: '代理模块响应不是合法 JSON',
+          message: '调试模块响应不是合法 JSON',
           status: 400,
         );
       }
       if (decoded is! Map<String, dynamic>) {
         throw const ProxyModuleException(
           code: 'PAYLOAD_DECODE_FAILED',
-          message: '代理模块响应不是 JSON 对象',
+          message: '调试模块响应不是 JSON 对象',
           status: 400,
         );
       }
       if (decoded['ok'] != true) {
         throw ProxyModuleException(
           code: decoded['code']?.toString() ?? 'BAD_REQUEST',
-          message: decoded['message']?.toString() ?? '代理模块返回错误',
+          message: decoded['message']?.toString() ?? '调试模块返回错误',
           status: _asIntOrNull(decoded['status']) ?? 400,
         );
       }

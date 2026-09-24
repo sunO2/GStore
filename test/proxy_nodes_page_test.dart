@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/design/app_components.dart' show AppLoading;
 import 'package:gstore/core/design/app_dialogs.dart';
@@ -421,7 +422,7 @@ void main() {
     expect(
       find.descendant(
         of: find.byKey(const Key('proxy_nodes_sheet_member_AUTO')),
-        matching: find.text('代理组'),
+        matching: find.text('端子组'),
       ),
       findsOneWidget,
     );
@@ -587,7 +588,7 @@ void main() {
     await tester.pump();
     await tester.pump();
 
-    expect(find.text('节点加载失败'), findsOneWidget);
+    expect(find.text('端子加载失败'), findsOneWidget);
     expect(find.text('订阅不存在'), findsOneWidget);
     expect(find.byKey(const Key('proxy_nodes_retry')), findsOneWidget);
     expect(tester.takeException(), isNull);
@@ -629,7 +630,7 @@ void main() {
     await tester.pump();
     await tester.pump();
 
-    expect(find.text('暂无节点'), findsOneWidget);
+    expect(find.text('暂无端子'), findsOneWidget);
     expect(tester.takeException(), isNull);
 
     await facade.controller.close();
@@ -921,7 +922,7 @@ void main() {
     expect(
       find.descendant(
         of: find.byKey(const Key('proxy_nodes_sheet_member_香港 01')),
-        matching: find.byIcon(Icons.check_circle),
+        matching: find.byIcon(TablerIcons.circle_check_filled),
       ),
       findsNothing,
     );
@@ -983,7 +984,7 @@ void main() {
     expect(
       find.descendant(
         of: find.byKey(const Key('proxy_nodes_sheet_member_香港 01')),
-        matching: find.byIcon(Icons.check_circle),
+        matching: find.byIcon(TablerIcons.circle_check_filled),
       ),
       findsNothing,
     );
@@ -1037,14 +1038,14 @@ void main() {
     expect(
       find.descendant(
         of: find.byKey(const Key('proxy_nodes_sheet_member_AUTO')),
-        matching: find.byIcon(Icons.folder_outlined),
+        matching: find.byIcon(TablerIcons.folder),
       ),
       findsOneWidget,
     );
     expect(
       find.descendant(
         of: find.byKey(const Key('proxy_nodes_sheet_member_香港 01')),
-        matching: find.byIcon(Icons.dns_outlined),
+        matching: find.byIcon(TablerIcons.server),
       ),
       findsOneWidget,
     );
@@ -1378,7 +1379,7 @@ void main() {
     ]);
     expect(find.text('该分组未在当前引擎生效，请重试或重新连接'), findsOneWidget);
     // 不再暴露原始错误消息。
-    expect(find.textContaining('切换节点失败'), findsNothing);
+    expect(find.textContaining('切换端子失败'), findsNothing);
     expect(find.text('分组不存在'), findsNothing);
     expect(tester.takeException(), isNull);
 

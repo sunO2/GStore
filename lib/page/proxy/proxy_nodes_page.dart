@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart' show ValueListenable, debugPrint;
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 
 import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/rust/proxy/ProxyContract.dart';
@@ -262,7 +263,7 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
       if (!mounted) return;
       setState(() {
         _loading = false;
-        _loadError = '节点加载失败：$error';
+        _loadError = '端子加载失败：$error';
       });
     }
   }
@@ -392,10 +393,10 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
       if (error.code == 'PROXY_NODE_NOT_FOUND') {
         AppDialogs.showError('该分组未在当前引擎生效，请重试或重新连接');
       } else {
-        AppDialogs.showError('切换节点失败：${error.message}');
+        AppDialogs.showError('切换端子失败：${error.message}');
       }
     } catch (error) {
-      if (mounted) AppDialogs.showError('切换节点失败：$error');
+      if (mounted) AppDialogs.showError('切换端子失败：$error');
     }
   }
 
@@ -428,7 +429,7 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
   }) async {
     final List<String> pendingList = pending ?? targets;
     if (pendingList.isEmpty) {
-      AppDialogs.showInfo('当前没有可测试的节点');
+      AppDialogs.showInfo('当前没有可测试的端子');
       return;
     }
     setState(() {
@@ -523,7 +524,7 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
         _PickerEntry(
           name: name,
           subtitle: _nodesByName[name] == null
-              ? '代理组'
+              ? '端子组'
               : _nodeSubtitle(_nodesByName[name]!),
           isGroupRef: _nodesByName[name] == null,
         ),
@@ -534,7 +535,7 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
         title: group.name,
         subtitle:
             '${_groupTypeLabel(group.type)} · ${group.members.length} 个成员',
-        icon: Icons.account_tree_outlined,
+        icon: TablerIcons.sitemap,
         entries: entries,
         activeName: _activeByGroup[group.name],
         selectable: _groupSelectable(group),
@@ -558,7 +559,7 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
       builder: (BuildContext sheetContext) => _NodePickerSheet(
         title: node.name,
         subtitle: _nodeSubtitle(node),
-        icon: Icons.dns_outlined,
+        icon: TablerIcons.server,
         nodeMode: true,
         entries: <_PickerEntry>[
           _PickerEntry(
@@ -585,17 +586,17 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('节点'),
+        title: const Text('网络选择'),
         actions: <Widget>[
           IconButton(
             key: const Key('proxy_nodes_sort'),
-            icon: const Icon(Icons.sort),
+            icon: const Icon(TablerIcons.arrows_sort),
             tooltip: '排序',
             onPressed: _pickSort,
           ),
           IconButton(
             key: const Key('proxy_nodes_test_all'),
-            icon: const Icon(Icons.speed_outlined),
+            icon: const Icon(TablerIcons.gauge),
             tooltip: '测试全部延迟',
             onPressed: _testing ? null : _testAll,
           ),
@@ -686,7 +687,7 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
     final bool active = (_activeByGroup[group.name] ?? '').isNotEmpty;
     return _GridTile(
       key: Key('proxy_nodes_group_${group.name}'),
-      icon: Icons.account_tree_outlined,
+      icon: TablerIcons.sitemap,
       active: active,
       activeKey: Key('proxy_nodes_group_active_${group.name}'),
       title: group.name,
@@ -739,7 +740,7 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
       case 'load-balance':
         return '负载均衡';
       case 'relay':
-        return '链式代理';
+        return '链式转发';
       default:
         return type;
     }
@@ -768,15 +769,15 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
             Icon(
-              Icons.dns_outlined,
+              TablerIcons.server,
               size: AppTypography.iconXXXL,
               color: theme.colorScheme.onSurfaceVariant,
             ),
             const SizedBox(height: AppSpacing.md),
-            Text('暂无节点', style: theme.textTheme.titleMedium),
+            Text('暂无端子', style: theme.textTheme.titleMedium),
             const SizedBox(height: AppSpacing.xs),
             Text(
-              '导入订阅后即可在此查看与切换节点',
+              '导入网络组后即可在此查看与切换端子',
               textAlign: TextAlign.center,
               style: theme.textTheme.bodyMedium,
             ),
@@ -796,12 +797,12 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
             Icon(
-              Icons.error_outline,
+              TablerIcons.alert_circle,
               size: AppTypography.iconXXXL,
               color: scheme.error,
             ),
             const SizedBox(height: AppSpacing.md),
-            Text('节点加载失败', style: theme.textTheme.titleMedium),
+            Text('端子加载失败', style: theme.textTheme.titleMedium),
             const SizedBox(height: AppSpacing.sm),
             Text(
               message.isEmpty ? '未知错误' : message,
@@ -858,7 +859,7 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
     final bool isActive = _activeByGroup[parentGroup] == node.name;
     return _GridTile(
       key: Key('proxy_nodes_member_${parentGroup}_${node.name}'),
-      icon: Icons.dns_outlined,
+      icon: TablerIcons.server,
       active: isActive,
       activeKey: Key('proxy_nodes_active_${parentGroup}_${node.name}'),
       title: node.name,
@@ -880,11 +881,11 @@ class _ProxyNodesPageState extends State<ProxyNodesPage> {
     final ProxyGroup? target = _groupByName(member);
     return _GridTile(
       key: Key('proxy_nodes_member_${parentGroup}_$member'),
-      icon: Icons.folder_outlined,
+      icon: TablerIcons.folder,
       active: isActive,
       activeKey: Key('proxy_nodes_active_${parentGroup}_$member'),
       title: member,
-      subtitle: '代理组',
+      subtitle: '端子组',
       // 悬空组引用（无同名分组）无可下钻目标：保持可渲染但无动作。
       onTap: target == null ? () {} : () => _openGroupSheet(target),
     );
@@ -955,7 +956,7 @@ class _GridTile extends StatelessWidget {
                   const Spacer(),
                   if (active)
                     Icon(
-                      Icons.check_circle,
+                      TablerIcons.circle_check_filled,
                       key: activeKey,
                       size: AppTypography.iconMD,
                       color: scheme.primary,
@@ -1067,7 +1068,7 @@ class _NodePickerSheet extends StatelessWidget {
           headerTrailing: FilledButton.tonalIcon(
             key: const Key('proxy_nodes_sheet_test'),
             onPressed: testing ? null : () => onTest(),
-            icon: const Icon(Icons.speed_outlined, size: AppTypography.iconMD),
+            icon: const Icon(TablerIcons.gauge, size: AppTypography.iconMD),
             label: Text(testing ? '正在测速…' : '测速'),
           ),
           actions: nodeMode
@@ -1114,7 +1115,7 @@ class _NodePickerSheet extends StatelessWidget {
         child: Row(
           children: <Widget>[
             Icon(
-              entry.isGroupRef ? Icons.folder_outlined : Icons.dns_outlined,
+              entry.isGroupRef ? TablerIcons.folder : TablerIcons.server,
               size: AppTypography.iconMD,
               color: selected ? scheme.primary : scheme.onSurfaceVariant,
             ),
@@ -1157,7 +1158,7 @@ class _NodePickerSheet extends StatelessWidget {
               Padding(
                 padding: AppSpacing.onlyLeftSM,
                 child: Icon(
-                  Icons.check_circle,
+                  TablerIcons.circle_check_filled,
                   size: AppTypography.iconMD,
                   color: scheme.primary,
                 ),
@@ -1198,7 +1199,7 @@ class _LatencyBadge extends StatelessWidget {
         child: _badge(
           context,
           color: scheme.error,
-          icon: Icons.warning_amber_outlined,
+          icon: TablerIcons.alert_triangle,
           text: '失败',
         ),
       );
@@ -1207,7 +1208,7 @@ class _LatencyBadge extends StatelessWidget {
       return _badge(
         context,
         color: scheme.error,
-        icon: Icons.error_outline,
+        icon: TablerIcons.alert_circle,
         text: '超时',
       );
     }
@@ -1294,7 +1295,7 @@ class _SheetOption extends StatelessWidget {
               ),
             ),
             if (selected)
-              Icon(Icons.check,
+              Icon(TablerIcons.check,
                   size: AppTypography.iconLG, color: scheme.primary),
           ],
         ),

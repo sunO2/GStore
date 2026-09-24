@@ -97,7 +97,7 @@ void main() {
 
     expect(find.byKey(const Key('proxy-site-probe-card')), findsOneWidget);
     expect(find.text('网站连通性'), findsOneWidget);
-    expect(find.text('检测遵循当前代理与规则（未开代理则直连）'), findsOneWidget);
+    expect(find.text('检测遵循当前隧道与规则（未连接则直连）'), findsOneWidget);
     expect(find.byKey(const Key('proxy-site-probe-run')), findsOneWidget);
     expect(find.text('开始检测'), findsOneWidget);
     for (final SiteProbeTarget t in _catalog) {

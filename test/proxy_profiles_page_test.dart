@@ -199,9 +199,9 @@ Future<void> _tick(WidgetTester tester) async {
 
 /// 打开导入弹层（URL 模式）并提交指定 URL。
 Future<void> _importViaUrl(WidgetTester tester, String url) async {
-  await tester.tap(find.byTooltip('导入订阅'));
+  await tester.tap(find.byTooltip('导入网络组'));
   await tester.pumpAndSettle();
-  expect(find.text('导入订阅'), findsWidgets);
+  expect(find.text('导入网络组'), findsWidgets);
   await tester.enterText(find.byType(TextField), url);
   await tester.tap(find.widgetWithText(FilledButton, '导入'));
   await _tick(tester);
@@ -238,7 +238,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('我的机场'), findsOneWidget);
-    expect(find.text('节点 42'), findsOneWidget);
+    expect(find.text('端子 42'), findsOneWidget);
     expect(find.text('分组 2'), findsOneWidget);
     expect(find.text('已用 3.00 KB / 1.00 MB'), findsOneWidget);
     expect(find.textContaining('到期：'), findsOneWidget);
@@ -300,7 +300,7 @@ void main() {
     await tester.tap(find.byTooltip('删除'));
     await tester.pumpAndSettle();
 
-    expect(find.text('删除订阅'), findsOneWidget);
+    expect(find.text('删除网络组'), findsOneWidget);
     // 危险样式：确认按钮带显式 error 背景（普通确认按钮 style 为 null）
     final confirmButton =
         tester.widget<FilledButton>(find.widgetWithText(FilledButton, '删除'));
@@ -366,8 +366,8 @@ void main() {
     await tester.pumpWidget(_host(ProxyProfilesPage(facade: facade)));
     await tester.pumpAndSettle();
 
-    expect(find.text('还没有订阅'), findsOneWidget);
-    expect(find.text('导入订阅'), findsWidgets);
+    expect(find.text('还没有网络组'), findsOneWidget);
+    expect(find.text('导入网络组'), findsWidgets);
     expect(tester.takeException(), isNull);
   });
 
@@ -391,7 +391,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    await tester.tap(find.byTooltip('导入订阅'));
+    await tester.tap(find.byTooltip('导入网络组'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('读取剪贴板中的分享链接'));
     await tester.pumpAndSettle();

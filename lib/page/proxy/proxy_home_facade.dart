@@ -77,6 +77,9 @@ abstract class ProxyHomeFacade implements ProxyFacade, ProxyConnectFacade {
   /// `node.list`：各代理组的实时选中（`now`）与当前路由分组（只读）。
   Future<NodeListResult> nodeList();
 
+  /// `net.shaper.get`：弱网模拟当前用户配置快照（只读，供首页状态卡徽标展示）。
+  Future<ProxyShaperSnapshot> loadShaperConfig();
+
   /// 读取持久化设置生成的 Kotlin `ProxyVpnService` 配置 JSON（含分流模式/应用
   /// 清单）。连接前注入，不得硬编码 `{}`（Todo 23 → Todo 24 交接）。
   @override
@@ -134,6 +137,9 @@ class ProxyModuleHomeFacade implements ProxyHomeFacade {
 
   @override
   Future<NodeListResult> nodeList() => _module.nodeList();
+
+  @override
+  Future<ProxyShaperSnapshot> loadShaperConfig() => _module.netShaperGet();
 
   @override
   Future<String> vpnConfigJson() => loadProxyVpnConfigJson();

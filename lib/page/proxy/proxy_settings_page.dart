@@ -1,10 +1,13 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show ScrollCacheExtent;
 import 'package:flutter/services.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 
 import 'package:gstore/core/design/app_components.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
+import 'package:gstore/core/design/app_radius.dart';
 import 'package:gstore/core/design/app_sheet.dart';
 import 'package:gstore/core/design/app_spacing.dart';
 import 'package:gstore/core/design/app_typography.dart';
@@ -27,6 +30,25 @@ const int _kEngineMinMtu = 1280;
 const String _kShaperDirUplink = 'uplink';
 const String _kShaperDirDownlink = 'downlink';
 
+/// 设置页 `ListView` 的预构建缓存高度（逻辑像素）。
+///
+/// 用于让「弱网模拟」锚点在初始 load 后始终已挂载，供
+/// [ProxySettingsPage.scrollToShaper] 的 `Scrollable.ensureVisible` 使用；仅影响
+/// 懒构建窗口，不参与任何视觉尺寸。
+const double _kSettingsPrebuildExtent = 10000;
+
+/// 各小节骨架屏的近似高度（逻辑像素）。
+///
+/// 仅用于「渐进式渲染」期间占位、避免数据到达后页面大幅跳动，非主题尺寸；全部
+/// 大于骨架内容自然高度以避免 RenderFlex 溢出。
+const double _kSkeletonEngineSettings = 340;
+const double _kSkeletonAlwaysOn = 200;
+const double _kSkeletonLogLevel = 160;
+const double _kSkeletonSplitTunnel = 180;
+const double _kSkeletonLan = 520;
+const double _kSkeletonShaper = 620;
+const double _kSkeletonEngine = 240;
+
 /// 代理设置页（Todos 23 / 28，纯展示 / 触发层）。
 ///
 /// 覆盖（按功能区自上而下）：
@@ -46,10 +68,14 @@ const String _kShaperDirDownlink = 'downlink';
 /// 所有解析 / 网络 / 路由 / 统计逻辑都在 Rust 侧（`gstore_mod_proxy`），本页只
 /// 翻译并持久化。门面经构造函数注入，测试无需原生模块 / 平台通道。
 class ProxySettingsPage extends StatefulWidget {
-  const ProxySettingsPage({super.key, this.facade});
+  const ProxySettingsPage({super.key, this.facade, this.scrollToShaper = false});
 
   /// 设置门面（测试可注入假实现；为空时用生产适配器）。
   final ProxySettingsFacade? facade;
+
+  /// 为真时在**初始 [_load] 完成后**自动滚动到「弱网模拟」小节（由首页状态卡
+  /// 的弱网模拟徽标点击触发）。该小节在 load 前不存在，故必须在 load 解析后触发。
+  final bool scrollToShaper;
 
   @override
   State<ProxySettingsPage> createState() => _ProxySettingsPageState();
@@ -57,6 +83,12 @@ class ProxySettingsPage extends StatefulWidget {
 
 class _ProxySettingsPageState extends State<ProxySettingsPage> {
   late final ProxySettingsFacade _facade;
+
+  /// 「弱网模拟」区域表头的锚点（仅用于 [widget.scrollToShaper] 的自动滚动）。
+  final GlobalKey _shaperSectionKey = GlobalKey();
+
+  /// 自动滚动只执行一次（`_load` 也可由下拉刷新 / 重试再次触发）。
+  bool _didAutoScrollToShaper = false;
 
   final TextEditingController _lanPort = TextEditingController();
   final TextEditingController _lanBind = TextEditingController();
@@ -69,11 +101,34 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
   final TextEditingController _shaperJitter = TextEditingController();
   final TextEditingController _shaperLoss = TextEditingController();
 
-  bool _loading = true;
+  /// 各独立小节的就绪标志：加载中为 `true`，该小节解析完成（含回退默认值）后
+  /// 立即清为 `false`。用于「渐进式渲染」——页面外壳先出，各小节用骨架占位。
+  bool _configLoading = true;
+  bool _engineLoading = true;
+  bool _engineSettingsLoading = true;
+  bool _lanLoading = true;
+  bool _shaperLoading = true;
+
+  /// 是否仍有任一独立小节在加载（`AppBar` 刷新按钮禁用态 / 下拉刷新判定）。
+  bool get _loading =>
+      _configLoading ||
+      _engineLoading ||
+      _engineSettingsLoading ||
+      _lanLoading ||
+      _shaperLoading;
+
   String? _error;
   bool _busy = false;
   ProxySettingsConfig _config = const ProxySettingsConfig();
-  List<InstalledAppOption> _apps = const <InstalledAppOption>[];
+
+  /// 已安装应用缓存（`null` = 尚未加载；首次打开选择器时按需枚举）。
+  List<InstalledAppOption>? _appsCache;
+
+  /// 首次枚举是否进行中（用于禁用按钮 + 内联 loading）。
+  bool _appsLoading = false;
+
+  /// 进行中的枚举（并发调用去重；完成后清空）。
+  Future<List<InstalledAppOption>>? _appsInFlight;
   ProxyEngineInfo _engine = const ProxyEngineInfo();
   ProxyLanConfig _lan = const ProxyLanConfig();
   ProxyLanStatus _lanStatus = const ProxyLanStatus();
@@ -150,7 +205,8 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
   /// 把当前方向的自定义参数同步到输入框。
   void _syncShaperControllers() {
     final direction = _activeShaperDirection;
-    _shaperRate.text = '${direction.rateBps}';
+    // UI 以 kbps 展示 / 编辑；模型仍是 bps，仅在边界换算。
+    _shaperRate.text = '${direction.rateBps ~/ 1000}';
     _shaperDelay.text = '${direction.delayMs}';
     _shaperJitter.text = '${direction.jitterMs}';
     _shaperLoss.text = _formatPct(direction.lossPct);
@@ -168,70 +224,167 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
         downlink: _shaperDownlink,
       );
 
+  /// 并发加载所有独立小节。
+  ///
+  /// 改造前是「顺序 await」：任一慢调用会阻塞后续全部小节。现在：
+  /// * 所有独立小节用 [Future.wait] **同时启动**（列表求值时各调用已同步进入自身
+  ///   首个 `await`，即「先全部启动、再等待」）；
+  /// * 每个小节解析后**只更新自己的状态**并清掉自己的就绪标志（最佳努力失败回落
+  ///   默认值，同样清标志），互不阻塞；
+  /// * [ProxySettingsFacade.loadSettings] 仍是唯一致命调用：抛错 → 错误态（行为
+  ///   与改造前一致）。
+  ///
+  /// 已安装应用列表保持惰性（[_ensureApps]），不在此处枚举。
   Future<void> _load() async {
     setState(() {
-      _loading = true;
       _error = null;
+      _configLoading = true;
+      _engineLoading = true;
+      _engineSettingsLoading = true;
+      _lanLoading = true;
+      _shaperLoading = true;
     });
+
+    await Future.wait<void>(<Future<void>>[
+      _loadConfig(),
+      _loadEngine(),
+      _loadEngineSettings(),
+      _loadLan(),
+      _loadShaper(),
+    ]);
+
+    if (!mounted) return;
+    _maybeScrollToShaper();
+  }
+
+  /// 加载分流 / 始终开启 / 日志级别配置（唯一致命小节）。
+  Future<void> _loadConfig() async {
     try {
       final config = await _facade.loadSettings();
-      final apps = await _facade.loadInstalledApps();
-      final engine = await _facade.loadEngineInfo();
-      ProxyLanConfig? lan;
-      ProxyLanStatus? lanStatus;
-      try {
-        lan = await _facade.loadLanConfig();
-      } catch (_) {
-        // 模块不可用 → 保留默认（LAN 关闭）
-      }
-      try {
-        lanStatus = await _facade.loadLanStatus();
-      } catch (_) {
-        // 模块不可用 → 保留默认（未监听）
-      }
-      ProxyEngineSettings engineSettings;
-      try {
-        engineSettings = await _facade.loadEngineSettings();
-      } catch (error) {
-        // 持久化异常 → 回落默认（gvisor / 1500），不阻断页面。
-        debugPrint('代理设置：读取引擎参数失败，回落默认值：$error');
-        engineSettings = const ProxyEngineSettings();
-      }
-      ProxyShaperSnapshot? shaper;
-      try {
-        shaper = await _facade.loadShaperConfig();
-      } catch (error) {
-        // 模块不可用 / 读取失败 → 保留默认（关闭），不阻断页面。
-        debugPrint('代理设置：读取弱网配置失败，回落默认值：$error');
-      }
       if (!mounted) return;
       setState(() {
         _config = config;
-        _apps = apps;
-        _engine = engine;
-        if (lan != null) _lan = lan;
-        if (lanStatus != null) _lanStatus = lanStatus;
-        _engineSettings = engineSettings;
-        _engineStack = _normalizeStack(engineSettings.stack);
-        if (shaper != null) {
-          _shaper = shaper;
-          _shaperEnabled = shaper.config.enabled;
-          _shaperUplink = shaper.config.uplink;
-          _shaperDownlink = shaper.config.downlink;
-          _shaperPresetId = presetForConfig(shaper.config).id;
-        }
-        _loading = false;
+        _configLoading = false;
       });
-      _syncLanControllers(_lan);
-      _engineMtu.text = '${engineSettings.mtu}';
-      _syncShaperControllers();
     } catch (error) {
       if (!mounted) return;
       setState(() {
         _error = '$error';
-        _loading = false;
+        _configLoading = false;
       });
     }
+  }
+
+  /// 加载引擎调试信息（与改造前一致：读取失败视为致命 → 错误态）。
+  Future<void> _loadEngine() async {
+    try {
+      final engine = await _facade.loadEngineInfo();
+      if (!mounted) return;
+      setState(() {
+        _engine = engine;
+        _engineLoading = false;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _error = '$error';
+        _engineLoading = false;
+      });
+    }
+  }
+
+  /// 加载引擎参数（stack / MTU）；持久化异常回落默认（gvisor / 1500），不阻断页面。
+  Future<void> _loadEngineSettings() async {
+    ProxyEngineSettings engineSettings;
+    try {
+      engineSettings = await _facade.loadEngineSettings();
+    } catch (error) {
+      debugPrint('代理设置：读取引擎参数失败，回落默认值：$error');
+      engineSettings = const ProxyEngineSettings();
+    }
+    if (!mounted) return;
+    setState(() {
+      _engineSettings = engineSettings;
+      _engineStack = _normalizeStack(engineSettings.stack);
+      _engineSettingsLoading = false;
+    });
+    _engineMtu.text = '${engineSettings.mtu}';
+  }
+
+  /// 并发加载 LAN 配置 + 监听状态；模块不可用各自回落默认，不阻断页面。
+  Future<void> _loadLan() async {
+    Future<ProxyLanConfig?> loadConfig() async {
+      try {
+        return await _facade.loadLanConfig();
+      } catch (_) {
+        return null; // 模块不可用 → 保留默认（LAN 关闭）
+      }
+    }
+
+    Future<ProxyLanStatus?> loadStatus() async {
+      try {
+        return await _facade.loadLanStatus();
+      } catch (_) {
+        return null; // 模块不可用 → 保留默认（未监听）
+      }
+    }
+
+    final values = await Future.wait<Object?>(<Future<Object?>>[
+      loadConfig(),
+      loadStatus(),
+    ]);
+    if (!mounted) return;
+    final lan = values[0] as ProxyLanConfig?;
+    final lanStatus = values[1] as ProxyLanStatus?;
+    setState(() {
+      if (lan != null) _lan = lan;
+      if (lanStatus != null) _lanStatus = lanStatus;
+      _lanLoading = false;
+    });
+    _syncLanControllers(_lan);
+  }
+
+  /// 加载弱网配置快照；模块不可用 / 读取失败回落默认（关闭），不阻断页面。
+  Future<void> _loadShaper() async {
+    ProxyShaperSnapshot? shaper;
+    try {
+      shaper = await _facade.loadShaperConfig();
+    } catch (error) {
+      debugPrint('代理设置：读取弱网配置失败，回落默认值：$error');
+    }
+    if (!mounted) return;
+    final snapshot = shaper;
+    setState(() {
+      if (snapshot != null) {
+        _shaper = snapshot;
+        _shaperEnabled = snapshot.config.enabled;
+        _shaperUplink = snapshot.config.uplink;
+        _shaperDownlink = snapshot.config.downlink;
+        _shaperPresetId = presetForConfig(snapshot.config).id;
+      }
+      _shaperLoading = false;
+    });
+    _syncShaperControllers();
+  }
+
+  /// 初始 load 完成后，若 [ProxySettingsPage.scrollToShaper] 为真则把「弱网模拟」
+  /// 区域表头滚入视口（仅一次）。
+  ///
+  /// 用 post-frame 回调确保锚点已在 `ListView` 中完成布局；`mounted` / context
+  /// 双重兜底，绝不因滚动失败而崩溃。
+  void _maybeScrollToShaper() {
+    if (!widget.scrollToShaper || _didAutoScrollToShaper) return;
+    _didAutoScrollToShaper = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final anchor = _shaperSectionKey.currentContext;
+      if (anchor == null) return;
+      Scrollable.ensureVisible(
+        anchor,
+        duration: const Duration(milliseconds: 300),
+        alignment: 0.1,
+      );
+    });
   }
 
   Future<void> _refreshEngine() async {
@@ -307,11 +460,43 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
     }
   }
 
+  /// 按需加载已安装应用（页面生命周期内缓存，仅首次枚举）。
+  ///
+  /// 并发调用复用同一 in-flight Future（去重）；加载期间 [_appsLoading] 为真，
+  /// 供按钮禁用 + 内联 loading 反馈。失败时由调用方兜底为空列表。
+  Future<List<InstalledAppOption>> _ensureApps() {
+    final cached = _appsCache;
+    if (cached != null) return Future<List<InstalledAppOption>>.value(cached);
+    final inFlight = _appsInFlight;
+    if (inFlight != null) return inFlight;
+
+    setState(() => _appsLoading = true);
+    final future = _facade.loadInstalledApps().then((apps) {
+      _appsCache = apps;
+      return apps;
+    }).whenComplete(() {
+      _appsInFlight = null;
+      _appsLoading = false;
+      if (mounted) setState(() {});
+    });
+    _appsInFlight = future;
+    return future;
+  }
+
   Future<void> _openAppPicker() async {
+    List<InstalledAppOption> apps;
+    try {
+      apps = await _ensureApps();
+    } catch (error) {
+      // 权限被拒 / 平台异常 → 回落空列表（选择器展示空态，不崩溃）。
+      debugPrint('代理设置：读取已安装应用失败，回落空列表：$error');
+      apps = const <InstalledAppOption>[];
+    }
+    if (!mounted) return;
     final result = await AppSheet.showCustom<Set<String>>(
       context: context,
       builder: (sheetContext) => _AppPickerSheet(
-        apps: _apps,
+        apps: apps,
         initial: _config.selectedApps,
       ),
     );
@@ -386,7 +571,7 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
       });
       _syncLanControllers(_lan);
       if (_lan.needsWarning || status.hasWarning) {
-        AppDialogs.showWarning('LAN 已启用但未配置认证，同一网络下的任何设备都可使用此代理');
+        AppDialogs.showWarning('LAN 已启用但未配置认证，同一网络下的任何设备都可使用此网络');
       } else {
         AppDialogs.showSuccess('LAN 设置已保存');
       }
@@ -540,7 +725,8 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
       return null;
     }
     return buildCustomShaperDirection(
-      rateBps: rate,
+      // 输入框单位为 kbps，契约单位为 bps，此处换算。
+      rateBps: rate * 1000,
       burstBytes: base.burstBytes,
       delayMs: delay,
       jitterMs: jitter,
@@ -580,7 +766,7 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
     final built = _buildShaperDirectionFromFields(_activeShaperDirection);
     if (built == null) {
       AppDialogs.showError(
-        '请填写有效数值：限速 0 或 1000–1000000000 bps，延迟 ≤ 60000 ms，'
+        '请填写有效数值：限速 0 或 1–1000000 kbps，延迟 ≤ 60000 ms，'
         '抖动 ≤ 30000 ms，丢包 0–100%',
       );
       return;
@@ -629,7 +815,7 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
       message: '将清空域名聚合与持久化统计行，确定继续吗？',
       confirmText: '重置',
       isDangerous: true,
-      icon: const Icon(Icons.restart_alt),
+      icon: const Icon(TablerIcons.reload),
     );
     if (ok != true || !mounted) return;
     try {
@@ -649,11 +835,11 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('代理设置'),
+        title: const Text('调试设置'),
         actions: [
           IconButton(
             tooltip: '刷新调试信息',
-            icon: const Icon(Icons.refresh),
+            icon: const Icon(TablerIcons.refresh),
             onPressed: _loading ? null : _refreshEngine,
           ),
         ],
@@ -663,38 +849,81 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
   }
 
   Widget _buildBody(BuildContext context) {
-    if (_loading) {
-      return const Center(child: AppLoading(size: AppLoadingSize.medium));
-    }
     final error = _error;
     if (error != null) {
       return _SettingsMessageState(
-        icon: Icons.error_outline,
+        icon: TablerIcons.alert_circle,
         title: '设置不可用',
         message: error,
         actionLabel: '重试',
         onAction: _load,
       );
     }
+    // 渐进式渲染：页面外壳（区域表头 + 静态小节）立即渲染，各独立小节数据未就绪
+    // 时用 [_SectionSkeleton] 占位，解析后原地替换为真实卡片。区域表头始终挂载，
+    // 因此 `scrollToShaper` 的锚点即使在占位态也能被 `Scrollable.ensureVisible`
+    // 解析。
     return RefreshIndicator(
       onRefresh: _load,
       child: ListView(
+        // 预构建全部小节：设置页内容有限，且 [`ProxySettingsPage.scrollToShaper`]
+        // 依赖「弱网模拟」锚点在 `Scrollable.ensureVisible` 前已挂载——默认懒构建
+        // 会使其落在 cacheExtent 之外导致 `currentContext` 为空、滚动静默失效。
+        // 该值只是懒构建窗口（非视觉尺寸），取足够覆盖整页内容的高度即可。
+        scrollCacheExtent:
+            const ScrollCacheExtent.pixels(_kSettingsPrebuildExtent),
         padding: AppSpacing.allLG,
         children: [
           const _RegionHeader(title: '连接与引擎'),
-          _buildEngineSettingsCard(context),
+          if (_engineSettingsLoading)
+            const _SectionSkeleton(
+              key: Key('section_skeleton_engine_settings'),
+              height: _kSkeletonEngineSettings,
+            )
+          else
+            _buildEngineSettingsCard(context),
           const SizedBox(height: AppSpacing.lg),
-          _buildAlwaysOnCard(context),
+          if (_configLoading)
+            const _SectionSkeleton(
+              key: Key('section_skeleton_always_on'),
+              height: _kSkeletonAlwaysOn,
+            )
+          else
+            _buildAlwaysOnCard(context),
           const SizedBox(height: AppSpacing.lg),
-          _buildLogLevelCard(context),
+          if (_configLoading)
+            const _SectionSkeleton(
+              key: Key('section_skeleton_log_level'),
+              height: _kSkeletonLogLevel,
+            )
+          else
+            _buildLogLevelCard(context),
           const SizedBox(height: AppSpacing.xxl),
           const _RegionHeader(title: '分流与入站'),
-          _buildSplitTunnelCard(context),
+          if (_configLoading)
+            const _SectionSkeleton(
+              key: Key('section_skeleton_split_tunnel'),
+              height: _kSkeletonSplitTunnel,
+            )
+          else
+            _buildSplitTunnelCard(context),
           const SizedBox(height: AppSpacing.lg),
-          _buildLanCard(context),
+          if (_lanLoading)
+            const _SectionSkeleton(
+              key: Key('section_skeleton_lan'),
+              height: _kSkeletonLan,
+            )
+          else
+            _buildLanCard(context),
           const SizedBox(height: AppSpacing.xxl),
-          const _RegionHeader(title: '弱网模拟'),
-          _buildShaperCard(context),
+          _RegionHeader(key: _shaperSectionKey, title: '弱网模拟'),
+          if (_shaperLoading)
+            const _SectionSkeleton(
+              key: Key('section_skeleton_shaper'),
+              height: _kSkeletonShaper,
+            )
+          else
+            _buildShaperCard(context),
           const SizedBox(height: AppSpacing.xxl),
           const _RegionHeader(title: '域名解析'),
           _buildDnsTile(context),
@@ -702,7 +931,13 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
           const _RegionHeader(title: '维护与诊断'),
           _buildStatsCard(context),
           const SizedBox(height: AppSpacing.lg),
-          _buildEngineCard(context),
+          if (_engineLoading)
+            const _SectionSkeleton(
+              key: Key('section_skeleton_engine'),
+              height: _kSkeletonEngine,
+            )
+          else
+            _buildEngineCard(context),
         ],
       ),
     );
@@ -712,7 +947,7 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     return _SectionCard(
-      icon: Icons.tune_outlined,
+      icon: TablerIcons.adjustments,
       title: '引擎参数',
       children: [
         Text(
@@ -763,7 +998,7 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
           child: FilledButton.tonalIcon(
             key: const Key('engine_settings_save'),
             onPressed: _busy ? null : _saveEngineSettings,
-            icon: const Icon(Icons.save_outlined, size: AppTypography.iconSM),
+            icon: const Icon(TablerIcons.device_floppy, size: AppTypography.iconSM),
             label: const Text('保存引擎参数'),
           ),
         ),
@@ -776,10 +1011,10 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
       margin: EdgeInsets.zero,
       child: ListTile(
         key: const Key('dns_settings_tile'),
-        leading: const Icon(Icons.dns_outlined),
+        leading: const Icon(TablerIcons.server),
         title: const Text('DNS 设置'),
         subtitle: const Text('解析模式、上游、DoH / DoT'),
-        trailing: const Icon(Icons.chevron_right),
+        trailing: const Icon(TablerIcons.chevron_right),
         onTap: _openDnsPage,
       ),
     );
@@ -790,7 +1025,7 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
     final scheme = theme.colorScheme;
     final selectedCount = _config.selectedApps.length;
     return _SectionCard(
-      icon: Icons.apps_outlined,
+      icon: TablerIcons.apps,
       title: '应用分流',
       children: [
         // 药丸走统一中等尺寸的 [AppSegmentedButton]，与首页「路由模式」同尺寸同组件。
@@ -813,7 +1048,7 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
         const SizedBox(height: AppSpacing.sm),
         if (_config.splitMode == ProxySplitTunnelMode.full)
           Text(
-            '全局模式：所有应用都通过代理。',
+            '全局模式：所有应用都通过隧道。',
             style: theme.textTheme.bodySmall?.copyWith(
               color: scheme.onSurfaceVariant,
             ),
@@ -829,8 +1064,10 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
               ),
               TextButton(
                 key: const Key('split_apps_button'),
-                onPressed: _busy ? null : _openAppPicker,
-                child: const Text('选择应用'),
+                onPressed: (_busy || _appsLoading) ? null : _openAppPicker,
+                child: _appsLoading
+                    ? const AppLoading(size: AppLoadingSize.small)
+                    : const Text('选择应用'),
               ),
             ],
           ),
@@ -842,7 +1079,7 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     return _SectionCard(
-      icon: Icons.power_settings_new_outlined,
+      icon: TablerIcons.power,
       title: '始终开启',
       children: [
         SwitchListTile(
@@ -858,7 +1095,7 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
           child: TextButton.icon(
             key: const Key('always_on_help'),
             onPressed: _showAlwaysOnHelp,
-            icon: const Icon(Icons.help_outline, size: AppTypography.iconSM),
+            icon: const Icon(TablerIcons.help_circle, size: AppTypography.iconSM),
             label: const Text('如何开启系统「始终开启的 VPN」？'),
           ),
         ),
@@ -878,13 +1115,13 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
     final scheme = theme.colorScheme;
     final showWarning = _lan.needsWarning || _lanStatus.hasWarning;
     return _SectionCard(
-      icon: Icons.lan_outlined,
+      icon: TablerIcons.network,
       title: '局域网监听 (LAN)',
       children: [
         SwitchListTile(
           key: const Key('lan_enabled_switch'),
           contentPadding: EdgeInsets.zero,
-          title: const Text('允许局域网设备使用本机代理'),
+          title: const Text('允许局域网设备使用本机网络'),
           subtitle: Text(
             _lanStatus.bound
                 ? '监听中：${_lanStatus.addresses.join(', ')}'
@@ -957,7 +1194,7 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
         if (showWarning) ...[
           const SizedBox(height: AppSpacing.md),
           Text(
-            _lanStatus.warning ?? '已启用但未配置认证：同一网络下的任何设备都可使用此代理。',
+            _lanStatus.warning ?? '已启用但未配置认证：同一网络下的任何设备都可使用此网络。',
             key: const Key('lan_warning_text'),
             style: theme.textTheme.bodySmall?.copyWith(color: scheme.error),
           ),
@@ -979,7 +1216,7 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
             IconButton(
               key: const Key('lan_copy_address'),
               onPressed: _lanStatus.bound ? _copyLanAddress : null,
-              icon: const Icon(Icons.copy_outlined, size: AppTypography.iconSM),
+              icon: const Icon(TablerIcons.copy, size: AppTypography.iconSM),
               tooltip: '复制地址',
             ),
           ],
@@ -989,7 +1226,7 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
           child: FilledButton.tonalIcon(
             key: const Key('lan_save_button'),
             onPressed: _busy ? null : _applyLanConfig,
-            icon: const Icon(Icons.save_outlined, size: AppTypography.iconSM),
+            icon: const Icon(TablerIcons.device_floppy, size: AppTypography.iconSM),
             label: const Text('保存 LAN 设置'),
           ),
         ),
@@ -1002,7 +1239,7 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
     final scheme = theme.colorScheme;
     final preset = presetOrCustomById(_shaperPresetId);
     return _SectionCard(
-      icon: Icons.speed_outlined,
+      icon: TablerIcons.gauge,
       title: '弱网模拟',
       children: [
         SwitchListTile(
@@ -1028,7 +1265,7 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
             contentPadding: AppSpacing.onlyHorizontalMD,
             title: Text('当前档位：${preset.label}'),
             subtitle: Text(_shaperPresetSubtitle(preset)),
-            trailing: const Icon(Icons.chevron_right),
+            trailing: const Icon(TablerIcons.chevron_right),
             onTap: _busy ? null : _openShaperPresetPicker,
           ),
         ),
@@ -1066,7 +1303,7 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
                   enabled: !_busy,
                   keyboardType: TextInputType.number,
                   decoration: const InputDecoration(
-                    labelText: '限速 (bps)',
+                    labelText: '限速 (kbps)',
                     hintText: '0 = 不限速',
                   ),
                 ),
@@ -1126,7 +1363,7 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
           child: FilledButton.tonalIcon(
             key: const Key('shaper_apply_button'),
             onPressed: _busy ? null : _applyShaper,
-            icon: const Icon(Icons.save_outlined, size: AppTypography.iconSM),
+            icon: const Icon(TablerIcons.device_floppy, size: AppTypography.iconSM),
             label: const Text('应用弱网参数'),
           ),
         ),
@@ -1165,7 +1402,7 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
 
   Widget _buildLogLevelCard(BuildContext context) {
     return _SectionCard(
-      icon: Icons.article_outlined,
+      icon: TablerIcons.file_text,
       title: '日志级别',
       children: [
         SegmentedButton<ProxyLogLevel>(
@@ -1189,7 +1426,7 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
   Widget _buildStatsCard(BuildContext context) {
     final theme = Theme.of(context);
     return _SectionCard(
-      icon: Icons.bar_chart_outlined,
+      icon: TablerIcons.chart_bar,
       title: '域名统计',
       children: [
         Align(
@@ -1197,7 +1434,7 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
           child: FilledButton.tonalIcon(
             key: const Key('stats_reset_button'),
             onPressed: _busy ? null : _resetStats,
-            icon: const Icon(Icons.restart_alt, size: AppTypography.iconSM),
+            icon: const Icon(TablerIcons.reload, size: AppTypography.iconSM),
             label: const Text('重置域名统计'),
             style: FilledButton.styleFrom(
               foregroundColor: theme.colorScheme.error,
@@ -1222,18 +1459,18 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
     final ping = _engine.ping;
     final mode = _engine.mode;
     return _SectionCard(
-      icon: Icons.memory_outlined,
+      icon: TablerIcons.cpu,
       title: '引擎调试信息',
       trailing: IconButton(
         key: const Key('engine_refresh'),
         tooltip: '刷新',
-        icon: const Icon(Icons.refresh, size: AppTypography.iconMD),
+        icon: const Icon(TablerIcons.refresh, size: AppTypography.iconMD),
         onPressed: _refreshEngine,
       ),
       children: [
         if (_engine.isEmpty)
           Text(
-            '代理模块不可用，暂无调试信息。',
+            '调试模块不可用，暂无调试信息。',
             style: theme.textTheme.bodyMedium?.copyWith(
               color: scheme.onSurfaceVariant,
             ),
@@ -1289,7 +1526,7 @@ class _ProxySettingsPageState extends State<ProxySettingsPage> {
 
 /// 功能区标题（区域表头），用于在视觉上把设置页分为若干功能区块。
 class _RegionHeader extends StatelessWidget {
-  const _RegionHeader({required this.title});
+  const _RegionHeader({super.key, required this.title});
 
   final String title;
 
@@ -1365,6 +1602,73 @@ class _SectionCard extends StatelessWidget {
   }
 }
 
+// ==================== 渐进式加载骨架 ====================
+
+/// 卡片外形的小节占位骨架（渐进式渲染期间替换尚未就绪的真实卡片）。
+///
+/// 全部取自主题令牌：`surfaceContainerHighest` 绘制占位条、[AppRadius] 圆角、
+/// [AppSpacing] 间距/尺寸，并内嵌 [AppLoading]，浅色 / 深色下均不突兀。
+/// [height] 只是占位高度（近似被替换的小节），避免数据到达后页面大幅跳动。
+class _SectionSkeleton extends StatelessWidget {
+  const _SectionSkeleton({super.key, required this.height});
+
+  final double height;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: EdgeInsets.zero,
+      child: SizedBox(
+        height: height,
+        child: const Padding(
+          padding: AppSpacing.allLG,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  _SkeletonBar(width: AppSpacing.xl, height: AppSpacing.xl),
+                  SizedBox(width: AppSpacing.sm),
+                  _SkeletonBar(
+                    width: AppSpacing.massive * 2,
+                    height: AppSpacing.md,
+                  ),
+                  Spacer(),
+                  AppLoading(size: AppLoadingSize.small),
+                ],
+              ),
+              SizedBox(height: AppSpacing.lg),
+              _SkeletonBar(width: double.infinity, height: AppSpacing.xxxl),
+              SizedBox(height: AppSpacing.md),
+              _SkeletonBar(width: double.infinity, height: AppSpacing.xxxl),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 骨架占位条：主题令牌着色的圆角块。
+class _SkeletonBar extends StatelessWidget {
+  const _SkeletonBar({required this.width, required this.height});
+
+  final double width;
+  final double height;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: width,
+      height: height,
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        borderRadius: AppRadius.allXS,
+      ),
+    );
+  }
+}
+
 // ==================== 应用选择弹层 ====================
 
 /// 已安装应用多选弹层（统一 [AppSheetScaffold] 骨架）。
@@ -1385,13 +1689,25 @@ class _AppPickerSheetState extends State<_AppPickerSheet> {
   String _query = '';
 
   List<InstalledAppOption> get _filtered {
-    if (_query.isEmpty) return widget.apps;
-    final q = _query.toLowerCase();
-    return widget.apps
-        .where((app) =>
-            app.name.toLowerCase().contains(q) ||
-            app.packageName.toLowerCase().contains(q))
-        .toList();
+    final query = _query.toLowerCase();
+    final List<InstalledAppOption> matches = query.isEmpty
+        ? <InstalledAppOption>[...widget.apps]
+        : widget.apps
+            .where((app) =>
+                app.name.toLowerCase().contains(query) ||
+                app.packageName.toLowerCase().contains(query))
+            .toList();
+    // 稳定排序：已选优先 → 名称（忽略大小写）→ 包名兜底。总序确定，切换勾选时
+    // 只按「已选分组」重排，组内次序稳定不抖动。
+    matches.sort((a, b) {
+      final aSelected = _selected.contains(a.packageName);
+      final bSelected = _selected.contains(b.packageName);
+      if (aSelected != bSelected) return aSelected ? -1 : 1;
+      final byName = a.name.toLowerCase().compareTo(b.name.toLowerCase());
+      if (byName != 0) return byName;
+      return a.packageName.compareTo(b.packageName);
+    });
+    return matches;
   }
 
   void _toggle(String packageName) {
@@ -1408,7 +1724,9 @@ class _AppPickerSheetState extends State<_AppPickerSheet> {
     return AppSheetScaffold(
       title: '选择应用',
       subtitle: widget.apps.isEmpty ? '无可用应用' : '共 ${widget.apps.length} 个已安装应用',
-      icon: const Icon(Icons.apps_outlined),
+      icon: const Icon(TablerIcons.apps),
+      // 统一弹层左右内边距（与 AppDialogs / 档位弹层一致），搜索框与列表不再贴边。
+      contentPadding: AppSpacing.onlyHorizontalXL,
       actions: [
         TextButton(
           onPressed: () => Navigator.of(context).pop(),
@@ -1422,6 +1740,8 @@ class _AppPickerSheetState extends State<_AppPickerSheet> {
       ],
       scrollable: false,
       content: Column(
+        // 内容自适应：跟随子项高度，不抢占骨架 80% 限高的剩余空白。
+        mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           TextField(
@@ -1430,7 +1750,7 @@ class _AppPickerSheetState extends State<_AppPickerSheet> {
             decoration: const InputDecoration(
               labelText: '搜索',
               hintText: '应用名 / 包名',
-              prefixIcon: Icon(Icons.search),
+              prefixIcon: Icon(TablerIcons.search),
             ),
           ),
           const SizedBox(height: AppSpacing.md),
@@ -1440,7 +1760,7 @@ class _AppPickerSheetState extends State<_AppPickerSheet> {
               padding: AppSpacing.onlyVerticalXXL,
               child: Column(
                 children: [
-                  Icon(Icons.apps_outlined,
+                  Icon(TablerIcons.apps,
                       size: AppTypography.iconXXXL,
                       color: scheme.onSurfaceVariant),
                   const SizedBox(height: AppSpacing.md),
@@ -1551,7 +1871,9 @@ class _ShaperPresetPickerSheet extends StatelessWidget {
   Widget build(BuildContext context) {
     return AppSheetScaffold(
       title: '选择网络档位',
-      icon: const Icon(Icons.speed_outlined),
+      icon: const Icon(TablerIcons.gauge),
+      // 统一弹层左右内边距（与 AppDialogs 的语义化弹层一致），避免档位行贴边。
+      contentPadding: AppSpacing.onlyHorizontalXL,
       actions: [
         TextButton(
           onPressed: () => Navigator.of(context).pop(),
@@ -1560,6 +1882,8 @@ class _ShaperPresetPickerSheet extends StatelessWidget {
       ],
       scrollable: false,
       content: Column(
+        // 内容自适应：档位行数少时收紧高度，不在下方留空白。
+        mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           for (final preset in proxyShaperPresets)
@@ -1594,7 +1918,8 @@ class _ShaperPresetRow extends StatelessWidget {
     return InkWell(
       onTap: onTap,
       child: Padding(
-        padding: AppSpacing.onlyVerticalSM,
+        // 左右内边距由弹层骨架 contentPadding 统一提供，此处只给舒适的行高。
+        padding: AppSpacing.onlyVerticalMD,
         child: Row(
           children: [
             Expanded(
@@ -1602,14 +1927,17 @@ class _ShaperPresetRow extends StatelessWidget {
                 label,
                 style: theme.textTheme.bodyLarge?.copyWith(
                   color: selected ? scheme.primary : scheme.onSurface,
+                  fontWeight: selected
+                      ? AppTypography.weightMedium
+                      : AppTypography.weightRegular,
                 ),
               ),
             ),
             if (selected)
               Icon(
-                Icons.check,
+                TablerIcons.check,
                 color: scheme.primary,
-                size: AppTypography.iconMD,
+                size: AppTypography.iconLG,
               ),
           ],
         ),

@@ -1069,4 +1069,41 @@ void main() {
       expect(event, isNull);
     });
   });
+
+  group('GeoAsset：错误原因透传（Rust error: Option<String>）', () {
+    test('fromJson 解析非空 error', () {
+      final asset = GeoAsset.fromJson(const <String, dynamic>{
+        'kind': 'mmdb',
+        'file': 'country.mmdb',
+        'path': '/tmp/country.mmdb',
+        'status': 'failed',
+        'verified': false,
+        'sha256': '',
+        'error': 'checksum mismatch: country.mmdb',
+      });
+      expect(asset.file, 'country.mmdb');
+      expect(asset.status, 'failed');
+      expect(asset.error, 'checksum mismatch: country.mmdb');
+    });
+
+    test('空串 error 归一化为 null', () {
+      final asset = GeoAsset.fromJson(const <String, dynamic>{
+        'kind': 'dat',
+        'file': 'geosite.dat',
+        'status': 'ready',
+        'verified': true,
+        'sha256': 'abc',
+        'error': '',
+      });
+      expect(asset.error, isNull);
+    });
+
+    test('缺失 error 宽容解码为 null，不抛错', () {
+      final asset = GeoAsset.fromJson(const <String, dynamic>{
+        'kind': 'dat',
+        'file': 'geosite.dat',
+      });
+      expect(asset.error, isNull);
+    });
+  });
 }

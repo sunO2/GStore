@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 
 import 'package:gstore/core/core.dart';
 
@@ -98,7 +99,7 @@ class _ProxySiteProbeCardState extends State<ProxySiteProbeCard> {
             Row(
               children: [
                 Icon(
-                  Icons.travel_explore_outlined,
+                  TablerIcons.world_search,
                   size: AppTypography.iconMD,
                   color: scheme.primary,
                 ),
@@ -108,7 +109,7 @@ class _ProxySiteProbeCardState extends State<ProxySiteProbeCard> {
             ),
             const SizedBox(height: AppSpacing.xs),
             Text(
-              '检测遵循当前代理与规则（未开代理则直连）',
+              '检测遵循当前隧道与规则（未连接则直连）',
               style: theme.textTheme.bodySmall?.copyWith(
                 color: scheme.onSurfaceVariant,
               ),
@@ -125,7 +126,7 @@ class _ProxySiteProbeCardState extends State<ProxySiteProbeCard> {
                         height: AppTypography.iconMD,
                         child: AppLoading(size: AppLoadingSize.small),
                       )
-                    : const Icon(Icons.play_arrow_outlined),
+                    : const Icon(TablerIcons.player_play),
                 label: Text(_hasRun ? '重新检测' : '开始检测'),
               ),
             ),

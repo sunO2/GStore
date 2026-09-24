@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 
 import 'package:gstore/core/core.dart';
 import 'package:gstore/core/rust/proxy/ProxyContract.dart';
@@ -17,6 +18,7 @@ import 'proxy_profiles_page.dart';
 import 'proxy_routing_mode_store.dart';
 import 'proxy_run_mode_store.dart';
 import 'proxy_settings_page.dart';
+import 'proxy_shaper_presets.dart';
 import 'proxy_site_probe.dart';
 import 'proxy_site_probe_card.dart';
 import 'proxy_stats_page.dart';
@@ -126,6 +128,10 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
   /// 规则模式 CN 直连 geo 数据的准备状态（驱动非阻塞提示 / 重试）。
   _GeoStatus _geoStatus = _GeoStatus.idle;
 
+  /// geo 下载失败时 Rust 上报的首个资产错误原因（`geo.assets[].error`）。
+  /// 用于在失败横幅里显示「为什么失败」，而不只是泛化文案。
+  String? _geoError;
+
   /// 连接 / 断开编排器（UI 无关，注入首页各接缝；供快捷磁贴复用同一流程）。
   late final ProxyConnectController _controller;
   StreamSubscription<ProxyEvent>? _eventSub;
@@ -167,6 +173,10 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
 
   /// 各代理组的实时选中（`node.list`）；引擎运行时优先用于「当前节点」展示。
   NodeListResult? _nodeList;
+
+  /// 弱网模拟快照（`net.shaper.get`，best-effort）；`config.enabled` 为真时在状态
+  /// 卡标题右侧展示「弱网模拟 · <档位>」徽标。
+  ProxyShaperSnapshot? _shaper;
 
   /// 当前选中的节点（持久化；节点页写入，首页展示 + 节点页高亮回显）。
   ProxyActiveNode? _activeNode;
@@ -218,6 +228,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
       final traffic = await _safe(() => _facade.statsTrafficGet(topDomains: 3));
       final lan = await _safe(() => _facade.lanStatus());
       final nodeList = await _safe(() => _facade.nodeList());
+      final shaper = await _safe(() => _facade.loadShaperConfig());
 
       // 解析「当前订阅」：优先沿用持久化 id；失效时若只剩 1 个订阅则自动选中并
       // 持久化，否则清除。选中 id 连接时经 `core.start.profileId` 生效。
@@ -244,6 +255,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
         }
         _lanStatus = lan;
         _version = version;
+        _shaper = shaper;
         _selectedProfileId = selected?.id;
         _profileName = selected?.name;
         _profileNodeCount = selected?.nodeCount;
@@ -283,7 +295,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
     } catch (error) {
       if (!mounted) return;
       setState(() {
-        _loadError = '代理模块加载失败：$error';
+        _loadError = '调试模块加载失败：$error';
         _loading = false;
       });
     }
@@ -438,26 +450,51 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
     final provisioner = await _ensureGeoProvisioner();
     if (!mounted || provisioner == null) return;
     if (_geoStatus == _GeoStatus.preparing) return;
-    setState(() => _geoStatus = _GeoStatus.preparing);
+    setState(() {
+      _geoStatus = _GeoStatus.preparing;
+      _geoError = null;
+    });
     final kickedOff = await provisioner.kickoff(
       profileId: _selectedProfileId,
       force: force,
     );
     if (!mounted) return;
     if (!kickedOff) {
-      setState(() => _geoStatus = _GeoStatus.failed);
+      await _markGeoFailed(provisioner);
       return;
     }
     // 后台等待下载完成（引擎会自动重编译规则，无需二次 reload）。
     final ready = await provisioner.waitReady();
     if (!mounted) return;
-    setState(() => _geoStatus = ready ? _GeoStatus.ready : _GeoStatus.failed);
+    if (ready) {
+      setState(() {
+        _geoStatus = _GeoStatus.ready;
+        _geoError = null;
+      });
+      return;
+    }
+    await _markGeoFailed(provisioner);
+  }
+
+  /// 进入失败态并尽力取出 Rust 上报的失败原因（`geo.assets[].error`）。
+  ///
+  /// best-effort：原因取不到（`null`）时保留泛化失败文案，绝不因取原因而崩溃。
+  Future<void> _markGeoFailed(ProxyGeoProvisioner provisioner) async {
+    final reason = await provisioner.lastFailureReason();
+    if (!mounted) return;
+    setState(() {
+      _geoStatus = _GeoStatus.failed;
+      _geoError = (reason != null && reason.isNotEmpty) ? reason : null;
+    });
   }
 
   /// 失败后的重试：`force` 绕过 provisioner 的 60s 失败节流后重新 kickoff。
   Future<void> _retryGeo() async {
     if (_geoStatus == _GeoStatus.preparing) return;
-    setState(() => _geoStatus = _GeoStatus.idle);
+    setState(() {
+      _geoStatus = _GeoStatus.idle;
+      _geoError = null;
+    });
     await _prepareGeoIfRule(force: true);
   }
 
@@ -708,22 +745,24 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
     final result = await AppSheet.show<ProxyMode>(
       context: context,
       title: '运行模式',
+      // 统一弹层左右内边距（与 AppDialogs 的语义化弹层一致），避免行贴边。
+      contentPadding: AppSpacing.onlyHorizontalXL,
       content: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           _modeOption(
             mode: ProxyMode.vpn,
             key: const Key('proxy-mode-option-vpn'),
-            icon: Icons.shield_outlined,
+            icon: TablerIcons.shield,
             title: 'VPN 模式（全设备）',
-            subtitle: '手机全部流量经由代理，并共享给其它设备（当 LAN 已启用）',
+            subtitle: '手机全部流量经由隧道，并共享给其它设备（当 LAN 已启用）',
           ),
           _modeOption(
             mode: ProxyMode.lanProxy,
             key: const Key('proxy-mode-option-lanProxy'),
-            icon: Icons.lan_outlined,
-            title: '局域网代理（仅共享给其它设备）',
-            subtitle: '手机自身流量不经过代理，仅向局域网提供入站',
+            icon: TablerIcons.network,
+            title: '局域网共享（仅共享给其它设备）',
+            subtitle: '手机自身流量不经过隧道，仅向局域网提供入站',
           ),
         ],
       ),
@@ -774,7 +813,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
               ),
             ),
             if (selected)
-              Icon(Icons.check,
+              Icon(TablerIcons.check,
                   size: AppTypography.iconMD, color: scheme.primary),
           ],
         ),
@@ -861,9 +900,22 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
       callback();
       return;
     }
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(builder: (_) => const ProxySettingsPage()),
+    unawaited(_openSettingsAndReload());
+  }
+
+  /// 打开 [ProxySettingsPage]，返回后重新 [_load]——用户可能在其中切换弱网模拟 /
+  /// 引擎设置，首页据此刷新（best-effort，失败不阻断）。
+  ///
+  /// [scrollToShaper] 为真时把「滚动到弱网模拟小节」意图透传给设置页（由状态卡
+  /// 徽标点击触发）；设置页自身在该页初始 load 完成后执行滚动。
+  Future<void> _openSettingsAndReload({bool scrollToShaper = false}) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => ProxySettingsPage(scrollToShaper: scrollToShaper),
+      ),
     );
+    if (!mounted) return;
+    await _load();
   }
 
   /// 「订阅」入口：打开订阅 / 配置管理页。
@@ -953,7 +1005,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
   String get _modeText => switch (_mode) {
         ProxyMode.off => '关闭',
         ProxyMode.vpn => 'VPN',
-        ProxyMode.lanProxy => '局域网代理',
+        ProxyMode.lanProxy => '局域网共享',
         ProxyMode.unknown => '未知',
       };
 
@@ -961,7 +1013,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
     final name = _profileName;
     if (name == null || name.isEmpty) return '未选择';
     final count = _profileNodeCount;
-    return count == null ? name : '$name（$count 节点）';
+    return count == null ? name : '$name（$count 个端子）';
   }
 
   String get _nodeText {
@@ -984,7 +1036,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
   /// 入口卡「订阅」副标题：当前选中订阅名（无选中降级为中性文案）。
   String get _subscriptionCardSubtitle {
     final name = _profileName;
-    return (name == null || name.isEmpty) ? '未选择订阅' : name;
+    return (name == null || name.isEmpty) ? '未选择网络组' : name;
   }
 
   /// 入口卡「节点选择」副标题：优先持久化的选中节点（`ProxyActiveNodeStore`），
@@ -996,13 +1048,13 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
           ? active.node
           : '${active.group} · ${active.node}';
     }
-    return '未选择节点';
+    return '未选择端子';
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('代理')),
+      appBar: AppBar(title: const Text('网络调试')),
       body: _buildBody(context),
     );
   }
@@ -1028,8 +1080,6 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
         const SizedBox(height: AppSpacing.lg),
         _buildTrafficCard(context),
         const SizedBox(height: AppSpacing.lg),
-        ProxySiteProbeCard(probe: widget.siteProbe),
-        const SizedBox(height: AppSpacing.lg),
         _buildQuickEntries(context),
         if (_geoStatus == _GeoStatus.preparing ||
             _geoStatus == _GeoStatus.failed) ...[
@@ -1040,6 +1090,8 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
           const SizedBox(height: AppSpacing.lg),
           _buildDelayCard(context, _nodeDelay!),
         ],
+        const SizedBox(height: AppSpacing.lg),
+        ProxySiteProbeCard(probe: widget.siteProbe),
         if (_version != null) ...[
           const SizedBox(height: AppSpacing.lg),
           _buildVersionCard(context, _version!),
@@ -1062,12 +1114,12 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
             child: Column(
               children: [
                 Icon(
-                  Icons.extension_off_outlined,
+                  TablerIcons.puzzle_off,
                   size: AppTypography.iconXXXL,
                   color: scheme.onSurfaceVariant,
                 ),
                 const SizedBox(height: AppSpacing.md),
-                Text('代理模块不可用', style: theme.textTheme.titleMedium),
+                Text('调试模块不可用', style: theme.textTheme.titleMedium),
                 const SizedBox(height: AppSpacing.sm),
                 Text(
                   message,
@@ -1087,7 +1139,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
   // ==================== 运行模式 / 入口卡 ====================
 
   String get _modeOptionLabel =>
-      _targetMode == ProxyMode.lanProxy ? '局域网代理（仅共享给其它设备）' : 'VPN 模式（全设备）';
+      _targetMode == ProxyMode.lanProxy ? '局域网共享（仅共享给其它设备）' : 'VPN 模式（全设备）';
 
   /// 入口区：**两行 × 每行两张独立 [Card]**。
   ///
@@ -1112,8 +1164,8 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
                 child: _buildEntryCard(
                   context,
                   key: const Key('proxy-subscribe-tile'),
-                  icon: Icons.rss_feed_outlined,
-                  title: '订阅',
+                  icon: TablerIcons.rss,
+                  title: '网络组',
                   subtitle: subscriptionSubtitle,
                   onTap: _openProfiles,
                 ),
@@ -1123,8 +1175,8 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
                 child: _buildEntryCard(
                   context,
                   key: const Key('proxy-nodes-tile'),
-                  icon: Icons.account_tree_outlined,
-                  title: '节点选择',
+                  icon: TablerIcons.sitemap,
+                  title: '网络选择',
                   subtitle: nodesSubtitle,
                   onTap: _openNodes,
                 ),
@@ -1141,8 +1193,8 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
                 child: _buildEntryCard(
                   context,
                   key: const Key('proxy-mode-tile'),
-                  icon: Icons.tune,
-                  title: '代理模式',
+                  icon: TablerIcons.adjustments,
+                  title: '网络模式',
                   subtitle: _modeOptionLabel,
                   onTap: _busy ? null : _openModePicker,
                 ),
@@ -1152,8 +1204,8 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
                 child: _buildEntryCard(
                   context,
                   key: const Key('proxy-settings-tile'),
-                  icon: Icons.lan_outlined,
-                  title: '代理设置',
+                  icon: TablerIcons.network,
+                  title: '调试设置',
                   subtitle: '局域网监听与入站端口',
                   onTap: _openLanSettings,
                 ),
@@ -1187,14 +1239,14 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
           Row(
             children: [
               Icon(
-                Icons.warning_amber_outlined,
+                TablerIcons.alert_triangle,
                 size: AppTypography.iconMD,
                 color: scheme.onTertiaryContainer,
               ),
               const SizedBox(width: AppSpacing.xs),
               Expanded(
                 child: Text(
-                  '局域网代理需要先启用局域网监听',
+                  '局域网共享需要先启用局域网监听',
                   style: theme.textTheme.labelMedium?.copyWith(
                     color: scheme.onTertiaryContainer,
                     fontWeight: AppTypography.weightMedium,
@@ -1205,7 +1257,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
           ),
           const SizedBox(height: AppSpacing.xs),
           Text(
-            '当前「局域网监听 (LAN)」处于关闭状态，切换到局域网代理会返回 '
+            '当前「局域网监听 (LAN)」处于关闭状态，切换到局域网共享会返回 '
             'PROXY_NO_INBOUND。请先在设置中开启它。',
             style: theme.textTheme.bodySmall?.copyWith(
               color: scheme.onTertiaryContainer,
@@ -1272,6 +1324,70 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
 
   // ==================== 状态卡 ====================
 
+  /// 状态卡标题右侧的弱网模拟徽标：`弱网模拟 · <档位>`。
+  ///
+  /// 档位经纯函数 [presetForConfig] 从已加载配置反查（未知 → 自定义）。配色用
+  /// `secondaryContainer`（M3「已选中 / 强调但非主色」语义）：与状态卡自身的连接
+  /// 状态色（primary / tertiary / onSurfaceVariant）都不冲突，也不与错误色混淆。
+  ///
+  /// 点击进入 [ProxySettingsPage] 并自动滚动到「弱网模拟」小节；外观保持不变，仅
+  /// 在最外层套一层透明 [Material] + [InkWell] 提供主题水波纹与可访问按钮语义。
+  Widget _buildShaperBadge(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final label = presetForConfig(_shaper!.config).label;
+    return Semantics(
+      button: true,
+      label: '弱网模拟 · $label，点击进入设置',
+      child: Material(
+        type: MaterialType.transparency,
+        borderRadius: AppRadius.allSM,
+        child: InkWell(
+          key: const Key('proxy-shaper-badge-tap'),
+          onTap: () => unawaited(_openSettingsAndReload(scrollToShaper: true)),
+          borderRadius: AppRadius.allSM,
+          // 透明内边距扩大点击热区，彩色药丸本身尺寸 / 外观不变。
+          child: Padding(
+            padding: const EdgeInsets.all(AppSpacing.xs),
+            child: Container(
+              constraints: const BoxConstraints(maxWidth: 140),
+              padding: const EdgeInsets.symmetric(
+                horizontal: AppSpacing.sm,
+                vertical: AppSpacing.xs,
+              ),
+              decoration: BoxDecoration(
+                color: scheme.secondaryContainer,
+                borderRadius: AppRadius.allSM,
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    TablerIcons.gauge,
+                    size: AppTypography.iconSM,
+                    color: scheme.onSecondaryContainer,
+                  ),
+                  const SizedBox(width: AppSpacing.xs),
+                  Flexible(
+                    child: Text(
+                      '弱网模拟 · $label',
+                      key: const Key('proxy-shaper-badge'),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: scheme.onSecondaryContainer,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildStatusCard(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
@@ -1297,8 +1413,8 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
               children: [
                 Icon(
                   _isRunning
-                      ? Icons.shield_outlined
-                      : Icons.shield_moon_outlined,
+                      ? TablerIcons.shield
+                      : TablerIcons.shield_off,
                   size: AppTypography.iconXL,
                   color: statusColor,
                 ),
@@ -1312,12 +1428,16 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
                     ),
                   ),
                 ),
+                if (_shaper?.config.enabled == true) ...[
+                  const SizedBox(width: AppSpacing.sm),
+                  _buildShaperBadge(context),
+                ],
               ],
             ),
             const SizedBox(height: AppSpacing.md),
             _infoRow(theme, '模式', _modeText),
             _infoRow(theme, '当前配置', _profileText),
-            _infoRow(theme, '当前节点', _nodeText),
+            _infoRow(theme, '网络端子', _nodeText),
             if (_isRunning) ...[
               const SizedBox(height: AppSpacing.md),
               _buildRoutingModeSwitch(context),
@@ -1370,7 +1490,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
         child: AppLoading(size: AppLoadingSize.small),
       );
     }
-    return Icon(_isRunning ? Icons.power_settings_new : Icons.shield_outlined);
+    return Icon(_isRunning ? TablerIcons.power : TablerIcons.shield);
   }
 
   /// 规则模式 geo 数据的非阻塞状态条：准备中（spinner + 文案）/ 失败（重试）。
@@ -1400,7 +1520,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
             children: [
               if (failed)
                 Icon(
-                  Icons.error_outline,
+                  TablerIcons.alert_circle,
                   size: AppTypography.iconMD,
                   color: contentColor,
                 )
@@ -1425,8 +1545,13 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
           const SizedBox(height: AppSpacing.xs),
           Text(
             failed
-                ? '规则模式依赖的 geo 数据下载失败，可重试。'
+                ? ((_geoError != null && _geoError!.isNotEmpty)
+                    ? '原因：$_geoError'
+                    : '规则模式依赖的 geo 数据下载失败，可重试。')
                 : '后台下载中，不影响当前连接；完成后 CN 直连规则自动生效。',
+            key: failed && _geoError != null && _geoError!.isNotEmpty
+                ? const Key('proxy-geo-error')
+                : null,
             style: theme.textTheme.bodySmall?.copyWith(color: contentColor),
           ),
           if (failed)
@@ -1461,14 +1586,14 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
           Row(
             children: [
               Icon(
-                Icons.error_outline,
+                TablerIcons.alert_circle,
                 size: AppTypography.iconMD,
                 color: scheme.onErrorContainer,
               ),
               const SizedBox(width: AppSpacing.xs),
               Expanded(
                 child: Text(
-                  error.code.isEmpty ? '代理引擎错误' : error.code,
+                  error.code.isEmpty ? '调试引擎错误' : error.code,
                   style: theme.textTheme.labelMedium?.copyWith(
                     color: scheme.onErrorContainer,
                     fontWeight: AppTypography.weightMedium,
@@ -1566,7 +1691,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
             Row(
               children: [
                 Icon(
-                  Icons.swap_vert_outlined,
+                  TablerIcons.arrows_up_down,
                   size: AppTypography.iconMD,
                   color: scheme.primary,
                 ),
@@ -1737,18 +1862,18 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
       child: Column(
         children: [
           ListTile(
-            leading: const Icon(Icons.travel_explore_outlined),
+            leading: const Icon(TablerIcons.world_search),
             title: const Text('请求域名 / IP'),
             subtitle: const Text('实时收集请求的域名与目标 IP'),
-            trailing: const Icon(Icons.chevron_right),
+            trailing: const Icon(TablerIcons.chevron_right),
             onTap: _openRequests,
           ),
           const Divider(height: 1),
           ListTile(
-            leading: const Icon(Icons.bar_chart_outlined),
+            leading: const Icon(TablerIcons.chart_bar),
             title: const Text('流量统计'),
             subtitle: const Text('按域名的连接数与流量'),
-            trailing: const Icon(Icons.chevron_right),
+            trailing: const Icon(TablerIcons.chevron_right),
             onTap: _openStats,
           ),
         ],
@@ -1785,7 +1910,7 @@ class _ProxyHomePageState extends State<ProxyHomePage> {
     return Card(
       margin: EdgeInsets.zero,
       child: ListTile(
-        leading: const Icon(Icons.speed_outlined),
+        leading: const Icon(TablerIcons.gauge),
         title: Text(delay.node.isEmpty ? delay.group : delay.node),
         subtitle: Text(delay.group),
         trailing: Text(

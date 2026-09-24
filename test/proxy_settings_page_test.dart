@@ -13,6 +13,7 @@
 // * 纯函数：`ProxySettingsConfig.toVpnConfigJson()` 的三种模式映射 +
 //   「排除应用」过滤本应用（Todo 4：绝不 `addDisallowedApplication(self)`）。
 
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -20,6 +21,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/design/app_components.dart';
 import 'package:gstore/core/design/app_dialogs.dart';
+import 'package:gstore/core/design/app_sheet.dart';
+import 'package:gstore/core/design/app_spacing.dart';
 import 'package:gstore/core/navigation/nav_key.dart';
 import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
@@ -71,21 +74,58 @@ class _FakeSettingsFacade implements ProxySettingsFacade {
   int shaperLoadCalls = 0;
   int shaperSaveCalls = 0;
   bool failShaperSave = false;
+  int installedAppsLoadCalls = 0;
+
+  // ==================== 并发 / 渐进渲染控制 ====================
+
+  /// 各独立小节的「启动」记录（按调用顺序；证明并发启动而非顺序 await）。
+  final List<String> startedLoads = <String>[];
+
+  /// 可选门闸：非空时对应加载会挂起直到测试 complete（用于观察加载中态）。
+  Completer<void>? settingsGate;
+  Completer<void>? engineGate;
+  Completer<void>? engineSettingsGate;
+  Completer<void>? lanConfigGate;
+  Completer<void>? lanStatusGate;
+  Completer<void>? shaperGate;
+
+  /// 为真时 [loadSettings] 抛错（验证错误态）。
+  bool failSettings = false;
 
   @override
-  Future<ProxySettingsConfig> loadSettings() async => config;
+  Future<ProxySettingsConfig> loadSettings() async {
+    startedLoads.add('settings');
+    await settingsGate?.future;
+    if (failSettings) throw StateError('设置读取失败（测试注入）');
+    return config;
+  }
 
   @override
-  Future<List<InstalledAppOption>> loadInstalledApps() async => apps;
+  Future<List<InstalledAppOption>> loadInstalledApps() async {
+    installedAppsLoadCalls++;
+    return apps;
+  }
 
   @override
-  Future<ProxyEngineInfo> loadEngineInfo() async => engine;
+  Future<ProxyEngineInfo> loadEngineInfo() async {
+    startedLoads.add('engine');
+    await engineGate?.future;
+    return engine;
+  }
 
   @override
-  Future<ProxyLanConfig> loadLanConfig() async => lanConfig;
+  Future<ProxyLanConfig> loadLanConfig() async {
+    startedLoads.add('lanConfig');
+    await lanConfigGate?.future;
+    return lanConfig;
+  }
 
   @override
-  Future<ProxyLanStatus> loadLanStatus() async => lanStatus;
+  Future<ProxyLanStatus> loadLanStatus() async {
+    startedLoads.add('lanStatus');
+    await lanStatusGate?.future;
+    return lanStatus;
+  }
 
   @override
   Future<ProxyLanStatus> saveLanConfig(ProxyLanConfig next) async {
@@ -104,6 +144,8 @@ class _FakeSettingsFacade implements ProxySettingsFacade {
 
   @override
   Future<ProxyShaperSnapshot> loadShaperConfig() async {
+    startedLoads.add('shaper');
+    await shaperGate?.future;
     shaperLoadCalls++;
     return shaperSnapshot;
   }
@@ -144,7 +186,11 @@ class _FakeSettingsFacade implements ProxySettingsFacade {
   }
 
   @override
-  Future<ProxyEngineSettings> loadEngineSettings() async => engineSettings;
+  Future<ProxyEngineSettings> loadEngineSettings() async {
+    startedLoads.add('engineSettings');
+    await engineSettingsGate?.future;
+    return engineSettings;
+  }
 
   @override
   Future<void> saveEngineSettings(ProxyEngineSettings settings) async {
@@ -232,7 +278,7 @@ void main() {
       expect(pill.top, greaterThanOrEqualTo(label.bottom),
           reason: '药丸必须位于标题下方，独立成行');
       // 左对齐：药丸左边缘与该卡片正文（首个 children 文本）左边缘对齐。
-      final Rect body = tester.getRect(find.text('全局模式：所有应用都通过代理。'));
+      final Rect body = tester.getRect(find.text('全局模式：所有应用都通过隧道。'));
       expect(pill.left, closeTo(body.left, 1.0),
           reason: '药丸应左对齐卡片正文');
       expect(tester.takeException(), isNull);
@@ -291,6 +337,35 @@ void main() {
       expect(facade.lastApps, containsAll(<String>['com.apple', 'com.banana']));
       expect(facade.config.selectedApps, hasLength(2));
       expect(find.text('已选 2 个应用'), findsOneWidget);
+    });
+
+    testWidgets('应用列表按需加载：首帧不枚举，首次打开选择器加载一次并缓存', (tester) async {
+      _useTallSurface(tester);
+      final facade = _FakeSettingsFacade();
+      await tester.pumpWidget(_host(ProxySettingsPage(facade: facade)));
+      await _settleLoad(tester);
+
+      // 首帧完成 load 后，尚未枚举已安装应用（证明首帧不再等待该耗时调用）。
+      expect(facade.installedAppsLoadCalls, 0,
+          reason: '首帧 load 不得调用 loadInstalledApps');
+
+      await tester.tap(find.text('仅选中'));
+      await tester.pump();
+
+      // 首次点击 → 触发一次枚举并打开选择器。
+      await tester.tap(find.byKey(const Key('split_apps_button')));
+      await tester.pumpAndSettle();
+      expect(facade.installedAppsLoadCalls, 1);
+      expect(find.byKey(const Key('split_app_search')), findsOneWidget);
+
+      // 关闭后再次打开 → 复用缓存，不重新枚举。
+      await tester.tap(find.byKey(const Key('split_apps_confirm')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('split_apps_button')));
+      await tester.pumpAndSettle();
+      expect(facade.installedAppsLoadCalls, 1,
+          reason: '二次打开必须复用缓存，不得重新枚举');
+      expect(find.byKey(const Key('split_app_search')), findsOneWidget);
     });
 
     testWidgets('「排除选中」模式可切换并保留选择', (tester) async {
@@ -582,6 +657,33 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
+    testWidgets('scrollToShaper：初始 load 后把弱网模拟小节滚入视口', (tester) async {
+      // 默认 800x600：弱网模拟小节初始位于视口下方，须由自动滚动带入。
+      final facade = _FakeSettingsFacade();
+      await tester.pumpWidget(
+        _host(ProxySettingsPage(facade: facade, scrollToShaper: true)),
+      );
+      await _settleLoad(tester);
+      // 触发 post-frame 中启动的 300ms 滚动动画并等待稳定。
+      await tester.pumpAndSettle();
+
+      final header = find.text('弱网模拟').first;
+      final viewport = tester.getRect(find.byType(ListView));
+      final rect = tester.getRect(header);
+      // 宽容容差：表头必须落在滚动视口内。
+      expect(
+        rect.top,
+        greaterThanOrEqualTo(viewport.top - 1.0),
+        reason: '弱网模拟表头顶部不得高于视口顶部',
+      );
+      expect(
+        rect.bottom,
+        lessThanOrEqualTo(viewport.bottom + 1.0),
+        reason: '弱网模拟表头底部不得低于视口底部',
+      );
+      expect(tester.takeException(), isNull);
+    });
+
     testWidgets('弱网模拟：开关调用 saveShaperConfig', (tester) async {
       _useTallSurface(tester);
       final facade = _FakeSettingsFacade();
@@ -634,13 +736,32 @@ void main() {
       expect(find.byKey(const Key('shaper_rate_field')), findsNothing);
     });
 
+    testWidgets('弱网模拟：档位弹层内容遵守统一左右内边距（20px）', (tester) async {
+      _useTallSurface(tester);
+      final facade = _FakeSettingsFacade();
+      await tester.pumpWidget(_host(ProxySettingsPage(facade: facade)));
+      await _settleLoad(tester);
+
+      await tester.tap(find.byKey(const Key('shaper_preset_selector')));
+      await tester.pumpAndSettle();
+
+      final Rect sheet = tester.getRect(find.byType(AppSheetScaffold));
+      final Rect row = tester.getRect(find.byKey(const Key('shaper_preset_3G')));
+      // 相对弹层左边缘：档位行必须内缩统一的 20px（onlyHorizontalXL）。
+      expect(row.left - sheet.left,
+          closeTo(AppSpacing.onlyHorizontalXL.left, 1.0),
+          reason: '档位行必须遵守统一弹层的 20px 左右内边距');
+      expect(tester.takeException(), isNull);
+    });
+
     testWidgets('弱网模拟：合法自定义值下发并展示快照', (tester) async {
       _useTallSurface(tester);
       final facade = _FakeSettingsFacade();
       await tester.pumpWidget(_host(ProxySettingsPage(facade: facade)));
       await _settleLoad(tester);
 
-      await tester.enterText(find.byKey(const Key('shaper_rate_field')), '200000');
+      // 输入框单位为 kbps：200 kbps 应换算为 200000 bps 存储。
+      await tester.enterText(find.byKey(const Key('shaper_rate_field')), '200');
       await tester.enterText(find.byKey(const Key('shaper_delay_field')), '300');
       await tester.enterText(find.byKey(const Key('shaper_jitter_field')), '40');
       await tester.enterText(find.byKey(const Key('shaper_loss_field')), '5');
@@ -676,7 +797,8 @@ void main() {
 
       const List<Map<String, String>> cases = <Map<String, String>>[
         <String, String>{'rate': ''},
-        <String, String>{'rate': '999'},
+        // 单位为 kbps：2_000_000 kbps → 2e9 bps 超过上限，非法。
+        <String, String>{'rate': '2000000'},
         <String, String>{'delay': '60001'},
         <String, String>{'loss': '101'},
       ];
@@ -696,6 +818,231 @@ void main() {
         );
         expect(find.textContaining('请填写有效数值'), findsOneWidget);
       }
+    });
+
+    testWidgets('弱网档位弹层：短内容自适应高度（远低于 80% 限高、无底部空白）',
+        (tester) async {
+      // 高视口是刻意选择：若内容 Column 贪婪填满骨架 80% 限高，弹层会撑到
+      // 0.8 * 2400 = 1920px，下方留出大段空白。
+      tester.view.physicalSize = const Size(1000, 2400);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(() {
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+      final facade = _FakeSettingsFacade();
+      await tester.pumpWidget(_host(ProxySettingsPage(facade: facade)));
+      await _settleLoad(tester);
+
+      // 2400 高视口下弱网档位选择器可能位于折叠下方，先滚入视口再点击。
+      await tester.ensureVisible(find.byKey(const Key('shaper_preset_selector')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('shaper_preset_selector')));
+      await tester.pumpAndSettle();
+
+      const double screenHeight = 2400;
+      final sheet = tester.getRect(find.byType(AppSheetScaffold));
+      // 内容自适应：短内容弹层应远低于 80% 限高（用 50% 做宽松上界）。
+      expect(sheet.height, lessThan(0.5 * screenHeight),
+          reason: '短内容弹层必须内容自适应，不得撑到 80% 限高');
+      // 无底部空白：最后一个档位行底边与操作区之间不得出现多余间距。
+      final lastRow =
+          tester.getRect(find.byKey(const Key('shaper_preset_custom')));
+      final actions = tester.getRect(find.widgetWithText(TextButton, '取消'));
+      expect(actions.top - lastRow.bottom, lessThan(40.0),
+          reason: '档位行与操作区之间不得出现空白');
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('弱网限速：bps↔kbps 边界换算（加载 25000 → 显示 25；输入 25 → 保存 25000）',
+        (tester) async {
+      _useTallSurface(tester);
+      const dir = ProxyShaperDirection(
+        rateBps: 25000,
+        burstBytes: 32768,
+        delayMs: 10,
+        jitterMs: 0,
+      );
+      final facade = _FakeSettingsFacade()
+        ..shaperSnapshot = const ProxyShaperSnapshot(
+          config: ProxyShaperConfig(enabled: true, uplink: dir, downlink: dir),
+          effective:
+              ProxyShaperConfig(enabled: true, uplink: dir, downlink: dir),
+          applied: true,
+          engineRunning: true,
+        );
+      await tester.pumpWidget(_host(ProxySettingsPage(facade: facade)));
+      await _settleLoad(tester);
+
+      // 该配置不属于任何预设 → 自定义档，输入框按 kbps 回填（25000 → 25）。
+      final rateField = tester.widget<TextField>(
+        find.byKey(const Key('shaper_rate_field')),
+      );
+      expect(rateField.controller?.text, '25');
+
+      // 输入 25 kbps + 应用 → 存储 bps 25000。
+      await tester.enterText(find.byKey(const Key('shaper_rate_field')), '25');
+      await tester.tap(find.byKey(const Key('shaper_apply_button')));
+      await tester.pumpAndSettle();
+      expect(facade.lastShaperSaved?.uplink.rateBps, 25000);
+
+      // 越界 kbps（2_000_000 → 2e9 bps > 上限）报错且不下发。
+      final calls = facade.shaperSaveCalls;
+      await tester.enterText(
+        find.byKey(const Key('shaper_rate_field')),
+        '2000000',
+      );
+      await tester.tap(find.byKey(const Key('shaper_apply_button')));
+      await tester.pumpAndSettle();
+      expect(facade.shaperSaveCalls, calls, reason: '越界 kbps 不得下发');
+      expect(find.textContaining('请填写有效数值'), findsOneWidget);
+    });
+
+    // ==================== 并发加载 / 渐进渲染 ====================
+
+    testWidgets('并发加载：所有独立小节在任何完成前均已启动（Future.wait）', (tester) async {
+      _useTallSurface(tester);
+      final facade = _FakeSettingsFacade()
+        ..settingsGate = Completer<void>()
+        ..engineGate = Completer<void>()
+        ..engineSettingsGate = Completer<void>()
+        ..lanConfigGate = Completer<void>()
+        ..lanStatusGate = Completer<void>()
+        ..shaperGate = Completer<void>();
+      await tester.pumpWidget(_host(ProxySettingsPage(facade: facade)));
+      await tester.pump();
+
+      expect(
+        facade.startedLoads.toSet(),
+        containsAll(<String>[
+          'settings',
+          'engine',
+          'engineSettings',
+          'lanConfig',
+          'lanStatus',
+          'shaper',
+        ]),
+        reason: '所有独立小节必须在任一完成前已启动（证明并发而非顺序 await）',
+      );
+
+      // 只放行 config：其余小节仍未完成 → 对应骨架仍在（未被顺序阻塞）。
+      facade.settingsGate!.complete();
+      await tester.pump();
+      expect(find.byKey(const Key('section_skeleton_lan')), findsOneWidget);
+      expect(find.byKey(const Key('section_skeleton_engine')), findsOneWidget);
+
+      for (final gate in <Completer<void>>[
+        facade.engineGate!,
+        facade.engineSettingsGate!,
+        facade.lanConfigGate!,
+        facade.lanStatusGate!,
+        facade.shaperGate!,
+      ]) {
+        gate.complete();
+      }
+      await tester.pumpAndSettle();
+
+      expect(find.text('应用分流'), findsOneWidget);
+      expect(find.byKey(const Key('section_skeleton_lan')), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('渐进渲染：外壳先出、未就绪小节显示骨架、就绪后替换为真实卡片', (tester) async {
+      _useTallSurface(tester);
+      final facade = _FakeSettingsFacade()..shaperGate = Completer<void>();
+      await tester.pumpWidget(_host(ProxySettingsPage(facade: facade)));
+      await tester.pump();
+      await tester.pump();
+
+      // 其余小节已就绪 → 真实内容；页面不再是全页 spinner。
+      expect(find.byKey(const Key('split_mode_selector')), findsOneWidget);
+      expect(find.byKey(const Key('lan_port_field')), findsOneWidget);
+      expect(find.byKey(const Key('engine_stack_selector')), findsOneWidget);
+      // 弱网小节仍在加载 → 骨架占位、真实卡片缺席；区域表头始终挂载（滚动锚点）。
+      expect(find.byKey(const Key('section_skeleton_shaper')), findsOneWidget);
+      expect(find.byKey(const Key('shaper_enabled_switch')), findsNothing);
+      expect(find.text('弱网模拟'), findsOneWidget);
+
+      facade.shaperGate!.complete();
+      await tester.pump();
+      await tester.pump();
+
+      expect(find.byKey(const Key('section_skeleton_shaper')), findsNothing);
+      expect(find.byKey(const Key('shaper_enabled_switch')), findsOneWidget);
+      // 表头 + 卡片标题。
+      expect(find.text('弱网模拟'), findsNWidgets(2));
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('配置读取失败 → 错误态与「重试」（不显示骨架）', (tester) async {
+      _useTallSurface(tester);
+      final facade = _FakeSettingsFacade()..failSettings = true;
+      await tester.pumpWidget(_host(ProxySettingsPage(facade: facade)));
+      await _settleLoad(tester);
+
+      expect(find.text('设置不可用'), findsOneWidget);
+      expect(find.text('重试'), findsOneWidget);
+      expect(find.byKey(const Key('section_skeleton_lan')), findsNothing);
+      expect(find.text('应用分流'), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
+    // ==================== 应用选择弹层 ====================
+
+    testWidgets('应用选择弹层内容遵守统一左右内边距（20px）', (tester) async {
+      _useTallSurface(tester);
+      final facade = _FakeSettingsFacade();
+      await tester.pumpWidget(_host(ProxySettingsPage(facade: facade)));
+      await _settleLoad(tester);
+
+      await tester.tap(find.text('仅选中'));
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('split_apps_button')));
+      await tester.pumpAndSettle();
+
+      final Rect sheet = tester.getRect(find.byType(AppSheetScaffold));
+      final Rect search = tester.getRect(find.byKey(const Key('split_app_search')));
+      // 相对断言（宽视口下弹层居中，绝对 left 不可靠）。
+      expect(search.left - sheet.left,
+          closeTo(AppSpacing.onlyHorizontalXL.left, 1.0),
+          reason: '搜索框必须遵守统一弹层的 20px 左内边距');
+      expect(sheet.right - search.right,
+          closeTo(AppSpacing.onlyHorizontalXL.right, 1.0),
+          reason: '搜索框必须遵守统一弹层的 20px 右内边距');
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('应用选择：已选置顶、组内按名称排序（无查询与查询均生效）', (tester) async {
+      _useTallSurface(tester);
+      final facade = _FakeSettingsFacade(
+        apps: const <InstalledAppOption>[
+          InstalledAppOption(packageName: 'com.apple', name: 'Apple'),
+          InstalledAppOption(packageName: 'com.banana', name: 'Banana'),
+          InstalledAppOption(packageName: 'com.cherry', name: 'Cherry'),
+        ],
+        config: const ProxySettingsConfig(
+          splitMode: ProxySplitTunnelMode.allow,
+          selectedApps: <String>{'com.apple', 'com.cherry'},
+        ),
+      );
+      await tester.pumpWidget(_host(ProxySettingsPage(facade: facade)));
+      await _settleLoad(tester);
+      await tester.tap(find.byKey(const Key('split_apps_button')));
+      await tester.pumpAndSettle();
+
+      double rowTop(String pkg) =>
+          tester.getTopLeft(find.byKey(Key('split_app_$pkg'))).dy;
+
+      // 已选组（apple、cherry）置顶且按名排序；未选的 banana 在后。
+      expect(rowTop('com.apple'), lessThan(rowTop('com.cherry')));
+      expect(rowTop('com.cherry'), lessThan(rowTop('com.banana')));
+
+      // 查询匹配全部（'com' 命中所有包名）后顺序保持。
+      await tester.enterText(find.byKey(const Key('split_app_search')), 'com');
+      await tester.pump();
+      expect(rowTop('com.apple'), lessThan(rowTop('com.cherry')));
+      expect(rowTop('com.cherry'), lessThan(rowTop('com.banana')));
+      expect(tester.takeException(), isNull);
     });
   });
 

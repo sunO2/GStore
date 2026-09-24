@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 import 'package:gstore/compent/entrance_list.dart';
 import 'package:gstore/core/design/design_tokens.dart';
 import 'package:gstore/core/icons/Icons.dart';
@@ -139,7 +140,7 @@ class _ProxyProfilesPageState extends State<ProxyProfilesPage> {
       if (!mounted || token != _loadToken) return;
       setState(() {
         _loading = false;
-        _loadError = '订阅列表加载失败：$error';
+        _loadError = '网络组列表加载失败：$error';
       });
     }
   }
@@ -177,7 +178,7 @@ class _ProxyProfilesPageState extends State<ProxyProfilesPage> {
       debugPrint('订阅切换同步引擎失败（profileId=${profile.id}）：$error');
     }
     if (!mounted) return;
-    AppDialogs.showSuccess('已设为当前订阅「${profile.name}」');
+    AppDialogs.showSuccess('已设为当前网络组「${profile.name}」');
   }
 
   // ==================== 事件 ====================
@@ -253,8 +254,8 @@ class _ProxyProfilesPageState extends State<ProxyProfilesPage> {
       }
       await _facade.profileCreate(ProfileCreateRequest(profile: imported));
       if (!mounted) return;
-      final name = imported.name.isEmpty ? '订阅' : imported.name;
-      AppDialogs.showSuccess('已导入「$name」，共 ${imported.nodeCount} 个节点');
+      final name = imported.name.isEmpty ? '网络组' : imported.name;
+      AppDialogs.showSuccess('已导入「$name」，共 ${imported.nodeCount} 个端子');
       await _load();
     } on ProxyModuleException catch (error) {
       await _showErrorSheet('导入失败', error.message);
@@ -278,7 +279,7 @@ class _ProxyProfilesPageState extends State<ProxyProfilesPage> {
           '已更新 ${result.count} 个，${result.failedCount} 个失败',
         );
       } else {
-        AppDialogs.showSuccess('已更新 ${result.count} 个订阅');
+        AppDialogs.showSuccess('已更新 ${result.count} 个网络组');
       }
       await _load();
     } on ProxyModuleException catch (error) {
@@ -316,13 +317,13 @@ class _ProxyProfilesPageState extends State<ProxyProfilesPage> {
 
   Future<void> _deleteProfile(ProfileSummary profile) async {
     final scheme = Theme.of(context).colorScheme;
-    final name = profile.name.isEmpty ? '该订阅' : '「${profile.name}」';
+    final name = profile.name.isEmpty ? '该网络组' : '「${profile.name}」';
     final confirmed = await AppDialogs.showConfirmSheet(
-      title: '删除订阅',
+      title: '删除网络组',
       message: '确定删除 $name 吗？删除后无法恢复。',
       confirmText: '删除',
       isDangerous: true,
-      icon: const Icon(Icons.delete_outline),
+      icon: const Icon(TablerIcons.trash),
       iconColor: scheme.error,
     );
     if (confirmed != true || !mounted) return;
@@ -346,7 +347,7 @@ class _ProxyProfilesPageState extends State<ProxyProfilesPage> {
     await AppDialogs.showAlertSheet(
       title: title,
       message: message.isEmpty ? '未知错误' : message,
-      icon: const Icon(Icons.error_outline),
+      icon: const Icon(TablerIcons.alert_circle),
       iconColor: scheme.error,
     );
   }
@@ -372,7 +373,7 @@ class _ProxyProfilesPageState extends State<ProxyProfilesPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('订阅与配置'),
+        title: const Text('网络组与配置'),
         actions: _buildActions(context),
       ),
       body: _buildBody(context),
@@ -390,13 +391,13 @@ class _ProxyProfilesPageState extends State<ProxyProfilesPage> {
     }
     return <Widget>[
       IconButton(
-        tooltip: '导入订阅',
-        icon: const Icon(Icons.add),
+        tooltip: '导入网络组',
+        icon: const Icon(TablerIcons.plus),
         onPressed: _openImportSheet,
       ),
       IconButton(
         tooltip: '全部更新',
-        icon: const Icon(Icons.refresh),
+        icon: const Icon(TablerIcons.refresh),
         onPressed: _profiles.isEmpty ? null : _refreshAll,
       ),
     ];
@@ -452,12 +453,12 @@ class _ProxyProfilesPageState extends State<ProxyProfilesPage> {
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(
-              Icons.extension_off_outlined,
+              TablerIcons.puzzle_off,
               size: AppTypography.iconXXXL,
               color: scheme.onSurfaceVariant,
             ),
             const SizedBox(height: AppSpacing.md),
-            Text('订阅列表不可用', style: theme.textTheme.titleMedium),
+            Text('网络组列表不可用', style: theme.textTheme.titleMedium),
             const SizedBox(height: AppSpacing.sm),
             Text(
               message,
@@ -487,15 +488,15 @@ class _ProxyProfilesPageState extends State<ProxyProfilesPage> {
           mainAxisSize: MainAxisSize.min,
           children: [
             ColoredAliIcon(
-              icon: Icons.link,
+              icon: TablerIcons.link,
               size: AppTypography.iconXXXL,
               color: scheme.onSurfaceVariant,
             ),
             const SizedBox(height: AppSpacing.md),
-            Text('还没有订阅', style: theme.textTheme.titleMedium),
+            Text('还没有网络组', style: theme.textTheme.titleMedium),
             const SizedBox(height: AppSpacing.sm),
             Text(
-              '通过 URL、文本、分享链接或本地文件导入订阅配置',
+              '通过 URL、文本、分享链接或本地文件导入网络组配置',
               textAlign: TextAlign.center,
               style: theme.textTheme.bodyMedium?.copyWith(
                 color: scheme.onSurfaceVariant,
@@ -504,8 +505,8 @@ class _ProxyProfilesPageState extends State<ProxyProfilesPage> {
             const SizedBox(height: AppSpacing.lg),
             FilledButton.icon(
               onPressed: _openImportSheet,
-              icon: const Icon(Icons.add),
-              label: const Text('导入订阅'),
+              icon: const Icon(TablerIcons.plus),
+              label: const Text('导入网络组'),
             ),
           ],
         ),
@@ -529,13 +530,13 @@ class _ProxyProfilesPageState extends State<ProxyProfilesPage> {
           Row(
             children: [
               Icon(
-                Icons.warning_amber_outlined,
+                TablerIcons.alert_triangle,
                 size: AppTypography.iconMD,
                 color: scheme.onErrorContainer,
               ),
               const SizedBox(width: AppSpacing.sm),
               Text(
-                '有 ${_warnings.length} 条订阅读取警告',
+                '有 ${_warnings.length} 条网络组读取警告',
                 style: theme.textTheme.labelMedium?.copyWith(
                   color: scheme.onErrorContainer,
                   fontWeight: AppTypography.weightMedium,
@@ -612,7 +613,7 @@ class _ProfileCard extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   ColoredAliIcon(
-                    icon: Icons.link,
+                    icon: TablerIcons.link,
                     size: AppTypography.iconXL,
                     color: selected ? scheme.onPrimaryContainer : scheme.primary,
                   ),
@@ -622,7 +623,7 @@ class _ProfileCard extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          profile.name.isEmpty ? '未命名订阅' : profile.name,
+                          profile.name.isEmpty ? '未命名网络组' : profile.name,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: theme.textTheme.titleMedium?.copyWith(
@@ -651,12 +652,12 @@ class _ProfileCard extends StatelessWidget {
                   else
                     IconButton(
                       tooltip: '更新',
-                      icon: const Icon(Icons.refresh),
+                      icon: const Icon(TablerIcons.refresh),
                       onPressed: onRefresh,
                     ),
                   IconButton(
                     tooltip: '删除',
-                    icon: const Icon(Icons.delete_outline),
+                    icon: const Icon(TablerIcons.trash),
                     onPressed: onDelete,
                   ),
                 ],
@@ -666,7 +667,7 @@ class _ProfileCard extends StatelessWidget {
                 spacing: AppSpacing.sm,
                 runSpacing: AppSpacing.xs,
                 children: [
-                  _Tag(text: '节点 ${profile.nodeCount}'),
+                  _Tag(text: '端子 ${profile.nodeCount}'),
                   if (profile.groupCount > 0)
                     _Tag(text: '分组 ${profile.groupCount}'),
                   _Tag(
@@ -676,18 +677,18 @@ class _ProfileCard extends StatelessWidget {
               ),
               const SizedBox(height: AppSpacing.sm),
               _InfoRow(
-                icon: Icons.data_usage_outlined,
+                icon: TablerIcons.activity,
                 text: _trafficText(profile.userinfo),
               ),
               const SizedBox(height: AppSpacing.xs),
               _InfoRow(
-                icon: Icons.event_outlined,
+                icon: TablerIcons.calendar_event,
                 text: _expiryText(profile.userinfo),
                 color: _isExpired(profile.userinfo) ? scheme.error : null,
               ),
               const SizedBox(height: AppSpacing.xs),
               _InfoRow(
-                icon: Icons.update_outlined,
+                icon: TablerIcons.refresh_dot,
                 text: _updatedText(profile),
               ),
               if (failed && refreshError.isNotEmpty) ...[
@@ -801,15 +802,15 @@ class _ImportSheetState extends State<_ImportSheet> {
   }
 
   String get _label => switch (_mode) {
-        ProxyImportMode.url => '订阅 URL',
-        ProxyImportMode.text => '订阅内容',
+        ProxyImportMode.url => '网络组 URL',
+        ProxyImportMode.text => '网络组内容',
         ProxyImportMode.link => '分享链接',
         ProxyImportMode.file => '本地文件',
       };
 
   String get _hint => switch (_mode) {
         ProxyImportMode.url => 'https://example.com/sub',
-        ProxyImportMode.text => '粘贴 Clash / base64 / 节点列表内容',
+        ProxyImportMode.text => '粘贴 Clash / base64 / 端子列表内容',
         ProxyImportMode.link => 'ss:// / vmess:// / trojan:// …',
         ProxyImportMode.file => '',
       };
@@ -838,7 +839,7 @@ class _ImportSheetState extends State<_ImportSheet> {
   void _submit() {
     final value = _controller.text.trim();
     if (value.isEmpty) {
-      AppDialogs.showError('请输入订阅内容');
+      AppDialogs.showError('请输入网络组内容');
       return;
     }
     Navigator.of(context).pop(_ImportRequest(_mode, value));
@@ -848,8 +849,8 @@ class _ImportSheetState extends State<_ImportSheet> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return AppSheetScaffold(
-      title: '导入订阅',
-      subtitle: '解析与存储全部在 Rust 模块内完成，应用内不解析订阅',
+      title: '导入网络组',
+      subtitle: '解析与存储全部在 Rust 模块内完成，应用内不解析网络组',
       contentPadding: AppSpacing.onlyHorizontalXL,
       content: Column(
         mainAxisSize: MainAxisSize.min,
@@ -860,17 +861,17 @@ class _ImportSheetState extends State<_ImportSheet> {
               ButtonSegment<ProxyImportMode>(
                 value: ProxyImportMode.url,
                 label: Text('URL'),
-                icon: Icon(Icons.link),
+                icon: Icon(TablerIcons.link),
               ),
               ButtonSegment<ProxyImportMode>(
                 value: ProxyImportMode.text,
                 label: Text('文本'),
-                icon: Icon(Icons.article_outlined),
+                icon: Icon(TablerIcons.file_text),
               ),
               ButtonSegment<ProxyImportMode>(
                 value: ProxyImportMode.link,
                 label: Text('分享链接'),
-                icon: Icon(Icons.share_outlined),
+                icon: Icon(TablerIcons.share),
               ),
             ],
             selected: <ProxyImportMode>{
@@ -894,7 +895,7 @@ class _ImportSheetState extends State<_ImportSheet> {
             alignment: Alignment.centerLeft,
             child: TextButton.icon(
               onPressed: _readClipboard,
-              icon: const Icon(Icons.content_paste_go, size: 18),
+              icon: const Icon(TablerIcons.file_import, size: 18),
               label: const Text('读取剪贴板中的分享链接'),
             ),
           ),
@@ -921,7 +922,7 @@ class _ImportSheetState extends State<_ImportSheet> {
                         Text('从文件导入', style: theme.textTheme.bodyLarge),
                         const SizedBox(height: AppSpacing.xs),
                         Text(
-                          '选择本地 Clash / 订阅文本文件',
+                          '选择本地 Clash / 网络组文本文件',
                           style: theme.textTheme.bodySmall?.copyWith(
                             color: theme.colorScheme.onSurfaceVariant,
                           ),
@@ -930,7 +931,7 @@ class _ImportSheetState extends State<_ImportSheet> {
                     ),
                   ),
                   Icon(
-                    Icons.chevron_right,
+                    TablerIcons.chevron_right,
                     color: theme.colorScheme.onSurfaceVariant,
                   ),
                 ],
@@ -960,7 +961,7 @@ String _sourceText(ProfileSummary profile) {
   final url = profile.sourceUrl ?? '';
   switch (origin) {
     case 'url':
-      return url.isEmpty ? 'URL 订阅' : url;
+      return url.isEmpty ? 'URL 网络组' : url;
     case 'text':
       return '粘贴文本导入';
     case 'link':

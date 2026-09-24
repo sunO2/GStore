@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gstore/core/design/app_components.dart';
+import 'package:gstore/core/design/app_sheet.dart';
+import 'package:gstore/core/design/app_spacing.dart';
 import 'package:gstore/core/rust/proxy/ProxyContract.dart';
 import 'package:gstore/core/rust/proxy/ProxyModule.dart';
 import 'package:gstore/page/proxy/proxy_active_node_store.dart';
@@ -19,6 +21,8 @@ import 'package:gstore/page/proxy/proxy_profiles_page.dart';
 import 'package:gstore/page/proxy/proxy_routing_mode_store.dart';
 import 'package:gstore/page/proxy/proxy_run_mode_store.dart';
 import 'package:gstore/page/proxy/proxy_settings_facade.dart';
+import 'package:gstore/page/proxy/proxy_settings_page.dart';
+import 'package:gstore/page/proxy/proxy_shaper_presets.dart';
 import 'package:gstore/page/proxy/proxy_stats_page.dart';
 import 'package:gstore/page/proxy/proxy_traffic_chart.dart';
 
@@ -190,6 +194,12 @@ class _FakeProxyFacade implements ProxyHomeFacade {
 
   @override
   Future<NodeListResult> nodeList() async => nodeListResult;
+
+  /// `net.shaper.get` 返回值；默认关闭（无徽标）。测试可注入启用快照。
+  ProxyShaperSnapshot shaperSnapshot = const ProxyShaperSnapshot();
+
+  @override
+  Future<ProxyShaperSnapshot> loadShaperConfig() async => shaperSnapshot;
 
   @override
   Future<String> vpnConfigJson() async => '{}';
@@ -378,6 +388,12 @@ class _FakeGeoProvisioner extends ProxyGeoProvisioner {
   Completer<bool>? waitReadyGate;
   bool waitReadyResult = true;
 
+  /// `lastFailureReason` 返回值（模拟 Rust 上报的 geo 资产失败原因）。
+  String? failureReason;
+
+  /// `lastFailureReason` 调用次数。
+  int lastFailureReasonCalls = 0;
+
   @override
   Future<bool> kickoff({String? profileId, bool force = false}) async {
     kickoffCalls++;
@@ -392,6 +408,12 @@ class _FakeGeoProvisioner extends ProxyGeoProvisioner {
     final gate = waitReadyGate;
     if (gate != null) return gate.future;
     return waitReadyResult;
+  }
+
+  @override
+  Future<String?> lastFailureReason() async {
+    lastFailureReasonCalls++;
+    return failureReason;
   }
 }
 
@@ -441,7 +463,7 @@ void main() {
     expect(find.text('连接'), findsOneWidget);
     expect(find.text('当前配置'), findsOneWidget);
     expect(find.text('未选择'), findsOneWidget);
-    expect(find.text('当前节点'), findsOneWidget);
+    expect(find.text('网络端子'), findsOneWidget);
     expect(find.text('自动'), findsOneWidget);
     expect(find.text('请求域名 / IP'), findsOneWidget);
     expect(find.text('流量统计'), findsOneWidget);
@@ -784,8 +806,8 @@ void main() {
     await tester.pumpWidget(_wrap(ProxyHomePage(facade: facade)));
     await _flush(tester);
 
-    expect(find.text('代理模块不可用'), findsOneWidget);
-    expect(find.text('代理模块未安装'), findsOneWidget);
+  expect(find.text('调试模块不可用'), findsOneWidget);
+  expect(find.text('调试模块未安装'), findsOneWidget);
     expect(find.text('重试'), findsOneWidget);
     expect(tester.takeException(), isNull);
 
@@ -831,6 +853,28 @@ void main() {
     await facade.controller.close();
   });
 
+  testWidgets('mode picker：运行模式行遵守统一左右内边距（20px）', (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade();
+    await tester.pumpWidget(_wrap(ProxyHomePage(facade: facade)));
+    await _flush(tester);
+
+    await tester.tap(find.byKey(const Key('proxy-mode-tile')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    final Rect row =
+        tester.getRect(find.byKey(const Key('proxy-mode-option-vpn')));
+    final Rect sheet = tester.getRect(find.byType(AppSheetScaffold));
+    // 相对弹层左边缘：运行模式行必须内缩统一的 20px（onlyHorizontalXL）。
+    expect(row.left - sheet.left,
+        closeTo(AppSpacing.onlyHorizontalXL.left, 1.0),
+        reason: '运行模式行必须遵守统一弹层的 20px 左右内边距');
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
   testWidgets('live switch：运行中从 VPN 切到局域网代理 -> core.set_mode + 停服务',
       (tester) async {
     final facade = _FakeProxyFacade()..lanEnabled = true;
@@ -856,7 +900,7 @@ void main() {
     expect(facade.coreSetModeCalls, 1);
     expect(facade.lastSetMode, 'lanProxy');
     expect(consent.stopCalls, 1, reason: 'lanProxy must stop the VpnService');
-    expect(find.text('局域网代理（仅共享给其它设备）'), findsOneWidget);
+    expect(find.text('局域网共享（仅共享给其它设备）'), findsOneWidget);
     expect(find.byKey(const Key('proxy-lan-disabled-warning')), findsNothing);
 
     // 切换到当前模式是 no-op（不再次请求）。
@@ -918,10 +962,10 @@ void main() {
     expect(find.byKey(const Key('proxy-nodes-tile')), findsOneWidget);
     expect(find.byKey(const Key('proxy-mode-tile')), findsOneWidget);
     expect(find.byKey(const Key('proxy-settings-tile')), findsOneWidget);
-    expect(find.text('订阅'), findsOneWidget);
-    expect(find.text('节点选择'), findsOneWidget);
-    expect(find.text('代理模式'), findsOneWidget);
-    expect(find.text('代理设置'), findsOneWidget);
+    expect(find.text('网络组'), findsOneWidget);
+    expect(find.text('网络选择'), findsOneWidget);
+    expect(find.text('网络模式'), findsOneWidget);
+    expect(find.text('调试设置'), findsOneWidget);
 
     final double subscribeY =
         tester.getTopLeft(find.byKey(const Key('proxy-subscribe-tile'))).dy;
@@ -953,7 +997,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
 
     expect(find.byType(ProxyProfilesPage), findsOneWidget);
-    expect(find.text('订阅与配置'), findsOneWidget);
+    expect(find.text('网络组与配置'), findsOneWidget);
     expect(tester.takeException(), isNull);
 
     await facade.controller.close();
@@ -973,7 +1017,7 @@ void main() {
 
     // VPN 模式（默认目标）下代理设置也必须出现。
     expect(find.byKey(const Key('proxy-settings-tile')), findsOneWidget);
-    expect(find.text('代理设置'), findsOneWidget);
+    expect(find.text('调试设置'), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('proxy-settings-tile')));
     await tester.pump();
@@ -995,7 +1039,7 @@ void main() {
 
     expect(find.byType(ProxyNodesPage), findsOneWidget);
     // 无选中订阅：节点页渲染其设计好的空态，而不是崩溃。
-    expect(find.text('暂无节点'), findsOneWidget);
+    expect(find.text('暂无端子'), findsOneWidget);
     expect(tester.takeException(), isNull);
 
     await facade.controller.close();
@@ -1051,7 +1095,7 @@ void main() {
 
     // 只有 1 个订阅：自动选中并持久化。
     expect(store.value, 'p1');
-    expect(find.text('订阅一（5 节点）'), findsOneWidget);
+    expect(find.text('订阅一（5 个端子）'), findsOneWidget);
     expect(find.text('未选择'), findsNothing);
     expect(tester.takeException(), isNull);
 
@@ -1221,8 +1265,8 @@ void main() {
     );
     await _flush(tester);
 
-    expect(find.text('未选择订阅'), findsOneWidget);
-    expect(find.text('未选择节点'), findsOneWidget);
+  expect(find.text('未选择网络组'), findsOneWidget);
+  expect(find.text('未选择端子'), findsOneWidget);
     expect(tester.takeException(), isNull);
 
     await facade.controller.close();
@@ -1422,7 +1466,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
 
     expect(store.value, ProxyMode.lanProxy);
-    expect(find.text('局域网代理（仅共享给其它设备）'), findsOneWidget);
+    expect(find.text('局域网共享（仅共享给其它设备）'), findsOneWidget);
 
     // 离开再进入代理页（重建 State）：从持久化恢复用户选择。
     await tester.pumpWidget(_wrap(const SizedBox()));
@@ -1432,7 +1476,7 @@ void main() {
     );
     await _flush(tester);
 
-    expect(find.text('局域网代理（仅共享给其它设备）'), findsOneWidget);
+    expect(find.text('局域网共享（仅共享给其它设备）'), findsOneWidget);
     expect(find.text('VPN 模式（全设备）'), findsNothing);
     expect(tester.takeException(), isNull);
 
@@ -1451,7 +1495,7 @@ void main() {
       )),
     );
     await _flush(tester);
-    expect(find.text('局域网代理（仅共享给其它设备）'), findsOneWidget);
+    expect(find.text('局域网共享（仅共享给其它设备）'), findsOneWidget);
 
     facade.emit(const ProxyStateEvent(
       state: ProxyConnState.running,
@@ -1465,7 +1509,7 @@ void main() {
 
     expect(find.text('未连接'), findsOneWidget);
     expect(store.value, ProxyMode.lanProxy);
-    expect(find.text('局域网代理（仅共享给其它设备）'), findsOneWidget);
+    expect(find.text('局域网共享（仅共享给其它设备）'), findsOneWidget);
     expect(tester.takeException(), isNull);
 
     await facade.controller.close();
@@ -1479,7 +1523,7 @@ void main() {
       _wrap(ProxyHomePage(facade: facade, runModeStore: store)),
     );
     await _flush(tester);
-    expect(find.text('局域网代理（仅共享给其它设备）'), findsOneWidget);
+    expect(find.text('局域网共享（仅共享给其它设备）'), findsOneWidget);
 
     // 引擎事件上报 vpn：用户的 lanProxy 选择不被覆盖。
     facade.emit(const ProxyStateEvent(
@@ -1492,7 +1536,7 @@ void main() {
     ));
     await _flush(tester);
 
-    expect(find.text('局域网代理（仅共享给其它设备）'), findsOneWidget);
+    expect(find.text('局域网共享（仅共享给其它设备）'), findsOneWidget);
     expect(store.value, ProxyMode.lanProxy);
     expect(tester.takeException(), isNull);
 
@@ -1766,6 +1810,71 @@ void main() {
     await facade.controller.close();
   });
 
+  testWidgets('geo：失败时横幅显示 Rust 上报的具体原因', (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade();
+    final geo = _FakeGeoProvisioner()
+      ..failureReason = 'checksum mismatch: country.mmdb';
+    final gate = Completer<bool>();
+    geo.waitReadyGate = gate;
+    await tester.pumpWidget(
+      _wrap(ProxyHomePage(
+        facade: facade,
+        vpnConsent: _FakeVpnConsent(),
+        geoProvisionerFactory: _FakeGeoProvisionerFactory(geo),
+      )),
+    );
+    await _flush(tester);
+    for (var i = 0; i < 5; i++) {
+      await tester.pump();
+    }
+
+    // waitReady 失败 → 横幅泛化标题 + best-effort 取到的具体原因。
+    gate.complete(false);
+    await _flush(tester);
+    await tester.pump();
+
+    expect(find.text('CN 直连规则数据准备失败'), findsOneWidget);
+    expect(find.byKey(const Key('proxy-geo-error')), findsOneWidget);
+    expect(
+      find.textContaining('checksum mismatch: country.mmdb'),
+      findsOneWidget,
+    );
+    expect(geo.lastFailureReasonCalls, greaterThanOrEqualTo(1));
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('geo：失败但取不到原因时回落泛化文案', (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade();
+    final geo = _FakeGeoProvisioner(); // failureReason 为空 → 泛化文案
+    final gate = Completer<bool>();
+    geo.waitReadyGate = gate;
+    await tester.pumpWidget(
+      _wrap(ProxyHomePage(
+        facade: facade,
+        vpnConsent: _FakeVpnConsent(),
+        geoProvisionerFactory: _FakeGeoProvisionerFactory(geo),
+      )),
+    );
+    await _flush(tester);
+    for (var i = 0; i < 5; i++) {
+      await tester.pump();
+    }
+
+    gate.complete(false);
+    await _flush(tester);
+    await tester.pump();
+
+    expect(find.byKey(const Key('proxy-geo-error')), findsNothing);
+    expect(find.text('规则模式依赖的 geo 数据下载失败，可重试。'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
   testWidgets('geo：非规则模式（direct）不 kickoff', (tester) async {
     _useTallViewport(tester);
     final facade = _FakeProxyFacade();
@@ -1902,6 +2011,99 @@ void main() {
     ));
     await _flush(tester);
     expect(painter().up, isEmpty);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('弱网模拟徽标：启用时状态卡右侧显示「弱网模拟 · 档位」', (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade()
+      ..shaperSnapshot = ProxyShaperSnapshot(
+        config: presetById(ProxyShaperPresetIds.g3)!.config,
+      );
+    await tester.pumpWidget(_wrap(ProxyHomePage(facade: facade)));
+    await _flush(tester);
+
+    expect(find.byKey(const Key('proxy-shaper-badge')), findsOneWidget);
+    expect(find.text('弱网模拟 · 3G'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('弱网模拟徽标：未知配置回落「自定义」', (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade()
+      ..shaperSnapshot = const ProxyShaperSnapshot(
+        config: ProxyShaperConfig(enabled: true),
+      );
+    await tester.pumpWidget(_wrap(ProxyHomePage(facade: facade)));
+    await _flush(tester);
+
+    expect(find.text('弱网模拟 · 自定义'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('弱网模拟徽标：关闭时不显示', (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade();
+    await tester.pumpWidget(_wrap(ProxyHomePage(facade: facade)));
+    await _flush(tester);
+
+    expect(find.byKey(const Key('proxy-shaper-badge')), findsNothing);
+    expect(find.textContaining('弱网模拟'), findsNothing);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('弱网模拟徽标：点击进入设置页（并请求滚动到弱网小节）', (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade()
+      ..shaperSnapshot = ProxyShaperSnapshot(
+        config: presetById(ProxyShaperPresetIds.g3)!.config,
+      );
+    await tester.pumpWidget(_wrap(ProxyHomePage(facade: facade)));
+    await _flush(tester);
+
+    expect(find.byType(ProxySettingsPage), findsNothing);
+    await tester.tap(find.byKey(const Key('proxy-shaper-badge-tap')));
+    await tester.pump();
+    // 路由过渡（300ms）+ 设置页初始 load 的若干微任务。
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.byType(ProxySettingsPage), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await facade.controller.close();
+  });
+
+  testWidgets('卡片顺序：网站连通性在流量统计之下、模块信息之上', (tester) async {
+    _useTallViewport(tester);
+    final facade = _FakeProxyFacade();
+    await tester.pumpWidget(_wrap(ProxyHomePage(facade: facade)));
+    await _flush(tester);
+
+    final double trafficY = tester.getTopLeft(find.text('流量统计')).dy;
+    final double probeY =
+        tester.getTopLeft(find.byKey(const Key('proxy-site-probe-card'))).dy;
+    final double versionY = tester.getTopLeft(find.text('模块信息')).dy;
+
+    expect(
+      probeY,
+      greaterThan(trafficY),
+      reason: '网站连通性应在流量统计卡片之下',
+    );
+    expect(
+      probeY,
+      lessThan(versionY),
+      reason: '网站连通性应在模块信息卡片之上',
+    );
     expect(tester.takeException(), isNull);
 
     await facade.controller.close();
