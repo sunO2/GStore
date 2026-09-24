@@ -45,6 +45,7 @@ mod dns;
 mod lan;
 mod limits;
 mod logging;
+mod mitm;
 mod mode;
 mod nodes;
 mod profile;
