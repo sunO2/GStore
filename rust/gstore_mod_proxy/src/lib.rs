@@ -40,6 +40,7 @@ use gstore_contract::error::{ModuleError, StatusCode};
 mod config;
 mod conn;
 mod capture;
+mod captures;
 mod controller;
 mod dispatch;
 mod dns;
@@ -813,6 +814,7 @@ pub(crate) fn start_engine(
     protect::install(host_protect_fd());
     stats::configure(&inst.data_dir);
     requests::configure(&inst.data_dir);
+    captures::configure(&inst.data_dir);
     let req = config::parse_request(payload)?;
     let generated = config::try_generate(&inst.data_dir, &inst.cache_dir, &req)?;
     let Some(generated) = generated else {

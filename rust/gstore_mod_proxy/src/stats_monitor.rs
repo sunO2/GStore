@@ -60,6 +60,7 @@ pub(crate) fn drive(instance_id: u64, now: u64) {
         .map(|inst| crate::current_mode(&inst))
         .unwrap_or(crate::ProxyMode::Off);
     crate::requests::tick(instance_id, mode, now);
+    crate::captures::maybe_persist(now);
 }
 
 /// Start the engine ticker if one is not already live. Idempotent: a second

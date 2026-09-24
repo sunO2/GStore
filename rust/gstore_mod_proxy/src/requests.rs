@@ -346,6 +346,9 @@ pub(crate) struct RequestStore {
     /// fires, without growing memory with connection churn.
     pub(crate) dirty: HashSet<u64>,
     pub(crate) dirty_overflow: u64,
+    /// External (capture) changes folded into the same `proxy.request` signal.
+    /// Bumped by [`crate::captures`]; the payload stays record-free.
+    pub(crate) external_dirty: u64,
     /// `now_ms` of the last emitted `proxy.request` dirty signal.
     pub(crate) last_emit_ms: u64,
     /// Monotonic sequence number of the dirty signal (`seq`).
@@ -393,6 +396,7 @@ impl RequestStore {
             reentered: 0,
             dirty: HashSet::new(),
             dirty_overflow: 0,
+            external_dirty: 0,
             last_emit_ms: 0,
             emit_seq: 0,
             db: None,
@@ -448,6 +452,7 @@ impl RequestStore {
         self.stale_live.clear();
         self.dirty.clear();
         self.dirty_overflow = 0;
+        self.external_dirty = 0;
         self.window_start_ms = 0;
         self.pending.clear();
         self.pending_overflow = false;
@@ -745,6 +750,12 @@ impl RequestStore {
         self.enqueue_pending(id);
     }
 
+    /// Fold an external producer's change (the capture store, Todo 13) into the
+    /// same `proxy.request` signal without minting a new event type.
+    fn mark_external_dirty(&mut self) {
+        self.external_dirty = self.external_dirty.saturating_add(1);
+    }
+
     /// Queue `id`'s current state for the next durable flush. No-op without a
     /// configured sink; over the queue cap the overflow flag makes the next
     /// flush persist the whole ring instead.
@@ -821,6 +832,7 @@ impl RequestStore {
         self.stale_live.clear();
         self.dirty.clear();
         self.dirty_overflow = 0;
+        self.external_dirty = 0;
         self.uid_pending.clear();
         self.uid_unprocessed.clear();
         self.uid_early.clear();
@@ -841,12 +853,13 @@ impl RequestStore {
     /// atomic with the check, so a suppressed tick leaves the dirty set intact
     /// for the next one.
     fn emit_pending(&mut self, now_ms: u64) -> Option<serde_json::Value> {
-        let count = self.dirty.len() as u64 + self.dirty_overflow;
+        let count = self.dirty.len() as u64 + self.dirty_overflow + self.external_dirty;
         if count == 0 || now_ms.saturating_sub(self.last_emit_ms) < MIN_EMIT_INTERVAL_MS {
             return None;
         }
         self.dirty.clear();
         self.dirty_overflow = 0;
+        self.external_dirty = 0;
         self.last_emit_ms = now_ms;
         self.emit_seq += 1;
         Some(serde_json::json!({
@@ -1259,6 +1272,12 @@ pub(crate) fn clear() {
     with_store(|st| st.clear());
 }
 
+/// Bump the shared `proxy.request` dirty counter on behalf of an external
+/// producer (the capture store, Todo 13). The only emitter stays `tick`.
+pub(crate) fn mark_external_dirty() {
+    with_store(|st| st.mark_external_dirty());
+}
+
 /// The configured durable-sink directory (or `None` while memory-only). A plain
 /// process-global so every engine path (VPN `start_engine`, LAN reconcile)
 /// observes the same config, independent of the per-thread store in tests.
@@ -1356,6 +1375,11 @@ pub(crate) fn next_record_id_for_tests() -> u64 {
 #[cfg(test)]
 pub(crate) fn next_cursor_for_tests() -> u64 {
     with_store(|st| st.next_cursor)
+}
+
+#[cfg(test)]
+pub(crate) fn external_dirty_for_tests() -> u64 {
+    with_store(|st| st.external_dirty)
 }
 
 #[cfg(test)]
