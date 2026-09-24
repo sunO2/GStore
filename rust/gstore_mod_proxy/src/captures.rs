@@ -30,9 +30,8 @@
 #![allow(dead_code)] // T13 store: consumed by the dispatch contract (Todo 12).
 
 use std::collections::{HashMap, VecDeque};
-#[cfg(not(test))]
-use std::sync::{Mutex, OnceLock};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 #[cfg(test)]
 use std::cell::RefCell;
 
@@ -1287,23 +1286,76 @@ struct RuleFile {
     rules: Vec<CaptureRule>,
 }
 
-/// Bounded, persisted rewrite-rule table. Storage keeps insertion order; reads
-/// sort by `(createdAtMs asc, id asc)`.
-struct RuleStore {
-    rules: Vec<CaptureRule>,
+/// One rule in the published table. `hitCount` is an atomic so a dataplane hit
+/// is counted without ever taking the writer mutex; the wire `hitCount` is
+/// materialized on read/persist.
+struct RuleEntry {
+    rule: CaptureRule,
+    hits: AtomicU64,
+}
+
+impl RuleEntry {
+    fn new(mut rule: CaptureRule, hits: u64) -> Arc<Self> {
+        rule.hit_count = 0;
+        Arc::new(Self {
+            rule,
+            hits: AtomicU64::new(hits),
+        })
+    }
+
+    fn materialize(&self) -> CaptureRule {
+        let mut rule = self.rule.clone();
+        rule.hit_count = self.hits.load(Ordering::Relaxed);
+        rule
+    }
+}
+
+/// Authoritative, writer-only table + persistence state. The dataplane never
+/// touches it.
+struct RuleData {
+    entries: Vec<Arc<RuleEntry>>,
     /// Next minted id sequence, persisted across restarts.
     next_seq: u64,
     /// Configured data dir; empty = memory-only.
     dir: String,
 }
 
+/// Process-global rewrite-rule table. The dataplane reads an immutable
+/// [`RuleStore::snapshot`] (its `RwLock` is held only long enough to clone the
+/// `Arc`) and never holds any lock across a dial; writers mutate
+/// [`RuleStore::inner`] and publish the new snapshot atomically.
+struct RuleStore {
+    inner: Mutex<RuleData>,
+    published: RwLock<Arc<Vec<Arc<RuleEntry>>>>,
+}
+
 impl RuleStore {
     fn fresh() -> Self {
-        Self { rules: Vec::new(), next_seq: 1, dir: String::new() }
+        Self {
+            inner: Mutex::new(RuleData {
+                entries: Vec::new(),
+                next_seq: 1,
+                dir: String::new(),
+            }),
+            published: RwLock::new(Arc::new(Vec::new())),
+        }
+    }
+
+    /// Current immutable read view: the lock is held only for an `Arc` clone, so
+    /// a hit never waits on a writer's disk I/O.
+    fn snapshot(&self) -> Arc<Vec<Arc<RuleEntry>>> {
+        let guard = self.published.read().unwrap_or_else(|e| e.into_inner());
+        Arc::clone(&guard)
+    }
+
+    fn publish(&self, entries: &[Arc<RuleEntry>]) {
+        let mut guard = self.published.write().unwrap_or_else(|e| e.into_inner());
+        *guard = Arc::new(entries.to_vec());
     }
 
     fn get_rules(&self) -> Vec<CaptureRule> {
-        let mut out = self.rules.clone();
+        let mut out: Vec<CaptureRule> =
+            self.snapshot().iter().map(|e| e.materialize()).collect();
         out.sort_by(|a, b| {
             a.created_at_ms
                 .cmp(&b.created_at_ms)
@@ -1312,10 +1364,18 @@ impl RuleStore {
         out
     }
 
+    /// Match the first enabled rule and count the hit without a writer lock.
+    fn match_rule(&self, method: &str, url: &str) -> Option<CaptureRule> {
+        let snapshot = self.snapshot();
+        let entry = snapshot.iter().find(|e| rule_matches(&e.rule, method, url))?;
+        entry.hits.fetch_add(1, Ordering::Relaxed);
+        Some(entry.materialize())
+    }
+
     /// Upsert a rule. A present `id` updates in place, preserving `createdAtMs`
     /// and `hitCount`; an absent `id` mints a new one. Rejects invalid input
     /// (422) and the table/entry size caps (507) **before** mutating.
-    fn upsert(&mut self, payload: &[u8]) -> Result<CaptureRule, ModuleError> {
+    fn upsert(&self, payload: &[u8]) -> Result<CaptureRule, ModuleError> {
         let req: CaptureRuleSetRequest = serde_json::from_slice(payload).map_err(|e| {
             rule_invalid(format!("capture.rules.set payload must be a JSON object: {e}"))
         })?;
@@ -1337,25 +1397,26 @@ impl RuleStore {
             .filter(|m| !m.is_empty())
             .map(str::to_string);
 
+        let mut data = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let existing = req
             .id
             .as_ref()
-            .and_then(|id| self.rules.iter().position(|r| &r.id == id));
-        let (id, created_at_ms, hit_count) = match existing {
+            .and_then(|id| data.entries.iter().position(|e| &e.rule.id == id));
+        let (id, created_at_ms, hits) = match existing {
             Some(i) => (
-                self.rules[i].id.clone(),
-                self.rules[i].created_at_ms,
-                self.rules[i].hit_count,
+                data.entries[i].rule.id.clone(),
+                data.entries[i].rule.created_at_ms,
+                data.entries[i].hits.load(Ordering::Relaxed),
             ),
             None => {
-                if self.rules.len() >= CAPTURE_RULE_CAP {
+                if data.entries.len() >= CAPTURE_RULE_CAP {
                     return Err(rule_limit(format!(
                         "capture rule table is full (cap {CAPTURE_RULE_CAP})"
                     )));
                 }
                 let id = match req.id.clone() {
                     Some(id) => id,
-                    None => self.mint_id(),
+                    None => data.mint_id(),
                 };
                 (id, crate::now_ms(), 0)
             }
@@ -1371,7 +1432,7 @@ impl RuleStore {
             resp_body: req.body,
             delay_ms: req.delay_ms.unwrap_or(0),
             created_at_ms,
-            hit_count,
+            hit_count: hits,
         };
         let size = serde_json::to_vec(&rule).map(|v| v.len()).unwrap_or(0);
         if size > CAPTURE_RULE_ENTRY_MAX_BYTES {
@@ -1379,39 +1440,47 @@ impl RuleStore {
                 "capture rule is {size} B > cap {CAPTURE_RULE_ENTRY_MAX_BYTES} B"
             )));
         }
+        let entry = RuleEntry::new(rule.clone(), hits);
         match existing {
-            Some(i) => self.rules[i] = rule.clone(),
-            None => self.rules.push(rule.clone()),
+            Some(i) => data.entries[i] = entry,
+            None => data.entries.push(entry),
         }
-        self.persist();
+        data.persist();
+        self.publish(&data.entries);
         Ok(rule)
     }
 
     /// Remove by id. Idempotent: `false` when the id is unknown. Persists only
     /// when something was actually removed.
-    fn remove(&mut self, payload: &[u8]) -> Result<bool, ModuleError> {
+    fn remove(&self, payload: &[u8]) -> Result<bool, ModuleError> {
         let req: CaptureRuleRemoveRequest = serde_json::from_slice(payload).map_err(|e| {
             rule_invalid(format!("capture.rules.remove payload must be a JSON object: {e}"))
         })?;
-        let Some(i) = self.rules.iter().position(|r| r.id == req.id) else {
+        let mut data = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(i) = data.entries.iter().position(|e| e.rule.id == req.id) else {
             return Ok(false);
         };
-        self.rules.remove(i);
-        self.persist();
+        data.entries.remove(i);
+        data.persist();
+        self.publish(&data.entries);
         Ok(true)
     }
+}
 
+impl RuleData {
     fn mint_id(&mut self) -> String {
         loop {
             let id = format!("r{}", self.next_seq);
             self.next_seq += 1;
-            if !self.rules.iter().any(|r| r.id == id) {
+            if !self.entries.iter().any(|e| e.rule.id == id) {
                 return id;
             }
         }
     }
 
     /// Atomic JSON write (`tmp` + rename) so a reader never sees a partial file.
+    /// Runs under `inner` only — never under `published` — so a slow disk write
+    /// can never stall a dataplane hit.
     fn persist(&self) {
         if self.dir.is_empty() {
             return;
@@ -1420,7 +1489,7 @@ impl RuleStore {
         let file = RuleFile {
             schema_version: RULE_SCHEMA_VERSION,
             next_seq: self.next_seq,
-            rules: self.rules.clone(),
+            rules: self.entries.iter().map(|e| e.materialize()).collect(),
         };
         let Ok(bytes) = serde_json::to_vec(&file) else { return };
         let tmp = path.with_extension("json.tmp");
@@ -1430,27 +1499,70 @@ impl RuleStore {
     }
 }
 
-/// Load `capture_rules.json` (bounded + id-sequence-safe), falling back to an
-/// empty table on ANY failure so a corrupt store never bricks module creation.
+/// Load `capture_rules.json` (bounded + id-sequence-safe). An absent file is a
+/// normal first run; a corrupt/unreadable one is **skipped with a warn** so a
+/// damaged store never bricks module creation and never panics.
 fn load_rule_store(dir: &str) -> RuleStore {
-    let mut st = RuleStore::fresh();
+    let store = RuleStore::fresh();
     let dir = dir.trim();
     if dir.is_empty() {
-        return st;
+        return store;
     }
-    st.dir = dir.to_string();
     let path = std::path::Path::new(dir).join(CAPTURE_RULES_FILE);
-    let Ok(bytes) = std::fs::read(&path) else { return st };
-    let Ok(file) = serde_json::from_slice::<RuleFile>(&bytes) else { return st };
-    st.rules = file.rules.into_iter().take(CAPTURE_RULE_CAP).collect();
-    let max_seq = st
-        .rules
-        .iter()
-        .filter_map(|r| r.id.strip_prefix('r')?.parse::<u64>().ok())
-        .max()
-        .unwrap_or(0);
-    st.next_seq = file.next_seq.max(max_seq + 1).max(1);
-    st
+    let file = match std::fs::read(&path) {
+        Ok(bytes) => match serde_json::from_slice::<RuleFile>(&bytes) {
+            Ok(file) => Some(file),
+            Err(e) => {
+                crate::log_message(
+                    2,
+                    &format!("proxy.captures: {path:?} corrupt, skipping rules: {e}"),
+                );
+                None
+            }
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            crate::log_message(
+                2,
+                &format!("proxy.captures: {path:?} unreadable, skipping rules: {e}"),
+            );
+            None
+        }
+    };
+    let (rules, next_seq) = match file {
+        Some(file) => {
+            let total = file.rules.len();
+            let rules: Vec<CaptureRule> = file.rules.into_iter().take(CAPTURE_RULE_CAP).collect();
+            if total > CAPTURE_RULE_CAP {
+                crate::log_message(
+                    2,
+                    &format!(
+                        "proxy.captures: {path:?} has {total} rules > cap {CAPTURE_RULE_CAP}, truncated"
+                    ),
+                );
+            }
+            let max_seq = rules
+                .iter()
+                .filter_map(|r| r.id.strip_prefix('r')?.parse::<u64>().ok())
+                .max()
+                .unwrap_or(0);
+            (rules, file.next_seq.max(max_seq + 1).max(1))
+        }
+        None => (Vec::new(), 1),
+    };
+    let mut data = store.inner.lock().unwrap_or_else(|e| e.into_inner());
+    data.entries = rules
+        .into_iter()
+        .map(|r| {
+            let hits = r.hit_count;
+            RuleEntry::new(r, hits)
+        })
+        .collect();
+    data.next_seq = next_seq;
+    data.dir = dir.to_string();
+    store.publish(&data.entries);
+    drop(data);
+    store
 }
 
 fn rule_invalid(message: impl Into<String>) -> ModuleError {
@@ -1491,47 +1603,44 @@ fn validate_rule_url(url: &str) -> Result<(), ModuleError> {
     Ok(())
 }
 
-#[cfg(not(test))]
-static RULE_STORE: OnceLock<Mutex<RuleStore>> = OnceLock::new();
+static RULE_STORE: OnceLock<RuleStore> = OnceLock::new();
 
-#[cfg(not(test))]
-fn with_rules<R>(f: impl FnOnce(&mut RuleStore) -> R) -> R {
-    let mut guard = RULE_STORE
-        .get_or_init(|| Mutex::new(RuleStore::fresh()))
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    f(&mut guard)
-}
-
-#[cfg(test)]
-thread_local! {
-    static TEST_RULE_STORE: RefCell<RuleStore> = RefCell::new(RuleStore::fresh());
-}
-
-#[cfg(test)]
-fn with_rules<R>(f: impl FnOnce(&mut RuleStore) -> R) -> R {
-    TEST_RULE_STORE.with(|s| f(&mut s.borrow_mut()))
+/// The one process-global rule table. Shipping and tests share it, so the
+/// dataplane read path is exercised exactly as it runs in production.
+fn rule_store() -> &'static RuleStore {
+    RULE_STORE.get_or_init(RuleStore::fresh)
 }
 
 /// Install the persisted rule table on module create (`lib.rs::create_impl`).
 pub(crate) fn configure_rules(data_dir: &str) {
     let loaded = load_rule_store(data_dir);
-    with_rules(|st| *st = loaded);
+    let loaded_data = std::mem::replace(
+        &mut *loaded.inner.lock().unwrap_or_else(|e| e.into_inner()),
+        RuleData {
+            entries: Vec::new(),
+            next_seq: 1,
+            dir: String::new(),
+        },
+    );
+    let store = rule_store();
+    let mut data = store.inner.lock().unwrap_or_else(|e| e.into_inner());
+    *data = loaded_data;
+    store.publish(&data.entries);
 }
 
 /// The whole rule table, ordered `(createdAtMs asc, id asc)`.
 pub(crate) fn rules_get() -> Vec<CaptureRule> {
-    with_rules(|st| st.get_rules())
+    rule_store().get_rules()
 }
 
 /// `capture.rules.set`: validate + upsert + persist.
 pub(crate) fn rules_set(payload: &[u8]) -> Result<CaptureRule, ModuleError> {
-    with_rules(|st| st.upsert(payload))
+    rule_store().upsert(payload)
 }
 
 /// `capture.rules.remove`: delete by id (idempotent) + persist.
 pub(crate) fn rules_remove(payload: &[u8]) -> Result<bool, ModuleError> {
-    with_rules(|st| st.remove(payload))
+    rule_store().remove(payload)
 }
 
 /// `capture.rules.get` arm.
@@ -1584,21 +1693,47 @@ pub(crate) fn rule_matches(rule: &CaptureRule, method: &str, url: &str) -> bool 
 /// `hitCount` is bumped in memory only: the dataplane must not write
 /// `capture_rules.json` on every request (a later `set` persists it).
 pub(crate) fn match_enabled_rule(method: &str, url: &str) -> Option<CaptureRule> {
-    with_rules(|st| {
-        let idx = st.rules.iter().position(|r| rule_matches(r, method, url))?;
-        st.rules[idx].hit_count += 1;
-        Some(st.rules[idx].clone())
-    })
+    rule_store().match_rule(method, url)
 }
 
 #[cfg(test)]
 pub(crate) fn rules_reset_for_tests() {
-    with_rules(|st| *st = RuleStore::fresh());
+    let store = rule_store();
+    let mut data = store.inner.lock().unwrap_or_else(|e| e.into_inner());
+    *data = RuleData {
+        entries: Vec::new(),
+        next_seq: 1,
+        dir: String::new(),
+    };
+    store.publish(&data.entries);
 }
 
 #[cfg(test)]
 pub(crate) fn rules_count_for_tests() -> usize {
-    with_rules(|st| st.rules.len())
+    rule_store().snapshot().len()
+}
+
+#[cfg(test)]
+pub(crate) fn rules_seed_for_tests(rules: Vec<CaptureRule>) {
+    let store = rule_store();
+    let mut data = store.inner.lock().unwrap_or_else(|e| e.into_inner());
+    data.entries = rules
+        .into_iter()
+        .map(|r| {
+            let hits = r.hit_count;
+            RuleEntry::new(r, hits)
+        })
+        .collect();
+    store.publish(&data.entries);
+}
+
+/// Serialises tests that mutate the process-global rule table. T16 promotes the
+/// rule store to a process-global (the dataplane read path runs on tokio worker
+/// threads), so rule tests must not interleave their set/remove cycles.
+#[cfg(test)]
+pub(crate) fn rules_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// The directory the capture sink is configured against (test proof).
@@ -2113,6 +2248,7 @@ mod tests {
     /// remove (idempotent) round trip, asserted field-by-field.
     #[test]
     fn capture_rules_upsert_remove_round_trip() {
+        let _g = rules_test_guard();
         rules_reset_for_tests();
         let created = set_rule(
             r#"{"enabled":true,"method":"get","url":"https://api.example.com/p/1","kind":"replace","statusCode":201,"headers":"content-type: application/json","body":"{\"ok\":true}"}"#,
@@ -2167,6 +2303,7 @@ mod tests {
     /// Failure QA: a bad url/kind/id is the frozen 422 and never stores a rule.
     #[test]
     fn capture_rules_invalid_url_kind_id_are_422() {
+        let _g = rules_test_guard();
         rules_reset_for_tests();
         for payload in [
             r#"{"enabled":true,"url":"not-a-url","kind":"replace"}"#,
@@ -2187,6 +2324,7 @@ mod tests {
     /// cap is still allowed.
     #[test]
     fn capture_rules_cap_enforced_is_507() {
+        let _g = rules_test_guard();
         rules_reset_for_tests();
         for i in 0..CAPTURE_RULE_CAP {
             set_rule(&format!(
@@ -2222,6 +2360,7 @@ mod tests {
     /// Adversarial: one oversized rule is the frozen 507, not an unbounded store.
     #[test]
     fn capture_rules_oversize_entry_is_507() {
+        let _g = rules_test_guard();
         rules_reset_for_tests();
         let body = "x".repeat(CAPTURE_RULE_ENTRY_MAX_BYTES);
         let err = set_rule(&format!(
@@ -2237,15 +2376,14 @@ mod tests {
     /// independent of insertion order.
     #[test]
     fn capture_rules_get_orders_by_created_at_then_id() {
+        let _g = rules_test_guard();
         rules_reset_for_tests();
-        with_rules(|st| {
-            st.rules = vec![
-                rule_fixture("rB", 200),
-                rule_fixture("rC", 100),
-                rule_fixture("rA", 200),
-                rule_fixture("rD", 100),
-            ];
-        });
+        rules_seed_for_tests(vec![
+            rule_fixture("rB", 200),
+            rule_fixture("rC", 100),
+            rule_fixture("rA", 200),
+            rule_fixture("rD", 100),
+        ]);
         let ids: Vec<String> = rules_get().into_iter().map(|r| r.id).collect();
         assert_eq!(ids, vec!["rC", "rD", "rA", "rB"]);
     }
@@ -2254,6 +2392,7 @@ mod tests {
     /// a restart; a post-restart minted id does not collide with restored ones.
     #[test]
     fn capture_rules_persist_across_restart() {
+        let _g = rules_test_guard();
         rules_reset_for_tests();
         let dir = unique_temp_dir("rules-restart");
         let dir_s = dir.to_str().unwrap().to_string();
@@ -2284,6 +2423,192 @@ mod tests {
         .unwrap();
         assert_ne!(r1.id, r2.id, "minted ids never collide across restarts");
         assert_eq!(rules_get().len(), 2);
+
+        rules_reset_for_tests();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ==================== Todo 16: hot-apply / bounds / persistence ====================
+
+    /// T16 hot-apply (unit seam): a runtime `set` is visible to the very next
+    /// matching hit, including an in-place update of the same id — no restart.
+    #[test]
+    fn capture_rules_hot_set_takes_effect_on_next_hit() {
+        let _g = rules_test_guard();
+        rules_reset_for_tests();
+        assert!(
+            match_enabled_rule("GET", "https://hot.test/a").is_none(),
+            "no rule yet -> no match"
+        );
+
+        let created = set_rule(
+            r#"{"enabled":true,"url":"https://hot.test/a","kind":"local","statusCode":418,"body":"hot"}"#,
+        )
+        .unwrap();
+        let hit = match_enabled_rule("GET", "https://hot.test/a")
+            .expect("the next hit must see the freshly set rule");
+        assert_eq!(hit.id, created.id);
+        assert_eq!(hit.kind, RULE_KIND_LOCAL);
+        assert_eq!(hit.status_code, Some(418));
+        assert_eq!(hit.resp_body.as_deref(), Some("hot"));
+
+        set_rule(&format!(
+            r#"{{"id":"{}","enabled":true,"url":"https://hot.test/a","kind":"replace","statusCode":201}}"#,
+            created.id
+        ))
+        .unwrap();
+        let updated = match_enabled_rule("GET", "https://hot.test/a")
+            .expect("an upsert must be visible to the next hit");
+        assert_eq!(updated.kind, RULE_KIND_REPLACE);
+        assert_eq!(updated.status_code, Some(201));
+    }
+
+    /// T16 hot-apply: `remove` invalidates on the very next hit.
+    #[test]
+    fn capture_rules_hot_remove_invalidates_immediately() {
+        let _g = rules_test_guard();
+        rules_reset_for_tests();
+        let created = set_rule(
+            r#"{"enabled":true,"url":"https://hot.test/rm","kind":"local","statusCode":200,"body":"x"}"#,
+        )
+        .unwrap();
+        assert!(match_enabled_rule("GET", "https://hot.test/rm").is_some());
+
+        let removed = rules_remove(format!(r#"{{"id":"{}"}}"#, created.id).as_bytes()).unwrap();
+        assert!(removed, "remove reports the deletion");
+        assert!(
+            match_enabled_rule("GET", "https://hot.test/rm").is_none(),
+            "the very next hit after remove must not match"
+        );
+    }
+
+    /// T16 concurrency: `set`/`remove` racing live hits must not deadlock, and
+    /// the hit path must keep observing rule changes (no lost read).
+    #[test]
+    fn capture_rules_hot_concurrent_set_and_hit_no_deadlock() {
+        use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+        let _g = rules_test_guard();
+        rules_reset_for_tests();
+        let seed = |status: u16| {
+            format!(
+                r#"{{"id":"hot-race","enabled":true,"url":"https://hot.test/race","kind":"local","statusCode":{status},"body":"r"}}"#
+            )
+        };
+        set_rule(&seed(200)).unwrap();
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let hits = Arc::new(AtomicU64::new(0));
+        let mut hitters = Vec::new();
+        for _ in 0..4 {
+            let stop = Arc::clone(&stop);
+            let hits = Arc::clone(&hits);
+            hitters.push(std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    if match_enabled_rule("GET", "https://hot.test/race").is_some() {
+                        hits.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }));
+        }
+
+        for i in 0..200 {
+            let _ = set_rule(&seed(200 + (i % 5) as u16));
+            if i % 3 == 0 {
+                let _ = rules_remove(br#"{"id":"hot-race"}"#);
+                let _ = set_rule(&seed(200));
+            }
+        }
+        stop.store(true, Ordering::SeqCst);
+        for t in hitters {
+            t.join().expect("a hit thread must not deadlock");
+        }
+        assert!(
+            hits.load(Ordering::Relaxed) > 0,
+            "live hits must have observed the rule table"
+        );
+        assert_eq!(rules_count_for_tests(), 1, "the racing cycles stay bounded");
+    }
+
+    /// T16 persistence: the table survives a cold restart and `capture.rules.get`
+    /// stays ordered `(createdAtMs asc, id asc)` across reads and a reload.
+    #[test]
+    fn capture_rules_hot_restart_restores_stable_order() {
+        let _g = rules_test_guard();
+        rules_reset_for_tests();
+        let dir = unique_temp_dir("rules-hot-restart");
+        let dir_s = dir.to_str().unwrap().to_string();
+        configure_rules(&dir_s);
+
+        let a = set_rule(
+            r#"{"enabled":true,"url":"https://hot.test/persist-a","kind":"local","body":"a"}"#,
+        )
+        .unwrap();
+        let b = set_rule(
+            r#"{"enabled":true,"url":"https://hot.test/persist-b","kind":"local","body":"b"}"#,
+        )
+        .unwrap();
+
+        rules_reset_for_tests();
+        configure_rules(&dir_s);
+
+        let restored = rules_get();
+        assert_eq!(restored.len(), 2, "the rule table is restored after restart");
+        let ids: Vec<&str> = restored.iter().map(|r| r.id.as_str()).collect();
+        assert!(ids.contains(&a.id.as_str()) && ids.contains(&b.id.as_str()));
+
+        let keyed: Vec<(u64, String)> =
+            restored.iter().map(|r| (r.created_at_ms, r.id.clone())).collect();
+        let mut sorted = keyed.clone();
+        sorted.sort();
+        assert_eq!(keyed, sorted, "get returns createdAtMs asc, id asc");
+
+        let again: Vec<String> = rules_get().into_iter().map(|r| r.id).collect();
+        assert_eq!(
+            again,
+            ids.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+            "ordering is stable across reads"
+        );
+
+        rules_reset_for_tests();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T16 failure QA: a corrupt `capture_rules.json` is skipped with a warn and
+    /// never panics; a later good `set` replaces it.
+    #[test]
+    fn capture_rules_hot_corrupt_file_skips_with_warn() {
+        let _g = rules_test_guard();
+        rules_reset_for_tests();
+        let dir = unique_temp_dir("rules-hot-corrupt");
+        let dir_s = dir.to_str().unwrap().to_string();
+        std::fs::write(
+            std::path::Path::new(&dir_s).join(CAPTURE_RULES_FILE),
+            b"{ not json",
+        )
+        .unwrap();
+
+        crate::logging::reset_for_tests();
+        configure_rules(&dir_s);
+        assert!(
+            rules_get().is_empty(),
+            "a corrupt file degrades to an empty table"
+        );
+
+        let snap = crate::logging::snapshot(0, crate::logging::RING_CAPACITY, None);
+        assert!(
+            snap.records
+                .iter()
+                .any(|r| r.level == "warn" && r.message.contains("capture_rules")),
+            "a corrupt rules file must warn, not silently skip: {:?}",
+            snap.records
+                .iter()
+                .map(|r| (r.level.clone(), r.message.clone()))
+                .collect::<Vec<_>>()
+        );
+
+        set_rule(r#"{"enabled":true,"url":"https://hot.test/after-corrupt","kind":"local"}"#)
+            .unwrap();
+        assert_eq!(rules_get().len(), 1, "a good set recovers the store");
 
         rules_reset_for_tests();
         let _ = std::fs::remove_dir_all(&dir);

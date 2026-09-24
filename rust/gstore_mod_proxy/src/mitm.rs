@@ -3762,6 +3762,7 @@ mod mitm_http_tests {
 
     #[test]
     fn mitm_rewrite_matches_store_and_bumps_hit_count() {
+        let _g = crate::captures::rules_test_guard();
         crate::captures::rules_reset_for_tests();
         let rule = crate::captures::rules_set(
             br#"{"enabled":true,"method":"get","url":"https://hit.test/a","kind":"replace"}"#,
@@ -3797,6 +3798,119 @@ mod mitm_http_tests {
             crate::captures::match_enabled_rule("GET", "https://hit.test/a").is_none(),
             "a disabled rule never matches"
         );
+        crate::captures::rules_reset_for_tests();
+    }
+
+    /// One h1 client connection that stays open, so the hot-apply test can send
+    /// several requests over the *same* connection (no reconnect).
+    async fn client_h1_session(
+        ca: &CertificateAuthority,
+        addr: SocketAddr,
+        host: &str,
+    ) -> client_http1::SendRequest<Full<Bytes>> {
+        let tcp = TcpStream::connect(addr).await.unwrap();
+        let connector = TlsConnector::from(client_tls(ca, b"http/1.1"));
+        let tls = connector
+            .connect(ServerName::try_from(host.to_string()).unwrap(), tcp)
+            .await
+            .unwrap();
+        let mut builder = client_http1::Builder::new();
+        builder.max_buf_size(H1_MAX_BUF_SIZE);
+        let (sender, conn) = builder
+            .handshake::<_, Full<Bytes>>(TokioIo::new(tls))
+            .await
+            .unwrap();
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+        sender
+    }
+
+    async fn send_h1_on(
+        sender: &mut client_http1::SendRequest<Full<Bytes>>,
+        host: &str,
+        method: &str,
+        path: &str,
+    ) -> ClientOutcome {
+        let request = Request::builder()
+            .method(method)
+            .uri(path)
+            .header(HOST, host)
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        let response = sender.send_request(request).await.unwrap();
+        let status = response.status().as_u16();
+        let headers = response.headers().clone();
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec();
+        ClientOutcome {
+            status,
+            headers,
+            body,
+        }
+    }
+
+    /// T16 hot-apply (data plane): a runtime `capture.rules.set` / `remove` is
+    /// observed on the very next request over the SAME connection, through the
+    /// live `StoreRuleSource` — no engine restart and no reconnect.
+    #[test]
+    fn capture_rules_hot_engine_set_takes_effect_without_reconnect() {
+        let _g = crate::captures::rules_test_guard();
+        crate::captures::rules_reset_for_tests();
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let ca = temp_ca("hot-apply");
+            let host = "flow.test";
+            let observed = Arc::new(StdMutex::new(None));
+            let upstream = start_fixture(
+                Arc::clone(&ca),
+                host,
+                Fixture::H2 {
+                    status: 200,
+                    body: b"upstream".to_vec(),
+                    content_type: "text/plain",
+                    observed,
+                },
+            )
+            .await;
+            let (mut _rx, sink) = recording_sink();
+            let ctx = BridgeContext::new(host, "conn-hot", 0).with_sink(sink);
+            let addr = run_bridge(Arc::clone(&ca), host, upstream, b"h2", ctx).await;
+
+            let mut sender = client_h1_session(&ca, addr, host).await;
+            let before = send_h1_on(&mut sender, host, "GET", "/hot").await;
+            assert_eq!(before.status, 200, "no rule yet -> serviced upstream");
+            assert_eq!(before.body, b"upstream");
+
+            let rule = crate::captures::rules_set(
+                br#"{"enabled":true,"url":"https://flow.test/hot","kind":"local","statusCode":418,"body":"hot"}"#,
+            )
+            .unwrap();
+            let after = send_h1_on(&mut sender, host, "GET", "/hot").await;
+            assert_eq!(
+                after.status, 418,
+                "the very next hit must use the freshly set rule"
+            );
+            assert_eq!(after.body, b"hot");
+            let hit = crate::captures::rules_get()
+                .into_iter()
+                .find(|r| r.id == rule.id)
+                .unwrap();
+            assert_eq!(hit.hit_count, 1, "the hot hit was counted via the live snapshot");
+
+            crate::captures::rules_remove(format!(r#"{{"id":"{}"}}"#, rule.id).as_bytes()).unwrap();
+            let restored = send_h1_on(&mut sender, host, "GET", "/hot").await;
+            assert_eq!(
+                restored.status, 200,
+                "remove invalidates on the very next hit"
+            );
+            assert_eq!(restored.body, b"upstream");
+        });
         crate::captures::rules_reset_for_tests();
     }
 }

@@ -2139,6 +2139,9 @@ fn create_impl(config: *const u8, config_len: usize) -> Result<u64, c_int> {
     lan::configure(&ctx.data_dir, &ctx.cache_dir);
     shaper::configure(&ctx.data_dir);
     capture::configure(&ctx.data_dir);
+    // The rule store is process-global (T16); in-crate tests configure it
+    // explicitly so a parallel instance create cannot clobber a rule test.
+    #[cfg(not(test))]
     captures::configure_rules(&ctx.data_dir);
     let last_mode = mode::load_last_mode(&ctx.data_dir);
     let inst = Arc::new(ProxyInstance {
@@ -3221,6 +3224,7 @@ mod abi_tests {
     #[test]
     fn capture_rules_contract_dispatch() {
         let _g = ABI_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _rg = captures::rules_test_guard();
         let api = register_api();
         let call = api.call.unwrap();
         let destroy = api.destroy.unwrap();
