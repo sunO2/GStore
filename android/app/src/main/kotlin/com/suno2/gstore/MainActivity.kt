@@ -209,6 +209,53 @@ class MainActivity : FlutterActivity() {
                     // TUN fd 是否已交给 Rust 宿主：isRunning 不足以判断（它在 fd 安装
                     // 之前就为 true）。
                     "hasTunFd" -> result.success(ProxyVpnService.tunFdInstalled)
+                    // 抓包 MITM CA（todo 18）：仅新增方法，委托给 CaInstaller（todo 17）。
+                    // 返回值均为可序列化的结构化 Map（ok/code/installed/...）；证书字节
+                    // 绝不写入日志，异常一律转 result.error 不崩溃。
+                    "installUserCa" -> {
+                        val bytes = call.argument<ByteArray>("bytes")
+                        if (bytes == null || bytes.isEmpty()) {
+                            result.error("ARG", "bytes required", null)
+                            return@setMethodCallHandler
+                        }
+                        try {
+                            result.success(CaInstaller.installUserCa(this, bytes))
+                        } catch (e: Exception) {
+                            Log.w(TAG, "installUserCa 失败: ${e.message}")
+                            result.error("CA_INSTALL_USER", "用户证书安装失败: ${e.message}", null)
+                        }
+                    }
+                    "installSystemCa" -> {
+                        val pem = call.argument<String>("pem")
+                        if (pem.isNullOrEmpty()) {
+                            result.error("ARG", "pem required", null)
+                            return@setMethodCallHandler
+                        }
+                        try {
+                            result.success(CaInstaller.installSystemCa(pem))
+                        } catch (e: Exception) {
+                            Log.w(TAG, "installSystemCa 失败: ${e.message}")
+                            result.error("CA_INSTALL_SYSTEM", "系统证书安装失败: ${e.message}", null)
+                        }
+                    }
+                    "detectRoot" -> {
+                        try {
+                            result.success(CaInstaller.isRooted())
+                        } catch (e: Exception) {
+                            Log.w(TAG, "detectRoot 失败: ${e.message}")
+                            result.error("CA_DETECT_ROOT", "root 检测失败: ${e.message}", null)
+                        }
+                    }
+                    "systemCaInstalled" -> {
+                        // pem 可选：缺省用最近一次成功写入的文件名（CaInstaller 内部）。
+                        val pem = call.argument<String>("pem")
+                        try {
+                            result.success(CaInstaller.systemCaInstalled(pem?.encodeToByteArray()))
+                        } catch (e: Exception) {
+                            Log.w(TAG, "systemCaInstalled 失败: ${e.message}")
+                            result.error("CA_SYSTEM_STATUS", "系统证书状态检测失败: ${e.message}", null)
+                        }
+                    }
                     else -> result.notImplemented()
                 }
             }
