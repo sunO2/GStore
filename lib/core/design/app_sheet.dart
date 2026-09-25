@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import 'app_borders.dart';
@@ -208,8 +210,18 @@ class AppSheetScaffold extends StatelessWidget {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final media = MediaQuery.of(context);
-    // 限高：内容再长也不顶出屏幕，超出部分由内容区内部滚动消化
-    final maxHeight = media.size.height * maxHeightFactor;
+    // 限高：内容再长也不顶出屏幕，超出部分由内容区内部滚动消化。
+    final preferredHeight = media.size.height * maxHeightFactor;
+    // 键盘弹出 / 顶部安全区会压缩实际可用高度：限高不能超过
+    // height - viewInsets.bottom - padding.top，否则弹层被顶出屏幕、
+    // 底部操作区（SafeArea）被裁剪。viewInsets.bottom == 0（无键盘）时
+    // 可用高度通常大于比例限高，保持原有 maxHeightFactor 行为不变。
+    final availableHeight =
+        media.size.height - media.viewInsets.bottom - media.padding.top;
+    final maxHeight = math.max(
+      0.0,
+      availableHeight < preferredHeight ? availableHeight : preferredHeight,
+    );
 
     final hasHeader =
         title != null || subtitle != null || icon != null || headerTrailing != null;
