@@ -104,6 +104,10 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
   bool _sending = false;
   bool _dirty = false;
 
+  /// URL ⇄ 参数同步的重入保护：任一方向的同步过程中绝不再次触发同步，
+  /// 避免显示 URL 的程序化回写被误判为一次新提交而振荡。
+  bool _syncing = false;
+
   late final String _draftId;
 
   @override
@@ -111,8 +115,18 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
     super.initState();
     final request = widget.request;
     _draftId = request?.id ?? generateDebugId('req');
+    // 载入时**始终**解析 URL 查询：`request.query` 非空则以它为准合并（URL 独有
+    // 键保留、同名键以 query 为准）；否则采用解析出的行。显示 URL 始终为合并后的
+    // `path?query#fragment`。解析绝不 `Uri.parse`、绝不解析 `{{var}}`、绝不抛。
+    final parsed = parseUrlQuery(request?.url ?? '');
+    final storedQuery = request?.query ?? const <DebugQueryParam>[];
+    final initialParams = storedQuery.isEmpty
+        ? parsed.params
+        : mergeParams(parsed.params, storedQuery);
     _name = TextEditingController(text: request?.name ?? '');
-    _url = TextEditingController(text: request?.url ?? '');
+    _url = TextEditingController(
+      text: rebuildUrl(parsed.base, parsed.fragment, initialParams),
+    );
     _body = TextEditingController(text: request?.body ?? '');
     _method = request?.method ?? 'GET';
     if (!_httpMethods.contains(_method)) _method = 'GET';
@@ -134,7 +148,7 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
     ]) {
       _bindDirty(controller);
     }
-    for (final q in request?.query ?? const <DebugQueryParam>[]) {
+    for (final q in initialParams) {
       _params.add(_newRow(name: q.name, value: q.value, enabled: q.enabled));
     }
     for (final h in request?.headers ?? const <DebugHeader>[]) {
@@ -184,6 +198,73 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
 
   RequestDebugFacade get _facade => widget.facade;
 
+  // ==================== URL ⇄ 参数同步 ====================
+
+  /// 从参数行 compose 出 `DebugQueryParam`（仅非空名字），同步与保存共用。
+  List<DebugQueryParam> _currentParams() => _params
+      .where((p) => p.nameCtrl.text.trim().isNotEmpty)
+      .map((p) => DebugQueryParam(
+            name: p.nameCtrl.text.trim(),
+            value: p.valueCtrl.text,
+            enabled: p.enabled,
+          ))
+      .toList();
+
+  /// 用 [params] 重建参数行：按序复用已有行（原地改写 controller 文本），
+  /// 不足则新建，多余则释放。复用避免行 key 抖动与焦点丢失。
+  void _applyParamRows(List<DebugQueryParam> params) {
+    for (var i = 0; i < params.length; i++) {
+      final param = params[i];
+      if (i < _params.length) {
+        final row = _params[i];
+        row.nameCtrl.text = param.name;
+        row.valueCtrl.text = param.value;
+        row.enabled = param.enabled;
+      } else {
+        _params.add(
+          _newRow(name: param.name, value: param.value, enabled: param.enabled),
+        );
+      }
+    }
+    while (_params.length > params.length) {
+      _params.removeLast().dispose();
+    }
+  }
+
+  /// 参数 → URL（提交驱动）：把参数行重建为显示 URL，保留 path 与 `#fragment`。
+  ///
+  /// 由参数行的提交（行内 done / 弹层完成）与增删触发；**绝不**监听每次击键。
+  void _syncUrlFromParams() {
+    if (_syncing) return;
+    _syncing = true;
+    try {
+      final parsed = parseUrlQuery(_url.text);
+      _url.text = rebuildUrl(parsed.base, parsed.fragment, _currentParams());
+    } finally {
+      _syncing = false;
+    }
+  }
+
+  /// URL → 参数（提交驱动）：解析刚提交的 URL，把查询并入参数行。
+  ///
+  /// 最新 URL 输入对同名键优先（覆盖），URL 独有键追加，既有参数行独有键保留。
+  /// 解析绝不解析 `{{var}}`、绝不抛异常（畸形输入兜底为「无查询」）。
+  ///
+  /// T15 的「URL 提交即发送」应先调用本方法，再做发送。
+  void _syncParamsFromUrl() {
+    if (_syncing) return;
+    _syncing = true;
+    try {
+      final parsed = parseUrlQuery(_url.text);
+      final merged = mergeParams(_currentParams(), parsed.params);
+      _applyParamRows(merged);
+      _url.text = rebuildUrl(parsed.base, parsed.fragment, merged);
+    } finally {
+      _syncing = false;
+    }
+    if (mounted) setState(() => _dirty = true);
+  }
+
   // ==================== 草稿 ====================
 
   DebugAuth? _composeAuth() {
@@ -209,7 +290,9 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
   }
 
   DebugRequest _composeDraft() {
-    final url = _url.text.trim();
+    // 规范化持久化：显示 URL 的查询移入 `query[]`，`url` 只留 path + `#fragment`。
+    final parsed = parseUrlQuery(_url.text.trim());
+    final url = rebuildUrl(parsed.base, parsed.fragment, const <DebugQueryParam>[]);
     final rawName = _name.text.trim();
     return DebugRequest(
       id: _draftId,
@@ -224,14 +307,7 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
                 enabled: h.enabled,
               ))
           .toList(),
-      query: _params
-          .where((p) => p.nameCtrl.text.trim().isNotEmpty)
-          .map((p) => DebugQueryParam(
-                name: p.nameCtrl.text.trim(),
-                value: p.valueCtrl.text,
-                enabled: p.enabled,
-              ))
-          .toList(),
+      query: _currentParams(),
       body: _body.text,
       bodyKind: _bodyKind,
       auth: _composeAuth(),
@@ -634,6 +710,7 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
                     label: '请求地址',
                     hintText: 'https://api.example/path',
                     textInputAction: TextInputAction.done,
+                    onSubmitted: (_) => _syncParamsFromUrl(),
                     toolbarBuilder: _sheetToolbar(
                       fieldKey: _urlFieldKey,
                       allowInsertVar: true,
@@ -818,6 +895,7 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
     required String nameHint,
     bool allowDisable = false,
   }) {
+    final isParams = keyPrefix == 'request-editor-param';
     return ListView(
       padding: AppSpacing.allLG,
       children: [
@@ -828,10 +906,13 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
           alignment: Alignment.centerLeft,
           child: TextButton.icon(
             key: addKey,
-            onPressed: () => setState(() {
-              rows.add(_newRow());
-              _dirty = true;
-            }),
+            onPressed: () {
+              setState(() {
+                rows.add(_newRow());
+                _dirty = true;
+              });
+              if (isParams) _syncUrlFromParams();
+            },
             icon: const Icon(TablerIcons.plus),
             label: Text(addLabel),
           ),
@@ -847,6 +928,10 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
     bool allowDisable,
     int index,
   ) {
+    // 参数行的「提交」触发 URL 回写；头 / Cookie 与 URL 无关。
+    final onCommitted = keyPrefix == 'request-editor-param'
+        ? (String _) => _syncUrlFromParams()
+        : null;
     return Padding(
       padding: AppSpacing.onlyVerticalXS,
       child: Row(
@@ -869,6 +954,7 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
                 mode: AppEditableFieldMode.inline,
                 hintText: nameHint,
                 textInputAction: TextInputAction.next,
+                onSubmitted: onCommitted,
               ),
             ),
           ),
@@ -883,6 +969,7 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
                 mode: AppEditableFieldMode.sheet,
                 label: nameHint,
                 hintText: '值',
+                onSubmitted: onCommitted,
                 toolbarBuilder: _sheetToolbar(
                   fieldKey: row.valueFieldKey,
                   suggestionsBuilder: keyPrefix == 'request-editor-header'
@@ -895,11 +982,15 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
           IconButton(
             tooltip: '删除',
             icon: const Icon(TablerIcons.trash),
-            onPressed: () => setState(() {
-              row.dispose();
-              _rowsOf(keyPrefix).remove(row);
-              _dirty = true;
-            }),
+            onPressed: () {
+              final wasParams = keyPrefix == 'request-editor-param';
+              setState(() {
+                row.dispose();
+                _rowsOf(keyPrefix).remove(row);
+                _dirty = true;
+              });
+              if (wasParams) _syncUrlFromParams();
+            },
           ),
         ],
       ),

@@ -1,0 +1,10 @@
+00:00 +0: loading /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_url_params_sync_test.dart
+00:00 +0: URL⇄参数同步 载入 url ?a=1 + query [a=2] → 行恰为 [a=2]
+00:00 +1: URL⇄参数同步 载入 legacy url ?a=1&b=2 + query [a=2] → 行 [a=2, b=2]（保留 URL 独有键）
+00:01 +2: URL⇄参数同步 提交 URL ?a=1&b=2 → 2 行
+00:01 +3: URL⇄参数同步 编辑行值 → URL 仅更新一次（无振荡）
+00:01 +4: URL⇄参数同步 保存规范化：url = path#frag（无 ?），query 精确；重载行一致
+00:02 +5: URL⇄参数同步 占位符字面保留：跳过同步解析，保存后 url/query 仍含 {{...}}
+00:02 +6: URL⇄参数同步 · QA 3 次连续编辑稳定（无振荡）
+00:02 +7: URL⇄参数同步 · QA 非法 / 局部 URL 提交不抛且行不变
+00:02 +8: All tests passed!

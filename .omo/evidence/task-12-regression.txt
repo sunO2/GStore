@@ -1,0 +1,225 @@
+00:00 +0: loading /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_capture_mapping_test.dart
+00:00 +0: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_capture_mapping_test.dart: 映射 method / url / headers / body / cookies（逐字段）
+00:00 +1: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_capture_mapping_test.dart: URL 为空 → 按 scheme://host+path 回退
+00:00 +2: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_capture_mapping_test.dart: 空 Body → bodyKind=none；form-urlencoded 推断正确
+00:00 +3: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_capture_mapping_test.dart: 头部续行并入上一行；无冒号行忽略
+00:00 +4: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_capture_mapping_test.dart: 可显式指定 id / name / collectionId
+00:00 +5: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_capture_mapping_test.dart: 保存重发：剥离 Content-Encoding，Content-Length 修正为明文实际字节数
+00:00 +6: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_capture_mapping_test.dart: 保存重发：identity 编码同样剥离；未提供 Content-Length 时不新增
+00:00 +7: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_cookie_test.dart: DebugCookieJar.parseSetCookie parses name / value / domain / path
+00:00 +8: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_cookie_test.dart: DebugCookieJar.parseSetCookie keeps commas inside Expires on a single cookie
+00:00 +9: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_cookie_test.dart: DebugCookieJar.parseSetCookie parses a joined multi-cookie header
+00:00 +10: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_cookie_test.dart: DebugCookieJar.parseSetCookie ignores empty / malformed fragments
+00:00 +11: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_cookie_test.dart: DebugCookieJar.parseSetCookie handles value containing "=" 
+00:00 +12: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_cookie_test.dart: DebugCookieJar stores from response headers and exposes a Cookie header string
+00:00 +13: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_cookie_test.dart: DebugCookieJar header lookup is case-insensitive
+00:00 +14: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_cookie_test.dart: DebugCookieJar Max-Age=0 removes an existing cookie
+00:00 +15: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_cookie_test.dart: DebugCookieJar an already-expired Expires cookie is not returned
+00:00 +16: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_cookie_test.dart: DebugCookieJar matches cookie domain by suffix
+00:00 +17: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_cookie_test.dart: DebugCookieJar does not leak cookies to unrelated hosts
+00:00 +18: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_cookie_test.dart: DebugCookieJar clear removes everything
+00:00 +19: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_cookie_test.dart: DebugCookieJar scoping rejects a Domain attribute that does not match the request host
+00:00 +20: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_cookie_test.dart: DebugCookieJar scoping accepts a Domain attribute that domain-matches the request host
+00:00 +21: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_cookie_test.dart: DebugCookieJar scoping host-only cookie (no Domain) is not sent to subdomains
+00:00 +22: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_cookie_test.dart: DebugCookieJar scoping rejects single-label / public-suffix-like Domain
+00:00 +23: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_cookie_test.dart: DebugCookieJar scoping path scoping: cookie only sent to a matching request path
+00:00 +24: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_cookie_test.dart: DebugCookieJar scoping Secure cookie only sent over https
+00:00 +25: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 集合分区（集合树 + 请求列表） 新建集合 → 通过门面持久化（名称精确、触发 save）
+00:00 +26: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 集合分区（集合树 + 请求列表） 新建集合 → 通过门面持久化（名称精确、触发 save）
+00:00 +27: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 集合分区（集合树 + 请求列表） 新建集合 → 通过门面持久化（名称精确、触发 save）
+00:00 +28: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 集合分区（集合树 + 请求列表） 新建集合 → 通过门面持久化（名称精确、触发 save）
+00:00 +29: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 集合分区（集合树 + 请求列表） 新建集合 → 通过门面持久化（名称精确、触发 save）
+00:00 +30: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 集合分区（集合树 + 请求列表） 新建集合 → 通过门面持久化（名称精确、触发 save）
+00:00 +31: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 集合分区（集合树 + 请求列表） 新建集合 → 通过门面持久化（名称精确、触发 save）
+00:00 +32: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 集合分区（集合树 + 请求列表） 新建集合 → 通过门面持久化（名称精确、触发 save）
+00:00 +32: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_facade_test.dart: store 持久化失败 → save 返回 false（不抛）
+[RequestDebugStore] 保存失败: Bad state: no dir
+00:00 +33: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 集合分区（集合树 + 请求列表） 新建集合 → 通过门面持久化（名称精确、触发 save）
+00:00 +34: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 集合分区（集合树 + 请求列表） 新建集合 → 通过门面持久化（名称精确、触发 save）
+00:00 +35: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 集合分区（集合树 + 请求列表） 新建集合 → 通过门面持久化（名称精确、触发 save）
+00:00 +36: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 集合分区（集合树 + 请求列表） 新建集合 → 通过门面持久化（名称精确、触发 save）
+00:01 +37: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 集合分区（集合树 + 请求列表） 新建集合 → 通过门面持久化（名称精确、触发 save）
+00:01 +38: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_history_test.dart: 历史分区渲染 空历史渲染空态「暂无历史」
+00:01 +39: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 集合分区（集合树 + 请求列表） 文件夹新建请求 → 编辑器保存 → 请求进入该集合（字段精确）
+00:02 +40: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 集合分区（集合树 + 请求列表） 文件夹新建请求 → 编辑器保存 → 请求进入该集合（字段精确）
+00:02 +41: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 集合分区（集合树 + 请求列表） 文件夹新建请求 → 编辑器保存 → 请求进入该集合（字段精确）
+00:02 +42: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 集合分区（集合树 + 请求列表） 文件夹新建请求 → 编辑器保存 → 请求进入该集合（字段精确）
+00:02 +43: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_history_test.dart: 删除与清空（危险操作二次确认） 清空需确认：确认后全部清除
+00:02 +44: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_history_test.dart: 删除与清空（危险操作二次确认） 清空需确认：确认后全部清除
+00:02 +45: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 集合分区（集合树 + 请求列表） 导入 cURL → 解析并写入集合（方法 / URL / Body 精确）
+00:03 +46: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_history_test.dart: 载入编辑器 点击历史行 → 编辑器载入该请求（URL / 方法预填）
+00:03 +47: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 请求编辑器 · 发送 发送触发门面，环境变量替换后的 URL 到达 sender
+00:03 +48: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 请求编辑器 · 保存 保存写入精确字段，且保存后离开不再二次确认
+00:03 +49: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 请求编辑器 · 保存 另存为生成副本（新 id、名称含副本）
+00:03 +50: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 请求编辑器 · 保存 导出 cURL → 展示等价命令
+00:04 +51: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 请求编辑器 · 未保存离开二次确认 有未保存编辑时返回 → 确认拦截；继续编辑不离开；放弃才离开
+00:04 +52: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 请求编辑器 · 环境变量 已定义解析、未定义保留并标记、且不递归
+00:04 +53: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 请求编辑器 · 环境变量 弹层内插入变量 → 命中弹层草稿（不写旧选区）
+00:05 +54: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 请求编辑器 · 环境变量 AppSuggestionChips 含 store.history 派生的最近值
+00:05 +55: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 请求编辑器 · 环境变量 工具栏 prev/next 在编辑器字段间移动焦点
+00:05 +56: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_editor_test.dart: 设计系统约束 编辑器分区使用 AppSegmentedButton（分段 参数/头/体/认证/Cookie/响应）
+00:11 +57: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+18:32:11 🟢 [INFO] BackupLogic: 开始初始化
+18:32:11 🟢 [INFO] BackupLogic: 备份模块未启用，跳过初始化
+00:12 +58: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +59: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +60: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +61: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +62: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +63: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +64: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +65: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +66: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +67: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +68: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +69: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +70: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +70: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_store_test.dart: 原子写（tmp + rename，失败不留半成品） tmp 写入失败 → 返回 false，原文件保持上一版完整内容
+[RequestDebugStore] 保存失败: FileSystemException: Cannot open file, path = '/tmp/request_debug_store_test_PWQQFK/request_debug_store.json.tmp' (OS Error: Is a directory, errno = 21)
+00:12 +71: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +72: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +72: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_store_test.dart: 损坏 / 脏状态降级（不抛，返回空或跳过脏条目） 非法 JSON → 空 store 且不抛
+[RequestDebugStore] 读取失败，使用空存储: FormatException: Unexpected character (at character 3)
+{ this is not json 
+  ^
+
+00:12 +73: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +74: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +74: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_store_test.dart: 损坏 / 脏状态降级（不抛，返回空或跳过脏条目） 合法 JSON 但根类型错误（数组）→ 空 store
+[RequestDebugStore] 读取失败，使用空存储: FormatException: store 根节点不是 JSON 对象
+00:12 +75: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +75: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_store_test.dart: 损坏 / 脏状态降级（不抛，返回空或跳过脏条目） 根合法但个别脏条目被跳过，好的条目保留
+[RequestDebugStore] 跳过非对象条目: this-is-not-an-object
+[RequestDebugStore] 跳过脏条目: FormatException: DebugHistoryEntry.request 缺失
+00:12 +76: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +77: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +78: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +79: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +80: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +81: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +82: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +83: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +84: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +85: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +86: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +87: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +88: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +89: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +90: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+WebDavConfigManager: 未找到配置
+00:12 +91: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +92: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +93: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +94: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +95: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +96: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +97: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +98: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +99: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +100: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +101: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +102: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +103: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +104: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +105: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +106: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +107: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +108: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +109: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +110: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +111: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +112: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +113: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +114: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +115: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +116: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +117: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +118: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +119: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 工具卡渲染「请求调试」入口
+00:12 +120: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_rules_test.dart: 改写规则列表 列表来自 capture.rules.get：展示 URL / 方法 / 类型 / 开关 / 命中数
+00:12 +121: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_rules_test.dart: 改写规则列表 列表来自 capture.rules.get：展示 URL / 方法 / 类型 / 开关 / 命中数
+00:12 +122: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_rules_test.dart: 改写规则列表 列表来自 capture.rules.get：展示 URL / 方法 / 类型 / 开关 / 命中数
+00:12 +123: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_rules_test.dart: 改写规则列表 列表来自 capture.rules.get：展示 URL / 方法 / 类型 / 开关 / 命中数
+00:12 +124: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_rules_test.dart: 改写规则列表 列表来自 capture.rules.get：展示 URL / 方法 / 类型 / 开关 / 命中数
+00:12 +125: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_rules_test.dart: 改写规则列表 列表来自 capture.rules.get：展示 URL / 方法 / 类型 / 开关 / 命中数
+00:12 +125: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 点击「请求调试」跳转到 AppRoute.requestDebug
+18:32:12 🟢 [INFO] BackupLogic: 开始初始化
+18:32:12 🟢 [INFO] BackupLogic: 备份模块未启用，跳过初始化
+00:13 +126: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_rules_test.dart: 改写规则列表 列表来自 capture.rules.get：展示 URL / 方法 / 类型 / 开关 / 命中数
+00:13 +127: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_rules_test.dart: 改写规则列表 列表来自 capture.rules.get：展示 URL / 方法 / 类型 / 开关 / 命中数
+00:13 +128: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_rules_test.dart: 改写规则列表 列表来自 capture.rules.get：展示 URL / 方法 / 类型 / 开关 / 命中数
+00:13 +129: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_rules_test.dart: 改写规则列表 列表来自 capture.rules.get：展示 URL / 方法 / 类型 / 开关 / 命中数
+00:13 +130: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_rules_test.dart: 改写规则列表 列表来自 capture.rules.get：展示 URL / 方法 / 类型 / 开关 / 命中数
+00:13 +131: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_rules_test.dart: 改写规则列表 列表来自 capture.rules.get：展示 URL / 方法 / 类型 / 开关 / 命中数
+00:13 +132: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_rules_test.dart: 改写规则列表 列表来自 capture.rules.get：展示 URL / 方法 / 类型 / 开关 / 命中数
+00:13 +133: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_rules_test.dart: 改写规则列表 列表来自 capture.rules.get：展示 URL / 方法 / 类型 / 开关 / 命中数
+00:13 +134: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_rules_test.dart: 改写规则列表 列表来自 capture.rules.get：展示 URL / 方法 / 类型 / 开关 / 命中数
+00:13 +135: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_rules_test.dart: 改写规则列表 列表来自 capture.rules.get：展示 URL / 方法 / 类型 / 开关 / 命中数
+00:13 +136: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_rules_test.dart: 改写规则列表 列表来自 capture.rules.get：展示 URL / 方法 / 类型 / 开关 / 命中数
+00:13 +137: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_rules_test.dart: 改写规则列表 列表来自 capture.rules.get：展示 URL / 方法 / 类型 / 开关 / 命中数
+00:13 +138: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_rules_test.dart: 改写规则列表 列表来自 capture.rules.get：展示 URL / 方法 / 类型 / 开关 / 命中数
+00:13 +139: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_rules_test.dart: 改写规则列表 列表来自 capture.rules.get：展示 URL / 方法 / 类型 / 开关 / 命中数
+00:13 +140: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_rules_test.dart: 改写规则列表 列表来自 capture.rules.get：展示 URL / 方法 / 类型 / 开关 / 命中数
+00:13 +141: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_rules_test.dart: 改写规则列表 列表来自 capture.rules.get：展示 URL / 方法 / 类型 / 开关 / 命中数
+00:13 +142: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_rules_test.dart: 改写规则列表 列表来自 capture.rules.get：展示 URL / 方法 / 类型 / 开关 / 命中数
+00:13 +143: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_rules_test.dart: 改写规则列表 列表来自 capture.rules.get：展示 URL / 方法 / 类型 / 开关 / 命中数
+00:13 +144: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_rules_test.dart: 改写规则列表 列表来自 capture.rules.get：展示 URL / 方法 / 类型 / 开关 / 命中数
+00:13 +145: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_rules_test.dart: 改写规则列表 列表来自 capture.rules.get：展示 URL / 方法 / 类型 / 开关 / 命中数
+00:13 +146: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_rules_test.dart: 改写规则列表 列表来自 capture.rules.get：展示 URL / 方法 / 类型 / 开关 / 命中数
+00:13 +147: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_rules_test.dart: 改写规则列表 列表来自 capture.rules.get：展示 URL / 方法 / 类型 / 开关 / 命中数
+00:13 +148: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_rules_test.dart: 改写规则列表 列表来自 capture.rules.get：展示 URL / 方法 / 类型 / 开关 / 命中数
+00:13 +149: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_rules_test.dart: 改写规则列表 列表来自 capture.rules.get：展示 URL / 方法 / 类型 / 开关 / 命中数
+00:13 +150: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_rules_test.dart: 改写规则列表 列表来自 capture.rules.get：展示 URL / 方法 / 类型 / 开关 / 命中数
+00:13 +151: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_rules_test.dart: 改写规则列表 列表来自 capture.rules.get：展示 URL / 方法 / 类型 / 开关 / 命中数
+00:13 +152: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_rules_test.dart: 改写规则列表 列表来自 capture.rules.get：展示 URL / 方法 / 类型 / 开关 / 命中数
+00:13 +153: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_url_params_sync_test.dart: URL⇄参数同步 载入 url ?a=1 + query [a=2] → 行恰为 [a=2]
+00:13 +154: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_url_params_sync_test.dart: URL⇄参数同步 载入 url ?a=1 + query [a=2] → 行恰为 [a=2]
+00:13 +155: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_url_params_sync_test.dart: URL⇄参数同步 载入 url ?a=1 + query [a=2] → 行恰为 [a=2]
+00:13 +156: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_url_params_sync_test.dart: URL⇄参数同步 载入 url ?a=1 + query [a=2] → 行恰为 [a=2]
+00:13 +157: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_url_params_sync_test.dart: URL⇄参数同步 载入 url ?a=1 + query [a=2] → 行恰为 [a=2]
+00:13 +158: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_url_params_sync_test.dart: URL⇄参数同步 载入 url ?a=1 + query [a=2] → 行恰为 [a=2]
+00:13 +159: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_url_params_sync_test.dart: URL⇄参数同步 载入 url ?a=1 + query [a=2] → 行恰为 [a=2]
+00:13 +159: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_page_test.dart: 我的页「工具」卡「请求调试」入口 点击「请求调试」跳转到 AppRoute.requestDebug
+WebDavConfigManager: 未找到配置
+00:13 +160: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_url_params_sync_test.dart: URL⇄参数同步 载入 url ?a=1 + query [a=2] → 行恰为 [a=2]
+00:13 +161: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_url_params_sync_test.dart: URL⇄参数同步 载入 url ?a=1 + query [a=2] → 行恰为 [a=2]
+00:13 +162: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_url_params_sync_test.dart: URL⇄参数同步 载入 url ?a=1 + query [a=2] → 行恰为 [a=2]
+00:13 +163: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_url_params_sync_test.dart: URL⇄参数同步 载入 url ?a=1 + query [a=2] → 行恰为 [a=2]
+00:13 +164: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_url_params_sync_test.dart: URL⇄参数同步 载入 url ?a=1 + query [a=2] → 行恰为 [a=2]
+00:13 +165: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_url_params_sync_test.dart: URL⇄参数同步 载入 url ?a=1 + query [a=2] → 行恰为 [a=2]
+00:13 +166: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_url_params_sync_test.dart: URL⇄参数同步 载入 url ?a=1 + query [a=2] → 行恰为 [a=2]
+00:13 +167: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_url_params_sync_test.dart: URL⇄参数同步 载入 url ?a=1 + query [a=2] → 行恰为 [a=2]
+00:13 +168: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_url_params_sync_test.dart: URL⇄参数同步 载入 url ?a=1 + query [a=2] → 行恰为 [a=2]
+00:13 +169: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_rules_test.dart: 新建 / 编辑 / 开关 / 删除 新建：默认关 + 调参正确 + 列表刷新
+00:14 +170: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_rules_test.dart: 新建 / 编辑 / 开关 / 删除 新建：默认关 + 调参正确 + 列表刷新
+00:14 +171: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_rules_test.dart: 新建 / 编辑 / 开关 / 删除 新建：默认关 + 调参正确 + 列表刷新
+00:14 +172: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: JSON 高亮树 · token / gutter / 折叠 / 搜索 搜索基于完整 bodyText，展开可见文本以包含命中位置
+00:14 +173: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: JSON 高亮树 · token / gutter / 折叠 / 搜索 搜索基于完整 bodyText，展开可见文本以包含命中位置
+00:14 +174: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: JSON 高亮树 · token / gutter / 折叠 / 搜索 搜索基于完整 bodyText，展开可见文本以包含命中位置
+00:14 +175: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: JSON 高亮树 · token / gutter / 折叠 / 搜索 搜索基于完整 bodyText，展开可见文本以包含命中位置
+00:14 +176: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: JSON 高亮树 · token / gutter / 折叠 / 搜索 搜索基于完整 bodyText，展开可见文本以包含命中位置
+00:15 +177: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: JSON 高亮树 · token / gutter / 折叠 / 搜索 搜索基于完整 bodyText，展开可见文本以包含命中位置
+00:15 +178: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: JSON 高亮树 · token / gutter / 折叠 / 搜索 搜索基于完整 bodyText，展开可见文本以包含命中位置
+00:15 +179: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: JSON 高亮树 · token / gutter / 折叠 / 搜索 搜索基于完整 bodyText，展开可见文本以包含命中位置
+00:15 +180: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: JSON 高亮树 · token / gutter / 折叠 / 搜索 搜索基于完整 bodyText，展开可见文本以包含命中位置
+00:15 +181: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: JSON 高亮树 · token / gutter / 折叠 / 搜索 搜索基于完整 bodyText，展开可见文本以包含命中位置
+00:15 +182: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: JSON 高亮树 · token / gutter / 折叠 / 搜索 搜索基于完整 bodyText，展开可见文本以包含命中位置
+00:15 +183: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: JSON 高亮树 · token / gutter / 折叠 / 搜索 搜索基于完整 bodyText，展开可见文本以包含命中位置
+00:15 +184: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: JSON 高亮树 · token / gutter / 折叠 / 搜索 搜索基于完整 bodyText，展开可见文本以包含命中位置
+00:16 +185: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: JSON 高亮树 · token / gutter / 折叠 / 搜索 搜索基于完整 bodyText，展开可见文本以包含命中位置
+00:16 +186: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: JSON 高亮树 · token / gutter / 折叠 / 搜索 搜索基于完整 bodyText，展开可见文本以包含命中位置
+00:17 +187: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: JSON 高亮树 · token / gutter / 折叠 / 搜索 超过 256KB 的 JSON → 分块纯文本路径，无异常
+00:17 +188: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: Cookie 表 名称 / 值 / 域 / 过期 行内容精确
+00:17 +189: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: Cookie 表 无 Cookie → 空态
+00:17 +190: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: 头 表 逐条渲染响应头
+00:17 +191: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: 头 表 360dp 下头部 / Cookie 表无溢出
+00:18 +192: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: 重发重置 换一次响应 → 回到 Body 默认态，格式化回默认，且不抛异常
+00:18 +193: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: 超长 Body 分块 首屏只建首个分块，展开更多后字符数增长且不崩
+00:18 +194: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: 二进制 / 非文本安全展示 image/png → 安全占位，不渲染原始文本，不崩
+00:18 +195: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: 二进制 / 非文本安全展示 无 Content-Type 但含 NUL → 判为二进制并安全占位
+00:18 +196: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: 动作 复制 → 剪贴板写入当前展示文本
+00:18 +197: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: 动作 保存为改写响应 → 生成的规则字段精确并经门面结果提示
+00:18 +198: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: JSON 词法 / 折叠（纯逻辑） tokenizeJsonLine 识别 key / string / number / keyword / 标点
+00:18 +199: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: JSON 词法 / 折叠（纯逻辑） jsonFoldRegions 找到对象与数组区间
+00:18 +200: /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_response_test.dart: JSON 词法 / 折叠（纯逻辑） jsonFoldRegions 忽略空容器单行
+00:18 +201: All tests passed!

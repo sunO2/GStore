@@ -1,0 +1,215 @@
+00:00 +0: loading /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_url_params_sync_test.dart
+00:00 +0: URL⇄参数同步 载入 url ?a=1 + query [a=2] → 行恰为 [a=2]
+══╡ EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK ╞════════════════════════════════════════════════════
+The following TestFailure was thrown running a test:
+Expected: exactly one matching candidate
+  Actual: _DescendantWidgetFinder:<Found 0 widgets with text "https://api.example/p?a=2" descending
+from widgets with key [<'request-editor-url'>]: []>
+   Which: means none were found but one was expected
+
+When the exception was thrown, this was the stack:
+#4      main.<anonymous closure>.<anonymous closure> (file:///home/hezhihu89/develop/flutter/project/GStore/test/request_debug_url_params_sync_test.dart:212:7)
+<asynchronous suspension>
+#5      testWidgets.<anonymous closure>.<anonymous closure> (package:flutter_test/src/widget_tester.dart:192:15)
+<asynchronous suspension>
+#6      TestWidgetsFlutterBinding._runTestBody (package:flutter_test/src/binding.dart:1952:5)
+<asynchronous suspension>
+<asynchronous suspension>
+(elided one frame from package:stack_trace)
+
+This was caught by the test expectation on the following line:
+  file:///home/hezhihu89/develop/flutter/project/GStore/test/request_debug_url_params_sync_test.dart line 212
+The test description was:
+  载入 url ?a=1 + query [a=2] → 行恰为 [a=2]
+════════════════════════════════════════════════════════════════════════════════════════════════════
+00:01 +0 -1: URL⇄参数同步 载入 url ?a=1 + query [a=2] → 行恰为 [a=2] [E]
+  Test failed. See exception logs above.
+  The test description was: 载入 url ?a=1 + query [a=2] → 行恰为 [a=2]
+  
+00:01 +0 -1: URL⇄参数同步 载入 legacy url ?a=1&b=2 + query [a=2] → 行 [a=2, b=2]（保留 URL 独有键）
+══╡ EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK ╞════════════════════════════════════════════════════
+The following TestFailure was thrown running a test:
+Expected: <2>
+  Actual: <1>
+
+When the exception was thrown, this was the stack:
+#4      main.<anonymous closure>.<anonymous closure> (file:///home/hezhihu89/develop/flutter/project/GStore/test/request_debug_url_params_sync_test.dart:234:7)
+<asynchronous suspension>
+#5      testWidgets.<anonymous closure>.<anonymous closure> (package:flutter_test/src/widget_tester.dart:192:15)
+<asynchronous suspension>
+#6      TestWidgetsFlutterBinding._runTestBody (package:flutter_test/src/binding.dart:1952:5)
+<asynchronous suspension>
+<asynchronous suspension>
+(elided one frame from package:stack_trace)
+
+This was caught by the test expectation on the following line:
+  file:///home/hezhihu89/develop/flutter/project/GStore/test/request_debug_url_params_sync_test.dart line 234
+The test description was:
+  载入 legacy url ?a=1&b=2 + query [a=2] → 行 [a=2, b=2]（保留 URL 独有键）
+════════════════════════════════════════════════════════════════════════════════════════════════════
+00:01 +0 -2: URL⇄参数同步 载入 legacy url ?a=1&b=2 + query [a=2] → 行 [a=2, b=2]（保留 URL 独有键） [E]
+  Test failed. See exception logs above.
+  The test description was: 载入 legacy url ?a=1&b=2 + query [a=2] → 行 [a=2, b=2]（保留 URL 独有键）
+  
+00:01 +0 -2: URL⇄参数同步 提交 URL ?a=1&b=2 → 2 行
+══╡ EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK ╞════════════════════════════════════════════════════
+The following TestFailure was thrown running a test:
+Expected: <2>
+  Actual: <0>
+
+When the exception was thrown, this was the stack:
+#4      main.<anonymous closure>.<anonymous closure> (file:///home/hezhihu89/develop/flutter/project/GStore/test/request_debug_url_params_sync_test.dart:250:7)
+<asynchronous suspension>
+#5      testWidgets.<anonymous closure>.<anonymous closure> (package:flutter_test/src/widget_tester.dart:192:15)
+<asynchronous suspension>
+#6      TestWidgetsFlutterBinding._runTestBody (package:flutter_test/src/binding.dart:1952:5)
+<asynchronous suspension>
+<asynchronous suspension>
+(elided one frame from package:stack_trace)
+
+This was caught by the test expectation on the following line:
+  file:///home/hezhihu89/develop/flutter/project/GStore/test/request_debug_url_params_sync_test.dart line 250
+The test description was:
+  提交 URL ?a=1&b=2 → 2 行
+════════════════════════════════════════════════════════════════════════════════════════════════════
+00:01 +0 -3: URL⇄参数同步 提交 URL ?a=1&b=2 → 2 行 [E]
+  Test failed. See exception logs above.
+  The test description was: 提交 URL ?a=1&b=2 → 2 行
+  
+00:01 +0 -3: URL⇄参数同步 编辑行值 → URL 仅更新一次（无振荡）
+══╡ EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK ╞════════════════════════════════════════════════════
+The following assertion was thrown running a test:
+The finder "Found 0 widgets with key [<'request-editor-param-value-0'>]: []" (used in a call to
+"tap()") could not find any matching widgets.
+
+When the exception was thrown, this was the stack:
+#0      WidgetController._getElementPoint (package:flutter_test/src/controller.dart:2095:7)
+#1      WidgetController.getCenter (package:flutter_test/src/controller.dart:1947:12)
+#2      WidgetController.tap (package:flutter_test/src/controller.dart:1080:7)
+#3      _editParamValue (file:///home/hezhihu89/develop/flutter/project/GStore/test/request_debug_url_params_sync_test.dart:159:16)
+#4      main.<anonymous closure>.<anonymous closure> (file:///home/hezhihu89/develop/flutter/project/GStore/test/request_debug_url_params_sync_test.dart:275:13)
+<asynchronous suspension>
+#5      testWidgets.<anonymous closure>.<anonymous closure> (package:flutter_test/src/widget_tester.dart:192:15)
+<asynchronous suspension>
+#6      TestWidgetsFlutterBinding._runTestBody (package:flutter_test/src/binding.dart:1952:5)
+<asynchronous suspension>
+<asynchronous suspension>
+(elided one frame from package:stack_trace)
+
+The test description was:
+  编辑行值 → URL 仅更新一次（无振荡）
+════════════════════════════════════════════════════════════════════════════════════════════════════
+00:02 +0 -4: URL⇄参数同步 编辑行值 → URL 仅更新一次（无振荡） [E]
+  Test failed. See exception logs above.
+  The test description was: 编辑行值 → URL 仅更新一次（无振荡）
+  
+00:02 +0 -4: URL⇄参数同步 保存规范化：url = path#frag（无 ?），query 精确；重载行一致
+══╡ EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK ╞════════════════════════════════════════════════════
+The following TestFailure was thrown running a test:
+Expected: <2>
+  Actual: <0>
+
+When the exception was thrown, this was the stack:
+#4      main.<anonymous closure>.<anonymous closure> (file:///home/hezhihu89/develop/flutter/project/GStore/test/request_debug_url_params_sync_test.dart:293:7)
+<asynchronous suspension>
+#5      testWidgets.<anonymous closure>.<anonymous closure> (package:flutter_test/src/widget_tester.dart:192:15)
+<asynchronous suspension>
+#6      TestWidgetsFlutterBinding._runTestBody (package:flutter_test/src/binding.dart:1952:5)
+<asynchronous suspension>
+<asynchronous suspension>
+(elided one frame from package:stack_trace)
+
+This was caught by the test expectation on the following line:
+  file:///home/hezhihu89/develop/flutter/project/GStore/test/request_debug_url_params_sync_test.dart line 293
+The test description was:
+  保存规范化：url = path#frag（无 ?），query 精确；重载行一致
+════════════════════════════════════════════════════════════════════════════════════════════════════
+00:02 +0 -5: URL⇄参数同步 保存规范化：url = path#frag（无 ?），query 精确；重载行一致 [E]
+  Test failed. See exception logs above.
+  The test description was: 保存规范化：url = path#frag（无 ?），query 精确；重载行一致
+  
+00:02 +0 -5: URL⇄参数同步 占位符字面保留：跳过同步解析，保存后 url/query 仍含 {{...}}
+══╡ EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK ╞════════════════════════════════════════════════════
+The following StateError was thrown running a test:
+Bad state: No element
+
+When the exception was thrown, this was the stack:
+#0      Iterable.single (dart:core/iterable.dart:694:25)
+#1      WidgetController.widget (package:flutter_test/src/controller.dart:828:30)
+#2      _paramName (file:///home/hezhihu89/develop/flutter/project/GStore/test/request_debug_url_params_sync_test.dart:129:24)
+#3      main.<anonymous closure>.<anonymous closure> (file:///home/hezhihu89/develop/flutter/project/GStore/test/request_debug_url_params_sync_test.dart:347:14)
+<asynchronous suspension>
+#4      testWidgets.<anonymous closure>.<anonymous closure> (package:flutter_test/src/widget_tester.dart:192:15)
+<asynchronous suspension>
+#5      TestWidgetsFlutterBinding._runTestBody (package:flutter_test/src/binding.dart:1952:5)
+<asynchronous suspension>
+<asynchronous suspension>
+(elided one frame from package:stack_trace)
+
+The test description was:
+  占位符字面保留：跳过同步解析，保存后 url/query 仍含 {{...}}
+════════════════════════════════════════════════════════════════════════════════════════════════════
+00:02 +0 -6: URL⇄参数同步 占位符字面保留：跳过同步解析，保存后 url/query 仍含 {{...}} [E]
+  Test failed. See exception logs above.
+  The test description was: 占位符字面保留：跳过同步解析，保存后 url/query 仍含 {{...}}
+  
+00:02 +0 -6: URL⇄参数同步 · QA 3 次连续编辑稳定（无振荡）
+══╡ EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK ╞════════════════════════════════════════════════════
+The following assertion was thrown running a test:
+The finder "Found 0 widgets with key [<'request-editor-param-value-0'>]: []" (used in a call to
+"tap()") could not find any matching widgets.
+
+When the exception was thrown, this was the stack:
+#0      WidgetController._getElementPoint (package:flutter_test/src/controller.dart:2095:7)
+#1      WidgetController.getCenter (package:flutter_test/src/controller.dart:1947:12)
+#2      WidgetController.tap (package:flutter_test/src/controller.dart:1080:7)
+#3      _editParamValue (file:///home/hezhihu89/develop/flutter/project/GStore/test/request_debug_url_params_sync_test.dart:159:16)
+#4      main.<anonymous closure>.<anonymous closure> (file:///home/hezhihu89/develop/flutter/project/GStore/test/request_debug_url_params_sync_test.dart:379:13)
+<asynchronous suspension>
+#5      testWidgets.<anonymous closure>.<anonymous closure> (package:flutter_test/src/widget_tester.dart:192:15)
+<asynchronous suspension>
+#6      TestWidgetsFlutterBinding._runTestBody (package:flutter_test/src/binding.dart:1952:5)
+<asynchronous suspension>
+<asynchronous suspension>
+(elided one frame from package:stack_trace)
+
+The test description was:
+  3 次连续编辑稳定（无振荡）
+════════════════════════════════════════════════════════════════════════════════════════════════════
+00:03 +0 -7: URL⇄参数同步 · QA 3 次连续编辑稳定（无振荡） [E]
+  Test failed. See exception logs above.
+  The test description was: 3 次连续编辑稳定（无振荡）
+  
+00:03 +0 -7: URL⇄参数同步 · QA 非法 / 局部 URL 提交不抛且行不变
+══╡ EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK ╞════════════════════════════════════════════════════
+The following TestFailure was thrown running a test:
+Expected: <1>
+  Actual: <0>
+
+When the exception was thrown, this was the stack:
+#4      main.<anonymous closure>.<anonymous closure> (file:///home/hezhihu89/develop/flutter/project/GStore/test/request_debug_url_params_sync_test.dart:413:7)
+<asynchronous suspension>
+#5      testWidgets.<anonymous closure>.<anonymous closure> (package:flutter_test/src/widget_tester.dart:192:15)
+<asynchronous suspension>
+#6      TestWidgetsFlutterBinding._runTestBody (package:flutter_test/src/binding.dart:1952:5)
+<asynchronous suspension>
+<asynchronous suspension>
+(elided one frame from package:stack_trace)
+
+This was caught by the test expectation on the following line:
+  file:///home/hezhihu89/develop/flutter/project/GStore/test/request_debug_url_params_sync_test.dart line 413
+The test description was:
+  非法 / 局部 URL 提交不抛且行不变
+════════════════════════════════════════════════════════════════════════════════════════════════════
+00:03 +0 -8: URL⇄参数同步 · QA 非法 / 局部 URL 提交不抛且行不变 [E]
+  Test failed. See exception logs above.
+  The test description was: 非法 / 局部 URL 提交不抛且行不变
+  
+00:03 +0 -8: Some tests failed.
+
+Failing tests:
+  /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_url_params_sync_test.dart: URL⇄参数同步 · QA 3 次连续编辑稳定（无振荡）
+  /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_url_params_sync_test.dart: URL⇄参数同步 · QA 非法 / 局部 URL 提交不抛且行不变
+  /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_url_params_sync_test.dart: URL⇄参数同步 保存规范化：url = path#frag（无 ?），query 精确；重载行一致
+  /home/hezhihu89/develop/flutter/project/GStore/test/request_debug_url_params_sync_test.dart: URL⇄参数同步 占位符字面保留：跳过同步解析，保存后 url/query 仍含 {{...}}
+  ... and 4 more

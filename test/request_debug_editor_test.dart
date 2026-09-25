@@ -58,6 +58,10 @@ class _FakeSender implements DebugSender {
           .where((h) => h.enabled && h.name.isNotEmpty)
           .map((h) => '${h.name}:${h.value}')
           .toList(),
+      'query': query
+          .where((q) => q.enabled && q.name.isNotEmpty)
+          .map((q) => '${q.name}=${q.value}')
+          .toList(),
       'useCookies': useCookies,
     });
     return response;
@@ -530,8 +534,10 @@ void main() {
       );
 
       // 不递归：值 `{{host}}` 不再展开，也不计入缺失。
+      // T12 起 URL 查询被规范化为参数行：提交不带查询的 URL 绝不丢弃既有参数，
+      // 因此 `m={{missing}}` 仍保留并重新出现在显示 URL 上（不递归展开）。
       await _setUrlViaSheet(tester, '{{nested}}');
-      expect(_previewText(tester), '{{host}}');
+      expect(_previewText(tester), '{{host}}?m={{missing}}');
       expect(
         find.byKey(const Key('request-editor-env-missing-host')),
         findsNothing,
