@@ -1558,14 +1558,28 @@ use crate::limits::CAPTURE_BODY_MAX_BYTES;
 pub(crate) const CAPTURE_PREVIEW_MAX_BYTES: usize = 256;
 /// In-memory request/response header text per side (ring field bound).
 pub(crate) const CAPTURE_HEADERS_MAX_BYTES: usize = 512;
-/// hyper h1 read+write buffer cap (per connection), matching the T9 budget.
-pub(crate) const H1_MAX_BUF_SIZE: usize = 8192;
+/// hyper h1 head buffer cap (per connection): the client-facing h1 server and
+/// the upstream h1 client both parse through this bound. hyper rejects a larger
+/// request head with `message head is too large` (`Parse::TooLarge`). hyper's
+/// default is ~400 KiB; we had lowered it to 8 KiB for the memory budget, which
+/// rejected real app requests carrying large `Cookie`/token heads (device defect
+/// 5). 64 KiB accepts those real heads while staying a hard, bounded cap that
+/// fits `MITM_SESSION_BUFFER_MAX_BYTES` (device defect 5).
+pub(crate) const H1_MAX_BUF_SIZE: usize = 64 * 1024;
+/// hyper h1 `max_headers` (header **count**, not bytes) on the client-facing
+/// server. hyper's default is 100, too low for real app requests (device defect
+/// 5), so we raise it to 256. A request exceeding it is answered with 431.
+pub(crate) const H1_MAX_HEADERS: usize = 256;
 /// hyper h2 flow-control windows / buffers, explicitly lowered from the 1–5 MiB
 /// defaults so one session cannot blow `MITM_SESSION_BUFFER_MAX_BYTES` (T9).
 pub(crate) const H2_INITIAL_STREAM_WINDOW_SIZE: u32 = 16 * 1024;
 pub(crate) const H2_INITIAL_CONNECTION_WINDOW_SIZE: u32 = 16 * 1024;
 pub(crate) const H2_MAX_SEND_BUF_SIZE: usize = 4 * 1024;
-pub(crate) const H2_MAX_HEADER_LIST_SIZE: u32 = 4 * 1024;
+/// hyper h2 `SETTINGS_MAX_HEADER_LIST_SIZE`: the bound on the decoded request
+/// header list. 4 KiB was far too small for real app requests (large Cookie/
+/// token heads, device defect 5), so raise it to 64 KiB while keeping a hard cap
+/// that fits `MITM_SESSION_BUFFER_MAX_BYTES`.
+pub(crate) const H2_MAX_HEADER_LIST_SIZE: u32 = 64 * 1024;
 /// Per-connection h2 accounting asserted in tests to match the T9 budget term.
 pub(crate) const H2_PER_CONNECTION_BUDGET_BYTES: u32 = H2_INITIAL_STREAM_WINDOW_SIZE
     + H2_INITIAL_CONNECTION_WINDOW_SIZE
@@ -1625,8 +1639,8 @@ pub(crate) const RUSTLS_BUFFER_LIMIT_BYTES: usize = 8192;
 /// T9 per-session budget terms (see `.omo/plans/proxy-http-capture.md` todo 9).
 pub(crate) const MITM_WS_TWO_SIDES_BYTES: usize = 2 * WS_PER_SIDE_BUDGET_BYTES; // 106_496
 pub(crate) const MITM_RUSTLS_TWO_CONNS_BYTES: usize = 2 * 2 * RUSTLS_BUFFER_LIMIT_BYTES; // 32_768
-pub(crate) const MITM_H1_TWO_CONNS_BYTES: usize = 2 * 2 * H1_MAX_BUF_SIZE; // 32_768
-pub(crate) const MITM_H2_TWO_CONNS_BYTES: usize = 2 * (H2_PER_CONNECTION_BUDGET_BYTES as usize); // 81_920
+pub(crate) const MITM_H1_TWO_CONNS_BYTES: usize = 2 * 2 * H1_MAX_BUF_SIZE; // 262_144
+pub(crate) const MITM_H2_TWO_CONNS_BYTES: usize = 2 * (H2_PER_CONNECTION_BUDGET_BYTES as usize); // 204_800
 /// Sum of every per-session buffer knob. A hard `const` assertion below proves it
 /// fits [`crate::limits::MITM_SESSION_BUFFER_MAX_BYTES`]; if any term regresses
 /// (or a knob silently goes back to a default) this stops compiling.
@@ -3315,6 +3329,7 @@ where
         HttpProtocol::H1 => {
             let mut builder = server_http1::Builder::new();
             builder.max_buf_size(H1_MAX_BUF_SIZE);
+            builder.max_headers(H1_MAX_HEADERS);
             builder
                 .serve_connection(io, service)
                 .with_upgrades()
@@ -3591,6 +3606,36 @@ mod mitm_http_tests {
         addr
     }
 
+    /// Like [`run_bridge`], but returns the bridge task's own result so a test can
+    /// assert a client-visible framing failure surfaces as a clean
+    /// `MitmFailure` (and not a panic / silent pass-through).
+    async fn run_bridge_returning(
+        ca: Arc<CertificateAuthority>,
+        host: &str,
+        upstream_addr: SocketAddr,
+        upstream_alpn: &[u8],
+        ctx: BridgeContext,
+    ) -> (SocketAddr, tokio::task::JoinHandle<Result<(), MitmFailure>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let host = host.to_string();
+        let alpn = upstream_alpn.to_vec();
+        let handle = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let client = match terminate(tcp, &ca, Some(&host)).await {
+                MitmTls::Terminated(tls) => tls,
+                MitmTls::Passthrough(_) => panic!("expected TLS termination"),
+                MitmTls::Failed(e) => panic!("terminate failed: {e}"),
+            };
+            let tcp_up = TcpStream::connect(upstream_addr).await.unwrap();
+            let connector = TlsConnector::from(client_tls(&ca, &alpn));
+            let sni = ServerName::try_from(host.clone()).unwrap();
+            let upstream = connector.connect(sni, tcp_up).await.unwrap();
+            bridge(client, upstream, ctx).await
+        });
+        (addr, handle)
+    }
+
     struct ClientOutcome {
         status: u16,
         headers: HeaderMap,
@@ -3644,6 +3689,60 @@ mod mitm_http_tests {
         }
     }
 
+    /// h1 client that accepts extra request headers (used to send a head larger
+    /// than the old 8 KiB buffer). Returns `Err` instead of panicking so a red
+    /// run reports a value, and mirrors the production client's buffer bound.
+    async fn client_send_h1_with_headers(
+        ca: &CertificateAuthority,
+        addr: SocketAddr,
+        host: &str,
+        path: &str,
+        extra: &[(&str, &str)],
+    ) -> Result<ClientOutcome, String> {
+        let tcp = tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(addr))
+            .await
+            .map_err(|_| "connect timed out".to_string())?
+            .map_err(|e| e.to_string())?;
+        let connector = TlsConnector::from(client_tls(ca, b"http/1.1"));
+        let tls = connector
+            .connect(ServerName::try_from(host.to_string()).unwrap(), tcp)
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut builder = client_http1::Builder::new();
+        builder.max_buf_size(H1_MAX_BUF_SIZE);
+        builder.max_headers(H1_MAX_HEADERS);
+        let (mut sender, conn) = builder
+            .handshake::<_, Full<Bytes>>(TokioIo::new(tls))
+            .await
+            .map_err(|e| e.to_string())?;
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+        let mut builder = Request::builder().method("GET").uri(path).header(HOST, host);
+        for (name, value) in extra {
+            builder = builder.header(*name, *value);
+        }
+        let request = builder.body(Full::new(Bytes::new())).unwrap();
+        let response = tokio::time::timeout(Duration::from_secs(5), sender.send_request(request))
+            .await
+            .map_err(|_| "send timed out".to_string())?
+            .map_err(|e| e.to_string())?;
+        let status = response.status().as_u16();
+        let headers = response.headers().clone();
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .map_err(|e| e.to_string())?
+            .to_bytes()
+            .to_vec();
+        Ok(ClientOutcome {
+            status,
+            headers,
+            body,
+        })
+    }
+
     async fn client_send_h2(
         ca: &CertificateAuthority,
         addr: SocketAddr,
@@ -3683,6 +3782,58 @@ mod mitm_http_tests {
             headers,
             body,
         }
+    }
+
+    /// h2 client that accepts extra request headers (used to prove a header list
+    /// larger than the old 4 KiB bound is accepted).
+    async fn client_send_h2_with_headers(
+        ca: &CertificateAuthority,
+        addr: SocketAddr,
+        host: &str,
+        path: &str,
+        extra: &[(&str, &str)],
+    ) -> Result<ClientOutcome, String> {
+        let tcp = tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(addr))
+            .await
+            .map_err(|_| "connect timed out".to_string())?
+            .map_err(|e| e.to_string())?;
+        let connector = TlsConnector::from(client_tls(ca, b"h2"));
+        let tls = connector
+            .connect(ServerName::try_from(host.to_string()).unwrap(), tcp)
+            .await
+            .map_err(|e| e.to_string())?;
+        let (mut sender, conn) = client_http2::Builder::new(TokioExecutor::new())
+            .handshake::<_, Full<Bytes>>(TokioIo::new(tls))
+            .await
+            .map_err(|e| e.to_string())?;
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+        let mut builder = Request::builder()
+            .method("GET")
+            .uri(format!("https://{host}{path}"));
+        for (name, value) in extra {
+            builder = builder.header(*name, *value);
+        }
+        let request = builder.body(Full::new(Bytes::new())).unwrap();
+        let response = tokio::time::timeout(Duration::from_secs(5), sender.send_request(request))
+            .await
+            .map_err(|_| "send timed out".to_string())?
+            .map_err(|e| e.to_string())?;
+        let status = response.status().as_u16();
+        let headers = response.headers().clone();
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .map_err(|e| e.to_string())?
+            .to_bytes()
+            .to_vec();
+        Ok(ClientOutcome {
+            status,
+            headers,
+            body,
+        })
     }
 
     fn gzip(data: &[u8]) -> Vec<u8> {
@@ -3794,9 +3945,178 @@ mod mitm_http_tests {
 
     #[test]
     fn mitm_http_h2_window_budget_is_bounded() {
-        assert_eq!(H1_MAX_BUF_SIZE, 8192);
-        assert_eq!(H2_PER_CONNECTION_BUDGET_BYTES, 40_960);
-        assert!(H2_PER_CONNECTION_BUDGET_BYTES <= 40_960);
+        assert_eq!(H1_MAX_BUF_SIZE, 65_536);
+        assert_eq!(H1_MAX_HEADERS, 256);
+        assert_eq!(H2_PER_CONNECTION_BUDGET_BYTES, 102_400);
+        assert!(H2_PER_CONNECTION_BUDGET_BYTES <= 102_400);
+    }
+
+    /// Device defect 5: a real app request head larger than the old 8 KiB bound
+    /// (a large `Cookie`/token) must traverse the bridge end to end and be
+    /// captured — not merely avoid a local error.
+    #[test]
+    fn mitm_http_h1_accepts_request_head_over_8kib() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let ca = temp_ca("h1bighead");
+            let host = "flow.test";
+            let observed = Arc::new(StdMutex::new(None::<String>));
+            let raw = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec();
+            let upstream = start_fixture(
+                Arc::clone(&ca),
+                host,
+                Fixture::RawH1Recorded {
+                    response: raw,
+                    observed: Arc::clone(&observed),
+                },
+            )
+            .await;
+            let (mut rx, sink) = recording_sink();
+            let ctx = BridgeContext::new(host, "conn-big-head", 0).with_sink(sink);
+            let bridge_addr = run_bridge(Arc::clone(&ca), host, upstream, b"http/1.1", ctx).await;
+
+            let cookie = format!("c={}", "a".repeat(12 * 1024));
+            assert!(
+                cookie.len() > 8 * 1024,
+                "precondition: the request head must exceed the old 8 KiB bound"
+            );
+            let out = client_send_h1_with_headers(
+                &ca,
+                bridge_addr,
+                host,
+                "/bank",
+                &[("cookie", cookie.as_str())],
+            )
+            .await
+            .expect("a request head over the old 8 KiB bound must succeed");
+            assert_eq!(out.status, 200);
+            assert_eq!(out.body, b"ok");
+
+            // Traversal proof: the origin really parsed the oversized head.
+            let forwarded = observed
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+                .expect("origin must have observed the request head");
+            assert!(
+                forwarded.len() > 8 * 1024,
+                "forwarded head was {} B, expected > 8 KiB",
+                forwarded.len()
+            );
+            assert!(forwarded.contains(&format!("cookie: {cookie}")));
+
+            // Capture proof: the exchange was recorded, not just forwarded.
+            let rec = next_record(&mut rx).await;
+            assert_eq!(rec.method, "GET");
+            assert_eq!(rec.url, "https://flow.test/bank");
+            assert_eq!(rec.status_code, 200);
+            assert!(!rec.mitm_failed);
+            reset_capture_sink();
+        });
+    }
+
+    /// The cap must stay a hard gate: a head beyond the new 64 KiB bound fails as
+    /// a clean `client_http` `MitmFailure` (never a panic, never forwarded).
+    #[test]
+    fn mitm_http_h1_request_head_beyond_limit_fails_cleanly() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let ca = temp_ca("h1toobig");
+            let host = "flow.test";
+            let raw = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec();
+            let upstream = start_fixture(Arc::clone(&ca), host, Fixture::RawH1(raw)).await;
+            let ctx = BridgeContext::new(host, "conn-too-big", 0);
+            let (bridge_addr, handle) =
+                run_bridge_returning(Arc::clone(&ca), host, upstream, b"http/1.1", ctx).await;
+
+            let tcp = TcpStream::connect(bridge_addr).await.unwrap();
+            let connector = TlsConnector::from(client_tls(&ca, b"http/1.1"));
+            let mut tls = connector
+                .connect(ServerName::try_from(host.to_string()).unwrap(), tcp)
+                .await
+                .unwrap();
+            let cookie = "a".repeat(H1_MAX_BUF_SIZE + 1024);
+            let head =
+                format!("GET /toobig HTTP/1.1\r\nHost: {host}\r\nCookie: {cookie}\r\n\r\n");
+            assert!(head.len() > H1_MAX_BUF_SIZE);
+            // Trickle the head so it accumulates across reads and trips the size
+            // check (a single large read can complete past the cap).
+            for chunk in head.as_bytes().chunks(4096) {
+                let _ = tls.write_all(chunk).await;
+                let _ = tls.flush().await;
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+
+            let outcome = tokio::time::timeout(Duration::from_secs(10), handle)
+                .await
+                .expect("bridge must finish, not hang")
+                .expect("bridge task must not panic");
+            let failure = outcome.expect_err("an over-limit head must not be forwarded");
+            assert_eq!(failure.stage(), MitmStage::ClientHttp);
+            assert!(
+                failure.message().to_ascii_lowercase().contains("too large"),
+                "expected a 'too large' parse failure, got: {}",
+                failure.message()
+            );
+            drop(tls);
+            reset_capture_sink();
+        });
+    }
+
+    /// Device defect 5: an h2 request header list over the old 4 KiB bound must be
+    /// accepted (and reach the origin), not rejected by
+    /// `SETTINGS_MAX_HEADER_LIST_SIZE`.
+    #[test]
+    fn mitm_http_h2_accepts_header_list_over_4kib() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let ca = temp_ca("h2bighead");
+            let host = "flow.test";
+            let observed = Arc::new(StdMutex::new(None::<Version>));
+            let upstream = start_fixture(
+                Arc::clone(&ca),
+                host,
+                Fixture::H2 {
+                    status: 200,
+                    body: b"ok".to_vec(),
+                    content_type: "text/plain",
+                    observed: Arc::clone(&observed),
+                },
+            )
+            .await;
+            let (mut rx, sink) = recording_sink();
+            let ctx = BridgeContext::new(host, "conn-h2-big-head", 0).with_sink(sink);
+            let bridge_addr = run_bridge(Arc::clone(&ca), host, upstream, b"h2", ctx).await;
+
+            let cookie = format!("c={}", "a".repeat(8 * 1024));
+            assert!(
+                cookie.len() > 4 * 1024,
+                "precondition: the header list must exceed the old 4 KiB bound"
+            );
+            let out = client_send_h2_with_headers(
+                &ca,
+                bridge_addr,
+                host,
+                "/bank",
+                &[("cookie", cookie.as_str())],
+            )
+            .await
+            .expect("an h2 header list over the old 4 KiB bound must be accepted");
+            assert_eq!(out.status, 200);
+            assert_eq!(out.body, b"ok");
+            assert_eq!(
+                *observed.lock().unwrap_or_else(|e| e.into_inner()),
+                Some(Version::HTTP_2),
+                "origin must have received the h2 request"
+            );
+
+            let rec = next_record(&mut rx).await;
+            assert_eq!(rec.method, "GET");
+            assert_eq!(rec.url, "https://flow.test/bank");
+            assert_eq!(rec.status_code, 200);
+            assert!(!rec.mitm_failed);
+            reset_capture_sink();
+        });
     }
 
     #[test]
@@ -4873,9 +5193,9 @@ mod mitm_ws_tests {
         assert_eq!(WS_PER_SIDE_BUDGET_BYTES, 53_248);
         assert_eq!(MITM_WS_TWO_SIDES_BYTES, 106_496);
         assert_eq!(MITM_RUSTLS_TWO_CONNS_BYTES, 32_768);
-        assert_eq!(MITM_H1_TWO_CONNS_BYTES, 32_768);
-        assert_eq!(MITM_H2_TWO_CONNS_BYTES, 81_920);
-        assert_eq!(MITM_SESSION_BUDGET_BYTES, 253_952);
+        assert_eq!(MITM_H1_TWO_CONNS_BYTES, 262_144);
+        assert_eq!(MITM_H2_TWO_CONNS_BYTES, 204_800);
+        assert_eq!(MITM_SESSION_BUDGET_BYTES, 606_208);
         assert!(MITM_SESSION_BUDGET_BYTES <= crate::limits::MITM_SESSION_BUFFER_MAX_BYTES);
 
         let config = ws_config();
