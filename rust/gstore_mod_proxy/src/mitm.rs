@@ -976,6 +976,70 @@ impl UpstreamTarget {
     }
 }
 
+/// Which boundary of a MITM session failed. Stable diagnostic labels so a
+/// device log attributes a `mitmFailed` to exactly one stage.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MitmStage {
+    ClientTls,
+    UpstreamDial,
+    UpstreamTls,
+    UpstreamHttp,
+    ClientHttp,
+}
+
+impl MitmStage {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            MitmStage::ClientTls => "client_tls",
+            MitmStage::UpstreamDial => "upstream_dial",
+            MitmStage::UpstreamTls => "upstream_tls",
+            MitmStage::UpstreamHttp => "upstream_http",
+            MitmStage::ClientHttp => "client_http",
+        }
+    }
+
+    fn from_upstream_kind(kind: &str) -> Self {
+        match kind {
+            "tls" => MitmStage::UpstreamTls,
+            _ => MitmStage::UpstreamDial,
+        }
+    }
+}
+
+/// A stage-tagged MITM failure. [`Self::stage`] drives the session-failure log
+/// (`session failed stage=<label>`); `Display` renders the same tag inline so
+/// request-level records (`record_mitm_failed`) are attributable too.
+#[derive(Debug)]
+pub(crate) struct MitmFailure {
+    stage: MitmStage,
+    message: String,
+}
+
+impl MitmFailure {
+    pub(crate) fn new(stage: MitmStage, message: impl Into<String>) -> Self {
+        Self {
+            stage,
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn stage(&self) -> MitmStage {
+        self.stage
+    }
+
+    pub(crate) fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+impl std::fmt::Display for MitmFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "stage={}: {}", self.stage.as_str(), self.message)
+    }
+}
+
+impl std::error::Error for MitmFailure {}
+
 /// Why an upstream re-origination attempt failed. `kind` is a stable label for
 /// logs/tests; `status`/`code` are the frozen failure contract.
 #[derive(Debug)]
@@ -1027,6 +1091,10 @@ impl UpstreamError {
         self.kind
     }
 
+    fn stage(&self) -> MitmStage {
+        MitmStage::from_upstream_kind(self.kind)
+    }
+
     pub(crate) fn message(&self) -> &str {
         &self.message
     }
@@ -1074,10 +1142,24 @@ pub(crate) async fn dial_upstream(
             metadata.dst_ip,
         ),
     );
-    adapter
-        .dial_tcp(&metadata)
-        .await
-        .map_err(UpstreamError::dial)
+    match adapter.dial_tcp(&metadata).await {
+        Ok(conn) => Ok(conn),
+        Err(e) => {
+            let error = UpstreamError::dial(e);
+            crate::log_message(
+                2,
+                &format!(
+                    "proxy.mitm: upstream dial failed via {} host={} dst_ip={:?} rule={}: {}",
+                    adapter.name(),
+                    target.host,
+                    metadata.dst_ip,
+                    rule,
+                    error.message(),
+                ),
+            );
+            Err(error)
+        }
+    }
 }
 
 /// Upstream-side TLS client settings.
@@ -1201,16 +1283,18 @@ impl TunnelUpstreamDialer {
 impl UpstreamDialer for TunnelUpstreamDialer {
     fn dial(
         &self,
-    ) -> Pin<Box<dyn Future<Output = Result<EstablishedUpstream, String>> + Send>> {
+    ) -> Pin<Box<dyn Future<Output = Result<EstablishedUpstream, MitmFailure>> + Send>> {
         let inner = Arc::clone(&self.inner);
         let target = self.target.clone();
         let tls = self.tls.clone();
         Box::pin(async move {
             let stream = open_upstream(&inner, &target, &tls)
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| MitmFailure::new(e.stage(), e.to_string()))?;
             let proto = HttpProtocol::from_alpn(stream.get_ref().1.alpn_protocol());
-            let client = UpstreamClient::establish(stream, proto).await?;
+            let client = UpstreamClient::establish(stream, proto)
+                .await
+                .map_err(|e| MitmFailure::new(MitmStage::UpstreamHttp, e))?;
             Ok(EstablishedUpstream { client, proto })
         })
     }
@@ -2198,7 +2282,7 @@ pub(crate) struct EstablishedUpstream {
 pub(crate) trait UpstreamDialer: Send + Sync {
     fn dial(
         &self,
-    ) -> Pin<Box<dyn Future<Output = Result<EstablishedUpstream, String>> + Send>>;
+    ) -> Pin<Box<dyn Future<Output = Result<EstablishedUpstream, MitmFailure>> + Send>>;
 }
 
 /// Everything the bridge needs beyond the two TLS streams.
@@ -2310,12 +2394,15 @@ impl BridgeState {
     }
     /// Resolve the upstream client, dialing through the tunnel on first use. A
     /// `kind:"local"` rewrite never reaches here, so it opens no socket.
-    async fn upstream_client(&self) -> Result<&EstablishedUpstream, String> {
+    async fn upstream_client(&self) -> Result<&EstablishedUpstream, MitmFailure> {
         self.upstream
             .get_or_try_init(|| async {
                 match &self.dialer {
                     Some(dialer) => dialer.dial().await,
-                    None => Err("bridge has no upstream".to_string()),
+                    None => Err(MitmFailure::new(
+                        MitmStage::UpstreamDial,
+                        "bridge has no upstream",
+                    )),
                 }
             })
             .await
@@ -2360,7 +2447,7 @@ impl BridgeState {
         let upstream = match self.upstream_client().await {
             Ok(upstream) => upstream,
             Err(e) => {
-                exchange.mark_failed(&e);
+                exchange.mark_failed(&e.to_string());
                 record_mitm_failed(&format!("http upstream: {e}"));
                 exchange.emit(true);
                 return upstream_failure_response();
@@ -2978,14 +3065,16 @@ pub(crate) async fn bridge<S, U>(
     client: TlsStream<S>,
     upstream: ClientTlsStream<U>,
     ctx: BridgeContext,
-) -> Result<(), String>
+) -> Result<(), MitmFailure>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     U: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let client_proto = HttpProtocol::from_alpn(client.get_ref().1.alpn_protocol());
     let upstream_proto = HttpProtocol::from_alpn(upstream.get_ref().1.alpn_protocol());
-    let upstream_client = UpstreamClient::establish(upstream, upstream_proto).await?;
+    let upstream_client = UpstreamClient::establish(upstream, upstream_proto)
+        .await
+        .map_err(|e| MitmFailure::new(MitmStage::UpstreamHttp, e))?;
     let cell = tokio::sync::OnceCell::new();
     let _ = cell.set(EstablishedUpstream {
         client: upstream_client,
@@ -3000,7 +3089,7 @@ pub(crate) async fn bridge_deferred<S>(
     client: TlsStream<S>,
     dialer: Arc<dyn UpstreamDialer>,
     ctx: BridgeContext,
-) -> Result<(), String>
+) -> Result<(), MitmFailure>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -3014,7 +3103,7 @@ async fn serve_client<S>(
     ctx: BridgeContext,
     upstream: Option<tokio::sync::OnceCell<EstablishedUpstream>>,
     dialer: Option<Arc<dyn UpstreamDialer>>,
-) -> Result<(), String>
+) -> Result<(), MitmFailure>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -3044,7 +3133,7 @@ where
                 .serve_connection(io, service)
                 .with_upgrades()
                 .await
-                .map_err(|e| e.to_string())
+                .map_err(|e| MitmFailure::new(MitmStage::ClientHttp, e.to_string()))
         }
         HttpProtocol::H2 => {
             let mut builder = server_http2::Builder::new(TokioExecutor::new());
@@ -3052,7 +3141,7 @@ where
             builder
                 .serve_connection(io, service)
                 .await
-                .map_err(|e| e.to_string())
+                .map_err(|e| MitmFailure::new(MitmStage::ClientHttp, e.to_string()))
         }
     }
 }
@@ -3774,16 +3863,18 @@ mod mitm_http_tests {
     impl UpstreamDialer for TunnelDialer {
         fn dial(
             &self,
-        ) -> Pin<Box<dyn Future<Output = Result<EstablishedUpstream, String>> + Send>> {
+        ) -> Pin<Box<dyn Future<Output = Result<EstablishedUpstream, MitmFailure>> + Send>> {
             let inner = Arc::clone(&self.inner);
             let target = self.target.clone();
             let tls = self.tls.clone();
             Box::pin(async move {
                 let stream = open_upstream(&inner, &target, &tls)
                     .await
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| MitmFailure::new(e.stage(), e.to_string()))?;
                 let proto = HttpProtocol::from_alpn(stream.get_ref().1.alpn_protocol());
-                let client = UpstreamClient::establish(stream, proto).await?;
+                let client = UpstreamClient::establish(stream, proto)
+                    .await
+                    .map_err(|e| MitmFailure::new(MitmStage::UpstreamHttp, e))?;
                 Ok(EstablishedUpstream { client, proto })
             })
         }
@@ -3794,8 +3885,13 @@ mod mitm_http_tests {
     impl UpstreamDialer for FailingDialer {
         fn dial(
             &self,
-        ) -> Pin<Box<dyn Future<Output = Result<EstablishedUpstream, String>> + Send>> {
-            Box::pin(async { Err("test: upstream unreachable".to_string()) })
+        ) -> Pin<Box<dyn Future<Output = Result<EstablishedUpstream, MitmFailure>> + Send>> {
+            Box::pin(async {
+                Err(MitmFailure::new(
+                    MitmStage::UpstreamDial,
+                    "test: upstream unreachable",
+                ))
+            })
         }
     }
 
@@ -5074,6 +5170,29 @@ mod tests {
         assert_eq!(pem_decode(&pem).unwrap(), der);
         assert!(pem_decode("garbage").is_none());
     }
+
+    /// The five stage labels are a diagnostic contract: a device log grep and
+    /// the session-failure line depend on these exact spellings.
+    #[test]
+    fn mitm_stage_labels_are_stable() {
+        assert_eq!(MitmStage::ClientTls.as_str(), "client_tls");
+        assert_eq!(MitmStage::UpstreamDial.as_str(), "upstream_dial");
+        assert_eq!(MitmStage::UpstreamTls.as_str(), "upstream_tls");
+        assert_eq!(MitmStage::UpstreamHttp.as_str(), "upstream_http");
+        assert_eq!(MitmStage::ClientHttp.as_str(), "client_http");
+        let failure = MitmFailure::new(MitmStage::UpstreamHttp, "boom");
+        assert!(failure.to_string().contains("stage=upstream_http"));
+        assert_eq!(failure.message(), "boom");
+    }
+
+    /// A forced upstream failure maps to the right stage: a refused/hung dial is
+    /// `upstream_dial`, a certificate/handshake rejection is `upstream_tls`.
+    #[test]
+    fn mitm_upstream_error_stage_mapping() {
+        assert_eq!(UpstreamError::dial("boom").stage(), MitmStage::UpstreamDial);
+        assert_eq!(UpstreamError::no_route().stage(), MitmStage::UpstreamDial);
+        assert_eq!(UpstreamError::tls("bad cert").stage(), MitmStage::UpstreamTls);
+    }
 }
 
 /// Todo 5 acceptance: rustls TLS termination with a per-SNI certificate
@@ -5797,6 +5916,38 @@ mod mitm_upstream_tests {
             meow_dns::Pool::new(net, Arc::new(meow_dns::MemoryStore::new(1024))).unwrap(),
         ));
         Arc::new(resolver)
+    }
+
+    /// A forced upstream TLS failure (TCP accepted then reset before the
+    /// handshake completes) is tagged `upstream_tls`, not a generic dial error.
+    #[test]
+    fn mitm_upstream_tcp_reset_maps_to_upstream_tls_stage() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let dir = temp_dir("stage-tls");
+            let ca = Arc::new(CertificateAuthority::generate(dir.to_str().unwrap()).expect("ca"));
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            tokio::spawn(async move {
+                if let Ok((tcp, _)) = listener.accept().await {
+                    drop(tcp);
+                }
+            });
+            let inner = tunnel_with(&["DOMAIN,stall.test,DIRECT"], Vec::new());
+            let target = UpstreamTarget::new("stall.test", port)
+                .with_dst_ip(IpAddr::V4(Ipv4Addr::LOCALHOST));
+            let dialer = TunnelUpstreamDialer::new(
+                inner,
+                target,
+                UpstreamTlsConfig::with_roots(trusted_roots(&ca)),
+            );
+            let failure = dialer
+                .dial()
+                .await
+                .err()
+                .expect("a reset TCP must fail the upstream TLS handshake");
+            assert_eq!(failure.stage().as_str(), "upstream_tls");
+        });
     }
 
     /// The default is strict: `skip_cert_verify == false`, and an untrusted leaf

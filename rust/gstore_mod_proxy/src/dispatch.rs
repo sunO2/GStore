@@ -28,8 +28,8 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use crate::capture::{self, AppAttribution};
 use crate::dns::DnsEngine;
 use crate::mitm::{
-    self, BridgeContext, CertificateAuthority, MitmGateObserver, MitmTls, TunnelUpstreamDialer,
-    UpstreamDialer, UpstreamTarget,
+    self, BridgeContext, CertificateAuthority, MitmFailure, MitmGateObserver, MitmStage, MitmTls,
+    TunnelUpstreamDialer, UpstreamDialer, UpstreamTarget,
 };
 use crate::sniff;
 
@@ -273,9 +273,17 @@ where
     spawn_isolated(async move {
         // The guard releases the slot when the session ends, panic included.
         let _guard = guard;
-        if let MitmStreamOutcome::Failed(e) = mitigate(stream, ca, host, observer, dialer, ctx).await
+        if let MitmStreamOutcome::Failed(e) =
+            mitigate(stream, ca, host.clone(), observer, dialer, ctx).await
         {
-            crate::log_message(2, &format!("proxy.mitm: session failed: {e}"));
+            crate::log_message(
+                2,
+                &format!(
+                    "proxy.mitm: session failed stage={} host={host}: {}",
+                    e.stage().as_str(),
+                    e.message(),
+                ),
+            );
         }
     });
     Ok(())
@@ -306,8 +314,8 @@ where
 pub(crate) enum MitmStreamOutcome {
     /// TLS termination succeeded and the bridge finished normally.
     Terminated,
-    /// Handshake/parse/upstream failed; the flow was closed.
-    Failed(String),
+    /// A stage-tagged failure; the flow was closed.
+    Failed(MitmFailure),
 }
 
 /// Run TLS termination over `stream` for `host`, then bridge the decrypted
@@ -335,21 +343,22 @@ where
             match mitm::bridge_deferred(tls, dialer, ctx).await {
                 Ok(()) => MitmStreamOutcome::Terminated,
                 Err(e) => {
-                    observer.on_failed(&host, &e);
+                    observer.on_failed(&host, &e.to_string());
                     mitm::record_mitm_failed(&format!("bridge: {e}"));
                     MitmStreamOutcome::Failed(e)
                 }
             }
         }
         MitmTls::Passthrough(_stream) => {
-            let reason = "unexpected passthrough".to_string();
-            observer.on_failed(&host, &reason);
-            MitmStreamOutcome::Failed(reason)
+            let e = MitmFailure::new(MitmStage::ClientTls, "unexpected passthrough");
+            observer.on_failed(&host, &e.to_string());
+            MitmStreamOutcome::Failed(e)
         }
         MitmTls::Failed(e) => {
+            let failure = MitmFailure::new(MitmStage::ClientTls, e.to_string());
             observer.on_failed(&host, &e.to_string());
-            mitm::record_mitm_failed(&e.to_string());
-            MitmStreamOutcome::Failed(e.to_string())
+            mitm::record_mitm_failed(&failure.to_string());
+            MitmStreamOutcome::Failed(failure)
         }
     }
 }
@@ -540,9 +549,15 @@ mod mitm_gate_tests {
     impl UpstreamDialer for UnreachableDialer {
         fn dial(
             &self,
-        ) -> Pin<Box<dyn Future<Output = Result<mitm::EstablishedUpstream, String>> + Send>>
-        {
-            Box::pin(async { Err("test dialer: no upstream".to_string()) })
+        ) -> Pin<
+            Box<dyn Future<Output = Result<mitm::EstablishedUpstream, MitmFailure>> + Send>,
+        > {
+            Box::pin(async {
+                Err(MitmFailure::new(
+                    MitmStage::UpstreamDial,
+                    "test dialer: no upstream",
+                ))
+            })
         }
     }
 
@@ -848,7 +863,7 @@ mod mitm_e2e_tests {
     use hyper::Uri;
     use rustls::pki_types::ServerName;
     use rustls::RootCertStore;
-    use tokio::io::DuplexStream;
+    use tokio::io::{AsyncWriteExt, DuplexStream};
     use tokio::net::TcpListener;
     use tokio_rustls::{TlsAcceptor, TlsConnector};
     use tokio_tungstenite::tungstenite::ClientRequestBuilder;
@@ -1388,6 +1403,56 @@ mod mitm_e2e_tests {
             let sibling = tokio::spawn(async { 7u32 });
             assert_eq!(sibling.await.unwrap(), 7, "dataplane runtime survives the failure");
             drain_inflight().await;
+            teardown();
+        });
+    }
+
+    struct NeverDialer;
+
+    impl UpstreamDialer for NeverDialer {
+        fn dial(
+            &self,
+        ) -> Pin<Box<dyn Future<Output = Result<mitm::EstablishedUpstream, MitmFailure>> + Send>>
+        {
+            Box::pin(async {
+                Err(MitmFailure::new(
+                    MitmStage::UpstreamDial,
+                    "test: never dials",
+                ))
+            })
+        }
+    }
+
+    /// A forced client TLS failure must appear in the session log with its
+    /// stage label, so a device log attributes the failure instead of showing a
+    /// bare hyper string.
+    #[test]
+    fn mitm_session_failure_log_is_stage_tagged() {
+        let rt = current_thread();
+        rt.block_on(async {
+            let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+            let (_ca, _inner) = setup(true, &[0]);
+            crate::logging::reset_for_tests();
+
+            let (mut client, server) = tokio::io::duplex(4096);
+            let ctx = BridgeContext::new("flow.test", "conn-stage", 0);
+            begin_mitm(server, Some("flow.test"), Arc::new(NeverDialer), ctx)
+                .expect("gate must start the session");
+            client.write_all(&[0xffu8; 32]).await.unwrap();
+            client.flush().await.unwrap();
+
+            drain_inflight().await;
+            let messages: Vec<String> = crate::logging::snapshot(0, 200, None)
+                .records
+                .into_iter()
+                .map(|r| r.message)
+                .collect();
+            assert!(
+                messages.iter().any(|m| {
+                    m.contains("session failed stage=client_tls") && m.contains("host=flow.test")
+                }),
+                "a client TLS failure must be stage-tagged: {messages:?}"
+            );
             teardown();
         });
     }
