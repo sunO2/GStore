@@ -485,6 +485,48 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('未匹配骨架的非 0 capture 自成一行，不被丢弃', (tester) async {
+    _useLargeViewport(tester);
+    final fake = _FakeRequestsFacade(
+      page: RequestPage(
+        records: <RequestRecord>[_record(recordId: 7)],
+        firstCursor: 7,
+        nextCursor: 7,
+        retained: 1,
+      ),
+      capturePage: CapturePage(
+        records: <CaptureRecord>[
+          // `requestRecordId != 0`，但骨架里不存在 id=999 的 request，
+          // 该 capture 必须派生独立行，绝不能被 join 丢弃。
+          _capture(
+            recordId: 42,
+            requestRecordId: 999,
+            host: 'unmatched.test',
+            method: 'DELETE',
+            url: 'https://unmatched.test/gone',
+            statusCode: 418,
+            protocol: 'h2',
+          ),
+        ],
+      ),
+    );
+    await tester.pumpWidget(
+      _host(ProxyRequestsPage(facade: fake, initialLive: false)),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    // 未匹配骨架的 capture 持独立 key，并携带自身 HTTP 详情。
+    expect(find.byKey(const ValueKey('capture_row_42')), findsOneWidget);
+    expect(find.text('DELETE'), findsOneWidget);
+    expect(find.text('unmatched.test'), findsOneWidget);
+    expect(find.text('/gone'), findsOneWidget);
+    expect(find.text('418'), findsOneWidget);
+    // 骨架行仍在（未匹配 capture 既不被丢弃也不顶替骨架行）。
+    expect(find.byKey(const ValueKey('request_row_7')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('搜索框：域名 / IP / 方法 / 路径 子串本地过滤且可逆', (tester) async {
     _useLargeViewport(tester);
     final fake = _FakeRequestsFacade(
