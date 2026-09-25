@@ -542,6 +542,10 @@ pub(crate) const CLIENT_TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10
 pub(crate) const UPSTREAM_TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Ceiling on the upstream hyper HTTP/1.1 or HTTP/2 handshake.
 pub(crate) const UPSTREAM_HTTP_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Ceiling on waiting for an upstream response head after the request was sent.
+/// A hung origin (TLS accepted, request written, no response) must not stall the
+/// client connection until the app aborts.
+pub(crate) const UPSTREAM_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Whole-session deadline in milliseconds (default 10 minutes). Reclaims the
 /// in-flight slot even when a later stage (an idle HTTP connection, a stalled
 /// body) never completes. The detached WS pump is excluded: it holds no slot
@@ -564,6 +568,27 @@ pub(crate) fn set_session_deadline_for_tests(ms: u64) {
 #[cfg(test)]
 pub(crate) fn reset_session_deadline_for_tests() {
     SESSION_DEADLINE_MS.store(MITM_SESSION_DEADLINE_MS, Ordering::Relaxed);
+}
+
+static UPSTREAM_RESPONSE_TIMEOUT_MS: AtomicU64 = AtomicU64::new(30_000);
+
+/// The upstream response ceiling in effect. Production uses
+/// [`UPSTREAM_RESPONSE_TIMEOUT`]; tests shorten it to exercise the timeout path.
+pub(crate) fn upstream_response_timeout() -> Duration {
+    Duration::from_millis(UPSTREAM_RESPONSE_TIMEOUT_MS.load(Ordering::Relaxed))
+}
+
+#[cfg(test)]
+pub(crate) fn set_upstream_response_timeout_for_tests(ms: u64) {
+    UPSTREAM_RESPONSE_TIMEOUT_MS.store(ms, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+pub(crate) fn reset_upstream_response_timeout_for_tests() {
+    UPSTREAM_RESPONSE_TIMEOUT_MS.store(
+        UPSTREAM_RESPONSE_TIMEOUT.as_millis() as u64,
+        Ordering::Relaxed,
+    );
 }
 
 /// Why the MITM acceptor could not terminate TLS.
@@ -2573,11 +2598,25 @@ impl BridgeState {
                 return simple_response(StatusCode::INTERNAL_SERVER_ERROR);
             }
         };
-        let (response, permit) = match upstream.client.send(upstream_request).await {
-            Ok(pair) => pair,
-            Err(e) => {
+        let (response, permit) = match tokio::time::timeout(
+            upstream_response_timeout(),
+            upstream.client.send(upstream_request),
+        )
+        .await
+        {
+            Ok(Ok(pair)) => pair,
+            Ok(Err(e)) => {
                 exchange.mark_failed(&e.to_string());
                 record_mitm_failed(&format!("http upstream: {e}"));
+                exchange.emit(true);
+                return upstream_failure_response();
+            }
+            Err(_) => {
+                exchange.mark_failed("upstream response timed out");
+                record_mitm_failed(&format!(
+                    "http upstream: response timed out after {}ms",
+                    upstream_response_timeout().as_millis()
+                ));
                 exchange.emit(true);
                 return upstream_failure_response();
             }
@@ -2698,10 +2737,22 @@ impl BridgeState {
                 return simple_response(StatusCode::INTERNAL_SERVER_ERROR);
             }
         };
-        let (mut response, permit) = match upstream.client.send(upstream_request).await {
-            Ok(pair) => pair,
-            Err(e) => {
+        let (mut response, permit) = match tokio::time::timeout(
+            upstream_response_timeout(),
+            upstream.client.send(upstream_request),
+        )
+        .await
+        {
+            Ok(Ok(pair)) => pair,
+            Ok(Err(e)) => {
                 record_mitm_failed(&format!("ws upstream: {e}"));
+                return simple_response(StatusCode::BAD_GATEWAY);
+            }
+            Err(_) => {
+                record_mitm_failed(&format!(
+                    "ws upstream: response timed out after {}ms",
+                    upstream_response_timeout().as_millis()
+                ));
                 return simple_response(StatusCode::BAD_GATEWAY);
             }
         };

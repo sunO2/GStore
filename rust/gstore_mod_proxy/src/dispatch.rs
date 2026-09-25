@@ -893,7 +893,7 @@ mod mitm_e2e_tests {
     use hyper::Uri;
     use rustls::pki_types::ServerName;
     use rustls::RootCertStore;
-    use tokio::io::{AsyncWriteExt, DuplexStream};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
     use tokio::net::TcpListener;
     use tokio_rustls::{TlsAcceptor, TlsConnector};
     use tokio_tungstenite::tungstenite::ClientRequestBuilder;
@@ -1021,6 +1021,20 @@ mod mitm_e2e_tests {
                 .keep_alive(false)
                 .serve_connection(hyper_util::rt::TokioIo::new(tls), service)
                 .await;
+        });
+        port
+    }
+
+    async fn start_hanging_tls_fixture(ca: Arc<CertificateAuthority>, host: &str) -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let config = ca.server_config(host).unwrap();
+        tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut tls = TlsAcceptor::from(config).accept(tcp).await.unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = tls.read(&mut buf).await;
+            std::future::pending::<()>().await;
         });
         port
     }
@@ -1561,6 +1575,71 @@ mod mitm_e2e_tests {
             drain_inflight().await;
             teardown();
         });
+    }
+
+    #[test]
+    fn mitm_e2e_upstream_response_timeout_is_failsafe_and_releases_slot() {
+        let rt = current_thread();
+        rt.block_on(async {
+            let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+            let (_ca, inner) = setup(true, &[0]);
+            let port = start_hanging_tls_fixture(mitm::ca().unwrap(), "flow.test").await;
+            capture_config(&[port], true);
+            mitm::set_upstream_response_timeout_for_tests(200);
+            let _reset = UpstreamTimeoutReset;
+            let ca = mitm::ca().unwrap();
+            let before = mitm::mitm_failed_count();
+
+            run_flow(Arc::clone(&inner), port, sniffer(&[port]), move |io| async move {
+                let outcome = tokio::time::timeout(Duration::from_secs(2), async {
+                    let tls = TlsConnector::from(client_tls(&ca, b"http/1.1"))
+                        .connect(ServerName::try_from("flow.test").unwrap(), io)
+                        .await
+                        .expect("client TLS");
+                    let (mut sender, conn) =
+                        hyper::client::conn::http1::handshake::<_, Full<Bytes>>(
+                            hyper_util::rt::TokioIo::new(tls),
+                        )
+                        .await
+                        .expect("client h1 handshake");
+                    tokio::spawn(async move {
+                        let _ = conn.await;
+                    });
+                    let request = hyper::Request::builder()
+                        .method("GET")
+                        .uri("/hang")
+                        .header(hyper::header::HOST, "flow.test")
+                        .body(Full::new(Bytes::new()))
+                        .unwrap();
+                    let response = sender.send_request(request).await.expect("fail-safe response");
+                    response.status().as_u16()
+                })
+                .await;
+                assert_eq!(
+                    outcome.expect(
+                        "a hung origin must not stall the client past the upstream response timeout"
+                    ),
+                    mitm::UPSTREAM_FAILURE_STATUS,
+                    "a hung origin must degrade to the structured upstream-failure status"
+                );
+            })
+            .await;
+
+            assert!(
+                mitm::mitm_failed_count() > before,
+                "an upstream response timeout must be recorded as mitmFailed"
+            );
+            drain_inflight().await;
+            teardown();
+        });
+    }
+
+    struct UpstreamTimeoutReset;
+
+    impl Drop for UpstreamTimeoutReset {
+        fn drop(&mut self) {
+            mitm::reset_upstream_response_timeout_for_tests();
+        }
     }
 
     struct NeverDialer;
