@@ -1,11 +1,15 @@
-/// 「请求调试」响应查看器（plan todo 32）测试。
+/// 「请求调试」响应查看器测试。
 ///
 /// 覆盖验收标准：
-/// - 各 `Content-Type` 渲染（JSON 美化 / XML 缩进 / HTML / 文本）；
+/// - 各 `Content-Type` 渲染（JSON 高亮 / XML 缩进 / HTML / 文本）；
 /// - `格式化 / 原始` 切换**确实改变**渲染文本；
+/// - JSON 高亮树：多 token 样式、行号 gutter、折叠子树、全量搜索；
+/// - 超过 256KB 的 JSON 回退到分块纯文本路径；
 /// - Cookie 表（名称 / 值 / 域 / 过期）行内容精确；
 /// - 超长 Body 分块（首屏只建首个分块的字符数，展开后增长）；
+/// - 搜索基于完整 bodyText，可展开可见文本以包含命中位置；
 /// - 二进制 / 非文本安全占位，不渲染原始字节、不崩；
+/// - 360dp 下头部 / Cookie 表无溢出；
 /// - `复制` 写入剪贴板；`保存为改写响应` 生成的规则字段精确。
 library;
 
@@ -55,11 +59,58 @@ Future<void> _pump(WidgetTester tester, DebugResponse response,
   await tester.pumpAndSettle();
 }
 
-String _textOf(WidgetTester tester, String key) =>
-    tester.widget<SelectableText>(find.byKey(Key(key))).data ?? '';
+/// 读取某个 key 下文本控件（`Text` / `SelectableText`）的纯文本。
+///
+/// 新的高亮/搜索渲染使用 `Text.rich` / `SelectableText.rich`（`data == null`，
+/// `textSpan != null`），故不能只读 `SelectableText.data`。
+String _plainTextOf(WidgetTester tester, String key) {
+  final finder = find.byKey(Key(key));
+  if (finder.evaluate().isEmpty) return '';
+  final widget = tester.widget(finder);
+  if (widget is SelectableText) {
+    return widget.data ?? widget.textSpan?.toPlainText() ?? '';
+  }
+  if (widget is Text) {
+    return widget.data ?? widget.textSpan?.toPlainText() ?? '';
+  }
+  return '';
+}
 
 String _bodyText(WidgetTester tester, {String prefix = 'response-body'}) =>
-    _textOf(tester, '$prefix-text');
+    _plainTextOf(tester, '$prefix-text');
+
+/// JSON 高亮树中渲染的全部文本（含 gutter 行号）。
+String _treeText(WidgetTester tester) {
+  final buffer = StringBuffer();
+  final finder = find.descendant(
+    of: find.byKey(const Key('response-body-tree')),
+    matching: find.byType(Text),
+  );
+  for (final element in finder.evaluate()) {
+    final text = element.widget as Text;
+    buffer.writeln(text.data ?? text.textSpan?.toPlainText() ?? '');
+  }
+  return buffer.toString();
+}
+
+/// JSON 高亮树中出现的 token 颜色集合（用于证明存在多种 token 样式）。
+Set<Color?> _treeTokenColors(WidgetTester tester) {
+  final colors = <Color?>{};
+  final finder = find.descendant(
+    of: find.byKey(const Key('response-body-tree')),
+    matching: find.byType(Text),
+  );
+  for (final element in finder.evaluate()) {
+    final text = element.widget as Text;
+    text.textSpan?.visitChildren((span) {
+      if (span is TextSpan && span.text != null && span.style != null) {
+        colors.add(span.style!.color);
+      }
+      return true;
+    });
+  }
+  return colors;
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -100,7 +151,7 @@ void main() {
   });
 
   group('Body · 按 Content-Type 渲染 + 格式化切换', () {
-    testWidgets('application/json → 格式化缩进；原始为单行原文', (tester) async {
+    testWidgets('application/json → 高亮树格式化；原始为单行原文', (tester) async {
       const raw = '{"a":1,"b":[2,3]}';
       await _pump(
         tester,
@@ -112,13 +163,16 @@ void main() {
         ),
       );
 
-      final formatted = _bodyText(tester);
+      expect(find.byKey(const Key('response-body-tree')), findsOneWidget);
+      expect(find.byKey(const Key('response-body-gutter')), findsOneWidget);
+      final formatted = _treeText(tester);
       expect(formatted, contains('"a": 1'));
       expect(formatted, contains('\n'));
 
       await tester.tap(find.byKey(const Key('response-format-raw')));
       await tester.pumpAndSettle();
       expect(_bodyText(tester), raw);
+      expect(find.byKey(const Key('response-body-tree')), findsNothing);
       expect(tester.takeException(), isNull);
     });
 
@@ -184,6 +238,7 @@ void main() {
       );
       expect(_bodyText(tester), raw);
       expect(find.textContaining('JSON 解析失败'), findsOneWidget);
+      expect(find.byKey(const Key('response-body-tree')), findsNothing);
       expect(tester.takeException(), isNull);
     });
 
@@ -201,6 +256,107 @@ void main() {
       await tester.tap(find.byKey(const Key('response-tab-raw')));
       await tester.pumpAndSettle();
       expect(_bodyText(tester, prefix: 'response-raw'), raw);
+      expect(tester.takeException(), isNull);
+    });
+  });
+
+  group('JSON 高亮树 · token / gutter / 折叠 / 搜索', () {
+    testWidgets('多类型 JSON → 多种 token 样式 + gutter', (tester) async {
+      await _pump(
+        tester,
+        _response(
+          headers: const <String, List<String>>{
+            'content-type': <String>['application/json'],
+          },
+          body: '{"a":1,"b":[true,null,"s"],"c":3.5}',
+        ),
+      );
+
+      final tree = find.byKey(const Key('response-body-tree'));
+      expect(tree, findsOneWidget);
+      expect(find.byKey(const Key('response-body-gutter')), findsOneWidget);
+      // RichText / TextSpan 数量 > 1（高亮要求多种 token 样式）。
+      expect(
+        find.descendant(of: tree, matching: find.byType(RichText)),
+        findsWidgets,
+      );
+      expect(_treeTokenColors(tester).length, greaterThan(1));
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('折叠子树 → 该子树文本消失', (tester) async {
+      const raw = '{"outer":{"marker":"unique1337"},"tail":1}';
+      await _pump(
+        tester,
+        _response(
+          headers: const <String, List<String>>{
+            'content-type': <String>['application/json'],
+          },
+          body: raw,
+        ),
+      );
+
+      expect(find.textContaining('unique1337'), findsOneWidget);
+      final lines = tryPrettyJson(raw)!.split('\n');
+      final markerLine = lines.indexWhere((line) => line.contains('unique1337'));
+      final region = jsonFoldRegions(lines).firstWhere(
+        (r) => r.openLine < markerLine && r.closeLine >= markerLine,
+      );
+      expect(region.id, isNonNegative);
+
+      await tester.tap(
+        find.byKey(Key('response-body-collapse-${region.id}')),
+      );
+      await tester.pumpAndSettle();
+      expect(find.textContaining('unique1337'), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('搜索基于完整 bodyText，展开可见文本以包含命中位置', (tester) async {
+      const marker = 'NEEDLE_AT_TAIL_917';
+      final huge = 'A' * 190000 + marker + 'B' * 9000;
+      await _pump(
+        tester,
+        _response(
+          headers: const <String, List<String>>{
+            'content-type': <String>['text/plain'],
+          },
+          body: huge,
+        ),
+      );
+
+      expect(find.byKey(const Key('response-body-text')), findsOneWidget);
+      expect(find.byKey(const Key('response-body-search-input')), findsOneWidget);
+      // 搜索前只渲染前 `chunkChars` 个字符，命中不在可见文本中。
+      expect(_bodyText(tester).contains(marker), isFalse);
+
+      await tester.enterText(
+        find.byKey(const Key('response-body-search-input')),
+        marker,
+      );
+      await tester.pumpAndSettle();
+
+      // 不再引用私有 `_visibleChars`：可见文本已包含命中且超过单块长度。
+      expect(_bodyText(tester).contains(marker), isTrue);
+      expect(_bodyText(tester).length, greaterThan(ResponseViewer.chunkChars));
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('超过 256KB 的 JSON → 分块纯文本路径，无异常', (tester) async {
+      final big = '{"data":"${'x' * (256 * 1024)}"}';
+      await _pump(
+        tester,
+        _response(
+          headers: const <String, List<String>>{
+            'content-type': <String>['application/json'],
+          },
+          body: big,
+        ),
+      );
+
+      expect(find.byKey(const Key('response-body-more')), findsOneWidget);
+      expect(find.byKey(const Key('response-body-tree')), findsNothing);
+      expect(find.byKey(const Key('response-body-gutter')), findsNothing);
       expect(tester.takeException(), isNull);
     });
   });
@@ -291,6 +447,41 @@ void main() {
       expect(find.text('nginx'), findsOneWidget);
       expect(tester.takeException(), isNull);
     });
+
+    testWidgets('360dp 下头部 / Cookie 表无溢出', (tester) async {
+      tester.view.physicalSize = const Size(360, 640);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+
+      final response = _response(
+        headers: const <String, List<String>>{
+          'content-type': <String>['text/plain'],
+          'content-security-policy-report-only': <String>[
+            'default-src https:; report-uri https://example.com/report',
+          ],
+          'set-cookie': <String>[
+            'session=abcdefghijklmnopqrstuvwxyz0123456789; Path=/; Domain=.example.com',
+          ],
+        },
+        body: 'ok',
+        cookies: const <DebugCookie>[
+          DebugCookie(
+            name: 'session',
+            value: 'abcdefghijklmnopqrstuvwxyz0123456789',
+            domain: 'api.example.com',
+          ),
+        ],
+      );
+      await _pump(tester, response);
+
+      await tester.tap(find.byKey(const Key('response-tab-headers')));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+
+      await tester.tap(find.byKey(const Key('response-tab-cookies')));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+    });
   });
 
   group('重发重置', () {
@@ -316,10 +507,10 @@ void main() {
       await tester.pumpAndSettle();
       expect(_bodyText(tester, prefix: 'response-raw'), '{"first":1}');
 
-      // 重发：换一个响应实例，查看器应重置回 Body + 格式化。
+      // 重发：换一个响应实例，查看器应重置回 Body + 格式化（高亮树）。
       await _pump(tester, second);
-      expect(_bodyText(tester), contains('"second": 2'));
-      expect(find.byKey(const Key('response-body-text')), findsOneWidget);
+      expect(_treeText(tester), contains('"second": 2'));
+      expect(find.byKey(const Key('response-body-gutter')), findsOneWidget);
       expect(tester.takeException(), isNull);
     });
   });
@@ -458,6 +649,38 @@ void main() {
         isTrue,
       );
       expect(tester.takeException(), isNull);
+    });
+  });
+
+  group('JSON 词法 / 折叠（纯逻辑）', () {
+    test('tokenizeJsonLine 识别 key / string / number / keyword / 标点', () {
+      final kinds = tokenizeJsonLine('  "name": "value", "ok": true, "n": -3.5e2')
+          .map((token) => token.kind)
+          .toSet();
+      expect(kinds, contains(JsonTokenKind.key));
+      expect(kinds, contains(JsonTokenKind.string));
+      expect(kinds, contains(JsonTokenKind.number));
+      expect(kinds, contains(JsonTokenKind.keyword));
+      expect(kinds, contains(JsonTokenKind.punctuation));
+    });
+
+    test('jsonFoldRegions 找到对象与数组区间', () {
+      const raw = '{"a":[1,2],"b":{"c":3}}';
+      final regions = jsonFoldRegions(tryPrettyJson(raw)!.split('\n'));
+      expect(regions.length, 3);
+      expect(regions.map((r) => r.id).toSet().length, 3);
+      for (final region in regions) {
+        expect(region.closeLine, greaterThan(region.openLine));
+      }
+    });
+
+    test('jsonFoldRegions 忽略空容器单行', () {
+      final regions = jsonFoldRegions(
+        tryPrettyJson('{"a":{},"b":[]}')!.split('\n'),
+      );
+      // 仅根对象形成区间；内联的空 `{}` / `[]` 不新增区间。
+      expect(regions.length, 1);
+      expect(regions.single.openLine, 0);
     });
   });
 }

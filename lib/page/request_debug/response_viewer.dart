@@ -70,6 +70,9 @@ class ResponseViewer extends StatefulWidget {
   /// 单个文本分块的字符上限（超出即折叠，避免一次性布局超长文本）。
   static const int chunkChars = 20000;
 
+  /// JSON 高亮 / 折叠树的体量上限；超过则退回分块纯文本渲染。
+  static const int maxJsonHighlightChars = 256 * 1024;
+
   @override
   State<ResponseViewer> createState() => _ResponseViewerState();
 }
@@ -82,17 +85,34 @@ class _ResponseViewerState extends State<ResponseViewer> {
   int _visibleChars = ResponseViewer.chunkChars;
   bool _saving = false;
 
+  /// Body 内搜索：输入控制器 + 命中状态（命中项基于**完整**文本计算）。
+  final TextEditingController _searchController = TextEditingController();
+  String _searchQuery = '';
+  int? _searchOffset;
+  bool _searchMiss = false;
+
+  /// 已折叠的 JSON 容器区间 id（== 开括号所在行号）。
+  final Set<int> _collapsed = <int>{};
+
   DebugResponse get _response => widget.response;
 
   @override
   void didUpdateWidget(ResponseViewer oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // 换了一次响应（重发）：回到 Body 默认态并重置分块。
+    // 换了一次响应（重发）：回到 Body 默认态并重置分块 / 搜索 / 折叠。
     if (!identical(oldWidget.response, widget.response)) {
       _tab = ResponseViewerTab.body;
       _format = ResponseBodyFormat.formatted;
       _visibleChars = ResponseViewer.chunkChars;
+      _clearSearch();
+      _collapsed.clear();
     }
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
   }
 
   // ==================== 纯逻辑（可单测） ====================
@@ -127,6 +147,8 @@ class _ResponseViewerState extends State<ResponseViewer> {
     if (_format == ResponseBodyFormat.raw) return raw;
     switch (_bodyKind) {
       case ResponseBodyKind.json:
+        // 超限时不做（昂贵的）整体美化，直接原文分块展示。
+        if (raw.length > ResponseViewer.maxJsonHighlightChars) return raw;
         return tryPrettyJson(raw) ?? raw;
       case ResponseBodyKind.xml:
         return prettyXml(raw);
@@ -135,6 +157,61 @@ class _ResponseViewerState extends State<ResponseViewer> {
       case ResponseBodyKind.binary:
         return raw;
     }
+  }
+
+  /// 搜索所依据的完整文本：JSON / XML 走（完整）美化文本，其余走原始 bodyText。
+  ///
+  /// 关键点：搜索永远基于**完整**文本而非当前可见分块，因此命中位于分块外时
+  /// 仍可被定位并展开。
+  String get _searchSourceText {
+    if (_bodyKind == ResponseBodyKind.binary) return '';
+    if (_format == ResponseBodyFormat.raw) return _response.bodyText;
+    switch (_bodyKind) {
+      case ResponseBodyKind.json:
+      case ResponseBodyKind.xml:
+        return _displayText;
+      case ResponseBodyKind.html:
+      case ResponseBodyKind.text:
+      case ResponseBodyKind.binary:
+        return _response.bodyText;
+    }
+  }
+
+  /// 清空搜索状态（切换分段 / 切换格式 / 重发时调用）。
+  void _clearSearch() {
+    _searchController.clear();
+    _searchQuery = '';
+    _searchOffset = null;
+    _searchMiss = false;
+  }
+
+  /// 搜索输入变化：在完整文本上定位首个命中；分块纯文本路径下展开可见文本。
+  void _onSearchChanged(String query) {
+    setState(() {
+      _searchQuery = query;
+      if (query.isEmpty) {
+        _searchOffset = null;
+        _searchMiss = false;
+        return;
+      }
+      final index = _searchSourceText.indexOf(query);
+      if (index < 0) {
+        _searchOffset = null;
+        _searchMiss = true;
+        return;
+      }
+      _searchOffset = index;
+      _searchMiss = false;
+      // 仅分块纯文本路径需要按命中位置扩展可见范围；JSON 高亮树整体渲染。
+      final jsonTreeActive = _bodyKind == ResponseBodyKind.json &&
+          _format == ResponseBodyFormat.formatted &&
+          _response.bodyText.length <= ResponseViewer.maxJsonHighlightChars &&
+          tryPrettyJson(_response.bodyText) != null;
+      if (!jsonTreeActive) {
+        final end = index + query.length;
+        if (end > _visibleChars) _visibleChars = end;
+      }
+    });
   }
 
   /// Cookie 行的展示模型（含从 `Set-Cookie` 还原的过期信息）。
@@ -259,6 +336,7 @@ class _ResponseViewerState extends State<ResponseViewer> {
             onChanged: (value) => setState(() {
               _format = value;
               _visibleChars = ResponseViewer.chunkChars;
+              _clearSearch();
             }),
           ),
           IconButton(
@@ -344,6 +422,7 @@ class _ResponseViewerState extends State<ResponseViewer> {
             onChanged: (value) => setState(() {
               _tab = value;
               _visibleChars = ResponseViewer.chunkChars;
+              _clearSearch();
             }),
           ),
         ),
@@ -445,16 +524,20 @@ class _ResponseViewerState extends State<ResponseViewer> {
     if (text.isEmpty) {
       return _buildEmpty(context, '响应体为空');
     }
-    final note = kind == ResponseBodyKind.json &&
-            _format == ResponseBodyFormat.formatted &&
-            tryPrettyJson(_response.bodyText) == null
-        ? 'JSON 解析失败，已按原文展示'
-        : null;
+    // JSON 高亮 / 折叠树仅在小体量下启用；超限或非法 JSON 退回分块纯文本。
+    final canHighlight = kind == ResponseBodyKind.json &&
+        _format == ResponseBodyFormat.formatted &&
+        _response.bodyText.length <= ResponseViewer.maxJsonHighlightChars;
+    final pretty = canHighlight ? tryPrettyJson(_response.bodyText) : null;
+    if (canHighlight && pretty != null) {
+      return _buildJsonTree(context, pretty);
+    }
     return _buildChunkedText(
       context,
       text,
       keyPrefix: 'response-body',
-      note: note,
+      note: canHighlight ? 'JSON 解析失败，已按原文展示' : null,
+      withSearch: true,
     );
   }
 
@@ -473,11 +556,14 @@ class _ResponseViewerState extends State<ResponseViewer> {
 
   /// 分块渲染：首屏只建前 [ResponseViewer.chunkChars] 个字符的文本，
   /// 超出部分经顶部的「展开更多」按钮按块续载，避免一次性布局超长文本。
+  ///
+  /// [withSearch] 为真时在顶部提供 Body 内搜索，命中项基于**完整**文本定位。
   Widget _buildChunkedText(
     BuildContext context,
     String text, {
     required String keyPrefix,
     required String? note,
+    bool withSearch = false,
   }) {
     final theme = Theme.of(context);
     final total = text.length;
@@ -487,6 +573,7 @@ class _ResponseViewerState extends State<ResponseViewer> {
     return ListView(
       padding: AppSpacing.allLG,
       children: [
+        if (withSearch) _buildSearchBar(context),
         // 控制条在文本**之前**：超长文本会占满视口，按钮若在其后将被
         // ListView 懒加载跳过而不可达。
         if (remaining > 0)
@@ -529,13 +616,260 @@ class _ResponseViewerState extends State<ResponseViewer> {
               ),
             ),
           ),
-        SelectableText(
-          shown,
-          key: Key('$keyPrefix-text'),
-          style: AppTypography.code,
+        _buildPlainText(context, shown, Key('$keyPrefix-text')),
+      ],
+    );
+  }
+
+  /// 纯文本控件；搜索命中时以 `Text.rich` 高亮命中片段。
+  Widget _buildPlainText(BuildContext context, String shown, Key key) {
+    final scheme = Theme.of(context).colorScheme;
+    final query = _searchQuery;
+    final index =
+        _searchOffset == null || query.isEmpty ? -1 : shown.indexOf(query);
+    if (index < 0) {
+      return SelectableText(shown, key: key, style: AppTypography.code);
+    }
+    final end = index + query.length;
+    return SelectableText.rich(
+      TextSpan(
+        children: [
+          TextSpan(text: shown.substring(0, index)),
+          TextSpan(
+            text: shown.substring(index, end),
+            style: TextStyle(backgroundColor: scheme.primaryContainer),
+          ),
+          TextSpan(text: shown.substring(end)),
+        ],
+      ),
+      key: key,
+      style: AppTypography.code,
+    );
+  }
+
+  /// Body 内搜索条（JSON 树与分块纯文本共用）。
+  Widget _buildSearchBar(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Padding(
+      key: const Key('response-body-search'),
+      padding: AppSpacing.onlyBottomMD,
+      child: Row(
+        children: [
+          Expanded(
+            child: TextField(
+              key: const Key('response-body-search-input'),
+              controller: _searchController,
+              style: theme.textTheme.bodySmall,
+              decoration: InputDecoration(
+                isDense: true,
+                hintText: '在完整响应体中搜索',
+                prefixIcon: const Icon(
+                  TablerIcons.search,
+                  size: AppTypography.iconSM,
+                ),
+                suffixIcon: _searchQuery.isEmpty
+                    ? null
+                    : IconButton(
+                        tooltip: '清除',
+                        icon: const Icon(
+                          TablerIcons.x,
+                          size: AppTypography.iconSM,
+                        ),
+                        onPressed: () => setState(_clearSearch),
+                      ),
+                border: const OutlineInputBorder(borderRadius: AppRadius.allSM),
+              ),
+              onChanged: _onSearchChanged,
+              onSubmitted: _onSearchChanged,
+            ),
+          ),
+          if (_searchQuery.isNotEmpty)
+            Padding(
+              padding: AppSpacing.onlyLeftMD,
+              child: Text(
+                _searchMiss ? '无匹配' : '已定位',
+                key: const Key('response-body-search-status'),
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: _searchMiss ? scheme.error : scheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// JSON 高亮 / 折叠树：行号 gutter + 无换行横向滚动 + 可折叠容器 + 搜索高亮。
+  Widget _buildJsonTree(BuildContext context, String pretty) {
+    final scheme = Theme.of(context).colorScheme;
+    final lines = pretty.split('\n');
+    final regions = jsonFoldRegions(lines);
+    final regionById = <int, JsonFoldRegion>{
+      for (final region in regions) region.id: region,
+    };
+    final hidden = List<bool>.filled(lines.length, false);
+    for (final id in _collapsed) {
+      final region = regionById[id];
+      if (region == null) continue;
+      for (var i = region.openLine + 1;
+          i <= region.closeLine && i < lines.length;
+          i++) {
+        hidden[i] = true;
+      }
+    }
+    final visibleLines = <int>[
+      for (var i = 0; i < lines.length; i++)
+        if (!hidden[i]) i,
+    ];
+
+    final spans = <InlineSpan>[];
+    for (var v = 0; v < visibleLines.length; v++) {
+      final i = visibleLines[v];
+      final highlight =
+          _searchQuery.isNotEmpty && lines[i].contains(_searchQuery);
+      spans.addAll(_jsonLineSpans(lines[i], highlight, scheme));
+      if (v < visibleLines.length - 1) {
+        spans.add(const TextSpan(text: '\n'));
+      }
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _buildSearchBar(context),
+        Expanded(
+          child: SingleChildScrollView(
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Container(
+                key: const Key('response-body-tree'),
+                padding: AppSpacing.allMD,
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _buildJsonGutter(
+                      context,
+                      lines.length,
+                      visibleLines,
+                      regionById,
+                    ),
+                    const SizedBox(width: AppSpacing.md),
+                    Text.rich(
+                      TextSpan(children: spans),
+                      style:
+                          AppTypography.code.copyWith(color: scheme.onSurface),
+                      softWrap: false,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
         ),
       ],
     );
+  }
+
+  /// 行号 + 折叠开关列；与文本行等高等宽，横向滚动时随文本一起移动。
+  Widget _buildJsonGutter(
+    BuildContext context,
+    int lineCount,
+    List<int> visibleLines,
+    Map<int, JsonFoldRegion> regionById,
+  ) {
+    final scheme = Theme.of(context).colorScheme;
+    const lineHeight = AppTypography.sizeSM * AppTypography.heightNormal;
+    final numberWidth =
+        AppSpacing.xs + '$lineCount'.length * AppTypography.sizeXS;
+    return Column(
+      key: const Key('response-body-gutter'),
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        for (final i in visibleLines)
+          SizedBox(
+            height: lineHeight,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                SizedBox(
+                  width: AppTypography.iconMD,
+                  child: regionById.containsKey(i)
+                      ? GestureDetector(
+                          key: Key('response-body-collapse-$i'),
+                          behavior: HitTestBehavior.opaque,
+                          onTap: () => setState(() {
+                            if (!_collapsed.remove(i)) _collapsed.add(i);
+                          }),
+                          child: Icon(
+                            _collapsed.contains(i)
+                                ? TablerIcons.chevron_right
+                                : TablerIcons.chevron_down,
+                            size: AppTypography.iconSM,
+                            color: scheme.onSurfaceVariant,
+                          ),
+                        )
+                      : null,
+                ),
+                const SizedBox(width: AppSpacing.xs),
+                SizedBox(
+                  width: numberWidth,
+                  child: Text(
+                    '${i + 1}',
+                    textAlign: TextAlign.right,
+                    softWrap: false,
+                    style: AppTypography.code.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+
+  /// 单行 JSON 的 token spans（搜索命中时整行加底色）。
+  List<InlineSpan> _jsonLineSpans(
+    String line,
+    bool highlight,
+    ColorScheme scheme,
+  ) =>
+      [
+        for (final token in tokenizeJsonLine(line))
+          TextSpan(
+            text: token.text,
+            style: _jsonTokenStyle(scheme, token.kind, highlight),
+          ),
+      ];
+
+  TextStyle _jsonTokenStyle(
+    ColorScheme scheme,
+    JsonTokenKind kind,
+    bool highlight,
+  ) {
+    final style = switch (kind) {
+      JsonTokenKind.key => AppTypography.code.copyWith(
+          color: scheme.primary,
+          fontWeight: AppTypography.weightMedium,
+        ),
+      JsonTokenKind.string =>
+        AppTypography.code.copyWith(color: scheme.tertiary),
+      JsonTokenKind.number =>
+        AppTypography.code.copyWith(color: scheme.secondary),
+      JsonTokenKind.keyword => AppTypography.code.copyWith(color: scheme.error),
+      JsonTokenKind.punctuation =>
+        AppTypography.code.copyWith(color: scheme.onSurfaceVariant),
+      JsonTokenKind.plain =>
+        AppTypography.code.copyWith(color: scheme.onSurface),
+    };
+    return highlight
+        ? style.copyWith(
+            backgroundColor: scheme.primaryContainer.withValues(alpha: 0.5),
+          )
+        : style;
   }
 
   Widget _buildBinary(BuildContext context) {
@@ -727,6 +1061,147 @@ ResponseBodyKind? classifyContentType(String? contentType) {
 bool isLikelyBinaryText(String text) {
   if (text.isEmpty) return false;
   return text.contains('\u0000');
+}
+
+/// JSON 词法单元类型（用于高亮着色）。
+enum JsonTokenKind { key, string, number, keyword, punctuation, plain }
+
+/// JSON 单行词法单元。
+class JsonToken {
+  const JsonToken(this.kind, this.text);
+
+  final JsonTokenKind kind;
+  final String text;
+}
+
+/// 将一行（美化后的）JSON 文本切分为带类型的高亮单元。
+///
+/// 纯函数、绝不抛异常；无法识别的内容按 [JsonTokenKind.plain] 兜底。
+List<JsonToken> tokenizeJsonLine(String line) {
+  final tokens = <JsonToken>[];
+  var i = 0;
+  while (i < line.length) {
+    final ch = line[i];
+    if (ch == '"') {
+      final start = i;
+      i++;
+      while (i < line.length) {
+        if (line[i] == r'\') {
+          i += 2;
+          continue;
+        }
+        if (line[i] == '"') {
+          i++;
+          break;
+        }
+        i++;
+      }
+      if (i > line.length) i = line.length;
+      final text = line.substring(start, i);
+      var j = i;
+      while (j < line.length && line[j] == ' ') {
+        j++;
+      }
+      final isKey = j < line.length && line[j] == ':';
+      tokens.add(JsonToken(
+        isKey ? JsonTokenKind.key : JsonTokenKind.string,
+        text,
+      ));
+      continue;
+    }
+    if (ch == ' ' || ch == '\t') {
+      final start = i;
+      while (i < line.length && (line[i] == ' ' || line[i] == '\t')) {
+        i++;
+      }
+      tokens.add(JsonToken(JsonTokenKind.plain, line.substring(start, i)));
+      continue;
+    }
+    if (ch == '-' || _isDigit(ch)) {
+      final start = i;
+      i++;
+      while (i < line.length && _isNumberPart(line[i])) {
+        i++;
+      }
+      tokens.add(JsonToken(JsonTokenKind.number, line.substring(start, i)));
+      continue;
+    }
+    final keyword = _keywordAt(line, i);
+    if (keyword != null) {
+      tokens.add(JsonToken(JsonTokenKind.keyword, keyword));
+      i += keyword.length;
+      continue;
+    }
+    if ('{}[],:'.contains(ch)) {
+      tokens.add(JsonToken(JsonTokenKind.punctuation, ch));
+      i++;
+      continue;
+    }
+    tokens.add(JsonToken(JsonTokenKind.plain, ch));
+    i++;
+  }
+  return tokens;
+}
+
+bool _isDigit(String ch) {
+  final code = ch.codeUnitAt(0);
+  return code >= 0x30 && code <= 0x39;
+}
+
+bool _isNumberPart(String ch) {
+  if (_isDigit(ch)) return true;
+  return ch == '.' || ch == 'e' || ch == 'E' || ch == '+' || ch == '-';
+}
+
+String? _keywordAt(String line, int index) {
+  const keywords = <String>['true', 'false', 'null'];
+  for (final keyword in keywords) {
+    if (line.startsWith(keyword, index)) return keyword;
+  }
+  return null;
+}
+
+/// JSON 中可折叠的容器区间（对象 / 数组）。
+class JsonFoldRegion {
+  const JsonFoldRegion({
+    required this.id,
+    required this.openLine,
+    required this.closeLine,
+  });
+
+  /// 折叠 id（== 开括号所在行号，稳定且便于测试）。
+  final int id;
+
+  /// 开括号所在行号。
+  final int openLine;
+
+  /// 对应闭括号所在行号。
+  final int closeLine;
+}
+
+/// 扫描美化后的 JSON 行，返回每个容器（对象 / 数组）的可折叠区间。
+///
+/// 空容器（`{}` / `[]` 单行）不产生区间。绝不抛异常。
+List<JsonFoldRegion> jsonFoldRegions(List<String> lines) {
+  final regions = <JsonFoldRegion>[];
+  final stack = <int>[];
+  for (var i = 0; i < lines.length; i++) {
+    final trimmed = lines[i].trim();
+    if (trimmed.isEmpty) continue;
+    if (trimmed.startsWith('}') || trimmed.startsWith(']')) {
+      if (stack.isNotEmpty) {
+        final open = stack.removeLast();
+        regions.add(
+          JsonFoldRegion(id: open, openLine: open, closeLine: i),
+        );
+      }
+      continue;
+    }
+    if (trimmed.endsWith('{') || trimmed.endsWith('[')) {
+      stack.add(i);
+    }
+  }
+  return regions;
 }
 
 /// JSON 美化；解析失败返回 `null`（调用方回退原文）。
