@@ -39,6 +39,7 @@ class _FakeRequestsFacade implements ProxyRequestsFacade {
   int configGetCalls = 0;
   int configSetCalls = 0;
   int resetCalls = 0;
+  int capturesResetCalls = 0;
   int exportCalls = 0;
   RequestGetRequest? lastGet;
   CapturesGetRequest? lastCaptures;
@@ -125,6 +126,11 @@ class _FakeRequestsFacade implements ProxyRequestsFacade {
   }
 
   @override
+  Future<void> capturesReset() async {
+    capturesResetCalls++;
+  }
+
+  @override
   Future<RequestExportResult> requestsExport(
     RequestExportRequest request,
   ) async {
@@ -150,6 +156,7 @@ void main() {
       const RequestGetRequest(cursor: 7, limit: 50),
     );
     await facade.requestsReset();
+    await facade.capturesReset();
     final export = await facade.requestsExport(
       const RequestExportRequest(format: 'csv'),
     );
@@ -186,6 +193,7 @@ void main() {
     final fake = facade as _FakeRequestsFacade;
     expect(fake.getCalls, 1);
     expect(fake.resetCalls, 1);
+    expect(fake.capturesResetCalls, 1);
     expect(fake.exportCalls, 1);
     expect(fake.lastGet!.cursor, 7);
     expect(fake.lastExport!.format, 'csv');
@@ -241,6 +249,10 @@ void main() {
         'ok': true,
         'cleared': 3,
       }),
+      ProxyMethods.capturesReset: _okEnvelope(<String, dynamic>{
+        'ok': true,
+        'cleared': 2,
+      }),
       ProxyMethods.requestsExport: _okEnvelope(<String, dynamic>{
         'csvPath': '/data/exp.csv',
         'rows': 9,
@@ -279,6 +291,7 @@ void main() {
 
     final page = await facade.requestsGet(const RequestGetRequest(limit: 10));
     await facade.requestsReset();
+    await facade.capturesReset();
     final export = await facade.requestsExport(
       const RequestExportRequest(format: 'both'),
     );
@@ -291,6 +304,7 @@ void main() {
     expect(gateway.methods, <String>[
       ProxyMethods.requestsGet,
       ProxyMethods.requestsReset,
+      ProxyMethods.capturesReset,
       ProxyMethods.requestsExport,
       ProxyMethods.capturesGet,
       ProxyMethods.captureConfigGet,

@@ -467,13 +467,15 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
   Future<void> _confirmReset() async {
     final ok = await AppDialogs.showConfirmSheet(
       title: '清空请求记录',
-      message: '将清空全部已采集的请求记录，且无法撤销。确定继续吗？',
+      message: '将清空全部请求记录与抓包内容（含已解密内容），且无法撤销。确定继续吗？',
       confirmText: '清空',
       isDangerous: true,
       icon: const Icon(TablerIcons.trash),
     );
     if (ok != true || !mounted) return;
     try {
+      // 先清抓包（含已解密行），再清请求骨架；两者都成功后才提示并刷新。
+      await _facade.capturesReset();
       await _facade.requestsReset();
       if (!mounted) return;
       AppDialogs.showSuccess('已清空请求记录');

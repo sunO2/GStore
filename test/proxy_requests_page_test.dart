@@ -58,6 +58,8 @@ class _FakeRequestsFacade implements ProxyRequestsFacade {
     this.configSetFail = false,
     this.exportResult = const RequestExportResult(),
     this.exportFail = false,
+    this.resetFail = false,
+    this.capturesResetFail = false,
   });
 
   RequestPage page;
@@ -69,17 +71,21 @@ class _FakeRequestsFacade implements ProxyRequestsFacade {
   bool configSetFail;
   RequestExportResult exportResult;
   bool exportFail;
+  bool resetFail;
+  bool capturesResetFail;
 
   int getCalls = 0;
   int capturesCalls = 0;
   int configGetCalls = 0;
   int configSetCalls = 0;
   int resetCalls = 0;
+  int capturesResetCalls = 0;
   int exportCalls = 0;
   RequestGetRequest? lastGet;
   CapturesGetRequest? lastCaptures;
   CaptureConfig? lastConfigSet;
   RequestExportRequest? lastExport;
+  final List<String> resetOrder = <String>[];
 
   @override
   Future<RequestPage> requestsGet(RequestGetRequest request) async {
@@ -127,6 +133,25 @@ class _FakeRequestsFacade implements ProxyRequestsFacade {
   @override
   Future<void> requestsReset() async {
     resetCalls++;
+    resetOrder.add('requests');
+    if (resetFail) {
+      throw const ProxyModuleException(code: 'RESET_FAIL', message: '请求清空失败');
+    }
+    // 模拟后端真实清空，便于断言 reload 后行消失。
+    page = const RequestPage();
+  }
+
+  @override
+  Future<void> capturesReset() async {
+    capturesResetCalls++;
+    resetOrder.add('captures');
+    if (capturesResetFail) {
+      throw const ProxyModuleException(
+        code: 'CAP_RESET_FAIL',
+        message: '抓包清空失败',
+      );
+    }
+    capturePage = const CapturePage();
   }
 
   @override
@@ -981,6 +1006,135 @@ void main() {
     await tester.pump(const Duration(seconds: 3));
 
     expect(fake.getCalls, before, reason: '卸载后不应再拉取');
+    expect(tester.takeException(), isNull);
+  });
+
+  // ==================== 清空（D7：requests + captures 双清） ====================
+
+  testWidgets('清空：确认后同时下发 captures.reset 与 requests.reset，解密行消失',
+      (tester) async {
+    _useLargeViewport(tester);
+    final fake = _FakeRequestsFacade(
+      page: RequestPage(
+        records: <RequestRecord>[_record(recordId: 1)],
+        firstCursor: 1,
+        nextCursor: 1,
+        retained: 1,
+      ),
+      capturePage: CapturePage(
+        records: <CaptureRecord>[
+          _capture(
+            recordId: 11,
+            requestRecordId: 1,
+            host: 'decrypted.example',
+            method: 'GET',
+            url: 'https://decrypted.example/secret',
+            statusCode: 200,
+          ),
+        ],
+      ),
+    );
+    await tester.pumpWidget(
+      _host(ProxyRequestsPage(facade: fake, initialLive: false)),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    // 前置：已解密行可见（叠加到 request_row_1 摘要）。
+    expect(find.byKey(const ValueKey('request_row_1')), findsOneWidget);
+    expect(find.text('decrypted.example'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('requests_reset')));
+    await tester.pumpAndSettle();
+    // 确认弹层必须声明同时清除抓包（含已解密）内容。
+    expect(find.textContaining('抓包内容（含已解密内容）'), findsOneWidget);
+
+    await tester.tap(find.text('清空'));
+    await tester.pumpAndSettle();
+
+    // 两个 reset 都必须被调用，且抓包先于请求清空。
+    expect(fake.capturesResetCalls, 1, reason: 'captures.reset 必须被调用');
+    expect(fake.resetCalls, 1, reason: 'requests.reset 必须被调用');
+    expect(fake.resetOrder, <String>['captures', 'requests']);
+    expect(find.text('已清空请求记录'), findsOneWidget);
+
+    // reload 路径：清空后解密行消失（不残留 captures.* 独立行）。
+    expect(find.byKey(const ValueKey('request_row_1')), findsNothing);
+    expect(find.text('decrypted.example'), findsNothing);
+    expect(find.text('暂无请求记录'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('对抗：captures.reset 失败 -> showError、不调用 requests.reset、不提示成功',
+      (tester) async {
+    _useLargeViewport(tester);
+    final fake = _FakeRequestsFacade(
+      page: RequestPage(
+        records: <RequestRecord>[_record(recordId: 1)],
+        firstCursor: 1,
+        nextCursor: 1,
+        retained: 1,
+      ),
+      capturePage: CapturePage(
+        records: <CaptureRecord>[
+          _capture(recordId: 11, requestRecordId: 1, host: 'decrypted.example'),
+        ],
+      ),
+      capturesResetFail: true,
+    );
+    await tester.pumpWidget(
+      _host(ProxyRequestsPage(facade: fake, initialLive: false)),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    await tester.tap(find.byKey(const Key('requests_reset')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('清空'));
+    await tester.pumpAndSettle();
+
+    expect(fake.capturesResetCalls, 1);
+    expect(fake.resetCalls, 0, reason: '抓包清空失败后不得继续清空请求');
+    expect(find.text('清空失败'), findsOneWidget);
+    expect(find.textContaining('抓包清空失败'), findsOneWidget);
+    expect(find.text('已清空请求记录'), findsNothing);
+    // 抓包未清 -> 解密行仍在。
+    expect(find.text('decrypted.example'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('对抗：requests.reset 失败 -> showError、不提示成功', (tester) async {
+    _useLargeViewport(tester);
+    final fake = _FakeRequestsFacade(
+      page: RequestPage(
+        records: <RequestRecord>[_record(recordId: 1)],
+        firstCursor: 1,
+        nextCursor: 1,
+        retained: 1,
+      ),
+      capturePage: CapturePage(
+        records: <CaptureRecord>[
+          _capture(recordId: 11, requestRecordId: 1, host: 'decrypted.example'),
+        ],
+      ),
+      resetFail: true,
+    );
+    await tester.pumpWidget(
+      _host(ProxyRequestsPage(facade: fake, initialLive: false)),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    await tester.tap(find.byKey(const Key('requests_reset')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('清空'));
+    await tester.pumpAndSettle();
+
+    expect(fake.capturesResetCalls, 1);
+    expect(fake.resetCalls, 1);
+    expect(find.text('清空失败'), findsOneWidget);
+    expect(find.textContaining('请求清空失败'), findsOneWidget);
+    expect(find.text('已清空请求记录'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 

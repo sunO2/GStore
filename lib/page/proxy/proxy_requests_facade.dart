@@ -29,6 +29,13 @@ abstract class ProxyRequestsFacade {
   /// `requests.reset`：清空内存请求环与 DB 行（游标保持单调，不回收）。
   Future<void> requestsReset();
 
+  /// `captures.reset`：清空抓包时间线（游标保持单调，含已解密记录）。
+  ///
+  /// 「清空记录」必须与 [requestsReset] 配对下发：合并列表会把未被
+  /// `requests` 骨架匹配的 capture（含已解密行）作为独立行展示，只清
+  /// `requests` 时这些行仍会残留。
+  Future<void> capturesReset();
+
   /// `requests.export`：把请求时间线导出为 CSV 和/或 JSON 文件。
   ///
   /// 响应仅回传文件路径 / 行数 / 字节数（记录只写入文件，不进 JSON 信封）。
@@ -61,6 +68,11 @@ class ProxyModuleRequestsFacade implements ProxyRequestsFacade {
   @override
   Future<void> requestsReset() async {
     await _module.requestsReset();
+  }
+
+  @override
+  Future<void> capturesReset() async {
+    await _module.capturesReset();
   }
 
   @override
