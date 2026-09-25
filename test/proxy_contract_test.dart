@@ -263,6 +263,7 @@ const _captureConfigFixture = <String, dynamic>{
   'captureBody': false,
   'captureWs': false,
   'captureH2': false,
+  'skipCertVerify': true,
   'maxBodyBytes': 524288,
 };
 
@@ -1160,6 +1161,7 @@ void main() {
       expect(cfg.captureBody, isFalse);
       expect(cfg.captureWs, isFalse);
       expect(cfg.captureH2, isFalse);
+      expect(cfg.skipCertVerify, isTrue);
       expect(cfg.maxBodyBytes, 524288);
 
       // get 形状 → toJson → fromJson 必须无损。
@@ -1171,7 +1173,45 @@ void main() {
       expect(decoded.appScope, cfg.appScope);
       expect(decoded.captureBody, cfg.captureBody);
       expect(decoded.captureH2, cfg.captureH2);
+      expect(decoded.skipCertVerify, cfg.skipCertVerify);
       expect(decoded.maxBodyBytes, cfg.maxBodyBytes);
+    });
+
+    test('capture.config：skipCertVerify 缺省→false，true/false 两向往返保真', () {
+      // 旧 JSON 无 skipCertVerify → false（严格 webpki，与 Rust serde default 一致）。
+      final legacy = Map<String, dynamic>.from(_captureConfigFixture)
+        ..remove('skipCertVerify');
+      expect(
+        CaptureConfig.fromJson(legacy).skipCertVerify,
+        isFalse,
+        reason: '缺省即严格校验，绝不默认开启跳过',
+      );
+      expect(
+        const CaptureConfig().skipCertVerify,
+        isFalse,
+        reason: 'Dart 模型默认值必须是 false',
+      );
+      // 非法/缺失值都宽容回退 false，绝不抛错。
+      for (final bad in <Object?>[null, 'yes', 1, true]) {
+        expect(
+          CaptureConfig.fromJson(<String, dynamic>{'skipCertVerify': bad})
+              .skipCertVerify,
+          bad == true,
+        );
+      }
+      // true 与 false 往返（解码 ↔ 编码）都保真。
+      for (final value in <bool>[true, false]) {
+        final encoded = CaptureConfig(skipCertVerify: value).toJson();
+        expect(encoded['skipCertVerify'], value);
+        expect(CaptureConfig.fromJson(encoded).skipCertVerify, value);
+      }
+      // `capture.config.set` 编码器显式带上该冻结字段。
+      expect(
+        (proxyRequestEncoders[ProxyMethods.captureConfigSet]!())
+            .containsKey('skipCertVerify'),
+        isTrue,
+        reason: 'set 请求必须包含 skipCertVerify（完整 10 字段形状）',
+      );
     });
 
     test('capture.config：缺省 appScope（旧 JSON）→ uid，两个方向都保真', () {

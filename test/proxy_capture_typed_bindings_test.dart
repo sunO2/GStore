@@ -186,6 +186,7 @@ void main() {
       'captureBody': true,
       'captureWs': true,
       'captureH2': true,
+      'skipCertVerify': false,
       'maxBodyBytes': 1048576,
     });
 

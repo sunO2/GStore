@@ -339,7 +339,7 @@ void main() {
       expect(payload['captureBody'], isFalse);
       expect(payload['captureWs'], isTrue);
       expect(payload['captureH2'], isFalse);
-      // 完整形状：9 个冻结字段，绝不缺键。
+      // 完整形状：10 个冻结字段，绝不缺键。
       expect(
         payload.keys.toSet(),
         <String>{
@@ -351,6 +351,7 @@ void main() {
           'captureBody',
           'captureWs',
           'captureH2',
+          'skipCertVerify',
           'maxBodyBytes',
         },
       );

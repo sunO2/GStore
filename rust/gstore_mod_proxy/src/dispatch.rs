@@ -971,6 +971,7 @@ mod mitm_e2e_tests {
             capture_body: true,
             capture_ws,
             capture_h2: true,
+            skip_cert_verify: false,
             max_body_bytes: CAPTURE_BODY_MAX_BYTES,
         });
         capture::config().as_ref().clone()

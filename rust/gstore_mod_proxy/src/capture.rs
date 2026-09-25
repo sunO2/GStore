@@ -124,6 +124,16 @@ pub(crate) struct CaptureConfig {
     pub capture_ws: bool,
     /// Capture HTTP/2 (todo 8).
     pub capture_h2: bool,
+    /// **SECURITY (frozen contract, D6):** when `true`, the MITM does **not**
+    /// authenticate the upstream server certificate (upstream TLS runs with
+    /// `SkipServerVerify` instead of strict webpki). The proxy then accepts
+    /// **ANY** upstream certificate — self-signed, expired, or an attacker's —
+    /// so the connection can be MITM'd a second time and content from any cert
+    /// is forwarded. Default `false` keeps today's strict certificate
+    /// authentication. Opt-in only, for self-signed/enterprise-interception
+    /// upstreams; never enable on a normal network.
+    #[serde(default)]
+    pub skip_cert_verify: bool,
     /// Disk-side body ceiling (SQLite only; never resident in memory).
     pub max_body_bytes: usize,
 }
@@ -139,6 +149,7 @@ impl Default for CaptureConfig {
             capture_body: true,
             capture_ws: true,
             capture_h2: true,
+            skip_cert_verify: false,
             max_body_bytes: CAPTURE_BODY_MAX_BYTES,
         }
     }
@@ -213,6 +224,7 @@ struct CaptureConfigPatch {
     capture_body: Option<bool>,
     capture_ws: Option<bool>,
     capture_h2: Option<bool>,
+    skip_cert_verify: Option<bool>,
     max_body_bytes: Option<usize>,
 }
 
@@ -275,6 +287,9 @@ impl CaptureConfig {
         }
         if let Some(v) = patch.capture_h2 {
             self.capture_h2 = v;
+        }
+        if let Some(v) = patch.skip_cert_verify {
+            self.skip_cert_verify = v;
         }
         if let Some(v) = patch.max_body_bytes {
             self.max_body_bytes = v;
@@ -630,6 +645,7 @@ mod mitm_gate_tests {
         assert!(cfg.app_allowlist.is_empty());
         assert_eq!(cfg.app_scope, AppScope::Uid);
         assert!(cfg.capture_body && cfg.capture_ws && cfg.capture_h2);
+        assert!(!cfg.skip_cert_verify, "upstream cert verification is strict by default");
         assert_eq!(cfg.max_body_bytes, CAPTURE_BODY_MAX_BYTES);
     }
 
@@ -903,12 +919,14 @@ mod config_io_tests {
                 "captureBody",
                 "captureWs",
                 "captureH2",
+                "skipCertVerify",
                 "maxBodyBytes",
             ])
         );
         assert_eq!(json["enabled"], serde_json::json!(false));
         assert_eq!(json["tlsPorts"], serde_json::json!([443, 8443]));
         assert_eq!(json["appScope"], serde_json::json!("uid"));
+        assert_eq!(json["skipCertVerify"], serde_json::json!(false));
         assert_eq!(
             json["maxBodyBytes"],
             serde_json::json!(CAPTURE_BODY_MAX_BYTES)
@@ -1093,6 +1111,82 @@ mod config_io_tests {
             let on_disk: CaptureConfig =
                 serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
             assert_eq!(on_disk.app_scope, AppScope::Routing, "file stays parseable and unchanged");
+        }
+
+        reset_for_tests();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `skipCertVerify` is a FROZEN opt-in security flag: present-but-absent
+    /// old JSON decodes to `false` (strict webpki, today's behavior) and both
+    /// directions survive the publish + persist path.
+    #[test]
+    fn capture_config_skip_cert_verify_defaults_false_and_round_trips() {
+        let _guard = serial();
+        reset_for_tests();
+        let dir = tmp_dir("skip-cert-verify");
+        let dir_str = dir.to_str().unwrap();
+        configure(dir_str);
+        let path = dir.join(CAPTURE_CONFIG_FILE);
+
+        // Default posture: strict cert verification.
+        assert!(!config().skip_cert_verify);
+        assert_eq!(config_json()["skipCertVerify"], serde_json::json!(false));
+        // A pre-D6 JSON payload without the field must decode to false, never fail.
+        let legacy: CaptureConfig = serde_json::from_slice(
+            br#"{"enabled":true,"tlsPorts":[443,8443],"domainAllowlist":[],
+                   "appAllowlist":[],"appScope":"uid","captureBody":true,
+                   "captureWs":true,"captureH2":true,"maxBodyBytes":1048576}"#,
+        )
+        .unwrap();
+        assert!(!legacy.skip_cert_verify, "missing skipCertVerify must default to false");
+
+        // Opt in: true publishes, serializes and persists.
+        let enabled = set(dir_str, br#"{"skipCertVerify":true}"#).unwrap();
+        assert!(enabled.skip_cert_verify);
+        assert!(config().skip_cert_verify);
+        assert_eq!(config_json()["skipCertVerify"], serde_json::json!(true));
+        let on_disk: CaptureConfig = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(on_disk.skip_cert_verify);
+
+        // Opt back out: false publishes, serializes and persists.
+        let disabled = set(dir_str, br#"{"skipCertVerify":false}"#).unwrap();
+        assert!(!disabled.skip_cert_verify);
+        assert_eq!(config_json()["skipCertVerify"], serde_json::json!(false));
+        let on_disk: CaptureConfig = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(!on_disk.skip_cert_verify);
+
+        reset_for_tests();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A non-bool `skipCertVerify` is a structured 422 that leaves the published
+    /// and on-disk config untouched (no partial write, no corruption).
+    #[test]
+    fn capture_config_invalid_skip_cert_verify_is_422_and_does_not_corrupt_persisted() {
+        let _guard = serial();
+        reset_for_tests();
+        let dir = tmp_dir("invalid-skip-cert-verify");
+        let dir_str = dir.to_str().unwrap();
+        configure(dir_str);
+        let good = set(dir_str, br#"{"skipCertVerify":true}"#).unwrap();
+        let path = dir.join(CAPTURE_CONFIG_FILE);
+        let before = std::fs::read(&path).unwrap();
+
+        for payload in [
+            br#"{"skipCertVerify":"yes"}"#.as_slice(),
+            br#"{"skipCertVerify":"true"}"#.as_slice(),
+            br#"{"skipCertVerify":1}"#.as_slice(),
+            br#"{"skipCertVerify":[]}"#.as_slice(),
+        ] {
+            let err = set(dir_str, payload).unwrap_err();
+            assert_eq!(err.status, StatusCode::InvalidArgument);
+            assert_eq!(err.code, ERR_CAPTURE_CONFIG_INVALID);
+            assert_eq!(*config(), good, "rejected skipCertVerify must not publish");
+            assert_eq!(std::fs::read(&path).unwrap(), before, "…nor persist");
+            let on_disk: CaptureConfig =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert!(on_disk.skip_cert_verify, "file stays parseable and unchanged");
         }
 
         reset_for_tests();

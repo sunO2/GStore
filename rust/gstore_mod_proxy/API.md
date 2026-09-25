@@ -1223,7 +1223,8 @@ ESP/AH（proto 50/51）等未知传输也**不**豁免。豁免帧在损伤判�
 ```json
 { "enabled": false, "tlsPorts": [443, 8443], "domainAllowlist": [],
   "appAllowlist": [], "appScope": "uid", "captureBody": true,
-  "captureWs": true, "captureH2": true, "maxBodyBytes": 1048576 }
+  "captureWs": true, "captureH2": true, "skipCertVerify": false,
+  "maxBodyBytes": 1048576 }
 ```
 
 | field | type | default | 含义 |
@@ -1236,6 +1237,7 @@ ESP/AH（proto 50/51）等未知传输也**不**豁免。豁免帧在损伤判�
 | `captureBody` | bool | `true` | 捕获请求/响应体 |
 | `captureWs` | bool | `true` | 捕获 WebSocket 帧 |
 | `captureH2` | bool | `true` | 捕获 HTTP/2 |
+| `skipCertVerify` | bool | `false` | **危险**：`true` 时 MITM **不校验上游服务器证书**（上游 TLS 用 `SkipServerVerify` 而非严格 webpki），接受**任意**上游证书。仅用于自签名 / 企业中间代理等明确可信的上游；缺少该字段的旧配置迁移为 `false`（严格校验，今日行为） |
 | `maxBodyBytes` | number | `1048576` | 落盘 Body 上限（仅 SQLite；不驻留内存），∈ `[1, 1048576]` |
 
 **`appScope` 语义（C1 至 C3）。** `appScope` 决定 `appAllowlist` 如何被强制，是冻结字段；缺少它的
@@ -1259,6 +1261,13 @@ ESP/AH（proto 50/51）等未知传输也**不**豁免。豁免帧在损伤判�
 TLS 终止失败（`mitmFailed`）不抓，非 root 不绕过 pinning；`routing` 门控信任 VPN 逐应用路由，
 配置手改/恢复造成的漂移由 Dart 启动对账自动关闭抓包缓解。真机 `getConnectionOwnerUid`
 行为/时延与 `addAllowedApplication` 的实际范围**未经设备验证（UNVERIFIED）**。
+
+**`skipCertVerify` 安全语义（FROZEN，默认 `false`）。** 默认 `false` 即**严格 webpki**：代理校验上游
+服务器证书，自签名 / 过期 / 伪造证书的连接失败（`mitmFailed`，直通）。置 `true` 会**关闭上游证书
+认证**，MITM 接受**任意**上游证书——包括自签名、中间人或攻击者的证书——因此该 TLS 可被**二次
+MITM**，代理会转发来自任意证书的内容。**仅**用于自签名 / 企业中间代理等明确可信的上游；**绝不**
+在普通网络开启。该字段是**冻结契约**的 opt-in 开关，per-session 快照（后续流判定立即使用新值），
+非 bool（字符串 / 数字 / 数组）为 **422 `PROXY_CAPTURE_CONFIG_INVALID`** 且不改动既有配置。
 
 **Partial update.** `capture.config.set` 接受 `CaptureConfig` 的任意子集（缺省字段保留当前值）。
 未知字段、非对象载荷、`tlsPorts` 含 `0` 或为空、`maxBodyBytes` 越界、`appScope` 非
@@ -1531,7 +1540,7 @@ registered in `rust/ERROR_CODES.md`.
 | `PROXY_CLASH_API_FAILED` | 500 | `diagnostics.clash_api.start` could not bind `127.0.0.1:<port>` or spawn its runtime/thread (Todo 18) |
 | `PROXY_DATAPLANE_DEAD` | — (supervisor event) | a TUN worker (reader/egress/ingress) ended or panicked while the tunnel was up; reported as a structured `proxy.state` `error.code` with the verbatim reason, then the loop restarts with bounded backoff (Todo 24) |
 | `PROXY_CAPTURE_UPSTREAM_FAILED` | — (data-plane HTTP 502) | a decrypted MITM request failed to re-originate through the tunnel outbound (rules/protect-aware dial or upstream TLS handshake); the capture layer answers a 502-style response and never panics. `skipCertVerify` defaults to strict verification (Todo 7) |
-| `PROXY_CAPTURE_CONFIG_INVALID` | 422 | `capture.config.set` payload invalid: non-object, unknown field, `tlsPorts` empty or containing `0`, `appScope` not `"routing"`/`"uid"`, or `maxBodyBytes` out of `[1, 1048576]`. The in-memory/on-disk config is left untouched on rejection (Todo 10) |
+| `PROXY_CAPTURE_CONFIG_INVALID` | 422 | `capture.config.set` payload invalid: non-object, unknown field, `tlsPorts` empty or containing `0`, `appScope` not `"routing"`/`"uid"`, `skipCertVerify` not a bool, or `maxBodyBytes` out of `[1, 1048576]`. The in-memory/on-disk config is left untouched on rejection (Todo 10) |
 | `PROXY_CAPTURE_CA_FAILED` | 422 / 500 | `capture.ca.generate` payload invalid (`regenerate` non-bool, non-object, unknown field → 422) or CA generate/load/reset failure (`rcgen` issuance / I/O → 500). A never-generated CA is **not** an error (`generated:false`); `reset` with no CA is `cleared:false` (Todo 11) |
 | `PROXY_CAPTURE_NOT_FOUND` | 404 | `captures.detail` `recordId` is not in the retained window (ring / pending-flush queue / SQLite table) (Todo 12) |
 | `PROXY_CAPTURE_CURSOR_INVALID` | 422 | `captures.get` `cursor` is present but not a non-negative integer (Todo 12) |

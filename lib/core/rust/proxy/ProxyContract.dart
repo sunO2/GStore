@@ -2894,6 +2894,7 @@ class CaptureConfig {
     this.captureBody = true,
     this.captureWs = true,
     this.captureH2 = true,
+    this.skipCertVerify = false,
     this.maxBodyBytes = 1048576,
   });
 
@@ -2905,6 +2906,11 @@ class CaptureConfig {
   final bool captureBody;
   final bool captureWs;
   final bool captureH2;
+
+  /// **危险（冻结契约，默认 `false`）**：`true` 时 MITM **不校验上游服务器
+  /// 证书**，接受任意上游证书，连接可被二次 MITM。仅用于自签名 / 企业中间
+  /// 代理等可信上游；缺省或非 bool 一律回退 `false`（严格校验）。
+  final bool skipCertVerify;
   final int maxBodyBytes;
 
   factory CaptureConfig.fromJson(Map<String, dynamic> json) => CaptureConfig(
@@ -2918,6 +2924,7 @@ class CaptureConfig {
         captureBody: json['captureBody'] != false,
         captureWs: json['captureWs'] != false,
         captureH2: json['captureH2'] != false,
+        skipCertVerify: json['skipCertVerify'] == true,
         maxBodyBytes: _intOrNull(json['maxBodyBytes']) ?? 1048576,
       );
 
@@ -2930,6 +2937,7 @@ class CaptureConfig {
         'captureBody': captureBody,
         'captureWs': captureWs,
         'captureH2': captureH2,
+        'skipCertVerify': skipCertVerify,
         'maxBodyBytes': maxBodyBytes,
       };
 
@@ -2942,6 +2950,7 @@ class CaptureConfig {
     bool? captureBody,
     bool? captureWs,
     bool? captureH2,
+    bool? skipCertVerify,
     int? maxBodyBytes,
   }) =>
       CaptureConfig(
@@ -2953,6 +2962,7 @@ class CaptureConfig {
         captureBody: captureBody ?? this.captureBody,
         captureWs: captureWs ?? this.captureWs,
         captureH2: captureH2 ?? this.captureH2,
+        skipCertVerify: skipCertVerify ?? this.skipCertVerify,
         maxBodyBytes: maxBodyBytes ?? this.maxBodyBytes,
       );
 }
