@@ -815,6 +815,187 @@ class AppSegment<T> {
   final Key? key;
 }
 
+// ========== AppTabBar ==========
+
+/// 统一的可滚动标签栏
+///
+/// 与 [AppSegmentedButton] 的关键区别：本组件基于 Material [TabBar] 且
+/// `isScrollable: true`，每个标签宽度由自身文本内容决定，选中较宽的标签
+/// **不会**强制拉伸其余标签（消除分段按钮等宽回流问题）。
+///
+/// - 自行持有 [TabController]，无需外层 `DefaultTabController`。
+/// - 仅用户点按标签时触发 [onChanged]；外部 [value] 的程序化变更只同步选中态，
+///   不触发回调（供发送后自动切换等场景使用）。
+/// - [AppSegment.key] 透传给渲染出的 [Tab]，使 `find.byKey` / `getSize` 可用。
+///
+/// 示例：
+/// ```dart
+/// AppTabBar<MyTab>(
+///   value: tab,
+///   segments: const [
+///     AppSegment(value: MyTab.a, label: 'A', key: Key('tab-a')),
+///     AppSegment(value: MyTab.b, label: 'B', key: Key('tab-b')),
+///   ],
+///   onChanged: (t) => setState(() => tab = t),
+/// )
+/// ```
+class AppTabBar<T> extends StatefulWidget {
+  const AppTabBar({
+    super.key,
+    required this.value,
+    required this.segments,
+    required this.onChanged,
+  });
+
+  /// 当前选中值
+  final T value;
+
+  /// 标签列表（顺序即渲染顺序）
+  final List<AppSegment<T>> segments;
+
+  /// 用户点按标签时的回调
+  final ValueChanged<T> onChanged;
+
+  @override
+  State<AppTabBar<T>> createState() => _AppTabBarState<T>();
+}
+
+class _AppTabBarState<T> extends State<AppTabBar<T>>
+    with SingleTickerProviderStateMixin {
+  late TabController _controller;
+
+  int _indexOf(T value) {
+    final index = widget.segments.indexWhere((segment) => segment.value == value);
+    return index < 0 ? 0 : index;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TabController(
+      length: widget.segments.length,
+      initialIndex: _indexOf(widget.value),
+      vsync: this,
+    );
+  }
+
+  @override
+  void didUpdateWidget(covariant AppTabBar<T> oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.segments.length != oldWidget.segments.length) {
+      _controller.dispose();
+      _controller = TabController(
+        length: widget.segments.length,
+        initialIndex: _indexOf(widget.value),
+        vsync: this,
+      );
+      return;
+    }
+    // 程序化 value 变更：仅同步选中索引，绝不触发 onChanged。
+    if (widget.value != oldWidget.value) {
+      final target = _indexOf(widget.value);
+      if (target != _controller.index) {
+        _controller.index = target;
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return TabBar(
+      controller: _controller,
+      isScrollable: true,
+      tabAlignment: TabAlignment.start,
+      indicatorColor: colorScheme.primary,
+      labelColor: colorScheme.primary,
+      unselectedLabelColor: colorScheme.onSurfaceVariant,
+      indicatorSize: TabBarIndicatorSize.label,
+      dividerColor: colorScheme.outlineVariant,
+      onTap: (index) => widget.onChanged(widget.segments[index].value),
+      tabs: [
+        for (final segment in widget.segments)
+          Tab(key: segment.key, text: segment.label),
+      ],
+    );
+  }
+}
+
+// ========== AppPillToggle ==========
+
+/// 小型内容尺寸的两态药丸切换
+///
+/// 用于响应视图「格式化 / 原始」这类紧凑二元切换：
+/// - 宽度随内容（无 `Expanded`、不强制等宽），切换选中不会改变任何宽度；
+/// - 选中态使用 `primaryContainer` / `onPrimaryContainer`；
+/// - 不注入勾选图标（区别于 Material `SegmentedButton`）。
+class AppPillToggle<T> extends StatelessWidget {
+  const AppPillToggle({
+    super.key,
+    required this.value,
+    required this.segments,
+    required this.onChanged,
+    this.enabled = true,
+  });
+
+  /// 当前选中值
+  final T value;
+
+  /// 选项列表
+  final List<AppSegment<T>> segments;
+
+  /// 选择变化回调
+  final ValueChanged<T> onChanged;
+
+  /// 是否启用
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (final segment in segments) _buildSegment(context, segment),
+      ],
+    );
+  }
+
+  Widget _buildSegment(BuildContext context, AppSegment<T> segment) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final selected = segment.value == value;
+
+    return InkWell(
+      key: segment.key,
+      borderRadius: AppRadius.allCircle,
+      onTap: enabled ? () => onChanged(segment.value) : null,
+      child: Container(
+        padding: AppSpacing.horizontalSM_verticalXS,
+        decoration: BoxDecoration(
+          color: selected ? colorScheme.primaryContainer : null,
+          borderRadius: AppRadius.allCircle,
+        ),
+        child: Text(
+          segment.label,
+          style: theme.textTheme.labelMedium?.copyWith(
+            color: !enabled
+                ? colorScheme.onSurface.withValues(alpha: 0.38)
+                : selected
+                    ? colorScheme.onPrimaryContainer
+                    : colorScheme.onSurfaceVariant,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 // ========== AppLoading ==========
 
 /// 统一的莫比乌斯环 Loading 组件
