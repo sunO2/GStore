@@ -35,9 +35,15 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 MODULE="gstore_mod_proxy"
 ABIS=(arm64-v8a armeabi-v7a x86 x86_64)
 # Contract sources, concatenated in exactly this order (must match build.rs).
+# mitm.rs/dispatch.rs/limits.rs are included so the D-wave runtime fixes
+# (fake-IP re-origination, stage timeouts, 32 in-flight / 48 MiB budget) cannot
+# ship stale: hashing only lib.rs+capture.rs+API.md was the B1 blind spot.
 CONTRACT_SOURCES=(
   "rust/gstore_mod_proxy/src/lib.rs"
   "rust/gstore_mod_proxy/src/capture.rs"
+  "rust/gstore_mod_proxy/src/mitm.rs"
+  "rust/gstore_mod_proxy/src/dispatch.rs"
+  "rust/gstore_mod_proxy/src/limits.rs"
   "rust/gstore_mod_proxy/API.md"
 )
 MARKER_PREFIX="GS_PROXY_CONTRACT_FP="

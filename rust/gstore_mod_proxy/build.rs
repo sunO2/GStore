@@ -22,7 +22,20 @@ use std::path::PathBuf;
 /// matters: the bytes are concatenated in exactly this order.
 /// The shell guard `scripts/ci/assert_proxy_module_contract.sh` MUST use the
 /// same list and the same order.
-const CONTRACT_SOURCES: &[&str] = &["src/lib.rs", "src/capture.rs", "API.md"];
+///
+/// `src/mitm.rs`, `src/dispatch.rs` and `src/limits.rs` are hashed too: the
+/// D-wave fixes (fake-IP re-origination, per-stage timeouts, 32 in-flight /
+/// 48 MiB budget) live there, and hashing only `lib.rs`/`capture.rs`/`API.md`
+/// let a rebuilt-but-forgotten shipped module escape the guard (the B1
+/// blind spot).
+const CONTRACT_SOURCES: &[&str] = &[
+    "src/lib.rs",
+    "src/capture.rs",
+    "src/mitm.rs",
+    "src/dispatch.rs",
+    "src/limits.rs",
+    "API.md",
+];
 
 /// FNV-1a 64-bit hash over `bytes`.
 fn fnv1a64(bytes: &[u8]) -> u64 {
