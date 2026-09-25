@@ -57,7 +57,7 @@ pub(crate) const MITM_CERT_CACHE_CAP: usize = 64;
 /// Per-entry ceiling for the leaf cache. We only ever cache our own single
 /// self-signed ECDSA leaf (estimated entry ≈ host(≤253) + DER(~0.5 KiB) + 1 KiB
 /// fixed overhead ≈ 1.8 KiB), so 4 KiB stays >2× conservative while leaving the
-/// 32 MiB budget room to charge the WebSocket open-session accumulation below.
+/// budget room to charge the WebSocket open-session accumulation below.
 pub(crate) const MITM_CERT_ENTRY_MAX_BYTES: usize = 4 * 1024;
 /// Capture-record ring. Holds summaries only; full payloads are disk-resident.
 pub(crate) const CAPTURE_RING_CAP: usize = 256;
@@ -78,7 +78,14 @@ pub(crate) const CAPTURE_FLUSH_QUEUE_BYTES: usize = crate::captures::CAPTURE_FLU
 pub(crate) const CAPTURE_DECODE_TRANSIENT_BYTES: usize = 8 * 1024;
 /// At most this many MITM sessions in flight; the (N+1)th is a **direct
 /// pass-through** — never queued, never buffered.
-pub(crate) const MITM_MAX_INFLIGHT: usize = 7;
+///
+/// Raised from 7 to 32 (device defect 2): app-scoped capture gates *all* TLS
+/// from the selected apps, and one page opens many concurrent TLS connections,
+/// so 7 starved real browsing. At 32 the recomputed worst case is 41,232,383 B
+/// against the 48 MiB budget below (9,099,265 B headroom), with the per-slot
+/// charge still 307,200 B (`MITM_SESSION_BUFFER_MAX_BYTES` 262,144 +
+/// `CAPTURE_DECODE_TRANSIENT_BYTES` 8,192 + WS share 64×576 = 36,864).
+pub(crate) const MITM_MAX_INFLIGHT: usize = 32;
 /// Hard per-session instant buffer, enforced by every protocol knob (Todo 9):
 /// WS + rustls (plaintext/TLS) + hyper h1 read/write + hyper h2 windows.
 pub(crate) const MITM_SESSION_BUFFER_MAX_BYTES: usize = 256 * 1024;
@@ -120,7 +127,7 @@ pub(crate) const MAX_SHAPER_MAX_FRAMES: usize = 512;
 pub(crate) const MAX_MITM_CERT_CACHE: usize = 64;
 pub(crate) const MAX_CAPTURE_RING: usize = 256;
 pub(crate) const MAX_CAPTURE_RULE: usize = 128;
-pub(crate) const MAX_MITM_MAX_INFLIGHT: usize = 7;
+pub(crate) const MAX_MITM_MAX_INFLIGHT: usize = 32;
 
 /// Per-entry ceilings for the worst-case accounting. These are generous upper
 /// bounds; real records are far smaller.
@@ -151,7 +158,10 @@ const FRAME_BYTES: usize = 1500;
 /// Upper bound on bytes the bounded accumulators may retain at once. A test
 /// asserts the computed [`worst_case_bytes`] stays under this; raise it only
 /// with a measured justification.
-pub(crate) const WORST_CASE_BUDGET_BYTES: usize = 32 * 1024 * 1024;
+///
+/// Raised from 32 MiB to 48 MiB for the 32-slot MITM cap (device defect 2). The
+/// documented worst case is now 41,232,383 B, i.e. 9,099,265 B of headroom.
+pub(crate) const WORST_CASE_BUDGET_BYTES: usize = 48 * 1024 * 1024;
 
 /// Worst-case retained bytes across all capped accumulators, assuming
 /// MTU-sized frames for the packet queues.
@@ -351,10 +361,10 @@ mod tests {
             + CAPTURE_RULE_CAP * CAPTURE_RULE_ENTRY_MAX_BYTES
             + MITM_MAX_INFLIGHT * MITM_SESSION_BUFFER_MAX_BYTES
             + MITM_PEM_BUFFER_MAX_BYTES;
-        assert_eq!(capture_additions, 3_473_408, "capture accounting drifted");
+        assert_eq!(capture_additions, 10_027_008, "capture accounting drifted");
         assert!(
-            capture_additions <= 3_954_689,
-            "capture additions {capture_additions} B exceed pre-existing headroom 3_954_689 B"
+            capture_additions <= 20_731_905,
+            "capture additions {capture_additions} B exceed pre-existing headroom 20_731_905 B"
         );
 
         // Capture pending-flush queue + streaming-decode transient. These were
@@ -362,7 +372,7 @@ mod tests {
         let capture_queue_additions =
             CAPTURE_FLUSH_QUEUE_BYTES + MITM_MAX_INFLIGHT * CAPTURE_DECODE_TRANSIENT_BYTES;
         assert_eq!(
-            capture_queue_additions, 188_416,
+            capture_queue_additions, 393_216,
             "capture queue/decode accounting drifted"
         );
 
@@ -370,7 +380,7 @@ mod tests {
         // one bounded frame record per frame, one session per in-flight slot.
         let ws_session_additions = MITM_WS_SESSION_BYTES;
         assert_eq!(
-            ws_session_additions, 258_048,
+            ws_session_additions, 1_179_648,
             "WS-session accounting drifted"
         );
         assert_eq!(
@@ -379,8 +389,8 @@ mod tests {
             "WS frame charge must dominate the real record"
         );
         assert!(
-            capture_additions + capture_queue_additions + ws_session_additions <= 3_954_689,
-            "capture total {} B exceeds the frozen pre-capture headroom 3_954_689 B",
+            capture_additions + capture_queue_additions + ws_session_additions <= 20_731_905,
+            "capture total {} B exceeds the widened pre-capture headroom 20_731_905 B",
             capture_additions + capture_queue_additions + ws_session_additions
         );
 
@@ -396,8 +406,8 @@ mod tests {
                 + capture_queue_additions
                 + ws_session_additions
                 + capture_uid_additions
-                <= 3_954_689,
-            "capture total {} B exceeds the frozen pre-capture headroom 3_954_689 B",
+                <= 20_731_905,
+            "capture total {} B exceeds the widened pre-capture headroom 20_731_905 B",
             capture_additions
                 + capture_queue_additions
                 + ws_session_additions
@@ -410,7 +420,7 @@ mod tests {
             baseline + request_additions + shaper_additions + capture_additions + capture_queue_additions + ws_session_additions + capture_uid_additions,
             "worst_case_bytes must equal baseline + request + shaper + capture + queue + WS-session + capture-uid accumulators"
         );
-        assert_eq!(worst, 33_552_383, "worst-case budget drifted");
+        assert_eq!(worst, 41_232_383, "worst-case budget drifted");
         assert!(
             worst <= WORST_CASE_BUDGET_BYTES,
             "worst-case {worst} B exceeds budget {WORST_CASE_BUDGET_BYTES} B"
@@ -432,7 +442,7 @@ mod tests {
         // — i.e. `worst_case_bytes()` includes exactly
         // `2 × SHAPER_BUFFER_BYTES_PER_DIRECTION` for the heaps, no more.
         let without_shaper = worst_case_bytes() - shaper_term;
-        assert_eq!(without_shaper, 29_358_079, "shaper term is not exactly 2 × the per-direction cap");
+        assert_eq!(without_shaper, 37_038_079, "shaper term is not exactly 2 × the per-direction cap");
 
         // The cap must equal the module's own source of truth.
         assert_eq!(SHAPER_BUFFER_BYTES_PER_DIRECTION, shaper::BUFFER_BYTES_PER_DIRECTION);
@@ -523,18 +533,30 @@ mod tests {
             + MITM_MAX_INFLIGHT * CAPTURE_DECODE_TRANSIENT_BYTES
             + MITM_WS_SESSION_BYTES
             + CAPTURE_UID_INFLIGHT_CAP * CAPTURE_UID_ENTRY_MAX_BYTES;
-        assert_eq!(memory, 3_952_640, "in-memory capture additions drifted");
+        assert_eq!(memory, 11_632_640, "in-memory capture additions drifted");
 
         const PRIOR_BASELINE: usize = 29_599_743;
         assert_eq!(worst_case_bytes() - PRIOR_BASELINE, memory);
 
-        // The 1 MiB disk-only body must NOT fit the headroom: charging it would
-        // blow the 3_954_689 B allowance, so its absence is provable.
-        const HEADROOM: usize = 3_954_689;
+        // The 1 MiB disk-only body must NOT be part of the charged additions.
+        // The equality above already pins the additions to `memory` (which
+        // excludes the body); assert the negative case explicitly so a future
+        // accidental charge is caught here rather than smuggled past the sum.
+        // (The raised 48 MiB budget means headroom exhaustion can no longer
+        // prove exclusion, so exclusion is proven structurally instead.)
         assert_eq!(CAPTURE_BODY_MAX_BYTES, 1024 * 1024);
+        assert_ne!(
+            worst_case_bytes() - PRIOR_BASELINE,
+            memory + CAPTURE_BODY_MAX_BYTES,
+            "the disk-only body must not be charged to the memory budget"
+        );
+        // The capture additions (still excluding the body) must fit the
+        // budget-minus-baseline headroom.
+        const HEADROOM: usize = 20_731_905;
+        assert_eq!(WORST_CASE_BUDGET_BYTES - PRIOR_BASELINE, HEADROOM);
         assert!(
-            memory + CAPTURE_BODY_MAX_BYTES > HEADROOM,
-            "a charged body would exceed the headroom; it must stay disk-only"
+            memory <= HEADROOM,
+            "capture additions {memory} B exceed the pre-capture headroom {HEADROOM} B"
         );
         assert_eq!(CAPTURE_URL_MAX_BYTES, 1024);
     }
@@ -545,12 +567,12 @@ mod tests {
         // dispatcher todo): the cap exists here so the gate can count in-flight
         // sessions and let the (MITM_MAX_INFLIGHT + 1)th take the direct
         // pass-through path instead of queueing or buffering. Pin the number.
-        assert_eq!(MITM_MAX_INFLIGHT, 7);
+        assert_eq!(MITM_MAX_INFLIGHT, 32);
         assert!(MITM_MAX_INFLIGHT > 0);
         assert_eq!(MITM_SESSION_BUFFER_MAX_BYTES, 262_144);
         assert_eq!(
             MITM_MAX_INFLIGHT * MITM_SESSION_BUFFER_MAX_BYTES,
-            1_835_008,
+            8_388_608,
             "in-flight session batch accounting drifted"
         );
     }
