@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 
 /// Reusable UI components that follow the app design system
@@ -1944,6 +1945,186 @@ class _AppEditableFullScreenState extends State<_AppEditableFullScreen> {
           ),
         ),
       ),
+    );
+  }
+}
+
+// ========== AppEditorToolbar ==========
+
+/// 就地编辑动作行（设计系统原语）。
+///
+/// 绑定一个外部 [controller]，提供：
+/// - 粘贴：从系统剪贴板读取纯文本并插入当前选区；
+/// - 清空：清空 [controller]；
+/// - 插入：当 [insertText] 非空时显示按钮，把该文本插入当前选区（选中内容被替换）；
+/// - 格式化：[onFormat] 回调槽位（具体格式化行为由调用方拥有，如 JSON 美化）；
+/// - 上一个 / 下一个字段：[onPrevious] / [onNext] 回调槽位（聚焦切换由调用方拥有）。
+///
+/// 本组件**只**渲染一行紧凑动作，不叠加任何 `viewInsets` 内边距、不在键盘上方
+/// 叠加任何浮层；弹层内边距由 `AppSheet`/`AppSheetScaffold` 负责。
+class AppEditorToolbar extends StatelessWidget {
+  const AppEditorToolbar({
+    super.key,
+    required this.controller,
+    this.insertText,
+    this.onFormat,
+    this.onPrevious,
+    this.onNext,
+  });
+
+  /// 绑定的编辑 controller（插入 / 清空都落在它身上）。
+  final TextEditingController controller;
+
+  /// 插入动作要写入的文本；为 null 时不渲染插入按钮。
+  final String? insertText;
+
+  /// 格式化回调槽位；为 null 时不渲染格式化按钮。
+  final VoidCallback? onFormat;
+
+  /// 跳到上一个字段的回调；为 null 时不渲染上一个按钮。
+  final VoidCallback? onPrevious;
+
+  /// 跳到下一个字段的回调；为 null 时不渲染下一个按钮。
+  final VoidCallback? onNext;
+
+  /// 在 [controller] 的当前选区处插入 [text]（选中内容被替换）。
+  ///
+  /// 选区无效（如从未聚焦的 controller）时追加到文本末尾——这样空 controller
+  /// 上插入等价于赋值。供本工具栏与 [AppSuggestionChips] 复用。
+  static void insertAtCursor(TextEditingController controller, String text) {
+    final value = controller.value;
+    final selection = value.selection;
+    final start = selection.isValid ? selection.start : value.text.length;
+    final end = selection.isValid ? selection.end : value.text.length;
+    final newText = value.text.replaceRange(start, end, text);
+    controller.value = value.copyWith(
+      text: newText,
+      selection: TextSelection.collapsed(offset: start + text.length),
+      composing: TextRange.empty,
+    );
+  }
+
+  Future<void> _paste() async {
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    final text = data?.text;
+    if (text == null || text.isEmpty) return;
+    insertAtCursor(controller, text);
+  }
+
+  Widget _action({
+    required Key key,
+    required IconData icon,
+    required String tooltip,
+    required VoidCallback onPressed,
+  }) {
+    return IconButton(
+      key: key,
+      tooltip: tooltip,
+      icon: Icon(icon),
+      iconSize: AppTypography.iconMD,
+      visualDensity: VisualDensity.compact,
+      onPressed: onPressed,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final insert = insertText;
+    return Wrap(
+      spacing: AppSpacing.xs,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        if (onPrevious != null)
+          _action(
+            key: const Key('editor-toolbar-prev'),
+            icon: TablerIcons.chevron_left,
+            tooltip: '上一个字段',
+            onPressed: onPrevious!,
+          ),
+        if (onNext != null)
+          _action(
+            key: const Key('editor-toolbar-next'),
+            icon: TablerIcons.chevron_right,
+            tooltip: '下一个字段',
+            onPressed: onNext!,
+          ),
+        _action(
+          key: const Key('editor-toolbar-paste'),
+          icon: TablerIcons.clipboard,
+          tooltip: '粘贴',
+          onPressed: _paste,
+        ),
+        if (insert != null)
+          _action(
+            key: const Key('editor-toolbar-insert'),
+            icon: TablerIcons.variable,
+            tooltip: '插入',
+            onPressed: () => insertAtCursor(controller, insert),
+          ),
+        if (onFormat != null)
+          _action(
+            key: const Key('editor-toolbar-format'),
+            icon: TablerIcons.braces,
+            tooltip: '格式化',
+            onPressed: onFormat!,
+          ),
+        _action(
+          key: const Key('editor-toolbar-clear'),
+          icon: TablerIcons.eraser,
+          tooltip: '清空',
+          onPressed: controller.clear,
+        ),
+      ],
+    );
+  }
+}
+
+// ========== AppSuggestionChips ==========
+
+/// 建议值快捷 chips（设计系统原语）。
+///
+/// 把 [suggestions] 渲染为一组紧凑的 `ActionChip`；点按其中一个会把该值插入
+/// [controller] 的当前选区（等价于「赋值 / 插入」，见
+/// [AppEditorToolbar.insertAtCursor]），并通过 [onSelected] 通知调用方。
+///
+/// [suggestions] 为空时渲染 [SizedBox.shrink]（不产生空行、不抛异常）。
+class AppSuggestionChips extends StatelessWidget {
+  const AppSuggestionChips(
+    this.suggestions, {
+    super.key,
+    required this.controller,
+    this.onSelected,
+  });
+
+  /// 建议值列表。
+  final List<String> suggestions;
+
+  /// 点按 chip 时接收插入值的编辑 controller。
+  final TextEditingController controller;
+
+  /// 点按 chip 时的附加回调（如标记脏值）；在写入 controller 之后触发。
+  final ValueChanged<String>? onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    if (suggestions.isEmpty) return const SizedBox.shrink();
+    final theme = Theme.of(context);
+    return Wrap(
+      spacing: AppSpacing.xs,
+      runSpacing: AppSpacing.xs,
+      children: [
+        for (final suggestion in suggestions)
+          ActionChip(
+            key: Key('editor-suggestion-chip-$suggestion'),
+            label: Text(suggestion),
+            labelStyle: theme.textTheme.labelMedium,
+            visualDensity: VisualDensity.compact,
+            onPressed: () {
+              AppEditorToolbar.insertAtCursor(controller, suggestion);
+              onSelected?.call(suggestion);
+            },
+          ),
+      ],
     );
   }
 }
