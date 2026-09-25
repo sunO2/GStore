@@ -169,7 +169,7 @@ pub(crate) async fn handle_flow<S>(
     let passthrough = match capture::decide_mitm(&config, dst.port(), host.as_deref(), &app) {
         Some(mitm_host) => {
             let prefixed = sniff::PrefixedStream::new(prefix, stream);
-            let dialer = production_dialer(&inner, &mitm_host, src, dst);
+            let dialer = production_dialer(&inner, &mitm_host, src, dst, config.skip_cert_verify);
             let ctx = bridge_context(&config, &mitm_host, src, dst);
             match begin_mitm(prefixed, Some(mitm_host.as_str()), dialer, ctx) {
                 // The isolated MITM task owns the stream now.
@@ -211,19 +211,33 @@ impl std::fmt::Display for MitmInitError {
 
 /// Build the production upstream dialer for one gate-hit flow: a decrypted
 /// request is re-originated through the live tunnel (rules/outbound/protect).
+///
+/// `skip_cert_verify` is the session snapshot's opt-in; true selects
+/// [`mitm::upstream_tls_config_for`] with `SkipServerVerify` and records one
+/// security event for the session.
 pub(crate) fn production_dialer(
     inner: &Arc<meow_tunnel::tunnel::TunnelInner>,
     host: &str,
     src: SocketAddr,
     dst: SocketAddr,
+    skip_cert_verify: bool,
 ) -> Arc<dyn UpstreamDialer> {
     let target = UpstreamTarget::new(host, dst.port())
         .with_dst_ip(dst.ip())
         .with_source(src.ip(), src.port());
+    if skip_cert_verify {
+        crate::log_message(
+            2,
+            &format!(
+                "proxy.mitm: upstream cert verification DISABLED by config \
+                 (skipCertVerify) host={host}"
+            ),
+        );
+    }
     Arc::new(TunnelUpstreamDialer::new(
         Arc::clone(inner),
         target,
-        mitm::upstream_tls_config(),
+        mitm::upstream_tls_config_for(skip_cert_verify),
     ))
 }
 
@@ -961,7 +975,11 @@ mod mitm_e2e_tests {
         Arc::new(sniff::Sniffer::new(cfg))
     }
 
-    fn capture_config(tls_ports: &[u16], capture_ws: bool) -> CaptureConfig {
+    fn capture_config_ex(
+        tls_ports: &[u16],
+        capture_ws: bool,
+        skip_cert_verify: bool,
+    ) -> CaptureConfig {
         capture::set_config(CaptureConfig {
             enabled: true,
             tls_ports: tls_ports.to_vec(),
@@ -971,10 +989,14 @@ mod mitm_e2e_tests {
             capture_body: true,
             capture_ws,
             capture_h2: true,
-            skip_cert_verify: false,
+            skip_cert_verify,
             max_body_bytes: CAPTURE_BODY_MAX_BYTES,
         });
         capture::config().as_ref().clone()
+    }
+
+    fn capture_config(tls_ports: &[u16], capture_ws: bool) -> CaptureConfig {
+        capture_config_ex(tls_ports, capture_ws, false)
     }
 
     async fn start_tls_fixture(ca: Arc<CertificateAuthority>, host: &str, body: Vec<u8>) -> u16 {
@@ -1173,6 +1195,123 @@ mod mitm_e2e_tests {
             drain_inflight().await;
             teardown();
         });
+    }
+
+    /// D6b: `skipCertVerify=true` in the per-session config snapshot makes the
+    /// upstream TLS accept an otherwise-untrusted leaf (`SkipServerVerify`), so
+    /// the session still decrypts and captures. It also emits exactly one
+    /// security event for the session.
+    #[test]
+    fn mitm_e2e_skip_cert_verify_accepts_untrusted_upstream() {
+        let rt = current_thread();
+        rt.block_on(async {
+            let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+            let (_mitm_ca, inner) = setup(true, &[0]);
+            let upstream_ca = temp_ca("untrusted-upstream");
+            let port = start_tls_fixture(
+                Arc::clone(&upstream_ca),
+                "flow.test",
+                b"UNTRUSTED-OK".to_vec(),
+            )
+            .await;
+            capture_config_ex(&[port], true, true);
+            let ca = mitm::ca().unwrap();
+            crate::logging::reset_for_tests();
+
+            run_flow(Arc::clone(&inner), port, sniffer(&[port]), {
+                let ca = Arc::clone(&ca);
+                move |io| async move {
+                    let (status, body) = client_h1_tls(&ca, "flow.test", io, "/skip").await;
+                    assert_eq!(
+                        status, 200,
+                        "skipCertVerify=true must accept the untrusted upstream"
+                    );
+                    assert_eq!(body, b"UNTRUSTED-OK");
+                }
+            })
+            .await;
+
+            let messages: Vec<String> = crate::logging::snapshot(0, 200, None)
+                .records
+                .into_iter()
+                .map(|r| r.message)
+                .collect();
+            assert_eq!(
+                messages
+                    .iter()
+                    .filter(|m| m.contains("upstream cert verification DISABLED"))
+                    .count(),
+                1,
+                "exactly one skipCertVerify security event per session: {messages:?}"
+            );
+            drain_inflight().await;
+            teardown();
+        });
+    }
+
+    /// D6b contrast: with the flag off (the default), the SAME untrusted
+    /// fixture is rejected by strict upstream TLS — proving the opt-in actually
+    /// changes behavior and the default is unchanged.
+    #[test]
+    fn mitm_e2e_strict_upstream_rejects_untrusted_fixture() {
+        let rt = current_thread();
+        rt.block_on(async {
+            let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+            let (_mitm_ca, inner) = setup(true, &[0]);
+            let upstream_ca = temp_ca("untrusted-upstream-strict");
+            let port = start_tls_fixture(
+                Arc::clone(&upstream_ca),
+                "flow.test",
+                b"UNTRUSTED-NOPE".to_vec(),
+            )
+            .await;
+            capture_config_ex(&[port], true, false);
+            let ca = mitm::ca().unwrap();
+            crate::logging::reset_for_tests();
+
+            run_flow(Arc::clone(&inner), port, sniffer(&[port]), {
+                let ca = Arc::clone(&ca);
+                move |io| async move {
+                    let (status, _body) = client_h1_tls(&ca, "flow.test", io, "/strict").await;
+                    assert_eq!(
+                        status, 502,
+                        "the default strict upstream TLS must reject an untrusted leaf"
+                    );
+                }
+            })
+            .await;
+
+            let messages: Vec<String> = crate::logging::snapshot(0, 200, None)
+                .records
+                .into_iter()
+                .map(|r| r.message)
+                .collect();
+            assert_eq!(
+                messages
+                    .iter()
+                    .filter(|m| m.contains("upstream cert verification DISABLED"))
+                    .count(),
+                0,
+                "no security event when the flag is off: {messages:?}"
+            );
+            drain_inflight().await;
+            teardown();
+        });
+    }
+
+    /// D6b: the dialer TLS selection honors the snapshot flag exactly — strict
+    /// by default, `SkipServerVerify` only when explicitly enabled.
+    #[test]
+    fn upstream_tls_config_for_honors_skip_flag() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(
+            !mitm::upstream_tls_config_for(false).skip_cert_verify(),
+            "false must stay strict"
+        );
+        assert!(
+            mitm::upstream_tls_config_for(true).skip_cert_verify(),
+            "true must opt into skip verification"
+        );
     }
 
     #[test]

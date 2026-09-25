@@ -1367,6 +1367,19 @@ pub(crate) fn upstream_tls_config() -> UpstreamTlsConfig {
         .clone()
 }
 
+/// Per-session upstream TLS selection: strict [`upstream_tls_config`] unless the
+/// session's config snapshot explicitly opted into `skipCertVerify`, in which
+/// case the verifier accepts ANY upstream leaf. Never process-wide — the caller
+/// passes the flag from its session snapshot each time.
+pub(crate) fn upstream_tls_config_for(skip_cert_verify: bool) -> UpstreamTlsConfig {
+    let config = upstream_tls_config();
+    if skip_cert_verify {
+        config.with_skip_cert_verify(true)
+    } else {
+        config
+    }
+}
+
 /// Override the upstream TLS settings. Tests point the dialer at a local
 /// fixture whose leaf is signed by the test CA; production never calls this.
 #[cfg(test)]
