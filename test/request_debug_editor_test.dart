@@ -23,6 +23,7 @@ import 'package:gstore/core/request_debug/debug_sender.dart';
 import 'package:gstore/core/request_debug/request_debug_facade.dart';
 import 'package:gstore/core/request_debug/request_debug_store.dart';
 import 'package:gstore/page/request_debug/collection_section.dart';
+import 'package:gstore/page/request_debug/history_section.dart';
 import 'package:gstore/page/request_debug/request_editor_page.dart';
 
 /// 假发送器：记录每次发送参数，返回受控响应；**不触碰网络**。
@@ -153,6 +154,24 @@ String _previewText(WidgetTester tester) {
   return text.textSpan?.toPlainText() ?? text.data ?? '';
 }
 
+/// 通过 URL 的自适应弹层设置 URL 值（tap 字段 → 弹层输入 → 完成）。
+Future<void> _setUrlViaSheet(WidgetTester tester, String url) async {
+  await tester.tap(find.byKey(const Key('request-editor-url')));
+  await tester.pumpAndSettle();
+  await tester.enterText(
+    find.byKey(const Key('request-editor-field-sheet-input')),
+    url,
+  );
+  await tester.tap(find.byKey(const Key('request-editor-field-sheet-confirm')));
+  await tester.pumpAndSettle();
+}
+
+/// URL 自适应字段当前展示的文本。
+Finder _urlDisplay(String url) => find.descendant(
+      of: find.byKey(const Key('request-editor-url')),
+      matching: find.text(url),
+    );
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -202,10 +221,7 @@ void main() {
       expect(find.byKey(const Key('request-editor-url')), findsOneWidget);
 
       await tester.enterText(find.byKey(const Key('request-editor-name')), '登录');
-      await tester.enterText(
-        find.byKey(const Key('request-editor-url')),
-        'https://api.example/login',
-      );
+      await _setUrlViaSheet(tester, 'https://api.example/login');
       await tester.tap(find.byKey(const Key('request-editor-method')));
       await tester.pumpAndSettle();
       await tester.tap(find.text('POST').last);
@@ -331,10 +347,7 @@ void main() {
       await _pumpEditor(tester, facade: facade, collectionId: collection.id);
 
       await tester.enterText(find.byKey(const Key('request-editor-name')), '创建用户');
-      await tester.enterText(
-        find.byKey(const Key('request-editor-url')),
-        'https://api.example/users',
-      );
+      await _setUrlViaSheet(tester, 'https://api.example/users');
       await tester.tap(find.byKey(const Key('request-editor-method')));
       await tester.pumpAndSettle();
       await tester.tap(find.text('POST').last);
@@ -440,12 +453,8 @@ void main() {
         collectionId: collection.id,
       );
 
-      // 编辑 URL → dirty。
-      await tester.enterText(
-        find.byKey(const Key('request-editor-url')),
-        'https://api.example/new',
-      );
-      await tester.pumpAndSettle();
+      // 编辑 URL（自适应弹层提交）→ dirty。
+      await _setUrlViaSheet(tester, 'https://api.example/new');
 
       // 返回 → 弹出二次确认。
       await tester.tap(find.byKey(const Key('request-editor-back')));
@@ -457,10 +466,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.byKey(const Key('open-editor')), findsNothing);
       expect(find.byKey(const Key('request-editor-url')), findsOneWidget);
-      final urlField = tester.widget<TextField>(
-        find.byKey(const Key('request-editor-url')),
-      );
-      expect(urlField.controller!.text, 'https://api.example/new');
+      expect(_urlDisplay('https://api.example/new'), findsOneWidget);
       expect(
         facade.store.requestById('r-unsaved')!.url,
         'https://api.example/old',
@@ -524,11 +530,7 @@ void main() {
       );
 
       // 不递归：值 `{{host}}` 不再展开，也不计入缺失。
-      await tester.enterText(
-        find.byKey(const Key('request-editor-url')),
-        '{{nested}}',
-      );
-      await tester.pumpAndSettle();
+      await _setUrlViaSheet(tester, '{{nested}}');
       expect(_previewText(tester), '{{host}}');
       expect(
         find.byKey(const Key('request-editor-env-missing-host')),
@@ -537,7 +539,7 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('插入变量 → 追加 `{{name}}` 到 URL 并高亮解析', (tester) async {
+    testWidgets('弹层内插入变量 → 命中弹层草稿（不写旧选区）', (tester) async {
       final facade = _facade();
       final env = facade.store.addEnvironment(
         name: 'dev',
@@ -562,6 +564,15 @@ void main() {
         collectionId: collection.id,
       );
 
+      // 打开 URL 自适应弹层。
+      await tester.tap(find.byKey(const Key('request-editor-url')));
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const Key('request-editor-field-sheet')),
+        findsOneWidget,
+      );
+
+      // 弹层内点「插入环境变量」→ 选择 → 落到弹层草稿。
       await tester.tap(find.byKey(const Key('request-editor-insert-var')));
       await tester.pumpAndSettle();
       await tester.tap(
@@ -569,11 +580,113 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      final urlField = tester.widget<TextField>(
-        find.byKey(const Key('request-editor-url')),
+      final draft = tester
+          .widget<TextField>(find.byKey(const Key('request-editor-field-sheet-input')))
+          .controller!;
+      expect(
+        draft.text,
+        'https://api.example/{{host}}',
+        reason: '插入必须命中弹层草稿，而非旧绑定值',
       );
-      expect(urlField.controller!.text, 'https://api.example/{{host}}');
+
+      // 确认 → 写回字段并刷新预览。
+      await tester.tap(find.byKey(const Key('request-editor-field-sheet-confirm')));
+      await tester.pumpAndSettle();
+      expect(_urlDisplay('https://api.example/{{host}}'), findsOneWidget);
       expect(_previewText(tester), 'https://api.example/https://api.example');
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('AppSuggestionChips 含 store.history 派生的最近值', (tester) async {
+      final facade = _facade();
+      final collection = facade.store.addCollection(name: 'API');
+      appendDebugHistory(
+        facade,
+        request: DebugRequest(
+          id: 'r-hist',
+          name: 'hist',
+          method: 'GET',
+          url: 'https://api.example/hist',
+          headers: const <DebugHeader>[
+            DebugHeader(name: 'X-Token', value: 'recent-secret-42'),
+          ],
+        ),
+        response: const DebugResponse(statusCode: 200),
+      );
+
+      await _pumpEditor(tester, facade: facade, collectionId: collection.id);
+
+      await tester.tap(find.byKey(const Key('request-editor-segment-headers')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('request-editor-headers-add')));
+      await tester.pumpAndSettle();
+
+      // 打开「值」自适应弹层，建议 chips 应含历史派生值。
+      await tester.tap(find.byKey(const Key('request-editor-header-value-0')));
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const Key('editor-suggestion-chip-recent-secret-42')),
+        findsOneWidget,
+      );
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('工具栏 prev/next 在编辑器字段间移动焦点', (tester) async {
+      final facade = _facade();
+      final collection = facade.store.addCollection(name: 'API');
+      final request = facade.store.addRequest(
+        collection.id,
+        DebugRequest(
+          id: 'r-focus',
+          name: 'focus',
+          method: 'GET',
+          url: 'https://api.example/',
+          auth: const DebugAuth(
+            type: DebugAuthType.basic,
+            username: 'user',
+            password: 'pass',
+          ),
+        ),
+      );
+
+      await _pumpEditor(
+        tester,
+        facade: facade,
+        request: request,
+        collectionId: collection.id,
+      );
+
+      // 切到认证段，使行内「用户名」字段存在。
+      await tester.tap(find.byKey(const Key('request-editor-segment-auth')));
+      await tester.pumpAndSettle();
+
+      final authUserEditable = tester.widget<EditableText>(
+        find.descendant(
+          of: find.byKey(const Key('request-editor-auth-user')),
+          matching: find.byType(EditableText),
+        ),
+      );
+      expect(authUserEditable.focusNode.hasFocus, isFalse);
+
+      // 打开 URL 弹层 → 工具栏「下一个」→ 焦点移到「用户名」。
+      await tester.tap(find.byKey(const Key('request-editor-url')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('editor-toolbar-next')));
+      await tester.pumpAndSettle();
+      expect(
+        authUserEditable.focusNode.hasFocus,
+        isTrue,
+        reason: 'next 应把焦点移向下一个字段',
+      );
+
+      // 再点「上一个」→ 焦点回到 URL 所在字段（弹层草稿）。
+      await tester.tap(find.byKey(const Key('editor-toolbar-prev')));
+      await tester.pumpAndSettle();
+      expect(
+        authUserEditable.focusNode.hasFocus,
+        isFalse,
+        reason: 'prev 应把焦点移回上一个字段',
+      );
       expect(tester.takeException(), isNull);
     });
   });

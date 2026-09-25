@@ -375,9 +375,13 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.byKey(const Key('request-editor-url')), findsOneWidget);
-      final urlField =
-          tester.widget<TextField>(find.byKey(const Key('request-editor-url')));
-      expect(urlField.controller!.text, 'https://api.example/thing');
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('request-editor-url')),
+          matching: find.text('https://api.example/thing'),
+        ),
+        findsOneWidget,
+      );
       expect(tester.takeException(), isNull);
     });
   });

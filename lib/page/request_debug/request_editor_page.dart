@@ -76,6 +76,20 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
   late final TextEditingController _authKeyName;
   late final TextEditingController _authKeyValue;
 
+  // 自适应字段的 state key：用于工具栏「上一个 / 下一个」在字段间移动焦点。
+  final GlobalKey<AppEditableFieldState> _urlFieldKey =
+      GlobalKey<AppEditableFieldState>();
+  final GlobalKey<AppEditableFieldState> _authUserFieldKey =
+      GlobalKey<AppEditableFieldState>();
+  final GlobalKey<AppEditableFieldState> _authPassFieldKey =
+      GlobalKey<AppEditableFieldState>();
+  final GlobalKey<AppEditableFieldState> _authTokenFieldKey =
+      GlobalKey<AppEditableFieldState>();
+  final GlobalKey<AppEditableFieldState> _authKeyNameFieldKey =
+      GlobalKey<AppEditableFieldState>();
+  final GlobalKey<AppEditableFieldState> _authKeyValueFieldKey =
+      GlobalKey<AppEditableFieldState>();
+
   final List<_KvRow> _params = <_KvRow>[];
   final List<_KvRow> _headers = <_KvRow>[];
   final List<_KvRow> _cookies = <_KvRow>[];
@@ -110,14 +124,24 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
     _authToken = TextEditingController(text: request?.auth?.token ?? '');
     _authKeyName = TextEditingController(text: request?.auth?.apiKeyName ?? '');
     _authKeyValue = TextEditingController(text: request?.auth?.apiKeyValue ?? '');
+    for (final controller in <TextEditingController>[
+      _url,
+      _authUser,
+      _authPass,
+      _authToken,
+      _authKeyName,
+      _authKeyValue,
+    ]) {
+      _bindDirty(controller);
+    }
     for (final q in request?.query ?? const <DebugQueryParam>[]) {
-      _params.add(_KvRow(name: q.name, value: q.value, enabled: q.enabled));
+      _params.add(_newRow(name: q.name, value: q.value, enabled: q.enabled));
     }
     for (final h in request?.headers ?? const <DebugHeader>[]) {
-      _headers.add(_KvRow(name: h.name, value: h.value, enabled: h.enabled));
+      _headers.add(_newRow(name: h.name, value: h.value, enabled: h.enabled));
     }
     for (final c in request?.cookies ?? const <DebugCookie>[]) {
-      _cookies.add(_KvRow(name: c.name, value: c.value));
+      _cookies.add(_newRow(name: c.name, value: c.value));
     }
   }
 
@@ -138,6 +162,25 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
   }
 
   void _markDirty() => setState(() => _dirty = true);
+
+  /// 绑定自适应字段 controller：文本变化（含弹层写回）即标记脏值并重建，
+  /// 使环境预览等派生 UI 同步刷新。
+  void _bindDirty(TextEditingController controller) {
+    controller.addListener(_onFieldChanged);
+  }
+
+  void _onFieldChanged() {
+    if (!mounted) return;
+    // 始终 setState：文本变化后需要刷新派生 UI（如 URL 环境预览）。
+    setState(() => _dirty = true);
+  }
+
+  _KvRow _newRow({String name = '', String value = '', bool enabled = true}) {
+    final row = _KvRow(name: name, value: value, enabled: enabled);
+    _bindDirty(row.nameCtrl);
+    _bindDirty(row.valueCtrl);
+    return row;
+  }
 
   RequestDebugFacade get _facade => widget.facade;
 
@@ -251,7 +294,11 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
     return spans;
   }
 
-  Future<void> _insertVariable() async {
+  /// 弹出「插入环境变量」选择器，并把 `{{name}}` 插入 [target] 的当前选区。
+  ///
+  /// [target] 是当前编辑面的 controller（弹层打开时为本地草稿），因此插入
+  /// 不会命中已过期的绑定值选区。
+  Future<void> _pickInsertVariable(TextEditingController target) async {
     final env = _facade.store.activeEnvironment;
     if (env == null || env.vars.isEmpty) return;
     final picked = await AppSheet.showCustom<String>(
@@ -279,16 +326,128 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
       ),
     );
     if (picked == null || !mounted) return;
-    final insert = '{{$picked}}';
-    final selection = _url.selection;
-    final start = selection.isValid ? selection.start : _url.text.length;
-    final end = selection.isValid ? selection.end : _url.text.length;
-    final next = _url.text.replaceRange(start, end, insert);
-    _url.value = TextEditingValue(
-      text: next,
-      selection: TextSelection.collapsed(offset: start + insert.length),
-    );
+    AppEditorToolbar.insertAtCursor(target, '{{$picked}}');
     _markDirty();
+  }
+
+  // ==================== 自适应字段工具栏 / 焦点 ====================
+
+  static const List<String> _commonHeaderNames = <String>[
+    'Content-Type',
+    'Authorization',
+    'Accept',
+    'User-Agent',
+    'X-Request-Id',
+  ];
+
+  /// 常见请求头名 + 历史请求里出现过的最近值（去重，最新优先）。
+  List<String> _headerSuggestions() {
+    final names = <String>[..._commonHeaderNames];
+    final recent = <String>[];
+    for (final entry in _facade.store.history) {
+      for (final h in entry.request.headers) {
+        final value = h.value.trim();
+        final name = h.name.trim();
+        if (value.isNotEmpty &&
+            !names.contains(value) &&
+            !recent.contains(value)) {
+          recent.add(value);
+        }
+        if (name.isNotEmpty &&
+            !names.contains(name) &&
+            !recent.contains(name)) {
+          recent.add(name);
+        }
+      }
+      if (recent.length >= 8) break;
+    }
+    return <String>[...names, ...recent];
+  }
+
+  Widget _insertVarButton(TextEditingController controller) {
+    return IconButton(
+      key: const Key('request-editor-insert-var'),
+      tooltip: '插入环境变量',
+      icon: const Icon(TablerIcons.variable),
+      visualDensity: VisualDensity.compact,
+      onPressed: () => _pickInsertVariable(controller),
+    );
+  }
+
+  /// 弹层工具栏：上一个/下一个字段 + 粘贴/清空（可选插入变量 / 建议 chips）。
+  AppEditableFieldToolbarBuilder _sheetToolbar({
+    required GlobalKey<AppEditableFieldState> fieldKey,
+    bool allowInsertVar = false,
+    List<String> Function()? suggestionsBuilder,
+  }) {
+    return (context, controller) {
+      final suggestions = suggestionsBuilder?.call() ?? const <String>[];
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Wrap(
+            spacing: AppSpacing.xs,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              if (allowInsertVar) _insertVarButton(controller),
+              AppEditorToolbar(
+                controller: controller,
+                onPrevious: () => _focusRelative(fieldKey, -1),
+                onNext: () => _focusRelative(fieldKey, 1),
+              ),
+            ],
+          ),
+          if (suggestions.isNotEmpty) ...[
+            const SizedBox(height: AppSpacing.xs),
+            AppSuggestionChips(suggestions, controller: controller),
+          ],
+        ],
+      );
+    };
+  }
+
+  /// 当前分段下可聚焦的编辑字段顺序（仅枚举已挂载的字段）。
+  List<GlobalKey<AppEditableFieldState>> _focusOrder() {
+    final order = <GlobalKey<AppEditableFieldState>>[_urlFieldKey];
+    void addRows(List<_KvRow> rows) {
+      for (final row in rows) {
+        order.add(row.nameFieldKey);
+        order.add(row.valueFieldKey);
+      }
+    }
+
+    switch (_segment) {
+      case RequestEditorSegment.params:
+        addRows(_params);
+        break;
+      case RequestEditorSegment.headers:
+        addRows(_headers);
+        break;
+      case RequestEditorSegment.cookies:
+        addRows(_cookies);
+        break;
+      case RequestEditorSegment.auth:
+        order.addAll(<GlobalKey<AppEditableFieldState>>[
+          _authUserFieldKey,
+          _authPassFieldKey,
+          _authTokenFieldKey,
+          _authKeyNameFieldKey,
+          _authKeyValueFieldKey,
+        ]);
+        break;
+      case RequestEditorSegment.body:
+      case RequestEditorSegment.response:
+        break;
+    }
+    return order.where((key) => key.currentState != null).toList();
+  }
+
+  void _focusRelative(GlobalKey<AppEditableFieldState> from, int delta) {
+    final order = _focusOrder();
+    final index = order.indexOf(from);
+    if (index < 0 || order.length < 2) return;
+    order[(index + delta) % order.length].currentState?.focus();
   }
 
   // ==================== 动作 ====================
@@ -466,21 +625,20 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                TextField(
+                KeyedSubtree(
                   key: const Key('request-editor-url'),
-                  controller: _url,
-                  textInputAction: TextInputAction.done,
-                  decoration: InputDecoration(
+                  child: AppEditableField(
+                    key: _urlFieldKey,
+                    controller: _url,
+                    mode: AppEditableFieldMode.sheet,
+                    label: '请求地址',
                     hintText: 'https://api.example/path',
-                    border: const OutlineInputBorder(),
-                    suffixIcon: IconButton(
-                      key: const Key('request-editor-insert-var'),
-                      tooltip: '插入环境变量',
-                      icon: const Icon(TablerIcons.variable),
-                      onPressed: _insertVariable,
+                    textInputAction: TextInputAction.done,
+                    toolbarBuilder: _sheetToolbar(
+                      fieldKey: _urlFieldKey,
+                      allowInsertVar: true,
                     ),
                   ),
-                  onChanged: (_) => _markDirty(),
                 ),
                 _buildEnvPreview(context),
               ],
@@ -663,14 +821,15 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
     return ListView(
       padding: AppSpacing.allLG,
       children: [
-        for (var i = 0; i < rows.length; i++) _buildKvRow(rows[i], keyPrefix, nameHint, allowDisable),
+        for (var i = 0; i < rows.length; i++)
+          _buildKvRow(rows[i], keyPrefix, nameHint, allowDisable, i),
         const SizedBox(height: AppSpacing.sm),
         Align(
           alignment: Alignment.centerLeft,
           child: TextButton.icon(
             key: addKey,
             onPressed: () => setState(() {
-              rows.add(_KvRow());
+              rows.add(_newRow());
               _dirty = true;
             }),
             icon: const Icon(TablerIcons.plus),
@@ -681,7 +840,13 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
     );
   }
 
-  Widget _buildKvRow(_KvRow row, String keyPrefix, String nameHint, bool allowDisable) {
+  Widget _buildKvRow(
+    _KvRow row,
+    String keyPrefix,
+    String nameHint,
+    bool allowDisable,
+    int index,
+  ) {
     return Padding(
       padding: AppSpacing.onlyVerticalXS,
       child: Row(
@@ -696,27 +861,35 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
             ),
           Expanded(
             flex: 2,
-            child: TextField(
-              controller: row.nameCtrl,
-              decoration: InputDecoration(
+            child: KeyedSubtree(
+              key: Key('$keyPrefix-name-$index'),
+              child: AppEditableField(
+                key: row.nameFieldKey,
+                controller: row.nameCtrl,
+                mode: AppEditableFieldMode.inline,
                 hintText: nameHint,
-                isDense: true,
-                border: const OutlineInputBorder(),
+                textInputAction: TextInputAction.next,
               ),
-              onChanged: (_) => _markDirty(),
             ),
           ),
           const SizedBox(width: AppSpacing.sm),
           Expanded(
             flex: 3,
-            child: TextField(
-              controller: row.valueCtrl,
-              decoration: const InputDecoration(
+            child: KeyedSubtree(
+              key: Key('$keyPrefix-value-$index'),
+              child: AppEditableField(
+                key: row.valueFieldKey,
+                controller: row.valueCtrl,
+                mode: AppEditableFieldMode.sheet,
+                label: nameHint,
                 hintText: '值',
-                isDense: true,
-                border: OutlineInputBorder(),
+                toolbarBuilder: _sheetToolbar(
+                  fieldKey: row.valueFieldKey,
+                  suggestionsBuilder: keyPrefix == 'request-editor-header'
+                      ? _headerSuggestions
+                      : null,
+                ),
               ),
-              onChanged: (_) => _markDirty(),
             ),
           ),
           IconButton(
@@ -822,13 +995,40 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
         ),
         const SizedBox(height: AppSpacing.md),
         if (_authType == DebugAuthType.basic) ...[
-          _field(_authUser, '用户名'),
-          _field(_authPass, '密码'),
+          _authField(
+            key: const Key('request-editor-auth-user'),
+            fieldKey: _authUserFieldKey,
+            controller: _authUser,
+            label: '用户名',
+          ),
+          _authField(
+            key: const Key('request-editor-auth-pass'),
+            fieldKey: _authPassFieldKey,
+            controller: _authPass,
+            label: '密码',
+          ),
         ] else if (_authType == DebugAuthType.bearer)
-          _field(_authToken, 'Token')
+          _authField(
+            key: const Key('request-editor-auth-token'),
+            fieldKey: _authTokenFieldKey,
+            controller: _authToken,
+            label: 'Token',
+            mode: AppEditableFieldMode.sheet,
+          )
         else if (_authType == DebugAuthType.apiKey) ...[
-          _field(_authKeyName, 'Key 名'),
-          _field(_authKeyValue, 'Key 值'),
+          _authField(
+            key: const Key('request-editor-auth-key-name'),
+            fieldKey: _authKeyNameFieldKey,
+            controller: _authKeyName,
+            label: 'Key 名',
+          ),
+          _authField(
+            key: const Key('request-editor-auth-key-value'),
+            fieldKey: _authKeyValueFieldKey,
+            controller: _authKeyValue,
+            label: 'Key 值',
+            mode: AppEditableFieldMode.sheet,
+          ),
           DropdownButtonFormField<String>(
             key: const Key('request-editor-auth-apikey-in'),
             initialValue: _apiKeyIn,
@@ -859,16 +1059,27 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
     );
   }
 
-  Widget _field(TextEditingController controller, String label) {
+  Widget _authField({
+    required Key key,
+    required GlobalKey<AppEditableFieldState> fieldKey,
+    required TextEditingController controller,
+    required String label,
+    AppEditableFieldMode mode = AppEditableFieldMode.inline,
+  }) {
     return Padding(
+      key: key,
       padding: AppSpacing.onlyBottomMD,
-      child: TextField(
+      child: AppEditableField(
+        key: fieldKey,
         controller: controller,
-        decoration: InputDecoration(
-          labelText: label,
-          border: const OutlineInputBorder(),
-        ),
-        onChanged: (_) => _markDirty(),
+        mode: mode,
+        label: label,
+        textInputAction: mode == AppEditableFieldMode.inline
+            ? TextInputAction.next
+            : TextInputAction.done,
+        toolbarBuilder: mode == AppEditableFieldMode.sheet
+            ? _sheetToolbar(fieldKey: fieldKey)
+            : null,
       ),
     );
   }
@@ -946,6 +1157,10 @@ class _KvRow {
 
   final TextEditingController nameCtrl;
   final TextEditingController valueCtrl;
+  final GlobalKey<AppEditableFieldState> nameFieldKey =
+      GlobalKey<AppEditableFieldState>();
+  final GlobalKey<AppEditableFieldState> valueFieldKey =
+      GlobalKey<AppEditableFieldState>();
   bool enabled;
 
   void dispose() {
