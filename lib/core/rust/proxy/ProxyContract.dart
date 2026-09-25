@@ -3096,6 +3096,7 @@ class CaptureRecord {
     this.durationMs = 0,
     this.truncated = false,
     this.mitmFailed = false,
+    this.failureReason = '',
     this.wsFrames = const <CaptureWsFrame>[],
   });
 
@@ -3121,6 +3122,7 @@ class CaptureRecord {
         durationMs: _int(json['durationMs']),
         truncated: _bool(json['truncated']),
         mitmFailed: _bool(json['mitmFailed']),
+        failureReason: _str(json['failureReason']),
         wsFrames: _mapList(json['wsFrames'])
             .map(CaptureWsFrame.fromJson)
             .toList(),
@@ -3147,6 +3149,7 @@ class CaptureRecord {
   final int durationMs;
   final bool truncated;
   final bool mitmFailed;
+  final String failureReason;
   final List<CaptureWsFrame> wsFrames;
 
   /// 由 [url] 派生的路径（契约不单独存 `path`）。
@@ -3174,6 +3177,7 @@ class CaptureRecord {
         'durationMs': durationMs,
         'truncated': truncated,
         'mitmFailed': mitmFailed,
+        'failureReason': failureReason,
         'wsFrames': wsFrames.map((f) => f.toJson()).toList(),
       };
 }
@@ -3236,6 +3240,7 @@ class CaptureDetail {
     this.durationMs = 0,
     this.truncated = false,
     this.mitmFailed = false,
+    this.failureReason = '',
     this.wsFrames = const <CaptureWsFrame>[],
   });
 
@@ -3263,6 +3268,7 @@ class CaptureDetail {
         durationMs: _int(json['durationMs']),
         truncated: _bool(json['truncated']),
         mitmFailed: _bool(json['mitmFailed']),
+        failureReason: _str(json['failureReason']),
         wsFrames: _mapList(json['wsFrames'])
             .map(CaptureWsFrame.fromJson)
             .toList(),
@@ -3291,9 +3297,38 @@ class CaptureDetail {
   final int durationMs;
   final bool truncated;
   final bool mitmFailed;
+  final String failureReason;
   final List<CaptureWsFrame> wsFrames;
 
   String get path => Uri.tryParse(url)?.path ?? '';
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'recordId': recordId,
+        'requestRecordId': requestRecordId,
+        'connId': connId,
+        'host': host,
+        'method': method,
+        'scheme': scheme,
+        'url': url,
+        'statusCode': statusCode,
+        'protocol': protocol,
+        'reqHeaders': reqHeaders,
+        'respHeaders': respHeaders,
+        'reqBodyPreview': base64Encode(reqBodyPreview),
+        'respBodyPreview': base64Encode(respBodyPreview),
+        'reqBody': base64Encode(reqBody),
+        'respBody': base64Encode(respBody),
+        'reqBytes': reqBytes,
+        'respBytes': respBytes,
+        'contentType': contentType,
+        'startedAtMs': startedAtMs,
+        'finishedAtMs': finishedAtMs,
+        'durationMs': durationMs,
+        'truncated': truncated,
+        'mitmFailed': mitmFailed,
+        'failureReason': failureReason,
+        'wsFrames': wsFrames.map((f) => f.toJson()).toList(),
+      };
 }
 
 /// `captures.reset` 响应（镜像 `API.md` §2.18 `{ok, cleared}`）。
