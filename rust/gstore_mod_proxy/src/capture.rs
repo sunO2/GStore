@@ -46,6 +46,19 @@ use serde::{Deserialize, Serialize};
 
 use crate::limits::CAPTURE_BODY_MAX_BYTES;
 
+/// Build-time fingerprint of the contract sources (`build.rs`).
+///
+/// `build.rs` hashes `src/lib.rs` + `src/capture.rs` + `API.md` (FNV-1a 64) and
+/// injects `GS_PROXY_CONTRACT_FP`. This `#[used]` + `#[no_mangle]` marker forces
+/// the literal into the compiled `.so`, where
+/// `scripts/ci/assert_proxy_module_contract.sh` greps for it to prove the
+/// shipped binary was built from the *current* contract sources. It changes no
+/// runtime behavior; it exists only to catch stale prebuilt modules.
+#[used]
+#[no_mangle]
+pub static GS_PROXY_CONTRACT_FP: &str =
+    concat!("GS_PROXY_CONTRACT_FP=", env!("GS_PROXY_CONTRACT_FP"));
+
 /// `capture.config.set` payload invalid (422, `rust/ERROR_CODES.md`).
 pub(crate) const ERR_CAPTURE_CONFIG_INVALID: &str = "PROXY_CAPTURE_CONFIG_INVALID";
 

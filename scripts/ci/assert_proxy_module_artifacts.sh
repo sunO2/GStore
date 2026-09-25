@@ -265,6 +265,19 @@ for abi in "${ABIS[@]}"; do
   fi
 done
 
+# ── contract fingerprint guard (stale shipped module) ───────────────────────
+# Proves each shipped jniLibs .so embeds the fingerprint of the CURRENT contract
+# sources. A stale prebuilt module (the B1 `appScope` defect) has a missing or
+# mismatched marker. Runs in the same assert flow so it cannot be skipped.
+if [ -x "$SCRIPT_DIR/assert_proxy_module_contract.sh" ]; then
+  if ! "$SCRIPT_DIR/assert_proxy_module_contract.sh"; then
+    failures=$((failures + 1))
+  fi
+else
+  fail "缺少合约指纹守卫脚本: $SCRIPT_DIR/assert_proxy_module_contract.sh"
+  failures=$((failures + 1))
+fi
+
 if [ "$failures" -gt 0 ]; then
   {
     echo "FAIL: proxy 深度产物断言失败（问题 $failures 个）"
