@@ -417,4 +417,131 @@ void main() {
       expect(tester.takeException(), isNull);
     });
   });
+
+  // ==================== D6c：跳过上游证书校验 ====================
+  //
+  // 覆盖：默认关 + 风险文案可见；开启需 `showConfirmSheet(isDangerous:true)` 二次
+  // 确认；确认后**精确校验** `capture.config.set` 载荷 `skipCertVerify:true` 且
+  // 开关回填；取消 → 不落库、开关保持关；加载已持久化的 true → 回填为开。
+  group('ProxyCaptureSettingsPage skipCertVerify toggle', () {
+    const Key switchKey = Key('capture_skip_cert_verify_switch');
+
+    testWidgets('默认关闭且风险文案可见', (tester) async {
+      _useTallSurface(tester);
+      final facade = _FakeCaptureFacade();
+      await tester.pumpWidget(_host(ProxyCaptureSettingsPage(
+        facade: facade,
+        installedApps: _FakeInstalledAppsProvider(),
+      )));
+      await _settleLoad(tester);
+
+      expect(find.byKey(switchKey), findsOneWidget);
+      expect(tester.widget<SwitchListTile>(find.byKey(switchKey)).value, isFalse);
+      expect(find.text('上游证书校验'), findsOneWidget);
+      // 风险文案必须常显，绝不隐藏。
+      expect(find.textContaining('二次中间人'), findsWidgets);
+      expect(find.textContaining('自签名'), findsWidgets);
+      expect(facade.config.skipCertVerify, isFalse);
+    });
+
+    testWidgets('开启 → 弹出危险确认，未确认前不落库且开关仍关',
+        (tester) async {
+      _useTallSurface(tester);
+      final facade = _FakeCaptureFacade();
+      await tester.pumpWidget(_host(ProxyCaptureSettingsPage(
+        facade: facade,
+        installedApps: _FakeInstalledAppsProvider(),
+      )));
+      await _settleLoad(tester);
+
+      await tester.tap(find.byKey(switchKey));
+      await tester.pumpAndSettle();
+
+      // 统一危险确认弹层出现。
+      expect(find.text('跳过上游证书校验？'), findsOneWidget);
+      expect(find.text('仍然开启'), findsOneWidget);
+      expect(find.textContaining('二次中间人'), findsWidgets);
+
+      expect(facade.setCalls, 0);
+      expect(
+        tester.widget<SwitchListTile>(find.byKey(switchKey)).value,
+        isFalse,
+      );
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('确认 → capture.config.set 收到 skipCertVerify:true 且回填',
+        (tester) async {
+      _useTallSurface(tester);
+      final facade = _FakeCaptureFacade();
+      await tester.pumpWidget(_host(ProxyCaptureSettingsPage(
+        facade: facade,
+        installedApps: _FakeInstalledAppsProvider(),
+      )));
+      await _settleLoad(tester);
+
+      await tester.tap(find.byKey(switchKey));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('仍然开启'));
+      await tester.pumpAndSettle();
+      await tester.pump(const Duration(milliseconds: 50));
+
+      // 实际下发载荷携带 true（非仅弹层出现）。
+      expect(facade.setCalls, 1);
+      expect(facade.lastSet, isNotNull);
+      expect(facade.lastSet!.skipCertVerify, isTrue);
+      expect(facade.lastSet!.toJson()['skipCertVerify'], isTrue);
+      // 持久化值回填到页面状态。
+      expect(facade.config.skipCertVerify, isTrue);
+      expect(
+        tester.widget<SwitchListTile>(find.byKey(switchKey)).value,
+        isTrue,
+      );
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('取消 → 开关保持关且从不下发 true', (tester) async {
+      _useTallSurface(tester);
+      final facade = _FakeCaptureFacade();
+      await tester.pumpWidget(_host(ProxyCaptureSettingsPage(
+        facade: facade,
+        installedApps: _FakeInstalledAppsProvider(),
+      )));
+      await _settleLoad(tester);
+
+      await tester.tap(find.byKey(switchKey));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('取消'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('跳过上游证书校验？'), findsNothing);
+      expect(
+        tester.widget<SwitchListTile>(find.byKey(switchKey)).value,
+        isFalse,
+      );
+      expect(facade.setCalls, 0);
+      expect(facade.lastSet, isNull);
+      expect(facade.config.skipCertVerify, isFalse);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('加载已持久化的 skipCertVerify:true → 开关回填为开',
+        (tester) async {
+      _useTallSurface(tester);
+      final facade = _FakeCaptureFacade(
+        config: const CaptureConfig(skipCertVerify: true),
+      );
+      await tester.pumpWidget(_host(ProxyCaptureSettingsPage(
+        facade: facade,
+        installedApps: _FakeInstalledAppsProvider(),
+      )));
+      await _settleLoad(tester);
+
+      expect(
+        tester.widget<SwitchListTile>(find.byKey(switchKey)).value,
+        isTrue,
+      );
+      expect(tester.takeException(), isNull);
+    });
+  });
 }

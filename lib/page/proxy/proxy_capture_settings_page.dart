@@ -7,6 +7,7 @@
 ///
 /// 覆盖（按功能区自上而下）：
 /// * **MITM 总开关**：`enabled`，与首页抓包区块共享同一 `capture.config`；
+/// * **上游证书校验**：`skipCertVerify`（默认关），开启需危险二次确认；
 /// * **域名白名单**：增删（主门控，命中 SNI/host 才解密）；
 /// * **App 白名单**：多选（复用 [ProxyInstalledAppsProvider]，仅域名白名单为空时
 ///   兜底）；
@@ -41,6 +42,16 @@ const int kCaptureMaxAllowlistEntries = 256;
 /// 单条白名单条目的字节上限（镜像 Rust
 /// `capture.rs::MAX_ALLOWLIST_ENTRY_BYTES`，即 DNS 名上限）。
 const int kCaptureMaxAllowlistEntryBytes = 253;
+
+/// 「跳过上游证书校验」的风险说明（卡片常显 + 危险确认弹层共用同一文案）。
+///
+/// 语义：关闭上游 TLS 证书校验后，代理不再验证上游服务器证书，任何人可用任意
+/// 证书冒充目标站点，流量可被「二次中间人」窃听 / 篡改，并会转发任何证书的内容；
+/// 仅用于自签名来源或企业中间代理。
+const String kCaptureSkipCertVerifyRiskText =
+    '关闭上游 TLS 证书校验：代理不再验证服务器证书，任何人可用任意证书冒充目标站点，'
+    '流量可被「二次中间人」窃听或篡改，并会转发任何证书的内容。'
+    '仅用于自签名来源或企业中间代理。';
 
 /// 抓包存储统计（保留 / 容量 / 淘汰 / 丢弃）。
 ///
@@ -266,6 +277,30 @@ class _ProxyCaptureSettingsPageState extends State<ProxyCaptureSettingsPage> {
   void _setCaptureH2(bool value) =>
       setState(() => _config = _config.copyWith(captureH2: value));
 
+  /// 切换「跳过上游证书校验」。
+  ///
+  /// 开启属下风险操作：先经统一 [AppDialogs.showConfirmSheet]（`isDangerous:true`）
+  /// 二次确认，确认后才把 `skipCertVerify:true` **经既有保存路径**
+  /// （`capture.config.set`）持久化；取消则保持关闭、绝不落库。关闭无需确认。
+  Future<void> _setSkipCertVerify(bool value) async {
+    if (!value) {
+      setState(() => _config = _config.copyWith(skipCertVerify: false));
+      await _save();
+      return;
+    }
+    final confirmed = await AppDialogs.showConfirmSheet(
+      title: '跳过上游证书校验？',
+      message: kCaptureSkipCertVerifyRiskText,
+      confirmText: '仍然开启',
+      cancelText: '取消',
+      isDangerous: true,
+      icon: const Icon(TablerIcons.shield_off),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => _config = _config.copyWith(skipCertVerify: true));
+    await _save();
+  }
+
   /// 按需加载已安装应用（页面生命周期内缓存，仅首次枚举；失败回落空列表）。
   Future<List<InstalledAppOption>> _ensureApps() {
     final cached = _appsCache;
@@ -432,6 +467,8 @@ class _ProxyCaptureSettingsPageState extends State<ProxyCaptureSettingsPage> {
       children: [
         _buildMitmCard(context),
         const SizedBox(height: AppSpacing.lg),
+        _buildUpstreamTlsCard(context),
+        const SizedBox(height: AppSpacing.lg),
         _buildCaCard(context),
         const SizedBox(height: AppSpacing.lg),
         _buildDomainCard(context),
@@ -511,6 +548,39 @@ class _ProxyCaptureSettingsPageState extends State<ProxyCaptureSettingsPage> {
           '与首页「抓包」区块共享同一份 capture.config；此处保存后首页状态即时同步。',
           style: theme.textTheme.bodySmall?.copyWith(
             color: theme.colorScheme.onSurfaceVariant,
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// 「上游证书校验」小节：开关默认关；开启需危险二次确认。
+  ///
+  /// 风险文案 [kCaptureSkipCertVerifyRiskText] 常显（绝不隐藏），并原样用于确认弹层。
+  Widget _buildUpstreamTlsCard(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return _CaptureSectionCard(
+      icon: TablerIcons.shield_off,
+      title: '上游证书校验',
+      children: [
+        SwitchListTile(
+          key: const Key('capture_skip_cert_verify_switch'),
+          contentPadding: EdgeInsets.zero,
+          title: const Text('跳过上游证书校验'),
+          subtitle: const Text(kCaptureSkipCertVerifyRiskText),
+          value: _config.skipCertVerify,
+          onChanged: _saving ? null : _setSkipCertVerify,
+          secondary: _config.skipCertVerify
+              ? Icon(TablerIcons.alert_triangle, color: scheme.error)
+              : null,
+        ),
+        const SizedBox(height: AppSpacing.xs),
+        Text(
+          '默认关闭（严格校验）。仅在明确知道上游为自签名来源或企业中间代理时'
+          '临时开启；开启后上游不再验签，可被二次中间人。',
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: scheme.onSurfaceVariant,
           ),
         ),
       ],
