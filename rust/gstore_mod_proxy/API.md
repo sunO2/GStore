@@ -1266,8 +1266,16 @@ TLS 终止失败（`mitmFailed`）不抓，非 root 不绕过 pinning；`routing
 服务器证书，自签名 / 过期 / 伪造证书的连接失败（`mitmFailed`，直通）。置 `true` 会**关闭上游证书
 认证**，MITM 接受**任意**上游证书——包括自签名、中间人或攻击者的证书——因此该 TLS 可被**二次
 MITM**，代理会转发来自任意证书的内容。**仅**用于自签名 / 企业中间代理等明确可信的上游；**绝不**
-在普通网络开启。该字段是**冻结契约**的 opt-in 开关，per-session 快照（后续流判定立即使用新值），
-非 bool（字符串 / 数字 / 数组）为 **422 `PROXY_CAPTURE_CONFIG_INVALID`** 且不改动既有配置。
+在普通网络开启。该字段是**冻结契约**的 opt-in 开关，per-session 快照（进行中的 MITM 会话保留其
+启动时的快照，`capture.config.set` 只作用于**新流**），非 bool（字符串 / 数字 / 数组）为
+**422 `PROXY_CAPTURE_CONFIG_INVALID`** 且不改动既有配置。
+
+**启用时的可观测与 UI（D6b/D6c）。** 当会话快照 `skipCertVerify == true`，该会话在**首次经它拨号
+上游**时下发**恰好一条** warn 级（`log_message(2, …)`）安全事件日志，形如
+`proxy.mitm: upstream cert verification DISABLED by config (skipCertVerify) host=<host>`；关闭时
+**不产生**该日志（每会话一条，绝不刷屏）。UI 侧由抓包设置页的「跳过上游证书校验」开关暴露
+（默认关），开启必须经统一危险确认弹层（`showConfirmSheet(isDangerous: true)`）二次确认，确认后
+才经 `capture.config.set` 写回 `skipCertVerify: true`；取消则不改变配置。
 
 **Partial update.** `capture.config.set` 接受 `CaptureConfig` 的任意子集（缺省字段保留当前值）。
 未知字段、非对象载荷、`tlsPorts` 含 `0` 或为空、`maxBodyBytes` 越界、`appScope` 非

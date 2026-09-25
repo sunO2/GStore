@@ -184,6 +184,23 @@ lane，**不进** Dart 事件环。
 - 配置变更**只作用于新流**：进行中的 MITM 会话保留其启动时的配置快照，中途改设置
   不会让一个会话处于自相矛盾的抓包状态。
 
+**上游证书校验（`skipCertVerify`，冻结字段，默认 `false`＝严格）。** MITM 解密一条 TLS 流后要**重新
+向真实上游**发起 TLS；默认这条上游 TLS 走**严格 webpki**，会校验服务器证书，自签名 / 过期 / 伪造
+证书一律失败（该流记为 `mitmFailed`、干净回落直通，不抓不崩溃）。置 `skipCertVerify:true` 即**关闭
+上游证书认证**（上游 TLS 用 `SkipServerVerify` 而非严格 webpki），接受**任意**上游证书。它解决的是
+「上游本就是自签名 / 企业中间代理（拦截式代理）」这类**无法用公共信任链验证**的场景。
+
+- **默认必须关，且仅自签名 / 企业中间代理等明确可信的上游才开。** 开启后该段 TLS 只保证
+  **机密性**、不保证**认证性**：任何能插入链路的中间人都能用任意证书冒充上游，代理会把其内容
+  当作可信上游转发，即**二次 MITM**。绝不建议在普通公网开启。
+- **per-session 快照。** 快照在会话（gate-hit 流）启动时取自当时的 `capture.config`，`capture.config.set`
+  只作用于**新流**；进行中的会话保持一致。
+- **可观测。** 会话快照为 `true` 时，该会话首次拨号上游会下发**恰好一条 warn 级安全事件日志**
+  （`proxy.mitm: upstream cert verification DISABLED by config (skipCertVerify) host=…`）；关闭时
+  不产生该日志。字段语义与错误码以 [`API.md §2.16`](../../rust/gstore_mod_proxy/API.md) 为准。
+- **UI 危险确认。** 抓包设置页的「跳过上游证书校验」开关默认关，开启需经统一危险确认弹层
+  （`showConfirmSheet(isDangerous:true)`）二次确认后才写回 `capture.config.set`；取消不生效。
+
 **CA 生命周期（`capture.ca.*`）。** CA 由 `rcgen` 生成；叶证书按 SNI 由 `rustls` 的
 自定义 `ResolvesServerCert` 动态签发并有界缓存。CA 私钥以 `0600` 存放在
 `<dataDir>/mitm/ca.key`，**绝不进入日志或事件载荷**。`capture.ca.get` 在尚未生成时
