@@ -38,6 +38,7 @@
 
 use std::collections::HashMap;
 use std::net::IpAddr;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -2534,6 +2535,8 @@ pub(crate) struct BridgeContext {
     pub host: String,
     pub conn_id: String,
     pub request_record_id: u64,
+    pub src: Option<SocketAddr>,
+    pub dst: Option<SocketAddr>,
     pub capture_body: bool,
     pub capture_ws: bool,
     pub capture_h2: bool,
@@ -2554,6 +2557,8 @@ impl BridgeContext {
             host: host.into(),
             conn_id: conn_id.into(),
             request_record_id,
+            src: None,
+            dst: None,
             capture_body: true,
             capture_ws: true,
             capture_h2: true,
@@ -2569,6 +2574,14 @@ impl BridgeContext {
     /// by tests (the store is process-global, the bridge runs on worker threads).
     pub(crate) fn with_rule_source(mut self, source: Arc<dyn CaptureRuleSource>) -> Self {
         self.rule_source = source;
+        self
+    }
+
+    /// Attach the bridged socket endpoints so the session can register a
+    /// synthetic `requests` skeleton keyed to this flow's `conn_id`.
+    pub(crate) fn with_endpoints(mut self, src: SocketAddr, dst: SocketAddr) -> Self {
+        self.src = Some(src);
+        self.dst = Some(dst);
         self
     }
 

@@ -296,10 +296,22 @@ pub(crate) fn bridge_context(
     dst: SocketAddr,
 ) -> BridgeContext {
     BridgeContext::new(host, format!("tun-{src}->{dst}"), 0)
+        .with_endpoints(src, dst)
         .with_capture_body(config.capture_body)
         .with_capture_ws(config.capture_ws)
         .with_capture_h2(config.capture_h2)
         .with_max_body_bytes(config.max_body_bytes)
+}
+
+/// Finalizes the synthetic `requests` skeleton for a started MITM session when
+/// the session task ends — normal completion, the session-deadline `Err`
+/// branch, or panic unwind alike.
+struct MitmFlowClose(String);
+
+impl Drop for MitmFlowClose {
+    fn drop(&mut self) {
+        crate::requests::close_mitm_flow(&self.0, crate::now_ms());
+    }
 }
 
 /// Hand a gate-hit flow to the MITM path.
@@ -332,6 +344,21 @@ where
     spawn_isolated(async move {
         // The guard releases the slot when the session ends, panic included.
         let _guard = guard;
+        let mut ctx = ctx;
+        let _flow_guard = match (ctx.src, ctx.dst) {
+            (Some(s), Some(d)) => {
+                let rid = crate::requests::open_mitm_flow(
+                    &ctx.conn_id,
+                    &ctx.host,
+                    s,
+                    d,
+                    crate::now_ms(),
+                );
+                ctx.request_record_id = rid;
+                Some(MitmFlowClose(ctx.conn_id.clone()))
+            }
+            _ => None,
+        };
         match tokio::time::timeout(
             mitm::session_deadline(),
             mitigate(stream, ca, host.clone(), observer, dialer, ctx),
@@ -1283,6 +1310,7 @@ mod mitm_e2e_tests {
         mitm::reset_ws_frame_sink();
         captures::reset_for_tests();
         captures::rules_reset_for_tests();
+        crate::requests::reset_for_tests();
         let ca = temp_ca("wire");
         mitm::install_ca(Arc::clone(&ca));
         mitm::set_upstream_tls_for_tests(UpstreamTlsConfig::with_roots(roots(&ca)));
@@ -1299,6 +1327,7 @@ mod mitm_e2e_tests {
         captures::reset_for_tests();
         captures::rules_reset_for_tests();
         capture::reset_for_tests();
+        crate::requests::reset_for_tests();
     }
 
     #[test]
@@ -1345,10 +1374,139 @@ mod mitm_e2e_tests {
         });
     }
 
-    /// D6b: `skipCertVerify=true` in the per-session config snapshot makes the
-    /// upstream TLS accept an otherwise-untrusted leaf (`SkipServerVerify`), so
-    /// the session still decrypts and captures. It also emits exactly one
-    /// security event for the session.
+    #[test]
+    fn mitm_e2e_capture_links_to_request_skeleton() {
+        let rt = current_thread();
+        rt.block_on(async {
+            let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+            let (_ca, inner) = setup(true, &[0]);
+            let port =
+                start_tls_fixture(mitm::ca().unwrap(), "flow.test", b"upstream".to_vec()).await;
+            capture_config(&[port], true);
+            let ca = mitm::ca().unwrap();
+
+            run_flow(Arc::clone(&inner), port, sniffer(&[port]), {
+                let ca = Arc::clone(&ca);
+                move |io| async move {
+                    let (status, body) = client_h1_tls(&ca, "flow.test", io, "/linked").await;
+                    assert_eq!(status, 200);
+                    assert_eq!(body, b"upstream");
+                }
+            })
+            .await;
+
+            let records = wait_for_capture(|rs| rs.len() == 1).await;
+            let capture = records.first().expect("exactly one capture record");
+            let rid = capture.request_record_id;
+            assert_ne!(
+                rid, 0,
+                "a MITM capture must carry the non-zero requestRecordId of its skeleton"
+            );
+            let page =
+                crate::requests::snapshot(0, 64, &crate::requests::RequestFilter::default());
+            assert!(
+                page.records.iter().any(|x| x.record_id == rid),
+                "the requests skeleton {rid} must exist at session start"
+            );
+
+            drain_inflight().await;
+            let page =
+                crate::requests::snapshot(0, 64, &crate::requests::RequestFilter::default());
+            let skeleton = page
+                .records
+                .iter()
+                .find(|x| x.record_id == rid)
+                .expect("skeleton retained after the session ends");
+            assert!(
+                skeleton.duration_ms.is_some(),
+                "session end must finalize the skeleton with a duration"
+            );
+            teardown();
+        });
+    }
+
+    #[test]
+    fn mitm_e2e_noca_starts_no_session_and_records_nothing() {
+        let rt = current_thread();
+        rt.block_on(async {
+            let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+            let (_ca, inner) = setup(false, &[0]);
+            mitm::clear_ca();
+
+            let src: SocketAddr = "10.0.0.2:40000".parse().unwrap();
+            let dst: SocketAddr = "127.0.0.1:443".parse().unwrap();
+            let (mut client, server) = tokio::io::duplex(64);
+            client.write_all(b"hello").await.expect("pre-write");
+            client.flush().await.expect("flush");
+
+            let before = crate::requests::next_record_id_for_tests();
+            let ctx =
+                BridgeContext::new("flow.test", "tun-flow", 0).with_endpoints(src, dst);
+            let dialer = production_dialer(&inner, "flow.test", src, dst, false);
+            let result = begin_mitm(server, Some("flow.test"), dialer, ctx);
+            let Err((mut stream, err)) = result else {
+                panic!("MITM init without a CA must fail");
+            };
+            assert!(matches!(err, MitmInitError::NoCa), "got {err}");
+            let mut got = [0u8; 5];
+            stream.read_exact(&mut got).await.expect("read passthrough");
+            assert_eq!(&got, b"hello", "init failure must pass bytes through unchanged");
+            assert_eq!(
+                crate::requests::next_record_id_for_tests(),
+                before,
+                "a session that never started must register zero request records"
+            );
+            teardown();
+        });
+    }
+
+    #[test]
+    fn mitm_e2e_inflight_cap_starts_no_session_and_records_nothing() {
+        let rt = current_thread();
+        rt.block_on(async {
+            let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+            let (_ca, inner) = setup(false, &[0]);
+
+            let mut held = Vec::new();
+            while let Some(slot) = mitm::InflightGuard::try_acquire() {
+                held.push(slot);
+            }
+            assert_eq!(
+                held.len(),
+                crate::limits::MITM_MAX_INFLIGHT,
+                "must reach the in-flight cap"
+            );
+
+            let src: SocketAddr = "10.0.0.2:40000".parse().unwrap();
+            let dst: SocketAddr = "127.0.0.1:443".parse().unwrap();
+            let (mut client, server) = tokio::io::duplex(64);
+            client.write_all(b"hello").await.expect("pre-write");
+            client.flush().await.expect("flush");
+
+            let before = crate::requests::next_record_id_for_tests();
+            let ctx =
+                BridgeContext::new("flow.test", "tun-flow", 0).with_endpoints(src, dst);
+            let dialer = production_dialer(&inner, "flow.test", src, dst, false);
+            let result = begin_mitm(server, Some("flow.test"), dialer, ctx);
+            let Err((mut stream, err)) = result else {
+                panic!("MITM init at the in-flight cap must fail");
+            };
+            assert!(matches!(err, MitmInitError::InflightCap), "got {err}");
+            let mut got = [0u8; 5];
+            stream.read_exact(&mut got).await.expect("read passthrough");
+            assert_eq!(&got, b"hello", "overflow must pass bytes through unchanged");
+            assert_eq!(
+                crate::requests::next_record_id_for_tests(),
+                before,
+                "an overflowed session must register zero request records"
+            );
+
+            drop(held);
+            mitm::clear_ca();
+            teardown();
+        });
+    }
+
     #[test]
     fn mitm_e2e_skip_cert_verify_accepts_untrusted_upstream() {
         let rt = current_thread();
