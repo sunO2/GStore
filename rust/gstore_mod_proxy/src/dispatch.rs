@@ -946,6 +946,68 @@ mod mitm_gate_tests {
             assert_eq!(sibling.await.unwrap(), 7, "dataplane runtime survives the panic");
         });
     }
+
+    fn capture_tls_plan() -> Option<sniff::SniffPlan> {
+        Some(sniff::SniffPlan {
+            proto: sniff::SniffProto::Tls,
+            timeout: Duration::from_millis(400),
+        })
+    }
+
+    fn baseline_tls_plan() -> Option<sniff::SniffPlan> {
+        Some(sniff::SniffPlan {
+            proto: sniff::SniffProto::Tls,
+            timeout: Duration::from_millis(100),
+        })
+    }
+
+    /// `sniff_plan` precedence matrix: a capture-enabled `tls_ports` entry
+    /// (400 ms) always wins, over both the baseline TLS ports and the HTTP
+    /// defaults (100 ms); an unmapped port yields no plan at all.
+    #[test]
+    fn sniff_plan_matrix_and_precedence() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+
+        // (a) capture-enabled tls_port on a non-default port -> TLS, 400 ms.
+        let cfg = CaptureConfig {
+            enabled: true,
+            tls_ports: vec![9443],
+            ..CaptureConfig::default()
+        };
+        assert_eq!(sniff_plan(&cfg, 9443), capture_tls_plan());
+        capture::reset_for_tests();
+
+        // (b) capture disabled still sniffs baseline 443 -> TLS, 100 ms.
+        let cfg = CaptureConfig {
+            enabled: false,
+            ..CaptureConfig::default()
+        };
+        assert_eq!(sniff_plan(&cfg, 443), baseline_tls_plan());
+        capture::reset_for_tests();
+
+        // (c) capture-enabled baseline 443 -> TLS, 400 ms (capture window wins).
+        let cfg = CaptureConfig {
+            enabled: true,
+            tls_ports: vec![443, 8443],
+            ..CaptureConfig::default()
+        };
+        assert_eq!(sniff_plan(&cfg, 443), capture_tls_plan());
+        capture::reset_for_tests();
+
+        // (d) an unmapped port yields no plan at all (nothing is read).
+        let cfg = CaptureConfig::default();
+        assert_eq!(sniff_plan(&cfg, 22), None);
+        capture::reset_for_tests();
+
+        // (e) a capture tls_ports entry beats the HTTP default 80 -> TLS, 400 ms.
+        let cfg = CaptureConfig {
+            enabled: true,
+            tls_ports: vec![80],
+            ..CaptureConfig::default()
+        };
+        assert_eq!(sniff_plan(&cfg, 80), capture_tls_plan());
+        capture::reset_for_tests();
+    }
 }
 
 /// R1 acceptance: the MITM bridge is wired into the **production** flow entry
@@ -1886,6 +1948,36 @@ mod mitm_e2e_tests {
                 "a client TLS failure must be stage-tagged: {messages:?}"
             );
             teardown();
+        });
+    }
+
+    /// Latency upper bound: a silent client must return within `timeout + slack`
+    /// and never panic. Deliberately uses the 100 ms baseline window (not the
+    /// 400 ms capture window) so the bound stays tight.
+    #[test]
+    fn sniff_prefix_silent_client_returns_within_latency_bound() {
+        let rt = current_thread();
+        rt.block_on(async {
+            let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+            let timeout = Duration::from_millis(100);
+            let sniffer = sniff::Sniffer::default_enabled();
+            // Connected but never sends: the read stays pending until the deadline.
+            let (_client, mut server) = tokio::io::duplex(64);
+
+            let start = Instant::now();
+            let plan = sniff::SniffPlan {
+                proto: sniff::SniffProto::Tls,
+                timeout,
+            };
+            let (prefix, host) = sniffer.sniff_prefix(&mut server, Some(plan)).await;
+            let elapsed = start.elapsed();
+
+            assert!(prefix.is_empty());
+            assert!(host.is_none());
+            assert!(
+                elapsed <= Duration::from_millis(200),
+                "silent client took {elapsed:?}, expected <= 200ms"
+            );
         });
     }
 }
