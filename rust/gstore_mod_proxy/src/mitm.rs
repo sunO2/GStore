@@ -1051,17 +1051,27 @@ pub(crate) async fn dial_upstream(
 ) -> Result<Box<dyn ProxyConn>, UpstreamError> {
     target.validate()?;
     let mut metadata = target.metadata();
+    // The TUN path hands us the address the client dialed as `dst_ip`. Under the
+    // default FakeIp DNS mode that is a synthetic `198.18.x.x` address, and
+    // meow's `DirectAdapter::resolve_targets` prefers `dst_ip` over `host` — so
+    // dialing it unchanged opens the dead fake-IP address. Mirror
+    // `route_inbound_tcp` (meow-tunnel/src/tcp.rs): rewrite fake-IP → host and
+    // clear `dst_ip` BEFORE rule matching, so the selected outbound re-resolves
+    // the real address (or reaches the client's proxy by name). Outside fake-IP
+    // mode this is a no-op apart from a hostname fill-in.
+    inner.pre_handle_metadata(&mut metadata);
     let Some((adapter, rule, _payload)) = inner.resolve_proxy_lazy(&mut metadata).await else {
         return Err(UpstreamError::no_route());
     };
     crate::log_message(
         2,
         &format!(
-            "proxy.mitm: upstream {}:{} via {} rule={}",
+            "proxy.mitm: upstream {}:{} via {} rule={} dst_ip={:?}",
             target.host,
             target.port,
             adapter.name(),
-            rule
+            rule,
+            metadata.dst_ip,
         ),
     );
     adapter
@@ -5416,8 +5426,10 @@ mod mitm_upstream_tests {
     };
     use std::collections::HashMap;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::sync::atomic::AtomicBool;
     use std::sync::Mutex;
     use std::time::{Duration, Instant};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
     use tokio_rustls::TlsAcceptor;
 
@@ -5464,7 +5476,17 @@ mod mitm_upstream_tests {
         lines: &[&str],
         proxies: Vec<(&str, Arc<dyn Proxy>)>,
     ) -> Arc<meow_tunnel::tunnel::TunnelInner> {
-        let tunnel = meow_tunnel::Tunnel::new(test_resolver());
+        tunnel_with_resolver(test_resolver(), lines, proxies)
+    }
+
+    /// [`tunnel_with`] over a caller-supplied resolver, so a FakeIp-mode test
+    /// can drive the real `DirectAdapter` re-resolution path.
+    pub(super) fn tunnel_with_resolver(
+        resolver: Arc<meow_dns::Resolver>,
+        lines: &[&str],
+        proxies: Vec<(&str, Arc<dyn Proxy>)>,
+    ) -> Arc<meow_tunnel::tunnel::TunnelInner> {
+        let tunnel = meow_tunnel::Tunnel::new(resolver);
         let rules: Vec<Box<dyn Rule>> = lines
             .iter()
             .map(|line| {
@@ -5502,6 +5524,7 @@ mod mitm_upstream_tests {
         name: String,
         health: ProxyHealth,
         dials: Mutex<Vec<String>>,
+        observations: Mutex<Vec<(String, Option<IpAddr>)>>,
         forward: SocketAddr,
     }
 
@@ -5511,12 +5534,22 @@ mod mitm_upstream_tests {
                 name: name.to_string(),
                 health: ProxyHealth::new(),
                 dials: Mutex::new(Vec::new()),
+                observations: Mutex::new(Vec::new()),
                 forward,
             })
         }
 
         pub(super) fn recorded(&self) -> Vec<String> {
             self.dials.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        }
+
+        /// The `(rule_host, dst_ip)` pair observed at dial time. Lets a test
+        /// assert the fake-IP rewrite actually cleared `dst_ip`.
+        pub(super) fn observed(&self) -> Vec<(String, Option<IpAddr>)> {
+            self.observations
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
         }
     }
 
@@ -5539,6 +5572,10 @@ mod mitm_upstream_tests {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .push(metadata.rule_host().to_string());
+            self.observations
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push((metadata.rule_host().to_string(), metadata.dst_ip));
             let stream = TcpStream::connect(self.forward).await?;
             Ok(Box::new(stream))
         }
@@ -5640,6 +5677,126 @@ mod mitm_upstream_tests {
             );
             let _ = fixture.await;
         });
+    }
+
+    /// Adversarial fake-IP proof. Under FakeIp mode the TUN path injects the
+    /// synthetic address as `dst_ip`; `dial_upstream` must rewrite it to the
+    /// host and re-resolve the REAL address. The fake pool is a loopback subnet
+    /// here, so an un-rewritten dial is caught by a decoy fixture listening on
+    /// the fake IP instead of merely failing — the assertion is on which
+    /// fixture received the dialed bytes, not that no error occurred.
+    #[test]
+    fn mitm_upstream_fake_ip_dst_is_rewritten_to_real_address() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let host = "flow.test";
+            let real_ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+
+            let resolver = fake_ip_resolver().await;
+            let fake_ip = resolver.lookup_ipv4(host).await.expect("synthesise fake IP");
+            assert!(resolver.is_fake_ip(fake_ip), "synthesised IP must be fake");
+            assert_eq!(resolver.reverse_lookup(fake_ip).as_deref(), Some(host));
+            resolver.preload_cache(host, &[real_ip], Duration::from_secs(60));
+
+            let real_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+            let port = real_listener.local_addr().unwrap().port();
+            let decoy_listener = TcpListener::bind(SocketAddr::new(fake_ip, port))
+                .await
+                .expect("fake-IP loopback address must be bindable");
+
+            let real_hit = Arc::new(AtomicBool::new(false));
+            let decoy_hit = Arc::new(AtomicBool::new(false));
+            let real_flag = Arc::clone(&real_hit);
+            let real_task = tokio::spawn(async move {
+                let Ok((mut tcp, _)) = real_listener.accept().await else {
+                    return;
+                };
+                real_flag.store(true, Ordering::SeqCst);
+                let mut buf = [0u8; 4];
+                let _ = tcp.read_exact(&mut buf).await;
+                let _ = tcp.write_all(b"real").await;
+            });
+            let decoy_flag = Arc::clone(&decoy_hit);
+            let decoy_task = tokio::spawn(async move {
+                if decoy_listener.accept().await.is_ok() {
+                    decoy_flag.store(true, Ordering::SeqCst);
+                }
+            });
+
+            let inner =
+                tunnel_with_resolver(resolver, &["DOMAIN,flow.test,DIRECT"], Vec::new());
+            let target = UpstreamTarget::new(host, port).with_dst_ip(fake_ip);
+            let mut conn = dial_upstream(&inner, &target)
+                .await
+                .expect("dial must use the resolved real address");
+
+            conn.write_all(b"ping").await.unwrap();
+            let mut reply = [0u8; 4];
+            conn.read_exact(&mut reply).await.unwrap();
+            assert_eq!(&reply, b"real", "the resolved-real-IP fixture answered");
+
+            tokio::time::timeout(Duration::from_secs(5), real_task)
+                .await
+                .expect("real fixture must be reached")
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert!(real_hit.load(Ordering::SeqCst), "real IP was dialed");
+            assert!(
+                !decoy_hit.load(Ordering::SeqCst),
+                "the fake IP must never be dialed"
+            );
+            decoy_task.abort();
+        });
+    }
+
+    /// The rewrite must be observable as a cleared `dst_ip`: a configured
+    /// outbound receiving the dial metadata sees `dst_ip = None` and the
+    /// recovered host, so `DirectAdapter::resolve_targets` cannot prefer the
+    /// dead fake address.
+    #[test]
+    fn mitm_upstream_fake_ip_dst_is_cleared_at_dial() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let host = "flow.test";
+            let resolver = fake_ip_resolver().await;
+            let fake_ip = resolver.lookup_ipv4(host).await.expect("synthesise fake IP");
+
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let forward = listener.local_addr().unwrap();
+            let proxy = RecordingProxy::new("PROXY", forward);
+            let inner = tunnel_with_resolver(
+                resolver,
+                &["DOMAIN,flow.test,PROXY"],
+                vec![("PROXY", Arc::clone(&proxy) as Arc<dyn Proxy>)],
+            );
+            let target = UpstreamTarget::new(host, forward.port()).with_dst_ip(fake_ip);
+            drop(dial_upstream(&inner, &target).await);
+
+            assert_eq!(
+                proxy.observed(),
+                vec![(host.to_string(), None)],
+                "dial metadata must carry the real host and a cleared dst_ip"
+            );
+        });
+    }
+
+    /// A FakeIp resolver over a bindable loopback subnet, so the synthetic IP
+    /// can be listened on by a decoy. The resolver has no upstream nameservers;
+    /// callers seed the real answer via `preload_cache`.
+    async fn fake_ip_resolver() -> Arc<meow_dns::Resolver> {
+        let mut resolver = meow_dns::Resolver::new(
+            Vec::new(),
+            Vec::new(),
+            meow_common::DnsMode::FakeIp,
+            meow_trie::DomainTrie::new(),
+            true,
+            true,
+        );
+        let net = "127.18.0.0/16".parse::<ipnet::IpNet>().unwrap();
+        resolver.set_fakeip_v4(Arc::new(
+            meow_dns::Pool::new(net, Arc::new(meow_dns::MemoryStore::new(1024))).unwrap(),
+        ));
+        Arc::new(resolver)
     }
 
     /// The default is strict: `skip_cert_verify == false`, and an untrusted leaf
