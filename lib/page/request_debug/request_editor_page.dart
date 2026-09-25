@@ -11,6 +11,8 @@
 /// 统一骨架（[AppSheet] / [AppDialogs]），零硬编码颜色。
 library;
 
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_tabler_icons/flutter_tabler_icons.dart';
 
@@ -103,6 +105,9 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
   DebugResponse? _response;
   bool _sending = false;
   bool _dirty = false;
+
+  /// 请求体 JSON 格式化失败的内联错误；成功格式化或再次编辑后清除。
+  String? _bodyError;
 
   /// URL ⇄ 参数同步的重入保护：任一方向的同步过程中绝不再次触发同步，
   /// 避免显示 URL 的程序化回写被误判为一次新提交而振荡。
@@ -1137,36 +1142,99 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
     if (keyPrefix == 'request-editor-param') _syncUrlFromParams();
   }
 
+  /// 校验并美化当前请求体 JSON（单一事实来源）。
+  ///
+  /// - 仅当 [DebugBodyKind.json] 生效；`jsonDecode` 成功后以 2 空格缩进写回
+  ///   [_body]，并清除内联错误；
+  /// - 解析失败时**不改动** [_body]，仅设置 [_bodyError]；
+  /// - 绝不逐键自动格式化（只由显式动作触发）。
+  void _formatBodyJson() {
+    if (_bodyKind != DebugBodyKind.json) return;
+    final raw = _body.text;
+    if (raw.trim().isEmpty) {
+      if (_bodyError != null) setState(() => _bodyError = null);
+      return;
+    }
+    final String pretty;
+    try {
+      pretty = const JsonEncoder.withIndent('  ').convert(jsonDecode(raw));
+    } catch (_) {
+      setState(() => _bodyError = 'JSON 格式错误，无法格式化');
+      return;
+    }
+    setState(() {
+      _body
+        ..text = pretty
+        ..selection = TextSelection.collapsed(offset: pretty.length);
+      _bodyError = null;
+      _dirty = true;
+    });
+  }
+
   Widget _buildBodyEditor(BuildContext context) {
+    final theme = Theme.of(context);
+    final isJson = _bodyKind == DebugBodyKind.json;
     return Padding(
       padding: AppSpacing.allLG,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          DropdownButtonFormField<DebugBodyKind>(
-            key: const Key('request-editor-body-kind'),
-            initialValue: _bodyKind,
-            decoration: const InputDecoration(
-              labelText: '类型',
-              border: OutlineInputBorder(),
-            ),
-            items: DebugBodyKind.values
-                .map(
-                  (kind) => DropdownMenuItem<DebugBodyKind>(
-                    value: kind,
-                    child: Text(kind.wire),
+          Row(
+            children: [
+              Expanded(
+                child: DropdownButtonFormField<DebugBodyKind>(
+                  key: const Key('request-editor-body-kind'),
+                  initialValue: _bodyKind,
+                  decoration: const InputDecoration(
+                    labelText: '类型',
+                    border: OutlineInputBorder(),
                   ),
-                )
-                .toList(),
-            onChanged: (value) {
-              if (value == null) return;
-              setState(() {
-                _bodyKind = value;
-                _dirty = true;
-              });
-            },
+                  items: DebugBodyKind.values
+                      .map(
+                        (kind) => DropdownMenuItem<DebugBodyKind>(
+                          value: kind,
+                          child: Text(kind.wire),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: (value) {
+                    if (value == null) return;
+                    setState(() {
+                      _bodyKind = value;
+                      _bodyError = null;
+                      _dirty = true;
+                    });
+                  },
+                ),
+              ),
+              if (isJson) ...[
+                const SizedBox(width: AppSpacing.sm),
+                IconButton(
+                  key: const Key('request-editor-body-format'),
+                  tooltip: '格式化 JSON',
+                  icon: const Icon(TablerIcons.braces),
+                  onPressed: _formatBodyJson,
+                ),
+              ],
+            ],
           ),
           const SizedBox(height: AppSpacing.md),
+          AppEditorToolbar(
+            controller: _body,
+            onFormat: isJson ? _formatBodyJson : null,
+          ),
+          if (_bodyError != null)
+            Padding(
+              padding: AppSpacing.onlyTopXS,
+              child: Text(
+                _bodyError!,
+                key: const Key('request-editor-body-format-error'),
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.error,
+                ),
+              ),
+            ),
+          const SizedBox(height: AppSpacing.sm),
           Expanded(
             child: TextField(
               key: const Key('request-editor-body'),
@@ -1178,7 +1246,12 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
                 hintText: '请求体',
                 border: OutlineInputBorder(),
               ),
-              onChanged: (_) => _markDirty(),
+              onChanged: (_) {
+                setState(() {
+                  _dirty = true;
+                  _bodyError = null;
+                });
+              },
             ),
           ),
         ],
