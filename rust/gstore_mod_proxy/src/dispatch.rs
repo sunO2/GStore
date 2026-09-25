@@ -2260,4 +2260,110 @@ mod mitm_e2e_tests {
             );
         });
     }
+
+    /// Todo 10: the capture config — not the sniffer's own port table — is the
+    /// source of truth for which ports get sniffed. The sniffer is built with
+    /// [`sniff::Sniffer::default_enabled`] (no port arguments at all), so the
+    /// only way an ephemeral fixture port can yield a host is
+    /// [`sniff_plan`] reading it back out of `capture.tlsPorts`.
+    ///
+    /// Positive: a `tlsPorts` entry is sniffed, gated, MITM-decrypted and
+    /// captured. Negative: a second fixture port **not** in `tlsPorts`, with
+    /// capture still enabled, is relayed untouched and produces neither a
+    /// capture nor a request skeleton.
+    #[test]
+    fn mitm_e2e_custom_tls_port_sniffs_decrypts_and_spares_others() {
+        let rt = current_thread();
+        rt.block_on(async {
+            let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+            let (_ca, _default_inner) = setup(true, &[0]);
+            // `MATCH,DIRECT` lets the relay reach the negative fixture even
+            // though no host is sniffed for it (no host => no DOMAIN match).
+            let inner = tunnel(&[
+                "DOMAIN,flow.test,DIRECT",
+                "DOMAIN,blocked.test,DIRECT",
+                "MATCH,DIRECT",
+            ]);
+
+            let positive_port =
+                start_tls_fixture(mitm::ca().unwrap(), "flow.test", b"upstream".to_vec()).await;
+            let negative_port =
+                start_tls_fixture(mitm::ca().unwrap(), "flow.test", b"PASS".to_vec()).await;
+
+            assert!(
+                !BASELINE_TLS_SNIFF_PORTS.contains(&positive_port)
+                    && !HTTP_SNIFF_PORTS.contains(&positive_port)
+                    && !BASELINE_TLS_SNIFF_PORTS.contains(&negative_port)
+                    && !HTTP_SNIFF_PORTS.contains(&negative_port),
+                "fixture ports must stay outside every hard-coded sniff set"
+            );
+
+            capture_config(&[positive_port], true);
+            let sniffer = Arc::new(sniff::Sniffer::default_enabled());
+            let ca = mitm::ca().unwrap();
+
+            run_flow(Arc::clone(&inner), positive_port, Arc::clone(&sniffer), {
+                let ca = Arc::clone(&ca);
+                move |io| async move {
+                    let (status, body) = client_h1_tls(&ca, "flow.test", io, "/custom-port").await;
+                    assert_eq!(status, 200);
+                    assert_eq!(body, b"upstream");
+                }
+            })
+            .await;
+
+            let records =
+                wait_for_capture(|rs| rs.iter().any(|r| r.url.ends_with("/custom-port"))).await;
+            let rec = records
+                .iter()
+                .find(|r| r.url.ends_with("/custom-port"))
+                .expect("the custom tlsPorts flow must be captured");
+            assert_eq!(
+                rec.host, "flow.test",
+                "the capture host proves the flow was sniffed via sniff_plan(config, port)"
+            );
+            assert_ne!(
+                rec.request_record_id, 0,
+                "a MITM capture must carry the non-zero requestRecordId of its skeleton"
+            );
+            assert_eq!(rec.status_code, 200, "the gate decrypted the custom port");
+            assert_eq!(rec.scheme, "https");
+
+            let before_negative = crate::requests::next_record_id_for_tests();
+
+            run_flow(Arc::clone(&inner), negative_port, Arc::clone(&sniffer), {
+                let ca = Arc::clone(&ca);
+                move |io| async move {
+                    let (status, body) =
+                        client_h1_tls(&ca, "flow.test", io, "/passthrough").await;
+                    assert_eq!(
+                        status, 200,
+                        "an unlisted port must still relay the upstream response"
+                    );
+                    assert_eq!(
+                        body, b"PASS",
+                        "bytes on an unlisted port pass through unchanged (no MITM)"
+                    );
+                }
+            })
+            .await;
+
+            assert_eq!(
+                crate::requests::next_record_id_for_tests(),
+                before_negative,
+                "an unlisted port must never open a MITM request skeleton"
+            );
+            drain_inflight().await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert!(
+                captures::snapshot(0, 64, &CaptureFilter::default())
+                    .records
+                    .iter()
+                    .all(|r| !r.url.ends_with("/passthrough")),
+                "an unlisted port must produce no capture"
+            );
+
+            teardown();
+        });
+    }
 }
