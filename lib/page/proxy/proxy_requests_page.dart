@@ -191,6 +191,7 @@ class ProxyRequestsPage extends StatefulWidget {
     this.saveFile,
     this.readFile,
     this.captureDetailFacade,
+    this.captureDeleteFacade,
     this.captureActionBinder,
   });
 
@@ -214,6 +215,12 @@ class ProxyRequestsPage extends StatefulWidget {
   /// `null` = 详情页使用生产适配器（[ProxyModuleCaptureDetailFacade]）。
   /// 测试注入假实现即可断言「跳转携带正确 `recordId`」而无需原生模块。
   final ProxyCaptureDetailFacade? captureDetailFacade;
+
+  /// 全屏详情页（[ProxyCaptureDetailPage]）的删除门面注入缝。
+  ///
+  /// `null` = 详情页使用生产适配器（[ProxyModuleCaptureDeleteFacade]）。
+  /// 测试注入假实现即可断言「删除携带正确 `recordId`」而无需原生模块。
+  final ProxyCaptureDeleteFacade? captureDeleteFacade;
 
   /// 全屏详情页动作桥注入缝（复制 cURL / 保存到请求调试 / 创建改写规则）。
   ///
@@ -1369,6 +1376,8 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
     final capture = row.capture;
     if (capture != null) {
       await _openCaptureDetail(capture, row.request);
+      // 详情页可能删除/修改了记录：push 返回（含删除成功后的 pop）即刷新列表。
+      if (mounted) await _load();
       return;
     }
     // 无 capture（未解密）→ 保留既有流级 AppSheet 详情。
@@ -1394,6 +1403,7 @@ class _ProxyRequestsPageState extends State<ProxyRequestsPage>
           recordId: capture.recordId,
           flow: flow,
           facade: widget.captureDetailFacade,
+          deleteFacade: widget.captureDeleteFacade,
           onCopyCurl: binder.onCopyCurl,
           onSaveToDebug: binder.onSaveToDebug,
           onCreateRewriteRule: binder.onCreateRewriteRule,

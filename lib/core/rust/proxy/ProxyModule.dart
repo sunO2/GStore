@@ -797,6 +797,14 @@ class ProxyModule implements ProxyFacade {
   Future<CapturesResetResult> capturesReset() =>
       invoke(ProxyMethods.capturesReset, CapturesResetResult.fromJson);
 
+  /// `captures.delete`：按 `recordId` 删除单条抓包记录（幂等 —— 缺席时
+  /// `removed:false`，不报错）。
+  Future<CaptureDeleteResult> capturesDelete(int recordId) => invoke(
+        ProxyMethods.capturesDelete,
+        CaptureDeleteResult.fromJson,
+        payload: CaptureDeleteRequest(recordId).toJson(),
+      );
+
   /// `capture.rules.get`：全部改写规则（响应 `{rules:[CaptureRule]}` 解包为
   /// 列表；Rust 侧已按 `createdAtMs asc, id asc` 稳定排序）。
   ///

@@ -27,6 +27,7 @@
 /// * 分段横向可滚，窄屏 5 段不溢出。
 library;
 
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -67,6 +68,28 @@ class ProxyModuleCaptureDetailFacade implements ProxyCaptureDetailFacade {
       );
 }
 
+/// 详情页删除能力：按 `recordId` 删除一条抓包记录（窄接口）。
+///
+/// 与 [ProxyCaptureDetailFacade] 分离，便于测试单独注入假删除实现而无需
+/// 原生模块；生产用 [ProxyModuleCaptureDeleteFacade] 薄转发
+/// [ProxyModule.capturesDelete]（`captures.delete`，幂等）。
+abstract class ProxyCaptureDeleteFacade {
+  /// `captures.delete`：删除一条记录；缺席时返回 `removed:false`（不报错）。
+  Future<CaptureDeleteResult> delete(int recordId);
+}
+
+/// 生产适配器：[ProxyModule] → [ProxyCaptureDeleteFacade] 的薄转发。
+class ProxyModuleCaptureDeleteFacade implements ProxyCaptureDeleteFacade {
+  ProxyModuleCaptureDeleteFacade([ProxyModule? module])
+      : _module = module ?? ProxyModule.instance;
+
+  final ProxyModule _module;
+
+  @override
+  Future<CaptureDeleteResult> delete(int recordId) =>
+      _module.capturesDelete(recordId);
+}
+
 /// 动作接缝：以整条详情为参数（Todo 24 桥接）。
 typedef CaptureDetailAction = void Function(CaptureDetail detail);
 
@@ -96,6 +119,7 @@ class ProxyCaptureDetailPage extends StatefulWidget {
     required this.recordId,
     this.flow,
     this.facade,
+    this.deleteFacade,
     this.onCopyCurl,
     this.onSaveToDebug,
     this.onCreateRewriteRule,
@@ -111,6 +135,9 @@ class ProxyCaptureDetailPage extends StatefulWidget {
 
   /// 详情门面（测试可注入；为空时用生产适配器）。
   final ProxyCaptureDetailFacade? facade;
+
+  /// 删除门面（测试可注入；为空时用生产适配器转发 `captures.delete`）。
+  final ProxyCaptureDeleteFacade? deleteFacade;
 
   /// 动作菜单：复制 cURL（`null` = 空实现，Todo 24 接线）。
   final CaptureDetailAction? onCopyCurl;
@@ -130,6 +157,7 @@ class ProxyCaptureDetailPage extends StatefulWidget {
 
 class _ProxyCaptureDetailPageState extends State<ProxyCaptureDetailPage> {
   late final ProxyCaptureDetailFacade _facade;
+  late final ProxyCaptureDeleteFacade _deleteFacade;
 
   CaptureDetailSegment _segment = CaptureDetailSegment.overview;
   bool _loading = true;
@@ -140,6 +168,7 @@ class _ProxyCaptureDetailPageState extends State<ProxyCaptureDetailPage> {
   void initState() {
     super.initState();
     _facade = widget.facade ?? ProxyModuleCaptureDetailFacade();
+    _deleteFacade = widget.deleteFacade ?? ProxyModuleCaptureDeleteFacade();
     _load();
   }
 
@@ -357,9 +386,49 @@ class _ProxyCaptureDetailPageState extends State<ProxyCaptureDetailPage> {
               widget.onCreateRewriteRule?.call(detail);
             },
           ),
+          _ActionTile(
+            key: const Key('detail_delete_record'),
+            icon: TablerIcons.trash,
+            title: '删除该记录',
+            onTap: () {
+              AppDialogs.popSheet<void>(null);
+              unawaited(_confirmDelete());
+            },
+          ),
         ],
       ),
     );
+  }
+
+  /// 「删除该记录」：危险确认 → `captures.delete(recordId)`。
+  ///
+  /// * 确认：下发删除；成功 `Navigator.pop` 返回列表（列表在 `_openRow` 的
+  ///   push 返回后 `_load()` 刷新）；
+  /// * 取消：不下发、不 pop；
+  /// * 失败：统一 [AppDialogs.showError]，留在本页。
+  Future<void> _confirmDelete() async {
+    final ok = await AppDialogs.showConfirmSheet(
+      title: '删除该记录',
+      message: '删除该抓包记录？不可撤销',
+      confirmText: '删除',
+      isDangerous: true,
+      icon: const Icon(TablerIcons.trash),
+    );
+    if (ok != true || !mounted) return;
+    try {
+      await _deleteFacade.delete(widget.recordId);
+      if (!mounted) return;
+      Navigator.of(context).pop();
+    } on ProxyModuleException catch (error) {
+      if (!mounted) return;
+      AppDialogs.showError(
+        error.message.isEmpty ? error.code : error.message,
+        title: '删除失败',
+      );
+    } catch (error) {
+      if (!mounted) return;
+      AppDialogs.showError('删除失败：$error');
+    }
   }
 }
 

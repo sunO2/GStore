@@ -204,6 +204,25 @@ class _FakeCaptureDetailFacade implements ProxyCaptureDetailFacade {
   }
 }
 
+/// 假删除门面（D8b）：记录被删除的 `recordId`，可注入失败。
+class _FakeCaptureDeleteFacade implements ProxyCaptureDeleteFacade {
+  _FakeCaptureDeleteFacade({this.fail = false});
+
+  bool fail;
+  int calls = 0;
+  int? lastRecordId;
+
+  @override
+  Future<CaptureDeleteResult> delete(int recordId) async {
+    calls++;
+    lastRecordId = recordId;
+    if (fail) {
+      throw const ProxyModuleException(code: 'DEL_FAIL', message: '删除失败');
+    }
+    return const CaptureDeleteResult(ok: true, removed: true);
+  }
+}
+
 /// 假动作桥：仅记录调用（证明导航 seam 把详情页回调绑定到桥）。
 class _FakeCaptureBridge implements CaptureBridge {
   int saveCalls = 0;
@@ -1241,6 +1260,173 @@ void main() {
     expect(save.fileNames, isEmpty, reason: '导出失败不应调用 saveFile');
     expect(find.text('导出失败'), findsOneWidget);
     expect(find.textContaining('导出后端失败'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  // ==================== D8b：详情页删除该记录 → 返回后列表刷新 ====================
+
+  testWidgets('删除：详情页确认删除携带正确 recordId，pop 后触发列表 _load 刷新',
+      (tester) async {
+    _useLargeViewport(tester);
+    final fake = _FakeRequestsFacade(
+      page: RequestPage(
+        records: <RequestRecord>[_record(recordId: 1)],
+        firstCursor: 1,
+        nextCursor: 1,
+        retained: 1,
+      ),
+      capturePage: CapturePage(
+        records: <CaptureRecord>[
+          _capture(
+            recordId: 11,
+            requestRecordId: 1,
+            host: 'api.example.com',
+            method: 'POST',
+            url: 'https://api.example.com/v1/items',
+            statusCode: 201,
+          ),
+        ],
+      ),
+    );
+    final detailFacade = _FakeCaptureDetailFacade(
+      value: const CaptureDetail(
+        recordId: 11,
+        requestRecordId: 1,
+        host: 'api.example.com',
+        method: 'POST',
+        scheme: 'https',
+        url: 'https://api.example.com/v1/items',
+        statusCode: 201,
+        protocol: 'h2',
+      ),
+    );
+    final deleteFacade = _FakeCaptureDeleteFacade();
+    await tester.pumpWidget(
+      _host(
+        ProxyRequestsPage(
+          facade: fake,
+          initialLive: false,
+          captureDetailFacade: detailFacade,
+          captureDeleteFacade: deleteFacade,
+          captureActionBinder: CaptureDetailActionBinder(
+            bridge: _FakeCaptureBridge(),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+    final beforeGet = fake.getCalls;
+    final beforeCaptures = fake.capturesCalls;
+
+    // 进入全屏详情页。
+    await tester.tap(find.byKey(const ValueKey('request_row_1')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.pump();
+    expect(find.byType(ProxyCaptureDetailPage), findsOneWidget);
+
+    // 动作菜单 → 删除该记录 → 确认。
+    await tester.tap(find.byKey(const Key('detail_actions_menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('detail_delete_record')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('删除'));
+    await tester.pumpAndSettle();
+
+    // 对抗：必须真的携带该行 capture 的 recordId，而非空/其它 id。
+    expect(deleteFacade.calls, 1, reason: '确认后必须调用 delete 一次');
+    expect(
+      deleteFacade.lastRecordId,
+      11,
+      reason: '必须删除该行 capture 的 recordId',
+    );
+    expect(
+      find.byType(ProxyCaptureDetailPage),
+      findsNothing,
+      reason: '删除成功后必须 pop 返回列表',
+    );
+    // 关键：pop 之后列表必须重新 _load（requests.get + captures.get 各再拉一次），
+    // 而不是仅弹了个提示。
+    expect(
+      fake.getCalls,
+      beforeGet + 1,
+      reason: '返回列表后必须触发 requests.get 重新拉取',
+    );
+    expect(
+      fake.capturesCalls,
+      beforeCaptures + 1,
+      reason: '返回列表后必须触发 captures.get 重新拉取',
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('对抗：详情页取消失败均不刷新列表（返回才刷新）', (tester) async {
+    _useLargeViewport(tester);
+    final fake = _FakeRequestsFacade(
+      page: RequestPage(
+        records: <RequestRecord>[_record(recordId: 1)],
+        firstCursor: 1,
+        nextCursor: 1,
+        retained: 1,
+      ),
+      capturePage: CapturePage(
+        records: <CaptureRecord>[
+          _capture(recordId: 11, requestRecordId: 1, host: 'api.example.com'),
+        ],
+      ),
+    );
+    final detailFacade = _FakeCaptureDetailFacade(
+      value: const CaptureDetail(
+        recordId: 11,
+        requestRecordId: 1,
+        host: 'api.example.com',
+        method: 'GET',
+        scheme: 'https',
+        url: 'https://api.example.com/v1/items',
+        statusCode: 200,
+        protocol: 'h1',
+      ),
+    );
+    final deleteFacade = _FakeCaptureDeleteFacade(fail: true);
+    await tester.pumpWidget(
+      _host(
+        ProxyRequestsPage(
+          facade: fake,
+          initialLive: false,
+          captureDetailFacade: detailFacade,
+          captureDeleteFacade: deleteFacade,
+          captureActionBinder: CaptureDetailActionBinder(
+            bridge: _FakeCaptureBridge(),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+    final beforeGet = fake.getCalls;
+
+    await tester.tap(find.byKey(const ValueKey('request_row_1')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.pump();
+
+    await tester.tap(find.byKey(const Key('detail_actions_menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('detail_delete_record')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('删除'));
+    await tester.pumpAndSettle();
+
+    // 失败：showError、留在详情页、列表不被刷新。
+    expect(deleteFacade.calls, 1);
+    expect(find.byType(ProxyCaptureDetailPage), findsOneWidget);
+    expect(find.text('删除失败'), findsWidgets);
+    expect(
+      fake.getCalls,
+      beforeGet,
+      reason: '删除失败未 pop，不得触发列表刷新',
+    );
     expect(tester.takeException(), isNull);
   });
 }

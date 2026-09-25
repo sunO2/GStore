@@ -77,6 +77,25 @@ class _NotFoundFacade implements ProxyCaptureDetailFacade {
   }
 }
 
+/// 假删除门面（D8b）：记录被删除的 `recordId`，可注入失败。
+class _FakeDeleteFacade implements ProxyCaptureDeleteFacade {
+  _FakeDeleteFacade({this.fail = false});
+
+  bool fail;
+  int calls = 0;
+  int? lastRecordId;
+
+  @override
+  Future<CaptureDeleteResult> delete(int recordId) async {
+    calls++;
+    lastRecordId = recordId;
+    if (fail) {
+      throw const ProxyModuleException(code: 'DEL_FAIL', message: '删除失败');
+    }
+    return const CaptureDeleteResult(ok: true, removed: true);
+  }
+}
+
 // ==================== 样例数据 ====================
 
 CaptureDetail _detail({
@@ -156,6 +175,42 @@ Future<void> _tapSegment(WidgetTester tester, String name) async {
   await tester.tap(find.byKey(Key('seg_$name')));
   await tester.pump();
   await tester.pump();
+}
+
+/// 以真实 Navigator 承载详情页（push 后才能断言删除成功后的 pop）。
+Widget _routeHost(Widget detail) => MaterialApp(
+      navigatorKey: appNavigatorKey,
+      scaffoldMessengerKey: AppDialogs.scaffoldMessengerKey,
+      home: Builder(
+        builder: (context) => Scaffold(
+          body: Center(
+            child: ElevatedButton(
+              key: const Key('open_detail'),
+              onPressed: () => Navigator.of(context).push<void>(
+                MaterialPageRoute<void>(builder: (_) => detail),
+              ),
+              child: const Text('HOME'),
+            ),
+          ),
+        ),
+      ),
+    );
+
+/// push 详情页并等首帧加载完成（避免 `pumpAndSettle` 与常驻 AppLoading 动画冲突）。
+Future<void> _openDetail(WidgetTester tester, Widget detail) async {
+  await tester.pumpWidget(_routeHost(detail));
+  await tester.tap(find.byKey(const Key('open_detail')));
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 400));
+  await _settleLoad(tester);
+}
+
+/// 打开动作菜单并点击某一动作项。
+Future<void> _tapAction(WidgetTester tester, String key) async {
+  await tester.tap(find.byKey(const Key('detail_actions_menu')));
+  await tester.pumpAndSettle();
+  await tester.tap(find.byKey(Key(key)));
+  await tester.pumpAndSettle();
 }
 
 // ==================== 测试 ====================
@@ -389,6 +444,91 @@ void main() {
     await tapAction('action_copy_curl');
     await tapAction('action_save_debug');
     await tapAction('action_create_rule');
+    expect(tester.takeException(), isNull);
+  });
+
+  // ==================== D8b 删除该记录 ====================
+
+  testWidgets('删除：确认后以正确 recordId 调用 delete 并 pop 返回', (tester) async {
+    final deleteFacade = _FakeDeleteFacade();
+    await _openDetail(
+      tester,
+      ProxyCaptureDetailPage(
+        recordId: 7,
+        facade: _FakeDetailFacade(detail: _detail()),
+        deleteFacade: deleteFacade,
+      ),
+    );
+    expect(find.byType(ProxyCaptureDetailPage), findsOneWidget);
+
+    await _tapAction(tester, 'detail_delete_record');
+    // 危险确认弹层文案必须出现，且确认前不得下发删除。
+    expect(find.text('删除该抓包记录？不可撤销'), findsOneWidget);
+    expect(deleteFacade.calls, 0, reason: '确认前不得调用 delete');
+
+    await tester.tap(find.text('删除'));
+    await tester.pumpAndSettle();
+
+    expect(deleteFacade.calls, 1, reason: '确认后必须调用 delete 一次');
+    expect(deleteFacade.lastRecordId, 7, reason: '必须携带本页 recordId');
+    expect(
+      find.byType(ProxyCaptureDetailPage),
+      findsNothing,
+      reason: '删除成功后必须 pop 返回列表',
+    );
+    expect(find.text('HOME'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('对抗：取消确认 -> 不调用 delete、不 pop、留在详情页', (tester) async {
+    final deleteFacade = _FakeDeleteFacade();
+    await _openDetail(
+      tester,
+      ProxyCaptureDetailPage(
+        recordId: 7,
+        facade: _FakeDetailFacade(detail: _detail()),
+        deleteFacade: deleteFacade,
+      ),
+    );
+
+    await _tapAction(tester, 'detail_delete_record');
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+
+    expect(deleteFacade.calls, 0, reason: '取消不得调用 delete');
+    expect(
+      find.byType(ProxyCaptureDetailPage),
+      findsOneWidget,
+      reason: '取消不得 pop',
+    );
+    expect(find.text('HOME'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('对抗：删除失败 -> showError 且留在详情页不 pop', (tester) async {
+    final deleteFacade = _FakeDeleteFacade(fail: true);
+    await _openDetail(
+      tester,
+      ProxyCaptureDetailPage(
+        recordId: 7,
+        facade: _FakeDetailFacade(detail: _detail()),
+        deleteFacade: deleteFacade,
+      ),
+    );
+
+    await _tapAction(tester, 'detail_delete_record');
+    await tester.tap(find.text('删除'));
+    await tester.pumpAndSettle();
+
+    expect(deleteFacade.calls, 1);
+    expect(deleteFacade.lastRecordId, 7);
+    expect(find.text('删除失败'), findsWidgets, reason: '必须走统一 showError');
+    expect(
+      find.byType(ProxyCaptureDetailPage),
+      findsOneWidget,
+      reason: '删除失败不得 pop',
+    );
+    expect(find.text('HOME'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 }
