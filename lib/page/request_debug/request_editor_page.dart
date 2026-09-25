@@ -764,7 +764,12 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
                     label: '请求地址',
                     hintText: 'https://api.example/path',
                     textInputAction: TextInputAction.done,
-                    onSubmitted: (_) => _syncParamsFromUrl(),
+                    onSubmitted: (_) {
+                      // 先同步 URL 查询到参数行（sync-before-send），再发送：
+                      // 否则刚输入的 `?a=1&b=2` 会在 composeDraft 规范化时被丢弃。
+                      _syncParamsFromUrl();
+                      _send();
+                    },
                     toolbarBuilder: _sheetToolbar(
                       fieldKey: _urlFieldKey,
                       allowInsertVar: true,
@@ -774,13 +779,6 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
                 _buildEnvPreview(context),
               ],
             ),
-          ),
-          const SizedBox(width: AppSpacing.xs),
-          IconButton.filled(
-            key: const Key('request-editor-send-top'),
-            tooltip: '发送',
-            icon: const Icon(TablerIcons.send),
-            onPressed: _sending ? null : _send,
           ),
         ],
       ),
@@ -1076,6 +1074,7 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
                 mode: AppEditableFieldMode.sheet,
                 label: nameHint,
                 hintText: '值',
+                textInputAction: TextInputAction.next,
                 onSubmitted: onCommitted,
                 toolbarBuilder: _sheetToolbar(
                   fieldKey: row.valueFieldKey,
@@ -1367,9 +1366,7 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
         controller: controller,
         mode: mode,
         label: label,
-        textInputAction: mode == AppEditableFieldMode.inline
-            ? TextInputAction.next
-            : TextInputAction.done,
+        textInputAction: TextInputAction.next,
         toolbarBuilder: mode == AppEditableFieldMode.sheet
             ? _sheetToolbar(fieldKey: fieldKey)
             : null,
@@ -1420,20 +1417,38 @@ class _RequestEditorPageState extends State<RequestEditorPage> {
               ),
             ),
             const SizedBox(width: AppSpacing.sm),
-            TextButton(
-              key: const Key('request-editor-save'),
-              onPressed: _save,
-              child: const Text('保存'),
-            ),
-            TextButton(
-              key: const Key('request-editor-save-as'),
-              onPressed: _saveAs,
-              child: const Text('另存为'),
-            ),
-            TextButton(
-              key: const Key('request-editor-export-curl'),
-              onPressed: _exportCurl,
-              child: const Text('导出 cURL'),
+            // 保存 / 另存为 / 导出 cURL 收进溢出菜单，发送保持唯一主操作。
+            PopupMenuButton<String>(
+              key: const Key('request-editor-more'),
+              tooltip: '更多',
+              icon: const Icon(TablerIcons.dots),
+              onSelected: (value) {
+                switch (value) {
+                  case 'save':
+                    _save();
+                  case 'save-as':
+                    _saveAs();
+                  case 'export-curl':
+                    _exportCurl();
+                }
+              },
+              itemBuilder: (_) => const <PopupMenuEntry<String>>[
+                PopupMenuItem<String>(
+                  key: Key('request-editor-save'),
+                  value: 'save',
+                  child: Text('保存'),
+                ),
+                PopupMenuItem<String>(
+                  key: Key('request-editor-save-as'),
+                  value: 'save-as',
+                  child: Text('另存为'),
+                ),
+                PopupMenuItem<String>(
+                  key: Key('request-editor-export-curl'),
+                  value: 'export-curl',
+                  child: Text('导出 cURL'),
+                ),
+              ],
             ),
           ],
         ),

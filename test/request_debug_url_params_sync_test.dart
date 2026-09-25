@@ -143,6 +143,9 @@ String _paramValue(WidgetTester tester, int i) {
 }
 
 /// 通过 URL 自适应弹层提交 URL。
+///
+/// T15 起 URL 提交（弹层完成）会 sync-then-send 并自动切到「响应」分段；本套
+/// 用例只验证 URL⇄参数同步，故提交后切回「参数」分段继续断言参数行。
 Future<void> _setUrlViaSheet(WidgetTester tester, String url) async {
   await tester.tap(find.byKey(const Key('request-editor-url')));
   await tester.pumpAndSettle();
@@ -152,6 +155,11 @@ Future<void> _setUrlViaSheet(WidgetTester tester, String url) async {
   );
   await tester.tap(find.byKey(const Key('request-editor-field-sheet-confirm')));
   await tester.pumpAndSettle();
+  final paramsTab = find.byKey(const Key('request-editor-segment-params'));
+  if (paramsTab.evaluate().isNotEmpty) {
+    await tester.tap(paramsTab);
+    await tester.pumpAndSettle();
+  }
 }
 
 /// 通过值 sheet 提交第 [i] 行参数值。
@@ -292,6 +300,8 @@ void main() {
       await _setUrlViaSheet(tester, 'https://api.example/p?a=1&b=2#frag');
       expect(_paramRowCount(tester), 2);
 
+      await tester.tap(find.byKey(const Key('request-editor-more')));
+      await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('request-editor-save')));
       await tester.pumpAndSettle();
 
@@ -347,6 +357,8 @@ void main() {
       expect(_paramName(tester, 0), 'm');
       expect(_paramValue(tester, 0), '{{missing}}');
 
+      await tester.tap(find.byKey(const Key('request-editor-more')));
+      await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('request-editor-save')));
       await tester.pumpAndSettle();
 

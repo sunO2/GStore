@@ -170,6 +170,14 @@ Future<void> _setUrlViaSheet(WidgetTester tester, String url) async {
   await tester.pumpAndSettle();
 }
 
+/// 打开右上「更多」溢出菜单并点选其中一项（保存 / 另存为 / 导出 cURL）。
+Future<void> _tapMore(WidgetTester tester, Key itemKey) async {
+  await tester.tap(find.byKey(const Key('request-editor-more')));
+  await tester.pumpAndSettle();
+  await tester.tap(find.byKey(itemKey));
+  await tester.pumpAndSettle();
+}
+
 /// URL 自适应字段当前展示的文本。
 Finder _urlDisplay(String url) => find.descendant(
       of: find.byKey(const Key('request-editor-url')),
@@ -231,8 +239,7 @@ void main() {
       await tester.tap(find.text('POST').last);
       await tester.pumpAndSettle();
 
-      await tester.tap(find.byKey(const Key('request-editor-save')));
-      await tester.pumpAndSettle();
+      await _tapMore(tester, const Key('request-editor-save'));
 
       final saved = facade.store.collectionById(collection.id)!.requests;
       expect(saved, hasLength(1));
@@ -341,6 +348,60 @@ void main() {
       expect(status.data, '200');
       expect(tester.takeException(), isNull);
     });
+
+    testWidgets('仅一个发送入口：底部 request-editor-send，无顶部按钮', (tester) async {
+      final facade = _facade();
+      final collection = facade.store.addCollection(name: 'API');
+
+      await _pumpEditor(tester, facade: facade, collectionId: collection.id);
+
+      expect(find.byKey(const Key('request-editor-send')), findsOneWidget);
+      expect(find.byKey(const Key('request-editor-send-top')), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('URL 弹层 done：先同步新查询参数再发送，且仅发送一次', (tester) async {
+      final sender = _sender();
+      final facade = _facade(sender: sender);
+      final collection = facade.store.addCollection(name: 'API');
+      final request = facade.store.addRequest(
+        collection.id,
+        DebugRequest(
+          id: 'r-submit',
+          name: 'submit',
+          method: 'GET',
+          url: 'https://api.example/search',
+        ),
+      );
+
+      await _pumpEditor(
+        tester,
+        facade: facade,
+        request: request,
+        collectionId: collection.id,
+      );
+
+      // 打开 URL 弹层，输入带查询的地址，按键盘 done（提交并触发发送）。
+      await tester.tap(find.byKey(const Key('request-editor-url')));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const Key('request-editor-field-sheet-input')),
+        'https://api.example/search?a=1&b=2',
+      );
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pumpAndSettle();
+
+      // 编辑面已关闭。
+      expect(find.byKey(const Key('request-editor-field-sheet')), findsNothing);
+      // 恰好发送一次，且带上刚输入的查询参数（sync-before-send）。
+      expect(sender.calls, hasLength(1));
+      expect(sender.calls.single['url'], 'https://api.example/search');
+      expect(
+        sender.calls.single['query'],
+        containsAll(<String>['a=1', 'b=2']),
+      );
+      expect(tester.takeException(), isNull);
+    });
   });
 
   group('请求编辑器 · 保存', () {
@@ -356,8 +417,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('POST').last);
       await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const Key('request-editor-save')));
-      await tester.pumpAndSettle();
+      await _tapMore(tester, const Key('request-editor-save'));
 
       final saved = facade.store.collectionById(collection.id)!.requests;
       expect(saved, hasLength(1));
@@ -394,8 +454,7 @@ void main() {
         collectionId: collection.id,
       );
 
-      await tester.tap(find.byKey(const Key('request-editor-save-as')));
-      await tester.pumpAndSettle();
+      await _tapMore(tester, const Key('request-editor-save-as'));
 
       final requests = facade.store.collectionById(collection.id)!.requests;
       expect(requests, hasLength(2));
@@ -426,8 +485,7 @@ void main() {
         collectionId: collection.id,
       );
 
-      await tester.tap(find.byKey(const Key('request-editor-export-curl')));
-      await tester.pumpAndSettle();
+      await _tapMore(tester, const Key('request-editor-export-curl'));
 
       expect(find.textContaining('curl'), findsWidgets);
       expect(find.textContaining('https://api.example/x'), findsWidgets);
@@ -714,6 +772,23 @@ void main() {
       await tester.tap(find.byKey(const Key('request-editor-segment-headers')));
       await tester.pumpAndSettle();
       expect(find.text('添加请求头'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('窄屏 360x640：外壳渲染无异常且动作齐备', (tester) async {
+      tester.view.physicalSize = const Size(360, 640);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final facade = _facade();
+      final collection = facade.store.addCollection(name: 'API');
+
+      await _pumpEditor(tester, facade: facade, collectionId: collection.id);
+
+      expect(find.byKey(const Key('request-editor-url')), findsOneWidget);
+      expect(find.byKey(const Key('request-editor-send')), findsOneWidget);
+      expect(find.byKey(const Key('request-editor-more')), findsOneWidget);
       expect(tester.takeException(), isNull);
     });
   });
