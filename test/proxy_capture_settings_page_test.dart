@@ -148,6 +148,11 @@ void main() {
         tester.widget<SwitchListTile>(find.byKey(const Key('capture_mitm_switch'))).value,
         isTrue,
       );
+      // 存量连接常显提示：key 命中且文案含「仅对新建连接生效」。
+      expect(
+        tester.widget<Text>(find.byKey(const Key('capture_existing_conn_hint'))).data,
+        contains('仅对新建连接生效'),
+      );
       // 域名芯片回填。
       expect(find.byKey(const Key('capture_domain_chip_example.com')), findsOneWidget);
       // App 计数回填。

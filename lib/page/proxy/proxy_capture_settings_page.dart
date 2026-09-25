@@ -550,6 +550,16 @@ class _ProxyCaptureSettingsPageState extends State<ProxyCaptureSettingsPage> {
             color: theme.colorScheme.onSurfaceVariant,
           ),
         ),
+        const SizedBox(height: AppSpacing.gapSM),
+        // 常显提示（不随开关状态显隐）：改动只影响后续新建连接。
+        Text(
+          key: const Key('capture_existing_conn_hint'),
+          '改动仅对新建连接生效；已在运行的 App 连接不会被解密/捕获，'
+          '请重启目标 App 或等待其连接重建。',
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+        ),
       ],
     );
   }
