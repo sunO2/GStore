@@ -538,6 +538,11 @@ pub(crate) const MITM_FAILED_SIGNAL: &str = "mitmFailed";
 /// Ceiling on the in-TUN **client** TLS handshake. A silent or stalled client
 /// must not pin an in-flight slot indefinitely.
 pub(crate) const CLIENT_TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Ceiling on the **upstream TCP dial** (`adapter.dial_tcp`). meow's
+/// [`meow_common::with_dial_timeout`] is a compile-time 5 s that is too short
+/// for slow mobile DIRECT connects, so the MITM upstream owns a longer,
+/// test-settable deadline (default 12 s) and retries a *timeout* once.
+pub(crate) const UPSTREAM_DIAL_TIMEOUT: Duration = Duration::from_secs(12);
 /// Ceiling on the **upstream** TLS handshake after the TCP dial succeeded.
 pub(crate) const UPSTREAM_TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Ceiling on the upstream hyper HTTP/1.1 or HTTP/2 handshake.
@@ -587,6 +592,27 @@ pub(crate) fn set_upstream_response_timeout_for_tests(ms: u64) {
 pub(crate) fn reset_upstream_response_timeout_for_tests() {
     UPSTREAM_RESPONSE_TIMEOUT_MS.store(
         UPSTREAM_RESPONSE_TIMEOUT.as_millis() as u64,
+        Ordering::Relaxed,
+    );
+}
+
+static UPSTREAM_DIAL_TIMEOUT_MS: AtomicU64 = AtomicU64::new(12_000);
+
+/// The upstream dial ceiling in effect. Production uses
+/// [`UPSTREAM_DIAL_TIMEOUT`]; tests shorten it to exercise the timeout path.
+pub(crate) fn upstream_dial_timeout() -> Duration {
+    Duration::from_millis(UPSTREAM_DIAL_TIMEOUT_MS.load(Ordering::Relaxed))
+}
+
+#[cfg(test)]
+pub(crate) fn set_upstream_dial_timeout_for_tests(ms: u64) {
+    UPSTREAM_DIAL_TIMEOUT_MS.store(ms, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+pub(crate) fn reset_upstream_dial_timeout_for_tests() {
+    UPSTREAM_DIAL_TIMEOUT_MS.store(
+        UPSTREAM_DIAL_TIMEOUT.as_millis() as u64,
         Ordering::Relaxed,
     );
 }
@@ -1261,10 +1287,33 @@ pub(crate) async fn dial_upstream(
             metadata.dst_ip,
         ),
     );
-    match meow_common::with_dial_timeout(adapter.name(), adapter.dial_tcp(&metadata)).await {
+    let timeout = upstream_dial_timeout();
+    let dial_result: Result<Box<dyn ProxyConn>, UpstreamError> =
+        match tokio::time::timeout(timeout, adapter.dial_tcp(&metadata)).await {
+            Ok(Ok(conn)) => Ok(conn),
+            Ok(Err(e)) => Err(UpstreamError::dial(e)),
+            Err(_) => {
+                crate::log_message(
+                    2,
+                    &format!(
+                        "proxy.mitm: upstream dial timed out after {:?} via {} host={} dst_ip={:?} rule={}; retrying once",
+                        timeout, adapter.name(), target.host, metadata.dst_ip, rule,
+                    ),
+                );
+                match tokio::time::timeout(timeout, adapter.dial_tcp(&metadata)).await {
+                    Ok(Ok(conn)) => Ok(conn),
+                    Ok(Err(e)) => Err(UpstreamError::dial(e)),
+                    Err(_) => Err(UpstreamError::dial(format!(
+                        "dial via {} exceeded the {:?} deadline",
+                        adapter.name(),
+                        timeout
+                    ))),
+                }
+            }
+        };
+    match dial_result {
         Ok(conn) => Ok(conn),
-        Err(e) => {
-            let error = UpstreamError::dial(e);
+        Err(error) => {
             crate::log_message(
                 2,
                 &format!(
@@ -6977,16 +7026,145 @@ mod mitm_upstream_tests {
         );
     }
 
-    /// A `ProxyAdapter` whose `dial_tcp` never resolves: `dial_upstream`'s own
-    /// timeout must cut it, so a hung outbound cannot pin a session slot.
-    struct HangingProxy {
-        health: ProxyHealth,
+    /// D12a: a ~6 s DIRECT dial that the old compile-time 5 s meow ceiling cut
+    /// now succeeds under the 12 s own deadline. The bytes moved through the
+    /// returned connection are the proof the dial *completed*, not merely that
+    /// no error was returned.
+    #[test]
+    fn slow_dial_beyond_old_5s_deadline_succeeds() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let forward = listener.local_addr().unwrap();
+            let fixture = tokio::spawn(async move {
+                let (mut tcp, _) = listener.accept().await.unwrap();
+                let mut buf = [0u8; 4];
+                tcp.read_exact(&mut buf).await.unwrap();
+                assert_eq!(&buf, b"ping");
+                tcp.write_all(b"pong").await.unwrap();
+            });
+
+            let proxy = RetryProxy::new(Duration::from_secs(6), forward);
+            let inner = tunnel_with(
+                &["DOMAIN-SUFFIX,slow.test,RETRY"],
+                vec![("RETRY", Arc::clone(&proxy) as Arc<dyn Proxy>)],
+            );
+            let target = UpstreamTarget::new("slow.test", forward.port())
+                .with_dst_ip(IpAddr::V4(Ipv4Addr::LOCALHOST));
+
+            let mut conn = dial_upstream(&inner, &target)
+                .await
+                .expect("a 6 s dial must beat the 12 s deadline");
+            conn.write_all(b"ping").await.unwrap();
+            let mut reply = [0u8; 4];
+            conn.read_exact(&mut reply).await.unwrap();
+            assert_eq!(
+                &reply, b"pong",
+                "the 6 s-dialed connection must be live, not just non-Error"
+            );
+            fixture.await.unwrap();
+            assert_eq!(
+                proxy.dial_count(),
+                1,
+                "a dial under the deadline must not be retried"
+            );
+        });
     }
 
-    fn hanging_proxy() -> Arc<dyn Proxy> {
+    /// D12a: the first attempt times out, the single retry completes, and the
+    /// overall dial succeeds. The recorded second connection is proven live.
+    #[test]
+    fn timed_out_dial_is_retried_once_and_succeeds() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+            let _reset = DialTimeoutReset;
+            set_upstream_dial_timeout_for_tests(150);
+
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let forward = listener.local_addr().unwrap();
+            let fixture = tokio::spawn(async move {
+                let (mut tcp, _) = listener.accept().await.unwrap();
+                tcp.write_all(b"ok").await.unwrap();
+            });
+
+            let proxy = RetryProxy::new(Duration::from_millis(400), forward);
+            let inner = tunnel_with(
+                &["DOMAIN,retry.test,RETRY"],
+                vec![("RETRY", Arc::clone(&proxy) as Arc<dyn Proxy>)],
+            );
+            let target = UpstreamTarget::new("retry.test", forward.port())
+                .with_dst_ip(IpAddr::V4(Ipv4Addr::LOCALHOST));
+
+            let mut conn = dial_upstream(&inner, &target)
+                .await
+                .expect("the retry must succeed");
+            let mut reply = [0u8; 2];
+            conn.read_exact(&mut reply).await.unwrap();
+            assert_eq!(&reply, b"ok", "the retried connection must be the live one");
+            fixture.await.unwrap();
+            assert_eq!(
+                proxy.dial_count(),
+                2,
+                "exactly one retry after the first timeout"
+            );
+        });
+    }
+
+    /// D12a: both attempts timing out yields the `upstream_dial` stage and the
+    /// registered 502 / `PROXY_CAPTURE_UPSTREAM_FAILED` shape.
+    #[test]
+    fn double_dial_timeout_maps_to_upstream_dial_stage() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+            let _reset = DialTimeoutReset;
+            set_upstream_dial_timeout_for_tests(100);
+
+            let hang = hanging_proxy();
+            let inner = tunnel_with(
+                &["DOMAIN,dead.test,HANG"],
+                vec![("HANG", Arc::clone(&hang) as Arc<dyn Proxy>)],
+            );
+            let target = UpstreamTarget::new("dead.test", 443)
+                .with_dst_ip(IpAddr::V4(Ipv4Addr::LOCALHOST));
+
+            let err = dial_upstream(&inner, &target)
+                .await
+                .err()
+                .expect("both attempts must time out");
+            assert_eq!(err.stage().as_str(), "upstream_dial");
+            assert_eq!(err.kind(), "dial");
+            assert_eq!(err.status(), 502);
+            assert_eq!(err.code(), ERR_CAPTURE_UPSTREAM_FAILED);
+            assert_eq!(
+                hang.dial_count(),
+                2,
+                "a timeout must be retried exactly once, then surface the failure"
+            );
+        });
+    }
+
+    /// A `ProxyAdapter` whose `dial_tcp` never resolves: `dial_upstream`'s own
+    /// timeout must cut it (twice, with one retry), so a hung outbound cannot
+    /// pin a session slot.
+    struct HangingProxy {
+        health: ProxyHealth,
+        dials: AtomicUsize,
+    }
+
+    fn hanging_proxy() -> Arc<HangingProxy> {
         Arc::new(HangingProxy {
             health: ProxyHealth::new(),
+            dials: AtomicUsize::new(0),
         })
+    }
+
+    impl HangingProxy {
+        fn dial_count(&self) -> usize {
+            self.dials.load(Ordering::SeqCst)
+        }
     }
 
     #[async_trait::async_trait]
@@ -7004,6 +7182,7 @@ mod mitm_upstream_tests {
             false
         }
         async fn dial_tcp(&self, _metadata: &Metadata) -> meow_common::Result<Box<dyn ProxyConn>> {
+            self.dials.fetch_add(1, Ordering::SeqCst);
             std::future::pending().await
         }
         async fn dial_udp(
@@ -7044,6 +7223,91 @@ mod mitm_upstream_tests {
         }
     }
 
+    /// Restores the production upstream dial deadline even if a test panics.
+    struct DialTimeoutReset;
+
+    impl Drop for DialTimeoutReset {
+        fn drop(&mut self) {
+            reset_upstream_dial_timeout_for_tests();
+        }
+    }
+
+    /// A test outbound whose **first** `dial_tcp` sleeps for `first_dial_delay`
+    /// before connecting and whose later dials connect at once. The dial count
+    /// proves whether a timeout was retried.
+    struct RetryProxy {
+        health: ProxyHealth,
+        dials: AtomicUsize,
+        first_dial_delay: Duration,
+        forward: SocketAddr,
+    }
+
+    impl RetryProxy {
+        fn new(first_dial_delay: Duration, forward: SocketAddr) -> Arc<Self> {
+            Arc::new(Self {
+                health: ProxyHealth::new(),
+                dials: AtomicUsize::new(0),
+                first_dial_delay,
+                forward,
+            })
+        }
+
+        fn dial_count(&self) -> usize {
+            self.dials.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ProxyAdapter for RetryProxy {
+        fn name(&self) -> &str {
+            "RETRY"
+        }
+        fn adapter_type(&self) -> AdapterType {
+            AdapterType::Direct
+        }
+        fn addr(&self) -> &str {
+            ""
+        }
+        fn support_udp(&self) -> bool {
+            false
+        }
+        async fn dial_tcp(&self, _metadata: &Metadata) -> meow_common::Result<Box<dyn ProxyConn>> {
+            if self.dials.fetch_add(1, Ordering::SeqCst) == 0 {
+                tokio::time::sleep(self.first_dial_delay).await;
+            }
+            let stream = TcpStream::connect(self.forward).await?;
+            Ok(Box::new(stream))
+        }
+        async fn dial_udp(
+            &self,
+            _metadata: &Metadata,
+        ) -> meow_common::Result<Box<dyn ProxyPacketConn>> {
+            Err(meow_common::MeowError::NotSupported("retry".into()))
+        }
+        fn health(&self) -> &ProxyHealth {
+            &self.health
+        }
+    }
+
+    impl Proxy for RetryProxy {
+        fn alive(&self) -> bool {
+            true
+        }
+        fn alive_for_url(&self, _url: &str) -> bool {
+            true
+        }
+        fn last_delay(&self) -> u16 {
+            0
+        }
+        fn last_delay_for_url(&self, _url: &str) -> u16 {
+            0
+        }
+        fn delay_history(&self) -> Vec<DelayHistory> {
+            Vec::new()
+        }
+    }
+
+
     /// A client that opens the TLS connection and then sends nothing must not
     /// pin its slot: the 10 s client-TLS ceiling ends the session.
     #[test]
@@ -7076,20 +7340,26 @@ mod mitm_upstream_tests {
         });
     }
 
-    /// An outbound whose dial never completes must be cut by the 5 s dial
-    /// ceiling, and the session must release its slot.
+    /// An outbound whose dial never completes must be cut by the dial ceiling
+    /// (twice — one retry), and the session must release its slot.
     #[test]
     fn hung_upstream_dial_releases_slot() {
         let rt = crate::bounded_runtime().expect("bounded_runtime");
         rt.block_on(async {
             let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+            let _reset = DialTimeoutReset;
+            set_upstream_dial_timeout_for_tests(150);
             reset_gate_counters_for_tests();
             let ca = Arc::new(
                 CertificateAuthority::generate(temp_dir("hang-dial").to_str().unwrap())
                     .expect("ca"),
             );
             install_ca(Arc::clone(&ca));
-            let inner = tunnel_with(&["DOMAIN,flow.test,HANG"], vec![("HANG", hanging_proxy())]);
+            let hang = hanging_proxy();
+            let inner = tunnel_with(
+                &["DOMAIN,flow.test,HANG"],
+                vec![("HANG", Arc::clone(&hang) as Arc<dyn Proxy>)],
+            );
             let dialer = production_dialer_for(inner, "flow.test", 443, &ca);
 
             let (client_io, server_io) = tokio::io::duplex(1 << 16);
@@ -7098,6 +7368,11 @@ mod mitm_upstream_tests {
                 .expect("session must start");
             let status = send_h1_request(&ca, client_io, "flow.test", "/hang").await;
             assert_eq!(status, 502, "a hung dial must degrade to a structured 502");
+            assert_eq!(
+                hang.dial_count(),
+                2,
+                "a dial that times out must be retried exactly once"
+            );
             wait_inflight_zero("the timed-out dial").await;
             clear_ca();
         });
