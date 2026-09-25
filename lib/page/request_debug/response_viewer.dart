@@ -242,9 +242,8 @@ class _ResponseViewerState extends State<ResponseViewer> {
               color: theme.colorScheme.onSurfaceVariant,
             ),
           ),
-          AppSegmentedButton<ResponseBodyFormat>(
+          AppPillToggle<ResponseBodyFormat>(
             value: _format,
-            density: AppSegmentedButton.mediumDensity,
             segments: const <AppSegment<ResponseBodyFormat>>[
               AppSegment(
                 value: ResponseBodyFormat.formatted,
@@ -318,41 +317,34 @@ class _ResponseViewerState extends State<ResponseViewer> {
       children: [
         Padding(
           padding: AppSpacing.onlyHorizontalLG,
-          child: Align(
-            alignment: Alignment.centerLeft,
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: AppSegmentedButton<ResponseViewerTab>(
-                value: _tab,
-                density: AppSegmentedButton.mediumDensity,
-                segments: const <AppSegment<ResponseViewerTab>>[
-                  AppSegment(
-                    value: ResponseViewerTab.headers,
-                    label: '头',
-                    key: Key('response-tab-headers'),
-                  ),
-                  AppSegment(
-                    value: ResponseViewerTab.body,
-                    label: 'Body',
-                    key: Key('response-tab-body'),
-                  ),
-                  AppSegment(
-                    value: ResponseViewerTab.cookies,
-                    label: 'Cookie',
-                    key: Key('response-tab-cookies'),
-                  ),
-                  AppSegment(
-                    value: ResponseViewerTab.raw,
-                    label: '原始',
-                    key: Key('response-tab-raw'),
-                  ),
-                ],
-                onChanged: (value) => setState(() {
-                  _tab = value;
-                  _visibleChars = ResponseViewer.chunkChars;
-                }),
+          child: AppTabBar<ResponseViewerTab>(
+            value: _tab,
+            segments: const <AppSegment<ResponseViewerTab>>[
+              AppSegment(
+                value: ResponseViewerTab.headers,
+                label: '头',
+                key: Key('response-tab-headers'),
               ),
-            ),
+              AppSegment(
+                value: ResponseViewerTab.body,
+                label: 'Body',
+                key: Key('response-tab-body'),
+              ),
+              AppSegment(
+                value: ResponseViewerTab.cookies,
+                label: 'Cookie',
+                key: Key('response-tab-cookies'),
+              ),
+              AppSegment(
+                value: ResponseViewerTab.raw,
+                label: '原始',
+                key: Key('response-tab-raw'),
+              ),
+            ],
+            onChanged: (value) => setState(() {
+              _tab = value;
+              _visibleChars = ResponseViewer.chunkChars;
+            }),
           ),
         ),
         const SizedBox(height: AppSpacing.sm),

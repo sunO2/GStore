@@ -293,6 +293,37 @@ void main() {
     });
   });
 
+  group('重发重置', () {
+    testWidgets('换一次响应 → 回到 Body 默认态，格式化回默认，且不抛异常', (tester) async {
+      final first = _response(
+        headers: const <String, List<String>>{
+          'content-type': <String>['application/json'],
+        },
+        body: '{"first":1}',
+      );
+      final second = _response(
+        headers: const <String, List<String>>{
+          'content-type': <String>['application/json'],
+        },
+        body: '{"second":2}',
+      );
+
+      await _pump(tester, first);
+      // 手动切到原始分段 + 原始格式，模拟用户上一次交互残留。
+      await tester.tap(find.byKey(const Key('response-tab-raw')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('response-format-raw')));
+      await tester.pumpAndSettle();
+      expect(_bodyText(tester, prefix: 'response-raw'), '{"first":1}');
+
+      // 重发：换一个响应实例，查看器应重置回 Body + 格式化。
+      await _pump(tester, second);
+      expect(_bodyText(tester), contains('"second": 2'));
+      expect(find.byKey(const Key('response-body-text')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+  });
+
   group('超长 Body 分块', () {
     testWidgets('首屏只建首个分块，展开更多后字符数增长且不崩', (tester) async {
       final huge = 'A' * 200000;
