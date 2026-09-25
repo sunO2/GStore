@@ -1036,7 +1036,9 @@ envelope (`core.*`, `stats.*`, `conn.*`) and module events.
 timeline as synthetic `requests` records. Their `rule` / `rulePayload` /
 `outbound` may be empty strings (no rule engine ran for them), which the UI
 renders as 「未匹配」. Such a synthetic record still occupies one slot of the
-`requests` ring and triggers exactly one UID attribution.
+`requests` ring and triggers exactly one UID attribution. When the MITM path
+degrades because the upstream dial/response failed, the matching capture also
+carries `failureReason` (§2.18).
 
 `RequestPage`:
 ```json
@@ -1342,7 +1344,8 @@ MITM**，代理会转发来自任意证书的内容。**仅**用于自签名 / �
   "respHeaders": "content-type: text/plain", "reqBodyPreview": "<base64>",
   "respBodyPreview": "<base64>", "reqBytes": 8, "respBytes": 9,
   "contentType": "text/plain", "startedAtMs": 0, "finishedAtMs": 0,
-  "durationMs": 0, "truncated": false, "mitmFailed": false, "wsFrames": [] }
+  "durationMs": 0, "truncated": false, "mitmFailed": false,
+  "failureReason": "", "wsFrames": [] }
 ```
 
 | field | type | notes |
@@ -1362,6 +1365,7 @@ MITM**，代理会转发来自任意证书的内容。**仅**用于自签名 / �
 | `startedAtMs` / `finishedAtMs` / `durationMs` | u64 | exchange timing |
 | `truncated` | bool | a preview/url was clipped |
 | `mitmFailed` | bool | capture degraded to pass-through |
+| `failureReason` | string | MITM 失败的阶段/原因，空串=未失败 |
 | `wsFrames` | CaptureWsFrame[] | frames attached to the exchange (empty until the WS capture path emits `"ws"` records) |
 
 `CaptureWsFrame`:

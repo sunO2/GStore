@@ -3166,6 +3166,7 @@ mod abi_tests {
             duration_ms: 5,
             truncated: false,
             mitm_failed: false,
+            failure_reason: String::new(),
             ws_frames: Vec::new(),
         };
         captures::ingest(mk(0, 7));
@@ -3266,6 +3267,7 @@ mod abi_tests {
             duration_ms: 5,
             truncated: false,
             mitm_failed: false,
+            failure_reason: String::new(),
             ws_frames: Vec::new(),
         };
         captures::ingest(mk(0));

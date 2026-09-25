@@ -234,6 +234,9 @@ pub(crate) struct CaptureSummary {
     pub duration_ms: u64,
     pub truncated: bool,
     pub mitm_failed: bool,
+    /// MITM failure stage/reason; empty when the exchange did not fail.
+    #[serde(default)]
+    pub failure_reason: String,
     /// WS frames attached to this exchange. Empty until the WS capture path
     /// emits a `"ws"` record; carried in the ring shape so `records` and
     /// `detail` share one contract.
@@ -274,6 +277,7 @@ pub(crate) struct CaptureDetail {
     pub duration_ms: u64,
     pub truncated: bool,
     pub mitm_failed: bool,
+    pub failure_reason: String,
     pub ws_frames: Vec<CaptureWsFrame>,
 }
 
@@ -305,6 +309,7 @@ impl CaptureDetail {
             duration_ms: r.duration_ms,
             truncated: r.truncated,
             mitm_failed: r.mitm_failed,
+            failure_reason: r.failure_reason.clone(),
             ws_frames: r.ws_frames.iter().map(ws_frame_to_summary).collect(),
         }
     }
@@ -336,6 +341,7 @@ impl CaptureDetail {
             duration_ms: s.duration_ms,
             truncated: s.truncated,
             mitm_failed: s.mitm_failed,
+            failure_reason: s.failure_reason.clone(),
             ws_frames: s.ws_frames.clone(),
         }
     }
@@ -508,6 +514,7 @@ impl CaptureStore {
             duration_ms: now.saturating_sub(session.started_at_ms),
             truncated: session.frames.iter().any(|f| f.truncated),
             mitm_failed: false,
+            failure_reason: String::new(),
             ws_frames: session.frames.clone(),
         };
         self.push_full(record, now);
@@ -832,6 +839,7 @@ fn summarize(r: &CaptureRecord) -> CaptureSummary {
         duration_ms: r.duration_ms,
         truncated,
         mitm_failed: r.mitm_failed,
+        failure_reason: r.failure_reason.clone(),
         ws_frames: r
             .ws_frames
             .iter()
@@ -919,7 +927,8 @@ impl Persist {
                duration_ms INTEGER NOT NULL,
                 truncated INTEGER NOT NULL,
                 mitm_failed INTEGER NOT NULL,
-                ws_frames TEXT NOT NULL DEFAULT '[]'
+                ws_frames TEXT NOT NULL DEFAULT '[]',
+                failure_reason TEXT NOT NULL DEFAULT ''
              );
              CREATE INDEX IF NOT EXISTS idx_capture_finished
                ON capture_records(finished_at_ms, record_id);",
@@ -932,6 +941,16 @@ impl Persist {
         if !has_ws_frames {
             conn.execute_batch(
                 "ALTER TABLE capture_records ADD COLUMN ws_frames TEXT NOT NULL DEFAULT '[]';",
+            )?;
+        }
+        let has_failure_reason: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('capture_records') WHERE name='failure_reason'",
+            [],
+            |r| r.get::<_, i64>(0).map(|n| n > 0),
+        )?;
+        if !has_failure_reason {
+            conn.execute_batch(
+                "ALTER TABLE capture_records ADD COLUMN failure_reason TEXT NOT NULL DEFAULT '';",
             )?;
         }
         Ok(Self {
@@ -957,9 +976,9 @@ impl Persist {
                     status_code, protocol, req_headers, resp_headers, req_body_preview,
                     resp_body_preview, req_body, resp_body, req_bytes, resp_bytes,
                     content_type, started_at_ms, finished_at_ms, duration_ms, truncated,
-                    mitm_failed, ws_frames)
+                    mitm_failed, ws_frames, failure_reason)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-                         ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)
+                         ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)
                  ON CONFLICT(record_id) DO UPDATE SET
                    request_record_id=excluded.request_record_id,
                    conn_id=excluded.conn_id,
@@ -983,7 +1002,8 @@ impl Persist {
                    duration_ms=excluded.duration_ms,
                    truncated=excluded.truncated,
                    mitm_failed=excluded.mitm_failed,
-                   ws_frames=excluded.ws_frames",
+                   ws_frames=excluded.ws_frames,
+                   failure_reason=excluded.failure_reason",
             )?;
             for r in records {
                 let ws_frames = serde_json::to_string(
@@ -1018,6 +1038,7 @@ impl Persist {
                     r.truncated as i64,
                     r.mitm_failed as i64,
                     ws_frames,
+                    r.failure_reason,
                 ])?;
             }
         }
@@ -1171,11 +1192,11 @@ impl Persist {
 const SUMMARY_COLUMNS: &str = "record_id, request_record_id, conn_id, host, method, scheme, url, \
      status_code, protocol, req_headers, resp_headers, req_body_preview, resp_body_preview, \
      req_bytes, resp_bytes, content_type, started_at_ms, finished_at_ms, duration_ms, \
-     truncated, mitm_failed, ws_frames";
+     truncated, mitm_failed, ws_frames, failure_reason";
 
 /// Number of columns in [`SUMMARY_COLUMNS`]; `load_detail`'s extra body columns
 /// follow at this offset.
-const SUMMARY_COLUMN_COUNT: usize = 22;
+const SUMMARY_COLUMN_COUNT: usize = 23;
 
 fn row_to_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<CaptureSummary> {
     Ok(CaptureSummary {
@@ -1201,6 +1222,7 @@ fn row_to_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<CaptureSummary> {
         truncated: row.get::<_, i64>(19)? != 0,
         mitm_failed: row.get::<_, i64>(20)? != 0,
         ws_frames: parse_ws_frames(row.get::<_, String>(21)?),
+        failure_reason: row.get(22)?,
     })
 }
 
@@ -2070,6 +2092,7 @@ mod tests {
             duration_ms: 5,
             truncated: false,
             mitm_failed: false,
+            failure_reason: String::new(),
             ws_frames: Vec::new(),
         }
     }
@@ -2209,6 +2232,112 @@ mod tests {
         assert_eq!(next_record_id_for_tests(), 5);
         flush_for_tests(4_000);
         assert_eq!(snapshot(0, 10, &CaptureFilter::default()).records.len(), 4, "the 4th row reached the DB");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// todo 1: `failureReason` survives the durable store in both the ring
+    /// `snapshot` and the full `detail`; an exchange that did not fail reads
+    /// back an empty reason.
+    #[test]
+    fn captures_store_failure_reason_round_trips() {
+        reset_for_tests();
+        let dir = unique_temp_dir("failure-reason");
+        let dir_s = dir.to_str().unwrap().to_string();
+        let reason = "dial via DIRECT exceeded the 12s deadline";
+
+        configure_at(&dir_s, 1_000);
+        let mut failed = fixture(0, 1_000);
+        failed.mitm_failed = true;
+        failed.failure_reason = reason.to_string();
+        let failed_id = with_store(|st| st.push_full(failed, 1_000));
+        let clean_id = with_store(|st| st.push_full(fixture(1, 1_001), 1_001));
+        flush_for_tests(2_000);
+        close_for_tests(2_000);
+
+        // Reopen the same DB: the ring is now seeded straight from disk.
+        configure_at(&dir_s, 3_000);
+
+        let page = snapshot(0, 10, &CaptureFilter::default());
+        let by_id = |id: u64| page.records.iter().find(|r| r.record_id == id).unwrap();
+        assert_eq!(by_id(failed_id).failure_reason, reason);
+        assert_eq!(by_id(clean_id).failure_reason, "");
+
+        let failed_detail = detail(failed_id).unwrap().unwrap();
+        assert_eq!(failed_detail.failure_reason, reason);
+        assert!(failed_detail.mitm_failed);
+        let clean_detail = detail(clean_id).unwrap().unwrap();
+        assert_eq!(clean_detail.failure_reason, "");
+
+        let _ = std::fs::remove_dir_all(&dir);
+        reset_for_tests();
+    }
+
+    /// todo 1: a pre-`failure_reason` database opens cleanly (the column is
+    /// added by ALTER), old rows read back an empty reason, and a second open
+    /// is idempotent.
+    #[test]
+    fn captures_legacy_schema_migrates_failure_reason_column() {
+        let dir = unique_temp_dir("legacy-schema");
+        let path = format!("{}/proxy_captures.db", dir.display());
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE capture_records (
+                   record_id INTEGER PRIMARY KEY,
+                   request_record_id INTEGER NOT NULL,
+                   conn_id TEXT NOT NULL,
+                   host TEXT NOT NULL,
+                   method TEXT NOT NULL,
+                   scheme TEXT NOT NULL,
+                   url TEXT NOT NULL,
+                   status_code INTEGER NOT NULL,
+                   protocol TEXT NOT NULL,
+                   req_headers TEXT NOT NULL,
+                   resp_headers TEXT NOT NULL,
+                   req_body_preview BLOB NOT NULL,
+                   resp_body_preview BLOB NOT NULL,
+                   req_body BLOB NOT NULL,
+                   resp_body BLOB NOT NULL,
+                   req_bytes INTEGER NOT NULL,
+                   resp_bytes INTEGER NOT NULL,
+                   content_type TEXT NOT NULL,
+                   started_at_ms INTEGER NOT NULL,
+                   finished_at_ms INTEGER NOT NULL,
+                   duration_ms INTEGER NOT NULL,
+                   truncated INTEGER NOT NULL,
+                   mitm_failed INTEGER NOT NULL,
+                   ws_frames TEXT NOT NULL DEFAULT '[]'
+                 );
+                 INSERT INTO capture_records
+                   (record_id, request_record_id, conn_id, host, method, scheme, url,
+                    status_code, protocol, req_headers, resp_headers, req_body_preview,
+                    resp_body_preview, req_body, resp_body, req_bytes, resp_bytes,
+                    content_type, started_at_ms, finished_at_ms, duration_ms, truncated,
+                    mitm_failed, ws_frames)
+                 VALUES (1, 5, 'conn', 'legacy.example', 'GET', 'https', 'https://legacy.example/p',
+                         200, 'h1', 'host: legacy.example', 'content-type: text/plain',
+                         x'61', x'62', x'63', x'64', 1, 1, 'text/plain', 1000, 1005, 5,
+                         0, 0, '[]');",
+            )
+            .unwrap();
+        }
+
+        let p1 = Persist::open(&path).expect("a legacy schema must migrate");
+        let page = p1.load_page(0, 10, 0, &CaptureFilter::default()).unwrap();
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0].host, "legacy.example");
+        assert_eq!(
+            page[0].failure_reason, "",
+            "a row written before the column existed reads back an empty reason"
+        );
+        let detail = p1.load_detail(1).unwrap().unwrap();
+        assert_eq!(detail.failure_reason, "");
+        assert_eq!(detail.req_body, b"c");
+        drop(p1);
+
+        let p2 = Persist::open(&path).expect("opening an already-migrated schema is idempotent");
+        assert_eq!(p2.count(0).unwrap(), 1);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2380,6 +2509,7 @@ mod tests {
             duration_ms: u64::MAX,
             truncated: true,
             mitm_failed: true,
+            failure_reason: String::new(),
             ws_frames: (0..CAPTURE_WS_RING_FRAMES)
                 .map(|i| CaptureWsFrame {
                     direction: "clientToServer".to_string(),

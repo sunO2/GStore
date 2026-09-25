@@ -1858,6 +1858,9 @@ pub(crate) struct CaptureRecord {
     pub duration_ms: u64,
     pub truncated: bool,
     pub mitm_failed: bool,
+    /// Stage/reason the capture degraded to pass-through; empty when it did not
+    /// fail. First non-empty reason wins (see `ExchangeCapture::mark_failed`).
+    pub failure_reason: String,
     pub ws_frames: Vec<WsFrameRecord>,
 }
 
@@ -2142,6 +2145,7 @@ struct ExchangeCapture {
     sides_done: AtomicUsize,
     emitted: AtomicBool,
     failed: AtomicBool,
+    failure_reason: Mutex<String>,
 }
 
 impl ExchangeCapture {
@@ -2177,6 +2181,7 @@ impl ExchangeCapture {
             sides_done: AtomicUsize::new(0),
             emitted: AtomicBool::new(false),
             failed: AtomicBool::new(false),
+            failure_reason: Mutex::new(String::new()),
         }
     }
 
@@ -2200,6 +2205,12 @@ impl ExchangeCapture {
 
     fn mark_failed(&self, reason: &str) {
         self.failed.store(true, Ordering::Release);
+        if !reason.trim().is_empty() {
+            let mut slot = self.failure_reason.lock().unwrap_or_else(|e| e.into_inner());
+            if slot.is_empty() {
+                *slot = reason.to_string();
+            }
+        }
         // A cancellation is the client/connection aborting, not a capture defect;
         // keep it at debug so real failures are not drowned out.
         let level = if is_cancellation_reason(reason) { 0 } else { 2 };
@@ -2267,6 +2278,11 @@ impl ExchangeCapture {
             duration_ms: now.saturating_sub(self.started_at_ms),
             truncated: request.truncated || response.truncated,
             mitm_failed: failed,
+            failure_reason: self
+                .failure_reason
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
             ws_frames: Vec::new(),
         };
         self.sink.on_capture(record);
@@ -4645,8 +4661,39 @@ mod mitm_http_tests {
                 rec.mitm_failed,
                 "the failed exchange is recorded as mitmFailed"
             );
+            assert!(
+                !rec.failure_reason.is_empty(),
+                "a failed exchange must carry its failure reason, got {:?}",
+                rec.failure_reason
+            );
             reset_capture_sink();
         });
+    }
+
+    #[test]
+    fn exchange_capture_failure_reason_keeps_the_first_non_empty_reason() {
+        let (mut rx, sink) = recording_sink();
+        let req_body = BodyCapture::new(false, BodyEncoding::Identity, 0);
+        let exchange = ExchangeCapture::new(
+            sink,
+            HttpProtocol::H1,
+            "flow.test",
+            "conn-reason",
+            0,
+            "GET",
+            "https://flow.test/dead",
+            &HeaderMap::new(),
+            req_body,
+            0,
+        );
+        exchange.mark_failed("dial timed out");
+        exchange.mark_failed("later reason");
+        exchange.mark_failed("   ");
+        exchange.emit(true);
+
+        let rec = rx.try_recv().expect("emit must push exactly one capture");
+        assert!(rec.mitm_failed);
+        assert_eq!(rec.failure_reason, "dial timed out");
     }
 
     // ==================== Todo 15: rewrite matching + execution ====================
