@@ -641,6 +641,8 @@ mod mitm_gate_tests {
     use std::time::{Duration, Instant};
 
     use rustls::pki_types::ServerName;
+    use smallvec::SmallVec;
+    use smol_str::SmolStr;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio_rustls::TlsConnector;
 
@@ -1034,6 +1036,110 @@ mod mitm_gate_tests {
         };
         assert_eq!(sniff_plan(&cfg, 80), capture_tls_plan());
         capture::reset_for_tests();
+    }
+
+    /// (a) A second `open_mitm_flow` for the SAME live session `conn_id` must
+    /// reuse `active_by_conn` — exactly one record is minted, never a second
+    /// skeleton for one session.
+    #[test]
+    fn mitm_open_flow_same_session_reuses_active_record() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        crate::requests::reset_for_tests();
+
+        let src: SocketAddr = "10.0.0.2:41000".parse().unwrap();
+        let dst: SocketAddr = "203.0.113.9:443".parse().unwrap();
+        let before = crate::requests::next_record_id_for_tests();
+        let first =
+            crate::requests::open_mitm_flow("tun-same-session", "shop.example", src, dst, 5_000);
+        let second =
+            crate::requests::open_mitm_flow("tun-same-session", "shop.example", src, dst, 5_100);
+
+        assert_eq!(
+            first, second,
+            "a second open for the same live conn_id must reuse active_by_conn"
+        );
+        assert_eq!(
+            crate::requests::next_record_id_for_tests(),
+            before + 1,
+            "a reused session must mint exactly one request skeleton"
+        );
+        let page =
+            crate::requests::snapshot(0, 64, &crate::requests::RequestFilter::default());
+        assert_eq!(
+            page.records
+                .iter()
+                .filter(|r| r.conn_id == "tun-same-session")
+                .count(),
+            1,
+            "only one record may exist for the reused conn_id"
+        );
+        crate::requests::reset_for_tests();
+    }
+
+    fn fixture_conn_metadata(host: &str) -> Metadata {
+        Metadata {
+            network: Network::Tcp,
+            conn_type: ConnType::Tun,
+            host: host.into(),
+            dst_ip: Some("1.2.3.4".parse().unwrap()),
+            dst_port: 443,
+            src_ip: Some("10.10.0.2".parse().unwrap()),
+            src_port: 40000,
+            ..Default::default()
+        }
+    }
+
+    /// (e) The synthetic `tun-…` conn_id cannot appear in meow's UUID-only
+    /// projection, so a `sync_full` pass mints a skeleton for each live meow
+    /// connection but neither duplicates nor stales/closes the synthetic one.
+    #[test]
+    fn mitm_sync_full_never_duplicates_synthetic_conn() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        crate::requests::reset_for_tests();
+        crate::conn::reset_for_tests();
+
+        let src: SocketAddr = "10.0.0.2:41000".parse().unwrap();
+        let dst: SocketAddr = "203.0.113.9:443".parse().unwrap();
+        let conn_id = format!("tun-{src}->{dst}");
+        let rid = crate::requests::open_mitm_flow(&conn_id, "flow.test", src, dst, 5_000);
+        let after_open = crate::requests::next_record_id_for_tests();
+
+        let stats = meow_tunnel::Statistics::new();
+        stats.track_connection(
+            fixture_conn_metadata("meow.example"),
+            SmolStr::new("DOMAIN-SUFFIX"),
+            SmolStr::new("meow.example"),
+            SmallVec::from_vec(vec![Arc::<str>::from("proxy-a")]),
+        );
+        let outcome = crate::conn::sync_full(&stats);
+        assert_eq!(outcome.live.len(), 1, "the real meow connection is projected");
+
+        assert_eq!(
+            crate::requests::next_record_id_for_tests(),
+            after_open + 1,
+            "sync_full must mint only the real connection's skeleton, never a second synthetic one"
+        );
+        let page =
+            crate::requests::snapshot(0, 64, &crate::requests::RequestFilter::default());
+        assert_eq!(
+            page.records
+                .iter()
+                .filter(|r| r.conn_id == conn_id)
+                .count(),
+            1,
+            "the synthetic tun-… conn_id must stay a single record"
+        );
+        let synthetic = page
+            .records
+            .iter()
+            .find(|r| r.record_id == rid)
+            .expect("the synthetic skeleton survives the projection pass");
+        assert_eq!(
+            synthetic.close_reason, "open",
+            "sync_full must not stale/close a connection outside meow's projection"
+        );
+        crate::requests::reset_for_tests();
+        crate::conn::reset_for_tests();
     }
 }
 
@@ -2363,6 +2469,102 @@ mod mitm_e2e_tests {
                 "an unlisted port must produce no capture"
             );
 
+            teardown();
+        });
+    }
+
+    /// (d) A panic inside an isolated MITM task must still run the RAII
+    /// `MitmFlowClose`, finalizing the skeleton, and must not escape to the
+    /// dataplane runtime.
+    #[test]
+    fn mitm_flow_guard_finalizes_skeleton_on_task_panic() {
+        let rt = current_thread();
+        rt.block_on(async {
+            let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+            let (_ca, _inner) = setup(true, &[0]);
+
+            let src: SocketAddr = "10.0.0.2:41000".parse().unwrap();
+            let dst: SocketAddr = "203.0.113.9:443".parse().unwrap();
+            let conn_id = format!("tun-{src}->{dst}");
+            let rid =
+                crate::requests::open_mitm_flow(&conn_id, "flow.test", src, dst, crate::now_ms());
+
+            let handle = spawn_isolated(async move {
+                // Mirrors `begin_mitm`: the flow guard is held for the session
+                // body, so a panic must still finalize on unwind.
+                let _flow_guard = MitmFlowClose(conn_id);
+                panic!("forced MITM task panic after the skeleton was registered");
+            });
+            assert!(
+                handle.await.is_ok(),
+                "spawn_isolated must catch the panic (no JoinError)"
+            );
+
+            let page =
+                crate::requests::snapshot(0, 64, &crate::requests::RequestFilter::default());
+            let skeleton = page
+                .records
+                .iter()
+                .find(|r| r.record_id == rid)
+                .expect("the skeleton must survive the panic");
+            assert_eq!(
+                skeleton.close_reason, "closed",
+                "the RAII guard must finalize the skeleton during panic unwind"
+            );
+            assert!(
+                skeleton.close_ts_ms.is_some() && skeleton.duration_ms.is_some(),
+                "panic unwind must stamp closeTsMs/durationMs"
+            );
+
+            let sibling = tokio::spawn(async { 7u32 });
+            assert_eq!(sibling.await.unwrap(), 7, "the dataplane runtime survives the panic");
+            teardown();
+        });
+    }
+
+    /// (f) `dial_upstream` re-originates through `adapter.dial_tcp` only — it
+    /// must NOT `track_connection`, so an upstream re-dial never adds a second
+    /// `requests` skeleton (even after a meow projection pass).
+    #[test]
+    fn mitm_upstream_redial_adds_no_request_skeleton() {
+        let rt = current_thread();
+        rt.block_on(async {
+            let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+            let (_ca, inner) = setup(true, &[0]);
+            crate::conn::reset_for_tests();
+
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let accept = tokio::spawn(async move {
+                if let Ok((_tcp, _)) = listener.accept().await {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            });
+
+            let target = UpstreamTarget::new("flow.test", port)
+                .with_dst_ip(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
+                .with_source("10.0.0.2".parse().unwrap(), 40000);
+            let before_conns = inner.stats.active_connection_count();
+            let before_records = crate::requests::next_record_id_for_tests();
+
+            let upstream = crate::mitm::dial_upstream(&inner, &target)
+                .await
+                .expect("the re-dial must reach the DIRECT fixture");
+            drop(upstream);
+
+            assert_eq!(
+                inner.stats.active_connection_count(),
+                before_conns,
+                "dial_upstream must not track_connection"
+            );
+            let _ = crate::conn::sync_full(&inner.stats);
+            assert_eq!(
+                crate::requests::next_record_id_for_tests(),
+                before_records,
+                "an upstream re-dial must never add a requests skeleton"
+            );
+
+            let _ = accept.await;
             teardown();
         });
     }
