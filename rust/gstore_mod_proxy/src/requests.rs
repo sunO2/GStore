@@ -28,6 +28,7 @@
 #![allow(dead_code)] // T1 foundation: consumed by later todos (capture, dispatch, persist).
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
@@ -1574,6 +1575,51 @@ pub(crate) fn record_close(rec: &ConnRecord, now_ms: u64, reason: CloseReason) {
     });
 }
 
+/// Register a synthesized request record for a MITM flow at session start.
+///
+/// MITM flows are not tracked by meow's connection table, so the dispatch layer
+/// synthesizes a [`ConnRecord`] from the bridged endpoints and projects it into
+/// the same timeline through the existing [`RequestStore::open_record`]
+/// chokepoint (dedupe/idempotency reused, never reimplemented). Returns the
+/// assigned `recordId`, which the MITM path stores on its request context.
+///
+/// Crate-internal only: no ABI/JSON surface is touched.
+pub(crate) fn open_mitm_flow(
+    conn_id: &str,
+    host: &str,
+    src: SocketAddr,
+    dst: SocketAddr,
+    now_ms: u64,
+) -> u64 {
+    let rec = ConnRecord {
+        id: conn_id.into(),
+        src: src.to_string(),
+        dst: format!("{}:{}", dst.ip(), dst.port()),
+        dst_ip: dst.ip().to_string(),
+        dst_port: dst.port(),
+        domain: host.into(),
+        network: "tcp".into(),
+        rule: String::new(),
+        rule_payload: String::new(),
+        outbound: String::new(),
+        started_at_ms: now_ms,
+        upload_bytes: 0,
+        download_bytes: 0,
+    };
+    with_store(|st| st.open_record(&rec, now_ms))
+}
+
+/// Finalize the synthesized record for a MITM flow at session end.
+///
+/// Idempotent by construction: [`RequestStore::finalize`] leaves a terminal
+/// record untouched, and a `conn_id` the bounded ring has already evicted (or
+/// never saw) is a silent no-op — this helper must never panic.
+pub(crate) fn close_mitm_flow(conn_id: &str, now_ms: u64) {
+    with_store(|st| {
+        st.finalize(conn_id, now_ms);
+    });
+}
+
 /// Finalize every stale id that `is_live` reports as gone from meow's live table
 /// — the only path that turns a stale record into a terminal `closed`.
 pub(crate) fn finalize_departed_stale(now_ms: u64, is_live: impl Fn(&str) -> bool) -> u64 {
@@ -2408,6 +2454,78 @@ mod tests {
         assert_eq!(s.records[0].close_ts_ms, Some(1_500), "closeTs untouched");
         assert_eq!(s.records[0].duration_ms, Some(500), "duration untouched");
         assert!(s.active_by_conn.is_empty());
+    }
+
+    // --- MITM synthesized skeleton records (request-timeline registration) ---
+
+    fn mitm_endpoints() -> (std::net::SocketAddr, std::net::SocketAddr) {
+        (
+            "10.0.0.2:41000".parse().unwrap(),
+            "203.0.113.9:443".parse().unwrap(),
+        )
+    }
+
+    fn row_by_id(page: &RequestSnapshot, id: u64) -> RequestRecord {
+        page.records
+            .iter()
+            .find(|r| r.record_id == id)
+            .cloned()
+            .unwrap_or_else(|| panic!("record {id} missing from snapshot"))
+    }
+
+    /// Happy QA: `open_mitm_flow` mints an open skeleton record whose domain is
+    /// the MITM host (known) and whose close fields are not yet terminal.
+    #[test]
+    fn open_mitm_flow_registers_open_skeleton_record() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        let (src, dst) = mitm_endpoints();
+        let rid = open_mitm_flow("mitm-open", "shop.example", src, dst, 5_000);
+
+        let page = snapshot(0, 10, &RequestFilter::default());
+        let r = row_by_id(&page, rid);
+        assert_eq!(r.domain, "shop.example");
+        assert!(r.domain_known);
+        assert_eq!(r.close_reason, "open");
+        assert_eq!(r.duration_ms, None);
+        assert_eq!(r.close_ts_ms, None);
+        assert_eq!(r.dst_ip, "203.0.113.9");
+        assert_eq!(r.dst_port, 443);
+        assert_eq!(r.network, "tcp");
+    }
+
+    /// `close_mitm_flow` writes the single terminal transition, and a repeated
+    /// close never overwrites `closeTsMs`/`durationMs`.
+    #[test]
+    fn close_mitm_flow_finalizes_once_and_is_idempotent() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        let (src, dst) = mitm_endpoints();
+        let rid = open_mitm_flow("mitm-close", "shop.example", src, dst, 5_000);
+
+        close_mitm_flow("mitm-close", 5_400);
+        let first = row_by_id(&snapshot(0, 10, &RequestFilter::default()), rid);
+        assert_eq!(first.close_reason, "closed");
+        assert!(first.close_ts_ms.is_some());
+        let duration = first.duration_ms;
+        assert!(duration.is_some());
+        assert_eq!(duration, Some(400));
+
+        close_mitm_flow("mitm-close", 9_999);
+        let second = row_by_id(&snapshot(0, 10, &RequestFilter::default()), rid);
+        assert_eq!(second.duration_ms, duration, "second close is a no-op");
+        assert_eq!(second.close_ts_ms, Some(5_400));
+    }
+
+    /// Failure QA: closing a `conn_id` that was never opened (or was already
+    /// evicted) is a silent no-op and never fabricates a record.
+    #[test]
+    fn close_mitm_flow_unknown_conn_is_silent_noop() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        close_mitm_flow("never-opened", 1_000);
+        let page = snapshot(0, 10, &RequestFilter::default());
+        assert!(page.records.is_empty(), "no record is fabricated");
     }
 
     /// A stale record is NOT terminal: no `closeTsMs`, no `durationMs`. Only the
