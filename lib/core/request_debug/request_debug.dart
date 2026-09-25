@@ -11,5 +11,6 @@ export 'debug_models.dart';
 export 'debug_response.dart';
 export 'debug_sender.dart';
 export 'env_resolver.dart';
+export 'query_codec.dart';
 export 'request_debug_facade.dart';
 export 'request_debug_store.dart';
