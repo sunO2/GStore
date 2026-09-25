@@ -105,3 +105,29 @@ device run required for widget-level behavior.
 - `.omo/evidence/task-17-request-debug-ui-ux.md` (+ red/green/analyze logs)
 
 `dist/` untouched; `rust/**` untouched; `pubspec.yaml` unchanged.
+
+## Follow-up fix — review finding N4 (gutter number width not scaled)
+
+**Finding:** the gutter line-number box width stayed `AppSpacing.xs + digits *
+sizeXS` while the number font scaled, so at zoom ≥ 1.25× a multi-digit row count
+(e.g. a 50-line JSON) clipped / crowded the collapse-chevron slot.
+
+**Fix** (`response_viewer.dart`, `_buildJsonGutter`):
+- `numberWidth = (AppSpacing.xs + '$lineCount'.length * AppTypography.sizeXS) *
+  widget.scale` — same `widget.scale` source as the font; nothing hardcoded.
+- added stable key `Key('${keyPrefix}-num-$i')` to the number `SizedBox`
+  (`response-fullscreen-num-0`, …); existing `-gutter` key untouched.
+
+**Test** (appended to `全屏缩放 · 行号对齐`): with a ≥10-line JSON (14 pretty
+lines), open the full-screen body, measure `response-fullscreen-num-0` at 1.0×
+and after zooming to 2.0×; assert `widthMax / width0 ≈ 2.0` and
+`takeException() == null` (no overflow/clipping).
+
+**Raw output**
+- RED (`.omo/evidence/task-17-n4-red.txt`): `放大器...` case fails — the keyed
+  number box didn't exist yet.
+- GREEN (`flutter test test/request_debug_response_test.dart
+  test/request_debug_editor_test.dart`): `+51: All tests passed!`
+  (`.omo/evidence/task-17-n4-green.txt`).
+- `dart analyze lib/` = 729 = 0 errors / 93 warnings / 636 infos == baseline, 0
+  entries for `response_viewer.dart` (`.omo/evidence/task-17-n4-analyze.txt`).

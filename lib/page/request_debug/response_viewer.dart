@@ -981,8 +981,10 @@ class _ResponseBodyPaneState extends State<_ResponseBodyPane> {
   ) {
     final scheme = Theme.of(context).colorScheme;
     final lineHeight = _gutterLineHeight;
+    // 行号框宽度随缩放同因子放大，避免放大后多位数行号被裁切 / 压到折叠图标槽。
     final numberWidth =
-        AppSpacing.xs + '$lineCount'.length * AppTypography.sizeXS;
+        (AppSpacing.xs + '$lineCount'.length * AppTypography.sizeXS) *
+            widget.scale;
     return Column(
       key: Key('${widget.keyPrefix}-gutter'),
       crossAxisAlignment: CrossAxisAlignment.end,
@@ -1015,6 +1017,7 @@ class _ResponseBodyPaneState extends State<_ResponseBodyPane> {
                 ),
                 const SizedBox(width: AppSpacing.xs),
                 SizedBox(
+                  key: Key('${widget.keyPrefix}-num-$i'),
                   width: numberWidth,
                   child: Text(
                     '${i + 1}',

@@ -649,6 +649,39 @@ void main() {
       expect(find.byKey(_zoomReset), findsNothing);
       expect(tester.takeException(), isNull);
     });
+
+    testWidgets('放大到 2.0× → gutter 行号框宽度同步 2×，不裁切/不抛异常', (tester) async {
+      // ≥10 行 JSON：行号可达两位数。
+      final body = '{"k0":0,${[for (var i = 1; i < 12; i++) '"k$i":$i'].join(',')}}';
+      await _openFullscreen(
+        tester,
+        _response(
+          headers: const <String, List<String>>{
+            'content-type': <String>['application/json'],
+          },
+          body: body,
+        ),
+      );
+
+      // 行数 ≥ 10（含两位数行号）。
+      expect(tryPrettyJson(body)!.split('\n').length, greaterThanOrEqualTo(10));
+
+      final numFinder = find.byKey(const Key('response-fullscreen-num-0'));
+      expect(numFinder, findsOneWidget);
+      final width0 = tester.getSize(numFinder).width;
+      expect(width0, greaterThan(0));
+
+      // 放大到 2.0×（1.0 → 1.25 → 1.5 → 1.75 → 2.0）。
+      for (var i = 0; i < 4; i++) {
+        await tester.tap(find.byKey(_zoomIn));
+        await tester.pumpAndSettle();
+      }
+      expect(_zoomLabel(tester), '200%');
+
+      final widthMax = tester.getSize(numFinder).width;
+      expect(widthMax / width0, closeTo(2.0, 0.001));
+      expect(tester.takeException(), isNull);
+    });
   });
 
   group('Cookie 表', () {
