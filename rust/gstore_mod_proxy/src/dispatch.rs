@@ -293,14 +293,15 @@ where
         )
         .await
         {
-            Ok(MitmStreamOutcome::Terminated) => {}
+            Ok(MitmStreamOutcome::Terminated) | Ok(MitmStreamOutcome::ClientAbort) => {}
             Ok(MitmStreamOutcome::Failed(e)) => {
                 crate::log_message(
                     2,
                     &format!(
-                        "proxy.mitm: session failed stage={} host={host}: {}",
+                        "proxy.mitm: session failed stage={} host={host}: {}{}",
                         e.stage().as_str(),
                         e.message(),
+                        diagnostic_suffix(&e),
                     ),
                 );
             }
@@ -324,6 +325,15 @@ fn init_failed(err: MitmInitError) -> MitmInitError {
     err
 }
 
+fn diagnostic_suffix(failure: &MitmFailure) -> String {
+    let rendered = failure.diagnostics().render();
+    if rendered.is_empty() {
+        String::new()
+    } else {
+        format!(" {rendered}")
+    }
+}
+
 /// Spawn a detached task that catches an unwinding panic and records it, so a
 /// panicking MITM handler can never take down the TUN dataplane.
 pub(crate) fn spawn_isolated<F>(future: F) -> tokio::task::JoinHandle<()>
@@ -344,6 +354,8 @@ where
 pub(crate) enum MitmStreamOutcome {
     /// TLS termination succeeded and the bridge finished normally.
     Terminated,
+    /// The peer aborted its own connection; not a proxy failure.
+    ClientAbort,
     /// A stage-tagged failure; the flow was closed.
     Failed(MitmFailure),
 }
@@ -372,6 +384,17 @@ where
             observer.on_terminated(&host);
             match mitm::bridge_deferred(tls, dialer, ctx).await {
                 Ok(()) => MitmStreamOutcome::Terminated,
+                Err(e) if e.is_client_abort() => {
+                    crate::log_message(
+                        1,
+                        &format!(
+                            "proxy.mitm: client_abort host={host}: {}{}",
+                            e.message(),
+                            diagnostic_suffix(&e),
+                        ),
+                    );
+                    MitmStreamOutcome::ClientAbort
+                }
                 Err(e) => {
                     observer.on_failed(&host, &e.to_string());
                     mitm::record_mitm_failed(&format!("bridge: {e}"));
@@ -1640,6 +1663,131 @@ mod mitm_e2e_tests {
         fn drop(&mut self) {
             mitm::reset_upstream_response_timeout_for_tests();
         }
+    }
+
+    #[derive(Debug)]
+    struct ShutdownFailingIo<S>(S);
+
+    impl<S: AsyncRead + Unpin> AsyncRead for ShutdownFailingIo<S> {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.0).poll_read(cx, buf)
+        }
+    }
+
+    impl<S: AsyncWrite + Unpin> AsyncWrite for ShutdownFailingIo<S> {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Pin::new(&mut self.0).poll_write(cx, buf)
+        }
+
+        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.0).poll_flush(cx)
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "forced shutdown failure",
+            )))
+        }
+    }
+
+    async fn client_h1_close(
+        ca: &CertificateAuthority,
+        io: DuplexStream,
+        host: &str,
+        path: &str,
+    ) -> u16 {
+        let tls = TlsConnector::from(client_tls(ca, b"http/1.1"))
+            .connect(ServerName::try_from(host.to_string()).unwrap(), io)
+            .await
+            .expect("client TLS handshake");
+        let (mut sender, conn) = hyper::client::conn::http1::handshake::<_, Full<Bytes>>(
+            hyper_util::rt::TokioIo::new(tls),
+        )
+        .await
+        .expect("client h1 handshake");
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+        let request = hyper::Request::builder()
+            .method("GET")
+            .uri(path)
+            .header(hyper::header::HOST, host)
+            .header(hyper::header::CONNECTION, "close")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        let response = sender.send_request(request).await.expect("response");
+        let status = response.status().as_u16();
+        let _ = response.into_body().collect().await;
+        status
+    }
+
+    #[test]
+    fn mitm_client_abort_is_not_counted_as_a_failure() {
+        let rt = current_thread();
+        rt.block_on(async {
+            let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+            let _rg = captures::rules_test_guard();
+            let (ca, _inner) = setup(true, &[0]);
+            captures::rules_set(
+                br#"{"enabled":true,"url":"https://flow.test/abort","kind":"local","statusCode":200,"headers":"content-type: text/plain","body":"bye"}"#,
+            )
+            .expect("local rule");
+
+            let before = mitm::mitm_failed_count();
+            let (client, server) = tokio::io::duplex(1 << 16);
+            let ctx = BridgeContext::new("flow.test", "conn-abort", 0);
+            begin_mitm(
+                ShutdownFailingIo(server),
+                Some("flow.test"),
+                Arc::new(NeverDialer),
+                ctx,
+            )
+            .expect("session must start");
+            assert_eq!(
+                client_h1_close(&ca, client, "flow.test", "/abort").await,
+                200,
+                "the local rule response must reach the client"
+            );
+            drain_inflight().await;
+            assert_eq!(
+                mitm::mitm_failed_count(),
+                before,
+                "a client abort (hyper Kind::Shutdown) must NOT increment mitmFailed"
+            );
+
+            let before_real = mitm::mitm_failed_count();
+            let (client, server) = tokio::io::duplex(1 << 16);
+            let ctx = BridgeContext::new("flow.test", "conn-real", 0);
+            begin_mitm(
+                ShutdownFailingIo(server),
+                Some("flow.test"),
+                Arc::new(NeverDialer),
+                ctx,
+            )
+            .expect("session must start");
+            assert_eq!(
+                client_h1_close(&ca, client, "flow.test", "/real").await,
+                mitm::UPSTREAM_FAILURE_STATUS,
+                "an unreachable upstream must still surface the failure status"
+            );
+            drain_inflight().await;
+            assert_eq!(
+                mitm::mitm_failed_count(),
+                before_real + 1,
+                "a genuine upstream failure must still be counted exactly once"
+            );
+
+            teardown();
+        });
     }
 
     struct NeverDialer;

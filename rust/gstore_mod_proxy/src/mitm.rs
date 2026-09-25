@@ -1050,6 +1050,7 @@ pub(crate) enum MitmStage {
     UpstreamTls,
     UpstreamHttp,
     ClientHttp,
+    ClientAbort,
 }
 
 impl MitmStage {
@@ -1060,6 +1061,7 @@ impl MitmStage {
             MitmStage::UpstreamTls => "upstream_tls",
             MitmStage::UpstreamHttp => "upstream_http",
             MitmStage::ClientHttp => "client_http",
+            MitmStage::ClientAbort => "client_abort",
         }
     }
 
@@ -1071,6 +1073,31 @@ impl MitmStage {
     }
 }
 
+/// Optional connection facts attached to a [`MitmFailure`] so a device log can
+/// attribute a failure without a second log line. All fields are best-effort.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct FailureDiagnostics {
+    client_proto: Option<&'static str>,
+    method: Option<String>,
+    upstream_proto: Option<&'static str>,
+}
+
+impl FailureDiagnostics {
+    pub(crate) fn render(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(proto) = self.client_proto {
+            parts.push(format!("client_proto={proto}"));
+        }
+        if let Some(method) = &self.method {
+            parts.push(format!("method={method}"));
+        }
+        if let Some(proto) = self.upstream_proto {
+            parts.push(format!("upstream_proto={proto}"));
+        }
+        parts.join(" ")
+    }
+}
+
 /// A stage-tagged MITM failure. [`Self::stage`] drives the session-failure log
 /// (`session failed stage=<label>`); `Display` renders the same tag inline so
 /// request-level records (`record_mitm_failed`) are attributable too.
@@ -1078,6 +1105,7 @@ impl MitmStage {
 pub(crate) struct MitmFailure {
     stage: MitmStage,
     message: String,
+    diagnostics: FailureDiagnostics,
 }
 
 impl MitmFailure {
@@ -1085,6 +1113,7 @@ impl MitmFailure {
         Self {
             stage,
             message: message.into(),
+            diagnostics: FailureDiagnostics::default(),
         }
     }
 
@@ -1094,6 +1123,31 @@ impl MitmFailure {
 
     pub(crate) fn message(&self) -> &str {
         &self.message
+    }
+
+    pub(crate) fn diagnostics(&self) -> &FailureDiagnostics {
+        &self.diagnostics
+    }
+
+    /// A client abort is the peer tearing down its own connection, not a proxy
+    /// failure; the failure counter and error-level logs must exclude it.
+    pub(crate) fn is_client_abort(&self) -> bool {
+        self.stage == MitmStage::ClientAbort
+    }
+
+    pub(crate) fn with_client_proto(mut self, proto: HttpProtocol) -> Self {
+        self.diagnostics.client_proto = Some(proto.as_str());
+        self
+    }
+
+    pub(crate) fn with_method(mut self, method: impl Into<String>) -> Self {
+        self.diagnostics.method = Some(method.into());
+        self
+    }
+
+    pub(crate) fn with_upstream_proto(mut self, proto: HttpProtocol) -> Self {
+        self.diagnostics.upstream_proto = Some(proto.as_str());
+        self
     }
 }
 
@@ -2483,6 +2537,7 @@ struct BridgeState {
     rule_source: Arc<dyn CaptureRuleSource>,
     upstream: tokio::sync::OnceCell<EstablishedUpstream>,
     dialer: Option<Arc<dyn UpstreamDialer>>,
+    last_method: std::sync::Mutex<Option<String>>,
 }
 
 impl BridgeState {
@@ -2513,6 +2568,9 @@ impl BridgeState {
     }
 
     async fn handle(&self, req: Request<Incoming>) -> Response<BridgeBody> {
+        if let Ok(mut slot) = self.last_method.lock() {
+            *slot = Some(req.method().as_str().to_string());
+        }
         if is_websocket_upgrade(&req) {
             return self.handle_websocket(req).await;
         }
@@ -3247,10 +3305,13 @@ where
         rule_source: ctx.rule_source,
         upstream: upstream.unwrap_or_else(tokio::sync::OnceCell::new),
         dialer,
+        last_method: std::sync::Mutex::new(None),
     });
-    let service = ProxyService { state };
+    let service = ProxyService {
+        state: Arc::clone(&state),
+    };
     let io = TokioIo::new(client);
-    match client_proto {
+    let result = match client_proto {
         HttpProtocol::H1 => {
             let mut builder = server_http1::Builder::new();
             builder.max_buf_size(H1_MAX_BUF_SIZE);
@@ -3258,16 +3319,39 @@ where
                 .serve_connection(io, service)
                 .with_upgrades()
                 .await
-                .map_err(|e| MitmFailure::new(MitmStage::ClientHttp, e.to_string()))
         }
         HttpProtocol::H2 => {
             let mut builder = server_http2::Builder::new(TokioExecutor::new());
             configure_h2_server(&mut builder);
-            builder
-                .serve_connection(io, service)
-                .await
-                .map_err(|e| MitmFailure::new(MitmStage::ClientHttp, e.to_string()))
+            builder.serve_connection(io, service).await
         }
+    };
+    result.map_err(|e| client_http_failure(client_proto, &state, e))
+}
+
+fn client_http_failure(
+    client_proto: HttpProtocol,
+    state: &BridgeState,
+    error: hyper::Error,
+) -> MitmFailure {
+    let failure = if error.is_shutdown() {
+        MitmFailure::new(MitmStage::ClientAbort, error.to_string())
+    } else {
+        MitmFailure::new(MitmStage::ClientHttp, error.to_string())
+    }
+    .with_client_proto(client_proto);
+    let last_method = state
+        .last_method
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let failure = match last_method {
+        Some(method) => failure.with_method(method),
+        None => failure,
+    };
+    match state.upstream.get() {
+        Some(upstream) => failure.with_upstream_proto(upstream.proto),
+        None => failure,
     }
 }
 
@@ -5437,7 +5521,7 @@ mod tests {
         assert!(pem_decode("garbage").is_none());
     }
 
-    /// The five stage labels are a diagnostic contract: a device log grep and
+    /// The six stage labels are a diagnostic contract: a device log grep and
     /// the session-failure line depend on these exact spellings.
     #[test]
     fn mitm_stage_labels_are_stable() {
@@ -5446,9 +5530,25 @@ mod tests {
         assert_eq!(MitmStage::UpstreamTls.as_str(), "upstream_tls");
         assert_eq!(MitmStage::UpstreamHttp.as_str(), "upstream_http");
         assert_eq!(MitmStage::ClientHttp.as_str(), "client_http");
+        assert_eq!(MitmStage::ClientAbort.as_str(), "client_abort");
         let failure = MitmFailure::new(MitmStage::UpstreamHttp, "boom");
         assert!(failure.to_string().contains("stage=upstream_http"));
         assert_eq!(failure.message(), "boom");
+        assert!(!failure.is_client_abort());
+    }
+
+    #[test]
+    fn mitm_client_abort_failure_is_classified_and_carries_diagnostics() {
+        let failure = MitmFailure::new(MitmStage::ClientAbort, "error shutting down connection")
+            .with_client_proto(HttpProtocol::H1)
+            .with_method("POST")
+            .with_upstream_proto(HttpProtocol::H2);
+        assert!(failure.is_client_abort());
+        assert_eq!(failure.stage().as_str(), "client_abort");
+        let rendered = failure.diagnostics().render();
+        assert!(rendered.contains("client_proto=h1"), "{rendered}");
+        assert!(rendered.contains("method=POST"), "{rendered}");
+        assert!(rendered.contains("upstream_proto=h2"), "{rendered}");
     }
 
     /// A forced upstream failure maps to the right stage: a refused/hung dial is
