@@ -1459,7 +1459,7 @@ use hyper::body::{Body, Bytes, Frame, Incoming, SizeHint};
 use hyper::client::conn::{http1 as client_http1, http2 as client_http2};
 use hyper::header::{
     HeaderName, HeaderValue, CONNECTION, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, HOST,
-    SEC_WEBSOCKET_EXTENSIONS, SEC_WEBSOCKET_KEY, UPGRADE,
+    SEC_WEBSOCKET_EXTENSIONS, SEC_WEBSOCKET_KEY, TRANSFER_ENCODING, UPGRADE,
 };
 use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
@@ -1934,6 +1934,23 @@ fn is_hop_by_hop(name: &HeaderName) -> bool {
             | "trailer"
             | "upgrade"
     )
+}
+
+/// Forward request headers to the re-originated upstream request. Hop-by-hop
+/// headers never cross; `Content-Length` is preserved because the body is a
+/// byte-for-byte tee under unchanged framing, and is dropped only when a
+/// client `Transfer-Encoding` makes the tee re-frame the body as chunked.
+fn copy_forward_request_headers(src: &HeaderMap, dst: &mut HeaderMap) {
+    let reframed_chunked = src.contains_key(TRANSFER_ENCODING);
+    for (name, value) in src.iter() {
+        if is_hop_by_hop(name) {
+            continue;
+        }
+        if name == CONTENT_LENGTH && reframed_chunked {
+            continue;
+        }
+        dst.append(name, value.clone());
+    }
 }
 
 fn host_header(headers: &HeaderMap) -> Option<String> {
@@ -2535,12 +2552,7 @@ impl BridgeState {
         let mut builder = Request::builder().method(method).uri(upstream_uri);
         match builder.headers_mut() {
             Some(dst) => {
-                for (name, value) in req_headers.iter() {
-                    if is_hop_by_hop(name) || name == CONTENT_LENGTH {
-                        continue;
-                    }
-                    dst.append(name, value.clone());
-                }
+                copy_forward_request_headers(&req_headers, dst);
                 if !dst.contains_key(HOST) {
                     if let Ok(value) = HeaderValue::from_str(&host) {
                         dst.insert(HOST, value);
@@ -3282,6 +3294,13 @@ mod mitm_http_tests {
 
     enum Fixture {
         RawH1(Vec<u8>),
+        /// Raw h1 response that also records the first request head the origin
+        /// saw, so a test can assert the *forwarded* request framing
+        /// (`Content-Length` vs `Transfer-Encoding: chunked`).
+        RawH1Recorded {
+            response: Vec<u8>,
+            observed: Arc<StdMutex<Option<String>>>,
+        },
         H2 {
             status: u16,
             body: Vec<u8>,
@@ -3305,7 +3324,11 @@ mod mitm_http_tests {
         })
     }
 
-    async fn serve_raw_h1(mut tls: tokio_rustls::server::TlsStream<TcpStream>, response: Vec<u8>) {
+    async fn serve_raw_h1(
+        mut tls: tokio_rustls::server::TlsStream<TcpStream>,
+        response: Vec<u8>,
+        observed: Option<Arc<StdMutex<Option<String>>>>,
+    ) {
         let mut buf = Vec::new();
         let mut tmp = [0u8; 4096];
         loop {
@@ -3322,6 +3345,9 @@ mod mitm_http_tests {
         }
         if let Some(end) = header_end(&buf) {
             let head = String::from_utf8_lossy(&buf[..end]).to_ascii_lowercase();
+            if let Some(slot) = observed {
+                *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(head.clone());
+            }
             if let Some(length) = parse_content_length(&head) {
                 let mut remaining = length.saturating_sub(buf.len().saturating_sub(end + 4));
                 while remaining > 0 {
@@ -3381,7 +3407,12 @@ mod mitm_http_tests {
                 Fixture::RawH1(bytes) => {
                     let config = ca.server_config(&host).unwrap();
                     let tls = TlsAcceptor::from(config).accept(tcp).await.unwrap();
-                    serve_raw_h1(tls, bytes).await;
+                    serve_raw_h1(tls, bytes, None).await;
+                }
+                Fixture::RawH1Recorded { response, observed } => {
+                    let config = ca.server_config(&host).unwrap();
+                    let tls = TlsAcceptor::from(config).accept(tcp).await.unwrap();
+                    serve_raw_h1(tls, response, Some(observed)).await;
                 }
                 Fixture::H2 {
                     status,
@@ -3695,6 +3726,128 @@ mod mitm_http_tests {
             assert_eq!(rec.req_body, b"data=1");
             assert_eq!(rec.req_body_preview, b"data=1");
             assert_eq!(rec.req_bytes, 6);
+            reset_capture_sink();
+        });
+    }
+
+    #[test]
+    fn mitm_forward_request_headers_preserve_content_length() {
+        let mut src = HeaderMap::new();
+        src.insert(CONTENT_LENGTH, HeaderValue::from_static("6"));
+        src.insert("x-test", HeaderValue::from_static("1"));
+        let mut dst = HeaderMap::new();
+        copy_forward_request_headers(&src, &mut dst);
+        assert_eq!(
+            dst.get(CONTENT_LENGTH).and_then(|v| v.to_str().ok()),
+            Some("6"),
+            "an unchanged byte-for-byte request body must keep its Content-Length"
+        );
+        assert_eq!(
+            dst.get("x-test").and_then(|v| v.to_str().ok()),
+            Some("1"),
+            "end-to-end headers must be forwarded"
+        );
+    }
+
+    #[test]
+    fn mitm_forward_request_headers_drop_content_length_when_reframed() {
+        let mut src = HeaderMap::new();
+        src.insert(CONTENT_LENGTH, HeaderValue::from_static("6"));
+        src.insert(TRANSFER_ENCODING, HeaderValue::from_static("chunked"));
+        let mut dst = HeaderMap::new();
+        copy_forward_request_headers(&src, &mut dst);
+        assert!(
+            dst.get(CONTENT_LENGTH).is_none(),
+            "a client Transfer-Encoding re-frames the tee, so a stale Content-Length must be dropped"
+        );
+        assert!(
+            dst.get(TRANSFER_ENCODING).is_none(),
+            "hop-by-hop Transfer-Encoding is never forwarded"
+        );
+    }
+
+    #[test]
+    fn mitm_http_h1_post_forwards_content_length_framing() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let ca = temp_ca("h1post-cl");
+            let host = "flow.test";
+            let raw = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec();
+            let observed = Arc::new(StdMutex::new(None));
+            let upstream = start_fixture(
+                Arc::clone(&ca),
+                host,
+                Fixture::RawH1Recorded {
+                    response: raw,
+                    observed: Arc::clone(&observed),
+                },
+            )
+            .await;
+            let (_rx, sink) = recording_sink();
+            let ctx = BridgeContext::new(host, "conn-post-cl", 0).with_sink(sink);
+            let bridge_addr = run_bridge(Arc::clone(&ca), host, upstream, b"http/1.1", ctx).await;
+            let out = client_send_h1(
+                &ca,
+                bridge_addr,
+                host,
+                "POST",
+                "/submit",
+                Some(b"data=1".to_vec()),
+            )
+            .await;
+            assert_eq!(out.status, 200);
+            assert_eq!(out.body, b"ok");
+
+            let head = observed
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+                .expect("the origin must have observed the forwarded request head");
+            assert!(
+                head.contains("content-length: 6"),
+                "an h1 upstream POST with a body must keep Content-Length framing: {head}"
+            );
+            assert!(
+                !head.contains("transfer-encoding"),
+                "the forwarded POST must not be re-framed as chunked: {head}"
+            );
+            reset_capture_sink();
+        });
+    }
+
+    #[test]
+    fn mitm_http_h1_get_is_unaffected_by_content_length_preservation() {
+        let rt = crate::bounded_runtime().expect("bounded_runtime");
+        rt.block_on(async {
+            let ca = temp_ca("h1get-framing");
+            let host = "flow.test";
+            let raw = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello".to_vec();
+            let observed = Arc::new(StdMutex::new(None));
+            let upstream = start_fixture(
+                Arc::clone(&ca),
+                host,
+                Fixture::RawH1Recorded {
+                    response: raw,
+                    observed: Arc::clone(&observed),
+                },
+            )
+            .await;
+            let (_rx, sink) = recording_sink();
+            let ctx = BridgeContext::new(host, "conn-get-framing", 0).with_sink(sink);
+            let bridge_addr = run_bridge(Arc::clone(&ca), host, upstream, b"http/1.1", ctx).await;
+            let out = client_send_h1(&ca, bridge_addr, host, "GET", "/plain", None).await;
+            assert_eq!(out.status, 200);
+            assert_eq!(out.body, b"hello");
+
+            let head = observed
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+                .expect("the origin must have observed the forwarded request head");
+            assert!(
+                !head.contains("transfer-encoding"),
+                "a bodyless GET must never be re-framed as chunked: {head}"
+            );
             reset_capture_sink();
         });
     }
